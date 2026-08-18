@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
+from app.agent.workflow.contracts import ContinuationContract, ContinuationDecision
 from app.agent.workflow.role_manifest import (ROLE_SPECS, role_specs, tools_for_role,
                                                validate_role_tool_groups)
 from app.agent.workflow.state import AgentState, Node, RequestRefinement
@@ -91,6 +92,18 @@ def test_role_manifest_documents_cross_turn_and_final_response_inputs():
     assert "request_refinement" in ROLE_SPECS["work_architect"].input_keys
     assert [spec.id for spec in ROLE_SPECS.values()
             if "request_refinement" in spec.output_keys] == ["request_architect"]
+    assert set(ContinuationContract.model_fields) == {
+        "version", "root_request", "intent", "action", "target_keys", "outcome_ids", "decisions",
+    }
+    assert set(ContinuationDecision.model_fields) == {"field", "value", "source"}
+    assert "continuation_contract" in ROLE_SPECS["request_architect"].input_keys
+    assert "continuation_contract" in ROLE_SPECS["request_architect"].output_keys
+    assert "continuation_contract" in ROLE_SPECS["research_analyst"].input_keys
+    assert "continuation_contract" in ROLE_SPECS["work_architect"].input_keys
+    assert "continuation_contract" in ROLE_SPECS["auditor"].input_keys
+    assert "continuation_contract" in ROLE_SPECS["result_integrator"].input_keys
+    assert [spec.id for spec in ROLE_SPECS.values()
+            if "continuation_contract" in spec.output_keys] == ["request_architect"]
     assert {"messages", "request_text"} <= set(ROLE_SPECS["query_specialist"].input_keys)
     assert {"messages", "intent", "request_text", "request_plan", "query_plan", "keywords",
             "turn_continuation", "materialized_ticket_sources"} <= set(

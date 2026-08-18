@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import re
+from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
 from app.agent.tools._ctx import (client, jira_key_allowed, search_spaces,
@@ -134,4 +135,245 @@ def render_template(content_template: str, resolved: list[dict]) -> dict:
             "missing": sorted(set(missing))}
 
 
-__all__ = ["resolve_references", "render_template"]
+def _attrs(attrs) -> dict[str, str]:
+    return {str(key).lower(): str(value or "") for key, value in attrs}
+
+
+def _ticket_key_from_anchor(attrs: dict[str, str]) -> str:
+    key = str(attrs.get("data-key") or "").strip().upper()
+    if re.fullmatch(r"[A-Z][A-Z0-9]{1,9}-\d+", key):
+        return key
+    href = str(attrs.get("href") or "").strip()
+    match = (re.fullmatch(r"([A-Z][A-Z0-9]{1,9}-\d+)", href, re.I)
+             or re.search(r"/browse/([A-Z][A-Z0-9]{1,9}-\d+)(?:$|[?#])", href, re.I))
+    return match.group(1).upper() if match else ""
+
+
+def render_editor_references(content_html: str, resolved: list[dict]) -> str:
+    """Render resolver-approved identities into the editor's canonical HTML IR.
+
+    The model-provided label is deliberately discarded for typed references.  Jira keys,
+    people, and Confluence documents use the resolver's exact identity/label, while an
+    external link keeps only its validated URL and resolver label.
+    """
+    tickets = {str(item.get("key") or "").upper(): item for item in resolved or []
+               if item.get("resolved") and item.get("kind") == "ticket"}
+    people = {str(item.get("userId") or ""): item for item in resolved or []
+              if item.get("resolved") and item.get("kind") == "person"}
+    urls = {str(item.get("url") or ""): item for item in resolved or []
+            if item.get("resolved") and item.get("kind") in {"document", "external"}}
+
+    class Renderer(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.out: list[str] = []
+            self.skip_tag = ""
+            self.skip_depth = 0
+
+        def _canonical(self, tag: str, attrs) -> str:
+            row = _attrs(attrs)
+            if tag == "a":
+                key = _ticket_key_from_anchor(row)
+                ticket = tickets.get(key)
+                if ticket:
+                    safe = html.escape(key, quote=True)
+                    return (f'<a class="jira-badge tkt" data-key="{safe}" '
+                            f'href="/browse/{safe}">{html.escape(key)}</a>')
+                ref = urls.get(row.get("href") or "")
+                if ref:
+                    css = "conf-link" if ref.get("kind") == "document" else "ref-link"
+                    url = html.escape(str(ref.get("url") or ""), quote=True)
+                    label = html.escape(str(ref.get("label") or ref.get("url") or ""))
+                    return (f'<a class="{css}" href="{url}" target="_blank" '
+                            f'rel="noopener">{label}</a>')
+            if tag == "span" and row.get("data-type") == "mention":
+                uid = str(row.get("data-id") or row.get("data-uid") or "")
+                person = people.get(uid)
+                if person:
+                    actual = html.escape(str(person.get("userId") or uid), quote=True)
+                    label = html.escape(str(person.get("label") or actual))
+                    return (f'<span data-type="mention" data-id="{actual}" '
+                            f'data-label="{label}">@{label}</span>')
+            return ""
+
+        def handle_starttag(self, tag, attrs):
+            lower = tag.lower()
+            if self.skip_tag:
+                self.skip_depth += 1
+                return
+            canonical = self._canonical(lower, attrs)
+            if canonical:
+                self.out.append(canonical)
+                self.skip_tag = lower
+                self.skip_depth = 0
+                return
+            rendered = "".join(
+                f' {html.escape(str(key), quote=True)}="{html.escape(str(value or ""), quote=True)}"'
+                for key, value in attrs)
+            self.out.append(f"<{tag}{rendered}>")
+
+        def handle_startendtag(self, tag, attrs):
+            if self.skip_tag:
+                return
+            rendered = "".join(
+                f' {html.escape(str(key), quote=True)}="{html.escape(str(value or ""), quote=True)}"'
+                for key, value in attrs)
+            self.out.append(f"<{tag}{rendered}/>")
+
+        def handle_endtag(self, tag):
+            if self.skip_tag:
+                if self.skip_depth:
+                    self.skip_depth -= 1
+                elif tag.lower() == self.skip_tag:
+                    self.skip_tag = ""
+                return
+            self.out.append(f"</{tag}>")
+
+        def handle_data(self, data):
+            if not self.skip_tag:
+                self.out.append(data)
+
+        def handle_entityref(self, name):
+            if not self.skip_tag:
+                self.out.append(f"&{name};")
+
+        def handle_charref(self, name):
+            if not self.skip_tag:
+                self.out.append(f"&#{name};")
+
+        def handle_comment(self, data):
+            if not self.skip_tag:
+                self.out.append(f"<!--{data}-->")
+
+    parser = Renderer()
+    try:
+        parser.feed(str(content_html or ""))
+        parser.close()
+        return "".join(parser.out)
+    except Exception:
+        return str(content_html or "")
+
+
+def validate_editor_html(content_html: str, resolved: list[dict]) -> dict:
+    """Validate the last editor boundary after all deterministic rendering.
+
+    This checker never repairs or deletes prose.  It reports the exact unsafe identity or
+    rendering token so the caller can fail closed instead of returning insertable HTML with
+    a low-salience warning.
+    """
+    resolved_tickets = {str(item.get("key") or "").upper() for item in resolved or []
+                        if item.get("resolved") and item.get("kind") == "ticket"}
+    resolved_people = {str(item.get("userId") or "") for item in resolved or []
+                       if item.get("resolved") and item.get("kind") == "person"}
+    resolved_urls = {str(item.get("url") or "") for item in resolved or []
+                     if item.get("resolved") and item.get("kind") in {"document", "external"}}
+    issues: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(code: str, value: str):
+        item = (str(code), str(value or "")[:180])
+        if item not in seen:
+            seen.add(item)
+            issues.append({"code": item[0], "value": item[1]})
+
+    for item in resolved or []:
+        if not item.get("resolved"):
+            add("unresolved_reference", str(item.get("id") or ""))
+
+    class Inspector(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.stack: list[tuple[str, dict[str, str]]] = []
+
+        def handle_starttag(self, tag, attrs):
+            lower, row = tag.lower(), _attrs(attrs)
+            self.stack.append((lower, row))
+            if lower in {"script", "style", "iframe", "object", "embed", "template",
+                         "form", "input", "button", "textarea", "select", "option",
+                         "meta", "link", "base"}:
+                add("unsafe_html", lower)
+            for name, value in row.items():
+                folded = value.strip().casefold()
+                if (name.startswith("on") or name in {"srcdoc", "formaction"}
+                        or "javascript:" in folded or "data:text/html" in folded
+                        or (name == "style" and ("expression(" in folded or "url(" in folded))):
+                    add("unsafe_html", f"{lower}.{name}")
+                # Compose HTML is inserted into TipTap before Jira's save-time sanitizer.
+                # A model-controlled image/video/SVG URL can therefore trigger an immediate
+                # browser GET to an external or LAN host. Editor output has no typed media
+                # contract, so only canonical ``a[href]`` references resolved below may carry
+                # a network location; every other network-bearing attribute fails closed.
+                if ((name in {"src", "srcset", "poster", "ping", "background",
+                              "xlink:href", "action"}
+                     or (name == "href" and lower != "a")) and value.strip()):
+                    add("unsafe_html", f"{lower}.{name}")
+            if lower == "a":
+                key = _ticket_key_from_anchor(row)
+                href = row.get("href") or ""
+                css = set((row.get("class") or "").split())
+                if key:
+                    if (key not in resolved_tickets or row.get("data-key", "").upper() != key
+                            or not {"jira-badge", "tkt"}.issubset(css)
+                            or href != f"/browse/{key}"):
+                        add("noncanonical_reference", key)
+                elif href not in resolved_urls:
+                    add("unresolved_reference", href or "anchor-without-href")
+                else:
+                    ref = next((item for item in resolved or []
+                                if item.get("resolved") and item.get("url") == href), {})
+                    expected = "conf-link" if ref.get("kind") == "document" else "ref-link"
+                    if expected not in css:
+                        add("noncanonical_reference", href)
+            elif lower == "span" and row.get("data-type") == "mention":
+                uid = row.get("data-id") or ""
+                if not uid or uid not in resolved_people:
+                    add("unresolved_person", uid or "mention-without-id")
+
+        def handle_endtag(self, tag):
+            lower = tag.lower()
+            for index in range(len(self.stack) - 1, -1, -1):
+                if self.stack[index][0] == lower:
+                    del self.stack[index:]
+                    break
+
+        def handle_data(self, data):
+            inside_anchor = any(tag == "a" for tag, _ in self.stack)
+            inside_mention = any(tag == "span" and row.get("data-type") == "mention"
+                                 for tag, row in self.stack)
+            if not inside_anchor:
+                for match in re.finditer(r"\b([A-Z][A-Z0-9]{0,9}-\d+)\b", data, re.I):
+                    add("unresolved_ticket", match.group(1).upper())
+                for match in re.finditer(r"https?://[^\s<>\"']+", data, re.I):
+                    add("bare_url", match.group(0).rstrip(".,;:!?)]}"))
+            if not inside_mention:
+                raw_mentions = re.findall(
+                    r"\[~([A-Za-z0-9._-]+)\]|(?<![\w@])@([A-Za-z0-9][A-Za-z0-9._-]{1,63})\b",
+                    data)
+                for bracketed, at_value in raw_mentions:
+                    add("raw_mention", bracketed or at_value)
+            if re.search(r"```|!?\[[^\]\n]+\]\([^)\n]+\)|\*\*[^*\n]+\*\*", data, re.I):
+                add("markdown", data.strip())
+            if re.search(r"(?m)^\s*(?:#{1,6}\s+|[-+*]\s+|\d+[.)]\s+|>\s+)", data):
+                add("markdown", data.strip())
+            # `h2. 제목` is a malformed heading only when it occupies a short block-like
+            # text node.  A prose sentence discussing the literal string `h2.` is allowed.
+            plain = data.strip()
+            if (len(plain) <= 80 and not re.search(r"[.!?。]\s*$", plain)
+                    and re.match(r"(?i)^h[1-6]\.\s+\S", plain)):
+                add("heading_marker", plain)
+
+    parser = Inspector()
+    try:
+        parser.feed(str(content_html or ""))
+        parser.close()
+        dangling = [tag for tag, row in parser.stack
+                    if tag == "a" or (tag == "span" and row.get("data-type") == "mention")]
+        if dangling:
+            add("invalid_html", "unclosed canonical reference: " + ", ".join(dangling))
+    except Exception as exc:
+        add("invalid_html", str(exc))
+    return {"ok": not issues, "issues": issues}
+
+
+__all__ = ["resolve_references", "render_template", "render_editor_references",
+           "validate_editor_html"]

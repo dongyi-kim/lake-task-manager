@@ -38,6 +38,12 @@ SIMPLE_MODEL = os.environ.get("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 from tools.agent_eval_protocol import (build_run_metadata, quantitative_metrics,
                                        raw_result_path, reserve_raw_result_path,
                                        write_raw_result)  # noqa: E402
+from tools.agent_eval_contracts import (  # noqa: E402
+    AUTOMATIC_CONTRACT_DEPENDENCIES,
+    _STRUCTURED_FAILURE_RE,
+    automatic_contract_flaws,
+    turn_execution_flaws,
+)
 from tools.agent_eval_isolation import (begin_case, configure_process_isolation,
                                          finish_case,
                                          preflight_evaluation_provider)  # noqa: E402
@@ -54,7 +60,9 @@ except ImportError:  # legacy asset에는 version 상수가 없었다.
 # v5.0.2 detects failed intermediate turns and enforces STARR1's already-versioned
 # internal-validation facts in the actual draft descriptions instead of accepting
 # those facts only in retrieval evidence or user-facing prose.
-BATTERY_VERSION = "5.0.2"
+# v5.1.0 applies the shared all-turn failure/question and final effect consistency
+# contract used by every write battery; human qualitative scoring remains separate.
+BATTERY_VERSION = "5.1.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("create")
 session = None
 
@@ -778,37 +786,9 @@ def _case_specific_contract_flaws(case_id: str, o: dict) -> list[str]:
     return checker(o) if checker else []
 
 
-_STRUCTURED_FAILURE_RE = re.compile(
-    r"structured\s+(?:output\s+)?(?:실패|fail(?:ed|ure)?|error)", re.I,
-)
-
-
 def _turn_execution_flaws(outs: list[dict]) -> list[str]:
-    """Fail automatic contracts on any visible Agent/structured turn failure.
-
-    Diagnostics intentionally omit provider text, prompts, and validation payloads.  A
-    later successful turn must not erase the fact that the scenario itself had failed.
-    """
-    flaws = []
-    for index, output in enumerate(outs):
-        if not isinstance(output, dict):
-            continue
-        error = output.get("error")
-        has_error = bool(error.strip()) if isinstance(error, str) else bool(error)
-        evidence = output.get("evaluationEvidence") or {}
-        traces = list(output.get("trace") or [])
-        if isinstance(evidence, dict):
-            traces.extend(evidence.get("trace") or [])
-        trace_text = "\n".join(
-            str(row.get("note") or "") if isinstance(row, dict) else str(row or "")
-            for row in traces
-        )
-        if has_error or _STRUCTURED_FAILURE_RE.search(trace_text):
-            flaws.append(
-                f"turn[{index}] Agent 실행 오류 또는 structured output 실패 기록 — "
-                "후속 turn 성공과 무관하게 자동 계약 실패"
-            )
-    return flaws
+    """Compatibility wrapper for direct evaluator tests."""
+    return turn_execution_flaws(outs)
 
 
 def _creation_contract_flaws(o: dict, turns: list[str]) -> list[str]:
@@ -819,10 +799,11 @@ def _creation_contract_flaws(o: dict, turns: list[str]) -> list[str]:
 def _all_contract_flaws(last: dict, turns: list[str], outs: list[dict],
                         *, structure_ok: bool, case_id: str = "") -> list[str]:
     """Return diagnosable failures for shared and case-specific contracts."""
-    turn_flaws = _turn_execution_flaws(outs) + [
+    turn_flaws = automatic_contract_flaws(outs) + [
         f"turn[{index}] {flaw}"
         for index, output in enumerate(outs)
         for flaw in _question_gate_flaws(output)
+        if "why_required" in flaw or "optional 구조 선호" in flaw
     ]
     flaws = (_body_flaws(last) + _output_flaws(last)
              + _creation_contract_flaws(last, turns)
@@ -850,6 +831,8 @@ def _duplicate_decision_ok(output: dict, _outputs=None) -> bool:
 # the designated dependency set explicitly. Keep this list limited to functions whose source
 # changes automatic pass/fail behavior; runtime/output plumbing does not belong here.
 CREATE_CHECKER_DEPENDENCIES = (
+    *AUTOMATIC_CONTRACT_DEPENDENCIES,
+    _DOD_VAGUE, _bug_grade_body, _has_placeholder_body,
     items, kids, pend, _body, has_sections, _owners, _question_text,
     _asks_for_bug_identity, _bug3_ok, _rule1_ok,
     _body_flaws, _output_flaws, _valid_iso_date, _unique_explicit_due,

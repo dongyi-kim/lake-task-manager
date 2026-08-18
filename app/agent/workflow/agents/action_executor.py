@@ -96,6 +96,61 @@ class ActionExecutor(Agent):
             approval.reject(token)
             return self._failed(state, "승인된 실행 payload 형식이 올바르지 않습니다.")
 
+        # Compound cards are two separately consumable fingerprints. Validate their reciprocal
+        # server-owned binding before executing the primary; otherwise a missing/stale token can
+        # silently drop the comment, or a valid comment capability for another ticket can be
+        # spliced into this update.
+        secondary_actions = {
+            "update_ticket": "add_ticket_comment",
+            "update_tickets": "add_ticket_comments",
+            "link_tickets": "add_ticket_comment",
+        }
+        expected_secondary = secondary_actions.get(str(record.get("action") or ""))
+        comment_token = str(state.get("comment_token") or "")
+        comment_record = approval.peek(comment_token) if comment_token else None
+        bundle = str(record.get("bundle") or "")
+        if bundle:
+            pair_ok = bool(
+                expected_secondary and comment_token and comment_record
+                and record.get("bundle_role") == "primary"
+                and str(record.get("peer_token") or "") == comment_token
+                and str(record.get("peer_action") or "") == expected_secondary
+                and str(comment_record.get("bundle") or "") == bundle
+                and comment_record.get("bundle_role") == "secondary"
+                and str(comment_record.get("peer_token") or "") == token
+                and str(comment_record.get("peer_action") or "") == record.get("action")
+                and str(comment_record.get("thread") or "") == thread_id
+                and comment_record.get("approved") is True
+                and comment_record.get("action") == expected_secondary
+                and isinstance(comment_record.get("payload"), dict)
+                and str(record.get("peer_fp") or "")
+                    == approval.fingerprint(comment_record.get("payload"))
+                and str(comment_record.get("peer_fp") or "")
+                    == approval.fingerprint(payload)
+            )
+            if not pair_ok:
+                approval.reject(token)
+                bound_peer = str(record.get("peer_token") or "")
+                bound_record = approval.peek(bound_peer) if bound_peer else None
+                if bound_record and str(bound_record.get("thread") or "") == thread_id:
+                    approval.reject(bound_peer)
+                if (comment_token and comment_token != bound_peer and comment_record
+                        and str(comment_record.get("thread") or "") == thread_id):
+                    approval.reject(comment_token)
+                return self._failed(
+                    state,
+                    "같은 승인 카드의 primary·comment 실행 지문이 서로 결속되지 않아 실행하지 않았습니다.",
+                )
+        elif comment_token:
+            # A loose secondary token is never a compound approval, even when action/thread
+            # happen to match. Reject before the primary so no half-card side effect occurs.
+            approval.reject(token)
+            if comment_record and str(comment_record.get("thread") or "") == thread_id:
+                approval.reject(comment_token)
+            return self._failed(
+                state, "서로 결속되지 않은 코멘트 승인 토큰이 있어 변경을 실행하지 않았습니다.",
+            )
+
         result, label = self._dispatch(str(record.get("action") or ""), payload, token)
 
         # ``consume`` happens inside each write tool, but several tools deliberately validate
@@ -105,12 +160,11 @@ class ActionExecutor(Agent):
         if result.get("failed") and approval.peek(token):
             approval.reject(token)
 
-        # A field update and its accompanying comment have separate one-use fingerprints, but
-        # both were visible on the same approval card. Execute the comment only after the field
-        # update succeeded, preserving the established partial-success report.
-        comment_token = str(state.get("comment_token") or "")
-        if str(record.get("action") or "") == "update_ticket" and comment_token:
-            comment_record = approval.peek(comment_token)
+        # A change and its accompanying comment have separate one-use fingerprints, but both
+        # were visible on the same approval card. Execute the comment only after the primary
+        # mutation succeeded, preserving the established partial-success report for singular,
+        # bulk and link changes.
+        if expected_secondary and bundle and comment_token:
             comment_same_thread = bool(
                 comment_record and str(comment_record.get("thread") or "") == thread_id
             )
@@ -120,13 +174,32 @@ class ActionExecutor(Agent):
                 # violate the partial-success contract. Never touch a foreign thread's token.
                 if comment_same_thread:
                     approval.reject(comment_token)
+                result["note"] = (
+                    "primary 변경이 전부 완료되지 않아 같은 승인 카드의 코멘트는 "
+                    "게시하지 않았습니다."
+                )
             elif (comment_same_thread and comment_record.get("approved")
-                  and comment_record.get("action") == "add_ticket_comment"
+                  and comment_record.get("action") == expected_secondary
                   and isinstance(comment_record.get("payload"), dict)):
                 comment_result, _ = self._dispatch(
-                    "add_ticket_comment", comment_record["payload"], comment_token,
+                    expected_secondary, comment_record["payload"], comment_token,
                 )
+                by_key = {str(row.get("key") or ""): row
+                          for row in (result.get("updated") or [])
+                          if isinstance(row, dict) and row.get("key")}
+                for row in comment_result.get("updated") or []:
+                    key = str((row or {}).get("key") or "")
+                    if key in by_key:
+                        fields = by_key[key].setdefault("fields", [])
+                        for field in row.get("fields") or []:
+                            if field not in fields:
+                                fields.append(field)
+                    elif key:
+                        result.setdefault("updated", []).append(row)
                 if comment_result.get("failed"):
+                    result.setdefault("failed", []).extend(comment_result["failed"])
+                    if approval.peek(comment_token):
+                        approval.reject(comment_token)
                     result["note"] = (
                         "필드는 바꿨지만 코멘트는 남기지 못했습니다: "
                         + str(comment_result["failed"][0].get("error") or "")

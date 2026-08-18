@@ -27,6 +27,96 @@ def fake(monkeypatch, tmp_path):
     G.reset()
 
 
+def test_interview_answer_plus_independent_summary_does_not_freeze_old_plan():
+    from app.agent.workflow import session
+
+    prior = {
+        "intent": "plan_work",
+        "request_text": "Writer 검증 Task를 만들어줘",
+        "request_plan": {"tasks": [{
+            "id": "writer", "kind": "ticket", "write_intent": True,
+            "instruction": "Writer 검증 Task 생성",
+        }]},
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": "Writer 검증 Task를 만들어줘",
+            "intent": "plan_work", "action": "create",
+            "target_keys": [], "outcome_ids": ["writer"], "decisions": [],
+        },
+        "questions": [{
+            "field": "assignee", "question": "담당자는 누구인가요?",
+            "kind": "text", "required_input": True,
+        }],
+    }
+    utterance = "담당자는 skcc.x1103이야. 그리고 최신 운영 회의 내용을 요약해줘."
+
+    assert session._is_interview_continuation(utterance, prior) is False
+    patch = session._turn_start_patch(utterance, prior)
+    assert patch["request_text"] == utterance
+    assert patch["request_plan"] == {}
+    assert patch["continuation_contract"] == {}
+
+
+@pytest.mark.parametrize("utterance", [
+    "담당자는 skcc.x1103이야. 그리고 현재 진행 상황은?",
+    "담당자는 skcc.x1103이야. 무엇이 남았어?",
+    "담당자는 skcc.x1103이야. 지금 상태가 어때?",
+    "담당자는 skcc.x1103이야. 그리고 진행률은?",
+    "담당자는 skcc.x1103이야. 그리고 진척도는?",
+    "담당자는 skcc.x1103이야. 그리고 완료율은?",
+])
+def test_interview_answer_plus_independent_read_does_not_drop_the_read(utterance):
+    from app.agent.workflow import session
+
+    prior = {
+        "intent": "plan_work", "request_text": "Writer 검증 Task 생성",
+        "request_plan": {"tasks": [{
+            "id": "writer", "kind": "ticket", "write_intent": True,
+            "instruction": "Writer 검증 Task 생성",
+        }]},
+        "continuation_contract": {
+            "version": "continuation.v1", "root_request": "Writer 검증 Task 생성",
+            "intent": "plan_work", "action": "create", "target_keys": [],
+            "outcome_ids": ["writer"], "decisions": [],
+        },
+        "questions": [{"field": "assignee", "question": "담당자는?",
+                       "kind": "text", "required_input": True}],
+    }
+
+    patch = session._turn_start_patch(utterance, prior)
+
+    assert patch["turn_continuation"] is False
+    assert patch["request_text"] == utterance
+    assert patch["request_plan"] == {}
+
+
+def test_typed_target_answer_may_replace_the_prior_jira_key():
+    from app.agent.workflow import session
+
+    prior = {
+        "intent": "plan_work", "request_text": "DL-9000 관련 검증 Task 생성",
+        "mentioned_keys": ["DL-9000"],
+        "request_plan": {"tasks": [{
+            "id": "verify", "kind": "ticket", "write_intent": True,
+            "instruction": "DL-9000 관련 검증 Task 생성",
+        }]},
+        "continuation_contract": {
+            "version": "continuation.v1", "root_request": "DL-9000 관련 검증 Task 생성",
+            "intent": "plan_work", "action": "create", "target_keys": ["DL-9000"],
+            "outcome_ids": ["verify"], "decisions": [],
+        },
+        "questions": [{"field": "target", "question": "실제 대상 티켓은?",
+                       "kind": "text", "required_input": True}],
+    }
+
+    patch = session._turn_start_patch("DL-9201로 할게", prior)
+
+    assert patch["turn_continuation"] is True
+    assert patch["request_plan"] == prior["request_plan"]
+    assert patch["continuation_contract"]["target_keys"] == ["DL-9201"]
+    assert patch["continuation_contract"]["decisions"][-1]["value"] == "DL-9201"
+
+
 # ── 라우팅 ─────────────────────────────────────────────────────────
 def test_direct_answer_intents_skip_the_historian():
     """my_day·progress·activity 는 과거 발굴이 아니라 지금 상태의 집계다."""
@@ -148,6 +238,20 @@ def test_request_architect_pins_lexically_decidable_bug_progress_and_depth_bound
     assert stale["playbook"] == "find_tickets"
     assert classify("적재 지연이 왜 났고 어떻게 해결했어?", Intent.ASK)["answer_depth"] == "explain"
     assert classify("CDC가 뭐고 우리는 어떻게 쓰고 있어?", Intent.ASK)["answer_depth"] == "explain"
+
+
+def test_request_architect_runtime_examples_use_generic_intent_boundaries():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    task = RequestArchitect().task({
+        "messages": [HumanMessage(content="증분 수집 방식의 현재 상태를 설명해줘")],
+    })
+
+    assert "실시간 수집 방식을 새로 도입해야 한다" in task
+    assert "증분 수집 방식 검토가 왜 멈췄었지" in task
+    assert "증분 수집이 뭐고 우리는 어떻게 쓰고 있어" in task
+    assert "CDC" not in task
 
 
 def test_portfolio_analyst_node_exists_and_flows_to_result_integrator():
@@ -1650,6 +1754,27 @@ def test_comment_only_pending_uses_comment_action_semantics():
     }
     many = _shape("t", base, SimpleNamespace(next=("action_executor",)))
     assert many["pending"]["action"] == "add_ticket_comments"
+
+
+def test_link_and_comment_pending_shows_every_approved_effect():
+    from types import SimpleNamespace
+    from app.agent.workflow.session import _shape
+
+    base = {
+        "approval_token": "primary", "comment_token": "secondary",
+        "reply": "", "trace": [],
+        "change_plan": {
+            "key": "DL-100", "changes": {},
+            "link": {"other": "DL-200", "relation": "Relates"},
+            "comment": "관련 결정 기록",
+        },
+    }
+
+    shaped = _shape("t", base, SimpleNamespace(next=("action_executor",)))
+
+    assert shaped["pending"]["key"] == "DL-100"
+    assert shaped["pending"]["changes"] == {"link": "Relates → DL-200"}
+    assert shaped["pending"]["comment"] == "관련 결정 기록"
 
 
 def test_latest_person_work_request_overrides_previous_ticket_context(monkeypatch):

@@ -58,7 +58,17 @@ from app.agent.workflow.agents.query_runner import QueryRunner
 from app.agent.workflow.agents.query_specialist import QuerySpecialist
 from app.agent.workflow.agents.work_architect import WorkArchitect
 from app.agent.workflow.agents.result_integrator import ResultIntegrator
-from app.agent.workflow.agents.auditor import Auditor
+from app.agent.workflow.agents.auditor import (
+    Auditor,
+    final_authority_review,
+)
+from app.agent.workflow.effect_contract import (
+    capture_user_field_locks,
+    continuation_action,
+    current_work_failed,
+    final_effect,
+    project_final_authority_state,
+)
 from app.agent.workflow.state import (MAX_REVISIONS, AgentState, Intent, Node,
                                       is_memory_only_request, reads_as_bug, request_text,
                                       verified_parent_epic_candidates)
@@ -218,14 +228,14 @@ def route_after_work_architect(state: AgentState):
     **변경 계획(modify)은 승인으로 직행**한다 — 담당자 추천(새 티켓용)도, validate_bulk
     (생성 검증)도 여기엔 해당이 없다. 안전장치는 승인 카드와 editmeta(편집 불가 필드 거부)다.
     """
-    if str(state.get("error") or "").startswith(f"[{Node.WORK_ARCHITECT}]"):
+    if current_work_failed(state):
         return "respond"
     if state.get("questions"):
         return "respond"
-    cp = state.get("change_plan") or {}
-    if cp.get("key") or cp.get("keys"):
+    effect = final_effect(state)
+    if effect.kind in {"comment", "update"}:
         return "propose"
-    if not (state.get("draft") or {}).get("items"):
+    if effect.kind != "create":
         return "respond"
     # Cloud APIs benefit from graph fan-out. A single-device local server can instead make
     # two long generations contend for the same queue, so the model profile owns this
@@ -291,6 +301,7 @@ def _merge_assignments(state: AgentState) -> dict:
     Auditor 가 배정 **전** 초안을 검증하므로(병렬), 배정된 사용자가 실재하는지는
     여기 코드가 보장한다 — validate_bulk 와 같은 lookup 을 쓴다.
     """
+    field_locks = capture_user_field_locks(state.get("draft") or {})
     draft = merge_assignments(state.get("draft"), state.get("assignments"))
     # 사용자 명시 배정은 추천보다 우선이다. fan-out join에서 PeopleAdvisor 제안을 합친 **뒤**
     # 원 발화로 다시 확정해, 병렬 상태 병합이 assignee_source 표식을 잃어도 지정값이
@@ -402,6 +413,14 @@ def _merge_assignments(state: AgentState) -> dict:
         review["ok"] = False
         review["errors"] = errors
         result["review"] = review
+    # Auditor ran beside PeopleAdvisor and therefore reviewed the pre-merge draft. Re-run the
+    # deterministic contract over the actual post-merge effect before routing can mint a token.
+    # Exact user assigned/unassigned values are immutable locks captured above; semantic advice
+    # has no authority to rewrite them.
+    merged_state = {**state, **result}
+    result["review"] = final_authority_review(
+        merged_state, locks=field_locks, require_effect=True,
+    )
     return result
 
 
@@ -467,12 +486,36 @@ def _propose(state: AgentState) -> dict:
     from app.agent import approval
     from app.agent.workflow.agents.work_architect import as_bulk_items
 
-    # Defense in depth: routing normally prevents this node from seeing a failed review,
-    # but stale checkpoints and direct callers must not turn a rejected draft into a live
-    # approval token. Empty strings also clear any token retained from an earlier state.
-    work_failed = str(state.get("error") or "").startswith(f"[{Node.WORK_ARCHITECT}]")
-    if work_failed or (state.get("review") or {}).get("ok") is False:
-        return {"approval_token": "", "comment_token": ""}
+    # This is the last mutable boundary before approval.stage(). Project stale containers
+    # through typed action authority, then independently validate the final effect. The
+    # fan-out join normally performed the same review, but stale checkpoints and direct
+    # callers must not be able to bypass it.
+    projected = project_final_authority_state(state)
+    review = final_authority_review(
+        projected,
+        locks=capture_user_field_locks(projected.get("draft") or {}),
+        require_effect=True,
+    )
+    effect = final_effect(projected)
+    typed_action = continuation_action(projected)
+    delta = ({
+        "draft": projected.get("draft") or {},
+        "change_plan": projected.get("change_plan") or {},
+        "review": review,
+    } if typed_action else {})
+
+    def emit(values: dict) -> dict:
+        return {**delta, **values}
+
+    # Empty strings clear any token retained from an earlier state. Change plans keep their
+    # established deterministic approval path; only CREATE requires Auditor review.ok=true.
+    if effect.kind == "none" and not typed_action and not current_work_failed(projected):
+        return {}
+    if (current_work_failed(projected) or effect.kind in {"none", "conflict"}
+            or review.get("ok") is not True):
+        return emit({"approval_token": "", "comment_token": ""})
+
+    state = projected
 
     tid = state.get("thread_id") or ""
 
@@ -483,7 +526,7 @@ def _propose(state: AgentState) -> dict:
     # field edits.  WorkArchitect already enforces this in normal runs, but approval staging
     # is the last boundary before a real write and must independently protect the payload.
     said = request_text(state)
-    comment_only = bool((plan.get("comment") or plan.get("comments"))
+    comment_only = typed_action == "comment" or bool((plan.get("comment") or plan.get("comments"))
                         and re.search(r"댓글|코멘트", said, re.I)
                         and re.search(r"댓글\s*(?:만|남겨|달아|작성)|코멘트\s*(?:만|남겨|달아|작성)",
                                       said, re.I)
@@ -492,30 +535,63 @@ def _propose(state: AgentState) -> dict:
                                           said, re.I))
     if comment_only and plan.get("changes"):
         plan = {**plan, "changes": {}}
-    if comment_only:
+    if comment_only and not typed_action:
+        # Legacy checkpoints had no typed authority and recovered an explicitly quoted body
+        # here. A typed turn already has a schema-validated Work payload; reparsing retained
+        # request prose could overwrite it with an older topic's comment.
         literal = re.search(r"['\"“‘]([^'\"”’]{2,1000})['\"”’]\s*(?:이라고|라는|라고)?\s*"
                             r"(?:댓글|코멘트)", said, re.I | re.S)
         if literal:
             plan = {**plan, "comment": literal.group(1).strip()}
+
+    def comment_effect() -> tuple[str, dict] | tuple[str, None]:
+        """Project the exact comment side of a reviewed compound change."""
+        keys = [str(key or "").strip() for key in (plan.get("keys") or [])
+                if str(key or "").strip()]
+        previews = [row for row in (plan.get("comments") or [])
+                    if isinstance(row, dict) and str(row.get("key") or "").strip()
+                    and str(row.get("body") or "").strip()]
+        body = str(plan.get("comment") or "").strip()
+        if keys and (previews or body):
+            rows = ([{"key": str(row["key"]).strip(), "body": str(row["body"]).strip()}
+                     for row in previews]
+                    or [{"key": key, "body": body} for key in keys])
+            return "add_ticket_comments", {"items": rows}
+        key = str(plan.get("key") or "").strip()
+        if key and body:
+            return "add_ticket_comment", {"key": key, "body": body}
+        return "", None
+
+    def stage_primary_effect(action: str, payload: dict) -> dict:
+        """Stage one primary mutation and bind its optional comment fingerprint."""
+        secondary_action, secondary_payload = comment_effect()
+        if secondary_action and secondary_payload:
+            primary, secondary = approval.stage_pair(
+                tid, action, payload, secondary_action, secondary_payload,
+            )
+            return {"approval_token": primary, "comment_token": secondary}
+        return {"approval_token": approval.stage(tid, action, payload)}
     # 상태 전이 — 지문은 transition_ticket 도구의 payload 와 같은 모양(comment 없을 때).
     if plan.get("key") and (plan.get("transition") or {}).get("id"):
         p = {"key": plan["key"], "transition": str(plan["transition"]["id"])}
         cmt = (plan.get("comment") or "").strip()
         if cmt:
             p["comment"] = cmt
-        return {"approval_token": approval.stage(tid, "transition_ticket", p)}
+        return emit({"approval_token": approval.stage(tid, "transition_ticket", p)})
     # 티켓 링크 — link_tickets 도구의 payload 와 같은 모양.
     if plan.get("key") and (plan.get("link") or {}).get("other"):
         lk = plan["link"]
-        return {"approval_token": approval.stage(
-            tid, "link_tickets",
-            {"key": plan["key"], "other": lk["other"], "relation": lk.get("relation") or "Relates"})}
+        return emit(stage_primary_effect(
+            "link_tickets",
+            {"key": plan["key"], "other": lk["other"],
+             "relation": lk.get("relation") or "Relates"},
+        ))
     # 조건 일괄 수정("마감 지난 것 전부 P1") — keys 복수면 update_tickets(bulk) 지문으로.
     if (plan.get("keys") or []) and plan.get("changes"):
         rows = [{"key": str(k).strip(), "changes": dict(plan["changes"])}
                 for k in plan["keys"] if str(k).strip()]
         if rows:
-            return {"approval_token": approval.stage(tid, "update_tickets", {"items": rows})}
+            return emit(stage_primary_effect("update_tickets", {"items": rows}))
     # ★ **코멘트만 남기는 일괄** — 필드 변경이 없어 위 갈래를 못 탄다. 그러면 승인 토큰이
     #   안 만들어져 **카드가 아예 안 뜨고**, 사용자는 무엇을 승인할지 볼 수 없다
     #   (실측 CMTB1: change_plan 은 섰는데 pending 이 비어 있었다).
@@ -528,23 +604,18 @@ def _propose(state: AgentState) -> dict:
                 or [{"key": str(k).strip(), "body": (plan.get("comment") or "").strip()}
                     for k in plan["keys"] if str(k).strip()])
         if rows:
-            return {"approval_token": approval.stage(tid, "add_ticket_comments",
+            return emit({"approval_token": approval.stage(tid, "add_ticket_comments",
                                                      {"items": rows}),
-                    "change_plan": plan}
+                    "change_plan": plan})
     if plan.get("key") and (plan.get("changes") or (plan.get("comment") or "").strip()):
         cmt = (plan.get("comment") or "").strip()
         if plan.get("changes"):
             payload = {"key": plan["key"], "changes": plan["changes"]}
-            out = {"approval_token": approval.stage(tid, "update_ticket", payload)}
-            if cmt:
-                # 코멘트도 카드에 보이므로 같은 승인에 묶인다 — 토큰은 내용별로 따로(1회용 지문).
-                out["comment_token"] = approval.stage(tid, "add_ticket_comment",
-                                                      {"key": plan["key"], "body": cmt})
-            return out
+            return emit(stage_primary_effect("update_ticket", payload))
         # 댓글만 — 그 토큰이 곧 승인 토큰이다(변경 필드가 없으니 update 토큰은 없다).
-        return {"approval_token": approval.stage(tid, "add_ticket_comment",
+        return emit({"approval_token": approval.stage(tid, "add_ticket_comment",
                                                  {"key": plan["key"], "body": cmt}),
-                "change_plan": plan}
+                "change_plan": plan})
 
     draft = state.get("draft") or {}
     # epic 모드 — 지문은 create_epic 도구의 payload 와 같은 모양(epic_payload 가 정의).
@@ -552,18 +623,18 @@ def _propose(state: AgentState) -> dict:
         from app.agent.workflow.agents.work_architect import epic_payload
         p = epic_payload(draft)
         if not p.get("summary"):
-            return {}
+            return emit({})
         # Creation is the Auditor-owned branch. A stale checkpoint or direct caller with
         # no explicit passing verdict must never mint a live create token. Change plans are
         # intentionally handled above under their separate deterministic contract.
-        if (state.get("review") or {}).get("ok") is not True:
-            return {"approval_token": "", "comment_token": ""}
-        return {"approval_token": approval.stage(tid, "create_epic", p)}
+        if review.get("ok") is not True:
+            return emit({"approval_token": "", "comment_token": ""})
+        return emit({"approval_token": approval.stage(tid, "create_epic", p)})
     items = as_bulk_items(draft)
     if not items:
-        return {}
-    if (state.get("review") or {}).get("ok") is not True:
-        return {"approval_token": "", "comment_token": ""}
+        return emit({})
+    if review.get("ok") is not True:
+        return emit({"approval_token": "", "comment_token": ""})
     payload = {"mode": draft.get("mode") or "task", "items": items}
     # 트리 초안 — Sub-Task 는 부모 키가 있어야 만들어지므로 **부모 생성 뒤 연쇄**로 실행된다.
     # 승인 지문에는 자식까지 넣는다: 화면에 보인 것과 실행되는 것이 어긋나면 HITL 이 무의미하다.
@@ -571,7 +642,7 @@ def _propose(state: AgentState) -> dict:
     kids = child_items(draft)
     if kids:
         payload["children"] = kids
-    return {"approval_token": approval.stage(tid, "create_tickets", payload)}
+    return emit({"approval_token": approval.stage(tid, "create_tickets", payload)})
 
 
 def build(checkpointer=None):

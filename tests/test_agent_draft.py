@@ -368,6 +368,66 @@ def test_create_projection_leaves_runtime_owned_structure_source_and_root_owner_
     assert "structure_source" not in WorkArchitect().task(state)
 
 
+def test_existing_ticket_update_schema_excludes_creation_only_fields():
+    """MTG9: exact updates should project a compact change, not an unused ticket body."""
+    state = _msg(
+        "DL-9203의 제목, due, 본문만 회의 최종 합의대로 바꿔줘",
+        intent=Intent.MODIFY, mentioned_keys=["DL-9203"],
+    )
+    state["continuation_contract"] = {
+        "version": "continuation.v1",
+        "root_request": "DL-9203의 제목, due, 본문만 회의 최종 합의대로 바꿔줘",
+        "intent": Intent.MODIFY,
+        "action": "update",
+        "target_keys": ["DL-9203"],
+        "outcome_ids": ["meeting-update"],
+        "decisions": [],
+    }
+    schema = WorkArchitect().schema_for(state)
+
+    assert "change" in schema["properties"]
+    assert not ({"mode", "items", "structure", "structure_why"}
+                & set(schema["properties"]))
+    assert schema.get("additionalProperties") is False
+
+
+def test_intentless_read_state_does_not_inherit_legacy_create_default():
+    """Sparse state alone is not creation authority; only a current CREATE projection is."""
+    from app.agent.workflow.agents.work_architect import _work_action
+
+    state = _msg("DL-9203 상태를 알려줘", request_plan={"tasks": [{
+        "id": "read", "kind": "research", "write_intent": False,
+        "instruction": "DL-9203 상태 조회",
+    }]})
+
+    assert _work_action(state) == "respond"
+
+
+def test_empty_comment_change_is_schema_valid_but_apply_fails_closed():
+    """Question-only is valid, but an empty effect can never become a successful write."""
+    state = _msg(
+        "DL-9201에 결정을 댓글로 남겨줘", intent=Intent.MODIFY,
+        mentioned_keys=["DL-9201"],
+    )
+    state["continuation_contract"] = {
+        "version": "continuation.v1",
+        "root_request": "DL-9201에 결정을 댓글로 남겨줘",
+        "intent": Intent.MODIFY,
+        "action": "comment",
+        "target_keys": ["DL-9201"],
+        "outcome_ids": ["comment"],
+        "decisions": [],
+    }
+
+    result = WorkArchitect().apply(state, {"questions": [], "change": {}, "rationale": ""})
+
+    assert not result["change_plan"]
+    assert not result["draft"]["items"]
+    assert result["questions"]
+    assert result["questions"][0]["required_input"] is True
+    assert result["questions"][0]["field"] == "comment"
+
+
 def test_model_cannot_fabricate_child_owner_but_exact_user_owner_is_restored():
     """Assignee projection is never authority; a literal current-request mapping is."""
     projected = {
@@ -991,13 +1051,12 @@ def test_unique_adjacent_actorless_uncertainty_keeps_a_source_related_reader_rel
 
 def test_later_completion_by_a_different_english_actor_does_not_supersede_uncertainty():
     """Shared artifact words cannot erase a different actor's open dependency."""
-    from app.agent.workflow.agents.work_architect import (
-        _typed_evidence_relation, _verified_evidence_obligations,
-    )
+    from app.agent.workflow.evidence_relations import parse_relation
+    from app.agent.workflow.agents.work_architect import _verified_evidence_obligations
 
-    reader = _typed_evidence_relation(
+    reader = parse_relation(
         "AcmeReader Delta consumption support is not yet confirmed")
-    writer = _typed_evidence_relation(
+    writer = parse_relation(
         "AcmeWriter Delta consumption support was completed")
     assert reader and reader["actors"] == ["AcmeReader"]
     assert writer and writer["actors"] == ["AcmeWriter"]
@@ -1723,6 +1782,61 @@ def test_delegated_subtask_without_a_deliverable_asks_then_converges_to_one_chil
     turn2 = WorkArchitect().apply(second, concrete)
     assert not turn2["questions"] and len(turn2["draft"]["items"]) == 1
     assert "회귀" in turn2["draft"]["items"][0]["summary"]
+
+
+def test_explicit_single_subtask_cardinality_cannot_expand_to_four_items(monkeypatch):
+    """ASKD2: an exact one-Sub-Task request remains one after semantic projection."""
+    from app.agent.workflow.agents import work_architect as work
+
+    monkeypatch.setattr(work, "_ticket_exists", lambda key: key == "DL-9090")
+    monkeypatch.setattr(work, "_can_parent_subtask", lambda key: key == "DL-9090")
+    monkeypatch.setattr(work, "_known_labels", lambda: set())
+    monkeypatch.setattr(work, "_known_components", lambda: {"Workbench"})
+    body = (
+        '<h3>작업 범위</h3><ul><li>성능 회귀 테스트를 추가한다</li></ul>'
+        '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+        '<li data-checked="false">회귀 테스트 결과를 기록한다</li></ul>'
+    )
+    state = _msg(
+        "리니지 뷰어 성능 회귀 테스트를 추가해줘",
+        intent=Intent.PLAN_WORK,
+        request_text="DL-9090 아래에 Sub-Task 하나 만들어줘. 내용은 알아서",
+        turn_continuation=True, mentioned_keys=["DL-9090"], situation="조사 완료",
+    )
+    state["continuation_contract"] = {
+        "version": "continuation.v1",
+        "root_request": "DL-9090 아래에 Sub-Task 하나 만들어줘. 내용은 알아서",
+        "intent": Intent.PLAN_WORK,
+        "action": "create",
+        "target_keys": ["DL-9090"],
+        "outcome_ids": [],
+        "decisions": [{
+            "field": "target",
+            "value": "리니지 뷰어 성능 회귀 테스트를 추가해줘",
+            "source": "interview_answer",
+        }],
+    }
+    output = {
+        "questions": [], "mode": "subtask", "structure": "multiple_tasks",
+        "structure_why": "회귀 테스트 단계를 세분화", "rationale": "",
+        "items": [
+            {"summary": "[Workbench] 리니지 뷰어 성능 회귀 테스트 추가",
+             "type": "Sub-Task", "parent": "DL-9090", "description": body},
+            {"summary": "테스트 기준 정의", "type": "Sub-Task",
+             "parent": "DL-9090", "description": body},
+            {"summary": "데이터셋 생성", "type": "Sub-Task",
+             "parent": "DL-9090", "description": body},
+            {"summary": "리포트 자동화", "type": "Sub-Task",
+             "parent": "DL-9090", "description": body},
+        ],
+    }
+
+    result = WorkArchitect().apply(state, output)
+
+    assert result["draft"]["mode"] == "subtask"
+    assert len(result["draft"]["items"]) == 1
+    assert "리니지 뷰어 성능 회귀 테스트" in result["draft"]["items"][0]["summary"]
+    assert not result["draft"]["items"][0].get("children")
 
 
 def test_required_input_question_survives_the_refinement_limit():
@@ -2789,6 +2903,33 @@ def test_done_comment_only_change_plan_is_allowed(monkeypatch):
         [], [])
     assert plan["comment"] == "완료 후 회고" and not plan["changes"]
     assert not questions
+
+
+def test_link_and_comment_survive_work_change_plan_assembly():
+    state = _msg(
+        "ACME-10을 ACME-20과 연결하고 관련 결정 댓글도 남겨줘",
+        intent=Intent.MODIFY, mentioned_keys=["ACME-10", "ACME-20"],
+        continuation_contract={
+            "version": "continuation.v1",
+            "root_request": "ACME-10을 ACME-20과 연결하고 관련 결정 댓글도 남겨줘",
+            "intent": "modify", "action": "mixed",
+            "target_keys": ["ACME-10", "ACME-20"],
+            "outcome_ids": ["link", "comment"], "decisions": [],
+        },
+    )
+    plan, questions = _change_plan(state, {
+        "change": {
+            "key": "ACME-10",
+            "link": {"other": "ACME-20", "relation": "Relates"},
+            "comment": "관련 결정 기록",
+        },
+        "rationale": "",
+    }, [], [])
+
+    assert not questions
+    assert plan["key"] == "ACME-10"
+    assert plan["link"] == {"other": "ACME-20", "relation": "Relates"}
+    assert "관련 결정" in plan["comment"]
 
 
 def test_irrelevant_historian_evidence_is_not_forced_into_description():
@@ -5919,6 +6060,26 @@ def test_null_ratio_dod_is_deterministic_across_calculate_review_and_report_word
     assert _dod_rows(item["description"]) == [
         "요청한 30개 대상별 null ratio 측정값과 실패·제외 목록을 티켓에 기록해 확인한다"
     ]
+
+
+def test_malformed_pipeline_dod_repair_is_product_name_invariant():
+    from app.agent.workflow.agents.work_architect import _repair_malformed_dod
+
+    repaired = []
+    for name in ("AtlasFlow", "NimbusFlow"):
+        summary = f"{name} 수집 파이프라인 개선"
+        item = {
+            "summary": summary,
+            "description": (
+                '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+                '<li data-checked="false">기능이 을 확인</li></ul>'
+            ),
+        }
+        assert _repair_malformed_dod(_msg(f"{summary} Task 만들어줘"), [item])
+        assert f"{summary}의 성공·실패 경로를 회귀 테스트 결과로 확인한다" in item["description"]
+        repaired.append(item["description"].replace(name, "PRODUCT"))
+
+    assert repaired[0] == repaired[1]
 
 
 def test_literal_numeric_mutation_does_not_gain_an_unverified_business_benefit():

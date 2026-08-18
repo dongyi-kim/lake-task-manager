@@ -20,8 +20,30 @@ from html import unescape
 from app.agent.workflow.agents.base import TextAgent, _call_config
 from app.agent.workflow.agents.work_architect import draft_text
 from app.agent.prompts.roles import SYSTEM_RESULT_INTEGRATOR
-from app.agent.workflow.evidence_index import canonicalize_evidence_index
+from app.agent.workflow.claim_grounding import (
+    drop_unsupported_guarantees as _drop_unsupported_guarantees,
+)
+from app.agent.workflow.evidence_index import (
+    atomic_fact_sidecar, build_atomic_fact_ledger, canonicalize_evidence_index,
+    enforce_atomic_fact_boundaries,
+)
 from app.agent.workflow.prompts import data_block, persona, wrap_data
+from app.agent.workflow.source_coverage import (
+    _EXTERNAL_SOURCE_COVERAGE_CLASSES,
+    _EXTERNAL_SOURCE_QUERY_CLASSES,
+    _OFFICIAL_EXTERNAL_SOURCE_COVERAGE_CLASSES,
+    _SOURCE_COVERAGE_LABELS,
+    _SOURCE_COVERAGE_ORDER,
+    _embedded_comment_coverage_rows,
+    _embedded_comment_hit_count,
+    _missing_planned_query_ids,
+    _requested_source_classes,
+    _requested_source_coverage,
+    _source_coverage_error_kind,
+    _source_coverage_rows,
+    _source_result_candidate_count,
+    _source_result_hit_count,
+)
 from app.agent.workflow.state import (AgentState, Intent, Node, last_user_text, note,
                                       is_memory_only_request, request_text)
 
@@ -41,27 +63,47 @@ class ResultIntegrator(TextAgent):
         completion = state.get("assignment_completion") or {}
         if completion.get("kind") == "incomplete_assignees":
             return self.apply(state, {"text": _assignment_completion_reply(completion)})
+        from app.agent.workflow.effect_contract import (
+            continuation_action, current_work_failed, final_effect,
+            project_final_authority_state,
+        )
+        projected = project_final_authority_state(state)
+        # A current structured Work failure outranks every draft/change container retained by
+        # a checkpoint. Render the absence of an effect directly; a prose model must never
+        # reinterpret stale state as a prepared card.
+        if current_work_failed(projected):
+            return self.apply({**projected, "_deterministic_reply": True,
+                               "_effect_failure_reply": True},
+                              {"text": _failed_effect_reply(projected)})
         # A rejected audit is never an approval turn. Render the blocking facts directly
         # so a language model cannot accidentally request approval for a payload that the
         # graph intentionally refused to stage.
-        if (state.get("review") or {}).get("ok") is False:
-            return self.apply({**state, "_deterministic_reply": True,
+        if (projected.get("review") or {}).get("ok") is False:
+            return self.apply({**projected, "_deterministic_reply": True,
                                "_blocked_review_reply": True},
-                              {"text": _blocked_review_reply(state)})
+                              {"text": _blocked_review_reply(projected)})
         # 질문 폼만 있는 턴은 구조화된 질문과 필수 사유가 이미 최종 데이터다. 예전에는
         # 35B 모델에 이 데이터를 다시 서술시킨 뒤 apply()에서 그 답을 전부 버리고
         # `_question_only_reply`로 교체했다. 사용자에게 보이지도 않는 호출이 로컬 MLX에서
         # 2분 이상 걸렸으므로, 같은 결정적 renderer를 호출 전에 사용한다.
-        questions = [q for q in (state.get("questions") or []) if isinstance(q, dict)]
-        if questions and not _has_executable_payload(state):
-            return self.apply({**state, "_deterministic_reply": True},
-                              {"text": _question_only_reply(state, questions)})
+        questions = [q for q in (projected.get("questions") or []) if isinstance(q, dict)]
+        if questions and not _has_executable_payload(projected):
+            return self.apply({**projected, "_deterministic_reply": True},
+                              {"text": _question_only_reply(projected, questions)})
         # 승인 대기 응답은 최종 payload를 사람이 검토하기 위한 설명이다. 이미 코드가
         # 확정한 카드 값을 LLM에 다시 요약시키면 필드·담당·수치가 달라지거나, 요청하지
         # 않은 삭제/후속 작업을 덧붙였다. 승인 문장은 payload의 결정적 projection으로 만든다.
-        if state.get("approval_token") and _has_executable_payload(state):
-            return self.apply({**state, "_deterministic_reply": True},
-                              {"text": _approval_reply(state)})
+        if projected.get("approval_token") and _has_executable_payload(projected):
+            return self.apply({**projected, "_deterministic_reply": True},
+                              {"text": _approval_reply(projected)})
+        effect = final_effect(projected)
+        if (continuation_action(projected) in {"create", "comment", "update", "mixed"}
+                and not questions and not projected.get("result")
+                and (not projected.get("approval_token")
+                     or effect.kind in {"none", "conflict"})):
+            return self.apply({**projected, "_deterministic_reply": True,
+                               "_effect_failure_reply": True},
+                              {"text": _failed_effect_reply(projected)})
         person_work = state.get("person_work_snapshot") or {}
         if person_work:
             return self.apply({**state, "_deterministic_reply": True},
@@ -173,6 +215,17 @@ class ResultIntegrator(TextAgent):
         # discarded comment provenance, confidence, fitness, and limitations immediately
         # before final composition.
         ev = json.dumps(state.get("evidence") or [], ensure_ascii=False, default=str)
+        from app.agent.workflow.agents.portfolio_analyst import activity_atomic_facts
+        atomic_facts = atomic_fact_sidecar(
+            state, extra_facts=activity_atomic_facts(state.get("group_activity") or ""),
+        )
+        if atomic_facts:
+            goal += (
+                "\nUse the Typed Atomic Fact Ledger as a binding boundary. Never transfer a value across "
+                "subject_id or predicate. `current` is the present value, `historical` is prior state only, "
+                "and every `conflict` row remains unresolved with both provenances. Untyped source prose is "
+                "context, not authority for rebinding a field."
+            )
         docs = "\n".join(f"- {d.get('title','')} {d.get('url','')}"
                          for d in (state.get("related_docs") or []))
         problems = "\n".join(f"- [{p.get('index')}] {p.get('message')} → {p.get('fix','')}"
@@ -267,6 +320,15 @@ class ResultIntegrator(TextAgent):
                 "limitations, authority, directness, recency, and corroboration evidence. Do not invent a "
                 "numeric score. Separate external specification from internal production readiness."
             )
+        source_coverage = _requested_source_coverage(state)
+        if any(row.get("status") != "covered" for row in source_coverage):
+            goal += (
+                "\nThe Requested Source Coverage Ledger is a binding evidence boundary. Use a source class "
+                "for a conclusion only when its `status` is `covered`. A `not_planned`, `not_executed`, "
+                "`zero_hits`, `incomplete`, `config_error`, `provider_error`, or `execution_error` row is a "
+                "limitation, never evidence. Do not imply that an unavailable source confirmed or contradicted "
+                "a claim; the server renders the exact missing-class disclosure."
+            )
         data = wrap_data(
             data_block("Interpretation Data: Show Unchanged Under the Korean Heading 제가 이해한 바",
                        state.get("interpretation")),
@@ -283,6 +345,10 @@ class ResultIntegrator(TextAgent):
             data_block("PMO Findings", pmo),
             data_block("Interpretation Caution", state.get("pmo_caution")),
             data_block("Verified Evidence Sources With Observations and Quality", ev),
+            data_block("Typed Atomic Fact Ledger: Current, Historical, and Conflict Sidecar",
+                       json.dumps(atomic_facts, ensure_ascii=False, default=str)),
+            data_block("Requested Source Coverage Ledger",
+                       json.dumps(source_coverage, ensure_ascii=False, default=str)),
             data_block("Related Documents", docs),
             data_block("Ticket Draft: Not Yet Created", draft_text(state.get("draft"))),
             data_block("Change Plan: Not Yet Executed",
@@ -370,12 +436,14 @@ class ResultIntegrator(TextAgent):
         # answer.  Running it through the normal evidence merger used to append unrelated Jira,
         # Confluence, and web sources collected before the draft was rejected.  Keep only safe
         # token/style rendering and return before any evidence or postcheck augmentation.
-        if state.get("_blocked_review_reply"):
+        if state.get("_blocked_review_reply") or state.get("_effect_failure_reply"):
             text = _render_reply_tokens(text)
             text = _enforce_reply_style(text)
             from langchain_core.messages import AIMessage
             return {"reply": text, "messages": [AIMessage(content=text)],
-                    "trace": note(state, self.name, f"{len(text)}자 · 검토 보류")}
+                    "trace": note(state, self.name, f"{len(text)}자 · "
+                                  + ("effect 없음" if state.get("_effect_failure_reply")
+                                     else "검토 보류"))}
         _qs = [q for q in (state.get("questions") or []) if isinstance(q, dict)]
         # A question-only turn has no executable payload for the prose model to summarize.
         # Letting it narrate the surrounding research produced invented Epic/module claims in
@@ -392,6 +460,7 @@ class ResultIntegrator(TextAgent):
             text = _align_draft_claims(text, state)
         text = _ensure_research_status(text, state)
         text = _drop_unsupported_guarantees(text, state)
+        text = enforce_atomic_fact_boundaries(text, build_atomic_fact_ledger(state))
 
         # Normalize verified entities and the source index before grounding.
         # Previously these deterministic repairs ran only after the checker, so a
@@ -500,7 +569,11 @@ class ResultIntegrator(TextAgent):
         #   그 제목에 붙이는 것은 **지어내는 것이 아니라 옮기는 것**이라 코드가 할 수 있다.
         text = _attach_known_doc_urls(text, state)
         text = _ensure_external_research_coverage(text, state)
+        text = _ensure_requested_source_coverage(text, state)
         text = _render_requested_source_quality(text, state)
+        # A grounding rewrite or later renderer may reintroduce a copied parent field. Repeat
+        # the same exact typed check before rebuilding the immutable evidence index.
+        text = enforce_atomic_fact_boundaries(text, build_atomic_fact_ledger(state))
         # Persist one canonical source index in the reply itself.  Research state and
         # model-written references used to be rendered as separate UI blocks, causing
         # duplicate counts and divergent formats.  The server owns numbering and grouping;
@@ -677,6 +750,36 @@ def _blocked_review_reply(state) -> str:
             "### 수정 필요\n\n" + "\n".join(f"- {row}" for row in rows))
 
 
+def _failed_effect_reply(state) -> str:
+    """Deterministic no-action report for a failed or empty current write turn."""
+    from app.agent.workflow.effect_contract import (
+        continuation_action, current_work_failed, final_effect,
+    )
+
+    action = continuation_action(state)
+    label = {
+        "create": "생성 payload", "comment": "댓글 payload",
+        "update": "변경 payload", "mixed": "복합 write payload",
+    }.get(action, "write payload")
+    effect = final_effect(state)
+    if current_work_failed(state):
+        raw = str(state.get("error") or "")
+        detail = raw.split("]", 1)[-1].strip(" -—:")[:220]
+        reason = detail or "Work Architect structured output 실패"
+    elif effect.kind == "conflict":
+        reason = "서로 함께 실행할 수 없는 write effect가 남아 작업 분할 필요"
+    elif action == "mixed":
+        reason = "요청된 복합 write effect를 모두 준비하지 못해 작업 분할 또는 보완 필요"
+    else:
+        reason = f"{label}를 준비하지 못함"
+    return ("### 작업 실패\n\n"
+            f"- {label}를 준비하지 못함\n"
+            "- Jira 실행 없음\n"
+            "- 실행 대기 카드 없음\n\n"
+            "### 원인\n\n"
+            f"- {reason}")
+
+
 def _approval_reply(state) -> str:
     """승인 카드와 동일한 state에서만 만드는 사용자 설명.
 
@@ -790,16 +893,19 @@ def _person_work_reply(data: dict) -> str:
         "### 최근 갱신 업무", "",
         "| 티켓 | 상태 | 우선순위 | 기한 |", "|---|---|---|---|",
     ]
-    # execute_jql_all already returns updated DESC.  A summary should expose a useful
-    # sample, not dump dozens of compact badges in one unreadable line.
-    for ticket in tickets[:5]:
+    # ``execute_jql_all`` already returns updated DESC.  The user asked for the person's
+    # current work, so silently reducing a complete 21-ticket snapshot to five rows is a
+    # material omission.  Keep a readable deterministic ceiling, but expose every item
+    # below that ceiling and state the exact remainder when the result is larger.
+    visible_limit = 25
+    for ticket in tickets[:visible_limit]:
         rows.append(
             f"| {{{{ticket-inline:{ticket['key']}}}}} | {_cell(ticket.get('status'))} | "
             f"{_cell(ticket.get('priority'))} | {_cell(ticket.get('duedate'))} |"
         )
-    remaining = len(tickets) - 5
+    remaining = len(tickets) - visible_limit
     if remaining > 0:
-        rows += ["", f"최근 갱신 순 5건 표시 · 외 {remaining}건"]
+        rows += ["", f"최근 갱신 순 {visible_limit}건 표시 · 외 {remaining}건"]
     rows += ["", "현재 담당자로 지정된 미완료 티켓 기준 · 최근 활동 로그와 구분"]
     return "\n".join(rows)
 
@@ -1943,8 +2049,60 @@ def _badgeify_known_ticket_mentions(text: str, state) -> str:
     return value
 
 
+_SOURCE_COVERAGE_LIMIT_TEXT = {
+    "not_planned": "조회 계획에 포함되지 않아 실행되지 않음",
+    "not_executed": "조회 계획에는 있었으나 실행 결과가 없어 미실행으로 처리",
+    "zero_hits": "설정된 범위에서 조회를 완료했지만 관련 결과 0건",
+    "unverified_official": "조회 결과는 있으나 공식 소유·발행 주체를 확인하지 못함",
+    "incomplete": "조회 결과 일부는 확보했지만 전체 조회가 완료되지 않음",
+    "config_error": "검색 범위 또는 연결 설정 오류로 조회하지 못함",
+    "provider_error": "검색 provider 접근 실패로 결과를 확보하지 못함",
+    "execution_error": "조회 실행 오류로 결과를 확보하지 못함",
+}
+
+
+def _ensure_requested_source_coverage(text: str, state) -> str:
+    """Render each explicitly requested but unavailable source class exactly once."""
+    value = str(text or "").strip()
+    heading_pattern = (
+        r"(?ms)^###\s*요청\s*출처\s*조사\s*한계\s*$.*?(?=^###\s|\Z)"
+    )
+    # Idempotence also clears a stale generated block when a later continuation now has hits.
+    value = _re.sub(heading_pattern, "", value).strip()
+    missing = [row for row in _requested_source_coverage(state)
+               if row.get("status") != "covered"]
+    if not missing:
+        return _re.sub(r"\n{3,}", "\n\n", value).strip()
+    lines = ["### 요청 출처 조사 한계", ""]
+    for row in missing[:len(_SOURCE_COVERAGE_ORDER)]:
+        limitation = _SOURCE_COVERAGE_LIMIT_TEXT.get(
+            str(row.get("status") or ""), "조회 결과를 확보하지 못함",
+        )
+        if row.get("status") == "incomplete":
+            reason = {
+                "missing_next_cursor": "다음 페이지 cursor 누락",
+                "cursor_cycle": "pagination cursor 순환",
+                "returned_below_total": "반환 건수가 total보다 적음",
+                "page_limit": "페이지 상한 도달",
+                "complete_false": "완결성 metadata 불충족",
+                "missing_query_result": "계획된 조회 결과 누락",
+            }.get(str(row.get("incomplete_reason") or ""), "완결성 metadata 불충족")
+            limitation += f"({reason})"
+        lines.append(
+            f"- **{row.get('label')}** — {limitation}. 해당 출처는 결론 근거에 사용하지 않음"
+        )
+    block = "\n".join(lines)
+    anchor = _re.search(r"(?m)^###\s*(?:근거|참조)\s*$", value)
+    if anchor:
+        value = (value[:anchor.start()].rstrip() + "\n\n" + block + "\n\n"
+                 + value[anchor.start():].lstrip())
+    else:
+        value = value.rstrip() + "\n\n" + block
+    return _re.sub(r"\n{3,}", "\n\n", value).strip()
+
+
 def _ensure_external_research_coverage(text: str, state) -> str:
-    """내부+외부 공식 조사를 요청했으면 검증된 외부 URL을 답에 보존한다.
+    """명시적으로 요청한 외부 조사의 검증된 URL만 답에 보존한다.
 
     Semantic conflict resolution belongs to Research Analyst, where source
     scope, dates, and provenance are all present. The former string scanner
@@ -1952,9 +2110,14 @@ def _ensure_external_research_coverage(text: str, state) -> str:
     unresolved contradiction and rewrote a correct conclusion after synthesis.
     This rendering guard therefore owns only the deterministic URL contract.
     """
-    asked = request_text(state) + " " + last_user_text(state)
-    if not ("외부" in asked and any(w in asked for w in ("조사", "자료", "공식", "근거"))):
+    requested = set(_requested_source_classes(state))
+    requested_external = requested.intersection(_EXTERNAL_SOURCE_COVERAGE_CLASSES)
+    if not requested_external:
         return text
+    official_required = bool(
+        requested_external.intersection(_OFFICIAL_EXTERNAL_SOURCE_COVERAGE_CLASSES)
+    )
+    allowed_query_sources = _requested_external_query_sources(requested_external)
     approval_display = _approval_display_mode(state)
     display_evidence = (_approval_display_evidence(state) if approval_display
                         else (state.get("evidence") or []))
@@ -1963,8 +2126,11 @@ def _ensure_external_research_coverage(text: str, state) -> str:
         if not isinstance(evidence, dict):
             continue
         url = str(evidence.get("url") or "").strip()
-        if _is_external_source_url(url):
-            sources.append((str(evidence.get("title") or "공식 자료").strip(), url,
+        provenance = _research_url_provenance(state, url)
+        if (_is_external_source_url(url) and provenance
+                and provenance.get("source") in allowed_query_sources
+                and (not official_required or provenance.get("official") is True)):
+            sources.append((str(evidence.get("title") or "외부 자료").strip(), url,
                             str(evidence.get("why") or "").strip()))
     if not sources and not approval_display:
         for title, url in _re.findall(
@@ -1975,7 +2141,10 @@ def _ensure_external_research_coverage(text: str, state) -> str:
             if _re.search(r"Search the documentation|Namespace Reference|\s-\sRust$|API Reference",
                           title, _re.I):
                 continue
-            sources.append((title.strip(), url, "공식 자료"))
+            provenance = _research_url_provenance(state, url)
+            if (provenance and provenance.get("source") in allowed_query_sources
+                    and (not official_required or provenance.get("official") is True)):
+                sources.append((title.strip(), url, "공식 자료"))
 
     value = str(text or "").rstrip()
     if sources:
@@ -1984,7 +2153,7 @@ def _ensure_external_research_coverage(text: str, state) -> str:
         value = value.replace("| 외부 확인 필요 |", "| 외부 조사 범위 |")
     missing = [(title, url, why) for title, url, why in sources if url not in value]
     if missing:
-        lines = ["### 외부 공식 근거", ""]
+        lines = ["### 외부 공식 근거" if official_required else "### 외부 근거", ""]
         for title, url, why in missing[:3]:
             lines.append(f"- [{title}]({_markdown_url(url)})" + (f" — {why}" if why else ""))
         value += "\n\n" + "\n".join(lines)
@@ -2026,63 +2195,62 @@ def _is_external_source_url(url: str) -> bool:
         return False
 
 
-def _drop_unsupported_guarantees(text: str, state) -> str:
-    """Do not turn a format description into an unsupported outcome guarantee.
+def _research_url_provenance(state, url: str) -> dict | None:
+    """Resolve one exact URL from current QueryRunner output or a durable Research stamp."""
+    exact = str(url or "").strip()
+    if not exact:
+        return None
+    from app.agent.workflow.agents.research_analyst import (
+        _durable_external_provenance_allowed,
+        _durable_url_provenance,
+        _executed_url_provenance,
+    )
+    current = _executed_url_provenance(state).get(exact)
+    if current:
+        return current
+    if _durable_external_provenance_allowed(state):
+        return _durable_url_provenance(state).get(exact)
+    return None
 
-    ``보장`` is a materially stronger claim than ``저장한다`` or ``지원한다``.  If no
-    request or verified research material uses that guarantee, remove only the attached
-    comma-clause.  Standalone guarantee sentences are retained as an explicit validation
-    gap instead of being silently presented as fact.
+
+def _requested_external_query_sources(requested_classes) -> set[str]:
+    """Map requested coverage classes to the exact public providers they authorize."""
+    allowed: set[str] = set()
+    for source_class in requested_classes or ():
+        allowed.update(_EXTERNAL_SOURCE_QUERY_CLASSES.get(str(source_class), ()))
+    return allowed
+
+
+def _external_evidence_is_authorized(item: dict, state) -> bool:
+    """Require acquisition provenance for a structured public-source row."""
+    url = str((item or {}).get("url") or "").strip()
+    provenance = _research_url_provenance(state, url)
+    if not provenance:
+        return False
+    requested = set(_requested_source_classes(state))
+    requested_external = requested.intersection(_EXTERNAL_SOURCE_COVERAGE_CLASSES)
+    allowed_query_sources = _requested_external_query_sources(requested_external)
+    if (allowed_query_sources and provenance.get("source") not in allowed_query_sources):
+        return False
+    if (requested_external.intersection(_OFFICIAL_EXTERNAL_SOURCE_COVERAGE_CLASSES)
+            and provenance.get("source") in {"web", "github"}
+            and provenance.get("official") is not True):
+        return False
+    return True
+
+
+def _is_structured_external_evidence(item: dict) -> bool:
+    """Treat every public URL as provenance-bearing, including untyped legacy rows.
+
+    Legacy/checkpoint evidence may have no observations at all, so a model-owned source label
+    cannot be the security boundary. Configured Jira/Confluence and private hosts are already
+    excluded by :func:`_is_external_source_url`; every remaining URL needs an exact current
+    QueryRunner hit or a signed Research continuation stamp.
     """
-    source = " ".join(str(state.get(key) or "") for key in (
-        "request_text", "topic_dossier", "pre_survey", "situation",
-        "knowledge_brief", "evidence",
-    ))
-    value = str(text or "")
-    if "보장" not in source:
-        value = _re.sub(
-            r"\s*[,，]\s*[^,.\n]{2,120}?(?:을|를|이|가)?\s*보장(?:함|됨|한다|합니다)?(?=[.\n]|$)",
-            "", value,
-        )
-        value = _re.sub(
-            r"(?m)^(\s*[-*]?\s*)?([^\n.]{2,160}?보장(?:함|됨|한다|합니다)?)[.]?\s*$",
-            lambda m: ((m.group(1) or "") + "해당 보장 효과는 검증 필요"),
-            value,
-        )
-    # A search-result snippet is candidate material, not a selected source.  Do not let a
-    # model attach an uncited optimization/quality benefit unless the request or structured
-    # research evidence actually retained that effect.
-    if not _re.search(r"쿼리\s*최적화|query\s*optim", source, _re.I):
-        value = _re.sub(
-            r"\s*NDV\s*통계(?:는|가)?\s*쿼리\s*최적화에\s*사용될\s*수\s*있음[.]?",
-            "", value, flags=_re.I,
-        )
-        value = _re.sub(
-            r"이는\s+[^.\n]{0,180}?성능\s*최적화에\s*기여할\s*수\s*있음을\s*시사하지만,?\s*",
-            "", value, flags=_re.I,
-        )
-    unresolved_reader = bool(_re.search(
-        r"StarRocks[^.\n]{0,100}(?:Puffin|NDV)[^.\n]{0,120}"
-        r"(?:확인되지|미확인|검증\s*필요|지원\s*여부)", source, _re.I,
-    ))
-    latest = last_user_text(state)
-    support_confirmed_now = bool(_re.search(
-        r"StarRocks[^.\n]{0,100}(?:Puffin|NDV)[^.\n]{0,100}"
-        r"(?:소비\s*(?:지원|확인|성공|완료)|지원(?:함|한다|됨|된다))",
-        latest, _re.I,
-    ))
-    if unresolved_reader and not support_confirmed_now:
-        value = _re.sub(
-            r"(?m)(?:^|(?<=[.!?])\s+)StarRocks[^.!?\n]{0,220}?"
-            r"Puffin[^.!?\n]{0,120}?(?:소비할\s*수\s*있음|소비를?\s*지원(?:함|한다|됨|된다))"
-            r"[.!?]?\s*",
-            "", value, flags=_re.I,
-        )
-    value = _re.sub(r"([가-힣]+)이며\.", r"\1임.", value)
-    value = _re.sub(r"([가-힣]+)되며\.", r"\1됨.", value)
-    value = _re.sub(r"([가-힣]+)하며\.", r"\1함.", value)
-    value = _re.sub(r"\s+([.,!?])", r"\1", value)
-    return value
+    return (isinstance(item, dict)
+            and _is_external_source_url(str(item.get("url") or "")))
+
+
 
 
 def _dedupe_refs(text: str) -> str:
@@ -2121,7 +2289,7 @@ def _fold_standalone_sources(text: str) -> str:
         return "" if len(found) > before else match.group(0)
 
     value = _re.sub(
-        r"(?ms)^###\s*외부\s*공식\s*근거\s*$\s*(.*?)(?=^###\s|\Z)",
+        r"(?ms)^###\s*외부\s*(?:공식\s*)?근거\s*$\s*(.*?)(?=^###\s|\Z)",
         take_external_section, value,
     )
     if not found:
@@ -2209,6 +2377,8 @@ def _external_evidence_context(state) -> str:
 def _is_non_renderable_evidence(item: dict, state=None) -> bool:
     return (_is_direct_input_pseudo_source(item)
             or _is_negative_search_pseudo_source(item)
+            or (_is_structured_external_evidence(item)
+                and not _external_evidence_is_authorized(item, state or {}))
             or _is_generic_external_source(
                 item, _external_evidence_context(state or {}),
             ))
@@ -2447,7 +2617,8 @@ def _drop_irrelevant_rendered_external_sources(value: str, state) -> str:
             item = {
                 "key": title, "title": title, "url": url, "observations": observations,
             }
-            if _is_generic_external_source(item, context):
+            if (not _external_evidence_is_authorized(item, state)
+                    or _is_generic_external_source(item, context)):
                 index = end
                 continue
         kept.extend(block)
@@ -2716,6 +2887,12 @@ def _approval_display_evidence(state) -> list[dict]:
     raw_external_added = 0
     for item in _approval_query_hit_evidence(state):
         candidate = _without_query_provenance(item)
+        # Approval display is another evidence renderer, so it must honor the same exact
+        # acquisition, requested-provider, and official-provenance boundary as the final
+        # source index. Raw QueryRunner hits are candidates, not an authorization bypass.
+        if (_is_structured_external_evidence(candidate)
+                and not _external_evidence_is_authorized(candidate, state)):
+            continue
         if not _approval_source_is_relevant(candidate, state):
             continue
         identity = _approval_evidence_identity(candidate)

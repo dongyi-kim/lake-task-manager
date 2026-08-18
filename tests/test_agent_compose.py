@@ -223,6 +223,17 @@ def test_need_info_signal_survives_inline_code_and_html_wrappers():
         "목적을 한 줄 적어 주세요"
 
 
+def test_editor_missing_subject_example_is_product_independent(monkeypatch):
+    from app.agent import config as CFG
+
+    monkeypatch.setattr(CFG, "llm_ready", lambda: (True, ""))
+    result = C.compose("", "description", "짧게")
+
+    assert result["ok"] is False and result["needsInfo"] is True
+    assert "수집 파이프라인 개선 작업 본문" in result["error"]
+    assert "CDC" not in result["error"]
+
+
 def test_explicitly_remaining_work_cannot_be_changed_to_completed():
     ctx = ("[DL-9090] 작업 — In Progress\n"
            "명시적 미완료(완료로 쓰지 말 것): 성능 측정 | 사용 가이드 작성")
@@ -420,6 +431,19 @@ def test_editor_person_mentions_are_limited_to_verified_context_people():
     assert "skcc.x1042" not in corrected
 
 
+def test_editor_never_collapses_multiple_or_explicit_people_to_primary_assignee():
+    source = '[DL-9090] "리니지" — In Progress · 담당 [~skcc.x1402]'
+    multiple = ('<p><span data-type="mention" data-id="other.one">@other.one</span> '
+                '<span data-type="mention" data-id="other.two">@other.two</span></p>')
+    assert C._unverified_editor_person_ids(
+        multiple, "담당자를 멘션해서 검토 요청", source) == ["other.one", "other.two"]
+
+    explicit = ('<p><span data-type="mention" data-id="other.one">'
+                '@other.one</span></p>')
+    assert C._unverified_editor_person_ids(
+        explicit, "other.one을 멘션해서 검토 요청", source) == ["other.one"]
+
+
 def test_status_comment_unfinished_checklist_does_not_read_as_completed():
     from app.agent.editor_author import _normalize_unfinished_checklist_labels
 
@@ -553,6 +577,25 @@ def test_non_done_child_is_added_to_the_explicit_remaining_guard():
         "<ul><li>다운스트림 2홉 조회: 완료 — DL-9092 해결</li></ul>", context)
 
 
+def test_non_done_child_key_completion_is_qualified_without_touching_done_sibling():
+    context = ('하위 1/2 완료: DL-9092 "조회 API 개선"(완료), '
+               'DL-9095 "다운스트림 조회 연동"(미완료: In Progress)')
+    html = ('<p><a class="jira-badge tkt" data-key="DL-9092" '
+            'href="/browse/DL-9092">DL-9092</a> 개선 완료 및 '
+            '<a class="jira-badge tkt" data-key="DL-9095" '
+            'href="/browse/DL-9095">DL-9095</a> 연동 완료에 따른 측정 요청</p>')
+
+    got = C._qualify_non_done_ticket_claims(html, context)
+
+    assert "DL-9092</a> 개선 완료" in got
+    assert "DL-9095</a> 연동은 Jira 상태 In Progress" in got
+    assert "상태 확인 후 측정 요청" in got
+
+    question = ('<p><a class="jira-badge tkt" data-key="DL-9095" '
+                'href="/browse/DL-9095">DL-9095</a> 완료 여부를 검토해 주세요.</p>')
+    assert C._qualify_non_done_ticket_claims(question, context) == question
+
+
 def test_conflicting_completion_is_qualified_as_a_specific_open_fact():
     from app.agent.editor_author import _qualify_status_conflicts, _status_conflicts
 
@@ -640,3 +683,165 @@ def test_compose_refuses_with_needs_setup_when_no_llm(monkeypatch):
         r = C.compose("DL-9090", "comment", "아무거나")
     assert r["ok"] is False and r.get("needsSetup") is True
     assert "설정" in r["error"]
+
+
+def test_compose_fails_closed_instead_of_returning_unresolved_pseudo_ticket(monkeypatch):
+    """A malformed ticket identity is never downgraded to an easy-to-miss success note."""
+    from app.agent import config as CFG
+
+    class _Reply:
+        content = "<h3>참고</h3><ul><li>D-9040 상위 작업</li></ul>"
+
+    class _Llm:
+        def invoke(self, _messages, **_kwargs):
+            return _Reply()
+
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kw: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: (
+        '[DL-9095] "다운스트림 조회 연동" — In Progress\n'
+        '상위 Epic: DL-9040 "데이터셋 카탈로그"'))
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+
+    result = C.compose("DL-9095", "description", "현재 맥락으로 본문을 작성해 줘")
+
+    assert result["ok"] is False and result.get("contentConflict") is True
+    assert "D-9040" in result["error"]
+    assert "html" not in result, "unresolved identity must not be insertable"
+
+
+def test_pseudo_ticket_alias_requires_unique_verified_key_and_exact_title():
+    source = ('상위 Epic: DL-9040 "데이터셋 카탈로그"\n'
+              '직접 상위 Task: DL-9090 "리니지 뷰어"')
+
+    exact = '<li>D-9040 "데이터셋 카탈로그" — 상위 Epic</li>'
+    aliases = C._source_ticket_aliases(exact, source)
+    rendered = C._badgeify(exact, ticket_aliases=aliases)
+
+    assert aliases == {"D-9040": "DL-9040"}
+    assert 'data-key="DL-9040"' in rendered and ">DL-9040</a>" in rendered
+    assert C._source_ticket_aliases(
+        '<li>D-9040 "다른 제목"</li>', source) == {}
+
+
+def test_compose_recovers_title_verified_pseudo_ancestor_keys_to_canonical_badges(monkeypatch):
+    from app.agent import config as CFG
+
+    class _Reply:
+        content = ('<h3>배경</h3><p>다운스트림 조회 연동 요청.</p>'
+                   '<h3>작업 범위</h3><ul><li>포함: 다운스트림 조회 연동</li></ul>'
+                   '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+                   '<li data-checked="false">결과와 테스트 기록 확인</li></ul>'
+                   '<h3>참고</h3><ul>'
+                   '<li>D-9040 "[데이터] 데이터셋 카탈로그 지식 픽스처" — 상위 Epic</li>'
+                   '<li>D-9090 "[Workbench] 데이터 리니지 뷰어 1차 오픈" — 직접 상위</li>'
+                   '</ul>')
+
+    class _Llm:
+        def invoke(self, _messages, **_kwargs):
+            return _Reply()
+
+    context = ('[DL-9095] "[Workbench] 다운스트림 조회 연동" — In Progress\n'
+               '상위 Epic: DL-9040 "[데이터] 데이터셋 카탈로그 지식 픽스처"\n'
+               '직접 상위 Task: DL-9090 "[Workbench] 데이터 리니지 뷰어 1차 오픈"')
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kw: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: context)
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+
+    result = C.compose("DL-9095", "description", "현재 맥락으로 본문을 작성해 줘")
+
+    assert result["ok"] is True
+    assert 'data-key="DL-9040"' in result["html"]
+    assert 'data-key="DL-9090"' in result["html"]
+    assert "D-9040" not in C._plain_text(result["html"])
+    assert "D-9090" not in C._plain_text(result["html"])
+
+
+def test_compose_canonicalizes_verified_markdown_mention_and_document(monkeypatch):
+    """Compatible-model Markdown is recovered without leaking raw syntax into the editor."""
+    from app.agent import config as CFG
+
+    class _Reply:
+        content = ("### 측정 결과 검토 요청\n\n"
+                   "@skcc.x1402 님, 조회 API 개선(DL-9092) 및 DL-9095 연동 완료에 "
+                   "따른 2홉 100 노드 측정 결과를 검토해 주세요.\n\n"
+                   "* **근거 문서:** "
+                   "https://confluence.corp.example/spaces/DL/pages/312238185/lineage")
+
+    class _Llm:
+        def invoke(self, _messages, **_kwargs):
+            return _Reply()
+
+    context = ('[DL-9090] "리니지 뷰어" — In Progress · 담당 [~skcc.x1402]\n'
+               '하위 1/2 완료: DL-9092 "조회 API 개선"(완료), '
+               'DL-9095 "다운스트림 조회 연동"(미완료: In Progress)\n'
+               '명시적 미완료(완료로 쓰지 말 것): '
+               '다운스트림 조회 연동 | 성능 측정(2홉 100 노드 기준)\n'
+               '관련 문서 「[설계] 리니지 뷰어 1차」 '
+               'https://confluence.corp.example/spaces/DL/pages/312238185/lineage')
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kw: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: context)
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+
+    result = C.compose(
+        "DL-9090", "comment", "담당자를 멘션해서 성능 측정 결과 검토 요청 코멘트 써줘")
+
+    assert result["ok"] is True
+    assert 'data-type="mention"' in result["html"]
+    assert 'data-id="skcc.x1402"' in result["html"]
+    assert 'class="conf-link"' in result["html"]
+    assert "[설계] 리니지 뷰어 1차" in result["html"]
+    assert "Jira 상태 In Progress" in result["html"]
+    assert "연동 완료" not in C._plain_text(result["html"])
+    assert "###" not in result["html"] and "**" not in result["html"]
+    assert "https://confluence" not in C._plain_text(result["html"])
+
+
+def test_compose_rejects_dangling_literal_heading_marker(monkeypatch):
+    from app.agent import config as CFG
+
+    class _Reply:
+        content = "<p>h2. 검토 결과</p><p>측정 기록을 확인해 주세요.</p>"
+
+    class _Llm:
+        def invoke(self, _messages, **_kwargs):
+            return _Reply()
+
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kw: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: '[DL-9090] "작업" — Open')
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+
+    result = C.compose("DL-9090", "comment", "검토 요청 코멘트를 작성해 줘")
+
+    assert result["ok"] is False and result.get("contentConflict") is True
+    assert "heading" in result["error"]
+
+
+def test_compose_preserves_source_verified_official_link_and_rejects_invented_url(monkeypatch):
+    from app.agent import config as CFG
+
+    class _Llm:
+        def __init__(self, content):
+            self.content = content
+
+        def invoke(self, _messages, **_kwargs):
+            return type("Reply", (), {"content": self.content})()
+
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: '[DL-9090] "작업" — Open')
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+    official = "https://docs.example/official-guide"
+    monkeypatch.setattr(
+        CFG, "get_llm", lambda **_kw: _Llm(f'<p>공식 문서 <a href="{official}">가이드</a></p>'))
+
+    verified = C.compose(
+        "DL-9090", "comment", f"공식 문서 {official}를 안내하는 코멘트를 작성해 줘")
+
+    assert verified["ok"] is True and 'class="ref-link"' in verified["html"]
+    assert official in verified["html"]
+
+    invented = "https://unknown.example/invented"
+    monkeypatch.setattr(
+        CFG, "get_llm", lambda **_kw: _Llm(f"<p>참고: {invented}</p>"))
+    rejected = C.compose("DL-9090", "comment", "참고 링크를 포함해 줘")
+
+    assert rejected["ok"] is False and rejected.get("contentConflict") is True
+    assert invented in rejected["error"]

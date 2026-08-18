@@ -37,6 +37,35 @@ class RequestPlan(StrictModel):
     assumptions: list[str] = Field(default_factory=list)
 
 
+class ContinuationDecision(StrictModel):
+    """One user-owned answer/refinement captured at a typed turn boundary."""
+
+    field: str = Field(min_length=1, max_length=120)
+    value: str = Field(min_length=1, max_length=1000)
+    source: Literal["interview_answer", "explicit_refinement"]
+
+
+class ContinuationContract(StrictModel):
+    """Bounded authority that may cross a conversational interview turn.
+
+    ``request_plan`` remains the sole outcome DAG.  This contract records its stable root,
+    action family and outcome ids plus only user-authored field decisions, so a short answer
+    cannot silently become a new request or force downstream roles to replay arbitrary history.
+    """
+
+    version: Literal["continuation.v1"] = "continuation.v1"
+    root_request: str = Field(min_length=1, max_length=12000)
+    intent: Literal[
+        "ask", "plan_work", "my_day", "progress", "activity", "modify", "chitchat"
+    ]
+    action: Literal["read", "create", "comment", "update", "mixed", "respond"]
+    target_keys: list[Annotated[str, Field(max_length=32)]] = Field(
+        default_factory=list, max_length=16)
+    outcome_ids: list[Annotated[str, Field(max_length=80)]] = Field(
+        default_factory=list, max_length=6)
+    decisions: list[ContinuationDecision] = Field(default_factory=list, max_length=16)
+
+
 class QuerySpec(StrictModel):
     id: str
     source: Literal["jira", "confluence", "comments", "people", "web", "github"]
@@ -162,7 +191,8 @@ ROLE_CONTRACTS = {
 }
 
 
-__all__ = ["ArtifactRef", "AtomicTask", "RequestPlan", "QuerySpec", "QueryPlan",
+__all__ = ["ArtifactRef", "AtomicTask", "RequestPlan", "ContinuationDecision",
+           "ContinuationContract", "QuerySpec", "QueryPlan",
            "QueryIntent", "CompactQueryPlan",
            "ResearchReport", "WorkPlan", "PeopleAdvice", "AuthoredArtifact",
            "AuditResult", "IntegratedResult", "ROLE_CONTRACTS"]

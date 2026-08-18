@@ -200,6 +200,59 @@ def _group_activity(state) -> str:
     return "\n".join(rows)
 
 
+def activity_atomic_facts(material: str) -> list[dict]:
+    """Project deterministic roster rows without moving a value between people.
+
+    ``_group_activity`` already emits a machine-owned line per exact account.  Preserve that
+    relation as typed sidecar facts before a prose model writes person sections.  This parser
+    accepts only that exact grammar; arbitrary activity prose remains untyped evidence.
+    """
+    facts: list[dict] = []
+    activity = _re0.compile(
+        r"^\[([A-Za-z][A-Za-z0-9_.:-]{2,80})\]\s*"
+        r"담당/변경 티켓:\s*(.*?)\s*\|\s*코멘트 등 활동:\s*(.*?)\s*"
+        r"\|\s*문서 활동:\s*(.*?)\s*$"
+    )
+    workload = _re0.compile(
+        r"^-\s*([A-Za-z][A-Za-z0-9_.:-]{2,80})(?:\s+[^:]{1,80})?:\s*"
+        r"진행중\s*(\d+)건\s*·\s*열림\s*(\d+)건\s*·\s*"
+        r"최근\s*(\d+)일\s*완료\s*(\d+)건\s*$"
+    )
+
+    def append(subject: str, predicate: str, value: str, provenance: str) -> None:
+        facts.append({
+            "fact_id": f"portfolio:{subject}:{predicate}",
+            "subject_id": subject, "predicate": predicate, "value": value,
+            "state": "", "observed_at": "",
+            "source_id": f"portfolio:activity:{subject}",
+            "provenance": provenance, "direct": True,
+            "authority": "portfolio_deterministic",
+        })
+
+    for raw in str(material or "").splitlines():
+        line = raw.strip()
+        matched = activity.match(line)
+        if matched:
+            subject = matched.group(1)
+            append(subject, "assigned_or_changed_tickets", matched.group(2).strip(),
+                   f"group_activity[{subject}].assigned_or_changed_tickets")
+            append(subject, "jira_activity", matched.group(3).strip(),
+                   f"group_activity[{subject}].jira_activity")
+            append(subject, "document_activity", matched.group(4).strip(),
+                   f"group_activity[{subject}].document_activity")
+            continue
+        matched = workload.match(line)
+        if matched:
+            subject, in_progress, opened, window, completed = matched.groups()
+            append(subject, "in_progress_count", in_progress,
+                   f"group_activity[{subject}].in_progress_count")
+            append(subject, "open_count", opened,
+                   f"group_activity[{subject}].open_count")
+            append(subject, "completed_count", completed,
+                   f"group_activity[{subject}].completed_count(window_days={window})")
+    return facts
+
+
 
 def _needs_module(state) -> bool:
     """모듈 이야기인데 **어느 모듈인지 알 수 없는가** — 그러면 물어야 한다.
@@ -789,4 +842,7 @@ Explicit ticket keys: {', '.join(state.get('mentioned_keys') or []) or 'none'}{g
                 "trace": note(state, self.name, f"발견 {len(finds)}건")}
 
 
-__all__ = ["PortfolioAnalyst", "_daily_priority_snapshot", "_my_day", "_my_day_rank"]
+__all__ = [
+    "PortfolioAnalyst", "_daily_priority_snapshot", "_my_day", "_my_day_rank",
+    "activity_atomic_facts",
+]

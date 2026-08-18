@@ -14,9 +14,9 @@ from app.agent.workflow.state import last_user_text, request_text
 
 
 _TITLE = r"(?:TL|PL|PM|PO|EM|M|파트장|그룹장|본부장|팀장|실장|부장|차장|과장|대리|선임|책임|수석|매니저|리더|님|씨)"
-_KNOWN_TECH = {
-    "API", "CDC", "DAG", "DL", "ETL", "HTML", "HTTP", "HTTPS", "JIRA", "JSON",
-    "LAKE", "LTM", "NDV", "POC", "SQL", "TL", "PL", "PM", "PO", "EM", "UI", "URL", "UX",
+_GENERIC_TOPIC_NOISE = {
+    "DL", "HTML", "HTTP", "HTTPS", "JIRA", "JSON", "LAKE", "LTM", "POC",
+    "TL", "PL", "PM", "PO", "EM", "UI", "URL", "UX",
 }
 _MEETING_RE = re.compile(r"회의(?:록|\s*기록|\s*메모|\s*결정|\s*후속|\s*내용|\s*요약)?|실무회의|미팅", re.I)
 _PERSON_LABEL_NOISE = {
@@ -77,9 +77,9 @@ def meeting_subject(state) -> str:
     terms: list[str] = []
     for token in re.findall(r"[A-Za-z][A-Za-z0-9.+-]{2,}", material):
         low = token.lower().strip(".+-")
-        if low in _MEETING_TOPIC_NOISE or low in {value.lower() for value in _KNOWN_TECH}:
-            if token.upper() not in {"NDV", "CDC"}:
-                continue
+        if low in _MEETING_TOPIC_NOISE or low in {
+                value.lower() for value in _GENERIC_TOPIC_NOISE}:
+            continue
         if token not in terms:
             terms.append(token)
     return " ".join(terms[:3])
@@ -234,7 +234,10 @@ def _uncertain_terms(text: str) -> list[str]:
         text, re.I,
     ))
     for term in re.findall(r"(?<![A-Za-z0-9])([A-Z][A-Z0-9-]{1,9})(?![A-Za-z0-9])", text):
-        if (term.upper() in _KNOWN_TECH or term.isdigit() or term in terms
+        # Do not maintain a product/acronym allowlist. Every candidate follows the same
+        # contract: research may establish its definition via ``_term_is_defined``; only a
+        # still-unresolved meeting-local meaning reaches the interview.
+        if (term.isdigit() or term in terms
                 or re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", term)):
             continue
         nearby = re.search(

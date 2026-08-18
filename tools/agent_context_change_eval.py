@@ -18,7 +18,7 @@ except ImportError:
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
 
-BATTERY_VERSION = "2.0.1"
+BATTERY_VERSION = "2.1.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("ctx-chg")
 
 
@@ -93,6 +93,9 @@ def _ctx_return_ok(output: dict[str, Any], outputs: list[dict[str, Any]]) -> boo
     )
 
 
+CONTEXT_CHECKER_DEPENDENCIES = (_pending, _text)
+
+
 CASES = [
     (
         "CTX1",
@@ -146,6 +149,7 @@ if __name__ == "__main__":
         prompt_version=PROMPT_VERSION,
         suite_review_elements=SUITE_REVIEW_ELEMENTS,
         case_review_specs=CASE_REVIEW_SPECS,
+        checker_dependencies=CONTEXT_CHECKER_DEPENDENCIES,
         selected=selected,
         requested_out=requested_out,
     )

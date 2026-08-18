@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import re
 from html import unescape
 from urllib.parse import unquote, urlsplit
 
+from app.agent.pagination import PaginationAccumulator
 from app.agent.workflow.state import Node, last_user_text, note, request_text
 
 
@@ -789,25 +791,29 @@ class QueryRunner:
 
     @staticmethod
     def _all_pages(tool_obj, args: dict) -> tuple[list, dict]:
-        rows, cursor, pages = [], "", 0
+        pager = PaginationAccumulator(max_pages=200)
         meta = {}
         while True:
-            payload = dict(args, cursor=cursor)
+            payload = dict(args, cursor=pager.cursor)
             result = tool_obj.invoke(payload) or {}
-            pages += 1
             meta = meta or {k: result.get(k) for k in (
                 "canonicalJql", "canonicalCql", "scopeProjects", "scopeSpaces", "total")}
             bucket = result.get("tickets") or result.get("documents") \
                 or result.get("comments") or result.get("people") or []
-            rows.extend(bucket)
-            nxt = result.get("nextCursor")
-            if result.get("error") or not result.get("hasMore") or not nxt or nxt == cursor:
-                if result.get("error"):
-                    meta["error"] = result["error"]
+            if not pager.add_page(bucket):
                 break
-            cursor = nxt
-        meta["pages"] = pages
-        return rows, meta
+            if result.get("error"):
+                meta["error"] = result["error"]
+                break
+            if not pager.advance(
+                has_more=bool(result.get("hasMore")),
+                next_cursor=result.get("nextCursor"),
+                total=meta.get("total"),
+            ):
+                break
+        meta.update(pager.metadata())
+        meta["complete"] = not bool(meta.get("error") or meta.get("incomplete"))
+        return pager.rows, meta
 
     def _run(self, state):
         from app.agent import tools as T

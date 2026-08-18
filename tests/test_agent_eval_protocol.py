@@ -187,7 +187,7 @@ def test_create_battery_manifest_fingerprints_shared_checker_dependencies():
         checker_dependencies=create.CREATE_CHECKER_DEPENDENCIES,
     )
 
-    assert create.BATTERY_VERSION == "5.0.2"
+    assert create.BATTERY_VERSION == "5.1.0"
     assert create.CREATE_CASE_CONTRACT_FLAW_CHECKERS["STARR1"] is \
         create._starr1_contract_flaws
     for dependency in (
@@ -200,6 +200,7 @@ def test_create_battery_manifest_fingerprints_shared_checker_dependencies():
         create._case_specific_contract_flaws,
         create._STRUCTURED_FAILURE_RE,
         create._turn_execution_flaws,
+        create.automatic_contract_flaws,
     ):
         assert any(item is dependency for item in create.CREATE_CHECKER_DEPENDENCIES)
     assert complete != lambda_only
@@ -213,6 +214,7 @@ def test_create_battery_manifest_fingerprints_shared_checker_dependencies():
         id(create._case_specific_contract_flaws),
         id(create._STRUCTURED_FAILURE_RE),
         id(create._turn_execution_flaws),
+        id(create.automatic_contract_flaws),
     }
     without_false_pass_checks = tuple(
         dependency for dependency in create.CREATE_CHECKER_DEPENDENCIES
@@ -505,11 +507,11 @@ def test_historical_base_report_keeps_its_declared_v1_contract():
 
 def test_all_primary_batteries_emit_versioned_metadata():
     expected = {
-        "tools/agent_lang_ab.py": ('suite="conversation"', "3.2.1"),
-        "tools/agent_compose_eval.py": ('suite="editor"', "3.0.0"),
-        "tools/agent_create_suite.py": ('suite="create"', "5.0.2"),
-        "tools/agent_meeting_eval.py": ('suite="meeting"', "3.0.0"),
-        "tools/agent_context_change_eval.py": ('suite="ctx-chg"', "2.0.1"),
+        "tools/agent_lang_ab.py": ('suite="conversation"', "3.3.0"),
+        "tools/agent_compose_eval.py": ('suite="editor"', "3.1.0"),
+        "tools/agent_create_suite.py": ('suite="create"', "5.1.0"),
+        "tools/agent_meeting_eval.py": ('suite="meeting"', "3.1.0"),
+        "tools/agent_context_change_eval.py": ('suite="ctx-chg"', "2.1.0"),
     }
     for relative, (suite_marker, battery_version) in expected.items():
         text = (ROOT / relative).read_text(encoding="utf-8")
@@ -520,6 +522,37 @@ def test_all_primary_batteries_emit_versioned_metadata():
         assert "case_review_specs=CASE_REVIEW_SPECS" in text, relative
         if "run_scenario_suite(" not in text:
             assert '"evaluation"' in text, relative
+
+
+def test_primary_battery_manifests_fingerprint_shared_automatic_contracts():
+    from tools import agent_compose_eval as editor
+    from tools import agent_context_change_eval as context
+    from tools import agent_create_suite as create
+    from tools import agent_meeting_eval as meeting
+    from tools import agent_scenario_eval as scenario
+    from tools.agent_eval_contracts import (
+        AUTOMATIC_CONTRACT_DEPENDENCIES,
+        EDITOR_RENDERER_CONTRACT_DEPENDENCIES,
+        automatic_contract_flaws,
+        editor_renderer_contract_flaws,
+    )
+
+    assert automatic_contract_flaws in AUTOMATIC_CONTRACT_DEPENDENCIES
+    assert editor_renderer_contract_flaws in EDITOR_RENDERER_CONTRACT_DEPENDENCIES
+    assert all(dependency in create.CREATE_CHECKER_DEPENDENCIES
+               for dependency in AUTOMATIC_CONTRACT_DEPENDENCIES)
+    assert all(dependency in editor.EDITOR_CHECKER_DEPENDENCIES
+               for dependency in EDITOR_RENDERER_CONTRACT_DEPENDENCIES)
+    assert context.CONTEXT_CHECKER_DEPENDENCIES
+    assert meeting.MEETING_CHECKER_DEPENDENCIES
+
+    runner_source = (ROOT / "tools/agent_scenario_eval.py").read_text(encoding="utf-8")
+    conversation_source = (ROOT / "tools/agent_lang_ab.py").read_text(encoding="utf-8")
+    assert "checker_dependencies=(*AUTOMATIC_CONTRACT_DEPENDENCIES" in runner_source
+    assert "automatic_flaws = automatic_contract_flaws(outputs)" in runner_source
+    assert "*AUTOMATIC_CONTRACT_DEPENDENCIES" in conversation_source
+    assert "checker_dependencies=CONVERSATION_CHECKER_DEPENDENCIES" in conversation_source
+    assert scenario.automatic_contract_flaws is automatic_contract_flaws
 
 
 def _assigned_case_ids(relative, assignment_name):
@@ -693,11 +726,15 @@ def test_create_v5_review_contract_names_field_source_and_auditor_false_positive
 
 def test_editor_battery_rejects_seed_loss_and_reference_renderer_contradictions():
     text = (ROOT / "tools/agent_compose_eval.py").read_text(encoding="utf-8")
+    contract_text = (ROOT / "tools/agent_eval_contracts.py").read_text(encoding="utf-8")
     assert "_seed_preserved" in text
     assert "seed in _txt" in text
     assert "_editor_contract_flaws" in text
-    assert "ticket marker 안에 이미 렌더된 anchor를 이중 삽입" in text
-    assert "resolved ticket을 미확인으로 경고" in text
+    assert "editor_renderer_contract_flaws(result)" in text
+    assert "ticket marker 안에 이미 렌더된 anchor를 이중 삽입" in contract_text
+    assert "resolved ticket을 미확인으로 경고" in contract_text
+    for defect in ("pseudo ticket", "raw mention", "raw Markdown", "bare URL"):
+        assert defect in contract_text
 
 
 def test_primary_battery_metrics_have_one_canonical_schema():

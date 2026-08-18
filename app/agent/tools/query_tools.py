@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 
 from langchain_core.tools import tool
 
+from app.agent.pagination import PaginationAccumulator
 from app.agent.tools._ctx import (client, compact, jira_scope, search_projects,
                                   search_spaces, settings, trim)
 
@@ -198,27 +199,30 @@ def run_jql_v2(where: str = "", order_by: str = "updated DESC", fields: list = N
 def execute_jql_all(where: str = "", order_by: str = "updated DESC",
                     fields: list | None = None, page_size: int = 100) -> dict:
     """모델 context 밖에서 모든 페이지를 순회해 안정적인 target snapshot을 만든다."""
-    cursor, rows, seen, pages = "", [], set(), 0
+    pager = PaginationAccumulator(max_pages=200)
     first = None
     while True:
-        page = _jql_page(where, order_by, fields, page_size, cursor, source="jira-all")
+        page = _jql_page(where, order_by, fields, page_size, pager.cursor, source="jira-all")
         first = first or page
-        pages += 1
-        for row in page.get("tickets") or []:
-            key = row.get("key")
-            if key and key not in seen:
-                seen.add(key)
-                rows.append(row)
-        nxt = page.get("nextCursor")
-        if not page.get("hasMore") or not nxt or nxt == cursor:
+        if not pager.add_page(page.get("tickets") or []):
             break
-        cursor = nxt
-    return {
+        if page.get("error"):
+            pager.incomplete_reason = "provider_error"
+            break
+        if not pager.advance(
+            has_more=bool(page.get("hasMore")),
+            next_cursor=page.get("nextCursor"),
+            total=(first or {}).get("total"),
+        ):
+            break
+    result = {
         "canonicalJql": (first or {}).get("canonicalJql"),
         "scopeProjects": search_projects(), "total": (first or {}).get("total"),
-        "returned": len(rows), "pages": pages, "tickets": rows,
+        "tickets": pager.rows,
         "snapshotAt": datetime.now(timezone.utc).isoformat(),
     }
+    result.update(pager.metadata())
+    return result
 
 
 def _cql_escape(value: str) -> str:

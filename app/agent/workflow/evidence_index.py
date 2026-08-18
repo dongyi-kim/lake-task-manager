@@ -19,7 +19,10 @@ input only and are serialized back to the canonical grammar.
 from __future__ import annotations
 
 from collections import OrderedDict
+from datetime import datetime, timezone
+import json
 import re
+from typing import Any, Iterable, TypedDict
 from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 
@@ -50,6 +53,532 @@ _MD_LINK_RE = re.compile(r"\[([^\n]+?)\]\((https?://[^\s)]+)\)")
 _URL_RE = re.compile(r"https?://[^\s)>\]}]+", re.I)
 _CUT_RE = re.compile(r"^(.*?)\s+(?:—|–|--)\s+(.*)$")
 _CONFLUENCE_RE = re.compile(r"confluence|/pages/\d+|/display/|/wiki/", re.I)
+
+
+class AtomicFact(TypedDict):
+    """One provenance-bound fact used only as a deterministic synthesis sidecar.
+
+    ``typed=False`` is intentional: natural-language observations remain visible evidence,
+    but they cannot participate in supersession until a producer supplies an exact subject
+    and predicate (or the value comes from the canonical materialized Jira snapshot).
+    """
+
+    fact_id: str
+    subject_id: str
+    predicate: str
+    value: str
+    state: str
+    observed_at: str
+    source_id: str
+    provenance: str
+    direct: bool
+    typed: bool
+    authority: str
+    temporal_role: str
+
+
+_ATOMIC_TICKET_RE = re.compile(r"^[A-Z][A-Z0-9]*-\d+$", re.I)
+_ATOMIC_NAMESPACE_RE = re.compile(
+    r"^[a-z][a-z0-9_.-]{1,31}:[A-Za-z0-9][A-Za-z0-9_.:/-]{0,119}$", re.I,
+)
+_ATOMIC_ACTOR_RE = re.compile(
+    r"^[a-z][a-z0-9_-]{1,31}\.[A-Za-z0-9][A-Za-z0-9_.-]{1,79}$", re.I,
+)
+_ATOMIC_PREDICATE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,79}$")
+_ATOMIC_FIELD_ALIASES = {
+    "status": "status", "상태": "status",
+    "done": "done", "완료": "done",
+    "assignee": "assignee", "담당": "assignee", "담당자": "assignee",
+    "duedate": "duedate", "due": "duedate", "마감": "duedate",
+    "마감일": "duedate", "기한": "duedate",
+    "parent": "parent_key", "parentkey": "parent_key", "parent_key": "parent_key",
+    "부모": "parent_key", "부모티켓": "parent_key",
+    "epic": "epic_key", "epickey": "epic_key", "epic_key": "epic_key",
+    "priority": "priority", "우선순위": "priority",
+    "resolution": "resolution", "해결": "resolution",
+    "sp": "story_points", "storypoints": "story_points",
+    "story_points": "story_points",
+    "components": "components", "component": "components",
+    "labels": "labels", "label": "labels",
+    "summary": "summary", "title": "summary", "type": "issue_type",
+    "issuetype": "issue_type", "issue_type": "issue_type",
+}
+_MATERIALIZED_ATOMIC_FIELDS = (
+    ("status", "status"), ("done", "done"), ("assignee", "assignee"),
+    ("duedate", "duedate"), ("parentKey", "parent_key"),
+    ("epicKey", "epic_key"), ("priority", "priority"),
+    ("resolution", "resolution"), ("sp", "story_points"),
+    ("components", "components"), ("labels", "labels"),
+    ("summary", "summary"), ("title", "summary"),
+    ("type", "issue_type"), ("issuetype", "issue_type"),
+)
+_MATERIALIZED_ATOMIC_PREDICATES = frozenset(
+    predicate for _field, predicate in _MATERIALIZED_ATOMIC_FIELDS
+)
+
+
+def _atomic_text(value: Any, limit: int = 500) -> str:
+    if isinstance(value, (list, tuple, dict)):
+        rendered = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    elif isinstance(value, bool):
+        rendered = "true" if value else "false"
+    else:
+        rendered = str(value or "")
+    return re.sub(r"\s+", " ", rendered).strip()[:limit]
+
+
+def _atomic_source_identity(item: dict) -> tuple[str, str]:
+    key = str(item.get("key") or "").strip().upper()
+    if _ATOMIC_TICKET_RE.fullmatch(key):
+        return f"ticket:{key}", key
+    url = str(item.get("url") or "").strip()
+    if _valid_url(url):
+        identity = f"url:{_clean_url(url)}"
+        return identity[:1000], identity[:160]
+    label = _atomic_text(item.get("key") or item.get("title"), 180)
+    identity = f"text:{label.casefold()}" if label else "text:unknown"
+    return identity, identity
+
+
+def _atomic_subject(value: Any, default: str) -> str:
+    exact = str(value or "").strip()
+    if (_ATOMIC_TICKET_RE.fullmatch(exact) or _ATOMIC_NAMESPACE_RE.fullmatch(exact)
+            or _ATOMIC_ACTOR_RE.fullmatch(exact)):
+        return exact.upper() if _ATOMIC_TICKET_RE.fullmatch(exact) else exact
+    return default
+
+
+def _atomic_evidence_claims_source(observation: dict, default: str) -> bool:
+    """A model observation may confirm its source identity, but may never rebind it."""
+    claimed = str(observation.get("subject_id") or "").strip()
+    return not claimed or claimed.casefold() == str(default or "").casefold()
+
+
+def _atomic_predicate(observation: dict) -> tuple[str, bool]:
+    raw = str(observation.get("predicate") or observation.get("field") or "").strip()
+    folded = re.sub(r"[\s_-]+", "", raw).casefold()
+    if folded in _ATOMIC_FIELD_ALIASES:
+        return _ATOMIC_FIELD_ALIASES[folded], True
+    if raw and _ATOMIC_PREDICATE_RE.fullmatch(raw):
+        return raw, True
+    return "untyped", False
+
+
+def _atomic_timestamp(value: str) -> float | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _resolve_atomic_temporality(facts: Iterable[AtomicFact]) -> list[AtomicFact]:
+    """Resolve time only inside an exact typed ``subject_id + predicate`` group.
+
+    A later row wins only when both rows are direct and both timestamps parse. Equal-time
+    differing values are contemporary conflicts. Missing dates and untyped observations never
+    become current merely because they happened to appear later in an array.
+    """
+    rows: list[AtomicFact] = [dict(row) for row in facts]  # type: ignore[list-item]
+    groups: dict[tuple[str, str], list[int]] = {}
+    for index, row in enumerate(rows):
+        if not row.get("typed"):
+            row["temporal_role"] = "untyped"
+            continue
+        groups.setdefault((row["subject_id"], row["predicate"]), []).append(index)
+
+    for indices in groups.values():
+        for index in indices:
+            rows[index]["temporal_role"] = (
+                "current" if rows[index].get("authority") == "materialized_ticket_sources"
+                else "observed"
+            )
+        # A model-authored row that merely repeats an exact materialized snapshot field is
+        # useful corroboration, not a newer snapshot.  Exclude that duplicate from the clock
+        # whenever the canonical field itself is present.  Deterministic ``extra_facts`` remain
+        # eligible to supersede because their producer, subject, predicate, and timestamp are
+        # code-owned rather than model-owned.
+        has_materialized = any(
+            rows[index].get("authority") == "materialized_ticket_sources"
+            for index in indices
+        )
+        dated = [
+            (index, _atomic_timestamp(rows[index].get("observed_at", "")))
+            for index in indices
+            if rows[index].get("direct")
+            and not (has_materialized
+                     and rows[index].get("authority") == "materialized_match")
+        ]
+        dated = [(index, stamp) for index, stamp in dated if stamp is not None]
+        if len(dated) < 2:
+            continue
+        latest_stamp = max(stamp for _index, stamp in dated)
+        latest = [index for index, stamp in dated if stamp == latest_stamp]
+        latest_values = {rows[index]["value"] for index in latest}
+        for index, stamp in dated:
+            if stamp < latest_stamp:
+                rows[index]["temporal_role"] = "historical"
+        if len(latest_values) > 1:
+            for index in latest:
+                rows[index]["temporal_role"] = "conflict"
+        else:
+            for index in latest:
+                rows[index]["temporal_role"] = "current"
+        dated_indices = {index for index, _stamp in dated}
+        for index in indices:
+            if index in dated_indices:
+                continue
+            # Undated direct or indirect values remain unresolved when they disagree with
+            # the dated current value; they cannot silently become history or current state.
+            if rows[index]["value"] not in latest_values:
+                rows[index]["temporal_role"] = "unresolved"
+    return rows
+
+
+def _cap_atomic_facts(rows: list[AtomicFact], cap: int) -> list[AtomicFact]:
+    """Bound the ledger after resolution so late temporal pairs are not split off."""
+    limit = max(0, int(cap or 0))
+    if len(rows) <= limit:
+        return rows
+    temporal_groups = {
+        (row["subject_id"], row["predicate"]) for row in rows
+        if row.get("typed")
+        and row.get("temporal_role") in {"historical", "conflict", "unresolved"}
+    }
+    roles = {"conflict": 0, "current": 1, "historical": 2,
+             "unresolved": 3, "observed": 4, "untyped": 5}
+    fields = {"status": 0, "done": 1, "duedate": 2, "assignee": 3,
+              "parent_key": 4, "epic_key": 5, "priority": 6}
+    ranked = sorted(range(len(rows)), key=lambda index: (
+        0 if (rows[index]["subject_id"], rows[index]["predicate"])
+        in temporal_groups else 1,
+        0 if rows[index].get("typed") else 2,
+        roles.get(rows[index].get("temporal_role", ""), 9),
+        fields.get(rows[index].get("predicate", ""), 20), index,
+    ))[:limit]
+    selected = set(ranked)
+    return [row for index, row in enumerate(rows) if index in selected]
+
+
+def build_atomic_fact_ledger(state: dict, *, extra_facts: Iterable[dict] = (),
+                             cap: int = 96) -> list[AtomicFact]:
+    """Project verified state into a bounded, provenance-preserving atomic ledger.
+
+    The original ``evidence`` and ``materialized_ticket_sources`` containers are never changed.
+    Natural-language text is deliberately not parsed into a subject or field. Model-authored
+    evidence stays untyped unless its exact field value or complete description/comment text can
+    be rebound to the same ticket in the canonical materialized snapshot. Deterministic producers
+    opt in through ``extra_facts``; canonical materialized Jira rows contribute typed fields.
+    """
+    facts: list[AtomicFact] = []
+    canonical_fields: dict[tuple[str, str, str], list[tuple[str, str]]] = {}
+    canonical_observations: dict[
+        tuple[str, str, str], list[tuple[str, str]]
+    ] = {}
+
+    ledger = state.get("materialized_ticket_sources") or {}
+    if isinstance(ledger, dict):
+        for row_index, row in enumerate(ledger.get("ticketDetails") or []):
+            if not isinstance(row, dict) or row.get("error"):
+                continue
+            key = str(row.get("key") or "").strip().upper()
+            if not _ATOMIC_TICKET_RE.fullmatch(key):
+                continue
+            observed_at = _atomic_text(row.get("updated") or row.get("created"), 80)
+            seen_predicates: set[str] = set()
+            for field, predicate in _MATERIALIZED_ATOMIC_FIELDS:
+                if predicate in seen_predicates or field not in row:
+                    continue
+                raw_value = row.get(field)
+                if raw_value in (None, "", []):
+                    continue
+                value = _atomic_text(raw_value)
+                if not value:
+                    continue
+                seen_predicates.add(predicate)
+                facts.append(AtomicFact(
+                    fact_id=f"materialized:{key}:{predicate}:{row_index}",
+                    subject_id=key, predicate=predicate, value=value,
+                    state=value if predicate in {"status", "done", "resolution"} else "",
+                    observed_at=observed_at, source_id=f"ticket:{key}",
+                    provenance=(f"materialized_ticket_sources.ticketDetails[{key}].{field}"
+                                + (f" @ {observed_at}" if observed_at else "")),
+                    direct=True, typed=True, authority="materialized_ticket_sources",
+                    temporal_role="current",
+                ))
+                canonical_fields.setdefault((key, predicate, value), []).append((
+                    observed_at,
+                    f"materialized_ticket_sources.ticketDetails[{key}].{field}",
+                ))
+
+            description = _atomic_text(row.get("description"), 420)
+            if description:
+                canonical_observations.setdefault(
+                    (key, "description", description), [],
+                ).append((
+                    observed_at,
+                    f"materialized_ticket_sources.ticketDetails[{key}].description",
+                ))
+            for comment_index, comment in enumerate(row.get("comments") or []):
+                if not isinstance(comment, dict):
+                    continue
+                comment_text = _atomic_text(
+                    comment.get("body") or comment.get("text") or comment.get("html")
+                    or comment.get("snippet") or comment.get("comment"), 420,
+                )
+                if not comment_text:
+                    continue
+                comment_date = _atomic_text(
+                    comment.get("observed_at") or comment.get("updated")
+                    or comment.get("modified") or comment.get("created")
+                    or comment.get("date"), 80,
+                )
+                canonical_observations.setdefault(
+                    (key, "comment", comment_text), [],
+                ).append((
+                    comment_date,
+                    (f"materialized_ticket_sources.ticketDetails[{key}]"
+                     f".comments[{comment_index}]"),
+                ))
+
+    for item_index, item in enumerate(state.get("evidence") or []):
+        if not isinstance(item, dict):
+            continue
+        source_id, default_subject = _atomic_source_identity(item)
+        for observation_index, observation in enumerate(item.get("observations") or []):
+            if not isinstance(observation, dict):
+                continue
+            declared_predicate, declared_typed = _atomic_predicate(observation)
+            subject = default_subject
+            location = str(observation.get("source") or "observation").strip().casefold()
+            text = _atomic_text(observation.get("text"))
+            explicit_value = observation.get("value")
+            value = _atomic_text(
+                explicit_value if explicit_value not in (None, "")
+                else observation.get("state") if observation.get("state") not in (None, "")
+                else text
+            )
+            if not value:
+                continue
+            supplied_observed_at = _atomic_text(observation.get("observed_at"), 80)
+            observed_at = supplied_observed_at
+            predicate = "untyped"
+            typed = False
+            direct = False
+            authority = "evidence"
+            canonical_provenance = ""
+
+            # A field assertion is safe only when its exact subject+field+value already
+            # exists in the materialized snapshot. The canonical timestamp, not a supplied
+            # model timestamp, owns its recency.
+            field_matches = canonical_fields.get(
+                (subject, declared_predicate, value), [],
+            ) if declared_typed and _atomic_evidence_claims_source(
+                observation, default_subject,
+            ) and not observation.get("actor_id") else []
+            if field_matches:
+                observed_at, canonical_provenance = field_matches[-1]
+                predicate = declared_predicate
+                typed = direct = True
+                authority = "materialized_match"
+            else:
+                # For free-form descriptions/comments, the complete normalized observation
+                # must equal a canonical source cell. A separately supplied semantic value is
+                # not trusted: only the full canonical text may become the fact value.
+                canonical_location = "comment" if location in {"comment", "comments"} else location
+                text_matches = canonical_observations.get(
+                    (subject, canonical_location, _atomic_text(text, 420)), [],
+                ) if (declared_typed and text
+                      and declared_predicate not in _MATERIALIZED_ATOMIC_PREDICATES
+                      and _atomic_evidence_claims_source(observation, default_subject)
+                      and not observation.get("actor_id")
+                      and explicit_value in (None, "")) else []
+                if supplied_observed_at and len(text_matches) > 1:
+                    text_matches = [match for match in text_matches
+                                    if match[0] == supplied_observed_at]
+                if len(text_matches) == 1:
+                    observed_at, canonical_provenance = text_matches[0]
+                    predicate = declared_predicate
+                    value = _atomic_text(text, 420)
+                    typed = direct = True
+                    authority = "materialized_match"
+
+            supplied_provenance = _atomic_text(observation.get("provenance"), 240)
+            provenance = f"{source_id}#{location}:{observation_index + 1}"
+            if observed_at:
+                provenance += f" @ {observed_at}"
+            if canonical_provenance:
+                provenance += f" · {canonical_provenance}"
+            if supplied_provenance and not typed:
+                provenance += f" · {supplied_provenance}"
+            fact_state = (_atomic_text(observation.get("state"), 120) if not typed
+                          else value if predicate in {"status", "done", "resolution"}
+                          else "")
+            facts.append(AtomicFact(
+                fact_id=f"evidence:{item_index}:{observation_index}:{subject}:{predicate}",
+                subject_id=subject, predicate=predicate, value=value,
+                state=fact_state,
+                observed_at=observed_at, source_id=source_id,
+                provenance=provenance[:700], direct=direct, typed=typed,
+                authority=authority, temporal_role="observed" if typed else "untyped",
+            ))
+
+    for index, raw in enumerate(extra_facts):
+        if not isinstance(raw, dict):
+            continue
+        subject = _atomic_subject(raw.get("subject_id"), "")
+        predicate, typed = _atomic_predicate(raw)
+        value = _atomic_text(raw.get("value") if raw.get("value") not in (None, "")
+                             else raw.get("state"))
+        source_id = _atomic_text(raw.get("source_id"), 300)
+        if not subject or not typed or not value or not source_id:
+            continue
+        facts.append(AtomicFact(
+            fact_id=_atomic_text(raw.get("fact_id"), 300) or f"extra:{index}:{subject}:{predicate}",
+            subject_id=subject, predicate=predicate, value=value,
+            state=_atomic_text(raw.get("state"), 120),
+            observed_at=_atomic_text(raw.get("observed_at"), 80),
+            source_id=source_id,
+            provenance=_atomic_text(raw.get("provenance"), 700) or source_id,
+            direct=bool(raw.get("direct")), typed=True,
+            authority=_atomic_text(raw.get("authority"), 80) or "deterministic",
+            temporal_role="observed",
+        ))
+
+    return _cap_atomic_facts(_resolve_atomic_temporality(facts), cap)
+
+
+def atomic_fact_sidecar(state: dict, *, extra_facts: Iterable[dict] = (),
+                        limit: int = 24) -> list[dict]:
+    """Return only typed facts for the LLM; raw/untyped evidence stays in its original block."""
+    facts = [row for row in build_atomic_fact_ledger(state, extra_facts=extra_facts)
+             if row.get("typed")]
+    priority = {"conflict": 0, "current": 1, "historical": 2,
+                "unresolved": 3, "observed": 4}
+    field_priority = {
+        "status": 0, "done": 1, "duedate": 2, "assignee": 3,
+        "parent_key": 4, "epic_key": 5, "priority": 6,
+    }
+    groups: dict[tuple[str, str], list[tuple[int, AtomicFact]]] = {}
+    for index, row in enumerate(facts):
+        groups.setdefault((row["subject_id"], row["predicate"]), []).append((index, row))
+    ordered_groups = sorted(groups.values(), key=lambda group: (
+        0 if any(row.get("temporal_role") in {"historical", "conflict", "unresolved"}
+                 for _index, row in group) else 1,
+        min(priority.get(row.get("temporal_role", ""), 9) for _index, row in group),
+        min(field_priority.get(row.get("predicate", ""), 20) for _index, row in group),
+        group[0][0],
+    ))
+    selected: list[tuple[int, AtomicFact]] = []
+    bounded = max(0, int(limit or 0))
+    for group in ordered_groups:
+        if len(selected) + len(group) <= bounded:
+            selected.extend(group)
+        if len(selected) == bounded:
+            break
+    compact = []
+    for _index, row in selected:
+        projected = {key: row[key] for key in (
+            "subject_id", "predicate", "value", "state", "observed_at", "source_id",
+            "provenance", "direct", "authority", "temporal_role",
+        )}
+        projected["value"] = _atomic_text(projected["value"], 240)
+        projected["state"] = _atomic_text(projected["state"], 80)
+        projected["source_id"] = _atomic_text(projected["source_id"], 240)
+        projected["provenance"] = _atomic_text(projected["provenance"], 320)
+        compact.append(projected)
+    return compact
+
+
+def enforce_atomic_fact_boundaries(text: str, facts: Iterable[AtomicFact]) -> str:
+    """Repair only exact, mechanically provable subject-field leakage in reply prose.
+
+    This guard never interprets free text. It currently covers Jira due dates because an ISO
+    date copied from a parent into a due-null child is both detectable and safely removable.
+    Raw observations under ``### 근거`` are immutable history and are therefore excluded.
+    """
+    value = str(text or "")
+    heading = re.search(r"(?m)^###\s*근거\s*$", value)
+    body, tail = (value[:heading.start()], value[heading.start():]) if heading else (value, "")
+    rows = list(facts)
+    due_by_subject: dict[str, set[str]] = {}
+    for row in rows:
+        if (row.get("typed") and row.get("predicate") == "duedate"
+                and row.get("authority") == "materialized_ticket_sources"
+                and row.get("temporal_role") == "current"):
+            due_by_subject.setdefault(row["subject_id"], set()).add(row["value"])
+    all_due = {due for values in due_by_subject.values() for due in values}
+    due_pattern = re.compile(
+        r"(?:마감(?:일)?|기한|due\s*date)\s*(?:은|는|이|가|:)?\s*"
+        r"(\d{4}-\d{2}-\d{2})", re.I,
+    )
+    repaired = []
+    for line in body.splitlines():
+        keys = {match.upper() for match in re.findall(
+            r"(?<![A-Za-z0-9-])([A-Z][A-Z0-9]*-\d+)(?![A-Za-z0-9-])", line, re.I,
+        )}
+        matched_due = due_pattern.search(line)
+        if len(keys) == 1 and matched_due:
+            subject = next(iter(keys))
+            date = matched_due.group(1)
+            allowed = due_by_subject.get(subject, set())
+            if date in all_due and date not in allowed:
+                line = due_pattern.sub("마감 확인되지 않음", line, count=1)
+        repaired.append(line)
+    body = "\n".join(repaired)
+
+    temporal: dict[tuple[str, str], list[AtomicFact]] = {}
+    for row in rows:
+        if (row.get("typed") and _ATOMIC_TICKET_RE.fullmatch(row.get("subject_id", ""))
+                and row.get("temporal_role") in {"current", "historical", "conflict"}):
+            temporal.setdefault((row["subject_id"], row["predicate"]), []).append(row)
+    current_additions: list[str] = []
+    for (subject, _predicate), group in temporal.items():
+        if any(row.get("temporal_role") == "conflict" for row in group):
+            continue
+        currents = [row for row in group if row.get("temporal_role") == "current"]
+        historical = [row for row in group if row.get("temporal_role") == "historical"]
+        current_values = {row.get("value", "") for row in currents if row.get("value")}
+        if len(current_values) != 1 or not historical:
+            continue
+        current = max(currents, key=lambda row: _atomic_timestamp(row.get("observed_at", "")) or 0)
+        changed = False
+        rewritten: list[str] = []
+        for line in body.splitlines():
+            exact_subject = bool(re.search(
+                rf"(?<![A-Za-z0-9-]){re.escape(subject)}(?![A-Za-z0-9-])", line, re.I,
+            ))
+            if not exact_subject or re.search(r"과거|이전|당시|histor(?:y|ical)|previous", line, re.I):
+                rewritten.append(line)
+                continue
+            matched_history = next((row for row in historical
+                                    if len(row.get("value", "")) >= 4
+                                    and re.search(r"[A-Za-z가-힣]", row.get("value", ""))
+                                    and row["value"].casefold() in line.casefold()
+                                    and (not row.get("observed_at")
+                                         or row["observed_at"] not in line)), None)
+            if not matched_history:
+                rewritten.append(line)
+                continue
+            stamp = matched_history.get("observed_at") or "시점 미상"
+            rewritten.append(f"이전 기록({stamp}): {line}")
+            changed = True
+        if changed:
+            body = "\n".join(rewritten)
+            if current["value"].casefold() not in body.casefold():
+                stamp = current.get("observed_at") or "시점 미상"
+                current_additions.append(
+                    f"현재 기록({stamp}): " + "{{ticket-inline:" + subject + "}}"
+                    + f" — {current['value']}"
+                )
+    if current_additions:
+        body = body.rstrip() + "\n\n" + "\n".join(current_additions) + "\n"
+    return (body + tail).strip()
 
 
 def _clean_url(url: str) -> str:
@@ -449,4 +978,7 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
     return result.strip()
 
 
-__all__ = ["canonicalize_evidence_index"]
+__all__ = [
+    "AtomicFact", "atomic_fact_sidecar", "build_atomic_fact_ledger",
+    "canonicalize_evidence_index", "enforce_atomic_fact_boundaries",
+]

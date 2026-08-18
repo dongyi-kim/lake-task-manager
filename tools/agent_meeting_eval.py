@@ -19,7 +19,7 @@ except ImportError:
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
 
-BATTERY_VERSION = "3.0.0"
+BATTERY_VERSION = "3.1.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("meeting")
 
 
@@ -248,6 +248,13 @@ def _meeting_fragment_update_ok(output: dict[str, Any], outputs: list[dict[str, 
     )
 
 
+# Case checkers are fingerprinted directly as members of ``CASES``.  Their shared helpers
+# are separate callables, so list them explicitly to keep the manifest exact.
+MEETING_CHECKER_DEPENDENCIES = (
+    pending_items, _text, _pending, _interview_then_resume,
+)
+
+
 CASES = [
     (
         "MTG1",
@@ -432,6 +439,7 @@ if __name__ == "__main__":
         prompt_version=PROMPT_VERSION,
         suite_review_elements=SUITE_REVIEW_ELEMENTS,
         case_review_specs=CASE_REVIEW_SPECS,
+        checker_dependencies=MEETING_CHECKER_DEPENDENCIES,
         selected=selected,
         requested_out=requested_out,
     )

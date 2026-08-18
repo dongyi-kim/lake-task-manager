@@ -14,7 +14,11 @@ ToolAgent 인 이유 — 몇 번 검색해야 충분한지는 미리 알 수 없
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
+import os
 import re as _re
 
 from app.agent.workflow.agents.base import ToolAgent
@@ -22,6 +26,10 @@ from app.agent.prompts.roles import SYSTEM_RESEARCH_ANALYST
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import (AgentState, Intent, Node, last_user_text, note,
                                       request_text)
+from app.agent.workflow.write_evidence_ledger import (
+    build_completed_write_ledger,
+    ledger_text as _ledger_text,
+)
 
 SCHEMA = {
     "type": "object",
@@ -160,9 +168,271 @@ def _query_plan_is_complete(state) -> bool:
         if not qid or row is None or str(row.get("source") or "") != str(spec.get("source") or ""):
             return False
         result = row.get("result")
-        if not isinstance(result, dict) or result.get("error") or result.get("materializationErrors"):
+        if (not isinstance(result, dict) or result.get("error")
+                or result.get("incomplete") or result.get("complete") is False
+                or result.get("materializationErrors")):
             return False
     return True
+
+
+_RESEARCH_PROVENANCE_FIELD = "_research_provenance_v1"
+_RESEARCH_PROVENANCE_AUTHORITY = "research_analyst"
+_EXTERNAL_QUERY_SOURCES = frozenset({"web", "github"})
+_RESEARCH_PROVENANCE_KEY = os.urandom(32)
+
+
+def _sign_research_provenance(stamp: dict) -> str:
+    """Create a process-local capability signature that model output cannot mint.
+
+    Research continuity lives inside one local application process. A restart deliberately
+    invalidates the capability and forces reacquisition, which is safer than trusting an old
+    public URL after its QueryRunner artifact is gone.
+    """
+    payload = {key: stamp.get(key) for key in (
+        "authority", "kind", "url", "source", "query_id", "official",
+    )}
+    raw = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hmac.new(_RESEARCH_PROVENANCE_KEY, raw, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _absolute_http_url(value) -> str:
+    """Return an exact absolute HTTP(S) URL or an empty string.
+
+    URL provenance uses the literal QueryRunner value.  In particular, it does not collapse
+    paths, query strings, or trailing slashes: a nearby URL is not the result that was opened.
+    """
+    from urllib.parse import urlsplit
+
+    url = str(value or "").strip()
+    try:
+        parsed = urlsplit(url)
+    except Exception:
+        return ""
+    return url if parsed.scheme.casefold() in {"http", "https"} and parsed.netloc else ""
+
+
+def _official_external_requested(state) -> bool:
+    """Whether the human requested an official public source, including GitHub wording."""
+    value = " ".join(part for part in (
+        request_text(state).strip(), last_user_text(state).strip(),
+    ) if part)
+    external = bool(_re.search(
+        r"(?:외부|\bexternal\b|\bpublic\b|\bweb\b|웹|\bgithub\b|깃허브)",
+        value, _re.I,
+    ))
+    return external and bool(_re.search(r"(?:공식|\bofficial\b)", value, _re.I))
+
+
+def _executed_url_provenance(state) -> dict[str, dict]:
+    """Index exact URLs returned by successful QueryRunner result rows.
+
+    This is the acquisition authority.  A URL merely written by a model, copied from a
+    prompt, or embedded in search prose never enters this map.  Incomplete/error results are
+    excluded because their partial rows cannot satisfy a complete source contract.
+    """
+    indexed: dict[str, dict] = {}
+
+    def visit(value, *, source: str, query_id: str) -> None:
+        if isinstance(value, dict):
+            url = _absolute_http_url(value.get("url"))
+            if url:
+                official = (value.get("official") is True
+                            or str(value.get("official") or "").strip().casefold() == "true")
+                candidate = {
+                    "authority": _RESEARCH_PROVENANCE_AUTHORITY,
+                    "kind": "executed_query_result_url",
+                    "url": url,
+                    "source": source,
+                    "query_id": query_id,
+                    "official": official,
+                }
+                candidate["signature"] = _sign_research_provenance(candidate)
+                prior = indexed.get(url)
+                # Prefer an explicit official hit when two executed queries returned the same URL.
+                if prior is None or (official and not prior.get("official")):
+                    indexed[url] = candidate
+            for child in value.values():
+                if isinstance(child, (dict, list, tuple)):
+                    visit(child, source=source, query_id=query_id)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child, source=source, query_id=query_id)
+
+    for row in state.get("query_results") or []:
+        if not isinstance(row, dict):
+            continue
+        result = row.get("result")
+        if (not isinstance(result, dict) or result.get("error")
+                or result.get("incomplete") is True or result.get("complete") is False):
+            continue
+        visit(
+            result,
+            source=str(row.get("source") or "").strip().casefold(),
+            query_id=str(row.get("id") or "").strip(),
+        )
+    return indexed
+
+
+def _validated_research_stamp(item: dict) -> dict | None:
+    """Validate a durable stamp already stored in server-owned Research state."""
+    if not isinstance(item, dict):
+        return None
+    url = _absolute_http_url(item.get("url"))
+    stamp = item.get(_RESEARCH_PROVENANCE_FIELD)
+    if not url or not isinstance(stamp, dict):
+        return None
+    if (stamp.get("authority") != _RESEARCH_PROVENANCE_AUTHORITY
+            or stamp.get("kind") != "executed_query_result_url"
+            or str(stamp.get("url") or "").strip() != url):
+        return None
+    source = str(stamp.get("source") or "").strip().casefold()
+    if not source:
+        return None
+    normalized = {
+        "authority": _RESEARCH_PROVENANCE_AUTHORITY,
+        "kind": "executed_query_result_url",
+        "url": url,
+        "source": source,
+        "query_id": str(stamp.get("query_id") or "").strip(),
+        "official": stamp.get("official") is True,
+    }
+    supplied = str(stamp.get("signature") or "").strip()
+    expected = _sign_research_provenance(normalized)
+    if not supplied or not hmac.compare_digest(supplied, expected):
+        return None
+    normalized["signature"] = supplied
+    return normalized
+
+
+def _durable_url_provenance(state) -> dict[str, dict]:
+    """Read only prior server-projected URL stamps for continuation turns."""
+    indexed: dict[str, dict] = {}
+    for field in ("evidence", "related_docs"):
+        for item in state.get(field) or []:
+            stamp = _validated_research_stamp(item)
+            if stamp:
+                indexed[stamp["url"]] = stamp
+    return indexed
+
+
+def _durable_external_provenance_allowed(state) -> bool:
+    """Allow a prior public-source capability only on a non-reacquiring continuation.
+
+    A current web/GitHub plan or result is authoritative even when it failed or returned
+    zero rows; falling back to yesterday's stamped URL would contradict that explicit
+    acquisition result. Fresh/legacy checkpoints also cannot opt into durability merely by
+    carrying an old evidence object.
+    """
+    if state.get("turn_continuation") is not True:
+        return False
+    planned = (state.get("query_plan") or {}).get("queries") or []
+    current = state.get("query_results") or []
+    return not any(
+        isinstance(row, dict)
+        and str(row.get("source") or "").strip().casefold() in _EXTERNAL_QUERY_SOURCES
+        for row in [*planned, *current]
+    )
+
+
+def _bind_research_url_provenance(state, rows) -> list[dict]:
+    """Drop unacquired URL rows and attach a durable server-owned provenance stamp.
+
+    Current exact QueryRunner hits win.  A continuation may reuse only a URL carrying a
+    stamp from the prior Research state.  For an official public-source request, a web or
+    GitHub hit without ``official=true`` is deliberately unusable.
+    """
+    current = _executed_url_provenance(state)
+    durable = _durable_url_provenance(state)
+    durable_allowed = _durable_external_provenance_allowed(state)
+    official_required = _official_external_requested(state)
+    bound: list[dict] = []
+    for raw in rows or []:
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        item.pop(_RESEARCH_PROVENANCE_FIELD, None)  # model-authored stamps have no authority
+        url = _absolute_http_url(item.get("url"))
+        if not url:
+            bound.append(item)
+            continue
+        stamp = current.get(url) or (durable.get(url) if durable_allowed else None)
+        if not stamp:
+            continue
+        if (official_required and stamp.get("source") in _EXTERNAL_QUERY_SOURCES
+                and stamp.get("official") is not True):
+            continue
+        # The durable sidecar is needed for public web/GitHub evidence. Internal Jira and
+        # Confluence rows already have their own typed/materialized provenance contracts and
+        # should keep their stable public state shape.
+        if stamp.get("source") in _EXTERNAL_QUERY_SOURCES:
+            item[_RESEARCH_PROVENANCE_FIELD] = dict(stamp)
+        bound.append(item)
+    return bound
+
+
+_TYPED_WRITE_ACTIONS = frozenset({"create", "comment", "update"})
+
+
+def _typed_write_action(state) -> str:
+    """Return only a validated continuation action that agrees with current intent.
+
+    The contract is deterministic workflow authority, while messages and model-authored uncertainty are
+    not.  Re-validating at this optimization boundary keeps a malformed/stale checkpoint from turning a
+    partial acquisition into a zero-call write path.
+    """
+    value = state.get("continuation_contract")
+    if not isinstance(value, dict) or not value:
+        return ""
+    try:
+        from app.agent.workflow.contracts import ContinuationContract
+        contract = ContinuationContract.model_validate(value)
+    except Exception:
+        return ""
+    intent = str(state.get("intent") or "").strip()
+    if intent and contract.intent != intent:
+        return ""
+    return contract.action if contract.action in _TYPED_WRITE_ACTIONS else ""
+
+
+def _materialized_ticket_keys(state) -> set[str]:
+    """Collect successfully opened Jira identities from bounded QueryRunner ledgers."""
+    keys: set[str] = set()
+    groups = []
+    for row in state.get("query_results") or []:
+        if not isinstance(row, dict) or not isinstance(row.get("result"), dict):
+            continue
+        groups.append(row["result"].get("ticketDetails") or [])
+    sidecar = state.get("materialized_ticket_sources") or {}
+    if isinstance(sidecar, dict):
+        groups.append(sidecar.get("ticketDetails") or [])
+    for group in groups:
+        for item in group:
+            if not isinstance(item, dict) or item.get("error"):
+                continue
+            key = str(item.get("key") or "").strip().upper()
+            if _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key):
+                keys.add(key)
+    return keys
+
+
+def _completed_typed_write_action(state) -> str:
+    """Return a zero-ReAct action only after complete acquisition and target materialization."""
+    action = _typed_write_action(state)
+    if not action or not _query_plan_is_complete(state):
+        return ""
+    contract = state.get("continuation_contract") or {}
+    targets = {str(key or "").strip().upper()
+               for key in (contract.get("target_keys") or []) if str(key or "").strip()}
+    if action in {"comment", "update"} and not targets:
+        return ""
+    # A named create target is commonly an existing parent or source ticket.  It must be opened just
+    # like a comment/update target; a search hit alone cannot authorize the zero-call path.
+    if targets and not targets.issubset(_materialized_ticket_keys(state)):
+        return ""
+    return action
 
 
 def _prefetched_creation_passthrough() -> dict:
@@ -185,65 +455,30 @@ def _prefetched_creation_passthrough() -> dict:
     }
 
 
-def _ledger_text(value, limit: int = 420) -> str:
-    """Keep deterministic ledger cells compact without interpreting their content."""
-    return _re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
-
-
-def _ledger_date(item: dict) -> str:
-    for field in ("observed_at", "updated", "modified", "created", "date", "published"):
-        value = str((item or {}).get(field) or "").strip()
-        if value:
-            return value[:80]
-    return ""
-
-
-def _query_provenance(row: dict) -> str:
-    """Render the exact QueryRunner scope/query metadata attached to one compact result."""
-    result = (row or {}).get("result") or {}
-    parts = [f"QueryPlan {row.get('source') or 'query'}:{row.get('id') or '-'}"]
-    for field in ("scopeProjects", "scopeSpaces", "pages", "total", "returned", "query",
-                  "canonicalJql", "canonicalCql", "artifactId"):
-        value = result.get(field)
-        if value not in (None, "", []):
-            rendered = json.dumps(value, ensure_ascii=False) if isinstance(value, (list, dict)) \
-                else str(value)
-            parts.append(f"{field}={rendered}")
-    return _ledger_text(" · ".join(parts))
-
-
-def _append_ledger_observation(target: list[dict], source: str, text: str,
-                               observed_at: str = "") -> None:
-    value = _ledger_text(text)
-    if not value:
-        return
-    row = {"source": source, "text": value, "observed_at": str(observed_at or "")[:80]}
-    if not any((old.get("source"), old.get("text"), old.get("observed_at"))
-               == (row["source"], row["text"], row["observed_at"]) for old in target):
-        target.append(row)
-
-
 _SEMANTIC_RESEARCH_KINDS = frozenset({"query", "research", "analyze", "respond"})
 _WRITE_OUTCOME_KINDS = frozenset({"plan", "ticket", "comment", "write"})
 
 
 def _compound_plan_requires_research_synthesis(state) -> bool:
-    """Whether PLAN_WORK contains research as a user-visible outcome.
+    """Whether a write contains research as a separate user-visible outcome.
 
     RequestPlan tasks describe requested deliverables, not the graph's internal retrieval stages.  A
     write-only plan can therefore keep the zero-LLM provenance adapter, while an explicit read/analyze
     outcome must be synthesized before the bounded Research state becomes the only evidence seen by the
     final response.  This decision deliberately uses the typed plan instead of guessing from prose verbs.
     """
-    if (state.get("intent") or "") != Intent.PLAN_WORK:
+    action = _typed_write_action(state)
+    if not action and (state.get("intent") or "") != Intent.PLAN_WORK:
         return False
     tasks = [task for task in (state.get("request_plan") or {}).get("tasks") or []
              if isinstance(task, dict)]
     has_research = any(str(task.get("kind") or "").strip().lower()
                        in _SEMANTIC_RESEARCH_KINDS for task in tasks)
-    has_write = any(bool(task.get("write_intent"))
-                    or str(task.get("kind") or "").strip().lower() in _WRITE_OUTCOME_KINDS
-                    for task in tasks)
+    has_write = bool(action) or any(
+        bool(task.get("write_intent"))
+        or str(task.get("kind") or "").strip().lower() in _WRITE_OUTCOME_KINDS
+        for task in tasks
+    )
     return has_research and has_write
 
 
@@ -307,317 +542,37 @@ def _research_ledger_terms(state) -> list[str]:
     return terms[:32]
 
 
-def _research_ledger_score(row: dict, terms: list[str]) -> int:
-    """Rank a real source without interpreting it or manufacturing a relevance claim."""
-    identity = f"{row.get('key', '')} {row.get('title', '')}".casefold()
-    observations = " ".join(
-        str(observation.get("text") or "")
-        for observation in (row.get("observations") or []) if isinstance(observation, dict)
-    ).casefold()
-    return sum((6 if term in identity else 2 if term in observations else 0) for term in terms)
-
-
-def _bounded_research_ledger(state, groups: tuple, duplicate_key: str) -> list[dict]:
-    """Select eight sources by explicit outcome relevance while retaining source diversity."""
-    terms = _research_ledger_terms(state)
-    ranked_groups = []
-    for group_index, group in enumerate(groups):
-        ranked = sorted(
-            enumerate(group),
-            key=lambda pair: (
-                0 if duplicate_key and pair[1].get("key") == duplicate_key else 1,
-                -_research_ledger_score(pair[1], terms),
-                pair[0],
-            ),
-        )
-        ranked_groups.append([(group_index, index, row) for index, row in ranked])
-
-    selected, identities = [], set()
-
-    def add(entry) -> None:
-        if entry is None:
-            return
-        identity = (entry[0], entry[1])
-        if identity in identities or len(selected) >= 8:
-            return
-        identities.add(identity)
-        selected.append(entry[2])
-
-    # One best source from every available class prevents a long Jira result page from erasing a
-    # materialized internal document or an authoritative public reference.
-    for ranked in ranked_groups:
-        add(ranked[0] if ranked else None)
-
-    remaining = [entry for ranked in ranked_groups for entry in ranked
-                 if (entry[0], entry[1]) not in identities]
-    remaining.sort(key=lambda entry: (
-        0 if duplicate_key and entry[2].get("key") == duplicate_key else 1,
-        -_research_ledger_score(entry[2], terms), entry[0], entry[1],
-    ))
-    for entry in remaining:
-        add(entry)
-    return selected
+def _completed_write_ledger(state, *, research_focus: bool = False,
+                            action: str = "") -> dict:
+    """Delegate completed QueryPlan projection after workflow-level decisions are fixed."""
+    action = action if action in _TYPED_WRITE_ACTIONS else (_typed_write_action(state) or "create")
+    contract = state.get("continuation_contract") or {}
+    target_keys = {
+        str(key or "").strip().upper() for key in (contract.get("target_keys") or [])
+        if str(key or "").strip()
+    }
+    results = [row for row in (state.get("query_results") or []) if isinstance(row, dict)]
+    sidecar = state.get("materialized_ticket_sources") or {}
+    sidecar_details = [dict(row) for row in (sidecar.get("ticketDetails") or [])
+                       if isinstance(row, dict) and not row.get("error")] \
+        if isinstance(sidecar, dict) else []
+    duplicate_key = _exact_creation_duplicate_key(state) if action == "create" else ""
+    return build_completed_write_ledger(
+        results,
+        materialized_ticket_details=sidecar_details,
+        target_keys=target_keys,
+        duplicate_key=duplicate_key,
+        action=action,
+        research_focus=research_focus,
+        research_terms=_research_ledger_terms(state) if research_focus else (),
+    )
 
 
 def _completed_creation_ledger(state, *, research_focus: bool = False) -> dict:
-    """Build a non-interpretive ledger from a completed creation QueryPlan.
-
-    QueryRunner has already enforced configured Jira/Confluence scope, exhausted the requested
-    pages, and opened the bounded ticket/document candidates. This adapter retains those real
-    identities and their body/comment provenance without asking a small model to rewrite JSON.
-    Candidate presence is deliberately *not* duplicate proof. The bounded evidence ledger is the
-    downstream source contract; ``research_focus`` ranks it against explicit typed research outcomes.
-    """
-    results = [row for row in (state.get("query_results") or []) if isinstance(row, dict)]
-    duplicate_key = _exact_creation_duplicate_key(state)
-
-    ticket_rows: dict[str, dict] = {}
-    ticket_order: list[str] = []
-
-    def ticket(key, title="", url="") -> dict | None:
-        exact = str(key or "").strip().upper()
-        if not exact:
-            return None
-        if exact not in ticket_rows:
-            ticket_rows[exact] = {
-                "key": exact, "title": _ledger_text(title, 300) or exact,
-                "url": str(url or "").strip()[:1000], "_material": [], "_queries": [],
-            }
-            ticket_order.append(exact)
-        current = ticket_rows[exact]
-        if title and (not current.get("title") or current.get("title") == exact):
-            current["title"] = _ledger_text(title, 300)
-        if url and not current.get("url"):
-            current["url"] = str(url).strip()[:1000]
-        return current
-
-    for query_row in results:
-        result = query_row.get("result") or {}
-        provenance = _query_provenance(query_row)
-        for hit in result.get("tickets") or []:
-            if not isinstance(hit, dict):
-                continue
-            entry = ticket(hit.get("key"), hit.get("summary") or hit.get("title"),
-                           hit.get("url") or hit.get("self"))
-            if entry:
-                entry["_queries"].append(provenance)
-        for detail in result.get("ticketDetails") or []:
-            if not isinstance(detail, dict) or detail.get("error"):
-                continue
-            entry = ticket(detail.get("key"), detail.get("summary") or detail.get("title"),
-                           detail.get("url") or detail.get("self"))
-            if not entry:
-                continue
-            entry["_queries"].append(provenance)
-            _append_ledger_observation(
-                entry["_material"], "description", detail.get("description"),
-                _ledger_date(detail),
-            )
-            for comment in detail.get("comments") or []:
-                if not isinstance(comment, dict):
-                    continue
-                author = _ledger_text(comment.get("author"), 80)
-                body = comment.get("body") or comment.get("html") or comment.get("snippet")
-                text = f"{author}: {body}" if author and body else body
-                _append_ledger_observation(
-                    entry["_material"], "comment", text, _ledger_date(comment),
-                )
-        for comment in result.get("comments") or []:
-            if not isinstance(comment, dict):
-                continue
-            entry = ticket(comment.get("ticketKey") or comment.get("key"),
-                           comment.get("ticketSummary") or comment.get("summary"))
-            if not entry:
-                continue
-            entry["_queries"].append(provenance)
-            author = _ledger_text(comment.get("author"), 80)
-            body = comment.get("snippet") or comment.get("body") or comment.get("html")
-            text = f"{author}: {body}" if author and body else body
-            _append_ledger_observation(
-                entry["_material"], "comment", text, _ledger_date(comment),
-            )
-
-    ticket_evidence = []
-    for key in ticket_order:
-        source = ticket_rows[key]
-        observations = list(source.pop("_material"))[:3]
-        queries = list(dict.fromkeys(source.pop("_queries")))
-        if queries:
-            _append_ledger_observation(observations, "query", " | ".join(queries))
-        is_duplicate = key == duplicate_key
-        ticket_evidence.append({
-            **source,
-            "why": ("요청의 핵심 대상·행동과 issue type이 일치하고 open 상태인 기존 티켓이다."
-                    if is_duplicate else
-                    "설정된 Jira 검색 범위에서 반환된 생성 검토 후보이다."),
-            "confidence": "high" if is_duplicate else "unknown",
-            "fitness": "direct" if is_duplicate else "unknown",
-            "limitations": ("" if is_duplicate else
-                            "검색 일치만으로 요청과 물질적으로 동일한 업무인지 확정하지 않았다."),
-            "observations": observations[:4],
-        })
-
-    document_rows: list[dict] = []
-    document_aliases: dict[str, dict] = {}
-    document_titles: dict[str, list[dict]] = {}
-
-    def document(item: dict) -> dict | None:
-        title = _ledger_text(item.get("title"), 300)
-        url = str(item.get("url") or "").strip()[:1000]
-        doc_id = str(item.get("id") or "").strip()
-        # URL/page id are source identities. A title is only a fallback for materialized bodies
-        # that carry neither; merging two different pages merely because their titles match loses
-        # provenance and can attach one body's facts to the other page.
-        aliases = [f"url:{url}" if url else "", f"id:{doc_id}" if doc_id else ""]
-        current = next((document_aliases[a] for a in aliases if a in document_aliases), None)
-        if current is None and not any(aliases) and title:
-            matches = document_titles.get(title) or []
-            current = matches[0] if len(matches) == 1 else None
-        if current is None:
-            identity = title or doc_id or url
-            if not identity:
-                return None
-            current = {"key": identity, "title": title or identity, "url": url,
-                       "_bodies": [], "_excerpts": [], "_queries": []}
-            document_rows.append(current)
-        elif title and (not current.get("title") or current.get("title") == current.get("key")):
-            current["title"] = title
-            current["key"] = title
-        if url and not current.get("url"):
-            current["url"] = url
-        for alias in aliases:
-            if alias:
-                document_aliases[alias] = current
-        if title and current not in document_titles.setdefault(title, []):
-            document_titles[title].append(current)
-        return current
-
-    for query_row in results:
-        result = query_row.get("result") or {}
-        provenance = _query_provenance(query_row)
-        for hit in result.get("documents") or []:
-            if not isinstance(hit, dict):
-                continue
-            entry = document(hit)
-            if not entry:
-                continue
-            entry["_queries"].append(provenance)
-            _append_ledger_observation(
-                entry["_excerpts"], "document", hit.get("excerpt") or hit.get("snippet"),
-                _ledger_date(hit),
-            )
-        for body in result.get("documentBodies") or []:
-            if not isinstance(body, dict) or body.get("error"):
-                continue
-            entry = document(body)
-            if not entry:
-                continue
-            entry["_queries"].append(provenance)
-            _append_ledger_observation(
-                entry["_bodies"], "document", body.get("text") or body.get("body"),
-                _ledger_date(body),
-            )
-
-    related_docs = []
-    document_evidence = []
-    for source in document_rows:
-        bodies = list(source.pop("_bodies"))
-        observations = (bodies + list(source.pop("_excerpts")))[:3]
-        queries = list(dict.fromkeys(source.pop("_queries")))
-        if queries:
-            _append_ledger_observation(observations, "query", " | ".join(queries))
-        document_evidence.append({
-            **source,
-            "why": ("설정된 Confluence 검색 범위에서 반환되어 본문까지 확인한 문서 후보이다."
-                    if bodies else
-                    "설정된 Confluence 검색 범위에서 반환된 문서 후보이다."),
-            "confidence": "unknown", "fitness": "unknown",
-            "limitations": "문서 내용만으로 요청한 신규 업무의 중복 여부를 확정하지 않았다.",
-            "observations": observations[:4],
-        })
-        related_docs.append({"title": source["title"], "url": source.get("url") or ""})
-
-    external_count = 0
-    external_evidence = []
-    for query_row in results:
-        if query_row.get("source") not in ("web", "github"):
-            continue
-        result = query_row.get("result") or {}
-        for hit in result.get("results") or []:
-            if not isinstance(hit, dict):
-                continue
-            title = _ledger_text(hit.get("title") or hit.get("name"), 300)
-            url = str(hit.get("url") or "").strip()[:1000]
-            identity = title or url
-            if not identity:
-                continue
-            observations = []
-            _append_ledger_observation(
-                observations, "external", hit.get("snippet") or hit.get("description"),
-                _ledger_date(hit),
-            )
-            external_provenance = _query_provenance(query_row)
-            if hit.get("official"):
-                external_provenance += " · official=true"
-            _append_ledger_observation(observations, "query", external_provenance)
-            external_evidence.append({
-                "key": identity, "title": title or identity, "url": url,
-                "why": (f"QueryPlan {query_row.get('source')}:{query_row.get('id') or '-'}에서 "
-                        "반환된 외부 자료이다."),
-                "confidence": "high" if hit.get("official") else "unknown",
-                "fitness": "unknown",
-                "limitations": "외부 자료이며 내부 적용 상태나 기존 업무의 중복을 증명하지 않는다.",
-                "observations": observations,
-            })
-            external_count += 1
-
-    # Keep the stable eight-source state contract while retaining cross-source coverage. Ticket-first
-    # truncation made eight Jira candidates erase the materialized Confluence body and public reference.
-    if duplicate_key:
-        ticket_evidence.sort(key=lambda row: row.get("key") != duplicate_key)
-    groups = ((ticket_evidence, 5), (document_evidence, 2), (external_evidence, 1))
-    if research_focus:
-        evidence = _bounded_research_ledger(
-            state, tuple(group for group, _cap in groups), duplicate_key,
-        )
-    else:
-        evidence = []
-        for group, cap in groups:
-            evidence.extend(group[:cap])
-        if len(evidence) < 8:
-            for group, cap in groups:
-                for row in group[cap:]:
-                    evidence.append(row)
-                    if len(evidence) == 8:
-                        break
-                if len(evidence) == 8:
-                    break
-
-    material_count = len(ticket_order) + len(document_rows) + external_count
-    if duplicate_key:
-        duplicate = next((row for row in ticket_evidence if row.get("key") == duplicate_key), {})
-        situation = (
-            f'{duplicate_key} "{duplicate.get("title") or duplicate_key}"가 요청의 핵심 대상·행동, '
-            "issue type과 일치하고 Done/Closed가 아닌 기존 티켓으로 확인됐다. "
-            "새 중복 티켓을 만들기 전에 이 티켓을 우선한다."
-        )
-    elif material_count:
-        situation = (
-            "설정된 검색 범위와 페이지 조건에 따라 QueryPlan 조회를 완료했고 "
-            f"티켓 {len(ticket_order)}건, 문서 {len(document_rows)}건, 외부 자료 "
-            f"{external_count}건을 원본 출처와 함께 전달한다. 이 항목들은 신규 초안의 "
-            "근거 후보이며, 검색 일치만으로 동일 업무가 이미 존재한다고 확정하지 않았다."
-        )
-    else:
-        situation = (
-            "현재 설정된 검색 범위와 페이지 조건에서 요청과 직접 중복되는 사내 티켓·문서를 "
-            "확인하지 못했다. 신규 초안으로 진행한다."
-        )
-    return {
-        "situation": situation, "evidence": evidence, "related_docs": related_docs,
-        "epic_candidate": "", "already_exists": bool(duplicate_key),
-        "_deterministic_passthrough": True,
-    }
+    """Compatibility name for callers and tests that specifically model ticket creation."""
+    return _completed_write_ledger(
+        state, research_focus=research_focus, action="create",
+    )
 
 
 def _research_outside(agent, asked: str) -> str:
@@ -1550,6 +1505,64 @@ class ResearchAnalyst(ToolAgent):
     # 자료로 가진 것을 도구로 재확인하는 데 쓰였다.
     max_steps = 7
 
+    def _from_completed_typed_write(self, state, action: str) -> dict | None:
+        """Project completed acquisition into Research state with zero tool decisions.
+
+        Query Specialist and Query Runner own acquisition.  Once their typed contract is complete and
+        every named mutation target has been opened, Research Analyst either passes the bounded factual
+        ledger through unchanged or performs exactly one synthesis for an explicit semantic deliverable.
+        """
+        direct_state = state
+        if not state.get("web_context") and any(
+                isinstance(row, dict) and row.get("source") in {"web", "github"}
+                for row in (state.get("query_results") or [])):
+            external = _prefetched_external_context(state.get("query_results") or [])[:6000]
+            if external:
+                direct_state = {**state, "web_context": external}
+
+        if _compound_plan_requires_research_synthesis(direct_state):
+            synthesis_state = {**direct_state, "_research_analyst_prefetched": True}
+            try:
+                out = self.apply(
+                    synthesis_state,
+                    self._synthesize_prefetched_query_plan(synthesis_state),
+                )
+                out["trace"] = (out.get("trace") or []) + [{
+                    "node": self.name, "label": "과거 이력 조사",
+                    "note": "완료된 복합 조사·작성 QueryPlan을 1회 의미 정리(도구 재호출 생략)",
+                }]
+                return out
+            except Exception:
+                # A provider/format failure cannot be repaired by repeating acquisition.  Preserve the
+                # real cross-source ledger, ranked only by typed outcome terms.
+                try:
+                    out = self.apply(
+                        direct_state,
+                        _completed_write_ledger(
+                            direct_state, research_focus=True, action=action,
+                        ),
+                    )
+                except Exception:
+                    return None
+                out["trace"] = (out.get("trace") or []) + [{
+                    "node": self.name, "label": "과거 이력 조사",
+                    "note": "복합 조사 의미 정리 실패 — 관련도 기반 bounded 근거 장부 전달",
+                }]
+                return out
+
+        try:
+            out = self.apply(
+                direct_state,
+                _completed_write_ledger(direct_state, action=action),
+            )
+        except Exception:
+            return None
+        out["trace"] = (out.get("trace") or []) + [{
+            "node": self.name, "label": "과거 이력 조사",
+            "note": "완료된 QueryPlan deterministic 근거 장부 전달(LLM/ReAct 생략)",
+        }]
+        return out
+
     def node(self):
         """진척도를 물었으면 조사 뒤 **코드가** get_progress 를 불러 숫자를 붙인다.
 
@@ -1561,6 +1574,15 @@ class ResearchAnalyst(ToolAgent):
         react = super().node()
 
         def run(state):
+            # This gate must precede neighborhood/dossier/external supplements: those are acquisition
+            # tools too. A completed typed write already has its bounded source ledger.
+            typed_write_action = _typed_write_action(state)
+            completed_write_action = _completed_typed_write_action(state)
+            if completed_write_action:
+                completed = self._from_completed_typed_write(state, completed_write_action)
+                if completed is not None:
+                    return completed
+
             # ── 사전 취합: 사용자가 티켓을 지목했으면 그 주변 지도(계보·라벨·컴포넌트·링크·
             # 참여자)를 **코드가** 만들어 자료로 준다. 모델이 검색을 반복하며 더듬는 대신
             # 지도를 보고 "무엇을 열지"만 고르게 한다.
@@ -1943,7 +1965,7 @@ class ResearchAnalyst(ToolAgent):
                 state = {**state, "web_context": _prefetched_external_context(
                     state.get("query_results") or [])}
             completed_creation_query = ((state.get("intent") or "") == Intent.PLAN_WORK
-                                        and completed_query_plan)
+                                        and completed_query_plan and not typed_write_action)
             if not external_prefetched and (wordy or (thin_internal and techy and not keys0)):
                 ctx = _research_outside(self, asked0)
                 if ctx:
@@ -2000,7 +2022,8 @@ class ResearchAnalyst(ToolAgent):
                         and not row["result"].get("materializationErrors")
                         for row in legacy_rows)
             )
-            if planned_create_query and (completed_query_plan or legacy_zero_query) \
+            if not typed_write_action \
+                    and planned_create_query and (completed_query_plan or legacy_zero_query) \
                     and not _query_results_have_material(state.get("query_results")) \
                     and not state.get("seed_map") \
                     and (not state.get("topic_dossier")
@@ -2062,7 +2085,8 @@ class ResearchAnalyst(ToolAgent):
             # 호환한다. 이 자료까지 없을 때만 ReAct 탐색으로 내려간다.
             prefetched = bool(state.get("query_results") or state.get("pre_survey")
                               or state.get("seed_map") or state.get("topic_dossier"))
-            if (state.get("intent") or "") == Intent.PLAN_WORK and prefetched:
+            if (state.get("intent") or "") == Intent.PLAN_WORK \
+                    and prefetched and not typed_write_action:
                 try:
                     direct_state = {**state, "_research_analyst_prefetched": True}
                     out = self.apply(direct_state, self._conclude(direct_state, []))
@@ -2230,9 +2254,11 @@ Original request: {last_user_text(state)}
 
     def apply(self, state, out):
         deterministic = bool(out.get("_deterministic_passthrough"))
-        raw_ev = [_normalize_evidence_quality(_normalize_evidence_identity(e, state))
-                  for e in (out.get("evidence") or [])
-                  if isinstance(e, dict)][:8]
+        projected_ev = [_normalize_evidence_quality(_normalize_evidence_identity(e, state))
+                        for e in (out.get("evidence") or [])
+                        if isinstance(e, dict)][:8]
+        had_projected_evidence = bool(projected_ev)
+        raw_ev = _bind_research_url_provenance(state, projected_ev)
         if deterministic:
             # QueryPlan rows are an evidence ledger, not model-authored relevance claims. Keep the
             # bounded real source identities intact. Downstream drafting and response roles consume this
@@ -2245,7 +2271,7 @@ Original request: {last_user_text(state)}
             raw_ev = [e for e in raw_ev if str(e.get("key") or "").upper() in named
                       or evidence_is_relevant(e)]
             ev = _relevant_only(state, raw_ev)
-            removed_all = bool(raw_ev) and not ev and not state.get("mentioned_keys")
+            removed_all = had_projected_evidence and not ev and not state.get("mentioned_keys")
         situation = out.get("situation") or ""
         if removed_all:
             situation = "현재 요청의 고유 개념과 직접 일치하는 내부 이력은 확인되지 않았다."
@@ -2264,7 +2290,10 @@ Original request: {last_user_text(state)}
         result = {
             "situation": situation,
             "evidence": ev,
-            "related_docs": [d for d in (out.get("related_docs") or []) if isinstance(d, dict)][:6],
+            "related_docs": _bind_research_url_provenance(
+                state,
+                [d for d in (out.get("related_docs") or []) if isinstance(d, dict)][:6],
+            ),
             "epic_candidate": (out.get("epic_candidate") or "").strip(),
             "already_exists": exists,
             # 사전 취합 자료를 **State 에 올린다** — 여태 node() 안 지역 사본이라 다음 역할

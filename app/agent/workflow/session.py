@@ -26,6 +26,15 @@ from app.agent import approval
 from app.agent import config as _cfg
 from app.agent import usage as _usage
 from app.agent.workflow.graph import get_graph
+from app.agent.workflow.continuation import (
+    build_continuation_contract,
+    capture_continuation_decisions,
+    has_continuation_cue,
+    has_interview_answer,
+    has_multi_field_refinement,
+    has_typed_continuation_contract,
+    merge_continuation_decisions,
+)
 from app.agent.workflow.state import TRACE_RESET, Node, Role, as_dict
 
 log = logging.getLogger("agent.chat")
@@ -108,7 +117,7 @@ def _detect_role() -> str:
         return Role.MEMBER
 
 
-_KEY_RE = _re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
+_KEY_RE = _re.compile(r"(?<![A-Z0-9])[A-Z][A-Z0-9]+-\d+(?![A-Z0-9-])", _re.I)
 
 
 def _recent_keys(text: str) -> list:
@@ -201,6 +210,18 @@ _FIELD_ONLY_REFINEMENT_START = _re.compile(
 _NON_FIELD_REQUEST = _re.compile(
     r"(?:알려\s*줘|조회(?:해|해줘)|검색(?:해|해줘)|찾아\s*줘|요약(?:해|해줘)|"
     r"설명(?:해|해줘)|분석(?:해|해줘)|누가|왜|어떻게)",
+    _re.I,
+)
+
+# A typed interview answer can share one utterance with a second read request.  Keep this
+# narrower than ``_INDEPENDENT_REQUEST``: generic imperatives such as ``계속해줘`` are common
+# continuation cues, while these shapes name a new status/progress question whose omission
+# would silently freeze the old write DAG.
+_INDEPENDENT_READ_FOLLOWUP = _re.compile(
+    r"(?:현재|지금|최신)?\s*(?:진행\s*)?(?:상황|현황|상태)"
+    r".{0,24}(?:\?|어때|알려|보여|조회|확인)|"
+    r"(?:무엇|뭐)(?:이|가)?\s*.{0,24}(?:남았|남아)|"
+    r"(?:남은|미완료)\s*.{0,24}(?:무엇|뭐|알려|보여|확인)",
     _re.I,
 )
 
@@ -352,6 +373,21 @@ def _looks_like_answer_to_questions(utterance: str, asked: list[dict]) -> bool:
     return False
 
 
+def _has_independent_question_clause(utterance: str, asked: list[dict]) -> bool:
+    """Detect a second question that no pending field owns, without enumerating its nouns."""
+    clauses = [part.strip() for part in _re.split(
+        r"(?<=[.!?])\s+|\s*(?:그리고|또한|그와 별개로)\s*",
+        str(utterance or ""), flags=_re.I,
+    ) if part.strip()]
+    for clause in clauses:
+        if "?" not in clause:
+            continue
+        if has_interview_answer(capture_continuation_decisions(clause, asked)):
+            continue
+        return True
+    return False
+
+
 _REFINEMENT_GENERIC_ANCHORS = {
     "poc", "phase", "stage", "dod", "acceptance", "criteria", "owner", "assignee",
     "scope", "deadline", "date", "title", "body", "description",
@@ -392,6 +428,7 @@ def _draft_refinement_repeats_subject(text: str, prior: dict) -> bool:
 _TURN_DERIVED_EMPTY = {
     "intent": "", "playbook": "", "keywords": [], "module": "", "mentioned_keys": [],
     "sufficient": False, "answer_depth": "", "request_plan": {}, "request_refinement": {},
+    "continuation_contract": {},
     "query_plan": {}, "query_results": [], "query_artifacts": {},
     "materialized_ticket_sources": {},
     "assignment_completion": {}, "bulk_targets": [],
@@ -473,11 +510,14 @@ def _is_interview_continuation(text: str, prior: dict) -> bool:
 
     asked = [q for q in (prior.get("questions") or []) if isinstance(q, dict)]
     # A full new request with a new explicit ticket is not an answer merely because the last turn asked.
+    # The exception is a typed target/parent answer: replacing an old key with a new key is exactly
+    # what that question owns, so the new key must reach the latest-wins continuation ledger.
     old_keys = set(prior.get("mentioned_keys") or [])
     new_keys = set(_recent_keys(utterance))
-    if new_keys and old_keys and not new_keys.issubset(old_keys):
-        return False
     if asked:
+        typed_contract = has_typed_continuation_contract(
+            prior.get("continuation_contract")
+        )
         parent_choice = any(
             str(question.get("field") or "").strip().casefold() in {"parent", "epic"}
             for question in asked
@@ -489,6 +529,40 @@ def _is_interview_continuation(text: str, prior: dict) -> bool:
             # 다른 target/question을 버리고 별도 work를 명령한 경우에는 stale state를 잇지 않는다.
             if not parent_choice:
                 return False
+        decisions = capture_continuation_decisions(utterance, asked)
+        if new_keys and old_keys and not new_keys.issubset(old_keys):
+            keyed_answer = any(
+                isinstance(row, dict)
+                and row.get("source") == "interview_answer"
+                and str(row.get("field") or "").split(":", 1)[0].casefold()
+                in {"target", "table", "entity", "document", "ticket", "parent", "epic"}
+                and new_keys <= set(_recent_keys(str(row.get("value") or "")))
+                for row in decisions
+            )
+            if not keyed_answer:
+                return False
+        if typed_contract and has_interview_answer(decisions):
+            # ``Task를 만들어줘`` can be a fresh request or simply the user's answer plus
+            # "continue the draft".  Only the explicit continuation cue permits the latter;
+            # a new named work request still resets before any stale plan can execute.
+            if (_INDEPENDENT_WORK_CREATION.search(utterance)
+                    and not has_continuation_cue(utterance)
+                    and not parent_choice):
+                return False
+            # One utterance can contain a valid field answer and a separate read/summary
+            # request.  The current continuation envelope cannot execute both atomically;
+            # carrying the old write DAG would silently discard the latter speech act.
+            if (not has_continuation_cue(utterance)
+                    and (_NON_FIELD_REQUEST.search(utterance)
+                         or _INDEPENDENT_READ_FOLLOWUP.search(utterance)
+                         or _has_independent_question_clause(utterance, asked))):
+                return False
+            return True
+        if typed_contract and has_multi_field_refinement(decisions):
+            if (_INDEPENDENT_WORK_CREATION.search(utterance)
+                    or _NON_FIELD_REQUEST.search(utterance)):
+                return False
+            return True
         # A fully parsed execution-field answer can close an optional legacy structure prompt
         # without asking RequestArchitect to rediscover the frozen plan. Required target/person/
         # term questions always win, including checkpoints whose answer matcher would otherwise
@@ -506,6 +580,9 @@ def _is_interview_continuation(text: str, prior: dict) -> bool:
         # Unrecognized short text is not automatically an interview answer. Korean requests
         # commonly omit a verb (``보안 교육 현황 파악 부탁``), so preserving stale state here
         # is more dangerous than routing the utterance as a fresh request.
+        return False
+
+    if new_keys and old_keys and not new_keys.issubset(old_keys):
         return False
 
     # When the previous turn already produced a draft/structure, preserve it only for a compact,
@@ -591,6 +668,17 @@ def _turn_start_patch(text: str, prior: dict) -> dict:
                 patch[key] = (_bounded_materialized_ticket_sources(prior[key])
                               if key == "materialized_ticket_sources"
                               else _copy.deepcopy(prior[key]))
+        contract = build_continuation_contract(
+            {**prior, "turn_continuation": True},
+            existing=prior.get("continuation_contract"),
+        )
+        if contract:
+            decisions = capture_continuation_decisions(
+                text, [q for q in (prior.get("questions") or []) if isinstance(q, dict)],
+            )
+            patch["continuation_contract"] = merge_continuation_decisions(
+                contract, decisions,
+            )
     else:
         patch["request_text"] = str(text or "").strip()
     return patch
@@ -849,7 +937,8 @@ def _shape(thread_id: str, state: dict, snap=None) -> dict:
             out["pending"] = {"token": data["approval_token"], "action": "update_ticket",
                               "key": plan["key"],
                               "changes": {"link": f"{lk.get('relation')} → {lk['other']}"},
-                              "comment": "", "rationale": plan.get("why") or ""}
+                              "comment": plan.get("comment") or "",
+                              "rationale": plan.get("why") or ""}
         elif plan.get("keys"):
             # 조건 일괄 수정 — 대상 전부와 공통 변경이 카드에 보여야 승인이 의미가 있다.
             # ★ 코멘트도 함께 싣는다 — **코멘트만 남기는 일괄**이 있고(사용자 요청),

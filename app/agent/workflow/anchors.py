@@ -178,6 +178,146 @@ def requested_outcome_contract(state: AgentState) -> dict:
     }
 
 
+_SCOPED_DECISION_FAMILIES = {
+    "target": "target", "table": "target", "entity": "target",
+    "document": "target", "ticket": "target",
+    "parent": "parent", "epic": "parent",
+    "assignee": "assignee", "owner": "assignee",
+}
+
+
+def _scoped_decision_resolution(state: AgentState) -> tuple[dict, list[dict], dict[str, str]]:
+    """Bridge ``field:<request task id>`` decisions to opaque draft outcome refs.
+
+    RequestPlan task ids are stable across an interview and intentionally human-readable to
+    the question producer. Draft bindings use hashed ids so a semantic projector cannot
+    reinterpret them. This is the sole deterministic bridge between those two namespaces.
+    """
+    continuation = state.get("continuation_contract") or {}
+    if (not isinstance(continuation, dict)
+            or continuation.get("version") != "continuation.v1"):
+        return {}, [], {}
+    contract = requested_outcome_contract(state)
+    outcomes = [row for row in (contract.get("outcomes") or []) if isinstance(row, dict)]
+    if not outcomes:
+        # Legacy/direct states have no RequestPlan namespace to bridge. Their unscoped
+        # deterministic guards still apply; do not guess an opaque outcome identity.
+        return {}, [], {}
+    aliases: dict[str, str] = {}
+    for row in outcomes:
+        opaque = str(row.get("id") or "").strip()
+        task_id = str(row.get("source_task_id") or "").strip()
+        if opaque:
+            aliases[opaque.casefold()] = opaque
+        if opaque and task_id:
+            aliases[task_id.casefold()] = opaque
+
+    resolved: dict[str, dict[str, dict]] = {}
+    issues: list[dict] = []
+    seen: dict[tuple[str, str], dict] = {}
+    allowed_task_ids = {
+        str(value or "").strip().casefold()
+        for value in (continuation.get("outcome_ids") or []) if str(value or "").strip()
+    }
+    for decision in continuation.get("decisions") or []:
+        if not isinstance(decision, dict):
+            continue
+        raw_field = str(decision.get("field") or "").strip()
+        if ":" not in raw_field:
+            continue
+        raw_family, raw_scope = raw_field.split(":", 1)
+        family = _SCOPED_DECISION_FAMILIES.get(raw_family.strip().casefold())
+        scope = raw_scope.strip()
+        if not family or not scope:
+            continue
+        opaque = aliases.get(scope.casefold(), "")
+        # ``outcome_ids`` is also checked so a stale task id cannot be silently rebound to
+        # a new RequestPlan that happens to share some unrelated draft artifact.
+        task_scope_known = scope.casefold() in allowed_task_ids
+        opaque_scope_known = scope.casefold() in {
+            str(row.get("id") or "").casefold() for row in outcomes
+        }
+        if not opaque or not (task_scope_known or opaque_scope_known):
+            issues.append({
+                "index": -1, "field": "outcome_refs",
+                "message": f"scoped continuation decision has unknown outcome: {raw_field}",
+            })
+            continue
+        normalized = {
+            "field": raw_field,
+            "value": str(decision.get("value") or "").strip(),
+            "source": str(decision.get("source") or ""),
+            "outcome_ref": opaque,
+            "source_task_id": str(next((row.get("source_task_id") for row in outcomes
+                                         if str(row.get("id") or "") == opaque), "") or ""),
+        }
+        identity = (opaque, family)
+        prior = seen.get(identity)
+        if prior and prior.get("value") != normalized["value"]:
+            issues.append({
+                "index": -1, "field": family,
+                "message": (f"outcome {opaque} has conflicting scoped {family} decisions: "
+                            f"{prior.get('field')} / {raw_field}"),
+            })
+        seen[identity] = normalized
+        resolved.setdefault(opaque, {})[family] = normalized
+    return resolved, issues, aliases
+
+
+def scoped_continuation_decisions(state: AgentState) -> dict[str, dict[str, dict]]:
+    """Return user decisions keyed by the opaque ``outcome_ref`` used in the draft."""
+    resolved, _issues, _aliases = _scoped_decision_resolution(state)
+    return resolved
+
+
+def validate_scoped_outcome_bindings(state: AgentState, draft: dict) -> list[dict]:
+    """Fail closed when a scoped decision has no unique root outcome binding."""
+    resolved, issues, aliases = _scoped_decision_resolution(state)
+    if not resolved and not issues:
+        return []
+    errors = list(issues)
+    roots = [row for row in (draft.get("items") or []) if isinstance(row, dict)]
+    occurrences: dict[str, list[int]] = {ref: [] for ref in resolved}
+    complete_scope = set(resolved) == {
+        str(row.get("id") or "")
+        for row in (requested_outcome_contract(state).get("outcomes") or [])
+        if str(row.get("id") or "")
+    }
+    for index, row in enumerate(roots):
+        raw_refs = [str(value or "").strip() for value in (row.get("outcome_refs") or [])
+                    if str(value or "").strip()]
+        canonical = [aliases.get(value.casefold(), "") for value in raw_refs]
+        canonical = [value for value in canonical if value]
+        if len(canonical) != len(set(canonical)):
+            errors.append({
+                "index": index, "field": "outcome_refs",
+                "message": "draft item repeats the same scoped outcome_ref",
+            })
+        scoped = [value for value in canonical if value in resolved]
+        if complete_scope and (len(canonical) != 1 or canonical[0] not in resolved):
+            errors.append({
+                "index": index, "field": "outcome_refs",
+                "message": "every root needs one unique scoped outcome_ref",
+            })
+        if len(scoped) > 1:
+            errors.append({
+                "index": index, "field": "outcome_refs",
+                "message": "one draft item ambiguously binds multiple scoped outcomes",
+            })
+        for value in set(scoped):
+            occurrences[value].append(index)
+    for outcome_ref, indexes in occurrences.items():
+        if len(indexes) == 1:
+            continue
+        errors.append({
+            "index": indexes[0] if indexes else -1,
+            "field": "outcome_refs",
+            "message": (f"scoped outcome {outcome_ref} must bind exactly one draft root; "
+                        f"found {len(indexes)}"),
+        })
+    return errors
+
+
 def format_requested_outcome_contract(state: AgentState) -> str:
     """Serialize the authoritative outcome sidecar without surrounding user context."""
     contract = requested_outcome_contract(state)

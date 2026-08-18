@@ -316,6 +316,16 @@ def test_web_search_uses_file_ca_bundle_and_parses_results(monkeypatch):
     assert r["results"][0]["url"] == "https://apache.org/docs"
 
 
+def test_web_official_detection_is_subject_owned_not_product_curated():
+    from app.agent.tools.web_tools import _official_source
+
+    assert _official_source("https://docs.acmedb.io/reference", "AcmeDB official docs")
+    assert not _official_source("https://docs.acmedb.io/reference", "OtherDB official docs")
+    assert not _official_source("https://acmedb-docs.example/reference", "AcmeDB official docs")
+    assert not _official_source("https://acmedb.evil.example/reference", "AcmeDB official docs")
+    assert _official_source("https://datatracker.ietf.org/doc/rfc9110/", "HTTP standard")
+
+
 def test_github_search_fails_soft_when_blocked(monkeypatch):
     import httpx
     def boom(*a, **k):
@@ -542,6 +552,253 @@ def test_completed_ask_query_plan_concludes_once_without_presurvey_or_react(monk
     assert calls == [(True, [])]
     assert out["situation"] == "상세 근거 묶음으로 정리"
     assert any("QueryPlan 근거 묶음" in row.get("note", "") for row in out["trace"])
+
+
+def _completed_typed_write_state(*, action: str, research: bool = False) -> dict:
+    """Generic completed acquisition for create/comment/update fast-path contracts."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.state import Intent
+
+    target = "DL-9301"
+    intent = Intent.PLAN_WORK if action == "create" else Intent.MODIFY
+    requests = {
+        "create": "ProtocolX 처리 절차를 적용하는 Task를 생성해줘",
+        "comment": f"{target}에 결정 사항 댓글을 남겨줘",
+        "update": f"{target}의 우선순위를 사용자가 지정한 값으로 변경해줘",
+    }
+    request = requests[action]
+    write_task = {
+        "id": "write", "kind": "ticket" if action == "create" else (
+            "comment" if action == "comment" else "write"),
+        "instruction": request, "depends_on": ["research"] if research else [],
+        "write_intent": True, "completion_criteria": ["요청한 초안을 준비한다"],
+    }
+    tasks = []
+    if research:
+        tasks.append({
+            "id": "research", "kind": "research",
+            "instruction": "최신 결정 근거와 이전 논의를 비교한다",
+            "depends_on": [], "write_intent": False,
+            "completion_criteria": ["출처별 시점과 최신 결론을 구분한다"],
+        })
+    tasks.append(write_task)
+    return {
+        "intent": intent,
+        "messages": [HumanMessage(content=request)],
+        "request_text": request,
+        "keywords": ["ProtocolX"] if action == "create" else ["결정 사항"],
+        "mentioned_keys": [] if action == "create" else [target],
+        "request_plan": {"goal": request, "tasks": tasks},
+        "continuation_contract": {
+            "version": "continuation.v1", "root_request": request,
+            "intent": intent, "action": action,
+            "target_keys": [] if action == "create" else [target],
+            "outcome_ids": [task["id"] for task in tasks], "decisions": [],
+        },
+        "query_plan": {"queries": [{"id": "jira", "source": "jira"}]},
+        "query_results": [{"id": "jira", "source": "jira", "result": {
+            "scopeProjects": ["DL"], "canonicalJql": 'project in ("DL")',
+            "tickets": ([] if action == "create" else [{
+                "key": target, "summary": "[일반] 결정 반영 대상", "status": "In Progress",
+            }]),
+            "ticketDetails": ([] if action == "create" else [{
+                "key": target, "summary": "[일반] 결정 반영 대상",
+                "status": "In Progress", "description": "검증된 현재 본문",
+                "comments": [{"author": "skcc.x1001", "created": "2026-08-17",
+                              "body": "이전 논의 기록"}],
+            }]),
+        }}],
+        "trace": [],
+    }
+
+
+@pytest.mark.parametrize("action", ["comment", "update", "create"])
+def test_completed_typed_write_query_plan_uses_zero_llm_zero_tool_fast_path(
+        action, monkeypatch):
+    """A typed write consumes the completed bounded ledger without a second acquisition pass."""
+    import app.agent.tools.survey_tools as survey_tools
+    import app.agent.workflow.agents.research_analyst as mod
+    from app.agent.workflow.agents.base import ToolAgent
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+
+    def forbidden(label):
+        return lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError(label))
+
+    monkeypatch.setattr(survey_tools, "neighborhood", forbidden(
+        "completed typed write must not rebuild a candidate neighborhood"))
+    monkeypatch.setattr(mod, "_presurvey", forbidden(
+        "completed typed write must not repeat lexical/semantic retrieval"))
+    monkeypatch.setattr(mod, "_topic_dossier", forbidden(
+        "completed typed write must not rematerialize a topic dossier"))
+    monkeypatch.setattr(mod, "_research_outside", forbidden(
+        "completed typed write must not supplement an already completed QueryPlan"))
+    monkeypatch.setattr(ToolAgent, "node", lambda _self: forbidden(
+        "completed typed write must not enter ReAct"))
+    analyst = ResearchAnalyst()
+    monkeypatch.setattr(analyst, "_conclude", forbidden(
+        "write-only completed plan must not call structured conclusion"))
+    monkeypatch.setattr(analyst, "invoke_structured", forbidden(
+        "write-only completed plan must not call semantic synthesis"))
+
+    out = analyst.node()(_completed_typed_write_state(action=action))
+
+    assert out["already_exists"] is False
+    if action != "create":
+        assert out["evidence"][0]["key"] == "DL-9301"
+    assert any("deterministic 근거 장부" in row.get("note", "")
+               for row in out["trace"])
+
+
+def test_completed_typed_write_uses_persisted_materialized_target_provenance():
+    """A continuation sidecar target remains a fully sourced direct target after an interview turn."""
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+
+    state = _completed_typed_write_state(action="update")
+    details = state["query_results"][0]["result"].pop("ticketDetails")
+    state["materialized_ticket_sources"] = {"ticketDetails": details}
+
+    out = ResearchAnalyst().node()(state)
+
+    target = next(row for row in out["evidence"] if row["key"] == "DL-9301")
+    assert target["confidence"] == "high" and target["fitness"] == "direct"
+    assert any(observation["source"] == "description"
+               and observation["text"] == "검증된 현재 본문"
+               for observation in target["observations"])
+
+
+def test_completed_typed_comment_with_explicit_research_synthesizes_exactly_once(
+        monkeypatch):
+    """A real research deliverable gets one synthesis, while retrieval remains complete."""
+    import app.agent.tools.survey_tools as survey_tools
+    from app.agent.workflow.agents.base import ToolAgent
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+
+    monkeypatch.setattr(survey_tools, "neighborhood", lambda *_args: (_ for _ in ()).throw(
+        AssertionError("completed compound write must not rebuild its neighborhood")))
+    monkeypatch.setattr(ToolAgent, "node", lambda _self: lambda _state: (_ for _ in ()).throw(
+        AssertionError("completed compound write must not enter ReAct")))
+    analyst = ResearchAnalyst()
+    calls = []
+
+    def synthesize(state, messages):
+        calls.append((state, messages))
+        return {
+            "situation": "2026-08-17 기록이 이전 논의보다 최신이다.",
+            "evidence": [{
+                "key": "DL-9301", "title": "[일반] 결정 반영 대상", "url": "",
+                "why": "현재 본문과 이전 논의를 함께 포함한다.",
+                "confidence": "high", "fitness": "direct", "limitations": "",
+                "observations": [{"source": "description", "text": "검증된 현재 본문"}],
+            }],
+            "related_docs": [], "already_exists": False,
+        }
+
+    monkeypatch.setattr(analyst, "invoke_structured", synthesize)
+    monkeypatch.setattr(analyst, "_conclude", lambda *_args: (_ for _ in ()).throw(
+        AssertionError("completed compound write must use the prefetched synthesis contract")))
+
+    out = analyst.node()(_completed_typed_write_state(action="comment", research=True))
+
+    assert len(calls) == 1
+    assert calls[0][0]["_research_analyst_prefetched"] is True
+    assert out["evidence"][0]["key"] == "DL-9301"
+    assert any("조사·작성 QueryPlan을 1회" in row.get("note", "")
+               for row in out["trace"])
+
+
+def test_completed_typed_write_preserves_explicit_respond_outcome_with_one_synthesis(
+        monkeypatch):
+    """An explicit user-facing explanation plus write is compound, not write-only."""
+    from app.agent.workflow.agents.base import ToolAgent
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+
+    state = _completed_typed_write_state(action="comment")
+    state["request_plan"]["tasks"].insert(0, {
+        "id": "explain", "kind": "respond",
+        "instruction": "검증된 현재 상황과 이전 논의의 차이를 먼저 설명한다",
+        "depends_on": [], "write_intent": False,
+        "completion_criteria": ["시점과 근거를 포함한다"],
+    })
+    state["continuation_contract"]["outcome_ids"] = ["explain", "write"]
+    monkeypatch.setattr(ToolAgent, "node", lambda _self: lambda _state: (_ for _ in ()).throw(
+        AssertionError("completed respond+write must not enter ReAct")))
+    analyst = ResearchAnalyst()
+    calls = []
+
+    def synthesize(_state, _messages):
+        calls.append(True)
+        return {
+            "situation": "검증된 현재 상황을 이전 논의와 구분했다.",
+            "evidence": [], "related_docs": [], "already_exists": False,
+        }
+
+    monkeypatch.setattr(analyst, "invoke_structured", synthesize)
+    out = analyst.node()(state)
+
+    assert calls == [True]
+    assert "현재 상황" in out["situation"]
+
+
+def test_completed_typed_create_with_unopened_named_target_keeps_safe_fallback(monkeypatch):
+    """A named parent/source search hit is not a materialized write ledger."""
+    from app.agent.workflow.agents.base import ToolAgent
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+
+    state = _completed_typed_write_state(action="create")
+    state["messages"][0].content = "검증 절차 Task를 생성해줘"
+    state["request_text"] = "검증 절차 Task를 생성해줘"
+    state["keywords"] = []
+    state["continuation_contract"]["root_request"] = state["request_text"]
+    state["continuation_contract"]["target_keys"] = ["DL-9301"]
+    calls = []
+
+    def base_node(_self):
+        def run(_state):
+            calls.append(_state)
+            return {"situation": "대상 원본을 여는 기존 안전 경로", "evidence": []}
+        return run
+
+    monkeypatch.setattr(ToolAgent, "node", base_node)
+    analyst = ResearchAnalyst()
+    monkeypatch.setattr(analyst, "_conclude", lambda *_args: (_ for _ in ()).throw(
+        AssertionError("unopened named target must not use prefetched write conclusion")))
+
+    out = analyst.node()(state)
+
+    assert len(calls) == 1
+    assert out["situation"] == "대상 원본을 여는 기존 안전 경로"
+
+
+@pytest.mark.parametrize("failure", ["missing", "error", "materialization"])
+def test_typed_write_incomplete_query_plan_keeps_react_fallback(failure, monkeypatch):
+    """Missing, errored, or unmaterialized acquisition never takes the completed fast path."""
+    from app.agent.workflow.agents.base import ToolAgent
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+
+    state = _completed_typed_write_state(action="comment")
+    state["messages"][0].content = "요청한 대상에 댓글을 남겨줘"
+    state["mentioned_keys"] = []
+    state["keywords"] = []
+    if failure == "missing":
+        state["query_plan"]["queries"].append({"id": "docs", "source": "confluence"})
+    elif failure == "error":
+        state["query_results"][0]["result"]["error"] = "scope unavailable"
+    else:
+        state["query_results"][0]["result"]["materializationErrors"] = ["DL-9301"]
+
+    calls = []
+
+    def base_node(_self):
+        def run(_state):
+            calls.append(_state)
+            return {"situation": "기존 안전 조사 경로", "evidence": []}
+        return run
+
+    monkeypatch.setattr(ToolAgent, "node", base_node)
+    out = ResearchAnalyst().node()(state)
+
+    assert len(calls) == 1
+    assert out["situation"] == "기존 안전 조사 경로"
 
 
 def test_completed_plan_work_query_plan_builds_deterministic_provenance_ledger(monkeypatch):
@@ -821,41 +1078,189 @@ def test_deterministic_ledger_does_not_merge_same_title_documents_with_distinct_
     assert by_url["https://conf/pages/202"]["observations"][0]["text"] == "두 번째 본문"
 
 
-def test_deterministic_ledger_cap_keeps_internal_document_and_external_source_diversity():
-    from app.agent.workflow.agents.research_analyst import (
-        ResearchAnalyst, _completed_creation_ledger,
-    )
+def test_completed_write_ledger_preserves_exact_binding_order_caps_and_diagnostics():
+    """Characterize the pure completed-query projection before its structural extraction."""
+    from copy import deepcopy
+    from app.agent.workflow.agents.research_analyst import _completed_write_ledger
 
-    tickets = [{"key": f"DL-{number}", "summary": f"Puffin 후보 {number}"}
+    state = {
+        "continuation_contract": {"target_keys": ["AB-7"]},
+        "query_results": [
+            {"id": "jira-main", "source": "jira", "result": {
+                "scopeProjects": ["AB"], "pages": 2,
+                "canonicalJql": 'project = "AB"',
+                "tickets": [
+                    {"key": "ab-7", "summary": "변경 대상", "url": "https://jira/browse/AB-7"},
+                    {"key": "AB-8", "summary": "검토 후보"},
+                ],
+            }},
+            {"id": "docs-main", "source": "confluence", "result": {
+                "scopeSpaces": ["OPS"], "pages": 1,
+                "documents": [{
+                    "id": "guide-1", "title": "운영 가이드",
+                    "url": "https://docs.example/pages/guide-1",
+                    "excerpt": "배포 전 점검", "modified": "2026-08-10",
+                }],
+                "documentBodies": [{
+                    "id": "guide-1", "title": "운영 가이드",
+                    "url": "https://docs.example/pages/guide-1",
+                    "text": "현재 운영 절차", "updated": "2026-08-11",
+                }],
+            }},
+            {"id": "web-main", "source": "web", "result": {
+                "query": "ProtocolY official documentation",
+                "results": [{
+                    "title": "ProtocolY Reference", "url": "https://protocol.example/reference",
+                    "snippet": "Normative reference.", "official": True,
+                    "published": "2026-08-12",
+                }],
+            }},
+            {"id": "github-main", "source": "github", "result": {
+                "query": "ProtocolY implementation",
+                "results": [{
+                    "name": "protocoly-client", "url": "https://code.example/protocoly-client",
+                    "description": "Client implementation.", "updated": "2026-08-13",
+                }],
+            }},
+        ],
+        "materialized_ticket_sources": {"ticketDetails": [{
+            "key": "AB-7", "summary": "변경 대상", "description": "검증된 현재 본문",
+            "updated": "2026-08-14",
+            "comments": [{
+                "author": "user.17", "body": "결정 기록", "created": "2026-08-15",
+            }],
+        }]},
+    }
+    original = deepcopy(state)
+
+    out = _completed_write_ledger(state, action="update")
+
+    assert state == original
+    assert out == {
+        "situation": (
+            "설정된 검색 범위와 페이지 조건에 따라 QueryPlan 조회를 완료했고 "
+            "티켓 2건, 문서 1건, 외부 자료 2건을 원본 출처와 함께 전달한다. 이 항목들은 필드 변경 "
+            "초안의 근거 장부이며, 검색 일치만으로 새 사실을 추론하지 않았다."
+        ),
+        "evidence": [
+            {
+                "key": "AB-7", "title": "변경 대상", "url": "https://jira/browse/AB-7",
+                "why": "사용자가 지정한 필드 변경 대상이며 QueryRunner가 원본을 열어 확인했다.",
+                "confidence": "high", "fitness": "direct",
+                "limitations": (
+                    "대상 원본이며, 새 값이나 댓글 내용은 사용자 요청과 별도 초안 계약에서만 확정한다."
+                ),
+                "observations": [
+                    {"source": "description", "text": "검증된 현재 본문",
+                     "observed_at": "2026-08-14"},
+                    {"source": "comment", "text": "user.17: 결정 기록",
+                     "observed_at": "2026-08-15"},
+                    {"source": "query", "text": (
+                        'QueryPlan jira:jira-main · scopeProjects=["AB"] · pages=2 · '
+                        'canonicalJql=project = "AB" | QueryPlan jira:materialized-ticket-sources '
+                        '· artifactId=materialized_ticket_sources'
+                    ), "observed_at": ""},
+                ],
+            },
+            {
+                "key": "AB-8", "title": "검토 후보", "url": "",
+                "why": "설정된 Jira 검색 범위에서 반환된 필드 변경 검토 후보이다.",
+                "confidence": "unknown", "fitness": "unknown",
+                "limitations": "검색 일치만으로 필드 변경 요청의 직접 근거인지 확정하지 않았다.",
+                "observations": [{
+                    "source": "query",
+                    "text": ('QueryPlan jira:jira-main · scopeProjects=["AB"] · pages=2 '
+                             '· canonicalJql=project = "AB"'),
+                    "observed_at": "",
+                }],
+            },
+            {
+                "key": "운영 가이드", "title": "운영 가이드",
+                "url": "https://docs.example/pages/guide-1",
+                "why": "설정된 Confluence 검색 범위에서 반환되어 본문까지 확인한 문서 후보이다.",
+                "confidence": "unknown", "fitness": "unknown",
+                "limitations": "문서 내용만으로 필드 변경 요청의 직접 근거인지 확정하지 않았다.",
+                "observations": [
+                    {"source": "document", "text": "현재 운영 절차",
+                     "observed_at": "2026-08-11"},
+                    {"source": "document", "text": "배포 전 점검",
+                     "observed_at": "2026-08-10"},
+                    {"source": "query", "text": (
+                        'QueryPlan confluence:docs-main · scopeSpaces=["OPS"] · pages=1'
+                    ), "observed_at": ""},
+                ],
+            },
+            {
+                "key": "ProtocolY Reference", "title": "ProtocolY Reference",
+                "url": "https://protocol.example/reference",
+                "why": "QueryPlan web:web-main에서 반환된 외부 자료이다.",
+                "confidence": "high", "fitness": "unknown",
+                "limitations": "외부 자료이며 내부 필드 변경 대상의 현재 상태를 증명하지 않는다.",
+                "observations": [
+                    {"source": "external", "text": "Normative reference.",
+                     "observed_at": "2026-08-12"},
+                    {"source": "query", "text": (
+                        "QueryPlan web:web-main · query=ProtocolY official documentation · official=true"
+                    ), "observed_at": ""},
+                ],
+            },
+            {
+                "key": "protocoly-client", "title": "protocoly-client",
+                "url": "https://code.example/protocoly-client",
+                "why": "QueryPlan github:github-main에서 반환된 외부 자료이다.",
+                "confidence": "unknown", "fitness": "unknown",
+                "limitations": "외부 자료이며 내부 필드 변경 대상의 현재 상태를 증명하지 않는다.",
+                "observations": [
+                    {"source": "external", "text": "Client implementation.",
+                     "observed_at": "2026-08-13"},
+                    {"source": "query", "text": (
+                        "QueryPlan github:github-main · query=ProtocolY implementation"
+                    ), "observed_at": ""},
+                ],
+            },
+        ],
+        "related_docs": [{
+            "title": "운영 가이드", "url": "https://docs.example/pages/guide-1",
+        }],
+        "epic_candidate": "", "already_exists": False,
+        "_deterministic_passthrough": True,
+    }
+
+
+def test_deterministic_ledger_cap_keeps_internal_document_and_external_source_diversity():
+    from app.agent.workflow.agents.research_analyst import _completed_creation_ledger
+
+    tickets = [{"key": f"AB-{number}", "summary": f"ProtocolY 후보 {number}"}
                for number in range(1, 9)]
     details = [{**row, "description": f"후보 {number} 본문"}
                for number, row in enumerate(tickets, 1)]
     state = {
-        "request_text": "Puffin 적용 Task 만들어줘", "keywords": ["Puffin"],
+        "request_text": "ProtocolY 적용 Task 만들어줘", "keywords": ["ProtocolY"],
         "mentioned_keys": [], "trace": [],
         "query_results": [
             {"id": "jira", "source": "jira", "result": {
-                "scopeProjects": ["DL"], "tickets": tickets, "ticketDetails": details,
+                "scopeProjects": ["AB"], "tickets": tickets, "ticketDetails": details,
             }},
             {"id": "docs", "source": "confluence", "result": {
-                "scopeSpaces": ["DATA"],
-                "documents": [{"id": "991", "title": "Puffin 내부 설계",
-                               "url": "https://conf/pages/991"}],
-                "documentBodies": [{"title": "Puffin 내부 설계",
-                                    "url": "https://conf/pages/991", "text": "내부 설계 본문"}],
+                "scopeSpaces": ["OPS"],
+                "documents": [{"id": "991", "title": "ProtocolY 내부 설계",
+                               "url": "https://docs.example/pages/991"}],
+                "documentBodies": [{"title": "ProtocolY 내부 설계",
+                                    "url": "https://docs.example/pages/991", "text": "내부 설계 본문"}],
             }},
             {"id": "web", "source": "web", "result": {"results": [{
-                "title": "Puffin specification", "url": "https://iceberg.apache.org/puffin-spec/",
+                "title": "ProtocolY reference", "url": "https://protocol.example/reference",
                 "snippet": "official format", "official": True,
             }]}},
         ],
     }
 
-    out = ResearchAnalyst().apply(state, _completed_creation_ledger(state))
-    assert len(out["evidence"]) == 8
-    assert any(row.get("url") == "https://conf/pages/991" for row in out["evidence"])
-    assert any(row.get("url") == "https://iceberg.apache.org/puffin-spec/"
-               for row in out["evidence"])
+    out = _completed_creation_ledger(state)
+
+    assert [row["key"] for row in out["evidence"]] == [
+        "AB-1", "AB-2", "AB-3", "AB-4", "AB-5",
+        "ProtocolY 내부 설계", "ProtocolY reference", "AB-6",
+    ]
 
 
 def _compound_research_creation_state():

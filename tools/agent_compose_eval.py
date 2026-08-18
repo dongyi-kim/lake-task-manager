@@ -36,6 +36,10 @@ SIMPLE_MODEL = os.environ.get("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 from tools.agent_eval_protocol import (build_run_metadata, quantitative_metrics,
                                        raw_result_path, reserve_raw_result_path,
                                        write_raw_result)  # noqa: E402
+from tools.agent_eval_contracts import (  # noqa: E402
+    EDITOR_RENDERER_CONTRACT_DEPENDENCIES,
+    editor_renderer_contract_flaws,
+)
 from tools.agent_eval_isolation import (begin_case, configure_process_isolation,
                                          finish_case,
                                          preflight_evaluation_provider)  # noqa: E402
@@ -45,7 +49,7 @@ try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "3.0.0"
+BATTERY_VERSION = "3.1.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("editor")
 CP = None
 
@@ -77,22 +81,13 @@ def _seed_preserved(result, seed_html):
 
 def _editor_contract_flaws(result):
     """사람 판독에서 발견된 reference resolution·renderer 계약 회귀."""
-    if not result.get("ok"):
-        return []
-    flaws = []
-    html = str(result.get("html") or "")
-    note = str(result.get("note") or "")
-    if re.search(r"\{\{ticket-(?:inline|list|detail):\s*<a\b", html, re.I):
-        flaws.append("ticket marker 안에 이미 렌더된 anchor를 이중 삽입")
-    resolved_keys = {
-        str(ref.get("key") or "") for ref in (result.get("references") or [])
-        if ref.get("kind") == "ticket" and ref.get("resolved") is True
-    }
-    contradicted = sorted(key for key in resolved_keys
-                          if key and "확인되지 않은" in note and key in note)
-    if contradicted:
-        flaws.append("resolved ticket을 미확인으로 경고: " + ", ".join(contradicted))
-    return flaws
+    return editor_renderer_contract_flaws(result)
+
+
+EDITOR_CHECKER_DEPENDENCIES = (
+    *EDITOR_RENDERER_CONTRACT_DEPENDENCIES,
+    _txt, _seed_preserved, _editor_contract_flaws,
+)
 
 
 # (ID, 설명, kwargs, 체커(result))
@@ -188,6 +183,7 @@ if __name__ == "__main__":
         prompt_version=PROMPT_VERSION,
         suite_review_elements=SUITE_REVIEW_ELEMENTS,
         case_review_specs=CASE_REVIEW_SPECS,
+        checker_dependencies=EDITOR_CHECKER_DEPENDENCIES,
     )
     OUT = str(reserve_raw_result_path(
         raw_result_path("editor", evaluation, requested=OUT),

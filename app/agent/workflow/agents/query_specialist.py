@@ -48,6 +48,12 @@ _QUERY_IDENTITY_NOISE = {
     "jira", "ticket", "tickets", "comment", "comments", "marker",
 }
 
+_INTERNAL_DOCUMENT_FORM_WORDS = {
+    "confluence", "wiki", "document", "documents", "doc", "docs",
+    "design", "memo", "minutes", "note", "notes", "page", "pages",
+    "문서", "설계", "설계문서", "회의록", "메모", "노트", "자료", "페이지",
+}
+
 _CREATION_CONTROL_WORDS = {
     "epic", "task", "ticket", "issue", "story", "feature", "improvement",
     "create", "make", "add", "select", "choose", "proceed", "request", "please",
@@ -300,6 +306,33 @@ def _safe_model_external_query(query: str) -> str:
 def _query_identity(query: str) -> str:
     tokens = re.findall(r"[a-z0-9.+-]+", str(query or "").lower())
     return " ".join(token for token in tokens if token not in _QUERY_IDENTITY_NOISE)
+
+
+def _normalize_internal_document_query(query: dict) -> None:
+    """Remove source-form words from a sufficiently specific Confluence subject.
+
+    Compatible models often append ``design document``/``설계`` to an otherwise exact
+    product subject. Confluence CQL treats that extra word as another required lexical term,
+    so a real page titled for the product can become a false zero-hit. Rewrite only when two
+    independent material terms remain, or when the remaining term is an identifier-shaped
+    Latin name. A generic request for ``설계`` alone is preserved instead of broadening it.
+    """
+    if str(query.get("source") or "").casefold() != "confluence":
+        return
+    raw = str(query.get("query") or "").strip()
+    if not raw:
+        return
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9_.+-]{1,}|[가-힣]{2,}", raw)
+    material = [token for token in tokens
+                if token.casefold() not in _INTERNAL_DOCUMENT_FORM_WORDS]
+    identifier = any(
+        re.fullmatch(r"[A-Za-z][A-Za-z0-9_.+-]{1,}", token)
+        and (token[:1].isupper() or any(ch.isupper() for ch in token[1:])
+             or any(ch.isdigit() or ch in "_.+-" for ch in token))
+        for token in material
+    )
+    if material and (len(material) >= 2 or identifier):
+        query["query"] = " ".join(material[:6])
 
 
 def _public_external_query(text: str) -> str:
@@ -1168,6 +1201,7 @@ class QuerySpecialist(StructuredAgent):
                 continue
             if not _normalize_model_jira_query(query):
                 continue
+            _normalize_internal_document_query(query)
             _normalize_query_fields(query)
             if query.get("source") == "comments" \
                     and not str(query.get("query") or "").strip() \
@@ -1295,6 +1329,7 @@ __all__ = ["QuerySpecialist", "_external_research_allowed", "_public_external_qu
            "_public_github_query", "_user_authored_text", "_internal_user_request_text",
            "_public_query_subject_text",
            "_safe_model_external_query", "_ensure_explicit_comment_query",
+           "_normalize_internal_document_query",
            "_normalize_meeting_research_queries",
            "_known_user_tokens", "_strip_known_user_tokens", "_jira_query_is_only_people",
            "_normalize_model_jira_query", "_normalize_query_fields",

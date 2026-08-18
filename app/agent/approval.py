@@ -45,6 +45,38 @@ def stage(thread_id: str, action: str, payload) -> str:
     return token
 
 
+def stage_pair(thread_id: str, primary_action: str, primary_payload,
+               secondary_action: str, secondary_payload) -> tuple[str, str]:
+    """Atomically stage the two fingerprints shown on one compound approval card.
+
+    Two unrelated, individually valid capabilities must never be spliced together by a
+    stale checkpoint or direct caller.  The reciprocal token ids bind both action/payload
+    records to the exact same card; :class:`ActionExecutor` validates the pair before it
+    executes either side.
+    """
+    _sweep()
+    primary = _rand.token_urlsafe(24)
+    secondary = _rand.token_urlsafe(24)
+    bundle = _rand.token_urlsafe(18)
+    now = time.time()
+    with _lock:
+        _pending[primary] = {
+            "thread": str(thread_id or ""), "action": primary_action,
+            "fp": fingerprint(primary_payload), "payload": primary_payload, "ts": now,
+            "approved": False, "bundle": bundle, "bundle_role": "primary",
+            "peer_token": secondary, "peer_action": secondary_action,
+            "peer_fp": fingerprint(secondary_payload),
+        }
+        _pending[secondary] = {
+            "thread": str(thread_id or ""), "action": secondary_action,
+            "fp": fingerprint(secondary_payload), "payload": secondary_payload, "ts": now,
+            "approved": False, "bundle": bundle, "bundle_role": "secondary",
+            "peer_token": primary, "peer_action": primary_action,
+            "peer_fp": fingerprint(primary_payload),
+        }
+    return primary, secondary
+
+
 def approve(token: str, thread_id: str = None) -> bool:
     """사용자가 화면에서 눌렀다. 여기서부터 쓰기가 가능해진다."""
     with _lock:

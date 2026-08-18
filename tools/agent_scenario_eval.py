@@ -13,6 +13,10 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from tools.agent_eval_contracts import (
+    AUTOMATIC_CONTRACT_DEPENDENCIES,
+    automatic_contract_flaws,
+)
 from tools.agent_eval_isolation import (begin_case, configure_process_isolation, finish_case,
                                         preflight_evaluation_provider)
 from tools.agent_eval_protocol import (
@@ -154,6 +158,7 @@ def run_scenario_suite(
     simple_model: str, prompt_version: str, suite_review_elements: Sequence[dict[str, Any]],
     case_review_specs: dict[str, dict[str, Any]], selected: set[str] | None = None,
     requested_out: str | os.PathLike[str] | None = None,
+    checker_dependencies: Sequence[Any] = (),
 ) -> Path:
     configure_process_isolation(suite)
     # A manual quality battery must never inherit a caller's production Jira mode.
@@ -177,6 +182,7 @@ def run_scenario_suite(
         prompt_version=prompt_version,
         suite_review_elements=suite_review_elements,
         case_review_specs=case_review_specs,
+        checker_dependencies=(*AUTOMATIC_CONTRACT_DEPENDENCIES, *checker_dependencies),
     )
     out_path = reserve_raw_result_path(
         raw_result_path(suite, evaluation, requested=requested_out),
@@ -189,6 +195,7 @@ def run_scenario_suite(
         turns: list[dict[str, Any]] = []
         isolation: dict[str, Any] = {}
         automatic_pass = False
+        automatic_flaws: list[str] = []
         error = ""
         try:
             outputs: list[dict[str, Any]] = []
@@ -203,7 +210,8 @@ def run_scenario_suite(
                     "durationSeconds": round(time.time() - turn_started, 1),
                     "output": output,
                 })
-            automatic_pass = bool(checker(outputs[-1], outputs))
+            automatic_flaws = automatic_contract_flaws(outputs)
+            automatic_pass = bool(checker(outputs[-1], outputs) and not automatic_flaws)
             isolation = finish_case(isolation_start)
         except Exception as exc:  # one failure must not discard the remaining battery
             error = str(exc)
@@ -216,6 +224,7 @@ def run_scenario_suite(
             "description": description,
             "inputs": prompts,
             "automaticPass": automatic_pass,
+            "automaticContractFlaws": automatic_flaws,
             "durationSeconds": round(time.time() - started, 1),
             "turns": turns,
             "isolation": isolation,

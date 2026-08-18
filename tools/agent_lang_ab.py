@@ -53,13 +53,17 @@ from app.agent.workflow import session          # noqa: E402
 from tools.agent_eval_protocol import (build_run_metadata, quantitative_metrics,
                                        raw_result_path, reserve_raw_result_path,
                                        write_raw_result)  # noqa: E402
+from tools.agent_eval_contracts import (  # noqa: E402
+    AUTOMATIC_CONTRACT_DEPENDENCIES,
+    automatic_contract_flaws,
+)
 from tools.agent_eval_review_specs import review_specs  # noqa: E402
 try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
     from app.agent.prompts.base import PROMPT_VERSION  # noqa: E402
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "3.2.1"
+BATTERY_VERSION = "3.3.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("conversation")
 
 # ── 시나리오 — 실사용에서 가장 자주 오는 것들. 여러 턴짜리도 그대로 둔다
@@ -191,7 +195,14 @@ def _checks(out: dict, user_text: str = "", evaluation_evidence: dict | None = N
         c["후검증위반"] = postcheck.check(out, text)
     except Exception:
         c["후검증위반"] = []
+    c["자동계약결함"] = automatic_contract_flaws([out])
     return c
+
+
+CONVERSATION_CHECKER_DEPENDENCIES = (
+    *AUTOMATIC_CONTRACT_DEPENDENCIES,
+    _KEY, _TABLE, _checks,
+)
 
 
 def _summarize(rows):
@@ -200,6 +211,7 @@ def _summarize(rows):
            "캐시토큰": 0, "LLM호출": 0, "근거위반": 0, "후검증위반": 0,
            "종결어미줄": 0, "맺음상투구": 0, "요구구조불일치": 0,
            "응답카드불일치": 0, "요청산출물부재": 0, "비용USD": 0.0}
+    tot["자동계약결함"] = 0
     for row in rows:
         for turn in row["턴"]:
             if "오류" in turn:
@@ -216,6 +228,10 @@ def _summarize(rows):
             tot["요구구조불일치"] += 1 if checks.get("요구구조불일치") else 0
             tot["응답카드불일치"] += 1 if checks.get("응답카드불일치") else 0
             tot["요청산출물부재"] += 1 if checks.get("요청산출물부재") else 0
+            tot["자동계약결함"] += len(checks.get("자동계약결함") or [])
+    tot["자동실패시나리오"] = sum(
+        1 for row in rows if row.get("자동계약통과") is False
+    )
     tot["초"] = round(tot["초"], 1)
     tot["비용USD"] = round(tot["비용USD"], 6)
     metrics = quantitative_metrics(
@@ -244,6 +260,7 @@ def run():
         prompt_version=PROMPT_VERSION,
         suite_review_elements=SUITE_REVIEW_ELEMENTS,
         case_review_specs=CASE_REVIEW_SPECS,
+        checker_dependencies=CONVERSATION_CHECKER_DEPENDENCIES,
     )
     out_path = reserve_raw_result_path(
         raw_result_path("conversation", evaluation, requested=REQUESTED_OUT),
@@ -253,14 +270,16 @@ def run():
         if ONLY and sid.split("-", 1)[0].upper() not in ONLY and sid.upper() not in ONLY:
             continue
         isolation_start = begin_case(sid)
-        tid, per = "", []
+        tid, per, scenario_outputs = "", [], []
         for q in turns:
             t0 = time.time()
             try:
                 out = session.ask(q, thread_id=tid)
             except Exception as e:                # noqa: BLE001 — 한 케이스가 죽어도 계속
+                scenario_outputs.append({"ok": False, "error": str(e)})
                 per.append({"질문": q, "오류": str(e)[:200]})
                 continue
+            scenario_outputs.append(out)
             tid = out.get("thread_id") or tid
             evaluation_evidence = session.evaluation_snapshot(tid)
             u = out.get("usage") or {}
@@ -287,7 +306,10 @@ def run():
                 "평가근거": evaluation_evidence,
             })
             print(f"  {sid} · {per[-1].get('초')}s · {per[-1].get('총토큰')}tok", flush=True)
+        scenario_flaws = automatic_contract_flaws(scenario_outputs)
         rows.append({"시나리오": sid, "턴": per,
+                     "자동계약통과": not scenario_flaws,
+                     "자동계약결함": scenario_flaws,
                      "격리": finish_case(isolation_start)})
         print(f"✔ {sid} 완료", flush=True)
         checkpoint_tot, checkpoint_metrics = _summarize(rows)

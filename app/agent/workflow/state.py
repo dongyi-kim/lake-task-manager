@@ -19,6 +19,8 @@ from typing_extensions import TypedDict
 
 from langgraph.graph.message import add_messages
 
+from app.agent.workflow.contracts import ContinuationContract
+
 
 class Node:
     """노드 이름. 그래프 조립과 UI 표시가 같은 문자열을 봐야 한다."""
@@ -198,6 +200,7 @@ class AgentState(TypedDict, total=False):
     answer_depth: str               # "brief"(값·결론만) | "explain"(개념·배경까지)
     request_plan: dict              # Request Architect의 원자 작업 DAG
     request_refinement: RequestRefinement  # 현재 턴의 검증된 parent/phase/duedate overlay
+    continuation_contract: ContinuationContract  # 원 요청/effect/target + typed user decisions
     turn_continuation: bool         # 직전 확인 질문에 대한 답변인가(새 요청의 stale state와 구분)
     turn_reset_reason: str          # local debug/evaluation용 턴 경계 판정 근거
 

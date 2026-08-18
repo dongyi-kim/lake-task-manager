@@ -925,6 +925,126 @@ def test_work_projection_does_not_drop_an_unrelated_unknown_property(monkeypatch
     assert "fabricated_property" not in projected["items"][0]
 
 
+def test_comment_action_uses_change_projection_and_ignores_creation_envelope(monkeypatch):
+    """MTG3: a typed comment action must never be forced through creation ``mode``."""
+    from app.agent import capabilities
+    from app.agent.workflow.agents.work_architect import WorkArchitect
+    from app.agent.workflow.state import Intent
+
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex": {
+        "checked": {"json_schema": True, "json_object": True}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+    state = {
+        # The continuation classifier can still say plan_work; the typed action is the
+        # authoritative artifact family at WorkArchitect's payload boundary.
+        "intent": Intent.PLAN_WORK,
+        "request_text": "DL-9201, DL-9202에 회의 결정사항 댓글만 남겨줘",
+        "messages": [HumanMessage(content="두 관련 Task의 댓글 초안을 계속해줘")],
+        "request_plan": {"tasks": [{
+            "id": "meeting-comment", "kind": "comment", "write_intent": True,
+            "instruction": "DL-9201과 DL-9202에 회의 결정사항 댓글 초안 생성",
+        }]},
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": "DL-9201, DL-9202에 회의 결정사항 댓글만 남겨줘",
+            "intent": Intent.MODIFY,
+            "action": "comment",
+            "target_keys": ["DL-9201", "DL-9202"],
+            "outcome_ids": ["meeting-comment"],
+            "decisions": [],
+        },
+    }
+    projected_with_creation_envelope = {
+        "questions": [], "mode": "comment", "items": [],
+        "structure": "single_task", "structure_why": "댓글 두 건",
+        "change": {
+            "keys": ["DL-9201", "DL-9202"],
+            "comment": "writer 결과와 reader 검증 상태를 공유하고 운영 반영은 보류합니다.",
+        },
+        "rationale": "필드 변경 없이 관련 Task 두 건에 댓글만 남깁니다.",
+    }
+    native = _SequenceLLM(projected_with_creation_envelope)
+    agent = WorkArchitect()
+    monkeypatch.setattr(agent, "llm", lambda **_kwargs: native)
+
+    schema = agent.schema_for(state)
+    assert "change" in schema["properties"]
+    assert "mode" not in schema["properties"] and "items" not in schema["properties"]
+
+    projected = agent._invoke_structured_transport(
+        state, [HumanMessage(content="original")], capability_tier="complex",
+        execution_layer="deep_semantic",
+    )
+
+    assert len(native.messages) == 1
+    assert projected["change"]["keys"] == ["DL-9201", "DL-9202"]
+    assert "mode" not in projected and "items" not in projected
+
+
+def test_creation_projection_normalizes_only_known_aliases_and_bounded_prose(monkeypatch):
+    """BUG2: harmless wire-shape drift must not buy a repair or invent another DoD."""
+    from app.agent import capabilities
+    from app.agent.workflow.agents.work_architect import WorkArchitect
+
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex": {
+        "checked": {"json_schema": True, "json_object": True}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+    payload = {
+        "interpretation": "이미 조사한 뒤에는 사용하지 않는 해석 " * 80,
+        "questions": [], "mode": "task", "structure": "single_task",
+        "structure_why": "검증된 단일 Bug 산출물 " * 80,
+        "items": [{
+            "id": "draft-bug-1",
+            "summary": "[Workbench] 리니지 뷰어 2홉 화면 공백", "type": "Bug",
+            "component": "workbench", "background": "화면 공백 오류 신고됨",
+            "reproduction": ["Chrome에서 리니지 뷰어를 2홉 이상 펼친다"],
+            "expected": "그래프가 표시된다", "actual": "화면이 빈다",
+            "scope_in": ["2홉 이상 확장 시 렌더링 오류 수정"],
+            "scope_out": [],
+            "dod": ["Chrome에서 2홉 이상 펼쳐 그래프가 표시됨을 확인한다"],
+        }],
+        "rationale": "사용자가 제공한 재현·기대·실제 동작으로 Bug를 구성함 " * 80,
+    }
+    native = _SequenceLLM(payload)
+    agent = WorkArchitect()
+    monkeypatch.setattr(agent, "llm", lambda **_kwargs: native)
+
+    projected = agent._invoke_structured_transport(
+        _work_creation_state(), [HumanMessage(content="original")],
+        capability_tier="complex", execution_layer="deep_semantic",
+    )
+
+    assert len(native.messages) == 1
+    assert "id" not in projected["items"][0]
+    assert projected["items"][0]["components"] == ["workbench"]
+    assert "component" not in projected["items"][0]
+    assert projected["items"][0]["dod"] == payload["items"][0]["dod"]
+    assert len(projected["structure_why"]) <= 500
+    assert len(projected["rationale"]) <= 800
+
+    # The wire alias changes shape only; it does not authorize a Jira component value.
+    # The normal createmeta-backed domain validation remains the final canonicalizer.
+    from app.domain.bulk import validate_bulk
+
+    class _CreateMeta:
+        def task_types(self):
+            return ["Task", "Bug"]
+
+        def priorities(self):
+            return []
+
+        def components(self):
+            return ["Workbench"]
+
+    checked = validate_bulk("task", [{
+        "summary": projected["items"][0]["summary"],
+        "type": "Bug", "epic": None,
+        "components": projected["items"][0]["components"],
+    }], _CreateMeta())
+    assert checked["ok"] is True
+    assert checked["items"][0]["components"] == ["Workbench"]
+
+
 @pytest.mark.parametrize("explicit_priority", [False, True], ids=("unspecified", "user-specified"))
 def test_work_nonstring_priority_is_dropped_only_when_the_user_did_not_specify_priority(
         monkeypatch, explicit_priority):

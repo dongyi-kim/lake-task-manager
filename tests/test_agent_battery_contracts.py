@@ -8,6 +8,7 @@ pytest.importorskip("langchain_core", reason="requirements-agent.txt 미설치")
 from tools import agent_compose_eval as editor_eval  # noqa: E402
 from tools import agent_create_suite as create_eval  # noqa: E402
 from tools import agent_context_change_eval as context_eval  # noqa: E402
+from tools import agent_eval_contracts as eval_contracts  # noqa: E402
 from tools import agent_meeting_eval as meeting_eval  # noqa: E402
 
 
@@ -31,6 +32,284 @@ def test_editor_contract_checker_rejects_resolution_and_renderer_contradictions(
     flaws = editor_eval._editor_contract_flaws(result)
     assert any("이중 삽입" in flaw for flaw in flaws)
     assert any("resolved ticket" in flaw for flaw in flaws)
+
+
+def _reviewed_pending(pending, *, kind, actions, target_count):
+    return {
+        "reply": "",
+        "pending": pending,
+        "questions": [],
+        "review": {
+            "ok": True,
+            "errors": [],
+            "final_authority": {
+                "kind": kind,
+                "actions": actions,
+                "target_count": target_count,
+            },
+        },
+    }
+
+
+def test_common_checker_keeps_an_intermediate_structured_failure_red():
+    final = _reviewed_pending(
+        {"action": "update_ticket", "key": "DL-9203",
+         "changes": {"summary": "새 제목"}},
+        kind="update", actions=["update_ticket"], target_count=1,
+    )
+    failed = {
+        "error": "private provider validation payload",
+        "trace": [{"node": "work_architect",
+                   "note": "실패: structured output 실패 — private payload"}],
+    }
+
+    flaws = eval_contracts.automatic_contract_flaws([failed, final])
+
+    assert any("turn[0]" in flaw and "structured" in flaw for flaw in flaws)
+    assert "private provider" not in " ".join(flaws)
+
+
+def test_common_checker_enforces_required_and_optional_question_stop_boundaries():
+    premature = {
+        "questions": [{"question": "담당자를 골라 주세요", "required_input": True,
+                       "why_required": "사람을 잘못 지정하면 다른 사용자에게 업무가 배정됨"}],
+        "pending": {"action": "create_tickets", "items": [{"summary": "초안"}]},
+    }
+    optional_stop = {
+        "questions": [{"question": "선호하는 구조가 있나요?", "required_input": False}],
+    }
+    required_stop = {
+        "questions": [{"question": "담당자를 골라 주세요", "required_input": True,
+                       "why_required": "사람을 잘못 지정하면 다른 사용자에게 업무가 배정됨"}],
+    }
+    final = _reviewed_pending(
+        {"action": "create_tickets", "items": [{"summary": "확정 초안"}]},
+        kind="create", actions=["create_tickets"], target_count=1,
+    )
+
+    assert any("required_input=true" in flaw
+               for flaw in eval_contracts.automatic_contract_flaws([premature]))
+    assert any("optional" in flaw
+               for flaw in eval_contracts.automatic_contract_flaws([optional_stop]))
+    assert not any("required_input" in flaw or "optional" in flaw
+                   for flaw in eval_contracts.automatic_contract_flaws(
+                       [required_stop, final],
+                   ))
+
+
+def test_common_checker_rejects_reply_pending_and_review_action_reversals():
+    output = _reviewed_pending(
+        {"action": "add_ticket_comment", "key": "DL-9095",
+         "changes": {}, "comment": "결과를 첨부해 주세요"},
+        kind="create", actions=["create_tickets"], target_count=2,
+    )
+    output["reply"] = "### 티켓 생성 승인 초안\n\n**총 2건 · 아직 생성되지 않음**"
+    output["review"]["summary"] = "티켓 생성 승인 초안 검증 통과"
+
+    flaws = eval_contracts.automatic_contract_flaws([output])
+
+    assert any("reply" in flaw and "action" in flaw for flaw in flaws)
+    assert any("review" in flaw and "kind" in flaw for flaw in flaws)
+    assert any("review" in flaw and "action" in flaw for flaw in flaws)
+    assert any("review/pending narrative action" in flaw for flaw in flaws)
+    assert any("cardinality" in flaw for flaw in flaws)
+
+
+def test_common_checker_compares_exact_create_fields_in_the_approval_table():
+    output = _reviewed_pending(
+        {
+            "action": "create_tickets",
+            "items": [
+                {"type": "Task", "summary": "writer 증빙", "epic": "DL-9200",
+                 "assignee": "skcc.i2011", "duedate": "2026-08-22"},
+                {"type": "Task", "summary": "reader 검증", "epic": "DL-9200",
+                 "assignee": "skcc.x1402", "duedate": "2026-08-25"},
+            ],
+        },
+        kind="create", actions=["create_tickets"], target_count=2,
+    )
+    output["reply"] = """### 티켓 승인 초안
+
+**총 3건 · 아직 생성되지 않음**
+
+| # | 유형 | 제목 | 상위 | 담당 | 기한 |
+|---:|---|---|---|---|---|
+| 1 | Task | writer 증빙 | DL-9201 | [~skcc.x1042] | 2026-08-23 |
+| 2 | Task | reader 검증 | DL-9200 | [~skcc.x1402] | 2026-08-25 |
+"""
+
+    flaws = eval_contracts.automatic_contract_flaws([output])
+
+    assert any("cardinality" in flaw for flaw in flaws)
+    assert any("parent" in flaw for flaw in flaws)
+    assert any("owner" in flaw for flaw in flaws)
+    assert any("due" in flaw for flaw in flaws)
+
+
+def test_common_checker_counts_create_children_without_corrupting_review_root_count():
+    output = _reviewed_pending(
+        {
+            "action": "create_tickets",
+            "items": [{"type": "Task", "summary": "통계 파이프라인", "assignee": ""}],
+            "children": [
+                {"type": "Sub-Task", "summary": "설계", "parent_index": 0,
+                 "assignee": "skcc.i2011"},
+                {"type": "Sub-Task", "summary": "검증", "parent_index": 0,
+                 "assignee": "skcc.x1402"},
+            ],
+        },
+        kind="create", actions=["create_tickets"], target_count=1,
+    )
+    output["reply"] = """### 티켓 승인 초안
+
+**총 3건 · 아직 생성되지 않음**
+
+| # | 유형 | 제목 | 상위 | 담당 | 기한 |
+|---:|---|---|---|---|---|
+| 1 | Task | 통계 파이프라인 | 최상위 | 미할당 | — |
+| 2 | Sub-Task | 설계 | 통계 파이프라인 | [~skcc.i2011] | — |
+| 3 | Sub-Task | 검증 | 통계 파이프라인 | [~skcc.x1402] | — |
+"""
+
+    assert eval_contracts.automatic_contract_flaws([output]) == []
+
+
+def test_common_checker_does_not_treat_no_further_edits_as_an_update_action():
+    output = _reviewed_pending(
+        {"action": "create_tickets", "items": [{"type": "Task", "summary": "초안"}]},
+        kind="create", actions=["create_tickets"], target_count=1,
+    )
+    output["review"]["summary"] = (
+        "요청 조건을 충족하며 별도의 추가 수정 없이 승인하여 생성할 수 있습니다."
+    )
+    assert eval_contracts.automatic_contract_flaws([output]) == []
+
+
+def test_common_checker_distinguishes_comment_draft_wording_from_ticket_creation():
+    comment = _reviewed_pending(
+        {
+            "action": "add_ticket_comment", "key": "DL-9095", "changes": {},
+            "comment": "성능 측정 결과와 원본 로그를 첨부해 주세요",
+        },
+        kind="comment", actions=["add_ticket_comment"], target_count=1,
+    )
+    comment["reply"] = "### 댓글 승인 초안\n\n아직 게시되지 않았습니다."
+    comment["review"]["summary"] = "댓글 승인 초안을 생성했습니다."
+    assert eval_contracts.automatic_contract_flaws([comment]) == []
+
+    create = _reviewed_pending(
+        {"action": "create_tickets", "items": [{"type": "Task", "summary": "초안"}]},
+        kind="create", actions=["create_tickets"], target_count=1,
+    )
+    create["review"]["summary"] = "댓글 승인 초안을 생성했습니다."
+    assert any("review/pending narrative action" in flaw
+               for flaw in eval_contracts.automatic_contract_flaws([create]))
+
+
+def test_common_checker_rejects_an_empty_update_card():
+    output = _reviewed_pending(
+        {"action": "update_ticket", "key": "DL-9203", "changes": {}},
+        kind="none", actions=[], target_count=0,
+    )
+    assert any("실행 가능한 effect" in flaw
+               for flaw in eval_contracts.automatic_contract_flaws([output]))
+
+
+@pytest.mark.parametrize(("pending", "actions"), [
+    (
+        {
+            "action": "update_ticket", "key": "DL-9203",
+            "changes": {"status": "Done"}, "comment": "",
+        },
+        ["transition_ticket"],
+    ),
+    (
+        {
+            "action": "update_ticket", "key": "DL-9203",
+            "changes": {"link": "blocks → DL-9204"}, "comment": "연결 사유",
+        },
+        ["link_tickets", "add_ticket_comment"],
+    ),
+])
+def test_common_checker_normalizes_transition_and_link_approval_cards(pending, actions):
+    output = _reviewed_pending(
+        pending, kind="update", actions=actions, target_count=1,
+    )
+    assert eval_contracts.automatic_contract_flaws([output]) == []
+
+
+def test_common_checker_preserves_bulk_action_authority_for_one_declared_target():
+    output = _reviewed_pending(
+        {
+            "action": "update_tickets", "keys": ["DL-9203"],
+            "changes": {"priority": "P4-Trivial"}, "comment": "변경 사유",
+        },
+        kind="update", actions=["update_tickets", "add_ticket_comments"],
+        target_count=1,
+    )
+    assert eval_contracts.automatic_contract_flaws([output]) == []
+
+
+def test_common_checker_compares_exact_update_field_removals():
+    output = _reviewed_pending(
+        {
+            "action": "update_ticket", "key": "DL-9203",
+            "changes": {"duedate": "", "parent": "", "assignee": ""},
+        },
+        kind="update", actions=["update_ticket"], target_count=1,
+    )
+    output["reply"] = """### 변경 승인 초안
+
+| 필드 | 현재 | 변경 |
+|---|---|---|
+| 기한 | 2026-08-22 | 2026-08-23 |
+| parent | DL-9200 | DL-9201 |
+| 담당자 | skcc.i2011 | skcc.x1042 |
+"""
+
+    flaws = eval_contracts.automatic_contract_flaws([output])
+
+    assert any("due" in flaw for flaw in flaws)
+    assert any("parent" in flaw for flaw in flaws)
+    assert any("owner" in flaw for flaw in flaws)
+
+    output["reply"] = """### 변경 승인 초안
+
+| 필드 | 현재 | 변경 |
+|---|---|---|
+| 기한 | 2026-08-22 | — |
+| parent | DL-9200 | — |
+| 담당자 | skcc.i2011 | 미할당 |
+"""
+    assert eval_contracts.automatic_contract_flaws([output]) == []
+
+
+@pytest.mark.parametrize(("html", "needle"), [
+    ('<p>참조 D-9040</p>', "pseudo ticket"),
+    ('<p>@이다은 검토 요청</p>', "raw mention"),
+    ('<p>[설계 문서](https://docs.example.test/design)</p>', "Markdown"),
+    ('<p>문서 https://docs.example.test/design 참고</p>', "bare URL"),
+])
+def test_editor_checker_rejects_generic_final_renderer_defects(html, needle):
+    flaws = eval_contracts.editor_renderer_contract_flaws({"ok": True, "html": html})
+    assert any(needle in flaw for flaw in flaws)
+
+
+def test_editor_checker_accepts_canonical_rendered_references():
+    result = {
+        "ok": True,
+        "html": (
+            '<p><a class="jira-badge tkt" data-key="DL-9040" '
+            'href="/browse/DL-9040">DL-9040</a> '
+            '<span data-type="mention" data-id="skcc.i2011">@이다은</span> '
+            '<a href="https://docs.example.test/design">설계 문서</a></p>'
+        ),
+        "references": [
+            {"kind": "ticket", "key": "DL-9040", "resolved": True},
+            {"kind": "person", "key": "skcc.i2011", "resolved": True},
+        ],
+    }
+    assert eval_contracts.editor_renderer_contract_flaws(result) == []
 
 
 def test_create_checker_rejects_reply_payload_tier_mismatch():

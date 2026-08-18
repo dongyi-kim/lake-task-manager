@@ -12,6 +12,12 @@ from __future__ import annotations
 
 from app.agent.workflow.agents.base import StructuredAgent
 from app.agent.prompts.roles import SYSTEM_REQUEST_ARCHITECT
+from app.agent.workflow.continuation import (
+    build_continuation_contract,
+    has_current_continuation_decision,
+    has_typed_continuation_contract,
+    merge_continuation_decisions,
+)
 from app.agent.workflow.prompts import persona
 from app.agent.workflow.state import (AgentState, Intent, Node, conversation,
                                       last_user_text, note)
@@ -434,6 +440,33 @@ def _authoritative_continuation_plan(state: dict) -> dict:
     return fixed
 
 
+def _authoritative_read_continuation_plan(state: dict) -> dict:
+    """Return a read-only outcome DAG across a typed interview answer.
+
+    The existing continuation guard historically protected writes only.  A short target or
+    terminology answer could therefore turn ``summarize these decisions`` into a fresh Task
+    creation when the classifier focused on words such as ``계속해줘``.  The typed Session
+    contract proves both the boundary and the effect family; arbitrary message history does not.
+    """
+    if not state.get("turn_continuation"):
+        return {}
+    if not has_typed_continuation_contract(state.get("continuation_contract")):
+        return {}
+    contract = build_continuation_contract(
+        state, existing=state.get("continuation_contract"),
+    )
+    if contract.get("action") != "read":
+        return {}
+    plan = state.get("request_plan") or {}
+    tasks = [task for task in (plan.get("tasks") or []) if isinstance(task, dict)] \
+        if isinstance(plan, dict) else []
+    if not tasks or any(_is_write_outcome(task) for task in tasks):
+        return {}
+    fixed = _copy.deepcopy(plan)
+    fixed["tasks"] = _copy.deepcopy(tasks)
+    return fixed
+
+
 def _continuation_write_intent(state: dict, fallback: str) -> str:
     """Keep the routing intent paired with an authoritative prior write plan."""
     plan = _authoritative_continuation_plan(state)
@@ -815,7 +848,7 @@ def _field_refinement_fast_patch(state: dict) -> dict:
     keywords = [str(value) for value in (
         raw_keywords if isinstance(raw_keywords, (list, tuple)) else []) if str(value).strip()]
     depth = str(state.get("answer_depth") or "brief")
-    return {
+    patch = {
         "intent": Intent.PLAN_WORK,
         "keywords": _copy.deepcopy(keywords),
         "module": str(state.get("module") or ""),
@@ -829,6 +862,14 @@ def _field_refinement_fast_patch(state: dict) -> dict:
         "trace": note(state, Node.REQUEST_ARCHITECT,
                       f"의도={Intent.PLAN_WORK} · 검증된 필드 보정({labels}) · 모델 호출 생략"),
     }
+    contract = build_continuation_contract(
+        {**state, **patch}, existing=state.get("continuation_contract"),
+    )
+    patch["continuation_contract"] = merge_continuation_decisions(contract, [
+        {"field": name, "value": str(value), "source": "explicit_refinement"}
+        for name, value in fields.items() if str(value).strip()
+    ])
+    return patch
 
 
 def _selection_is_not_creation(text: str) -> bool:
@@ -945,7 +986,7 @@ Classify what the user wants from the conversation, construct an atomic task pla
 
 ## Intent Examples
 
-- `실시간 수집에 CDC를 도입해야 한다` -> `plan_work`: start new work.
+- `실시간 수집 방식을 새로 도입해야 한다` -> `plan_work`: start new work.
 - `데이터 거버넌스 에픽 하나 새로 만들자` -> `plan_work`: Epic creation is new work.
 - `DL-1234 밑에 서브태스크 여러 개 만들어줘` -> `plan_work`: bulk Sub-Task creation.
 - `적재 배치가 어젯밤부터 계속 실패한다` -> `plan_work` with `playbook="bug_report"`: a defect report creates a Task-tier Bug.
@@ -957,7 +998,7 @@ Classify what the user wants from the conversation, construct an atomic task pla
 - `내 모듈에 담당자 없는 업무 있으면 하나 하고 싶네` -> `my_day`: the user wants work they can take, not a team-wide progress report.
 - `skcc.x1042 최근 3일간 뭐 했어?` -> `activity`: a person's activity.
 - `DL-101 관련자들이 요즘 어떤 일들을 해?` -> `activity`: the subject is people's activity; retain the ticket key.
-- `CDC 검토가 왜 멈췄었지?` -> `ask`: historical rationale, not a progress metric.
+- `증분 수집 방식 검토가 왜 멈췄었지?` -> `ask`: historical rationale, not a progress metric.
 - `지난 분기에 성능 관련해서 어떤 논의가 있었어?` -> `ask`: past discussion and records.
 - `DL-207을 x1103에게 맡기는 게 적절할까?` -> `ask`: evaluate assignment; no mutation was requested.
 - `DL-207 담당자를 x1103 으로 바꿔줘` -> `modify`.
@@ -972,7 +1013,7 @@ Classify what the user wants from the conversation, construct an atomic task pla
 - `fdc.fdc_trace_summary_ic 적재주기는?` -> `brief`.
 - `DL-101 담당자 누구야?` -> `brief`.
 - `이번 주 마감 지난 티켓 뭐 있어?` -> `brief` because the list is the answer.
-- `CDC가 뭐고 우리는 어떻게 쓰고 있어?` -> `explain`.
+- `증분 수집이 뭐고 우리는 어떻게 쓰고 있어?` -> `explain`.
 - `적재 지연이 왜 났고 어떻게 해결했어?` -> `explain`.
 - `Schema Registry 우리 어떻게 쓰고 있어?` -> `explain`.
 
@@ -1001,20 +1042,56 @@ Classify what the user wants from the conversation, construct an atomic task pla
 
     def apply(self, state, out):
         prior_write_plan = _authoritative_continuation_plan(state)
+        prior_read_plan = _authoritative_read_continuation_plan(state)
+        carried_contract = {}
+        if has_typed_continuation_contract(state.get("continuation_contract")):
+            carried_contract = build_continuation_contract(
+                state, existing=state.get("continuation_contract"),
+            )
         fallback_intent = out.get("intent") or Intent.PLAN_WORK
         asked = last_user_text(state)
-        kws = [k for k in (out.get("keywords") or []) if str(k).strip()]
+        additive_outcome = bool(prior_write_plan and _continuation_outcome_additions(asked))
+        outcome_directive = _continuation_outcome_directive(asked)
+        current_typed_decision = has_current_continuation_decision(
+            carried_contract, asked,
+        )
+        stable_subject = bool(
+            state.get("turn_continuation") and carried_contract and not additive_outcome
+        )
+        authoritative_refinement = bool(
+            stable_subject and (not outcome_directive or current_typed_decision)
+        )
+        if stable_subject:
+            kws = [str(k) for k in (state.get("keywords") or []) if str(k).strip()]
+            for key in carried_contract.get("target_keys") or []:
+                if key not in kws:
+                    kws.append(key)
+            module = str(state.get("module") or "")
+        else:
+            kws = [k for k in (out.get("keywords") or []) if str(k).strip()]
+            module = out.get("module") or ""
         # For an additive continuation, keep the bounded raw model tasks until projection can
         # remove exact echoes of prior outcomes. Generic compaction would merge an echoed old
         # Task and the genuinely new Task into one synthetic ``task-1`` and lose the new id.
-        if prior_write_plan and _continuation_outcome_additions(asked):
+        if prior_read_plan or (prior_write_plan and authoritative_refinement):
+            source_plan = prior_read_plan or prior_write_plan
+            current_tasks = _copy.deepcopy(source_plan.get("tasks") or [])
+        elif prior_write_plan and additive_outcome:
             current_tasks = [task for task in (out.get("tasks") or [])[:6]
                              if isinstance(task, dict)]
         else:
             current_tasks = _compact_request_tasks(out, asked, fallback_intent)
-        planned_tasks, outcomes_changed = _project_followup_outcomes(
-            state, current_tasks, fallback_intent)
-        if prior_write_plan and (not outcomes_changed
+        if prior_read_plan or (prior_write_plan and authoritative_refinement):
+            planned_tasks, outcomes_changed = current_tasks, False
+        else:
+            planned_tasks, outcomes_changed = _project_followup_outcomes(
+                state, current_tasks, fallback_intent)
+        if prior_read_plan:
+            contract = build_continuation_contract(
+                state, existing=state.get("continuation_contract"),
+            )
+            intent = str(contract.get("intent") or state.get("intent") or Intent.ASK)
+        elif prior_write_plan and (not outcomes_changed
                                  or any(_is_write_outcome(task) for task in planned_tasks)):
             intent = _continuation_write_intent(state, fallback_intent)
         elif prior_write_plan and outcomes_changed:
@@ -1028,25 +1105,33 @@ Classify what the user wants from the conversation, construct an atomic task pla
         projected_goal = " · ".join(
             str(task.get("instruction") or "").strip()
             for task in planned_tasks if isinstance(task, dict) and task.get("instruction"))[:240]
-        request_plan = _repair_delegated_selection_plan({
-            "goal": (projected_goal if prior_write_plan and outcomes_changed else
-                     (prior_write_plan.get("goal") if prior_write_plan else ""))
-                    or out.get("goal") or asked,
-            "tasks": planned_tasks or [{
-                "id": "task-1", "kind": "query" if intent in Intent.NEEDS_RESEARCH else "respond",
-                "instruction": asked, "depends_on": [],
-                "write_intent": intent in Intent.DRAFTS_TICKETS,
-                "completion_criteria": ["사용자 요청에 직접 답한다"],
-            }],
-            "blocking_questions": out.get("blocking_questions") or [],
-            "assumptions": _ground_request_assumptions(
-                out.get("assumptions") or [], grounded_request),
-        }, grounded_request)
+        if prior_read_plan:
+            request_plan = _copy.deepcopy(prior_read_plan)
+        else:
+            request_plan = _repair_delegated_selection_plan({
+                "goal": (projected_goal if prior_write_plan and outcomes_changed else
+                         (prior_write_plan.get("goal") if prior_write_plan else ""))
+                        or out.get("goal") or asked,
+                "tasks": planned_tasks or [{
+                    "id": "task-1", "kind": "query" if intent in Intent.NEEDS_RESEARCH else "respond",
+                    "instruction": asked, "depends_on": [],
+                    "write_intent": intent in Intent.DRAFTS_TICKETS,
+                    "completion_criteria": ["사용자 요청에 직접 답한다"],
+                }],
+                "blocking_questions": out.get("blocking_questions") or [],
+                "assumptions": _ground_request_assumptions(
+                    out.get("assumptions") or [], grounded_request),
+            }, grounded_request)
+        mentioned_keys = _carry_keys(state, out)
+        if (state.get("turn_continuation")
+                and carried_contract.get("action") in {"read", "comment", "update", "mixed"}
+                and carried_contract.get("target_keys")):
+            mentioned_keys = _copy.deepcopy(carried_contract["target_keys"])
         patch = {
             "intent": intent,
             "keywords": kws,
-            "module": out.get("module") or "",
-            "mentioned_keys": _carry_keys(state, out),
+            "module": module,
+            "mentioned_keys": mentioned_keys,
             "sufficient": bool(out.get("sufficient")),
             "playbook": out.get("playbook") or "",
             "answer_depth": _carry_depth(state, out),
@@ -1202,8 +1287,20 @@ Classify what the user wants from the conversation, construct an atomic task pla
 
         # Identity/term interview answers refine the same meeting action.  Never replace its
         # exact target, field list, ticket shape, or comment boundary with the short answer.
-        if is_meeting_request(state) and _meeting_request:
+        if (state.get("turn_continuation")
+                and carried_contract.get("root_request")):
+            # The latest user message is only an answer/refinement.  Keep the stable root as
+            # the explicit request boundary for read as well as write continuations.
+            patch["request_text"] = carried_contract["root_request"]
+        elif is_meeting_request(state) and _meeting_request:
             patch["request_text"] = _meeting_request
+
+        # Persist one validated envelope for the next Session turn.  The request DAG remains
+        # in ``request_plan``; this sidecar carries only stable effect/target identity and
+        # user-authored typed decisions.
+        patch["continuation_contract"] = build_continuation_contract(
+            {**state, **patch}, existing=state.get("continuation_contract"),
+        )
 
         # Ticket shape is an Agent-owned, reversible design choice.  Stopping before retrieval
         # to ask that preference wasted a turn and prevented internal history from answering more

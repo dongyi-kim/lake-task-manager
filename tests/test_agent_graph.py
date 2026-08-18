@@ -965,6 +965,375 @@ def test_proposal_boundary_clears_any_actionable_token_when_review_failed():
     assert G._propose(state) == {"approval_token": "", "comment_token": ""}
 
 
+def test_comment_authority_projects_out_create_and_field_update_effects():
+    """CTX4: a typed comment request may never inherit a stale create/update payload."""
+    state = {
+        "thread_id": "comment-authority",
+        "request_text": "이전 주제에서 DL-9090에 '오래된 댓글'이라고 댓글 남겨줘",
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": "DL-9090에 결정 내용만 댓글로 남겨줘",
+            "intent": "modify",
+            "action": "comment",
+            "target_keys": ["DL-9090"],
+            "outcome_ids": ["comment-decision"],
+            "decisions": [],
+        },
+        "review": {"ok": True, "summary": "stale creation review"},
+        "draft": {"mode": "task", "rationale": "새 Task 생성", "items": [{
+            "summary": "요청하지 않은 신규 Task", "type": "Task",
+        }]},
+        "change_plan": {
+            "key": "DL-9090",
+            "changes": {"assignee": "skcc.x1210"},
+            "comment": "회의에서 운영 반영을 보류하기로 결정했습니다.",
+            "why": "담당자 변경과 신규 Task 생성",
+        },
+    }
+
+    staged = G._propose(state)
+    record = approval.peek(staged["approval_token"])
+
+    assert record["action"] == "add_ticket_comment"
+    assert record["payload"] == {
+        "key": "DL-9090",
+        "body": "회의에서 운영 반영을 보류하기로 결정했습니다.",
+    }
+    assert staged["draft"] == {}
+    assert staged["change_plan"]["changes"] == {}
+    assert "필드·상태 변경 없음" in staged["change_plan"]["why"]
+    assert staged["review"]["ok"] is True
+    assert "댓글" in staged["review"]["summary"]
+
+
+def test_comment_authority_never_falls_through_to_stale_create_draft():
+    state = {
+        "thread_id": "comment-no-body",
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": "DL-9090에 댓글 남겨줘",
+            "intent": "modify", "action": "comment",
+            "target_keys": ["DL-9090"], "outcome_ids": ["comment"],
+            "decisions": [],
+        },
+        "review": {"ok": True},
+        "draft": {"mode": "task", "items": [{
+            "summary": "오래된 생성 초안", "type": "Task",
+        }]},
+        "change_plan": {},
+    }
+
+    blocked = G._propose(state)
+
+    assert blocked["approval_token"] == ""
+    assert blocked["comment_token"] == ""
+    assert blocked["draft"] == {}
+    assert blocked["review"]["ok"] is False
+    assert any(row.get("field") == "effect" for row in blocked["review"]["errors"])
+
+
+def test_comment_change_uses_deterministic_final_review_but_never_promotes_red_review():
+    contract = {
+        "version": "continuation.v1",
+        "root_request": "DL-9090에 결정 댓글을 남겨줘",
+        "intent": "modify", "action": "comment",
+        "target_keys": ["DL-9090"], "outcome_ids": ["comment"], "decisions": [],
+    }
+    plan = {"key": "DL-9090", "changes": {}, "comment": "운영 반영 보류"}
+
+    staged = G._propose({
+        "thread_id": "comment-machine-review",
+        "continuation_contract": contract,
+        "draft": {}, "change_plan": plan,
+    })
+    assert approval.peek(staged["approval_token"])["action"] == "add_ticket_comment"
+    assert staged["review"]["ok"] is True
+    assert staged["review"]["approval_contract"] == "deterministic_final_effect.v1"
+
+    blocked = G._propose({
+        "thread_id": "comment-red-review",
+        "continuation_contract": contract,
+        "review": {"ok": False},
+        "draft": {}, "change_plan": plan,
+    })
+    assert blocked["approval_token"] == "" and blocked["comment_token"] == ""
+    assert blocked["review"]["ok"] is False
+
+
+def test_mixed_create_and_change_requires_split_before_approval():
+    """The current executor has no atomic fingerprint for create+change compound effects."""
+    state = {
+        "thread_id": "unsupported-mixed",
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": "새 Task를 만들고 DL-9090에 보류 댓글도 남겨줘",
+            "intent": "modify", "action": "mixed",
+            "target_keys": ["DL-9090"], "outcome_ids": ["create", "comment"],
+            "decisions": [],
+        },
+        "review": {"ok": True},
+        "draft": {"mode": "task", "items": [{"summary": "새 Task", "type": "Task"}]},
+        "change_plan": {"key": "DL-9090", "changes": {}, "comment": "보류"},
+    }
+
+    blocked = G._propose(state)
+
+    assert blocked["approval_token"] == "" and blocked["comment_token"] == ""
+    assert blocked["review"]["ok"] is False
+    assert any("분할" in str(row.get("message") or "")
+               for row in blocked["review"]["errors"])
+
+
+def test_mixed_update_and_comment_keeps_existing_two_fingerprint_approval_contract():
+    """A supported compound change keeps both reviewed effects on one approval card."""
+    state = {
+        "thread_id": "supported-mixed",
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": "DL-9090 마감일을 바꾸고 결정 댓글도 남겨줘",
+            "intent": "modify", "action": "mixed",
+            "target_keys": ["DL-9090"], "outcome_ids": ["update", "comment"],
+            "decisions": [],
+        },
+        "draft": {},
+        "change_plan": {
+            "key": "DL-9090",
+            "changes": {"duedate": "2026-09-01"},
+            "comment": "운영 반영은 9월 1일로 결정",
+        },
+    }
+
+    staged = G._propose(state)
+
+    update = approval.peek(staged["approval_token"])
+    comment = approval.peek(staged["comment_token"])
+    assert update["action"] == "update_ticket"
+    assert update["payload"] == {
+        "key": "DL-9090", "changes": {"duedate": "2026-09-01"},
+    }
+    assert comment["action"] == "add_ticket_comment"
+    assert comment["payload"] == {
+        "key": "DL-9090", "body": "운영 반영은 9월 1일로 결정",
+    }
+    assert staged["review"]["ok"] is True
+    assert staged["review"]["final_authority"] == {
+        "kind": "update",
+        "actions": ["update_ticket", "add_ticket_comment"],
+        "target_count": 1,
+    }
+
+
+def test_propose_rejects_change_target_outside_typed_contract():
+    """A self-consistent approval fingerprint is not authority to change another ticket."""
+    state = {
+        "thread_id": "typed-target-mismatch",
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": "DL-100에 결정 댓글을 남겨줘",
+            "intent": "modify", "action": "comment",
+            "target_keys": ["DL-100"], "outcome_ids": ["comment"],
+            "decisions": [],
+        },
+        "draft": {},
+        "change_plan": {"key": "DL-999", "changes": {}, "comment": "결정 승인"},
+    }
+
+    blocked = G._propose(state)
+
+    assert blocked["approval_token"] == "" and blocked["comment_token"] == ""
+    assert blocked["review"]["ok"] is False
+    assert any(row.get("field") == "target" for row in blocked["review"]["errors"])
+    assert approval.peek(blocked["approval_token"]) is None
+
+
+def test_propose_rejects_ambiguous_singular_and_bulk_change_targets():
+    state = {
+        "thread_id": "typed-target-shape-conflict",
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": "ACME-10을 In Progress로 옮겨줘",
+            "intent": "modify", "action": "update",
+            "target_keys": ["ACME-10"], "outcome_ids": ["transition"],
+            "decisions": [],
+        },
+        "draft": {},
+        "change_plan": {
+            "key": "ACME-999", "keys": ["ACME-10"],
+            "transition": {"id": "2", "name": "In Progress"},
+        },
+    }
+
+    blocked = G._propose(state)
+
+    assert blocked["approval_token"] == "" and blocked["comment_token"] == ""
+    assert blocked["review"]["ok"] is False
+    assert any(row.get("field") == "target" for row in blocked["review"]["errors"])
+
+
+@pytest.mark.parametrize("extra", [
+    {"transition": {"id": "2", "name": "In Progress"},
+     "changes": {"priority": "P1-Critical"}},
+    {"link": {"other": "ACME-20", "relation": "Relates"},
+     "changes": {"priority": "P1-Critical"}},
+    {"transition": {"id": "2", "name": "In Progress"},
+     "link": {"other": "ACME-20", "relation": "Relates"}},
+])
+def test_propose_rejects_competing_primary_change_effects(extra):
+    target_keys = ["ACME-10"] + (["ACME-20"] if extra.get("link") else [])
+    state = {
+        "thread_id": "typed-primary-conflict",
+        "continuation_contract": {
+            "version": "continuation.v1", "root_request": "복합 변경",
+            "intent": "modify", "action": "update", "target_keys": target_keys,
+            "outcome_ids": ["update"], "decisions": [],
+        },
+        "draft": {}, "change_plan": {"key": "ACME-10", **extra},
+    }
+
+    blocked = G._propose(state)
+
+    assert blocked["approval_token"] == "" and blocked["comment_token"] == ""
+    assert blocked["review"]["ok"] is False
+    assert any(row.get("field") == "effect" for row in blocked["review"]["errors"])
+
+
+def test_mixed_bulk_update_and_comments_stage_both_fingerprints():
+    state = {
+        "thread_id": "typed-bulk-mixed",
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": "DL-100과 DL-200의 마감을 바꾸고 결정 댓글도 남겨줘",
+            "intent": "modify", "action": "mixed",
+            "target_keys": ["DL-100", "DL-200"],
+            "outcome_ids": ["update", "comment"], "decisions": [],
+        },
+        "draft": {},
+        "change_plan": {
+            "keys": ["DL-100", "DL-200"],
+            "changes": {"duedate": "2026-09-30"},
+            "comment": "운영 반영일 확정",
+        },
+    }
+
+    staged = G._propose(state)
+
+    primary = approval.peek(staged["approval_token"])
+    secondary = approval.peek(staged["comment_token"])
+    assert primary["action"] == "update_tickets"
+    assert [row["key"] for row in primary["payload"]["items"]] == ["DL-100", "DL-200"]
+    assert secondary["action"] == "add_ticket_comments"
+    assert secondary["payload"]["items"] == [
+        {"key": "DL-100", "body": "운영 반영일 확정"},
+        {"key": "DL-200", "body": "운영 반영일 확정"},
+    ]
+
+
+def test_mixed_bulk_update_rejects_partial_comment_preview():
+    state = {
+        "thread_id": "typed-bulk-partial-comment",
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": "DL-100과 DL-200의 마감을 바꾸고 둘 다 댓글을 남겨줘",
+            "intent": "modify", "action": "mixed",
+            "target_keys": ["DL-100", "DL-200"],
+            "outcome_ids": ["update", "comment"], "decisions": [],
+        },
+        "draft": {},
+        "change_plan": {
+            "keys": ["DL-100", "DL-200"],
+            "changes": {"duedate": "2026-09-30"},
+            "comment": "공통 결정",
+            "comments": [{"key": "DL-100", "body": "공통 결정"}],
+        },
+    }
+
+    blocked = G._propose(state)
+
+    assert blocked["approval_token"] == "" and blocked["comment_token"] == ""
+    assert blocked["review"]["ok"] is False
+    assert any(row.get("field") == "comment_targets"
+               for row in blocked["review"]["errors"])
+
+
+def test_mixed_bulk_update_allows_an_explicit_single_ticket_comment_subset():
+    state = {
+        "thread_id": "typed-bulk-comment-subset",
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": ("ACME-10과 ACME-20 priority를 High로 바꾸고 "
+                             "ACME-10에만 결정 댓글을 남겨줘"),
+            "intent": "modify", "action": "mixed",
+            "target_keys": ["ACME-10", "ACME-20"],
+            "outcome_ids": ["update", "comment"], "decisions": [],
+        },
+        "draft": {},
+        "change_plan": {
+            "keys": ["ACME-10", "ACME-20"],
+            "changes": {"priority": "High"},
+            "comments": [{"key": "ACME-10", "body": "결정"}],
+        },
+    }
+
+    staged = G._propose(state)
+
+    assert staged["review"]["ok"] is True
+    assert approval.peek(staged["approval_token"])["action"] == "update_tickets"
+    secondary = approval.peek(staged["comment_token"])
+    assert secondary["action"] == "add_ticket_comments"
+    assert secondary["payload"]["items"] == [{"key": "ACME-10", "body": "결정"}]
+
+
+def test_mixed_link_and_comment_stage_both_fingerprints():
+    state = {
+        "thread_id": "typed-link-mixed",
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": "DL-100을 DL-200과 연결하고 DL-100에 결정 댓글을 남겨줘",
+            "intent": "modify", "action": "mixed",
+            "target_keys": ["DL-100", "DL-200"],
+            "outcome_ids": ["link", "comment"], "decisions": [],
+        },
+        "draft": {},
+        "change_plan": {
+            "key": "DL-100", "changes": {},
+            "link": {"other": "DL-200", "relation": "Relates"},
+            "comment": "관련 결정 기록",
+        },
+    }
+
+    staged = G._propose(state)
+
+    assert approval.peek(staged["approval_token"])["action"] == "link_tickets"
+    assert approval.peek(staged["comment_token"])["action"] == "add_ticket_comment"
+
+
+def test_directional_link_and_comment_target_are_bound_to_the_literal_request():
+    state = {
+        "thread_id": "typed-link-direction",
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": "DL-100이 DL-200을 막는 링크를 만들고 DL-100에 결정 댓글을 남겨줘",
+            "intent": "modify", "action": "mixed",
+            "target_keys": ["DL-100", "DL-200"],
+            "outcome_ids": ["link", "comment"], "decisions": [],
+        },
+        "draft": {},
+        "change_plan": {
+            "key": "DL-200", "changes": {},
+            "link": {"other": "DL-100", "relation": "Relates"},
+            "comment": "관련 결정 기록",
+        },
+    }
+
+    blocked = G._propose(state)
+
+    assert blocked["approval_token"] == "" and blocked["comment_token"] == ""
+    assert blocked["review"]["ok"] is False
+    assert {row.get("field") for row in blocked["review"]["errors"]} >= {
+        "link", "comment_targets",
+    }
+
+
 def test_failed_review_renderer_never_asks_for_approval():
     from app.agent.workflow.agents.result_integrator import _blocked_review_reply
 
@@ -1663,8 +2032,10 @@ def test_action_executor_discards_primary_and_secondary_tokens_after_update_fail
 
     primary_payload = {"key": "DL-1", "changes": {"summary": "바뀐 제목"}}
     comment_payload = {"key": "DL-1", "body": "변경 사유"}
-    primary = approval.stage("t-update-fail", "update_ticket", primary_payload)
-    comment = approval.stage("t-update-fail", "add_ticket_comment", comment_payload)
+    primary, comment = approval.stage_pair(
+        "t-update-fail", "update_ticket", primary_payload,
+        "add_ticket_comment", comment_payload,
+    )
     approval.approve(primary, "t-update-fail")
     approval.approve(comment, "t-update-fail")
 
@@ -1695,8 +2066,8 @@ def test_action_executor_discards_primary_and_secondary_tokens_after_update_fail
     assert approval.peek(comment) is None, "실행하지 않은 secondary comment도 함께 폐기"
 
 
-def test_action_executor_keeps_field_success_but_discards_invalid_comment_capability(monkeypatch):
-    """A malformed secondary token does not roll back a completed field update or stay reusable."""
+def test_action_executor_rejects_an_unbound_secondary_before_the_primary(monkeypatch):
+    """Two unrelated valid tokens cannot be spliced into one compound card."""
     from app.agent import tools as T
     from app.agent.workflow.agents.action_executor import ActionExecutor
 
@@ -1725,11 +2096,234 @@ def test_action_executor_keeps_field_success_but_discards_invalid_comment_capabi
         "comment_token": invalid, "trace": [],
     })
 
-    assert out["result"]["updated"] == [{"key": "DL-1", "fields": ["summary"]}]
-    assert not out["result"]["failed"]
-    assert "코멘트 승인 정보" in out["result"]["note"]
+    assert out["result"]["updated"] == []
+    assert out["result"]["failed"]
+    assert "결속되지 않은" in out["result"]["failed"][0]["error"]
     assert approval.peek(primary) is None
     assert approval.peek(invalid) is None, "유효하지 않은 same-thread secondary capability 폐기"
+
+
+@pytest.mark.parametrize(("primary_action", "secondary_action"), [
+    ("update_tickets", "add_ticket_comments"),
+    ("link_tickets", "add_ticket_comment"),
+])
+def test_action_executor_dispatches_supported_compound_change_effects(
+        monkeypatch, primary_action, secondary_action):
+    """Every reviewed effect on a mixed approval card executes exactly once."""
+    from app.agent.workflow.agents.action_executor import ActionExecutor
+
+    primary_payload = ({"items": [{"key": "DL-1", "changes": {"priority": "High"}}]}
+                       if primary_action == "update_tickets" else
+                       {"key": "DL-1", "other": "DL-2", "relation": "Relates"})
+    secondary_payload = ({"items": [{"key": "DL-1", "body": "결정"}]}
+                         if secondary_action == "add_ticket_comments" else
+                         {"key": "DL-1", "body": "결정"})
+    primary, secondary = approval.stage_pair(
+        "t-compound", primary_action, primary_payload, secondary_action, secondary_payload,
+    )
+    approval.approve(primary, "t-compound")
+    approval.approve(secondary, "t-compound")
+    calls = []
+
+    def dispatch(self, action, payload, token):
+        calls.append((action, payload, token))
+        return ({"created": [], "updated": [{"key": "DL-1", "fields": [action]}],
+                 "failed": [], "note": ""}, action)
+
+    monkeypatch.setattr(ActionExecutor, "_dispatch", dispatch)
+    out = ActionExecutor().node()({
+        "thread_id": "t-compound", "approval_token": primary,
+        "comment_token": secondary, "trace": [],
+    })
+
+    assert [call[0] for call in calls] == [primary_action, secondary_action]
+    assert out["result"]["failed"] == []
+    assert out["result"]["updated"][0]["fields"] == [primary_action, secondary_action]
+
+
+def test_partial_bulk_update_explicitly_reports_that_comments_were_not_posted(monkeypatch):
+    from app.agent.workflow.agents.action_executor import ActionExecutor
+
+    primary_payload = {"items": [
+        {"key": "DL-1", "changes": {"priority": "High"}},
+        {"key": "DL-2", "changes": {"priority": "High"}},
+    ]}
+    secondary_payload = {"items": [
+        {"key": "DL-1", "body": "결정"}, {"key": "DL-2", "body": "결정"},
+    ]}
+    primary, secondary = approval.stage_pair(
+        "t-partial", "update_tickets", primary_payload,
+        "add_ticket_comments", secondary_payload,
+    )
+    approval.approve(primary, "t-partial")
+    approval.approve(secondary, "t-partial")
+    calls = []
+
+    def dispatch(self, action, payload, token):
+        calls.append(action)
+        if action == "update_tickets":
+            return ({"created": [], "updated": [{"key": "DL-1", "fields": ["priority"]}],
+                     "failed": [{"summary": "DL-2", "error": "provider failure"}],
+                     "note": ""}, "partial update")
+        raise AssertionError("secondary comments must not execute after partial primary failure")
+
+    monkeypatch.setattr(ActionExecutor, "_dispatch", dispatch)
+    out = ActionExecutor().node()({
+        "thread_id": "t-partial", "approval_token": primary,
+        "comment_token": secondary, "trace": [],
+    })
+
+    assert calls == ["update_tickets"]
+    assert "코멘트" in out["result"]["note"] and "게시하지 않았" in out["result"]["note"]
+    assert approval.peek(secondary) is None
+
+
+def test_partial_secondary_comments_preserve_successes_and_failures(monkeypatch):
+    from app.agent.workflow.agents.action_executor import ActionExecutor
+
+    primary_payload = {"items": [
+        {"key": "DL-1", "changes": {"priority": "High"}},
+        {"key": "DL-2", "changes": {"priority": "High"}},
+    ]}
+    secondary_payload = {"items": [
+        {"key": "DL-1", "body": "결정"}, {"key": "DL-2", "body": "결정"},
+    ]}
+    primary, secondary = approval.stage_pair(
+        "t-secondary-partial", "update_tickets", primary_payload,
+        "add_ticket_comments", secondary_payload,
+    )
+    approval.approve(primary, "t-secondary-partial")
+    approval.approve(secondary, "t-secondary-partial")
+
+    def dispatch(self, action, payload, token):
+        if action == "update_tickets":
+            return ({"created": [], "updated": [
+                {"key": "DL-1", "fields": ["priority"]},
+                {"key": "DL-2", "fields": ["priority"]},
+            ], "failed": [], "note": ""}, "updated")
+        return ({"created": [], "updated": [{"key": "DL-1", "fields": ["comment"]}],
+                 "failed": [{"summary": "DL-2", "error": "comment provider failure"}],
+                 "note": ""}, "partial comments")
+
+    monkeypatch.setattr(ActionExecutor, "_dispatch", dispatch)
+    out = ActionExecutor().node()({
+        "thread_id": "t-secondary-partial", "approval_token": primary,
+        "comment_token": secondary, "trace": [],
+    })
+
+    by_key = {row["key"]: row["fields"] for row in out["result"]["updated"]}
+    assert by_key["DL-1"] == ["priority", "comment"]
+    assert by_key["DL-2"] == ["priority"]
+    assert out["result"]["failed"] == [
+        {"summary": "DL-2", "error": "comment provider failure"},
+    ]
+
+
+def test_compound_primary_missing_its_bound_comment_token_executes_nothing(monkeypatch):
+    from app.agent.workflow.agents.action_executor import ActionExecutor
+
+    primary, secondary = approval.stage_pair(
+        "t-bound-missing", "update_ticket",
+        {"key": "DL-1", "changes": {"priority": "High"}},
+        "add_ticket_comment", {"key": "DL-1", "body": "결정"},
+    )
+    approval.approve(primary, "t-bound-missing")
+    approval.approve(secondary, "t-bound-missing")
+    calls = []
+    monkeypatch.setattr(
+        ActionExecutor, "_dispatch",
+        lambda *args: calls.append(args) or ({"updated": [], "failed": []}, "unexpected"),
+    )
+
+    out = ActionExecutor().node()({
+        "thread_id": "t-bound-missing", "approval_token": primary,
+        "comment_token": "", "trace": [],
+    })
+
+    assert calls == []
+    assert out["result"]["failed"]
+    assert approval.peek(primary) is None and approval.peek(secondary) is None
+
+
+def test_compound_tokens_from_different_cards_cannot_be_spliced(monkeypatch):
+    from app.agent.workflow.agents.action_executor import ActionExecutor
+
+    primary, proper = approval.stage_pair(
+        "t-pair", "update_ticket", {"key": "DL-1", "changes": {"priority": "High"}},
+        "add_ticket_comment", {"key": "DL-1", "body": "정상"},
+    )
+    other_primary, foreign = approval.stage_pair(
+        "t-pair", "update_ticket", {"key": "DL-9", "changes": {"priority": "Low"}},
+        "add_ticket_comment", {"key": "DL-999", "body": "다른 카드"},
+    )
+    for token in (primary, proper, other_primary, foreign):
+        approval.approve(token, "t-pair")
+    calls = []
+    monkeypatch.setattr(
+        ActionExecutor, "_dispatch",
+        lambda *args: calls.append(args) or ({"updated": [], "failed": []}, "unexpected"),
+    )
+
+    out = ActionExecutor().node()({
+        "thread_id": "t-pair", "approval_token": primary,
+        "comment_token": foreign, "trace": [],
+    })
+
+    assert calls == []
+    assert out["result"]["failed"]
+    assert approval.peek(primary) is None and approval.peek(foreign) is None
+
+
+@pytest.mark.parametrize("keys", [
+    ["ACME-10", "ACME-10", "ACME-20"],
+    ["ACME-10", "acme-10", "ACME-20"],
+])
+def test_propose_rejects_duplicate_bulk_targets(keys):
+    state = {
+        "thread_id": "typed-duplicate-targets",
+        "continuation_contract": {
+            "version": "continuation.v1", "root_request": "두 티켓 변경",
+            "intent": "modify", "action": "mixed",
+            "target_keys": ["ACME-10", "ACME-20"],
+            "outcome_ids": ["update", "comment"], "decisions": [],
+        },
+        "draft": {}, "change_plan": {
+            "keys": keys, "changes": {"priority": "P1-Critical"},
+            "comment": "결정",
+        },
+    }
+
+    blocked = G._propose(state)
+
+    assert blocked["approval_token"] == "" and blocked["comment_token"] == ""
+    assert any(row.get("field") == "target" for row in blocked["review"]["errors"])
+
+
+def test_propose_rejects_invalid_or_duplicate_bulk_comment_previews():
+    state = {
+        "thread_id": "typed-invalid-comment-preview",
+        "continuation_contract": {
+            "version": "continuation.v1", "root_request": "두 티켓 변경과 댓글",
+            "intent": "modify", "action": "mixed",
+            "target_keys": ["ACME-10", "ACME-20"],
+            "outcome_ids": ["update", "comment"], "decisions": [],
+        },
+        "draft": {}, "change_plan": {
+            "keys": ["ACME-10", "ACME-20"],
+            "changes": {"priority": "P1-Critical"}, "comment": "결정",
+            "comments": [
+                {"key": "ACME-10", "body": "결정"},
+                {"key": "ACME-20", "body": "결정"},
+                {"key": "NOT_A_KEY", "body": "유출"},
+            ],
+        },
+    }
+
+    blocked = G._propose(state)
+
+    assert blocked["approval_token"] == "" and blocked["comment_token"] == ""
+    assert any(row.get("field") == "comment_targets"
+               for row in blocked["review"]["errors"])
 
 
 def test_action_executor_write_adapter_allowlist_matches_registry_and_fails_on_drift():
@@ -1947,6 +2541,143 @@ def test_merge_join_reapplies_user_named_assignees_after_recommendations():
     assert [a.get("user") for a in merged["assignments"]] == ["skcc.x1402", "skcc.x1450"]
     assert all("payload" in a["reasons"][0] for a in merged["assignments"])
     assert not merged["assignments"][1].get("alternates"), "1순위와 같은 사용자는 대안이 아니다"
+
+
+def test_final_join_preserves_explicit_owner_unassigned_and_parent(monkeypatch):
+    """MTG5/MTG8: recommendations cannot override literal meeting decisions."""
+    from app.agent.workflow.agents import auditor
+
+    monkeypatch.setattr(auditor, "_machine_check", lambda _state: {
+        "ok": True, "errors": [], "warnings": [], "text": "ok",
+    })
+    state = {
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": "Epic DL-9200 아래에 Writer와 Reader 후속 작업을 만든다",
+            "intent": "plan_work", "action": "create",
+            "target_keys": ["DL-9200"], "outcome_ids": ["writer", "reader"],
+            "decisions": [{
+                "field": "parent", "value": "Epic DL-9200 아래", "source": "explicit_refinement",
+            }],
+        },
+        "review": {"ok": True, "errors": [], "problems": []},
+        "draft": {"mode": "task", "items": [{
+            "summary": "Writer 호환성 확인", "type": "Task", "epic": "DL-9200",
+            "assignee": "skcc.i2011", "assignee_source": "user",
+        }, {
+            "summary": "Reader 호환성 확인", "type": "Task", "epic": "DL-9200",
+            "assignee_source": "user_unassigned",
+        }]},
+        "assignments": [
+            {"index": 0, "user": "skcc.x1210", "reasons": ["부하가 낮음"]},
+            {"index": 1, "user": "skcc.x1103", "reasons": ["유사 이력"]},
+        ],
+    }
+
+    merged = G._merge_assignments(state)
+    writer, reader = merged["draft"]["items"]
+
+    assert writer["assignee"] == "skcc.i2011"
+    assert reader.get("assignee") in (None, "")
+    assert writer["epic"] == reader["epic"] == "DL-9200"
+    assert merged["review"]["ok"] is True
+    assert merged["review"]["final_authority"]["kind"] == "create"
+
+
+def test_final_join_rechecks_parent_after_premerge_auditor_passed(monkeypatch):
+    """The semantic Auditor verdict is not authority over the post-merge payload."""
+    from app.agent.workflow.agents import auditor
+
+    monkeypatch.setattr(auditor, "_machine_check", lambda _state: {
+        "ok": True, "errors": [], "warnings": [], "text": "ok",
+    })
+    state = {
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": "Epic DL-9200 아래에 Writer 확인 Task를 만든다",
+            "intent": "plan_work", "action": "create",
+            "target_keys": ["DL-9200"], "outcome_ids": ["writer"],
+            "decisions": [{
+                "field": "parent", "value": "DL-9200", "source": "interview_answer",
+            }],
+        },
+        "review": {"ok": True, "errors": [], "problems": []},
+        "draft": {"mode": "task", "items": [{
+            "summary": "Writer 확인", "type": "Task", "epic": "DL-7001",
+        }]},
+        "assignments": [],
+    }
+
+    merged = G._merge_assignments(state)
+
+    assert merged["review"]["ok"] is False
+    assert any(row.get("field") == "parent" for row in merged["review"]["errors"])
+    assert G.route_after_auditor({**state, **merged, "revisions": MAX_REVISIONS}) == "respond"
+
+
+def test_scoped_parent_decisions_are_not_reinterpreted_as_one_global_parent(monkeypatch):
+    from app.agent.workflow.agents import auditor
+
+    monkeypatch.setattr(auditor, "_machine_check", lambda _state: {
+        "ok": True, "errors": [], "warnings": [], "text": "ok",
+    })
+    state = {
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": "Bug와 Story를 각각 지정된 상위에 생성",
+            "intent": "plan_work", "action": "create",
+            "target_keys": ["DL-100", "DL-200"], "outcome_ids": ["bug", "story"],
+            "decisions": [
+                {"field": "parent:bug", "value": "DL-100", "source": "interview_answer"},
+                {"field": "parent:story", "value": "DL-200", "source": "interview_answer"},
+            ],
+        },
+        "review": {"ok": True, "errors": [], "problems": []},
+        "draft": {"mode": "task", "items": [
+            {"summary": "Bug 후속", "type": "Bug", "epic": "DL-100",
+             "outcome_refs": ["bug"]},
+            {"summary": "Story 후속", "type": "Story", "epic": "DL-200",
+             "outcome_refs": ["story"]},
+        ]},
+    }
+
+    review = auditor.final_authority_review(state, require_effect=True)
+
+    assert review["ok"] is True
+    assert not [row for row in review["errors"] if row.get("field") == "parent"]
+
+
+def test_final_join_blocks_explicit_single_subtask_cardinality_expansion(monkeypatch):
+    """ASKD2: one requested Sub-Task cannot become four approval payload items."""
+    from app.agent.workflow.agents import auditor
+
+    monkeypatch.setattr(auditor, "_machine_check", lambda _state: {
+        "ok": True, "errors": [], "warnings": [], "text": "ok",
+    })
+    state = {
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": "DL-9090 아래에 회귀 검증 Sub-Task 하나 만들어줘",
+            "intent": "plan_work", "action": "create",
+            "target_keys": ["DL-9090"], "outcome_ids": ["regression"],
+            "decisions": [],
+        },
+        "request_plan": {"tasks": [{
+            "id": "regression", "kind": "ticket", "write_intent": True,
+            "instruction": "DL-9090 아래에 회귀 검증 Sub-Task 하나 생성",
+        }]},
+        "review": {"ok": True, "errors": [], "problems": []},
+        "draft": {"mode": "subtask", "items": [
+            {"summary": f"회귀 검증 {index}", "type": "Sub-Task", "parent": "DL-9090"}
+            for index in range(1, 5)
+        ]},
+        "assignments": [],
+    }
+
+    merged = G._merge_assignments(state)
+
+    assert merged["review"]["ok"] is False
+    assert any(row.get("field") == "cardinality" for row in merged["review"]["errors"])
 
 
 def _any_real_user():

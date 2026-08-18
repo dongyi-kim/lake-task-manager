@@ -251,7 +251,7 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
     if bare_key and seedless and len(prompt) < 15:
         return {"ok": False, "needsInfo": True,
                 "error": ("이대로는 정확한 글을 쓸 수 없습니다 — 무엇에 대한 글인지 목적과 "
-                          "대상을 한 줄만 적어 주세요 (예: 'CDC 파이프라인 개선 작업 본문')")}
+                          "대상을 한 줄만 적어 주세요 (예: '수집 파이프라인 개선 작업 본문')")}
 
     ctx = _ticket_context(ticket_key, kind)
     # A generic status-sharing comment is a projection of progress_report, not a writing
@@ -343,7 +343,7 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
         llm_usage = meter.snapshot() if meter is not None else llm_usage
         return {"ok": False, "error": _friendly_error(str(e)), "usage": llm_usage}
 
-    html = _unfence(html)
+    html = _normalize_editor_markup(_unfence(html))
     html = _preserve_ambiguous_seed(html, seed, prompt)
     # ── 피드백 루프: 모호해서 못 쓴다는 신호 — 일반론을 지어내는 것보다 낫다(사용자 요청).
     #    UI 는 팝업을 유지한 채 이 문구를 보여 주고 프롬프트·시드 보완을 유도한다.
@@ -368,13 +368,29 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
     # 확인 가능한 key/uid를 legacy 표기로 먼저 내린 뒤 기존 parser가 뱃지화한다.
     html = _ensure_review_context(html, prompt, ctx)
     html = _legacy_reference_tokens(html)
-    html = _badgeify(html)
     source = "\n".join((prompt, seed, ctx))
+    # A compatible model occasionally drops one project-key character while copying a
+    # nearby exact title (for example, `AB-123` -> `A-123`).  Repair only when both the
+    # unique numeric candidate and its canonical source title match; numeric suffix alone
+    # is never identity evidence.
+    html = _badgeify(html, ticket_aliases=_source_ticket_aliases(html, source))
+    unsupported_people = _unverified_editor_person_ids(html, prompt, source)
+    if unsupported_people:
+        return {"ok": False, "contentConflict": True,
+                "error": ("AI 생성문에 확인할 수 없는 사람 참조가 있어 삽입하지 않았습니다: "
+                          + ", ".join(unsupported_people[:5])),
+                "usage": llm_usage}
     html = _ground_editor_person_mentions(html, prompt, source)
     if kind != "description":
         html = _normalize_unfinished_checklist_labels(html, ctx)
     # The editor may mention only entities supplied by the user or the verified ticket context.
     # Existence alone is insufficient: a real but unrelated ticket is still unsupported evidence.
+    unsupported_tickets = _unverified_editor_ticket_keys(html, source)
+    if unsupported_tickets:
+        return {"ok": False, "contentConflict": True,
+                "error": ("AI 생성문에 현재 자료로 확인할 수 없는 ticket 참조가 있어 "
+                          "삽입하지 않았습니다: " + ", ".join(unsupported_tickets[:5])),
+                "usage": llm_usage}
     html = _drop_unverified_editor_ticket_claims(html, source)
     html = _ground_acceptance_metrics(html, source)
     if kind == "description":
@@ -385,6 +401,7 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
     html = _drop_generic_editor_closer(html)
     html = _drop_unverified_editor_dates(html, source)
     html = _repair_dangling_editor_ending(html)
+    html = _qualify_non_done_ticket_claims(html, ctx)
 
     # 의미 후검증 — 자료가 명시적으로 '남은 일'이라고 한 대상을 완료로 뒤집은 문장은
     # 사용자가 자기 이름으로 게시하기 전에 차단한다. 경고만 띄우고 삽입하면 토스트를 놓친
@@ -405,16 +422,49 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
     references = []
     unresolved = []
     try:
-        from app.agent.references import resolve_references
-        resolved = resolve_references(_reference_candidates(html))
+        from app.agent.references import (render_editor_references, resolve_references,
+                                          validate_editor_html)
+        candidates = _reference_candidates(html)
+        allowed_urls = {_html.unescape(value).rstrip(".,;:!?)]}") for value in re.findall(
+            r"https?://[^\s<>\"']+", source, re.I)}
+        unsupported_urls = sorted({
+            str(item.get("url") or "") for item in candidates
+            if item.get("kind") in {"document", "external"}
+            and str(item.get("url") or "") not in allowed_urls
+            and str(item.get("url") or "") not in _html.unescape(source)
+        })
+        if unsupported_urls:
+            return {"ok": False, "contentConflict": True,
+                    "error": ("AI 생성문에 현재 자료로 확인할 수 없는 URL이 있어 "
+                              "삽입하지 않았습니다: " + ", ".join(unsupported_urls[:3])),
+                    "usage": llm_usage}
+        resolved = resolve_references(candidates)
         references = resolved.get("references") or []
         unresolved = resolved.get("unresolved") or []
+        if unresolved:
+            message = ", ".join(str(item.get("id") or "") for item in unresolved[:5])
+            return {"ok": False, "contentConflict": True,
+                    "error": ("AI 생성문에 해결할 수 없는 참조가 있어 삽입하지 않았습니다: "
+                              + message),
+                    "references": references, "usage": llm_usage}
         html = _normalize_editor_ticket_titles(html, references)
-    except Exception:
-        pass
+        html = render_editor_references(html, references)
+        final_check = validate_editor_html(html, references)
+        if not final_check.get("ok"):
+            issue_text = ", ".join(
+                f'{item.get("code")}: {item.get("value")}'
+                for item in (final_check.get("issues") or [])[:5])
+            return {"ok": False, "contentConflict": True,
+                    "error": ("AI 생성문의 최종 editor 렌더링 계약이 안전하지 않아 "
+                              "삽입하지 않았습니다 — " + issue_text),
+                    "references": references, "usage": llm_usage}
+    except Exception as exc:
+        return {"ok": False, "contentConflict": True,
+                "error": ("AI 생성문의 참조를 안전하게 확인하지 못해 삽입하지 않았습니다: "
+                          + str(exc)[:180]),
+                "usage": llm_usage}
 
     # 접지 — 챗과 **같은 검사**를 태운다. 에디터에 꽂히는 글이라고 날조를 봐줄 이유가 없다.
-    note_parts = []
     try:
         from app.agent.workflow import grounding
         # Ground visible prose, not HTML attributes such as data-key/href. Attribute copies of a key
@@ -422,20 +472,22 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
         bad = grounding.check(_plain_text(html))
         unknown = ((bad.get("fake_keys") or []) + (bad.get("fake_people") or []))
         if unknown:
-            note_parts.append("확인되지 않은 항목: " + ", ".join(str(x) for x in unknown[:5]))
+            return {"ok": False, "contentConflict": True,
+                    "error": ("AI 생성문에 확인되지 않은 항목이 있어 삽입하지 않았습니다: "
+                              + ", ".join(str(x) for x in unknown[:5])),
+                    "references": references, "usage": llm_usage}
         wrong_titles = list((bad.get("wrong_titles") or {}))
         if wrong_titles:
-            note_parts.append("실제 제목과 다른 티켓 표기: "
-                              + ", ".join(str(x) for x in wrong_titles[:5]))
+            return {"ok": False, "contentConflict": True,
+                    "error": ("AI 생성문에 canonical 제목과 다른 ticket 표기가 남아 있어 "
+                              "삽입하지 않았습니다: "
+                              + ", ".join(str(x) for x in wrong_titles[:5])),
+                    "references": references, "usage": llm_usage}
     except Exception:
         pass
     # UI가 ticket/person/document를 다시 regex 추측하지 않도록 canonical reference bundle을
-    # 함께 보낸다. 해결 실패는 malformed anchor를 만들지 않고 note로 노출한다.
-    if unresolved:
-        message = ", ".join(str(x.get("id") or "") for x in unresolved[:5])
-        note_parts.append(f"확인되지 않은 참조: {message}")
-    note = " ".join(note_parts)
-    return {"ok": True, "html": html, "note": note, "references": references,
+    # 함께 보낸다. 해결 실패는 위의 final authority gate에서 성공 응답 전에 차단한다.
+    return {"ok": True, "html": html, "note": "", "references": references,
             "usage": llm_usage}
 
 
@@ -450,6 +502,35 @@ def _need_info(value: str) -> str:
     plain = _plain_text(_unfence(value)).strip().strip("`'\"“”‘’ ")
     match = re.match(r"NEED_INFO:\s*(.+)", plain, re.S | re.I)
     return match.group(1).strip().strip("`'\"“”‘’ ")[:300] if match else ""
+
+
+def _normalize_editor_markup(value: str) -> str:
+    """Recover a pure Markdown/plain provider response into editor HTML once.
+
+    Existing HTML is never fed through the Markdown renderer because escaping it would
+    destroy already-typed badges and task lists.  A hybrid HTML/Markdown response keeps its
+    bytes and is rejected by the final validator if raw syntax remains.
+    """
+    out = str(value or "").strip()
+    if not out:
+        return ""
+    has_editor_html = bool(re.search(
+        r"</?(?:p|br|hr|h[1-6]|ul|ol|li|a|span|strong|em|s|code|pre|blockquote|"
+        r"table|thead|tbody|tfoot|tr|td|th)\b", out, re.I))
+    if has_editor_html:
+        return out
+    markdown_links = re.findall(r"!?\[[^\]\n]*\]\(([^)\s]+)\)", out)
+    if any(not re.match(r"^https?://", destination, re.I)
+           for destination in markdown_links):
+        # The shared renderer intentionally drops unsupported destinations.  In an Agent
+        # draft that would silently erase meaning, so preserve the raw token for the final
+        # validator to reject instead.
+        return out
+    try:
+        from app.content.mdhtml import markdown_to_html
+        return markdown_to_html(out)
+    except Exception:
+        return out
 
 
 def _preserve_ambiguous_seed(rendered: str, seed: str, prompt: str) -> str:
@@ -533,6 +614,34 @@ def _unrelated_information_request(prompt: str, context: str) -> bool:
     return bool(words and not any(re.sub(r"\s+", "", word) in haystack for word in words))
 
 
+def _editor_person_boundary(prompt: str, source: str) -> tuple[set[str], str, bool]:
+    allowed = set(re.findall(r"\[~([A-Za-z0-9._-]+)\]", source or ""))
+    primary_match = re.search(
+        r'^\[[A-Z][A-Z0-9]*-\d+\].*?·\s*담당\s+\[~([A-Za-z0-9._-]+)\]',
+        source or "", re.M,
+    )
+    primary = primary_match.group(1) if primary_match else ""
+    asks_assignee = bool(re.search(r"멘션|담당자|담당\s*(?:을|에게|한테)", prompt or ""))
+    return allowed, primary, asks_assignee
+
+
+def _unverified_editor_person_ids(rendered: str, prompt: str, source: str) -> list[str]:
+    """Return unsupported ids unless the explicit-assignee request has one exact replacement."""
+    allowed, primary, asks_assignee = _editor_person_boundary(prompt, source)
+    ids = set(re.findall(
+        r'<span\b[^>]*\bdata-(?:id|uid)=["\']([A-Za-z0-9._-]+)["\'][^>]*>',
+        str(rendered or ""), re.I))
+    unsupported = sorted(ids - allowed)
+    generic_request = bool(re.search(
+        r"담당자(?:를|에게|한테)?\s*(?:직접\s*)?멘션|담당\s*(?:자를\s*)?멘션",
+        prompt or ""))
+    # One generic placeholder can safely mean the already verified primary assignee.
+    # Multiple actors or a named/id-specific request cannot be collapsed to one person.
+    can_replace = (len(ids) == 1 and len(unsupported) == 1 and asks_assignee
+                   and generic_request and bool(primary))
+    return [] if can_replace else unsupported
+
+
 def _ground_editor_person_mentions(rendered: str, prompt: str, source: str) -> str:
     """Keep only verified people from editor context and use the primary assignee when asked.
 
@@ -543,13 +652,7 @@ def _ground_editor_person_mentions(rendered: str, prompt: str, source: str) -> s
     removed rather than leaving a broken ``담당자 께서는`` fragment.
     """
     out = str(rendered or "")
-    allowed = set(re.findall(r"\[~([A-Za-z0-9._-]+)\]", source or ""))
-    primary_match = re.search(
-        r'^\[[A-Z][A-Z0-9]*-\d+\].*?·\s*담당\s+\[~([A-Za-z0-9._-]+)\]',
-        source or "", re.M,
-    )
-    primary = primary_match.group(1) if primary_match else ""
-    asks_assignee = bool(re.search(r"멘션|담당자|담당\s*(?:을|에게|한테)", prompt or ""))
+    allowed, primary, asks_assignee = _editor_person_boundary(prompt, source)
     pattern = (r'<span\b[^>]*data-type="mention"[^>]*data-id="([^"]+)"[^>]*>'
                r'.*?</span>')
 
@@ -663,6 +766,14 @@ def _drop_unrequested_description_quality_claims(rendered: str, source: str) -> 
 
     return re.sub(r"<li\b[^>]*data-checked=[\"']?false[\"']?[^>]*>(.*?)</li>",
                   clean_dod, out, flags=re.S | re.I)
+
+
+def _unverified_editor_ticket_keys(rendered: str, source: str) -> list[str]:
+    allowed = {value.upper() for value in re.findall(
+        r"\b[A-Z][A-Z0-9]{1,9}-\d+\b", source or "", re.I)}
+    visible = {value.upper() for value in re.findall(
+        r"\b[A-Z][A-Z0-9]{1,9}-\d+\b", _plain_text(rendered), re.I)}
+    return sorted(visible - allowed)
 
 
 def _drop_unverified_editor_ticket_claims(rendered: str, source: str) -> str:
@@ -869,6 +980,43 @@ def _status_conflicts(rendered: str, context: str) -> list[str]:
     return bad
 
 
+def _qualify_non_done_ticket_claims(rendered: str, context: str) -> str:
+    """Replace a completion claim tied to an exact non-done child badge.
+
+    Title-based topic matching cannot connect `ABC-123 연동 완료` to a child whose title is
+    `다운스트림 조회 연동`.  The deterministic child row carries the exact key and Jira
+    status, so only the short completion clause immediately following that canonical badge
+    is qualified; unrelated completed siblings and the rest of the sentence are preserved.
+    """
+    children = re.findall(
+        r'\b([A-Z][A-Z0-9]{1,9}-\d+)\s+"[^"]+"\(미완료:\s*([^)]+)\)',
+        str(context or ""), re.I)
+    out = str(rendered or "")
+    for raw_key, raw_status in children:
+        key = raw_key.upper()
+        status = _html.escape(raw_status.strip() or "상태 미상")
+        anchor = (rf'(<a\b[^>]*data-key=["\']{re.escape(key)}["\'][^>]*>'
+                  rf'.*?</a>)')
+        claim = re.compile(
+            anchor
+            + r'(?P<subject>[^<\n.!?]{0,80}?)'
+              r'(?:완료(?:되었습니다|됐습니다|했습니다|하였습니다|되었|됐|했|함|됨|된|하였)?)'
+              r'(?!\s*(?:조건|기준|여부|시점|계획|예정|목표|를?\s*위해))'
+              r'(?P<linker>\s*에\s*따른|\s*에\s*따라|\s*로\s*인해|\s*하여|\s*해서)?',
+            re.S | re.I)
+
+        def qualify(match):
+            subject = re.sub(r"(?:은|는|이|가|을|를)?\s*$", "",
+                             match.group("subject") or "").strip()
+            subject_text = (" " + _html.escape(subject) if subject else " 해당 작업")
+            bridge = ". 상태 확인 후" if (match.group("linker") or "").strip() else ""
+            return (match.group(1) + subject_text + f"은 Jira 상태 {status}로 "
+                    f"최종 상태 확인 필요{bridge}")
+
+        out = claim.sub(qualify, out)
+    return out
+
+
 def _topic_matches(topic: str, sentence: str) -> bool:
     """`다운스트림 조회 연동`과 `다운스트림 2홉 조회` 같은 안전한 축약을 맞춘다."""
     topic_plain = re.sub(r"^\s*\[[^\]]+\]\s*", "", str(topic or ""))
@@ -933,7 +1081,42 @@ def _qualify_status_conflicts(rendered: str, topics: list[str]) -> str:
     return out
 
 
-def _badgeify(html: str) -> str:
+def _source_ticket_aliases(rendered: str, source: str) -> dict[str, str]:
+    """Resolve a one-character project-prefix copy error only with exact title evidence.
+
+    A numeric issue suffix is not globally unique and is never enough.  The verified source
+    must contain exactly one key with that suffix, the copied prefix must be exactly one
+    character shorter, and the quoted title beside the generated token must equal the
+    canonical quoted source title.
+    """
+    row = re.compile(
+        r"\b([A-Z][A-Z0-9]{0,9})-(\d+)\b[^\n\"“]{0,100}[\"“]([^\"”\n]{2,180})[\"”]",
+        re.I)
+    source_by_number: dict[str, dict[str, tuple[str, str, str]]] = {}
+    for match in row.finditer(_plain_text(source)):
+        prefix, number, title = match.group(1).upper(), match.group(2), match.group(3)
+        key = f"{prefix}-{number}"
+        source_by_number.setdefault(number, {})[key] = (
+            key, prefix, re.sub(r"\s+", " ", title).strip().casefold())
+
+    aliases: dict[str, str] = {}
+    for match in row.finditer(_plain_text(rendered)):
+        prefix, number, title = match.group(1).upper(), match.group(2), match.group(3)
+        raw_key = f"{prefix}-{number}"
+        candidates = list((source_by_number.get(number) or {}).values())
+        if len(candidates) != 1 or candidates[0][0] == raw_key:
+            continue
+        key, canonical_prefix, canonical_title = candidates[0]
+        copied_title = re.sub(r"\s+", " ", title).strip().casefold()
+        prefix_supported = (len(canonical_prefix) == len(prefix) + 1
+                            and (canonical_prefix.startswith(prefix)
+                                 or canonical_prefix.endswith(prefix)))
+        if prefix_supported and canonical_title and copied_title == canonical_title:
+            aliases[raw_key] = key
+    return aliases
+
+
+def _badgeify(html: str, ticket_aliases: dict[str, str] | None = None) -> str:
     """평문 언급 → 에디터 뱃지 마크업.
 
     · 티켓 키(태그 밖 텍스트의 `DL-123`) → `<a href=".../browse/DL-123">DL-123</a>`
@@ -946,6 +1129,9 @@ def _badgeify(html: str) -> str:
     from html.parser import HTMLParser
     from app.agent.tools._ctx import jira_key_allowed
 
+    aliases = {str(key).upper(): str(value).upper()
+               for key, value in (ticket_aliases or {}).items()}
+
     class BadgeParser(HTMLParser):
         def __init__(self):
             super().__init__(convert_charrefs=False)
@@ -956,10 +1142,11 @@ def _badgeify(html: str) -> str:
             if tag.lower() == "a":
                 pairs = [(str(k), str(v or "")) for k, v in attrs]
                 href = next((v for k, v in pairs if k.lower() == "href"), "")
-                hit = (re.fullmatch(r"([A-Z][A-Z0-9]{1,9}-\d+)", href.strip(), re.I)
-                       or re.search(r"/browse/([A-Z][A-Z0-9]{1,9}-\d+)(?:$|[?#])",
+                hit = (re.fullmatch(r"([A-Z][A-Z0-9]{0,9}-\d+)", href.strip(), re.I)
+                       or re.search(r"/browse/([A-Z][A-Z0-9]{0,9}-\d+)(?:$|[?#])",
                                     href.strip(), re.I))
-                key = hit.group(1).upper() if hit else ""
+                raw_key = hit.group(1).upper() if hit else ""
+                key = aliases.get(raw_key, raw_key)
                 if key and jira_key_allowed(key):
                     # 모델이 ``href="DL-1"``이나 절대 Jira URL을 내도 editor가 이해하는
                     # canonical ticket badge anchor 하나로 정규화한다.
@@ -983,21 +1170,35 @@ def _badgeify(html: str) -> str:
                 del self.stack[idx:]
 
         def handle_data(self, data):
-            if any(x in self.stack for x in ("a", "table", "code", "pre")):
+            if any(x in self.stack for x in ("a", "code", "pre")):
                 self.out.append(data); return
-            pattern = re.compile(r"\[~([A-Za-z0-9._-]+)\]|\b([A-Z][A-Z0-9]{1,9}-\d+)\b")
+            pattern = re.compile(
+                r"(?P<url>https?://[^\s<>\"']+)|"
+                r"\[~(?P<bracket_uid>[A-Za-z0-9._-]+)\]|"
+                r"(?<![\w@])@(?P<at_uid>[A-Za-z0-9][A-Za-z0-9._-]{1,63})\b|"
+                r"\b(?P<key>[A-Z][A-Z0-9]{0,9}-\d+)\b",
+                re.I)
             pos = 0
             for match in pattern.finditer(data):
                 self.out.append(data[pos:match.start()])
-                uid, key = match.group(1), match.group(2)
+                url = match.group("url") or ""
+                uid = match.group("bracket_uid") or match.group("at_uid") or ""
+                raw_key = (match.group("key") or "").upper()
+                key = aliases.get(raw_key, raw_key)
                 if uid:
                     self.out.append(f'<span data-type="mention" data-id="{_html.escape(uid)}">'
                                     f'@{_html.escape(uid)}</span>')
+                elif url:
+                    clean = url.rstrip(".,;:!?)]}")
+                    suffix = url[len(clean):]
+                    safe = _html.escape(clean, quote=True)
+                    self.out.append(f'<a href="{safe}">{_html.escape(clean)}</a>{suffix}')
                 elif jira_key_allowed(key):
-                    self.out.append(f'<a class="jira-badge tkt" data-key="{key}" '
-                                    f'href="/browse/{key}">{key}</a>')
+                    safe = _html.escape(key, quote=True)
+                    self.out.append(f'<a class="jira-badge tkt" data-key="{safe}" '
+                                    f'href="/browse/{safe}">{_html.escape(key)}</a>')
                 else:
-                    self.out.append(key)
+                    self.out.append(raw_key)
                 pos = match.end()
             self.out.append(data[pos:])
 
@@ -1038,27 +1239,27 @@ def _legacy_reference_tokens(value: str) -> str:
 
 def _reference_candidates(rendered: str) -> list[dict]:
     """생성 HTML에서 typed reference 후보를 추출한다. label/url 검증은 resolver가 한다."""
-    from urllib.parse import urlsplit
     from app.agent.retrieval.harvest import _conf_id
-    from app.agent.tools._ctx import settings
 
     refs, seen = [], set()
     for key in re.findall(r"\b([A-Z][A-Z0-9]{1,9}-\d+)\b", rendered or ""):
         rid = "ticket:" + key
         if rid not in seen:
             seen.add(rid); refs.append({"id": rid, "kind": "ticket", "key": key})
-    for uid in re.findall(r'data-id=["\']([A-Za-z0-9._-]+)["\']', rendered or ""):
+    for uid in re.findall(r'data-(?:id|uid)=["\']([A-Za-z0-9._-]+)["\']',
+                          rendered or "", re.I):
         rid = "person:" + uid
         if rid not in seen:
             seen.add(rid); refs.append({"id": rid, "kind": "person", "user_id": uid})
-    for url in re.findall(r'href=["\'](https?://[^"\']+)["\']', rendered or ""):
+    for url in re.findall(r'href=["\'](https?://[^"\']+)["\']', rendered or "", re.I):
+        url = _html.unescape(url)
         rid = "url:" + str(len(refs))
         if url not in seen:
             seen.add(url)
-            conf_base = str(getattr(settings(), "confluence_base", "") or "")
-            same_conf = bool(conf_base and urlsplit(conf_base).netloc.lower()
-                             == urlsplit(url).netloc.lower())
-            page_id = _conf_id(url) if same_conf else ""
+            page_id = _conf_id(url)
+            # A verified editor source can carry the public/corporate Confluence host while
+            # the local provider uses an in-process base URL.  Page identity and allowed
+            # space are validated by `_document`; host equality is not identity evidence.
             if page_id:
                 refs.append({"id": rid, "kind": "document", "page_id": page_id, "url": url})
             else:

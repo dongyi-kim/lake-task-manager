@@ -115,6 +115,31 @@ def test_heterogeneous_meeting_labels_are_recognized_and_attachment_filename_is_
     assert meeting_subject(state) == "Puffin StarRocks"
 
 
+def test_informal_meeting_subject_keeps_unseen_domain_acronyms_without_a_product_allowlist():
+    state = _state("회의 메모. ETL CDC SQL 전환 검증 결과를 정리해줘")
+
+    assert meeting_subject(state) == "ETL CDC SQL"
+
+
+def test_meeting_acronym_interview_is_name_invariant_after_research():
+    for term in ("QXZ", "VRT"):
+        request = (
+            "회의 결정에서 모호한 용어는 자료를 찾아도 확정되지 않으면 먼저 물어봐. "
+            f"{term} 검증 기준을 작성한다."
+        )
+        unresolved = {
+            **_state(request), "situation": "내부 기록과 외부 공식 자료 조사 완료",
+            "topic_dossier": f"{term}의 회의 내 정의는 확인되지 않음",
+        }
+        defined = {
+            **unresolved,
+            "topic_dossier": f"{term}는 Queue eXchange 검증 단계이며 판정 기준을 기록함",
+        }
+
+        assert term in str(unresolved_questions(unresolved))
+        assert term not in str(unresolved_questions(defined))
+
+
 def test_meeting_person_parsing_does_not_interview_particles_or_the_word_not_decided():
     set_person_context("meeting-person-boundaries", ["DL-9200"])
     request = ("회의 메모. 참석자는 다은님, 최하은, {{최민서:1042}}\n"

@@ -224,6 +224,167 @@ def test_runner_filters_zero_anchor_external_hit_but_keeps_raw_artifact(monkeypa
     assert got["query_artifacts"]["external-official"]["results"] == [unrelated, direct]
 
 
+def test_all_pages_marks_missing_cursor_and_count_mismatch_incomplete():
+    class OneBrokenPage:
+        @staticmethod
+        def invoke(_payload):
+            return {
+                "documents": [{"id": "1", "title": "one"}],
+                "total": 21, "hasMore": True, "nextCursor": "",
+            }
+
+    rows, meta = QueryRunner._all_pages(OneBrokenPage(), {})
+
+    assert len(rows) == 1
+    assert meta["incomplete"] is True
+    assert meta["incompleteReason"] == "missing_next_cursor"
+
+
+def test_all_pages_rejects_cursor_cycle_instead_of_claiming_complete():
+    class CyclingPages:
+        @staticmethod
+        def invoke(payload):
+            cursor = payload.get("cursor") or ""
+            next_cursor = {"": "A", "A": "B", "B": "A"}[cursor]
+            return {
+                "documents": [{"id": cursor or "root"}],
+                "total": 9, "hasMore": True, "nextCursor": next_cursor,
+            }
+
+    rows, meta = QueryRunner._all_pages(CyclingPages(), {})
+
+    assert len(rows) == 3
+    assert meta["incomplete"] is True
+    assert meta["incompleteReason"] == "cursor_cycle"
+
+
+def test_all_pages_rejects_an_exact_repeated_page_without_total_metadata():
+    class RepeatedPages:
+        @staticmethod
+        def invoke(payload):
+            return {
+                "documents": [{"id": "same"}],
+                "hasMore": not bool(payload.get("cursor")),
+                "nextCursor": "page-2" if not payload.get("cursor") else None,
+            }
+
+    rows, meta = QueryRunner._all_pages(RepeatedPages(), {})
+
+    assert rows == [{"id": "same"}]
+    assert meta["incomplete"] is True
+    assert meta["complete"] is False
+    assert meta["incompleteReason"] == "repeated_page"
+
+
+@pytest.mark.parametrize(
+    ("pages", "total", "reason", "expected_ids"),
+    [
+        (
+            [
+                {"documents": [{"id": "same"}], "hasMore": True, "nextCursor": "A"},
+                {"documents": [{"id": "same"}], "hasMore": False, "nextCursor": None},
+            ],
+            2, "repeated_page", ["same"],
+        ),
+        (
+            [{"documents": [{"id": "one"}, {"id": "two"}],
+              "hasMore": False, "nextCursor": None}],
+            1, "returned_above_total", ["one", "two"],
+        ),
+    ],
+)
+def test_all_pages_deduplicates_rows_and_requires_exact_total(
+        pages, total, reason, expected_ids):
+    class FakePages:
+        index = 0
+
+        @classmethod
+        def invoke(cls, _payload):
+            row = dict(pages[cls.index])
+            cls.index += 1
+            row["total"] = total
+            return row
+
+    rows, meta = QueryRunner._all_pages(FakePages(), {})
+
+    assert [row["id"] for row in rows] == expected_ids
+    assert meta["incomplete"] is True
+    assert meta["incompleteReason"] == reason
+    assert meta["complete"] is False
+
+
+def test_research_complete_plan_rejects_incomplete_page_metadata():
+    from app.agent.workflow.agents.research_analyst import _query_plan_is_complete
+
+    state = {
+        "query_plan": {"queries": [{
+            "id": "docs", "source": "confluence", "completeness": "all",
+        }]},
+        "query_results": [{
+            "id": "docs", "source": "confluence",
+            "result": {"documents": [{"id": "1"}], "incomplete": True,
+                       "incompleteReason": "cursor_cycle"},
+        }],
+    }
+
+    assert _query_plan_is_complete(state) is False
+
+
+def test_execute_jql_all_marks_missing_cursor_incomplete(monkeypatch):
+    from app.agent.tools import query_tools
+
+    monkeypatch.setattr(query_tools, "_jql_page", lambda *_args, **_kwargs: {
+        "canonicalJql": "project = AAA ORDER BY key ASC",
+        "total": 3, "tickets": [{"key": "AAA-1"}],
+        "hasMore": True, "nextCursor": "",
+    })
+    monkeypatch.setattr(query_tools, "search_projects", lambda: ["AAA"])
+
+    got = query_tools.execute_jql_all(where="status != Done")
+
+    assert got["tickets"] == [{"key": "AAA-1"}]
+    assert got["incomplete"] is True
+    assert got["complete"] is False
+    assert got["incompleteReason"] == "missing_next_cursor"
+
+
+def test_execute_jql_all_marks_unique_rows_above_total_incomplete(monkeypatch):
+    from app.agent.tools import query_tools
+
+    monkeypatch.setattr(query_tools, "_jql_page", lambda *_args, **_kwargs: {
+        "canonicalJql": "project = AAA ORDER BY key ASC", "total": 1,
+        "tickets": [{"key": "AAA-1"}, {"key": "AAA-2"}],
+        "hasMore": False, "nextCursor": None,
+    })
+    monkeypatch.setattr(query_tools, "search_projects", lambda: ["AAA"])
+
+    got = query_tools.execute_jql_all(where="status != Done")
+
+    assert got["incomplete"] is True
+    assert got["incompleteReason"] == "returned_above_total"
+
+
+def test_execute_jql_all_rejects_exact_repeated_page_without_total_metadata(monkeypatch):
+    from app.agent.tools import query_tools
+
+    pages = iter([
+        {"tickets": [{"key": "DL-1"}], "hasMore": True, "nextCursor": "next",
+         "total": None, "canonicalJql": "project = DL"},
+        {"tickets": [{"key": "DL-1"}], "hasMore": False, "nextCursor": None,
+         "total": None, "canonicalJql": "project = DL"},
+    ])
+
+    monkeypatch.setattr(query_tools, "_jql_page", lambda *args, **kwargs: next(pages))
+
+    got = query_tools.execute_jql_all(where="status != Done")
+
+    assert got["tickets"] == [{"key": "DL-1"}]
+    assert got["returned"] == 1
+    assert got["pages"] == 2
+    assert got["complete"] is False
+    assert got["incompleteReason"] == "repeated_page"
+
+
 def test_runner_keeps_direct_numbered_standard_when_subject_uses_its_public_name(monkeypatch):
     """A formal document number can be the direct source for a differently named standard."""
     from app.agent import tools as T
@@ -2009,6 +2170,25 @@ def test_empty_confluence_search_config_does_not_fallback():
     result = search_documents.invoke({"query": "anything"})
     assert "search.confluence.spaces" in result["error"]
     assert result["documents"] == []
+
+
+def test_confluence_subject_drops_only_document_form_words_when_material_is_specific():
+    from app.agent.workflow.agents.query_specialist import _normalize_internal_document_query
+
+    query = {"source": "confluence", "query": "AcmeGraph DeltaSketch VectorStats 설계"}
+    _normalize_internal_document_query(query)
+
+    assert query["query"] == "AcmeGraph DeltaSketch VectorStats"
+
+
+@pytest.mark.parametrize("subject", ["설계", "회의록", "design document"])
+def test_confluence_subject_does_not_broaden_a_form_only_query(subject):
+    from app.agent.workflow.agents.query_specialist import _normalize_internal_document_query
+
+    query = {"source": "confluence", "query": subject}
+    _normalize_internal_document_query(query)
+
+    assert query["query"] == subject
 
 
 def test_incomplete_assignee_query_joins_parent_children_and_hides_irrelevant(monkeypatch):

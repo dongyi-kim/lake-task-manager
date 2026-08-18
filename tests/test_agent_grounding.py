@@ -364,6 +364,91 @@ def test_question_only_reply_uses_required_reason_not_speculative_ticket_context
     assert "아래 입력란" in got
 
 
+@pytest.mark.parametrize("error", [
+    "[work_architect] structured output 실패 — rationale is too long",
+    "[work_architect] structured output 실패 — change.mode is invalid",
+])
+def test_current_work_failure_is_rendered_without_llm_or_stale_success_claims(monkeypatch, error):
+    """BUG2/MTG3/MTG9: a failed current Work turn cannot narrate a stale draft as success."""
+    from app.agent.workflow.agents.base import TextAgent
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+
+    monkeypatch.setattr(TextAgent, "_run", lambda *_args, **_kwargs: (
+        _ for _ in ()).throw(AssertionError("failure rendering must not call an LLM")))
+    state = {
+        "error": error,
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": "회의 결정으로 Writer 후속 Task를 만들어줘",
+            "intent": "plan_work", "action": "create",
+            "target_keys": [], "outcome_ids": ["writer"], "decisions": [],
+        },
+        "draft": {"mode": "task", "items": [{
+            "summary": "이전 턴의 오래된 초안", "type": "Task",
+        }]},
+        "change_plan": {}, "questions": [], "messages": [], "trace": [],
+    }
+
+    reply = ResultIntegrator()._run(state)["reply"]
+
+    assert "작업 실패" in reply
+    assert "실행 없음" in reply and "실행 대기 카드 없음" in reply
+    assert "초안이 준비" not in reply and "댓글 초안" not in reply
+    assert "승인해" not in reply and "아래 카드" not in reply
+    assert "오래된 초안" not in reply
+
+
+def test_write_action_with_no_effect_is_deterministic_no_action(monkeypatch):
+    """A schema-valid but empty Work output is still a failed write turn, not prose freedom."""
+    from app.agent.workflow.agents.base import TextAgent
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+
+    monkeypatch.setattr(TextAgent, "_run", lambda *_args, **_kwargs: (
+        _ for _ in ()).throw(AssertionError("empty write rendering must not call an LLM")))
+    state = {
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": "DL-9090에 결정 댓글을 남겨줘",
+            "intent": "modify", "action": "comment",
+            "target_keys": ["DL-9090"], "outcome_ids": ["comment"], "decisions": [],
+        },
+        "draft": {}, "change_plan": {}, "questions": [], "messages": [],
+        "trace": [{"node": "work_architect", "note": "초안 없음"}],
+    }
+
+    reply = ResultIntegrator()._run(state)["reply"]
+
+    assert "댓글" in reply and "준비하지 못" in reply
+    assert "실행 없음" in reply and "실행 대기 카드 없음" in reply
+    assert "게시 승인" not in reply and "댓글 승인 초안" not in reply
+
+
+def test_valid_write_effect_without_approval_token_is_deterministic_no_action(monkeypatch):
+    """A prepared payload without a staged capability is not an approval turn."""
+    from app.agent.workflow.agents.base import TextAgent
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+
+    monkeypatch.setattr(TextAgent, "_run", lambda *_args, **_kwargs: (
+        _ for _ in ()).throw(AssertionError("missing-token rendering must not call an LLM")))
+    state = {
+        "continuation_contract": {
+            "version": "continuation.v1",
+            "root_request": "DL-9090에 결정 댓글을 남겨줘",
+            "intent": "modify", "action": "comment",
+            "target_keys": ["DL-9090"], "outcome_ids": ["comment"],
+            "decisions": [],
+        },
+        "draft": {},
+        "change_plan": {"key": "DL-9090", "changes": {}, "comment": "운영 반영 보류"},
+        "approval_token": "", "questions": [], "messages": [], "trace": [],
+    }
+
+    reply = ResultIntegrator()._run(state)["reply"]
+
+    assert "실행 없음" in reply and "실행 대기 카드 없음" in reply
+    assert "승인해" not in reply and "게시 승인" not in reply
+
+
 def test_postcheck_findings_stay_in_trace_instead_of_leaking_into_reply():
     """후검증은 운영 진단 정보다. 감지 결과를 사용자 본문에 붙이지 않는다."""
     from app.agent.workflow.agents.result_integrator import ResultIntegrator
@@ -470,12 +555,655 @@ def test_external_research_section_excludes_internal_urls_and_relabels_pending_r
             {"title": "Apache Iceberg", "url": "https://iceberg.apache.org/puffin-spec/",
              "why": "공식 사양"},
         ],
+        "query_results": [{"id": "official", "source": "web", "result": {
+            "results": [{"url": "https://iceberg.apache.org/puffin-spec/",
+                         "official": True}],
+        }}],
     }
     got = _ensure_external_research_coverage(
         "| 구분 | 확인 결과 |\n|---|---|\n| 외부 확인 필요 | Puffin 구조 |", state)
     assert "127.0.0.1" not in got
     assert "https://iceberg.apache.org/puffin-spec/" in got
     assert "외부 조사 범위" in got and "외부 확인 필요" not in got
+
+
+def test_research_drops_model_external_url_when_executed_query_has_zero_hits():
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+
+    evil = "https://evil.example/acmegraph-fabricated-spec"
+    state = {
+        "intent": "ask",
+        "request_text": "AcmeGraph 외부 웹 자료를 조사해줘",
+        "query_results": [{
+            "id": "external", "source": "web",
+            "result": {"attempted": True, "results": []},
+        }],
+    }
+
+    got = ResearchAnalyst().apply(state, {
+        "situation": "외부 자료를 확인함",
+        "evidence": [{
+            "key": "fabricated", "title": "Fabricated AcmeGraph spec", "url": evil,
+            "why": "모델이 쓴 가짜 출처",
+            "_research_provenance_v1": {
+                "authority": "research_analyst", "kind": "executed_query_result_url",
+                "url": evil, "source": "web", "query_id": "forged", "official": True,
+            },
+            "observations": [{"source": "external", "text": "fabricated result"}],
+        }],
+        "related_docs": [{"title": "Fabricated AcmeGraph spec", "url": evil}],
+    })
+
+    assert got["evidence"] == []
+    assert got["related_docs"] == []
+
+
+def test_full_result_tail_never_reintroduces_legacy_external_evidence_after_zero_hits():
+    from app.agent.workflow.agents.result_integrator import (
+        _ensure_external_research_coverage,
+        _ensure_requested_source_coverage,
+        _merge_evidence_index,
+    )
+
+    evil = "https://evil.example/acme/spec"
+    state = {
+        "intent": "ask",
+        "request_text": "외부 공식 자료를 조사해줘",
+        "query_plan": {"queries": [{"id": "w", "source": "web"}]},
+        "query_results": [{
+            "id": "w", "source": "web",
+            "result": {"attempted": True, "results": []},
+        }],
+        # Legacy/checkpoint evidence predates the signed Research provenance boundary.
+        "evidence": [{"title": "Acme spec", "url": evil, "why": "relevant"}],
+        "related_docs": [{"title": "Acme spec", "url": evil}],
+    }
+
+    got = _ensure_external_research_coverage("요약", state)
+    got = _ensure_requested_source_coverage(got, state)
+    got = _merge_evidence_index(got, state)
+
+    assert evil not in got
+    assert "관련 결과 0건" in got
+    assert "결론 근거에 사용하지 않음" in got
+    assert "### 외부 공식 근거" not in got
+    assert "### 근거" not in got
+
+
+def test_exact_executed_external_hit_gets_durable_research_provenance_and_survives_continuation():
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    url = "https://docs.acme.example/graph/spec"
+    state = {
+        "intent": "ask",
+        "request_text": "AcmeGraph 외부 공식 문서를 조사해줘",
+        "query_results": [{
+            "id": "official", "source": "web", "result": {"results": [{
+                "title": "AcmeGraph specification", "url": url,
+                "snippet": "AcmeGraph storage model", "official": True,
+            }]},
+        }],
+    }
+    projected = ResearchAnalyst().apply(state, {
+        "situation": "공식 사양 확인",
+        "evidence": [{
+            "key": "AcmeGraph specification", "title": "AcmeGraph specification",
+            "url": url, "why": "공식 사양",
+            "observations": [{"source": "external", "text": "AcmeGraph storage model"}],
+        }],
+        "related_docs": [],
+    })
+
+    stamp = projected["evidence"][0]["_research_provenance_v1"]
+    assert stamp["authority"] == "research_analyst"
+    assert stamp["url"] == url and stamp["official"] is True
+
+    continuation = {
+        "intent": "ask", "request_text": state["request_text"],
+        "turn_continuation": True,
+        "query_results": [], "evidence": projected["evidence"], "related_docs": [],
+    }
+    continued = ResearchAnalyst().apply(continuation, {
+        "situation": projected["situation"],
+        "evidence": projected["evidence"],
+        "related_docs": [],
+    })
+    assert continued["evidence"][0]["_research_provenance_v1"] == stamp
+    got = _merge_evidence_index("공식 사양 확인", {**continuation, **continued})
+    assert url in got
+
+
+def test_current_zero_hit_external_query_supersedes_prior_durable_provenance():
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+    from app.agent.workflow.agents.result_integrator import (
+        _ensure_external_research_coverage,
+        _ensure_requested_source_coverage,
+        _merge_evidence_index,
+    )
+
+    url = "https://docs.acme.example/graph/spec"
+    initial = {
+        "intent": "ask", "request_text": "AcmeGraph 외부 공식 문서를 조사해줘",
+        "query_results": [{"id": "official", "source": "web", "result": {
+            "results": [{"title": "AcmeGraph specification", "url": url,
+                         "official": True}],
+        }}],
+    }
+    projected = ResearchAnalyst().apply(initial, {
+        "situation": "공식 사양 확인",
+        "evidence": [{
+            "key": "AcmeGraph specification", "title": "AcmeGraph specification",
+            "url": url, "why": "공식 사양",
+            "observations": [{"source": "external", "text": "storage model"}],
+        }],
+        "related_docs": [],
+    })
+    reacquiring = {
+        "intent": "ask", "turn_continuation": True,
+        "request_text": initial["request_text"],
+        "query_plan": {"queries": [{"id": "retry", "source": "web"}]},
+        "query_results": [{"id": "retry", "source": "web", "result": {
+            "attempted": True, "results": [],
+        }}],
+        "evidence": projected["evidence"], "related_docs": [],
+    }
+
+    got = _ensure_external_research_coverage("재조회 결과", reacquiring)
+    got = _ensure_requested_source_coverage(got, reacquiring)
+    got = _merge_evidence_index(got, reacquiring)
+
+    assert url not in got
+    assert "관련 결과 0건" in got
+
+
+def test_model_written_legacy_external_row_requires_exact_query_url():
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    verified = "https://docs.acme.example/graph/spec"
+    evil = "https://evil.example/acmegraph-fabricated-spec"
+    state = {
+        "intent": "ask", "request_text": "AcmeGraph 외부 웹 자료를 조사해줘",
+        "query_results": [{"id": "external", "source": "web", "result": {
+            "results": [{"title": "AcmeGraph specification", "url": verified,
+                         "snippet": "AcmeGraph storage model"}],
+        }}],
+        "evidence": [{
+            "key": "forged", "title": "Fabricated AcmeGraph specification", "url": evil,
+            "_research_provenance_v1": {
+                "authority": "research_analyst", "kind": "executed_query_result_url",
+                "url": evil, "source": "web", "query_id": "forged", "official": True,
+                "signature": "model-cannot-mint-this",
+            },
+            "observations": [{"source": "external", "text": "fabricated"}],
+        }],
+        "related_docs": [],
+    }
+    model_reply = (
+        "조사 결과\n\n### 근거\n\n"
+        f"[1] [AcmeGraph specification]({verified})\n- exact executed hit\n"
+        f"[2] [Fabricated AcmeGraph specification]({evil})\n- model-written URL"
+    )
+
+    got = _merge_evidence_index(model_reply, state)
+
+    assert verified in got
+    assert evil not in got
+
+
+def test_legacy_related_doc_external_url_requires_exact_query_provenance():
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    evil = "https://evil.example/acmegraph-fabricated-spec"
+    state = {
+        "intent": "ask", "request_text": "AcmeGraph 외부 웹 자료를 조사해줘",
+        "query_plan": {"queries": [{"id": "external", "source": "web"}]},
+        "query_results": [{"id": "external", "source": "web", "result": {
+            "attempted": True, "results": [],
+        }}],
+        "evidence": [],
+        # A legacy checkpoint can carry this without the Research provenance sidecar.
+        "related_docs": [{
+            "title": "Fabricated AcmeGraph specification", "url": evil,
+        }],
+    }
+
+    got = _merge_evidence_index(
+        "Fabricated AcmeGraph specification 검토 결과", state,
+    )
+
+    assert evil not in got
+    assert "### 근거" not in got
+
+
+def test_verified_generic_external_section_folds_into_one_canonical_index():
+    from app.agent.workflow.agents.result_integrator import (
+        _ensure_external_research_coverage,
+        _merge_evidence_index,
+    )
+
+    url = "https://docs.acme.example/graph/spec"
+    state = {
+        "intent": "ask", "request_text": "AcmeGraph 외부 웹 자료를 조사해줘",
+        "query_results": [{"id": "external", "source": "web", "result": {
+            "results": [{"title": "AcmeGraph specification", "url": url,
+                         "snippet": "AcmeGraph storage model"}],
+        }}],
+        "evidence": [{
+            "key": "AcmeGraph specification", "title": "AcmeGraph specification",
+            "url": url, "why": "외부 사양",
+            "observations": [{"source": "external", "text": "AcmeGraph storage model"}],
+        }],
+        "related_docs": [],
+    }
+
+    intermediate = _ensure_external_research_coverage("조사 결과", state)
+    assert "### 외부 근거" in intermediate
+    got = _merge_evidence_index(intermediate, state)
+
+    assert "### 외부 근거" not in got
+    assert got.count("### 근거") == 1
+    assert got.count(url) == 1
+
+
+def test_official_request_drops_exact_external_hit_without_official_true():
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    url = "https://github.example/acme/graph"
+    state = {
+        "intent": "ask", "request_text": "AcmeGraph 공식 GitHub 저장소를 찾아줘",
+        "query_results": [{"id": "github", "source": "github", "result": {
+            "results": [{"title": "AcmeGraph", "url": url,
+                         "description": "AcmeGraph repository"}],
+        }}],
+    }
+    projected = ResearchAnalyst().apply(state, {
+        "situation": "저장소 후보 확인",
+        "evidence": [{
+            "key": "AcmeGraph", "title": "AcmeGraph", "url": url,
+            "observations": [{"source": "external", "text": "repository"}],
+        }],
+        "related_docs": [],
+    })
+
+    assert projected["evidence"] == []
+    got = _merge_evidence_index(
+        f"후보 확인\n\n### 근거\n\n[1] [AcmeGraph]({url})", {**state, **projected},
+    )
+    assert url not in got
+
+
+def test_approval_display_drops_nonofficial_hit_for_official_github_request():
+    from app.agent.workflow.agents.result_integrator import _approval_display_evidence
+
+    url = "https://github.example/acme/graph"
+    state = {
+        "intent": "plan_work",
+        "request_text": f"{url} 공식 GitHub 자료를 조사해서 검증 Task를 만들어줘",
+        "approval_token": "pending-token",
+        "draft": {"items": [{
+            "summary": "AcmeGraph GitHub 사양 검증", "description": url,
+        }]},
+        "query_results": [{"id": "github", "source": "github", "result": {
+            "results": [{
+                "title": "AcmeGraph", "url": url,
+                "description": "AcmeGraph repository specification",
+            }],
+        }}],
+        "evidence": [], "related_docs": [],
+    }
+
+    visible = _approval_display_evidence(state)
+
+    assert not any(item.get("url") == url for item in visible)
+
+
+def test_requested_source_coverage_discloses_only_zero_hit_class_for_acme_fixture():
+    from app.agent.workflow.agents.result_integrator import (
+        _ensure_requested_source_coverage,
+        _requested_source_coverage,
+    )
+
+    state = {
+        "intent": "ask",
+        "request_text": (
+            "AcmeGraph DeltaSketch 운영 판단을 위해 Jira 티켓과 댓글, "
+            "Confluence wiki, 외부 공식 문서를 함께 조사해줘"
+        ),
+        "query_plan": {"queries": [
+            {"id": "jira", "source": "jira"},
+            {"id": "comments", "source": "comments"},
+            {"id": "wiki", "source": "confluence"},
+            {"id": "official", "source": "web"},
+        ]},
+        "query_results": [
+            {"id": "jira", "source": "jira",
+             "result": {"tickets": [{"key": "ACME-1"}], "returned": 1}},
+            {"id": "comments", "source": "comments",
+             "result": {"comments": [{"ticketKey": "ACME-1", "snippet": "검증 중"}],
+                        "returned": 1}},
+            {"id": "wiki", "source": "confluence",
+             "result": {"documents": [], "returned": 0, "total": 0}},
+            {"id": "official", "source": "web",
+             "result": {"attempted": True, "results": [{
+                 "title": "AcmeGraph DeltaSketch specification",
+                 "url": "https://docs.acme.example/deltasketch/spec",
+                 "official": True,
+             }]}},
+        ],
+    }
+
+    coverage = {row["source_class"]: row for row in _requested_source_coverage(state)}
+    assert coverage["jira"]["status"] == "covered"
+    assert coverage["comments"]["status"] == "covered"
+    assert coverage["confluence"]["status"] == "zero_hits"
+    assert coverage["external_official"]["status"] == "covered"
+
+    source = "확인된 내부 기록 기준으로는 운영 보류\n\n### 근거\n\n[1] {{ticket-detail:ACME-1}}"
+    got = _ensure_requested_source_coverage(source, state)
+
+    assert got.count("### 요청 출처 조사 한계") == 1
+    assert "**Confluence/wiki**" in got
+    assert "조회를 완료했지만 관련 결과 0건" in got
+    assert "결론 근거에 사용하지 않음" in got
+    assert "**Jira 티켓**" not in got
+    assert "**Jira 댓글**" not in got
+    assert "**외부 공식 자료**" not in got
+    assert got.index("### 요청 출처 조사 한계") < got.index("### 근거")
+
+
+@pytest.mark.parametrize(("request_value", "source", "source_class"), [
+    ("AcmeGraph 외부 웹 자료를 조사해줘", "web", "external_web"),
+    ("AcmeGraph 관련 GitHub 자료를 찾아줘", "github", "external_github"),
+    ("AcmeGraph 관련 깃허브 자료를 검색해줘", "github", "external_github"),
+])
+def test_explicit_external_source_request_has_coverage_without_official_word(
+        request_value, source, source_class):
+    from app.agent.workflow.agents.result_integrator import _requested_source_coverage
+
+    state = {
+        "intent": "ask",
+        "request_text": request_value,
+        "query_plan": {"queries": [{"id": "external", "source": source}]},
+        "query_results": [{"id": "external", "source": source, "result": {
+            "results": [{
+                "title": "AcmeGraph repository",
+                "url": "https://github.example/acme/graph",
+            }],
+        }}],
+    }
+
+    rows = _requested_source_coverage(state)
+
+    assert [row["source_class"] for row in rows] == [source_class]
+    assert rows[0]["status"] == "covered"
+    assert rows[0]["result_hits"] == 1
+    assert rows[0]["usable_as_evidence"] is True
+
+
+@pytest.mark.parametrize(("hit_source", "missing_class", "missing_label"), [
+    ("web", "external_github", "GitHub 자료"),
+    ("github", "external_web", "외부 웹 자료"),
+])
+def test_explicit_web_and_github_requests_have_independent_coverage(
+        hit_source, missing_class, missing_label):
+    from app.agent.workflow.agents.result_integrator import (
+        _ensure_requested_source_coverage,
+        _requested_source_coverage,
+    )
+
+    other_source = "github" if hit_source == "web" else "web"
+    state = {
+        "intent": "ask",
+        "request_text": "AcmeGraph 외부 웹과 GitHub 자료를 모두 조사해줘",
+        "query_plan": {"queries": [
+            {"id": "web", "source": "web"},
+            {"id": "github", "source": "github"},
+        ]},
+        "query_results": [
+            {"id": hit_source, "source": hit_source, "result": {"results": [{
+                "title": f"AcmeGraph {hit_source}",
+                "url": f"https://{hit_source}.example/acme/graph",
+            }]}},
+            {"id": other_source, "source": other_source,
+             "result": {"attempted": True, "results": []}},
+        ],
+    }
+
+    rows = {row["source_class"]: row for row in _requested_source_coverage(state)}
+
+    assert set(rows) == {"external_web", "external_github"}
+    assert rows[f"external_{hit_source}"]["status"] == "covered"
+    assert rows[missing_class]["status"] == "zero_hits"
+    assert rows[missing_class]["result_hits"] == 0
+    rendered = _ensure_requested_source_coverage("조회 결과", state)
+    assert f"**{missing_label}**" in rendered
+    covered_label = "외부 웹 자료" if hit_source == "web" else "GitHub 자료"
+    assert f"**{covered_label}**" not in rendered
+
+
+def test_official_github_hit_without_official_provenance_is_not_zero_or_covered():
+    from app.agent.workflow.agents.result_integrator import (
+        _ensure_requested_source_coverage,
+        _requested_source_coverage,
+    )
+
+    state = {
+        "intent": "ask",
+        "request_text": "AcmeGraph 공식 GitHub 저장소를 찾아줘",
+        "query_plan": {"queries": [{"id": "github", "source": "github"}]},
+        "query_results": [{"id": "github", "source": "github", "result": {
+            "results": [{
+                "title": "AcmeGraph",
+                "url": "https://github.example/acme/graph",
+            }],
+        }}],
+    }
+
+    row = _requested_source_coverage(state)[0]
+
+    assert row["source_class"] == "external_github_official"
+    assert row["status"] == "unverified_official"
+    assert row["result_hits"] == 0
+    assert row["candidate_hits"] == 1
+    assert row["usable_as_evidence"] is False
+    rendered = _ensure_requested_source_coverage("조회 결과", state)
+    assert "공식 소유·발행 주체를 확인하지 못함" in rendered
+    assert "관련 결과 0건" not in rendered
+
+
+def test_requested_source_coverage_distinguishes_unplanned_from_unexecuted():
+    from app.agent.workflow.agents.result_integrator import _requested_source_coverage
+
+    state = {
+        "intent": "ask",
+        "request_text": "Jira 티켓·댓글과 Confluence wiki를 조사해줘",
+        "query_plan": {"queries": [{"id": "wiki", "source": "confluence"}]},
+        "query_results": [],
+    }
+
+    coverage = {row["source_class"]: row for row in _requested_source_coverage(state)}
+    assert coverage["jira"]["status"] == "not_planned"
+    assert coverage["comments"]["status"] == "not_planned"
+    assert coverage["confluence"]["status"] == "not_executed"
+
+
+@pytest.mark.parametrize(("request_value", "source", "result", "expected"), [
+    ("Confluence wiki를 조사해줘", "confluence",
+     {"error": "검색 범위 미설정 — search.confluence.spaces를 지정하세요", "documents": []},
+     "config_error"),
+    ("외부 공식 문서를 조사해줘", "web",
+     {"error": "웹 검색 provider가 blocked 상태입니다", "results": [], "attempted": True},
+     "provider_error"),
+    ("Jira 티켓을 조사해줘", "jira",
+     {"error": "invalid cursor", "tickets": []}, "execution_error"),
+    ("Jira 댓글을 조사해줘", "comments",
+     {"comments": [], "returned": 0}, "zero_hits"),
+])
+def test_requested_source_coverage_classifies_failure_kind(
+        request_value, source, result, expected):
+    from app.agent.workflow.agents.result_integrator import _requested_source_coverage
+
+    state = {
+        "intent": "ask",
+        "request_text": request_value,
+        "query_plan": {"queries": [{"id": "source", "source": source}]},
+        "query_results": [{"id": "source", "source": source, "result": result}],
+    }
+
+    rows = _requested_source_coverage(state)
+    assert len(rows) == 1
+    assert rows[0]["status"] == expected
+    assert rows[0]["usable_as_evidence"] is False
+
+
+def test_requested_source_coverage_rejects_partial_hits_with_incomplete_pagination():
+    from app.agent.workflow.agents.result_integrator import (
+        _ensure_requested_source_coverage,
+        _requested_source_coverage,
+    )
+
+    state = {
+        "intent": "ask",
+        "request_text": "AcmeGraph 관련 Confluence wiki를 전부 조사해줘",
+        "query_plan": {"queries": [{
+            "id": "wiki", "source": "confluence", "completeness": "all",
+        }]},
+        "query_results": [{"id": "wiki", "source": "confluence", "result": {
+            "documents": [{"id": "1", "title": "AcmeGraph 설계"}],
+            "returned": 1, "total": 8,
+            "incomplete": True, "complete": False,
+            "incompleteReason": "cursor_cycle",
+        }}],
+    }
+
+    row = _requested_source_coverage(state)[0]
+    assert row["result_hits"] == 1
+    assert row["status"] == "incomplete"
+    assert row["incomplete_reason"] == "cursor_cycle"
+    assert row["usable_as_evidence"] is False
+
+    got = _ensure_requested_source_coverage("확인된 범위 요약", state)
+    assert "전체 조회가 완료되지 않음" in got
+    assert "pagination cursor 순환" in got
+    assert "결론 근거에 사용하지 않음" in got
+
+
+def test_requested_source_coverage_rejects_missing_planned_query_result_despite_hit():
+    from app.agent.workflow.agents.result_integrator import (
+        _ensure_requested_source_coverage,
+        _requested_source_coverage,
+    )
+
+    state = {
+        "intent": "ask",
+        "request_text": "AcmeGraph 외부 웹 자료를 모두 조사해줘",
+        "query_plan": {"queries": [
+            {"id": "w1", "source": "web"},
+            {"id": "w2", "source": "web"},
+        ]},
+        "query_results": [{"id": "w1", "source": "web", "result": {
+            "results": [{
+                "title": "AcmeGraph specification",
+                "url": "https://docs.acme.example/graph/spec",
+            }],
+        }}],
+    }
+
+    row = _requested_source_coverage(state)[0]
+
+    assert row["source_class"] == "external_web"
+    assert row["planned_queries"] == 2
+    assert row["executed_queries"] == 1
+    assert row["result_hits"] == 1
+    assert row["status"] == "incomplete"
+    assert row["incomplete_reason"] == "missing_query_result"
+    assert row["missing_query_ids"] == ["w2"]
+    assert row["usable_as_evidence"] is False
+    rendered = _ensure_requested_source_coverage("확인된 웹 자료 요약", state)
+    assert "계획된 조회 결과 누락" in rendered
+    assert "결론 근거에 사용하지 않음" in rendered
+
+
+def test_embedded_jira_comments_inherit_supplying_query_incomplete_status():
+    from app.agent.workflow.agents.result_integrator import (
+        _ensure_requested_source_coverage,
+        _requested_source_coverage,
+    )
+
+    state = {
+        "intent": "ask",
+        "request_text": "AcmeGraph Jira 댓글을 모두 조사해줘",
+        "query_plan": {"queries": [{
+            "id": "jira-with-comments", "source": "jira", "completeness": "all",
+        }]},
+        "query_results": [{"id": "jira-with-comments", "source": "jira", "result": {
+            "ticketDetails": [{
+                "key": "ACME-1",
+                "comments": [{"id": "100", "body": "validation pending"}],
+            }],
+            "incomplete": True, "complete": False,
+            "incompleteReason": "cursor_cycle",
+        }}],
+    }
+
+    row = _requested_source_coverage(state)[0]
+
+    assert row["source_class"] == "comments"
+    assert row["result_hits"] == 1
+    assert row["status"] == "incomplete"
+    assert row["incomplete_reason"] == "cursor_cycle"
+    assert row["usable_as_evidence"] is False
+    assert row["planned_queries"] == 1
+    assert row["executed_queries"] == 1
+    rendered = _ensure_requested_source_coverage("댓글 조사 결과", state)
+    assert "전체 조회가 완료되지 않음" in rendered
+    assert "pagination cursor 순환" in rendered
+    assert "결론 근거에 사용하지 않음" in rendered
+
+
+def test_requested_source_coverage_is_idempotent_and_skips_a_satisfied_class():
+    from app.agent.workflow.agents.result_integrator import _ensure_requested_source_coverage
+
+    complete = {
+        "intent": "ask",
+        "request_text": "Confluence wiki를 조사해줘",
+        "query_plan": {"queries": [{"id": "wiki", "source": "confluence"}]},
+        "query_results": [{"id": "wiki", "source": "confluence", "result": {
+            "documents": [{"title": "AcmeGraph 설계", "url": "/spaces/ACME/pages/1"}],
+            "returned": 1,
+        }}],
+    }
+    assert _ensure_requested_source_coverage("확인된 문서 요약", complete) == "확인된 문서 요약"
+
+    missing = {**complete, "query_results": []}
+    once = _ensure_requested_source_coverage("확인된 Jira 근거 요약", missing)
+    twice = _ensure_requested_source_coverage(once, missing)
+    assert once == twice
+    assert twice.count("### 요청 출처 조사 한계") == 1
+    assert _ensure_requested_source_coverage(twice, complete) == "확인된 Jira 근거 요약"
+
+
+def test_result_integrator_task_forbids_using_an_unavailable_source_as_evidence():
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+
+    state = {
+        "intent": "ask",
+        "request_text": "AcmeGraph 운영 판단을 위해 Confluence wiki를 조사해줘",
+        "query_plan": {"queries": [{"id": "wiki", "source": "confluence"}]},
+        "query_results": [{"id": "wiki", "source": "confluence", "result": {
+            "documents": [], "returned": 0, "total": 0,
+        }}],
+        "messages": [],
+    }
+
+    task = ResultIntegrator().task(state)
+
+    assert "Requested Source Coverage Ledger is a binding evidence boundary" in task
+    assert '"source_class": "confluence"' in task
+    assert '"status": "zero_hits"' in task
+    assert '"usable_as_evidence": false' in task
 
 
 def test_comment_approval_quotes_every_markdown_line():
@@ -532,16 +1260,26 @@ def test_approval_reply_exposes_assignment_evidence_for_every_child_ticket():
     assert "| Reader 확인 | {{mention:skcc.i2044}} | 진행중 6건 |" in got
 
 
-def test_person_work_reply_summarizes_instead_of_dumping_every_badge():
+def test_person_work_reply_exposes_the_complete_bounded_current_work_snapshot():
     from app.agent.workflow.agents.result_integrator import _person_work_reply
 
     tickets = [{"key": f"DL-{index}", "status": "Open", "priority": "P2-Major",
                 "duedate": "2026-08-30"} for index in range(1, 8)]
     got = _person_work_reply({"user_id": "skcc.i2011", "tickets": tickets})
     assert "{{mention:skcc.i2011}}" in got and "미완료 7건" in got
-    assert "| 상태 | Open 7건 |" in got and "외 2건" in got
-    assert "{{ticket-inline:DL-5}}" in got
-    assert "DL-6" not in got and "DL-7" not in got
+    assert "| 상태 | Open 7건 |" in got and "외 2건" not in got
+    assert all(f"{{{{ticket-inline:DL-{index}}}}}" in got for index in range(1, 8))
+
+
+def test_person_work_reply_states_the_remainder_above_the_readable_ceiling():
+    from app.agent.workflow.agents.result_integrator import _person_work_reply
+
+    tickets = [{"key": f"DL-{index}", "status": "Open", "priority": "P2-Major"}
+               for index in range(1, 29)]
+    got = _person_work_reply({"user_id": "skcc.i2011", "tickets": tickets})
+
+    assert "{{ticket-inline:DL-25}}" in got
+    assert "DL-26" not in got and "최근 갱신 순 25건 표시 · 외 3건" in got
 
 
 def test_progress_reply_gets_a_compact_complete_child_snapshot_when_model_omits_it():
@@ -1110,6 +1848,13 @@ def test_research_answer_evidence_keeps_direct_cross_source_coverage_only():
                 }],
             },
         ],
+        "query_results": [{"id": "external-sources", "source": "web", "result": {
+            "results": [
+                {"url": generic_search},
+                {"url": direct_spec},
+                {"url": component_readme},
+            ],
+        }}],
         "related_docs": [],
     }
 
@@ -1134,6 +1879,9 @@ def test_result_integrator_does_not_redrop_query_runner_approved_direct_intro():
                 "source": "external", "text": "StarRocks is an analytical database",
             }],
         }],
+        "query_results": [{"id": "intro", "source": "web", "result": {
+            "results": [{"url": intro}],
+        }}],
         "related_docs": [],
     }
 
@@ -1189,6 +1937,9 @@ def test_result_integrator_filters_zero_anchor_external_evidence():
                 }],
             },
         ],
+        "query_results": [{"id": "external", "source": "web", "result": {
+            "results": [{"url": unrelated}, {"url": direct}],
+        }}],
         "related_docs": [],
     }
 
@@ -1216,6 +1967,9 @@ def test_result_integrator_keeps_direct_numbered_standard_for_public_name_alias(
             "key": "N3096", "title": "N3096", "url": direct,
             "observations": [{"source": "external", "text": "WG14 working draft N3096"}],
         }],
+        "query_results": [{"id": "standard", "source": "web", "result": {
+            "results": [{"url": direct}],
+        }}],
         "related_docs": [],
     }
 
@@ -1307,6 +2061,11 @@ def test_result_integrator_keeps_explicitly_requested_official_navigation_target
             "key": title, "title": title, "url": url,
             "observations": [{"source": "external", "text": observation}],
         }],
+        "query_results": [{
+            "id": "official-link",
+            "source": "github" if "github.com" in url else "web",
+            "result": {"results": [{"url": url, "official": True}]},
+        }],
         "related_docs": [],
     }
 
@@ -1387,6 +2146,9 @@ def test_bare_document_reference_is_promoted_to_verified_url_without_duplicate_s
                 {"source": "document", "text": "내부 writer 버전 확인"},
             ],
         }],
+        "query_results": [{"id": "document", "source": "confluence", "result": {
+            "documents": [{"title": title, "url": url}],
+        }}],
         "related_docs": [{"title": title, "url": url}],
     }
 
@@ -1407,7 +2169,9 @@ def test_legacy_standalone_source_is_folded_into_the_single_evidence_index():
     state = {"evidence": [{
         "key": title, "title": title, "url": url,
         "observations": [{"source": "document", "text": "설계 원칙 확인"}],
-    }], "related_docs": [{"title": title, "url": url}]}
+    }], "query_results": [{"id": "document", "source": "confluence", "result": {
+        "documents": [{"title": title, "url": url}],
+    }}], "related_docs": [{"title": title, "url": url}]}
 
     got = _merge_evidence_index(f"초안 작성\n\n출처: [{title}]({url})", state)
 
@@ -1425,7 +2189,13 @@ def test_external_official_source_block_is_folded_into_the_single_evidence_index
         "- [Puffin Spec](https://iceberg.apache.org/puffin-spec/) — 공식 자료\n\n"
         "### 근거\n\n[1] {{ticket-detail:DL-9200}}\n- 내부 도입 검토"
     )
-    got = _merge_evidence_index(source, {"evidence": [], "related_docs": []})
+    got = _merge_evidence_index(source, {
+        "evidence": [], "related_docs": [],
+        "query_results": [{"id": "official", "source": "web", "result": {
+            "results": [{"url": "https://iceberg.apache.org/puffin-spec/",
+                         "official": True}],
+        }}],
+    })
 
     assert "### 외부 공식 근거" not in got
     assert got.count("### 근거") == 1
@@ -1532,7 +2302,7 @@ def test_external_format_description_cannot_invent_an_outcome_guarantee():
 
     reader_state = {
         "request_text": "회의록 조사",
-        "topic_dossier": "StarRocks reader의 Puffin NDV 실제 소비 지원 여부는 미확인",
+        "topic_dossier": "StarRocks의 Puffin NDV 실제 소비 지원 여부는 미확인",
         "evidence": [],
     }
     reader = ("StarRocks는 Iceberg와 함께 사용되는 데이터베이스. "
@@ -1541,6 +2311,181 @@ def test_external_format_description_cannot_invent_an_outcome_guarantee():
     got = _drop_unsupported_guarantees(reader, reader_state)
     assert "소비할 수 있음" not in got
     assert "실제 지원 여부는 검증 필요" in got
+
+
+@pytest.mark.parametrize(
+    ("consumer", "artifact"),
+    [("AtlasReader", "QuartzStats"), ("NimbusReader", "HarborStats")],
+)
+def test_unconfirmed_capability_gate_is_product_name_invariant(consumer, artifact):
+    from app.agent.workflow.agents.result_integrator import _drop_unsupported_guarantees
+
+    state = {
+        "request_text": "회의 결과를 요약해줘",
+        "topic_dossier": f"{consumer}의 {artifact} 소비 지원 여부는 미확인",
+    }
+    raw = (
+        f"{consumer}는 데이터 처리 구성요소. "
+        f"{consumer}는 {artifact} 통계를 소비할 수 있음. "
+        "실제 지원 여부는 검증 필요."
+    )
+
+    got = _drop_unsupported_guarantees(raw, state)
+
+    assert "소비할 수 있음" not in got
+    assert "실제 지원 여부는 검증 필요" in got
+
+
+def test_public_relation_policy_is_conservative_across_consumers():
+    """One public matcher fails closed on actor, artifact, and direction ambiguity."""
+    from app.agent.workflow.evidence_relations import parse_relation, same_relation
+
+    def relation(value):
+        parsed = parse_relation(value)
+        assert parsed
+        return parsed
+
+    unresolved = relation(
+        "AtlasReader는 QuartzStats를 소비할 수 있는지는 미확인"
+    )
+    same = relation("AtlasReader는 QuartzStats를 소비할 수 있음")
+    role_reversed = relation("AtlasReader는 QuartzStats를 생성할 수 있음")
+    parser_gap = relation(
+        "AtlasReader reader의 QuartzStats 소비 지원 여부는 미확인"
+    )
+    different_actor = relation("NimbusReader는 QuartzStats를 소비할 수 있음")
+    different_artifact = relation("AtlasReader는 HarborStats를 소비할 수 있음")
+    shared_context_different_artifact = relation(
+        "AcmePlatform에서 AtlasReader는 HarborStats를 소비할 수 있음"
+    )
+    contextual_unresolved = relation(
+        "AcmePlatform에서 AtlasReader는 QuartzStats를 소비할 수 있는지는 미확인"
+    )
+    actorless_single_anchor = relation(
+        "QuartzStats consumption support was completed"
+    )
+    actorless_unresolved = relation(
+        "QuartzStats consumption support is not yet confirmed"
+    )
+
+    assert same_relation(unresolved, same)
+    assert not same_relation(unresolved, role_reversed)
+    assert not same_relation(parser_gap, same)
+    assert not same_relation(unresolved, different_actor)
+    assert not same_relation(unresolved, different_artifact)
+    assert not same_relation(contextual_unresolved, shared_context_different_artifact)
+    assert not same_relation(actorless_unresolved, actorless_single_anchor)
+
+
+def test_latest_user_confirmation_authorizes_only_the_same_capability_relation():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.result_integrator import _drop_unsupported_guarantees
+
+    state = {
+        "request_text": "회의 결과를 요약해줘",
+        "topic_dossier": "AtlasReader의 QuartzStats 소비 지원 여부는 미확인",
+        "messages": [HumanMessage(
+            content="AtlasReader의 QuartzStats 소비 지원 검증을 완료했고 작동을 확인했어"
+        )],
+    }
+    raw = "AtlasReader는 QuartzStats 통계를 소비할 수 있음."
+
+    assert _drop_unsupported_guarantees(raw, state) == raw
+
+    state["messages"] = [HumanMessage(
+        content="NimbusReader의 HarborStats 소비 지원 검증을 완료했고 작동을 확인했어"
+    )]
+    assert "소비할 수 있음" not in _drop_unsupported_guarantees(raw, state)
+
+    state["messages"] = [HumanMessage(
+        content="AtlasReader의 QuartzStats 소비 지원 상태를 확인해줘"
+    )]
+    assert "소비할 수 있음" not in _drop_unsupported_guarantees(raw, state)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "NimbusReader는 QuartzStats 통계를 소비할 수 있음.",
+        "AtlasReader는 HarborStats 통계를 소비할 수 있음.",
+        "NimbusReader는 HarborStats 통계를 소비할 수 있음.",
+    ],
+)
+def test_unconfirmed_relation_does_not_suppress_an_unrelated_capability(raw):
+    from app.agent.workflow.agents.result_integrator import _drop_unsupported_guarantees
+
+    state = {
+        "request_text": "회의 결과를 요약해줘",
+        "topic_dossier": "AtlasReader의 QuartzStats 소비 지원 여부는 미확인",
+    }
+
+    assert _drop_unsupported_guarantees(raw, state) == raw
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "AtlasReader cannot consume QuartzStats.",
+        "AtlasReader does not support QuartzStats consumption.",
+        "AtlasReader는 QuartzStats 통계를 소비할 수 없음.",
+    ],
+)
+def test_unconfirmed_relation_gate_preserves_negative_capability_limits(raw):
+    from app.agent.workflow.agents.result_integrator import _drop_unsupported_guarantees
+
+    state = {"topic_dossier": "AtlasReader의 QuartzStats 소비 지원 여부는 미확인"}
+
+    assert _drop_unsupported_guarantees(raw, state) == raw
+
+
+def test_rollout_validation_gate_does_not_negate_a_supported_capability():
+    from app.agent.workflow.agents.result_integrator import _drop_unsupported_guarantees
+
+    state = {
+        "topic_dossier": (
+            "AtlasReader는 QuartzStats 통계를 소비한다. "
+            "운영 반영 전 검증 필요."
+        ),
+    }
+    raw = "AtlasReader는 QuartzStats 통계를 소비할 수 있음."
+
+    assert _drop_unsupported_guarantees(raw, state) == raw
+
+
+def test_unsupported_benefit_gate_is_product_name_invariant():
+    from app.agent.workflow.agents.result_integrator import _drop_unsupported_guarantees
+
+    state = {
+        "request_text": "QuartzStats 형식의 운영 적용 여부를 조사해줘",
+        "evidence": [
+            {"observations": [{"text": "QuartzStats는 통계를 저장하는 형식"}]},
+            {"observations": [{"text": (
+                "NimbusReader는 HarborStats를 소비하며 쿼리 최적화 성능을 개선함"
+            )}]},
+        ],
+    }
+    raw = (
+        "QuartzStats는 통계를 저장하는 형식. "
+        "QuartzStats 통계는 쿼리 최적화에 사용될 수 있음. "
+        "이는 운영 적용이 성능 최적화에 기여할 수 있음을 시사하지만, "
+        "소비 검증 전에는 적용할 수 없음."
+    )
+
+    got = _drop_unsupported_guarantees(raw, state)
+
+    assert "최적화" not in got
+    assert "소비 검증 전에는 적용할 수 없음" in got
+
+
+def test_direct_same_relation_evidence_can_support_a_benefit_claim():
+    from app.agent.workflow.agents.result_integrator import _drop_unsupported_guarantees
+
+    state = {"evidence": [{"observations": [{"text": (
+        "AtlasReader는 QuartzStats를 소비하며 쿼리 최적화 성능을 개선함"
+    )}]}]}
+    raw = "AtlasReader는 QuartzStats 소비로 쿼리 최적화 성능을 개선할 수 있음."
+
+    assert _drop_unsupported_guarantees(raw, state) == raw
 
 
 def test_definition_citation_rebinding_does_not_add_a_fifth_table_column():
@@ -1573,8 +2518,15 @@ def test_public_format_definition_is_rebound_from_internal_ticket_to_external_sp
         "- [Puffin Spec](https://iceberg.apache.org/puffin-spec/) — 공식 자료\n\n"
         "### 근거\n\n[1] {{ticket-detail:DL-9200}}\n- 내부 도입 검토"
     )
+    state = {
+        "evidence": [], "related_docs": [],
+        "query_results": [{"id": "official", "source": "web", "result": {
+            "results": [{"url": "https://iceberg.apache.org/puffin-spec/",
+                         "official": True}],
+        }}],
+    }
     got = _rebind_definition_citations(
-        _merge_evidence_index(source, {"evidence": [], "related_docs": []}))
+        _merge_evidence_index(source, state))
     body = got.split("### 근거", 1)[0]
     assert "파일 형식 [2]" in body
     assert "검증 전 보류 [1]" in body
@@ -1797,6 +2749,9 @@ def test_explicit_source_quality_and_marker_contract_is_completed_from_structure
              "limitations": "내부 운영 여부는 판단하지 않음",
              "observations": [{"source": "external", "text": "Puffin 통계 파일 사양"}]},
         ],
+        "query_results": [{"id": "external", "source": "web", "result": {
+            "results": [{"url": "https://example.com/puffin", "official": True}],
+        }}],
     }
     source = "### 결론\n\nWriter PoC 결과를 확보했으며 reader 검증은 남아 있음\n\n### 근거\n\n[1] DL-9201"
     got = _render_requested_source_quality(source, state)
@@ -2019,3 +2974,423 @@ def test_ticket_table_word_task_is_not_parsed_as_a_person():
     key, _ = _real_key_and_title()
     g = grounding.check(f"- {key}: 작업 진행 중")
     assert "작업" not in g["fake_people"], g
+
+
+def test_atomic_fact_ledger_supersedes_only_later_direct_same_subject_field():
+    from app.agent.workflow.evidence_index import build_atomic_fact_ledger
+
+    trusted = [
+        {
+            "subject_id": "ACME-41", "predicate": "validation_state",
+            "value": "not run", "state": "pending",
+            "observed_at": "2026-08-01T09:00:00+09:00", "direct": True,
+            "source_id": "ticket:ACME-41#document",
+            "provenance": "query_runner.ticket[ACME-41].description",
+            "authority": "query_runner_deterministic",
+        },
+        {
+            "subject_id": "ACME-41", "predicate": "validation_state",
+            "value": "completed", "state": "completed",
+            "observed_at": "2026-08-10T18:00:00+09:00", "direct": True,
+            "source_id": "ticket:ACME-41#comment:7",
+            "provenance": "query_runner.ticket[ACME-41].comments[7]",
+            "authority": "query_runner_deterministic",
+        },
+    ]
+
+    facts = [row for row in build_atomic_fact_ledger({}, extra_facts=trusted)
+             if row["subject_id"] == "ACME-41"
+             and row["predicate"] == "validation_state"]
+
+    assert [(row["value"], row["temporal_role"]) for row in facts] == [
+        ("not run", "historical"), ("completed", "current"),
+    ]
+    assert {row["source_id"] for row in facts} == {
+        "ticket:ACME-41#document", "ticket:ACME-41#comment:7",
+    }
+    assert all(row["provenance"] for row in facts)
+
+
+def test_atomic_fact_ledger_never_inherits_parent_due_into_due_null_child():
+    from app.agent.workflow.evidence_index import build_atomic_fact_ledger
+
+    state = {"materialized_ticket_sources": {"ticketDetails": [
+        {"key": "ACME-10", "type": "Task", "duedate": "2026-09-30",
+         "updated": "2026-08-17T10:00:00+09:00"},
+        {"key": "ACME-11", "type": "Sub-Task", "parentKey": "ACME-10",
+         "duedate": "", "updated": "2026-08-18T10:00:00+09:00"},
+    ]}}
+
+    facts = build_atomic_fact_ledger(state)
+
+    assert any(row["subject_id"] == "ACME-10" and row["predicate"] == "duedate"
+               and row["value"] == "2026-09-30" for row in facts)
+    assert not any(row["subject_id"] == "ACME-11" and row["predicate"] == "duedate"
+                   for row in facts)
+    assert any(row["subject_id"] == "ACME-11" and row["predicate"] == "parent_key"
+               and row["value"] == "ACME-10" for row in facts)
+
+
+def test_atomic_fact_ledger_keeps_actor_values_and_provenance_separate():
+    from app.agent.workflow.evidence_index import build_atomic_fact_ledger
+
+    trusted = [
+        {"subject_id": "actor:alice", "predicate": "completed_count",
+         "value": "3", "observed_at": "2026-08-15", "direct": True,
+         "source_id": "portfolio:actor:alice", "provenance": "portfolio[alice].completed",
+         "authority": "portfolio_deterministic"},
+        {"subject_id": "actor:bob", "predicate": "completed_count",
+         "value": "1", "observed_at": "2026-08-16", "direct": True,
+         "source_id": "portfolio:actor:bob", "provenance": "portfolio[bob].completed",
+         "authority": "portfolio_deterministic"},
+    ]
+
+    facts = [row for row in build_atomic_fact_ledger({}, extra_facts=trusted)
+             if row["predicate"] == "completed_count"]
+
+    assert {(row["subject_id"], row["value"]) for row in facts} == {
+        ("actor:alice", "3"), ("actor:bob", "1"),
+    }
+    assert {row["source_id"] for row in facts} == {
+        "portfolio:actor:alice", "portfolio:actor:bob",
+    }
+    assert all(row["temporal_role"] == "observed" for row in facts)
+
+
+def test_atomic_fact_ledger_rejects_model_rebinding_to_a_different_ticket():
+    from app.agent.workflow.evidence_index import build_atomic_fact_ledger
+
+    state = {"evidence": [{
+        "key": "ACME-20", "title": "Acme source ticket", "observations": [{
+            "source": "comment", "text": "borrowed due",
+            "subject_id": "ACME-99", "predicate": "duedate", "value": "2026-09-30",
+            "observed_at": "2026-08-18", "direct": True,
+        }],
+    }]}
+
+    facts = build_atomic_fact_ledger(state)
+
+    assert len(facts) == 1
+    assert facts[0]["subject_id"] == "ACME-20"
+    assert facts[0]["source_id"] == "ticket:ACME-20"
+    assert facts[0]["predicate"] == "untyped"
+    assert facts[0]["typed"] is False
+    assert facts[0]["direct"] is False
+    assert not any(row["subject_id"] == "ACME-99" for row in facts)
+
+
+def test_model_evidence_cannot_fabricate_actor_or_supersede_canonical_field():
+    from app.agent.workflow.evidence_index import build_atomic_fact_ledger
+
+    state = {
+        "materialized_ticket_sources": {"ticketDetails": [{
+            "key": "ACME-20", "assignee": "acct.alice", "status": "In Progress",
+            "updated": "2026-08-18T08:00:00Z",
+        }]},
+        "evidence": [{
+            "key": "ACME-20", "title": "Acme source ticket", "observations": [{
+                "source": "comment", "text": "fabricated reassignment",
+                "actor_id": "actor:mallory", "predicate": "assignee",
+                "value": "actor:mallory", "observed_at": "2026-08-19T08:00:00Z",
+                "direct": True,
+            }],
+        }],
+    }
+
+    facts = build_atomic_fact_ledger(state)
+    canonical = next(row for row in facts
+                     if row["authority"] == "materialized_ticket_sources"
+                     and row["predicate"] == "assignee")
+    model_row = next(row for row in facts if row["authority"] == "evidence")
+
+    assert canonical["value"] == "acct.alice"
+    assert canonical["temporal_role"] == "current"
+    assert model_row["subject_id"] == "ACME-20"
+    assert model_row["typed"] is False and model_row["direct"] is False
+    assert not any(row["subject_id"] == "actor:mallory" and row["typed"] for row in facts)
+
+
+def test_model_evidence_cannot_make_materialized_current_historical():
+    from app.agent.workflow.evidence_index import build_atomic_fact_ledger
+
+    state = {
+        "materialized_ticket_sources": {"ticketDetails": [{
+            "key": "ACME-21", "status": "In Progress",
+            "updated": "2026-08-18T08:00:00Z",
+        }]},
+        "evidence": [{
+            "key": "ACME-21", "observations": [{
+                "source": "field", "text": "fabricated completion",
+                "subject_id": "ACME-21", "predicate": "status", "value": "Done",
+                "observed_at": "2026-08-19T08:00:00Z", "direct": True,
+            }],
+        }],
+    }
+
+    facts = build_atomic_fact_ledger(state)
+    canonical = next(row for row in facts
+                     if row["authority"] == "materialized_ticket_sources"
+                     and row["predicate"] == "status")
+    fabricated = next(row for row in facts if row["authority"] == "evidence")
+
+    assert canonical["temporal_role"] == "current"
+    assert fabricated["typed"] is False and fabricated["direct"] is False
+    assert not any(row["predicate"] == "status" and row["value"] == "Done"
+                   and row["typed"] for row in facts)
+
+
+def test_canonical_matching_evidence_is_typed_without_displacing_snapshot():
+    from app.agent.workflow.evidence_index import build_atomic_fact_ledger
+
+    state = {
+        "materialized_ticket_sources": {"ticketDetails": [{
+            "key": "ACME-22", "status": "Done", "updated": "2026-08-18T08:00:00Z",
+        }]},
+        "evidence": [{
+            "key": "ACME-22", "observations": [{
+                "source": "field", "text": "status Done",
+                "subject_id": "ACME-22", "predicate": "status", "value": "Done",
+                "observed_at": "2026-08-19T08:00:00Z", "direct": True,
+            }],
+        }],
+    }
+
+    facts = build_atomic_fact_ledger(state)
+    canonical = next(row for row in facts
+                     if row["authority"] == "materialized_ticket_sources")
+    matching = next(row for row in facts if row["authority"] != "materialized_ticket_sources")
+
+    assert canonical["temporal_role"] == "current"
+    assert matching["typed"] is True and matching["direct"] is True
+    assert matching["authority"] == "materialized_match"
+
+
+def test_canonical_comment_matches_supply_trusted_timestamp_for_progression():
+    from app.agent.workflow.evidence_index import build_atomic_fact_ledger
+
+    state = {
+        "materialized_ticket_sources": {"ticketDetails": [{
+            "key": "ACME-23", "updated": "2026-08-10T18:00:00Z",
+            "comments": [
+                {"created": "2026-08-01T09:00:00Z", "body": "validation not run"},
+                {"created": "2026-08-10T18:00:00Z", "body": "validation completed"},
+            ],
+        }]},
+        "evidence": [{
+            "key": "ACME-23", "observations": [
+                {"source": "comment", "text": "validation not run",
+                 "subject_id": "ACME-23", "predicate": "validation_state",
+                 "state": "fabricated pending label",
+                 "provenance": "fabricated:other-actor"},
+                {"source": "comment", "text": "validation completed",
+                 "subject_id": "ACME-23", "predicate": "validation_state",
+                 "state": "fabricated completion label"},
+            ],
+        }],
+    }
+
+    facts = [row for row in build_atomic_fact_ledger(state)
+             if row["predicate"] == "validation_state"]
+
+    assert [(row["value"], row["observed_at"], row["temporal_role"])
+            for row in facts] == [
+        ("validation not run", "2026-08-01T09:00:00Z", "historical"),
+        ("validation completed", "2026-08-10T18:00:00Z", "current"),
+    ]
+    assert all(row["authority"] == "materialized_match" for row in facts)
+    assert all(row["state"] == "" for row in facts)
+    assert all("fabricated:other-actor" not in row["provenance"] for row in facts)
+    assert len({row["provenance"] for row in facts}) == 2
+
+
+def test_canonical_comment_match_does_not_authorize_fabricated_value_or_actor():
+    from app.agent.workflow.evidence_index import build_atomic_fact_ledger
+
+    state = {
+        "materialized_ticket_sources": {"ticketDetails": [{
+            "key": "ACME-24", "comments": [{
+                "created": "2026-08-18T09:00:00Z", "body": "Alice started validation",
+            }],
+        }]},
+        "evidence": [{
+            "key": "ACME-24", "observations": [{
+                "source": "comment", "text": "Alice started validation",
+                "actor_id": "actor:mallory", "predicate": "completed_count", "value": "99",
+                "observed_at": "2026-08-19T09:00:00Z", "direct": True,
+            }, {
+                "source": "comment", "text": "Alice started validation",
+                "predicate": "assignee", "direct": True,
+            }],
+        }],
+    }
+
+    model_rows = [row for row in build_atomic_fact_ledger(state)
+                  if row["authority"] == "evidence"]
+
+    assert len(model_rows) == 2
+    assert all(row["subject_id"] == "ACME-24" for row in model_rows)
+    assert all(row["predicate"] == "untyped" for row in model_rows)
+    assert all(row["typed"] is False and row["direct"] is False for row in model_rows)
+
+
+def test_atomic_fact_ledger_preserves_contemporary_conflict_provenance():
+    from app.agent.workflow.evidence_index import build_atomic_fact_ledger
+
+    trusted = [
+        {"subject_id": "ACME-30", "predicate": "batch_limit", "value": "30",
+         "observed_at": "2026-08-18T09:00:00Z", "direct": True,
+         "source_id": "document:acme-limit", "provenance": "document#limit",
+         "authority": "query_runner_deterministic"},
+        {"subject_id": "ACME-30", "predicate": "batch_limit", "value": "45",
+         "observed_at": "2026-08-18T09:00:00Z", "direct": True,
+         "source_id": "ticket:ACME-30#comment", "provenance": "comment#limit",
+         "authority": "query_runner_deterministic"},
+    ]
+
+    facts = [row for row in build_atomic_fact_ledger({}, extra_facts=trusted)
+             if row["predicate"] == "batch_limit"]
+
+    assert {row["value"] for row in facts} == {"30", "45"}
+    assert {row["temporal_role"] for row in facts} == {"conflict"}
+    assert len({row["provenance"] for row in facts}) == 2
+
+
+def test_atomic_fact_boundary_drops_foreign_parent_due_from_child_claim():
+    from app.agent.workflow.evidence_index import (
+        build_atomic_fact_ledger, enforce_atomic_fact_boundaries,
+    )
+
+    state = {"materialized_ticket_sources": {"ticketDetails": [
+        {"key": "ACME-10", "duedate": "2026-09-30", "updated": "2026-08-17"},
+        {"key": "ACME-11", "parentKey": "ACME-10", "updated": "2026-08-18"},
+    ]}}
+    source = "{{ticket-inline:ACME-11}}의 마감은 2026-09-30"
+
+    got = enforce_atomic_fact_boundaries(
+        source, build_atomic_fact_ledger(state),
+    )
+
+    assert "2026-09-30" not in got
+    assert "마감 확인되지 않음" in got
+
+
+def test_atomic_fact_boundary_labels_stale_state_as_history_and_restores_current():
+    from app.agent.workflow.evidence_index import (
+        build_atomic_fact_ledger, enforce_atomic_fact_boundaries,
+    )
+
+    state = {
+        "materialized_ticket_sources": {"ticketDetails": [{
+            "key": "ACME-41", "comments": [
+                {"created": "2026-08-01", "body": "validation not run"},
+                {"created": "2026-08-10", "body": "validation completed"},
+            ],
+        }]},
+        "evidence": [{"key": "ACME-41", "observations": [
+            {"source": "comment", "text": "validation not run",
+             "predicate": "validation_state"},
+            {"source": "comment", "text": "validation completed",
+             "predicate": "validation_state"},
+        ]}],
+    }
+    source = "{{ticket-inline:ACME-41}} validation not run"
+
+    got = enforce_atomic_fact_boundaries(
+        source, build_atomic_fact_ledger(state),
+    )
+
+    assert "이전 기록(2026-08-01)" in got
+    assert "현재 기록(2026-08-10)" in got and "completed" in got
+    assert not got.startswith("{{ticket-inline:ACME-41}} validation not run")
+
+
+def test_result_integrator_receives_bounded_atomic_fact_sidecar():
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+
+    state = {
+        "intent": "ask", "messages": [], "request_text": "Acme validation history",
+        "materialized_ticket_sources": {"ticketDetails": [{
+            "key": "ACME-41", "status": "Done", "done": True,
+            "updated": "2026-08-10",
+            "comments": [
+                {"created": "2026-08-01", "body": "validation not run"},
+                {"created": "2026-08-10", "body": "validation completed"},
+            ],
+        }]},
+        "evidence": [{"key": "ACME-41", "observations": [
+            {"source": "comment", "text": "validation not run",
+             "predicate": "validation_state"},
+            {"source": "comment", "text": "validation completed",
+             "predicate": "validation_state"},
+        ]}],
+    }
+
+    task = ResultIntegrator().task(state)
+
+    assert "Typed Atomic Fact Ledger" in task
+    assert '"temporal_role": "historical"' in task
+    assert '"temporal_role": "current"' in task
+    assert '"authority": "materialized_ticket_sources"' in task
+    assert 'materialized_ticket_sources.ticketDetails[ACME-41].comments[0]' in task
+    assert "Never transfer a value across subject_id or predicate" in task
+
+
+def test_atomic_fact_cap_keeps_late_temporal_group_complete():
+    from app.agent.workflow.evidence_index import atomic_fact_sidecar
+
+    details = []
+    for index in range(1, 9):
+        details.append({
+            "key": f"ACME-{index}", "status": "Done", "done": True,
+            "assignee": f"acct.user{index}", "duedate": "2026-09-30",
+            "parentKey": "ACME-100", "epicKey": "ACME-200", "priority": "High",
+            "resolution": "Fixed", "sp": index, "components": ["Core"],
+            "labels": ["acme"], "summary": f"Acme item {index}", "type": "Task",
+            "updated": "2026-08-10", "comments": ([
+                {"created": "2026-08-01", "body": "validation not run"},
+                {"created": "2026-08-10", "body": "validation completed"},
+            ] if index == 8 else []),
+        })
+    state = {
+        "materialized_ticket_sources": {"ticketDetails": details},
+        "evidence": [{"key": "ACME-8", "observations": [
+            {"source": "comment", "text": "validation not run",
+             "predicate": "validation_state"},
+            {"source": "comment", "text": "validation completed",
+             "predicate": "validation_state"},
+        ]}],
+    }
+
+    sidecar = atomic_fact_sidecar(state)
+    progression = [row for row in sidecar if row["predicate"] == "validation_state"]
+
+    assert len(sidecar) <= 24
+    assert {row["temporal_role"] for row in progression} == {"historical", "current"}
+
+
+def test_portfolio_activity_atomic_facts_bind_each_value_to_exact_actor():
+    from app.agent.workflow.agents.portfolio_analyst import activity_atomic_facts
+    from app.agent.workflow.evidence_index import build_atomic_fact_ledger
+
+    material = (
+        "[로스터] Acme: acct.alice, acct.bob (2명)\n"
+        "[조회 기간] 최근 7일\n"
+        "[acct.alice] 담당/변경 티켓: ACME-1 \"export\"(Done) | "
+        "코멘트 등 활동: ACME-1 rollout note | 문서 활동: export guide\n"
+        "[acct.bob] 담당/변경 티켓: ACME-2 \"import\"(Open) | "
+        "코멘트 등 활동: 없음 | 문서 활동: import guide"
+    )
+
+    facts = build_atomic_fact_ledger({}, extra_facts=activity_atomic_facts(material))
+
+    assert {(row["subject_id"], row["predicate"], row["value"]) for row in facts} == {
+        ("acct.alice", "assigned_or_changed_tickets", 'ACME-1 "export"(Done)'),
+        ("acct.alice", "jira_activity", "ACME-1 rollout note"),
+        ("acct.alice", "document_activity", "export guide"),
+        ("acct.bob", "assigned_or_changed_tickets", 'ACME-2 "import"(Open)'),
+        ("acct.bob", "jira_activity", "없음"),
+        ("acct.bob", "document_activity", "import guide"),
+    }
+    assert all(row["source_id"] == f"portfolio:activity:{row['subject_id']}"
+               for row in facts)
+    assert all(row["temporal_role"] == "observed" for row in facts)

@@ -25,6 +25,7 @@ from html import unescape
 from app.agent.workflow.agents.base import StructuredAgent
 from app.agent.workflow.agents.work_architect import (
     _authoritative_explicit_due, _explicit_due_instruction_status,
+    _can_parent_subtask,
     _current_request_boundary_text, _global_exact_due_for_roots,
     _delegates_existing_epic_choice, _explicit_parent_epic,
     _explicit_hierarchical_ordinal_contract,
@@ -35,7 +36,23 @@ from app.agent.workflow.agents.work_architect import (
 from app.agent.prompts.roles import SYSTEM_AUDITOR
 from app.agent.workflow.anchors import (
     is_ordinal, requested_outcome_contract, required_user_anchors,
-    validate_draft_outcome_contract,
+    scoped_continuation_decisions, validate_draft_outcome_contract,
+    validate_scoped_outcome_bindings,
+)
+from app.agent.workflow.continuation import (
+    is_top_level_parent_choice,
+    jira_keys,
+    parse_assignee_decision,
+)
+from app.agent.workflow.effect_contract import (
+    UPDATE_EFFECT_ACTIONS as _UPDATE_EFFECT_ACTIONS,
+    WRITE_ACTIONS as _WRITE_ACTIONS,
+    UserFieldLock,
+    capture_user_field_locks,
+    continuation_action,
+    current_work_failed,
+    final_effect,
+    project_final_authority_state,
 )
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import (
@@ -66,6 +83,654 @@ SCHEMA = {
     },
     "required": ["grounded", "rule_compliant", "answers_request", "problems"],
 }
+
+
+_KEY = _re.compile(r"(?<![A-Z0-9-])([A-Z][A-Z0-9]{1,9}-\d+)(?!\d)", _re.I)
+
+
+def _locked_field_errors(state: AgentState,
+                         locks: tuple[UserFieldLock, ...]) -> list[dict]:
+    items = [row for row in ((state.get("draft") or {}).get("items") or [])
+             if isinstance(row, dict)]
+    errors = []
+    for lock in locks:
+        row = items[lock.index] if 0 <= lock.index < len(items) else None
+        if row is not None and lock.child_index is not None:
+            children = [child for child in (row.get("children") or []) if isinstance(child, dict)]
+            row = children[lock.child_index] if 0 <= lock.child_index < len(children) else None
+        actual = str((row or {}).get(lock.field) or "")
+        if row is not None and actual == lock.value:
+            continue
+        error = {
+            "index": lock.index,
+            "field": lock.field,
+            "message": ("사용자 지정 미할당이 추천 병합 뒤 담당자로 바뀌었다"
+                        if not lock.value else
+                        f"사용자 지정 담당자 {lock.value}가 추천 병합 뒤 {actual or '비어 있음'}으로 바뀌었다"),
+            "source": "final_authority",
+        }
+        if lock.child_index is not None:
+            error["child_index"] = lock.child_index
+        errors.append(error)
+    return errors
+
+
+_TOP_LEVEL_PARENT = "__TOP_LEVEL__"
+
+
+_is_top_level_parent_value = is_top_level_parent_choice
+
+
+def _typed_parent(state: AgentState) -> str:
+    """Read one exact parent from the typed authority, not from conversation history."""
+    contract = state.get("continuation_contract") or {}
+    if not isinstance(contract, dict) or contract.get("version") != "continuation.v1":
+        return ""
+    for decision in reversed(contract.get("decisions") or []):
+        if not isinstance(decision, dict):
+            continue
+        # A scoped ``parent:<outcome>`` decision belongs only to the matching outcome. The
+        # existing machine check maps those per-outcome clauses through opaque outcome_refs;
+        # treating the last scoped value as a global parent would corrupt every sibling.
+        field = str(decision.get("field") or "").strip().casefold()
+        if field not in {"parent", "epic"}:
+            continue
+        if _is_top_level_parent_value(str(decision.get("value") or "")):
+            return _TOP_LEVEL_PARENT
+        keys = jira_keys(decision.get("value"))
+        if len(keys) == 1:
+            return keys[0]
+    root = str(contract.get("root_request") or "")
+    matches = []
+    key = r"([A-Z][A-Z0-9]{1,9}-\d+)"
+    for pattern in (
+        rf"(?:Epic|에픽|parent|상위)(?:은|는|이|가|을|를|으로|로|:)?\s*{key}",
+        rf"{key}\s*(?:Epic|에픽)?\s*(?:아래|밑에?|하위|상위)",
+    ):
+        matches.extend(match.group(1).upper() for match in _re.finditer(pattern, root, _re.I))
+    values = list(dict.fromkeys(matches))
+    return values[0] if len(values) == 1 else ""
+
+
+def _typed_parent_errors(state: AgentState) -> list[dict]:
+    expected = _typed_parent(state)
+    if not expected:
+        return []
+    errors = []
+    for index, row in enumerate((state.get("draft") or {}).get("items") or []):
+        if not isinstance(row, dict):
+            continue
+        actual = str(row.get("parent") or row.get("epic") or "").strip().upper()
+        if expected == _TOP_LEVEL_PARENT and actual:
+            errors.append({
+                "index": index, "field": "parent", "source": "final_authority",
+                "message": f"typed 사용자는 최상위 Task를 지정했으나 최종 payload parent는 {actual}",
+            })
+        elif expected != _TOP_LEVEL_PARENT and actual != expected:
+            errors.append({
+                "index": index, "field": "parent", "source": "final_authority",
+                "message": f"typed 사용자 지정 parent는 {expected}이나 최종 payload는 {actual or '비어 있음'}",
+            })
+    return errors
+
+
+def _typed_assignee_errors(state: AgentState) -> list[dict]:
+    """Validate one unscoped exact owner decision across all final roots."""
+    contract = state.get("continuation_contract") or {}
+    if not isinstance(contract, dict) or contract.get("version") != "continuation.v1":
+        return []
+    decision = None
+    for row in contract.get("decisions") or []:
+        if not isinstance(row, dict):
+            continue
+        field = str(row.get("field") or "").strip().casefold()
+        if ":" not in field and field in {"assignee", "owner"}:
+            decision = row
+    if not decision:
+        return []
+    value = str(decision.get("value") or "").strip()
+    kind, parsed = parse_assignee_decision(value)
+    unassigned = kind == "unassigned"
+    user_id = parsed if kind == "user_id" else ""
+    named = kind == "display_name"
+    errors = []
+    for index, row in enumerate((state.get("draft") or {}).get("items") or []):
+        if not isinstance(row, dict):
+            continue
+        actual = str(row.get("assignee") or "").strip().casefold()
+        source = str(row.get("assignee_source") or "")
+        if unassigned and actual:
+            message = f"typed 사용자는 미할당을 지정했으나 최종 payload 담당자는 {actual}"
+        elif user_id and actual != user_id:
+            message = (f"typed 사용자 지정 담당자는 {user_id}이나 최종 payload는 "
+                       f"{actual or '비어 있음'}")
+        elif named and (not actual or source != "user"):
+            message = "이름으로 지정한 담당자가 검증된 Jira 계정으로 최종 고정되지 않았다"
+        else:
+            continue
+        errors.append({
+            "index": index, "field": "assignee", "source": "final_authority",
+            "message": message,
+        })
+    return errors
+
+
+def _scoped_decision_errors(state: AgentState) -> list[dict]:
+    """Validate per-outcome user fields against their one exact final root."""
+    draft = state.get("draft") or {}
+    errors = validate_scoped_outcome_bindings(state, draft)
+    scoped = scoped_continuation_decisions(state)
+    if not scoped:
+        return errors
+    contract = requested_outcome_contract(state)
+    aliases: dict[str, str] = {}
+    for outcome in contract.get("outcomes") or []:
+        if not isinstance(outcome, dict):
+            continue
+        opaque = str(outcome.get("id") or "").strip()
+        source_task_id = str(outcome.get("source_task_id") or "").strip()
+        if opaque:
+            aliases[opaque.casefold()] = opaque
+        if opaque and source_task_id:
+            aliases[source_task_id.casefold()] = opaque
+
+    roots = [row for row in (draft.get("items") or []) if isinstance(row, dict)]
+    bound: dict[str, list[tuple[int, dict]]] = {ref: [] for ref in scoped}
+    for index, row in enumerate(roots):
+        raw_refs = [str(value or "").strip() for value in (row.get("outcome_refs") or [])
+                    if str(value or "").strip()]
+        refs = [aliases.get(value.casefold(), "") for value in raw_refs]
+        refs = [value for value in refs if value]
+        if len(refs) == 1 and refs[0] in bound:
+            bound[refs[0]].append((index, row))
+
+    for outcome_ref, decisions in scoped.items():
+        matches = bound.get(outcome_ref) or []
+        if len(matches) != 1:
+            continue
+        index, row = matches[0]
+        parent = decisions.get("parent") or {}
+        expected_keys = jira_keys(parent.get("value"))
+        top_level = bool(parent and _is_top_level_parent_value(
+            str(parent.get("value") or "")))
+        if top_level:
+            actual = str(row.get("parent") or row.get("epic") or "").strip().upper()
+            if actual:
+                errors.append({
+                    "index": index, "field": "parent",
+                    "message": (f"outcome {outcome_ref} is explicitly top-level, but final "
+                                f"payload has parent {actual}"),
+                })
+        elif parent and len(expected_keys) != 1:
+            errors.append({
+                "index": index, "field": "parent",
+                "message": f"outcome {outcome_ref} scoped parent is not one exact Jira key",
+            })
+        elif len(expected_keys) == 1:
+            expected = expected_keys[0]
+            actual = str(row.get("parent") or row.get("epic") or "").strip().upper()
+            if actual != expected:
+                errors.append({
+                    "index": index, "field": "parent",
+                    "message": (f"outcome {outcome_ref} parent is {expected}, but final "
+                                f"payload has {actual or '비어 있음'}"),
+                })
+
+        assignment = decisions.get("assignee") or {}
+        value = str(assignment.get("value") or "").strip()
+        if not value:
+            continue
+        kind, parsed = parse_assignee_decision(value)
+        unassigned = kind == "unassigned"
+        user_id = parsed if kind == "user_id" else ""
+        actual = str(row.get("assignee") or "").strip().casefold()
+        if unassigned and actual:
+            errors.append({
+                "index": index, "field": "assignee",
+                "message": (f"outcome {outcome_ref} is explicitly unassigned, but final "
+                            f"payload assigns {actual}"),
+            })
+        elif user_id and actual != user_id:
+            errors.append({
+                "index": index, "field": "assignee",
+                "message": (f"outcome {outcome_ref} assignee is {user_id}, but final "
+                            f"payload has {actual or '비어 있음'}"),
+            })
+        elif kind == "display_name":
+            source = str(row.get("assignee_source") or "")
+            if not actual or source != "user":
+                errors.append({
+                    "index": index, "field": "assignee",
+                    "message": (f"outcome {outcome_ref} named assignee was not resolved to "
+                                "one verified Jira account"),
+                })
+        elif kind == "unknown":
+            errors.append({
+                "index": index, "field": "assignee",
+                "message": f"outcome {outcome_ref} assignee directive is not a verified identity",
+            })
+    return errors
+
+
+def _typed_change_target_errors(state: AgentState) -> list[dict]:
+    """Seal the executable change targets to the typed continuation envelope.
+
+    Approval fingerprints prove that a payload was not modified after staging; they do not
+    prove that the payload targets the ticket the user named.  Compare the complete primary
+    target set here, including the other side of an explicit link and per-row comments, before
+    any capability can be minted.
+    """
+    contract = state.get("continuation_contract") or {}
+    if not isinstance(contract, dict) or contract.get("version") != "continuation.v1":
+        return []
+    if str(contract.get("action") or "") not in {"comment", "update", "mixed"}:
+        return []
+    expected = {
+        str(value or "").strip().upper()
+        for value in (contract.get("target_keys") or [])
+        if _KEY.fullmatch(str(value or "").strip())
+    }
+    plan = state.get("change_plan") or {}
+    singular_key = str(plan.get("key") or "").strip().upper()
+    raw_bulk_keys = [str(value or "").strip() for value in (plan.get("keys") or [])]
+    bulk_keys = [value.upper() for value in raw_bulk_keys]
+    actual = {
+        str(value or "").strip().upper()
+        for value in [*bulk_keys, singular_key]
+        if _KEY.fullmatch(str(value or "").strip())
+    }
+    other = str((plan.get("link") or {}).get("other") or "").strip().upper()
+    if _KEY.fullmatch(other):
+        actual.add(other)
+    for row in plan.get("comments") or []:
+        key = str((row or {}).get("key") or "").strip().upper() if isinstance(row, dict) else ""
+        if _KEY.fullmatch(key):
+            actual.add(key)
+    errors = []
+    valid_bulk_keys = [value for value in bulk_keys if _KEY.fullmatch(value)]
+    if raw_bulk_keys and (
+            len(valid_bulk_keys) != len(raw_bulk_keys)
+            or len(set(valid_bulk_keys)) != len(valid_bulk_keys)):
+        errors.append({
+            "index": -1, "field": "target", "source": "final_authority",
+            "message": "bulk target key는 유효한 Jira key의 중복 없는 목록이어야 한다",
+        })
+    if singular_key and bulk_keys:
+        errors.append({
+            "index": -1, "field": "target", "source": "final_authority",
+            "message": "change_plan에 singular key와 bulk keys가 함께 있어 실행 대상이 모호하다",
+        })
+    if expected != actual or not expected:
+        errors.append({
+            "index": -1, "field": "target", "source": "final_authority",
+            "message": (
+                "typed 변경 대상과 최종 실행 대상이 다르다 "
+                f"(요청: {', '.join(sorted(expected)) or '없음'}; "
+                f"payload: {', '.join(sorted(actual)) or '없음'})"
+            ),
+        })
+
+    primary_keys = {
+        str(value or "").strip().upper()
+        for value in (plan.get("keys") or [])
+        if _KEY.fullmatch(str(value or "").strip())
+    }
+    raw_previews = [row for row in (plan.get("comments") or []) if isinstance(row, dict)]
+    previews = [row for row in raw_previews
+                if _KEY.fullmatch(str(row.get("key") or "").strip())
+                and str(row.get("body") or "").strip()]
+    if raw_previews and len(previews) != len(raw_previews):
+        errors.append({
+            "index": -1, "field": "comment_targets", "source": "final_authority",
+            "message": "댓글 미리보기에는 유효한 Jira key와 비어 있지 않은 본문만 허용된다",
+        })
+    if not primary_keys and raw_previews:
+        errors.append({
+            "index": -1, "field": "comment_targets", "source": "final_authority",
+            "message": "단건 변경의 댓글은 comments 배열이 아니라 exact key의 comment로 확정해야 한다",
+        })
+    if primary_keys and previews:
+        preview_keys = [str(row.get("key") or "").strip().upper() for row in previews]
+        explicit_comment_targets = _explicit_named_comment_targets(state)
+        expected_comment_targets = explicit_comment_targets or primary_keys
+        if (set(preview_keys) != expected_comment_targets
+                or not set(preview_keys) <= primary_keys
+                or len(preview_keys) != len(expected_comment_targets)
+                or len(set(preview_keys)) != len(preview_keys)):
+            errors.append({
+                "index": -1, "field": "comment_targets", "source": "final_authority",
+                "message": ("일괄 변경의 댓글 미리보기 대상이 명시된 댓글 대상과 일치하지 않는다 "
+                            f"(expected comments: {', '.join(sorted(expected_comment_targets))}; "
+                            f"comments: {', '.join(preview_keys) or '없음'})"),
+            })
+    return errors
+
+
+def _explicit_named_comment_targets(state: AgentState) -> set[str]:
+    """Return Jira keys explicitly bound to the comment effect in current authority text."""
+    contract = state.get("continuation_contract") or {}
+    text = (str(contract.get("root_request") or "")
+            if isinstance(contract, dict) and contract.get("version") == "continuation.v1"
+            else _current_request_boundary_text(state))
+    return {
+        match.group(1).upper() for match in _re.finditer(
+            r"(?<![A-Z0-9-])([A-Z][A-Z0-9]{1,9}-\d+)(?![A-Z0-9-])"
+            r"\s*(?:에|에는|에만|에게)\s*[^.!?\n]{0,48}(?:댓글|코멘트)",
+            text, _re.I,
+        )
+    }
+
+
+def _change_shape_errors(state: AgentState) -> list[dict]:
+    """Reject change containers that encode multiple competing primary mutations."""
+    plan = state.get("change_plan") or {}
+    if not isinstance(plan, dict) or not plan:
+        return []
+    primary = [
+        name for name, present in (
+            ("transition", bool((plan.get("transition") or {}).get("id"))),
+            ("link", bool((plan.get("link") or {}).get("other"))),
+            ("fields", bool(plan.get("changes") or {})),
+        ) if present
+    ]
+    errors = []
+    raw_keys = [str(value or "").strip().upper() for value in (plan.get("keys") or [])]
+    if plan.get("key") and raw_keys:
+        errors.append({
+            "index": -1, "field": "target", "source": "final_authority",
+            "message": "change_plan은 singular key와 bulk keys를 동시에 가질 수 없다",
+        })
+    valid_keys = [value for value in raw_keys if _KEY.fullmatch(value)]
+    if raw_keys and (len(valid_keys) != len(raw_keys)
+                     or len(set(valid_keys)) != len(valid_keys)):
+        errors.append({
+            "index": -1, "field": "target", "source": "final_authority",
+            "message": "bulk target은 유효한 Jira key의 중복 없는 목록이어야 한다",
+        })
+    raw_comments = [row for row in (plan.get("comments") or []) if isinstance(row, dict)]
+    if raw_comments:
+        comment_keys = [str(row.get("key") or "").strip().upper() for row in raw_comments]
+        valid_comments = [row for row in raw_comments
+                          if _KEY.fullmatch(str(row.get("key") or "").strip())
+                          and str(row.get("body") or "").strip()]
+        if (len(valid_comments) != len(raw_comments)
+                or len(set(comment_keys)) != len(comment_keys)):
+            errors.append({
+                "index": -1, "field": "comment_targets", "source": "final_authority",
+                "message": "comments는 유효한 Jira key별 비어 있지 않은 본문을 한 번씩만 가져야 한다",
+            })
+        if not raw_keys:
+            errors.append({
+                "index": -1, "field": "comment_targets", "source": "final_authority",
+                "message": "단건 댓글은 comments 배열이 아니라 top-level comment로 정규화해야 한다",
+            })
+    if len(primary) > 1:
+        errors.append({
+            "index": -1, "field": "effect", "source": "final_authority",
+            "message": ("change_plan에 서로 다른 primary mutation이 함께 있어 하나가 "
+                        f"누락될 수 있다: {', '.join(primary)}"),
+        })
+    if (plan.get("keys") or []) and any(name in primary for name in ("transition", "link")):
+        errors.append({
+            "index": -1, "field": "effect", "source": "final_authority",
+            "message": "bulk keys에는 singular transition/link mutation을 함께 실행할 수 없다",
+        })
+    return errors
+
+
+def _explicit_link_and_comment_errors(state: AgentState) -> list[dict]:
+    """Bind directional link/comment effects to the literal typed request.
+
+    ``target_keys`` is intentionally an unordered identity set.  That is insufficient for a
+    directional relation or for deciding which endpoint receives a comment, so recover only
+    high-precision literal clauses from the immutable root request and reject mismatches.
+    """
+    plan = state.get("change_plan") or {}
+    if not isinstance(plan, dict) or not plan:
+        return []
+    contract = state.get("continuation_contract") or {}
+    text = (str(contract.get("root_request") or "").strip()
+            if isinstance(contract, dict) and contract.get("version") == "continuation.v1"
+            else _current_request_boundary_text(state))
+    if not text:
+        return []
+    errors: list[dict] = []
+    link = plan.get("link") if isinstance(plan.get("link"), dict) else {}
+    if link.get("other") and _re.search(r"링크|연결|\b(?:blocks?|relates?)\b|막는\s*관계", text, _re.I):
+        actual_key = str(plan.get("key") or "").strip().upper()
+        actual_other = str(link.get("other") or "").strip().upper()
+        actual_relation = str(link.get("relation") or "Relates").strip().casefold()
+        block = _re.search(
+            r"(?<![A-Z0-9-])([A-Z][A-Z0-9]{1,9}-\d+)(?![A-Z0-9-])\s*(?:이|가)\s*"
+            r"(?<![A-Z0-9-])([A-Z][A-Z0-9]{1,9}-\d+)(?![A-Z0-9-])\s*(?:을|를)"
+            r"[^.!?\n]{0,40}(?:막|block)", text, _re.I,
+        )
+        if not block:
+            block = _re.search(
+                r"(?<![A-Z0-9-])([A-Z][A-Z0-9]{1,9}-\d+)(?![A-Z0-9-])"
+                r"\s+(?:blocks?|막(?:는|는다)?)\s+"
+                r"(?<![A-Z0-9-])([A-Z][A-Z0-9]{1,9}-\d+)(?![A-Z0-9-])",
+                text, _re.I,
+            )
+        if block:
+            expected_key, expected_other = (block.group(1).upper(), block.group(2).upper())
+            if ((actual_key, actual_other) != (expected_key, expected_other)
+                    or actual_relation != "blocks"):
+                errors.append({
+                    "index": -1, "field": "link", "source": "final_authority",
+                    "message": (f"명시된 방향 관계는 {expected_key} Blocks {expected_other}이나 "
+                                f"payload는 {actual_key or '없음'} "
+                                f"{str(link.get('relation') or 'Relates')} {actual_other or '없음'}이다"),
+                })
+        else:
+            keys = list(dict.fromkeys(match.group(1).upper() for match in _KEY.finditer(text)))
+            if len(keys) == 2 and ({actual_key, actual_other} != set(keys)
+                                   or actual_relation != "relates"):
+                errors.append({
+                    "index": -1, "field": "link", "source": "final_authority",
+                    "message": "명시된 두 Jira endpoint의 일반 연결(Relates)과 payload가 다르다",
+                })
+
+    has_comment = bool(str(plan.get("comment") or "").strip() or plan.get("comments"))
+    if has_comment:
+        named_comment_targets = sorted(_explicit_named_comment_targets(state))
+        if len(named_comment_targets) == 1:
+            if plan.get("keys"):
+                actual_comment_targets = {
+                    str(row.get("key") or "").strip().upper()
+                    for row in (plan.get("comments") or []) if isinstance(row, dict)
+                } or {str(value or "").strip().upper() for value in plan.get("keys") or []}
+            else:
+                actual_comment_targets = {str(plan.get("key") or "").strip().upper()}
+            if actual_comment_targets != set(named_comment_targets):
+                errors.append({
+                    "index": -1, "field": "comment_targets", "source": "final_authority",
+                    "message": (f"명시적 댓글 대상은 {named_comment_targets[0]}이나 payload 대상은 "
+                                f"{', '.join(sorted(actual_comment_targets)) or '없음'}이다"),
+                })
+    return errors
+
+
+def _cardinality_errors(state: AgentState) -> list[dict]:
+    """Enforce only explicit single-Sub-Task cardinality; decomposition otherwise remains semantic."""
+    contract = state.get("continuation_contract") or {}
+    if not isinstance(contract, dict) or contract.get("version") != "continuation.v1":
+        return []
+    texts = [str(contract.get("root_request") or "")]
+    allowed_ids = {str(value or "") for value in (contract.get("outcome_ids") or [])}
+    for task in (state.get("request_plan") or {}).get("tasks") or []:
+        if isinstance(task, dict) and (not allowed_ids or str(task.get("id") or "") in allowed_ids):
+            texts.append(str(task.get("instruction") or ""))
+    material = "\n".join(texts)
+    subtask_term = r"(?:Sub[ -]?Task|서브\s*태스크|서브테스크|하위\s*(?:태스크|티켓|작업))"
+    explicit_single = bool(_re.search(
+        rf"{subtask_term}.{{0,40}}"
+        r"(?:하나|한\s*(?:개|건)|1\s*(?:개|건)|\bsingle\b|\bone\b)|"
+        rf"(?:하나|한\s*(?:개|건)|1\s*(?:개|건)|\bsingle\b|\bone\b).{{0,40}}"
+        rf"{subtask_term}",
+        material, _re.I,
+    ))
+    # ``A와 B에 각각 한 개씩`` is a per-target distribution, not one total issue.
+    distributive = bool(_re.search(
+        rf"(?:각각.{{0,40}}{subtask_term}.{{0,24}}(?:하나|한\s*(?:개|건)|1\s*(?:개|건))|"
+        rf"{subtask_term}.{{0,40}}(?:하나|한\s*(?:개|건)|1\s*(?:개|건))\s*씩)",
+        material, _re.I,
+    ))
+    if distributive:
+        explicit_single = False
+    if not explicit_single:
+        return []
+    draft = state.get("draft") or {}
+    roots = [row for row in (draft.get("items") or []) if isinstance(row, dict)]
+    children = [child for row in roots for child in (row.get("children") or [])
+                if isinstance(child, dict)]
+    total = len(roots) + len(children)
+    if total != 1 or len(roots) != 1 or children:
+        return [{
+            "index": -1, "field": "cardinality", "source": "final_authority",
+            "message": (f"사용자가 Sub-Task 1건을 지정했으나 최종 생성 이슈는 "
+                        f"root {len(roots)}건 + child {len(children)}건"),
+        }]
+    row = roots[0]
+    issue_type = str(row.get("type") or row.get("issue_type") or "").strip()
+    normalized_type = issue_type.casefold().replace("-", "").replace(" ", "")
+    if normalized_type != "subtask" or str(draft.get("mode") or "").casefold() != "subtask":
+        return [{
+            "index": 0, "field": "cardinality", "source": "final_authority",
+            "message": ("정확히 1건 요청은 wrapper Task가 아니라 mode=subtask의 "
+                        "Sub-Task 1건이어야 한다"),
+        }]
+    parent = str(row.get("parent") or "").strip().upper()
+    if not parent or not _can_parent_subtask(parent):
+        return [{
+            "index": 0, "field": "cardinality", "source": "final_authority",
+            "message": (f"정확히 1건의 Sub-Task 부모는 실재하는 Task-tier여야 하나 "
+                        f"{parent or '비어 있음'}은 유효하지 않다"),
+        }]
+    return []
+
+
+def _dedupe_errors(rows) -> list[dict]:
+    result, seen = [], set()
+    for raw in rows or []:
+        if not isinstance(raw, dict):
+            continue
+        row = dict(raw)
+        identity = (row.get("index"), row.get("child_index"), row.get("field"),
+                    str(row.get("message") or ""))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append(row)
+    return result
+
+
+def final_authority_review(state: AgentState, *,
+                           locks: tuple[UserFieldLock, ...] = (),
+                           require_effect: bool = False) -> dict:
+    """Re-seal review against the final projected effect after every mutable merge."""
+    view = project_final_authority_state(state)
+    effect = final_effect(view)
+    action = continuation_action(view)
+    previous = dict(view.get("review") or {})
+    errors = [dict(row) for row in (previous.get("errors") or [])
+              if isinstance(row, dict) and row.get("source") != "final_authority"]
+    warnings = [dict(row) for row in (previous.get("warnings") or []) if isinstance(row, dict)]
+    problems = [dict(row) for row in (previous.get("problems") or []) if isinstance(row, dict)]
+
+    if current_work_failed(view):
+        errors.append({
+            "index": -1, "field": "effect", "source": "final_authority",
+            "message": "현재 Work Architect structured output이 실패해 실행 effect가 확정되지 않았다",
+        })
+    expected = {
+        "create": {"create"}, "comment": {"comment"}, "update": {"update"},
+        "read": {"none"}, "respond": {"none"},
+    }.get(action)
+    plan = view.get("change_plan") or {}
+    transition_comment = bool(
+        (plan.get("transition") or {}).get("id") and str(plan.get("comment") or "").strip()
+    )
+    if action == "mixed" and not (
+        effect.kind == "update"
+        and any(name in _UPDATE_EFFECT_ACTIONS for name in effect.actions)
+        and (any(name.startswith("add_ticket_comment") for name in effect.actions)
+             or transition_comment)
+    ):
+        # The existing executor intentionally binds update+comment to two fingerprints on one
+        # approval card.  No equivalent atomic contract exists for create+change, or for a
+        # ``mixed`` request whose final payload silently lost one side.  Those cases must be
+        # split or clarified rather than approving a partial outcome.
+        errors.append({
+            "index": -1, "field": "effect", "source": "final_authority",
+            "message": "mixed 요청의 최종 effect가 지원되는 update+comment 쌍이 아니어서 분할 확인이 필요하다",
+        })
+    if expected is not None and effect.kind not in expected:
+        errors.append({
+            "index": -1, "field": "effect", "source": "final_authority",
+            "message": f"typed action은 {action}이나 최종 effect는 {effect.kind}",
+        })
+    if effect.kind == "conflict":
+        errors.append({
+            "index": -1, "field": "effect", "source": "final_authority",
+            "message": "하나의 최종 승인 경계에 create와 change effect가 함께 남아 있다",
+        })
+    if require_effect and action in _WRITE_ACTIONS and effect.kind == "none" \
+            and not view.get("questions"):
+        errors.append({
+            "index": -1, "field": "effect", "source": "final_authority",
+            "message": f"{action} 요청에 승인 가능한 최종 effect가 없다",
+        })
+
+    if effect.kind == "create":
+        if previous.get("ok") is not True:
+            errors.append({
+                "index": -1, "field": "review", "source": "final_authority",
+                "message": "create effect에는 명시적인 pre-merge review.ok=true가 필요하다",
+            })
+        auto = _machine_check(view)
+        errors.extend({**dict(row), "source": "final_authority"}
+                      for row in (auto.get("errors") or []) if isinstance(row, dict))
+        warnings = _dedupe_errors([*warnings, *(auto.get("warnings") or [])])
+        errors.extend(_locked_field_errors(view, locks))
+        errors.extend(_typed_parent_errors(view))
+        errors.extend(_typed_assignee_errors(view))
+        errors.extend(_scoped_decision_errors(view))
+        errors.extend(_cardinality_errors(view))
+    elif effect.kind in {"comment", "update"} and previous.get("ok") is False:
+        # Change flows do not run the semantic Auditor, so an absent verdict is accepted only
+        # because this function is their deterministic machine-only review. An explicit red
+        # verdict from this/current state remains red and cannot be promoted by omission.
+        errors.append({
+            "index": -1, "field": "review", "source": "final_authority",
+            "message": "명시적으로 실패한 기존 review를 최종 change effect가 승격할 수 없다",
+        })
+    if effect.kind in {"comment", "update"}:
+        errors.extend(_change_shape_errors(view))
+        errors.extend(_typed_change_target_errors(view))
+        errors.extend(_explicit_link_and_comment_errors(view))
+
+    errors = _dedupe_errors(errors)
+    ok = not errors and not problems and (previous.get("ok") is True
+                                          if effect.kind == "create" else True)
+    label = {"create": "생성", "comment": "댓글", "update": "변경",
+             "none": "무효", "conflict": "충돌"}.get(effect.kind, effect.kind)
+    summary = (f"최종 {label} effect 검증 통과"
+               + (" — 필드·상태 변경 없음" if effect.kind == "comment" else "")
+               if ok else f"최종 {label} effect 검증 보류 — 오류 {len(errors)}건")
+    checks = dict(previous.get("checks") or {})
+    checks["final_authority"] = ok
+    return {
+        **previous,
+        "ok": ok,
+        "checks": checks,
+        "errors": errors,
+        "problems": problems,
+        "warnings": warnings,
+        "summary": summary,
+        "final_authority": effect.as_dict(),
+        "approval_contract": "deterministic_final_effect.v1",
+    }
 
 
 class Auditor(StructuredAgent):
