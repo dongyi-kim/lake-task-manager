@@ -2222,6 +2222,7 @@ def test_action_executor_dispatches_supported_compound_change_effects(
     calls = []
 
     def dispatch(self, action, payload, token):
+        assert approval.consume(token, action, payload)[0]
         calls.append((action, payload, token))
         return ({"created": [], "updated": [{"key": "DL-1", "fields": [action]}],
                  "failed": [], "note": ""}, action)
@@ -2235,6 +2236,7 @@ def test_action_executor_dispatches_supported_compound_change_effects(
     assert [call[0] for call in calls] == [primary_action, secondary_action]
     assert out["result"]["failed"] == []
     assert out["result"]["updated"][0]["fields"] == [primary_action, secondary_action]
+    assert approval.peek(primary) is None and approval.peek(secondary) is None
 
 
 def test_partial_bulk_update_explicitly_reports_that_comments_were_not_posted(monkeypatch):
@@ -2256,6 +2258,7 @@ def test_partial_bulk_update_explicitly_reports_that_comments_were_not_posted(mo
     calls = []
 
     def dispatch(self, action, payload, token):
+        assert approval.consume(token, action, payload)[0]
         calls.append(action)
         if action == "update_tickets":
             return ({"created": [], "updated": [{"key": "DL-1", "fields": ["priority"]}],
@@ -2271,7 +2274,7 @@ def test_partial_bulk_update_explicitly_reports_that_comments_were_not_posted(mo
 
     assert calls == ["update_tickets"]
     assert "코멘트" in out["result"]["note"] and "게시하지 않았" in out["result"]["note"]
-    assert approval.peek(secondary) is None
+    assert approval.peek(primary) is None and approval.peek(secondary) is None
 
 
 def test_partial_secondary_comments_preserve_successes_and_failures(monkeypatch):
@@ -2292,6 +2295,7 @@ def test_partial_secondary_comments_preserve_successes_and_failures(monkeypatch)
     approval.approve(secondary, "t-secondary-partial")
 
     def dispatch(self, action, payload, token):
+        assert approval.consume(token, action, payload)[0]
         if action == "update_tickets":
             return ({"created": [], "updated": [
                 {"key": "DL-1", "fields": ["priority"]},
@@ -2313,6 +2317,7 @@ def test_partial_secondary_comments_preserve_successes_and_failures(monkeypatch)
     assert out["result"]["failed"] == [
         {"summary": "DL-2", "error": "comment provider failure"},
     ]
+    assert approval.peek(primary) is None and approval.peek(secondary) is None
 
 
 def test_compound_primary_missing_its_bound_comment_token_executes_nothing(monkeypatch):

@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 from app.agent.workflow.agents.base import Agent
 from app.agent.workflow.agents.work_architect import draft_json, draft_text
 from app.agent.prompts.roles import SYSTEM_ACTION_EXECUTOR
@@ -30,6 +32,14 @@ SUPPORTED_WRITE_ACTIONS = frozenset({
     "update_tickets", "add_ticket_comments", "transition_ticket", "link_tickets",
     "attach_document",
 })
+
+
+class _DispatchFailure(RuntimeError):
+    """Internal signal carrying whether this exact failed attempt consumed its capability."""
+
+    def __init__(self, consumption_attestation: dict | None):
+        super().__init__("approved dispatch failed")
+        self.consumption_attestation = consumption_attestation
 
 
 class ActionExecutor(Agent):
@@ -49,7 +59,7 @@ class ActionExecutor(Agent):
         from app.agent import approval
 
         token = str(state.get("approval_token") or "")
-        record = approval.peek(token) if token else None
+        record = deepcopy(approval.peek(token)) if token else None
         if not record:
             return self._failed(state, "승인된 실행 계획이 없거나 만료되었습니다.")
         if not record.get("approved"):
@@ -63,7 +73,7 @@ class ActionExecutor(Agent):
             return self._failed(state, "대화에 연결되지 않은 승인 작업을 거부했습니다.")
         if record_thread != thread_id:
             return self._failed(state, "이 대화에서 승인한 실행 계획이 아닙니다.")
-        payload = record.get("payload")
+        payload = deepcopy(record.get("payload"))
         if not isinstance(payload, dict):
             approval.reject(token)
             return self._failed(state, "승인된 실행 payload 형식이 올바르지 않습니다.")
@@ -123,20 +133,63 @@ class ActionExecutor(Agent):
                 state, "서로 결속되지 않은 코멘트 승인 토큰이 있어 변경을 실행하지 않았습니다.",
             )
 
-        result, label = self._dispatch(str(record.get("action") or ""), payload, token)
+        action = str(record.get("action") or "")
+        primary_cancelled = False
+        try:
+            result, label, consumption_attestation = self._dispatch_once(
+                action, payload, token, thread_id,
+            )
+        except Exception as failure:
+            # A provider may have applied the side effect before its adapter raised.  Do not call
+            # that a success and do not leave the capability replayable; carry an explicitly
+            # incomplete legacy result to the semantic reporter instead.
+            primary_cancelled = approval.reject(token)
+            owns_pair = primary_cancelled or bool(
+                getattr(failure, "consumption_attestation", None)
+            )
+            if (owns_pair and comment_token and comment_record
+                    and str(comment_record.get("thread") or "") == thread_id):
+                approval.reject(comment_token)
+            blocked = self._empty_result()
+            blocked["failed"] = [{
+                "summary": action or "승인 작업",
+                "error": "외부 실행 응답이 중단되어 실제 반영 여부를 확인해야 합니다.",
+            }]
+            from app.agent.workflow.execution_receipt import scrub_execution_sidecars
+            blocked = scrub_execution_sidecars(
+                blocked, secrets_to_remove=(token, comment_token),
+            )
+            return {"result": blocked, "execution_receipt": {},
+                    "trace": note(state, self.name, "외부 실행 응답 중단 · 결과 확인 필요")}
+        raw_execution = result.pop("_execution_raw", None)
 
-        # ``consume`` happens inside each write tool, but several tools deliberately validate
-        # Jira state before consuming.  Once ActionExecutor has attempted an approved card, a
-        # pre-validation failure must not leave the same capability reusable by a direct caller.
-        # External failures already consume it; ``reject`` is therefore an idempotent cleanup.
-        if result.get("failed") and approval.peek(token):
-            approval.reject(token)
+        # Provider output and token absence are not positive execution proof.  Only consume() in
+        # this exact dispatch attempt can issue the attestation used by the common finalizer.
+        if consumption_attestation is None:
+            primary_cancelled = approval.reject(token)
+            untrusted_projection = bool(
+                result.get("created") or result.get("updated") or not result.get("failed")
+            )
+            if untrusted_projection:
+                result = self._verification_needed_result(
+                    action, "승인 capability가 실행 경계에서 정확히 소비되지 않아 실제 반영 여부를 확인해야 합니다.",
+                )
+            raw_execution = None
+            if untrusted_projection:
+                label = "승인 capability 미소비 · 결과 확인 필요"
 
         # A change and its accompanying comment have separate one-use fingerprints, but both
         # were visible on the same approval card. Execute the comment only after the primary
         # mutation succeeded, preserving the established partial-success report for singular,
         # bulk and link changes.
-        if expected_secondary and bundle and comment_token:
+        if (expected_secondary and bundle and comment_token
+                and consumption_attestation is None):
+            # A double-click loser has no ownership over the shared secondary capability.  It may
+            # cancel the peer only when it atomically cancelled the still-pending primary itself.
+            if (primary_cancelled and comment_record
+                    and str(comment_record.get("thread") or "") == thread_id):
+                approval.reject(comment_token)
+        elif expected_secondary and bundle and comment_token:
             comment_same_thread = bool(
                 comment_record and str(comment_record.get("thread") or "") == thread_id
             )
@@ -153,9 +206,27 @@ class ActionExecutor(Agent):
             elif (comment_same_thread and comment_record.get("approved")
                   and comment_record.get("action") == expected_secondary
                   and isinstance(comment_record.get("payload"), dict)):
-                comment_result, _ = self._dispatch(
-                    expected_secondary, comment_record["payload"], comment_token,
-                )
+                try:
+                    comment_result, _, comment_attestation = self._dispatch_once(
+                        expected_secondary, comment_record["payload"], comment_token, thread_id,
+                    )
+                except Exception:
+                    approval.reject(comment_token)
+                    comment_result = self._empty_result()
+                    comment_result["failed"] = [{
+                        "summary": expected_secondary,
+                        "error": "외부 코멘트 실행 응답이 중단되어 실제 반영 여부를 확인해야 합니다.",
+                    }]
+                    comment_attestation = None
+                comment_result.pop("_execution_raw", None)
+                if comment_attestation is None:
+                    approval.reject(comment_token)
+                    comment_result = self._empty_result()
+                    comment_result["failed"] = [{
+                        "summary": expected_secondary,
+                        "error": "코멘트 승인 capability가 실행 경계에서 소비되지 않아 "
+                                 "실제 반영 여부를 확인해야 합니다.",
+                    }]
                 by_key = {str(row.get("key") or ""): row
                           for row in (result.get("updated") or [])
                           if isinstance(row, dict) and row.get("key")}
@@ -170,8 +241,6 @@ class ActionExecutor(Agent):
                         result.setdefault("updated", []).append(row)
                 if comment_result.get("failed"):
                     result.setdefault("failed", []).extend(comment_result["failed"])
-                    if approval.peek(comment_token):
-                        approval.reject(comment_token)
                     result["note"] = (
                         "필드는 바꿨지만 코멘트는 남기지 못했습니다: "
                         + str(comment_result["failed"][0].get("error") or "")
@@ -184,16 +253,81 @@ class ActionExecutor(Agent):
                 if comment_same_thread:
                     approval.reject(comment_token)
                 result["note"] = "필드는 바꿨지만 코멘트 승인 정보가 유효하지 않습니다."
-        return {"result": result, "trace": note(state, self.name, label)}
+        from app.agent.workflow import execution_receipt as receipt_contract
+
+        receipt = None
+        secrets = (token, comment_token)
+        if (not bundle and not comment_token and action in receipt_contract.EXECUTION_RECEIPT_ACTIONS
+                and consumption_attestation is not None and isinstance(raw_execution, dict)):
+            try:
+                receipt = receipt_contract.issue_execution_receipt(
+                    record=record, token=token, result=result, raw=raw_execution,
+                    consumption_attestation=consumption_attestation,
+                )
+                if receipt is None:
+                    result = self._verification_needed_result(
+                        action, "외부 실행 결과의 정확한 결속을 확인할 수 없어 실제 반영 여부를 확인해야 합니다.",
+                    )
+                result = receipt_contract.scrub_execution_sidecars(
+                    result, secrets_to_remove=secrets,
+                )
+            except Exception:
+                # The write may already have happened.  Receipt/schema/signer availability must
+                # never abort the graph or turn that uncertainty into a deterministic success.
+                receipt = None
+                result = receipt_contract.scrub_execution_sidecars(
+                    self._verification_needed_result(
+                        action, "외부 실행 결과의 검증이 중단되어 실제 반영 여부를 확인해야 합니다.",
+                    ), secrets_to_remove=secrets,
+                )
+        else:
+            try:
+                result = receipt_contract.scrub_execution_sidecars(
+                    result, secrets_to_remove=secrets,
+                )
+            except Exception:
+                result = self._verification_needed_result(
+                    action, "외부 실행 결과를 안전하게 표시할 수 없어 실제 반영 여부를 확인해야 합니다.",
+                )
+        return {"result": result, "execution_receipt": receipt or {},
+                "trace": note(state, self.name, label)}
 
     @staticmethod
     def _empty_result() -> dict:
         return {"created": [], "updated": [], "failed": [], "note": ""}
 
+    @classmethod
+    def _verification_needed_result(cls, action: str, error: str) -> dict:
+        result = cls._empty_result()
+        result["failed"] = [{"summary": action or "승인 작업", "error": error}]
+        return result
+
+    def _dispatch_once(self, action: str, payload: dict, token: str,
+                       thread_id: str) -> tuple[dict, str, dict | None]:
+        """Run one adapter in a dispatch-scoped approval consumption context."""
+        from app.agent import approval
+
+        attempt_nonce, context_token = approval.begin_consumption_attempt(token)
+        try:
+            result, label = self._dispatch(action, payload, token)
+        except Exception as exc:
+            attestation = approval.take_consumption(
+                token, attempt_nonce=attempt_nonce, thread_id=thread_id,
+                action=action, payload=payload,
+            )
+            raise _DispatchFailure(attestation) from exc
+        finally:
+            approval.end_consumption_attempt(context_token)
+        attestation = approval.take_consumption(
+            token, attempt_nonce=attempt_nonce, thread_id=thread_id,
+            action=action, payload=payload,
+        )
+        return result, label, attestation
+
     def _failed(self, state, message: str, summary: str = "승인 작업") -> dict:
         result = self._empty_result()
         result["failed"] = [{"summary": summary, "error": str(message or "")[:300]}]
-        return {"result": result,
+        return {"result": result, "execution_receipt": {},
                 "trace": note(state, self.name, f"실행 거부 — {str(message or '')[:80]}")}
 
     @staticmethod
@@ -202,6 +336,22 @@ class ActionExecutor(Agent):
         if not raw.get("ok") and not rows:
             rows = [{"summary": summary, "error": str(raw.get("error") or "실행 실패")[:300]}]
         return rows
+
+    @staticmethod
+    def _raw_execution_complete(action: str, payload: dict, raw: dict) -> bool:
+        from app.agent.workflow.execution_receipt import execution_raw_complete
+        return execution_raw_complete(action, payload, raw)
+
+    @classmethod
+    def _incomplete_external_result(cls, action: str, raw: dict) -> tuple[dict, str]:
+        """Keep contradictory provider output out of the legacy success projection too."""
+        result = cls._empty_result()
+        result["failed"] = [{
+            "summary": action,
+            "error": "외부 실행 응답이 승인 payload와 정확히 결속되지 않아 실제 반영 여부를 확인해야 합니다.",
+        }]
+        result["_execution_raw"] = raw
+        return result, "외부 실행 응답 불일치 · 결과 확인 필요"
 
     def _dispatch(self, action: str, payload: dict, token: str) -> tuple[dict, str]:
         """Dispatch one explicit approved action through its canonical registry tool."""
@@ -227,22 +377,28 @@ class ActionExecutor(Agent):
 
         if action == "create_tickets":
             raw = T.BY_NAME[action].invoke({**payload, "approval_token": token}) or {}
+            if not self._raw_execution_complete(action, payload, raw):
+                return self._incomplete_external_result(action, raw)
             created = [row for row in (raw.get("created") or [])
                        if isinstance(row, dict) and row.get("key")]
             failed = self._failure_rows(
                 raw, str(((payload.get("items") or [{}])[0] or {}).get("summary") or "티켓 생성"),
             )
-            return ({"created": created, "updated": [], "failed": failed, "note": ""},
+            return ({"created": created, "updated": [], "failed": failed, "note": "",
+                     "_execution_raw": raw},
                     f"생성 {len(created)}건" + (f" · 실패 {len(failed)}건" if failed else ""))
 
         if action == "create_epic":
             raw = T.BY_NAME[action].invoke({**payload, "approval_token": token}) or {}
+            if not self._raw_execution_complete(action, payload, raw):
+                return self._incomplete_external_result(action, raw)
             created = [row for row in (raw.get("created") or [])
                        if isinstance(row, dict) and row.get("key")]
             failed = self._failure_rows(raw, str(payload.get("summary") or "Epic 생성"))
             followup = ("이 Epic 아래에 Task 를 이어서 만들 수 있습니다 — 원하시면 말씀해 주세요."
                         if created else "")
-            return ({"created": created, "updated": [], "failed": failed, "note": followup},
+            return ({"created": created, "updated": [], "failed": failed, "note": followup,
+                     "_execution_raw": raw},
                     f"Epic 생성 {len(created)}건" + (" · 실패" if failed else ""))
 
         if action == "update_ticket":
@@ -251,10 +407,16 @@ class ActionExecutor(Agent):
             raw = T.BY_NAME[action].invoke(
                 {"key": key, **changes, "approval_token": token},
             ) or {}
+            if not self._raw_execution_complete(action, payload, raw):
+                return self._incomplete_external_result(action, raw)
             failed = self._failure_rows(raw, key or "티켓 변경")
             updated = ([] if failed else
-                       [{"key": key, "fields": list(raw.get("updated") or [])}])
-            return ({"created": [], "updated": updated, "failed": failed, "note": ""},
+                       [{"index": raw.get("index"), "key": key,
+                         "fields": list(raw.get("updated") or []),
+                         "target_id": raw.get("target_id"),
+                         "effect_digest": raw.get("effect_digest")}])
+            return ({"created": [], "updated": updated, "failed": failed, "note": "",
+                     "_execution_raw": raw},
                     (f"변경 1건({', '.join(raw.get('updated') or [])})" if updated else "변경 실패"))
 
         if action == "add_ticket_comment":
@@ -267,10 +429,13 @@ class ActionExecutor(Agent):
 
         if action == "update_tickets":
             raw = T.BY_NAME[action].invoke({**payload, "approval_token": token}) or {}
+            if not self._raw_execution_complete(action, payload, raw):
+                return self._incomplete_external_result(action, raw)
             updated = [row for row in (raw.get("updated") or []) if isinstance(row, dict)]
             keys = [str((row or {}).get("key") or "") for row in (payload.get("items") or [])]
             failed = self._failure_rows(raw, ", ".join(k for k in keys[:5] if k) or "일괄 변경")
-            return ({"created": [], "updated": updated, "failed": failed, "note": ""},
+            return ({"created": [], "updated": updated, "failed": failed, "note": "",
+                     "_execution_raw": raw},
                     f"일괄 변경 {len(updated)}건" + (f" · 실패 {len(failed)}건" if failed else ""))
 
         if action == "add_ticket_comments":

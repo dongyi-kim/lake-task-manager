@@ -149,7 +149,10 @@ def test_execution_result_without_exactly_once_receipt_keeps_semantic_path(monke
         "updated": [], "failed": [], "note": "{{mention:unsafe}}",
     }))
 
-    assert out == {"fallback": True, "trace": []}
+    assert out["fallback"] is True
+    metric = _fast_path(out)
+    assert metric["id"] == "result.execution_receipt.v1"
+    assert metric["complete"] is False and metric["savedCalls"] == 0
 
 
 def test_authoritative_structure_tree_skips_llm_and_preserves_bytes(monkeypatch):

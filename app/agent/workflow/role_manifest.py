@@ -140,7 +140,7 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         "action_executor", "Action Executor", "deterministic", "fast_structured",
         "Executes exactly once only the write payload that matches the approved fingerprint.",
         ("thread_id", "approval_token", "comment_token", "draft", "change_plan"),
-        ("result",), ("write",), effect="write", kind="service",
+        ("result", "execution_receipt"), ("write",), effect="write", kind="service",
         execution_layer="deterministic",
     ),
     "result_integrator": RoleSpec(
@@ -153,7 +153,7 @@ ROLE_SPECS: dict[str, RoleSpec] = {
          "group_activity", "ticket_progress",
          "person_work_snapshot", "daily_priority_snapshot", "interpretation", "questions",
          "draft", "assignments", "change_plan", "continuation_contract", "review",
-         "approval_token", "result", "error"),
+         "approval_token", "result", "execution_receipt", "error"),
         ("reply",), effect="respond",
     ),
     "editor_author": RoleSpec(

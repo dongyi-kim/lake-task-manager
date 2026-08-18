@@ -270,6 +270,7 @@ class AgentState(TypedDict, total=False):
     approval_token: str
     comment_token: str              # 변경과 함께 남길 코멘트의 승인 토큰(카드에 코멘트가 보였을 때만)
     result: dict                    # {"created":[...], "failed":[...]}
+    execution_receipt: dict         # signed execution-receipt.v1; never exposed as UI result data
 
     # ── 공통 ──
     reply: str                      # 사용자에게 보일 최종 문장

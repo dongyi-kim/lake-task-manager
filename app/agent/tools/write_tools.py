@@ -19,6 +19,9 @@ from langchain_core.tools import tool
 
 from app.agent import approval
 from app.agent.tools._ctx import client, compact, trim
+from app.agent.workflow.execution_receipt import (
+    bind_execution_rows, bind_single_execution_result,
+)
 
 # 쓰기 도구는 자기가 어느 대화에 속하는지 알아야 한다(토큰이 thread 에 묶인다).
 # 도구 인자로 받으면 모델이 남의 thread 를 적을 수 있으므로 **서버가 심어 준다**.
@@ -97,7 +100,8 @@ _TICKET_KEY = re.compile(r"^[A-Z][A-Z0-9]*-\d+$", re.I)
 
 
 def _bind_children_to_created_parents(
-        children: list, created: list, *, parent_count: int) -> tuple[list[dict], list[dict]]:
+        children: list, created: list, *, parent_count: int,
+        source_indices: list[int] | None = None) -> tuple[list[dict], list[dict]]:
     """Bind children by the original parent result index, never success-list position."""
     keys_by_index: dict[int, list[str]] = {}
     for receipt in created or []:
@@ -129,6 +133,8 @@ def _bind_children_to_created_parents(
         row["type"] = "Sub-Task"
         row["parent"] = parent_keys[0]
         rows.append(row)
+        if source_indices is not None:
+            source_indices.append(child_index)
     return rows, failed
 
 
@@ -166,15 +172,26 @@ def create_tickets(mode: str, items: list, approval_token: str, children: list =
         r = c.bulk_create(mode, items, desc_to_field=c.desc_field_value)
     except Exception as e:
         return {"ok": False, "created": [], "failed": [], "error": str(e)[:300]}
+    r = dict(r or {})
+    r["created"] = bind_execution_rows(
+        r.get("created"), action="create_tickets", items=items, scope="item",
+    )
+    r["failed"] = bind_execution_rows(
+        r.get("failed"), action="create_tickets", items=items, scope="item",
+    )
     if not kids:
         return r
 
     # ── 2단계: 만들어진 부모 키로 Sub-Task 를 붙인다 ──────────────────
+    child_source_indices: list[int] = []
     rows, unbound = _bind_children_to_created_parents(
         kids, r.get("created") or [], parent_count=len(items or []),
+        source_indices=child_source_indices,
     )
     if unbound:
-        r.setdefault("failed", []).extend(unbound)
+        r.setdefault("failed", []).extend(bind_execution_rows(
+            unbound, action="create_tickets", items=kids, scope="child",
+        ))
         r["ok"] = False
     if not rows:
         return r
@@ -186,14 +203,25 @@ def create_tickets(mode: str, items: list, approval_token: str, children: list =
              "error": "규칙 위반으로 만들지 않았습니다: "
                       + "; ".join(str(e.get("message")) for e in (sub.get("errors") or [])[:3])})
         return r
+    # ``rows`` contains only Jira fields.  The parallel source-index list is kept locally and
+    # applied to provider receipts after the call, so internal target ids never reach Jira.
     try:
         r2 = c.bulk_create("subtask", rows, desc_to_field=c.desc_field_value)
     except Exception as e:
         r.setdefault("failed", []).append({"summary": f"Sub-Task {len(rows)}건",
                                            "error": str(e)[:200]})
         return r
-    r["created"] = (r.get("created") or []) + (r2.get("created") or [])
-    r["failed"] = (r.get("failed") or []) + (r2.get("failed") or [])
+    r2 = dict(r2 or {})
+    child_created = bind_execution_rows(
+        r2.get("created"), action="create_tickets", items=kids, scope="child",
+        source_indices=child_source_indices,
+    )
+    child_failed = bind_execution_rows(
+        r2.get("failed"), action="create_tickets", items=kids, scope="child",
+        source_indices=child_source_indices,
+    )
+    r["created"] = (r.get("created") or []) + child_created
+    r["failed"] = (r.get("failed") or []) + child_failed
     r["ok"] = bool(r.get("ok")) and bool(r2.get("ok"))
     return r
 
@@ -235,7 +263,8 @@ def update_ticket(key: str, approval_token: str, assignee: str = None, duedate: 
     except Exception as e:
         return {"ok": False, "error": f"티켓 상태를 확인하지 못했습니다: {str(e)[:200]}"}
 
-    ok, why = approval.consume(approval_token, "update_ticket", {"key": key, "changes": changes})
+    payload = {"key": key, "changes": changes}
+    ok, why = approval.consume(approval_token, "update_ticket", payload)
     if not ok:
         return _denied(why)
 
@@ -274,8 +303,11 @@ def update_ticket(key: str, approval_token: str, assignee: str = None, duedate: 
         c.update_fields(key, fields)
     except Exception as e:
         return {"ok": False, "error": str(e)[:300]}
-    return compact({"ok": True, "key": key, "updated": sorted(fields),
-                    "skipped": sorted(denied) or None})
+    return bind_single_execution_result(
+        compact({"ok": True, "key": key, "updated": sorted(fields),
+                 "skipped": sorted(denied) or None}),
+        action="update_ticket", payload=payload,
+    )
 
 
 @tool
@@ -306,7 +338,11 @@ def create_epic(summary: str, approval_token: str, epic_name: str = "",
         key = (r or {}).get("key")
         if not key:
             return {"ok": False, "error": "Epic 생성 응답에 키가 없습니다."}
-        return {"ok": True, "created": [{"key": key, "summary": summary}], "failed": []}
+        created = bind_execution_rows(
+            [{"index": 0, "key": key, "summary": summary}],
+            action="create_epic", items=[payload],
+        )
+        return {"ok": True, "created": created, "failed": []}
     except Exception as e:
         return {"ok": False, "created": [], "failed": [], "error": str(e)[:300]}
 
@@ -449,9 +485,16 @@ def update_tickets(items: list, approval_token: str) -> dict:
                     out[name] = value
             return out
     try:
-        return c.bulk_update(rows, _fields_for_update)
+        result = dict(c.bulk_update(rows, _fields_for_update) or {})
     except Exception as e:
         return {"ok": False, "updated": [], "failed": [], "error": str(e)[:300]}
+    result["updated"] = bind_execution_rows(
+        result.get("updated"), action="update_tickets", items=rows,
+    )
+    result["failed"] = bind_execution_rows(
+        result.get("failed"), action="update_tickets", items=rows,
+    )
+    return result
 
 
 @tool

@@ -18,6 +18,7 @@ FastPathId = Literal[
     "auditor.machine_negative.v1",
     "portfolio.intermediate.v1",
     "research.single_bounded_query",
+    "result.execution_receipt.v1",
     "result.structure_tree.v1",
     "work.exact_single_ticket_update",
 ]
@@ -26,6 +27,7 @@ FastPathAuthority = Literal[
     "portfolio_analyst.raw_tool_snapshot",
     "request-plan.v1+query-plan.v1+query-results.v1",
     "request-plan.requested-effects.v1+continuation.v1",
+    "action-executor.approved-dispatch.v1",
     "work_architect.structure_stage",
 ]
 TypedCheckAuthority = Literal["auditor.machine-check.v1"]
@@ -69,6 +71,14 @@ _SPECS = (
         required_checks=frozenset({
             "ask_intent", "one_query_outcome", "query_plan_complete",
             "exact_result_binding", "ledger_result_shape", "bounded_without_omission",
+        }),
+    ),
+    TypedFastPathSpec(
+        path_id="result.execution_receipt.v1",
+        authority="action-executor.approved-dispatch.v1",
+        required_checks=frozenset({
+            "typed_receipt", "current_thread", "current_capability",
+            "exact_approval", "exact_outcomes", "safe_renderable",
         }),
     ),
     TypedFastPathSpec(

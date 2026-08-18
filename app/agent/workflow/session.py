@@ -139,7 +139,8 @@ def _initial(thread_id, text, user_role, user_id) -> dict:
             "user_identity": _identity(),
             # 새 턴이 시작되면 지난 턴의 승인·실행 결과는 지운다 — 안 지우면 옛 토큰으로
             # result_integrator 가 다시 '승인 대기'로 흘러간다.
-            "approval_token": "", "comment_token": "", "result": {}, "revisions": 0,
+            "approval_token": "", "comment_token": "", "result": {},
+            "execution_receipt": {}, "revisions": 0,
             "repair_budget": zero_typed_repair_budget(),
             # trace 는 리듀서 필드라 [] 대입으로는 안 비워진다 — 리셋 신호를 앞에 싣는다.
             "trace": [TRACE_RESET], "change_plan": {}, "questions": []}
@@ -442,7 +443,7 @@ _TURN_DERIVED_EMPTY = {
     "knowledge_brief": {}, "pmo_caution": "",
     "interpretation": "", "structure_plan": [], "structure_ok": False,
     "structure_notes": [], "draft": {}, "assignments": [], "review": {},
-    "reply": "", "error": "", "turns": 0,
+    "reply": "", "error": "", "turns": 0, "execution_receipt": {},
     "repair_budget": zero_typed_repair_budget(),
 }
 
@@ -928,12 +929,17 @@ def _shape(thread_id: str, state: dict, snap=None) -> dict:
     waiting = bool(snap and Node.ACTION_EXECUTOR in (getattr(snap, "next", None) or ()))
 
     data = as_dict(state or {})
+    from app.agent.workflow.execution_receipt import scrub_execution_sidecars
+    public_result = scrub_execution_sidecars(
+        data.get("result") or {},
+        secrets_to_remove=(data.get("approval_token"), data.get("comment_token")),
+    )
     out = {"thread_id": thread_id, "ok": not data.get("error"),
            "reply": data.get("reply") or "", "trace": data.get("trace") or [],
            "intent": data.get("intent") or "", "situation": data.get("situation") or "",
            "evidence": data.get("evidence") or [], "related_docs": data.get("related_docs") or [],
            "questions": data.get("questions") or [], "assignments": data.get("assignments") or [],
-           "review": data.get("review") or {}, "result": data.get("result") or {},
+           "review": data.get("review") or {}, "result": public_result,
            "error": data.get("error") or ""}
 
     # 승인 카드 — 무엇을 승인하는지가 화면과 토큰에 **같은 내용**으로 담겨야 한다.

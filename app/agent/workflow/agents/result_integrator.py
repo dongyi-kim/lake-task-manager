@@ -57,6 +57,9 @@ from app.agent.workflow.state import (AgentState, Intent, Node, last_user_text, 
 from app.agent.workflow.typed_fast_path import (
     evaluate_typed_fast_path, typed_fast_path_note,
 )
+from app.agent.workflow.execution_receipt import (
+    parse_execution_receipt, render_execution_receipt,
+)
 
 
 def _text(value) -> bool:
@@ -128,6 +131,37 @@ def _structure_fast_path_decision(state: dict):
 def _structure_reply(tree: str) -> str:
     return ("### 구조 제안\n\n```\n" + tree + "\n```\n\n"
             "항목은 합치기·나누기·추가·제거·이름 변경이 가능합니다.")
+
+
+def _execution_receipt_fast_path(state: dict):
+    """Validate one server-signed receipt and prepare its inert deterministic projection."""
+    receipt = None
+    rendered = ""
+    try:
+        receipt = parse_execution_receipt(
+            state.get("execution_receipt"),
+            thread_id=str(state.get("thread_id") or ""),
+            token=str(state.get("approval_token") or ""),
+        )
+        if receipt is not None:
+            rendered = render_execution_receipt(receipt)
+    except Exception:
+        # Validator/renderer availability is not execution authority.  Preserve the reachable
+        # semantic Result path rather than aborting the graph or replaying the side effect.
+        receipt, rendered = None, ""
+    complete = receipt is not None
+    decision = evaluate_typed_fast_path(
+        "result.execution_receipt.v1",
+        checks={
+            "typed_receipt": complete,
+            "current_thread": complete,
+            "current_capability": complete,
+            "exact_approval": complete,
+            "exact_outcomes": complete,
+            "safe_renderable": bool(rendered),
+        },
+    )
+    return decision, receipt, rendered
 
 
 def _complete_portfolio_snapshot(snapshot) -> bool:
@@ -255,14 +289,41 @@ class ResultIntegrator(TextAgent):
         덧붙이는 것이 이번 실패의 직접 원인이었다. 이 갈래는 아래 renderer가 곧 최종 답이다.
         """
         misses = []
-        completion = state.get("assignment_completion") or {}
-        if completion.get("kind") == "incomplete_assignees":
-            return self.apply(state, {"text": _assignment_completion_reply(completion)})
         from app.agent.workflow.effect_contract import (
             continuation_action, current_work_failed, final_effect,
             project_final_authority_state,
         )
         projected = project_final_authority_state(state)
+        # Execution is terminal even though the consumed approval token remains in graph state.
+        # A signed receipt outranks stale questions/review/card data.  A malformed receipt may
+        # trigger the semantic reporter only when a legacy execution result also exists; by
+        # itself it is inert and cannot bypass review/question authority.
+        if projected.get("execution_receipt"):
+            decision, _receipt, rendered = _execution_receipt_fast_path(projected)
+            if decision.complete:
+                return self.apply({**projected, "_deterministic_reply": True,
+                                   "_typed_terminal_reply": True,
+                                   "_fast_path_decision": decision,
+                                   "_fast_path_note": "승인 실행 영수증 결정적 렌더링"},
+                                  {"text": rendered})
+            if projected.get("result"):
+                out = super()._run(projected)
+                out["trace"] = [*(out.get("trace") or []), *typed_fast_path_note(
+                    projected, self.name, "승인 실행 영수증 불완전 · 기존 합성 사용", decision,
+                )]
+                return out
+            # A malformed sidecar is not branch authority.  With no legacy execution result it
+            # cannot bypass the existing review/question/approval decision below.
+        elif projected.get("result"):
+            decision, _receipt, _rendered = _execution_receipt_fast_path(projected)
+            out = super()._run(projected)
+            out["trace"] = [*(out.get("trace") or []), *typed_fast_path_note(
+                projected, self.name, "승인 실행 영수증 없음 · 기존 합성 사용", decision,
+            )]
+            return out
+        completion = state.get("assignment_completion") or {}
+        if completion.get("kind") == "incomplete_assignees":
+            return self.apply(state, {"text": _assignment_completion_reply(completion)})
         # A current structured Work failure outranks every draft/change container retained by
         # a checkpoint. Render the absence of an effect directly; a prose model must never
         # reinterpret stale state as a prepared card.
@@ -288,7 +349,8 @@ class ResultIntegrator(TextAgent):
         # 승인 대기 응답은 최종 payload를 사람이 검토하기 위한 설명이다. 이미 코드가
         # 확정한 카드 값을 LLM에 다시 요약시키면 필드·담당·수치가 달라지거나, 요청하지
         # 않은 삭제/후속 작업을 덧붙였다. 승인 문장은 payload의 결정적 projection으로 만든다.
-        if projected.get("approval_token") and _has_executable_payload(projected):
+        if (projected.get("approval_token") and not projected.get("result")
+                and _has_executable_payload(projected)):
             return self.apply({**projected, "_deterministic_reply": True},
                               {"text": _approval_reply(projected)})
         tree = (projected.get("draft") or {}).get("structure_tree")
