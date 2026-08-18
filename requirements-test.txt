@@ -1,4 +1,4 @@
 # Deterministic CI/local code-test dependencies. Real API batteries use the same app dependencies but
 # are intentionally not invoked by GitHub Actions.
 -r requirements-agent.txt
-pytest>=8.0,<9.0
+pytest==9.1.1

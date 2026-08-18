@@ -139,6 +139,14 @@ def _list_tools(spec: dict) -> list:
 def _call_tool(spec: dict, name: str, arguments: dict) -> str:
     async def go(s):
         r = await s.call_tool(name, arguments or {})
+        # MCP tool failures are ordinary CallToolResult values, not necessarily raised
+        # exceptions.  Never promote structuredContent from an error result into model
+        # evidence; the external server is not an authority to redefine that boundary.
+        if bool(getattr(r, "is_error", False)):
+            raise RuntimeError("remote MCP tool returned an error result")
+        structured = getattr(r, "structured_content", None)
+        if structured is not None:
+            return json.dumps(structured, ensure_ascii=False, default=str)[:8000]
         parts = []
         for c in (r.content or []):
             text = getattr(c, "text", None)
@@ -148,32 +156,26 @@ def _call_tool(spec: dict, name: str, arguments: dict) -> str:
     return _run(spec, go)
 
 
-def _pyd_model(server: str, tool_name: str, schema: dict):
-    """MCP inputSchema(JSON Schema) → pydantic 모델. 모르는 타입은 str 로 — 도구 인자는
-    결국 텍스트 직렬화되므로 관대해도 안전하다."""
-    from pydantic import Field, create_model
-    kinds = {"string": str, "integer": int, "number": float, "boolean": bool,
-             "array": list, "object": dict}
-    props = (schema or {}).get("properties") or {}
-    required = set((schema or {}).get("required") or [])
-    fields = {}
-    for pname, spec_ in props.items():
-        t = kinds.get((spec_ or {}).get("type"), str)
-        desc = (spec_ or {}).get("description") or ""
-        default = ... if pname in required else (spec_ or {}).get("default")
-        fields[pname] = (t, Field(default, description=desc))
-    if not fields:
-        fields["query"] = (str, Field(..., description="Request content"))
-    return create_model(f"mcp_{server}_{tool_name}_args", **fields)
-
-
 def _wrap(spec: dict, t) -> object:
     """MCP 도구 하나 → LangChain StructuredTool. docstring 은 원 서버의 설명 그대로 —
     그게 그 도구의 명세다. 이름에 서버명을 접두해 내부 도구와 충돌하지 않게 한다."""
+    from jsonschema.validators import validator_for
     from langchain_core.tools import StructuredTool
     server, name = spec["name"], t.name
+    input_schema = getattr(t, "inputSchema", None)
+    input_schema = input_schema if isinstance(input_schema, dict) else {}
+    validator_type = validator_for(input_schema)
+    validator_type.check_schema(input_schema)
+    input_validator = validator_type(input_schema)
 
     def call(**kwargs):
+        try:
+            input_validator.validate(kwargs)
+        except Exception as e:
+            log.warning("MCP tool '%s/%s' rejected invalid arguments (%s)",
+                        server, name, type(e).__name__)
+            return (f"External MCP tool ({server}/{name}) failed: invalid arguments. "
+                    "Continue with internal research only.")
         try:
             return _call_tool(spec, name, kwargs)
         except Exception as e:
@@ -184,7 +186,7 @@ def _wrap(spec: dict, t) -> object:
         " (External MCP tool: never pass internal ticket keys, employee names, or project names.)"
     return StructuredTool.from_function(
         func=call, name=f"mcp_{server}_{name}"[:60], description=desc[:900],
-        args_schema=_pyd_model(server, name, getattr(t, "inputSchema", None) or {}),
+        args_schema=input_schema,
         metadata={
             "ltm_source": "mcp",
             "ltm_capability": "read",

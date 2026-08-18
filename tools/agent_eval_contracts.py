@@ -440,6 +440,21 @@ def _write_boundary_flaws(output: Mapping[str, Any], *, turn_index: int) -> list
     reply = str(output.get("reply") or "")
     reply_kinds = reply_write_kinds(reply)
     if not pending:
+        # ``draft_items`` is evaluator-only visibility into an internal candidate.  It is
+        # not a user-facing approval card.  If final authority says this turn is a write
+        # but review blocks it without asking for required input, counting that hidden
+        # draft as task fulfilment creates a false green (the user only sees "보류").
+        review = _mapping(output.get("review"))
+        authority = _mapping(review.get("final_authority"))
+        write_actions = {
+            str(value) for value in (authority.get("actions") or []) if str(value)
+        }
+        if (_draft_rows(output) and write_actions and review.get("ok") is not True
+                and not _rows(output.get("questions"))):
+            return [
+                f"turn[{turn_index}] 내부 write draft가 있으나 review가 보류되어 "
+                "사용자 승인 payload가 노출되지 않음"
+            ]
         if reply_kinds and not output.get("questions"):
             return [
                 f"turn[{turn_index}] reply가 {sorted(reply_kinds)} write 성공·승인 초안을 "

@@ -16,61 +16,17 @@
 
 from __future__ import annotations
 
+from pydantic import TypeAdapter
+
 from app.agent.workflow.agents.base import StructuredAgent
 from app.agent.workflow.agents.work_architect import draft_text
 from app.agent.prompts.roles import SYSTEM_PEOPLE_ADVISOR
+from app.agent.workflow.contracts import PeopleAdvice
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import AgentState, Node, note
 
-SCHEMA = {
-    "type": "object",
-    "properties": {
-        "assignments": {
-            "type": "array", "maxItems": 30,
-            "items": {
-                "type": "object",
-                "properties": {
-                    "index": {"type": "integer", "description": "Zero-based draft item index."},
-                    "user": {"type": "string", "description": "Jira user ID in skcc.x1042 form; empty if unresolved."},
-                    "reasons": {
-                        "type": "array", "minItems": 1, "maxItems": 3,
-                        "items": {"type": "string", "maxLength": 180},
-                        "description": ("Korean recommendation reasons grounded in the supplied evidence. "
-                                        "Each reason includes a metric or ticket key, for example similar "
-                                        "tickets, relevant comments, or current in-progress count. Never use "
-                                        "a generic claim such as 적합해 보임."),
-                    },
-                    "alternates": {
-                        "type": "array", "maxItems": 2,
-                        "items": {"type": "object", "properties": {
-                            "user": {"type": "string"},
-                            "why": {"type": "string", "maxLength": 180,
-                                    "description": "Korean explanation of both evidence and limitation."}}},
-                        "description": "One or two alternatives, including why each is not first choice.",
-                    },
-                    # 자식 담당도 **여기서** 정한다 — 사람을 고르는 일은 한 역할의 것이다.
-                    "children": {
-                        "type": "array", "maxItems": 30,
-                        "items": {"type": "object", "properties": {
-                            "index": {"type": "integer", "description": "Zero-based child index within this item."},
-                            "user": {"type": "string", "description": "Jira user id"},
-                            "why": {"type": "string", "maxLength": 180,
-                                    "description": "Korean assignment reason containing a metric or ticket key."}}},
-                        "description": ("Assignments for each child Sub-Task. Do not assign a person whom "
-                                        "your own analysis rejected for excessive workload. Empty when there "
-                                        "are no children."),
-                    },
-                },
-                "required": ["index", "user", "reasons"],
-            },
-        },
-        "caution": {
-            "type": "string", "maxLength": 240,
-            "description": "Korean assignment caution such as overload or role mismatch; empty when none.",
-        },
-    },
-    "required": ["assignments"],
-}
+PEOPLE_ADVICE_ADAPTER = TypeAdapter(PeopleAdvice)
+SCHEMA = PEOPLE_ADVICE_ADAPTER.json_schema()
 
 
 def _similar_history(state) -> str:
@@ -323,6 +279,9 @@ Inferred module: {state.get('module') or 'unknown'}{data}"""
 
     def schema(self):
         return SCHEMA
+
+    def pre_validate_structured_output(self, state, out, *, output_contract: str, execution_stage: str) -> dict:
+        return PEOPLE_ADVICE_ADAPTER.validate_python(out).model_dump(exclude_unset=True)
 
     def apply(self, state, out):
         # 초안에 없는 항목 번호는 버린다 — 실 모델이 1건짜리 초안에 [0]~[5]를 낸 적이 있다.

@@ -21,34 +21,6 @@ from app.agent.prompts.roles import SYSTEM_ACTION_EXECUTOR
 from app.agent.workflow.prompts import persona
 from app.agent.workflow.state import AgentState, Node, note
 
-SCHEMA = {
-    "type": "object",
-    "properties": {
-        "created": {
-            "type": "array",
-            "items": {"type": "object", "properties": {
-                "key": {"type": "string"}, "summary": {"type": "string"}}},
-            "description": "Tickets actually created and returned by the write tool.",
-        },
-        "failed": {
-            "type": "array",
-            "items": {"type": "object", "properties": {
-                "summary": {"type": "string"}, "error": {"type": "string"}}},
-            "description": "Failed items copied exactly from tool output; never suppress a failure.",
-        },
-        "updated": {
-            "type": "array",
-            "items": {"type": "object", "properties": {
-                "key": {"type": "string"},
-                "fields": {"type": "array", "items": {"type": "string"}}}},
-            "description": "Tickets actually updated and returned by the write tool.",
-        },
-        "note": {"type": "string", "description": "Exact Korean user-facing tool note, or empty."},
-    },
-    "required": ["created", "failed"],
-}
-
-
 # Explicit execution adapters are an allowlist, not a mirror that automatically trusts every
 # future write tool. ``_validate_action_registry`` makes drift fail loud: adding a new tool to
 # WRITE_TOOLS cannot silently make it executable, and removing/renaming an adapter cannot leave an
@@ -394,7 +366,7 @@ This section is context only; the JSON above is authoritative.
 {draft_text(draft)}"""
 
     def schema(self):
-        return SCHEMA
+        return {}
 
     def apply(self, state, out):
         created = [c for c in (out.get("created") or []) if isinstance(c, dict) and c.get("key")]

@@ -18,6 +18,7 @@ from app.agent.workflow.continuation import (
     has_typed_continuation_contract,
     merge_continuation_decisions,
 )
+from app.agent.workflow.contracts import QuestionContract, RequestQuestion
 from app.agent.workflow.prompts import persona
 from app.agent.workflow.state import (AgentState, Intent, Node, conversation,
                                       last_user_text, note)
@@ -97,6 +98,12 @@ SCHEMA = {
         "blocking_questions": {"type": "array", "maxItems": 3,
                                "items": {"type": "string", "maxLength": 240},
                                "description": "Only questions whose answers materially change the result."},
+        "request_questions": {
+            "type": "array", "maxItems": 3,
+            "items": RequestQuestion.model_json_schema(),
+            "description": ("Missing inputs: target/action only when the object/operation is "
+                            "absent; scope/acceptance/other never block."),
+        },
         "assumptions": {"type": "array", "maxItems": 5,
                         "items": {"type": "string", "maxLength": 200}},
         "plan": {
@@ -104,7 +111,7 @@ SCHEMA = {
             "description": "One concise Korean progress line with two to four steps joined by arrows.",
         },
     },
-    "required": ["intent", "keywords", "sufficient"],
+    "required": ["intent", "keywords", "sufficient", "request_questions"],
 }
 
 
@@ -280,7 +287,8 @@ def _has_explicit_parallel_outcomes(user_text: str, tasks: list[dict]) -> bool:
     return expected >= 2 and len(tasks) == expected
 
 
-def _compact_request_tasks(out: dict, user_text: str, intent: str) -> list[dict]:
+def _compact_request_tasks(out: dict, user_text: str, intent: str, *,
+                           pin_single_write: bool = True) -> list[dict]:
     """Keep a model DAG only for genuinely compound, independently checkable outcomes."""
     tasks = [task for task in (out.get("tasks") or []) if isinstance(task, dict)]
     effects = _explicit_user_effects(user_text)
@@ -295,6 +303,16 @@ def _compact_request_tasks(out: dict, user_text: str, intent: str) -> list[dict]
             task["kind"] = "plan"
             task["instruction"] = user_text
             task["write_intent"] = True
+            return [task]
+        if (pin_single_write and tasks and _is_write_outcome(tasks[0])
+                and str(user_text or "").strip()):
+            # A one-outcome plan has no semantic decomposition for the model to add.  Its
+            # instruction is the downstream authority boundary, so keep the exact current
+            # request—including explicit acceptance/safety constraints—and do not promote
+            # model-authored examples, assumptions, or delegated implementation choices to
+            # user requirements.  Multi-outcome requests retain their atomic model mapping.
+            task = dict(tasks[0])
+            task["instruction"] = str(user_text).strip()
             return [task]
         return tasks
     task_effects = {_task_outcome_effect(task) for task in tasks}
@@ -906,6 +924,10 @@ def _repair_delegated_selection_plan(plan: dict, grounded_request: str) -> dict:
     fixed["tasks"] = fixed_tasks
     fixed["blocking_questions"] = [repair(row) for row in
                                    (fixed.get("blocking_questions") or [])]
+    fixed["request_questions"] = [
+        {**row, "question": repair(row.get("question"))}
+        for row in (fixed.get("request_questions") or []) if isinstance(row, dict)
+    ]
     fixed["assumptions"] = [repair(row) for row in (fixed.get("assumptions") or [])]
     return fixed
 
@@ -939,6 +961,51 @@ def _ground_request_assumptions(assumptions: list, grounded_request: str) -> lis
             continue
         kept.append(row)
     return kept
+
+
+def _validated_request_questions(value) -> list[dict]:
+    """Validate bounded slot labels without interpreting their natural-language text."""
+    rows: list[dict] = []
+    for raw in (value or [])[:3]:
+        try:
+            rows.append(RequestQuestion.model_validate(raw).model_dump())
+        except Exception:
+            continue
+    return rows
+
+
+def _single_required_request_question(state: dict, request_plan: dict, *,
+                                      intent: str, sufficient: bool) -> dict:
+    """Project exactly one unresolved target/action on an atomic write plan."""
+    tasks = [row for row in (request_plan.get("tasks") or []) if isinstance(row, dict)]
+    if (intent != Intent.PLAN_WORK or sufficient or len(tasks) != 1
+            or tasks[0].get("write_intent") is not True):
+        return {}
+
+    contract = state.get("continuation_contract") or {}
+    resolved = ({
+        str(row.get("field") or "").split(":", 1)[0].casefold()
+        for row in (contract.get("decisions") or [])
+        if isinstance(row, dict) and str(row.get("value") or "").strip()
+    } if has_typed_continuation_contract(contract) else set())
+    candidates = [
+        row for row in _validated_request_questions(
+            request_plan.get("request_questions") or [])
+        if row["field"] in {"target", "action"} and row["field"] not in resolved
+    ]
+    fields = {row["field"] for row in candidates}
+    if len(fields) != 1 or not candidates:
+        return {}
+
+    field = candidates[0]["field"]
+    why = {
+        "target": "생성할 작업의 대상을 식별할 수 없음",
+        "action": "생성할 작업에서 수행할 행동을 식별할 수 없음",
+    }[field]
+    return QuestionContract(
+        question=candidates[0]["question"], kind="text", options=[], field=field,
+        ownership="user_required", required_input=True, why_required=why, fallback="",
+    ).model_dump()
 
 
 class RequestArchitect(StructuredAgent):
@@ -981,8 +1048,16 @@ Classify what the user wants from the conversation, construct an atomic task pla
   appends it to the authoritative prior DAG; do not echo the prior outcomes as new tasks.
 - A single request has exactly one task. Split only a genuinely compound request with independently
   checkable deliverables, and keep at most three concise completion criteria per task.
+- A task instruction represents only the user's requested outcome and explicit constraints. Never
+  turn an assumption, example, default, or delegated implementation choice into a required outcome.
+- Always return `request_questions`: `target` only if the object is absent, `action` only if the
+  operation is absent. A named concrete object means target is present. Classify optional boundaries,
+  success details, and preferences as `scope`, `acceptance`, or `other`; never relabel them as
+  target/action. Return `[]` when nothing is missing.
 - Do not ask for technical details that Jira, Confluence, comments, or external research can recover.
-- Write `goal`, `instruction`, `completion_criteria`, `blocking_questions`, `assumptions`, and `plan` in Korean because they are user-visible or preserve the Korean request.
+- Write `goal`, `instruction`, `completion_criteria`, `request_questions.question`,
+  `blocking_questions`, `assumptions`, and `plan` in Korean because they are user-visible or
+  preserve the Korean request.
 
 ## Intent Examples
 
@@ -1050,6 +1125,11 @@ Classify what the user wants from the conversation, construct an atomic task pla
             )
         fallback_intent = out.get("intent") or Intent.PLAN_WORK
         asked = last_user_text(state)
+        request_questions = _validated_request_questions(out.get("request_questions") or [])
+        legacy_blocking_questions = [
+            str(value).strip()[:240] for value in (out.get("blocking_questions") or [])
+            if str(value).strip()
+        ][:3]
         additive_outcome = bool(prior_write_plan and _continuation_outcome_additions(asked))
         outcome_directive = _continuation_outcome_directive(asked)
         current_typed_decision = has_current_continuation_decision(
@@ -1060,6 +1140,10 @@ Classify what the user wants from the conversation, construct an atomic task pla
         )
         authoritative_refinement = bool(
             stable_subject and (not outcome_directive or current_typed_decision)
+        )
+        plan_request_questions = (
+            _validated_request_questions(prior_write_plan.get("request_questions") or [])
+            if prior_write_plan and authoritative_refinement else request_questions
         )
         if stable_subject:
             kws = [str(k) for k in (state.get("keywords") or []) if str(k).strip()]
@@ -1080,7 +1164,14 @@ Classify what the user wants from the conversation, construct an atomic task pla
             current_tasks = [task for task in (out.get("tasks") or [])[:6]
                              if isinstance(task, dict)]
         else:
-            current_tasks = _compact_request_tasks(out, asked, fallback_intent)
+            current_tasks = _compact_request_tasks(
+                out, asked, fallback_intent,
+                # A compound continuation may return one replacement task whose model
+                # instruction is the semantic value to splice into the prior DAG.  It is
+                # not a new one-outcome authority boundary and must not be replaced by the
+                # conversational edit directive (for example, "change the comment body").
+                pin_single_write=not bool(prior_write_plan),
+            )
         if prior_read_plan or (prior_write_plan and authoritative_refinement):
             planned_tasks, outcomes_changed = current_tasks, False
         else:
@@ -1118,7 +1209,14 @@ Classify what the user wants from the conversation, construct an atomic task pla
                     "write_intent": intent in Intent.DRAFTS_TICKETS,
                     "completion_criteria": ["사용자 요청에 직접 답한다"],
                 }],
-                "blocking_questions": out.get("blocking_questions") or [],
+                **({"request_questions": plan_request_questions}
+                   if plan_request_questions else {}),
+                # Keep the historical string surface for evaluation/checkpoint consumers,
+                # but make the typed rows its canonical projection when available.
+                "blocking_questions": (
+                    [row["question"] for row in plan_request_questions]
+                    if plan_request_questions else legacy_blocking_questions
+                ),
                 "assumptions": _ground_request_assumptions(
                     out.get("assumptions") or [], grounded_request),
             }, grounded_request)
@@ -1301,6 +1399,18 @@ Classify what the user wants from the conversation, construct an atomic task pla
         patch["continuation_contract"] = build_continuation_contract(
             {**state, **patch}, existing=state.get("continuation_contract"),
         )
+
+        direct_question = _single_required_request_question(
+            {**state, **patch}, patch.get("request_plan") or {},
+            intent=str(patch.get("intent") or ""),
+            sufficient=bool(patch.get("sufficient")),
+        )
+        if direct_question:
+            patch["questions"] = [direct_question]
+            patch["trace"] = note(
+                state, self.name,
+                f"의도={patch['intent']} · 필수 {direct_question['field']} 입력 1건",
+            )
 
         # Ticket shape is an Agent-owned, reversible design choice.  Stopping before retrieval
         # to ask that preference wasted a turn and prevented internal history from answering more

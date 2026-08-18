@@ -10,6 +10,8 @@
 #
 # 실행: python -X utf8 -u tools/agent_eval_launcher.py conversation [모델] [시나리오 ID...] [--out .cache/...json]
 #       raw 결과는 기본적으로 .cache/agent-evaluation/<runGroupId>/ 아래에 저장한다.
+from collections.abc import Mapping
+
 import json
 import os
 import re
@@ -19,9 +21,6 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.agent_scenario_eval import validate_eval_argv  # noqa: E402
 
-os.environ.setdefault("JIRA_ENV", "mock")
-os.environ.setdefault("LAKE_AGENT_PROVIDER", "openai")
-os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"      # 사람이 없는 실행 — 설정 확인 게이트 면제
 _raw_args = list(sys.argv[1:])
 if __name__ == "__main__":
     validate_eval_argv(_raw_args)
@@ -40,16 +39,12 @@ else:
 ONLY = {x.upper() for x in _scenario_args if x.upper().startswith("S")}
 # 언어/프롬프트 비교에서도 production routing을 유지한다. 모델을 하나로
 # 평준화하면 프롬프트뿐 아니라 실행 환경까지 바뀌어 주 비교 결과가 무효가 된다.
-os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
-SIMPLE_MODEL = os.environ["LAKE_AGENT_OPENAI_CHAT_SIMPLE"]
+SIMPLE_MODEL = os.environ.get("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 from tools.agent_scenario_eval import configure_model_routing  # noqa: E402
-configure_model_routing(MODEL, SIMPLE_MODEL)
 
 from tools.agent_eval_isolation import (begin_case, configure_process_isolation,
                                          finish_case,
                                          preflight_evaluation_provider)  # noqa: E402
-configure_process_isolation("conversation")
-from app.agent.workflow import session          # noqa: E402
 from tools.agent_eval_protocol import (build_run_metadata, quantitative_metrics,
                                        raw_result_path, reserve_raw_result_path,
                                        write_raw_result)  # noqa: E402
@@ -57,14 +52,40 @@ from tools.agent_eval_contracts import (  # noqa: E402
     AUTOMATIC_CONTRACT_DEPENDENCIES,
     automatic_contract_flaws,
 )
+from tools.agent_eval_claims import (  # noqa: E402
+    EVALUATION_CLAIM_CONTRACT_DEPENDENCIES,
+    MeasurementAvailability,
+    RequiredBoolean,
+    UnresolvedViolation,
+    evaluation_claim_consistency_flaws,
+    measurement_gate_flaws,
+)
 from tools.agent_eval_review_specs import review_specs  # noqa: E402
 try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
     from app.agent.prompts.base import PROMPT_VERSION  # noqa: E402
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "3.3.0"
+# v5.0.0 treats an internal write draft blocked by review as unfulfilled when no
+# required-input question or user-facing approval payload exists.
+BATTERY_VERSION = "5.0.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("conversation")
+session = None
+
+
+def _prepare_runtime():
+    """Configure the live battery only when executed, never when imported by tests."""
+    global session
+    configure_process_isolation("conversation")
+    os.environ.setdefault("JIRA_ENV", "mock")
+    os.environ.setdefault("LAKE_AGENT_PROVIDER", "openai")
+    # 사람이 없는 실행은 설정 화면의 확인 게이트를 면제한다.
+    os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"
+    os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
+    configure_model_routing(MODEL, SIMPLE_MODEL)
+    preflight_evaluation_provider()
+    from app.agent.workflow import session as runtime_session
+    session = runtime_session
 
 # ── 시나리오 — 실사용에서 가장 자주 오는 것들. 여러 턴짜리도 그대로 둔다
 #    (인터뷰 → 초안이 이 도구의 핵심 갈래다).
@@ -91,6 +112,85 @@ SCENARIOS = [
 
 _KEY = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
 _TABLE = re.compile(r"^\s*\|.+\|\s*$", re.M)
+_REQUIRED_TRUE_CHECK_FIELDS = (
+    "내외부조사완결", "복합근거단일인덱스", "본문근거연결",
+    "복합자료조회", "출처평가완결", "현재업무범위",
+)
+_REQUIRED_FALSE_CHECK_FIELDS = (
+    ("요구구조불일치", "요구구조충족"),
+    ("응답카드불일치", "응답카드충족"),
+    ("요청산출물부재", "요청산출물충족"),
+)
+
+
+def _required_boolean_measurements(checks: dict) -> list[RequiredBoolean]:
+    typed = checks.get("필수구조검사")
+    if isinstance(typed, dict):
+        return [
+            RequiredBoolean(str(check_id), actual if isinstance(actual, bool) else None)
+            for check_id, actual in sorted(typed.items())
+        ]
+    requirements = [
+        RequiredBoolean(field, checks.get(field))
+        for field in _REQUIRED_TRUE_CHECK_FIELDS if field in checks
+    ]
+    requirements.extend(
+        RequiredBoolean(requirement_id, not checks.get(field))
+        for field, requirement_id in _REQUIRED_FALSE_CHECK_FIELDS if field in checks
+    )
+    return requirements
+
+
+def _unresolved_violation_measurements(checks: dict) -> list[UnresolvedViolation]:
+    typed = checks.get("미해결위반수")
+    if isinstance(typed, dict):
+        return [
+            UnresolvedViolation(
+                str(check_id),
+                count if isinstance(count, int) and not isinstance(count, bool) else None,
+            )
+            for check_id, count in sorted(typed.items())
+        ]
+    grounding_count = checks.get("근거위반")
+    postcheck_rows = checks.get("후검증위반")
+    return [
+        UnresolvedViolation(
+            "grounding",
+            grounding_count if isinstance(grounding_count, int)
+            and not isinstance(grounding_count, bool) else None,
+        ),
+        UnresolvedViolation(
+            "postcheck",
+            len(postcheck_rows) if isinstance(postcheck_rows, list) else None,
+        ),
+    ]
+
+
+def _measurement_availability(checks: dict) -> list[MeasurementAvailability]:
+    typed = checks.get("measurementStatus")
+    if not isinstance(typed, Mapping):
+        return []
+    statuses: list[MeasurementAvailability] = []
+    for check_id, row in sorted(typed.items()):
+        if not isinstance(row, Mapping) or not isinstance(row.get("available"), bool):
+            statuses.append(MeasurementAvailability(str(check_id), False, "InvalidStatus"))
+            continue
+        statuses.append(MeasurementAvailability(
+            str(check_id), row["available"], str(row.get("errorType") or ""),
+        ))
+    return statuses
+
+
+def _measurement_contract_flaws(checks: dict, reply: str,
+                                 evaluation_evidence: dict | None) -> list[str]:
+    """Promote explicitly required measurements; never infer policy from case ids."""
+    requirements = _required_boolean_measurements(checks)
+    flaws = measurement_gate_flaws(
+        requirements, _unresolved_violation_measurements(checks),
+        _measurement_availability(checks),
+    )
+    flaws.extend(evaluation_claim_consistency_flaws(reply, evaluation_evidence))
+    return list(dict.fromkeys(flaws))
 
 
 def _checks(out: dict, user_text: str = "", evaluation_evidence: dict | None = None) -> dict:
@@ -183,25 +283,73 @@ def _checks(out: dict, user_text: str = "", evaluation_evidence: dict | None = N
             re.search(r"mention:|\[~|data-(?:uid|id)", text)
             and not re.search(r"(?<!미)완료(?:된|한|\s*작업|\s*티켓)", text)
         )
+    measurement_status: dict[str, dict[str, str | bool]] = {}
     try:
         from app.agent.workflow import grounding
-        g = grounding.check(text) or {}
+        g = grounding.check(text)
+        if not isinstance(g, Mapping):
+            raise TypeError("grounding measurement must be a mapping")
         c["근거위반"] = (len(g.get("fake_keys") or []) + len(g.get("wrong_titles") or {})
                        + len(g.get("fake_people") or []) + len(g.get("name_as_id") or {}))
-    except Exception:
+        measurement_status["grounding"] = MeasurementAvailability(
+            "grounding", True,
+        ).as_dict()
+    except Exception as exc:
         c["근거위반"] = None
+        measurement_status["grounding"] = MeasurementAvailability(
+            "grounding", False, type(exc).__name__,
+        ).as_dict()
     try:
         from app.agent.workflow import postcheck
-        c["후검증위반"] = postcheck.check(out, text)
-    except Exception:
-        c["후검증위반"] = []
-    c["자동계약결함"] = automatic_contract_flaws([out])
+        postcheck_rows = postcheck.check(out, text)
+        if not isinstance(postcheck_rows, list):
+            raise TypeError("postcheck measurement must be a list")
+        c["후검증위반"] = postcheck_rows
+        measurement_status["postcheck"] = MeasurementAvailability(
+            "postcheck", True,
+        ).as_dict()
+    except Exception as exc:
+        c["후검증위반"] = None
+        measurement_status["postcheck"] = MeasurementAvailability(
+            "postcheck", False, type(exc).__name__,
+        ).as_dict()
+    c["measurementStatus"] = measurement_status
+    c["필수구조검사"] = {
+        requirement.check_id: requirement.actual
+        for requirement in _required_boolean_measurements(c)
+    }
+    c["미해결위반수"] = {
+        "grounding": c.get("근거위반"),
+        "postcheck": (len(c.get("후검증위반"))
+                      if isinstance(c.get("후검증위반"), list) else None),
+    }
+    measured_flaws = _measurement_contract_flaws(c, text, evaluation_evidence)
+    c["결정검사결함"] = measured_flaws
+    c["자동계약결함"] = list(dict.fromkeys(
+        automatic_contract_flaws([out]) + measured_flaws
+    ))
     return c
+
+
+def _scenario_contract_flaws(outputs: list[dict], turn_records: list[dict]) -> list[str]:
+    """Combine shared output gates with each turn's deterministic measurement gates."""
+    flaws = automatic_contract_flaws(outputs)
+    for index, turn in enumerate(turn_records):
+        checks = turn.get("검사") or {}
+        flaws.extend(
+            f"turn[{index}] {flaw}"
+            for flaw in (checks.get("결정검사결함") or [])
+        )
+    return list(dict.fromkeys(flaws))
 
 
 CONVERSATION_CHECKER_DEPENDENCIES = (
     *AUTOMATIC_CONTRACT_DEPENDENCIES,
-    _KEY, _TABLE, _checks,
+    *EVALUATION_CLAIM_CONTRACT_DEPENDENCIES,
+    _KEY, _TABLE, _REQUIRED_TRUE_CHECK_FIELDS, _REQUIRED_FALSE_CHECK_FIELDS,
+    _required_boolean_measurements, _unresolved_violation_measurements,
+    _measurement_availability, _measurement_contract_flaws, _checks,
+    _scenario_contract_flaws,
 )
 
 
@@ -244,8 +392,8 @@ def _summarize(rows):
 
 
 def run():
-    # Keep imports network-free, but fail before reserving an output path or starting a case.
-    preflight_evaluation_provider()
+    # Keep imports side-effect free, but fail before reserving an output path or starting a case.
+    _prepare_runtime()
     selected_ids = [
         sid for sid, _ in SCENARIOS
         if not ONLY or sid.split("-", 1)[0].upper() in ONLY or sid.upper() in ONLY
@@ -306,7 +454,7 @@ def run():
                 "평가근거": evaluation_evidence,
             })
             print(f"  {sid} · {per[-1].get('초')}s · {per[-1].get('총토큰')}tok", flush=True)
-        scenario_flaws = automatic_contract_flaws(scenario_outputs)
+        scenario_flaws = _scenario_contract_flaws(scenario_outputs, per)
         rows.append({"시나리오": sid, "턴": per,
                      "자동계약통과": not scenario_flaws,
                      "자동계약결함": scenario_flaws,

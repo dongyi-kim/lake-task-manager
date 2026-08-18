@@ -63,10 +63,12 @@ from app.agent.workflow.agents.auditor import (
     final_authority_review,
 )
 from app.agent.workflow.effect_contract import (
+    PENDING_RATIONALE_CONTRACT,
     capture_user_field_locks,
     continuation_action,
     current_work_failed,
     final_effect,
+    project_pending_rationale,
     project_final_authority_state,
 )
 from app.agent.workflow.resolved_slots import parent_selection_authority
@@ -554,13 +556,23 @@ def _propose(state: AgentState) -> dict:
     # fan-out join normally performed the same review, but stale checkpoints and direct
     # callers must not be able to bypass it.
     projected = project_final_authority_state(state)
+    typed_action = continuation_action(projected)
+    if typed_action in {"update", "comment"} and projected.get("change_plan"):
+        plan = dict(projected.get("change_plan") or {})
+        plan["why"] = project_pending_rationale(change_plan=plan)
+        plan["rationale_contract"] = PENDING_RATIONALE_CONTRACT
+        projected = {**projected, "change_plan": plan}
+    elif typed_action == "create":
+        draft = dict(projected.get("draft") or {})
+        if draft.get("rationale_contract") == PENDING_RATIONALE_CONTRACT:
+            draft["rationale"] = project_pending_rationale(draft=draft)
+            projected = {**projected, "draft": draft}
     review = final_authority_review(
         projected,
         locks=capture_user_field_locks(projected.get("draft") or {}),
         require_effect=True,
     )
     effect = final_effect(projected)
-    typed_action = continuation_action(projected)
     delta = ({
         "draft": projected.get("draft") or {},
         "change_plan": projected.get("change_plan") or {},

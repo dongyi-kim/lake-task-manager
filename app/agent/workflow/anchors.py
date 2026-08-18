@@ -43,6 +43,27 @@ _STOP = {
 _MAX_REQUESTED_OUTCOMES = 6
 _MAX_REQUESTED_OUTCOME_CHARS = 512
 _WRITE_KINDS = {"ticket", "comment", "write", "plan"}
+_OUTCOME_TERM_STOP = {
+    "task", "story", "bug", "feature", "improvement", "ticket", "module",
+    "티켓", "작업", "업무", "추가", "진행", "수행", "작성", "적용", "개선",
+    "조정", "최적화", "구현", "개발", "검증",
+}
+
+
+def outcome_authority_terms(text: str) -> set[str]:
+    """Return product-neutral terms used only to compare authority boundaries.
+
+    This is deliberately smaller than Work's drafting heuristics: product, component, and
+    technology names are material identity here and must never be placed on a local stoplist.
+    The function does not infer intent; it only supports bounded set comparisons between the
+    original request, planner projection, finding, and visible draft.
+    """
+    clean = re.sub(r"^\s*\[[^\]]+\]\s*", "", str(text or ""))
+    words = re.findall(r"[A-Za-z0-9_.-]{2,}|[가-힣]{2,}", clean.casefold())
+    return {
+        word for word in words
+        if word not in _OUTCOME_TERM_STOP and not word.isdigit()
+    }
 
 
 def _anchors_from_text(text: str) -> list[str]:
@@ -132,11 +153,14 @@ def format_anchor_contract(state: AgentState, *, include_latest: bool = True) ->
 def requested_outcome_contract(state: AgentState) -> dict:
     """Return a bounded, stable contract for user-requested write outcomes.
 
-    The Request Architect already expresses each user-visible outcome as an atomic typed
-    task.  Downstream semantic models must not rediscover the requested action from a long
-    evidence bundle: doing so allowed an implementation method found in research to replace
-    the user's requested result.  This contract therefore copies the planner's instruction
-    verbatim and gives it an opaque id.  It deliberately performs no verb classification.
+    The Request Architect expresses each user-visible outcome as an atomic typed task and
+    pins a single write outcome to the current user request.  Downstream semantic models must
+    not rediscover the requested action from a long evidence bundle: doing so allowed an
+    implementation method found in research to replace the user's requested result.  This
+    contract therefore copies the bounded instruction and gives it an opaque id.  The id and
+    user-authored action/object/explicit constraints are authority; planner-authored examples,
+    assumptions, and delegated implementation choices are not independent user requirements.
+    It deliberately performs no verb classification.
 
     The normal RequestPlan schema is capped at six tasks and 280 characters per instruction.
     The defensive limits below keep hand-built/legacy state bounded too; truncation is made
@@ -323,8 +347,8 @@ def format_requested_outcome_contract(state: AgentState) -> str:
     contract = requested_outcome_contract(state)
     if not contract:
         return ""
-    return ("Requested outcome contract (authoritative; preserve ids and instructions "
-            "verbatim): "
+    return ("Requested outcome contract (ids authoritative; preserve user-authored action, "
+            "object, and explicit constraints): "
             + json.dumps(contract, ensure_ascii=False, separators=(",", ":")))
 
 

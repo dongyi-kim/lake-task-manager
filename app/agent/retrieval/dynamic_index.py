@@ -127,7 +127,8 @@ def upsert(docs: list[dict]) -> dict:
     stale = [cid for did, *_ in plan for cid in manifest.old_chunk_ids(did)]
     if store is not None and stale:
         try:
-            store.delete([c for c in stale if c in store.docstore._dict])
+            present = set(store.index_to_docstore_id.values())
+            store.delete([chunk_id for chunk_id in stale if chunk_id in present])
         except Exception:
             pass        # 지우기가 안 되면 중복이 남을 뿐, 새 내용은 어차피 들어간다
 
@@ -172,6 +173,6 @@ def search(query: str, k: int = 6, kind: str = "") -> list[dict]:
 def stats() -> dict:
     s = dict(manifest.stats())
     store = _load()
-    s["vectors"] = len(getattr(store, "docstore", None).__dict__.get("_dict", {})) if store else 0
+    s["vectors"] = len(store.index_to_docstore_id) if store else 0
     s["embedSig"] = embed_sig()
     return s

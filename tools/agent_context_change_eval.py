@@ -24,7 +24,8 @@ except ImportError:
 
 # v2.2.0 verifies every intermediate turn's literal target/field/value transport;
 # the final replacement remains an independent latest-request contract.
-BATTERY_VERSION = "2.2.0"
+# v3.0.0 inherits the common hidden-draft/user-visible approval boundary.
+BATTERY_VERSION = "3.0.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("ctx-chg")
 
 

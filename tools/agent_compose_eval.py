@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import time
+import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.agent_scenario_eval import validate_eval_argv  # noqa: E402
@@ -49,7 +50,8 @@ try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "3.1.0"
+# v4.0.0 inherits the common hidden-draft/user-visible approval boundary.
+BATTERY_VERSION = "4.0.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("editor")
 CP = None
 
@@ -82,6 +84,47 @@ def _seed_preserved(result, seed_html):
 def _editor_contract_flaws(result):
     """사람 판독에서 발견된 reference resolution·renderer 계약 회귀."""
     return editor_renderer_contract_flaws(result)
+
+
+def _redact_diagnostic_text(value):
+    """Remove common credential forms before an exception reaches raw evidence."""
+    text = str(value or "")
+    text = re.sub(
+        r"(?i)\b(https?://)[^/@\s:]+(?::[^/@\s]*)?@",
+        r"\1<redacted>@",
+        text,
+    )
+    text = re.sub(
+        r"(?i)([?&](?:api[_-]?key|access[_-]?token|token|password|secret)=)[^&\s]+",
+        r"\1<redacted>",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}",
+        r"\1 <redacted>",
+        text,
+    )
+    text = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}\b", "sk-<redacted>", text)
+    text = re.sub(
+        r'''(?ix)\b(authorization|api[-_ ]?key|access[-_ ]?token|password|secret)\b
+            (\s*[=:]\s*|["']\s*:\s*["'])
+            (?!<redacted>)[^\s,;"'}]+''',
+        lambda match: match.group(1) + match.group(2) + "<redacted>",
+        text,
+    )
+    return text
+
+
+def _exception_diagnostic(stage, exc):
+    """Keep a stage-labelled traceback without frame locals in ignored raw evidence."""
+    rendered = "".join(traceback.TracebackException.from_exception(
+        exc, capture_locals=False).format())
+    return {
+        "stage": str(stage or "unknown"),
+        "exceptionType": type(exc).__name__,
+        "message": _redact_diagnostic_text(str(exc))[:500],
+        "traceback": _redact_diagnostic_text(rendered)[-8000:],
+    }
 
 
 EDITOR_CHECKER_DEPENDENCIES = (
@@ -192,21 +235,27 @@ if __name__ == "__main__":
         isolation_start = begin_case(cid)
         t0 = time.time()
         isolation = {}
+        stage = "compose"
         try:
             r = CP.compose(**{("ticket_key" if k == "ticket_key" else k): v for k, v in kw.items()})
+            stage = "renderer_contract"
             flaws = _editor_contract_flaws(r)
+            stage = "case_contract"
             ok = bool(check(r) and not flaws)
             elapsed = round(time.time() - t0, 1)
+            stage = "isolation_finish"
             isolation = finish_case(isolation_start)
         except Exception as e:
+            diagnostics = [_exception_diagnostic(stage, e)]
+            safe_message = diagnostics[0]["message"]
             try:
                 isolation = finish_case(isolation_start)
             except Exception as isolation_error:
-                e = RuntimeError(f"{e}; isolation failure: {isolation_error}")
-            print(f"✗ {cid} {desc}: 예외 {str(e)[:140]}")
+                diagnostics.append(_exception_diagnostic("isolation_finish", isolation_error))
+            print(f"✗ {cid} {desc}: {stage} {type(e).__name__}: {safe_message[:120]}")
             records.append({"id": cid, "설명": desc, "입력": kw, "통과": False,
-                            "초": round(time.time() - t0, 1), "오류": str(e),
-                            "격리": isolation})
+                            "초": round(time.time() - t0, 1), "오류": safe_message,
+                            "진단": diagnostics, "격리": isolation})
             total, metrics = _summary(records, hits)
             write_raw_result(OUT, {"model": MODEL, "simpleModel": SIMPLE_MODEL,
                                    "promptVersion": PROMPT_VERSION, "evaluation": evaluation,

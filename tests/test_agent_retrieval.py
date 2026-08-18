@@ -173,6 +173,16 @@ def test_changing_embedding_model_invalidates_the_whole_index(monkeypatch):
     assert manifest.stats()["documents"] == 0, "벡터만 버리고 장부를 남기면 조용히 고장난다"
 
 
+def test_dynamic_stats_uses_public_faiss_id_mapping(monkeypatch):
+    """Retrieval must not depend on the community adapter's private docstore._dict."""
+    from types import SimpleNamespace
+
+    store = SimpleNamespace(index_to_docstore_id={0: "jira:DL-1#0", 1: "jira:DL-1#1"})
+    monkeypatch.setattr(dynamic_index, "_load", lambda: store)
+
+    assert dynamic_index.stats()["vectors"] == 2
+
+
 def test_empty_and_blank_docs_are_ignored():
     r = dynamic_index.upsert([{"doc_id": "", "text": "x"}, {"doc_id": "jira:X", "text": "  "}])
     assert r["indexed"] == 0

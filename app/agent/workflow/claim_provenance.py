@@ -74,6 +74,18 @@ CITATION_OCCURRENCE_RE = re.compile(
 _WRAPPED_CITATION_GROUP_RE = re.compile(
     rf"\[\[({_CITATION_CONTENT_PATTERN})\]\]", re.I,
 )
+_TYPED_CITATION_ALIAS_RE = re.compile(
+    r"\{\{ticket-(?:list|inline|detail):([A-Z][A-Z0-9]*-\d+)\}\}", re.I,
+)
+_CITATION_ALIAS_GROUP_RE = re.compile(r"\[([^\[\]\n]{1,180})\](?!\()")
+_CLAIM_SENTENCE_BOUNDARY_RE = re.compile(
+    r"\r?\n|[;|!?]|[.](?!\d)(?=\s|$|\[)",
+)
+EVIDENCE_SECTION_LABEL_PATTERN = r"(?:근거|참조|evidence|sources?|references?)"
+EVIDENCE_HEADING_RE = re.compile(
+    rf"(?im)^[ \t]*(?:#{{1,6}}[ \t]*{EVIDENCE_SECTION_LABEL_PATTERN}|"
+    rf"\*\*{EVIDENCE_SECTION_LABEL_PATTERN}\*\*)[ \t]*$",
+)
 _COMPLETION_ASSERTION_RE = re.compile(
     r"(?:완료(?:되었|됐|했|함|됨|된|하였|되었습니다|됐습니다|했습니다|하였습니다)?|"
     r"성공(?:했|함|했습니다|하였다|하였습니다)?|"
@@ -197,6 +209,78 @@ def normalize_citation_wrappers(text: str) -> str:
     return _WRAPPED_CITATION_GROUP_RE.sub(r"[\1]", str(text or ""))
 
 
+def _citation_alias_key(value: str) -> str:
+    return " ".join(str(value or "").split()).strip().casefold()
+
+
+def _citation_alias_indexes(evidence) -> tuple[dict[str, int], dict[str, set[int]]]:
+    bound = bind_evidence_provenance(evidence or [])
+    alias_identities: dict[str, set[str]] = {}
+    identity_ordinals: dict[str, set[int]] = {}
+    first_ordinal_by_identity: dict[str, int] = {}
+
+    def add(alias: str, identity: str) -> None:
+        normalized = _citation_alias_key(alias)
+        if normalized:
+            alias_identities.setdefault(normalized, set()).add(identity)
+
+    for ordinal, item in enumerate(bound, 1):
+        identity = str(item.get("_source_id") or "")
+        first_ordinal = first_ordinal_by_identity.setdefault(identity, ordinal)
+        identity_ordinals[identity] = {first_ordinal}
+        key = str(item.get("key") or "").strip()
+        title = str(item.get("title") or "").strip()
+        add(key, identity)
+        add(title, identity)
+        # Source labels commonly use ``Short title - publisher``.  The short display alias
+        # is safe only when it resolves uniquely after all sources have been inspected.
+        for label in (key, title):
+            if " - " in label:
+                add(label.split(" - ", 1)[0], identity)
+
+    return ({
+        alias: first_ordinal_by_identity[next(iter(identities))]
+        for alias, identities in alias_identities.items() if len(identities) == 1
+    }, identity_ordinals)
+
+
+def _resolved_citation_alias(content: str, unique_aliases: dict[str, int],
+                             identity_ordinals: dict[str, set[int]]) -> str | None:
+    value = str(content or "").strip()
+    if re.fullmatch(_CITATION_CONTENT_PATTERN, value, re.I):
+        return ",".join(citation_tokens(value))
+    typed = _TYPED_CITATION_ALIAS_RE.fullmatch(value)
+    if typed:
+        ordinals = identity_ordinals.get(f"ticket:{typed.group(1).upper()}", set())
+        return str(next(iter(ordinals))) if len(ordinals) == 1 else ""
+    ordinal = unique_aliases.get(_citation_alias_key(value))
+    return str(ordinal) if ordinal else None
+
+
+def normalize_citation_aliases(text: str, evidence) -> str:
+    """Compile verified typed/named aliases into the ordinal citation grammar.
+
+    Arbitrary bracketed prose is not a citation merely because it is adjacent to one.
+    Priority tags, checklist markers, and domain notation must remain literal unless the
+    content is a typed source marker or resolves to one unique runtime-verified source.
+    """
+    unique_aliases, identity_ordinals = _citation_alias_indexes(evidence)
+    value = normalize_citation_wrappers(text)
+
+    def replace(match: re.Match) -> str:
+        content = match.group(1).strip()
+        resolved = _resolved_citation_alias(content, unique_aliases, identity_ordinals)
+        if resolved and re.fullmatch(_CITATION_CONTENT_PATTERN, content, re.I):
+            return match.group(0)
+        if resolved:
+            return f"[{resolved}]"
+        if resolved == "":
+            return "(근거 확인 필요)"
+        return match.group(0)
+
+    return _CITATION_ALIAS_GROUP_RE.sub(replace, value)
+
+
 def citation_tokens(value: str) -> tuple[str, ...]:
     """Parse one content group or an adjacent citation run in display order."""
     raw = str(value or "")
@@ -235,15 +319,19 @@ def citation_occurrences(value: str):
         )
 
 
+def citation_claim_span(value: str, start: int, end: int) -> tuple[int, int]:
+    """Return the bounded sentence/line span owned by one citation occurrence."""
+    text = str(value or "")
+    prior = list(_CLAIM_SENTENCE_BOUNDARY_RE.finditer(text, 0, max(0, start)))
+    following = _CLAIM_SENTENCE_BOUNDARY_RE.search(text, max(0, end))
+    left = prior[-1].end() if prior else 0
+    right = following.end() if following else len(text)
+    return left, right
+
+
 def _claim_text_at(value: str, start: int, end: int) -> str:
-    left = max(value.rfind("\n", 0, start), value.rfind(".", 0, start),
-               value.rfind("!", 0, start), value.rfind("?", 0, start))
-    right_candidates = [position for position in (
-        value.find("\n", end), value.find(".", end), value.find("!", end),
-        value.find("?", end),
-    ) if position >= 0]
-    right = min(right_candidates) + 1 if right_candidates else len(value)
-    return " ".join(value[left + 1:right].split()).strip()
+    span_start, span_end = citation_claim_span(value, start, end)
+    return " ".join(value[span_start:span_end].split()).strip()
 
 
 def _without_negated_completion(value: str) -> str:
@@ -557,10 +645,11 @@ def build_claim_provenance_graph(text: str, evidence, *, claim_facts=(),
 
 
 __all__ = [
-    "CITATION_GROUP_RE", "CITATION_OCCURRENCE_RE", "CITATION_TOKEN_PATTERN", "ClaimBinding",
+    "CITATION_GROUP_RE", "CITATION_OCCURRENCE_RE", "CITATION_TOKEN_PATTERN",
+    "EVIDENCE_HEADING_RE", "EVIDENCE_SECTION_LABEL_PATTERN", "ClaimBinding",
     "ClaimProvenanceGraph", "ProvenanceObservation",
     "ProvenanceSource", "bind_evidence_provenance",
     "build_claim_provenance_graph", "citation_occurrence_id",
-    "citation_occurrences", "citation_tokens", "evidence_source_id",
-    "normalize_citation_wrappers",
+    "citation_claim_span", "citation_occurrences", "citation_tokens", "evidence_source_id",
+    "normalize_citation_aliases", "normalize_citation_wrappers",
 ]

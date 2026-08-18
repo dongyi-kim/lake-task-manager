@@ -18,6 +18,7 @@ from app.agent.workflow.state import AgentState, Node
 
 
 WRITE_ACTIONS = {"create", "comment", "update", "mixed"}
+PENDING_RATIONALE_CONTRACT = "pending-rationale.v1"
 UPDATE_EFFECT_ACTIONS = {
     "transition_ticket", "link_tickets", "update_ticket", "update_tickets",
 }
@@ -64,6 +65,15 @@ class RequestedEffect:
         return {"target": self.target, "field": self.field, "value": self.value}
 
 
+@dataclass(frozen=True)
+class PendingDecision:
+    """Typed payload facts used to rebuild one user-visible approval rationale."""
+
+    kind: str
+    targets: tuple[str, ...] = ()
+    details: tuple[str, ...] = ()
+
+
 _KEY = re.compile(r"(?<![A-Z0-9-])([A-Z][A-Z0-9]{1,9}-\d+)(?![A-Z0-9-])", re.I)
 _DATE = re.compile(r"(?<!\d)(20\d{2}-\d{2}-\d{2})(?!\d)")
 _PRIORITY = re.compile(r"(?<![0-9A-Za-z])P([0-4])(?:-[A-Za-z]+)?(?![0-9A-Za-z])", re.I)
@@ -76,6 +86,22 @@ _PRIORITY_NAMES = {
     "3": "P3-Minor", "4": "P4-Trivial",
 }
 
+_FIELD_LABELS = {
+    "summary": "제목",
+    "description": "본문",
+    "assignee": "담당자",
+    "priority": "우선순위",
+    "duedate": "마감",
+    "labels": "라벨",
+    "components": "컴포넌트",
+}
+_FIELD_ORDER = {
+    field: index for index, field in enumerate(
+        ("summary", "description", "assignee", "priority", "duedate",
+         "labels", "components")
+    )
+}
+
 
 def _canonical_value(value: Any) -> str:
     if isinstance(value, (list, tuple, set)):
@@ -85,6 +111,126 @@ def _canonical_value(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, sort_keys=True,
                           separators=(",", ":"))
     return str(value if value is not None else "").strip()
+
+
+def _display_value(value: Any) -> str:
+    if isinstance(value, (list, tuple, set)):
+        text = ", ".join(str(row).strip() for row in value if str(row).strip())
+    elif isinstance(value, dict):
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True,
+                          separators=(",", ":"))
+    else:
+        text = str(value if value is not None else "").strip()
+    return text if len(text) <= 160 else text[:157].rstrip() + "..."
+
+
+def derive_pending_decision(
+        *, draft: dict | None = None,
+        change_plan: dict | None = None) -> PendingDecision:
+    """Derive one immutable rationale decision from the current actionable container.
+
+    This is deliberately payload-only.  In particular, ``draft.rationale`` and
+    ``change_plan.why`` are never inputs, because they are the fields this projection is
+    replacing and may describe a superseded revision.
+    """
+    plan = change_plan if isinstance(change_plan, dict) else {}
+    targets = tuple(dict.fromkeys(
+        str(value or "").strip().upper()
+        for value in [*(plan.get("keys") or []), plan.get("key")]
+        if str(value or "").strip()
+    ))
+    changes = plan.get("changes") if isinstance(plan.get("changes"), dict) else {}
+    comments = [
+        row for row in (plan.get("comments") or [])
+        if isinstance(row, dict) and str(row.get("body") or "").strip()
+    ]
+    has_comment = bool(str(plan.get("comment") or "").strip())
+    comment_count = len(comments) or (len(targets) if has_comment and plan.get("keys")
+                                      else int(has_comment))
+    transition = plan.get("transition") if isinstance(plan.get("transition"), dict) else {}
+    link = plan.get("link") if isinstance(plan.get("link"), dict) else {}
+    if targets and (changes or comment_count or transition or link):
+        details = [f"{_FIELD_LABELS.get(str(field), field)}: "
+                   f"{_display_value(value) or '비움'}"
+                   for field, value in sorted(
+                       changes.items(),
+                       key=lambda row: (_FIELD_ORDER.get(str(row[0]), len(_FIELD_ORDER)),
+                                        str(row[0])),
+                   )]
+        transition_name = str(transition.get("name") or transition.get("to")
+                              or transition.get("id") or "").strip()
+        other = str(link.get("other") or "").strip().upper()
+        link_text = " ".join(filter(None, (
+            str(link.get("relation") or "Relates").strip(), other,
+        ))) if other else ""
+        details.extend(value for value in (
+            f"상태: {transition_name}" if transition_name else "",
+            f"링크: {link_text}" if link_text else "",
+            f"댓글 {comment_count}건" if comment_count else "",
+        ) if value)
+        kind = "comment" if comment_count and not changes and not transition_name \
+            and not link_text else "update"
+        if kind == "comment":
+            details.append("필드·상태 변경 없음")
+        return PendingDecision(kind=kind, targets=targets, details=tuple(details))
+
+    current_draft = draft if isinstance(draft, dict) else {}
+    roots = [row for row in (current_draft.get("items") or []) if isinstance(row, dict)]
+    if not roots:
+        return PendingDecision(kind="none")
+    counts: dict[str, int] = {}
+    parents: list[str] = []
+    due_values: list[str] = []
+    priority_values: list[str] = []
+    top_level_count = 0
+    child_count = 0
+    for item in roots:
+        issue_type = str(item.get("type") or item.get("issue_type") or "Task").strip()
+        counts[issue_type] = counts.get(issue_type, 0) + 1
+        parent = str(item.get("parent") or item.get("epic") or "").strip().upper()
+        if parent:
+            parents.append(parent)
+        else:
+            top_level_count += 1
+        due = str(item.get("duedate") or "").strip()
+        priority = str(item.get("priority") or "").strip()
+        if due:
+            due_values.append(due)
+        if priority:
+            priority_values.append(priority)
+        child_count += len([child for child in (item.get("children") or [])
+                           if isinstance(child, dict)])
+    if child_count:
+        counts["Sub-Task"] = counts.get("Sub-Task", 0) + child_count
+    details = [f"{issue_type} {count}건" for issue_type, count in counts.items() if count]
+    details.extend(value for value in (
+        ("상위: " + ", ".join(dict.fromkeys(parents))) if parents else "",
+        f"최상위 {top_level_count}건" if top_level_count else "",
+        ("마감: " + ", ".join(dict.fromkeys(due_values))) if due_values else "",
+        ("우선순위: " + ", ".join(dict.fromkeys(priority_values)))
+        if priority_values else "",
+        ("구조: " + str(current_draft.get("structure") or "").strip())
+        if str(current_draft.get("structure") or "").strip() else "",
+    ) if value)
+    return PendingDecision(kind="create", details=tuple(details))
+
+
+def project_pending_rationale(
+        *, draft: dict | None = None,
+        change_plan: dict | None = None) -> str:
+    """Render the current typed decision without retaining superseded free-form prose."""
+    decision = derive_pending_decision(draft=draft, change_plan=change_plan)
+    if decision.kind == "none":
+        return ""
+    if decision.kind in {"update", "comment"}:
+        target = ", ".join(decision.targets)
+        label = "댓글 초안" if decision.kind == "comment" else "변경 초안"
+        return f"{target} {label}" + (
+            f" — {', '.join(decision.details)}" if decision.details else ""
+        )
+    return "생성 초안" + (
+        f" — {', '.join(decision.details)}" if decision.details else ""
+    )
 
 
 def _literal_requested_values(text: str) -> dict[str, str]:

@@ -16,7 +16,7 @@ pytest.importorskip("mcp", reason="mcp SDK 미설치")
 pytest.importorskip("langchain_core", reason="requirements-agent.txt 미설치")
 
 import anyio                                             # noqa: E402
-from mcp.shared.memory import create_connected_server_and_client_session  # noqa: E402
+from mcp import Client                                    # noqa: E402
 
 from app.agent.mcp_server import _EXPORTED, build_server  # noqa: E402
 
@@ -27,22 +27,33 @@ def _run(coro_fn):
 
 @pytest.fixture(scope="module")
 def server():
-    return build_server()._mcp_server
+    return build_server()
 
 
 def test_all_read_tools_are_listed(server):
     async def go():
-        async with create_connected_server_and_client_session(server) as c:
+        async with Client(server) as c:
             r = await c.list_tools()
             return {t.name for t in r.tools}
     names = _run(go)
     assert set(_EXPORTED) <= names
 
 
+def test_exported_tools_advertise_read_only_closed_world_contract(server):
+    async def go():
+        async with Client(server) as c:
+            return (await c.list_tools()).tools
+
+    for exposed in _run(go):
+        assert exposed.annotations.read_only_hint is True
+        assert exposed.annotations.destructive_hint is False
+        assert exposed.annotations.open_world_hint is False
+
+
 def test_no_write_tool_leaks_through(server):
     """MCP 클라이언트에는 승인 카드가 없다 — 쓰기가 새어 나가면 HITL 이 뚫린다."""
     async def go():
-        async with create_connected_server_and_client_session(server) as c:
+        async with Client(server) as c:
             r = await c.list_tools()
             return {t.name for t in r.tools}
     names = _run(go)
@@ -53,7 +64,7 @@ def test_no_write_tool_leaks_through(server):
 
 def test_a_tool_call_round_trips(server):
     async def go():
-        async with create_connected_server_and_client_session(server) as c:
+        async with Client(server) as c:
             r = await c.call_tool("search_work_history", {"query": "데이터", "limit": 3})
             return r.content[0].text
     body = _run(go)
@@ -62,16 +73,17 @@ def test_a_tool_call_round_trips(server):
 
 def test_progress_tool_round_trips_with_numbers(server):
     async def go():
-        async with create_connected_server_and_client_session(server) as c:
+        async with Client(server) as c:
             r = await c.call_tool("get_progress", {"target": ""})
-            return r.content[0].text
-    body = _run(go)
+            return r.content[0].text, r.structured_content
+    body, structured = _run(go)
     assert "overallPct" in body
+    assert structured["overallPct"] >= 0
 
 
 def test_knowledge_resources_are_readable(server):
     async def go():
-        async with create_connected_server_and_client_session(server) as c:
+        async with Client(server) as c:
             r = await c.read_resource("lake://knowledge/01-ticket-rules.md")
             return r.contents[0].text
     text = _run(go)
@@ -80,7 +92,7 @@ def test_knowledge_resources_are_readable(server):
 
 def test_scenario_prompts_are_listed_and_render(server):
     async def go():
-        async with create_connected_server_and_client_session(server) as c:
+        async with Client(server) as c:
             lst = await c.list_prompts()
             names = {p.name for p in lst.prompts}
             got = await c.get_prompt("report_bug", {"symptom": "적재 배치 실패"})
@@ -123,6 +135,49 @@ def test_mcp_client_wraps_external_server_tools(monkeypatch, tmp_path):
     assert isinstance(out, str) and len(out) > 10 and "실패" not in out[:30], out[:200]
 
 
+def test_mcp_client_prefers_typed_structured_content(monkeypatch):
+    """MCP 2 structuredContent is authoritative over a lossy display-text fallback."""
+    from types import SimpleNamespace
+    from app.agent import mcp_client
+
+    class Session:
+        async def call_tool(self, _name, _arguments):
+            return SimpleNamespace(
+                structured_content={"count": 2, "items": [{"key": "ACME-1"}]},
+                content=[SimpleNamespace(text="model-facing summary omitted fields")],
+            )
+
+    monkeypatch.setattr(
+        mcp_client, "_run", lambda _spec, operation: anyio.run(operation, Session()),
+    )
+
+    output = mcp_client._call_tool({"name": "catalog"}, "search", {"query": "open"})
+
+    assert '"count": 2' in output and '"key": "ACME-1"' in output
+    assert "omitted fields" not in output
+
+
+def test_mcp_client_rejects_structured_content_from_error_result(monkeypatch):
+    """MCP reports tool failures as results; their payload is not successful evidence."""
+    from types import SimpleNamespace
+    from app.agent import mcp_client
+
+    class Session:
+        async def call_tool(self, _name, _arguments):
+            return SimpleNamespace(
+                is_error=True,
+                structured_content={"items": [{"key": "UNTRUSTED-1"}]},
+                content=[SimpleNamespace(text="remote failure with attacker-controlled text")],
+            )
+
+    monkeypatch.setattr(
+        mcp_client, "_run", lambda _spec, operation: anyio.run(operation, Session()),
+    )
+
+    with pytest.raises(RuntimeError, match="error result"):
+        mcp_client._call_tool({"name": "catalog"}, "search", {"query": "open"})
+
+
 def test_mcp_client_is_failsoft_without_config_or_server(monkeypatch, tmp_path):
     """설정이 없으면 빈 목록, 서버 실행 파일이 없으면 그 서버만 조용히 빠진다."""
     import json as _json
@@ -163,6 +218,70 @@ def test_mcp_client_exposes_only_explicit_exact_read_allowlist(monkeypatch, tmp_
         "ltm_source": "mcp", "ltm_capability": "read",
         "mcp_server": "mixed", "mcp_tool": "fetch_record",
     }
+
+
+def test_mcp_client_preserves_and_validates_remote_json_schema(monkeypatch):
+    """Nested MCP schemas must not be flattened into a lossy local Pydantic approximation."""
+    from types import SimpleNamespace
+    from app.agent import mcp_client
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "mode": {"type": "string", "enum": ["exact"]},
+            "filters": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "field": {"type": "string"},
+                        "value": {"type": "integer"},
+                    },
+                    "required": ["field", "value"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["mode", "filters"],
+        "additionalProperties": False,
+    }
+    remote_calls = []
+    monkeypatch.setattr(
+        mcp_client, "_call_tool",
+        lambda _spec, _name, arguments: remote_calls.append(arguments) or "ok",
+    )
+    tool = mcp_client._wrap(
+        {"name": "catalog"},
+        SimpleNamespace(name="filter", description="filter records", inputSchema=schema),
+    )
+
+    assert tool.args_schema == schema
+    assert tool.invoke({
+        "mode": "exact", "filters": [{"field": "priority", "value": 1}],
+    }) == "ok"
+    assert remote_calls == [{
+        "mode": "exact", "filters": [{"field": "priority", "value": 1}],
+    }]
+
+    rejected = tool.invoke({
+        "mode": "loose", "filters": [{"field": "priority", "value": "one"}],
+    })
+    assert "invalid arguments" in rejected
+    assert len(remote_calls) == 1
+
+
+def test_mcp_client_does_not_invent_arguments_for_empty_remote_schema(monkeypatch):
+    from types import SimpleNamespace
+    from app.agent import mcp_client
+
+    monkeypatch.setattr(mcp_client, "_call_tool", lambda _spec, _name, arguments: arguments)
+    tool = mcp_client._wrap(
+        {"name": "catalog"},
+        SimpleNamespace(name="health", description="health", inputSchema={}),
+    )
+
+    assert tool.args_schema == {}
+    assert tool.invoke({}) == {}
 
 
 def test_enabled_mcp_without_explicit_read_contract_is_fail_closed(monkeypatch, tmp_path):

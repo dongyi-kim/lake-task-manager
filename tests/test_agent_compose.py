@@ -878,3 +878,48 @@ def test_shared_editor_status_is_preserved_when_both_exact_bindings_match():
     )
 
     assert C._bind_ticket_status_claims(html, context) == html
+
+
+def test_status_binding_preserves_nonledger_anchor_in_same_block():
+    context = "티켓별 현재 상태: ACME-81=Closed | ACME-82=In Progress"
+    html = (
+        '<p><a data-key="ACME-80" href="/browse/ACME-80">ACME-80</a>의 검토에서 '
+        '<a data-key="ACME-81" href="/browse/ACME-81">ACME-81</a> 및 '
+        '<a data-key="ACME-82" href="/browse/ACME-82">ACME-82</a>는 '
+        'Jira 상태 In Progress입니다.</p>'
+    )
+
+    got = C._bind_ticket_status_claims(html, context)
+
+    assert 'ACME-80</a>의 검토' in got
+    assert 'ACME-80</a> · Jira 상태' not in got
+    assert 'ACME-81</a> · Jira 상태 Closed' in got
+    assert 'ACME-82</a> · Jira 상태 In Progress' in got
+
+
+def test_compose_normalizes_hybrid_html_and_markdown_before_final_gate(monkeypatch):
+    from app.agent import config as CFG
+
+    class _Reply:
+        content = (
+            "<p>측정 결과 검토를 요청드립니다.</p>\n\n"
+            "### 확인 대상\n\n"
+            "- **측정 기준:** 2홉 100 노드\n"
+            "- 결과 기록\n\n"
+            "<p>확인 후 의견을 남겨 주세요.</p>"
+        )
+
+    class _Llm:
+        def invoke(self, _messages, **_kwargs):
+            return _Reply()
+
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kw: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: '[ACME-80] "성능 측정" — Open')
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+
+    result = C.compose("ACME-80", "comment", "측정 결과 검토 요청 코멘트를 작성해 줘")
+
+    assert result["ok"] is True
+    assert "<h3>확인 대상</h3>" in result["html"]
+    assert "<ul>" in result["html"] and "<strong>측정 기준:</strong>" in result["html"]
+    assert not any(token in result["html"] for token in ("###", "**", "- 결과 기록"))

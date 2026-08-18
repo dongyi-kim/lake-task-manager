@@ -22,7 +22,8 @@ except ImportError:
 
 # v3.2.0 maps heterogeneous-note outcomes by stable outcome id, falling back to
 # exact source assignee/due tuples.  Repeated title substrings no longer select row 0.
-BATTERY_VERSION = "3.2.0"
+# v4.0.0 inherits the common hidden-draft/user-visible approval boundary.
+BATTERY_VERSION = "4.0.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("meeting")
 
 

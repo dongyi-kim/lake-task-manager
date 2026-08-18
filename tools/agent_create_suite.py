@@ -71,7 +71,9 @@ except ImportError:  # legacy asset에는 version 상수가 없었다.
 # v5.2.0 replaces the product-shaped fact regex with typed DOM fact relations.  Inflected
 # completion, shared actor predicates, and a condition split across DOM leaves no longer
 # produce false reds, while omissions and direct reversals remain deterministic failures.
-BATTERY_VERSION = "5.2.0"
+# v6.0.0 makes a review-blocked internal draft without a required question or
+# user-visible approval payload an automatic task-fulfilment failure.
+BATTERY_VERSION = "6.0.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("create")
 session = None
 

@@ -7,13 +7,19 @@ import os
 import pytest
 
 from tools import agent_eval_launcher as L
-from tools.agent_eval_isolation import EvaluationPreflightError, NETWORK_PREFLIGHT_MARKER
+from tools.agent_eval_isolation import (
+    EFFECTIVE_PROVIDER_IDENTITY_ENV,
+    EvaluationPreflightError,
+    NETWORK_PREFLIGHT_MARKER,
+)
 from tools.agent_scenario_eval import parse_scenario_args, validate_eval_argv
 
 
 @pytest.fixture(autouse=True)
 def clean_handoff_marker(monkeypatch):
     monkeypatch.delenv(NETWORK_PREFLIGHT_MARKER, raising=False)
+    monkeypatch.delenv(EFFECTIVE_PROVIDER_IDENTITY_ENV, raising=False)
+    monkeypatch.delenv("LTM_AGENT_STRUCTURED_OUTPUT_FALLBACK", raising=False)
     monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai")
     monkeypatch.setenv("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 
@@ -50,9 +56,12 @@ def test_launcher_sets_handoff_only_after_endpoint_preflight(monkeypatch):
     def authorize(model, simple_model, timeout):
         assert NETWORK_PREFLIGHT_MARKER not in os.environ
         events.append(("authorize", model, simple_model, timeout))
+        return "a" * 64
 
     def run(script, argv):
         assert os.environ[NETWORK_PREFLIGHT_MARKER] == "1"
+        assert os.environ["LTM_AGENT_STRUCTURED_OUTPUT_FALLBACK"] == "forbid"
+        assert os.environ[EFFECTIVE_PROVIDER_IDENTITY_ENV] == "a" * 64
         events.append(("run", script, list(argv)))
         return 17
 
@@ -64,6 +73,8 @@ def test_launcher_sets_handoff_only_after_endpoint_preflight(monkeypatch):
         ("run", "agent_meeting_eval.py", ["gpt-4o", "MTG1"]),
     ]
     assert NETWORK_PREFLIGHT_MARKER not in os.environ
+    assert EFFECTIVE_PROVIDER_IDENTITY_ENV not in os.environ
+    assert "LTM_AGENT_STRUCTURED_OUTPUT_FALLBACK" not in os.environ
 
 
 def test_failed_launcher_preflight_never_sets_marker_or_starts_runner(monkeypatch, capsys):
@@ -79,6 +90,8 @@ def test_failed_launcher_preflight_never_sets_marker_or_starts_runner(monkeypatc
     )
     assert L.main(["create", "gpt-4o-mini", "STARR1"]) == 3
     assert NETWORK_PREFLIGHT_MARKER not in os.environ
+    assert EFFECTIVE_PROVIDER_IDENTITY_ENV not in os.environ
+    assert "LTM_AGENT_STRUCTURED_OUTPUT_FALLBACK" not in os.environ
     assert "no cases started" in capsys.readouterr().err
 
 

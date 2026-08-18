@@ -4,14 +4,408 @@ from __future__ import annotations
 
 import html
 import re
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
+from typing import Callable, Generic, Literal, TypeVar
 from urllib.parse import urlsplit
+
+import nh3
 
 from app.agent.tools._ctx import (client, jira_key_allowed, search_spaces,
                                   settings)
 
 
 _TOKEN = re.compile(r"\{\{(ref|mention):([A-Za-z0-9_.:-]+)\}\}")
+_EDITOR_TAG_RE = re.compile(
+    r"</?(?:p|br|hr|h[1-6]|ul|ol|li|a|span|strong|em|s|code|pre|blockquote|"
+    r"table|thead|tbody|tfoot|tr|td|th)\b",
+    re.I,
+)
+_MARKDOWN_BLOCK_RE = re.compile(
+    r"(?m)^\s{0,3}(?:#{1,6}\s+\S|[-+*]\s+(?:\[[ xX]\]\s*)?\S|"
+    r"\d+[.)]\s+\S|>\s+\S|```|\|.*\|\s*$)",
+)
+_MARKDOWN_INLINE_RE = re.compile(
+    r"!?\[[^\]\n]+\]\([^)\n]+\)|\*\*[^*\n]+\*\*|~~[^~\n]+~~|`[^`\n]+`",
+)
+_MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]\n]*\]\(([^)\s]+)\)")
+_VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+              "link", "meta", "param", "source", "track", "wbr"}
+_ROOT_BLOCK_TAGS = {
+    "address", "article", "aside", "blockquote", "div", "dl", "fieldset", "figure",
+    "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "li",
+    "main", "nav", "ol", "p", "pre", "section", "table", "tbody", "td", "tfoot",
+    "th", "thead", "tr", "ul",
+}
+_EDITOR_ALLOWED_TAGS = {
+    "p", "div", "section", "h1", "h2", "h3", "h4", "h5", "h6", "br", "hr",
+    "blockquote", "strong", "b", "em", "i", "u", "s", "del", "code", "pre",
+    "ul", "ol", "li", "table", "thead", "tbody", "tfoot", "tr", "th", "td",
+    "span", "a",
+}
+_EDITOR_ALLOWED_ATTRIBUTES = {
+    "a": {"href", "data-key", "target", "rel"},
+    "span": {"data-type", "data-id", "data-label"},
+    "ul": {"data-type"},
+    "li": {"data-checked"},
+    "ol": {"start"},
+    "th": {"colspan", "rowspan", "colwidth"},
+    "td": {"colspan", "rowspan", "colwidth"},
+}
+_EDITOR_ALLOWED_CLASSES = {
+    "a": {"jira-badge", "tkt", "conf-link", "ref-link"},
+    "span": {"md-person", "mention"},
+}
+_EDITOR_HTML_CLEANER = nh3.Cleaner(
+    tags=_EDITOR_ALLOWED_TAGS,
+    attributes=_EDITOR_ALLOWED_ATTRIBUTES,
+    allowed_classes=_EDITOR_ALLOWED_CLASSES,
+    clean_content_tags={
+        "script", "style", "iframe", "object", "embed", "template", "form", "svg",
+    },
+    url_schemes={"http", "https"},
+    url_relative="pass_through",
+    link_rel=None,
+    strip_comments=True,
+)
+
+
+@dataclass(frozen=True)
+class EditorRenderDiagnostic:
+    """A non-prose diagnostic emitted by the editor rendering boundary."""
+
+    stage: str
+    code: str
+    detail: str = ""
+
+    def as_dict(self) -> dict[str, str]:
+        return {"stage": self.stage, "code": self.code, "detail": self.detail}
+
+
+@dataclass(frozen=True)
+class EditorMarkupNormalization:
+    """Typed result of accepting HTML, Markdown, or a mixed provider response."""
+
+    html: str
+    input_format: Literal["empty", "html", "markdown", "mixed"]
+    diagnostics: tuple[EditorRenderDiagnostic, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return not self.diagnostics
+
+
+_StageValue = TypeVar("_StageValue")
+
+
+@dataclass(frozen=True)
+class EditorStageResult(Generic[_StageValue]):
+    """Runtime adapter for one render stage; raw functions remain directly testable."""
+
+    value: _StageValue | None = None
+    diagnostic: EditorRenderDiagnostic | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.diagnostic is None
+
+
+def run_editor_stage(stage: str, operation: Callable[[], _StageValue]) -> EditorStageResult[_StageValue]:
+    """Fail closed at a named UI boundary without serializing exception text or endpoints.
+
+    Resolver and renderer functions themselves do not swallow exceptions, so their unit tests
+    still expose programming defects. The compose adapter uses this narrow stage wrapper to
+    keep a provider/client failure from becoming an unclassified HTTP 500. Only the exception
+    class is retained; request URLs, headers, and credentials are deliberately omitted.
+    """
+    try:
+        return EditorStageResult(value=operation())
+    except Exception as exc:
+        return EditorStageResult(diagnostic=EditorRenderDiagnostic(
+            str(stage or "editor_render"), "runtime_failure", type(exc).__name__,
+        ))
+
+
+@dataclass
+class _MarkupElement:
+    tag: str
+    attrs: tuple[tuple[str, str], ...] = ()
+    children: list[object] = field(default_factory=list)
+    self_closing: bool = False
+
+
+@dataclass(frozen=True)
+class _MarkupComment:
+    value: str
+
+
+class _MixedMarkupParser(HTMLParser):
+    """Parse provider markup into a small tree so only text nodes become Markdown."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.root: list[object] = []
+        self.stack: list[_MarkupElement] = []
+        self.diagnostics: list[EditorRenderDiagnostic] = []
+
+    def _append(self, value: object) -> None:
+        (self.stack[-1].children if self.stack else self.root).append(value)
+
+    @staticmethod
+    def _attrs(attrs) -> tuple[tuple[str, str], ...]:
+        return tuple((str(key).lower(), str(value or "")) for key, value in attrs)
+
+    def handle_starttag(self, tag, attrs):
+        lower = str(tag).lower()
+        node = _MarkupElement(lower, self._attrs(attrs), self_closing=lower in _VOID_TAGS)
+        self._append(node)
+        if not node.self_closing:
+            self.stack.append(node)
+
+    def handle_startendtag(self, tag, attrs):
+        self._append(_MarkupElement(str(tag).lower(), self._attrs(attrs), self_closing=True))
+
+    def handle_endtag(self, tag):
+        lower = str(tag).lower()
+        if not self.stack or self.stack[-1].tag != lower:
+            self.diagnostics.append(EditorRenderDiagnostic(
+                "markup_normalization", "malformed_html", f"unexpected closing tag: {lower}",
+            ))
+            return
+        self.stack.pop()
+
+    def handle_data(self, data):
+        self._append(str(data))
+
+    def handle_entityref(self, name):
+        self._append(f"&{name};")
+
+    def handle_charref(self, name):
+        self._append(f"&#{name};")
+
+    def handle_comment(self, data):
+        self._append(_MarkupComment(str(data)))
+
+    def close_tree(self) -> None:
+        self.close()
+        if self.stack:
+            tags = ", ".join(node.tag for node in self.stack[-4:])
+            self.diagnostics.append(EditorRenderDiagnostic(
+                "markup_normalization", "malformed_html", f"unclosed tag: {tags}",
+            ))
+
+
+def _serialize_attrs(attrs: tuple[tuple[str, str], ...]) -> str:
+    return "".join(
+        f' {html.escape(key, quote=True)}="{html.escape(value, quote=True)}"'
+        for key, value in attrs
+    )
+
+
+def _markdown_html(value: str) -> str:
+    from app.content.mdhtml import markdown_to_html
+
+    return markdown_to_html(html.unescape(str(value or "")))
+
+
+def _inline_markdown_html(value: str) -> str:
+    source = str(value or "")
+    if not _MARKDOWN_INLINE_RE.search(html.unescape(source)):
+        return source
+    leading_size = len(source) - len(source.lstrip())
+    trailing_size = len(source) - len(source.rstrip())
+    end = len(source) - trailing_size if trailing_size else len(source)
+    leading, body, trailing = source[:leading_size], source[leading_size:end], source[end:]
+    rendered = _markdown_html(body)
+    match = re.fullmatch(r"<p>(.*)</p>", rendered, re.S)
+    return leading + (match.group(1) if match else rendered) + trailing
+
+
+def _render_verbatim_node(node: object) -> str:
+    """Serialize a code/pre/anchor subtree without interpreting Markdown in descendants."""
+    if isinstance(node, _MarkupComment):
+        return f"<!--{node.value}-->"
+    if isinstance(node, str):
+        return node
+    if not isinstance(node, _MarkupElement):
+        raise TypeError(f"unsupported editor markup node: {type(node).__name__}")
+    attrs = _serialize_attrs(node.attrs)
+    if node.self_closing:
+        return f"<{node.tag}{attrs}>"
+    body = "".join(_render_verbatim_node(child) for child in node.children)
+    return f"<{node.tag}{attrs}>{body}</{node.tag}>"
+
+
+def _render_markdown_flow(nodes: list[object], *, unwrap_paragraph: bool,
+                          force_markdown: bool = False) -> str:
+    """Render one contiguous inline flow through stable DOM placeholders."""
+    if not nodes:
+        return ""
+    probe = "".join(node if isinstance(node, str) else "LTM_INLINE_NODE" for node in nodes)
+    has_markdown = bool(
+        _MARKDOWN_BLOCK_RE.search(html.unescape(probe))
+        or _MARKDOWN_INLINE_RE.search(html.unescape(probe))
+    )
+    if not force_markdown and not has_markdown:
+        return "".join(
+            node if isinstance(node, str) else _render_mixed_node(node)
+            for node in nodes
+        )
+
+    rendered_nodes = [
+        node if isinstance(node, str) else _render_mixed_node(node)
+        for node in nodes
+    ]
+    collision_text = "".join(rendered_nodes)
+    token_prefix = "LTMINLINEFLOWPLACEHOLDER"
+    while token_prefix in collision_text:
+        token_prefix += "X"
+    parts: list[str] = []
+    replacements: list[tuple[str, str]] = []
+    for original, rendered_node in zip(nodes, rendered_nodes):
+        if isinstance(original, str):
+            parts.append(rendered_node)
+            continue
+        token = f"{token_prefix}{len(replacements)}Z"
+        parts.append(token)
+        replacements.append((token, rendered_node))
+
+    source = "".join(parts)
+    leading = trailing = ""
+    if unwrap_paragraph:
+        leading_size = len(source) - len(source.lstrip())
+        trailing_size = len(source) - len(source.rstrip())
+        end = len(source) - trailing_size if trailing_size else len(source)
+        leading, source, trailing = source[:leading_size], source[leading_size:end], source[end:]
+    rendered = _markdown_html(source)
+    if unwrap_paragraph:
+        paragraph = re.fullmatch(r"<p>(.*)</p>", rendered, re.S)
+        rendered = leading + (paragraph.group(1) if paragraph else rendered) + trailing
+    for token, markup in replacements:
+        rendered = rendered.replace(token, markup)
+    return rendered
+
+
+def _render_mixed_children(nodes: list[object]) -> str:
+    """Render inline siblings together, while retaining real block-element boundaries."""
+    out: list[str] = []
+    flow: list[object] = []
+
+    def flush() -> None:
+        if flow:
+            out.append(_render_markdown_flow(flow, unwrap_paragraph=True))
+            flow.clear()
+
+    for child in nodes:
+        if isinstance(child, _MarkupElement) and child.tag in _ROOT_BLOCK_TAGS:
+            flush()
+            out.append(_render_mixed_node(child))
+        else:
+            flow.append(child)
+    flush()
+    return "".join(out)
+
+
+def _render_mixed_node(node: object) -> str:
+    if isinstance(node, _MarkupComment):
+        return f"<!--{node.value}-->"
+    if isinstance(node, str):
+        return _inline_markdown_html(node)
+    if not isinstance(node, _MarkupElement):
+        raise TypeError(f"unsupported editor markup node: {type(node).__name__}")
+
+    attrs = _serialize_attrs(node.attrs)
+    if node.self_closing:
+        return f"<{node.tag}{attrs}>"
+
+    # A provider sometimes wraps a Markdown heading/list in ``<p>`` while mixing it with
+    # valid HTML blocks.  Convert that whole text-only block instead of creating invalid
+    # nested ``<p><h3>`` markup. Elements already carrying typed references stay untouched.
+    text_only = all(isinstance(child, str) for child in node.children)
+    raw_text = "".join(str(child) for child in node.children) if text_only else ""
+    if node.tag == "p" and text_only and _MARKDOWN_BLOCK_RE.search(html.unescape(raw_text)):
+        return _markdown_html(raw_text)
+
+    preserve_markdown = node.tag in {"code", "pre", "a"}
+    if text_only:
+        body = raw_text if preserve_markdown else _inline_markdown_html(raw_text)
+        return f"<{node.tag}{attrs}>{body}</{node.tag}>"
+    body = ("".join(_render_verbatim_node(child) for child in node.children)
+            if preserve_markdown else _render_mixed_children(node.children))
+    return f"<{node.tag}{attrs}>{body}</{node.tag}>"
+
+
+def _render_mixed_root(nodes: list[object], *, normalize_markdown: bool = True) -> str:
+    """Render root flow without applying Markdown semantics to an HTML-only document."""
+    if not normalize_markdown:
+        return "".join(
+            node if isinstance(node, str) else _render_mixed_node(node)
+            for node in nodes
+        )
+
+    # Markdown and inline DOM share one flow. The same placeholder renderer is used inside
+    # element bodies so delimiters can span an inline child without crossing block children.
+    out: list[str] = []
+    flow: list[object] = []
+
+    def flush() -> None:
+        if not flow:
+            return
+        rendered = _render_markdown_flow(
+            flow, unwrap_paragraph=False, force_markdown=True,
+        )
+        if rendered:
+            out.append(rendered)
+        flow.clear()
+
+    for node in nodes:
+        if isinstance(node, _MarkupElement) and node.tag in _ROOT_BLOCK_TAGS:
+            flush()
+            out.append(_render_mixed_node(node))
+            continue
+        flow.append(node)
+    flush()
+    return "".join(out)
+
+
+def normalize_editor_markup(content: str) -> EditorMarkupNormalization:
+    """Normalize provider HTML/Markdown into one editor HTML dialect.
+
+    The model-facing contract requests HTML, but compatible providers can return Markdown
+    or interleave Markdown blocks with valid HTML. This boundary parses existing elements
+    first and applies the shared Markdown renderer only to text nodes, so typed anchors and
+    mentions are never escaped or reconstructed by regex. Unsupported Markdown destinations
+    and malformed HTML remain fail-closed typed diagnostics for the caller.
+    """
+    source = str(content or "").strip()
+    if not source:
+        return EditorMarkupNormalization("", "empty")
+
+    has_html = bool(_EDITOR_TAG_RE.search(source))
+    has_markdown = bool(_MARKDOWN_BLOCK_RE.search(source) or _MARKDOWN_INLINE_RE.search(source))
+    input_format: Literal["html", "markdown", "mixed"] = (
+        "mixed" if has_html and has_markdown else "html" if has_html else "markdown"
+    )
+    unsafe_schemes: list[str] = []
+    for destination in _MARKDOWN_LINK_RE.findall(html.unescape(source)):
+        parsed = urlsplit(destination)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            unsafe_schemes.append(parsed.scheme.lower() or "relative")
+    if unsafe_schemes:
+        detail = "unsupported schemes: " + ", ".join(sorted(set(unsafe_schemes)))
+        return EditorMarkupNormalization(source, input_format, (
+            EditorRenderDiagnostic(
+                "markup_normalization", "unsupported_link_destination", detail,
+            ),
+        ))
+
+    parser = _MixedMarkupParser()
+    parser.feed(source)
+    parser.close_tree()
+    if parser.diagnostics:
+        return EditorMarkupNormalization(source, input_format, tuple(parser.diagnostics))
+    rendered = _render_mixed_root(parser.root, normalize_markdown=input_format != "html")
+    return EditorMarkupNormalization(rendered, input_format)
 
 
 def _error(ref: dict, message: str) -> dict:
@@ -199,7 +593,8 @@ def render_editor_references(content_html: str, resolved: list[dict]) -> str:
         def handle_starttag(self, tag, attrs):
             lower = tag.lower()
             if self.skip_tag:
-                self.skip_depth += 1
+                if lower not in _VOID_TAGS:
+                    self.skip_depth += 1
                 return
             canonical = self._canonical(lower, attrs)
             if canonical:
@@ -246,20 +641,20 @@ def render_editor_references(content_html: str, resolved: list[dict]) -> str:
                 self.out.append(f"<!--{data}-->")
 
     parser = Renderer()
-    try:
-        parser.feed(str(content_html or ""))
-        parser.close()
-        return "".join(parser.out)
-    except Exception:
-        return str(content_html or "")
+    # Invalid identities are value-level resolver/validator diagnostics. A programming
+    # defect in this deterministic renderer must remain observable to the caller/evaluator
+    # rather than silently returning the unsafe pre-rendered fragment.
+    parser.feed(str(content_html or ""))
+    parser.close()
+    return "".join(parser.out)
 
 
 def validate_editor_html(content_html: str, resolved: list[dict]) -> dict:
     """Validate the last editor boundary after all deterministic rendering.
 
-    This checker never repairs or deletes prose.  It reports the exact unsafe identity or
-    rendering token so the caller can fail closed instead of returning insertable HTML with
-    a low-salience warning.
+    ``nh3`` owns HTML5 parsing and the complete element/attribute/URL allowlist.  Any cleanup
+    means the provider did not produce the supported editor IR, so the response fails closed.
+    The remaining inspector validates only product identities and visible editor text.
     """
     resolved_tickets = {str(item.get("key") or "").upper() for item in resolved or []
                         if item.get("resolved") and item.get("kind") == "ticket"}
@@ -280,6 +675,15 @@ def validate_editor_html(content_html: str, resolved: list[dict]) -> dict:
         if not item.get("resolved"):
             add("unresolved_reference", str(item.get("id") or ""))
 
+    source = str(content_html or "")
+    try:
+        canonical = _EDITOR_HTML_CLEANER.clean(source)
+    except Exception as exc:
+        canonical = ""
+        add("noncanonical_html", f"sanitizer failure: {type(exc).__name__}")
+    if canonical != source:
+        add("noncanonical_html", "outside the supported editor HTML IR")
+
     class Inspector(HTMLParser):
         def __init__(self):
             super().__init__(convert_charrefs=False)
@@ -287,26 +691,8 @@ def validate_editor_html(content_html: str, resolved: list[dict]) -> dict:
 
         def handle_starttag(self, tag, attrs):
             lower, row = tag.lower(), _attrs(attrs)
-            self.stack.append((lower, row))
-            if lower in {"script", "style", "iframe", "object", "embed", "template",
-                         "form", "input", "button", "textarea", "select", "option",
-                         "meta", "link", "base"}:
-                add("unsafe_html", lower)
-            for name, value in row.items():
-                folded = value.strip().casefold()
-                if (name.startswith("on") or name in {"srcdoc", "formaction"}
-                        or "javascript:" in folded or "data:text/html" in folded
-                        or (name == "style" and ("expression(" in folded or "url(" in folded))):
-                    add("unsafe_html", f"{lower}.{name}")
-                # Compose HTML is inserted into TipTap before Jira's save-time sanitizer.
-                # A model-controlled image/video/SVG URL can therefore trigger an immediate
-                # browser GET to an external or LAN host. Editor output has no typed media
-                # contract, so only canonical ``a[href]`` references resolved below may carry
-                # a network location; every other network-bearing attribute fails closed.
-                if ((name in {"src", "srcset", "poster", "ping", "background",
-                              "xlink:href", "action"}
-                     or (name == "href" and lower != "a")) and value.strip()):
-                    add("unsafe_html", f"{lower}.{name}")
+            if lower not in _VOID_TAGS:
+                self.stack.append((lower, row))
             if lower == "a":
                 key = _ticket_key_from_anchor(row)
                 href = row.get("href") or ""
@@ -331,10 +717,15 @@ def validate_editor_html(content_html: str, resolved: list[dict]) -> dict:
 
         def handle_endtag(self, tag):
             lower = tag.lower()
-            for index in range(len(self.stack) - 1, -1, -1):
-                if self.stack[index][0] == lower:
-                    del self.stack[index:]
-                    break
+            if lower not in _VOID_TAGS and self.stack and self.stack[-1][0] == lower:
+                self.stack.pop()
+
+        def handle_startendtag(self, tag, attrs):
+            lower = tag.lower()
+            self.handle_starttag(tag, attrs)
+            if lower not in _VOID_TAGS:
+                if self.stack and self.stack[-1][0] == lower:
+                    self.stack.pop()
 
         def handle_data(self, data):
             inside_anchor = any(tag == "a" for tag, _ in self.stack)
@@ -364,16 +755,13 @@ def validate_editor_html(content_html: str, resolved: list[dict]) -> dict:
 
     parser = Inspector()
     try:
-        parser.feed(str(content_html or ""))
+        parser.feed(canonical)
         parser.close()
-        dangling = [tag for tag, row in parser.stack
-                    if tag == "a" or (tag == "span" and row.get("data-type") == "mention")]
-        if dangling:
-            add("invalid_html", "unclosed canonical reference: " + ", ".join(dangling))
     except Exception as exc:
-        add("invalid_html", str(exc))
+        add("noncanonical_html", f"product inspection failure: {type(exc).__name__}")
     return {"ok": not issues, "issues": issues}
 
 
-__all__ = ["resolve_references", "render_template", "render_editor_references",
-           "validate_editor_html"]
+__all__ = ["EditorMarkupNormalization", "EditorRenderDiagnostic", "EditorStageResult",
+           "normalize_editor_markup", "run_editor_stage", "resolve_references",
+           "render_template", "render_editor_references", "validate_editor_html"]

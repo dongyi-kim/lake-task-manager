@@ -268,7 +268,9 @@ def test_review_role_schemas_bound_local_generation_without_dropping_evidence():
     from app.agent.workflow.agents.auditor import SCHEMA as audit_schema
     from app.agent.workflow.agents.people_advisor import SCHEMA as people_schema
 
-    assignment = people_schema["properties"]["assignments"]["items"]["properties"]
+    assignment_item = people_schema["properties"]["assignments"]["items"]
+    assignment_name = assignment_item["$ref"].removeprefix("#/$defs/")
+    assignment = people_schema["$defs"][assignment_name]["properties"]
     assert assignment["reasons"]["minItems"] == 1
     assert assignment["reasons"]["maxItems"] == 3
     assert assignment["alternates"]["maxItems"] == 2

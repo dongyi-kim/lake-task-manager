@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from langchain_core.tools import tool
 
 from app.agent.tools._ctx import compact, trim
-from app.infra.public_tls import public_ca_bundle
+from app.infra.public_tls import public_ssl_context
 
 _TIMEOUT = 8        # 외부는 느릴 수 있다 — 조사 한 걸음이 대화를 오래 잡으면 안 된다
 _PUBLIC_STANDARDS_AUTHORITIES = (
@@ -41,8 +41,8 @@ _DOMAIN_NOISE = {
 _COMMON_SECOND_LEVEL_SUFFIXES = {"ac", "co", "com", "edu", "gov", "net", "org"}
 
 
-def _ca_bundle() -> str:
-    """Use a file CA bundle instead of the Windows user certificate store.
+def _tls_context():
+    """Use the shared file-backed TLS context instead of the Windows user store.
 
     The former ``duckduckgo-search`` transport uses ``primp`` on Windows.  In a
     restricted process it tries to open the current-user native certificate store,
@@ -50,7 +50,7 @@ def _ca_bundle() -> str:
     search call waiting for minutes.  httpx + certifi has the same TLS verification
     semantics without depending on that OS-global store.
     """
-    return public_ca_bundle()
+    return public_ssl_context()
 
 
 def _public_search(query: str, limit: int) -> list[dict]:
@@ -63,7 +63,7 @@ def _public_search(query: str, limit: int) -> list[dict]:
         headers={"User-Agent": "Mozilla/5.0 (compatible; LakeTaskManager/1.0)"},
         follow_redirects=True,
         timeout=_TIMEOUT,
-        verify=_ca_bundle(),
+        verify=_tls_context(),
     )
     if response.status_code != 200:
         raise RuntimeError(f"search endpoint HTTP {response.status_code}")
@@ -171,7 +171,7 @@ def search_github(query: str, limit: int = 5) -> dict:
                               "per_page": max(1, min(int(limit or 5), 8))},
                       headers={"Accept": "application/vnd.github+json",
                                "User-Agent": "lake-task-manager-agent"},
-                      timeout=_TIMEOUT, verify=_ca_bundle())
+                      timeout=_TIMEOUT, verify=_tls_context())
         r.raise_for_status()
         items = (r.json() or {}).get("items") or []
     except Exception as e:

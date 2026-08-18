@@ -115,8 +115,10 @@ def test_protocol_versions_and_weights_are_explicit():
     assert protocol["qualification"]["minimumRepetitions"] == 5
     assert sum(item["weight"] for item in protocol["humanRubric"]["dimensions"]) == pytest.approx(1)
     assert len(protocol["humanRubric"]["dimensions"]) == 5
-    assert protocol["protocolVersion"] == "2.0.0"
+    assert protocol["protocolVersion"] == "3.0.0"
     assert protocol["rubricVersion"] == "2.0.0"
+    assert protocol["qualification"]["requiresSameBenchmarkKey"] is True
+    assert "requiresSameComparabilityKey" not in protocol["qualification"]
     assert set(protocol["humanRubric"]["scoreAnchors"]) == {"1", "2", "3", "4", "5"}
     assert protocol["qualitativeEvaluation"]["allowedAgentFamilies"] == ["codex", "claude"]
     assert "generic-no-defect-claims-are-invalid" in \
@@ -188,7 +190,7 @@ def test_create_battery_manifest_fingerprints_shared_checker_dependencies():
         checker_dependencies=create.CREATE_CHECKER_DEPENDENCIES,
     )
 
-    assert create.BATTERY_VERSION == "5.2.0"
+    assert create.BATTERY_VERSION == "6.0.0"
     assert create.CREATE_CASE_CONTRACT_FLAW_CHECKERS["STARR1"] is \
         create._starr1_contract_flaws
     for dependency in (
@@ -425,21 +427,33 @@ def test_run_metadata_marks_partial_single_run_as_exploratory(monkeypatch):
         suite_review_elements=suite_elements,
         case_review_specs=case_specs,
     )
-    assert metadata["protocolVersion"] == "2.0.0"
+    assert metadata["protocolVersion"] == "3.0.0"
     assert metadata["battery"]["batteryVersion"] == "1.0.0"
     assert len(metadata["battery"]["batteryManifestSha256"]) == 64
     assert len(metadata["battery"]["specializedReviewSpecSha256"]) == 64
     assert len(metadata["run"]["dataManifestSha256"]) == 64
+    assert len(metadata["run"]["candidateTreeSha256"]) == 64
+    assert len(metadata["run"]["runtimePackageSetSha256"]) == 64
+    assert len(metadata["benchmarkKey"]) == 64
+    assert len(metadata["candidateKey"]) == 64
+    assert len(metadata["comparabilityKey"]) == 64
+    assert metadata["run"]["structuredOutputBackend"] == "instructor"
+    assert metadata["run"]["structuredBackendVersion"]
+    assert metadata["run"]["structuredBackendFallbackPolicy"] == "allow"
     assert metadata["run"]["runKind"] == "exploratory"
     assert metadata["qualificationEligible"] is False
     assert "selected cases are not the full battery" in metadata["qualificationIneligibilityReasons"]
     assert "evaluation process isolation is not recorded" in \
+        metadata["qualificationIneligibilityReasons"]
+    assert "provider endpoint identity is not recorded" in \
         metadata["qualificationIneligibilityReasons"]
 
 
 def test_comparability_key_changes_with_execution_policy(monkeypatch):
     monkeypatch.setenv("LTM_EVAL_REPETITIONS", "5")
     monkeypatch.setenv("LTM_EVAL_PROCESS_ISOLATION", "separate-process-private-cache")
+    monkeypatch.setenv("LTM_EVAL_EFFECTIVE_PROVIDER_IDENTITY_SHA256", "a" * 64)
+    monkeypatch.setenv("LTM_AGENT_STRUCTURED_OUTPUT_FALLBACK", "forbid")
     suite_elements, case_specs = specialized_contract(("A",))
     common = dict(
         suite="example", battery_version="1.0.0", cases=[("A", "첫째")],
@@ -454,6 +468,106 @@ def test_comparability_key_changes_with_execution_policy(monkeypatch):
     monkeypatch.setenv("LTM_EVAL_PROCESS_ISOLATION", "shared-process")
     third = E.build_run_metadata(**common)["comparabilityKey"]
     assert second != third
+
+
+def test_benchmark_and_candidate_keys_separate_workload_from_runtime_candidate(monkeypatch):
+    monkeypatch.setenv("LTM_EVAL_REPETITIONS", "5")
+    monkeypatch.setenv("LTM_EVAL_PROCESS_ISOLATION", "separate-process-private-cache")
+    monkeypatch.setattr(E, "git_snapshot", lambda: {
+        "commit": "abc123", "dirtyTrackedFiles": False,
+        "gitStatusAvailable": True,
+        "candidateTreeSha256": "a" * 64,
+    })
+    suite_elements, case_specs = specialized_contract(("A",))
+    common = dict(
+        suite="example", battery_version="1.0.0", cases=[("A", "first")],
+        selected_case_ids=["A"], model="model-a", simple_model="model-a-small",
+        prompt_version="candidate-v1", suite_review_elements=suite_elements,
+        case_review_specs=case_specs,
+    )
+
+    first = E.build_run_metadata(**common)
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai_compat")
+    monkeypatch.setenv("LTM_AGENT_STRUCTURED_OUTPUT_BACKEND", "legacy")
+    monkeypatch.setenv("LTM_EVAL_EFFECTIVE_PROVIDER_IDENTITY_SHA256", "b" * 64)
+    second = E.build_run_metadata(**{
+        **common, "model": "model-b", "simple_model": "model-b-small",
+        "prompt_version": "candidate-v2",
+    })
+
+    assert first["benchmarkKey"] == second["benchmarkKey"]
+    assert first["candidateKey"] != second["candidateKey"]
+    assert first["comparabilityKey"] != second["comparabilityKey"]
+    assert first["run"]["providerEndpointIdentitySha256"] != \
+        second["run"]["providerEndpointIdentitySha256"]
+    assert "endpoint-a" not in json.dumps(first, ensure_ascii=False)
+    assert second["run"]["structuredOutputBackend"] == "legacy"
+
+    monkeypatch.setenv("LTM_EVAL_CACHE_POLICY", "cold-cache-each-attempt")
+    third = E.build_run_metadata(**common)
+    assert third["benchmarkKey"] != first["benchmarkKey"]
+
+
+def test_self_attested_or_invalid_provider_identity_is_not_qualification_metadata(monkeypatch):
+    monkeypatch.setenv("LTM_EVAL_PROVIDER_ENDPOINT_ID", "operator-label")
+    monkeypatch.setenv("LTM_EVAL_EFFECTIVE_PROVIDER_IDENTITY_SHA256", "not-a-digest")
+    suite_elements, case_specs = specialized_contract(("A",))
+    metadata = E.build_run_metadata(
+        suite="example", battery_version="1.0.0", cases=[("A", "first")],
+        selected_case_ids=["A"], model="model-a", simple_model="model-a-small",
+        prompt_version="candidate-v1", suite_review_elements=suite_elements,
+        case_review_specs=case_specs,
+    )
+
+    assert metadata["run"]["providerEndpointIdentitySha256"] == "unrecorded"
+    assert "provider endpoint identity is not recorded" in \
+        metadata["qualificationIneligibilityReasons"]
+
+
+def test_git_status_failure_cannot_be_recorded_as_a_clean_candidate(monkeypatch):
+    def checked(*args):
+        if args[:2] == ("rev-parse", "HEAD"):
+            return True, "abc123"
+        return False, ""
+
+    monkeypatch.setattr(E, "_git_checked", checked)
+    snapshot = E.git_snapshot()
+    assert snapshot["commit"] == "abc123"
+    assert snapshot["gitStatusAvailable"] is False
+
+    monkeypatch.setattr(E, "git_snapshot", lambda: snapshot)
+    suite_elements, case_specs = specialized_contract(("A",))
+    metadata = E.build_run_metadata(
+        suite="example", battery_version="1.0.0", cases=[("A", "first")],
+        selected_case_ids=["A"], model="model-a", simple_model="model-a-small",
+        prompt_version="candidate-v1", suite_review_elements=suite_elements,
+        case_review_specs=case_specs,
+    )
+    assert metadata["run"]["gitStatusAvailable"] is False
+    assert metadata["run"]["candidateDirty"] is True
+    assert "git working-tree status is unavailable" in \
+        metadata["qualificationIneligibilityReasons"]
+
+
+def test_harness_tree_changes_the_benchmark_not_the_candidate(monkeypatch):
+    monkeypatch.setattr(E, "git_snapshot", lambda: {
+        "commit": "abc123", "gitStatusAvailable": True,
+        "dirtyTrackedFiles": False, "dirtyUntrackedFiles": False,
+        "candidateTreeSha256": "a" * 64,
+    })
+    monkeypatch.setattr(E, "evaluation_harness_tree_sha256", lambda: "1" * 64)
+    suite_elements, case_specs = specialized_contract(("A",))
+    common = dict(
+        suite="example", battery_version="1.0.0", cases=[("A", "first")],
+        selected_case_ids=["A"], model="model-a", simple_model="model-a-small",
+        prompt_version="candidate-v1", suite_review_elements=suite_elements,
+        case_review_specs=case_specs,
+    )
+    first = E.build_run_metadata(**common)
+    monkeypatch.setattr(E, "evaluation_harness_tree_sha256", lambda: "2" * 64)
+    second = E.build_run_metadata(**common)
+    assert first["benchmarkKey"] != second["benchmarkKey"]
+    assert first["candidateKey"] == second["candidateKey"]
 
 
 def test_report_block_contains_versioned_criteria_and_validates(monkeypatch):
@@ -477,6 +591,8 @@ def test_report_block_contains_versioned_criteria_and_validates(monkeypatch):
     assert "evaluatorAgentFamily" in block
     assert "ltmLlmUsedAsJudge | `false`" in block
     assert "processIsolation" in block
+    assert "evaluationHarnessTreeSha256" in block
+    assert "### Candidate identity" in block
     assert "## 실행 격리" in block
     assert "process-private-sqlite-and-cold-cache-each-case" in block
     assert "공통 anchor" in block
@@ -496,6 +612,32 @@ def test_report_block_contains_versioned_criteria_and_validates(monkeypatch):
     assert E.validate_report(block.replace("protocolVersion", "protocol"))
 
 
+def test_report_renders_every_distinct_candidate_identity(monkeypatch):
+    suite_elements, case_specs = specialized_contract(("A",))
+    common = dict(
+        suite="example", battery_version="1.0.0", cases=[("A", "first")],
+        selected_case_ids=["A"], prompt_version="candidate-v1",
+        suite_review_elements=suite_elements, case_review_specs=case_specs,
+    )
+    monkeypatch.setenv("LTM_EVAL_RUN_GROUP_ID", "paired-candidate-a")
+    monkeypatch.setenv("LTM_EVAL_CANDIDATE_ORDER_INDEX", "a-first")
+    first = E.build_run_metadata(
+        **common, model="model-a", simple_model="simple-a",
+    )
+    monkeypatch.setenv("LTM_EVAL_RUN_GROUP_ID", "paired-candidate-b")
+    monkeypatch.setenv("LTM_EVAL_CANDIDATE_ORDER_INDEX", "b-second")
+    second = E.build_run_metadata(
+        **{**common, "suite": "example-b"}, model="model-b", simple_model="simple-b",
+    )
+    block = E.render_report_standard_block([first, second])
+    assert "model-a" in block and "model-b" in block
+    assert "simple-a" in block and "simple-b" in block
+    assert "paired-candidate-a" in block and "paired-candidate-b" in block
+    assert "a-first" in block and "b-second" in block
+    assert first["candidateKey"] in block and second["candidateKey"] in block
+    assert E.validate_report(block) == []
+
+
 def test_historical_base_report_keeps_its_declared_v1_contract():
     report = (ROOT / "research/agent-improvement/evaluations/2026-08-15-base-rubric-1.2-full.md")
     text = report.read_text(encoding="utf-8")
@@ -506,11 +648,11 @@ def test_historical_base_report_keeps_its_declared_v1_contract():
 
 def test_all_primary_batteries_emit_versioned_metadata():
     expected = {
-        "tools/agent_lang_ab.py": ('suite="conversation"', "3.3.0"),
-        "tools/agent_compose_eval.py": ('suite="editor"', "3.1.0"),
-        "tools/agent_create_suite.py": ('suite="create"', "5.2.0"),
-        "tools/agent_meeting_eval.py": ('suite="meeting"', "3.2.0"),
-        "tools/agent_context_change_eval.py": ('suite="ctx-chg"', "2.2.0"),
+        "tools/agent_lang_ab.py": ('suite="conversation"', "5.0.0"),
+        "tools/agent_compose_eval.py": ('suite="editor"', "4.0.0"),
+        "tools/agent_create_suite.py": ('suite="create"', "6.0.0"),
+        "tools/agent_meeting_eval.py": ('suite="meeting"', "4.0.0"),
+        "tools/agent_context_change_eval.py": ('suite="ctx-chg"', "3.0.0"),
     }
     for relative, (suite_marker, battery_version) in expected.items():
         text = (ROOT / relative).read_text(encoding="utf-8")
@@ -524,6 +666,7 @@ def test_all_primary_batteries_emit_versioned_metadata():
 
 
 def test_primary_battery_manifests_fingerprint_shared_automatic_contracts():
+    from tools import agent_lang_ab as conversation
     from tools import agent_compose_eval as editor
     from tools import agent_context_change_eval as context
     from tools import agent_create_suite as create
@@ -536,6 +679,7 @@ def test_primary_battery_manifests_fingerprint_shared_automatic_contracts():
         automatic_contract_flaws,
         editor_renderer_contract_flaws,
     )
+    from tools.agent_eval_claims import EVALUATION_CLAIM_CONTRACT_DEPENDENCIES
 
     assert automatic_contract_flaws in AUTOMATIC_CONTRACT_DEPENDENCIES
     assert editor_renderer_contract_flaws in EDITOR_RENDERER_CONTRACT_DEPENDENCIES
@@ -543,6 +687,12 @@ def test_primary_battery_manifests_fingerprint_shared_automatic_contracts():
                for dependency in AUTOMATIC_CONTRACT_DEPENDENCIES)
     assert all(dependency in editor.EDITOR_CHECKER_DEPENDENCIES
                for dependency in EDITOR_RENDERER_CONTRACT_DEPENDENCIES)
+    assert all(dependency in conversation.CONVERSATION_CHECKER_DEPENDENCIES
+               for dependency in EVALUATION_CLAIM_CONTRACT_DEPENDENCIES)
+    assert conversation._measurement_contract_flaws in \
+        conversation.CONVERSATION_CHECKER_DEPENDENCIES
+    assert conversation._scenario_contract_flaws in \
+        conversation.CONVERSATION_CHECKER_DEPENDENCIES
     assert context.CONTEXT_CHECKER_DEPENDENCIES
     assert meeting.MEETING_CHECKER_DEPENDENCIES
     assert all(dependency in context.CONTEXT_CHECKER_DEPENDENCIES
@@ -557,6 +707,28 @@ def test_primary_battery_manifests_fingerprint_shared_automatic_contracts():
     assert "*AUTOMATIC_CONTRACT_DEPENDENCIES" in conversation_source
     assert "checker_dependencies=CONVERSATION_CHECKER_DEPENDENCIES" in conversation_source
     assert scenario.automatic_contract_flaws is automatic_contract_flaws
+
+    registry = E.normalize_specialized_review_specs(
+        conversation.SCENARIOS, conversation.SUITE_REVIEW_ELEMENTS,
+        conversation.CASE_REVIEW_SPECS,
+    )
+    complete = E.battery_manifest_sha256(
+        conversation.SCENARIOS, registry,
+        checker_dependencies=conversation.CONVERSATION_CHECKER_DEPENDENCIES,
+    )
+    without_claim_gates = tuple(
+        dependency for dependency in conversation.CONVERSATION_CHECKER_DEPENDENCIES
+        if all(dependency is not claim_dependency
+               for claim_dependency in EVALUATION_CLAIM_CONTRACT_DEPENDENCIES)
+    )
+    assert complete != E.battery_manifest_sha256(
+        conversation.SCENARIOS, registry,
+        checker_dependencies=without_claim_gates,
+    )
+    assert complete == E.battery_manifest_sha256(
+        conversation.SCENARIOS, registry,
+        checker_dependencies=conversation.CONVERSATION_CHECKER_DEPENDENCIES,
+    )
 
 
 def _assigned_case_ids(relative, assignment_name):

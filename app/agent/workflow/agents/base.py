@@ -73,53 +73,20 @@ def _prompt_json_contract(schema_text: str) -> str:
     )
 
 
-def _deframe_structured_output(text: str) -> str:
-    """Remove only LTM's exact terminal JSON transport marker.
-
-    Some OpenAI-compatible servers accept ``stop`` but return the requested marker as a
-    literal suffix instead of consuming it.  The marker is framing that LTM itself asked
-    the model to emit, so removing that one exact terminal token is not JSON recovery.
-    Prefix prose, a marker in the middle, trailing prose, and partial objects remain
-    invalid and are rejected by the strict whole-document parser below.
-    """
-    value = (text or "").strip()
-    if value.endswith(STRUCTURED_END_TOKEN):
-        return value[:-len(STRUCTURED_END_TOKEN)].rstrip()
-    return value
-
-
-def _loads_loose(text: str):
-    """정확히 하나의 JSON object만 수용한다.
-
-    이름은 이전 import 호환을 위해 유지하지만 동작은 의도적으로 strict하다. LTM이 요청한
-    exact terminal transport marker만 제거하며 code fence, 설명 prefix, balanced-brace 추출을
-    성공 처리하면 provider의 parse 실패율을 숨기므로 금지한다.
-    """
-    import json
-    t = _deframe_structured_output(text)
-    if not t:
-        return None
-    try:
-        v = json.loads(t)
-        return v if isinstance(v, dict) else None
-    except Exception:
-        return None
-
-
-def _response_shape(raw, text: str) -> str:
-    """Return safe parse diagnostics without logging response or reasoning content."""
-    value = (text or "").strip()
-    metadata = getattr(raw, "response_metadata", None) or {}
-    finish = metadata.get("finish_reason") or metadata.get("stop_reason") or "unknown"
-    return (f"chars={len(value)}, starts_object={value.startswith('{')}, "
-            f"ends_object={value.endswith('}')}, finish={finish}")
-
-
-def _length_truncated(raw) -> bool:
-    """Whether the provider explicitly stopped this response at its output ceiling."""
-    metadata = getattr(raw, "response_metadata", None) or {}
-    finish = str(metadata.get("finish_reason") or metadata.get("stop_reason") or "").lower()
-    return finish in {"length", "max_tokens", "max_output_tokens"}
+def _structured_repair_messages(schema_text: str, raw_text: str,
+                                validation_error: str, repair_context: str = "") -> list:
+    """Build the single bounded format-repair prompt shared by structured call sites."""
+    source = (("Semantic memo:\n" + repair_context + "\n\n") if repair_context else "")
+    return [
+        SystemMessage(content=(
+            "Preserve the output's meaning. Repair only JSON syntax and schema violations. "
+            f"Return raw JSON, then emit {STRUCTURED_END_TOKEN}. The marker is transport "
+            "framing, not JSON. Never use Markdown, a code fence, or an explanation.")),
+        HumanMessage(content=(
+            source + f"Validation error:\n{validation_error}"
+            f"\n\nJSON Schema:\n{schema_text}"
+            f"\n\nOutput to repair:\n{raw_text[:12000]}")),
+    ]
 
 
 def _validate_output(value, schema: dict) -> dict:
@@ -179,6 +146,25 @@ def _raise_unrepairable_structured_output(errors: list[str], reason: str,
     if exc is not None:
         raise error from exc
     raise error
+
+
+def _raise_structured_backend_error(errors: list[str], exc) -> None:
+    """Map the shared adapter's bounded failure kinds to the public runtime error."""
+    cause = exc.cause or exc
+    if exc.kind == "transport":
+        errors.append(f"prompt_json: {str(cause)[:180]}")
+        _raise_unrepairable_structured_output(
+            errors, "provider 호출 실패로 교정할 모델 출력이 없습니다.", cause)
+    if exc.kind == "empty":
+        errors.append("prompt_json: 모델 출력이 비어 있습니다 (chars=0).")
+        _raise_unrepairable_structured_output(
+            errors, "모델 출력이 비어 있어 교정할 내용이 없습니다.")
+    if exc.kind == "length":
+        errors.append("prompt_json: 모델 출력이 길이 한도에서 잘렸습니다.")
+        _raise_unrepairable_structured_output(
+            errors, "모델 출력이 길이 한도에서 잘려 format repair를 반복하지 않습니다.")
+    errors.append("structured_backend: " + str(exc)[:180])
+    raise RuntimeError("structured output 실패 — " + " | ".join(errors)) from cause
 
 
 def _capability_is_unsupported(exc: Exception, capability: str) -> bool:
@@ -270,8 +256,7 @@ def invoke_schema(schema: dict, messages: list, tier: str | None = None,
         return _cfg.get_llm(tier=active_tier, **values)
 
     capability_profile = capabilities.get(initial_tier).get("checked") or {}
-    errors, raw_text, validation_error = [], "", ""
-    validation_diagnostic: dict[str, str] = {}
+    errors = []
     for capability, method in (("json_schema", "json_schema"),
                                ("json_object", "json_mode")):
         if capability_profile.get(capability) is False:
@@ -298,54 +283,34 @@ def invoke_schema(schema: dict, messages: list, tier: str | None = None,
                 )
             if _capability_is_unsupported(exc, capability):
                 capabilities.record(initial_tier, capability, False, str(exc))
-    try:
-        raw = make_llm().invoke(
-            list(messages) + [HumanMessage(content=_prompt_json_contract(
-                json.dumps(schema, ensure_ascii=False)))],
+    from app.agent import instructor_adapter
+    schema_text = json.dumps(schema, ensure_ascii=False)
+
+    def initial_call():
+        return make_llm().invoke(
+            list(messages) + [HumanMessage(content=_prompt_json_contract(schema_text))],
             stop=[STRUCTURED_END_TOKEN],
-            config=_call_config(observed_role, call_label, initial_layer, execution_stage),
-        )
-    except Exception as exc:
-        errors.append(f"prompt_json: {str(exc)[:160]}")
-        _raise_unrepairable_structured_output(
-            errors, "provider 호출 실패로 교정할 모델 출력이 없습니다.", exc)
-    raw_text = str(getattr(raw, "content", raw) or "")
-    if not raw_text.strip():
-        errors.append("prompt_json: 모델 출력이 비어 있습니다 (chars=0).")
-        _raise_unrepairable_structured_output(
-            errors, "모델 출력이 비어 있어 교정할 내용이 없습니다.")
-    try:
-        parsed = _loads_loose(raw_text)
-        if parsed is None:
-            raise ValueError("JSON 객체를 찾지 못했습니다 (" + _response_shape(raw, raw_text) + ").")
-        return _validate_output(parsed, schema)
-    except Exception as exc:
-        validation_error = str(exc)[:1000]
-        validation_diagnostic = _validation_diagnostic(exc)
-        errors.append(f"prompt_json: {str(exc)[:160]}")
-    try:
+            config=_call_config(observed_role, call_label, initial_layer, execution_stage))
+
+    def repair_call(raw_text: str, validation_error: str, diagnostic: dict[str, str]):
         repair_layer = "projection" if initial_layer else ""
         repair_contract = "typed_projection" if repair_layer else "structured"
-        raw = make_llm(call_layer=repair_layer, call_stage="repair",
-                       profile="fast_structured", output_contract=repair_contract).invoke([
-            SystemMessage(content=(
-                "Preserve meaning exactly. Repair only JSON syntax and schema violations. "
-                f"Return raw JSON, then emit {STRUCTURED_END_TOKEN}. The marker is transport "
-                "framing, not JSON. Never use Markdown, a code fence, or an explanation.")),
-            HumanMessage(content=("Validation error:\n" + validation_error + "\n\nJSON Schema:\n"
-                                  + json.dumps(schema, ensure_ascii=False)
-                                  + "\n\nOutput to repair:\n" + raw_text[:12000]))],
+        return make_llm(call_layer=repair_layer, call_stage="repair",
+                        profile="fast_structured", output_contract=repair_contract).invoke(
+            _structured_repair_messages(schema_text, raw_text, validation_error),
             stop=[STRUCTURED_END_TOKEN],
             config=_call_config(observed_role, call_label + "_repair",
-                                repair_layer, "repair", validation_diagnostic),
-        )
-        parsed = _loads_loose(str(getattr(raw, "content", raw) or ""))
-        if parsed is None:
-            raise ValueError("repair JSON 객체를 찾지 못했습니다.")
-        return _validate_output(parsed, schema)
-    except Exception as exc:
-        errors.append(f"repair: {str(exc)[:160]}")
-        raise RuntimeError("structured output 실패 — " + " | ".join(errors)) from exc
+                                repair_layer, "repair", diagnostic))
+
+    try:
+        return instructor_adapter.invoke_prompt_json(
+            schema=schema, model_name=name, initial_call=initial_call,
+            repair_call=repair_call,
+            validate_output=lambda value: _validate_output(value, schema),
+            validation_diagnostic=_validation_diagnostic,
+            end_token=STRUCTURED_END_TOKEN)
+    except instructor_adapter.InstructorAdapterError as exc:
+        _raise_structured_backend_error(errors, exc)
 
 
 class Agent(ABC):
@@ -476,19 +441,6 @@ class Agent(ABC):
         kw.setdefault("role_id", str(self.name))
         return _cfg.get_llm(tier=self.model_tier(execution_stage, execution_layer=layer), **kw)
 
-    def structured(self, method: str = "json_schema", state: AgentState | None = None,
-                   output_contract: str = "structured", **kw):
-        """스키마로 받는 모델. **스키마에 이름을 붙여서** 넘긴다.
-
-        OpenAI/AOAI 는 구조화 출력을 함수 호출로 구현하므로 스키마가 함수 이름을 가져야 한다.
-        이름 없는 JSON Schema 를 그대로 주면 `Unsupported function` 으로 죽는다 — 실 키로
-        처음 돌렸을 때 여섯 역할이 전부 여기서 넘어졌다. 역할마다 적어 두면 빠뜨리는 사람이
-        생기므로 여기서 한 번에 붙인다.
-        """
-        schema = self.schema_for(state or {})
-        return self.llm(output_contract=output_contract, **kw).with_structured_output(
-            _named(schema, self.name), method=method)
-
     def _semantic_projection_tier(self) -> str:
         """Return a projection tier only for an opted-in, non-native Role invocation."""
         from app.agent import capabilities
@@ -612,73 +564,55 @@ class Agent(ABC):
         schema_text = json.dumps(schema, ensure_ascii=False)
         prompt_messages = list(messages) + [HumanMessage(content=
             _prompt_json_contract(schema_text))]
-        raw_text = ""
-        if not wire_available():
+
+        # Instructor/rollback consume these same LangChain calls. Provider routing,
+        # callbacks, usage metering, trace labels and the hard wire budget therefore stay
+        # independent of the selected parsing backend.
+        from app.agent import instructor_adapter
+        remaining_attempts = (2 if max_wire_attempts is None else
+                              max_wire_attempts - wire_attempts)
+        if remaining_attempts <= 0:
             fail_wire_ceiling()
-        try:
+
+        def prompt_initial_call():
+            nonlocal wire_attempts
+            if not wire_available():
+                fail_wire_ceiling()
             wire_attempts += 1
-            raw = make_llm().invoke(
+            return make_llm().invoke(
                 prompt_messages, stop=[STRUCTURED_END_TOKEN],
                 config=_call_config(
                     self.name, output_contract, active_layer, execution_stage))
-        except Exception as exc:
-            errors.append(f"prompt_json: {str(exc)[:180]}")
-            _raise_unrepairable_structured_output(
-                errors, "provider 호출 실패로 교정할 모델 출력이 없습니다.", exc)
-        raw_text = str(getattr(raw, "content", raw) or "")
-        if not raw_text.strip():
-            errors.append("prompt_json: 모델 출력이 비어 있습니다 (chars=0).")
-            _raise_unrepairable_structured_output(
-                errors, "모델 출력이 비어 있어 교정할 내용이 없습니다.")
-        try:
-            parsed = _loads_loose(raw_text)
-            if parsed is None:
-                raise ValueError("JSON 객체를 찾지 못했습니다 (" + _response_shape(raw, raw_text) + ").")
-            return validate_output(parsed)
-        except Exception as exc:
-            validation_error = str(exc)[:1000]
-            validation_diagnostic = _validation_diagnostic(exc)
-            errors.append(f"prompt_json: {str(exc)[:180]}")
 
-        # A length-truncated object is missing semantic payload, not merely malformed JSON.
-        # Repeating the projection repair with the same model-profile budget reproduced the
-        # same 1,024-token truncation in STARR1 and doubled latency without a valid object.
-        # Model profiles own a sufficient projection ceiling; if that ceiling is still hit,
-        # fail closed instead of disguising a second full projection as format repair.
-        if output_contract.startswith("typed_projection") and _length_truncated(raw):
-            _raise_unrepairable_structured_output(
-                errors,
-                "모델 출력이 길이 한도에서 잘려 동일 예산의 format repair를 반복하지 않습니다.",
-            )
-
-        # repair는 원 업무를 다시 판단시키는 호출이 아니라 형식만 교정하는 1회 호출이다.
-        if not wire_available():
-            fail_wire_ceiling()
-        try:
+        def prompt_repair_call(raw_text: str, validation_error: str,
+                               diagnostic: dict[str, str]):
+            nonlocal wire_attempts
+            if not wire_available():
+                fail_wire_ceiling()
             wire_attempts += 1
-            repair_source = (("Semantic memo:\n" + repair_context + "\n\n")
-                             if repair_context else "")
             repair_layer = "projection"
-            repaired = self.llm(
+            return self.llm(
                 execution_layer=repair_layer, execution_stage="repair",
-                profile="fast_structured", output_contract=output_contract).invoke([
-                SystemMessage(content=(
-                    "Preserve the output's meaning. Repair only JSON syntax and schema violations. "
-                    f"Return raw JSON, then emit {STRUCTURED_END_TOKEN}. The marker is transport "
-                    "framing, not JSON. Never use Markdown, a code fence, or an explanation.")),
-                HumanMessage(content=(repair_source + f"Validation error:\n{validation_error}"
-                                      f"\n\nJSON Schema:\n{schema_text}"
-                                      f"\n\nOutput to repair:\n{raw_text[:12000]}"))
-                ], stop=[STRUCTURED_END_TOKEN],
-                config=_call_config(self.name, output_contract + "_repair",
-                                    repair_layer, "repair", validation_diagnostic))
-            parsed = _loads_loose(str(getattr(repaired, "content", repaired) or ""))
-            if parsed is None:
-                raise ValueError("repair 결과에서 JSON 객체를 찾지 못했습니다.")
-            return validate_output(parsed)
-        except Exception as exc:
-            errors.append(f"repair: {str(exc)[:180]}")
-            raise RuntimeError("structured output 실패 — " + " | ".join(errors)) from exc
+                profile="fast_structured", output_contract=output_contract).invoke(
+                    _structured_repair_messages(
+                        schema_text, raw_text, validation_error, repair_context),
+                    stop=[STRUCTURED_END_TOKEN],
+                    config=_call_config(
+                        self.name, output_contract + "_repair", repair_layer, "repair",
+                        diagnostic))
+
+        try:
+            return instructor_adapter.invoke_prompt_json(
+                schema=schema, model_name=self.name,
+                initial_call=prompt_initial_call, repair_call=prompt_repair_call,
+                validate_output=validate_output,
+                validation_diagnostic=_validation_diagnostic,
+                end_token=STRUCTURED_END_TOKEN,
+                max_attempts=min(2, remaining_attempts),
+                fail_on_length=output_contract.startswith("typed_projection"),
+            )
+        except instructor_adapter.InstructorAdapterError as exc:
+            _raise_structured_backend_error(errors, exc)
 
     def _invoke_semantic_projection(self, state: AgentState, messages: list,
                                     projection_tier: str) -> dict:
@@ -861,24 +795,6 @@ class StructuredAgent(Agent):
         except Exception as e:
             return self.fallback(state, e)
 
-    def _json_fallback(self, state: AgentState):
-        """스키마를 프롬프트로 주고 평문 JSON 을 받아 낸다. 실패하면 None."""
-        import json
-        try:
-            layer = self.execution_layer("synthesis")
-            msg = self.llm(execution_layer=layer, execution_stage="fallback").invoke([
-                SystemMessage(content=self.system(state)),
-                HumanMessage(content=(
-                    self.task(state)
-                    + "\n\n---\n**Required output format:** Return exactly one JSON object satisfying "
-                      "the JSON Schema below. Include no prose, preface, or code fence; begin and end with braces.\n"
-                    + json.dumps(self.schema_for(state), ensure_ascii=False)))],
-                config=_call_config(self.name, "structured_fallback", layer, "fallback"))
-            return _loads_loose(str(getattr(msg, "content", msg) or ""))
-        except Exception:
-            return None
-
-
 class TextAgent(Agent):
     """사용자에게 그대로 보여줄 문장을 만드는 역할. 스키마를 씌우지 않는 유일한 자리다.
 
@@ -982,7 +898,8 @@ class ToolAgent(Agent):
         for tool_obj in self.tools:
             schema = {}
             try:
-                schema = tool_obj.args_schema.model_json_schema()
+                source = tool_obj.args_schema
+                schema = source if isinstance(source, dict) else source.model_json_schema()
             except Exception:
                 pass
             catalog.append({"name": tool_obj.name,
@@ -1017,7 +934,10 @@ class ToolAgent(Agent):
             args = (item or {}).get("args") or {}
             if name in owned and isinstance(args, dict):
                 schema_model = getattr(owned[name], "args_schema", None)
-                if schema_model is not None:
+                if isinstance(schema_model, dict):
+                    from jsonschema import validate as validate_json
+                    validate_json(instance=args, schema=schema_model)
+                elif schema_model is not None:
                     args = schema_model.model_validate(args).model_dump()
                 calls.append({"name": name, "args": args, "id": "fallback_" + uuid.uuid4().hex[:12]})
         return AIMessage(content=str(parsed.get("answer") or "") if not calls else "",
@@ -1025,24 +945,10 @@ class ToolAgent(Agent):
 
     def _act(self, scratch: _Scratch) -> dict:
         from langgraph.prebuilt import ToolNode
-        # 모델이 한 턴에 여러 도구를 부르면(독립 조회 묶음) **동시에** 실행한다 —
-        # mock 은 밀리초지만 prod Jira 는 호출당 수백 ms 라 직렬이면 그대로 합산된다.
-        last = (scratch.get("messages") or [])[-1]
-        calls = list(getattr(last, "tool_calls", None) or [])
-        if len(calls) <= 1:
-            return ToolNode(self.tools).invoke(scratch)
-        from concurrent.futures import ThreadPoolExecutor
-        from langchain_core.messages import AIMessage
-        node = ToolNode(self.tools)
-
-        def one(tc):
-            # 호출 하나짜리 가짜 메시지로 ToolNode 를 태운다 — 도구 조회·에러 처리 재사용.
-            fake = AIMessage(content="", tool_calls=[tc])
-            return node.invoke({"messages": [fake]})["messages"]
-
-        with ThreadPoolExecutor(max_workers=min(4, len(calls))) as ex:
-            outs = list(ex.map(one, calls))
-        return {"messages": [m for ms in outs for m in ms]}
+        # ToolNode owns parallel dispatch, result ordering and per-tool error conversion.
+        # Keeping a second executor here duplicated current LangGraph behavior and made its
+        # cancellation/error semantics diverge from the single-call path.
+        return ToolNode(self.tools).invoke(scratch)
 
     def _route(self, scratch: _Scratch) -> str:
         last = (scratch.get("messages") or [])[-1] if scratch.get("messages") else None

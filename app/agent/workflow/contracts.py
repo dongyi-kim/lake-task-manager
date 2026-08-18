@@ -30,9 +30,17 @@ class AtomicTask(StrictModel):
     completion_criteria: list[str] = Field(default_factory=list)
 
 
+class RequestQuestion(StrictModel):
+    """Request-stage missing slot."""
+
+    question: str = Field(min_length=1, max_length=240)
+    field: Literal["target", "action", "scope", "acceptance", "other"]
+
+
 class RequestPlan(StrictModel):
     goal: str
     tasks: list[AtomicTask]
+    request_questions: list[RequestQuestion] = Field(default_factory=list, max_length=3)
     blocking_questions: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
 
@@ -186,17 +194,38 @@ class WorkPlan(StrictModel):
     assumptions: list[str] = Field(default_factory=list)
 
 
-class AssignmentAdvice(StrictModel):
-    temp_id: str
-    primary_user_id: str = ""
-    candidate_user_ids: list[str] = Field(default_factory=list)
-    reasons: list[str] = Field(default_factory=list)
-    evidence_reference_ids: list[str] = Field(default_factory=list)
-    alternatives: list[str] = Field(default_factory=list)
+class _ExtensibleRoleModel(BaseModel):
+    model_config = ConfigDict(extra="allow", strict=True)
 
 
-class PeopleAdvice(StrictModel):
-    assignments: list[AssignmentAdvice]
+class AssignmentAlternative(_ExtensibleRoleModel):
+    user: str = Field(default_factory=str)
+    why: str = Field(default_factory=str, max_length=180, description="Korean explanation of both evidence and limitation.")
+
+
+class ChildAssignment(_ExtensibleRoleModel):
+    index: int = Field(default_factory=int, description="Zero-based child index within this item.")
+    user: str = Field(default_factory=str, description="Jira user id")
+    why: str = Field(default_factory=str, max_length=180, description="Korean assignment reason containing a metric or ticket key.")
+
+
+class AssignmentAdvice(_ExtensibleRoleModel):
+    index: int = Field(description="Zero-based draft item index.")
+    user: str = Field(description="Jira user ID in skcc.x1042 form; empty if unresolved.")
+    reasons: list[Annotated[str, Field(max_length=180)]] = Field(
+        min_length=1, max_length=3, description="Korean recommendation reasons grounded in supplied evidence; each includes a metric or ticket key, never a generic suitability claim.")
+    alternates: list[AssignmentAlternative] = Field(
+        default_factory=list, max_length=2,
+        description="One or two alternatives, including why each is not first choice.")
+    children: list[ChildAssignment] = Field(
+        default_factory=list, max_length=30,
+        description="Assignments for each child Sub-Task. Never assign a person rejected for excessive workload; empty when there are no children.")
+
+
+class PeopleAdvice(_ExtensibleRoleModel):
+    model_config = ConfigDict(title="people_advisor")
+    assignments: list[AssignmentAdvice] = Field(max_length=30)
+    caution: str = Field(default_factory=str, max_length=240, description="Korean assignment caution such as overload or role mismatch; empty when none.")
 
 
 class AuthoredArtifact(StrictModel):
@@ -237,7 +266,7 @@ ROLE_CONTRACTS = {
 }
 
 
-__all__ = ["ArtifactRef", "AtomicTask", "RequestPlan", "ContinuationDecision",
+__all__ = ["ArtifactRef", "AtomicTask", "RequestQuestion", "RequestPlan", "ContinuationDecision",
            "ContinuationContract", "QuestionContract", "ResolvedSlot", "QuerySpec", "QueryPlan",
            "QueryIntent", "CompactQueryPlan",
            "ResearchReport", "WorkPlan", "PeopleAdvice", "AuthoredArtifact",

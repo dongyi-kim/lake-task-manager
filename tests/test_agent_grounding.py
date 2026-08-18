@@ -2742,6 +2742,135 @@ def test_related_document_link_nested_under_ticket_is_promoted_to_its_own_source
     assert "reader 지원은 미확인" in ticket_block
 
 
+def test_related_document_hydration_never_falls_back_from_a_verified_url_to_title():
+    from app.agent.workflow.evidence_index import canonical_related_documents
+
+    selected_url = "https://docs.example.test/pages/a"
+    other_url = "https://docs.example.test/pages/b"
+    state = {"query_results": [{"result": {"projectedDocumentBodies": [{
+        "title": "Release plan", "url": other_url, "text": "B only fact",
+    }]}}]}
+
+    got = canonical_related_documents(
+        state, [{
+            "title": "Release plan", "url": selected_url,
+            "text": "A fabricated", "updated": "2099-01-01",
+        }],
+    )
+
+    assert got == [{"title": "Release plan", "url": selected_url}]
+
+
+def test_unique_title_only_document_hydration_copies_the_canonical_identity():
+    from app.agent.workflow.evidence_index import (
+        canonical_related_documents, canonicalize_evidence_index,
+    )
+
+    url = "https://docs.example.test/pages/release"
+    state = {"query_results": [{"result": {"projectedDocumentBodies": [{
+        "title": "Release plan", "url": url, "text": "Canonical milestone fact",
+        "updated": "2026-08-18",
+    }]}}]}
+
+    hydrated = canonical_related_documents(state, [{"title": "Release plan"}])
+    got = canonicalize_evidence_index(
+        "Release plan [Release plan].", related_docs=hydrated,
+    )
+
+    assert hydrated == [{
+        "title": "Release plan", "url": url, "text": "Canonical milestone fact",
+        "updated": "2026-08-18",
+    }]
+    assert "Release plan [1]." in got
+    assert f"[Release plan]({url})" in got
+    assert "Canonical milestone fact" in got
+
+
+def test_identical_projected_document_duplicates_hydrate_as_one_identity():
+    from app.agent.workflow.evidence_index import canonical_related_documents
+
+    row = {
+        "title": "Guide", "url": "https://docs.example.test/pages/guide",
+        "text": "Canonical body", "updated": "2026-08-18",
+    }
+    state = {"query_results": [
+        {"result": {"projectedDocumentBodies": [dict(row)]}},
+        {"result": {"projectedDocumentBodies": [dict(row)]}},
+    ]}
+
+    got = canonical_related_documents(
+        state, [{"title": "Guide", "url": row["url"], "text": "model text"}],
+    )
+
+    assert got == [row]
+
+
+def test_conflicting_projected_document_duplicates_fail_closed():
+    from app.agent.workflow.evidence_index import canonical_related_documents
+
+    url = "https://docs.example.test/pages/guide"
+    state = {"query_results": [
+        {"result": {"projectedDocumentBodies": [
+            {"title": "Guide", "url": url, "text": "Version A"},
+        ]}},
+        {"result": {"projectedDocumentBodies": [
+            {"title": "Guide", "url": url, "text": "Version B"},
+        ]}},
+    ]}
+
+    got = canonical_related_documents(
+        state, [{"title": "Guide", "url": url, "text": "model text"}],
+    )
+
+    assert got == [{"title": "Guide", "url": url}]
+
+
+def test_related_document_title_mention_does_not_move_a_ticket_observation():
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    title = "Release plan"
+    url = "https://docs.example.test/pages/release"
+    ticket_fact = "Release plan approval is blocked"
+    got = canonicalize_evidence_index(
+        "Decision [1].\n\n### 근거\n\n[1] ACME-1\n- " + ticket_fact,
+        evidence=[{"key": "ACME-1", "observations": [
+            {"source": "comment", "text": ticket_fact},
+        ]}],
+        related_docs=[{
+            "title": title, "url": url, "text": "Document describes milestones",
+        }],
+    )
+
+    ticket_block = got.split("{{ticket-detail:ACME-1}}", 1)[1]
+    assert ticket_fact in ticket_block
+    assert got.count(ticket_fact) == 1
+    if url in got:
+        document_block = got.split(f"[{title}]({url})", 1)[1]
+        assert ticket_fact not in document_block
+
+
+def test_related_document_url_does_not_reassign_surrounding_comment_fact():
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    title = "Release plan"
+    url = "https://docs.example.test/pages/release"
+    comment_fact = f"Release plan {url} approval is blocked"
+    got = canonicalize_evidence_index(
+        "Decision [1].\n\n### 근거\n\n[1] ACME-1\n- " + comment_fact,
+        evidence=[{"key": "ACME-1", "observations": [
+            {"source": "comment", "text": comment_fact},
+        ]}],
+        related_docs=[{
+            "title": title, "url": url, "text": "Document only describes milestones",
+        }],
+    )
+
+    ticket_block, document_block = got.split(f"[{title}]({url})", 1)
+    assert "approval is blocked" in ticket_block
+    assert "approval is blocked" not in document_block
+    assert "Document only describes milestones" in document_block
+
+
 def test_explicit_source_quality_and_marker_contract_is_completed_from_structured_evidence():
     from app.agent.workflow.agents.result_integrator import (
         _ensure_requested_body_citations, _merge_evidence_index,
@@ -3568,6 +3697,14 @@ def test_exact_date_math_corrects_weekday_and_exposes_relative_conflict_without_
     assert got.startswith("2026-08-11부터"), "유용한 exact-date 문맥은 보존해야 함"
 
 
+def test_exact_date_math_accepts_a_natural_inclusive_day_count():
+    from app.agent.workflow.evidence_index import enforce_atomic_fact_boundaries
+
+    source = "기간은 2026-08-18부터 2026-08-20까지 총 3일간입니다."
+
+    assert enforce_atomic_fact_boundaries(source, []) == source
+
+
 def test_completion_claim_rebinds_to_current_direct_typed_observation():
     from app.agent.workflow.claim_provenance import build_claim_provenance_graph
     from app.agent.workflow.evidence_index import canonicalize_evidence_index
@@ -3963,6 +4100,238 @@ def test_canonical_evidence_heading_is_idempotent_and_glued_heading_is_separated
         assert "\n#\n\n## 근거" not in got
 
 
+def test_bold_section_after_bold_evidence_heading_is_not_rebound_as_evidence():
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    reply = """**근거**
+[1] ACME-1 — description에서 사실
+- 근거 사실
+**다음 단계**
+- 근거에 없는 10개 표본 계획"""
+    evidence = [{
+        "key": "ACME-1",
+        "observations": [{"source": "description", "text": "근거 사실"}],
+    }]
+
+    canonicalized = canonicalize_evidence_index(reply, evidence=evidence)
+
+    assert "**다음 단계**" in canonicalized
+    assert "근거에 없는 10개 표본 계획" in canonicalized
+    assert "[1-c] 근거에 없는 10개 표본 계획" not in canonicalized
+
+
+def test_decimal_quantity_citation_uses_the_whole_claim_span():
+    from app.agent.workflow.evidence_index import _reconcile_cited_quantity_claims
+    from app.agent.workflow.quantity_claims import parse_quantity_relations
+
+    relations = parse_quantity_relations(
+        "40 candidates -> 20.5 samples",
+        source_id="ticket:ACME-1", subject_id="ACME-1",
+    )
+
+    got = _reconcile_cited_quantity_claims(
+        "Selection is 20.5 samples [1].", {"ticket:ACME-1": 1}, relations,
+    )
+
+    assert got == "Selection is 20.5 samples [1]."
+
+
+@pytest.mark.parametrize("separator", ["; ", " | "])
+def test_distinct_quantity_citations_never_invalidate_each_other(separator):
+    from app.agent.workflow.evidence_index import _reconcile_cited_quantity_claims
+    from app.agent.workflow.quantity_claims import parse_quantity_relations
+
+    first = parse_quantity_relations(
+        "40 candidates -> 20 samples",
+        source_id="ticket:ACME-1", subject_id="ACME-1",
+    )
+    second = parse_quantity_relations(
+        "30 candidates -> 10 samples",
+        source_id="ticket:ACME-2", subject_id="ACME-2",
+    )
+    source = f"First 20 samples [1]{separator}second 10 samples [2]."
+
+    got = _reconcile_cited_quantity_claims(
+        source, {"ticket:ACME-1": 1, "ticket:ACME-2": 2}, first + second,
+    )
+
+    assert got == source
+    assert "수량 근거 확인 필요" not in got
+
+
+def test_comma_joined_multi_source_quantities_fail_closed_without_cross_rewrite():
+    from app.agent.workflow.evidence_index import _reconcile_cited_quantity_claims
+    from app.agent.workflow.quantity_claims import parse_quantity_relations
+
+    relations = (
+        *parse_quantity_relations(
+            "40 candidates -> 20 samples",
+            source_id="ticket:ACME-1", subject_id="ACME-1",
+        ),
+        *parse_quantity_relations(
+            "30 candidates -> 10 samples",
+            source_id="ticket:ACME-2", subject_id="ACME-2",
+        ),
+    )
+    source = "First 20 samples [1], second 10 samples [2]."
+
+    got = _reconcile_cited_quantity_claims(
+        source, {"ticket:ACME-1": 1, "ticket:ACME-2": 2}, relations,
+    )
+
+    assert got == source
+
+
+def test_duplicate_rows_for_one_typed_source_share_one_citation_identity():
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    evidence = [{
+        "key": "ACME-220", "observations": [
+            {"source": "description", "text": "first verified fact"},
+        ],
+    }, {
+        "key": "ACME-220", "observations": [
+            {"source": "comment", "text": "second verified fact"},
+        ],
+    }]
+
+    got = canonicalize_evidence_index(
+        "Result [{{ticket-inline:ACME-220}}].", evidence=evidence,
+    )
+    body, tail = got.split("### 근거", 1)
+
+    assert "Result [1]." in body
+    assert "근거 확인 필요" not in body
+    assert tail.count("{{ticket-detail:ACME-220}}") == 1
+    assert "[1-a]" in tail and "[1-b]" in tail
+
+
+def test_duplicate_source_rows_do_not_shift_a_later_typed_citation():
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    evidence = [{
+        "key": "ACME-222", "observations": [
+            {"source": "description", "text": "first source fact"},
+        ],
+    }, {
+        "key": "ACME-222", "observations": [
+            {"source": "comment", "text": "second source fact"},
+        ],
+    }, {
+        "key": "ACME-223", "observations": [
+            {"source": "description", "text": "later source fact"},
+        ],
+    }]
+
+    got = canonicalize_evidence_index(
+        "Later result [{{ticket-inline:ACME-223}}].", evidence=evidence,
+    )
+    body, tail = got.split("### 근거", 1)
+
+    assert "Later result [2]." in body
+    assert "근거 확인 필요" not in body
+    assert tail.index("{{ticket-detail:ACME-222}}") < tail.index(
+        "{{ticket-detail:ACME-223}}"
+    )
+
+
+def test_duplicate_named_aliases_for_distinct_sources_remain_ambiguous():
+    from app.agent.workflow.claim_provenance import normalize_citation_aliases
+
+    evidence = [
+        {"title": "Shared guide", "url": "https://docs.example.test/a"},
+        {"title": "Shared guide", "url": "https://docs.example.test/b"},
+    ]
+
+    assert normalize_citation_aliases(
+        "Result [Shared guide].", evidence,
+    ) == "Result [Shared guide]."
+
+
+@pytest.mark.parametrize("heading", ["### Evidence", "**Sources**", "## References"])
+def test_runtime_canonicalizes_every_supported_evidence_heading_once(heading):
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    source = f"Result [1].\n\n{heading}\n\n[1] ACME-221"
+    evidence = [{"key": "ACME-221", "observations": [
+        {"source": "description", "text": "verified fact"},
+    ]}]
+
+    got = canonicalize_evidence_index(source, evidence=evidence)
+
+    assert got.count("### 근거") == 1
+    assert heading not in got
+    assert got.count("{{ticket-detail:ACME-221}}") == 1
+
+
+@pytest.mark.parametrize("heading", ["**근거**", "## 근거", "### Evidence"])
+def test_atomic_fact_repairs_never_mutate_source_sections(heading):
+    from app.agent.workflow.evidence_index import enforce_atomic_fact_boundaries
+
+    observation = "기간은 2026-08-01부터 2026-08-20까지 1주 기간입니다."
+    source = f"요약입니다.\n\n{heading}\n- {observation}"
+
+    got = enforce_atomic_fact_boundaries(source, [])
+
+    assert observation in got
+    assert "정확히 19일" not in got
+
+
+@pytest.mark.parametrize("duration", [
+    "약 1주", "대략 1주", "1주 정도", "1주 가량", "1주 내외", "1주 반",
+    "1주 정도였습니다", "1주 내외였습니다",
+    "about 1 week", "approximately 1 week",
+])
+def test_date_math_never_treats_approximate_duration_as_exact(duration):
+    from app.agent.workflow.evidence_index import enforce_atomic_fact_boundaries
+
+    source = f"기간은 2026-08-01부터 2026-08-10까지 {duration} 기간입니다."
+
+    got = enforce_atomic_fact_boundaries(source, [])
+
+    assert duration in got
+    assert "불일치" not in got and "정확히 9일" not in got
+
+
+def test_date_math_checks_an_explicit_english_elapsed_duration():
+    from app.agent.workflow.evidence_index import enforce_atomic_fact_boundaries
+
+    got = enforce_atomic_fact_boundaries(
+        "Period is 2026-08-01 to 2026-08-20 for 1 week.", [],
+    )
+
+    assert "정확히 19일" in got
+    assert "1 week" in got and "불일치" in got
+
+
+@pytest.mark.parametrize("source, exact_days", [
+    ("Deadline moved from 2026-08-11 to 2026-08-25 by 1 week.", 14),
+    ("Period from 2026-08-01 to 2026-08-20 lasted 1 week.", 19),
+    ("Period 2026-08-01 to 2026-08-09 one week duration.", 8),
+    ("Period 2026-08-01 to 2026-08-06 20.5 days duration.", 5),
+    ("Period 2026-08-01 to 2026-09-05 1.5 weeks duration.", 35),
+])
+def test_date_math_checks_explicit_english_relation_before_duration(source, exact_days):
+    from app.agent.workflow.evidence_index import enforce_atomic_fact_boundaries
+
+    got = enforce_atomic_fact_boundaries(source, [])
+
+    assert f"정확히 {exact_days}일" in got
+    assert "불일치" in got
+
+
+@pytest.mark.parametrize("duration, expected", [
+    ("한 주", 7), ("두 주", 14), ("one week", 7),
+    ("20.5 days", 20.5), ("1.5 weeks", 10.5),
+])
+def test_duration_parser_preserves_word_numbers_and_decimals(duration, expected):
+    from decimal import Decimal
+
+    from app.agent.workflow.evidence_index import _duration_days
+
+    assert _duration_days(duration) == Decimal(str(expected))
+
+
 def test_exact_materialized_free_text_proves_provenance_but_not_completion():
     from app.agent.workflow.evidence_index import (
         canonical_observation_facts, canonicalize_evidence_index,
@@ -4038,3 +4407,285 @@ def test_materialized_observation_overlay_fails_closed_on_duplicate_or_other_tic
 
     assert canonical_observation_facts(state, duplicate) == []
     assert canonical_observation_facts(state, swapped) == []
+
+
+@pytest.mark.parametrize("component", ["AtlasWriter", "AcmeReader"])
+def test_typed_quantity_relation_never_turns_container_count_into_sample_count(component):
+    from dataclasses import FrozenInstanceError
+
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+    from app.agent.workflow.evidence_index import canonical_quantity_relations
+
+    title = f"{component} selection notes"
+    url = f"https://docs.example.test/{component.casefold()}/selection"
+    canonical_text = f"{component} 1차 대상은 20개 후보 중 5개 표본으로 선정했다."
+    state = {
+        "query_results": [{
+            "id": "docs", "source": "confluence", "result": {
+                "projectedDocumentBodies": [{
+                    "title": title, "url": url, "updated": "2026-08-17",
+                    "text": canonical_text,
+                }],
+            },
+        }],
+        "evidence": [{
+            "key": "ACME-201", "title": f"{component} rollout", "observations": [{
+                "source": "document",
+                "text": f"{title} ({url}): {component} 1차 대상은 20개 표본이다.",
+            }],
+        }],
+        "related_docs": [{"title": title, "url": url}],
+    }
+
+    relations = canonical_quantity_relations(state)
+    assert len(relations) == 1
+    assert relations[0].container.value == "20"
+    assert relations[0].container.unit == "후보"
+    assert relations[0].selection.value == "5"
+    assert relations[0].selection.unit == "표본"
+    assert "source_text" not in relations[0].as_dict()
+    with pytest.raises(FrozenInstanceError):
+        relations[0].selection.value = "20"
+
+    source = (
+        f"{component} 결과 [{{{{ticket-inline:ACME-201}}}}].\n\n"
+        f"### 근거\n\n(근거 확인 필요) [{title}]({url})\n\n"
+        f"### 근거\n\n[1] ACME-201\n"
+        f"- {url}: {component} 1차 대상은 20개 표본이다."
+    )
+    got = _merge_evidence_index(source, state)
+
+    assert got.count("### 근거") == 1
+    assert "[{{ticket-" not in got
+    assert f"{component} 1차 대상은 20개 표본" not in got
+    assert "20개 후보 중 5개 표본" in got
+    assert f"[{title}]({url})" in got
+
+
+@pytest.mark.parametrize("source", [
+    "20개의 후보 중 5개의 표본으로 선정했다.",
+    "후보 20개 중 표본 5개로 선정했다.",
+    "20개 후보 중 표본 5개로 선정했다.",
+    "후보는 20개 중 5개 표본으로 선정했다.",
+])
+def test_typed_quantity_parser_normalizes_korean_counter_particles_and_term_order(source):
+    from app.agent.workflow.quantity_claims import parse_quantity_relations
+
+    relations = parse_quantity_relations(
+        source, source_id="document:generic-selection", subject_id="subject:generic",
+    )
+
+    assert len(relations) == 1
+    assert (relations[0].container.value, relations[0].container.unit) == ("20", "후보")
+    assert (relations[0].selection.value, relations[0].selection.unit) == ("5", "표본")
+    assert relations[0].source_span in source
+    assert parse_quantity_relations(
+        "후보 20개와 표본 5개", source_id="document:no-relation",
+        subject_id="subject:generic",
+    ) == ()
+
+
+def test_typed_quantity_relation_fails_closed_only_for_the_cited_claim():
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+    from app.agent.workflow.quantity_claims import parse_quantity_relations
+
+    url = "https://docs.example.test/acme/selection"
+    source_id = "url:https://docs.example.test/acme/selection"
+    canonical = (
+        "Acme pool은 24개 후보 중 6개 표본으로 선정했다. "
+        "별도 회귀는 10개 표본 검증."
+    )
+    relations = parse_quantity_relations(
+        canonical,
+        source_id=source_id, subject_id=source_id,
+    )
+    evidence = [{
+        "key": "Acme selection", "title": "Acme selection", "url": url,
+        "observations": [{
+            "source": "document",
+            "text": canonical,
+        }],
+    }]
+
+    got = canonicalize_evidence_index(
+        "Acme 1차 대상은 24개 표본이다 [1]. "
+        "Acme 별도 회귀는 10개 표본 검증이다 [1]. "
+        "별도 무인용 집계는 24개 표본이다.",
+        evidence=evidence, quantity_relations=relations,
+    )
+    body = got.split("### 근거", 1)[0]
+
+    assert "Acme 1차 대상은 수량 근거 확인 필요 [1]." in body
+    assert "Acme 별도 회귀는 10개 표본 검증이다 [1]." in body
+    assert "별도 무인용 집계는 24개 표본이다." in body
+
+
+@pytest.mark.parametrize("component", ["AtlasWriter", "AcmeReader"])
+def test_quantity_rewrite_requires_exact_relation_binding(component):
+    from app.agent.workflow.quantity_claims import (
+        parse_quantity_relations, reconcile_quantity_observation,
+    )
+
+    canonical = (
+        f"{component} 1차 대상은 20개 후보 중 5개 표본으로 선정했다. "
+        f"{component} 공통 기준선은 별도로 20개 표본 검증을 완료했다."
+    )
+    relations = parse_quantity_relations(
+        canonical, source_id="url:https://docs.example.test/selection",
+        subject_id=f"component:{component.casefold()}",
+    )
+    claim = f"{component} 1차 대상은 20개 표본이다."
+
+    unbound = reconcile_quantity_observation(
+        claim, relations, authoritative_texts=(canonical,),
+    )
+    bound = reconcile_quantity_observation(
+        claim, relations, relation_id=relations[0].relation_id,
+        authoritative_texts=(canonical,),
+    )
+
+    assert claim == unbound
+    assert f"{component} 1차 대상은 20개 후보 중 5개 표본이다." == bound
+
+
+def test_quantity_rewrite_recognizes_unit_first_bound_claims_and_preserves_valid_terms():
+    from app.agent.workflow.quantity_claims import (
+        parse_quantity_relations, reconcile_quantity_observation,
+    )
+
+    canonical = (
+        "선정 대상은 20개 후보 중 5개 표본으로 정했다. "
+        "별도 회귀 표본은 10개입니다."
+    )
+    relations = parse_quantity_relations(
+        canonical, source_id="document:generic-selection", subject_id="subject:generic",
+    )
+    relation_id = relations[0].relation_id
+
+    repaired = reconcile_quantity_observation(
+        "대상 표본은 20개입니다.", relations, relation_id=relation_id,
+    )
+    valid_bound = reconcile_quantity_observation(
+        "대상 표본은 5개입니다.", relations, relation_id=relation_id,
+    )
+    valid_separate = reconcile_quantity_observation(
+        "별도 회귀 표본은 10개입니다.", relations,
+    )
+
+    assert repaired == "대상 20개 후보 중 5개 표본입니다."
+    assert valid_bound == "대상 표본은 5개입니다."
+    assert valid_separate == "별도 회귀 표본은 10개입니다."
+
+
+def test_quantity_term_parser_projects_unit_first_claims_to_semantic_units():
+    from app.agent.workflow.quantity_claims import parse_quantity_terms
+
+    assert [
+        (term.value, term.unit) for term in
+        parse_quantity_terms("표본은 5개입니다. 작업은 3건입니다.")
+    ] == [("5", "표본"), ("3", "작업")]
+
+
+@pytest.mark.parametrize("component", ["AtlasWriter", "AcmeReader"])
+def test_separate_supported_quantity_is_not_rebound_to_other_relation(component):
+    from app.agent.workflow.quantity_claims import (
+        parse_quantity_relations, reconcile_quantity_observation,
+    )
+
+    canonical = (
+        f"{component} 1차 대상은 20개 후보 중 5개 표본으로 선정했다. "
+        f"{component} 별도 회귀는 10개 표본 검증을 완료했다."
+    )
+    relations = parse_quantity_relations(
+        canonical, source_id="url:https://docs.example.test/selection",
+        subject_id=f"component:{component.casefold()}",
+    )
+    separate_claim = f"{component} 별도 회귀는 10개 표본 검증을 완료했다."
+
+    got = reconcile_quantity_observation(
+        separate_claim, relations, authoritative_texts=(canonical,),
+    )
+
+    assert got == separate_claim
+    assert "20개 후보 중 5개 표본" not in got
+
+
+@pytest.mark.parametrize("component", ["AtlasWriter", "AcmeReader"])
+def test_date_delta_check_handles_changed_from_to_claim_without_name_literals(component):
+    from app.agent.workflow.evidence_index import enforce_atomic_fact_boundaries
+
+    source = (
+        f"{component} 마감은 2026-01-01에서 2026-01-15(금요일)로 "
+        "1주 연기되었으므로 즉시 출시를 권고합니다."
+    )
+
+    got = enforce_atomic_fact_boundaries(source, [])
+
+    assert "2026-01-15(목요일)" in got
+    assert "정확히 14일" in got and "1주" in got and "불일치" in got
+    assert "출시를 권고" not in got
+
+
+@pytest.mark.parametrize("prefix", ["Atlas", "Acme"])
+def test_single_citation_ast_merges_headings_and_resolves_typed_and_named_aliases(prefix):
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    title = f"{prefix} Format - Official Guide"
+    short_title = f"{prefix} Format"
+    url = f"https://docs.example.test/{prefix.casefold()}/format"
+    evidence = [{
+        "key": "ACME-210", "title": f"{prefix} rollout", "observations": [{
+            "source": "description", "text": f"{prefix} rollout remains pending",
+        }],
+    }]
+    related_docs = [{
+        "title": title, "url": url,
+        "text": f"{prefix} format stores typed statistics.",
+    }]
+    source = (
+        f"Rollout status [{{{{ticket-inline:ACME-210}}}}]. "
+        f"Format definition [1] [{short_title}] [1].\n\n"
+        f"### 근거\n\n[1] ACME-210\n\n"
+        f"### 근거\n\n(근거 확인 필요) [{title}]({url})"
+    )
+
+    got = canonicalize_evidence_index(
+        source, evidence=evidence, related_docs=related_docs,
+    )
+    body = got.split("### 근거", 1)[0]
+
+    assert got.count("### 근거") == 1
+    assert "[{{ticket-" not in got
+    assert f"[{short_title}]" not in body
+    assert "(근거 확인 필요)" not in got
+    assert "[1]" in body and "[2]" in body
+    assert f"[{title}]({url})" in got
+
+
+def test_single_citation_ast_gates_an_unbound_typed_marker():
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    got = canonicalize_evidence_index(
+        "Unknown source [{{ticket-inline:ACME-999}}].",
+        evidence=[{"key": "ACME-210", "observations": [
+            {"source": "description", "text": "known source"},
+        ]}],
+    )
+
+    assert "[{{ticket-" not in got
+    assert "Unknown source (근거 확인 필요)." in got
+
+
+def test_single_citation_ast_preserves_a_non_citation_bracket_next_to_a_citation():
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    got = canonicalize_evidence_index(
+        "위험도 [P0] [1].",
+        evidence=[{"key": "ACME-211", "observations": [
+            {"source": "description", "text": "known fact"},
+        ]}],
+    )
+    body = got.split("### 근거", 1)[0]
+
+    assert "위험도 [P0] [1]." in body
+    assert "(근거 확인 필요)" not in body

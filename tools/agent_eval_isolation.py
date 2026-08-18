@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_CACHE_ROOT = ROOT / ".cache" / "agent-evaluation" / "runtime-cache"
 REAL_LLM_PROVIDERS = frozenset({"openai", "openai_compat", "aoai"})
 NETWORK_PREFLIGHT_MARKER = "LTM_EVAL_NETWORK_PREFLIGHTED"
+EFFECTIVE_PROVIDER_IDENTITY_ENV = "LTM_EVAL_EFFECTIVE_PROVIDER_IDENTITY_SHA256"
 _PREFLIGHT: dict[str, Any] = {"suite": "", "identity": "", "passed": False}
 
 

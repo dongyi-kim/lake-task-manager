@@ -119,16 +119,6 @@ def test_prompt_json_accepts_only_the_exact_terminal_transport_marker(monkeypatc
     assert fake.invocations == 1
 
 
-@pytest.mark.parametrize("content", [
-    'prefix {"value":"ok"}<END_JSON>',
-    '{"value":"ok"}<END_JSON> trailing prose',
-    '{"value":"<END_JSON>"}<END_JSON> trailing prose',
-    '{"value":"ok"<END_JSON>',
-], ids=("prefix", "trailing-prose", "middle-marker", "partial-object"))
-def test_transport_deframing_does_not_recover_non_terminal_or_partial_json(content):
-    assert base._loads_loose(content) is None
-
-
 def test_format_repair_accepts_an_exact_literal_transport_suffix(monkeypatch):
     _no_cached_capabilities(monkeypatch)
     fake = _LiteralStopMarkerLLM(first="not json", second='{"value":"ok"}<END_JSON>')
@@ -1289,11 +1279,6 @@ def test_truncated_semantic_memo_fails_before_typed_projection(monkeypatch):
     assert projector.messages == []
 
 
-def test_prefixed_json_is_not_silently_extracted():
-    assert base._loads_loose('설명: {"value":"ok"}') is None
-    assert base._loads_loose('```json\n{"value":"ok"}\n```') is None
-
-
 def test_model_schema_value_error_does_not_poison_provider_capability():
     assert not base._capability_is_unsupported(
         RuntimeError("'높음' is not one of ['high', 'medium', 'low']"), "json_schema")
@@ -1355,6 +1340,85 @@ def test_tool_fallback_can_only_schedule_registered_tools(monkeypatch):
     assert message.tool_calls[0]["args"] == {"value": "pong"}
     # invalid enum is not silently filtered; exact validation error drives one repair.
     assert message is not None
+
+
+def test_tool_fallback_preserves_json_schema_dict_tools(monkeypatch):
+    """Prompt-only providers receive and validate the same schema used by MCP tools."""
+    from langchain_core.tools import StructuredTool
+
+    schema = {
+        "type": "object",
+        "properties": {"mode": {"type": "string", "enum": ["exact"]}},
+        "required": ["mode"],
+        "additionalProperties": False,
+    }
+    structured = StructuredTool.from_function(
+        func=lambda **kwargs: kwargs,
+        name="schema_dict_tool",
+        description="Use the exact remote schema.",
+        args_schema=schema,
+    )
+
+    class SchemaDictAgent(_FallbackToolAgent):
+        @property
+        def tools(self):
+            return [structured]
+
+    captured = {}
+
+    def plan(_schema, messages, **_kwargs):
+        captured["prompt"] = messages[-1].content
+        return {"tool_calls": [{"name": "schema_dict_tool", "args": {"mode": "exact"}}],
+                "answer": ""}
+
+    monkeypatch.setattr(base, "invoke_schema", plan)
+    message = SchemaDictAgent()._think_without_native_tools({
+        "messages": [HumanMessage(content="filter")],
+    })
+
+    assert message.tool_calls[0]["args"] == {"mode": "exact"}
+    assert '"enum": ["exact"]' in captured["prompt"]
+
+
+def test_tool_agent_delegates_parallel_calls_to_langgraph_tool_node():
+    """The framework-owned ToolNode keeps independent calls concurrent and ordered."""
+    import threading
+
+    barrier = threading.Barrier(2, timeout=2)
+
+    @tool
+    def first(value: str) -> str:
+        """Return the first value after both independent calls have started."""
+        barrier.wait()
+        return "first:" + value
+
+    @tool
+    def second(value: str) -> str:
+        """Return the second value after both independent calls have started."""
+        barrier.wait()
+        return "second:" + value
+
+    class ParallelAgent(_FallbackToolAgent):
+        @property
+        def tools(self):
+            return [first, second]
+
+        def _think(self, scratch):
+            if getattr((scratch.get("messages") or [])[-1], "type", "") == "human":
+                return {"messages": [AIMessage(content="", tool_calls=[
+                    {"name": "first", "args": {"value": "a"}, "id": "call_a"},
+                    {"name": "second", "args": {"value": "b"}, "id": "call_b"},
+                ])], "steps": 1}
+            return {"messages": [AIMessage(content="done")], "steps": 2}
+
+    result = ParallelAgent().build().invoke({
+        "messages": [HumanMessage(content="run both")], "steps": 0,
+    })
+
+    tools = [message for message in result["messages"] if message.type == "tool"]
+    assert [(message.name, message.content) for message in tools] == [
+        ("first", "first:a"), ("second", "second:b"),
+    ]
 
 
 def test_tool_agent_routes_decision_and_synthesis_on_separate_manifest_layers(monkeypatch):

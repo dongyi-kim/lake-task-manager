@@ -72,6 +72,45 @@ def test_langfuse_absent_is_not_an_error(clean_env):
     assert C.callbacks() == []
 
 
+def test_langfuse_v4_initializes_one_client_and_uses_invocation_metadata(
+        clean_env, monkeypatch):
+    import langfuse
+    import langfuse.langchain
+    from app.agent.workflow import session
+
+    values = {
+        "langfusePublicKey": "pk-test",
+        "langfuseSecretKey": "sk-test",
+        "langfuseHost": "https://trace.example.test",
+    }
+    clients, handlers = [], []
+
+    class Client:
+        def __init__(self, **kwargs):
+            clients.append(kwargs)
+
+    class Handler:
+        def __init__(self, **kwargs):
+            handlers.append(kwargs)
+
+    monkeypatch.setattr(C._secrets, "get", lambda key, *names: values.get(key, ""))
+    monkeypatch.setattr(langfuse, "Langfuse", Client)
+    monkeypatch.setattr(langfuse.langchain, "CallbackHandler", Handler)
+    monkeypatch.setattr(C, "_LANGFUSE_CACHE", {"signature": None, "client": None})
+
+    first = C.get_langfuse_handler("thread-a")
+    second = C.get_langfuse_handler("thread-b")
+    config = session._config("thread-a")
+
+    assert first is not None and second is not None
+    assert clients == [{
+        "public_key": "pk-test", "secret_key": "sk-test",
+        "base_url": "https://trace.example.test",
+    }]
+    assert handlers == [{"public_key": "pk-test"}] * 3
+    assert config["metadata"] == {"langfuse_session_id": "thread-a"}
+
+
 def test_status_never_leaks_secrets(clean_env, monkeypatch):
     monkeypatch.setattr(S, "load", lambda: {"aoaiApiKey": "sk-super-secret-1234",
                                             "aoaiEndpoint": "https://x.example"})

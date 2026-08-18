@@ -1,0 +1,6 @@
+# Development-only dependency inventory tools. Keep this file separate from
+# requirements.txt: none of these packages are required by the LTM runtime.
+cyclonedx-bom==7.3.1
+license-expression==30.4.4
+pip-audit==2.10.1
+pip-licenses==5.5.5

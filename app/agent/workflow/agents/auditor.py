@@ -35,7 +35,8 @@ from app.agent.workflow.agents.work_architect import (
 )
 from app.agent.prompts.roles import SYSTEM_AUDITOR
 from app.agent.workflow.anchors import (
-    is_ordinal, requested_outcome_contract, required_user_anchors,
+    is_ordinal, outcome_authority_terms, requested_outcome_contract,
+    required_user_anchors,
     scoped_continuation_decisions, validate_draft_outcome_contract,
     validate_scoped_outcome_bindings,
 )
@@ -1007,7 +1008,7 @@ Audit the complete ticket draft before it is shown to the user.
 - A title need not end in a verb. An intentional top-level Task or Story without an Epic is valid.
 - Reuse of one verified reference across multiple payload items is not blocking when it supports each item.
 - Treat `evidence_obligations` as authoritative execution constraints. A completed result is a reusable baseline, not work to repeat; an unconfirmed dependency must remain unconfirmed; an approval or rollout gate must appear in scope and DoD; and existing validation work must be reused rather than duplicated. Preserve producer, artifact, and consumer roles exactly—a consumer under verification is not evidence that the consumer can generate the artifact. Omission or role/state reversal is a blocking `grounded` problem.
-- Treat `requested_outcome_contract` as an authoritative literal result contract. For every `outcome_ref`, compare its exact instruction with the item's title, scope, and DoD. Evidence may refine implementation method or constraints, but omission or replacement of the requested action/object—including an opposite action—is a blocking `request` problem. Never repair it by inventing intent.
+- Treat `requested_outcome_contract` as authoritative for the user-authored action, object, and explicit constraints. For every `outcome_ref`, compare that required result with the item's title, scope, and DoD. A legacy planner instruction can contain examples or implementation choices that are absent from `Original User Request`; when the user delegated those choices, they are runtime-owned and cannot become missing user requirements. Evidence may refine implementation method or constraints, but omission or replacement of the user's action/object—including an opposite action—or an explicit acceptance/safety constraint is a blocking `request` problem. Never repair it by inventing intent.
 - Audit every child in the authoritative contract too. `applicable_outcome_refs` is explicit when the child maps to another requested outcome and otherwise inherited from its parent. A legitimate design, implementation, validation, or rollout stage need not repeat the parent's action verb; block only a child that replaces/reverses the applicable requested result or introduces an unrelated deliverable.
 - Write `message`, `fix`, and `summary` in Korean.
 
@@ -1031,7 +1032,8 @@ The draft must preserve this subject; subject drift is a blocking request-covera
         disproved_checks = {
             str(problem.get("check") or "")
             for problem in raw_problems
-            if _canonical_identity_false_finding(state, problem)
+            if (_canonical_identity_false_finding(state, problem)
+                or _runtime_owned_planner_detail_finding(state, problem))
         }
         problems, advice = _partition_model_problems(state, raw_problems)
         # A schema-valid projection can still lose the model's problem array while retaining
@@ -1101,18 +1103,22 @@ The draft must preserve this subject; subject drift is a blocking request-covera
 
 
 def _canonical_identity_false_finding(state: AgentState, problem: dict) -> bool:
-    """Reject a typed display/account mismatch disproved by canonical assignment facts."""
+    """Reject any assignee finding disproved by the canonical assignment binding.
+
+    The model's ``expected`` and ``actual`` strings are both allegations.  Once a stable
+    work item is uniquely bound to a source assignment and the authored payload matches that
+    binding, neither string may override the machine authority.  A genuinely wrong payload
+    remains blocking through ``_meeting_assignment_errors`` below.
+    """
     if (problem.get("finding_kind") != "field_mismatch"
             or problem.get("field") != "assignee"):
         return False
-    expected = str(problem.get("expected") or "").strip()
-    actual = str(problem.get("actual") or "").strip()
-    if not expected or not actual:
+    if not str(problem.get("expected") or "").strip() \
+            or not str(problem.get("actual") or "").strip():
         return False
     authority = _meeting_assignment_authority(state)
     bindings = authority["bindings"]
-    identity_map = authority["identity_map"]
-    if not bindings or not identity_map:
+    if not bindings:
         return False
     index = problem.get("index", -1)
     items = [row for row in ((state.get("draft") or {}).get("items") or [])
@@ -1120,7 +1126,8 @@ def _canonical_identity_false_finding(state: AgentState, problem: dict) -> bool:
     if not isinstance(index, int) or not 0 <= index < len(items):
         return False
     item = items[index]
-    if str(item.get("assignee_source") or "") != "user":
+    if str(item.get("assignee_source") or "") not in {
+            "user", "user_unassigned"}:
         return False
     item_id = str(item.get("item_id") or "")
     binding = next((row for row in bindings if row["item_id"] == item_id), None)
@@ -1128,18 +1135,70 @@ def _canonical_identity_false_finding(state: AgentState, problem: dict) -> bool:
             row.get("index") == index and row.get("field") == "assignee"
             for row in _meeting_assignment_errors(state)):
         return False
-    equivalents = {
-        str(label).strip().casefold(): str(owner_id).strip().casefold()
-        for label, owner_id in identity_map.items()
-    }
-    equivalents.update({owner_id: owner_id for owner_id in equivalents.values()})
-    expected_id = equivalents.get(expected.casefold(), "")
-    actual_id = equivalents.get(actual.casefold(), "")
     authored_id = str(item.get("assignee") or "").strip().casefold()
     bound_id = str(binding.get("owner_id") or "").strip().casefold()
-    return bool(
-        expected_id and expected_id == actual_id == authored_id == bound_id
-    )
+    return authored_id == bound_id
+
+
+def _request_plan_terms(state: AgentState) -> set[str]:
+    """Return bounded semantic terms authored by RequestArchitect, never evidence prose."""
+    plan = state.get("request_plan") or {}
+    values: list[str] = []
+    for task in (plan.get("tasks") or [])[:6]:
+        if not isinstance(task, dict):
+            continue
+        values.append(str(task.get("instruction") or ""))
+        values.extend(str(row or "") for row in (task.get("completion_criteria") or [])[:3])
+    values.extend(str(row or "") for row in (plan.get("assumptions") or [])[:5])
+    return outcome_authority_terms("\n".join(values))
+
+
+def _runtime_owned_planner_detail_finding(state: AgentState, problem: dict) -> bool:
+    """Identify a typed request finding whose requirement exists only in the plan.
+
+    RequestArchitect is a projector, not a second user.  An implementation preference
+    introduced solely by that projector may be selected by Work and shown on the approval
+    card; it cannot suspend the workflow whether or not the user used a particular delegation
+    phrase. This guard deliberately fails closed unless the finding supplies a typed
+    expected/actual relation, and the complete draft visibly preserves the original request's
+    subject.
+    User-authored acceptance/safety terms therefore remain blocking,
+    as do rule, grounding, hierarchy, identity, and vague-target findings.
+    """
+    if (str(problem.get("check") or "") != "request"
+            or str(problem.get("finding_kind") or "") not in {
+                "request_coverage", "missing_requirement",
+            }):
+        return False
+
+    request = _current_request_boundary_text(state)
+    expected = str(problem.get("expected") or "").strip()
+    actual = str(problem.get("actual") or "").strip()
+    if not request or not expected or not actual:
+        return False
+
+    request_terms = outcome_authority_terms(request)
+    expected_terms = outcome_authority_terms(expected)
+    actual_terms = outcome_authority_terms(actual)
+    planner_terms = _request_plan_terms(state)
+    draft_terms = outcome_authority_terms(draft_full_text(state.get("draft")))
+    if not all((request_terms, expected_terms, actual_terms, planner_terms, draft_terms)):
+        return False
+
+    # The finding must describe the visible draft truthfully enough to be scoped to the
+    # otherwise-complete outcome, not an unrelated or opposite artifact.
+    if len(actual_terms & draft_terms) < min(2, len(actual_terms)):
+        return False
+    if len(request_terms & draft_terms) < min(2, len(request_terms)):
+        return False
+
+    planner_aligned = expected_terms & planner_terms
+    planner_only = planner_aligned - request_terms
+    # Two terms plus majority dominance avoids reclassifying a one-word field omission or a
+    # user-authored requirement merely because the planner paraphrased one adjacent word.
+    return (len(planner_only) >= 2
+            and len(planner_only) * 2 > len(planner_aligned)
+            and len(expected_terms & request_terms) < len(planner_only))
 
 
 def _partition_model_problems(state: AgentState, problems: list) -> tuple[list, list]:
@@ -1160,6 +1219,9 @@ def _partition_model_problems(state: AgentState, problems: list) -> tuple[list, 
     blocking, advice, seen = [], [], set()
     for problem in problems:
         if _canonical_identity_false_finding(state, problem):
+            continue
+        if _runtime_owned_planner_detail_finding(state, problem):
+            advice.append(problem)
             continue
         if _unverified_delegated_parent_claim(state, problem):
             # A model cannot turn absence from the bounded candidate ledger into proof that

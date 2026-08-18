@@ -242,6 +242,104 @@ def test_work_repair_discards_stale_review_and_carries_the_defect_signature():
     assert repaired["change_plan"]["requested_effects"]["effects"]
 
 
+@pytest.mark.parametrize(
+    ("item_parent", "present", "absent"),
+    [
+        ({"epic": "ACME-100"}, "ACME-100", "최상위"),
+        ({}, "최상위", "ACME-100"),
+    ],
+    ids=("selected-parent", "removed-parent"),
+)
+def test_pending_rationale_is_projected_from_the_current_parent_snapshot(
+        item_parent, present, absent):
+    from app.agent.workflow.effect_contract import project_pending_rationale
+
+    draft = {
+        "mode": "task",
+        "rationale": "이전 수정에서는 ACME-100 연결을 제거하고 ACME-9에 배치한다고 설명",
+        "structure": "task_with_subtasks",
+        "structure_why": "이전 수정의 ACME-9 배치 설명",
+        "items": [{
+            "summary": "AcmeStream 호환성 구현", "type": "Task",
+            "duedate": "2026-10-03", **item_parent,
+            "children": [{"summary": "호환성 검증", "type": "Sub-Task"}],
+        }],
+    }
+
+    rationale = project_pending_rationale(draft=draft)
+
+    assert present in rationale
+    assert absent not in rationale
+    assert "ACME-9" not in rationale
+    assert "2026-10-03" in rationale
+    assert "Task 1건" in rationale and "Sub-Task 1건" in rationale
+
+
+def test_pending_rationale_lists_every_current_scalar_update_and_drops_stale_comment():
+    from app.agent.workflow.effect_contract import project_pending_rationale
+
+    plan = {
+        "key": "ACME-42",
+        "changes": {"priority": "P1-Critical", "duedate": "2026-10-03"},
+        "comment": "",
+        "why": "이전 턴의 댓글도 함께 게시하고 제목을 바꾼다",
+    }
+
+    rationale = project_pending_rationale(change_plan=plan)
+
+    assert "ACME-42" in rationale
+    assert "우선순위: P1-Critical" in rationale
+    assert "마감: 2026-10-03" in rationale
+    assert "댓글" not in rationale and "제목" not in rationale
+
+
+def test_typed_title_replacement_rebuilds_why_from_the_current_effect_only():
+    from app.agent.workflow.agents.work_architect import WorkArchitect
+
+    text = "ACME-42 제목만 'AcmeStream 호환성 검증'으로 변경"
+    tasks = [{"id": "rename", "kind": "write", "write_intent": True,
+              "instruction": text}]
+    state = _state(text, tasks, action="update")
+    state["continuation_contract"]["target_keys"] = ["ACME-42"]
+    state["change_plan"] = {
+        "key": "ACME-42", "changes": {"priority": "P2-Major"},
+        "comment": "이전 턴 댓글", "why": "이전 우선순위와 댓글 변경",
+    }
+
+    result = WorkArchitect().apply(state, {
+        "questions": [], "mode": "task", "items": [],
+        "rationale": "이전 우선순위와 댓글 변경",
+        "change": {"key": "ACME-42", "summary": "AcmeStream 호환성 검증"},
+    })
+
+    assert result["change_plan"]["changes"] == {
+        "summary": "AcmeStream 호환성 검증",
+    }
+    assert not result["change_plan"].get("comment")
+    assert result["change_plan"]["why"] == (
+        "ACME-42 변경 초안 — 제목: AcmeStream 호환성 검증"
+    )
+
+
+def test_structured_scope_and_dod_drop_only_exact_adjacent_token_spans():
+    from app.agent.workflow.agents.work_architect import _materialize_creation_parts
+
+    out = {"items": [{
+        "summary": "AcmeStream 호환성", "type": "Task", "background": "요청됨",
+        "scope_in": ["schema schema 호환성 확인", "read path read path 검증"],
+        "scope_out": [],
+        "dod": ["result result 기록", "cache cash 비교"],
+    }]}
+
+    _materialize_creation_parts(out, {})
+    body = out["items"][0]["description"]
+
+    assert "schema 호환성 확인" in body and "schema schema" not in body
+    assert "read path 검증" in body and "read path read path" not in body
+    assert "result 기록" in body and "result result" not in body
+    assert "cache cash 비교" in body, "non-identical words are not typo-corrected"
+
+
 def test_final_pending_keeps_every_requested_effect_and_exact_update_payload():
     from app.agent import approval
     from app.agent.workflow import graph
@@ -255,7 +353,8 @@ def test_final_pending_keeps_every_requested_effect_and_exact_update_payload():
     state["change_plan"] = {
         "key": "ACME-42",
         "changes": {"priority": "P1-Critical", "duedate": "2026-10-03"},
-        "why": "두 필드 변경",
+        "comment": "",
+        "why": "이전 턴에는 제목과 댓글도 바꾼다고 설명",
     }
     seal_requested_effect_contract(state)
 
@@ -266,6 +365,9 @@ def test_final_pending_keeps_every_requested_effect_and_exact_update_payload():
     try:
         assert token
         assert len(proposed["change_plan"]["requested_effects"]["effects"]) == 2
+        assert proposed["change_plan"]["why"] == (
+            "ACME-42 변경 초안 — 우선순위: P1-Critical, 마감: 2026-10-03"
+        )
         assert pending and pending["payload"]["changes"] == {
             "priority": "P1-Critical", "duedate": "2026-10-03",
         }

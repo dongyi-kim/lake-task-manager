@@ -275,19 +275,20 @@ def test_all_harnesses_declare_case_reset_and_world_verification():
         assert "begin_case(" in text, relative
         assert "finish_case(" in text, relative
 
-    conversation = (ROOT / "tools/agent_lang_ab.py").read_text(encoding="utf-8")
-    assert conversation.index('configure_process_isolation("conversation")') < \
-        conversation.index("from app.agent.workflow import session")
-    run = conversation.index("def run():")
-    assert run < conversation.index("preflight_evaluation_provider()", run) < \
-        conversation.index("reserve_raw_result_path(", run)
-    for relative in ("tools/agent_compose_eval.py", "tools/agent_create_suite.py"):
+    for relative in (
+        "tools/agent_lang_ab.py", "tools/agent_compose_eval.py", "tools/agent_create_suite.py",
+    ):
         text = (ROOT / relative).read_text(encoding="utf-8")
         prepare = text.index("def _prepare_runtime")
         configure = text.index("configure_process_isolation(", prepare)
         preflight = text.index("preflight_evaluation_provider()", prepare)
         runtime_import = text.index("from app.agent", prepare)
         assert prepare < configure < preflight < runtime_import, relative
+
+    conversation = (ROOT / "tools/agent_lang_ab.py").read_text(encoding="utf-8")
+    run = conversation.index("def run():")
+    assert run < conversation.index("_prepare_runtime()", run) < \
+        conversation.index("reserve_raw_result_path(", run)
 
     shared = (ROOT / "tools/agent_scenario_eval.py").read_text(encoding="utf-8")
     assert "configure_process_isolation(suite)" in shared

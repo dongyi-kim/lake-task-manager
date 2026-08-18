@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 import json
 import re
@@ -28,15 +29,22 @@ from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 from app.agent.workflow.claim_provenance import (
     CITATION_GROUP_RE, CITATION_OCCURRENCE_RE, CITATION_TOKEN_PATTERN,
+    EVIDENCE_HEADING_RE, EVIDENCE_SECTION_LABEL_PATTERN,
     bind_evidence_provenance, build_claim_provenance_graph,
-    citation_occurrences, citation_tokens, normalize_citation_wrappers,
+    citation_claim_span, citation_occurrences, citation_tokens, evidence_source_id,
+    normalize_citation_aliases,
+    normalize_citation_wrappers,
+)
+from app.agent.workflow.quantity_claims import (
+    QuantityRelation, QuantityTerm, parse_quantity_relations,
+    reconcile_quantity_observation,
 )
 
 
-_HEADING_RE = re.compile(
-    r"(?m)^(?:#{1,4}\s*(?:근거|참조)|\*\*(?:근거|참조)\*\*)\s*$"
+_HEADING_RE = EVIDENCE_HEADING_RE
+_NEXT_HEADING_RE = re.compile(
+    r"(?m)^\s*(?:#{1,6}\s+|\*\*[^*\n]+\*\*\s*$)",
 )
-_NEXT_HEADING_RE = re.compile(r"(?m)^#{1,4}\s+")
 _ROOT_RE = re.compile(
     r"^\s*(?:-\s*)?(?:\[(\d+)(?:-([a-z]))?\]|(\d+)[.)])\s*(.*?)\s*$",
     re.I,
@@ -179,6 +187,146 @@ def _atomic_timestamp(value: str) -> float | None:
         return parsed.astimezone(timezone.utc).timestamp()
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _projected_document_rows(state: dict) -> list[dict]:
+    rows: list[dict] = []
+    for query in state.get("query_results") or []:
+        if not isinstance(query, dict):
+            continue
+        result = query.get("result") or {}
+        if not isinstance(result, dict):
+            continue
+        for item in result.get("projectedDocumentBodies") or []:
+            if isinstance(item, dict) and item.get("text"):
+                rows.append(dict(item))
+    return rows
+
+
+def canonical_related_documents(state: dict, related_docs: Iterable[dict]) -> list[dict]:
+    """Hydrate selected document identities from exact QueryRunner projections.
+
+    Retrieval does not make every document renderable.  Only a document already selected in
+    ``related_docs`` is hydrated, and ambiguous title-only matches fail closed.
+    """
+    projected = _projected_document_rows(state)
+    by_url: dict[str, list[dict]] = {}
+    by_title: dict[str, list[dict]] = {}
+
+    def add_unique(index: dict[str, list[dict]], key: str, row: dict) -> None:
+        signature = (
+            str(row.get("title") or "").strip().casefold(),
+            _clean_url(str(row.get("url") or "").strip()),
+            _atomic_text(row.get("text"), 1200),
+            _atomic_text(row.get("updated"), 80),
+        )
+        bucket = index.setdefault(key, [])
+        if not any((
+            str(current.get("title") or "").strip().casefold(),
+            _clean_url(str(current.get("url") or "").strip()),
+            _atomic_text(current.get("text"), 1200),
+            _atomic_text(current.get("updated"), 80),
+        ) == signature for current in bucket):
+            bucket.append(row)
+
+    for row in projected:
+        url = str(row.get("url") or "").strip()
+        title = str(row.get("title") or "").strip().casefold()
+        if _valid_url(url):
+            add_unique(by_url, _clean_url(url), row)
+        if title:
+            add_unique(by_title, title, row)
+
+    hydrated: list[dict] = []
+    for raw in related_docs or []:
+        if not isinstance(raw, dict):
+            continue
+        doc = dict(raw)
+        # ``related_docs`` can contain model-authored display fields.  Projection lookup is
+        # the authority for document content and timestamps, so never carry those fields
+        # across a failed identity match.
+        doc.pop("text", None)
+        doc.pop("updated", None)
+        url = str(doc.get("url") or "").strip()
+        title = str(doc.get("title") or "").strip().casefold()
+        has_verified_url = _valid_url(url)
+        candidates = by_url.get(_clean_url(url), []) if has_verified_url else []
+        # A selected URL is already the document identity.  Falling back to a same-title
+        # row after that exact lookup misses can splice another document's body into it.
+        # Title-only hydration is reserved for selections that carry no URL at all.
+        if not has_verified_url and title:
+            candidates = by_title.get(title, [])
+        if len(candidates) == 1:
+            canonical = candidates[0]
+            canonical_title = _atomic_text(canonical.get("title"), 300)
+            canonical_url = str(canonical.get("url") or "").strip()
+            if canonical_title:
+                doc["title"] = canonical_title
+            if _valid_url(canonical_url):
+                doc["url"] = canonical_url
+            doc["text"] = _atomic_text(canonical.get("text"), 1200)
+            doc["updated"] = _atomic_text(canonical.get("updated"), 80)
+        hydrated.append(doc)
+    return hydrated
+
+
+def canonical_quantity_relations(state: dict, *, cap: int = 64) \
+        -> tuple[QuantityRelation, ...]:
+    """Return immutable quantity relations from canonical ticket/document source cells."""
+    relations: list[QuantityRelation] = []
+    ledger = state.get("materialized_ticket_sources") or {}
+    ticket_rows = list(ledger.get("ticketDetails") or []) if isinstance(ledger, dict) else []
+    for query in state.get("query_results") or []:
+        if isinstance(query, dict) and isinstance(query.get("result"), dict):
+            ticket_rows.extend(query["result"].get("ticketDetails") or [])
+    for row in ticket_rows:
+        if not isinstance(row, dict) or row.get("error"):
+            continue
+        key = str(row.get("key") or "").strip().upper()
+        if not _ATOMIC_TICKET_RE.fullmatch(key):
+            continue
+        observed_at = _atomic_text(row.get("updated") or row.get("created"), 80)
+        description = _atomic_text(row.get("description"), 1200)
+        if description:
+            relations.extend(parse_quantity_relations(
+                description, source_id=f"ticket:{key}", subject_id=key,
+                observed_at=observed_at,
+                provenance=f"materialized_ticket_sources.ticketDetails[{key}].description",
+            ))
+        for index, comment in enumerate(row.get("comments") or []):
+            if not isinstance(comment, dict):
+                continue
+            body = _atomic_text(comment.get("body") or comment.get("text"), 1200)
+            if body:
+                relations.extend(parse_quantity_relations(
+                    body, source_id=f"ticket:{key}", subject_id=key,
+                    observed_at=_atomic_text(
+                        comment.get("updated") or comment.get("created"), 80,
+                    ),
+                    provenance=(f"materialized_ticket_sources.ticketDetails[{key}]"
+                                f".comments[{index}]"),
+                ))
+    for row in _projected_document_rows(state):
+        url = str(row.get("url") or "").strip()
+        if not _valid_url(url):
+            continue
+        source_id = f"url:{_clean_url(url)}"
+        relations.extend(parse_quantity_relations(
+            _atomic_text(row.get("text"), 1200), source_id=source_id,
+            subject_id=source_id, observed_at=_atomic_text(row.get("updated"), 80),
+            provenance=source_id,
+        ))
+
+    unique: list[QuantityRelation] = []
+    seen: set[str] = set()
+    for relation in relations:
+        if relation.relation_id in seen:
+            continue
+        seen.add(relation.relation_id)
+        unique.append(relation)
+        if len(unique) >= max(0, int(cap or 0)):
+            break
+    return tuple(unique)
 
 
 def _materialized_observation_catalog(
@@ -574,8 +722,11 @@ _DATED_WEEKDAY_RE = re.compile(
     r"([월화수목금토일])요일)", re.I,
 )
 _RELATIVE_DURATION_RE = re.compile(
-    r"(?<![0-9A-Za-z가-힣])((?:한|두|세|네|\d+)\s*주(?:일)?|일주일|\d+\s*일)"
-    r"(?![0-9A-Za-z])",
+    r"(?<![0-9A-Za-z가-힣.])((?:한|두|세|네|\d+(?:\.\d+)?)\s*주(?:일)?|"
+    r"일주일|\d+(?:\.\d+)?\s*일|"
+    r"(?:one|two|three|four|\d+(?:\.\d+)?)\s*(?:weeks?|days?))"
+    r"(?:\s*간)?(?![0-9A-Za-z])",
+    re.I,
 )
 _ACTION_FROM_DATE_RE = re.compile(
     r"(?:권고|추천|착수|배포|출시|승인|진행(?:하|해)|실행(?:하|해)|"
@@ -590,22 +741,57 @@ _DATE_INTERVAL_CONNECTOR_RE = re.compile(
 )
 _DATE_DURATION_BRIDGE_RE = re.compile(
     r"\s*(?:\([월화수목금토일]요일\))?\s*(?:까지(?:의)?\s*)?"
+    r"(?:(?:로|by)\s*)?"
+    r"(?:(?:lasted|took|spanned|was)\s*)?"
     r"(?:(?:총|정확히|약|for)\s*)?(?:기간(?:은|이|:)?\s*)?",
     re.I,
 )
+_APPROXIMATE_DURATION_PREFIX_RE = re.compile(
+    r"(?:약|대략(?:적으로)?|around|about|approximately)\s*$", re.I,
+)
+_APPROXIMATE_DURATION_SUFFIX_RE = re.compile(
+    r"^\s*(?:정도|가량|내외|반)"
+    r"(?=\s|[.,;:!?]|$|이|입|였|었|로|의|가|는|은)", re.I,
+)
 
 
-def _duration_days(value: str) -> int | None:
+def _duration_days(value: str) -> Decimal | None:
     compact = re.sub(r"\s+", "", str(value or ""))
     if compact == "일주일" or compact.startswith("한주"):
-        return 7
-    words = {"두": 2, "세": 3, "네": 4}
-    week = re.fullmatch(r"(두|세|네|\d+)주(?:일)?", compact)
+        return Decimal(7)
+    words = {"두": Decimal(2), "세": Decimal(3), "네": Decimal(4)}
+    week = re.fullmatch(r"(두|세|네|\d+(?:\.\d+)?)주(?:일)?", compact)
     if week:
-        count = words.get(week.group(1), int(week.group(1)) if week.group(1).isdigit() else 0)
-        return count * 7
-    day = re.fullmatch(r"(\d+)일", compact)
-    return int(day.group(1)) if day else None
+        count = words.get(week.group(1))
+        try:
+            if count is None:
+                count = Decimal(week.group(1))
+        except InvalidOperation:
+            return None
+        return count * Decimal(7)
+    day = re.fullmatch(r"(\d+(?:\.\d+)?)일", compact)
+    if day:
+        try:
+            return Decimal(day.group(1))
+        except InvalidOperation:
+            return None
+    english = re.fullmatch(
+        r"(one|two|three|four|\d+(?:\.\d+)?)(weeks?|days?)", compact, re.I,
+    )
+    if not english:
+        return None
+    words_en = {
+        "one": Decimal(1), "two": Decimal(2),
+        "three": Decimal(3), "four": Decimal(4),
+    }
+    count = words_en.get(english.group(1).casefold())
+    try:
+        if count is None:
+            count = Decimal(english.group(1))
+    except InvalidOperation:
+        return None
+    return count * (Decimal(7) if english.group(2).casefold().startswith("week")
+                    else Decimal(1))
 
 
 def _enforce_exact_date_math(value: str) -> str:
@@ -642,13 +828,27 @@ def _enforce_exact_date_math(value: str) -> str:
         if len(relations) != 1:
             return clause
         start_match, end_match, mismatch = relations[0]
+        connector = clause[start_match.end():end_match.start()]
+        bridge = clause[end_match.end():mismatch.start()]
+        following = clause[mismatch.end():mismatch.end() + 24]
+        if (_APPROXIMATE_DURATION_PREFIX_RE.search(bridge)
+                or _APPROXIMATE_DURATION_SUFFIX_RE.search(following)):
+            return clause
         try:
             start = datetime.strptime(start_match.group(1), "%Y-%m-%d").date()
             end = datetime.strptime(end_match.group(1), "%Y-%m-%d").date()
         except ValueError:
             return clause
         exact_days = abs((end - start).days)
-        if _duration_days(mismatch.group(1)) in (None, exact_days):
+        stated_days = _duration_days(mismatch.group(1))
+        allowed_days = {exact_days}
+        # Natural-language date ranges can count both endpoints (for example 18일부터
+        # 20일까지 = 3일간).  Accept that conventional alternative when the interval
+        # explicitly carries an inclusive end marker; values matching neither convention
+        # are still mechanically inconsistent.
+        if re.search(r"까지|through|until|inclusive", connector + bridge, re.I):
+            allowed_days.add(exact_days + 1)
+        if stated_days is None or stated_days in allowed_days:
             return clause
         relative = mismatch.group(1)
         conflict = f"정확히 {exact_days}일(상대 표현 '{relative}'와 불일치)"
@@ -656,7 +856,7 @@ def _enforce_exact_date_math(value: str) -> str:
         # Preserve the useful dated statement. Remove only a downstream action whose
         # premise is the false duration, and leave an explicit deterministic boundary.
         action_clause = re.search(
-            r"(?:이므로|이어서|이기\s*때문에|때문에|따라서|그러므로|so|therefore)"
+            r"(?:이므로|으므로|므로|이어서|이기\s*때문에|때문에|따라서|그러므로|so|therefore)"
             r"[^.!?]*(?:권고|추천|착수|배포|출시|승인|진행|실행|"
             r"recommend|deploy|release|approve|proceed)[^.!?]*[.!?]?",
             fixed, re.I,
@@ -680,15 +880,52 @@ def _enforce_exact_date_math(value: str) -> str:
     return "\n".join(rendered)
 
 
+def normalize_evidence_summaries(evidence: Iterable[dict]) -> list[dict]:
+    """Return a date-consistent copy of model-authored evidence summaries.
+
+    Research ``evidence`` is a presentation projection.  Canonical QueryRunner artifacts,
+    materialized ticket rows, and related document bodies are intentionally not accepted by
+    this helper, so their raw observations stay immutable.  A changed summary loses any
+    model-supplied normalization hint; downstream authority must be rebound from the original
+    canonical source rather than inherited from that hint.
+    """
+    projected: list[dict] = []
+    for raw in evidence or ():
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        observations = []
+        for raw_observation in item.get("observations") or []:
+            if isinstance(raw_observation, dict):
+                observation = dict(raw_observation)
+                original = str(observation.get("text") or "")
+                normalized = _enforce_exact_date_math(original)
+                observation["text"] = normalized
+                if normalized != original:
+                    observation.pop("normalized_text", None)
+                    observation.pop("canonical_text", None)
+                observations.append(observation)
+            elif isinstance(raw_observation, str):
+                observations.append(_enforce_exact_date_math(raw_observation))
+            else:
+                observations.append(raw_observation)
+        item["observations"] = observations
+        if isinstance(item.get("why"), str):
+            item["why"] = _enforce_exact_date_math(item["why"])
+        projected.append(item)
+    return projected
+
+
 def enforce_atomic_fact_boundaries(text: str, facts: Iterable[AtomicFact]) -> str:
     """Repair only exact, mechanically provable subject-field leakage in reply prose.
 
     This guard never interprets free text. It currently covers Jira due dates because an ISO
     date copied from a parent into a due-null child is both detectable and safely removable.
-    Raw observations under ``### 근거`` are immutable history and are therefore excluded.
+    Raw observations under any canonical source heading are immutable history and are
+    therefore excluded.
     """
     value = str(text or "")
-    heading = re.search(r"(?m)^###\s*근거\s*$", value)
+    heading = EVIDENCE_HEADING_RE.search(value)
     body, tail = (value[:heading.start()], value[heading.start():]) if heading else (value, "")
     body = _enforce_exact_date_math(body)
     rows = list(facts)
@@ -747,7 +984,7 @@ def enforce_atomic_fact_boundaries(text: str, facts: Iterable[AtomicFact]) -> st
 
     temporal: dict[tuple[str, str], list[AtomicFact]] = {}
     for row in rows:
-        if (row.get("typed") and _ATOMIC_TICKET_RE.fullmatch(row.get("subject_id", ""))
+        if (row.get("typed") and row.get("subject_id") and row.get("predicate")
                 and row.get("temporal_role") in {"current", "historical", "conflict"}):
             temporal.setdefault((row["subject_id"], row["predicate"]), []).append(row)
     current_additions: list[str] = []
@@ -770,8 +1007,8 @@ def enforce_atomic_fact_boundaries(text: str, facts: Iterable[AtomicFact]) -> st
                 rewritten.append(line)
                 continue
             matched_history = next((row for row in historical
-                                    if len(row.get("value", "")) >= 4
-                                    and re.search(r"[A-Za-z가-힣]", row.get("value", ""))
+                                    if len(row.get("value", "")) >= 2
+                                    and re.search(r"[0-9A-Za-z가-힣]", row.get("value", ""))
                                     and row["value"].casefold() in line.casefold()
                                     and (not row.get("observed_at")
                                          or row["observed_at"] not in line)), None)
@@ -783,15 +1020,90 @@ def enforce_atomic_fact_boundaries(text: str, facts: Iterable[AtomicFact]) -> st
             changed = True
         if changed:
             body = "\n".join(rewritten)
-            if current["value"].casefold() not in body.casefold():
+            current_is_present = any(
+                re.search(
+                    rf"(?<![A-Za-z0-9-]){re.escape(subject)}(?![A-Za-z0-9-])",
+                    line, re.I,
+                ) and current["value"].casefold() in line.casefold()
+                for line in body.splitlines()
+            )
+            if not current_is_present:
                 stamp = current.get("observed_at") or "시점 미상"
+                subject_display = (
+                    "{{ticket-inline:" + subject + "}}"
+                    if _ATOMIC_TICKET_RE.fullmatch(subject)
+                    else f"`{subject}`"
+                )
                 current_additions.append(
-                    f"현재 기록({stamp}): " + "{{ticket-inline:" + subject + "}}"
-                    + f" — {current['value']}"
+                    f"현재 기록({stamp}): {subject_display} — {current['value']}"
                 )
     if current_additions:
         body = body.rstrip() + "\n\n" + "\n".join(current_additions) + "\n"
     return (body + tail).strip()
+
+
+def _atomic_literal_is_present(value: str, literal: str) -> bool:
+    """Match a typed atom as a whole token when its ends are word-like."""
+    target = str(literal or "").strip()
+    if not target:
+        return False
+    # Korean particles may immediately follow an ASCII id/value (``ACME-1의``,
+    # ``Ready입니다``), so they are not part of that token's boundary.  A Korean atom uses
+    # the wider class to avoid matching inside another Korean word.
+    token_class = r"0-9A-Za-z가-힣" if re.search(r"[가-힣]", target) else r"0-9A-Za-z"
+    left = rf"(?<![{token_class}])" if re.match(r"[0-9A-Za-z가-힣]", target) else ""
+    right = rf"(?![{token_class}])" if re.search(r"[0-9A-Za-z가-힣]$", target) else ""
+    return bool(re.search(left + re.escape(target) + right, str(value or ""), re.I))
+
+
+def rebind_atomic_fact_citations(text: str, facts: Iterable[AtomicFact]) -> str:
+    """Bind an exact typed subject/value claim to its one canonical source.
+
+    This is intentionally narrower than semantic citation scoring.  A claim qualifies only
+    when its bounded sentence contains both a server-owned ``subject_id`` and the complete
+    current/observed value.  If that unique source was omitted from the rendered index, the
+    unrelated citation cluster is removed and the claim fails closed explicitly.
+    """
+    value = str(text or "")
+    heading = EVIDENCE_HEADING_RE.search(value)
+    if not heading:
+        return value
+    body, source_tail = value[:heading.start()].rstrip(), value[heading.start():]
+    number_by_source: dict[str, str] = {}
+    for number, source in re.findall(r"(?m)^\[(\d+)\]\s+(.+)$", source_tail):
+        ticket = re.search(
+            r"\{\{ticket-detail:([A-Z][A-Z0-9]*-\d+)\}\}", source, re.I,
+        )
+        if ticket:
+            number_by_source[f"ticket:{ticket.group(1).upper()}"] = number
+        link = re.search(r"\[[^\n]+?\]\((https?://[^)\s]+)\)", source, re.I)
+        if link:
+            number_by_source[f"url:{_clean_url(link.group(1))}"] = number
+
+    eligible = [
+        row for row in facts or ()
+        if row.get("typed") and row.get("direct") and row.get("source_id")
+        and row.get("subject_id") and row.get("value")
+        and row.get("temporal_role") in {"current", "observed"}
+    ]
+    replacements: list[tuple[int, int, str]] = []
+    for _occurrence_id, match, _tokens in citation_occurrences(body):
+        start, end = citation_claim_span(body, match.start(), match.end())
+        claim = body[start:end]
+        matches = [
+            row for row in eligible
+            if _atomic_literal_is_present(claim, row["subject_id"])
+            and _atomic_literal_is_present(claim, row["value"])
+        ]
+        source_ids = list(dict.fromkeys(str(row["source_id"]) for row in matches))
+        if len(source_ids) != 1:
+            continue
+        number = number_by_source.get(source_ids[0], "")
+        replacement = f"[{number}]" if number else "(직접 근거 확인 필요)"
+        replacements.append((match.start(), match.end(), replacement))
+    for start, end, replacement in reversed(replacements):
+        body = body[:start] + replacement + body[end:]
+    return body.rstrip() + "\n\n" + source_tail.lstrip()
 
 
 def _clean_url(url: str) -> str:
@@ -882,14 +1194,29 @@ def _source_parts(raw: str) -> tuple[str, str, str]:
 
 
 def _split(text: str) -> tuple[str, list[str], str]:
-    value = str(text or "")
-    heading = _HEADING_RE.search(value)
-    if not heading:
-        return value.rstrip(), [], ""
-    start = heading.end()
-    following = _NEXT_HEADING_RE.search(value, start)
-    end = following.start() if following else len(value)
-    return value[:heading.start()].rstrip(), value[start:end].splitlines(), value[end:].lstrip()
+    """Parse every evidence section into one document AST.
+
+    A first-section string split left later ``### 근거`` headings in the body, so the final
+    serializer appended a third path instead of owning the document.  Line parsing keeps
+    non-evidence sections in place and unions all evidence rows in encounter order.
+    """
+    body: list[str] = []
+    evidence_lines: list[str] = []
+    in_evidence = False
+    found = False
+    for line in str(text or "").splitlines():
+        if _HEADING_RE.fullmatch(line.strip()):
+            found = True
+            in_evidence = True
+            continue
+        if in_evidence and _NEXT_HEADING_RE.match(line):
+            in_evidence = False
+            body.append(line)
+            continue
+        (evidence_lines if in_evidence else body).append(line)
+    if not found:
+        return str(text or "").rstrip(), [], ""
+    return "\n".join(body).rstrip(), evidence_lines, ""
 
 
 def _append_observation(group: dict, value: str, *, normalized_value: str = "") -> int | None:
@@ -956,10 +1283,68 @@ def _compact_adjacent_citations(text: str) -> str:
     return _CITATION_RUN_RE.sub(merge, str(text or ""))
 
 
+def _reconcile_cited_quantity_claims(
+        text: str, source_numbers: dict[str, int],
+        quantity_relations: Iterable[QuantityRelation]) -> str:
+    """Apply a typed relation only to the bounded claim that cites its exact source."""
+    value = str(text or "")
+    identity_by_number = {str(number): identity
+                          for identity, number in source_numbers.items()}
+    by_source: dict[str, list[QuantityRelation]] = {}
+    for relation in quantity_relations or ():
+        if isinstance(relation, QuantityRelation):
+            by_source.setdefault(relation.source_id, []).append(relation)
+    plans: dict[tuple[int, int], dict[str, object]] = {}
+    for _occurrence_id, match, tokens in citation_occurrences(value):
+        identities = [
+            identity_by_number.get(token.split("-", 1)[0], "")
+            for token in tokens
+        ]
+        relations = tuple(
+            relation
+            for identity in identities
+            for relation in by_source.get(identity, ())
+        )
+        if not relations:
+            continue
+        start, end = citation_claim_span(value, match.start(), match.end())
+        plan = plans.setdefault((start, end), {"identities": set(), "relations": {}})
+        plan["identities"].update(identity for identity in identities if identity)
+        plan["relations"].update({row.relation_id: row for row in relations})
+
+    for (start, end), plan in sorted(plans.items(), reverse=True):
+        # If multiple typed sources own the exact same prose span, rewriting that span
+        # with either source corrupts its neighbor.  Leave the ambiguous compound claim
+        # unchanged for the independent evaluator and human review.
+        if len(plan["identities"]) != 1:
+            continue
+        claim = value[start:end]
+        repaired = reconcile_quantity_observation(claim, plan["relations"].values())
+        if repaired != claim:
+            value = value[:start] + repaired + value[end:]
+    return value
+
+
+def _observation_quantity_relations(
+        identity: str, observation: str, related_docs: Iterable[dict],
+        by_source: dict[str, list[QuantityRelation]]) \
+        -> tuple[QuantityRelation, ...]:
+    """Bind a model observation to a document relation only by its exact verified URL."""
+    rows = list(by_source.get(identity, ()))
+    for doc in related_docs or ():
+        if not isinstance(doc, dict):
+            continue
+        url = str(doc.get("url") or "").strip()
+        if _valid_url(url) and url in observation:
+            rows.extend(by_source.get(f"url:{_clean_url(url)}", ()))
+    return tuple({relation.relation_id: relation for relation in rows}.values())
+
+
 def normalize_evidence_heading_boundary(value: str) -> str:
     """Separate a glued evidence heading without matching inside an existing hash run."""
     return re.sub(
-        r"(?<=[^\n#])(#{1,4}\s*(?:근거|참조)\s*)(?=\r?\n)",
+        rf"(?i)(?<=[^\n#])(#[#]{{0,5}}\s*{EVIDENCE_SECTION_LABEL_PATTERN}\s*)"
+        rf"(?=\r?\n)",
         r"\n\n\1", str(value or ""),
     )
 
@@ -967,20 +1352,48 @@ def normalize_evidence_heading_boundary(value: str) -> str:
 def canonicalize_evidence_index(text: str, evidence: list | None = None,
                                 related_docs: list | None = None,
                                 claim_facts: list | None = None,
-                                observation_facts: list | None = None) -> str:
+                                observation_facts: list | None = None,
+                                quantity_relations: Iterable[QuantityRelation] = ()) -> str:
     """Merge every evidence channel into one stable, hierarchical source index."""
-    # Bind model ordinals to structured Research sources before any source dedupe or
-    # renumbering.  ``[[1-b]]`` is presentation noise, not a different identifier.
-    value = normalize_citation_wrappers(text)
-    # Style normalization may glue a canonical heading to the preceding sentence. Restore
-    # the structural boundary before parsing so stale bare source rows cannot survive beside
-    # the rebuilt index and trigger a false late grounding warning.
-    value = normalize_evidence_heading_boundary(value)
+    # Related documents participate in the same provisional source order only when the
+    # reply names them. Appending them preserves every Research ordinal while allowing a
+    # named alias to compile into the one numeric citation grammar.
+    provenance_evidence = list(evidence or [])
+    # Research prose is a display projection.  Normalize its mechanically provable date
+    # arithmetic on a copy while the raw rows remain available for provenance binding.
+    display_evidence = normalize_evidence_summaries(evidence or [])
+    projected_source_ids = {
+        evidence_source_id(item) for item in (evidence or []) if isinstance(item, dict)
+    }
+    known_source_ids = {
+        evidence_source_id(item) for item in provenance_evidence if isinstance(item, dict)
+    }
+    for doc in related_docs or []:
+        if not isinstance(doc, dict):
+            continue
+        source_id = evidence_source_id(doc)
+        if source_id in known_source_ids:
+            continue
+        known_source_ids.add(source_id)
+        observations = []
+        if doc.get("text"):
+            observations.append({
+                "source": "document", "text": str(doc.get("text") or ""),
+                "observed_at": str(doc.get("updated") or ""),
+            })
+        provenance_evidence.append({**doc, "observations": observations})
+
+    # Parse source definitions before compiling aliases. A legitimate source title can itself
+    # start with ``[Team]``; treating that bracket as a body citation would corrupt identity.
+    value = normalize_evidence_heading_boundary(normalize_citation_wrappers(text))
+    body, lines, tail = _split(value)
+    # Bind aliases and model ordinals only in claim prose, before source dedupe/renumbering.
+    # ``[[1-b]]`` and ``[{{ticket-inline:KEY}}]`` are presentation, never identity.
+    body = normalize_citation_aliases(body, provenance_evidence)
     provenance_graph = build_claim_provenance_graph(
-        value, evidence or [], claim_facts=claim_facts or [],
+        body, provenance_evidence, claim_facts=claim_facts or [],
         observation_facts=observation_facts or [],
     )
-    body, lines, tail = _split(value)
     # The canonical source index is always the last section.  Legacy replies sometimes put
     # another heading after references; preserve that content by moving it before the index.
     if tail:
@@ -993,7 +1406,8 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
     def ensure(identity: str, source: str) -> dict:
         group = groups.get(identity)
         if group is None:
-            group = {"identity": identity, "source": source, "observations": [], "rows": []}
+            group = {"identity": identity, "source": source, "observations": [],
+                     "rows": [], "explicit": False}
             groups[identity] = group
         elif group["source"].startswith("http") and source.startswith("["):
             # Prefer a human title over a bare URL when either legacy path supplied one.
@@ -1012,6 +1426,8 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
             "observations": [],
             "rows": [*(alias_group.get("rows") or []),
                      *((target or {}).get("rows") or [])],
+            "explicit": bool(alias_group.get("explicit")
+                             or (target or {}).get("explicit")),
         }
         for observation in [*(alias_group.get("observations") or []),
                             *((target or {}).get("observations") or [])]:
@@ -1038,23 +1454,34 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
             old = root.group(1) or root.group(3)
             identity, source, obs = _source_parts(root.group(4))
             current = ensure(identity, source)
-            obs_index = _append_observation(current, obs)
+            obs_index = _append_observation(current, _enforce_exact_date_math(obs))
             row = {"old": old, "identity": identity, "observation": obs_index}
             current["rows"].append(row)
             parsed_rows.append(row)
             continue
         child = _CHILD_RE.match(line)
         if child and current:
-            obs_index = _append_observation(current, _observation(child.group(3)))
+            obs_index = _append_observation(
+                current, _enforce_exact_date_math(_observation(child.group(3))),
+            )
             if child.group(1):
                 row = {"old": f"{child.group(1)}-{child.group(2)}",
                        "identity": current["identity"], "observation": obs_index}
                 current["rows"].append(row)
                 parsed_rows.append(row)
+            continue
+        # A previous renderer could emit a verified document as an unnumbered source row.
+        # It is still part of the evidence AST, not body prose. Preserve its exact URL and
+        # let the one serializer assign the integer; do not manufacture an observation.
+        link = _MD_LINK_RE.search(line)
+        if link:
+            identity, source, _obs = _source_parts(link.group(0))
+            current = ensure(identity, source)
+            current["explicit"] = True
 
     # Research Analyst state joins by real source identity.  ``why`` is a fallback only;
     # source-specific observations are preferred and remain lossless.
-    for item in evidence or []:
+    for item in display_evidence:
         if not isinstance(item, dict):
             continue
         key = str(item.get("key") or "").strip()
@@ -1091,17 +1518,26 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
         observations = item.get("observations") or []
         for obs in observations:
             if isinstance(obs, dict):
+                rendered_observation = _enforce_exact_date_math(
+                    _observation(obs.get("text"), obs.get("source")),
+                )
+                normalized_observation = _enforce_exact_date_math(_observation(
+                    obs.get("normalized_text") or obs.get("canonical_text")
+                    or obs.get("text"), obs.get("source"),
+                ))
                 _append_observation(
-                    group, _observation(obs.get("text"), obs.get("source")),
-                    normalized_value=_observation(
-                        obs.get("normalized_text") or obs.get("canonical_text")
-                        or obs.get("text"), obs.get("source"),
-                    ),
+                    group, rendered_observation,
+                    normalized_value=normalized_observation,
                 )
             elif isinstance(obs, str):
-                _append_observation(group, _observation(obs))
+                _append_observation(
+                    group, _enforce_exact_date_math(_observation(obs)),
+                )
         if not observations and not group["observations"]:
-            _append_observation(group, _observation(item.get("why"), "query"))
+            _append_observation(
+                group,
+                _enforce_exact_date_math(_observation(item.get("why"), "query")),
+            )
 
     # Related docs hydrate a title/URL already used by the reply or evidence.  They are not
     # appended merely because retrieval returned them: rejected/guide noise must stay internal.
@@ -1115,29 +1551,35 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
         identity = f"url:{_clean_url(url)}"
         alias = f"text:{title.casefold()}"
         mentioned_in_observation = False
-        carried: list[str] = []
         # A model can place a related-document link under a ticket as if the link itself
-        # were a ticket finding. Promote that link to its own source root; keep only any
-        # actual prose finding after the URL under the document source.
+        # were a ticket finding. Promote a link-only row to its own source root.  Material
+        # prose surrounding a URL remains owned by its original source: the link identifies
+        # a document but does not prove that the surrounding assertion came from it.
         for existing in list(groups.values()):
             if existing.get("identity") == identity:
                 continue
             kept = []
             for observation in existing.get("observations") or []:
-                urls = _URL_RE.findall(str(observation or ""))
-                same_url = any(_clean_url(found.rstrip(".,;:!?")) == _clean_url(url)
-                               for found in urls)
-                link_only = same_url or (title in str(observation or "") and bool(urls))
+                observation_text = str(observation or "")
+                urls = _URL_RE.findall(observation_text)
+                same_url = url in observation_text or any(
+                    _clean_url(found.rstrip(".,;:!?")) == _clean_url(url)
+                    for found in urls
+                )
+                # A title mention is prose, not provenance.  Move an observation to the
+                # document source only when it contains that document's exact verified URL.
+                link_only = same_url
                 if not link_only:
                     kept.append(observation)
                     continue
                 mentioned_in_observation = True
                 remainder = str(observation or "")
                 remainder = _MD_LINK_RE.sub("", remainder)
+                remainder = remainder.replace(url, "")
                 remainder = _URL_RE.sub("", remainder)
                 remainder = remainder.replace(title, "").strip(" []()—–-:;,.\t")
                 if len(remainder) >= 8:
-                    carried.append(_observation(remainder, "document"))
+                    kept.append(observation)
             existing["observations"] = kept
             existing.pop("_observation_keys", None)
         group = promote_alias(alias, identity, f"[{title}]({url})") \
@@ -1147,8 +1589,11 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
         elif title in body or url in body or mentioned_in_observation:
             group = ensure(identity, f"[{title}]({url})")
         if group:
-            for observation in carried:
-                _append_observation(group, observation)
+            if mentioned_in_observation:
+                group["explicit"] = True
+            canonical_text = _atomic_text(doc.get("text"), 1200)
+            if canonical_text:
+                _append_observation(group, _observation(canonical_text, "document"))
 
     # Drop a model-written source shell that has neither a finding nor a body
     # citation. Structured evidence with a real finding already received an
@@ -1162,7 +1607,9 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
             if identity:
                 cited_identities.add(identity)
     for identity in list(groups):
-        if not groups[identity]["observations"] and identity not in cited_identities:
+        if (not groups[identity]["observations"]
+                and identity not in cited_identities
+                and not groups[identity].get("explicit")):
             del groups[identity]
 
     if not groups:
@@ -1216,12 +1663,31 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
             rendered_observation = _observation(
                 observation_node.get("text"), observation_node.get("source"),
             )
+            if identity in projected_source_ids:
+                rendered_observation = _enforce_exact_date_math(rendered_observation)
+            # An observation containing an exact verified document URL was already promoted
+            # out of its model-assigned group above.  A bare title is not source proof.
+            if (str(observation_node.get("source") or "").casefold()
+                    in {"document", "confluence"}
+                    and any(
+                        str(doc.get("url") or "") in rendered_observation or any(
+                            _clean_url(found.rstrip(".,;:!?"))
+                            == _clean_url(str(doc.get("url") or ""))
+                            for found in _URL_RE.findall(rendered_observation)
+                        )
+                        for doc in (related_docs or []) if isinstance(doc, dict)
+                        and _valid_url(str(doc.get("url") or ""))
+                    )):
+                continue
+            normalized_observation = _observation(
+                observation_node.get("normalized_text")
+                or observation_node.get("text"), observation_node.get("source"),
+            )
+            if identity in projected_source_ids:
+                normalized_observation = _enforce_exact_date_math(normalized_observation)
             observation_index = _append_observation(
                 group, rendered_observation,
-                normalized_value=_observation(
-                    observation_node.get("normalized_text")
-                    or observation_node.get("text"), observation_node.get("source"),
-                ),
+                normalized_value=normalized_observation,
             )
             marker = base
             if observation_index is not None and len(group["observations"]) > 1:
@@ -1273,6 +1739,11 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
         return citation
 
     body = _compact_adjacent_citations(CITATION_OCCURRENCE_RE.sub(replace_citation, body))
+    body = _reconcile_cited_quantity_claims(body, number, quantity_relations)
+    quantity_by_source: dict[str, list[QuantityRelation]] = {}
+    for relation in quantity_relations or ():
+        if isinstance(relation, QuantityRelation):
+            quantity_by_source.setdefault(relation.source_id, []).append(relation)
     rendered: list[str] = []
     for identity in identity_order:
         group = groups[identity]
@@ -1280,6 +1751,11 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
         rendered.append(f"[{base}] {group['source']}")
         observations = group["observations"]
         for index, obs in enumerate(observations):
+            obs = reconcile_quantity_observation(
+                obs, _observation_quantity_relations(
+                    identity, obs, related_docs or (), quantity_by_source,
+                ),
+            )
             marker = f" [{base}-{chr(97 + index)}]" if len(observations) > 1 else ""
             rendered.append(f"-{marker} {obs}".replace("-  ", "- "))
 
@@ -1290,8 +1766,11 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
 
 
 __all__ = [
-    "AtomicFact", "atomic_fact_sidecar", "build_atomic_fact_ledger",
+    "AtomicFact", "QuantityRelation", "QuantityTerm", "atomic_fact_sidecar",
+    "build_atomic_fact_ledger",
     "build_claim_provenance_graph", "canonicalize_evidence_index",
-    "canonical_observation_facts", "enforce_atomic_fact_boundaries",
-    "normalize_evidence_heading_boundary",
+    "canonical_observation_facts", "canonical_quantity_relations",
+    "canonical_related_documents", "enforce_atomic_fact_boundaries",
+    "normalize_evidence_heading_boundary", "normalize_evidence_summaries",
+    "rebind_atomic_fact_citations",
 ]

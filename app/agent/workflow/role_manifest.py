@@ -69,7 +69,7 @@ ROLE_SPECS: dict[str, RoleSpec] = {
          "turn_continuation", "situation", "evidence", "materialized_ticket_sources",
          "structure_plan", "draft", "questions", "approval_token", "continuation_contract"),
         ("intent", "keywords", "module", "mentioned_keys", "sufficient", "playbook",
-         "answer_depth", "request_plan", "request_refinement", "request_text", "trace",
+         "answer_depth", "request_plan", "request_refinement", "request_text", "questions", "trace",
          "continuation_contract"),
         execution_layer="lightweight_semantic",
     ),

@@ -239,7 +239,7 @@ p50/p95, token/call/cost, 자동 실패율, 사람 점수와 치명 결함률을
 초기화하고 mock jira820 provider Store도 재생성한다. 다중 turn 안의 state만 유지하고 다음 case로 넘기지
 않는다. 시작·종료 `worldSha256` 또는 `providerStoreSha256`가 다르면 읽기 전용 평가가 fixture를 덮어쓴
 것이므로 case를 실패 처리한다. 초기화·fingerprint 시간은 Agent latency에
-포함하지 않는다. 이 격리를 제거하거나 cache policy를 바꾸면 같은 `comparabilityKey`로 비교하지 않는다.
+포함하지 않는다. 이 격리를 제거하거나 cache policy를 바꾸면 같은 `benchmarkKey`로 비교하지 않는다.
 
 대화 checkpoint에서 영속되는 것은 message history와 사용자가 답하는 중인 인터뷰의 원 요청·조사 근거다.
 새 요청, 취소, 대체, 주제 전환 턴에는 `topic_dossier`, query result, PMO finding, draft/change plan,

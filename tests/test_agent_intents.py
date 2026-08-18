@@ -737,7 +737,9 @@ def test_verified_field_only_continuation_skips_request_model_and_preserves_outc
     assert patch["keywords"] == ["StarRocks", "Puffin", "NDV"]
     assert patch["mentioned_keys"] == ["DL-9090"]
     assert "모델 호출 생략" in patch["trace"][0]["note"]
-    assert G.route_after_request_architect({**state, **patch}) == "refine"
+    # Classification stays zero-call, but the new typed parent delegation owns one
+    # topology-bounded structural refresh before Work can select an existing Epic.
+    assert G.route_after_request_architect({**state, **patch}) == "investigate"
 
 
 def test_typed_phase_action_change_falls_back_to_semantic_request_architect(monkeypatch):
@@ -1062,7 +1064,9 @@ def test_exact_optional_structure_question_uses_zero_call_typed_continuation(
         "phase": "1차",
         "duedate": "2026-09-30",
     }
-    assert G.route_after_request_architect({**state, **patch}) == "refine"
+    # The optional shape question is non-blocking.  The explicit select-existing parent
+    # decision still requires one deterministic candidate refresh on this turn.
+    assert G.route_after_request_architect({**state, **patch}) == "investigate"
 
 
 def test_new_turn_clears_stale_typed_request_refinement():

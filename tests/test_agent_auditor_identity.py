@@ -219,6 +219,47 @@ def test_rejected_identity_finding_does_not_return_as_synthetic_axis_failure(mon
     assert reviewed["problems"] == []
 
 
+def test_model_stated_actual_cannot_override_matching_current_assignment(monkeypatch):
+    items, records, people = _three_outcome_fixture()
+    state = _runtime_state(monkeypatch, items, records, people)
+    stale_finding = {
+        "index": 0,
+        "check": "request",
+        "finding_kind": "field_mismatch",
+        "field": "assignee",
+        "expected": "Consumer Owner",
+        "actual": "acct.producer",
+        "message": "현재 담당자가 acct.producer라서 Consumer Owner와 다릅니다.",
+        "fix": "담당자를 Consumer Owner로 변경하세요.",
+    }
+
+    blocking, advice = auditor._partition_model_problems(state, [stale_finding])
+
+    assert blocking == [] and advice == []
+
+
+def test_model_stated_expected_cannot_override_matching_source_assignment(monkeypatch):
+    items, records, people = _three_outcome_fixture()
+    state = _runtime_state(monkeypatch, items, records, people)
+    source_contradicting_finding = {
+        "index": 0,
+        "check": "request",
+        "finding_kind": "field_mismatch",
+        "field": "assignee",
+        "expected": "acct.producer",
+        "actual": "acct.consumer",
+        "message": "현재 담당자를 다른 outcome의 담당자로 바꿔야 합니다.",
+        "fix": "acct.producer로 변경하세요.",
+    }
+
+    blocking, advice = auditor._partition_model_problems(
+        state, [source_contradicting_finding],
+    )
+
+    assert blocking == [] and advice == []
+    assert auditor._meeting_assignment_errors(state) == []
+
+
 def test_wrong_canonical_meeting_owner_is_machine_error_and_not_suppressed(
         monkeypatch):
     items, records, people = _three_outcome_fixture()

@@ -296,8 +296,8 @@ def test_web_search_fails_soft_when_blocked(monkeypatch):
 
 
 def test_web_search_uses_file_ca_bundle_and_parses_results(monkeypatch):
-    import certifi
     import httpx
+    from app.infra.public_tls import public_ssl_context
 
     seen = {}
 
@@ -312,7 +312,7 @@ def test_web_search_uses_file_ca_bundle_and_parses_results(monkeypatch):
 
     monkeypatch.setattr(httpx, "get", fake_get)
     r = _run(T.BY_NAME["search_web"], query="Apache docs")
-    assert seen["verify"] == certifi.where()
+    assert seen["verify"] is public_ssl_context()
     assert r["results"][0]["url"] == "https://apache.org/docs"
 
 

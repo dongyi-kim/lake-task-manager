@@ -231,6 +231,24 @@ class EditorAuthor:
         return compose(ticket_key, kind, prompt, seed_html, user_id)
 
 
+def _render_stage_failure(diagnostic, usage: dict, references: list[dict] | None = None) -> dict:
+    """Map a non-secret typed render diagnostic to the editor's fail-closed response."""
+    payload = diagnostic.as_dict() if diagnostic is not None else {
+        "stage": "editor_render", "code": "runtime_failure", "detail": "unknown",
+    }
+    result = {
+        "ok": False,
+        "contentConflict": True,
+        "error": ("AI 생성문의 editor 렌더링 단계가 안전하게 완료되지 않아 "
+                  f"삽입하지 않았습니다 — {payload['stage']}: {payload['code']}"),
+        "renderDiagnostics": [payload],
+        "usage": usage,
+    }
+    if references is not None:
+        result["references"] = references
+    return result
+
+
 def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
             seed_html: str = "", user_id: str = "") -> dict:
     """에디터에 꽂을 HTML 을 만든다. 돌려주는 것: {ok, html, note}."""
@@ -348,7 +366,21 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
         llm_usage = meter.snapshot() if meter is not None else llm_usage
         return {"ok": False, "error": _friendly_error(str(e)), "usage": llm_usage}
 
-    html = _normalize_editor_markup(_unfence(html))
+    from app.agent.references import normalize_editor_markup, run_editor_stage
+    normalization_stage = run_editor_stage(
+        "markup_normalization", lambda: normalize_editor_markup(_unfence(html)))
+    if not normalization_stage.ok:
+        return _render_stage_failure(normalization_stage.diagnostic, llm_usage)
+    normalization = normalization_stage.value
+    assert normalization is not None
+    if not normalization.ok:
+        diagnostics = [item.as_dict() for item in normalization.diagnostics]
+        codes = ", ".join(item.code for item in normalization.diagnostics)
+        return {"ok": False, "contentConflict": True,
+                "error": ("AI 생성문의 editor markup을 안전하게 정규화하지 못해 "
+                          "삽입하지 않았습니다 — " + codes),
+                "renderDiagnostics": diagnostics, "usage": llm_usage}
+    html = normalization.html
     html = _preserve_ambiguous_seed(html, seed, prompt)
     # ── 피드백 루프: 모호해서 못 쓴다는 신호 — 일반론을 지어내는 것보다 낫다(사용자 요청).
     #    UI 는 팝업을 유지한 채 이 문구를 보여 주고 프롬프트·시드 보완을 유도한다.
@@ -426,48 +458,66 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
     # exist while the prose gives it the wrong title; normalizing before grounding avoids a contradictory
     # "resolved but unverified" UI state without hiding an actual unresolved entity.
     references = []
-    unresolved = []
-    try:
-        from app.agent.references import (render_editor_references, resolve_references,
-                                          validate_editor_html)
-        candidates = _reference_candidates(html)
-        allowed_urls = {_html.unescape(value).rstrip(".,;:!?)]}") for value in re.findall(
-            r"https?://[^\s<>\"']+", source, re.I)}
-        unsupported_urls = sorted({
-            str(item.get("url") or "") for item in candidates
-            if item.get("kind") in {"document", "external"}
-            and str(item.get("url") or "") not in allowed_urls
-            and str(item.get("url") or "") not in _html.unescape(source)
-        })
-        if unsupported_urls:
-            return {"ok": False, "contentConflict": True,
-                    "error": ("AI 생성문에 현재 자료로 확인할 수 없는 URL이 있어 "
-                              "삽입하지 않았습니다: " + ", ".join(unsupported_urls[:3])),
-                    "usage": llm_usage}
-        resolved = resolve_references(candidates)
-        references = resolved.get("references") or []
-        unresolved = resolved.get("unresolved") or []
-        if unresolved:
-            message = ", ".join(str(item.get("id") or "") for item in unresolved[:5])
-            return {"ok": False, "contentConflict": True,
-                    "error": ("AI 생성문에 해결할 수 없는 참조가 있어 삽입하지 않았습니다: "
-                              + message),
-                    "references": references, "usage": llm_usage}
-        html = _normalize_editor_ticket_titles(html, references)
-        html = render_editor_references(html, references)
-        final_check = validate_editor_html(html, references)
-        if not final_check.get("ok"):
-            issue_text = ", ".join(
-                f'{item.get("code")}: {item.get("value")}'
-                for item in (final_check.get("issues") or [])[:5])
-            return {"ok": False, "contentConflict": True,
-                    "error": ("AI 생성문의 최종 editor 렌더링 계약이 안전하지 않아 "
-                              "삽입하지 않았습니다 — " + issue_text),
-                    "references": references, "usage": llm_usage}
-    except Exception as exc:
+    from app.agent.references import (render_editor_references, resolve_references,
+                                      validate_editor_html)
+    candidates = _reference_candidates(html)
+    allowed_urls = {_html.unescape(value).rstrip(".,;:!?)]}") for value in re.findall(
+        r"https?://[^\s<>\"']+", source, re.I)}
+    unsupported_urls = sorted({
+        str(item.get("url") or "") for item in candidates
+        if item.get("kind") in {"document", "external"}
+        and str(item.get("url") or "") not in allowed_urls
+        and str(item.get("url") or "") not in _html.unescape(source)
+    })
+    if unsupported_urls:
         return {"ok": False, "contentConflict": True,
-                "error": ("AI 생성문의 참조를 안전하게 확인하지 못해 삽입하지 않았습니다: "
-                          + str(exc)[:180]),
+                "error": ("AI 생성문에 현재 자료로 확인할 수 없는 URL이 있어 "
+                          "삽입하지 않았습니다: " + ", ".join(unsupported_urls[:3])),
+                "renderDiagnostics": [{"stage": "reference_resolution",
+                                       "code": "unsupported_url"}],
+                "usage": llm_usage}
+    resolution_stage = run_editor_stage(
+        "reference_resolution", lambda: resolve_references(candidates))
+    if not resolution_stage.ok:
+        return _render_stage_failure(resolution_stage.diagnostic, llm_usage)
+    resolved = resolution_stage.value or {}
+    references = resolved.get("references") or []
+    unresolved = resolved.get("unresolved") or []
+    if unresolved:
+        message = ", ".join(str(item.get("id") or "") for item in unresolved[:5])
+        return {"ok": False, "contentConflict": True,
+                "error": ("AI 생성문에 해결할 수 없는 참조가 있어 삽입하지 않았습니다: "
+                          + message),
+                "references": references,
+                "renderDiagnostics": [{"stage": "reference_resolution",
+                                       "code": "unresolved_reference",
+                                       "count": len(unresolved)}],
+                "usage": llm_usage}
+    render_stage = run_editor_stage(
+        "reference_rendering",
+        lambda: render_editor_references(
+            _normalize_editor_ticket_titles(html, references), references,
+        ),
+    )
+    if not render_stage.ok:
+        return _render_stage_failure(render_stage.diagnostic, llm_usage, references)
+    html = str(render_stage.value or "")
+    validation_stage = run_editor_stage(
+        "final_validation", lambda: validate_editor_html(html, references))
+    if not validation_stage.ok:
+        return _render_stage_failure(validation_stage.diagnostic, llm_usage, references)
+    final_check = validation_stage.value or {}
+    if not final_check.get("ok"):
+        issues = final_check.get("issues") or []
+        issue_text = ", ".join(
+            f'{item.get("code")}: {item.get("value")}' for item in issues[:5])
+        return {"ok": False, "contentConflict": True,
+                "error": ("AI 생성문의 최종 editor 렌더링 계약이 안전하지 않아 "
+                          "삽입하지 않았습니다 — " + issue_text),
+                "references": references,
+                "renderDiagnostics": [
+                    {"stage": "final_validation", **dict(item)} for item in issues
+                ],
                 "usage": llm_usage}
 
     # 접지 — 챗과 **같은 검사**를 태운다. 에디터에 꽂히는 글이라고 날조를 봐줄 이유가 없다.
@@ -508,35 +558,6 @@ def _need_info(value: str) -> str:
     plain = _plain_text(_unfence(value)).strip().strip("`'\"“”‘’ ")
     match = re.match(r"NEED_INFO:\s*(.+)", plain, re.S | re.I)
     return match.group(1).strip().strip("`'\"“”‘’ ")[:300] if match else ""
-
-
-def _normalize_editor_markup(value: str) -> str:
-    """Recover a pure Markdown/plain provider response into editor HTML once.
-
-    Existing HTML is never fed through the Markdown renderer because escaping it would
-    destroy already-typed badges and task lists.  A hybrid HTML/Markdown response keeps its
-    bytes and is rejected by the final validator if raw syntax remains.
-    """
-    out = str(value or "").strip()
-    if not out:
-        return ""
-    has_editor_html = bool(re.search(
-        r"</?(?:p|br|hr|h[1-6]|ul|ol|li|a|span|strong|em|s|code|pre|blockquote|"
-        r"table|thead|tbody|tfoot|tr|td|th)\b", out, re.I))
-    if has_editor_html:
-        return out
-    markdown_links = re.findall(r"!?\[[^\]\n]*\]\(([^)\s]+)\)", out)
-    if any(not re.match(r"^https?://", destination, re.I)
-           for destination in markdown_links):
-        # The shared renderer intentionally drops unsupported destinations.  In an Agent
-        # draft that would silently erase meaning, so preserve the raw token for the final
-        # validator to reject instead.
-        return out
-    try:
-        from app.content.mdhtml import markdown_to_html
-        return markdown_to_html(out)
-    except Exception:
-        return out
 
 
 def _preserve_ambiguous_seed(rendered: str, seed: str, prompt: str) -> str:
@@ -1077,7 +1098,9 @@ def _bind_ticket_status_claims(rendered: str, context: str) -> str:
 
         def annotate(anchor: re.Match) -> str:
             key = anchor.group(2).upper()
-            return anchor.group(1) + f" · Jira 상태 {_html.escape(ledger[key])}"
+            status = ledger.get(key)
+            return (anchor.group(1) if status is None else
+                    anchor.group(1) + f" · Jira 상태 {_html.escape(status)}")
 
         return anchor_re.sub(annotate, block)
 

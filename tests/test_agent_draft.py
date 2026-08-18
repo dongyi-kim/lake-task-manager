@@ -1520,6 +1520,8 @@ def test_typed_field_only_refinement_clones_the_prior_draft_and_uses_zero_work_c
     assert item["labels"] == ["keep-root"]
     assert item["priority"] == "P2-Major"
     assert item["children"] == prior_children
+    assert "DL-101" in result["draft"]["rationale"]
+    assert "기존 검토 완료 초안" not in result["draft"]["rationale"]
 
 
 def test_generic_top_level_phase_and_due_refinement_overlays_only_typed_fields():
@@ -1548,6 +1550,8 @@ def test_generic_top_level_phase_and_due_refinement_overlays_only_typed_fields()
     assert item["duedate"] == "2026-10-15"
     assert "2차" in item["summary"] and "2차" in item["description"]
     assert item["priority"] == "P2-Major" and item["children"] == [child]
+    assert "최상위" in projection["rationale"]
+    assert "ACME-100" not in projection["rationale"]
 
 
 @pytest.mark.parametrize("patch", [
@@ -1925,7 +1929,7 @@ def test_exact_current_turn_mutation_replaces_stale_creation_draft():
     assert result["change_plan"]["key"] == "DL-9203"
     assert result["change_plan"]["changes"] == {"priority": "P4-Trivial"}
     assert "fdc" not in result["change_plan"]["why"].lower()
-    assert "priority" in result["change_plan"]["why"]
+    assert "우선순위" in result["change_plan"]["why"]
 
 
 def test_cancelling_a_comment_does_not_discard_the_replacement_field_change():

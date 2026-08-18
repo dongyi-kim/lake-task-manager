@@ -10,6 +10,7 @@ from tools import agent_create_suite as create_eval  # noqa: E402
 from tools import agent_context_change_eval as context_eval  # noqa: E402
 from tools import agent_eval_contracts as eval_contracts  # noqa: E402
 from tools import agent_eval_fact_relations as fact_relations  # noqa: E402
+from tools import agent_lang_ab as conversation_eval  # noqa: E402
 from tools import agent_meeting_eval as meeting_eval  # noqa: E402
 
 
@@ -68,6 +69,109 @@ def test_common_checker_keeps_an_intermediate_structured_failure_red():
 
     assert any("turn[0]" in flaw and "structured" in flaw for flaw in flaws)
     assert "private provider" not in " ".join(flaws)
+
+
+def test_common_checker_rejects_hidden_draft_when_review_blocks_the_user_card():
+    output = {
+        "reply": "### 검토 보류\n\n- 실행 대기 카드 없음",
+        "pending": None,
+        "questions": [],
+        "draft_items": [{"summary": "완성된 내부 초안", "type": "Task"}],
+        "review": {
+            "ok": False,
+            "problems": [{"field": "summary", "message": "선택 사양을 더 적으세요"}],
+            "final_authority": {
+                "kind": "create", "actions": ["create_tickets"], "target_count": 1,
+            },
+        },
+    }
+
+    flaws = eval_contracts.automatic_contract_flaws([output])
+
+    assert any("내부 write draft" in flaw and "승인 payload" in flaw for flaw in flaws)
+
+
+def test_conversation_measurements_make_r30_s8_structural_and_grounding_failures_red():
+    checks = {
+        "요구구조불일치": False,
+        "응답카드불일치": False,
+        "요청산출물부재": False,
+        "내외부조사완결": True,
+        "복합근거단일인덱스": False,
+        "본문근거연결": True,
+        "복합자료조회": True,
+        "출처평가완결": True,
+        "근거위반": 2,
+        "후검증위반": [],
+    }
+
+    measured = conversation_eval._measurement_contract_flaws(checks, "", {})
+    scenario = conversation_eval._scenario_contract_flaws(
+        [{}], [{"검사": {"결정검사결함": measured}}],
+    )
+
+    assert any("복합근거단일인덱스" in flaw for flaw in scenario)
+    assert any("grounding=2" in flaw for flaw in scenario)
+    assert scenario  # scenario-level automaticPass is therefore false
+
+
+def test_conversation_measurements_leave_satisfied_generic_checks_green():
+    checks = {
+        "요구구조불일치": False,
+        "응답카드불일치": False,
+        "요청산출물부재": False,
+        "복합근거단일인덱스": True,
+        "본문근거연결": True,
+        "근거위반": 0,
+        "후검증위반": [],
+    }
+
+    assert conversation_eval._measurement_contract_flaws(checks, "", {}) == []
+
+    typed = {
+        "필수구조검사": {"opaque-layout-contract": False},
+        "미해결위반수": {"canonical-grounding": 3},
+    }
+    flaws = conversation_eval._measurement_contract_flaws(typed, "", {})
+    assert any("opaque-layout-contract" in flaw for flaw in flaws)
+    assert any("canonical-grounding=3" in flaw for flaw in flaws)
+
+
+@pytest.mark.parametrize("broken_check", ("grounding", "postcheck"))
+def test_conversation_measurement_exceptions_are_hard_infrastructure_failures(
+    monkeypatch, broken_check,
+):
+    from app.agent.workflow import grounding, postcheck
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("private evaluator diagnostic")
+
+    monkeypatch.setattr(grounding, "check", fail if broken_check == "grounding" else lambda _text: {})
+    monkeypatch.setattr(
+        postcheck, "check",
+        fail if broken_check == "postcheck" else lambda _output, _text: [],
+    )
+
+    checks = conversation_eval._checks({"reply": "계측 결과"})
+    status = checks["measurementStatus"]
+
+    assert status[broken_check] == {
+        "available": False,
+        "errorType": "RuntimeError",
+    }
+    assert status[{"grounding": "postcheck", "postcheck": "grounding"}[broken_check]][
+        "available"
+    ] is True
+    infrastructure_flaw = next(
+        flaw for flaw in checks["결정검사결함"]
+        if "evaluator infrastructure failure" in flaw and broken_check in flaw
+    )
+    assert "errorType=RuntimeError" in infrastructure_flaw
+    assert "private evaluator diagnostic" not in str(checks)
+    assert not any(
+        f"unresolved violation count>0: {broken_check}" in flaw
+        for flaw in checks["결정검사결함"]
+    )
 
 
 def test_common_checker_enforces_required_and_optional_question_stop_boundaries():
@@ -311,6 +415,34 @@ def test_editor_checker_accepts_canonical_rendered_references():
         ],
     }
     assert eval_contracts.editor_renderer_contract_flaws(result) == []
+
+
+def test_editor_evaluator_exception_diagnostic_keeps_stage_type_and_traceback():
+    try:
+        raise KeyError("ACME-80")
+    except KeyError as exc:
+        diagnostic = editor_eval._exception_diagnostic("compose", exc)
+
+    assert diagnostic["stage"] == "compose"
+    assert diagnostic["exceptionType"] == "KeyError"
+    assert diagnostic["message"] == "'ACME-80'"
+    assert "KeyError: 'ACME-80'" in diagnostic["traceback"]
+
+
+def test_editor_evaluator_exception_diagnostic_redacts_credentials():
+    secret = "sk-exampleSecret123456"
+    try:
+        raise RuntimeError(
+            "Authorization: Bearer top-secret-token "
+            f"api_key={secret} https://user:pass@example.test/v1?token=query-secret"
+        )
+    except RuntimeError as exc:
+        diagnostic = editor_eval._exception_diagnostic("compose", exc)
+
+    serialized = str(diagnostic)
+    for value in ("top-secret-token", secret, "user:pass", "query-secret"):
+        assert value not in serialized
+    assert serialized.count("<redacted>") >= 4
 
 
 def test_create_checker_rejects_reply_payload_tier_mismatch():

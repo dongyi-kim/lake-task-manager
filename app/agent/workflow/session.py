@@ -3,7 +3,7 @@
 여기가 하는 일은 셋이다.
 
   · **대화를 잇는다** — `thread_id` 로 Checkpointer 에 State 를 맡긴다. 되묻기가 가능해지는 이유.
-  · **관측을 붙인다** — Langfuse `CallbackHandler(session_id=thread_id)` 를 모든 실행에 단다.
+  · **관측을 붙인다** — Langfuse callback과 `langfuse_session_id` metadata를 모든 실행에 단다.
     한 대화가 한 세션으로 묶여야 트레이스를 읽을 수 있다.
   · **승인 대기를 노출한다** — 그래프가 ActionExecutor 앞에서 멈췄다는 사실과, 무엇을 승인해야 하는지를
     화면이 알 수 있는 형태로 돌려준다.
@@ -53,6 +53,7 @@ def _config(thread_id: str, meter=None) -> dict:
         cbs = cbs + [h]
     return {"configurable": {"thread_id": thread_id},
             "callbacks": cbs,
+            "metadata": {"langfuse_session_id": thread_id},
             "recursion_limit": RECURSION_LIMIT}
 
 

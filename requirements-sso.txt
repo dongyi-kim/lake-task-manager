@@ -1,13 +1,13 @@
 # Prod (corporate SSO) path only - Playwright bundled Chromium
 -r requirements.txt
 # Pinned for a deterministic Chromium build (so an offline browser copy matches).
-playwright==1.61.0
+playwright==1.62.0
 # 시스템 트레이 상주(창 닫아도 백엔드 유지) — pystray + 아이콘 렌더용 Pillow.
 # 없으면 run.py 가 기존 '창 닫으면 종료' 모드로 자동 폴백한다(트레이는 best-effort).
 pystray==0.19.5
-Pillow>=10.0.0
+Pillow==12.3.0
 # After install: `playwright install chromium`
 # If the corporate network blocks the download CDN, provision the browser offline:
-#   1) On any PC with internet:  pip install playwright==1.61.0 && playwright install chromium
+#   1) On any PC with internet:  pip install playwright==1.62.0 && playwright install chromium
 #   2) Copy  %LOCALAPPDATA%\ms-playwright  to the SAME path on the target PC.
 # Or use a proxy:  set HTTPS_PROXY=http://<proxy>:<port>   before running.

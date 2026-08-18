@@ -41,6 +41,7 @@ DEFAULT_API_VERSION = "2024-10-21"
 
 DEFAULT_OPENAI_CHAT = "gpt-4o-mini"
 DEFAULT_OPENAI_EMBED = "text-embedding-3-small"
+_LANGFUSE_CACHE: dict[str, object] = {"signature": None, "client": None}
 
 
 # ── 설치 게이팅 ────────────────────────────────────────────────────
@@ -696,10 +697,21 @@ def get_langfuse_handler(session_id: str = None):
     if not (pk and sk):
         return None
     try:
-        from langfuse.callback import CallbackHandler
-        return CallbackHandler(public_key=pk, secret_key=sk,
-                               host=_secrets.get("langfuseHost") or None,
-                               session_id=session_id)
+        from langfuse import Langfuse
+        from langfuse.langchain import CallbackHandler
+        host = _secrets.get("langfuseHost") or None
+        signature = (str(pk), str(sk), str(host or ""))
+        if _LANGFUSE_CACHE.get("signature") != signature:
+            _LANGFUSE_CACHE.update(
+                signature=signature,
+                client=Langfuse(
+                    public_key=pk, secret_key=sk, base_url=host,
+                ),
+            )
+        # Langfuse v4 binds the conversation via LangChain invocation metadata rather
+        # than a CallbackHandler constructor argument. ``session_id`` remains accepted
+        # here so existing callers do not need a second observability API.
+        return CallbackHandler(public_key=pk)
     except Exception:
         return None
 

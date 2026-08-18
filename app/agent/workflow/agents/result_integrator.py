@@ -23,10 +23,15 @@ from app.agent.prompts.roles import SYSTEM_RESULT_INTEGRATOR
 from app.agent.workflow.claim_grounding import (
     drop_unsupported_guarantees as _drop_unsupported_guarantees,
 )
+from app.agent.workflow.claim_provenance import (
+    EVIDENCE_HEADING_RE, bind_evidence_provenance, evidence_source_id,
+)
 from app.agent.workflow.evidence_index import (
     atomic_fact_sidecar, build_atomic_fact_ledger, build_claim_provenance_graph,
-    canonical_observation_facts, canonicalize_evidence_index,
+    canonical_observation_facts, canonical_quantity_relations,
+    canonical_related_documents, canonicalize_evidence_index,
     enforce_atomic_fact_boundaries, normalize_evidence_heading_boundary,
+    normalize_evidence_summaries, rebind_atomic_fact_citations,
 )
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.source_coverage import (
@@ -220,6 +225,9 @@ class ResultIntegrator(TextAgent):
         atomic_facts = atomic_fact_sidecar(
             state, extra_facts=activity_atomic_facts(state.get("group_activity") or ""),
         )
+        quantity_relations = [
+            relation.as_dict() for relation in canonical_quantity_relations(state)
+        ]
         if atomic_facts:
             goal += (
                 "\nUse the Typed Atomic Fact Ledger as a binding boundary. Never transfer a value across "
@@ -375,6 +383,9 @@ class ResultIntegrator(TextAgent):
                        json.dumps(provenance_graph, ensure_ascii=False, default=str)),
             data_block("Typed Atomic Fact Ledger: Current, Historical, and Conflict Sidecar",
                        json.dumps(atomic_facts, ensure_ascii=False, default=str)),
+            data_block("Typed Quantity Relations: Immutable Canonical Source Spans",
+                       (json.dumps(quantity_relations, ensure_ascii=False, default=str)
+                        if quantity_relations else "")),
             data_block("Requested Source Coverage Ledger",
                        json.dumps(source_coverage, ensure_ascii=False, default=str)),
             data_block("Related Documents", docs),
@@ -2069,6 +2080,112 @@ _SOURCE_COVERAGE_LIMIT_TEXT = {
 }
 
 
+def _materialized_internal_source_rows(state, *, cap: int | None = 8) -> list[dict]:
+    """Return successful opened Jira identities in deterministic acquisition order."""
+    rows: list[dict] = []
+    seen: set[str] = set()
+    by_key: dict[str, dict] = {}
+
+    def add(values) -> None:
+        for raw in values or []:
+            if not isinstance(raw, dict) or raw.get("error"):
+                continue
+            key = str(raw.get("key") or "").strip().upper()
+            if not _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I):
+                continue
+            if key in seen:
+                # Current-turn query data wins.  A durable row may still carry canonical
+                # description/comment cells omitted by a compact current projection, so fill
+                # only missing fields on our copy instead of discarding that authority.
+                current = by_key[key]
+                for field, value in raw.items():
+                    if current.get(field) in (None, "", [], {}) \
+                            and value not in (None, "", [], {}):
+                        current[field] = value
+                continue
+            seen.add(key)
+            projected = {**raw, "key": key}
+            by_key[key] = projected
+            rows.append(projected)
+
+    planned = {
+        str(row.get("id") or "").strip()
+        for row in ((state.get("query_plan") or {}).get("queries") or [])
+        if isinstance(row, dict) and row.get("source") == "jira"
+    }
+    query_rows = [
+        row for row in (state.get("query_results") or [])
+        if isinstance(row, dict) and row.get("source") == "jira"
+    ]
+    # A planned+executed query is the strongest current-turn ledger.  Persisted materialized
+    # details follow it so a continuation still preserves identities after query reset.
+    for query in sorted(
+            query_rows,
+            key=lambda row: 0 if str(row.get("id") or "").strip() in planned else 1):
+        result = query.get("result") or {}
+        if isinstance(result, dict):
+            add(result.get("ticketDetails") or [])
+    ledger = state.get("materialized_ticket_sources") or {}
+    if isinstance(ledger, dict):
+        add(ledger.get("ticketDetails") or [])
+    return rows if cap is None else rows[:max(0, int(cap or 0))]
+
+
+def _ensure_internal_source_coverage_disclosure(
+        text: str, state, selected_evidence: list[dict]) -> str:
+    """Disclose opened internal identities omitted by bounded Research selection.
+
+    Materialization proves that a source was inspected, not that it supports the conclusion.
+    Omitted rows therefore remain outside ``### 근거`` and are explicitly labelled as not
+    selected rather than being silently lost or promoted into evidence.
+    """
+    value = _re.sub(
+        r"(?ms)^###\s*조회된\s*내부\s*출처\s*범위\s*$.*?(?=^###\s|\Z)",
+        "", str(text or ""),
+    ).strip()
+    materialized = _materialized_internal_source_rows(state)
+    if not materialized:
+        return value
+    def has_material_finding(item: dict) -> bool:
+        if str(item.get("why") or "").strip():
+            return True
+        return any(
+            (str(observation.get("text") or "").strip()
+             and str(observation.get("source") or "").strip().casefold() != "query")
+            if isinstance(observation, dict) else bool(str(observation or "").strip())
+            for observation in (item.get("observations") or [])
+        )
+
+    selected = {
+        evidence_source_id(item) for item in selected_evidence or []
+        if isinstance(item, dict) and has_material_finding(item)
+    }
+    heading = EVIDENCE_HEADING_RE.search(value)
+    if heading:
+        for key in _re.findall(
+                r"\{\{ticket-detail:([A-Z][A-Z0-9]*-\d+)\}\}",
+                value[heading.start():], _re.I):
+            selected.add(f"ticket:{key.upper()}")
+    omitted = [row for row in materialized
+               if f"ticket:{row['key']}" not in selected]
+    if not omitted:
+        return _re.sub(r"\n{3,}", "\n\n", value).strip()
+    lines = ["### 조회된 내부 출처 범위", ""]
+    for row in omitted:
+        lines.append(
+            f"- {{{{ticket-inline:{row['key']}}}}} — 실물 조회 완료, "
+            "최종 결론 근거로 선택하지 않음"
+        )
+    block = "\n".join(lines)
+    heading = EVIDENCE_HEADING_RE.search(value)
+    if heading:
+        value = (value[:heading.start()].rstrip() + "\n\n" + block + "\n\n"
+                 + value[heading.start():].lstrip())
+    else:
+        value = value.rstrip() + "\n\n" + block
+    return _re.sub(r"\n{3,}", "\n\n", value).strip()
+
+
 def _ensure_requested_source_coverage(text: str, state) -> str:
     """Render each explicitly requested but unavailable source class exactly once."""
     value = str(text or "").strip()
@@ -3062,18 +3179,211 @@ def _drop_direct_input_source_rows(text: str) -> str:
     return _re.sub(r"\n{3,}", "\n\n", value).strip()
 
 
+def _selected_final_evidence(state) -> list[dict]:
+    """Return the immutable display selection shared by reply and eval projections."""
+    if _approval_display_mode(state):
+        rows = _approval_display_evidence(state)
+    else:
+        rows = [
+            _without_query_provenance(item)
+            for item in (state.get("evidence") or [])
+            if isinstance(item, dict) and not _is_non_renderable_evidence(item, state)
+        ]
+    return [_dedupe_ticket_description_observations(item) for item in rows]
+
+
+def _authority_safe_evidence(rows) -> list[dict]:
+    """Strip model-declared authority while preserving display prose and source identity."""
+    safe: list[dict] = []
+    for raw in rows or []:
+        if not isinstance(raw, dict):
+            continue
+        item = {
+            field: raw.get(field)
+            for field in ("key", "title", "url", "why", "confidence", "fitness",
+                          "limitations")
+            if raw.get(field) not in (None, "")
+        }
+        observations = []
+        for raw_observation in raw.get("observations") or []:
+            if isinstance(raw_observation, dict):
+                observations.append({
+                    "source": str(raw_observation.get("source") or "").strip(),
+                    "text": str(raw_observation.get("text") or ""),
+                })
+            elif isinstance(raw_observation, str):
+                observations.append(raw_observation)
+        item["observations"] = observations
+        safe.append(item)
+    return safe
+
+
+def canonical_evaluation_evidence(state) -> list[dict]:
+    """Project final evidence without mutating or granting authority to model prose.
+
+    Source identity comes from the same final selection used by the reply.  Exact Jira
+    description/comment cells are rebound to a materialized QueryRunner row; every other
+    observation remains an explicitly indirect research projection.  Opened but unselected
+    ticket identities are retained in a bounded coverage ledger with no observations, so
+    acquisition is visible without presenting an omitted source as conclusion evidence.
+    """
+    selected_input = _authority_safe_evidence(_selected_final_evidence(state))
+    display_rows = normalize_evidence_summaries(selected_input)
+    bound_rows = bind_evidence_provenance(selected_input)
+
+    # QueryRunner ticketDetails and the durable ledger are both canonical acquisition
+    # artifacts.  Build an ephemeral authority view; the caller's state remains untouched.
+    materialized = _materialized_internal_source_rows(state, cap=None)
+    materialized_by_source = {
+        f"ticket:{row['key']}": row for row in materialized
+    }
+    authority_state = dict(state or {})
+    authority_state["materialized_ticket_sources"] = {
+        "ticketDetails": [dict(row) for row in materialized],
+    }
+    trusted_by_observation = {
+        str(row.get("observation_id") or ""): row
+        for row in canonical_observation_facts(authority_state, selected_input)
+        if row.get("observation_id")
+    }
+
+    result: list[dict] = []
+    result_by_source: dict[str, dict] = {}
+    trusted_fields = (
+        "fact_id", "source_id", "subject_id", "predicate", "value", "claim_kind",
+        "observed_at", "normalized_text", "provenance", "direct", "typed",
+        "authority", "state", "temporal_role",
+    )
+
+    for index, display_item in enumerate(display_rows):
+        bound_item = bound_rows[index]
+        raw_item = selected_input[index]
+        source_id = str(bound_item.get("_source_id") or evidence_source_id(raw_item))
+        materialized_row = materialized_by_source.get(source_id)
+        source_authority = "research_projection"
+        if materialized_row:
+            source_authority = "materialized_ticket_sources"
+        elif source_id.startswith("url:") and _research_url_provenance(
+                state, str(display_item.get("url") or "")):
+            # This proves acquisition and URL identity only.  Observation prose below stays
+            # indirect unless a separate canonical cell rebinds it.
+            source_authority = "executed_query_result_url"
+
+        title = str(display_item.get("title") or "").strip()
+        url = str(display_item.get("url") or "").strip()
+        if materialized_row:
+            title = str(materialized_row.get("summary") or title).strip()
+            url = str(materialized_row.get("url") or url).strip()
+        row = {
+            "key": str(display_item.get("key") or "").strip(),
+            "title": title,
+            "_source_id": source_id,
+            "_source_class": str(bound_item.get("_source_class") or "untyped"),
+            "_selection": "selected",
+            "_authority": source_authority,
+            "observations": [],
+        }
+        if url:
+            row["url"] = url
+        why = str(display_item.get("why") or "").strip()
+        if why:
+            row["why"] = why
+            row["_why_authority"] = "research_projection"
+
+        sidecar = bound_item.get("_provenance") or {}
+        observation_ids = {
+            int(binding.get("ordinal") or 0): str(binding.get("observation_id") or "")
+            for binding in (sidecar.get("observations") or [])
+            if isinstance(binding, dict)
+        }
+        raw_observations = raw_item.get("observations") or []
+        for ordinal, display_observation in enumerate(
+                display_item.get("observations") or [], 1):
+            observation_id = observation_ids.get(ordinal, "")
+            if isinstance(display_observation, dict):
+                observation = {
+                    "source": str(display_observation.get("source") or "").strip(),
+                    "text": str(display_observation.get("text") or ""),
+                    "authority": "research_projection",
+                    "direct": False,
+                    "typed": False,
+                    "temporal_role": "untyped",
+                }
+                if observation_id:
+                    observation["observation_id"] = observation_id
+                raw_observation = (
+                    raw_observations[ordinal - 1]
+                    if ordinal <= len(raw_observations) else None
+                )
+                unchanged = (
+                    isinstance(raw_observation, dict)
+                    and observation["text"] == str(raw_observation.get("text") or "")
+                )
+                trusted = trusted_by_observation.get(observation_id) if unchanged else None
+                if trusted:
+                    observation.update({
+                        field: trusted[field] for field in trusted_fields if field in trusted
+                    })
+                row["observations"].append(observation)
+            elif isinstance(display_observation, str):
+                row["observations"].append({
+                    "source": "evidence", "text": display_observation,
+                    "authority": "research_projection", "direct": False,
+                    "typed": False, "temporal_role": "untyped",
+                })
+
+        existing = result_by_source.get(source_id)
+        if existing is None:
+            result_by_source[source_id] = row
+            result.append(row)
+            continue
+        seen_observations = {
+            str(observation.get("observation_id") or "")
+            or "\x1f".join((str(observation.get("source") or ""),
+                              str(observation.get("text") or "")))
+            for observation in existing["observations"]
+        }
+        for observation in row["observations"]:
+            identity = (str(observation.get("observation_id") or "")
+                        or "\x1f".join((str(observation.get("source") or ""),
+                                         str(observation.get("text") or ""))))
+            if identity not in seen_observations:
+                seen_observations.add(identity)
+                existing["observations"].append(observation)
+
+    # Eight identities are enough for reviewer visibility while keeping snapshots bounded.
+    # They intentionally carry no observations or conclusion authority.
+    omitted_count = 0
+    for materialized_row in materialized:
+        source_id = f"ticket:{materialized_row['key']}"
+        if source_id in result_by_source:
+            continue
+        result.append({
+            "key": materialized_row["key"],
+            "title": str(materialized_row.get("summary") or "").strip(),
+            "_source_id": source_id,
+            "_source_class": "jira",
+            "_selection": "inspected_not_selected",
+            "_authority": "materialized_ticket_sources",
+            "observations": [],
+        })
+        omitted_count += 1
+        if omitted_count >= 8:
+            break
+    return result
+
+
 def _merge_evidence_index(text: str, state) -> str:
     """Union model references and structured research provenance in the persisted reply."""
     approval_display = _approval_display_mode(state)
-    evidence = (_approval_display_evidence(state) if approval_display else
-                [_without_query_provenance(item) for item in (state.get("evidence") or [])
-                 if isinstance(item, dict) and not _is_non_renderable_evidence(item, state)])
-    evidence = [_dedupe_ticket_description_observations(item) for item in evidence]
+    evidence = _selected_final_evidence(state)
     value = _normalize_rendered_evidence_ticket_tokens(
         _drop_direct_input_source_rows(_fold_standalone_sources(text)),
     )
     value = _drop_irrelevant_rendered_external_sources(value, state)
-    related_docs = state.get("related_docs") or []
+    related_docs = canonical_related_documents(
+        state, state.get("related_docs") or [],
+    )
     if approval_display:
         # Approval prose is a deterministic payload projection. Rebuild its source tail from
         # the filtered view so an earlier generic search block cannot survive a second pass.
@@ -3097,11 +3407,17 @@ def _merge_evidence_index(text: str, state) -> str:
             or (str(doc.get("title") or "").strip().casefold() in visible_titles
                 and title_counts.get(str(doc.get("title") or "").strip().casefold()) == 1)
         )]
-    return canonicalize_evidence_index(
+    else:
+        value = _ensure_internal_source_coverage_disclosure(value, state, evidence)
+    rendered = canonicalize_evidence_index(
         value,
         evidence=evidence,
         related_docs=related_docs,
         observation_facts=canonical_observation_facts(state, evidence),
+        quantity_relations=canonical_quantity_relations(state),
+    )
+    return rebind_atomic_fact_citations(
+        rendered, build_atomic_fact_ledger(state),
     )
 
 

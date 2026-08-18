@@ -50,7 +50,9 @@ from app.agent.workflow.evidence_relations import (
     same_relation,
 )
 from app.agent.workflow.effect_contract import (
+    PENDING_RATIONALE_CONTRACT,
     materialize_requested_update_effects,
+    project_pending_rationale,
     seal_requested_effect_contract,
 )
 from app.agent.workflow.prompts import data_block, persona, wrap_data
@@ -507,6 +509,28 @@ def _html_list(values, *, checklist: bool = False) -> str:
     ) + "</ul>"
 
 
+def _collapse_adjacent_duplicate_tokens(value: str) -> str:
+    """Remove only adjacent, exactly equal token spans from generated prose.
+
+    No spelling, stemming, case folding, or semantic similarity is involved.  This keeps the
+    transformation safe for arbitrary product language while repairing mechanical model
+    echoes such as ``read path read path validation``.
+    """
+    tokens = str(value or "").split()
+    changed = True
+    while changed and len(tokens) >= 2:
+        changed = False
+        for width in range(len(tokens) // 2, 0, -1):
+            for start in range(0, len(tokens) - 2 * width + 1):
+                if tokens[start:start + width] == tokens[start + width:start + 2 * width]:
+                    del tokens[start + width:start + 2 * width]
+                    changed = True
+                    break
+            if changed:
+                break
+    return " ".join(tokens)
+
+
 def _scope_identity(value: str) -> str:
     return _re.sub(r"[^0-9A-Za-z가-힣]+", "", str(value or "")).casefold()
 
@@ -540,8 +564,10 @@ def _materialize_creation_parts(out: dict, state: dict | None = None) -> None:
             reproduction = item.pop("reproduction", []) or []
             expected = str(item.pop("expected", "") or "").strip()
             actual = str(item.pop("actual", "") or "").strip()
-            included = item.pop("scope_in", []) or []
-            excluded = item.pop("scope_out", []) or []
+            included = [_collapse_adjacent_duplicate_tokens(value)
+                        for value in (item.pop("scope_in", []) or [])]
+            excluded = [_collapse_adjacent_duplicate_tokens(value)
+                        for value in (item.pop("scope_out", []) or [])]
             # An exclusion that repeats included scope is a contradiction, not a boundary.
             # Qwen produced this exact failure for every row of a PoC draft.  Compare the
             # semantic values before HTML rendering so the older prose guards cannot miss
@@ -553,7 +579,8 @@ def _materialize_creation_parts(out: dict, state: dict | None = None) -> None:
             # production rollout and broad expansion are not part of this first stage.
             if not excluded and _re.search(r"\bPoC\b|1\s*차|1차", request, _re.I):
                 excluded = ["운영 배포 및 전체 대상 확대"]
-            dod = item.pop("dod", []) or []
+            dod = [_collapse_adjacent_duplicate_tokens(value)
+                   for value in (item.pop("dod", []) or [])]
             refs = item.pop("references", []) or []
             scope = _html_list(included)
             if excluded:
@@ -579,8 +606,10 @@ def _materialize_creation_parts(out: dict, state: dict | None = None) -> None:
         for child in (item.get("children") or []):
             if not isinstance(child, dict) or str(child.get("description") or "").strip():
                 continue
-            included = child.pop("scope_in", []) or []
-            dod = child.pop("dod", []) or []
+            included = [_collapse_adjacent_duplicate_tokens(value)
+                        for value in (child.pop("scope_in", []) or [])]
+            dod = [_collapse_adjacent_duplicate_tokens(value)
+                   for value in (child.pop("dod", []) or [])]
             child["description"] = (
                 "<h3>작업 범위</h3>" + _html_list(included)
                 + "<h3>완료 조건 (DoD)</h3>" + _html_list(dod, checklist=True)
@@ -1625,21 +1654,21 @@ def _request_refinement_projection(state: dict) -> dict:
                 else:
                     item["description"] = body + phase_block
 
-    rationale = str(prior.get("rationale") or "").strip()
-    changed = [key for key, value in (
-        ("parent", parent), ("phase", phase), ("duedate", due),
-    ) if value]
-    return {
+    projection = {
         "questions": questions,
         "mode": str(prior.get("mode") or "task"),
         "structure": str(prior.get("structure") or ""),
         "structure_why": str(prior.get("structure_why") or ""),
         "items": items,
-        "rationale": (rationale + "\n(검증된 후속 필드만 기존 초안에 반영: "
-                      + ", ".join(changed) + ")").strip(),
+        "rationale_contract": PENDING_RATIONALE_CONTRACT,
         **({"resolved_slots": resolved_slots} if resolved_slots else {}),
         "_construction": "request_refinement",
     }
+    # A field-only continuation is a new payload revision.  Reusing the previous free-form
+    # rationale would retain a removed/changed parent or due date, so render only the current
+    # typed draft snapshot.
+    projection["rationale"] = project_pending_rationale(draft=projection)
+    return projection
 
 
 class WorkArchitect(StructuredAgent):
@@ -1683,6 +1712,7 @@ class WorkArchitect(StructuredAgent):
                 prior = copy.deepcopy(state.get("draft") or {})
                 prior["items"] = refinement["items"]
                 prior["rationale"] = refinement.get("rationale") or prior.get("rationale") or ""
+                prior["rationale_contract"] = refinement["rationale_contract"]
                 if "resolved_slots" in refinement:
                     prior["resolved_slots"] = copy.deepcopy(refinement["resolved_slots"])
                 seal_work_item_identities(state, prior)
@@ -3981,6 +4011,12 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             state, draft=draft, change_plan=plan,
             force_refresh=bool(typed_parent_slots),
         )
+        # Existing-ticket rationale is entirely describable by the current effect payload.
+        # Rebuild it after every normalizer and effect seal so an older priority, due date,
+        # comment, or title sentence cannot survive a replacement turn.
+        if plan and action in {"update", "comment"}:
+            plan["why"] = project_pending_rationale(change_plan=plan)
+            plan["rationale_contract"] = PENDING_RATIONALE_CONTRACT
         previous_review = state.get("review") or {}
         prior_signature = str(previous_review.get("defect_signature") or "")
         if previous_review.get("ok") is False and prior_signature:
@@ -5521,19 +5557,7 @@ def _collapse_repeated_summary(summary: str) -> str:
     combining the parent subject and a child title.  The duplicate is mechanical: delete
     only an adjacent, exactly equal token span and preserve every other word.
     """
-    tokens = str(summary or "").split()
-    changed = True
-    while changed and len(tokens) >= 2:
-        changed = False
-        for width in range(len(tokens) // 2, 0, -1):
-            for start in range(0, len(tokens) - 2 * width + 1):
-                if tokens[start:start + width] == tokens[start + width:start + 2 * width]:
-                    del tokens[start + width:start + 2 * width]
-                    changed = True
-                    break
-            if changed:
-                break
-    return " ".join(tokens)
+    return _collapse_adjacent_duplicate_tokens(summary)
 
 
 def _bug_grade_body(body) -> bool:
