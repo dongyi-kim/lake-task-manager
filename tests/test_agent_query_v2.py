@@ -818,6 +818,126 @@ def test_runner_keeps_full_materialized_raw_but_bounds_llm_and_continuation_proj
     assert len(json.dumps(raw, ensure_ascii=False)) > len(rendered) * 2
 
 
+def test_research_materialization_expands_bounded_root_validation_entities(monkeypatch):
+    """A strict keyword search must not hide a relevant child or direct linked validator.
+
+    The root contains both query anchors, while each validation entity deliberately contains
+    only one.  Expansion follows verified Jira edges; it must not relax the global JQL or admit
+    an unrelated child merely because it is newer.
+    """
+    from app.agent import tools as T
+    from app.agent.workflow.agents.query_runner import _materialize_evidence
+
+    class GraphClient(_Client):
+        def ticket_children(self, key):
+            assert key == "ACME-100"
+            return [
+                {"key": "ACME-102", "summary": "AcmeReader validation",
+                 "updated": "2026-08-18T09:00:00Z", "status": "In Progress"},
+                {"key": "ACME-103", "summary": "Dashboard colour cleanup",
+                 "updated": "2026-08-19T09:00:00Z", "status": "Open"},
+            ]
+
+        def ticket_related(self, key, limit=20):
+            assert key == "ACME-100" and limit <= 20
+            return [
+                {"key": "ACME-104", "summary": "AcmeWriter output verification",
+                 "updated": "2026-08-17T09:00:00Z", "via": "link",
+                 "rel": "validates"},
+                {"key": "OTHER-9", "summary": "AcmeWriter verification outside scope",
+                 "updated": "2026-08-20T09:00:00Z", "via": "link",
+                 "rel": "validates"},
+            ][:limit]
+
+    fake = GraphClient(0)
+    _ctx.bind(fake, _settings(["ACME"]))
+    opened = []
+
+    def ticket(args):
+        key = args["key"]
+        opened.append(key)
+        return {
+            "key": key,
+            "type": "Epic" if key == "ACME-100" else "Task",
+            "summary": {
+                "ACME-100": "AcmeWriter AcmeReader rollout",
+                "ACME-102": "AcmeReader validation",
+                "ACME-104": "AcmeWriter output verification",
+            }[key],
+            "updated": {
+                "ACME-100": "2026-08-16T09:00:00Z",
+                "ACME-102": "2026-08-18T09:00:00Z",
+                "ACME-104": "2026-08-17T09:00:00Z",
+            }[key],
+            "description": "verified material", "comments": [],
+        }
+
+    monkeypatch.setitem(T.BY_NAME, "get_ticket", SimpleNamespace(invoke=ticket))
+    results = [{
+        "id": "jira-research", "source": "jira", "result": {
+            "query": "AcmeWriter AcmeReader rollout",
+            "tickets": [{"key": "ACME-100", "summary": "AcmeWriter AcmeReader rollout",
+                         "issueType": "Epic", "updated": "2026-08-16T09:00:00Z"}],
+            "returned": 1, "total": 1, "complete": True,
+        },
+    }]
+
+    got = _materialize_evidence(
+        results,
+        focus="AcmeWriter AcmeReader rollout readiness",
+        expand_entities=True,
+    )
+
+    assert set(opened) == {"ACME-100", "ACME-102", "ACME-104"}
+    assert "ACME-103" not in opened and "OTHER-9" not in opened
+    assert got["ticketKeys"] == ["ACME-100", "ACME-102", "ACME-104"]
+    coverage = got["entityCoverage"]
+    assert coverage["mode"] == "bounded_one_hop"
+    assert coverage["rootKeys"] == ["ACME-100"]
+    assert coverage["selectedKeys"] == ["ACME-102", "ACME-104"]
+    assert coverage["complete"] is False
+    assert coverage["callBudget"]["root_neighbor_reads"] == 2
+    assert coverage["callBudget"]["expanded_detail_reads"] == 2
+
+    opened.clear()
+    tiny = _materialize_evidence(
+        results, focus="AcmeWriter AcmeReader rollout readiness",
+        expand_entities=True, ticket_cap=1,
+    )
+    assert opened == ["ACME-100"]
+    assert tiny["ticketKeys"] == ["ACME-100"]
+    assert "entityCoverage" not in tiny
+
+
+def test_entity_expansion_uses_explicit_ticket_root_and_latest_same_subject_validator():
+    """A named non-Epic root is valid; recency never admits a different actor."""
+    from app.agent.workflow.source_graph import expansion_root_keys, select_validation_edges
+
+    details = [
+        {"key": "ACME-200", "type": "Task", "summary": "AcmeWriter rollout"},
+        {"key": "ACME-201", "type": "Task", "summary": "AcmeReader rollout"},
+    ]
+    assert expansion_root_keys(details, preferred_keys=["ACME-201"]) == ["ACME-201"]
+
+    edges = [
+        {"root_key": "ACME-201", "target_key": "ACME-202", "kind": "child",
+         "relation": "validates", "summary": "AcmeWriter AcmeReader compatibility",
+         "updated": "2026-08-16T09:00:00Z"},
+        {"root_key": "ACME-201", "target_key": "ACME-203", "kind": "child",
+         "relation": "validates", "summary": "AcmeReader output validation",
+         "updated": "2026-08-18T09:00:00Z"},
+        {"root_key": "ACME-201", "target_key": "ACME-204", "kind": "child",
+         "relation": "validates", "summary": "BetaReader output validation",
+         "updated": "2026-08-19T09:00:00Z"},
+    ]
+    selected, eligible = select_validation_edges(
+        edges, ["acmewriter", "acmereader"], cap=1,
+    )
+
+    assert eligible == 2
+    assert [row["target_key"] for row in selected] == ["ACME-203"]
+
+
 def test_continuation_reprojects_legacy_oversized_ticket_ledger_around_current_subject():
     import json
 

@@ -278,6 +278,16 @@ def _requested_source_coverage(state) -> list[dict]:
             status = "not_executed"
         else:
             status = "zero_hits"
+        entity_rows = [
+            (row.get("result") or {}).get("entityCoverage")
+            for row in executed
+            if isinstance(row.get("result"), dict)
+            and isinstance((row.get("result") or {}).get("entityCoverage"), dict)
+        ] if source_class == "jira" else []
+        entity_complete = bool(entity_rows) and all(
+            row.get("complete") is True and row.get("truncated") is not True
+            for row in entity_rows
+        )
         coverage.append({
             "source_class": source_class,
             "label": _SOURCE_COVERAGE_LABELS[source_class],
@@ -288,6 +298,16 @@ def _requested_source_coverage(state) -> list[dict]:
             **({"candidate_hits": candidate_hits}
                if source_class in _OFFICIAL_EXTERNAL_SOURCE_COVERAGE_CLASSES else {}),
             "usable_as_evidence": status == "covered",
+            **({
+                # Source pagination and entity traversal answer different questions. A
+                # green Jira row proves the scoped JQL completed; bounded child/link
+                # expansion remains explicitly non-complete unless its own provider says so.
+                "entity_coverage_status": "complete" if entity_complete else "bounded",
+                "entity_coverage_complete": entity_complete,
+                "entity_roots": sum(len(row.get("rootKeys") or []) for row in entity_rows),
+                "entity_selected": sum(len(row.get("selectedKeys") or []) for row in entity_rows),
+                "entity_truncated": any(row.get("truncated") is True for row in entity_rows),
+            } if entity_rows else {}),
             **({"incomplete_reason": incomplete_reason} if incomplete_reason else {}),
             **({"missing_query_ids": missing_query_ids} if missing_query_ids else {}),
         })

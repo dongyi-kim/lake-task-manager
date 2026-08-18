@@ -25,9 +25,10 @@ from app.agent.prompts.roles import SYSTEM_WORK_ARCHITECT
 from app.agent.workflow.anchors import (
     bind_single_outcome_contract, format_requested_outcome_contract,
     requested_outcome_contract, scoped_continuation_decisions,
-    single_outcome_binding,
+    seal_work_item_identities, single_outcome_binding, work_item_id,
 )
 from app.agent.workflow.agents.base import StructuredAgent, invoke_schema
+from app.agent.workflow.contracts import QuestionContract
 from app.agent.workflow.continuation import (
     authoritative_decision_values,
     is_top_level_parent_choice,
@@ -48,6 +49,7 @@ from app.agent.workflow.evidence_relations import (
     relation_terms,
     same_relation,
 )
+from app.agent.workflow.effect_contract import seal_requested_effect_contract
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import (MAX_REFINE_TURNS, AgentState, Intent, Node,
                                       conversation, last_user_text, note, reads_as_bug,
@@ -2099,6 +2101,17 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         }
         if "outcome_refs" not in item_schema["required"]:
             item_schema["required"].append("outcome_refs")
+        item_schema["properties"]["item_id"] = {
+            "type": "string", "maxLength": 80,
+            "enum": [
+                work_item_id(contract["id"], row["id"])
+                for row in contract.get("outcomes") or []
+            ],
+            "description": (
+                "Optional runtime work-item identity paired with the single outcome_ref. "
+                "Preserve it during a repair; runtime verifies and re-seals it."
+            ),
+        }
         child_schema = item_schema["properties"]["children"]["items"]
         child_schema["properties"]["outcome_refs"] = {
             "type": "array", "minItems": 1, "maxItems": 6,
@@ -2217,6 +2230,12 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             # to this apply call; an intent-less read/respond state stays non-creating.
             state = {**state, "_legacy_work_projection": "create"}
         action = _work_action(state)
+        # RequestPlan cardinality is typed authority.  Generic "small/delegated" and
+        # semantic-title compactors operate on mutable prose, so they may simplify only
+        # when there is no explicit multi-outcome contract to preserve.
+        typed_outcome_count = len(
+            requested_outcome_contract(state).get("outcomes") or []
+        )
         if _is_create_action(state):
             _materialize_creation_parts(out, state)
         # 문자열로 오면(구모델·fake) 구조로 승격한다 — 화면은 dict 만 다루면 된다.
@@ -2251,17 +2270,14 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         if delegated:
             qs = [q for q in qs if _delegated_question_is_blocking(state, q)]
         qs = _drop_unneeded_meeting_questions(state, qs)
-        # Questions are an execution-blocker channel, not a preference survey. A safe
-        # structure/default remains editable on the approval card and must not suspend the
-        # graph. Structure preferences are never blockers, even if a model labels one so.
-        qs = [q for q in qs
-              if str(q.get("field") or "").casefold() != "structure"
-              and _question_requires_input(q)]
+        items = [i for i in (out.get("items") or []) if isinstance(i, dict) and i.get("summary")]
+        qs = _normalize_question_contracts(
+            state, qs, mode=str(out.get("mode") or "task"), items=items,
+        )
         # 모델이 낸 질문은 **초안을 만들기 전에 답이 필요한 질문**이다. 뒤에서 코드가
         # 붙이는 구조 확인 질문과 구분해 둔다 — 전자는 초안과 함께 내면 사용자가 무엇을
         # 승인해야 할지 모순되고, 후자는 초안의 모양을 보여 주려고 일부러 함께 낸다.
         model_questions = bool(qs)
-        items = [i for i in (out.get("items") or []) if isinstance(i, dict) and i.get("summary")]
         if not out.get("_construction"):
             _discard_projected_assignees(items)
         if _is_create_action(state) and not items and not qs:
@@ -2681,7 +2697,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # "체크박스 하나 추가, 알아서" 같은 요청이 조사 문맥의 단계어를 주워 Epic+Sub-Task
         # 다섯 건으로 부풀었다. 단일 산출물·짧은 요청·전권 위임이 동시에 확인된 경우에만
         # 적용하며, 사용자가 분할/단계/복수 산출물을 말한 요청은 건드리지 않는다.
-        if (mode == "task" and items and _simple_delegated_request(state)
+        if (mode == "task" and items and typed_outcome_count <= 1
+                and _simple_delegated_request(state)
                 and out.get("_construction") != "request_refinement"):
             best = _best_item_for_request(state, items)
             changed = len(items) > 1 or bool(best.get("children"))
@@ -3123,7 +3140,11 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                                     + "\n(단계 항목은 독립 Task 가 아니라 Sub-Task 로 접었다)").strip()
 
         need = 2 if structure == "task_with_subtasks" else 3
-        if mode == "task" and len(items) >= need:
+        # A typed RequestPlan already states whether these are independent outcomes. Never
+        # collapse those roots by title similarity: overlapping producer/consumer/reviewer
+        # descriptions are mutable prose and cannot replace stable outcome identity.
+        has_typed_outcomes = typed_outcome_count > 0
+        if mode == "task" and len(items) >= need and not has_typed_outcomes:
             bases = [_base_title(str(i.get("summary") or "")) for i in items]
             # 전원일치를 요구하면 **30개 중 하나만 어긋나도 접기가 통째로 무산된다**
             # (실측 STR1: 같은 요청이 8건·30건·1+30 으로 매번 다르게 나온다). 그렇다고
@@ -3513,7 +3534,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # 같은 산출물을 모듈만 달리해 2~3벌 만든 경우를 접는다. 단순 문자열 중복이 아니라
         # 행동어(조정/최적화/개선)를 뗀 업무 핵심어로 묶고, module-aliases가 가리키는 실제
         # 모듈의 항목을 남긴다. 예: "쿼리 엔진 인덱스"는 Runtime 한 건만 유지한다.
-        if mode == "task" and len(items) > 1:
+        if mode == "task" and len(items) > 1 and not has_typed_outcomes:
             removed = _dedupe_semantic_items(state, items)
             if removed:
                 structure = out["structure"] = draft["structure"] = \
@@ -3674,9 +3695,9 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         plan, qs = _change_plan(state, out, items, qs)
         _canonicalize_meeting_mentions(state, plan)
         qs = _normalize_duplicate_and_bug_questions(state, qs, items=items, plan=plan)
-        qs = [q for q in qs
-              if str(q.get("field") or "").casefold() != "structure"
-              and _question_requires_input(q)]
+        qs = _normalize_question_contracts(
+            state, qs, mode=str(out.get("mode") or mode), items=items,
+        )
         # ★ 바꿀 값을 **정확히 말한** 수정 요청에는 되묻지 않는다. 계획이 이미 섰으면
         #   승인 카드가 곧 확인 단계다(work_architect.md: "NEVER ask permission to proceed").
         #   실측(MOD8): "라벨 data-quality 추가하고 컴포넌트를 Catalog 로" 처럼 값을 다 준
@@ -3853,8 +3874,29 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                     child["tier"], child["issue_type"], child["type"] = \
                         "subtask", child_type, child_type
 
+        # RequestPlan outcome identity and exact requested fields are runtime authority.
+        # Seal them only after every body/hierarchy normalizer has finished, and carry the
+        # prior immutable effect snapshot across an Auditor repair instead of recomputing it
+        # from mutable prose.
+        seal_work_item_identities(state, draft)
+        seal_requested_effect_contract(state, draft=draft, change_plan=plan)
+        previous_review = state.get("review") or {}
+        prior_signature = str(previous_review.get("defect_signature") or "")
+        if previous_review.get("ok") is False and prior_signature:
+            repair_attempt = {
+                "defect_signature": prior_signature,
+                "payload_digest": str(previous_review.get("payload_digest") or ""),
+            }
+            (draft if _is_create_action(state) else plan)["repair_attempt"] = repair_attempt
+
+        # Deterministic late questions use the same typed ownership path as model questions.
+        qs = _normalize_question_contracts(
+            state, qs, mode=str(draft.get("mode") or mode), items=items,
+        )
+        reset_review = ({"review": {}} if previous_review else {})
+
         return {"questions": qs, "draft": draft, "change_plan": plan, "turns": turns,
-                "interpretation": interp, **st_out,
+                "interpretation": interp, **st_out, **reset_review,
                 "trace": note(state, self.name,
                               f"변경 계획 {plan.get('key')}" if plan else
                               ("해석 확인 " if interp and not items else "")
@@ -7832,9 +7874,85 @@ def _said_defaults(state) -> bool:
     return any(w in said for w in ("알아서", "기본값", "맡길게", "맡기겠", "네가 정해", "아무거나"))
 
 
+def _normalize_question_contracts(
+        state: dict, questions: list, *, mode: str = "task",
+        items: list | None = None) -> list[dict]:
+    """Classify question ownership once and return only execution blockers.
+
+    Parent placement for a Task is reversible: one verified compatible Epic can be selected,
+    and otherwise the item can remain explicitly top-level. Structure is likewise the visible
+    current draft, not a user-only fact. A Sub-Task without a resolved Task-tier parent has no
+    executable fallback, so that same field remains user-owned.
+    """
+    roots = [row for row in (items or []) if isinstance(row, dict)]
+    verified_parents = verified_parent_epic_candidates(state)
+    normalized: list[dict] = []
+    for raw in questions or []:
+        if not isinstance(raw, dict) or not str(raw.get("question") or "").strip():
+            continue
+        field = str(raw.get("field") or "").strip()[:120]
+        family = field.casefold().split(":", 1)[0]
+        safe_fallback = ""
+        if family in {"structure", "shape"}:
+            safe_fallback = "현재 보이는 초안 구조"
+        elif family in {"parent", "epic"}:
+            resolved_subtask_parent = bool(
+                str(mode or "").casefold() == "subtask"
+                and roots
+                and all(
+                    _can_parent_subtask(str(row.get("parent") or "").strip())
+                    for row in roots
+                )
+            )
+            # ``epic`` is overloaded by legacy projections.  For a Task it is the
+            # reversible parent-placement slot; while creating an Epic it can instead be
+            # a duplicate reporting-unit conflict (reuse versus create).  That decision
+            # changes the requested object itself and remains user-owned.
+            epic_object_decision = (
+                family == "epic" and str(mode or "").casefold() == "epic"
+            )
+            if str(mode or "").casefold() != "subtask" and not epic_object_decision:
+                safe_fallback = (
+                    str(verified_parents[0].get("key") or "")
+                    if len(verified_parents) == 1 else "top-level"
+                )
+            elif resolved_subtask_parent:
+                safe_fallback = "검증된 기존 Task 부모"
+
+        requested_required = (
+            raw.get("required_input") is True
+            and bool(str(raw.get("why_required") or "").strip())
+        )
+        ownership = ("runtime_optional" if safe_fallback or not requested_required
+                     else "user_required")
+        kind = str(raw.get("kind") or "text")
+        if kind not in {"text", "choice", "multi", "date"}:
+            kind = "text"
+        contract = QuestionContract(
+            question=str(raw.get("question") or "").strip()[:1000],
+            kind=kind,
+            options=[
+                str(value).strip()[:240] for value in (raw.get("options") or [])
+                if str(value).strip()
+            ][:5],
+            field=field,
+            ownership=ownership,
+            required_input=ownership == "user_required",
+            why_required=(str(raw.get("why_required") or "").strip()[:500]
+                          if ownership == "user_required" else ""),
+            fallback=safe_fallback[:500],
+        ).model_dump()
+        # ``questions`` is the graph's blocking channel. Runtime-owned preferences stay on
+        # the draft/approval surface through the selected fallback and never suspend Work.
+        if contract["ownership"] == "user_required":
+            normalized.append(contract)
+    return normalized[:3]
+
+
 def _question_requires_input(question) -> bool:
     """질문이 없으면 유효하고 사실적인 action/payload를 만들 수 없는가."""
     return (isinstance(question, dict)
+            and question.get("ownership", "user_required") == "user_required"
             and question.get("required_input") is True
             and bool(str(question.get("why_required") or "").strip()))
 

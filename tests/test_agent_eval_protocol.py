@@ -177,6 +177,7 @@ def test_battery_manifest_covers_inputs_and_checker_source():
 
 def test_create_battery_manifest_fingerprints_shared_checker_dependencies():
     import tools.agent_create_suite as create
+    import tools.agent_eval_fact_relations as facts
 
     registry = E.normalize_specialized_review_specs(
         create.CASES, create.SUITE_REVIEW_ELEMENTS, create.CASE_REVIEW_SPECS,
@@ -187,14 +188,13 @@ def test_create_battery_manifest_fingerprints_shared_checker_dependencies():
         checker_dependencies=create.CREATE_CHECKER_DEPENDENCIES,
     )
 
-    assert create.BATTERY_VERSION == "5.1.0"
+    assert create.BATTERY_VERSION == "5.2.0"
     assert create.CREATE_CASE_CONTRACT_FLAW_CHECKERS["STARR1"] is \
         create._starr1_contract_flaws
     for dependency in (
-        create._draft_description_fact_groups,
-        create._fact_terms_near,
-        create._subject_scopes,
-        create._adjacent_fact_pairs,
+        *facts.FACT_RELATION_DEPENDENCIES,
+        create._draft_descriptions,
+        create._STARR1_FACT_CONTRACTS,
         create._starr1_contract_flaws,
         create.CREATE_CASE_CONTRACT_FLAW_CHECKERS,
         create._case_specific_contract_flaws,
@@ -205,10 +205,9 @@ def test_create_battery_manifest_fingerprints_shared_checker_dependencies():
         assert any(item is dependency for item in create.CREATE_CHECKER_DEPENDENCIES)
     assert complete != lambda_only
     false_pass_dependencies = {
-        id(create._draft_description_fact_groups),
-        id(create._fact_terms_near),
-        id(create._subject_scopes),
-        id(create._adjacent_fact_pairs),
+        *(id(dependency) for dependency in facts.FACT_RELATION_DEPENDENCIES),
+        id(create._draft_descriptions),
+        id(create._STARR1_FACT_CONTRACTS),
         id(create._starr1_contract_flaws),
         id(create.CREATE_CASE_CONTRACT_FLAW_CHECKERS),
         id(create._case_specific_contract_flaws),
@@ -509,9 +508,9 @@ def test_all_primary_batteries_emit_versioned_metadata():
     expected = {
         "tools/agent_lang_ab.py": ('suite="conversation"', "3.3.0"),
         "tools/agent_compose_eval.py": ('suite="editor"', "3.1.0"),
-        "tools/agent_create_suite.py": ('suite="create"', "5.1.0"),
-        "tools/agent_meeting_eval.py": ('suite="meeting"', "3.1.0"),
-        "tools/agent_context_change_eval.py": ('suite="ctx-chg"', "2.1.0"),
+        "tools/agent_create_suite.py": ('suite="create"', "5.2.0"),
+        "tools/agent_meeting_eval.py": ('suite="meeting"', "3.2.0"),
+        "tools/agent_context_change_eval.py": ('suite="ctx-chg"', "2.2.0"),
     }
     for relative, (suite_marker, battery_version) in expected.items():
         text = (ROOT / relative).read_text(encoding="utf-8")
@@ -528,6 +527,7 @@ def test_primary_battery_manifests_fingerprint_shared_automatic_contracts():
     from tools import agent_compose_eval as editor
     from tools import agent_context_change_eval as context
     from tools import agent_create_suite as create
+    from tools import agent_eval_request_fields as request_fields
     from tools import agent_meeting_eval as meeting
     from tools import agent_scenario_eval as scenario
     from tools.agent_eval_contracts import (
@@ -545,6 +545,10 @@ def test_primary_battery_manifests_fingerprint_shared_automatic_contracts():
                for dependency in EDITOR_RENDERER_CONTRACT_DEPENDENCIES)
     assert context.CONTEXT_CHECKER_DEPENDENCIES
     assert meeting.MEETING_CHECKER_DEPENDENCIES
+    assert all(dependency in context.CONTEXT_CHECKER_DEPENDENCIES
+               for dependency in request_fields.REQUEST_FIELD_DEPENDENCIES)
+    assert context._context_case_checker in context.CONTEXT_CHECKER_DEPENDENCIES
+    assert meeting._map_outcome_rows in meeting.MEETING_CHECKER_DEPENDENCIES
 
     runner_source = (ROOT / "tools/agent_scenario_eval.py").read_text(encoding="utf-8")
     conversation_source = (ROOT / "tools/agent_lang_ab.py").read_text(encoding="utf-8")

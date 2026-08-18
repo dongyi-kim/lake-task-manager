@@ -25,6 +25,10 @@ import re
 from typing import Any, Iterable, TypedDict
 from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
+from app.agent.workflow.claim_provenance import (
+    build_claim_provenance_graph, normalize_citation_wrappers,
+)
+
 
 _HEADING_RE = re.compile(
     r"(?m)^(?:#{1,4}\s*(?:근거|참조)|\*\*(?:근거|참조)\*\*)\s*$"
@@ -741,7 +745,11 @@ def _compact_adjacent_citations(text: str) -> str:
 def canonicalize_evidence_index(text: str, evidence: list | None = None,
                                 related_docs: list | None = None) -> str:
     """Merge every evidence channel into one stable, hierarchical source index."""
-    body, lines, tail = _split(text)
+    # Bind model ordinals to structured Research sources before any source dedupe or
+    # renumbering.  ``[[1-b]]`` is presentation noise, not a different identifier.
+    value = normalize_citation_wrappers(text)
+    provenance_graph = build_claim_provenance_graph(value, evidence or [])
+    body, lines, tail = _split(value)
     # The canonical source index is always the last section.  Legacy replies sometimes put
     # another heading after references; preserve that content by moving it before the index.
     if tail:
@@ -947,6 +955,34 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
         else:
             marker_map[row["old"]] = base
 
+    # A model may cite the ordinal Research array without also reproducing a legacy source
+    # root.  Those bindings are typed before rendering, so add them only as a fallback;
+    # an explicitly parsed root above always wins when legacy input used a different order.
+    graph_sources = {row["ordinal"]: row for row in provenance_graph["sources"]}
+    graph_observations: dict[tuple[str, int], dict] = {
+        (row["source_id"], row["ordinal"]): row
+        for row in provenance_graph["observations"]
+    }
+    for ordinal, source_node in graph_sources.items():
+        identity = source_node["source_id"]
+        group = groups.get(identity)
+        if group is None or identity not in number:
+            continue
+        base = str(number[identity])
+        marker_map.setdefault(str(ordinal), base)
+        for observation_ordinal in range(1, 27):
+            observation_node = graph_observations.get((identity, observation_ordinal))
+            if observation_node is None:
+                break
+            rendered_observation = _observation(
+                observation_node.get("text"), observation_node.get("source"),
+            )
+            observation_index = _append_observation(group, rendered_observation)
+            marker = base
+            if observation_index is not None and len(group["observations"]) > 1:
+                marker = f"{base}-{chr(97 + observation_index)}"
+            marker_map.setdefault(f"{ordinal}-{chr(96 + observation_ordinal)}", marker)
+
     def replace_citation(match: re.Match) -> str:
         mapped: list[str] = []
         unresolved = False
@@ -980,5 +1016,6 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
 
 __all__ = [
     "AtomicFact", "atomic_fact_sidecar", "build_atomic_fact_ledger",
-    "canonicalize_evidence_index", "enforce_atomic_fact_boundaries",
+    "build_claim_provenance_graph", "canonicalize_evidence_index",
+    "enforce_atomic_fact_boundaries",
 ]

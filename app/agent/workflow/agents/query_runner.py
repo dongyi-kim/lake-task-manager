@@ -697,7 +697,10 @@ def _materialization_ticket_selection(results: list[dict], *, cap: int = 8,
     return selected, [key for key in selected if key in parent_candidates]
 
 
-def _materialize_evidence(results: list[dict], *, focus: str = "") -> dict:
+def _materialize_evidence(results: list[dict], *, focus: str = "",
+                          expand_entities: bool = False,
+                          entity_root_keys=(), ticket_cap: int = 8,
+                          entity_cap: int = 2) -> dict:
     """Open selected Jira and Confluence hits without another LLM routing loop.
 
     Search order is already the QueryPlan's relevance/order contract. Preserve order within each
@@ -708,7 +711,35 @@ def _materialize_evidence(results: list[dict], *, focus: str = "") -> dict:
     from concurrent.futures import ThreadPoolExecutor
     from app.agent import tools as T
 
-    ticket_keys, parent_candidate_keys = _materialization_ticket_selection(results)
+    # Reserve two exact-read slots only when research entity expansion is active and a
+    # structural root is visible in the lightweight hit set.  Listing/create paths retain
+    # the existing eight-ticket selection contract.
+    root_hint = any(
+        str((ticket or {}).get("issueType") or (ticket or {}).get("type") or "")
+        .strip().casefold() == "epic"
+        for row in results if isinstance(row, dict)
+        for ticket in ((row.get("result") or {}).get("tickets") or [])
+        if isinstance(ticket, dict)
+    )
+    preferred_root_set = {
+        str(key or "").strip().upper() for key in entity_root_keys if str(key or "").strip()
+    }
+    raw_keys = {
+        str((ticket or {}).get("key") or "").strip().upper()
+        for row in results if isinstance(row, dict)
+        for ticket in ((row.get("result") or {}).get("tickets") or [])
+        if isinstance(ticket, dict) and (ticket or {}).get("key")
+    }
+    ticket_limit = max(0, int(ticket_cap or 0))
+    # One materialized root is required before any graph traversal.  Never let expansion
+    # consume that slot or make the total number of exact ticket reads exceed ticket_cap.
+    reserve = min(max(0, int(entity_cap or 0)), max(0, ticket_limit - 1)) \
+        if expand_entities and (root_hint or len(raw_keys) == 1
+                                or bool(preferred_root_set & raw_keys)) else 0
+    initial_cap = max(0, ticket_limit - reserve)
+    ticket_keys, parent_candidate_keys = _materialization_ticket_selection(
+        results, cap=initial_cap,
+    )
     document_refs = []
     for row in results:
         if not isinstance(row, dict):
@@ -744,6 +775,36 @@ def _materialize_evidence(results: list[dict], *, focus: str = "") -> dict:
         *(str((row.get("result") or {}).get("query") or "") for row in results
           if isinstance(row, dict)),
     )))
+    entity_coverage = None
+    if expand_entities and reserve:
+        try:
+            from app.agent.tools._ctx import client, jira_key_allowed
+            from app.agent.workflow.source_graph import bounded_entity_expansion
+
+            expanded_keys, entity_coverage = bounded_entity_expansion(
+                client(), ticket_details, focus_terms,
+                allowed_key=jira_key_allowed, excluded_keys=ticket_keys,
+                preferred_root_keys=preferred_root_set, cap=reserve,
+            )
+        except Exception as exc:
+            expanded_keys = []
+            entity_coverage = {
+                "mode": "bounded_one_hop", "rootKeys": [], "scannedCandidates": 0,
+                "eligibleCandidates": 0, "selectedKeys": [], "cap": reserve,
+                "truncated": False, "complete": False,
+                "error": str(exc)[:240],
+                "callBudget": {"root_neighbor_reads": 0, "expanded_detail_reads": 0},
+            }
+        if expanded_keys:
+            with ThreadPoolExecutor(max_workers=min(4, len(expanded_keys))) as pool:
+                expanded_details = list(pool.map(open_ticket, expanded_keys))
+            ticket_keys.extend(expanded_keys)
+            ticket_details.extend(expanded_details)
+            entity_coverage["materializedKeys"] = [
+                str(row.get("key") or "").strip().upper()
+                for row in expanded_details
+                if isinstance(row, dict) and not row.get("error") and row.get("key")
+            ]
     ticket_projection = [_project_ticket_detail(row, focus_terms) for row in ticket_details]
     document_projection = [_project_document_body(row, focus_terms) for row in document_bodies]
 
@@ -756,6 +817,8 @@ def _materialize_evidence(results: list[dict], *, focus: str = "") -> dict:
         ticket_target["result"] = dict(ticket_target.get("result") or {},
                                        ticketDetails=ticket_projection,
                                        detailProjection="ticket-detail.v1")
+        if entity_coverage is not None:
+            ticket_target["result"]["entityCoverage"] = entity_coverage
         if errors:
             ticket_target["result"]["materializationErrors"] = errors
     if document_target is not None and document_bodies:
@@ -780,6 +843,7 @@ def _materialize_evidence(results: list[dict], *, focus: str = "") -> dict:
         "projectedDocumentBodies": document_projection,
         "ticketKeys": ticket_keys, "parentCandidateKeys": materialized_parents,
         "errors": errors,
+        **({"entityCoverage": entity_coverage} if entity_coverage is not None else {}),
     }
 
 
@@ -1010,9 +1074,14 @@ class QueryRunner:
                     compact["artifactId"] = qid
             results.append({"id": qid, "source": source, "result": compact})
         if _needs_evidence_materialization(state, results):
+            research_expansion = any(
+                isinstance(task, dict) and str(task.get("kind") or "") == "research"
+                for task in ((state.get("request_plan") or {}).get("tasks") or [])
+            )
             materialized = _materialize_evidence(results, focus="\n".join(value for value in (
                 request_text(state).strip(), last_user_text(state).strip(),
-            ) if value))
+            ) if value), expand_entities=research_expansion,
+                entity_root_keys=state.get("mentioned_keys") or ())
             if materialized["tickets"] or materialized["documents"] or materialized["errors"]:
                 artifacts["evidence-materialization"] = materialized
             successful_details = [dict(row) for row in

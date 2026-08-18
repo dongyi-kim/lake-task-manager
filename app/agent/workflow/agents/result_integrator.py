@@ -24,8 +24,8 @@ from app.agent.workflow.claim_grounding import (
     drop_unsupported_guarantees as _drop_unsupported_guarantees,
 )
 from app.agent.workflow.evidence_index import (
-    atomic_fact_sidecar, build_atomic_fact_ledger, canonicalize_evidence_index,
-    enforce_atomic_fact_boundaries,
+    atomic_fact_sidecar, build_atomic_fact_ledger, build_claim_provenance_graph,
+    canonicalize_evidence_index, enforce_atomic_fact_boundaries,
 )
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.source_coverage import (
@@ -305,14 +305,33 @@ class ResultIntegrator(TextAgent):
                 )
         asked_for_quality = (request_text(state) + " " + last_user_text(state)).strip()
         if state.get("evidence"):
+            provenance_graph = build_claim_provenance_graph("", state.get("evidence") or [])
+            # Evidence rows already carry observation text and ids. Keep the authority graph
+            # structural so the same prose is not sent to the local model twice.
+            provenance_graph = {
+                "sources": provenance_graph["sources"],
+                "observations": [
+                    {key: row[key] for key in (
+                        "observation_id", "source_id", "ordinal", "source",
+                    )}
+                    for row in provenance_graph["observations"]
+                ],
+                "claims": [], "unbound_claim_ids": [],
+            }
             goal += (
                 "\nFor every material conclusion, add the matching `[n]` or `[n-a]` marker in the body. "
                 "Do not leave a conclusion uncited merely because its source is listed at the end. Preserve "
                 "comment observations and dated source conflicts; ticket status alone is not result evidence. "
                 "Bind each claim only to a source whose supplied `observations[].text` directly supports it; "
                 "`why` explains relevance but is not evidence. Never attribute a ticket-comment result to a "
-                "meeting document merely because both discuss the same topic."
+                "meeting document merely because both discuss the same topic. Treat source_id and "
+                "observation_id in the Claim Provenance Graph as authority; numeric ordinals are display "
+                "aliases only. An external source with `internal_readiness_authority=false` may explain its "
+                "format, but can never establish this project's production or rollout readiness."
             )
+        else:
+            provenance_graph = {"sources": [], "observations": [], "claims": [],
+                                "unbound_claim_ids": []}
         if any(word in asked_for_quality for word in ("신뢰도", "출처별", "요청 적합성", "적합성")):
             goal += (
                 "\nAdd `### 출처 평가` before `### 근거` with a compact "
@@ -328,6 +347,12 @@ class ResultIntegrator(TextAgent):
                 "`zero_hits`, `incomplete`, `config_error`, `provider_error`, or `execution_error` row is a "
                 "limitation, never evidence. Do not imply that an unavailable source confirmed or contradicted "
                 "a claim; the server renders the exact missing-class disclosure."
+            )
+        if any(row.get("entity_coverage_complete") is False for row in source_coverage):
+            goal += (
+                "\nSource-class completion and entity coverage are separate. A covered Jira query proves "
+                "only that its scoped pages completed. When `entity_coverage_complete=false`, describe the "
+                "child/link traversal as bounded and never claim that every related entity was inspected."
             )
         data = wrap_data(
             data_block("Interpretation Data: Show Unchanged Under the Korean Heading 제가 이해한 바",
@@ -345,6 +370,8 @@ class ResultIntegrator(TextAgent):
             data_block("PMO Findings", pmo),
             data_block("Interpretation Caution", state.get("pmo_caution")),
             data_block("Verified Evidence Sources With Observations and Quality", ev),
+            data_block("Typed Claim Provenance Graph: Source and Observation Authority",
+                       json.dumps(provenance_graph, ensure_ascii=False, default=str)),
             data_block("Typed Atomic Fact Ledger: Current, Historical, and Conflict Sidecar",
                        json.dumps(atomic_facts, ensure_ascii=False, default=str)),
             data_block("Requested Source Coverage Ledger",

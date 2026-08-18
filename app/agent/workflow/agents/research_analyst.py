@@ -2253,6 +2253,8 @@ Original request: {last_user_text(state)}
         return SCHEMA
 
     def apply(self, state, out):
+        from app.agent.workflow.claim_provenance import bind_evidence_provenance
+
         deterministic = bool(out.get("_deterministic_passthrough"))
         projected_ev = [_normalize_evidence_quality(_normalize_evidence_identity(e, state))
                         for e in (out.get("evidence") or [])
@@ -2272,6 +2274,9 @@ Original request: {last_user_text(state)}
                       or evidence_is_relevant(e)]
             ev = _relevant_only(state, raw_ev)
             removed_all = had_projected_evidence and not ev and not state.get("mentioned_keys")
+        # Persist server-owned source/observation identities. Result composition consumes
+        # this typed graph; numeric markers remain a renderer concern only.
+        ev = bind_evidence_provenance(ev)
         situation = out.get("situation") or ""
         if removed_all:
             situation = "현재 요청의 고유 개념과 직접 일치하는 내부 이력은 확인되지 않았다."

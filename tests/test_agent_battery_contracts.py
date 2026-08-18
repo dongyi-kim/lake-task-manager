@@ -9,6 +9,7 @@ from tools import agent_compose_eval as editor_eval  # noqa: E402
 from tools import agent_create_suite as create_eval  # noqa: E402
 from tools import agent_context_change_eval as context_eval  # noqa: E402
 from tools import agent_eval_contracts as eval_contracts  # noqa: E402
+from tools import agent_eval_fact_relations as fact_relations  # noqa: E402
 from tools import agent_meeting_eval as meeting_eval  # noqa: E402
 
 
@@ -614,6 +615,97 @@ def test_starr1_rollout_hold_composes_an_explicit_adjacent_antecedent():
     assert not any("운영 반영" in flaw for flaw in flaws)
 
 
+def test_starr1_r28_raw_payload_replays_as_typed_fact_relations():
+    """The r28 raw draft is semantically faithful despite DOM/prose morphology.
+
+    This is intentionally a minimal replay of the actual payload, not a new product
+    phrase fixture: completion is inflected, the two validation actors share predicates,
+    and the rollout condition inherits its actor across clauses in one DOM leaf.
+    """
+    output = _starr1_payload(
+        writer=(
+            "DL-9201에서 5개 표본에 대한 Writer PoC가 완료되어 "
+            "Puffin 파일 생성 결과가 확보되었다"
+        ),
+        validation=(
+            "reader 경로와 optimizer 실행계획을 함께 확인 중입니다. / "
+            "지원 여부는 아직 확정하지 않았습니다"
+        ),
+        rollout=(
+            "StarRocks reader 소비 가능성을 단계적으로 검증한다. / "
+            "검증 전 운영 반영은 금지한다"
+        ),
+    )
+
+    assert create_eval._starr1_contract_flaws(output) == []
+
+
+def test_typed_fact_relation_engine_is_product_neutral():
+    producer = fact_relations.FactTerm("producer", r"\bproducer\b")
+    consumer = fact_relations.FactTerm("consumer", r"\bconsumer\b")
+    indexer = fact_relations.FactTerm("indexer", r"\bindexer\b")
+    trial = fact_relations.FactTerm("trial", r"\btrial\b")
+    samples = fact_relations.FactTerm("sample scope", r"\b3 samples\b")
+    validation = fact_relations.FactTerm("validation", r"\bvalidation\b")
+    deployment = fact_relations.FactTerm(
+        "deployment", r"\bproduction deployment\b",
+    )
+    contracts = (
+        fact_relations.FactRelationContract(
+            "baseline", "single",
+            fact_relations.RelationRef(
+                (producer,), (trial,), (samples,), (consumer, indexer),
+            ),
+            ("completed",), ("incomplete", "in_progress"), "missing baseline", "reversed baseline",
+        ),
+        fact_relations.FactRelationContract(
+            "shared state", "shared",
+            fact_relations.RelationRef((consumer, indexer)),
+            ("in_progress", "unconfirmed"), ("confirmed",),
+            "missing shared state", "reversed shared state",
+        ),
+        fact_relations.FactRelationContract(
+            "gate", "gate",
+            fact_relations.RelationRef((consumer,), (validation,)),
+            ("held", "before_boundary"), ("positive_action",),
+            "missing gate", "reversed gate",
+            fact_relations.RelationRef((), (deployment,)),
+        ),
+    )
+    valid = [
+        "<p>The producer trial completed for 3 samples.</p>"
+        "<p>The consumer and indexer are together under validation. "
+        "Support is unconfirmed.</p>"
+        "<p>Consumer validation is incomplete before release. "
+        "Therefore production deployment is on hold.</p>"
+    ]
+    assert fact_relations.fact_relation_flaws(valid, contracts) == []
+
+    reversed_baseline = [valid[0].replace("completed", "is incomplete")]
+    assert fact_relations.fact_relation_flaws(
+        reversed_baseline, contracts[:1],
+    ) == ["reversed baseline"]
+
+
+def test_starr1_typed_relation_composes_adjacent_dom_leaves():
+    output = _starr1_payload(
+        writer=(
+            "<span>writer PoC를 완료했습니다</span>"
+            "<span>대상은 5개 표본입니다</span>"
+        ),
+        validation=(
+            "<span>reader와 optimizer 소비 검증을 진행하고 있습니다</span>"
+            "<span>지원 여부는 아직 확정하지 않았습니다</span>"
+        ),
+        rollout=(
+            "<span>reader 검증은 완료 전입니다</span>"
+            "<span>따라서 운영 반영을 보류합니다</span>"
+        ),
+    )
+
+    assert create_eval._starr1_contract_flaws(output) == []
+
+
 @pytest.mark.parametrize(("override", "expected"), [
     ({"writer": "5개 표본의 writer PoC는 미완료 상태임"}, "미완료·미수행"),
     ({"validation": "reader와 optimizer 소비 검증 완료, 지원은 확정됨"},
@@ -783,6 +875,39 @@ def test_heterogeneous_meeting_create_checker_requires_explicit_unassigned_and_i
     assert not meeting_eval._meeting_fragment_create_ok(output, [output])
 
 
+def test_meeting_create_maps_noisy_titles_by_stable_source_fields_not_first_substring():
+    rows = [
+        {"type": "Task", "summary": "writer reader 증빙 패키지", "epic": "DL-9200",
+         "assignee": "skcc.i2011", "duedate": "2026-08-22",
+         "description": "배경 회의 skcc.x1042\n작업 범위 writer\n완료 조건"},
+        {"type": "Task", "summary": "writer reader 검증 결과", "epic": "DL-9200",
+         "assignee": "skcc.x1402", "duedate": "2026-08-25",
+         "description": "배경 회의 skcc.x1042\n작업 범위 reader\n완료 조건"},
+        {"type": "Task", "summary": "writer reader 로그 마스킹", "epic": "DL-9200",
+         "assignee": "", "duedate": "2026-08-27",
+         "description": "배경 회의 skcc.x1042\n작업 범위 로그 마스킹\n완료 조건"},
+    ]
+    output = {"pending": {"action": "create_tickets", "items": rows}, "questions": []}
+
+    assert meeting_eval._meeting_fragment_create_ok(output, [output])
+
+    # An auditor-blocked raw turn with no executable payload remains a real failure.
+    blocked = {"pending": None, "questions": [], "review": {"ok": False}}
+    assert not meeting_eval._meeting_fragment_create_ok(blocked, [blocked])
+
+    for index, row in enumerate(rows):
+        row["outcome_refs"] = [f"outcome:opaque-{index}"]
+    output["pending"]["items"] = list(reversed(rows))
+    assert meeting_eval._meeting_fragment_create_ok(output, [output])
+
+    for row, outcome_id in zip(rows, ("task_writer", "task_reader", "task_masking")):
+        row["outcome_refs"] = [outcome_id]
+    assert meeting_eval._meeting_fragment_create_ok(output, [output])
+
+    rows[0]["outcome_refs"] = ["task_reader"]
+    assert not meeting_eval._meeting_fragment_create_ok(output, [output])
+
+
 def test_incomplete_meeting_checker_requires_owner_or_unassigned_interview_before_draft():
     question = {"questions": [{"question": "reader 담당자를 정할까요, 미할당으로 둘까요?"}]}
     final = {"questions": [], "pending": {"action": "create_tickets", "items": [
@@ -811,6 +936,47 @@ def test_context_switch_checker_requires_only_the_latest_exact_change():
     }
     assert context_eval._ctx_unrelated_ok(exact, [])
     assert not context_eval._ctx_unrelated_ok(contaminated, [])
+
+
+def test_context_checker_replays_every_intermediate_exact_field_request():
+    inputs = list(context_eval._CTX3_INPUTS)
+    outputs = [
+        {
+            "reply": "DL-9203 priority P1-Critical 변경 승인 초안",
+            "pending": {
+                "action": "update_ticket", "key": "DL-9203",
+                "changes": {"priority": "P1-Critical"},
+            },
+        },
+        {
+            "reply": "DL-9203 댓글 승인 초안",
+            "pending": {
+                "action": "add_ticket_comment", "key": "DL-9203", "changes": {},
+                "comment": "회의 결정사항을 공유합니다",
+            },
+        },
+        {
+            "reply": "DL-9203 제목 [Catalog] Puffin NDV 결과 템플릿 정리 변경 승인 초안",
+            "pending": {
+                "action": "update_ticket", "key": "DL-9203",
+                "changes": {"summary": "[Catalog] Puffin NDV 결과 템플릿 정리"},
+                "comment": "",
+            },
+        },
+    ]
+
+    flaws = context_eval._intermediate_request_field_flaws(inputs, outputs)
+    assert any("turn[0]" in flaw and "duedate" in flaw and "2026-08-31" in flaw
+               for flaw in flaws)
+    assert any("turn[0]" in flaw and "reply" in flaw and "2026-08-31" in flaw
+               for flaw in flaws)
+    checker = next(case[3] for case in context_eval.CASES if case[0] == "CTX3")
+    assert not checker(outputs[-1], outputs)
+
+    outputs[0]["pending"]["changes"]["duedate"] = "2026-08-31"
+    outputs[0]["reply"] += " · due 2026-08-31"
+    assert context_eval._intermediate_request_field_flaws(inputs, outputs) == []
+    assert checker(outputs[-1], outputs)
 
 
 def test_context_return_checker_accepts_the_canonical_single_ticket_action():

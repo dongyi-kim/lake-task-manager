@@ -3011,6 +3011,129 @@ def test_atomic_fact_ledger_supersedes_only_later_direct_same_subject_field():
     assert all(row["provenance"] for row in facts)
 
 
+def test_temporal_relation_never_merges_another_actor_or_predicate():
+    """Progression is exact on entity and relation, not broad topic similarity."""
+    from app.agent.workflow.evidence_index import build_atomic_fact_ledger
+
+    trusted = [
+        {"subject_id": "actor:acme-writer", "predicate": "artifact_generation",
+         "value": "not performed", "observed_at": "2026-08-01T09:00:00Z",
+         "direct": True, "source_id": "document:writer-plan",
+         "provenance": "document:writer-plan#observation:1", "authority": "query_runner"},
+        {"subject_id": "actor:acme-writer", "predicate": "artifact_generation",
+         "value": "completed", "observed_at": "2026-08-10T09:00:00Z",
+         "direct": True, "source_id": "ticket:ACME-12#comment:2",
+         "provenance": "ticket:ACME-12#comment:2", "authority": "query_runner"},
+        {"subject_id": "actor:acme-reader", "predicate": "artifact_generation",
+         "value": "not performed", "observed_at": "2026-08-11T09:00:00Z",
+         "direct": True, "source_id": "ticket:ACME-13#comment:1",
+         "provenance": "ticket:ACME-13#comment:1", "authority": "query_runner"},
+        {"subject_id": "actor:acme-writer", "predicate": "artifact_consumption",
+         "value": "not performed", "observed_at": "2026-08-12T09:00:00Z",
+         "direct": True, "source_id": "ticket:ACME-14#comment:1",
+         "provenance": "ticket:ACME-14#comment:1", "authority": "query_runner"},
+    ]
+
+    facts = build_atomic_fact_ledger({}, extra_facts=trusted)
+    by_relation = {(row["subject_id"], row["predicate"], row["value"]):
+                   row["temporal_role"] for row in facts}
+
+    assert by_relation[("actor:acme-writer", "artifact_generation", "not performed")] \
+        == "historical"
+    assert by_relation[("actor:acme-writer", "artifact_generation", "completed")] \
+        == "current"
+    assert by_relation[("actor:acme-reader", "artifact_generation", "not performed")] \
+        == "observed"
+    assert by_relation[("actor:acme-writer", "artifact_consumption", "not performed")] \
+        == "observed"
+
+
+def test_structured_claim_provenance_binds_source_and_observation_before_renumbering():
+    from app.agent.workflow.evidence_index import (
+        build_claim_provenance_graph, canonicalize_evidence_index,
+    )
+    from app.agent.workflow.claim_provenance import bind_evidence_provenance
+
+    evidence = [
+        {"key": "ACME-12", "title": "AcmeWriter validation", "observations": [
+            {"source": "description", "text": "AcmeWriter output validation plan"},
+            {"source": "comment", "text": "AcmeWriter output generation completed"},
+        ]},
+        {"key": "HTTPS://SPEC.example/acme-format/",
+         "title": "Acme format specification", "observations": [
+             {"source": "external", "text": "The format can store statistics"},
+         ]},
+    ]
+    source = (
+        "AcmeWriter output generation completed [[1-b]]. "
+        "The public format can store statistics [2-a]."
+    )
+
+    bound = bind_evidence_provenance(evidence)
+    assert bound[0]["observations"] == evidence[0]["observations"]
+    assert bound[0]["_provenance"]["observations"][1]["observation_id"]
+    graph = build_claim_provenance_graph(source, evidence)
+    assert len(graph["claims"]) == 2
+    assert {row["source_id"] for row in graph["claims"]} == {
+        "ticket:ACME-12", "url:https://spec.example/acme-format",
+    }
+    writer = next(row for row in graph["claims"]
+                  if row["source_id"] == "ticket:ACME-12")
+    assert writer["observation_id"] in {
+        row["observation_id"] for row in graph["observations"]
+        if row["source_id"] == "ticket:ACME-12" and row["source"] == "comment"
+    }
+    external = next(row for row in graph["sources"]
+                    if row["source_id"] == "url:https://spec.example/acme-format")
+    assert external["internal_readiness_authority"] is False
+
+    reordered = build_claim_provenance_graph(
+        "AcmeWriter output generation completed [2-b].", [evidence[1], evidence[0]],
+    )
+    assert reordered["claims"][0]["claim_id"] == writer["claim_id"]
+    assert reordered["claims"][0]["source_id"] == writer["source_id"]
+
+    source_scope = build_claim_provenance_graph("AcmeWriter source context [1].", evidence)
+    source_claim = source_scope["claims"][0]
+    assert source_claim["observation_id"].endswith("#observation:source-scope")
+    assert any(row["observation_id"] == source_claim["observation_id"]
+               for row in source_scope["observations"])
+
+    rendered = canonicalize_evidence_index(source, evidence=evidence)
+    assert "근거 확인 필요" not in rendered
+    assert "[[" not in rendered
+    assert "completed [1-b]" in rendered
+    assert "statistics [2]" in rendered
+
+
+def test_source_coverage_keeps_entity_completeness_separate_from_source_green():
+    from app.agent.workflow.source_coverage import _requested_source_coverage
+
+    state = {
+        "intent": "ask",
+        "request_text": "Jira 티켓 근거를 조사해줘",
+        "query_plan": {"queries": [{
+            "id": "jira", "source": "jira", "query": "AcmeWriter AcmeReader",
+        }]},
+        "query_results": [{
+            "id": "jira", "source": "jira", "result": {
+                "tickets": [{"key": "ACME-10"}], "returned": 1, "total": 1,
+                "complete": True,
+                "entityCoverage": {
+                    "mode": "bounded_one_hop", "rootKeys": ["ACME-10"],
+                    "selectedKeys": ["ACME-11"], "complete": False,
+                    "truncated": True,
+                },
+            },
+        }],
+    }
+
+    row = _requested_source_coverage(state)[0]
+    assert row["status"] == "covered" and row["usable_as_evidence"] is True
+    assert row["entity_coverage_status"] == "bounded"
+    assert row["entity_coverage_complete"] is False
+
+
 def test_atomic_fact_ledger_never_inherits_parent_due_into_due_null_child():
     from app.agent.workflow.evidence_index import build_atomic_fact_ledger
 

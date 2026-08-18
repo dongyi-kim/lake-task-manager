@@ -66,6 +66,27 @@ class ContinuationContract(StrictModel):
     decisions: list[ContinuationDecision] = Field(default_factory=list, max_length=16)
 
 
+class QuestionContract(StrictModel):
+    """Runtime-owned classification of one user-facing question.
+
+    Semantic projection may suggest a question, but only the runtime decides whether the
+    missing slot is owned by the user or can be satisfied by verified retrieval/a reversible
+    default.  Keeping both classes in one typed envelope prevents a preference question from
+    accidentally becoming a graph blocker after a later normalizer.
+    """
+
+    contract: Literal["question.v1"] = "question.v1"
+    question: str = Field(min_length=1, max_length=1000)
+    kind: Literal["text", "choice", "multi", "date"] = "text"
+    options: list[Annotated[str, Field(max_length=240)]] = Field(
+        default_factory=list, max_length=5)
+    field: str = Field(default="", max_length=120)
+    ownership: Literal["user_required", "runtime_optional"]
+    required_input: bool
+    why_required: str = Field(default="", max_length=500)
+    fallback: str = Field(default="", max_length=500)
+
+
 class QuerySpec(StrictModel):
     id: str
     source: Literal["jira", "confluence", "comments", "people", "web", "github"]
@@ -192,7 +213,7 @@ ROLE_CONTRACTS = {
 
 
 __all__ = ["ArtifactRef", "AtomicTask", "RequestPlan", "ContinuationDecision",
-           "ContinuationContract", "QuerySpec", "QueryPlan",
+           "ContinuationContract", "QuestionContract", "QuerySpec", "QueryPlan",
            "QueryIntent", "CompactQueryPlan",
            "ResearchReport", "WorkPlan", "PeopleAdvice", "AuthoredArtifact",
            "AuditResult", "IntegratedResult", "ROLE_CONTRACTS"]

@@ -273,6 +273,11 @@ def route_after_auditor(state: AgentState) -> str:
     review = state.get("review") or {}
     if review.get("ok"):
         return "propose"
+    # The same typed defect after one repair is evidence that another full semantic replay
+    # would spend the call budget without changing the payload. Field-level deterministic
+    # repairs happen before this router; an unrepairable recurrence fails closed.
+    if review.get("repeated_defect") is True:
+        return "respond"
     # A genuine blocking problem gets one bounded repair opportunity. Contradicted model
     # findings were already removed by Auditor grounding, so paying this retry only happens
     # for an actionable defect. Exhaustion still fails closed with no pending payload.
@@ -301,8 +306,40 @@ def _merge_assignments(state: AgentState) -> dict:
     Auditor 가 배정 **전** 초안을 검증하므로(병렬), 배정된 사용자가 실재하는지는
     여기 코드가 보장한다 — validate_bulk 와 같은 lookup 을 쓴다.
     """
-    field_locks = capture_user_field_locks(state.get("draft") or {})
-    draft = merge_assignments(state.get("draft"), state.get("assignments"))
+    from app.agent.workflow.anchors import seal_work_item_identities
+
+    source_draft = dict(state.get("draft") or {})
+    source_draft["items"] = [dict(row) if isinstance(row, dict) else row
+                             for row in (source_draft.get("items") or [])]
+    seal_work_item_identities(state, source_draft)
+    field_locks = capture_user_field_locks(source_draft)
+
+    # PeopleAdvisor currently emits list positions for transport compatibility. Convert
+    # those positions to Work's stable ids at the join, and honor an already supplied id
+    # over a stale index. No title/description matching is permitted here.
+    item_rows = [row for row in (source_draft.get("items") or []) if isinstance(row, dict)]
+    index_by_id = {
+        str(row.get("item_id") or ""): index for index, row in enumerate(item_rows)
+        if str(row.get("item_id") or "")
+    }
+    assignments = []
+    for raw in state.get("assignments") or []:
+        if not isinstance(raw, dict):
+            continue
+        row = dict(raw)
+        identity = str(row.get("item_id") or "")
+        if identity:
+            if identity not in index_by_id:
+                continue
+            row["index"] = index_by_id[identity]
+        else:
+            index = row.get("index")
+            if isinstance(index, int) and 0 <= index < len(item_rows):
+                identity = str(item_rows[index].get("item_id") or "")
+                if identity:
+                    row["item_id"] = identity
+        assignments.append(row)
+    draft = merge_assignments(source_draft, assignments)
     # 사용자 명시 배정은 추천보다 우선이다. fan-out join에서 PeopleAdvisor 제안을 합친 **뒤**
     # 원 발화로 다시 확정해, 병렬 상태 병합이 assignee_source 표식을 잃어도 지정값이
     # 추천값으로 바뀌지 않게 한다(PAR1 실측).
@@ -394,7 +431,7 @@ def _merge_assignments(state: AgentState) -> dict:
     # authoritative, so pre-advisor prose such as "담당자는 미정" must not survive into the
     # approval reply or staged payload rationale.
     draft = _normalize_resolved_assignment_rationale(draft)
-    assignments = _align_assignments_to_draft(state.get("assignments") or [], draft)
+    assignments = _align_assignments_to_draft(assignments, draft)
     result = {"draft": draft, "assignments": assignments}
     if assignment_errors:
         review = dict(state.get("review") or {})
@@ -427,11 +464,18 @@ def _merge_assignments(state: AgentState) -> dict:
 def _align_assignments_to_draft(assignments: list, draft: dict) -> list:
     """ResultIntegrator가 과거 추천값이 아니라 최종 승인 payload의 담당과 근거를 보게 한다."""
     rows = [dict(a) for a in (assignments or []) if isinstance(a, dict)]
+    by_identity = {str(a.get("item_id") or ""): a for a in rows
+                   if str(a.get("item_id") or "")}
     by_index = {a.get("index"): a for a in rows if isinstance(a.get("index"), int)}
     for index, item in enumerate((draft or {}).get("items") or []):
-        row = by_index.get(index)
+        identity = str(item.get("item_id") or "")
+        row = by_identity.get(identity) if identity else None
+        row = row or by_index.get(index)
         if row is None:
             continue
+        row["index"] = index
+        if identity:
+            row["item_id"] = identity
         actual = str(item.get("assignee") or "")
         if actual != str(row.get("user") or ""):
             row["user"] = actual

@@ -51,8 +51,12 @@ from app.agent.workflow.effect_contract import (
     capture_user_field_locks,
     continuation_action,
     current_work_failed,
+    defect_signature,
     final_effect,
+    payload_digest,
     project_final_authority_state,
+    typed_audit_findings,
+    validate_requested_effect_contract,
 )
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import (
@@ -625,6 +629,28 @@ def _dedupe_errors(rows) -> list[dict]:
     return result
 
 
+def _typed_review_contract(state: AgentState, review: dict) -> dict:
+    """Attach stable finding identity and detect a repeated repair defect."""
+    sealed = dict(review or {})
+    rows = [
+        *[row for row in (sealed.get("errors") or []) if isinstance(row, dict)],
+        *[row for row in (sealed.get("problems") or []) if isinstance(row, dict)],
+    ]
+    findings = typed_audit_findings(state, rows)
+    signature = defect_signature(findings)
+    action = continuation_action(state)
+    container = ((state.get("draft") or {}) if action == "create"
+                 else (state.get("change_plan") or {}))
+    attempt = container.get("repair_attempt") if isinstance(container, dict) else {}
+    prior_signature = str((attempt or {}).get("defect_signature") or "")
+    sealed["findings"] = findings
+    sealed["payload_digest"] = payload_digest(state)
+    sealed["defect_signature"] = signature
+    sealed["repeated_defect"] = bool(signature and prior_signature == signature)
+    sealed["finding_contract"] = "audit-finding.v1"
+    return sealed
+
+
 def final_authority_review(state: AgentState, *,
                            locks: tuple[UserFieldLock, ...] = (),
                            require_effect: bool = False) -> dict:
@@ -709,6 +735,7 @@ def final_authority_review(state: AgentState, *,
         errors.extend(_change_shape_errors(view))
         errors.extend(_typed_change_target_errors(view))
         errors.extend(_explicit_link_and_comment_errors(view))
+    errors.extend(validate_requested_effect_contract(view))
 
     errors = _dedupe_errors(errors)
     ok = not errors and not problems and (previous.get("ok") is True
@@ -720,7 +747,7 @@ def final_authority_review(state: AgentState, *,
                if ok else f"최종 {label} effect 검증 보류 — 오류 {len(errors)}건")
     checks = dict(previous.get("checks") or {})
     checks["final_authority"] = ok
-    return {
+    return _typed_review_contract(view, {
         **previous,
         "ok": ok,
         "checks": checks,
@@ -730,7 +757,7 @@ def final_authority_review(state: AgentState, *,
         "summary": summary,
         "final_authority": effect.as_dict(),
         "approval_contract": "deterministic_final_effect.v1",
-    }
+    })
 
 
 class Auditor(StructuredAgent):
@@ -771,9 +798,12 @@ class Auditor(StructuredAgent):
                     or "Bug 필수 섹션" in str(w.get("message") or "")
                     for w in auto["warnings"])
                 if auto["ok"] and not blocking_content:
-                    return {"review": {"ok": True, "checks": {}, "problems": [],
-                                       "errors": [], "warnings": auto["warnings"],
-                                       "summary": "단건 초안 — 기계 검증 통과(자동)"},
+                    review = _typed_review_contract(state, {
+                        "ok": True, "checks": {}, "problems": [],
+                        "errors": [], "warnings": auto["warnings"],
+                        "summary": "단건 초안 — 기계 검증 통과(자동)",
+                    })
+                    return {"review": review,
                             "revisions": (state.get("revisions") or 0) + 1,
                             "trace": note(state, self.name, "통과(기계 검증만 — 단건 초안)")}
             return base_run(state)
@@ -887,10 +917,12 @@ The draft must preserve this subject; subject drift is a blocking request-covera
                        "비차단 참고로 남겼다.")
         elif ok and raw_problems and not problems:
             summary = "권위 상태와 모순된 모델 지적을 제외하고 정책·근거 검증 통과."
-        review = {"ok": ok, "checks": checks, "problems": problems,
-                  "errors": auto["errors"],
-                  "warnings": auto["warnings"] + advisory_warnings,
-                  "summary": summary}
+        review = _typed_review_contract(state, {
+            "ok": ok, "checks": checks, "problems": problems,
+            "errors": auto["errors"],
+            "warnings": auto["warnings"] + advisory_warnings,
+            "summary": summary,
+        })
         failed = [k for k, v in checks.items() if not v]
         return {"review": review, "revisions": (state.get("revisions") or 0) + 1,
                 "trace": note(state, self.name,

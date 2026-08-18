@@ -431,6 +431,105 @@ def validate_draft_outcome_contract(state: AgentState, draft: dict) -> list[dict
             "message": "outcome contract outcomes are not represented in the draft: "
                        + ", ".join(missing[:6]),
         })
+    errors.extend(validate_work_item_identities(state, draft))
+    return errors
+
+
+def work_item_id(contract_id: str, outcome_ref: str) -> str:
+    """Return the opaque Work identity owned by one RequestPlan outcome.
+
+    The value deliberately depends on typed ids only.  Titles and descriptions are mutable
+    prose, so using their substring overlap to recover identity after a repair can silently
+    exchange owners, parents, or deadlines between similar sibling outcomes.
+    """
+    material = f"{str(contract_id or '').strip()}\0{str(outcome_ref or '').strip()}"
+    return "work-item:" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+def seal_work_item_identities(state: AgentState, draft: dict) -> dict:
+    """Attach stable RequestPlan-derived ids without interpreting visible prose.
+
+    A root must have exactly one outcome ref to receive an id. Ambiguous/missing mappings
+    remain unsealed and are rejected by the outcome validator. Children inherit the root
+    outcome and receive a stable positional id only for audit paths; root identity is the
+    authority used by assignment and repair joins.
+    """
+    if not isinstance(draft, dict):
+        return draft
+    contract = requested_outcome_contract(state)
+    contract_id = str(contract.get("id") or "")
+    allowed = {
+        str(row.get("id") or "")
+        for row in (contract.get("outcomes") or []) if str(row.get("id") or "")
+    }
+    if not contract_id or not allowed:
+        return draft
+    draft["identity_contract"] = "work-item.v1"
+    for item in (draft.get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        refs = list(dict.fromkeys(
+            str(value or "").strip() for value in (item.get("outcome_refs") or [])
+            if str(value or "").strip() in allowed
+        ))
+        if len(refs) != 1:
+            item.pop("item_id", None)
+            continue
+        root_id = work_item_id(contract_id, refs[0])
+        item["item_id"] = root_id
+        for child_index, child in enumerate(item.get("children") or []):
+            if not isinstance(child, dict):
+                continue
+            child_refs = list(dict.fromkeys(
+                str(value or "").strip() for value in (child.get("outcome_refs") or [])
+                if str(value or "").strip() in allowed
+            ))
+            child_ref = child_refs[0] if len(child_refs) == 1 else refs[0]
+            child_material = f"{work_item_id(contract_id, child_ref)}\0child\0{child_index}"
+            child["item_id"] = (
+                "work-child:" + hashlib.sha256(child_material.encode("utf-8")).hexdigest()[:16]
+            )
+    return draft
+
+
+def validate_work_item_identities(state: AgentState, draft: dict) -> list[dict]:
+    """Validate identities only after Work has opted into the v1 identity contract."""
+    if not isinstance(draft, dict) or (
+            draft.get("identity_contract") != "work-item.v1"
+            and not any(isinstance(row, dict) and row.get("item_id")
+                        for row in (draft.get("items") or []))):
+        return []
+    contract = requested_outcome_contract(state)
+    contract_id = str(contract.get("id") or "")
+    allowed = {
+        str(row.get("id") or "")
+        for row in (contract.get("outcomes") or []) if str(row.get("id") or "")
+    }
+    errors: list[dict] = []
+    seen: dict[str, int] = {}
+    for index, item in enumerate(draft.get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        refs = list(dict.fromkeys(
+            str(value or "").strip() for value in (item.get("outcome_refs") or [])
+            if str(value or "").strip() in allowed
+        ))
+        expected = work_item_id(contract_id, refs[0]) if len(refs) == 1 else ""
+        actual = str(item.get("item_id") or "")
+        if not expected or actual != expected:
+            errors.append({
+                "index": index, "field": "item_id",
+                "message": "Work item identity does not match its single typed outcome_ref",
+            })
+            continue
+        if actual in seen:
+            errors.append({
+                "index": index, "field": "item_id",
+                "message": (f"Work item identity is duplicated with item {seen[actual]}; "
+                            "one outcome cannot be rebound by title order"),
+            })
+        else:
+            seen[actual] = index
     return errors
 
 
