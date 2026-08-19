@@ -9,6 +9,10 @@ import { createTypeahead } from "../../lib/typeahead.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
 import { categoryColor } from "../../lib/colors.js";
 
+const RECENT_MAX = 20;
+// 예전 host/URL 형태로 저장된 같은 항목을 합친 뒤에도 20개를 채울 수 있도록 넉넉히 받는다.
+const RECENT_FETCH = 100;
+
 export default {
   name: "SearchOverlay",
   components: { Avatar },
@@ -129,7 +133,7 @@ export default {
     idx(src, i) { return this.flat.findIndex((f) => f.src === src && f.it === (this.view[src].items[i])); },
     async loadRecent() {
       let r = [];
-      try { r = (await api.recent(30)) || []; } catch (e) { r = []; }
+      try { r = (await api.recent(RECENT_FETCH)) || []; } catch (e) { r = []; }
       // 예전에 다른 URL 형태(호스트 다름)로 저장된 같은 티켓/문서를 한 줄로 합친다
       const seen = new Set();
       this.recent = r.filter((x) => {
@@ -138,7 +142,7 @@ export default {
         if (seen.has(k)) return false;
         seen.add(k);
         return true;
-      }).slice(0, 20);
+      }).slice(0, RECENT_MAX);
       if (this.showRecent) this.active = -1;
     },
     // 최근 목록에서 지우기(잘못 열었던 항목 등). 서버 목록이라 다른 브라우저에서도 사라진다.

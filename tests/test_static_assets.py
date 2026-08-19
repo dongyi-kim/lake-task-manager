@@ -470,6 +470,34 @@ def test_field_edit_shows_offline_defaults_immediately_and_pins_none_option():
     assert "api.warmGlobals()" not in tasks        # Task 본 데이터 완료 여부에 종속되지 않음
 
 
+def test_feature_guides_explain_search_recents_quick_open_and_browser_access():
+    guides = (STATIC / "lib" / "guides.js").read_text(encoding="utf-8")
+    spot = (STATIC / "components" / "ui" / "GuideSpot.js").read_text(encoding="utf-8")
+
+    assert 'id: "global-search-recent-1"' in guides
+    assert 'anchor: ".search-trig"' in guides
+    assert "/ 키를 누르면 통합 검색창이 열립니다" in guides
+    assert "최근 열어본" in guides and "티켓·문서·웹 링크" in guides
+    assert 'id: "quick-open-hotkey-1"' in guides
+    assert 'anchor: ".setmenu-trig"' in guides
+    assert "body: ({ hotkey }) => hotkey" in guides
+    assert 'export function hotkeyLabel(spec)' in guides
+    assert 'api.prefs().then((p) =>' in spot and "p.quickOpenHotkey" in spot
+    assert 'id: "browser-localhost-access-1"' in guides
+    assert 'body: ({ port }) =>' in guides and '"웹 브라우저 주소창에서 localhost:" + port' in guides
+    assert 'port: window.location.port || "4457"' in spot
+    assert 'this.g.body({ hotkey: hotkeyLabel(this.hotkey), port:' in spot
+    assert "{{ bodyText() }}" in spot
+
+
+def test_global_search_keeps_up_to_twenty_unique_recent_items():
+    search = (STATIC / "components" / "ui" / "SearchOverlay.js").read_text(encoding="utf-8")
+    assert "const RECENT_MAX = 20;" in search
+    assert "const RECENT_FETCH = 100;" in search
+    assert "api.recent(RECENT_FETCH)" in search
+    assert ").slice(0, RECENT_MAX);" in search
+
+
 # ── 파이썬 소스 위생 ────────────────────────────────────────────────────────
 # 같은 편집 사고의 파이썬 판. heredoc 으로 소스를 고치면 줄바꿈이 **공백으로 뭉개져**
 # `if a  <공백 17칸>  and b:` 같은 줄이 남는다. 문법은 멀쩡해서 테스트도 전부 통과하고
