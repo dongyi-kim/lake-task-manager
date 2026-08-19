@@ -143,7 +143,7 @@ def test_ticket_create_dialogs_use_wider_responsive_defaults():
 
 
 def test_uniform_subtask_status_reuses_solo_parent_and_foldable_children_in_one_column():
-    """한 상태 그룹은 단독 Task 목록에 편입돼 같은 폭·순서로 정렬되고 하위만 붙는다."""
+    """한 상태 그룹은 단독 Task 목록에 편입되고 모든 그룹이 같은 하단 폴더블 바를 쓴다."""
     view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
     css = (STATIC / "styles" / "mytasks.css").read_text(encoding="utf-8")
 
@@ -152,18 +152,51 @@ def test_uniform_subtask_status_reuses_solo_parent_and_foldable_children_in_one_
     assert 'const compact = this.axis === "h" ? grouped.filter((p) => this.compactStatus(p)) : [];' in view
     assert "const solo = this.soloPanel(" in view
     assert "compactPanel: p" in view
+    assert "statusCategory: p.singleStatus" not in view
+    assert 'const rawParent = p?.parentCard?.statusCategory;' in view
+    assert 'return uniform && this.bandOpen(parentStatus) ? parentStatus : null;' in view
     assert 'kind: "solo", cards: this.sorted(vis)' in view
     assert '<TaskCard v-if="!c.compactPanel" :card="c"' in view
     assert 'class="mt-compact-flow"' in view
     assert '<TaskCard :card="c" :style="sigStyle(c)"' in view
+    assert "const SubtaskFoldBar = {" in view
+    assert "components: { Avatar }" in view
+    assert '<span class="mt-subfoot-toggle"' in view
+    assert '<strong>{{ total }}</strong> Subtasks' in view
+    assert 'class="mt-subfoot-owners"' in view
+    assert 'v-for="owner in assignees"' in view
+    assert 'class="mt-subfoot-sep mt-subfoot-progress-sep"' in view
+    assert 'role="progressbar"' in view
+    assert '<em>{{ done }} / {{ total }}</em>' in view
+    assert "const seenAssignees = new Set();" in view
+    assert "allCount: all.length, assignees" in view
+    assert view.count("<SubtaskFoldBar") == 3  # 1축 compact + 가로 3축 + 세로 상태축
+    assert ':closed="isGroupClosed(c.compactPanel)"' in view
+    assert ':closed="isGroupClosed(p)"' in view
+    assert 'class="mt-roll"' not in view
+    assert 'mode === "all" || mode === "collapsed"' in view
     assert 'class="mt-gbody one mt-compact-children"' in view
-    assert "cellCards(c.compactPanel, st.k)" in view
+    assert "cellCards(c.compactPanel, c.compactPanel.singleStatus)" in view
+    assert "overflowed(c.compactPanel, c.compactPanel.singleStatus)" in view
+    assert "cellHidden(c.compactPanel, c.compactPanel.singleStatus)" in view
     # 실제 그룹들은 먼저, standalone/compact 공유 목록은 마지막에 붙는다.
     assert view.index("const out = grouped.filter") < view.index("if (solo) out.push(solo)")
     assert ".mt-gslot > .mt-gcard2 { grid-column: 1 / -1;" in css
     assert ".mt-compact-flow { width: 100%; min-width: 0; }" in css
-    assert ".mt-compact-head > .mt-card.two { width: 100%; box-sizing: border-box; }" in css
+    assert ".mt-compact-head > .mt-card.two { width: 100%; box-sizing: border-box;" in css
     assert ".mt-compact-children { display: grid; grid-template-columns: minmax(0, 1fr);" in css
+    assert ".mt-subfoot { display: flex; align-items: center; gap: 7px; width: 100%; height: 30px;" in css
+    assert ".mt-subfoot-toggle { flex: none; display: inline-grid; place-items: center; width: 19px; height: 19px;" in css
+    assert ".mt-subfoot-owners { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 10px;" in css
+    assert ".mt-subfoot-progress-sep { margin-left: auto; }" in css
+    assert view.count('class="mt-owner mt-sub-owner"') == 3
+    assert view.count('class="mt-subdue-sep"') == 3
+    assert 'v-if="!c.mine || subView === \'all\'" class="mt-owner"' not in view
+    assert 'v-if="!sub.mine || subView === \'all\'" class="mt-owner"' not in view
+    assert ".mt-sub-owner { flex: 0 1 auto; min-width: 0; max-width: 108px; overflow: hidden; }" in css
+    assert "@container mtc (max-width: 340px)" in css
+    assert ".mt-compact-flow > .mt-subfoot { border: 1px solid var(--border-hi); border-top: 0;" in css
+    assert ".mt-compact-head > .mt-fold" not in css
     assert "mt-gslot.one-status" not in css
 
 
@@ -392,6 +425,77 @@ def test_agent_wiki_mentions_render_as_person_badges_even_before_name_hydration(
     assert "MENTION_RE" in md
     assert "personBadge" in md
     assert "[~" in md
+
+
+def test_editor_and_rendered_mentions_share_stable_avatar_badge_ui():
+    """멘션은 로딩 상태로 모양이 바뀌지 않고 사진 성공 시에만 @ 폴백을 덮는다."""
+    badge = (STATIC / "lib" / "mentionBadge.js").read_text(encoding="utf-8")
+    editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
+    agent = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
+    css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
+
+    assert 'avatar.textContent = "@"' in badge
+    assert 'img.className = "mention-av-img"' in badge and 'img.classList.add("on")' in badge
+    assert "avatar.isConnected" not in badge       # cached load도 사진 표시
+    assert "paintMentionBadge" in editor and "addNodeView()" in editor
+    assert "enhanceMentionBadges(root)" in dialog
+    assert "mention mention-badge" in agent and 'aria-hidden="true">@</span>' in agent
+    assert ".mention-badge, .tkt-desc .mention, .tkt-desc a.user-hover, .agent-md .md-person" in css
+    assert ".mention-av-img.on { opacity: 1; }" in css
+
+
+def test_field_edit_shows_offline_defaults_immediately_and_pins_none_option():
+    """최근/local 추천은 서버를 기다리지 않고, 없음은 어떤 검색어에도 필터링되지 않는다."""
+    src = (STATIC / "components" / "ui" / "FieldEdit.js").read_text(encoding="utf-8")
+    css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
+    root = (STATIC / "components" / "app-root.js").read_text(encoding="utf-8")
+    tasks = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
+
+    labels = src[src.index("suggest(q) {"):src.index("searchEpics(q) {")]
+    epics = src[src.index("searchEpics(q) {"):src.index("searchWho(q) {")]
+    users = src[src.index("searchWho(q) {"):src.index("// ── 최근 사용값")]
+    assert labels.index("this.opts = this._prepRecentStr(base);") < labels.index('api.options("labels", "")')
+    assert epics.index("this.opts = this._prepRecent(base") < epics.index('api.options("epics", "")')
+    assert users.index("this.who = this._prepRecent(base") < users.index("this._ta.run(q)")
+    assert "this._lookupCurrent(token, q)" in src and "lookupSeq += 1" in src
+    assert ".catch(() => { this.opts = []; })" not in src
+    assert "hasNoneOption()" in src
+    assert src.count('class="fe-i fe-empty"') == 3
+    assert '@click="clearMulti"' in src and '@click="clearUser"' in src
+    assert 'v-if="hasNoneOption" class="fe-clear"' in src
+    assert ".fe-i.fe-empty" in css
+    assert ".fe-i > span:not(.avt):not(.fe-empty-mark)" in css
+    assert root.count("api.warmGlobals()") == 2    # 최초 인증 성공 + 재인증 복귀
+    assert "api.warmGlobals()" not in tasks        # Task 본 데이터 완료 여부에 종속되지 않음
+
+
+def test_feature_guides_explain_search_recents_quick_open_and_browser_access():
+    guides = (STATIC / "lib" / "guides.js").read_text(encoding="utf-8")
+    spot = (STATIC / "components" / "ui" / "GuideSpot.js").read_text(encoding="utf-8")
+
+    assert 'id: "global-search-recent-1"' in guides
+    assert 'anchor: ".search-trig"' in guides
+    assert "/ 키를 누르면 통합 검색창이 열립니다" in guides
+    assert "최근 열어본" in guides and "티켓·문서·웹 링크" in guides
+    assert 'id: "quick-open-hotkey-1"' in guides
+    assert 'anchor: ".setmenu-trig"' in guides
+    assert "body: ({ hotkey }) => hotkey" in guides
+    assert 'export function hotkeyLabel(spec)' in guides
+    assert 'api.prefs().then((p) =>' in spot and "p.quickOpenHotkey" in spot
+    assert 'id: "browser-localhost-access-1"' in guides
+    assert 'body: ({ port }) =>' in guides and '"웹 브라우저 주소창에서 localhost:" + port' in guides
+    assert 'port: window.location.port || "4457"' in spot
+    assert 'this.g.body({ hotkey: hotkeyLabel(this.hotkey), port:' in spot
+    assert "{{ bodyText() }}" in spot
+
+
+def test_global_search_keeps_up_to_twenty_unique_recent_items():
+    search = (STATIC / "components" / "ui" / "SearchOverlay.js").read_text(encoding="utf-8")
+    assert "const RECENT_MAX = 20;" in search
+    assert "const RECENT_FETCH = 100;" in search
+    assert "api.recent(RECENT_FETCH)" in search
+    assert ").slice(0, RECENT_MAX);" in search
 
 
 # ── 파이썬 소스 위생 ────────────────────────────────────────────────────────

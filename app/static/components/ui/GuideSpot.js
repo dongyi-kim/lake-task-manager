@@ -6,7 +6,8 @@
 //  · **가리킬 요소가 없으면 안 뜬다.** 기능이 사라지면 안내도 저절로 조용해진다.
 //  · 한 번에 하나. 닫으면 '봤다' 로 기록하고 다음 것을 찾는다.
 //  · 요소는 화면이 데이터를 받은 뒤 늦게 나타나기도 한다 → 잠깐 기다렸다가 다시 찾는다.
-import { nextGuide, markSeen, pruneSeen } from "../../lib/guides.js";
+import { api } from "../../lib/api.js";
+import { nextGuide, markSeen, pruneSeen, hotkeyLabel } from "../../lib/guides.js";
 
 const SETTLE_MS = 900;        // 화면이 자리를 잡을 때까지(첫 렌더 직후의 흔들림을 피한다)
 const RETRY_MS = 700;         // 요소가 아직 없을 때 다시 찾아보는 간격
@@ -16,9 +17,12 @@ export default {
   name: "GuideSpot",
   props: { route: { type: String, default: "" } },
   // g=지금 띄운 안내, box=가리킬 요소의 위치, pos=말풍선의 **확정** 위치(실측 후에 정해진다)
-  data() { return { g: null, box: null, pos: null }; },
+  data() { return { g: null, box: null, pos: null, hotkey: "ctrl+alt+space" }; },
   mounted() {
     pruneSeen();                                  // 지워진 안내의 기록 청소
+    // 빠른 열기 안내는 기본값을 하드코딩해 보여 주지 않고 이 사용자가 설정한 조합을 쓴다.
+    // prefs는 memo라 SettingsMenu와 중복 호출해도 요청은 하나이며, 늦으면 기본값으로 먼저 그린다.
+    api.prefs().then((p) => { if (p && p.quickOpenHotkey) this.hotkey = p.quickOpenHotkey; }).catch(() => {});
     this._reflow = () => this.measure();
     window.addEventListener("resize", this._reflow);
     window.addEventListener("scroll", this._reflow, true);
@@ -79,6 +83,12 @@ export default {
       this.g = null; this.box = null; this.pos = null;
       this.schedule();                                        // 이 화면에 또 있으면 이어서
     },
+    bodyText() {
+      if (!this.g) return "";
+      return typeof this.g.body === "function"
+        ? this.g.body({ hotkey: hotkeyLabel(this.hotkey), port: window.location.port || "4457" })
+        : this.g.body;
+    },
     /**
      * 말풍선 자리를 정한다 — **실제로 그려진 크기를 재고 나서.**
      *
@@ -128,7 +138,7 @@ export default {
     <div ref="bub" class="guide-bub" :class="'pl-' + (g.place || 'right')"
          :style="pos || { left: '-9999px', top: '0px' }" role="dialog">
       <div class="guide-t">{{ g.title }}</div>
-      <div class="guide-b">{{ g.body }}</div>
+      <div class="guide-b">{{ bodyText() }}</div>
       <button class="guide-x" @click="close">알겠습니다</button>
     </div>
   </div>`,

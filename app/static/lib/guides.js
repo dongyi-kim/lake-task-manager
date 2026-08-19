@@ -17,7 +17,8 @@
 //           (= 기능이 없는 화면에선 저절로 조용하다).
 //   routes  이 화면들에서만. 비우면 어디서든.
 //   place   말풍선 위치 — 'right' | 'left' | 'top' | 'bottom'
-//   title / body  안내 문구. 평문만(마크다운은 그대로 글자로 보인다).
+//   title / body  안내 문구. 평문만(마크다운은 그대로 글자로 보인다). body는 사용자 설정처럼
+//                 실행 중 값이 필요하면 ({ hotkey, port }) => "..." 함수도 가능하다.
 //   order   낮을수록 먼저.
 
 const KEY = "lake.guides.seen";
@@ -25,7 +26,42 @@ const KEY = "lake.guides.seen";
 /** 데이터를 그려 주는 화면들 — '불러오는 중' 이나 낡은 캐시를 만날 수 있는 곳. */
 export const DATA_ROUTES = ["wbs", "vit", "workload", "mytasks"];
 
+/** 저장 spec을 사람이 읽는 단축키 표기로. 설정에 새 조합이 생겨도 가이드는 그대로 표시한다. */
+export function hotkeyLabel(spec) {
+  const names = { ctrl: "Ctrl", alt: "Alt", shift: "Shift", space: "Space", meta: "Win" };
+  return String(spec || "ctrl+alt+space").toLowerCase().split("+").filter(Boolean)
+    .map((part) => names[part] || (part.length === 1 ? part.toUpperCase() : part))
+    .join(" + ");
+}
+
 export const GUIDES = [
+  {
+    id: "global-search-recent-1",
+    anchor: ".search-trig",
+    place: "bottom",
+    order: 5,
+    title: "검색과 최근 항목을 한 번에",
+    body: "/ 키를 누르면 통합 검색창이 열립니다. 검색어가 비어 있으면 최근 열어본 "
+        + "티켓·문서·웹 링크를 바로 볼 수 있습니다.",
+  },
+  {
+    id: "quick-open-hotkey-1",
+    anchor: ".setmenu-trig",
+    place: "bottom",
+    order: 6,
+    title: "어디서든 앱 창 바로 열기",
+    body: ({ hotkey }) => hotkey + "를 누르면 다른 프로그램을 쓰는 중에도 이 화면이 바로 나타납니다. "
+        + "오른쪽 설정에서 단축키를 바꿀 수 있습니다.",
+  },
+  {
+    id: "browser-localhost-access-1",
+    anchor: ".setmenu-trig",
+    place: "bottom",
+    order: 7,
+    title: "브라우저에서도 LTM 열기",
+    body: ({ port }) => "웹 브라우저 주소창에서 localhost:" + port
+        + "로 접속하면 LTM을 사용할 수 있습니다.",
+  },
   {
     id: "refresh-fab-1",
     anchor: ".fab-refresh",
