@@ -3215,10 +3215,15 @@ class JiraClient:
             return out
         return self.cache.get_or_set(f"statuscats:{self.env}", self.STATUS_CATS_TTL, do)[0]
 
-    def ticket_timeline(self, key, limit=40):
+    def ticket_timeline(self, key, limit=40, defer=False):
         """티켓 이력 — [{kind,date,author,authorId,field,from,to,srcKey}] 최신순.
-        본인 이벤트(생성/중요 필드 변경/댓글) + **직계 자손의 상태 변경**(srcKey 로 출처 표시)."""
-        cats = self._status_cats()
+        본인 이벤트(생성/중요 필드 변경/댓글) + **직계 자손의 상태 변경**(srcKey 로 출처 표시).
+
+        ``defer`` 는 다이얼로그 첫 표시용이다. 캐시가 없을 때 Jira changelog 를 HTTP 요청
+        스레드에서 기다리지 않고 저우선순위 SWR worker 로 넘겨, 본문·편집 요청을 막지 않는다.
+        준비 전이면 None, 신선하거나 stale 캐시가 있으면 즉시 목록을 돌려준다.
+        """
+        cats = None
 
         def ev_of(h, allow, src=None):
             who = h.get("author") or {}
@@ -3241,12 +3246,14 @@ class JiraClient:
                       "from": frm, "to": to,
                       "srcKey": src}
                 if low == "status":                      # 뱃지 색용 카테고리(없으면 중립)
-                    ev["fromCat"] = cats.get((frm or "").lower())
-                    ev["toCat"] = cats.get((to or "").lower())
+                    ev["fromCat"] = (cats or {}).get((frm or "").lower())
+                    ev["toCat"] = (cats or {}).get((to or "").lower())
                 out.append(ev)
             return out
 
         def build():
+            nonlocal cats
+            cats = self._status_cats()
             ev = []
             own = self._changelog(key)
             rep = own.get("reporter") or {}
@@ -3269,7 +3276,15 @@ class JiraClient:
                     ev.extend(ev_of(h, {"status"}, src=ck))
             ev.sort(key=lambda e: e.get("date") or "", reverse=True)   # 최신순
             return ev[:limit]
-        return self._swr(f"timeline:{self.env}:{key}", build)
+        cache_key = f"timeline:{self.env}:{key}"
+        if defer:
+            hit = self.cache.get(cache_key)
+            if hit is not None:
+                return hit
+            stale = self.cache.get_stale(cache_key)
+            self._refresh_bg(cache_key, self.s.cache_ttl_seconds, build)
+            return stale
+        return self._swr(cache_key, build)
 
     def ticket_children(self, key):
         """직계 하위 티켓(Epic→Epic Link 자식 / 그 외→Sub-Task) — ticket_badge 형태.

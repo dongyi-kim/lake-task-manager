@@ -2,6 +2,9 @@
 // GET 응답을 URL 키로 memo(프로미스 캐시) → 탭 전환/중복요청 재fetch 방지. refresh() 에서 clear.
 // updated: 2026-07-09
 const REQUEST_TIMEOUT_MS = 35 * 1000;
+// 타임라인은 보조 정보이고 하위 changelog까지 모아 일반 조회보다 비싸다. 이 요청 하나가
+// 다이얼로그를 오래 붙잡지 않게 더 짧게 끊고, 해당 패널에서만 다시 시도하게 한다.
+const TIMELINE_TIMEOUT_MS = 15 * 1000;
 
 async function req(path, opts) {
   // 브라우저 fetch 기본값은 무한 대기다. 서버/SSO worker 가 비정상 상태여도 화면의 버튼과
@@ -41,13 +44,13 @@ async function req(path, opts) {
 // 최근 300개면 "다시 열면 즉시" 체감은 유지되면서 힙은 일정 수준에서 멈춘다.
 const _memo = new Map();
 const MEMO_MAX = 300;
-function get(path) {
+function get(path, opts) {
   if (_memo.has(path)) {
     const p = _memo.get(path);
     _memo.delete(path); _memo.set(path, p);   // 재삽입 = 최근 사용 표시(Map 은 삽입순 유지)
     return p;
   }
-  const p = req(path).catch((e) => { _memo.delete(path); throw e; });  // 실패는 캐시 안 함
+  const p = req(path, opts).catch((e) => { _memo.delete(path); throw e; });  // 실패는 캐시 안 함
   _memo.set(path, p);
   if (_memo.size > MEMO_MAX) _memo.delete(_memo.keys().next().value);  // 가장 오래된 것부터
   return p;
@@ -164,7 +167,10 @@ export const api = {
   userBadge: (userId) => get("/api/mention/user/" + encodeURIComponent(userId)),
   ticketAncestors: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/ancestors"),
   ticketSiblings: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/siblings"),
-  ticketTimeline: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/timeline"),
+  // 첫 조회는 서버가 저우선순위로 만들고 202를 즉시 돌려준다. pending 응답을 memo 하면 다음
+  // poll도 영원히 같은 Promise를 보므로, 이 경로만 브라우저 memo 없이 서버 캐시를 직접 확인한다.
+  ticketTimeline: (key) => req("/api/ticket/" + encodeURIComponent(key) + "/timeline?deferred=1",
+                               { timeoutMs: TIMELINE_TIMEOUT_MS }),
   ticketChildren: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/children"),
   ticketRelated: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/related"),
   ticketAttachments: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/attachments"),

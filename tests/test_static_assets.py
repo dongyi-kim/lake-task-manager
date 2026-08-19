@@ -361,6 +361,25 @@ def test_frontend_requests_time_out_without_turning_transport_stalls_into_login(
     assert "api.login()" in refresh             # degraded 분기 뒤에서만 인증 흐름 진입
 
 
+def test_ticket_timeline_is_deferred_and_never_blocks_loaded_dialog_sections():
+    """타임라인 cold build/실패는 자기 패널만 기다리고 이미 로드된 필드 조작을 막지 않는다."""
+    api = (STATIC / "lib" / "api.js").read_text(encoding="utf-8")
+    dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
+    css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
+
+    assert "const TIMELINE_TIMEOUT_MS" in api
+    assert '"/timeline?deferred=1"' in api
+    assert "ticketTimeline: (key) => req(" in api      # pending 응답은 browser memo 금지
+    assert 'spineLoading: true, timelineLoading: true, timelineErr: ""' in dialog
+    assert "async loadTimeline(" in dialog and "result.pending" in dialog
+    assert "TIMELINE_WAIT_MS" in dialog and "retryTimeline()" in dialog
+    assert 'v-else-if="timelineErr"' in dialog and "@click=\"retryTimeline\"" in dialog
+    assert ".tl-error button" in css
+    # editmeta가 먼저 요청되어 완료된 본문/필드가 타임라인 때문에 읽기 전용으로 남지 않는다.
+    assert dialog.index("api.editmeta(key)") < dialog.index("this.loadTimeline(key, my)")
+    assert "Promise.allSettled([_sib, _tl])" not in dialog
+
+
 def test_agent_wiki_mentions_render_as_person_badges_even_before_name_hydration():
     md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
     assert "MENTION_RE" in md

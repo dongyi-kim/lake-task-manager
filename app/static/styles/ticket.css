@@ -265,6 +265,12 @@
 .tl-src { font-family: ui-monospace, Consolas, monospace; font-size: 9.5px; color: var(--accent);
   background: var(--panel); border: 1px solid var(--border); border-radius: 4px;
   padding: 0 4px; margin-right: 4px; white-space: nowrap; }
+/* 타임라인 실패는 다이얼로그 전체 오류가 아니다. 우측 패널 안에서만 이유와 재시도를 제공하고
+   본문·필드·다른 티켓 링크는 그대로 조작 가능하게 둔다. */
+.tl-error p { margin: 7px 0 9px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.tl-error button { border: 1px solid var(--border); border-radius: 6px; padding: 4px 9px;
+  background: var(--panel); color: var(--text); font: inherit; font-size: 11px; cursor: pointer; }
+.tl-error button:hover { border-color: var(--accent); color: var(--accent); }
 /* 우측 패널 — 타임라인 */
 .tkt-tl { position: relative; flex: 0 0 var(--tl-w, 220px); width: var(--tl-w, 220px);
   align-self: stretch; min-width: 0;

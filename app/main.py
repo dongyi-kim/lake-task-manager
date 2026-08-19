@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.domain import mytasks, rollup, search, vit, workload
-from app.auth.base import SessionExpired, UpstreamUnavailable
+from app.auth.base import SessionExpired, UpstreamUnavailable, background_upstream
 from app.infra.cache import Cache
 from app.jira.jira_client import JiraClient
 from app.infra.settings import STATIC_DIR, get_settings, load_plan, load_people
@@ -1149,9 +1149,15 @@ def api_ticket_ancestors(key: str):
 
 
 @app.get("/api/ticket/{key}/timeline")
-def api_ticket_timeline(key: str):
-    """티켓 타임라인 — 생성/상태/담당자/해결/댓글 등 중요 이력만(설명 수정 등 잡음 제외)."""
-    return JSONResponse(_client.ticket_timeline(key))
+def api_ticket_timeline(key: str, deferred: bool = False):
+    """티켓 타임라인 — 보조 패널이므로 본문·편집·쓰기 요청보다 뒤에서 처리한다."""
+    # prod SSO provider 는 단일 우선순위 큐다. changelog 한 건이 지연됐다는 이유로 이미 열린
+    # 본문/필드의 클릭·저장을 막지 않게, 타임라인이 만드는 모든 후속 조회를 background 로 둔다.
+    with background_upstream():
+        timeline = _client.ticket_timeline(key, defer=deferred)
+    if deferred and timeline is None:
+        return JSONResponse({"pending": True}, status_code=202)
+    return JSONResponse(timeline)
 
 
 @app.get("/api/ticket/{key}/attachments")
