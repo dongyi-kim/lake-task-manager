@@ -143,21 +143,28 @@ def test_ticket_create_dialogs_use_wider_responsive_defaults():
 
 
 def test_uniform_subtask_status_reuses_solo_parent_and_foldable_children_in_one_column():
-    """한 상태 그룹은 단독 Task 부모 카드 + 기존 폴더블 하위 목록으로 한 칸에 표시한다."""
+    """한 상태 그룹은 단독 Task 목록에 편입돼 같은 폭·순서로 정렬되고 하위만 붙는다."""
     view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
     css = (STATIC / "styles" / "mytasks.css").read_text(encoding="utf-8")
 
     assert "singleStatus: uniformStatusCategory(all)" in view
     assert "parentCard: this.card(g, g, !!g.mine)" in view
-    assert 'class="mt-gslot" :class="compactStatusClass(p)"' in view
-    assert '<TaskCard v-if="compactStatus(p)" :card="p.parentCard"' in view
-    assert 'v-for="st in panelStates(p)"' in view
-    for status, column in (("todo", 1), ("inprogress", 2), ("done", 3)):
-        assert f".mt-gslot.one-status.s-{status} > .mt-gcard2 {{ grid-column: {column}; }}" in css
-        assert css.count(f".mt-gslot.one-status.s-{status} > .mt-gcard2") == 2
+    assert 'const compact = this.axis === "h" ? grouped.filter((p) => this.compactStatus(p)) : [];' in view
+    assert "const solo = this.soloPanel(" in view
+    assert "compactPanel: p" in view
+    assert 'kind: "solo", cards: this.sorted(vis)' in view
+    assert '<TaskCard v-if="!c.compactPanel" :card="c"' in view
+    assert 'class="mt-compact-flow"' in view
+    assert '<TaskCard :card="c" :style="sigStyle(c)"' in view
+    assert 'class="mt-gbody one mt-compact-children"' in view
+    assert "cellCards(c.compactPanel, st.k)" in view
+    # 실제 그룹들은 먼저, standalone/compact 공유 목록은 마지막에 붙는다.
+    assert view.index("const out = grouped.filter") < view.index("if (solo) out.push(solo)")
     assert ".mt-gslot > .mt-gcard2 { grid-column: 1 / -1;" in css
-    assert ".mt-gslot.one-status .mt-gh > .mt-card.two" in css
-    assert ".mt-gslot.one-status .mt-gbody { border: 1px solid var(--border); border-top: 0;" in css
+    assert ".mt-compact-flow { width: 100%; min-width: 0; }" in css
+    assert ".mt-compact-head > .mt-card.two { width: 100%; box-sizing: border-box; }" in css
+    assert ".mt-compact-children { display: grid; grid-template-columns: minmax(0, 1fr);" in css
+    assert "mt-gslot.one-status" not in css
 
 
 def test_comment_submit_waits_for_pending_draft_before_final_delete():

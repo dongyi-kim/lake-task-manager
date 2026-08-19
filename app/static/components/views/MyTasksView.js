@@ -314,9 +314,19 @@ export default {
       // 전체 최솟값이 된다 → 다른 그룹과 같이 정렬하면 언제나 맨 위를 차지한다. 순위 경쟁은
       // 실제 묶음(그룹)끼리만 시키고, 자루는 자리를 고정한다.
       // Epic 필터: 그룹은 부모·자식이 같은 Epic 을 공유하므로 그룹의 버킷으로 통째로 거른다.
-      const out = this.groups.filter((g) => g.hasSubs && this.epicPass(g) && this.projPass(g) && !this.excluded[g.key]).map((g) => this.taskPanel(g))
+      const grouped = this.groups
+        .filter((g) => g.hasSubs && this.epicPass(g) && this.projPass(g) && !this.excluded[g.key])
+        .map((g) => this.taskPanel(g));
+      // 가로축에서 모든 Sub-Task 가 한 상태인 Task 는 그룹 패널이 아니다. 하위 없는 Task 와
+      // 같은 마지막 카드 목록으로 보내 폭·위치·정렬을 완전히 공유하고, 하위 목록만 카드 아래에 붙인다.
+      // 세로축이거나 해당 상태 열을 접었으면 기존 그룹 표현을 유지한다.
+      const compact = this.axis === "h" ? grouped.filter((p) => this.compactStatus(p)) : [];
+      const out = grouped.filter((p) => !compact.includes(p))
         .sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1]);
-      const solo = this.soloPanel(this.groups.filter((g) => !g.hasSubs && this.epicPass(g) && this.projPass(g) && !this.excluded[g.key]));
+      const solo = this.soloPanel(
+        this.groups.filter((g) => !g.hasSubs && this.epicPass(g) && this.projPass(g) && !this.excluded[g.key]),
+        compact,
+      );
       if (solo) out.push(solo);
       return out;
     },
@@ -596,16 +606,24 @@ export default {
         rank: this.rankOf(all),
       };
     },
-    /** 하위 없는 Task 들을 묶음 없이 카드로만 모은 덩어리(그룹 패널이 아니다). */
-    soloPanel(gs) {
+    /** 하위 없는 Task 들과 1축 Task 들을 같은 카드 목록으로 모은 덩어리(그룹 패널이 아니다). */
+    soloPanel(gs, compactPanels = []) {
       const cards = [];
       for (const g of gs) {
         for (const a of g.atoms) if (!this.excluded[a.key]) cards.push(this.card(a, g, true));
         for (const ot of g.others) if (!this.excluded[ot.key]) cards.push(this.card(ot, g, false));
       }
       const vis = this.visible(cards);
+      // 부모의 원래 상태가 아니라 Sub-Task 의 공통 상태 열에 놓는다. 나머지 정렬 필드는 부모
+      // TaskCard 그대로라 단독 Task 와 정확히 같은 comparator(마감/우선순위/Epic)를 탄다.
+      for (const p of compactPanels) {
+        vis.push(Object.assign({}, p.parentCard, {
+          statusCategory: p.singleStatus,
+          compactPanel: p,
+        }));
+      }
       if (!vis.length) return null;
-      return { key: "__solo__", kind: "solo", cards: vis, rank: this.rankOf(cards) };
+      return { key: "__solo__", kind: "solo", cards: this.sorted(vis), rank: this.rankOf(cards) };
     },
     /** 패널의 카드를 상태별로 나눈다 — 상태 축이 가로든 세로든 이 함수를 쓴다. */
     byState(cards) {
@@ -617,15 +635,6 @@ export default {
     compactStatus(p) {
       const status = p && p.kind === "task" ? p.singleStatus : null;
       return status && this.bandOpen(status) ? status : null;
-    },
-    compactStatusClass(p) {
-      const status = this.compactStatus(p);
-      return status ? ["one-status", "s-" + status] : [];
-    },
-    /** 1컬럼 그룹도 같은 하위 셀 마크업을 쓰되, 유일한 상태 셀 하나만 렌더한다. */
-    panelStates(p) {
-      const status = this.compactStatus(p);
-      return status ? this.states.filter((st) => st.k === status) : this.states;
     },
     /**
      * 하위가 많은 Task 는 카드가 세로로 길어져 목록을 훑기 어렵다 — 접어 둔다.
@@ -931,23 +940,53 @@ export default {
           <div v-for="st in states" :key="'n-' + st.k" class="mt-cell"
                :class="['c-' + st.k, { empty: !byState(p.cards)[st.k].length,
                                                 closed: !bandOpen(st.k) }]">
-            <TaskCard v-for="c in byState(p.cards)[st.k]" :key="c.key" :card="c"
-                   :style="sigStyle(c)" :epic-title="epicTitle(c.epicKey)" />
+            <template v-for="c in byState(p.cards)[st.k]" :key="c.key">
+              <TaskCard v-if="!c.compactPanel" :card="c"
+                     :style="sigStyle(c)" :epic-title="epicTitle(c.epicKey)" />
+              <!-- 1축 Task 는 단독 Task 와 같은 셀·배열·TaskCard 를 그대로 쓴다.
+                   이 wrapper 는 폭/정렬을 만들지 않고 기존 폴더블 Sub-Task 목록만 아래에 잇는다. -->
+              <div v-else class="mt-compact-flow"
+                   :class="{ folded: gClosed[c.compactPanel.key],
+                             open: c.compactPanel.mode !== 'collapsed' && !gClosed[c.compactPanel.key] }">
+                <div class="mt-compact-head">
+                  <button type="button" class="mt-fold" @click.stop="toggleGroup(c.compactPanel.key)"
+                          :title="gClosed[c.compactPanel.key] ? '하위 펼치기' : '하위 접기'">
+                    <span class="chev" :class="{ open: !gClosed[c.compactPanel.key] }">▸</span></button>
+                  <TaskCard :card="c" :style="sigStyle(c)" :epic-title="epicTitle(c.epicKey)" />
+                </div>
+                <div v-if="c.compactPanel.mode !== 'collapsed' && !gClosed[c.compactPanel.key]"
+                     class="mt-gbody one mt-compact-children"
+                     :class="{ foldwrap: foldable(c.compactPanel), folded: peeking(c.compactPanel),
+                               'fold-peek': peeking(c.compactPanel) }">
+                  <div v-for="sub in cellCards(c.compactPanel, st.k)" :key="sub.key" class="mt-card tkt"
+                       :class="{ mine: sub.mine, rel: !sub.mine, done: sub.statusCategory === 'done',
+                               urgent: isUrgentC(sub) }" :style="sigStyle(sub)" :data-key="sub.key">
+                    <span v-if="isHotC(sub)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
+                    <PriIcon :rank="sub.priRank" :name="sub.pri" />
+                    <span class="mt-key">{{ sub.key }}</span>
+                    <span class="mt-title">{{ sub.title }}</span>
+                    <span v-if="!sub.mine || subView === 'all'" class="mt-owner" :class="{ me: sub.mine }"
+                          :title="(sub.assignee || '미할당') + ' 담당' + (sub.mine ? ' (나)' : '')">
+                      <Avatar :user="sub.assigneeId" :name="sub.assignee" :size="15" />{{ sub.assignee || '미할당' }}</span>
+                    <DueText :card="sub" />
+                  </div>
+                  <button v-if="overflowed(c.compactPanel, st.k)" class="fold-b"
+                          @click.stop="toggleSub(c.compactPanel.key)">{{
+                          subOpen[c.compactPanel.key] ? '접기' : '+' + cellHidden(c.compactPanel, st.k) + '개 더' }}</button>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
 
         <!-- Task 그룹 = 카드 하나 -->
-        <div v-else-if="p.kind === 'task'" class="mt-gslot" :class="compactStatusClass(p)">
+        <div v-else-if="p.kind === 'task'" class="mt-gslot">
         <div class="mt-gcard2 k-task" :class="{ folded: gClosed[p.key] }" :style="sigStyle(p.group)">
           <div class="mt-gh">
             <button type="button" class="mt-fold" @click.stop="toggleGroup(p.key)"
                     :title="gClosed[p.key] ? '하위 펼치기' : '하위 접기'">
               <span class="chev" :class="{ open: !gClosed[p.key] }">▸</span></button>
-            <!-- 한 상태 1컬럼은 하위 없는 Task 와 **같은 2줄 카드**를 부모로 쓴다.
-                 그 아래 접히는 하위 목록만 기존 Task+SubTask UI 에서 재사용한다. -->
-            <TaskCard v-if="compactStatus(p)" :card="p.parentCard" :style="sigStyle(p.group)"
-                      :epic-title="epicTitle(p.epicKey)" />
-            <div v-else class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
+            <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
                  :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done',
                         urgent: isUrgentC(p.group) }">
               <span v-if="isHotC(p.group)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
@@ -976,7 +1015,7 @@ export default {
             </div>
           </div>
           <div v-if="p.mode !== 'collapsed' && !gClosed[p.key]" class="mt-gbody">
-            <div v-for="st in panelStates(p)" :key="p.key + st.k" class="mt-cell"
+            <div v-for="st in states" :key="p.key + st.k" class="mt-cell"
                  :class="['c-' + st.k, { empty: !byState(p.cards)[st.k].length,
                                                 closed: !bandOpen(st.k),
                                                 foldwrap: foldable(p),
