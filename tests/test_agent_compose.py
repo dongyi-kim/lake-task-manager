@@ -346,6 +346,34 @@ def test_route_returns_html_for_the_editor():
     assert r.status_code == 200 and r.json()["ok"] and r.json()["html"]
 
 
+def test_route_fails_closed_when_editor_pipeline_raises(monkeypatch):
+    """Prod-only context/render failures must not escape as an opaque HTTP 500."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("provider response contained an unsupported value")
+
+    monkeypatch.setattr(C.EditorAuthor, "compose", _raise)
+    cli = TestClient(app, raise_server_exceptions=False)
+    response = cli.post(
+        "/api/agent/compose",
+        json={"ticketKey": PROG, "kind": "comment", "prompt": "진행 공유 코멘트"},
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "ok": False,
+        "contentConflict": True,
+        "error": "AI 편집기 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+        "renderDiagnostics": [{
+            "stage": "editor_compose",
+            "code": "runtime_failure",
+            "detail": "RuntimeError",
+        }],
+    }
+
+
 # ── 렌더링 왕복: 우리가 쓰라고 한 표기가 실제로 살아남는가 ──────────
 def test_checklists_survive_the_save_conversion():
     """에이전트는 taskList 로 쓰고, 저장은 사내 Jira 의 <p><input> 로 평탄화된다.

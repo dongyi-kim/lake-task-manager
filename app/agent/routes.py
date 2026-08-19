@@ -402,7 +402,26 @@ def api_compose(body: _ComposeBody):
     쓰기가 아니다(승인 토큰 없음). 저장은 사용자가 에디터에서 누른다.
     """
     from app.agent.editor_author import EditorAuthor
-    r = EditorAuthor().compose(body.ticketKey, body.kind, body.prompt, body.seedHtml, body.userId)
+    try:
+        r = EditorAuthor().compose(
+            body.ticketKey, body.kind, body.prompt, body.seedHtml, body.userId,
+        )
+    except Exception as exc:
+        # Editor generation has provider, Jira-context, normalization, grounding, and
+        # rendering stages. A prod-only value may fail at any of those boundaries. Keep
+        # the traceback in server logs, but never expose exception text or credentials to
+        # the browser and never let the editor receive an opaque HTML 500 response.
+        log.exception("Editor compose pipeline failed")
+        return JSONResponse({
+            "ok": False,
+            "contentConflict": True,
+            "error": "AI 편집기 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+            "renderDiagnostics": [{
+                "stage": "editor_compose",
+                "code": "runtime_failure",
+                "detail": type(exc).__name__,
+            }],
+        }, status_code=502)
     return JSONResponse(r, status_code=200 if r.get("ok") else 400)
 
 
