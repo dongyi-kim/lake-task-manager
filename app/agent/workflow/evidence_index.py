@@ -1350,6 +1350,10 @@ def _append_observation(group: dict, value: str, *, normalized_value: str = "") 
         normalized = re.sub(r"[\s\"'“”‘’.,;:!?]+", " ", normalized).strip()
         return normalized.casefold()
 
+    visible_key = comparison_key(obs)
+    for index, current in enumerate(group["observations"]):
+        if comparison_key(current) == visible_key:
+            return index
     keys = group.get("_observation_keys")
     if not isinstance(keys, list) or len(keys) != len(group["observations"]):
         keys = [comparison_key(current) for current in group["observations"]]
@@ -1563,6 +1567,13 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
         if root and not root.group(2):
             old = root.group(1) or root.group(3)
             identity, source, obs = _source_parts(root.group(4))
+            # A person can own or author evidence, but a mention badge is not itself a
+            # verifiable source.  Model-written person-only roots otherwise survive as a
+            # fake citation (for example ``[5] {{mention:placeholder}} - 담당자``).
+            if (re.fullmatch(r"\{\{mention:[^}\n]+\}\}", source, re.I)
+                    or re.fullmatch(r"\[~[^]\n]+\]", source, re.I)):
+                current = None
+                continue
             current = ensure(identity, source)
             obs_index = _append_observation(current, _enforce_exact_date_math(obs))
             row = {"old": old, "identity": identity, "observation": obs_index}
@@ -1755,6 +1766,14 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
                 and not groups[identity].get("explicit")):
             del groups[identity]
 
+    # Once a structured manifest exists, model-authored prose is not an additional source
+    # authority.  Keep legacy text roots only for legacy calls with no manifest; verified
+    # ticket and URL sources above already own the canonical findings.
+    if provenance_evidence:
+        for identity in list(groups):
+            if identity.startswith("text:") and identity not in known_source_ids:
+                del groups[identity]
+
     if not groups:
         # Remove only an empty legacy heading.  Never invent a source index.
         if _HEADING_RE.search(str(text or "")):
@@ -1894,6 +1913,12 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
         return citation
 
     body = _compact_adjacent_citations(CITATION_OCCURRENCE_RE.sub(replace_citation, body))
+    # Canonicalization can run at Research, Result and final presentation boundaries.
+    # The qualification is a state marker, not prose to accumulate on every pass.
+    body = re.sub(
+        r"(?:\s*\(직접 완료 근거 확인 필요\)){2,}",
+        " (직접 완료 근거 확인 필요)", body,
+    )
     body = _reconcile_cited_quantity_claims(body, number, quantity_relations)
     quantity_by_source: dict[str, list[QuantityRelation]] = {}
     for relation in quantity_relations or ():

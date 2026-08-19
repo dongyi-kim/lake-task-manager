@@ -3852,7 +3852,7 @@ def test_plain_common_noun_grounding_candidate_does_not_trigger_result_repair(mo
         {"text": "하위 작업의 현재 상태를 정리했습니다."},
     )["reply"]
 
-    assert calls["check"] == 1
+    assert calls["check"] == 2
     assert "자동 검증 경고" not in got
 
 
@@ -3890,6 +3890,131 @@ def test_bare_responsibility_noun_is_not_parsed_as_a_person(text):
     got = grounding.check(text)
 
     assert not got["fake_people"] and got["ok"] is True
+
+
+@pytest.mark.parametrize("text", [
+    "기존 담당자는 변경 이력을 확인했습니다.",
+    "내부 Spark writer 버전은 확인 완료 상태입니다.",
+    "지표 정합성 리샘플이 진행 중입니다.",
+    "reader 검증이 진행 중입니다.",
+])
+def test_domain_state_nouns_are_not_parsed_as_people(text):
+    got = grounding.check(text)
+
+    assert not got["fake_people"] and got["ok"] is True
+
+
+def test_result_canonicalizes_verified_plain_person_before_warning(monkeypatch):
+    from app.agent.workflow import grounding as grounding_module
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+
+    original = grounding_module.check
+    calls = {"count": 0}
+
+    def checked(text, allowed_people=None):
+        calls["count"] += 1
+        if "하은님" in text:
+            return {
+                "fake_keys": [], "wrong_titles": {}, "fake_people": [],
+                "real_titles": {}, "unlinked_refs": [],
+                "name_as_id": {"하은": "skcc.x1402"},
+                "person_findings": [{
+                    "candidate": "하은", "context_kind": "honorific",
+                    "verdict": "verified_name_requires_id",
+                }], "ok": False,
+            }
+        return original(text, allowed_people=allowed_people)
+
+    monkeypatch.setattr(grounding_module, "check", checked)
+    got = ResultIntegrator().apply(
+        {"messages": [], "intent": "ask", "trace": []},
+        {"text": "담당과 기한: 하은님이 reader 검증을 맡았습니다."},
+    )["reply"]
+
+    assert "하은님" not in got
+    assert "[~skcc.x1402]" in got
+    assert "자동 검증 경고" not in got
+    assert calls["count"] >= 2
+
+
+def test_two_syllable_people_remain_checked_in_explicit_person_contexts():
+    for text in ("담당자: 하은", "하은 님"):
+        got = grounding.check(text)
+        assert ("하은" in got['fake_people'] or "하은" in got['name_as_id'])
+
+
+def test_evidence_index_drops_person_only_source_roots():
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    got = canonicalize_evidence_index(
+        "결론입니다.\n\n### 근거\n\n[1] {{mention:UI픽스처01}}\n- 담당자",
+        evidence=[],
+    )
+
+    assert "UI픽스처01" not in got
+    assert "담당자" not in got
+
+
+def test_evidence_index_drops_model_summary_source_when_verified_manifest_exists():
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    got = canonicalize_evidence_index(
+        "운영 반영은 보류 [4].\n\n### 근거\n\n"
+        "[4] 2026-08-15 실무회의에서 운영 반영 보류를 결정함\n"
+        "- 회의 결정 요약",
+        evidence=[{
+            "key": "ACME-122",
+            "observations": [{"source": "description", "text": "운영 반영 보류"}],
+        }],
+    )
+
+    assert "실무회의에서 운영 반영 보류를 결정함" not in got
+    assert "{{ticket-detail:ACME-122}}" in got
+
+
+def test_evidence_index_deduplicates_identical_visible_observations():
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    evidence = [{
+        "key": "ACME-120",
+        "observations": [
+            {"source": "comment", "text": "reader 검증 중", "canonical_text": "검증 진행"},
+            {"source": "comment", "text": "reader 검증 중", "canonical_text": "진행 중"},
+        ],
+    }]
+    got = canonicalize_evidence_index("결론 [1].", evidence=evidence)
+
+    assert got.count("reader 검증 중") == 1
+
+
+def test_evidence_index_completion_warning_is_idempotent():
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    evidence = [{
+        "key": "ACME-121",
+        "observations": [{"source": "description", "text": "writer PoC 계획"}],
+    }]
+    once = canonicalize_evidence_index("writer PoC 완료 [1].", evidence=evidence)
+    thrice = canonicalize_evidence_index(
+        once.replace("(직접 완료 근거 확인 필요)",
+                     "(직접 완료 근거 확인 필요) " * 3),
+        evidence=evidence,
+    )
+
+    assert thrice.count("직접 완료 근거 확인 필요") == 1
+
+
+def test_explicit_source_rebinds_a_preposed_model_marker():
+    from app.agent.workflow.agents.result_integrator import _rebind_explicit_source_citations
+
+    got = _rebind_explicit_source_citations(
+        "[7] [회의록] Puffin 실무회의(2026-08-15)에서 운영 반영 보류를 결정했습니다."
+        "\n\n### 근거\n\n"
+        "[5] [[회의록] Puffin 실무회의](https://wiki.example/pages/5/meeting)\n"
+        "[7] [Puffin Spec](https://iceberg.apache.org/puffin-spec/)"
+    )
+
+    assert "[5] [회의록] Puffin 실무회의(2026-08-15)" in got
 
 
 def test_completion_rebind_does_not_swap_subjects_that_share_a_predicate():

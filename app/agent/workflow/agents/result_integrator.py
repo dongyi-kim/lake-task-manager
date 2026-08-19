@@ -818,6 +818,15 @@ class ResultIntegrator(TextAgent):
                  grounding.check(text, allowed_people=_dialogue_speakers(request_text(state))))
             if g:
                 g = _filter_plain_person_candidates(g, text)
+            if g and g.get("name_as_id"):
+                canonical_people = _canonicalize_verified_person_findings(text, g)
+                if canonical_people != text:
+                    text = canonical_people
+                    g = grounding.check(
+                        text, allowed_people=_dialogue_speakers(request_text(state)),
+                    )
+                    if g:
+                        g = _filter_plain_person_candidates(g, text)
         except Exception:
             g = None                        # 검증기가 죽으면 답은 그대로 나간다
         if g and not g["ok"]:
@@ -886,6 +895,26 @@ class ResultIntegrator(TextAgent):
         # duplicate counts and divergent formats.  The server owns numbering and grouping;
         # the browser only renders this canonical Markdown (with a legacy-read fallback).
         text = _merge_evidence_index(text, state)
+        try:
+            late_grounding = grounding.check(
+                text, allowed_people=_dialogue_speakers(request_text(state)),
+            )
+            if late_grounding:
+                late_grounding = _filter_plain_person_candidates(late_grounding, text)
+            if late_grounding and late_grounding.get("name_as_id"):
+                text = _canonicalize_verified_person_findings(text, late_grounding)
+                late_grounding = grounding.check(
+                    text, allowed_people=_dialogue_speakers(request_text(state)),
+                )
+                if late_grounding:
+                    late_grounding = _filter_plain_person_candidates(late_grounding, text)
+            if late_grounding and not late_grounding.get("ok"):
+                warning = grounding.warning_block(late_grounding).strip()
+                if warning and warning not in grounding_warnings:
+                    grounding_warnings.append(warning)
+            g = late_grounding or g
+        except Exception:
+            pass
         text = _rebind_definition_citations(text)
         text = _rebind_explicit_source_citations(text)
         # Explicit citation-marker requests are a rendering contract.  The source index
@@ -1453,6 +1482,28 @@ def _canonicalize_person_mentions(text: str, state) -> str:
         ids = by_name[name]
         if len(ids) == 1:
             out = out.replace(name, f"[~{next(iter(ids))}]")
+    return out
+
+
+def _canonicalize_verified_person_findings(text: str, checked: dict) -> str:
+    """Replace only checker-resolved plain names with their canonical user IDs.
+
+    The grounding checker has already queried the directory and refuses unknown names.
+    This deterministic projection is therefore safer and more useful than showing a
+    warning that tells the user how the system itself could have rendered the identity.
+    """
+    out = str(text or "")
+    for name, uid in sorted(
+            (checked.get("name_as_id") or {}).items(), key=lambda row: len(row[0]),
+            reverse=True):
+        name, uid = str(name or "").strip(), str(uid or "").strip()
+        if not name or not uid:
+            continue
+        out = _re.sub(
+            rf"(?<![가-힣A-Za-z0-9]){_re.escape(name)}"
+            rf"(?=(?:님)?(?:은|는|이|가|을|를|과|와|께서)?(?![가-힣]))",
+            f"[~{uid}]", out,
+        )
     return out
 
 
@@ -4031,6 +4082,8 @@ def _rebind_explicit_source_citations(text: str) -> str:
             if len(matches) == 1:
                 _title, number, position = matches[0]
                 citation = _BODY_CITATION_RE.search(sentence, position + len(_title))
+                if citation is None:
+                    citation = _BODY_CITATION_RE.search(sentence, 0, position)
                 if citation:
                     sentence = (sentence[:citation.start()] + f"[{number}]"
                                 + sentence[citation.end():])

@@ -42,7 +42,9 @@ _ROLE_SENTENCE = (
 ROLE_NAME_SENTENCE_RE = re.compile(
     rf"{_ROLE_SENTENCE}[ \t]+[\*_]*([가-힣]{{2,4}})\b")
 BARE_NAME_ACTION_RE = re.compile(
-    r"(?<![가-힣])([가-힣]{2,4})(?:은|는|이|가)[ \t]+"
+    # Bare two-syllable subjects are overwhelmingly domain nouns (생성/검증/초안/지원).
+    # Two-syllable people remain covered by explicit role and honorific grammars above.
+    r"(?<![가-힣])([가-힣]{3,4})(?:은|는|이|가)[ \t]+"
     r"(?:담당|진행|작성|보고|검토|확인|수행|맡)")
 UID_RE = re.compile(r"^[a-z]+\.[a-z]\d+$")
 # 답변 속 사번 꼴 토큰 — 실재 검증 대상. NNNN 같은 자리표시자는 그 자체로 위반이다
@@ -251,7 +253,7 @@ def check(reply: str, allowed_people: set[str] | None = None) -> dict:
         _NOT_NAMES = {"현재", "이번", "오늘", "내일", "진행", "완료", "지연", "마감", "기한",
                       "상태", "예정", "검토", "확인", "미정", "없음", "전체", "작업", "근거",
                       "후보", "후보는", "업무", "내용", "분야", "조직", "모듈", "티켓", "범위",
-                      "확인되지"}
+                      "확인되지", "기존", "버전", "변경", "리샘플", "검증"}
         _NOT_NAME_SUFFIXES = ("에는", "에서는", "으로는", "부터는", "까지는", "보다도")
         for name, context_kind in candidates:
             if (not name or name in seen or UID_RE.match(name) or name in _NOT_NAMES
