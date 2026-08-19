@@ -133,6 +133,29 @@ SCHEMA = {
                 "targets; omit ambiguous, inferred, unsupported, or multi-valued fields."
             ),
         },
+        "target_selectors": {
+            "type": "array", "maxItems": 1,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "minLength": 1, "maxLength": 60},
+                    "anchor_key": {
+                        "type": "string", "pattern": r"^[A-Z][A-Z0-9]{1,9}-\d+$",
+                    },
+                    "relation": {"type": "string", "enum": ["direct_child"]},
+                    "state": {"type": "string", "enum": ["incomplete"]},
+                    "cardinality": {"type": "string", "enum": ["exactly_one"]},
+                },
+                "required": ["task_id", "anchor_key", "relation", "state", "cardinality"],
+                "additionalProperties": False,
+            },
+            "description": (
+                "Relative mutation target only when the user explicitly named one Jira anchor "
+                "and requested exactly one incomplete direct child beneath it. task_id must "
+                "name the sole write task. Otherwise return []. This is acquisition intent; "
+                "runtime resolves the actual child from Jira."
+            ),
+        },
         "assumptions": {"type": "array", "maxItems": 5,
                         "items": {"type": "string", "maxLength": 200}},
         "plan": {
@@ -141,7 +164,7 @@ SCHEMA = {
         },
     },
     "required": ["intent", "keywords", "sufficient", "request_questions",
-                 "requested_effects"],
+                 "requested_effects", "target_selectors"],
 }
 
 
@@ -343,6 +366,14 @@ def _compact_request_tasks(out: dict, user_text: str, intent: str, *,
             # user requirements.  Multi-outcome requests retain their atomic model mapping.
             task = dict(tasks[0])
             task["instruction"] = str(user_text).strip()
+            # ``kind`` is already the typed user-visible effect.  A small local model can
+            # nevertheless emit ``write_intent=false`` for a comment/update draft, which
+            # sends QuerySpecialist and Research back through semantic acquisition even
+            # though the graph will later route the same task to WorkArchitect.  Normalize
+            # this one-outcome contradiction at the RequestPlan boundary; read-only kinds
+            # never enter this branch.
+            if intent in Intent.DRAFTS_TICKETS:
+                task["write_intent"] = True
             return [task]
         return tasks
     task_effects = {_task_outcome_effect(task) for task in tasks}
@@ -1170,6 +1201,11 @@ Classify what the user wants from the conversation, construct an atomic task pla
   supplied one exact target and final canonical `priority`, ISO `duedate`, or quoted `summary` value.
   Copy the exact value substring from `Current User Message` into `literal`. Return `[]` for
   corrections, negation, multiple candidates, unclear targets, or inferred/unsupported fields.
+- Always return `target_selectors`. Emit exactly one row only when one write task explicitly targets
+  the exactly-one incomplete direct child of one named Jira anchor (for example, `DL-9090 아래의
+  남은 하위 Task 하나`). Copy that write task's id and the written anchor key. Return `[]` for an
+  explicit target key, sibling/descendant ambiguity, more than one write task, broad/all children,
+  or an inferred relation. The runtime—not this model—resolves the actual child identity from Jira.
 - Always return `request_questions`: `target` only if the object is absent, `action` only if the
   operation is absent. A named concrete object means target is present. Classify optional boundaries,
   success details, and preferences as `scope`, `acceptance`, or `other`; never relabel them as
@@ -1340,6 +1376,16 @@ Classify what the user wants from the conversation, construct an atomic task pla
                 "assumptions": _ground_request_assumptions(
                     out.get("assumptions") or [], grounded_request),
             }, grounded_request)
+            if not (prior_write_plan and authoritative_refinement):
+                from app.agent.workflow.target_resolution import ground_target_selectors
+                selector_boundary = str(state.get("request_text") or "").strip() or asked
+                selectors = ground_target_selectors(
+                    out.get("target_selectors") or [], planned_tasks, selector_boundary,
+                )
+                if selectors:
+                    request_plan["target_selectors"] = selectors
+                else:
+                    request_plan.pop("target_selectors", None)
         mentioned_keys = _carry_keys(state, out)
         if (state.get("turn_continuation")
                 and carried_contract.get("action") in {"read", "comment", "update", "mixed"}

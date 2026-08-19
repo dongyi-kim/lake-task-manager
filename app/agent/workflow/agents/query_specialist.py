@@ -470,6 +470,13 @@ def _comment_scope_where(state, jira_query: dict) -> str:
 
 def _ensure_explicit_comment_query(state, plan: dict) -> None:
     """Keep an explicit Jira-comment source requirement even when the model omitted it."""
+    # A relative target selector names an anchor, not the final comment ticket. Reading the
+    # anchor's comments here is both irrelevant and weaker than the later provider-resolved
+    # child identity. The target snapshot is compiled after normalization; downstream Work
+    # receives the user-authored comment body and does not need historical comments to stage it.
+    from app.agent.workflow.target_resolution import current_target_selectors
+    if current_target_selectors(state):
+        return
     asked = _internal_user_request_text(state).casefold()
     if not any(word in asked for word in _COMMENT_WORDS):
         return
@@ -1004,13 +1011,24 @@ def _deterministic_plan_retrieval(state) -> bool:
     to paraphrase that requirement. Explicit research/query/analyze tasks keep the semantic
     path because they may require additional sources or distinct filters.
     """
-    if (state.get("intent") or "") != Intent.PLAN_WORK:
+    intent = state.get("intent") or ""
+    if intent not in Intent.DRAFTS_TICKETS:
         return False
     try:
         from app.agent.workflow.meeting_context import is_meeting_request
         if is_meeting_request(state):
             return False
     except Exception:
+        return False
+
+    # A current, server-grounded relative selector already proves that acquisition is one
+    # bounded relationship snapshot.  Do not ask the model to rediscover that query merely
+    # because an older checkpoint preserved a contradictory ``write_intent`` boolean.
+    from app.agent.workflow.target_resolution import current_target_selectors
+    if current_target_selectors(state):
+        return True
+
+    if intent != Intent.PLAN_WORK:
         return False
 
     try:
@@ -1179,6 +1197,16 @@ class QuerySpecialist(StructuredAgent):
                         or isinstance(out, dict) and "queries" not in out)
         plan = (_compile_compact_query_plan(validate_role_output(self.name, out))
                 if compact_wire else QueryPlan.model_validate(out).model_dump())
+        # Relationship-query provenance is compiler-owned. A persisted/runtime row carrying
+        # this field is not reusable authority and is dropped whole; the current grounded
+        # RequestPlan selector is recompiled below with a fresh id/anchor/cardinality.
+        ordinary_queries = []
+        for row in plan.get("queries") or []:
+            if not isinstance(row, dict) or str(row.get("target_selector_id") or "").strip():
+                continue
+            row.pop("target_selector_id", None)  # keep legacy/runtime query shape byte-stable
+            ordinary_queries.append(row)
+        plan["queries"] = ordinary_queries
         # ``uncertainty`` is model-owned prose and cannot claim compiler provenance. Legacy
         # runtime plans may carry the typed field, but re-applying QuerySpecialist must
         # recompute it from the current/frozen human authority rather than trust the input.
@@ -1326,6 +1354,28 @@ class QuerySpecialist(StructuredAgent):
                 if not github_variants:
                     plan.setdefault("uncertainty", []).append(
                         "GitHub research was requested, but no privacy-safe public subject was available.")
+        # Append server-executed relationship reads only after every model/legacy query has
+        # been normalized. CompactQueryPlan has no target_selector_id, so only this compiler
+        # can create the branch consumed by QueryRunner.
+        from app.agent.workflow.target_resolution import selector_query_specs
+        selector_specs = selector_query_specs(state)
+        if selector_specs:
+            selector_ids = {str(row.get("id") or "") for row in selector_specs}
+            # selector_query_specs is non-empty only after current_target_selectors has
+            # rebound exactly one selector to exactly one typed write task.  Reusing that
+            # proof avoids a second, weaker interpretation of ``write_intent`` here.
+            selector_only_write = len(selector_specs) == 1
+            plan["queries"] = [
+                row for row in plan["queries"]
+                if str(row.get("id") or "") not in selector_ids
+                and not (selector_only_write and row.get("source") in {"jira", "comments"})
+            ]
+            plan["queries"].extend(selector_specs)
+            if selector_only_write:
+                # Model-authored uncertainty described the missing child identity.  The
+                # compiler-owned snapshot is the executable proof of that uncertainty, so
+                # do not retain prose that would make a complete one-row plan look partial.
+                plan["uncertainty"] = []
         # Normalization can deterministically rebuild public/comment rows after the creation
         # compiler runs. A target-required plan is terminal for acquisition, so reassert the
         # exact no-executable-read half of the provenance invariant at the final boundary.

@@ -535,9 +535,8 @@ def _completed_typed_write_action(state) -> str:
     action = _typed_write_action(state)
     if not action or not _query_plan_is_complete(state):
         return ""
-    contract = state.get("continuation_contract") or {}
-    targets = {str(key or "").strip().upper()
-               for key in (contract.get("target_keys") or []) if str(key or "").strip()}
+    from app.agent.workflow.target_resolution import authoritative_mutation_targets
+    targets = set(authoritative_mutation_targets(state))
     if action in {"comment", "update"} and not targets:
         return ""
     # Explicit/read-continuation Jira keys use a current-attempt read receipt.  This is a
@@ -835,11 +834,20 @@ def _completed_write_ledger(state, *, research_focus: bool = False,
                             action: str = "") -> dict:
     """Delegate completed QueryPlan projection after workflow-level decisions are fixed."""
     action = action if action in _TYPED_WRITE_ACTIONS else (_typed_write_action(state) or "create")
-    contract = state.get("continuation_contract") or {}
-    target_keys = {
-        str(key or "").strip().upper() for key in (contract.get("target_keys") or [])
-        if str(key or "").strip()
-    }
+    from app.agent.workflow.target_resolution import authoritative_mutation_targets
+    target_keys = set(authoritative_mutation_targets(state))
+    if not target_keys:
+        from app.agent.workflow.target_resolution import target_resolution_requested
+        if not target_resolution_requested(state):
+            # Persisted evaluation/checkpoint ledgers predate continuation.v1. They may
+            # still rank an already-opened detail by the historical target list, but this
+            # compatibility branch never authorizes a write or a zero-ReAct decision.
+            contract = state.get("continuation_contract") or {}
+            target_keys = {
+                str(key or "").strip().upper()
+                for key in (contract.get("target_keys") or [])
+                if _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", str(key or "").strip(), _re.I)
+            } if isinstance(contract, dict) else set()
     results = [row for row in (state.get("query_results") or []) if isinstance(row, dict)]
     sidecar = state.get("materialized_ticket_sources") or {}
     sidecar_details = [dict(row) for row in (sidecar.get("ticketDetails") or [])

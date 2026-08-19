@@ -64,6 +64,24 @@ class RequestedUpdateEffect(StrictModel):
         return self
 
 
+class TargetSelector(StrictModel):
+    """One relative mutation target requested by a typed atomic task.
+
+    The model may describe the relationship, but runtime code adds ``source_digest`` only
+    after binding the anchor to the current request boundary and the selector to exactly one
+    write task.  A selector is acquisition intent, not an executable Jira identity; QueryRunner
+    must still resolve it through a complete server-owned relationship snapshot.
+    """
+
+    contract: Literal["target-selector.v1"] = "target-selector.v1"
+    task_id: str = Field(min_length=1, max_length=60)
+    anchor_key: str = Field(pattern=r"^[A-Z][A-Z0-9]{1,9}-\d+$", max_length=32)
+    relation: Literal["direct_child"]
+    state: Literal["incomplete"]
+    cardinality: Literal["exactly_one"]
+    source_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class RequestPlan(StrictModel):
     goal: str
     tasks: list[AtomicTask]
@@ -71,12 +89,16 @@ class RequestPlan(StrictModel):
     blocking_questions: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
     requested_effects: list[RequestedUpdateEffect] = Field(default_factory=list, max_length=3)
+    target_selectors: list[TargetSelector] = Field(default_factory=list, max_length=3)
 
     @model_validator(mode="after")
     def unique_requested_effects(self):
         identities = [(row.target, row.field) for row in self.requested_effects]
         if len(identities) != len(set(identities)):
             raise ValueError("requested effects must be unique by target and field")
+        selector_tasks = [row.task_id for row in self.target_selectors]
+        if len(selector_tasks) != len(set(selector_tasks)):
+            raise ValueError("target selectors must be unique by task_id")
         return self
 
 
@@ -272,6 +294,10 @@ class QuerySpec(StrictModel):
     # Reserved for persisted legacy plans. QueryRunner currently executes independent reads;
     # non-empty dependencies are rejected rather than silently ignored.
     depends_on: list[str] = Field(default_factory=list)
+    # Runtime compiler provenance for a server-owned relationship query. CompactQueryPlan
+    # cannot emit it; QuerySpecialist removes persisted/model values and reconstructs it from
+    # the grounded RequestPlan selector.
+    target_selector_id: str = Field(default="", max_length=60)
 
 
 class QueryPlan(StrictModel):
@@ -471,6 +497,7 @@ def validate_role_output(role_id: str, value: object) -> dict:
 
 
 __all__ = ["ArtifactRef", "AtomicTask", "RequestQuestion", "RequestedUpdateEffect",
+           "TargetSelector",
            "RequestPlan", "ContinuationDecision",
            "ContinuationContract", "QuestionContract", "QuestionAnswer",
            "QuestionAnswerReceipt", "QuestionAnswerChallenge",

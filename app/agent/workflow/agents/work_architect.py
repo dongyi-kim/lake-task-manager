@@ -411,9 +411,8 @@ def _is_create_action(state: dict) -> bool:
 
 
 def _typed_target_keys(state: dict) -> list[str]:
-    contract = _typed_continuation_contract(state)
-    return [str(value).strip().upper() for value in (contract.get("target_keys") or [])
-            if _re.fullmatch(r"[A-Z][A-Z0-9]{1,9}-\d+", str(value).strip(), _re.I)]
+    from app.agent.workflow.target_resolution import authoritative_mutation_targets
+    return list(authoritative_mutation_targets(state))
 
 
 def _typed_decision_values(state: dict, *families: str) -> list[str]:
@@ -2333,12 +2332,19 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 cleaned.pop(key, None)
             targets = _typed_target_keys(state)
             change = cleaned.get("change")
-            if isinstance(change, dict) and targets \
-                    and not (change.get("key") or change.get("keys")):
-                if len(targets) == 1:
-                    change["key"] = targets[0]
-                else:
-                    change["keys"] = targets
+            if isinstance(change, dict) and targets:
+                from app.agent.workflow.target_resolution import target_resolution_requested
+                if target_resolution_requested(state):
+                    # The provider-proven relationship receipt outranks a model copy of the
+                    # anchor key. Reproject the exact resolved identities; Auditor validates
+                    # the same receipt before an approval capability can be minted.
+                    change.pop("key", None)
+                    change.pop("keys", None)
+                if not (change.get("key") or change.get("keys")):
+                    if len(targets) == 1:
+                        change["key"] = targets[0]
+                    else:
+                        change["keys"] = targets
             if "rationale" in cleaned:
                 cleaned["rationale"] = _bounded_explanation(cleaned["rationale"], 800)
             return cleaned

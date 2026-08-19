@@ -372,11 +372,8 @@ def _typed_change_target_errors(state: AgentState) -> list[dict]:
         return []
     if str(contract.get("action") or "") not in {"comment", "update", "mixed"}:
         return []
-    expected = {
-        str(value or "").strip().upper()
-        for value in (contract.get("target_keys") or [])
-        if _KEY.fullmatch(str(value or "").strip())
-    }
+    from app.agent.workflow.target_resolution import authoritative_mutation_targets
+    expected = set(authoritative_mutation_targets(state))
     plan = state.get("change_plan") or {}
     singular_key = str(plan.get("key") or "").strip().upper()
     raw_bulk_keys = [str(value or "").strip() for value in (plan.get("keys") or [])]

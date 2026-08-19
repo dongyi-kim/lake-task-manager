@@ -571,6 +571,11 @@ def _needs_evidence_materialization(state, results: list[dict]) -> bool:
     through several model round trips.
     """
     tasks = (state.get("request_plan") or {}).get("tasks") or []
+    if any(isinstance((row or {}).get("result"), dict)
+           and isinstance(row["result"].get("targetResolution"), dict)
+           and row["result"]["targetResolution"].get("complete") is True
+           for row in results if isinstance(row, dict)):
+        return True
     if any(str(task.get("kind") or "") == "research" for task in tasks
            if isinstance(task, dict)):
         return True
@@ -667,6 +672,7 @@ def _materialization_ticket_selection(results: list[dict], *, cap: int = 8,
     all_keys: list[str] = []
     ordinary: list[str] = []
     parent_candidates: list[str] = []
+    resolved_targets: list[str] = []
 
     def add(target: list[str], value) -> None:
         key = str(value or "").strip().upper()
@@ -677,6 +683,10 @@ def _materialization_ticket_selection(results: list[dict], *, cap: int = 8,
         if not isinstance(row, dict):
             continue
         result = row.get("result") or {}
+        target_resolution = result.get("targetResolution")
+        if isinstance(target_resolution, dict) and target_resolution.get("complete") is True:
+            for key in target_resolution.get("resolvedKeys") or []:
+                add(resolved_targets, key)
         row_keys: list[str] = []
         for ticket in result.get("tickets") or []:
             add(row_keys, (ticket or {}).get("key"))
@@ -687,8 +697,17 @@ def _materialization_ticket_selection(results: list[dict], *, cap: int = 8,
             add(parent_candidates if _is_parent_candidate_result(row) else ordinary, key)
 
     limit = max(0, int(cap or 0))
-    reserved = parent_candidates[:min(max(0, int(parent_reserve or 0)), limit)]
-    selected = [key for key in ordinary if key not in reserved][:limit - len(reserved)]
+    # A provider-proven relative mutation target must remain materialized even when dozens
+    # of completed siblings precede it. It is still only a read candidate until the signed
+    # target-resolution receipt validates at Work/Auditor.
+    reserved_targets = resolved_targets[:limit]
+    reserved = parent_candidates[:min(
+        max(0, int(parent_reserve or 0)), max(0, limit - len(reserved_targets)),
+    )]
+    selected = list(reserved_targets)
+    selected.extend(key for key in ordinary
+                    if key not in selected and key not in reserved)
+    selected = selected[:limit - len(reserved)]
     selected.extend(reserved)
     for key in all_keys:
         if len(selected) >= limit:
@@ -1173,6 +1192,7 @@ class QueryRunner:
             }
 
         results, artifacts = [], {}
+        target_resolution_artifacts = {}
         materialized = {
             "ticketKeys": [], "ticketDetails": [], "projectedTicketDetails": [],
             "documentBodies": [], "projectedDocumentBodies": [], "errors": [],
@@ -1196,47 +1216,69 @@ class QueryRunner:
             complete = spec.get("completeness") or "page"
             try:
                 if source == "jira":
-                    references = [str(key).strip().upper()
+                    selector_id = str(spec.get("target_selector_id") or "").strip()
+                    if selector_id:
+                        from app.agent.tools._ctx import client, jira_key_allowed
+                        from app.agent.workflow.target_resolution import (
+                            build_target_resolution_result,
+                        )
+                        anchor_key = str(spec.get("where") or "").rsplit("=", 1)[-1].strip()
+                        if jira_key_allowed(anchor_key):
+                            snapshot = client().ticket_children_snapshot(anchor_key, cap=100)
+                        else:
+                            snapshot = {
+                                "contract": "jira-direct-children-snapshot.v1",
+                                "parentKey": anchor_key, "parentType": "Unknown",
+                                "children": [], "expectedKeys": [], "returned": 0,
+                                "total": 0, "complete": False, "remaining": None,
+                            }
+                        raw, selector_artifact = build_target_resolution_result(
+                            state, spec, snapshot,
+                        )
+                        if selector_artifact is not None:
+                            target_resolution_artifacts[selector_id] = selector_artifact
+                    else:
+                        references = [str(key).strip().upper()
                                   for key in (spec.get("parent_reference_keys") or [])
                                   if re.fullmatch(r"[A-Z][A-Z0-9]*-\d+",
                                                   str(key).strip(), re.I)]
-                    hierarchy = (_resolve_parent_reference_candidates(references)
-                                 if references else {})
-                    candidates = hierarchy.get("candidates") or []
-                    if candidates:
-                        raw = {
-                            "tickets": [{key: detail.get(key) for key in
-                                         ("key", "summary", "type", "status", "assignee", "updated")
-                                         if detail.get(key) not in (None, "")}
-                                        for detail in candidates],
-                            "ticketDetails": candidates,
-                            "returned": len(candidates), "total": len(candidates), "pages": 0,
-                            "parentCandidate": True,
-                            "parentResolution": "referenced-ticket-hierarchy",
-                            "referenceKeys": references,
-                        }
-                    elif not str(spec.get("query") or "").strip() and references:
-                        # Never turn a failed hierarchy resolution into an all-Epic scan.
-                        raw = {
-                            "tickets": [], "returned": 0, "total": 0, "pages": 0,
-                            "parentCandidate": True,
-                            "parentResolution": "unresolved-reference",
-                            "referenceKeys": references,
-                            "error": ("참조 티켓에서 상위 Epic 관계를 확인하지 못했고 "
-                                      "안전한 subject 검색어도 없어 후보 조회를 확대하지 않았습니다."),
-                        }
-                    else:
-                        args = {
-                            "where": _jira_where(spec.get("where") or "",
-                                                 spec.get("query") or ""),
-                            "order_by": spec.get("order_by") or "updated DESC",
-                            "fields": spec.get("fields") or [],
-                            "page_size": spec.get("page_size") or 50,
-                        }
-                        if complete == "all":
-                            raw = execute_jql_all(**args)
+                        hierarchy = (_resolve_parent_reference_candidates(references)
+                                     if references else {})
+                        candidates = hierarchy.get("candidates") or []
+                        if candidates:
+                            raw = {
+                                "tickets": [{key: detail.get(key) for key in
+                                             ("key", "summary", "type", "status", "assignee", "updated")
+                                             if detail.get(key) not in (None, "")}
+                                            for detail in candidates],
+                                "ticketDetails": candidates,
+                                "returned": len(candidates), "total": len(candidates), "pages": 0,
+                                "parentCandidate": True,
+                                "parentResolution": "referenced-ticket-hierarchy",
+                                "referenceKeys": references,
+                            }
+                        elif not str(spec.get("query") or "").strip() and references:
+                            # Never turn a failed hierarchy resolution into an all-Epic scan.
+                            raw = {
+                                "tickets": [], "returned": 0, "total": 0, "pages": 0,
+                                "parentCandidate": True,
+                                "parentResolution": "unresolved-reference",
+                                "referenceKeys": references,
+                                "error": ("참조 티켓에서 상위 Epic 관계를 확인하지 못했고 "
+                                          "안전한 subject 검색어도 없어 후보 조회를 확대하지 않았습니다."),
+                            }
                         else:
-                            raw = T.BY_NAME["run_jql_v2"].invoke(args)
+                            args = {
+                                "where": _jira_where(spec.get("where") or "",
+                                                     spec.get("query") or ""),
+                                "order_by": spec.get("order_by") or "updated DESC",
+                                "fields": spec.get("fields") or [],
+                                "page_size": spec.get("page_size") or 50,
+                            }
+                            if complete == "all":
+                                raw = execute_jql_all(**args)
+                            else:
+                                raw = T.BY_NAME["run_jql_v2"].invoke(args)
                 elif source == "confluence":
                     args = {"query": spec.get("query") or "", "where": spec.get("where") or "",
                             "page_size": spec.get("page_size") or 50}
@@ -1409,6 +1451,9 @@ class QueryRunner:
                 for row in exact_details:
                     by_key[str(row.get("key") or "").strip().upper()] = row
                 materialized_ticket_sources["ticketDetails"] = list(by_key.values())[:8]
+        if target_resolution_artifacts:
+            from app.agent.workflow.target_resolution import TARGET_RESOLUTION_ARTIFACT
+            artifacts[TARGET_RESOLUTION_ARTIFACT] = target_resolution_artifacts
         if parent_candidate_search_attempted:
             materialized_ticket_sources["parentCandidateSearchAttempted"] = True
         materialized_ticket_sources = _merge_materialized_ticket_sources(

@@ -187,6 +187,7 @@ def test_request_architect_rejects_correction_candidates_from_exact_lane(monkeyp
         "intent": "modify", "keywords": ["ACME-42"], "module": "",
         "mentioned_keys": ["ACME-42"], "sufficient": True, "playbook": "",
         "answer_depth": "brief", "goal": text, "request_questions": [],
+        "target_selectors": [],
         "requested_effects": [
             {"target": "ACME-42", "field": "priority", "value": "P2-Major",
              "literal": "P2"},
@@ -224,6 +225,7 @@ def test_request_architect_runtime_grounds_unique_effects_before_zero_call(monke
         "intent": "modify", "keywords": ["ACME-42"], "module": "",
         "mentioned_keys": ["ACME-42"], "sufficient": True, "playbook": "",
         "answer_depth": "brief", "goal": text, "request_questions": [],
+        "target_selectors": [],
         "requested_effects": [
             {"target": "ACME-42", "field": "priority", "value": "P2-Major",
              "literal": "P2"},

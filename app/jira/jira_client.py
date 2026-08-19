@@ -1266,6 +1266,7 @@ class JiraClient:
     # an LLM payload.  Callers receive an explicit incomplete ledger once this cap is hit.
     COMMENT_SNAPSHOT_CAP = 200
     COMMENT_SNAPSHOT_PAGE_SIZE = 50
+    DIRECT_CHILD_SNAPSHOT_CAP = 100
 
     def _project_comment_row(self, comment, *, proxy_media=True):
         """Normalize one provider comment for both cached UI and evidence snapshots."""
@@ -1413,6 +1414,184 @@ class JiraClient:
             "comments": rows,
             **({"incompleteReason": reason} if reason else {}),
             **({"error": error} if error else {}),
+        }
+
+    def ticket_children_snapshot(self, key, *, cap=None):
+        """Return one fresh, cardinality-proven direct-child snapshot.
+
+        ``ticket_children`` is a UI/cache API and intentionally tolerates stale rows and a
+        display cap. Relative mutation-target resolution needs a different boundary: fetch
+        the parent relationship from Jira now, open every exact child identity through
+        bounded key batches, and expose incomplete coverage instead of treating a partial
+        list as the full sibling set.
+        """
+        parent_key = str(key or "").strip().upper()
+
+        def failed(reason, *, parent_type="", expected=(), returned=0, total=None, error=""):
+            expected_rows = [str(value or "").strip().upper() for value in expected]
+            return {
+                "contract": "jira-direct-children-snapshot.v1",
+                "parentKey": parent_key,
+                "parentType": parent_type or "Unknown",
+                "children": [],
+                "expectedKeys": expected_rows,
+                "returned": int(returned or 0),
+                "total": int(total) if type(total) is int and total >= 0 else len(expected_rows),
+                "complete": False,
+                "remaining": None,
+                "incompleteReason": reason,
+                **({"error": str(error)[:300]} if error else {}),
+            }
+
+        if (not re.fullmatch(r"[A-Z][A-Z0-9]{1,9}-\d+", parent_key)
+                or (cap is not None and type(cap) is not int)):
+            return failed("invalid_request")
+        maximum = min(self.DIRECT_CHILD_SNAPSHOT_CAP,
+                      max(1, cap if cap is not None else self.DIRECT_CHILD_SNAPSHOT_CAP))
+        fields = "summary,status,issuetype,parent,assignee,updated,subtasks"
+        try:
+            parent = self.provider.get_json(
+                f"/rest/api/2/issue/{parent_key}", params={"fields": fields},
+            ) or {}
+        except Exception as exc:
+            return failed("parent_read_failed", error=exc)
+        if not isinstance(parent, dict):
+            return failed("invalid_parent")
+        # Never fill a missing provider identity from the requested path.  The exact key is
+        # part of the relationship authority, not a display convenience.
+        returned_parent = str(parent.get("key") or "").strip().upper()
+        if returned_parent != parent_key:
+            return failed("wrong_parent")
+        parent_fields = parent.get("fields")
+        if not isinstance(parent_fields, dict):
+            return failed("invalid_parent")
+        parent_type = str((parent_fields.get("issuetype") or {}).get("name") or "").strip()
+        if not parent_type:
+            return failed("invalid_parent")
+
+        expected_keys = []
+        raw_by_key = {}
+        try:
+            if parent_type.casefold() == "epic":
+                start = 0
+                total = None
+                while start < maximum:
+                    data = self.provider.get_json("/rest/api/2/search", params={
+                        "jql": f'"Epic Link" = {parent_key}',
+                        "fields": fields, "startAt": start,
+                        "maxResults": min(50, maximum - start),
+                    }) or {}
+                    if not isinstance(data, dict) or not isinstance(data.get("issues"), list):
+                        return failed("invalid_page", parent_type=parent_type,
+                                      expected=expected_keys, total=total)
+                    page_total = data.get("total")
+                    if type(page_total) is not int or page_total < 0:
+                        return failed("total_missing", parent_type=parent_type,
+                                      expected=expected_keys)
+                    if total is None:
+                        total = page_total
+                    elif total != page_total:
+                        return failed("total_changed", parent_type=parent_type,
+                                      expected=expected_keys, total=total)
+                    if total > maximum:
+                        return failed("cap_exceeded", parent_type=parent_type,
+                                      expected=expected_keys, total=total)
+                    batch = data["issues"]
+                    if not batch and start < total:
+                        return failed("non_advancing", parent_type=parent_type,
+                                      expected=expected_keys, total=total)
+                    for raw in batch:
+                        child_key = str((raw or {}).get("key") or "").strip().upper()
+                        if (not re.fullmatch(r"[A-Z][A-Z0-9]{1,9}-\d+", child_key)
+                                or child_key in raw_by_key):
+                            return failed("duplicate_or_invalid_child", parent_type=parent_type,
+                                          expected=expected_keys, total=total)
+                        expected_keys.append(child_key)
+                        raw_by_key[child_key] = raw
+                    start += len(batch)
+                    if start >= total:
+                        break
+                if total != len(expected_keys):
+                    return failed("coverage_mismatch", parent_type=parent_type,
+                                  expected=expected_keys, returned=len(raw_by_key), total=total)
+            else:
+                subtasks = parent_fields.get("subtasks")
+                if not isinstance(subtasks, list):
+                    return failed("invalid_parent_children", parent_type=parent_type)
+                for row in subtasks:
+                    child_key = str((row or {}).get("key") or "").strip().upper()
+                    if (not re.fullmatch(r"[A-Z][A-Z0-9]{1,9}-\d+", child_key)
+                            or child_key in expected_keys):
+                        return failed("duplicate_or_invalid_child", parent_type=parent_type,
+                                      expected=expected_keys)
+                    expected_keys.append(child_key)
+                if len(expected_keys) > maximum:
+                    return failed("cap_exceeded", parent_type=parent_type,
+                                  expected=expected_keys, total=len(expected_keys))
+                for offset in range(0, len(expected_keys), self.ISSUE_BATCH):
+                    chunk = expected_keys[offset:offset + self.ISSUE_BATCH]
+                    if not chunk:
+                        continue
+                    data = self.provider.get_json("/rest/api/2/search", params={
+                        "jql": "key in (%s)" % ",".join(chunk),
+                        "fields": fields, "startAt": 0, "maxResults": len(chunk),
+                    }) or {}
+                    issues = data.get("issues") if isinstance(data, dict) else None
+                    if (not isinstance(issues, list) or type(data.get("total")) is not int
+                            or data.get("total") != len(chunk) or len(issues) != len(chunk)):
+                        return failed("coverage_mismatch", parent_type=parent_type,
+                                      expected=expected_keys, returned=len(raw_by_key),
+                                      total=len(expected_keys))
+                    for raw in issues:
+                        child_key = str((raw or {}).get("key") or "").strip().upper()
+                        if child_key not in chunk or child_key in raw_by_key:
+                            return failed("wrong_or_duplicate_child", parent_type=parent_type,
+                                          expected=expected_keys, returned=len(raw_by_key),
+                                          total=len(expected_keys))
+                        raw_by_key[child_key] = raw
+        except Exception as exc:
+            return failed("provider_error", parent_type=parent_type,
+                          expected=expected_keys, returned=len(raw_by_key),
+                          total=len(expected_keys), error=exc)
+
+        children = []
+        for child_key in expected_keys:
+            raw = raw_by_key.get(child_key)
+            child_fields = (raw or {}).get("fields") if isinstance(raw, dict) else None
+            if not isinstance(child_fields, dict):
+                return failed("invalid_child", parent_type=parent_type,
+                              expected=expected_keys, returned=len(children),
+                              total=len(expected_keys))
+            status = child_fields.get("status") or {}
+            category = _norm_cat((status.get("statusCategory") or {}).get("key"))
+            summary = str(child_fields.get("summary") or "").strip()
+            issue_type = str((child_fields.get("issuetype") or {}).get("name") or "").strip()
+            status_name = str(status.get("name") or "").strip()
+            if category not in {"todo", "inprogress", "done"} \
+                    or not summary or not issue_type or not status_name:
+                return failed("invalid_child", parent_type=parent_type,
+                              expected=expected_keys, returned=len(children),
+                              total=len(expected_keys))
+            assignee = child_fields.get("assignee") or {}
+            children.append({
+                "key": child_key, "summary": summary, "status": status_name,
+                "statusCategory": category, "type": issue_type,
+                "parentKey": parent_key,
+                "assignee": (real_name(assignee.get("displayName") or assignee.get("name"))
+                             if assignee else None),
+                "assigneeId": assignee.get("name") if assignee else None,
+                "updated": child_fields.get("updated") or None,
+            })
+        return {
+            "contract": "jira-direct-children-snapshot.v1",
+            "parentKey": parent_key,
+            "parentType": parent_type,
+            "children": children,
+            "expectedKeys": expected_keys,
+            "returned": len(children),
+            "total": len(expected_keys),
+            "complete": True,
+            "remaining": 0,
         }
 
     # ── 범용 단일 리소스 (env 무관 — /api/issue·/api/epic 리소스 엔드포인트용) ──
