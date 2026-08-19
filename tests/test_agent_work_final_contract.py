@@ -153,6 +153,145 @@ def test_stable_outcome_identity_survives_assignment_merge_without_title_matchin
     assert {row["item_id"] for row in merged["assignments"]} == {left_id, right_id}
 
 
+def test_one_requested_outcome_can_own_multiple_distinct_payload_roots():
+    """One user result may legitimately decompose into several independently owned tickets."""
+    from app.agent.workflow.anchors import (
+        requested_outcome_contract,
+        seal_work_item_identities,
+        validate_draft_outcome_contract,
+    )
+
+    tasks = [{
+        "id": "delivery",
+        "kind": "ticket",
+        "write_intent": True,
+        "instruction": "Acme viewer를 측정하고 조정하고 문서화",
+    }]
+    state = _state("Acme viewer를 측정하고 조정하고 문서화해줘", tasks)
+    contract = requested_outcome_contract(state)
+    outcome_ref = contract["outcomes"][0]["id"]
+    draft = {
+        "mode": "task",
+        "outcome_contract_id": contract["id"],
+        "items": [
+            {"summary": "Acme viewer 측정", "type": "Task",
+             "outcome_refs": [outcome_ref]},
+            {"summary": "Acme viewer 조정", "type": "Task",
+             "outcome_refs": [outcome_ref]},
+            {"summary": "Acme viewer 문서화", "type": "Task",
+             "outcome_refs": [outcome_ref]},
+        ],
+    }
+
+    seal_work_item_identities(state, draft)
+
+    identities = [row["item_id"] for row in draft["items"]]
+    assert draft["identity_contract"] == "work-item.v2"
+    assert len(set(identities)) == 3
+    assert all(value.startswith("work-item:") for value in identities)
+    assert validate_draft_outcome_contract(state, draft) == []
+
+
+def test_work_apply_seals_a_compound_single_outcome_without_identity_collision():
+    from app.agent.workflow.anchors import validate_draft_outcome_contract
+    from app.agent.workflow.agents.work_architect import WorkArchitect
+
+    tasks = [{
+        "id": "delivery",
+        "kind": "ticket",
+        "write_intent": True,
+        "instruction": "Acme viewer를 측정하고 조정하고 문서화",
+    }]
+    state = _state("Acme viewer를 측정하고 조정하고 문서화해줘. 알아서", tasks)
+    output = {
+        "questions": [],
+        "mode": "task",
+        "structure": "multiple_tasks",
+        "structure_why": "독립 산출물 세 개",
+        "rationale": "",
+        "items": [{
+            "summary": f"[Runtime] Acme viewer {action}",
+            "type": "Task",
+            "background": f"Acme viewer {action} 요청됨",
+            "scope_in": [f"Acme viewer {action}"],
+            "scope_out": ["요청 외 변경"],
+            "dod": [f"{action} 결과 기록"],
+            "components": ["Runtime"],
+        } for action in ("측정", "조정", "문서화")],
+    }
+
+    draft = WorkArchitect().apply(state, output)["draft"]
+
+    assert len(draft["items"]) == 3
+    assert draft["identity_contract"] == "work-item.v2"
+    assert len({row["item_id"] for row in draft["items"]}) == 3
+    assert validate_draft_outcome_contract(state, draft) == []
+
+
+def test_multi_root_outcome_audit_contract_is_collective_not_per_title():
+    from app.agent.workflow.anchors import requested_outcome_contract, seal_work_item_identities
+    from app.agent.workflow.agents.auditor import _audit_grounding_contract
+
+    tasks = [{
+        "id": "delivery",
+        "kind": "ticket",
+        "write_intent": True,
+        "instruction": "Acme reader 검증과 운영 가이드 작성",
+    }]
+    state = _state("Acme reader 검증과 운영 가이드 작성", tasks)
+    contract = requested_outcome_contract(state)
+    outcome_ref = contract["outcomes"][0]["id"]
+    state["draft"] = {
+        "mode": "task",
+        "outcome_contract_id": contract["id"],
+        "items": [
+            {"summary": "Acme reader 검증", "type": "Task",
+             "outcome_refs": [outcome_ref]},
+            {"summary": "Acme 운영 가이드 작성", "type": "Task",
+             "outcome_refs": [outcome_ref]},
+        ],
+    }
+    seal_work_item_identities(state, state["draft"])
+
+    authority = _audit_grounding_contract(state)
+
+    assert authority["outcome_groups"] == [{
+        "outcome_ref": outcome_ref,
+        "item_ids": [row["item_id"] for row in state["draft"]["items"]],
+        "indexes": [0, 1],
+        "coverage": "collective",
+    }]
+
+
+def test_resolved_slot_never_guesses_one_root_from_a_multi_root_outcome():
+    from app.agent.workflow.resolved_slots import bind_resolved_slot_item_ids
+
+    draft = {
+        "items": [
+            {"item_id": "work-item:a", "outcome_refs": ["outcome:shared"]},
+            {"item_id": "work-item:b", "outcome_refs": ["outcome:shared"]},
+        ],
+        "resolved_slots": [{
+            "contract": "resolved-slot.v1",
+            "field": "parent",
+            "outcome_id": "outcome:shared",
+            "item_id": "",
+            "request": "select_existing",
+            "required": True,
+            "status": "resolved",
+            "value": "ACME-100",
+            "resolution": "verified_candidate",
+            "provenance": "materialized_parent_candidates",
+            "evidence": ["ACME-100"],
+            "decision_digest": "a" * 64,
+        }],
+    }
+
+    bound = bind_resolved_slot_item_ids(draft)
+
+    assert bound[0]["item_id"] == ""
+
+
 def test_auditor_finding_has_stable_identity_path_evidence_and_payload_digest(monkeypatch):
     from app.agent.workflow.anchors import requested_outcome_contract, seal_work_item_identities
     from app.agent.workflow.agents import auditor

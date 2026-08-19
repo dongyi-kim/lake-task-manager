@@ -1106,7 +1106,7 @@ Audit the complete ticket draft before it is shown to the user.
 - A title need not end in a verb. An intentional top-level Task or Story without an Epic is valid.
 - Reuse of one verified reference across multiple payload items is not blocking when it supports each item.
 - Treat `evidence_obligations` as authoritative execution constraints. A completed result is a reusable baseline, not work to repeat; an unconfirmed dependency must remain unconfirmed; an approval or rollout gate must appear in scope and DoD; and existing validation work must be reused rather than duplicated. Preserve producer, artifact, and consumer roles exactly—a consumer under verification is not evidence that the consumer can generate the artifact. Omission or role/state reversal is a blocking `grounded` problem.
-- Treat `requested_outcome_contract` as authoritative for the user-authored action, object, and explicit constraints. For every `outcome_ref`, compare that required result with the item's title, scope, and DoD. A legacy planner instruction can contain examples or implementation choices that are absent from `Original User Request`; when the user delegated those choices, they are runtime-owned and cannot become missing user requirements. Evidence may refine implementation method or constraints, but omission or replacement of the user's action/object—including an opposite action—or an explicit acceptance/safety constraint is a blocking `request` problem. Never repair it by inventing intent.
+- Treat `requested_outcome_contract` as authoritative for the user-authored action, object, and explicit constraints. A singleton outcome may be served by several root items; when `outcome_groups` marks collective coverage, compare the required result with the union of those items and require each member to be a relevant contribution, rather than demanding that every title repeat the whole compound request. For an individually bound outcome, compare it with that item's title, scope, and DoD. A legacy planner instruction can contain examples or implementation choices that are absent from `Original User Request`; when the user delegated those choices, they are runtime-owned and cannot become missing user requirements. Evidence may refine implementation method or constraints, but omission or replacement of the user's action/object—including an opposite action—or an explicit acceptance/safety constraint is a blocking `request` problem. Never repair it by inventing intent.
 - Audit every child in the authoritative contract too. `applicable_outcome_refs` is explicit when the child maps to another requested outcome and otherwise inherited from its parent. A legitimate design, implementation, validation, or rollout stage need not repeat the parent's action verb; block only a child that replaces/reverses the applicable requested result or introduces an unrelated deliverable.
 - Write `message`, `fix`, and `summary` in Korean.
 
@@ -1530,6 +1530,17 @@ def _audit_grounding_contract(state: AgentState) -> dict:
             "child_count": len(children),
             "children": children,
         })
+    grouped: dict[str, dict] = {}
+    for row in rows:
+        for outcome_ref in row.get("outcome_refs") or []:
+            group = grouped.setdefault(outcome_ref, {
+                "outcome_ref": outcome_ref, "item_ids": [], "indexes": [],
+                "coverage": "collective",
+            })
+            group["item_ids"].append(row["item_id"])
+            group["indexes"].append(row["index"])
+    outcome_groups = [group for group in grouped.values() if len(group["indexes"]) > 1]
+
     typed_epic = (str(draft.get("mode") or "task").casefold() == "epic"
                   or any(row["type"].casefold() == "epic" for row in rows))
     textual_epic = _draft_asserts_new_epic_creation(draft)
@@ -1541,6 +1552,7 @@ def _audit_grounding_contract(state: AgentState) -> dict:
         "draft_asserts_new_epic_creation": textual_epic,
         "requested_outcome_contract": requested_outcome_contract(state),
         "draft_outcome_contract_id": str(draft.get("outcome_contract_id") or ""),
+        "outcome_groups": outcome_groups,
         "evidence_obligations": (draft.get("evidence_obligations")
                                  or _verified_evidence_obligations(state)),
         "meeting_assignment_bindings": meeting_authority["bindings"],

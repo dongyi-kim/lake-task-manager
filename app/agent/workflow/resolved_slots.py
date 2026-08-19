@@ -115,7 +115,7 @@ def bind_resolved_slot_item_ids(draft: dict) -> list[dict]:
     """Bind slot outcome ids to sealed Work ids without using mutable titles."""
     if not isinstance(draft, dict):
         return []
-    by_outcome: dict[str, str] = {}
+    by_outcome: dict[str, list[str]] = {}
     for item in draft.get("items") or []:
         if not isinstance(item, dict):
             continue
@@ -125,7 +125,7 @@ def bind_resolved_slot_item_ids(draft: dict) -> list[dict]:
         ))
         item_id = str(item.get("item_id") or "").strip()
         if len(refs) == 1 and item_id:
-            by_outcome[refs[0]] = item_id
+            by_outcome.setdefault(refs[0], []).append(item_id)
 
     bound: list[dict] = []
     for raw in draft.get("resolved_slots") or []:
@@ -133,7 +133,10 @@ def bind_resolved_slot_item_ids(draft: dict) -> list[dict]:
             slot = ResolvedSlot.model_validate(raw)
         except Exception:
             continue
-        item_id = slot.item_id or by_outcome.get(slot.outcome_id, "")
+        candidates = list(dict.fromkeys(by_outcome.get(slot.outcome_id, [])))
+        # An outcome-level slot can bind a root only when that root is unique. Multiple
+        # roots serving the same outcome need item-scoped authority; list order is not it.
+        item_id = slot.item_id or (candidates[0] if len(candidates) == 1 else "")
         bound.append(slot.model_copy(update={"item_id": item_id}).model_dump())
     if bound:
         draft["resolved_slots"] = bound

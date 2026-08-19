@@ -459,24 +459,48 @@ def validate_draft_outcome_contract(state: AgentState, draft: dict) -> list[dict
     return errors
 
 
-def work_item_id(contract_id: str, outcome_ref: str) -> str:
-    """Return the opaque Work identity owned by one RequestPlan outcome.
+def work_item_id(contract_id: str, outcome_ref: str, root_slot: str = "") -> str:
+    """Return one opaque identity inside a requested-outcome payload.
 
-    The value deliberately depends on typed ids only.  Titles and descriptions are mutable
-    prose, so using their substring overlap to recover identity after a repair can silently
-    exchange owners, parents, or deadlines between similar sibling outcomes.
+    One requested outcome can legitimately decompose into several root tickets. ``root_slot``
+    is a server-stamped position inside that immutable draft payload, not a title matcher or a
+    second semantic outcome.  A singleton keeps the historical v1 value for checkpoint and
+    receipt compatibility.  Titles and descriptions never participate in either identity.
     """
-    material = f"{str(contract_id or '').strip()}\0{str(outcome_ref or '').strip()}"
+    material = (f"{str(contract_id or '').strip()}\0{str(outcome_ref or '').strip()}"
+                + (f"\0{str(root_slot or '').strip()}" if str(root_slot or '').strip() else ""))
     return "work-item:" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 
-def seal_work_item_identities(state: AgentState, draft: dict) -> dict:
-    """Attach stable RequestPlan-derived ids without interpreting visible prose.
+def _root_identity_slots(draft: dict, allowed: set[str]) -> list[tuple[dict, list[str], str]]:
+    """Project roots to typed refs plus a deterministic within-payload occurrence slot."""
+    roots = [row for row in (draft.get("items") or []) if isinstance(row, dict)]
+    refs_by_root = [list(dict.fromkeys(
+        str(value or "").strip() for value in (row.get("outcome_refs") or [])
+        if str(value or "").strip() in allowed
+    )) for row in roots]
+    totals: dict[str, int] = {}
+    for refs in refs_by_root:
+        if len(refs) == 1:
+            totals[refs[0]] = totals.get(refs[0], 0) + 1
+    seen: dict[str, int] = {}
+    projected = []
+    for row, refs in zip(roots, refs_by_root):
+        slot = ""
+        if len(refs) == 1 and totals.get(refs[0], 0) > 1:
+            seen[refs[0]] = seen.get(refs[0], 0) + 1
+            slot = f"root:{seen[refs[0]]}"
+        projected.append((row, refs, slot))
+    return projected
 
-    A root must have exactly one outcome ref to receive an id. Ambiguous/missing mappings
-    remain unsealed and are rejected by the outcome validator. Children inherit the root
-    outcome and receive a stable positional id only for audit paths; root identity is the
-    authority used by assignment and repair joins.
+
+def seal_work_item_identities(state: AgentState, draft: dict) -> dict:
+    """Attach typed payload identities without interpreting visible prose.
+
+    A root must have exactly one outcome ref to receive an id. Several roots may serve the
+    same outcome; their list slots are stamped only inside this complete payload so parallel
+    assignment/audit joins cannot collide. Ambiguous/missing mappings remain unsealed and are
+    rejected. Children inherit the already-sealed root identity plus their bounded slot.
     """
     if not isinstance(draft, dict):
         return draft
@@ -488,18 +512,14 @@ def seal_work_item_identities(state: AgentState, draft: dict) -> dict:
     }
     if not contract_id or not allowed:
         return draft
-    draft["identity_contract"] = "work-item.v1"
-    for item in (draft.get("items") or []):
-        if not isinstance(item, dict):
-            continue
-        refs = list(dict.fromkeys(
-            str(value or "").strip() for value in (item.get("outcome_refs") or [])
-            if str(value or "").strip() in allowed
-        ))
+    projected = _root_identity_slots(draft, allowed)
+    grouped = any(slot for _item, _refs, slot in projected)
+    draft["identity_contract"] = "work-item.v2" if grouped else "work-item.v1"
+    for item, refs, root_slot in projected:
         if len(refs) != 1:
             item.pop("item_id", None)
             continue
-        root_id = work_item_id(contract_id, refs[0])
+        root_id = work_item_id(contract_id, refs[0], root_slot)
         item["item_id"] = root_id
         for child_index, child in enumerate(item.get("children") or []):
             if not isinstance(child, dict):
@@ -509,7 +529,11 @@ def seal_work_item_identities(state: AgentState, draft: dict) -> dict:
                 if str(value or "").strip() in allowed
             ))
             child_ref = child_refs[0] if len(child_refs) == 1 else refs[0]
-            child_material = f"{work_item_id(contract_id, child_ref)}\0child\0{child_index}"
+            child_material = (
+                f"{root_id}\0{child_ref}\0child\0{child_index}"
+                if root_slot else
+                f"{work_item_id(contract_id, child_ref)}\0child\0{child_index}"
+            )
             child["item_id"] = (
                 "work-child:" + hashlib.sha256(child_material.encode("utf-8")).hexdigest()[:16]
             )
@@ -517,9 +541,9 @@ def seal_work_item_identities(state: AgentState, draft: dict) -> dict:
 
 
 def validate_work_item_identities(state: AgentState, draft: dict) -> list[dict]:
-    """Validate identities only after Work has opted into the v1 identity contract."""
+    """Validate identities only after Work has opted into a typed identity contract."""
     if not isinstance(draft, dict) or (
-            draft.get("identity_contract") != "work-item.v1"
+            draft.get("identity_contract") not in {"work-item.v1", "work-item.v2"}
             and not any(isinstance(row, dict) and row.get("item_id")
                         for row in (draft.get("items") or []))):
         return []
@@ -530,15 +554,19 @@ def validate_work_item_identities(state: AgentState, draft: dict) -> list[dict]:
         for row in (contract.get("outcomes") or []) if str(row.get("id") or "")
     }
     errors: list[dict] = []
+    projected = _root_identity_slots(draft, allowed)
+    expected_contract = ("work-item.v2"
+                         if any(slot for _item, _refs, slot in projected)
+                         else "work-item.v1")
+    if draft.get("identity_contract") != expected_contract:
+        errors.append({
+            "index": -1, "field": "identity_contract",
+            "message": "Work identity contract does not match outcome root cardinality",
+        })
     seen: dict[str, int] = {}
-    for index, item in enumerate(draft.get("items") or []):
-        if not isinstance(item, dict):
-            continue
-        refs = list(dict.fromkeys(
-            str(value or "").strip() for value in (item.get("outcome_refs") or [])
-            if str(value or "").strip() in allowed
-        ))
-        expected = work_item_id(contract_id, refs[0]) if len(refs) == 1 else ""
+    for index, (item, refs, root_slot) in enumerate(projected):
+        expected = (work_item_id(contract_id, refs[0], root_slot)
+                    if len(refs) == 1 else "")
         actual = str(item.get("item_id") or "")
         if not expected or actual != expected:
             errors.append({
