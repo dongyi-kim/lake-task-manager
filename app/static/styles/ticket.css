@@ -440,19 +440,20 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .zoomable:hover .zoom-btn, .zoom-btn:hover { opacity: 1; }
 .zoom-btn svg { width: 13px; height: 13px; }
 .tkt-desc hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
-/* 실 Jira DC 프로필 링크(a.user-hover)도 앱의 사람 멘션과 같은 pill 뱃지로 표시. */
-/* 사람 멘션 — 티켓 본문·댓글·에이전트 답변이 **같은 모양**이다(사용자 지시).
-   프사가 없는 사용자가 더 많아 이니셜 원이 바탕이고, 사진이 로드되면 그 위를 덮는다. */
-.tkt-desc .mention, .tkt-desc a.user-hover, .agent-md .md-person {
+/* 사람 멘션 — 에디터·티켓 본문·댓글·에이전트 답변이 **같은 DOM/CSS**를 쓴다.
+   사진이 로드되기 전과 404일 때는 @ 원이 남고, 성공한 사진만 같은 원 위를 덮는다. */
+.mention-badge, .tkt-desc .mention, .tkt-desc a.user-hover, .agent-md .md-person {
   display: inline-flex; align-items: center; gap: 4px; vertical-align: -2px;
-  padding: 0 6px 0 3px; border-radius: 11px; font-weight: 600; color: var(--text);
+  min-height: 18px; box-sizing: border-box; padding: 0 6px 0 2px; border-radius: 11px;
+  font-size: 12.5px; line-height: 18px; font-weight: 600; color: var(--text);
   background: color-mix(in srgb, var(--accent) 12%, transparent); }
-.md-avt-wrap { position: relative; display: inline-flex; align-items: center;
+.mention-av { position: relative; display: inline-flex; align-items: center;
   justify-content: center; width: 16px; height: 16px; border-radius: 50%;
-  overflow: hidden; flex: none; font-size: 8.5px; font-weight: 800; color: #fff; }
-.md-avt { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+  overflow: hidden; flex: none; font-size: 11px; line-height: 1; font-weight: 800; color: #fff; }
+.mention-av-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
   opacity: 0; transition: opacity .12s; }
-.md-avt.on { opacity: 1; }
+.mention-av-img.on { opacity: 1; }
+.mention-nm { min-width: 0; }
 
 /* 앱 전역 참조 호버 — body 직속 fixed layer라 표·다이얼로그 overflow에 잘리지 않는다. */
 .reference-hover { position:fixed; z-index:1200; width:max-content; min-width:220px;
@@ -908,9 +909,10 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .cmt-ed-host .ProseMirror a.web-badge.ProseMirror-selectednode {
   outline: 2px solid var(--accent); outline-offset: 1px; }
 
-/* 멘션 칩 */
-.cmt-ed-host .ProseMirror .mention { color: var(--accent); font-weight: 700; background: color-mix(in srgb, var(--accent) 12%, transparent);
-  border-radius: 4px; padding: 0 3px; }
+/* 에디터 안 멘션도 공통 badge 그대로. atom 선택 표식만 에디터가 추가한다. */
+.cmt-ed-host .ProseMirror .mention-badge { user-select: none; cursor: default; }
+.cmt-ed-host .ProseMirror .mention-badge.ProseMirror-selectednode {
+  outline: 2px solid var(--accent); outline-offset: 1px; }
 /* 링크 뱃지 편집 패널 (뱃지 더블클릭 / 툴바 🔗) — 제목·URL 을 한 화면에서 */
 .badge-edit { position: fixed; z-index: 100001; width: 320px; padding: 10px 12px;
   background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
@@ -1107,6 +1109,11 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .fe-i.cur { color: var(--accent); font-weight: 600; }
 .fe-i em { margin-left: auto; font-style: normal; font-size: 10px; color: var(--muted-2);
   flex: none; padding-left: 8px; }
+/* `없음`은 검색 결과가 아니라 필드 자체의 값이므로 검색어/서버 응답에 밀려 사라지지 않는다. */
+.fe-i.fe-empty { flex: none; color: var(--muted); border-bottom: 1px solid var(--border);
+  border-radius: 6px 6px 2px 2px; margin-bottom: 2px; }
+.fe-empty-mark { display: inline-flex; align-items: center; justify-content: center; width: 20px;
+  height: 20px; border-radius: 50%; background: var(--panel-2); color: var(--muted-2); font-weight: 700; }
 /* 담당자/보고자 검색 — 소속명이 긴 사람이 있어 팝업을 넓히고, 그래도 넘치면 이름은 말줄임.
    (사번 em 은 오른쪽에 고정 폭으로 남겨 누구인지 항상 보이게) */
 .fe-pop.users { min-width: 330px; max-width: min(460px, 82vw); }
@@ -1456,13 +1463,10 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .cfm-b.ok.danger { background: var(--danger); border-color: var(--danger); }
 .cfm-b:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* 맨션 — 사람이지 링크가 아니다. 에디터의 .mention 과 같은 칩 모양으로 읽히게 한다. */
-.tkt-desc a.user-hover { display: inline-flex; align-items: center; font-weight: 700;
-  font-size: 12.5px; line-height: 18px; padding: 0 7px; border-radius: 9px;
-  color: var(--accent); text-decoration: none;
-  background: color-mix(in srgb, var(--accent) 12%, transparent); }
-.tkt-desc a.user-hover::before { content: "@"; opacity: .65; margin-right: 1px; }
-.tkt-desc a.user-hover:hover { text-decoration: none;
+/* Jira user-hover도 사람이지 웹 링크가 아니다. 공통 renderer가 붙기 전 한 frame만 @를 보강한다. */
+.tkt-desc a.user-hover { text-decoration: none; }
+.tkt-desc a.user-hover:not([data-mention-ui])::before { content: "@"; }
+.tkt-desc a.user-hover:hover { color: var(--text); text-decoration: none;
   background: color-mix(in srgb, var(--accent) 20%, transparent); }
 
 /* 이 티켓을 멘션한 문서 — 좌측 패널. 문서로 바로 나가는 링크라 티켓 행(.tkt)과 달리 밑줄 없이. */

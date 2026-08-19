@@ -15,6 +15,7 @@ import LinkPicker from "./LinkPicker.js";
 import TransitionDialog from "./TransitionDialog.js";
 import { confirmDoneDespiteOpenSubs } from "../../lib/doneGuard.js";
 import DueText from "./DueText.js";
+import { enhanceMentionBadges } from "../../lib/mentionBadge.js";
 import NewChildDialog from "./NewChildDialog.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
 import { isBusy, busyLabel } from "../../lib/uibusy.js";
@@ -604,7 +605,7 @@ export default {
       this.loadTimeline(key, my);
 
       // 유휴 시 이 티켓의 편집 팝업(담당/보고 기본·상태 전이)·전역 기본목록을 미리 데운다(로그인 상태).
-      if (fresh()) { api.warmTicket(key); api.warmGlobals(); }
+      if (fresh()) api.warmTicket(key);  // 전역 FieldEdit 목록은 AppRoot가 화면 데이터와 독립적으로 준비
     },
     typeColor(t) { return TYPE_BG[t] || "var(--ty-task)"; },
     typeLabel(t) { return typeLabel(t); },
@@ -973,6 +974,8 @@ export default {
     augmentLinks() {
       const root = this.$el;
       if (!root || !root.querySelectorAll) return;
+      // 사람 멘션은 링크 보강보다 먼저 공통 UI로 맞춘다. 사진 요청 중·실패 시에도 @ 원이 남는다.
+      enhanceMentionBadges(root);
       // 1) Confluence 뱃지 — 내부 텍스트 무시하고 URL 에서 문서 제목 유도. 없으면 기존 텍스트.
       root.querySelectorAll(".tkt-desc a.conf-link").forEach((a) => {
         if (a.dataset.conftitled) return;

@@ -135,7 +135,10 @@ export default {
     // 인증이 서면 화면을 연다. **런처가 서버 자기 창으로 SSO 를 끝내는 경로**(prod 첫 기동)에서는
     // 프론트가 로그인을 건 적이 없어, 여기서 안 열면 오버레이만 걷히고 아무 화면도 없이 남는다.
     // (api.js 의 인증 감시자가 그 순간을 잡아 auth-ok 를 쏜다.)
-    window.addEventListener("auth-ok", () => { this.needLogin = false; this.ready = true; });
+    window.addEventListener("auth-ok", () => {
+      this.needLogin = false; this.ready = true;
+      api.warmGlobals();       // 어느 탭의 본 데이터도 기다리지 않고 FieldEdit 기본목록 준비
+    });
     // 티켓 링크(.tkt[data-key]) 위임 처리 — 어느 화면/코멘트에서 눌러도 인앱 다이얼로그로 연다.
     document.addEventListener("click", (e) => {
       const a = e.target.closest && e.target.closest(".tkt[data-key]");
@@ -167,6 +170,7 @@ export default {
       // 미인증인 채로 뜬 첫 화면 — 인증이 서는 순간을 지켜본다. 401 을 한 번도 안 겪는 경로
       // (캐시가 없어 뷰가 아예 안 뜬 경우)라 여기서 직접 걸어 줘야 한다.
       if (this.needLogin) watchAuth();
+      else api.warmGlobals();  // Task/티켓 로딩이 느려도 FieldEdit 추천은 독립적으로 데운다.
     }).catch(() => {}).finally(() => { this.ready = true; });
     // 매니저 판정은 **부팅과 무관하게** 따로 흐른다. 결과가 오면 watch 가 정리한다.
     api.me().then((me) => { this.manager = !!(me && me.manager); })

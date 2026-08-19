@@ -16,7 +16,7 @@
 //   유일한 예외는 **표 안** — 제목을 나열하는 자리라 셀에서는 가벼운 키 링크만 쓴다.
 //   뱃지의 타입·상태 채움은 AgentView.augmentBadges() 가 비동기로 한다(렌더는 동기라서).
 
-import { sigColor, initialOf } from "./colors.js";
+import { sigColor } from "./colors.js";
 
 const KEY_RE = /(?<![0-9A-Za-z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Za-z-])/g;
 const TICKET_TOKEN_RE = /\{\{ticket-(list|inline|detail):([A-Z][A-Z0-9]*-\d+)\}\}/g;
@@ -110,9 +110,10 @@ function keyBadge(key, mode) {
 
 function personBadge(uid, name) {
   const label = (name || uid || "").trim();
-  return `<span class="md-person mention" data-type="mention" data-id="${esc(uid)}" ` +
-         `data-uid="${esc(uid)}"><span class="md-avt-wrap" style="background:${sigColor(uid)}">` +
-         `${esc(initialOf(label, uid))}</span><span class="md-person-nm">${esc(label)}</span></span>`;
+  return `<span class="md-person mention mention-badge" data-type="mention" data-id="${esc(uid)}" ` +
+         `data-uid="${esc(uid)}" data-mention-ui="1"><span class="mention-av" ` +
+         `style="background:${sigColor(uid)}" aria-hidden="true">@</span>` +
+         `<span class="mention-nm md-person-nm">${esc(label)}</span></span>`;
 }
 
 /** 인라인 문법. 이미 escape 된 문자열을 받는다.

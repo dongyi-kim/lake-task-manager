@@ -18,12 +18,10 @@ import CommentEditor from "../ui/CommentEditor.js";
 import FieldEdit from "../ui/FieldEdit.js";
 import { agentApi } from "../../lib/agentApi.js";
 import { mergeEvidenceMarkdown, renderMarkdown } from "../../lib/agentMd.js";
-import { TYPE_BG, typeIconSvg, initialOf } from "../../lib/colors.js";
+import { TYPE_BG, typeIconSvg } from "../../lib/colors.js";
 import { api } from "../../lib/api.js";
 import { pushToast } from "../../lib/toast.js";
-
-// 프사가 없는 사용자 — 세션 동안 기억한다(렌더마다 404 를 다시 쏘지 않게).
-const AVATAR_MISSING = new Set();
+import { createMentionAvatar } from "../../lib/mentionBadge.js";
 
 function regexEscape(value) {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -315,32 +313,20 @@ export default {
         const code = badge.parentElement;
         if (code && code.childNodes.length === 1) code.replaceWith(badge);
       });
-      // 사람 칩의 프사 — **로드에 성공한 경우에만** 이니셜 원 위에 얹는다. 없는 사용자가
-      // 더 많아서(mock 은 전원 404) 미리 <img> 를 심으면 깨진 아이콘이 보인다.
-      // 없는 사용자는 세션 동안 기억해 매 렌더마다 재요청하지 않는다(Avatar.js 와 같은 관례).
+      // 사람 칩의 프사 — 공통 mention avatar가 @를 먼저 그리고, 성공한 사진만 그 위를 덮는다.
       root.querySelectorAll(".agent-md .md-person[data-uid]:not([data-filled])").forEach((el) => {
         el.dataset.filled = "1";
         const uid = el.getAttribute("data-uid");
-        const wrap = el.querySelector(".md-avt-wrap");
+        const wrap = el.querySelector(".mention-av");
         const name = el.querySelector(".md-person-nm");
         if (uid && name) api.userBadge(uid).then((u) => {
           if (!u || !el.isConnected) return;
           const label = u.name || u.displayName || uid;
           name.textContent = label;
-          if (wrap && wrap.firstChild && wrap.firstChild.nodeType === Node.TEXT_NODE) {
-            wrap.firstChild.nodeValue = initialOf(label, uid);
-          }
         }).catch(() => { /* username만 남겨도 식별 가능 */ });
-        if (!uid || !wrap || AVATAR_MISSING.has(uid)) return;
-        const img = new Image();
-        img.onload = () => {
-          if (!img.naturalWidth || !wrap.isConnected) return;
-          img.className = "md-avt on";
-          img.alt = "";
-          wrap.appendChild(img);
-        };
-        img.onerror = () => AVATAR_MISSING.add(uid);
-        img.src = "/api/avatar/" + encodeURIComponent(uid);
+        if (!uid) return;
+        const avatar = createMentionAvatar(uid, name ? name.textContent : uid);
+        if (wrap) wrap.replaceWith(avatar); else el.prepend(avatar);
       });
       root.querySelectorAll(".agent-md a.tkt[data-key]:not([data-filled])").forEach((a) => {
         a.dataset.filled = "1";

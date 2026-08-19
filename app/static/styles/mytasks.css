@@ -173,6 +173,14 @@
   font-size: 10px; color: var(--muted-2); white-space: nowrap; }
 .mt-owner .avt { width: 15px; height: 15px; }
 .mt-owner.me { color: var(--muted); font-weight: 600; }
+/* SubTask 한 줄 카드: 제목과 담당자 사이만 선으로 끊는다. D-day 자체 테두리까지 있으므로
+   담당자 오른쪽에 선을 더 넣으면 두 줄로 보인다. 카드가 짧아지면 담당자와 선을 함께 생략한다. */
+.mt-sub-owner { flex: 0 1 auto; min-width: 0; max-width: 108px; overflow: hidden; }
+.mt-sub-owner .mt-owner-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mt-subdue-sep { flex: none; width: 1px; height: 15px; background: var(--border); }
+@container mtc (max-width: 340px) {
+  .mt-sub-owner, .mt-subdue-sep { display: none; }
+}
 .mt-due { flex: none; font-family: ui-monospace, Consolas, monospace; font-size: 9.5px; font-weight: 700;
   padding: 1px 6px; border-radius: 4px; white-space: nowrap; color: var(--muted-2);
   background: var(--panel-2); border: 1px solid var(--border); }
@@ -311,20 +319,39 @@
     border-left: 0; padding-left: 2px; } }
 .mt-cell.empty { min-height: 0; }
 
-/* 하위 진척 — 부모 카드에만. ★ .mt-bar 는 상단 옵션 패널이 쓰는 이름이라 겹치면
-   패널이 4px 막대로 찌그러진다(실제로 겪었다). 반드시 .mt-pbar 를 쓸 것. */
-.mt-roll { flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: 10px;
-  color: var(--muted); font-family: ui-monospace, Consolas, monospace; }
-.mt-roll em { font-style: normal; font-weight: 700; }
-/* 막대는 눈으로 비율을 읽는 것이라 너무 짧으면 '거의 다 됐나' 를 못 읽는다 — 넉넉히 준다 */
-.mt-pbar { display: inline-block; width: 84px; height: 6px; border-radius: 99px;
+/* Task with SubTask 공용 하단바 — 3축 그룹·1축 단독 흐름에서 같은 컴포넌트를 쓴다.
+   부모 카드 본문은 그대로 두고, 30px 바 전체를 눌러 하위 목록을 접고 펼친다. */
+.mt-subfoot { display: flex; align-items: center; gap: 7px; width: 100%; height: 30px;
+  padding: 0 8px; box-sizing: border-box; font-family: inherit; font-size: 10.5px; font-weight: 700;
+  color: var(--text); background: var(--panel-2); border: 0; border-top: 1px solid var(--border);
+  cursor: pointer; text-align: left; }
+.mt-subfoot:hover { background: color-mix(in srgb, var(--gc, var(--accent)) 7%, var(--panel-2)); }
+.mt-subfoot:focus-visible { outline: 2px solid var(--gc, var(--accent)); outline-offset: -2px; }
+.mt-subfoot-toggle { flex: none; display: inline-grid; place-items: center; width: 19px; height: 19px;
+  box-sizing: border-box; border: 1px solid var(--border-hi); border-radius: 4px;
+  color: var(--muted); background: var(--panel); font-size: 18px; line-height: 1;
+  transition: color .12s, border-color .12s, background .12s, transform .12s; }
+.mt-subfoot-toggle.open { color: var(--gc, var(--accent)); border-color: color-mix(in srgb, var(--gc, var(--accent)) 45%, var(--border));
+  background: color-mix(in srgb, var(--gc, var(--accent)) 8%, var(--panel)); transform: rotate(90deg); }
+.mt-subfoot-label { flex: none; display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.mt-subfoot-label strong { font-family: ui-monospace, Consolas, monospace; font-size: 11px; font-variant-numeric: tabular-nums; }
+.mt-subfoot-sep { flex: none; width: 1px; height: 15px; background: var(--border-hi); }
+.mt-subfoot-owners { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 10px;
+  overflow: hidden; white-space: nowrap; }
+.mt-subfoot-owner { flex: none; display: inline-flex; align-items: center; gap: 4px; min-width: 0;
+  color: var(--muted); font-size: 10px; font-weight: 600; }
+.mt-subfoot-owner .avt { flex: none; width: 15px; height: 15px; }
+.mt-subfoot-progress-sep { margin-left: auto; }
+.mt-subfoot-progress { flex: none; display: inline-flex; align-items: center; gap: 7px; }
+.mt-subfoot-progress em { min-width: 33px; color: var(--muted); font-family: ui-monospace, Consolas, monospace;
+  font-style: normal; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+/* 막대는 눈으로 비율을 읽는 것이라 너무 짧으면 '거의 다 됐나' 를 못 읽는다. */
+.mt-pbar { display: inline-block; width: 84px; height: 5px; border-radius: 99px;
   background: var(--track, var(--border)); overflow: hidden; }
 .mt-pbar i { display: block; height: 100%; background: var(--gc, var(--accent)); }
 /* 묶음 사이 세로선 — 소속(Epic)과 현황(진척·담당자·마감)을 끊는다 */
 .mt-sep { flex: none; width: 1px; align-self: stretch; margin: 2px 1px; background: var(--border); }
-/* 좁아지면 **막대부터** 버린다 — 숫자(3/7)는 남아도 뜻이 그대로지만, 막대만 남으면
-   몇 개인지 알 수 없다. */
-@media (max-width: 1100px) { .mt-card.parent .mt-pbar { display: none; } }
+@media (max-width: 520px) { .mt-subfoot .mt-pbar { width: 58px; } }
 
 /* ── ax-v : 상태 밴드(가로로 꽉 참) + 그룹이 좌우 ── */
 /* 상태 영역 — 테두리로 감싼 상자(콜아웃)가 아니라, **가로선으로 나뉜 개별 공간**이다.
@@ -789,10 +816,10 @@
    wrapper 는 레이아웃을 바꾸지 않고, 기존 폴더블 하위 목록을 부모 카드 바로 아래에만 잇는다. */
 .ax-h .mt-compact-flow { width: 100%; min-width: 0; }
 .ax-h .mt-compact-head { position: relative; min-width: 0; }
-.ax-h .mt-compact-head > .mt-card.two { width: 100%; box-sizing: border-box; }
-.ax-h .mt-compact-flow.open .mt-compact-head > .mt-card.two { border-radius: 3px 3px 0 0; }
-/* 버튼은 카드 폭을 먹지 않고 단독 카드 셀의 11px 거터 안에 뜬다. */
-.ax-h .mt-compact-head > .mt-fold { left: -10px; top: 7px; }
+.ax-h .mt-compact-head > .mt-card.two { width: 100%; box-sizing: border-box; border-radius: 3px 3px 0 0; }
+.ax-h .mt-compact-flow > .mt-subfoot { border: 1px solid var(--border-hi); border-top: 0;
+  border-left-color: var(--sig, var(--border-hi)); border-radius: 0 0 3px 3px; }
+.ax-h .mt-compact-flow.open > .mt-subfoot { border-radius: 0; }
 .ax-h .mt-compact-children { display: grid; grid-template-columns: minmax(0, 1fr);
   gap: 4px; padding: 7px 8px 9px; background: var(--panel-2);
   border: 1px solid var(--border); border-top: 0; border-radius: 0 0 3px 3px; }
@@ -947,11 +974,9 @@
 :root[data-theme="dark"] .mt-card:not(.parent):not(.rel) {
   box-shadow: 0 3px 10px rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 255, 255, .05); }
 
-/* ── Task with SubTask 부모 카드 — 진척을 **제목 바로 뒤**에 붙여 읽히게 ──
-   제목은 자라지 않게(shrink) 두고 진척을 바로 뒤에 붙인다. 나머지(소속 Epic·담당·마감)는
-   오른쪽으로 민다(진척이 제목에 딱 붙어 '제목 → 얼마나 됐나' 로 이어 읽힌다). */
+/* Task with SubTask 부모의 진척은 공용 하단바로 이동했다. 부모 줄은 제목과 소속·담당·마감만
+   읽히게 두고, 오른쪽 정보 그룹은 기존 정렬을 유지한다. */
 .mt-card.parent .mt-title { flex: 0 1 auto; }
-.mt-card.parent .mt-roll { flex: none; }
 .ax-h .mt-card.parent .mt-epic { margin-left: auto; }   /* 가로: epic(항상 렌더)부터 오른쪽 그룹 */
 .ax-v .mt-card.parent .mt-sep { margin-left: auto; }    /* 세로: epic 없음 → sep 부터 오른쪽 그룹 */
 

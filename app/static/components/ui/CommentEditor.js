@@ -18,6 +18,7 @@ import { pushToast } from "../../lib/toast.js";
 import { agentApi } from "../../lib/agentApi.js";
 import { beginBusy } from "../../lib/uibusy.js";
 import AgentSettingsDialog from "./AgentSettingsDialog.js";
+import { paintMentionBadge } from "../../lib/mentionBadge.js";
 
 // 첨부 업로드 재시도 — prod 는 SSO 세션/사내망 탓에 첨부가 간헐적으로 삐끗한다. 한 번 실패했다고
 // 파일을 버리지 않고 최대 이만큼 **다시** 올려 본다(총 시도 횟수).
@@ -967,6 +968,41 @@ function mentionSuggestion(ticketKey) {
   };
 }
 
+/** TipTap mention의 저장 HTML은 그대로 두고 편집 중 DOM만 공통 badge로 그린다.
+ *  노드뷰를 쓰지 않고 DOM을 보강하면 ProseMirror가 낯선 avatar를 즉시 지워 버린다. */
+function mentionExt(T, ticketKey) {
+  return T.Mention.extend({
+    addNodeView() {
+      return ({ node, HTMLAttributes }) => {
+        let current = node;
+        const dom = document.createElement("span");
+        Object.entries(HTMLAttributes || {}).forEach(([key, value]) => {
+          if (value != null) dom.setAttribute(key, value);
+        });
+        dom.setAttribute("contenteditable", "false");
+        const paint = (next) => {
+          const uid = next.attrs.id || "";
+          const label = next.attrs.label || uid;
+          paintMentionBadge(dom, uid, label);
+          dom.setAttribute("data-type", "mention");
+        };
+        paint(current);
+        return {
+          dom,
+          update(next) {
+            if (next.type !== current.type) return false;
+            const changed = next.attrs.id !== current.attrs.id || next.attrs.label !== current.attrs.label;
+            current = next;
+            if (changed) paint(next);
+            return true;
+          },
+          ignoreMutation: () => true,
+        };
+      };
+    },
+  }).configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion(ticketKey) });
+}
+
 // 끌어서 정한 높이는 **기억한다**. 매번 다시 늘리게 하면 늘리는 의미가 없다 —
 // 긴 글을 쓰는 사람은 늘 길게 쓴다. 화면(px)이라 localStorage 로 충분하다.
 const H_KEY = "cmtEditorH";
@@ -1054,7 +1090,7 @@ export default {
         fileBadgeExt(T),
         singleLineHeadingExt(T),
         firstBlockEscapeExt(T),
-        T.Mention.configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion(this.ticketKey) }),
+        mentionExt(T, this.ticketKey),
         T.Table.configure({ resizable: true }), T.TableRow, T.TableHeader, T.TableCell,
         // 정렬 — 문단·제목·표 셀에. 표 셀을 포함해야 마크다운 표의 :-: / --: 정렬이 붙는다.
         T.TextAlign.configure({ types: ["heading", "paragraph", "tableCell", "tableHeader"] }),

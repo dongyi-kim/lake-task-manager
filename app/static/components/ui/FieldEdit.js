@@ -39,7 +39,7 @@ export default {
   },
   emits: ["saved", "pick"],
   data() {
-    return { open: false, busy: false, err: "", q: "", opts: [], hi: 0,
+    return { open: false, busy: false, err: "", q: "", opts: [], hi: 0, lookupSeq: 0,
              draft: null, who: [], dateDraft: "",   // 날짜 텍스트 입력(자동 YYYY-MM-DD 포맷)
              // 팝업을 body 로 teleport 해 fixed 로 띄운다 — 안 그러면 스크롤되는 다이얼로그
              // (overflow:auto) 안에 갇혀 긴 목록이 잘린다. popStyle 은 트리거 기준 위치.
@@ -69,6 +69,12 @@ export default {
     isDate() { return this.field === "duedate"; },
     isEpic() { return this.field === "epic"; },
     isType() { return this.field === "issuetype"; },
+    // Jira 가 선택 해제를 허용하는 필드는 검색 결과와 별개로 `없음`을 항상 고를 수 있어야 한다.
+    // 서버 결과 안에 가짜 옵션으로 섞으면 검색어에 걸러지거나 늦은 응답과 함께 사라지므로 UI에 고정한다.
+    hasNoneOption() {
+      if (!this.isUser && !this.isEpic && !this.isDate && !this.isMulti) return false;
+      return this.local || !this.meta || this.meta.required !== true;
+    },
     // 라벨만 **새 값 생성**을 허용한다. 컴포넌트는 프로젝트 설정에 있는 것만 유효해
     // 아무거나 만들면 저장에서 거절된다(Jira 가 모르는 컴포넌트다).
     canCreate() { return this.field === "labels"; },
@@ -86,6 +92,7 @@ export default {
       if (!this.editable || this.busy) return;
       window.dispatchEvent(new CustomEvent("fe-open", { detail: this._id() }));
       this.open = true; this.err = ""; this.q = ""; this.hi = 0;
+      this.lookupSeq += 1;                         // 이전에 닫힌 팝업의 늦은 응답 무효화
       // 트리거 기준으로 팝업을 놓고, 스크롤/리사이즈 때 따라오게 한다(닫히면 뗀다).
       this.$nextTick(() => this._place());
       window.addEventListener("scroll", this._place, true);
@@ -103,9 +110,18 @@ export default {
       if (this.field === "priority") {
         this.opts = (this.meta.allowedValues || []).map((v) => v.name);
       } else if (this.field === "components") {
-        const base = ((this.meta && this.meta.allowedValues) || []).map((v) => v.name);   // local 은 meta 없음
+        // local choices와 editmeta는 네트워크와 무관한 기본 목록이다. 먼저 그려 둔 뒤, 둘 다 없을
+        // 때만 서버 목록을 보충한다. 이전에는 local choices를 빈 meta로 덮어써 목록이 사라졌다.
+        const localBase = (this.local ? (this.choices || []) : []).map((v) => typeof v === "string" ? v : v.name).filter(Boolean);
+        const metaBase = ((this.meta && this.meta.allowedValues) || []).map((v) => v.name);
+        const base = localBase.concat(metaBase);
         this.opts = this._prepRecentStr(base);
-        if (!base.length) api.options("components").then((r) => { this.opts = this._prepRecentStr((r || []).map((x) => x.name)); });
+        if (!base.length) {
+          const token = ++this.lookupSeq;
+          api.options("components").then((r) => {
+            if (this._lookupCurrent(token, "")) this.opts = this._prepRecentStr((r || []).map((x) => x.name));
+          }).catch(() => {});                       // 즉시 표시한 최근 목록은 실패해도 유지
+        }
       } else if (this.field === "labels") {
         this.suggest("");
       } else if (this.isEpic) {
@@ -140,34 +156,63 @@ export default {
     },
     close() {
       this.open = false; this.q = ""; this.err = "";
+      this.lookupSeq += 1;
+      for (const ta of [this._ta, this._taLbl, this._taEp]) if (ta) ta.cancel();
       window.removeEventListener("scroll", this._place, true);
       window.removeEventListener("resize", this._place);
     },
+    _lookupCurrent(token, q) {
+      return this.open && token === this.lookupSeq && this.q === q;
+    },
     suggest(q) {
-      if (!q) {                                  // 기본 목록 — 즉시(memo/워밍). 디바운스·순번가드 불필요.
+      q = String(q || "");
+      const token = ++this.lookupSeq;
+      if (!q) {
+        // 최근값/local choices는 서버 로딩과 무관한 오프라인 기본 추천이다. 요청 전에 즉시 그린다.
+        const base = (this.local ? (this.choices || []) : []).map((v) => typeof v === "string" ? v : v.name).filter(Boolean);
+        this.opts = this._prepRecentStr(base);
         if (this._taLbl) this._taLbl.cancel();   // 대기 중이던 타이핑 응답 취소(빈 목록을 덮지 않게)
-        api.options("labels", "").then((r) => { this.opts = this._prepRecentStr(r || []); }).catch(() => { this.opts = []; });
+        api.options("labels", "").then((r) => {
+          if (this._lookupCurrent(token, q)) this.opts = this._prepRecentStr(base.concat(r || []));
+        }).catch(() => {});                       // 오프라인 추천을 빈 배열로 되돌리지 않는다
         return;
       }
       // 타이핑 — **디바운스 + 응답 역전 방어**(typeahead). 늦게 온 옛 질의 결과는 버려 **마지막
       // 글자 결과만** 반영된다(전엔 매 키마다 직접 호출이라 옛 응답이 새 목록을 덮을 수 있었다).
       this._taLbl = this._taLbl || createTypeahead((x) => api.options("labels", x), { minLen: 1 });
-      this._taLbl.run(q).then((r) => { if (r != null) this.opts = r || []; }).catch(() => {});
+      this._taLbl.run(q).then((r) => {
+        if (r != null && this._lookupCurrent(token, q)) this.opts = r || [];
+      }).catch(() => {});
     },
     searchEpics(q) {
+      q = String(q || "");
+      const token = ++this.lookupSeq;
       if (!q) {
+        const base = (this.local ? (this.choices || []) : []).filter((e) => e && typeof e === "object");
+        this.opts = this._prepRecent(base, (e) => e.key || e.id);
         if (this._taEp) this._taEp.cancel();
-        api.options("epics", "").then((r) => { this.opts = this._prepRecent(r || [], (e) => e.key); }).catch(() => { this.opts = []; });
+        api.options("epics", "").then((r) => {
+          if (this._lookupCurrent(token, q)) this.opts = this._prepRecent(base.concat(r || []), (e) => e.key || e.id);
+        }).catch(() => {});
         return;
       }
       this._taEp = this._taEp || createTypeahead((x) => api.options("epics", x), { minLen: 1 });
-      this._taEp.run(q).then((r) => { if (r != null) this.opts = r || []; }).catch(() => {});
+      this._taEp.run(q).then((r) => {
+        if (r != null && this._lookupCurrent(token, q)) this.opts = r || [];
+      }).catch(() => {});
     },
     searchWho(q) {
+      q = String(q || "");
+      const token = ++this.lookupSeq;
+      if (!q) {
+        const base = (this.local ? (this.choices || []) : []).filter((u) => u && typeof u === "object");
+        this.who = this._prepRecent(base, (u) => u.id).slice(0, 8);
+      }
       this._ta.run(q).then((r) => {
-        if (!r) return;
+        if (!r || !this._lookupCurrent(token, q)) return;
         // 빈 질의(기본 추천)면 **최근 이 다이얼로그에서 고른 사람**을 맨 위로.
-        this.who = q ? r.slice(0, 8) : this._prepRecent(r.slice(0, 8), (u) => u.id);
+        const base = (this.local ? (this.choices || []) : []).filter((u) => u && typeof u === "object");
+        this.who = q ? r.slice(0, 8) : this._prepRecent(base.concat(r.slice(0, 8)), (u) => u.id).slice(0, 8);
       }).catch(() => {});
     },
     // ── 최근 사용값(이 필드에서 내가 고른 값) — 기본 목록 상단에 우선 노출 ──
@@ -188,17 +233,23 @@ export default {
     },
     /** 객체 목록 앞에 최근값(같은 shape)을 끼워 넣고 중복 제거. */
     _prepRecent(list, idOf) {
-      const rec = this._recent();
-      if (!rec.length) return list;
-      const seen = new Set(rec.map((x) => x.id));
-      return rec.concat((list || []).filter((x) => !seen.has(idOf(x))));
+      const out = [], seen = new Set();
+      for (const item of this._recent().concat(list || [])) {
+        const id = item && (item.id || idOf(item));
+        if (!id || seen.has(String(id))) continue;
+        seen.add(String(id)); out.push(item);
+      }
+      return out;
     },
     /** 문자열 목록(라벨·컴포넌트) 앞에 최근값을 끼워 넣고 중복 제거. */
     _prepRecentStr(list) {
-      const rec = this._recent().map((x) => x.id).filter(Boolean);
-      if (!rec.length) return list || [];
-      const seen = new Set(rec);
-      return rec.concat((list || []).filter((x) => !seen.has(x)));
+      const out = [], seen = new Set();
+      for (const value of this._recent().map((x) => x.id).concat(list || [])) {
+        const text = String(value || "");
+        if (!text || seen.has(text)) continue;
+        seen.add(text); out.push(text);
+      }
+      return out;
     },
     toggle(v) {
       const i = this.draft.indexOf(v);
@@ -234,6 +285,7 @@ export default {
       for (const val of this.draft) this._pushRecent({ id: String(val), label: String(val) });
       this.save(this.draft.slice());
     },
+    clearMulti() { this.draft = []; },
     clearUser() { this.save(""); },
     // ── 날짜 입력(자유 타이핑) ──
     // 네이티브 <input type=date> 는 세그먼트 편집이라 '20260417' 을 심리스하게 못 치고, 중간
@@ -303,6 +355,9 @@ export default {
         <input ref="inp" :value="q" @input="q = $event.target.value; searchWho($event.target.value)"
                placeholder="이름 또는 사번">
         <div class="fe-list">
+          <button v-if="hasNoneOption" class="fe-i fe-empty" :class="{ cur: !userId }" @click="clearUser">
+            <span class="fe-empty-mark">—</span><span>없음</span>
+          </button>
           <button v-for="u in who" :key="u.id" class="fe-i" :class="{ cur: u.id === userId }"
                   @click="save(u.id, u)">
             <Avatar :user="u.id" :name="u.display || u.name" :size="20" />
@@ -310,7 +365,6 @@ export default {
           </button>
           <div v-if="!who.length" class="fe-none">결과가 없습니다.</div>
         </div>
-        <button v-if="field === 'assignee' && userId" class="fe-clear" @click="clearUser">담당자 해제</button>
       </template>
 
       <!-- 소속 Epic -->
@@ -318,6 +372,9 @@ export default {
         <input ref="inp" :value="q" @input="q = $event.target.value; searchEpics($event.target.value)"
                placeholder="Epic 이름·제목 또는 키">
         <div class="fe-list">
+          <button v-if="hasNoneOption" class="fe-i fe-empty" :class="{ cur: !value }" @click="save('')">
+            <span class="fe-empty-mark">—</span><span>없음</span>
+          </button>
           <!-- Epic 은 이름이 둘이다: **단축어(Epic Name)** 와 요약. 사람들은 단축어로 부르지만
                비슷한 단축어끼리는 요약을 봐야 구별된다 — 그래서 둘 다 보인다. -->
           <!-- Task 생성 시 상위 Epic 피커(NewChildDialog .nk-cand-epic)와 **같은 포맷**:
@@ -330,7 +387,6 @@ export default {
           </button>
           <div v-if="!opts.length" class="fe-none">Epic 이 없습니다.</div>
         </div>
-        <button v-if="value" class="fe-clear" @click="save('')">Epic 소속 해제</button>
       </template>
 
       <!-- 작업 기한 — 자유 타이핑(YYYYMMDD 자동 포맷) + 달력 버튼 -->
@@ -347,7 +403,7 @@ export default {
           <input ref="nat" type="date" class="fe-date-native" :value="value || ''" @change="onNative" tabindex="-1">
         </div>
         <div v-if="err" class="fe-err">{{ err }}</div>
-        <button v-if="value" class="fe-clear" @click="save('')">기한 지우기</button>
+        <button v-if="hasNoneOption" class="fe-clear" @mousedown.prevent @click="save('')">없음</button>
       </template>
 
       <!-- 라벨 / 컴포넌트 — 뱃지 담기 -->
@@ -361,6 +417,9 @@ export default {
                @keydown.enter.prevent="canCreate ? addNew() : null"
                :placeholder="canCreate ? '검색 또는 새로 입력 후 Enter' : '검색'">
         <div class="fe-list">
+          <button v-if="hasNoneOption" class="fe-i fe-empty" :class="{ cur: !draft.length }" @click="clearMulti">
+            <span class="fe-empty-mark">—</span><span>없음</span><em v-if="!draft.length">선택됨</em>
+          </button>
           <button v-for="o in opts.filter(x => x.toLowerCase().includes(q.toLowerCase()))" :key="o"
                   class="fe-i" :class="{ cur: draft.includes(o) }" @click="toggle(o)">
             {{ o }}<em v-if="draft.includes(o)">담김</em>
