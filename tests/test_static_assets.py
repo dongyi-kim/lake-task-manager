@@ -154,6 +154,7 @@ def test_uniform_subtask_status_reuses_solo_parent_and_foldable_children_in_one_
     assert 'v-for="st in panelStates(p)"' in view
     for status, column in (("todo", 1), ("inprogress", 2), ("done", 3)):
         assert f".mt-gslot.one-status.s-{status} > .mt-gcard2 {{ grid-column: {column}; }}" in css
+        assert css.count(f".mt-gslot.one-status.s-{status} > .mt-gcard2") == 2
     assert ".mt-gslot > .mt-gcard2 { grid-column: 1 / -1;" in css
     assert ".mt-gslot.one-status .mt-gh > .mt-card.two" in css
     assert ".mt-gslot.one-status .mt-gbody { border: 1px solid var(--border); border-top: 0;" in css

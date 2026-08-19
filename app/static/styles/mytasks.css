@@ -797,7 +797,10 @@
   border-radius: 0 0 3px 3px; }
 @media (max-width: 900px) {
   .ax-h .mt-gslot { grid-template-columns: 1fr; }
-  .ax-h .mt-gslot.one-status > .mt-gcard2 { grid-column: 1; }
+  /* 위 상태별 규칙과 같은 specificity 로 덮어야 2·3번째 implicit column 이 생기지 않는다. */
+  .ax-h .mt-gslot.one-status.s-todo > .mt-gcard2,
+  .ax-h .mt-gslot.one-status.s-inprogress > .mt-gcard2,
+  .ax-h .mt-gslot.one-status.s-done > .mt-gcard2 { grid-column: 1; }
 }
 
 /* 미분류(Unclassified) — 방향도 무게도 없다. 점 하나로 '아직 등급이 없다' 만 말한다.
