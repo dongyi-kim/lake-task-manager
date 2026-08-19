@@ -40,6 +40,20 @@ const STATES = [
   { k: "inprogress", label: "진행 중", drop: "진행 중" },
   { k: "done", label: "최근 완료", drop: "완료" },
 ];
+const STATE_KEYS = new Set(STATES.map((st) => st.k));
+
+/** 모든 Sub-Task 가 같은 상태 Category 면 그 상태를 돌려준다.
+ *  빈 그룹이나 둘 이상의 상태가 섞인 그룹은 기존 3컬럼 UI 를 써야 하므로 null 이다. */
+export function uniformStatusCategory(cards) {
+  let only = null;
+  for (const card of cards || []) {
+    // byState 와 같은 폴백: 알 수 없는 Category 는 할당됨 칸에 놓인다.
+    const status = STATE_KEYS.has(card.statusCategory) ? card.statusCategory : "todo";
+    if (only !== null && only !== status) return null;
+    only = status;
+  }
+  return only;
+}
 // Epic 시그니처 컬러 — 같은 Epic 은 어느 화면·어느 카드에서도 같은 색.
 // 사용자 VoC 는 Epic 이 없어도 **전용 Epic 처럼** 자기 색을 갖는다(Epic 이 배정돼 있으면 그쪽 우선).
 // Epic 도 VoC 도 아니면 색을 주지 않는다 — 없는 소속을 색으로 지어내지 않는다.
@@ -574,7 +588,11 @@ export default {
         key: g.key, kind: "task", group: g,
         title: g.title, epicKey: g.epic,
         mode, mineCount: mineCards.length, allCount: all.length,
+        // 1컬럼 모드의 부모는 별도 축약 UI 가 아니라 단독 Task 와 같은 TaskCard 를 그대로 쓴다.
+        parentCard: this.card(g, g, !!g.mine),
         cards: this.sorted(shown),
+        // 화면에 일부만 펼쳐도 판정은 동료 몫까지 포함한 **모든 실제 Sub-Task** 기준이다.
+        singleStatus: uniformStatusCategory(all),
         rank: this.rankOf(all),
       };
     },
@@ -594,6 +612,20 @@ export default {
       const m = { todo: [], inprogress: [], done: [] };
       for (const c of cards) (m[c.statusCategory] || m.todo).push(c);
       return m;
+    },
+    /** 가로축의 1컬럼 버전. 해당 상태 열이 접혔으면 부모 정보가 찌그러지지 않게 기존 전폭으로 둔다. */
+    compactStatus(p) {
+      const status = p && p.kind === "task" ? p.singleStatus : null;
+      return status && this.bandOpen(status) ? status : null;
+    },
+    compactStatusClass(p) {
+      const status = this.compactStatus(p);
+      return status ? ["one-status", "s-" + status] : [];
+    },
+    /** 1컬럼 그룹도 같은 하위 셀 마크업을 쓰되, 유일한 상태 셀 하나만 렌더한다. */
+    panelStates(p) {
+      const status = this.compactStatus(p);
+      return status ? this.states.filter((st) => st.k === status) : this.states;
     },
     /**
      * 하위가 많은 Task 는 카드가 세로로 길어져 목록을 훑기 어렵다 — 접어 둔다.
@@ -905,12 +937,17 @@ export default {
         </div>
 
         <!-- Task 그룹 = 카드 하나 -->
-        <div v-else-if="p.kind === 'task'" class="mt-gcard2 k-task" :class="{ folded: gClosed[p.key] }" :style="sigStyle(p.group)">
+        <div v-else-if="p.kind === 'task'" class="mt-gslot" :class="compactStatusClass(p)">
+        <div class="mt-gcard2 k-task" :class="{ folded: gClosed[p.key] }" :style="sigStyle(p.group)">
           <div class="mt-gh">
             <button type="button" class="mt-fold" @click.stop="toggleGroup(p.key)"
                     :title="gClosed[p.key] ? '하위 펼치기' : '하위 접기'">
               <span class="chev" :class="{ open: !gClosed[p.key] }">▸</span></button>
-            <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
+            <!-- 한 상태 1컬럼은 하위 없는 Task 와 **같은 2줄 카드**를 부모로 쓴다.
+                 그 아래 접히는 하위 목록만 기존 Task+SubTask UI 에서 재사용한다. -->
+            <TaskCard v-if="compactStatus(p)" :card="p.parentCard" :style="sigStyle(p.group)"
+                      :epic-title="epicTitle(p.epicKey)" />
+            <div v-else class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
                  :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done',
                         urgent: isUrgentC(p.group) }">
               <span v-if="isHotC(p.group)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
@@ -939,7 +976,7 @@ export default {
             </div>
           </div>
           <div v-if="p.mode !== 'collapsed' && !gClosed[p.key]" class="mt-gbody">
-            <div v-for="st in states" :key="p.key + st.k" class="mt-cell"
+            <div v-for="st in panelStates(p)" :key="p.key + st.k" class="mt-cell"
                  :class="['c-' + st.k, { empty: !byState(p.cards)[st.k].length,
                                                 closed: !bandOpen(st.k),
                                                 foldwrap: foldable(p),
@@ -962,6 +999,7 @@ export default {
                         subOpen[p.key] ? '접기' : '+' + cellHidden(p, st.k) + '개 더' }}</button>
             </div>
           </div>
+        </div>
         </div>
 
       </template>
