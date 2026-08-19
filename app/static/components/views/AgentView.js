@@ -462,7 +462,7 @@ export default {
       this.dispatch(text, null);
     },
 
-    dispatch(text, html) {
+    dispatch(text, html, questionReceipt = null) {
       this.turns.push({ who: "user", text, html: html || "" });
       const turn = { who: "agent", text: "", trace: [], evidence: [], docs: [],
                      questions: [], assignments: [], review: {}, pending: null, result: null,
@@ -497,7 +497,8 @@ export default {
       this.$nextTick(this.scroll);
 
       this.aborts[myKey] = agentApi.stream(
-        { text, threadId: this.threadId },
+        { text: questionReceipt ? "" : text, threadId: this.threadId,
+          ...(questionReceipt ? { questionReceipt } : {}) },
         (ev) => {
           // local dev에서 복사할 진단 기록. token 원문·비밀값은 보관하지 않고 글자 수만 센다.
           if (ev.type === "token") turn.debug.tokenChars += String(ev.text || "").length;
@@ -592,6 +593,7 @@ export default {
               text: ev.reply || "(답변이 비어 있습니다)",
               trace: ev.trace || [], evidence: ev.evidence || [],
               docs: ev.related_docs || [], questions: ev.questions || [],
+              questionReceipt: ev.questionReceipt || null,
               assignments: ev.assignments || [], review: ev.review || {},
               pending: ev.pending || null, result: ev.result || null,
               usage: ev.usage || null, people: ev.people || {},
@@ -996,8 +998,8 @@ export default {
     },
 
     // ── 되묻기 폼 ──────────────────────────────────────────────
-    // 에이전트의 질문(kind/options/field)을 폼으로 그리고, 답을 모아 **한 문장으로** 보낸다.
-    // 백엔드는 자연어 답을 받는 것과 동일 — 폼은 순전히 입력을 쉽게 만드는 층이다.
+    // 에이전트의 질문(kind/options/field)을 폼으로 그리고, 서버가 준 opaque question_id와
+    // 답만 돌려준다. 이전 서버/loose 질문에는 기존 자연어 전송을 그대로 유지한다.
     qKey(qi) { return "q" + qi; },
     setAns(qi, v, extra) {
       // FieldEdit pick(v, extra) — 사람은 '본명(사번)' 으로 답해 모델도 사람도 읽게 한다.
@@ -1065,17 +1067,34 @@ export default {
     },
     submitAnswers(turn) {
       const lines = [];
+      const answers = [];
       (turn.questions || []).forEach((q, qi) => {
         const a = (this.answers[this.qKey(qi)] || "").trim();
-        if (a) lines.push((q.question || q) + " → " + a);
+        if (a) {
+          lines.push((q.question || q) + " → " + a);
+          answers.push({ question_id: q.question_id,
+                         value: q.kind === "multi" ? a.split(" | ").filter(Boolean) : a });
+        }
       });
       if (!lines.length) return;
       this.answers = {};
+      const challenge = turn.questionReceipt;
+      if (challenge && challenge.challenge_id
+          && answers.every((row) => row.question_id)) {
+        turn.questionReceipt = null; // one-use capability; prevent a second local submit
+        this.dispatch(lines.join("\n"), null, {
+          contract: "question_answer.receipt.v1",
+          challenge_id: challenge.challenge_id,
+          answers,
+        });
+        return;
+      }
       this.text = lines.join("\n");
-      this.send();
+      this.send(); // old server / loose question: preserve the semantic text path
     },
-    skipAnswers() {
+    skipAnswers(turn) {
       this.answers = {};
+      if (turn) turn.questionReceipt = null;
       this.text = "나머지는 합리적 기본값으로 알아서 진행해줘";
       this.send();
     },
@@ -1214,7 +1233,7 @@ export default {
                  class="agent-qform">
               <!-- 클로드식 순차 폼: 질문은 한 번에 하나씩, 답한 질문은 접혀 선택만 보인다
                    (세로 카드형 보기가 스크롤을 먹는 것의 절충 — 사용자 요청). -->
-              <div v-for="(q, qi) in t.questions" :key="qi" class="aq"
+              <div v-for="(q, qi) in t.questions" :key="q.question_id || qi" class="aq"
                    v-show="qDone[qi] || qi === qActive(t)">
 
                 <!-- 접힌 질문 — 질문 한 줄 + 선택한 답. 누르면 다시 편다 -->
@@ -1280,7 +1299,7 @@ export default {
               </div>
               <div class="aq-act">
                 <button class="ag-ok" :disabled="!formReady(t)" @click="submitAnswers(t)">답변 보내기</button>
-                <button class="ag-cancel" @click="skipAnswers()">알아서 진행해줘</button>
+                <button class="ag-cancel" @click="skipAnswers(t)">알아서 진행해줘</button>
               </div>
             </div>
 

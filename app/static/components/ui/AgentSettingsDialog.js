@@ -25,9 +25,13 @@ export default {
   emits: ["close", "saved"],
   data() {
     return {
+      providers: PROVIDERS,
       st: null, env: "", selectedId: "", err: "", busy: false, saving: false,
-      form: { name: "", provider: "", chatModel: "", chatModelSimple: "", embedModel: "", apiVersion: "" },
-      models: { chat: [], embed: [], total: 0, error: "" },
+      form: { name: "", provider: "", chatModel: "", chatModelSimple: "", embedModel: "", apiVersion: "",
+        chatModelProfile: "", chatModelSimpleProfile: "",
+        embeddingProvider: "", embeddingApiVersion: "",
+        embedRevision: "", embedPrecision: "", embedDimension: "", embedNormalization: "" },
+      models: { chat: [], simple: [], embed: [], total: 0, error: "" },
       comboOpen: "", comboAll: false, authEdit: null, authProbe: null, probe: null,
       verify: null, verifyBusy: false, addOpen: false, addName: "", addProvider: "openai",
       userPrompt: "", showProjPrompt: false, index: null,
@@ -39,6 +43,18 @@ export default {
     selected() { return this.configs.find((x) => x.id === this.selectedId) || null; },
     active() { return this.configs.find((x) => x.active) || null; },
     cur() { return PROVIDERS.find((x) => x.k === this.form.provider) || PROVIDERS[0]; },
+    authFields() {
+      const rows = [...this.cur.fields];
+      if (this.form.provider === "openai_compat") rows.push(
+        ["simpleBaseUrl", "간단한 역할 Base URL (선택)", "http://192.168.55.173:18083/v1", false],
+        ["simpleApiKey", "간단한 역할 API 키 (선택)", "", true],
+        ["simpleHeaders", "간단한 역할 추가 헤더 (JSON)", '{"X-Auth":"..."}', true]);
+      if (this.form.embeddingProvider) rows.push(
+        ["embeddingBaseUrl", "임베딩 Base URL", "http://127.0.0.1:18081/v1", false],
+        ["embeddingApiKey", "임베딩 API 키 (선택)", "", true],
+        ["embeddingHeaders", "임베딩 추가 헤더 (JSON)", '{"X-Auth":"..."}', true]);
+      return rows;
+    },
     addProviders() { return this.env === "prod" ? PROVIDERS.filter((x) => x.k !== "fake") : PROVIDERS; },
     masked() { return (this.selected && this.selected.secrets) || {}; },
     canActivate() { return !!(this.selected && !this.st.envSupplied && this.selected.authOk && this.selected.modelsOk); },
@@ -73,8 +89,14 @@ export default {
       this.selectedId = id;
       this.form = { name: row.name || "", provider: row.provider || "",
         chatModel: row.chatModel || "", chatModelSimple: row.chatModelSimple || "",
-        embedModel: row.embedModel || "", apiVersion: row.apiVersion || "" };
-      this.models = { chat: [], embed: [], total: 0, error: "" };
+        embedModel: row.embedModel || "", apiVersion: row.apiVersion || "",
+        chatModelProfile: row.chatModelProfile || "",
+        chatModelSimpleProfile: row.chatModelSimpleProfile || "",
+        embeddingProvider: row.embeddingProvider || "",
+        embeddingApiVersion: row.embeddingApiVersion || "", embedRevision: row.embedRevision || "",
+        embedPrecision: row.embedPrecision || "", embedDimension: row.embedDimension || "",
+        embedNormalization: row.embedNormalization || "" };
+      this.models = { chat: [], simple: [], embed: [], total: 0, error: "" };
       this.authProbe = null; this.probe = null; this.verify = null; this.err = "";
       if (row.authOk || row.provider === "fake") this.loadModels();
     },
@@ -108,20 +130,22 @@ export default {
     },
     hasKey(k) { return !!this.masked[k]; },
     keyShown(k) { return String(this.masked[k] || "").replace("설정됨 ", ""); },
-    anyKey() { return this.cur.fields.some((f) => this.hasKey(f[0])); },
+    anyKey() { return this.authFields.some((f) => this.hasKey(f[0])); },
     openAuthEdit() {
       const values = {};
-      this.cur.fields.forEach((f) => { values[f[0]] = ""; });
+      this.authFields.forEach((f) => { values[f[0]] = ""; });
       this.authEdit = { values, busy: false, err: "" };
     },
     async applyAuth() {
       if (!this.authEdit || this.authEdit.busy || !this.selected) return;
       const secrets = {};
-      this.cur.fields.forEach((f) => { const v = (this.authEdit.values[f[0]] || "").trim(); if (v) secrets[f[0]] = v; });
+      this.authFields.forEach((f) => { const v = (this.authEdit.values[f[0]] || "").trim(); if (v) secrets[f[0]] = v; });
       if (!Object.keys(secrets).length) { this.authEdit.err = "바꿀 값을 하나 이상 입력하세요."; return; }
       this.authEdit.busy = true; this.authEdit.err = "";
       try {
-        await agentApi.updateConfig(this.selected.id, { apiVersion: this.form.apiVersion, secrets });
+        await agentApi.updateConfig(this.selected.id, { apiVersion: this.form.apiVersion,
+          embeddingProvider: this.form.embeddingProvider,
+          embeddingApiVersion: this.form.embeddingApiVersion, secrets });
         const result = await agentApi.probeConfigAuth(this.selected.id);
         await this.load(this.selected.id);
         this.authProbe = result;
@@ -133,12 +157,13 @@ export default {
       if (!this.selected || this.busy) return;
       this.busy = true; this.verify = null;
       try { this.models = await agentApi.configModels(this.selected.id); }
-      catch (e) { this.models = { chat: [], embed: [], total: 0, error: (e && e.message) || "조회 실패" }; }
+      catch (e) { this.models = { chat: [], simple: [], embed: [], total: 0, error: (e && e.message) || "조회 실패" }; }
       finally { this.busy = false; }
     },
     comboVal(kind) { return kind === "chat" ? this.form.chatModel : kind === "simple" ? this.form.chatModelSimple : this.form.embedModel; },
     comboOpts(kind) {
-      let rows = kind === "embed" ? this.models.embed : this.models.chat;
+      let rows = kind === "embed" ? this.models.embed
+        : kind === "simple" && (this.models.simple || []).length ? this.models.simple : this.models.chat;
       if (kind !== "embed" && this.verify && (this.verify.ok || []).length)
         rows = rows.filter((x) => this.verify.ok.includes(x));
       const q = this.comboVal(kind).trim().toLowerCase();
@@ -165,7 +190,13 @@ export default {
       try {
         await agentApi.updateConfig(this.selected.id, { name: this.form.name,
           chatModel: this.form.chatModel, chatModelSimple: this.form.chatModelSimple,
-          embedModel: this.form.embedModel, apiVersion: this.form.apiVersion });
+          embedModel: this.form.embedModel, apiVersion: this.form.apiVersion,
+          chatModelProfile: this.form.chatModelProfile,
+          chatModelSimpleProfile: this.form.chatModelSimpleProfile,
+          embeddingProvider: this.form.embeddingProvider,
+          embeddingApiVersion: this.form.embeddingApiVersion,
+          embedRevision: this.form.embedRevision, embedPrecision: this.form.embedPrecision,
+          embedDimension: this.form.embedDimension, embedNormalization: this.form.embedNormalization });
         const result = await agentApi.probeConfig(this.selected.id);
         await this.load(this.selected.id);
         this.probe = result;
@@ -231,7 +262,7 @@ export default {
 
             <section v-if="cur.fields.length" class="ag-sec">
               <div class="ag-lab">인증</div>
-              <div v-for="f in cur.fields" :key="f[0]" class="ag-f"><span>{{ f[1] }}</span>
+              <div v-for="f in authFields" :key="f[0]" class="ag-f"><span>{{ f[1] }}</span>
                 <input class="ag-keyin" readonly :value="hasKey(f[0]) ? keyShown(f[0]) : ''" :placeholder="hasKey(f[0]) ? '' : '아직 설정되지 않음'">
               </div>
               <button class="ag-mini" @click="openAuthEdit">{{ anyKey() ? '인증 정보 변경' : '인증 정보 입력' }}</button>
@@ -250,11 +281,18 @@ export default {
                   <div v-if="comboOpen === kind" class="ag-combo-drop"><button v-for="m in comboOpts(kind)" :key="m" @mousedown.prevent="pickModel(kind,m)">{{ m }}</button><div v-if="!comboOpts(kind).length" class="ag-combo-empty">{{ models.error ? '목록 조회 실패 — 직접 입력' : '목록이 비어 있음 — 직접 입력' }}</div></div>
                 </div>
               </div>
+              <label class="ag-f"><span>기본/복합 채팅 모델 프로파일 (선택)</span><input v-model="form.chatModelProfile" placeholder="비우면 모델명으로 자동 선택"></label>
+              <label class="ag-f"><span>간단한 역할 모델 프로파일 (선택)</span><input v-model="form.chatModelSimpleProfile" placeholder="비우면 모델명으로 자동 선택"></label>
+              <label class="ag-f"><span>임베딩 연결</span><select v-model="form.embeddingProvider"><option value="">채팅 연결과 동일 (기존 동작)</option><option v-for="p in providers" :key="'embed-'+p.k" :value="p.k">{{ p.label }}</option></select></label>
+              <div v-if="form.embeddingProvider" class="ag-hint">임베딩 endpoint와 인증은 위 인증 정보 변경에서 별도로 입력. 채팅 endpoint와 공유하지 않음</div>
+              <div v-if="form.provider === 'openai_compat' && form.chatModelSimple" class="ag-hint">간단한 역할 Base URL을 입력하면 complex 모델과 다른 서버 사용. 비우면 기본 채팅 endpoint 공유</div>
+              <label v-if="form.embeddingProvider === 'aoai'" class="ag-f"><span>임베딩 api-version</span><input v-model="form.embeddingApiVersion"></label>
+              <div class="ag-f"><span>임베딩 메타데이터</span><div class="ag-inline-fields"><input v-model="form.embedRevision" placeholder="revision"><input v-model="form.embedPrecision" placeholder="fp16"><input v-model="form.embedDimension" placeholder="dimension"><input v-model="form.embedNormalization" placeholder="l2"></div></div>
               <label v-if="form.provider === 'aoai'" class="ag-f"><span>api-version</span><input v-model="form.apiVersion"></label>
               <div v-if="models.total" class="ag-hint">서버 {{ models.total }}개 · 채팅 {{ models.chat.length }} · 임베딩 {{ models.embed.length }}</div>
               <div v-if="models.error" class="ag-hint">목록 조회 실패 — {{ models.error }}</div>
               <div v-if="verify" class="ag-hint">{{ verify.error || ('사용 가능 ' + (verify.ok || []).length + '개 · 제외 ' + Object.keys(verify.denied || {}).length + '개') }}</div>
-              <div v-if="probe" class="ag-probe"><div class="ag-row" :class="probe.chat && probe.chat.ok ? 'ok' : 'no'"><b>채팅</b><span>{{ probe.chat && probe.chat.ok ? '정상' : '실패' }}</span><em>{{ probe.chat && (probe.chat.error || probe.chat.ms + 'ms') }}</em></div><div class="ag-row" :class="probe.embeddings && probe.embeddings.ok ? 'ok' : 'no'"><b>임베딩</b><span>{{ probe.embeddings && probe.embeddings.ok ? '정상' : '실패' }}</span><em>{{ probe.embeddings && (probe.embeddings.error || probe.embeddings.ms + 'ms') }}</em></div></div>
+              <div v-if="probe" class="ag-probe"><div class="ag-row" :class="probe.chat && probe.chat.ok ? 'ok' : 'no'"><b>채팅</b><span>{{ probe.chat && probe.chat.ok ? '정상' : '실패' }}</span><em>{{ probe.chat && (probe.chat.error || probe.chat.ms + 'ms') }}</em></div><div v-if="probe.simple" class="ag-row" :class="probe.simple.ok ? 'ok' : 'no'"><b>간단한 역할</b><span>{{ probe.simple.ok ? '정상' : '실패' }}</span><em>{{ probe.simple.error || probe.simple.ms + 'ms' }}</em></div><div class="ag-row" :class="probe.embeddings && probe.embeddings.ok ? 'ok' : 'no'"><b>임베딩</b><span>{{ probe.embeddings && probe.embeddings.ok ? '정상' : '실패' }}</span><em>{{ probe.embeddings && (probe.embeddings.error || probe.embeddings.ms + 'ms') }}</em></div></div>
               <button class="ag-ok inline" :disabled="saving" @click="saveModels">{{ saving ? '확인 중…' : '저장하고 모델 확인' }}</button>
             </section>
 
@@ -280,7 +318,7 @@ export default {
 
       <div v-if="addOpen" class="ag-back inner" @click.self="addOpen = false"><div class="ag-dlg small"><div class="ag-h"><h3>연결 설정 추가</h3><button class="ag-x" @click="addOpen = false">✕</button></div><div class="ag-body"><label class="ag-f"><span>설정 이름</span><input v-model="addName" autofocus placeholder="예: 개인 OpenAI, 사내 AOAI"></label><label class="ag-f"><span>연결 방식</span><select v-model="addProvider"><option v-for="p in addProviders" :key="p.k" :value="p.k">{{ p.label }}</option></select></label><div class="ag-hint">같은 연결 방식도 이름을 달리해 여러 개 등록 가능</div></div><div class="ag-act"><button class="ag-ok" :disabled="saving" @click="createConfig">추가</button><button class="ag-cancel" @click="addOpen = false">취소</button></div></div></div>
 
-      <div v-if="authEdit" class="ag-back inner" @click.self="authEdit = null"><div class="ag-dlg small"><div class="ag-h"><h3>{{ form.name }} 인증 정보</h3><button class="ag-x" @click="authEdit = null">✕</button></div><div class="ag-body"><label v-for="f in cur.fields" :key="f[0]" class="ag-f"><span>{{ f[1] }}</span><input :type="f[3] ? 'password' : 'text'" v-model="authEdit.values[f[0]]" :placeholder="hasKey(f[0]) ? keyShown(f[0]) + ' (비우면 유지)' : f[2]"></label><div v-if="authEdit.err" class="ag-err">{{ authEdit.err }}</div></div><div class="ag-act"><button class="ag-ok" :disabled="authEdit.busy" @click="applyAuth">{{ authEdit.busy ? '확인 중…' : '저장하고 연결 확인' }}</button><button class="ag-cancel" @click="authEdit = null">취소</button></div></div></div>
+      <div v-if="authEdit" class="ag-back inner" @click.self="authEdit = null"><div class="ag-dlg small"><div class="ag-h"><h3>{{ form.name }} 인증 정보</h3><button class="ag-x" @click="authEdit = null">✕</button></div><div class="ag-body"><label v-for="f in authFields" :key="f[0]" class="ag-f"><span>{{ f[1] }}</span><input :type="f[3] ? 'password' : 'text'" v-model="authEdit.values[f[0]]" :placeholder="hasKey(f[0]) ? keyShown(f[0]) + ' (비우면 유지)' : f[2]"></label><div v-if="authEdit.err" class="ag-err">{{ authEdit.err }}</div></div><div class="ag-act"><button class="ag-ok" :disabled="authEdit.busy" @click="applyAuth">{{ authEdit.busy ? '확인 중…' : '저장하고 연결 확인' }}</button><button class="ag-cancel" @click="authEdit = null">취소</button></div></div></div>
     </div>
   </div>`,
 };

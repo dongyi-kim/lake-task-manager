@@ -18,7 +18,7 @@ from app.agent.tools._ctx import (client, compact, jira_key_allowed, jira_scope,
                                   search_projects, search_spaces, settings, trim)
 
 
-def _issue_brief(raw: dict, sp_field: str = None) -> dict:
+def _issue_brief(raw: dict, sp_field: str = None, epic_field: str = None) -> dict:
     f = (raw or {}).get("fields") or {}
     st = f.get("status") or {}
     a = f.get("assignee") or {}
@@ -35,6 +35,10 @@ def _issue_brief(raw: dict, sp_field: str = None) -> dict:
         "priority": priority.get("name") if isinstance(priority, dict) else priority,
         "duedate": f.get("duedate"),
         "sp": f.get(sp_field) if sp_field else None,
+        # Hierarchy is source data, not a lexical inference. QueryRunner follows these
+        # bounded keys when a user references a child and delegates its Epic choice.
+        "parentKey": ((f.get("parent") or {}).get("key") or None),
+        "epicKey": (f.get(epic_field) if epic_field else None) or None,
         "created": (f.get("created") or "")[:10],
         "updated": (f.get("updated") or "")[:10],
     })
@@ -150,8 +154,8 @@ def get_ticket(key: str, comment_limit: int = 5) -> dict:
     and comment authors can support assignee analysis. Each call is a separate round trip, so open
     only the most relevant tickets, usually two to four.
 
-    Returns summary, status, assignee, components, labels, priority, due date, SP, a shortened
-    description, and recent comments.
+    Returns summary, status, assignee, hierarchy (`parentKey`/`epicKey`), components,
+    labels, priority, due date, SP, a shortened description, and recent comments.
     """
     if not jira_key_allowed(key):
         return {"error": "티켓이 search.jira.projects 범위 밖이거나 검색 범위가 비어 있습니다."}
@@ -159,7 +163,8 @@ def get_ticket(key: str, comment_limit: int = 5) -> dict:
     raw = c.get_issue(key) or {}
     if not raw.get("key"):          # 없는 키에 빈 껍데기가 돌아오기도 한다 — key 로 판정한다
         return {"error": f"{key} 티켓을 찾을 수 없습니다. 키를 다시 확인하세요."}
-    out = _issue_brief(raw, getattr(settings(), "sp_field_id", None))
+    out = _issue_brief(raw, getattr(settings(), "sp_field_id", None),
+                       getattr(settings(), "epic_link_field_id", None))
     out["description"] = trim(((raw.get("fields") or {}).get("description")), 1200)
     # comments 는 **비어 있어도 싣는다** — "코멘트가 없다"와 "안 가져왔다"는 모델에게 다른 정보다.
     # ★ 코멘트 행의 본문은 `html`, 일시는 `date` 다(body/created 아님). 처음에 body 로 읽는 바람에

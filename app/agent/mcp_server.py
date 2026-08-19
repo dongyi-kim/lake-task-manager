@@ -34,15 +34,14 @@ Claude Desktop 설정 예(claude_desktop_config.json):
 
 from __future__ import annotations
 
-import json
 import os
 
 os.environ.setdefault("JIRA_ENV", "mock")
 
 
 def _mcp():
-    from mcp.server.fastmcp import FastMCP
-    return FastMCP(
+    from mcp.server import MCPServer
+    return MCPServer(
         "lake-task-manager",
         instructions=(
             "Read-only PMO tools for the internal Lake data platform. Search Jira tickets and "
@@ -61,10 +60,11 @@ _EXPORTED = (
 
 def build_server():
     server = _mcp()
+    from mcp.types import ToolAnnotations
     from app.agent import tools as T
 
     # ── Tools: LangChain @tool → MCP tool. 스키마·설명을 다시 적지 않는다. ──
-    # FastMCP 는 **함수 시그니처를 읽어** 입력 스키마를 만든다. `**kwargs` 래퍼를 주면
+    # MCPServer 는 **함수 시그니처를 읽어** 입력 스키마를 만든다. `**kwargs` 래퍼를 주면
     # "kwargs 라는 필수 인자"로 오해하므로, LangChain 쪽 스키마에서 진짜 시그니처를 만들어 입힌다.
     import inspect
 
@@ -72,9 +72,9 @@ def build_server():
         lc_tool = T.BY_NAME[name]
 
         def make(fn_tool):
-            def call(**kwargs) -> str:
+            def call(**kwargs) -> dict[str, object]:
                 out = fn_tool.invoke(kwargs)
-                return json.dumps(out, ensure_ascii=False, default=str)
+                return out if isinstance(out, dict) else {"result": out}
             return call
 
         fn = make(lc_tool)
@@ -90,10 +90,16 @@ def build_server():
                 default=inspect.Parameter.empty if required else field.default,
                 annotation=field.annotation if field.annotation is not None else str))
             notes[pname] = field.annotation
-        fn.__signature__ = inspect.Signature(params, return_annotation=str)
-        fn.__annotations__ = {**notes, "return": str}
+        fn.__signature__ = inspect.Signature(params, return_annotation=dict[str, object])
+        fn.__annotations__ = {**notes, "return": dict[str, object]}
 
-        server.add_tool(fn, name=lc_tool.name, description=lc_tool.description)
+        server.add_tool(
+            fn, name=lc_tool.name, description=lc_tool.description,
+            annotations=ToolAnnotations(
+                readOnlyHint=True, destructiveHint=False, openWorldHint=False,
+            ),
+            structured_output=True,
+        )
 
     # ── Resources: knowledge/ 규칙 문서 — 질의가 아니라 열람이므로 Tools 가 아니라 여기다. ──
     from app.agent.retrieval.static_index import _sources

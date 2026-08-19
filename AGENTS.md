@@ -447,7 +447,23 @@ lake-task-manager/               # repo 루트
 
 ---
 
-## 9. 테스트 원칙
+## 9. 실 LLM·LAN 실행 규칙
+
+- 실제 LLM 배터리, `192.168.*` 사설망 API, SSH처럼 repository 밖 socket을 쓰는 명령은
+  **첫 시도부터 network-enabled/escalated 실행**으로 호출한다. 일반 sandbox에서 먼저 실패시킨 뒤
+  재시도하지 않는다.
+- 배터리 실행 전 같은 권한 경로에서 chat `/v1/models`와 필요한 embedding health endpoint를
+  preflight한다. preflight 실패는 모델 품질 결과로 기록하지 않고 infrastructure failure로 분리한다.
+- 로컬 배터리는 `.local/ltm-local-llm/tools/`의 전용 launcher를 사용해 provider, complex/simple
+  model routing, endpoint, run group을 한곳에서 고정한다. 임의 shell command를 매번 다시 조립하지 않는다.
+- real-provider 배터리 runner는 승인된 launcher가 endpoint 확인 뒤 넘기는
+  `LTM_EVAL_NETWORK_PREFLIGHTED=1` handoff 없이는 socket을 열기 전에 실패해야 한다. runner를 직접
+  호출하거나 `--help`·알 수 없는 option을 넘겨 full battery가 묵시적으로 시작되는 동작을 허용하지 않는다.
+- socket access denied, certificate store access denied, connection/auth/timeout처럼 모델 응답이 없는
+  실패는 JSON repair나 정성 채점 대상으로 넘기지 않는다. raw에는 infrastructure attempt로 보존하고
+  권한·endpoint를 교정한 뒤 실패한 case만 새 attempt 경로에서 재실행한다.
+
+## 10. 테스트 원칙
 
 - `progress.py`/`rollup.py`는 가짜 이슈 리스트(fixture)로 유닛테스트. Jira 없이 계산 로직 검증.
 - 통합테스트는 **로컬 Fake Jira(:8080)/Docker Jira 상대로만**. 사내 Jira에 자동 테스트 절대 금지.
@@ -457,7 +473,7 @@ lake-task-manager/               # repo 루트
 
 ---
 
-## 10. 하지 말 것
+## 11. 하지 말 것
 
 - 사내 SSO 세션 파일(`jira_state.json`) git 커밋 금지 → `.gitignore`. (`config/jira.yml` 은 placeholder 템플릿이라 커밋 대상 — 실 비밀은 세션 파일에만.)
 - 상태명(status name) 하드코딩 금지 → `statusCategory.key` 사용.
@@ -470,7 +486,7 @@ lake-task-manager/               # repo 루트
 
 ---
 
-## 11. 향후 전환 경로
+## 12. 향후 전환 경로
 
 이 Playwright 세션 방식은 **PoC/반자동용**이다.
 로컬에서 SP 롤업 가치가 검증되면, 그 결과를 근거로
@@ -480,7 +496,7 @@ lake-task-manager/               # repo 루트
 
 ---
 
-## 12. 개발자용 진단 기능 (dev-tools) — 관리 방식
+## 13. 개발자용 진단 기능 (dev-tools) — 관리 방식
 
 사내 API의 **실제 응답 형태**를 개발 중 확인해야 할 때가 있다(사내 데이터는 외부 반출 불가).
 그래서 앱 안에 **기본 꺼진** 진단 기능을 두고, 설정으로 켠 뒤 **필드 구조만**(값 마스킹) 화면에서 확인한다.

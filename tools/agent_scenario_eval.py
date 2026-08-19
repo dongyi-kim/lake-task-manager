@@ -13,7 +13,12 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from tools.agent_eval_isolation import begin_case, configure_process_isolation, finish_case
+from tools.agent_eval_contracts import (
+    AUTOMATIC_CONTRACT_DEPENDENCIES,
+    automatic_contract_flaws,
+)
+from tools.agent_eval_isolation import (begin_case, configure_process_isolation, finish_case,
+                                        preflight_evaluation_provider)
 from tools.agent_eval_protocol import (
     build_run_metadata,
     quantitative_metrics,
@@ -27,10 +32,45 @@ ScenarioCheck = Callable[[dict[str, Any], list[dict[str, Any]]], bool]
 Scenario = tuple[str, str, list[str], ScenarioCheck]
 
 
+def validate_eval_argv(argv: Sequence[str]) -> None:
+    """Reject control-looking arguments before a manual runner can start a battery.
+
+    These scripts historically treated ``--help`` and misspelled options as an omitted model,
+    which silently launched the full default battery. Only the one documented option is valid.
+    """
+    raw = list(argv)
+    for index, arg in enumerate(raw):
+        if arg == "--out":
+            if index + 1 >= len(raw) or raw[index + 1].startswith("-"):
+                raise SystemExit("--out requires a result path; evaluation not started")
+            continue
+        if arg.startswith("--out="):
+            if not arg.split("=", 1)[1].strip():
+                raise SystemExit("--out requires a result path; evaluation not started")
+            continue
+        if arg.startswith("-"):
+            raise SystemExit(f"unsupported evaluation option: {arg}; evaluation not started")
+
+
+def configure_model_routing(model: str, simple_model: str) -> str:
+    """Respect an explicitly injected provider while preserving cloud defaults."""
+    provider = str(os.environ.get("LAKE_AGENT_PROVIDER") or "openai").strip().lower()
+    os.environ["LAKE_AGENT_PROVIDER"] = provider
+    prefix = {"openai": "LAKE_AGENT_OPENAI_CHAT",
+              "openai_compat": "LAKE_AGENT_COMPAT_CHAT",
+              "aoai": "LAKE_AGENT_AOAI_CHAT"}.get(provider)
+    if not prefix:
+        raise ValueError(f"battery에서 지원하지 않는 provider: {provider}")
+    os.environ[prefix] = model
+    os.environ[prefix + "_SIMPLE"] = simple_model
+    return provider
+
+
 def parse_scenario_args(
     argv: Sequence[str], *, default_model: str = "gpt-4o",
 ) -> tuple[str, set[str], str | None]:
     raw = list(argv)
+    validate_eval_argv(raw)
     requested_out = None
     for index, arg in enumerate(raw):
         if arg.startswith("--out="):
@@ -57,6 +97,34 @@ def selected_scenarios(cases: Sequence[Scenario], selected: set[str]) -> list[Sc
     if not selected:
         return list(cases)
     return [case for case in cases if case[0].upper() in selected]
+
+
+def invoke_scenario_turn(
+    session: Any, prompt: str, thread_id: str, *, streaming: bool = False,
+) -> tuple[dict[str, Any], str, float | None]:
+    """Run one scenario turn through ask or stream with one normalized output contract."""
+    if not streaming:
+        output = dict(session.ask(prompt, thread_id=thread_id) or {})
+        return output, str(output.get("thread_id") or thread_id), None
+
+    started = time.perf_counter()
+    first_token: float | None = None
+    current_thread = thread_id
+    output: dict[str, Any] | None = None
+    for event in session.stream(prompt, thread_id=thread_id):
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "")
+        if event_type == "start":
+            current_thread = str(event.get("thread_id") or current_thread)
+        elif event_type == "token" and first_token is None:
+            first_token = time.perf_counter() - started
+        elif event_type == "final":
+            output = {key: value for key, value in event.items() if key != "type"}
+            current_thread = str(output.get("thread_id") or current_thread)
+    if output is None:
+        raise RuntimeError("stream ended without a final event")
+    return output, current_thread, first_token
 
 
 def _usage(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
@@ -118,14 +186,16 @@ def run_scenario_suite(
     simple_model: str, prompt_version: str, suite_review_elements: Sequence[dict[str, Any]],
     case_review_specs: dict[str, dict[str, Any]], selected: set[str] | None = None,
     requested_out: str | os.PathLike[str] | None = None,
+    checker_dependencies: Sequence[Any] = (),
+    streaming: bool = False,
 ) -> Path:
     configure_process_isolation(suite)
     # A manual quality battery must never inherit a caller's production Jira mode.
     os.environ["JIRA_ENV"] = "mock"
-    os.environ["LAKE_AGENT_PROVIDER"] = "openai"
+    os.environ.setdefault("LAKE_AGENT_PROVIDER", "openai")
     os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"
-    os.environ["LAKE_AGENT_OPENAI_CHAT"] = model
-    os.environ["LAKE_AGENT_OPENAI_CHAT_SIMPLE"] = simple_model
+    configure_model_routing(model, simple_model)
+    preflight_evaluation_provider()
 
     # Import only after cache/provider environment is complete.
     from app.agent.workflow import session
@@ -141,6 +211,7 @@ def run_scenario_suite(
         prompt_version=prompt_version,
         suite_review_elements=suite_review_elements,
         case_review_specs=case_review_specs,
+        checker_dependencies=(*AUTOMATIC_CONTRACT_DEPENDENCIES, *checker_dependencies),
     )
     out_path = reserve_raw_result_path(
         raw_result_path(suite, evaluation, requested=requested_out),
@@ -153,21 +224,27 @@ def run_scenario_suite(
         turns: list[dict[str, Any]] = []
         isolation: dict[str, Any] = {}
         automatic_pass = False
+        automatic_flaws: list[str] = []
         error = ""
         try:
             outputs: list[dict[str, Any]] = []
             for prompt in prompts:
                 turn_started = time.time()
-                output = session.ask(prompt, thread_id=thread_id)
-                thread_id = output.get("thread_id") or thread_id
+                output, thread_id, time_to_first_token = invoke_scenario_turn(
+                    session, prompt, thread_id, streaming=streaming,
+                )
                 output["evaluationEvidence"] = session.evaluation_snapshot(thread_id)
                 outputs.append(output)
-                turns.append({
+                turn_record = {
                     "input": prompt,
                     "durationSeconds": round(time.time() - turn_started, 1),
                     "output": output,
-                })
-            automatic_pass = bool(checker(outputs[-1], outputs))
+                }
+                if time_to_first_token is not None:
+                    turn_record["timeToFirstTokenSeconds"] = round(time_to_first_token, 3)
+                turns.append(turn_record)
+            automatic_flaws = automatic_contract_flaws(outputs)
+            automatic_pass = bool(checker(outputs[-1], outputs) and not automatic_flaws)
             isolation = finish_case(isolation_start)
         except Exception as exc:  # one failure must not discard the remaining battery
             error = str(exc)
@@ -180,6 +257,7 @@ def run_scenario_suite(
             "description": description,
             "inputs": prompts,
             "automaticPass": automatic_pass,
+            "automaticContractFlaws": automatic_flaws,
             "durationSeconds": round(time.time() - started, 1),
             "turns": turns,
             "isolation": isolation,
@@ -216,6 +294,6 @@ def run_scenario_suite(
 
 
 __all__ = [
-    "Scenario", "parse_scenario_args", "pending_items", "run_scenario_suite",
-    "selected_scenarios",
+    "Scenario", "invoke_scenario_turn", "parse_scenario_args", "pending_items", "run_scenario_suite",
+    "selected_scenarios", "validate_eval_argv",
 ]

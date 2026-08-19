@@ -15,15 +15,60 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re as _re
+from datetime import datetime
+from html import escape as _escape_html, unescape as _unescape_html
 
 from app.agent.prompts.roles import SYSTEM_WORK_ARCHITECT
+from app.agent.workflow.anchors import (
+    bind_single_outcome_contract, format_requested_outcome_contract,
+    requested_outcome_contract, scoped_continuation_decisions,
+    seal_work_item_identities, single_outcome_binding, work_item_id,
+)
 from app.agent.workflow.agents.base import StructuredAgent, invoke_schema
+from app.agent.workflow.contracts import QuestionContract
+from app.agent.workflow.continuation import (
+    authoritative_decision_values,
+    is_top_level_parent_choice,
+    jira_keys,
+    parse_assignee_decision,
+)
+from app.agent.workflow.evidence_relations import (
+    discriminative_relation_terms,
+    generic_material_terms,
+    is_direct_positive_completion,
+    is_generic_material_term,
+    is_relation_gate,
+    is_relation_state_or_action,
+    is_unconfirmed_fact,
+    parse_relation,
+    relation_actor_identities,
+    relation_actor_roles,
+    relation_terms,
+    same_relation,
+)
+from app.agent.workflow.effect_contract import (
+    PENDING_RATIONALE_CONTRACT,
+    materialize_requested_update_effects,
+    project_pending_rationale,
+    requested_update_effect_authority,
+    seal_requested_effect_contract,
+)
 from app.agent.workflow.prompts import data_block, persona, wrap_data
+from app.agent.workflow.resolved_slots import (
+    bind_resolved_slot_item_ids,
+    parent_selection_authority,
+    resolve_parent_slot,
+)
 from app.agent.workflow.state import (MAX_REFINE_TURNS, AgentState, Intent, Node,
                                       conversation, last_user_text, note, reads_as_bug,
-                                      request_text)
+                                      request_text, verified_parent_epic_candidates)
+from app.agent.workflow.typed_fast_path import (
+    evaluate_typed_fast_path,
+    typed_fast_path_note,
+)
 
 # 신규 구축 규모의 신호 — **프롬프트 넛지와 하향 편향 가드가 같은 목록을 본다.**
 # 갈라지면 "프롬프트는 시키는데 코드는 안 막는" 상태가 되고, 그건 이 저장소가 반복해서
@@ -71,7 +116,6 @@ ITEM = {
                     "summary": {"type": "string", "description": "Distinct Korean child summary; do not copy the parent title."},
                     "description": {"type": "string",
                                     "description": "Korean HTML with only this child's 작업 범위 and 완료 조건 (DoD); do not copy parent background."},
-                    "assignee": {"type": "string", "description": "Verified user ID, or empty."},
                     "duedate": {"type": "string", "description": "YYYY-MM-DD, or empty when unknown."},
                 },
                 "required": ["summary"],
@@ -100,7 +144,8 @@ QUESTION = {
                     "description": "Two to five Korean options for choice, with the recommended option first and an optional short reason."},
         "field": {"type": "string",
                   "enum": ["", "assignee", "epic", "priority", "duedate", "component",
-                           "target", "parent", "scope", "acceptance", "reproduction"],
+                           "target", "parent", "scope", "background", "acceptance",
+                           "reproduction", "structure", "status"],
                   "description": "Ticket field being asked; the UI supplies field-specific autocomplete."},
         "required_input": {
             "type": "boolean",
@@ -139,12 +184,6 @@ SCHEMA = {
                 "stage, target, or owner; multiple_tasks is independent deliverables; new_epic requires at "
                 "least two sprints, at least three cross-module or cross-owner Tasks, no suitable verified "
                 "existing Epic, and an explicit independent reporting intent."),
-        },
-        "structure_source": {
-            "type": "string", "enum": ["user_specified", "inferred"],
-            "description": (
-                "Who selected the structure. user_specified means the user explicitly named it; inferred "
-                "means the agent selected it from the work shape."),
         },
         "structure_why": {
             "type": "string",
@@ -192,6 +231,1492 @@ SCHEMA = {
 }
 
 
+# Prompt-only compatible providers are substantially more reliable when they do not
+# have to escape Jira HTML inside JSON string values. The model returns semantic body
+# parts and deterministic code below renders the established HTML contract.
+CREATE_CHILD = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "summary": {"type": "string", "maxLength": 180},
+        "scope_in": {"type": "array", "minItems": 1, "maxItems": 6,
+                     "items": {"type": "string", "maxLength": 320}},
+        "dod": {"type": "array", "minItems": 1, "maxItems": 5,
+                "items": {"type": "string", "maxLength": 320}},
+        "duedate": {"type": "string", "maxLength": 20},
+    },
+    "required": ["summary", "scope_in", "dod"],
+}
+
+CREATE_ITEM = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "summary": {"type": "string", "maxLength": 180},
+        "tier": {"type": "string", "enum": ["epic", "task", "subtask"]},
+        "issue_type": {"type": "string", "maxLength": 80},
+        "type": {"type": "string", "maxLength": 80},
+        "epic": {"type": "string", "maxLength": 40},
+        "epic_name": {"type": "string", "maxLength": 80},
+        "parent": {"type": "string", "maxLength": 40},
+        "background": {"type": "string", "maxLength": 1000},
+        "reproduction": {"type": "array", "maxItems": 6,
+                         "items": {"type": "string", "maxLength": 360}},
+        "expected": {"type": "string", "maxLength": 700},
+        "actual": {"type": "string", "maxLength": 700},
+        "scope_in": {"type": "array", "minItems": 1, "maxItems": 8,
+                     "items": {"type": "string", "maxLength": 360}},
+        "scope_out": {"type": "array", "maxItems": 6,
+                      "items": {"type": "string", "maxLength": 320}},
+        # One authoritative criterion is a usable projection.  The runtime may derive a
+        # second action-family review check under the product body contract, but transport
+        # validation must never force the projector to invent one merely to reach minItems.
+        "dod": {"type": "array", "minItems": 1, "maxItems": 6,
+                "items": {"type": "string", "maxLength": 360}},
+        "references": {"type": "array", "maxItems": 6,
+                       "items": {"type": "string", "maxLength": 500}},
+        "children": {"type": "array", "maxItems": 30, "items": CREATE_CHILD},
+        "components": {"type": "array", "maxItems": 3,
+                       "items": {"type": "string", "maxLength": 80}},
+        "labels": {"type": "array", "maxItems": 8,
+                   "items": {"type": "string", "maxLength": 80}},
+        "priority": {"type": "string", "maxLength": 80},
+        "duedate": {"type": "string", "maxLength": 20},
+    },
+    "required": ["summary", "type", "background", "scope_in", "dod"],
+}
+
+CREATE_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "interpretation": {"type": "string", "maxLength": 600},
+        "questions": {"type": "array", "maxItems": 3, "items": QUESTION},
+        "mode": {"type": "string", "enum": ["task", "subtask", "epic"]},
+        "structure": {"type": "string", "enum": [
+            "single_task", "task_with_subtasks", "multiple_tasks", "new_epic"]},
+        "structure_why": {"type": "string", "maxLength": 500},
+        "items": {"type": "array", "maxItems": 12, "items": CREATE_ITEM},
+        "rationale": {"type": "string", "maxLength": 800},
+    },
+    "required": ["questions", "mode", "items"],
+}
+
+
+CHANGE_FIELDS = {
+    "key": {"type": "string", "maxLength": 40,
+            "description": "One verified existing ticket key."},
+    "keys": {"type": "array", "maxItems": 30,
+             "items": {"type": "string", "maxLength": 40},
+             "description": "Complete verified target snapshot for one bulk change."},
+    "assignee": {"type": "string", "maxLength": 120},
+    "duedate": {"type": "string", "maxLength": 20},
+    "priority": {"type": "string", "maxLength": 80},
+    "summary": {"type": "string", "maxLength": 240},
+    "description": {"type": "string", "maxLength": 12000},
+    "labels": {"type": "array", "maxItems": 20,
+               "items": {"type": "string", "maxLength": 80}},
+    "components": {"type": "array", "maxItems": 3,
+                   "items": {"type": "string", "maxLength": 80}},
+    "status": {"type": "string", "maxLength": 120},
+    "link": {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "other": {"type": "string", "maxLength": 40},
+            "relation": {"type": "string", "maxLength": 120},
+        },
+        "required": ["other", "relation"],
+    },
+    "comment": {"type": "string", "maxLength": 12000},
+}
+
+UPDATE_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "questions": {"type": "array", "maxItems": 3, "items": QUESTION},
+        "change": {
+            "type": "object", "additionalProperties": False,
+            "properties": CHANGE_FIELDS,
+            "description": "Existing-ticket update/comment/transition/link plan only.",
+        },
+        "rationale": {"type": "string", "maxLength": 800},
+    },
+    "required": ["questions"],
+}
+
+COMMENT_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "questions": {"type": "array", "maxItems": 3, "items": QUESTION},
+        "change": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                key: copy.deepcopy(CHANGE_FIELDS[key])
+                for key in ("key", "keys", "comment")
+            },
+            "description": "Comment-only plan; no Jira field mutation is permitted.",
+        },
+        "rationale": {"type": "string", "maxLength": 800},
+    },
+    "required": ["questions"],
+}
+
+
+_CONTINUATION_ACTIONS = {"read", "create", "comment", "update", "mixed", "respond"}
+
+
+def _typed_continuation_contract(state: dict) -> dict:
+    """Return only a bounded v1 contract already validated at the Session boundary."""
+    contract = (state or {}).get("continuation_contract") or {}
+    if (not isinstance(contract, dict)
+            or contract.get("version") != "continuation.v1"
+            or contract.get("action") not in _CONTINUATION_ACTIONS):
+        return {}
+    return contract
+
+
+def _work_action(state: dict) -> str:
+    """Select the artifact family from typed continuation authority.
+
+    The legacy intent fallback keeps old checkpoints/tests usable; it is not a second
+    language classifier. Pending approval-draft edits remain create-artifact revisions,
+    while an existing Jira target remains an update.
+    """
+    contract = _typed_continuation_contract(state)
+    if contract:
+        return str(contract["action"])
+    if (state or {}).get("_legacy_work_projection") == "create":
+        return "create"
+    intent = str((state or {}).get("intent") or "")
+    if intent == Intent.MODIFY:
+        pending = bool(((state or {}).get("draft") or {}).get("items"))
+        boundary = "\n".join(filter(None, (
+            last_user_text(state).strip(), request_text(state).strip(),
+        )))
+        mentioned = bool((state or {}).get("mentioned_keys") or []) or bool(_re.search(
+            r"(?<![A-Z0-9])[A-Z][A-Z0-9]{1,9}-\d+(?![A-Z0-9-])", boundary, _re.I,
+        ))
+        return "create" if pending and not mentioned else "update"
+    if intent == Intent.PLAN_WORK:
+        return "create"
+    if intent in {Intent.ASK, Intent.MY_DAY, Intent.PROGRESS,
+                  Intent.ACTIVITY, Intent.CHITCHAT}:
+        return "respond"
+    return "respond"
+
+
+def _is_change_action(state: dict) -> bool:
+    return _work_action(state) in {"comment", "update", "mixed"}
+
+
+def _is_create_action(state: dict) -> bool:
+    return _work_action(state) in {"create", "mixed"}
+
+
+def _typed_target_keys(state: dict) -> list[str]:
+    from app.agent.workflow.target_resolution import authoritative_mutation_targets
+    return list(authoritative_mutation_targets(state))
+
+
+def _typed_decision_values(state: dict, *families: str) -> list[str]:
+    contract = _typed_continuation_contract(state)
+    wanted = {str(value).casefold() for value in families}
+    result = []
+    for row in contract.get("decisions") or []:
+        if not isinstance(row, dict):
+            continue
+        field = str(row.get("field") or "").split(":", 1)[0].casefold()
+        value = str(row.get("value") or "").strip()
+        if field in wanted and value:
+            result.append(value)
+    return result
+
+
+def _apply_typed_parent_resolution(state: dict, items: list[dict]) -> list[dict]:
+    """Apply one typed parent authority using only verified materialized Epic details.
+
+    Candidate acquisition and semantic drafting remain in their existing graph roles.  This
+    leaf binds those outputs: the typed continuation authorizes selection, State verifies
+    candidate type/materialization, and the existing generic ranker supplies compatibility.
+    No user sentence is reparsed here.
+    """
+    authority = parent_selection_authority(state)
+    rows = [row for row in (items or []) if isinstance(row, dict)]
+    if not authority or not rows:
+        return []
+    candidates = verified_parent_epic_candidates(state)
+    slots: list[dict] = []
+    for item in rows:
+        issue_type = str(item.get("type") or item.get("issue_type") or "").casefold()
+        outcome_refs = list(dict.fromkeys(
+            str(value or "").strip() for value in (item.get("outcome_refs") or [])
+            if str(value or "").strip()
+        ))
+        outcome_id = outcome_refs[0] if len(outcome_refs) == 1 else ""
+        if issue_type == "epic":
+            selected = None
+        else:
+            component = next((
+                str(value or "").strip() for value in (item.get("components") or [])
+                if str(value or "").strip()
+            ), "")
+            selected = _rank_parent_epic_candidates(
+                str(item.get("summary") or ""), component, candidates,
+            )
+        slot = resolve_parent_slot(
+            authority, outcome_id=outcome_id,
+            item_id=str(item.get("item_id") or ""), selected=selected,
+        )
+        slots.append(slot.model_dump())
+        if slot.status == "resolved" and slot.resolution == "verified_candidate":
+            item.pop("parent", None)
+            item["epic"] = slot.value
+            item["parent_source"] = "resolved_slot"
+        elif slot.status == "resolved" and slot.resolution == "top_level":
+            item.pop("parent", None)
+            item.pop("epic", None)
+            item["parent_source"] = "resolved_slot_top_level"
+        else:
+            item.pop("parent", None)
+            item.pop("epic", None)
+    return slots
+
+
+def _required_parent_resolution_question() -> dict:
+    return QuestionContract(
+        question=("검증된 호환 상위 Epic 후보가 없습니다. 정확한 기존 Epic을 지정하거나 "
+                  "최상위 Task로 둘지 알려 주세요."),
+        kind="text", options=[], field="parent_resolution",
+        ownership="user_required", required_input=True,
+        why_required=("요청한 기존 parent 연결을 충족할 검증된 호환 후보가 없어 "
+                      "실행 가능한 parent 값이 필요함"),
+        fallback="",
+    ).model_dump()
+
+
+def _bounded_explanation(value, limit: int):
+    """Bound non-authoritative prose without coercing a wrong JSON type."""
+    if not isinstance(value, str):
+        return value
+    text = " ".join(value.split())
+    if len(text) <= limit:
+        return text
+    prefix = text[:max(1, limit - 3)].rsplit(" ", 1)[0].strip()
+    return (prefix or text[:max(1, limit - 3)]).rstrip() + "..."
+
+
+def _html_list(values, *, checklist: bool = False) -> str:
+    rows = [str(value).strip() for value in (values or []) if str(value).strip()]
+    if not rows:
+        return ""
+    attr = ' data-type="taskList"' if checklist else ""
+    item_attr = ' data-checked="false"' if checklist else ""
+    return f"<ul{attr}>" + "".join(
+        f"<li{item_attr}>{_escape_html(value)}</li>" for value in rows
+    ) + "</ul>"
+
+
+def _collapse_adjacent_duplicate_tokens(value: str) -> str:
+    """Remove only adjacent, exactly equal token spans from generated prose.
+
+    No spelling, stemming, case folding, or semantic similarity is involved.  This keeps the
+    transformation safe for arbitrary product language while repairing mechanical model
+    echoes such as ``read path read path validation``.
+    """
+    tokens = str(value or "").split()
+    changed = True
+    while changed and len(tokens) >= 2:
+        changed = False
+        for width in range(len(tokens) // 2, 0, -1):
+            for start in range(0, len(tokens) - 2 * width + 1):
+                if tokens[start:start + width] == tokens[start + width:start + 2 * width]:
+                    del tokens[start + width:start + 2 * width]
+                    changed = True
+                    break
+            if changed:
+                break
+    return " ".join(tokens)
+
+
+def _scope_identity(value: str) -> str:
+    return _re.sub(r"[^0-9A-Za-z가-힣]+", "", str(value or "")).casefold()
+
+
+def _reference_html_list(values) -> str:
+    """Render persisted ticket references as real links, never bare Jira keys."""
+    rows = []
+    for value in (values or []):
+        escaped = _escape_html(str(value).strip())
+        if not escaped:
+            continue
+        escaped = _re.sub(
+            r"\b([A-Z][A-Z0-9]*-\d+)\b",
+            lambda match: (f'<a href="/browse/{match.group(1)}" '
+                           f'data-ticket-key="{match.group(1)}">{match.group(1)}</a>'),
+            escaped,
+        )
+        rows.append(escaped)
+    return "<ul>" + "".join(f"<li>{row}</li>" for row in rows) + "</ul>" if rows else ""
+
+
+def _materialize_creation_parts(out: dict, state: dict | None = None) -> None:
+    """Render structured ticket body parts into the existing Jira HTML payload."""
+    request = ((request_text(state or {}) + " " + last_user_text(state or {})).strip()
+               if state is not None else "")
+    for item in (out.get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        if not str(item.get("description") or "").strip():
+            background = str(item.pop("background", "") or "").strip()
+            reproduction = item.pop("reproduction", []) or []
+            expected = str(item.pop("expected", "") or "").strip()
+            actual = str(item.pop("actual", "") or "").strip()
+            included = [_collapse_adjacent_duplicate_tokens(value)
+                        for value in (item.pop("scope_in", []) or [])]
+            excluded = [_collapse_adjacent_duplicate_tokens(value)
+                        for value in (item.pop("scope_out", []) or [])]
+            # An exclusion that repeats included scope is a contradiction, not a boundary.
+            # Qwen produced this exact failure for every row of a PoC draft.  Compare the
+            # semantic values before HTML rendering so the older prose guards cannot miss
+            # the separate ``제외`` block.
+            included_ids = {_scope_identity(value) for value in included if _scope_identity(value)}
+            excluded = [value for value in excluded
+                        if _scope_identity(value) not in included_ids]
+            # A literal PoC/first-stage request gives one supported conservative boundary:
+            # production rollout and broad expansion are not part of this first stage.
+            if not excluded and _re.search(r"\bPoC\b|1\s*차|1차", request, _re.I):
+                excluded = ["운영 배포 및 전체 대상 확대"]
+            dod = [_collapse_adjacent_duplicate_tokens(value)
+                   for value in (item.pop("dod", []) or [])]
+            refs = item.pop("references", []) or []
+            scope = _html_list(included)
+            if excluded:
+                scope += "<p><strong>제외</strong></p>" + _html_list(excluded)
+            is_bug = str(item.get("type") or item.get("issue_type") or "").casefold() == "bug"
+            if is_bug and (reproduction or expected or actual):
+                body = (
+                    "<h3>배경</h3><p>" + _escape_html(background or "오류 신고됨") + "</p>"
+                    "<h3>재현 경로</h3>" + _html_list(reproduction)
+                    + "<h3>기대 동작</h3><p>" + _escape_html(expected or "확인 필요") + "</p>"
+                    + "<h3>실제 동작</h3><p>" + _escape_html(actual or "확인 필요") + "</p>"
+                    + "<h3>완료 조건 (DoD)</h3>" + _html_list(dod, checklist=True)
+                )
+            else:
+                body = (
+                    "<h3>배경</h3><p>" + _escape_html(background or "요청됨") + "</p>"
+                    "<h3>작업 범위</h3>" + (scope or "<p>요청 범위 확인 필요</p>")
+                    + "<h3>완료 조건 (DoD)</h3>" + _html_list(dod, checklist=True)
+                )
+            if refs:
+                body += "<h3>참고</h3>" + _reference_html_list(refs)
+            item["description"] = body
+        for child in (item.get("children") or []):
+            if not isinstance(child, dict) or str(child.get("description") or "").strip():
+                continue
+            included = [_collapse_adjacent_duplicate_tokens(value)
+                        for value in (child.pop("scope_in", []) or [])]
+            dod = [_collapse_adjacent_duplicate_tokens(value)
+                   for value in (child.pop("dod", []) or [])]
+            child["description"] = (
+                "<h3>작업 범위</h3>" + _html_list(included)
+                + "<h3>완료 조건 (DoD)</h3>" + _html_list(dod, checklist=True)
+            )
+
+
+def _discard_projected_assignees(items: list[dict]) -> None:
+    """Remove model-authored ownership before deterministic/user/People assignment.
+
+    A syntactically plausible account id is not proof that the user assigned that person.
+    Runtime recovery paths set ``_construction`` and already derive owners from literal
+    request data; ordinary semantic projection has no authority over this field.
+    """
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        item.pop("assignee", None)
+        item.pop("assignee_source", None)
+        for child in item.get("children") or []:
+            if isinstance(child, dict):
+                child.pop("assignee", None)
+                child.pop("assignee_source", None)
+
+
+_EVIDENCE_GATE_SATISFIED = _re.compile(
+    r"(?:운영\s*반영|배포|출시|rollout|deploy(?:ment)?|release)"
+    r".{0,48}(?:승인(?:했|되|함)|허용(?:했|되|함)|approved|allowed)|"
+    r"(?:승인(?:했|되|함)|허용(?:했|되|함)|approved|allowed)"
+    r".{0,48}(?:운영\s*반영|배포|출시|rollout|deploy(?:ment)?|release)",
+    _re.I,
+)
+_EVIDENCE_VALIDATION = _re.compile(
+    r"검증|테스트|검토|validation|verification|test|review", _re.I,
+)
+_EVIDENCE_VALIDATION_MATERIAL = _re.compile(
+    r"기준|절차|방법|시나리오|테스트\s*케이스|체크\s*리스트|판정\s*결과|"
+    r"측정\s*결과|실행\s*결과|로그|지표|"
+    r"\b(?:criteria|procedure|scenario|test\s*case|checklist|fixture|"
+    r"validation\s*result|verification\s*result|test\s*result|metric|log)\b",
+    _re.I,
+)
+_EVIDENCE_VALIDATION_MATERIAL_ABSENT = _re.compile(
+    r"(?:기준|절차|방법|시나리오|테스트\s*케이스|결과).{0,20}"
+    r"(?:없|미정|미작성|확보(?:하지|되지)\s*않)|"
+    r"\b(?:no|without|missing|unavailable)\s+(?:criteria|procedure|result|fixture)\b",
+    _re.I,
+)
+_EVIDENCE_VALIDATION_MATERIAL_PLANNED = _re.compile(
+    # Korean: the modal/future governs creation of the criteria artifact itself.
+    r"(?:검증|테스트)?\s*(?:기준|절차|방법|시나리오|케이스|체크\s*리스트)"
+    r".{0,32}(?:작성|수립|정의|마련|기록|생성).{0,12}"
+    r"(?:해야|하여야|필요|예정|계획)|"
+    r"(?:검증|테스트)?\s*(?:기준|절차|방법|시나리오|케이스|체크\s*리스트)"
+    r"\s+(?:필요|예정|계획)(?:하|이|입|함|\s*$)|"
+    # English: an artifact + authoring modal, or a modal + authoring action + artifact.
+    r"\b(?:validation\s+|verification\s+|test\s+)?(?:criteria|procedure|"
+    r"scenario|checklist|fixture)\b.{0,32}"
+    r"\b(?:must|should|shall|will|need(?:s|ed)?(?:\s+to)?|"
+    r"plan(?:s|ned|ning)?\s+to|scheduled\s+to)\b.{0,24}"
+    r"\b(?:be\s+)?(?:written|defined|created|documented)\b|"
+    r"\b(?:must|should|shall|will|need(?:s|ed)?(?:\s+to)?|"
+    r"plan(?:s|ned|ning)?\s+to|scheduled\s+to)\b.{0,24}"
+    r"\b(?:write|define|create|document)\b.{0,48}"
+    r"\b(?:validation\s+|verification\s+|test\s+)?(?:criteria|procedure|"
+    r"scenario|checklist|fixture)\b|"
+    r"\b(?:validation\s+|verification\s+|test\s+)?(?:criteria|procedure|"
+    r"scenario|checklist|fixture)\b\s+(?:(?:is|are)\s+)?"
+    r"(?:required|needed|planned|scheduled)\b",
+    _re.I,
+)
+_EVIDENCE_REPEAT_REQUEST = _re.compile(
+    r"다시|재수행|재실행|재검증|재검토|재작성|반복|redo|rerun|repeat", _re.I,
+)
+def _is_direct_gate_satisfaction(value: str) -> bool:
+    """A gate closes only on a direct positive completion-and-approval observation."""
+    text = str(value or "")
+    return bool(is_direct_positive_completion(text)
+                and _EVIDENCE_GATE_SATISFIED.search(text))
+
+
+def _ticket_detail_done(detail: dict) -> bool:
+    if detail.get("done") is True:
+        return True
+    fields = detail.get("fields") or {}
+    if not isinstance(fields, dict):
+        fields = {}
+    status = fields.get("status")
+    nested_category = status.get("statusCategory") if isinstance(status, dict) else {}
+    category = (detail.get("statusCategory") or fields.get("statusCategory")
+                or nested_category or {})
+    if isinstance(category, dict):
+        category = category.get("key") or category.get("name") or ""
+    return str(category or "").strip().casefold() in {"done", "complete", "completed"}
+
+
+def _canonical_detail_observations(detail: dict) -> list[dict]:
+    """Return bounded Jira facts with source timestamps from the materialized detail only.
+
+    ``state.evidence[].observations`` is a model-authored research projection.  A matching
+    materialized key proves that the ticket exists; it does not authenticate arbitrary text
+    attached to that key by the model.  Therefore facts are compiled exclusively from the
+    canonical ticket description/comments/status snapshot.  Evidence rows remain useful for
+    relevance and deterministic key order, but never become draft prose.
+    """
+    out: list[dict] = []
+
+    def append(value, *, source: str, observed_at="", observation_group="") -> None:
+        text = _re.sub(r"\bh[1-6]\.\s*", "", str(value or "").strip(), flags=_re.I)
+        if not text:
+            return
+        for fragment in _re.split(r"(?<=[.!?。])\s+|[\r\n]+", text):
+            compact = " ".join(fragment.split()).strip()
+            if not compact:
+                continue
+            row = {
+                "text": compact[:420],
+                "source": source,
+                "observed_at": str(observed_at or "").strip()[:80],
+                "observation_group": str(observation_group or source).strip()[:80],
+            }
+            if not any(existing["text"] == row["text"]
+                       and existing["observed_at"] == row["observed_at"] for existing in out):
+                out.append(row)
+
+    append(detail.get("description"), source="description",
+           observed_at=detail.get("updated"), observation_group="description")
+    for comment_index, comment in enumerate((detail.get("comments") or [])[:8]):
+        if not isinstance(comment, dict):
+            continue
+        append(comment.get("body") or comment.get("text"), source="comment",
+               observed_at=comment.get("updated") or comment.get("created"),
+               observation_group=f"comment:{comment_index}")
+    return out[:24]
+
+
+def _composition_material_terms(value: str) -> set[str]:
+    """Return exact artifact/context terms, excluding actor, action, and lifecycle noise."""
+    actor_keys = {actor.casefold() for actor in relation_actor_identities(value)}
+    return {
+        term for term in relation_terms(value)
+        if term not in actor_keys
+        and not is_relation_state_or_action(term)
+    }
+
+
+def _same_observation_relation(anchor: str, sibling: str) -> bool:
+    """Allow same-comment composition only for a shared actor/material relation."""
+    sibling_relation = parse_relation(sibling)
+    if not sibling_relation:
+        return False
+    anchor_actors = {value.casefold() for value in relation_actor_identities(anchor)}
+    sibling_actors = {value.casefold() for value in relation_actor_identities(sibling)}
+    if anchor_actors and sibling_actors and not (anchor_actors & sibling_actors):
+        return False
+    return bool(_composition_material_terms(anchor) & _composition_material_terms(sibling))
+
+
+def _source_relation_terms(source_subject: str, focus_terms: set[str]) -> set[str]:
+    return discriminative_relation_terms(source_subject) | {
+        term.casefold() for term in focus_terms
+        if not is_generic_material_term(term)
+        and not is_relation_state_or_action(term)
+    }
+
+
+def _relation_overlaps_source(
+        value: str, source_subject: str, focus_terms: set[str]) -> bool:
+    source_terms = _source_relation_terms(source_subject, focus_terms)
+    relation_terms = discriminative_relation_terms(value)
+    if source_terms & relation_terms:
+        return True
+    # Technical actor names commonly qualify the role/material token in a title
+    # (``AcmeReader`` vs ``reader``). Match only substantial contained tokens; action
+    # detection remains boundary-based and is deliberately not inferred here.
+    return any(
+        min(len(source), len(relation)) >= 4
+        and (source in relation or relation in source)
+        for source in source_terms for relation in relation_terms
+    )
+
+
+def _uncertainty_matches_source(
+        fact_row: dict, observations: list[dict], source_subject: str,
+        focus_terms: set[str]) -> bool:
+    """Keep an uncertainty only when its relation is grounded in source/focus.
+
+    A pure lifecycle sentence may borrow one adjacent relation in the same canonical
+    comment, but that relation must itself overlap the source title or requested focus.
+    Rich off-topic facts never win merely because they are the newest sentence.
+    """
+    fact = str(fact_row.get("text") or "").strip()
+    if _relation_overlaps_source(fact, source_subject, focus_terms):
+        return True
+    if discriminative_relation_terms(fact):
+        return False
+    group = str(fact_row.get("observation_group") or "")
+    if not group:
+        return False
+    anchor_index = observations.index(fact_row)
+    related = [
+        row for index, row in enumerate(observations)
+        if row is not fact_row
+        and str(row.get("observation_group") or "") == group
+        and abs(index - anchor_index) == 1
+        and parse_relation(str(row.get("text") or ""))
+        and _relation_overlaps_source(
+            str(row.get("text") or ""), source_subject, focus_terms,
+        )
+    ]
+    return len(related) == 1
+
+
+def _select_same_group_relation_siblings(
+        fact_row: dict, observations: list[dict], focus_terms: set[str],
+        source_subject: str = "") -> list[dict]:
+    """Select only siblings demonstrably belonging to an uncertainty relation.
+
+    An actorless lifecycle sentence is common in operational comments. One shared product
+    keyword is not enough to attach every sentence in that comment: unrelated billing and
+    runtime facts often share it. Independently uncertain siblings remain material when they
+    share an artifact. Positive siblings require the same explicit actor or at least two
+    non-focus material terms; an actorless anchor accepts only one unique best such match.
+    """
+    fact = str(fact_row.get("text") or "").strip()
+    group = str(fact_row.get("observation_group") or "")
+    anchor_actors = {value.casefold() for value in relation_actor_identities(fact)}
+    anchor_material = _composition_material_terms(fact)
+    excluded = {value.casefold() for value in focus_terms} | set(generic_material_terms())
+    candidates: list[tuple[int, dict, set[str], set[str]]] = []
+    for index, row in enumerate(observations):
+        if row is fact_row or str(row.get("observation_group") or "") != group:
+            continue
+        value = str(row.get("text") or "").strip()
+        if not value or is_relation_gate(value) or not parse_relation(value):
+            continue
+        sibling_actors = {item.casefold() for item in relation_actor_identities(value)}
+        common = anchor_material & _composition_material_terms(value)
+        candidates.append((index, row, sibling_actors, common))
+
+    selected: list[dict] = []
+    selected_ids: set[int] = set()
+
+    def select(row: dict) -> None:
+        identity = id(row)
+        if identity not in selected_ids:
+            selected_ids.add(identity)
+            selected.append(row)
+
+    # These are direct uncertainty facts themselves, not inferred positive context. Keep
+    # every materially overlapping one (reader/optimizer progress in a single comment).
+    for _index, row, _actors, common in candidates:
+        if common and is_unconfirmed_fact(str(row.get("text") or "")):
+            select(row)
+
+    # Operational comments often put the relation and its status in adjacent sentences:
+    # ``Actor A/Actor B 확인 중. 지원 여부는 미확정.``  The status sentence has no actor or
+    # artifact token to overlap. Compose it only when there is exactly one adjacent typed
+    # uncertainty sibling in the same source group; multiple candidates stay unbound.
+    if not anchor_actors:
+        anchor_index = observations.index(fact_row)
+        adjacent_uncertain = [
+            (index, row) for index, row, _actors, common in candidates
+            if not common
+            and is_unconfirmed_fact(str(row.get("text") or ""))
+            and abs(index - anchor_index) == 1
+            and _relation_overlaps_source(
+                str(row.get("text") or ""), source_subject, focus_terms,
+            )
+        ]
+        if len(adjacent_uncertain) == 1:
+            select(adjacent_uncertain[0][1])
+
+    scored: list[tuple[int, int, dict]] = []
+    for index, row, sibling_actors, common in candidates:
+        if id(row) in selected_ids:
+            continue
+        if anchor_actors and sibling_actors and anchor_actors & sibling_actors:
+            select(row)
+            continue
+        discriminative = {term for term in common if term not in excluded}
+        if len(discriminative) >= 2:
+            scored.append((len(discriminative), index, row))
+
+    if anchor_actors:
+        for _score, _index, row in scored:
+            select(row)
+    elif scored:
+        best = max(score for score, _index, _row in scored)
+        best_rows = [(index, row) for score, index, row in scored if score == best]
+        # Materially tied actorless relations are ambiguous; proximity must not manufacture
+        # certainty. If the material match itself is unique, retain that closest row.
+        if len(best_rows) == 1:
+            select(best_rows[0][1])
+
+    return sorted(selected, key=lambda row: observations.index(row))
+
+
+def _unique_adjacent_relation_context(
+        fact_row: dict, observations: list[dict],
+        source_subject: str, focus_terms: set[str]) -> str:
+    """Return one source-related adjacent relation, or nothing when ambiguous."""
+    group = str(fact_row.get("observation_group") or "")
+    if not group:
+        return ""
+    anchor_index = observations.index(fact_row)
+    candidates = []
+    for index, row in enumerate(observations):
+        if row is fact_row or str(row.get("observation_group") or "") != group:
+            continue
+        text = str(row.get("text") or "").strip()
+        if (not text or is_relation_gate(text)
+                or is_direct_positive_completion(text)
+                or not parse_relation(text)):
+            continue
+        distance = abs(index - anchor_index)
+        if (distance == 1
+                and _relation_overlaps_source(text, source_subject, focus_terms)):
+            candidates.append((distance, index, text))
+    if len(candidates) != 1:
+        return ""
+    return candidates[0][2][:420]
+
+
+def _observation_timestamp(value) -> float | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _latest_observation(rows: list[dict]) -> dict | None:
+    if not rows:
+        return None
+    return max(enumerate(rows), key=lambda pair: (
+        _observation_timestamp(pair[1].get("observed_at")) is not None,
+        _observation_timestamp(pair[1].get("observed_at")) or float("-inf"),
+        pair[0],
+    ))[1]
+
+
+def _reconcile_evidence_temporality(collected: dict[str, list[dict]]) -> None:
+    """Drop only an older uncertainty directly superseded for the same relation.
+
+    Equal/missing/inverted timestamps are not enough to choose a winner.  Both facts remain
+    in the contract and are explicitly linked as a temporal conflict for human/Auditor review.
+    """
+    completed = collected.get("completed_baseline") or []
+    retained = []
+    for uncertain in collected.get("unconfirmed_dependency") or []:
+        uncertain_relation = uncertain.get("fact_relation")
+        related = [
+            row for row in completed
+            if uncertain_relation and row.get("fact_relation")
+            and same_relation(uncertain_relation, row["fact_relation"])
+        ]
+        if not related:
+            retained.append(uncertain)
+            continue
+        uncertain_at = _observation_timestamp(uncertain.get("observed_at"))
+        later = [row for row in related
+                 if uncertain_at is not None
+                 and _observation_timestamp(row.get("observed_at")) is not None
+                 and _observation_timestamp(row.get("observed_at")) > uncertain_at]
+        if later:
+            for row in later:
+                row.setdefault("supersedes", []).append(uncertain["id"])
+            continue
+        conflict_ids = [row["id"] for row in related]
+        uncertain["temporal_conflict_with"] = conflict_ids
+        for row in related:
+            row.setdefault("temporal_conflict_with", []).append(uncertain["id"])
+        retained.append(uncertain)
+    collected["unconfirmed_dependency"] = retained
+
+    # A historical rollout/approval constraint remains authoritative until a *later*,
+    # canonical observation directly records both completion and approval for the same
+    # typed material relation. Missing/equal timestamps cannot establish ordering and are
+    # surfaced as a conflict instead of silently choosing a winner.
+    retained_gates = []
+    for gate in collected.get("approval_gate") or []:
+        gate_relation = gate.get("fact_relation")
+        satisfied = [
+            row for row in completed
+            if gate_relation and row.get("fact_relation")
+            and _is_direct_gate_satisfaction(str(row.get("fact") or ""))
+            and same_relation(gate_relation, row["fact_relation"])
+        ]
+        if not satisfied:
+            retained_gates.append(gate)
+            continue
+        gate_at = _observation_timestamp(gate.get("observed_at"))
+        later = [row for row in satisfied
+                 if gate_at is not None
+                 and _observation_timestamp(row.get("observed_at")) is not None
+                 and _observation_timestamp(row.get("observed_at")) > gate_at]
+        if later:
+            for row in later:
+                row.setdefault("satisfies", []).append(gate["id"])
+            continue
+        conflict_ids = [row["id"] for row in satisfied]
+        gate["temporal_conflict_with"] = conflict_ids
+        for row in satisfied:
+            row.setdefault("temporal_conflict_with", []).append(gate["id"])
+        retained_gates.append(gate)
+    collected["approval_gate"] = retained_gates
+
+
+def _verified_evidence_obligations(state: dict, *, cap: int = 8) -> list[dict]:
+    """Compile material Jira facts into a bounded, typed drafting contract.
+
+    Search hits alone are never authority.  Only successfully materialized internal ticket
+    details may create an obligation.  The contract says *how* a verified fact must affect
+    a new draft: completed work is a baseline, an uncertain dependency stays uncertain,
+    a gate is explicit, and an existing validation artifact is reused instead of cloned.
+    Product names and ticket ids come entirely from runtime evidence; the classifier owns
+    only generic lifecycle/relationship semantics.
+    """
+    ledger = state.get("materialized_ticket_sources") or {}
+    if not isinstance(ledger, dict):
+        return []
+    details = {
+        str(row.get("key") or "").strip().upper(): row
+        for row in (ledger.get("ticketDetails") or [])
+        if isinstance(row, dict) and not row.get("error")
+        and _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+",
+                          str(row.get("key") or "").strip().upper())
+    }
+    if not details:
+        return []
+
+    from app.agent.workflow.relevance import evidence_is_relevant, matches_focus
+
+    collected: dict[str, list[dict]] = {
+        "completed_baseline": [],
+        "unconfirmed_dependency": [],
+        "approval_gate": [],
+        "reuse_existing_validation": [],
+    }
+    seen: set[tuple[str, str]] = set()
+
+    def add(kind: str, *, key: str, title: str, fact_row: dict,
+            observations: list[dict]) -> None:
+        fingerprint = (kind, key)
+        if fingerprint in seen or len(collected[kind]) >= 2:
+            return
+        seen.add(fingerprint)
+        protected = []
+        fact = str(fact_row.get("text") or "").strip()
+        constraint_context = ""
+        selected_group_values: set[str] = set()
+        focus_terms = set()
+        for raw in state.get("keywords") or []:
+            focus_terms.update(relation_terms(str(raw or "")))
+        if kind == "unconfirmed_dependency":
+            group = str(fact_row.get("observation_group") or "")
+            if group:
+                selected_rows = _select_same_group_relation_siblings(
+                    fact_row, observations, focus_terms, title,
+                )
+                selected_group_values = {
+                    str(row.get("text") or "").strip() for row in selected_rows
+                }
+                parts = [
+                    str(row.get("text") or "").strip()
+                    for row in selected_rows if str(row.get("text") or "").strip()
+                ]
+                constraint_context = " / ".join(parts)[:420]
+                if fact not in parts:
+                    parts.append(fact)
+                if len(parts) > 1:
+                    fact = " / ".join(parts)[:420]
+        fragment_texts = [str(row.get("text") or "") for row in observations]
+        joined = " ".join([title, fact, *fragment_texts])
+        for raw in state.get("keywords") or []:
+            term = str(raw or "").strip()
+            if len(term) >= 2 and term.casefold() in joined.casefold() and term not in protected:
+                protected.append(term)
+        relationship_facts = []
+        relations = []
+        direct_relation = None
+        if kind in {"completed_baseline", "unconfirmed_dependency", "approval_gate"}:
+            direct_relation = parse_relation(fact)
+            if kind == "approval_gate":
+                constraint_context = _unique_adjacent_relation_context(
+                    fact_row, observations, title, focus_terms,
+                )
+                # The typed relation is already present in the obligation fact rendered as
+                # dependency/gate prose. Rendering it again as a generic relationship block
+                # duplicates the same canonical observation in the visible ticket.
+                relationship_facts = []
+                relations = [direct_relation] if direct_relation else []
+            elif kind == "unconfirmed_dependency":
+                # Preserve a materially different producer/artifact/consumer relation from
+                # another canonical description, while the co-comment progress fragments
+                # already composed into ``fact`` are never rendered a second time.
+                relation_anchor = " ".join([title, fact])
+                relationship_facts = []
+                fact_group = str(fact_row.get("observation_group") or "")
+                for row in observations:
+                    value = str(row.get("text") or "").strip()
+                    same_group = str(row.get("observation_group") or "") == fact_group
+                    if (not value or value.casefold() in fact.casefold()
+                            or is_relation_gate(value)
+                            or not parse_relation(value)
+                            or is_direct_positive_completion(value)):
+                        continue
+                    if same_group and value not in selected_group_values:
+                        continue
+                    if not _same_observation_relation(relation_anchor, value):
+                        continue
+                    relationship_facts.append(value)
+                    if len(relationship_facts) >= 2:
+                        break
+                relations = ([direct_relation] if direct_relation else []) + [
+                    row for row in (
+                        parse_relation(value) for value in relationship_facts
+                    ) if row
+                ]
+            else:
+                direct = [fact] if direct_relation else []
+                compatible = [
+                    value for value in fragment_texts
+                    if value not in direct
+                    and value.casefold() not in fact.casefold()
+                    and parse_relation(value)
+                    and not is_unconfirmed_fact(value)
+                ]
+                relationship_facts = (direct + compatible)[:2]
+                relations = [row for row in (
+                    parse_relation(value) for value in relationship_facts
+                ) if row]
+            for relation in relations:
+                for term in [*relation.get("actors", []), *relation.get("objects", [])]:
+                    if (len(term) >= 2
+                            and term.casefold() not in {
+                                value.casefold() for value in protected
+                            }):
+                        protected.append(term)
+        collected[kind].append({
+            "id": f"evidence:{key}:{kind}",
+            "kind": kind,
+            "source_key": key,
+            "source_title": title[:180],
+            "source_subject": title[:180],
+            "constraint_context": constraint_context[:420],
+            "fact": fact[:420],
+            "observed_at": str(fact_row.get("observed_at") or "")[:80],
+            "relationship_facts": relationship_facts,
+            "fact_relation": direct_relation,
+            "relations": relations,
+            "protected_terms": protected[:10],
+        })
+
+    for evidence in state.get("evidence") or []:
+        if not isinstance(evidence, dict) or not evidence_is_relevant(evidence):
+            continue
+        key = str(evidence.get("key") or "").strip().upper()
+        detail = details.get(key)
+        if not detail:
+            continue
+        # Title and every factual sentence come from the canonical materialized snapshot.
+        # The evidence row contributes only its key/order and relevance judgment.
+        title = str(detail.get("summary") or key).strip()
+        observations = _canonical_detail_observations(detail)
+        fragment_texts = [str(row.get("text") or "") for row in observations]
+        focus_text = " ".join([title, *fragment_texts])
+        if not matches_focus(focus_text, state.get("keywords") or []):
+            continue
+        done = _ticket_detail_done(detail)
+        direct_completion = _latest_observation([
+            row for row in observations
+            if is_direct_positive_completion(row["text"])
+        ])
+        if direct_completion:
+            add("completed_baseline", key=key, title=title, fact_row=direct_completion,
+                observations=observations)
+        focus_terms = set()
+        for raw in state.get("keywords") or []:
+            focus_terms.update(relation_terms(str(raw or "")))
+        uncertain = _latest_observation([
+            row for row in observations
+            if is_unconfirmed_fact(row["text"])
+            and _uncertainty_matches_source(
+                row, observations, title, focus_terms,
+            )
+        ])
+        if uncertain:
+            add("unconfirmed_dependency", key=key, title=title, fact_row=uncertain,
+                observations=observations)
+        gate = _latest_observation([
+            row for row in observations if is_relation_gate(row["text"])
+        ])
+        if gate:
+            add("approval_gate", key=key, title=title, fact_row=gate,
+                observations=observations)
+        reusable_validation = _latest_observation([
+            row for row in observations
+            if _EVIDENCE_VALIDATION_MATERIAL.search(row["text"])
+            and not _EVIDENCE_VALIDATION_MATERIAL_ABSENT.search(row["text"])
+            and not _EVIDENCE_VALIDATION_MATERIAL_PLANNED.search(row["text"])
+        ])
+        if (not done and reusable_validation
+                and _EVIDENCE_VALIDATION.search(" ".join([title, *fragment_texts]))):
+            add("reuse_existing_validation", key=key, title=title,
+                fact_row=reusable_validation, observations=observations)
+
+    _reconcile_evidence_temporality(collected)
+    ordered = [
+        *collected["completed_baseline"],
+        *collected["unconfirmed_dependency"],
+        *collected["approval_gate"],
+        *collected["reuse_existing_validation"],
+    ]
+    return ordered[:max(0, cap)]
+
+
+def _obligation_item_indexes(obligation: dict, items: list[dict]) -> list[int]:
+    roots = [row for row in (items or []) if isinstance(row, dict)]
+    if not roots:
+        return []
+    if len(roots) == 1:
+        return [0]
+    tokens = {
+        value.casefold() for value in (obligation.get("protected_terms") or [])
+        if len(str(value or "").strip()) >= 2
+    }
+    if not tokens:
+        return []
+    scores = []
+    for index, row in enumerate(roots):
+        visible = (str(row.get("summary") or "") + " "
+                   + str(row.get("description") or "")).casefold()
+        scores.append((sum(1 for token in tokens if token in visible), index))
+    best = max(score for score, _index in scores)
+    # When several sibling Tasks share the same strongest product/relationship match, the
+    # constraint applies to each of them.  Dropping an obligation merely because the roots
+    # tie made multi-deliverable requests less grounded than single-Task requests.
+    return [index for score, index in scores if score == best and score > 0]
+
+
+def _has_obligation_marker(body: str, obligation_id: str) -> bool:
+    marker = _re.escape(_escape_html(obligation_id, quote=True))
+    return bool(_re.search(
+        rf"data-evidence-obligation\s*=\s*(['\"]){marker}\1", str(body or ""), _re.I,
+    ))
+
+
+def _visible_normalized(value) -> str:
+    without_markup = _re.sub(r"<[^>]+>", " ", str(value or ""))
+    visible = _unescape_html(without_markup)
+    return _re.sub(r"[^0-9A-Za-z가-힣_.-]+", " ", visible).strip().casefold()
+
+
+def _obligation_atomic_clause(obligation: dict) -> str:
+    """One bounded visible clause that keeps source, relation, state, and constraint together."""
+    key = str(obligation.get("source_key") or "").strip()
+    subject = str(obligation.get("source_subject")
+                  or obligation.get("source_title") or key).strip()
+    fact = str(obligation.get("fact") or "").strip()
+    context = str(obligation.get("constraint_context") or "").strip()
+    if context and _visible_normalized(context) not in _visible_normalized(fact):
+        material = f"{context} / {fact}" if fact else context
+    else:
+        material = fact or context
+    source = " ".join(value for value in (key, subject) if value)
+    kind = str(obligation.get("kind") or "")
+    conflict = obligation.get("temporal_conflict_with") or []
+    if kind == "completed_baseline":
+        return f"{source}의 완료된 결과를 baseline으로 재사용한다 — {material}"[:1000]
+    if kind == "unconfirmed_dependency":
+        prefix = "검증 상태 충돌 — " if conflict else ""
+        return f"{prefix}{source}의 미확정 dependency — {material}"[:1000]
+    if kind == "approval_gate":
+        return f"{source}의 검증·승인 gate — {material}"[:1000]
+    if kind == "reuse_existing_validation":
+        return f"{source}의 기존 검증 기준·결과를 재사용한다 — {material}"[:1000]
+    return f"{source} — {material}"[:1000]
+
+
+def _drop_unmarked_equivalent_block(body: str, text: str) -> str:
+    """Remove only an exact browser-visible duplicate that lacks authority metadata."""
+    wanted = _visible_normalized(text)
+    if not wanted:
+        return body
+    wanted_tokens = set(wanted.split())
+    wanted_keys = set(_re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", str(text or ""), _re.I))
+    obligation_words = {
+        "baseline", "재사용", "미확정", "dependency", "gate", "승인", "중복",
+        "unconfirmed", "reuse", "approval",
+    }
+
+    def replace(match) -> str:
+        block = match.group(0)
+        if "data-evidence-obligation" in block.casefold():
+            return block
+        candidate = _visible_normalized(block)
+        if candidate == wanted:
+            return ""
+        candidate_tokens = set(candidate.split())
+        candidate_keys = set(_re.findall(
+            r"\b[A-Z][A-Z0-9]*-\d+\b", _unescape_html(block), _re.I,
+        ))
+        common = wanted_tokens & candidate_tokens
+        same_obligation = (
+            bool(wanted_keys & candidate_keys)
+            and bool(common & obligation_words)
+            and len(common) / max(1, min(len(wanted_tokens), len(candidate_tokens))) >= .65
+        )
+        return "" if same_obligation else block
+
+    return _re.sub(r"<(?:p|li)\b[^>]*>[\s\S]*?</(?:p|li)>", replace,
+                   str(body or ""), flags=_re.I)
+
+
+def _obligation_marker_block(body: str, obligation_id: str) -> str:
+    marker = _re.escape(_escape_html(obligation_id, quote=True))
+    match = _re.search(
+        rf"<(p|li)\b[^>]*data-evidence-obligation\s*=\s*(['\"]){marker}\2"
+        rf"[^>]*>([\s\S]*?)</\1>",
+        str(body or ""), _re.I,
+    )
+    return match.group(0) if match else ""
+
+
+def _append_obligation_background(body: str, obligation_id: str, text: str) -> str:
+    if _has_obligation_marker(body, obligation_id):
+        return body
+    body = _drop_unmarked_equivalent_block(body, text)
+    marker = _escape_html(obligation_id, quote=True)
+    block = (f'<p data-evidence-obligation="{marker}">'
+             f'{_escape_html(text)}</p>')
+    match = _re.search(r"(<h3>\s*배경\s*</h3>)(.*?)(?=<h3>|$)",
+                       body, _re.S | _re.I)
+    if match:
+        return body[:match.end(2)] + block + body[match.end(2):]
+    return f"<h3>배경</h3>{block}" + body
+
+
+def _append_obligation_list(body: str, heading: str, obligation_id: str,
+                            text: str, *, checklist: bool = False) -> str:
+    if _has_obligation_marker(body, obligation_id):
+        return body
+    body = _drop_unmarked_equivalent_block(body, text)
+    marker = _escape_html(obligation_id, quote=True)
+    li = (f'<li data-evidence-obligation="{marker}"'
+          + (' data-checked="false"' if checklist else '')
+          + f'>{_escape_html(text)}</li>')
+    pattern = (rf"(<h3>\s*{_re.escape(heading)}(?:\s*\(DoD\))?\s*</h3>\s*"
+               rf"<ul\b[^>]*>)(.*?)(</ul>)")
+    match = _re.search(pattern, body, _re.S | _re.I)
+    if match:
+        return body[:match.end(2)] + li + body[match.end(2):]
+    section = (f"<h3>{heading}</h3><ul"
+               + (' data-type="taskList"' if checklist else '')
+               + f">{li}</ul>")
+    if heading == "작업 범위":
+        before_dod = _re.search(r"<h3>\s*완료 조건", body, _re.I)
+        if before_dod:
+            return body[:before_dod.start()] + section + body[before_dod.start():]
+    return body + section
+
+
+def _apply_verified_evidence_obligations(state: dict, items: list[dict]) -> list[dict]:
+    """Materialize typed evidence obligations into the applicable Task execution contract."""
+    obligations = copy.deepcopy(_verified_evidence_obligations(state))
+    if not obligations:
+        return []
+    request = _current_request_boundary_text(state)
+    explicit_repeat = bool(_EVIDENCE_REPEAT_REQUEST.search(request))
+    for obligation in obligations:
+        indexes = [
+            index for index in _obligation_item_indexes(obligation, items)
+            if not _is_bug_item(items[index])
+            and str(items[index].get("type") or "").casefold() != "epic"
+        ]
+        obligation["item_indexes"] = indexes
+        key = str(obligation.get("source_key") or "")
+        kind = str(obligation.get("kind") or "")
+        atomic = _obligation_atomic_clause(obligation)
+        for index in indexes:
+            item = items[index]
+            if _is_bug_item(item) or str(item.get("type") or "").casefold() == "epic":
+                continue
+            body = str(item.get("description") or "")
+            oid = str(obligation.get("id") or "")
+            if kind == "completed_baseline":
+                body = _append_obligation_background(
+                    body, oid, atomic,
+                )
+                if not explicit_repeat:
+                    body = _append_obligation_list(
+                        body, "작업 범위", oid + ":scope",
+                        f"제외: 완료된 {key} 작업의 재수행 — 기존 결과를 baseline으로 재사용",
+                    )
+            elif kind == "unconfirmed_dependency":
+                body = _append_obligation_background(
+                    body, oid, atomic,
+                )
+                body = _append_obligation_list(
+                    body, "작업 범위", oid + ":scope",
+                    f"제외: {key}의 미확정 결과를 완료 사실로 간주하는 범위",
+                )
+            elif kind == "approval_gate":
+                body = _append_obligation_list(
+                    body, "작업 범위", oid,
+                    f"제외: {atomic} 충족 전 범위 확장",
+                )
+                body = _append_obligation_list(
+                    body, "완료 조건", oid + ":dod",
+                    f"{atomic}의 충족 여부와 판정 근거를 기록한다",
+                    checklist=True,
+                )
+            elif kind == "reuse_existing_validation":
+                body = _append_obligation_list(
+                    body, "작업 범위", oid,
+                    f"제외: {atomic}; 기존 검증 작업 자체의 중복 수행",
+                )
+                body = _append_obligation_list(
+                    body, "완료 조건", oid + ":dod",
+                    (f"{key}의 기존 검증 기준·결과를 재사용하고 검증 작업이 "
+                     "중복되지 않도록 확인한다"),
+                    checklist=True,
+                )
+                for child in item.get("children") or []:
+                    if not isinstance(child, dict) or _execution_stage(child.get("summary")) != "validation":
+                        continue
+                    child_body = str(child.get("description") or "")
+                    child_body = _append_obligation_list(
+                        child_body, "작업 범위", oid + ":child-reuse",
+                        f"포함: {key}의 기존 검증 결과·기준을 입력으로 재사용",
+                    )
+                    child_body = _append_obligation_list(
+                        child_body, "작업 범위", oid + ":child-no-duplicate",
+                        f"제외: {key}에서 수행 중인 기존 검증 작업 자체의 중복 수행",
+                    )
+                    child_body = _append_obligation_list(
+                        child_body, "완료 조건", oid + ":child-dod",
+                        f"{key}의 기존 검증 기준·결과 재사용 여부를 확인한다",
+                        checklist=True,
+                    )
+                    child["description"] = child_body
+            item["description"] = body
+    return [row for row in obligations if row.get("item_indexes")]
+
+
+def _unmarked_relation_reversal(body: str, obligation: dict) -> bool:
+    """Detect an explicit model-authored producer/consumer reversal outside markers."""
+    unmarked = _re.sub(
+        r"<(p|li)\b[^>]*data-evidence-obligation\s*=\s*(['\"])[^'\"]+\2"
+        r"[^>]*>[\s\S]*?</\1>", " ", str(body or ""), flags=_re.I,
+    )
+    visible = _unescape_html(_re.sub(r"<[^>]+>", ". ", unmarked))
+    projected = [relation for relation in (
+        parse_relation(fragment)
+        for fragment in _re.split(r"(?<=[.!?。])\s+|[\r\n]+", visible)
+    ) if relation]
+    canonical = [row for row in (
+        obligation.get("relations") or [obligation.get("fact_relation")]
+    ) if isinstance(row, dict)]
+    for expected in canonical:
+        expected_roles = (expected.get("actor_roles")
+                          or relation_actor_roles(expected.get("fact") or ""))
+        expected_objects = set(expected.get("objects") or [])
+        for actual in projected:
+            actual_roles = actual.get("actor_roles") or {}
+            actual_objects = set(actual.get("objects") or [])
+            common_objects = expected_objects & actual_objects
+            required_overlap = 1 if min(len(expected_objects), len(actual_objects)) <= 1 else 2
+            if len(common_objects) < required_overlap:
+                continue
+            for expected_actor, roles in expected_roles.items():
+                actual_key = next((actor for actor in actual_roles
+                                   if actor.casefold() == expected_actor.casefold()), "")
+                if not actual_key:
+                    continue
+                expected_set = set(roles)
+                actual_set = set(actual_roles.get(actual_key) or [])
+                if (("producer" in expected_set and "consumer" in actual_set)
+                        or ("consumer" in expected_set and "producer" in actual_set)):
+                    return True
+    return False
+
+
+def _evidence_obligation_errors(state: dict, draft: dict) -> list[dict]:
+    """Fail closed when a material verified fact disappears before approval."""
+    items = [row for row in (draft.get("items") or []) if isinstance(row, dict)]
+    if not items or str(draft.get("mode") or "task").casefold() == "epic":
+        return []
+    # Canonical materialized sources are the authority. ``draft.evidence_obligations`` is
+    # only a rendered provenance/cache copy and may be incomplete or model-mutated. Falling
+    # back to that copy is useful for isolated legacy/manual audit payloads only when no
+    # canonical obligation can be derived at all.
+    derived = _verified_evidence_obligations(state)
+    obligations = copy.deepcopy(
+        derived if derived else (draft.get("evidence_obligations") or [])
+    )
+    errors = []
+    for obligation in obligations:
+        indexes = [index for index in (obligation.get("item_indexes") or [])
+                   if isinstance(index, int) and 0 <= index < len(items)]
+        if not indexes:
+            indexes = [
+                index for index in _obligation_item_indexes(obligation, items)
+                if not _is_bug_item(items[index])
+                and str(items[index].get("type") or "").casefold() != "epic"
+            ]
+        kind = str(obligation.get("kind") or "")
+        oid = str(obligation.get("id") or "")
+        key = str(obligation.get("source_key") or "")
+        atomic = _visible_normalized(_obligation_atomic_clause(obligation))
+        for index in indexes:
+            item = items[index]
+            body = str(item.get("description") or "")
+            primary = _obligation_marker_block(body, oid)
+            primary_visible = _visible_normalized(primary)
+            missing = not primary or not atomic or atomic not in primary_visible
+            if kind in {"approval_gate", "reuse_existing_validation"}:
+                dod = _obligation_marker_block(body, oid + ":dod")
+                dod_visible = _visible_normalized(dod)
+                missing = missing or not dod
+                if kind == "approval_gate":
+                    missing = missing or atomic not in dod_visible
+                else:
+                    missing = missing or not all(
+                        word in dod_visible for word in ("재사용", "중복")
+                    )
+            combined = body + " " + " ".join(
+                str(child.get("description") or "")
+                for child in (item.get("children") or []) if isinstance(child, dict)
+            )
+            reversal = _unmarked_relation_reversal(combined, obligation)
+            if missing or reversal:
+                errors.append({
+                    "index": index,
+                    "field": "evidence_obligation",
+                    "obligation_kind": kind,
+                    "message": (
+                        f"검증된 근거 의무 {kind}({key})의 source·relation·state가 하나의 "
+                        "표시 블록에 보존되지 않았다"
+                        if missing else
+                        f"검증된 근거 의무 {kind}({key})와 반대로 producer/consumer 역할을 "
+                        "서술했다"
+                    ),
+                })
+    return errors
+
+
+_CREATION_TARGET_GUARD = "creation_target_required"
+_CREATION_TARGET_GUARD_WHY = "생성할 티켓의 작업 대상과 실행 행동을 식별할 수 없음"
+
+
+def _creation_target_guard_reason(state: dict) -> str:
+    """Return a blocker only from Query's typed deterministic provenance.
+
+    ``uncertainty`` is model-facing prose and has no authority here. The plan marker is
+    compiler-only and valid only with an empty executable read set; the runner artifact is
+    likewise accepted only with its exact kind and boolean proof. ASK and MODIFY never use a
+    creation guard, even if stale state contains one of these values.
+    """
+    if not _is_create_action(state):
+        return ""
+    plan = state.get("query_plan") or {}
+    plan_guard = (
+        isinstance(plan, dict)
+        and plan.get("compiler_guard") == _CREATION_TARGET_GUARD
+        and not (plan.get("queries") or [])
+    )
+    artifact = (state.get("query_artifacts") or {}).get("creation-subject-guard") or {}
+    artifact_guard = (
+        isinstance(artifact, dict)
+        and artifact.get("kind") == _CREATION_TARGET_GUARD
+        and artifact.get("targetRequired") is True
+    )
+    return _CREATION_TARGET_GUARD_WHY if plan_guard or artifact_guard else ""
+
+
+def _request_refinement_projection(state: dict) -> dict:
+    """Clone a complete pending draft and apply RequestArchitect's typed field overlay.
+
+    ``request_refinement`` is emitted only by RequestArchitect's exact field-only
+    continuation path. WorkArchitect must not reinterpret the user's sentence or resend a
+    settled draft to the model. The prior payload remains authoritative; only the three
+    bounded fields in the typed handoff may change.
+    """
+    refinement = state.get("request_refinement") or {}
+    prior = state.get("draft") or {}
+    if (not _is_create_action(state)
+            or not state.get("turn_continuation")
+            or str(state.get("error") or "").startswith(f"[{Node.WORK_ARCHITECT}]")
+            or not isinstance(refinement, dict)
+            or not any(str(refinement.get(key) or "").strip()
+                       for key in ("parent", "phase", "duedate"))
+            or not isinstance(prior, dict)):
+        return {}
+    items = copy.deepcopy([
+        row for row in (prior.get("items") or [])
+        if isinstance(row, dict) and str(row.get("summary") or "").strip()
+    ])
+    if not items:
+        return {}
+
+    parent = str(refinement.get("parent") or "").strip()
+    phase = str(refinement.get("phase") or "").strip()
+    due = str(refinement.get("duedate") or "").strip()
+    resolved_slots: list[dict] = []
+    questions: list[dict] = []
+    if parent == "top_level":
+        for item in items:
+            item.pop("epic", None)
+            item.pop("parent", None)
+    elif parent == "select_existing":
+        resolved_slots = _apply_typed_parent_resolution(state, items)
+        if any(row.get("status") != "resolved" for row in resolved_slots):
+            items.clear()
+            questions = [_required_parent_resolution_question()]
+    elif _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", parent, _re.I):
+        for item in items:
+            if str(item.get("type") or "").casefold() != "epic":
+                item.pop("parent", None)
+                item["epic"] = parent.upper()
+
+    if due:
+        for item in items:
+            item["duedate"] = due
+    if phase:
+        for item in items:
+            summary = str(item.get("summary") or "").strip()
+            if phase not in summary:
+                item["summary"] = f"{summary} — {phase}"
+            body = str(item.get("description") or "")
+            if body and phase not in _unescape_html(_re.sub(r"<[^>]+>", " ", body)):
+                phase_block = (
+                    f'<p data-request-refinement="phase">적용 단계: '
+                    f'{_escape_html(phase)}</p>'
+                )
+                scope = _re.search(r"<h3>\s*작업 범위\s*</h3>", body, _re.I)
+                if scope:
+                    item["description"] = body[:scope.end()] + phase_block + body[scope.end():]
+                else:
+                    item["description"] = body + phase_block
+
+    projection = {
+        "questions": questions,
+        "mode": str(prior.get("mode") or "task"),
+        "structure": str(prior.get("structure") or ""),
+        "structure_why": str(prior.get("structure_why") or ""),
+        "items": items,
+        "rationale_contract": PENDING_RATIONALE_CONTRACT,
+        **({"resolved_slots": resolved_slots} if resolved_slots else {}),
+        "_construction": "request_refinement",
+    }
+    # A field-only continuation is a new payload revision.  Reusing the previous free-form
+    # rationale would retain a removed/changed parent or due date, so render only the current
+    # typed draft snapshot.
+    projection["rationale"] = project_pending_rationale(draft=projection)
+    return projection
+
+
+_EXACT_UPDATE_FIELDS = frozenset({"priority", "duedate", "summary"})
+_EXACT_UPDATE_FAST_PATH_ID = "work.exact_single_ticket_update"
+
+
+def _exact_single_update_fast_path(state: dict):
+    """Prove one complete scalar update from RequestArchitect-issued effects only."""
+    contract = _typed_continuation_contract(state)
+    typed_effects, typed_error = requested_update_effect_authority(state)
+    materialized = materialize_requested_update_effects(state, {})
+    changes = (materialized.get("changes")
+               if isinstance(materialized.get("changes"), dict) else {})
+    target = str(materialized.get("key") or "").strip().upper()
+    snapshot = materialized.get("requested_effects") or {}
+    effects = {
+        (str(row.get("target") or "").strip().upper(),
+         str(row.get("field") or ""), str(row.get("value") or ""))
+        for row in (snapshot.get("effects") or []) if isinstance(row, dict)
+    } if isinstance(snapshot, dict) else set()
+    expected_effects = {(row.target, row.field, row.value) for row in typed_effects}
+    current = last_user_text(state).strip()
+    decision = evaluate_typed_fast_path(
+        _EXACT_UPDATE_FAST_PATH_ID,
+        checks={
+            "typed_update_contract": contract.get("action") == "update",
+            "single_target": len(_typed_target_keys(state)) == 1 and bool(target),
+            "single_outcome": len(contract.get("outcome_ids") or []) == 1,
+            "typed_effect_mapping": not typed_error and bool(typed_effects),
+            "supported_request_surface": not _unsupported_exact_update_field(current),
+            "supported_scalar_set": bool(changes)
+            and set(changes).issubset(_EXACT_UPDATE_FIELDS),
+            "current_turn_boundary": bool(current)
+            and current == str(contract.get("root_request") or "").strip(),
+            "requested_effects_sealed": (
+                materialized.get("effect_contract") == "requested-effects.v1"
+                and snapshot.get("contract") == "requested-effects.v1"
+                and effects == expected_effects
+            ),
+        },
+    )
+    return decision, ({"key": target, **changes} if decision.complete else {})
+
+
 class WorkArchitect(StructuredAgent):
     """★ 도구를 쓰지 않는다 — 필요한 재료는 **코드가 전부 미리 조회**한다.
 
@@ -207,48 +1732,141 @@ class WorkArchitect(StructuredAgent):
     """
 
     name = Node.WORK_ARCHITECT
-    temperature = 0.3          # 초안은 약간의 폭이 필요하다
-    _force_draft = False       # 질문-도피 재시도 플래그(단일 사용자 앱 — 인스턴스 보관으로 충분)
 
     def node(self):
         base = super().node()
 
         def run(state):
-            out = base(state)
-            # ── 질문-도피 가드: "알아서" 위임인데 질문만 내고 초안 0건이면 **한 번 재시도**.
-            # 프롬프트(force_rule)로 막아도 부하·모델 변덕으로 재발한다(스위트 실측 5건).
-            # 해석 확인 턴(조사 전 — situation 없음)은 질문이 정답이므로 제외.
-            try:
-                dodged = (bool(out.get("questions"))
-                          and not ((out.get("draft") or {}).get("items"))
-                          and not ((out.get("change_plan") or {}).get("key"))
-                          and (_said_defaults(state) or state.get("bulk_targets"))
-                          and not any(_question_requires_input(q)
-                                      for q in (out.get("questions") or []))
-                          and (state.get("situation") or "").strip())
-                # 초안 수정 요청인데 수정본(items)도 유효한 변경 계획도 없다 — 말로만
-                # 설명하고 끝(실측 2회). mentioned_keys 는 오염될 수 있어 조건에 안 쓴다.
-                cp0 = out.get("change_plan") or {}
-                dodged = dodged or (
-                    (state.get("intent") or "") == "modify"
-                    and bool((state.get("draft") or {}).get("items"))
-                    and not ((out.get("draft") or {}).get("items"))
-                    and not (cp0.get("key") or cp0.get("keys")))
-            except Exception:
-                dodged = False
-            if dodged and not WorkArchitect._force_draft:
-                WorkArchitect._force_draft = True
-                try:
-                    out2 = base(state)
-                    if ((out2.get("draft") or {}).get("items")) \
-                            or ((out2.get("change_plan") or {}).get("key")):
-                        out2["trace"] = note(state, self.name,
-                                             f"질문 도피 재시도 → 초안 "
-                                             f"{len((out2.get('draft') or {}).get('items') or [])}건")
-                        return out2
-                finally:
-                    WorkArchitect._force_draft = False
-            return out
+            def finish(result: dict) -> dict:
+                result = dict(result or {})
+                # ``error`` uses a last-value reducer. A successful Work turn must clear a
+                # prior Work failure so the graph can distinguish current failure from stale
+                # state; an actual fallback keeps its ``[work_architect]`` error intact.
+                prior_work_error = str(state.get("error") or "").startswith(
+                    f"[{self.name}]"
+                )
+                if prior_work_error and not str(result.get("error") or "").strip():
+                    result["error"] = ""
+                return result
+
+            fast_path, exact_change = _exact_single_update_fast_path(state)
+            if fast_path.complete:
+                direct = self.apply(state, {
+                    "questions": [], "change": exact_change, "rationale": "",
+                })
+                direct["trace"] = typed_fast_path_note(
+                    state, self.name, "정확 단일 티켓 변경 · 모델 호출 생략", fast_path,
+                )
+                return finish(direct)
+
+            refinement = _request_refinement_projection(state)
+            if refinement:
+                # This handoff is a field overlay on an already reviewed payload, not a
+                # fresh draft. Re-running ``apply`` would redistribute owners, normalize
+                # children, and otherwise mutate fields the user did not ask to change.
+                # Preserve the prior draft byte-for-byte outside parent/phase/due.
+                prior = copy.deepcopy(state.get("draft") or {})
+                prior["items"] = refinement["items"]
+                prior["rationale"] = refinement.get("rationale") or prior.get("rationale") or ""
+                prior["rationale_contract"] = refinement["rationale_contract"]
+                if "resolved_slots" in refinement:
+                    prior["resolved_slots"] = copy.deepcopy(refinement["resolved_slots"])
+                seal_work_item_identities(state, prior)
+                bind_resolved_slot_item_ids(prior)
+                seal_requested_effect_contract(
+                    state, draft=prior, change_plan={}, force_refresh=True,
+                )
+                direct = {
+                    "questions": list(refinement.get("questions") or []),
+                    "draft": prior, "change_plan": {},
+                    "turns": (state.get("turns") or 0) + 1,
+                    "interpretation": "",
+                    "structure_notes": list(state.get("structure_notes") or [])[-8:],
+                    "trace": note(
+                        state, self.name, "기존 초안 · 검증된 후속 필드 결정적 반영",
+                    ),
+                }
+                return finish(direct)
+
+            # Concrete delegated work has no remaining semantic choice once research and
+            # blocker guards have run. Sending the same ~10K context to a small model first
+            # added 28-69 seconds and frequently returned empty ``items``. Build the literal
+            # conservative draft directly; ``apply`` still owns hierarchy/body/owner guards.
+            if _is_create_action(state) and (state.get("situation") or "").strip():
+                named = [key for key in (state.get("mentioned_keys") or [])
+                         if _ticket_exists(key)]
+                invalid_subtask_parents = [
+                    key for key in named
+                    if _asks_subtasks(state) and not _can_parent_subtask(key)
+                ]
+                if invalid_subtask_parents:
+                    # Ticket tier is runtime metadata, not a semantic choice.  Asking the
+                    # structured model to rediscover an invalid parent spent ~10K tokens in
+                    # SUB1/SUB3 before ``apply`` deterministically replaced its answer with
+                    # this same legal-hierarchy interview.
+                    direct = self.apply(state, {
+                        "questions": [], "mode": "subtask", "items": [],
+                        "rationale": "",
+                    })
+                    direct["trace"] = note(
+                        state, self.name, "유효하지 않은 Sub-Task 부모 · 결정적 대안 질문",
+                    )
+                    return finish(direct)
+                outcome = requested_outcome_contract(state)
+                if len(outcome.get("outcomes") or []) > 1:
+                    # Multi-outcome root mapping is semantic. Deterministic recovery lacks
+                    # source provenance, so let the one normal structured call bind it.
+                    return finish(base(state))
+                epic_downgrade = _recover_delegated_epic_downgrade(state)
+                if epic_downgrade:
+                    direct = self.apply(state, {
+                        "questions": [],
+                        **epic_downgrade,
+                        "_construction": "literal_delegated",
+                        "_epic_downgrade": True,
+                    })
+                    direct["trace"] = note(
+                        state, self.name, "Epic 기준 미충족 · 결정적 Task 초안 1건",
+                    )
+                    return finish(direct)
+                subtasks = _recover_explicit_subtasks(state)
+                if subtasks:
+                    direct = self.apply(state, {
+                        "questions": [], "mode": "subtask", "items": subtasks,
+                        "structure": "multiple_tasks",
+                        "structure_source": "user_specified",
+                        "structure_why": "기존 Task와 Sub-Task 산출물·담당을 사용자가 명시",
+                        "rationale": "명시된 부모·산출물·담당으로 Sub-Task 초안 구성",
+                        "_construction": "literal_delegated",
+                    })
+                    direct["trace"] = note(
+                        state, self.name,
+                        f"결정적 Sub-Task 초안 {len((direct.get('draft') or {}).get('items') or [])}건",
+                    )
+                    return finish(direct)
+                recovered = _recover_delegated_creation(state)
+                if recovered:
+                    recovered_structure = (shape_hint(state)[0]
+                                           or ("multiple_tasks" if len(recovered) > 1
+                                               else "single_task"))
+                    direct = self.apply(state, {
+                        "questions": [], "mode": "task", "items": recovered,
+                        "structure": recovered_structure,
+                        "structure_source": (
+                            "user_specified" if shape_hint(state)[0] else "inferred"),
+                        "structure_why": "사용자가 위임한 구체 작업을 최소 실행 범위로 복원",
+                        "rationale": "사용자 리터럴 요청과 안전 기본값으로 초안 구성",
+                        "_construction": "literal_delegated",
+                    })
+                    direct["trace"] = note(
+                        state, self.name,
+                        f"결정적 위임 초안 {len((direct.get('draft') or {}).get('items') or [])}건",
+                    )
+                    return finish(direct)
+            # Semantic→projection mode owns its bounded correction inside Agent.  Re-running
+            # this whole node would resend the original prompt/evidence and repeat the 35B
+            # semantic judgment, so the outer workflow always invokes it exactly once.
+            return finish(base(state))
 
         return run
 
@@ -261,23 +1879,144 @@ class WorkArchitect(StructuredAgent):
                  "required value. Otherwise complete the safest draft from verified information, leave "
                  "optional fields empty, and record a material Korean `확인 필요` in `rationale`."
                  if forced else "")
-        if WorkArchitect._force_draft:
-            extra += ("\n\n## Required Draft Recovery\n\nThe previous attempt omitted the requested artifact. "
-                      "Return `questions=[]` and complete `items`. For a draft-revision request, return the "
-                      "entire revised item set from Current Draft Data, not an explanation. Record unresolved "
-                      "points in Korean in `rationale`.")
         # 정적 지시는 prompts/roles/work_architect.md — 동적 경고(횟수 소진)만 코드가 덧붙인다.
         # ★ 경로에 안 쓰이는 절은 싣지 않는다. 기존 티켓의 필드를 바꾸는 턴에 '어떻게
         #   쪼갤 것인가'·'본문 4섹션'·'Epic 생성' 지시는 판단에 쓰이지 않으면서 매 호출
         #   2천 토큰을 태운다(work_architect system 4.2k tok 중 절반이 생성 전용이었다).
-        return persona(state, _role_md(state) + extra)
+        return persona(state, _role_md(state) + extra, role_id=self.name)
+
+    def post_projection_correction(self, state, out):
+        """Correct only a schema-valid optional-question/empty-artifact projection.
+
+        Required-input interviews remain untouched.  This hook runs while the semantic memo
+        is still available, so it replaces the former full WorkArchitect node retry without
+        re-sending the conversation, research bundle, or system prompt.
+        """
+        action = _work_action(state)
+        pending_draft_revision = (
+            action == "create"
+            and (state.get("intent") or "") == Intent.MODIFY
+            and bool((state.get("draft") or {}).get("items"))
+        )
+        delegated = bool(_said_defaults(state) or state.get("bulk_targets"))
+        if not (pending_draft_revision or delegated):
+            return ""
+        if (action == "create"
+                and not _has_concrete_work_target(_current_request_boundary_text(state))
+                and not any(_has_concrete_work_target(value) for value in
+                            _typed_decision_values(state, "target", "scope", "action"))):
+            # A correction context can reproject a verified decision; it cannot invent the
+            # missing work target. Let ``apply`` emit the required target interview instead.
+            return ""
+        questions = [row for row in (out.get("questions") or []) if isinstance(row, dict)]
+        # Before research, an interpretation question can be the correct artifact.  The
+        # former guard excluded that turn, while still recovering a questionless delegated
+        # PLAN_WORK result and any pending draft revision.
+        if questions and not pending_draft_revision \
+                and not (state.get("situation") or "").strip():
+            return ""
+        if any(_delegated_question_is_blocking(state, row) for row in questions):
+            return ""
+        items = [row for row in (out.get("items") or [])
+                 if isinstance(row, dict) and str(row.get("summary") or "").strip()]
+        change = out.get("change") or {}
+        has_change = bool(change.get("key") or change.get("keys")
+                          or any(value not in (None, "", [], {})
+                                 for key, value in change.items()
+                                 if key not in {"key", "keys"}))
+        if pending_draft_revision:
+            if items and not has_change:
+                return ""
+        elif items or has_change:
+            return ""
+        # ``apply`` can recover an exact literal mutation without another model call.  Do
+        # not spend a projection correction on an artifact the deterministic layer owns.
+        if (action == "update"
+                and _explicit_single_mutation_from_request(state)):
+            return ""
+        if pending_draft_revision:
+            artifact = ("the complete revised `items` set and an empty/absent `change`; "
+                        "this edits the pending approval draft, not Jira")
+        elif action in {"comment", "update"}:
+            artifact = "a complete `change` object for the requested mutation"
+        else:
+            artifact = "at least one complete item"
+        kind = "only optional questions" if questions else "an empty artifact"
+        return (
+            f"The projection returned {kind} despite sufficient verified "
+            f"context. Preserve the memo's decision, return `questions=[]`, and emit {artifact}. "
+            "Do not invent a value absent from the memo."
+        )
+
+    def post_projection_correction_context(self, state, out):
+        """Supply pending-draft recovery facts without resending research or role prompts."""
+        if not (_work_action(state) == "create"
+                and (state.get("intent") or "") == Intent.MODIFY
+                and (state.get("draft") or {}).get("items")):
+            return ""
+        allowed = {
+            "summary", "tier", "issue_type", "type", "epic", "epic_name", "parent",
+            "description", "children", "components", "labels", "priority", "duedate",
+            "assignee", "assignee_source", "meeting_assignment_ref",
+        }
+
+        def compact_item(row):
+            if not isinstance(row, dict):
+                return {}
+            compact = {key: value for key, value in row.items() if key in allowed}
+            if "description" in compact:
+                compact["description"] = str(compact["description"] or "")[:3000]
+            if isinstance(compact.get("children"), list):
+                compact["children"] = [compact_item(child)
+                                       for child in compact["children"][:30]]
+            return compact
+
+        prior = state.get("draft") or {}
+        typed = {
+            "mode": prior.get("mode") or "task",
+            "structure": prior.get("structure") or "",
+            "items": [compact_item(row) for row in (prior.get("items") or [])[:12]],
+        }
+        instruction = _current_request_boundary_text(state)[:2400]
+        return (
+            "Current pending-draft modification instruction:\n" + instruction
+            + "\n\nPrior pending draft typed subset:\n"
+            + json.dumps(typed, ensure_ascii=False, separators=(",", ":"))[:10000]
+            + "\nReturn complete revised items, preserve every unaffected field, and do not "
+              "emit a Jira `change` plan."
+        )
 
     def task(self, state):
         # "알아서/기본값" 은 선택 재량만 위임한다. 이전 계약은 질문을 전부 금지해 target·parent·
         # 재현 조건처럼 payload 성립에 필요한 값까지 추측하게 만들었다. 필수 입력에는 명시적
         # 표식을 요구하고, 그 외 선호 질문만 억제한다.
-        said = conversation(state)
-        defaults = any(w in said for w in ("알아서", "기본값", "맡길게", "맡기겠"))
+        # Delegation is a current-request field, not durable conversation state. An old
+        # topic's `알아서` must not switch a new topic into forced defaulting.
+        defaults = _said_defaults(state)
+        action = _work_action(state)
+        outcome_contract = (requested_outcome_contract(state)
+                            if _is_create_action(state) else {})
+        if outcome_contract and single_outcome_binding(state):
+            outcome_rule = (
+                "\n- Preserve the single Authoritative Requested Outcome's exact action and "
+                "object in the title, scope, and DoD. Its opaque contract id and outcome ref "
+                "are attached deterministically by the runtime; do not emit binding fields "
+                "that are absent from the target schema. Research may refine implementation "
+                "context but must never replace or reverse the requested result."
+            )
+        elif outcome_contract:
+            outcome_rule = (
+                "\n- Treat every instruction in the Authoritative Requested Outcome Contract "
+                "as the user's exact result, not as background prose. Bind every item with "
+                "`outcome_refs`, copy `outcome_contract_id` exactly, and preserve each requested "
+                "action and object in the relevant title, scope, and DoD. Research may supply "
+                "a method or constraint but must never replace or reverse the requested result."
+                "\n- A child Sub-Task inherits its parent's applicable `outcome_refs` when it is "
+                "a stage of the same outcome. Set child `outcome_refs` only for a different "
+                "explicit mapping; never attach every contract id to every child by default."
+            )
+        else:
+            outcome_rule = ""
         force_rule = ("\n- The user delegated optional choices; this does not supply required input. Return "
                       "`questions=[]` and at least one complete item when the literal request and verified "
                       "evidence support a valid conservative draft. If user-owned information is indispensable "
@@ -287,8 +2026,10 @@ class WorkArchitect(StructuredAgent):
                       "specific Korean `why_required`, and no competing payload. Mark optional preference "
                       "questions `required_input=false`; the runtime suppresses them under delegation. Select "
                       "the best supported Epic candidate without asking; use an intentional top-level Task if "
-                      "none fits. Preserve supplied assignee IDs and deadlines; leave optional unspecified "
-                      "fields empty. Record only material defaults or open facts in Korean `rationale`."
+                      "none fits. Preserve all deadlines; leave optional unspecified fields empty. Assignees "
+                      "at every tier are attached after projection from explicit user ownership or PeopleAdvisor "
+                      "evidence; do not emit an `assignee`. Record only "
+                      "material defaults or open facts in Korean `rationale`."
                       if defaults else "")
         # 버그는 새 기능과 초안 규칙이 다르다 — 갈래를 지시문으로 가른다(Prompt Chaining 의 분기).
         # ★ **버그 초안은 의도가 아니라 요청의 낱말로 고른다**(사용자 지적 — "결국 버그
@@ -297,9 +2038,10 @@ class WorkArchitect(StructuredAgent):
         #   쓰이는 곳이 이 goal 하나뿐이었다 — **갈래가 아니라 산출물 유형**이다.
         #   낱말로 고르면 분류가 흔들려도 본문 규율이 안 바뀐다: "적재 배치가 계속
         #   실패한다"가 어느 갈래로 가든 재현·기대·실제가 유지된다.
-        _said = request_text(state) + " " + conversation(state)
+        _said = _current_request_boundary_text(state)
         _is_bug = reads_as_bug(_said)      # 판정은 state.reads_as_bug 한 곳에만 있다
-        if _is_bug and (state.get("intent") or "") in Intent.DRAFTS_TICKETS:
+        if (_is_bug and (_is_create_action(state)
+                         or not _typed_continuation_contract(state))):
             goal = """Draft one Task-tier `Bug`.
 
 - Use `type="Bug"` and a Korean summary that names the observed symptom.
@@ -307,13 +2049,13 @@ class WorkArchitect(StructuredAgent):
 - Add a verified suspected-cause ticket key only when research directly supports that relationship.
 - If an open Bug already has the same symptom, do not draft a duplicate; ask the user to choose how to proceed.
 - Default to one Bug without Sub-Tasks unless the user explicitly requests a valid split."""
-        elif ((state.get("intent") or "") == Intent.MODIFY
+        elif (action == "create" and (state.get("intent") or "") == Intent.MODIFY
                 and not state.get("mentioned_keys")
                 and (state.get("draft") or {}).get("items")):
             goal = """Revise the pending draft; this is not a change to an existing Jira ticket.
 
 Return the complete revised `items` set from Current Draft Data, preserving every unaffected field. Do not create `change` or ask a question; the revision becomes a new approval card."""
-        elif (state.get("intent") or "") == Intent.MODIFY:
+        elif action in {"comment", "update"}:
             goal = """Build an existing-ticket `change` plan and leave `items=[]`.
 
 - Use only verified ticket keys. If a user-supplied key cannot be verified, ask one target-resolution question.
@@ -327,7 +2069,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
 - Do not ask for execution permission; the deterministic approval card owns approval.
 - Creation placement rules do not apply to a change plan.
 - Ticket deletion is unsupported. For a deletion request, return no `change` and no `items`; explain `삭제는 지원되지 않음` in Korean `rationale` and offer one non-destructive transition or archive-label alternative. Never create a new Task to perform deletion."""
-        elif (state.get("intent") or "") == Intent.PLAN_WORK \
+        elif action == "create" \
                 and not (state.get("situation") or "").strip():
             # ── 해석 확인 턴(조사 전) — 혼자 오래 조사하고 한 번에 결론 내는 호흡이
             # 방향 착오를 낳았다(실측 STARR NDV). 조사 **전에** 해석과 갈림길을 확인받는다.
@@ -364,19 +2106,20 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                      "independent deliverable differs from its parent into a sibling Task and remove the "
                      "duplicate child.")
         if shape:
-            goal += (f"\n- The user explicitly selected the shape `{word}` -> `{shape}`. Preserve it, set "
-                     "`structure_source=\"user_specified\"`, and do not recommend a competing shape.")
-        elif any(w in request_text(state) for w in BUILD_WORDS):
+            goal += (f"\n- The user explicitly selected the shape `{word}` -> `{shape}`. Preserve it and "
+                     "do not recommend a competing shape. The runtime records who selected it.")
+        elif any(w in _current_request_boundary_text(state) for w in BUILD_WORDS):
             # 신규 구축 규모는 하향(단일 Task 뭉개기)이 실측된 실패 모드다 — 넛지를 준다.
             goal += ("\n- This is a new build or pipeline request. When design, implementation, validation, "
                      "and integration have distinct owners or time boundaries, use `task_with_subtasks` and "
                      "real `children`; listing stages as DoD bullets is not decomposition.")
         elif not defaults:
-            goal += ("\n- The user specified work but not shape. Select it, set "
-                     "`structure_source=\"inferred\"`, and do not add a separate structure-confirmation "
+            goal += ("\n- The user specified work but not shape. Select it and do not add a separate "
+                     "structure-confirmation "
                      "question because the runtime adds one when required.")
         ev = "\n".join(f"- {e.get('key','')} {e.get('title','')} — {e.get('why','')}"
                        for e in (state.get("evidence") or []))
+        evidence_obligations = _verified_evidence_obligations(state)
         # ★ 후속 턴에는 **지금 고치는 초안 전문**을 준다 — 이게 없으면 모델은 매번 처음부터
         #   다시 쓰고, 그 사이 제목·주제가 흘러간다(실측: 원 요청이 Epic 주제로 둔갑).
         prev = draft_full_text(state.get("draft")) if (state.get("turns") or 0) > 0 else ""
@@ -389,8 +2132,15 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                        #   오늘 슬롯을 늘리면서 이 갈래까지 샌 것이고, 계약 배터리는
                        #   change_plan 만 보느라 못 잡았다.
                        _slot_audit(state)
-                       if (state.get("intent") or "") == Intent.PLAN_WORK
+                       if action == "create"
                        else ""),
+            data_block("Authoritative Requested Outcome Contract: Preserve Action and Object",
+                       (format_requested_outcome_contract(state)
+                        if _is_create_action(state) else "")),
+            data_block(
+                "Authoritative Meeting Assignment Sources: Copy One Record Id Per Root",
+                _meeting_assignment_catalog_json(state),
+            ),
             data_block("Current Draft Data: Preserve Unaffected Items and Children; Append Only New Requested Items", prev),
             data_block("Verified Bulk-Change Target Snapshot: Put Every Key in change.keys",
                        ", ".join(state.get("bulk_targets") or [])),
@@ -414,9 +2164,13 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             data_block("Prefetched Research Data and Exact Candidate Keys",
                        (state.get("pre_survey") or "")[:2000]),
             data_block("Verified Evidence Tickets", ev),
+            data_block(
+                "Verified Evidence-to-Draft Obligations: Apply Exactly; Preserve Roles and State",
+                json.dumps(evidence_obligations, ensure_ascii=False, separators=(",", ":")),
+            ),
             # 외부 기술 조사는 지금까지 ResearchAnalyst·KnowledgeCurator 에만 갔다. 그런데 **본문의 배경과
-            # 범위를 쓰는 것은 WorkArchitect** 다 — 그래서 "StarRocks 가 읽는 Iceberg 테이블의
-            # 통계", "플랜 반영 확인" 같은 도메인 관계가 조사에는 있는데 초안에는 안 실렸고,
+            # 범위를 쓰는 것은 WorkArchitect** 다 — 그래서 생산자·artifact·소비자 관계와
+            # 실행 경로 반영 확인 같은 도메인 관계가 조사에는 있는데 초안에는 안 실렸고,
             # Sub-Task 제목이 "설계 완료/테스트 수행" 처럼 일반어로 떨어졌다
             # (DRAFT-COMPARISON 갭 ①). data_block 은 비면 빈 문자열이라, 웹 조사가 돈
             # 턴(신기술 요청)에만 붙는다 — 평소 경로의 토큰은 그대로다.
@@ -441,15 +2195,22 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
 - The subject of every summary and body is Original Request Data. Epic bodies, comments, and related tickets provide placement or evidence only. Preserve unique request terms such as product, technology, table, asset, and symptom.
 - Write each Korean summary as `[Module]` plus a distinct action phrase for one deliverable.
 - In `배경`, state only the verified trigger or the fact that the concrete change was requested. Never invent generic benefits or current problems such as improved user experience, efficiency, accuracy, performance, stability, or reduced exposure.
-- Write a structured HTML body with the correct Korean sections. Use independently testable task-list DoD items. Use a comparison table or verified link only when needed; never return one wall-of-text paragraph.
+- For creation items, fill semantic body fields: Korean `background`, `scope_in`, `scope_out`, `dod`, and `references`. Do not emit HTML or a `description`; deterministic code renders the Jira HTML contract. Keep DoD items independently testable.
+- Do not emit `assignee` at any tier. Exact user-owned root/child assignments are restored deterministically after projection from the current request or resolved meeting mapping; every recommendation is owned by PeopleAdvisor.
+- Verified Evidence-to-Draft Obligations are typed execution constraints, not optional references. Treat completed results as reusable baselines instead of new work; keep unconfirmed dependencies explicitly unconfirmed; make approval or rollout gates explicit in scope and DoD; and reuse existing validation work rather than duplicating it. Preserve the evidence's producer, artifact, and consumer roles exactly—a consumer under verification must never be rewritten as the artifact's generator.
 - Select an Epic independently for each Task from Verified Placement Values. If no candidate fits, choose an intentional top-level Task. Ask an Epic choice only when materially different verified candidates remain and the user did not delegate the choice.
 - Use exactly one verified component per item. Split independent cross-module deliverables to avoid double-counted workload.
 - Prefer existing verified labels. Do not create a typo or synonym; a truly new label must remain visible as new on the approval card.
 - Split independent deliverables into Tasks. Split one deliverable shared across stages, targets, or owners into real Sub-Task `children`.
 - If equivalent work already exists, ask how to proceed unless the user delegated with `알아서`; under delegation, draft safely and record the overlap in Korean `rationale`.
 - A request to create new work must not become a `change` to a similar existing ticket. Use that ticket only as relevant evidence.{force_rule}
+- A child Sub-Task must represent a distinct execution stage, target, or owner rather than duplicate its parent.{outcome_rule}
 - For meeting notes, preserve the exact requested item count and distinguish an owner from a reviewer. A named
   owner is an instruction, not an assignee recommendation; never replace it with a lower-workload candidate.
+- When Authoritative Meeting Assignment Sources is present, copy exactly one listed `record_id` to each
+  corresponding root's `meeting_assignment_ref`, and consume every listed record exactly once. Use
+  `meeting-source:none` only for a surplus root that has no explicit assignment source record. Never reuse
+  a ref or infer it from output order or a shortened/common title; copy the matching bounded record whole.
 
 ## Conversation Data
 
@@ -457,7 +2218,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
 
 ## Original Request Data
 
-{request_text(state)}
+{_current_request_boundary_text(state)}
 
 ## Current User Message Data
 
@@ -466,7 +2227,208 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
     def schema(self):
         return SCHEMA
 
+    def schema_for(self, state):
+        action = _work_action(state)
+        if action == "comment":
+            return COMMENT_SCHEMA
+        if action == "update":
+            return UPDATE_SCHEMA
+        if action == "mixed":
+            # A mixed request is the one legitimate shape that can contain both a new
+            # draft artifact and an existing-ticket change. Keep the legacy union only
+            # for that explicit typed action; pure paths use the compact contracts above.
+            return SCHEMA
+        if (state.get("intent") or "") == Intent.MODIFY:
+            # Typed action=create here means a pending approval-draft revision, not a Jira
+            # field update. Its existing complete HTML items use the established union.
+            return SCHEMA
+        contract = requested_outcome_contract(state)
+        if not contract:
+            return CREATE_SCHEMA
+        # With exactly one complete requested outcome there is no mapping choice.  Keeping
+        # opaque ids in the prompt-only provider's required schema caused otherwise valid
+        # Qwen drafts to enter a 30-40 second format-repair call. Runtime injection below is
+        # authoritative; multi-outcome requests retain explicit model mapping and validation.
+        if single_outcome_binding(state):
+            return CREATE_SCHEMA
+        schema = copy.deepcopy(CREATE_SCHEMA)
+        schema["properties"]["outcome_contract_id"] = {
+            "type": "string", "maxLength": 80, "enum": [contract["id"]],
+            "description": "Exact id of the authoritative requested outcome contract.",
+        }
+        if "outcome_contract_id" not in schema["required"]:
+            schema["required"].append("outcome_contract_id")
+        item_schema = schema["properties"]["items"]["items"]
+        item_schema["properties"]["outcome_refs"] = {
+            "type": "array", "minItems": 1, "maxItems": 6,
+            "items": {"type": "string", "enum": [
+                row["id"] for row in contract.get("outcomes") or []
+            ]},
+            "description": (
+                "Opaque requested-outcome ids satisfied by this item. Copy ids from the "
+                "authoritative requested outcome contract; never infer or rename them."),
+        }
+        if "outcome_refs" not in item_schema["required"]:
+            item_schema["required"].append("outcome_refs")
+        item_schema["properties"]["item_id"] = {
+            "type": "string", "maxLength": 80,
+            "enum": [
+                work_item_id(contract["id"], row["id"])
+                for row in contract.get("outcomes") or []
+            ],
+            "description": (
+                "Optional runtime work-item identity paired with the single outcome_ref. "
+                "Preserve it during a repair; runtime verifies and re-seals it."
+            ),
+        }
+        meeting_sources = _meeting_assignment_catalog(state)
+        if meeting_sources:
+            from app.agent.workflow.meeting_context import NO_MEETING_ASSIGNMENT_REF
+            item_schema["properties"]["meeting_assignment_ref"] = {
+                "type": "string", "maxLength": 80,
+                "enum": [*[row["record_id"] for row in meeting_sources],
+                         NO_MEETING_ASSIGNMENT_REF],
+                "description": (
+                    "Exact opaque record_id copied from Authoritative Meeting Assignment "
+                    "Sources for this root, or meeting-source:none only when this root has "
+                    "no explicit source record. Consume every real record_id exactly once. "
+                    "Never select or repair it from output order or shared title terms."
+                ),
+            }
+            item_schema["required"].append("meeting_assignment_ref")
+        child_schema = item_schema["properties"]["children"]["items"]
+        child_schema["properties"]["outcome_refs"] = {
+            "type": "array", "minItems": 1, "maxItems": 6,
+            "items": {"type": "string", "enum": [
+                row["id"] for row in contract.get("outcomes") or []
+            ]},
+            "description": (
+                "Optional explicit outcome mapping. Omit for a stage that inherits the "
+                "parent item's applicable outcome ids."),
+        }
+        return schema
+
+    def pre_validate_structured_output(
+            self, state, out, *, output_contract: str, execution_stage: str):
+        """Normalize only runtime-owned fields and explicitly safe wire aliases.
+
+        Creation assignees belong to literal user mapping and PeopleAdvisor, while structure
+        provenance belongs to runtime request/accepted-state inspection. Qwen may still emit
+        those plausible fields even though the strict CREATE schema intentionally excludes
+        them. Existing-ticket actions likewise own their artifact family through the typed
+        continuation contract, so a projector's irrelevant creation envelope is discarded.
+        Every unrelated unknown property remains and is rejected normally.
+        """
+        if not isinstance(out, dict):
+            return out
+        cleaned = copy.deepcopy(out)
+        action = _work_action(state)
+
+        if action in {"comment", "update"}:
+            # These fields have no representation or effect in a typed existing-ticket
+            # action. In particular, `mode="comment"` is not a creation enum error.
+            for key in ("interpretation", "mode", "items", "structure",
+                        "structure_why", "outcome_contract_id"):
+                cleaned.pop(key, None)
+            targets = _typed_target_keys(state)
+            change = cleaned.get("change")
+            if isinstance(change, dict) and targets:
+                from app.agent.workflow.target_resolution import target_resolution_requested
+                if target_resolution_requested(state):
+                    # The provider-proven relationship receipt outranks a model copy of the
+                    # anchor key. Reproject the exact resolved identities; Auditor validates
+                    # the same receipt before an approval capability can be minted.
+                    change.pop("key", None)
+                    change.pop("keys", None)
+                if not (change.get("key") or change.get("keys")):
+                    if len(targets) == 1:
+                        change["key"] = targets[0]
+                    else:
+                        change["keys"] = targets
+            if "rationale" in cleaned:
+                cleaned["rationale"] = _bounded_explanation(cleaned["rationale"], 800)
+            return cleaned
+
+        # Mixed retains the union schema and cannot safely discard either artifact family.
+        if action == "mixed":
+            return cleaned
+
+        priority_was_requested = bool(_re.search(
+            r"우선순위|\bpriority\b|(?<![0-9A-Za-z])P[0-4](?![0-9A-Za-z])",
+            _current_request_boundary_text(state), _re.I,
+        ))
+
+        def strip_runtime_authority(value) -> None:
+            if isinstance(value, dict):
+                value.pop("assignee", None)
+                value.pop("assignee_source", None)
+                value.pop("structure_source", None)
+                # Qwen occasionally emits a numeric default for this optional string. If
+                # the user never requested priority, it has no semantic authority and may
+                # be omitted before strict validation. An explicit priority remains strict:
+                # coercing or dropping it would hide a materially wrong payload.
+                if ("priority" in value and not isinstance(value.get("priority"), str)
+                        and not priority_was_requested):
+                    value.pop("priority", None)
+                for child in value.values():
+                    strip_runtime_authority(child)
+            elif isinstance(value, list):
+                for child in value:
+                    strip_runtime_authority(child)
+
+        strip_runtime_authority(cleaned)
+
+        # Qwen's prompt-only projector has emitted these two exact CREATE wire variants.
+        # `id` is a projector-local row handle with no Jira payload authority. `component`
+        # is the singular spelling of our typed `components` list and is safe only when it
+        # is the sole value or agrees with the canonical field. Conflicts stay unknown and
+        # therefore fail strict validation instead of being silently dropped.
+        for item in (cleaned.get("items") or []):
+            if not isinstance(item, dict):
+                continue
+            item.pop("id", None)
+            if "component" in item and isinstance(item.get("component"), str):
+                alias = str(item.get("component") or "").strip()
+                canonical = item.get("components")
+                if canonical is None and alias:
+                    item["components"] = [alias]
+                    item.pop("component", None)
+                elif (isinstance(canonical, list)
+                      and [str(value).strip() for value in canonical] == [alias]):
+                    item.pop("component", None)
+
+        if "interpretation" in cleaned:
+            interpretation = _bounded_explanation(cleaned.get("interpretation"), 600)
+            has_draft = any(isinstance(row, dict) for row in (cleaned.get("items") or []))
+            if (state.get("situation") or "").strip() or has_draft:
+                # Interpretation is a pre-research artifact only. Once research or a draft
+                # exists, it is unused and must not consume the CREATE maxLength budget.
+                interpretation = ""
+            cleaned["interpretation"] = interpretation
+        for key, limit in (("structure_why", 500), ("rationale", 800)):
+            if key in cleaned:
+                cleaned[key] = _bounded_explanation(cleaned[key], limit)
+        return cleaned
+
     def apply(self, state, out):
+        if (not _typed_continuation_contract(state)
+                and not str((state or {}).get("intent") or "").strip()
+                and isinstance(out, dict)
+                and any(key in out for key in
+                        ("mode", "items", "interpretation", "structure", "structure_why"))):
+            # Isolated callers and old checkpoints may omit intent, but their current
+            # CREATE projection is still typed provenance.  Scope this compatibility flag
+            # to this apply call; an intent-less read/respond state stays non-creating.
+            state = {**state, "_legacy_work_projection": "create"}
+        action = _work_action(state)
+        # RequestPlan cardinality is typed authority.  Generic "small/delegated" and
+        # semantic-title compactors operate on mutable prose, so they may simplify only
+        # when there is no explicit multi-outcome contract to preserve.
+        typed_outcome_count = len(
+            requested_outcome_contract(state).get("outcomes") or []
+        )
+        if _is_create_action(state):
+            _materialize_creation_parts(out, state)
         # 문자열로 오면(구모델·fake) 구조로 승격한다 — 화면은 dict 만 다루면 된다.
         # 한 번에 필요한 질문은 3개까지 묶는다. 이후 턴에도 필수 입력이 남으면 계속 묻되,
         # 질문 수 상한을 필수값 추측 허가로 바꾸지 않는다.
@@ -499,12 +2461,17 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         if delegated:
             qs = [q for q in qs if _delegated_question_is_blocking(state, q)]
         qs = _drop_unneeded_meeting_questions(state, qs)
+        items = [i for i in (out.get("items") or []) if isinstance(i, dict) and i.get("summary")]
+        qs = _normalize_question_contracts(
+            state, qs, mode=str(out.get("mode") or "task"), items=items,
+        )
         # 모델이 낸 질문은 **초안을 만들기 전에 답이 필요한 질문**이다. 뒤에서 코드가
         # 붙이는 구조 확인 질문과 구분해 둔다 — 전자는 초안과 함께 내면 사용자가 무엇을
         # 승인해야 할지 모순되고, 후자는 초안의 모양을 보여 주려고 일부러 함께 낸다.
         model_questions = bool(qs)
-        items = [i for i in (out.get("items") or []) if isinstance(i, dict) and i.get("summary")]
-        if not items and not qs:
+        if not out.get("_construction"):
+            _discard_projected_assignees(items)
+        if _is_create_action(state) and not items and not qs:
             recovered_meeting = _recover_decided_meeting_tasks(state)
             if recovered_meeting:
                 items = out["items"] = recovered_meeting
@@ -521,7 +2488,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # Recover only literal, typed values; free-form bodies and inferred fields remain
         # model/interview territory.
         exact_change = _explicit_single_mutation_from_request(state)
-        if exact_change and (state.get("intent") or "") == Intent.MODIFY:
+        if exact_change and action == "update":
             out["change"] = exact_change
             out["items"] = []
             exact_fields = ", ".join(key for key in exact_change if key != "key")
@@ -535,7 +2502,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # reproduction interview would request.  Some models still return only a
         # generic question and no item.  Recover the report into a conservative Bug
         # draft before hierarchy/placement/body guards run; do not invent missing facts.
-        if not items and (state.get("intent") or Intent.PLAN_WORK) == Intent.PLAN_WORK:
+        if _is_create_action(state) and not items:
             recovered_bug = _complete_bug_draft_from_report(state)
             if recovered_bug:
                 items = out["items"] = [recovered_bug]
@@ -552,25 +2519,90 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                                       "중복 질문 없이 Bug 초안으로 정리했다)").strip()
         # 규칙/측정 방법만 있고 적용할 데이터 대상이 없으면 실행 가능한 초안이 아니다.
         # `널 비율 체크`만 받은 두 번째 턴에서 조기 초안을 낸 ASK2 회귀를 결정적으로 막는다.
-        if _missing_data_quality_target(state):
+        if _is_create_action(state) and _missing_data_quality_target(state):
             qs = [{"question": "어느 데이터셋·테이블·컬럼을 대상으로 적용할지 알려 주세요.",
                    "kind": "text", "options": [], "field": "",
                    "required_input": True,
                    "why_required": "품질 규칙을 적용할 데이터 대상을 식별할 수 없음"}]
             model_questions = True
-        if _missing_subtask_deliverable(state):
+        if _is_create_action(state) and _missing_subtask_deliverable(state):
             qs = [{"question": "이 Sub-Task에서 수행할 구체적인 작업 내용이나 목적을 알려 주세요.",
                    "kind": "text", "options": [], "field": "scope",
                    "required_input": True,
                    "why_required": "부모와 개수만 있고 생성할 Sub-Task의 실행 내용이 없음"}]
             model_questions = True
-        human_request = (request_text(state) + " " + _human_request_text(state)).strip()
-        if _missing_exact_mutation(human_request):
+        human_request = _current_request_boundary_text(state)
+        if action in {"create", "update", "mixed"} \
+                and _missing_exact_mutation(human_request):
             qs = [{"question": "임계값을 어떤 값으로 변경할지 알려 주세요.",
                    "kind": "text", "options": [], "field": "",
                    "required_input": True,
                    "why_required": "변경 payload에 넣을 정확한 새 임계값이 없음"}]
             model_questions = True
+        explicit_create = (
+            str((state or {}).get("intent") or "") == Intent.PLAN_WORK
+            or (_typed_continuation_contract(state).get("action") in {"create", "mixed"})
+        )
+        if (explicit_create
+                and _said_defaults(state)
+                and not _has_concrete_work_target(_current_request_boundary_text(state))
+                and not any(_has_concrete_work_target(value) for value in
+                            _typed_decision_values(state, "target", "scope", "action"))):
+            items.clear()
+            qs = [{
+                "question": "어떤 대상에 무엇을 해야 하는지 구체적인 작업 내용을 알려 주세요.",
+                "kind": "text", "options": [], "field": "target",
+                "required_input": True,
+                "why_required": "티켓의 작업 대상과 실행할 행동을 식별할 수 없음",
+            }]
+            model_questions = True
+        # Query's deterministic compiler has already proved that this PLAN_WORK turn has
+        # only execution controls and no creation subject. This typed provenance outranks a
+        # plausible model-invented item regardless of delegation; no downstream recovery or
+        # approval path may turn ``[ETL] data pipeline``-style filler into a live draft.
+        target_guard_reason = _creation_target_guard_reason(state)
+        if target_guard_reason:
+            items.clear()
+            out["items"] = []
+            qs = [{
+                "question": "어떤 대상에 무엇을 해야 하는지 구체적인 작업 내용을 알려 주세요.",
+                "kind": "text", "options": [], "field": "target",
+                "required_input": True,
+                "why_required": target_guard_reason,
+            }]
+            model_questions = True
+        # A non-native small model can return valid JSON but leave ``items=[]`` even after
+        # the user delegated every optional choice.  Repeating the same call produced the
+        # same empty object and a generic "만들 수 있는 티켓 없음" interview.  Recover only
+        # from the literal request when all real blocker guards above are clear; the normal
+        # hierarchy, decomposition, assignment, body, and Auditor passes still run below.
+        if _is_create_action(state) and not items and not qs and state.get("situation"):
+            epic_downgrade = _recover_delegated_epic_downgrade(state)
+            recovered = ([] if epic_downgrade else _recover_delegated_creation(state))
+            if epic_downgrade:
+                items = out["items"] = epic_downgrade["items"]
+                mode = out["mode"] = epic_downgrade["mode"]
+                out["structure"] = epic_downgrade["structure"]
+                out["structure_source"] = epic_downgrade["structure_source"]
+                out["structure_why"] = epic_downgrade["structure_why"]
+                out["interpretation"] = ""
+                out["rationale"] = epic_downgrade["rationale"]
+                out["_construction"] = "literal_delegated"
+                out["_epic_downgrade"] = True
+                model_questions = False
+            elif recovered:
+                items = out["items"] = recovered
+                mode = out["mode"] = "task"
+                inferred_shape = (shape_hint(state)[0]
+                                  or ("multiple_tasks" if len(recovered) > 1
+                                      else "single_task"))
+                out["structure"] = inferred_shape
+                out["structure_source"] = "user_specified" if shape_hint(state)[0] else "inferred"
+                out["structure_why"] = "사용자가 위임한 구체 작업을 최소 실행 범위로 복원"
+                out["interpretation"] = ""
+                out["rationale"] = "사용자 리터럴 요청과 안전 기본값으로 초안 구성"
+                out["_construction"] = "literal_delegated"
+                model_questions = False
         for item in items:
             if item.get("issue_type") and not item.get("type"):
                 item["type"] = item["issue_type"]
@@ -583,7 +2615,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # 조사까지 끝난 명시적 "기존 Task 아래 A와 B Sub-Task 추가" 요청에서 모델이
         # interpretation만 내고 items를 비우는 변동이 있다. 대상·부모·산출물이 모두 사용자
         # 문장에 있으므로 다시 묻지 않고 최소 초안을 결정적으로 복원한다(SUB2 실측).
-        if not items and not qs and state.get("situation"):
+        if _is_create_action(state) and not items and not qs and state.get("situation"):
             recovered = _recover_explicit_subtasks(state)
             if recovered:
                 items = out["items"] = recovered
@@ -604,6 +2636,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # ── 사용자가 입으로 지정한 담당("성능 측정은 x1402")은 **코드가 보장**한다 —
         # force_rule 로 지시해도 모델이 떨어뜨리는 일이 반복됐다(실측 PAR1 2회).
         _apply_named_assignees(state, items)
+        _apply_scoped_continuation_decisions(state, items, mode, qs)
         # ★ 기계적 가드 — task 배치에 Sub-Task 가 섞이면 그 항목은 뺀다. 프롬프트로 막았는데도
         #   실 모델이 섞어 낸 적이 있고, 그대로 두면 검증 실패 → 재작성 왕복만 태우다
         #   한도 소진으로 끝난다. 빼는 것이 반려보다 낫다(부모 생성 후 2차 승인으로 붙일 수 있다).
@@ -611,7 +2644,9 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # 라고 지목했으면 그 키가 부모다(실재는 조사에서 이미 확인됐다). **모드와 무관하게**
         # 채운다: mode=subtask 로 내면서 parent 만 빠뜨리면 검증에서 통째로 반려돼
         # "만들겠습니다" 라고 말해 놓고 초안이 0건이 된다(실측: PAR1).
-        named = [k for k in (state.get("mentioned_keys") or []) if _ticket_exists(k)]
+        named = [k for k in dict.fromkeys([
+            *_typed_target_keys(state), *(state.get("mentioned_keys") or []),
+        ]) if _ticket_exists(k)]
         # 사용자가 지목한 부모 자체가 Sub-Task/Epic이면 그 아래에 Sub-Task를 또 만들 수 없다.
         # 예전 검사는 "Epic이 아닌 실재 티켓"만 봐서 Sub-Task를 부모로 승인했고, 답변은
         # 불가능하다고 말하면서 payload에는 생성될 항목이 남는 모순이 생겼다. 불가능한 요청은
@@ -656,6 +2691,24 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 if (i.get("type") or "").lower().startswith("sub") or mode == "subtask":
                     if not str(i.get("parent") or "").strip():
                         i["parent"] = named[0]
+
+        # An exact one-child request is an output cardinality contract, not a suggestion
+        # to decompose the child's work.  Collapse a projector-expanded list/wrapper before
+        # any paid split path can turn that one Sub-Task into four descendants.
+        if (_explicit_single_subtask_request(state) and items and named
+                and _can_parent_subtask(named[0])
+                and len((requested_outcome_contract(state).get("outcomes") or [])) <= 1):
+            best = _best_item_for_request(state, items)
+            best.pop("children", None)
+            _force_item_type(best, "Sub-Task", "subtask")
+            best["parent"] = named[0]
+            items[:] = [best]
+            mode = out["mode"] = "subtask"
+            out["structure"] = "single_task"
+            out["structure_why"] = "사용자가 기존 Task 아래 Sub-Task 한 건을 정확히 요청했다"
+            out["rationale"] = ((out.get("rationale") or "")
+                                + "\n(Sub-Task 한 건 요청을 그대로 보존해 추가 분해하지 않았다)"
+                                ).strip()
 
         # ★ 새 일을 "단계별 Sub-Task"로 만들라는 요청인데 모델이 임의의 기존 티켓을 골라
         # mode=subtask 로 내면, 사용자가 요청한 **새 부모 Task가 사라진다**. S1 재검증에서
@@ -785,6 +2838,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             for i in items:
                 i.pop("children", None)
         _apply_named_assignees(state, items)
+        _apply_scoped_continuation_decisions(state, items, mode, qs)
         turns = (state.get("turns") or 0) + 1
         # 되묻기 상한 뒤에는 선택 질문만 버린다. 필수 질문은 답이 없으면 계속 미확정이다.
         if qs and turns > MAX_REFINE_TURNS:
@@ -799,24 +2853,14 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             out["rationale"] = ((out.get("rationale") or "")
                                 + "\n(답이 필요한 질문이 남아 있어 임의 초안은 보류했다)"
                                 ).strip()
-        # 초안 관련 인터뷰의 마지막엔 항상 **자유 의견** 질문 하나를 붙인다(사용자 요청) —
-        # 객관식 보기가 못 담는 계획·우려를 받아낼 출구. 코드가 붙이므로 모델이 잊지 못한다.
-        # ★ 이미 넷 이상 물었으면 **자유 의견 칸은 붙이지 않는다.** 슬롯이 늘어(배경·완료
-        #   조건·분할) 질문이 6개까지 나왔는데(실측 ASK1·DUP1·RULE1), 그쯤 되면 출구가
-        #   하나 더 있는 것이 아니라 **취조로 읽힌다.** 자유 의견은 물을 것이 적을 때
-        #   객관식이 못 담는 말을 받으려던 장치다 — 많이 물었으면 이미 받은 것이다.
-        if qs and len(qs) < 3 \
-                and not any(_question_requires_input(q) for q in qs) \
-                and not any(q.get("kind") == "text" and "자유" in q.get("question", "") for q in qs):
-            qs.append({"question": "그 밖에 반영할 의견이나 원하는 진행 방식이 있으면 자유롭게 "
-                                   "적어 주세요 (없으면 건너뛰어도 됩니다)",
-                       "kind": "text", "options": [], "field": ""})
+        # Optional feedback belongs on the approval surface. ``questions`` carries only
+        # values without which a truthful executable payload cannot be formed.
         # ── 시스템·픽스처 라벨은 사람이 붙이는 것이 아니다 ────────────────
         # 배치 재료로 기존 라벨 **목록**을 주니 모델이 거기서 아무거나 집었다(실측:
         # 카탈로그 검색 개선 티켓에 `ui-fixture`). 데이터 관리용 표식은 업무 티켓의
         # 라벨이 아니고, 잘못 붙으면 그 필터로 조회하는 화면이 오염된다.
         # 판정은 **딱 이 부류만** — 일반 라벨의 적절성은 사용자가 카드에서 판단한다.
-        said_all = (request_text(state) + " " + last_user_text(state)).lower()
+        said_all = _current_request_boundary_text(state).lower()
         for it in items:
             drop_l = [str(lb) for lb in (it.get("labels") or [])
                       if _re.match(r"^(ui|dataset|test|demo|sample)[-_]?fixture$|^tbl[-_]",
@@ -844,7 +2888,9 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # "체크박스 하나 추가, 알아서" 같은 요청이 조사 문맥의 단계어를 주워 Epic+Sub-Task
         # 다섯 건으로 부풀었다. 단일 산출물·짧은 요청·전권 위임이 동시에 확인된 경우에만
         # 적용하며, 사용자가 분할/단계/복수 산출물을 말한 요청은 건드리지 않는다.
-        if mode == "task" and items and _simple_delegated_request(state):
+        if (mode == "task" and items and typed_outcome_count <= 1
+                and _simple_delegated_request(state)
+                and out.get("_construction") != "request_refinement"):
             best = _best_item_for_request(state, items)
             changed = len(items) > 1 or bool(best.get("children"))
             best.pop("children", None)
@@ -874,7 +2920,11 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                          if sum(len(i.get("children") or []) for i in items) else "single_task")
             out["structure"] = structure
         why = (out.get("structure_why") or "").strip()
-        src = out.get("structure_source") or ""
+        # ``structure_source`` is runtime provenance, not semantic model output.  Asking a
+        # projector to classify its own decision produced the invalid enum `user_request`
+        # in r24 and spent a repair call even though request text and accepted state already
+        # determine the answer.  Never trust or normalize a model-provided string here.
+        src = "inferred"
         said_shape, _word = shape_hint(state)
         # 사용자가 새 일의 형태를 "단계별 Sub-Task"로 지정했는데 모델이 single_task 를
         # 내면 `user_specified` 표지만 붙고 산출 구조는 사용자 지정과 달라진다. 표식은
@@ -888,7 +2938,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                     ("사람 나눠", "담당 나눠", "나눠 맡", "나눠서 진행")):
                 why = "같은 반복 대상을 module roster에 분량으로 나누라는 요청이다"
                 out["structure_why"] = why
-        elif said_shape == "single_task" and mode == "task" and items:
+        elif (said_shape == "single_task" and mode == "task" and items
+              and out.get("_construction") != "request_refinement"):
             # `Task 만들어줘`처럼 issue type을 단수로 지정했으면 모델이 임의로 붙인
             # 설계/구현/검증 children을 접는다. 사용자 지정 형태는 권고가 아니라 결정이다.
             best = _best_item_for_request(state, items)
@@ -896,13 +2947,25 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             items[:] = [best]
             structure = out["structure"] = "single_task"
             why = out["structure_why"] = "사용자가 단일 티켓 타입으로 생성을 요청했다"
-        if said_shape:                      # 사용자가 말한 것은 판단이 아니다 — 코드가 확정한다
+        authoritative_plan = any(
+            isinstance(row, dict) and str(row.get("summary") or "").strip()
+            for row in (state.get("structure_plan") or [])
+        )
+        if said_shape or (authoritative_plan
+                          and (state.get("structure_ok") or structure_accepted(state))):
+            # 실제 형태를 말했거나 화면에 제시된 nonempty 뼈대를 승인한 경우만 사용자
+            # 지정이다. 빈 plan에서 `그냥 진행해줘`의 일반 동사를 승인으로 읽지 않는다.
             src = "user_specified"
+        # 사용자는 Epic을 요청했지만 최종 Task 구조는 Epic reporting-unit 기준에 따라
+        # Work Architect가 보수적으로 선택했다. 이 구조까지 user_specified로 표시하면
+        # 승인 카드가 실제 사용자 선택과 반대로 설명한다.
+        if out.get("_epic_downgrade"):
+            src = "inferred"
 
         # 생성 payload는 Story Point를 지원하지 않는다. 모델이 rationale에 "생성 후 할당"
         # 같은 약속을 남겨도 실제 승인 payload와 모순되므로 제거하고 정확한 안내를 남긴다.
         sp = _re.search(r"(?:스토리\s*포인트|Story\s*Points?|\bSP)\s*(?:를|은|:|=)?\s*(\d+)",
-                        request_text(state), _re.I)
+                        _current_request_boundary_text(state), _re.I)
         if sp and items:
             for it in items:
                 for field in ("story_points", "storyPoints", "story_point", "sp"):
@@ -913,24 +2976,93 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 "", rationale, flags=_re.I).strip(" ;\n")
             out["rationale"] = (rationale + f"\n(Story Point {sp.group(1)}는 생성 payload 미지원 — "
                                 "생성 후 티켓 화면에서 직접 설정)").strip()
-        # 상대 날짜 산술은 모델의 언어 능력이 아니라 런타임 계산으로 확정한다. 생성 배터리
-        # ATTR1에서 같은 날의 "이번 주 금요일"을 다음 주 화요일로 내면서도 형식 검사는
-        # 통과했다. 여러 티켓에 서로 다른 기한이 섞인 경우까지 추측하지 않도록, 현재 사용자
-        # 메시지가 상대 기한을 명시한 단일 초안에만 적용한다.
-        _apply_relative_due_to_single_draft(state, items)
+        # 명시한 ISO 마감일과 상대 날짜 산술은 모델의 언어 능력이 아니라 런타임 계산으로
+        # 확정한다. 형식상 유효한 다른 날짜를 모델이 내도 사용자가 쓴 유일한 exact date가
+        # 우선한다. 여러 루트 티켓이나 여러 날짜의 대응 관계까지 추측하지는 않는다.
+        # A deterministic multi-outcome recovery may have established a literal root
+        # bijection but not yet attached its opaque refs. Bind that proven mapping before
+        # per-outcome scalar fields are compiled; an unproven mapping remains untouched.
+        if (_is_create_action(state) and out.get("_construction")
+                and requested_outcome_contract(state)):
+            _bind_deterministic_multi_outcomes(state, out)
+        per_outcome_due = _expected_due_dates_by_root(state, items)
+        due_status, due_literal = _explicit_due_instruction_status(state)
+        if per_outcome_due:
+            for index, item in enumerate(items):
+                item["duedate"] = per_outcome_due[index]
+        elif due_status in {"invalid", "ambiguous"} and items:
+            for item in items:
+                item["duedate"] = ""
+            if not any(str(question.get("field") or "") == "duedate" for question in qs):
+                detail = (f"'{due_literal}'은 유효한 날짜가 아닙니다. "
+                          if due_status == "invalid" and due_literal else
+                          "서로 다른 마감일이 함께 지정되어 있습니다. ")
+                due_question = {
+                    "question": detail + "적용할 마감일 하나를 YYYY-MM-DD로 알려 주세요.",
+                    "kind": "date", "options": [], "field": "duedate",
+                    "required_input": True,
+                    "why_required": "사용자 지정 마감일을 유효한 단일 날짜로 확정할 수 없음",
+                }
+                qs = [question for question in qs
+                      if _question_requires_input(question)][:2] + [due_question]
+            out["rationale"] = ((out.get("rationale") or "")
+                                + "\n(확인 필요: 마감일이 유효한 단일 날짜로 확정되지 않아 "
+                                  "초안의 임의 날짜를 제거했다)").strip()
+        elif due_status == "clear" and items:
+            for item in items:
+                item["duedate"] = ""
+            out["rationale"] = ((out.get("rationale") or "")
+                                + "\n(사용자 요청에 따라 마감일을 비워 뒀다)").strip()
+        else:
+            applied_due = _apply_relative_due_to_single_draft(state, items)
+            authoritative_due = _authoritative_explicit_due(state)
+            if applied_due and authoritative_due:
+                out["rationale"] = _normalize_due_rationale(
+                    str(out.get("rationale") or ""), authoritative_due)
+        outcome_contract = (requested_outcome_contract(state)
+                            if _is_create_action(state) else {})
+        # Apply after every deterministic recovery/grouping path has settled ``items``.
+        # Binding the raw model output at method entry misses a meeting/bug/delegation
+        # artifact that code safely reconstructs later in this method.
+        single_binding_payload = {"items": items}
+        if outcome_contract and bind_single_outcome_contract(state, single_binding_payload):
+            out["outcome_contract_id"] = single_binding_payload["outcome_contract_id"]
+        # Deterministic literal recovery is itself derived from the authoritative user
+        # request, so attach its typed binding here. Normal model output is never silently
+        # repaired: a missing/wrong binding remains visible to the Auditor's fail-closed
+        # machine check.
+        elif outcome_contract and out.get("_construction"):
+            if not _bind_deterministic_multi_outcomes(state, out):
+                # Never make coverage pass by copying every outcome to every root. Without
+                # a proven one-to-one literal mapping, leave the contract visibly invalid so
+                # Auditor blocks it and the semantic path/user can resolve the ambiguity.
+                out.pop("outcome_contract_id", None)
+                for item in items:
+                    if isinstance(item, dict):
+                        item.pop("outcome_refs", None)
+        # Runtime recovery can attach outcome refs after the earlier hierarchy/owner pass.
+        # Seal scoped user decisions once more at the final draft boundary.
+        _apply_scoped_continuation_decisions(
+            state, items, out.get("mode") or mode, qs)
         draft = {"mode": out.get("mode") or "task", "items": items,
                  "structure": structure, "structure_why": why,
                  "structure_source": src,
                  "rationale": out.get("rationale") or ""}
+        if outcome_contract or out.get("outcome_contract_id"):
+            draft["outcome_contract_id"] = str(out.get("outcome_contract_id") or "")
+        if out.get("_construction"):
+            draft["construction"] = str(out["_construction"])
         # ★ 형태가 **우리 판단**이고 기본값(단일 Task)에서 올라간 것이면 한 번 확인한다.
         #   티켓 하나로 끝날 일을 다섯 개로 쪼개 놓고 승인만 받는 것은 사용자가 원한 게
         #   아닐 수 있다. 사용자가 '알아서'라고 했으면 묻지 않는다(위임이 이긴다).
         if (src == "inferred" and structure in ("task_with_subtasks", "multiple_tasks",
                                                 "new_epic")
                 and items and not qs and not _said_defaults(state)):
-            qs = [{"question": _shape_question(structure, items),
-                   "kind": "choice", "field": "",
-                   "options": _shape_options(structure)}]
+            out["rationale"] = (
+                (out.get("rationale") or "")
+                + "\n(구조는 실행 단위와 현재 초안에 맞춘 안전 기본값이다 — 승인 화면에서 "
+                  "Task/하위 작업 구성을 조정할 수 있다)"
+            ).strip()
         if draft_new_labels:
             draft["new_labels"] = draft_new_labels
         # (구조: …) 줄은 **맨 끝에서 한 번만** 붙인다 — 여기서도 붙이던 것을 뺐다.
@@ -1021,6 +3153,12 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                                   "닫힌다)").strip()
 
         # ── 주제 가드 — 제목·본문이 **원 요청의 고유어**를 유지하는지 확인한다.
+        # Semantic projection and later grouping may produce a structurally valid title while
+        # dropping one product token or turning ``1차`` into bare ``차``. High-precision user
+        # anchors are facts, not editorial wording, so restore them before judging drift.
+        if _preserve_required_user_anchors(state, items):
+            out["rationale"] = ((out.get("rationale") or "")
+                                + "\n(원 요청의 고유 식별자·차수 표기를 제목에 복원했다)").strip()
         # 실측: Epic 본문("증분 적재")이 원 요청("starrocks puffin ndv")을 잠식해 전혀
         # 다른 티켓이 만들어졌다. 판정은 코드가, 고치는 판단은 사람이 한다(경고 노출).
         drift = _topic_drift(state, items)
@@ -1031,39 +3169,115 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # ── Epic Link 는 **실재하고 관련 있는 write-project Epic** 이어야 한다 ─────
         # 실측: 사용자가 "기존 에픽 중 맞는 걸로 붙여줘"라고 했는데 모델이 Task(DL-9072)를
         # 에픽이라 답하고 초안에는 아예 안 실었다. 타입 확인은 판단이 아니라 조회다.
+        typed_parent_authority = parent_selection_authority(state)
+        typed_parent_slots = _apply_typed_parent_resolution(state, items)
+        if typed_parent_slots:
+            draft["resolved_slots"] = typed_parent_slots
+            if any(row.get("status") != "resolved" for row in typed_parent_slots):
+                items.clear()
+                qs.append(_required_parent_resolution_question())
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(요청한 기존 parent에 검증된 호환 후보가 없어 "
+                                      "실행 초안을 차단했다)").strip()
+            else:
+                selected_keys = [str(row.get("value") or "")
+                                 for row in typed_parent_slots if row.get("value")]
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(typed parent 결정을 검증된 후보에 결속: "
+                                    + ", ".join(selected_keys) + ")").strip()
         explicit_epic = _explicit_parent_epic(state)
+        explicit_epics = _expected_parent_epics_by_root(state, items)
+        delegated_epic_choice = bool(typed_parent_authority) \
+            or _delegates_existing_epic_choice(state)
+        verified_parent_keys = ({
+            str(row.get("key") or "").strip().upper()
+            for row in verified_parent_epic_candidates(state)
+        } if delegated_epic_choice else set())
         if explicit_epic and mode != "subtask":
             for it in items:
                 if not str(it.get("type") or "").lower().startswith("sub"):
                     it["epic"] = explicit_epic
-        for it in items:
+        elif explicit_epics and mode != "subtask":
+            for index, it in enumerate(items):
+                if not str(it.get("type") or "").lower().startswith("sub"):
+                    it["epic"] = explicit_epics[index]
+        for index, it in enumerate(items):
             ek = str(it.get("epic") or "").strip()
             if not ek:
+                replacement = _delegated_parent_epic(state, it) \
+                    if delegated_epic_choice else None
+                if replacement:
+                    it["epic"] = str(replacement["key"])
+                    out["rationale"] = ((out.get("rationale") or "")
+                                        + f"\n(선택을 위임받아 검증된 기존 Epic "
+                                          f"{replacement['key']} 아래에 배치했다)").strip()
+                elif delegated_epic_choice and mode != "epic":
+                    # Delegation chooses among relevant verified candidates; it is not
+                    # permission to attach the first Epic from the same component.  A
+                    # top-level Task is reversible and does not corrupt another Epic's
+                    # progress when no subject-relevant candidate is supported.
+                    it.pop("epic", None)
+                    out["rationale"] = ((out.get("rationale") or "")
+                                        + "\n(관련성이 검증된 기존 Epic 후보가 없어 "
+                                          "최상위 Task로 보수적으로 배치했다)").strip()
                 continue
-            if not _is_epic(ek):
-                it["epic"] = ""
+            if delegated_epic_choice and ek.upper() not in verified_parent_keys:
+                replacement = _delegated_parent_epic(state, it, rejected_key=ek)
+                if replacement:
+                    it["epic"] = str(replacement["key"])
+                    message = (
+                        f"초안 parent {ek}은 현재 조회에서 상세 확인된 기존 Epic 후보가 "
+                        f"아니어서 {replacement['key']}으로 대체했다"
+                    )
+                else:
+                    it.pop("epic", None)
+                    message = (
+                        f"초안 parent {ek}은 현재 조회에서 상세 확인된 기존 Epic 후보가 "
+                        "아니어서 연결을 비우고 최상위 Task로 뒀다"
+                    )
                 out["rationale"] = ((out.get("rationale") or "")
-                                    + f"\n({ek} 는 Epic 이 아니라 연결하지 않았다 — "
-                                      "Epic 후보를 다시 확인해야 한다)").strip()
+                                    + f"\n({message})").strip()
+                continue
+            # The successful opened detail already proves a delegated candidate's type.
+            # Other parent paths retain the live Jira type guard.
+            if not delegated_epic_choice and not _is_epic(ek):
+                replacement = _delegated_parent_epic(state, it, rejected_key=ek) \
+                    if delegated_epic_choice else None
+                it["epic"] = str(replacement["key"]) if replacement else ""
+                note_text = (f"검증된 기존 Epic {replacement['key']}으로 대체했다"
+                             if replacement else "Epic 후보를 다시 확인해야 한다")
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n({ek} 는 Epic 이 아니다 — {note_text})").strip()
                 continue
             # 사용자가 직접 지목한 Epic은 의식적인 선택이므로 그대로 둔다. 모델/검색이 추론한
             # Epic만 write project·모듈·주제 적합성을 검증한다. 부적합하면 최상위 Task가
             # 엉뚱한 진척률을 오염시키는 것보다 연결을 비우는 편이 안전하다.
-            if ek == explicit_epic:
+            if ek == explicit_epic or ek == explicit_epics.get(index):
+                continue
+            if (out.get("_construction") == "request_refinement"
+                    and delegated_epic_choice and ek.upper() in verified_parent_keys):
+                # The typed continuation selected from QueryRunner's already-materialized
+                # candidate set. Do not re-open or semantically reinterpret it during a
+                # zero-call field overlay.
+                continue
+            if (str(it.get("parent_source") or "") == "resolved_slot"
+                    and typed_parent_authority and ek.upper() in verified_parent_keys):
+                # The shared ResolvedSlot already binds typed authority, materialized type
+                # proof and semantic compatibility. Do not reopen/reinterpret it here.
                 continue
             reason = _inferred_epic_rejection(state, it, ek)
             if reason:
-                it["epic"] = ""
+                replacement = _delegated_parent_epic(state, it, rejected_key=ek) \
+                    if delegated_epic_choice else None
+                it["epic"] = str(replacement["key"]) if replacement else ""
+                if replacement:
+                    message = (f"{ek} 배치를 거부했다 — {reason}; 검증된 기존 Epic "
+                               f"{replacement['key']}으로 대체했다")
+                else:
+                    # Preserve the established rationale wording consumed by the UI/tests.
+                    message = f"{ek} 연결을 뺐다 — {reason}"
                 out["rationale"] = ((out.get("rationale") or "")
-                                    + f"\n({ek} 연결을 뺐다 — {reason})").strip()
-                continue
-            em = _epic_module(ek)
-            comps = [str(c) for c in (it.get("components") or []) if str(c).strip()]
-            if em and comps and em != comps[0]:
-                it["epic"] = ""
-                out["rationale"] = ((out.get("rationale") or "")
-                                    + f"\n({ek} 연결을 뺐다 — {em} 모듈 Epic과 "
-                                      f"{comps[0]} 컴포넌트가 다르다)").strip()
+                                    + f"\n({message})").strip()
 
         # 컴포넌트는 하나만 — 둘이면 워크로드가 이중 계상된다(knowledge/03).
         for it in items:
@@ -1139,7 +3353,11 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                                     + "\n(단계 항목은 독립 Task 가 아니라 Sub-Task 로 접었다)").strip()
 
         need = 2 if structure == "task_with_subtasks" else 3
-        if mode == "task" and len(items) >= need:
+        # A typed RequestPlan already states whether these are independent outcomes. Never
+        # collapse those roots by title similarity: overlapping producer/consumer/reviewer
+        # descriptions are mutable prose and cannot replace stable outcome identity.
+        has_typed_outcomes = typed_outcome_count > 0
+        if mode == "task" and len(items) >= need and not has_typed_outcomes:
             bases = [_base_title(str(i.get("summary") or "")) for i in items]
             # 전원일치를 요구하면 **30개 중 하나만 어긋나도 접기가 통째로 무산된다**
             # (실측 STR1: 같은 요청이 8건·30건·1+30 으로 매번 다르게 나온다). 그렇다고
@@ -1153,7 +3371,10 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 group = [i for i, b in zip(items, bases) if b == base]
                 rest = [i for i, b in zip(items, bases) if b != base]
                 head = dict(group[0])
-                head["summary"] = base
+                # ``base`` intentionally removes digits for grouping equality. It must never
+                # become a visible title: an ordinal such as ``1차`` is user-authored scope.
+                head["summary"] = _display_base_title(
+                    str(group[0].get("summary") or "")) or base
                 head["children"] = [{"summary": str(i.get("summary") or ""),
                                      **({"assignee": i["assignee"]} if i.get("assignee") else {}),
                                      **({"duedate": i["duedate"]} if i.get("duedate") else {})}
@@ -1240,6 +3461,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                         "question": f"{twin['key']} \"{twin.get('summary', '')}\" 가 이미 있습니다. "
                                     "여기에 Task 로 붙일까요, 그래도 새 Epic 을 만들까요?",
                         "kind": "choice", "field": "epic",
+                        "required_input": True,
+                        "why_required": "명시한 새 Epic 생성과 기존 동일 보고 단위 재사용이 충돌함",
                         "options": [f"{twin['key']} 아래 Task 로 (권장 — 중복 Epic 은 진척 집계를 흐린다)",
                                     "새 Epic 을 만든다"]}]
                     # draft 는 이 위에서 이미 조립됐고 items 를 **참조로** 공유한다 —
@@ -1252,7 +3475,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # A literal "make it an Epic" does not waive the four reporting-unit criteria.
         # If duration/scale evidence is insufficient, choose the reversible Task placement
         # even when no near-duplicate Epic title was found.
-        if (out.get("mode") or "") == "epic" and items and request_text(state).strip():
+        if (out.get("mode") or "") == "epic" and items \
+                and _current_request_boundary_text(state):
             unmet = _new_epic_unmet_criteria(state)
             if unmet:
                 item = items[0]
@@ -1281,26 +3505,32 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # 만들었다(본문도 빈 채로). 위임은 선택을 맡긴 것이지 격상 권한을 준 것이 아닌데,
         # 모델은 "알아서"를 격상 승인으로 읽는다. 새 Epic 은 진척 보고 단위가 하나 더 생기는
         # 일이라 되돌리기가 가장 비싸다 — knowledge/04 의 격상 조건도 보수적으로 적혀 있다.
-        # 담을 Epic 이 하나도 없으면 격상을 그대로 둔다(그때는 만드는 것이 맞다).
-        if (out.get("mode") or "") == "epic" and items and not qs and _re.search(
-                r"(에픽|epic)[^.\n]{0,12}(골라|정해|선택)", conversation(state), _re.I):
-            component = next((str(c).strip() for c in (items[0].get("components") or [])
-                              if str(c).strip()), "")
-            pick = _pick_parent_epic(str(items[0].get("summary") or ""), component)
+        # 관련 후보가 없더라도 '고르라'는 위임은 새 Epic 생성 권한이 아니다. 그 경우
+        # 되돌리기 쉬운 최상위 Task로 보수화한다.
+        if ((out.get("mode") or "") == "epic" and items and not qs
+                and delegated_epic_choice):
+            # QueryRunner already opened a bounded candidate set. Do not consult a second
+            # global Epic list here: an unopened search hit is not sufficient evidence for
+            # a write-time hierarchy decision.
+            pick = _delegated_parent_epic(state, items[0])
+            _force_item_type(items[0], "Task", "task")
             if pick:
-                _force_item_type(items[0], "Task", "task")
                 items[0]["epic"] = pick["key"]
-                items[0].pop("epic_name", None)
-                # ★ `draft` 는 이 위에서 이미 조립됐다 — `out` 만 고치면 승인 카드는 여전히
-                #   Epic 이다(items 는 참조로 공유돼 항목만 바뀐 채 mode 는 epic). 코드가
-                #   만든 값이 소비하는 쪽에 안 닿는 §5-f 의 그 부류라, 두 벌 다 쓴다.
-                mode = out["mode"] = draft["mode"] = "task"
-                structure = out["structure"] = draft["structure"] = "single_task"
-                out["rationale"] = ((out.get("rationale") or "")
-                                    + f"\n(Epic 을 **고르라**고 해서 {pick['key']} "
-                                      f"\"{str(pick.get('summary') or '')[:40]}\" 아래 Task 로 뒀다 — "
-                                      "새 Epic 은 진척 보고 단위가 하나 더 생기는 일이라 "
-                                      "말하지 않았으면 만들지 않는다)").strip()
+                placement = (f"{pick['key']} \"{str(pick.get('summary') or '')[:40]}\" "
+                             "아래 Task")
+            else:
+                items[0].pop("epic", None)
+                placement = "관련 Epic 없는 최상위 Task"
+            items[0].pop("epic_name", None)
+            # ★ `draft` 는 이 위에서 이미 조립됐다 — `out` 만 고치면 승인 카드는 여전히
+            #   Epic 이다(items 는 참조로 공유돼 항목만 바뀐 채 mode 는 epic). 코드가
+            #   만든 값이 소비하는 쪽에 안 닿는 §5-f 의 그 부류라, 두 벌 다 쓴다.
+            mode = out["mode"] = draft["mode"] = "task"
+            structure = out["structure"] = draft["structure"] = "single_task"
+            out["rationale"] = ((out.get("rationale") or "")
+                                + f"\n(Epic 을 **고르라**고 해서 {placement}로 뒀다 — "
+                                  "새 Epic 은 진척 보고 단위가 하나 더 생기는 일이라 "
+                                  "명시적 생성 요청 없이는 만들지 않는다)").strip()
 
         # ── 컴포넌트가 비면 제목의 [모듈] 접두에서 채운다 ────────────────
         # 우리 제목 규약이 "[모듈] 무엇을 한다"다. 모델이 제목엔 넣고 필드엔 빠뜨리는 일이
@@ -1392,34 +3622,28 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                                      "PoC", "테스트", "배포") if w in body)
             # request_text가 후속 답변으로 덮이는 회귀가 있더라도 전체 사용자 발화에서
             # 최초 구축 신호를 복원한다(STARR1: 첫 턴 `파이프라인`이 둘째 턴에서 사라짐).
-            building_request = (request_text(state) + " " + _human_request_text(state)).strip()
+            building_request = _current_request_boundary_text(state)
             building = any(w in building_request for w in BUILD_WORDS)
             if dod >= 5 or stages >= 3 or building:
-                if _said_defaults(state):
-                    # 위임받았으면 묻지 않고 **나눠서** 낸다 — 보정 호출 1회로 단계를
-                    # children 으로 뽑는다(실측: 위임 케이스에서 단일 Task 뭉개기가 반복).
-                    fix = _split_into_children(state, items[0])
-                    if fix:
-                        items[0]["children"] = fix
-                        _fill_owners(items[0], fix)
-                        structure = "task_with_subtasks"
-                        why = ("설계·구현·검증처럼 단계가 나뉘고 담당이 갈릴 규모라 "
-                               "단계별 Sub-Task 로 나눴다")
-                        out["structure"], out["structure_why"] = structure, why
-                        draft["structure"], draft["structure_why"] = structure, why
-                        out["rationale"] = ((out.get("rationale") or "")
-                                            + "\n(다단계 규모라 단계별 Sub-Task 로 나눴다 — "
-                                              "위임에 따라 자동. 승인 화면에서 고칠 수 있다)").strip()
-                    else:
-                        out["rationale"] = ((out.get("rationale") or "")
-                                            + "\n(확인 필요: 설계·구현·검증처럼 단계가 나뉘는 "
-                                              "규모로 보이는데 단일 Task 다 — Sub-Task 분할 검토)").strip()
+                # An understructured build has a deterministic conservative shape: keep
+                # the requested deliverable as its parent and expose execution stages as
+                # children. The approval card remains the reversible editing boundary.
+                fix = _split_into_children(state, items[0])
+                if fix:
+                    items[0]["children"] = fix
+                    _fill_owners(items[0], fix)
+                    structure = "task_with_subtasks"
+                    why = ("설계·구현·검증처럼 단계가 나뉘고 담당이 갈릴 규모라 "
+                           "단계별 Sub-Task 로 나눴다")
+                    out["structure"], out["structure_why"] = structure, why
+                    draft["structure"], draft["structure_why"] = structure, why
+                    out["rationale"] = ((out.get("rationale") or "")
+                                        + "\n(다단계 규모라 단계별 Sub-Task 로 나눈 안전 "
+                                          "기본값이다 — 승인 화면에서 고칠 수 있다)").strip()
                 else:
-                    qs = [{"question": "작업이 여러 단계(설계·구현·검증 등)로 나뉘는 규모로 "
-                                       "보입니다. 어떻게 만들까요?",
-                           "kind": "choice", "field": "",
-                           "options": ["Task 하나 + 단계별 Sub-Task (권장 — 단계·담당이 나뉜다)",
-                                       "단일 Task 로 둔다"]}]
+                    out["rationale"] = ((out.get("rationale") or "")
+                                        + "\n(구조 권고: 다단계 규모이지만 근거 있는 하위 실행 "
+                                          "단위를 결정적으로 만들 수 없어 현재 Task를 유지했다)").strip()
 
         # ── 모듈이 갈리는 자식은 **형제 Task 로 올린다** ─────────────────────────
         # knowledge/03: 요청이 두 모듈에 걸치면 컴포넌트를 둘 다 넣지 말고 **티켓을 나눠서
@@ -1503,7 +3727,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             # 뭉갠 것보다 나쁘다 — 사용자가 시킨 일의 절반이 **없어졌는데** 초안은 멀쩡해
             # 보이고, 제외 문구가 그것을 정당해 보이게 만든다. 모델 자신이 "별도 작업"이라고
             # 판단했으니 남은 것은 그 별도 작업을 **만드는 일**뿐이다.
-            want = modules_in_text(request_text(state))
+            want = modules_in_text(_current_request_boundary_text(state))
             have = {resolve_module((i.get("components") or [""])[0]) for i in items}
             missing = [m for m in want if m not in have]
             if missing and _said_defaults(state) and not qs and len(want) >= 2:
@@ -1523,7 +3747,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # 같은 산출물을 모듈만 달리해 2~3벌 만든 경우를 접는다. 단순 문자열 중복이 아니라
         # 행동어(조정/최적화/개선)를 뗀 업무 핵심어로 묶고, module-aliases가 가리키는 실제
         # 모듈의 항목을 남긴다. 예: "쿼리 엔진 인덱스"는 Runtime 한 건만 유지한다.
-        if mode == "task" and len(items) > 1:
+        if mode == "task" and len(items) > 1 and not has_typed_outcomes:
             removed = _dedupe_semantic_items(state, items)
             if removed:
                 structure = out["structure"] = draft["structure"] = \
@@ -1575,22 +3799,17 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         #   구조 지시였다(실측 STR1: 이것 때문에 본문 없는 초안이 카드에 올라갔다).
         if items and not qs and mode != "subtask" and not said_shape \
                 and not _said_defaults(state) \
-                and (state.get("intent") or "") != Intent.MODIFY \
+                and _is_create_action(state) \
                 and (state.get("situation") or "").strip() \
                 and is_composite(items) and not state.get("structure_ok"):
             if structure_accepted(state) and (state.get("structure_plan") or []):
                 pass                      # 사용자가 방금 승인했다 — 이번 턴부터 살을 붙인다
             else:
-                struct_stage = True
-                for it in items:          # 뼈대 단계에서는 본문을 만들지 않는다
-                    it.pop("description", None)
-                    for c in (it.get("children") or []):
-                        if isinstance(c, dict):
-                            c.pop("description", None)
-                qs = [structure_question(items)]
+                # Optional structure preference must not suspend an otherwise complete
+                # draft. Preserve bodies and show the inferred shape as editable advice.
                 out["rationale"] = ((out.get("rationale") or "")
-                                    + "\n(먼저 **구조**를 맞춥니다 — 이 뼈대가 확정되면 각 "
-                                      "티켓의 배경·범위·완료 조건을 채웁니다)").strip()
+                                    + "\n(구조 권고: 독립 실행 단위가 여러 개라 현재 복합 초안을 "
+                                      "유지했다 — 승인 화면에서 합치거나 나눌 수 있다)").strip()
 
         # ★ **질문이 붙는 턴에도 초안은 화면에 보인다** — 되묻는 턴이라고 본문을 방치하면
         #   그 얇은 본문이 그대로 사용자에게 간다("확인을 받되 초안은 그대로 보여 준다"가
@@ -1654,6 +3873,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 # generic review wording escapes into the approval payload.
                 _sharpen_dod(state, items)
                 _dedupe_dod_rows(items)
+                _ensure_minimum_task_dod(state, items)
 
         # A meeting record is an authoritative decision record.  Preserve reviewers in the
         # ticket body and remove optional create fields that the minutes never decided.
@@ -1678,7 +3898,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # PMO_VIT 는 경영진 보고 현안 전용이고 트리 최상위 하나에만 붙는다 — 그런데 모델이
         # 기존 라벨 목록에서 보고는 신규 티켓 셋에 전부 붙였다(실측). 사용자가 입으로 말했을
         # 때만 남기고, 아니면 기계적으로 뗀다. 규칙 위반 라벨은 검색 노이즈가 된다.
-        asked_all = conversation(state)
+        asked_all = _current_request_boundary_text(state)
         if "PMO_VIT" not in asked_all and "현안" not in asked_all:
             for it in items:
                 if it.get("labels"):
@@ -1688,6 +3908,9 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         plan, qs = _change_plan(state, out, items, qs)
         _canonicalize_meeting_mentions(state, plan)
         qs = _normalize_duplicate_and_bug_questions(state, qs, items=items, plan=plan)
+        qs = _normalize_question_contracts(
+            state, qs, mode=str(out.get("mode") or mode), items=items,
+        )
         # ★ 바꿀 값을 **정확히 말한** 수정 요청에는 되묻지 않는다. 계획이 이미 섰으면
         #   승인 카드가 곧 확인 단계다(work_architect.md: "NEVER ask permission to proceed").
         #   실측(MOD8): "라벨 data-quality 추가하고 컴포넌트를 Catalog 로" 처럼 값을 다 준
@@ -1766,7 +3989,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                        and str(i.get("summary") or "").strip()])
         # 해석 확인 턴은 초안이 없는 것이 정상이다 — 대신 '제가 이해한 바'가 나가고 사용자가
         # 거기에 답한다. 그것마저 비었으면 아래 갈래다(막다른 턴이라는 점은 같다).
-        interp_turn = bool(str(out.get("interpretation") or "").strip()
+        interp_turn = bool(_is_create_action(state)
+                           and str(out.get("interpretation") or "").strip()
                            and not state.get("situation"))
         if not items and not plan and not qs and not interp_turn:
             # 들어온 것이 있었으면 **몇 건이 걷혔는지** 남긴다. 애초에 없었으면(모델이 빈손)
@@ -1777,17 +4001,36 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 out["rationale"] = ((out.get("rationale") or "")
                                     + f"\n(초안 {came_in}건이 검증 과정에서 모두 제외됐다)").strip()
                 draft["rationale"] = out["rationale"]
-            qs = [{"question": "요청하신 내용으로는 만들 수 있는 티켓이 없었습니다. "
-                               "어떻게 할까요?",
-                       "kind": "choice", "field": "",
-                       "options": ["범위를 다시 알려주면 그것으로 다시 잡는다",
-                                   "부모/Epic 을 지정해 그 아래로 만든다",
-                                   "이번엔 만들지 않는다"]}]
+            if action == "comment":
+                qs = [{
+                    "question": "댓글 계획의 대상과 남길 내용을 확정하지 못했습니다. "
+                                "대상 티켓과 댓글 내용 또는 전달 목적을 알려 주세요.",
+                    "kind": "text", "field": "comment", "options": [],
+                    "required_input": True,
+                    "why_required": "검증을 통과한 comment payload가 남아 있지 않음",
+                }]
+            elif action == "update":
+                qs = [{
+                    "question": "기존 티켓에서 바꿀 필드와 정확한 새 값을 알려 주세요.",
+                    "kind": "text", "field": "change", "options": [],
+                    "required_input": True,
+                    "why_required": "검증을 통과한 update payload가 남아 있지 않음",
+                }]
+            else:
+                qs = [{"question": "요청하신 내용으로는 만들 수 있는 티켓이 없었습니다. "
+                                   "어떻게 할까요?",
+                           "kind": "choice", "field": "",
+                           "required_input": True,
+                           "why_required": "검증을 통과한 생성 payload가 남아 있지 않음",
+                           "options": ["범위를 다시 알려주면 그것으로 다시 잡는다",
+                                       "부모/Epic 을 지정해 그 아래로 만든다",
+                                       "이번엔 만들지 않는다"]}]
 
         # 해석 확인 턴의 "제가 이해한 바" — ResultIntegrator 가 질문에 앞세워 보여 준다.
         # 그 외 턴에는 지난 해석이 남지 않게 비운다(오래된 해석은 오해가 된다).
         interp = (str(out.get("interpretation") or "").strip()
-                  if not items and not state.get("situation") else "")
+                  if _is_create_action(state) and not items and not state.get("situation")
+                  else "")
 
         # ── 구조 합의 상태를 State 에 남긴다 ──────────────────────────────────
         # `structure_notes` 는 **누적**이다. "3번 빼줘" 다음 턴에 "1번을 둘로" 라고 하면
@@ -1811,6 +4054,21 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         elif items and is_composite(items):
             st_out["structure_ok"] = True     # 살을 붙이는 단계로 넘어왔다
 
+        # Evidence fidelity is payload authority, not prose preference.  Apply the bounded
+        # verified contract after every body/grouping normalizer so a late rewrite cannot
+        # silently discard a completed baseline, uncertain dependency, approval gate, or
+        # reusable validation artifact.  The Auditor independently enforces the same typed
+        # contract at the approval boundary.
+        evidence_obligations = _apply_verified_evidence_obligations(state, items)
+        if evidence_obligations:
+            draft["evidence_obligations"] = evidence_obligations
+        else:
+            draft.pop("evidence_obligations", None)
+
+        # Late normalizers (stage folding and approved-structure restore) can rewrite titles
+        # after the first guard. Seal the same invariant again at the payload boundary.
+        _preserve_required_user_anchors(state, items)
+
         # tier와 issue_type을 분리해 downstream/보고서가 Bug를 별도 계층으로 오해하지 않게 한다.
         # 기존 write adapter가 쓰는 `type`은 호환을 위해 함께 유지한다.
         for item in items:
@@ -1829,8 +4087,40 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                     child["tier"], child["issue_type"], child["type"] = \
                         "subtask", child_type, child_type
 
+        # Typed outcome/source identity and exact requested fields are runtime authority.
+        # Seal them only after every body/hierarchy normalizer has finished, and carry the
+        # prior immutable effect snapshot across an Auditor repair instead of recomputing it
+        # from mutable prose.
+        _apply_source_bound_meeting_assignments(state, items)
+        seal_work_item_identities(state, draft)
+        bind_resolved_slot_item_ids(draft)
+        seal_requested_effect_contract(
+            state, draft=draft, change_plan=plan,
+            force_refresh=bool(typed_parent_slots),
+        )
+        # Existing-ticket rationale is entirely describable by the current effect payload.
+        # Rebuild it after every normalizer and effect seal so an older priority, due date,
+        # comment, or title sentence cannot survive a replacement turn.
+        if plan and action in {"update", "comment"}:
+            plan["why"] = project_pending_rationale(change_plan=plan)
+            plan["rationale_contract"] = PENDING_RATIONALE_CONTRACT
+        previous_review = state.get("review") or {}
+        prior_signature = str(previous_review.get("defect_signature") or "")
+        if previous_review.get("ok") is False and prior_signature:
+            repair_attempt = {
+                "defect_signature": prior_signature,
+                "payload_digest": str(previous_review.get("payload_digest") or ""),
+            }
+            (draft if _is_create_action(state) else plan)["repair_attempt"] = repair_attempt
+
+        # Deterministic late questions use the same typed ownership path as model questions.
+        qs = _normalize_question_contracts(
+            state, qs, mode=str(draft.get("mode") or mode), items=items,
+        )
+        reset_review = ({"review": {}} if previous_review else {})
+
         return {"questions": qs, "draft": draft, "change_plan": plan, "turns": turns,
-                "interpretation": interp, **st_out,
+                "interpretation": interp, **st_out, **reset_review,
                 "trace": note(state, self.name,
                               f"변경 계획 {plan.get('key')}" if plan else
                               ("해석 확인 " if interp and not items else "")
@@ -1851,50 +4141,53 @@ def _normalize_priority(value) -> str:
     return _PRI.get("P" + match.group(1), raw) if match else _PRI.get(raw.upper(), raw)
 
 
-def _explicit_single_mutation_from_request(state) -> dict:
-    """Parse a conservative field-only update from the latest user turn.
+def _unsupported_exact_update_field(text: str) -> bool:
+    """Whether the same request names an effect outside the scalar fast-path contract."""
+    outside_quotes = _re.sub(r"['\"“‘][^'\"”’\n]{2,240}['\"”’]", " ", str(text or ""))
+    return bool(_re.search(
+        r"\bbody\b|\bdescription\b|\bcomment\b|\blabels?\b|\bcomponents?\b|"
+        r"\bassignee\b|\bowner\b|\bstatus\b|\btransition\b|\blink\b|"
+        r"\bparent\b|\bepic\b|\bstory\s*points?\b|\bfix\s*versions?\b|"
+        r"본문|설명(?:은|는|을|를|만|:)|댓글|코멘트|라벨|태그|컴포넌트|"
+        r"담당|배정|할당|상태|전이|링크|부모|에픽|스토리\s*포인트|해결\s*버전|"
+        r"이슈\s*유형|티켓\s*유형|issue\s*type",
+        outside_quotes, _re.I,
+    ))
 
-    This is a context-boundary guard, not a general natural-language parser.  It accepts
-    one literal Jira key and only values whose field names are present in the same current
-    message.  Therefore an earlier research topic can never supply the target or payload.
-    """
-    said = (last_user_text(state) or request_text(state) or "").strip()
+
+def _explicit_single_mutation_from_request(state) -> dict:
+    """Project only RequestArchitect-issued effects; semantic prose is never reparsed here."""
+    said = _current_request_boundary_text(state)
+    if _unsupported_exact_update_field(said):
+        return {}
     keys = list(dict.fromkeys(_re.findall(
         r"(?<![0-9A-Z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Z-])", said, _re.I)))
     if len(keys) != 1:
         return {}
-    fields = {}
-    if _re.search(r"우선순위|priority", said, _re.I):
-        priority = _re.search(r"(?<![0-9A-Za-z])P([0-4])(?:-[A-Za-z]+)?(?![0-9A-Za-z])",
-                              said, _re.I)
-        if priority:
-            fields["priority"] = _PRI["P" + priority.group(1)]
-    if _re.search(r"기한|마감|due(?:date)?", said, _re.I):
-        due = _re.search(r"\b(\d{4}-\d{2}-\d{2})\b", said)
-        if due:
-            fields["duedate"] = due.group(1)
-    if _re.search(r"제목|summary|title", said, _re.I):
-        summary = _re.search(
-            r"(?:제목|summary|title)(?:만|을|를)?\s*(?:은|는|을|를|:)?\s*"
-            r"['\"“‘]([^'\"”’\n]{2,240})['\"”’]",
-            said, _re.I,
-        )
-        if summary:
-            fields["summary"] = summary.group(1).strip()
-    return {"key": keys[0].upper(), **fields} if fields else {}
+    typed, typed_error = requested_update_effect_authority(state)
+    targets = {row.target for row in typed}
+    fields = {row.field: row.value for row in typed}
+    if (typed_error or targets != {keys[0].upper()} or not fields
+            or not set(fields).issubset(_EXACT_UPDATE_FIELDS)):
+        return {}
+    return {"key": keys[0].upper(), **fields}
 
 
 def _explicit_meeting_update_fields(state) -> dict:
     """Recover exact meeting field values from the authoritative original request."""
+    request = _meeting_request_boundary_text(state)
+    if not _re.search(r"회의|미팅", request, _re.I):
+        return {}
     try:
         from app.agent.workflow.meeting_context import (
-            is_meeting_request, meeting_request_text, resolved_people,
+            is_meeting_request, resolved_people,
         )
-        if not is_meeting_request(state) or (state.get("intent") or "") != Intent.MODIFY:
+        if (not is_meeting_request(state)
+                or _work_action(state) not in {"update", "mixed"}):
             return {}
     except Exception:
         return {}
-    request, latest = meeting_request_text(state), last_user_text(state)
+    latest = last_user_text(state)
     fields = {}
 
     def line(label: str) -> str:
@@ -1980,15 +4273,29 @@ def _change_plan(state, out, items, qs):
     읽어서는 알 수 없었다 — 여기 있는 것은 전부 **변경 계획** 쪽 가드다.
     (필드 범위 제한 · 상대 날짜 계산 · 전이 해석 · 링크 조립 · 벌크 대상 확정)
     """
+    action = _work_action(state)
+    update_allowed = action in {"update", "mixed"}
     # modify 갈래 — 변경 계획. 바꿀 값이 하나도 없는 change 는 계획이 아니다.
     change = out.get("change") if isinstance(out.get("change"), dict) else {}
+    typed_targets = _typed_target_keys(state)
+    if typed_targets and not (change.get("key") or change.get("keys")):
+        if len(typed_targets) == 1:
+            change["key"] = typed_targets[0]
+        else:
+            change["keys"] = typed_targets
     # ★ 새 일을 만들라고 한 요청에는 변경 계획을 만들지 않는다. 조사에서 비슷한 티켓이
     #   나오면 모델이 그걸 고치겠다고 답하는 일이 있는데(실측), 그러면 사용자가 부탁한
     #   생성은 통째로 사라지고 시키지도 않은 수정이 승인 카드에 오른다.
-    if change.get("key") and (state.get("intent") or "") != Intent.MODIFY:
+    if (change.get("key") or change.get("keys")) and not _is_change_action(state):
+        target = change.get("key") or ", ".join(change.get("keys") or [])
+        if (state.get("draft") or {}).get("items"):
+            note_text = ("승인 대기 초안에 대한 수정 요청 — 기존 티켓 변경이 아니라 "
+                         "초안을 고쳐야 한다")
+        else:
+            note_text = (f"참고: {target} 가 비슷한 일이지만, 요청은 새로 만드는 것이라 "
+                         "변경하지 않았다")
         out["rationale"] = ((out.get("rationale") or "")
-                            + f"\n(참고: {change['key']} 가 비슷한 일이지만, 요청은 "
-                              "새로 만드는 것이라 변경하지 않았다)").strip()
+                            + f"\n({note_text})").strip()
         change = {}
     plan = {}
     if change.get("key"):
@@ -1998,13 +4305,16 @@ def _change_plan(state, out, items, qs):
         # A meeting update often reaches this node after an identity/term interview.  The
         # original request is authoritative and may enumerate exact fields even when the
         # model returns only one of them on the resumed turn.
-        fields.update(_explicit_meeting_update_fields(state))
+        if update_allowed:
+            fields.update(_explicit_meeting_update_fields(state))
+        else:
+            fields = {}
         for unchanged in _meeting_unchanged_fields(state):
             fields.pop(unchanged, None)
         # 빈 문자열은 "안 바꿈"이지 변경이 아니다 — 지원하지 않는 필드를 요청받으면
         # (실측: "스토리포인트 5로") 모델이 나머지를 전부 ""로 채워 **빈 변경 카드**가
         # 떴다. 담당 해제("assignee": "")만 예외로 인정한다(사용자가 뗄 때 쓴다).
-        _said = request_text(state) + " " + last_user_text(state)
+        _said = _current_request_boundary_text(state)
         _wipe = _re.search(r"(담당|assignee)\w*\s*(해제|비워|없애|제거)", _said)
         fields = {k: v for k, v in fields.items()
                   if (isinstance(v, list) and v) or str(v or "").strip()
@@ -2030,7 +4340,7 @@ def _change_plan(state, out, items, qs):
             fields["priority"] = _normalize_priority(fields["priority"])
         # 상대 날짜("다음주 수요일")는 **코드가 계산**한다 — 모델 산술이 흔들렸다
         # (실측: 같은 질문에 8-12(수·정답)와 8-16(일·오답)을 번갈아 냈다).
-        rel = _relative_due(request_text(state) + " " + last_user_text(state))
+        rel = _relative_due(_current_request_boundary_text(state))
         if rel and str(fields.get("duedate") or "") != rel:
             if fields.get("duedate"):
                 out["rationale"] = ((out.get("rationale") or "")
@@ -2096,10 +4406,10 @@ def _change_plan(state, out, items, qs):
         # 사용자 문장의 상태명이 **1차**다 — 모델이 불가능한 목표('리뷰 대기')를 임의로
         # 다른 상태('Open')로 바꿔치기한 실측. 요청과 다르면 요청 쪽을 쓴다.
         mu_t = _re.search(r"([가-힣A-Za-z ]{2,16}?)\s*(?:상태)?\s*로\s*(?:옮겨|바꿔|전이|이동)",
-                          request_text(state) + " " + last_user_text(state))
+                          _current_request_boundary_text(state))
         if mu_t:
             want = mu_t.group(1).strip()
-        if k0 and want and not fields and not plan:
+        if update_allowed and k0 and want and not fields and not plan:
             try:
                 from app.agent import tools as T
                 cands = [t for t in (T.BY_NAME["list_transitions"].invoke({"key": k0}) or [])
@@ -2125,23 +4435,45 @@ def _change_plan(state, out, items, qs):
                     qs = [{"question": f"{k0} 를 '{want}' 상태로 옮길 수는 없습니다. "
                                        "지금 갈 수 있는 상태는 다음뿐입니다 — 고르시면 "
                                        "그대로 변경 카드를 만들어 드립니다.",
-                           "kind": "choice", "field": "",
+                           "kind": "choice", "field": "status",
+                           "required_input": True,
+                           "why_required": "요청한 상태 전이가 없어 유효한 도착 상태 선택이 필요함",
                            "options": opts[:5]}]
             except Exception:
                 pass
         # ── 티켓 링크 — link_tickets 도구가 실행한다(실측: 링크 요청이 코멘트로 우회됐다).
         lk = change.get("link") if isinstance(change.get("link"), dict) else {}
-        if k0 and lk.get("other") and not plan:
-            plan = {"key": k0,
-                    "link": {"other": str(lk["other"]).strip(),
-                             "relation": str(lk.get("relation") or "Relates").strip()},
-                    "comment": "", "why": out.get("rationale") or ""}
+        if update_allowed and k0 and lk.get("other"):
+            link = {"other": str(lk["other"]).strip(),
+                    "relation": str(lk.get("relation") or "Relates").strip()}
+            if not plan:
+                plan = {"key": k0, "link": link, "comment": cmt,
+                        "why": out.get("rationale") or ""}
+            elif (str(plan.get("key") or "") == k0 and not (plan.get("changes") or {})
+                  and not plan.get("transition") and not plan.get("link")):
+                # Comment-only assembly happens before structural link assembly. Preserve
+                # both reviewed effects instead of letting the comment make ``not plan``
+                # false and silently erase the requested link.
+                plan["link"] = link
+                plan["comment"] = cmt
+            else:
+                # This executor supports link+comment, but not link plus another field/status
+                # mutation in one atomic fingerprint. Never approve just one side.
+                plan = {}
+                qs = [{
+                    "question": (f"{k0} 링크와 다른 필드·상태 변경을 한 번에 실행할 수 없습니다. "
+                                 "링크와 나머지 변경을 별도 승인 작업으로 나눌까요?"),
+                    "kind": "choice", "field": "action_split",
+                    "required_input": True,
+                    "why_required": "서로 다른 write effect를 별도 승인 지문으로 분리해야 함",
+                    "options": ["링크 먼저", "필드·상태 변경 먼저"],
+                }]
     # 조건 일괄 수정 — keys 복수. 실재하는 키만 남긴다(조사에서 온 것이지만 한 번 더).
     # 단건 경로와 마찬가지로 회의록의 명시적 결정 bullet이 authoritative comment body다.
     # 예전에는 bulk 경로만 model의 얇은 `알림: 담당자`를 그대로 사용해 결정 내용 전체가
     # 사라졌다. 여기서 한 번 조립해 이하의 조건·preview가 모두 같은 body를 보게 한다.
     bulk_comment = str(change.get("comment") or "").strip()
-    bulk_said = request_text(state) + " " + last_user_text(state)
+    bulk_said = _current_request_boundary_text(state)
     if _comment_forbidden(bulk_said):
         bulk_comment = ""
     else:
@@ -2153,17 +4485,18 @@ def _change_plan(state, out, items, qs):
     #   전부에 담당자를 멘션해 상태 점검을 요청" 같은 요청이 통째로 일괄 경로를 못 탔다
     #   (실측 CMTB1: 대상이 안 잡히자 모델이 아무 티켓 둘을 골라 이야기했다).
     #   코멘트는 필드가 아니지만 **N건에 쓰는 일**이라는 점은 같다.
-    if state.get("bulk_targets") and (change.get("assignee") is not None
-                                      or change.get("duedate") is not None
-                                      or change.get("priority") is not None
-                                      or change.get("labels") is not None
-                                      or bulk_comment
-                                      or bulk_keys):
+    if state.get("bulk_targets") and (
+            (update_allowed and (change.get("assignee") is not None
+                                 or change.get("duedate") is not None
+                                 or change.get("priority") is not None
+                                 or change.get("labels") is not None))
+            or bulk_comment or bulk_keys):
         bulk_keys = [str(k) for k in state["bulk_targets"]]
     if bulk_keys and not plan:
-        fields = {k: change[k] for k in ("assignee", "duedate", "priority", "labels",
-                                         "components")
-                  if k in change and change[k] is not None}
+        fields = ({k: change[k] for k in ("assignee", "duedate", "priority", "labels",
+                                          "components")
+                   if k in change and change[k] is not None}
+                  if update_allowed else {})
         if str(fields.get("priority") or "").strip():
             fields["priority"] = _normalize_priority(fields["priority"])
         # 빈 문자열 값은 변경이 아니다 — 모델이 안 바꿀 필드를 "" 로 채워 빈 changes
@@ -2197,9 +4530,9 @@ def _change_plan(state, out, items, qs):
     # ── 전이 최종 보장: "DL-x 를 <상태>로 옮겨/바꿔" 인데 모델이 change.status 를
     # 안 쓰고 엉뚱한 초안을 냈다(실측: '상태로 옮김' Task 를 새로 만듦) — 코드가
     # 요청에서 상태명을 뽑아 전이를 조립하고 초안을 버린다.
-    if not plan and (state.get("intent") or "") == Intent.MODIFY \
+    if not plan and update_allowed \
             and (state.get("mentioned_keys") or []):
-        req_t = request_text(state) + " " + last_user_text(state)
+        req_t = _current_request_boundary_text(state)
         mt = _re.search(r"([가-힣A-Za-z ]{2,16}?)\s*(?:상태)?\s*로\s*(?:옮겨|바꿔|전이|이동)",
                         req_t)
         if mt:
@@ -2226,7 +4559,9 @@ def _change_plan(state, out, items, qs):
                     # 모델이 낸 잡질문("제목을 알려주실…")은 버린다 — 정확한 choice 하나가 답이다.
                     qs = [{"question": f"{k_t} 를 '{want_t}' 로 옮길 전이가 없습니다. "
                                        "가능한 전이 중에서 골라 주세요.",
-                           "kind": "choice", "field": "",
+                           "kind": "choice", "field": "status",
+                           "required_input": True,
+                           "why_required": "요청한 상태 전이가 없어 유효한 도착 상태 선택이 필요함",
                            "options": [str(t.get("to") or t.get("name"))
                                        for t in cands_t][:5]}]
                     items.clear()
@@ -2235,8 +4570,8 @@ def _change_plan(state, out, items, qs):
 
     # ── 링크 최종 보장: "A 가 B 를 막는 관계로 연결" — 키 둘 + 관계 낱말이면 조립.
     # (실측: 모델이 change.link 대신 무의미한 확인 질문 4개를 냈다.)
-    if not plan and (state.get("intent") or "") == Intent.MODIFY:
-        req_l = request_text(state) + " " + last_user_text(state)
+    if not plan and update_allowed:
+        req_l = _current_request_boundary_text(state)
         keys_l = _re.findall(r"\b[A-Z][A-Z0-9]{1,9}-\d+\b", req_l)
         if len(dict.fromkeys(keys_l)) >= 2 and _re.search(r"연결|링크|link", req_l):
             a, b = list(dict.fromkeys(keys_l))[:2]
@@ -2251,9 +4586,8 @@ def _change_plan(state, out, items, qs):
 
     # ── 최종 보장: 대상(JQL)과 변경 필드(요청 파싱)가 둘 다 확정되면 **코드가 계획을
     # 조립**한다 — 모델이 Epic 질문으로 새는 것을 두 번의 프롬프트 교정으로도 못 막았다.
-    if not plan and state.get("bulk_targets") \
-            and (state.get("intent") or "") == Intent.MODIFY:
-        req = request_text(state)
+    if not plan and state.get("bulk_targets") and update_allowed:
+        req = _current_request_boundary_text(state)
         fields = {}
         # \b 는 한글 앞에서 안 선다("P1으로") — ASCII 경계만 본다.
         mp = _re.search(r"(?<![0-9A-Za-z])P([0-4])(?![0-9A-Za-z])", req)
@@ -2274,10 +4608,16 @@ def _change_plan(state, out, items, qs):
             qs = []
             items.clear()          # 수정 요청에 초안을 만들었어도 계획이 이긴다(참조 공유)
 
+    # Exact scalar leaves belong to the immutable typed request, not to semantic projection.
+    # Materialize them before person/Done/editability guards so omitted sibling fields do not
+    # require an Auditor regeneration and cannot bypass the ordinary safety checks.
+    if update_allowed:
+        plan = materialize_requested_update_effects(state, plan)
+
     # 댓글은 사용자가 외부에 남기는 실제 메시지다. 대상만 있고 본문·목적이 없으면 `알아서`를
     # 내용 생성 권한으로 해석하지 않는다(ASKD3). 모델이 questions=[]로 빠져도 코드가 묻는다.
-    _full_request = request_text(state) + " " + last_user_text(state)
-    if (state.get("intent") or "") == Intent.MODIFY \
+    _full_request = _current_request_boundary_text(state)
+    if _is_change_action(state) \
             and _re.search(r"댓글|코멘트", _full_request) \
             and _comment_input_missing(state, plan):
         plan = {}
@@ -2291,7 +4631,7 @@ def _change_plan(state, out, items, qs):
     # 그대로 넣으면 뒤의 '없는 사번' 가드가 동명이인 후보도 지워 버린다. 디렉토리 조회 결과가
     # 하나면 exact ID로 고치고, 여러 명이면 full display/name/module을 보기로 제시한다(AMB1).
     _person_name = _requested_assignee_name(_full_request)
-    if (state.get("intent") or "") == Intent.MODIFY and _person_name:
+    if update_allowed and _person_name:
         try:
             from app.agent import tools as T
             person = T.BY_NAME["find_person"].invoke({"name": _person_name}) or {}
@@ -2383,9 +4723,9 @@ def _change_plan(state, out, items, qs):
 
     # 삭제 요청 — 지원되지 않는다. 모델이 빈 변경+코멘트 카드를 만들던 것(실측)을 코드가
     # 막는다: 카드 없이 사유·대안만 답하게 한다.
-    if plan and not plan.get("changes") \
+    if plan and update_allowed and not plan.get("changes") \
             and _re.search(r"삭제|지워\s*줘|없애",
-                           request_text(state) + " " + last_user_text(state)):
+                           _current_request_boundary_text(state)):
         plan = {}
         out["rationale"] = ((out.get("rationale") or "")
                             + "\n(삭제는 지원되지 않는다 — 상태 전이(닫음)나 보관 라벨을 "
@@ -2395,7 +4735,7 @@ def _change_plan(state, out, items, qs):
     #  스토리포인트는 티켓 화면에서 직접, 그것도 Story 에만 설정된다 — 도메인 제약.)
     if not plan and not items and _re.search(
             r"스토리\s*포인트|story\s*point|\bSP\b",
-            request_text(state) + " " + last_user_text(state), _re.I):
+            _current_request_boundary_text(state), _re.I):
         out["rationale"] = ((out.get("rationale") or "")
                             + "\n(스토리포인트는 에이전트가 바꾸지 못한다 — 티켓 화면에서 "
                               "직접 입력해야 하고, 애초에 Story 타입에만 설정된다. "
@@ -2406,21 +4746,43 @@ def _change_plan(state, out, items, qs):
     # 한다(mentioned_keys 는 모델·이월로 오염될 수 있다).
     if plan and plan.get("key") \
             and ((state.get("draft") or {}).get("items")) and not items:
-        said_by_user = " ".join(str(getattr(m, "content", "") or "")
-                                for m in (state.get("messages") or [])
-                                if getattr(m, "type", "") == "human")
+        said_by_user = _current_request_boundary_text(state)
         if plan["key"] not in said_by_user:
             plan = {}
             out["rationale"] = ((out.get("rationale") or "")
                                 + "\n(승인 대기 초안에 대한 수정 요청 — 기존 티켓 변경이 "
                                   "아니라 초안을 고쳐야 한다)").strip()
 
+    # ``comments`` is a bulk preview contract. Some projections emit it for a singular
+    # update/link while leaving the top-level comment empty; the executor reads only the
+    # latter and would silently drop the visible message. Canonicalize one exact matching
+    # row, and fail closed on every other singular shape.
+    if plan and plan.get("key") and (plan.get("comments") or []):
+        rows = [row for row in plan.get("comments") or [] if isinstance(row, dict)]
+        key = str(plan.get("key") or "").strip().upper()
+        valid = [row for row in rows
+                 if str(row.get("key") or "").strip().upper() == key
+                 and str(row.get("body") or "").strip()]
+        if len(rows) == len(valid) == 1:
+            plan["comment"] = str(plan.get("comment") or valid[0]["body"]).strip()
+            plan.pop("comments", None)
+        else:
+            plan = {}
+            items.clear()
+            qs = [{
+                "question": "단건 변경에 표시된 댓글 대상이 실행 대상과 일치하지 않습니다. "
+                            "댓글 대상과 본문을 다시 알려 주세요.",
+                "kind": "text", "field": "comment", "options": [],
+                "required_input": True,
+                "why_required": "단건 comment를 exact 변경 대상에 결속해야 함",
+            }]
+
     # ── ★ **묻지 않은 것에 대한 안내를 근거 줄에 싣지 않는다** ────────────────
     # 승인 카드의 근거 줄은 사용자가 **판단하는 자리**다. 무관한 문장이 있으면 무엇을
     # 근거로 승인하는지가 흐려진다. 실측(CMTB1): 일괄 코멘트 계획의 why 가
     # "삭제는 지원되지 않음. 상태를 닫음으로 전이하거나…" 였다 — 삭제 요청이 아니었다.
     # 프롬프트에 적힌 예외 안내(삭제·스토리포인트)를 모델이 아무 데나 옮겨 적는다.
-    said_all = request_text(state) + " " + conversation(state)
+    said_all = _current_request_boundary_text(state)
     for pat, need in ((r"삭제[^)\n]{0,20}지원되지\s*않", ("삭제", "지워", "없애")),
                       (r"스토리\s*포인트[^)\n]{0,20}(?:설정할 수 없|지원)", ("포인트", "SP"))):
         if _re.search(pat, str(out.get("rationale") or "")) \
@@ -2465,8 +4827,8 @@ def _slot_audit(state) -> str:
     모델이 매번 다르게 가리던 것을 표로 굳힌다(knowledge/07 §최소 요건과 같은 룰).
     해석 확인 턴에는 '무엇을 물을지'의 근거가 되고, 초안 턴에는 '무엇을 기본값으로
     채웠는지'의 근거가 된다."""
-    req, conv = request_text(state), conversation(state)
-    text = (req + " " + conv).strip()
+    text = _current_request_boundary_text(state)
+    conv = text
     low = text.lower()
     shape, _w = shape_hint(state)
     comps = _known_components()
@@ -2526,18 +4888,137 @@ def _slot_audit(state) -> str:
     return "\n".join(rows)
 
 
-def _apply_named_assignees(state, items: list) -> None:
-    """"성능 측정은 x1402, 가이드 작성은 x1450" 식의 **입으로 지정한 담당**을 초안에 강제한다.
+def _meeting_assignment_records(state) -> list[dict]:
+    """Return only source-derived meeting assignments inside a meeting boundary."""
+    from app.agent.workflow.meeting_context import is_meeting_request, meeting_owner_records
+    return (meeting_owner_records(state) if is_meeting_request(state) else [])
 
-    패턴: <작업 문구>(은|는) <사번>. 문구의 핵심 낱말이 제목에 들어 있는 항목(자식 포함)의
-    빈 assignee 를 채운다 — 모델이 이미 적은 값은 존중한다(덮지 않는다)."""
-    text = conversation(state) or request_text(state)
+
+def _meeting_assignment_catalog(state) -> list[dict[str, object]]:
+    """Return the copy catalog whenever the typed wire has a selection decision."""
+    from app.agent.workflow.meeting_context import meeting_assignment_source_catalog
+    rows = meeting_assignment_source_catalog(state)
+    expected_roots = len(requested_outcome_contract(state).get("outcomes") or [])
+    return rows if rows and (len(rows) > 1 or expected_roots > 1) else []
+
+
+def _meeting_assignment_catalog_json(state) -> str:
+    return (json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+            if (rows := _meeting_assignment_catalog(state)) else "")
+
+
+def _separate_typed_meeting_scalars(state: dict, items: list[dict]) -> dict[int, dict]:
+    """Return exact non-meeting scalar authority for source-unbound meeting roots."""
+    rows = [row for row in (items or []) if isinstance(row, dict)]
+    authority: dict[int, dict] = {index: {} for index in range(len(rows))}
+    per_outcome_due = _expected_due_dates_by_root(state, rows)
+    global_due = _global_exact_due_for_roots(state, len(rows))
+    for index in range(len(rows)):
+        due = per_outcome_due.get(index) or global_due
+        if due:
+            authority[index]["duedate"] = due
+
+    continuation = (state or {}).get("continuation_contract") or {}
+    if not isinstance(continuation, dict) or continuation.get("version") != "continuation.v1":
+        return {index: value for index, value in authority.items() if value}
+
+    def exact_assignment(decision: dict | None) -> dict:
+        kind, value = parse_assignee_decision(str((decision or {}).get("value") or ""))
+        if kind == "user_id":
+            return {"assignee": value, "assignee_source": "user"}
+        if kind == "unassigned":
+            return {"assignee": "", "assignee_source": "user_unassigned"}
+        return {}
+
+    global_assignment: dict = {}
+    for decision in continuation.get("decisions") or []:
+        if not isinstance(decision, dict):
+            continue
+        field = str(decision.get("field") or "").strip().casefold()
+        if ":" not in field and field in {"owner", "assignee"}:
+            global_assignment = exact_assignment(decision)
+    if global_assignment:
+        for value in authority.values():
+            value.update(global_assignment)
+
+    contract = requested_outcome_contract(state)
+    aliases = {
+        alias.casefold(): opaque
+        for outcome in (contract.get("outcomes") or []) if isinstance(outcome, dict)
+        if (opaque := str(outcome.get("id") or "").strip())
+        for alias in (opaque, str(outcome.get("source_task_id") or "").strip()) if alias
+    }
+    canonical_refs = []
+    for row in rows:
+        raw = [str(value or "").strip() for value in (row.get("outcome_refs") or [])
+               if str(value or "").strip()]
+        canonical_refs.append(aliases.get(raw[0].casefold(), "") if len(raw) == 1 else "")
+    scoped = scoped_continuation_decisions(state)
+    for index, outcome_ref in enumerate(canonical_refs):
+        if not outcome_ref or canonical_refs.count(outcome_ref) != 1:
+            continue
+        assignment = exact_assignment((scoped.get(outcome_ref) or {}).get("assignee"))
+        if assignment:
+            authority[index].update(assignment)
+    return {index: value for index, value in authority.items() if value}
+
+
+def _apply_source_bound_meeting_assignments(state, items: list[dict]) -> bool:
+    """Project owner/due through exact source identity; ambiguity stays unresolved."""
+    records = _meeting_assignment_records(state)
+    roots = [row for row in (items or []) if isinstance(row, dict)]
+    if not records or not roots:
+        return bool(records)
+    from app.agent.workflow.meeting_context import meeting_assignment_source_mapping
+    mapping, _issues = meeting_assignment_source_mapping(roots, records)
+    separate_authority = _separate_typed_meeting_scalars(state, roots)
+    for index, item in enumerate(roots):
+        record_index = mapping.get(index)
+        if record_index is None:
+            item.pop("assignee", None)
+            item.pop("assignee_source", None)
+            item.pop("duedate", None)
+            typed = separate_authority.get(index) or {}
+            if "assignee" in typed:
+                if typed["assignee"]:
+                    item["assignee"] = typed["assignee"]
+                item["assignee_source"] = typed["assignee_source"]
+            if typed.get("duedate"):
+                item["duedate"] = typed["duedate"]
+            continue
+        record = records[record_index]
+        decision = str(record.get("owner_decision") or "").strip()
+        owner = str(record.get("owner") or "").strip()
+        item.pop("assignee", None)
+        if decision == "assigned" and owner:
+            item["assignee"] = owner
+            item["assignee_source"] = "user"
+        elif decision == "unassigned":
+            item["assignee_source"] = "user_unassigned"
+        else:
+            item.pop("assignee_source", None)
+        due = str(record.get("due") or "").strip()
+        if due:
+            item["duedate"] = due
+        else:
+            item.pop("duedate", None)
+    return True
+
+
+def _apply_named_assignees(state, items: list) -> None:
+    """Apply meeting refs or exact non-meeting account-id shorthand."""
+    if _apply_source_bound_meeting_assignments(state, items):
+        return
+
+    # Assignee is a user-owned current-request field. Full conversation history can contain
+    # a valid assignment from an unrelated prior topic whose work phrase happens to match.
+    text = _current_request_boundary_text(state)
     rows = list(items) + [c for i in items for c in (i.get("children") or [])
                           if isinstance(c, dict)]
     if not text or not rows:
         return
     for m in _re.finditer(r"([가-힣A-Za-z0-9·/ ]{2,24}?)\s*(?:은|는)\s*(?:skcc\.)?"
-                          r"([a-z]{1,2}\d{2,6})\b", text):
+                          r"([a-z]{1,2}\d{2,6})(?![A-Za-z0-9_])", text):
         phrase, uid = m.group(1).strip(), f"skcc.{m.group(2)}"
         words = [w for w in _re.split(r"\s+", phrase) if len(w) >= 2][-2:]
         if not words:
@@ -2551,35 +5032,164 @@ def _apply_named_assignees(state, items: list) -> None:
                 r["assignee"] = uid
                 r["assignee_source"] = "user"
 
-    # 회의록은 ``@이름 — 작업``, ``이름TL이 작업 담당``처럼 자연어로 담당을 쓴다.
-    # 조사/인터뷰에서 확정한 identity만 사용하고, 제목과 가장 많이 겹치는 한 항목에 강제한다.
-    try:
-        from app.agent.workflow.meeting_context import is_meeting_request, meeting_owner_records
-        if not is_meeting_request(state):
-            return
-        records = meeting_owner_records(state)
-    except Exception:
+
+def _apply_scoped_continuation_decisions(state: dict, items: list[dict], mode: str,
+                                         questions: list[dict] | None = None) -> None:
+    """Apply global and per-outcome parent/assignee answers after semantic projection.
+
+    The question ledger is keyed by RequestPlan task ids, while draft roots carry opaque
+    outcome ids. ``scoped_continuation_decisions`` owns that bridge. A decision is applied
+    only when its outcome binds one and only one root; malformed bindings remain untouched
+    so the Auditor can reject them instead of spreading one sibling's values globally.
+    """
+    scoped = scoped_continuation_decisions(state)
+    rows = [row for row in (items or []) if isinstance(row, dict)]
+    contract_state = (state or {}).get("continuation_contract") or {}
+    raw_decisions = [row for row in contract_state.get("decisions") or []
+                     if isinstance(row, dict)] if isinstance(contract_state, dict) else []
+    global_decisions: dict[str, dict] = {}
+    for decision in raw_decisions:
+        field = str(decision.get("field") or "").strip().casefold()
+        family = field.split(":", 1)[0]
+        if ":" not in field and family in {"parent", "epic", "owner", "assignee"}:
+            global_decisions["parent" if family in {"parent", "epic"} else "assignee"] = decision
+    if (not scoped and not global_decisions) or not rows:
         return
-    used: set[int] = set()
-    for record in records:
-        phrase = str(record.get("work") or "")
-        uid = str(record.get("owner") or "")
-        pterms = {w.casefold() for w in _re.findall(r"[가-힣A-Za-z0-9_.-]{2,}", phrase)
-                  if w not in ("기한", "까지", "담당")}
-        ranked = sorted(
-            ((len(pterms & {w.casefold() for w in _re.findall(
-                r"[가-힣A-Za-z0-9_.-]{2,}", str(row.get("summary") or ""))}), index, row)
-             for index, row in enumerate(rows) if index not in used),
-            key=lambda value: (-value[0], value[1]),
-        )
-        if ranked and (ranked[0][0] > 0 or len(rows) == 1):
-            _score, row_index, row = ranked[0]
-            used.add(row_index)
+    contract = requested_outcome_contract(state)
+    aliases: dict[str, str] = {}
+    for outcome in contract.get("outcomes") or []:
+        if not isinstance(outcome, dict):
+            continue
+        opaque = str(outcome.get("id") or "").strip()
+        task_id = str(outcome.get("source_task_id") or "").strip()
+        if opaque:
+            aliases[opaque.casefold()] = opaque
+        if opaque and task_id:
+            aliases[task_id.casefold()] = opaque
+
+    bindings: dict[str, list[dict]] = {ref: [] for ref in scoped}
+    for row in rows:
+        raw_refs = [str(value or "").strip() for value in (row.get("outcome_refs") or [])
+                    if str(value or "").strip()]
+        refs = [aliases.get(value.casefold(), "") for value in raw_refs]
+        refs = [value for value in refs if value]
+        # Multiple/duplicate refs are not a deterministic assignment boundary.
+        if len(refs) != 1 or len(raw_refs) != 1:
+            continue
+        if refs[0] in bindings:
+            bindings[refs[0]].append(row)
+
+    def apply_parent(row: dict, decision: dict, *, field: str) -> bool:
+        value = str(decision.get("value") or "")
+        issue_type = str(row.get("type") or row.get("issue_type") or "")
+        is_subtask = (str(mode or "").casefold() == "subtask"
+                      or issue_type.casefold().replace("-", "").replace(" ", "")
+                      == "subtask")
+        if is_top_level_parent_choice(value):
+            if is_subtask:
+                items.clear()
+                if questions is not None and not any(
+                        str(question.get("field") or "") == field for question in questions):
+                    questions.append({
+                        "question": "Sub-Task는 최상위로 만들 수 없습니다. 실제 부모 Task를 알려 주세요.",
+                        "kind": "text", "options": [], "field": field,
+                        "required_input": True,
+                        "why_required": "Sub-Task 생성에는 Task-tier 부모가 필수임",
+                    })
+                return False
+            row.pop("parent", None)
+            row.pop("epic", None)
+            row["parent_source"] = "user_top_level"
+            return True
+        keys = jira_keys(value)
+        if len(keys) != 1:
+            return True
+        key = keys[0]
+        if is_subtask and _can_parent_subtask(key):
+            row["parent"] = key
+            row.pop("epic", None)
+            row["parent_source"] = "user"
+        elif not is_subtask and issue_type.casefold() != "epic" and _is_epic(key):
+            row["epic"] = key
+            row.pop("parent", None)
+            row["parent_source"] = "user"
+        return True
+
+    def assignment_value(decision: dict, *, field: str) -> tuple[str, str]:
+        value = str(decision.get("value") or "").strip()
+        kind, parsed = parse_assignee_decision(value)
+        if kind == "unassigned":
+            return "unassigned", ""
+        if kind == "user_id":
+            return "resolved", parsed
+        if kind != "display_name":
+            return "unresolved", ""
+        name = parsed
+        try:
+            from app.agent import tools as T
+            result = T.BY_NAME["find_person"].invoke({"name": name}) or {}
+        except Exception:
+            result = {}
+        resolved = str(result.get("resolved") or "").strip().casefold()
+        resolved_kind, resolved_uid = parse_assignee_decision(resolved)
+        if resolved_kind == "user_id":
+            return "resolved", resolved_uid
+        if questions is not None and not any(
+                str(question.get("field") or "") == field for question in questions):
+            candidates = [candidate for candidate in (result.get("candidates") or [])
+                          if isinstance(candidate, dict)]
+            options = [
+                " ".join(filter(None, (
+                    str(candidate.get("display") or candidate.get("name") or "").strip(),
+                    f"({candidate.get('id')})" if candidate.get("id") else "",
+                    str(candidate.get("module") or "").strip(),
+                )))
+                for candidate in candidates[:8]
+            ]
+            questions.append({
+                "question": (f"'{name}' 담당자를 한 명으로 확인할 수 없습니다. "
+                             "정확한 Jira username을 알려 주세요."),
+                "kind": "choice" if options else "text", "options": options,
+                "field": field, "required_input": True,
+                "why_required": "사용자 지정 담당자를 고유한 Jira 계정으로 확인해야 함",
+            })
+        return "unresolved", ""
+
+    def apply_assignment(row: dict, decision: dict, *, field: str) -> bool:
+        status, uid = assignment_value(decision, field=field)
+        if status == "unassigned":
+            row.pop("assignee", None)
+            row["assignee_source"] = "user_unassigned"
+            return True
+        if status == "resolved":
             row["assignee"] = uid
-            row["assignee_source"] = "user" if uid else "user_unassigned"
-            due = str(record.get("due") or "")
-            if due:
-                row["duedate"] = due
+            row["assignee_source"] = "user"
+            return True
+        items.clear()
+        return False
+
+    if global_decisions:
+        for row in list(rows):
+            if global_decisions.get("parent") and not apply_parent(
+                    row, global_decisions["parent"], field="parent"):
+                return
+            if global_decisions.get("assignee") and not apply_assignment(
+                    row, global_decisions["assignee"], field="assignee"):
+                return
+
+    for outcome_ref, decisions in scoped.items():
+        matched = bindings.get(outcome_ref) or []
+        if len(matched) != 1:
+            continue
+        row = matched[0]
+        if decisions.get("parent") and not apply_parent(
+                row, decisions["parent"],
+                field=str(decisions["parent"].get("field") or f"parent:{outcome_ref}")):
+            return
+        if decisions.get("assignee") and not apply_assignment(
+                row, decisions["assignee"],
+                field=str(decisions["assignee"].get("field") or f"assignee:{outcome_ref}")):
+            return
 
 
 def _ensure_meeting_background_attribution(state, items: list) -> None:
@@ -2629,7 +5239,7 @@ def _ensure_meeting_reviewers(state, items: list) -> None:
         )
         if not is_meeting_request(state):
             return
-        original = meeting_request_text(state)
+        original = _meeting_request_boundary_text(state)
         people = resolved_people(state)
     except Exception:
         return
@@ -2680,7 +5290,7 @@ def _drop_unrequested_meeting_create_fields(state, items: list) -> None:
         from app.agent.workflow.meeting_context import is_meeting_request, meeting_request_text
         if not is_meeting_request(state):
             return
-        said = meeting_request_text(state)
+        said = _meeting_request_boundary_text(state)
     except Exception:
         return
     decisions = _meeting_optional_field_decisions(said)
@@ -2727,7 +5337,7 @@ def _drop_unneeded_meeting_questions(state, questions: list[dict]) -> list[dict]
         from app.agent.workflow.meeting_context import is_meeting_request, meeting_request_text
         if not is_meeting_request(state):
             return questions
-        decisions = _meeting_optional_field_decisions(meeting_request_text(state))
+        decisions = _meeting_optional_field_decisions(_meeting_request_boundary_text(state))
     except Exception:
         return questions
     aliases = {
@@ -2739,7 +5349,8 @@ def _drop_unneeded_meeting_questions(state, questions: list[dict]) -> list[dict]
     try:
         from app.agent.workflow.meeting_context import meeting_request_text
         explicit_epics = {key.upper() for key in _re.findall(
-            r"\bEpic\s+([A-Z][A-Z0-9]*-\d+)", meeting_request_text(state), _re.I)}
+            r"\bEpic\s+([A-Z][A-Z0-9]*-\d+)",
+            _meeting_request_boundary_text(state), _re.I)}
     except Exception:
         explicit_epics = set()
     kept = []
@@ -2765,7 +5376,7 @@ def _meeting_unchanged_fields(state) -> set[str]:
         from app.agent.workflow.meeting_context import is_meeting_request, meeting_request_text
         if not is_meeting_request(state):
             return set()
-        text = meeting_request_text(state)
+        text = _meeting_request_boundary_text(state)
     except Exception:
         return set()
     marker = _re.search(r"\[(?:회의\s*)?(?:종료\s*직전\s*)?(?:최종\s*)?합의\]", text, _re.I)
@@ -2805,9 +5416,9 @@ def _recover_decided_meeting_tasks(state) -> list[dict]:
         from app.agent.workflow.meeting_context import (
             is_meeting_request, meeting_owner_records, meeting_request_text,
         )
-        if not is_meeting_request(state) or (state.get("intent") or "") != Intent.PLAN_WORK:
+        if not is_meeting_request(state) or not _is_create_action(state):
             return []
-        original = meeting_request_text(state)
+        original = _meeting_request_boundary_text(state)
         count_match = _re.search(r"(?:Task|티켓|테스크)\s*([1-9]\d*)\s*건", original, _re.I)
         records = meeting_owner_records(state)
         if not count_match or len(records) != int(count_match.group(1)):
@@ -2839,6 +5450,11 @@ def _recover_decided_meeting_tasks(state) -> list[dict]:
                 "</ul>"
             ),
         }
+        evidence = row.get("source_evidence")
+        source_ref = (str(evidence.get("record_id") or "").strip()
+                      if isinstance(evidence, dict) else "")
+        if source_ref:
+            item["meeting_assignment_ref"] = source_ref
         if row.get("owner"):
             item["assignee"] = str(row["owner"])
         items.append(item)
@@ -2887,7 +5503,7 @@ def _preserve_defined_meeting_terms(state, items: list) -> None:
         from app.agent.workflow.meeting_context import is_meeting_request, meeting_request_text
         if not is_meeting_request(state):
             return
-        original = meeting_request_text(state)
+        original = _meeting_request_boundary_text(state)
     except Exception:
         return
     latest = last_user_text(state)
@@ -2982,9 +5598,17 @@ def _volume_partition_children(state, item: dict) -> list:
     # 계산 전 숫자는 제거하고 자식 제목의 계산된 분량만 source-of-truth로 둔다.
     subject = _re.sub(r"\s*[-–—]?\s*\d*\s*개씩\s*(?:분담|배분|처리|등록)?\s*$", "",
                       subject).strip(" -–—")
-    base = _base_title(subject).strip() or "요청 대상 처리"
+    # `_base_title` intentionally removes every number for *comparison*.  Reusing it as
+    # the visible title silently changed a grounded request (`30개`) into a dangling
+    # `개`.  Keep the literal quantity in the parent title and remove it only from the
+    # repeated child/body stem.
+    base = _display_base_title(subject).strip() or "요청 대상 처리"
+    work_base = _re.sub(
+        rf"\s*{total}\s*{_re.escape(unit)}(?:을|를)?(?=\s|$)", " ", base,
+    )
+    work_base = _re.sub(r"\s{2,}", " ", work_base).strip() or "요청 대상 처리"
     item["summary"] = f"{prefix} {base}".strip()
-    safe_base = _esc(base)
+    safe_base = _esc(work_base)
     item["description"] = (
         f"<h3>배경</h3><p>{safe_base} 대상 {total}{unit}를 여러 담당자가 중복 없이 "
         "나누어 처리해야 한다.</p>"
@@ -3001,7 +5625,7 @@ def _volume_partition_children(state, item: dict) -> list:
         size = quotient + (1 if idx < remainder else 0)
         label = f"담당 묶음 {idx + 1}/{groups}"
         child = {
-            "summary": f"{base} — {label} ({size}{unit})",
+            "summary": f"{work_base} — {label} ({size}{unit})",
             "description": (
                 f"<h3>작업 범위</h3><ul><li>parent의 확정 대상 목록 중 {_esc(label)}에 "
                 f"배정된 {size}{unit}를 처리한다.</li></ul>"
@@ -3030,10 +5654,16 @@ def _split_into_children(state, item: dict) -> list:
     # 이 함수에 도달했다는 것 자체가 이미 "다단계로 나눈다"는 구조 판정이다. 신규 구축을
     # 다시 LLM에 물어 단계명 변동과 한 번의 왕복을 추가하지 말고, 구체적인 parent 대상을
     # 보존한 최소 실행 단위로 결정적으로 분해한다. 국소 수정은 호출 전 가드에서 제외된다.
-    all_human = (request_text(state) + " " + _human_request_text(state)).strip()
-    base = _base_title(str(item.get("summary") or "")).strip()
+    all_human = _current_request_boundary_text(state)
+    base = _display_base_title(str(item.get("summary") or "")).strip()
     if base and any(word in all_human for word in BUILD_WORDS):
         return [{"summary": f"{base} — {stage}"} for stage in ("설계", "구현", "검증")]
+    # DoD가 이미 서로 다른 실행 단계를 구체적으로 열거했다면 구조 판단이 끝난 입력이다.
+    # 동일한 본문을 다시 모델에 보내면 왕복만 늘고 구체적인 사용자 대상을 바꿔 쓸 수 있다.
+    # 이 compiler가 모호하다고 판정한 잔여 입력에만 semantic split을 허용한다.
+    compiled = _children_from_dod(item)
+    if compiled:
+        return compiled
     try:
         schema = {"title": "split_children", "type": "object", "properties": {
             "children": {"type": "array", "items": {
@@ -3045,14 +5675,15 @@ def _split_into_children(state, item: dict) -> list:
         r = invoke_schema(schema, [
             ("system", "You are a PMO ticket architect. Split multi-stage work into Korean Sub-Task "
                        "execution units that one owner can finish within several days. Return JSON only."),
-            ("user", f"Original request: {request_text(state)}\n\n"
+            ("user", f"Original request: {_current_request_boundary_text(state)}\n\n"
                      f"Task summary: {item.get('summary')}\n"
                      f"Body data: {str(item.get('description') or '')[:1200]}\n\n"
                      "Split this Task into two to five Sub-Tasks. Every Korean summary must identify the "
                      "specific work target and outcome. A stage name alone, such as `설계 단계`, `구현 단계`, "
-                     "or `검증 단계`, is invalid. Good examples preserve the target: `Puffin NDV 통계 스키마 "
-                     "설계`, `통계 생성 배치 Job 구현`, `StarRocks 플랜 반영 검증`.")],
-            tier="simple", temperature=0.1, name="split_children")
+                     "or `검증 단계`, is invalid. Good examples preserve the target: `통계 artifact 스키마 "
+                     "설계`, `통계 생성 배치 Job 구현`, `소비자 실행계획 반영 검증`.")],
+            execution_layer="lightweight_semantic", execution_stage="split_children",
+            profile="fast_structured", name="split_children", role_id=Node.WORK_ARCHITECT)
         kids = [{"summary": str(c.get("summary") or "").strip()}
                 for c in (r or {}).get("children") or []
                 if str(c.get("summary") or "").strip()]
@@ -3064,20 +5695,12 @@ def _split_into_children(state, item: dict) -> list:
             return kids[:5]
     except Exception:
         pass
-    # ★ 보정 호출이 빈손이면 **DoD 에서 코드가 뽑는다.** 이 호출은 LLM 한 방이라 레이트리밋·
-    #   흔들림으로 그냥 실패하는데, 그러면 다단계 규모가 조용히 단일 Task 로 남았다
-    #   (실측 STARR1: 같은 케이스가 실행마다 통과/실패로 뒤집혔다).
-    #   knowledge/07 이 이미 규정한다 — "DoD 가 5개를 넘고 서로 다른 단계라면 그건 DoD 가
-    #   아니라 **Sub-Task 목록**이다". 규정이 있으니 코드가 그대로 집행한다.
-    fallback = _children_from_dod(item)
-    if fallback:
-        return fallback
     # 사용자가 **새 일의 단계별 Sub-Task 형태를 명시**한 경우에는 빈 리스트로 돌아가면
     # 안 된다. 보정 LLM이 일반적인 단계명만 내어 필터에 걸리고 DoD도 두 줄뿐이면 두
     # 폴백이 모두 빈손이 될 수 있다. 구조 판단은 사용자가 이미 했으므로 빈 산출을 허용하지 않는다.
     # 코드가 부모 제목의 대상을 보존한 최소 3단계를 만든다.
     if shape_hint(state)[0] == "task_with_subtasks":
-        base = _base_title(str(item.get("summary") or "")).strip()
+        base = _display_base_title(str(item.get("summary") or "")).strip()
         if base:
             return [{"summary": f"{base} {stage}"} for stage in ("설계", "구현", "검증")]
     return []
@@ -3112,19 +5735,7 @@ def _collapse_repeated_summary(summary: str) -> str:
     combining the parent subject and a child title.  The duplicate is mechanical: delete
     only an adjacent, exactly equal token span and preserve every other word.
     """
-    tokens = str(summary or "").split()
-    changed = True
-    while changed and len(tokens) >= 2:
-        changed = False
-        for width in range(len(tokens) // 2, 0, -1):
-            for start in range(0, len(tokens) - 2 * width + 1):
-                if tokens[start:start + width] == tokens[start + width:start + 2 * width]:
-                    del tokens[start + width:start + 2 * width]
-                    changed = True
-                    break
-            if changed:
-                break
-    return " ".join(tokens)
+    return _collapse_adjacent_duplicate_tokens(summary)
 
 
 def _bug_grade_body(body) -> bool:
@@ -3169,7 +5780,7 @@ def _reported_symptom(text: str) -> str:
 
 def _repair_bug_facts_from_report(state, items) -> bool:
     """Replace a placeholder actual result with the observed symptom already in the report."""
-    said = (request_text(state) + "\n" + conversation(state)).strip()
+    said = _current_request_boundary_text(state)
     symptom = _reported_runtime_actual(said) or _reported_symptom(said)
     if not symptom:
         return False
@@ -3321,7 +5932,7 @@ def _bug_body_for(state, it) -> str:
     사용자가 안 준 칸은 지어내지 않고 "확인 필요"로 남긴다 — 빈 칸이 거짓말보다 낫고,
     질문 갈래(BUG1)가 그 칸을 채우러 간다.
     """
-    said = (request_text(state) + "\n" + conversation(state)).strip()
+    said = _current_request_boundary_text(state)
     symptom0 = _reported_symptom(said)
     expected0 = _reported_expectation(said)
     steps0 = _reported_steps(said, symptom0)
@@ -3344,7 +5955,8 @@ def _bug_body_for(state, it) -> str:
             ("system", "You are a QA analyst. Extract reproduction steps, expected behavior, and observed "
                        "behavior exactly from the report. Never invent a missing fact; leave it empty. Return JSON only."),
             ("user", f"Bug summary: {it.get('summary')}\n\nReport data:\n{said[:1500]}")],
-            tier="simple", temperature=0.1, name="bug_body") or {}
+            execution_layer="lightweight_semantic", execution_stage="bug_body",
+            profile="fast_structured", name="bug_body", role_id=Node.WORK_ARCHITECT) or {}
         steps = [str(x).strip() for x in (r.get("steps") or []) if str(x).strip()]
         expected = str(r.get("expected") or "").strip()
         actual = str(r.get("actual") or "").strip()
@@ -3390,7 +6002,7 @@ def _complete_bug_draft_from_report(state) -> dict:
     when a reported symptom, an explicit expectation, and a reproducible screen or
     execution step can all be extracted. Otherwise the normal interview remains.
     """
-    said = (request_text(state) + "\n" + conversation(state)).strip()
+    said = _current_request_boundary_text(state)
     if not reads_as_bug(said) or _missing_bug_reproduction(said):
         return {}
     symptom = _reported_symptom(said)
@@ -3446,14 +6058,15 @@ def _task_for_module(state, mod: str, ref: dict, want: str = "") -> dict:
         r = invoke_schema(schema, [
             ("system", "You are a PMO ticket architect. Draft one missing deliverable present in the original "
                        "request. Never add unrequested work. Return JSON only."),
-            ("user", f"Original request: {request_text(state)}\n\n"
+            ("user", f"Original request: {_current_request_boundary_text(state)}\n\n"
                      f"Existing sibling draft: {ref.get('summary')}\n"
                      f"Module for this ticket: {mod}\n"
                      + (f"Fixed summary: {want}\n" if want else "")
                      + f"\nDraft only the part owned by module {mod}. Do not overlap the sibling; put sibling-owned "
                      "work in `excludes`. Every DoD item must name observable completion evidence rather than "
                      "a generic phrase such as `테스트 완료`.")],
-            tier="simple", temperature=0.1, name="module_task")
+            execution_layer="deep_semantic", execution_stage="module_task",
+            profile="reasoning", name="module_task", role_id=Node.WORK_ARCHITECT)
         r = r or {}
         s = (want or str(r.get("summary") or "")).strip()
         inc = [str(x).strip() for x in (r.get("includes") or []) if str(x).strip()]
@@ -3517,7 +6130,7 @@ def _dod_rows(body) -> list:
 def _drop_unrequested_deployment_dod(state, items) -> bool:
     """개발·MVP 요청을 별도 배포 작업이나 운영 배포 약속으로 확대하지 않는다."""
     import re
-    req = request_text(state)
+    req = _current_request_boundary_text(state)
     if re.search(r"배포|릴리(?:스|즈)|운영\s*반영|production|prod\b", req, re.I):
         return False
     changed = False
@@ -3534,6 +6147,20 @@ def _drop_unrequested_deployment_dod(state, items) -> bool:
         targets = [item] + [c for c in (item.get("children") or []) if isinstance(c, dict)]
         for target in targets:
             body = str(target.get("description") or "")
+            if _re.search(r"\bPoC\b|MVP|최소\s*기능|1\s*차|1차", req, _re.I):
+                # A minimal/first-stage request cannot be rewritten in model prose as a
+                # production build. Remove only the sentence carrying that unauthorized
+                # expansion; verified rollout gates are appended later with typed markers.
+                body, n = _re.subn(
+                    r"(?:(?<=<p>)|(?<=[.!?]\s))[^<.!?]{0,180}"
+                    r"(?:프로덕션|production)[^<.!?]{0,140}"
+                    r"(?:파이프라인\s*)?(?:구축|개발|전환|build(?:ing)?)[^<.!?]*"
+                    r"(?:[.!?]|(?=</p>))",
+                    "", body, flags=_re.I,
+                )
+                if n:
+                    body = _re.sub(r"<p>\s*</p>", "", body, flags=_re.I)
+                    changed = True
             # 범위에 끼어든 배포도 같은 의미 확장이다. 구현 자체는 유지한다.
             body, n = _re.subn(r"코드\s*작성\s*및\s*배포", "코드 작성 및 테스트 환경 검증", body)
             changed = changed or bool(n)
@@ -3557,7 +6184,7 @@ def _drop_unrequested_deployment_dod(state, items) -> bool:
 
 def _mark_unspecified_acceptance_criteria(state, items) -> bool:
     """정의되지 않은 품질·성능 기준을 충족했다고 단정하지 않고 확인 과제로 남긴다."""
-    req = request_text(state)
+    req = _current_request_boundary_text(state)
     has_metric = bool(_re.search(
         r"(?:p\d{2}|\d+(?:\.\d+)?\s*(?:ms|초|분|시간|%|건/초|tps|qps|mb|gb))",
         req, _re.I))
@@ -3686,7 +6313,7 @@ def _dedupe_dod_rows(items) -> bool:
 def _drop_cross_item_dod(state, items) -> bool:
     """독립 Task의 완료조건에 형제 산출물이나 명시적 제외 범위를 섞지 않는다."""
     changed = False
-    request = request_text(state)
+    request = _current_request_boundary_text(state)
     rows = [item for item in (items or []) if isinstance(item, dict)]
     sibling_markers = ("가이드", "문서", "인덱스", "성능 측정", "리포트", "대시보드")
     for item in rows:
@@ -3719,7 +6346,7 @@ def _drop_cross_item_dod(state, items) -> bool:
 def _repair_malformed_dod(state, items) -> bool:
     """모델 문장에서 조사·서술어가 탈락한 DoD를 관찰 가능한 문장으로 교체한다."""
     changed = False
-    request = request_text(state) + " " + last_user_text(state)
+    request = _current_request_boundary_text(state)
     malformed = _re.compile(
         r"(?:이|가)\s+(?:을|를)\s*확인|(?:이|가)\s+하여|(?:이|가)\s+하는지\s*(?:실행|테스트)|"
         r"기능이\s+을|사용자가[^<]{0,20}(?:쉽게|편리하게)\s*확인\s*가능",
@@ -3740,7 +6367,8 @@ def _repair_malformed_dod(state, items) -> bool:
             changed = True
             if "알림" in summary and values:
                 evidence = f"{values[-1]} 경계 전후 알림 발생 여부를 실행 로그와 테스트 결과로 확인한다"
-            elif "CDC" in summary or "배치" in summary:
+            elif any(word in summary for word in (
+                    "배치", "파이프라인", "수집", "적재", "동기화")):
                 evidence = f"{summary}의 성공·실패 경로를 회귀 테스트 결과로 확인한다"
             elif any(word in summary for word in ("팝업", "체크박스", "필터", "화면", "UI")):
                 evidence = f"{summary} 동작을 테스트 결과와 화면 증빙으로 확인한다"
@@ -3776,7 +6404,7 @@ def _preserve_explicit_value_transition(state, items) -> bool:
     rows = [item for item in (items or []) if isinstance(item, dict)]
     if len(rows) != 1:
         return False
-    asked = (last_user_text(state) or request_text(state)).strip()
+    asked = _current_request_boundary_text(state)
     pairs = []
     for match in _EXPLICIT_VALUE_TRANSITION.finditer(asked):
         pair = (match.group("before").strip(), match.group("after").strip())
@@ -3806,8 +6434,12 @@ def _preserve_explicit_value_transition(state, items) -> bool:
 
 def _action_specific_proof(state, summary: str) -> str:
     """Return observable evidence for recurring action families, without inventing facts."""
-    subject = _re.sub(r"^\s*\[[^\]]+\]\s*", "", str(summary or "작업")).strip()
-    asked = (request_text(state) + " " + last_user_text(state)).strip()
+    # A vague-state deletion in ``_sharpen_dod`` can leave terminal punctuation behind.
+    # Appending a Korean particle to that fragment produced malformed prose such as
+    # ``코드 .의``.  Punctuation is presentation, not part of the evidence subject.
+    subject = _re.sub(r"^\s*\[[^\]]+\]\s*", "", str(summary or "작업"))
+    subject = subject.strip().rstrip(" .,:;!?。…").strip() or "작업"
+    asked = _current_request_boundary_text(state)
     if any(word in subject for word in ("도움말", "단축키", "팝업", "체크박스")):
         return (f"{subject}의 열기·닫기 동작과 표시 항목을 UI 테스트 결과 및 "
                 "화면 증빙으로 확인한다")
@@ -3858,7 +6490,8 @@ def _sharpen_dod(state, items) -> bool:
             r"^\s*\[[^\]]+\]\s*", "", str(child.get("summary") or "작업")
         ).strip()
         bad = _vague_dod(_dod_rows(body))
-        if not _re.search(r"보고서|리포트|문서|가이드|공유|전달", request_text(state), _re.I):
+        if not _re.search(r"보고서|리포트|문서|가이드|공유|전달",
+                          _current_request_boundary_text(state), _re.I):
             bad += [row for row in _dod_rows(body)
                     if _re.search(r"보고서|리포트", row, _re.I)]
         if any(word in subject for word in ("가이드", "문서", "템플릿")):
@@ -3896,7 +6529,9 @@ def _sharpen_dod(state, items) -> bool:
         generic_review = [row for row in all_dod if _re.search(
             r"결과와\s*검증\s*기록.{0,40}담당\s*리뷰|"
             r"검증\s*기록.{0,40}리뷰로\s*확인|"
-            r"결과가\s*반영.{0,40}담당\s*리뷰", row, _re.I)]
+            r"결과가\s*반영.{0,40}담당\s*리뷰|"
+            r"요청한\s*작업이\s*반영.{0,50}검증\s*결과.{0,30}리뷰로\s*확인",
+            row, _re.I)]
         bad = list(dict.fromkeys([*_vague_dod(all_dod), *generic_review]))
         for old in bad:
             if old in generic_review:
@@ -3915,7 +6550,7 @@ def _sharpen_dod(state, items) -> bool:
                 r"성공적으로\s*추가됨?|추가됨|후속\s*조치\s*필요\s*여부\s*평가|"
                 r"정상(?:적으로)?\s*(?:동작|작동|구현|표시)(?:함|됨)?|"
                 r"문서화\s*완료|이상\s*없음|문제\s*없음)",
-                "", old, flags=_re.I).strip(" -·:;")
+                "", old, flags=_re.I).strip(" -·:;.。…")
             # `정상적으로 작동해야 할 것`에서 vague phrase를 떼면 `해야 할 것` 또는
             # `할 것`이 조사처럼 남을 수 있다. Evidence 문장에 그 찌꺼기를 이어 붙이지 않는다.
             stem = _re.sub(r"(?:이|가)?\s*(?:해야\s*)?(?:함|됨|할\s*것|한다)?\s*$", "", stem)
@@ -3936,7 +6571,8 @@ def _sharpen_dod(state, items) -> bool:
         # A model may write an otherwise fluent but unrequested "report delivery" DoD.
         # Reporting is a separate deliverable; if the user did not ask for one, replace the
         # row with evidence of the actual action instead of silently expanding scope.
-        if not _re.search(r"보고서|리포트|문서|가이드|공유|전달", request_text(state), _re.I):
+        if not _re.search(r"보고서|리포트|문서|가이드|공유|전달",
+                          _current_request_boundary_text(state), _re.I):
             replacement = _action_specific_proof(state, it.get("summary") or "")
 
             def replace_report(match):
@@ -3972,7 +6608,7 @@ def _sharpen_dod(state, items) -> bool:
         # contract and preserve only a threshold the user literally supplied.
         if _re.search(r"(?:null|널)\s*(?:ratio|비율)", summary_subject, _re.I):
             replacement = _action_specific_proof(state, summary_subject)
-            asked = (request_text(state) + " " + last_user_text(state)).strip()
+            asked = _current_request_boundary_text(state)
             explicit_values = {
                 value.replace(" ", "") for value in _re.findall(
                     r"\d+(?:\.\d+)?\s*(?:%|퍼센트|이하|이상|미만|초과)", asked, _re.I)
@@ -4010,7 +6646,7 @@ def _fill_thin_bodies(state, items, repair: bool = True) -> bool:
     # ① 배경 채우기는 **LLM 호출이 없다 — 전 항목에 건다.** 처음엔 아래 보정과 함께 "한 건만"
     #    고치게 뒀는데, 초안이 4건으로 갈린 실행에서 **둘 이상이 얇아** 첫 건만 고쳐진 채
     #    나갔다(실측 STR2: `[2] '배경' 섹션 없음`). 공짜인 수리를 아낄 이유가 없다.
-    req = request_text(state).strip()
+    req = _current_request_boundary_text(state)
     hit = False
     if req:
         for it in tops:
@@ -4124,6 +6760,193 @@ def _children_from_dod(item: dict) -> list:
 
 _WEEKDAYS = {"월": 0, "화": 1, "수": 2, "목": 3, "금": 4, "토": 5, "일": 6}
 
+_ISO_DATE = r"(?<!\d)(20\d{2}-\d{2}-\d{2})(?!\d)"
+_DUE_WORD = r"(?:마감(?:일)?|기한|due\s*date|duedate|due)"
+
+
+def _valid_iso_date(value: str) -> bool:
+    """Return whether ``value`` is a real calendar date in canonical ISO form."""
+    from datetime import date
+    try:
+        return date.fromisoformat(str(value or "")).isoformat() == value
+    except (TypeError, ValueError):
+        return False
+
+
+def _explicit_due_candidates(text: str) -> list[str]:
+    """Extract only dates explicitly bound to a deadline, preserving first-seen order.
+
+    Arbitrary dates in background/history are not deadlines. A date qualifies when a due
+    label is in the same short clause, or when the user writes the ordinary deadline form
+    ``YYYY-MM-DD까지``. Invalid calendar dates remain non-authoritative.
+    """
+    source = str(text or "")
+    found: list[tuple[int, str]] = []
+    patterns = (
+        rf"{_DUE_WORD}\s*(?:은|는|이|가|을|를|:|=|로|으로)?\s*{_ISO_DATE}",
+        rf"{_ISO_DATE}\s*(?:을|를|로|으로|까지)?\s*{_DUE_WORD}",
+        rf"{_ISO_DATE}\s*까지(?:로|를|는|은)?",
+    )
+    for pattern in patterns:
+        for match in _re.finditer(pattern, source, _re.I):
+            value = next((group for group in match.groups()
+                          if group and _re.fullmatch(r"20\d{2}-\d{2}-\d{2}", group)), "")
+            if _valid_iso_date(value):
+                found.append((match.start(), value))
+    ordered = []
+    for _position, value in sorted(found):
+        if value not in ordered:
+            ordered.append(value)
+    return ordered
+
+
+def _explicit_due_instruction_status(state: dict) -> tuple[str, str]:
+    """Classify the authoritative current-turn due instruction.
+
+    Returns ``(status, value)`` where status is ``valid``, ``ambiguous``, ``invalid``,
+    ``clear``, or ``absent``. This typed boundary prevents an invalid/ambiguous user-owned
+    field from degrading to an empty helper result that silently preserves a model date.
+    """
+    frozen = request_text(state).strip()
+    latest = last_user_text(state).strip()
+    continuation = bool(state.get("turn_continuation"))
+    source = latest if continuation and latest and latest != frozen else frozen
+    due_labeled = bool(_re.search(_DUE_WORD, source, _re.I))
+    deadline_form = bool(_re.search(rf"{_ISO_DATE}\s*까지", source))
+    if due_labeled and _re.search(
+            r"(?:제거|삭제|없애|비워|미설정|설정하지\s*말|없(?:음|이))|"
+            r"(?:clear|unset|remove)", source, _re.I):
+        return "clear", ""
+    raw_dates = _re.findall(_ISO_DATE, source)
+    # A single labelled deadline clause can contain two alternatives while the narrower
+    # extractor binds only its first value. Detect the alternatives locally; arbitrary
+    # incident/history dates elsewhere in the same request are not competing deadlines.
+    ambiguous_clause = bool(_re.search(
+        rf"{_DUE_WORD}[^.!?\n]{{0,32}}{_ISO_DATE}[^.!?\n]{{0,16}}"
+        rf"(?:\ub610\ub294|\ud639\uc740|\uc911|or|/)\s*{_ISO_DATE}", source, _re.I,
+    ) or _re.search(
+        rf"{_ISO_DATE}[^.!?\n]{{0,16}}(?:\ub610\ub294|\ud639\uc740|or|/)\s*{_ISO_DATE}"
+        rf"[^.!?\n]{{0,32}}{_DUE_WORD}", source, _re.I,
+    ))
+    if ambiguous_clause:
+        return "ambiguous", ""
+
+    values = _explicit_due_candidates(source)
+    if len(values) > 1:
+        return "ambiguous", ""
+    if len(values) == 1:
+        return "valid", values[0]
+
+    if (due_labeled or deadline_form) and raw_dates:
+        # No valid candidate reached this branch, so every literal date was invalid or the
+        # deadline clause itself was malformed.
+        return "invalid", str(raw_dates[0])
+
+    # A bare answer is a due instruction only when it directly answers the current assistant
+    # due question; a date in an unrelated continuation is not a deadline.
+    if continuation and latest:
+        messages = list(state.get("messages") or [])
+        last_human_index = next((index for index in range(len(messages) - 1, -1, -1)
+                                 if getattr(messages[index], "type", "") == "human"), -1)
+        previous = messages[last_human_index - 1] if last_human_index > 0 else None
+        match = _re.fullmatch(_ISO_DATE, latest)
+        if (match and previous is not None
+                and getattr(previous, "type", "") in ("ai", "assistant")
+                and _re.search(_DUE_WORD, str(getattr(previous, "content", "") or ""), _re.I)):
+            value = match.group(1)
+            return ("valid", value) if _valid_iso_date(value) else ("invalid", value)
+    return "absent", ""
+
+
+def _authoritative_explicit_due(state: dict) -> str:
+    """Return the sole explicit deadline inside the current request boundary.
+
+    Repeating the same deadline is unambiguous. Distinct deadlines are deliberately left
+    unresolved because assigning them to one or more draft roots requires user intent.
+    ``request_text`` is the session-frozen authority. Only an explicit continuation may add
+    the latest human answer; older conversation turns are never scanned. A bare ISO answer
+    is accepted only when that current continuation directly follows an assistant deadline
+    question, so a stale topic date cannot silently become a Jira due date.
+    """
+    frozen = request_text(state).strip()
+    latest = last_user_text(state).strip()
+    continuation = bool(state.get("turn_continuation"))
+    status, status_value = _explicit_due_instruction_status(state)
+    if status == "valid":
+        return status_value
+    if status in {"ambiguous", "invalid", "clear"}:
+        return ""
+    frozen_values = _explicit_due_candidates(frozen)
+    messages = list(state.get("messages") or [])
+
+    # A current continuation is authoritative over the frozen first-turn request. This is
+    # field precedence, not a union: "A로 만들어줘" followed by "B로 바꿔" means B. Two
+    # deadlines in the same current answer remain ambiguous and are never guessed.
+    current_followup = continuation and latest and latest != frozen
+    if current_followup:
+        latest_values = _explicit_due_candidates(latest)
+        if len(latest_values) == 1:
+            return latest_values[0]
+        if len(latest_values) > 1:
+            return ""
+
+        last_human_index = next((index for index in range(len(messages) - 1, -1, -1)
+                                 if getattr(messages[index], "type", "") == "human"), -1)
+        answer = (str(getattr(messages[last_human_index], "content", "") or "").strip()
+                  if last_human_index >= 0 else "")
+        match = _re.fullmatch(_ISO_DATE, answer)
+        previous = messages[last_human_index - 1] if last_human_index > 0 else None
+        if (answer == latest and match and previous is not None
+                and getattr(previous, "type", "") in ("ai", "assistant")
+                and _re.search(_DUE_WORD, str(getattr(previous, "content", "") or ""), _re.I)
+                and _valid_iso_date(match.group(1))):
+            return match.group(1)
+
+        prior_items = [row for row in ((state.get("draft") or {}).get("items") or [])
+                       if isinstance(row, dict)]
+        prior_due = (str(prior_items[0].get("duedate") or "").strip()
+                     if len(prior_items) == 1 else "")
+        # A title/body-only refinement carries the already-approved typed due forward. This
+        # prevents turn 3 from reverting B to frozen turn-1 A. A current due instruction
+        # which is invalid, ambiguous, or clears the field must fail closed instead.
+        if not _re.search(_DUE_WORD, latest, _re.I) and _valid_iso_date(prior_due):
+            return prior_due
+        return ""
+
+    return frozen_values[0] if len(frozen_values) == 1 else ""
+
+
+def _global_exact_due_for_roots(state: dict, root_count: int) -> str:
+    """Return one exact date only when the user explicitly scopes it to every root."""
+    if root_count < 2:
+        return ""
+    due = _authoritative_explicit_due(state)
+    if not due:
+        return ""
+    source = _current_request_boundary_text(state)
+    universal = (
+        r"(?:둘\s*다|모두|전부|공통(?:으로|의)?|"
+        r"각\s*(?:Task|태스크|테스크|티켓|항목)|"
+        r"\d+\s*(?:건|개)\s*(?:모두|다))"
+    )
+    scoped = bool(
+        _re.search(rf"{universal}[^.!?\n]{{0,60}}{_DUE_WORD}", source, _re.I)
+        or _re.search(rf"{_DUE_WORD}[^.!?\n]{{0,60}}{universal}", source, _re.I)
+    )
+    return due if scoped else ""
+
+
+def _normalize_due_rationale(rationale: str, due: str) -> str:
+    """Remove model-authored deadline reasoning and append the authoritative user fact."""
+    text = str(rationale or "")
+    text = _re.sub(
+        rf"[^.\n;!?]*(?:{_DUE_WORD}|{_ISO_DATE})[^.\n;!?]*(?:[.\n;!?]|$)",
+        " ", text, flags=_re.I,
+    )
+    text = "\n".join(line.strip() for line in text.splitlines() if line.strip()).strip()
+    canonical = f"사용자 지정 마감일 {due} 그대로 적용."
+    return f"{text}\n{canonical}".strip()
+
 
 def _relative_due(text: str) -> str:
     """"다음주 수요일"·"이번주 금요일"·"내일"·"모레" → YYYY-MM-DD. 못 알아들으면 "".
@@ -4163,18 +6986,38 @@ def _relative_due(text: str) -> str:
 
 
 def _apply_relative_due_to_single_draft(state: dict, items: list) -> str:
-    """현재 메시지의 상대 기한을 단일 생성 초안에 적용하고 확정값을 반환한다.
+    """Apply an exact/relative due only where root scope is deterministic.
 
-    원 요청 전체가 아니라 마지막 사용자 메시지를 우선하는 이유는, 후속 편집에서 이미 바꾼
-    기한을 첫 턴의 상대 표현이 다시 덮지 않게 하기 위해서다. 메시지가 없는 단위 테스트·내부
-    호출만 원 요청을 fallback으로 사용한다.
+    One root is unambiguous. Multiple roots are updated only when the user explicitly scopes
+    one exact date to all of them (for example ``둘 다 마감은 ...``). Root-specific dates,
+    an unscoped global-looking date, and relative dates across several roots remain semantic.
     """
-    if len(items or []) != 1 or not isinstance(items[0], dict):
+    rows = [row for row in (items or []) if isinstance(row, dict)]
+    if not rows or len(rows) != len(items or []):
         return ""
-    source = last_user_text(state) or request_text(state)
+    due_status, _due_value = _explicit_due_instruction_status(state)
+    if due_status in {"ambiguous", "invalid", "clear"}:
+        # Never retain a model-authored or stale date after the current user explicitly
+        # supplied an unusable/cleared due instruction. Work/Auditor decide whether the
+        # status needs an interview; this helper owns the payload safety boundary.
+        if len(rows) == 1:
+            rows[0]["duedate"] = ""
+        return ""
+    due = _authoritative_explicit_due(state)
+    if due and len(rows) == 1:
+        rows[0]["duedate"] = due
+        return due
+    global_due = _global_exact_due_for_roots(state, len(rows))
+    if global_due:
+        for row in rows:
+            row["duedate"] = global_due
+        return global_due
+    if len(rows) != 1:
+        return ""
+    source = _current_request_boundary_text(state)
     due = _relative_due(source)
     if due:
-        items[0]["duedate"] = due
+        rows[0]["duedate"] = due
     return due
 
 
@@ -4201,7 +7044,7 @@ def _remove_unrequested_quality_claims(state: dict, items: list) -> bool:
     좁히면 형식 검사는 통과해도 다른 작업이 된다. 여기서는 사용자 원문에 실제로 등장한
     차원만 허용한다. Bug는 재현/기대/실제 계약이 별도이므로 대상에서 제외한다.
     """
-    request = (request_text(state) + " " + last_user_text(state)).strip()
+    request = _current_request_boundary_text(state)
     forbidden = [p for p in _QUALITY_DIMENSIONS if not _re.search(p, request, _re.I)]
     if not forbidden:
         return False
@@ -4287,11 +7130,13 @@ def _repair_statistics_generation_semantics(state: dict, items: list) -> bool:
     only when the user explicitly asks to generate statistics and the body contains an
     unrequested method, then rebuilds the body from the verified title/request boundary.
     """
-    asked = (request_text(state) + " " + last_user_text(state)).strip()
-    if not (_re.search(r"통계\s*정보.{0,30}생성|NDV.{0,30}생성", asked, _re.I)
-            or _re.search(r"generat\w*.{0,30}(?:NDV|statistic)|"
-                          r"(?:NDV|statistic).{0,30}generat\w*", asked, _re.I)):
+    asked = _current_request_boundary_text(state)
+    # The invariant is the requested *generation* outcome, not one particular statistics
+    # technology. Product/domain qualifiers flow from the request and item summary; this
+    # repair must never inject a qualifier absent from both.
+    if not _re.search(r"생성|산출|generat\w*|produc\w*", asked, _re.I):
         return False
+    requested_terms = discriminative_relation_terms(asked)
     drift_patterns = (
         r"데이터\s*(?:소스\s*)?(?:수집|변환|분석|처리|수정)",
         r"통계\s*정보(?:를|의)?\s*(?:수집|처리)",
@@ -4305,7 +7150,10 @@ def _repair_statistics_generation_semantics(state: dict, items: list) -> bool:
         if not isinstance(item, dict) or _is_bug_item(item):
             continue
         summary = _re.sub(r"^\s*\[[^]]+\]\s*", "", str(item.get("summary") or "")).strip()
-        if not _re.search(r"NDV|통계", summary, _re.I):
+        summary_terms = discriminative_relation_terms(summary)
+        common = requested_terms & summary_terms
+        required_overlap = 1 if min(len(requested_terms), len(summary_terms)) <= 1 else 2
+        if len(common) < required_overlap:
             continue
         body = str(item.get("description") or "")
         bad = [pattern for pattern in drift_patterns
@@ -4324,7 +7172,7 @@ def _repair_statistics_generation_semantics(state: dict, items: list) -> bool:
             "<li>제외: 요청에 명시되지 않은 데이터 수집·변환·배포 및 보고서 작성</li></ul>"
             "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
             f"<li data-checked=\"false\">{subject}의 실행 성공·실패 로그와 테스트 결과를 티켓에 기록한다</li>"
-            "<li data-checked=\"false\">생성된 NDV 통계정보의 산출 여부와 검증 결과를 티켓에 기록한다</li>"
+            f"<li data-checked=\"false\">{subject} 실행으로 생성된 결과의 산출 여부와 검증 결과를 티켓에 기록한다</li>"
             "</ul>" + reference
         )
         changed = True
@@ -4395,7 +7243,7 @@ def _drop_unrequested_requester_attribution(state: dict, items: list) -> bool:
     reason for every ticket.  Keep an attribution only when the user actually mentioned
     that identity in the request.
     """
-    asked = (request_text(state) + " " + _human_request_text(state)).strip()
+    asked = _current_request_boundary_text(state)
     changed = False
     targets = []
     for item in items or []:
@@ -4430,7 +7278,7 @@ def _remove_assignee_semantic_drift(state: dict, items: list) -> bool:
     raw IDs and their suffixes are removed from prose because people must be represented
     by typed mentions or the assignee field.
     """
-    asked = (request_text(state) + " " + last_user_text(state)).strip()
+    asked = _current_request_boundary_text(state)
     changed = False
     targets = []
     for item in items or []:
@@ -4515,6 +7363,14 @@ def _base_title(s: str) -> str:
     s = _re.sub(r"\d+", "", s or "")
     s = _re.sub(r"\s*[-–—:]?\s*(?:설계|구현|검증|테스트|연동|모니터링|문서화|배포|개발)"
                 r"(?:\s*단계)?\s*$", "", s.strip()).strip()
+    return _re.sub(r"\s{2,}", " ", s).strip(" -–—:#")
+
+
+def _display_base_title(s: str) -> str:
+    """Visible counterpart of `_base_title`: strip stage suffixes, retain facts/numbers."""
+    s = str(s or "").strip()
+    s = _re.sub(r"\s*[-–—:]?\s*(?:설계|구현|검증|테스트|연동|모니터링|문서화|배포|개발)"
+                r"(?:\s*단계)?\s*$", "", s).strip()
     return _re.sub(r"\s{2,}", " ", s).strip(" -–—:#")
 
 
@@ -4634,7 +7490,7 @@ def _topic_drift(state, items: list) -> str:
 
     고유어 = 식별자(테이블명 등) + 영문 기술 토큰(4자↑, 일반어 제외). 판정은 코드가 하고
     고칠지는 사람이 정한다 — 경고는 rationale 로 승인 카드에 노출된다."""
-    req = request_text(state)
+    req = _current_request_boundary_text(state)
     if not req or not items:
         return ""
     try:
@@ -4669,13 +7525,361 @@ def _topic_drift(state, items: list) -> str:
     terms = {t for t in terms if t and t.lower() not in labels and t.lower() not in _COMMON}
     if not terms:
         return ""
-    hay = " ".join(str(i.get("summary") or "") + " " + str(i.get("description") or "")
+    hay = " ".join(str(i.get("summary") or "") + " "
+                   + _visible_body_text(str(i.get("description") or ""))
                    for i in items).lower()
     if any(t.lower() in hay for t in terms):
         return ""
     shown = ", ".join(sorted(terms)[:4])
     return (f"(확인 필요: 원 요청의 고유어({shown})가 제목·본문에 없다 — 요청과 다른 "
             "주제의 티켓일 수 있다. Epic 본문을 따라간 것은 아닌지 검토)")
+
+
+_ANCHOR_OPAQUE_TAGS = frozenset({"a", "code", "pre", "script", "style"})
+_ANCHOR_OPAQUE_TOKEN = _re.compile(r"(\{\{[^{}\r\n]{1,300}\}\}|`[^`\r\n]*`)")
+
+
+def _html_tag_end(value: str, start: int) -> int:
+    """Find a tag end without treating ``>`` inside a quoted attribute as the end."""
+    quote = ""
+    for index in range(start + 1, len(value)):
+        char = value[index]
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in ("'", '"'):
+            quote = char
+        elif char == ">":
+            return index
+    return -1
+
+
+def _map_visible_body_text(value: str, transform) -> str:
+    """Transform authored visible text without rewriting source identities or markup.
+
+    Description HTML also transports URLs, ticket/mention placeholders, and literal code. A global
+    replacement can silently turn one source into another. Tags and attributes, link labels, code/pre
+    blocks, and renderer placeholders are therefore opaque; only ordinary visible text nodes are mapped.
+    The original HTML is retained byte-for-byte instead of being parsed and reserialized.
+    """
+    source = str(value or "")
+    out, protected, cursor = [], [], 0
+    while cursor < len(source):
+        if source[cursor] == "<":
+            end = _html_tag_end(source, cursor)
+            if end >= 0:
+                tag = source[cursor:end + 1]
+                parsed = _re.match(r"<\s*(/?)\s*([A-Za-z][A-Za-z0-9:-]*)", tag)
+                if parsed:
+                    closing, name = bool(parsed.group(1)), parsed.group(2).casefold()
+                    if closing and name in _ANCHOR_OPAQUE_TAGS:
+                        for stack_index in range(len(protected) - 1, -1, -1):
+                            if protected[stack_index] == name:
+                                del protected[stack_index:]
+                                break
+                    if (not closing and name in _ANCHOR_OPAQUE_TAGS
+                            and not tag.rstrip().endswith("/>")):
+                        protected.append(name)
+                # Comments, doctypes, and unknown tags are structural too. Keep them exact even
+                # when they do not have a normal element-name shape.
+                out.append(tag)
+                cursor = end + 1
+                continue
+            # Malformed trailing ``<`` is visible input, not a tag. Advance one character so a
+            # damaged description cannot trap normalization in a zero-progress loop.
+            out.append("<" if protected else transform("<"))
+            cursor += 1
+            continue
+        end = source.find("<", cursor)
+        if end < 0:
+            end = len(source)
+        text = source[cursor:end]
+        if protected:
+            out.append(text)
+        else:
+            pieces = _ANCHOR_OPAQUE_TOKEN.split(text)
+            out.extend(piece if index % 2 else transform(piece)
+                       for index, piece in enumerate(pieces))
+        cursor = end
+    return "".join(out)
+
+
+def _visible_body_text(value: str) -> str:
+    """Return only text eligible for anchor insertion and coverage checks."""
+    visible = []
+
+    def collect(text: str) -> str:
+        visible.append(text)
+        return text
+
+    _map_visible_body_text(value, collect)
+    return " ".join(visible)
+
+
+_HIERARCHY_ISSUE_TIER = _re.compile(
+    r"(?i)(?P<child>Sub[\s_-]*Task|Subtask|서브\s*(?:태스크|테스크))|"
+    r"(?P<root>Task|Epic|Story|Bug|Feature|Improvement|"
+    r"태스크|테스크|에픽|스토리|버그|피처|임프로브먼트)"
+)
+
+
+def _explicit_hierarchical_ordinal_contract(state) -> dict[str, str]:
+    """Bind explicit request ordinals to their nearest root/child issue tier.
+
+    Multiple phase ordinals cannot be propagated globally: ``1차 … Task 아래 2차 …
+    Sub-Task`` owns two different visible scopes.  Bind each ordinal to the nearest
+    explicit issue-type token (preferring the following token on an exact tie, as Korean
+    modifiers normally precede their noun).  Ambiguous or incomplete material deliberately
+    returns no contract and remains semantic-review work.
+    """
+    material = _current_request_boundary_text(state)
+    ordinal_rows = [
+        (match.start(), match.end(), f"{int(match.group(1))}차")
+        for match in _re.finditer(r"(?<!\d)(\d{1,3})\s*차", material)
+    ]
+    if len({value for _, _, value in ordinal_rows}) < 2:
+        return {}
+    tier_rows = [
+        (match.start(), match.end(), "child" if match.group("child") else "root")
+        for match in _HIERARCHY_ISSUE_TIER.finditer(material)
+    ]
+    if not tier_rows:
+        return {}
+
+    bound: dict[str, set[str]] = {"root": set(), "child": set()}
+    for ordinal_start, ordinal_end, value in ordinal_rows:
+        candidates = []
+        for tier_start, tier_end, tier in tier_rows:
+            if ordinal_end <= tier_start:
+                gap, direction = tier_start - ordinal_end, 0
+            elif tier_end <= ordinal_start:
+                gap, direction = ordinal_start - tier_end, 1
+            else:
+                gap, direction = 0, 0
+            # A wider match is a different clause/outcome, not an ordinal/type binding.
+            if gap <= 32:
+                candidates.append((gap, direction, tier_start, tier))
+        if not candidates:
+            continue
+        candidates.sort()
+        best = candidates[0]
+        # Same-position ambiguity should not be resolved by regex declaration order.
+        if len(candidates) > 1 and candidates[1][:3] == best[:3]:
+            return {}
+        bound[best[3]].add(value)
+
+    if len(bound["root"]) != 1 or len(bound["child"]) != 1:
+        return {}
+    root = next(iter(bound["root"]))
+    child = next(iter(bound["child"]))
+    if root == child:
+        return {}
+    return {"root": root, "child": child}
+
+
+def _preserve_required_user_anchors(state, items: list) -> bool:
+    """Restore precise request anchors without attempting general title rewriting.
+
+    A single top-level deliverable owns the original subject, so all high-precision anchors
+    belong in its title. With several independent deliverables, restore only an item that
+    already contains at least one anchor; spreading every product name to every item would
+    merge separate scopes. Generated stage children inherit the repaired parent subject.
+    """
+    from app.agent.workflow.anchors import is_ordinal, required_user_anchors
+
+    # Interview answers often add the exact phase/ordinal or identifier after the original
+    # request (for example ``1차``). Both turns are authoritative for the final payload.
+    anchors = required_user_anchors(state, include_latest=True)
+    subjects = [value for value in anchors if not is_ordinal(value)]
+    ordinals = [value for value in anchors if is_ordinal(value)]
+    hierarchy_ordinals = _explicit_hierarchical_ordinal_contract(state)
+    rows = [item for item in (items or []) if isinstance(item, dict)]
+    if not rows or not (subjects or ordinals):
+        return False
+    # An ordinal-only Korean request has no Latin subject anchor. It is still safe to seal
+    # one root with one exact phase, but spreading one phase over several deliverables or
+    # choosing among several explicit phases would change semantics.
+    if not subjects and (
+            len(rows) != 1 or (len(ordinals) != 1 and not hierarchy_ordinals)):
+        return False
+
+    def contains(text: str, value: str) -> bool:
+        if is_ordinal(value):
+            return value in _re.sub(r"\s+", "", str(text or ""))
+        return bool(_re.search(
+            rf"(?<![0-9A-Za-z_.-]){_re.escape(value)}(?![0-9A-Za-z_.-])",
+            str(text or ""), _re.I,
+        ))
+
+    def strip_anchor(text: str, value: str) -> str:
+        return _re.sub(
+            rf"(?<![0-9A-Za-z_.-]){_re.escape(value)}(?![0-9A-Za-z_.-])",
+            "", text, flags=_re.I,
+        )
+
+    def replace_visible_subject(body: str, old_subject: str, new_subject: str) -> str:
+        if not old_subject or not new_subject or old_subject == new_subject:
+            return body
+        pattern = _re.compile(
+            rf"(?<![0-9A-Za-z_.-]){_re.escape(old_subject)}(?![0-9A-Za-z_.-])",
+            _re.I,
+        )
+        return _map_visible_body_text(body, lambda text: pattern.sub(new_subject, text))
+
+    def body_contains(body: str, value: str) -> bool:
+        return contains(_visible_body_text(body), value)
+
+    def repair_hierarchy_summary(text: str, tier: str) -> str:
+        """Correct one misplaced visible phase without rewriting descriptive prose."""
+        expected = hierarchy_ordinals.get(tier)
+        matches = list(_re.finditer(r"(?<!\d)\d{1,3}\s*차", str(text or "")))
+        if not expected or len(matches) != 1 or contains(text, expected):
+            return text
+        match = matches[0]
+        return text[:match.start()] + expected + text[match.end():]
+
+    ordinal_follow = (
+        r"[—–-]|설계|기획|구현|개발|구축|적용|전환|검증|테스트|측정|배포|"
+        r"모니터링|작업|진행|결과|산출물|성공|실패"
+    )
+
+    def repair_ordinal(text: str, owned_subjects: list[str]) -> str:
+        """Repair a model-dropped ordinal only in text carrying the protected subject."""
+        if len(ordinals) != 1:
+            return text
+        if owned_subjects and not any(contains(text, value) for value in owned_subjects):
+            return text
+        return _re.sub(
+            rf"(?<!\d)차(?=\s*(?:{ordinal_follow})(?:\s|$|[<.,]))",
+            ordinals[0], text,
+        )
+
+    def seal_body(body: str, old_summary: str, new_summary: str,
+                  owned_subjects: list[str]) -> tuple[str, bool]:
+        """Keep the title's protected anchors in the authored scope/DoD body."""
+        original = str(body or "")
+        if not original:
+            return original, False
+        old_subject = _re.sub(r"^\s*\[[^\]]+\]\s*", "", old_summary).strip()
+        new_subject = _re.sub(r"^\s*\[[^\]]+\]\s*", "", new_summary).strip()
+        fresh = original
+        if old_subject and new_subject and old_subject != new_subject:
+            fresh = replace_visible_subject(fresh, old_subject, new_subject)
+        fresh = _map_visible_body_text(
+            fresh, lambda text: repair_ordinal(text, owned_subjects))
+
+        # If projection omitted an exact proper noun from the body entirely, add only the
+        # missing protected tokens to the existing `포함:` row.  This is a factual copy, not
+        # semantic prose generation, and is idempotent across the Work/assignment boundaries.
+        missing = [value for value in owned_subjects if not body_contains(fresh, value)]
+        if len(ordinals) == 1 and not body_contains(fresh, ordinals[0]):
+            missing.append(ordinals[0])
+        if missing and _re.search(r"<li\b[^>]*>\s*포함\s*[:：]", fresh, _re.I):
+            copied = _esc(" ".join(missing)) + " "
+            fresh = _re.sub(
+                r"(<li\b[^>]*>\s*포함\s*[:：]\s*)",
+                lambda match: match.group(1) + copied,
+                fresh, count=1, flags=_re.I,
+            )
+        return fresh, fresh != original
+
+    changed = False
+    for item in rows:
+        old_summary = str(item.get("summary") or "").strip()
+        summary = repair_hierarchy_summary(old_summary, "root")
+        changed = changed or summary != old_summary
+        if not summary:
+            continue
+        hay = summary + " " + _visible_body_text(str(item.get("description") or ""))
+        owned_subjects = (subjects if len(rows) == 1 else [
+            value for value in subjects if contains(hay, value)
+        ])
+        if len(rows) > 1 and subjects and not owned_subjects:
+            continue
+        missing = [value for value in owned_subjects if not contains(summary, value)]
+        if missing:
+            module_match = _re.match(r"^\s*(\[[^]]+\])\s*", summary)
+            module = module_match.group(1) if module_match else ""
+            rest = summary[module_match.end():] if module_match else summary
+            # Rebuild only the protected-token prefix in original order. All unprotected
+            # authored wording stays byte-for-byte except whitespace collapsed at joins.
+            for value in owned_subjects:
+                rest = strip_anchor(rest, value)
+            rest = _re.sub(r"\s{2,}", " ", rest).strip(" -")
+            summary = " ".join(part for part in (module, " ".join(owned_subjects), rest) if part)
+            changed = True
+        # A single explicit ordinal is a scope boundary. Multiple ordinals usually describe
+        # separate phases and are left for semantic decomposition instead of being glued to
+        # every title.
+        if len(ordinals) == 1 and not contains(summary, ordinals[0]):
+            ordinal = ordinals[0]
+            malformed = _re.search(
+                rf"(?<!\d)차(?=\s*(?:{ordinal_follow})(?:\s|$))", summary,
+            )
+            if malformed:
+                summary = summary[:malformed.start()] + ordinal + summary[malformed.end():]
+            else:
+                action = _re.search(r"\s+(구현|개발|구축|적용|전환|작업|진행)\s*$", summary)
+                if action:
+                    summary = summary[:action.start()] + " " + ordinal + summary[action.start():]
+                else:
+                    summary = summary.rstrip() + " " + ordinal
+            changed = True
+        item["summary"] = _re.sub(r"\s{2,}", " ", summary).strip()
+        item["description"], body_changed = seal_body(
+            str(item.get("description") or ""), old_summary, item["summary"],
+            owned_subjects,
+        )
+        changed = changed or body_changed
+
+        parent_summary = str(item.get("summary") or "")
+        parent_module = _re.match(r"^\s*(\[[^]]+\])\s*", parent_summary)
+        parent_subject = parent_summary[parent_module.end():] if parent_module else parent_summary
+        parent_core = _re.sub(
+            r"\s+(?:구현|개발|구축|적용|전환|작업|진행)\s*$", "", parent_subject,
+        ).strip()
+        for child in (item.get("children") or []):
+            if not isinstance(child, dict):
+                continue
+            child_summary = str(child.get("summary") or "").strip()
+            old_child_summary = child_summary
+            child_summary = repair_hierarchy_summary(child_summary, "child")
+            if child_summary != old_child_summary:
+                child["summary"] = child_summary
+                changed = True
+            child_visible = (
+                child_summary + " "
+                + _visible_body_text(str(child.get("description") or ""))
+            )
+            child_explicit_ordinals = _re.findall(
+                r"(?<!\d)\d{1,3}\s*차", child_visible,
+            )
+            # An explicit child phase is authored scope, even when it conflicts with the
+            # parent. Never silently rewrite ``2차`` to the parent's ``1차``. Likewise, a
+            # multi-phase request has no single ordinal safe to propagate into every child;
+            # preserve the literal draft and let deterministic/semantic review resolve any
+            # ambiguity. Single-ordinal children with a missing/bare phase still inherit.
+            if child_explicit_ordinals or len(ordinals) != 1:
+                continue
+            stage = _re.search(
+                r"[—–-]\s*(설계|기획|구현|개발|적용|검증|테스트|측정|배포|모니터링)\s*$",
+                child_summary,
+            )
+            if not stage or (owned_subjects and not any(
+                    contains(child_summary, value) for value in owned_subjects)):
+                continue
+            child_module = _re.match(r"^\s*(\[[^]]+\])\s*", child_summary)
+            module = child_module.group(1) if child_module else (
+                parent_module.group(1) if parent_module else "")
+            fresh = f"{parent_core} — {stage.group(1)}"
+            child["summary"] = (f"{module} {fresh}" if module else fresh).strip()
+            changed = changed or child["summary"] != child_summary
+            child["description"], body_changed = seal_body(
+                str(child.get("description") or ""), old_child_summary, child["summary"],
+                owned_subjects,
+            )
+            changed = changed or body_changed
+    return changed
 
 
 def as_bulk_items(draft: dict) -> list:
@@ -4832,11 +8036,11 @@ def _role_md(state) -> str:
     판단에 쓰이지 않는다(초안 items 를 내지 않는 경로다).
     """
     from app.agent.prompts.roles import compose
-    intent = (state.get("intent") or "").strip()
+    action = _work_action(state)
     editing_draft = bool((state.get("draft") or {}).get("items"))
-    if intent == Intent.MODIFY and not editing_draft:
+    if action in {"comment", "update"} and not editing_draft:
         return compose(SYSTEM_WORK_ARCHITECT, _CREATE_ONLY)
-    if intent in Intent.DRAFTS_TICKETS:
+    if action == "create":
         return compose(SYSTEM_WORK_ARCHITECT, _MODIFY_ONLY)
     return SYSTEM_WORK_ARCHITECT
 
@@ -4928,15 +8132,136 @@ def _epic_options(state) -> list:
         rows.sort(key=lambda r: r.get("module") != mod)
     return rows
 
+def _current_request_boundary_text(state) -> str:
+    """Return only the frozen request and its explicit current continuation.
+
+    Old conversation is evidence/history, not authority for delegation or a new topic's
+    target. If session says this is not a continuation and the two texts differ, the latest
+    human turn wins conservatively instead of inheriting an old ``알아서``.
+    """
+    contract = _typed_continuation_contract(state)
+    if state.get("turn_continuation") and contract:
+        # Session already reduced arbitrary history to a validated root plus latest-wins
+        # user-authored decisions.  Re-appending the latest prose would duplicate values
+        # (notably relative dates) and restore non-authoritative conversational text.
+        rows = [str(contract.get("root_request") or "").strip()]
+        rows.extend(authoritative_decision_values(contract))
+        return "\n".join(dict.fromkeys(row for row in rows if row))
+
+    frozen = request_text(state).strip()
+    latest = last_user_text(state).strip()
+    if state.get("turn_continuation"):
+        rows = [frozen] if frozen else []
+        if latest and latest != frozen:
+            rows.append(latest)
+        return "\n".join(rows)
+    return latest or frozen
+
+
+def _meeting_request_boundary_text(state) -> str:
+    """Return the meeting record only inside its explicit continuation boundary.
+
+    Meeting interviews historically freeze only the latest answer in ``request_text`` and
+    recover the original minutes from typed message history.  That recovery is legitimate
+    only when session marks the turn as a continuation; on a new topic the latest request
+    boundary wins and stale minutes are never consulted.
+    """
+    current = _current_request_boundary_text(state)
+    if not state.get("turn_continuation"):
+        return current
+    try:
+        from app.agent.workflow.meeting_context import meeting_request_text
+        original = str(meeting_request_text(state) or "").strip()
+    except Exception:
+        original = ""
+    return original or current
+
+
 def _said_defaults(state) -> bool:
-    """사용자가 선택 재량을 위임했나. 필수 입력 질문까지 끄는 신호는 아니다."""
-    said = conversation(state)
+    """사용자가 현재 요청에서 선택 재량을 위임했나. 필수 질문은 끄지 않는다."""
+    said = _current_request_boundary_text(state)
     return any(w in said for w in ("알아서", "기본값", "맡길게", "맡기겠", "네가 정해", "아무거나"))
+
+
+def _normalize_question_contracts(
+        state: dict, questions: list, *, mode: str = "task",
+        items: list | None = None) -> list[dict]:
+    """Classify question ownership once and return only execution blockers.
+
+    Parent placement for a Task is reversible: one verified compatible Epic can be selected,
+    and otherwise the item can remain explicitly top-level. Structure is likewise the visible
+    current draft, not a user-only fact. A Sub-Task without a resolved Task-tier parent has no
+    executable fallback, so that same field remains user-owned.
+    """
+    roots = [row for row in (items or []) if isinstance(row, dict)]
+    verified_parents = verified_parent_epic_candidates(state)
+    normalized: list[dict] = []
+    for raw in questions or []:
+        if not isinstance(raw, dict) or not str(raw.get("question") or "").strip():
+            continue
+        field = str(raw.get("field") or "").strip()[:120]
+        family = field.casefold().split(":", 1)[0]
+        safe_fallback = ""
+        if family in {"structure", "shape"}:
+            safe_fallback = "현재 보이는 초안 구조"
+        elif family in {"parent", "epic"}:
+            resolved_subtask_parent = bool(
+                str(mode or "").casefold() == "subtask"
+                and roots
+                and all(
+                    _can_parent_subtask(str(row.get("parent") or "").strip())
+                    for row in roots
+                )
+            )
+            # ``epic`` is overloaded by legacy projections.  For a Task it is the
+            # reversible parent-placement slot; while creating an Epic it can instead be
+            # a duplicate reporting-unit conflict (reuse versus create).  That decision
+            # changes the requested object itself and remains user-owned.
+            epic_object_decision = (
+                family == "epic" and str(mode or "").casefold() == "epic"
+            )
+            if str(mode or "").casefold() != "subtask" and not epic_object_decision:
+                safe_fallback = (
+                    str(verified_parents[0].get("key") or "")
+                    if len(verified_parents) == 1 else "top-level"
+                )
+            elif resolved_subtask_parent:
+                safe_fallback = "검증된 기존 Task 부모"
+
+        requested_required = (
+            raw.get("required_input") is True
+            and bool(str(raw.get("why_required") or "").strip())
+        )
+        ownership = ("runtime_optional" if safe_fallback or not requested_required
+                     else "user_required")
+        kind = str(raw.get("kind") or "text")
+        if kind not in {"text", "choice", "multi", "date"}:
+            kind = "text"
+        contract = QuestionContract(
+            question=str(raw.get("question") or "").strip()[:1000],
+            kind=kind,
+            options=[
+                str(value).strip()[:240] for value in (raw.get("options") or [])
+                if str(value).strip()
+            ][:5],
+            field=field,
+            ownership=ownership,
+            required_input=ownership == "user_required",
+            why_required=(str(raw.get("why_required") or "").strip()[:500]
+                          if ownership == "user_required" else ""),
+            fallback=safe_fallback[:500],
+        ).model_dump()
+        # ``questions`` is the graph's blocking channel. Runtime-owned preferences stay on
+        # the draft/approval surface through the selected fallback and never suspend Work.
+        if contract["ownership"] == "user_required":
+            normalized.append(contract)
+    return normalized[:3]
 
 
 def _question_requires_input(question) -> bool:
     """질문이 없으면 유효하고 사실적인 action/payload를 만들 수 없는가."""
     return (isinstance(question, dict)
+            and question.get("ownership", "user_required") == "user_required"
             and question.get("required_input") is True
             and bool(str(question.get("why_required") or "").strip()))
 
@@ -4975,7 +8300,7 @@ def _delegated_question_is_blocking(state, question) -> bool:
     """위임 요청에서 모델이 `required_input`으로 표시한 질문을 실제 blocker로 검증."""
     if not _question_requires_input(question):
         return False
-    said = (request_text(state) + " " + conversation(state)).strip()
+    said = _current_request_boundary_text(state)
     qtext = (str(question.get("question") or "") + " "
              + str(question.get("why_required") or "") + " "
              + str(question.get("field") or "")).lower()
@@ -4991,7 +8316,11 @@ def _delegated_question_is_blocking(state, question) -> bool:
         return any(w in qtext for w in ("임계", "값", "몇", "현재", "목표"))
     if reads_as_bug(said) and _missing_bug_reproduction(said):
         return any(w in qtext for w in ("재현", "언제", "경로", "환경", "조건", "빈도", "기대"))
-    if _re.search(r"Sub-?Task|서브\s*태스크", said, _re.I) and not _legal_parent_is_known(state, said):
+    # "단계별 Sub-Task로"는 새 Task의 children 구조를 지정한 것이지 기존 Jira 부모를
+    # 지정한 요청이 아니다. 명시한 기존 티켓 아래에 추가하려는 경우에만 legal-parent
+    # 인터뷰가 필수다. 그렇지 않으면 모델이 모든 신설 Task+Sub-Task 요청에 Epic/상위
+    # 티켓 선택을 강제로 되묻는다.
+    if _requests_existing_parent_subtask(said) and not _legal_parent_is_known(state, said):
         return any(w in qtext for w in ("부모", "상위", "task", "티켓"))
     if _re.search(r"중복|같은\s*(?:작업|증상)|이미", qtext):
         return True
@@ -5027,8 +8356,17 @@ def _normalize_duplicate_and_bug_questions(state, questions: list, *, items=None
     interview should ask only for facts that are still absent from the report and group
     closely related diagnostic fields into one answerable prompt.
     """
-    said = (request_text(state) + " " + last_user_text(state)).strip()
+    said = _current_request_boundary_text(state)
     if state.get("already_exists"):
+        # The role contract already distinguishes a reversible delegated draft from an
+        # unapproved write: when the user said "알아서" and concrete items exist, keep
+        # the overlap as verified ticket evidence on the approval card instead of asking
+        # the user to repeat the delegation. Without concrete items (or without delegated
+        # choice), duplicate handling remains a required interview.
+        if _said_defaults(state) and (items or plan):
+            return [question for question in questions
+                    if not _re.search(r"중복|같은\s*(?:작업|증상)|이미",
+                                      str(question.get("question") or ""), _re.I)]
         candidates = [row for row in (state.get("evidence") or [])
                       if isinstance(row, dict) and str(row.get("key") or "").strip()]
         if candidates:
@@ -5086,6 +8424,312 @@ def _legal_parent_is_known(state, text: str) -> bool:
     return any(_can_parent_subtask(k) for k in keys)
 
 
+def _requests_existing_parent_subtask(text: str) -> bool:
+    """Whether the user wants children under an already-existing ticket.
+
+    A bare decomposition phrase (``단계별 Sub-Task로``) describes the shape of a new
+    draft.  Existing-parent semantics require an explicit ticket key or a referential
+    phrase such as ``그 Task 아래``/``해당 티켓에``.
+    """
+    said = str(text or "")
+    child = r"(?:Sub-?Task|서브\s*태스크)"
+    key_parent = _re.search(
+        rf"\b[A-Z][A-Z0-9]*-\d+\b.{{0,30}}(?:아래|밑|하위|에).{{0,30}}{child}|"
+        rf"\b[A-Z][A-Z0-9]*-\d+\b.{{0,30}}{child}.{{0,20}}(?:추가|생성|만들)",
+        said, _re.I,
+    )
+    referential_parent = _re.search(
+        rf"(?:그|이|해당|기존)\s*(?:Task|태스크|티켓).{{0,25}}(?:아래|밑|하위|에)"
+        rf".{{0,25}}{child}",
+        said, _re.I,
+    )
+    return bool(key_parent or referential_parent)
+
+
+def _recover_delegated_epic_downgrade(state) -> dict:
+    """Build a grounded Task when a delegated new-Epic request misses Epic criteria.
+
+    The ordinary Epic guard runs after a model has returned an Epic item.  A small local
+    model can instead return an empty item list or an optional preference question, so that
+    guard is never reached.  This recovery applies the same reporting-unit criteria before
+    the model call.  It only uses an explicit Epic-shaped request, a concrete literal work
+    target, and a verified configured module; it never invents a KPI, owner, or deadline.
+    """
+    if not _said_defaults(state) or not _is_create_action(state):
+        return {}
+    if len((requested_outcome_contract(state).get("outcomes") or [])) > 1:
+        return {}
+
+    current_request = _current_request_boundary_text(state)
+    frozen = request_text(state).strip()
+    latest = last_user_text(state).strip()
+    candidates = ([value for value in (frozen, latest) if value]
+                  if state.get("turn_continuation") else
+                  ([current_request] if current_request else []))
+    epic_request = next(
+        (value for value in candidates if value and _shape_hint_text(value)[0] == "new_epic"),
+        "",
+    )
+    # ``request_text`` should retain the pre-interview request, but a revised follow-up can
+    # legitimately become the active root.  Shape recovery must therefore inspect literal
+    # human turns as well instead of depending on ``shape_hint``'s current/original pair.
+    # This is conversation state recovery, not a model-specific exception.
+    if not epic_request:
+        return {}
+
+    unmet = _new_epic_unmet_criteria(state)
+    if not unmet:
+        return {}
+
+    all_human = current_request
+    if (not _has_concrete_work_target(epic_request)
+            or reads_as_bug(epic_request)
+            or _missing_data_quality_target(state)
+            or _missing_exact_mutation(all_human or epic_request)
+            or _requests_existing_parent_subtask(all_human)):
+        return {}
+
+    # Remove only the requested container and conversational scale wording.  The literal
+    # work noun remains the Task subject (for example, ``쿼리 성능 개선``).
+    subject = _re.sub(
+        r"(?:(?:새|신규)\s*)?(?:Epic|에픽)(?:으로|을|를)?"
+        r"[^.!?\n]{0,50}(?:잡아|만들|생성|구성)[^.!?\n]*",
+        " ", epic_request, flags=_re.I,
+    )
+    subject = _re.sub(r"\b대대적으로\b", " ", subject)
+    subject = _re.sub(
+        r"(?:한번\s*)?(?:해\s*보자|해보자|진행하자|하자)(?=\s*[.!?]?(?:\s|$))",
+        " ", subject,
+    )
+    subject = _re.sub(r"[.!?]+", " ", subject)
+    subject = _re.sub(r"\s+", " ", subject).strip(" .,:;-")
+    subject = _re.sub(r"(?:을|를|은|는)\s*$", "", subject).strip()
+    if len(subject) < 3:
+        return {}
+
+    try:
+        from app.infra.settings import modules_in_text
+        module = next(iter(modules_in_text(all_human or epic_request)), "")
+    except Exception:
+        module = ""
+    summary = _collapse_repeated_summary(f"[{module}] {subject}" if module else subject)
+    item = {
+        "summary": summary,
+        "type": "Task",
+        "issue_type": "Task",
+        "tier": "task",
+    }
+    if module and module in _known_components():
+        item["components"] = [module]
+    pick = _pick_parent_epic(summary, module)
+    if pick:
+        item["epic"] = str(pick["key"])
+        placement = f"기존 Epic {pick['key']} 아래 Task"
+    else:
+        placement = "최상위 Task"
+    item["description"] = _minimal_grounded_body(item)
+    criteria = ", ".join(unmet)
+    return {
+        "mode": "task",
+        "items": [item],
+        "structure": "single_task",
+        "structure_source": "inferred",
+        "structure_why": f"Epic 조건 미충족({criteria})으로 {placement}로 보수화",
+        "rationale": f"Epic 격상 보류 — {criteria}; {placement}로 정리",
+    }
+
+
+def _recover_delegated_creation(state) -> list[dict]:
+    """Build conservative Tasks from a concrete delegated literal request.
+
+    This is a no-model recovery, not a general ticket writer. It owns either one literal
+    Task, one volume-partitioned Task tree, or an explicit cross-module deliverable list.
+    It deliberately refuses ambiguity that changes the action or creates an
+    irreversible/invalid payload.
+    """
+    if not _said_defaults(state) or not _is_create_action(state):
+        return []
+    if len((requested_outcome_contract(state).get("outcomes") or [])) > 1:
+        return []
+    said = _current_request_boundary_text(state)
+    volume_partition = bool(
+        _re.search(r"[2-9][0-9]{0,3}\s*(?:개|건)", said)
+        and any(word in said for word in
+                ("사람 나눠", "담당 나눠", "나눠 맡", "나눠서 진행"))
+    )
+    if (not _has_concrete_work_target(said)
+            or _missing_data_quality_target(state)
+            or _missing_subtask_deliverable(state)
+            or _missing_exact_mutation(said)
+            or _explicit_parentless_subtask(state)
+            or _requests_existing_parent_subtask(said)
+            or _re.search(r"(?:새|신규)\s*(?:Epic|에픽)|(?:Epic|에픽)\s*(?:생성|만들)", said, _re.I)):
+        return []
+    if reads_as_bug(said):
+        # Complete pasted reports have their own Bug-grade deterministic recovery; an
+        # incomplete report must stay in the reproduction interview path.
+        return []
+
+    simple = _simple_delegated_request(state)
+    if not simple and not volume_partition:
+        compound = _recover_cross_module_deliverables(state)
+        return compound
+
+    literal = _current_request_boundary_text(state)
+    explicit_epic = _explicit_parent_epic(state)
+    # Preserve the action noun while stripping conversational request/delegation suffixes.
+    replacements = (
+        (r"추가\s*(?:해\s*)?(?:줘|주세요)", "추가"),
+        (r"개선\s*(?:해\s*)?(?:줘|주세요)", "개선"),
+        (r"등록\s*(?:해\s*)?(?:줘|주세요)", "등록"),
+        (r"구현\s*(?:해\s*)?(?:줘|주세요)", "구현"),
+        (r"만들어\s*(?:줘|주세요)", "생성"),
+    )
+    subject = literal
+    for pattern, value in replacements:
+        subject = _re.sub(pattern, value, subject, flags=_re.I)
+    subject = _re.sub(
+        r"(?:나머지는\s*)?(?:알아서|기본값으로|맡길게|네가\s*정해)"
+        r"(?:\s*(?:초안|진행))?(?:\s*(?:잡아|해))?(?:\s*줘)?",
+        "", subject, flags=_re.I,
+    )
+    if explicit_epic:
+        # The parent relation is placement metadata, not part of the child summary.
+        # Keep only the user's literal deliverable when they say, for example,
+        # ``DL-101 에픽 아래에 CDC 재처리 배치 개선 Task 하나 만들어줘``.
+        # This also prevents an unrelated parent title/situation generated by a model
+        # from leaking into ``structure_why`` or the ticket title.
+        subject = _re.sub(
+            rf"^\s*{_re.escape(explicit_epic)}\s*(?:(?:Epic|에픽|티켓)\s*)?"
+            r"(?:아래(?:에)?|밑(?:에)?|하위(?:에)?|에)\s*",
+            "", subject, flags=_re.I,
+        )
+        subject = _re.sub(
+            r"\s*(?:Task|태스크|Story|Feature|Improvement)\s*"
+            r"(?:하나|한\s*개|1\s*(?:개|건))?\s*"
+            r"(?:생성|작성|추가|만들(?:어)?|잡아)?\s*[.!?]*\s*$",
+            "", subject, flags=_re.I,
+        )
+    subject = _re.sub(r"사람\s*나눠서\s*진행(?:하게)?\s*(?:생성|해|하도록)?", "", subject)
+    # Conversational endings are not part of a Jira summary. Strip them before final
+    # punctuation folding so `등록해야 해.` becomes the grounded action `등록`.
+    subject = _re.sub(r"(?:해야\s*해|해야\s*합니다|하고\s*싶어|원해)"
+                      r"(?=\s*[.!?]?(?:\s|$))", "", subject)
+    subject = _re.sub(r"(\d+\s*(?:개|건))(?:을|를)\s+"
+                      r"(등록|처리|검토|수정|확인|이관|전환)", r"\1 \2", subject)
+    subject = _re.sub(r"\s+(?:초안|티켓|Task|태스크)\s*(?:생성|작성|잡아)?\s*$", "", subject,
+                      flags=_re.I)
+    subject = _re.sub(r"([가-힣A-Za-z0-9_])(?:에|에서)\s+(?=[가-힣A-Za-z0-9_'\"])", r"\1 ", subject)
+    subject = _re.sub(r"\s+", " ", subject).strip(" .,:;-")
+    if len(subject) < 3:
+        return []
+
+    try:
+        from app.infra.settings import modules_in_text
+        module = next(iter(modules_in_text(subject)), "")
+    except Exception:
+        module = ""
+    if module:
+        subject = _re.sub(rf"^\s*{_re.escape(module)}\s+", "", subject, flags=_re.I)
+    issue_type = "Task"
+    for candidate in ("Story", "Improvement", "Feature"):
+        if _re.search(rf"\b{candidate}\b", said, _re.I):
+            issue_type = candidate
+            break
+    summary = f"[{module}] {subject}" if module else subject
+    item = {"summary": _collapse_repeated_summary(summary), "type": issue_type,
+            "issue_type": issue_type, "tier": "task"}
+    if explicit_epic:
+        item["epic"] = explicit_epic
+    if module and module in _known_components():
+        item["components"] = [module]
+    item["description"] = _minimal_grounded_body(item)
+    return [item]
+
+
+_DELEGATED_ACTIONS = {
+    "측정": "측정", "테스트": "테스트", "검증": "검증", "분석": "분석",
+    "손봐": "조정", "조정": "조정", "최적화": "최적화", "개선": "개선",
+    "수정": "수정", "등록": "등록", "구현": "구현", "개발": "개발",
+    "작성": "작성", "써": "작성", "문서화": "문서화", "정리": "정리",
+}
+
+
+def _recover_cross_module_deliverables(state) -> list[dict]:
+    """Recover explicitly named sibling deliverables without guessing a hierarchy.
+
+    The conservative boundary is deliberate: at least two configured modules must be
+    present in the request. A documentation deliverable with no module wording inherits
+    the first subject module because it documents that subject; any other unscoped clause
+    aborts recovery. This handles cross-module ownership as data, while leaving ordinary
+    multi-stage planning to Work Architect's semantic model.
+    """
+    literal = _current_request_boundary_text(state)
+    if not literal or not _said_defaults(state):
+        return []
+    try:
+        from app.infra.settings import modules_in_text
+        requested_modules = list(dict.fromkeys(modules_in_text(literal)))
+    except Exception:
+        return []
+    if len(requested_modules) < 2:
+        return []
+
+    # Remove only request/delegation wrappers. The work nouns and their literal actions
+    # remain authoritative; this is not free-form summarization.
+    clean = _re.sub(
+        r"(?:초안|티켓|Task|태스크)(?:을|를)?\s*(?:잡아|만들어|작성해)?\s*(?:줘|주세요)?",
+        " ", literal, flags=_re.I,
+    )
+    clean = _re.sub(r"(?:나머지는\s*)?(?:알아서|기본값으로|맡길게|네가\s*정해)",
+                    " ", clean, flags=_re.I)
+    action_pattern = "|".join(sorted(map(_re.escape, _DELEGATED_ACTIONS), key=len,
+                                       reverse=True))
+    matches = list(_re.finditer(
+        rf"(?P<subject>[^,.!?]{{2,90}}?)(?P<action>{action_pattern})"
+        rf"(?:해야\s*해|해야\s*하고|해\s*야|하고|하며|해|할|도)?",
+        clean, _re.I,
+    ))
+    rows: list[tuple[str, str, str]] = []
+    for match in matches:
+        subject = match.group("subject")
+        subject = _re.sub(
+            r"^\s*(?:그리고|동시에|또|결과(?:에)?\s*따라|그\s*결과(?:에)?\s*따라|이후)\s*", "", subject,
+            flags=_re.I,
+        )
+        subject = _re.sub(r"\s*(?:쪽)?(?:을|를|도|은|는)\s*$", "", subject).strip(" -:;")
+        subject = _re.sub(r"\s+쪽(?=\s)", "", subject)
+        action = _DELEGATED_ACTIONS.get(match.group("action"), match.group("action"))
+        if len(subject) < 2:
+            continue
+        module_hits = list(dict.fromkeys(modules_in_text(subject)))
+        module = module_hits[0] if len(module_hits) == 1 else ""
+        rows.append((subject, action, module))
+
+    if len(rows) < 2 or not any(module for _, _, module in rows):
+        return []
+    primary_module = next((module for _, _, module in rows if module), "")
+    items, seen = [], set()
+    for subject, action, module in rows:
+        if not module and _re.search(r"가이드|문서|매뉴얼", subject, _re.I):
+            module = primary_module
+        if not module:
+            return []
+        title_subject = _re.sub(rf"^\s*{_re.escape(module)}\s+", "", subject, flags=_re.I)
+        summary = _collapse_repeated_summary(f"[{module}] {title_subject} {action}")
+        identity = _base_title(summary).casefold()
+        if not identity or identity in seen:
+            continue
+        seen.add(identity)
+        item = {
+            "summary": summary, "type": "Task", "issue_type": "Task", "tier": "task",
+            "components": [module],
+        }
+        item["description"] = _minimal_grounded_body(item)
+        items.append(item)
+    return items if len(items) >= 2 else []
+
+
 def _explicit_comment_body(text: str) -> bool:
     # `내용은 알아서`는 내용이 아니다. 따옴표, 콜론 뒤 문장, 또는 요청 동사 앞의 구체 문구만 인정.
     if _re.search(r"내용(?:은|도)?\s*(?:알아서|아무거나|적당히)", text):
@@ -5095,9 +8739,11 @@ def _explicit_comment_body(text: str) -> bool:
 
 
 def _comment_input_missing(state, plan: dict) -> bool:
-    original = request_text(state)
+    original = (_meeting_request_boundary_text(state)
+                if state.get("turn_continuation") else
+                _current_request_boundary_text(state))
     latest = last_user_text(state).strip()
-    if _comment_forbidden(original + " " + latest):
+    if _comment_forbidden(original):
         return False
     delegated_placeholder = bool(_re.search(
         r"(?:내용|목적)(?:은|도)?\s*(?:알아서|아무거나|적당히)", original,
@@ -5105,7 +8751,7 @@ def _comment_input_missing(state, plan: dict) -> bool:
     # 확인 질문의 다음 턴에 실제 문장을 주면 원 요청의 placeholder보다 그 답이 우선한다.
     followup_body = (latest and latest != original and len(latest) >= 4
                      and not _re.fullmatch(r"(?:알아서|아무거나|적당히|없음|없어)", latest))
-    if followup_body or _explicit_comment_body(original + " " + latest):
+    if followup_body or _explicit_comment_body(original):
         return False
     if delegated_placeholder:
         return True
@@ -5150,7 +8796,7 @@ def _canonicalize_meeting_mentions(state, plan: dict) -> None:
             )
         # If a model substitutes another valid user ID without retaining the display name,
         # repair role clauses from the explicit meeting note (writer/reader result owner).
-        original = request_text(state)
+        original = _meeting_request_boundary_text(state)
         for role in ("writer", "reader"):
             owner = _re.search(
                 rf"{role}\s*결과(?:는|를|은)?\s*(?:@|\{{\{{)?([가-힣]{{1,5}})",
@@ -5188,7 +8834,7 @@ def _canonicalize_meeting_mentions(state, plan: dict) -> None:
             # ticket key misses ordinary forms such as ``DL-7001에는``.
             r"(?<![A-Z0-9-])([A-Z][A-Z0-9]*-\d+)(?!\d)[^.\n]{0,80}"
             r"(?:댓글|코멘트)(?:을|는|도)?\s*"
-            r"(?:달지|남기지)\s*않", request_text(state), _re.I)
+            r"(?:달지|남기지)\s*않", _meeting_request_boundary_text(state), _re.I)
         for key in excluded:
             value = _re.sub(
                 rf"(?mi)^.*(?<![A-Z0-9-]){_re.escape(key)}(?!\d).*$", "", value)
@@ -5219,7 +8865,7 @@ def _meeting_decision_comment(state, fallback: str) -> str:
     bullets (for example, a background ticket that must not receive a comment) are instructions
     about the write and must never become comment content.
     """
-    original = request_text(state)
+    original = _meeting_request_boundary_text(state)
     if not (_re.search(r"회의|미팅", original, _re.I)
             and _re.search(r"댓글|코멘트", original, _re.I)):
         return fallback
@@ -5261,12 +8907,10 @@ def _missing_subtask_deliverable(state) -> bool:
     This intentionally targets explicit placeholders such as ``내용은 알아서``. A later human answer takes
     precedence, so the interview converges instead of preserving a generic first-turn draft.
     """
-    rows = [str(getattr(message, "content", "") or "").strip()
-            for message in (state.get("messages") or [])
-            if getattr(message, "type", "") == "human" and
-            str(getattr(message, "content", "") or "").strip()]
-    original = str(state.get("request_text") or (rows[0] if rows else request_text(state))).strip()
-    latest = rows[-1] if rows else last_user_text(state).strip()
+    boundary = _current_request_boundary_text(state)
+    original = (request_text(state).strip() if state.get("turn_continuation")
+                else boundary)
+    latest = last_user_text(state).strip()
     if not _re.search(r"Sub-?Task|서브\s*태스크", original, _re.I):
         return False
     if not _re.search(r"내용(?:은|도)?\s*(?:알아서|아무거나|적당히)|"
@@ -5279,7 +8923,7 @@ def _missing_subtask_deliverable(state) -> bool:
 
 
 def _missing_data_quality_target(state) -> bool:
-    said = (request_text(state) + " " + _human_request_text(state)).strip()
+    said = _current_request_boundary_text(state)
     if not _re.search(r"데이터\s*품질|널\s*비율|null\s*(?:rate|ratio)", said, _re.I):
         return False
     # 독립 보고 단위 자체를 만드는 명시적 Epic 요청은 broad scope가 산출물이다.
@@ -5312,7 +8956,7 @@ _COMPOSITE_SIGNALS = (
 
 def _simple_delegated_request(state) -> bool:
     """명시적 단일 산출물 + 위임 요청인가. 과분해를 막는 보수적 판정."""
-    req = request_text(state).strip()
+    req = _current_request_boundary_text(state)
     if not req or len(req) > 150 or not _said_defaults(state):
         return False
     if shape_hint(state)[0] or any(w.lower() in req.lower() for w in _COMPOSITE_SIGNALS):
@@ -5343,6 +8987,134 @@ def _semantic_terms(text: str) -> set:
     return {w for w in words if w not in _SEMANTIC_STOP and not w.isdigit()}
 
 
+def _one_to_one_outcome_instructions(state: dict, roots: list[dict]) -> dict[int, str]:
+    """Return root-indexed instructions only for a complete one-to-one typed binding.
+
+    Scalar user-owned fields cannot be copied from the first clause of a multi-outcome
+    request.  The opaque refs are the only safe bridge from each atomic Request Architect
+    instruction to one visible root.  Missing, repeated, unknown, truncated, or all-to-all
+    refs deliberately produce no mapping and leave the decision to semantic review.
+    """
+    contract = requested_outcome_contract(state)
+    outcomes = [row for row in (contract.get("outcomes") or []) if isinstance(row, dict)]
+    rows = [row for row in (roots or []) if isinstance(row, dict)]
+    if (len(outcomes) < 2 or len(rows) != len(outcomes)
+            or contract.get("omitted_count")
+            or any(row.get("truncated") for row in outcomes)):
+        return {}
+    instructions = {str(row.get("id") or ""): str(row.get("instruction") or "")
+                    for row in outcomes if str(row.get("id") or "")}
+    if len(instructions) != len(outcomes):
+        return {}
+    mapped: dict[int, str] = {}
+    used: set[str] = set()
+    for index, row in enumerate(rows):
+        refs = list(dict.fromkeys(
+            str(value or "") for value in (row.get("outcome_refs") or []) if str(value or "")
+        ))
+        if len(refs) != 1 or refs[0] not in instructions or refs[0] in used:
+            return {}
+        used.add(refs[0])
+        mapped[index] = instructions[refs[0]]
+    return mapped if used == set(instructions) else {}
+
+
+def _parent_epic_from_text(text: str) -> str:
+    """Return one verified explicit parent key, never the first key of several clauses."""
+    source = str(text or "")
+    if not _re.search(r"에픽|epic|아래|밑에|상위", source, _re.I):
+        return ""
+    key = r"([A-Z][A-Z0-9]*-\d+)"
+    candidates = []
+    for pattern in (
+        rf"(?:Epic|에픽)(?:은|는|이|가|을|를|으로|로|:)?\s*{key}",
+        rf"{key}\s*(?:Epic|에픽)?\s*(?:아래|밑에?|하위|상위)",
+        rf"(?:아래|밑에?|하위|상위)(?:의|로|는|은)?\s*(?:Epic|에픽)?\s*{key}",
+    ):
+        candidates.extend(match.group(1).upper()
+                          for match in _re.finditer(pattern, source, _re.I))
+    keys = list(dict.fromkeys(candidates))
+    if len(keys) != 1:
+        return ""
+    return keys[0] if _is_epic(keys[0]) else ""
+
+
+def _expected_parent_epics_by_root(state: dict, roots: list[dict]) -> dict[int, str]:
+    """Map exact per-outcome Epic clauses through one-to-one opaque root refs."""
+    instructions = _one_to_one_outcome_instructions(state, roots)
+    if not instructions:
+        return {}
+    mapped = {index: _parent_epic_from_text(instruction)
+              for index, instruction in instructions.items()}
+    return mapped if mapped and all(mapped.values()) else {}
+
+
+def _expected_due_dates_by_root(state: dict, roots: list[dict]) -> dict[int, str]:
+    """Map exact per-outcome deadlines without interpreting a multi-date scalar."""
+    instructions = _one_to_one_outcome_instructions(state, roots)
+    if not instructions:
+        return {}
+    mapped: dict[int, str] = {}
+    for index, instruction in instructions.items():
+        values = _explicit_due_candidates(instruction)
+        if len(values) != 1:
+            return {}
+        mapped[index] = values[0]
+    return mapped
+
+
+def _bind_deterministic_multi_outcomes(state: dict, payload: dict) -> bool:
+    """Bind a deterministic recovery only when literal root mapping is a bijection.
+
+    Coverage alone is insufficient: assigning every outcome id to every root makes swapped
+    A/B work appear valid. Each outcome must have a distinctive literal term absent from all
+    sibling outcomes, and those terms must identify exactly one distinct root. Anything less
+    stays unbound for Auditor/semantic recovery rather than guessing.
+    """
+    contract = requested_outcome_contract(state)
+    outcomes = [row for row in (contract.get("outcomes") or []) if isinstance(row, dict)]
+    items = [row for row in (payload.get("items") or []) if isinstance(row, dict)]
+    if (len(outcomes) < 2 or len(items) != len(outcomes)
+            or contract.get("omitted_count")
+            or any(row.get("truncated") for row in outcomes)):
+        return False
+
+    outcome_terms = [_semantic_terms(str(row.get("instruction") or ""))
+                     for row in outcomes]
+    item_terms = [_semantic_terms(
+        str(row.get("summary") or "") + " "
+        + _visible_body_text(str(row.get("description") or ""))
+    ) for row in items]
+    mapping: dict[int, int] = {}
+    for outcome_index, terms in enumerate(outcome_terms):
+        sibling_terms = set().union(*(
+            values for index, values in enumerate(outcome_terms) if index != outcome_index
+        ))
+        distinctive = terms - sibling_terms
+        if not distinctive:
+            return False
+        candidates = [index for index, values in enumerate(item_terms)
+                      if distinctive <= values]
+        if len(candidates) != 1 or candidates[0] in mapping.values():
+            return False
+        mapping[outcome_index] = candidates[0]
+
+    if len(mapping) != len(items):
+        return False
+    payload["outcome_contract_id"] = str(contract.get("id") or "")
+    for outcome_index, item_index in mapping.items():
+        items[item_index]["outcome_refs"] = [str(outcomes[outcome_index].get("id") or "")]
+        for child in (items[item_index].get("children") or []):
+            if isinstance(child, dict):
+                child.pop("outcome_refs", None)
+    return True
+
+
+def _semantic_overlap_is_related(overlap: set[str]) -> bool:
+    """One substantial identifier or two domain terms are minimum placement evidence."""
+    return bool(len(overlap) >= 2 or any(len(value) >= 6 for value in overlap))
+
+
 def _explicit_nested_structure(state) -> bool:
     """Whether the user explicitly authorized child/stage decomposition.
 
@@ -5350,7 +9122,7 @@ def _explicit_nested_structure(state) -> bool:
     A nested hierarchy is retained only when the user actually asks for Sub-Tasks,
     stages, splitting, or distributed execution.
     """
-    said = (request_text(state) + "\n" + _human_request_text(state)).strip()
+    said = _current_request_boundary_text(state)
     return bool(_re.search(
         r"sub[- ]?tasks?|서브\s*태스크|하위\s*(?:티켓|작업)|"
         r"단계별|각\s*단계|단계로|쪼개|나눠|분할|분담",
@@ -5383,10 +9155,11 @@ def _drop_unrequested_nested_work(state, items: list) -> list[str]:
 
 def _best_item_for_request(state, items: list) -> dict:
     """과분해를 접을 때 원 요청과 가장 가까운 항목을 보존한다."""
-    req_terms = _semantic_terms(request_text(state))
+    current = _current_request_boundary_text(state)
+    req_terms = _semantic_terms(current)
     try:
         from app.infra.settings import modules_in_text, resolve_module
-        wanted = set(modules_in_text(request_text(state)))
+        wanted = set(modules_in_text(current))
     except Exception:
         wanted, resolve_module = set(), lambda x: ""
 
@@ -5400,21 +9173,34 @@ def _best_item_for_request(state, items: list) -> dict:
 
 def _explicit_parent_epic(state) -> str:
     """사용자가 키와 Epic/상위 관계를 직접 말한 경우만 반환한다."""
-    try:
-        from app.agent.workflow.meeting_context import meeting_request_text
-        original = meeting_request_text(state)
-    except Exception:
-        original = request_text(state)
-    said = original + " " + last_user_text(state)
-    relation = bool(_re.search(r"에픽|epic|아래|밑에|상위", said, _re.I))
-    if not relation:
-        return ""
-    keys = _re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", said, _re.I)
-    keys += [str(key) for key in (state.get("mentioned_keys") or []) if str(key) in said]
-    for key in dict.fromkeys(value.upper() for value in keys):
-        if _is_epic(key):
-            return key
-    return ""
+    said = _current_request_boundary_text(state)
+    if state.get("turn_continuation"):
+        original = _meeting_request_boundary_text(state)
+        if original and original != said:
+            said = original + "\n" + last_user_text(state)
+    return _parent_epic_from_text(said)
+
+
+def _delegates_existing_epic_choice(state) -> bool:
+    """Whether the user delegated choosing an existing Epic without authorizing creation.
+
+    Request Architect owns the natural-language distinction.  Work Architect reuses that
+    exact contract at the payload boundary instead of maintaining a looser second regex.
+    Only human-authored request turns are inspected; model rationale mentioning creation
+    must not revoke or invent the delegation.
+    """
+    if parent_selection_authority(state):
+        return True
+    contract = state.get("continuation_contract") or {}
+    if (state.get("turn_continuation") is True
+            and isinstance(contract, dict)
+            and contract.get("version") == "continuation.v1"):
+        return False
+
+    from app.agent.workflow.agents.request_architect import _selection_is_not_creation
+
+    said = _current_request_boundary_text(state)
+    return _selection_is_not_creation(said)
 
 
 def _epic_summary(key: str) -> str:
@@ -5435,25 +9221,59 @@ def _inferred_epic_rejection(state, item: dict, key: str) -> str:
         write_project = ""
     if write_project and str(key).split("-", 1)[0].upper() != write_project:
         return f"write project {write_project} 밖의 Epic이다"
+    title = _epic_summary(key)
+    delegated_choice = _delegates_existing_epic_choice(state)
+    epic_terms = _semantic_terms(title)
+    work_terms = _semantic_terms(
+        str(item.get("summary") or "") + " " + _current_request_boundary_text(state))
+    overlap = epic_terms & work_terms
+    related = _semantic_overlap_is_related(overlap)
+
+    # An Epic is a reporting container and may intentionally contain Tasks owned by another
+    # component.  A module mismatch is therefore only a rejection signal when the user did
+    # not delegate a semantically verified cross-module placement.  This keeps an unrelated
+    # inferred placement conservative while allowing shared Epics such as platform work with
+    # ETL/Catalog children.
     em = _epic_module(key)
     comps = [str(c) for c in (item.get("components") or []) if str(c).strip()]
-    if em and comps and em != comps[0]:
+    if em and comps and em != comps[0] and not (delegated_choice and related):
         return f"{em} 모듈 Epic과 {comps[0]} 컴포넌트가 다르다"
-    title = _epic_summary(key)
-    delegated_choice = bool(_re.search(
-        r"(?:에픽|epic).{0,16}(?:골라|정해|선택)", conversation(state), _re.I,
-    ))
-    if title and not delegated_choice:
-        epic_terms = _semantic_terms(title)
-        work_terms = _semantic_terms(str(item.get("summary") or "") + " " + request_text(state))
+    if title:
         # 모듈명·'작업/개선' 같은 공통어를 제거한 뒤 업무 고유어가 하나도 겹치지 않으면
         # 관련성은 확인되지 않은 것이다. 최상위 Task는 되돌리기 쉬우나 잘못된 Epic 집계는
         # 조용히 장기간 오염된다.
-        overlap = epic_terms & work_terms
-        if epic_terms and work_terms and (len(overlap) < 2
-                                          and not any(len(x) >= 6 for x in overlap)):
+        if epic_terms and work_terms and not related:
             return "업무 고유어가 Epic 제목과 겹치지 않는다"
     return ""
+
+
+def _delegated_parent_epic(state, item: dict, *, rejected_key: str = ""):
+    """Return a materialized existing replacement when Epic selection was delegated.
+
+    Search rows are candidate discovery, not write authority. Only the intersection of
+    QueryRunner's structural candidate keys and successfully opened ticket details may be
+    selected. An empty ledger deliberately yields no parent; downstream policy can keep
+    the Task top-level or ask instead of attaching it to an opaque search hit.
+    """
+    if not _delegates_existing_epic_choice(state):
+        return None
+    component = next((str(value).strip() for value in (item.get("components") or [])
+                      if str(value).strip()), "")
+    pick = _rank_parent_epic_candidates(
+        str(item.get("summary") or ""), component,
+        _materialized_parent_epic_candidates(state),
+    )
+    key = str((pick or {}).get("key") or "").strip()
+    if not key or key == str(rejected_key or "").strip():
+        return None
+    if _inferred_epic_rejection(state, item, key):
+        return None
+    return pick
+
+
+def _materialized_parent_epic_candidates(state: dict) -> list[dict]:
+    """Return successful Epic details in QueryRunner's candidate order."""
+    return verified_parent_epic_candidates(state)
 
 
 def _dedupe_semantic_items(state, items: list) -> list:
@@ -5501,7 +9321,7 @@ def _dedupe_semantic_items(state, items: list) -> list:
         core_text = _re.sub(r"^\s*\[[^\]]+\]\s*", "",
                             str(group[0][0].get("summary") or ""))
         wanted = set(modules_in_text(core_text))
-        request = request_text(state)
+        request = _current_request_boundary_text(state)
 
         def score(pair):
             it, terms = pair
@@ -5553,7 +9373,7 @@ def _has_placeholder_body(body) -> bool:
 
 def _has_lineage_game_drift(state, item: dict) -> bool:
     """데이터 리니지를 게임 `Lineage` 서사로 해석한 명백한 sense drift를 잡는다."""
-    req = request_text(state)
+    req = _current_request_boundary_text(state)
     if "리니지" not in req:
         return False
     game_terms = ("게임", "플레이어", "캐릭터", "클라이맥스", "결말", "몰입감")
@@ -5586,6 +9406,43 @@ def _minimal_grounded_body(item: dict) -> str:
             "<li>제외: 요청에 명시되지 않은 연관 기능 변경</li></ul>"
             "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
             f"<li data-checked=\"false\">{_esc(dod)}</li></ul>" + refs)
+
+
+def _ensure_minimum_task_dod(state, items: list) -> bool:
+    """Keep the Task body contract at two independently reviewable checks.
+
+    One evidence sentence can prove the result but not that its measurement or authored
+    scope is reproducible. Add a second action-family check only when a non-Bug Task has
+    exactly one DoD row; never replace richer model-authored criteria.
+    """
+    changed = False
+    for item in items or []:
+        if (not isinstance(item, dict) or _is_bug_item(item)
+                or str(item.get("type") or "").lower().startswith("sub")):
+            continue
+        body = str(item.get("description") or "")
+        if len(_dod_rows(body)) != 1:
+            continue
+        subject = _re.sub(r"^\s*\[[^]]+\]\s*", "",
+                          str(item.get("summary") or "작업")).strip()
+        if any(word in subject for word in ("가이드", "문서", "매뉴얼")):
+            second = f"{subject}의 대상·절차·예시가 요청 범위와 일치함을 리뷰 결과로 확인한다"
+        elif any(word in subject for word in ("성능", "측정", "벤치마크")):
+            second = "측정 환경·입력·반복 조건을 함께 기록해 같은 조건에서 재현 가능함을 확인한다"
+        elif "인덱스" in subject:
+            second = "변경 대상 인덱스와 변경 전 상태를 기록해 적용 범위를 리뷰로 확인한다"
+        else:
+            second = "요청 범위와 제외 범위가 승인 내용과 일치함을 리뷰 결과로 확인한다"
+        pattern = r"(<h3>\s*완료 조건(?:\s*\(DoD\))?\s*</h3>\s*<ul\b[^>]*>)(.*?)(</ul>)"
+        match = _re.search(pattern, body, _re.S | _re.I)
+        if not match:
+            continue
+        body = (body[:match.start()] + match.group(1) + match.group(2)
+                + f'<li data-checked="false">{_esc(second)}</li>'
+                + match.group(3) + body[match.end():])
+        item["description"] = body
+        changed = True
+    return changed
 
 
 def _preserve_existing_parent_topic(items: list) -> bool:
@@ -5623,19 +9480,38 @@ def _preserve_existing_parent_topic(items: list) -> bool:
 
 def _recover_explicit_subtasks(state) -> list:
     """기존 Task와 2개 이상의 자식 이름을 명시한 요청의 빈 model output을 복원한다."""
-    req = request_text(state)
+    req = _current_request_boundary_text(state)
     if not _asks_subtasks(state):
         return []
     parents = [str(k) for k in (state.get("mentioned_keys") or [])
                if _can_parent_subtask(k)]
     if not parents:
         return []
-    m = _re.search(r"(?:에|아래|밑에)\s*(.+?)\s*(?:서브\s*태스크|sub-?task)", req, _re.I)
-    if not m:
-        return []
-    names = [_re.sub(r"^(?:각각|추가로)\s*|\s*(?:작업|항목)$", "", x).strip(" .")
-             for x in _re.split(r"\s*(?:이랑|랑|와|과|및|,)\s*", m.group(1))]
-    names = [x for x in names if len(x) >= 2 and not _re.fullmatch(r"\d+개", x)]
+    named_rows: list[tuple[str, str]] = []
+    colon = _re.search(
+        r"(?:서브\s*태스크|sub-?task)\s*\d*\s*(?:개|건)?\s*"
+        r"(?:만들|생성|추가)[^:：\n]*[:：]\s*(.+)$", req, _re.I | _re.S,
+    )
+    if colon:
+        for raw in _re.split(r"\s*[,;]\s*", colon.group(1)):
+            row = _re.sub(r"(?:나머지는\s*)?알아서.*$", "", raw).strip(" .")
+            match = _re.match(
+                r"(.+?)\s*(?:은|는)\s*((?:skcc\.)?[a-z]{1,2}\d{2,6})\b", row, _re.I,
+            )
+            if match:
+                named_rows.append((match.group(1).strip(),
+                                   "skcc." + match.group(2).split(".")[-1]))
+            elif row:
+                named_rows.append((row, ""))
+        names = [name for name, _uid in named_rows]
+    else:
+        m = _re.search(r"(?:에|아래|밑에)\s*(.+?)\s*(?:서브\s*태스크|sub-?task)", req, _re.I)
+        if not m:
+            return []
+        names = [_re.sub(r"^(?:각각|추가로)\s*|\s*(?:작업|항목)$", "", x).strip(" .")
+                 for x in _re.split(r"\s*(?:이랑|랑|와|과|및|,)\s*", m.group(1))]
+        names = [x for x in names if len(x) >= 2 and not _re.fullmatch(r"\d+개", x)]
+        named_rows = [(name, "") for name in names]
     if not 2 <= len(names) <= 6:
         return []
     parent = parents[0]
@@ -5648,7 +9524,7 @@ def _recover_explicit_subtasks(state) -> list:
     except Exception:
         component = ""
     out = []
-    for name in names:
+    for name, assignee in named_rows:
         title = name
         if any(w in name for w in ("성능", "테스트", "검증")) and not _re.search(r"수행|실행|완료$", name):
             title += " 수행"
@@ -5664,6 +9540,9 @@ def _recover_explicit_subtasks(state) -> list:
                 f"<li data-checked=\"false\">{_esc(dod)}</li></ul>")
         item = {"summary": summary, "type": "Sub-Task", "parent": parent,
                 "description": body, "priority": "P3-Minor"}
+        if assignee:
+            item["assignee"] = assignee
+            item["assignee_source"] = "user"
         if component:
             item["components"] = [component]
         out.append(item)
@@ -5826,7 +9705,7 @@ def _can_parent_subtask(key) -> bool:
     """그 티켓이 **Sub-Task 의 부모가 될 수 있나** — 실재하는 Task tier여야 한다.
 
     실재 여부만 보던 자리들이 있었는데, Jira 에서 **Epic 밑에는 Sub-Task 를 못 단다**
-    (Epic 의 자식은 Story/Task 다). 실측 STR1: 모델이 Epic DL-5982 를 부모로 지목한
+    (Epic 의 자식은 Story/Task 다). 실측 회귀에서는 모델이 검증된 Epic을 부모로 지목한
     Sub-Task 10건을 냈고 — 답변에서 스스로 "Epic이라 부모로 적합하지 않다"고 적으면서도
     초안에는 그대로 실었다. 실재 검사는 통과하니 강등 가드도 안 걸렸다.
     같은 규칙을 BULK3 케이스에서 이미 확인했다(그때는 **케이스가** 틀렸었다 — §8).
@@ -5920,7 +9799,7 @@ def _known_components() -> set:
 
 def _new_epic_unmet_criteria(state) -> list[str]:
     """Return missing criteria for a new reporting Epic from literal user evidence."""
-    asked = conversation(state) or request_text(state)
+    asked = _current_request_boundary_text(state)
     if not str(asked or "").strip():
         return []
     unmet = []
@@ -5967,50 +9846,75 @@ def _existing_epic_like(summary: str):
     return None
 
 
-def _pick_parent_epic(summary: str, module: str = ""):
+def _rank_parent_epic_candidates(summary: str, module: str, rows: list[dict]):
+    """Choose one semantically related Epic from an already bounded candidate set."""
+    terms = _semantic_terms(summary)
+    if not terms or not rows:
+        return None
+
+    ranked = []
+    wanted_module = str(module or "").casefold()
+    for index, row in enumerate(rows):
+        fields = row.get("fields") or {}
+        candidate_summary = str(row.get("summary") or fields.get("summary") or "")
+        overlap = terms & _semantic_terms(candidate_summary)
+        components = fields.get("components") or []
+        component = next((str(value.get("name") if isinstance(value, dict) else value)
+                          for value in components if value), "")
+        candidate_module = str(row.get("module") or component or "").casefold()
+        same_module = bool(wanted_module and candidate_module == wanted_module)
+        # Semantic overlap is primary. Module and original ledger order are stable
+        # tiebreakers, never substitutes for subject relevance.
+        ranked.append((len(overlap), max((len(value) for value in overlap), default=0),
+                       int(same_module), -index, row, overlap))
+    best = max(ranked, key=lambda value: value[:4])
+    return best[4] if _semantic_overlap_is_related(best[5]) else None
+
+
+def _pick_parent_epic(summary: str, module: str = "", *, delegated: bool = False):
     """이 일을 담을 만한 **기존 Epic** 하나 — 낱말이 가장 많이 겹치는 것. 없으면 None.
 
     `_existing_epic_like` 는 "이름이 사실상 같은가"를 보고(중복 격상 방지), 이쪽은
     "담을 데가 있나"를 본다. 겹치는 낱말이 하나도 없으면 고르지 않는다 — 아무 Epic 에나
-    넣으면 그 Epic 의 진척률이 남의 일로 흐려진다.
+    넣으면 그 Epic 의 진척률이 남의 일로 흐려진다. 선택 위임은 관련성 기준을 낮추지 않는다;
+    module 일치는 배치 후보의 위치 정보일 뿐 업무 주제가 같다는 근거가 아니다.
     """
-    base = _re.sub(r"^\s*\[[^\]]+\]\s*", "", str(summary or "")).strip()
-    words = [w for w in _re.split(r"[\s·,/]+", base) if len(w) >= 2]
-    # NDV·Puffin 통계는 쿼리 옵티마이저가 소비하는 통계정보다. 사용자가 기존 Epic 선택을
-    # 위임했을 때만 쓰이는 보조 어휘이며, 새 Epic을 자동 생성하는 근거로는 사용하지 않는다.
-    if _re.search(r"\b(?:NDV|Puffin|StarRocks)\b|통계", base, _re.I):
-        words += ["쿼리", "성능", "query", "latency"]
-    if not words:
-        return None
-    best, score = None, 0
     try:
         from app.agent.tools.search_tools import find_parent_epic
         rows = [r for r in (find_parent_epic.invoke({"query": "", "limit": 25}) or [])
-                if isinstance(r, dict) and r.get("key")]
-        if module and any(str(r.get("module") or "").casefold() == module.casefold()
-                          for r in rows):
-            rows = [r for r in rows
-                    if str(r.get("module") or "").casefold() == module.casefold()]
-        for r in rows:
-            other = str(r.get("summary") or "")
-            n = sum(1 for w in words if w in other)
-            if n > score:
-                best, score = r, n
+                if isinstance(r, dict) and r.get("key") and not r.get("error")]
     except Exception:
         return None
-    return best if score else None
+    return _rank_parent_epic_candidates(summary, module, rows)
 
 
 def _asks_subtasks(state) -> bool:
     """"서브태스크로 쪼개줘 / 하위 작업 추가해줘" 처럼 **자식을 붙여 달라**는 요청인가."""
-    said = last_user_text(state)
+    said = _current_request_boundary_text(state)
     return any(w in said for w in ("서브태스크", "서브 태스크", "subtask", "sub-task",
                                    "하위 작업", "하위작업", "쪼개", "나눠서 붙"))
 
 
+def _explicit_single_subtask_request(state) -> bool:
+    """Whether the authoritative request fixes cardinality at exactly one child."""
+    if not _is_create_action(state):
+        return False
+    said = _current_request_boundary_text(state)
+    child = r"(?:Sub-?Task|서브\s*태스크|하위\s*작업)"
+    one = r"(?:1\s*(?:개|건)|한\s*(?:개|건)|하나(?:의)?)"
+    exact = bool(_re.search(
+        rf"(?:{child}.{{0,16}}{one}|{one}.{{0,16}}{child})", said, _re.I,
+    ))
+    plural = bool(_re.search(
+        rf"(?:각각|각\s*티켓|마다).{{0,20}}{child}|{child}.{{0,12}}하나씩",
+        said, _re.I,
+    ))
+    return exact and not plural
+
+
 def _explicit_parentless_subtask(state) -> bool:
     """Sub-Task 요청과 부모 부재가 모두 사용자 문장에 명시됐는지 판별한다."""
-    said = (request_text(state) + " " + last_user_text(state)).replace(" ", "")
+    said = _current_request_boundary_text(state).replace(" ", "")
     return _asks_subtasks(state) and bool(_re.search(
         r"(?:부모(?:는|가|티켓은|티켓이)?(?:없|없이|필요없)|최상위(?:로|에))", said))
 
@@ -6041,8 +9945,7 @@ _SHAPE_WORDS = (
 
 def shape_hint(state) -> tuple:
     """Return the latest explicit shape, falling back to the pre-interview request."""
-    from app.agent.workflow.meeting_context import meeting_request_text
-    latest, original = last_user_text(state), meeting_request_text(state)
+    latest, original = last_user_text(state), _meeting_request_boundary_text(state)
     for said in (latest, original):
         hint = _shape_hint_text(said)
         if hint[0]:
@@ -6108,6 +10011,23 @@ def _shape_options(structure) -> list:
     opts = [f"{tail[order[0]]} (추천 — 지금 초안이 이 형태다)"]
     opts += [tail[k] for k in order[1:3]]
     return opts
+
+
+def _optional_structure_question(question: str, options: list[str]) -> dict:
+    """Return the single typed contract for deterministic shape preferences.
+
+    Structure confirmation has a safe current default—the visible draft—so it is never a
+    required-input interview. Keeping this constructor shared prevents late deterministic
+    questions from bypassing the model-facing QUESTION contract.
+    """
+    return {
+        "question": str(question or "").strip(),
+        "kind": "choice",
+        "field": "structure",
+        "options": [str(value).strip() for value in (options or []) if str(value).strip()],
+        "required_input": False,
+        "why_required": "",
+    }
 
 
 # ── 구조 합의 단계 (사용자 요청) ───────────────────────────────────────────
@@ -6188,7 +10108,8 @@ def structure_question(items) -> dict:
     k = sum(len([c for c in (i.get("children") or []) if isinstance(c, dict)])
             for i in (items or []) if isinstance(i, dict))
     made = f"Task {n}건" + (f" · Sub-Task {k}건" if k else "")
-    return {"question": f"이 구조로 진행할까요? ({made}) — 고칠 것이 있으면 그대로 "
-                        "말씀해 주세요(합치기·나누기·추가·삭제·이름 변경).",
-            "kind": "choice", "field": "",
-            "options": ["이 구조로 진행한다", "고칠 것이 있다 (아래에 적는다)"]}
+    return _optional_structure_question(
+        f"이 구조로 진행할까요? ({made}) — 고칠 것이 있으면 그대로 "
+        "말씀해 주세요(합치기·나누기·추가·삭제·이름 변경).",
+        ["이 구조로 진행한다", "고칠 것이 있다 (아래에 적는다)"],
+    )

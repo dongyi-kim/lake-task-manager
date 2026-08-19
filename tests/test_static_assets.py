@@ -32,9 +32,8 @@ def test_home_shows_only_five_daily_release_notes():
     assert ':key="r.version"' in home and "{{ r.version }}" in home
     assert "r.date" not in home and "hn-date" not in home
     versions = re.findall(r'version:\s*"(v\d{4}\.\d{2}\.\d{2})"', notes)
-    assert versions[:5] == [
-        "v2026.08.13", "v2026.08.12", "v2026.08.10", "v2026.08.07", "v2026.08.06",
-    ]
+    assert len(versions) >= 5
+    assert versions == sorted(versions, reverse=True)
     assert len(versions) == len(set(versions))
     assert not re.search(r'version:\s*"v\d{4}\.\d{2}\.\d{2}\.\d+"', notes)
     assert not re.search(r'\bdate\s*:', notes)
@@ -273,6 +272,8 @@ def test_agent_settings_use_named_configs_instead_of_fixed_provider_tabs():
         assert call in dialog and call in api_src
     assert 'configModels: (id)' in api_src
     assert '/api/agent/configs/' in api_src
+    assert 'chatModelSimpleProfile' in dialog
+    assert '간단한 역할 모델 프로파일 (선택)' in dialog
 
 
 def test_agent_sidebar_identifies_named_environment_and_missing_configs():

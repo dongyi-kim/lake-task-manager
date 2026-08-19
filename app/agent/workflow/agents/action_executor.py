@@ -15,204 +15,493 @@
 
 from __future__ import annotations
 
-from app.agent.workflow.agents.base import ToolAgent
+from copy import deepcopy
+
+from app.agent.workflow.agents.base import Agent
 from app.agent.workflow.agents.work_architect import draft_json, draft_text
 from app.agent.prompts.roles import SYSTEM_ACTION_EXECUTOR
 from app.agent.workflow.prompts import persona
 from app.agent.workflow.state import AgentState, Node, note
 
-SCHEMA = {
-    "type": "object",
-    "properties": {
-        "created": {
-            "type": "array",
-            "items": {"type": "object", "properties": {
-                "key": {"type": "string"}, "summary": {"type": "string"}}},
-            "description": "Tickets actually created and returned by the write tool.",
-        },
-        "failed": {
-            "type": "array",
-            "items": {"type": "object", "properties": {
-                "summary": {"type": "string"}, "error": {"type": "string"}}},
-            "description": "Failed items copied exactly from tool output; never suppress a failure.",
-        },
-        "updated": {
-            "type": "array",
-            "items": {"type": "object", "properties": {
-                "key": {"type": "string"},
-                "fields": {"type": "array", "items": {"type": "string"}}}},
-            "description": "Tickets actually updated and returned by the write tool.",
-        },
-        "note": {"type": "string", "description": "Exact Korean user-facing tool note, or empty."},
-    },
-    "required": ["created", "failed"],
-}
+# Explicit execution adapters are an allowlist, not a mirror that automatically trusts every
+# future write tool. ``_validate_action_registry`` makes drift fail loud: adding a new tool to
+# WRITE_TOOLS cannot silently make it executable, and removing/renaming an adapter cannot leave an
+# approval action that crashes only after the user clicks the card.
+SUPPORTED_WRITE_ACTIONS = frozenset({
+    "create_tickets", "create_epic", "update_ticket", "add_ticket_comment",
+    "update_tickets", "add_ticket_comments", "transition_ticket", "link_tickets",
+    "attach_document",
+})
 
 
-class ActionExecutor(ToolAgent):
+class _DispatchFailure(RuntimeError):
+    """Internal signal carrying whether this exact failed attempt consumed its capability."""
+
+    def __init__(self, consumption_attestation: dict | None):
+        super().__init__("approved dispatch failed")
+        self.consumption_attestation = consumption_attestation
+
+
+class ActionExecutor(Agent):
     name = Node.ACTION_EXECUTOR
-    temperature = 0.0          # 실행은 창의적일 필요가 없다
-    tier = "simple"            # 승인된 JSON 을 그대로 넘기는 일이다 — 판단이 얕다
                                # (modify 는 아예 LLM 없이 돌고, create 도 인자 전달 + 결과 보고뿐)
 
     def node(self):
-        """실행은 **LLM 없이 결정적으로** — modify 도, create 도.
+        """Execute the exact approved payload without any LLM or ReAct fallback.
 
-        실행에 판단이 없다: 승인된 인자를 도구에 넘기고 결과를 그대로 옮기면 끝이다.
-        모델을 끼웠더니 생긴 실패 모드(전부 실측): modify 인데 create_tickets 를 부름,
-        검증 **경고**(Epic 미연결 안내)를 '실패한 항목·후속 조치'로 각색해 보고 —
-        사용자가 방금 '최상위로 두겠다'고 결정한 것을 다시 경고하는 셈이다.
-        도구 결과만이 사실이다. ReAct 는 계획이 전혀 없는 예외 경로에만 남는다.
+        The approval record is authoritative: it stores the action and payload that the user saw,
+        and every write tool consumes the same payload fingerprint.  Missing, unapproved, cross-thread,
+        malformed, or unknown actions fail closed instead of asking a model to choose a write tool.
         """
-        react = super().node()
+        return self._run
 
-        def run(state):
-            plan = state.get("change_plan") or {}
-            # 상태 전이 — transition_ticket 도구로(지문은 _propose 가 같은 모양으로 봉인).
-            if plan.get("key") and (plan.get("transition") or {}).get("id"):
-                from app.agent import tools as T
-                cmt = (plan.get("comment") or "").strip()
-                args = {"key": plan["key"], "transition_id": str(plan["transition"]["id"]),
-                        "approval_token": state.get("approval_token") or ""}
-                if cmt:
-                    args["comment"] = cmt
-                r = T.BY_NAME["transition_ticket"].invoke(args)
-                if not r.get("ok"):
-                    return {"result": {"created": [], "updated": [],
-                                       "failed": [{"summary": plan["key"],
-                                                   "error": r.get("error") or ""}]},
-                            "trace": note(state, self.name, "전이 실패")}
-                return {"result": {"created": [], "failed": [],
-                                   "updated": [{"key": plan["key"],
-                                                "fields": [f"status→{plan['transition'].get('name')}"]}]},
-                        "trace": note(state, self.name,
-                                      f"전이 {plan['transition'].get('name')}")}
-            # 티켓 링크 — link_tickets 도구로.
-            if plan.get("key") and (plan.get("link") or {}).get("other"):
-                from app.agent import tools as T
-                lk = plan["link"]
-                r = T.BY_NAME["link_tickets"].invoke(
-                    {"key": plan["key"], "other_key": lk["other"],
-                     "relation": lk.get("relation") or "Relates",
-                     "approval_token": state.get("approval_token") or ""})
-                if not r.get("ok"):
-                    return {"result": {"created": [], "updated": [],
-                                       "failed": [{"summary": plan["key"],
-                                                   "error": r.get("error") or ""}]},
-                            "trace": note(state, self.name, "링크 실패")}
-                return {"result": {"created": [], "failed": [],
-                                   "updated": [{"key": plan["key"],
-                                                "fields": [f"link {lk.get('relation')}→{lk['other']}"]}]},
-                        "trace": note(state, self.name, f"링크 {lk['other']}")}
-            # 조건 일괄 수정 — 지문은 update_tickets(bulk) payload 와 같은 모양이어야 한다.
-            if plan.get("keys") and plan.get("changes"):
-                from app.agent import tools as T
-                rows = [{"key": str(k).strip(), "changes": dict(plan["changes"])}
-                        for k in plan["keys"] if str(k).strip()]
-                r = T.BY_NAME["update_tickets"].invoke(
-                    {"items": rows, "approval_token": state.get("approval_token") or ""})
-                if not r.get("ok") and not (r.get("updated") or []):
-                    return {"result": {"created": [], "updated": [],
-                                       "failed": (r.get("failed") or
-                                                  [{"summary": ", ".join(plan["keys"][:5]),
-                                                    "error": r.get("error") or ""}])},
-                            "trace": note(state, self.name,
-                                          f"일괄 변경 실패 — {str(r.get('error'))[:80]}")}
-                return {"result": {"created": [], "failed": r.get("failed") or [],
-                                   "updated": r.get("updated") or []},
-                        "trace": note(state, self.name,
-                                      f"일괄 변경 {len(r.get('updated') or [])}건")}
-            if not plan.get("key"):
-                return self._run_create(state, react)
+    def _run(self, state):
+        from app.agent import approval
 
-            from app.agent import tools as T
-            cmt0 = (plan.get("comment") or "").strip()
-            if not plan.get("changes") and cmt0:
-                # 댓글만 — 승인 토큰이 곧 add_ticket_comment 토큰이다.
-                cr = T.BY_NAME["add_ticket_comment"].invoke(
-                    {"key": plan["key"], "body": cmt0,
-                     "approval_token": state.get("approval_token") or ""})
-                if not cr.get("ok"):
-                    return {"result": {"created": [], "updated": [],
-                                       "failed": [{"summary": plan["key"],
-                                                   "error": cr.get("error") or ""}]},
-                            "trace": note(state, self.name, "코멘트 실패")}
-                return {"result": {"created": [], "failed": [],
-                                   "updated": [{"key": plan["key"], "fields": ["comment"]}],
-                                   "note": ""},
-                        "trace": note(state, self.name, "코멘트 1건")}
+        token = str(state.get("approval_token") or "")
+        record = deepcopy(approval.peek(token)) if token else None
+        if not record:
+            return self._failed(state, "승인된 실행 계획이 없거나 만료되었습니다.")
+        if not record.get("approved"):
+            return self._failed(state, "아직 사용자가 승인하지 않았습니다.")
+        thread_id = str(state.get("thread_id") or "")
+        record_thread = str(record.get("thread") or "")
+        if not thread_id:
+            return self._failed(state, "실행할 대화 식별자가 없어 승인 작업을 거부했습니다.")
+        if not record_thread:
+            approval.reject(token)
+            return self._failed(state, "대화에 연결되지 않은 승인 작업을 거부했습니다.")
+        if record_thread != thread_id:
+            return self._failed(state, "이 대화에서 승인한 실행 계획이 아닙니다.")
+        payload = deepcopy(record.get("payload"))
+        if not isinstance(payload, dict):
+            approval.reject(token)
+            return self._failed(state, "승인된 실행 payload 형식이 올바르지 않습니다.")
 
-            args = {"key": plan["key"], "approval_token": state.get("approval_token") or ""}
-            args.update(plan.get("changes") or {})
-            r = T.BY_NAME["update_ticket"].invoke(args)
-            if not r.get("ok"):
-                return {"result": {"created": [], "updated": [],
-                                   "failed": [{"summary": plan["key"], "error": r.get("error") or ""}]},
-                        "trace": note(state, self.name, f"변경 실패 — {str(r.get('error'))[:80]}")}
+        # Compound cards are two separately consumable fingerprints. Validate their reciprocal
+        # server-owned binding before executing the primary; otherwise a missing/stale token can
+        # silently drop the comment, or a valid comment capability for another ticket can be
+        # spliced into this update.
+        secondary_actions = {
+            "update_ticket": "add_ticket_comment",
+            "update_tickets": "add_ticket_comments",
+            "link_tickets": "add_ticket_comment",
+        }
+        expected_secondary = secondary_actions.get(str(record.get("action") or ""))
+        comment_token = str(state.get("comment_token") or "")
+        comment_record = approval.peek(comment_token) if comment_token else None
+        bundle = str(record.get("bundle") or "")
+        if bundle:
+            pair_ok = bool(
+                expected_secondary and comment_token and comment_record
+                and record.get("bundle_role") == "primary"
+                and str(record.get("peer_token") or "") == comment_token
+                and str(record.get("peer_action") or "") == expected_secondary
+                and str(comment_record.get("bundle") or "") == bundle
+                and comment_record.get("bundle_role") == "secondary"
+                and str(comment_record.get("peer_token") or "") == token
+                and str(comment_record.get("peer_action") or "") == record.get("action")
+                and str(comment_record.get("thread") or "") == thread_id
+                and comment_record.get("approved") is True
+                and comment_record.get("action") == expected_secondary
+                and isinstance(comment_record.get("payload"), dict)
+                and str(record.get("peer_fp") or "")
+                    == approval.fingerprint(comment_record.get("payload"))
+                and str(comment_record.get("peer_fp") or "")
+                    == approval.fingerprint(payload)
+            )
+            if not pair_ok:
+                approval.reject(token)
+                bound_peer = str(record.get("peer_token") or "")
+                bound_record = approval.peek(bound_peer) if bound_peer else None
+                if bound_record and str(bound_record.get("thread") or "") == thread_id:
+                    approval.reject(bound_peer)
+                if (comment_token and comment_token != bound_peer and comment_record
+                        and str(comment_record.get("thread") or "") == thread_id):
+                    approval.reject(comment_token)
+                return self._failed(
+                    state,
+                    "같은 승인 카드의 primary·comment 실행 지문이 서로 결속되지 않아 실행하지 않았습니다.",
+                )
+        elif comment_token:
+            # A loose secondary token is never a compound approval, even when action/thread
+            # happen to match. Reject before the primary so no half-card side effect occurs.
+            approval.reject(token)
+            if comment_record and str(comment_record.get("thread") or "") == thread_id:
+                approval.reject(comment_token)
+            return self._failed(
+                state, "서로 결속되지 않은 코멘트 승인 토큰이 있어 변경을 실행하지 않았습니다.",
+            )
 
-            out = {"created": [], "failed": [],
-                   "updated": [{"key": plan["key"], "fields": r.get("updated") or []}], "note": ""}
-            cmt = (plan.get("comment") or "").strip()
-            if cmt:
-                cr = T.BY_NAME["add_ticket_comment"].invoke(
-                    {"key": plan["key"], "body": cmt,
-                     "approval_token": state.get("comment_token") or ""})
-                if not cr.get("ok"):
-                    out["note"] = f"필드는 바꿨지만 코멘트는 남기지 못했습니다: {cr.get('error') or ''}"
-            return {"result": out,
-                    "trace": note(state, self.name,
-                                  f"변경 1건({', '.join(r.get('updated') or [])})"
-                                  + (" · 코멘트" if cmt and not out["note"] else ""))}
+        action = str(record.get("action") or "")
+        primary_cancelled = False
+        try:
+            result, label, consumption_attestation = self._dispatch_once(
+                action, payload, token, thread_id,
+            )
+        except Exception as failure:
+            # A provider may have applied the side effect before its adapter raised.  Do not call
+            # that a success and do not leave the capability replayable; carry an explicitly
+            # incomplete legacy result to the semantic reporter instead.
+            primary_cancelled = approval.reject(token)
+            owns_pair = primary_cancelled or bool(
+                getattr(failure, "consumption_attestation", None)
+            )
+            if (owns_pair and comment_token and comment_record
+                    and str(comment_record.get("thread") or "") == thread_id):
+                approval.reject(comment_token)
+            blocked = self._empty_result()
+            blocked["failed"] = [{
+                "summary": action or "승인 작업",
+                "error": "외부 실행 응답이 중단되어 실제 반영 여부를 확인해야 합니다.",
+            }]
+            from app.agent.workflow.execution_receipt import scrub_execution_sidecars
+            blocked = scrub_execution_sidecars(
+                blocked, secrets_to_remove=(token, comment_token),
+            )
+            return {"result": blocked, "execution_receipt": {},
+                    "trace": note(state, self.name, "외부 실행 응답 중단 · 결과 확인 필요")}
+        raw_execution = result.pop("_execution_raw", None)
 
-        return run
+        # Provider output and token absence are not positive execution proof.  Only consume() in
+        # this exact dispatch attempt can issue the attestation used by the common finalizer.
+        if consumption_attestation is None:
+            primary_cancelled = approval.reject(token)
+            untrusted_projection = bool(
+                result.get("created") or result.get("updated") or not result.get("failed")
+            )
+            if untrusted_projection:
+                result = self._verification_needed_result(
+                    action, "승인 capability가 실행 경계에서 정확히 소비되지 않아 실제 반영 여부를 확인해야 합니다.",
+                )
+            raw_execution = None
+            if untrusted_projection:
+                label = "승인 capability 미소비 · 결과 확인 필요"
 
-    def _run_create(self, state, react):
-        """생성 실행 — 승인된 초안을 create_tickets/create_epic 한 번에 넘긴다.
-        결과는 도구가 준 그대로."""
+        # A change and its accompanying comment have separate one-use fingerprints, but both
+        # were visible on the same approval card. Execute the comment only after the primary
+        # mutation succeeded, preserving the established partial-success report for singular,
+        # bulk and link changes.
+        if (expected_secondary and bundle and comment_token
+                and consumption_attestation is None):
+            # A double-click loser has no ownership over the shared secondary capability.  It may
+            # cancel the peer only when it atomically cancelled the still-pending primary itself.
+            if (primary_cancelled and comment_record
+                    and str(comment_record.get("thread") or "") == thread_id):
+                approval.reject(comment_token)
+        elif expected_secondary and bundle and comment_token:
+            comment_same_thread = bool(
+                comment_record and str(comment_record.get("thread") or "") == thread_id
+            )
+            if result.get("failed"):
+                # The comment was one card's secondary action. If the primary field update did
+                # not happen, posting or retaining that separately approved comment later would
+                # violate the partial-success contract. Never touch a foreign thread's token.
+                if comment_same_thread:
+                    approval.reject(comment_token)
+                result["note"] = (
+                    "primary 변경이 전부 완료되지 않아 같은 승인 카드의 코멘트는 "
+                    "게시하지 않았습니다."
+                )
+            elif (comment_same_thread and comment_record.get("approved")
+                  and comment_record.get("action") == expected_secondary
+                  and isinstance(comment_record.get("payload"), dict)):
+                try:
+                    comment_result, _, comment_attestation = self._dispatch_once(
+                        expected_secondary, comment_record["payload"], comment_token, thread_id,
+                    )
+                except Exception:
+                    approval.reject(comment_token)
+                    comment_result = self._empty_result()
+                    comment_result["failed"] = [{
+                        "summary": expected_secondary,
+                        "error": "외부 코멘트 실행 응답이 중단되어 실제 반영 여부를 확인해야 합니다.",
+                    }]
+                    comment_attestation = None
+                comment_result.pop("_execution_raw", None)
+                if comment_attestation is None:
+                    approval.reject(comment_token)
+                    comment_result = self._empty_result()
+                    comment_result["failed"] = [{
+                        "summary": expected_secondary,
+                        "error": "코멘트 승인 capability가 실행 경계에서 소비되지 않아 "
+                                 "실제 반영 여부를 확인해야 합니다.",
+                    }]
+                by_key = {str(row.get("key") or ""): row
+                          for row in (result.get("updated") or [])
+                          if isinstance(row, dict) and row.get("key")}
+                for row in comment_result.get("updated") or []:
+                    key = str((row or {}).get("key") or "")
+                    if key in by_key:
+                        fields = by_key[key].setdefault("fields", [])
+                        for field in row.get("fields") or []:
+                            if field not in fields:
+                                fields.append(field)
+                    elif key:
+                        result.setdefault("updated", []).append(row)
+                if comment_result.get("failed"):
+                    result.setdefault("failed", []).extend(comment_result["failed"])
+                    result["note"] = (
+                        "필드는 바꿨지만 코멘트는 남기지 못했습니다: "
+                        + str(comment_result["failed"][0].get("error") or "")
+                    )
+                else:
+                    label += " · 코멘트"
+            else:
+                # A malformed same-thread secondary capability is no longer reachable from the
+                # finished graph, but rejecting it here also prevents accidental direct reuse.
+                if comment_same_thread:
+                    approval.reject(comment_token)
+                result["note"] = "필드는 바꿨지만 코멘트 승인 정보가 유효하지 않습니다."
+        from app.agent.workflow import execution_receipt as receipt_contract
+
+        receipt = None
+        secrets = (token, comment_token)
+        if (not bundle and not comment_token and action in receipt_contract.EXECUTION_RECEIPT_ACTIONS
+                and consumption_attestation is not None and isinstance(raw_execution, dict)):
+            try:
+                receipt = receipt_contract.issue_execution_receipt(
+                    record=record, token=token, result=result, raw=raw_execution,
+                    consumption_attestation=consumption_attestation,
+                )
+                if receipt is None:
+                    result = self._verification_needed_result(
+                        action, "외부 실행 결과의 정확한 결속을 확인할 수 없어 실제 반영 여부를 확인해야 합니다.",
+                    )
+                result = receipt_contract.scrub_execution_sidecars(
+                    result, secrets_to_remove=secrets,
+                )
+            except Exception:
+                # The write may already have happened.  Receipt/schema/signer availability must
+                # never abort the graph or turn that uncertainty into a deterministic success.
+                receipt = None
+                result = receipt_contract.scrub_execution_sidecars(
+                    self._verification_needed_result(
+                        action, "외부 실행 결과의 검증이 중단되어 실제 반영 여부를 확인해야 합니다.",
+                    ), secrets_to_remove=secrets,
+                )
+        else:
+            try:
+                result = receipt_contract.scrub_execution_sidecars(
+                    result, secrets_to_remove=secrets,
+                )
+            except Exception:
+                result = self._verification_needed_result(
+                    action, "외부 실행 결과를 안전하게 표시할 수 없어 실제 반영 여부를 확인해야 합니다.",
+                )
+        return {"result": result, "execution_receipt": receipt or {},
+                "trace": note(state, self.name, label)}
+
+    @staticmethod
+    def _empty_result() -> dict:
+        return {"created": [], "updated": [], "failed": [], "note": ""}
+
+    @classmethod
+    def _verification_needed_result(cls, action: str, error: str) -> dict:
+        result = cls._empty_result()
+        result["failed"] = [{"summary": action or "승인 작업", "error": error}]
+        return result
+
+    def _dispatch_once(self, action: str, payload: dict, token: str,
+                       thread_id: str) -> tuple[dict, str, dict | None]:
+        """Run one adapter in a dispatch-scoped approval consumption context."""
+        from app.agent import approval
+
+        attempt_nonce, context_token = approval.begin_consumption_attempt(token)
+        try:
+            result, label = self._dispatch(action, payload, token)
+        except Exception as exc:
+            attestation = approval.take_consumption(
+                token, attempt_nonce=attempt_nonce, thread_id=thread_id,
+                action=action, payload=payload,
+            )
+            raise _DispatchFailure(attestation) from exc
+        finally:
+            approval.end_consumption_attempt(context_token)
+        attestation = approval.take_consumption(
+            token, attempt_nonce=attempt_nonce, thread_id=thread_id,
+            action=action, payload=payload,
+        )
+        return result, label, attestation
+
+    def _failed(self, state, message: str, summary: str = "승인 작업") -> dict:
+        result = self._empty_result()
+        result["failed"] = [{"summary": summary, "error": str(message or "")[:300]}]
+        return {"result": result, "execution_receipt": {},
+                "trace": note(state, self.name, f"실행 거부 — {str(message or '')[:80]}")}
+
+    @staticmethod
+    def _failure_rows(raw: dict, summary: str) -> list[dict]:
+        rows = [row for row in (raw.get("failed") or []) if isinstance(row, dict)]
+        if not raw.get("ok") and not rows:
+            rows = [{"summary": summary, "error": str(raw.get("error") or "실행 실패")[:300]}]
+        return rows
+
+    @staticmethod
+    def _raw_execution_complete(action: str, payload: dict, raw: dict) -> bool:
+        from app.agent.workflow.execution_receipt import execution_raw_complete
+        return execution_raw_complete(action, payload, raw)
+
+    @classmethod
+    def _incomplete_external_result(cls, action: str, raw: dict) -> tuple[dict, str]:
+        """Keep contradictory provider output out of the legacy success projection too."""
+        result = cls._empty_result()
+        result["failed"] = [{
+            "summary": action,
+            "error": "외부 실행 응답이 승인 payload와 정확히 결속되지 않아 실제 반영 여부를 확인해야 합니다.",
+        }]
+        result["_execution_raw"] = raw
+        return result, "외부 실행 응답 불일치 · 결과 확인 필요"
+
+    def _dispatch(self, action: str, payload: dict, token: str) -> tuple[dict, str]:
+        """Dispatch one explicit approved action through its canonical registry tool."""
+        from app.agent import approval
         from app.agent import tools as T
-        from app.agent.workflow.agents.work_architect import as_bulk_items, epic_payload
-        draft = state.get("draft") or {}
 
-        if (draft.get("mode") or "task") == "epic":
-            p = epic_payload(draft)
-            if not p.get("summary"):
-                return react(state)
-            r = T.BY_NAME["create_epic"].invoke(
-                {**p, "approval_token": state.get("approval_token") or ""})
-            created = [c for c in (r.get("created") or []) if isinstance(c, dict) and c.get("key")]
-            failed = [] if created else [{"summary": p.get("summary", ""),
-                                          "error": r.get("error") or ""}]
-            note_txt = ("이 Epic 아래에 Task 를 이어서 만들 수 있습니다 — 원하시면 말씀해 주세요."
+        try:
+            self._validate_action_registry(T)
+        except RuntimeError as exc:
+            approval.reject(token)
+            return ({"created": [], "updated": [],
+                     "failed": [{"summary": action or "승인 작업",
+                                 "error": str(exc)[:300]}], "note": ""},
+                    "쓰기 도구 registry 불일치 거부")
+        if action not in SUPPORTED_WRITE_ACTIONS:
+            # An approved token for an action this version cannot execute must not remain as a
+            # reusable ambient capability. The user can request a new supported plan and approve it.
+            approval.reject(token)
+            return ({"created": [], "updated": [],
+                     "failed": [{"summary": action or "승인 작업",
+                                 "error": "지원하지 않는 승인 작업이라 실행하지 않았습니다."}],
+                     "note": ""}, "지원하지 않는 승인 작업 거부")
+
+        if action == "create_tickets":
+            raw = T.BY_NAME[action].invoke({**payload, "approval_token": token}) or {}
+            if not self._raw_execution_complete(action, payload, raw):
+                return self._incomplete_external_result(action, raw)
+            created = [row for row in (raw.get("created") or [])
+                       if isinstance(row, dict) and row.get("key")]
+            failed = self._failure_rows(
+                raw, str(((payload.get("items") or [{}])[0] or {}).get("summary") or "티켓 생성"),
+            )
+            return ({"created": created, "updated": [], "failed": failed, "note": "",
+                     "_execution_raw": raw},
+                    f"생성 {len(created)}건" + (f" · 실패 {len(failed)}건" if failed else ""))
+
+        if action == "create_epic":
+            raw = T.BY_NAME[action].invoke({**payload, "approval_token": token}) or {}
+            if not self._raw_execution_complete(action, payload, raw):
+                return self._incomplete_external_result(action, raw)
+            created = [row for row in (raw.get("created") or [])
+                       if isinstance(row, dict) and row.get("key")]
+            failed = self._failure_rows(raw, str(payload.get("summary") or "Epic 생성"))
+            followup = ("이 Epic 아래에 Task 를 이어서 만들 수 있습니다 — 원하시면 말씀해 주세요."
                         if created else "")
-            return {"result": {"created": created, "failed": failed, "updated": [],
-                               "note": note_txt},
-                    "trace": note(state, self.name,
-                                  f"Epic 생성 {len(created)}건" + (" · 실패" if failed else ""))}
+            return ({"created": created, "updated": [], "failed": failed, "note": followup,
+                     "_execution_raw": raw},
+                    f"Epic 생성 {len(created)}건" + (" · 실패" if failed else ""))
 
-        items = as_bulk_items(draft)
-        if not items:
-            return react(state)          # 계획이 없다 — 예외 경로만 모델에게
-        from app.agent.workflow.agents.work_architect import child_items
-        kids = child_items(draft)
-        r = T.BY_NAME["create_tickets"].invoke(
-            {"mode": draft.get("mode") or "task", "items": items,
-             **({"children": kids} if kids else {}),
-             "approval_token": state.get("approval_token") or ""})
-        created = [c for c in (r.get("created") or []) if isinstance(c, dict) and c.get("key")]
-        failed = [f for f in (r.get("failed") or []) if isinstance(f, dict)]
-        if not r.get("ok") and not created and not failed:
-            # 검증 거부·토큰 거부 — 항목별 실패가 아니라 배치 전체가 시작을 안 한 것
-            failed = [{"summary": it.get("summary", ""), "error": r.get("error") or ""}
-                      for it in items[:1]]
-        return {"result": {"created": created, "failed": failed, "updated": [],
-                           "note": ""},
-                "trace": note(state, self.name,
-                              f"생성 {len(created)}건" + (f" · 실패 {len(failed)}건" if failed else ""))}
+        if action == "update_ticket":
+            key = str(payload.get("key") or "")
+            changes = payload.get("changes") if isinstance(payload.get("changes"), dict) else {}
+            raw = T.BY_NAME[action].invoke(
+                {"key": key, **changes, "approval_token": token},
+            ) or {}
+            if not self._raw_execution_complete(action, payload, raw):
+                return self._incomplete_external_result(action, raw)
+            failed = self._failure_rows(raw, key or "티켓 변경")
+            updated = ([] if failed else
+                       [{"index": raw.get("index"), "key": key,
+                         "fields": list(raw.get("updated") or []),
+                         "target_id": raw.get("target_id"),
+                         "effect_digest": raw.get("effect_digest")}])
+            return ({"created": [], "updated": updated, "failed": failed, "note": "",
+                     "_execution_raw": raw},
+                    (f"변경 1건({', '.join(raw.get('updated') or [])})" if updated else "변경 실패"))
+
+        if action == "add_ticket_comment":
+            key = str(payload.get("key") or "")
+            raw = T.BY_NAME[action].invoke({**payload, "approval_token": token}) or {}
+            failed = self._failure_rows(raw, key or "코멘트")
+            updated = [] if failed else [{"key": key, "fields": ["comment"]}]
+            return ({"created": [], "updated": updated, "failed": failed, "note": ""},
+                    "코멘트 1건" if updated else "코멘트 실패")
+
+        if action == "update_tickets":
+            raw = T.BY_NAME[action].invoke({**payload, "approval_token": token}) or {}
+            if not self._raw_execution_complete(action, payload, raw):
+                return self._incomplete_external_result(action, raw)
+            updated = [row for row in (raw.get("updated") or []) if isinstance(row, dict)]
+            keys = [str((row or {}).get("key") or "") for row in (payload.get("items") or [])]
+            failed = self._failure_rows(raw, ", ".join(k for k in keys[:5] if k) or "일괄 변경")
+            return ({"created": [], "updated": updated, "failed": failed, "note": "",
+                     "_execution_raw": raw},
+                    f"일괄 변경 {len(updated)}건" + (f" · 실패 {len(failed)}건" if failed else ""))
+
+        if action == "add_ticket_comments":
+            raw = T.BY_NAME[action].invoke({**payload, "approval_token": token}) or {}
+            posted = [row for row in (raw.get("created") or []) if isinstance(row, dict)]
+            updated = [{"key": str(row.get("key") or ""), "fields": ["comment"]}
+                       for row in posted if row.get("key")]
+            keys = [str((row or {}).get("key") or "") for row in (payload.get("items") or [])]
+            failed = self._failure_rows(raw, ", ".join(k for k in keys[:5] if k) or "일괄 코멘트")
+            return ({"created": [], "updated": updated, "failed": failed, "note": ""},
+                    f"코멘트 {len(updated)}건" + (f" · 실패 {len(failed)}건" if failed else ""))
+
+        if action == "transition_ticket":
+            key = str(payload.get("key") or "")
+            transition_id = str(payload.get("transition") or "")
+            args = {"key": key, "transition_id": transition_id,
+                    "approval_token": token}
+            for field in ("comment", "assignee"):
+                if field in payload:
+                    args[field] = payload[field]
+            raw = T.BY_NAME[action].invoke(args) or {}
+            failed = self._failure_rows(raw, key or "상태 전이")
+            updated = [] if failed else [{"key": key, "fields": [f"status→{transition_id}"]}]
+            return ({"created": [], "updated": updated, "failed": failed, "note": ""},
+                    f"전이 {transition_id}" if updated else "전이 실패")
+
+        if action == "link_tickets":
+            key, other = str(payload.get("key") or ""), str(payload.get("other") or "")
+            relation = str(payload.get("relation") or "Relates")
+            raw = T.BY_NAME[action].invoke(
+                {"key": key, "other_key": other, "relation": relation,
+                 "approval_token": token},
+            ) or {}
+            failed = self._failure_rows(raw, key or "티켓 링크")
+            updated = [] if failed else [{"key": key, "fields": [f"link {relation}→{other}"]}]
+            return ({"created": [], "updated": updated, "failed": failed, "note": ""},
+                    f"링크 {other}" if updated else "링크 실패")
+
+        # attach_document
+        key = str(payload.get("key") or "")
+        raw = T.BY_NAME[action].invoke({**payload, "approval_token": token}) or {}
+        failed = self._failure_rows(raw, key or "문서 첨부")
+        updated = [] if failed else [{"key": key, "fields": ["document"]}]
+        return ({"created": [], "updated": updated, "failed": failed, "note": ""},
+                "문서 연결 1건" if updated else "문서 연결 실패")
+
+    @staticmethod
+    def _validate_action_registry(registry) -> None:
+        """Reject write-registry drift until an explicit deterministic adapter is reviewed."""
+        registered = {str(getattr(tool, "name", "") or "")
+                      for tool in (registry.WRITE_TOOLS or [])}
+        missing = SUPPORTED_WRITE_ACTIONS - registered
+        unreviewed = registered - SUPPORTED_WRITE_ACTIONS
+        if missing or unreviewed:
+            details = []
+            if missing:
+                details.append("registry missing: " + ", ".join(sorted(missing)))
+            if unreviewed:
+                details.append("unreviewed write tools: " + ", ".join(sorted(unreviewed)))
+            raise RuntimeError("ActionExecutor/WRITE_TOOLS drift — " + " | ".join(details))
 
     @property
     def tools(self):
-        from app.agent import tools as T
-        return T.WRITE_TOOLS + T.REVIEW_TOOLS
+        from app.agent.workflow.role_manifest import tools_for_role
+        # Permission inventory only. ``node`` never passes this list to an LLM.
+        return tools_for_role(self.name)
 
     def system(self, state):
         return persona(state, SYSTEM_ACTION_EXECUTOR, lite=True)  # 결정적 실행 위주 — 축약판이면 충분
@@ -242,7 +531,7 @@ This section is context only; the JSON above is authoritative.
 {draft_text(draft)}"""
 
     def schema(self):
-        return SCHEMA
+        return {}
 
     def apply(self, state, out):
         created = [c for c in (out.get("created") or []) if isinstance(c, dict) and c.get("key")]

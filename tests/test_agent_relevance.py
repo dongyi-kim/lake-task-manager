@@ -36,6 +36,43 @@ def test_a_model_written_why_cannot_make_a_generic_title_relevant():
     assert "직접 일치" in got["situation"] and "DL-5431" not in got["situation"]
 
 
+def test_related_research_with_explicit_missing_implementation_is_not_a_duplicate():
+    state = {
+        "request_text": "Iceberg Puffin NDV Batch Job을 구현해줘",
+        "keywords": ["Iceberg Puffin NDV", "Batch Job"],
+    }
+    evidence = [{
+        "key": "DL-7001", "title": "[Lake] Iceberg 통계 메타데이터 표준 조사",
+        "why": "Puffin NDV 선행 조사", "fitness": "supporting",
+        "observations": [{
+            "source": "comment",
+            "text": "실제 구현 PoC는 아직 생성하지 않았다. reader 소비 여부도 확인되지 않음",
+        }],
+    }]
+    got = ResearchAnalyst().apply(state, {
+        "situation": "DL-7001은 선행 조사", "evidence": evidence,
+        "already_exists": True,
+    })
+
+    assert got["evidence"]
+    assert got["already_exists"] is False
+
+
+def test_model_direct_fitness_without_exact_query_proof_cannot_raise_duplicate_guard():
+    state = {"request_text": "Iceberg Puffin NDV Batch Job을 구현해줘"}
+    evidence = [{
+        "key": "DL-9204", "title": "[ETL] Iceberg Puffin NDV Batch Job 구현",
+        "why": "동일 구현 범위", "fitness": "direct", "observations": [],
+    }]
+    got = ResearchAnalyst().apply(state, {
+        "situation": "동일 구현 진행 중", "evidence": evidence,
+        "already_exists": True,
+    })
+
+    assert got["already_exists"] is False
+    assert "입증되지" in got["situation"] and "동일 구현 진행 중" not in got["situation"]
+
+
 def test_similarity_requires_a_discriminating_request_term():
     kws = ["Workbench", "쿼리", "편집기", "단축키"]
     assert discriminating_keywords(kws) == ["쿼리", "편집기", "단축키"]

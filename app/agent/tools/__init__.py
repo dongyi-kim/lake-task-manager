@@ -58,6 +58,19 @@ PMO_TOOLS = [whoami, get_my_workload, get_progress, find_stale_tickets,
 # 외부 지식(웹·GitHub) — 일반 기술 지식 보강. 폐쇄망이면 "막혀 있다"를 돌려준다(의존 아님).
 WEB_TOOLS = [search_web, search_github]
 
+# Model-facing Role catalogs.  These are deliberately narrower than the reusable capability
+# groups above: Query Runner and deterministic prefetch code already perform broad scoped
+# retrieval, so Research only receives tools that can fill a newly discovered evidence gap.
+# Every schema in these lists is sent on each native/fallback tool-decision call; adding a tool is
+# therefore a permission and prompt-budget change and must be justified by a Role contract/test.
+RESEARCH_TOOLS = [get_ticket, read_document, search_documents, search_comments,
+                  query_people, list_attachments, read_attachment, search_web, search_github]
+
+# Portfolio keeps its existing runtime capabilities, but records them as one exact Role catalog
+# instead of approximating them with the much broader ``pmo + people`` manifest declaration.
+PORTFOLIO_TOOLS = [*PMO_TOOLS, get_ticket, get_module_people, get_team_workload,
+                   run_jql, get_ticket_participants]
+
 # 초안을 검사한다 — 부작용 없음. 몇 번이고 불러도 된다.
 REVIEW_TOOLS = [validate_ticket_plan, list_ticket_options, list_child_types, list_transitions]
 
@@ -69,6 +82,7 @@ WRITE_TOOLS = [create_tickets, create_epic, update_ticket, add_ticket_comment,
 TOOL_GROUPS = {
     "search": SEARCH_TOOLS, "people": PEOPLE_TOOLS, "rule": RULE_TOOLS,
     "pmo": PMO_TOOLS, "web": WEB_TOOLS, "review": REVIEW_TOOLS, "write": WRITE_TOOLS,
+    "research": RESEARCH_TOOLS, "portfolio": PORTFOLIO_TOOLS,
 }
 
 
@@ -100,6 +114,6 @@ def set_thread(thread_id: str):
     _set_query_thread(thread_id)
 
 __all__ = ["SEARCH_TOOLS", "PEOPLE_TOOLS", "RULE_TOOLS", "PMO_TOOLS", "WEB_TOOLS", "REVIEW_TOOLS",
-           "WRITE_TOOLS", "READ_TOOLS", "ALL_TOOLS", "BY_NAME",
+           "RESEARCH_TOOLS", "PORTFOLIO_TOOLS", "WRITE_TOOLS", "READ_TOOLS", "ALL_TOOLS", "BY_NAME",
            "TOOL_GROUPS",
            "bind", "client", "settings", "set_thread"]

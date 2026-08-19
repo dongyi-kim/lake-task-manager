@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import json
 import shutil
+import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.agent import config as _cfg
@@ -36,7 +38,8 @@ _cached = {"sig": None, "store": None}
 
 
 def embed_sig() -> str:
-    return f"{_cfg.provider()}|{_cfg.embed_model()}"
+    raw = json.dumps(_cfg.embedding_identity(chunking_version="text-v1"), sort_keys=True)
+    return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
 def index_dir() -> Path:
@@ -70,7 +73,10 @@ def _save(store):
     d = index_dir()
     d.mkdir(parents=True, exist_ok=True)
     store.save_local(str(d))
-    (d / "meta.json").write_text(json.dumps({"embedSig": embed_sig()}, ensure_ascii=False),
+    (d / "meta.json").write_text(json.dumps({"embedSig": embed_sig(),
+                                              **_cfg.embedding_identity(chunking_version="text-v1"),
+                                              "created_at": datetime.now(timezone.utc).isoformat()},
+                                             ensure_ascii=False, indent=2),
                                  encoding="utf-8")
     _cached.update(sig=embed_sig(), store=store)
 
@@ -121,7 +127,8 @@ def upsert(docs: list[dict]) -> dict:
     stale = [cid for did, *_ in plan for cid in manifest.old_chunk_ids(did)]
     if store is not None and stale:
         try:
-            store.delete([c for c in stale if c in store.docstore._dict])
+            present = set(store.index_to_docstore_id.values())
+            store.delete([chunk_id for chunk_id in stale if chunk_id in present])
         except Exception:
             pass        # 지우기가 안 되면 중복이 남을 뿐, 새 내용은 어차피 들어간다
 
@@ -166,6 +173,6 @@ def search(query: str, k: int = 6, kind: str = "") -> list[dict]:
 def stats() -> dict:
     s = dict(manifest.stats())
     store = _load()
-    s["vectors"] = len(getattr(store, "docstore", None).__dict__.get("_dict", {})) if store else 0
+    s["vectors"] = len(store.index_to_docstore_id) if store else 0
     s["embedSig"] = embed_sig()
     return s

@@ -1,6 +1,6 @@
 {
   "protocolName": "LTM Agent Evaluation Protocol",
-  "protocolVersion": "2.0.0",
+  "protocolVersion": "3.0.0",
   "rubricVersion": "2.0.0",
   "primaryEvidencePolicy": "complete-run-no-substitution",
   "attemptPolicy": "retain-every-attempt",
@@ -26,7 +26,7 @@
     "candidateOrder": "counterbalanced-randomized",
     "requiresFullBattery": true,
     "requiresCleanCommit": true,
-    "requiresSameComparabilityKey": true
+    "requiresSameBenchmarkKey": true
   },
   "aggregation": {
     "caseScore": "weighted-mean-of-dimensions-after-caps",
@@ -261,10 +261,21 @@
     "runGroupId",
     "repetitions",
     "candidateCommit",
+    "candidateTreeSha256",
+    "runtimePackageSetSha256",
+    "evaluationHarnessTreeSha256",
     "promptVersion",
     "model",
     "simpleModel",
+    "provider",
+    "providerEndpointIdentitySha256",
+    "structuredOutputBackend",
+    "structuredBackendVersion",
+    "structuredBackendFallbackPolicy",
     "dataManifestSha256",
+    "benchmarkKey",
+    "candidateKey",
+    "comparabilityKey",
     "selectionPolicy",
     "aggregation",
     "percentileMethod",
@@ -321,6 +332,29 @@
         "percentileMethod", "candidateOrderIndex", "retryPolicy", "cachePolicy",
         "qualitativeEvaluatorPolicy", "evaluatorAgentFamily", "evaluatorAgentModel",
         "directRawOutputReview", "ltmLlmUsedAsJudge", "reviewerCount", "blindedReview"
+      ]
+    },
+    "2.0.0": {
+      "requiredSections": [
+        "측정 식별자",
+        "비교 가능성 및 evidence 선택",
+        "실행 조건",
+        "배터리 범위",
+        "정량 결과",
+        "사람 품질 평가 기준",
+        "배터리·case 특수 검토요소",
+        "배터리별 실제 출력과 평가",
+        "자동 checker와 사람 판정 불일치",
+        "실패·재시도·제한사항"
+      ],
+      "requiredFields": [
+        "protocolVersion", "rubricVersion", "batteryVersion", "batteryManifestSha256",
+        "specializedReviewSpecSha256", "runKind", "runGroupId", "repetitions",
+        "candidateCommit", "promptVersion", "model", "simpleModel", "dataManifestSha256",
+        "selectionPolicy", "aggregation", "percentileMethod", "candidateOrderIndex",
+        "retryPolicy", "cachePolicy", "processIsolation", "qualitativeEvaluatorPolicy",
+        "evaluatorAgentFamily", "evaluatorAgentModel", "directRawOutputReview",
+        "ltmLlmUsedAsJudge", "reviewerCount", "blindedReview"
       ]
     }
   }

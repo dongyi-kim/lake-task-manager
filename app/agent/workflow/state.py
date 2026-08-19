@@ -13,9 +13,13 @@ State 는 대화 하나(=`thread_id`)의 수명을 갖는다. Checkpointer 가 �
 from __future__ import annotations
 
 import re
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any
+
+from typing_extensions import TypedDict
 
 from langgraph.graph.message import add_messages
+
+from app.agent.workflow.contracts import ContinuationContract
 
 
 class Node:
@@ -93,6 +97,8 @@ class Stage:
 
 MAX_REFINE_TURNS = 4       # 되묻기 상한. 넘으면 아는 것만으로 초안을 만든다
 MAX_REVISIONS = 2          # Auditor↔WorkArchitect 왕복 상한. 안 걸면 무한 루프가 된다
+MAX_MACHINE_REVISIONS = 2  # deterministic repair lane 상한 — semantic 예산과 분리한다
+MAX_TOTAL_REPAIR_ATTEMPTS = MAX_REVISIONS + MAX_MACHINE_REVISIONS
 
 TRACE_RESET = {"reset": True}    # 턴 시작에 trace 를 비우는 신호 — 리듀서엔 "대입"이 없다
 
@@ -107,6 +113,70 @@ def merge_trace(old: list | None, new: list | None) -> list:
 def last_value(old, new):
     """마지막 쓰기가 이긴다 — 단일 값 필드를 병렬 스텝에서도 쓸 수 있게 하는 리듀서."""
     return new
+
+
+class MaterializedTicketSources(TypedDict, total=False):
+    """Bounded verified Jira details that may safely cross an interview turn.
+
+    Search result pages and execution artifacts are per-turn working data.  Work still needs
+    the successfully opened ticket details—and the exact subset that were structural parent
+    candidates—after a Research/term interview.  Keeping that small typed sidecar separate
+    avoids carrying a complete JQL result or silently re-running retrieval.
+    """
+
+    ticketDetails: list[dict[str, Any]]
+    parentCandidateKeys: list[str]
+    parentCandidateSearchAttempted: bool
+
+
+class RequestRefinement(TypedDict, total=False):
+    """Fully parsed execution-field overlay for the current request turn.
+
+    This sidecar is populated only by RequestArchitect's deterministic continuation lane.
+    It is deliberately separate from ``request_plan``: the plan remains the authoritative
+    outcome DAG, while these values say how WorkArchitect should place and constrain that
+    already-known outcome.  ``parent`` is either an exact Jira key or the bounded sentinel
+    ``select_existing``/``top_level``; ``phase`` is a normalized ordinal such as ``1차``;
+    ``duedate`` is a validated ISO date.
+    """
+
+    parent: str
+    phase: str
+    duedate: str
+
+
+def verified_parent_epic_candidates(state: "AgentState") -> list[dict[str, Any]]:
+    """Return the successfully opened Epics authorized for automatic placement.
+
+    A search hit is discovery, not write authority. Automatic parent selection therefore
+    uses only the ordered intersection of the structural parent query and successful ticket
+    detail materialization. Keeping this invariant in State gives routing, Work, and Audit
+    one definition instead of three subtly different interpretations of the same ledger.
+    """
+    ledger = state.get("materialized_ticket_sources") or {}
+    if not isinstance(ledger, dict):
+        return []
+    allowed: list[str] = []
+    for value in ledger.get("parentCandidateKeys") or []:
+        key = str(value or "").strip().upper()
+        if key and key not in allowed:
+            allowed.append(key)
+    if not allowed:
+        return []
+    details: dict[str, dict[str, Any]] = {}
+    for row in ledger.get("ticketDetails") or []:
+        if not isinstance(row, dict) or row.get("error"):
+            continue
+        key = str(row.get("key") or "").strip().upper()
+        issue_type = (row.get("fields") or {}).get("issuetype") or {}
+        kind = str(
+            row.get("type") or row.get("issuetype")
+            or (issue_type.get("name") if isinstance(issue_type, dict) else issue_type)
+            or ""
+        ).strip().casefold()
+        if key and kind == "epic":
+            details[key] = row
+    return [details[key] for key in allowed if key in details]
 
 
 class AgentState(TypedDict, total=False):
@@ -131,13 +201,18 @@ class AgentState(TypedDict, total=False):
     sufficient: bool                # 되묻지 않고 진행해도 되나
     answer_depth: str               # "brief"(값·결론만) | "explain"(개념·배경까지)
     request_plan: dict              # Request Architect의 원자 작업 DAG
+    request_refinement: RequestRefinement  # 현재 턴의 검증된 parent/phase/duedate overlay
+    continuation_contract: ContinuationContract  # 원 요청/effect/target + typed user decisions
+    question_receipt_projection: dict  # Session-owned, non-secret one-turn answer projection
     turn_continuation: bool         # 직전 확인 질문에 대한 답변인가(새 요청의 stale state와 구분)
     turn_reset_reason: str          # local debug/evaluation용 턴 경계 판정 근거
+    turn_attempt_id: str            # Session-owned per-turn nonce; typed receipt에는 digest만 저장
 
     # ── Query Specialist / deterministic Query Runner ──
     query_plan: dict
     query_results: list             # LLM에 전달할 compact 결과
     query_artifacts: dict           # 전체 target key snapshot 등 모델 밖 실행 자료
+    materialized_ticket_sources: MaterializedTicketSources  # 인터뷰 턴을 건너는 검증된 티켓 ledger(최대 8)
     assignment_completion: dict     # 분담형 Task의 미완료 Sub-Task·담당자 deterministic 집계
 
     # ── ResearchAnalyst 사전 취합(코드가 만든 자료) ──
@@ -160,6 +235,7 @@ class AgentState(TypedDict, total=False):
     pmo_findings: list              # [{"key","point","action"}] 조회에서 확인한 사실
     group_activity: str             # PMO — 로스터 전원 활동 사전 취합(그룹 질의의 3층 자료)
     ticket_progress: str            # PMO — 티켓 한 건의 진척 근거 4갈래 사전 취합
+    portfolio_snapshot: dict        # Portfolio의 bounded raw progress/activity 정본
     person_work_snapshot: dict      # 특정 사람의 현재 미완료 할당 티켓 결정적 조회
     daily_priority_snapshot: dict   # 본인 열린 업무의 deadline+priority 결정적 1순위
     knowledge_brief: dict           # KnowledgeCurator — {concepts, our_context, references, gaps}
@@ -190,11 +266,13 @@ class AgentState(TypedDict, total=False):
     # ── Auditor ──
     review: dict                    # {"ok","errors","warnings","critique"}
     revisions: int
+    repair_budget: dict             # typed-repair-budget.v1 semantic/machine/total sidecar
 
     # ── ActionExecutor (승인 후) ──
     approval_token: str
     comment_token: str              # 변경과 함께 남길 코멘트의 승인 토큰(카드에 코멘트가 보였을 때만)
     result: dict                    # {"created":[...], "failed":[...]}
+    execution_receipt: dict         # signed execution-receipt.v1; never exposed as UI result data
 
     # ── 공통 ──
     reply: str                      # 사용자에게 보일 최종 문장

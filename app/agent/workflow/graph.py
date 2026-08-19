@@ -44,7 +44,11 @@ import re
 
 from langgraph.graph import END, START, StateGraph
 
-from app.agent.workflow.agents.people_advisor import PeopleAdvisor, merge_assignments
+from app.agent.workflow.agents.people_advisor import (
+    PeopleAdvisor,
+    _normalize_resolved_assignment_rationale,
+    merge_assignments,
+)
 from app.agent.workflow.agents.knowledge_curator import KnowledgeCurator
 from app.agent.workflow.agents.research_analyst import ResearchAnalyst
 from app.agent.workflow.agents.action_executor import ActionExecutor
@@ -54,9 +58,25 @@ from app.agent.workflow.agents.query_runner import QueryRunner
 from app.agent.workflow.agents.query_specialist import QuerySpecialist
 from app.agent.workflow.agents.work_architect import WorkArchitect
 from app.agent.workflow.agents.result_integrator import ResultIntegrator
-from app.agent.workflow.agents.auditor import Auditor
-from app.agent.workflow.state import (MAX_REVISIONS, AgentState, Intent, Node,
-                                      is_memory_only_request, reads_as_bug, request_text)
+from app.agent.workflow.agents.auditor import (
+    Auditor,
+    final_authority_review,
+)
+from app.agent.workflow.effect_contract import (
+    PENDING_RATIONALE_CONTRACT,
+    capture_user_field_locks,
+    continuation_action,
+    current_work_failed,
+    final_effect,
+    project_pending_rationale,
+    project_final_authority_state,
+)
+from app.agent.workflow.resolved_slots import parent_selection_authority
+from app.agent.workflow.state import (MAX_MACHINE_REVISIONS, MAX_REVISIONS,
+                                      MAX_TOTAL_REPAIR_ATTEMPTS, AgentState, Intent, Node,
+                                      is_memory_only_request, reads_as_bug, request_text,
+                                      verified_parent_epic_candidates)
+from app.agent.workflow.typed_fast_path import typed_repair_retry_allowed
 
 _compiled = {"graph": None}
 
@@ -68,6 +88,41 @@ def _node(agent):
 
 
 # ── 라우터: State 만 보고 결정한다(부작용 없음) ──────────────────────
+def _needs_delegated_parent_retrieval(state: AgentState) -> bool:
+    """Refresh retrieval when a continuation newly delegates an unverified parent choice."""
+    authority = parent_selection_authority(state)
+    if authority:
+        # The durable ledger can predate the current continuation decision. Its historical
+        # ``attempted`` bit and even materialized candidates are therefore not proof that a
+        # subject-compatible structural read ran for this new delegation. The graph reaches
+        # this router only once before QueryRunner on the current turn, so always refreshing
+        # the new typed decision is bounded by topology rather than a mutable string marker.
+        return True
+
+    contract = state.get("continuation_contract") or {}
+    if (state.get("turn_continuation") is True
+            and isinstance(contract, dict)
+            and contract.get("version") == "continuation.v1"):
+        # A typed continuation that did not carry parent authority must not be upgraded by
+        # reparsing display text in Graph or Work.
+        return False
+
+    # Legacy/direct callers without a validated continuation envelope retain the old path.
+    # This compatibility branch is deliberately unreachable for the typed r30 boundary.
+    from app.agent.workflow.agents.work_architect import _delegates_existing_epic_choice
+    ledger = state.get("materialized_ticket_sources") or {}
+    search_completed = (
+        isinstance(ledger, dict)
+        and ledger.get("parentCandidateSearchAttempted") is True
+    )
+    return (
+        (state.get("intent") or "") in Intent.DRAFTS_TICKETS
+        and _delegates_existing_epic_choice(state)
+        and not verified_parent_epic_candidates(state)
+        and not search_completed
+    )
+
+
 def route_after_request_architect(state: AgentState) -> str:
     """세 갈래 — 조사(research_analyst) / 현황 직행(portfolio_analyst) / 답(result_integrator).
 
@@ -82,8 +137,9 @@ def route_after_request_architect(state: AgentState) -> str:
     # 후속 요청에 쓸 필요도 없는 토큰을 소비한다. 대화 메시지는 checkpointer가 보존한다.
     if is_memory_only_request(state):
         return "respond"
-    # RequestArchitect can settle a cheap structure choice before any Jira/web lookup. Questions are a
-    # terminal result for this turn; sending them through research wastes calls and cannot improve them.
+    # A genuinely blocking question produced after the available context was considered is terminal
+    # for this turn.  Optional ticket-shape preferences are never put here: retrieval and the Agent's
+    # conservative default own those choices.
     if state.get("questions"):
         return "respond"
     # 회의록의 사람·로컬 약어는 먼저 관련 자료를 찾고, 그래도 확정되지 않을 때 인터뷰한다.
@@ -96,6 +152,13 @@ def route_after_request_architect(state: AgentState) -> str:
     if state.get("turn_continuation") and (state.get("situation") or "").strip():
         if intent == Intent.ASK:
             return "curate"
+        if intent in Intent.DRAFTS_TICKETS:
+            # Earlier research may have opened related tickets without running a structural
+            # parent-candidate query. A later "choose an existing Epic" refinement needs one
+            # bounded refresh before Work can safely auto-place the draft.
+            if _needs_delegated_parent_retrieval(state):
+                return "investigate"
+            return "refine"
     # 분담형 Task의 미완료자 조회는 Query Specialist의 자유 JQL이나 Portfolio ReAct가
     # 아니라 parent 탐색→직계 Sub-Task 전수 집계라는 고정 join이다.
     from app.agent.workflow.assignment_completion import asks_incomplete_assignees
@@ -118,21 +181,10 @@ def route_after_request_architect(state: AgentState) -> str:
     if (intent == Intent.MODIFY and not state.get("mentioned_keys")
             and (state.get("draft") or {}).get("items")):
         return "refine"    # approval_token 은 턴마다 리셋되므로 조건에 못 쓴다
-    # ③ 해석 확인 선행 — 막연한 신규 개발 요청은 **조사보다 사용자 확인이 먼저**다.
-    #    실측(STARR NDV): 혼자 오래 조사하고 한 번에 결론을 내니 방향이 틀렸다. 조사 전에
-    #    해석·범위를 2~3문항으로 확인받으면 조사가 짧고 정확해진다(사용자 피드백: 일방적
-    #    호흡이 길다). 위임("알아서")이면 묻지 않는 기존 원칙이 이긴다.
-    #    ★ **버그 신고는 여기 해당 없다** — "2홉 이상 펼치면 화면이 빈다"는 막연한 것이
-    #    아니라 증상이 이미 문장에 있다. 물을 것은 해석이 아니라 재현 경로이고, 그 전에
-    #    **같은 증상의 Bug 가 이미 열려 있는지**를 봐야 한다(중복 티켓). 갈래를 걷어내며
-    #    이 자리가 조용히 넓어졌던 것을 낱말 판정으로 되돌린다(§7 16-b).
-    if intent == Intent.PLAN_WORK and not state.get("sufficient") \
-            and not (state.get("situation") or "").strip() \
-            and not (state.get("turns") or 0) \
-            and not reads_as_bug(request_text(state)):
-        from app.agent.workflow.agents.work_architect import _said_defaults
-        if not _said_defaults(state):
-            return "refine"
+    # 신규 업무의 모호함은 먼저 허용된 Jira/Confluence/web 범위에서 조사한다. 구조·Epic·
+    # 분해 방식처럼 Agent가 안전하게 정할 수 있는 선호를 인터뷰하지 않으며, 조사 뒤에도
+    # 남은 target/action 같은 사용자 소유 blocker만 WorkArchitect가 질문한다. 이 순서를
+    # 뒤집으면 관련 이력이 답할 수 있는 내용을 사용자에게 되묻고 검색 자체가 사라진다.
     if intent in Intent.DIRECT_ANSWER:
         # 데이터 자산 질문("fdc.fdc_trace_summary_ic 적재주기는?")이 progress/activity 로
         # 오분류되면 회복이 불가능하다 — portfolio_analyst에는 검색 도구가 없어서 테이블 이름을
@@ -148,6 +200,12 @@ def route_after_request_architect(state: AgentState) -> str:
 def route_after_query_runner(state: AgentState) -> str:
     """결정적 집계만으로 답이 완성된 요청은 일반 Research ReAct를 건너뛴다."""
     completion = state.get("assignment_completion") or {}
+    guard = (state.get("query_artifacts") or {}).get("creation-subject-guard") or {}
+    if (guard.get("kind") == "creation_target_required"
+            and guard.get("targetRequired") is True):
+        # Work owns required-input questions. Skip Research because the acquisition compiler
+        # has already proved there is no safe subject to investigate.
+        return "refine"
     return "respond" if completion.get("kind") == "incomplete_assignees" else "investigate"
 
 
@@ -193,12 +251,36 @@ def route_after_work_architect(state: AgentState):
     **변경 계획(modify)은 승인으로 직행**한다 — 담당자 추천(새 티켓용)도, validate_bulk
     (생성 검증)도 여기엔 해당이 없다. 안전장치는 승인 카드와 editmeta(편집 불가 필드 거부)다.
     """
+    if current_work_failed(state):
+        return "respond"
     if state.get("questions"):
         return "respond"
-    cp = state.get("change_plan") or {}
-    if cp.get("key") or cp.get("keys"):
+    effect = final_effect(state)
+    if effect.kind in {"comment", "update"}:
         return "propose"
-    return ["assign", "review"] if (state.get("draft") or {}).get("items") else "respond"
+    if effect.kind != "create":
+        return "respond"
+    # Cloud APIs benefit from graph fan-out. A single-device local server can instead make
+    # two long generations contend for the same queue, so the model profile owns this
+    # scheduling capability. Roles remain model/provider agnostic.
+    if not _parallel_role_calls_allowed():
+        return "sequential"
+    return ["assign", "review"]
+
+
+def _parallel_role_calls_allowed() -> bool:
+    """Whether the active complex model can efficiently serve concurrent Role requests."""
+    try:
+        from app.agent import config as agent_config
+        from app.agent import model_profiles
+        definition = agent_config.chat_definition("complex")
+        capabilities = model_profiles.capabilities_for(
+            definition.model, definition.model_profile,
+        )
+        return capabilities.get("parallel_role_calls") is not False
+    except Exception:
+        # Unknown/legacy profiles retain the established cloud-friendly fan-out behavior.
+        return True
 
 
 def route_after_auditor(state: AgentState) -> str:
@@ -207,19 +289,31 @@ def route_after_auditor(state: AgentState) -> str:
     상한 소진 뒤의 갈래가 중요하다:
       · **기계 검증 오류**(없는 부모·틀린 타입)가 남았으면 → respond. 만들어 봤자 Jira 가
         거부하므로 승인 카드를 줄 이유가 없다.
-      · **LLM 검열 의견만** 남았으면 → propose. 검열 의견은 경고로 카드에 실린다.
-        ★ 검열자가 만족할 때까지 승인 자체를 막으면 **사람이 판단할 기회가 사라진다** —
-        실제로 멀쩡한 근거를 "불충분"이라며 두 번 반려해 사용자가 승인할 길이 없어졌다.
-        최종 판단은 검열자가 아니라 사람이 한다.
+      · **의미 검열 문제**가 남았으면 → respond. 권위 상태와 모순되는 오판은 Auditor가
+        먼저 제거하므로, 여기 남은 blocking problem과 실행 가능한 승인 카드를 동시에
+        노출하지 않는다.
     """
     review = state.get("review") or {}
     if review.get("ok"):
         return "propose"
-    # 재작성은 **기계 오류가 있을 때만** — LLM 의견만으로 왕복하면 한 턴이 200초를 넘겼다
-    # (실측: 반려 1회 = 호출 +4~8회). 의견은 카드에 '검토 의견'으로 실려 사람이 판단한다.
-    if review.get("errors") and (state.get("revisions") or 0) < MAX_REVISIONS:
+    # The same typed defect after one repair is evidence that another full semantic replay
+    # would spend the call budget without changing the payload. Field-level deterministic
+    # repairs happen before this router; an unrepairable recurrence fails closed.
+    if review.get("repeated_defect") is True:
+        return "respond"
+    # A genuine blocking problem gets one bounded repair opportunity. Contradicted model
+    # findings were already removed by Auditor grounding, so paying this retry only happens
+    # for an actionable defect. Exhaustion still fails closed with no pending payload.
+    repair_lane = str(review.get("repair_lane") or "semantic")
+    if (review.get("errors") or review.get("problems")) \
+            and typed_repair_retry_allowed(
+                state, repair_lane,
+                semantic_limit=MAX_REVISIONS,
+                machine_limit=MAX_MACHINE_REVISIONS,
+                total_limit=MAX_TOTAL_REPAIR_ATTEMPTS,
+            ):
         return "revise"
-    return "respond" if review.get("errors") else "propose"
+    return "respond"
 
 
 def route_after_result_integrator(state: AgentState) -> str:
@@ -241,7 +335,40 @@ def _merge_assignments(state: AgentState) -> dict:
     Auditor 가 배정 **전** 초안을 검증하므로(병렬), 배정된 사용자가 실재하는지는
     여기 코드가 보장한다 — validate_bulk 와 같은 lookup 을 쓴다.
     """
-    draft = merge_assignments(state.get("draft"), state.get("assignments"))
+    from app.agent.workflow.anchors import seal_work_item_identities
+
+    source_draft = dict(state.get("draft") or {})
+    source_draft["items"] = [dict(row) if isinstance(row, dict) else row
+                             for row in (source_draft.get("items") or [])]
+    seal_work_item_identities(state, source_draft)
+    field_locks = capture_user_field_locks(source_draft)
+
+    # PeopleAdvisor currently emits list positions for transport compatibility. Convert
+    # those positions to Work's stable ids at the join, and honor an already supplied id
+    # over a stale index. No title/description matching is permitted here.
+    item_rows = [row for row in (source_draft.get("items") or []) if isinstance(row, dict)]
+    index_by_id = {
+        str(row.get("item_id") or ""): index for index, row in enumerate(item_rows)
+        if str(row.get("item_id") or "")
+    }
+    assignments = []
+    for raw in state.get("assignments") or []:
+        if not isinstance(raw, dict):
+            continue
+        row = dict(raw)
+        identity = str(row.get("item_id") or "")
+        if identity:
+            if identity not in index_by_id:
+                continue
+            row["index"] = index_by_id[identity]
+        else:
+            index = row.get("index")
+            if isinstance(index, int) and 0 <= index < len(item_rows):
+                identity = str(item_rows[index].get("item_id") or "")
+                if identity:
+                    row["item_id"] = identity
+        assignments.append(row)
+    draft = merge_assignments(source_draft, assignments)
     # 사용자 명시 배정은 추천보다 우선이다. fan-out join에서 PeopleAdvisor 제안을 합친 **뒤**
     # 원 발화로 다시 확정해, 병렬 상태 병합이 assignee_source 표식을 잃어도 지정값이
     # 추천값으로 바뀌지 않게 한다(PAR1 실측).
@@ -251,29 +378,133 @@ def _merge_assignments(state: AgentState) -> dict:
     #   돌았는데, 자식 담당의 주인이 PeopleAdvisor 로 옮겨 가면서(§5-c) 덮어쓰기 뒤편에 남았다:
     #   실측(생성 스위트 STR1) 테이블 29건이 WorkArchitect 에서 고루 나뉜 뒤 제안으로 전부 한
     #   사람에게 갔다. 규칙은 work_architect.spread_volume_split 한 벌이고, 부르는 자리가 둘이다.
-    from app.agent.workflow.agents.work_architect import spread_volume_split
+    from app.agent.workflow.agents.work_architect import (
+        _preserve_required_user_anchors,
+        spread_volume_split,
+    )
     spread_volume_split(draft.get("items") or [])
+    assignment_errors = []
+
+    def assignee_error(user: str, *, index: int, child_index=None,
+                       unavailable: bool = False) -> None:
+        error = {
+            "index": index,
+            "field": "assignee",
+            "message": (f"담당자 {user}의 존재 검증을 수행하지 못했다"
+                        if unavailable else
+                        f"사용자가 지정한 담당자 {user}의 존재를 확인할 수 없다"),
+        }
+        if child_index is not None:
+            error["child_index"] = child_index
+        assignment_errors.append(error)
+
     try:
         from app.agent.tools._ctx import client
         exists = client().bulk_lookup().user_exists
-        for it in draft.get("items") or []:
-            u = (it.get("assignee") or "").strip()
-            if u and not exists(u):
-                it["assignee"] = _resolve_user(u, exists)
+
+        def validate(row: dict, *, index: int, child_index=None) -> None:
+            user = str(row.get("assignee") or "").strip()
+            if not user:
+                return
+            try:
+                known = exists(user)
+            except Exception:
+                # Identity authority is unavailable. Preserve what the user will see, but
+                # never let an unverified root or child owner reach an approval payload.
+                assignee_error(user, index=index, child_index=child_index,
+                               unavailable=True)
+                return
+            if known:
+                return
+            resolved = _resolve_user(user, exists)
+            if resolved:
+                row["assignee"] = resolved
+                return
+            if str(row.get("assignee_source") or "") == "user":
+                # A literal user decision may not be silently turned into unassigned work.
+                # Keep it visible and block approval until the identity can be corrected.
+                assignee_error(user, index=index, child_index=child_index)
+                return
+            # Model/PeopleAdvisor recommendations have no identity authority. Unknown
+            # accounts are removed at the final payload join, at both hierarchy tiers.
+            row.pop("assignee", None)
+
+        for index, item in enumerate(draft.get("items") or []):
+            if not isinstance(item, dict):
+                continue
+            validate(item, index=index)
+            for child_index, child in enumerate(item.get("children") or []):
+                if isinstance(child, dict):
+                    validate(child, index=index, child_index=child_index)
     except Exception:
-        pass                              # lookup 실패가 초안 자체를 버리게 하면 안 된다
-    assignments = _align_assignments_to_draft(state.get("assignments") or [], draft)
-    return {"draft": draft, "assignments": assignments}
+        # Keep the draft visible but fail closed: without the identity authority neither a
+        # root nor child assignee is safe to stage for approval.
+        for index, item in enumerate(draft.get("items") or []):
+            if not isinstance(item, dict):
+                continue
+            user = str(item.get("assignee") or "").strip()
+            if user:
+                assignee_error(user, index=index, unavailable=True)
+            for child_index, child in enumerate(item.get("children") or []):
+                if not isinstance(child, dict):
+                    continue
+                user = str(child.get("assignee") or "").strip()
+                if user:
+                    assignee_error(user, index=index, child_index=child_index,
+                                   unavailable=True)
+    # WorkArchitect and PeopleAdvisor run as a fan-out.  Their join may retain assignment
+    # metadata from the newer branch while taking a stale pre-normalization title/body from
+    # the other.  Re-seal immutable user anchors at the actual pending-payload boundary.
+    _preserve_required_user_anchors(state, draft.get("items") or [])
+    # People Advisor runs beside Work Architect. At this final join the assignee fields are
+    # authoritative, so pre-advisor prose such as "담당자는 미정" must not survive into the
+    # approval reply or staged payload rationale.
+    draft = _normalize_resolved_assignment_rationale(draft)
+    assignments = _align_assignments_to_draft(assignments, draft)
+    result = {"draft": draft, "assignments": assignments}
+    if assignment_errors:
+        review = dict(state.get("review") or {})
+        errors = [dict(row) for row in (review.get("errors") or [])
+                  if isinstance(row, dict)]
+        fingerprints = {
+            (row.get("index"), row.get("child_index"), row.get("field"), row.get("message"))
+            for row in errors
+        }
+        for error in assignment_errors:
+            fingerprint = (error.get("index"), error.get("child_index"),
+                           error.get("field"), error.get("message"))
+            if fingerprint not in fingerprints:
+                errors.append(error)
+                fingerprints.add(fingerprint)
+        review["ok"] = False
+        review["errors"] = errors
+        result["review"] = review
+    # Auditor ran beside PeopleAdvisor and therefore reviewed the pre-merge draft. Re-run the
+    # deterministic contract over the actual post-merge effect before routing can mint a token.
+    # Exact user assigned/unassigned values are immutable locks captured above; semantic advice
+    # has no authority to rewrite them.
+    merged_state = {**state, **result}
+    result["review"] = final_authority_review(
+        merged_state, locks=field_locks, require_effect=True,
+    )
+    return result
 
 
 def _align_assignments_to_draft(assignments: list, draft: dict) -> list:
     """ResultIntegrator가 과거 추천값이 아니라 최종 승인 payload의 담당과 근거를 보게 한다."""
     rows = [dict(a) for a in (assignments or []) if isinstance(a, dict)]
+    by_identity = {str(a.get("item_id") or ""): a for a in rows
+                   if str(a.get("item_id") or "")}
     by_index = {a.get("index"): a for a in rows if isinstance(a.get("index"), int)}
     for index, item in enumerate((draft or {}).get("items") or []):
-        row = by_index.get(index)
+        identity = str(item.get("item_id") or "")
+        row = by_identity.get(identity) if identity else None
+        row = row or by_index.get(index)
         if row is None:
             continue
+        row["index"] = index
+        if identity:
+            row["item_id"] = identity
         actual = str(item.get("assignee") or "")
         if actual != str(row.get("user") or ""):
             row["user"] = actual
@@ -289,10 +520,11 @@ def _align_assignments_to_draft(assignments: list, draft: dict) -> list:
                 continue
             actual_child = str(child.get("assignee") or "")
             child_row = child_rows.get(child_index)
-            if child_row is not None and actual_child \
+            if child_row is not None \
                     and actual_child != str(child_row.get("user") or ""):
                 child_row["user"] = actual_child
-                child_row["why"] = "사용자 지정 또는 승인 payload에 확정된 담당자"
+                child_row["why"] = ("사용자 지정 또는 승인 payload에 확정된 담당자"
+                                    if actual_child else "")
                 child_rows[child_index] = child_row
         if child_rows:
             row["children"] = [child_rows[k] for k in sorted(child_rows)]
@@ -327,6 +559,47 @@ def _propose(state: AgentState) -> dict:
     from app.agent import approval
     from app.agent.workflow.agents.work_architect import as_bulk_items
 
+    # This is the last mutable boundary before approval.stage(). Project stale containers
+    # through typed action authority, then independently validate the final effect. The
+    # fan-out join normally performed the same review, but stale checkpoints and direct
+    # callers must not be able to bypass it.
+    projected = project_final_authority_state(state)
+    typed_action = continuation_action(projected)
+    if typed_action in {"update", "comment"} and projected.get("change_plan"):
+        plan = dict(projected.get("change_plan") or {})
+        plan["why"] = project_pending_rationale(change_plan=plan)
+        plan["rationale_contract"] = PENDING_RATIONALE_CONTRACT
+        projected = {**projected, "change_plan": plan}
+    elif typed_action == "create":
+        draft = dict(projected.get("draft") or {})
+        if draft.get("rationale_contract") == PENDING_RATIONALE_CONTRACT:
+            draft["rationale"] = project_pending_rationale(draft=draft)
+            projected = {**projected, "draft": draft}
+    review = final_authority_review(
+        projected,
+        locks=capture_user_field_locks(projected.get("draft") or {}),
+        require_effect=True,
+    )
+    effect = final_effect(projected)
+    delta = ({
+        "draft": projected.get("draft") or {},
+        "change_plan": projected.get("change_plan") or {},
+        "review": review,
+    } if typed_action else {})
+
+    def emit(values: dict) -> dict:
+        return {**delta, **values}
+
+    # Empty strings clear any token retained from an earlier state. Change plans keep their
+    # established deterministic approval path; only CREATE requires Auditor review.ok=true.
+    if effect.kind == "none" and not typed_action and not current_work_failed(projected):
+        return {}
+    if (current_work_failed(projected) or effect.kind in {"none", "conflict"}
+            or review.get("ok") is not True):
+        return emit({"approval_token": "", "comment_token": ""})
+
+    state = projected
+
     tid = state.get("thread_id") or ""
 
     # modify 갈래 — 변경 승인. 토큰은 update_ticket 도구가 만들 payload 와 **같은 모양**이어야
@@ -336,7 +609,7 @@ def _propose(state: AgentState) -> dict:
     # field edits.  WorkArchitect already enforces this in normal runs, but approval staging
     # is the last boundary before a real write and must independently protect the payload.
     said = request_text(state)
-    comment_only = bool((plan.get("comment") or plan.get("comments"))
+    comment_only = typed_action == "comment" or bool((plan.get("comment") or plan.get("comments"))
                         and re.search(r"댓글|코멘트", said, re.I)
                         and re.search(r"댓글\s*(?:만|남겨|달아|작성)|코멘트\s*(?:만|남겨|달아|작성)",
                                       said, re.I)
@@ -345,30 +618,63 @@ def _propose(state: AgentState) -> dict:
                                           said, re.I))
     if comment_only and plan.get("changes"):
         plan = {**plan, "changes": {}}
-    if comment_only:
+    if comment_only and not typed_action:
+        # Legacy checkpoints had no typed authority and recovered an explicitly quoted body
+        # here. A typed turn already has a schema-validated Work payload; reparsing retained
+        # request prose could overwrite it with an older topic's comment.
         literal = re.search(r"['\"“‘]([^'\"”’]{2,1000})['\"”’]\s*(?:이라고|라는|라고)?\s*"
                             r"(?:댓글|코멘트)", said, re.I | re.S)
         if literal:
             plan = {**plan, "comment": literal.group(1).strip()}
+
+    def comment_effect() -> tuple[str, dict] | tuple[str, None]:
+        """Project the exact comment side of a reviewed compound change."""
+        keys = [str(key or "").strip() for key in (plan.get("keys") or [])
+                if str(key or "").strip()]
+        previews = [row for row in (plan.get("comments") or [])
+                    if isinstance(row, dict) and str(row.get("key") or "").strip()
+                    and str(row.get("body") or "").strip()]
+        body = str(plan.get("comment") or "").strip()
+        if keys and (previews or body):
+            rows = ([{"key": str(row["key"]).strip(), "body": str(row["body"]).strip()}
+                     for row in previews]
+                    or [{"key": key, "body": body} for key in keys])
+            return "add_ticket_comments", {"items": rows}
+        key = str(plan.get("key") or "").strip()
+        if key and body:
+            return "add_ticket_comment", {"key": key, "body": body}
+        return "", None
+
+    def stage_primary_effect(action: str, payload: dict) -> dict:
+        """Stage one primary mutation and bind its optional comment fingerprint."""
+        secondary_action, secondary_payload = comment_effect()
+        if secondary_action and secondary_payload:
+            primary, secondary = approval.stage_pair(
+                tid, action, payload, secondary_action, secondary_payload,
+            )
+            return {"approval_token": primary, "comment_token": secondary}
+        return {"approval_token": approval.stage(tid, action, payload)}
     # 상태 전이 — 지문은 transition_ticket 도구의 payload 와 같은 모양(comment 없을 때).
     if plan.get("key") and (plan.get("transition") or {}).get("id"):
         p = {"key": plan["key"], "transition": str(plan["transition"]["id"])}
         cmt = (plan.get("comment") or "").strip()
         if cmt:
             p["comment"] = cmt
-        return {"approval_token": approval.stage(tid, "transition_ticket", p)}
+        return emit({"approval_token": approval.stage(tid, "transition_ticket", p)})
     # 티켓 링크 — link_tickets 도구의 payload 와 같은 모양.
     if plan.get("key") and (plan.get("link") or {}).get("other"):
         lk = plan["link"]
-        return {"approval_token": approval.stage(
-            tid, "link_tickets",
-            {"key": plan["key"], "other": lk["other"], "relation": lk.get("relation") or "Relates"})}
+        return emit(stage_primary_effect(
+            "link_tickets",
+            {"key": plan["key"], "other": lk["other"],
+             "relation": lk.get("relation") or "Relates"},
+        ))
     # 조건 일괄 수정("마감 지난 것 전부 P1") — keys 복수면 update_tickets(bulk) 지문으로.
     if (plan.get("keys") or []) and plan.get("changes"):
         rows = [{"key": str(k).strip(), "changes": dict(plan["changes"])}
                 for k in plan["keys"] if str(k).strip()]
         if rows:
-            return {"approval_token": approval.stage(tid, "update_tickets", {"items": rows})}
+            return emit(stage_primary_effect("update_tickets", {"items": rows}))
     # ★ **코멘트만 남기는 일괄** — 필드 변경이 없어 위 갈래를 못 탄다. 그러면 승인 토큰이
     #   안 만들어져 **카드가 아예 안 뜨고**, 사용자는 무엇을 승인할지 볼 수 없다
     #   (실측 CMTB1: change_plan 은 섰는데 pending 이 비어 있었다).
@@ -381,23 +687,18 @@ def _propose(state: AgentState) -> dict:
                 or [{"key": str(k).strip(), "body": (plan.get("comment") or "").strip()}
                     for k in plan["keys"] if str(k).strip()])
         if rows:
-            return {"approval_token": approval.stage(tid, "add_ticket_comments",
+            return emit({"approval_token": approval.stage(tid, "add_ticket_comments",
                                                      {"items": rows}),
-                    "change_plan": plan}
+                    "change_plan": plan})
     if plan.get("key") and (plan.get("changes") or (plan.get("comment") or "").strip()):
         cmt = (plan.get("comment") or "").strip()
         if plan.get("changes"):
             payload = {"key": plan["key"], "changes": plan["changes"]}
-            out = {"approval_token": approval.stage(tid, "update_ticket", payload)}
-            if cmt:
-                # 코멘트도 카드에 보이므로 같은 승인에 묶인다 — 토큰은 내용별로 따로(1회용 지문).
-                out["comment_token"] = approval.stage(tid, "add_ticket_comment",
-                                                      {"key": plan["key"], "body": cmt})
-            return out
+            return emit(stage_primary_effect("update_ticket", payload))
         # 댓글만 — 그 토큰이 곧 승인 토큰이다(변경 필드가 없으니 update 토큰은 없다).
-        return {"approval_token": approval.stage(tid, "add_ticket_comment",
+        return emit({"approval_token": approval.stage(tid, "add_ticket_comment",
                                                  {"key": plan["key"], "body": cmt}),
-                "change_plan": plan}
+                "change_plan": plan})
 
     draft = state.get("draft") or {}
     # epic 모드 — 지문은 create_epic 도구의 payload 와 같은 모양(epic_payload 가 정의).
@@ -405,11 +706,18 @@ def _propose(state: AgentState) -> dict:
         from app.agent.workflow.agents.work_architect import epic_payload
         p = epic_payload(draft)
         if not p.get("summary"):
-            return {}
-        return {"approval_token": approval.stage(tid, "create_epic", p)}
+            return emit({})
+        # Creation is the Auditor-owned branch. A stale checkpoint or direct caller with
+        # no explicit passing verdict must never mint a live create token. Change plans are
+        # intentionally handled above under their separate deterministic contract.
+        if review.get("ok") is not True:
+            return emit({"approval_token": "", "comment_token": ""})
+        return emit({"approval_token": approval.stage(tid, "create_epic", p)})
     items = as_bulk_items(draft)
     if not items:
-        return {}
+        return emit({})
+    if review.get("ok") is not True:
+        return emit({"approval_token": "", "comment_token": ""})
     payload = {"mode": draft.get("mode") or "task", "items": items}
     # 트리 초안 — Sub-Task 는 부모 키가 있어야 만들어지므로 **부모 생성 뒤 연쇄**로 실행된다.
     # 승인 지문에는 자식까지 넣는다: 화면에 보인 것과 실행되는 것이 어긋나면 HITL 이 무의미하다.
@@ -417,7 +725,7 @@ def _propose(state: AgentState) -> dict:
     kids = child_items(draft)
     if kids:
         payload["children"] = kids
-    return {"approval_token": approval.stage(tid, "create_tickets", payload)}
+    return emit({"approval_token": approval.stage(tid, "create_tickets", payload)})
 
 
 def build(checkpointer=None):
@@ -432,6 +740,10 @@ def build(checkpointer=None):
     g.add_node(Node.KNOWLEDGE_CURATOR, _node(KnowledgeCurator()))
     g.add_node(Node.WORK_ARCHITECT, _node(WorkArchitect()))
     g.add_node(Node.PEOPLE_ADVISOR, _node(PeopleAdvisor()))
+    # Same canonical Roles, alternate scheduling only. These node ids are graph plumbing,
+    # not Role aliases: trace, prompt, manifest and model profile still use the canonical ids.
+    g.add_node("people_advisor_serial", _node(PeopleAdvisor()))
+    g.add_node("auditor_serial", _node(Auditor()))
     g.add_node("merge_assignments", _merge_assignments)
     g.add_node(Node.AUDITOR, _node(Auditor()))
     g.add_node("propose", _propose)
@@ -448,6 +760,7 @@ def build(checkpointer=None):
     g.add_edge(Node.QUERY_SPECIALIST, Node.QUERY_RUNNER)
     g.add_conditional_edges(Node.QUERY_RUNNER, route_after_query_runner,
                             {"investigate": Node.RESEARCH_ANALYST,
+                             "refine": Node.WORK_ARCHITECT,
                              "respond": Node.RESULT_INTEGRATOR})
     g.add_edge(Node.PORTFOLIO_ANALYST, Node.RESULT_INTEGRATOR)
     g.add_conditional_edges(Node.RESEARCH_ANALYST, route_after_research_analyst,
@@ -458,9 +771,12 @@ def build(checkpointer=None):
     #   둘 다 끝나야 merge_assignments(join)가 실행되고, 거기서 통과/재작성을 가른다.
     g.add_conditional_edges(Node.WORK_ARCHITECT, route_after_work_architect,
                             {"assign": Node.PEOPLE_ADVISOR, "review": Node.AUDITOR,
+                             "sequential": "people_advisor_serial",
                              "respond": Node.RESULT_INTEGRATOR, "propose": "propose"})
     g.add_edge(Node.PEOPLE_ADVISOR, "merge_assignments")
     g.add_edge(Node.AUDITOR, "merge_assignments")
+    g.add_edge("people_advisor_serial", "auditor_serial")
+    g.add_edge("auditor_serial", "merge_assignments")
     g.add_conditional_edges("merge_assignments", route_after_auditor,
                             {"revise": Node.WORK_ARCHITECT, "propose": "propose",
                              "respond": Node.RESULT_INTEGRATOR})

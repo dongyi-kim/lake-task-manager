@@ -1,9 +1,9 @@
 # LTM Agent 평가 표준
 
 > Source of truth: [`evaluation_protocol.json`](evaluation_protocol.json)  
-> 현재 protocol: `2.0.0` / human rubric: `2.0.0`
+> 현재 protocol: `3.0.0` / human rubric: `2.0.0`
 
-이 문서는 prompt, Role, Tool, workflow 후보의 품질·시간·token을 같은 자로 비교하기 위한 실행 규약. 과거 보고서의 점수는 해당 보고서가 선언한 규약으로만 해석하며, 버전이 없거나 `comparabilityKey`가 다른 점수를 한 시계열처럼 비교하지 않음
+이 문서는 prompt, Role, Tool, workflow 후보의 품질·시간·token을 같은 자로 비교하기 위한 실행 규약. 과거 보고서의 점수는 해당 보고서가 선언한 규약으로만 해석한다. 후보 간 비교는 동일한 `benchmarkKey`에서만 수행하며, `candidateKey`는 model/provider/backend/prompt/tree가 다른 후보를 구분한다. `comparabilityKey`는 동일 benchmark와 동일 candidate의 반복 실행을 식별한다.
 
 ## 1. 버전 식별자
 
@@ -19,6 +19,11 @@
 `specializedReviewSpecSha256`, mock/config에서 계산한 `dataManifestSha256`도 기록. 버전을 올리지 않고 내용을
 바꾸면 hash가 달라져 비교 불가로 탐지
 
+- `benchmarkKey`: protocol/rubric, battery/review manifest, case 집합, data, 반복·retry·cache·격리 정책
+- `candidateKey`: model/simple model, provider+endpoint identity, structured-output backend+version/fallback policy,
+  prompt version, commit/dirty/tree digest, resolved Python package-set digest
+- `comparabilityKey`: 위 두 키의 결합. 동일 후보 반복 실행 진단용이며 교차 모델 pairing 기준이 아님
+
 ## 2. 실행 종류와 결과 선택
 
 ### `exploratory`
@@ -29,7 +34,7 @@
 
 ### `qualification`
 
-- 같은 `protocolVersion`, `rubricVersion`, suite별 `batteryVersion`과 manifest, mock data, model routing, 후보 commit을 사용
+- 같은 `benchmarkKey`를 사용하고, 각 후보의 `candidateKey`를 고정
 - 후보별 최소 5회
 - 후보 순서를 무작위화하고 전체 횟수에서 각 후보의 선행 횟수가 균형을 이루도록 배치
 - full battery와 clean commit 필수
@@ -46,17 +51,25 @@
 
 ## 3. 고정 실행 조건
 
-후보 비교 시 아래 값이 모두 같아야 함
+후보 비교 시 아래 benchmark 조건이 모두 같아야 함
 
-- main/complex model과 simple model
-- provider, 역할별 model routing, temperature 등 runtime 설정
 - mock Jira·Confluence·comment·people data와 search config
 - battery case·checker와 실행할 case 집합
 - retry policy, concurrency, cache 초기화 정책
 - suite별 별도 process, case별 world·cache·session 초기화와 world mutation 검사 정책
 - protocol/rubric 및 사람 평가 양식
 
-현재 production 비교 profile의 기본 routing은 main/complex=`gpt-4o`, simple=`gpt-4o-mini`. 다른 모델로 실행할 수 있으나 동일 run group의 모든 후보에 똑같이 적용하고 별도 profile로 기록
+main/complex model, simple model, provider, structured-output backend, prompt와 runtime tree는
+`candidateKey`에 기록한다. 코드·prompt만 비교하는 same-model A/B에서는 model routing을 동일하게
+유지한다. 이전 OpenAI 후보와 local 후보처럼 model 자체를 비교하는 cross-model qualification에서는
+이 값들이 후보 차원이며, 각 후보 안에서는 고정하고 실행 순서를 counterbalance한다. 서로 다른 후보를
+같은 run group 파일에 덮어쓰지 않고 paired run group과 candidate order를 명시한다.
+Qualification 실행은 URL이나 자격증명을 raw에 기록하지 않는다. launcher가 preflight에 사용한
+실제 complex/simple provider·model·base URL·API version·profile을 비밀 없는 digest로 계산해 child에
+전달하고, raw metadata에는 `providerEndpointIdentitySha256`만 기록한다. 운영자 자기신고 라벨은
+candidate identity로 사용하지 않는다.
+실 배터리 launcher는 `structuredBackendFallbackPolicy=forbid`를 강제한다. Instructor 초기화가
+wire call 전에 실패해도 legacy로 조용히 전환하지 않고 해당 attempt를 infrastructure failure로 남긴다.
 
 ### 실행 격리
 
@@ -337,7 +350,7 @@ marker 이동·ticket detail·문서/web link를 직접 확인. 캡처 원본은
 보고서 또는 PR Description에 다음 section을 모두 포함
 
 1. `측정 식별자`: protocol/rubric/battery version과 manifest, candidate commit/prompt version
-2. `비교 가능성 및 evidence 선택`: `comparabilityKey`, primary/closure 구분, 비교 가능 여부
+2. `비교 가능성 및 evidence 선택`: `benchmarkKey`, `candidateKey`, `comparabilityKey`, primary/closure 구분, 비교 가능 여부
 3. `실행 조건`: model routing, provider, mock data hash, 반복 수, 후보 순서, retry/cache 정책
 4. `배터리 범위`: suite별 전체/실행/누락 case
 5. `정량 결과`: 시간 p50/p95, token, calls, cost, 기술 실패·retry
@@ -362,7 +375,7 @@ Codex/Claude 직접 평가가 끝나면 `research/agent-improvement/evaluations/
 
 - candidate commit, `promptVersion`, `protocolVersion`, `rubricVersion`
 - suite별 `batteryVersion`, `batteryManifestSha256`, `specializedReviewSpecSha256`,
-  `dataManifestSha256`, `comparabilityKey`
+  `dataManifestSha256`, `benchmarkKey`, `candidateKey`, `comparabilityKey`
 - model/simpleModel/provider/runtime profile, run kind, repeat index와 실행 case
 - battery·case·축별 점수, 공통 checklist와 특수 검토 판정, 실제 출력의 짧은 발췌와 Codex/Claude의 간략 평가
 - raw cache 상대 경로, 기술 실패·retry, reviewer identity와 blinding 제한

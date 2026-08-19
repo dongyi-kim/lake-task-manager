@@ -1,4 +1,5 @@
 # tools/agent_context_change_eval.py — 대화 중 요청 컨텍스트 전환 배터리.
+# 실행: python -X utf8 tools/agent_eval_launcher.py context [모델] [케이스ID ...] [--out 결과.json]
 from __future__ import annotations
 
 import json
@@ -9,6 +10,10 @@ from typing import Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tools.agent_eval_review_specs import review_specs
+from tools.agent_eval_request_fields import (
+    REQUEST_FIELD_DEPENDENCIES,
+    intermediate_request_field_flaws,
+)
 from tools.agent_scenario_eval import parse_scenario_args, run_scenario_suite
 
 try:
@@ -17,7 +22,10 @@ except ImportError:
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
 
-BATTERY_VERSION = "2.0.1"
+# v2.2.0 verifies every intermediate turn's literal target/field/value transport;
+# the final replacement remains an independent latest-request contract.
+# v3.0.0 inherits the common hidden-draft/user-visible approval boundary.
+BATTERY_VERSION = "3.0.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("ctx-chg")
 
 
@@ -92,44 +100,71 @@ def _ctx_return_ok(output: dict[str, Any], outputs: list[dict[str, Any]]) -> boo
     )
 
 
+_intermediate_request_field_flaws = intermediate_request_field_flaws
+
+
+def _context_case_checker(final_checker, inputs):
+    """Bind shared all-intermediate exact-field checks to a final-state checker."""
+    def checked(output: dict[str, Any], outputs: list[dict[str, Any]]) -> bool:
+        return (
+            not _intermediate_request_field_flaws(inputs, outputs)
+            and bool(final_checker(output, outputs))
+        )
+
+    return checked
+
+
+CONTEXT_CHECKER_DEPENDENCIES = (
+    *REQUEST_FIELD_DEPENDENCIES,
+    _pending, _text, _ctx_unrelated_ok, _ctx_shared_info_ok, _ctx_flip_flop_ok,
+    _ctx_return_ok, _intermediate_request_field_flaws, _context_case_checker,
+)
+
+
+_CTX1_INPUTS = [
+    "fdc.fdc_trace_summary_ic 데이터 히스토리와 현재 상태를 조사해줘.",
+    "이건 그만. 완전히 다른 요청이야. DL-9203의 priority만 P4-Trivial로 바꾸는 승인 전 초안을 만들어줘. 다른 필드는 건드리지 마.",
+]
+_CTX2_INPUTS = [
+    "참고로 2026-08-24에 fdc 30분 배치 점검이 예정돼 있어. 지금은 답하지 말고 이 정보만 기억해줘.",
+    "DL-9090과 하위 Task의 현재 진행상황과 남은 작업만 알려줘.",
+]
+_CTX3_INPUTS = [
+    "DL-9203의 priority를 P1-Critical로, due를 2026-08-31로 바꾸는 초안을 만들어줘.",
+    "방금 필드 변경은 취소. 대신 같은 티켓에 '회의 결정사항을 공유합니다' 댓글만 다는 초안으로 바꿔줘.",
+    "그 댓글도 취소. 최종 요청은 제목만 '[Catalog] Puffin NDV 결과 템플릿 정리'로 변경하는 거야. 다른 변경 없이 승인 전 초안만 보여줘.",
+]
+_CTX4_INPUTS = [
+    "DL-9090과 하위 Task의 진행상황을 확인해줘.",
+    "잠깐 다른 얘기. @이다은이 지금 맡은 업무를 요약해줘.",
+    "다시 DL-9090으로 돌아갈게. 아직 남은 하위 Task 하나에만 '2홉 100노드 성능 측정 결과와 원본 로그를 첨부해 주세요'라는 댓글 승인 초안을 만들어줘. 필드는 바꾸지 마.",
+]
+
+
 CASES = [
     (
         "CTX1",
         "완전히 다른 요청으로 전환되면 이전 조사 맥락을 폐기하고 최신 변경만 초안화",
-        [
-            "fdc.fdc_trace_summary_ic 데이터 히스토리와 현재 상태를 조사해줘.",
-            "이건 그만. 완전히 다른 요청이야. DL-9203의 priority만 P4-Trivial로 바꾸는 승인 전 초안을 만들어줘. 다른 필드는 건드리지 마.",
-        ],
-        _ctx_unrelated_ok,
+        _CTX1_INPUTS,
+        _context_case_checker(_ctx_unrelated_ok, _CTX1_INPUTS),
     ),
     (
         "CTX2",
         "사용자가 정보를 공유한 뒤 다른 조회를 요청하면 공유 정보와 조회 대상을 섞지 않음",
-        [
-            "참고로 2026-08-24에 fdc 30분 배치 점검이 예정돼 있어. 지금은 답하지 말고 이 정보만 기억해줘.",
-            "DL-9090과 하위 Task의 현재 진행상황과 남은 작업만 알려줘.",
-        ],
-        _ctx_shared_info_ok,
+        _CTX2_INPUTS,
+        _context_case_checker(_ctx_shared_info_ok, _CTX2_INPUTS),
     ),
     (
         "CTX3",
         "요청이 여러 번 뒤집혀도 취소된 write 의도를 버리고 마지막 필드만 초안화",
-        [
-            "DL-9203의 priority를 P1-Critical로, due를 2026-08-31로 바꾸는 초안을 만들어줘.",
-            "방금 필드 변경은 취소. 대신 같은 티켓에 '회의 결정사항을 공유합니다' 댓글만 다는 초안으로 바꿔줘.",
-            "그 댓글도 취소. 최종 요청은 제목만 '[Catalog] Puffin NDV 결과 템플릿 정리'로 변경하는 거야. 다른 변경 없이 승인 전 초안만 보여줘.",
-        ],
-        _ctx_flip_flop_ok,
+        _CTX3_INPUTS,
+        _context_case_checker(_ctx_flip_flop_ok, _CTX3_INPUTS),
     ),
     (
         "CTX4",
         "잠깐 다른 주제를 거친 뒤 이전 대상에 돌아와도 현재 요청에 필요한 정보만 복원",
-        [
-            "DL-9090과 하위 Task의 진행상황을 확인해줘.",
-            "잠깐 다른 얘기. @이다은이 지금 맡은 업무를 요약해줘.",
-            "다시 DL-9090으로 돌아갈게. 아직 남은 하위 Task 하나에만 '2홉 100노드 성능 측정 결과와 원본 로그를 첨부해 주세요'라는 댓글 승인 초안을 만들어줘. 필드는 바꾸지 마.",
-        ],
-        _ctx_return_ok,
+        _CTX4_INPUTS,
+        _context_case_checker(_ctx_return_ok, _CTX4_INPUTS),
     ),
 ]
 
@@ -145,6 +180,7 @@ if __name__ == "__main__":
         prompt_version=PROMPT_VERSION,
         suite_review_elements=SUITE_REVIEW_ELEMENTS,
         case_review_specs=CASE_REVIEW_SPECS,
+        checker_dependencies=CONTEXT_CHECKER_DEPENDENCIES,
         selected=selected,
         requested_out=requested_out,
     )

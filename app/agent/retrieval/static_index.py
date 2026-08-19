@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.agent import config as _cfg
@@ -46,7 +47,8 @@ def _sources() -> list[Path]:
 def signature() -> str:
     """문서 내용 + **임베딩 모델 정체성**. 둘 중 하나만 바뀌어도 색인은 무효다."""
     h = hashlib.sha256()
-    h.update(f"{_cfg.provider()}|{_cfg.embed_model()}|".encode())
+    h.update(json.dumps(_cfg.embedding_identity(chunking_version="markdown-v1"),
+                        sort_keys=True).encode())
     for p in _sources():
         h.update(p.name.encode())
         h.update(p.read_bytes())
@@ -89,8 +91,9 @@ def build(force: bool = False):
         shutil.rmtree(d, ignore_errors=True)    # 낡은 벡터가 섞이지 않게 통째로 갈아엎는다
     d.mkdir(parents=True, exist_ok=True)
     store.save_local(str(d))
-    meta.write_text(json.dumps({"sig": sig, "chunks": len(chunks),
-                                "provider": _cfg.provider(), "embedModel": _cfg.embed_model()},
+    identity = _cfg.embedding_identity(chunking_version="markdown-v1")
+    meta.write_text(json.dumps({"sig": sig, "chunks": len(chunks), **identity,
+                                "created_at": datetime.now(timezone.utc).isoformat()},
                                ensure_ascii=False, indent=2), encoding="utf-8")
     _cached.update(sig=sig, store=store)
     return store
@@ -116,7 +119,9 @@ def stats() -> dict:
         m = {}
     return {"documents": [p.name for p in _sources()],
             "indexed": m.get("chunks"), "fresh": m.get("sig") == signature(),
-            "provider": m.get("provider"), "embedModel": m.get("embedModel")}
+            "provider": m.get("provider"), "embedModel": m.get("embedding_model"),
+            "modelRevision": m.get("model_revision"), "dimension": m.get("dimension"),
+            "normalization": m.get("normalization")}
 
 
 if __name__ == "__main__":          # 첫 질의를 빠르게 하고 싶을 때 미리 굽는다

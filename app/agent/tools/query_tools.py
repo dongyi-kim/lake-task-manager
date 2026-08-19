@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 
 from langchain_core.tools import tool
 
+from app.agent.pagination import PaginationAccumulator
 from app.agent.tools._ctx import (client, compact, jira_scope, search_projects,
                                   search_spaces, settings, trim)
 
@@ -29,6 +30,11 @@ _ORDER_RE = re.compile(
     r'(?:\s*,\s*(?:"[^"]+"|[A-Za-z][A-Za-z0-9_.-]*)(?:\s+(?:ASC|DESC))?)*\s*$',
     re.I,
 )
+
+# Comment evidence is intentionally bounded independently from Jira's 20-row UI cache.
+# A result beyond this ceiling is reported incomplete; silently truncating would let an
+# ``all`` QuerySpec claim semantic coverage it does not possess.
+COMMENT_SEARCH_RESULT_CAP = 200
 
 
 def set_thread(thread_id: str) -> None:
@@ -198,27 +204,30 @@ def run_jql_v2(where: str = "", order_by: str = "updated DESC", fields: list = N
 def execute_jql_all(where: str = "", order_by: str = "updated DESC",
                     fields: list | None = None, page_size: int = 100) -> dict:
     """모델 context 밖에서 모든 페이지를 순회해 안정적인 target snapshot을 만든다."""
-    cursor, rows, seen, pages = "", [], set(), 0
+    pager = PaginationAccumulator(max_pages=200)
     first = None
     while True:
-        page = _jql_page(where, order_by, fields, page_size, cursor, source="jira-all")
+        page = _jql_page(where, order_by, fields, page_size, pager.cursor, source="jira-all")
         first = first or page
-        pages += 1
-        for row in page.get("tickets") or []:
-            key = row.get("key")
-            if key and key not in seen:
-                seen.add(key)
-                rows.append(row)
-        nxt = page.get("nextCursor")
-        if not page.get("hasMore") or not nxt or nxt == cursor:
+        if not pager.add_page(page.get("tickets") or []):
             break
-        cursor = nxt
-    return {
+        if page.get("error"):
+            pager.incomplete_reason = "provider_error"
+            break
+        if not pager.advance(
+            has_more=bool(page.get("hasMore")),
+            next_cursor=page.get("nextCursor"),
+            total=(first or {}).get("total"),
+        ):
+            break
+    result = {
         "canonicalJql": (first or {}).get("canonicalJql"),
         "scopeProjects": search_projects(), "total": (first or {}).get("total"),
-        "returned": len(rows), "pages": pages, "tickets": rows,
+        "tickets": pager.rows,
         "snapshotAt": datetime.now(timezone.utc).isoformat(),
     }
+    result.update(pager.metadata())
+    return result
 
 
 def _cql_escape(value: str) -> str:
@@ -295,10 +304,9 @@ def search_documents(query: str = "", where: str = "", content_type: str = "page
                 "scopeSpaces": spaces, "documents": [], "hasMore": False}
 
 
-@tool
-def search_comments(query: str = "", jql_where: str = "", author: str = "",
-                    date_from: str = "", date_to: str = "", page_size: int = 20,
-                    cursor: str = "") -> dict:
+def _search_comments_page(query: str = "", jql_where: str = "", author: str = "",
+                          date_from: str = "", date_to: str = "", page_size: int = 20,
+                          cursor: str = "", *, prove_complete: bool = False) -> dict:
     """Search comments by text, author, date range, and additional JQL within configured Jira projects.
 
     The read-only tool paginates candidate tickets and inspects comment bodies. Each hit preserves ticket key and
@@ -318,10 +326,22 @@ def search_comments(query: str = "", jql_where: str = "", author: str = "",
     try:
         page = _jql_page(where, "updated DESC", ["summary"], min(page_size, 25), cursor, source)
         hits = []
+        snapshots = []
+        omitted_hits = 0
         needle = str(query or "").casefold()
         for ticket in page.get("tickets") or []:
             key = ticket.get("key")
-            for comment in client().issue_comments(key, 100) or []:
+            if prove_complete:
+                snapshot = client().comment_snapshot(key)
+                if not isinstance(snapshot, dict):
+                    snapshot = {"key": key, "complete": False, "comments": [],
+                                "incompleteReason": "invalid_snapshot", "remaining": None}
+                snapshots.append(snapshot)
+                comments = snapshot.get("comments") or []
+            else:
+                snapshot = None
+                comments = client().issue_comments(key, 100) or []
+            for comment in comments:
                 who = str(comment.get("authorId") or comment.get("author") or "")
                 when = str(comment.get("date") or comment.get("created") or "")
                 body = re.sub(r"<[^>]+>", " ", str(comment.get("html") or comment.get("body") or ""))
@@ -333,15 +353,106 @@ def search_comments(query: str = "", jql_where: str = "", author: str = "",
                     continue
                 if needle and needle not in body.casefold():
                     continue
-                hits.append({"ticketKey": key, "ticketSummary": ticket.get("summary"),
-                             "author": who, "date": when, "snippet": trim(body, 500)})
+                normalized_body = " ".join(body.split())
+                body_truncated = len(normalized_body) > 500
+                if not prove_complete or len(hits) < COMMENT_SEARCH_RESULT_CAP:
+                    hit = {"id": str(comment.get("id") or ""),
+                           "ticketKey": key, "ticketSummary": ticket.get("summary"),
+                           "author": who, "date": when,
+                           "snippet": trim(normalized_body, 500)}
+                    if body_truncated:
+                        hit["bodyTruncated"] = True
+                    hits.append(hit)
+                    if prove_complete and body_truncated and snapshot is not None:
+                        # Cardinality completeness is not content completeness.  Research
+                        # sees only this bounded row, so a clipped body cannot authorize an
+                        # ``all comments`` acquisition shortcut.
+                        snapshot["bodyTruncated"] = True
+                else:
+                    # Continue validating provider coverage, but never grow the artifact.
+                    if snapshot is not None:
+                        snapshot["resultTruncated"] = True
+                    omitted_hits += 1
+        if not prove_complete:
+            return {"canonicalJql": page.get("canonicalJql"),
+                    "scopeProjects": page.get("scopeProjects"),
+                    "candidateTickets": page.get("returned"),
+                    "returned": len(hits), "hasMore": page.get("hasMore"),
+                    "nextCursor": page.get("nextCursor"), "comments": hits}
+        candidate_total = page.get("total")
+        candidate_returned = page.get("returned")
+        candidate_keys = [str(row.get("key") or "").strip().upper()
+                          for row in (page.get("tickets") or []) if isinstance(row, dict)]
+        candidate_complete = (
+            type(candidate_total) is int and candidate_total >= 0
+            and type(candidate_returned) is int and candidate_returned >= 0
+            and not bool(page.get("hasMore"))
+            and candidate_returned == candidate_total
+            and candidate_returned == len(candidate_keys)
+            and len(candidate_keys) == len(set(candidate_keys))
+            and all(re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key)
+                    for key in candidate_keys)
+        )
+        incomplete = sorted({str(row.get("key") or key) for row in snapshots
+                             if (not row.get("complete") or row.get("resultTruncated")
+                                 or row.get("bodyTruncated"))})
+        remaining_values = [row.get("remaining") for row in snapshots]
+        remaining = (sum(value for value in remaining_values if type(value) is int)
+                     if all(type(value) is int for value in remaining_values) else None)
+        comments_complete = not incomplete and len(snapshots) == int(candidate_returned or 0)
+        comment_coverage = {
+            "tickets": len(snapshots),
+            "comments": sum(int(row.get("returned") or 0) for row in snapshots),
+            "complete": comments_complete,
+            "incompleteTickets": incomplete,
+            "remaining": remaining,
+            "resultTruncated": bool(omitted_hits),
+            "resultRemaining": omitted_hits,
+        }
+        candidate_coverage = {
+            "returned": candidate_returned,
+            "total": candidate_total,
+            "hasMore": bool(page.get("hasMore")),
+            "complete": candidate_complete,
+            "keys": candidate_keys,
+        }
         return {"canonicalJql": page.get("canonicalJql"),
-                "scopeProjects": page.get("scopeProjects"), "candidateTickets": page.get("returned"),
-                "returned": len(hits), "hasMore": page.get("hasMore"),
-                "nextCursor": page.get("nextCursor"), "comments": hits}
+                "scopeProjects": page.get("scopeProjects"),
+                "candidateTickets": candidate_returned, "candidateCoverage": candidate_coverage,
+                "commentCoverage": comment_coverage,
+                "complete": candidate_complete and comments_complete,
+                "returned": len(hits),
+                "hasMore": page.get("hasMore"), "nextCursor": page.get("nextCursor"),
+                "comments": hits}
     except Exception as exc:
         return {"error": str(exc)[:300], "scopeProjects": search_projects(),
                 "comments": [], "hasMore": False}
+
+
+@tool
+def search_comments(query: str = "", jql_where: str = "", author: str = "",
+                    date_from: str = "", date_to: str = "", page_size: int = 20,
+                    cursor: str = "") -> dict:
+    """Search a bounded cached page of Jira comments within configured projects.
+
+    This public/ReAct tool intentionally preserves the low-cost UI-cache behavior.  A
+    server-owned QueryRunner ``completeness=all`` contract uses the private paginated helper
+    below instead; models cannot opt themselves into that expensive authority path.
+    """
+    return _search_comments_page(
+        query=query, jql_where=jql_where, author=author,
+        date_from=date_from, date_to=date_to, page_size=page_size, cursor=cursor,
+        prove_complete=False,
+    )
+
+
+def search_comments_complete_page(args: dict) -> dict:
+    """Server-only one-page adapter with independently proven comment-body coverage."""
+    values = dict(args or {})
+    allowed = {key: values.get(key) for key in (
+        "query", "jql_where", "author", "date_from", "date_to", "page_size", "cursor"
+    ) if key in values}
+    return _search_comments_page(**allowed, prove_complete=True)
 
 
 @tool

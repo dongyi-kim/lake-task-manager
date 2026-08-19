@@ -1,0 +1,357 @@
+version: 1
+
+# Role은 아래 semantic task profile 이름만 요청한다. 실제 API parameter는 model profile이
+# provider capability에 맞게 번역하며 Role 코드에는 model 이름이나 숫자 parameter를 두지 않는다.
+task_profiles:
+  fast_structured:
+    reasoning: "off"
+  balanced:
+    reasoning: "off"
+  reasoning:
+    reasoning: "on"
+
+# Output size is semantic at the Task Profile boundary but numeric at the Model Profile
+# boundary. A cloud endpoint and a single-device local server do not need the same ceiling;
+# keeping the number in each model profile avoids Role-level model branches.
+
+provider_defaults:
+  openai: {}
+  aoai: {}
+  openai_compat: {}
+
+model_profiles:
+  qwen3.5-4b:
+    match:
+      # Match the immediate parameter-count segment, not a later quantizer such as
+      # ``Qwen3.5-9B-...-4bit``. Only the measured 4B model is a typed projector.
+      - '(?i)(?:^|[/_-])(?:ltm[-_])?qwen3[._-]?5[-_/]4b(?:$|[._/-])'
+    capabilities:
+      # Evaluated only as a literal typed projector. Semantic classification/planning
+      # falls back to the complex endpoint until a lightweight lane earns qualification.
+      execution_layers: [projection]
+      reasoning: true
+      reasoning_control: qwen_thinking
+      temperature: true
+      top_p: true
+      top_k: true
+      min_p: true
+      presence_penalty: true
+      repetition_penalty: true
+      streaming: true
+      tools: false
+      tool_choice: false
+      json_object: false
+      json_schema: false
+      reasoning_separation: false
+      parallel_role_calls: false
+    defaults:
+      min_p: 0.0
+      repetition_penalty: 1.0
+    profiles:
+      fast_structured:
+        temperature: 0.1
+        top_p: 0.8
+        top_k: 20
+        presence_penalty: 0.0
+        max_tokens: 1024
+      balanced:
+        temperature: 0.7
+        top_p: 0.8
+        top_k: 20
+        presence_penalty: 1.0
+        max_tokens: 2048
+      reasoning:
+        temperature: 1.0
+        top_p: 0.95
+        top_k: 20
+        presence_penalty: 1.0
+        max_tokens: 4096
+    contracts:
+      structured:
+        fast_structured:
+          # Strict transport JSON is deterministic; zero sampling removed content
+          # variance without changing the schema/tool gate pass rate.
+          temperature: 0.0
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          # QueryPlan JSON reached the 2K finish=length boundary on a three-deliverable
+          # create request. 3K closes the schema without invoking the repair call.
+          max_tokens: 3072
+        balanced:
+          temperature: 0.0
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 3072
+        reasoning:
+          # Measured create drafts normally close below 3K output tokens.  A 4K ceiling
+          # prolonged malformed/empty Work payload retries without adding usable fields.
+          temperature: 0.0
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 3072
+      # This contract is used only after a complex semantic model has produced a memo.
+      # It must project that memo literally, with deterministic sampling and enough room
+      # for WorkDraft's nested item schema.
+      typed_projection:
+        fast_structured:
+          temperature: 0.0
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 3072
+        balanced:
+          temperature: 0.0
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 3072
+        reasoning:
+          temperature: 0.0
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 3072
+
+  qwen3.6-35b-a3b:
+    match:
+      - '(?i)qwen3[._-]?6.*35b.*a3b'
+      - '(?i)ltm-qwen3[._-]?6-35b-a3b'
+    capabilities:
+      execution_layers: [projection, lightweight_semantic, deep_semantic]
+      reasoning: true
+      reasoning_control: qwen_thinking
+      temperature: true
+      top_p: true
+      top_k: true
+      min_p: true
+      presence_penalty: true
+      repetition_penalty: true
+      streaming: true
+      tools: false
+      tool_choice: false
+      json_object: false
+      json_schema: false
+      reasoning_separation: false
+      # mlx-lm's basic OpenAI server cannot constrain JSON for the large model. The
+      # separately configured simple model is selected only when its own profile carries
+      # the `projection` execution-layer qualification; semantic synthesis stays here.
+      # A single MLX process shares one Metal generation queue. Parallel Role requests
+      # interleave long prefill/generation and made a two-Role review step take over ten
+      # minutes in the local full battery. Keep independent tool I/O parallel, but schedule
+      # model-backed Role review sequentially for this serving profile.
+      parallel_role_calls: false
+    defaults:
+      min_p: 0.0
+      repetition_penalty: 1.0
+    profiles:
+      fast_structured:
+        # LTM's strict tool-schema fixture: 0.0-0.2 all reached 100% exact JSON and tool
+        # selection, while the general-generation 0.7 setting regressed selection to 83.3%.
+        temperature: 0.1
+        top_p: 0.8
+        top_k: 20
+        presence_penalty: 0.0
+        max_tokens: 1024
+      balanced:
+        temperature: 0.7
+        top_p: 0.8
+        top_k: 20
+        presence_penalty: 1.5
+        max_tokens: 3072
+      reasoning:
+        temperature: 1.0
+        top_p: 0.95
+        top_k: 20
+        presence_penalty: 1.5
+        max_tokens: 8192
+    # Structured payload generation is a transport contract, not free-form prose.
+    # Keep thinking disabled and give large schemas enough room to close their JSON
+    # object; the transport stop marker ends successful generations early.
+    contracts:
+      # The complex model sees the original Role prompt and evidence exactly once and
+      # emits this bounded, final-only memo. Numeric sampling/output limits live here,
+      # never in Role code.
+      semantic_memo:
+        fast_structured:
+          temperature: 0.1
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 1024
+        balanced:
+          temperature: 0.2
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 1536
+        reasoning:
+          temperature: 0.2
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 2048
+      structured:
+        fast_structured:
+          temperature: 0.0
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 3072
+        balanced:
+          temperature: 0.0
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 4096
+        reasoning:
+          temperature: 0.0
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 4096
+      # The quality-first local topology can route both semantic and projection layers to
+      # this same 35B endpoint. WorkDraft's nested item/child JSON exceeded the generic
+      # 1,024-token fast profile in STARR1, so the literal projection transport needs its
+      # own bounded budget. The terminal marker still stops a normally closed object early.
+      typed_projection:
+        fast_structured:
+          temperature: 0.0
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 3072
+        balanced:
+          temperature: 0.0
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 3072
+        reasoning:
+          temperature: 0.0
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 3072
+
+  # Keep this exact profile before the generic GPT-4o row: model-profile capability,
+  # not a Role/model-name branch, preserves the cloud GPT-4o + GPT-4o-mini mixed lane.
+  openai-gpt4o-mini:
+    match:
+      - '(?i)(^|[/_-])gpt-4o-mini($|[._-])'
+    capabilities:
+      execution_layers: [projection, lightweight_semantic]
+      reasoning: false
+      reasoning_control: none
+      temperature: true
+      top_p: true
+      top_k: false
+      min_p: false
+      presence_penalty: true
+      repetition_penalty: false
+      streaming: true
+      tools: true
+      tool_choice: true
+      json_object: true
+      json_schema: true
+    profiles:
+      fast_structured:
+        temperature: 0.0
+        max_tokens: 2048
+      balanced:
+        temperature: 0.2
+        max_tokens: 4096
+      reasoning:
+        temperature: 0.2
+        max_tokens: 16384
+
+  openai-gpt4o:
+    match:
+      - '(?i)(^|[/_-])gpt-4o($|[._-])'
+    capabilities:
+      execution_layers: [projection, lightweight_semantic, deep_semantic]
+      reasoning: false
+      reasoning_control: none
+      temperature: true
+      top_p: true
+      top_k: false
+      min_p: false
+      presence_penalty: true
+      repetition_penalty: false
+      streaming: true
+      tools: true
+      tool_choice: true
+      json_object: true
+      json_schema: true
+    profiles:
+      fast_structured:
+        temperature: 0.0
+        max_tokens: 2048
+      balanced:
+        temperature: 0.2
+        max_tokens: 4096
+      reasoning:
+        temperature: 0.2
+        max_tokens: 16384
+
+  openai-reasoning:
+    match:
+      - '(?i)(^|[/_-])(gpt-5|o[134])($|[._-])'
+    capabilities:
+      execution_layers: [projection, lightweight_semantic, deep_semantic]
+      reasoning: true
+      reasoning_control: openai_effort
+      temperature: false
+      top_p: false
+      top_k: false
+      min_p: false
+      presence_penalty: false
+      repetition_penalty: false
+      streaming: true
+      tools: true
+      tool_choice: true
+      json_object: true
+      json_schema: true
+    profiles:
+      fast_structured:
+        reasoning_effort: minimal
+        max_tokens: 2048
+      balanced:
+        reasoning_effort: low
+        max_tokens: 4096
+      reasoning:
+        reasoning_effort: medium
+        max_tokens: 16384
+
+  default-chat:
+    match:
+      - '.*'
+    capabilities:
+      # Unknown models must not silently inherit a semantic fast lane. They remain on
+      # the configured complex endpoint until a measured profile explicitly qualifies.
+      execution_layers: [deep_semantic]
+      reasoning: false
+      reasoning_control: none
+      temperature: true
+      top_p: true
+      top_k: false
+      min_p: false
+      presence_penalty: true
+      repetition_penalty: false
+      streaming: true
+      tools: probe
+      tool_choice: probe
+      json_object: probe
+      json_schema: probe
+    profiles:
+      fast_structured:
+        temperature: 0.0
+        max_tokens: 2048
+      balanced:
+        temperature: 0.2
+        max_tokens: 4096
+      reasoning:
+        temperature: 0.2
+        max_tokens: 16384

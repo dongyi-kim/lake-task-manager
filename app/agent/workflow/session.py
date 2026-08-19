@@ -3,7 +3,7 @@
 여기가 하는 일은 셋이다.
 
   · **대화를 잇는다** — `thread_id` 로 Checkpointer 에 State 를 맡긴다. 되묻기가 가능해지는 이유.
-  · **관측을 붙인다** — Langfuse `CallbackHandler(session_id=thread_id)` 를 모든 실행에 단다.
+  · **관측을 붙인다** — Langfuse callback과 `langfuse_session_id` metadata를 모든 실행에 단다.
     한 대화가 한 세션으로 묶여야 트레이스를 읽을 수 있다.
   · **승인 대기를 노출한다** — 그래프가 ActionExecutor 앞에서 멈췄다는 사실과, 무엇을 승인해야 하는지를
     화면이 알 수 있는 형태로 돌려준다.
@@ -17,6 +17,7 @@ from __future__ import annotations
 import re as _re
 import copy as _copy
 
+from dataclasses import dataclass
 import logging
 import uuid
 
@@ -26,7 +27,25 @@ from app.agent import approval
 from app.agent import config as _cfg
 from app.agent import usage as _usage
 from app.agent.workflow.graph import get_graph
+from app.agent.workflow.continuation import (
+    build_continuation_contract,
+    capture_continuation_decisions,
+    has_continuation_cue,
+    has_interview_answer,
+    has_multi_field_refinement,
+    has_typed_continuation_contract,
+    merge_continuation_decisions,
+)
 from app.agent.workflow.state import TRACE_RESET, Node, Role, as_dict
+from app.agent.workflow.typed_fast_path import zero_typed_repair_budget
+from app.agent.workflow.question_receipt import (
+    ReceiptClaim,
+    claim_question_receipt,
+    finish_question_receipt,
+    issue_question_challenge,
+    question_turn_lock,
+    release_question_receipt,
+)
 
 log = logging.getLogger("agent.chat")
 
@@ -44,6 +63,7 @@ def _config(thread_id: str, meter=None) -> dict:
         cbs = cbs + [h]
     return {"configurable": {"thread_id": thread_id},
             "callbacks": cbs,
+            "metadata": {"langfuse_session_id": thread_id},
             "recursion_limit": RECURSION_LIMIT}
 
 
@@ -108,7 +128,7 @@ def _detect_role() -> str:
         return Role.MEMBER
 
 
-_KEY_RE = _re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
+_KEY_RE = _re.compile(r"(?<![A-Z0-9])[A-Z][A-Z0-9]+-\d+(?![A-Z0-9-])", _re.I)
 
 
 def _recent_keys(text: str) -> list:
@@ -128,7 +148,9 @@ def _initial(thread_id, text, user_role, user_id) -> dict:
             "user_identity": _identity(),
             # 새 턴이 시작되면 지난 턴의 승인·실행 결과는 지운다 — 안 지우면 옛 토큰으로
             # result_integrator 가 다시 '승인 대기'로 흘러간다.
-            "approval_token": "", "comment_token": "", "result": {}, "revisions": 0,
+            "approval_token": "", "comment_token": "", "result": {},
+            "execution_receipt": {}, "revisions": 0,
+            "repair_budget": zero_typed_repair_budget(),
             # trace 는 리듀서 필드라 [] 대입으로는 안 비워진다 — 리셋 신호를 앞에 싣는다.
             "trace": [TRACE_RESET], "change_plan": {}, "questions": []}
 
@@ -139,10 +161,289 @@ _CONTEXT_SWITCH = _re.compile(
     r"(?:대신|다시\s+.+?돌아갈)", _re.I,
 )
 
+_FIELD_REPLACEMENT = _re.compile(
+    r"(?:Epic|에픽|상위|부모|담당(?:자)?|assignee|owner|마감(?:일)?|기한|due(?:\s*date)?|"
+    r"범위|단계|우선순위|priority).{0,40}\s대신(?:\s|$)",
+    _re.I,
+)
+
+_HARD_CONTEXT_SWITCH = _re.compile(
+    r"(?:이건|이거|그건|그거).{0,8}(?:그만|취소)|완전히\s*다른|잠깐\s*다른|"
+    r"최종\s*요청|(?:변경|요청).{0,8}(?:도\s*)?취소|다시\s+.+?돌아갈",
+    _re.I,
+)
+
+_PARENT_CREATION_ANSWER = _re.compile(
+    r"(?:적합|마땅|관련).{0,24}(?:없|없으면).{0,24}(?:새\s*(?:Epic|에픽)|"
+    r"(?:Epic|에픽).{0,8}새)|^\s*새\s*(?:Epic|에픽)(?:을|를|으로|로)?\s*"
+    r"(?:만들|생성|진행|선택)?",
+    _re.I,
+)
+
+_DRAFT_REFINEMENT_FIELDS = (
+    _re.compile(r"(?:상위|부모|기존)\s*(?:Epic|에픽)|(?:Epic|에픽)\s*(?:선택|연결|하위)|"
+                r"(?:Epic|에픽)\s*대신\s*(?:최상위|단일|Task|태스크|테스크)", _re.I),
+    _re.compile(r"(?:범위|단계|phase|stage)\s*(?:은|는|을|를|으로|로|:|=)|"
+                r"\d+\s*차\s*(?:로|까지)", _re.I),
+    _re.compile(r"(?:마감|기한|due(?:\s*date)?|deadline)\s*(?:은|는|을|를|로|:|=)|"
+                r"\d{4}-\d{2}-\d{2}\s*(?:까지|로)", _re.I),
+    _re.compile(r"(?:담당(?:자)?|배정|assignee|owner)\s*(?:은|는|을|를|로|:|=)|"
+                r"미할당\s*(?:으로|로)", _re.I),
+    _re.compile(r"(?:우선순위|priority)\s*(?:은|는|을|를|로|:|=)", _re.I),
+    _re.compile(r"(?:제목|본문|설명|완료\s*조건|DoD|acceptance\s+criteria)\s*"
+                r"(?:은|는|에|을|를|로|:|=).{0,40}(?:추가|수정|바꿔|변경|정리)", _re.I),
+)
+
+_EXPLICIT_NEW_WORK = _re.compile(
+    r"(?:새|별도|다른)\s*(?:Epic|에픽|Task|테스크|티켓|작업).{0,16}(?:만들|생성|추가)|"
+    r"(?:Epic|에픽|Task|테스크|티켓|작업)(?:을|를)?\s*(?:새로|별도로|따로)"
+    r".{0,12}(?:만들|생성|추가)",
+    _re.I,
+)
+
+# A failed PLAN_WORK turn has no draft/question to prove that the next speech act belongs to
+# it.  In that narrow state, ``Task 만들어줘`` is an independent creation request even when
+# the same sentence also happens to carry two field-shaped values.
+_INDEPENDENT_WORK_CREATION = _re.compile(
+    r"(?:Epic|에픽|Task|태스크|테스크|티켓|작업)(?:은|는|이|가|을|를|으로|로)?"
+    r"[^.!?\n]{0,24}(?:만들|생성|등록|발행)|"
+    r"(?:만들|생성|등록|발행)[^.!?\n]{0,24}"
+    r"(?:Epic|에픽|Task|태스크|테스크|티켓|작업)",
+    _re.I,
+)
+
+_FIELD_ONLY_REFINEMENT_START = _re.compile(
+    r"^\s*(?:(?:그리고|그럼|그러면|알아서|계속)\s*)*(?:기존\s*)?"
+    r"(?:상위|부모|Epic|에픽|범위|단계|phase|stage|마감|기한|due(?:\s*date)?|"
+    r"담당(?:자)?|배정|assignee|owner|우선순위|priority|제목|본문|설명|"
+    r"완료\s*조건|DoD|acceptance\s+criteria)",
+    _re.I,
+)
+
+_NON_FIELD_REQUEST = _re.compile(
+    r"(?:알려\s*줘|조회(?:해|해줘)|검색(?:해|해줘)|찾아\s*줘|요약(?:해|해줘)|"
+    r"설명(?:해|해줘)|분석(?:해|해줘)|누가|왜|어떻게)",
+    _re.I,
+)
+
+# A typed interview answer can share one utterance with a second read request.  Keep this
+# narrower than ``_INDEPENDENT_REQUEST``: generic imperatives such as ``계속해줘`` are common
+# continuation cues, while these shapes name a new status/progress question whose omission
+# would silently freeze the old write DAG.
+_INDEPENDENT_READ_FOLLOWUP = _re.compile(
+    r"(?:현재|지금|최신)?\s*(?:진행\s*)?(?:상황|현황|상태)"
+    r".{0,24}(?:\?|어때|알려|보여|조회|확인)|"
+    r"(?:무엇|뭐)(?:이|가)?\s*.{0,24}(?:남았|남아)|"
+    r"(?:남은|미완료)\s*.{0,24}(?:무엇|뭐|알려|보여|확인)",
+    _re.I,
+)
+
+_INDEPENDENT_REQUEST = _re.compile(
+    r"(?:해\s*줘|해주세요|해줘|해봐|알려\s*줘|보여\s*줘|찾아\s*줘|추천(?:해|해줘)|"
+    r"조회(?:해|해줘)|정리(?:해|해줘)|설명(?:해|해줘)|만들(?:어|어줘)|생성(?:해|해줘)|"
+    r"수정(?:해|해줘)|바꿔\s*줘)|"
+    r"(?:누가|누구|뭐|무엇|어떤|왜|언제|어디|어떻게|몇\s*명|현황|상태)"
+    r".{0,50}(?:\?|궁금|알려|찾|확인|조회|보여|정리)|"
+    # A new topic can be a declarative speech act rather than an imperative. Without these
+    # predicates, ``서울 날씨가 궁금해`` and ``운영회의는 취소됐어`` were mistaken for terse
+    # answers to an unrelated pending field question and inherited the stale request plan.
+    r"[^?!\n]{1,60}(?:은|는|이|가)\s*(?:궁금(?:해|합니다|한데)|"
+    r"(?:취소|연기|변경|완료|종료)(?:됐|되었|했)(?:어|다|습니다|대)?)|"
+    r"(?:있어|없어|됐어|됐나|어때)\s*\?",
+    _re.I,
+)
+
+_SIMPLE_INTERVIEW_ANSWER = _re.compile(
+    r"^\s*(?:응|네|예|아니|아니요|맞아|맞습니다|그대로|없어|없습니다|모르겠|"
+    r"알아서|미할당|그걸로|이걸로|첫\s*번째|두\s*번째|세\s*번째|[1-3]\s*번)"
+    r"(?:\s*(?:해줘|진행해줘|선택해줘))?[.!]?\s*$",
+    _re.I,
+)
+
+_OUTCOME_REFINEMENT = _re.compile(
+    r"^\s*(?:기존\s*)?(?:댓글|코멘트|Bug|Story|Feature|Improvement|Task|Sub-?Task|"
+    r"Epic|버그|스토리|태스크|테스크|서브\s*태스크|에픽|티켓|문서|보고서|조사|리서치)"
+    r"(?:은|는|을|를|\s|내용|대상|범위|제목)*.{0,50}"
+    r"(?:빼|제외|취소|삭제|없애|하지\s*마|말고|대신|바꿔|수정|변경|교체)",
+    _re.I,
+)
+
+_LEGACY_STRUCTURE_QUESTION = _re.compile(
+    r"(?:단일|여러|복수|다수|최상위)\s*(?:Task|태스크|테스크)|"
+    r"(?:Task|태스크|테스크).{0,16}(?:Sub-?Task|서브\s*태스크|서브\s*테스크)|"
+    r"(?:Epic|에픽)\s*(?:으로|아래|하위|상위|부모)|"
+    r"(?:티켓|이슈|Task|태스크|테스크)\s*(?:계층|구조|형태)|"
+    r"(?:구조|형태)(?:를|로)\s*.{0,16}(?:진행|나누|나눠|분할|쪼개|합치|합쳐|통합)",
+    _re.I,
+)
+_LEGACY_STRUCTURE_OPTION = _re.compile(
+    r"(?:단일|하나의?)\s*(?:Task|태스크|테스크)|"
+    r"(?:여러|복수|다수|최상위|\d+\s*(?:건|개)?)\s*(?:Task|태스크|테스크)|"
+    r"(?:Task|태스크|테스크)\s*(?:하나\s*)?(?:\+|와|과|/|또는)\s*"
+    r"(?:단계별\s*)?(?:Sub-?Task|서브\s*태스크|서브\s*테스크)|"
+    r"(?:Sub-?Task|서브\s*태스크|서브\s*테스크)\s*(?:\+|와|과|/)\s*"
+    r"(?:Task|태스크|테스크)|"
+    r"(?:^|\s)(?:Epic|에픽)(?:\s|$|으로|로)",
+    _re.I,
+)
+
+
+def _legacy_blank_structure_choice(question: dict) -> bool:
+    """Recognize only the bounded pre-metadata structure preference card."""
+    if (str(question.get("field") or "").strip()
+            or "required_input" in question
+            or str(question.get("why_required") or "").strip()):
+        return False
+    text = str(question.get("question") or "").strip()
+    options = [str(value or "").strip() for value in (question.get("options") or [])
+               if str(value or "").strip()]
+    is_choice = str(question.get("kind") or "").strip().casefold() == "choice"
+    option_shapes = [value for value in options if _LEGACY_STRUCTURE_OPTION.search(value)]
+    return bool((is_choice or options) and (
+        _LEGACY_STRUCTURE_QUESTION.search(text)
+        or (len(options) >= 2 and len(option_shapes) == len(options))
+    ))
+
+
+def _pending_questions_are_optional(asked: list[dict]) -> bool:
+    """Return true only when every pending prompt is explicitly or structurally optional.
+
+    Current cards must explicitly set ``required_input=false``. Legacy structure-preference
+    cards used an empty field and omitted the flag, so accept only their bounded question/option
+    grammar. A blank field by itself conveys no ownership or optionality and fails closed.
+    """
+    if not asked:
+        return False
+    for question in asked:
+        required = question.get("required_input")
+        if required is True or str(question.get("why_required") or "").strip():
+            return False
+        if required is False or _legacy_blank_structure_choice(question):
+            continue
+        return False
+    return True
+
+
+def _looks_like_answer_to_questions(utterance: str, asked: list[dict]) -> bool:
+    """Recognize bounded answer shapes before treating a pending interview as sticky."""
+    text = str(utterance or "").strip()
+    if not text:
+        return False
+    if _SIMPLE_INTERVIEW_ANSWER.fullmatch(text):
+        return True
+    if any(str(option or "").strip() and str(option).strip().casefold() in text.casefold()
+           for question in asked for option in (question.get("options") or [])):
+        return True
+
+    for question in asked:
+        field = " ".join((str(question.get("field") or ""),
+                          str(question.get("question") or ""))).casefold()
+        if any(token in field for token in ("parent", "epic", "에픽", "상위", "부모")):
+            if (_PARENT_CREATION_ANSWER.search(text)
+                    or _re.search(r"\b[A-Z][A-Z0-9]+-\d+\b|(?:기존|새)\s*(?:Epic|에픽)",
+                                  text, _re.I)):
+                return True
+        if any(token in field for token in ("due", "date", "deadline", "마감", "기한")):
+            if _re.search(r"\d{4}[-./]\d{1,2}[-./]\d{1,2}|(?:월|화|수|목|금|토|일)요일|"
+                          r"(?:마감|기한).{0,12}(?:없|제거|취소)", text, _re.I):
+                return True
+            if _re.fullmatch(
+                    r"\s*(?:오늘|내일|모레|이번\s*주|다음\s*주|다다음\s*주)"
+                    r"(?:\s*(?:월|화|수|목|금|토|일)요일)?(?:까지)?(?:로)?"
+                    r"(?:\s*(?:해줘|진행해줘))?[.!]?\s*", text, _re.I):
+                return True
+        if any(token in field for token in ("structure", "shape", "type", "구조", "유형")):
+            if _re.fullmatch(r"\s*(?:(?:단일|최상위)\s*)?(?:Epic|에픽|Task|태스크|테스크|"
+                             r"Sub-?Task|서브\s*태스크)(?:\s*(?:하나|구조|로|으로))*"
+                             r"(?:\s*(?:구성|선택|진행)?해줘)?[.!]?\s*", text, _re.I):
+                return True
+        if any(token in field for token in ("term", "acronym", "meaning", "용어", "뜻", "약어")):
+            if _re.fullmatch(r"\s*.{1,40}(?:은|는|이란|란)\s*.{1,100}[.!]?\s*", text, _re.S):
+                return True
+        if any(token in field for token in ("person", "assignee", "owner", "reviewer", "담당", "사람", "누구")):
+            if _re.fullmatch(r"\s*(?:@?[가-힣]{2,5}(?:님|TL|M|차장|책임|매니저)?|"
+                             r"(?:skcc\.)?[a-z]{1,3}\d{2,8}|미할당)"
+                             r"(?:\s*(?:이야|입니다|로|으로))?"
+                             r"(?:\s*(?:배정|지정)?해줘)?[.!]?\s*",
+                             text, _re.I):
+                return True
+        if any(token in field for token in ("target", "table", "entity", "document", "ticket",
+                                             "대상", "테이블", "문서", "티켓")):
+            # A target answer is a value-shaped phrase, not another request sentence.  This
+            # accepts identifiers and ``X로 해줘`` while rejecting ``Puffin 이력을 요약해줘``.
+            if (_re.fullmatch(r"\s*[A-Za-z][A-Za-z0-9_.-]{1,119}"
+                              r"(?:\s*(?:이야|입니다|로|으로)(?:\s*(?:해줘|진행해줘))?)?"
+                              r"[.!]?\s*", text, _re.I)
+                    or _re.fullmatch(r"\s*[^?!\n]{1,60}(?:이야|입니다|말한\s*거야|"
+                                     r"(?:로|으로)\s*(?:(?:선택|지정|진행)?해줘))[.!]?\s*", text)):
+                return True
+    if _re.fullmatch(r"\s*[^?!\n]{1,60}(?:로|으로)\s*"
+                     r"(?:(?:선택|지정|배정|구성|진행)?해줘)[.!]?\s*", text):
+        return True
+    # A legacy question without a typed field provides no safe way to distinguish a terse
+    # answer from an unrelated Korean noun-style request. Fail closed as a new turn instead
+    # of executing the stale write plan; typed field/choice shapes above remain continuations.
+    return False
+
+
+def _has_independent_question_clause(utterance: str, asked: list[dict]) -> bool:
+    """Detect a second question that no pending field owns, without enumerating its nouns."""
+    clauses = [part.strip() for part in _re.split(
+        r"(?<=[.!?])\s+|\s*(?:그리고|또한|그와 별개로)\s*",
+        str(utterance or ""), flags=_re.I,
+    ) if part.strip()]
+    for clause in clauses:
+        if "?" not in clause:
+            continue
+        if has_interview_answer(capture_continuation_decisions(clause, asked)):
+            continue
+        return True
+    return False
+
+
+_REFINEMENT_GENERIC_ANCHORS = {
+    "poc", "phase", "stage", "dod", "acceptance", "criteria", "owner", "assignee",
+    "scope", "deadline", "date", "title", "body", "description",
+}
+
+
+def _draft_refinement_subject_sets(text: str, prior: dict) -> tuple[set[str], set[str]]:
+    """Return comparable high-precision subject anchors for a refinement boundary."""
+    from app.agent.workflow.anchors import required_user_anchors
+
+    original = str(prior.get("request_text") or "").strip()
+    if not original:
+        return set(), set()
+    old = {value.casefold() for value in required_user_anchors(
+        {"request_text": original, "messages": []}, include_latest=False)}
+    new = {value.casefold() for value in required_user_anchors(
+        {"request_text": str(text or ""), "messages": []}, include_latest=False)}
+    old = {value for value in old
+           if value not in _REFINEMENT_GENERIC_ANCHORS and not _re.fullmatch(r"\d+차", value)}
+    new = {value for value in new
+           if value not in _REFINEMENT_GENERIC_ANCHORS and not _re.fullmatch(r"\d+차", value)}
+    return old, new
+
+
+def _draft_refinement_changes_subject(text: str, prior: dict) -> bool:
+    """Return true when a supposed field refinement introduces a different named topic."""
+    old, new = _draft_refinement_subject_sets(text, prior)
+    # A constraint-only follow-up may have no named subject.  Once it names a subject,
+    # however, at least one stable original anchor must agree before stale work is inherited.
+    return bool(new and not (new & old))
+
+
+def _draft_refinement_repeats_subject(text: str, prior: dict) -> bool:
+    old, new = _draft_refinement_subject_sets(text, prior)
+    return bool(old and new and (old & new))
+
+
 _TURN_DERIVED_EMPTY = {
     "intent": "", "playbook": "", "keywords": [], "module": "", "mentioned_keys": [],
-    "sufficient": False, "answer_depth": "", "request_plan": {},
+    "sufficient": False, "answer_depth": "", "request_plan": {}, "request_refinement": {},
+    "continuation_contract": {}, "question_receipt_projection": {},
     "query_plan": {}, "query_results": [], "query_artifacts": {},
+    "materialized_ticket_sources": {},
     "assignment_completion": {}, "bulk_targets": [],
     "pre_survey": "", "seed_map": "", "web_context": "", "topic_dossier": "",
     "situation": "", "evidence": [], "related_docs": [], "epic_candidate": "",
@@ -151,63 +452,431 @@ _TURN_DERIVED_EMPTY = {
     "knowledge_brief": {}, "pmo_caution": "",
     "interpretation": "", "structure_plan": [], "structure_ok": False,
     "structure_notes": [], "draft": {}, "assignments": [], "review": {},
-    "reply": "", "error": "", "turns": 0,
+    "reply": "", "error": "", "turns": 0, "execution_receipt": {},
+    "repair_budget": zero_typed_repair_budget(),
 }
 
 
+def _bounded_materialized_ticket_sources(value) -> dict:
+    """Copy only the verified, bounded ticket ledger across an interview boundary.
+
+    The full query artifacts deliberately reset every turn.  QueryRunner's durable sidecar
+    contains at most eight successful ``get_ticket`` details.  Re-validate that boundary here
+    as well so a legacy/manual checkpoint cannot turn continuation into an unbounded context
+    replay, and retain parent keys only when their opened detail is present.
+    """
+    raw = value if isinstance(value, dict) else {}
+    parent_search_attempted = raw.get("parentCandidateSearchAttempted") is True
+    details: list[dict] = []
+    seen: set[str] = set()
+    for row in raw.get("ticketDetails") or []:
+        if not isinstance(row, dict) or row.get("error"):
+            continue
+        key = str(row.get("key") or "").strip().upper()
+        if not key or key in seen:
+            continue
+        detail = _copy.deepcopy(row)
+        detail["key"] = key
+        details.append(detail)
+        seen.add(key)
+        if len(details) >= 8:
+            break
+    if not details and not parent_search_attempted:
+        return {}
+    parents: list[str] = []
+    for raw_key in raw.get("parentCandidateKeys") or []:
+        key = str(raw_key or "").strip().upper()
+        if key in seen and key not in parents:
+            parents.append(key)
+    bounded = {"ticketDetails": details, "parentCandidateKeys": parents}
+    if parent_search_attempted:
+        bounded["parentCandidateSearchAttempted"] = True
+    return bounded
+
+
+def _same_write_outcome_replacement(text: str, prior: dict) -> bool:
+    """Whether this turn replaces an effect on one already-typed mutation target."""
+    from app.agent.workflow.agents.request_architect import _continuation_outcome_directive
+
+    utterance = str(text or "")
+    prior_contract = prior.get("continuation_contract") or {}
+    prior_targets = [
+        str(key or "").strip().upper()
+        for key in (prior_contract.get("target_keys") or [])
+        if _re.fullmatch(r"[A-Z][A-Z0-9]{1,9}-\d+", str(key or "").strip(), _re.I)
+    ] if has_typed_continuation_contract(prior_contract) else []
+    current_keys = set(_recent_keys(utterance))
+    return bool(
+        prior.get("request_plan")
+        and str(prior_contract.get("action") or "") in {"comment", "update", "mixed"}
+        and len(prior_targets) == 1
+        and _continuation_outcome_directive(utterance)
+        and (not current_keys or current_keys <= set(prior_targets))
+        and not _EXPLICIT_NEW_WORK.search(utterance)
+    )
+
+
 def _is_interview_continuation(text: str, prior: dict) -> bool:
-    """Keep expensive research only for an actual answer to our unresolved question."""
-    asked = [q for q in (prior.get("questions") or []) if isinstance(q, dict)]
-    if not asked or _CONTEXT_SWITCH.search(str(text or "")):
+    """Preserve prior work only for an interview answer or a bounded draft refinement.
+
+    A draft follow-up commonly supplies several missing fields without repeating the original
+    work request (for example: parent Epic + first-phase scope + due date).  Treating that as a
+    new topic discards the researched subject and lets control words become the new task title.
+    Conversely, one generic field such as a date is not enough to inherit stale context.
+    """
+    utterance = str(text or "")
+    # RequestArchitect owns the exact typed-add grammar. Reuse it here so the session boundary
+    # and outcome projection cannot disagree about whether ``Task 하나 더`` extends the current
+    # plan. The import is local because Session already imports the assembled graph at startup.
+    from app.agent.workflow.agents.request_architect import (
+        _continuation_outcome_additions,
+        _typed_continuation_refinement,
+    )
+    adds_typed_outcome = bool(prior.get("request_plan")
+                              and _continuation_outcome_additions(utterance))
+    same_write_outcome_replacement = _same_write_outcome_replacement(utterance, prior)
+    # A typed ``댓글 대신 ...`` can be an in-plan outcome edit, but an explicit whole-topic
+    # switch must always clear stale work even when that phrase happens to begin with an
+    # outcome label.
+    if _HARD_CONTEXT_SWITCH.search(utterance) and not same_write_outcome_replacement:
         return False
+    if (_CONTEXT_SWITCH.search(utterance)
+            and not same_write_outcome_replacement
+            and not _FIELD_REPLACEMENT.search(utterance)
+            and not _OUTCOME_REFINEMENT.search(utterance)):
+        return False
+
+    asked = [q for q in (prior.get("questions") or []) if isinstance(q, dict)]
     # A full new request with a new explicit ticket is not an answer merely because the last turn asked.
+    # The exception is a typed target/parent answer: replacing an old key with a new key is exactly
+    # what that question owns, so the new key must reach the latest-wins continuation ledger.
     old_keys = set(prior.get("mentioned_keys") or [])
-    new_keys = set(_recent_keys(text))
+    new_keys = set(_recent_keys(utterance))
+    if asked:
+        typed_contract = has_typed_continuation_contract(
+            prior.get("continuation_contract")
+        )
+        parent_choice = any(
+            str(question.get("field") or "").strip().casefold() in {"parent", "epic"}
+            for question in asked
+        ) and bool(_PARENT_CREATION_ANSWER.search(utterance))
+        if adds_typed_outcome:
+            return True
+        if _EXPLICIT_NEW_WORK.search(utterance):
+            # "새 Epic을 만들까요?"에 대한 답은 기존 interview의 continuation이다.
+            # 다른 target/question을 버리고 별도 work를 명령한 경우에는 stale state를 잇지 않는다.
+            if not parent_choice:
+                return False
+        decisions = capture_continuation_decisions(utterance, asked)
+        if new_keys and old_keys and not new_keys.issubset(old_keys):
+            keyed_answer = any(
+                isinstance(row, dict)
+                and row.get("source") == "interview_answer"
+                and str(row.get("field") or "").split(":", 1)[0].casefold()
+                in {"target", "table", "entity", "document", "ticket", "parent", "epic"}
+                and new_keys <= set(_recent_keys(str(row.get("value") or "")))
+                for row in decisions
+            )
+            if not keyed_answer:
+                return False
+        if typed_contract and has_interview_answer(decisions):
+            # ``Task를 만들어줘`` can be a fresh request or simply the user's answer plus
+            # "continue the draft".  Only the explicit continuation cue permits the latter;
+            # a new named work request still resets before any stale plan can execute.
+            if (_INDEPENDENT_WORK_CREATION.search(utterance)
+                    and not has_continuation_cue(utterance)
+                    and not parent_choice):
+                return False
+            # One utterance can contain a valid field answer and a separate read/summary
+            # request.  The current continuation envelope cannot execute both atomically;
+            # carrying the old write DAG would silently discard the latter speech act.
+            if (not has_continuation_cue(utterance)
+                    and (_NON_FIELD_REQUEST.search(utterance)
+                         or _INDEPENDENT_READ_FOLLOWUP.search(utterance)
+                         or _has_independent_question_clause(utterance, asked))):
+                return False
+            return True
+        if typed_contract and has_multi_field_refinement(decisions):
+            if (_INDEPENDENT_WORK_CREATION.search(utterance)
+                    or _NON_FIELD_REQUEST.search(utterance)):
+                return False
+            return True
+        # A fully parsed execution-field answer can close an optional legacy structure prompt
+        # without asking RequestArchitect to rediscover the frozen plan. Required target/person/
+        # term questions always win, including checkpoints whose answer matcher would otherwise
+        # mistake ``Epic 은 네가 골라줘`` for a term definition.
+        typed_fields = _typed_continuation_refinement(utterance)
+        if typed_fields:
+            return _pending_questions_are_optional(asked)
+        if (parent_choice or _OUTCOME_REFINEMENT.search(utterance)
+                or _looks_like_answer_to_questions(utterance, asked)):
+            return True
+        # A complete speech act is a new request even when it reuses the prior subject and
+        # contains neither an explicit cancellation nor a new Jira key.
+        if _INDEPENDENT_REQUEST.search(utterance):
+            return False
+        # Unrecognized short text is not automatically an interview answer. Korean requests
+        # commonly omit a verb (``보안 교육 현황 파악 부탁``), so preserving stale state here
+        # is more dangerous than routing the utterance as a fresh request.
+        return False
+
     if new_keys and old_keys and not new_keys.issubset(old_keys):
         return False
-    return True
+
+    if same_write_outcome_replacement:
+        return True
+
+    # When the previous turn already produced a draft/structure, preserve it only for a compact,
+    # multi-field refinement.  Explicitly asking for separate/new work always wins.
+    if adds_typed_outcome:
+        return True
+    if _EXPLICIT_NEW_WORK.search(utterance):
+        return False
+    # A typed edit to an already planned user-visible outcome is itself a continuation even
+    # when the previous turn has not materialized a draft yet.  RequestArchitect applies the
+    # bounded typed diff; resetting here would erase the authoritative compound outcome DAG
+    # before that guard can run.
+    if prior.get("request_plan") and _OUTCOME_REFINEMENT.search(utterance):
+        return True
+    # A complete create/register speech act is a new work root even when an old draft or
+    # structure exists and the sentence happens to include two refinement-shaped fields.
+    # Check this before the materialized-draft shortcut; otherwise ``Task 하나 만들어줘``
+    # silently edits stale work merely because it also supplies scope and a due date.
+    if _INDEPENDENT_WORK_CREATION.search(utterance):
+        return False
+    if _draft_refinement_changes_subject(utterance, prior):
+        return False
+    matched_fields = sum(bool(pattern.search(utterance)) for pattern in _DRAFT_REFINEMENT_FIELDS)
+    if matched_fields < 2:
+        return False
+    if prior.get("draft") or prior.get("structure_plan"):
+        return True
+
+    # With no draft/question, accept only a field-shaped continuation. A full Task creation
+    # speech act or an unrelated answer/query remains a new turn even if it embeds scope and
+    # due-date values. A repeated stable technical subject is also safe; otherwise the utterance
+    # must begin with a recognized field label (``Epic... 범위... 마감...``).
+    if _NON_FIELD_REQUEST.search(utterance):
+        return False
+    if (not _FIELD_ONLY_REFINEMENT_START.search(utterance)
+            and not _draft_refinement_repeats_subject(utterance, prior)):
+        return False
+
+    # Work can fail after Research has already materialized authoritative evidence (for
+    # example, a structured projection exhausts its output budget). A compact multi-field
+    # answer is still a refinement of that frozen write request even though no draft/question
+    # survived. Require both a typed write plan and at least one successful bounded detail;
+    # this keeps unrelated work from inheriting stale evidence merely because it also names
+    # a date and scope.
+    tasks = (prior.get("request_plan") or {}).get("tasks") or []
+    has_write_intent = any(
+        isinstance(task, dict) and bool(task.get("write_intent")) for task in tasks
+    )
+    ledger = _bounded_materialized_ticket_sources(
+        prior.get("materialized_ticket_sources")
+    )
+    return (
+        str(prior.get("intent") or "") == "plan_work"
+        and has_write_intent
+        and bool(ledger.get("ticketDetails"))
+    )
 
 
-def _turn_start_patch(text: str, prior: dict) -> dict:
+def _turn_start_patch(
+    text: str,
+    prior: dict,
+    *,
+    question_receipt_projection: dict | None = None,
+    receipt_continuation_contract: dict | None = None,
+    receipt_bound: bool = False,
+) -> dict:
     """Separate per-turn working memory from durable conversation messages.
 
     LangGraph merges new input into the checkpoint.  Without explicit empty values, a new request inherits the
     previous topic dossier, draft, approval review, and PMO result.  Preserve research only while answering a
     blocking interview; every other turn receives a clean working set and a new request root.
     """
-    continuation = _is_interview_continuation(text, prior)
+    typed_receipt = bool(question_receipt_projection)
+    continuation = typed_receipt or receipt_bound or _is_interview_continuation(text, prior)
     patch = _copy.deepcopy(_TURN_DERIVED_EMPTY)
     patch.update(turn_continuation=continuation,
-                 turn_reset_reason="interview-answer" if continuation else "new-or-revised-request")
+                 turn_reset_reason="interview-answer" if continuation else "new-or-revised-request",
+                 turn_attempt_id=uuid.uuid4().hex)
     if continuation:
-        for key in ("request_text", "pre_survey", "seed_map", "web_context", "topic_dossier",
+        # RequestArchitect owns these bounded planning fields.  A true continuation keeps
+        # them so a deterministic field-only fast path can reuse the already classified
+        # request without reconstructing its subject from the short answer.  Query plans and
+        # query results deliberately stay in ``_TURN_DERIVED_EMPTY``: a changed parent/scope/
+        # due field may require a fresh bounded query, and graph routing decides that below.
+        for key in ("intent", "request_text", "request_plan", "playbook", "keywords",
+                    "module", "mentioned_keys", "sufficient", "answer_depth",
+                    "pre_survey", "seed_map", "web_context", "topic_dossier",
                     "situation", "evidence", "related_docs", "epic_candidate", "already_exists",
-                    "bulk_targets", "structure_plan", "structure_ok", "structure_notes", "draft",
-                    "turns"):
+                    "bulk_targets", "materialized_ticket_sources", "structure_plan", "structure_ok",
+                    "structure_notes", "draft", "turns"):
             if key in prior:
-                patch[key] = prior[key]
+                patch[key] = (_bounded_materialized_ticket_sources(prior[key])
+                              if key == "materialized_ticket_sources"
+                              else _copy.deepcopy(prior[key]))
+        contract = build_continuation_contract(
+            {**prior, "turn_continuation": True},
+            existing=prior.get("continuation_contract"),
+            preserve_outcome_targets=_same_write_outcome_replacement(text, prior),
+        )
+        if typed_receipt:
+            # The receipt boundary already projected and validated this contract exactly once.
+            # Do not feed its bounded message back through the prose continuation parser.
+            patch["continuation_contract"] = _copy.deepcopy(
+                receipt_continuation_contract or {}
+            )
+            patch["question_receipt_projection"] = _copy.deepcopy(
+                question_receipt_projection or {}
+            )
+        elif receipt_bound:
+            # An authentic receipt proves this is the pending interview turn, but a field
+            # without a lossless projector still belongs to semantic RequestArchitect.
+            patch["continuation_contract"] = _copy.deepcopy(
+                receipt_continuation_contract
+                if receipt_continuation_contract is not None
+                else prior.get("continuation_contract") or {}
+            )
+        elif contract:
+            decisions = capture_continuation_decisions(
+                text, [q for q in (prior.get("questions") or []) if isinstance(q, dict)],
+            )
+            patch["continuation_contract"] = merge_continuation_decisions(
+                contract, decisions,
+            )
+        # ``bulk_targets`` is executable state consumed directly by WorkArchitect.  A
+        # continuation may carry it only while the rebuilt typed contract independently
+        # re-proves the same keys through the current write DAG/scoped decision.  Merely
+        # copying an old list would let a background read key bypass the contract split.
+        allowed_targets = {
+            str(key or "").strip().upper()
+            for key in (patch.get("continuation_contract") or {}).get("target_keys") or []
+        }
+        patch["bulk_targets"] = [
+            str(key or "").strip().upper()
+            for key in patch.get("bulk_targets") or []
+            if str(key or "").strip().upper() in allowed_targets
+        ]
     else:
         patch["request_text"] = str(text or "").strip()
     return patch
 
 
-def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "") -> dict:
+def _checkpoint_revision(snapshot) -> str:
+    config = getattr(snapshot, "config", None) or {}
+    configurable = config.get("configurable") if isinstance(config, dict) else {}
+    return str((configurable or {}).get("checkpoint_id") or "").strip()
+
+
+@dataclass(frozen=True)
+class _PreparedTurn:
+    initial: dict
+    claim: ReceiptClaim | None
+    checkpoint_revision: str
+    error: str = ""
+
+
+def _prepare_turn(
+    graph,
+    *,
+    thread_id: str,
+    text: str,
+    user_role: str,
+    user_id: str,
+    question_receipt=None,
+) -> _PreparedTurn:
+    """Build one ask/stream input from the same checkpoint and turn-reset boundary."""
+    try:
+        prior_snapshot = graph.get_state(_config(thread_id))
+        prior = dict(prior_snapshot.values or {})
+    except Exception:
+        prior_snapshot, prior = None, {}
+    revision = _checkpoint_revision(prior_snapshot)
+    claim: ReceiptClaim | None = None
+    message_text = str(text or "")
+    if question_receipt is not None:
+        claim = claim_question_receipt(
+            question_receipt, thread_id=thread_id, checkpoint_revision=revision,
+            request_plan=prior.get("request_plan") or {},
+            continuation_contract=prior.get("continuation_contract") or {},
+        )
+        if claim.status == "rejected":
+            return _PreparedTurn(
+                initial={}, claim=claim, checkpoint_revision=revision,
+                error=("질문 답변이 만료되었거나 이미 제출되었습니다. "
+                       "현재 질문을 다시 확인해 주세요."),
+            )
+        message_text = claim.message_text
+    try:
+        initial = _initial(thread_id, message_text, user_role, user_id)
+        if claim and claim.owns_lease:
+            initial.update(_turn_start_patch(
+                message_text, prior,
+                question_receipt_projection=(claim.projection
+                                             if claim.status == "fast" else None),
+                receipt_continuation_contract=claim.continuation_contract,
+                receipt_bound=True,
+            ))
+        else:
+            initial.update(_turn_start_patch(message_text, prior))
+    except Exception:
+        if claim and claim.owns_lease:
+            release_question_receipt(claim)
+        raise
+    return _PreparedTurn(
+        initial=initial, claim=claim, checkpoint_revision=revision,
+    )
+
+
+def _finish_receipt(graph, thread_id: str, prepared: _PreparedTurn, *, success: bool) -> None:
+    if not prepared.claim or not prepared.claim.owns_lease:
+        return
+    try:
+        revision = _checkpoint_revision(graph.get_state(_config(thread_id)))
+    except Exception:
+        # Once graph execution was attempted, an unreadable checkpoint cannot prove that
+        # nothing advanced.  A distinct sentinel makes finish fail closed to consumed.
+        revision = "unknown-after-graph"
+    finish_question_receipt(
+        prepared.claim, success=success, checkpoint_revision=revision,
+    )
+
+
+def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "",
+        question_receipt=None) -> dict:
     """한 턴 굴린다. 승인이 필요한 지점에서 멈추면 `pending` 이 채워져 돌아온다."""
     tid = thread_id or new_thread()
+    if question_receipt is not None and str(text or "").strip():
+        return {"thread_id": tid, "ok": False, "reply": "",
+                "error": "질문 답변과 새 메시지를 함께 보낼 수 없습니다.", "trace": []}
     too_long = _guard(text)
     if too_long:
         return {"thread_id": tid, "ok": False, "reply": too_long, "error": too_long, "trace": []}
     log.info("[%s] Q: %s", tid, (text or "")[:500])
     meter = _usage.Meter()
     graph = get_graph()
-    try:
-        prior = dict((graph.get_state(_config(tid)).values or {}))
-    except Exception:
-        prior = {}
-    initial = _initial(tid, text, user_role, user_id)
-    initial.update(_turn_start_patch(text, prior))
-    state = graph.invoke(initial, _config(tid, meter))
-    out = _shape(tid, state)
+    with question_turn_lock(tid):
+        prepared = _prepare_turn(
+            graph, thread_id=tid, text=text, user_role=user_role, user_id=user_id,
+            question_receipt=question_receipt,
+        )
+        if prepared.error:
+            return {"thread_id": tid, "ok": False, "reply": "",
+                    "error": prepared.error, "trace": []}
+        try:
+            state = graph.invoke(prepared.initial, _config(tid, meter))
+        except Exception:
+            _finish_receipt(graph, tid, prepared, success=False)
+            raise
+        _finish_receipt(graph, tid, prepared, success=True)
+        try:
+            snap = graph.get_state(_config(tid))
+        except Exception:
+            snap = None
+        out = _shape(tid, state, snap)
     out["usage"] = meter.snapshot()
     log.info("[%s] A: %s", tid, (out.get("reply") or "")[:1000])
     log.info("[%s] 사용량: %s", tid, out["usage"])
@@ -222,29 +891,33 @@ def resume(thread_id: str, token: str, overrides: dict = None) -> dict:
     추천을 그대로 받는 게 아니라 후보 중 고르거나 직접 지정할 수 있어야 한다(사용자 요청).
     승인 전에 스테이징 내용과 State 를 **같이** 고쳐 지문을 다시 묶는다.
     """
-    err = _apply_overrides(thread_id, token, overrides)
-    if err:
-        return {"thread_id": thread_id, "ok": False, "error": err}
-    if not approval.approve(token, thread_id):
-        return {"thread_id": thread_id, "ok": False,
-                "error": "승인 토큰이 이 대화의 것이 아니거나 만료되었습니다. 다시 요청하세요."}
-    # 변경 카드에 코멘트가 함께 보였다면 그 토큰도 같은 승인에 묶인다(내용은 카드에 있었다).
-    try:
-        vals = get_graph().get_state(_config(thread_id)).values or {}
-        if vals.get("comment_token"):
-            approval.approve(vals["comment_token"], thread_id)
-    except Exception:
-        pass
-    from app.agent.tools import set_thread
-    set_thread(thread_id)
-    log.info("[%s] 승인됨 — 실행 시작", thread_id)
-    meter = _usage.Meter()
-    # None = 멈춘 자리(ActionExecutor 앞)에서 이어서
-    state = get_graph().invoke(None, _config(thread_id, meter))
-    out = _shape(thread_id, state)
-    out["usage"] = meter.snapshot()
-    log.info("[%s] 실행 결과: %s", thread_id, out.get("result"))
-    return out
+    # Approval resumes and new chat turns mutate the same checkpoint.  Serialize the whole
+    # capability transaction with ask/stream so an old paused branch cannot race a fresh
+    # turn and restore its prior turn nonce/artifacts after the new request has started.
+    with question_turn_lock(thread_id):
+        err = _apply_overrides(thread_id, token, overrides)
+        if err:
+            return {"thread_id": thread_id, "ok": False, "error": err}
+        if not approval.approve(token, thread_id):
+            return {"thread_id": thread_id, "ok": False,
+                    "error": "승인 토큰이 이 대화의 것이 아니거나 만료되었습니다. 다시 요청하세요."}
+        # 변경 카드에 코멘트가 함께 보였다면 그 토큰도 같은 승인에 묶인다(내용은 카드에 있었다).
+        try:
+            vals = get_graph().get_state(_config(thread_id)).values or {}
+            if vals.get("comment_token"):
+                approval.approve(vals["comment_token"], thread_id)
+        except Exception:
+            pass
+        from app.agent.tools import set_thread
+        set_thread(thread_id)
+        log.info("[%s] 승인됨 — 실행 시작", thread_id)
+        meter = _usage.Meter()
+        # None = 멈춘 자리(ActionExecutor 앞)에서 이어서
+        state = get_graph().invoke(None, _config(thread_id, meter))
+        out = _shape(thread_id, state)
+        out["usage"] = meter.snapshot()
+        log.info("[%s] 실행 결과: %s", thread_id, out.get("result"))
+        return out
 
 
 # 카드에서 편집 가능한 항목 필드 — 여기 없는 키는 조용히 버린다(클라이언트를 믿지 않는다).
@@ -393,6 +1066,16 @@ def evaluation_snapshot(thread_id: str) -> dict:
         data = as_dict(dict(st.values or {}))
     except Exception:
         return {}
+    # The reviewer must see the same final evidence selection and deterministic
+    # normalization as the rendered reply.  Keep the checkpoint itself immutable:
+    # ``canonical_evaluation_evidence`` returns a bounded projection and never grants
+    # model-authored prose source authority.
+    from app.agent.workflow.agents.result_integrator import canonical_evaluation_evidence
+    from app.agent.workflow.evidence_index import canonical_related_documents
+    data["evidence"] = canonical_evaluation_evidence(data)
+    data["related_docs"] = canonical_related_documents(
+        data, data.get("related_docs") or [],
+    )
     fields = {
         "requestPlan": "request_plan",
         "queryPlan": "query_plan",
@@ -421,13 +1104,34 @@ def _shape(thread_id: str, state: dict, snap=None) -> dict:
     waiting = bool(snap and Node.ACTION_EXECUTOR in (getattr(snap, "next", None) or ()))
 
     data = as_dict(state or {})
+    from app.agent.workflow.execution_receipt import scrub_execution_sidecars
+    public_result = scrub_execution_sidecars(
+        data.get("result") or {},
+        secrets_to_remove=(data.get("approval_token"), data.get("comment_token")),
+    )
     out = {"thread_id": thread_id, "ok": not data.get("error"),
            "reply": data.get("reply") or "", "trace": data.get("trace") or [],
            "intent": data.get("intent") or "", "situation": data.get("situation") or "",
            "evidence": data.get("evidence") or [], "related_docs": data.get("related_docs") or [],
            "questions": data.get("questions") or [], "assignments": data.get("assignments") or [],
-           "review": data.get("review") or {}, "result": data.get("result") or {},
+           "review": data.get("review") or {}, "result": public_result,
            "error": data.get("error") or ""}
+
+    challenge = issue_question_challenge(
+        thread_id=thread_id,
+        checkpoint_revision=_checkpoint_revision(snap),
+        request_plan=data.get("request_plan") or {},
+        continuation_contract=data.get("continuation_contract") or {},
+        questions=data.get("questions") or [],
+    )
+    if challenge:
+        identities = challenge.get("questions") or []
+        out["questions"] = [
+            {**dict(question), "question_id": identity.get("question_id", "")}
+            for question, identity in zip(out["questions"], identities)
+            if isinstance(question, dict) and isinstance(identity, dict)
+        ]
+        out["questionReceipt"] = challenge
 
     # 승인 카드 — 무엇을 승인하는지가 화면과 토큰에 **같은 내용**으로 담겨야 한다.
     if waiting and data.get("approval_token"):
@@ -444,7 +1148,8 @@ def _shape(thread_id: str, state: dict, snap=None) -> dict:
             out["pending"] = {"token": data["approval_token"], "action": "update_ticket",
                               "key": plan["key"],
                               "changes": {"link": f"{lk.get('relation')} → {lk['other']}"},
-                              "comment": "", "rationale": plan.get("why") or ""}
+                              "comment": plan.get("comment") or "",
+                              "rationale": plan.get("why") or ""}
         elif plan.get("keys"):
             # 조건 일괄 수정 — 대상 전부와 공통 변경이 카드에 보여야 승인이 의미가 있다.
             # ★ 코멘트도 함께 싣는다 — **코멘트만 남기는 일괄**이 있고(사용자 요청),
@@ -585,13 +1290,20 @@ def request_stop(thread_id: str) -> bool:
     return True
 
 
-def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = ""):
+def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = "",
+           question_receipt=None):
     """진행 상황을 흘려보낸다. 조사에 십수 초가 걸리는데 빈 화면을 보여 줄 수는 없다.
 
     `subgraphs=True` 를 쓰는 이유 — 역할 안에서 도구를 부르는 중이라는 것까지 보여야
     "멈춘 것"과 "일하는 중"이 구분된다.
     """
     tid = thread_id or new_thread()
+    if question_receipt is not None and str(text or "").strip():
+        yield {"type": "start", "thread_id": tid}
+        message = "질문 답변과 새 메시지를 함께 보낼 수 없습니다."
+        yield {"type": "final", "thread_id": tid, "ok": False, "reply": "",
+               "error": message, "trace": []}
+        return
     too_long = _guard(text)
     if too_long:
         yield {"type": "start", "thread_id": tid}
@@ -600,45 +1312,57 @@ def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = "
         return
     log.info("[%s] Q(stream): %s", tid, (text or "")[:500])
     meter = _usage.Meter()
-    _STOP.discard(tid)          # 새 턴은 깨끗한 상태에서 — 지난 중단 신호를 물려받지 않는다
     yield {"type": "start", "thread_id": tid}
-    try:
-        # updates(진행) + messages(토큰) 를 함께 받는다 — 최종 답이 통째로 도착하기를
-        # 기다리면 ResultIntegrator 생성 시간(2~7초)이 전부 침묵이 된다. ResultIntegrator 의 토큰만
-        # 흘리는 이유: 중간 역할(think·conclude)의 글은 사용자용 문장이 아니다.
-        for item in get_graph().stream(_initial(tid, text, user_role, user_id),
-                                       _config(tid, meter),
-                                       stream_mode=["updates", "messages"], subgraphs=True):
-            # subgraphs=True + 리스트 모드 → (ns, mode, payload)
-            ns, mode, payload = (item if len(item) == 3 else ("", item[0], item[1]))
-            # 중단 — 사용자가 멈추라고 했다. 지금 노드가 끝나는 경계에서 빠져나간다.
-            if tid in _STOP:
-                _STOP.discard(tid)
-                log.info("[%s] 중단됨", tid)
-                yield {"type": "stopped", "thread_id": tid,
-                       "message": "요청하신 대로 중단했습니다. 여기까지 진행된 내용은 "
-                                  "남아 있어 이어서 물으면 그 지점부터 계속합니다."}
-                return
-            if mode == "messages":
-                msg, meta = payload
-                node = str((meta or {}).get("langgraph_node") or "")
-                piece = getattr(msg, "content", "") or ""
-                # ★ Chunk 타입만 — 스트림이 끝나면 **완성 메시지**가 한 번 더 흘러온다
-                #   (실측: 같은 답이 두 번 조립됐다). 조각과 완성본을 둘 다 받으면 두 배가 된다.
-                if (node == Node.RESULT_INTEGRATOR and piece
-                        and type(msg).__name__.endswith("Chunk")):
-                    yield {"type": "token", "text": piece}
-                continue
-            for ev in _events(ns, payload):
-                yield ev
-    except Exception as e:
-        log.exception("[%s] 그래프 실패", tid)
-        yield {"type": "error", "message": str(e)[:300]}
-    final = _shape(tid, dict((get_graph().get_state(_config(tid)).values or {})))
-    final["usage"] = meter.snapshot()
-    log.info("[%s] A(stream): %s", tid, (final.get("reply") or "")[:1000])
-    log.info("[%s] 사용량: %s", tid, final["usage"])
-    yield {"type": "final", **final}
+    with question_turn_lock(tid):
+        _STOP.discard(tid)      # 같은 thread의 이전 turn이 끝난 뒤에만 stop 신호를 초기화한다
+        graph = get_graph()
+        prepared = _prepare_turn(
+            graph, thread_id=tid, text=text, user_role=user_role, user_id=user_id,
+            question_receipt=question_receipt,
+        )
+        if prepared.error:
+            yield {"type": "final", "thread_id": tid, "ok": False, "reply": "",
+                   "error": prepared.error, "trace": []}
+            return
+        completed = False
+        try:
+            # updates(진행) + messages(토큰) 를 함께 받는다 — 최종 답이 통째로 도착하기를
+            # 기다리면 ResultIntegrator 생성 시간(2~7초)이 전부 침묵이 된다.
+            for item in graph.stream(
+                    prepared.initial, _config(tid, meter),
+                    stream_mode=["updates", "messages"], subgraphs=True):
+                ns, mode, payload = (item if len(item) == 3 else ("", item[0], item[1]))
+                if tid in _STOP:
+                    _STOP.discard(tid)
+                    log.info("[%s] 중단됨", tid)
+                    yield {"type": "stopped", "thread_id": tid,
+                           "message": "요청하신 대로 중단했습니다. 여기까지 진행된 내용은 "
+                                      "남아 있어 이어서 물으면 그 지점부터 계속합니다."}
+                    return
+                if mode == "messages":
+                    msg, meta = payload
+                    node = str((meta or {}).get("langgraph_node") or "")
+                    piece = getattr(msg, "content", "") or ""
+                    if (node == Node.RESULT_INTEGRATOR and piece
+                            and type(msg).__name__.endswith("Chunk")):
+                        yield {"type": "token", "text": piece}
+                    continue
+                for ev in _events(ns, payload):
+                    yield ev
+            completed = True
+        except GeneratorExit:
+            raise
+        except Exception as e:
+            log.exception("[%s] 그래프 실패", tid)
+            yield {"type": "error", "message": str(e)[:300]}
+        finally:
+            _finish_receipt(graph, tid, prepared, success=completed)
+        snap = graph.get_state(_config(tid))
+        final = _shape(tid, dict((snap.values or {})), snap)
+        final["usage"] = meter.snapshot()
+        log.info("[%s] A(stream): %s", tid, (final.get("reply") or "")[:1000])
+        log.info("[%s] 사용량: %s", tid, final["usage"])
+        yield {"type": "final", **final}
 
 
 _TOOL_KO = {  # 도구명 → 사람이 읽는 라벨. "도구 사용 중"만으로는 어디서 느린지 모른다(사용자 지적)

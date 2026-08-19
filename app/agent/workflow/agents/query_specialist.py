@@ -7,7 +7,12 @@ import re
 
 from app.agent.prompts.roles import SYSTEM_QUERY_SPECIALIST
 from app.agent.workflow.agents.base import StructuredAgent
-from app.agent.workflow.contracts import QueryPlan
+from app.agent.workflow.contracts import (
+    CompactQueryPlan,
+    QueryPlan,
+    role_output_schema,
+    validate_role_output,
+)
 from app.agent.workflow.prompts import persona
 from app.agent.workflow.state import (AgentState, Intent, Node, conversation,
                                       last_user_text, note, request_text)
@@ -20,7 +25,7 @@ _INTERNAL_LATIN = {"etl", "catalog", "runtime", "workbench", "dataops", "observa
                    "manager", "api", "ui", "sub-task", "subtask", "feature", "improvement",
                    "point", "batch", "job", "sql", "jql", "cql", "json", "html", "pmo",
                    "voc", "our", "project", "internal", "external", "official", "documentation",
-                   "confluence", "wiki", "marker", "citation",
+                   "confluence", "wiki", "github", "marker", "citation",
                    "hotfix", "poc", "p0", "p1", "p2", "p3", "p4", "critical", "major", "minor",
                    # Meeting-note scaffolding and Jira field labels are not public technologies.
                    "comment", "comments", "component", "components", "description", "docx", "fields",
@@ -46,6 +51,56 @@ _COMMENT_SCOPE_IGNORED = {
 _QUERY_IDENTITY_NOISE = {
     "official", "documentation", "document", "docs", "confluence", "wiki",
     "jira", "ticket", "tickets", "comment", "comments", "marker",
+}
+
+_INTERNAL_DOCUMENT_FORM_WORDS = {
+    "confluence", "wiki", "document", "documents", "doc", "docs",
+    "design", "memo", "minutes", "note", "notes", "page", "pages",
+    "문서", "설계", "설계문서", "회의록", "메모", "노트", "자료", "페이지",
+}
+
+_CREATION_CONTROL_WORDS = {
+    "epic", "task", "ticket", "issue", "story", "feature", "improvement",
+    "create", "make", "add", "select", "choose", "proceed", "request", "please",
+    "에픽", "태스크", "티켓", "작업", "이슈", "스토리", "피처", "임프로브먼트",
+    "생성", "추가", "선택", "진행", "요청", "부탁", "알아서", "기존", "신규", "새로",
+    "범위", "마감", "최소", "기능", "하나", "한개", "네가", "제가", "우리가",
+    "위한", "위해", "참고", "참조",
+}
+
+_CREATION_CONTROL_PATTERN = re.compile(
+    r"^(?:만들|골라|고르|정해|진행해|부탁해|요청해|생성해|추가해|선택해|"
+    r"해야|해주세요|해줘|해주|바랍니다)(?:[가-힣]*)$",
+    re.I,
+)
+
+# Query planning needs a separate, stricter notion of a *material subject*.  Words such as
+# ``구현`` and ``1차`` are useful in a ticket title, so ``_creation_subject_terms`` keeps them
+# available after a real topic.  On their own, however, they are only execution controls and
+# must not compile into a project-wide ``text ~ 구현`` lookup.  Keep this guard vocabulary
+# separate so normal subject ranking and ASK/navigation queries do not change.
+_CREATION_SUBJECT_GUARD_MARKER = "creation_target_required"
+_CREATION_TARGET_REQUIRED_REASON = (
+    "생성/중복 조회에 사용할 구체적인 기술·업무 대상이 없고, "
+    "parent·범위·단계·마감 같은 실행 필드만 있어 조회를 생략함"
+)
+_CREATION_SUBJECT_GUARD_CONTROLS = _CREATION_CONTROL_WORDS | {
+    "parent", "top", "level", "scope", "phase", "stage", "due", "deadline",
+    "existing", "current", "first", "mvp", "implement", "implementation",
+    "develop", "development", "deploy", "deployment", "validate", "validation",
+    "build", "change", "fix", "improve", "improvement", "optimize", "optimization",
+    "refactor", "refactoring", "update", "upgrade", "migrate", "migration",
+    "work", "plan", "finish", "complete", "completion", "execute", "execution", "run",
+    "enhance", "enhancement", "service", "system", "process", "application", "app",
+    "module", "code", "data",
+    "i", "me", "my", "you", "your",
+    "은", "는", "이", "가", "을", "를", "에", "로", "차",
+    "나", "내", "저", "제", "너", "네",
+    "부모", "상위", "최상위", "단계", "기한", "마감일", "연결", "지정",
+    "구현", "개발", "적용", "배포", "검증", "완료", "개선", "변경", "수정",
+    "구축", "최적화", "리팩터링", "마이그레이션", "전환", "업데이트",
+    "서비스", "시스템", "프로세스", "애플리케이션", "앱", "모듈", "코드", "데이터", "화면",
+    "선택해", "진행해",
 }
 
 
@@ -258,6 +313,33 @@ def _query_identity(query: str) -> str:
     return " ".join(token for token in tokens if token not in _QUERY_IDENTITY_NOISE)
 
 
+def _normalize_internal_document_query(query: dict) -> None:
+    """Remove source-form words from a sufficiently specific Confluence subject.
+
+    Compatible models often append ``design document``/``설계`` to an otherwise exact
+    product subject. Confluence CQL treats that extra word as another required lexical term,
+    so a real page titled for the product can become a false zero-hit. Rewrite only when two
+    independent material terms remain, or when the remaining term is an identifier-shaped
+    Latin name. A generic request for ``설계`` alone is preserved instead of broadening it.
+    """
+    if str(query.get("source") or "").casefold() != "confluence":
+        return
+    raw = str(query.get("query") or "").strip()
+    if not raw:
+        return
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9_.+-]{1,}|[가-힣]{2,}", raw)
+    material = [token for token in tokens
+                if token.casefold() not in _INTERNAL_DOCUMENT_FORM_WORDS]
+    identifier = any(
+        re.fullmatch(r"[A-Za-z][A-Za-z0-9_.+-]{1,}", token)
+        and (token[:1].isupper() or any(ch.isupper() for ch in token[1:])
+             or any(ch.isdigit() or ch in "_.+-" for ch in token))
+        for token in material
+    )
+    if material and (len(material) >= 2 or identifier):
+        query["query"] = " ".join(material[:6])
+
+
 def _public_external_query(text: str) -> str:
     """Build a non-identifying public technology query without another LLM call.
 
@@ -279,16 +361,90 @@ def _public_external_query(text: str) -> str:
     return " ".join(tokens[:8]) + " official documentation"
 
 
+def _public_github_query(public_query: str) -> str:
+    """Project a privacy-safe public web subject into a bounded GitHub query.
+
+    ``_public_external_query`` has already stripped private identifiers and untranslated
+    text. GitHub does not benefit from navigation words such as ``official documentation``;
+    removing them also prevents a bare "GitHub에서 찾아줘" authorization from becoming a
+    content subject by itself.
+    """
+    noise = {"official", "documentation", "document", "docs", "github", "repository", "repo"}
+    tokens = [
+        token for token in re.findall(r"[A-Za-z][A-Za-z0-9.+-]{1,}", str(public_query or ""))
+        if token.casefold().strip(".+-") not in noise
+    ]
+    return " ".join(tokens[:8])
+
+
+def _user_authored_text(state) -> str:
+    """Return only the latest human utterance for public-disclosure decisions.
+
+    Internal retrieval may reuse a frozen request across a verified continuation. Public
+    disclosure is intentionally stricter: every web/GitHub call must be authorized and
+    constructible from the *current* human utterance. A prior public technology name or web
+    permission must never make a later control-only refinement disclose frozen context.
+    """
+    latest = last_user_text(state).strip()
+    return latest or request_text(state).strip()
+
+
+def _internal_user_request_text(state) -> str:
+    """Return the bounded human request used by internal Jira/Confluence retrieval.
+
+    Unlike public search, an in-scope continuation must retain the frozen subject while the
+    latest turn supplies fields such as parent, phase, and due date. ``_creation_subject_literals``
+    also recovers legacy checkpoints whose nominal frozen field was replaced by an interview
+    answer, but only after Session has declared a true continuation.
+    """
+    if state.get("turn_continuation"):
+        return "\n".join(_creation_subject_literals(state))
+    return last_user_text(state).strip() or request_text(state).strip()
+
+
+def _public_query_subject_text(state) -> str:
+    """Compose a public subject only after the latest turn explicitly authorizes lookup.
+
+    ``_external_research_allowed`` remains current-turn-only. Once a true continuation says
+    merely "공식 문서도 찾아줘", the frozen human request may supply the public technology
+    name without making the user repeat it. An implicit technology lookup or an unrelated new
+    turn never receives frozen text.
+    """
+    current = _user_authored_text(state).strip()
+    explicitly_authorized = any(word in current.casefold() for word in _EXTERNAL_WORDS)
+    if state.get("turn_continuation") and explicitly_authorized:
+        frozen = request_text(state).strip()
+        if frozen and frozen != current:
+            return f"{frozen}\n{current}"
+    return current
+
+
 def _external_research_allowed(state) -> bool:
     """일반 사내 ticket 작업에 임의 웹 검색을 붙이지 않는다.
 
     사용자가 외부 조사를 말했거나 CDC/StarRocks처럼 내부 module명이 아닌 고유 기술 토큰을
     요청에 쓴 경우만 허용한다. ticket key/user id/URL은 기술 토큰으로 세지 않는다.
     """
-    text = (request_text(state) + " " + conversation(state)).strip()
+    text = _user_authored_text(state)
     low = text.lower()
     if any(w in low for w in _EXTERNAL_WORDS):
         return True
+    # An explicit existing parent plus a concrete create instruction is already scoped by
+    # verified internal context.  Treating every Latin acronym as a public technology made
+    # `CDC 재처리` search the U.S. Centers for Disease Control and injected unrelated web
+    # results into an otherwise complete Jira draft.  Explicit external-research wording
+    # above still wins, and open-ended technology/meeting research keeps the normal path.
+    keys = [str(key).upper() for key in (state.get("mentioned_keys") or [])
+            if re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", str(key).upper())]
+    explicit_parent_create = bool(
+        (state.get("intent") or "") == Intent.PLAN_WORK
+        and keys
+        and re.search(r"(?:아래|밑|하위|상위|에픽|epic)", text, re.I)
+        and re.search(r"(?:만들|생성|추가|등록|초안)", text, re.I)
+        and not re.search(r"회의|미팅", text, re.I)
+    )
+    if explicit_parent_create:
+        return False
     scrubbed = _PRIVATE_EXTERNAL_PATTERN.sub(" ", _strip_known_user_tokens(text))
     latin = {x.lower().strip("._+-")
              for x in re.findall(r"[A-Za-z][A-Za-z0-9_.-]{2,}", scrubbed)}
@@ -314,7 +470,14 @@ def _comment_scope_where(state, jira_query: dict) -> str:
 
 def _ensure_explicit_comment_query(state, plan: dict) -> None:
     """Keep an explicit Jira-comment source requirement even when the model omitted it."""
-    asked = (request_text(state) + " " + conversation(state)).casefold()
+    # A relative target selector names an anchor, not the final comment ticket. Reading the
+    # anchor's comments here is both irrelevant and weaker than the later provider-resolved
+    # child identity. The target snapshot is compiled after normalization; downstream Work
+    # receives the user-authored comment body and does not need historical comments to stage it.
+    from app.agent.workflow.target_resolution import current_target_selectors
+    if current_target_selectors(state):
+        return
+    asked = _internal_user_request_text(state).casefold()
     if not any(word in asked for word in _COMMENT_WORDS):
         return
     if any(query.get("source") == "comments" for query in plan.get("queries") or []):
@@ -397,6 +560,492 @@ def _normalize_meeting_research_queries(state, plan: dict) -> None:
             })
 
 
+def _creation_subject_literals(state) -> list[str]:
+    """Return the frozen creation request followed by the latest human refinement.
+
+    ``request_text`` is the normal frozen authority. Older checkpoints and one
+    pre-research interview path could nevertheless overwrite it with a short answer such
+    as ``Epic은 네가 골라줘``. On an explicit continuation only, recover the closest
+    earlier *human* utterance whose literal technical anchors agree with the typed
+    RequestPlan. The plan is used solely to choose between human strings; it can never
+    introduce a search term. A topic-change turn never scans old conversation.
+    """
+    frozen = request_text(state).strip()
+    latest = last_user_text(state).strip()
+    original = frozen
+    # Session owns the context-boundary decision. Inferring continuation here from stale
+    # questions/structure would let an unrelated new request resurrect an older topic.
+    continuation = bool(state.get("turn_continuation"))
+    if continuation:
+        plan = state.get("request_plan") or {}
+        plan_material = " ".join((
+            str(plan.get("goal") or ""),
+            json.dumps(plan.get("tasks") or [], ensure_ascii=False, default=str),
+            " ".join(str(value) for value in (state.get("keywords") or [])),
+        ))
+        plan_anchors = {value.casefold() for value in _retrieval_anchors(plan_material)}
+        # A previous QueryRunner turn may have opened the exact Jira records before asking
+        # for parent/scope fields. Those details are bounded, verified, and reset by Session
+        # on a new request. Their subject vocabulary is therefore a safe relevance check for
+        # choosing an earlier *human* utterance; it never introduces a term by itself.
+        ledger = state.get("materialized_ticket_sources") or {}
+        ledger_material = json.dumps(
+            (ledger.get("ticketDetails") or []) if isinstance(ledger, dict) else [],
+            ensure_ascii=False, default=str,
+        )
+        ledger_anchors = {value.casefold() for value in _retrieval_anchors(ledger_material)}
+        authority_anchors = plan_anchors | ledger_anchors
+        original_anchors = {value.casefold() for value in _retrieval_anchors(original)}
+        best_overlap = len(authority_anchors & original_anchors)
+        humans = [str(getattr(message, "content", "") or "").strip()
+                  for message in (state.get("messages") or [])
+                  if getattr(message, "type", "") == "human"]
+        # The final human row is ``latest``. Search backward so the closest qualifying
+        # pre-interview request wins without pulling an older, unrelated conversation.
+        if humans and latest and humans[-1] == latest:
+            humans = humans[:-1]
+        for candidate in reversed([value for value in humans if value]):
+            anchors = {value.casefold() for value in _retrieval_anchors(candidate)}
+            overlap = len(authority_anchors & anchors)
+            if overlap >= 2 and overlap > best_overlap:
+                original, best_overlap = candidate, overlap
+
+    rows = []
+    for value in (original, latest):
+        if value and value not in rows:
+            rows.append(value)
+    return rows
+
+
+def _creation_guard_token(raw: str) -> str:
+    """Return one authoritative material token, or empty for execution-only control text."""
+    value = str(raw or "").strip().strip(".,;:!?…()[]{}\"'`")
+    if not value:
+        return ""
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}|\d+(?:차|개|건)?", value):
+        return ""
+    # Normalize only common grammar suffixes.  This is not a semantic stemmer: it merely
+    # lets ``범위는`` and ``구현까지`` meet their explicit control vocabulary below.
+    for suffix in ("으로부터", "에서는", "으로", "에서", "에게", "까지", "부터",
+                   "하는", "하며", "하고", "해서", "해야해", "해야", "해주세요",
+                   "해줘", "로", "을", "를", "은", "는", "이", "가", "의", "에"):
+        if value.endswith(suffix) and len(value) - len(suffix) >= 1:
+            value = value[:-len(suffix)]
+            break
+    folded = value.casefold()
+    if (not value or folded in _CREATION_SUBJECT_GUARD_CONTROLS
+            or _CREATION_CONTROL_PATTERN.fullmatch(value)):
+        return ""
+    return value
+
+
+def _authoritative_creation_material_anchors(state) -> list[str]:
+    """Extract subject anchors only from the current/frozen human creation request.
+
+    RequestArchitect keywords are intentionally excluded: after a context-boundary mistake a
+    model can remember the old topic, but that recollection is not authoritative retrieval
+    permission.  A true continuation already exposes its frozen human request through
+    ``_creation_subject_literals``.
+    """
+    anchors: list[str] = []
+    seen: set[str] = set()
+    authored = "\n".join(_creation_subject_literals(state))
+    for raw in re.findall(
+            r"(?<![A-Za-z0-9])[A-Z][A-Z0-9]*-\d+(?![A-Za-z0-9])|"
+            r"[A-Za-z][A-Za-z0-9_.+-]{1,}|[가-힣]+|\d+차|\d{4}-\d{2}-\d{2}",
+            authored, re.I):
+        # Exact ticket identities are handled structurally by ``mentioned_keys``/``where``;
+        # they are not lexical subject terms.
+        if re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", raw, re.I):
+            continue
+        value = _creation_guard_token(raw)
+        folded = value.casefold()
+        if value and folded not in seen:
+            seen.add(folded)
+            anchors.append(value)
+    return anchors
+
+
+def _creation_anchor_specificity(value: str) -> int:
+    """Classify one non-control subject anchor without a corpus-dependent rarity guess.
+
+    Structured identifiers and technical Latin names are independently specific enough for
+    a duplicate lookup (``fdc.table_id``, ``DeltaSketch``). A Korean domain noun of three or more
+    syllables is also a usable target. Short ordinary nouns need a second independent anchor.
+    """
+    token = str(value or "").strip()
+    if not token:
+        return 0
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.+-]{1,}", token):
+        if re.search(r"[0-9_.+-]", token):
+            return 3
+        # Product-style casing/acronyms are identifier-shaped. A longer lowercase token is
+        # a conservative rarity proxy; short generic English nouns still need a partner.
+        identifier_cased = (
+            token.isupper() or token[:1].isupper()
+            or any(character.isupper() for character in token[1:])
+        )
+        return 2 if identifier_cased or len(token) >= 6 else 1
+    if re.fullmatch(r"[가-힣]+", token):
+        return 2 if len(token) >= 3 else 1
+    return 1
+
+
+def _creation_target_required_reason(state, explicit_keys: list[str] | None = None) -> str:
+    """Return a fail-loud marker only for demonstrably control-only PLAN_WORK text.
+
+    One high-information identifier/technical anchor is sufficient; two weaker independent
+    nouns are also sufficient. Exact referenced ticket keys remain safe structural reads. The
+    r25 failure (``Epic ... 1차 구현 ... 마감``) contains only execution controls and is
+    rejected before Jira execution.
+    """
+    if str(state.get("intent") or "") != Intent.PLAN_WORK:
+        return ""
+    literals = "\n".join(_creation_subject_literals(state)).strip()
+    if not literals:
+        return ""
+    exact = [str(key).strip().upper() for key in (explicit_keys or [])
+             if re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", str(key).strip(), re.I)]
+    if exact or re.search(r"\b[A-Z][A-Z0-9]*-\d+\b", literals, re.I):
+        return ""
+    anchors = _authoritative_creation_material_anchors(state)
+    if len(anchors) >= 2 or any(_creation_anchor_specificity(value) >= 2
+                                for value in anchors):
+        return ""
+    return _CREATION_TARGET_REQUIRED_REASON
+
+
+def _query_plan_creation_target_required(plan: dict) -> str:
+    """Trust only compiler provenance paired with the no-executable-read invariant."""
+    if ((plan or {}).get("compiler_guard") == _CREATION_SUBJECT_GUARD_MARKER
+            and not ((plan or {}).get("queries") or [])):
+        return _CREATION_TARGET_REQUIRED_REASON
+    return ""
+
+
+def _explicit_creation_parent_keys(state) -> set[str]:
+    """Return only keys that human text unambiguously assigns as a parent.
+
+    ``mentioned_keys`` is a reference set, not a hierarchy contract. A request may say
+    ``DL-123 참고해서 Epic 골라줘``; treating that related Task as an explicit parent
+    suppresses the very Epic search the user delegated. Keep the boundary syntactic and
+    conservative. Runtime tier validation remains Work/Auditor's responsibility.
+    """
+    text = "\n".join(_creation_subject_literals(state))
+    keys = {
+        value.upper() for value in [
+            *re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", text, re.I),
+            *(str(key) for key in (state.get("mentioned_keys") or [])),
+        ]
+        if re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", str(value).strip(), re.I)
+    }
+    confirmed: set[str] = set()
+    for key in keys:
+        ticket = re.escape(key)
+        patterns = (
+            # `DL-10 아래`, `DL-10 Epic 아래`, `DL-10을 부모 Task로`
+            rf"\b{ticket}\b\s*(?:은|는|이|가|을|를)?\s*"
+            rf"(?:(?:Epic|에픽|상위\s*(?:Epic|에픽|티켓|Task)|부모\s*(?:티켓|Task|태스크)?)\s*)?"
+            rf"(?:아래|밑(?:에)?|하위|under)(?=\s|에|로|$|[,.])",
+            rf"\b{ticket}\b\s*(?:은|는|이|가|을|를)?\s*"
+            rf"(?:상위|부모)\s*(?:Epic|에픽|티켓|Task|태스크)?\s*(?:으로|로)?",
+            # `상위 Epic은 DL-10`, `부모 티켓: DL-10`
+            rf"(?:상위|부모)\s*(?:Epic|에픽|티켓|Task|태스크)?\s*"
+            rf"(?:은|는|이|가|:)?\s*\b{ticket}\b",
+            # `Epic DL-10 아래`, `Epic DL-10에 Task 추가`
+            rf"(?:Epic|에픽)\s*(?:키|티켓)?\s*(?:은|는|:)?\s*\b{ticket}\b\s*"
+            rf"(?:아래|밑(?:에)?|하위|에\s*(?:Task|태스크|티켓))",
+            rf"\b{ticket}\b\s*(?:에|으로)\s*(?:Sub-?Task|서브\s*태스크|Task|태스크|티켓)"
+            rf"[^.\n]{{0,24}}(?:생성|추가|만들|등록)",
+        )
+        if any(re.search(pattern, text, re.I) for pattern in patterns):
+            confirmed.add(key)
+    return confirmed
+
+
+def _creation_subject_terms(state, limit: int = 5) -> list[str]:
+    """Compile the duplicate-search subject from user-authored text.
+
+    Request Architect keywords are useful hints but are model-authored and can contain a
+    control decision such as ``Epic 생성`` even when the user said to select an existing
+    Epic. The frozen original request is therefore the authority. We strip conversational
+    control/hierarchy words while preserving domain actions such as ``전환`` or ``구축``;
+    those actions can distinguish an implementation ticket from a research ticket.
+    """
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def normalize_token(raw: str, *, keyword_phrase: bool = False) -> str:
+        value = str(raw or "").strip().strip(".,;:!?…()[]{}\"'`")
+        if not value:
+            return ""
+        # Korean particles and connective endings are grammar, not search subjects.
+        for suffix in ("으로부터", "에서는", "으로", "에서", "에게", "까지", "부터",
+                       "하는", "하며", "하고", "해서", "해야해", "해야", "해주세요",
+                       "해줘", "해", "로", "을", "를", "은", "는", "이", "가", "의", "에"):
+            if value.endswith(suffix) and len(value) - len(suffix) >= 2:
+                value = value[:-len(suffix)]
+                break
+        folded = value.casefold()
+        if (not value or folded in _CREATION_CONTROL_WORDS
+                or _CREATION_CONTROL_PATTERN.fullmatch(value)
+                or re.fullmatch(r"\d+(?:차|개|건)?|\d{4}-\d{2}-\d{2}", value)):
+            return ""
+        return value
+
+    def keyword_token_set() -> set[str]:
+        hinted: set[str] = set()
+        for phrase in state.get("keywords") or []:
+            tokens = re.findall(r"[A-Za-z][A-Za-z0-9_.+-]{1,}|[가-힣]+", str(phrase))
+            for token in tokens:
+                value = normalize_token(token, keyword_phrase=len(tokens) > 1)
+                if value:
+                    hinted.add(value.casefold())
+        return hinted
+
+    hinted = keyword_token_set()
+    for literal in _creation_subject_literals(state):
+        candidates = []
+        local_seen: set[str] = set()
+        for index, token in enumerate(re.findall(
+                r"[A-Za-z][A-Za-z0-9_.+-]{1,}|[가-힣]+|\d{4}-\d{2}-\d{2}", literal)):
+            value = normalize_token(token)
+            if not value or value.casefold() in local_seen:
+                continue
+            local_seen.add(value.casefold())
+            # Model keywords never introduce text, but overlap with the literal request is a
+            # useful semantic rank. Public/technical identifiers are next. Conversational
+            # lead-ins therefore cannot consume the five-term budget before the actual subject.
+            internal = value.casefold() in _INTERNAL_LATIN
+            is_technical = bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_.+-]{1,}", value)) \
+                and not internal
+            priority = (0 if value.casefold() in hinted else
+                        1 if is_technical else 3 if internal else 2)
+            candidates.append((priority, index, value))
+
+        anchors = [index for priority, index, _value in candidates if priority <= 1]
+        if anchors:
+            first_anchor = min(anchors)
+            # Free-form requests often start with an arbitrarily long conversational clause.
+            # Content after the first verified keyword/technical anchor is more likely to finish
+            # that subject; pre-anchor prose remains available only when the budget has room.
+            candidates = [
+                (4 if priority == 2 and index < first_anchor else priority, index, value)
+                for priority, index, value in candidates
+            ]
+
+        # Frozen original text has source precedence. The latest interview answer can add a
+        # genuine qualifier only when the original subject did not fill the bounded query.
+        selected = sorted(sorted(candidates, key=lambda row: (row[0], row[1]))[:limit],
+                          key=lambda row: row[1])
+        for _priority, _index, value in selected:
+            if value.casefold() in seen:
+                continue
+            seen.add(value.casefold())
+            terms.append(value)
+            if len(terms) >= limit:
+                return terms
+
+    # Only supplement a sparse literal subject. This is deliberately lower precedence:
+    # keywords are semantic hints generated by a model, not an authority for user intent.
+    if len(terms) < 2:
+        for phrase in state.get("keywords") or []:
+            tokens = re.findall(r"[A-Za-z][A-Za-z0-9_.+-]{1,}|[가-힣]+", str(phrase))
+            for token in tokens:
+                value = normalize_token(token, keyword_phrase=len(tokens) > 1)
+                if value and value.casefold() not in seen:
+                    seen.add(value.casefold())
+                    terms.append(value)
+                if len(terms) >= limit:
+                    return terms
+    return terms
+
+
+def _materialized_parent_reference_keys(state, subject_terms: list[str]) -> list[str]:
+    """Return relevant previously opened Epics for exact continuation revalidation.
+
+    A first research turn can open the correct Epic before the user delegates parent choice
+    in a later turn. Search hits alone are never promoted. We seed only successful, bounded
+    ``get_ticket`` details whose opened type is Epic and whose material overlaps at least two
+    retained subject anchors; QueryRunner then opens the exact key again and confirms its type.
+    """
+    if not state.get("turn_continuation"):
+        return []
+    ledger = state.get("materialized_ticket_sources") or {}
+    if not isinstance(ledger, dict):
+        return []
+    wanted = {str(value).strip().casefold() for value in subject_terms if str(value).strip()}
+    if len(wanted) < 2:
+        return []
+    selected: list[str] = []
+    for row in ledger.get("ticketDetails") or []:
+        if not isinstance(row, dict) or row.get("error"):
+            continue
+        fields = row.get("fields") or {}
+        field_type = fields.get("issuetype")
+        if isinstance(field_type, dict):
+            field_type = field_type.get("name")
+        raw_type = row.get("type") or row.get("issuetype") or field_type
+        if str(raw_type or "").strip().casefold() != "epic":
+            continue
+        key = str(row.get("key") or "").strip().upper()
+        if not re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key):
+            continue
+        material = " ".join(str(row.get(name) or "") for name in (
+            "summary", "title", "description",
+        )).casefold()
+        overlap = {term for term in wanted if term in material}
+        if len(overlap) >= 2 and key not in selected:
+            selected.append(key)
+        if len(selected) == 2:
+            break
+    return selected
+
+
+def _compile_compact_query_plan(out: dict) -> dict:
+    """Expand the model's compact retrieval AST into the runtime QueryPlan contract."""
+    compact = CompactQueryPlan.model_validate(out)
+    page_sizes = {"web": 5, "github": 5, "comments": 25}
+    queries = []
+    for index, read in enumerate(compact.reads, 1):
+        queries.append({
+            "id": f"read-{index}-{read.source}",
+            "source": read.source,
+            "query": read.subject.strip(),
+            "where": read.where.strip(),
+            "order_by": "updated DESC",
+            "fields": [],
+            "completeness": "all" if read.exhaustive else "page",
+            "page_size": page_sizes.get(read.source, 50),
+            "depends_on": [],
+        })
+    return QueryPlan(
+        queries=queries, joins=[], uncertainty=compact.uncertainty,
+    ).model_dump(exclude={"compiler_guard"})
+
+
+def _compact_request_context(state) -> dict:
+    """Project only authoritative retrieval inputs; omit verbose/stale conversation."""
+    request = request_text(state)
+    latest = last_user_text(state)
+    tasks = []
+    for task in (state.get("request_plan") or {}).get("tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        tasks.append({
+            "kind": str(task.get("kind") or ""),
+            "instruction": str(task.get("instruction") or "")[:500],
+            "criteria": [str(value)[:240]
+                         for value in (task.get("completion_criteria") or [])[:4]],
+        })
+        if len(tasks) >= 8:
+            break
+    return {
+        "request_excerpt": _bounded_retrieval_excerpt(request, 1800),
+        "latest_user_excerpt": (_bounded_retrieval_excerpt(latest, 900)
+                                if latest and latest != request else ""),
+        "literal_anchors": _retrieval_anchors(f"{request}\n{latest}"),
+        "tasks": tasks,
+        "keywords": [str(value)[:120] for value in (state.get("keywords") or [])[:12]],
+        "ticket_keys": [str(value) for value in (state.get("mentioned_keys") or [])[:20]],
+    }
+
+
+def _bounded_retrieval_excerpt(text: str, limit: int) -> str:
+    """Bound verbose minutes/attachments while retaining both request and final instruction."""
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    head = limit * 3 // 5
+    tail = limit - head
+    omitted = len(value) - limit
+    return f"{value[:head]}\n[… {omitted} chars omitted; see atomic tasks/anchors …]\n{value[-tail:]}"
+
+
+def _retrieval_anchors(text: str, limit: int = 48) -> list[str]:
+    """Extract exact identifiers from the full text, including material outside excerpts."""
+    found, seen = [], set()
+    # Scan strict identifiers first across the entire input. Otherwise dozens of ordinary
+    # English words near the beginning of a long attachment could consume the cap before a
+    # ticket key or table identifier near the middle.
+    patterns = (
+        re.compile(
+            r"(?<![A-Za-z0-9])[A-Z][A-Z0-9]*-\d+(?![A-Za-z0-9])|"
+            r"(?<![A-Za-z0-9_.])(?:skcc\.)?[a-z]\d{3,}(?![A-Za-z0-9_])|"
+            r"(?<![A-Za-z0-9_.])[A-Za-z][A-Za-z0-9]*(?:[_.+-][A-Za-z0-9]+)+(?![A-Za-z0-9_.])",
+            re.I,
+        ),
+        re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]{2,}\b"),
+    )
+    for pattern in patterns:
+        for match in pattern.finditer(str(text or "")):
+            value = match.group(0).strip(".,;:!?()[]{}")
+            folded = value.casefold()
+            if not value or folded in seen or folded in _INTERNAL_LATIN:
+                continue
+            seen.add(folded)
+            found.append(value)
+            if len(found) >= limit:
+                return found
+    return found
+
+
+def _reject_unsupported_relational_plan(plan: dict) -> None:
+    """Fail loudly instead of pretending QueryRunner performs cross-read substitution."""
+    joins = [value for value in (plan.get("joins") or []) if str(value).strip()]
+    dependent = [str(row.get("id") or "<unnamed>")
+                 for row in (plan.get("queries") or []) if row.get("depends_on")]
+    if joins or dependent:
+        raise ValueError(
+            "QueryPlan dependencies/joins are unsupported; compile independent reads or add "
+            f"a deterministic domain service (depends_on={dependent}, joins={joins})"
+        )
+
+
+def _deterministic_plan_retrieval(state) -> bool:
+    """Whether a write plan needs only compiler-owned prerequisite retrieval.
+
+    Work Architect's recovery intentionally refuses some complex drafts. Query planning
+    has a narrower decision: a write-only RequestPlan always needs the same scoped Jira
+    duplicate/target read plus any privacy-safe external lookup. It does not need a model
+    to paraphrase that requirement. Explicit research/query/analyze tasks keep the semantic
+    path because they may require additional sources or distinct filters.
+    """
+    intent = state.get("intent") or ""
+    if intent not in Intent.DRAFTS_TICKETS:
+        return False
+    try:
+        from app.agent.workflow.meeting_context import is_meeting_request
+        if is_meeting_request(state):
+            return False
+    except Exception:
+        return False
+
+    # A current, server-grounded relative selector already proves that acquisition is one
+    # bounded relationship snapshot.  Do not ask the model to rediscover that query merely
+    # because an older checkpoint preserved a contradictory ``write_intent`` boolean.
+    from app.agent.workflow.target_resolution import current_target_selectors
+    if current_target_selectors(state):
+        return True
+
+    if intent != Intent.PLAN_WORK:
+        return False
+
+    try:
+        from app.agent.workflow.agents.work_architect import _recover_delegated_creation
+        if _recover_delegated_creation(state):
+            return True
+    except Exception:
+        pass
+
+    tasks = [task for task in (state.get("request_plan") or {}).get("tasks") or []
+             if isinstance(task, dict)]
+    if not tasks or not any(bool(task.get("write_intent")) for task in tasks):
+        return False
+    semantic_read_kinds = {"query", "research", "analyze"}
+    return not any(str(task.get("kind") or "") in semantic_read_kinds for task in tasks)
+
+
 def _ensure_creation_duplicate_query(state, plan: dict) -> None:
     """Every create plan checks scoped Jira history before proposing a new ticket.
 
@@ -408,68 +1057,168 @@ def _ensure_creation_duplicate_query(state, plan: dict) -> None:
     """
     if (state.get("intent") or "") != Intent.PLAN_WORK:
         return
-    if any(query.get("source") == "jira" for query in plan.get("queries") or []):
+    plan.pop("compiler_guard", None)
+    asked = _internal_user_request_text(state).strip()
+    explicit_comments = any(word in asked.casefold() for word in _COMMENT_WORDS)
+    explicit_people = bool(re.search(
+        r"담당|할당|배정|누가|사람|인원|멤버|member|assignee", asked, re.I))
+    # New-work history needs one scoped duplicate lookup, not a status-by-status fan-out.
+    # The model used to emit five equivalent Jira queries plus speculative people/comments
+    # reads. Apart from latency, pseudo-JQL in those rows could silently return no evidence.
+    # Keep explicitly requested source classes; replace all Jira variants below with one
+    # canonical query that the deterministic runner understands.
+    plan["queries"] = [
+        query for query in (plan.get("queries") or [])
+        if query.get("source") != "jira"
+        and (query.get("source") != "comments" or explicit_comments)
+        and (query.get("source") != "people" or explicit_people)
+    ]
+    explicit_keys = [
+        str(key).upper() for key in (state.get("mentioned_keys") or [])
+        if re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", str(key).upper())
+    ]
+    target_required = _creation_target_required_reason(state, explicit_keys)
+    if target_required:
+        # This field is absent from CompactQueryPlan and is reset at ``apply`` entry, so only
+        # this deterministic compiler can establish the runtime no-read provenance.
+        plan["compiler_guard"] = _CREATION_SUBJECT_GUARD_MARKER
+        plan["queries"] = []
+        if target_required not in plan.setdefault("uncertainty", []):
+            plan["uncertainty"].append(target_required)
         return
-    ignored = {
-        "작업", "티켓", "생성", "추가", "신규", "만들자", "만들어", "요청",
-        "기능", "개선", "알아서", "task", "ticket", "create", "issue",
-    }
-    terms = []
-    def collect(material) -> None:
-        for value in material:
-            clean = re.sub(r"[\"'`]+", "", str(value)).strip()
-            if not clean or clean.casefold() in ignored or clean.casefold() in _INTERNAL_LATIN:
-                continue
-            if clean.casefold() not in {term.casefold() for term in terms}:
-                terms.append(clean)
-
-    collect(state.get("keywords") or [])
-    # Request Architect can return only a module keyword such as ``ETL``.  It is present
-    # but intentionally filtered above, so ``if not material`` is insufficient: retry from
-    # the literal request when no searchable subject survived the privacy/noise filter.
-    if not terms:
-        collect(re.findall(
-            r"[A-Za-z][A-Za-z0-9_.+-]{2,}|[가-힣]{2,}",
-            request_text(state) or last_user_text(state),
-        ))
-    if not terms:
+    terms = _creation_subject_terms(state)
+    if not terms and not explicit_keys:
         return
+    public_technical = [term for term in terms
+                        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.+-]{1,}", term)
+                        and not re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", term, re.I)
+                        and term.casefold() not in _INTERNAL_LATIN]
+    # QueryRunner has an intentional 2-of-3 compiler for public technology triples. Keep
+    # that bounded recall boundary instead of turning five mixed tokens into strict AND:
+    # related writer/reader/validation tickets often omit the umbrella product or Korean
+    # deliverable word, while the exact-duplicate guard still opens and compares each body.
+    duplicate_terms = public_technical[:3] if len(public_technical) >= 3 else terms[:5]
+    where = "key in (" + ", ".join(explicit_keys) + ")" if explicit_keys else ""
     plan.setdefault("queries", []).insert(0, {
         "id": "internal-duplicate-check",
         "source": "jira",
-        "query": " ".join(terms[:5]),
-        "where": "",
+        "query": "" if explicit_keys else " ".join(duplicate_terms),
+        "where": where,
         "order_by": "updated DESC",
         "fields": ["key", "summary", "status", "issuetype", "assignee", "updated"],
         "completeness": "all",
         "page_size": 50,
         "depends_on": [],
     })
+    # When the user delegates an existing Epic choice, selection itself needs an opened,
+    # auditable source. Work drafting may choose from the same Jira scope later, but that
+    # service result is not a Research evidence artifact. Acquire a narrow Epic candidate
+    # set here so QueryRunner materializes the selected parent before approval rendering.
+    user_text = "\n".join(_creation_subject_literals(state))
+    delegates_parent = bool(re.search(
+        r"(?:Epic|에픽)[^.\n]{0,32}(?:골라|고르|선택|정해|알아서)|"
+        r"(?:골라|고르|선택|정해)[^.\n]{0,24}(?:Epic|에픽)",
+        user_text, re.I,
+    ))
+    explicit_parent_keys = _explicit_creation_parent_keys(state)
+    if delegates_parent and not explicit_parent_keys:
+        # Three Latin anchors use QueryRunner's stable 2-of-3 lexical boundary. This keeps
+        # a relevant parent that omits an umbrella product name without broad all-Epic reads.
+        non_key_terms = [term for term in terms
+                         if not re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", term, re.I)]
+        parent_terms = public_technical[:3] if len(public_technical) >= 2 else non_key_terms[:3]
+        reference_keys = [key for key in explicit_keys if key not in explicit_parent_keys]
+        for key in _materialized_parent_reference_keys(state, terms):
+            if key not in reference_keys:
+                reference_keys.append(key)
+        if parent_terms or reference_keys:
+            plan["queries"].insert(1, {
+                "id": "parent-candidate-check", "source": "jira",
+                "query": " ".join(parent_terms), "where": "issueType = Epic",
+                "order_by": "updated DESC",
+                "fields": ["key", "summary", "status", "issuetype", "assignee", "updated"],
+                "completeness": "all", "page_size": 50, "depends_on": [],
+                # Compiler-owned relationship seed. QueryRunner opens these exact tickets,
+                # follows parent/Epic fields, and runs the lexical query only if none resolve.
+                "parent_reference_keys": reference_keys,
+            })
 
 
 class QuerySpecialist(StructuredAgent):
     name = Node.QUERY_SPECIALIST
-    temperature = 0.0
-    tier = "simple"
+
+    def node(self):
+        model_node = super().node()
+
+        def run(state):
+            # A concrete delegated creation still needs the Jira duplicate check, but it
+            # does not need a small model to restate that single deterministic query. In
+            # local-model measurements the model expanded this one query until max_tokens,
+            # then spent a second call trying to repair the truncated JSON. Reuse the same
+            # scope/pagination normalizer below so this fast path changes neither search
+            # coverage nor project scoping.
+            if _deterministic_plan_retrieval(state):
+                result = self.apply(state, {
+                    "queries": [], "joins": [], "uncertainty": [],
+                })
+                result["trace"] = note(
+                    state, self.name,
+                    f"결정적 선행 조회 {len((result.get('query_plan') or {}).get('queries') or [])}개 설계",
+                )
+                return result
+            return model_node(state)
+
+        return run
 
     def system(self, state):
         return persona(state, SYSTEM_QUERY_SPECIALIST, lite=True)
 
     def task(self, state):
+        context = json.dumps(
+            _compact_request_context(state), ensure_ascii=False, separators=(",", ":"))
         return (
-            "# Task\n\nConvert Request Architect's plan into an executable QueryPlan. "
-            "Do not answer the user or recommend an action.\n\n"
-            "## Request Plan Data\n\n" + json.dumps(state.get("request_plan") or {}, ensure_ascii=False)
-            + "\n\n## Retrieval Keywords\n\n" + json.dumps(state.get("keywords") or [], ensure_ascii=False)
-            + "\n\n## Explicit Ticket Keys\n\n" + json.dumps(state.get("mentioned_keys") or [], ensure_ascii=False)
-            + "\n\n## Recent Conversation Data\n\n" + conversation(state)
+            "# Task\n\nReturn a compact retrieval AST, not an answer or action. "
+            "Each read contains only source, literal search subject, structural where, and "
+            "whether every page is required. Preserve the user's subject exactly. Never put "
+            "ticket creation, update, selection, or workflow instructions in `subject`; those "
+            "describe the requested action, not evidence to retrieve. Use at most 8 reads; "
+            "keep every subject, where, and uncertainty string within 240 characters.\n\n"
+            "## Authoritative Retrieval Context\n\n" + context
         )
 
     def schema(self):
-        return QueryPlan.model_json_schema()
+        return role_output_schema(self.name)
 
     def apply(self, state, out):
-        plan = QueryPlan.model_validate(out).model_dump()
+        # Direct callers and persisted fixtures may still pass the historical runtime
+        # QueryPlan. Model transport always uses the compact schema above; accepting the
+        # old shape here keeps OpenAI/native callers and stored state migration-safe.
+        compact_wire = (isinstance(out, CompactQueryPlan)
+                        or isinstance(out, dict) and "queries" not in out)
+        plan = (_compile_compact_query_plan(validate_role_output(self.name, out))
+                if compact_wire else QueryPlan.model_validate(out).model_dump())
+        # Relationship-query provenance is compiler-owned. A persisted/runtime row carrying
+        # this field is not reusable authority and is dropped whole; the current grounded
+        # RequestPlan selector is recompiled below with a fresh id/anchor/cardinality.
+        ordinary_queries = []
+        for row in plan.get("queries") or []:
+            if not isinstance(row, dict) or str(row.get("target_selector_id") or "").strip():
+                continue
+            row.pop("target_selector_id", None)  # keep legacy/runtime query shape byte-stable
+            ordinary_queries.append(row)
+        plan["queries"] = ordinary_queries
+        # ``uncertainty`` is model-owned prose and cannot claim compiler provenance. Legacy
+        # runtime plans may carry the typed field, but re-applying QuerySpecialist must
+        # recompute it from the current/frozen human authority rather than trust the input.
+        plan.pop("compiler_guard", None)
+        plan["uncertainty"] = [
+            str(value) for value in (plan.get("uncertainty") or [])
+            if not str(value or "").strip().startswith(
+                _CREATION_SUBJECT_GUARD_MARKER + ":")
+        ]
+        # Validate the contract before normalization can prune a missing dependency and make
+        # an unsupported relational plan appear independent.
+        _reject_unsupported_relational_plan(plan)
         # Source coverage is a user contract, not a model preference.
         _ensure_creation_duplicate_query(state, plan)
         _ensure_explicit_comment_query(state, plan)
@@ -484,8 +1233,13 @@ class QuerySpecialist(StructuredAgent):
                 plan.setdefault("uncertainty", []).append(
                     "담당자 ID를 티켓 키로 해석한 Jira 조회는 실행하지 않음")
                 continue
+            from app.agent.workflow.exact_mention_materialization import (
+                normalize_exact_key_echo,
+            )
+            normalize_exact_key_echo(state, query)
             if not _normalize_model_jira_query(query):
                 continue
+            _normalize_internal_document_query(query)
             _normalize_query_fields(query)
             if query.get("source") == "comments" \
                     and not str(query.get("query") or "").strip() \
@@ -503,14 +1257,16 @@ class QuerySpecialist(StructuredAgent):
             plan["queries"] = [q for q in plan["queries"]
                                if q.get("source") not in ("web", "github")]
         else:
-            try:
-                from app.agent.workflow.meeting_context import is_meeting_request, meeting_subject
-                meeting_query = meeting_subject(state) if is_meeting_request(state) else ""
-            except Exception:
-                meeting_query = ""
-            public_query = (f"{meeting_query} official documentation" if meeting_query else
-                            _public_external_query(
-                                (request_text(state) + " " + conversation(state)).strip()))
+            authored_public_text = _public_query_subject_text(state)
+            # Meeting normalization may split a private identifier (`secret_client_code`
+            # → `secret client code`, `skcc.x1402` → person-like fragments). Never use that
+            # derived topic as disclosure provenance. Every external source is compiled from
+            # the original human text through the same private-token sanitizer.
+            private_authored = bool(
+                _PRIVATE_EXTERNAL_PATTERN.search(authored_public_text)
+                or _contains_known_user_token(authored_public_text)
+            )
+            public_query = _public_external_query(authored_public_text)
             web = [q for q in plan["queries"] if q.get("source") == "web"]
             candidates = [public_query]
             original_terms = set(_query_identity(public_query).split()) - {
@@ -521,7 +1277,9 @@ class QuerySpecialist(StructuredAgent):
                     "official", "documentation"}
                 # If an original public spelling is available, the canonical/translated query must remain
                 # anchored to it. This rejects an unrelated model-generated web query.
-                if translated and (not original_terms or original_terms & translated_terms):
+                unanchored_translation_allowed = not original_terms and not private_authored
+                if translated and (original_terms & translated_terms
+                                   or unanchored_translation_allowed):
                     candidates.append(translated)
             variants = []
             for candidate in candidates:
@@ -550,13 +1308,96 @@ class QuerySpecialist(StructuredAgent):
             if not variants:
                 plan.setdefault("uncertainty", []).append(
                     "External research was requested, but no privacy-safe canonical technology name was available.")
+            # GitHub uses the same disclosure boundary as web. Model-authored repository
+            # searches are candidates only: sanitize them, require overlap with the current
+            # authorized public subject, and rebuild the rows so no internal identifier can
+            # reach ``search_github``. An explicit current-turn GitHub request receives one
+            # compiler-owned row even when the model omitted it.
+            github = [q for q in plan["queries"] if q.get("source") == "github"]
+            github_requested = "github" in _user_authored_text(state).casefold()
+            github_base = _public_github_query(public_query)
+            github_candidates = [github_base]
+            github_terms = set(_query_identity(github_base).split())
+            for query in github:
+                translated = _public_github_query(
+                    _safe_model_external_query(query.get("query") or ""),
+                )
+                translated_terms = set(_query_identity(translated).split())
+                unanchored_translation_allowed = not github_terms and not private_authored
+                if translated and (github_terms & translated_terms
+                                   or unanchored_translation_allowed):
+                    github_candidates.append(translated)
+            github_variants = []
+            for candidate in github_candidates:
+                if candidate and _query_identity(candidate) not in {
+                        _query_identity(existing) for existing in github_variants}:
+                    github_variants.append(candidate)
+            github_variants = github_variants[:2]
+            plan["queries"] = [q for q in plan["queries"] if q.get("source") != "github"]
+            github_template = github[0] if github else {
+                "id": "external-github", "source": "github", "where": "",
+                "order_by": "updated DESC", "fields": [], "completeness": "page",
+                "page_size": 5, "depends_on": [],
+            }
+            if github or github_requested:
+                used_ids = {q.get("id") for q in plan["queries"]}
+                for index, candidate in enumerate(github_variants):
+                    query = dict(github_template)
+                    wanted = str(github_template.get("id") or "external-github") if index == 0 \
+                        else "external-github-alias"
+                    while wanted in used_ids:
+                        wanted += "-2"
+                    used_ids.add(wanted)
+                    query.update({"id": wanted, "source": "github", "query": candidate,
+                                  "where": ""})
+                    plan["queries"].append(query)
+                if not github_variants:
+                    plan.setdefault("uncertainty", []).append(
+                        "GitHub research was requested, but no privacy-safe public subject was available.")
+        # Append server-executed relationship reads only after every model/legacy query has
+        # been normalized. CompactQueryPlan has no target_selector_id, so only this compiler
+        # can create the branch consumed by QueryRunner.
+        from app.agent.workflow.target_resolution import selector_query_specs
+        selector_specs = selector_query_specs(state)
+        if selector_specs:
+            selector_ids = {str(row.get("id") or "") for row in selector_specs}
+            # selector_query_specs is non-empty only after current_target_selectors has
+            # rebound exactly one selector to exactly one typed write task.  Reusing that
+            # proof avoids a second, weaker interpretation of ``write_intent`` here.
+            selector_only_write = len(selector_specs) == 1
+            plan["queries"] = [
+                row for row in plan["queries"]
+                if str(row.get("id") or "") not in selector_ids
+                and not (selector_only_write and row.get("source") in {"jira", "comments"})
+            ]
+            plan["queries"].extend(selector_specs)
+            if selector_only_write:
+                # Model-authored uncertainty described the missing child identity.  The
+                # compiler-owned snapshot is the executable proof of that uncertainty, so
+                # do not retain prose that would make a complete one-row plan look partial.
+                plan["uncertainty"] = []
+        # Normalization can deterministically rebuild public/comment rows after the creation
+        # compiler runs. A target-required plan is terminal for acquisition, so reassert the
+        # exact no-executable-read half of the provenance invariant at the final boundary.
+        if plan.get("compiler_guard") == _CREATION_SUBJECT_GUARD_MARKER:
+            plan["queries"] = []
         return {"query_plan": plan,
                 "trace": note(state, self.name, f"조회 {len(plan['queries'])}개 설계")}
 
 
 __all__ = ["QuerySpecialist", "_external_research_allowed", "_public_external_query",
+           "_public_github_query", "_user_authored_text", "_internal_user_request_text",
+           "_public_query_subject_text",
            "_safe_model_external_query", "_ensure_explicit_comment_query",
+           "_normalize_internal_document_query",
            "_normalize_meeting_research_queries",
            "_known_user_tokens", "_strip_known_user_tokens", "_jira_query_is_only_people",
            "_normalize_model_jira_query", "_normalize_query_fields",
-           "_dedupe_equivalent_queries", "_ensure_creation_duplicate_query"]
+           "_dedupe_equivalent_queries", "_ensure_creation_duplicate_query",
+           "_creation_subject_literals", "_explicit_creation_parent_keys",
+           "_creation_subject_terms", "_authoritative_creation_material_anchors",
+           "_creation_target_required_reason", "_query_plan_creation_target_required",
+           "_materialized_parent_reference_keys",
+           "_compile_compact_query_plan",
+           "_compact_request_context", "_bounded_retrieval_excerpt", "_retrieval_anchors",
+           "_reject_unsupported_relational_plan", "_deterministic_plan_retrieval"]

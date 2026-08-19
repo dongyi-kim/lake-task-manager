@@ -104,6 +104,112 @@ def test_the_prompt_tells_the_model_which_kind_of_editor_it_is():
     assert "ticket description" in body and "comment" in cmt
 
 
+def test_editor_author_requests_its_manifest_profile_without_numeric_sampling_override(monkeypatch):
+    """Editor Author는 숫자 파라미터 대신 manifest의 semantic profile만 요청한다."""
+    from app.agent import config as CFG
+    from app.agent.workflow.role_manifest import ROLE_SPECS
+
+    requested = {}
+    invoked = {}
+
+    class _Reply:
+        content = "<p>검토 요청 초안</p>"
+
+    class _Llm:
+        def invoke(self, _messages, **kwargs):
+            invoked.update(kwargs)
+            return _Reply()
+
+    def _get_llm(**kwargs):
+        requested.update(kwargs)
+        return _Llm()
+
+    monkeypatch.setattr(CFG, "get_llm", _get_llm)
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: "")
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+
+    result = C.compose("__new__", "comment", "검토 요청 초안을 작성해 줘")
+    spec = ROLE_SPECS["editor_author"]
+
+    assert result["ok"] is True
+    assert requested == {
+        "tier": spec.model_tier,
+        "profile": spec.task_profile,
+        "role_id": spec.id,
+    }
+    assert invoked["config"]["metadata"] == {
+        "ltm_role_id": spec.id,
+        "ltm_output_contract": "text",
+        "ltm_execution_layer": "deep_semantic",
+        "ltm_execution_stage": "synthesis",
+    }
+
+
+def test_editor_author_preserves_error_call_usage(monkeypatch):
+    """Provider failures retain the call/stage that explains the empty editor response."""
+    from app.agent import config as CFG
+
+    class _Llm:
+        def invoke(self, _messages, **kwargs):
+            config = kwargs["config"]
+            for handler in config.get("callbacks") or []:
+                handler.on_chat_model_start(
+                    {}, [[]], run_id="editor-error", metadata=config["metadata"])
+                handler.on_llm_error(RuntimeError("connection failed"), run_id="editor-error")
+            raise RuntimeError("connection failed")
+
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kwargs: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_args: "")
+    monkeypatch.setattr(C, "_house_rules", lambda *_args: "")
+
+    result = C.compose("__new__", "comment", "검토 요청 초안을 작성해 줘")
+
+    assert result["ok"] is False
+    detail = result["usage"]["callsDetail"]
+    assert result["usage"]["calls"] == 1
+    assert detail[0]["finishReason"] == "error"
+    assert detail[0]["executionLayer"] == "deep_semantic"
+    assert detail[0]["executionStage"] == "synthesis"
+
+
+def test_editor_author_preserves_usage_for_empty_output(monkeypatch):
+    """A completed but empty response is still a measured model call."""
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+    from app.agent import config as CFG
+
+    class _Reply:
+        content = ""
+
+    class _Llm:
+        def invoke(self, _messages, **kwargs):
+            config = kwargs["config"]
+            message = AIMessage(
+                content="",
+                response_metadata={"finish_reason": "stop", "model_name": "editor-model"},
+                usage_metadata={"input_tokens": 12, "output_tokens": 0,
+                                "total_tokens": 12},
+            )
+            response = LLMResult(
+                generations=[[ChatGeneration(message=message)]], llm_output={})
+            for handler in config.get("callbacks") or []:
+                handler.on_chat_model_start(
+                    {}, [[]], run_id="editor-empty", metadata=config["metadata"])
+                handler.on_llm_end(response, run_id="editor-empty")
+            return _Reply()
+
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kwargs: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_args: "")
+    monkeypatch.setattr(C, "_house_rules", lambda *_args: "")
+
+    result = C.compose("__new__", "comment", "검토 요청 초안을 작성해 줘")
+
+    assert result["ok"] is False
+    assert result["usage"]["calls"] == 1
+    assert result["usage"]["totalTokens"] == 12
+    assert result["usage"]["callsDetail"][0]["executionStage"] == "synthesis"
+
+
 def test_fenced_output_is_unwrapped():
     """```html 로 감싸 오는 모델이 있다 — 그대로 꽂으면 에디터에 백틱이 남는다."""
     assert C._unfence("```html\n<p>안녕</p>\n```") == "<p>안녕</p>"
@@ -115,6 +221,17 @@ def test_need_info_signal_survives_inline_code_and_html_wrappers():
     assert C._need_info("`NEED_INFO: 검토 대상을 알려 주세요`") == "검토 대상을 알려 주세요"
     assert C._need_info("<p><code>NEED_INFO: 목적을 한 줄 적어 주세요</code></p>") == \
         "목적을 한 줄 적어 주세요"
+
+
+def test_editor_missing_subject_example_is_product_independent(monkeypatch):
+    from app.agent import config as CFG
+
+    monkeypatch.setattr(CFG, "llm_ready", lambda: (True, ""))
+    result = C.compose("", "description", "짧게")
+
+    assert result["ok"] is False and result["needsInfo"] is True
+    assert "수집 파이프라인 개선 작업 본문" in result["error"]
+    assert "CDC" not in result["error"]
 
 
 def test_explicitly_remaining_work_cannot_be_changed_to_completed():
@@ -152,10 +269,38 @@ def test_compose_qualifies_a_status_claim_that_conflicts_with_materials(monkeypa
         "[DL-9090] 작업 — In Progress\n"
         "명시적 미완료(완료로 쓰지 말 것): 성능 측정 | 문서 정리"))
     monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
-    r = C.compose(PROG, "comment", "상태 공유")
+    r = C.compose(PROG, "comment", "현재 진행 상태를 한 줄로 알려줘")
     assert r["ok"] is True
-    assert "성능 측정 항목" in r["html"] and "Jira 상태가 In Progress" in r["html"]
+    assert "성능 측정 항목" in r["html"] and "Jira 상태 In Progress" in r["html"]
+    assert "자료상 아직 남음" in r["html"]
     assert "확인 필요" in r["html"]
+
+
+def test_generic_status_share_uses_verified_progress_without_calling_the_llm(monkeypatch):
+    from app.agent import config as CFG
+    from app.agent.tools import survey_tools
+
+    monkeypatch.setattr(CFG, "llm_ready", lambda: (True, ""))
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kw: (_ for _ in ()).throw(
+        AssertionError("generic status share must not call the LLM")))
+    monkeypatch.setattr(survey_tools, "progress_report", lambda *_a, **_kw: {
+        "key": "DL-9090", "status": "In Progress", "due": "2026-08-24",
+        "children": [
+            {"key": "DL-9093", "title": "그래프 렌더", "status": "Closed", "done": True},
+            {"key": "DL-9095", "title": "다운스트림 조회 연동",
+             "status": "In Progress", "done": False},
+        ],
+        "comments": [{"text": "다운스트림 조회 연동을 붙였습니다. 남은 건 성능 측정입니다."}],
+        "documents": [{"excerpt": "다운스트림 조회 연동: 완료"}],
+    })
+
+    result = C.compose("DL-9090", "comment", "상태 공유")
+
+    assert result["ok"] is True and result["deterministic"] is True
+    assert result["usage"]["calls"] == 0
+    assert "DL-9093" in result["html"]
+    assert "DL-9095" in result["html"] and "상태 확인 필요" in result["html"]
+    assert "남은 확인 항목" in result["html"] and "성능 측정" in result["html"]
 
 
 def test_compose_recognizes_backticked_need_info_as_feedback(monkeypatch):
@@ -286,6 +431,19 @@ def test_editor_person_mentions_are_limited_to_verified_context_people():
     assert "skcc.x1042" not in corrected
 
 
+def test_editor_never_collapses_multiple_or_explicit_people_to_primary_assignee():
+    source = '[DL-9090] "리니지" — In Progress · 담당 [~skcc.x1402]'
+    multiple = ('<p><span data-type="mention" data-id="other.one">@other.one</span> '
+                '<span data-type="mention" data-id="other.two">@other.two</span></p>')
+    assert C._unverified_editor_person_ids(
+        multiple, "담당자를 멘션해서 검토 요청", source) == ["other.one", "other.two"]
+
+    explicit = ('<p><span data-type="mention" data-id="other.one">'
+                '@other.one</span></p>')
+    assert C._unverified_editor_person_ids(
+        explicit, "other.one을 멘션해서 검토 요청", source) == ["other.one"]
+
+
 def test_status_comment_unfinished_checklist_does_not_read_as_completed():
     from app.agent.editor_author import _normalize_unfinished_checklist_labels
 
@@ -351,6 +509,31 @@ def test_resolved_ticket_title_is_normalized_and_list_items_are_deduplicated():
     assert "짧은 가짜 제목" not in got
     assert "[데이터] 데이터셋 카탈로그 지식 픽스처" in got
     assert got.count("같은 항목") == 1
+
+    entity = _normalize_editor_ticket_titles(
+        '<p><a data-key="DL-9040">DL-9040</a> &quot;다른 자식 제목&quot;</p>', refs)
+    assert "다른 자식 제목" not in entity
+    assert "[데이터] 데이터셋 카탈로그 지식 픽스처" in entity
+
+    compatible = _normalize_editor_ticket_titles(
+        '<p><a href="DL-9040">DL-9040</a> "다른 자식 제목"</p>', refs)
+    assert "다른 자식 제목" not in compatible
+    assert "[데이터] 데이터셋 카탈로그 지식 픽스처" in compatible
+
+
+def test_resolved_ticket_colon_or_parenthesis_keeps_explanation_after_canonical_title():
+    from app.agent.editor_author import _normalize_editor_ticket_titles
+
+    refs = [{"kind": "ticket", "resolved": True, "key": "DL-9092",
+             "label": "[Runtime] 리니지 다운스트림 조회 API 응답 20초"}]
+    html = ('<p><a data-key="DL-9092">DL-9092</a>: 해결 후 연동 완료</p>'
+            '<p><a data-key="DL-9092">DL-9092</a> (현재 Closed)</p>')
+
+    got = _normalize_editor_ticket_titles(html, refs)
+
+    assert got.count('"[Runtime] 리니지 다운스트림 조회 API 응답 20초"') == 2
+    assert ': 해결 후 연동 완료' in got
+    assert '(현재 Closed)' in got
 
 
 def test_dangling_editor_connective_is_completed():
@@ -419,27 +602,52 @@ def test_non_done_child_is_added_to_the_explicit_remaining_guard():
         "<ul><li>다운스트림 2홉 조회: 완료 — DL-9092 해결</li></ul>", context)
 
 
+def test_non_done_child_key_completion_is_qualified_without_touching_done_sibling():
+    context = ('하위 1/2 완료: DL-9092 "조회 API 개선"(완료), '
+               'DL-9095 "다운스트림 조회 연동"(미완료: In Progress)')
+    html = ('<p><a class="jira-badge tkt" data-key="DL-9092" '
+            'href="/browse/DL-9092">DL-9092</a> 개선 완료 및 '
+            '<a class="jira-badge tkt" data-key="DL-9095" '
+            'href="/browse/DL-9095">DL-9095</a> 연동 완료에 따른 측정 요청</p>')
+
+    got = C._qualify_non_done_ticket_claims(html, context)
+
+    assert "DL-9092</a> 개선 완료" in got
+    assert "DL-9095</a> 연동은 Jira 상태 In Progress" in got
+    assert "상태 확인 후 측정 요청" in got
+
+    question = ('<p><a class="jira-badge tkt" data-key="DL-9095" '
+                'href="/browse/DL-9095">DL-9095</a> 완료 여부를 검토해 주세요.</p>')
+    assert C._qualify_non_done_ticket_claims(question, context) == question
+
+
 def test_conflicting_completion_is_qualified_as_a_specific_open_fact():
     from app.agent.editor_author import _qualify_status_conflicts, _status_conflicts
 
     context = "명시적 미완료(완료로 쓰지 말 것): 다운스트림 조회 연동"
     html = "<ul><li>다운스트림 조회 연동 작업은 API 개선 덕분에 완료되었습니다.</li></ul>"
     fixed = _qualify_status_conflicts(html, _status_conflicts(html, context))
-    assert "Jira 상태가 In Progress" in fixed and "확인 필요" in fixed
+    assert "자료상 아직 남음" in fixed and "Jira 상태 In Progress" in fixed and "확인 필요" in fixed
     assert not _status_conflicts(fixed, context)
 
     tagged = ("<ul><li><strong>다운스트림 조회 연동</strong> 작업은 "
               "<code>DL-9092</code> 해결 후 완료되었습니다.</li></ul>")
     fixed_tagged = _qualify_status_conflicts(tagged, _status_conflicts(tagged, context))
-    assert "Jira 상태가 In Progress" in fixed_tagged
+    assert "Jira 상태 In Progress" in fixed_tagged
 
     repeated = ("<ul><li>다운스트림 조회 연동: 완료</li></ul>"
                 "<p>다운스트림 조회 연동 작업도 완료되었습니다.</p>")
     fixed_repeated = _qualify_status_conflicts(
         repeated, _status_conflicts(repeated, context))
-    assert fixed_repeated.count("Jira 상태가 In Progress") == 2
+    assert fixed_repeated.count("Jira 상태 In Progress") == 2
     assert not _status_conflicts(fixed_repeated, context)
     assert not _status_conflicts(fixed_tagged, context)
+
+    markdown = "### 진행 상황\n\n- 다운스트림 조회 연동 작업을 완료했습니다"
+    fixed_markdown = _qualify_status_conflicts(
+        markdown, _status_conflicts(markdown, context))
+    assert "자료상 아직 남음" in fixed_markdown
+    assert not _status_conflicts(fixed_markdown, context)
 
 
 def test_unsupported_metric_is_replaced_but_seed_metric_is_preserved():
@@ -500,3 +708,243 @@ def test_compose_refuses_with_needs_setup_when_no_llm(monkeypatch):
         r = C.compose("DL-9090", "comment", "아무거나")
     assert r["ok"] is False and r.get("needsSetup") is True
     assert "설정" in r["error"]
+
+
+def test_compose_fails_closed_instead_of_returning_unresolved_pseudo_ticket(monkeypatch):
+    """A malformed ticket identity is never downgraded to an easy-to-miss success note."""
+    from app.agent import config as CFG
+
+    class _Reply:
+        content = "<h3>참고</h3><ul><li>D-9040 상위 작업</li></ul>"
+
+    class _Llm:
+        def invoke(self, _messages, **_kwargs):
+            return _Reply()
+
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kw: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: (
+        '[DL-9095] "다운스트림 조회 연동" — In Progress\n'
+        '상위 Epic: DL-9040 "데이터셋 카탈로그"'))
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+
+    result = C.compose("DL-9095", "description", "현재 맥락으로 본문을 작성해 줘")
+
+    assert result["ok"] is False and result.get("contentConflict") is True
+    assert "D-9040" in result["error"]
+    assert "html" not in result, "unresolved identity must not be insertable"
+
+
+def test_pseudo_ticket_alias_requires_unique_verified_key_and_exact_title():
+    source = ('상위 Epic: DL-9040 "데이터셋 카탈로그"\n'
+              '직접 상위 Task: DL-9090 "리니지 뷰어"')
+
+    exact = '<li>D-9040 "데이터셋 카탈로그" — 상위 Epic</li>'
+    aliases = C._source_ticket_aliases(exact, source)
+    rendered = C._badgeify(exact, ticket_aliases=aliases)
+
+    assert aliases == {"D-9040": "DL-9040"}
+    assert 'data-key="DL-9040"' in rendered and ">DL-9040</a>" in rendered
+    assert C._source_ticket_aliases(
+        '<li>D-9040 "다른 제목"</li>', source) == {}
+
+
+def test_compose_recovers_title_verified_pseudo_ancestor_keys_to_canonical_badges(monkeypatch):
+    from app.agent import config as CFG
+
+    class _Reply:
+        content = ('<h3>배경</h3><p>다운스트림 조회 연동 요청.</p>'
+                   '<h3>작업 범위</h3><ul><li>포함: 다운스트림 조회 연동</li></ul>'
+                   '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+                   '<li data-checked="false">결과와 테스트 기록 확인</li></ul>'
+                   '<h3>참고</h3><ul>'
+                   '<li>D-9040 "[데이터] 데이터셋 카탈로그 지식 픽스처" — 상위 Epic</li>'
+                   '<li>D-9090 "[Workbench] 데이터 리니지 뷰어 1차 오픈" — 직접 상위</li>'
+                   '</ul>')
+
+    class _Llm:
+        def invoke(self, _messages, **_kwargs):
+            return _Reply()
+
+    context = ('[DL-9095] "[Workbench] 다운스트림 조회 연동" — In Progress\n'
+               '상위 Epic: DL-9040 "[데이터] 데이터셋 카탈로그 지식 픽스처"\n'
+               '직접 상위 Task: DL-9090 "[Workbench] 데이터 리니지 뷰어 1차 오픈"')
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kw: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: context)
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+
+    result = C.compose("DL-9095", "description", "현재 맥락으로 본문을 작성해 줘")
+
+    assert result["ok"] is True, result.get("renderDiagnostics") or result
+    assert 'data-key="DL-9040"' in result["html"]
+    assert 'data-key="DL-9090"' in result["html"]
+    assert "D-9040" not in C._plain_text(result["html"])
+    assert "D-9090" not in C._plain_text(result["html"])
+
+
+def test_compose_canonicalizes_verified_markdown_mention_and_document(monkeypatch):
+    """Compatible-model Markdown is recovered without leaking raw syntax into the editor."""
+    from app.agent import config as CFG
+
+    class _Reply:
+        content = ("### 측정 결과 검토 요청\n\n"
+                   "@skcc.x1402 님, 조회 API 개선(DL-9092) 및 DL-9095 연동 완료에 "
+                   "따른 2홉 100 노드 측정 결과를 검토해 주세요.\n\n"
+                   "* **근거 문서:** "
+                   "https://confluence.corp.example/spaces/DL/pages/312238185/lineage")
+
+    class _Llm:
+        def invoke(self, _messages, **_kwargs):
+            return _Reply()
+
+    context = ('[DL-9090] "리니지 뷰어" — In Progress · 담당 [~skcc.x1402]\n'
+               '하위 1/2 완료: DL-9092 "조회 API 개선"(완료), '
+               'DL-9095 "다운스트림 조회 연동"(미완료: In Progress)\n'
+               '명시적 미완료(완료로 쓰지 말 것): '
+               '다운스트림 조회 연동 | 성능 측정(2홉 100 노드 기준)\n'
+               '관련 문서 「[설계] 리니지 뷰어 1차」 '
+               'https://confluence.corp.example/spaces/DL/pages/312238185/lineage')
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kw: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: context)
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+
+    result = C.compose(
+        "DL-9090", "comment", "담당자를 멘션해서 성능 측정 결과 검토 요청 코멘트 써줘")
+
+    assert result["ok"] is True, result.get("renderDiagnostics") or result
+    assert 'data-type="mention"' in result["html"]
+    assert 'data-id="skcc.x1402"' in result["html"]
+    assert 'class="conf-link"' in result["html"]
+    assert "[설계] 리니지 뷰어 1차" in result["html"]
+    assert "Jira 상태 In Progress" in result["html"]
+    assert "연동 완료" not in C._plain_text(result["html"])
+    assert "###" not in result["html"] and "**" not in result["html"]
+    assert "https://confluence" not in C._plain_text(result["html"])
+
+
+def test_compose_rejects_dangling_literal_heading_marker(monkeypatch):
+    from app.agent import config as CFG
+
+    class _Reply:
+        content = "<p>h2. 검토 결과</p><p>측정 기록을 확인해 주세요.</p>"
+
+    class _Llm:
+        def invoke(self, _messages, **_kwargs):
+            return _Reply()
+
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kw: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: '[DL-9090] "작업" — Open')
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+
+    result = C.compose("DL-9090", "comment", "검토 요청 코멘트를 작성해 줘")
+
+    assert result["ok"] is False and result.get("contentConflict") is True
+    assert "heading" in result["error"]
+
+
+def test_compose_preserves_source_verified_official_link_and_rejects_invented_url(monkeypatch):
+    from app.agent import config as CFG
+
+    class _Llm:
+        def __init__(self, content):
+            self.content = content
+
+        def invoke(self, _messages, **_kwargs):
+            return type("Reply", (), {"content": self.content})()
+
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: '[DL-9090] "작업" — Open')
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+    official = "https://docs.example/official-guide"
+    monkeypatch.setattr(
+        CFG, "get_llm", lambda **_kw: _Llm(f'<p>공식 문서 <a href="{official}">가이드</a></p>'))
+
+    verified = C.compose(
+        "DL-9090", "comment", f"공식 문서 {official}를 안내하는 코멘트를 작성해 줘")
+
+    assert verified["ok"] is True and 'class="ref-link"' in verified["html"]
+    assert official in verified["html"]
+
+    invented = "https://unknown.example/invented"
+    monkeypatch.setattr(
+        CFG, "get_llm", lambda **_kw: _Llm(f"<p>참고: {invented}</p>"))
+    rejected = C.compose("DL-9090", "comment", "참고 링크를 포함해 줘")
+
+    assert rejected["ok"] is False and rejected.get("contentConflict") is True
+    assert invented in rejected["error"]
+
+
+def test_each_ticket_keeps_its_own_status_when_one_sentence_mentions_two_tickets():
+    context = (
+        '하위 1/2 완료: ACME-81 "Atlas export"(완료: Closed), '
+        'ACME-82 "Atlas import"(미완료: In Progress)\n'
+        '티켓별 현재 상태: ACME-81=Closed | ACME-82=In Progress'
+    )
+    html = (
+        '<p><a class="jira-badge tkt" data-key="ACME-81" '
+        'href="/browse/ACME-81">ACME-81</a> export 및 '
+        '<a class="jira-badge tkt" data-key="ACME-82" '
+        'href="/browse/ACME-82">ACME-82</a> import는 Jira 상태 In Progress입니다.</p>'
+    )
+
+    got = C._bind_ticket_status_claims(html, context)
+
+    assert 'ACME-81</a> · Jira 상태 Closed' in got
+    assert 'ACME-82</a> · Jira 상태 In Progress' in got
+    assert got.count("Jira 상태 Closed") == 1
+    assert "export 및" in got
+    assert "import는 Jira 상태 In Progress입니다" not in got
+
+
+def test_shared_editor_status_is_preserved_when_both_exact_bindings_match():
+    context = "티켓별 현재 상태: ACME-83=Closed | ACME-84=Closed"
+    html = (
+        '<p><a data-key="ACME-83" href="/browse/ACME-83">ACME-83</a> 및 '
+        '<a data-key="ACME-84" href="/browse/ACME-84">ACME-84</a>는 '
+        'Jira 상태 Closed입니다.</p>'
+    )
+
+    assert C._bind_ticket_status_claims(html, context) == html
+
+
+def test_status_binding_preserves_nonledger_anchor_in_same_block():
+    context = "티켓별 현재 상태: ACME-81=Closed | ACME-82=In Progress"
+    html = (
+        '<p><a data-key="ACME-80" href="/browse/ACME-80">ACME-80</a>의 검토에서 '
+        '<a data-key="ACME-81" href="/browse/ACME-81">ACME-81</a> 및 '
+        '<a data-key="ACME-82" href="/browse/ACME-82">ACME-82</a>는 '
+        'Jira 상태 In Progress입니다.</p>'
+    )
+
+    got = C._bind_ticket_status_claims(html, context)
+
+    assert 'ACME-80</a>의 검토' in got
+    assert 'ACME-80</a> · Jira 상태' not in got
+    assert 'ACME-81</a> · Jira 상태 Closed' in got
+    assert 'ACME-82</a> · Jira 상태 In Progress' in got
+
+
+def test_compose_normalizes_hybrid_html_and_markdown_before_final_gate(monkeypatch):
+    from app.agent import config as CFG
+
+    class _Reply:
+        content = (
+            "<p>측정 결과 검토를 요청드립니다.</p>\n\n"
+            "### 확인 대상\n\n"
+            "- **측정 기준:** 2홉 100 노드\n"
+            "- 결과 기록\n\n"
+            "<p>확인 후 의견을 남겨 주세요.</p>"
+        )
+
+    class _Llm:
+        def invoke(self, _messages, **_kwargs):
+            return _Reply()
+
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kw: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: '[ACME-80] "성능 측정" — Open')
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+
+    result = C.compose("ACME-80", "comment", "측정 결과 검토 요청 코멘트를 작성해 줘")
+
+    assert result["ok"] is True
+    assert "<h3>확인 대상</h3>" in result["html"]
+    assert "<ul>" in result["html"] and "<strong>측정 기준:</strong>" in result["html"]
+    assert not any(token in result["html"] for token in ("###", "**", "- 결과 기록"))

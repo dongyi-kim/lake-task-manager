@@ -49,8 +49,12 @@ Actions에 넣지 않는다. 승인된 로컬 환경에서 필요한 suite만 �
 | 대화·검색 품질 | `tools/agent_scenarios.py`, `tools/agent_lang_ab.py` |
 | Compose | `tools/agent_compose_eval.py` |
 | Create | `tools/agent_create_suite.py` |
-| 인간 관점 판독 | `tools/agent_user_review.py`, `tools/agent_quality_read.py` |
-| 성능·토큰·시간 | `tools/agent_perf.py` |
+| 사용자 화면 raw 수집 | `tools/agent_eval_launcher.py user-review` |
+
+`user-review`도 다른 실 LLM 배터리와 동일하게 승인된 launcher를 통해서만 실행한다. 후보
+LTM 모델이나 동일 production endpoint를 별도 judge로 호출하지 않으며, Codex/Claude 작업
+에이전트가 저장된 raw output을 직접 읽어 정성 판정한다.
+| 성능·토큰·TTFT | `tools/agent_eval_launcher.py perf` |
 
 수동 배터리는 다음 경우에만 수행한다.
 

@@ -19,6 +19,7 @@ import re as _re0
 
 from app.agent.workflow.agents.base import ToolAgent
 from app.agent.prompts.roles import SYSTEM_PORTFOLIO_ANALYST
+from app.agent.workflow.continuation import jira_keys
 from app.agent.workflow.prompts import persona
 from app.agent.workflow.state import AgentState, Intent, Node, last_user_text, note
 
@@ -45,6 +46,13 @@ SCHEMA = {
 
 
 _MODULES = ("ETL", "Catalog", "Runtime", "Workbench", "DataOps", "DevOps")
+_PROGRESS_CHILD_LIMIT = 8
+_EPIC_CHILD_LIMIT = 12
+
+
+def _jira_key(value) -> bool:
+    """Accept one canonical key, never a key-shaped substring plus control text."""
+    return isinstance(value, str) and jira_keys(value, limit=2) == [value]
 
 
 def _current_person_work(state) -> dict:
@@ -101,7 +109,33 @@ def _current_person_work(state) -> dict:
             "count": int(assigned.get("count") or 0), "jql": assigned.get("jql") or ""}
 
 
-def _group_activity(state) -> str:
+def _render_group_activity(snapshot: dict) -> str:
+    """Render the legacy compatibility view from one typed snapshot."""
+    scope, roster = snapshot.get("scope") or "", snapshot.get("roster") or []
+    rows = [f"[로스터] {scope}: {', '.join(roster)} ({len(roster)}명)",
+            f"[조회 기간] 최근 {snapshot.get('window_days')}일"]
+    workload = (snapshot.get("workload") or {}).get("data") or {}
+    people = workload.get("people") or []
+    if people:
+        rows.append("[부하 — 이 수치로 '얼마나 바쁜지'를 판단해 답하라. "
+                    "진행중이 팀 평균을 크게 넘으면 과부하, 훨씬 적으면 여유다]")
+        average = sum(int(row.get("inProgress") or 0) for row in people) / max(1, len(people))
+        rows += [f"- {row.get('id')} {row.get('name', '')}: 진행중 {row.get('inProgress')}건 · "
+                 f"열림 {row.get('open')}건 · 최근 {workload.get('doneWindowDays', 28)}일 완료 "
+                 f"{row.get('done28d')}건" for row in people]
+        rows.append(f"- 팀 진행중 평균 {average:.1f}건")
+    for activity in snapshot.get("activities") or []:
+        uid, data = activity["user_id"], activity.get("data") or {}
+        touched = ", ".join(f"{row.get('key')} \"{row.get('summary','')}\"({row.get('status','')})"
+                            for row in data.get("touched") or []) or "없음"
+        jira = ", ".join(f"{row.get('key')} {row.get('what','')}"
+                         for row in data.get("jiraActivity") or []) or "없음"
+        docs = ", ".join(row.get("title", "") for row in data.get("docActivity") or []) or "없음"
+        rows.append(f"[{uid}] 담당/변경 티켓: {touched} | 코멘트 등 활동: {jira} | 문서 활동: {docs}")
+    return "\n".join(rows)
+
+
+def _group_activity_material(state) -> dict:
     """그룹 활동 질의의 사전 취합 — 로스터 전원의 활동을 **코드가** 조회해 자료로 만든다.
 
     실측 2회: 모델에게 맡기면 한 명만 조회하고 끝내거나, 티켓 표만 나열하고 사람별
@@ -111,11 +145,11 @@ def _group_activity(state) -> str:
     import re as _re
     from app.agent.workflow.state import Intent as _I
     if (state.get("intent") or "") != _I.ACTIVITY:
-        return ""
+        return {}
     asked = last_user_text(state)
     if not any(w in asked for w in ("모듈", "인력", "구성원", "팀", "들의", "들이",
                                     "관련자", "유관자")):
-        return ""                       # 특정 개인 질문은 기존 경로
+        return {}                       # 특정 개인 질문은 기존 경로
     m = _re.search(r"(\d+)\s*일", asked)
     days = max(1, min(int(m.group(1)) if m else 7, 90))
 
@@ -151,7 +185,7 @@ def _group_activity(state) -> str:
             except Exception:
                 module = ""
         if not module:
-            return ""
+            return {}
         mods = named or [module]
         who = " · ".join(mods)
         roster = []
@@ -161,44 +195,80 @@ def _group_activity(state) -> str:
                 if uid not in roster:
                     roster.append(uid)
     if not roster:
-        return ""
-    rows = [f"[로스터] {who}: {', '.join(roster)} ({len(roster)}명)", f"[조회 기간] 최근 {days}일"]
+        return {}
+    requested_workload = bool(_re.search(
+        r"바쁘|바쁨|부하|여유|한가|워크로드|일이 많|얼마나 (?:많|바)", asked))
+    workload = {"availability": "not_requested"}
     # ── "얼마나 바쁜지"를 물었으면 **부하 수치**가 답이다 ───────────────────
     # 실측: "ETL 사람들 요즘 얼마나 바쁜지"에 무슨 일을 했는지만 나열하고 정작
     # 바쁨의 정도(진행중 건수·지연·최근 처리량)는 한 줄도 없었다. 활동 회고와
     # 부하 판단은 다른 질문이다 — 코드가 워크로드를 함께 실어 준다.
-    if _re.search(r"바쁘|바쁨|부하|여유|한가|워크로드|일이 많|얼마나 (?:많|바)", asked):
+    if requested_workload:
         try:
             wl = T.BY_NAME["get_team_workload"].invoke({"module": who}) or {}
-            people = wl.get("people") or []
-            if people:
-                rows.append("[부하 — 이 수치로 '얼마나 바쁜지'를 판단해 답하라. "
-                            "진행중이 팀 평균을 크게 넘으면 과부하, 훨씬 적으면 여유다]")
-                avg = sum(int(x.get("inProgress") or 0) for x in people) / max(1, len(people))
-                for x in people:
-                    rows.append(
-                        f"- {x.get('id')} {x.get('name', '')}: 진행중 {x.get('inProgress')}건 · "
-                        f"열림 {x.get('open')}건 · 최근 {wl.get('doneWindowDays', 28)}일 완료 "
-                        f"{x.get('done28d')}건")
-                rows.append(f"- 팀 진행중 평균 {avg:.1f}건")
+            raw_people = wl.get("people")
+            people = [row for row in raw_people[:8] if isinstance(row, dict)] \
+                if isinstance(raw_people, list) else []
+            by_id = {str(row.get("id") or ""): row for row in people}
+            ids = [str(row.get("id") or "") for row in raw_people] \
+                if isinstance(raw_people, list) and all(isinstance(row, dict) for row in raw_people) else []
+            ready = (len(ids) == len(roster) == len(set(ids)) and set(ids) == set(roster)
+                     and all(all(isinstance(by_id[uid].get(field), (int, float))
+                                 for field in ("inProgress", "open", "done28d")) for uid in roster))
+            workload = {"availability": "available" if ready else "unavailable", "data": {
+                **wl, "people": [dict(row) for row in people],
+            }}
         except Exception:
-            pass
+            workload = {"availability": "unavailable"}
     # 전원 활동 조회를 병렬로 — N명 직렬(사람당 1~2초)이 턴 시간의 큰 몫이었다.
     from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        acts = list(ex.map(lambda u: (u, T.BY_NAME["get_user_activity"].invoke(
-            {"user_id": u, "days": days}) or {}), roster[:8]))
-    for uid, a in acts:
-        if a.get("denied"):
-            return ""                   # 매니저 아님 — 도구 게이트 존중, 기존 경로가 거부를 전한다
-        touched = ", ".join(f"{t.get('key')} \"{t.get('summary','')}\"({t.get('status','')})"
-                            for t in (a.get("touched") or [])[:5]) or "없음"
-        cmts = ", ".join(f"{j.get('key')} {j.get('what','')}"
-                         for j in (a.get("jiraActivity") or [])[:4]) or "없음"
-        docs = ", ".join(d.get("title", "") for d in (a.get("docActivity") or [])[:3]) or "없음"
-        rows.append(f"[{uid}] 담당/변경 티켓: {touched} | 코멘트 등 활동: {cmts} | 문서 활동: {docs}")
-    return "\n".join(rows)
+    def fetch(uid: str) -> dict:
+        try:
+            data = T.BY_NAME["get_user_activity"].invoke({"user_id": uid, "days": days}) or {}
+            if data.get("denied"):
+                return {"user_id": uid, "availability": "denied"}
+            if not all(isinstance(data.get(field), list)
+                       for field in ("touched", "jiraActivity", "docActivity")):
+                return {"user_id": uid, "availability": "unavailable"}
+            raw = {field: data[field] for field in ("touched", "jiraActivity", "docActivity")}
+            if any(not all(isinstance(row, dict) for row in rows) for rows in raw.values()):
+                return {"user_id": uid, "availability": "unavailable"}
+            if any(not _jira_key(row.get("key"))
+                   for field in ("touched", "jiraActivity") for row in raw[field]):
+                return {"user_id": uid, "availability": "unavailable"}
+            limits = {"touched": 5, "jiraActivity": 4, "docActivity": 3}
+            return {"user_id": uid, "availability": "available", "data": {
+                **data,
+                **{field: [dict(row) for row in raw[field][:limit]]
+                   for field, limit in limits.items()},
+                "coverage": {field: {"total": len(raw[field]), "returned": min(len(raw[field]), limit),
+                                      "remainingCount": max(0, len(raw[field]) - limit)}
+                             for field, limit in limits.items()},
+            }}
+        except Exception:
+            return {"user_id": uid, "availability": "unavailable"}
 
+    selected_roster = list(roster[:8])
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        activities = list(ex.map(fetch, selected_roster))
+    complete = (len(roster) == len(selected_roster)
+                and all(row.get("availability") == "available" for row in activities)
+                and (not requested_workload or workload.get("availability") == "available"))
+    snapshot = {
+        "kind": "group_activity", "scope": who, "window_days": days,
+        "roster": selected_roster, "roster_total": len(roster),
+        "workload": workload, "activities": activities, "complete": complete,
+    }
+    # Compatibility prose remains byte-for-byte shaped like the legacy pre-material.  The
+    # fast path never sends it to the model; the raw snapshot above is its only authority.
+    if any(row.get("availability") != "available" for row in activities):
+        return {"text": "", "snapshot": snapshot, "complete": False}
+    return {"text": _render_group_activity(snapshot), "snapshot": snapshot, "complete": complete}
+
+
+def _group_activity(state) -> str:
+    """Compatibility text projection for callers outside the graph node."""
+    return str((_group_activity_material(state) or {}).get("text") or "")
 
 
 def _needs_module(state) -> bool:
@@ -416,131 +486,203 @@ def _module_compare(state) -> str:
         return ""
 
 
-def _ticket_progress(state) -> str:
-    """티켓 한 건의 진척 질의 — 근거 네 갈래를 **코드가** 모아 자료로 준다.
+def _render_progress_ticket(ticket: dict) -> str:
+    """Legacy pre-material view; fast-path consumers use the raw ticket instead."""
+    key = ticket.get("key") or ""
+    blocks = []
+    tree = ticket.get("epic_tree") or {}
+    if tree.get("children"):
+        coverage = tree.get("coverage") or {}
+        remaining = int(coverage.get("remainingCount") or 0)
+        rows = [f"[{key} Epic 트리 — 전체 {tree.get('total')}건 중 완료 {tree.get('done')}건. "
+                "아래는 bounded 표본이며 전체 여부는 coverage를 따른다]"]
+        if remaining:
+            rows.append(f"- 커버리지: 앞 {coverage.get('returned')}건 표시, "
+                        f"{remaining}건 생략 — 아래 목록을 전체라고 하지 말 것")
+        rows += [f"- {x.get('key')} \"{x.get('summary', '')}\" {x.get('status', '')}"
+                 f"{' ✅' if x.get('done') else ''}" for x in tree["children"]]
+        blocks.append("\n".join(rows))
+    rows = [f'[{key}] "{ticket.get("title", "")}" — 상태 {ticket.get("status")}'
+            f' · 담당 {"[~" + ticket["assigneeId"] + "]" if ticket.get("assigneeId") else "없음"}'
+            f' · 마감 {ticket.get("due") or "없음"} · 최근 갱신 {ticket.get("updated")}']
+    children = ticket.get("children") or []
+    if children:
+        rows.append(f'하위 Sub-Task {ticket.get("children_done")} 완료:')
+        rows += [f'  - {x["key"]} "{x.get("title", "")}" '
+                 f'{"완료" if x.get("done") else "진행중"}'
+                 f' (담당 {"[~" + x["assigneeId"] + "]" if x.get("assigneeId") else "없음"})'
+                 for x in children]
+        child_coverage = ticket.get("childrenAggregate") or {}
+        if child_coverage.get("remainingCount"):
+            rows.append(f"  - 커버리지: 앞 {child_coverage.get('returned')}건 표시, "
+                        f"{child_coverage.get('remainingCount')}건 생략 — 전체 집계와 구분할 것")
+        opened = [x for x in children if not x.get("done")]
+        if opened:
+            rows.append("★ **지금 진행 중인 하위 작업 — 답에 반드시 키와 제목으로 넣는다**:")
+            rows += [f'  - {x["key"]} "{x.get("title", "")}"'
+                     f' (담당 {"[~" + x["assigneeId"] + "]" if x.get("assigneeId") else "없음"})'
+                     for x in opened]
+            rows.append("★ 위 티켓이 맡은 일은 **아직 안 끝났다**. 결과 문서나 연결 티켓에 "
+                        "그 주제가 나온다고 해서 '완료'라고 쓰지 마라 — 티켓이 열려 있는 "
+                        "것이 사실이고, 문서는 설계·계획일 수 있다.")
+    if ticket.get("changes"):
+        rows += ["티켓 변동:", *[f'  - {x["date"]} {x.get("field")} '
+                f'{x.get("from") or "(없음)"} → {x.get("to") or "(없음)"}'
+                for x in ticket["changes"]]]
+    if ticket.get("comments"):
+        rows += ["진행 보고(코멘트, 오래된 것부터):",
+                 *[f'  - {x["date"]} {x.get("who")}: {x.get("text", "")}'
+                   for x in ticket["comments"]]]
+    if ticket.get("links"):
+        rows += ["연결 티켓:", *[f'  - {x["key"]} ({x.get("rel")}) "{x.get("title", "")}" '
+                f'{"해결됨" if x.get("done") else x.get("status") or ""} (갱신 {x.get("updated")})'
+                for x in ticket["links"]]]
+    for document in ticket.get("documents") or []:
+        rows += [f'결과 기록 문서 「{document.get("title")}」 (최종 수정 {document.get("updated")}):',
+                 f'  {document.get("excerpt", "")}']
+    blocks.append("\n".join(rows))
+    return "\n\n".join(blocks)
 
-    상태 필드는 'In Progress' 한 단어라 답이 못 된다. 모델의 도구 순회에 맡기면 코멘트만
-    보거나 하위 티켓만 세고 끝낸다 — 결과를 적는 문서의 최근 수정처럼 **찾아가야 보이는**
-    근거가 특히 잘 누락된다. 반복문으로 되는 일은 코드가 한다.
-    """
+
+def _ticket_progress_material(state) -> dict:
+    """Acquire bounded raw progress data alongside the unchanged legacy view."""
     from app.agent.workflow.state import Intent as _I
-    # RequestArchitect normally extracts explicit ticket keys, but a context switch may
-    # intentionally clear carried state before rebuilding the latest request.  Progress
-    # lookup must still honor keys written in that latest authoritative utterance rather
-    # than falling through to the generic PMO/WBS path.
-    # Python's Unicode ``\b`` does not split ASCII keys from adjacent Korean particles
-    # (``DL-9090과``), so use ASCII-only boundaries.
+
+    # Python Unicode word boundaries do not split ASCII keys from adjacent Korean particles.
     latest_keys = _re0.findall(
         r"(?<![A-Za-z0-9])([A-Z][A-Z0-9]*-\d+)(?![A-Za-z0-9])",
         last_user_text(state), _re0.I,
     )
-    keys = [str(k).upper() for k in (
+    requested_keys = list(dict.fromkeys(str(key).upper() for key in (
         latest_keys or (state.get("mentioned_keys") or [])
-    ) if k][:2]
+    ) if key))
+    keys = requested_keys[:4]
     if not keys:
-        return ""
+        return {}
     asked = last_user_text(state)
-    progressy = any(w in asked for w in ("진척", "진행", "어디까지", "얼마나 됐", "상황",
-                                         "현황", "잘 되고", "근황"))
-    if not (progressy or (state.get("intent") or "") == _I.PROGRESS):
-        return ""
+    if not (any(word in asked for word in (
+            "진척", "진행", "어디까지", "얼마나 됐", "상황", "현황", "잘 되고", "근황"))
+            or (state.get("intent") or "") == _I.PROGRESS):
+        return {}
 
     from concurrent.futures import ThreadPoolExecutor
 
-    from app.agent.tools.survey_tools import progress_report
-    blocks = []
-    # Epic 키의 진척은 직계 children 이 아니라 **트리**다 — progress_report 만 보면
-    # "하위 5개 전부 완료"로 오답한다(실측: Epic 아래 열린 Task 다수를 못 봄).
     from app.agent import tools as T
+    from app.agent.tools.survey_tools import progress_report
 
-    def _epic_block(k):
+    def fetch(key: str) -> dict:
         try:
-            tr = T.BY_NAME["get_epic_tree"].invoke({"epic_key": k}) or {}
-            rows = tr.get("children") or []
-            if not rows or tr.get("error"):
-                return ""
-            done = sum(1 for t in rows if t.get("done"))
-            lines = [f"[{k} Epic 트리 — 전체 {len(rows)}건 중 완료 {done}건. "
-                     "이 목록이 곧 '이 Epic 아래 티켓 전부'다]"]
-            for t in rows[:30]:
-                lines.append(f"- {t.get('key')} \"{t.get('summary', '')}\" "
-                             f"{t.get('status', '')}{' ✅' if t.get('done') else ''}")
-            return "\n".join(lines)
+            data = progress_report(key)
+            return ({"availability": "available", "data": data}
+                    if isinstance(data, dict)
+                    else {"availability": "unavailable", "data": {}})
         except Exception:
-            return ""
-    # 키 2건이면 두 티켓을 병렬로 — prod 에선 티켓당 5갈래 조회가 통째로 대기가 된다.
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        reports = list(ex.map(lambda k: progress_report(k), keys))
-    for k, r in zip(keys, reports):
-        if r.get("error"):
-            # 미존재 키는 **사실**이다 — 자료로 밝혀야 모델이 '권한 없음'으로 지어내지
-            # 않는다(실측: DL-90933 을 권한 문제라고 답했다). 오탈자 후보도 코드가 찾는다.
+            return {"availability": "unavailable", "data": {}}
+
+    def epic_tree(key: str) -> dict:
+        try:
+            raw = T.BY_NAME["get_epic_tree"].invoke({"epic_key": key}) or {}
+            if raw.get("error"):
+                return {"availability": "unavailable", "error": str(raw.get("error"))}
+            source = raw.get("children") or []
+            if (not isinstance(source, list) or any(
+                    not isinstance(row, dict) or not _jira_key(row.get("key")) for row in source)):
+                return {"availability": "unavailable"}
+            rows = [dict(row) for row in source[:_EPIC_CHILD_LIMIT]]
+            if not rows:
+                return {"availability": "not_applicable"}
+            return {"availability": "available", "total": len(source),
+                    "done": sum(1 for row in source if row.get("done")), "children": rows,
+                    "coverage": {"returned": len(rows),
+                                 "remainingCount": max(0, len(source) - len(rows))}}
+        except Exception:
+            return {"availability": "unavailable"}
+
+    def without_display_assignees(raw: dict) -> dict:
+        ticket = {key: value for key, value in raw.items() if key != "assignee"}
+        source = raw.get("children") or []
+        ticket["children"] = [
+            {key: value for key, value in row.items() if key != "assignee"}
+            for row in source[:_PROGRESS_CHILD_LIMIT]
+        ]
+        ticket["childrenAggregate"] = {
+            "total": len(source), "done": sum(1 for row in source if row.get("done")),
+            "returned": len(ticket["children"]),
+            "remainingCount": max(0, len(source) - len(ticket["children"])),
+        }
+        ticket["children_done"] = (
+            f"{ticket['childrenAggregate']['done']}/{ticket['childrenAggregate']['total']}"
+            if source else "")
+        return ticket
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        acquired = list(pool.map(fetch, keys))
+    tickets, blocks = [], []
+    for key, acquired_row in zip(keys, acquired):
+        availability = acquired_row["availability"]
+        report = acquired_row.get("data") or {}
+        if availability != "available":
+            tickets.append({"key": key, "availability": availability})
+            continue
+        if report.get("error"):
             hint = ""
-            m = _re0.match(r"([A-Z]+-)(\d+)$", k or "")
-            if m and len(m.group(2)) >= 2:
-                # 오탈자 후보: 마지막 자리 삭제(90933→9093) / 앞자리 유지 축약
-                cands = [m.group(1) + m.group(2)[:-1], m.group(1) + m.group(2)[1:]]
-                for cand in cands:
+            match = _re0.match(r"([A-Z]+-)(\d+)$", key)
+            if match and len(match.group(2)) >= 2:
+                candidates = [
+                    match.group(1) + match.group(2)[:-1],
+                    match.group(1) + match.group(2)[1:],
+                ]
+                for candidate in candidates:
                     try:
-                        if not progress_report(cand).get("error"):
-                            hint = f" 비슷한 키로 {cand} 가 실재한다 — 오탈자인지 확인하라."
+                        if not progress_report(candidate).get("error"):
+                            hint = f" 비슷한 키로 {candidate} 가 실재한다 — 오탈자인지 확인하라."
                             break
                     except Exception:
                         pass
-            blocks.append(f"[{k}] 존재하지 않는 티켓이다(권한 문제가 아니라 미존재).{hint}")
+            tickets.append({
+                "key": key, "availability": "not_found",
+                "error": str(report.get("error") or ""), "similar_key": hint,
+            })
+            blocks.append(f"[{key}] 존재하지 않는 티켓이다(권한 문제가 아니라 미존재).{hint}")
             continue
-        eb = _epic_block(k)
-        if eb:
-            blocks.append(eb)
-        rows = [f'[{r["key"]}] "{r.get("title", "")}" — 상태 {r.get("status")}'
-                f' · 담당 {"[~" + r["assigneeId"] + "]" if r.get("assigneeId") else "없음"}'
-                f' · 마감 {r.get("due") or "없음"}'
-                f' · 최근 갱신 {r.get("updated")}']
-        if r.get("children"):
-            rows.append(f'하위 Sub-Task {r.get("children_done")} 완료:')
-            rows += [f'  - {c["key"]} "{c.get("title", "")}" '
-                     f'{"완료" if c.get("done") else "진행중"}'
-                     f' (담당 {"[~" + c["assigneeId"] + "]" if c.get("assigneeId") else "없음"})'
-                     for c in r["children"]]
-            # ★ **'지금 무엇을 하고 있나'를 따로 짚어 준다.** 위 목록에 진행중 표시가 있는데도
-            #   모델은 **끝난 것만** 옮겨 적었다(실측 PROG1: 완료된 DL-9093·9094 만 쓰고,
-            #   정작 열려 있는 DL-9095 를 한 번도 언급하지 않았다). 게다가 그 티켓이 하는 일을
-            #   "완료되었음을 확인했습니다"라고 **거꾸로** 말했다 — 결과 문서가 그 대목을
-            #   설명하고 있으면 문서의 서술을 완료로 오독한다.
-            #   진척 질문의 답에서 가장 중요한 한 줄이 이것이라 목록에 섞어 두면 안 된다.
-            open_kids = [c for c in r["children"] if not c.get("done")]
-            if open_kids:
-                rows.append("★ **지금 진행 중인 하위 작업 — 답에 반드시 키와 제목으로 넣는다**:")
-                rows += [f'  - {c["key"]} "{c.get("title", "")}"'
-                         f' (담당 {"[~" + c["assigneeId"] + "]" if c.get("assigneeId") else "없음"})'
-                         for c in open_kids]
-                rows.append("★ 위 티켓이 맡은 일은 **아직 안 끝났다**. 결과 문서나 연결 티켓에 "
-                            "그 주제가 나온다고 해서 '완료'라고 쓰지 마라 — 티켓이 열려 있는 "
-                            "것이 사실이고, 문서는 설계·계획일 수 있다.")
-        if r.get("changes"):
-            rows.append("티켓 변동:")
-            rows += [f'  - {ch["date"]} {ch.get("field")} '
-                     f'{ch.get("from") or "(없음)"} → {ch.get("to") or "(없음)"}'
-                     for ch in r["changes"]]
-        if r.get("comments"):
-            rows.append("진행 보고(코멘트, 오래된 것부터):")
-            rows += [f'  - {m["date"]} {m.get("who")}: {m.get("text", "")}'
-                     for m in r["comments"]]
-        if r.get("links"):
-            rows.append("연결 티켓:")
-            rows += [f'  - {x["key"]} ({x.get("rel")}) "{x.get("title", "")}" '
-                     f'{"해결됨" if x.get("done") else x.get("status") or ""}'
-                     f' (갱신 {x.get("updated")})' for x in r["links"]]
-        for dc in r.get("documents") or []:
-            rows.append(f'결과 기록 문서 「{dc.get("title")}」 (최종 수정 {dc.get("updated")}):')
-            rows.append(f'  {dc.get("excerpt", "")}')
-        blocks.append(chr(10).join(rows))
-    return (chr(10) + chr(10)).join(blocks)[:4000]
+        lists = ("children", "changes", "comments", "links", "documents")
+        ready = (_jira_key(key) and str(report.get("key") or "").upper() == key
+                 and all(isinstance(report.get(field), str) and report.get(field)
+                         for field in ("title", "status"))
+                 and all(isinstance(report.get(field), list)
+                         and all(isinstance(row, dict) for row in report[field]) for field in lists))
+        ready = (ready and all(_jira_key(row.get("key"))
+                               for field in ("children", "links") for row in report[field]))
+        if not ready:
+            tickets.append({"key": key, "availability": "unavailable"})
+            continue
+        ticket = without_display_assignees(report)
+        ticket.update({"key": str(report.get("key") or key),
+                       "availability": "available", "epic_tree": epic_tree(key)})
+        tickets.append(ticket)
+        blocks.append(_render_progress_ticket(ticket))
+
+    complete = (len(requested_keys) == len(keys) == len(tickets)
+                and all(row.get("availability") == "available"
+                        and (row.get("epic_tree") or {}).get("availability") != "unavailable"
+                        for row in tickets))
+    snapshot = {
+        "kind": "ticket_progress", "requested_keys": keys,
+        "requestedTotal": len(requested_keys),
+        "remainingCount": max(0, len(requested_keys) - len(keys)),
+        "missingKeys": requested_keys[len(keys):], "tickets": tickets,
+        "complete": complete,
+    }
+    return {"text": "\n\n".join(blocks)[:4000], "snapshot": snapshot,
+            "complete": complete}
+
+def _ticket_progress(state) -> str:
+    """Compatibility text projection for callers outside the graph node."""
+    return str((_ticket_progress_material(state) or {}).get("text") or "")
 
 
 class PortfolioAnalyst(ToolAgent):
     name = Node.PORTFOLIO_ANALYST
-    temperature = 0.1
     # 그룹 질의(whoami+로스터+워크로드+인원별 활동)는 6걸음으로 부족했다. 다만 전원
     # 조회는 이제 _group_activity 가 코드로 하므로 12 까지 열어 둘 이유가 없다.
     max_steps = 8
@@ -579,18 +721,26 @@ class PortfolioAnalyst(ToolAgent):
                     "kind": "choice", "field": "module",
                     "options": opts + ["잘 모르겠다 — 내가 속한 곳으로"]}],
                     "trace": note(state, self.name, "모듈 미해결 — 컴포넌트 확인 질문")}
+            machine_projects: list[dict] = []
+            legacy_only_material = False
             try:
-                pre = _group_activity(state)
+                group_material = _group_activity_material(state)
             except Exception:
-                pre = ""
+                group_material = {}
+            pre = str(group_material.get("text") or "")
             if pre:
                 state = {**state, "group_activity": pre}
+                if group_material.get("complete") is True:
+                    machine_projects.append(group_material)
+                else:
+                    legacy_only_material = True
             if not pre:
                 try:
                     pre = _self_report(state)
                 except Exception:
                     pre = ""
                 if pre:
+                    legacy_only_material = True
                     state = {**state, "group_activity": pre}
             # PMO_VIT 현안 질의 — 라벨 필터 조회다. 전체 진척률 덤프로 답하던 것(실측)을
             # 코드가 현안 목록(키·제목·상태·담당)으로 바꾼다.
@@ -602,6 +752,7 @@ class PortfolioAnalyst(ToolAgent):
                         {"jql": 'labels = "PMO_VIT" ORDER BY duedate ASC', "limit": 20}) or {}
                     rows = rj.get("items") or rj.get("tickets") or []
                     if rows:
+                        legacy_only_material = True
                         blk = ("[PMO_VIT 현안 " + str(len(rows)) + "건 — 이 목록이 곧 답이다. "
                                "건별 상태·담당·마감으로 답하라]\n"
                                + "\n".join(f"- {t.get('key')} \"{t.get('summary', '')}\" "
@@ -618,6 +769,7 @@ class PortfolioAnalyst(ToolAgent):
             except Exception:
                 day_blk = ""
             if day_blk:
+                legacy_only_material = True
                 state = {**state, "ticket_progress":
                          ((state.get("ticket_progress") or "") + "\n\n" + day_blk).strip()}
                 daily = _daily_priority_snapshot(day_blk)
@@ -632,13 +784,24 @@ class PortfolioAnalyst(ToolAgent):
             except Exception:
                 cmp_blk = ""
             if cmp_blk:
+                legacy_only_material = True
                 state = {**state, "ticket_progress":
                          ((state.get("ticket_progress") or "") + "\n\n" + cmp_blk).strip()}
             try:
-                prog = _ticket_progress(state)
+                progress_material = _ticket_progress_material(state)
             except Exception:
-                prog = ""
+                progress_material = {}
+            prog = str(progress_material.get("text") or "")
+            progress_snapshot = progress_material.get("snapshot") or {}
+            progress_missing = bool(progress_snapshot.get("missingKeys"))
+            if progress_snapshot:
+                state = {**state, "portfolio_snapshot": {
+                    "version": "portfolio.snapshot.v1", "materials": [progress_snapshot]}}
             if prog:
+                if progress_material.get("complete") is True:
+                    machine_projects.append(progress_material)
+                else:
+                    legacy_only_material = True
                 # VIT 현안 블록 등 앞선 사전취합을 덮지 않는다 — 병합.
                 merged = ((state.get("ticket_progress") or "") + "\n\n" + prog).strip()
                 state = {**state, "ticket_progress": merged}
@@ -647,16 +810,45 @@ class PortfolioAnalyst(ToolAgent):
             take_last_jql()                    # 이전 턴 잔여 비우기
             # ── L3a 직결: 진척/그룹활동 재료를 코드가 전부 취합했으면 걷지 않는다.
             # (JQL 요구는 예외 — run_jql 실행 자체가 요청의 일부다.)
-            if (prog or pre or vit_blk) and "JQL" not in last_user_text(state).upper():
+            from app.agent.workflow.typed_fast_path import (
+                evaluate_typed_fast_path, typed_fast_path_note,
+            )
+            fast_path_decision = None
+            prefetched = bool(prog or pre or vit_blk)
+            if prefetched:
+                fast_path_decision = evaluate_typed_fast_path(
+                    "portfolio.intermediate.v1",
+                    checks={"typed_material": bool(machine_projects),
+                            "all_material_complete": bool(machine_projects) and all(
+                                row.get("complete") is True for row in machine_projects),
+                            "legacy_material_absent": not legacy_only_material,
+                            "requested_targets_complete": not progress_missing,
+                            "non_jql_request": "JQL" not in last_user_text(state).upper()})
+            if ((prog or pre or vit_blk) and not progress_missing
+                    and "JQL" not in last_user_text(state).upper()):
+                if fast_path_decision.complete:
+                    out = {
+                        "portfolio_snapshot": {
+                            "version": "portfolio.snapshot.v1",
+                            "materials": [row["snapshot"] for row in machine_projects],
+                        },
+                        "trace": typed_fast_path_note(
+                            state, self.name, "typed 사전취합 → 최종 통합(중간 LLM 생략)",
+                            fast_path_decision),
+                    }
+                    if pre:
+                        out["group_activity"] = pre
+                    if prog:
+                        out["ticket_progress"] = prog
+                    return out
                 try:
                     out = self.apply(state, self._conclude(state, []))
                     if pre:
                         out["group_activity"] = pre
                     if prog:
                         out["ticket_progress"] = prog
-                    out["trace"] = (out.get("trace") or []) + [
-                        {"node": self.name, "label": "현황 조회",
-                         "note": "사전 취합 자료로 바로 정리(조회 생략)"}]
+                    out["trace"] = (out.get("trace") or []) + typed_fast_path_note(
+                        state, self.name, "typed 불완전 · 기존 중간 합성 사용", fast_path_decision)
                     return out
                 except Exception:
                     pass
@@ -665,6 +857,11 @@ class PortfolioAnalyst(ToolAgent):
                 out["group_activity"] = pre
             if prog:
                 out["ticket_progress"] = prog    # ResultIntegrator 도 이 자료로 3층을 쓴다 — State 에 싣는다
+            if progress_snapshot and not progress_material.get("complete"):
+                out["portfolio_snapshot"] = state["portfolio_snapshot"]
+            if fast_path_decision:
+                out["trace"] = (out.get("trace") or []) + typed_fast_path_note(
+                    state, self.name, "typed 불완전 · 기존 ReAct 사용", fast_path_decision)
             q = take_last_jql()
             if q and "JQL" in last_user_text(state).upper():
                 # 사용자가 JQL 을 원했다 — 어느 조회 도구를 썼든 **실행된 쿼리**를 코드가
@@ -677,15 +874,11 @@ class PortfolioAnalyst(ToolAgent):
 
     @property
     def tools(self):
-        from app.agent import tools as T
-        # 로스터·팀 워크로드 — 그룹 활동 질문("ETL 인력들 요즘 뭐 해")에 필요하다.
-        return T.PMO_TOOLS + [T.BY_NAME["get_ticket"], T.BY_NAME["get_module_people"],
-                              T.BY_NAME["get_team_workload"],
-                              T.BY_NAME["run_jql"],           # 조건 조합 검색("P1 미배정 진행중")
-                              T.BY_NAME["get_ticket_participants"]]  # 특정 티켓 유관자 대상 질의
+        from app.agent.workflow.role_manifest import tools_for_role
+        return tools_for_role(self.name)
 
     def system(self, state):
-        return persona(state, SYSTEM_PORTFOLIO_ANALYST)
+        return persona(state, SYSTEM_PORTFOLIO_ANALYST, role_id=self.name)
 
     def task(self, state):
         intent = state.get("intent") or ""
@@ -722,9 +915,14 @@ class PortfolioAnalyst(ToolAgent):
                         "evidence. Cover every roster member.\n" + ga)
         tp = state.get("ticket_progress") or ""
         if tp:
+            missing = [key for material in ((state.get("portfolio_snapshot") or {}).get("materials") or [])
+                       if isinstance(material, dict) for key in (material.get("missingKeys") or [])]
             ga_block += (
                 "\n\n### Prefetched Ticket Progress Data\n\n"
-                "Answer from this data without another query. Progress is not a status word. In Korean, cover "
+                + (("This bounded prefetch is partial. Query every missing key before concluding: "
+                    + ", ".join(missing) + ". Never describe the first batch as the complete target set. ")
+                   if missing else "Answer from this data without another query. ")
+                + "Progress is not a status word. In Korean, cover "
                 "in order: current completion including completed children; the events supporting that judgment "
                 "such as comments, ticket changes, resolved blockers, or recently updated result documents; "
                 "and remaining work and deadline risk. Preserve a document's stated remaining work. Attach an "
@@ -794,4 +992,6 @@ Explicit ticket keys: {', '.join(state.get('mentioned_keys') or []) or 'none'}{g
                 "trace": note(state, self.name, f"발견 {len(finds)}건")}
 
 
-__all__ = ["PortfolioAnalyst", "_daily_priority_snapshot", "_my_day", "_my_day_rank"]
+__all__ = [
+    "PortfolioAnalyst", "_daily_priority_snapshot", "_my_day", "_my_day_rank",
+]

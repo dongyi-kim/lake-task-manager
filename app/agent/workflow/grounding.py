@@ -32,11 +32,20 @@ _ROLE = r"(?:PM|리더|담당자?|개발자|디자이너|리포터|작성자|검
 NAME_RE = re.compile(
     rf"{_ROLE}[\*_]*[ \t]*[:\-–][ \t]*[\*_]*([가-힣]{{2,4}})\b|"
     rf"([가-힣]{{2,4}})[ \t]*님\b")
-# Natural prose also names people without punctuation: ``담당자는 안하준``.  Keeping
-# this separate preserves the stable capture groups of ``NAME_RE`` and lets the
-# non-name allowlist filter ordinary phrases such as ``담당 작업``.
+# Natural prose also names people without punctuation: ``담당자는 안하준``. A bare
+# ``담당 성능`` is a responsibility noun phrase, not a person assertion; bare ``담당``
+# therefore requires a subject particle while ``담당자`` remains an explicit role.
+_ROLE_SENTENCE = (
+    r"(?:(?:PM|리더|담당자|개발자|디자이너|리포터|작성자|검토자|매니저|QA|"
+    r"실무자|엔지니어|기획자|운영자)(?:은|는|이|가)?|담당(?:은|는|이|가))"
+)
 ROLE_NAME_SENTENCE_RE = re.compile(
-    rf"{_ROLE}(?:은|는|이|가)?[ \t]+[\*_]*([가-힣]{{2,4}})\b")
+    rf"{_ROLE_SENTENCE}[ \t]+[\*_]*([가-힣]{{2,4}})\b")
+BARE_NAME_ACTION_RE = re.compile(
+    # Bare two-syllable subjects are overwhelmingly domain nouns (생성/검증/초안/지원).
+    # Two-syllable people remain covered by explicit role and honorific grammars above.
+    r"(?<![가-힣])([가-힣]{3,4})(?:은|는|이|가)[ \t]+"
+    r"(?:담당|진행|작성|보고|검토|확인|수행|맡)")
 UID_RE = re.compile(r"^[a-z]+\.[a-z]\d+$")
 # 답변 속 사번 꼴 토큰 — 실재 검증 대상. NNNN 같은 자리표시자는 그 자체로 위반이다
 # (재작성 지시문의 예시 표기를 답에 그대로 복사한 실측 사고).
@@ -195,7 +204,7 @@ def check(reply: str, allowed_people: set[str] | None = None) -> dict:
         elif loose and not ok_loose:
             wrong_titles[key] = real
 
-    fake_people, name_as_id = [], {}
+    fake_people, name_as_id, person_findings = [], {}, []
     try:
         from app.domain.search import search_users
         s = settings()
@@ -209,6 +218,10 @@ def check(reply: str, allowed_people: set[str] | None = None) -> dict:
             if "N" in uid.split(".")[-1].upper() and any(ch == "N" for ch in uid):
                 if "NN" in uid.upper():
                     fake_people.append(uid + " (자리표시자)")
+                    person_findings.append({
+                        "candidate": uid, "context_kind": "user_id",
+                        "verdict": "placeholder",
+                    })
                     continue
             # ★ 전체 id 가 **정확히** 실재해야 한다. 접미(x1001)만 검색하면 다른 실존
             #   사번(skcc.x1001)의 접미와 겹치는 날조(etl.x1001)가 통과한다(실측).
@@ -216,20 +229,33 @@ def check(reply: str, allowed_people: set[str] | None = None) -> dict:
                    (search_users(c, s, uid.split(".")[-1], 8) or [])
             if not any(str(u.get("id") or "") == uid for u in hits):
                 fake_people.append(uid)
+                person_findings.append({
+                    "candidate": uid, "context_kind": "user_id",
+                    "verdict": "unverified_person",
+                })
         # 역할 문맥 + 키→사람 매핑("**DL-123**: 김철수") 두 꼴 모두 본다 —
         # 후자는 역할 낱말이 제목 줄에만 있고 항목 줄엔 없어서 NAME_RE 가 놓쳤다(실측).
-        names = [(m.group(1) or m.group(2) or "").strip() for m in NAME_RE.finditer(text)]
-        names += [m.group(1).strip() for m in ROLE_NAME_SENTENCE_RE.finditer(text)]
-        names += [m.group(1).strip() for m in KEY_NAME_RE.finditer(text)]
-        names += [m.group(1).strip() for m in TABLE_NAME_RE.finditer(text)]
+        candidates = [
+            ((m.group(1) or m.group(2) or "").strip(),
+             "role_delimiter" if m.group(1) else "honorific")
+            for m in NAME_RE.finditer(text)
+        ]
+        candidates += [(m.group(1).strip(), "role_sentence")
+                       for m in ROLE_NAME_SENTENCE_RE.finditer(text)]
+        candidates += [(m.group(1).strip(), "ticket_mapping")
+                       for m in KEY_NAME_RE.finditer(text)]
+        candidates += [(m.group(1).strip(), "role_table")
+                       for m in TABLE_NAME_RE.finditer(text)]
+        candidates += [(m.group(1).strip(), "named_actor_action")
+                       for m in BARE_NAME_ACTION_RE.finditer(text)]
         # 상태·시간 낱말은 사람이 아니다 — "DL-9090: 현재 2/3 완료" 의 '현재'가 인물로
         # 걸렸다(실측 오탐). 이 목록은 오탐이 관측될 때마다 늘린다.
         _NOT_NAMES = {"현재", "이번", "오늘", "내일", "진행", "완료", "지연", "마감", "기한",
                       "상태", "예정", "검토", "확인", "미정", "없음", "전체", "작업", "근거",
                       "후보", "후보는", "업무", "내용", "분야", "조직", "모듈", "티켓", "범위",
-                      "확인되지"}
+                      "확인되지", "기존", "버전", "변경", "리샘플", "검증"}
         _NOT_NAME_SUFFIXES = ("에는", "에서는", "으로는", "부터는", "까지는", "보다도")
-        for name in names:
+        for name, context_kind in candidates:
             if (not name or name in seen or UID_RE.match(name) or name in _NOT_NAMES
                     or name.endswith(_NOT_NAME_SUFFIXES)
                     or name in allowed_people):
@@ -238,6 +264,10 @@ def check(reply: str, allowed_people: set[str] | None = None) -> dict:
             hits = search_users(c, s, name) or []
             if not hits:
                 fake_people.append(name)
+                person_findings.append({
+                    "candidate": name, "context_kind": context_kind,
+                    "verdict": "unverified_person",
+                })
             else:
                 # ★ **실재하는 실명도 위반이다.** result_integrator.md: "never translate ids into
                 #   names". 여태 이 검사는 **날조만** 봤기 때문에 실명이 그냥 통과했다
@@ -247,6 +277,10 @@ def check(reply: str, allowed_people: set[str] | None = None) -> dict:
                 uid = str((hits[0] or {}).get("id") or "")
                 if uid:
                     name_as_id[name] = uid
+                    person_findings.append({
+                        "candidate": name, "context_kind": context_kind,
+                        "verdict": "verified_name_requires_id",
+                    })
     except Exception:
         pass          # 사람 검증이 안 되는 환경이면 키 검사만으로 간다
 
@@ -254,6 +288,7 @@ def check(reply: str, allowed_people: set[str] | None = None) -> dict:
     return {"fake_keys": fake_keys, "wrong_titles": wrong_titles,
             "fake_people": fake_people, "real_titles": real_titles,
             "unlinked_refs": unlinked_refs, "name_as_id": name_as_id,
+            "person_findings": person_findings,
             "ok": not (fake_keys or wrong_titles or fake_people
                        or unlinked_refs or name_as_id)}
 

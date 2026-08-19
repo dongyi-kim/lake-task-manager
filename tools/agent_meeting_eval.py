@@ -1,10 +1,12 @@
 # tools/agent_meeting_eval.py — 회의록 이해·조사·인터뷰·write 초안 배터리.
+# 실행: python -X utf8 tools/agent_eval_launcher.py meeting [모델] [케이스ID ...] [--out 결과.json]
 from __future__ import annotations
 
 import json
 import os
 import re
 import sys
+from dataclasses import dataclass
 from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -18,7 +20,10 @@ except ImportError:
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
 
-BATTERY_VERSION = "3.0.0"
+# v3.2.0 maps heterogeneous-note outcomes by stable outcome id, falling back to
+# exact source assignee/due tuples.  Repeated title substrings no longer select row 0.
+# v4.0.0 inherits the common hidden-draft/user-visible approval boundary.
+BATTERY_VERSION = "4.0.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("meeting")
 
 
@@ -175,6 +180,77 @@ def _meeting_fragment_summary_ok(output: dict[str, Any], outputs: list[dict[str,
     )
 
 
+@dataclass(frozen=True)
+class _OutcomeSource:
+    outcome_ids: tuple[str, ...]
+    subject_terms: tuple[str, ...]
+    assignee: str
+    due: str
+
+
+def _stable_outcome_ids(row: dict[str, Any]) -> set[str]:
+    values = []
+    for field in ("outcome_id", "source_outcome_id", "source_task_id"):
+        if row.get(field):
+            values.append(row[field])
+    for field in ("outcome_refs", "applicable_outcome_refs"):
+        values.extend(row.get(field) or [])
+    return {str(value).strip() for value in values if str(value).strip()}
+
+
+def _row_due(row: dict[str, Any]) -> str:
+    return str(row.get("duedate") or row.get("due") or "")
+
+
+def _map_outcome_rows(
+    rows: list[dict[str, Any]], expectations: tuple[_OutcomeSource, ...],
+) -> dict[_OutcomeSource, dict[str, Any]]:
+    """Map one row per outcome by typed id or an exact literal source tuple."""
+    declared_ids = [_stable_outcome_ids(row) for row in rows]
+    result: dict[_OutcomeSource, dict[str, Any]] = {}
+    used: set[int] = set()
+
+    # Recognized source ids are authoritative.  Runtime may instead expose opaque stable
+    # hashes; those cannot be decoded by the evaluator and therefore use exact source
+    # assignee/due mapping below.
+    for expectation in expectations:
+        candidates = [
+            index for index, ids in enumerate(declared_ids)
+            if ids.intersection(expectation.outcome_ids)
+        ]
+        if len(candidates) > 1:
+            return {}
+        if candidates:
+            index = candidates[0]
+            if index in used:
+                return {}
+            used.add(index)
+            result[expectation] = rows[index]
+
+    for expectation in expectations:
+        if expectation in result:
+            continue
+        candidates = [
+            index for index, row in enumerate(rows)
+            if index not in used
+            and str(row.get("assignee") or "") == expectation.assignee
+            and _row_due(row) == expectation.due
+        ]
+        if len(candidates) != 1:
+            return {}
+        index = candidates[0]
+        used.add(index)
+        result[expectation] = rows[index]
+    return result if len(result) == len(expectations) else {}
+
+
+_MTG7_OUTCOMES = (
+    _OutcomeSource(("task_writer", "writer"), ("writer",), "skcc.i2011", "2026-08-22"),
+    _OutcomeSource(("task_reader", "reader"), ("reader",), "skcc.x1402", "2026-08-25"),
+    _OutcomeSource(("task_masking", "masking"), ("마스킹", "masking"), "", "2026-08-27"),
+)
+
+
 def _meeting_fragment_create_ok(output: dict[str, Any], outputs: list[dict[str, Any]]) -> bool:
     pending = _pending(output)
     rows = pending_items(output)
@@ -184,18 +260,16 @@ def _meeting_fragment_create_ok(output: dict[str, Any], outputs: list[dict[str, 
         return False
     if any((row.get("epic") or row.get("epicKey") or "") != "DL-9200" for row in rows):
         return False
-    writer = next((row for row in rows if "writer" in _text(row).lower()), {})
-    reader = next((row for row in rows if "reader" in _text(row).lower()), {})
-    masking = next((row for row in rows if "마스킹" in _text(row)), {})
-    expected = (
-        (writer, "skcc.i2011", "2026-08-22"),
-        (reader, "skcc.x1402", "2026-08-25"),
-        (masking, "", "2026-08-27"),
-    )
-    for row, owner, due in expected:
-        if not row or str(row.get("assignee") or "") != owner:
+    mapped = _map_outcome_rows(rows, _MTG7_OUTCOMES)
+    if not mapped:
+        return False
+    for expectation, row in mapped.items():
+        if not any(term.casefold() in _text(row).casefold()
+                   for term in expectation.subject_terms):
             return False
-        if str(row.get("duedate") or row.get("due") or "") != due:
+        if str(row.get("assignee") or "") != expectation.assignee:
+            return False
+        if _row_due(row) != expectation.due:
             return False
         body = str(row.get("description") or "")
         if not all(section in body for section in ("배경", "작업 범위", "완료 조건")):
@@ -245,6 +319,14 @@ def _meeting_fragment_update_ok(output: dict[str, Any], outputs: list[dict[str, 
         and "skcc.x1042" in body
         and not pending.get("comment")
     )
+
+
+# Case checkers are fingerprinted directly as members of ``CASES``.  Their shared helpers
+# are separate callables, so list them explicitly to keep the manifest exact.
+MEETING_CHECKER_DEPENDENCIES = (
+    pending_items, _text, _pending, _interview_then_resume,
+    _OutcomeSource, _stable_outcome_ids, _row_due, _map_outcome_rows, _MTG7_OUTCOMES,
+)
 
 
 CASES = [
@@ -431,6 +513,7 @@ if __name__ == "__main__":
         prompt_version=PROMPT_VERSION,
         suite_review_elements=SUITE_REVIEW_ELEMENTS,
         case_review_specs=CASE_REVIEW_SPECS,
+        checker_dependencies=MEETING_CHECKER_DEPENDENCIES,
         selected=selected,
         requested_out=requested_out,
     )

@@ -15,22 +15,272 @@ from __future__ import annotations
 
 import json
 import re as _re
+from html import unescape
 
 from app.agent.workflow.agents.base import TextAgent
 from app.agent.workflow.agents.work_architect import draft_text
 from app.agent.prompts.roles import SYSTEM_RESULT_INTEGRATOR
-from app.agent.workflow.evidence_index import canonicalize_evidence_index
+from app.agent.workflow.claim_grounding import (
+    drop_unsupported_guarantees as _drop_unsupported_guarantees,
+)
+from app.agent.workflow.claim_provenance import (
+    EVIDENCE_HEADING_RE, bind_evidence_provenance, evidence_source_id,
+)
+from app.agent.workflow.evidence_index import (
+    atomic_fact_sidecar, build_atomic_fact_ledger, build_claim_provenance_graph,
+    canonical_materialized_documents, canonical_observation_facts,
+    canonical_quantity_relations, canonical_source_scope_facts,
+    canonical_related_documents, canonicalize_evidence_index,
+    enforce_atomic_fact_boundaries, normalize_evidence_heading_boundary,
+    normalize_evidence_summaries, rebind_atomic_fact_citations,
+)
 from app.agent.workflow.prompts import data_block, persona, wrap_data
+from app.agent.workflow.continuation import jira_keys
+from app.agent.workflow.source_coverage import (
+    _EXTERNAL_SOURCE_COVERAGE_CLASSES,
+    _EXTERNAL_SOURCE_QUERY_CLASSES,
+    _OFFICIAL_EXTERNAL_SOURCE_COVERAGE_CLASSES,
+    _SOURCE_COVERAGE_LABELS,
+    _SOURCE_COVERAGE_ORDER,
+    _embedded_comment_coverage_rows,
+    _embedded_comment_hit_count,
+    _missing_planned_query_ids,
+    _requested_source_classes,
+    _requested_source_coverage,
+    _source_coverage_error_kind,
+    _source_coverage_rows,
+    _source_result_candidate_count,
+    _source_result_hit_count,
+)
 from app.agent.workflow.state import (AgentState, Intent, Node, last_user_text, note,
                                       is_memory_only_request, request_text)
+from app.agent.workflow.typed_fast_path import (
+    evaluate_typed_fast_path, typed_fast_path_note,
+)
+from app.agent.workflow.execution_receipt import (
+    parse_execution_receipt, render_execution_receipt,
+)
+
+
+def _text(value) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _jira_key(value) -> bool:
+    return isinstance(value, str) and jira_keys(value, limit=2) == [value]
+
+
+def _keyed_rows(rows) -> bool:
+    return (isinstance(rows, list) and all(
+        isinstance(row, dict) and _jira_key(row.get("key")) for row in rows))
+
+
+def _bounded_key_rows(rows, aggregate) -> bool:
+    if not _keyed_rows(rows) or not isinstance(aggregate, dict):
+        return False
+    total, done = aggregate.get("total"), aggregate.get("done")
+    returned, remaining = aggregate.get("returned"), aggregate.get("remainingCount")
+    return (all(type(value) is int and value >= 0
+                for value in (total, done, returned, remaining))
+            and returned == len(rows) and total == returned + remaining and done <= total)
+
+
+def _bounded_epic_tree(tree) -> bool:
+    if not isinstance(tree, dict) or tree.get("availability") == "not_applicable":
+        return isinstance(tree, dict) and tree.get("availability") == "not_applicable"
+    coverage = tree.get("coverage")
+    if tree.get("availability") != "available" or not isinstance(coverage, dict):
+        return False
+    return _bounded_key_rows(tree.get("children"), {
+        "total": tree.get("total"), "done": tree.get("done"), **coverage,
+    })
+
+
+def _sealed_structure_tree(state: dict) -> str:
+    from app.agent.workflow.agents.work_architect import structure_tree
+    plan = state.get("structure_plan")
+    if (not isinstance(plan, list) or any(
+            not isinstance(row, dict) or not isinstance(row.get("children"), list)
+            or not isinstance(row.get("components"), list)
+            or any(not _text(child) for child in row["children"])
+            or any(not _text(component) for component in row["components"])
+            for row in plan)):
+        return ""
+    items = [{**row, "children": [{"summary": child} for child in row.get("children") or []]}
+             for row in plan if isinstance(row, dict)]
+    return structure_tree(items) if len(items) == len(plan) else ""
+
+
+def _structure_fast_path_decision(state: dict):
+    tree = (state.get("draft") or {}).get("structure_tree")
+    plan = state.get("structure_plan")
+    sealed = _sealed_structure_tree(state)
+    return evaluate_typed_fast_path(
+        "result.structure_tree.v1",
+        checks={
+            "tree": _text(tree),
+            "stage_authority": state.get("structure_ok") is False
+            and not state.get("approval_token") and isinstance(plan, list) and bool(plan)
+            and all(isinstance(row, dict) and _text(row.get("summary")) for row in plan),
+            "tree_seal": _text(sealed) and tree == sealed,
+            "render_safe": _text(sealed) and "```" not in sealed
+            and all(character in "\n\t" or ord(character) >= 32 for character in sealed),
+        })
+
+
+def _structure_reply(tree: str) -> str:
+    return ("### 구조 제안\n\n```\n" + tree + "\n```\n\n"
+            "항목은 합치기·나누기·추가·제거·이름 변경이 가능합니다.")
+
+
+def _execution_receipt_fast_path(state: dict):
+    """Validate one server-signed receipt and prepare its inert deterministic projection."""
+    receipt = None
+    rendered = ""
+    try:
+        receipt = parse_execution_receipt(
+            state.get("execution_receipt"),
+            thread_id=str(state.get("thread_id") or ""),
+            token=str(state.get("approval_token") or ""),
+        )
+        if receipt is not None:
+            rendered = render_execution_receipt(receipt)
+    except Exception:
+        # Validator/renderer availability is not execution authority.  Preserve the reachable
+        # semantic Result path rather than aborting the graph or replaying the side effect.
+        receipt, rendered = None, ""
+    complete = receipt is not None
+    decision = evaluate_typed_fast_path(
+        "result.execution_receipt.v1",
+        checks={
+            "typed_receipt": complete,
+            "current_thread": complete,
+            "current_capability": complete,
+            "exact_approval": complete,
+            "exact_outcomes": complete,
+            "safe_renderable": bool(rendered),
+        },
+    )
+    return decision, receipt, rendered
+
+
+def _complete_portfolio_snapshot(snapshot) -> bool:
+    if not isinstance(snapshot, dict) or snapshot.get("version") != "portfolio.snapshot.v1":
+        return False
+    materials = snapshot.get("materials")
+    if not isinstance(materials, list) or not materials:
+        return False
+    for material in materials:
+        if not isinstance(material, dict) or material.get("complete") is not True:
+            return False
+        if material.get("kind") == "group_activity":
+            roster, activities = material.get("roster"), material.get("activities")
+            workload = material.get("workload") or {}
+            if (workload.get("availability") not in {"available", "not_requested"}
+                    or not isinstance(roster, list) or not roster or not isinstance(activities, list)
+                    or len(roster) != len(activities) or any(
+                    not isinstance(row, dict) or row.get("availability") != "available"
+                    or row.get("user_id") != roster[index]
+                    or not all(isinstance((row.get("data") or {}).get(field), list)
+                               for field in ("touched", "jiraActivity", "docActivity"))
+                    or not all(_keyed_rows((row.get("data") or {}).get(field))
+                               for field in ("touched", "jiraActivity"))
+                    for index, row in enumerate(activities))):
+                return False
+        elif material.get("kind") == "ticket_progress":
+            requested, tickets = material.get("requested_keys"), material.get("tickets")
+            if (not isinstance(requested, list) or not requested or not isinstance(tickets, list)
+                    or len(requested) != len(set(requested))
+                    or not all(_jira_key(key) for key in requested)
+                    or material.get("remainingCount") != 0
+                    or material.get("missingKeys") != []
+                    or material.get("requestedTotal") != len(requested)
+                    or len(requested) != len(tickets) or any(
+                    not isinstance(row, dict) or row.get("availability") != "available"
+                    or row.get("key") != requested[index] or not _text(row.get("title"))
+                    or not _text(row.get("status"))
+                    or not all(isinstance(row.get(field), list)
+                               for field in ("children", "changes", "comments", "links", "documents"))
+                    or not _bounded_key_rows(row.get("children"), row.get("childrenAggregate"))
+                    or not _keyed_rows(row.get("links"))
+                    or not _bounded_epic_tree(row.get("epic_tree"))
+                    for index, row in enumerate(tickets))):
+                return False
+        else:
+            return False
+    return True
+
+
+def _portfolio_prompt_material(snapshot) -> str:
+    return (json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"), default=str)
+            if _complete_portfolio_snapshot(snapshot) else "")
+
+
+def _portfolio_ticket_rows(snapshot):
+    for material in (snapshot.get("materials") or []) if isinstance(snapshot, dict) else []:
+        if isinstance(material, dict) and material.get("kind") == "ticket_progress":
+            for ticket in material.get("tickets") or []:
+                if isinstance(ticket, dict):
+                    yield ticket
+                    yield from (row for field in ("children", "links")
+                                for row in (ticket.get(field) or []) if isinstance(row, dict))
+
+
+def _portfolio_atomic_facts(snapshot) -> list[dict]:
+    if not _complete_portfolio_snapshot(snapshot):
+        return []
+    facts = []
+
+    def add(subject, predicate, value, provenance, observed_at=""):
+        if not subject or value is None:
+            return
+        rendered = (json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+                    if isinstance(value, (list, dict)) else
+                    "true" if value is True else "false" if value is False else str(value))
+        facts.append({
+            "fact_id": f"portfolio:{subject}:{predicate}", "subject_id": str(subject),
+            "predicate": predicate, "value": rendered,
+            "state": rendered if predicate in {"status", "done"} else "",
+            "observed_at": str(observed_at or ""), "source_id": f"portfolio:{subject}",
+            "provenance": provenance, "direct": True, "authority": "portfolio_snapshot",
+        })
+
+    for index, material in enumerate(snapshot["materials"]):
+        if material["kind"] == "group_activity":
+            for activity in material.get("activities") or []:
+                uid, data = activity.get("user_id"), activity.get("data") or {}
+                for field, predicate in (("touched", "assigned_or_changed_tickets"),
+                                         ("jiraActivity", "jira_activity"),
+                                         ("docActivity", "document_activity")):
+                    add(uid, predicate, data.get(field), f"portfolio_snapshot.materials[{index}].{field}")
+            workload = (material.get("workload") or {}).get("data") or {}
+            for person in workload.get("people") or []:
+                for field, predicate in (("inProgress", "in_progress_count"),
+                                         ("open", "open_count"), ("done28d", "completed_count")):
+                    add(person.get("id"), predicate, person.get(field),
+                        f"portfolio_snapshot.materials[{index}].workload.{field}")
+        else:
+            for row in _portfolio_ticket_rows({"materials": [material]}):
+                key = row.get("key")
+                for field, predicate in (("status", "status"), ("done", "done"),
+                                         ("assigneeId", "assignee"), ("due", "duedate")):
+                    add(key, predicate, row.get(field),
+                        f"portfolio_snapshot.materials[{index}].tickets[{key}].{field}",
+                        row.get("updated"))
+    return facts
+
+
+def _result_atomic_ledger(state):
+    return build_atomic_fact_ledger(
+        state, extra_facts=_portfolio_atomic_facts(state.get("portfolio_snapshot") or {}),
+    )
 
 
 class ResultIntegrator(TextAgent):
     name = Node.RESULT_INTEGRATOR
-    temperature = 0.4          # 사람에게 보일 문장이라 약간의 자연스러움이 필요하다
 
     def system(self, state):
-        return persona(state, SYSTEM_RESULT_INTEGRATOR)
+        return persona(state, SYSTEM_RESULT_INTEGRATOR, role_id=self.name)
 
     def _run(self, state):
         """완전한 deterministic 집계는 다시 LLM에 요약시키지 않는다.
@@ -38,15 +288,89 @@ class ResultIntegrator(TextAgent):
         사람·티켓 목록을 이미 코드가 확정했는데 마지막 모델이 일부를 생략하거나 무관 티켓을
         덧붙이는 것이 이번 실패의 직접 원인이었다. 이 갈래는 아래 renderer가 곧 최종 답이다.
         """
+        misses = []
+        from app.agent.workflow.effect_contract import (
+            continuation_action, current_work_failed, final_effect,
+            project_final_authority_state,
+        )
+        projected = project_final_authority_state(state)
+        # Execution is terminal even though the consumed approval token remains in graph state.
+        # A signed receipt outranks stale questions/review/card data.  A malformed receipt may
+        # trigger the semantic reporter only when a legacy execution result also exists; by
+        # itself it is inert and cannot bypass review/question authority.
+        if projected.get("execution_receipt"):
+            decision, _receipt, rendered = _execution_receipt_fast_path(projected)
+            if decision.complete:
+                return self.apply({**projected, "_deterministic_reply": True,
+                                   "_typed_terminal_reply": True,
+                                   "_fast_path_decision": decision,
+                                   "_fast_path_note": "승인 실행 영수증 결정적 렌더링"},
+                                  {"text": rendered})
+            if projected.get("result"):
+                out = super()._run(projected)
+                out["trace"] = [*(out.get("trace") or []), *typed_fast_path_note(
+                    projected, self.name, "승인 실행 영수증 불완전 · 기존 합성 사용", decision,
+                )]
+                return out
+            # A malformed sidecar is not branch authority.  With no legacy execution result it
+            # cannot bypass the existing review/question/approval decision below.
+        elif projected.get("result"):
+            decision, _receipt, _rendered = _execution_receipt_fast_path(projected)
+            out = super()._run(projected)
+            out["trace"] = [*(out.get("trace") or []), *typed_fast_path_note(
+                projected, self.name, "승인 실행 영수증 없음 · 기존 합성 사용", decision,
+            )]
+            return out
         completion = state.get("assignment_completion") or {}
         if completion.get("kind") == "incomplete_assignees":
             return self.apply(state, {"text": _assignment_completion_reply(completion)})
+        # A current structured Work failure outranks every draft/change container retained by
+        # a checkpoint. Render the absence of an effect directly; a prose model must never
+        # reinterpret stale state as a prepared card.
+        if current_work_failed(projected):
+            return self.apply({**projected, "_deterministic_reply": True,
+                               "_effect_failure_reply": True},
+                              {"text": _failed_effect_reply(projected)})
+        # A rejected audit is never an approval turn. Render the blocking facts directly
+        # so a language model cannot accidentally request approval for a payload that the
+        # graph intentionally refused to stage.
+        if (projected.get("review") or {}).get("ok") is False:
+            return self.apply({**projected, "_deterministic_reply": True,
+                               "_blocked_review_reply": True},
+                              {"text": _blocked_review_reply(projected)})
+        # 질문 폼만 있는 턴은 구조화된 질문과 필수 사유가 이미 최종 데이터다. 예전에는
+        # 35B 모델에 이 데이터를 다시 서술시킨 뒤 apply()에서 그 답을 전부 버리고
+        # `_question_only_reply`로 교체했다. 사용자에게 보이지도 않는 호출이 로컬 MLX에서
+        # 2분 이상 걸렸으므로, 같은 결정적 renderer를 호출 전에 사용한다.
+        questions = [q for q in (projected.get("questions") or []) if isinstance(q, dict)]
+        if questions and not _has_executable_payload(projected):
+            return self.apply({**projected, "_deterministic_reply": True},
+                              {"text": _question_only_reply(projected, questions)})
         # 승인 대기 응답은 최종 payload를 사람이 검토하기 위한 설명이다. 이미 코드가
         # 확정한 카드 값을 LLM에 다시 요약시키면 필드·담당·수치가 달라지거나, 요청하지
         # 않은 삭제/후속 작업을 덧붙였다. 승인 문장은 payload의 결정적 projection으로 만든다.
-        if state.get("approval_token") and _has_executable_payload(state):
-            return self.apply({**state, "_deterministic_reply": True},
-                              {"text": _approval_reply(state)})
+        if (projected.get("approval_token") and not projected.get("result")
+                and _has_executable_payload(projected)):
+            return self.apply({**projected, "_deterministic_reply": True},
+                              {"text": _approval_reply(projected)})
+        tree = (projected.get("draft") or {}).get("structure_tree")
+        if tree is not None:
+            decision = _structure_fast_path_decision(projected)
+            if decision.complete:
+                return self.apply({**projected, "_deterministic_reply": True,
+                                   "_typed_terminal_reply": True,
+                                   "_fast_path_decision": decision,
+                                   "_fast_path_note": "구조 트리 결정적 렌더링"},
+                                  {"text": _structure_reply(_sealed_structure_tree(projected))})
+            misses.append((decision, "구조 stage authority 불완전 · 기존 합성 사용"))
+        effect = final_effect(projected)
+        if (continuation_action(projected) in {"create", "comment", "update", "mixed"}
+                and not questions and not projected.get("result")
+                and (not projected.get("approval_token")
+                     or effect.kind in {"none", "conflict"})):
+            return self.apply({**projected, "_deterministic_reply": True,
+                               "_effect_failure_reply": True},
+                              {"text": _failed_effect_reply(projected)})
         person_work = state.get("person_work_snapshot") or {}
         if person_work:
             return self.apply({**state, "_deterministic_reply": True},
@@ -57,12 +381,22 @@ class ResultIntegrator(TextAgent):
                               {"text": _daily_priority_reply(daily)})
         if is_memory_only_request(state):
             return self.apply(state, {"text": "확인. 이 대화의 후속 요청에 필요한 경우에만 참고"})
-        return super()._run(state)
+        out = super()._run(state)
+        for decision, label in misses:
+            out["trace"] = [*(out.get("trace") or []),
+                            *typed_fast_path_note(state, self.name, label, decision)]
+        return out
 
     def task(self, state):
         intent = state.get("intent") or Intent.PLAN_WORK
         result, review = state.get("result") or {}, state.get("review") or {}
         qs = state.get("questions") or []
+        portfolio = state.get("portfolio_snapshot") or {}
+        portfolio_data = _portfolio_prompt_material(portfolio)
+        portfolio_kinds = {row.get("kind") for row in (portfolio.get("materials") or [])
+                           if isinstance(row, dict)} if portfolio_data else set()
+        portfolio_missing = [key for row in (portfolio.get("materials") or [])
+                             if isinstance(row, dict) for key in (row.get("missingKeys") or [])]
 
         if result:
             goal = ("Report execution in three to five concise Korean sentences. List each created item on "
@@ -120,14 +454,15 @@ class ResultIntegrator(TextAgent):
                     + ("\nFor multiple draft items, show every item in a `| # | 제목 | 모듈 | Epic | 마감 |` "
                        "table; never describe only the first item."
                        if n_items > 1 else ""))
-        elif state.get("ticket_progress"):
+        elif "ticket_progress" in portfolio_kinds or state.get("ticket_progress"):
             # 진척 질문에 "In Progress 입니다"는 답이 아니다 — 무엇이 끝났고 무엇이 남았는지를
             # 근거(코멘트·변동·하위 티켓·결과 문서)와 함께 시간순으로 서술한다.
             goal = ("Report ticket progress in Korean: current completion including child counts and completed "
                     "items; supporting events from progress comments, ticket changes, cleared blockers, or "
                     "updated result documents; and remaining work plus deadline risk. Do not return only a "
                     "status name. Preserve stated remaining work and attach exact ticket or document evidence.")
-        elif intent in Intent.DIRECT_ANSWER and state.get("group_activity"):
+        elif (intent in Intent.DIRECT_ANSWER
+              and ("group_activity" in portfolio_kinds or state.get("group_activity"))):
             goal = ("Write a Korean three-layer group-activity narrative without a table: one paragraph "
                     "covering the full roster; two or three sentences on the module's combined contribution; "
                     "and one `###` section per person with verified ticket, comment, and document evidence. "
@@ -157,9 +492,29 @@ class ResultIntegrator(TextAgent):
         # role that writes the user-facing evidence chain.  The former flattened line
         # discarded comment provenance, confidence, fitness, and limitations immediately
         # before final composition.
-        ev = json.dumps(state.get("evidence") or [], ensure_ascii=False, default=str)
-        docs = "\n".join(f"- {d.get('title','')} {d.get('url','')}"
-                         for d in (state.get("related_docs") or []))
+        ev = ("" if portfolio_data else
+              json.dumps(state.get("evidence") or [], ensure_ascii=False, default=str))
+        atomic_facts = [] if portfolio_data else atomic_fact_sidecar(state)
+        quantity_relations = ([] if portfolio_data else [
+            relation.as_dict() for relation in canonical_quantity_relations(state)])
+        if atomic_facts:
+            goal += (
+                "\nUse the Typed Atomic Fact Ledger as a binding boundary. Never transfer a value across "
+                "subject_id or predicate. `current` is the present value, `historical` is prior state only, "
+                "and every `conflict` row remains unresolved with both provenances. Untyped source prose is "
+                "context, not authority for rebinding a field."
+            )
+        if portfolio_data:
+            goal += ("\nPortfolio Snapshot Data is the sole portfolio authority. Preserve each nested "
+                     "user_id and ticket key relation; do not transfer an activity, count, state, or child "
+                     "between subjects. A nonzero remainingCount is explicit omitted coverage: disclose it "
+                     "and never describe the bounded child rows as the complete population.")
+        elif portfolio_missing:
+            goal += ("\nThe portfolio prefetch is incomplete. Explicitly disclose these uninspected targets "
+                     "and never describe the visible first batch as the complete result: "
+                     + ", ".join(portfolio_missing) + ".")
+        docs = ("" if portfolio_data else "\n".join(
+            f"- {d.get('title','')} {d.get('url','')}" for d in (state.get("related_docs") or [])))
         problems = "\n".join(f"- [{p.get('index')}] {p.get('message')} → {p.get('fix','')}"
                              for p in (review.get("problems") or []))
         errors = "\n".join(f"- [{e.get('index')}] {e.get('field')}: {e.get('message')}"
@@ -229,17 +584,41 @@ class ResultIntegrator(TextAgent):
                     "Use a verified mention token for every person. Follow with `### 조사로 보강한 맥락` for "
                     "only directly relevant internal history and external official findings, and `### 미결·검증` "
                     "for remaining uncertainty. Preserve explicit sample counts, pass/fail thresholds, hold or "
-                    "exclusion decisions, and supplied local-term definitions. Do not list unrelated current "
+                    "exclusion decisions, and supplied local-term definitions. A pass criterion is not a passed "
+                    "result. Keep speaker, requester, reviewer, and explicit assignee separate; never add a "
+                    "responsibility row from an instruction or review statement. Do not list unrelated current "
                     "tickets, and do not replace a meeting decision with an older ticket status. Finish with the "
                     "single `### 근거` index; ticket sources use detail tokens and documents use verified links."
                 )
         asked_for_quality = (request_text(state) + " " + last_user_text(state)).strip()
-        if state.get("evidence"):
+        if state.get("evidence") and not portfolio_data:
+            provenance_graph = build_claim_provenance_graph("", state.get("evidence") or [])
+            # Evidence rows already carry observation text and ids. Keep the authority graph
+            # structural so the same prose is not sent to the local model twice.
+            provenance_graph = {
+                "sources": provenance_graph["sources"],
+                "observations": [
+                    {key: row[key] for key in (
+                        "observation_id", "source_id", "ordinal", "source",
+                    )}
+                    for row in provenance_graph["observations"]
+                ],
+                "claims": [], "unbound_claim_ids": [], "unsupported_claim_ids": [],
+            }
             goal += (
                 "\nFor every material conclusion, add the matching `[n]` or `[n-a]` marker in the body. "
                 "Do not leave a conclusion uncited merely because its source is listed at the end. Preserve "
-                "comment observations and dated source conflicts; ticket status alone is not result evidence."
+                "comment observations and dated source conflicts; ticket status alone is not result evidence. "
+                "Bind each claim only to a source whose supplied `observations[].text` directly supports it; "
+                "`why` explains relevance but is not evidence. Never attribute a ticket-comment result to a "
+                "meeting document merely because both discuss the same topic. Treat source_id and "
+                "observation_id in the Claim Provenance Graph as authority; numeric ordinals are display "
+                "aliases only. An external source with `internal_readiness_authority=false` may explain its "
+                "format, but can never establish this project's production or rollout readiness."
             )
+        else:
+            provenance_graph = {"sources": [], "observations": [], "claims": [],
+                                "unbound_claim_ids": [], "unsupported_claim_ids": []}
         if any(word in asked_for_quality for word in ("신뢰도", "출처별", "요청 적합성", "적합성")):
             goal += (
                 "\nAdd `### 출처 평가` before `### 근거` with a compact "
@@ -247,14 +626,33 @@ class ResultIntegrator(TextAgent):
                 "limitations, authority, directness, recency, and corroboration evidence. Do not invent a "
                 "numeric score. Separate external specification from internal production readiness."
             )
+        source_coverage = _requested_source_coverage(state)
+        if any(row.get("status") != "covered" for row in source_coverage):
+            goal += (
+                "\nThe Requested Source Coverage Ledger is a binding evidence boundary. Use a source class "
+                "for a conclusion only when its `status` is `covered`. A `not_planned`, `not_executed`, "
+                "`zero_hits`, `incomplete`, `config_error`, `provider_error`, or `execution_error` row is a "
+                "limitation, never evidence. Do not imply that an unavailable source confirmed or contradicted "
+                "a claim; the server renders the exact missing-class disclosure."
+            )
+        if any(row.get("entity_coverage_complete") is False for row in source_coverage):
+            goal += (
+                "\nSource-class completion and entity coverage are separate. A covered Jira query proves "
+                "only that its scoped pages completed. When `entity_coverage_complete=false`, describe the "
+                "child/link traversal as bounded and never claim that every related entity was inspected."
+            )
         data = wrap_data(
             data_block("Interpretation Data: Show Unchanged Under the Korean Heading 제가 이해한 바",
                        state.get("interpretation")),
             data_block("Knowledge Brief Data", brief),
+            data_block("Portfolio Snapshot Data: Sole Model-Visible Portfolio Authority",
+                       portfolio_data),
+            data_block("Portfolio Coverage Gap Data: Uninspected Requested Keys",
+                       ", ".join(portfolio_missing)),
             data_block("Complete Roster Activity Data",
-                       state.get("group_activity")),
+                       "" if portfolio_data else state.get("group_activity")),
             data_block("Prefetched Ticket Progress: Changes, Comments, Children, and Documents",
-                       state.get("ticket_progress")),
+                       "" if portfolio_data else state.get("ticket_progress")),
             # 주제 조사 원본 — 결론 문장(situation)만 실으면 조각의 출처(코멘트 작성자·
             # 변경 일자)가 사라져 "근거를 대라"는 요구를 만족시킬 수 없다.
             data_block("Topic Dossier: Missing Requested Values Must Be Reported as 확인된 기록 없음",
@@ -263,6 +661,16 @@ class ResultIntegrator(TextAgent):
             data_block("PMO Findings", pmo),
             data_block("Interpretation Caution", state.get("pmo_caution")),
             data_block("Verified Evidence Sources With Observations and Quality", ev),
+            data_block("Typed Claim Provenance Graph: Source and Observation Authority",
+                       json.dumps(provenance_graph, ensure_ascii=False, default=str)),
+            data_block("Typed Atomic Fact Ledger: Current, Historical, and Conflict Sidecar",
+                       (json.dumps(atomic_facts, ensure_ascii=False, default=str)
+                        if atomic_facts else "")),
+            data_block("Typed Quantity Relations: Immutable Canonical Source Spans",
+                       (json.dumps(quantity_relations, ensure_ascii=False, default=str)
+                        if quantity_relations else "")),
+            data_block("Requested Source Coverage Ledger",
+                       json.dumps(source_coverage, ensure_ascii=False, default=str)),
             data_block("Related Documents", docs),
             data_block("Ticket Draft: Not Yet Created", draft_text(state.get("draft"))),
             data_block("Change Plan: Not Yet Executed",
@@ -338,6 +746,12 @@ class ResultIntegrator(TextAgent):
 
     def apply(self, state, out):
         text = out.get("text") or ""
+        if state.get("_typed_terminal_reply"):
+            decision = state["_fast_path_decision"]
+            from langchain_core.messages import AIMessage
+            return {"reply": text, "messages": [AIMessage(content=text)],
+                    "trace": typed_fast_path_note(
+                        state, self.name, state.get("_fast_path_note") or f"{len(text)}자", decision)}
         # 모델이 내부 task wrapper를 답변으로 복창하거나 reference placeholder를 그대로
         # 노출하는 것은 내용 문제가 아니라 렌더링 계약 위반이다. grounding 전에 정규화해
         # 검사와 사용자 화면이 같은 문자열을 보게 한다.
@@ -346,6 +760,18 @@ class ResultIntegrator(TextAgent):
         # model-written filename/placeholder link rows before grounding so the diagnostic
         # itself does not leak into an otherwise valid answer.
         text = _drop_direct_input_source_rows(text)
+        # A failed authoritative review is an execution-boundary response, not a research
+        # answer.  Running it through the normal evidence merger used to append unrelated Jira,
+        # Confluence, and web sources collected before the draft was rejected.  Keep only safe
+        # token/style rendering and return before any evidence or postcheck augmentation.
+        if state.get("_blocked_review_reply") or state.get("_effect_failure_reply"):
+            text = _render_reply_tokens(text)
+            text = _enforce_reply_style(text)
+            from langchain_core.messages import AIMessage
+            return {"reply": text, "messages": [AIMessage(content=text)],
+                    "trace": note(state, self.name, f"{len(text)}자 · "
+                                  + ("effect 없음" if state.get("_effect_failure_reply")
+                                     else "검토 보류"))}
         _qs = [q for q in (state.get("questions") or []) if isinstance(q, dict)]
         # A question-only turn has no executable payload for the prose model to summarize.
         # Letting it narrate the surrounding research produced invented Epic/module claims in
@@ -362,6 +788,18 @@ class ResultIntegrator(TextAgent):
             text = _align_draft_claims(text, state)
         text = _ensure_research_status(text, state)
         text = _drop_unsupported_guarantees(text, state)
+        text = enforce_atomic_fact_boundaries(text, _result_atomic_ledger(state))
+
+        # Normalize verified entities and the source index before grounding.
+        # Previously these deterministic repairs ran only after the checker, so a
+        # valid plain key or Confluence page id triggered a second full LLM rewrite
+        # and still leaked an internal warning. Unknown entities are untouched and
+        # remain visible to the grounding checker.
+        text = _badgeify_known_ticket_mentions(text, state)
+        text = _normalize_ticket_detail_sections(text)
+        text = _normalize_badge_repetitions(text)
+        text = _attach_known_doc_urls(text, state)
+        text = _merge_evidence_index(text, state)
 
         # ── 접지 검사 — 답변의 티켓 키·제목·인명을 실물과 대조한다.
         # 지도·자료를 정확히 줘도 답변 단계에서 날조가 나왔다(없는 키, 바뀐 제목, "PM: 김철수").
@@ -378,33 +816,26 @@ class ResultIntegrator(TextAgent):
         try:
             g = ({"ok": True} if state.get("_deterministic_reply") or question_only else
                  grounding.check(text, allowed_people=_dialogue_speakers(request_text(state))))
+            if g:
+                g = _filter_plain_person_candidates(g, text)
+            if g and g.get("name_as_id"):
+                canonical_people = _canonicalize_verified_person_findings(text, g)
+                if canonical_people != text:
+                    text = canonical_people
+                    g = grounding.check(
+                        text, allowed_people=_dialogue_speakers(request_text(state)),
+                    )
+                    if g:
+                        g = _filter_plain_person_candidates(g, text)
         except Exception:
             g = None                        # 검증기가 죽으면 답은 그대로 나간다
         if g and not g["ok"]:
-            text2, g2 = "", None
-            try:
-                fixed = self.llm().invoke([
-                    ("system", self.system(state)),
-                    ("user", f"The previous Korean answer contains grounding violations. Rewrite the entire "
-                             f"answer, correcting only the violations below and preserving all valid content.\n\n"
-                             f"### Violations\n\n{grounding.violation_note(g)}\n\n"
-                             f"### Previous Answer\n\n{text}")])
-                text2 = str(getattr(fixed, "content", "") or "").strip()
-                if text2:
-                    g2 = grounding.check(
-                        text2, allowed_people=_dialogue_speakers(request_text(state)))
-            except Exception:
-                text2, g2 = "", None        # 교정 실패 — 아래에서 원문 + 경고로 간다
-            if g2 and g2["ok"] and _kept_substance(text, text2):
-                text = text2
-            else:                           # 못 고침 — 덜 틀린 쪽에 **반드시 경고를 단다**
-                use2 = bool(g2) and _violations(g2) < _violations(g) \
-                    and _kept_substance(text, text2)
-                better, gb = (text2, g2) if use2 else (text, g)
-                text = better
-                warning = grounding.warning_block(gb).strip()
-                if warning:
-                    grounding_warnings.append(warning)
+            # Result is the final ownership boundary. A second full-model rewrite is both
+            # expensive and capable of changing already-valid claims/citations. Preserve the
+            # detected answer and expose the deterministic diagnostic in this same pass.
+            warning = grounding.warning_block(g).strip()
+            if warning:
+                grounding_warnings.append(warning)
 
         # 전용 진행 Task bullet은 detail badge 하나로 기계화한다. 모델이 raw key+제목을
         # 출력해도 최종 문자열은 badge가 가진 정보를 중복하지 않는다.
@@ -453,13 +884,39 @@ class ResultIntegrator(TextAgent):
         #   그 제목에 붙이는 것은 **지어내는 것이 아니라 옮기는 것**이라 코드가 할 수 있다.
         text = _attach_known_doc_urls(text, state)
         text = _ensure_external_research_coverage(text, state)
+        text = _ensure_requested_source_coverage(text, state)
+        text = _ensure_entity_coverage_disclosure(text, state)
         text = _render_requested_source_quality(text, state)
+        # A grounding rewrite or later renderer may reintroduce a copied parent field. Repeat
+        # the same exact typed check before rebuilding the immutable evidence index.
+        text = enforce_atomic_fact_boundaries(text, _result_atomic_ledger(state))
         # Persist one canonical source index in the reply itself.  Research state and
         # model-written references used to be rendered as separate UI blocks, causing
         # duplicate counts and divergent formats.  The server owns numbering and grouping;
         # the browser only renders this canonical Markdown (with a legacy-read fallback).
         text = _merge_evidence_index(text, state)
+        try:
+            late_grounding = grounding.check(
+                text, allowed_people=_dialogue_speakers(request_text(state)),
+            )
+            if late_grounding:
+                late_grounding = _filter_plain_person_candidates(late_grounding, text)
+            if late_grounding and late_grounding.get("name_as_id"):
+                text = _canonicalize_verified_person_findings(text, late_grounding)
+                late_grounding = grounding.check(
+                    text, allowed_people=_dialogue_speakers(request_text(state)),
+                )
+                if late_grounding:
+                    late_grounding = _filter_plain_person_candidates(late_grounding, text)
+            if late_grounding and not late_grounding.get("ok"):
+                warning = grounding.warning_block(late_grounding).strip()
+                if warning and warning not in grounding_warnings:
+                    grounding_warnings.append(warning)
+            g = late_grounding or g
+        except Exception:
+            pass
         text = _rebind_definition_citations(text)
+        text = _rebind_explicit_source_citations(text)
         # Explicit citation-marker requests are a rendering contract.  The source index
         # already owns stable numbering, so bind uncited conclusion paragraphs to the
         # best-matching verified sources after numbering instead of trusting another LLM
@@ -502,6 +959,7 @@ class ResultIntegrator(TextAgent):
         text = _render_reply_tokens(text)
         text = _canonicalize_person_mentions(text, state)
         text = _enforce_reply_style(text)
+        text = normalize_evidence_heading_boundary(text)
         # Grounding diagnostics are not provenance.  Insert them before the already-built
         # evidence index; otherwise a legacy reference parser can absorb warning bullets as
         # observations, while appending after the index would violate the index-last contract.
@@ -552,17 +1010,31 @@ def _ensure_progress_child_coverage(text: str, state) -> str:
     """
     if (state.get("intent") or "") != Intent.PROGRESS:
         return str(text or "")
-    material = str(state.get("ticket_progress") or "")
     children: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for match in _re.finditer(
-        r"(?m)^\s*-\s+([A-Z][A-Z0-9]*-\d+)\s+\"[^\"]*\"\s+(완료|진행중)\b",
-        material,
-    ):
-        key, status = match.group(1), match.group(2)
-        if key not in seen:
-            seen.add(key)
-            children.append((key, status))
+    snapshot = state.get("portfolio_snapshot") or {}
+    for material in snapshot.get("materials") or []:
+        if not isinstance(material, dict) or material.get("kind") != "ticket_progress":
+            continue
+        for ticket in material.get("tickets") or []:
+            if not isinstance(ticket, dict) or ticket.get("availability") != "available":
+                continue
+            for child in ticket.get("children") or []:
+                if not isinstance(child, dict):
+                    continue
+                key = str(child.get("key") or "")
+                if _jira_key(key) and key not in seen:
+                    seen.add(key)
+                    children.append((key, "완료" if child.get("done") else "진행중"))
+    # Old checkpoints and non-snapshot legacy lanes keep their established repair contract.
+    if not isinstance(snapshot.get("materials"), list):
+        for match in _re.finditer(
+                r"(?m)^\s*-\s+([A-Z][A-Z0-9]*-\d+)\s+\"[^\"]*\"\s+(완료|진행중)\b",
+                str(state.get("ticket_progress") or "")):
+            key, status = match.group(1), match.group(2)
+            if _jira_key(key) and key not in seen:
+                seen.add(key)
+                children.append((key, status))
     if not children or all(key in str(text or "") for key, _status in children):
         return str(text or "")
 
@@ -602,6 +1074,61 @@ def _cell(value) -> str:
     if isinstance(value, list):
         value = ", ".join(map(str, value))
     return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _blocked_review_reply(state) -> str:
+    """Non-actionable response for a draft that failed the authoritative review gate."""
+    review = state.get("review") or {}
+    rows = []
+    for error in review.get("errors") or []:
+        if not isinstance(error, dict):
+            continue
+        field = str(error.get("field") or "").strip()
+        message = str(error.get("message") or "").strip()
+        if message:
+            rows.append((field + ": " if field else "") + message)
+    for problem in review.get("problems") or []:
+        if not isinstance(problem, dict):
+            continue
+        message = str(problem.get("message") or "").strip()
+        fix = str(problem.get("fix") or "").strip()
+        if message:
+            rows.append(message + ((" → " + fix) if fix else ""))
+    rows = list(dict.fromkeys(rows))[:6]
+    if not rows:
+        rows = ["검토를 통과하지 못한 항목 확인 필요"]
+    return ("### 검토 보류\n\n- 티켓 생성·변경 실행 없음\n- 실행 대기 카드 없음\n\n"
+            "### 수정 필요\n\n" + "\n".join(f"- {row}" for row in rows))
+
+
+def _failed_effect_reply(state) -> str:
+    """Deterministic no-action report for a failed or empty current write turn."""
+    from app.agent.workflow.effect_contract import (
+        continuation_action, current_work_failed, final_effect,
+    )
+
+    action = continuation_action(state)
+    label = {
+        "create": "생성 payload", "comment": "댓글 payload",
+        "update": "변경 payload", "mixed": "복합 write payload",
+    }.get(action, "write payload")
+    effect = final_effect(state)
+    if current_work_failed(state):
+        raw = str(state.get("error") or "")
+        detail = raw.split("]", 1)[-1].strip(" -—:")[:220]
+        reason = detail or "Work Architect structured output 실패"
+    elif effect.kind == "conflict":
+        reason = "서로 함께 실행할 수 없는 write effect가 남아 작업 분할 필요"
+    elif action == "mixed":
+        reason = "요청된 복합 write effect를 모두 준비하지 못해 작업 분할 또는 보완 필요"
+    else:
+        reason = f"{label}를 준비하지 못함"
+    return ("### 작업 실패\n\n"
+            f"- {label}를 준비하지 못함\n"
+            "- Jira 실행 없음\n"
+            "- 실행 대기 카드 없음\n\n"
+            "### 원인\n\n"
+            f"- {reason}")
 
 
 def _approval_reply(state) -> str:
@@ -717,16 +1244,19 @@ def _person_work_reply(data: dict) -> str:
         "### 최근 갱신 업무", "",
         "| 티켓 | 상태 | 우선순위 | 기한 |", "|---|---|---|---|",
     ]
-    # execute_jql_all already returns updated DESC.  A summary should expose a useful
-    # sample, not dump dozens of compact badges in one unreadable line.
-    for ticket in tickets[:5]:
+    # ``execute_jql_all`` already returns updated DESC.  The user asked for the person's
+    # current work, so silently reducing a complete 21-ticket snapshot to five rows is a
+    # material omission.  Keep a readable deterministic ceiling, but expose every item
+    # below that ceiling and state the exact remainder when the result is larger.
+    visible_limit = 25
+    for ticket in tickets[:visible_limit]:
         rows.append(
             f"| {{{{ticket-inline:{ticket['key']}}}}} | {_cell(ticket.get('status'))} | "
             f"{_cell(ticket.get('priority'))} | {_cell(ticket.get('duedate'))} |"
         )
-    remaining = len(tickets) - 5
+    remaining = len(tickets) - visible_limit
     if remaining > 0:
-        rows += ["", f"최근 갱신 순 5건 표시 · 외 {remaining}건"]
+        rows += ["", f"최근 갱신 순 {visible_limit}건 표시 · 외 {remaining}건"]
     rows += ["", "현재 담당자로 지정된 미완료 티켓 기준 · 최근 활동 로그와 구분"]
     return "\n".join(rows)
 
@@ -812,7 +1342,17 @@ def _render_reply_tokens(text: str) -> str:
             return f"[{rid}]({url})"
         return rid                         # 알 수 없는 typed id를 깨진 토큰으로 노출하지 않는다
 
-    out = _re.sub(r"\{\{+ref:([A-Za-z0-9_.:-]+)\}+\}", ref, str(text or ""))
+    out = str(text or "")
+    # Typed UI tokens are rendered by the client. A model sometimes wraps one
+    # in inline-code backticks, making Markdown and the badge renderer overlap.
+    # Remove only backticks whose complete content is one strict typed token;
+    # ordinary inline code remains untouched.
+    out = _re.sub(
+        r"`(\{\{+(?:ticket-(?:list|inline|detail)|ref|mention):"
+        r"[A-Za-z0-9_.:-]+\}+\})`",
+        r"\1", out,
+    )
+    out = _re.sub(r"\{\{+ref:([A-Za-z0-9_.:-]+)\}+\}", ref, out)
     out = _re.sub(r"\{\{+mention:([A-Za-z0-9_.:-]+)\}+\}", r"[~\1]", out)
     return out
 
@@ -945,6 +1485,28 @@ def _canonicalize_person_mentions(text: str, state) -> str:
     return out
 
 
+def _canonicalize_verified_person_findings(text: str, checked: dict) -> str:
+    """Replace only checker-resolved plain names with their canonical user IDs.
+
+    The grounding checker has already queried the directory and refuses unknown names.
+    This deterministic projection is therefore safer and more useful than showing a
+    warning that tells the user how the system itself could have rendered the identity.
+    """
+    out = str(text or "")
+    for name, uid in sorted(
+            (checked.get("name_as_id") or {}).items(), key=lambda row: len(row[0]),
+            reverse=True):
+        name, uid = str(name or "").strip(), str(uid or "").strip()
+        if not name or not uid:
+            continue
+        out = _re.sub(
+            rf"(?<![가-힣A-Za-z0-9]){_re.escape(name)}"
+            rf"(?=(?:님)?(?:은|는|이|가|을|를|과|와|께서)?(?![가-힣]))",
+            f"[~{uid}]", out,
+        )
+    return out
+
+
 def _assignment_completion_reply(data: dict) -> str:
     """미완료 담당자 집계를 질문 축 그대로 짧게 렌더한다."""
     topic = str(data.get("topic") or "해당 업무")
@@ -1013,6 +1575,7 @@ def _enforce_reply_style(text: str) -> str:
             (r"보였습니다", "보였음"),
             (r"보입니다", "보임"),
             (r"([가-힣]+)되어야\s*합니다", r"\1 필요"),
+            (r"([가-힣]+)해야\s*합니다", r"\1 필요"),
             (r"([가-힣]+(?:되지|하지))\s*않았습니다", r"\1 않음"),
             (r"([가-힣]+(?:되지|하지))\s*않습니다", r"\1 않음"),
             (r"([가-힣]+)하였습니다", r"\1함"),
@@ -1847,9 +2410,14 @@ def _badgeify_known_ticket_mentions(text: str, state) -> str:
         known.update(_re.findall(
             r"(?<![0-9A-Z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Z-])",
             str(state.get(field) or ""), _re.I))
-    known.update(_re.findall(
-        r"(?<![0-9A-Z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Z-])",
-        str(state.get("ticket_progress") or ""), _re.I))
+    snapshot = state.get("portfolio_snapshot") or {}
+    if isinstance(snapshot.get("materials"), list):
+        known.update(str(row.get("key") or "").upper()
+                     for row in _portfolio_ticket_rows(snapshot) if _jira_key(row.get("key")))
+    else:
+        known.update(_re.findall(
+            r"(?<![0-9A-Z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Z-])",
+            str(state.get("ticket_progress") or ""), _re.I))
     value = str(text or "")
     for key in sorted(known, key=len, reverse=True):
         # ':' 앞은 {{ticket-*:KEY}} 내부이므로 제외. 영숫자/하이픈 경계도 엄격히 유지.
@@ -1859,20 +2427,256 @@ def _badgeify_known_ticket_mentions(text: str, state) -> str:
     return value
 
 
+_SOURCE_COVERAGE_LIMIT_TEXT = {
+    "not_planned": "조회 계획에 포함되지 않아 실행되지 않음",
+    "not_executed": "조회 계획에는 있었으나 실행 결과가 없어 미실행으로 처리",
+    "zero_hits": "설정된 범위에서 조회를 완료했지만 관련 결과 0건",
+    "unverified_official": "조회 결과는 있으나 공식 소유·발행 주체를 확인하지 못함",
+    "incomplete": "조회 결과 일부는 확보했지만 전체 조회가 완료되지 않음",
+    "config_error": "검색 범위 또는 연결 설정 오류로 조회하지 못함",
+    "provider_error": "검색 provider 접근 실패로 결과를 확보하지 못함",
+    "execution_error": "조회 실행 오류로 결과를 확보하지 못함",
+}
+
+
+def _materialized_internal_source_rows(state, *, cap: int | None = 8) -> list[dict]:
+    """Return successful opened Jira identities in deterministic acquisition order."""
+    rows: list[dict] = []
+    seen: set[str] = set()
+    by_key: dict[str, dict] = {}
+
+    def add(values) -> None:
+        for raw in values or []:
+            if not isinstance(raw, dict) or raw.get("error"):
+                continue
+            key = str(raw.get("key") or "").strip().upper()
+            if not _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I):
+                continue
+            if key in seen:
+                # Current-turn query data wins.  A durable row may still carry canonical
+                # description/comment cells omitted by a compact current projection, so fill
+                # only missing fields on our copy instead of discarding that authority.
+                current = by_key[key]
+                for field, value in raw.items():
+                    if current.get(field) in (None, "", [], {}) \
+                            and value not in (None, "", [], {}):
+                        current[field] = value
+                continue
+            seen.add(key)
+            projected = {**raw, "key": key}
+            by_key[key] = projected
+            rows.append(projected)
+
+    planned = {
+        str(row.get("id") or "").strip()
+        for row in ((state.get("query_plan") or {}).get("queries") or [])
+        if isinstance(row, dict) and row.get("source") == "jira"
+    }
+    query_rows = [
+        row for row in (state.get("query_results") or [])
+        if isinstance(row, dict) and row.get("source") == "jira"
+    ]
+    # A planned+executed query is the strongest current-turn ledger.  Persisted materialized
+    # details follow it so a continuation still preserves identities after query reset.
+    for query in sorted(
+            query_rows,
+            key=lambda row: 0 if str(row.get("id") or "").strip() in planned else 1):
+        result = query.get("result") or {}
+        if isinstance(result, dict):
+            add(result.get("ticketDetails") or [])
+    artifacts = state.get("query_artifacts") or {}
+    materialized = artifacts.get("evidence-materialization") or {} \
+        if isinstance(artifacts, dict) else {}
+    if isinstance(materialized, dict):
+        add(materialized.get("projectedTicketDetails")
+            or materialized.get("ticketDetails") or [])
+    ledger = state.get("materialized_ticket_sources") or {}
+    if isinstance(ledger, dict):
+        add(ledger.get("ticketDetails") or [])
+    return rows if cap is None else rows[:max(0, int(cap or 0))]
+
+
+def _has_canonical_evidence_manifest(state) -> bool:
+    """Whether QueryRunner emitted the bounded multi-source materialization contract."""
+    artifacts = state.get("query_artifacts") or {}
+    if not isinstance(artifacts, dict):
+        return False
+    materialized = artifacts.get("evidence-materialization") or {}
+    return isinstance(materialized, dict) and any(
+        materialized.get(key) for key in (
+            "projectedTicketDetails", "ticketDetails",
+            "projectedDocumentBodies", "documentBodies",
+        )
+    )
+
+
+def _ensure_internal_source_coverage_disclosure(
+        text: str, state, selected_evidence: list[dict]) -> str:
+    """Disclose opened internal identities omitted by bounded Research selection.
+
+    Materialization proves that a source was inspected, not that it supports the conclusion.
+    Omitted rows therefore remain outside ``### 근거`` and are explicitly labelled as not
+    selected rather than being silently lost or promoted into evidence.
+    """
+    value = _re.sub(
+        r"(?ms)^###\s*조회된\s*내부\s*출처\s*범위\s*$.*?(?=^###\s|\Z)",
+        "", str(text or ""),
+    ).strip()
+    materialized = _materialized_internal_source_rows(state)
+    if not materialized:
+        return value
+    def has_material_finding(item: dict) -> bool:
+        if str(item.get("why") or "").strip():
+            return True
+        return any(
+            (str(observation.get("text") or "").strip()
+             and str(observation.get("source") or "").strip().casefold() != "query")
+            if isinstance(observation, dict) else bool(str(observation or "").strip())
+            for observation in (item.get("observations") or [])
+        )
+
+    selected = {
+        evidence_source_id(item) for item in selected_evidence or []
+        if isinstance(item, dict) and has_material_finding(item)
+    }
+    heading = EVIDENCE_HEADING_RE.search(value)
+    if heading:
+        for key in _re.findall(
+                r"\{\{ticket-detail:([A-Z][A-Z0-9]*-\d+)\}\}",
+                value[heading.start():], _re.I):
+            selected.add(f"ticket:{key.upper()}")
+    omitted = [row for row in materialized
+               if f"ticket:{row['key']}" not in selected]
+    if not omitted:
+        return _re.sub(r"\n{3,}", "\n\n", value).strip()
+    lines = ["### 조회된 내부 출처 범위", ""]
+    for row in omitted:
+        lines.append(
+            f"- {{{{ticket-inline:{row['key']}}}}} — 실물 조회 완료, "
+            "최종 결론 근거로 선택하지 않음"
+        )
+    block = "\n".join(lines)
+    heading = EVIDENCE_HEADING_RE.search(value)
+    if heading:
+        value = (value[:heading.start()].rstrip() + "\n\n" + block + "\n\n"
+                 + value[heading.start():].lstrip())
+    else:
+        value = value.rstrip() + "\n\n" + block
+    return _re.sub(r"\n{3,}", "\n\n", value).strip()
+
+
+def _ensure_requested_source_coverage(text: str, state) -> str:
+    """Render each explicitly requested but unavailable source class exactly once."""
+    value = str(text or "").strip()
+    heading_pattern = (
+        r"(?ms)^###\s*요청\s*출처\s*조사\s*한계\s*$.*?(?=^###\s|\Z)"
+    )
+    # Idempotence also clears a stale generated block when a later continuation now has hits.
+    value = _re.sub(heading_pattern, "", value).strip()
+    missing = [row for row in _requested_source_coverage(state)
+               if row.get("status") != "covered"]
+    if not missing:
+        return _re.sub(r"\n{3,}", "\n\n", value).strip()
+    lines = ["### 요청 출처 조사 한계", ""]
+    for row in missing[:len(_SOURCE_COVERAGE_ORDER)]:
+        limitation = _SOURCE_COVERAGE_LIMIT_TEXT.get(
+            str(row.get("status") or ""), "조회 결과를 확보하지 못함",
+        )
+        if row.get("status") == "incomplete":
+            reason = {
+                "missing_next_cursor": "다음 페이지 cursor 누락",
+                "cursor_cycle": "pagination cursor 순환",
+                "returned_below_total": "반환 건수가 total보다 적음",
+                "page_limit": "페이지 상한 도달",
+                "complete_false": "완결성 metadata 불충족",
+                "missing_query_result": "계획된 조회 결과 누락",
+            }.get(str(row.get("incomplete_reason") or ""), "완결성 metadata 불충족")
+            limitation += f"({reason})"
+        failed = [str(value or "").strip()
+                  for value in row.get("materialization_failed_identities") or []
+                  if str(value or "").strip()]
+        if failed:
+            limitation += " (실물 열기 실패: " + ", ".join(failed[:8]) + ")"
+        lines.append(
+            f"- **{row.get('label')}** — {limitation}. 해당 출처는 결론 근거에 사용하지 않음"
+        )
+    block = "\n".join(lines)
+    anchor = _re.search(r"(?m)^###\s*(?:근거|참조)\s*$", value)
+    if anchor:
+        value = (value[:anchor.start()].rstrip() + "\n\n" + block + "\n\n"
+                 + value[anchor.start():].lstrip())
+    else:
+        value = value.rstrip() + "\n\n" + block
+    return _re.sub(r"\n{3,}", "\n\n", value).strip()
+
+
+def _ensure_entity_coverage_disclosure(text: str, state) -> str:
+    """Disclose bounded entity traversal independently of green source pagination."""
+    value = _re.sub(
+        r"(?ms)^###\s*연관\s*엔티티\s*조사\s*한계\s*$.*?(?=^###\s|\Z)",
+        "", str(text or ""),
+    ).strip()
+    rows = []
+    for query in (state.get("query_results") or []):
+        if not isinstance(query, dict) or not isinstance(query.get("result"), dict):
+            continue
+        coverage = (query.get("result") or {}).get("entityCoverage")
+        if isinstance(coverage, dict) and (
+                coverage.get("complete") is not True
+                or coverage.get("truncated") is True):
+            rows.append(coverage)
+    if not rows:
+        return value
+    roots = sum(len(row.get("rootKeys") or []) for row in rows)
+    selected = sum(len(row.get("selectedKeys") or []) for row in rows)
+    truncated = any(row.get("truncated") is True for row in rows)
+    scope = f"루트 {roots}건·확장 {selected}건"
+    if truncated:
+        scope += "·상한 도달"
+    block = (
+        "### 연관 엔티티 조사 한계\n\n"
+        f"- 연관 엔티티 탐색은 설정된 범위({scope})까지만 수행했으며, "
+        "전체 관련 엔티티를 확인한 것은 아님"
+    )
+    anchor = _re.search(r"(?m)^###\s*(?:근거|참조)\s*$", value)
+    if anchor:
+        return (value[:anchor.start()].rstrip() + "\n\n" + block + "\n\n"
+                + value[anchor.start():].lstrip())
+    return value.rstrip() + "\n\n" + block
+
+
 def _ensure_external_research_coverage(text: str, state) -> str:
-    """내부+외부 공식 조사를 요청했으면 검증된 외부 URL과 충돌 상태를 답에 보존한다."""
-    asked = request_text(state) + " " + last_user_text(state)
-    if not ("외부" in asked and any(w in asked for w in ("조사", "자료", "공식", "근거"))):
+    """명시적으로 요청한 외부 조사의 검증된 URL만 답에 보존한다.
+
+    Semantic conflict resolution belongs to Research Analyst, where source
+    scope, dates, and provenance are all present. The former string scanner
+    treated an older ``not yet`` record plus later completion evidence as an
+    unresolved contradiction and rewrote a correct conclusion after synthesis.
+    This rendering guard therefore owns only the deterministic URL contract.
+    """
+    requested = set(_requested_source_classes(state))
+    requested_external = requested.intersection(_EXTERNAL_SOURCE_COVERAGE_CLASSES)
+    if not requested_external:
         return text
+    official_required = bool(
+        requested_external.intersection(_OFFICIAL_EXTERNAL_SOURCE_COVERAGE_CLASSES)
+    )
+    allowed_query_sources = _requested_external_query_sources(requested_external)
+    approval_display = _approval_display_mode(state)
+    display_evidence = (_approval_display_evidence(state) if approval_display
+                        else (state.get("evidence") or []))
     sources = []
-    for evidence in (state.get("evidence") or []):
+    for evidence in display_evidence:
         if not isinstance(evidence, dict):
             continue
         url = str(evidence.get("url") or "").strip()
-        if _is_external_source_url(url):
-            sources.append((str(evidence.get("title") or "공식 자료").strip(), url,
+        provenance = _research_url_provenance(state, url)
+        if (_is_external_source_url(url) and provenance
+                and provenance.get("source") in allowed_query_sources
+                and (not official_required or provenance.get("official") is True)):
+            sources.append((str(evidence.get("title") or "외부 자료").strip(), url,
                             str(evidence.get("why") or "").strip()))
-    if not sources:
+    if not sources and not approval_display:
         for title, url in _re.findall(
                 r"^-\s*(.+?)\s*·\s*공식\s*—[^\n]*\((https?://[^)\s]+)\)\s*$",
                 str(state.get("web_context") or ""), _re.M):
@@ -1881,7 +2685,10 @@ def _ensure_external_research_coverage(text: str, state) -> str:
             if _re.search(r"Search the documentation|Namespace Reference|\s-\sRust$|API Reference",
                           title, _re.I):
                 continue
-            sources.append((title.strip(), url, "공식 자료"))
+            provenance = _research_url_provenance(state, url)
+            if (provenance and provenance.get("source") in allowed_query_sources
+                    and (not official_required or provenance.get("official") is True)):
+                sources.append((title.strip(), url, "공식 자료"))
 
     value = str(text or "").rstrip()
     if sources:
@@ -1890,42 +2697,11 @@ def _ensure_external_research_coverage(text: str, state) -> str:
         value = value.replace("| 외부 확인 필요 |", "| 외부 조사 범위 |")
     missing = [(title, url, why) for title, url, why in sources if url not in value]
     if missing:
-        lines = ["### 외부 공식 근거", ""]
+        lines = ["### 외부 공식 근거" if official_required else "### 외부 근거", ""]
         for title, url, why in missing[:3]:
             lines.append(f"- [{title}]({_markdown_url(url)})" + (f" — {why}" if why else ""))
         value += "\n\n" + "\n".join(lines)
 
-    material = " ".join(str(state.get(k) or "") for k in ("topic_dossier", "pre_survey"))
-    material += " " + json.dumps(state.get("evidence") or [], ensure_ascii=False, default=str)
-    # A generated conclusion must not keep a definitive PoC-complete claim when the
-    # supplied internal record says that PoC is still unperformed.  Merely appending a
-    # warning left two mutually exclusive statements on screen (S8 UI review). Replace
-    # the unsafe assertion itself; retain the remaining reader/support clause.
-    source_says_unperformed = bool(_re.search(
-        r"PoC[^\n]{0,120}(?:아직\s*수행하지\s*않|미수행|수행\s*전|완료되지\s*않)",
-        material, _re.I,
-    ))
-    source_says_complete = bool(_re.search(
-        r"PoC[^\n]{0,120}(?:수행\s*완료|완료되었|완료됨|완료한\s*상태)",
-        material, _re.I,
-    ))
-    if source_says_unperformed:
-        reason = "내부 기록 상충" if source_says_complete else "확인 근거 부족"
-        value = _re.sub(
-            r"(?:Puffin\s+NDV(?:의)?\s*)?(?:writer\s*)?PoC(?:는|가|은|이)?\s*"
-            r"(?:수행\s*)?(?:완료되었(?:으나|지만)?|완료되었다|완료됨|완료한\s*상태)\s*[,，]?",
-            f"Puffin NDV writer PoC 완료 여부는 {reason}으로 확정 불가. ",
-            value,
-            flags=_re.I,
-        )
-        value = _re.sub(r"\.\s*\.", ".", value)
-    conflict_material = material + " " + value
-    if ("PoC" in conflict_material
-            and _re.search(r"PoC[^\n]{0,80}(?:완료|수행 완료)", conflict_material)
-            and _re.search(r"PoC[^\n]{0,80}(?:아직\s*수행하지\s*않|미수행)", conflict_material)
-            and "내부 기록 상충" not in value):
-        value += ("\n\n### 확인 필요\n\n- 내부 기록 상충: 한 기록은 PoC 완료, 다른 기록은 미수행으로 기술. "
-                  "대상 범위와 갱신 시점 확인 전 현재 완료 여부 확정 불가")
     return value
 
 
@@ -1963,63 +2739,62 @@ def _is_external_source_url(url: str) -> bool:
         return False
 
 
-def _drop_unsupported_guarantees(text: str, state) -> str:
-    """Do not turn a format description into an unsupported outcome guarantee.
+def _research_url_provenance(state, url: str) -> dict | None:
+    """Resolve one exact URL from current QueryRunner output or a durable Research stamp."""
+    exact = str(url or "").strip()
+    if not exact:
+        return None
+    from app.agent.workflow.agents.research_analyst import (
+        _durable_external_provenance_allowed,
+        _durable_url_provenance,
+        _executed_url_provenance,
+    )
+    current = _executed_url_provenance(state).get(exact)
+    if current:
+        return current
+    if _durable_external_provenance_allowed(state):
+        return _durable_url_provenance(state).get(exact)
+    return None
 
-    ``보장`` is a materially stronger claim than ``저장한다`` or ``지원한다``.  If no
-    request or verified research material uses that guarantee, remove only the attached
-    comma-clause.  Standalone guarantee sentences are retained as an explicit validation
-    gap instead of being silently presented as fact.
+
+def _requested_external_query_sources(requested_classes) -> set[str]:
+    """Map requested coverage classes to the exact public providers they authorize."""
+    allowed: set[str] = set()
+    for source_class in requested_classes or ():
+        allowed.update(_EXTERNAL_SOURCE_QUERY_CLASSES.get(str(source_class), ()))
+    return allowed
+
+
+def _external_evidence_is_authorized(item: dict, state) -> bool:
+    """Require acquisition provenance for a structured public-source row."""
+    url = str((item or {}).get("url") or "").strip()
+    provenance = _research_url_provenance(state, url)
+    if not provenance:
+        return False
+    requested = set(_requested_source_classes(state))
+    requested_external = requested.intersection(_EXTERNAL_SOURCE_COVERAGE_CLASSES)
+    allowed_query_sources = _requested_external_query_sources(requested_external)
+    if (allowed_query_sources and provenance.get("source") not in allowed_query_sources):
+        return False
+    if (requested_external.intersection(_OFFICIAL_EXTERNAL_SOURCE_COVERAGE_CLASSES)
+            and provenance.get("source") in {"web", "github"}
+            and provenance.get("official") is not True):
+        return False
+    return True
+
+
+def _is_structured_external_evidence(item: dict) -> bool:
+    """Treat every public URL as provenance-bearing, including untyped legacy rows.
+
+    Legacy/checkpoint evidence may have no observations at all, so a model-owned source label
+    cannot be the security boundary. Configured Jira/Confluence and private hosts are already
+    excluded by :func:`_is_external_source_url`; every remaining URL needs an exact current
+    QueryRunner hit or a signed Research continuation stamp.
     """
-    source = " ".join(str(state.get(key) or "") for key in (
-        "request_text", "topic_dossier", "pre_survey", "situation",
-        "knowledge_brief", "evidence",
-    ))
-    value = str(text or "")
-    if "보장" not in source:
-        value = _re.sub(
-            r"\s*[,，]\s*[^,.\n]{2,120}?(?:을|를|이|가)?\s*보장(?:함|됨|한다|합니다)?(?=[.\n]|$)",
-            "", value,
-        )
-        value = _re.sub(
-            r"(?m)^(\s*[-*]?\s*)?([^\n.]{2,160}?보장(?:함|됨|한다|합니다)?)[.]?\s*$",
-            lambda m: ((m.group(1) or "") + "해당 보장 효과는 검증 필요"),
-            value,
-        )
-    # A search-result snippet is candidate material, not a selected source.  Do not let a
-    # model attach an uncited optimization/quality benefit unless the request or structured
-    # research evidence actually retained that effect.
-    if not _re.search(r"쿼리\s*최적화|query\s*optim", source, _re.I):
-        value = _re.sub(
-            r"\s*NDV\s*통계(?:는|가)?\s*쿼리\s*최적화에\s*사용될\s*수\s*있음[.]?",
-            "", value, flags=_re.I,
-        )
-        value = _re.sub(
-            r"이는\s+[^.\n]{0,180}?성능\s*최적화에\s*기여할\s*수\s*있음을\s*시사하지만,?\s*",
-            "", value, flags=_re.I,
-        )
-    unresolved_reader = bool(_re.search(
-        r"StarRocks[^.\n]{0,100}(?:Puffin|NDV)[^.\n]{0,120}"
-        r"(?:확인되지|미확인|검증\s*필요|지원\s*여부)", source, _re.I,
-    ))
-    latest = last_user_text(state)
-    support_confirmed_now = bool(_re.search(
-        r"StarRocks[^.\n]{0,100}(?:Puffin|NDV)[^.\n]{0,100}"
-        r"(?:소비\s*(?:지원|확인|성공|완료)|지원(?:함|한다|됨|된다))",
-        latest, _re.I,
-    ))
-    if unresolved_reader and not support_confirmed_now:
-        value = _re.sub(
-            r"(?m)(?:^|(?<=[.!?])\s+)StarRocks[^.!?\n]{0,220}?"
-            r"Puffin[^.!?\n]{0,120}?(?:소비할\s*수\s*있음|소비를?\s*지원(?:함|한다|됨|된다))"
-            r"[.!?]?\s*",
-            "", value, flags=_re.I,
-        )
-    value = _re.sub(r"([가-힣]+)이며\.", r"\1임.", value)
-    value = _re.sub(r"([가-힣]+)되며\.", r"\1됨.", value)
-    value = _re.sub(r"([가-힣]+)하며\.", r"\1함.", value)
-    value = _re.sub(r"\s+([.,!?])", r"\1", value)
-    return value
+    return (isinstance(item, dict)
+            and _is_external_source_url(str(item.get("url") or "")))
+
+
 
 
 def _dedupe_refs(text: str) -> str:
@@ -2058,7 +2833,7 @@ def _fold_standalone_sources(text: str) -> str:
         return "" if len(found) > before else match.group(0)
 
     value = _re.sub(
-        r"(?ms)^###\s*외부\s*공식\s*근거\s*$\s*(.*?)(?=^###\s|\Z)",
+        r"(?ms)^###\s*외부\s*(?:공식\s*)?근거\s*$\s*(.*?)(?=^###\s|\Z)",
         take_external_section, value,
     )
     if not found:
@@ -2112,23 +2887,649 @@ def _is_negative_search_pseudo_source(item: dict) -> bool:
         return False
     key = str(item.get("key") or "").strip()
     title = str(item.get("title") or "").strip()
-    if not key or key != title or _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I):
+    if not key or _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I):
         return False
     observations = " ".join(
         str(row.get("text") or "") for row in (item.get("observations") or [])
         if isinstance(row, dict)
     )
     material = " ".join((str(item.get("why") or ""), str(item.get("limitations") or ""), observations))
-    return bool(_re.search(
+    negative = bool(_re.search(
         r"찾지\s*못|확인(?:되지\s*않|할\s*수\s*없)|기록이\s*없|"
-        r"검색(?:된|\s*결과).{0,60}(?:없|존재하지\s*않|나타나지\s*않|찾지\s*못)|"
+        r"검색(?:된|\s*결과).{0,80}(?:0\s*(?:건|개)|없|존재하지\s*않|나타나지\s*않|찾지\s*못)|"
         r"나타나지\s*않",
         material,
     ))
+    if not negative:
+        return False
+    # Mismatched synthetic ids such as `internal-duplicate-check` are common for query
+    # artifacts. Low-confidence/context-only misses still are uncertainties, not sources.
+    return (key == title
+            or str(item.get("fitness") or "").strip() == "context-only"
+            or str(item.get("confidence") or "").strip() == "low"
+            or any(str(row.get("source") or "") in {"query", "web"}
+                   for row in (item.get("observations") or []) if isinstance(row, dict)))
 
 
-def _is_non_renderable_evidence(item: dict) -> bool:
-    return _is_direct_input_pseudo_source(item) or _is_negative_search_pseudo_source(item)
+def _external_evidence_context(state) -> str:
+    # Keep the final renderer on QueryRunner's exact current/frozen public-subject boundary.
+    # Model/query text is evidence provenance, never relevance authority.
+    from app.agent.workflow.agents.query_runner import _external_evidence_context as shared
+    return shared(state)
+
+
+def _is_non_renderable_evidence(item: dict, state=None) -> bool:
+    return (_is_direct_input_pseudo_source(item)
+            or _is_negative_search_pseudo_source(item)
+            or (_is_structured_external_evidence(item)
+                and not _external_evidence_is_authorized(item, state or {}))
+            or _is_generic_external_source(
+                item, _external_evidence_context(state or {}),
+            ))
+
+
+_APPROVAL_RELEVANCE_WORD_RE = _re.compile(
+    r"[A-Za-z][A-Za-z0-9._+-]{1,}|[가-힣]{2,}", _re.I,
+)
+_APPROVAL_RELEVANCE_STOP = {
+    "add", "analytical", "analytics", "bug", "change", "create", "creation", "current",
+    "data", "database", "delete", "docs",
+    "documentation", "document", "draft", "epic", "existing", "github", "home",
+    "homepage", "https", "issue", "modify", "official", "open", "org", "page", "plan",
+    "please", "project", "readme", "result", "results", "review", "search", "source",
+    "story", "support", "system", "task", "technology", "ticket", "update", "validation",
+    "verify", "work",
+    "검토", "결과", "공식", "근거", "기존", "변경", "생성", "수정", "신규", "업무",
+    "요청", "작업", "지원", "초안", "추가", "확인", "필요", "데이터", "문서", "자료",
+    "시스템", "플랫폼", "티켓",
+}
+
+
+def _approval_display_mode(state) -> bool:
+    """Whether the current reply is a create/change payload awaiting approval."""
+    draft = state.get("draft") or {}
+    plan = state.get("change_plan") or {}
+    return bool(state.get("approval_token")
+                and (draft.get("items") or plan.get("key") or plan.get("keys")))
+
+
+def _approval_relevance_words(value) -> set[str]:
+    """Extract stable subject anchors without treating workflow verbs as evidence."""
+    words: set[str] = set()
+    korean_suffixes = (
+        "으로부터", "에게서", "에서는", "으로", "에서", "에게", "에는", "까지", "부터",
+        "은", "는", "이", "가", "을", "를", "의", "와", "과", "도", "만",
+    )
+    for match in _APPROVAL_RELEVANCE_WORD_RE.findall(str(value or "")):
+        token = match.casefold().strip("._+-")
+        if (len(token) < 2 or token in _APPROVAL_RELEVANCE_STOP
+                or _re.fullmatch(r"[a-z][a-z0-9]*-\d+", token, _re.I)):
+            continue
+        words.add(token)
+        if _re.fullmatch(r"[a-z0-9._+-]+", token, _re.I):
+            for part in _re.split(r"[._+-]+", token):
+                if len(part) >= 2 and part not in _APPROVAL_RELEVANCE_STOP:
+                    words.add(part)
+        elif _re.fullmatch(r"[가-힣]+", token):
+            for suffix in korean_suffixes:
+                if token.endswith(suffix) and len(token) - len(suffix) >= 2:
+                    stem = token[:-len(suffix)]
+                    if stem not in _APPROVAL_RELEVANCE_STOP:
+                        words.add(stem)
+                    break
+    return words
+
+
+def _approval_focus_material(state) -> str:
+    return " ".join((
+        request_text(state), last_user_text(state),
+        json.dumps(state.get("draft") or {}, ensure_ascii=False, default=str),
+        json.dumps(state.get("change_plan") or {}, ensure_ascii=False, default=str),
+    ))
+
+
+def _approval_source_material(item: dict) -> str:
+    observations = []
+    for observation in item.get("observations") or []:
+        if not isinstance(observation, dict) or observation.get("source") == "query":
+            continue
+        observations.append(str(observation.get("text") or ""))
+    key = str(item.get("key") or "").strip()
+    if _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I):
+        key = ""
+    return " ".join((key, str(item.get("title") or ""),
+                     str(item.get("url") or ""), *observations))
+
+
+def _is_generic_external_source(item: dict, context: str = "") -> bool:
+    """Reject generic or zero-subject-overlap hits from every visible evidence list.
+
+    Search engines frequently rank a product homepage, a documentation search shell, or
+    ``docs/README.md`` ahead of the requested feature specification, and can also return an
+    arbitrary file with no request anchor at all. Raw QueryRunner artifacts retain those
+    results for diagnostics; user-visible evidence keeps only direct topic documents.
+    """
+    url = str(item.get("url") or "").strip()
+    if not _is_external_source_url(url):
+        return False
+    # Keep one policy implementation for both the QueryRunner compact view and the final
+    # source index. This prevents a source approved as a direct intro/home/repository target
+    # from being silently discarded during final rendering.
+    from app.agent.workflow.agents.query_runner import _external_hit_is_relevant
+    return not _external_hit_is_relevant({
+        "title": item.get("title") or item.get("key"),
+        "name": item.get("key") or item.get("title"),
+        "url": url,
+        "snippet": " ".join(
+            str(observation.get("text") or "")
+            for observation in (item.get("observations") or [])
+            if isinstance(observation, dict) and observation.get("source") != "query"
+        ),
+    }, context)
+
+
+def _is_generic_approval_external_source(item: dict, state=None) -> bool:
+    """Backward-compatible name for approval relevance callers and focused tests."""
+    return _is_generic_external_source(item, _external_evidence_context(state or {}))
+
+
+def _without_query_provenance(item: dict) -> dict:
+    """Project a source for users while retaining JQL/CQL provenance in raw state."""
+    out = dict(item or {})
+    out["observations"] = [
+        dict(observation) if isinstance(observation, dict) else observation
+        for observation in (item.get("observations") or [])
+        if not (isinstance(observation, dict)
+                and str(observation.get("source") or "").strip().casefold() == "query")
+    ]
+    if not out["observations"] and _re.search(
+            r"QueryPlan|\bJQL\b|canonicalJql|canonicalCql", str(out.get("why") or ""), _re.I):
+        out["why"] = ""
+    return out
+
+
+_EVIDENCE_TICKET_TOKEN_RE = _re.compile(
+    r"\{\{ticket-(?:inline|detail|list):([A-Z][A-Z0-9]*-\d+)\}\}", _re.I,
+)
+
+
+def _ticket_description_identity(value: str) -> str:
+    """Canonicalize only presentation-equivalent ticket references for exact dedupe."""
+    text = _EVIDENCE_TICKET_TOKEN_RE.sub(r"\1", str(value or ""))
+    text = unescape(_re.sub(r"<[^>]+>", " ", text))
+    return " ".join(text.split()).casefold()
+
+
+def _dedupe_ticket_description_observations(item: dict) -> dict:
+    """Drop only canonical-exact duplicate descriptions inside one verified ticket source.
+
+    Comments and non-identical description findings remain separate. This deliberately does
+    not attempt semantic similarity: deleting two independently worded facts is not safe.
+    """
+    out = dict(item or {})
+    key = str(out.get("key") or "").strip().upper()
+    observations = list(out.get("observations") or [])
+    if not _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I) or not observations:
+        return out
+    seen: set[str] = set()
+    kept = []
+    for observation in observations:
+        if not isinstance(observation, dict) \
+                or str(observation.get("source") or "").strip().casefold() != "description":
+            kept.append(dict(observation) if isinstance(observation, dict) else observation)
+            continue
+        normalized = dict(observation)
+        normalized["text"] = _EVIDENCE_TICKET_TOKEN_RE.sub(
+            r"\1", str(observation.get("text") or ""),
+        )
+        identity = _ticket_description_identity(normalized["text"])
+        if identity and identity in seen:
+            continue
+        if identity:
+            seen.add(identity)
+        kept.append(normalized)
+    out["observations"] = kept
+    return out
+
+
+def _normalize_rendered_evidence_ticket_tokens(value: str) -> str:
+    """Make typed/plain ticket spellings comparable only inside a legacy source tail.
+
+    Canonical evidence rendering recreates every root ``ticket-detail`` token. Normalizing
+    child observation spellings here therefore removes a presentation-only duplicate without
+    touching actionable badges in the answer body.
+    """
+    text = str(value or "")
+    heading = _re.search(
+        r"(?m)^(?:#{1,4}\s*(?:근거|참조)|\*\*(?:근거|참조)\*\*)\s*$", text,
+    )
+    if not heading:
+        return text
+    return text[:heading.end()] + _EVIDENCE_TICKET_TOKEN_RE.sub(
+        r"\1", text[heading.end():],
+    )
+
+
+_LEGACY_EVIDENCE_ROOT_RE = _re.compile(
+    r"^\s*(?:-\s*)?(?:\[(\d+)\]|(\d+)[.)])\s+(.+?)\s*$",
+)
+
+
+def _drop_irrelevant_rendered_external_sources(value: str, state) -> str:
+    """Apply the shared hit policy to model-written legacy evidence roots as well.
+
+    QueryRunner prevents new noise from reaching synthesis, but cached/legacy replies can
+    already contain a numbered external row. Buffer one root and its child observations,
+    then remove only external URL blocks that fail the same current/frozen subject policy.
+    """
+    text = str(value or "")
+    heading = _re.search(
+        r"(?m)^(?:#{1,4}\s*(?:근거|참조)|\*\*(?:근거|참조)\*\*)\s*$", text,
+    )
+    if not heading:
+        return text
+    section_start = heading.end()
+    following = _re.search(r"(?m)^#{1,4}\s+", text[section_start:])
+    section_end = section_start + following.start() if following else len(text)
+    lines = text[section_start:section_end].splitlines()
+    context = _external_evidence_context(state)
+    kept: list[str] = []
+    index = 0
+    while index < len(lines):
+        root = _LEGACY_EVIDENCE_ROOT_RE.match(lines[index])
+        if not root:
+            kept.append(lines[index])
+            index += 1
+            continue
+        end = index + 1
+        while end < len(lines) and not _LEGACY_EVIDENCE_ROOT_RE.match(lines[end]):
+            end += 1
+        block = lines[index:end]
+        label = root.group(3)
+        markdown = _re.search(r"\[([^\]]+)]\((https?://[^\s)]+)\)", label, _re.I)
+        bare = _re.search(r"https?://[^\s)>\]}]+", label, _re.I)
+        url = (markdown.group(2) if markdown else (bare.group(0) if bare else ""))
+        if url and _is_external_source_url(url):
+            title = markdown.group(1) if markdown else label
+            observations = []
+            for child in block[1:]:
+                detail = _re.sub(
+                    r"^\s*[-*+]\s*(?:\[\d+-[a-z]]\s*)?", "", child, flags=_re.I,
+                ).strip()
+                if detail:
+                    observations.append({"source": "external", "text": detail})
+            item = {
+                "key": title, "title": title, "url": url, "observations": observations,
+            }
+            if (not _external_evidence_is_authorized(item, state)
+                    or _is_generic_external_source(item, context)):
+                index = end
+                continue
+        kept.extend(block)
+        index = end
+    section = "\n".join(kept)
+    return text[:section_start] + section + text[section_end:]
+
+
+def _approval_payload_ticket_keys(state) -> list[str]:
+    """Return existing ticket keys whose identity is part of the proposed payload."""
+    keys: list[str] = []
+
+    def add(value) -> None:
+        key = str(value or "").strip().upper()
+        if _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I) and key not in keys:
+            keys.append(key)
+
+    draft = state.get("draft") or {}
+    for item in [*(draft.get("items") or []), *(draft.get("children") or [])]:
+        if not isinstance(item, dict):
+            continue
+        add(item.get("epic"))
+        add(item.get("parent"))
+    plan = state.get("change_plan") or {}
+    add(plan.get("key"))
+    for key in plan.get("keys") or []:
+        add(key)
+    return keys
+
+
+def _bounded_plain_observation(value, limit: int = 420) -> str:
+    """Turn a materialized Jira rich-text field into one bounded evidence sentence."""
+    text = str(value or "")
+    text = _re.sub(
+        r"</?(?:p|li|h[1-6]|div|br|ul|ol|table|thead|tbody|tr|td|th)[^>]*>",
+        " ", text, flags=_re.I,
+    )
+    text = unescape(_re.sub(r"<[^>]+>", " ", text))
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip(" ,.;:-") + "…"
+
+
+def _approval_materialized_payload_sources(state) -> dict[str, dict]:
+    """Build authoritative display sources only from QueryRunner-opened ticket details."""
+    selected = set(_approval_payload_ticket_keys(state))
+    if not selected:
+        return {}
+    sources: dict[str, dict] = {}
+    # The current turn keeps complete QueryRunner rows. An interview continuation resets
+    # those bulky rows but preserves their bounded, validated detail ledger. Prefer current
+    # rows and use the typed ledger only for identities no longer present there.
+    details: list[dict] = []
+    seen_detail_keys: set[str] = set()
+
+    def add_details(values) -> None:
+        for detail in values or []:
+            if not isinstance(detail, dict) or detail.get("error"):
+                continue
+            key = str(detail.get("key") or "").strip().upper()
+            if not key or key in seen_detail_keys:
+                continue
+            seen_detail_keys.add(key)
+            details.append(detail)
+
+    for row in (state.get("query_results") or []):
+        if not isinstance(row, dict) or row.get("source") != "jira":
+            continue
+        add_details((row.get("result") or {}).get("ticketDetails") or [])
+    ledger = state.get("materialized_ticket_sources") or {}
+    if isinstance(ledger, dict):
+        add_details(ledger.get("ticketDetails") or [])
+
+    for detail in details:
+        key = str(detail.get("key") or "").strip().upper()
+        if key not in selected:
+            continue
+        observations = []
+        description = _bounded_plain_observation(detail.get("description"))
+        if description:
+            observations.append({"source": "description", "text": description})
+        for comment in (detail.get("comments") or [])[:2]:
+            if not isinstance(comment, dict):
+                continue
+            body = _bounded_plain_observation(comment.get("body") or comment.get("text"))
+            author = str(comment.get("author") or "").strip()
+            if body:
+                observations.append({
+                    "source": "comment", "text": f"{author}: {body}" if author else body,
+                })
+        fields = []
+        for label, field in (("유형", "type"), ("상태", "status"), ("담당", "assignee")):
+            if detail.get(field):
+                fields.append(f"{label} {detail[field]}")
+        if fields:
+            observations.append({"source": "field", "text": " · ".join(fields)})
+        # ``ticketDetails`` is the materialization boundary. An empty/error detail is
+        # never upgraded merely because the search hit named the selected parent.
+        if not observations:
+            continue
+        sources[key] = {
+            "key": key,
+            "title": str(detail.get("summary") or detail.get("title") or key).strip(),
+            "url": str(detail.get("url") or detail.get("self") or "").strip(),
+            "why": "승인 초안에서 참조한 기존 티켓의 상세 원본을 확인함",
+            "confidence": "high", "fitness": "supporting",
+            "limitations": "상위·대상 티켓의 맥락 근거이며 신규 작업의 완료를 증명하지 않음",
+            "observations": observations,
+        }
+    return sources
+
+
+def _merge_display_source(primary: dict, materialized: dict) -> dict:
+    """Hydrate a bounded ledger row without mutating either persisted source object."""
+    out = _without_query_provenance(primary)
+    if materialized.get("title"):
+        out["title"] = materialized["title"]
+    if materialized.get("url") and not out.get("url"):
+        out["url"] = materialized["url"]
+    observations = list(out.get("observations") or [])
+    seen = {(str(row.get("source") or ""), str(row.get("text") or ""))
+            for row in observations if isinstance(row, dict)}
+    for observation in materialized.get("observations") or []:
+        identity = (str(observation.get("source") or ""), str(observation.get("text") or ""))
+        if identity not in seen:
+            observations.append(dict(observation))
+            seen.add(identity)
+    out["observations"] = observations
+    for field in ("why", "confidence", "fitness", "limitations"):
+        if materialized.get(field):
+            out[field] = materialized[field]
+    return out
+
+
+def _approval_source_is_relevant(item: dict, state) -> bool:
+    """Prove display relevance from exact payload refs or substantive topic overlap.
+
+    Query provenance is intentionally excluded from source material: it repeats the search
+    phrase and made a landing page appear relevant merely because the right words were typed
+    into the search box.
+    """
+    payload = _approval_focus_material(state)
+    key = str(item.get("key") or "").strip().upper()
+    url = str(item.get("url") or "").strip()
+    if _is_generic_approval_external_source(item, state):
+        return False
+    if not url and any(
+        isinstance(observation, dict) and observation.get("source") in {"external", "web"}
+        for observation in (item.get("observations") or [])
+    ):
+        return False
+    exact_keys = {found.upper() for found in _re.findall(
+        r"(?<![A-Z0-9-])([A-Z][A-Z0-9]*-\d+)(?![A-Z0-9-])", payload, _re.I,
+    )}
+    exact_urls = {found.rstrip(".,;:!?)\"'") for found in _re.findall(
+        r"https?://[^\s)\]}]+", payload, _re.I,
+    )}
+    if _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I) and key in exact_keys:
+        # A search hit is not an authoritative parent/target source until its details were
+        # opened. Query-only observations remain debug metadata and cannot justify selection.
+        return any(
+            isinstance(observation, dict)
+            and str(observation.get("source") or "").strip().casefold() != "query"
+            and str(observation.get("text") or "").strip()
+            for observation in (item.get("observations") or [])
+        )
+    if url and url.rstrip("/") in {value.rstrip("/") for value in exact_urls}:
+        return True
+
+    focus_words = _approval_relevance_words(payload)
+    source_words = _approval_relevance_words(_approval_source_material(item))
+    observation_words = _approval_relevance_words(" ".join(
+        str(observation.get("text") or "")
+        for observation in (item.get("observations") or [])
+        if isinstance(observation, dict) and observation.get("source") != "query"
+    ))
+    overlap = focus_words & source_words
+    substantive_overlap = focus_words & observation_words
+    if not overlap or not substantive_overlap:
+        return False
+    required = 1 if len(focus_words) <= 1 else 2
+    if len(overlap) >= required:
+        return True
+    # Research synthesis can explicitly record that one narrow source was used for a
+    # decision.  A single matching subject anchor is enough only with that direct/supporting
+    # judgment; unreviewed QueryPlan hits remain ``unknown`` and must meet the stricter test.
+    if _is_external_source_url(url):
+        return False
+    return str(item.get("fitness") or "").strip().lower() in {"direct", "supporting"}
+
+
+def _approval_url_identity(url: str) -> str:
+    from urllib.parse import urlsplit, urlunsplit
+    try:
+        parsed = urlsplit(str(url or "").strip())
+        return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(),
+                           parsed.path.rstrip("/"), parsed.query, ""))
+    except Exception:
+        return str(url or "").strip().rstrip("/").casefold()
+
+
+def _approval_evidence_identity(item: dict) -> str:
+    key = str(item.get("key") or "").strip().upper()
+    if _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I):
+        return "ticket:" + key
+    url = str(item.get("url") or "").strip()
+    if url:
+        return "url:" + _approval_url_identity(url)
+    return "text:" + str(item.get("title") or item.get("key") or "").strip().casefold()
+
+
+def _approval_query_hit_evidence(state) -> list[dict]:
+    """Expose directly relevant raw web hits even when the compact ledger kept another hit."""
+    candidates = []
+    for row in (state.get("query_results") or []):
+        if not isinstance(row, dict) or row.get("source") not in ("web", "github"):
+            continue
+        for hit in ((row.get("result") or {}).get("results") or []):
+            if not isinstance(hit, dict):
+                continue
+            title = str(hit.get("title") or hit.get("name") or "").strip()
+            url = str(hit.get("url") or "").strip()
+            detail = str(hit.get("snippet") or hit.get("description") or "").strip()
+            if not url or not detail:
+                continue
+            candidates.append({
+                "key": title or url,
+                "title": title or url,
+                "url": url,
+                "confidence": "high" if hit.get("official") is True else "unknown",
+                "fitness": "unknown",
+                "limitations": "검색 결과이며 내부 적용 상태를 직접 증명하지 않음",
+                "observations": [{"source": "external", "text": detail}],
+            })
+    return candidates
+
+
+def _approval_display_evidence(state) -> list[dict]:
+    """Return a display-only projection; never mutate the research ledger or raw artifacts."""
+    visible: list[dict] = []
+    seen: set[str] = set()
+    materialized = _approval_materialized_payload_sources(state)
+    for item in (state.get("evidence") or []):
+        if not isinstance(item, dict) or _is_non_renderable_evidence(item, state):
+            continue
+        key = str(item.get("key") or "").strip().upper()
+        candidate = (_merge_display_source(item, materialized[key])
+                     if key in materialized else _without_query_provenance(item))
+        if not _approval_source_is_relevant(candidate, state):
+            continue
+        identity = _approval_evidence_identity(candidate)
+        if identity and identity not in seen:
+            seen.add(identity)
+            visible.append(candidate)
+    # A selected parent can be outside the bounded Research ledger while still appearing in
+    # the complete QueryRunner artifact. Add it only from a materialized ``ticketDetails`` row.
+    for key in _approval_payload_ticket_keys(state):
+        item = materialized.get(key)
+        if not item or not _approval_source_is_relevant(item, state):
+            continue
+        identity = _approval_evidence_identity(item)
+        if identity and identity not in seen:
+            seen.add(identity)
+            visible.append(item)
+    raw_external_added = 0
+    for item in _approval_query_hit_evidence(state):
+        candidate = _without_query_provenance(item)
+        # Approval display is another evidence renderer, so it must honor the same exact
+        # acquisition, requested-provider, and official-provenance boundary as the final
+        # source index. Raw QueryRunner hits are candidates, not an authorization bypass.
+        if (_is_structured_external_evidence(candidate)
+                and not _external_evidence_is_authorized(candidate, state)):
+            continue
+        if not _approval_source_is_relevant(candidate, state):
+            continue
+        identity = _approval_evidence_identity(candidate)
+        if not identity or identity in seen:
+            continue
+        seen.add(identity)
+        visible.append(candidate)
+        raw_external_added += 1
+        if raw_external_added == 3:
+            break
+    return visible
+
+
+def _approval_official_external_urls(state) -> set[str]:
+    official: set[str] = set()
+
+    def visit(value) -> None:
+        if isinstance(value, dict):
+            url = str(value.get("url") or "").strip()
+            if url and (value.get("official") is True
+                        or str(value.get("official") or "").casefold() == "true"):
+                official.add(_approval_url_identity(url))
+            for child in value.values():
+                if isinstance(child, (dict, list, tuple)):
+                    visit(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child)
+
+    visit(state.get("query_results") or [])
+    for line in str(state.get("web_context") or "").splitlines():
+        if not _re.search(r"(?:·\s*공식\b|official\s*=\s*true)", line, _re.I):
+            continue
+        for url in _re.findall(r"https?://[^\s)\]}]+", line, _re.I):
+            official.add(_approval_url_identity(url.rstrip(".,;:!?")))
+    for item in (state.get("evidence") or []):
+        if not isinstance(item, dict) or not item.get("url"):
+            continue
+        query_notes = " ".join(
+            str(observation.get("text") or "")
+            for observation in (item.get("observations") or [])
+            if isinstance(observation, dict) and observation.get("source") == "query"
+        )
+        if _re.search(r"official\s*=\s*true", query_notes, _re.I):
+            official.add(_approval_url_identity(item["url"]))
+    return official
+
+
+def _approval_external_search_attempted(state) -> bool:
+    if any(isinstance(row, dict) and row.get("source") in ("web", "github")
+           for row in (state.get("query_results") or [])):
+        return True
+    context = str(state.get("web_context") or "")
+    if _re.search(r"\[(?:web|github)\s*검색\]|웹\s*검색|GitHub\s*검색", context, _re.I):
+        return True
+    for item in (state.get("evidence") or []):
+        if not isinstance(item, dict):
+            continue
+        for observation in item.get("observations") or []:
+            if (isinstance(observation, dict) and observation.get("source") == "query"
+                    and _re.search(r"QueryPlan\s+(?:web|github):",
+                                   str(observation.get("text") or ""), _re.I)):
+                return True
+    return False
+
+
+def _drop_approval_evidence_section(text: str) -> str:
+    """Rebuild deterministic approval provenance from its filtered structured projection."""
+    value = str(text or "")
+    heading = _re.search(r"(?m)^#{1,4}\s*(?:근거|참조)\s*$", value)
+    if not heading:
+        return value.strip()
+    following = _re.search(r"(?m)^#{1,4}\s+", value[heading.end():])
+    end = heading.end() + following.start() if following else len(value)
+    return "\n\n".join(part.strip() for part in (value[:heading.start()], value[end:])
+                         if part.strip())
+
+
+def _add_approval_research_limit(text: str, state, evidence: list[dict]) -> str:
+    if not _approval_external_search_attempted(state):
+        return str(text or "")
+    official = _approval_official_external_urls(state)
+    has_direct_official = any(
+        _is_external_source_url(str(item.get("url") or ""))
+        and _approval_url_identity(str(item.get("url") or "")) in official
+        for item in evidence
+    )
+    value = str(text or "").strip()
+    if has_direct_official or _re.search(r"(?m)^###\s*조사\s*한계\s*$", value):
+        return value
+    block = ("### 조사 한계\n\n"
+             "- 외부 검색은 수행했지만 요청 주제를 직접 뒷받침하는 공식 자료는 확인하지 못함")
+    return value.rstrip() + "\n\n" + block
 
 
 def _drop_direct_input_source_rows(text: str) -> str:
@@ -2162,14 +3563,390 @@ def _drop_direct_input_source_rows(text: str) -> str:
     return _re.sub(r"\n{3,}", "\n\n", value).strip()
 
 
+def _selected_final_evidence(state) -> list[dict]:
+    """Return the immutable display selection shared by reply and eval projections."""
+    if _approval_display_mode(state):
+        rows = _approval_display_evidence(state)
+    else:
+        rows = [
+            _without_query_provenance(item)
+            for item in (state.get("evidence") or [])
+            if isinstance(item, dict) and not _is_non_renderable_evidence(item, state)
+        ]
+    return [_dedupe_ticket_description_observations(item) for item in rows]
+
+
+def _authority_safe_evidence(rows) -> list[dict]:
+    """Strip model-declared authority while preserving display prose and source identity."""
+    safe: list[dict] = []
+    for raw in rows or []:
+        if not isinstance(raw, dict):
+            continue
+        item = {
+            field: raw.get(field)
+            for field in ("key", "title", "url", "why", "confidence", "fitness",
+                          "limitations")
+            if raw.get(field) not in (None, "")
+        }
+        observations = []
+        for raw_observation in raw.get("observations") or []:
+            if isinstance(raw_observation, dict):
+                observations.append({
+                    "source": str(raw_observation.get("source") or "").strip(),
+                    "text": str(raw_observation.get("text") or ""),
+                })
+            elif isinstance(raw_observation, str):
+                observations.append(raw_observation)
+        item["observations"] = observations
+        safe.append(item)
+    return safe
+
+
+def canonical_evaluation_evidence(state) -> list[dict]:
+    """Project final evidence without mutating or granting authority to model prose.
+
+    Source identity comes from the same final selection used by the reply. Exact Jira
+    description/comment and selected document cells are rebound to materialized QueryRunner
+    rows; every other observation remains an explicitly indirect research projection. Opened
+    but unselected ticket/document identities remain visible with no conclusion observations.
+    """
+    selected_input = _authority_safe_evidence(_selected_final_evidence(state))
+    display_rows = normalize_evidence_summaries(selected_input)
+    bound_rows = bind_evidence_provenance(selected_input)
+
+    # QueryRunner ticketDetails and the durable ledger are both canonical acquisition
+    # artifacts.  Build an ephemeral authority view; the caller's state remains untouched.
+    materialized = _materialized_internal_source_rows(state, cap=None)
+    materialized_by_source = {
+        f"ticket:{row['key']}": row for row in materialized
+    }
+    materialized_documents = canonical_materialized_documents(state)
+    document_groups: dict[str, list[dict]] = {}
+    for document in materialized_documents:
+        if document.get("url"):
+            document_groups.setdefault(evidence_source_id(document), []).append(document)
+    documents_by_source = {
+        source_id: rows[0] for source_id, rows in document_groups.items()
+        if len(rows) == 1
+    }
+    conflicting_document_sources = {
+        source_id for source_id, rows in document_groups.items() if len(rows) != 1
+    }
+    document_identity_by_source = {
+        source_id: rows[0] for source_id, rows in document_groups.items()
+    }
+    authority_state = dict(state or {})
+    authority_state["materialized_ticket_sources"] = {
+        "ticketDetails": [dict(row) for row in materialized],
+    }
+    trusted_by_observation = {
+        str(row.get("observation_id") or ""): row
+        for row in canonical_observation_facts(authority_state, selected_input)
+        if row.get("observation_id")
+    }
+
+    result: list[dict] = []
+    result_by_source: dict[str, dict] = {}
+    trusted_fields = (
+        "fact_id", "source_id", "subject_id", "predicate", "value", "claim_kind",
+        "observed_at", "normalized_text", "provenance", "direct", "typed",
+        "authority", "state", "temporal_role",
+    )
+
+    for index, display_item in enumerate(display_rows):
+        bound_item = bound_rows[index]
+        raw_item = selected_input[index]
+        source_id = str(bound_item.get("_source_id") or evidence_source_id(raw_item))
+        materialized_row = materialized_by_source.get(source_id)
+        materialized_document = documents_by_source.get(source_id)
+        source_authority = "research_projection"
+        if materialized_row:
+            source_authority = "materialized_ticket_sources"
+        elif materialized_document:
+            source_authority = "materialized_document_sources"
+        elif source_id in conflicting_document_sources:
+            source_authority = "materialized_document_conflict"
+        elif source_id.startswith("url:") and _research_url_provenance(
+                state, str(display_item.get("url") or "")):
+            # This proves acquisition and URL identity only.  Observation prose below stays
+            # indirect unless a separate canonical cell rebinds it.
+            source_authority = "executed_query_result_url"
+
+        title = str(display_item.get("title") or "").strip()
+        url = str(display_item.get("url") or "").strip()
+        if materialized_row:
+            title = str(materialized_row.get("summary") or title).strip()
+            url = str(materialized_row.get("url") or url).strip()
+        elif materialized_document:
+            title = str(materialized_document.get("title") or title).strip()
+            url = str(materialized_document.get("url") or url).strip()
+        row = {
+            "key": str(display_item.get("key") or "").strip(),
+            "title": title,
+            "_source_id": source_id,
+            "_source_class": str(bound_item.get("_source_class") or "untyped"),
+            "_selection": "selected",
+            "_authority": source_authority,
+            "observations": [],
+        }
+        if source_id in conflicting_document_sources:
+            row["_conflict"] = "canonical_document_payload_conflict"
+        if url:
+            row["url"] = url
+        why = str(display_item.get("why") or "").strip()
+        if why:
+            row["why"] = why
+            row["_why_authority"] = "research_projection"
+
+        sidecar = bound_item.get("_provenance") or {}
+        observation_ids = {
+            int(binding.get("ordinal") or 0): str(binding.get("observation_id") or "")
+            for binding in (sidecar.get("observations") or [])
+            if isinstance(binding, dict)
+        }
+        raw_observations = raw_item.get("observations") or []
+        display_observations = ([] if source_id in conflicting_document_sources
+                                else display_item.get("observations") or [])
+        for ordinal, display_observation in enumerate(display_observations, 1):
+            observation_id = observation_ids.get(ordinal, "")
+            if isinstance(display_observation, dict):
+                observation = {
+                    "source": str(display_observation.get("source") or "").strip(),
+                    "text": str(display_observation.get("text") or ""),
+                    "authority": "research_projection",
+                    "direct": False,
+                    "typed": False,
+                    "temporal_role": "untyped",
+                }
+                if observation_id:
+                    observation["observation_id"] = observation_id
+                raw_observation = (
+                    raw_observations[ordinal - 1]
+                    if ordinal <= len(raw_observations) else None
+                )
+                unchanged = (
+                    isinstance(raw_observation, dict)
+                    and observation["text"] == str(raw_observation.get("text") or "")
+                )
+                trusted = trusted_by_observation.get(observation_id) if unchanged else None
+                if trusted:
+                    observation.update({
+                        field: trusted[field] for field in trusted_fields if field in trusted
+                    })
+                elif materialized_document and unchanged and isinstance(raw_observation, dict):
+                    canonical_text = " ".join(
+                        str(materialized_document.get("text") or "").split()
+                    ).strip()
+                    raw_text = " ".join(
+                        str(raw_observation.get("text") or "").split()
+                    ).strip()
+                    location = str(raw_observation.get("source") or "").strip().casefold()
+                    if (canonical_text and raw_text == canonical_text
+                            and location in {"document", "confluence"}):
+                        observation.update({
+                            "observed_at": str(
+                                materialized_document.get("updated") or ""
+                            ).strip(),
+                            "normalized_text": canonical_text,
+                            "provenance": (
+                                "materialized_document_sources["
+                                + source_id + "].text"
+                            ),
+                            "direct": True,
+                            "typed": False,
+                            "authority": "materialized_document_sources",
+                            "temporal_role": "observed",
+                        })
+                row["observations"].append(observation)
+            elif isinstance(display_observation, str):
+                row["observations"].append({
+                    "source": "evidence", "text": display_observation,
+                    "authority": "research_projection", "direct": False,
+                    "typed": False, "temporal_role": "untyped",
+                })
+
+        existing = result_by_source.get(source_id)
+        if existing is None:
+            result_by_source[source_id] = row
+            result.append(row)
+            continue
+        seen_observations = {
+            str(observation.get("observation_id") or "")
+            or "\x1f".join((str(observation.get("source") or ""),
+                              str(observation.get("text") or "")))
+            for observation in existing["observations"]
+        }
+        for observation in row["observations"]:
+            identity = (str(observation.get("observation_id") or "")
+                        or "\x1f".join((str(observation.get("source") or ""),
+                                         str(observation.get("text") or ""))))
+            if identity not in seen_observations:
+                seen_observations.add(identity)
+                existing["observations"].append(observation)
+
+    # ``related_docs`` is the selected document channel. Hydrate it from exact QueryRunner
+    # projections even when Research omitted the duplicate evidence row.
+    for document in canonical_related_documents(state, state.get("related_docs") or []):
+        source_id = evidence_source_id(document)
+        if source_id in result_by_source:
+            continue
+        if source_id in conflicting_document_sources:
+            identity = document_identity_by_source[source_id]
+            selected_conflict = {
+                "key": str(identity.get("url") or "").strip(),
+                "title": str(identity.get("url") or "").strip(),
+                "url": str(identity.get("url") or "").strip(),
+                "_source_id": source_id,
+                "_source_class": "internal_document",
+                "_selection": "selected",
+                "_authority": "materialized_document_conflict",
+                "_conflict": "canonical_document_payload_conflict",
+                "observations": [],
+            }
+            result_by_source[source_id] = selected_conflict
+            result.append(selected_conflict)
+            continue
+        if source_id not in documents_by_source:
+            continue
+        canonical = documents_by_source[source_id]
+        canonical_text = " ".join(str(canonical.get("text") or "").split()).strip()
+        observation = {
+            "source": "document", "text": canonical_text,
+            "observed_at": str(canonical.get("updated") or "").strip(),
+            "normalized_text": canonical_text,
+            "provenance": f"materialized_document_sources[{source_id}].text",
+            "direct": True, "typed": False,
+            "authority": "materialized_document_sources",
+            "temporal_role": "observed",
+        }
+        selected_document = {
+            "key": str(canonical.get("title") or "").strip(),
+            "title": str(canonical.get("title") or "").strip(),
+            "url": str(canonical.get("url") or "").strip(),
+            "_source_id": source_id,
+            "_source_class": "internal_document",
+            "_selection": "selected",
+            "_authority": "materialized_document_sources",
+            "observations": [observation] if canonical_text else [],
+        }
+        result_by_source[source_id] = selected_document
+        result.append(selected_document)
+
+    # Tickets and documents share one bounded inspected-source ledger. Selected sources above
+    # are never capped; only identity-only coverage rows consume this reviewer budget.
+    omitted_candidates: list[dict] = []
+    omitted_source_ids: set[str] = set()
+    for materialized_row in materialized:
+        source_id = f"ticket:{materialized_row['key']}"
+        if source_id in result_by_source or source_id in omitted_source_ids:
+            continue
+        omitted_source_ids.add(source_id)
+        omitted_candidates.append({
+            "key": materialized_row["key"],
+            "title": str(materialized_row.get("summary") or "").strip(),
+            "_source_id": source_id,
+            "_source_class": "jira",
+            "_selection": "inspected_not_selected",
+            "_authority": "materialized_ticket_sources",
+            "observations": [],
+        })
+    for canonical in materialized_documents:
+        source_id = evidence_source_id(canonical)
+        if source_id in result_by_source or source_id in omitted_source_ids:
+            continue
+        omitted_source_ids.add(source_id)
+        conflict = source_id in conflicting_document_sources
+        omitted_candidates.append({
+            "key": str(canonical.get("url") if conflict
+                       else canonical.get("title") or "").strip(),
+            "title": str(canonical.get("url") if conflict
+                         else canonical.get("title") or "").strip(),
+            "url": str(canonical.get("url") or "").strip(),
+            "_source_id": source_id,
+            "_source_class": "internal_document",
+            "_selection": "inspected_not_selected",
+            "_authority": ("materialized_document_conflict" if conflict
+                           else "materialized_document_sources"),
+            **({"_conflict": "canonical_document_payload_conflict"}
+               if conflict else {}),
+            "observations": [],
+        })
+    inspected_limit = 8
+    included = omitted_candidates[:inspected_limit]
+    remaining = max(0, len(omitted_candidates) - len(included))
+    if remaining and included:
+        included[-1]["_coverage"] = {
+            "kind": "inspected_source_ledger",
+            "limit": inspected_limit,
+            "remainingCount": remaining,
+        }
+    for omitted in included:
+        source_id = str(omitted.get("_source_id") or "")
+        result_by_source[source_id] = omitted
+        result.append(omitted)
+    return result
+
+
 def _merge_evidence_index(text: str, state) -> str:
     """Union model references and structured research provenance in the persisted reply."""
-    evidence = [item for item in (state.get("evidence") or [])
-                if isinstance(item, dict) and not _is_non_renderable_evidence(item)]
-    return canonicalize_evidence_index(
+    approval_display = _approval_display_mode(state)
+    canonical_manifest = (
+        not approval_display and _has_canonical_evidence_manifest(state)
+    )
+    evidence = (canonical_evaluation_evidence(state) if canonical_manifest
+                else _selected_final_evidence(state))
+    value = _normalize_rendered_evidence_ticket_tokens(
         _drop_direct_input_source_rows(_fold_standalone_sources(text)),
+    )
+    value = _drop_irrelevant_rendered_external_sources(value, state)
+    related_docs = canonical_related_documents(
+        state, state.get("related_docs") or [],
+    )
+    if approval_display:
+        # Approval prose is a deterministic payload projection. Rebuild its source tail from
+        # the filtered view so an earlier generic search block cannot survive a second pass.
+        value = _drop_approval_evidence_section(value)
+        value = _add_approval_research_limit(value, state, evidence)
+        visible_urls = {_approval_url_identity(str(item.get("url") or ""))
+                        for item in evidence if item.get("url")}
+        visible_titles = {
+            str(item.get("title") or item.get("key") or "").strip().casefold()
+            for item in evidence
+            if not _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+",
+                                 str(item.get("key") or "").strip(), _re.I)
+        }
+        title_counts: dict[str, int] = {}
+        for doc in related_docs:
+            if isinstance(doc, dict) and doc.get("title"):
+                title = str(doc["title"]).strip().casefold()
+                title_counts[title] = title_counts.get(title, 0) + 1
+        related_docs = [doc for doc in related_docs if isinstance(doc, dict) and (
+            _approval_url_identity(str(doc.get("url") or "")) in visible_urls
+            or (str(doc.get("title") or "").strip().casefold() in visible_titles
+                and title_counts.get(str(doc.get("title") or "").strip().casefold()) == 1)
+        )]
+    else:
+        if not canonical_manifest:
+            value = _ensure_internal_source_coverage_disclosure(value, state, evidence)
+    observation_facts = [
+        *canonical_observation_facts(state, evidence),
+        *canonical_source_scope_facts(state, evidence),
+    ]
+    rendered = canonicalize_evidence_index(
+        value,
         evidence=evidence,
-        related_docs=state.get("related_docs") or [],
+        related_docs=related_docs,
+        observation_facts=observation_facts,
+        quantity_relations=canonical_quantity_relations(state),
+        trusted_observation_dates=canonical_manifest,
+    )
+    if canonical_manifest:
+        # The canonical claim graph already owns typed observation and source-scope facts.
+        # Re-running the legacy exact-literal pass would collapse citations belonging to
+        # other clauses in a compound sentence.
+        return rendered
+    return rebind_atomic_fact_citations(
+        rendered, build_atomic_fact_ledger(state),
     )
 
 
@@ -2268,6 +4045,53 @@ def _rebind_definition_citations(text: str) -> str:
     return "\n".join(lines).rstrip() + "\n\n" + index.lstrip()
 
 
+def _rebind_explicit_source_citations(text: str) -> str:
+    """Bind an explicitly named source to its own canonical index number.
+
+    A model can correctly name a meeting/document but leave the marker from the
+    adjacent external source. Once the canonical index exists, the exact source
+    title and number are deterministic. Replace only the first citation after
+    one uniquely named source in that sentence; implicit analytical claims stay
+    untouched.
+    """
+    value = str(text or "")
+    heading = _re.search(r"(?m)^###\s*근거\s*$", value)
+    if not heading:
+        return value
+    body, source_index = value[:heading.start()].rstrip(), value[heading.start():]
+    titles = []
+    for number, row in _re.findall(r"(?m)^\[(\d+)\]\s+(.+)$", source_index):
+        link = _re.match(r"\[([^\n]+?)\]\(https?://", row)
+        if link:
+            title = link.group(1).strip()
+            if len(title) >= 3:
+                titles.append((title, number))
+    if not titles:
+        return value
+
+    rendered = []
+    for line in body.splitlines():
+        if line.lstrip().startswith(("|", "#", ">")):
+            rendered.append(line)
+            continue
+        sentences = _re.split(r"(?<=[.!?])\s+", line)
+        fixed = []
+        for sentence in sentences:
+            matches = [(title, number, sentence.find(title))
+                       for title, number in titles if title in sentence]
+            if len(matches) == 1:
+                _title, number, position = matches[0]
+                citation = _BODY_CITATION_RE.search(sentence, position + len(_title))
+                if citation is None:
+                    citation = _BODY_CITATION_RE.search(sentence, 0, position)
+                if citation:
+                    sentence = (sentence[:citation.start()] + f"[{number}]"
+                                + sentence[citation.end():])
+            fixed.append(sentence)
+        rendered.append(" ".join(fixed))
+    return "\n".join(rendered).rstrip() + "\n\n" + source_index.lstrip()
+
+
 def _source_quality_requested(state) -> bool:
     asked = (request_text(state) + " " + last_user_text(state)).casefold()
     return any(word in asked for word in ("신뢰도", "출처별", "요청 적합성", "출처 적합성"))
@@ -2275,14 +4099,17 @@ def _source_quality_requested(state) -> bool:
 
 def _render_requested_source_quality(text: str, state) -> str:
     """Project structured source judgments into one complete, deterministic table."""
-    evidence = [row for row in (state.get("evidence") or [])
-                if isinstance(row, dict) and not _is_non_renderable_evidence(row)]
+    approval_display = _approval_display_mode(state)
+    evidence = (_approval_display_evidence(state) if approval_display else
+                [row for row in (state.get("evidence") or [])
+                 if isinstance(row, dict) and not _is_non_renderable_evidence(row, state)])
     if not evidence or not _source_quality_requested(state):
         return str(text or "")
     confidence = {"high": "높음", "medium": "중간", "low": "낮음", "unknown": "미확인"}
     fitness = {"direct": "직접", "supporting": "보조", "context-only": "맥락", "unknown": "미확인"}
     rows = ["### 출처 평가", "", "| 출처 | 신뢰도 | 요청 적합성 | 한계 |", "|---|---|---|---|"]
     represented_urls = set()
+    approval_official = _approval_official_external_urls(state) if approval_display else set()
     for item in evidence:
         key = str(item.get("key") or "").strip().upper()
         title = str(item.get("title") or item.get("key") or "출처").strip()
@@ -2300,18 +4127,28 @@ def _render_requested_source_quality(text: str, state) -> str:
         if _is_external_source_url(url):
             # An external specification can be authoritative about its own format, never
             # direct proof that this LTM/Jira project is production-ready.
-            official = bool(_re.search(
-                rf"(?m)^-\s*[^\n]*·\s*공식\s*—[^\n]*{_re.escape(url)}",
-                str(state.get("web_context") or "")))
+            official = (_approval_url_identity(url) in approval_official
+                        if approval_display else bool(_re.search(
+                            rf"(?m)^-\s*[^\n]*·\s*공식\s*—[^\n]*{_re.escape(url)}",
+                            str(state.get("web_context") or ""))))
             raw_confidence = "high" if official else "medium"
             raw_fitness = "supporting"
             limitation = limitation or "내부 운영 적용 여부는 직접 판단하지 않음"
         if not limitation:
-            limitation = {
-                "direct": "단일 출처만으로 최종 판단하기에는 범위 제한",
-                "supporting": "보조 근거로 단독 결론 불가",
-                "context-only": "배경 이해용으로 직접 판단 근거가 아님",
-            }.get(raw_fitness, "근거 한계 미확인")
+            kinds = {str(obs.get("source") or "") for obs in (item.get("observations") or [])
+                     if isinstance(obs, dict)}
+            if raw_fitness == "direct" and "comment" in kinds:
+                limitation = "기록된 결과 이후의 변경·후속 검증은 별도 확인 필요"
+            elif raw_fitness == "direct" and kinds <= {"description", "field"}:
+                limitation = "계획·정책 근거이며 실행 결과는 별도 확인 필요"
+            elif raw_fitness == "direct" and "document" in kinds:
+                limitation = "문서 기록 시점 이후 변경은 반영되지 않을 수 있음"
+            else:
+                limitation = {
+                    "direct": "이 출처가 기록한 범위 밖의 결과는 판단하지 않음",
+                    "supporting": "보조 근거로 단독 결론 불가",
+                    "context-only": "배경 이해용으로 직접 판단 근거가 아님",
+                }.get(raw_fitness, "근거 한계 미확인")
         rows.append(
             f"| {_cell(source)} | {confidence.get(raw_confidence, '미확인')} | "
             f"{fitness.get(raw_fitness, '미확인')} | {_cell(limitation)} |"
@@ -2619,6 +4456,31 @@ def _violations(g: dict) -> int:
     return len(g.get("fake_keys") or []) + len(g.get("wrong_titles") or {}) \
         + len(g.get("fake_people") or []) + len(g.get("unlinked_refs") or []) \
         + len(g.get("name_as_id") or {})
+
+
+def _filter_plain_person_candidates(result: dict, text: str) -> dict:
+    """Suppress only upstream findings explicitly typed as non-person common nouns.
+
+    Result must not run a second person grammar over checker output. Legacy/untyped findings
+    remain enforceable; only the authoritative structured finding can exclude a candidate.
+    """
+    out = dict(result or {})
+    suppress = {
+        str(finding.get("candidate") or "").strip()
+        for finding in (out.get("person_findings") or [])
+        if isinstance(finding, dict)
+        and finding.get("context_kind") == "common_noun"
+        and finding.get("verdict") == "non_person"
+    }
+    out["fake_people"] = [
+        candidate for candidate in (out.get("fake_people") or [])
+        if str(candidate).split(" (", 1)[0].strip() not in suppress
+    ]
+    out["ok"] = not (
+        out.get("fake_keys") or out.get("wrong_titles") or out.get("fake_people")
+        or out.get("unlinked_refs") or out.get("name_as_id")
+    )
+    return out
 
 
 def _kept_substance(before: str, after: str) -> bool:

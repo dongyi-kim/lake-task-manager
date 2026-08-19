@@ -24,30 +24,25 @@ from __future__ import annotations
 
 import html
 import re
-from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import parse_qs, unquote, urlparse
 
 from langchain_core.tools import tool
 
 from app.agent.tools._ctx import compact, trim
-from app.infra.public_tls import public_ca_bundle
+from app.infra.public_tls import public_ssl_context
 
 _TIMEOUT = 8        # 외부는 느릴 수 있다 — 조사 한 걸음이 대화를 오래 잡으면 안 된다
-_OFFICIAL_DOC_HOSTS = (
-    "apache.org", "starrocks.io", "docs.github.com", "kubernetes.io",
-    "python.org", "openjdk.org", "ietf.org", "w3.org",
+_PUBLIC_STANDARDS_AUTHORITIES = (
+    "apache.org", "ietf.org", "w3.org", "open-std.org",
 )
-_OFFICIAL_FALLBACKS = (
-    ({"iceberg", "puffin"}, "Apache Iceberg Puffin specification",
-     "https://iceberg.apache.org/puffin-spec/", ("blob types", "puffin")),
-    ({"iceberg", "puffin", "ndv"}, "StarRocks Iceberg column statistics setting",
-     "https://docs.starrocks.io/docs/sql-reference/System_variable/#enable_iceberg_column_statistics",
-     ("enable_iceberg_column_statistics", "ndv", "puffin")),
-)
+_DOMAIN_NOISE = {
+    "api", "com", "dev", "docs", "documentation", "github", "io", "net", "org", "www",
+}
+_COMMON_SECOND_LEVEL_SUFFIXES = {"ac", "co", "com", "edu", "gov", "net", "org"}
 
 
-def _ca_bundle() -> str:
-    """Use a file CA bundle instead of the Windows user certificate store.
+def _tls_context():
+    """Use the shared file-backed TLS context instead of the Windows user store.
 
     The former ``duckduckgo-search`` transport uses ``primp`` on Windows.  In a
     restricted process it tries to open the current-user native certificate store,
@@ -55,7 +50,7 @@ def _ca_bundle() -> str:
     search call waiting for minutes.  httpx + certifi has the same TLS verification
     semantics without depending on that OS-global store.
     """
-    return public_ca_bundle()
+    return public_ssl_context()
 
 
 def _public_search(query: str, limit: int) -> list[dict]:
@@ -68,7 +63,7 @@ def _public_search(query: str, limit: int) -> list[dict]:
         headers={"User-Agent": "Mozilla/5.0 (compatible; LakeTaskManager/1.0)"},
         follow_redirects=True,
         timeout=_TIMEOUT,
-        verify=_ca_bundle(),
+        verify=_tls_context(),
     )
     if response.status_code != 200:
         raise RuntimeError(f"search endpoint HTTP {response.status_code}")
@@ -97,7 +92,7 @@ def _public_search(query: str, limit: int) -> list[dict]:
             "title": trim(re.sub(r"\s+", " ", title).strip(), 120),
             "url": url,
             "snippet": trim(re.sub(r"\s+", " ", snippet).strip(), 260),
-            "official": _official_source(url),
+            "official": _official_source(url, query),
         }))
     if not rows:
         raise RuntimeError("search endpoint returned no parseable results")
@@ -105,39 +100,31 @@ def _public_search(query: str, limit: int) -> list[dict]:
     return rows
 
 
-def _official_source(url: str) -> bool:
+def _official_source(url: str, query: str = "") -> bool:
+    """Recognize standards authorities or a subject-owned first-party domain.
+
+    Product-specific domain lists and curated query fallbacks made one benchmark topic work
+    while every unseen product remained unverified.  A first-party product domain instead has
+    an exact non-noise label in common with the public query; standards bodies are a small
+    policy class rather than a per-product exception.
+    """
     host = (urlparse(str(url or "")).hostname or "").lower()
-    return any(host == domain or host.endswith("." + domain) for domain in _OFFICIAL_DOC_HOSTS)
-
-
-def _official_fallback(query: str) -> list[dict]:
-    """Read curated first-party origins when the anonymous search index is rate-limited."""
-    terms = {token.lower() for token in re.findall(r"[A-Za-z0-9_.-]{2,}", query or "")}
-    candidates = [(title, url, anchors) for required, title, url, anchors in _OFFICIAL_FALLBACKS
-                  if required <= terms]
-    if not candidates:
-        return []
-
-    def fetch(candidate):
-        title, url, anchors = candidate
-        try:
-            import httpx
-            response = httpx.get(url, headers={"User-Agent": "lake-task-manager-agent"},
-                                 follow_redirects=True, timeout=5, verify=_ca_bundle())
-            response.raise_for_status()
-            body = re.sub(r"(?is)<(?:script|style).*?>.*?</(?:script|style)>", " ", response.text)
-            plain = re.sub(r"<[^>]+>", " ", html.unescape(body))
-            plain = re.sub(r"\s+", " ", plain).strip()
-            positions = [plain.lower().find(anchor) for anchor in anchors]
-            position = next((value for value in positions if value >= 0), 0)
-            start = max(0, position - 80)
-            return compact({"title": title, "url": str(response.url or url),
-                            "snippet": trim(plain[start:start + 420], 420), "official": True})
-        except Exception:
-            return None
-
-    with ThreadPoolExecutor(max_workers=min(2, len(candidates))) as executor:
-        return [row for row in executor.map(fetch, candidates) if row]
+    if not host:
+        return False
+    if any(host == domain or host.endswith("." + domain)
+           for domain in _PUBLIC_STANDARDS_AUTHORITIES):
+        return True
+    labels = [part for part in host.split(".") if part]
+    owner = ""
+    if len(labels) >= 2:
+        owner_index = (-3 if len(labels) >= 3
+                       and labels[-2] in _COMMON_SECOND_LEVEL_SUFFIXES else -2)
+        owner = labels[owner_index]
+    query_terms = {
+        token.casefold() for token in re.findall(r"[A-Za-z][A-Za-z0-9-]{2,}", query or "")
+        if token.casefold() not in _DOMAIN_NOISE
+    }
+    return bool(owner and owner not in _DOMAIN_NOISE and owner in query_terms)
 
 
 @tool
@@ -157,10 +144,6 @@ def search_web(query: str, limit: int = 5) -> dict:
     try:
         normalized = _public_search(q, limit)
     except Exception as e:
-        fallback = _official_fallback(q)
-        if fallback:
-            return {"query": q, "attempted": True, "results": fallback,
-                    "fallback": "official-direct", "searchError": str(e)[:120]}
         return {"query": q, "attempted": True, "results": [],
                 "error": f"웹 검색이 막혀 있거나 실패했습니다({str(e)[:120]}). "
                          "사내 조사만으로 진행하세요."}
@@ -188,7 +171,7 @@ def search_github(query: str, limit: int = 5) -> dict:
                               "per_page": max(1, min(int(limit or 5), 8))},
                       headers={"Accept": "application/vnd.github+json",
                                "User-Agent": "lake-task-manager-agent"},
-                      timeout=_TIMEOUT, verify=_ca_bundle())
+                      timeout=_TIMEOUT, verify=_tls_context())
         r.raise_for_status()
         items = (r.json() or {}).get("items") or []
     except Exception as e:

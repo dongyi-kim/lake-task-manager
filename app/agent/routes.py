@@ -24,16 +24,18 @@ from pydantic import BaseModel
 from app.agent import config as _cfg
 from app.agent import profiles as _profiles
 from app.agent import secrets as _secrets
+from app.agent.workflow.contracts import QuestionAnswerReceipt
 
 log = logging.getLogger("agent.api")
 router = APIRouter(prefix="/api/agent")
 
 
 class _ChatBody(BaseModel):
-    text: str
+    text: str = ""
     threadId: str = ""
     role: str = ""                 # 비우면 서버가 매니저 여부로 판별(테스트용 override 만 남김)
     userId: str = ""
+    questionReceipt: QuestionAnswerReceipt | None = None
 
 
 class _ApproveBody(BaseModel):
@@ -68,6 +70,14 @@ class _ConfigUpdateBody(BaseModel):
     chatModelSimple: str = None
     embedModel: str = None
     apiVersion: str = None
+    chatModelProfile: str = None
+    chatModelSimpleProfile: str = None
+    embeddingProvider: str = None
+    embeddingApiVersion: str = None
+    embedRevision: str = None
+    embedPrecision: str = None
+    embedDimension: str = None
+    embedNormalization: str = None
     secrets: dict = None
 
 
@@ -161,7 +171,10 @@ def api_config_create(body: _ConfigCreateBody):
 def api_config_update(config_id: str, body: _ConfigUpdateBody):
     try:
         patch = {k: getattr(body, k) for k in
-                 ("name", "chatModel", "chatModelSimple", "embedModel", "apiVersion")
+                 ("name", "chatModel", "chatModelSimple", "embedModel", "apiVersion",
+                  "chatModelProfile", "chatModelSimpleProfile",
+                  "embeddingProvider", "embeddingApiVersion",
+                  "embedRevision", "embedPrecision", "embedDimension", "embedNormalization")
                  if getattr(body, k) is not None}
         _profiles.update(config_id, patch)
         if body.secrets:
@@ -327,20 +340,35 @@ def api_index_reset():
 def api_chat(body: _ChatBody):
     """한 턴. 승인이 필요하면 `pending` 이 실려 돌아온다(스트리밍이 필요 없는 호출용)."""
     from app.agent.workflow import session
-    if not (body.text or "").strip():
+    has_text = bool((body.text or "").strip())
+    has_receipt = body.questionReceipt is not None
+    if has_text and has_receipt:
+        return JSONResponse({"ok": False, "error": "질문 답변과 새 메시지를 함께 보낼 수 없습니다."},
+                            status_code=400)
+    if not has_text and not has_receipt:
         return JSONResponse({"ok": False, "error": "할 말을 입력하세요."}, status_code=400)
-    return JSONResponse(session.ask(body.text, body.threadId, body.role, body.userId))
+    return JSONResponse(session.ask(
+        body.text, body.threadId, body.role, body.userId,
+        question_receipt=body.questionReceipt,
+    ))
 
 
 @router.post("/chat/stream")
 def api_chat_stream(body: _ChatBody):
     """SSE. 조사에 십수 초가 걸리므로 진행 상황을 흘려보낸다."""
     from app.agent.workflow import session
-    if not (body.text or "").strip():
+    has_text = bool((body.text or "").strip())
+    has_receipt = body.questionReceipt is not None
+    if has_text and has_receipt:
+        return JSONResponse({"ok": False, "error": "질문 답변과 새 메시지를 함께 보낼 수 없습니다."},
+                            status_code=400)
+    if not has_text and not has_receipt:
         return JSONResponse({"ok": False, "error": "할 말을 입력하세요."}, status_code=400)
 
     def gen():
-        for ev in session.stream(body.text, body.threadId, body.role, body.userId):
+        for ev in session.stream(
+                body.text, body.threadId, body.role, body.userId,
+                question_receipt=body.questionReceipt):
             yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
 
     # Nginx 등 중간 버퍼가 SSE 를 모아 두면 스트리밍의 의미가 없다 — 꺼 달라고 명시한다.

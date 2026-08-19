@@ -19,56 +19,11 @@ from __future__ import annotations
 from app.agent.workflow.agents.base import StructuredAgent
 from app.agent.workflow.agents.work_architect import draft_text
 from app.agent.prompts.roles import SYSTEM_PEOPLE_ADVISOR
+from app.agent.workflow.contracts import role_output_schema, validate_role_output
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import AgentState, Node, note
 
-SCHEMA = {
-    "type": "object",
-    "properties": {
-        "assignments": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "index": {"type": "integer", "description": "Zero-based draft item index."},
-                    "user": {"type": "string", "description": "Jira user ID in skcc.x1042 form; empty if unresolved."},
-                    "reasons": {
-                        "type": "array", "items": {"type": "string"},
-                        "description": ("Korean recommendation reasons grounded in the supplied evidence. "
-                                        "Each reason includes a metric or ticket key, for example similar "
-                                        "tickets, relevant comments, or current in-progress count. Never use "
-                                        "a generic claim such as 적합해 보임."),
-                    },
-                    "alternates": {
-                        "type": "array",
-                        "items": {"type": "object", "properties": {
-                            "user": {"type": "string"},
-                            "why": {"type": "string", "description": "Korean explanation of both evidence and limitation."}}},
-                        "description": "One or two alternatives, including why each is not first choice.",
-                    },
-                    # 자식 담당도 **여기서** 정한다 — 사람을 고르는 일은 한 역할의 것이다.
-                    "children": {
-                        "type": "array",
-                        "items": {"type": "object", "properties": {
-                            "index": {"type": "integer", "description": "Zero-based child index within this item."},
-                            "user": {"type": "string", "description": "Jira user id"},
-                            "why": {"type": "string",
-                                    "description": "Korean assignment reason containing a metric or ticket key."}}},
-                        "description": ("Assignments for each child Sub-Task. Do not assign a person whom "
-                                        "your own analysis rejected for excessive workload. Empty when there "
-                                        "are no children."),
-                    },
-                },
-                "required": ["index", "user", "reasons"],
-            },
-        },
-        "caution": {
-            "type": "string",
-            "description": "Korean assignment caution such as overload or role mismatch; empty when none.",
-        },
-    },
-    "required": ["assignments"],
-}
+SCHEMA = role_output_schema(Node.PEOPLE_ADVISOR)
 
 
 def _similar_history(state) -> str:
@@ -161,12 +116,21 @@ def _user_fixed_assignments(draft: dict) -> list[dict]:
     for index, item in enumerate(draft.get("items") or []):
         if not isinstance(item, dict):
             continue
-        children = [
-            {"index": child_index, "user": str(child.get("assignee") or "").strip(),
-             "why": "사용자 지정 담당자"}
-            for child_index, child in enumerate(item.get("children") or [])
-            if isinstance(child, dict) and str(child.get("assignee") or "").strip()
-        ]
+        children = []
+        for child_index, child in enumerate(item.get("children") or []):
+            if not isinstance(child, dict):
+                continue
+            source = str(child.get("assignee_source") or "")
+            if source not in ("user", "user_unassigned"):
+                continue
+            explicitly_unassigned_child = source == "user_unassigned"
+            children.append({
+                "index": child_index,
+                "user": "" if explicitly_unassigned_child else
+                        str(child.get("assignee") or "").strip(),
+                "why": ("사용자 지정 미할당" if explicitly_unassigned_child
+                        else "사용자 지정 담당자"),
+            })
         explicitly_unassigned = item.get("assignee_source") == "user_unassigned"
         rows.append({
             "index": index,
@@ -174,6 +138,46 @@ def _user_fixed_assignments(draft: dict) -> list[dict]:
             "reasons": ["사용자 지정 미할당" if explicitly_unassigned else "사용자 지정 담당자"],
             "children": children,
             "alternates": [],
+        })
+    return rows
+
+
+def _workload_only_assignments(draft: dict, roster_load: str) -> list[dict]:
+    """Choose the measured least-load roster member when no experience signal exists.
+
+    With only workload numbers available, asking a model to narrate the same ordering added
+    latency and sometimes inverted its meaning (for example, calling 16 open tickets "high
+    capacity"). This helper does no semantic ranking: it preserves the configured module
+    roster and sorts the already measured in-progress/open counts.
+    """
+    rows = []
+    for index, item in enumerate((draft or {}).get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        module = next((str(value).strip() for value in (item.get("components") or [])
+                       if str(value).strip()), "")
+        candidates = _module_roster(roster_load, module)
+        if not candidates:
+            return []
+        chosen = candidates[0]
+        reason = (f"{module} 로스터 · 진행중 {chosen['in_progress']}건 · "
+                  f"열림 {chosen['open']}건 · 관련 이력 없음")
+        children = []
+        for child_index, _child in enumerate(item.get("children") or []):
+            person = candidates[child_index % len(candidates)]
+            children.append({
+                "index": child_index, "user": person["user"],
+                "why": (f"{module} 로스터 · 진행중 {person['in_progress']}건 · "
+                        f"열림 {person['open']}건"),
+            })
+        rows.append({
+            "index": index, "user": chosen["user"], "reasons": [reason],
+            "children": children,
+            "alternates": [{
+                "user": person["user"],
+                "why": (f"{module} 로스터 · 진행중 {person['in_progress']}건 · "
+                        f"열림 {person['open']}건"),
+            } for person in candidates[1:3]],
         })
     return rows
 
@@ -187,7 +191,6 @@ class PeopleAdvisor(StructuredAgent):
     """
 
     name = Node.PEOPLE_ADVISOR
-    temperature = 0.2
 
     def node(self):
         base = super().node()
@@ -220,12 +223,22 @@ class PeopleAdvisor(StructuredAgent):
                 state = {**state, "similar_history": hist}
             if load:
                 state = {**state, "roster_load": load}
+            if ((state.get("draft") or {}).get("construction") == "literal_delegated"
+                    and not hist):
+                rows = _workload_only_assignments(state.get("draft") or {}, load)
+                if rows:
+                    result = self.apply(state, {"assignments": rows, "caution": ""})
+                    result["trace"] = note(
+                        state, self.name,
+                        f"{len(rows)}건 부하 기준 결정적 추천(관련 이력 없음)",
+                    )
+                    return result
             return base(state)
 
         return run
 
     def system(self, state):
-        return persona(state, SYSTEM_PEOPLE_ADVISOR)
+        return persona(state, SYSTEM_PEOPLE_ADVISOR, role_id=self.name)
 
     def task(self, state):
         from app.agent.workflow.relevance import evidence_is_relevant
@@ -263,6 +276,9 @@ Inferred module: {state.get('module') or 'unknown'}{data}"""
 
     def schema(self):
         return SCHEMA
+
+    def pre_validate_structured_output(self, state, out, *, output_contract: str, execution_stage: str) -> dict:
+        return validate_role_output(self.name, out)
 
     def apply(self, state, out):
         # 초안에 없는 항목 번호는 버린다 — 실 모델이 1건짜리 초안에 [0]~[5]를 낸 적이 있다.
@@ -452,6 +468,18 @@ def _module_roster(roster_load, module: str) -> list[dict]:
     return sorted(people, key=lambda p: (p["in_progress"], p["open"], p["user"]))
 
 
+def _has_verified_assignment_experience(reasons) -> bool:
+    """Return whether a cleaned reason contains direct, user-specific history evidence."""
+    import re
+
+    text = " ".join(str(reason or "") for reason in (reasons or []))
+    return bool(re.search(
+        r"\b[A-Z][A-Z0-9]*-\d+\b|유사\s*(?:티켓|작업|업무)?\s*\d+\s*건|"
+        r"(?:티켓|작업)\s*담당",
+        text,
+    ))
+
+
 def _enforce_item_roster(row: dict, item: dict, roster_load) -> dict:
     """초안 컴포넌트와 다른 모듈의 추천을 검증된 후보로 교정한다.
 
@@ -462,11 +490,35 @@ def _enforce_item_roster(row: dict, item: dict, roster_load) -> dict:
     module = next((str(c).strip() for c in (item.get("components") or [])
                    if str(c).strip()), "")
     candidates = _module_roster(roster_load, module)
+    chosen = str(row.get("user") or "").strip()
+    fixed_source = str(item.get("assignee_source") or "")
+    if fixed_source == "user":
+        # A user decision outranks both semantic experience ranking and workload order.
+        chosen = str(item.get("assignee") or "").strip()
+        row = dict(row, user=chosen, reasons=["사용자 지정 담당자"], alternates=[])
+    elif fixed_source == "user_unassigned":
+        chosen = ""
+        row = dict(row, user="", reasons=["사용자 지정 미할당"], alternates=[])
     if not candidates:
+        supplied = {int(child.get("index") or 0): dict(child)
+                    for child in (row.get("children") or []) if isinstance(child, dict)}
+        children = []
+        for child_index, child in enumerate(item.get("children") or []):
+            existing = supplied.get(child_index, {})
+            source = str(child.get("assignee_source") or "")
+            if source == "user_unassigned":
+                children.append({"index": child_index, "user": "",
+                                 "why": "사용자 지정 미할당"})
+            elif source == "user":
+                children.append({"index": child_index,
+                                 "user": str(child.get("assignee") or "").strip(),
+                                 "why": "사용자 지정 담당자"})
+            elif existing:
+                children.append(existing)
+        row["children"] = children
         return row
     by_user = {p["user"]: p for p in candidates}
-    chosen = str(row.get("user") or "").strip()
-    if chosen not in by_user:
+    if fixed_source not in ("user", "user_unassigned") and chosen not in by_user:
         chosen = candidates[0]["user"]
         picked = by_user[chosen]
         row = dict(row, user=chosen,
@@ -507,6 +559,38 @@ def _enforce_item_roster(row: dict, item: dict, roster_load) -> dict:
                                "why": with_load(alternate.get("why"), by_user[user])})
         row["alternates"] = alternates[:2]
 
+    # The model sees a prose roster and may omit the true minimum from alternates or attach
+    # another person's count to the selected ID. Only after counts have been rebound to the
+    # complete module roster is a workload superlative safe. Verified direct history keeps
+    # semantic precedence; workload-only selection is compiler-owned and deterministic.
+    chosen_load = by_user.get(chosen)
+    minimum_load = candidates[0]
+    if (fixed_source not in ("user", "user_unassigned")
+            and chosen_load
+            and (chosen_load["in_progress"], chosen_load["open"])
+                > (minimum_load["in_progress"], minimum_load["open"])
+            and not _has_verified_assignment_experience(row.get("reasons"))):
+        picked = candidates[0]
+        chosen = picked["user"]
+        tied = [person for person in candidates
+                if (person["in_progress"], person["open"])
+                == (picked["in_progress"], picked["open"])]
+        rank = "공동 최저라" if len(tied) > 1 else "가장 낮아"
+        row = dict(
+            row,
+            user=chosen,
+            reasons=[
+                f"검증된 관련 이력 근거 없음 · {module} 로스터 · "
+                f"진행중 {picked['in_progress']}건 · 열림 {picked['open']}건 · "
+                f"후보 중 현재 부하가 {rank} 임시 추천"
+            ],
+            alternates=[{
+                "user": person["user"],
+                "why": (f"{module} 로스터 · 진행중 {person['in_progress']}건 · "
+                        f"열림 {person['open']}건")
+            } for person in candidates if person["user"] != chosen][:2],
+        )
+
     # 모델이 자식만 다른 모듈 사람에게 줬다면 같은 후보 집합 안에서 분산한다.
     children = []
     supplied = {int(c.get("index") or 0): dict(c)
@@ -516,6 +600,13 @@ def _enforce_item_roster(row: dict, item: dict, roster_load) -> dict:
         user = str(existing.get("user") or "").strip()
         if child.get("assignee_source") == "user":
             user = str(child.get("assignee") or user).strip()
+        elif child.get("assignee_source") == "user_unassigned":
+            # An explicit empty assignment is a user decision, not a missing model field.
+            # Keep an aligned display row so ResultIntegrator cannot narrate a roster member
+            # while merge_assignments correctly leaves the payload unassigned.
+            children.append({"index": child_index, "user": "",
+                             "why": "사용자 지정 미할당"})
+            continue
         elif user not in by_user:
             user = candidates[child_index % len(candidates)]["user"]
         if not user:
@@ -530,6 +621,38 @@ def _enforce_item_roster(row: dict, item: dict, roster_load) -> dict:
     if children:
         row["children"] = children
     return row
+
+
+def _normalize_resolved_assignment_rationale(draft: dict) -> dict:
+    """Remove stale unassigned prose once every payload item has an assignee.
+
+    ``rationale`` is authored before People Advisor runs in the graph fan-out. The merged
+    item fields are authoritative; keeping a sentence such as ``담당자는 미정`` after all
+    fields were filled makes the pending payload contradict itself.
+    """
+    import re
+
+    result = dict(draft or {})
+    targets = []
+    for item in result.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        targets.append(item)
+        targets.extend(child for child in (item.get("children") or [])
+                       if isinstance(child, dict))
+    if not targets or not all(str(item.get("assignee") or "").strip() for item in targets):
+        return result
+    rationale = str(result.get("rationale") or "")
+    if not rationale:
+        return result
+    rationale = re.sub(
+        r"(?im)(?:^|(?<=[.。\n]))\s*[^.。\n]{0,100}담당(?:자)?(?:는|은|을|를)?"
+        r"[^.。\n]{0,50}(?:미정|미할당|정하지\s*않|비워\s*둠|비어\s*있)"
+        r"[^.。\n]*(?:[.。]|$)",
+        " ", rationale,
+    )
+    result["rationale"] = re.sub(r"[ \t]+\n", "\n", rationale).strip()
+    return result
 
 
 def _normalize_workload_choice(row: dict) -> dict:
@@ -605,4 +728,4 @@ def merge_assignments(draft: dict, assignments: list) -> dict:
                 touched = True
         if touched:
             items[i] = dict(items[i], children=kids)
-    return dict(draft or {}, items=items)
+    return _normalize_resolved_assignment_rationale(dict(draft or {}, items=items))

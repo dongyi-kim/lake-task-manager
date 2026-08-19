@@ -1,6 +1,6 @@
 # tools/agent_create_suite.py — 티켓 **생성** 시나리오 배터리 (실 LLM, 수동 실행 전용).
 #
-# 실행: python -X utf8 tools/agent_create_suite.py [모델] [케이스ID ...] [--out 결과.json]
+# 실행: python -X utf8 tools/agent_eval_launcher.py create [모델] [케이스ID ...] [--out 결과.json]
 #
 # 생성 요청은 사용자가 말하는 방식이 제각각이다 — 한 줄로 던지기도 하고, 구조를 지정하기도
 # 하고, 남이 쓴 글을 통째로 붙여넣기도 한다. 여기 모은 것은 **그 변주**다.
@@ -12,10 +12,16 @@ import os
 import re
 import sys
 import time
+from datetime import date
+from urllib.parse import urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tools.agent_scenario_eval import validate_eval_argv  # noqa: E402
+
 # 사람이 없는 실행이다 — 설정 화면의 확인 게이트를 면제한다(config._env_supplied).
 _raw_args = list(sys.argv[1:])
+if __name__ == "__main__":
+    validate_eval_argv(_raw_args)
 OUT = None
 for i, arg in enumerate(_raw_args):
     if arg.startswith("--out="):
@@ -31,15 +37,43 @@ SIMPLE_MODEL = os.environ.get("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 from tools.agent_eval_protocol import (build_run_metadata, quantitative_metrics,
                                        raw_result_path, reserve_raw_result_path,
                                        write_raw_result)  # noqa: E402
+from tools.agent_eval_contracts import (  # noqa: E402
+    AUTOMATIC_CONTRACT_DEPENDENCIES,
+    _STRUCTURED_FAILURE_RE,
+    automatic_contract_flaws,
+    turn_execution_flaws,
+)
+from tools.agent_eval_fact_relations import (  # noqa: E402
+    FACT_RELATION_DEPENDENCIES,
+    FactRelationContract,
+    FactTerm,
+    RelationRef,
+    fact_relation_flaws,
+)
 from tools.agent_eval_isolation import (begin_case, configure_process_isolation,
-                                         finish_case)  # noqa: E402
+                                         finish_case,
+                                         preflight_evaluation_provider)  # noqa: E402
 from tools.agent_eval_review_specs import review_specs  # noqa: E402
 try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
     from app.agent.prompts.base import PROMPT_VERSION  # noqa: E402
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "4.0.2"
+# v5 major: deterministic pass now enforces explicit single-root due/ordinal,
+# question necessity metadata, and user-facing evidence relevance. Historical
+# v4 automatic pass rates therefore remain v4-only and are not rescored.
+# v5.0.1 fixes nested draft child discovery for blocked/review-failed outputs.
+# v5.0.2 detects failed intermediate turns and enforces STARR1's already-versioned
+# internal-validation facts in the actual draft descriptions instead of accepting
+# those facts only in retrieval evidence or user-facing prose.
+# v5.1.0 applies the shared all-turn failure/question and final effect consistency
+# contract used by every write battery; human qualitative scoring remains separate.
+# v5.2.0 replaces the product-shaped fact regex with typed DOM fact relations.  Inflected
+# completion, shared actor predicates, and a condition split across DOM leaves no longer
+# produce false reds, while omissions and direct reversals remain deterministic failures.
+# v6.0.0 makes a review-blocked internal draft without a required question or
+# user-visible approval payload an automatic task-fulfilment failure.
+BATTERY_VERSION = "6.0.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("create")
 session = None
 
@@ -49,10 +83,12 @@ def _prepare_runtime():
     global session
     configure_process_isolation("create")
     os.environ.setdefault("JIRA_ENV", "mock")
-    os.environ["LAKE_AGENT_PROVIDER"] = "openai"
+    os.environ.setdefault("LAKE_AGENT_PROVIDER", "openai")
     os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"
-    os.environ["LAKE_AGENT_OPENAI_CHAT"] = MODEL
     os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
+    from tools.agent_scenario_eval import configure_model_routing
+    configure_model_routing(MODEL, SIMPLE_MODEL)
+    preflight_evaluation_provider()
     from app.agent.workflow import session as runtime_session
     session = runtime_session
 
@@ -63,7 +99,30 @@ def items(o):
 
 
 def kids(o):
-    return ((o.get("pending") or {}).get("children")) or []
+    """Return every child regardless of approval/rendering state.
+
+    Approved cards historically expose children at ``pending.children`` while a blocked
+    Auditor result keeps them nested under ``draft_items[*].children``.  Looking at only
+    the former made a blocked Task with three real Sub-Tasks appear structurally empty and
+    also hid child-level contract defects.  Preserve source order and collapse the same
+    child when a renderer mirrors it in both shapes.
+    """
+    rows = []
+    seen = set()
+    pending = o.get("pending") or {}
+    candidates = list(pending.get("children") or [])
+    for root in items(o):
+        if isinstance(root, dict):
+            candidates.extend(root.get("children") or [])
+    for child in candidates:
+        if not isinstance(child, dict):
+            continue
+        identity = json.dumps(child, ensure_ascii=False, sort_keys=True, default=str)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        rows.append(child)
+    return rows
 
 
 def pend(o, k, d=None):
@@ -201,6 +260,338 @@ def _output_flaws(o) -> list:
     return flaws
 
 
+_DUE_BEFORE_DATE_RE = re.compile(
+    r"(?:마감(?:일)?|기한|due(?:\s*date)?)\s*(?:은|는|이|가|을|를|로|:|=)?\s*"
+    r"(\d{4}-\d{2}-\d{2})",
+    re.I,
+)
+_DATE_BEFORE_DUE_RE = re.compile(
+    r"(\d{4}-\d{2}-\d{2})\s*(?:까지|마감(?:일)?|기한|due(?:\s*date)?)",
+    re.I,
+)
+_SOURCE_ORDINAL_RE = re.compile(r"(?<![0-9])([0-9]+)\s*차")
+_BARE_ORDINAL_RE = re.compile(
+    r"(?<![0-9A-Za-z가-힣_])차(?=\s|[—–\-:·,.;!?()\[\]{}]|$)",
+)
+
+
+def _valid_iso_date(value: str) -> bool:
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _unique_explicit_due(turns: list[str]) -> str | None:
+    """Return the newest unambiguous explicit due; later user changes supersede."""
+    for turn in reversed(turns):
+        raw_values = {
+            value
+            for pattern in (_DUE_BEFORE_DATE_RE, _DATE_BEFORE_DUE_RE)
+            for value in pattern.findall(str(turn or ""))
+        }
+        if not raw_values:
+            continue
+        valid = {value for value in raw_values if _valid_iso_date(value)}
+        return next(iter(valid)) if len(raw_values) == 1 and len(valid) == 1 else None
+    return None
+
+
+def _root_payload_items(o: dict) -> list[dict]:
+    rows = [row for row in items(o) if isinstance(row, dict)]
+    non_subtasks = [
+        row for row in rows
+        if not str(row.get("type") or "").strip().lower().startswith("sub")
+    ]
+    return non_subtasks or rows
+
+
+def _payload_due(row: dict) -> str:
+    fields = row.get("fields") if isinstance(row.get("fields"), dict) else {}
+    return str(row.get("duedate") or row.get("due")
+               or fields.get("duedate") or fields.get("due") or "")
+
+
+def _visible_row_text(row: dict) -> str:
+    text = "\n".join((str(row.get("summary") or ""), _body(row)))
+    return re.sub(r"<[^>]+>", " ", text)
+
+
+def _latest_explicit_ordinals(turns: list[str]) -> list[str]:
+    """Use the newest turn that names an ordinal; later user changes supersede."""
+    for turn in reversed(turns):
+        values = sorted(set(_SOURCE_ORDINAL_RE.findall(str(turn or ""))))
+        if values:
+            return values
+    return []
+
+
+def _explicit_field_flaws(o: dict, turns: list[str]) -> list[str]:
+    """Deterministic user-field preservation shared by every create case."""
+    flaws = []
+    roots = _root_payload_items(o)
+    due = _unique_explicit_due(turns)
+    # A unique global-looking date cannot be mapped deterministically across
+    # multiple independent roots. Their per-ticket mapping stays in the case
+    # contract and human review rather than producing an automatic false red.
+    if due and len(roots) == 1:
+        actual = _payload_due(roots[0])
+        if actual != due:
+            flaws.append(
+                f"root[0] 명시 마감일 불일치: 요청 {due}, payload {actual or '없음'}"
+            )
+
+    ordinals = _latest_explicit_ordinals(turns)
+    rows = roots + [row for row in kids(o) if isinstance(row, dict)]
+    if ordinals and rows:
+        for index, row in enumerate(rows):
+            for field_name in ("summary", "description"):
+                value = re.sub(r"<[^>]+>", " ", str(row.get(field_name) or ""))
+                if _BARE_ORDINAL_RE.search(value):
+                    flaws.append(
+                        f"draft[{index}] {field_name}에서 숫자 ordinal이 bare '차'로 손상"
+                    )
+                    break
+
+        # 하나의 root tree와 하나의 source ordinal이면 root가 그 범위를 소유하고
+        # children은 계층적으로 상속한다. 매 child 제목에 같은 `1차`를 반복할 필요는
+        # 없지만, 명시했다면 bare/충돌 ordinal이어서는 안 된다.
+        if len(roots) == 1 and len(ordinals) == 1:
+            expected = ordinals[0]
+            expected_number = re.match(r"(\d+)", expected).group(1)
+            ordinal_re = re.compile(rf"(?<![0-9]){re.escape(expected_number)}\s*차")
+            root_visible = _visible_row_text(roots[0])
+            root_numbers = set(re.findall(r"(?<!\d)(\d{1,3})\s*차", root_visible))
+            root_conflicts = sorted(value for value in root_numbers
+                                    if value != expected_number)
+            if root_conflicts:
+                flaws.append(
+                    f"draft[0] 원문 ordinal '{expected_number}차'와 충돌하는 ordinal "
+                    + ", ".join(f"{value}차" for value in root_conflicts)
+                )
+            elif not ordinal_re.search(root_visible):
+                flaws.append(f"draft[0] 원문 ordinal '{expected_number}차' 누락")
+            for index, row in enumerate(rows[1:], 1):
+                actual = set(re.findall(r"(?<!\d)(\d{1,3})\s*차", _visible_row_text(row)))
+                conflicts = sorted(value for value in actual if value != expected_number)
+                if conflicts:
+                    flaws.append(
+                        f"draft[{index}] root 범위 '{expected_number}차'와 충돌하는 ordinal "
+                        + ", ".join(f"{value}차" for value in conflicts)
+                    )
+    return flaws
+
+
+def _evidence_section(reply: str) -> str:
+    match = re.search(r"(?mi)^(#{1,4})[ \t]*근거[^\r\n]*$", reply)
+    if not match:
+        return ""
+    level = len(match.group(1))
+    tail = reply[match.end():]
+    next_section = re.search(rf"(?m)^#{{1,{level}}}[ \t]+\S", tail)
+    end = match.end() + (next_section.start() if next_section else len(tail))
+    return reply[match.start():end]
+
+
+def _generic_direct_source(url: str) -> bool:
+    parsed = urlsplit(url.rstrip(".,;"))
+    host = parsed.netloc.lower()
+    path = (parsed.path or "/").lower().rstrip("/")
+    if path in ("", "/", "/search", "/docs", "/documentation"):
+        return True
+    if re.fullmatch(r"/docs/introduction/[^/]*(?:intro|introduction)", path):
+        return True
+    if "github.com" in host and (
+        path.endswith("/docs/readme.md")
+        or re.search(r"/tree/[^/]+/docs$", path)
+    ):
+        return True
+    return False
+
+
+def _approved_evidence_flaws(o: dict) -> list[str]:
+    """Reject debug observations and generic pages only when shown as evidence."""
+    if not (items(o) or kids(o)):
+        return []
+    evidence = _evidence_section(str(o.get("reply") or ""))
+    if not evidence:
+        return []
+    flaws = []
+    if re.search(
+        r"(?i)\b(?:canonicaljql|scopeprojects|queryplan)\b|"
+        r"\b(?:pages|returned|startat|total)=\d+",
+        evidence,
+    ):
+        flaws.append("승인 답변 근거에 canonicalJQL/QueryPlan pagination debug 관측 노출")
+
+    urls = re.findall(r"https?://[^\s)>]+", evidence)
+    contribution_material = re.search(
+        r"(?i)contributor license agreement|\bCLA\b|markdown syntax|"
+        r"(?:contribut|기여).{0,40}(?:documentation|docs|문서)|"
+        r"(?:documentation|docs|문서).{0,40}(?:contribut|기여)|"
+        r"search the documentation|/docs/readme\.md",
+        evidence,
+    )
+    if contribution_material or any(_generic_direct_source(url) for url in urls):
+        flaws.append("승인 답변 근거에 generic search/home/docs README 또는 기여 안내를 직접 근거로 출력")
+    return flaws
+
+
+def _question_gate_flaws(o: dict) -> list[str]:
+    """Reject optional preference questions that stop a create workflow."""
+    questions = [q for q in (o.get("questions") or []) if isinstance(q, dict)]
+    if not questions:
+        return []
+    flaws = []
+    reply = str(o.get("reply") or "")
+    question_only = not items(o) and not kids(o) and not o.get("pending")
+    optional_only = all(q.get("required_input") is False for q in questions)
+    if question_only and optional_only and re.search(r"사용자\s*입력\s*필요", reply):
+        flaws.append("required_input=false 질문만으로 진행을 중단하며 사용자 입력 필요라고 표시")
+
+    for index, question in enumerate(questions):
+        required = question.get("required_input")
+        text = str(question.get("question") or "")
+        field = str(question.get("field") or "").strip().lower()
+        if required is False and (
+            field in {"structure", "ticket_structure", "shape"}
+            or any(term in text for term in ("티켓 구조", "어떤 구조", "단일 Task", "Sub-Task"))
+        ):
+            flaws.append(
+                f"question[{index}] optional 구조 선호를 질문으로 중단; 조사·안전한 기본값 필요"
+            )
+        if required is True:
+            reason = str(question.get("why_required") or "").strip()
+            generic = re.fullmatch(
+                r"(?:확인|진행|작업|사용자 입력)이?\s*필요(?:합니다|함|하다)?[.!]?",
+                reason,
+            )
+            if len(reason) < 8 or generic:
+                flaws.append(
+                    f"question[{index}] 필수 질문의 why_required가 비었거나 구체적이지 않음"
+                )
+        elif required is None and question_only:
+            flaws.append(f"question[{index}] required_input 계약 누락")
+    return flaws
+
+
+def _draft_descriptions(o: dict) -> list[str]:
+    """Return only payload descriptions; reply/retrieval prose has no fact authority."""
+    roots = _root_payload_items(o)
+    children = [row for row in kids(o) if isinstance(row, dict)]
+    return [_body(row) for row in roots + children if _body(row).strip()]
+
+
+_WRITER = FactTerm("writer", r"(?<![a-z0-9])(?:writer|라이터)(?![a-z0-9])")
+_READER = FactTerm("reader", r"(?<![a-z0-9])(?:reader|리더)(?![a-z0-9])")
+_OPTIMIZER = FactTerm(
+    "optimizer", r"(?<![a-z0-9])(?:optimizer|옵티마이저)(?![a-z0-9])",
+)
+_POC = FactTerm("proof-of-concept", r"(?<![a-z0-9])poc(?![a-z0-9])")
+_FIVE_SAMPLES = FactTerm(
+    "five-sample scope",
+    r"(?:5\s*(?:개|건)?\s*(?:표본|샘플|samples?)|"
+    r"(?:표본|샘플|samples?)\s*5\s*(?:개|건)?)",
+)
+_VALIDATION = FactTerm("validation", r"검증|확인|validation|evidence|증거")
+_ROLLOUT = FactTerm(
+    "production rollout", r"운영\s*(?:반영|배포)|production\s*(?:rollout|deployment)",
+)
+
+_STARR1_FACT_CONTRACTS = (
+    FactRelationContract(
+        name="completed-baseline",
+        mode="single",
+        relation=RelationRef(
+            actors=(_WRITER,),
+            anchors=(_POC,),
+            qualifiers=(_FIVE_SAMPLES,),
+            scope_boundaries=(_READER, _OPTIMIZER),
+        ),
+        expected_states=("completed",),
+        contradiction_states=("incomplete", "in_progress"),
+        missing_message="STARR1 본문/DoD에 '5개 표본 writer PoC 완료' 사실 누락",
+        reversal_message=(
+            "STARR1 본문/DoD가 5개 표본 writer PoC를 미완료·미수행 상태로 뒤집음"
+        ),
+    ),
+    FactRelationContract(
+        name="shared-validation-state",
+        mode="shared",
+        relation=RelationRef(actors=(_READER, _OPTIMIZER)),
+        expected_states=("in_progress", "unconfirmed"),
+        contradiction_states=("confirmed",),
+        missing_message=(
+            "STARR1 본문/DoD에 reader와 optimizer 소비 검증의 "
+            "'진행 중·미확정' 상태 누락"
+        ),
+        reversal_message=(
+            "STARR1 본문/DoD가 reader/optimizer 소비 검증을 완료·확정 상태로 뒤집음"
+        ),
+    ),
+    FactRelationContract(
+        name="conditional-rollout-gate",
+        mode="gate",
+        relation=RelationRef(actors=(_READER,), anchors=(_VALIDATION,)),
+        action=RelationRef(actors=(), anchors=(_ROLLOUT,)),
+        expected_states=("held", "before_boundary"),
+        contradiction_states=("positive_action",),
+        missing_message=(
+            "STARR1 본문/DoD에 'reader 검증 완료 전 운영 반영 보류' 조건 누락"
+        ),
+        reversal_message=(
+            "STARR1 본문/DoD가 reader 검증 완료 전에 운영 반영을 진행·승인하도록 뒤집음"
+        ),
+    ),
+)
+
+
+def _starr1_contract_flaws(o: dict) -> list[str]:
+    """Apply versioned fixture expectations through the common typed relation engine."""
+    return fact_relation_flaws(_draft_descriptions(o), _STARR1_FACT_CONTRACTS)
+
+
+CREATE_CASE_CONTRACT_FLAW_CHECKERS = {
+    "STARR1": _starr1_contract_flaws,
+}
+
+
+def _case_specific_contract_flaws(case_id: str, o: dict) -> list[str]:
+    checker = CREATE_CASE_CONTRACT_FLAW_CHECKERS.get(str(case_id or ""))
+    return checker(o) if checker else []
+
+
+def _turn_execution_flaws(outs: list[dict]) -> list[str]:
+    """Compatibility wrapper for direct evaluator tests."""
+    return turn_execution_flaws(outs)
+
+
+def _creation_contract_flaws(o: dict, turns: list[str]) -> list[str]:
+    """Automatic contract failures only; this is never a human-quality score."""
+    return _explicit_field_flaws(o, turns) + _approved_evidence_flaws(o)
+
+
+def _all_contract_flaws(last: dict, turns: list[str], outs: list[dict],
+                        *, structure_ok: bool, case_id: str = "") -> list[str]:
+    """Return diagnosable failures for shared and case-specific contracts."""
+    turn_flaws = automatic_contract_flaws(outs) + [
+        f"turn[{index}] {flaw}"
+        for index, output in enumerate(outs)
+        for flaw in _question_gate_flaws(output)
+        if "why_required" in flaw or "optional 구조 선호" in flaw
+    ]
+    flaws = (_body_flaws(last) + _output_flaws(last)
+             + _creation_contract_flaws(last, turns)
+             + _case_specific_contract_flaws(case_id, last) + turn_flaws)
+    if not structure_ok:
+        # A false result with an empty defect list looks like a harness error. The detailed
+        # predicate remains in the versioned case review spec, but the raw result must expose
+        # which contract family failed.
+        flaws.insert(0, "케이스별 구조 계약 실패 — 해당 case review spec과 payload를 대조")
+    return flaws
+
+
 def _duplicate_decision_ok(output: dict, _outputs=None) -> bool:
     """Question form owns duplicate decisions; prose must not echo the same form."""
     questions = output.get("questions") or []
@@ -209,6 +600,28 @@ def _duplicate_decision_ok(output: dict, _outputs=None) -> bool:
             and all(value in blob for value in (
                 "DL-9072", "프로듀서 Avro 직렬화 전환", "근거",
                 "범위를 추가", "별도 티켓")))
+
+
+# Case lambdas and the shared post-check call these globals by name. ``inspect.getsource``
+# on a lambda cannot see through that reference, so the evaluation manifest must fingerprint
+# the designated dependency set explicitly. Keep this list limited to functions whose source
+# changes automatic pass/fail behavior; runtime/output plumbing does not belong here.
+CREATE_CHECKER_DEPENDENCIES = (
+    *AUTOMATIC_CONTRACT_DEPENDENCIES,
+    _DOD_VAGUE, _bug_grade_body, _has_placeholder_body,
+    items, kids, pend, _body, has_sections, _owners, _question_text,
+    _asks_for_bug_identity, _bug3_ok, _rule1_ok,
+    _body_flaws, _output_flaws, _valid_iso_date, _unique_explicit_due,
+    _root_payload_items, _payload_due, _visible_row_text, _latest_explicit_ordinals,
+    _explicit_field_flaws, _evidence_section, _generic_direct_source,
+    _approved_evidence_flaws, _question_gate_flaws, _creation_contract_flaws,
+    *FACT_RELATION_DEPENDENCIES,
+    _draft_descriptions, _WRITER, _READER, _OPTIMIZER, _POC, _FIVE_SAMPLES,
+    _VALIDATION, _ROLLOUT, _STARR1_FACT_CONTRACTS, _starr1_contract_flaws,
+    CREATE_CASE_CONTRACT_FLAW_CHECKERS, _case_specific_contract_flaws,
+    _STRUCTURED_FAILURE_RE, _turn_execution_flaws,
+    _all_contract_flaws, _duplicate_decision_ok,
+)
 
 
 # (ID, 설명, [질의…], 체커(마지막 out, 전체 outs))
@@ -444,7 +857,9 @@ def run(cid, desc, turns, check):
             outs.append(o)
         last = outs[-1]
         ok_struct = bool(check(last, outs))
-        flaws = _body_flaws(last) + _output_flaws(last)
+        flaws = _all_contract_flaws(
+            last, turns, outs, structure_ok=ok_struct, case_id=cid,
+        )
         # 구조가 맞아도 본문·최종 답변 계약을 어기면 통과가 아니다.
         ok = ok_struct and not flaws
         elapsed = round(time.time() - t0, 1)
@@ -456,6 +871,7 @@ def run(cid, desc, turns, check):
             e = RuntimeError(f"{e}; isolation failure: {isolation_error}")
         print(f"✗ {cid} {desc}: 예외 {str(e)[:160]}")
         RESULTS.append({"id": cid, "설명": desc, "입력": turns, "통과": False,
+                        "자동계약통과": False, "사람정성평가": None,
                         "초": round(time.time() - t0, 1), "오류": str(e),
                         "턴": outs, "격리": isolation})
         return False, 0
@@ -464,14 +880,15 @@ def run(cid, desc, turns, check):
           f"{' + 자식 ' + str(len(kids(last))) if kids(last) else ''}"
           f" · 질문 {len(last.get('questions') or [])}"
           f" · 구조 {pend(last, 'structure') or '-'}"
-          f" · 본문 {'ok' if not flaws else f'{len(flaws)}건'} · {elapsed:.0f}s")
+          f" · 자동계약 {'ok' if not flaws else f'{len(flaws)}건'} · {elapsed:.0f}s")
     if flaws:
-        print(f"    본문 결함: {' / '.join(flaws[:4])}")
+        print(f"    자동 계약 결함: {' / '.join(flaws[:4])}")
     if not ok:
         print(f"    reply: {(last.get('reply') or '')[:200]}")
         print(f"    items: {json.dumps(items(last), ensure_ascii=False)[:300]}")
     RESULTS.append({"id": cid, "설명": desc, "입력": turns, "통과": ok,
-                    "구조통과": ok_struct, "본문결함": flaws, "초": elapsed,
+                    "자동계약통과": ok, "사람정성평가": None,
+                    "구조통과": ok_struct, "자동계약결함": flaws, "초": elapsed,
                     "턴": outs, "격리": isolation})
     return ok, sum(((turn.get("usage") or {}).get("costUsd") or 0) for turn in outs)
 
@@ -523,6 +940,7 @@ if __name__ == "__main__":
         prompt_version=PROMPT_VERSION,
         suite_review_elements=SUITE_REVIEW_ELEMENTS,
         case_review_specs=CASE_REVIEW_SPECS,
+        checker_dependencies=CREATE_CHECKER_DEPENDENCIES,
     )
     OUT = str(reserve_raw_result_path(
         raw_result_path("create", EVALUATION_METADATA, requested=OUT),

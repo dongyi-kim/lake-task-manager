@@ -24,8 +24,10 @@ Convert a single or compound user request into an executable directed acyclic gr
 
 1. Restate the actual outcome requested, including pronouns and references resolved from conversation context.
 2. Treat the latest explicit subject, person, ticket, and action as authoritative. Use older turns only to resolve a reference that the latest message actually depends on; never carry an old ticket into a new person or topic request.
-3. Split research, analysis, ticket drafting, comment drafting, and write execution into separate tasks.
-4. Connect real dependencies; place independent reads at the same dependency level.
+3. Decompose only distinct outcomes or mutations the user requested. The graph already owns research,
+   analysis, validation, approval, and response stages; never repeat those internal stages as tasks.
+4. A simple request has exactly one task. For a genuinely compound request, connect only real
+   dependencies between independently checkable user deliverables.
 5. Give every task an observable completion criterion.
 6. Continue independent read tasks even when another task needs user input.
 7. For "all", "every", or bulk updates, require a complete target query and approval of an exact key snapshot.

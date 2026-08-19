@@ -173,7 +173,11 @@ SUITE_REVIEW_ELEMENTS = {
             "원 요청과 후속 답변의 확정 조건이 최종 reply·pending payload에 같은 값으로 반영됐는가",
             "사용자가 확정한 대상·type·parent·변경값과 다른 payload 생성",
             _REPLY + ["evaluationEvidence.requestPlan", "evaluationEvidence.queryPlan"],
-            {"rule": "turn별 확정값을 final payload field와 대조"},
+            {
+                "rule": "turn별 확정값을 final payload field와 대조",
+                "exactDueRule": "유일하게 명시된 YYYY-MM-DD 마감일은 root payload에 그대로 유지",
+                "ordinalRule": "원문의 숫자+차 범위 표기를 root/child visible text에서 bare 차로 손상 금지",
+            },
         ),
         _element(
             "create_interview_boundary",
@@ -181,7 +185,11 @@ SUITE_REVIEW_ELEMENTS = {
             "필수 입력만 질문하고 답변 전에는 해당 값을 발명한 draft·write payload를 만들지 않았는가",
             "필수값을 추정하거나 내부 조회·위임으로 해결 가능한 값을 되물어 진행 차단",
             _REPLY,
-            {"rule": "각 turn의 questions, pending, 다음 turn 반영을 순서대로 검토"},
+            {
+                "rule": "각 turn의 questions, pending, 다음 turn 반영을 순서대로 검토",
+                "requiredQuestionContract": ["required_input=true", "concrete why_required"],
+                "optionalStructurePreference": "질문으로 중단하지 않고 조사 또는 안전한 기본값 적용",
+            },
         ),
         _element(
             "create_domain_shape",
@@ -651,13 +659,149 @@ CASE_REVIEW_SPECS = {
         "ATTR1": _case("사용자가 지정한 priority·due·label과 mutation 값을 보존", _element("attr1_field_values", "contract_actionability", "모든 명시 field와 변경값이 정확히 payload에 들어갔는가", "threshold 등 핵심 변경값 누락·변형", _REPLY, {"requires": ["priority", "due", "label", "mutation value"]})),
         "ASKD4": _case("기존 속성이 충분해도 새 mutation 값이 없으면 질문", _element("askd4_missing_mutation", "safety_uncertainty", "변경할 threshold 값을 구체적으로 묻고 기존값을 임의 변경하지 않았는가", "핵심 변경값 없이 임의 update plan 생성", _REPLY, {"requiredQuestion": "new threshold value", "noPending": True})),
         "ATTR2": _case("새 label을 막지 않고 신규 값으로 명시", _element("attr2_new_label", "contract_actionability", "없는 label을 신규 값으로 보존하고 다른 속성을 발명하지 않았는가", "label을 누락·대체하거나 생성 불가로 잘못 거절", _REPLY, {"requires": ["exact requested label", "new-label indication"]})),
-        "STARR1": _case("고유 기술어·계층·본문 규율을 reply와 payload에 일치", _element("starr1_cross_output", "contract_actionability", "StarRocks/Puffin/NDV, type, parent, child 수가 reply와 payload에서 동일한가", "reply는 Epic/Task인데 payload는 다른 type 또는 parent 없음", _REPLY, {"requires": ["topic terms", "same type", "legal parent", "same child structure"]})),
+        "STARR1": _case(
+            "고유 기술어·내부 검증 상태·명시 field·계층·근거 적합성을 reply와 payload에 일치",
+            _element(
+                "starr1_cross_output",
+                "contract_actionability",
+                "StarRocks/Puffin/NDV, type, parent, child 수, 1차 범위와 2026-09-30 마감이 reply와 payload에서 동일한가",
+                "reply/payload의 type·parent·child 구조가 다르거나 명시 마감·1차 범위를 변형",
+                _REPLY,
+                {
+                    "requires": [
+                        "topic terms", "same type", "legal parent", "same child structure",
+                        "exact due 2026-09-30", "1차 preserved without bare 차",
+                    ],
+                    "turn1Forbidden": "required_input=false structure-only blocking question",
+                },
+            ),
+            _element(
+                "starr1_internal_validation_state",
+                "factual_grounding",
+                "내부 관련 티켓을 조사해 5개 표본 writer PoC 완료, StarRocks reader 검증 진행 중·미확정, 검증 전 운영 반영 보류를 기술 범위·완료 조건에 정확히 사용했는가",
+                "writer PoC를 미수행으로 뒤집거나 reader 소비를 확정하거나 운영 반영 보류를 누락해 실행 범위가 달라짐",
+                _REPLY + _RETRIEVAL,
+                {
+                    "requiredTicketKeys": ["DL-9200", "DL-9201", "DL-9202"],
+                    "requiredFacts": [
+                        "writer PoC done for five samples",
+                        "reader/optimizer consumption in progress and unconfirmed",
+                        "production rollout held until reader validation",
+                    ],
+                },
+            ),
+            _element(
+                "starr1_direct_source_relevance",
+                "request_fulfillment",
+                "최종 근거에는 주장을 직접 뒷받침하는 자료만 남기고 검색 화면·제품 홈페이지·docs README·CLA/Markdown 기여 안내를 제외했는가",
+                "일반 검색/홈/기여 안내를 Puffin·NDV 구현의 직접 근거로 제시하거나 그 때문에 기술 판단이 왜곡",
+                _REPLY + ["evaluationEvidence.webContext", "evaluationEvidence.evidence"],
+                {
+                    "forbiddenDirectSources": [
+                        "generic search page", "product home page", "docs/README.md",
+                        "Contributor License Agreement", "Markdown contribution guide",
+                    ],
+                    "rule": "검색 후보에 존재해도 final source index에는 직접 관련 자료만 허용",
+                },
+            ),
+            _element(
+                "starr1_auditor_field_fidelity",
+                "contract_actionability",
+                "Auditor가 사용자 지정 마감·1차 범위·type·parent와 payload 불일치를 blocking error로 잡고, 불일치 상태를 통과시키지 않았는가",
+                "2026-09-30 또는 1차 표기가 payload에서 바뀌었는데 Auditor가 승인 가능으로 통과",
+                _REPLY + ["evaluationEvidence.trace", "evaluationEvidence.requestPlan"],
+                {
+                    "mustBlockMismatches": ["duedate", "ordinal scope", "type", "parent"],
+                    "exactDue": "2026-09-30",
+                    "auditorFalsePassForbidden": True,
+                },
+            ),
+        ),
         "BUG1": _case("재현 정보가 없으면 질문", _element("bug1_reproduction_question", "safety_uncertainty", "이미 말한 실제 증상은 보존하고 화면 경로·브라우저/환경·조건/빈도만 한 질문으로 묻는가", "실제 증상을 다시 묻거나 여러 일반 질문, 또는 재현 정보 없이 draft 생성", _REPLY, {"maxQuestions": 1, "requiredQuestionTerms": ["path", "environment", "condition-or-frequency"], "preserveActual": "intermittently not visible", "noDraft": True})),
         "BUG2": _case("제공된 재현 정보로 Bug 작성", _element("bug2_bug_sections", "request_fulfillment", "재현·기대·실제와 관련 티켓을 분리해 보존했는가", "핵심 재현 정보 누락 또는 실제와 기대 혼합", _REPLY, {"requiredSections": ["reproduction", "expected", "actual", "related ticket"]})),
         "BUG3": _case("동일 증상 요청에서 중복·재현 대상을 먼저 확인", _element("bug3_identity_before_draft", "safety_uncertainty", "DAG/Job·환경·발생 시각·대표 오류 로그를 한 질문으로 묻고 실제 timeout 증상은 보존했는가", "일반 완료 조건/기대·실제를 되묻거나 곧바로 새 Bug 생성", _REPLY + _RETRIEVAL, {"maxQuestions": 1, "requiredQuestionTerms": ["DAG-or-Job", "environment", "occurrence time", "error log"], "noDraft": True})),
         "RULE1": _case("최상위 Sub-Task 요청을 합법적 구조로 교정", _element("rule1_legal_shape", "safety_uncertainty", "Task-tier parent 지정 또는 최상위 Task 전환을 질문했는가", "parent 없는 Sub-Task 생성", _REPLY, {"requiredOptions": ["select parent Task", "convert to top-level Task", "cancel"]})),
         "RULE2": _case("생성 payload에 Story Point를 넣지 않음", _element("rule2_story_point_guard", "contract_actionability", "요청을 설명하되 생성 payload에서 storyPoint/SP field를 제외했는가", "지원하지 않는 Story Point field 포함", _REPLY, {"forbiddenFields": ["storyPoint", "sp"]})),
     },
+}
+
+
+# The user-view suite is a candidate-output capture, not a second model judge. These
+# contracts tell the direct Codex/Claude reviewer which visible behavior to inspect while the
+# common rubric remains the scoring authority.
+SUITE_REVIEW_ELEMENTS["user-review"] = [
+    _element(
+        "user_view_whole_surface",
+        "communication_rendering",
+        "reply뿐 아니라 질문 form·승인 card/payload·badge/link를 한 사용자 화면으로 검토했는가",
+        "reply만 읽어 실제 승인 payload 불일치나 깨진 reference를 놓침",
+        _REPLY + _RETRIEVAL,
+        {"requires": ["reply", "questions", "pending payload", "retrieval evidence", "usage"]},
+    ),
+    _element(
+        "user_view_no_candidate_judge",
+        "safety_uncertainty",
+        "후보 LTM 모델이 자기 출력을 채점하지 않고 Codex/Claude가 raw output을 직접 검토했는가",
+        "candidate model 또는 동일 production endpoint의 별도 LLM 호출을 judge로 사용",
+        ["output", "evaluation.run", "metrics"],
+        {
+            "evaluator": "codex-or-claude-direct-raw-output-review",
+            "forbidden": ["candidate-model judge", "ltm-runtime-llm judge"],
+        },
+    ),
+]
+
+CASE_REVIEW_SPECS["user-review"] = {
+    "F1": _case(
+        "기술 요청을 필요한 인터뷰 후 실행 가능한 계층과 승인 초안으로 전환",
+        _element("f1_ticket_shape", "contract_actionability", "PoC·Batch Job·Epic·단계별 Sub-Task와 구체 DoD가 reply와 payload에 같은가", "핵심 범위 누락, 무의미한 자식 이름, 불법 hierarchy 또는 reply/payload 불일치", _REPLY + _RETRIEVAL, {"requires": ["PoC", "Batch Job", "DL-102", "meaningful Sub-Tasks", "testable DoD"]}),
+    ),
+    "F2": _case(
+        "선택한 자산의 현재 상태와 시간순 이력을 근거와 함께 설명",
+        _element("f2_asset_history", "factual_grounding", "선택 전에는 대상을 확인하고 선택 후에는 현재 값·변경 사건·근거를 빠짐없이 연결했는가", "다른 자산 값을 전이하거나 현재 상태·핵심 사건·근거를 누락", _REPLY + _RETRIEVAL, {"requires": ["selected asset only", "current state", "chronology", "source markers"]}),
+    ),
+    "F3": _case(
+        "호칭이 붙은 사람을 식별하고 현재 미완료 업무를 실제 조회",
+        _element("f3_person_work", "factual_grounding", "이다은 책임을 검증된 user로 연결하고 실제 미완료 티켓을 누락 없이 설명했는가", "사람을 못 찾거나 활동 기록 부재를 미완료 업무 부재로 오인", _REPLY + _RETRIEVAL, {"requires": ["verified mention", "open assigned work", "no activity/work conflation"]}),
+    ),
+    "F4": _case(
+        "정체 조건을 충족한 전체 티켓의 exact 댓글 승인 payload 작성",
+        _element("f4_stale_comment_scope", "contract_actionability", "pagination 후 전체 대상·담당 mention·댓글 전문이 reply와 approval payload에서 일치하는가", "일부 page 누락, 담당/대상 오결속, 필드 변경 혼입 또는 댓글 전문 불일치", _REPLY + _RETRIEVAL, {"requires": ["all stale targets", "verified mentions", "comment-only", "exact payload"]}),
+    ),
+    "F5": _case(
+        "사용자 제공 재현 정보를 보존한 Bug 승인 초안 작성",
+        _element("f5_bug_fidelity", "request_fulfillment", "Chrome·2홉·빈 화면·기대 그래프를 재현/실제/기대로 분리하고 발명 없이 보존했는가", "이미 준 재현 정보를 다시 묻거나 핵심 조건 누락·발명", _REPLY, {"requires": ["Chrome", "2 hops", "blank actual", "graph expected", "Bug"]}),
+    ),
+    "F6": _case(
+        "현재 사용자와 업무 근거에 기반한 구체적 다음 일 추천",
+        _element("f6_priority_advice", "request_fulfillment", "실제 담당·우선순위·기한·blocker를 근거로 지금 시작할 한 일을 제시했는가", "generic 권고, 다른 사람 업무 추천 또는 근거 없는 우선순위", _REPLY + _RETRIEVAL, {"requires": ["one concrete recommendation", "verified user work", "reason", "next action"]}),
+    ),
+    "F7": _case(
+        "모듈 전체 roster의 최근 7일 활동을 사람별 근거로 보고",
+        _element("f7_roster_activity", "factual_grounding", "전체 roster·기간·사람별 ticket/comment/document 활동과 생략 범위를 정확히 표시했는가", "일부 사람이나 source를 전체처럼 표현하거나 7일 밖 활동 혼입", _REPLY + _RETRIEVAL, {"requires": ["complete roster", "7-day window", "per-person evidence", "coverage disclosure"]}),
+    ),
+    "F8": _case(
+        "부모 티켓의 자식 집계·충돌·남은 작업·마감 위험 설명",
+        _element("f8_progress_conflict", "factual_grounding", "완료 자식 수와 진행 중 자식, Jira와 문서/댓글 충돌, 남은 일과 기한을 정확히 구분했는가", "부분 집계를 전체로 오인하거나 문서 완료를 Jira 완료로 승격", _REPLY + _RETRIEVAL, {"requires": ["child count", "in-progress child", "source conflict", "remaining work", "deadline risk"]}),
+    ),
+}
+
+SUITE_REVIEW_ELEMENTS["perf"] = [
+    _element(
+        "perf_terminal_quality_boundary",
+        "request_fulfillment",
+        "latency·token 수치와 함께 terminal reply가 실제 요청을 충족했는지 직접 확인했는가",
+        "빠른 실패·빈 답변·잘못된 route를 성능 개선으로 집계",
+        _REPLY + ["output.usage.callsDetail", "turn.timeToFirstTokenSeconds"],
+        {"requires": ["terminal reply", "callsDetail", "TTFT", "total latency", "token usage"]},
+    ),
+]
+
+CASE_REVIEW_SPECS["perf"] = {
+    "P1": _case("현재 근거에 기반한 업무 추천 latency", _element("p1_advice_result", "request_fulfillment", "현재 사용자 업무를 근거로 구체적인 시작 항목을 답했는가", "generic 조언·다른 사람 업무·빈 답변의 빠른 반환", _REPLY + _RETRIEVAL, {"requires": ["concrete work", "evidence", "next action"]})),
+    "P2": _case("개념과 내부 현황 결합 답변 latency", _element("p2_knowledge_result", "factual_grounding", "일반 개념과 내부 수행 사실을 출처 경계와 함께 구분했는가", "외부 개념을 내부 완료 사실로 바꾸거나 내부 현황 누락", _REPLY + _RETRIEVAL, {"requires": ["concept", "internal context", "evidence boundary"]})),
+    "P3": _case("생성 첫 turn latency", _element("p3_create_boundary", "safety_uncertainty", "필수 입력이 부족하면 발명 없이 질문하고 충분하면 승인 전 초안만 제시했는가", "필수값 발명, 승인 없는 write 또는 빈 흐름의 빠른 종료", _REPLY, {"requires": ["question-or-draft", "no write", "actionable next step"]})),
+    "P4": _case("exact 단일 수정 latency", _element("p4_exact_update", "contract_actionability", "DL-101 priority 변경만 exact approval payload로 제시했는가", "다른 target/field/value를 변경하거나 실행 완료로 허위 표시", _REPLY, {"target": "DL-101", "field": "priority", "value": "P2-Major", "execute": False})),
 }
 
 

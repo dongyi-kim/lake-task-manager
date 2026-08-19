@@ -78,24 +78,58 @@
 `workflow/role_manifest.py`가 유일한 roster다. Role은 alias 없이 canonical id 하나로 식별한다.
 그 id를 graph node, module filename, prompt filename에 그대로 쓰고 class 이름만 PascalCase로 변환한다.
 
-| 역할 | 책임 | 권한·출력 |
-|---|---|---|
-| Request Architect | 복합 요청을 atomic task와 route로 분해 | `intent`, `request_plan`; tool 없음 |
-| Query Specialist | 자연어 조회를 typed `QueryPlan`으로 변환 | query 작성만, 실행 없음 |
-| Query Runner | scope·pagination 계약에 따라 query 실행 | read-only, 전체 artifact 보존 |
-| Research Analyst | Jira·Confluence·comment·people·외부 근거 취합 | 사실·추론·공백 분리, read-only |
-| Knowledge Curator | 조사 결과를 재사용 가능한 전문 brief로 정리 | `knowledge_brief` |
-| Portfolio Analyst | 진척·업무량·정체·활동 해석 | 근거가 있는 finding/caution |
-| Work Architect | 질문, 구조, create/change draft 작성 | draft-only |
-| People Advisor | 실제 roster·이력·workload로 담당 후보 제안 | 근거와 대안, draft-only |
-| Auditor | schema·계층·근거·요청 충족 감사 | blocking error와 warning 분리 |
-| Action Executor | 승인된 exact payload 실행 | 유일한 write 권한 |
-| Result Integrator | 최종 state와 미해결 항목을 한국어로 통합 | 새 조회·write 금지 |
-| Editor Author | 기존 본문을 보존하며 description/comment 초안 작성 | draft-only |
+| 역할 | 종류 | 책임 | 권한·출력 |
+|---|---|---|---|
+| Request Architect | semantic | 복합 요청을 atomic task와 route로 분해 | `intent`, `request_plan`; tool 없음 |
+| Query Specialist | semantic | 자연어 조회를 typed `QueryPlan`으로 변환 | query 작성만, 실행 없음 |
+| Query Runner | service | scope·pagination 계약에 따라 query 실행 | read-only, 전체 artifact 보존 |
+| Research Analyst | semantic | Jira·Confluence·comment·people·외부 근거 취합 | 사실·추론·공백 분리, read-only |
+| Knowledge Curator | semantic | 조사 결과를 재사용 가능한 전문 brief로 정리 | `knowledge_brief` |
+| Portfolio Analyst | semantic | 진척·업무량·정체·활동 해석 | 근거가 있는 finding/caution |
+| Work Architect | semantic | 질문, 구조, create/change draft 작성 | draft-only |
+| People Advisor | semantic | 실제 roster·이력·workload로 담당 후보 제안 | 근거와 대안, draft-only |
+| Auditor | guardrail | schema·계층·근거·요청 충족 감사 | blocking error와 warning 분리 |
+| Action Executor | service | 승인된 exact payload 실행 | 유일한 write 권한 |
+| Result Integrator | semantic | 최종 state와 미해결 항목을 한국어로 통합 | 새 조회·write 금지 |
+| Editor Author | semantic | 기존 본문을 보존하며 description/comment 초안 작성 | draft-only |
 
-역할을 추가하거나 합치기 전에 기존 역할의 I/O와 실패 기준으로 책임을 표현할 수 없는지 확인한다. 역할 수 증가 자체는 목표가 아니다.
+- `semantic`: 모델이 모호한 의미·우선순위·종합을 판단. 소수의 안정적인 Role로 유지하고 각 Role에 필요한 최소 tool allowlist만 제공
+- `service`: typed input을 검증한 코드가 조회·변환·실행. 모델의 ReAct·자유 선택에 안전성과 정확성을 의존하지 않음
+- `guardrail`: 초안·근거·실행 가능성을 수락 또는 차단. 새 사실이나 payload를 작성하거나 write를 실행하지 않음
+
+워크플로 단계마다 Role을 추가하지 않는다. 먼저 기존 semantic Role의 typed I/O, deterministic service, guardrail 검사로 책임을 표현한다. 신규 semantic Role은 분리 전·후를 같은 versioned battery와 evaluator로 비교해 품질 개선을 보이고, token·latency·실패율의 허용 가능한 비용과 기존 Role별 regression 없음을 증명한 뒤에만 추가한다. 증거가 없으면 기존 구조를 유지한다.
 `Planner`, `Historian` 같은 legacy 이름이나 `Portfolio Analyst (PMO)` 같은 alias 표기를 추가하지 않는다.
 호환이 필요해도 alias lookup을 만들지 말고 checkpoint 수명과 외부 API 영향을 검토해 명시적으로 migration한다.
+
+### 모델 runtime 경계
+
+LLM 호출은 반드시 `Role → Task Profile → Model Profile → Capability → Provider Adapter → Request`를 거친다.
+
+- `workflow/role_manifest.py`의 execution layer가 모델 라우팅 정본이다.
+  - `deterministic`: 모델 호출 없이 typed service가 실행
+  - `projection`: 이미 결정된 의미를 schema로 옮기는 무판단 변환. 평가로 자격을 얻은 simple model만 허용
+  - `lightweight_semantic`: 분류·조회 설계·tool decision 같은 제한된 의미 판단. simple model profile에
+    `lightweight_semantic` 자격이 없으면 complex model로 fail-safe fallback
+  - `deep_semantic`: 계획·근거 종합·감사·최종 응답 같은 깊은 판단. 항상 complex model 사용
+- `structured`, `json_schema`, native tools 같은 wire-format capability는 모델의 의미 판단 자격이 아니다.
+  포맷 지원 여부로 semantic 호출 endpoint를 변경하지 않는다.
+- ToolAgent는 `decision_layer`와 synthesis layer를 별도로 선언할 수 있지만, 검증된 경량 모델이 없으면
+  둘 다 complex fallback을 사용한다. 신규 9B/simple lane은 versioned battery에서 품질·latency·retry와
+  Role별 regression 없음이 증명된 뒤 `config/llm_profiles.yml`에만 자격을 추가한다.
+- Role은 `fast_structured`, `balanced`, `reasoning` 중 semantic task profile만 선언한다.
+- `temperature`, `top_p`, `top_k`, `min_p`, `enable_thinking`, `reasoning_effort` 숫자·provider parameter를
+  Role class나 prompt에 하드코딩하지 않는다. 정본은 `config/llm_profiles.yml`이다.
+- parameter 우선순위는 `explicit request override > Role/Task profile > Model profile > Provider default`다.
+- Qwen/OpenAI/MLX/vLLM 분기를 Role에 넣지 않는다. capability와 provider adapter에서만 변환한다.
+- chat과 embedding은 서로 다른 provider/base URL/key를 사용할 수 있다. 빈 embedding override만 기존
+  chat 연결로 fallback하며, 한 base URL을 공유시키기 위한 reverse proxy를 만들지 않는다.
+- native `json_schema`/tool calling은 HTTP 2xx가 아니라 실제 schema/tool contract 준수로 probe한다.
+  미지원 모델은 prompt JSON → strict parse → JSON Schema/Pydantic validation → validation error를 포함한
+  1회 regenerate로 처리한다. code fence/brace extraction/regex/문자열 치환으로 parse failure를 숨기지 않는다.
+- tool catalog는 해당 Role의 등록 tool만 expose하고, tool 이름 enum과 각 tool의 Pydantic args schema를
+  통과한 호출만 실행한다. reasoning trace와 API key는 debug log에 기록하지 않는다.
+- embedding index metadata에는 model/revision/precision/dimension/normalization/chunking/config version을
+  포함한다. identity가 다른 vector는 기존 namespace에 append하지 않고 index를 교체한다.
 
 ## 4. prompt와 tool contract 작성법
 
@@ -181,13 +215,16 @@ repository root나 상위 deploy root에 `.test-tmp-*`, `.pytest-tmp-*`, `.codex
   bundle/context를 사용하고, 폐쇄망·차단은 짧은 fail-soft 결과로 반환한다. 공용 HTTPS 경로를
   추가할 때 기본 `urllib` SSL context나 Windows native trust-store transport를 사용하지 않는다.
 
-- Conversation: `tools/agent_lang_ab.py`
-- Compose: `tools/agent_compose_eval.py`
-- Create: `tools/agent_create_suite.py`
-- Meeting: `tools/agent_meeting_eval.py` — 회의록 조사·사람 식별·인터뷰·요약·create/comment/update 초안
-- Context change: `tools/agent_context_change_eval.py` — 대화 중 최신 요청 우선·무관 맥락 배제·pending 교체
-- 사람 관점 판독: `tools/agent_user_review.py`, `tools/agent_quality_read.py`
-- 정량 병목: `tools/agent_perf.py`
+- Conversation: `tools/agent_eval_launcher.py conversation`
+- Compose: `tools/agent_eval_launcher.py compose`
+- Create: `tools/agent_eval_launcher.py create`
+- Meeting: `tools/agent_eval_launcher.py meeting` — 회의록 조사·사람 식별·인터뷰·요약·create/comment/update 초안
+- Context change: `tools/agent_eval_launcher.py context`
+
+실 provider runner를 직접 실행하면 network handoff marker가 없으므로 socket을 열기 전에 중단한다.
+로컬 Qwen/BGE 전체 preflight는 repository 밖 `.local/ltm-local-llm/tools/` launcher를 우선 사용한다.
+- 사용자 화면 raw 수집: `tools/agent_eval_launcher.py user-review`; 이후 Codex/Claude가 raw를 직접 판독
+- 정량 병목: `tools/agent_eval_launcher.py perf` (streaming TTFT·callsDetail·token raw 수집)
 
 production routing 비교의 기본은 main/complex=`gpt-4o`, simple=`gpt-4o-mini`다. 모든 후보에서
 `(model, simpleModel)`을 동일하게 유지한다. raw JSON에는 `protocolVersion`, `rubricVersion`,
@@ -202,7 +239,7 @@ p50/p95, token/call/cost, 자동 실패율, 사람 점수와 치명 결함률을
 초기화하고 mock jira820 provider Store도 재생성한다. 다중 turn 안의 state만 유지하고 다음 case로 넘기지
 않는다. 시작·종료 `worldSha256` 또는 `providerStoreSha256`가 다르면 읽기 전용 평가가 fixture를 덮어쓴
 것이므로 case를 실패 처리한다. 초기화·fingerprint 시간은 Agent latency에
-포함하지 않는다. 이 격리를 제거하거나 cache policy를 바꾸면 같은 `comparabilityKey`로 비교하지 않는다.
+포함하지 않는다. 이 격리를 제거하거나 cache policy를 바꾸면 같은 `benchmarkKey`로 비교하지 않는다.
 
 대화 checkpoint에서 영속되는 것은 message history와 사용자가 답하는 중인 인터뷰의 원 요청·조사 근거다.
 새 요청, 취소, 대체, 주제 전환 턴에는 `topic_dossier`, query result, PMO finding, draft/change plan,

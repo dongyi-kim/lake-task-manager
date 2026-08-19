@@ -18,14 +18,70 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import secrets as _rand
 import threading
 import time
+from contextvars import ContextVar, Token
 
 TTL_SECONDS = 30 * 60          # 승인해 놓고 잊은 초안이 무한정 살아 있지 않게
 _lock = threading.Lock()
 _pending: dict[str, dict] = {}
+_consumed: dict[tuple[str, str], dict] = {}
+_verified: dict[str, float] = {}
+_attestation_key = _rand.token_bytes(32)
+_execution_attempt: ContextVar[tuple[str, str]] = ContextVar(
+    "approval_execution_attempt", default=("", ""),
+)
+
+
+def _attestation(record: dict, token: str, attempt_digest: str) -> dict:
+    body = {
+        "contract": "approval-consumption.v1",
+        "thread": str(record.get("thread") or ""),
+        "action": str(record.get("action") or ""),
+        "fp": str(record.get("fp") or ""),
+        "approved": record.get("approved") is True,
+        "token_digest": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        "attempt_digest": attempt_digest,
+        "nonce": _rand.token_hex(16),
+        "ts": time.time(),
+    }
+    blob = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    body["seal"] = hmac.new(_attestation_key, blob, hashlib.sha256).hexdigest()
+    return body
+
+
+def _valid_attestation(value: dict) -> bool:
+    if not isinstance(value, dict) or set(value) != {
+            "contract", "thread", "action", "fp", "approved", "token_digest", "attempt_digest",
+            "nonce", "ts", "seal",
+    }:
+        return False
+    def sha256(value) -> bool:
+        return (isinstance(value, str) and len(value) == 64
+                and all(character in "0123456789abcdef" for character in value))
+
+    timestamp = value.get("ts")
+    now = time.time()
+    if (value.get("contract") != "approval-consumption.v1"
+            or value.get("approved") is not True
+            or not value.get("thread") or not value.get("action")
+            or not sha256(value.get("fp")) or not sha256(value.get("token_digest"))
+            or not sha256(value.get("attempt_digest")) or not sha256(value.get("seal"))
+            or not isinstance(value.get("nonce"), str) or len(value.get("nonce")) != 32
+            or isinstance(timestamp, bool) or not isinstance(timestamp, (int, float))
+            or timestamp < now - TTL_SECONDS or timestamp > now + 5):
+        return False
+    seal = str(value.get("seal") or "")
+    body = {key: item for key, item in value.items() if key != "seal"}
+    try:
+        blob = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError):
+        return False
+    expected = hmac.new(_attestation_key, blob, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(seal, expected)
 
 
 def fingerprint(payload) -> str:
@@ -43,6 +99,38 @@ def stage(thread_id: str, action: str, payload) -> str:
                            "fp": fingerprint(payload), "payload": payload, "ts": time.time(),
                            "approved": False}
     return token
+
+
+def stage_pair(thread_id: str, primary_action: str, primary_payload,
+               secondary_action: str, secondary_payload) -> tuple[str, str]:
+    """Atomically stage the two fingerprints shown on one compound approval card.
+
+    Two unrelated, individually valid capabilities must never be spliced together by a
+    stale checkpoint or direct caller.  The reciprocal token ids bind both action/payload
+    records to the exact same card; :class:`ActionExecutor` validates the pair before it
+    executes either side.
+    """
+    _sweep()
+    primary = _rand.token_urlsafe(24)
+    secondary = _rand.token_urlsafe(24)
+    bundle = _rand.token_urlsafe(18)
+    now = time.time()
+    with _lock:
+        _pending[primary] = {
+            "thread": str(thread_id or ""), "action": primary_action,
+            "fp": fingerprint(primary_payload), "payload": primary_payload, "ts": now,
+            "approved": False, "bundle": bundle, "bundle_role": "primary",
+            "peer_token": secondary, "peer_action": secondary_action,
+            "peer_fp": fingerprint(secondary_payload),
+        }
+        _pending[secondary] = {
+            "thread": str(thread_id or ""), "action": secondary_action,
+            "fp": fingerprint(secondary_payload), "payload": secondary_payload, "ts": now,
+            "approved": False, "bundle": bundle, "bundle_role": "secondary",
+            "peer_token": primary, "peer_action": primary_action,
+            "peer_fp": fingerprint(primary_payload),
+        }
+    return primary, secondary
 
 
 def approve(token: str, thread_id: str = None) -> bool:
@@ -110,6 +198,7 @@ def amend_payload(token: str, thread_id: str, payload) -> tuple[bool, str]:
 
 
 def reject(token: str) -> bool:
+    """Cancel a still-pending capability; never erase another in-flight attempt's proof."""
     with _lock:
         return _pending.pop(token, None) is not None
 
@@ -138,8 +227,77 @@ def consume(token: str, action: str, payload) -> tuple[bool, str]:
         if rec["fp"] != fingerprint(payload):
             return False, ("승인 화면에 보여 준 내용과 실행하려는 내용이 다릅니다. "
                            "바뀐 내용으로 다시 승인을 받으세요.")
-        _pending.pop(token, None)
+        consumed = _pending.pop(token, None)
+        attempt_token, attempt_nonce = _execution_attempt.get()
+        if attempt_token == token and attempt_nonce:
+            attempt_digest = hashlib.sha256(attempt_nonce.encode("utf-8")).hexdigest()
+            _consumed[(token, attempt_digest)] = _attestation(
+                consumed, token, attempt_digest,
+            )
         return True, ""
+
+
+def begin_consumption_attempt(token: str) -> tuple[str, Token]:
+    """Bind a synchronous ActionExecutor dispatch to an unguessable local attempt."""
+    nonce = _rand.token_urlsafe(24)
+    return nonce, _execution_attempt.set((str(token or ""), nonce))
+
+
+def end_consumption_attempt(context_token: Token) -> None:
+    _execution_attempt.reset(context_token)
+
+
+def take_consumption(
+        token: str, *, attempt_nonce: str, thread_id: str, action: str, payload) -> dict | None:
+    """Take one exact positive-consumption attestation for this dispatch attempt only."""
+    _sweep()
+    attempt_digest = hashlib.sha256(str(attempt_nonce or "").encode("utf-8")).hexdigest()
+    with _lock:
+        value = _consumed.pop((token or "", attempt_digest), None)
+    if not _valid_attestation(value):
+        return None
+    try:
+        payload_fp = fingerprint(payload)
+    except (TypeError, ValueError):
+        return None
+    expected_token = hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+    if (value.get("thread") != str(thread_id or "")
+            or value.get("action") != str(action or "")
+            or value.get("fp") != payload_fp
+            or value.get("attempt_digest") != attempt_digest
+            or not hmac.compare_digest(str(value.get("token_digest") or ""), expected_token)):
+        return None
+    return dict(value)
+
+
+def verify_consumption_attestation(
+        value: dict, *, token: str, thread_id: str, action: str, payload) -> bool:
+    """Verify an already-taken server attestation before a receipt is sealed."""
+    if not _valid_attestation(value):
+        return False
+    try:
+        payload_fp = fingerprint(payload)
+    except (TypeError, ValueError):
+        return False
+    exact = bool(
+        value.get("thread") == str(thread_id or "")
+        and value.get("action") == str(action or "")
+        and value.get("fp") == payload_fp
+        and isinstance(value.get("attempt_digest"), str)
+        and len(value.get("attempt_digest")) == 64
+        and hmac.compare_digest(
+            str(value.get("token_digest") or ""),
+            hashlib.sha256(str(token or "").encode("utf-8")).hexdigest(),
+        )
+    )
+    if not exact:
+        return False
+    nonce = str(value.get("nonce") or "")
+    with _lock:
+        if nonce in _verified:
+            return False
+        _verified[nonce] = time.time()
+    return True
 
 
 def _sweep():
@@ -147,9 +305,15 @@ def _sweep():
     with _lock:
         for t in [t for t, r in _pending.items() if r["ts"] < cut]:
             _pending.pop(t, None)
+        for key in [key for key, record in _consumed.items() if record["ts"] < cut]:
+            _consumed.pop(key, None)
+        for nonce in [nonce for nonce, ts in _verified.items() if ts < cut]:
+            _verified.pop(nonce, None)
 
 
 def clear():
     """테스트용."""
     with _lock:
         _pending.clear()
+        _consumed.clear()
+        _verified.clear()
