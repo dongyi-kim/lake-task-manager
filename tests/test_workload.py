@@ -14,6 +14,7 @@ from app.auth.base import SessionExpired      # noqa: E402
 from app.infra.cache import Cache                   # noqa: E402
 from app.jira.jira_client import JiraClient        # noqa: E402
 from app.infra.settings import get_settings, load_people   # noqa: E402
+from app.mock.world import get_world                 # noqa: E402
 
 PLAN = {"modules": ["ETL"], "project_key": "DL"}
 PEOPLE = {"ETL": ["skcc.x1042"]}
@@ -99,6 +100,34 @@ def test_workload_bucket_cached_individually():
     c.workload_bucket(user, "inProgress")
     assert c.cache.get(f"workload_bucket:{c.env}:{user}:inProgress") is not None
     assert c.cache.get(f"workload_bucket:{c.env}:{user}:done7d") is None   # 부른 것만 캐시
+
+
+def test_subtask_inherits_parent_epic_in_summary_and_detail():
+    """SubTask 는 직접 Epic Link 가 없어도 Parent Task 의 Epic 으로 집계돼야 한다."""
+    world = get_world()
+    case = None
+    for key, issue in world.issues.items():
+        parent = world.issues.get(issue.get("parentKey")) or {}
+        recent_open = (issue.get("statusCategory") == "todo"
+                       and (world.today - issue["updated"]).days <= 14)
+        if (issue.get("type") == "Sub-Task" and issue.get("assignee")
+                and parent.get("epicKey")
+                and (issue.get("statusCategory") == "inprogress" or recent_open)):
+            case = (key, issue, parent)
+            break
+    assert case, "Parent Epic 이 있는 미완료 SubTask fixture 가 필요하다"
+
+    key, issue, parent = case
+    bucket = "inProgress" if issue["statusCategory"] == "inprogress" else "open"
+    c = _client()
+
+    detail = next(t for t in c.workload_bucket(issue["assignee"], bucket)
+                  if t["key"] == key)
+    assert detail["epic"] == parent["epicKey"]
+    assert detail["epicName"]
+
+    summary = c.workload_person(issue["assignee"])[bucket]
+    assert summary["epics"][parent["epicKey"]]["count"] >= 1
 
 
 # ── '최근 완료' 기간 필터 (1·2·4주) ──────────────────────────────────────────
