@@ -249,7 +249,9 @@ def _explicit_schema_text(messages):
             "Return exactly one JSON object that satisfies this JSON Schema:\n",
             "The stop marker is transport framing and is not part of the JSON.\n"):
         if marker in text:
-            return text.split(marker, 1)[1].split("\n\nOutput to repair:", 1)[0]
+            return (text.split(marker, 1)[1]
+                    .split("\n\nOutput to repair:", 1)[0]
+                    .split("\n\nExisting validated material:", 1)[0])
     raise AssertionError("explicit JSON Schema prompt was not found")
 
 
@@ -294,6 +296,47 @@ def test_invoke_schema_compacts_and_memoizes_every_explicit_schema_pass(monkeypa
     assert [row["metadata"]["ltm_execution_stage"] for row in fake.configs] == [
         "", "", "", "repair",
     ]
+
+
+def test_invoke_schema_requests_only_the_single_missing_root_field(monkeypatch):
+    from app.agent import capabilities
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "situation": {"type": "string", "maxLength": 1600},
+            "evidence": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["situation", "evidence"],
+        "additionalProperties": False,
+    }
+    monkeypatch.setattr(capabilities, "get", lambda _tier="complex": {
+        "checked": {"json_schema": False, "json_object": False}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+    fake = _SequenceLLM(
+        json.dumps({"evidence": ["DL-100 exact fact"]}, ensure_ascii=False),
+        json.dumps({"situation": "DL-100에서 현재 상태를 확인했다."},
+                   ensure_ascii=False),
+    )
+    monkeypatch.setattr(base._cfg, "get_llm", lambda **_kwargs: fake)
+
+    result = base.invoke_schema(schema, [HumanMessage(content="상황을 조사해")],
+                                role_id="research_analyst")
+
+    assert result == {
+        "situation": "DL-100에서 현재 상태를 확인했다.",
+        "evidence": ["DL-100 exact fact"],
+    }
+    assert len(fake.messages) == 2
+    repair_text = _message_text(fake.messages[1])
+    assert "one-field JSON patch" in repair_text
+    marker = "One-field patch JSON Schema:\n"
+    patch_schema = json.loads(
+        repair_text.split(marker, 1)[1].split("\n\nExisting validated material:", 1)[0]
+    )
+    assert patch_schema["required"] == ["situation"]
+    assert set(patch_schema["properties"]) == {"situation"}
+    assert fake.configs[1]["metadata"]["ltm_output_contract"] == "structured_repair"
 
 
 def test_agent_transport_compacts_and_memoizes_every_explicit_schema_pass(monkeypatch):

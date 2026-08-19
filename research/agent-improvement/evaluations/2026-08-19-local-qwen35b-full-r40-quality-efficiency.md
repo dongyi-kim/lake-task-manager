@@ -114,6 +114,28 @@ five committed skips (two exact updates and three portfolio projections), but al
 events; those invalid events need reconciliation before the telemetry can be treated as a
 reliable optimization denominator.
 
+## Follow-up: bounded required-field repair (r42)
+
+Nine of the 15 general repairs were the same Research schema failure: the initial object had
+valid evidence but omitted the single required root field `situation`. The common structured
+adapter now proves that this is the only JSON Schema violation, preserves the validated object,
+requests a strict one-field patch, merges it server-side, and validates the complete original
+schema again. Any second violation keeps the existing full-repair path.
+
+The same real Qwen CTX4 turn produced the following isolated repair measurements:
+
+| Metric | r40 full repair | r42 required patch | Change |
+|---|---:|---:|---:|
+| Prompt tokens | 1,721 | 1,115 | -35.2% |
+| Completion tokens | 960 | 192 | -80.0% |
+| Total tokens | 2,681 | 1,307 | -51.2% |
+| Model time | 32.406s | 7.971s | -75.4% |
+
+The end-to-end CTX4 result is not used as a latency A/B because r42 made one extra stochastic
+Research tool-decision call. Its existing final target-authority failure also remained unchanged.
+The table measures only the matched `structured_repair` opportunity; the full regression suite
+after the change was 3,182 passed and 2 skipped.
+
 ## Recommended next work
 
 1. Fix producer identity, not downstream title matching: unique server-owned `item_id` and exact

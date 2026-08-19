@@ -90,6 +90,114 @@ def test_instructor_adapter_uses_role_prevalidation_before_schema_validation():
     assert calls == ["initial"]
 
 
+@pytest.mark.parametrize("selected_backend", ["instructor", "legacy"])
+def test_single_missing_root_field_uses_a_bounded_patch_and_preserves_valid_material(
+        monkeypatch, selected_backend):
+    """A large valid evidence payload must not be regenerated to add one missing summary."""
+    monkeypatch.setenv(instructor_adapter.BACKEND_ENV, selected_backend)
+    schema = {
+        "type": "object",
+        "properties": {
+            "situation": {"type": "string", "maxLength": 1600},
+            "evidence": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "key": {"type": "string"},
+                        "observations": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["key", "observations"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["situation", "evidence"],
+        "additionalProperties": False,
+    }
+    evidence = [{"key": "DL-100", "observations": ["kept exactly", "still exact"]}]
+    calls = []
+    patch_schemas = []
+
+    def validate(value):
+        from jsonschema import validate
+
+        validate(instance=value, schema=schema)
+        return dict(value)
+
+    result = instructor_adapter.invoke_prompt_json(
+        schema=schema,
+        model_name="ResearchOutput",
+        initial_call=lambda: calls.append("initial") or AIMessage(
+            content=json.dumps({"evidence": evidence}, ensure_ascii=False)),
+        repair_call=lambda *_args: calls.append("full-repair") or AIMessage(
+            content=json.dumps({"situation": "wrong path", "evidence": []})),
+        required_patch_call=lambda _raw, _error, _diagnostic, patch_schema: (
+            calls.append("required-patch")
+            or patch_schemas.append(patch_schema)
+            or AIMessage(content=json.dumps({"situation": "검증된 현재 상황"},
+                                             ensure_ascii=False))
+        ),
+        validate_output=validate,
+        validation_diagnostic=lambda exc: {
+            "category": "schema",
+            "keyword": str(getattr(exc, "validator", "")),
+            "path": "$",
+            "missing": "situation",
+        },
+        end_token="<END_JSON>",
+    )
+
+    assert result == {"situation": "검증된 현재 상황", "evidence": evidence}
+    assert calls == ["initial", "required-patch"]
+    assert patch_schemas == [{
+        "type": "object",
+        "properties": {"situation": {"type": "string", "maxLength": 1600}},
+        "required": ["situation"],
+        "additionalProperties": False,
+    }]
+
+
+def test_missing_root_patch_is_not_used_when_existing_material_has_another_violation():
+    schema = {
+        "type": "object",
+        "properties": {
+            "situation": {"type": "string"},
+            "evidence": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["situation", "evidence"],
+        "additionalProperties": False,
+    }
+    calls = []
+
+    def validate(value):
+        from jsonschema import validate
+
+        validate(instance=value, schema=schema)
+        return dict(value)
+
+    result = instructor_adapter.invoke_prompt_json(
+        schema=schema,
+        model_name="ResearchOutput",
+        initial_call=lambda: calls.append("initial") or AIMessage(
+            content=json.dumps({"evidence": "not-an-array"})),
+        repair_call=lambda *_args: calls.append("full-repair") or AIMessage(
+            content=json.dumps({"situation": "fixed", "evidence": []})),
+        required_patch_call=lambda *_args: calls.append("required-patch"),
+        validate_output=validate,
+        validation_diagnostic=lambda exc: {
+            "category": "schema",
+            "keyword": str(getattr(exc, "validator", "")),
+            "path": "$",
+            "missing": "situation",
+        },
+        end_token="<END_JSON>",
+    )
+
+    assert result == {"situation": "fixed", "evidence": []}
+    assert calls == ["initial", "full-repair"]
+
+
 def test_instructor_adapter_never_retries_empty_or_transport_failures():
     for outcome in (AIMessage(content="   "), ConnectionError("offline")):
         calls = []

@@ -101,6 +101,24 @@ def _structured_repair_messages(schema_text: str, raw_text: str,
     ]
 
 
+def _structured_required_patch_messages(patch_schema_text: str, raw_text: str,
+                                        validation_error: str,
+                                        repair_context: str = "") -> list:
+    """Request only one missing root field while preserving the validated object server-side."""
+    source = (("Semantic memo:\n" + repair_context + "\n\n") if repair_context else "")
+    return [
+        SystemMessage(content=(
+            "The existing JSON object is valid except for one missing required root field. "
+            "Return only the one-field JSON patch required by the patch schema. Do not repeat, "
+            "summarize, or modify existing fields. Preserve meaning and use raw JSON only. "
+            f"After the closing }}, emit {STRUCTURED_END_TOKEN}.")),
+        HumanMessage(content=(
+            source + f"Validation error:\n{validation_error}"
+            f"\n\nOne-field patch JSON Schema:\n{patch_schema_text}"
+            f"\n\nExisting validated material:\n{raw_text[:12000]}")),
+    ]
+
+
 def _validate_output(value, schema: dict) -> dict:
     """관대한 추출 뒤에는 반드시 동일한 JSON Schema로 엄격 검증한다."""
     from jsonschema import validate
@@ -321,10 +339,22 @@ def invoke_schema(schema: dict, messages: list, tier: str | None = None,
             config=_call_config(observed_role, call_label + "_repair",
                                 repair_layer, "repair", diagnostic))
 
+    def required_patch_call(raw_text: str, validation_error: str,
+                            diagnostic: dict[str, str], patch_schema: dict):
+        repair_layer = "projection" if initial_layer else ""
+        repair_contract = "typed_projection" if repair_layer else "structured"
+        return make_llm(call_layer=repair_layer, call_stage="repair",
+                        profile="fast_structured", output_contract=repair_contract).invoke(
+            _structured_required_patch_messages(
+                _compact_schema_text(patch_schema), raw_text, validation_error),
+            stop=[STRUCTURED_END_TOKEN],
+            config=_call_config(observed_role, call_label + "_repair",
+                                repair_layer, "repair", diagnostic))
+
     try:
         return instructor_adapter.invoke_prompt_json(
             schema=schema, model_name=name, initial_call=initial_call,
-            repair_call=repair_call,
+            repair_call=repair_call, required_patch_call=required_patch_call,
             validate_output=lambda value: _validate_output(value, schema),
             validation_diagnostic=_validation_diagnostic,
             end_token=STRUCTURED_END_TOKEN)
@@ -627,10 +657,29 @@ class Agent(ABC):
                         self.name, output_contract + "_repair", repair_layer, "repair",
                         diagnostic))
 
+        def prompt_required_patch_call(raw_text: str, validation_error: str,
+                                       diagnostic: dict[str, str], patch_schema: dict):
+            nonlocal wire_attempts
+            if not wire_available():
+                fail_wire_ceiling()
+            wire_attempts += 1
+            repair_layer = "projection"
+            return self.llm(
+                execution_layer=repair_layer, execution_stage="repair",
+                profile="fast_structured", output_contract=output_contract).invoke(
+                    _structured_required_patch_messages(
+                        _compact_schema_text(patch_schema), raw_text,
+                        validation_error, repair_context),
+                    stop=[STRUCTURED_END_TOKEN],
+                    config=_call_config(
+                        self.name, output_contract + "_repair", repair_layer, "repair",
+                        diagnostic))
+
         try:
             return instructor_adapter.invoke_prompt_json(
                 schema=schema, model_name=self.name,
                 initial_call=prompt_initial_call, repair_call=prompt_repair_call,
+                required_patch_call=prompt_required_patch_call,
                 validate_output=validate_output,
                 validation_diagnostic=_validation_diagnostic,
                 end_token=STRUCTURED_END_TOKEN,
