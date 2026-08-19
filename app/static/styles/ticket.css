@@ -1118,7 +1118,7 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
    (사번 em 은 오른쪽에 고정 폭으로 남겨 누구인지 항상 보이게) */
 .fe-pop.users { min-width: 330px; max-width: min(460px, 82vw); }
 /* 이름 span 만 늘린다 — Avatar 도 <span class="avt"> 라 :not(.avt) 로 제외(안 하면 사진이 늘어남) */
-.fe-pop.users .fe-i > span:not(.avt) { flex: 1 1 auto; min-width: 0; overflow: hidden;
+.fe-pop.users .fe-i > span:not(.avt):not(.fe-empty-mark) { flex: 1 1 auto; min-width: 0; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
 .fe-i .avt { flex: none; }
 .fe-none { font-size: 11.5px; color: var(--muted-2); padding: 5px 7px; }

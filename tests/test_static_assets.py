@@ -465,6 +465,7 @@ def test_field_edit_shows_offline_defaults_immediately_and_pins_none_option():
     assert '@click="clearMulti"' in src and '@click="clearUser"' in src
     assert 'v-if="hasNoneOption" class="fe-clear"' in src
     assert ".fe-i.fe-empty" in css
+    assert ".fe-i > span:not(.avt):not(.fe-empty-mark)" in css
     assert root.count("api.warmGlobals()") == 2    # 최초 인증 성공 + 재인증 복귀
     assert "api.warmGlobals()" not in tasks        # Task 본 데이터 완료 여부에 종속되지 않음
 
