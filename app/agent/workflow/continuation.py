@@ -240,7 +240,9 @@ def _instruction_target_keys(tasks: list[dict]) -> list[str]:
     return result[:16]
 
 
-def build_continuation_contract(state: dict, *, existing=None) -> dict:
+def build_continuation_contract(
+        state: dict, *, existing=None, preserve_outcome_targets: bool = False,
+        replacement_root: str = "") -> dict:
     """Build a validated contract from authoritative state, retaining prior decisions only."""
     carried = _validated(existing if existing is not None else state.get("continuation_contract"))
     continuation = state.get("turn_continuation") is True and bool(carried)
@@ -263,6 +265,24 @@ def build_continuation_contract(state: dict, *, existing=None) -> dict:
                             str(key or "").strip())]
     write_tasks = [task for task in tasks if _is_write_task(task)]
     task_targets = _instruction_target_keys(write_tasks)
+    derived_action = _task_action(intent, tasks)
+    carried_targets = [
+        str(key or "").strip().upper()
+        for key in (carried.get("target_keys") or [])
+        if _KEY_RE.fullmatch(str(key or "").strip())
+    ]
+    can_preserve_outcome_target = bool(
+        continuation
+        and preserve_outcome_targets
+        and str(carried.get("action") or "") in {"comment", "update", "mixed"}
+        and derived_action in {"comment", "update", "mixed"}
+        and len(carried_targets) == 1
+    )
+    # An explicit typed outcome replacement supersedes the old mutation request rather than
+    # appending to it. Keep the proven target identity, but make the latest human replacement
+    # the immutable request boundary used by Work/effect/Auditor validation.
+    if can_preserve_outcome_target and str(replacement_root or "").strip():
+        root = str(replacement_root).strip()
     mentioned = [str(key or "").strip().upper()
                  for key in (state.get("mentioned_keys") or []) if _KEY_RE.fullmatch(
                      str(key or "").strip())]
@@ -270,10 +290,19 @@ def build_continuation_contract(state: dict, *, existing=None) -> dict:
         # On a continuation ``bulk_targets`` is inherited execution state, not fresh user
         # authority.  Re-prove it through exact current write-task instructions; a keyless
         # write task must return empty and let semantic target resolution run again.
-        current_write_targets = (
-            task_targets if continuation
-            else (explicit_targets or task_targets)
-        )
+        if continuation:
+            current_write_targets = task_targets
+            # RequestArchitect may replace one already-typed write outcome (for example,
+            # field update -> comment -> another field update) without the user repeating
+            # the one stable Jira key in every sentence.  Preserve that target only when
+            # the shared outcome-directive parser explicitly authorized the replacement,
+            # both action families remain mutations, and the prior authority is exactly one
+            # valid key.  Generic keyless continuations still fail closed, so background/read
+            # identities cannot become mutation targets.
+            if not current_write_targets and can_preserve_outcome_target:
+                current_write_targets = carried_targets
+        else:
+            current_write_targets = explicit_targets or task_targets
     else:
         current_write_targets = explicit_targets
     current_write_set = set(current_write_targets)
@@ -320,7 +349,6 @@ def build_continuation_contract(state: dict, *, existing=None) -> dict:
     else:
         target_keys = _ordered_unique([*prior_targets, *derived_targets], limit=16)
 
-    derived_action = _task_action(intent, tasks)
     prior_outcomes = carried.get("outcome_ids") or []
     action = (str(carried.get("action") or derived_action)
               if continuation and outcome_ids == prior_outcomes else derived_action)

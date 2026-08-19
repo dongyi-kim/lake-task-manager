@@ -494,6 +494,28 @@ def _bounded_materialized_ticket_sources(value) -> dict:
     return bounded
 
 
+def _same_write_outcome_replacement(text: str, prior: dict) -> bool:
+    """Whether this turn replaces an effect on one already-typed mutation target."""
+    from app.agent.workflow.agents.request_architect import _continuation_outcome_directive
+
+    utterance = str(text or "")
+    prior_contract = prior.get("continuation_contract") or {}
+    prior_targets = [
+        str(key or "").strip().upper()
+        for key in (prior_contract.get("target_keys") or [])
+        if _re.fullmatch(r"[A-Z][A-Z0-9]{1,9}-\d+", str(key or "").strip(), _re.I)
+    ] if has_typed_continuation_contract(prior_contract) else []
+    current_keys = set(_recent_keys(utterance))
+    return bool(
+        prior.get("request_plan")
+        and str(prior_contract.get("action") or "") in {"comment", "update", "mixed"}
+        and len(prior_targets) == 1
+        and _continuation_outcome_directive(utterance)
+        and (not current_keys or current_keys <= set(prior_targets))
+        and not _EXPLICIT_NEW_WORK.search(utterance)
+    )
+
+
 def _is_interview_continuation(text: str, prior: dict) -> bool:
     """Preserve prior work only for an interview answer or a bounded draft refinement.
 
@@ -512,12 +534,14 @@ def _is_interview_continuation(text: str, prior: dict) -> bool:
     )
     adds_typed_outcome = bool(prior.get("request_plan")
                               and _continuation_outcome_additions(utterance))
+    same_write_outcome_replacement = _same_write_outcome_replacement(utterance, prior)
     # A typed ``댓글 대신 ...`` can be an in-plan outcome edit, but an explicit whole-topic
     # switch must always clear stale work even when that phrase happens to begin with an
     # outcome label.
-    if _HARD_CONTEXT_SWITCH.search(utterance):
+    if _HARD_CONTEXT_SWITCH.search(utterance) and not same_write_outcome_replacement:
         return False
     if (_CONTEXT_SWITCH.search(utterance)
+            and not same_write_outcome_replacement
             and not _FIELD_REPLACEMENT.search(utterance)
             and not _OUTCOME_REFINEMENT.search(utterance)):
         return False
@@ -598,6 +622,9 @@ def _is_interview_continuation(text: str, prior: dict) -> bool:
 
     if new_keys and old_keys and not new_keys.issubset(old_keys):
         return False
+
+    if same_write_outcome_replacement:
+        return True
 
     # When the previous turn already produced a draft/structure, preserve it only for a compact,
     # multi-field refinement.  Explicitly asking for separate/new work always wins.
@@ -694,6 +721,7 @@ def _turn_start_patch(
         contract = build_continuation_contract(
             {**prior, "turn_continuation": True},
             existing=prior.get("continuation_contract"),
+            preserve_outcome_targets=_same_write_outcome_replacement(text, prior),
         )
         if typed_receipt:
             # The receipt boundary already projected and validated this contract exactly once.

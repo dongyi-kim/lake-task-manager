@@ -295,6 +295,120 @@ def test_existing_ticket_update_answer_cannot_be_reclassified_as_creation():
     assert got["continuation_contract"]["action"] == "update"
 
 
+def test_single_target_outcome_replacements_keep_the_typed_target_across_cancellations():
+    """CTX3: replacing effects does not erase the one verified mutation identity."""
+    root = "DL-9203의 priority와 due를 바꾸는 승인 전 초안을 보여줘"
+    first_task = _task(
+        "update", "DL-9203 priority와 due 변경", kind="write",
+    )
+    prior = {
+        "intent": Intent.MODIFY,
+        "request_text": root,
+        "request_plan": {
+            "goal": "DL-9203 필드 변경", "tasks": [first_task],
+            "blocking_questions": [], "assumptions": [],
+        },
+        "mentioned_keys": ["DL-9203"],
+        "continuation_contract": _contract(
+            root=root, intent=Intent.MODIFY, action="update",
+            targets=["DL-9203"], outcomes=["update"],
+        ),
+    }
+
+    comment_text = (
+        "방금 필드 변경은 취소. 대신 같은 티켓에 "
+        "'회의 결정사항을 공유합니다' 댓글만 다는 초안으로 바꿔줘."
+    )
+    comment_turn = _turn_start_patch(comment_text, prior)
+    assert comment_turn["turn_continuation"] is True
+    assert comment_turn["continuation_contract"]["target_keys"] == ["DL-9203"]
+    comment_patch = RequestArchitect().apply(
+        {**comment_turn, "messages": [HumanMessage(content=comment_text)]},
+        {
+            "intent": Intent.MODIFY, "keywords": ["회의 결정"],
+            "goal": "DL-9203 댓글 초안", "sufficient": True,
+            "request_questions": [], "requested_effects": [], "target_selectors": [],
+            "tasks": [_task("comment-draft", comment_text, kind="comment")],
+            "blocking_questions": [], "assumptions": [],
+        },
+    )
+    assert comment_patch["continuation_contract"]["action"] == "comment"
+    assert comment_patch["continuation_contract"]["target_keys"] == ["DL-9203"]
+
+    title_text = (
+        "그 댓글도 취소. 최종 요청은 제목만 "
+        "'[Catalog] Puffin NDV 결과 템플릿 정리'로 변경하는 거야. "
+        "다른 변경 없이 승인 전 초안만 보여줘."
+    )
+    title_turn = _turn_start_patch(title_text, {**prior, **comment_patch})
+    assert title_turn["turn_continuation"] is True
+    assert title_turn["continuation_contract"]["target_keys"] == ["DL-9203"]
+    title_patch = RequestArchitect().apply(
+        {**title_turn, "messages": [HumanMessage(content=title_text)]},
+        {
+            "intent": Intent.MODIFY, "keywords": ["Puffin NDV"],
+            "goal": "DL-9203 제목 변경", "sufficient": True,
+            "request_questions": [], "target_selectors": [],
+            "requested_effects": [{
+                "target": "DL-9203", "field": "summary",
+                "value": "[Catalog] Puffin NDV 결과 템플릿 정리",
+                "literal": "[Catalog] Puffin NDV 결과 템플릿 정리",
+            }],
+            "tasks": [_task("title-update", title_text, kind="write")],
+            "blocking_questions": [], "assumptions": [],
+        },
+    )
+    assert title_patch["continuation_contract"]["action"] == "update"
+    assert title_patch["continuation_contract"]["target_keys"] == ["DL-9203"]
+    # Corrections deliberately stay off the exact scalar fast path, but the semantic Work
+    # projection and final deterministic audit must retain the same typed target.
+    from app.agent.workflow.agents.auditor import final_authority_review
+    from app.agent.workflow.agents.work_architect import WorkArchitect
+    final_state = {
+        **title_turn, **title_patch, "messages": [HumanMessage(content=title_text)],
+    }
+    work = WorkArchitect().apply(final_state, {
+        "questions": [], "mode": "task", "items": [], "rationale": "최종 제목만 변경",
+        "change": {
+            "key": "DL-9203",
+            "summary": "[Catalog] Puffin NDV 결과 템플릿 정리",
+        },
+    })
+    review = final_authority_review({**final_state, **work}, require_effect=True)
+    assert work["change_plan"].get("changes") == {
+        "summary": "[Catalog] Puffin NDV 결과 템플릿 정리",
+    }, work
+    assert review["ok"] is True, review["errors"]
+
+
+def test_outcome_replacement_does_not_carry_multiple_or_new_targets():
+    root = "DL-9203과 DL-9204에 댓글을 남겨줘"
+    prior = {
+        "intent": Intent.MODIFY,
+        "request_text": root,
+        "request_plan": {
+            "goal": "두 티켓 댓글", "tasks": [
+                _task("comments", "DL-9203과 DL-9204 댓글", kind="comment"),
+            ],
+        },
+        "mentioned_keys": ["DL-9203", "DL-9204"],
+        "continuation_contract": _contract(
+            root=root, intent=Intent.MODIFY, action="comment",
+            targets=["DL-9203", "DL-9204"], outcomes=["comments"],
+        ),
+    }
+
+    ambiguous = _turn_start_patch("그 댓글은 취소하고 같은 티켓 제목만 바꿔줘", prior)
+    switched = _turn_start_patch(
+        "그 댓글은 취소하고 DL-9300 제목만 새 제목으로 바꿔줘", prior,
+    )
+
+    assert ambiguous["turn_continuation"] is False
+    assert ambiguous["continuation_contract"] == {}
+    assert switched["turn_continuation"] is False
+    assert switched["continuation_contract"] == {}
+
+
 def test_read_summary_interview_answer_preserves_the_original_read_contract():
     root = "Puffin 회의 결정과 담당·기한을 세 줄로 요약해줘"
     summary_task = _task(

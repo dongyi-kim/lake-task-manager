@@ -435,6 +435,9 @@ _OUTCOME_REMOVE_ACTION = r"(?:빼|제외|취소|삭제|없애|하지\s*마|안\s
 _OUTCOME_CHANGE_ACTION = r"(?:바꿔|수정|변경|교체)"
 _OUTCOME_ADD_COUNT = r"(?:하나|한\s*(?:건|개)|1\s*(?:건|개)?)"
 _OUTCOME_ADD_ACTION = r"(?:만들|생성|등록|작성|남겨|달아|산출|올려)"
+_SCALAR_UPDATE_LABEL = (
+    r"(?:제목|summary|우선순위|priority|마감(?:일)?|기한|due(?:\s*date)?)"
+)
 
 
 def _continuation_outcome_additions(text: str) -> list[str]:
@@ -494,6 +497,19 @@ def _continuation_outcome_directive(text: str) -> dict:
                 and _re.search(fr"(?:{label})(?:\s*(?:내용|대상|범위|결론|제목))?(?:은|는|을|를)?"
                                fr".{{0,40}}{_OUTCOME_CHANGE_ACTION}", value, _re.I)):
             change.add(effect)
+    # A scalar Jira-field replacement is still a ticket/update outcome even when the user
+    # refers to the previous comment only by cancellation ("그 댓글도 취소. 제목만 ...").
+    # This classifies the outcome family only; requested_effects/runtime grounding still owns
+    # the exact field, value, and current-message literal.
+    if _re.search(
+            fr"{_SCALAR_UPDATE_LABEL}(?:은|는|을|를)?\s*만?.{{0,120}}"
+            fr"{_OUTCOME_CHANGE_ACTION}", value, _re.I):
+        # AtomicTask's public wire kind ``write`` is intentionally generic and projects to
+        # the historical ``document`` outcome family, while some providers emit ``ticket``.
+        # Admit either family here; the exact requested_effect and Work/Auditor contracts
+        # still prove that the eventual payload is a Jira scalar update.
+        only.update({"ticket", "document"})
+        change.update({"ticket", "document"})
     return {"remove": remove, "only": only, "change": change, "add": add} \
         if remove or only or change or add else {}
 
@@ -1577,8 +1593,17 @@ Classify what the user wants from the conversation, construct an atomic task pla
         # Persist one validated envelope for the next Session turn.  The request DAG remains
         # in ``request_plan``; this sidecar carries only stable effect/target identity and
         # user-authored typed decisions.
+        replaces_outcome = bool(
+            state.get("turn_continuation")
+            and prior_write_plan
+            and outcome_directive
+            and outcomes_changed
+            and not additive_outcome
+        )
         patch["continuation_contract"] = build_continuation_contract(
             {**state, **patch}, existing=state.get("continuation_contract"),
+            preserve_outcome_targets=replaces_outcome,
+            replacement_root=asked if replaces_outcome else "",
         )
 
         direct_question = _single_required_request_question(
