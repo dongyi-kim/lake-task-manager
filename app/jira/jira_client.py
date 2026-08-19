@@ -3759,6 +3759,39 @@ class JiraClient:
         return {"count": {"task": 0, "subtask": 0, "voc": 0},
                 "hr": {"task": 0, "subtask": 0, "voc": 0}, "epics": {}}
 
+    def _wl_effective_epics(self, issues):
+        """워크로드 이슈별 실질 Epic.
+
+        Jira 의 SubTask 는 Epic Link 를 직접 갖지 않고 ``parent`` 만 가진다. 따라서 직접
+        Epic Link 가 없는 SubTask 는 상위 Task 의 Epic Link 를 상속한다. 부모는 한 번에
+        prefetch 해 prod SSO 의 직렬 왕복을 늘리지 않는다.
+        """
+        issues = list(issues or [])
+        enf = self.s.epic_link_field_id
+        out, parent_by_issue = {}, {}
+        for it in issues:
+            key = it.get("key")
+            if not key:
+                continue
+            f = it.get("fields", {}) or {}
+            direct = (f.get(enf) if enf else None) or None
+            out[key] = direct
+            itt = f.get("issuetype") or {}
+            parent_key = (f.get("parent") or {}).get("key")
+            if not direct and itt.get("subtask") and parent_key:
+                parent_by_issue[key] = parent_key
+
+        parent_keys = sorted(set(parent_by_issue.values()))
+        if parent_keys:
+            self.prefetch_issues(parent_keys, light=True)
+            parent_epics = {}
+            for parent_key in parent_keys:
+                pf = (self.get_issue_light(parent_key) or {}).get("fields") or {}
+                parent_epics[parent_key] = (pf.get(enf) if enf else None) or None
+            for key, parent_key in parent_by_issue.items():
+                out[key] = parent_epics.get(parent_key)
+        return out
+
     def _wl_counts(self, jql):
         # count(티켓수) · hr(소요시간, 표준 timespent 초→시). 카테고리 3분할: task/subtask/voc.
         # epics: **소속 Epic 별** 분포(막대 색구분 '소속 Epic' 모드용). 키=Epic키 / '__voc__' / '__none__'.
@@ -3767,8 +3800,9 @@ class JiraClient:
         #       → 실패는 그대로 올려보내고 workload_person 이 캐시 없이 error 로 처리한다.
         by = {"count": {"task": 0, "subtask": 0, "voc": 0},
               "hr": {"task": 0, "subtask": 0, "voc": 0}, "epics": {}}
-        enf = self.s.epic_link_field_id
-        for it in self._search(jql, max_results=300):   # write-through: 각 티켓 캐시
+        issues = self._search(jql, max_results=300)   # write-through: 각 티켓 캐시
+        effective_epics = self._wl_effective_epics(issues)
+        for it in issues:
             f = it.get("fields", {}) or {}
             comps = [c.get("name") for c in (f.get("components") or [])]
             comp = VOC_COMPONENT if VOC_COMPONENT in comps else (comps[0] if comps else "")
@@ -3780,7 +3814,7 @@ class JiraClient:
             by["count"][c] += 1
             by["hr"][c] += hr
             # Epic 분포 — 상세(epicDist)와 같은 그룹 규칙
-            ek = (f.get(enf) if enf else None) or None
+            ek = effective_epics.get(it.get("key"))
             gk = ek if ek else ("__voc__" if VOC_COMPONENT in comps else "__none__")
             g = by["epics"].setdefault(gk, {"count": 0, "hr": 0})
             g["count"] += 1
@@ -3831,7 +3865,7 @@ class JiraClient:
         return {module: [by_pid[pid] for pid in people.get(module, []) if pid in by_pid]
                 for module in modules}
 
-    def _wl_ticket(self, it):
+    def _wl_ticket(self, it, epic=None):
         """워크로드 상세용 티켓 투영: 번호·제목·타입·상태·마감·완료일시."""
         f = it.get("fields", {}) or {}
         st = f.get("status") or {}
@@ -3852,7 +3886,7 @@ class JiraClient:
             "priRank": _pri_rank((f.get("priority") or {}).get("name")),
             # Epic 분포용. epic 이 있으면 그 Epic 소속이고(= VoC 라도 Epic 이 있으면 그쪽으로 센다),
             # 없고 VoC 컴포넌트면 '사용자 VoC' 를 전용 Epic 처럼 따로 센다.
-            "epic": f.get(self.s.epic_link_field_id) or None,
+            "epic": epic or f.get(self.s.epic_link_field_id) or None,
             "voc": self.s.voc_component in comps,
             "components": comps,
         }
@@ -3902,7 +3936,9 @@ class JiraClient:
             return None
         def do():
             raws = self._search(jql.format(u=user), max_results=200)
-            out = [self._wl_ticket(it) for it in raws if self._wl_keep(it)]
+            effective_epics = self._wl_effective_epics(raws)
+            out = [self._wl_ticket(it, effective_epics.get(it.get("key")))
+                   for it in raws if self._wl_keep(it)]
             self._attach_epic_names(out)
             return out
         suffix = f":{d}" if bucket == "done7d" else ""

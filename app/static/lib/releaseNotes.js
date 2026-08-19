@@ -10,7 +10,7 @@
 //
 // 묶을 게 하나뿐인 날이어도 소제목을 붙인다(형식이 날마다 달라지면 그게 더 눈에 걸린다).
 export const RELEASES = [
-  { version: "v2026.08.19", title: "AI 연결·답변 안정성과 Task 보기 개선", groups: [
+  { version: "v2026.08.19", title: "AI 연결·답변 안정성과 Task·워크로드 개선", groups: [
     { h: "AI 연결", items: [
       "로컬 AI와 OpenAI 호환 서버 등 사용 환경에 맞춰 채팅·검색 모델 연결을 나누어 설정할 수 있습니다",
     ] },
@@ -21,6 +21,9 @@ export const RELEASES = [
     ] },
     { h: "Task", items: [
       "Task와 Sub-Task를 그룹화할 때 모든 하위 작업이 같은 상태면 해당 상태 한 칸 폭으로 줄이고, 부모는 단독 Task와 같은 카드로 표시해 중복 진척 막대를 없앴습니다",
+    ] },
+    { h: "인력 워크로드", items: [
+      "SubTask가 상위 Task의 Epic에 포함되지 않아 Epic별 현황과 모니터링 수치에서 빠지던 문제를 수정했습니다",
     ] },
   ] },
   { version: "v2026.08.17", title: "로컬 AI 연결과 모델별 실행 설정", groups: [
