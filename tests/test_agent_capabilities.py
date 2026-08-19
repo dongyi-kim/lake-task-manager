@@ -1560,7 +1560,16 @@ def test_tool_fallback_preserves_json_schema_dict_tools(monkeypatch):
     })
 
     assert message.tool_calls[0]["args"] == {"mode": "exact"}
-    assert '"enum": ["exact"]' in captured["prompt"]
+    wire = captured["prompt"].split("Registered tools:\n", 1)[1]
+    catalog = json.loads(wire)
+    assert catalog == [{
+        "name": "schema_dict_tool",
+        "description": "Use the exact remote schema.",
+        "input_schema": schema,
+    }]
+    assert wire == json.dumps(
+        catalog, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+    )
 
 
 def test_tool_agent_delegates_parallel_calls_to_langgraph_tool_node():

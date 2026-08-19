@@ -136,6 +136,14 @@ Research tool-decision call. Its existing final target-authority failure also re
 The table measures only the matched `structured_repair` opportunity; the full regression suite
 after the change was 3,182 passed and 2 skipped.
 
+The prompt-only tool fallback also repeated the same nine-tool Research catalog with JSON
+whitespace on every decision. The catalog now uses the same fail-closed compact JSON transport as
+schema prompts: parsed value, property order, descriptions, input schemas, and validation remain
+identical. The catalog itself changed from 11,138 to 10,815 characters and from 2,597 to 2,303
+o200k tokens. In the same CTX4 fixture, the first provider-counted Research decision prompt changed
+from 9,236 tokens in r42 to 8,913 in r43 (`-323`, `-3.5%`). Later decision count and latency are not
+used as an A/B because tool selection and generation length varied between runs.
+
 ## Recommended next work
 
 1. Fix producer identity, not downstream title matching: unique server-owned `item_id` and exact

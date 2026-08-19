@@ -43,15 +43,20 @@ STRUCTURED_END_TOKEN = "<END_JSON>"
 SEMANTIC_MEMO_END_TOKEN = "<END_SEMANTIC_MEMO>"
 
 
-def _compact_schema_text(schema: dict) -> str:
-    """Serialize one JSON Schema without changing its JSON value or property order.
+def _compact_json_text(value) -> str:
+    """Serialize prompt-only JSON without changing its value or property order.
 
     ``allow_nan=False`` keeps this transport fail-closed: a non-JSON value must not be
-    silently normalized into a different schema merely to produce a shorter prompt.
+    silently normalized merely to produce a shorter prompt.
     """
     return json.dumps(
-        schema, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+        value, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
     )
+
+
+def _compact_schema_text(schema: dict) -> str:
+    """Serialize one JSON Schema through the common semantic-equivalent transport."""
+    return _compact_json_text(schema)
 
 
 def _call_config(role_id: str, output_contract: str, execution_layer: str = "",
@@ -985,7 +990,7 @@ class ToolAgent(Agent):
             "using JSON shaped as {\"tool_calls\":[{\"name\":str,\"args\":object}],\"answer\":str}. "
             "When more retrieval is needed, return tool_calls. When evidence is sufficient, return an empty "
             "array and answer. Never invent an unregistered name.\n\nRegistered tools:\n"
-            + json.dumps(catalog, ensure_ascii=False)))
+            + _compact_json_text(catalog)))
         decision_schema = {
             "type": "object", "additionalProperties": False,
             "properties": {
