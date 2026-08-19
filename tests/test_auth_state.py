@@ -19,6 +19,12 @@ needs_login 이 True 를 유지한다(시간으로 풀리지 않는다).
 """
 import os
 import sys
+import itertools
+import queue
+import threading
+import time
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.infra.cache import Cache                    # noqa: E402
@@ -149,3 +155,108 @@ def test_keepalive_is_prod_only():
     c._renew_service = lambda name: called.append(name)
     c.keepalive_auth()
     assert called == []
+
+
+def test_myself_auth_failure_marks_session_dead_without_health_probe():
+    """health를 로컬 전용으로 바꿔도 부팅 warm_session이 만료 세션을 상태에 기록한다."""
+    from app.auth.base import SessionExpired
+
+    c = _prod_client()
+
+    class _Expired:
+        def get_json(self, path, params=None, quiet=False):
+            raise SessionExpired("HTTP 401 on /rest/api/2/myself")
+
+    c._provider, c._provider_built = _Expired(), True
+    assert c.current_user() == {}
+    assert c.needs_login() is True
+
+
+def test_health_never_calls_jira(monkeypatch):
+    """프로세스 health가 상류를 타면 Jira 장애가 곧 localhost 앱 장애가 된다."""
+    from fastapi.testclient import TestClient
+    import app.main as m
+
+    monkeypatch.setattr(m._client, "needs_login", lambda: False)
+    monkeypatch.setattr(m._client, "upstream_state", lambda: {
+        "down": True, "reason": "timeout", "hasCache": True, "lastSyncAt": None,
+        "servedStaleAt": None,
+    })
+    monkeypatch.setattr(
+        m, "_session_user",
+        lambda: (_ for _ in ()).throw(AssertionError("health must not call /myself")),
+    )
+    body = TestClient(m.app).get("/api/health").json()
+    assert body["status"] == "ok" and body["needLogin"] is False
+
+
+def test_status_distinguishes_transport_stall_from_login(monkeypatch):
+    """망은 연결됐지만 provider가 멎은 상태를 인증 만료로 오인하지 않는다."""
+    from fastapi.testclient import TestClient
+    import app.main as m
+
+    monkeypatch.setattr(m._client, "session_recheck_async", lambda: None)
+    monkeypatch.setattr(m._client, "needs_login", lambda: False)
+    monkeypatch.setattr(m._client, "upstream_state", lambda: {
+        "down": True, "reason": "provider timeout", "hasCache": True,
+        "lastSyncAt": 123.0, "servedStaleAt": 124.0,
+    })
+    monkeypatch.setattr(m, "_probe_online", lambda timeout=1.2: True)
+    body = TestClient(m.app).get("/api/status").json()
+    assert body["mode"] == "degraded"
+    assert body["needLogin"] is False
+
+
+def test_sso_queue_timeout_breaks_provider_and_future_calls_fail_fast():
+    """Playwright worker 한 번이 굳어도 큐의 모든 후속 요청이 180초씩 기다리면 안 된다."""
+    from app.auth.base import UpstreamUnavailable
+    from app.auth.sso_session import SsoSessionProvider
+
+    p = object.__new__(SsoSessionProvider)
+    p._jobs = queue.PriorityQueue()
+    p._seq = itertools.count()
+    p._broken = threading.Event()
+    p._closed = threading.Event()
+    p._broken_reason = ""
+
+    class _AliveThread:
+        @staticmethod
+        def is_alive():
+            return True
+
+    p._thread = _AliveThread()
+    started = time.monotonic()
+    with pytest.raises(UpstreamUnavailable, match="계속 실행"):
+        p._submit(lambda: None, wait=0.01)
+    assert p.broken is True
+    with pytest.raises(UpstreamUnavailable):
+        p._submit(lambda: None, wait=10)
+    assert time.monotonic() - started < 0.5
+
+
+def test_broken_provider_rebuild_waits_for_circuit_breaker():
+    """장애 직후 Chromium을 연타 생성하지 않고, 차단 시간이 지난 첫 요청만 재생성한다."""
+    from app.auth.base import UpstreamUnavailable
+
+    c = _prod_client()
+    closed = []
+
+    class _Broken:
+        broken = True
+
+        @staticmethod
+        def close():
+            closed.append(True)
+
+    replacement = object()
+    built = []
+    c._provider, c._provider_built = _Broken(), True
+    c._make_provider = lambda: built.append(True) or replacement
+    c.mark_upstream_down("timeout")
+    with pytest.raises(UpstreamUnavailable, match="timeout"):
+        _ = c.provider
+    assert built == [] and closed == []
+
+    c._upstream_down_until = 0
+    assert c.provider is replacement
+    assert built == [True] and closed == [True]

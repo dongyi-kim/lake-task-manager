@@ -30,6 +30,8 @@ function fmtBytes(n) {
 }
 
 const FOLD_AT = 5;
+const TIMELINE_POLL_MS = 800;
+const TIMELINE_WAIT_MS = 15 * 1000;
 
 // 하위 Task 정렬 기준 — '내 Task' 와 같은 축(마감·우선순위) + 사람별 보기.
 const KID_SORTS = [
@@ -130,9 +132,9 @@ export default {
                     // 상태 전이 팝업
                     stOpen: false, stInfo: null, stErr: "", stPick: null,
                     err: "", expanded: false, zoom: null, zoomLoading: false,
-                    // 첫 로딩 동안 참 — 좌/우 부가정보 패널을 (데이터 오기 전에도) 스켈레톤으로 띄워
-                    // 레이아웃을 통째로 먼저 그리기 위한 플래그. 형제·타임라인까지 오면 꺼진다.
-                    loading: true,
+                    // 좌측 계보와 우측 타임라인은 서로 다른 요청이다. 하나가 멈춰도 이미 받은 다른
+                    // 패널과 본문을 계속 조작할 수 있도록 로딩·오류 상태를 절대 공유하지 않는다.
+                    spineLoading: true, timelineLoading: true, timelineErr: "",
                     refreshing: false,               // 좌하단 강제 새로고침 진행 표시
                     sumEdit: false, sumDraft: "", sumBusy: false, sumErr: "",   // 제목(summary) 인라인 수정
                     // 좌/우 부가정보 패널 — 폭 조절·접기(저장). 넓은 화면(사이드바 모드)에서만 의미.
@@ -191,6 +193,7 @@ export default {
     loadTiptap().catch(() => { /* CDN 차단 등 — 실제 사용 시 에러 표시 */ });
   },
   unmounted() {
+    this._req = (this._req || 0) + 1;        // pending timeline poll 등 늦은 응답 무효화
     window.removeEventListener("keydown", this._onKey);
     window.removeEventListener("resize", this._onResize);
     window.removeEventListener("ticket-changed", this._onExtChanged);
@@ -490,6 +493,31 @@ export default {
         .then((r) => { this.stInfo = r || {}; })
         .catch((e) => { this.stErr = (e && e.message) || "불러오지 못했습니다."; this.stInfo = {}; });
     },
+    /** 타임라인은 **보조 패널 하나만** 기다린다. 서버가 cold changelog를 저우선순위로 만드는 동안
+     *  202 pending을 짧게 poll하고, 상한을 넘으면 이 패널에만 재시도 UI를 남긴다. */
+    async loadTimeline(key = this.keyId, requestId = this._req) {
+      const fresh = () => requestId === this._req && this.keyId === key;
+      if (!fresh()) return;
+      this.timelineLoading = true; this.timelineErr = "";
+      const until = Date.now() + TIMELINE_WAIT_MS;
+      try {
+        while (fresh()) {
+          const result = await api.ticketTimeline(key);
+          if (Array.isArray(result)) {
+            if (fresh()) this.timeline = result;
+            return;
+          }
+          if (!result || !result.pending) throw new Error("타임라인 응답을 확인할 수 없습니다.");
+          if (Date.now() >= until) throw new Error("타임라인 응답이 지연되고 있습니다.");
+          await new Promise((resolve) => setTimeout(resolve, TIMELINE_POLL_MS));
+        }
+      } catch (e) {
+        if (fresh()) this.timelineErr = (e && e.message) || "타임라인을 불러오지 못했습니다.";
+      } finally {
+        if (fresh()) this.timelineLoading = false;
+      }
+    },
+    retryTimeline() { this.loadTimeline(this.keyId, this._req); },
     hardRefresh() {
       // 좌하단 강제 새로고침 — 서버측 파생 캐시(children/siblings/… SWR 옛 결과)까지 비운 **뒤**
       // 다시 받는다. 순서가 중요: 먼저 서버 캐시를 털고 나서 load 해야 최신이 잡힌다.
@@ -509,7 +537,7 @@ export default {
       const fresh = () => my === this._req && this.keyId === key;
       this.err = "";
       if (!quiet) {
-        this.loading = true;      // 좌/우 패널을 스켈레톤으로 먼저 띄운다(형제·타임라인 오면 끔)
+        this.spineLoading = true; this.timelineLoading = true; this.timelineErr = "";
         this.v = null; this.comments = null;
         this.ancestors = []; this.siblings = []; this.timeline = [];
         this.children = []; this.related = []; this.atts = []; this.docs = [];
@@ -548,17 +576,21 @@ export default {
       //   parallel)만 미세 손해지만 dev·localhost 라 무시 가능.
       await vp;                                          // 1순위: 티켓정보·설명·일정
       if (!fresh()) return;
-      // 2순위: 계보(조상) · 댓글(설명 바로 아래, 먼저 읽는다)
-      await Promise.all([
+      // 2순위: **조작 가능 상태**부터. editmeta가 와야 이미 보이는 제목·필드가 클릭 가능하다.
+      // 타임라인을 이보다 먼저 큐에 넣으면 changelog 지연 하나 때문에 완성된 본문까지 읽기 전용처럼
+      // 굳는다. 계보·댓글도 같은 묶음에서 각자 도착 즉시 그리되, 요청 순서는 editmeta가 먼저다.
+      await Promise.allSettled([
+        api.editmeta(key).then((m) => { if (fresh()) this.emeta = m || {}; })
+          .catch(() => { if (fresh()) this.emeta = {}; }),
+        api.childTypes(key).then((t) => { if (fresh()) this.kidTypes = t || []; }).catch(() => {}),
         api.ticketAncestors(key).then((a) => { if (fresh()) this.ancestors = a || []; }).catch(() => {}),
         api.ticketComments(key).then((c) => { if (fresh()) this.comments = c; }).catch(() => { if (fresh()) this.comments = []; }),
       ]);
       if (!fresh()) return;
-      // 3순위: 형제·타임라인·첨부·관련문서·하위·관련티켓·지원(편집메타·하위타입) — 서로 동급이라 함께.
-      // 형제·타임라인은 좌/우 패널 스켈레톤을 걷는 기준이라 둘이 끝나면 loading 을 끈다.
-      const _sib = api.ticketSiblings(key).then((s) => { if (fresh()) this.siblings = s || []; }).catch(() => {});
-      const _tl = api.ticketTimeline(key).then((t) => { if (fresh()) this.timeline = t || []; }).catch(() => {});
-      Promise.allSettled([_sib, _tl]).then(() => { if (fresh()) this.loading = false; });
+      // 3순위: 나머지 섹션을 병렬로 채운다. 타임라인은 이 요청들을 **모두 먼저 출발시킨 뒤**
+      // 별도 저우선순위 job으로 시작한다. 그래서 어느 한 섹션이 늦어도 다른 섹션 클릭은 살아 있다.
+      api.ticketSiblings(key).then((s) => { if (fresh()) this.siblings = s || []; }).catch(() => {})
+        .finally(() => { if (fresh()) this.spineLoading = false; });
       api.ticketAttachments(key).then((a) => {
         if (!fresh()) return;
         this.atts = a || []; this.attOpen = this.atts.length <= FOLD_AT;
@@ -569,8 +601,7 @@ export default {
       }).catch(() => {});
       api.ticketChildren(key).then((c) => { if (fresh()) this.children = c || []; }).catch(() => {});
       api.ticketRelated(key).then((r) => { if (fresh()) this.related = r || []; }).catch(() => {});
-      api.editmeta(key).then((m) => { if (fresh()) this.emeta = m || {}; }).catch(() => { if (fresh()) this.emeta = {}; });
-      api.childTypes(key).then((t) => { if (fresh()) this.kidTypes = t || []; }).catch(() => {});
+      this.loadTimeline(key, my);
 
       // 유휴 시 이 티켓의 편집 팝업(담당/보고 기본·상태 전이)·전역 기본목록을 미리 데운다(로그인 상태).
       if (fresh()) { api.warmTicket(key); api.warmGlobals(); }
@@ -1127,19 +1158,19 @@ export default {
         <div class="tkt-cols" :class="{ 'spine-hidden': spineHidden, 'tl-hidden': tlHidden }"
              :style="{ '--spine-w': spineW + 'px', '--tl-w': tlW + 'px' }">
           <!-- 접힌 상태에서 다시 펴는 손잡이(얇은 레일) -->
-          <button v-if="spineHidden && (loading || hasSpine)" class="spine-show stub" title="계보·형제 패널 펼치기"
+          <button v-if="spineHidden && (spineLoading || hasSpine)" class="spine-show stub" title="계보·형제 패널 펼치기"
                   @click="setSpineHidden(false)">
             <span class="st-ic">›</span>
             <span class="st-label">계보 · 형제</span>
             <span class="st-dots" aria-hidden="true"><i></i><i></i><i></i></span>
           </button>
           <!-- 좌측 세로 스파인 — 계보(조상→현재, 레일+진척) + 형제 목록. 클릭 시 해당 티켓으로 이동 -->
-          <!-- loading 동안엔(데이터 전) 스켈레톤으로 미리 그려 레이아웃을 통째로 띄운다. -->
-          <aside v-if="(loading || hasSpine) && !spineHidden" class="tkt-spine">
+          <!-- 이 패널 데이터가 오기 전만 스켈레톤으로 미리 그린다. 타임라인 로딩과는 무관하다. -->
+          <aside v-if="(spineLoading || hasSpine) && !spineHidden" class="tkt-spine">
             <button class="spine-hide" title="부가정보 패널 접기" @click="setSpineHidden(true)">‹</button>
             <!-- 오른쪽 가장자리를 끌어 폭 조절. 넓은 화면에서만 보인다(좁으면 grid 라 무의미). -->
             <div class="spine-grip" title="너비 조절 — 드래그" @mousedown.prevent="startSpineDrag"></div>
-            <div v-if="loading && !hasSpine" class="sk-box spn-sk">
+            <div v-if="spineLoading && !hasSpine" class="sk-box spn-sk">
               <span class="sk-ln" v-for="w in [72,88,58,80,64]" :key="'sksp'+w" :style="{ width: w + '%' }"></span>
             </div>
             <!-- 조상이 없으면(Epic 등) 자기 자신만 남으므로 계보 블록 자체를 생략 -->
@@ -1587,14 +1618,14 @@ export default {
           </div><!-- /.tkt-main -->
 
           <!-- 접힌 상태에서 다시 펴는 손잡이(우측 가장자리) -->
-          <button v-if="tlHidden && (loading || hasTl)" class="tl-show stub" title="일정·타임라인 패널 펼치기"
+          <button v-if="tlHidden && (timelineLoading || hasTl || timelineErr)" class="tl-show stub" title="일정·타임라인 패널 펼치기"
                   @click="setTlHidden(false)">
             <span class="st-ic">‹</span>
             <span class="st-label">일정 · 타임라인</span>
             <span class="st-dots" aria-hidden="true"><i></i><i></i><i></i></span>
           </button>
-          <!-- 우측: 일정 + 타임라인 (폭 조절·접기 — 좌측 스파인과 대칭). loading 동안 스켈레톤으로 먼저. -->
-          <aside v-if="(loading || hasTl) && !tlHidden" class="tkt-tl">
+          <!-- 우측: 일정은 본문(v), 타임라인은 자기 로딩 상태로 각각 렌더한다. -->
+          <aside v-if="(timelineLoading || hasTl || timelineErr) && !tlHidden" class="tkt-tl">
             <button class="tl-hide" title="일정·타임라인 패널 접기" @click="setTlHidden(true)">›</button>
             <!-- 왼쪽 가장자리를 끌어 폭 조절 -->
             <div class="tl-grip" title="너비 조절 — 드래그" @mousedown.prevent="startTlDrag"></div>
@@ -1611,7 +1642,7 @@ export default {
               </div>
               </div>
             </template>
-            <div v-else-if="loading" class="grp grp-who"><div class="sec sec-dates">
+            <div v-else-if="timelineLoading" class="grp grp-who"><div class="sec sec-dates">
               <div class="tkt-mlabel sf-gap">일정</div>
               <div class="sk-box"><span class="sk-ln" v-for="w in [60,55,66,50,58]" :key="'skdt'+w" :style="{ width: w + '%' }"></span></div>
             </div></div>
@@ -1638,9 +1669,14 @@ export default {
                 </span>
               </div>
             </div>
-            <div v-else-if="loading" class="sec sec-history">
+            <div v-else-if="timelineLoading" class="sec sec-history">
               <div class="tkt-mlabel sf-gap">타임라인</div>
               <div class="sk-box"><span class="sk-ln" v-for="w in [85,70,92,64]" :key="'sktl'+w" :style="{ width: w + '%' }"></span></div>
+            </div>
+            <div v-else-if="timelineErr" class="sec sec-history tl-error">
+              <div class="tkt-mlabel sf-gap">타임라인</div>
+              <p>{{ timelineErr }}</p>
+              <button type="button" @click="retryTimeline">다시 시도</button>
             </div>
           </aside>
         </div><!-- /.tkt-cols -->

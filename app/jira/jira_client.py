@@ -16,7 +16,8 @@ from html import escape, unescape
 from urllib.parse import quote, unquote, urlparse
 
 from app.domain import progress
-from app.auth.base import SessionExpired, background_upstream, write_upstream
+from app.auth.base import (SessionExpired, UpstreamUnavailable,
+                           background_upstream, write_upstream)
 from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
                        flatten_task_lists, proxy_attachment_images, proxy_attachment_links,
                        proxy_images, sanitize_html, unproxy_media,
@@ -495,6 +496,22 @@ class JiraClient:
 
     @property
     def provider(self):
+        # timeout 난 Playwright worker 는 Python 에서 안전하게 강제 종료할 수 없다. 그 provider 에
+        # 계속 요청을 넣으면 모든 FastAPI worker 가 같은 죽은 큐에 매달린다. 회로차단기 동안은
+        # 즉시 실패하고, 시간이 지난 첫 요청이 새 provider 로 갈아끼운다.
+        if self._provider_built and getattr(self._provider, "broken", False):
+            if self.upstream_down():
+                raise UpstreamUnavailable(
+                    getattr(self, "_upstream_reason", "") or "Jira 연결 복구 대기 중")
+            with self._provider_lock:
+                if self._provider_built and getattr(self._provider, "broken", False):
+                    old = self._provider
+                    self._provider = None
+                    self._provider_built = False
+                    try:
+                        old.close()
+                    except Exception:
+                        pass
         if not self._provider_built:
             with self._provider_lock:
                 if not self._provider_built:          # 락 안에서 재확인(더블체크)
@@ -2754,12 +2771,14 @@ class JiraClient:
         self._session_dead = False
 
     def session_recheck_async(self):
-        """죽은 것으로 표시된 세션이 되살아났는지 **뒤에서** 한 번씩 확인한다.
+        """죽은 세션이나 격리된 transport가 되살아났는지 **뒤에서** 한 번씩 확인한다.
 
         누가 어떤 경로로 로그인했든(앱 창·런처가 띄운 창·다른 인스턴스) 화면이 스스로
         살아나야 한다. /api/status 는 즉답해야 하므로 여기서 기다리지 않고 스레드로 돌린다
-        (prod 의 실패 판정은 최대 수십 초가 걸린다)."""
-        if self.env != "prod" or not getattr(self, "_session_dead", False):
+        (prod 의 실패 판정은 최대 수십 초가 걸린다). transport 차단도 이 경로로 재확인해야
+        상단 상태 polling만 남은 상황에서 자동으로 새 provider가 만들어진다."""
+        needs_recheck = getattr(self, "_session_dead", False) or self.upstream_down()
+        if self.env != "prod" or not needs_recheck:
             return
         now = time.time()
         if now < getattr(self, "_session_recheck_at", 0) or getattr(self, "_session_rechecking", False):
@@ -2807,6 +2826,14 @@ class JiraClient:
                     "display": u.get("displayName") or u.get("name") or ""}
         try:
             return self.cache.get_or_set(f"myself:{self.env}", self.USER_TTL, do)[0]
+        except UpstreamUnavailable as exc:
+            self.mark_upstream_down(str(exc))
+            return {}
+        except SessionExpired as exc:
+            # 이 호출 자체가 /myself 이므로 여기서의 401/403은 세션 판정의 근거다. 부팅
+            # warm_session도 이 경로를 타므로 health가 상류를 기다리지 않아도 곧 상태가 갱신된다.
+            self.mark_session_dead(str(exc))
+            return {}
         except Exception:
             return {}
 
@@ -3188,10 +3215,15 @@ class JiraClient:
             return out
         return self.cache.get_or_set(f"statuscats:{self.env}", self.STATUS_CATS_TTL, do)[0]
 
-    def ticket_timeline(self, key, limit=40):
+    def ticket_timeline(self, key, limit=40, defer=False):
         """티켓 이력 — [{kind,date,author,authorId,field,from,to,srcKey}] 최신순.
-        본인 이벤트(생성/중요 필드 변경/댓글) + **직계 자손의 상태 변경**(srcKey 로 출처 표시)."""
-        cats = self._status_cats()
+        본인 이벤트(생성/중요 필드 변경/댓글) + **직계 자손의 상태 변경**(srcKey 로 출처 표시).
+
+        ``defer`` 는 다이얼로그 첫 표시용이다. 캐시가 없을 때 Jira changelog 를 HTTP 요청
+        스레드에서 기다리지 않고 저우선순위 SWR worker 로 넘겨, 본문·편집 요청을 막지 않는다.
+        준비 전이면 None, 신선하거나 stale 캐시가 있으면 즉시 목록을 돌려준다.
+        """
+        cats = None
 
         def ev_of(h, allow, src=None):
             who = h.get("author") or {}
@@ -3214,12 +3246,14 @@ class JiraClient:
                       "from": frm, "to": to,
                       "srcKey": src}
                 if low == "status":                      # 뱃지 색용 카테고리(없으면 중립)
-                    ev["fromCat"] = cats.get((frm or "").lower())
-                    ev["toCat"] = cats.get((to or "").lower())
+                    ev["fromCat"] = (cats or {}).get((frm or "").lower())
+                    ev["toCat"] = (cats or {}).get((to or "").lower())
                 out.append(ev)
             return out
 
         def build():
+            nonlocal cats
+            cats = self._status_cats()
             ev = []
             own = self._changelog(key)
             rep = own.get("reporter") or {}
@@ -3242,7 +3276,15 @@ class JiraClient:
                     ev.extend(ev_of(h, {"status"}, src=ck))
             ev.sort(key=lambda e: e.get("date") or "", reverse=True)   # 최신순
             return ev[:limit]
-        return self._swr(f"timeline:{self.env}:{key}", build)
+        cache_key = f"timeline:{self.env}:{key}"
+        if defer:
+            hit = self.cache.get(cache_key)
+            if hit is not None:
+                return hit
+            stale = self.cache.get_stale(cache_key)
+            self._refresh_bg(cache_key, self.s.cache_ttl_seconds, build)
+            return stale
+        return self._swr(cache_key, build)
 
     def ticket_children(self, key):
         """직계 하위 티켓(Epic→Epic Link 자식 / 그 외→Sub-Task) — ticket_badge 형태.
@@ -4057,5 +4099,11 @@ class JiraClient:
             return []
 
     def close(self):
-        if self.provider:
-            self.provider.close()
+        # 종료는 새 provider 를 만들 이유가 없다. 특히 회로차단기 중 ``self.provider`` 접근은
+        # 즉시 UpstreamUnavailable 을 내므로, 이미 만든 인스턴스만 best-effort 로 퇴역시킨다.
+        provider = self._provider if self._provider_built else None
+        if provider:
+            try:
+                provider.close()
+            except Exception:
+                pass

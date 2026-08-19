@@ -6,6 +6,7 @@
 //
 //   offline        망이 안 닿는다. 사용자가 할 수 있는 건 기다리는 것뿐.
 //   authenticating 망은 닿는데 세션이 없다. 로그인이 진행 중이다.
+//   degraded       망은 닿지만 Jira/SSO transport 응답이 늦다. 앱 자체는 정상이다.
 // 둘을 같은 말로 뭉뚱그리면 무엇을 기다려야 하는지 알 수 없다.
 import { api } from "../../lib/api.js";
 
@@ -15,12 +16,14 @@ export default {
   name: "StatusBanner",
   data() { return { mode: "ok", lastSyncAt: null, hidden: false }; },
   computed: {
-    show() { return !this.hidden && (this.mode === "offline" || this.mode === "authenticating"); },
-    label() { return this.mode === "offline" ? "오프라인" : "인증 중"; },
+    show() { return !this.hidden && ["offline", "authenticating", "degraded"].includes(this.mode); },
+    label() { return this.mode === "offline" ? "오프라인" : (this.mode === "degraded" ? "Jira 응답 지연" : "인증 중"); },
     detail() {
       return this.mode === "offline"
         ? "사내망에 연결되지 않았습니다. 연결되면 자동으로 최신 데이터를 받아옵니다."
-        : "SSO 로그인을 진행하고 있습니다. 완료되면 자동으로 최신 데이터를 받아옵니다.";
+        : (this.mode === "degraded"
+          ? "앱은 정상 실행 중입니다. 저장된 데이터를 계속 볼 수 있고 잠시 후 자동 재시도합니다."
+          : "SSO 로그인을 진행하고 있습니다. 완료되면 자동으로 최신 데이터를 받아옵니다.");
     },
     since() {
       if (!this.lastSyncAt) return "저장된 이전 데이터";

@@ -56,6 +56,11 @@ export default {
                     "VPN·사내망 연결을 확인해 주세요. 연결되면 자동으로 최신 데이터를 받아옵니다.");
         return false;
       }
+      if (st.mode === "degraded") {
+        this._toast("error", "Jira 응답이 지연되고 있습니다",
+                    "앱은 정상 실행 중입니다. 잠시 후 다시 누르면 자동으로 새 연결을 시도합니다.");
+        return false;
+      }
       if (!st.needLogin) return true;                        // 정상 — 바로 받는다
 
       this.phase = "auth";

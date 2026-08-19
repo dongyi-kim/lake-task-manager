@@ -157,6 +157,45 @@ def test_timeline_cached():
     assert c.cache.get(f"timeline:{c.env}:{key}") is not None
 
 
+def test_subtaskless_timeline_can_defer_cold_changelog_without_blocking(monkeypatch):
+    """SubTask가 없어도 본인 changelog가 멈출 수 있으므로 cold 타임라인은 background로 넘긴다."""
+    c = _client()
+    key = next(k for k, it in get_world().issues.items() if not it.get("subtasks"))
+    scheduled = []
+
+    def schedule(cache_key, ttl, producer):
+        scheduled.append((cache_key, ttl, producer))
+
+    status_calls = []
+    monkeypatch.setattr(c, "_status_cats", lambda: status_calls.append(True) or {})
+    monkeypatch.setattr(c, "_refresh_bg", schedule)
+    assert c.ticket_timeline(key, defer=True) is None
+    assert status_calls == []                 # 202를 돌려주기 전에 Jira status 조회도 하지 않는다
+    assert len(scheduled) == 1
+    assert scheduled[0][0] == f"timeline:{c.env}:{key}"
+    assert callable(scheduled[0][2])
+
+
+def test_timeline_route_marks_deferred_work_as_background(monkeypatch):
+    """다이얼로그용 202 응답은 즉시 반환되고 모든 Jira 후속조회는 background priority다."""
+    from fastapi.testclient import TestClient
+    from app import main
+    from app.auth.base import PRIO_BACKGROUND, upstream_priority
+
+    seen = []
+
+    class Client:
+        def ticket_timeline(self, key, defer=False):
+            seen.append((key, defer, upstream_priority()))
+            return None
+
+    monkeypatch.setattr(main, "_client", Client())
+    response = TestClient(main.app).get("/api/ticket/DL-1/timeline?deferred=1")
+    assert response.status_code == 202
+    assert response.json() == {"pending": True}
+    assert seen == [("DL-1", True, PRIO_BACKGROUND)]
+
+
 def test_timeline_includes_child_status_changes():
     """자손(하위 티켓)의 상태 변경도 srcKey 로 출처를 달고 합류한다."""
     c = _client()
