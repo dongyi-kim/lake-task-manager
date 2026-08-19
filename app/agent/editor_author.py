@@ -534,11 +534,16 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
                     "references": references, "usage": llm_usage}
         wrong_titles = list((bad.get("wrong_titles") or {}))
         if wrong_titles:
+            title_diagnostics = [{
+                "stage": "grounding", "code": "wrong_ticket_title", "key": str(key),
+            } for key in wrong_titles[:5]]
             return {"ok": False, "contentConflict": True,
                     "error": ("AI 생성문에 canonical 제목과 다른 ticket 표기가 남아 있어 "
                               "삽입하지 않았습니다: "
                               + ", ".join(str(x) for x in wrong_titles[:5])),
-                    "references": references, "usage": llm_usage}
+                    "references": references,
+                    "renderDiagnostics": title_diagnostics,
+                    "usage": llm_usage}
     except Exception:
         pass
     # UI가 ticket/person/document를 다시 regex 추측하지 않도록 canonical reference bundle을
@@ -825,7 +830,15 @@ def _drop_unverified_editor_ticket_claims(rendered: str, source: str) -> str:
 
 
 def _normalize_editor_ticket_titles(rendered: str, references: list[dict]) -> str:
-    """Replace quoted shorthand after a ticket badge with the resolver's canonical title."""
+    """Bind title-like prose after a ticket badge to the resolver's canonical title.
+
+    Local models sometimes render a resolved related ticket as ``KEY: short explanation``
+    or ``KEY (short explanation)``.  The grounding guard correctly treats those immediate
+    delimiters as a title assertion, but the explanation is often a status/reason rather
+    than the canonical Jira title.  Prefix the exact resolved title while preserving that
+    explanation as ordinary prose.  This keeps the strict wrong-title guard intact instead
+    of relaxing it for editor output.
+    """
     out = str(rendered or "")
     for ref in references or []:
         if ref.get("kind") != "ticket" or not ref.get("resolved"):
@@ -834,10 +847,23 @@ def _normalize_editor_ticket_titles(rendered: str, references: list[dict]) -> st
         label = str(ref.get("label") or "").strip()
         if not key or not label:
             continue
-        pattern = (rf'(<a\b[^>]*data-key=["\']{re.escape(key)}["\'][^>]*>.*?</a>)'
-                   r'\s*["“][^"”\n]{1,160}["”]')
+        # Badgeify accepts compatible-model anchors by visible key/href and canonicalizes
+        # their attributes later.  Match that pre-render form as well as data-key anchors;
+        # resolver/final validation still owns the href and identity checks.
+        anchor = rf'(<a\b[^>]*>\s*{re.escape(key)}\s*</a>)'
+        pattern = anchor + r'\s*(?:["“]|&quot;)[^\n]{1,240}?(?:["”]|&quot;)'
         out = re.sub(pattern, lambda m: m.group(1) + " \"" + _html.escape(label) + "\"",
                      out, flags=re.S | re.I)
+        # A canonical quoted title between the key and the original delimiter makes the
+        # identity claim exact; the following text remains a status/reason, not a title.
+        assertion = anchor + r'(\s*)([:(])'
+        out = re.sub(
+            assertion,
+            lambda m: (m.group(1) + ' "' + _html.escape(label) + '"'
+                       + m.group(2) + m.group(3)),
+            out,
+            flags=re.S | re.I,
+        )
     return out
 
 

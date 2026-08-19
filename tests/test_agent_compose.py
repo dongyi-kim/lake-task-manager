@@ -510,6 +510,31 @@ def test_resolved_ticket_title_is_normalized_and_list_items_are_deduplicated():
     assert "[데이터] 데이터셋 카탈로그 지식 픽스처" in got
     assert got.count("같은 항목") == 1
 
+    entity = _normalize_editor_ticket_titles(
+        '<p><a data-key="DL-9040">DL-9040</a> &quot;다른 자식 제목&quot;</p>', refs)
+    assert "다른 자식 제목" not in entity
+    assert "[데이터] 데이터셋 카탈로그 지식 픽스처" in entity
+
+    compatible = _normalize_editor_ticket_titles(
+        '<p><a href="DL-9040">DL-9040</a> "다른 자식 제목"</p>', refs)
+    assert "다른 자식 제목" not in compatible
+    assert "[데이터] 데이터셋 카탈로그 지식 픽스처" in compatible
+
+
+def test_resolved_ticket_colon_or_parenthesis_keeps_explanation_after_canonical_title():
+    from app.agent.editor_author import _normalize_editor_ticket_titles
+
+    refs = [{"kind": "ticket", "resolved": True, "key": "DL-9092",
+             "label": "[Runtime] 리니지 다운스트림 조회 API 응답 20초"}]
+    html = ('<p><a data-key="DL-9092">DL-9092</a>: 해결 후 연동 완료</p>'
+            '<p><a data-key="DL-9092">DL-9092</a> (현재 Closed)</p>')
+
+    got = _normalize_editor_ticket_titles(html, refs)
+
+    assert got.count('"[Runtime] 리니지 다운스트림 조회 API 응답 20초"') == 2
+    assert ': 해결 후 연동 완료' in got
+    assert '(현재 Closed)' in got
+
 
 def test_dangling_editor_connective_is_completed():
     from app.agent.editor_author import _repair_dangling_editor_ending
@@ -749,7 +774,7 @@ def test_compose_recovers_title_verified_pseudo_ancestor_keys_to_canonical_badge
 
     result = C.compose("DL-9095", "description", "현재 맥락으로 본문을 작성해 줘")
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result.get("renderDiagnostics") or result
     assert 'data-key="DL-9040"' in result["html"]
     assert 'data-key="DL-9090"' in result["html"]
     assert "D-9040" not in C._plain_text(result["html"])
@@ -785,7 +810,7 @@ def test_compose_canonicalizes_verified_markdown_mention_and_document(monkeypatc
     result = C.compose(
         "DL-9090", "comment", "담당자를 멘션해서 성능 측정 결과 검토 요청 코멘트 써줘")
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result.get("renderDiagnostics") or result
     assert 'data-type="mention"' in result["html"]
     assert 'data-id="skcc.x1402"' in result["html"]
     assert 'class="conf-link"' in result["html"]
