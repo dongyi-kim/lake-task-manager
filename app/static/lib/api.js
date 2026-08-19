@@ -1,8 +1,27 @@
 // api.js — 백엔드 리소스 호출 래퍼. 401 needLogin 을 전역 이벤트로 알린다(LoginOverlay 가 수신).
 // GET 응답을 URL 키로 memo(프로미스 캐시) → 탭 전환/중복요청 재fetch 방지. refresh() 에서 clear.
 // updated: 2026-07-09
+const REQUEST_TIMEOUT_MS = 35 * 1000;
+
 async function req(path, opts) {
-  const r = await fetch(path, opts);
+  // 브라우저 fetch 기본값은 무한 대기다. 서버/SSO worker 가 비정상 상태여도 화면의 버튼과
+  // 새로고침은 다시 눌릴 수 있어야 하므로 모든 요청에 상한을 둔다. 로그인·업로드처럼 사람이
+  // 오래 기다리는 동작만 호출부에서 timeoutMs 를 넓힌다.
+  const o = Object.assign({}, opts || {});
+  const timeoutMs = Number(o.timeoutMs) || REQUEST_TIMEOUT_MS;
+  delete o.timeoutMs;
+  const ctl = new AbortController();
+  o.signal = ctl.signal;
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  let r;
+  try {
+    r = await fetch(path, o);
+  } catch (e) {
+    if (ctl.signal.aborted) throw new Error("요청 시간이 초과되었습니다. 앱은 계속 실행 중이며 잠시 후 다시 시도할 수 있습니다.");
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
   if (r.status === 401) {
     let b = {}; try { b = await r.clone().json(); } catch (e) {}
     if (b && b.needLogin) { watchAuth(); window.dispatchEvent(new CustomEvent("need-login")); }
@@ -103,7 +122,7 @@ export const api = {
     warmGet("/api/mention/users?q=&key=" + k);
     warmGet("/api/ticket/" + k + "/menu");
   }),
-  login: () => req("/api/login", { method: "POST" }),
+  login: () => req("/api/login", { method: "POST", timeoutMs: 310 * 1000 }),
   updateInfo: () => req("/api/update"),                                // 업데이트 가능 여부(배포 repo) — memo 제외
   updateRestart: () => req("/api/app/update-restart", { method: "POST" }),   // git pull + 재시작(트레이 경로)
   prefs: () => req("/api/prefs"),
@@ -236,7 +255,8 @@ export const api = {
   attachmentUpload: (key, file) => {                                   // multipart — Content-Type 자동
     const fd = new FormData();
     fd.append("file", file, file.name || "paste.png");
-    return req("/api/ticket/" + encodeURIComponent(key) + "/attachment", { method: "POST", body: fd })
+    return req("/api/ticket/" + encodeURIComponent(key) + "/attachment",
+               { method: "POST", body: fd, timeoutMs: 16 * 60 * 1000 })
       .then((r) => { evict(encodeURIComponent(key)); return r; });
   },
   documentDelete: (key, lid) =>

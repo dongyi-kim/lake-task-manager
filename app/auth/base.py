@@ -113,6 +113,15 @@ class LoginRequired(SessionExpired):
     """세션 파일이 아직 없음 — 최초 SSO 로그인이 필요. (SessionExpired 로 함께 처리됨)"""
 
 
+class UpstreamUnavailable(RuntimeError):
+    """인증 문제가 아니라 상류/브라우저 transport 가 응답하지 않는 상태.
+
+    SessionExpired 와 분리한다. 네트워크 timeout 뒤에 다시 ``/myself`` 를 확인하면 같은
+    멎은 provider 큐에 한 번 더 매달리고, 단순 망 장애를 SSO 만료로 오인해 로그인 창까지
+    띄우게 된다. 호출부는 이 예외를 503 + 회로차단기로 처리한다.
+    """
+
+
 class UpstreamError(SessionExpired):
     """상류 4xx/5xx — 진단용으로 status·응답 본문 미리보기를 담는다.
     401 이면 정말 세션 만료지만, 403 은 XSRF·권한, 그 외는 서버 문제일 수 있다."""

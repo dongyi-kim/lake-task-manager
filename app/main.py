@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.domain import mytasks, rollup, search, vit, workload
-from app.auth.base import SessionExpired
+from app.auth.base import SessionExpired, UpstreamUnavailable
 from app.infra.cache import Cache
 from app.jira.jira_client import JiraClient
 from app.infra.settings import STATIC_DIR, get_settings, load_plan, load_people
@@ -315,6 +315,20 @@ def _on_session_expired(request: Request, exc: SessionExpired):
     return JSONResponse(
         status_code=401,
         content={"needLogin": True, "env": _settings.jira_env, "detail": str(exc)})
+
+
+@app.exception_handler(UpstreamUnavailable)
+def _on_upstream_unavailable(request: Request, exc: UpstreamUnavailable):
+    """망/Playwright transport 장애는 인증 만료와 분리한다.
+
+    여기서 ``session_alive()`` 를 다시 부르면 이미 굳은 큐를 한 번 더 기다리게 된다. 회로만
+    잠깐 열어 캐시로 버티게 하고 503으로 즉시 돌려, localhost UI와 트레이는 계속 살린다.
+    """
+    _client.mark_upstream_down(str(exc)[:160])
+    return JSONResponse(
+        status_code=503,
+        content={"error": "Jira 연결이 응답하지 않습니다. 앱은 계속 실행 중이며 잠시 후 자동 재시도합니다.",
+                 "retryable": True, "detail": str(exc)[:200]})
 
 
 def _build_rev():
@@ -809,16 +823,11 @@ def _require_person_access(user):
 
 @app.get("/api/health")
 def health():
-    # 세션 **파일이 있는지**만 보면 부족하다. 파일은 남아 있는데 쿠키가 만료된 경우가 흔한데,
-    # 그때 앱이 그냥 켜지면 화면은 떴는데 모든 조회가 실패하는 상태가 된다(사용자에겐 '인증 오류').
-    # → prod 는 저장된 세션으로 /myself 를 **한 번 실제로 찔러 본다**. 이건 headless 재사용이라
-    #   로그인 창을 띄우지 않는다(수동 로그인은 사용자가 [SSO 로그인] 을 눌러야 시작된다).
+    # ★ health 는 프로세스/localhost 생존 확인이다. Jira·SSO 를 절대 타지 않는다.
+    # 런처·브라우저 부팅·새로고침이 모두 이 경로를 쓰므로, 여기서 /myself 를 기다리면 상류 장애가
+    # 곧 앱 전체 장애로 보인다. 실제 세션 실패는 데이터 요청과 비동기 /api/status 재확인이 판정한다.
     need = _client.needs_login()
-    if not need and _settings.jira_env == "prod":
-        need = not bool(_session_user().get("id"))
     st = _client.upstream_state()
-    if not need:
-        _client.mark_upstream_ok()          # 세션이 읽혔다 = 상류 정상
     return {"status": "ok", "env": _settings.jira_env, "projectKey": _settings.project_key,
             "needLogin": need, "rev": _BUILD_REV,
             # 이 사본이 특정 버전에 **묶여 있으면** 화면이 그렇게 말해야 한다. 안 그러면
@@ -869,16 +878,23 @@ def api_status():
     _client.session_recheck_async()
     st = _client.upstream_state()
     st["env"] = _settings.jira_env
-    unauth = _client.needs_login() or st["down"]
+    need_login = _client.needs_login()
+    down = bool(st["down"])
     # mode — 화면 상단 알림이 이 하나로 갈린다.
     #   ok             정상
     #   offline        망이 안 닿는다 → 기다리는 수밖에 없다
     #   authenticating 망은 닿는데 세션이 없다 → 로그인이 진행 중이다
-    if not unauth:
+    if not need_login and not down:
         st["mode"] = "ok"
     else:
-        st["mode"] = "authenticating" if _probe_online() else "offline"
-    st["needLogin"] = unauth
+        online = _probe_online()
+        if not online:
+            st["mode"] = "offline"
+        elif need_login:
+            st["mode"] = "authenticating"
+        else:
+            st["mode"] = "degraded"       # 망은 닿지만 Jira/Playwright 응답이 멎음
+    st["needLogin"] = need_login
     return JSONResponse(st)
 
 

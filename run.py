@@ -1315,6 +1315,7 @@ def _run_tray(s):
     # 백그라운드에서 주기적으로 채워 두고, 메뉴는 캐시된 값을 즉시 그린다.
     _sso = {}            # {서비스명: True(인증) | False(로그인 필요) | None(미설정)}
     _busy = set()        # 로그인 진행 중인 서비스
+    _probe = {"running": False}
 
     def probe_sso():
         if s.jira_env != "prod":
@@ -1331,6 +1332,25 @@ def _run_tray(s):
                 _sso[svc["name"]] = bool(_probe_service(svc).get("authenticated"))
             except Exception:
                 _sso[svc["name"]] = False
+
+    def probe_sso_async(icon=None):
+        """트레이 UI 스레드는 네트워크를 절대 기다리지 않는다(중복 요청은 하나로 합친다)."""
+        if _probe["running"]:
+            return
+        _probe["running"] = True
+
+        def run():
+            try:
+                probe_sso()
+            finally:
+                _probe["running"] = False
+                if icon is not None:
+                    try:
+                        icon.update_menu()
+                    except Exception:
+                        pass
+
+        threading.Thread(target=run, name="sso-probe-manual", daemon=True).start()
 
     def sso_poller(icon):
         # 매분 인증 상태를 확인한다 — 이게 곧 **keep-warm** 이다. 살아 있는 세션에 주기적으로
@@ -1485,7 +1505,7 @@ def _run_tray(s):
         pystray.MenuItem("앱 열기", on_open, default=True),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("SSO 인증", pystray.Menu(lambda: sso_items())),
-        pystray.MenuItem("SSO 상태 새로고침", lambda icon, item: (probe_sso(), icon.update_menu())),
+        pystray.MenuItem("SSO 상태 새로고침", lambda icon, item: probe_sso_async(icon)),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("빠른 열기 단축키", pystray.Menu(lambda: hotkey_items())),
         pystray.MenuItem("업데이트 후 재시작", on_restart),

@@ -34,6 +34,7 @@ def _auth_log(msg):
 import threading
 
 from .base import (AuthProvider, LoginRequired, SessionExpired, UpstreamError,
+                   UpstreamUnavailable,
                    WRITE_HEADERS, PRIO_WRITE, upstream_priority)
 
 
@@ -59,6 +60,12 @@ class SsoSessionProvider(AuthProvider):
 
     supports_parallel = False
 
+    # Playwright 기본 30초보다 짧게 명시한다. 상류가 끊겼을 때 첫 실패를 유한 시간 안에
+    # 확정해야 큐에 매달린 나머지 FastAPI worker 도 함께 풀어 줄 수 있다.
+    REQUEST_TIMEOUT_MS = 20_000
+    START_TIMEOUT = 20
+    JOB_TIMEOUT = 30
+
     def __init__(self, base, store, user_agent=None):
         self.base = base.rstrip("/")
         # 세션 파일이 없으면 브라우저를 띄우기 전에 명확히 실패 → 라우트가 needLogin 으로 안내.
@@ -74,10 +81,16 @@ class SsoSessionProvider(AuthProvider):
         self._jobs = queue.PriorityQueue()
         self._seq = itertools.count()          # 같은 우선순위는 들어온 순서대로
         self._ready = threading.Event()
+        self._broken = threading.Event()
+        self._closed = threading.Event()
+        self._broken_reason = ""
         self._start_error = None
         self._thread = threading.Thread(target=self._loop, name="playwright-sso", daemon=True)
         self._thread.start()
-        self._ready.wait()
+        if not self._ready.wait(self.START_TIMEOUT):
+            self._mark_broken("SSO 브라우저 기동 시간 초과")
+            raise UpstreamUnavailable(
+                f"SSO 브라우저가 {self.START_TIMEOUT}초 안에 시작되지 않았습니다.")
         if self._start_error is not None:
             raise self._start_error
 
@@ -101,6 +114,10 @@ class SsoSessionProvider(AuthProvider):
             if job is None:
                 break
             fn, done, box = job
+            if self._broken.is_set() or self._closed.is_set():
+                box[1] = UpstreamUnavailable(self._broken_reason or "SSO provider 사용 불가")
+                done.set()
+                continue
             try:
                 # PC 절전/크래시로 브라우저가 죽어 있을 수 있다(밤새 켜 둔 뒤 흔하다).
                 # 그때는 **저장된 쿠키 파일로 브라우저만 다시 띄운다** — 재로그인 불필요.
@@ -132,9 +149,38 @@ class SsoSessionProvider(AuthProvider):
             ctx_kw["user_agent"] = self._ua
         self._context = self._browser.new_context(**ctx_kw)
 
-    # 한 요청이 이보다 오래 걸리면 스레드가 먹통이라고 본다. 넉넉히 두되 **무한 대기는 안 된다** —
-    # 예전엔 timeout 이 없어, 죽은 브라우저에서 호출이 멎으면 앱 전체가 응답을 잃었다.
-    JOB_TIMEOUT = 180
+    @property
+    def broken(self):
+        return self._broken.is_set() or self._closed.is_set()
+
+    def _mark_broken(self, reason):
+        """이 provider 를 격리하고 아직 실행 전인 대기 작업을 즉시 깨운다.
+
+        Python 에서 다른 스레드의 Playwright 호출을 강제로 중단할 수는 없다. 대신 그 스레드는
+        daemon 으로 퇴역시키고, 큐에 있던 요청과 새 요청은 기다리지 않게 한다. JiraClient 는
+        회로차단기 시간이 지난 뒤 새 provider 를 만든다.
+        """
+        self._broken_reason = str(reason or "SSO provider 응답 없음")[:200]
+        self._broken.set()
+        while True:
+            try:
+                _prio, _seq, job = self._jobs.get_nowait()
+            except queue.Empty:
+                break
+            if job is None:
+                continue
+            _fn, done, box = job
+            box[1] = UpstreamUnavailable(self._broken_reason)
+            done.set()
+
+    @staticmethod
+    def _is_transport_error(exc):
+        name = type(exc).__name__.lower()
+        msg = str(exc).lower()
+        return ("timeout" in name or "timeout" in msg or "timed out" in msg
+                or "target page, context or browser has been closed" in msg
+                or "browser has been closed" in msg or "connection closed" in msg
+                or "socket hang up" in msg or "econn" in msg)
 
     def _submit(self, fn, priority=0, wait=None):
         """fn 을 Playwright 전용 스레드에서 실행하고 결과/예외를 호출자 스레드로 반환.
@@ -143,17 +189,25 @@ class SsoSessionProvider(AuthProvider):
         단일 큐라 백그라운드 작업이 앞에 쌓이면 사용자의 다음 조회가 그만큼 늦어진다
         → 낮은 우선순위로 넣어 사용자 요청이 항상 앞지르게 한다. 쓰기는 그보다도 앞이다.
         """
+        if self.broken:
+            raise UpstreamUnavailable(self._broken_reason or "SSO provider 가 격리되었습니다.")
         if not self._thread.is_alive():
-            raise SessionExpired("SSO provider 스레드가 종료됨 — login 재실행 필요.")
+            self._mark_broken("SSO provider 스레드가 종료되었습니다.")
+            raise UpstreamUnavailable(self._broken_reason)
         done = threading.Event()
         box = [None, None]   # [result, error]
         self._jobs.put((priority, next(self._seq), (fn, done, box)))
         limit = wait if wait else self.JOB_TIMEOUT      # 업로드는 크기에 맞춘 한도를 받는다
         if not done.wait(limit):
-            raise SessionExpired(
-                "Jira 응답이 없습니다(%ds 초과). 절전 후 세션이 끊겼을 수 있습니다 — "
-                "[SSO 로그인] 을 다시 실행하세요." % int(limit))
+            self._mark_broken("Jira/SSO 응답 시간 초과(%ds)" % int(limit))
+            raise UpstreamUnavailable(
+                "Jira 응답이 없습니다(%ds 초과). 앱은 계속 실행되며 잠시 후 자동 재시도합니다."
+                % int(limit))
         if box[1] is not None:
+            if self._is_transport_error(box[1]):
+                self._mark_broken(box[1])
+                raise UpstreamUnavailable(
+                    "Jira/SSO 연결이 응답하지 않습니다. 앱은 계속 실행되며 잠시 후 자동 재시도합니다.")
             raise box[1]
         return box[0]
 
@@ -161,8 +215,8 @@ class SsoSessionProvider(AuthProvider):
         # Playwright 스레드에서 실행 — body 추출(json()/text())도 반드시 이 스레드에서.
         # path 가 절대 URL(http…)이면 그대로(Confluence 등 별도 호스트), 아니면 jira base + path.
         url = path if path.startswith(("http://", "https://")) else self.base + path
-        resp = self._context.request.get(url, params=params or {})
-        if resp.status in (401, 403) or resp.status >= 500:
+        resp = self._context.request.get(url, params=params or {}, timeout=self.REQUEST_TIMEOUT_MS)
+        if resp.status in (401, 403):
             # ★ **무엇이** 401 인지 찍는다. '인증 계속 풀림' 이 어느 요청에서 시작되는지
             #   여기 없이는 알 수 없다(401 은 세션 만료·XSRF·권한이 다 같은 코드로 온다).
             reason = ""
@@ -175,6 +229,8 @@ class SsoSessionProvider(AuthProvider):
             if not quiet:
                 _auth_log(f"[auth] GET {resp.status} {path}" + (f" [{reason}]" if reason else ""))
             raise SessionExpired(f"HTTP {resp.status} on {path} — 세션 만료 가능. login 재실행.")
+        if resp.status >= 500:
+            raise UpstreamUnavailable(f"HTTP {resp.status} on {path} — Jira 서버 응답 오류")
         return resp.text() if as_text else resp.json()
 
     def get_json(self, path, params=None, priority=None, quiet=False):
@@ -251,6 +307,9 @@ class SsoSessionProvider(AuthProvider):
             if resp.status == 401:
                 raise SessionExpired(
                     f"HTTP 401 on {path}{hdrs} — {(body or '세션 만료 가능. login 재실행.')[:200]}")
+            if resp.status >= 500:
+                raise UpstreamUnavailable(
+                    f"HTTP {resp.status} on {path} — {(body or 'Jira 서버 응답 오류')[:200]}")
             raise UpstreamError(resp.status, path, body)
         if not want_json:
             return resp.status
@@ -323,6 +382,9 @@ class SsoSessionProvider(AuthProvider):
             if resp.status == 401:
                 raise SessionExpired(
                     f"HTTP 401 on {path}{hdrs} — {(body or '세션 만료 가능. login 재실행.')[:200]}")
+            if resp.status >= 500:
+                raise UpstreamUnavailable(
+                    f"HTTP {resp.status} on {path} — {(body or 'Jira 서버 응답 오류')[:200]}")
             raise UpstreamError(resp.status, path, body)
         try:
             return resp.json()
@@ -350,10 +412,12 @@ class SsoSessionProvider(AuthProvider):
     def _fetch_bytes(self, path, params):
         # 이미지/첨부 프록시 — 인증된 브라우저 컨텍스트로 받아 바이트 반환. 절대 URL 도 허용.
         url = path if path.startswith(("http://", "https://")) else self.base + path
-        resp = self._context.request.get(url, params=params or {})
-        if resp.status in (401, 403) or resp.status >= 500:
+        resp = self._context.request.get(url, params=params or {}, timeout=self.REQUEST_TIMEOUT_MS)
+        if resp.status in (401, 403):
             _auth_log(f"[auth] GET(bytes) {resp.status} {path}")
             raise SessionExpired(f"HTTP {resp.status} on {path} — 세션 만료 가능. login 재실행.")
+        if resp.status >= 500:
+            raise UpstreamUnavailable(f"HTTP {resp.status} on {path} — Jira 서버 응답 오류")
         return resp.body(), resp.headers.get("content-type")
 
     def _diag_write(self, url):
@@ -433,9 +497,13 @@ class SsoSessionProvider(AuthProvider):
         return self._submit(do, PRIO_WRITE)
 
     def close(self):
+        """퇴역은 즉시 반환한다. 멎은 Playwright 호출 때문에 로그인/종료까지 멎으면 안 된다."""
         try:
-            self._jobs.put((99, next(self._seq), None))
-            self._thread.join(timeout=10)
+            self._closed.set()
+            self._mark_broken("SSO provider 가 교체되었습니다.")
+            # 현재 실행 중인 호출이 돌아오는 즉시, 남은 작업보다 먼저 루프를 끝낸다.
+            self._jobs.put((-999, next(self._seq), None))
+            self._thread.join(timeout=0.2)
         except Exception:
             pass
 

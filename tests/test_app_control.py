@@ -48,6 +48,16 @@ def test_counts_never_go_negative():
     _reset()
 
 
+def test_tray_sso_refresh_never_waits_for_network_in_menu_callback():
+    """트레이 메뉴 콜백에서 probe_sso를 직접 부르면 종료 메뉴까지 같이 얼어붙는다."""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "run.py").read_text(encoding="utf-8")
+    assert "def probe_sso_async(icon=None):" in src
+    assert 'lambda icon, item: probe_sso_async(icon)' in src
+    assert 'lambda icon, item: (probe_sso(), icon.update_menu())' not in src
+
+
 def test_open_endpoint(client=None):
     _reset()
     from fastapi.testclient import TestClient
