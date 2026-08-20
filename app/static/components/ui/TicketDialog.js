@@ -460,6 +460,7 @@ export default {
         const v = await api.ticket(this.keyId, true);      // 캐시 건너뛰기 — 기준이 낡으면 안 된다
         if (v && this.v && v.descriptionHtml !== undefined) {
           this.v.descriptionHtml = v.descriptionHtml;
+          this.v.descriptionEditHtml = v.descriptionEditHtml;
           this.v.descriptionSections = v.descriptionSections;
         }
       } catch (e) { /* 지금 화면의 본문으로 연다 */ }
@@ -1388,7 +1389,8 @@ export default {
             </div>
             <!-- 댓글과 **같은 에디터** — 여기만 다른 편집기를 쓰면 표·코드·이미지 붙여넣기가
                  되는 곳과 안 되는 곳이 생긴다. 저장은 이 화면이 소유한다(버튼이 둘이면 안 된다). -->
-            <CommentEditor ref="ded" :ticket-key="tk" :initial="v.descriptionHtml" hide-footer
+            <CommentEditor ref="ded" :ticket-key="tk"
+                           :initial="v.descriptionEditHtml !== undefined ? v.descriptionEditHtml : v.descriptionHtml" hide-footer
                            sections kind="description"
                            :submit-fn="saveDesc" @cancel="descEdit = false" />
             <div class="tkt-desc-edit-f">

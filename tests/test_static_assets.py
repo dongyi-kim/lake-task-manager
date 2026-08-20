@@ -442,6 +442,10 @@ def test_editor_and_rendered_mentions_share_stable_avatar_badge_ui():
     assert "enhanceMentionBadges(root)" in dialog
     assert "mention mention-badge" in agent and 'aria-hidden="true">@</span>' in agent
     assert ".mention-badge, .tkt-desc .mention, .tkt-desc a.user-hover, .agent-md .md-person" in css
+    assert "gap: 4px; vertical-align: middle;" in css
+    assert "gap: 4px; vertical-align: -2px;" not in css
+    assert "this.v.descriptionEditHtml = v.descriptionEditHtml;" in dialog
+    assert 'v.descriptionEditHtml !== undefined ? v.descriptionEditHtml : v.descriptionHtml' in dialog
     assert ".mention-av > img.mention-av-img.on { opacity: 1; }" in css
 
 
