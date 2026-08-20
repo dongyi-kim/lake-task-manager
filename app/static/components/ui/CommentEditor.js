@@ -13,7 +13,7 @@ import LinkPicker from "./LinkPicker.js";
 import MarkdownTableDialog from "./MarkdownTableDialog.js";
 import { extOf } from "../../lib/filetype.js";
 import { sigColor, initialOf, typeLabel, TYPE_BG } from "../../lib/colors.js";
-import { debouncedItems } from "../../lib/typeahead.js";
+import { createMentionUserItems, rememberUser } from "../../lib/userSuggestions.js";
 import { pushToast } from "../../lib/toast.js";
 import { agentApi } from "../../lib/agentApi.js";
 import { beginBusy } from "../../lib/uibusy.js";
@@ -913,17 +913,21 @@ function slashExt(T, host) {
   });
 }
 
-function mentionSuggestion(ticketKey) {
-  // 디바운스 없이 두면 **한 글자마다** 요청이 나간다(한글은 자모 단위라 더 심하다).
-  // 대기 중이던 호출은 최신 결과로 함께 해소한다 — 취소해 버리면 팝업이 멎는다.
+function mentionSuggestion(ticketKey, host) {
+  // 검색·기본 추천 정렬은 FieldEdit와 공용이다. TipTap items에는 객체가 들어온다는 점만 여기서 잇는다.
   // ★ TipTap 은 items 에 **객체**({ query, editor, … })를 넘긴다. 문자열로 받으면
   //   질의가 "[object Object]" 가 돼 팝업이 늘 비어 보인다.
-  const fetchUsers = debouncedItems((q) => api.mentionUsers(q, ticketKey));
+  const fetchUsers = createMentionUserItems(ticketKey);
   return {
     char: "@",
-    items: ({ query }) => fetchUsers(query || ""),
+    items: fetchUsers,
     render: () => {
       let el = null, items = [], sel = 0, command = null;
+      const closePopup = () => {
+        if (el) el.remove();
+        el = null; items = []; command = null;
+        if (host && host._mentionPopupCleanup === closePopup) host._mentionPopupCleanup = null;
+      };
       const paint = () => {
         if (!el) return;
         if (!items.length) { el.innerHTML = '<div class="mn-empty">사용자 없음</div>'; return; }
@@ -941,7 +945,10 @@ function mentionSuggestion(ticketKey) {
           img.addEventListener("error", () => img.remove());
         });
       };
-      const pick = (i) => { const u = items[i]; if (u && command) command({ id: u.id, label: u.name }); };
+      const pick = (i) => {
+        const u = items[i];
+        if (u && command) { rememberUser(u); command({ id: u.id, label: u.name }); }
+      };
       const place = (rectFn) => {
         if (!el || !rectFn) return; const r = rectFn(); if (!r) return;
         el.style.left = Math.round(r.left) + "px";
@@ -949,8 +956,10 @@ function mentionSuggestion(ticketKey) {
       };
       return {
         onStart: (p) => {
+          if (host && host._mentionPopupCleanup) host._mentionPopupCleanup();
           items = p.items || []; sel = 0; command = p.command;
           el = document.createElement("div"); el.className = "mention-popup";
+          if (host) host._mentionPopupCleanup = closePopup;
           document.body.appendChild(el); paint(); place(p.clientRect);
         },
         onUpdate: (p) => { items = p.items || []; command = p.command; if (sel >= items.length) sel = 0; paint(); place(p.clientRect); },
@@ -959,10 +968,10 @@ function mentionSuggestion(ticketKey) {
           if (k === "ArrowDown") { sel = n ? (sel + 1) % n : 0; paint(); return true; }
           if (k === "ArrowUp") { sel = n ? (sel - 1 + n) % n : 0; paint(); return true; }
           if (k === "Enter") { if (n) { pick(sel); return true; } }
-          if (k === "Escape") { return true; }
+          if (k === "Escape") { closePopup(); return true; }
           return false;
         },
-        onExit: () => { if (el) el.remove(); el = null; },
+        onExit: closePopup,
       };
     },
   };
@@ -970,7 +979,7 @@ function mentionSuggestion(ticketKey) {
 
 /** TipTap mention의 저장 HTML은 그대로 두고 편집 중 DOM만 공통 badge로 그린다.
  *  노드뷰를 쓰지 않고 DOM을 보강하면 ProseMirror가 낯선 avatar를 즉시 지워 버린다. */
-function mentionExt(T, ticketKey) {
+function mentionExt(T, ticketKey, host) {
   return T.Mention.extend({
     addNodeView() {
       return ({ node, HTMLAttributes }) => {
@@ -1000,7 +1009,7 @@ function mentionExt(T, ticketKey) {
         };
       };
     },
-  }).configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion(ticketKey) });
+  }).configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion(ticketKey, host) });
 }
 
 // 끌어서 정한 높이는 **기억한다**. 매번 다시 늘리게 하면 늘리는 의미가 없다 —
@@ -1090,7 +1099,7 @@ export default {
         fileBadgeExt(T),
         singleLineHeadingExt(T),
         firstBlockEscapeExt(T),
-        mentionExt(T, this.ticketKey),
+        mentionExt(T, this.ticketKey, this),
         T.Table.configure({ resizable: true }), T.TableRow, T.TableHeader, T.TableCell,
         // 정렬 — 문단·제목·표 셀에. 표 셀을 포함해야 마크다운 표의 :-: / --: 정렬이 붙는다.
         T.TextAlign.configure({ types: ["heading", "paragraph", "tableCell", "tableHeader"] }),
@@ -1169,6 +1178,7 @@ export default {
   },
   beforeUnmount() {
     this._dead = true;
+    if (this._mentionPopupCleanup) this._mentionPopupCleanup();  // body 직속 팝업은 에디터보다 먼저 정리
     clearTimeout(this._dt); this._dt = null;       // 제출/이동 뒤 예약 저장이 옛 초안을 되살리지 않게
     if (this._upTick) { clearInterval(this._upTick); this._upTick = null; }   // 업로드 경과 타이머
     try { for (const u of this._pending.keys()) URL.revokeObjectURL(u); } catch (e) { /* noop */ }

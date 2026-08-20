@@ -12,6 +12,7 @@ import Avatar from "./Avatar.js";
 import PriIcon, { priRankOf } from "./PriIcon.js";
 import TypeBadge from "./TypeBadge.js";
 import { createTypeahead } from "../../lib/typeahead.js";
+import { createUserTypeahead, defaultUserSuggestions, rememberUser } from "../../lib/userSuggestions.js";
 import { categoryColor } from "../../lib/colors.js";
 
 const KO = {
@@ -127,8 +128,8 @@ export default {
       } else if (this.isEpic) {
         this.searchEpics("");
       } else if (this.isUser) {
-        this._ta = this._ta || createTypeahead((q) => api.mentionUsers(q, this.ticket),
-                                               { minLen: 1, allowEmpty: true });
+        const localUsers = (this.local ? (this.choices || []) : []).filter((u) => u && typeof u === "object");
+        this._ta = this._ta || createUserTypeahead(this.ticket, localUsers);
         this.searchWho("");
       }
       this._focus();
@@ -206,13 +207,11 @@ export default {
       const token = ++this.lookupSeq;
       if (!q) {
         const base = (this.local ? (this.choices || []) : []).filter((u) => u && typeof u === "object");
-        this.who = this._prepRecent(base, (u) => u.id).slice(0, 8);
+        this.who = defaultUserSuggestions([], base);
       }
       this._ta.run(q).then((r) => {
         if (!r || !this._lookupCurrent(token, q)) return;
-        // 빈 질의(기본 추천)면 **최근 이 다이얼로그에서 고른 사람**을 맨 위로.
-        const base = (this.local ? (this.choices || []) : []).filter((u) => u && typeof u === "object");
-        this.who = q ? r.slice(0, 8) : this._prepRecent(base.concat(r.slice(0, 8)), (u) => u.id).slice(0, 8);
+        this.who = r;
       }).catch(() => {});
     },
     // ── 최근 사용값(이 필드에서 내가 고른 값) — 기본 목록 상단에 우선 노출 ──
@@ -261,7 +260,10 @@ export default {
       this.draft.push(v); this.q = ""; this.suggest("");
     },
     async save(v, extra) {
-      if (v && !Array.isArray(v)) this._pushRecent(this._recItem(v, extra));   // 최근값 기록(빈값=해제 제외)
+      if (v && !Array.isArray(v)) {
+        const recent = this._recItem(v, extra);
+        if (this.isUser) rememberUser(recent); else this._pushRecent(recent);  // 사용자는 멘션과 공용
+      }
       if (this.local) {
         // 아직 티켓이 없다 — 서버에 보낼 것이 없으므로 고른 값만 넘긴다.
         this.$emit("pick", v, extra || null);

@@ -450,9 +450,10 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .mention-av { position: relative; display: inline-flex; align-items: center;
   justify-content: center; width: 16px; height: 16px; border-radius: 50%;
   overflow: hidden; flex: none; font-size: 11px; line-height: 1; font-weight: 800; color: #fff; }
-.mention-av-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
-  opacity: 0; transition: opacity .12s; }
-.mention-av-img.on { opacity: 1; }
+.mention-badge .mention-av > img.mention-av-img { position: absolute; inset: 0; display: block;
+  width: 100%; height: 100%; max-width: none; object-fit: cover; border: 0; border-radius: inherit;
+  margin: 0; padding: 0; vertical-align: middle; opacity: 0; transition: opacity .12s; }
+.mention-badge .mention-av > img.mention-av-img.on { opacity: 1; }
 .mention-nm { min-width: 0; }
 
 /* 앱 전역 참조 호버 — body 직속 fixed layer라 표·다이얼로그 overflow에 잘리지 않는다. */
@@ -866,7 +867,8 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   background: var(--accent); cursor: nwse-resize; opacity: 0; transition: opacity .12s; }
 .cmt-ed-host .ProseMirror .img-wrap:hover .img-resize,
 .cmt-ed-host .ProseMirror .ProseMirror-selectednode .img-resize { opacity: 1; }
-.cmt-ed-host .ProseMirror .ProseMirror-selectednode img { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cmt-ed-host .ProseMirror .ProseMirror-selectednode:not(.mention-badge) img {
+  outline: 2px solid var(--accent); outline-offset: 1px; }
 .cmt-ed-host .ProseMirror hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
 .cmt-ed-host .ProseMirror p.is-editor-empty:first-child::before { content: attr(data-placeholder);
   color: var(--muted-2); float: left; height: 0; pointer-events: none; }

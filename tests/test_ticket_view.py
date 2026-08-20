@@ -157,6 +157,36 @@ def test_prod_proxy_media_rewrites_images():
         c.env = "mock"
 
 
+def test_prod_comment_source_proxies_attachment_image_for_edit_and_unproxies_on_save():
+    """게시 후 보이던 붙여넣기 이미지가 수정 에디터에서 localhost/secure 로 깨지지 않아야 한다."""
+    c = _client()
+    class Provider:
+        @staticmethod
+        def get_json(*args, **kwargs):
+            return {"comments": [{
+                "id": "42",
+                "body": '<p>before<img src="/secure/attachment/9/paste.png" alt="paste.png"></p>',
+            }]}
+
+    c._provider = Provider()
+    c._provider_built = True
+    c.env = "prod"
+    old_format = c.s.comment_format
+    try:
+        c.s.comment_format = "html"
+        source = c.comment_source("DL-9007", "42")
+
+        assert source and source["id"] == "42"
+        assert "/api/img?u=" in source["html"]
+        assert "secure%2Fattachment%2F9%2Fpaste.png" in source["html"]
+        assert 'src="/secure/attachment/' not in source["html"]
+        stored = c.comment_field_value(source["html"])
+        assert "/api/img?u=" not in stored
+        assert "/secure/attachment/9/paste.png" in stored
+    finally:
+        c.s.comment_format = old_format
+
+
 def test_api_img_rejects_disallowed_host():
     from fastapi.testclient import TestClient
 

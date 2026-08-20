@@ -2731,6 +2731,12 @@ class JiraClient:
                     html = sanitize_html(_revive_checkboxes(body)) if body.strip() else ""
                 else:
                     html = wiki_to_html(body, self._mention_name)
+                # 읽기용 코멘트와 마찬가지로 첨부 이미지는 앱의 인증 프록시를 거쳐야 한다.
+                # prod HTML 원본에는 /secure/attachment/... 가 남아 있는데 이를 그대로 에디터에
+                # 주면 브라우저가 localhost/secure/... 로 해석해, 게시 후에는 보이던 이미지가
+                # 수정 진입 순간 엑박이 된다. 저장 시 comment_field_value()가 다시 원본 URL로
+                # 되돌리므로 프록시된 편집 HTML을 반환해도 왕복 저장은 안정적이다.
+                html = self._proxy_media(html)
                 return {"id": str(comment_id), "html": html}
         return None
 

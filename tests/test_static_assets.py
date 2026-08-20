@@ -28,7 +28,7 @@ def test_home_shows_only_five_daily_release_notes():
     notes = (STATIC / "lib" / "releaseNotes.js").read_text(encoding="utf-8")
     guide = (STATIC.parents[1] / "AGENTS.md").read_text(encoding="utf-8")
 
-    assert "RELEASES.slice(0, 5)" in home
+    assert "RELEASES.slice(0, 10)" in home
     assert ':key="r.version"' in home and "{{ r.version }}" in home
     assert "r.date" not in home and "hn-date" not in home
     versions = re.findall(r'version:\s*"(v\d{4}\.\d{2}\.\d{2})"', notes)
@@ -442,7 +442,25 @@ def test_editor_and_rendered_mentions_share_stable_avatar_badge_ui():
     assert "enhanceMentionBadges(root)" in dialog
     assert "mention mention-badge" in agent and 'aria-hidden="true">@</span>' in agent
     assert ".mention-badge, .tkt-desc .mention, .tkt-desc a.user-hover, .agent-md .md-person" in css
-    assert ".mention-av-img.on { opacity: 1; }" in css
+    assert ".mention-av > img.mention-av-img.on { opacity: 1; }" in css
+
+
+def test_field_edit_and_mentions_share_user_defaults_and_cleanup_popup():
+    """사용자 추천은 한 구현을 쓰며, 닫힌 에디터의 body 팝업과 어긋난 사진이 남지 않는다."""
+    shared = (STATIC / "lib" / "userSuggestions.js").read_text(encoding="utf-8")
+    field = (STATIC / "components" / "ui" / "FieldEdit.js").read_text(encoding="utf-8")
+    editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
+
+    assert 'const RECENT_KEY = "userSuggestions.recent"' in shared
+    assert "createUserTypeahead" in field and "defaultUserSuggestions" in field
+    assert "createMentionUserItems" in editor and "rememberUser(u)" in editor
+    assert "suggestion: mentionSuggestion(ticketKey, host)" in editor
+    assert 'if (k === "Escape") { closePopup(); return true; }' in editor
+    assert "if (this._mentionPopupCleanup) this._mentionPopupCleanup()" in editor
+    assert ".mention-badge .mention-av > img.mention-av-img" in css
+    assert "height: 100%; max-width: none" in css and "border: 0; border-radius: inherit" in css
+    assert ".ProseMirror-selectednode:not(.mention-badge) img" in css
 
 
 def test_field_edit_shows_offline_defaults_immediately_and_pins_none_option():
@@ -457,7 +475,7 @@ def test_field_edit_shows_offline_defaults_immediately_and_pins_none_option():
     users = src[src.index("searchWho(q) {"):src.index("// ── 최근 사용값")]
     assert labels.index("this.opts = this._prepRecentStr(base);") < labels.index('api.options("labels", "")')
     assert epics.index("this.opts = this._prepRecent(base") < epics.index('api.options("epics", "")')
-    assert users.index("this.who = this._prepRecent(base") < users.index("this._ta.run(q)")
+    assert users.index("this.who = defaultUserSuggestions([], base);") < users.index("this._ta.run(q)")
     assert "this._lookupCurrent(token, q)" in src and "lookupSeq += 1" in src
     assert ".catch(() => { this.opts = []; })" not in src
     assert "hasNoneOption()" in src

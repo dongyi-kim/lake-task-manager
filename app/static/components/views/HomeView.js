@@ -24,7 +24,7 @@ const PAGES = [
 export default {
   name: "HomeView",
   // manager 는 스스로 확인한다(api.me 는 memo 라 앱루트와 중복 요청이 아니다). null=아직 모름.
-  data() { return { auth: null, env: "", manager: null, releases: RELEASES.slice(0, 5),
+  data() { return { auth: null, env: "", manager: null, releases: RELEASES.slice(0, 10),
                     ask: "", askBusy: false, askNote: "" }; },
   computed: {
     // 허락된 페이지만 — 매니저 전용은 manager 가 확정(true)일 때만 노출(먼저 판정, 그 뒤 표시).
