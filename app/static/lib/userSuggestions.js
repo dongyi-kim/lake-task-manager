@@ -44,14 +44,22 @@ export function rememberUser(user) {
   try { localStorage.setItem(RECENT_KEY, JSON.stringify(next)); } catch (e) { /* 사파리 프라이빗 등 */ }
 }
 
-/** 빈 검색의 공통 목록: 최근 선택 → 로컬 선택지 → 티켓 기반 서버 추천. */
+/** 빈 검색의 공통 목록: 티켓 기반 서버 추천 → 로컬 티켓 관련자 → 최근 선택. */
 export function defaultUserSuggestions(serverItems, localItems) {
-  return mergeUserSuggestions(recentUsers(), localItems, serverItems).slice(0, RESULT_MAX);
+  // 티켓 맥락을 반영한 서버/로컬 목록이 최근 선택 사용자보다 항상 먼저다.
+  return mergeUserSuggestions(serverItems, localItems, recentUsers()).slice(0, RESULT_MAX);
 }
 
 function finalUsers(query, serverItems, localItems) {
-  return query ? mergeUserSuggestions(serverItems).slice(0, RESULT_MAX)
-               : defaultUserSuggestions(serverItems, localItems);
+  if (!query) return defaultUserSuggestions(serverItems, localItems);
+  const q = query.toLocaleLowerCase();
+  const matches = (user) => [user && user.id, user && user.name, user && user.display]
+    .some((value) => String(value || "").toLocaleLowerCase().includes(q));
+  const contextual = (serverItems || []).filter((user) => Number(user.contextRank) === 0);
+  const remaining = (serverItems || []).filter((user) => Number(user.contextRank) !== 0);
+  // 이미 다이어로그에 로드된 티켓 관련자 → 서버가 판정한 관련자 → 최근 선택 → 일반 유사 이름.
+  return mergeUserSuggestions((localItems || []).filter(matches), contextual,
+                              recentUsers().filter(matches), remaining).slice(0, RESULT_MAX);
 }
 
 /** FieldEdit용. 서버 캐시는 재사용하되 최근값 병합은 매번 다시 해 방금 고른 사람도 즉시 반영한다. */
@@ -68,14 +76,14 @@ export function createUserTypeahead(ticketKey, localItems) {
 }
 
 /** TipTap v3 @멘션용 초기값. 서버를 기다리지 않고 FieldEdit와 같은 최근 목록부터 보여 준다. */
-export function mentionInitialUsers() {
-  return defaultUserSuggestions([], []);
+export function mentionInitialUsers(localItems) {
+  return defaultUserSuggestions([], localItems);
 }
 
 /** TipTap v3 @멘션용. 디바운스·응답 역전·취소는 Suggestion이 관리한다. */
-export function createManagedMentionItems(ticketKey) {
+export function createManagedMentionItems(ticketKey, localItems) {
   return ({ query, signal }) => {
     const q = String(query || "").trim();
-    return api.mentionUsers(q, ticketKey, { signal }).then((items) => finalUsers(q, items));
+    return api.mentionUsers(q, ticketKey, { signal }).then((items) => finalUsers(q, items, localItems));
   };
 }

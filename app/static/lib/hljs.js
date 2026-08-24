@@ -22,10 +22,9 @@ export function ensureHljsTheme(dark) {
 
 export function loadHljs() {
   if (_hp) return _hp;
-  // highlight.js 도 로컬 미러(vendor/esm)에서. manifest 가 진입 파일을 가리킨다.
-  _hp = fetch("/vendor/esm/manifest.json").then((r) => r.json())
-    .then((man) => import(/* @vite-ignore */ man.hljs))
-    .then((m) => m.default || m)
+  // 에디터와 같은 단일 번들의 common 언어 집합을 공유한다.
+  _hp = import("/vendor/tiptap.bundle.mjs")
+    .then((m) => m.hljs)
     .catch((e) => { _hp = null; throw e; });
   return _hp;
 }

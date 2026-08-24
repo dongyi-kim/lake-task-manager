@@ -33,10 +33,14 @@ export function createManagedSuggestionRenderer(options) {
       if (!element) return;
       if (!items.length) {
         const label = loading ? settings.loadingLabel : settings.emptyLabel;
-        element.innerHTML = `<div class="mn-empty">${label || ""}</div>`;
+        const spinner = loading ? '<span class="spinner" aria-hidden="true"></span>' : "";
+        element.innerHTML = `<div class="mn-empty${loading ? " is-loading" : ""}" role="status">${spinner}${label || ""}</div>`;
         return;
       }
-      element.innerHTML = settings.renderItems(items, selected);
+      const loadingRow = loading && settings.showLoadingWithItems
+        ? `<div class="mn-loading" role="status"><span class="spinner" aria-hidden="true"></span>${settings.loadingLabel || ""}</div>`
+        : "";
+      element.innerHTML = settings.renderItems(items, selected) + loadingRow;
       element.querySelectorAll(settings.itemSelector || "[data-suggestion-index]").forEach((row) => {
         row.addEventListener("pointerdown", (event) => {
           event.preventDefault();
@@ -52,8 +56,12 @@ export function createManagedSuggestionRenderer(options) {
       const nextQuery = props.query || "";
       if (resetSelection || nextQuery !== query) selected = 0;
       query = nextQuery;
-      items = Array.isArray(props.items) ? props.items : [];
       loading = Boolean(props.loading);
+      // TipTap v3 sends initialItems again on every query change while the debounced
+      // request is pending. Those are useful for a bare '@', but become misleading
+      // stale search results as soon as the user starts typing a name.
+      const nextItems = Array.isArray(props.items) ? props.items : [];
+      items = loading && query && settings.hideItemsWhileLoading ? [] : nextItems;
       command = props.command;
       if (selected >= items.length) selected = 0;
       paint();

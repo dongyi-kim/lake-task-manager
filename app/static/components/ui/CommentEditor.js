@@ -886,17 +886,19 @@ function slashExt(T, host) {
   });
 }
 
-function mentionSuggestion(ticketKey) {
-  const fetchUsers = createManagedMentionItems(ticketKey);
+function mentionSuggestion(ticketKey, localUsers) {
+  const fetchUsers = createManagedMentionItems(ticketKey, localUsers);
   return {
     char: "@",
     items: fetchUsers,
-    initialItems: mentionInitialUsers(),
+    initialItems: mentionInitialUsers(localUsers),
     debounce: typeaheadDelay(),
     render: createManagedSuggestionRenderer({
       className: "mention-popup",
       emptyLabel: "사용자 없음",
-      loadingLabel: "사용자 불러오는 중…",
+      loadingLabel: "사용자 검색 중…",
+      hideItemsWhileLoading: true,
+      showLoadingWithItems: true,
       itemSelector: ".mn-item",
       selectedSelector: ".mn-item.sel",
       select(user, command) {
@@ -921,7 +923,7 @@ function mentionSuggestion(ticketKey) {
 
 /** TipTap mention의 저장 HTML은 그대로 두고 편집 중 DOM만 공통 badge로 그린다.
  *  노드뷰를 쓰지 않고 DOM을 보강하면 ProseMirror가 낯선 avatar를 즉시 지워 버린다. */
-function mentionExt(T, ticketKey) {
+function mentionExt(T, ticketKey, localUsers) {
   return T.Mention.extend({
     addNodeView() {
       return ({ node, HTMLAttributes }) => {
@@ -951,7 +953,7 @@ function mentionExt(T, ticketKey) {
         };
       };
     },
-  }).configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion(ticketKey) });
+  }).configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion(ticketKey, localUsers) });
 }
 
 // 끌어서 정한 높이는 **기억한다**. 매번 다시 늘리게 하면 늘리는 의미가 없다 —
@@ -993,6 +995,8 @@ export default {
     // 예전엔 "내용이 비었으면 새 댓글" 로 봤는데, 설명이 빈 티켓의 본문 편집기가 같은 조건에
     // 걸려 **새 댓글 초안을 본문에 불러왔다**. 목적이 다르면 칸도 달라야 한다.
     kind: { type: String, default: "comment" },   // comment | description | transition
+    // 티켓 다이어로그가 이미 가진 담당/보고/최근 댓글 맥락. 네트워크 지연 중에도 이들이 먼저 뜬다.
+    mentionUsers: { type: Array, default: () => [] },
   },
   emits: ["submitted", "cancel"],
   data() { return { ready: false, loadErr: "", busy: false, err: "", tick: 0, languages: [],
@@ -1043,7 +1047,7 @@ export default {
         fileBadgeExt(T),
         singleLineHeadingExt(T),
         firstBlockEscapeExt(T),
-        mentionExt(T, this.ticketKey),
+        mentionExt(T, this.ticketKey, this.mentionUsers),
         T.Table.configure({ resizable: true }), T.TableRow, T.TableHeader, T.TableCell,
         // 정렬 — 문단·제목·표 셀에. 표 셀을 포함해야 마크다운 표의 :-: / --: 정렬이 붙는다.
         T.TextAlign.configure({ types: ["heading", "paragraph", "tableCell", "tableHeader"] }),

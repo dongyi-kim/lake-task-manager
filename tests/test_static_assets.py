@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 STATIC = Path(__file__).resolve().parents[1] / "app" / "static"
+ROOT = STATIC.parents[1]
 ASSETS = sorted(list(STATIC.rglob("*.js")) + list(STATIC.rglob("*.css")))
 
 # 소스에 있어서는 안 되는 제어문자 — 탭·개행·CR 만 허용한다.
@@ -549,64 +550,56 @@ def test_field_edit_and_mentions_share_user_defaults_and_managed_popup():
     shared = (STATIC / "lib" / "userSuggestions.js").read_text(encoding="utf-8")
     field = (STATIC / "components" / "ui" / "FieldEdit.js").read_text(encoding="utf-8")
     editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
     popup = (STATIC / "lib" / "suggestionPopup.js").read_text(encoding="utf-8")
     api = (STATIC / "lib" / "api.js").read_text(encoding="utf-8")
-    manifest = json.loads((STATIC / "vendor" / "esm" / "manifest.json").read_text(encoding="utf-8"))
-    managed = (STATIC / "vendor" / "esm" / Path(manifest["suggestion"]).name).read_text(encoding="utf-8")
-    vendor_sources = "\n".join(path.read_text(encoding="utf-8") for path in (STATIC / "vendor" / "esm").glob("*.mjs"))
+    package = json.loads((ROOT / "tools" / "tiptap-bundle" / "package.json").read_text(encoding="utf-8"))
+    bundle = (STATIC / "vendor" / "tiptap.bundle.mjs").read_text(encoding="utf-8")
     css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
 
     assert 'const RECENT_KEY = "userSuggestions.recent"' in shared
     assert "createUserTypeahead" in field and "defaultUserSuggestions" in field
     assert "createManagedMentionItems" in editor and "rememberUser(user)" in editor
-    assert "initialItems: mentionInitialUsers()" in editor
+    assert "initialItems: mentionInitialUsers(localUsers)" in editor
     assert "debounce: typeaheadDelay()" in editor
-    assert "suggestion: mentionSuggestion(ticketKey)" in editor
+    assert "suggestion: mentionSuggestion(ticketKey, localUsers)" in editor
     assert "props.mount(element)" in popup and "unmount()" in popup
     assert 'if (key === "Escape") return false' in popup
+    assert "loading && query && settings.hideItemsWhileLoading ? [] : nextItems" in popup
+    assert "settings.showLoadingWithItems" in popup and 'class="mn-loading"' in popup
+    assert "hideItemsWhileLoading: true" in editor and "showLoadingWithItems: true" in editor
+    assert "사용자 검색 중…" in editor
     assert "document.body.appendChild(el)" not in editor and "_mentionPopupCleanup" not in editor
     assert "api.mentionUsers(q, ticketKey, { signal })" in shared
+    assert "serverItems, localItems, recentUsers()" in shared
+    assert "Number(user.contextRank) === 0" in shared
+    assert ':mention-users="mentionUsers"' in dialog
     assert "mentionUsers: (q, key, opts)" in api
-    assert "@tiptap/suggestion@3.30.3" in managed
-    assert "new AbortController" in vendor_sources
-    assert "autoUpdate" in vendor_sources and "computePosition" in vendor_sources
+    assert package["dependencies"]["@tiptap/suggestion"] == "3.30.3"
+    assert "AbortController" in bundle
     assert ".mention-badge .mention-av > img.mention-av-img" in css
     assert "height: 100%; max-width: none" in css and "border: 0; border-radius: inherit" in css
     assert ".ProseMirror-selectednode:not(.mention-badge) img" in css
 
 
 def test_comment_editor_runs_on_one_tiptap_v3_runtime():
-    """에디터 진입 모듈은 모두 v3.30.3이며 table/text-style의 v3 named export를 사용한다."""
+    """에디터는 lock된 v3 패키지를 하나의 로컬 번들로만 로드한다."""
     loader = (STATIC / "lib" / "tiptap.js").read_text(encoding="utf-8")
     editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
-    manifest = json.loads((STATIC / "vendor" / "esm" / "manifest.json").read_text(encoding="utf-8"))
-    tiptap_entries = [key for key in manifest if key not in {"lowlight", "hljs"}]
-    vendor_dir = STATIC / "vendor" / "esm"
+    package = json.loads((ROOT / "tools" / "tiptap-bundle" / "package.json").read_text(encoding="utf-8"))
+    lock = json.loads((ROOT / "tools" / "tiptap-bundle" / "package-lock.json").read_text(encoding="utf-8"))
+    entry = (ROOT / "tools" / "tiptap-bundle" / "entry.mjs").read_text(encoding="utf-8")
+    bundle = STATIC / "vendor" / "tiptap.bundle.mjs"
 
-    for key in tiptap_entries:
-        source = (vendor_dir / Path(manifest[key]).name).read_text(encoding="utf-8")
-        assert "@tiptap/" in source and "@3.30.3" in source, key
-    pending = [Path(path).name for path in manifest.values()]
-    seen: set[str] = set()
-    versions: set[str] = set()
-    while pending:
-        name = pending.pop()
-        if name in seen:
-            continue
-        seen.add(name)
-        source = (vendor_dir / name).read_text(encoding="utf-8")
-        versions.update(re.findall(r"@tiptap/[\w./-]+@(\d+\.\d+\.\d+)", source))
-        pending.extend(re.findall(r"/vendor/esm/([0-9a-f]{16}\.mjs)", source))
-        imports = re.findall(r'(?:from|import)\s*(?:\(\s*)?["\']((?:\.{1,2}/|/)[^"\']+)', source)
-        assert all(path.startswith("/vendor/esm/") for path in imports), (name, imports)
-    assert {path.name for path in vendor_dir.glob("*.mjs")} == seen
-    assert versions == {"3.30.3"}
-    assert 'version: "3.30.3"' in loader
-    assert "Table: table.Table" in loader and "TableRow: table.TableRow" in loader
-    assert 'TextStyle: m["extension-text-style"].TextStyle' in loader
+    tiptap_versions = {version for name, version in package["dependencies"].items() if name.startswith("@tiptap/")}
+    assert tiptap_versions == {"3.30.3"}
+    assert lock["packages"]["node_modules/@tiptap/core"]["version"] == "3.30.3"
+    assert bundle.is_file() and bundle.stat().st_size < 1024 * 1024
+    assert not (STATIC / "vendor" / "esm").exists()
+    assert 'import("/vendor/tiptap.bundle.mjs")' in loader
+    assert "Table, TableRow, TableCell, TableHeader" in entry and "{ TextStyle }" in entry
     assert 'T.StarterKit.configure({ codeBlock: false, link: false })' in editor
     assert 'commands.setContent(html, { emitUpdate: false })' in editor
-    assert "extension-table-row" not in manifest and "extension-link" not in manifest
 
 
 def test_field_edit_shows_offline_defaults_immediately_and_pins_none_option():
