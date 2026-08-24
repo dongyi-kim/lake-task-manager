@@ -443,7 +443,9 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 /* 사람 멘션 — 에디터·티켓 본문·댓글·에이전트 답변이 **같은 DOM/CSS**를 쓴다.
    사진이 로드되기 전과 404일 때는 @ 원이 남고, 성공한 사진만 같은 원 위를 덮는다. */
 .mention-badge, .tkt-desc .mention, .tkt-desc a.user-hover, .agent-md .md-person {
-  display: inline-flex; align-items: center; gap: 4px; vertical-align: -2px;
+  /* px로 아래로 밀면 본문·댓글·에디터의 서로 다른 글자 크기에서 baseline이 어긋난다.
+     middle은 주변 텍스트의 x-height 중심에 18px 뱃지 중심을 맞춰 어느 줄에서도 수평을 유지한다. */
+  display: inline-flex; align-items: center; gap: 4px; vertical-align: middle;
   min-height: 18px; box-sizing: border-box; padding: 0 6px 0 2px; border-radius: 11px;
   font-size: 12.5px; line-height: 18px; font-weight: 600; color: var(--text);
   background: color-mix(in srgb, var(--accent) 12%, transparent); }

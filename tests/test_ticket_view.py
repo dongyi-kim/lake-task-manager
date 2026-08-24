@@ -187,6 +187,56 @@ def test_prod_comment_source_proxies_attachment_image_for_edit_and_unproxies_on_
         c.s.comment_format = old_format
 
 
+def test_prod_comment_source_preserves_mention_through_edit_and_republish():
+    """prod 댓글 수정이 user-hover를 일반 링크로 굳히지 않고 실제 멘션으로 왕복해야 한다."""
+    c = _client()
+    class Provider:
+        @staticmethod
+        def get_json(*args, **kwargs):
+            return {"comments": [{
+                "id": "43",
+                "body": ('<p>담당 <a class="user-hover" '
+                         'href="/secure/ViewProfile.jspa?name=skcc.x1103">이준서</a> 님</p>'),
+            }]}
+
+    c._provider = Provider()
+    c._provider_built = True
+    c.env = "prod"
+    old_format = c.s.comment_format
+    try:
+        c.s.comment_format = "html"
+        source = c.comment_source("DL-9008", "43")
+
+        assert source and 'data-type="mention"' in source["html"]
+        assert 'data-id="skcc.x1103"' in source["html"]
+        stored = c.comment_field_value(source["html"])
+        assert 'class="user-hover"' in stored
+        assert 'href="/secure/ViewProfile.jspa?name=skcc.x1103"' in stored
+        assert 'data-type="mention"' not in stored
+    finally:
+        c.s.comment_format = old_format
+
+
+def test_ticket_view_keeps_rendered_mention_and_supplies_canonical_edit_html():
+    """본문은 Jira 앵커로 표시하되 수정 에디터에는 별도 canonical mention HTML을 준다."""
+    c = _client()
+    original = c._get_issue_view
+    try:
+        c._get_issue_view = lambda *args, **kwargs: {
+            "key": "DL-9009",
+            "fields": {"description": ('<p>담당 <a class="user-hover" '
+                       'href="/secure/ViewProfile.jspa?name=skcc.x1103">이준서</a></p>')},
+            "renderedFields": {},
+        }
+        view = c.ticket_view("DL-9009", fresh=True)
+
+        assert 'class="user-hover"' in view["descriptionHtml"]
+        assert 'data-type="mention"' in view["descriptionEditHtml"]
+        assert 'data-id="skcc.x1103"' in view["descriptionEditHtml"]
+    finally:
+        c._get_issue_view = original
+
+
 def test_api_img_rejects_disallowed_host():
     from fastapi.testclient import TestClient
 

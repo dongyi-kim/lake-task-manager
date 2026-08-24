@@ -19,9 +19,9 @@ from app.domain import progress
 from app.auth.base import (SessionExpired, UpstreamUnavailable,
                            background_upstream, write_upstream)
 from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
-                       flatten_task_lists, proxy_attachment_images, proxy_attachment_links,
-                       proxy_images, sanitize_html, unproxy_media,
-                       shorten_mention_names, text_to_html, tidy_html)
+                       flatten_task_lists, lift_mentions_html, proxy_attachment_images,
+                       proxy_attachment_links, proxy_images, sanitize_html,
+                       shorten_mention_names, text_to_html, tidy_html, unproxy_media)
 from app.domain.names import real_name
 from app.content.sections import split_sections
 
@@ -2728,7 +2728,7 @@ class JiraClient:
                 body = c.get("body") or ""
                 if self._comment_fmt() == "html":
                     # description 수정로드와 같은 형태 — 체크박스를 다시 살려 에디터가 태스크리스트로 든다.
-                    html = sanitize_html(_revive_checkboxes(body)) if body.strip() else ""
+                    html = lift_mentions_html(sanitize_html(_revive_checkboxes(body))) if body.strip() else ""
                 else:
                     html = wiki_to_html(body, self._mention_name)
                 # 읽기용 코멘트와 마찬가지로 첨부 이미지는 앱의 인증 프록시를 거쳐야 한다.
@@ -2955,7 +2955,11 @@ class JiraClient:
             return None
         view = _build_ticket_view(raw, self.s.sp_field_id, self.s.jira_base,
                                   self.s.epic_link_field_id)
+        # 화면 표시형 user-hover 앵커는 그대로 유지하고, 편집기에만 TipTap mention 노드를 준다.
+        # 같은 descriptionHtml을 양쪽에 쓰면 수정 진입 때 일반 링크로 파싱돼 재저장 후 파란 링크가 된다.
+        view["descriptionEditHtml"] = lift_mentions_html(view["descriptionHtml"])
         view["descriptionHtml"] = self._proxy_media(view["descriptionHtml"])
+        view["descriptionEditHtml"] = self._proxy_media(view["descriptionEditHtml"])
         # 섹션은 프록시 이전 HTML 에서 잘렸다 — 이미지가 든 섹션도 프록시를 타야 한다
         for sec in view.get("descriptionSections") or []:
             sec["html"] = self._proxy_media(sec["html"])

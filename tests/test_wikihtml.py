@@ -202,6 +202,30 @@ def test_mention_html_mode_becomes_jira_anchor():
     assert sanitize_html(stored) == stored
 
 
+def test_prod_mention_anchor_lifts_to_editor_node_and_round_trips():
+    """prod 저장형 앵커는 수정 시 Mention 노드가 되고 재저장하면 같은 Jira 멘션으로 돌아간다."""
+    from app.content.htmlsafe import flatten_mentions_html, lift_mentions_html, sanitize_html
+    stored = ('<p>담당 <a class="user-hover" target="_blank" '
+              'href="/secure/ViewProfile.jspa?name=skcc.x1103">이준서</a> 님</p>')
+
+    editor = lift_mentions_html(sanitize_html(stored))
+
+    assert '<span class="mention" data-type="mention"' in editor
+    assert 'data-id="skcc.x1103"' in editor
+    assert 'data-label="이준서"' in editor
+    assert ">@이준서</span>" in editor
+    saved_again = sanitize_html(flatten_mentions_html(editor))
+    assert 'class="user-hover"' in saved_again
+    assert 'href="/secure/ViewProfile.jspa?name=skcc.x1103"' in saved_again
+    assert ">이준서</a>" in saved_again
+
+
+def test_lift_mentions_does_not_convert_unrelated_user_hover_link():
+    from app.content.htmlsafe import lift_mentions_html
+    link = '<a class="user-hover" href="https://example.com/user?id=1">일반 링크</a>'
+    assert lift_mentions_html(link) == link
+
+
 def test_mention_wiki_mode_stays_id():
     """wiki 모드(mock/local): 멘션 → [~사번] (기존 동작 유지, 회귀 가드)."""
     h = '<p><span data-type="mention" data-id="skcc.x1103">@이준서</span> 님</p>'

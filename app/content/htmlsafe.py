@@ -164,6 +164,48 @@ def flatten_mentions_html(html):
 
     return _MENTION_SPAN_RE.sub(_repl, html)
 
+
+# prod 저장형 user-hover 앵커 → TipTap이 실제 Mention 노드로 읽는 canonical span.
+# 표시 HTML을 이 형태로 바꾸지는 않는다. 수정 에디터에 넣는 원문에서만 들어 올려야, 재저장할 때
+# flatten_mentions_html이 다시 Jira 앵커로 되돌리고 멘션 알림·프로필 링크 의미도 유지된다.
+_MENTION_ANCHOR_TAG_RE = re.compile(r'<a\b[^>]*>.*?</a>', re.I | re.S)
+_MENTION_CLASS_ATTR_RE = re.compile(r'\bclass="([^"]*)"', re.I)
+_MENTION_HREF_ATTR_RE = re.compile(r'\bhref="([^"]*)"', re.I)
+
+
+def lift_mentions_html(html):
+    """Jira ``user-hover`` 프로필 앵커를 TipTap ``mention`` span으로 복원한다.
+
+    user-hover라는 class만 보고 일반 링크를 멘션으로 바꾸지 않는다. 프로필 경로와 사용자 id까지
+    모두 확인하고, 하나라도 없으면 원문을 그대로 둔다.
+    """
+    if not html or "user-hover" not in html or "ViewProfile.jspa" not in html:
+        return html
+
+    def _repl(m):
+        tag = m.group(0)
+        cm = _MENTION_CLASS_ATTR_RE.search(tag)
+        hm = _MENTION_HREF_ATTR_RE.search(tag)
+        if not cm or "user-hover" not in cm.group(1).split() or not hm:
+            return tag
+        href = unescape(hm.group(1) or "")
+        parsed = urllib.parse.urlparse(href)
+        if not parsed.path.lower().endswith("/secure/viewprofile.jspa"):
+            return tag
+        query = {str(k).lower(): v for k, v in urllib.parse.parse_qs(parsed.query).items()}
+        values = query.get("name") or query.get("username") or query.get("userkey") or []
+        uid = str(values[0] if values else "").strip()
+        if not uid:
+            return tag
+        inner = re.sub(r"<[^>]+>", "", tag[tag.find(">") + 1:tag.lower().rfind("</a>")])
+        label = unescape(inner).strip().lstrip("@").strip() or uid
+        safe_id = escape(uid, quote=True)
+        safe_label = escape(label, quote=True)
+        return ('<span class="mention" data-type="mention" data-id="' + safe_id
+                + '" data-label="' + safe_label + '">@' + escape(label) + "</span>")
+
+    return _MENTION_ANCHOR_TAG_RE.sub(_repl, html)
+
 # 표시에 필요한 서식 태그만 허용 (구조/텍스트/표/코드/링크/이미지).
 _ALLOWED_TAGS = {
     "p", "br", "hr", "b", "strong", "i", "em", "u", "s", "strike", "del", "ins",
