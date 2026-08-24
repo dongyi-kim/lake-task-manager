@@ -13,12 +13,13 @@ Lake Task Manager — FastAPI 진입점.
 JIRA_ENV=mock 이면 Jira 없이 결정적 데이터로 전체가 구동된다.
 """
 
+import json
 import sys
 import threading
 import urllib.parse
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -1262,7 +1263,8 @@ def api_comment_source(key: str, cid: str):
 
 @app.get("/api/mytasks")
 def api_mytasks(user: str = "", done: bool = False, scope: str = "assignee",
-                openFilter: str = "all", progFilter: str = "all", doneFilter: str = "1w"):
+                openFilter: str = "all", progFilter: str = "all", doneFilter: str = "1w",
+                deferred: bool = False):
     """'내 Task' — 세션 사용자가 담당한 일감 + 그 부모/형제/Epic 맥락을 **한 모델**로.
     세 가지 뷰(시간 우선·부모 클러스터·계층 우선)는 전부 이 하나에서 프론트가 파생시킨다.
     user 를 주면 그 사람 기준(대리 확인용), done=true 면 완료까지 포함.
@@ -1275,7 +1277,75 @@ def api_mytasks(user: str = "", done: bool = False, scope: str = "assignee",
         _client, user or None, include_done=done, scope=scope,
         open_filter=(openFilter if openFilter in ("all", "2w") else "all"),
         prog_filter=(progFilter if progFilter in ("all", "1m") else "all"),
-        done_filter=(doneFilter if doneFilter in ("1w", "1m") else "1w")))
+        done_filter=(doneFilter if doneFilter in ("1w", "1m") else "1w"),
+        defer_children=deferred))
+
+
+@app.get("/api/mytasks/stream")
+def api_mytasks_stream(user: str = "", done: bool = False, scope: str = "assignee",
+                       openFilter: str = "all", progFilter: str = "all",
+                       doneFilter: str = "1w"):
+    """Stream each completed normalized JQL leaf as one NDJSON Task-model chunk."""
+    def lines():
+        try:
+            for event in mytasks.iter_my_task_models(
+                    _client, user or None, include_done=done, scope=scope,
+                    open_filter=(openFilter if openFilter in ("all", "2w") else "all"),
+                    prog_filter=(progFilter if progFilter in ("all", "1m") else "all"),
+                    done_filter=(doneFilter if doneFilter in ("1w", "1m") else "1w")):
+                yield json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+        except Exception as exc:  # response headers are already sent; errors travel in-band
+            yield json.dumps({
+                "type": "error", "error": str(exc),
+                "needLogin": isinstance(exc, SessionExpired),
+            }, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+    return StreamingResponse(
+        lines(), media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/mytasks/sync/{sync_id}/group/{key}")
+def api_mytasks_group(sync_id: str, key: str):
+    """Parent Task 하나의 SubTask만 독립 동기화한다."""
+    try:
+        # 퀵필터를 바꾸면 새 base JQL이 이 보강 작업을 앞질러야 한다. 한 Jira 호출이 끝난
+        # 경계마다 foreground 요청이 먼저 큐를 잡도록 background priority로 실행한다.
+        with background_upstream():
+            group = mytasks.hydrate_my_task_group(_client, sync_id, key.upper())
+        return JSONResponse({"group": group})
+    except PermissionError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=403)
+    except KeyError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except LookupError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=410)
+
+
+@app.get("/api/mytasks/epics")
+def api_mytasks_epic_metadata(keys: str = ""):
+    """Resolve newly referenced Epic labels without delaying the Task leaf stream.
+
+    Misses are batched and queued as background work, so the next foreground JQL leaf or a newly
+    selected filter always wins the serial prod provider queue.
+    """
+    requested = [key.strip().upper() for key in keys.split(",") if key.strip()][:100]
+    with background_upstream():
+        epics = _client.epic_metadata_many(requested)
+    return JSONResponse({"epics": epics})
+
+
+@app.get("/api/mytasks/sync/{sync_id}/epics")
+def api_mytasks_epics(sync_id: str):
+    """초기 카드 렌더 뒤 Epic 제목/상태만 별도로 보강한다."""
+    try:
+        with background_upstream():
+            epics = mytasks.hydrate_my_task_epics(_client, sync_id)
+        return JSONResponse({"epics": epics})
+    except PermissionError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=403)
+    except LookupError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=410)
 
 
 class _AssigneeBody(BaseModel):
@@ -1984,6 +2054,7 @@ def api_activity(user: str):
 @app.post("/api/refresh")
 def api_refresh():
     _cache.invalidate()          # 전체 캐시 무효화 (epic/workload/activity)
+    _client.advance_jql_generation()  # 진행 중인 leaf warming도 구세대에서 멈추게 한다
     from app.infra.settings import reload_people
     reload_people()              # config(people.yaml) 편집분도 다음 조회부터 반영
     return {"status": "refreshed"}

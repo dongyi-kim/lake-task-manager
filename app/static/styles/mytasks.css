@@ -207,6 +207,13 @@
 /* 고정 max-width 는 카드가 좁아져도 그대로여서 넘쳐 나간다. 남는 폭만큼만 쓰고
    모자라면 줄어들며 …로 잘리게 한다(줄어들 수 있어야 ellipsis 가 걸린다). */
 .mt-epic.sm { max-width: none; }
+.mt-epic.pending { display: inline-flex; align-items: center; gap: 4px;
+  color: color-mix(in srgb, #fff 78%, transparent);
+  background: color-mix(in srgb, var(--sig, var(--ty-epic)) 72%, var(--panel)); }
+.mt-epic.pending::before { content: ""; flex: none; width: 8px; height: 8px; box-sizing: border-box;
+  border: 1.3px solid color-mix(in srgb, currentColor 38%, transparent); border-top-color: currentColor;
+  border-radius: 50%; animation: mt-sync-spin .75s linear infinite; }
+:root[data-theme="dark"] .mt-epic.pending { color: color-mix(in srgb, #0b1015 78%, transparent); }
 .tc-l2 .mt-epic { flex: 0 1 auto; min-width: 24px; margin-left: auto; }
 /* 'Epic 없음' 은 뱃지가 아니라 **없음의 표시**다 — 채우면 있는 것처럼 보인다 */
 .mt-epic.none { color: var(--muted-2); background: none; font-weight: 600;
@@ -222,6 +229,19 @@
   color: var(--text); border-left: 1px solid color-mix(in srgb, var(--ty-story) 40%, var(--border)); }
 .tc-l2 .mt-voc { margin-left: auto; }
 .mt-none { color: var(--muted-2); font-size: 11px; padding: 6px 8px; }
+.mt-axis-load { flex: none; display: inline-flex; align-items: center; gap: 4px;
+  color: var(--muted); font-size: 9.5px; font-weight: 600; white-space: nowrap; }
+.mt-axis-load i, .mt-axis-shell i { width: 9px; height: 9px; box-sizing: border-box;
+  border: 1.5px solid var(--border-hi); border-top-color: var(--tc, var(--accent));
+  border-radius: 50%; animation: mt-sync-spin .75s linear infinite; }
+.mt-axis-shell { position: relative; z-index: 1; display: grid;
+  grid-template-columns: var(--mt-cols, repeat(3, minmax(0, 1fr))); min-height: 112px; }
+.mt-axis-shell > div { display: flex; align-items: flex-start; justify-content: center;
+  min-width: 0; padding: 18px 8px; overflow: hidden; color: var(--muted-2);
+  font-size: 10px; white-space: nowrap; }
+.mt-axis-shell > div > span { display: inline-flex; align-items: center; gap: 6px; }
+.mt-bandh-w > .mt-axis-load { margin-left: 2px; }
+@media (max-width: 900px) { .mt-axis-shell { grid-template-columns: 1fr; } }
 
 /* 그룹 안에서 내 담당이 아닌 티켓을 펼치는 버튼 */
 .mt-more { border: 1px dashed var(--border-hi); background: none; color: var(--muted);
@@ -345,6 +365,12 @@
 .mt-subfoot-progress { flex: none; display: inline-flex; align-items: center; gap: 7px; }
 .mt-subfoot-progress em { min-width: 33px; color: var(--muted); font-family: ui-monospace, Consolas, monospace;
   font-style: normal; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+.mt-subfoot-sync { flex: none; display: inline-flex; align-items: center; gap: 5px; margin-left: auto;
+  color: var(--muted); font-size: 10px; font-weight: 600; }
+.mt-subfoot-sync i { width: 10px; height: 10px; box-sizing: border-box;
+  border: 1.5px solid var(--border-hi); border-top-color: var(--gc, var(--accent)); border-radius: 50%;
+  animation: mt-sync-spin .75s linear infinite; }
+@keyframes mt-sync-spin { to { transform: rotate(360deg); } }
 /* 막대는 눈으로 비율을 읽는 것이라 너무 짧으면 '거의 다 됐나' 를 못 읽는다. */
 .mt-pbar { display: inline-block; width: 84px; height: 5px; border-radius: 99px;
   background: var(--track, var(--border)); overflow: hidden; }
@@ -730,7 +756,8 @@
 .mt-colbg > .c-todo { background: color-mix(in srgb, var(--st-todo) 11%, transparent); }
 .mt-colbg > .c-inprogress { background: color-mix(in srgb, var(--st-prog) 11%, transparent); }
 .mt-colbg > .c-done { background: color-mix(in srgb, var(--st-done) 11%, transparent); }
-.mt-hwrap > .mt-gbody, .mt-hwrap > .mt-gcard2, .mt-hwrap > .mt-gslot { position: relative; z-index: 1; }
+.mt-hwrap > .mt-gbody, .mt-hwrap > .mt-gcard2, .mt-hwrap > .mt-gslot,
+.mt-hwrap > .mt-axis-shell { position: relative; z-index: 1; }
 /* 셀에 칠하던 색은 걷는다 — 두 겹이 되면 그룹 구간만 옅어 보인다 */
 .ax-h .mt-gbody.plain .mt-cell { background: none; }
 @media (max-width: 900px) { .mt-colbg { display: none; } }

@@ -33,6 +33,7 @@ RUNTIME_PINS = {
     "langfuse": "4.14.4",
     "httpx": "0.28.1",
     "certifi": "2026.7.22",
+    "tzdata": "2026.3",
     "jsonschema": "4.26.0",
     "nh3": "0.3.6",
     "mcp": "2.0.0",

@@ -54,19 +54,21 @@ def _query_hash(source: str, canonical: str) -> str:
     return hashlib.sha256(f"{source}\n{canonical}".encode("utf-8")).hexdigest()[:24]
 
 
-def _encode_cursor(source: str, canonical: str, offset: int) -> str:
+def _encode_cursor(source: str, canonical: str, offset: int, snapshot_id: str = "") -> str:
     payload = {
-        "v": 1, "s": source, "q": _query_hash(source, canonical),
+        "v": 2, "s": source, "q": _query_hash(source, canonical),
         "o": max(0, int(offset)), "t": _THREAD.get(),
     }
+    if snapshot_id:
+        payload["p"] = str(snapshot_id)
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     sig = hmac.new(_CURSOR_KEY, raw, hashlib.sha256).digest()
     return _b64(raw) + "." + _b64(sig)
 
 
-def _decode_cursor(cursor: str, source: str, canonical: str) -> int:
+def _decode_cursor_data(cursor: str, source: str, canonical: str) -> dict:
     if not cursor:
-        return 0
+        return {"o": 0, "p": ""}
     try:
         left, right = str(cursor).split(".", 1)
         raw, supplied = _unb64(left), _unb64(right)
@@ -79,9 +81,14 @@ def _decode_cursor(cursor: str, source: str, canonical: str) -> int:
         current = _THREAD.get()
         if payload.get("t") != current:
             raise ValueError("thread")
-        return max(0, int(payload.get("o") or 0))
+        return {"o": max(0, int(payload.get("o") or 0)),
+                "p": str(payload.get("p") or "")}
     except Exception as exc:
         raise ValueError("cursor가 현재 대화와 조회 조건에 유효하지 않습니다.") from exc
+
+
+def _decode_cursor(cursor: str, source: str, canonical: str) -> int:
+    return _decode_cursor_data(cursor, source, canonical)["o"]
 
 
 def _split_order(jql: str) -> tuple[str, str]:
@@ -161,7 +168,8 @@ def _issue_row(raw: dict, projected_fields: list[str] | None = None) -> dict:
 def _jql_page(where: str, order_by: str, fields: list | None, page_size: int,
               cursor: str, source: str = "jira") -> dict:
     canonical = _canonical_jql(where, order_by)
-    start = _decode_cursor(cursor, source, canonical)
+    cursor_data = _decode_cursor_data(cursor, source, canonical)
+    start = cursor_data["o"]
     size = max(1, min(int(page_size or 100), 100))
     requested = [str(x).strip() for x in (fields or []) if str(x).strip()]
     base_fields = ["summary", "project", "issuetype", "status", "assignee", "priority",
@@ -169,10 +177,14 @@ def _jql_page(where: str, order_by: str, fields: list | None, page_size: int,
     for field in requested[:30]:
         if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", field) and field not in base_fields:
             base_fields.append(field)
-    page = client().search_issues_page(canonical, start_at=start, max_results=size,
-                                       fields=base_fields, light=True)
+    page_kwargs = {"start_at": start, "max_results": size,
+                   "fields": base_fields, "light": True}
+    if cursor_data.get("p"):
+        page_kwargs["snapshot_id"] = cursor_data["p"]
+    page = client().search_issues_page(canonical, **page_kwargs)
     rows = [_issue_row(x, requested) for x in page["issues"]]
-    next_cursor = (_encode_cursor(source, canonical, page["nextStartAt"])
+    next_cursor = (_encode_cursor(source, canonical, page["nextStartAt"],
+                                  page.get("snapshotId") or cursor_data.get("p") or "")
                    if page.get("hasMore") else None)
     return {
         "canonicalJql": canonical,

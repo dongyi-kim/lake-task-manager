@@ -131,11 +131,15 @@ def scoped_person_workload(user_id: str, done_days: int = 28) -> dict:
     def bucket(condition: str) -> dict:
         jql = jira_scope(f'assignee = "{safe}" AND {condition}') + \
             " ORDER BY updated DESC, key ASC"
-        start, counts = 0, {}
+        start, counts, snapshot_id = 0, {}, None
         while True:
-            page = c.search_issues_page(jql, start_at=start, max_results=100,
-                                        fields=["project", "issuetype", "status", "updated"],
-                                        light=True)
+            page_kwargs = {"start_at": start, "max_results": 100,
+                           "fields": ["project", "issuetype", "status", "updated"],
+                           "light": True}
+            if snapshot_id:
+                page_kwargs["snapshot_id"] = snapshot_id
+            page = c.search_issues_page(jql, **page_kwargs)
+            snapshot_id = page.get("snapshotId") or snapshot_id
             for raw in page.get("issues") or []:
                 key = str(raw.get("key") or "")
                 if not jira_key_allowed(key):

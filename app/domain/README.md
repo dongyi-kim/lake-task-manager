@@ -9,7 +9,7 @@ PMO 대시보드의 **계산·조립 로직**. 정규화된 이슈를 입력받�
 - **rollup.py** — Epic 진척률 + wbs_config → **WBS/Module/PMO 가중 조합**(순수).
 - **workload.py** — 기능3 인력 워크로드 조립(모듈 목록·로스터·인력별 번들).
 - **vit.py** — 기능2 PMO_VIT 현안 조립(shell/module/detail, 뉴스 컷오프, 평탄화).
-- **mytasks.py** — '내 Task' 트리 빌드 + 우선순위(`pri_rank`)/카테고리 랭킹 + 롤업.
+- **mytasks.py** — '내 Task' Parent 우선 모델 + Parent별 SubTask 비동기 보강 + 우선순위/카테고리 롤업.
 - **search.py** — 통합 검색(Jira/Confluence/Bitbucket) + 멘션/사용자 제안 + 인력 해석.
 - **names.py** — `real_name`(displayName 에서 회사 제거) + `staff_kind`(x*/i* 개발/운영 뱃지).
 

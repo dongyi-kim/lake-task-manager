@@ -202,6 +202,39 @@ def test_uniform_subtask_status_reuses_solo_parent_and_foldable_children_in_one_
     assert "mt-gslot.one-status" not in css
 
 
+def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_overwrite():
+    view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
+    api = (STATIC / "lib" / "api.js").read_text(encoding="utf-8")
+
+    assert '"&deferred=1"' in api
+    assert "myTasksStream: (opts, onEvent, signal)" in api
+    assert "myTasksEpicMeta: (keys)" in api
+    assert "response.body.getReader" in api
+    assert "myTasksGroup: (syncId, key)" in api
+    assert "myTasksEpics: (syncId)" in api
+    assert "this._hydrateModel(finalModel, seq, key, cache);" in view
+    assert "this._mergeStreamModel(cache[key] || this._emptyTaskModel(), event.model)" in view
+    assert "this._streamAbort.abort()" in view
+    assert "this._cacheModel(cache, key, next)" in view
+    assert "this._queueEpicMetadata(next, cache)" in view
+    assert 'epicDisplayTitle(k) { return this.epicPending(k) ? "Epic 이름 확인 중"' in view
+    assert "groups, epics: Array.from(epicMap.values()), counts: this._groupCounts(groups)" in view
+    assert "if (claimed.has(atom.key)) return false;" in view
+    assert 'if (kind === "permission") return;' in view
+    assert 'title: kind === "auth" ? "일부 Task를 인증 문제로 불러오지 못했습니다"' in view
+    assert "Parent Task는 준비됨" not in view
+    assert "mt-sub-sync-row" not in view
+    # A changed filter stops not-yet-started child jobs. Completed leaf chunks are cached before
+    # the sequence guard, while only the matching sequence may touch visible UI.
+    assert 'if (seq !== this._loadSeq) return;   // 아직 시작하지 않은 옛 필터 보강' in view
+    assert "cache[cacheKey] = next;" in view
+    assert "this._loadSeq === patch.seq" in view
+    assert "await Promise.allSettled([worker(), worker()]);" in view
+    assert "groups, counts: this._groupCounts(groups)" in view
+    assert "if (!seen.has(atom.key))" in view
+    assert "if (p?.group?.childrenPending) return null;" in view
+
+
 def test_comment_submit_waits_for_pending_draft_before_final_delete():
     """제출 성공 뒤 예약된 saveDraft가 완료 글을 되살리는 경쟁 상태를 막는다."""
     src = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
@@ -579,6 +612,16 @@ def test_global_search_keeps_up_to_twenty_unique_recent_items():
     assert "const RECENT_FETCH = 100;" in search
     assert "api.recent(RECENT_FETCH)" in search
     assert ").slice(0, RECENT_MAX);" in search
+
+
+def test_global_search_revalidates_kept_results_when_reopened():
+    search = (STATIC / "components" / "ui" / "SearchOverlay.js").read_text(encoding="utf-8")
+    typeahead = (STATIC / "lib" / "typeahead.js").read_text(encoding="utf-8")
+
+    assert "clear() { m.clear(); }" in typeahead
+    assert "return { run, cancel, clear };" in typeahead
+    assert "Object.values(this._src).forEach((t) => t.clear());" in search
+    assert "if (this.q.trim()) this.run();" in search
 
 
 # ── 파이썬 소스 위생 ────────────────────────────────────────────────────────

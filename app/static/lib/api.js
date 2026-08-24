@@ -39,6 +39,67 @@ async function req(path, opts) {
   return r.json();
 }
 
+/** Read newline-delimited JSON incrementally.  The timeout is inactivity-based: every completed
+ *  leaf resets it, while a filter change aborts immediately through the caller's signal. */
+async function streamNdjson(path, onEvent, signal) {
+  const ctl = new AbortController();
+  let timedOut = false, timer = null;
+  const abortFromCaller = () => ctl.abort();
+  if (signal) {
+    if (signal.aborted) ctl.abort();
+    else signal.addEventListener("abort", abortFromCaller, { once: true });
+  }
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { timedOut = true; ctl.abort(); }, REQUEST_TIMEOUT_MS);
+  };
+  arm();
+  try {
+    const response = await fetch(path, {
+      signal: ctl.signal, headers: { Accept: "application/x-ndjson" }, cache: "no-store",
+    });
+    if (response.status === 401) {
+      watchAuth(); window.dispatchEvent(new CustomEvent("need-login"));
+      throw new Error("HTTP 401");
+    }
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    const decoder = new TextDecoder();
+    let pending = "";
+    const consume = (text) => {
+      pending += text;
+      const lines = pending.split("\n");
+      pending = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (event.type === "error") {
+          if (event.needLogin) { watchAuth(); window.dispatchEvent(new CustomEvent("need-login")); }
+          throw new Error(event.error || "Task 스트림을 불러오지 못했습니다.");
+        }
+        onEvent(event);
+      }
+    };
+    if (!response.body || !response.body.getReader) {
+      consume(await response.text() + "\n");
+      return;
+    }
+    const reader = response.body.getReader();
+    while (true) {
+      const part = await reader.read();
+      if (part.done) break;
+      arm();
+      consume(decoder.decode(part.value, { stream: true }));
+    }
+    consume(decoder.decode() + (pending ? "\n" : ""));
+  } catch (error) {
+    if (timedOut) throw new Error("요청 시간이 초과되었습니다. 앱은 계속 실행 중이며 잠시 후 다시 시도할 수 있습니다.");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener("abort", abortFromCaller);
+  }
+}
+
 // memo 는 **LRU 상한**을 둔다 — 앱 창은 트레이 상주로 며칠씩 살아 있는데, 무한 memo 면
 // 열람한 모든 티켓의 본문·코멘트·타임라인 JSON 이 힙에 계속 쌓인다(장기 사용 메모리 증가의 주범).
 // 최근 300개면 "다시 열면 즉시" 체감은 유지되면서 힙은 일정 수준에서 멈춘다.
@@ -151,8 +212,21 @@ export const api = {
     return req("/api/mytasks?scope=" + encodeURIComponent(o.scope || "assignee")
       + "&openFilter=" + encodeURIComponent(o.openFilter || "all")
       + "&progFilter=" + encodeURIComponent(o.progFilter || "all")
-      + "&doneFilter=" + encodeURIComponent(o.doneFilter || "1w"));
+      + "&doneFilter=" + encodeURIComponent(o.doneFilter || "1w")
+      + "&deferred=1");
   },
+  myTasksStream: (opts, onEvent, signal) => {
+    const o = opts || {};
+    return streamNdjson("/api/mytasks/stream?scope=" + encodeURIComponent(o.scope || "assignee")
+      + "&openFilter=" + encodeURIComponent(o.openFilter || "all")
+      + "&progFilter=" + encodeURIComponent(o.progFilter || "all")
+      + "&doneFilter=" + encodeURIComponent(o.doneFilter || "1w"), onEvent, signal);
+  },
+  myTasksGroup: (syncId, key) => req("/api/mytasks/sync/" + encodeURIComponent(syncId)
+    + "/group/" + encodeURIComponent(key)),
+  myTasksEpics: (syncId) => req("/api/mytasks/sync/" + encodeURIComponent(syncId) + "/epics"),
+  myTasksEpicMeta: (keys) => get("/api/mytasks/epics?keys="
+    + encodeURIComponent((keys || []).join(","))),
   search: (q, scope, only) => req("/api/search?q=" + encodeURIComponent(q)
     + "&scope=" + encodeURIComponent(scope || "scoped")
     + (only ? "&only=" + encodeURIComponent(only) : "")),               // only=jira|confluence

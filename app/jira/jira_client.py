@@ -6,11 +6,14 @@ Phase A 범위: Epic 자식 SP 롤업. (기능2·3 의 검색/활동은 후속 P
 """
 
 import base64
+import hashlib
 import re
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, timedelta
 from html import escape, unescape
 from urllib.parse import quote, unquote, urlparse
@@ -24,6 +27,8 @@ from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_secti
                        shorten_mention_names, text_to_html, tidy_html, unproxy_media)
 from app.domain.names import real_name
 from app.content.sections import split_sections
+from app.jira.jql import (JqlUnsupported, compile_jql, fields_with_order,
+                          sort_issues)
 
 
 # 실 Jira DC statusCategory.key → 내부 vocab (new=todo, indeterminate=inprogress, done=done)
@@ -35,6 +40,18 @@ _ANCHOR_RE = re.compile(r'<a\s[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.S | re.I)
 _CONF_TITLE_RE = re.compile(r"/pages/\d+/([^/?#]+)|/display/[^/]+/([^/?#]+)")
 #: Confluence 페이지 id — 옛 링크(`/pages/viewpage.action?pageId=…`)엔 제목이 없고 이것만 있다.
 _CONF_PAGEID_RE = re.compile(r"[?&]pageId=(\d+)|/pages/(\d+)(?:[/?#]|$)")
+
+
+@dataclass(frozen=True)
+class MutationEvent:
+    """One successful Jira write and the cache dependencies it can affect."""
+
+    kind: str
+    key: str = ""
+    changed_fields: tuple[str, ...] = ()
+    parent_key: str | None = None
+    epic_key: str | None = None
+    related_keys: tuple[str, ...] = ()
 
 
 # 이슈 링크 관계 문구 — 사내 Jira 는 inward/outward 에 서술형 장문을 넣기도 한다
@@ -465,6 +482,20 @@ def _is_default_avatar_url(url):
 
 
 class JiraClient:
+    JQL_CACHE_VERSION = 2
+    JQL_SNAPSHOT_TTL = 30 * 60
+    # Epic 제목/상태는 일반 티켓 본문보다 훨씬 덜 바뀌고 Task·Workload·WBS 전역에서 반복된다.
+    # 일반 issue TTL(기본 15분)보다 길게 유지하되 Epic 수정 성공 시 _invalidate_ticket()이
+    # 즉시 이 전용 항목을 비워, 긴 TTL이 사용자 수정 반영을 늦추지는 않게 한다.
+    EPIC_META_TTL = 6 * 3600
+    JQL_LEAF_RESULT_LIMIT = 10_000
+    # A serial provider (prod SSO/mock) cannot make a large DNF cold query interactive if every
+    # leaf blocks the response.  Build the first exhaustive snapshot with one equivalent Jira
+    # query and warm every leaf at background priority; later equivalent queries use those leaves.
+    # Small DNF queries stay synchronous so their leaf cache is immediately reusable.
+    JQL_FOREGROUND_LEAF_LIMIT = 4
+    JQL_BOOTSTRAP_RESULT_LIMIT = 50_000
+
     def __init__(self, settings, cache):
         self.s = settings
         self.cache = cache
@@ -487,6 +518,9 @@ class JiraClient:
         self._provider_built = False
         self._provider_lock = threading.Lock()   # provider lazy 생성 경쟁 방지(부팅 warm + 첫 요청 동시 접근)
         self._renew_at = {}          # 서비스별 마지막 무음갱신 시도 시각(스로틀)
+        self._jql_lock_guard = threading.Lock()
+        self._jql_locks = {}
+        self._mutation_batch = threading.local()
         # 세션 사용자 캐시도 함께 버린다. 안 그러면 로그인 직후에도 옛 판정(빈 사용자)이
         # TTL 동안 남아 매니저 여부·본인 댓글 판정이 계속 틀린다.
         try:
@@ -861,6 +895,7 @@ class JiraClient:
         return value
 
     def _refresh_bg(self, key, ttl, producer):
+        fence = self.cache.fence()
         self._ensure_bg()
         with self._bg_lock:
             if key in self._bg_inflight:
@@ -870,7 +905,7 @@ class JiraClient:
         def job():
             try:
                 with background_upstream():
-                    self.cache.set(key, producer(), ttl)
+                    self.cache.set_if_fence(key, producer(), ttl, fence)
             except Exception:
                 pass                     # 갱신 실패는 조용히 — stale 값이 계속 쓰인다
             finally:
@@ -895,7 +930,652 @@ class JiraClient:
         그대로 재사용되므로 캐시 가치가 크다(담당/상태 변경 시 'mt:' 프리픽스째 무효화한다)."""
         return self._search(jql, cache_key=cache_key, max_results=max_results)
 
-    def search_issues_page(self, jql, start_at=0, max_results=100, fields=None, light=True):
+    def iter_search_issue_chunks(self, jql, fields=None, light=True):
+        """Yield one fully cached DNF leaf as soon as it finishes.
+
+        This is the progressive counterpart of :meth:`search_issues`.  Every yielded chunk has
+        already completed its leaf cache, row cache and ``issueL`` write-through, so a browser
+        that switches filters may stop consuming the stream without losing completed work.
+
+        Serial providers (prod SSO and the latency-injected mock) intentionally submit one leaf
+        at a time.  A newly selected filter can therefore enter the provider priority queue at
+        the next leaf boundary instead of sitting behind every leaf of the abandoned filter.
+        Parallel-safe providers yield futures in completion order.
+        """
+        requested_fields = fields
+        if isinstance(requested_fields, (list, tuple, set)):
+            requested_fields = ",".join(
+                str(value) for value in requested_fields if str(value).strip())
+        requested_fields = (requested_fields or self._issue_fields(light=light)).strip()
+        def failure(exc):
+            message = str(exc or "Jira 검색 실패")
+            lowered = message.lower()
+            if (isinstance(exc, PermissionError)
+                    or re.search(r"(?:http\s*)?403\b|forbidden|permission denied|not permitted",
+                                 lowered)):
+                kind = "permission"
+            elif (isinstance(exc, SessionExpired)
+                  or re.search(r"(?:http\s*)?401\b|login|required|session|anonymous|인증|로그인",
+                               lowered)):
+                kind = "auth"
+            else:
+                kind = "other"
+            return {"kind": kind, "message": message}
+
+        try:
+            compiled = self._compile_jql(jql)
+        except JqlUnsupported:
+            try:
+                issues = self._legacy_search(
+                    jql, cache_key=None, max_results=self.JQL_BOOTSTRAP_RESULT_LIMIT,
+                    light=light)
+            except Exception as exc:
+                yield {
+                    "leaf": jql, "leafIndex": 0, "leafTotal": 1,
+                    "issues": [], "combined": [], "fallback": True,
+                    "error": failure(exc),
+                }
+                return
+            yield {
+                "leaf": jql, "leafIndex": 0, "leafTotal": 1,
+                "issues": issues, "combined": issues, "fallback": True,
+            }
+            return
+        except Exception as exc:
+            yield {
+                "leaf": jql, "leafIndex": 0, "leafTotal": 1,
+                "issues": [], "combined": [], "fallback": False,
+                "error": failure(exc),
+            }
+            return
+
+        execution_fields = fields_with_order(requested_fields, compiled.order)
+        generation = self._jql_generation()
+        projection = self._projection_signature(execution_fields, light)
+        items = tuple(enumerate(zip(compiled.leaves, compiled.leaf_fields)))
+        combined = {}
+
+        def fetch(item):
+            index, (leaf, predicate_fields) = item
+            rows = self._cached_jql_leaf(
+                leaf, predicate_fields, execution_fields, light, generation, projection)
+            return index, leaf, rows
+
+        provider = self.provider
+        if getattr(provider, "supports_parallel", False) and len(items) > 1:
+            with ThreadPoolExecutor(max_workers=min(8, len(items))) as executor:
+                futures = {executor.submit(fetch, item): item for item in items}
+                for future in as_completed(futures):
+                    fallback_index, (fallback_leaf, _predicate_fields) = futures[future]
+                    try:
+                        index, leaf, rows = future.result()
+                    except Exception as exc:
+                        yield {
+                            "leaf": fallback_leaf, "leafIndex": fallback_index,
+                            "leafTotal": len(items), "issues": [],
+                            "combined": sort_issues(combined.values(), compiled.order),
+                            "fallback": False, "error": failure(exc),
+                        }
+                        continue
+                    for issue in rows:
+                        key = (issue or {}).get("key")
+                        if key:
+                            combined[key] = issue
+                    yield {
+                        "leaf": leaf, "leafIndex": index, "leafTotal": len(items),
+                        "issues": rows,
+                        "combined": sort_issues(combined.values(), compiled.order),
+                        "fallback": False,
+                    }
+        else:
+            for item in items:
+                fallback_index, (fallback_leaf, _predicate_fields) = item
+                try:
+                    index, leaf, rows = fetch(item)
+                except Exception as exc:
+                    yield {
+                        "leaf": fallback_leaf, "leafIndex": fallback_index,
+                        "leafTotal": len(items), "issues": [],
+                        "combined": sort_issues(combined.values(), compiled.order),
+                        "fallback": False, "error": failure(exc),
+                    }
+                    continue
+                for issue in rows:
+                    key = (issue or {}).get("key")
+                    if key:
+                        combined[key] = issue
+                yield {
+                    "leaf": leaf, "leafIndex": index, "leafTotal": len(items),
+                    "issues": rows,
+                    "combined": sort_issues(combined.values(), compiled.order),
+                    "fallback": False,
+                }
+
+    def _jql_epoch_namespace(self):
+        return f"jql:{self.env}"
+
+    def _jql_leaf_epoch_namespace(self):
+        return f"jqlleaf:{self.env}"
+
+    def _jql_generation(self):
+        return self.cache.epoch(self._jql_epoch_namespace())
+
+    def _jql_leaf_generation(self):
+        return self.cache.epoch(self._jql_leaf_epoch_namespace())
+
+    def _jql_user_context(self):
+        """Opaque cache partition for Jira permission/current-user context."""
+        user = self.current_user() or {}
+        identity = str(user.get("id") or "anonymous")
+        return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+
+    def advance_jql_generation(self):
+        """Invalidate every normalized leaf and snapshot after an explicit global refresh."""
+        self.cache.bump_epoch(self._jql_leaf_epoch_namespace())
+        return self.cache.bump_epoch(self._jql_epoch_namespace())
+
+    def _jql_index_prefix(self, kind, leaf_generation, value):
+        return (f"jqlidx{kind}:v{self.JQL_CACHE_VERSION}:{self.env}:"
+                f"e{leaf_generation}:u{self._jql_user_context()}:"
+                f"{str(value or '').lower()}:")
+
+    @staticmethod
+    def _jql_changed_predicate_fields(events):
+        """Fields whose predicates can gain or lose a mutated issue.
+
+        Every successful Jira write changes ``updated``.  Text predicates can be affected by
+        summary/description/comment changes, and Jira's component JQL field is singular while the
+        REST payload field is plural.
+        """
+        events = tuple(events or ())
+        fields = {
+            str(field).strip().lower()
+            for event in events
+            for field in (event.changed_fields or ())
+            if str(field).strip()
+        }
+        if events:
+            fields.add("updated")
+        if "components" in fields:
+            fields.add("component")
+        if "issuetype" in fields:
+            fields.add("type")
+        if "duedate" in fields:
+            fields.add("due")
+        if fields & {"resolution", "resolutiondate"}:
+            fields.add("resolved")
+        if "status" in fields:
+            fields.add("statuscategory")
+        if "key" in fields:
+            fields.add("issue")
+        if fields & {"summary", "description", "comment"}:
+            fields.add("text")
+        if any(event.kind in {"create", "create_epic"} for event in events):
+            # New issues have implicit/default fields not all present in the create payload.
+            fields.update({"*", "key", "project", "issuetype", "status", "statuscategory",
+                           "created", "updated", "reporter", "resolution"})
+        return fields
+
+    def _affected_jql_leaf_keys(self, events):
+        """Resolve active leaf keys affected by successful mutations via persistent indexes."""
+        generation = self._jql_leaf_generation()
+        keys = set()
+        for event in events:
+            # Reverse membership is sufficient for deletion (the issue can only leave leaves),
+            # and is the safe fallback for mutation kinds that provide no changed-field contract.
+            # Ordinary field writes use the dependency index below, so changing a description does
+            # not evict an unrelated assignee/component leaf merely because it contains the issue.
+            if not event.key or (event.kind != "delete" and event.changed_fields):
+                continue
+            prefix = self._jql_index_prefix("issue", generation, event.key)
+            keys.update(value for value in self.cache.entries_by_prefix(prefix).values()
+                        if isinstance(value, str))
+        # Delete cannot make an issue enter a previously non-matching leaf.  All other writes may
+        # do so, therefore consult the field dependency index as well as the membership index.
+        membership_fields = self._jql_changed_predicate_fields(
+            [event for event in events if event.kind != "delete"])
+        for field in membership_fields:
+            prefix = self._jql_index_prefix("field", generation, field)
+            keys.update(value for value in self.cache.entries_by_prefix(prefix).values()
+                        if isinstance(value, str))
+        return keys
+
+    def _apply_mutation_events(self, events):
+        """Invalidate aggregates, affected JQL leaves, and one immutable snapshot generation."""
+        events = tuple(events or ())
+        if not events:
+            return events
+
+        fields = {
+            str(field).lower()
+            for event in events
+            for field in (event.changed_fields or ())
+        }
+        kinds = {event.kind for event in events}
+        structural = bool(kinds & {
+            "create", "create_epic", "delete", "transition", "assignee", "epic_link"
+        }) or bool(fields & {
+            "summary", "issuetype", "status", "assignee", "reporter", "components",
+            "labels", "duedate", "resolution", "resolutiondate", "priority", "parent",
+            str(self.s.epic_link_field_id or "").lower(),
+            str(self.s.sp_field_id or "").lower(),
+        })
+        people = bool(kinds & {"create", "delete", "transition", "assignee", "epic_link"}) \
+            or bool(fields & {"assignee", "components", "status", "resolution",
+                              "resolutiondate", "timespent"})
+        if structural:
+            for prefix in ("mt:", "mytasks:", "search:", "epic_cand:", "epic_options:"):
+                self.cache.invalidate(prefix)
+        if people:
+            for prefix in ("workload:", "workload_bucket:", "activity:"):
+                self.cache.invalidate(prefix)
+        if structural:
+            for prefix in ("wbs_build:", "vit_bases:", "vit_list:"):
+                self.cache.invalidate(prefix)
+        self.cache.invalidate_keys(self._affected_jql_leaf_keys(events))
+        # Rows/snapshots remain generation-scoped so an already issued pagination cursor stays
+        # immutable.  New first-page searches get a new snapshot, but unaffected leaf membership
+        # survives and is reused.
+        self.cache.bump_epoch(self._jql_epoch_namespace())
+        return events
+
+    def _record_mutation(self, event: MutationEvent):
+        """Record one successful Jira write.
+
+        Detail caches are invalidated by their existing narrow helpers. Snapshot rows are versioned
+        per successful mutation batch, while normalized leaf membership is selectively invalidated
+        through issue/field reverse indexes. Bulk operations collect these events so aggregate
+        invalidation and the snapshot generation bump happen once at batch completion.
+        """
+        pending = getattr(self._mutation_batch, "events", None)
+        if pending is not None:
+            pending.append(event)
+        else:
+            self._apply_mutation_events((event,))
+        return event
+
+    @contextmanager
+    def _mutation_batch_scope(self):
+        """Collect nested successful mutation events and flush them once at the outer boundary."""
+        if getattr(self._mutation_batch, "events", None) is not None:
+            yield
+            return
+        self._mutation_batch.events = []
+        try:
+            yield
+        finally:
+            events = tuple(self._mutation_batch.events)
+            del self._mutation_batch.events
+            self._apply_mutation_events(events)
+
+    def _compile_jql(self, jql):
+        raw = str(jql or "")
+        needs_user = bool(re.search(
+            r"\bcurrentUser\s*\(|\b(?:start|end)Of(?:Day|Week|Month|Year)\s*\(|"
+            r"(?<![A-Za-z0-9_])[+-]\d+[mhdw](?![A-Za-z0-9_])", raw, re.I))
+        user = self.current_user() if needs_user else {}
+        return compile_jql(
+            raw,
+            user_id=(user or {}).get("id") or "",
+            timezone_name=(user or {}).get("timezone") or "Asia/Seoul",
+            ttl_seconds=self.s.cache_ttl_seconds,
+        )
+
+    def _projection_signature(self, fields, light):
+        normalized = ",".join(sorted(
+            {part.strip().lower() for part in str(fields or "").split(",") if part.strip()}))
+        context = self._jql_user_context()
+        return hashlib.sha256(
+            f"{context}\n{int(bool(light))}\n{normalized}".encode("utf-8")
+        ).hexdigest()[:20]
+
+    def _projection_covers_issue_cache(self, fields, light):
+        """Whether a search row is complete enough for the shared issue/issueL cache.
+
+        JQL snapshots are projection-scoped, but ``issueL`` is the canonical light-ticket cache.
+        Writing an agent/search projection such as ``summary,status`` into it makes later WBS and
+        relationship reads believe omitted ``subtasks``/parent fields are genuinely empty.
+        """
+        raw = str(fields or "").strip()
+        if raw.lower() in {"*all", "*navigable"}:
+            return True
+        supplied = {part.strip().lower() for part in raw.split(",") if part.strip()}
+        required = {
+            part.strip().lower()
+            for part in self._issue_fields(light=light).split(",")
+            if part.strip()
+        }
+        return required.issubset(supplied)
+
+    def _jql_lock(self, key):
+        with self._jql_lock_guard:
+            lock = self._jql_locks.get(key)
+            if lock is None:
+                # Bound the process-only single-flight registry. Cache keys remain authoritative.
+                if len(self._jql_locks) > 2048:
+                    self._jql_locks.clear()
+                lock = self._jql_locks[key] = threading.Lock()
+            return lock
+
+    def _fetch_exhaustive_jql(self, query, fields, light, result_limit):
+        issues, start, expected_total = [], 0, None
+        fence = self.cache.fence()
+        while True:
+            page = self._legacy_search_issues_page(
+                query, start_at=start, max_results=100, fields=fields, light=light,
+                write_through=False)
+            total = page.get("total")
+            if total is not None:
+                expected_total = int(total)
+                if expected_total > result_limit:
+                    raise JqlUnsupported(
+                        f"JQL 결과가 안전 한도 {result_limit}건을 초과했습니다.")
+            batch = page.get("issues") or []
+            issues.extend(batch)
+            if len(issues) > result_limit:
+                raise JqlUnsupported(
+                    f"JQL 결과가 안전 한도 {result_limit}건을 초과했습니다.")
+            if not page.get("hasMore"):
+                break
+            next_start = page.get("nextStartAt")
+            if next_start is None or int(next_start) <= start:
+                raise ValueError("Jira 검색 pagination이 앞으로 진행하지 않습니다.")
+            start = int(next_start)
+        if expected_total is not None and len(issues) != expected_total:
+            raise ValueError("Jira leaf 검색 결과가 불완전합니다.")
+        if self._projection_covers_issue_cache(fields, light):
+            pfx = "issueL" if light else "issue"
+            self.cache.set_many_if_fence(
+                ((f"{pfx}:{self.env}:{(issue or {}).get('key')}", issue)
+                 for issue in issues if (issue or {}).get("key")),
+                self.s.cache_ttl_seconds, fence)
+        return issues
+
+    def _fetch_jql_leaf(self, leaf, fields, light):
+        query = ((leaf + " ") if leaf else "") + "ORDER BY key ASC"
+        return self._fetch_exhaustive_jql(
+            query, fields, light, self.JQL_LEAF_RESULT_LIMIT)
+
+    def _jql_row_key(self, generation, projection, issue_key):
+        return (f"jqlrow:v{self.JQL_CACHE_VERSION}:{self.env}:g{generation}:"
+                f"{projection}:{issue_key}")
+
+    def _store_jql_rows(self, issues, generation, projection):
+        fence = self.cache.fence()
+        ttl = max(int(self.s.cache_ttl_seconds), self.JQL_SNAPSHOT_TTL)
+        self.cache.set_many_if_fence(
+            ((self._jql_row_key(generation, projection, (issue or {}).get("key")), issue)
+             for issue in issues if (issue or {}).get("key")),
+            ttl, fence)
+
+    def _load_jql_rows(self, issue_keys, generation, projection):
+        cache_keys = [self._jql_row_key(generation, projection, key) for key in issue_keys]
+        found = self.cache.get_many(cache_keys)
+        rows = []
+        for issue_key, cache_key in zip(issue_keys, cache_keys):
+            row = found.get(cache_key)
+            if isinstance(row, dict) and row.get("key") == issue_key:
+                rows.append(row)
+        if len(rows) != len(issue_keys):
+            raise ValueError("JQL snapshot의 issue row가 만료되었습니다. 첫 페이지부터 다시 조회하세요.")
+        return rows
+
+    def _jql_leaf_key(self, leaf):
+        leaf_generation = self._jql_leaf_generation()
+        context = self._jql_user_context()
+        digest = hashlib.sha256(f"{context}\n{leaf}".encode("utf-8")).hexdigest()
+        key = (f"jqlleaf:v{self.JQL_CACHE_VERSION}:{self.env}:"
+               f"e{leaf_generation}:{digest}")
+        return leaf_generation, digest, key
+
+    def _register_jql_leaf_indexes(self, key, digest, leaf_generation,
+                                   issue_keys, predicate_fields):
+        """Persist issue/field-to-leaf edges for selective invalidation."""
+        fence = self.cache.fence()
+        ttl = self.s.cache_ttl_seconds
+        rows = []
+        for issue_key in issue_keys:
+            if issue_key:
+                rows.append((self._jql_index_prefix(
+                    "issue", leaf_generation, issue_key) + digest, key))
+        for field in (predicate_fields or ("*",)):
+            if field:
+                rows.append((self._jql_index_prefix(
+                    "field", leaf_generation, field) + digest, key))
+        self.cache.set_many_if_fence(rows, ttl, fence)
+
+    def _hydrate_jql_leaf_rows(self, issue_keys, fields, light, generation, projection):
+        """Hydrate stable leaf IDs from versioned rows/shared issue caches, batching misses."""
+        issue_keys = list(issue_keys or ())
+        cache_keys = [self._jql_row_key(generation, projection, key) for key in issue_keys]
+        cached_rows = self.cache.get_many(cache_keys)
+        by_key = {
+            issue_key: cached_rows.get(cache_key)
+            for issue_key, cache_key in zip(issue_keys, cache_keys)
+            if isinstance(cached_rows.get(cache_key), dict)
+            and cached_rows.get(cache_key).get("key") == issue_key
+        }
+
+        missing = [key for key in issue_keys if key not in by_key]
+        if missing and self._projection_covers_issue_cache(fields, light):
+            full = self.cache.get_many(f"issue:{self.env}:{key}" for key in missing)
+            light_rows = self.cache.get_many(
+                f"issueL:{self.env}:{key}" for key in missing) if light else {}
+            for issue_key in missing:
+                row = full.get(f"issue:{self.env}:{issue_key}")
+                if row is None and light:
+                    row = light_rows.get(f"issueL:{self.env}:{issue_key}")
+                if isinstance(row, dict) and row.get("key") == issue_key:
+                    by_key[issue_key] = row
+            missing = [key for key in issue_keys if key not in by_key]
+
+        for offset in range(0, len(missing), self.ISSUE_BATCH):
+            chunk = missing[offset:offset + self.ISSUE_BATCH]
+            query = "key in (%s) ORDER BY key ASC" % ",".join(chunk)
+            for row in self._fetch_exhaustive_jql(query, fields, light, len(chunk)):
+                issue_key = (row or {}).get("key")
+                if issue_key:
+                    by_key[issue_key] = row
+
+        rows = [by_key[key] for key in issue_keys if key in by_key]
+        if len(rows) != len(issue_keys):
+            raise ValueError("JQL leaf issue row를 완전하게 복원하지 못했습니다.")
+        self._store_jql_rows(rows, generation, projection)
+        return rows
+
+    def _cached_jql_leaf(self, leaf, predicate_fields, fields, light,
+                         generation, projection):
+        leaf_generation, digest, key = self._jql_leaf_key(leaf)
+        lock = self._jql_lock(key)
+        with lock:
+            def produce():
+                rows = self._fetch_jql_leaf(leaf, fields, light)
+                self._store_jql_rows(rows, generation, projection)
+                issue_keys = [
+                    (row or {}).get("key") for row in rows if (row or {}).get("key")
+                ]
+                # Register edges before get_or_set publishes the leaf.  A concurrent mutation
+                # either sees the edge and evicts the leaf or advances the fence so the leaf cannot
+                # be stored; warm hits never rewrite thousands of index rows.
+                self._register_jql_leaf_indexes(
+                    key, digest, leaf_generation, issue_keys, predicate_fields)
+                return issue_keys
+
+            issue_keys = self.cache.get_or_set(
+                key, self.s.cache_ttl_seconds,
+                produce)[0]
+        return self._hydrate_jql_leaf_rows(
+            issue_keys, fields, light, generation, projection)
+
+    @staticmethod
+    def _combine_jql_rows(rows_by_leaf, order):
+        combined = {}
+        for rows in rows_by_leaf:
+            for issue in rows:
+                key = (issue or {}).get("key")
+                if key and key not in combined:
+                    combined[key] = issue
+        return sort_issues(combined.values(), order)
+
+    def _warm_jql_leaves_bg(self, compiled, fields, light, generation, projection, context):
+        """Finish every cold DNF leaf without holding the visible request open.
+
+        Serial Jira providers use a priority queue.  Marking this work background means a tab
+        click or mutation can overtake it between leaf/page requests instead of waiting for an
+        entire large decomposition to drain.
+        """
+        digest = hashlib.sha256(
+            f"{context}\n{generation}\n{projection}\n{compiled.canonical}".encode("utf-8")
+        ).hexdigest()
+        inflight_key = f"jqlwarm:{self.env}:g{generation}:{digest}"
+        self._ensure_bg()
+        with self._bg_lock:
+            if inflight_key in self._bg_inflight:
+                return
+            self._bg_inflight.add(inflight_key)
+
+        def job():
+            try:
+                with background_upstream():
+                    for leaf, predicate_fields in zip(
+                            compiled.leaves, compiled.leaf_fields):
+                        # A successful write made this generation obsolete.  New searches will
+                        # schedule their own generation; do not spend the serial queue on old data.
+                        if self._jql_generation() != generation:
+                            break
+                        try:
+                            self._cached_jql_leaf(
+                                leaf, predicate_fields, fields, light, generation, projection)
+                        except Exception:
+                            # Never turn a partial/error response into a cached empty leaf.  A
+                            # later query retries the missing leaf through the normal path.
+                            continue
+            finally:
+                with self._bg_lock:
+                    self._bg_inflight.discard(inflight_key)
+
+        self._bg_pool.submit(job)
+
+    def _build_jql_snapshot(self, compiled, fields, light, generation, projection, context):
+        provider = self.provider
+        serial_cold_bootstrap = (
+            len(compiled.leaves) > self.JQL_FOREGROUND_LEAF_LIMIT
+            and not getattr(provider, "supports_parallel", False)
+        )
+        if serial_cold_bootstrap:
+            # The canonical query is logically identical to the union of every DNF leaf.  Fetch it
+            # exhaustively (no app Limit/Pagination) so the first screen gets a complete snapshot,
+            # then populate every leaf in the background for cross-screen reuse.
+            try:
+                rows = self._fetch_exhaustive_jql(
+                    compiled.canonical, fields, light, self.JQL_BOOTSTRAP_RESULT_LIMIT)
+                self._store_jql_rows(rows, generation, projection)
+                self._warm_jql_leaves_bg(
+                    compiled, fields, light, generation, projection, context)
+                return {
+                    "canonical": compiled.canonical,
+                    "context": context,
+                    "projection": projection,
+                    "light": bool(light),
+                    "generation": generation,
+                    "issueKeys": [row.get("key") for row in sort_issues(rows, compiled.order)
+                                  if row.get("key")],
+                    "leafWarmPending": True,
+                }
+            except JqlUnsupported:
+                # Very large whole-query snapshots keep the strict leaf path and its per-leaf cap.
+                pass
+
+        fetch = lambda item: self._cached_jql_leaf(
+            item[0], item[1], fields, light, generation, projection)
+        # Every decomposed leaf executes (or hits its own cache); no global-limit early exit.
+        rows_by_leaf = self._pmap(tuple(zip(compiled.leaves, compiled.leaf_fields)), fetch)
+        rows = self._combine_jql_rows(rows_by_leaf, compiled.order)
+        self._store_jql_rows(rows, generation, projection)
+        return {
+            "canonical": compiled.canonical,
+            "context": context,
+            "projection": projection,
+            "light": bool(light),
+            "generation": generation,
+            "issueKeys": [row.get("key") for row in rows if row.get("key")],
+        }
+
+    def _jql_snapshot(self, compiled, fields, light, snapshot_id=None):
+        context = self._jql_user_context()
+        projection = self._projection_signature(fields, light)
+        if snapshot_id:
+            key = f"jqlsnap:v{self.JQL_CACHE_VERSION}:{self.env}:{snapshot_id}"
+            snapshot = self.cache.get(key)
+            if not isinstance(snapshot, dict):
+                raise ValueError("검색 snapshot이 만료되었습니다. 첫 페이지부터 다시 조회하세요.")
+            if (snapshot.get("canonical") != compiled.canonical
+                    or snapshot.get("context") != context
+                    or snapshot.get("projection") != projection
+                    or bool(snapshot.get("light")) != bool(light)):
+                raise ValueError("검색 snapshot이 현재 JQL 또는 필드 projection과 일치하지 않습니다.")
+            issue_keys = list(snapshot.get("issueKeys") or [])
+            hydrated = dict(snapshot)
+            hydrated["issues"] = self._load_jql_rows(
+                issue_keys, int(snapshot.get("generation", 0)), projection)
+            return snapshot_id, hydrated
+        generation = self._jql_generation()
+        identity = hashlib.sha256(
+            f"{context}\n{generation}\n{projection}\n{compiled.canonical}".encode("utf-8")
+        ).hexdigest()[:32]
+        snapshot_id = f"{generation}.{identity}"
+        key = f"jqlsnap:v{self.JQL_CACHE_VERSION}:{self.env}:{snapshot_id}"
+        lock = self._jql_lock(key)
+        with lock:
+            snapshot = self.cache.get_or_set(
+                key, self.JQL_SNAPSHOT_TTL,
+                lambda: self._build_jql_snapshot(
+                    compiled, fields, light, generation, projection, context))[0]
+        issue_keys = list(snapshot.get("issueKeys") or [])
+        hydrated = dict(snapshot)
+        hydrated["issues"] = self._load_jql_rows(
+            issue_keys, int(snapshot.get("generation", generation)), projection)
+        return snapshot_id, hydrated
+
+    def search_issues_page(self, jql, start_at=0, max_results=100, fields=None, light=True,
+                           snapshot_id=None):
+        """One deterministic page from the app-composed OR snapshot.
+
+        Unsupported grammar/order keeps the historical Jira pagination path. Supported queries
+        execute and cache every DNF leaf, then union, deduplicate and sort locally before slicing.
+        """
+        start = max(0, int(start_at or 0))
+        size = max(1, min(int(max_results or 100), 100))
+        requested_fields = fields
+        if isinstance(requested_fields, (list, tuple, set)):
+            requested_fields = ",".join(str(x) for x in requested_fields if str(x).strip())
+        requested_fields = (requested_fields or self._issue_fields(light=light)).strip()
+        try:
+            compiled = self._compile_jql(jql)
+            execution_fields = fields_with_order(requested_fields, compiled.order)
+            sid, snapshot = self._jql_snapshot(
+                compiled, execution_fields, light, snapshot_id=snapshot_id)
+        except JqlUnsupported:
+            return self._legacy_search_issues_page(
+                jql, start_at=start, max_results=size, fields=requested_fields, light=light)
+        issues = list(snapshot.get("issues") or [])
+        page_issues = issues[start:start + size]
+        total = len(issues)
+        next_start = start + len(page_issues)
+        return {
+            "startAt": start,
+            "maxResults": size,
+            "total": total,
+            "issues": page_issues,
+            "returned": len(page_issues),
+            "hasMore": next_start < total,
+            "nextStartAt": next_start if next_start < total else None,
+            "snapshotId": sid,
+            "canonicalJql": compiled.canonical,
+        }
+
+    def _legacy_search_issues_page(self, jql, start_at=0, max_results=100, fields=None,
+                                   light=True, write_through=True):
         """JQL 검색 결과 한 페이지와 Jira pagination metadata를 그대로 돌려준다.
 
         ``search_issues``는 화면용 편의를 위해 내부에서 모든 페이지를 합쳐 list만 반환한다.
@@ -931,10 +1611,11 @@ class JiraClient:
         next_start = start + returned
         has_more = bool(returned) and (total is None or next_start < total)
         pfx = "issueL" if light else "issue"
-        for it in issues:
-            key = (it or {}).get("key")
-            if key:
-                self.cache.set(f"{pfx}:{self.env}:{key}", it, self.s.cache_ttl_seconds)
+        if write_through and self._projection_covers_issue_cache(requested_fields, light):
+            for it in issues:
+                key = (it or {}).get("key")
+                if key:
+                    self.cache.set(f"{pfx}:{self.env}:{key}", it, self.s.cache_ttl_seconds)
         return {
             "startAt": start,
             "maxResults": int(data.get("maxResults") or size),
@@ -945,16 +1626,20 @@ class JiraClient:
             "nextStartAt": next_start if has_more else None,
         }
 
-    def issues_by_keys(self, keys):
-        """키 목록 → 원본 이슈들. 캐시에 있으면 그대로 쓰고 없는 것만 한 번에 받는다."""
+    def issues_by_keys(self, keys, light=False):
+        """키 목록 → 원본 이슈들. 캐시에 있으면 그대로 쓰고 없는 것만 한 번에 받는다.
+
+        ``light=True`` is for list/card projections. It reuses JQL write-through ``issueL`` rows
+        instead of fetching full descriptions, attachments and links again.
+        """
         keys = [k for k in dict.fromkeys(keys) if k]
         if not keys:
             return []
-        self.prefetch_issues(keys)
+        self.prefetch_issues(keys, light=light)
         out = []
         for k in keys:
             try:
-                raw = self.get_issue(k)
+                raw = self.get_issue_light(k) if light else self.get_issue(k)
             except Exception:
                 raw = None
             if isinstance(raw, dict) and raw.get("key"):
@@ -1001,9 +1686,9 @@ class JiraClient:
         for i in range(0, len(miss), self.ISSUE_BATCH):
             chunk = miss[i:i + self.ISSUE_BATCH]
             try:
-                data = self.provider.get_json("/rest/api/2/search", params={
-                    "jql": "key in (%s)" % ",".join(chunk),
-                    "fields": fields, "maxResults": len(chunk)})
+                data = self.search_issues_page(
+                    "key in (%s)" % ",".join(chunk), start_at=0,
+                    max_results=len(chunk), fields=fields, light=light)
             except SessionExpired:
                 raise
             except Exception:
@@ -1014,6 +1699,23 @@ class JiraClient:
                     self.cache.set(f"{pfx}:{env}:{k}", it, self.s.cache_ttl_seconds)
 
     def _search(self, jql, cache_key=None, max_results=200, light=True, ttl=None):
+        fields = self._issue_fields(light=light)
+        try:
+            compiled = self._compile_jql(jql)
+            execution_fields = fields_with_order(fields, compiled.order)
+            _sid, snapshot = self._jql_snapshot(compiled, execution_fields, light)
+            issues = list(snapshot.get("issues") or [])[:max(0, int(max_results or 0))]
+            if cache_key:
+                # Preserve observability/compatibility for existing mt:/epic_* cache namespaces;
+                # normalized leaf and snapshot keys remain the source used for cache hits.
+                self.cache.set(cache_key + (":light" if light else ""), issues,
+                               ttl or self.s.cache_ttl_seconds)
+            return issues
+        except JqlUnsupported:
+            return self._legacy_search(
+                jql, cache_key=cache_key, max_results=max_results, light=light, ttl=ttl)
+
+    def _legacy_search(self, jql, cache_key=None, max_results=200, light=True, ttl=None):
         """JQL 검색 → 원본 이슈 리스트. 결과를 티켓 단위 캐시에 write-through.
         (검색 자체도 cache_key 주면 캐시 — 같은 목록 재조회 절약).
 
@@ -1493,11 +2195,13 @@ class JiraClient:
                 start = 0
                 total = None
                 while start < maximum:
-                    data = self.provider.get_json("/rest/api/2/search", params={
-                        "jql": f'"Epic Link" = {parent_key}',
-                        "fields": fields, "startAt": start,
-                        "maxResults": min(50, maximum - start),
-                    }) or {}
+                    # Mutation target resolution is deliberately fresh and authoritative.  A
+                    # normalized snapshot is correct for UI pagination but may predate the write
+                    # whose target set we are about to approve.
+                    data = self._legacy_search_issues_page(
+                        f'"Epic Link" = {parent_key}', fields=fields, light=False,
+                        start_at=start, max_results=min(50, maximum - start),
+                        write_through=False) or {}
                     if not isinstance(data, dict) or not isinstance(data.get("issues"), list):
                         return failed("invalid_page", parent_type=parent_type,
                                       expected=expected_keys, total=total)
@@ -1549,10 +2253,9 @@ class JiraClient:
                     chunk = expected_keys[offset:offset + self.ISSUE_BATCH]
                     if not chunk:
                         continue
-                    data = self.provider.get_json("/rest/api/2/search", params={
-                        "jql": "key in (%s)" % ",".join(chunk),
-                        "fields": fields, "startAt": 0, "maxResults": len(chunk),
-                    }) or {}
+                    data = self._legacy_search_issues_page(
+                        "key in (%s)" % ",".join(chunk), fields=fields, light=False,
+                        start_at=0, max_results=len(chunk), write_through=False) or {}
                     issues = data.get("issues") if isinstance(data, dict) else None
                     if (not isinstance(issues, list) or type(data.get("total")) is not int
                             or data.get("total") != len(chunk) or len(issues) != len(chunk)):
@@ -1656,9 +2359,11 @@ class JiraClient:
         parent_key, epic_key = self._lineage_of(key)      # 그룹 형제 캐시(부모/Epic)까지 함께 털기 위해
         for pfx in ("issue", "issueL", "issueview", "comments", "children", "siblings",
                     "ancestors", "related", "timeline", "attachments", "documents",
-                    "remotelinks", "epic_children", "changelog", "editmeta"):
+                    "remotelinks", "epic_children", "epicmeta", "changelog", "editmeta"):
             self.cache.invalidate(f"{pfx}:{env}:{key}")
         self._invalidate_lineage(parent_key, epic_key)    # 형제 목록은 그룹(부모/Epic)별 공유 캐시
+        self._record_mutation(MutationEvent("refresh", key, parent_key=parent_key,
+                                            epic_key=epic_key))
         self._reprime(key, comments=True)
         return {"ok": True}
 
@@ -1684,6 +2389,7 @@ class JiraClient:
         # 조상(Epic Link/parent)을 읽는다. 이걸 안 비우면 소속 Epic 을 바꿔도 옛 원본을 읽어
         # 계보가 안 바뀌고, 새 Epic 요약을 못 찾아 뱃지가 키로 뜬다(방금 그 버그).
         self.cache.invalidate(f"issue:{self.env}:{key}")
+        self.cache.invalidate(f"epicmeta:{self.env}:{key}")
         # 계보(조상/형제) 조립결과도 비운다 — _swr 로 따로 캐시되기 때문.
         self.cache.invalidate(f"ancestors:{self.env}:{key}")
         self.cache.invalidate(f"mentionctx:{self.env}:{key}")   # 담당/보고/댓글 변화 → @멘션 기본목록도 낡음
@@ -1790,6 +2496,9 @@ class JiraClient:
         # 담당자를 이 경로로 바꾸기도 한다(필드 편집기) → 워크로드/활동 집계도 갱신.
         if isinstance(fields, dict) and "assignee" in fields:
             self._invalidate_people_views()
+        self._record_mutation(MutationEvent(
+            "fields", key,
+            changed_fields=tuple(str(field) for field in (fields or {}).keys())))
         return {"ok": True}
 
     def toggle_description_checkbox(self, key, index, checked, cbid=None):
@@ -1808,6 +2517,8 @@ class JiraClient:
                                {"fields": {"description": new_body}})
         # 체크박스 하나만 바뀌었다 — 본문 캐시만 비운다(계보·후보풀·이력·재조회는 불필요).
         self._invalidate_ticket_content(key)
+        self._record_mutation(MutationEvent("description", key,
+                                            changed_fields=("description",)))
         return {"ok": True}
 
     def toggle_comment_checkbox(self, key, comment_id, index, checked, cbid=None):
@@ -1827,6 +2538,8 @@ class JiraClient:
                                {"body": new_body})
         # 코멘트 체크박스 하나만 바뀌었다 — 코멘트 캐시만 비운다(경량, 재조회 없음).
         self._invalidate_ticket_content(key, comments=True)
+        self._record_mutation(MutationEvent("comment", key,
+                                            changed_fields=("comment",)))
         return {"ok": True}
 
     OPTIONS_TTL = 1800          # 우선순위·컴포넌트는 거의 안 바뀐다
@@ -2070,6 +2783,8 @@ class JiraClient:
         self.cache.invalidate("epic_cand:")
         # 새 티켓이 담당자에게 배정됐으면 그 사람 워크로드/활동도 낡는다(하위 Task 생성 포함).
         self._invalidate_people_views()
+        self._record_mutation(MutationEvent(
+            "create", key or "", changed_fields=tuple(fields.keys()), parent_key=parent_key))
         return {"key": key}
 
     def task_types(self):
@@ -2110,6 +2825,8 @@ class JiraClient:
         # WBS/현안/에픽 목록이 이 Epic 을 담으려면 관련 목록 캐시를 비운다(넓게).
         for pfx in ("wbs_build", "vit_bases", "vit_list", "epic_options"):
             self.cache.invalidate(f"{pfx}:")
+        self._record_mutation(MutationEvent(
+            "create_epic", key or "", changed_fields=tuple(fields.keys())))
         return {"key": key}
 
     def set_epic_link(self, epic_key, task_keys):
@@ -2132,6 +2849,10 @@ class JiraClient:
         # 이 Epic 의 자식 목록 캐시 무효화(새로 든 Task 가 보이게)
         self.cache.invalidate(f"epic_children:{self.env}:{epic_key}")
         self.cache.invalidate(f"children:{self.env}:{epic_key}")
+        if linked:
+            self._record_mutation(MutationEvent(
+                "epic_link", epic_key, changed_fields=(enf,), epic_key=epic_key,
+                related_keys=tuple(linked)))
         return {"ok": not failed, "linked": linked, "failed": failed}
 
     def bulk_lookup(self, may_edit=None):
@@ -2193,17 +2914,18 @@ class JiraClient:
         새 부모 밑에 새로 만드는 것이고, 건마다 상류를 두 번 더 치면 100건이 200왕복이 된다."""
         from app.domain.bulk import to_create_kwargs
         created, failed = [], []
-        for i, it in enumerate(items or []):
-            summary = (it.get("summary") or "").strip()
-            try:
-                kw = to_create_kwargs(mode, it)
-                desc = it.get("description")
-                if desc and desc_to_field:
-                    kw["description"] = desc_to_field(desc)
-                r = self.create_child(**kw)
-                created.append({"index": i, "key": (r or {}).get("key"), "summary": summary})
-            except Exception as e:
-                failed.append({"index": i, "summary": summary, "error": str(e)[:300]})
+        with self._mutation_batch_scope():
+            for i, it in enumerate(items or []):
+                summary = (it.get("summary") or "").strip()
+                try:
+                    kw = to_create_kwargs(mode, it)
+                    desc = it.get("description")
+                    if desc and desc_to_field:
+                        kw["description"] = desc_to_field(desc)
+                    r = self.create_child(**kw)
+                    created.append({"index": i, "key": (r or {}).get("key"), "summary": summary})
+                except Exception as e:
+                    failed.append({"index": i, "summary": summary, "error": str(e)[:300]})
         return {"ok": not failed, "created": created, "failed": failed}
 
     def bulk_update(self, items, to_fields):
@@ -2214,32 +2936,34 @@ class JiraClient:
         경로와 규칙이 갈라지면 안 된다). None 을 주면 그 항목은 권한 없음으로 실패 처리한다.
         반환 모양은 bulk_create 와 같다 — 화면·에이전트가 같은 코드로 결과를 그린다."""
         updated, failed = [], []
-        for i, it in enumerate(items or []):
-            key = (it.get("key") or "").strip()
-            changes = it.get("changes") or {}
-            try:
-                fields = to_fields(key, changes)
-                if not fields:
-                    failed.append({"index": i, "summary": key,
-                                   "error": "편집 권한이 없거나 바꿀 필드가 없습니다."})
-                    continue
-                self.update_fields(key, fields)
-                updated.append({"index": i, "key": key, "fields": sorted(changes)})
-            except Exception as e:
-                failed.append({"index": i, "summary": key, "error": str(e)[:300]})
+        with self._mutation_batch_scope():
+            for i, it in enumerate(items or []):
+                key = (it.get("key") or "").strip()
+                changes = it.get("changes") or {}
+                try:
+                    fields = to_fields(key, changes)
+                    if not fields:
+                        failed.append({"index": i, "summary": key,
+                                       "error": "편집 권한이 없거나 바꿀 필드가 없습니다."})
+                        continue
+                    self.update_fields(key, fields)
+                    updated.append({"index": i, "key": key, "fields": sorted(changes)})
+                except Exception as e:
+                    failed.append({"index": i, "summary": key, "error": str(e)[:300]})
         return {"ok": not failed, "updated": updated, "failed": failed}
 
     def bulk_comment(self, items, to_body=None):
         """여러 티켓에 코멘트를 **차례로** 남긴다. `to_body(html)` 로 저장 형식을 맞춘다."""
         created, failed = [], []
-        for i, it in enumerate(items or []):
-            key = (it.get("key") or "").strip()
-            body = it.get("body") or ""
-            try:
-                self.add_comment(key, to_body(body) if to_body else body)
-                created.append({"index": i, "key": key})
-            except Exception as e:
-                failed.append({"index": i, "summary": key, "error": str(e)[:300]})
+        with self._mutation_batch_scope():
+            for i, it in enumerate(items or []):
+                key = (it.get("key") or "").strip()
+                body = it.get("body") or ""
+                try:
+                    self.add_comment(key, to_body(body) if to_body else body)
+                    created.append({"index": i, "key": key})
+                except Exception as e:
+                    failed.append({"index": i, "summary": key, "error": str(e)[:300]})
         return {"ok": not failed, "created": created, "failed": failed}
 
     def my_task_context(self):
@@ -2544,6 +3268,11 @@ class JiraClient:
         # 상태·담당·해결이 한꺼번에 바뀐다 → 본문/댓글을 즉시 다시 채운다(쓰기 우선순위).
         self._invalidate_ticket(key, comments=bool(comment))
         self._invalidate_people_views()   # 상태·담당 변경 → 워크로드/활동 집계도 낡는다
+        changed = ["status", "resolution", "assignee", "timespent"]
+        if comment:
+            changed.append("comment")
+        self._record_mutation(MutationEvent(
+            "transition", key, changed_fields=tuple(changed)))
         return res
 
     def cascade_suggestion(self, child_key, *, created=False):
@@ -2623,6 +3352,7 @@ class JiraClient:
         """코멘트 작성 (body = Jira wiki markup). 반환: 생성된 코멘트 객체."""
         res = self.provider.post_json(f"/rest/api/2/issue/{key}/comment", {"body": body})
         self._invalidate_ticket(key, comments=True)
+        self._record_mutation(MutationEvent("comment", key, changed_fields=("comment",)))
         return res
 
     def update_comment(self, key, comment_id, body):
@@ -2630,12 +3360,14 @@ class JiraClient:
         res = self.provider.put_json(
             f"/rest/api/2/issue/{key}/comment/{comment_id}", {"body": body})
         self._invalidate_ticket(key, comments=True)
+        self._record_mutation(MutationEvent("comment", key, changed_fields=("comment",)))
         return res
 
     def delete_comment(self, key, comment_id):
         """코멘트 삭제 (본인 것)."""
         self.provider.delete(f"/rest/api/2/issue/{key}/comment/{comment_id}")
         self._invalidate_ticket(key, comments=True)
+        self._record_mutation(MutationEvent("comment", key, changed_fields=("comment",)))
         return {"ok": True}
 
     def upload_attachment(self, key, filename, data, content_type=None):
@@ -2644,6 +3376,8 @@ class JiraClient:
         res = self.provider.post_multipart(
             f"/rest/api/2/issue/{key}/attachments", filename, data, content_type)
         self._invalidate_ticket(key, attachments=True)
+        self._record_mutation(MutationEvent(
+            "attachment", key, changed_fields=("attachment",)))
         return res
 
     def delete_attachment(self, attachment_id, key=None):
@@ -2651,6 +3385,8 @@ class JiraClient:
         self.provider.delete(f"/rest/api/2/attachment/{attachment_id}")
         if key:
             self._invalidate_ticket(key, attachments=True)
+        self._record_mutation(MutationEvent(
+            "attachment", key or "", changed_fields=("attachment",)))
         return {"ok": True}
 
     LINK_TYPES_TTL = 24 * 3600            # 링크 타입은 인스턴스 설정 — 거의 안 바뀐다
@@ -2689,6 +3425,8 @@ class JiraClient:
         # 양쪽 다 무효화 — 상대 티켓에서도 곧바로 보여야 한다
         self._invalidate_ticket(key, links=True)
         self._invalidate_ticket(other_key, links=True)
+        self._record_mutation(MutationEvent(
+            "link", key, changed_fields=("issuelinks",), related_keys=(other_key,)))
         return {"ok": True}
 
     def delete_issue_link(self, link_id, key=None, other_key=None):
@@ -2696,6 +3434,9 @@ class JiraClient:
         for k in (key, other_key):
             if k:
                 self._invalidate_ticket(k, links=True)
+        self._record_mutation(MutationEvent(
+            "link", key or other_key or "", changed_fields=("issuelinks",),
+            related_keys=tuple(k for k in (key, other_key) if k)))
         return {"ok": True}
 
     def add_remote_link(self, key, url, title="", relationship=""):
@@ -2710,11 +3451,15 @@ class JiraClient:
             body["relationship"] = relationship
         res = self.provider.post_json(f"/rest/api/2/issue/{key}/remotelink", body)
         self._invalidate_ticket(key, documents=True)
+        self._record_mutation(MutationEvent(
+            "document", key, changed_fields=("remotelinks",)))
         return res or {"ok": True}
 
     def delete_remote_link(self, key, link_id):
         self.provider.delete(f"/rest/api/2/issue/{key}/remotelink/{link_id}")
         self._invalidate_ticket(key, documents=True)
+        self._record_mutation(MutationEvent(
+            "document", key, changed_fields=("remotelinks",)))
         return {"ok": True}
 
     def comment_source(self, key, comment_id):
@@ -2831,7 +3576,9 @@ class JiraClient:
                     "name": real_name(u.get("displayName") or u.get("name")) or "",
                     # display = '{본명} {회사}' 원본 — 동명이인 구분이 필요한 화면(담당자 선택 등)용.
                     # name 은 짧은 본명이라 소속을 알 수 없다.
-                    "display": u.get("displayName") or u.get("name") or ""}
+                    "display": u.get("displayName") or u.get("name") or "",
+                    # JQL startOf*/relative-date normalization must follow Jira's user context.
+                    "timezone": u.get("timeZone") or "Asia/Seoul"}
         try:
             return self.cache.get_or_set(f"myself:{self.env}", self.USER_TTL, do)[0]
         except UpstreamUnavailable as exc:
@@ -2927,6 +3674,48 @@ class JiraClient:
                            or (f.get("reporter") or {}).get("key") or None),
         }
 
+    def epic_metadata(self, key):
+        """Return long-lived Task-card metadata for one Epic.
+
+        The dedicated entry avoids refetching a mostly immutable Epic every time a Task filter is
+        revisited.  Only successful Jira data is cached; auth/network failures never become a
+        ticket-key-shaped label for six hours.
+        """
+        key = str(key or "").strip().upper()
+        if not key:
+            return None
+        cache_key = f"epicmeta:{self.env}:{key}"
+        hit = self.cache.get(cache_key)
+        if isinstance(hit, dict) and hit.get("title"):
+            return hit
+        badge = self.ticket_badge(key)
+        if not badge:
+            return None
+        result = {
+            "key": key,
+            "title": self.epic_label(badge, key),
+            "statusCategory": badge.get("statusCategory") or "todo",
+        }
+        self.cache.set(cache_key, result, self.EPIC_META_TTL)
+        return result
+
+    def epic_metadata_many(self, keys):
+        """Resolve Epic labels in one light prefetch, reusing long-lived per-Epic entries."""
+        ordered = list(dict.fromkeys(
+            str(key).strip().upper() for key in (keys or ()) if str(key or "").strip()))
+        if not ordered:
+            return []
+        cached = self.cache.get_many(f"epicmeta:{self.env}:{key}" for key in ordered)
+        missing = [key for key in ordered if f"epicmeta:{self.env}:{key}" not in cached]
+        if missing:
+            self.prefetch_issues(missing, light=True)
+        result = []
+        for key in ordered:
+            meta = cached.get(f"epicmeta:{self.env}:{key}") or self.epic_metadata(key)
+            if meta:
+                result.append(meta)
+        return result
+
     # ── 담당자 ────────────────────────────────────────────────────────
     def set_assignee(self, key, user_id):
         """담당자 지정/해제. user_id 가 비면 해제(Jira 는 name=null 로 받는다)."""
@@ -2934,17 +3723,20 @@ class JiraClient:
                                {"name": user_id or None})
         self._invalidate_ticket(key)
         self._invalidate_people_views()   # 담당 변경 → 전/후 담당자의 워크로드/활동 집계가 낡는다
+        self._record_mutation(MutationEvent(
+            "assignee", key, changed_fields=("assignee",)))
         return {"ok": True}
 
     def delete_issue(self, key):
         """티켓 삭제. 되돌릴 수 없다 — 호출부(라우트/화면)가 확인을 받는다."""
         self.provider.delete(f"/rest/api/2/issue/{key}")
         # 이 티켓의 캐시를 전부 버린다. 살아 있으면 지워진 티켓이 목록에 계속 남는다.
-        for pre in ("issue", "issueview", "comments", "attachments", "documents",
+        for pre in ("issue", "issueL", "issueview", "comments", "attachments", "documents",
                     "remotelinks", "timeline", "changelog", "children", "related",
-                    "siblings", "ancestors"):
+                    "siblings", "ancestors", "epicmeta"):
             self.cache.invalidate(f"{pre}:{self.env}:{key}")
         self._invalidate_people_views()   # 삭제된 티켓이 담당자 워크로드/활동에 계속 잡히지 않게
+        self._record_mutation(MutationEvent("delete", key))
         return {"ok": True}
 
     def ticket_view(self, key, fresh=False):

@@ -17,6 +17,7 @@
 """
 
 import re
+import secrets
 from datetime import date, datetime
 
 from app.domain.names import real_name
@@ -44,6 +45,7 @@ _PARTIAL = {"done": 1.0, "inprogress": 0.4, "todo": 0.0}
 _NO_DUE = 10 ** 6           # 마감 없음 = 맨 뒤. None 정렬 분기를 안 만들려고 큰 수를 쓴다
 # '최근 완료' 로 볼 기간 선택지. 1주는 워크로드의 done7d 와 같은 창이다.
 DONE_WINDOWS = {"1w": 7, "1m": 30}
+ASYNC_SYNC_TTL = 30 * 60
 
 
 def _days_until(due, today):
@@ -133,8 +135,249 @@ def _rollup(nodes):
     return int(round(got / tot * 100))
 
 
+def _role_of(node, me):
+    a, r = node["assigneeId"] == me, node["reporterId"] == me
+    return "both" if (a and r) else ("assignee" if a else ("reporter" if r else None))
+
+
+def _matches_scope(node, context):
+    """Return whether one child is an execution atom for a saved Task-page scope."""
+    kind = context.get("scopeKind")
+    if kind == "module":
+        ids = set(context.get("moduleIds") or ())
+        components = set(context.get("moduleComponents") or ())
+        return (node["assigneeId"] in ids or node["reporterId"] in ids
+                or any(value in components for value in (node.get("components") or ())))
+    if kind == "uassignee":
+        return node["assigneeId"] == context.get("specificUser")
+    if kind == "ureporter":
+        return node["reporterId"] == context.get("specificUser")
+    if kind == "epic":
+        return node.get("epic") == context.get("epic")
+    if kind == "jql":
+        return node["key"] in set(context.get("matchedKeys") or ())
+    me = context.get("me")
+    if kind == "reporter":
+        return node["reporterId"] == me
+    if kind == "both":
+        return node["assigneeId"] == me or node["reporterId"] == me
+    return node["assigneeId"] == me
+
+
+def _hydrated_group(parent, children, context, expected_keys):
+    """Build the same group payload as ``build_my_tasks`` for one independently loaded parent."""
+    me = context.get("me")
+    parent = dict(parent)
+    parent["role"] = _role_of(parent, me)
+    children = [dict(child) for child in children]
+    for child in children:
+        child["role"] = _role_of(child, me)
+
+    loaded = {child["key"] for child in children}
+    expected = list(dict.fromkeys(expected_keys or loaded))
+    missing = [key for key in expected if key not in loaded]
+    initial = (context.get("groupMeta") or {}).get(parent["key"], {})
+    mine = [child for child in children if _matches_scope(child, context)]
+    mine_keys = {child["key"] for child in mine}
+    others = [child for child in children if child["key"] not in mine_keys]
+    if not expected and not children:
+        mine = [parent]
+        others = []
+
+    mine.sort(key=lambda node: (
+        node["dueDays"] if node["dueDays"] is not None else _NO_DUE,
+        node["priRank"], node["key"]))
+    complete = not missing
+    return {
+        "key": parent["key"], "title": parent["title"], "type": parent["type"],
+        "mine": initial.get("mine", _matches_scope(parent, context)),
+        "role": initial.get("role", parent.get("role")),
+        "assignee": parent["assignee"], "assigneeId": parent["assigneeId"],
+        "status": parent["status"], "statusCategory": parent["statusCategory"],
+        "reporter": parent.get("reporter"), "reporterId": parent.get("reporterId"),
+        "voc": parent.get("voc"), "epic": parent["epic"],
+        "pri": parent["pri"], "priRank": min((node["priRank"] for node in mine), default=2),
+        "priBand": parent["priBand"], "due": parent["due"], "dueDays": parent["dueDays"],
+        "atoms": mine, "others": others, "hasSubs": bool(expected or children),
+        "standalone": not bool(expected or children),
+        "pct": _rollup(children) if complete and children else None,
+        "kidsDone": sum(1 for child in children if child["statusCategory"] == "done"),
+        "kidsTotal": len(expected) if expected else len(children),
+        "othersDone": sum(1 for child in others if child["statusCategory"] == "done"),
+        "urgency": min((node["dueDays"] for node in mine if node["dueDays"] is not None), default=None),
+        "childrenPending": bool(missing), "childrenLoaded": complete,
+        "childrenLoadedCount": len(children),
+    }
+
+
+def _sync_key(client, sync_id):
+    return "mytasks:sync:%s:%s" % (getattr(client, "env", "?"), sync_id)
+
+
+def hydrate_my_task_group(client, sync_id, group_key):
+    """Hydrate exactly one Task-with-SubTask group from an opaque base-response snapshot."""
+    state = client.cache.get(_sync_key(client, sync_id))
+    if not isinstance(state, dict):
+        raise LookupError("Task 동기화 정보가 만료되었습니다.")
+    session_user = (client.current_user() or {}).get("id")
+    if session_user != state.get("sessionUser"):
+        raise PermissionError("다른 사용자 Task 동기화 정보입니다.")
+    expected = (state.get("children") or {}).get(group_key)
+    if expected is None:
+        raise KeyError("동기화 대상 Task가 아닙니다.")
+
+    today = client.s_today() if hasattr(client, "s_today") else date.today()
+    fields = {"sp": client.s.sp_field_id, "epic": client.s.epic_link_field_id,
+              "voc": client.s.voc_component}
+    parents = client.issues_by_keys([group_key], light=True)
+    if not parents:
+        raise LookupError("Parent Task를 불러오지 못했습니다.")
+    parent = _node(parents[0], today, fields)
+    children = [_node(raw, today, fields)
+                for raw in client.issues_by_keys(expected, light=True)]
+    return _hydrated_group(parent, children, state.get("context") or {}, expected)
+
+
+def hydrate_my_task_epics(client, sync_id):
+    """Load Epic labels independently so cards are not held behind serial badge lookups."""
+    state = client.cache.get(_sync_key(client, sync_id))
+    if not isinstance(state, dict):
+        raise LookupError("Task 동기화 정보가 만료되었습니다.")
+    session_user = (client.current_user() or {}).get("id")
+    if session_user != state.get("sessionUser"):
+        raise PermissionError("다른 사용자 Task 동기화 정보입니다.")
+    return client.epic_metadata_many(state.get("epics") or ())
+
+
+class _TaskRowsClient:
+    """Delegate every Jira operation except the Task-page search itself.
+
+    Progressive Task rendering receives one cached JQL leaf at a time.  Reusing the normal model
+    builder with this tiny adapter keeps grouping, scope matching and statistics identical to the
+    non-streaming API instead of reimplementing those rules in the HTTP layer.
+    """
+
+    def __init__(self, client, rows, recorder=None):
+        self._client = client
+        self._rows = list(rows or ())
+        self._recorder = recorder
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+    def search_issues(self, jql, max_results=200, cache_key=None):
+        if self._recorder is not None:
+            self._recorder.append((cache_key, jql, max_results))
+            return []
+        return self._rows[:max(0, int(max_results or 0))]
+
+
+def _leaf_status_axis(leaf):
+    """Best-effort status band for progress display; membership still comes from issue rows."""
+    value = re.sub(r'\s+', ' ', str(leaf or '').lower())
+    if re.search(r'statuscategory\s*=\s*(?:"done"|done)(?:\s|$|\))', value):
+        return "done"
+    if re.search(r'statuscategory\s*=\s*(?:"in progress"|in progress)(?:\s|$|\))', value):
+        return "inprogress"
+    if re.search(r'statuscategory\s*=\s*(?:"to do"|to do)(?:\s|$|\))', value):
+        return "todo"
+    return None
+
+
+def iter_my_task_models(client, user=None, include_done=False, limit=200, scope="assignee",
+                        open_filter="all", prog_filter="all", done_filter="1w"):
+    """Yield Task models as normalized JQL leaves complete.
+
+    Events are NDJSON-ready dictionaries.  ``chunk`` models contain only the newly completed leaf;
+    the browser appends them, deduplicates by issue key, sorts again and recomputes statistics.
+    ``complete`` is the authoritative union and carries the one SubTask hydration snapshot.
+    """
+    yield {"type": "start", "axes": ["todo", "inprogress", "done"]}
+
+    calls = []
+    planner = _TaskRowsClient(client, (), recorder=calls)
+    empty = build_my_tasks(
+        planner, user=user, include_done=include_done, limit=limit, scope=scope,
+        open_filter=open_filter, prog_filter=prog_filter, done_filter=done_filter,
+        defer_children=True, create_sync=False)
+    if not calls:
+        yield {"type": "complete", "model": empty, "leafDone": 0, "leafTotal": 0}
+        return
+
+    query_results = []
+    errors = []
+    query_total = len(calls)
+    leaf_done = 0
+    # The precise total is available without running an upstream request.  Unsupported syntax is
+    # one legacy chunk and remains correct, merely less granular.
+    leaf_total = 0
+    for _cache_key, jql, _max_results in calls:
+        try:
+            leaf_total += len(client._compile_jql(jql).leaves)
+        except Exception:
+            leaf_total += 1
+    yield {"type": "planned", "leafDone": 0, "leafTotal": leaf_total}
+
+    for query_index, (cache_key, jql, max_results) in enumerate(calls):
+        query_rows = []
+        query_failed = False
+        for chunk in client.iter_search_issue_chunks(jql, light=True):
+            leaf_done += 1
+            if chunk.get("error"):
+                query_failed = True
+                error = dict(chunk["error"])
+                errors.append(error)
+                yield {
+                    "type": "leaf-error", "error": error,
+                    "axis": _leaf_status_axis(chunk.get("leaf")),
+                    "leaf": chunk.get("leaf"), "leafDone": leaf_done,
+                    "leafTotal": leaf_total, "queryIndex": query_index,
+                    "queryTotal": query_total,
+                }
+                continue
+            leaf_rows = list(chunk.get("issues") or ())
+            query_rows = list(chunk.get("combined") or ())[:max(0, int(max_results or 0))]
+            leaf_model = build_my_tasks(
+                _TaskRowsClient(client, leaf_rows), user=user, include_done=include_done,
+                limit=limit, scope=scope, open_filter=open_filter,
+                prog_filter=prog_filter, done_filter=done_filter,
+                defer_children=True, create_sync=False)
+            yield {
+                "type": "chunk", "model": leaf_model,
+                "axis": _leaf_status_axis(chunk.get("leaf")),
+                "leaf": chunk.get("leaf"), "leafDone": leaf_done,
+                "leafTotal": leaf_total, "queryIndex": query_index,
+                "queryTotal": query_total,
+            }
+        # Preserve the historical mt:* aggregate cache only after this subquery is complete.  A
+        # disconnected stream never publishes a partial list as a complete API-cache hit.
+        query_results.append(query_rows)
+        if cache_key is not None and not query_failed:
+            client.cache.set(cache_key + ":light", query_rows,
+                             client.s.cache_ttl_seconds)
+
+    # Reapply the per-subquery limit before the authoritative union.  Rows from multiple module
+    # queries may overlap, so issue key remains the identity at this final boundary as well.
+    final_rows = {}
+    for rows, (_cache_key, _jql, max_results) in zip(query_results, calls):
+        for row in rows[:max(0, int(max_results or 0))]:
+            key = (row or {}).get("key")
+            if key:
+                final_rows[key] = row
+    complete = build_my_tasks(
+        _TaskRowsClient(client, final_rows.values()), user=user, include_done=include_done,
+        limit=limit, scope=scope, open_filter=open_filter,
+        prog_filter=prog_filter, done_filter=done_filter,
+        defer_children=True, create_sync=True)
+    yield {"type": "complete", "model": complete,
+           "leafDone": leaf_done, "leafTotal": leaf_total,
+           "leafSucceeded": leaf_done - len(errors), "leafFailed": len(errors),
+           "partial": bool(errors), "errors": errors}
+
+
 def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assignee",
-                   open_filter="all", prog_filter="all", done_filter="1w"):
+                   open_filter="all", prog_filter="all", done_filter="1w",
+                   defer_children=False, create_sync=True):
     """세션 사용자(또는 user 지정)의 '내 Task' 모델.
 
     scope: assignee(담당) | reporter(내가 등록) | both. '내 일'의 정의는 사람마다 다르다 —
@@ -276,8 +519,7 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
     # (Epic 자체는 아래에서 그룹의 소속 표시로만 쓴다).
     def role_of(n):
         """이 일감에서 내 역할 — 화면이 '담당/등록'을 구분해 보여줄 수 있게."""
-        a, r = n["assigneeId"] == me, n["reporterId"] == me
-        return "both" if (a and r) else ("assignee" if a else ("reporter" if r else None))
+        return _role_of(n, me)
 
     def is_mine(n):
         """이 스코프의 '대상 일'인가 — 하위 중 무엇을 원자로 뽑을지의 기준이다.
@@ -313,22 +555,37 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
         return [x.get("key") for x in ((raw.get("fields") or {}).get("subtasks") or []) if x.get("key")]
 
     need_parents = sorted({n["parentKey"] for n in mine if n["isSub"] and n["parentKey"]})
-    parent_raw = {r["key"]: r for r in client.issues_by_keys(need_parents)} if need_parents else {}
+    # Task 화면은 description/attachment/link를 쓰지 않는다. JQL이 이미 채운 issueL 캐시를
+    # 그대로 재사용해야 하므로 Parent도 light projection으로만 보강한다.
+    parent_raw = {r["key"]: r for r in client.issues_by_keys(need_parents, light=True)} \
+        if need_parents else {}
     parents = {k: _node(r, today, ef) for k, r in parent_raw.items()}
 
     # 하위를 알아야 하는 이슈 = 내 Task 들 + 위에서 가져온 부모들
-    kid_keys = []
-    for r in mine_raw:
-        kid_keys += sub_keys(r)
-    for r in parent_raw.values():
-        kid_keys += sub_keys(r)
+    expected_kids = {}
+    for r in list(mine_raw) + list(parent_raw.values()):
+        key = r.get("key")
+        keys = sub_keys(r)
+        if key and keys:
+            expected_kids[key] = list(dict.fromkeys(keys))
+    kid_keys = [key for keys in expected_kids.values() for key in keys]
     kid_of = {}                                   # 부모키 -> [자식 노드]
-    if kid_keys:
-        for r in client.issues_by_keys(sorted(set(kid_keys))):
-            c = _node(r, today, ef)
-            c["role"] = role_of(c)
-            if c["parentKey"]:
-                kid_of.setdefault(c["parentKey"], []).append(c)
+    if defer_children:
+        # 1차 응답은 JQL 결과에 이미 실려 온 SubTask만 사용한다. 동료 하위 전체를 받는 배치는
+        # Parent별 후속 API로 미뤄, 느린 그룹 하나 때문에 모든 카드가 기다리지 않게 한다.
+        # 실제 parent 관계가 이미 있는 JQL row는 타입 이름/로케일과 무관하게 자식으로 재사용한다.
+        # (SubTask 판정 자체는 여전히 issuetype.subtask가 원칙이지만, Jira가 parent를 준 row를
+        # base에서 버리면 full 보강 뒤 카드가 다른 그룹으로 순간 이동한다.)
+        child_rows = sorted(
+            (r for r in mine_raw if ((r.get("fields") or {}).get("parent") or {}).get("key")),
+            key=lambda row: row.get("key") or "")
+    else:
+        child_rows = client.issues_by_keys(sorted(set(kid_keys)), light=True) if kid_keys else []
+    for r in child_rows:
+        c = _node(r, today, ef)
+        c["role"] = role_of(c)
+        if c["parentKey"]:
+            kid_of.setdefault(c["parentKey"], []).append(c)
 
     # 3) 그룹 구성 — 부모 Task 단위. 하위 없는 내 Task 는 자기 자신이 그룹이자 원자.
     groups = {}
@@ -366,12 +623,12 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
             add_atom(g, n)
         else:
             kids = kid_of.get(n["key"]) or []
-            g = group_of(n, bool(kids))
+            g = group_of(n, bool(expected_kids.get(n["key"]) or kids))
             my_kids = [c for c in kids if is_mine(c)]
             if my_kids:
                 for c in my_kids:
                     add_atom(g, c)      # 하위가 있으면 하위가 실행 단위 — Task 자체는 원자가 아니다
-            elif not kids:
+            elif not expected_kids.get(n["key"]) and not kids:
                 add_atom(g, n)          # 하위가 아예 없는 단독 Task → Task 자체가 원자(soloPanel 로 감)
             # else: 하위는 있으나 전부 남의 것/스코프 밖(예: epic 스코프의 Sub-Task 는 Epic Link 가 없어
             #   is_mine 이 안 잡힌다). 이때 **Task 자신을 하위 원자로 넣지 않는다** — 넣으면 부모 헤더와
@@ -381,16 +638,23 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
     # 4) 동료 하위 + 롤업 + 정렬 키
     for g in groups.values():
         kids = kid_of.get(g["key"]) or []
+        expected = expected_kids.get(g["key"]) or [child["key"] for child in kids]
+        loaded_keys = {child["key"] for child in kids}
+        pending = bool(defer_children and any(key not in loaded_keys for key in expected))
         mine_keys = {a["key"] for a in g["atoms"]}
         g["others"] = [c for c in kids if c["key"] not in mine_keys]
-        g["hasSubs"] = bool(kids)
+        g["hasSubs"] = bool(expected or kids)
+        g["standalone"] = not g["hasSubs"]
+        g["childrenPending"] = pending
+        g["childrenLoaded"] = not pending
+        g["childrenLoadedCount"] = len(kids)
         # 롤업은 하위 전체 기준(동료 몫 포함) — 부모의 실제 진척이다.
         # 하위가 없으면 그 Task 하나의 상태가 곧 진척이라 별도 바를 그리지 않는다(pct=None).
-        g["pct"] = _rollup(kids) if kids else None
+        g["pct"] = _rollup(kids) if kids and not pending else None
         # 화면에는 퍼센트 대신 **몇 개 중 몇 개**를 적는다. 퍼센트는 SP 가중이 섞인 값이라
         # "3/7" 처럼 손으로 세어 확인할 수가 없다 — 눈으로 대조되는 숫자가 신뢰를 만든다.
         g["kidsDone"] = sum(1 for c in kids if c["statusCategory"] == "done")
-        g["kidsTotal"] = len(kids)
+        g["kidsTotal"] = len(expected) if expected else len(kids)
         g["othersDone"] = sum(1 for c in g["others"] if c["statusCategory"] == "done")
         g["atoms"].sort(key=lambda a: (a["dueDays"] if a["dueDays"] is not None else _NO_DUE,
                                        a["priRank"], a["key"]))
@@ -403,18 +667,41 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
                                 g["priRank"], g["key"]))
 
     # 5) Epic 메타 — 그룹이 참조하는 것만(이름을 보여주려면 제목이 필요하다)
+    epic_keys = sorted({g["epic"] for g in out if g["epic"]})
     epics = []
-    for ek in sorted({g["epic"] for g in out if g["epic"]}):
-        b = client.ticket_badge(ek)
-        epics.append({"key": ek, "title": client.epic_label(b, ek),   # Epic Name→Summary→키
-                      "statusCategory": (b or {}).get("statusCategory") or "todo"})
+    if defer_children:
+        # 제목/상태가 없어도 카드는 Epic key로 즉시 그릴 수 있다. 직렬 badge 조회는 별도 동기화한다.
+        epics = [{"key": key, "title": key, "statusCategory": "todo", "pending": True}
+                 for key in epic_keys]
+    else:
+        epics = client.epic_metadata_many(epic_keys)
 
     atoms = [a for g in out for a in g["atoms"]]
-    return {"user": {"id": me, "name": (client.current_user() or {}).get("name") or me},
-            "scope": scope, "openFilter": open_filter, "doneFilter": done_filter,
-            "doneWindowDays": DONE_WINDOWS.get(done_filter, 7),
-            "today": today.isoformat(), "groups": out, "epics": epics,
-            "counts": _counts(atoms)}
+    result = {"user": {"id": me, "name": (client.current_user() or {}).get("name") or me},
+              "scope": scope, "openFilter": open_filter, "doneFilter": done_filter,
+              "doneWindowDays": DONE_WINDOWS.get(done_filter, 7),
+              "today": today.isoformat(), "groups": out, "epics": epics,
+              "counts": _counts(atoms)}
+    pending_groups = {g["key"]: expected_kids.get(g["key"], [])
+                      for g in out if g.get("childrenPending")}
+    if defer_children and create_sync and (pending_groups or epic_keys):
+        sync_id = secrets.token_urlsafe(18)
+        session_user = (client.current_user() or {}).get("id")
+        context = {
+            "me": me, "scopeKind": scope_kind, "specificUser": spec_user,
+            "epic": epic_scope, "moduleIds": sorted(mod_ids),
+            "moduleComponents": sorted(mod_comps), "matchedKeys": sorted(seen),
+            "groupMeta": {g["key"]: {"mine": g["mine"], "role": g.get("role")}
+                          for g in out},
+        }
+        client.cache.set(_sync_key(client, sync_id), {
+            "sessionUser": session_user, "context": context,
+            "children": pending_groups, "epics": epic_keys,
+        }, ASYNC_SYNC_TTL)
+        result["syncId"] = sync_id
+        result["syncPending"] = len(pending_groups)
+        result["epicsPending"] = bool(epic_keys)
+    return result
 
 
 def _counts(atoms):

@@ -451,10 +451,14 @@ def find_parent_epic(query: str = "", limit: int = 10) -> list:
     if epic_name_field:
         fields.append(epic_name_field)
     try:
-        start, rows = 0, []
+        start, rows, snapshot_id = 0, [], None
         while len(rows) < wanted:
-            page = c.search_issues_page(jql, start_at=start, max_results=100,
-                                        fields=fields, light=True)
+            page_kwargs = {"start_at": start, "max_results": 100,
+                           "fields": fields, "light": True}
+            if snapshot_id:
+                page_kwargs["snapshot_id"] = snapshot_id
+            page = c.search_issues_page(jql, **page_kwargs)
+            snapshot_id = page.get("snapshotId") or snapshot_id
             rows.extend(page.get("issues") or [])
             if not page.get("hasMore") or page.get("nextStartAt") is None:
                 break
@@ -512,7 +516,20 @@ def _relaxed(query: str, lim: int = 8) -> list:
     c, s = client(), settings()
 
     def _hit(q):
-        return (search_all(c, s, q, scope="all", limit=lim).get("jira") or {}).get("items") or []
+        # Token 하나(특히 UI)는 최근 결과가 많다. 로컬 ORDER가 정확해진 뒤에는 작은 ``lim``
+        # 안에만 있던 후보를 교집합 점수에서 영구히 잃을 수 있으므로, bounded candidate pool을
+        # 넓게 받은 뒤 아래에서 최종 lim으로 자른다. JQL snapshot은 어차피 leaf 전체를 만들며
+        # 이 사다리는 Jira 점수만 쓰므로 Confluence 왕복은 하지 않는다.
+        try:
+            result = search_all(
+                c, s, q, scope="all", limit=max(lim, 100), only=["jira"])
+        except TypeError as exc:
+            # Third-party/test adapters written against the older search_all contract may not
+            # expose ``only`` yet. Preserve that call contract without hiding unrelated TypeErrors.
+            if "unexpected keyword argument 'only'" not in str(exc):
+                raise
+            result = search_all(c, s, q, scope="all", limit=max(lim, 100))
+        return (result.get("jira") or {}).get("items") or []
 
     toks = [t.strip("[]()\"'") for t in (query or "").split()]
     toks = [t for t in toks if len(t) >= 2 and t not in _STOP]
