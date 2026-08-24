@@ -1324,6 +1324,11 @@ class World:
             fx(key, "Sub-Task", f"보안교육수강 - 인원 {i}", training,
                module="DevOps", component="DevOps", parentKey="DL-9100", epicKey=None,
                assignee=uid, reporter="lead", created=d - timedelta(days=14), due=d,
+               # 14개 전체에 상태 이력을 둬 다수 SubTask 타임라인의 지연·완전성을 검증한다.
+               # rng를 쓰지 않아 기존 world 시퀀스에는 영향이 없다.
+               changelog=[self._chg(uid, 1 if completed else max(2, 14 - i), "status",
+                                    "In Progress" if completed else "Open",
+                                    "Closed" if completed else "In Progress", "09:20")],
                **({"statusCategory": "done", "statusName": "Closed",
                    "resolved": d - timedelta(days=1), "updated": d - timedelta(days=1)}
                   if completed else

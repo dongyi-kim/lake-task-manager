@@ -228,6 +228,17 @@ def test_agent_ticket_badges_have_compact_and_detail_modes():
     assert '.agent-md a.tkt[data-key]:not([data-filled])' in view
 
 
+def test_auto_converted_jira_links_reuse_short_ticket_badge():
+    """본문·댓글 에디터의 원문 Jira URL은 기존 Short 뱃지 클래스(아이콘+키)를 공통 사용한다."""
+    dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
+    editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
+    assert 'a.classList.add("jira-badge", "jira-badge-list", "tkt")' in dialog
+    assert 'a.className = "jira-badge jira-badge-list tkt"' in editor
+    assert ".tkt-desc .jira-badge-list .jb-name" in css
+    assert ".cmt-ed-host .jira-badge-list .jb-meta" in css
+
+
 def test_agent_ticket_references_always_use_detail_badges():
     """참조의 ticket은 raw key·token·Jira link 입력 모두 detail badge로 정규화한다."""
     md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
@@ -410,11 +421,18 @@ def test_ticket_timeline_is_deferred_and_never_blocks_loaded_dialog_sections():
     css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
 
     assert "const TIMELINE_TIMEOUT_MS" in api
-    assert '"/timeline?deferred=1"' in api
-    assert "ticketTimeline: (key) => req(" in api      # pending 응답은 browser memo 금지
+    assert '"/timeline?deferred=1&children="' in api
+    assert "ticketTimeline: (key, children) => req(" in api      # pending 응답은 browser memo 금지
+    assert '/timeline?deferred=1&children=" + (children ? "1" : "0")' in api
     assert 'spineLoading: true, timelineLoading: true, timelineErr: ""' in dialog
     assert "async loadTimeline(" in dialog and "result.pending" in dialog
     assert "TIMELINE_WAIT_MS" in dialog and "retryTimeline()" in dialog
+    assert "toggleChildTimeline" in dialog and "childTimelineLoading" in dialog
+    assert "하위 티켓 히스토리도 보기" in dialog
+    # 최초 load는 children 인자를 주지 않는다. 명시적 버튼 메서드에서만 true로 요청한다.
+    assert "this.loadTimeline(key, my);" in dialog
+    toggle = dialog[dialog.index("async toggleChildTimeline"):dialog.index("hardRefresh()")]
+    assert "api.ticketTimeline(key, true)" in toggle
     assert 'v-else-if="timelineErr"' in dialog and "@click=\"retryTimeline\"" in dialog
     assert ".tl-error button" in css
     # editmeta가 먼저 요청되어 완료된 본문/필드가 타임라인 때문에 읽기 전용으로 남지 않는다.

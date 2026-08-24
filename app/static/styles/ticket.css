@@ -271,6 +271,14 @@
 .tl-error button { border: 1px solid var(--border); border-radius: 6px; padding: 4px 9px;
   background: var(--panel); color: var(--text); font: inherit; font-size: 11px; cursor: pointer; }
 .tl-error button:hover { border-color: var(--accent); color: var(--accent); }
+.tl-child-toggle { width: 100%; display: inline-flex; align-items: center; justify-content: center;
+  gap: 6px; margin-top: 4px; padding: 6px 8px; border: 1px solid var(--border);
+  border-radius: 7px; background: var(--panel); color: var(--muted); font: inherit;
+  font-size: 10.5px; font-weight: 650; cursor: pointer; }
+.tl-child-toggle:hover, .tl-child-toggle.on { border-color: var(--accent); color: var(--accent); }
+.tl-child-toggle:disabled { cursor: default; opacity: .75; }
+.tl-child-toggle .spinner { width: 11px; height: 11px; border-width: 1.5px; }
+.tl-child-error { margin: 5px 1px 0; color: var(--muted-2); font-size: 10px; line-height: 1.4; }
 /* 우측 패널 — 타임라인 */
 .tkt-tl { position: relative; flex: 0 0 var(--tl-w, 220px); width: var(--tl-w, 220px);
   align-self: stretch; min-width: 0;
@@ -502,6 +510,13 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .jira-badge .jb-meta.st-todo { color: var(--st-todo); }
 .jira-badge .jb-meta.st-inprogress { color: var(--st-prog); }
 .jira-badge .jb-meta.st-done { color: var(--st-done); }
+/* Short 티켓 뱃지 — Agent 목록에서 쓰던 jira-badge-list 계약을 본문·에디터에도 그대로 적용. */
+.tkt-desc .jira-badge-list .jb-name,
+.tkt-desc .jira-badge-list .jb-meta,
+.cmt-ed-host .jira-badge-list .jb-name,
+.cmt-ed-host .jira-badge-list .jb-meta { display: none; }
+.tkt-desc .jira-badge-list,
+.cmt-ed-host .jira-badge-list { padding-left: 5px; padding-right: 5px; gap: 3px; }
 :root { --conf-ic: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M14 3v4a1 1 0 0 0 1 1h4'/><path d='M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z'/><path d='M9 13h6M9 17h4'/></svg>"); }
 /* 인라인 code 는 base.css 의 공통 규칙(GitHub 방식)이 맡는다 — 여기서 다시 정하지 않는다.
    자리마다 따로 정하던 때에는 같은 앱 안에서 코드 조각이 서너 가지 모양으로 보였다. */

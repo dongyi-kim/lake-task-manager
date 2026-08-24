@@ -169,7 +169,8 @@ export const api = {
   ticketSiblings: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/siblings"),
   // 첫 조회는 서버가 저우선순위로 만들고 202를 즉시 돌려준다. pending 응답을 memo 하면 다음
   // poll도 영원히 같은 Promise를 보므로, 이 경로만 브라우저 memo 없이 서버 캐시를 직접 확인한다.
-  ticketTimeline: (key) => req("/api/ticket/" + encodeURIComponent(key) + "/timeline?deferred=1",
+  ticketTimeline: (key, children) => req("/api/ticket/" + encodeURIComponent(key)
+                               + "/timeline?deferred=1&children=" + (children ? "1" : "0"),
                                { timeoutMs: TIMELINE_TIMEOUT_MS }),
   ticketChildren: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/children"),
   ticketRelated: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/related"),

@@ -50,6 +50,8 @@ def test_security_training_fixture_has_all_fourteen_direct_subtasks():
     assert sum(row["statusCategory"] == "done" for row in children) == 10
     assert sum(row["statusCategory"] != "done" for row in children) == 4
     assert len({row["assignee"] for row in children}) == 14
+    assert all(any(item.get("field") == "status" for h in row["changelog"]
+                   for item in h.get("items", [])) for row in children)
 
 
 def test_meeting_battery_fixtures_are_deterministic_and_keep_known_gaps():

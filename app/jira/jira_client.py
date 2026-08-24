@@ -1742,11 +1742,13 @@ class JiraClient:
             for pfx in ("issue", "issueL", "issueview", "children"):
                 self.cache.invalidate(f"{pfx}:{env}:{parent_key}")
             self.cache.invalidate(f"siblings:{env}:sub:{parent_key}")
+            self.cache.invalidate(f"timeline:{env}:{parent_key}")
             self._reprime(parent_key)               # 부모 진척/뷰를 백그라운드로 즉시 재조회
         if epic_key:
             # Epic 자식 목록(형제·롤업 진척이 공유) — 구성원 상태/소속이 바뀌면 Epic 진척·형제뷰가 낡는다.
             self.cache.invalidate(f"epic_children:{env}:{epic_key}")
             self.cache.invalidate(f"siblings:{env}:epic:{epic_key}")
+            self.cache.invalidate(f"timeline:{env}:{epic_key}")
 
     # ── 편집 ──────────────────────────────────────────────────────────
     # **무엇을 고칠 수 있는지는 Jira 가 정한다.** 우리가 추측하면(예: 담당자면 다 된다) 화면은
@@ -3225,13 +3227,14 @@ class JiraClient:
             return out
         return self.cache.get_or_set(f"statuscats:{self.env}", self.STATUS_CATS_TTL, do)[0]
 
-    def ticket_timeline(self, key, limit=40, defer=False):
+    def ticket_timeline(self, key, limit=40, defer=False, include_children=True):
         """티켓 이력 — [{kind,date,author,authorId,field,from,to,srcKey}] 최신순.
-        본인 이벤트(생성/중요 필드 변경/댓글) + **직계 자손의 상태 변경**(srcKey 로 출처 표시).
+        1티어는 본인 이벤트(생성/중요 필드 변경/댓글), 2티어는 직계 자손의 상태 변경이다.
 
-        ``defer`` 는 다이얼로그 첫 표시용이다. 캐시가 없을 때 Jira changelog 를 HTTP 요청
-        스레드에서 기다리지 않고 저우선순위 SWR worker 로 넘겨, 본문·편집 요청을 막지 않는다.
-        준비 전이면 None, 신선하거나 stale 캐시가 있으면 즉시 목록을 돌려준다.
+        다이얼로그 최초 표시는 ``include_children=False`` 로 1티어만 요청한다. 사용자가 명시적으로
+        '하위 티켓 히스토리도 보기'를 누른 뒤에만 2티어를 별도 캐시/작업으로 만든다. ``defer`` 가
+        True이고 필요한 tier가 cold면 HTTP 요청 스레드에서 기다리지 않고 저우선순위 worker로
+        넘긴 뒤 None을 반환한다. 이 분리가 없으면 자식 하나의 지연이 본인 이력 표시까지 늦춘다.
         """
         cats = None
 
@@ -3261,7 +3264,7 @@ class JiraClient:
                 out.append(ev)
             return out
 
-        def build():
+        def build_self():
             nonlocal cats
             cats = self._status_cats()
             ev = []
@@ -3278,23 +3281,52 @@ class JiraClient:
                 ev.append({"kind": "comment", "date": c.get("date"), "author": c.get("author"),
                            "authorId": c.get("authorId"), "field": None,
                            "from": None, "to": None, "srcKey": None})
-            # 자손은 '상태 변경'만 (요청 범위). 자식별 changelog 는 캐시되어 재방문 시 무료.
+            ev.sort(key=lambda e: e.get("date") or "", reverse=True)
+            return ev
+
+        def build_children():
+            nonlocal cats
+            cats = self._status_cats()
+            ev = []
+            # 자손은 '상태 변경'만. 자식별 changelog는 캐시되어 재방문/자식 직접 열기에도 재사용.
             child_keys = self._child_keys(key)
             self.prefetch_changelogs(child_keys)      # 낱개 N 회 → 검색 1 회
             for ck in child_keys:
                 for h in (self._changelog(ck).get("histories") or []):
                     ev.extend(ev_of(h, {"status"}, src=ck))
-            ev.sort(key=lambda e: e.get("date") or "", reverse=True)   # 최신순
+            return ev
+
+        def merge(own, children):
+            ev = list(own or []) + list(children or [])
+            ev.sort(key=lambda e: e.get("date") or "", reverse=True)
             return ev[:limit]
-        cache_key = f"timeline:{self.env}:{key}"
+
+        # key 앞부분을 기존 invalidate prefix와 맞춘다. 출력 계약이 바뀌었으므로 v2로 옛 캐시를 격리.
+        self_key = f"timeline:{self.env}:{key}:self:v2"
+        children_key = f"timeline:{self.env}:{key}:children:v2"
         if defer:
-            hit = self.cache.get(cache_key)
-            if hit is not None:
-                return hit
-            stale = self.cache.get_stale(cache_key)
-            self._refresh_bg(cache_key, self.s.cache_ttl_seconds, build)
-            return stale
-        return self._swr(cache_key, build)
+            own = self.cache.get(self_key)
+            if own is None:
+                own = self.cache.get_stale(self_key)
+                self._refresh_bg(self_key, self.s.cache_ttl_seconds, build_self)
+                if own is None:
+                    return None
+            if not include_children:
+                return merge(own, [])
+
+            children = self.cache.get(children_key)
+            if children is None:
+                children = self.cache.get_stale(children_key)
+                self._refresh_bg(children_key, self.s.cache_ttl_seconds, build_children)
+                if children is None:
+                    return None
+            return merge(own, children)
+
+        own = self._swr(self_key, build_self)
+        if not include_children:
+            return merge(own, [])
+        children = self._swr(children_key, build_children)
+        return merge(own, children)
 
     def ticket_children(self, key):
         """직계 하위 티켓(Epic→Epic Link 자식 / 그 외→Sub-Task) — ticket_badge 형태.
@@ -3306,11 +3338,13 @@ class JiraClient:
             return [b for b in (self.ticket_badge(k) for k in kids) if b]
         return self._swr(f"children:{self.env}:{key}", build)
 
-    def ticket_related(self, key, limit=20):
-        """관련 티켓 — 두 소스를 합친다.
+    def ticket_related(self, key, limit=20, include_mentions=True):
+        """관련 티켓 — 필요에 따라 두 소스를 합친다.
           (1) Jira 이슈 링크(relates to / blocks / duplicates …)  ← issuelinks 필드
           (2) 설명·코멘트에서 **언급**된 티켓                      ← /browse/KEY 링크 파싱
-        계보(조상·자식)와 자기 자신은 제외해 좌측 패널의 다른 섹션과 중복되지 않게 한다."""
+        티켓 다이얼로그는 (1)만 사용한다. Jira가 원문 키를 자동 링크한 것도 (2)로 보이기 때문에
+        이를 관계 UI에 섞으면 새 티켓에 무관한 Task가 '언급'으로 대량 노출된다. Agent 탐색은
+        본문 근거가 필요하므로 기본값은 두 소스를 유지한다."""
         def build():
             skip = {key}
             skip |= {a["key"] for a in (self.ticket_ancestors(key) or [])}
@@ -3333,24 +3367,25 @@ class JiraClient:
                 rel = _rel_label(t, bool(out_i))
                 found.append((k, rel, "link"))
 
-            htmls = []
-            try:
-                v = self.ticket_view(key)
-                if v:
-                    htmls.append(v.get("descriptionHtml") or "")
-            except Exception:
-                pass
-            try:
-                for c in self._issue_comments(key, limit=10):
-                    htmls.append(c.get("html") or "")
-            except Exception:
-                pass
-            for h in htmls:
-                for k in _BROWSE_KEY_RE.findall(h or ""):
-                    if k in seen:
-                        continue
-                    seen.add(k)
-                    found.append((k, "본문·코멘트에서 언급", "mention"))
+            if include_mentions:
+                htmls = []
+                try:
+                    v = self.ticket_view(key)
+                    if v:
+                        htmls.append(v.get("descriptionHtml") or "")
+                except Exception:
+                    pass
+                try:
+                    for c in self._issue_comments(key, limit=10):
+                        htmls.append(c.get("html") or "")
+                except Exception:
+                    pass
+                for h in htmls:
+                    for k in _BROWSE_KEY_RE.findall(h or ""):
+                        if k in seen:
+                            continue
+                        seen.add(k)
+                        found.append((k, "본문·코멘트에서 언급", "mention"))
 
             picked = found[:limit]
             self.prefetch_issues([k for k, _, _ in picked])   # 관련 티켓 원본을 한 번에
@@ -3360,7 +3395,8 @@ class JiraClient:
                 if b:
                     out.append(dict(b, rel=rel, via=via))
             return out
-        return self._swr(f"related:{self.env}:{key}", build)
+        scope = "all" if include_mentions else "links"
+        return self._swr(f"related:{self.env}:{key}:v2:{scope}", build)
 
     def ticket_attachments(self, key):
         """첨부파일 — [{id,filename,size,mime,created,author,url,thumb,isImage}].
