@@ -162,6 +162,40 @@ candidate는 Task → Workload에서 검색 호출을 줄이는 대신 상세 is
 데운 뒤 새 브라우저에서 Task 필터를 재실행한 구간은 검색 upstream 0회였고 기존 issue 캐시까지
 포함해 전체 upstream이 37.3% 감소했다.
 
+## 실제 UI 여정 — Task Parent 우선·SubTask 비동기 동기화
+
+Task API를 base와 Parent별 보강의 2단계로 나눴다. base는 JQL에 이미 포함된 Task/SubTask와 필요한
+Parent만 `issueL` projection으로 조립하고, 동료 SubTask와 Epic label은 base 응답 직후 최대 2개씩
+독립 요청한다. 후속 요청은 background upstream priority라 퀵필터의 새 base JQL이 먼저 큐를 잡는다.
+
+800ms 고의 지연, 빈 프로세스 캐시의 TEST 담당자 모델을 직접 비교한 결과다.
+
+| 구간 | 기존 전체 모델 | base-first | 변화 |
+|---|---:|---:|---:|
+| 첫 모델 응답 | 5447.6ms | 4102.9ms | -24.7% |
+| 모든 SubTask·Epic 보강 완료 | 5447.6ms | 5744.2ms | +5.4% |
+
+완전 완료 시간은 Parent별 요청 경계 때문에 소폭 늘지만 UI는 4.1초에 풀리고, 이후 그룹마다 카드와
+진척률이 독립적으로 채워진다. 같은 지연의 실제 브라우저 TEST 화면에서는 base 확인 시 카드 26개와
+동기화 중 그룹 2개가 먼저 보였고, 한 그룹이 완료돼도 다른 그룹은 계속 `동기화 중` 상태를 유지한 뒤
+각각 완료됐다. 느린 그룹 하나가 전체 Task 화면의 loading/클릭을 붙잡지 않았다.
+
+같은 브라우저에서 SubTask 동기화 도중 퀵필터를 `Workbench → DataOps → Workbench`로 바꿨다.
+
+| 조작 | 관찰 |
+|---|---|
+| Workbench 선택 | 45ms에 선택 반영·새 loading 전환 |
+| Workbench base | 카드 114개가 먼저 표시, 14개 Parent 그룹은 독립 보강 |
+| 보강 중 DataOps 선택 | 47ms에 Workbench 카드를 치우고 DataOps loading으로 전환 |
+| DataOps base | 1551ms, 카드 87개·13개 Parent 보강 시작 |
+| 이전 응답 경합 후 | 선택은 DataOps 유지, Workbench key가 화면을 덮지 않음; 카드 104개·pending 0 |
+| Workbench 재방문 | 173ms, loading 없이 캐시된 카드 113개 즉시 표시 |
+
+필터별 성공 base는 도착 순서와 무관하게 SWR 캐시에 저장한다. 이미 시작된 옛 필터의 그룹 보강도
+완료되면 그 필터 캐시에 합치되 현재 화면은 request sequence가 같은 경우에만 갱신한다. 아직 시작하지
+않은 옛 보강은 중단해 새 필터에 양보한다. 따라서 새 필터 전환과 이전 필터 결과 보존을 동시에 만족한다.
+브라우저 console error/warning은 0건이었다.
+
 ## 정확성 gate
 
 - baseline/candidate 검색 비교 480건: key·순서 일치, 불일치 0
@@ -171,4 +205,4 @@ candidate는 Task → Workload에서 검색 호출을 줄이는 대신 상세 is
 - 정상 warm JQL: upstream 0회
 - snapshot cursor: mutation 전 snapshot은 같은 generation으로 중복·누락 없이 계속 읽힘
 - full issue → light 재사용 허용, light → full 재사용 금지
-- 선택 만료·검색 UI focused regression 486 passed. 전체 offline suite는 3284 passed, 2 skipped.
+- 선택 만료·검색·Task 비동기 UI focused regression 563 passed. 직전 PR head의 전체 offline suite는 3284 passed, 2 skipped였으며, 현재 변경의 전체 suite는 GitHub Actions에서 판정한다.

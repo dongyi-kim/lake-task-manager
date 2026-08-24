@@ -202,6 +202,25 @@ def test_uniform_subtask_status_reuses_solo_parent_and_foldable_children_in_one_
     assert "mt-gslot.one-status" not in css
 
 
+def test_mytasks_loads_base_then_hydrates_groups_without_stale_filter_overwrite():
+    view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
+    api = (STATIC / "lib" / "api.js").read_text(encoding="utf-8")
+
+    assert '"&deferred=1"' in api
+    assert "myTasksGroup: (syncId, key)" in api
+    assert "myTasksEpics: (syncId)" in api
+    assert "this._hydrateModel(model, seq, key, cache);" in view
+    # A changed filter stops not-yet-started old jobs, while an already completed old response is
+    # still merged into that filter's SWR cache. Only the matching sequence may touch visible UI.
+    assert 'if (seq !== this._loadSeq) return;   // 아직 시작하지 않은 옛 필터 보강' in view
+    assert "cache[cacheKey] = next;" in view
+    assert "this._loadSeq === patch.seq" in view
+    assert "await Promise.allSettled([worker(), worker()]);" in view
+    assert "groups, counts: this._groupCounts(groups)" in view
+    assert "if (!seen.has(atom.key))" in view
+    assert "if (p?.group?.childrenPending) return null;" in view
+
+
 def test_comment_submit_waits_for_pending_draft_before_final_delete():
     """제출 성공 뒤 예약된 saveDraft가 완료 글을 되살리는 경쟁 상태를 막는다."""
     src = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")

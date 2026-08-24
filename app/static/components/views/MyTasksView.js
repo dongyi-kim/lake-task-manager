@@ -83,9 +83,10 @@ const SubtaskFoldBar = {
       return this.total ? Math.round(this.done * 100 / this.total) : 0;
     },
     assignees() { return this.panel?.assignees || []; },
+    pending() { return !!this.panel?.group?.childrenPending; },
   },
   template: `
-    <button type="button" class="mt-subfoot" :class="{ open: !closed }"
+    <button type="button" class="mt-subfoot" :class="{ open: !closed, pending }"
             :aria-expanded="!closed" :title="closed ? 'SubTask 펼치기' : 'SubTask 접기'"
             @click.stop="$emit('toggle')">
       <span class="mt-subfoot-toggle" :class="{ open: !closed }" aria-hidden="true">▸</span>
@@ -99,7 +100,8 @@ const SubtaskFoldBar = {
         </span>
       </span>
       <span class="mt-subfoot-sep mt-subfoot-progress-sep" aria-hidden="true"></span>
-      <span class="mt-subfoot-progress">
+      <span v-if="pending" class="mt-subfoot-sync"><i aria-hidden="true"></i>동기화 중</span>
+      <span v-else class="mt-subfoot-progress">
         <span class="mt-pbar" role="progressbar" :aria-valuenow="done" aria-valuemin="0"
               :aria-valuemax="total" :aria-label="done + ' / ' + total + ' SubTask 완료'"
               :title="done + ' / ' + total + ' 완료'">
@@ -407,12 +409,81 @@ export default {
         if (ks.length > 12) delete cache[ks[0]];
         if (seq !== this._loadSeq) return;     // 더 최신 요청이 이미 떴다 — 화면엔 안 쓴다
         this.model = model;
+        // 전체 모델을 기다리지 않는다. Parent/기본 카드를 먼저 확정하고, 각 Task-with-SubTask와
+        // Epic label을 작은 후속 요청으로 보강한다. await하지 않으므로 필터/UI는 즉시 풀린다.
+        this._hydrateModel(model, seq, key, cache);
       }
       catch (e) {
         if (seq !== this._loadSeq) return;     // 낡은 요청의 에러도 최신 화면에 씌우지 않는다
         this.err = (e && e.message) || "불러오기 실패";
       }
       finally { if (seq === this._loadSeq) this.loading = false; }
+    },
+    /** 완료된 후속 결과는 필터가 이미 바뀌었어도 그 필터의 SWR 캐시에 합친다.
+     *  단 현재 화면은 load sequence가 같은 경우에만 바꾼다. */
+    _mergeHydration(cache, cacheKey, syncId, patch) {
+      const previous = cache[cacheKey];
+      if (!previous || previous.syncId !== syncId) return;
+      let next = previous;
+      if (patch.group) {
+        const claimed = new Set((patch.group.atoms || []).map((atom) => atom.key));
+        const groups = (previous.groups || []).map((group) => {
+          if (group.key === patch.group.key) return patch.group;
+          if (!claimed.size || !(group.atoms || []).some((atom) => claimed.has(atom.key))) return group;
+          // Jira가 SubTask flag를 누락해 같은 row를 standalone으로도 준 경우 Parent 쪽을 우선한다.
+          return Object.assign({}, group, { atoms: group.atoms.filter((atom) => !claimed.has(atom.key)) });
+        });
+        next = Object.assign({}, previous, {
+          groups, counts: this._groupCounts(groups),
+        });
+      } else if (patch.epics) {
+        next = Object.assign({}, previous, { epics: patch.epics, epicsPending: false });
+      }
+      cache[cacheKey] = next;
+      if (this._loadSeq === patch.seq && this.model && this.model.syncId === syncId) this.model = next;
+    },
+    _groupCounts(groups) {
+      const seen = new Set(), atoms = [];
+      for (const group of groups || []) for (const atom of group.atoms || []) {
+        if (!seen.has(atom.key)) { seen.add(atom.key); atoms.push(atom); }
+      }
+      return {
+        total: atoms.length,
+        overdue: atoms.filter((atom) => atom.statusCategory !== "done" && atom.dueDays !== null
+          && atom.dueDays !== undefined && atom.dueDays < 0).length,
+        today: atoms.filter((atom) => atom.statusCategory !== "done" && atom.dueDays === 0).length,
+        week: atoms.filter((atom) => atom.statusCategory !== "done" && atom.dueDays > 0 && atom.dueDays <= 7).length,
+        done: atoms.filter((atom) => atom.statusCategory === "done").length,
+        noDue: atoms.filter((atom) => atom.dueDays === null || atom.dueDays === undefined).length,
+      };
+    },
+    async _hydrateModel(model, seq, cacheKey, cache) {
+      const syncId = model && model.syncId;
+      if (!syncId) return;
+      const jobs = (model.groups || []).filter((group) => group.childrenPending)
+        .map((group) => ({ type: "group", key: group.key }));
+      if (model.epicsPending) jobs.splice(Math.min(2, jobs.length), 0, { type: "epics" });
+      let cursor = 0;
+      // 브라우저 요청은 둘만 병렬화한다. 서버에서는 background priority라 새 퀵필터 JQL이
+      // 이 작업들을 앞지르고, 이미 시작된 옛 필터 결과만 해당 필터 캐시에 안전하게 남는다.
+      const worker = async () => {
+        while (cursor < jobs.length) {
+          if (seq !== this._loadSeq) return;   // 아직 시작하지 않은 옛 필터 보강은 새 필터에 양보
+          const job = jobs[cursor++];
+          try {
+            const result = job.type === "group"
+              ? await api.myTasksGroup(syncId, job.key)
+              : await api.myTasksEpics(syncId);
+            // await 중 필터가 바뀌어도 완료된 값은 버리지 않는다. 현재 UI 반영만 seq가 막는다.
+            this._mergeHydration(cache, cacheKey, syncId, {
+              seq, group: result && result.group, epics: result && result.epics,
+            });
+          } catch (e) {
+            // Parent 하나 실패가 다른 카드나 새 필터를 막지 않는다. 다음 실제 load에서 재시도한다.
+          }
+        }
+      };
+      await Promise.allSettled([worker(), worker()]);
     },
     /** 티켓이 바뀌면 클라이언트 모델 캐시는 낡는다 — 통째로 비운다(서버 mt: 캐시도 같은 이유로 무효화). */
     _dropModelCache() { this._mcache = {}; },
@@ -699,10 +770,15 @@ export default {
     },
     /** 가로축의 1컬럼 버전. 부모 상태 열이 접혔으면 부모 정보가 찌그러지지 않게 기존 전폭으로 둔다. */
     compactStatus(p) {
+      if (p?.group?.childrenPending) return null;
       const uniform = p && p.kind === "task" ? p.singleStatus : null;
       const rawParent = p?.parentCard?.statusCategory;
       const parentStatus = STATE_KEYS.has(rawParent) ? rawParent : "todo";
       return uniform && this.bandOpen(parentStatus) ? parentStatus : null;
+    },
+    parentState(p) {
+      const value = p?.group?.statusCategory;
+      return STATE_KEYS.has(value) ? value : "todo";
     },
     /**
      * 하위가 많은 Task 는 카드가 세로로 길어져 목록을 훑기 어렵다 — 접어 둔다.
@@ -1075,6 +1151,9 @@ export default {
           </div>
           <SubtaskFoldBar :panel="p" :closed="isGroupClosed(p)" @toggle="toggleGroup(p)" />
           <div v-if="!isGroupClosed(p)" class="mt-gbody">
+            <div v-if="p.group.childrenPending" class="mt-sub-sync-row">
+              <i aria-hidden="true"></i> Parent Task는 준비됨 · SubTask 동기화 중
+            </div>
             <div v-for="st in states" :key="p.key + st.k" class="mt-cell"
                  :class="['c-' + st.k, { empty: !byState(p.cards)[st.k].length,
                                                 closed: !bandOpen(st.k),
@@ -1138,7 +1217,7 @@ export default {
               <TaskCard v-for="c in byState(p.cards)[st.k]" :key="'so-' + c.key" :card="c"
                    :style="sigStyle(c)" :epic-title="epicTitle(c.epicKey)" />
             </template>
-            <div v-else v-show="byState(p.cards)[st.k].length" class="mt-gcard2 k-task"
+            <div v-else v-show="byState(p.cards)[st.k].length || (p.group.childrenPending && parentState(p) === st.k)" class="mt-gcard2 k-task"
                  :class="{ folded: isGroupClosed(p) }" :style="sigStyle(p.group)">
               <div class="mt-gh">
             <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
@@ -1165,6 +1244,9 @@ export default {
               <SubtaskFoldBar :panel="p" :closed="isGroupClosed(p)" @toggle="toggleGroup(p)" />
               <div v-if="!isGroupClosed(p)" class="mt-gbody one"
                    :class="{ foldwrap: foldable(p), folded: peeking(p), 'fold-peek': peeking(p) }">
+                <div v-if="p.group.childrenPending" class="mt-sub-sync-row">
+                  <i aria-hidden="true"></i> SubTask 동기화 중
+                </div>
                 <div v-for="c in cellCards(p, st.k)" :key="c.key" class="mt-card tkt"
                      :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done',
                              urgent: isUrgentC(c) }" :style="sigStyle(c)" :data-key="c.key">

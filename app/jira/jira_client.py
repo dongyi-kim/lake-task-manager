@@ -1501,16 +1501,20 @@ class JiraClient:
             "nextStartAt": next_start if has_more else None,
         }
 
-    def issues_by_keys(self, keys):
-        """키 목록 → 원본 이슈들. 캐시에 있으면 그대로 쓰고 없는 것만 한 번에 받는다."""
+    def issues_by_keys(self, keys, light=False):
+        """키 목록 → 원본 이슈들. 캐시에 있으면 그대로 쓰고 없는 것만 한 번에 받는다.
+
+        ``light=True`` is for list/card projections. It reuses JQL write-through ``issueL`` rows
+        instead of fetching full descriptions, attachments and links again.
+        """
         keys = [k for k in dict.fromkeys(keys) if k]
         if not keys:
             return []
-        self.prefetch_issues(keys)
+        self.prefetch_issues(keys, light=light)
         out = []
         for k in keys:
             try:
-                raw = self.get_issue(k)
+                raw = self.get_issue_light(k) if light else self.get_issue(k)
             except Exception:
                 raw = None
             if isinstance(raw, dict) and raw.get("key"):

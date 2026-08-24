@@ -151,8 +151,12 @@ export const api = {
     return req("/api/mytasks?scope=" + encodeURIComponent(o.scope || "assignee")
       + "&openFilter=" + encodeURIComponent(o.openFilter || "all")
       + "&progFilter=" + encodeURIComponent(o.progFilter || "all")
-      + "&doneFilter=" + encodeURIComponent(o.doneFilter || "1w"));
+      + "&doneFilter=" + encodeURIComponent(o.doneFilter || "1w")
+      + "&deferred=1");
   },
+  myTasksGroup: (syncId, key) => req("/api/mytasks/sync/" + encodeURIComponent(syncId)
+    + "/group/" + encodeURIComponent(key)),
+  myTasksEpics: (syncId) => req("/api/mytasks/sync/" + encodeURIComponent(syncId) + "/epics"),
   search: (q, scope, only) => req("/api/search?q=" + encodeURIComponent(q)
     + "&scope=" + encodeURIComponent(scope || "scoped")
     + (only ? "&only=" + encodeURIComponent(only) : "")),               // only=jira|confluence

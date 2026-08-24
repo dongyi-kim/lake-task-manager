@@ -345,6 +345,14 @@
 .mt-subfoot-progress { flex: none; display: inline-flex; align-items: center; gap: 7px; }
 .mt-subfoot-progress em { min-width: 33px; color: var(--muted); font-family: ui-monospace, Consolas, monospace;
   font-style: normal; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+.mt-subfoot-sync { flex: none; display: inline-flex; align-items: center; gap: 5px; margin-left: auto;
+  color: var(--muted); font-size: 10px; font-weight: 600; }
+.mt-subfoot-sync i, .mt-sub-sync-row i { width: 10px; height: 10px; box-sizing: border-box;
+  border: 1.5px solid var(--border-hi); border-top-color: var(--gc, var(--accent)); border-radius: 50%;
+  animation: mt-sync-spin .75s linear infinite; }
+.mt-sub-sync-row { grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 32px; color: var(--muted-2); font-size: 10px; }
+@keyframes mt-sync-spin { to { transform: rotate(360deg); } }
 /* 막대는 눈으로 비율을 읽는 것이라 너무 짧으면 '거의 다 됐나' 를 못 읽는다. */
 .mt-pbar { display: inline-block; width: 84px; height: 5px; border-radius: 99px;
   background: var(--track, var(--border)); overflow: hidden; }
