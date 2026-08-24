@@ -382,19 +382,16 @@
   margin: 18px 0 8px; font-weight: 700; }
 
 /* ── description 렌더 ── */
-/* 티켓 다이얼로그 좌하단 강제 새로고침 — 캐시 비우고 서버에서 다시 받기(체크박스 등 최신 반영) */
-.tkt-refresh { position: absolute; left: 14px; bottom: 12px; z-index: 30;
-  width: 38px; height: 38px; border-radius: 50%; display: flex; align-items: center;
+/* 티켓 다이얼로그 강제 새로고침 — 하단 댓글 도크 안에서 캐시를 비우고 다시 받는다. */
+.tkt-refresh { position: static; flex: 0 0 34px;
+  width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center;
   justify-content: center; cursor: pointer; color: var(--muted);
-  background: var(--panel); border: 1px solid var(--border);
-  box-shadow: 0 3px 12px rgba(0,0,0,.18); transition: color .12s, border-color .12s, transform .12s; }
+  background: var(--panel-2); border: 1px solid var(--border);
+  box-shadow: 0 1px 4px rgba(0,0,0,.12); transition: color .12s, border-color .12s, transform .12s; }
 .tkt-refresh:hover { color: var(--accent); border-color: var(--accent); transform: translateY(-1px); }
-.tkt-refresh svg { width: 18px; height: 18px; }
+.tkt-refresh svg { width: 17px; height: 17px; }
 .tkt-refresh.busy { color: var(--accent); cursor: default; }
 .tkt-refresh.busy svg { animation: ltm-spin .8s linear infinite; }
-/* 전체 화면(페이지) 모드에서는 뷰포트 좌하단에 **고정** — 페이지가 길어도 스크롤과 무관하게 늘 보인다 */
-.tkt-page .tkt-refresh { position: fixed; left: 18px; bottom: 18px; z-index: 8000; width: 42px; height: 42px; }
-.tkt-page .tkt-refresh svg { width: 20px; height: 20px; }
 
 .tkt-desc { font-size: 12.5px; line-height: 1.6; word-break: break-word; }
 /* 체크박스 — 수정권한 있으면 클릭해 토글(서버 저장). 권한 없으면 읽기전용 느낌. */
@@ -742,23 +739,17 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .spn-title.virt { color: var(--muted); font-weight: 600; letter-spacing: .2px; }
 
 /* ── 티켓 단독 페이지(mode=page) — '새 창에서 열기' 로 뜨는 화면 ──
-   모달이 아니라 문서다: 오버레이·그림자·높이 제한 없이 페이지가 스크롤된다.
-   타이틀바는 그대로 두되(제목·Jira 링크) 창 스크롤에 sticky 로 붙는다. */
-/* 창을 그대로 쓴다 — 모달이 아니라 페이지다.
-   .wrap 의 패딩(22 28 60)과 헤더 아래 여백(16)을 음수 마진으로 상쇄해 가장자리까지 붙인다. */
-/* nav bar 도 없는 화면이므로(.wrap-bare) 마진 상쇄 없이 100vh 를 그대로 쓴다.
-   내용이 짧아도 화면 아래까지 채운다 — 안 그러면 패널이 중간에서 끊겨 어색하다. */
-.tkt-page { margin: 0; padding: 0; min-height: 100vh;
-  display: flex; flex-direction: column; }
-.tkt-dlg.page { width: 100%; max-width: none; margin: 0; flex: 1;
+   모달과 같은 viewport shell을 쓴다. 제목과 새 댓글 도크는 남고, 가운데 본문만 스크롤된다. */
+.tkt-page { position: relative; margin: 0; padding: 0; min-height: 0; height: 100vh; height: 100dvh;
+  overflow: hidden; display: flex; flex-direction: column; }
+.tkt-dlg.page { width: 100%; max-width: none; min-height: 0; height: 100%; margin: 0; flex: 1;
   display: flex; flex-direction: column;
-  max-height: none; overflow: visible;         /* 페이지 자체가 스크롤 주체 */
+  max-height: 100%; overflow: hidden;
   box-shadow: none; border: 0; border-radius: 0; }
-.tkt-dlg.page .tkt-body { overflow: visible; flex: 1; display: flex; flex-direction: column; }
+.tkt-dlg.page .tkt-body { min-height: 0; overflow: hidden auto; flex: 1; display: flex; flex-direction: column; }
 .tkt-dlg.page .tkt-cols { flex: 1; }           /* 남는 높이를 컬럼이 가져가 배경이 바닥까지 */
-/* 페이지 모드는 **페이지가** 스크롤 주체다 → 타이틀바를 sticky 로 붙여 둔다.
-   (다이얼로그 모드는 본문만 스크롤하고 타이틀바는 흐르지 않는 첫 행이라 sticky 가 필요 없다.) */
-.tkt-dlg.page .tkt-bar { position: sticky; top: 0; border-radius: 0; }
+.tkt-dlg.page .tkt-bar { position: static; border-radius: 0; }
+.tkt-dlg.page .tkt-compose-dock { border-radius: 0; }
 /* 확장 버튼이 없는 페이지에서는 .expanded 폭 제한도 무의미 */
 .tkt-dlg.page.expanded { max-width: none; }
 
@@ -770,13 +761,23 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .tkt-cmt-act { border: 1px solid transparent; background: none; color: var(--muted);
   font-size: 11px; padding: 1px 7px; border-radius: 6px; cursor: pointer; }
 .tkt-cmt-act:hover { color: var(--text); border-color: var(--border); background: var(--panel-2); }
-/* 작성창 아래 넉넉한 여백 — 스크롤 최하단에 붙어 '바닥에 쏠린' 느낌이 나지 않게 */
-.tkt-cmt-compose { margin-top: 12px; padding-bottom: 42vh; }
-.cmt-editor.maximized ~ *, .tkt-cmt-compose:has(.cmt-editor.maximized) { padding-bottom: 0; }
+/* 새 댓글 전용 하단 도크 — 본문(.tkt-body)의 스크롤과 분리한다. */
+.tkt-compose-dock { position: relative; z-index: 20; flex: none; display: flex; align-items: flex-end;
+  gap: 10px; min-width: 0; padding: 8px 14px 9px;
+  border-top: 1px solid var(--border); border-radius: 0 0 11px 11px;
+  background: var(--panel); box-shadow: 0 -7px 18px rgba(0,0,0,.1); }
+.tkt-cmt-compose { flex: 1 1 auto; min-width: 0; margin: 0; padding: 0; }
 .tkt-cmt-addbtn { border: 1px dashed var(--border); background: var(--panel); color: var(--muted);
-  font-size: 12.5px; padding: 8px 14px; border-radius: 9px; cursor: pointer; width: 100%; text-align: left; }
+  min-height: 34px; font-size: 12.5px; padding: 6px 14px; border-radius: 9px;
+  cursor: pointer; width: 100%; text-align: left; }
 .tkt-cmt-addbtn:hover { color: var(--text); border-color: var(--accent); background: var(--panel-2); }
 .tkt-cmt-err { margin-top: 8px; font-size: 12px; color: #d1425c; }
+
+/* 저장된 에디터 높이가 커도 도크가 화면 전체를 밀어내지 않는다. 툴바·버튼은 남기고 본문만 줄인다. */
+.tkt-compose-dock .cmt-editor:not(.maximized) { display: flex; flex-direction: column;
+  max-height: calc(100vh - 140px); max-height: calc(100dvh - 140px); margin-top: 0; }
+.tkt-compose-dock .cmt-editor:not(.maximized) .cmt-ed-host {
+  flex: 1 1 auto; min-height: 120px; }
 
 /* CommentEditor (TipTap) */
 .cmt-editor { margin-top: 8px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden;

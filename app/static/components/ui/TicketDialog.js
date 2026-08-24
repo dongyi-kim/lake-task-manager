@@ -1653,12 +1653,6 @@ export default {
                   <div v-else class="tkt-cmt-b tkt-desc" @click="(e) => onContentClick(e, c)" v-html="c.html"></div>
                 </div>
               </div>
-              <!-- 작성 — 항상 노출(me 조회 실패에도 사라지지 않게). 미인증이면 제출 때 로그인 오버레이 -->
-              <div class="tkt-cmt-compose">
-                <button v-if="!composing" class="tkt-cmt-addbtn" @click="startCompose">＋ 댓글 달기</button>
-                <CommentEditor v-else :ticket-key="tk" submit-label="등록" :submit-fn="submitNew"
-                  @submitted="onComposed" @cancel="cancelCompose" />
-              </div>
               <div v-if="editErr" class="tkt-cmt-err">{{ editErr }}</div>
             </template>
           </template>
@@ -1739,15 +1733,25 @@ export default {
         </div><!-- /.tkt-cols -->
         </div><!-- /.tkt-body -->
 
-        <!-- 좌하단 강제 새로고침 — 이 티켓을 캐시 비우고 서버에서 다시 받는다(체크박스 등 최신 반영) -->
-        <button class="tkt-refresh" :class="{ busy: refreshing }" @click="hardRefresh"
-                :title="refreshing ? '새로 받는 중…' : '강제 새로고침 (캐시 비우고 다시 받기)'"
-                aria-label="강제 새로고침">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
-               stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v5h-5"/>
-          </svg>
-        </button>
+        <!-- 새 댓글은 본문 로딩·스크롤과 독립된 하단 도크다. 이미 열린 티켓의 다른 데이터가
+             늦어져도 작성창까지 함께 밀리거나 가려지지 않는다. 수정 에디터는 기존 댓글 자리에 남는다. -->
+        <div class="tkt-compose-dock" :class="{ open: composing }">
+          <!-- 강제 새로고침도 도크 안에 둬 작성창과 겹치지 않는다. -->
+          <button class="tkt-refresh" :class="{ busy: refreshing }" @click="hardRefresh"
+                  :title="refreshing ? '새로 받는 중…' : '강제 새로고침 (캐시 비우고 다시 받기)'"
+                  aria-label="강제 새로고침">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v5h-5"/>
+            </svg>
+          </button>
+          <!-- 항상 노출(me·comments 조회 실패에도 사라지지 않게). 미인증이면 제출 때 로그인 오버레이 -->
+          <div class="tkt-cmt-compose">
+            <button v-if="!composing" class="tkt-cmt-addbtn" @click="startCompose">＋ 댓글 달기</button>
+            <CommentEditor v-else :ticket-key="tk" submit-label="등록" :submit-fn="submitNew"
+              @submitted="onComposed" @cancel="cancelCompose" />
+          </div>
+        </div>
       </div>
 
       <div v-if="zoom" class="tkt-zoom" @click="zoom = null">

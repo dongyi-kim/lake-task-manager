@@ -440,6 +440,25 @@ def test_ticket_timeline_is_deferred_and_never_blocks_loaded_dialog_sections():
     assert "Promise.allSettled([_sib, _tl])" not in dialog
 
 
+def test_new_comment_composer_is_docked_outside_ticket_body_in_dialog_and_page():
+    """새 댓글 작성창은 본문 스크롤과 분리하고, 기존 댓글 수정창은 각 댓글 자리에 둔다."""
+    dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
+    css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
+
+    body_end = dialog.index('</div><!-- /.tkt-body -->')
+    dock = dialog.index('class="tkt-compose-dock"')
+    compose = dialog.index('class="tkt-cmt-compose"')
+    assert body_end < dock < compose
+    assert dialog.count('class="tkt-cmt-compose"') == 1
+    assert dialog.index('v-if="editingId === c.id"') < body_end
+    assert 'class="tkt-refresh"' in dialog[dock:]
+    assert ".tkt-compose-dock" in css and "flex: none" in css
+    assert ".tkt-dlg.page .tkt-body { min-height: 0; overflow: hidden auto" in css
+    assert ".tkt-dlg.page .tkt-compose-dock { border-radius: 0; }" in css
+    assert "padding-bottom: 42vh" not in css
+    assert ".tkt-page .tkt-refresh { position: fixed" not in css
+
+
 def test_agent_wiki_mentions_render_as_person_badges_even_before_name_hydration():
     md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
     assert "MENTION_RE" in md
