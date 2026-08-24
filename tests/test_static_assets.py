@@ -459,6 +459,28 @@ def test_new_comment_composer_is_docked_outside_ticket_body_in_dialog_and_page()
     assert ".tkt-page .tkt-refresh { position: fixed" not in css
 
 
+def test_new_comment_composer_hides_without_unmounting_and_shows_text_only_preview():
+    """가리기는 에디터 상태를 유지하고, 접힌 바에는 이미지·표를 제외한 텍스트만 보여준다."""
+    dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
+    editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
+
+    assert 'composeCollapsed: false, composePreview: "", composeHasDraft: false' in dialog
+    assert 'v-if="composing" v-show="!composeCollapsed" class="tkt-compose-editor"' in dialog
+    assert 'class="tkt-compose-hide"' in dialog and "@click=\"collapseCompose\"" in dialog
+    assert 'class="tkt-compose-hide-chevron"' in dialog and "⌄" not in dialog
+    assert 'ref="newCommentEditor"' in dialog and "await ed.flushDraft()" in dialog
+    assert 'class="tkt-cmt-draft-v"' in dialog and "{{ composePreview || '텍스트 미리보기 없음' }}" in dialog
+    assert "async cancelCompose()" in dialog and "await ed.discardDraft()" in dialog
+    assert 'clone.querySelectorAll("img, table, pre, hr, .img-wrap, .tableWrapper")' in editor
+    assert "async flushDraft()" in editor and "async discardDraft()" in editor
+    assert ".tkt-compose-hide { position: absolute; top: 0; left: 50%" in css
+    assert ".tkt-compose-hide-chevron" in css and "border-bottom: 1.5px solid currentColor" in css
+    assert ".tkt-compose-editor:has(.cmt-editor.maximized) .tkt-compose-hide" in css
+    assert ".tkt-compose-editor .cmt-ed-bar > .cmt-ed-btn.ghost { color: var(--danger)" in css
+    assert ".tkt-cmt-addbtn.draft" in css and ".tkt-cmt-draft-v" in css
+
+
 def test_agent_wiki_mentions_render_as_person_badges_even_before_name_hydration():
     md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
     assert "MENTION_RE" in md
