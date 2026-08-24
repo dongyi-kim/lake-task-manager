@@ -1,4 +1,4 @@
-// typeahead.js — 자동완성(통합검색·티켓/문서 링크·@멘션) 공용 입력 처리.
+// typeahead.js — 자동완성(통합검색·티켓/문서 링크·사용자 필드) 공용 입력 처리.
 //
 // 자동완성이 버벅이는 원인은 대개 서버가 아니라 **호출 방식**이다. 셋을 한곳에서 처리한다:
 //  1) 디바운스 — 타이핑이 멈춘 뒤에만 부른다. 한글 IME 는 자모마다 입력 이벤트가 나므로
@@ -94,25 +94,4 @@ export function createTypeahead(fetcher, opts) {
   }
 
   return { run, cancel, clear };
-}
-
-/**
- * TipTap suggestion(@멘션)용 — items() 는 반드시 Promise 를 해소해야 하므로,
- * 대기 중이던 호출을 **최신 결과로 한꺼번에** 해소한다(취소해 방치하면 팝업이 멎는다).
- */
-export function debouncedItems(fetcher) {
-  let timer = null, waiters = [], lastQ = null, lastR = [];
-  return (query) => new Promise((resolve) => {
-    const q = query || "";
-    if (q === lastQ) { resolve(lastR); return; }             // 같은 질의는 즉시(요청 없음)
-    waiters.push(resolve);
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      Promise.resolve(fetcher(q)).then((r) => r || [], () => []).then((r) => {
-        lastQ = q; lastR = r;
-        const ws = waiters; waiters = [];
-        ws.forEach((w) => w(r));
-      });
-    }, typeaheadDelay());
-  });
 }

@@ -1,3 +1,0 @@
-/* esm.sh - @tiptap/extension-task-list@2.11.7 */
-import{Node as e,mergeAttributes as r}from"/vendor/esm/e761d34120b1a287.mjs";var i=e.create({name:"taskList",addOptions(){return{itemTypeName:"taskItem",HTMLAttributes:{}}},group:"block list",content(){return`${this.options.itemTypeName}+`},parseHTML(){return[{tag:`ul[data-type="${this.name}"]`,priority:51}]},renderHTML({HTMLAttributes:t}){return["ul",r(this.options.HTMLAttributes,t,{"data-type":this.name}),0]},addCommands(){return{toggleTaskList:()=>({commands:t})=>t.toggleList(this.name,this.options.itemTypeName)}},addKeyboardShortcuts(){return{"Mod-Shift-9":()=>this.editor.commands.toggleTaskList()}}});export{i as TaskList,i as default};
-//# sourceMappingURL=extension-task-list.mjs.map

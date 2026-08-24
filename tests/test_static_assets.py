@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -543,22 +544,69 @@ def test_editor_and_rendered_mentions_share_stable_avatar_badge_ui():
     assert ".mention-av > img.mention-av-img.on { opacity: 1; }" in css
 
 
-def test_field_edit_and_mentions_share_user_defaults_and_cleanup_popup():
-    """사용자 추천은 한 구현을 쓰며, 닫힌 에디터의 body 팝업과 어긋난 사진이 남지 않는다."""
+def test_field_edit_and_mentions_share_user_defaults_and_managed_popup():
+    """추천은 한 구현을 쓰고 팝업 수명·위치는 최신 TipTap Suggestion이 관리한다."""
     shared = (STATIC / "lib" / "userSuggestions.js").read_text(encoding="utf-8")
     field = (STATIC / "components" / "ui" / "FieldEdit.js").read_text(encoding="utf-8")
     editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    popup = (STATIC / "lib" / "suggestionPopup.js").read_text(encoding="utf-8")
+    api = (STATIC / "lib" / "api.js").read_text(encoding="utf-8")
+    manifest = json.loads((STATIC / "vendor" / "esm" / "manifest.json").read_text(encoding="utf-8"))
+    managed = (STATIC / "vendor" / "esm" / Path(manifest["suggestion"]).name).read_text(encoding="utf-8")
+    vendor_sources = "\n".join(path.read_text(encoding="utf-8") for path in (STATIC / "vendor" / "esm").glob("*.mjs"))
     css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
 
     assert 'const RECENT_KEY = "userSuggestions.recent"' in shared
     assert "createUserTypeahead" in field and "defaultUserSuggestions" in field
-    assert "createMentionUserItems" in editor and "rememberUser(u)" in editor
-    assert "suggestion: mentionSuggestion(ticketKey, host)" in editor
-    assert 'if (k === "Escape") { closePopup(); return true; }' in editor
-    assert "if (this._mentionPopupCleanup) this._mentionPopupCleanup()" in editor
+    assert "createManagedMentionItems" in editor and "rememberUser(user)" in editor
+    assert "initialItems: mentionInitialUsers()" in editor
+    assert "debounce: typeaheadDelay()" in editor
+    assert "suggestion: mentionSuggestion(ticketKey)" in editor
+    assert "props.mount(element)" in popup and "unmount()" in popup
+    assert 'if (key === "Escape") return false' in popup
+    assert "document.body.appendChild(el)" not in editor and "_mentionPopupCleanup" not in editor
+    assert "api.mentionUsers(q, ticketKey, { signal })" in shared
+    assert "mentionUsers: (q, key, opts)" in api
+    assert "@tiptap/suggestion@3.30.3" in managed
+    assert "new AbortController" in vendor_sources
+    assert "autoUpdate" in vendor_sources and "computePosition" in vendor_sources
     assert ".mention-badge .mention-av > img.mention-av-img" in css
     assert "height: 100%; max-width: none" in css and "border: 0; border-radius: inherit" in css
     assert ".ProseMirror-selectednode:not(.mention-badge) img" in css
+
+
+def test_comment_editor_runs_on_one_tiptap_v3_runtime():
+    """에디터 진입 모듈은 모두 v3.30.3이며 table/text-style의 v3 named export를 사용한다."""
+    loader = (STATIC / "lib" / "tiptap.js").read_text(encoding="utf-8")
+    editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    manifest = json.loads((STATIC / "vendor" / "esm" / "manifest.json").read_text(encoding="utf-8"))
+    tiptap_entries = [key for key in manifest if key not in {"lowlight", "hljs"}]
+    vendor_dir = STATIC / "vendor" / "esm"
+
+    for key in tiptap_entries:
+        source = (vendor_dir / Path(manifest[key]).name).read_text(encoding="utf-8")
+        assert "@tiptap/" in source and "@3.30.3" in source, key
+    pending = [Path(path).name for path in manifest.values()]
+    seen: set[str] = set()
+    versions: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        source = (vendor_dir / name).read_text(encoding="utf-8")
+        versions.update(re.findall(r"@tiptap/[\w./-]+@(\d+\.\d+\.\d+)", source))
+        pending.extend(re.findall(r"/vendor/esm/([0-9a-f]{16}\.mjs)", source))
+        imports = re.findall(r'(?:from|import)\s*(?:\(\s*)?["\']((?:\.{1,2}/|/)[^"\']+)', source)
+        assert all(path.startswith("/vendor/esm/") for path in imports), (name, imports)
+    assert {path.name for path in vendor_dir.glob("*.mjs")} == seen
+    assert versions == {"3.30.3"}
+    assert 'version: "3.30.3"' in loader
+    assert "Table: table.Table" in loader and "TableRow: table.TableRow" in loader
+    assert 'TextStyle: m["extension-text-style"].TextStyle' in loader
+    assert 'T.StarterKit.configure({ codeBlock: false, link: false })' in editor
+    assert 'commands.setContent(html, { emitUpdate: false })' in editor
+    assert "extension-table-row" not in manifest and "extension-link" not in manifest
 
 
 def test_field_edit_shows_offline_defaults_immediately_and_pins_none_option():

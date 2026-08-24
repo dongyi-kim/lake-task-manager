@@ -1,7 +1,7 @@
 // userSuggestions.js — 담당자/보고자 FieldEdit와 @멘션이 공유하는 사용자 추천.
 // 같은 티켓·같은 빈 검색이면 두 UI가 같은 최근 사용자와 서버 기본 추천을 같은 순서로 보여야 한다.
 import { api } from "./api.js";
-import { createTypeahead, debouncedItems } from "./typeahead.js";
+import { createTypeahead } from "./typeahead.js";
 
 const RECENT_KEY = "userSuggestions.recent";
 const LEGACY_KEYS = ["fe.recent.assignee", "fe.recent.reporter"];
@@ -67,11 +67,15 @@ export function createUserTypeahead(ticketKey, localItems) {
   };
 }
 
-/** TipTap @멘션용. FieldEdit와 동일한 후처리와 기본 추천 순서를 쓴다. */
-export function createMentionUserItems(ticketKey) {
-  const fetchUsers = debouncedItems((q) => api.mentionUsers(q, ticketKey));
-  return ({ query }) => {
+/** TipTap v3 @멘션용 초기값. 서버를 기다리지 않고 FieldEdit와 같은 최근 목록부터 보여 준다. */
+export function mentionInitialUsers() {
+  return defaultUserSuggestions([], []);
+}
+
+/** TipTap v3 @멘션용. 디바운스·응답 역전·취소는 Suggestion이 관리한다. */
+export function createManagedMentionItems(ticketKey) {
+  return ({ query, signal }) => {
     const q = String(query || "").trim();
-    return fetchUsers(q).then((items) => finalUsers(q, items));
+    return api.mentionUsers(q, ticketKey, { signal }).then((items) => finalUsers(q, items));
   };
 }
