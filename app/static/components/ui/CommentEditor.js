@@ -1566,7 +1566,7 @@ export default {
       }
       this._ed.chain().focus().updateAttributes("image", { width: w }).run();
     },
-    // ── 작성 중 임시저장(IndexedDB, TTL 7일) — 취소/이동해도 내용·이미지가 남는다 ──
+    // ── 작성 중 임시저장(IndexedDB, TTL 7일) — 가리기/이동해도 내용·이미지가 남는다 ──
     // 수정 모드는 원본이 있으므로 저장하지 않는다(새 댓글 작성만).
     //
     // **본문 편집은 초안을 쓰지 않는다.** 본문은 서버에 이미 있는 글이고, 다른 사람이 고쳤을 수도
@@ -1586,21 +1586,30 @@ export default {
       if (!k || !this._ed) return;
       clearTimeout(this._dt);
       this._dt = setTimeout(() => {
-        if (!this._ed || this._dead) return;
-        let html = this._ed.getHTML();
-        const text = (this._ed.getText() || "").trim();
-        const imgs = [];
-        for (const [url, info] of this._pending) {
-          if (!html.includes(url)) continue;
-          const token = "draft:" + info.name;          // objectURL 은 새로고침 후 무효 → 토큰으로
-          html = html.split(url).join(token);
-          imgs.push({ token, name: info.name, blob: info.blob });
-        }
-        if (!text && !imgs.length) {
-          this._draftWrite = clearDraft(k); return;             // 빈 초안은 남기지 않는다
-        }
-        this._draftWrite = saveDraft(k, { html, images: imgs });
+        this._dt = null;
+        this.flushDraft();
       }, 700);
+    },
+    /** 접는 순간에는 디바운스를 기다리지 않고 지금 보이는 초안을 저장한다. */
+    async flushDraft() {
+      const k = this.draftKey();
+      if (!k || !this._ed || this._dead) return;
+      clearTimeout(this._dt); this._dt = null;
+      let html = this._ed.getHTML();
+      const text = (this._ed.getText() || "").trim();
+      const imgs = [];
+      for (const [url, info] of this._pending) {
+        if (!html.includes(url)) continue;
+        const token = "draft:" + info.name;          // objectURL 은 새로고침 후 무효 → 토큰으로
+        html = html.split(url).join(token);
+        imgs.push({ token, name: info.name, blob: info.blob });
+      }
+      const write = (!text && !imgs.length)
+        ? clearDraft(k)                               // 빈 초안은 남기지 않는다
+        : saveDraft(k, { html, images: imgs });
+      this._draftWrite = write;
+      try { await write; } catch (_) { /* 임시저장 실패가 작성 자체를 막지는 않는다 */ }
+      finally { if (this._draftWrite === write) this._draftWrite = null; }
     },
     async restoreDraft() {
       const k = this.draftKey();
@@ -1619,13 +1628,19 @@ export default {
       this._ed.commands.setContent(html, false);
       this.restored = true;
     },
-    discardDraft() {
+    async discardDraft() {
       const k = this.draftKey();
-      if (k) clearDraft(k);
+      clearTimeout(this._dt); this._dt = null;
+      const prior = this._draftWrite;
+      if (prior) { try { await prior; } catch (_) { /* 마지막 삭제가 최종 상태를 정한다 */ } }
       try { for (const u of this._pending.keys()) URL.revokeObjectURL(u); } catch (e) { /* noop */ }
       this._pending.clear();
-      if (this._ed) this._ed.commands.clearContent(true);
+      if (this._ed) this._ed.commands.clearContent(false);
       this.restored = false;
+      const write = k ? clearDraft(k) : null;
+      this._draftWrite = write;
+      if (write) { try { await write; } catch (_) { /* IndexedDB 실패는 화면 취소를 막지 않는다 */ } }
+      if (this._draftWrite === write) this._draftWrite = null;
     },
     // 바깥(생성 다이얼로그 등)에서 '설명을 쓸지' 판단용 — 글자·이미지·링크·체크박스 하나라도 있으면 false.
     isBlank() {
@@ -1633,6 +1648,18 @@ export default {
       const text = (this._ed.getText() || "").trim();
       return !text && !/<img\b|<a\b|<input\b/i.test(this._ed.getHTML());
     },
+    /** 접힌 바용 한 줄 미리보기. 이미지·표·코드블록처럼 한 줄로 읽을 수 없는 노드는 제외한다. */
+    previewText(limit = 160) {
+      const host = this.$refs.ed && this.$refs.ed.querySelector(".ProseMirror");
+      if (!host) return "";
+      const clone = host.cloneNode(true);
+      clone.querySelectorAll("img, table, pre, hr, .img-wrap, .tableWrapper").forEach((n) => n.remove());
+      clone.querySelectorAll("p, div, li, blockquote, h1, h2, h3, h4").forEach((n) => n.append(" "));
+      const text = (clone.textContent || "").replace(/\u200b/g, "").replace(/\s+/g, " ").trim();
+      const max = Math.max(24, Number(limit) || 160);
+      return text.length > max ? text.slice(0, max).trimEnd() + "…" : text;
+    },
+    focus() { try { if (this._ed) this._ed.commands.focus(); } catch (_) { /* noop */ } },
     // Creation dialogs use this snapshot in the initial create request. Keep the editor
     // implementation private and expose only the serializable value and pending state.
     htmlValue() { return this._ed ? this._ed.getHTML() : ""; },

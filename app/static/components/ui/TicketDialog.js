@@ -119,7 +119,8 @@ export default {
   emits: ["close", "search", "toggle-theme"],
   data() { return { v: null, comments: null, ancestors: [], siblings: [], timeline: [], children: [], related: [], atts: [], docs: [],
                     pdesc: null, pdescOpen: false, pdescErr: "",
-                    me: null, composing: false, editingId: null, editInitial: "", editErr: "",
+                    me: null, composing: false, composeCollapsed: false, composePreview: "", composeHasDraft: false,
+                    editingId: null, editInitial: "", editErr: "",
                     cmtSort: "new",              // new=최신순(기본) | old=오래된순. 초 단위까지 비교.
                     // 링크 추가(관련 티켓/관련문서) · 파일 첨부(＋ 버튼 · 드래그앤드롭)
                     relPick: false, linkBusy: false, linkErr: "",
@@ -586,7 +587,8 @@ export default {
         this.childTimelineErr = ""; this.showChildTimeline = false;
         this.children = []; this.related = []; this.atts = []; this.docs = [];
         this.pdesc = null; this.pdescOpen = false; this.pdescErr = "";
-        this.composing = false; this.editingId = null; this.editInitial = ""; this.editErr = "";
+        this.composing = false; this.composeCollapsed = false; this.composePreview = ""; this.composeHasDraft = false;
+        this.editingId = null; this.editInitial = ""; this.editErr = "";
         this.kidTypes = []; this.adding = false; this.ncErr = ""; this.emeta = null;
       }
       if (!this.me) api.me().then((m) => { this.me = m || {}; }).catch(() => { this.me = {}; });
@@ -874,10 +876,27 @@ export default {
         .then((c) => { if (this.keyId === key) this.comments = c || []; })
         .catch(() => {});
     },
-    startCompose() { this.editingId = null; this.editErr = ""; this.composing = true; },
-    cancelCompose() { this.composing = false; },
+    startCompose() {
+      this.editingId = null; this.editErr = ""; this.composing = true; this.composeCollapsed = false;
+      this.$nextTick(() => { const ed = this.$refs.newCommentEditor; if (ed && ed.focus) ed.focus(); });
+    },
+    async collapseCompose() {
+      const ed = this.$refs.newCommentEditor;
+      this.composePreview = ed && ed.previewText ? ed.previewText() : "";
+      this.composeHasDraft = !!(ed && ed.isBlank && !ed.isBlank());
+      this.composeCollapsed = true;              // 에디터는 unmount 하지 않는다 — 커서·첨부까지 그대로
+      if (ed && ed.flushDraft) await ed.flushDraft();
+    },
+    async cancelCompose() {
+      const ed = this.$refs.newCommentEditor;
+      if (ed && ed.discardDraft) await ed.discardDraft();
+      this.composing = false; this.composeCollapsed = false; this.composePreview = ""; this.composeHasDraft = false;
+    },
     submitNew(md) { return api.commentCreate(this.tk, md); },     // CommentEditor 가 await
-    onComposed() { this.composing = false; this.reloadComments(); this.reloadSide(); },
+    onComposed() {
+      this.composing = false; this.composeCollapsed = false; this.composePreview = ""; this.composeHasDraft = false;
+      this.reloadComments(); this.reloadSide();
+    },
     async startEdit(c) {
       // 원본(markdown)을 먼저 받아온 뒤 editingId 를 켠다 — 에디터는 마운트 시 initialValue 만 읽으므로.
       this.composing = false; this.editErr = "";
@@ -1735,7 +1754,8 @@ export default {
 
         <!-- 새 댓글은 본문 로딩·스크롤과 독립된 하단 도크다. 이미 열린 티켓의 다른 데이터가
              늦어져도 작성창까지 함께 밀리거나 가려지지 않는다. 수정 에디터는 기존 댓글 자리에 남는다. -->
-        <div class="tkt-compose-dock" :class="{ open: composing }">
+        <div class="tkt-compose-dock"
+             :class="{ open: composing && !composeCollapsed, 'has-draft': composing && composeCollapsed && composeHasDraft }">
           <!-- 강제 새로고침도 도크 안에 둬 작성창과 겹치지 않는다. -->
           <button class="tkt-refresh" :class="{ busy: refreshing }" @click="hardRefresh"
                   :title="refreshing ? '새로 받는 중…' : '강제 새로고침 (캐시 비우고 다시 받기)'"
@@ -1747,9 +1767,26 @@ export default {
           </button>
           <!-- 항상 노출(me·comments 조회 실패에도 사라지지 않게). 미인증이면 제출 때 로그인 오버레이 -->
           <div class="tkt-cmt-compose">
-            <button v-if="!composing" class="tkt-cmt-addbtn" @click="startCompose">＋ 댓글 달기</button>
-            <CommentEditor v-else :ticket-key="tk" submit-label="등록" :submit-fn="submitNew"
-              @submitted="onComposed" @cancel="cancelCompose" />
+            <button v-if="!composing || composeCollapsed" class="tkt-cmt-addbtn"
+                    :class="{ draft: composing && composeCollapsed && composeHasDraft }"
+                    :title="composeHasDraft ? (composePreview || '미리볼 수 없는 콘텐츠가 포함된 작성 중 댓글') : '댓글 달기'"
+                    @click="startCompose">
+              <template v-if="composing && composeCollapsed && composeHasDraft">
+                <span class="tkt-cmt-draft-k">작성 중</span>
+                <span class="tkt-cmt-draft-v">{{ composePreview || '텍스트 미리보기 없음' }}</span>
+                <span class="tkt-cmt-draft-open">펼치기</span>
+              </template>
+              <template v-else>＋ 댓글 달기</template>
+            </button>
+            <div v-if="composing" v-show="!composeCollapsed" class="tkt-compose-editor">
+              <!-- 좌·우 부가 패널의 접기 손잡이를 90도 돌린 형태: 에디터 상단 경계에 반쯤 걸친다. -->
+              <button type="button" class="tkt-compose-hide" title="댓글 작성창 가리기"
+                      aria-label="댓글 작성창 가리기" @click="collapseCompose">
+                <span class="tkt-compose-hide-chevron" aria-hidden="true"></span><b>가리기</b>
+              </button>
+              <CommentEditor ref="newCommentEditor" :ticket-key="tk" submit-label="등록" :submit-fn="submitNew"
+                @submitted="onComposed" @cancel="cancelCompose" />
+            </div>
           </div>
         </div>
       </div>
