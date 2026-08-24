@@ -202,16 +202,30 @@ def test_uniform_subtask_status_reuses_solo_parent_and_foldable_children_in_one_
     assert "mt-gslot.one-status" not in css
 
 
-def test_mytasks_loads_base_then_hydrates_groups_without_stale_filter_overwrite():
+def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_overwrite():
     view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
     api = (STATIC / "lib" / "api.js").read_text(encoding="utf-8")
 
     assert '"&deferred=1"' in api
+    assert "myTasksStream: (opts, onEvent, signal)" in api
+    assert "myTasksEpicMeta: (keys)" in api
+    assert "response.body.getReader" in api
     assert "myTasksGroup: (syncId, key)" in api
     assert "myTasksEpics: (syncId)" in api
-    assert "this._hydrateModel(model, seq, key, cache);" in view
-    # A changed filter stops not-yet-started old jobs, while an already completed old response is
-    # still merged into that filter's SWR cache. Only the matching sequence may touch visible UI.
+    assert "this._hydrateModel(finalModel, seq, key, cache);" in view
+    assert "this._mergeStreamModel(cache[key] || this._emptyTaskModel(), event.model)" in view
+    assert "this._streamAbort.abort()" in view
+    assert "this._cacheModel(cache, key, next)" in view
+    assert "this._queueEpicMetadata(next, cache)" in view
+    assert 'epicDisplayTitle(k) { return this.epicPending(k) ? "Epic 이름 확인 중"' in view
+    assert "groups, epics: Array.from(epicMap.values()), counts: this._groupCounts(groups)" in view
+    assert "if (claimed.has(atom.key)) return false;" in view
+    assert 'if (kind === "permission") return;' in view
+    assert 'title: kind === "auth" ? "일부 Task를 인증 문제로 불러오지 못했습니다"' in view
+    assert "Parent Task는 준비됨" not in view
+    assert "mt-sub-sync-row" not in view
+    # A changed filter stops not-yet-started child jobs. Completed leaf chunks are cached before
+    # the sequence guard, while only the matching sequence may touch visible UI.
     assert 'if (seq !== this._loadSeq) return;   // 아직 시작하지 않은 옛 필터 보강' in view
     assert "cache[cacheKey] = next;" in view
     assert "this._loadSeq === patch.seq" in view

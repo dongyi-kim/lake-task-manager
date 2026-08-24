@@ -196,6 +196,43 @@ Parent만 `issueL` projection으로 조립하고, 동료 SubTask와 Epic label�
 않은 옛 보강은 중단해 새 필터에 양보한다. 따라서 새 필터 전환과 이전 필터 결과 보존을 동시에 만족한다.
 브라우저 console error/warning은 0건이었다.
 
+## 실제 UI 여정 — JQL leaf 완료순 스트리밍
+
+base 모델 하나를 기다리던 경계도 제거했다. 세 상태 영역은 요청 직후 먼저 그려지고, 정규화된 OR
+leaf마다 완료된 티켓 목록을 NDJSON으로 즉시 전달한다. 브라우저는 매 chunk마다 기존 결과에 append한
+뒤 issue key로 중복 제거하고, 마감/우선순위/키로 다시 정렬하며 상단 통계를 재계산한다. 전체 leaf가
+끝난 다음에만 Parent별 SubTask 보강을 시작한다.
+
+800ms 고의 지연에서 캐시를 비운 `key = DL-9008 OR key = DL-9028 OR key = DL-9030` 스트림의 실제
+응답 시각은 다음과 같았다.
+
+| 이벤트 | 요청 후 시각 |
+|---|---:|
+| 상태축/start | 21ms |
+| leaf 계획 확정 | 1003ms |
+| 첫 leaf 카드 append | 1866ms |
+| 둘째 leaf append | 2709ms |
+| 셋째 leaf append | 3572ms |
+| 최종 합집합 확정 | 3582ms |
+
+DataOps 실제 Task 화면에서도 전역 `불러오는 중`은 나타나지 않았다. 시작 시 세 축이 모두 빈 shell로
+즉시 보이고, 3.8초에는 완료축 6건, 7.0초에는 진행 9건/완료 6건처럼 완료된 leaf부터 누적됐다.
+최종 SubTask 보강 뒤 DOM 티켓 96개는 unique key도 96개로 중복 0건이었다.
+
+DataOps 수집 도중 Workbench로 바꾸면 기존 Workbench 캐시 95개가 즉시 표시됐고, 200ms 뒤 다시
+DataOps로 돌아오면 중단 전에 완료된 DataOps leaf 3개 분량(상태별 5/15/11)이 즉시 복구됐다. 이전
+스트림은 더 이상 화면을 갱신하지 않지만, 중단 전 완료한 leaf와 issueL row는 서버 캐시에 남는다.
+
+부분 실패도 leaf 경계로 격리한다. Jira 403/권한 거절은 정상적인 비가시 범위로 보고 조용히 제외한다.
+401/인증 및 기타 오류는 성공한 카드와 통계를 유지하면서 종류별 토스트를 한 번만 띄운다. 실패가 섞인
+subquery는 부분 결과를 완전한 `mt:` aggregate로 저장하지 않는다. 자동 테스트에서 permission/auth/기타
+leaf 3개를 각각 실패시킨 뒤 네 번째 leaf가 계속 도착하는 것과 partial 완료 모델을 확인했다.
+
+Epic 이름은 첫 참조 leaf 직후 별도 저우선순위 배치로 조회한다. 일반 issue TTL보다 긴 6시간 전용
+`epicmeta:` 캐시를 사용하고, Epic 수정/삭제/강제 새로고침 성공 시 즉시 선택 무효화한다. 따라서 카드
+수집을 막지 않으면서 재방문 시 티켓 번호 placeholder 대신 이름을 바로 재사용한다. Parent 카드 아래의
+회색 `Parent Task는 준비됨` placeholder는 제거하고 기존 SubTask 하단바의 작은 spinner만 유지했다.
+
 ## 정확성 gate
 
 - baseline/candidate 검색 비교 480건: key·순서 일치, 불일치 0
@@ -205,4 +242,5 @@ Parent만 `issueL` projection으로 조립하고, 동료 SubTask와 Epic label�
 - 정상 warm JQL: upstream 0회
 - snapshot cursor: mutation 전 snapshot은 같은 generation으로 중복·누락 없이 계속 읽힘
 - full issue → light 재사용 허용, light → full 재사용 금지
-- 선택 만료·검색·Task 비동기 UI focused regression 563 passed. 직전 PR head의 전체 offline suite는 3284 passed, 2 skipped였으며, 현재 변경의 전체 suite는 GitHub Actions에서 판정한다.
+- leaf 스트리밍·부분 실패·Epic 장기 캐시를 포함한 focused regression 513개 통과.
+- 현재 변경의 전체 offline suite 3309 passed, 2 skipped. GitHub Actions에서도 같은 계약을 판정한다.

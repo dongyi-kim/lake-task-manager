@@ -54,6 +54,7 @@ export default {
     showOwner: { type: Boolean, default: true },
     showEpic: { type: Boolean, default: true },
     epicTitle: { type: String, default: "" },
+    epicPending: { type: Boolean, default: false },
     // '내 담당' 이 아닌 카드를 흐리게(.rel) 물러나게 할지. '내 Task' 화면에서는 그게 핵심이지만,
     // **아직 만들어지지도 않은 티켓**(Bulk 미리보기)에는 담당 관계가 없어 흐릴 이유가 없다.
     dim: { type: Boolean, default: true },
@@ -106,7 +107,8 @@ export default {
             :title="'상위: ' + parentKey + ' ' + parentTitle">
         <b class="mp-k">{{ parentKey }}</b><span class="mp-t">{{ parentTitle }}</span>
       </span>
-      <span v-else-if="showEpic && card.epicKey" class="mt-epic sm" :title="'Epic: ' + epicTitle">{{ epicTitle }}</span>
+      <span v-else-if="showEpic && card.epicKey" class="mt-epic sm" :class="{ pending: epicPending }"
+            :title="'Epic: ' + epicTitle">{{ epicTitle }}</span>
       <span v-else-if="showEpic && card.voc" class="mt-voc sm" :title="'사용자 VoC' + (vocSegs.length > 1 ? ' — ' + vocSegs.slice(1).join(' · ') : '')">
         <span v-for="(s, i) in vocSegs" :key="i" class="mt-voc-seg" :class="{ head: i === 0 }">{{ s }}</span>
       </span>

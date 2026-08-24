@@ -13,12 +13,13 @@ Lake Task Manager — FastAPI 진입점.
 JIRA_ENV=mock 이면 Jira 없이 결정적 데이터로 전체가 구동된다.
 """
 
+import json
 import sys
 import threading
 import urllib.parse
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -1280,6 +1281,30 @@ def api_mytasks(user: str = "", done: bool = False, scope: str = "assignee",
         defer_children=deferred))
 
 
+@app.get("/api/mytasks/stream")
+def api_mytasks_stream(user: str = "", done: bool = False, scope: str = "assignee",
+                       openFilter: str = "all", progFilter: str = "all",
+                       doneFilter: str = "1w"):
+    """Stream each completed normalized JQL leaf as one NDJSON Task-model chunk."""
+    def lines():
+        try:
+            for event in mytasks.iter_my_task_models(
+                    _client, user or None, include_done=done, scope=scope,
+                    open_filter=(openFilter if openFilter in ("all", "2w") else "all"),
+                    prog_filter=(progFilter if progFilter in ("all", "1m") else "all"),
+                    done_filter=(doneFilter if doneFilter in ("1w", "1m") else "1w")):
+                yield json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+        except Exception as exc:  # response headers are already sent; errors travel in-band
+            yield json.dumps({
+                "type": "error", "error": str(exc),
+                "needLogin": isinstance(exc, SessionExpired),
+            }, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+    return StreamingResponse(
+        lines(), media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
 @app.get("/api/mytasks/sync/{sync_id}/group/{key}")
 def api_mytasks_group(sync_id: str, key: str):
     """Parent Task 하나의 SubTask만 독립 동기화한다."""
@@ -1295,6 +1320,19 @@ def api_mytasks_group(sync_id: str, key: str):
         return JSONResponse({"error": str(exc)}, status_code=404)
     except LookupError as exc:
         return JSONResponse({"error": str(exc)}, status_code=410)
+
+
+@app.get("/api/mytasks/epics")
+def api_mytasks_epic_metadata(keys: str = ""):
+    """Resolve newly referenced Epic labels without delaying the Task leaf stream.
+
+    Misses are batched and queued as background work, so the next foreground JQL leaf or a newly
+    selected filter always wins the serial prod provider queue.
+    """
+    requested = [key.strip().upper() for key in keys.split(",") if key.strip()][:100]
+    with background_upstream():
+        epics = _client.epic_metadata_many(requested)
+    return JSONResponse({"epics": epics})
 
 
 @app.get("/api/mytasks/sync/{sync_id}/epics")

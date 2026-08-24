@@ -246,17 +246,138 @@ def hydrate_my_task_epics(client, sync_id):
     session_user = (client.current_user() or {}).get("id")
     if session_user != state.get("sessionUser"):
         raise PermissionError("다른 사용자 Task 동기화 정보입니다.")
-    result = []
-    for key in state.get("epics") or ():
-        badge = client.ticket_badge(key)
-        result.append({"key": key, "title": client.epic_label(badge, key),
-                       "statusCategory": (badge or {}).get("statusCategory") or "todo"})
-    return result
+    return client.epic_metadata_many(state.get("epics") or ())
+
+
+class _TaskRowsClient:
+    """Delegate every Jira operation except the Task-page search itself.
+
+    Progressive Task rendering receives one cached JQL leaf at a time.  Reusing the normal model
+    builder with this tiny adapter keeps grouping, scope matching and statistics identical to the
+    non-streaming API instead of reimplementing those rules in the HTTP layer.
+    """
+
+    def __init__(self, client, rows, recorder=None):
+        self._client = client
+        self._rows = list(rows or ())
+        self._recorder = recorder
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+    def search_issues(self, jql, max_results=200, cache_key=None):
+        if self._recorder is not None:
+            self._recorder.append((cache_key, jql, max_results))
+            return []
+        return self._rows[:max(0, int(max_results or 0))]
+
+
+def _leaf_status_axis(leaf):
+    """Best-effort status band for progress display; membership still comes from issue rows."""
+    value = re.sub(r'\s+', ' ', str(leaf or '').lower())
+    if re.search(r'statuscategory\s*=\s*(?:"done"|done)(?:\s|$|\))', value):
+        return "done"
+    if re.search(r'statuscategory\s*=\s*(?:"in progress"|in progress)(?:\s|$|\))', value):
+        return "inprogress"
+    if re.search(r'statuscategory\s*=\s*(?:"to do"|to do)(?:\s|$|\))', value):
+        return "todo"
+    return None
+
+
+def iter_my_task_models(client, user=None, include_done=False, limit=200, scope="assignee",
+                        open_filter="all", prog_filter="all", done_filter="1w"):
+    """Yield Task models as normalized JQL leaves complete.
+
+    Events are NDJSON-ready dictionaries.  ``chunk`` models contain only the newly completed leaf;
+    the browser appends them, deduplicates by issue key, sorts again and recomputes statistics.
+    ``complete`` is the authoritative union and carries the one SubTask hydration snapshot.
+    """
+    yield {"type": "start", "axes": ["todo", "inprogress", "done"]}
+
+    calls = []
+    planner = _TaskRowsClient(client, (), recorder=calls)
+    empty = build_my_tasks(
+        planner, user=user, include_done=include_done, limit=limit, scope=scope,
+        open_filter=open_filter, prog_filter=prog_filter, done_filter=done_filter,
+        defer_children=True, create_sync=False)
+    if not calls:
+        yield {"type": "complete", "model": empty, "leafDone": 0, "leafTotal": 0}
+        return
+
+    query_results = []
+    errors = []
+    query_total = len(calls)
+    leaf_done = 0
+    # The precise total is available without running an upstream request.  Unsupported syntax is
+    # one legacy chunk and remains correct, merely less granular.
+    leaf_total = 0
+    for _cache_key, jql, _max_results in calls:
+        try:
+            leaf_total += len(client._compile_jql(jql).leaves)
+        except Exception:
+            leaf_total += 1
+    yield {"type": "planned", "leafDone": 0, "leafTotal": leaf_total}
+
+    for query_index, (cache_key, jql, max_results) in enumerate(calls):
+        query_rows = []
+        query_failed = False
+        for chunk in client.iter_search_issue_chunks(jql, light=True):
+            leaf_done += 1
+            if chunk.get("error"):
+                query_failed = True
+                error = dict(chunk["error"])
+                errors.append(error)
+                yield {
+                    "type": "leaf-error", "error": error,
+                    "axis": _leaf_status_axis(chunk.get("leaf")),
+                    "leaf": chunk.get("leaf"), "leafDone": leaf_done,
+                    "leafTotal": leaf_total, "queryIndex": query_index,
+                    "queryTotal": query_total,
+                }
+                continue
+            leaf_rows = list(chunk.get("issues") or ())
+            query_rows = list(chunk.get("combined") or ())[:max(0, int(max_results or 0))]
+            leaf_model = build_my_tasks(
+                _TaskRowsClient(client, leaf_rows), user=user, include_done=include_done,
+                limit=limit, scope=scope, open_filter=open_filter,
+                prog_filter=prog_filter, done_filter=done_filter,
+                defer_children=True, create_sync=False)
+            yield {
+                "type": "chunk", "model": leaf_model,
+                "axis": _leaf_status_axis(chunk.get("leaf")),
+                "leaf": chunk.get("leaf"), "leafDone": leaf_done,
+                "leafTotal": leaf_total, "queryIndex": query_index,
+                "queryTotal": query_total,
+            }
+        # Preserve the historical mt:* aggregate cache only after this subquery is complete.  A
+        # disconnected stream never publishes a partial list as a complete API-cache hit.
+        query_results.append(query_rows)
+        if cache_key is not None and not query_failed:
+            client.cache.set(cache_key + ":light", query_rows,
+                             client.s.cache_ttl_seconds)
+
+    # Reapply the per-subquery limit before the authoritative union.  Rows from multiple module
+    # queries may overlap, so issue key remains the identity at this final boundary as well.
+    final_rows = {}
+    for rows, (_cache_key, _jql, max_results) in zip(query_results, calls):
+        for row in rows[:max(0, int(max_results or 0))]:
+            key = (row or {}).get("key")
+            if key:
+                final_rows[key] = row
+    complete = build_my_tasks(
+        _TaskRowsClient(client, final_rows.values()), user=user, include_done=include_done,
+        limit=limit, scope=scope, open_filter=open_filter,
+        prog_filter=prog_filter, done_filter=done_filter,
+        defer_children=True, create_sync=True)
+    yield {"type": "complete", "model": complete,
+           "leafDone": leaf_done, "leafTotal": leaf_total,
+           "leafSucceeded": leaf_done - len(errors), "leafFailed": len(errors),
+           "partial": bool(errors), "errors": errors}
 
 
 def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assignee",
                    open_filter="all", prog_filter="all", done_filter="1w",
-                   defer_children=False):
+                   defer_children=False, create_sync=True):
     """세션 사용자(또는 user 지정)의 '내 Task' 모델.
 
     scope: assignee(담당) | reporter(내가 등록) | both. '내 일'의 정의는 사람마다 다르다 —
@@ -553,10 +674,7 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
         epics = [{"key": key, "title": key, "statusCategory": "todo", "pending": True}
                  for key in epic_keys]
     else:
-        for ek in epic_keys:
-            b = client.ticket_badge(ek)
-            epics.append({"key": ek, "title": client.epic_label(b, ek),   # Epic Name→Summary→키
-                          "statusCategory": (b or {}).get("statusCategory") or "todo"})
+        epics = client.epic_metadata_many(epic_keys)
 
     atoms = [a for g in out for a in g["atoms"]]
     result = {"user": {"id": me, "name": (client.current_user() or {}).get("name") or me},
@@ -566,7 +684,7 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
               "counts": _counts(atoms)}
     pending_groups = {g["key"]: expected_kids.get(g["key"], [])
                       for g in out if g.get("childrenPending")}
-    if defer_children and (pending_groups or epic_keys):
+    if defer_children and create_sync and (pending_groups or epic_keys):
         sync_id = secrets.token_urlsafe(18)
         session_user = (client.current_user() or {}).get("id")
         context = {

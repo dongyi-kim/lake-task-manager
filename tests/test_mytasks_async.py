@@ -2,10 +2,12 @@
 
 import pytest
 
+from app.auth.base import SessionExpired
 from app.domain.mytasks import (
     build_my_tasks,
     hydrate_my_task_epics,
     hydrate_my_task_group,
+    iter_my_task_models,
 )
 from app.infra.cache import Cache
 from app.infra.settings import get_settings
@@ -150,3 +152,110 @@ def test_expired_or_invalidated_filter_snapshot_cannot_hydrate():
 
     with pytest.raises(LookupError, match="만료"):
         hydrate_my_task_group(client, deferred["syncId"], "DL-9020")
+
+
+@pytest.mark.parametrize("scope", [
+    "assignee", "reporter", "both", "module:TEST", "mymodules",
+    "assignee:test.ui02", "epic:DL-9019",
+    'jql:project = DL AND assignee = "test.ui01"',
+])
+def test_progressive_leaf_union_matches_authoritative_task_model(scope):
+    client = _client()
+    events = list(iter_my_task_models(client, scope=scope))
+
+    assert events[0]["type"] == "start"
+    assert events[1]["type"] == "planned"
+    chunks = [event for event in events if event["type"] == "chunk"]
+    assert chunks
+    assert [event["leafDone"] for event in chunks] == list(range(1, len(chunks) + 1))
+    assert all(event["leafTotal"] == len(chunks) for event in chunks)
+
+    streamed = events[-1]["model"]
+    direct = build_my_tasks(client, scope=scope, defer_children=True)
+    streamed_groups = {
+        group["key"]: [atom["key"] for atom in group["atoms"]]
+        for group in streamed["groups"]
+    }
+    direct_groups = {
+        group["key"]: [atom["key"] for atom in group["atoms"]]
+        for group in direct["groups"]
+    }
+    assert streamed_groups == direct_groups
+    assert streamed["counts"] == direct["counts"]
+
+
+def test_completed_stream_leaf_is_cached_before_the_browser_can_stop_consuming():
+    client = _client()
+    query = (
+        'assignee = "test.ui01" AND ('
+        'statusCategory = "To Do" OR statusCategory = "In Progress" '
+        'OR statusCategory = Done) ORDER BY duedate ASC'
+    )
+    stream = client.iter_search_issue_chunks(query)
+    first = next(stream)
+    stream.close()
+
+    _generation, _digest, cache_key = client._jql_leaf_key(first["leaf"])
+    assert client.cache.get(cache_key) is not None
+    for issue in first["issues"]:
+        assert client.cache.get(f"issueL:{client.env}:{issue['key']}") is not None
+
+
+def test_leaf_failures_are_isolated_classified_and_later_leaves_still_arrive(monkeypatch):
+    client = _client()
+    original = client._cached_jql_leaf
+
+    def flaky(leaf, *args, **kwargs):
+        if "DL-9008" in leaf:
+            raise PermissionError("HTTP 403 permission denied")
+        if "DL-9028" in leaf:
+            raise SessionExpired("HTTP 401 session expired")
+        if "DL-9030" in leaf:
+            raise RuntimeError("temporary Jira failure")
+        return original(leaf, *args, **kwargs)
+
+    monkeypatch.setattr(client, "_cached_jql_leaf", flaky)
+    chunks = list(client.iter_search_issue_chunks(
+        "key = DL-9008 OR key = DL-9028 OR key = DL-9030 OR key = DL-9020"))
+
+    errors = [chunk["error"]["kind"] for chunk in chunks if chunk.get("error")]
+    assert sorted(errors) == ["auth", "other", "permission"]
+    assert any(any(issue["key"] == "DL-9020" for issue in chunk["issues"])
+               for chunk in chunks if not chunk.get("error"))
+    assert len(chunks) == 4
+
+
+def test_partial_task_stream_keeps_successes_and_does_not_publish_partial_mt_cache(monkeypatch):
+    client = _client()
+    original = client._cached_jql_leaf
+
+    def one_denied_leaf(leaf, *args, **kwargs):
+        if "statuscategory = done" in leaf.lower():
+            raise PermissionError("HTTP 403 permission denied")
+        return original(leaf, *args, **kwargs)
+
+    monkeypatch.setattr(client, "_cached_jql_leaf", one_denied_leaf)
+    events = list(iter_my_task_models(client, scope="assignee"))
+    complete = events[-1]
+
+    assert any(event["type"] == "leaf-error"
+               and event["error"]["kind"] == "permission" for event in events)
+    assert complete["type"] == "complete"
+    assert complete["partial"] is True
+    assert complete["leafFailed"] == 1
+    assert complete["model"]["groups"]
+    assert client.cache.get(f"mt:{client.env}:asg:test.ui01:all.all.1w:light") is None
+
+
+def test_epic_metadata_uses_long_ttl_and_ticket_invalidation_evicts_it(monkeypatch):
+    client = _client()
+    meta = client.epic_metadata("DL-9019")
+
+    assert meta and meta["title"] != "DL-9019"
+    assert client.EPIC_META_TTL > client.s.cache_ttl_seconds
+    cache_key = f"epicmeta:{client.env}:DL-9019"
+    assert client.cache.get(cache_key) == meta
+
+    monkeypatch.setattr(client, "_reprime", lambda *args, **kwargs: None)
+    client._invalidate_ticket("DL-9019")
+    assert client.cache.get(cache_key) is None

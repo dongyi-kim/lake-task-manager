@@ -157,7 +157,13 @@ export default {
                 SubtaskFoldBar },
   data() {
     return {
-      model: null, loading: true, err: "",
+      model: null, loading: false, err: "",
+      streamAxes: {
+        todo: { state: "loading", chunks: 0 },
+        inprogress: { state: "loading", chunks: 0 },
+        done: { state: "loading", chunks: 0 },
+      },
+      streamProgress: { done: 0, total: 0 },
       // 카드 드래그 상태변경 — 드래그 중이면 {key,title,cat,x,y,zone}. zone = 커서 아래 드랍영역(상태 k | null).
       drag: null,
       dragTrx: null,        // 드랍한 전이에 필수 입력이 있으면 TransitionDialog 로 채운다 {ticket, transition}
@@ -244,6 +250,8 @@ export default {
     this._bindDrag();
   },
   unmounted() {
+    if (this._streamAbort) this._streamAbort.abort();
+    if (this._epicMetaTimer) clearTimeout(this._epicMetaTimer);
     window.removeEventListener("ticket-changed", this._onChanged);
     window.removeEventListener("force-refresh", this._fr);
     window.removeEventListener("auth-ok", this._authok);
@@ -382,42 +390,291 @@ export default {
     },
   },
   methods: {
-    /** quiet=true 면 스피너를 띄우지 않는다 — 전이 후처럼 **이미 보고 있는 화면**을 갱신할 때
-     *  로딩 화면을 한 번 끼워 넣으면 목록이 통째로 사라졌다 나타나 '전체 새로고침' 으로 보인다.
-     *  바뀐 건 티켓 하나인데 화면 전체가 깜빡일 이유가 없다. */
+    _emptyTaskModel() {
+      return {
+        scope: this.apiScope, openFilter: this.openFilter, progFilter: this.progFilter,
+        doneFilter: this.doneFilter, doneWindowDays: this.doneFilter === "1m" ? 30 : 7,
+        groups: [], epics: [], counts: this._groupCounts([]), streamComplete: false,
+      };
+    },
+    _mergeRows(left, right) {
+      const byKey = new Map();
+      for (const row of (left || [])) if (row && row.key) byKey.set(row.key, row);
+      for (const row of (right || [])) if (row && row.key) byKey.set(row.key, row);
+      return Array.from(byKey.values());
+    },
+    _sortTaskRows(rows) {
+      return (rows || []).slice().sort((a, b) => {
+        const ad = a.dueDays === null || a.dueDays === undefined ? NO_DUE : a.dueDays;
+        const bd = b.dueDays === null || b.dueDays === undefined ? NO_DUE : b.dueDays;
+        return ad - bd || (a.priRank ?? 2) - (b.priRank ?? 2)
+          || String(a.key).localeCompare(String(b.key));
+      });
+    },
+    _refreshTaskGroup(group) {
+      const merged = Object.assign({}, group);
+      merged.atoms = this._sortTaskRows(merged.atoms);
+      merged.others = this._sortTaskRows(merged.others)
+        .filter((row) => !merged.atoms.some((atom) => atom.key === row.key));
+      const children = this._mergeRows(merged.atoms, merged.others)
+        .filter((row) => row.key !== merged.key);
+      merged.kidsTotal = Math.max(merged.kidsTotal || 0, children.length);
+      merged.kidsDone = children.filter((row) => row.statusCategory === "done").length;
+      merged.othersDone = merged.others.filter((row) => row.statusCategory === "done").length;
+      const due = merged.atoms.map((row) => row.dueDays)
+        .filter((value) => value !== null && value !== undefined);
+      merged.urgency = due.length ? Math.min(...due) : null;
+      merged.priRank = merged.atoms.length
+        ? Math.min(...merged.atoms.map((row) => row.priRank ?? 2)) : (merged.priRank ?? 2);
+      return merged;
+    },
+    _mergeTaskGroup(previous, incoming) {
+      if (!previous) return Object.assign({}, incoming, {
+        atoms: (incoming.atoms || []).slice(), others: (incoming.others || []).slice(),
+      });
+      const oldComplete = previous.hasSubs && previous.childrenLoaded && !previous.childrenPending;
+      const newComplete = incoming.hasSubs && incoming.childrenLoaded && !incoming.childrenPending;
+      const complete = newComplete ? incoming : (oldComplete ? previous : null);
+      const merged = Object.assign({}, previous, incoming);
+      if (complete) {
+        merged.atoms = (complete.atoms || []).slice();
+        merged.others = (complete.others || []).slice();
+        merged.childrenPending = false; merged.childrenLoaded = true;
+      } else {
+        merged.atoms = this._mergeRows(previous.atoms, incoming.atoms);
+        merged.others = this._mergeRows(previous.others, incoming.others)
+          .filter((row) => !merged.atoms.some((atom) => atom.key === row.key));
+        merged.childrenPending = !!(previous.childrenPending || incoming.childrenPending);
+        merged.childrenLoaded = !merged.childrenPending;
+      }
+      merged.hasSubs = !!(previous.hasSubs || incoming.hasSubs);
+      merged.standalone = !merged.hasSubs;
+      merged.kidsTotal = Math.max(previous.kidsTotal || 0, incoming.kidsTotal || 0,
+                                  merged.atoms.length + merged.others.length);
+      return this._refreshTaskGroup(merged);
+    },
+    _normalizeStreamGroups(groups) {
+      const byGroup = new Map((groups || []).map((group) => [group.key, group]));
+      const mineByKey = new Map();
+      for (const group of (groups || [])) for (const atom of (group.atoms || [])) {
+        if (atom && atom.key) mineByKey.set(atom.key, atom);
+      }
+      let rows = (groups || []).map((group) => Object.assign({}, group, {
+        atoms: (group.atoms || []).filter((atom) =>
+          !atom.parentKey || atom.parentKey === group.key || !byGroup.has(atom.parentKey)),
+        others: (group.others || []).slice(),
+      }));
+      // A partial leaf may know that a ticket is mine before its parent metadata is complete.
+      // Once a parent group also contains that key as related, promote the known mine row into the
+      // parent rather than rendering a related child plus a standalone mine card.
+      rows = rows.map((group) => {
+        if (!group.hasSubs) return group;
+        const promoted = (group.others || []).filter((row) => mineByKey.has(row.key));
+        if (!promoted.length) return group;
+        const promoteKeys = new Set(promoted.map((row) => row.key));
+        return Object.assign({}, group, {
+          atoms: this._mergeRows(group.atoms, promoted.map((row) => mineByKey.get(row.key))),
+          others: group.others.filter((row) => !promoteKeys.has(row.key)),
+        });
+      });
+      // Parent 그룹이 standalone보다 먼저 issue key를 소유한다. Jira가 SubTask flag를 누락해도
+      // 같은 티켓이 두 카드로 늘어나지 않는다.
+      const claimed = new Set();
+      for (const group of rows.slice().sort((a, b) => Number(!!b.hasSubs) - Number(!!a.hasSubs))) {
+        group.atoms = group.atoms.filter((atom) => {
+          if (claimed.has(atom.key)) return false;
+          claimed.add(atom.key); return true;
+        });
+        group.others = group.others.filter((atom) => {
+          if (claimed.has(atom.key)) return false;
+          claimed.add(atom.key); return true;
+        });
+      }
+      rows = rows.filter((group) => group.hasSubs || group.atoms.length || group.others.length)
+        .map((group) => this._refreshTaskGroup(group));
+      return rows.sort((a, b) => {
+        const ad = a.urgency === null || a.urgency === undefined ? NO_DUE : a.urgency;
+        const bd = b.urgency === null || b.urgency === undefined ? NO_DUE : b.urgency;
+        return ad - bd || (a.priRank ?? 2) - (b.priRank ?? 2)
+          || String(a.key).localeCompare(String(b.key));
+      });
+    },
+    /** A completed leaf is appended immediately; issue identity, order and statistics are rebuilt
+     *  after every append so arrival order never leaks into the visible Task order. */
+    _mergeStreamModel(previous, incoming) {
+      const base = previous || this._emptyTaskModel();
+      const byKey = new Map((base.groups || []).map((group) => [group.key, group]));
+      for (const group of (incoming && incoming.groups) || []) {
+        byKey.set(group.key, this._mergeTaskGroup(byKey.get(group.key), group));
+      }
+      const groups = this._normalizeStreamGroups(Array.from(byKey.values()));
+      const epicMap = new Map((base.epics || []).map((epic) => [epic.key, epic]));
+      for (const epic of (incoming && incoming.epics) || []) {
+        const old = epicMap.get(epic.key);
+        if (!old || old.pending || !epic.pending) epicMap.set(epic.key, epic);
+      }
+      return Object.assign({}, base, incoming || {}, {
+        groups, epics: Array.from(epicMap.values()), counts: this._groupCounts(groups),
+        streamComplete: false,
+      });
+    },
+    _cacheModel(cache, key, model) {
+      cache[key] = model;
+      const keys = Object.keys(cache);
+      if (keys.length > 12) delete cache[keys[0]];
+    },
+    axisLoading(key) { return (this.streamAxes[key] || {}).state !== "done"; },
+    axisChunks(key) { return (this.streamAxes[key] || {}).chunks || 0; },
+    _applyEpicMetadata(epics, cache) {
+      const rows = (epics || []).filter((epic) => epic && epic.key && epic.title);
+      if (!rows.length) return;
+      const known = this._epicMetaKnown || (this._epicMetaKnown = new Map());
+      for (const epic of rows) known.set(epic.key, Object.assign({}, epic, { pending: false }));
+      const patch = (model) => {
+        if (!model) return model;
+        let changed = false;
+        const nextEpics = (model.epics || []).map((epic) => {
+          const meta = known.get(epic.key);
+          if (!meta || (epic.title === meta.title && !epic.pending)) return epic;
+          changed = true; return Object.assign({}, epic, meta, { pending: false });
+        });
+        if (!changed) return model;
+        return Object.assign({}, model, {
+          epics: nextEpics,
+          epicsPending: nextEpics.some((epic) => epic.pending || !epic.title || epic.title === epic.key),
+        });
+      };
+      for (const modelKey of Object.keys(cache || {})) cache[modelKey] = patch(cache[modelKey]);
+      if (this._activeCacheKey && cache[this._activeCacheKey]) this.model = cache[this._activeCacheKey];
+    },
+    _queueEpicMetadata(model, cache) {
+      const known = this._epicMetaKnown || (this._epicMetaKnown = new Map());
+      const ready = [], pending = this._epicMetaPending || (this._epicMetaPending = new Set());
+      const inflight = this._epicMetaInflight || (this._epicMetaInflight = new Set());
+      for (const epic of (model && model.epics) || []) {
+        if (!epic || !epic.key) continue;
+        if (epic.title && epic.title !== epic.key && !epic.pending) {
+          known.set(epic.key, epic); continue;
+        }
+        if (known.has(epic.key)) ready.push(known.get(epic.key));
+        else if (!inflight.has(epic.key)) pending.add(epic.key);
+      }
+      this._applyEpicMetadata(ready, cache);
+      if (!pending.size || this._epicMetaTimer || this._epicMetaBusy) return;
+      this._epicMetaTimer = setTimeout(() => {
+        this._epicMetaTimer = null; this._flushEpicMetadata(cache);
+      }, 40);
+    },
+    async _flushEpicMetadata(cache) {
+      const pending = this._epicMetaPending || new Set();
+      if (this._epicMetaBusy || !pending.size) return;
+      const keys = Array.from(pending).slice(0, 100);
+      const inflight = this._epicMetaInflight || (this._epicMetaInflight = new Set());
+      keys.forEach((key) => { pending.delete(key); inflight.add(key); });
+      this._epicMetaBusy = true;
+      try {
+        const result = await api.myTasksEpicMeta(keys);
+        this._applyEpicMetadata((result && result.epics) || [], cache);
+      } catch (e) { /* 카드/JQL 스트림은 Epic 메타 조회 실패와 독립적으로 계속 동작한다 */ }
+      finally {
+        keys.forEach((key) => inflight.delete(key));
+        this._epicMetaBusy = false;
+        if (pending.size) this._queueEpicMetadata({ epics: Array.from(pending).map((key) => ({ key })) }, cache);
+      }
+    },
+    /** The axes exist before the first upstream result.  Every leaf then appends independently. */
     async load(opts) {
-      // 이 요청이 무엇을 받는지의 서명(스코프+상태필터). 캐시 키 겸 SWR 판정에 쓴다.
       const key = this.apiScope + "|" + this.openFilter + "|" + this.progFilter + "|" + this.doneFilter;
       const cache = this._mcache || (this._mcache = {});
-      // 예전에 받아 둔 같은 필터의 응답이 있으면 **즉시** 보여 준다(SWR) — 스피너 없이 바로 뜨고,
-      // 아래에서 최신으로 조용히 갱신한다. 퀵필터를 오갈 때 체감이 즉각적이 된다.
-      if (!(opts && opts.quiet) && cache[key]) { this.model = cache[key]; this.loading = false; }
-      else if (!(opts && opts.quiet)) this.loading = true;
+      if (this._streamAbort) this._streamAbort.abort();
+      const controller = this._streamAbort = new AbortController();
+      const seq = this._loadSeq = (this._loadSeq || 0) + 1;
+      const cached = cache[key];
+      // 새 필터는 이전 필터 카드를 남기지 않는다. 같은 필터의 완료/부분 캐시만 즉시 재사용한다.
+      this.model = cached || this._emptyTaskModel();
+      this._activeCacheKey = key;
+      this._queueEpicMetadata(this.model, cache);
+      this.streamAxes = {
+        todo: { state: "loading", chunks: 0 },
+        inprogress: { state: "loading", chunks: 0 },
+        done: { state: "loading", chunks: 0 },
+      };
+      this.streamProgress = { done: 0, total: 0 };
+      this.loading = false;
       this.err = "";
       if (Object.keys(this.excluded).length) this.excluded = {};   // 실 로딩이면 클라 이탈표시 초기화(목록이 새로 정확)
-      // ★ 요청 순번 가드 — 퀵필터를 빠르게 바꾸면 요청이 여러 개 날아가는데, prod 지연 때문에
-      //   먼저 보낸(지나간) 요청이 **나중에** 도착해 최신 화면을 옛 결과로 덮어쓴다(리포트된 버그:
-      //   이미 다른 필터를 골랐는데 지나간 필터 내용이 렌더링됨). 순번이 어긋난 응답은 UI 에선 버린다.
-      const seq = this._loadSeq = (this._loadSeq || 0) + 1;
       try {
-        const model = await api.myTasks({ scope: this.apiScope, openFilter: this.openFilter,
-                                          progFilter: this.progFilter, doneFilter: this.doneFilter });
-        // ★ 성공 응답은 **순번과 무관하게** 캐시에 보관한다 — UI 가 버릴 응답이라도 성공했으면
-        //   그 필터로 다시 왔을 때 즉시 쓸 수 있게 재활용한다(요청 헛수고 방지). 캐시는 12개로 제한.
-        cache[key] = model;
-        const ks = Object.keys(cache);
-        if (ks.length > 12) delete cache[ks[0]];
-        if (seq !== this._loadSeq) return;     // 더 최신 요청이 이미 떴다 — 화면엔 안 쓴다
-        this.model = model;
-        // 전체 모델을 기다리지 않는다. Parent/기본 카드를 먼저 확정하고, 각 Task-with-SubTask와
-        // Epic label을 작은 후속 요청으로 보강한다. await하지 않으므로 필터/UI는 즉시 풀린다.
-        this._hydrateModel(model, seq, key, cache);
+        await api.myTasksStream({ scope: this.apiScope, openFilter: this.openFilter,
+          progFilter: this.progFilter, doneFilter: this.doneFilter }, (event) => {
+          if (event.type === "planned") {
+            if (seq === this._loadSeq) this.streamProgress = {
+              done: event.leafDone || 0, total: event.leafTotal || 0,
+            };
+            return;
+          }
+          if (event.type === "chunk") {
+            const next = this._mergeStreamModel(cache[key] || this._emptyTaskModel(), event.model);
+            this._cacheModel(cache, key, next);       // 화면이 바뀐 뒤 도착해도 이 필터 캐시에 남긴다
+            if (seq !== this._loadSeq) {
+              this._queueEpicMetadata(next, cache);   // 지난 필터도 완료된 Epic 메타는 캐시에 남긴다
+              return;
+            }
+            this.model = next;
+            this._queueEpicMetadata(next, cache);     // 첫 참조 즉시 별도 저우선순위 배치로 이름을 채운다
+            this.streamProgress = { done: event.leafDone || 0, total: event.leafTotal || 0 };
+            const axes = Object.assign({}, this.streamAxes);
+            if (event.axis && axes[event.axis]) axes[event.axis] = {
+              state: "loading", chunks: axes[event.axis].chunks + 1,
+            };
+            this.streamAxes = axes;
+            return;
+          }
+          if (event.type === "leaf-error") {
+            if (seq !== this._loadSeq) return;
+            this.streamProgress = { done: event.leafDone || 0, total: event.leafTotal || 0 };
+            const kind = (event.error && event.error.kind) || "other";
+            if (kind === "permission") return;       // 볼 권한 없는 leaf는 Jira의 정상적인 부분 결과
+            const notices = this._streamErrorNotices || (this._streamErrorNotices = new Set());
+            const noticeKey = seq + ":" + kind;
+            if (notices.has(noticeKey)) return;
+            notices.add(noticeKey);
+            if (kind === "auth") window.dispatchEvent(new CustomEvent("need-login"));
+            pushToast({
+              kind: "error", key: "task-stream-" + noticeKey,
+              title: kind === "auth" ? "일부 Task를 인증 문제로 불러오지 못했습니다"
+                                     : "일부 Task를 불러오지 못했습니다",
+              message: "불러온 티켓은 계속 표시합니다.", timeout: 7000,
+            });
+            return;
+          }
+          if (event.type === "complete") {
+            const finalModel = Object.assign({}, event.model || this._emptyTaskModel(), {
+              streamComplete: true,
+            });
+            this._cacheModel(cache, key, finalModel);
+            if (seq !== this._loadSeq) {
+              this._queueEpicMetadata(finalModel, cache);
+              return;
+            }
+            this.model = finalModel;
+            this._queueEpicMetadata(finalModel, cache);
+            this.streamProgress = { done: event.leafDone || 0, total: event.leafTotal || 0 };
+            this.streamAxes = {
+              todo: { state: "done", chunks: this.axisChunks("todo") },
+              inprogress: { state: "done", chunks: this.axisChunks("inprogress") },
+              done: { state: "done", chunks: this.axisChunks("done") },
+            };
+            this._hydrateModel(finalModel, seq, key, cache);
+          }
+        }, controller.signal);
       }
       catch (e) {
-        if (seq !== this._loadSeq) return;     // 낡은 요청의 에러도 최신 화면에 씌우지 않는다
+        if (controller.signal.aborted || seq !== this._loadSeq) return;
         this.err = (e && e.message) || "불러오기 실패";
       }
-      finally { if (seq === this._loadSeq) this.loading = false; }
+      finally {
+        if (seq === this._loadSeq && this._streamAbort === controller) this._streamAbort = null;
+      }
     },
     /** 완료된 후속 결과는 필터가 이미 바뀌었어도 그 필터의 SWR 캐시에 합친다.
      *  단 현재 화면은 load sequence가 같은 경우에만 바꾼다. */
@@ -426,13 +683,18 @@ export default {
       if (!previous || previous.syncId !== syncId) return;
       let next = previous;
       if (patch.group) {
-        const claimed = new Set((patch.group.atoms || []).map((atom) => atom.key));
-        const groups = (previous.groups || []).map((group) => {
+        const claimed = new Set(this._mergeRows(patch.group.atoms, patch.group.others)
+          .map((row) => row.key));
+        const groups = this._normalizeStreamGroups((previous.groups || []).map((group) => {
           if (group.key === patch.group.key) return patch.group;
-          if (!claimed.size || !(group.atoms || []).some((atom) => claimed.has(atom.key))) return group;
-          // Jira가 SubTask flag를 누락해 같은 row를 standalone으로도 준 경우 Parent 쪽을 우선한다.
-          return Object.assign({}, group, { atoms: group.atoms.filter((atom) => !claimed.has(atom.key)) });
-        });
+          if (!claimed.size) return group;
+          // Parent가 소유한다고 확인된 모든 child(atom/other)는 standalone/다른 임시 그룹에서
+          // 제거한다. leaf 도착 시 parent 정보가 덜 온 row도 hydration 뒤에는 한 장만 남는다.
+          return Object.assign({}, group, {
+            atoms: (group.atoms || []).filter((atom) => !claimed.has(atom.key)),
+            others: (group.others || []).filter((atom) => !claimed.has(atom.key)),
+          });
+        }));
         next = Object.assign({}, previous, {
           groups, counts: this._groupCounts(groups),
         });
@@ -462,7 +724,6 @@ export default {
       if (!syncId) return;
       const jobs = (model.groups || []).filter((group) => group.childrenPending)
         .map((group) => ({ type: "group", key: group.key }));
-      if (model.epicsPending) jobs.splice(Math.min(2, jobs.length), 0, { type: "epics" });
       let cursor = 0;
       // 브라우저 요청은 둘만 병렬화한다. 서버에서는 background priority라 새 퀵필터 JQL이
       // 이 작업들을 앞지르고, 이미 시작된 옛 필터 결과만 해당 필터 캐시에 안전하게 남는다.
@@ -824,6 +1085,12 @@ export default {
     /** 하위 보기 모드 — 그룹별 설정이 있으면 그것, 없으면 상단 옵션이 정한 기본값. */
     /** 펼치기 버튼 — 접기 → 내 것만 → 전체 → 접기 로 순환한다. */
     epicTitle(k) { return k ? ((this.epicMap[k] || {}).title || k) : null; },
+    epicPending(k) {
+      if (!k) return false;
+      const epic = this.epicMap[k];
+      return !epic || epic.pending || !epic.title || epic.title === k;
+    },
+    epicDisplayTitle(k) { return this.epicPending(k) ? "Epic 이름 확인 중" : this.epicTitle(k); },
     // VoC 티켓 제목 접두 [대분류 - 소분류] → 뱃지 세그먼트 / 제목에서 접두 제거(voc.js).
     vocSegs(title) { return vocBadgeSegs(title); },
     vocStrip(title) { return vocStripTitle(title); },
@@ -1045,14 +1312,12 @@ export default {
       </div>
     </div>
 
-    <div v-if="loading" class="loading">불러오는 중…</div>
-    <div v-else-if="err" class="mt-err">{{ err }}</div>
-    <div v-else-if="!panels.length" class="mt-empty">표시할 일감이 없습니다.</div>
+    <div v-if="err" class="mt-err">{{ err }}</div>
 
     <!-- ══ 상태 = 가로축 : 칼럼 헤더는 맨 위 한 줄, 그룹은 **각자 하나의 카드** 안에 3칼럼 ══
          (그룹마다 헤더를 반복하면 빈 헤더가 그룹 수만큼 늘어나고, 반대로 헤더만 위에 두고 카드를
           안 씌우면 어디부터 어디까지가 한 그룹인지 안 읽힌다 — 둘 다 피한 구조다.) -->
-    <template v-else-if="axis === 'h'">
+    <template v-if="axis === 'h'">
       <div class="mt-headrow">
         <div v-for="st in states" :key="'h-' + st.k" class="mt-colh"
              :class="['c-' + st.k, { closed: !bandOpen(st.k) }]">
@@ -1062,6 +1327,10 @@ export default {
             <template v-if="bandOpen(st.k)">{{ st.label }}</template>
             <b>{{ allCards.filter(c => c.statusCategory === st.k && (subView === 'all' || c.mine)).length }}</b>
           </button>
+          <span v-if="bandOpen(st.k) && axisLoading(st.k)" class="mt-axis-load"
+                :title="'완료된 JQL leaf ' + axisChunks(st.k) + '개 반영'">
+            <i aria-hidden="true"></i>{{ axisChunks(st.k) ? axisChunks(st.k) + '차 반영' : '수집 중' }}
+          </span>
           <!-- 표시 범위는 **그 칸에만** 걸리는 조건이라 그 칸의 제목에 둔다 -->
           <span v-if="bandOpen(st.k) && bandFilter(st.k)" class="mt-colf">
             <button v-for="o in bandFilter(st.k).opts" :key="o.k" type="button"
@@ -1078,6 +1347,13 @@ export default {
           <div v-for="st in states" :key="'bg-' + st.k" :class="'c-' + st.k"></div>
         </div>
 
+      <div v-if="!panels.length" class="mt-axis-shell">
+        <div v-for="st in states" :key="'shell-' + st.k" :class="'c-' + st.k">
+          <span v-if="axisLoading(st.k)"><i aria-hidden="true"></i>완료되는 티켓부터 표시합니다</span>
+          <span v-else>해당 상태의 티켓 없음</span>
+        </div>
+      </div>
+
       <template v-for="p in panels" :key="p.key">
         <!-- 그룹화 없음 / 하위 없는 Task 묶음 — 묶을 게 없으니 카드 테두리도 없다 -->
         <div v-if="p.kind === 'none' || p.kind === 'solo'" class="mt-gbody plain">
@@ -1086,13 +1362,15 @@ export default {
                                                 closed: !bandOpen(st.k) }]">
             <template v-for="c in byState(p.cards)[st.k]" :key="c.key">
               <TaskCard v-if="!c.compactPanel" :card="c"
-                     :style="sigStyle(c)" :epic-title="epicTitle(c.epicKey)" />
+                     :style="sigStyle(c)" :epic-title="epicDisplayTitle(c.epicKey)"
+                     :epic-pending="epicPending(c.epicKey)" />
               <!-- 1축 Task 는 단독 Task 와 같은 셀·배열·TaskCard 를 그대로 쓴다.
                    공용 하단바와 폴더블 Sub-Task 목록만 부모 카드 바로 아래에 잇는다. -->
               <div v-else class="mt-compact-flow" :style="sigStyle(c)"
                    :class="{ folded: isGroupClosed(c.compactPanel), open: !isGroupClosed(c.compactPanel) }">
                 <div class="mt-compact-head">
-                  <TaskCard :card="c" :style="sigStyle(c)" :epic-title="epicTitle(c.epicKey)" />
+                  <TaskCard :card="c" :style="sigStyle(c)" :epic-title="epicDisplayTitle(c.epicKey)"
+                            :epic-pending="epicPending(c.epicKey)" />
                 </div>
                 <SubtaskFoldBar :panel="c.compactPanel" :closed="isGroupClosed(c.compactPanel)"
                                 @toggle="toggleGroup(c.compactPanel)" />
@@ -1136,7 +1414,8 @@ export default {
               <TypeBadge :type="p.group.type" />
               <span class="mt-key">{{ p.key }}</span>
               <span class="mt-title">{{ p.group.voc ? vocStrip(p.title) : p.title }}</span>
-              <span v-if="p.epicKey" class="mt-epic" :title="'Epic: ' + epicTitle(p.epicKey)">{{ epicTitle(p.epicKey) }}</span>
+              <span v-if="p.epicKey" class="mt-epic" :class="{ pending: epicPending(p.epicKey) }"
+                    :title="'Epic: ' + epicDisplayTitle(p.epicKey)">{{ epicDisplayTitle(p.epicKey) }}</span>
               <span v-else-if="p.group.voc" class="mt-voc" :title="'사용자 VoC' + (vocSegs(p.title).length > 1 ? ' — ' + vocSegs(p.title).slice(1).join(' · ') : '')">
                 <span v-for="(s, i) in vocSegs(p.title)" :key="i" class="mt-voc-seg" :class="{ head: i === 0 }">{{ s }}</span>
               </span>
@@ -1151,9 +1430,6 @@ export default {
           </div>
           <SubtaskFoldBar :panel="p" :closed="isGroupClosed(p)" @toggle="toggleGroup(p)" />
           <div v-if="!isGroupClosed(p)" class="mt-gbody">
-            <div v-if="p.group.childrenPending" class="mt-sub-sync-row">
-              <i aria-hidden="true"></i> Parent Task는 준비됨 · SubTask 동기화 중
-            </div>
             <div v-for="st in states" :key="p.key + st.k" class="mt-cell"
                  :class="['c-' + st.k, { empty: !byState(p.cards)[st.k].length,
                                                 closed: !bandOpen(st.k),
@@ -1196,6 +1472,10 @@ export default {
             <span class="chev" :class="{ open: bandOpen(st.k) }">▸</span>{{ st.label }}
             <b>{{ bandCount(st.k) }}</b>
           </button>
+          <span v-if="axisLoading(st.k)" class="mt-axis-load"
+                :title="'완료된 JQL leaf ' + axisChunks(st.k) + '개 반영'">
+            <i aria-hidden="true"></i>{{ axisChunks(st.k) ? axisChunks(st.k) + '차 반영' : '수집 중' }}
+          </span>
           <span v-if="bandFilter(st.k)" class="mt-colf">
             <button v-for="o in bandFilter(st.k).opts" :key="o.k" type="button"
                     class="mt-colf-b" :class="{ on: opt(st.k) === o.k }"
@@ -1206,16 +1486,21 @@ export default {
         <!-- 그룹화 없음 → 카드 그리드 하나 -->
         <div v-if="groupBy === 'none'" class="mt-grid2">
           <TaskCard v-for="c in byState(panels[0].cards)[st.k]" :key="c.key" :card="c"
-                   :style="sigStyle(c)" :epic-title="epicTitle(c.epicKey)" />
-          <div v-if="!byState(panels[0].cards)[st.k].length" class="mt-none">해당 상태의 티켓 없음</div>
+                   :style="sigStyle(c)" :epic-title="epicDisplayTitle(c.epicKey)"
+                   :epic-pending="epicPending(c.epicKey)" />
+          <div v-if="!byState(panels[0].cards)[st.k].length" class="mt-none">{{
+            axisLoading(st.k) ? '완료되는 티켓부터 표시합니다' : '해당 상태의 티켓 없음' }}</div>
         </div>
         <!-- 그룹화 있음 → 그룹이 좌우로 늘어서고 각 그룹 안이 그리드 -->
         <div v-else class="mt-grouprow">
+          <div v-if="!bandCount(st.k)" class="mt-none">{{
+            axisLoading(st.k) ? '완료되는 티켓부터 표시합니다' : '해당 상태의 티켓 없음' }}</div>
           <template v-for="p in panels" :key="p.key">
             <!-- 하위 없는 Task 묶음 — 카드로만 -->
             <template v-if="p.kind === 'solo'">
               <TaskCard v-for="c in byState(p.cards)[st.k]" :key="'so-' + c.key" :card="c"
-                   :style="sigStyle(c)" :epic-title="epicTitle(c.epicKey)" />
+                   :style="sigStyle(c)" :epic-title="epicDisplayTitle(c.epicKey)"
+                   :epic-pending="epicPending(c.epicKey)" />
             </template>
             <div v-else v-show="byState(p.cards)[st.k].length || (p.group.childrenPending && parentState(p) === st.k)" class="mt-gcard2 k-task"
                  :class="{ folded: isGroupClosed(p) }" :style="sigStyle(p.group)">
@@ -1228,7 +1513,8 @@ export default {
               <TypeBadge :type="p.group.type" />
               <span class="mt-key">{{ p.key }}</span>
               <span class="mt-title">{{ p.group.voc ? vocStrip(p.title) : p.title }}</span>
-              <span v-if="p.epicKey" class="mt-epic" :title="'Epic: ' + epicTitle(p.epicKey)">{{ epicTitle(p.epicKey) }}</span>
+              <span v-if="p.epicKey" class="mt-epic" :class="{ pending: epicPending(p.epicKey) }"
+                    :title="'Epic: ' + epicDisplayTitle(p.epicKey)">{{ epicDisplayTitle(p.epicKey) }}</span>
               <span v-else-if="p.group.voc" class="mt-voc" :title="'사용자 VoC' + (vocSegs(p.title).length > 1 ? ' — ' + vocSegs(p.title).slice(1).join(' · ') : '')">
                 <span v-for="(s, i) in vocSegs(p.title)" :key="i" class="mt-voc-seg" :class="{ head: i === 0 }">{{ s }}</span>
               </span>
@@ -1244,9 +1530,6 @@ export default {
               <SubtaskFoldBar :panel="p" :closed="isGroupClosed(p)" @toggle="toggleGroup(p)" />
               <div v-if="!isGroupClosed(p)" class="mt-gbody one"
                    :class="{ foldwrap: foldable(p), folded: peeking(p), 'fold-peek': peeking(p) }">
-                <div v-if="p.group.childrenPending" class="mt-sub-sync-row">
-                  <i aria-hidden="true"></i> SubTask 동기화 중
-                </div>
                 <div v-for="c in cellCards(p, st.k)" :key="c.key" class="mt-card tkt"
                      :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done',
                              urgent: isUrgentC(c) }" :style="sigStyle(c)" :data-key="c.key">
