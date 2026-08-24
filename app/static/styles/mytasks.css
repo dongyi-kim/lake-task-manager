@@ -814,9 +814,12 @@
 /* ── 1축 Task with SubTask = 단독 Task 목록 항목 ────────────────────────────
    부모는 `.mt-gbody.plain > .mt-cell` 안에서 다른 TaskCard 와 같은 폭·정렬을 그대로 받는다.
    wrapper 는 레이아웃을 바꾸지 않고, 기존 폴더블 하위 목록을 부모 카드 바로 아래에만 잇는다. */
-.ax-h .mt-compact-flow { width: 100%; min-width: 0; }
+.ax-h .mt-compact-flow { width: 100%; min-width: 0; border-radius: 3px;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, .13), 0 1px 2px rgba(0, 0, 0, .08); }
+.ax-h .mt-compact-flow:hover { box-shadow: 0 6px 16px rgba(0, 0, 0, .16), 0 1px 3px rgba(0, 0, 0, .08); }
 .ax-h .mt-compact-head { position: relative; min-width: 0; }
-.ax-h .mt-compact-head > .mt-card.two { width: 100%; box-sizing: border-box; border-radius: 3px 3px 0 0; }
+.ax-h .mt-compact-head > .mt-card.two { width: 100%; box-sizing: border-box;
+  border-radius: 3px 3px 0 0; box-shadow: none; }
 .ax-h .mt-compact-flow > .mt-subfoot { border: 1px solid var(--border-hi); border-top: 0;
   border-left-color: var(--sig, var(--border-hi)); border-radius: 0 0 3px 3px; }
 .ax-h .mt-compact-flow.open > .mt-subfoot { border-radius: 0; }
@@ -973,6 +976,11 @@
   border-top-color: var(--border-hi); border-right-color: var(--border-hi); border-bottom-color: var(--border-hi); }
 :root[data-theme="dark"] .mt-card:not(.parent):not(.rel) {
   box-shadow: 0 3px 10px rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 255, 255, .05); }
+:root[data-theme="dark"] .ax-h .mt-compact-flow {
+  box-shadow: 0 3px 10px rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 255, 255, .05); }
+:root[data-theme="dark"] .ax-h .mt-compact-flow:hover {
+  box-shadow: 0 6px 16px rgba(0, 0, 0, .58), inset 0 1px 0 rgba(255, 255, 255, .06); }
+:root[data-theme="dark"] .ax-h .mt-compact-head > .mt-card.two { box-shadow: none; }
 
 /* Task with SubTask 부모의 진척은 공용 하단바로 이동했다. 부모 줄은 제목과 소속·담당·마감만
    읽히게 두고, 오른쪽 정보 그룹은 기존 정렬을 유지한다. */

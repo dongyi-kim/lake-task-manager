@@ -182,8 +182,10 @@ def test_uniform_subtask_status_reuses_solo_parent_and_foldable_children_in_one_
     # 실제 그룹들은 먼저, standalone/compact 공유 목록은 마지막에 붙는다.
     assert view.index("const out = grouped.filter") < view.index("if (solo) out.push(solo)")
     assert ".mt-gslot > .mt-gcard2 { grid-column: 1 / -1;" in css
-    assert ".mt-compact-flow { width: 100%; min-width: 0; }" in css
-    assert ".mt-compact-head > .mt-card.two { width: 100%; box-sizing: border-box;" in css
+    assert ".mt-compact-flow { width: 100%; min-width: 0; border-radius: 3px;" in css
+    assert ".mt-compact-flow:hover { box-shadow: 0 6px 16px" in css
+    assert ".mt-compact-head > .mt-card.two { width: 100%; box-sizing: border-box;\n  border-radius: 3px 3px 0 0; box-shadow: none;" in css
+    assert ':root[data-theme="dark"] .ax-h .mt-compact-flow {' in css
     assert ".mt-compact-children { display: grid; grid-template-columns: minmax(0, 1fr);" in css
     assert ".mt-subfoot { display: flex; align-items: center; gap: 7px; width: 100%; height: 30px;" in css
     assert ".mt-subfoot-toggle { flex: none; display: inline-grid; place-items: center; width: 19px; height: 19px;" in css
