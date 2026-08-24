@@ -1019,6 +1019,24 @@ class JiraClient:
             {part.strip().lower() for part in str(fields or "").split(",") if part.strip()}))
         return hashlib.sha256(f"{int(bool(light))}\n{normalized}".encode("utf-8")).hexdigest()[:20]
 
+    def _projection_covers_issue_cache(self, fields, light):
+        """Whether a search row is complete enough for the shared issue/issueL cache.
+
+        JQL snapshots are projection-scoped, but ``issueL`` is the canonical light-ticket cache.
+        Writing an agent/search projection such as ``summary,status`` into it makes later WBS and
+        relationship reads believe omitted ``subtasks``/parent fields are genuinely empty.
+        """
+        raw = str(fields or "").strip()
+        if raw.lower() in {"*all", "*navigable"}:
+            return True
+        supplied = {part.strip().lower() for part in raw.split(",") if part.strip()}
+        required = {
+            part.strip().lower()
+            for part in self._issue_fields(light=light).split(",")
+            if part.strip()
+        }
+        return required.issubset(supplied)
+
     def _jql_lock(self, key):
         with self._jql_lock_guard:
             lock = self._jql_locks.get(key)
@@ -1055,11 +1073,12 @@ class JiraClient:
             start = int(next_start)
         if expected_total is not None and len(issues) != expected_total:
             raise ValueError("Jira leaf 검색 결과가 불완전합니다.")
-        pfx = "issueL" if light else "issue"
-        self.cache.set_many_if_fence(
-            ((f"{pfx}:{self.env}:{(issue or {}).get('key')}", issue)
-             for issue in issues if (issue or {}).get("key")),
-            self.s.cache_ttl_seconds, fence)
+        if self._projection_covers_issue_cache(fields, light):
+            pfx = "issueL" if light else "issue"
+            self.cache.set_many_if_fence(
+                ((f"{pfx}:{self.env}:{(issue or {}).get('key')}", issue)
+                 for issue in issues if (issue or {}).get("key")),
+                self.s.cache_ttl_seconds, fence)
         return issues
 
     def _fetch_jql_leaf(self, leaf, fields, light):
@@ -1306,7 +1325,7 @@ class JiraClient:
         next_start = start + returned
         has_more = bool(returned) and (total is None or next_start < total)
         pfx = "issueL" if light else "issue"
-        if write_through:
+        if write_through and self._projection_covers_issue_cache(requested_fields, light):
             for it in issues:
                 key = (it or {}).get("key")
                 if key:
@@ -1885,13 +1904,14 @@ class JiraClient:
             if parent_type.casefold() == "epic":
                 start = 0
                 total = None
-                snapshot_id = None
                 while start < maximum:
-                    data = self.search_issues_page(
+                    # Mutation target resolution is deliberately fresh and authoritative.  A
+                    # normalized snapshot is correct for UI pagination but may predate the write
+                    # whose target set we are about to approve.
+                    data = self._legacy_search_issues_page(
                         f'"Epic Link" = {parent_key}', fields=fields, light=False,
                         start_at=start, max_results=min(50, maximum - start),
-                        snapshot_id=snapshot_id) or {}
-                    snapshot_id = data.get("snapshotId") or snapshot_id
+                        write_through=False) or {}
                     if not isinstance(data, dict) or not isinstance(data.get("issues"), list):
                         return failed("invalid_page", parent_type=parent_type,
                                       expected=expected_keys, total=total)
@@ -1943,9 +1963,9 @@ class JiraClient:
                     chunk = expected_keys[offset:offset + self.ISSUE_BATCH]
                     if not chunk:
                         continue
-                    data = self.search_issues_page(
+                    data = self._legacy_search_issues_page(
                         "key in (%s)" % ",".join(chunk), fields=fields, light=False,
-                        start_at=0, max_results=len(chunk)) or {}
+                        start_at=0, max_results=len(chunk), write_through=False) or {}
                     issues = data.get("issues") if isinstance(data, dict) else None
                     if (not isinstance(issues, list) or type(data.get("total")) is not int
                             or data.get("total") != len(chunk) or len(issues) != len(chunk)):

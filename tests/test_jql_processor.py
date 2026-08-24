@@ -132,6 +132,19 @@ def test_client_executes_and_caches_every_or_leaf():
     assert len(calls) == count
 
 
+def test_narrow_projection_never_poisons_shared_light_issue_cache():
+    client = JiraClient(get_settings(), Cache(":memory:"))
+    key = "DL-9012"
+    client.search_issues_page(
+        f"key = {key}", fields=["summary", "status"], light=True)
+    assert client.cache.get(f"issueL:{client.env}:{key}") is None
+
+    client.search_issues_page(
+        f"key = {key}", fields=client._issue_fields(light=True), light=True)
+    cached = client.cache.get(f"issueL:{client.env}:{key}")
+    assert cached and (cached.get("fields") or {}).get("subtasks")
+
+
 def test_large_serial_dnf_returns_bootstrap_snapshot_then_caches_every_leaf():
     client = JiraClient(get_settings(), Cache(":memory:"))
     calls = _count_searches(client)
