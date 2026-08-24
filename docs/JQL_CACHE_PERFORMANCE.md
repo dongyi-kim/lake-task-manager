@@ -20,33 +20,78 @@
 
 | 지연 | 시나리오 | baseline cold | candidate cold | baseline warm | candidate warm |
 |---:|---|---:|---:|---:|---:|
-| 250 | 동일 JQL 반복 | 1110.73 | 411.76 | 1081.35 / 1653.00 | 2.34 / 2.63 |
-| 250 | AND 순서 변경 | 1032.91 | 403.89 | 1049.23 / 1390.13 | 2.36 / 2.70 |
-| 250 | OR 순서 변경 | 573.70 | 713.86 | 578.04 / 787.56 | 1.28 / 1.48 |
-| 250 | OR 뒤 단일 leaf | 589.27 | 717.94 | 563.89 / 725.64 | 1.34 / 54.24 |
-| 800 | 동일 JQL 반복 | 1537.42 | 974.46 | 1385.20 / 2116.15 | 2.58 / 7.57 |
-| 800 | AND 순서 변경 | 1525.91 | 947.12 | 1455.43 / 1961.53 | 2.33 / 3.26 |
-| 800 | OR 순서 변경 | 1106.32 | 1782.82 | 1073.06 / 1294.42 | 1.30 / 3.90 |
-| 800 | OR 뒤 단일 leaf | 1086.40 | 1780.69 | 1054.85 / 1227.05 | 1.60 / 40.31 |
+| 250 | 동일 JQL 반복 | 1110.73 | 646.94 | 1081.35 / 1653.00 | 2.39 / 2.74 |
+| 250 | AND 순서 변경 | 1032.91 | 643.62 | 1049.23 / 1390.13 | 2.39 / 4.47 |
+| 250 | OR 순서 변경 | 573.70 | 931.02 | 578.04 / 787.56 | 1.75 / 3.06 |
+| 250 | OR 뒤 단일 leaf | 589.27 | 919.38 | 563.89 / 725.64 | 1.31 / 27.91 |
+| 800 | 동일 JQL 반복 | 1537.42 | 1755.87 | 1385.20 / 2116.15 | 2.32 / 2.70 |
+| 800 | AND 순서 변경 | 1525.91 | 1746.82 | 1455.43 / 1961.53 | 2.40 / 3.25 |
+| 800 | OR 순서 변경 | 1106.32 | 2548.18 | 1073.06 / 1294.42 | 1.37 / 2.36 |
+| 800 | OR 뒤 단일 leaf | 1086.40 | 2573.87 | 1054.85 / 1227.05 | 1.57 / 35.38 |
 
 - candidate의 20개 정상 warm 조회는 모든 시나리오에서 upstream 0회였다. baseline JQL은 20회였다.
 - 기존 단건 issue 캐시는 그대로다. 250ms에서 warm p50은 baseline 0.11ms, candidate 0.12ms다.
-- OR cold는 모든 leaf를 실제 실행하므로 250ms에서 약 140ms, 800ms에서 약 676ms가 추가된다.
-  첫 재조회에서 약 577ms/1072ms를 절약하므로 두 지연 조건 모두 한 번 재사용되기 전에 손익분기점을 넘는다.
-- AND/동일 쿼리는 batch write와 row dedup 덕분에 cold도 baseline보다 빨랐다.
+- isolated cold client는 사용자/권한 context 분리를 위해 `/myself`를 한 번 확인한다. 실제 앱은 부팅 때
+  이미 이 값을 warm하므로 UI 여정에는 추가되지 않지만 위 API cold 수치에는 250/800ms 지연이 포함된다.
+- OR cold는 사용자 context 확인과 모든 leaf 실행 비용이 추가된다. 대신 정상 warm은 1~4ms이고
+  upstream 0회라 고의 지연이 클수록 반복 퀵필터/탭 왕복에서 손익분기점을 빠르게 넘는다.
 
 ## Mutation 직후 비용
 
 | 지연 | 구분 | write p50 | 다음 신규 조회 p50/p95 | 최신값 |
 |---:|---|---:|---:|---:|
 | 250 | baseline | 271.99 | 263.61 / 281.16 | 5/5 |
-| 250 | candidate | 300.35 | 328.56 / 357.54 | 5/5 |
+| 250 | candidate | 278.80 | 286.33 / 309.49 | 5/5 |
 | 800 | baseline | 820.94 | 816.37 / 834.43 | 5/5 |
-| 800 | candidate | 841.97 | 876.24 / 901.44 | 5/5 |
+| 800 | candidate | 835.87 | 839.16 / 850.79 | 5/5 |
 
-candidate는 성공한 write 뒤 generation을 바꾸고 다음 조회를 의도적으로 한 번 miss시킨다. 250ms 기준
-추가 비용은 약 65ms이며 이후 동치 조회는 다시 2~3ms다. 실패한 write는 generation과 정상 캐시를
-유지하고, write 이전 SWR producer는 generation fence 때문에 낡은 값을 되살리지 못한다.
+candidate는 성공한 write 뒤 immutable snapshot generation만 바꾸며, leaf membership은 변경 필드에
+의존하는 것만 만료한다. 위 `key = DL-9001` 시나리오는 key leaf를 그대로 재사용하고 무효화된 issue row
+한 건만 배치 보강해 다음 조회 비용도 baseline에 근접했다. 이후 동치 조회는 다시 2~3ms다. 실패한
+write는 generation과 정상 캐시를 유지하고, write 이전 SWR producer는 generation fence 때문에 낡은
+값을 되살리지 못한다.
+
+## 실제 UI 여정 — 여러 Task 연속 수정
+
+250ms 지연에서 Task 탭으로 TEST 모듈의 disposable Task 3개를 실제 생성했다. Task/상세,
+Workload, WBS, 통합검색을 먼저 순회해 같은 38개 leaf와 issue/detail 캐시를 prime한 뒤 다음 10개
+성공 write를 연속 수행했다.
+
+- Task A: 제목 변경, Open → In Progress → Resolved 전이
+- Task B: 본문 변경, 댓글 추가, 댓글 수정
+- Task C: 기한·우선순위·담당자 변경
+- 매 단계에서 다이어로그 표시를 확인하고, 닫은 뒤 상태 컬럼 이동과 담당자 퀵필터 이탈/진입을 확인
+
+비교 기준은 선택 만료 도입 직전 commit `cad75c2`이며, 두 실행 모두 cold prime 비용은 거의 같았다
+(`158 calls / 84.0s upstream` 대 `157 calls / 83.2s upstream`). 아래는 prime 후 계측만 초기화해
+mutation과 자동 재조회에 사용된 실제 in-process Jira 호출을 센 값이다.
+
+| 여러 Task mutation 구간 | 전체 generation leaf | 선택적 issue/field 역인덱스 | 변화 |
+|---|---:|---:|---:|
+| 성공 write | 10 | 10 | 동일 |
+| 전체 upstream | 256 | 226 | -11.7% |
+| read | 246 | 216 | -12.2% |
+| Jira search | 24 | 10 | -58.3% |
+| issue/detail read | 221 | 205 | -7.2% |
+| 누적 upstream 대기 | 111.29s | 94.98s | -14.7% |
+| mutation UI p50 / p95 | 2082 / 2672ms | 2082 / 2672ms | 직접 상세 재조회가 지배해 동일 |
+
+snapshot generation은 `10`번 모두 증가했다. 이것은 기존 cursor가 같은 row generation을 계속 읽게
+하는 정합성 장치이며 leaf 폐기를 뜻하지 않는다. leaf payload는 issue key 배열만 저장하고,
+`issue→leaf` 1495개와 `predicate field→leaf` 62개의 TTL edge를 만들었다. 설명/댓글처럼 assignee,
+component leaf의 membership과 무관한 변경은 해당 leaf를 유지한다. 상태·담당자처럼 membership을
+바꿀 수 있는 쓰기는 그 필드를 참조하는 활성 leaf만 지운다. 삭제는 issue 역인덱스로 실제 포함 중인
+leaf만 지운다.
+
+후속 실제 UI 검증 결과는 다음과 같다.
+
+- Resolved Task는 이전 컬럼에서 사라지고 최근 완료에 새 제목으로 표시
+- 담당자 `test.ui01 → test.ui02` 변경 후 UI01 퀵필터에서 즉시 사라지고 UI02에서 표시
+- 세 Task를 닫고 다시 열어 제목·본문·댓글·상태·기한·우선순위·담당자 최신값 확인
+- Workload → WBS → Task 복귀 후 Task 결과 유지, 통합검색도 세 티켓의 최신 row 반환
+- keep-alive 통합검색이 같은 검색어의 이전 결과를 보존하던 별도 버그를 발견해, 팝업 재활성화 시
+  소스 typeahead 캐시를 비우고 검색어는 유지한 채 재조회하도록 수정. 추가 제목 변경 후 이전 제목이
+  사라지고 새 제목이 표시되는 것을 브라우저에서 재현 검증
 
 ## 실제 UI 여정 — 대량 퀵필터
 
@@ -126,4 +171,4 @@ candidate는 Task → Workload에서 검색 호출을 줄이는 대신 상세 is
 - 정상 warm JQL: upstream 0회
 - snapshot cursor: mutation 전 snapshot은 같은 generation으로 중복·누락 없이 계속 읽힘
 - full issue → light 재사용 허용, light → full 재사용 금지
-- focused regression: 896 passed, 2 skipped. GitHub의 전체 offline suite도 통과했다.
+- 선택 만료·검색 UI focused regression 486 passed. 전체 offline suite는 3284 passed, 2 skipped.

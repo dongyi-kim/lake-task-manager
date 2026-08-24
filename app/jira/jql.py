@@ -61,6 +61,7 @@ class OrderSpec:
 class CompiledJql:
     canonical: str
     leaves: tuple[str, ...]
+    leaf_fields: tuple[tuple[str, ...], ...]
     order: tuple[OrderSpec, ...]
 
 
@@ -409,6 +410,22 @@ def _normalize_atom(value: str, user_id: str, now: datetime) -> str:
     return _render_tokens(tokens)
 
 
+def _atom_field(value: str) -> str:
+    """Return the field referenced by one normalized DNF atom.
+
+    Leaf membership only depends on predicate fields, not on the result projection or ORDER BY.
+    Keeping this alongside the canonical leaf lets the cache layer invalidate just the leaves a
+    successful mutation can move an issue into or out of.
+    """
+    raw = str(value or "").strip()
+    if raw.upper().startswith("NOT (") and raw.endswith(")"):
+        raw = raw[5:-1].strip()
+    tokens = tokenize(raw)
+    if not tokens or tokens[0].kind not in {"WORD", "STRING"}:
+        raise JqlUnsupported("JQL 비교식의 필드를 확인할 수 없습니다.")
+    return _unquote(tokens[0].value).strip().lower()
+
+
 def _normalize_tree(node, user_id: str, now: datetime):
     if isinstance(node, Atom):
         return Atom(_normalize_atom(node.value, user_id, now))
@@ -530,14 +547,20 @@ def compile_jql(raw: str, *, user_id: str = "", timezone_name: str = "UTC",
         if len(atoms) > MAX_ATOMS_PER_LEAF:
             raise JqlUnsupported("한 leaf의 조건이 64개를 초과했습니다.")
         clean.add(atoms)
-    leaves = tuple(" AND ".join(atoms) for atoms in sorted(clean, key=lambda x: tuple(y.casefold() for y in x)))
+    ordered_rows = tuple(sorted(clean, key=lambda x: tuple(y.casefold() for y in x)))
+    leaves = tuple(" AND ".join(atoms) for atoms in ordered_rows)
+    leaf_fields = tuple(
+        tuple(sorted({_atom_field(atom) for atom in atoms}))
+        for atoms in ordered_rows
+    )
     if not leaves:
         leaves = ("",)
+        leaf_fields = (tuple(),)
     order = _parse_order(order_tokens)
     order_text = ", ".join(f"{spec.field} {spec.direction}" for spec in order)
     base = " OR ".join(f"({leaf})" for leaf in leaves) if len(leaves) > 1 else leaves[0]
     canonical = (base + " ORDER BY " + order_text).strip()
-    return CompiledJql(canonical=canonical, leaves=leaves, order=order)
+    return CompiledJql(canonical=canonical, leaves=leaves, leaf_fields=leaf_fields, order=order)
 
 
 def fields_with_order(fields: str, order: Iterable[OrderSpec]) -> str:

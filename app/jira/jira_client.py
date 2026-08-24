@@ -482,7 +482,7 @@ def _is_default_avatar_url(url):
 
 
 class JiraClient:
-    JQL_CACHE_VERSION = 1
+    JQL_CACHE_VERSION = 2
     JQL_SNAPSHOT_TTL = 30 * 60
     JQL_LEAF_RESULT_LIMIT = 10_000
     # A serial provider (prod SSO/mock) cannot make a large DNF cold query interactive if every
@@ -929,15 +929,94 @@ class JiraClient:
     def _jql_epoch_namespace(self):
         return f"jql:{self.env}"
 
+    def _jql_leaf_epoch_namespace(self):
+        return f"jqlleaf:{self.env}"
+
     def _jql_generation(self):
         return self.cache.epoch(self._jql_epoch_namespace())
 
+    def _jql_leaf_generation(self):
+        return self.cache.epoch(self._jql_leaf_epoch_namespace())
+
+    def _jql_user_context(self):
+        """Opaque cache partition for Jira permission/current-user context."""
+        user = self.current_user() or {}
+        identity = str(user.get("id") or "anonymous")
+        return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+
     def advance_jql_generation(self):
-        """Invalidate normalized leaves/snapshots after an explicit global refresh."""
+        """Invalidate every normalized leaf and snapshot after an explicit global refresh."""
+        self.cache.bump_epoch(self._jql_leaf_epoch_namespace())
         return self.cache.bump_epoch(self._jql_epoch_namespace())
 
+    def _jql_index_prefix(self, kind, leaf_generation, value):
+        return (f"jqlidx{kind}:v{self.JQL_CACHE_VERSION}:{self.env}:"
+                f"e{leaf_generation}:u{self._jql_user_context()}:"
+                f"{str(value or '').lower()}:")
+
+    @staticmethod
+    def _jql_changed_predicate_fields(events):
+        """Fields whose predicates can gain or lose a mutated issue.
+
+        Every successful Jira write changes ``updated``.  Text predicates can be affected by
+        summary/description/comment changes, and Jira's component JQL field is singular while the
+        REST payload field is plural.
+        """
+        events = tuple(events or ())
+        fields = {
+            str(field).strip().lower()
+            for event in events
+            for field in (event.changed_fields or ())
+            if str(field).strip()
+        }
+        if events:
+            fields.add("updated")
+        if "components" in fields:
+            fields.add("component")
+        if "issuetype" in fields:
+            fields.add("type")
+        if "duedate" in fields:
+            fields.add("due")
+        if fields & {"resolution", "resolutiondate"}:
+            fields.add("resolved")
+        if "status" in fields:
+            fields.add("statuscategory")
+        if "key" in fields:
+            fields.add("issue")
+        if fields & {"summary", "description", "comment"}:
+            fields.add("text")
+        if any(event.kind in {"create", "create_epic"} for event in events):
+            # New issues have implicit/default fields not all present in the create payload.
+            fields.update({"*", "key", "project", "issuetype", "status", "statuscategory",
+                           "created", "updated", "reporter", "resolution"})
+        return fields
+
+    def _affected_jql_leaf_keys(self, events):
+        """Resolve active leaf keys affected by successful mutations via persistent indexes."""
+        generation = self._jql_leaf_generation()
+        keys = set()
+        for event in events:
+            # Reverse membership is sufficient for deletion (the issue can only leave leaves),
+            # and is the safe fallback for mutation kinds that provide no changed-field contract.
+            # Ordinary field writes use the dependency index below, so changing a description does
+            # not evict an unrelated assignee/component leaf merely because it contains the issue.
+            if not event.key or (event.kind != "delete" and event.changed_fields):
+                continue
+            prefix = self._jql_index_prefix("issue", generation, event.key)
+            keys.update(value for value in self.cache.entries_by_prefix(prefix).values()
+                        if isinstance(value, str))
+        # Delete cannot make an issue enter a previously non-matching leaf.  All other writes may
+        # do so, therefore consult the field dependency index as well as the membership index.
+        membership_fields = self._jql_changed_predicate_fields(
+            [event for event in events if event.kind != "delete"])
+        for field in membership_fields:
+            prefix = self._jql_index_prefix("field", generation, field)
+            keys.update(value for value in self.cache.entries_by_prefix(prefix).values()
+                        if isinstance(value, str))
+        return keys
+
     def _apply_mutation_events(self, events):
-        """Invalidate aggregate caches and advance JQL generation once for successful writes."""
+        """Invalidate aggregates, affected JQL leaves, and one immutable snapshot generation."""
         events = tuple(events or ())
         if not events:
             return events
@@ -968,16 +1047,20 @@ class JiraClient:
         if structural:
             for prefix in ("wbs_build:", "vit_bases:", "vit_list:"):
                 self.cache.invalidate(prefix)
+        self.cache.invalidate_keys(self._affected_jql_leaf_keys(events))
+        # Rows/snapshots remain generation-scoped so an already issued pagination cursor stays
+        # immutable.  New first-page searches get a new snapshot, but unaffected leaf membership
+        # survives and is reused.
         self.cache.bump_epoch(self._jql_epoch_namespace())
         return events
 
     def _record_mutation(self, event: MutationEvent):
         """Record one successful Jira write.
 
-        Detail caches are invalidated by their existing narrow helpers. The persistent generation
-        makes every new JQL lookup ignore pre-write leaves/snapshots while old cursor snapshots stay
-        addressable until their 30-minute lifetime ends. Bulk operations collect these events so
-        their aggregate invalidation and generation bump happen exactly once at batch completion.
+        Detail caches are invalidated by their existing narrow helpers. Snapshot rows are versioned
+        per successful mutation batch, while normalized leaf membership is selectively invalidated
+        through issue/field reverse indexes. Bulk operations collect these events so aggregate
+        invalidation and the snapshot generation bump happen once at batch completion.
         """
         pending = getattr(self._mutation_batch, "events", None)
         if pending is not None:
@@ -1013,11 +1096,13 @@ class JiraClient:
             ttl_seconds=self.s.cache_ttl_seconds,
         )
 
-    @staticmethod
-    def _projection_signature(fields, light):
+    def _projection_signature(self, fields, light):
         normalized = ",".join(sorted(
             {part.strip().lower() for part in str(fields or "").split(",") if part.strip()}))
-        return hashlib.sha256(f"{int(bool(light))}\n{normalized}".encode("utf-8")).hexdigest()[:20]
+        context = self._jql_user_context()
+        return hashlib.sha256(
+            f"{context}\n{int(bool(light))}\n{normalized}".encode("utf-8")
+        ).hexdigest()[:20]
 
     def _projection_covers_issue_cache(self, fields, light):
         """Whether a search row is complete enough for the shared issue/issueL cache.
@@ -1110,21 +1195,92 @@ class JiraClient:
             raise ValueError("JQL snapshot의 issue row가 만료되었습니다. 첫 페이지부터 다시 조회하세요.")
         return rows
 
-    def _cached_jql_leaf(self, leaf, fields, light, generation, projection):
-        digest = hashlib.sha256(leaf.encode("utf-8")).hexdigest()
-        key = (f"jqlleaf:v{self.JQL_CACHE_VERSION}:{self.env}:g{generation}:"
-               f"{projection}:{digest}")
+    def _jql_leaf_key(self, leaf):
+        leaf_generation = self._jql_leaf_generation()
+        context = self._jql_user_context()
+        digest = hashlib.sha256(f"{context}\n{leaf}".encode("utf-8")).hexdigest()
+        key = (f"jqlleaf:v{self.JQL_CACHE_VERSION}:{self.env}:"
+               f"e{leaf_generation}:{digest}")
+        return leaf_generation, digest, key
+
+    def _register_jql_leaf_indexes(self, key, digest, leaf_generation,
+                                   issue_keys, predicate_fields):
+        """Persist issue/field-to-leaf edges for selective invalidation."""
+        fence = self.cache.fence()
+        ttl = self.s.cache_ttl_seconds
+        rows = []
+        for issue_key in issue_keys:
+            if issue_key:
+                rows.append((self._jql_index_prefix(
+                    "issue", leaf_generation, issue_key) + digest, key))
+        for field in (predicate_fields or ("*",)):
+            if field:
+                rows.append((self._jql_index_prefix(
+                    "field", leaf_generation, field) + digest, key))
+        self.cache.set_many_if_fence(rows, ttl, fence)
+
+    def _hydrate_jql_leaf_rows(self, issue_keys, fields, light, generation, projection):
+        """Hydrate stable leaf IDs from versioned rows/shared issue caches, batching misses."""
+        issue_keys = list(issue_keys or ())
+        cache_keys = [self._jql_row_key(generation, projection, key) for key in issue_keys]
+        cached_rows = self.cache.get_many(cache_keys)
+        by_key = {
+            issue_key: cached_rows.get(cache_key)
+            for issue_key, cache_key in zip(issue_keys, cache_keys)
+            if isinstance(cached_rows.get(cache_key), dict)
+            and cached_rows.get(cache_key).get("key") == issue_key
+        }
+
+        missing = [key for key in issue_keys if key not in by_key]
+        if missing and self._projection_covers_issue_cache(fields, light):
+            full = self.cache.get_many(f"issue:{self.env}:{key}" for key in missing)
+            light_rows = self.cache.get_many(
+                f"issueL:{self.env}:{key}" for key in missing) if light else {}
+            for issue_key in missing:
+                row = full.get(f"issue:{self.env}:{issue_key}")
+                if row is None and light:
+                    row = light_rows.get(f"issueL:{self.env}:{issue_key}")
+                if isinstance(row, dict) and row.get("key") == issue_key:
+                    by_key[issue_key] = row
+            missing = [key for key in issue_keys if key not in by_key]
+
+        for offset in range(0, len(missing), self.ISSUE_BATCH):
+            chunk = missing[offset:offset + self.ISSUE_BATCH]
+            query = "key in (%s) ORDER BY key ASC" % ",".join(chunk)
+            for row in self._fetch_exhaustive_jql(query, fields, light, len(chunk)):
+                issue_key = (row or {}).get("key")
+                if issue_key:
+                    by_key[issue_key] = row
+
+        rows = [by_key[key] for key in issue_keys if key in by_key]
+        if len(rows) != len(issue_keys):
+            raise ValueError("JQL leaf issue row를 완전하게 복원하지 못했습니다.")
+        self._store_jql_rows(rows, generation, projection)
+        return rows
+
+    def _cached_jql_leaf(self, leaf, predicate_fields, fields, light,
+                         generation, projection):
+        leaf_generation, digest, key = self._jql_leaf_key(leaf)
         lock = self._jql_lock(key)
         with lock:
             def produce():
                 rows = self._fetch_jql_leaf(leaf, fields, light)
                 self._store_jql_rows(rows, generation, projection)
-                return [(row or {}).get("key") for row in rows if (row or {}).get("key")]
+                issue_keys = [
+                    (row or {}).get("key") for row in rows if (row or {}).get("key")
+                ]
+                # Register edges before get_or_set publishes the leaf.  A concurrent mutation
+                # either sees the edge and evicts the leaf or advances the fence so the leaf cannot
+                # be stored; warm hits never rewrite thousands of index rows.
+                self._register_jql_leaf_indexes(
+                    key, digest, leaf_generation, issue_keys, predicate_fields)
+                return issue_keys
 
             issue_keys = self.cache.get_or_set(
                 key, self.s.cache_ttl_seconds,
                 produce)[0]
-        return self._load_jql_rows(issue_keys, generation, projection)
+        return self._hydrate_jql_leaf_rows(
+            issue_keys, fields, light, generation, projection)
 
     @staticmethod
     def _combine_jql_rows(rows_by_leaf, order):
@@ -1136,7 +1292,7 @@ class JiraClient:
                     combined[key] = issue
         return sort_issues(combined.values(), order)
 
-    def _warm_jql_leaves_bg(self, compiled, fields, light, generation, projection):
+    def _warm_jql_leaves_bg(self, compiled, fields, light, generation, projection, context):
         """Finish every cold DNF leaf without holding the visible request open.
 
         Serial Jira providers use a priority queue.  Marking this work background means a tab
@@ -1144,7 +1300,7 @@ class JiraClient:
         entire large decomposition to drain.
         """
         digest = hashlib.sha256(
-            f"{generation}\n{projection}\n{compiled.canonical}".encode("utf-8")
+            f"{context}\n{generation}\n{projection}\n{compiled.canonical}".encode("utf-8")
         ).hexdigest()
         inflight_key = f"jqlwarm:{self.env}:g{generation}:{digest}"
         self._ensure_bg()
@@ -1156,14 +1312,15 @@ class JiraClient:
         def job():
             try:
                 with background_upstream():
-                    for leaf in compiled.leaves:
+                    for leaf, predicate_fields in zip(
+                            compiled.leaves, compiled.leaf_fields):
                         # A successful write made this generation obsolete.  New searches will
                         # schedule their own generation; do not spend the serial queue on old data.
                         if self._jql_generation() != generation:
                             break
                         try:
                             self._cached_jql_leaf(
-                                leaf, fields, light, generation, projection)
+                                leaf, predicate_fields, fields, light, generation, projection)
                         except Exception:
                             # Never turn a partial/error response into a cached empty leaf.  A
                             # later query retries the missing leaf through the normal path.
@@ -1174,7 +1331,7 @@ class JiraClient:
 
         self._bg_pool.submit(job)
 
-    def _build_jql_snapshot(self, compiled, fields, light, generation, projection):
+    def _build_jql_snapshot(self, compiled, fields, light, generation, projection, context):
         provider = self.provider
         serial_cold_bootstrap = (
             len(compiled.leaves) > self.JQL_FOREGROUND_LEAF_LIMIT
@@ -1189,9 +1346,10 @@ class JiraClient:
                     compiled.canonical, fields, light, self.JQL_BOOTSTRAP_RESULT_LIMIT)
                 self._store_jql_rows(rows, generation, projection)
                 self._warm_jql_leaves_bg(
-                    compiled, fields, light, generation, projection)
+                    compiled, fields, light, generation, projection, context)
                 return {
                     "canonical": compiled.canonical,
+                    "context": context,
                     "projection": projection,
                     "light": bool(light),
                     "generation": generation,
@@ -1203,14 +1361,15 @@ class JiraClient:
                 # Very large whole-query snapshots keep the strict leaf path and its per-leaf cap.
                 pass
 
-        fetch = lambda leaf: self._cached_jql_leaf(
-            leaf, fields, light, generation, projection)
+        fetch = lambda item: self._cached_jql_leaf(
+            item[0], item[1], fields, light, generation, projection)
         # Every decomposed leaf executes (or hits its own cache); no global-limit early exit.
-        rows_by_leaf = self._pmap(compiled.leaves, fetch)
+        rows_by_leaf = self._pmap(tuple(zip(compiled.leaves, compiled.leaf_fields)), fetch)
         rows = self._combine_jql_rows(rows_by_leaf, compiled.order)
         self._store_jql_rows(rows, generation, projection)
         return {
             "canonical": compiled.canonical,
+            "context": context,
             "projection": projection,
             "light": bool(light),
             "generation": generation,
@@ -1218,6 +1377,7 @@ class JiraClient:
         }
 
     def _jql_snapshot(self, compiled, fields, light, snapshot_id=None):
+        context = self._jql_user_context()
         projection = self._projection_signature(fields, light)
         if snapshot_id:
             key = f"jqlsnap:v{self.JQL_CACHE_VERSION}:{self.env}:{snapshot_id}"
@@ -1225,6 +1385,7 @@ class JiraClient:
             if not isinstance(snapshot, dict):
                 raise ValueError("검색 snapshot이 만료되었습니다. 첫 페이지부터 다시 조회하세요.")
             if (snapshot.get("canonical") != compiled.canonical
+                    or snapshot.get("context") != context
                     or snapshot.get("projection") != projection
                     or bool(snapshot.get("light")) != bool(light)):
                 raise ValueError("검색 snapshot이 현재 JQL 또는 필드 projection과 일치하지 않습니다.")
@@ -1235,7 +1396,7 @@ class JiraClient:
             return snapshot_id, hydrated
         generation = self._jql_generation()
         identity = hashlib.sha256(
-            f"{generation}\n{projection}\n{compiled.canonical}".encode("utf-8")
+            f"{context}\n{generation}\n{projection}\n{compiled.canonical}".encode("utf-8")
         ).hexdigest()[:32]
         snapshot_id = f"{generation}.{identity}"
         key = f"jqlsnap:v{self.JQL_CACHE_VERSION}:{self.env}:{snapshot_id}"
@@ -1244,7 +1405,7 @@ class JiraClient:
             snapshot = self.cache.get_or_set(
                 key, self.JQL_SNAPSHOT_TTL,
                 lambda: self._build_jql_snapshot(
-                    compiled, fields, light, generation, projection))[0]
+                    compiled, fields, light, generation, projection, context))[0]
         issue_keys = list(snapshot.get("issueKeys") or [])
         hydrated = dict(snapshot)
         hydrated["issues"] = self._load_jql_rows(

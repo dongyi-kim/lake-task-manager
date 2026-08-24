@@ -132,6 +132,104 @@ def test_client_executes_and_caches_every_or_leaf():
     assert len(calls) == count
 
 
+def test_mutation_reuses_unaffected_leaves_and_evicts_only_field_dependencies():
+    client = JiraClient(get_settings(), Cache(":memory:"))
+    calls = _count_searches(client)
+    query = (
+        "project = DL AND assignee = test.ui01 "
+        "OR project = DL AND reporter = test.ui01 ORDER BY updated DESC"
+    )
+    compiled = client._compile_jql(query)
+    client.search_issues(query, max_results=20)
+    leaf_keys = {
+        leaf: client._jql_leaf_key(leaf)[2]
+        for leaf in compiled.leaves
+    }
+    assignee_leaf = next(key for leaf, key in leaf_keys.items() if "assignee" in leaf)
+    reporter_leaf = next(key for leaf, key in leaf_keys.items() if "reporter" in leaf)
+    assert client.cache.get(assignee_leaf) is not None
+    assert client.cache.get(reporter_leaf) is not None
+
+    before_generation = client._jql_generation()
+    before_calls = len(calls)
+    client._apply_mutation_events((
+        MutationEvent("description", "DL-9012", changed_fields=("description",)),
+    ))
+    assert client._jql_generation() == before_generation + 1
+    assert client.cache.get(assignee_leaf) is not None
+    assert client.cache.get(reporter_leaf) is not None
+    client.search_issues(query, max_results=20)
+    assert len(calls) == before_calls
+
+    client._apply_mutation_events((
+        MutationEvent("assignee", "DL-9012", changed_fields=("assignee",)),
+    ))
+    assert client.cache.get(assignee_leaf) is None
+    assert client.cache.get(reporter_leaf) is not None
+    client.search_issues(query, max_results=20)
+    assert len(calls) == before_calls + 1
+
+
+def test_rest_field_changes_cover_common_jql_aliases():
+    fields = JiraClient._jql_changed_predicate_fields((
+        MutationEvent("fields", "DL-1", changed_fields=(
+            "components", "issuetype", "duedate", "resolutiondate", "status", "key",
+        )),
+    ))
+    assert {"component", "type", "due", "resolved", "statuscategory", "issue"} <= fields
+
+
+def test_leaf_payload_is_ids_and_issue_reverse_index_handles_delete():
+    client = JiraClient(get_settings(), Cache(":memory:"))
+    query = "key = DL-9012 ORDER BY updated DESC"
+    compiled = client._compile_jql(query)
+    rows = client.search_issues(query, max_results=5)
+    assert [row["key"] for row in rows] == ["DL-9012"]
+
+    leaf_generation, _digest, leaf_key = client._jql_leaf_key(compiled.leaves[0])
+    assert client.cache.get(leaf_key) == ["DL-9012"]
+    reverse = client.cache.entries_by_prefix(
+        client._jql_index_prefix("issue", leaf_generation, "DL-9012"))
+    assert set(reverse.values()) == {leaf_key}
+
+    client._apply_mutation_events((MutationEvent("delete", "DL-9012"),))
+    assert client.cache.get(leaf_key) is None
+
+
+def test_create_invalidates_unfiltered_leaf_that_can_gain_the_new_issue():
+    client = JiraClient(get_settings(), Cache(":memory:"))
+    compiled = client._compile_jql("ORDER BY key ASC")
+    client.search_issues("ORDER BY key ASC", max_results=5)
+    _generation, _digest, leaf_key = client._jql_leaf_key(compiled.leaves[0])
+    assert client.cache.get(leaf_key) is not None
+
+    client._apply_mutation_events((
+        MutationEvent("create", "DL-99999", changed_fields=("summary",)),
+    ))
+    assert client.cache.get(leaf_key) is None
+
+
+def test_leaf_row_and_snapshot_keys_are_partitioned_by_user_context():
+    client = JiraClient(get_settings(), Cache(":memory:"))
+    client.current_user = lambda: {"id": "user-a"}
+    _generation_a, _digest_a, leaf_a = client._jql_leaf_key("project = DL")
+    projection_a = client._projection_signature("summary,status", True)
+    snapshot_a = client.search_issues_page(
+        "project = DL ORDER BY key ASC", max_results=2,
+        fields="summary,status", light=True)["snapshotId"]
+
+    client.current_user = lambda: {"id": "user-b"}
+    _generation_b, _digest_b, leaf_b = client._jql_leaf_key("project = DL")
+    projection_b = client._projection_signature("summary,status", True)
+    snapshot_b = client.search_issues_page(
+        "project = DL ORDER BY key ASC", max_results=2,
+        fields="summary,status", light=True)["snapshotId"]
+
+    assert leaf_a != leaf_b
+    assert projection_a != projection_b
+    assert snapshot_a != snapshot_b
+
+
 def test_narrow_projection_never_poisons_shared_light_issue_cache():
     client = JiraClient(get_settings(), Cache(":memory:"))
     key = "DL-9012"

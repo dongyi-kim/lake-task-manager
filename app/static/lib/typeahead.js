@@ -45,6 +45,7 @@ function makeCache(ttl) {
       m.set(k, { v, t: Date.now() });
       if (m.size > 40) m.delete(m.keys().next().value);   // 오래된 것부터 버린다
     },
+    clear() { m.clear(); },
   };
 }
 
@@ -67,6 +68,7 @@ export function createTypeahead(fetcher, opts) {
   let seq = 0;
 
   function cancel() { clearTimeout(timer); timer = null; seq++; }
+  function clear() { cancel(); if (cache) cache.clear(); }
 
   function run(query) {
     const q = (query || "").trim();
@@ -91,7 +93,7 @@ export function createTypeahead(fetcher, opts) {
     });
   }
 
-  return { run, cancel };
+  return { run, cancel, clear };
 }
 
 /**

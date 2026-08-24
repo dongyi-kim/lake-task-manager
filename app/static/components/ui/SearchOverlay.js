@@ -56,6 +56,11 @@ export default {
   activated() {
     window.addEventListener("keydown", this._onKey);
     this.loadRecent();                  // 열 때마다 갱신(다른 브라우저에서 연 것도 반영된다)
+    // keep-alive 는 검색어를 보존하되 결과까지 영구 보존하면, 티켓 수정 후 같은 검색어로 다시
+    // 열었을 때 이전 제목·상태·담당자가 계속 보인다. 활성화 시 소스 캐시를 비우고 현재 검색어를
+    // 다시 실행해 서버의 mutation invalidation 결과를 받는다.
+    Object.values(this._src).forEach((t) => t.clear());
+    if (this.q.trim()) this.run();
     // 이전 검색어를 선택 상태로 둔다 — 바로 새로 타이핑하면 덮어써지고, 그대로 두면 결과 유지
     this.$nextTick(() => { const el = this.$refs.input; if (el) { el.focus(); el.select(); } });
   },

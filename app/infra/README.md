@@ -5,7 +5,8 @@
 ## 파일
 - **process_identity.py** — Windows base Python 이미지·런타임 DLL을 `LakeTaskManager.exe`/`LakeTaskManagerDev.exe`로 준비하고 앱 시작 전에 해당 프로세스로 교체.
 - **cache.py** — SQLite TTL 캐시. **2단계 TTL**(outdated/dead)로 오프라인·SSO 만료에도 화면을 지키고,
-  `get_or_set`(폴백) · `get_or_set_swr`(stale-while-revalidate) · 주기 purge · snapshot(시계열) · recent(최근 열람) 제공.
+  `get_or_set`(폴백) · `get_or_set_swr`(stale-while-revalidate) · exact-key 묶음 무효화 · TTL prefix
+  index 조회 · 주기 purge · snapshot(시계열) · recent(최근 열람) 제공.
 - **settings.py** — config 로딩(jira.yml·wbs_config·people) + 경로 탐색(dev/frozen/컨테이너) + `Settings` + `is_manager`.
   ★ `SRC_DIR = Path(__file__)...parent×3` — 이 파일이 **app/infra/** 에 있어 repo 루트까지 3단계다(이동 시 주의).
 - **prefs.py** — 사용자 환경설정 JSON 로드/저장(app_prefs.json — 커밋 금지).

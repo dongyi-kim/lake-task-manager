@@ -16,8 +16,11 @@ REST 를 호출하고, **모든 호출은 캐시(app/infra)를 경유**한다. m
 - **쓰기 후 무효화**: 편집이 바꾸는 화면은 반드시 재조회되게 무효화한다. 무거운 티켓 무효화(`_invalidate_ticket`)와
   경량(`_invalidate_ticket_content`, 뷰모드 체크박스용) · 인력뷰(`_invalidate_people_views`, 담당변경/전이/생성)를 구분.
 - 지원되는 검색은 모든 OR leaf를 개별 캐싱한 뒤 앱에서 합집합·중복 제거·ORDER·pagination한다.
-  성공한 Jira write는 `MutationEvent`로 JQL generation을 올려 새 조회가 이전 leaf/snapshot을 재사용하지 않게 한다.
+  leaf payload는 issue key 목록만 가지며, `issue→leaf` 역인덱스와 `predicate field→leaf` 의존
+  인덱스로 성공한 `MutationEvent`가 영향을 주는 leaf만 만료한다. snapshot/row generation은 별도로
+  올려 기존 pagination cursor는 불변으로 두고 새 조회만 최신 row를 사용한다.
 - 병렬 provider는 leaf를 동시에 완주한다. prod SSO/mock처럼 직렬 provider에서 leaf가 4개를 넘으면
   첫 exhaustive snapshot을 동치 전체 JQL로 먼저 만들고, 모든 leaf는 background 우선순위로 빠짐없이
-  warming한다. snapshot/leaf는 generation별 issue row를 공유해 중복 payload와 SQLite commit을 줄인다.
+  warming한다. projection과 무관한 leaf membership은 탭 간 공유하고, snapshot은 generation별 issue
+  row를 공유해 중복 payload와 SQLite commit을 줄인다.
 - 이 파일은 크다(~3천 줄). 향후 mixin 분할 후보지만 지금은 단일 클래스(공유 `self.cache`/`self.provider`).

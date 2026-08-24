@@ -196,6 +196,29 @@ class Cache:
                             pass
         return found
 
+    def entries_by_prefix(self, prefix):
+        """Return fresh cache entries below an exact key prefix.
+
+        JQL reverse indexes use one small row per issue/field-to-leaf edge.  Looking those rows up
+        by prefix avoids scanning or decoding every cached leaf when one ticket changes.
+        """
+        prefix = str(prefix or "")
+        if not prefix:
+            return {}
+        now, found = time.time(), {}
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT key,payload,fetched_at,ttl FROM cache "
+                "WHERE key>=? AND key<?", (prefix, prefix + "\uffff")
+            ).fetchall()
+        for key, payload, fetched_at, ttl in rows:
+            if now - fetched_at <= ttl:
+                try:
+                    found[key] = json.loads(payload)
+                except Exception:
+                    pass
+        return found
+
     def epoch(self, namespace):
         with self._lock:
             row = self._conn.execute(
@@ -350,6 +373,20 @@ class Cache:
             else:
                 self._conn.execute("DELETE FROM cache")
             self._conn.commit()
+
+    def invalidate_keys(self, keys):
+        """Delete exact cache keys in one fenced transaction."""
+        unique = list(dict.fromkeys(str(key) for key in keys if key))
+        if not unique:
+            return 0
+        with self._lock:
+            self._write_fence += 1
+            for offset in range(0, len(unique), 400):
+                batch = unique[offset:offset + 400]
+                marks = ",".join("?" for _ in batch)
+                self._conn.execute(f"DELETE FROM cache WHERE key IN ({marks})", batch)
+            self._conn.commit()
+        return len(unique)
 
     # ── 스냅샷(시계열) ──
     def add_snapshot(self, entity, ref, metric):

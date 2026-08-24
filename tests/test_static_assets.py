@@ -581,6 +581,16 @@ def test_global_search_keeps_up_to_twenty_unique_recent_items():
     assert ").slice(0, RECENT_MAX);" in search
 
 
+def test_global_search_revalidates_kept_results_when_reopened():
+    search = (STATIC / "components" / "ui" / "SearchOverlay.js").read_text(encoding="utf-8")
+    typeahead = (STATIC / "lib" / "typeahead.js").read_text(encoding="utf-8")
+
+    assert "clear() { m.clear(); }" in typeahead
+    assert "return { run, cancel, clear };" in typeahead
+    assert "Object.values(this._src).forEach((t) => t.clear());" in search
+    assert "if (this.q.trim()) this.run();" in search
+
+
 # ── 파이썬 소스 위생 ────────────────────────────────────────────────────────
 # 같은 편집 사고의 파이썬 판. heredoc 으로 소스를 고치면 줄바꿈이 **공백으로 뭉개져**
 # `if a  <공백 17칸>  and b:` 같은 줄이 남는다. 문법은 멀쩡해서 테스트도 전부 통과하고
