@@ -451,10 +451,14 @@ def find_parent_epic(query: str = "", limit: int = 10) -> list:
     if epic_name_field:
         fields.append(epic_name_field)
     try:
-        start, rows = 0, []
+        start, rows, snapshot_id = 0, [], None
         while len(rows) < wanted:
-            page = c.search_issues_page(jql, start_at=start, max_results=100,
-                                        fields=fields, light=True)
+            page_kwargs = {"start_at": start, "max_results": 100,
+                           "fields": fields, "light": True}
+            if snapshot_id:
+                page_kwargs["snapshot_id"] = snapshot_id
+            page = c.search_issues_page(jql, **page_kwargs)
+            snapshot_id = page.get("snapshotId") or snapshot_id
             rows.extend(page.get("issues") or [])
             if not page.get("hasMore") or page.get("nextStartAt") is None:
                 break

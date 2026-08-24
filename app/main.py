@@ -1984,6 +1984,7 @@ def api_activity(user: str):
 @app.post("/api/refresh")
 def api_refresh():
     _cache.invalidate()          # 전체 캐시 무효화 (epic/workload/activity)
+    _client.advance_jql_generation()  # 진행 중인 leaf warming도 구세대에서 멈추게 한다
     from app.infra.settings import reload_people
     reload_people()              # config(people.yaml) 편집분도 다음 조회부터 반영
     return {"status": "refreshed"}

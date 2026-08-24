@@ -41,6 +41,10 @@ CREATE TABLE IF NOT EXISTS recent (
     opened_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_recent_at ON recent(opened_at DESC);
+CREATE TABLE IF NOT EXISTS cache_epoch (
+    namespace TEXT PRIMARY KEY,
+    value     INTEGER NOT NULL
+);
 """
 
 
@@ -61,6 +65,10 @@ class Cache:
         self._lock = threading.Lock()
         self.dead_ttl = int(dead_ttl)
         self._set_count = 0
+        # In-flight producers capture this fence. Any invalidation makes their pre-write result
+        # ineligible for cache storage, preventing a stale background refresh from resurrecting
+        # data immediately after a successful Jira write.
+        self._write_fence = 0
         # 상류(Jira)가 지금 못 쓰는 상태면 True 를 주는 콜러블. 있으면 producer 를 **아예 호출하지
         # 않고** 낡은 값으로 답한다 — 죽은 세션에 매번 붙어 보느라 화면이 멎는 걸 막는다
         # (prod 의 Playwright 호출은 실패 판정까지 최대 180초가 걸린다).
@@ -121,6 +129,94 @@ class Cache:
                 self._purge_within_lock()
             self._conn.commit()
 
+    def fence(self):
+        with self._lock:
+            return self._write_fence
+
+    def set_if_fence(self, key, value, ttl, fence):
+        """Store only when no invalidation happened after the producer started."""
+        with self._lock:
+            if self._write_fence != fence:
+                return False
+            self._conn.execute(
+                "INSERT OR REPLACE INTO cache(key, payload, fetched_at, ttl) VALUES (?,?,?,?)",
+                (key, json.dumps(value, ensure_ascii=False), time.time(), int(ttl)),
+            )
+            self._set_count += 1
+            if self._set_count >= self.PURGE_EVERY:
+                self._set_count = 0
+                self._purge_within_lock()
+            self._conn.commit()
+            return True
+
+    def set_many_if_fence(self, values, ttl, fence):
+        """Store a group atomically when the producer's generation fence is still current.
+
+        JQL searches write through tens or hundreds of issues.  Committing each row separately
+        turns local cache persistence into a visible UI delay, so the normalized query layer uses
+        one SQLite transaction while keeping the same mutation race fence.
+        """
+        rows = [(str(key), json.dumps(value, ensure_ascii=False), time.time(), int(ttl))
+                for key, value in values]
+        if not rows:
+            return True
+        with self._lock:
+            if self._write_fence != fence:
+                return False
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO cache(key, payload, fetched_at, ttl) VALUES (?,?,?,?)",
+                rows,
+            )
+            self._set_count += len(rows)
+            if self._set_count >= self.PURGE_EVERY:
+                self._set_count = 0
+                self._purge_within_lock()
+            self._conn.commit()
+            return True
+
+    def get_many(self, keys):
+        """Return fresh cache values for keys with a bounded number of SQLite round trips."""
+        ordered = list(dict.fromkeys(str(key) for key in keys if key))
+        if not ordered:
+            return {}
+        now, found = time.time(), {}
+        with self._lock:
+            for offset in range(0, len(ordered), 400):
+                batch = ordered[offset:offset + 400]
+                marks = ",".join("?" for _ in batch)
+                rows = self._conn.execute(
+                    f"SELECT key,payload,fetched_at,ttl FROM cache WHERE key IN ({marks})",
+                    batch,
+                ).fetchall()
+                for key, payload, fetched_at, ttl in rows:
+                    if now - fetched_at <= ttl:
+                        try:
+                            found[key] = json.loads(payload)
+                        except Exception:
+                            pass
+        return found
+
+    def epoch(self, namespace):
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM cache_epoch WHERE namespace=?", (namespace,)
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def bump_epoch(self, namespace):
+        """Atomically advance a persistent logical cache generation."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO cache_epoch(namespace,value) VALUES (?,1) "
+                "ON CONFLICT(namespace) DO UPDATE SET value=value+1", (namespace,)
+            )
+            row = self._conn.execute(
+                "SELECT value FROM cache_epoch WHERE namespace=?", (namespace,)
+            ).fetchone()
+            self._write_fence += 1
+            self._conn.commit()
+        return int(row[0])
+
     def _purge_within_lock(self):
         """죽은 캐시 행(dead_ttl 초과) + 오래된 스냅샷 삭제. **이미 _lock 을 쥔 채** 호출한다.
         (SQLite 는 DELETE 로 파일이 줄진 않지만 빈 페이지를 재사용하므로 크기가 안정된다.)"""
@@ -137,6 +233,11 @@ class Cache:
         with self._lock:
             self._purge_within_lock()
             self._conn.commit()
+
+    def close(self):
+        """Release the SQLite handle (benchmarks and short-lived clients)."""
+        with self._lock:
+            self._conn.close()
 
     def get_or_set(self, key, ttl, producer):
         """신선하면 그대로, 아니면 producer() 로 갱신. **갱신에 실패하면 낡은 값으로 버틴다.**
@@ -159,6 +260,7 @@ class Cache:
             if alive is not None:
                 self.served_stale_at = time.time()
                 return alive[0], True
+        fence = self.fence()
         try:
             value = producer()
         except Exception:
@@ -167,7 +269,7 @@ class Cache:
                 raise                       # 낡은 값조차 없으면 숨길 게 없다 — 그대로 알린다
             self.served_stale_at = time.time()
             return alive[0], True
-        self.set(key, value, ttl)
+        self.set_if_fence(key, value, ttl, fence)
         self.last_upstream_ok = time.time()
         if self.on_upstream_ok:
             try:
@@ -235,12 +337,14 @@ class Cache:
         if stale is not None:
             background(key, ttl, producer)
             return stale, "stale"
+        fence = self.fence()
         value = producer()
-        self.set(key, value, ttl)
+        self.set_if_fence(key, value, ttl, fence)
         return value, "miss"
 
     def invalidate(self, prefix=None):
         with self._lock:
+            self._write_fence += 1
             if prefix:
                 self._conn.execute("DELETE FROM cache WHERE key LIKE ?", (prefix + "%",))
             else:

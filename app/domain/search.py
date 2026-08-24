@@ -141,8 +141,8 @@ def _search_jira(client, s, q, scope, limit):
     # project_key는 쓰기 대상이지 검색 범위 fallback이 아니다.
     jql = "project in (%s) AND %s" % (", ".join(projects), jql)
     jql += " ORDER BY updated DESC"
-    data = client.provider.get_json("/rest/api/2/search", params={
-        "jql": jql, "fields": fields, "maxResults": limit})
+    data = client.search_issues_page(
+        jql, start_at=0, max_results=limit, fields=fields, light=True)
     base = (s.jira_base or "").rstrip("/")
     allowed = {p.upper() for p in projects}
     items = [dict(_jira_item(it, base, enf), exact=True) for it in exact

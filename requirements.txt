@@ -70,6 +70,9 @@ langfuse==4.14.4
 # 사용자 인증서 저장소를 열지 않는다. 일반 기술 지식 보강용이며 폐쇄망이면 자동 무력화.
 httpx==0.28.1
 certifi==2026.7.22
+# Windows embedded Python has no system IANA database. JQL relative-date normalization uses the
+# Jira user's timeZone, so zoneinfo needs the official portable database as a runtime dependency.
+tzdata==2026.3
 
 # Agent structured-output 검증 코드가 직접 import한다. MCP의 전이 의존성에 기대지 않고
 # 검증 구현과 버전을 명시적으로 고정한다.
