@@ -154,7 +154,8 @@ def test_timeline_cached():
     c = _client()
     key = _key_of_type("Bug")
     c.ticket_timeline(key)
-    assert c.cache.get(f"timeline:{c.env}:{key}") is not None
+    assert c.cache.get(f"timeline:{c.env}:{key}:self:v2") is not None
+    assert c.cache.get(f"timeline:{c.env}:{key}:children:v2") is not None
 
 
 def test_subtaskless_timeline_can_defer_cold_changelog_without_blocking(monkeypatch):
@@ -172,7 +173,7 @@ def test_subtaskless_timeline_can_defer_cold_changelog_without_blocking(monkeypa
     assert c.ticket_timeline(key, defer=True) is None
     assert status_calls == []                 # 202를 돌려주기 전에 Jira status 조회도 하지 않는다
     assert len(scheduled) == 1
-    assert scheduled[0][0] == f"timeline:{c.env}:{key}"
+    assert scheduled[0][0] == f"timeline:{c.env}:{key}:self:v2"
     assert callable(scheduled[0][2])
 
 
@@ -185,15 +186,80 @@ def test_timeline_route_marks_deferred_work_as_background(monkeypatch):
     seen = []
 
     class Client:
-        def ticket_timeline(self, key, defer=False):
-            seen.append((key, defer, upstream_priority()))
+        def ticket_timeline(self, key, defer=False, include_children=True):
+            seen.append((key, defer, include_children, upstream_priority()))
             return None
 
     monkeypatch.setattr(main, "_client", Client())
-    response = TestClient(main.app).get("/api/ticket/DL-1/timeline?deferred=1")
+    response = TestClient(main.app).get("/api/ticket/DL-1/timeline?deferred=1&children=0")
     assert response.status_code == 202
     assert response.json() == {"pending": True}
-    assert seen == [("DL-1", True, PRIO_BACKGROUND)]
+    assert seen == [("DL-1", True, False, PRIO_BACKGROUND)]
+
+
+def test_timeline_first_tier_never_collects_child_history(monkeypatch):
+    """다이얼로그 최초 타임라인은 하위 이력 조회를 예약조차 하지 않는다."""
+    c = _client()
+    key = "DL-9100"                        # 직계 Sub-Task 14개 fixture
+    monkeypatch.setattr(c, "_child_keys", lambda *_a, **_k: (_ for _ in ()).throw(
+        AssertionError("1티어에서 child key를 읽으면 안 된다")))
+
+    timeline = c.ticket_timeline(key, include_children=False)
+
+    assert timeline
+    assert all(e.get("srcKey") is None for e in timeline)
+    assert c.cache.get(f"timeline:{c.env}:{key}:children:v2") is None
+
+
+def test_second_tier_is_separately_deferred_and_merged(monkeypatch):
+    """버튼 요청 뒤에만 2티어를 예약하고 완료 후 본인 이력과 최신순으로 합친다."""
+    c = _client()
+    key = "DL-9100"
+    own = c.ticket_timeline(key, include_children=False)
+    scheduled = []
+    monkeypatch.setattr(c, "_refresh_bg", lambda cache_key, ttl, producer:
+                        scheduled.append((cache_key, ttl, producer)))
+
+    assert c.ticket_timeline(key, defer=True, include_children=True) is None
+    assert [row[0] for row in scheduled] == [f"timeline:{c.env}:{key}:children:v2"]
+
+    cache_key, ttl, producer = scheduled[0]
+    c.cache.set(cache_key, producer(), ttl)
+    merged = c.ticket_timeline(key, defer=True, include_children=True)
+    assert any(e.get("srcKey") for e in merged)
+    assert {e.get("srcKey") for e in merged if e.get("srcKey")} <= set(
+        get_world().issues[key]["subtasks"])
+    assert any(e.get("srcKey") is None for e in merged)
+    assert [e.get("date") for e in merged] == sorted(
+        [e.get("date") for e in merged], reverse=True)
+    assert len(own) <= len(merged)
+
+
+def test_delayed_second_tier_yields_to_foreground_requests(monkeypatch):
+    """고의 지연 + SubTask 14개에서도 2티어가 일반 조회를 여러 왕복 동안 막지 않는다."""
+    import time
+    from app.auth import inprocess
+
+    c = _client()
+    key = "DL-9100"
+    c.ticket_timeline(key, include_children=False)       # 최초 1티어는 먼저 완료된 상태
+    monkeypatch.setattr(inprocess, "_LAT_MS", 60)       # prod 직렬·원격 체감 재현 옵션
+
+    assert c.ticket_timeline(key, defer=True, include_children=True) is None
+    time.sleep(0.02)                                    # 첫 background 왕복이 실행되게 둔다
+    started = time.perf_counter()
+    c.get_issue_light("DL-9092")                        # 타임라인과 무관한 사용자 조회
+    elapsed = time.perf_counter() - started
+
+    # 실행 중이던 한 왕복 + 내 한 왕복은 기다릴 수 있지만, 14개 전체 뒤로 밀리면 실패다.
+    assert elapsed < 0.30, f"foreground request starved for {elapsed:.3f}s"
+    child_key = f"timeline:{c.env}:{key}:children:v2"
+    deadline = time.time() + 4
+    while c.cache.get(child_key) is None and time.time() < deadline:
+        time.sleep(0.03)
+    assert c.cache.get(child_key) is not None
+    merged = c.ticket_timeline(key, defer=True, include_children=True)
+    assert len({e.get("srcKey") for e in merged if e.get("srcKey")}) == 14
 
 
 def test_timeline_includes_child_status_changes():
@@ -287,6 +353,18 @@ def test_rel_label_shortens_verbose_jira_text():
     # 짧은 문구는 그대로
     ok = {"name": "Custom", "outward": "supersedes", "inward": "is superseded by"}
     assert _rel_label(ok, True) == "supersedes"
+
+
+def test_dialog_related_tasks_only_uses_explicit_issue_links():
+    """본문의 Jira URL은 관련 Task 관계가 아니다. 다이얼로그에서는 명시적 issuelink만 보인다."""
+    c = _client()
+    linked = c.ticket_related("DL-9004", include_mentions=False)
+    discovered = c.ticket_related("DL-9004", include_mentions=True)
+
+    assert {r["key"] for r in linked} == {"DL-9005", "DL-9006", "DL-9001"}
+    assert all(r["via"] == "link" for r in linked)
+    assert "DL-5005" not in {r["key"] for r in linked}
+    assert any(r["key"] == "DL-5005" and r["via"] == "mention" for r in discovered)
 
 
 def test_conf_draft_url_title_and_key():

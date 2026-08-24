@@ -136,6 +136,10 @@ export default {
                     // 좌측 계보와 우측 타임라인은 서로 다른 요청이다. 하나가 멈춰도 이미 받은 다른
                     // 패널과 본문을 계속 조작할 수 있도록 로딩·오류 상태를 절대 공유하지 않는다.
                     spineLoading: true, timelineLoading: true, timelineErr: "",
+                    // 하위 이력은 최초 진입에서 요청하지 않는다. 사용자가 버튼을 눌렀을 때만
+                    // 별도 저우선순위 작업으로 받아 본인 이력 위에 합친다.
+                    childTimeline: [], childTimelineLoading: false, childTimelineLoaded: false,
+                    childTimelineErr: "", showChildTimeline: false,
                     refreshing: false,               // 좌하단 강제 새로고침 진행 표시
                     sumEdit: false, sumDraft: "", sumBusy: false, sumErr: "",   // 제목(summary) 인라인 수정
                     // 좌/우 부가정보 패널 — 폭 조절·접기(저장). 넓은 화면(사이드바 모드)에서만 의미.
@@ -282,9 +286,12 @@ export default {
       return list;
     },
     /** 좌측 부가정보 패널을 그릴 거리가 있는가(계보/형제/타임라인 중 하나라도). */
-    hasSpine() { return this.spine.length > 1 || this.siblings.length > 0 || this.timeline.length > 0; },
+    hasSpine() { return this.spine.length > 1 || this.siblings.length > 0 || this.visibleTimeline.length > 0; },
     /** 우측 타임라인 패널을 그릴 거리가 있는가(일정 또는 이력). */
-    hasTl() { return !!(this.v || this.timeline.length); },
+    hasTl() { return !!(this.v || this.visibleTimeline.length); },
+    visibleTimeline() {
+      return this.showChildTimeline && this.childTimelineLoaded ? this.childTimeline : this.timeline;
+    },
     // 스파인 계보 = [조상…, 현재]. 조상만 도착해도 그릴 수 있어야 하므로 **v 를 기다리지 않는다**
     // (현재 노드는 keyId 로 먼저 그리고, v 가 오면 제목·타입이 채워진다).
     spine() {
@@ -520,6 +527,39 @@ export default {
       }
     },
     retryTimeline() { this.loadTimeline(this.keyId, this._req); },
+    /** 2티어는 명시적 클릭 뒤에만 시작한다. 본인 이력은 그대로 둔 채 버튼 상태만 기다린다. */
+    async toggleChildTimeline() {
+      if (this.childTimelineLoaded) {
+        this.showChildTimeline = !this.showChildTimeline;
+        return;
+      }
+      if (this.childTimelineLoading) return;
+      const key = this.keyId, requestId = this._req;
+      const fresh = () => requestId === this._req && this.keyId === key;
+      this.showChildTimeline = true;
+      this.childTimelineLoading = true;
+      this.childTimelineErr = "";
+      const until = Date.now() + TIMELINE_WAIT_MS;
+      try {
+        while (fresh()) {
+          const result = await api.ticketTimeline(key, true);
+          if (Array.isArray(result)) {
+            if (fresh()) {
+              this.childTimeline = result;
+              this.childTimelineLoaded = true;
+            }
+            return;
+          }
+          if (!result || !result.pending) throw new Error("하위 티켓 히스토리 응답을 확인할 수 없습니다.");
+          if (Date.now() >= until) throw new Error("하위 티켓 히스토리가 지연되고 있습니다.");
+          await new Promise((resolve) => setTimeout(resolve, TIMELINE_POLL_MS));
+        }
+      } catch (e) {
+        if (fresh()) this.childTimelineErr = (e && e.message) || "하위 티켓 히스토리를 불러오지 못했습니다.";
+      } finally {
+        if (fresh()) this.childTimelineLoading = false;
+      }
+    },
     hardRefresh() {
       // 좌하단 강제 새로고침 — 서버측 파생 캐시(children/siblings/… SWR 옛 결과)까지 비운 **뒤**
       // 다시 받는다. 순서가 중요: 먼저 서버 캐시를 털고 나서 load 해야 최신이 잡힌다.
@@ -542,6 +582,8 @@ export default {
         this.spineLoading = true; this.timelineLoading = true; this.timelineErr = "";
         this.v = null; this.comments = null;
         this.ancestors = []; this.siblings = []; this.timeline = [];
+        this.childTimeline = []; this.childTimelineLoading = false; this.childTimelineLoaded = false;
+        this.childTimelineErr = ""; this.showChildTimeline = false;
         this.children = []; this.related = []; this.atts = []; this.docs = [];
         this.pdesc = null; this.pdescOpen = false; this.pdescErr = "";
         this.composing = false; this.editingId = null; this.editInitial = ""; this.editErr = "";
@@ -1004,7 +1046,7 @@ export default {
         if (!m) return;
         a.dataset.jira = "1";
         const key = m[1];
-        a.classList.add("jira-badge", "tkt");
+        a.classList.add("jira-badge", "jira-badge-list", "tkt");
         a.setAttribute("data-key", key);
         a.setAttribute("role", "button");
         a.setAttribute("tabindex", "0");
@@ -1652,14 +1694,14 @@ export default {
               <div class="sk-box"><span class="sk-ln" v-for="w in [60,55,66,50,58]" :key="'skdt'+w" :style="{ width: w + '%' }"></span></div>
             </div></div>
 
-            <div v-if="timeline.length" class="sec sec-history">
+            <div v-if="visibleTimeline.length || (!timelineLoading && !timelineErr && children.length)" class="sec sec-history">
             <div class="tkt-mlabel sf-gap">타임라인</div>
-              <div v-for="(e, i) in timeline" :key="i" class="tl-row"
+              <div v-for="(e, i) in visibleTimeline" :key="(e.srcKey || 'self') + '-' + (e.date || '') + '-' + i" class="tl-row"
                    :class="{ child: e.srcKey, tkt: !!e.srcKey }" :data-key="e.srcKey || null"
                    :title="(e.srcKey ? e.srcKey + ' · ' : '') + tlText(e)">
                 <span class="tl-rail">
                   <span class="tl-dot" :class="'k-' + e.kind"></span>
-                  <span v-if="i < timeline.length - 1" class="tl-line"></span>
+                  <span v-if="i < visibleTimeline.length - 1" class="tl-line"></span>
                 </span>
                 <span class="tl-body">
                   <span class="tl-t"><span v-if="e.srcKey" class="tl-src">{{ e.srcKey }}</span
@@ -1673,6 +1715,16 @@ export default {
                   <span class="tl-m">{{ e.author || '—' }} · {{ fdt(e.date) }}</span>
                 </span>
               </div>
+              <button v-if="children.length" type="button" class="tl-child-toggle"
+                      :class="{ busy: childTimelineLoading, on: showChildTimeline && childTimelineLoaded }"
+                      :disabled="childTimelineLoading" @click="toggleChildTimeline">
+                <span v-if="childTimelineLoading" class="spinner"></span>
+                <span>{{ childTimelineLoading ? '하위 티켓 히스토리 불러오는 중…'
+                  : childTimelineErr ? '하위 티켓 히스토리 다시 시도'
+                  : childTimelineLoaded && showChildTimeline ? '하위 티켓 히스토리 숨기기'
+                  : '하위 티켓 히스토리도 보기' }}</span>
+              </button>
+              <p v-if="childTimelineErr" class="tl-child-error">{{ childTimelineErr }}</p>
             </div>
             <div v-else-if="timelineLoading" class="sec sec-history">
               <div class="tkt-mlabel sf-gap">타임라인</div>

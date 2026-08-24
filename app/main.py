@@ -1149,12 +1149,12 @@ def api_ticket_ancestors(key: str):
 
 
 @app.get("/api/ticket/{key}/timeline")
-def api_ticket_timeline(key: str, deferred: bool = False):
-    """티켓 타임라인 — 보조 패널이므로 본문·편집·쓰기 요청보다 뒤에서 처리한다."""
+def api_ticket_timeline(key: str, deferred: bool = False, children: bool = True):
+    """티켓 타임라인 — 최초엔 본인 이력만, 요청할 때만 하위 이력까지 저우선순위로 만든다."""
     # prod SSO provider 는 단일 우선순위 큐다. changelog 한 건이 지연됐다는 이유로 이미 열린
     # 본문/필드의 클릭·저장을 막지 않게, 타임라인이 만드는 모든 후속 조회를 background 로 둔다.
     with background_upstream():
-        timeline = _client.ticket_timeline(key, defer=deferred)
+        timeline = _client.ticket_timeline(key, defer=deferred, include_children=children)
     if deferred and timeline is None:
         return JSONResponse({"pending": True}, status_code=202)
     return JSONResponse(timeline)
@@ -1180,8 +1180,8 @@ def api_ticket_children(key: str):
 
 @app.get("/api/ticket/{key}/related")
 def api_ticket_related(key: str):
-    """관련 Task — 이슈 링크(relates to 등) + 설명·코멘트에서 언급된 티켓."""
-    return JSONResponse(_client.ticket_related(key))
+    """관련 Task — 사용자가 Jira 이슈 링크로 명시한 관계만 표시한다."""
+    return JSONResponse(_client.ticket_related(key, include_mentions=False))
 
 
 @app.get("/api/ticket/{key}/siblings")
