@@ -28,6 +28,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 DESCRIPTION_TICKET = "DL-9001"
 COMMENT_TICKET = "DL-9007"
+EDITOR_LATENCY_MS = int(os.environ.get("LTM_EDITOR_E2E_LATENCY_MS", "800"))
 PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
@@ -91,7 +92,7 @@ def editor_browser(tmp_path):
         "JIRA_ENV": "mock",
         "LAKE_NO_WINDOW": "1",
         # 검색 중 stale 추천이 사라지고 명시적 loading row가 뜨는 시간창을 만든다.
-        "LAKE_MOCK_LATENCY_MS": "800",
+        "LAKE_MOCK_LATENCY_MS": str(EDITOR_LATENCY_MS),
         "CACHE_DB_PATH": str(run_dir / "cache.sqlite3"),
     })
     log_path = run_dir / "server.log"
@@ -325,7 +326,8 @@ def _assert_mention_popup_lifecycle(page, editor) -> None:
     page.keyboard.press("Control+A")
     page.keyboard.press("Backspace")
     editor.press_sequentially("@강", delay=180)
-    page.get_by_text("사용자 검색 중…", exact=True).wait_for(state="visible", timeout=3_000)
+    if EDITOR_LATENCY_MS:
+        page.get_by_text("사용자 검색 중…", exact=True).wait_for(state="visible", timeout=3_000)
     popup = page.locator(".mention-popup")
     assert "정한울" not in popup.inner_text(), "stale recent user remained during search"
     candidate = popup.locator(".mn-item", has_text="강수아")
@@ -435,3 +437,64 @@ def test_existing_editor_regression_fixtures_render_in_browser(editor_browser):
         for selector in checks:
             page.locator(selector).first.wait_for(state="visible", timeout=15_000)
         assert not errors, f"{key} browser page errors: {errors}"
+
+
+def test_comment_composer_uses_compact_scoped_height_and_enriches_context_name(editor_browser):
+    """새 댓글 높이는 다른 에디터 저장값과 분리되고, 기존 멘션 검색으로 full 이름을 보강한다."""
+    page, base, errors, _upload_path = editor_browser
+    page.add_init_script(
+        "localStorage.setItem('cmtEditorH', '700'); "
+        "localStorage.removeItem('cmtEditorComposeH');")
+    _open_ticket(page, base, COMMENT_TICKET)
+    page.get_by_role("button", name="＋ 댓글 달기").click()
+
+    editor = page.locator(".tkt-compose-editor .ProseMirror")
+    host = page.locator(".tkt-compose-editor .cmt-ed-host")
+    handle = page.get_by_role("separator", name="댓글 작성창 높이 조절")
+    editor.wait_for(state="visible")
+    handle.wait_for(state="visible")
+    initial = host.evaluate("el => el.getBoundingClientRect().height")
+    assert 175 <= initial <= 185, f"compact comment height expected 180px, got {initial}"
+    assert page.evaluate("localStorage.getItem('cmtEditorH')") == "700"
+
+    # 이 티켓의 담당자는 로컬 후보에서 짧은 이름만 가진다. 같은 검색 응답에 이미 포함된
+    # displayName으로 보강하고 별도 사용자 상세 조회 없이 팝업에는 회사명까지 보여야 한다.
+    editor.press_sequentially("@UI픽스처02", delay=120)
+    if EDITOR_LATENCY_MS:
+        page.get_by_text("사용자 검색 중…", exact=True).wait_for(state="visible", timeout=3_000)
+    candidate = page.locator(".mention-popup .mn-item", has_text="UI픽스처02")
+    candidate.wait_for(state="visible", timeout=15_000)
+    assert candidate.locator(".mn-nm").inner_text() == "UI픽스처02 TEST"
+    page.keyboard.press("Escape")
+
+    editor.click()
+    page.keyboard.press("Control+A")
+    page.keyboard.type("댓글 높이 조절 초안")
+    box = handle.bounding_box()
+    assert box is not None
+    # 중앙은 가리기 버튼이 경계 위에 겹친다. 실제 사용자가 잡는 좌측 경계 띠를 끈다.
+    drag_x = box["x"] + min(80, box["width"] / 4)
+    page.mouse.move(drag_x, box["y"] + box["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(drag_x, box["y"] - 80, steps=8)
+    page.mouse.up()
+    resized = host.evaluate("el => el.getBoundingClientRect().height")
+    assert resized >= initial + 60, f"top resize did not grow editor: {initial} -> {resized}"
+    assert int(page.evaluate("localStorage.getItem('cmtEditorComposeH')")) == round(resized)
+    assert page.evaluate("localStorage.getItem('cmtEditorH')") == "700"
+
+    page.get_by_role("button", name="댓글 작성창 가리기").click()
+    folded = page.locator("button.tkt-cmt-addbtn.draft")
+    folded.wait_for(state="visible")
+    assert "댓글 높이 조절 초안" in folded.inner_text()
+    folded.click()
+    assert "댓글 높이 조절 초안" in editor.inner_text()
+
+    reset_box = handle.bounding_box()
+    assert reset_box is not None
+    reset_x = reset_box["x"] + min(80, reset_box["width"] / 4)
+    page.mouse.dblclick(reset_x, reset_box["y"] + reset_box["height"] / 2)
+    reset = host.evaluate("el => el.getBoundingClientRect().height")
+    assert 175 <= reset <= 185
+    assert page.evaluate("localStorage.getItem('cmtEditorComposeH')") is None
+    assert not errors, f"browser page errors: {errors}"

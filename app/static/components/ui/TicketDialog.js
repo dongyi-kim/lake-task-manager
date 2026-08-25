@@ -913,6 +913,14 @@ export default {
       this.composeCollapsed = true;              // 에디터는 unmount 하지 않는다 — 커서·첨부까지 그대로
       if (ed && ed.flushDraft) await ed.flushDraft();
     },
+    resizeCompose(e) {
+      const ed = this.$refs.newCommentEditor;
+      if (ed && ed.startResizeFromTop) ed.startResizeFromTop(e);
+    },
+    resetComposeHeight() {
+      const ed = this.$refs.newCommentEditor;
+      if (ed && ed.resetHeight) ed.resetHeight();
+    },
     async cancelCompose() {
       const ed = this.$refs.newCommentEditor;
       if (ed && ed.discardDraft) await ed.discardDraft();
@@ -1805,12 +1813,17 @@ export default {
               <template v-else>＋ 댓글 달기</template>
             </button>
             <div v-if="composing" v-show="!composeCollapsed" class="tkt-compose-editor">
-              <!-- 좌·우 부가 패널의 접기 손잡이를 90도 돌린 형태: 에디터 상단 경계에 반쯤 걸친다. -->
+              <!-- 좌·우 패널 경계처럼 넓은 조작 영역을 두고, 중앙 폴딩 버튼은 경계선에 걸친다. -->
+              <div class="tkt-compose-resize" role="separator" aria-orientation="horizontal"
+                   aria-label="댓글 작성창 높이 조절" title="끌어서 높이 조절 · 더블클릭하면 기본 높이"
+                   @pointerdown="resizeCompose" @dblclick="resetComposeHeight"></div>
               <button type="button" class="tkt-compose-hide" title="댓글 작성창 가리기"
                       aria-label="댓글 작성창 가리기" @click="collapseCompose">
-                <span class="tkt-compose-hide-chevron" aria-hidden="true"></span><b>가리기</b>
+                <b>가리기</b><span class="tkt-compose-hide-chevron" aria-hidden="true"></span>
               </button>
-              <CommentEditor ref="newCommentEditor" :ticket-key="tk" :mention-users="mentionUsers" submit-label="등록" :submit-fn="submitNew"
+              <CommentEditor ref="newCommentEditor" :ticket-key="tk" :mention-users="mentionUsers"
+                height-key="cmtEditorComposeH" :initial-height="180"
+                submit-label="등록" :submit-fn="submitNew"
                 @submitted="onComposed" @cancel="cancelCompose" />
             </div>
           </div>

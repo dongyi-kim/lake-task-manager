@@ -962,14 +962,19 @@ const H_KEY = "cmtEditorH";
 const H_MIN = 120;
 const H_MAX = 720;
 
-function loadEditorHeight() {
-  try {
-    const v = parseInt(localStorage.getItem(H_KEY) || "", 10);
-    return v >= H_MIN && v <= H_MAX ? v : null;
-  } catch (e) { return null; }
+function validEditorHeight(value) {
+  const v = Number(value);
+  return Number.isFinite(v) && v >= H_MIN && v <= H_MAX ? Math.round(v) : null;
 }
-function saveEditorHeight(v) {
-  try { localStorage.setItem(H_KEY, String(v)); } catch (e) { /* 사파리 프라이빗 등 */ }
+
+function loadEditorHeight(key, fallback) {
+  try {
+    const saved = validEditorHeight(parseInt(localStorage.getItem(key) || "", 10));
+    return saved === null ? validEditorHeight(fallback) : saved;
+  } catch (e) { return validEditorHeight(fallback); }
+}
+function saveEditorHeight(key, value) {
+  try { localStorage.setItem(key, String(value)); } catch (e) { /* 사파리 프라이빗 등 */ }
 }
 
 export default {
@@ -997,13 +1002,17 @@ export default {
     kind: { type: String, default: "comment" },   // comment | description | transition
     // 티켓 다이어로그가 이미 가진 담당/보고/최근 댓글 맥락. 네트워크 지연 중에도 이들이 먼저 뜬다.
     mentionUsers: { type: Array, default: () => [] },
+    // 설명 편집에서 크게 늘린 값이 새 댓글 작성창까지 화면을 채우지 않도록 자리별 저장 키와
+    // 기본 높이를 받을 수 있다. 사용자가 조절한 높이는 각 자리에서 계속 기억한다.
+    heightKey: { type: String, default: H_KEY },
+    initialHeight: { type: Number, default: 0 },
   },
   emits: ["submitted", "cancel"],
   data() { return { ready: false, loadErr: "", busy: false, err: "", tick: 0, languages: [],
                     maximized: false, restored: false,
                     // 인라인 모드에서 사용자가 끌어 정한 본문 높이(px). null = 기본값.
                     // 최대화 모드에는 안 쓴다 — 거기선 창이 높이를 정한다.
-                    hostH: loadEditorHeight(), resizing: false,
+                    hostH: loadEditorHeight(this.heightKey, this.initialHeight), resizing: false,
                     // 업로드 진행 — 몇 개 중 몇 번째, 지금 무엇을 올리는 중인가
                     upTotal: 0, upDone: 0, upName: "", upSize: "", upStart: 0, tickNow: 0,
                     // 파일을 이 에디터 위로 끌고 왔는가 — 테두리로 "여기에 놓으면 본문" 을 말한다
@@ -1396,9 +1405,11 @@ export default {
     },
 
     /** 아래 손잡이를 끌어 본문 높이를 바꾼다(인라인 모드 전용).
-     *  pointer 이벤트 + setPointerCapture 를 쓰는 이유: 마우스가 에디터 밖으로 나가도 끌림이
-     *  유지된다. mousemove 를 document 에 걸면 iframe·다른 요소 위에서 놓칠 수 있다. */
-    startResize(e) {
+     *  pointer 이벤트를 window에 걸어 손잡이 밖으로 나가도 끌림을 유지한다. */
+    startResize(e) { this.startResizeFrom(e, 1); },
+    /** 새 댓글 도크의 상단 경계용. 위로 끌수록 본문이 커진다. */
+    startResizeFromTop(e) { this.startResizeFrom(e, -1); },
+    startResizeFrom(e, direction) {
       if (this.maximized) return;
       const host = this.$refs.ed;
       if (!host) return;
@@ -1407,14 +1418,15 @@ export default {
       const startY = e.clientY;
       const startH = host.getBoundingClientRect().height;
       const move = (ev) => {
-        const h = Math.max(H_MIN, Math.min(H_MAX, Math.round(startH + (ev.clientY - startY))));
+        const delta = direction * (ev.clientY - startY);
+        const h = Math.max(H_MIN, Math.min(H_MAX, Math.round(startH + delta)));
         this.hostH = h;
       };
       const up = () => {
         this.resizing = false;
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
-        if (this.hostH) saveEditorHeight(this.hostH);
+        if (this.hostH) saveEditorHeight(this.heightKey, this.hostH);
         // ★ 드래그가 끝나면 브라우저가 click 을 한 번 더 쏜다. 그 click 이 바깥으로 올라가면
         //   오버레이의 '바깥 클릭 = 닫기' 에 걸려 **다이얼로그가 그냥 꺼진다**(실제로 겪었다).
         //   딱 한 번만 삼킨다 — 계속 막으면 다음 클릭까지 먹는다.
@@ -1426,8 +1438,8 @@ export default {
     },
     /** 손잡이를 더블클릭하면 기본 높이로 되돌린다 — 잘못 늘렸을 때 되돌릴 길이 있어야 한다. */
     resetHeight() {
-      this.hostH = null;
-      try { localStorage.removeItem(H_KEY); } catch (e) { /* noop */ }
+      this.hostH = validEditorHeight(this.initialHeight);
+      try { localStorage.removeItem(this.heightKey); } catch (e) { /* noop */ }
     },
     inCodeBlock() { this.tick; return !!(this._ed && this._ed.isActive("codeBlock")); },
     codeLang() { this.tick; return (this._ed && this._ed.getAttributes("codeBlock").language) || ""; },
