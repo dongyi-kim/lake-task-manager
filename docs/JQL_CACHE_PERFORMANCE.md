@@ -199,9 +199,9 @@ Parent만 `issueL` projection으로 조립하고, 동료 SubTask와 Epic label�
 ## 실제 UI 여정 — JQL leaf 완료순 스트리밍
 
 base 모델 하나를 기다리던 경계도 제거했다. 세 상태 영역은 요청 직후 먼저 그려지고, 정규화된 OR
-leaf마다 완료된 티켓 목록을 NDJSON으로 즉시 전달한다. 브라우저는 매 chunk마다 기존 결과에 append한
-뒤 issue key로 중복 제거하고, 마감/우선순위/키로 다시 정렬하며 상단 통계를 재계산한다. 전체 leaf가
-끝난 다음에만 Parent별 SubTask 보강을 시작한다.
+leaf마다 완료된 티켓 목록을 NDJSON으로 즉시 전달한다. 최초 구현은 브라우저가 매 chunk를 append한
+뒤 issue key 중복 제거·정렬·통계 재계산을 맡았다. 아래의 정본 스냅샷 개선에서는 이 책임을 서버로
+옮겼다. 전체 leaf가 끝난 다음에만 Parent별 SubTask 보강을 시작하는 경계는 유지한다.
 
 800ms 고의 지연에서 캐시를 비운 `key = DL-9008 OR key = DL-9028 OR key = DL-9030` 스트림의 실제
 응답 시각은 다음과 같았다.
@@ -233,6 +233,42 @@ Epic 이름은 첫 참조 leaf 직후 별도 저우선순위 배치로 조회한
 수집을 막지 않으면서 재방문 시 티켓 번호 placeholder 대신 이름을 바로 재사용한다. Parent 카드 아래의
 회색 `Parent Task는 준비됨` placeholder는 제거하고 기존 SubTask 하단바의 작은 spinner만 유지했다.
 
+## 실제 UI 여정 — 서버 정본 Task 스냅샷 (#30)
+
+`origin/main`(`ad536dd`)과 `improvement/task-stream-snapshots`를 별도 worktree에서 실행했다. 매 실행은
+새 `LAKE_CACHE_DIR`을 사용했고, 브라우저의 Task 화면에서 `Workbench / 할당 모두 / 진행 모두 /
+완료 1개월`을 동일하게 선택했다. 첫 카드, 세 상태축 leaf 완료, 모든 Parent SubTask 보강 완료를 각각
+관찰했다. 수치는 동일 mock world의 cold 단일 실측이며 단위는 ms다.
+
+| 고의 지연 | 구간 | baseline | candidate | 변화 |
+|---:|---|---:|---:|---:|
+| 0 | 첫 카드 | 465 | 473 | +1.7% |
+| 0 | 상태축 완료 | 4659 | 3014 | -35.3% |
+| 0 | SubTask 보강 완료 | 5112 | 3882 | -24.1% |
+| 250 | 첫 카드 | 3241 | 1836 | -43.4% |
+| 250 | 상태축 완료 | 14279 | 11814 | -17.3% |
+| 250 | SubTask 보강 완료 | 15948 | 13285 | -16.7% |
+| 800 | 첫 카드 | 10938 | 6945 | -36.5% |
+| 800 | 상태축 완료 | 43717 | 35713 | -18.3% |
+| 800 | SubTask 보강 완료 | 48413 | 40442 | -16.5% |
+
+모든 실행의 최종 상태축은 `할당 32 / 진행 32 / 최근 완료 31`, 화면 key 목록도 동일했다. 800ms
+candidate를 같은 서버 캐시에서 새로고침한 warm 실행은 `첫 카드 200ms / 상태축 506ms / SubTask
+978ms`였다. `module:TEST` warm 스트림은 leaf별 모델 29개·445KB 대신 캐시가 준비된 subquery를
+묶어 정본 7개·144KB로 내려 payload를 67.8% 줄였다.
+
+브라우저는 이제 JQL leaf나 Parent 그룹을 병합하지 않는다. 서버가 완료된 leaf 원본을 계속 누적해
+issue key를 한 번만 소유시키고, 정렬·통계까지 계산한 `task-snapshot.v1` 전체 모델을 request token과
+단조 sequence로 발행한다. Parent 보강도 서버 sync model에 반영한 다음 새 정본을 반환하므로, deferred
+base에서 잠시 단독 그룹으로 보였던 SubTask가 Parent에도 중복되는 경우까지 서버에서 제거한다.
+
+800ms에서 `Workbench → Runtime` 전환 및 담당자·보고자·모듈·세 기간 필터 연속 변경을 실제로 수행했다.
+선택 직후 이전 필터 카드는 사라지고 새 상태축이 먼저 나타났으며, 중단 전에 완료된 옛 leaf는 서버
+cache에 남았다. 늦게 도착한 이전 token/sequence는 현재 모델을 덮지 않았고 최종 선택 결과만 남았다.
+Workload와 WBS를 순회한 뒤 Task로 돌아와도 겹치는 JQL leaf와 `issueL` 캐시가 재사용됐다. permission
+leaf는 조용히 제외하고 auth/기타 실패는 성공 카드가 계속 보이는 상태에서 종류별 토스트 한 번으로
+알리는 계약을 회귀 테스트로 고정했다.
+
 ## 정확성 gate
 
 - baseline/candidate 검색 비교 480건: key·순서 일치, 불일치 0
@@ -242,5 +278,5 @@ Epic 이름은 첫 참조 leaf 직후 별도 저우선순위 배치로 조회한
 - 정상 warm JQL: upstream 0회
 - snapshot cursor: mutation 전 snapshot은 같은 generation으로 중복·누락 없이 계속 읽힘
 - full issue → light 재사용 허용, light → full 재사용 금지
-- leaf 스트리밍·부분 실패·Epic 장기 캐시를 포함한 focused regression 513개 통과.
-- 현재 변경의 전체 offline suite 3309 passed, 2 skipped. GitHub Actions에서도 같은 계약을 판정한다.
+- leaf 스트리밍·부분 실패·Epic 장기 캐시를 포함한 focused regression 540개 통과.
+- 현재 변경의 전체 offline suite 3315 passed, 2 skipped. GitHub Actions에서도 같은 계약을 판정한다.

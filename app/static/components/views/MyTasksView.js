@@ -397,127 +397,6 @@ export default {
         groups: [], epics: [], counts: this._groupCounts([]), streamComplete: false,
       };
     },
-    _mergeRows(left, right) {
-      const byKey = new Map();
-      for (const row of (left || [])) if (row && row.key) byKey.set(row.key, row);
-      for (const row of (right || [])) if (row && row.key) byKey.set(row.key, row);
-      return Array.from(byKey.values());
-    },
-    _sortTaskRows(rows) {
-      return (rows || []).slice().sort((a, b) => {
-        const ad = a.dueDays === null || a.dueDays === undefined ? NO_DUE : a.dueDays;
-        const bd = b.dueDays === null || b.dueDays === undefined ? NO_DUE : b.dueDays;
-        return ad - bd || (a.priRank ?? 2) - (b.priRank ?? 2)
-          || String(a.key).localeCompare(String(b.key));
-      });
-    },
-    _refreshTaskGroup(group) {
-      const merged = Object.assign({}, group);
-      merged.atoms = this._sortTaskRows(merged.atoms);
-      merged.others = this._sortTaskRows(merged.others)
-        .filter((row) => !merged.atoms.some((atom) => atom.key === row.key));
-      const children = this._mergeRows(merged.atoms, merged.others)
-        .filter((row) => row.key !== merged.key);
-      merged.kidsTotal = Math.max(merged.kidsTotal || 0, children.length);
-      merged.kidsDone = children.filter((row) => row.statusCategory === "done").length;
-      merged.othersDone = merged.others.filter((row) => row.statusCategory === "done").length;
-      const due = merged.atoms.map((row) => row.dueDays)
-        .filter((value) => value !== null && value !== undefined);
-      merged.urgency = due.length ? Math.min(...due) : null;
-      merged.priRank = merged.atoms.length
-        ? Math.min(...merged.atoms.map((row) => row.priRank ?? 2)) : (merged.priRank ?? 2);
-      return merged;
-    },
-    _mergeTaskGroup(previous, incoming) {
-      if (!previous) return Object.assign({}, incoming, {
-        atoms: (incoming.atoms || []).slice(), others: (incoming.others || []).slice(),
-      });
-      const oldComplete = previous.hasSubs && previous.childrenLoaded && !previous.childrenPending;
-      const newComplete = incoming.hasSubs && incoming.childrenLoaded && !incoming.childrenPending;
-      const complete = newComplete ? incoming : (oldComplete ? previous : null);
-      const merged = Object.assign({}, previous, incoming);
-      if (complete) {
-        merged.atoms = (complete.atoms || []).slice();
-        merged.others = (complete.others || []).slice();
-        merged.childrenPending = false; merged.childrenLoaded = true;
-      } else {
-        merged.atoms = this._mergeRows(previous.atoms, incoming.atoms);
-        merged.others = this._mergeRows(previous.others, incoming.others)
-          .filter((row) => !merged.atoms.some((atom) => atom.key === row.key));
-        merged.childrenPending = !!(previous.childrenPending || incoming.childrenPending);
-        merged.childrenLoaded = !merged.childrenPending;
-      }
-      merged.hasSubs = !!(previous.hasSubs || incoming.hasSubs);
-      merged.standalone = !merged.hasSubs;
-      merged.kidsTotal = Math.max(previous.kidsTotal || 0, incoming.kidsTotal || 0,
-                                  merged.atoms.length + merged.others.length);
-      return this._refreshTaskGroup(merged);
-    },
-    _normalizeStreamGroups(groups) {
-      const byGroup = new Map((groups || []).map((group) => [group.key, group]));
-      const mineByKey = new Map();
-      for (const group of (groups || [])) for (const atom of (group.atoms || [])) {
-        if (atom && atom.key) mineByKey.set(atom.key, atom);
-      }
-      let rows = (groups || []).map((group) => Object.assign({}, group, {
-        atoms: (group.atoms || []).filter((atom) =>
-          !atom.parentKey || atom.parentKey === group.key || !byGroup.has(atom.parentKey)),
-        others: (group.others || []).slice(),
-      }));
-      // A partial leaf may know that a ticket is mine before its parent metadata is complete.
-      // Once a parent group also contains that key as related, promote the known mine row into the
-      // parent rather than rendering a related child plus a standalone mine card.
-      rows = rows.map((group) => {
-        if (!group.hasSubs) return group;
-        const promoted = (group.others || []).filter((row) => mineByKey.has(row.key));
-        if (!promoted.length) return group;
-        const promoteKeys = new Set(promoted.map((row) => row.key));
-        return Object.assign({}, group, {
-          atoms: this._mergeRows(group.atoms, promoted.map((row) => mineByKey.get(row.key))),
-          others: group.others.filter((row) => !promoteKeys.has(row.key)),
-        });
-      });
-      // Parent 그룹이 standalone보다 먼저 issue key를 소유한다. Jira가 SubTask flag를 누락해도
-      // 같은 티켓이 두 카드로 늘어나지 않는다.
-      const claimed = new Set();
-      for (const group of rows.slice().sort((a, b) => Number(!!b.hasSubs) - Number(!!a.hasSubs))) {
-        group.atoms = group.atoms.filter((atom) => {
-          if (claimed.has(atom.key)) return false;
-          claimed.add(atom.key); return true;
-        });
-        group.others = group.others.filter((atom) => {
-          if (claimed.has(atom.key)) return false;
-          claimed.add(atom.key); return true;
-        });
-      }
-      rows = rows.filter((group) => group.hasSubs || group.atoms.length || group.others.length)
-        .map((group) => this._refreshTaskGroup(group));
-      return rows.sort((a, b) => {
-        const ad = a.urgency === null || a.urgency === undefined ? NO_DUE : a.urgency;
-        const bd = b.urgency === null || b.urgency === undefined ? NO_DUE : b.urgency;
-        return ad - bd || (a.priRank ?? 2) - (b.priRank ?? 2)
-          || String(a.key).localeCompare(String(b.key));
-      });
-    },
-    /** A completed leaf is appended immediately; issue identity, order and statistics are rebuilt
-     *  after every append so arrival order never leaks into the visible Task order. */
-    _mergeStreamModel(previous, incoming) {
-      const base = previous || this._emptyTaskModel();
-      const byKey = new Map((base.groups || []).map((group) => [group.key, group]));
-      for (const group of (incoming && incoming.groups) || []) {
-        byKey.set(group.key, this._mergeTaskGroup(byKey.get(group.key), group));
-      }
-      const groups = this._normalizeStreamGroups(Array.from(byKey.values()));
-      const epicMap = new Map((base.epics || []).map((epic) => [epic.key, epic]));
-      for (const epic of (incoming && incoming.epics) || []) {
-        const old = epicMap.get(epic.key);
-        if (!old || old.pending || !epic.pending) epicMap.set(epic.key, epic);
-      }
-      return Object.assign({}, base, incoming || {}, {
-        groups, epics: Array.from(epicMap.values()), counts: this._groupCounts(groups),
-        streamComplete: false,
-      });
-    },
     _cacheModel(cache, key, model) {
       cache[key] = model;
       const keys = Object.keys(cache);
@@ -582,13 +461,18 @@ export default {
         if (pending.size) this._queueEpicMetadata({ epics: Array.from(pending).map((key) => ({ key })) }, cache);
       }
     },
-    /** The axes exist before the first upstream result.  Every leaf then appends independently. */
+    /** The axes exist before the first upstream result.  The server owns cumulative
+     *  append/dedup/sort/statistics; this client only accepts a newer authoritative snapshot. */
     async load(opts) {
       const key = this.apiScope + "|" + this.openFilter + "|" + this.progFilter + "|" + this.doneFilter;
       const cache = this._mcache || (this._mcache = {});
       if (this._streamAbort) this._streamAbort.abort();
       const controller = this._streamAbort = new AbortController();
       const seq = this._loadSeq = (this._loadSeq || 0) + 1;
+      const requestToken = (window.crypto && window.crypto.randomUUID)
+        ? window.crypto.randomUUID() : Date.now().toString(36) + "-" + seq;
+      this._activeRequestToken = requestToken;
+      let lastSequence = -1;
       const cached = cache[key];
       // 새 필터는 이전 필터 카드를 남기지 않는다. 같은 필터의 완료/부분 캐시만 즉시 재사용한다.
       this.model = cached || this._emptyTaskModel();
@@ -605,38 +489,38 @@ export default {
       if (Object.keys(this.excluded).length) this.excluded = {};   // 실 로딩이면 클라 이탈표시 초기화(목록이 새로 정확)
       try {
         await api.myTasksStream({ scope: this.apiScope, openFilter: this.openFilter,
-          progFilter: this.progFilter, doneFilter: this.doneFilter }, (event) => {
-          if (event.type === "planned") {
-            if (seq === this._loadSeq) this.streamProgress = {
-              done: event.leafDone || 0, total: event.leafTotal || 0,
-            };
-            return;
-          }
-          if (event.type === "chunk") {
-            const next = this._mergeStreamModel(cache[key] || this._emptyTaskModel(), event.model);
-            this._cacheModel(cache, key, next);       // 화면이 바뀐 뒤 도착해도 이 필터 캐시에 남긴다
-            if (seq !== this._loadSeq) {
-              this._queueEpicMetadata(next, cache);   // 지난 필터도 완료된 Epic 메타는 캐시에 남긴다
-              return;
-            }
-            this.model = next;
-            this._queueEpicMetadata(next, cache);     // 첫 참조 즉시 별도 저우선순위 배치로 이름을 채운다
-            this.streamProgress = { done: event.leafDone || 0, total: event.leafTotal || 0 };
+          progFilter: this.progFilter, doneFilter: this.doneFilter, requestToken }, (event) => {
+          if (event.type !== "snapshot" || event.contract !== "task-snapshot.v1"
+              || event.requestToken !== requestToken) return;
+          const eventSequence = Number(event.sequence);
+          if (!Number.isInteger(eventSequence) || eventSequence <= lastSequence) return;
+          lastSequence = eventSequence;
+
+          const progress = event.progress || {};
+          const active = seq === this._loadSeq && this._activeRequestToken === requestToken;
+          if (active) this.streamProgress = {
+            done: progress.completed || 0, total: progress.total || 0,
+          };
+
+          const completedLeaves = (event.completedLeaves && event.completedLeaves.length)
+            ? event.completedLeaves : (event.completedLeaf ? [event.completedLeaf] : []);
+          if (active && completedLeaves.length) {
             const axes = Object.assign({}, this.streamAxes);
-            if (event.axis && axes[event.axis]) axes[event.axis] = {
-              state: "loading", chunks: axes[event.axis].chunks + 1,
-            };
+            for (const completed of completedLeaves) {
+              if (completed.status !== "success" || !completed.axis || !axes[completed.axis]) continue;
+              axes[completed.axis] = {
+                state: "loading", chunks: axes[completed.axis].chunks + 1,
+              };
+            }
             this.streamAxes = axes;
-            return;
           }
-          if (event.type === "leaf-error") {
-            if (seq !== this._loadSeq) return;
-            this.streamProgress = { done: event.leafDone || 0, total: event.leafTotal || 0 };
-            const kind = (event.error && event.error.kind) || "other";
-            if (kind === "permission") return;       // 볼 권한 없는 leaf는 Jira의 정상적인 부분 결과
+
+          if (active) for (const error of (event.partialErrors || [])) {
+            const kind = (error && error.kind) || "other";
+            if (kind === "permission") continue;     // Jira 권한 제외는 정상 best-effort 결과
             const notices = this._streamErrorNotices || (this._streamErrorNotices = new Set());
-            const noticeKey = seq + ":" + kind;
-            if (notices.has(noticeKey)) return;
+            const noticeKey = requestToken + ":" + kind;
+            if (notices.has(noticeKey)) continue;
             notices.add(noticeKey);
             if (kind === "auth") window.dispatchEvent(new CustomEvent("need-login"));
             pushToast({
@@ -645,26 +529,24 @@ export default {
                                      : "일부 Task를 불러오지 못했습니다",
               message: "불러온 티켓은 계속 표시합니다.", timeout: 7000,
             });
-            return;
           }
-          if (event.type === "complete") {
-            const finalModel = Object.assign({}, event.model || this._emptyTaskModel(), {
-              streamComplete: true,
-            });
-            this._cacheModel(cache, key, finalModel);
-            if (seq !== this._loadSeq) {
-              this._queueEpicMetadata(finalModel, cache);
-              return;
-            }
-            this.model = finalModel;
-            this._queueEpicMetadata(finalModel, cache);
-            this.streamProgress = { done: event.leafDone || 0, total: event.leafTotal || 0 };
+
+          // Planning snapshot(replace=false)은 warm 같은-filter 카드를 비우지 않는다. 이후
+          // 모델은 서버가 정렬·통계까지 끝낸 정본이므로 클라이언트 병합 없이 원자 교체한다.
+          if (event.replace !== false && event.model) {
+            const next = Object.assign({}, event.model, { streamComplete: !!event.done });
+            this._cacheModel(cache, key, next);
+            this._queueEpicMetadata(next, cache);
+            if (active) this.model = next;
+          }
+
+          if (active && event.done) {
             this.streamAxes = {
               todo: { state: "done", chunks: this.axisChunks("todo") },
               inprogress: { state: "done", chunks: this.axisChunks("inprogress") },
               done: { state: "done", chunks: this.axisChunks("done") },
             };
-            this._hydrateModel(finalModel, seq, key, cache);
+            this._hydrateModel(cache[key], seq, key, cache);
           }
         }, controller.signal);
       }
@@ -675,34 +557,6 @@ export default {
       finally {
         if (seq === this._loadSeq && this._streamAbort === controller) this._streamAbort = null;
       }
-    },
-    /** 완료된 후속 결과는 필터가 이미 바뀌었어도 그 필터의 SWR 캐시에 합친다.
-     *  단 현재 화면은 load sequence가 같은 경우에만 바꾼다. */
-    _mergeHydration(cache, cacheKey, syncId, patch) {
-      const previous = cache[cacheKey];
-      if (!previous || previous.syncId !== syncId) return;
-      let next = previous;
-      if (patch.group) {
-        const claimed = new Set(this._mergeRows(patch.group.atoms, patch.group.others)
-          .map((row) => row.key));
-        const groups = this._normalizeStreamGroups((previous.groups || []).map((group) => {
-          if (group.key === patch.group.key) return patch.group;
-          if (!claimed.size) return group;
-          // Parent가 소유한다고 확인된 모든 child(atom/other)는 standalone/다른 임시 그룹에서
-          // 제거한다. leaf 도착 시 parent 정보가 덜 온 row도 hydration 뒤에는 한 장만 남는다.
-          return Object.assign({}, group, {
-            atoms: (group.atoms || []).filter((atom) => !claimed.has(atom.key)),
-            others: (group.others || []).filter((atom) => !claimed.has(atom.key)),
-          });
-        }));
-        next = Object.assign({}, previous, {
-          groups, counts: this._groupCounts(groups),
-        });
-      } else if (patch.epics) {
-        next = Object.assign({}, previous, { epics: patch.epics, epicsPending: false });
-      }
-      cache[cacheKey] = next;
-      if (this._loadSeq === patch.seq && this.model && this.model.syncId === syncId) this.model = next;
     },
     _groupCounts(groups) {
       const seen = new Set(), atoms = [];
@@ -725,6 +579,7 @@ export default {
       const jobs = (model.groups || []).filter((group) => group.childrenPending)
         .map((group) => ({ type: "group", key: group.key }));
       let cursor = 0;
+      let snapshotSequence = Number(model.snapshotSequence) || 0;
       // 브라우저 요청은 둘만 병렬화한다. 서버에서는 background priority라 새 퀵필터 JQL이
       // 이 작업들을 앞지르고, 이미 시작된 옛 필터 결과만 해당 필터 캐시에 안전하게 남는다.
       const worker = async () => {
@@ -735,10 +590,14 @@ export default {
             const result = job.type === "group"
               ? await api.myTasksGroup(syncId, job.key)
               : await api.myTasksEpics(syncId);
-            // await 중 필터가 바뀌어도 완료된 값은 버리지 않는다. 현재 UI 반영만 seq가 막는다.
-            this._mergeHydration(cache, cacheKey, syncId, {
-              seq, group: result && result.group, epics: result && result.epics,
-            });
+            if (!result || result.contract !== "task-snapshot.v1" || result.type !== "snapshot"
+                || result.syncId !== syncId || !Number.isInteger(Number(result.sequence))
+                || Number(result.sequence) <= snapshotSequence || !result.model) continue;
+            snapshotSequence = Number(result.sequence);
+            const next = Object.assign({}, result.model, { streamComplete: true });
+            cache[cacheKey] = next;             // 지난 필터도 완료된 서버 정본은 캐시에 남긴다
+            this._queueEpicMetadata(next, cache);
+            if (this._loadSeq === seq && this.model && this.model.syncId === syncId) this.model = next;
           } catch (e) {
             // Parent 하나 실패가 다른 카드나 새 필터를 막지 않는다. 다음 실제 load에서 재시도한다.
           }

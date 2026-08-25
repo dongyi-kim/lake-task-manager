@@ -994,6 +994,10 @@ class JiraClient:
         projection = self._projection_signature(execution_fields, light)
         items = tuple(enumerate(zip(compiled.leaves, compiled.leaf_fields)))
         combined = {}
+        coalesce_cached = bool(items) and all(
+            self._jql_leaf_cache_ready(
+                leaf, execution_fields, light, generation, projection)
+            for _index, (leaf, _predicate_fields) in items)
 
         def fetch(item):
             index, (leaf, predicate_fields) = item
@@ -1014,7 +1018,8 @@ class JiraClient:
                             "leaf": fallback_leaf, "leafIndex": fallback_index,
                             "leafTotal": len(items), "issues": [],
                             "combined": sort_issues(combined.values(), compiled.order),
-                            "fallback": False, "error": failure(exc),
+                            "fallback": False, "coalesceCached": coalesce_cached,
+                            "error": failure(exc),
                         }
                         continue
                     for issue in rows:
@@ -1025,7 +1030,7 @@ class JiraClient:
                         "leaf": leaf, "leafIndex": index, "leafTotal": len(items),
                         "issues": rows,
                         "combined": sort_issues(combined.values(), compiled.order),
-                        "fallback": False,
+                        "fallback": False, "coalesceCached": coalesce_cached,
                     }
         else:
             for item in items:
@@ -1037,7 +1042,8 @@ class JiraClient:
                         "leaf": fallback_leaf, "leafIndex": fallback_index,
                         "leafTotal": len(items), "issues": [],
                         "combined": sort_issues(combined.values(), compiled.order),
-                        "fallback": False, "error": failure(exc),
+                        "fallback": False, "coalesceCached": coalesce_cached,
+                        "error": failure(exc),
                     }
                     continue
                 for issue in rows:
@@ -1048,7 +1054,7 @@ class JiraClient:
                     "leaf": leaf, "leafIndex": index, "leafTotal": len(items),
                     "issues": rows,
                     "combined": sort_issues(combined.values(), compiled.order),
-                    "fallback": False,
+                    "fallback": False, "coalesceCached": coalesce_cached,
                 }
 
     def _jql_epoch_namespace(self):
@@ -1406,6 +1412,37 @@ class JiraClient:
                 produce)[0]
         return self._hydrate_jql_leaf_rows(
             issue_keys, fields, light, generation, projection)
+
+    def _jql_leaf_cache_ready(self, leaf, fields, light, generation, projection):
+        """Whether membership and every projected row can be read without upstream work.
+
+        Task streaming uses this only as a conservative batching hint.  A false negative merely
+        emits more progressive snapshots; a false positive would make a supposedly warm batch
+        wait on Jira, so every row must be proven available in either its exact projection cache
+        or a compatible shared issue cache.
+        """
+        _leaf_generation, _digest, key = self._jql_leaf_key(leaf)
+        issue_keys = self.cache.get(key)
+        if not isinstance(issue_keys, list):
+            return False
+        if not issue_keys:
+            return True
+        row_keys = [self._jql_row_key(generation, projection, issue_key)
+                    for issue_key in issue_keys]
+        projected = self.cache.get_many(row_keys)
+        missing = [issue_key for issue_key, row_key in zip(issue_keys, row_keys)
+                   if not isinstance(projected.get(row_key), dict)]
+        if not missing:
+            return True
+        if not self._projection_covers_issue_cache(fields, light):
+            return False
+        full = self.cache.get_many(f"issue:{self.env}:{issue_key}" for issue_key in missing)
+        light_rows = self.cache.get_many(
+            f"issueL:{self.env}:{issue_key}" for issue_key in missing) if light else {}
+        return all(
+            isinstance(full.get(f"issue:{self.env}:{issue_key}"), dict)
+            or (light and isinstance(light_rows.get(f"issueL:{self.env}:{issue_key}"), dict))
+            for issue_key in missing)
 
     @staticmethod
     def _combine_jql_rows(rows_by_leaf, order):
