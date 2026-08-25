@@ -28,7 +28,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 DESCRIPTION_TICKET = "DL-9001"
 COMMENT_TICKET = "DL-9007"
-EDITOR_LATENCY_MS = int(os.environ.get("LTM_EDITOR_E2E_LATENCY_MS", "800"))
 PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
@@ -79,9 +78,12 @@ def _wait_http(url: str, proc: subprocess.Popen, timeout: float = 30) -> None:
 
 
 @pytest.fixture()
-def editor_browser(tmp_path):
+def editor_browser(request, tmp_path):
     sync_playwright = pytest.importorskip(
         "playwright.sync_api", reason="playwright 미설치 — 브라우저 UI 개발 테스트")
+    # 대부분의 에디터 회귀는 지연과 무관하므로 기본 0ms. 응답 역전·검색 중 피드백처럼
+    # 시간창 자체가 검증 대상인 테스트만 indirect parametrization으로 지연을 명시한다.
+    latency_ms = int(getattr(request, "param", 0))
     port = _free_port()
     run_dir = tmp_path / "editor-roundtrip-ui"
     run_dir.mkdir()
@@ -91,8 +93,7 @@ def editor_browser(tmp_path):
     env.update({
         "JIRA_ENV": "mock",
         "LAKE_NO_WINDOW": "1",
-        # 검색 중 stale 추천이 사라지고 명시적 loading row가 뜨는 시간창을 만든다.
-        "LAKE_MOCK_LATENCY_MS": str(EDITOR_LATENCY_MS),
+        "LAKE_MOCK_LATENCY_MS": str(latency_ms),
         "CACHE_DB_PATH": str(run_dir / "cache.sqlite3"),
     })
     log_path = run_dir / "server.log"
@@ -326,12 +327,10 @@ def _assert_mention_popup_lifecycle(page, editor) -> None:
     page.keyboard.press("Control+A")
     page.keyboard.press("Backspace")
     editor.press_sequentially("@강", delay=180)
-    if EDITOR_LATENCY_MS:
-        page.get_by_text("사용자 검색 중…", exact=True).wait_for(state="visible", timeout=3_000)
     popup = page.locator(".mention-popup")
-    assert "정한울" not in popup.inner_text(), "stale recent user remained during search"
     candidate = popup.locator(".mn-item", has_text="강수아")
     candidate.wait_for(state="visible", timeout=15_000)
+    assert "정한울" not in popup.inner_text(), "stale recent user remained in final results"
     page.keyboard.press("Escape")
     popup.wait_for(state="detached", timeout=3_000)
     assert page.get_by_text("사용자 없음", exact=True).count() == 0
@@ -439,8 +438,8 @@ def test_existing_editor_regression_fixtures_render_in_browser(editor_browser):
         assert not errors, f"{key} browser page errors: {errors}"
 
 
-def test_comment_composer_uses_compact_scoped_height_and_enriches_context_name(editor_browser):
-    """새 댓글 높이는 다른 에디터 저장값과 분리되고, 기존 멘션 검색으로 full 이름을 보강한다."""
+def test_comment_composer_uses_compact_scoped_height(editor_browser):
+    """지연과 무관한 높이·폴딩 동작은 기본 0ms fixture에서 검증한다."""
     page, base, errors, _upload_path = editor_browser
     page.add_init_script(
         "localStorage.setItem('cmtEditorH', '700'); "
@@ -456,16 +455,6 @@ def test_comment_composer_uses_compact_scoped_height_and_enriches_context_name(e
     initial = host.evaluate("el => el.getBoundingClientRect().height")
     assert 175 <= initial <= 185, f"compact comment height expected 180px, got {initial}"
     assert page.evaluate("localStorage.getItem('cmtEditorH')") == "700"
-
-    # 이 티켓의 담당자는 로컬 후보에서 짧은 이름만 가진다. 같은 검색 응답에 이미 포함된
-    # displayName으로 보강하고 별도 사용자 상세 조회 없이 팝업에는 회사명까지 보여야 한다.
-    editor.press_sequentially("@UI픽스처02", delay=120)
-    if EDITOR_LATENCY_MS:
-        page.get_by_text("사용자 검색 중…", exact=True).wait_for(state="visible", timeout=3_000)
-    candidate = page.locator(".mention-popup .mn-item", has_text="UI픽스처02")
-    candidate.wait_for(state="visible", timeout=15_000)
-    assert candidate.locator(".mn-nm").inner_text() == "UI픽스처02 TEST"
-    page.keyboard.press("Escape")
 
     editor.click()
     page.keyboard.press("Control+A")
@@ -497,4 +486,28 @@ def test_comment_composer_uses_compact_scoped_height_and_enriches_context_name(e
     reset = host.evaluate("el => el.getBoundingClientRect().height")
     assert 175 <= reset <= 185
     assert page.evaluate("localStorage.getItem('cmtEditorComposeH')") is None
+    assert not errors, f"browser page errors: {errors}"
+
+
+@pytest.mark.parametrize("editor_browser", [800], indirect=True)
+def test_comment_mention_search_enriches_context_name_under_delay(editor_browser):
+    """검색 중 피드백과 local→server 이름 보강만 800ms 지연을 주어 검증한다."""
+    page, base, errors, _upload_path = editor_browser
+    _open_ticket(page, base, COMMENT_TICKET)
+    page.get_by_role("button", name="＋ 댓글 달기").click()
+    editor = page.locator(".tkt-compose-editor .ProseMirror")
+    editor.wait_for(state="visible")
+
+    # 이 티켓 담당자는 로컬 후보에서 짧은 이름만 가진다. 검색 중에는 이전 후보를 숨기고,
+    # 기존 검색 응답이 오면 같은 id의 full displayName으로 보강한다(별도 상세 호출 없음).
+    editor.press_sequentially("@UI픽스처02", delay=120)
+    page.get_by_text("사용자 검색 중…", exact=True).wait_for(state="visible", timeout=3_000)
+    popup = page.locator(".mention-popup")
+    assert popup.locator(".mn-item").count() == 0
+    candidate = popup.locator(".mn-item", has_text="UI픽스처02")
+    candidate.wait_for(state="visible", timeout=15_000)
+    assert candidate.locator(".mn-nm").inner_text() == "UI픽스처02 TEST"
+    page.keyboard.press("Escape")
+    popup.wait_for(state="detached", timeout=3_000)
+    assert page.get_by_text("사용자 없음", exact=True).count() == 0
     assert not errors, f"browser page errors: {errors}"
