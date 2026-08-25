@@ -185,6 +185,105 @@ def test_subtask_hydration_writes_light_issue_cache_without_poisoning_full_rows(
         assert client.cache.get(f"issue:{client.env}:{key}") is None
 
 
+def test_direct_child_membership_is_shared_by_tasks_dialog_vit_and_wbs():
+    client = _client()
+    model = build_my_tasks(client, scope="assignee", defer_children=True)
+    expected = ["DL-9021", "DL-9022", "DL-9023", "DL-9024"]
+
+    # MyTasks primes membership from its existing JQL parent row.
+    assert _group(model, "DL-9020")["kidsTotal"] == len(expected)
+    cache_key = client._direct_child_cache_key("DL-9020")
+    assert client.cache.get(cache_key) == expected
+
+    # Ticket dialog and PMO_VIT consume the same membership; only their derived projection differs.
+    dialog_keys = [row["key"] for row in client.ticket_children("DL-9020")]
+    vit_keys = [row["key"] for row in client._vit_tree("DL-9020", "Task")]
+    assert dialog_keys == expected
+    assert vit_keys == expected
+    assert client.cache.get(cache_key) == expected
+
+    # WBS uses the same Epic->Task and Task->SubTask memberships plus issueL detail rows.
+    tree = client.epic_tree("DL-9019")
+    task = next(row for row in tree if row["key"] == "DL-9020")
+    assert [row["key"] for row in task["children"]] == expected
+    assert client.cache.get(cache_key) == expected
+    assert all(client.cache.get(f"issueL:{client.env}:{key}") is not None
+               for key in expected)
+
+
+def test_detail_edit_keeps_membership_but_invalidates_all_derived_child_views(monkeypatch):
+    client = _client()
+    expected = client.direct_child_keys("DL-9020")
+    membership_key = client._direct_child_cache_key("DL-9020")
+    for prefix in ("children", "vit_tree", "epic_tree", "epic_issues"):
+        client.cache.set(f"{prefix}:{client.env}:DL-9020", {"stale": True}, 300)
+    client.cache.set(f"vit_build:{client.env}", {"stale": True}, 300)
+    monkeypatch.setattr(client, "_reprime", lambda *_args, **_kwargs: None)
+
+    client._invalidate_ticket("DL-9021")
+
+    # Status/summary/assignee changes alter child rows, not who the children are.
+    assert client.cache.get(membership_key) == expected
+    for prefix in ("children", "vit_tree", "epic_tree", "epic_issues"):
+        assert client.cache.get(f"{prefix}:{client.env}:DL-9020") is None
+    assert client.cache.get(f"vit_build:{client.env}") is None
+
+
+def test_child_create_and_delete_refresh_shared_membership(monkeypatch):
+    client = _client()
+    before = client.direct_child_keys("DL-9020")
+    monkeypatch.setattr(client, "_reprime", lambda *_args, **_kwargs: None)
+
+    created = client.create_child("DL-9020", "Sub-Task", "[cache] membership mutation")
+    created_key = created["key"]
+    try:
+        after_create = client.direct_child_keys("DL-9020")
+        assert created_key in after_create
+        assert len(after_create) == len(before) + 1
+
+        client.delete_issue(created_key)
+        after_delete = client.direct_child_keys("DL-9020")
+        assert after_delete == before
+    finally:
+        # Keep the shared mock world clean if an assertion before delete fails.
+        try:
+            client.provider.delete(f"/rest/api/2/issue/{created_key}")
+        except Exception:
+            pass
+
+
+def test_epic_field_edit_invalidates_old_and_new_memberships(monkeypatch):
+    client = _client()
+    epic_key = "DL-9019"
+    before = client.direct_child_keys(epic_key, parent_type="Epic")
+    monkeypatch.setattr(client, "_reprime", lambda *_args, **_kwargs: None)
+    created_key = client.create_child(None, "Task", "[cache] epic membership mutation")["key"]
+
+    try:
+        client.update_fields(created_key, {client.s.epic_link_field_id: epic_key})
+        assert created_key in client.direct_child_keys(epic_key, parent_type="Epic")
+
+        client.update_fields(created_key, {client.s.epic_link_field_id: None})
+        assert client.direct_child_keys(epic_key, parent_type="Epic") == before
+    finally:
+        try:
+            client.provider.delete(f"/rest/api/2/issue/{created_key}")
+        except Exception:
+            pass
+
+
+def test_failed_parent_read_does_not_cache_false_empty_membership(monkeypatch):
+    client = _client()
+    partial_parent = {"key": "DL-9020", "fields": {"issuetype": {"name": "Task"}}}
+    monkeypatch.setattr(
+        client, "get_issue_light",
+        lambda _key: (_ for _ in ()).throw(RuntimeError("upstream unavailable")))
+
+    with pytest.raises(RuntimeError, match="upstream unavailable"):
+        client.direct_child_keys("DL-9020", parent_issue=partial_parent)
+    assert client.cache.get(client._direct_child_cache_key("DL-9020")) is None
+
+
 def test_expired_or_invalidated_filter_snapshot_cannot_hydrate():
     client = _client()
     deferred = build_my_tasks(client, scope="assignee", defer_children=True)

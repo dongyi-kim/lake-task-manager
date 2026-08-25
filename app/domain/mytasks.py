@@ -677,10 +677,15 @@ def build_my_tasks(client, user=None, include_done=False, limit=None, scope="ass
         return {"user": {"id": me}, "groups": [], "epics": [], "counts": _counts([])}
 
     # 2) 맥락 채우기 — 부모(내가 Sub 담당인 경우)와 하위(내 Task 의 동료 Sub 포함).
-    #    하위는 JQL('parent in ...')이 아니라 이슈의 subtasks 필드로 모은다.
-    #    구버전 Jira 는 parent JQL 지원이 들쭉날쭉이고, subtasks 는 이미 받아온 필드라 공짜다.
+    #    하위는 JQL('parent in ...')이 아니라 공통 direct-child membership 캐시로 모은다.
+    #    이 화면의 JQL row에 subtasks가 이미 있으므로 상류 호출 없이 캐시를 prime하고,
+    #    티켓 다이어로그·PMO_VIT·WBS가 같은 parent를 열 때 그대로 재사용한다.
     def sub_keys(raw):
-        return [x.get("key") for x in ((raw.get("fields") or {}).get("subtasks") or []) if x.get("key")]
+        try:
+            return client.direct_child_keys(raw.get("key"), parent_issue=raw)
+        except Exception:
+            client.miss_add()
+            return []
 
     need_parents = sorted({n["parentKey"] for n in mine if n["isSub"] and n["parentKey"]})
     # Task 화면은 description/attachment/link를 쓰지 않는다. JQL이 이미 채운 issueL 캐시를
