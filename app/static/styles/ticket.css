@@ -978,8 +978,8 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .badge-edit .be-unlink { margin-right: auto; color: var(--muted); }
 .badge-edit .be-unlink:hover { color: var(--danger); border-color: var(--danger); }
 
-/* @멘션 자동완성 팝업 (body 에 append) */
-.mention-popup { position: fixed; z-index: 100000; min-width: 200px; max-width: 320px; max-height: 240px;
+/* @멘션 자동완성 팝업 — TipTap v3 + Floating UI가 body mount와 위치 추적을 맡는다. */
+.mention-popup { position: absolute; z-index: 100000; min-width: 200px; max-width: 320px; max-height: 240px;
   overflow: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 8px 28px rgba(0,0,0,.22); padding: 4px; font-size: 13px; }
 .mention-popup .mn-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 7px; cursor: pointer; }
@@ -994,6 +994,11 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .mention-popup .mn-nm { color: var(--text); font-weight: 600; }
 .mention-popup .mn-id { color: var(--muted-2); font-size: 11px; margin-left: auto; }
 .mention-popup .mn-empty { padding: 8px 10px; color: var(--muted); }
+.mention-popup .mn-empty.is-loading, .mention-popup .mn-loading { display: flex; align-items: center; gap: 7px; }
+.mention-popup .mn-loading { margin-top: 3px; padding: 6px 8px 4px; border-top: 1px solid var(--border);
+  color: var(--muted); font-size: 11.5px; }
+.mention-popup .mn-empty .spinner, .mention-popup .mn-loading .spinner { width: 12px; height: 12px;
+  border-width: 1.5px; flex: none; }
 
 .cmt-ed-bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
   border-top: 1px solid var(--border); background: var(--panel-2); }

@@ -67,6 +67,17 @@ def test_empty_query_returns_empty():
     assert r["jira"]["items"] == [] and r["confluence"]["items"] == [] and r["bitbucket"]["items"] == []
 
 
+def test_mention_rank_preserves_ticket_and_recent_context_order(monkeypatch):
+    """유사 이름 검색에서도 티켓 관련자와 최근 등장자가 일반 사용자보다 먼저다."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(search, "_ticket_people", lambda client, key: ["reporter", "recent.mention"])
+    monkeypatch.setattr(search, "_manager_people_uids", lambda settings: {"module.person"})
+    rank = search._mention_rank(object(), SimpleNamespace(), "DL-5160")
+
+    assert rank("reporter") < rank("recent.mention") < rank("module.person") < rank("similar.name")
+
+
 def test_endpoint_ok():
     from fastapi.testclient import TestClient
 

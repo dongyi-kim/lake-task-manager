@@ -282,3 +282,10 @@ def test_font_color_wiki_roundtrip():
     w = html_to_wiki('<p><span style="color:#dc2626">빨강</span> <span style="background-color:#fef08a">형광</span></p>')
     assert w == "{color:#dc2626}빨강{color} 형광"
     assert '<span style="color:#dc2626">빨강</span>' in wiki_to_html(w)
+
+
+def test_browser_rgb_font_color_is_normalized_for_jira_wiki():
+    """TipTap getHTML은 선택한 hex 색상을 rgb()로 직렬화해도 매크로가 글자로 새지 않는다."""
+    w = html_to_wiki('<p><span style="color:rgb(220, 38, 38)">빨강</span></p>')
+    assert w == "{color:#dc2626}빨강{color}"
+    assert wiki_to_html(w) == '<p><span style="color:#dc2626">빨강</span></p>'

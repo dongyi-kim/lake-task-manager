@@ -7,12 +7,14 @@
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
 import pytest
 
 STATIC = Path(__file__).resolve().parents[1] / "app" / "static"
+ROOT = STATIC.parents[1]
 ASSETS = sorted(list(STATIC.rglob("*.js")) + list(STATIC.rglob("*.css")))
 
 # 소스에 있어서는 안 되는 제어문자 — 탭·개행·CR 만 허용한다.
@@ -520,6 +522,17 @@ def test_new_comment_composer_hides_without_unmounting_and_shows_text_only_previ
     assert ".tkt-cmt-addbtn.draft" in css and ".tkt-cmt-draft-v" in css
 
 
+def test_editor_root_handles_file_drops_missed_by_prosemirror():
+    """툴바·여백에 놓은 파일도 티켓 첨부로 새지 않고 본문 삽입 경로를 탄다."""
+    editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+
+    drop = editor[editor.index("onDropFiles(e) {"):editor.index("startResize(e)")]
+    assert "e.defaultPrevented" in drop
+    assert "e.preventDefault()" in drop and "e.stopPropagation()" in drop
+    assert "this.insertFiles(e.dataTransfer.files)" in drop
+    assert '@drop="onDropFiles"' in editor
+
+
 def test_agent_wiki_mentions_render_as_person_badges_even_before_name_hydration():
     md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
     assert "MENTION_RE" in md
@@ -549,22 +562,61 @@ def test_editor_and_rendered_mentions_share_stable_avatar_badge_ui():
     assert ".mention-av > img.mention-av-img.on { opacity: 1; }" in css
 
 
-def test_field_edit_and_mentions_share_user_defaults_and_cleanup_popup():
-    """사용자 추천은 한 구현을 쓰며, 닫힌 에디터의 body 팝업과 어긋난 사진이 남지 않는다."""
+def test_field_edit_and_mentions_share_user_defaults_and_managed_popup():
+    """추천은 한 구현을 쓰고 팝업 수명·위치는 최신 TipTap Suggestion이 관리한다."""
     shared = (STATIC / "lib" / "userSuggestions.js").read_text(encoding="utf-8")
     field = (STATIC / "components" / "ui" / "FieldEdit.js").read_text(encoding="utf-8")
     editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
+    popup = (STATIC / "lib" / "suggestionPopup.js").read_text(encoding="utf-8")
+    api = (STATIC / "lib" / "api.js").read_text(encoding="utf-8")
+    package = json.loads((ROOT / "tools" / "tiptap-bundle" / "package.json").read_text(encoding="utf-8"))
+    bundle = (STATIC / "vendor" / "tiptap.bundle.mjs").read_text(encoding="utf-8")
     css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
 
     assert 'const RECENT_KEY = "userSuggestions.recent"' in shared
     assert "createUserTypeahead" in field and "defaultUserSuggestions" in field
-    assert "createMentionUserItems" in editor and "rememberUser(u)" in editor
-    assert "suggestion: mentionSuggestion(ticketKey, host)" in editor
-    assert 'if (k === "Escape") { closePopup(); return true; }' in editor
-    assert "if (this._mentionPopupCleanup) this._mentionPopupCleanup()" in editor
+    assert "createManagedMentionItems" in editor and "rememberUser(user)" in editor
+    assert "initialItems: mentionInitialUsers(localUsers)" in editor
+    assert "debounce: typeaheadDelay()" in editor
+    assert "suggestion: mentionSuggestion(ticketKey, localUsers)" in editor
+    assert "props.mount(element)" in popup and "unmount()" in popup
+    assert 'if (key === "Escape") return false' in popup
+    assert "loading && query && settings.hideItemsWhileLoading ? [] : nextItems" in popup
+    assert "settings.showLoadingWithItems" in popup and 'class="mn-loading"' in popup
+    assert "hideItemsWhileLoading: true" in editor and "showLoadingWithItems: true" in editor
+    assert "사용자 검색 중…" in editor
+    assert "document.body.appendChild(el)" not in editor and "_mentionPopupCleanup" not in editor
+    assert "api.mentionUsers(q, ticketKey, { signal })" in shared
+    assert "serverItems, localItems, recentUsers()" in shared
+    assert "Number(user.contextRank) === 0" in shared
+    assert ':mention-users="mentionUsers"' in dialog
+    assert "mentionUsers: (q, key, opts)" in api
+    assert package["dependencies"]["@tiptap/suggestion"] == "3.30.3"
+    assert "AbortController" in bundle
     assert ".mention-badge .mention-av > img.mention-av-img" in css
     assert "height: 100%; max-width: none" in css and "border: 0; border-radius: inherit" in css
     assert ".ProseMirror-selectednode:not(.mention-badge) img" in css
+
+
+def test_comment_editor_runs_on_one_tiptap_v3_runtime():
+    """에디터는 lock된 v3 패키지를 하나의 로컬 번들로만 로드한다."""
+    loader = (STATIC / "lib" / "tiptap.js").read_text(encoding="utf-8")
+    editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    package = json.loads((ROOT / "tools" / "tiptap-bundle" / "package.json").read_text(encoding="utf-8"))
+    lock = json.loads((ROOT / "tools" / "tiptap-bundle" / "package-lock.json").read_text(encoding="utf-8"))
+    entry = (ROOT / "tools" / "tiptap-bundle" / "entry.mjs").read_text(encoding="utf-8")
+    bundle = STATIC / "vendor" / "tiptap.bundle.mjs"
+
+    tiptap_versions = {version for name, version in package["dependencies"].items() if name.startswith("@tiptap/")}
+    assert tiptap_versions == {"3.30.3"}
+    assert lock["packages"]["node_modules/@tiptap/core"]["version"] == "3.30.3"
+    assert bundle.is_file() and bundle.stat().st_size < 1024 * 1024
+    assert not (STATIC / "vendor" / "esm").exists()
+    assert 'import("/vendor/tiptap.bundle.mjs")' in loader
+    assert "Table, TableRow, TableCell, TableHeader" in entry and "{ TextStyle }" in entry
+    assert 'T.StarterKit.configure({ codeBlock: false, link: false })' in editor
+    assert 'commands.setContent(html, { emitUpdate: false })' in editor
 
 
 def test_field_edit_shows_offline_defaults_immediately_and_pins_none_option():

@@ -45,16 +45,14 @@ metadata only from either an embedded `esm.sh` header or
 license service. Missing, conflicting, invalid, or stale provenance makes the launcher exit 1 after
 writing the complete partial inventory.
 
-The 2026-08-18 repository baseline is intentionally a public-release blocker:
+The editor vendor layout was compacted after the 2026-08-18 baseline:
 
-- 545 files are present: 541 `.mjs`, one `.js`, two `.css`, and the esm entry `manifest.json`.
-- All 541 `.mjs` headers yield 58 exact package/version pairs offline.
-- There is no tracked `package.json`, package-manager lock, reproducible vendor script, or
-  authoritative license/source manifest for this copied graph. A package-manager SBOM therefore
-  cannot reconstruct its provenance from the repository as it stands.
-- The remaining four files lack the supported package identity evidence. Some banners contain
-  useful hints (for example Vue's version/license banner), but a hint is not substituted for an
-  authoritative source record.
+- The recursive esm.sh mirror was replaced by `vendor/tiptap.bundle.mjs`; the browser now requests
+  one editor module instead of hundreds of hashed modules.
+- `tools/tiptap-bundle/package.json`, `package-lock.json`, and `Build-TiptapBundle.ps1` pin the npm
+  inputs and reproduce the esbuild output while keeping install/build artifacts under `.cache/`.
+- The public-release gate still requires authoritative package license/source records and an exact
+  hash record for the generated bundle. A generated bundle is not treated as its own dependency.
 
 Do not copy license values from memory or infer them from package popularity. Populate
 `THIRD_PARTY_ASSETS.json` from the exact source archives/repositories and archive the applicable

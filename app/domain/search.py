@@ -296,18 +296,22 @@ def _manager_people_uids(s):
 
 
 def _mention_rank(client, s, key):
-    """사람 검색 결과 정렬 가중치 함수 → uid 를 받아 0·1·2 를 돌려준다(작을수록 위).
-      0) 이 티켓에 등장한 사람   1) 매니저 또는 등록 인력   2) 그 외.
-    같은 등급 안에서는 호출부가 stable sort 라 기존 Jira 검색 순서가 유지된다."""
-    tset = {str(u).strip().lower() for u in _ticket_people(client, key) if u}
+    """사람 검색 정렬키: 티켓 관련자는 등장 순서까지 보존해 유사 이름보다 위에 둔다.
+
+    ``_ticket_people`` 은 담당/보고 뒤에 최신 댓글 작성자·멘션자를 순서대로 돌려준다. 예전에는
+    이를 set 으로 바꿔 모두 같은 0점만 줬기 때문에 같은 이름 사이에서 Jira 검색 순서로 다시
+    섞였다. rank와 context 내 순번을 함께 반환해 최근 티켓 맥락을 실제 검색 결과에도 유지한다.
+    """
+    ticket_people = [str(u).strip().lower() for u in _ticket_people(client, key) if u]
+    tpos = {uid: index for index, uid in enumerate(ticket_people)}
     mpset = _manager_people_uids(s)
     def rank(uid):
         u = (uid or "").strip().lower()
-        if u in tset:
-            return 0
+        if u in tpos:
+            return (0, tpos[u])
         if u in mpset:
-            return 1
-        return 2
+            return (1, 0)
+        return (2, 0)
     return rank
 
 
@@ -378,7 +382,9 @@ def mention_suggestions(client, s, q, key, limit=8):
         # (Jira 검색 순위로만 자르면 우선순위 사람이 하필 9번째라 잘려 안 보인다.)
         results = search_users(client, s, q, min(max(limit * 4, limit), 40))
         rank = _mention_rank(client, s, key)
-        # stable sort 라 같은 등급 안에선 기존 Jira 검색 순서가 유지된다.
+        # 프론트도 최근 선택 사용자와 합칠 때 티켓 맥락 그룹을 보존할 수 있게 등급을 싣는다.
+        for user in results:
+            user["contextRank"] = rank(user.get("id"))[0]
         results.sort(key=lambda u: rank(u.get("id")))
         return results[:limit]
     # 기본 노출인데 **티켓 맥락이 없으면**(일반 사람검색) 모듈 사람 + 매니저뿐 — config 유래라

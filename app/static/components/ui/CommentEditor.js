@@ -13,7 +13,9 @@ import LinkPicker from "./LinkPicker.js";
 import MarkdownTableDialog from "./MarkdownTableDialog.js";
 import { extOf } from "../../lib/filetype.js";
 import { sigColor, initialOf, typeLabel, TYPE_BG } from "../../lib/colors.js";
-import { createMentionUserItems, rememberUser } from "../../lib/userSuggestions.js";
+import { createManagedMentionItems, mentionInitialUsers, rememberUser } from "../../lib/userSuggestions.js";
+import { typeaheadDelay } from "../../lib/typeahead.js";
+import { createManagedSuggestionRenderer } from "../../lib/suggestionPopup.js";
 import { pushToast } from "../../lib/toast.js";
 import { agentApi } from "../../lib/agentApi.js";
 import { beginBusy } from "../../lib/uibusy.js";
@@ -851,58 +853,27 @@ function slashSuggestion(host) {
         return it.id.startsWith(q) || it.t.toLowerCase().includes(q) || it.k.includes(q);
       });
     },
-    render: () => {
-      let el = null, items = [], sel = 0, command = null;
-      const paint = () => {
-        if (!el) return;
-        if (!items.length) { el.innerHTML = '<div class="mn-empty">해당하는 명령이 없습니다</div>'; return; }
-        let html = "", g = "";
-        items.forEach((it, i) => {
-          if (it.g !== g) { g = it.g; html += `<div class="sl-g">${esc(g)}</div>`; }
-          html += `<div class="sl-item${i === sel ? " sel" : ""}" data-i="${i}">`
-                + `<span class="sl-ic">${esc(it.ic)}</span>`
-                + `<span class="sl-t">${esc(it.t)}</span>`
-                + (it.h ? `<span class="sl-h">${esc(it.h)}</span>` : "")
-                + `<span class="sl-k">/${esc(it.id)}</span></div>`;
+    render: createManagedSuggestionRenderer({
+      className: "mention-popup slash-popup",
+      emptyLabel: "해당하는 명령이 없습니다",
+      loadingLabel: "명령을 찾는 중…",
+      itemSelector: ".sl-item",
+      selectedSelector: ".sl-item.sel",
+      selectOnTab: true,
+      select: (item, command) => command(item),
+      renderItems(items, selected) {
+        let html = "", group = "";
+        items.forEach((item, index) => {
+          if (item.g !== group) { group = item.g; html += `<div class="sl-g">${esc(group)}</div>`; }
+          html += `<div class="sl-item${index === selected ? " sel" : ""}" data-suggestion-index="${index}">`
+                + `<span class="sl-ic">${esc(item.ic)}</span>`
+                + `<span class="sl-t">${esc(item.t)}</span>`
+                + (item.h ? `<span class="sl-h">${esc(item.h)}</span>` : "")
+                + `<span class="sl-k">/${esc(item.id)}</span></div>`;
         });
-        el.innerHTML = html;
-        el.querySelectorAll(".sl-item").forEach((row) => {
-          row.addEventListener("mousedown", (e) => { e.preventDefault(); pick(+row.dataset.i); });
-        });
-        const cur = el.querySelector(".sl-item.sel");
-        if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: "nearest" });
-      };
-      const pick = (i) => { const it = items[i]; if (it && command) command(it); };
-      const place = (rectFn) => {
-        if (!el || !rectFn) return; const r = rectFn(); if (!r) return;
-        // 아래가 모자라면 위로 — 화면 끝에서 목록이 잘리면 고를 수가 없다.
-        const h = el.offsetHeight || 260;
-        const below = window.innerHeight - r.bottom;
-        el.style.left = Math.round(Math.min(r.left, window.innerWidth - 300)) + "px";
-        el.style.top = Math.round(below < h + 12 ? Math.max(8, r.top - h - 4) : r.bottom + 4) + "px";
-      };
-      return {
-        onStart: (p) => {
-          items = p.items || []; sel = 0; command = p.command;
-          el = document.createElement("div"); el.className = "mention-popup slash-popup";
-          document.body.appendChild(el); paint(); place(p.clientRect);
-        },
-        onUpdate: (p) => {
-          items = p.items || []; command = p.command;
-          if (sel >= items.length) sel = 0;
-          paint(); place(p.clientRect);
-        },
-        onKeyDown: (p) => {
-          const k = p.event.key, n = items.length;
-          if (k === "ArrowDown") { sel = n ? (sel + 1) % n : 0; paint(); return true; }
-          if (k === "ArrowUp") { sel = n ? (sel - 1 + n) % n : 0; paint(); return true; }
-          if (k === "Enter" || k === "Tab") { if (n) { pick(sel); return true; } }
-          if (k === "Escape") { return true; }
-          return false;
-        },
-        onExit: () => { if (el) el.remove(); el = null; },
-      };
-    },
+        return html;
+      },
+    }),
   };
 }
 
@@ -915,73 +886,44 @@ function slashExt(T, host) {
   });
 }
 
-function mentionSuggestion(ticketKey, host) {
-  // 검색·기본 추천 정렬은 FieldEdit와 공용이다. TipTap items에는 객체가 들어온다는 점만 여기서 잇는다.
-  // ★ TipTap 은 items 에 **객체**({ query, editor, … })를 넘긴다. 문자열로 받으면
-  //   질의가 "[object Object]" 가 돼 팝업이 늘 비어 보인다.
-  const fetchUsers = createMentionUserItems(ticketKey);
+function mentionSuggestion(ticketKey, localUsers) {
+  const fetchUsers = createManagedMentionItems(ticketKey, localUsers);
   return {
     char: "@",
     items: fetchUsers,
-    render: () => {
-      let el = null, items = [], sel = 0, command = null;
-      const closePopup = () => {
-        if (el) el.remove();
-        el = null; items = []; command = null;
-        if (host && host._mentionPopupCleanup === closePopup) host._mentionPopupCleanup = null;
-      };
-      const paint = () => {
-        if (!el) return;
-        if (!items.length) { el.innerHTML = '<div class="mn-empty">사용자 없음</div>'; return; }
-        el.innerHTML = items.map((u, i) =>
-          `<div class="mn-item${i === sel ? " sel" : ""}" data-i="${i}">`
-          + mnAvatar(u.name, u.id)
-          // 팝업엔 회사까지 붙은 전체 표시명(동명이인 구분). 삽입되는 멘션은 본명만(pick).
-          + `<span class="mn-nm">${esc(u.display || u.name)}</span><span class="mn-id">${esc(u.id)}</span></div>`).join("");
-        el.querySelectorAll(".mn-item").forEach((row) => {
-          row.addEventListener("mousedown", (e) => { e.preventDefault(); pick(+row.dataset.i); });
-        });
-        // 프로필 사진: 로드되면 부드럽게 드러내고, 실패(404/세션)면 지워 이니셜을 유지(인라인 핸들러 없이 — CSP 안전).
-        el.querySelectorAll(".mn-av-img").forEach((img) => {
+    initialItems: mentionInitialUsers(localUsers),
+    debounce: typeaheadDelay(),
+    render: createManagedSuggestionRenderer({
+      className: "mention-popup",
+      emptyLabel: "사용자 없음",
+      loadingLabel: "사용자 검색 중…",
+      hideItemsWhileLoading: true,
+      showLoadingWithItems: true,
+      itemSelector: ".mn-item",
+      selectedSelector: ".mn-item.sel",
+      select(user, command) {
+        rememberUser(user);
+        command({ id: user.id, label: user.name });
+      },
+      renderItems: (items, selected) => items.map((user, index) =>
+        `<div class="mn-item${index === selected ? " sel" : ""}" data-suggestion-index="${index}">`
+        + mnAvatar(user.name, user.id)
+        + `<span class="mn-nm">${esc(user.display || user.name)}</span>`
+        + `<span class="mn-id">${esc(user.id)}</span></div>`).join(""),
+      afterPaint(element) {
+        // 사진이 실패해도 이니셜 원은 그대로 남는다.
+        element.querySelectorAll(".mn-av-img").forEach((img) => {
           img.addEventListener("load", () => img.classList.add("on"));
           img.addEventListener("error", () => img.remove());
         });
-      };
-      const pick = (i) => {
-        const u = items[i];
-        if (u && command) { rememberUser(u); command({ id: u.id, label: u.name }); }
-      };
-      const place = (rectFn) => {
-        if (!el || !rectFn) return; const r = rectFn(); if (!r) return;
-        el.style.left = Math.round(r.left) + "px";
-        el.style.top = Math.round(r.bottom + 4) + "px";
-      };
-      return {
-        onStart: (p) => {
-          if (host && host._mentionPopupCleanup) host._mentionPopupCleanup();
-          items = p.items || []; sel = 0; command = p.command;
-          el = document.createElement("div"); el.className = "mention-popup";
-          if (host) host._mentionPopupCleanup = closePopup;
-          document.body.appendChild(el); paint(); place(p.clientRect);
-        },
-        onUpdate: (p) => { items = p.items || []; command = p.command; if (sel >= items.length) sel = 0; paint(); place(p.clientRect); },
-        onKeyDown: (p) => {
-          const k = p.event.key, n = items.length;
-          if (k === "ArrowDown") { sel = n ? (sel + 1) % n : 0; paint(); return true; }
-          if (k === "ArrowUp") { sel = n ? (sel - 1 + n) % n : 0; paint(); return true; }
-          if (k === "Enter") { if (n) { pick(sel); return true; } }
-          if (k === "Escape") { closePopup(); return true; }
-          return false;
-        },
-        onExit: closePopup,
-      };
-    },
+      },
+    }),
   };
 }
 
 /** TipTap mention의 저장 HTML은 그대로 두고 편집 중 DOM만 공통 badge로 그린다.
  *  노드뷰를 쓰지 않고 DOM을 보강하면 ProseMirror가 낯선 avatar를 즉시 지워 버린다. */
-function mentionExt(T, ticketKey, host) {
+function mentionExt(T, ticketKey, localUsers) {
   return T.Mention.extend({
     addNodeView() {
       return ({ node, HTMLAttributes }) => {
@@ -1011,7 +953,7 @@ function mentionExt(T, ticketKey, host) {
         };
       };
     },
-  }).configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion(ticketKey, host) });
+  }).configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion(ticketKey, localUsers) });
 }
 
 // 끌어서 정한 높이는 **기억한다**. 매번 다시 늘리게 하면 늘리는 의미가 없다 —
@@ -1053,6 +995,8 @@ export default {
     // 예전엔 "내용이 비었으면 새 댓글" 로 봤는데, 설명이 빈 티켓의 본문 편집기가 같은 조건에
     // 걸려 **새 댓글 초안을 본문에 불러왔다**. 목적이 다르면 칸도 달라야 한다.
     kind: { type: String, default: "comment" },   // comment | description | transition
+    // 티켓 다이어로그가 이미 가진 담당/보고/최근 댓글 맥락. 네트워크 지연 중에도 이들이 먼저 뜬다.
+    mentionUsers: { type: Array, default: () => [] },
   },
   emits: ["submitted", "cancel"],
   data() { return { ready: false, loadErr: "", busy: false, err: "", tick: 0, languages: [],
@@ -1092,7 +1036,9 @@ export default {
     this._ed = new T.Editor({
       element: this.$refs.ed,
       extensions: [
-        T.StarterKit.configure({ codeBlock: false }),   // 아래 CodeBlockLowlight 로 교체(구문강조)
+        // v3 StarterKit의 Link는 모든 <a>를 mark로 먼저 소비한다. 이 앱은 Jira/문서 링크를
+        // linkBadge atom으로 편집하므로 끄고, 코드블럭도 아래 Lowlight 구현으로 교체한다.
+        T.StarterKit.configure({ codeBlock: false, link: false }),
         // 코드블럭 — 원래 Jira 와 같은 태그(<pre class="jecodeblock"><code class="language-X">) + lowlight 강조
         codeLineNumbers(T).configure({ lowlight: T.lowlight, HTMLAttributes: { class: "jecodeblock" } }),
         calloutExt(T),
@@ -1101,7 +1047,7 @@ export default {
         fileBadgeExt(T),
         singleLineHeadingExt(T),
         firstBlockEscapeExt(T),
-        mentionExt(T, this.ticketKey, this),
+        mentionExt(T, this.ticketKey, this.mentionUsers),
         T.Table.configure({ resizable: true }), T.TableRow, T.TableHeader, T.TableCell,
         // 정렬 — 문단·제목·표 셀에. 표 셀을 포함해야 마크다운 표의 :-: / --: 정렬이 붙는다.
         T.TextAlign.configure({ types: ["heading", "paragraph", "tableCell", "tableHeader"] }),
@@ -1180,7 +1126,6 @@ export default {
   },
   beforeUnmount() {
     this._dead = true;
-    if (this._mentionPopupCleanup) this._mentionPopupCleanup();  // body 직속 팝업은 에디터보다 먼저 정리
     clearTimeout(this._dt); this._dt = null;       // 제출/이동 뒤 예약 저장이 옛 초안을 되살리지 않게
     if (this._upTick) { clearInterval(this._upTick); this._upTick = null; }   // 업로드 경과 타이머
     try { for (const u of this._pending.keys()) URL.revokeObjectURL(u); } catch (e) { /* noop */ }
@@ -1427,8 +1372,10 @@ export default {
     },
     toggleMax() { this.maximized = !this.maximized; },
 
-    // 드래그 안내 — 실제 삽입은 ProseMirror 의 handleDrop 이 한다. 여기서는 **보이는 것만**
-    // 맡는다(테두리). 두 곳에서 삽입하면 파일이 두 번 들어간다.
+    // 드래그 안내. 본문 위 드롭은 ProseMirror handleDrop 이 먼저 처리한다. 다만 툴바·여백처럼
+    // .cmt-editor 안이지만 ProseMirror 밖인 곳에 놓으면 편집기 handler가 호출되지 않는다.
+    // 루트에서는 defaultPrevented 여부를 보고 **아직 처리되지 않은** 파일만 같은 insertFiles 경로로
+    // 넘긴다. 상위 TicketDialog까지 전파하면 티켓 첨부로도 올라가므로 여기서 멈춘다.
     hasFiles(e) {
       const t = e.dataTransfer && e.dataTransfer.types;
       return !!t && Array.prototype.indexOf.call(t, "Files") >= 0;
@@ -1440,7 +1387,13 @@ export default {
       this.dragOver = true;    // dragenter 를 놓치는 경로(자식 위로 바로 진입)가 있어 여기서도 켠다
     },
     onDragLeave() { this.dragDepth = Math.max(0, this.dragDepth - 1); if (!this.dragDepth) this.dragOver = false; },
-    onDropFiles() { this.dragDepth = 0; this.dragOver = false; },
+    onDropFiles(e) {
+      this.dragDepth = 0; this.dragOver = false;
+      if (!this.hasFiles(e) || e.defaultPrevented) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.insertFiles(e.dataTransfer.files);
+    },
 
     /** 아래 손잡이를 끌어 본문 높이를 바꾼다(인라인 모드 전용).
      *  pointer 이벤트 + setPointerCapture 를 쓰는 이유: 마우스가 에디터 밖으로 나가도 끌림이
@@ -1625,7 +1578,7 @@ export default {
           html = html.split(im.token).join(url);
         } catch (e) { /* noop */ }
       }
-      this._ed.commands.setContent(html, false);
+      this._ed.commands.setContent(html, { emitUpdate: false });
       this.restored = true;
     },
     async discardDraft() {

@@ -286,6 +286,32 @@ export default {
       list.sort((a, b) => (this.cmtSort === "old" ? t(a) - t(b) : t(b) - t(a)));
       return list;
     },
+    /** 에디터가 서버를 기다리지 않고 먼저 보여 줄 티켓 관련자. 최근 댓글/멘션 순서를 보존한다. */
+    mentionUsers() {
+      const out = [], seen = new Set();
+      const add = (id, name) => {
+        id = String(id || "").trim();
+        if (!id || seen.has(id)) return;
+        seen.add(id); out.push({ id, name: name || id, display: name || id, avatar: "/api/avatar/" + encodeURIComponent(id) });
+      };
+      if (this.v) {
+        add(this.v.reporterId, this.v.reporter);
+        add(this.v.assigneeId, this.v.assignee);
+      }
+      for (const comment of this.sortedComments) {
+        add(comment.authorId, comment.author);
+        try {
+          const doc = new DOMParser().parseFromString(comment.html || "", "text/html");
+          doc.querySelectorAll("[data-type='mention'][data-id], .mention[data-id], a.user-hover[href*='ViewProfile.jspa']")
+            .forEach((node) => {
+              let id = node.getAttribute("data-id") || "";
+              if (!id) id = new URL(node.getAttribute("href") || "", location.origin).searchParams.get("name") || "";
+              add(id, String(node.textContent || "").trim().replace(/^@+\s*/, ""));
+            });
+        } catch (e) { /* 정화된 HTML 파싱 실패는 서버 추천이 보충한다. */ }
+      }
+      return out;
+    },
     /** 좌측 부가정보 패널을 그릴 거리가 있는가(계보/형제/타임라인 중 하나라도). */
     hasSpine() { return this.spine.length > 1 || this.siblings.length > 0 || this.visibleTimeline.length > 0; },
     /** 우측 타임라인 패널을 그릴 거리가 있는가(일정 또는 이력). */
@@ -1450,7 +1476,7 @@ export default {
             </div>
             <!-- 댓글과 **같은 에디터** — 여기만 다른 편집기를 쓰면 표·코드·이미지 붙여넣기가
                  되는 곳과 안 되는 곳이 생긴다. 저장은 이 화면이 소유한다(버튼이 둘이면 안 된다). -->
-            <CommentEditor ref="ded" :ticket-key="tk"
+            <CommentEditor ref="ded" :ticket-key="tk" :mention-users="mentionUsers"
                            :initial="v.descriptionEditHtml !== undefined ? v.descriptionEditHtml : v.descriptionHtml" hide-footer
                            sections kind="description"
                            :submit-fn="saveDesc" @cancel="descEdit = false" />
@@ -1666,7 +1692,7 @@ export default {
                       <button class="tkt-cmt-act" @click="delComment(c)">삭제</button>
                     </span>
                   </div>
-                  <CommentEditor v-if="editingId === c.id" :ticket-key="tk" :initial="editInitial"
+                  <CommentEditor v-if="editingId === c.id" :ticket-key="tk" :mention-users="mentionUsers" :initial="editInitial"
                     submit-label="저장" :submit-fn="(md) => submitEdit(c, md)"
                     @submitted="onEdited" @cancel="cancelEdit" />
                   <div v-else class="tkt-cmt-b tkt-desc" @click="(e) => onContentClick(e, c)" v-html="c.html"></div>
@@ -1784,7 +1810,7 @@ export default {
                       aria-label="댓글 작성창 가리기" @click="collapseCompose">
                 <span class="tkt-compose-hide-chevron" aria-hidden="true"></span><b>가리기</b>
               </button>
-              <CommentEditor ref="newCommentEditor" :ticket-key="tk" submit-label="등록" :submit-fn="submitNew"
+              <CommentEditor ref="newCommentEditor" :ticket-key="tk" :mention-users="mentionUsers" submit-label="등록" :submit-fn="submitNew"
                 @submitted="onComposed" @cancel="cancelCompose" />
             </div>
           </div>
