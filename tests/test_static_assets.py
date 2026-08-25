@@ -243,6 +243,25 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
     assert "if (p?.group?.childrenPending) return null;" in view
 
 
+def test_mytasks_defaults_to_my_module_and_reloads_identity_after_auth():
+    """선택 이력이 없으면 내 모듈을 쓰고, prod 최초 인증 실패 뒤에도 모듈 목록을 복구한다."""
+    view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
+
+    assert "export function resolveDefaultModule(selected, explicit, mine, all)" in view
+    assert 'const next = mineList.find((module) => !allList.length || known.has(module)) || "";' in view
+    assert 'if (explicit && (!current || !allList.length || known.has(current)))' in view
+    assert "moduleSelExplicit: false" in view
+    assert "this.moduleSel = resolved.selected;" in view
+    assert "this.moduleSelExplicit = resolved.explicit;" in view
+    assert 'window.addEventListener("auth-ok", this._authok = () => { this.refreshMe(); this.load(); });' in view
+    assert 'if (this.scope === "module" && before !== this.apiScope) this.load();' in view
+    assert 'if (typeof saved.moduleSelExplicit === "boolean")' in view
+    assert "else this.moduleSelExplicit = !!saved.moduleSel;" in view
+    assert "moduleSelExplicit: this.moduleSelExplicit" in view
+    pick = view[view.index("onModulePick(v) {"):view.index("runJql() {")]
+    assert pick.index("this.moduleSelExplicit = true;") < pick.index('this.scope = "module"')
+
+
 def test_comment_submit_waits_for_pending_draft_before_final_delete():
     """제출 성공 뒤 예약된 saveDraft가 완료 글을 되살리는 경쟁 상태를 막는다."""
     src = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")

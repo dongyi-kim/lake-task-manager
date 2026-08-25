@@ -151,6 +151,20 @@ const BAND_FILTERS = {
 };
 const PREF_KEY = "mytasks.opts";
 
+/** 저장된 선택을 존중하되, 사용자가 모듈을 고른 적이 없으면 첫 소속 모듈을 기본값으로 쓴다.
+ *  explicit=true + 빈 값은 사용자가 직접 고른 "내 모듈 전체"이므로 그대로 보존한다. */
+export function resolveDefaultModule(selected, explicit, mine, all) {
+  const current = typeof selected === "string" ? selected : "";
+  const mineList = Array.isArray(mine) ? mine.filter(Boolean) : [];
+  const allList = Array.isArray(all) ? all.filter(Boolean) : [];
+  const known = new Set(allList);
+  if (explicit && (!current || !allList.length || known.has(current))) {
+    return { selected: current, explicit: true, changed: false };
+  }
+  const next = mineList.find((module) => !allList.length || known.has(module)) || "";
+  return { selected: next, explicit: false, changed: next !== current || !!explicit };
+}
+
 export default {
   name: "MyTasksView",
   components: { TypeBadge, Avatar, TaskCard, PriIcon, DueText, FieldEdit, AdvancedSearchDialog, TransitionDialog,
@@ -179,7 +193,8 @@ export default {
       // 상단 퀵필터 — 세 세그먼트(담당자/보고자/모듈) + 고급 검색. 각 세그먼트는 [버튼][우측 선택]
       // 으로, 버튼이 그 스코프를 켜고 우측 선택(사람 picker / 모듈 콤보)이 대상을 정한다. Default = '나'.
       scope: "assignee",    // assignee | reporter | module | jql
-      moduleSel: "",        // 선택한 모듈명("" = 내 모듈 전체) — 포커스 떠나도 유지
+      moduleSel: "",        // 선택한 모듈명("" = 내 모듈 전체) — 사용자 선택은 포커스 떠나도 유지
+      moduleSelExplicit: false, // false면 /api/me 도착 후 첫 소속 모듈을 기본값으로 적용
       assigneeSel: null,    // {id, name}  null = 나
       reporterSel: null,    // {id, name}  null = 나
       jqlText: "",          // 고급 검색 JQL(직접 입력 또는 빌더가 채움)
@@ -208,7 +223,8 @@ export default {
   mounted() {
     this.loadPrefs();
     // 모듈 필터 셀렉터용 — 내 모듈/전체 모듈. 태스크 로딩과 병렬(부팅 안 막음).
-    api.me().then((me) => { this.me = me || null; }).catch(() => {});
+    // 최초 조회가 인증 전이라 실패해도 auth-ok 에서 다시 받아, 모듈 목록만 영구히 비는 일을 막는다.
+    this.refreshMe();
     this.load();
     // 창 크기가 바뀌면 축도 따라간다(리사이즈·모니터 전환·창 분할).
     // 상태 전이 등으로 티켓이 바뀌면 **이 뷰만** 조용히 다시 받는다. 카드가 새 상태의 열로
@@ -242,7 +258,7 @@ export default {
     });
     // 재인증(auth-ok) 후 — 세션이 끊긴 채 실패했던 조회를 다시 받는다(그대로 두면 '목록 없음'
     // 으로 굳어 새로고침해야만 떴다). 서버 캐시는 안 비운다(가벼운 재조회).
-    window.addEventListener("auth-ok", this._authok = () => { this.load(); });
+    window.addEventListener("auth-ok", this._authok = () => { this.refreshMe(); this.load(); });
     this._mq = window.matchMedia(NARROW);
     this._onMq = (e) => { this.axis = e.matches ? "v" : "h"; };
     this._mq.addEventListener ? this._mq.addEventListener("change", this._onMq)
@@ -390,6 +406,24 @@ export default {
     },
   },
   methods: {
+    /** 세션 사용자와 모듈 디렉토리를 Task 본문과 독립적으로 받는다.
+     *  선택 이력이 없으면 첫 소속 모듈을 기본으로 잡고, 모듈 필터가 활성화된 상태라면
+     *  먼저 시작한 전체 모듈 요청을 즉시 취소해 새 기본 모듈로 전환한다. */
+    async refreshMe() {
+      const seq = this._meSeq = (this._meSeq || 0) + 1;
+      try {
+        const me = await api.me();
+        if (seq !== this._meSeq) return;
+        const before = this.apiScope;
+        this.me = me || null;
+        const resolved = resolveDefaultModule(this.moduleSel, this.moduleSelExplicit,
+          (this.me && this.me.modules) || [], (this.me && this.me.allModules) || []);
+        this.moduleSel = resolved.selected;
+        this.moduleSelExplicit = resolved.explicit;
+        if (resolved.changed) this.savePrefs();
+        if (this.scope === "module" && before !== this.apiScope) this.load();
+      } catch (e) { /* Task 본문 로딩과 독립 — 인증 복귀 때 다시 시도한다 */ }
+    },
     _emptyTaskModel() {
       return {
         scope: this.apiScope, openFilter: this.openFilter, progFilter: this.progFilter,
@@ -664,6 +698,7 @@ export default {
      *  선택은 moduleSel 에 남아 포커스가 떠나도 유지된다. */
     onModulePick(v) {
       this.moduleSel = (!v || v === "__all__") ? "" : v;
+      this.moduleSelExplicit = true;
       this.scope = "module"; this.savePrefs(); this.load();
     },
     /** 고급 검색 — JQL 입력/빌더 결과로 검색 실행. 비어 있으면 '나(담당)'로 폴백. */
@@ -755,6 +790,10 @@ export default {
       // 상단 퀵필터(연관성/모듈)는 OPTIONS 밖이라 따로 복원한다.
       if (["assignee", "reporter", "module", "jql"].includes(saved.scope)) this.scope = saved.scope;
       if (typeof saved.moduleSel === "string") this.moduleSel = saved.moduleSel;
+      // 구버전 저장값에는 explicit 표식이 없다. 실제 모듈명이 있으면 사용자 선택으로 보존하고,
+      // 빈 값은 옛 기본값이었으므로 새 "첫 소속 모듈" 기본 정책으로 한 번 마이그레이션한다.
+      if (typeof saved.moduleSelExplicit === "boolean") this.moduleSelExplicit = saved.moduleSelExplicit;
+      else this.moduleSelExplicit = !!saved.moduleSel;
       if (saved.assigneeSel && saved.assigneeSel.id) this.assigneeSel = saved.assigneeSel;
       if (saved.reporterSel && saved.reporterSel.id) this.reporterSel = saved.reporterSel;
       if (typeof saved.jqlText === "string") this.jqlText = saved.jqlText;
@@ -763,7 +802,8 @@ export default {
     },
     savePrefs() {
       const out = { bandClosed: this.bandClosed, epicHidden: this.epicHidden, gClosed: this.gClosed,
-                    scope: this.scope, moduleSel: this.moduleSel, projPref: this.projPref,
+                    scope: this.scope, moduleSel: this.moduleSel, moduleSelExplicit: this.moduleSelExplicit,
+                    projPref: this.projPref,
                     assigneeSel: this.assigneeSel, reporterSel: this.reporterSel, jqlText: this.jqlText };
       for (const o of OPTIONS) out[o.key] = this[o.key];
       for (const f of Object.values(BAND_FILTERS)) out[f.key] = this[f.key];
