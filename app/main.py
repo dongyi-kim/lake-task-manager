@@ -14,6 +14,7 @@ JIRA_ENV=mock 이면 Jira 없이 결정적 데이터로 전체가 구동된다.
 """
 
 import json
+import re
 import sys
 import threading
 import urllib.parse
@@ -1284,19 +1285,22 @@ def api_mytasks(user: str = "", done: bool = False, scope: str = "assignee",
 @app.get("/api/mytasks/stream")
 def api_mytasks_stream(user: str = "", done: bool = False, scope: str = "assignee",
                        openFilter: str = "all", progFilter: str = "all",
-                       doneFilter: str = "1w"):
-    """Stream each completed normalized JQL leaf as one NDJSON Task-model chunk."""
+                       doneFilter: str = "1w", requestToken: str = ""):
+    """Stream authoritative cumulative Task snapshots as normalized JQL leaves finish."""
+    token = re.sub(r"[^A-Za-z0-9._:-]", "", requestToken or "")[:128]
     def lines():
         try:
             for event in mytasks.iter_my_task_models(
                     _client, user or None, include_done=done, scope=scope,
                     open_filter=(openFilter if openFilter in ("all", "2w") else "all"),
                     prog_filter=(progFilter if progFilter in ("all", "1m") else "all"),
-                    done_filter=(doneFilter if doneFilter in ("1w", "1m") else "1w")):
+                    done_filter=(doneFilter if doneFilter in ("1w", "1m") else "1w"),
+                    request_token=token or None):
                 yield json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
         except Exception as exc:  # response headers are already sent; errors travel in-band
             yield json.dumps({
                 "type": "error", "error": str(exc),
+                "contract": mytasks.TASK_STREAM_CONTRACT, "requestToken": token,
                 "needLogin": isinstance(exc, SessionExpired),
             }, ensure_ascii=False, separators=(",", ":")) + "\n"
 
@@ -1312,8 +1316,8 @@ def api_mytasks_group(sync_id: str, key: str):
         # 퀵필터를 바꾸면 새 base JQL이 이 보강 작업을 앞질러야 한다. 한 Jira 호출이 끝난
         # 경계마다 foreground 요청이 먼저 큐를 잡도록 background priority로 실행한다.
         with background_upstream():
-            group = mytasks.hydrate_my_task_group(_client, sync_id, key.upper())
-        return JSONResponse({"group": group})
+            snapshot = mytasks.hydrate_my_task_snapshot(_client, sync_id, key.upper())
+        return JSONResponse(snapshot)
     except PermissionError as exc:
         return JSONResponse({"error": str(exc)}, status_code=403)
     except KeyError as exc:

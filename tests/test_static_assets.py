@@ -212,25 +212,31 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
     assert "response.body.getReader" in api
     assert "myTasksGroup: (syncId, key)" in api
     assert "myTasksEpics: (syncId)" in api
-    assert "this._hydrateModel(finalModel, seq, key, cache);" in view
-    assert "this._mergeStreamModel(cache[key] || this._emptyTaskModel(), event.model)" in view
+    assert 'event.contract !== "task-snapshot.v1"' in view
+    assert "event.requestToken !== requestToken" in view
+    assert "eventSequence <= lastSequence" in view
+    assert "event.completedLeaves && event.completedLeaves.length" in view
+    assert "this._hydrateModel(cache[key], seq, key, cache);" in view
+    assert "_mergeStreamModel" not in view
+    assert "_mergeTaskGroup" not in view
+    assert "_normalizeStreamGroups" not in view
     assert "this._streamAbort.abort()" in view
     assert "this._cacheModel(cache, key, next)" in view
     assert "this._queueEpicMetadata(next, cache)" in view
     assert 'epicDisplayTitle(k) { return this.epicPending(k) ? "Epic 이름 확인 중"' in view
-    assert "groups, epics: Array.from(epicMap.values()), counts: this._groupCounts(groups)" in view
-    assert "if (claimed.has(atom.key)) return false;" in view
-    assert 'if (kind === "permission") return;' in view
+    assert 'result.contract !== "task-snapshot.v1"' in view
+    assert "Number(result.sequence) <= snapshotSequence" in view
+    assert 'if (kind === "permission") continue;' in view
     assert 'title: kind === "auth" ? "일부 Task를 인증 문제로 불러오지 못했습니다"' in view
     assert "Parent Task는 준비됨" not in view
     assert "mt-sub-sync-row" not in view
-    # A changed filter stops not-yet-started child jobs. Completed leaf chunks are cached before
-    # the sequence guard, while only the matching sequence may touch visible UI.
+    # A changed filter stops not-yet-started child jobs. The server owns completed leaf caches,
+    # while only a matching request token and monotonic sequence may touch visible UI.
     assert 'if (seq !== this._loadSeq) return;   // 아직 시작하지 않은 옛 필터 보강' in view
     assert "cache[cacheKey] = next;" in view
-    assert "this._loadSeq === patch.seq" in view
+    assert "this._loadSeq === seq && this.model && this.model.syncId === syncId" in view
     assert "await Promise.allSettled([worker(), worker()]);" in view
-    assert "groups, counts: this._groupCounts(groups)" in view
+    assert "_mergeHydration" not in view
     assert "if (!seen.has(atom.key))" in view
     assert "if (p?.group?.childrenPending) return null;" in view
 

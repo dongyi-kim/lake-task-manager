@@ -220,7 +220,8 @@ export const api = {
     return streamNdjson("/api/mytasks/stream?scope=" + encodeURIComponent(o.scope || "assignee")
       + "&openFilter=" + encodeURIComponent(o.openFilter || "all")
       + "&progFilter=" + encodeURIComponent(o.progFilter || "all")
-      + "&doneFilter=" + encodeURIComponent(o.doneFilter || "1w"), onEvent, signal);
+      + "&doneFilter=" + encodeURIComponent(o.doneFilter || "1w")
+      + "&requestToken=" + encodeURIComponent(o.requestToken || ""), onEvent, signal);
   },
   myTasksGroup: (syncId, key) => req("/api/mytasks/sync/" + encodeURIComponent(syncId)
     + "/group/" + encodeURIComponent(key)),
