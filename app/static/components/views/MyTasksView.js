@@ -570,8 +570,10 @@ export default {
           if (event.replace !== false && event.model) {
             const next = Object.assign({}, event.model, { streamComplete: !!event.done });
             this._cacheModel(cache, key, next);
+            // 새 snapshot은 Epic을 key-only로 보낼 수 있다. 먼저 known metadata를 cache에
+            // 다시 입힌 뒤 그 정본을 화면에 넣어야, 이미 알던 이름이 "확인 중"으로 되돌아가지 않는다.
             this._queueEpicMetadata(next, cache);
-            if (active) this.model = next;
+            if (active) this.model = cache[key];
           }
 
           if (active && event.done) {
@@ -631,7 +633,9 @@ export default {
             const next = Object.assign({}, result.model, { streamComplete: true });
             cache[cacheKey] = next;             // 지난 필터도 완료된 서버 정본은 캐시에 남긴다
             this._queueEpicMetadata(next, cache);
-            if (this._loadSeq === seq && this.model && this.model.syncId === syncId) this.model = next;
+            if (this._loadSeq === seq && this.model && this.model.syncId === syncId) {
+              this.model = cache[cacheKey];
+            }
           } catch (e) {
             // Parent 하나 실패가 다른 카드나 새 필터를 막지 않는다. 다음 실제 load에서 재시도한다.
           }
