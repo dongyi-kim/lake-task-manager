@@ -516,6 +516,17 @@ def test_new_comment_composer_hides_without_unmounting_and_shows_text_only_previ
     assert ".tkt-cmt-addbtn.draft" in css and ".tkt-cmt-draft-v" in css
 
 
+def test_editor_root_handles_file_drops_missed_by_prosemirror():
+    """툴바·여백에 놓은 파일도 티켓 첨부로 새지 않고 본문 삽입 경로를 탄다."""
+    editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+
+    drop = editor[editor.index("onDropFiles(e) {"):editor.index("startResize(e)")]
+    assert "e.defaultPrevented" in drop
+    assert "e.preventDefault()" in drop and "e.stopPropagation()" in drop
+    assert "this.insertFiles(e.dataTransfer.files)" in drop
+    assert '@drop="onDropFiles"' in editor
+
+
 def test_agent_wiki_mentions_render_as_person_badges_even_before_name_hydration():
     md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
     assert "MENTION_RE" in md

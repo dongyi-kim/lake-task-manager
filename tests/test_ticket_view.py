@@ -69,7 +69,7 @@ def test_mock_bug_description_has_rich_elements():
     assert v is not None
     html = v["descriptionHtml"]
     assert v["descriptionFormat"] == "html"
-    assert "<table>" in html and "<th>" in html           # 표
+    assert "<table " in html and "<th " in html           # 표
     assert '<pre class="jecodeblock">' in html and "<code" in html  # 코드블록
     assert "callout callout-warning" in html              # 콜아웃
     assert '<img src="/ticket-sample.svg"' in html        # 이미지(오프라인)
@@ -92,7 +92,7 @@ def test_mock_epic_has_panel_and_table_and_safe_link():
     v = _client().ticket_view(_key_of_type("Epic"))
     html = v["descriptionHtml"]
     assert '<div class="panel">' in html and "panel-title" in html
-    assert "<table>" in html
+    assert "<table " in html
     # 링크는 정화기가 rel/target 강제
     assert 'rel="noopener noreferrer nofollow"' in html and 'target="_blank"' in html
 
@@ -217,11 +217,101 @@ def test_prod_comment_source_preserves_mention_through_edit_and_republish():
         c.s.comment_format = old_format
 
 
+def test_wiki_comment_source_revives_task_checkboxes_for_editing():
+    c = _client()
+    class Provider:
+        @staticmethod
+        def get_json(*args, **kwargs):
+            return {"comments": [{
+                "id": "44",
+                "body": ('<p dir="auto"><input id="task-1" type="checkbox" '
+                         'checked="checked" />완료 항목</p>'),
+            }]}
+
+    c._provider = Provider()
+    c._provider_built = True
+    old_format = c.s.comment_format
+    try:
+        c.s.comment_format = "wiki"
+        source = c.comment_source("DL-9008", "44")
+
+        assert source and '<input id="task-1" type="checkbox" checked="checked"' in source["html"]
+        assert "&lt;input" not in source["html"]
+    finally:
+        c.s.comment_format = old_format
+
+
+def test_wiki_comment_source_resolves_attached_image_for_editing():
+    c = _client()
+    original_get_issue = c.get_issue
+    class Provider:
+        @staticmethod
+        def get_json(*args, **kwargs):
+            return {"comments": [{"id": "45", "body": "이미지 !paste-roundtrip.png!"}]}
+
+    c._provider = Provider()
+    c._provider_built = True
+    c.get_issue = lambda key: {"fields": {"attachment": [{
+        "filename": "paste-roundtrip.png",
+        "content": "/secure/attachment/45/paste-roundtrip.png",
+    }]}}
+    old_format = c.s.comment_format
+    try:
+        c.s.comment_format = "wiki"
+        source = c.comment_source("DL-9008", "45")
+
+        assert source and "/api/img?u=" in source["html"]
+        assert "secure%2Fattachment%2F45%2Fpaste-roundtrip.png" in source["html"]
+        assert 'src="paste-roundtrip.png"' not in source["html"]
+    finally:
+        c.s.comment_format = old_format
+        c.get_issue = original_get_issue
+
+
+def test_mock_uploaded_comment_image_roundtrips_into_edit_source():
+    """실제 mock REST의 첨부 목록과 댓글 원본을 함께 써 수정 이미지 URL을 복원한다."""
+    c = _client()
+    old_format = c.s.comment_format
+    try:
+        c.s.comment_format = "wiki"
+        uploaded = c.upload_attachment("DL-9007", "roundtrip-source.png", b"png", "image/png")[0]
+        html = f'<p>이미지<img src="{uploaded["content"]}" alt="roundtrip-source.png"></p>'
+        created = c.add_comment("DL-9007", c.comment_field_value(html))
+        source = c.comment_source("DL-9007", str(created["id"]))
+
+        assert source and "/api/img?u=" in source["html"], source
+        assert "roundtrip-source.png" in source["html"]
+    finally:
+        c.s.comment_format = old_format
+
+
+def test_prod_description_and_comment_tables_store_jira_visible_borders():
+    """prod HTML 저장값 자체에 표 선이 있어야 하며 재게시해도 중복되지 않아야 한다."""
+    c = _client()
+    old_description = c.s.description_format
+    old_comment = c.s.comment_format
+    source = "<table><tbody><tr><th>제목</th><td>값</td></tr></tbody></table>"
+    try:
+        c.s.description_format = "html"
+        c.s.comment_format = "html"
+        for serializer in (c.desc_field_value, c.comment_field_value):
+            stored = serializer(source)
+            assert stored.startswith('<table border="1" cellpadding="0" cellspacing="0"')
+            assert stored.count("border:1px solid #dfe1e6") == 3
+            assert "border-collapse:collapse" in stored
+            assert serializer(stored) == stored
+    finally:
+        c.s.description_format = old_description
+        c.s.comment_format = old_comment
+
+
 def test_ticket_view_keeps_rendered_mention_and_supplies_canonical_edit_html():
     """본문은 Jira 앵커로 표시하되 수정 에디터에는 별도 canonical mention HTML을 준다."""
     c = _client()
     original = c._get_issue_view
+    old_format = c.s.description_format
     try:
+        c.s.description_format = "html"
         c._get_issue_view = lambda *args, **kwargs: {
             "key": "DL-9009",
             "fields": {"description": ('<p>담당 <a class="user-hover" '
@@ -234,6 +324,32 @@ def test_ticket_view_keeps_rendered_mention_and_supplies_canonical_edit_html():
         assert 'data-type="mention"' in view["descriptionEditHtml"]
         assert 'data-id="skcc.x1103"' in view["descriptionEditHtml"]
     finally:
+        c.s.description_format = old_format
+        c._get_issue_view = original
+
+
+def test_wiki_description_edit_html_repairs_renderer_color_macro_leak():
+    """Jira renderedFields가 color 매크로를 덜 풀어도 수정 진입 서식과 멘션은 살아 있어야 한다."""
+    c = _client()
+    original = c._get_issue_view
+    old_format = c.s.description_format
+    try:
+        c.s.description_format = "wiki"
+        c._get_issue_view = lambda *args, **kwargs: {
+            "key": "DL-9009",
+            "fields": {"description": "{color:#dc2626}빨강{color} [~skcc.x1103]"},
+            "renderedFields": {"description": ('<p>{color:#dc2626}빨강{color} '
+                               '<a class="user-hover" '
+                               'href="/secure/ViewProfile.jspa?name=skcc.x1103">이준서</a></p>')},
+        }
+        view = c.ticket_view("DL-9009", fresh=True)
+
+        assert '{color:' not in view["descriptionEditHtml"]
+        assert '<span style="color:#dc2626">빨강</span>' in view["descriptionEditHtml"]
+        assert 'data-type="mention"' in view["descriptionEditHtml"]
+        assert 'data-id="skcc.x1103"' in view["descriptionEditHtml"]
+    finally:
+        c.s.description_format = old_format
         c._get_issue_view = original
 
 

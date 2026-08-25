@@ -165,8 +165,23 @@ def test_table_and_code_preserved():
            "<tbody><tr><td colspan=\"2\">v</td></tr></tbody></table>"
            "<pre><code>print(1)</code></pre>")
     out = sanitize_html(src)
-    assert "<table>" in out and "<th>" in out and "<td" in out and 'colspan="2"' in out
+    assert "<table " in out and "<th " in out and "<td" in out and 'colspan="2"' in out
     assert "<pre>" in out and "<code>" in out and "print(1)" in out
+
+
+def test_table_carries_opaque_jira_borders_and_is_idempotent():
+    """LTM stylesheet가 없는 Jira에서도 table/th/td 선이 투명해지지 않아야 한다."""
+    src = ('<table style="position:absolute"><tbody><tr>'
+           '<th style="text-align:center">제목</th><td>값</td></tr></tbody></table>')
+    out = sanitize_html(src)
+
+    assert '<table border="1" cellpadding="0" cellspacing="0"' in out
+    assert out.count("border:1px solid #dfe1e6") == 3
+    assert "border-collapse:collapse" in out and "border-spacing:0" in out
+    assert "padding:6px 8px" in out and "vertical-align:top" in out
+    assert "text-align:center" in out
+    assert "position:absolute" not in out
+    assert sanitize_html(out) == out
 
 
 def test_heading_and_blockquote_preserved():

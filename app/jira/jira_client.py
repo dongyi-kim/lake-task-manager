@@ -40,6 +40,15 @@ _ANCHOR_RE = re.compile(r'<a\s[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.S | re.I)
 _CONF_TITLE_RE = re.compile(r"/pages/\d+/([^/?#]+)|/display/[^/]+/([^/?#]+)")
 #: Confluence 페이지 id — 옛 링크(`/pages/viewpage.action?pageId=…`)엔 제목이 없고 이것만 있다.
 _CONF_PAGEID_RE = re.compile(r"[?&]pageId=(\d+)|/pages/(\d+)(?:[/?#]|$)")
+_LEAKED_COLOR_RE = re.compile(
+    r"\{color:(#[0-9a-f]{6})\}(.*?)\{color\}", re.I | re.S)
+
+
+def _repair_leaked_color_macros(html):
+    """일부 renderedFields 응답에 글자로 남은 안전한 hex color 매크로만 HTML로 복구한다."""
+    return _LEAKED_COLOR_RE.sub(
+        lambda match: '<span style="color:' + match.group(1).lower() + '">' + match.group(2) + "</span>",
+        html or "")
 
 
 @dataclass(frozen=True)
@@ -2695,9 +2704,7 @@ class JiraClient:
             return None
         html = unproxy_media(html)          # 재편집 시 박힌 프록시 URL(/api/img?u=..)을 원래 첨부로 복원
         from app.content.wikihtml import html_to_wiki
-        fmt = (getattr(self.s, "description_format", "") or "").lower()
-        if fmt not in ("html", "wiki"):
-            fmt = "html" if self.env == "prod" else "wiki"
+        fmt = self._description_fmt()
         # HTML 모드: 태스크리스트를 먼저 **체크박스 문단**으로, 영역 구분선을 **'=== 제목 ==='
         # 문단**으로 편다(안 그러면 태스크리스트는 불릿·빈 span 으로 어긋나고, 구분선은 정화 때
         # sec-title-node class 가 떨어져 그냥 <div> 로 남아 '=== ===' 표식이 사라진다).
@@ -2705,6 +2712,14 @@ class JiraClient:
         if fmt == "html":
             return sanitize_html(flatten_mentions_html(flatten_section_titles(flatten_task_lists(html))))
         return html_to_wiki(html)
+
+    def _description_fmt(self):
+        fmt = (getattr(self.s, "description_format", "") or "").lower()
+        return fmt if fmt in ("html", "wiki") else ("html" if self.env == "prod" else "wiki")
+
+    def _description_edit_html(self, rendered_html):
+        """표시 renderer가 color 매크로를 덜 풀어도 수정용 리치 HTML과 이미지 URL을 보존한다."""
+        return lift_mentions_html(_repair_leaked_color_macros(rendered_html))
 
     def _comment_fmt(self):
         fmt = (getattr(self.s, "comment_format", "") or "").lower()
@@ -3477,7 +3492,11 @@ class JiraClient:
                     # description 수정로드와 같은 형태 — 체크박스를 다시 살려 에디터가 태스크리스트로 든다.
                     html = lift_mentions_html(sanitize_html(_revive_checkboxes(body))) if body.strip() else ""
                 else:
-                    html = wiki_to_html(body, self._mention_name)
+                    # html_to_wiki가 태스크 항목을 체크박스 문단으로 저장한다. wiki_to_html만
+                    # 호출하면 그 문단이 이스케이프된 글자가 되어 수정 진입에서 체크리스트가
+                    # 사라지므로, 본문 표시 경로와 같은 복원기를 거친다.
+                    html = _revive_checkboxes(wiki_to_html(body, self._mention_name))
+                    html = self._resolve_wiki_attachment_images(key, html)
                 # 읽기용 코멘트와 마찬가지로 첨부 이미지는 앱의 인증 프록시를 거쳐야 한다.
                 # prod HTML 원본에는 /secure/attachment/... 가 남아 있는데 이를 그대로 에디터에
                 # 주면 브라우저가 localhost/secure/... 로 해석해, 게시 후에는 보이던 이미지가
@@ -3486,6 +3505,35 @@ class JiraClient:
                 html = self._proxy_media(html)
                 return {"id": str(comment_id), "html": html}
         return None
+
+    def _resolve_wiki_attachment_images(self, key, html):
+        """wiki의 ``!파일명!`` 이미지를 현재 티켓 첨부의 실제 content URL로 연결한다."""
+        if "<img" not in (html or ""):
+            return html
+        try:
+            fields = (self.get_issue(key).get("fields") or {})
+            by_name = {str(a.get("filename") or ""): str(a.get("content") or "")
+                       for a in (fields.get("attachment") or []) if a.get("content")}
+        except Exception:
+            return html
+        if not by_name:
+            return html
+
+        def replace(match):
+            src = unescape(match.group(2) or "")
+            # URL/절대경로는 이미 해석된 값이다. wiki converter가 만든 순수 파일명만 연결한다.
+            if "/" in src or ":" in src:
+                return match.group(0)
+            resolved = by_name.get(src)
+            if not resolved:
+                return match.group(0)
+            # jira820은 in-process 호스트(testserver)를 절대 URL로 돌려준다. 브라우저가 그 호스트로
+            # 직접 갈 수 없으므로 dev에서는 provider가 이해하는 상대 첨부 경로로 되돌린다.
+            if self.env != "prod" and resolved.startswith(("http://", "https://")):
+                resolved = urlparse(resolved).path
+            return match.group(1) + escape(resolved, quote=True) + match.group(3)
+
+        return re.sub(r'(<img\b[^>]*\bsrc=")([^"]*)(")', replace, html, flags=re.I)
 
     def _mention_name(self, uid):
         """멘션 라벨 — 본명만(본문에 박히는 이름이라 짧아야 한다)."""
@@ -3751,7 +3799,7 @@ class JiraClient:
                                   self.s.epic_link_field_id)
         # 화면 표시형 user-hover 앵커는 그대로 유지하고, 편집기에만 TipTap mention 노드를 준다.
         # 같은 descriptionHtml을 양쪽에 쓰면 수정 진입 때 일반 링크로 파싱돼 재저장 후 파란 링크가 된다.
-        view["descriptionEditHtml"] = lift_mentions_html(view["descriptionHtml"])
+        view["descriptionEditHtml"] = self._description_edit_html(view["descriptionHtml"])
         view["descriptionHtml"] = self._proxy_media(view["descriptionHtml"])
         view["descriptionEditHtml"] = self._proxy_media(view["descriptionEditHtml"])
         # 섹션은 프록시 이전 HTML 에서 잘렸다 — 이미지가 든 섹션도 프록시를 타야 한다

@@ -1372,8 +1372,10 @@ export default {
     },
     toggleMax() { this.maximized = !this.maximized; },
 
-    // 드래그 안내 — 실제 삽입은 ProseMirror 의 handleDrop 이 한다. 여기서는 **보이는 것만**
-    // 맡는다(테두리). 두 곳에서 삽입하면 파일이 두 번 들어간다.
+    // 드래그 안내. 본문 위 드롭은 ProseMirror handleDrop 이 먼저 처리한다. 다만 툴바·여백처럼
+    // .cmt-editor 안이지만 ProseMirror 밖인 곳에 놓으면 편집기 handler가 호출되지 않는다.
+    // 루트에서는 defaultPrevented 여부를 보고 **아직 처리되지 않은** 파일만 같은 insertFiles 경로로
+    // 넘긴다. 상위 TicketDialog까지 전파하면 티켓 첨부로도 올라가므로 여기서 멈춘다.
     hasFiles(e) {
       const t = e.dataTransfer && e.dataTransfer.types;
       return !!t && Array.prototype.indexOf.call(t, "Files") >= 0;
@@ -1385,7 +1387,13 @@ export default {
       this.dragOver = true;    // dragenter 를 놓치는 경로(자식 위로 바로 진입)가 있어 여기서도 켠다
     },
     onDragLeave() { this.dragDepth = Math.max(0, this.dragDepth - 1); if (!this.dragDepth) this.dragOver = false; },
-    onDropFiles() { this.dragDepth = 0; this.dragOver = false; },
+    onDropFiles(e) {
+      this.dragDepth = 0; this.dragOver = false;
+      if (!this.hasFiles(e) || e.defaultPrevented) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.insertFiles(e.dataTransfer.files);
+    },
 
     /** 아래 손잡이를 끌어 본문 높이를 바꾼다(인라인 모드 전용).
      *  pointer 이벤트 + setPointerCapture 를 쓰는 이유: 마우스가 에디터 밖으로 나가도 끌림이
