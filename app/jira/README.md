@@ -9,6 +9,8 @@ REST 를 호출하고, **모든 호출은 캐시(app/infra)를 경유**한다. m
   아바타·미디어 프록시·Confluence·Bitbucket·변경이력·계보(조상/형제/자식). 캐시 키 네임스페이스·TTL·무효화 규칙의 소유자.
 - **jql.py** — 앱이 사용하는 JQL subset의 AST 파싱·context 해소·DNF leaf 분해·canonical 정렬과
   OR 합성 결과의 로컬 정렬. 미지원 문법·함수·정렬은 `jira_client`의 기존 Jira 실행 경로로 폴백한다.
+- **jql_lark.py** — PR #32의 비프로덕션 Lark parser candidate. context 전처리와 기존 AST/DNF 정책을
+  재사용해 차등 검증하며, 채택 판단 전까지 `JiraClient`에는 연결하지 않는다.
 
 ## 규칙 (AGENTS.md §8 아키텍처 규칙)
 - **어떤 인증인지 몰라야 한다** — 환경 분기 없음, provider 만 다르다.

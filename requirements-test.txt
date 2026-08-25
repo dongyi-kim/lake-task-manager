@@ -2,3 +2,6 @@
 # are intentionally not invoked by GitHub Actions.
 -r requirements-agent.txt
 pytest==9.1.1
+# #32 parser POC only. Keep this out of the runtime dependency set until the differential and
+# packaging gates justify replacing the production parser.
+lark==1.3.1

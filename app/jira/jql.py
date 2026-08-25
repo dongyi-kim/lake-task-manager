@@ -1,4 +1,4 @@
-"""JQL parsing, normalization, context resolution and local result composition.
+"""JQL context preprocessing, parsing, normalization and local result composition.
 
 This module intentionally implements the subset exercised by Lake Task Manager.  Jira and
 plugin functions outside that subset are rejected so the caller can preserve compatibility by
@@ -320,8 +320,9 @@ def _resolve_context(tokens: list[Token], user_id: str, now: datetime) -> list[T
         if token.kind == "WORD" and i + 1 < len(tokens) and tokens[i + 1].kind == "LPAREN":
             name = token.value
             lower = name.lower()
-            # IN (...) is a value list, not a function call.
-            if lower == "in":
+            # Whole-query preprocessing also sees boolean/grouping syntax.  These keywords may
+            # be followed by ``(`` but are not function calls.
+            if lower in {"in", "and", "or", "not", "order", "by", "is"}:
                 out.append(token); i += 1; continue
             depth = 0
             end = None
@@ -403,9 +404,33 @@ def _sort_in_lists(tokens: list[Token]) -> list[Token]:
     return out
 
 
-def _normalize_atom(value: str, user_id: str, now: datetime) -> str:
+def preprocess_context_jql(raw: str, *, user_id: str = "", timezone_name: str = "UTC",
+                           now: datetime | None = None, ttl_seconds: int = 900) -> str:
+    """Resolve the supported request context before any syntax parser sees the JQL.
+
+    Context policy is deliberately independent from the hand-written parser and the Lark POC.
+    The small tokenizer is quote-aware, so strings such as ``summary ~ "currentUser()"`` are
+    never rewritten.  Unsupported Jira/plugin functions still force the caller onto Jira's
+    monolithic compatibility path.
+    """
+    cleaned = (raw or "").strip().rstrip(";").strip()
+    tokens = tokenize(cleaned)
+    try:
+        tz = ZoneInfo(timezone_name or "UTC")
+    except Exception:
+        tz = timezone.utc
+    if now is None:
+        stamp = datetime.now(tz).timestamp()
+    else:
+        current = now if now.tzinfo else now.replace(tzinfo=tz)
+        stamp = current.astimezone(tz).timestamp()
+    bucket = max(1, int(ttl_seconds or 900))
+    context_now = datetime.fromtimestamp((int(stamp) // bucket) * bucket, tz)
+    return _render_tokens(_resolve_context(tokens, user_id, context_now))
+
+
+def _normalize_atom(value: str) -> str:
     tokens = tokenize(value)
-    tokens = _resolve_context(tokens, user_id, now)
     tokens = _sort_in_lists(tokens)
     return _render_tokens(tokens)
 
@@ -426,15 +451,15 @@ def _atom_field(value: str) -> str:
     return _unquote(tokens[0].value).strip().lower()
 
 
-def _normalize_tree(node, user_id: str, now: datetime):
+def _normalize_tree(node):
     if isinstance(node, Atom):
-        return Atom(_normalize_atom(node.value, user_id, now))
+        return Atom(_normalize_atom(node.value))
     if isinstance(node, Not):
-        return Not(_normalize_tree(node.child, user_id, now))
+        return Not(_normalize_tree(node.child))
     children = []
     cls = And if isinstance(node, And) else Or
     for child in node.children:
-        normalized = _normalize_tree(child, user_id, now)
+        normalized = _normalize_tree(child)
         if isinstance(normalized, cls):
             children.extend(normalized.children)
         else:
@@ -522,23 +547,9 @@ def _parse_order(tokens: list[Token]) -> tuple[OrderSpec, ...]:
     return tuple(specs)
 
 
-def compile_jql(raw: str, *, user_id: str = "", timezone_name: str = "UTC",
-                now: datetime | None = None, ttl_seconds: int = 900) -> CompiledJql:
-    tokens = tokenize((raw or "").strip().rstrip(";").strip())
-    condition_tokens, order_tokens = _split_order(tokens)
-    try:
-        tz = ZoneInfo(timezone_name or "UTC")
-    except Exception:
-        tz = timezone.utc
-    if now is None:
-        stamp = datetime.now(tz).timestamp()
-    else:
-        current = now if now.tzinfo else now.replace(tzinfo=tz)
-        stamp = current.astimezone(tz).timestamp()
-    bucket = max(1, int(ttl_seconds or 900))
-    context_now = datetime.fromtimestamp((int(stamp) // bucket) * bucket, tz)
-    parsed = _Parser(condition_tokens).parse()
-    normalized = _normalize_tree(parsed, user_id, context_now)
+def _compile_ast(parsed, order: tuple[OrderSpec, ...]) -> CompiledJql:
+    """Apply parser-independent normalization, DNF and safety policies to an AST."""
+    normalized = _normalize_tree(parsed)
     normalized = _nnf(normalized)
     rows = _dnf(normalized)
     clean: set[tuple[str, ...]] = set()
@@ -556,11 +567,21 @@ def compile_jql(raw: str, *, user_id: str = "", timezone_name: str = "UTC",
     if not leaves:
         leaves = ("",)
         leaf_fields = (tuple(),)
-    order = _parse_order(order_tokens)
     order_text = ", ".join(f"{spec.field} {spec.direction}" for spec in order)
     base = " OR ".join(f"({leaf})" for leaf in leaves) if len(leaves) > 1 else leaves[0]
     canonical = (base + " ORDER BY " + order_text).strip()
     return CompiledJql(canonical=canonical, leaves=leaves, leaf_fields=leaf_fields, order=order)
+
+
+def compile_jql(raw: str, *, user_id: str = "", timezone_name: str = "UTC",
+                now: datetime | None = None, ttl_seconds: int = 900) -> CompiledJql:
+    prepared = preprocess_context_jql(
+        raw, user_id=user_id, timezone_name=timezone_name, now=now,
+        ttl_seconds=ttl_seconds)
+    tokens = tokenize(prepared)
+    condition_tokens, order_tokens = _split_order(tokens)
+    parsed = _Parser(condition_tokens).parse()
+    return _compile_ast(parsed, _parse_order(order_tokens))
 
 
 def fields_with_order(fields: str, order: Iterable[OrderSpec]) -> str:
