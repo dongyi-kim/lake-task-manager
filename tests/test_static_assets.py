@@ -225,6 +225,16 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
     assert "this._streamAbort.abort()" in view
     assert "this._cacheModel(cache, key, next)" in view
     assert "this._queueEpicMetadata(next, cache)" in view
+    # Progressive/key-only snapshots must not overwrite already-known Epic titles after
+    # _queueEpicMetadata synchronously reapplies them to the cached authoritative model.
+    stream_replace = view[view.index("if (event.replace !== false && event.model)"):
+                          view.index("if (active && event.done)")]
+    assert stream_replace.index("this._queueEpicMetadata(next, cache)") < stream_replace.index("this.model = cache[key]")
+    assert "this.model = next" not in stream_replace
+    hydrate_replace = view[view.index("cache[cacheKey] = next;"):
+                           view.index("} catch (e) {", view.index("cache[cacheKey] = next;"))]
+    assert hydrate_replace.index("this._queueEpicMetadata(next, cache)") < hydrate_replace.index("this.model = cache[cacheKey]")
+    assert "this.model = next" not in hydrate_replace
     assert 'epicDisplayTitle(k) { return this.epicPending(k) ? "Epic 이름 확인 중"' in view
     assert 'result.contract !== "task-snapshot.v1"' in view
     assert "Number(result.sequence) <= snapshotSequence" in view
