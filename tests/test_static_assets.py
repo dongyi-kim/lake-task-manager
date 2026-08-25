@@ -204,6 +204,22 @@ def test_uniform_subtask_status_reuses_solo_parent_and_foldable_children_in_one_
     assert "mt-gslot.one-status" not in css
 
 
+def test_mytasks_uses_axis_pagination_without_splitting_subtask_groups():
+    view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
+    css = (STATIC / "styles" / "mytasks.css").read_text(encoding="utf-8")
+
+    assert "const AXIS_PAGE_SIZE = 40;" in view
+    assert "axisEntries()" in view and 'add(state.k, "panel:" + panel.key)' in view
+    assert "Task with SubTask는 자식을 쪼개지 않고 한 항목으로 센다" in view
+    assert 'v-for="c in pagedCards(p, st.k)"' in view
+    assert 'panelPageVisibleAny(p)' in view
+    assert 'v-show="panelPageVisible(p, st.k)"' in view
+    assert view.count('class="mt-axis-more-btn"') == 2
+    assert "{{ axisHidden(st.k) }}개 더 보기" in view
+    assert ".mt-axis-more-row { display: grid;" in css
+    assert ".mt-axis-more-btn { display: inline-flex;" in css
+
+
 def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_overwrite():
     view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
     api = (STATIC / "lib" / "api.js").read_text(encoding="utf-8")

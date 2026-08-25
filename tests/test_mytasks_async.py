@@ -342,6 +342,68 @@ def test_authoritative_snapshot_is_independent_of_leaf_completion_order(monkeypa
     assert [event["sequence"] for event in events] == list(range(len(events)))
 
 
+def test_done_window_cannot_crowd_active_axes_out_of_the_task_model(monkeypatch):
+    """A Done-only filter change must not compete with To Do/In Progress for one global cap."""
+    client = _client()
+    me = "test.ui01"
+
+    def raw(key, category, *, due=None, resolved=None):
+        category_key = {"todo": "new", "inprogress": "indeterminate", "done": "done"}[category]
+        fields = {
+            "summary": key, "issuetype": {"name": "Task", "subtask": False},
+            "status": {"name": category, "statusCategory": {"key": category_key}},
+            "assignee": {"name": me, "displayName": me},
+            "reporter": {"name": me, "displayName": me},
+            "priority": {"name": "P2-Major"}, "duedate": due,
+            "resolutiondate": resolved, "created": "2026-01-01T09:00:00+0900",
+            "updated": "2026-08-25T09:00:00+0900", "components": [],
+            "subtasks": [], "parent": None,
+        }
+        fields[client.s.sp_field_id] = None
+        fields[client.s.epic_link_field_id] = None
+        return {"key": key, "fields": fields}
+
+    progress = [raw(f"DL-97{i:04d}", "inprogress") for i in range(30)]
+    todo = [raw(f"DL-96{i:04d}", "todo") for i in range(5)]
+    done = [raw(f"DL-98{i:04d}", "done", due="2026-01-01",
+                resolved="2026-08-15T18:00:00+0900") for i in range(230)]
+
+    def chunks(jql, fields=None, light=True):
+        compiled = client._compile_jql(jql)
+        combined = {}
+        for index, leaf in enumerate(compiled.leaves):
+            lowered = leaf.lower()
+            if "statuscategory = done" in lowered:
+                rows = done[:20] if "resolved >= -7d" in jql.lower() else done
+            elif "statuscategory = \"in progress\"" in lowered:
+                rows = progress
+            elif "statuscategory = \"to do\"" in lowered:
+                rows = todo
+            else:
+                rows = []
+            for row in rows:
+                combined[row["key"]] = row
+            yield {
+                "leaf": leaf, "leafIndex": index, "leafTotal": len(compiled.leaves),
+                "issues": rows, "combined": sort_issues(combined.values(), compiled.order),
+                "fallback": False, "coalesceCached": False,
+            }
+
+    monkeypatch.setattr(client, "iter_search_issue_chunks", chunks)
+    week = list(iter_my_task_models(client, scope="assignee", done_filter="1w"))[-1]["model"]
+    month = list(iter_my_task_models(client, scope="assignee", done_filter="1m"))[-1]["model"]
+
+    def keys(model, category):
+        return {atom["key"] for group in model["groups"] for atom in group["atoms"]
+                if atom["statusCategory"] == category}
+
+    expected_progress = {row["key"] for row in progress}
+    assert keys(week, "inprogress") == expected_progress
+    assert keys(month, "inprogress") == expected_progress
+    assert keys(month, "done") == {row["key"] for row in done}
+    assert month["counts"]["total"] == len(progress) + len(todo) + len(done)
+
+
 def test_epic_metadata_uses_long_ttl_and_ticket_invalidation_evicts_it(monkeypatch):
     client = _client()
     meta = client.epic_metadata("DL-9019")

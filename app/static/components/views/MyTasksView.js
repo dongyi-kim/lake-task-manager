@@ -120,6 +120,9 @@ const SubtaskFoldBar = {
 // 한 상태 칸에 우선 보여 줄 하위 개수. **어느 한 칸이라도** 이 수를 넘으면 그 Task 는
 // 접기 대상이 되고, 그때부터 모든 칸이 같은 규칙으로 잘린다.
 const SUB_CAP = 5;
+// 서버/JQL은 모든 결과를 끝까지 수집한다. 이 값은 데이터 상한이 아니라 한 상태축에서 한 번에
+// DOM에 펼쳐 보일 최상위 항목 수다. Task with SubTask는 자식을 쪼개지 않고 한 항목으로 센다.
+const AXIS_PAGE_SIZE = 40;
 const NARROW = "(max-width: 900px)";      // 이 아래로는 3칼럼이 성립하지 않는다(CSS 도 같은 값)
 
 const OPTIONS = [
@@ -204,6 +207,7 @@ export default {
       openFilter: "all",    // 할당됨 축: all | 2w   (서버 질의 조건)
       progFilter: "all",    // 진행 중 축: all | 1m  (기본 모두 — 지금 하는 일을 숨기지 않는다)
       doneFilter: "1w",     // 완료 축 기간: 1w | 1m (서버 질의 조건)
+      axisPage: { todo: AXIS_PAGE_SIZE, inprogress: AXIS_PAGE_SIZE, done: AXIS_PAGE_SIZE },
       sort: "due",
       busy: false,
       // Epic 필터(하단 콤보) — **가릴 버킷**만 담는다(비어 있으면 전부 표시). 새로 나타난 Epic 은
@@ -404,6 +408,38 @@ export default {
       if (solo) out.push(solo);
       return out;
     },
+    /** 상태축별 페이지 단위. 독립 Task/1축 Task는 카드 하나, 혼합 SubTask 그룹은 부모 그룹
+     *  하나를 한 항목으로 센다. 그룹 안의 자식은 기존 폴더블 UI가 담당하므로 페이지가
+     *  Task 경계를 잘라 부모만 보이거나 일부 자식만 사라지는 일이 없다. */
+    axisEntries() {
+      const out = { todo: [], inprogress: [], done: [] };
+      const seen = { todo: new Set(), inprogress: new Set(), done: new Set() };
+      const add = (axis, id) => {
+        if (!seen[axis].has(id)) { seen[axis].add(id); out[axis].push(id); }
+      };
+      for (const panel of this.panels) {
+        const split = this.byState(panel.cards || []);
+        if (panel.kind === "none" || panel.kind === "solo") {
+          for (const state of this.states) for (const card of split[state.k]) {
+            add(state.k, "card:" + card.key);
+          }
+          continue;
+        }
+        for (const state of this.states) {
+          const pendingParent = panel.group && panel.group.childrenPending
+            && this.parentState(panel) === state.k;
+          if (split[state.k].length || pendingParent) add(state.k, "panel:" + panel.key);
+        }
+      }
+      return out;
+    },
+    axisVisibleEntries() {
+      const out = {};
+      for (const state of this.states) {
+        out[state.k] = new Set(this.axisEntries[state.k].slice(0, this.axisPage[state.k]));
+      }
+      return out;
+    },
   },
   methods: {
     /** 세션 사용자와 모듈 디렉토리를 Task 본문과 독립적으로 받는다.
@@ -499,6 +535,10 @@ export default {
      *  append/dedup/sort/statistics; this client only accepts a newer authoritative snapshot. */
     async load(opts) {
       const key = this.apiScope + "|" + this.openFilter + "|" + this.progFilter + "|" + this.doneFilter;
+      if (this._axisPageKey !== key) {
+        this._axisPageKey = key;
+        this.resetAxisPages();
+      }
       const cache = this._mcache || (this._mcache = {});
       if (this._streamAbort) this._streamAbort.abort();
       const controller = this._streamAbort = new AbortController();
@@ -678,6 +718,7 @@ export default {
     setOpt(o, v) {
       if (this[o.key] === v) return;
       this[o.key] = v;
+      this.resetAxisPages();
       this.savePrefs();
       if (o.reload) this.load();
     },
@@ -738,14 +779,14 @@ export default {
     toggleEpic(k) {
       const h = Object.assign({}, this.epicHidden);
       if (h[k]) delete h[k]; else h[k] = true;
-      this.epicHidden = h; this.savePrefs();
+      this.epicHidden = h; this.resetAxisPages(); this.savePrefs();
     },
     /** '모든 Epic' — 다 보이면 전부 가리고, 아니면 전부 보인다(가림 초기화). */
     toggleAllEpics() {
       if (this.allEpicsShown) {
         const h = {}; for (const k of this.allBuckets) h[k] = true; this.epicHidden = h;
       } else { this.epicHidden = {}; }
-      this.savePrefs();
+      this.resetAxisPages(); this.savePrefs();
     },
 
     /** 이슈키 접두사 = 프로젝트 키(DL-1234 → DL). */
@@ -759,14 +800,14 @@ export default {
     projPass(x) { return this.projShown(this.projectOf(x)); },
     toggleProj(p) {
       this.projPref = Object.assign({}, this.projPref, { [p]: !this.projShown(p) });
-      this.savePrefs();
+      this.resetAxisPages(); this.savePrefs();
     },
     /** '모든 Project' — 다 보이면 전부 숨기고, 아니면 전부 보인다. */
     toggleAllProjects() {
       const want = !this.allProjectsShown;
       const pref = Object.assign({}, this.projPref);
       for (const p of this.projectOptions) pref[p.key] = want;
-      this.projPref = pref; this.savePrefs();
+      this.projPref = pref; this.resetAxisPages(); this.savePrefs();
     },
 
     /** 옵션은 브라우저에 남긴다 — 매번 같은 배치로 맞추는 건 화면이 할 일이지 사람이 할 일이 아니다.
@@ -845,6 +886,7 @@ export default {
       const f = BAND_FILTERS[k];
       if (!f || this[f.key] === v) return;
       this[f.key] = v;
+      this.resetAxisPages();
       this.savePrefs();
       this.load({ quiet: true });          // 서버 질의 조건이라 다시 받아야 한다
     },
@@ -931,6 +973,27 @@ export default {
       const m = { todo: [], inprogress: [], done: [] };
       for (const c of cards) (m[c.statusCategory] || m.todo).push(c);
       return m;
+    },
+    resetAxisPages() {
+      this.axisPage = { todo: AXIS_PAGE_SIZE, inprogress: AXIS_PAGE_SIZE, done: AXIS_PAGE_SIZE };
+    },
+    axisEntryCount(k) { return (this.axisEntries[k] || []).length; },
+    axisShown(k) { return Math.min(this.axisPage[k] || AXIS_PAGE_SIZE, this.axisEntryCount(k)); },
+    axisHidden(k) { return Math.max(0, this.axisEntryCount(k) - this.axisShown(k)); },
+    moreBand(k) {
+      this.axisPage = Object.assign({}, this.axisPage, {
+        [k]: (this.axisPage[k] || AXIS_PAGE_SIZE) + AXIS_PAGE_SIZE,
+      });
+    },
+    pagedCards(panel, k) {
+      const visible = this.axisVisibleEntries[k] || new Set();
+      return this.byState(panel.cards || [])[k].filter((card) => visible.has("card:" + card.key));
+    },
+    panelPageVisible(panel, k) {
+      return (this.axisVisibleEntries[k] || new Set()).has("panel:" + panel.key);
+    },
+    panelPageVisibleAny(panel) {
+      return this.states.some((state) => this.panelPageVisible(panel, state.k));
     },
     /** 가로축의 1컬럼 버전. 부모 상태 열이 접혔으면 부모 정보가 찌그러지지 않게 기존 전폭으로 둔다. */
     compactStatus(p) {
@@ -1261,9 +1324,9 @@ export default {
         <!-- 그룹화 없음 / 하위 없는 Task 묶음 — 묶을 게 없으니 카드 테두리도 없다 -->
         <div v-if="p.kind === 'none' || p.kind === 'solo'" class="mt-gbody plain">
           <div v-for="st in states" :key="'n-' + st.k" class="mt-cell"
-               :class="['c-' + st.k, { empty: !byState(p.cards)[st.k].length,
+               :class="['c-' + st.k, { empty: !pagedCards(p, st.k).length,
                                                 closed: !bandOpen(st.k) }]">
-            <template v-for="c in byState(p.cards)[st.k]" :key="c.key">
+            <template v-for="c in pagedCards(p, st.k)" :key="c.key">
               <TaskCard v-if="!c.compactPanel" :card="c"
                      :style="sigStyle(c)" :epic-title="epicDisplayTitle(c.epicKey)"
                      :epic-pending="epicPending(c.epicKey)" />
@@ -1306,7 +1369,7 @@ export default {
         </div>
 
         <!-- Task 그룹 = 카드 하나 -->
-        <div v-else-if="p.kind === 'task'" class="mt-gslot">
+        <div v-else-if="p.kind === 'task' && panelPageVisibleAny(p)" class="mt-gslot">
         <div class="mt-gcard2 k-task" :class="{ folded: isGroupClosed(p) }" :style="sigStyle(p.group)">
           <div class="mt-gh">
             <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
@@ -1334,11 +1397,11 @@ export default {
           <SubtaskFoldBar :panel="p" :closed="isGroupClosed(p)" @toggle="toggleGroup(p)" />
           <div v-if="!isGroupClosed(p)" class="mt-gbody">
             <div v-for="st in states" :key="p.key + st.k" class="mt-cell"
-                 :class="['c-' + st.k, { empty: !byState(p.cards)[st.k].length,
+                 :class="['c-' + st.k, { empty: !panelPageVisible(p, st.k) || !byState(p.cards)[st.k].length,
                                                 closed: !bandOpen(st.k),
                                                 foldwrap: foldable(p),
                                                 folded: peeking(p), 'fold-peek': peeking(p) }]">
-                <div v-for="c in cellCards(p, st.k)" :key="c.key" class="mt-card tkt"
+                <div v-for="c in (panelPageVisible(p, st.k) ? cellCards(p, st.k) : [])" :key="c.key" class="mt-card tkt"
                      :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done',
                              urgent: isUrgentC(c) }" :style="sigStyle(c)" :data-key="c.key">
                   <span v-if="isHotC(c)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
@@ -1355,7 +1418,7 @@ export default {
                 </div>
                 <!-- 넘친 칸에만 더보기가 붙지만, 누르면 **이 Task 의 모든 칸**이 함께 열린다.
                      접혀 있을 때는 흐려진 카드 **위에** 앉는다(.foldwrap.folded > .fold-b). -->
-                <button v-if="overflowed(p, st.k)" class="fold-b" @click.stop="toggleSub(p.key)">{{
+                <button v-if="panelPageVisible(p, st.k) && overflowed(p, st.k)" class="fold-b" @click.stop="toggleSub(p.key)">{{
                         subOpen[p.key] ? '접기' : '+' + cellHidden(p, st.k) + '개 더' }}</button>
             </div>
           </div>
@@ -1363,6 +1426,16 @@ export default {
         </div>
 
       </template>
+      <div class="mt-axis-more-row">
+        <div v-for="st in states" :key="'more-' + st.k" class="mt-axis-more-cell"
+             :class="['c-' + st.k, { closed: !bandOpen(st.k) }]">
+          <button v-if="bandOpen(st.k) && axisHidden(st.k)" type="button" class="mt-axis-more-btn"
+                  @click="moreBand(st.k)">
+            <span>{{ axisHidden(st.k) }}개 더 보기</span>
+            <small>{{ axisShown(st.k) }} / {{ axisEntryCount(st.k) }}</small>
+          </button>
+        </div>
+      </div>
       </div>
     </template>
 
@@ -1388,10 +1461,10 @@ export default {
         <template v-if="bandOpen(st.k)">
         <!-- 그룹화 없음 → 카드 그리드 하나 -->
         <div v-if="groupBy === 'none'" class="mt-grid2">
-          <TaskCard v-for="c in byState(panels[0].cards)[st.k]" :key="c.key" :card="c"
+          <TaskCard v-for="c in pagedCards(panels[0], st.k)" :key="c.key" :card="c"
                    :style="sigStyle(c)" :epic-title="epicDisplayTitle(c.epicKey)"
                    :epic-pending="epicPending(c.epicKey)" />
-          <div v-if="!byState(panels[0].cards)[st.k].length" class="mt-none">{{
+          <div v-if="!pagedCards(panels[0], st.k).length" class="mt-none">{{
             axisLoading(st.k) ? '완료되는 티켓부터 표시합니다' : '해당 상태의 티켓 없음' }}</div>
         </div>
         <!-- 그룹화 있음 → 그룹이 좌우로 늘어서고 각 그룹 안이 그리드 -->
@@ -1401,11 +1474,11 @@ export default {
           <template v-for="p in panels" :key="p.key">
             <!-- 하위 없는 Task 묶음 — 카드로만 -->
             <template v-if="p.kind === 'solo'">
-              <TaskCard v-for="c in byState(p.cards)[st.k]" :key="'so-' + c.key" :card="c"
+              <TaskCard v-for="c in pagedCards(p, st.k)" :key="'so-' + c.key" :card="c"
                    :style="sigStyle(c)" :epic-title="epicDisplayTitle(c.epicKey)"
                    :epic-pending="epicPending(c.epicKey)" />
             </template>
-            <div v-else v-show="byState(p.cards)[st.k].length || (p.group.childrenPending && parentState(p) === st.k)" class="mt-gcard2 k-task"
+            <div v-else v-show="panelPageVisible(p, st.k)" class="mt-gcard2 k-task"
                  :class="{ folded: isGroupClosed(p) }" :style="sigStyle(p.group)">
               <div class="mt-gh">
             <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
@@ -1455,6 +1528,12 @@ export default {
               </div>
             </div>
           </template>
+        </div>
+        <div v-if="axisHidden(st.k)" class="mt-axis-more">
+          <button type="button" class="mt-axis-more-btn" @click="moreBand(st.k)">
+            <span>{{ axisHidden(st.k) }}개 더 보기</span>
+            <small>{{ axisShown(st.k) }} / {{ axisEntryCount(st.k) }}</small>
+          </button>
         </div>
         </template>
       </div>

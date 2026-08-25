@@ -757,7 +757,7 @@
 .mt-colbg > .c-inprogress { background: color-mix(in srgb, var(--st-prog) 11%, transparent); }
 .mt-colbg > .c-done { background: color-mix(in srgb, var(--st-done) 11%, transparent); }
 .mt-hwrap > .mt-gbody, .mt-hwrap > .mt-gcard2, .mt-hwrap > .mt-gslot,
-.mt-hwrap > .mt-axis-shell { position: relative; z-index: 1; }
+.mt-hwrap > .mt-axis-shell, .mt-hwrap > .mt-axis-more-row { position: relative; z-index: 1; }
 /* 셀에 칠하던 색은 걷는다 — 두 겹이 되면 그룹 구간만 옅어 보인다 */
 .ax-h .mt-gbody.plain .mt-cell { background: none; }
 @media (max-width: 900px) { .mt-colbg { display: none; } }
@@ -800,6 +800,20 @@
      갈린다(카드끼리는 셀 좌우 패딩 11px 이 간격을 준다). */
 .ax-h .mt-headrow, .ax-h .mt-colbg, .ax-h .mt-gbody {
   grid-template-columns: var(--mt-cols, repeat(3, minmax(0, 1fr))); gap: 0; padding: 0; }
+.ax-h .mt-axis-more-row { display: grid;
+  grid-template-columns: var(--mt-cols, repeat(3, minmax(0, 1fr))); gap: 0; padding: 8px 0 6px; }
+.mt-axis-more-cell { min-width: 0; padding: 0 11px; }
+.mt-axis-more-cell.closed { padding: 0; }
+.mt-axis-more { display: flex; justify-content: center; padding: 0 12px 12px; }
+.mt-axis-more-btn { display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+  width: 100%; min-height: 30px; padding: 5px 12px; border: 1px solid var(--border-hi);
+  border-radius: 3px; color: var(--text); background: color-mix(in srgb, var(--panel) 88%, transparent);
+  font: inherit; font-size: 11.5px; font-weight: 700; cursor: pointer; }
+.mt-axis-more-btn small { color: var(--muted); font-size: 10px; font-weight: 600;
+  font-variant-numeric: tabular-nums; }
+.mt-axis-more-btn:hover { color: var(--text); border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+.mt-axis-more-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .ax-h .mt-headrow { padding-bottom: 0; margin-bottom: 0; }
 /* 헤더 = 박스 상단(얇은 바). 3칼럼이 하나로 이어지게 내부 세로경계는 단선, 바깥 끝만 라운드.
    좌측 색선 없이 상태색(조금 더 진하게). */

@@ -1416,7 +1416,7 @@ class JiraClient:
                     key, digest, leaf_generation, issue_keys, predicate_fields)
                 return issue_keys
 
-            issue_keys = self.cache.get_or_set(
+            issue_keys = self.cache.get_or_set_strict(
                 key, self.s.cache_ttl_seconds,
                 produce)[0]
         return self._hydrate_jql_leaf_rows(
@@ -1750,7 +1750,9 @@ class JiraClient:
             compiled = self._compile_jql(jql)
             execution_fields = fields_with_order(fields, compiled.order)
             _sid, snapshot = self._jql_snapshot(compiled, execution_fields, light)
-            issues = list(snapshot.get("issues") or [])[:max(0, int(max_results or 0))]
+            issues = list(snapshot.get("issues") or [])
+            if max_results is not None:
+                issues = issues[:max(0, int(max_results))]
             if cache_key:
                 # Preserve observability/compatibility for existing mt:/epic_* cache namespaces;
                 # normalized leaf and snapshot keys remain the source used for cache hits.
@@ -1798,19 +1800,24 @@ class JiraClient:
                         if isinstance(data, dict) and "issues" in data:
                             batch = data.get("issues", [])
                             issues.extend(batch); start += 100
-                            if start >= data.get("total", 0) or not batch or start >= max_results:
+                            if (start >= data.get("total", 0) or not batch
+                                    or (max_results is not None and start >= max_results)):
                                 break
                             continue
-                    # 자식 없는 Epic 은 Jira DC 가 400 에러로 답한다 — 정상적인 '0건' 이라 조용히.
+                    # 자식 없는 Epic 은 Jira DC 가 400 에러로 답한다 — 첫 페이지의 정상적인
+                    # '0건' 만 허용한다. 중간 페이지의 비정상 응답을 부분 성공으로 돌려주면
+                    # 이미 받은 앞 페이지만 목록 캐시에 굳어 실제 티켓이 사라진다.
                     msgs = " ".join((data or {}).get("errorMessages") or []) if isinstance(data, dict) else ""
-                    if "parent epic" not in msgs.lower():
-                        self._log_once("search-odd",
-                                       f"[search] 검색 응답 아님(무시): {str(data)[:120]}")
-                    break
+                    if "parent epic" in msgs.lower() and start == 0 and not issues:
+                        return []
+                    self._log_once("search-odd",
+                                   f"[search] 검색 응답 아님: {str(data)[:120]}")
+                    raise ValueError(msgs or "Jira 검색 응답 형식이 올바르지 않습니다.")
                 batch = data.get("issues", [])
                 issues.extend(batch)
                 start += 100
-                if start >= data.get("total", 0) or not batch or start >= max_results:
+                if (start >= data.get("total", 0) or not batch
+                        or (max_results is not None and start >= max_results)):
                     break
             return issues
         if cache_key:

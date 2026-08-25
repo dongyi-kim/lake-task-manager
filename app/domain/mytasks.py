@@ -321,7 +321,9 @@ class _TaskRowsClient:
         if self._recorder is not None:
             self._recorder.append((cache_key, jql, max_results))
             return []
-        return self._rows[:max(0, int(max_results or 0))]
+        if max_results is None:
+            return list(self._rows)
+        return self._rows[:max(0, int(max_results))]
 
     def issues_by_keys(self, keys, light=False):
         if not self._cache_only:
@@ -357,7 +359,7 @@ def _leaf_status_axis(leaf):
     return None
 
 
-def iter_my_task_models(client, user=None, include_done=False, limit=200, scope="assignee",
+def iter_my_task_models(client, user=None, include_done=False, limit=None, scope="assignee",
                         open_filter="all", prog_filter="all", done_filter="1w",
                         request_token=None):
     """Yield versioned, authoritative cumulative Task snapshots.
@@ -435,7 +437,8 @@ def iter_my_task_models(client, user=None, include_done=False, limit=200, scope=
     def cumulative_model(*, create_sync=False):
         rows_by_key = {}
         for rows, (_cache_key, _jql, max_results) in zip(query_results, calls):
-            for row in rows[:max(0, int(max_results or 0))]:
+            selected = rows if max_results is None else rows[:max(0, int(max_results))]
+            for row in selected:
                 key = (row or {}).get("key")
                 if key:
                     rows_by_key[key] = row
@@ -467,8 +470,10 @@ def iter_my_task_models(client, user=None, include_done=False, limit=200, scope=
                         cumulative_model(), errors=errors, leaf_done=leaf_done,
                         leaf_total=leaf_total, completed_leaf=completed)
                 continue
-            query_results[query_index] = list(chunk.get("combined") or ())[
-                :max(0, int(max_results or 0))]
+            combined = list(chunk.get("combined") or ())
+            query_results[query_index] = (
+                combined if max_results is None else combined[:max(0, int(max_results))]
+            )
             completed = {
                 "leaf": leaf, "axis": axis, "status": "success",
                 "leafIndex": chunk.get("leafIndex"),
@@ -498,7 +503,7 @@ def iter_my_task_models(client, user=None, include_done=False, limit=200, scope=
                 leaf_done=leaf_done, leaf_total=leaf_total)
 
 
-def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assignee",
+def build_my_tasks(client, user=None, include_done=False, limit=None, scope="assignee",
                    open_filter="all", prog_filter="all", done_filter="1w",
                    defer_children=False, create_sync=True):
     """세션 사용자(또는 user 지정)의 '내 Task' 모델.
