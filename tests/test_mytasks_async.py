@@ -1,5 +1,7 @@
 """Task-page base-first and per-parent SubTask synchronization contracts."""
 
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from app.auth.base import SessionExpired
@@ -7,11 +9,13 @@ from app.domain.mytasks import (
     build_my_tasks,
     hydrate_my_task_epics,
     hydrate_my_task_group,
+    hydrate_my_task_snapshot,
     iter_my_task_models,
 )
 from app.infra.cache import Cache
 from app.infra.settings import get_settings
 from app.jira.jira_client import JiraClient
+from app.jira.jql import sort_issues
 
 
 def _client():
@@ -94,8 +98,49 @@ def test_each_async_group_matches_the_legacy_complete_model():
         assert _without_async_metadata(actual) == _without_async_metadata(expected[shell["key"]])
 
 
+def test_group_hydration_returns_monotonic_authoritative_snapshots_without_duplicate_rows():
+    client = _client()
+    deferred = build_my_tasks(client, scope="module:TEST", defer_children=True)
+    pending = [group for group in deferred["groups"] if group.get("childrenPending")]
+    assert len(pending) >= 2
+
+    snapshots = [hydrate_my_task_snapshot(client, deferred["syncId"], group["key"])
+                 for group in pending]
+    first, second, final = snapshots[0], snapshots[1], snapshots[-1]
+
+    assert first["contract"] == second["contract"] == "task-snapshot.v1"
+    assert first["type"] == second["type"] == "snapshot"
+    assert first["syncId"] == second["syncId"] == deferred["syncId"]
+    assert first["sequence"] == 1
+    assert second["sequence"] == 2
+    assert final["sequence"] == len(pending)
+    assert final["model"]["snapshotSequence"] == len(pending)
+    assert final["model"]["syncPending"] == 0
+    rows = [row for group in final["model"]["groups"]
+            for row in list(group["atoms"]) + list(group["others"])]
+    keys = [row["key"] for row in rows]
+    assert len(keys) == len(set(keys))
+
+
+def test_parallel_group_hydration_serializes_authoritative_snapshot_versions():
+    client = _client()
+    deferred = build_my_tasks(client, scope="assignee", defer_children=True)
+    pending = [group for group in deferred["groups"] if group.get("childrenPending")][:2]
+    assert len(pending) == 2
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        snapshots = list(pool.map(
+            lambda group: hydrate_my_task_snapshot(client, deferred["syncId"], group["key"]),
+            pending))
+
+    assert sorted(snapshot["sequence"] for snapshot in snapshots) == [1, 2]
+    latest = max(snapshots, key=lambda snapshot: snapshot["sequence"])["model"]
+    latest_groups = {group["key"]: group for group in latest["groups"]}
+    assert all(latest_groups[group["key"]]["childrenPending"] is False for group in pending)
+
+
 @pytest.mark.parametrize("scope", [
-    "assignee", "reporter", "both", "module:TEST",
+    "assignee", "reporter", "both", "module:TEST", "module:Workbench",
     "assignee:test.ui02", "reporter:test.ui02", "epic:DL-9019",
     'jql:project = DL AND assignee = "test.ui01"',
 ])
@@ -104,25 +149,20 @@ def test_async_completion_preserves_every_task_scope(scope):
     deferred = build_my_tasks(client, scope=scope, defer_children=True)
     complete = build_my_tasks(client, scope=scope)
 
-    actual_groups = {group["key"]: group for group in deferred["groups"]}
     hydrated_keys = set()
+    actual = deferred
     if deferred.get("syncId"):
         for shell in deferred["groups"]:
             if shell.get("childrenPending"):
-                hydrated = hydrate_my_task_group(client, deferred["syncId"], shell["key"])
+                snapshot = hydrate_my_task_snapshot(client, deferred["syncId"], shell["key"])
                 hydrated_keys.add(shell["key"])
-                claimed = {atom["key"] for atom in hydrated["atoms"]}
-                for key, group in tuple(actual_groups.items()):
-                    if key != shell["key"] and claimed:
-                        copy = dict(group)
-                        copy["atoms"] = [atom for atom in group["atoms"] if atom["key"] not in claimed]
-                        actual_groups[key] = copy
-                actual_groups[shell["key"]] = hydrated
+                actual = snapshot["model"]
         actual_epics = hydrate_my_task_epics(client, deferred["syncId"]) \
             if deferred.get("epicsPending") else deferred["epics"]
     else:
         actual_epics = deferred["epics"]
 
+    actual_groups = {group["key"]: group for group in actual["groups"]}
     expected_groups = {group["key"]: group for group in complete["groups"]}
     assert set(actual_groups) == set(expected_groups)
     for key, expected in expected_groups.items():
@@ -155,20 +195,33 @@ def test_expired_or_invalidated_filter_snapshot_cannot_hydrate():
 
 
 @pytest.mark.parametrize("scope", [
-    "assignee", "reporter", "both", "module:TEST", "mymodules",
+    "assignee", "reporter", "both", "module:TEST", "module:Workbench", "mymodules",
     "assignee:test.ui02", "epic:DL-9019",
     'jql:project = DL AND assignee = "test.ui01"',
 ])
 def test_progressive_leaf_union_matches_authoritative_task_model(scope):
     client = _client()
-    events = list(iter_my_task_models(client, scope=scope))
+    events = list(iter_my_task_models(client, scope=scope, request_token="filter-a"))
 
-    assert events[0]["type"] == "start"
-    assert events[1]["type"] == "planned"
-    chunks = [event for event in events if event["type"] == "chunk"]
+    assert all(event["contract"] == "task-snapshot.v1" for event in events)
+    assert all(event["type"] == "snapshot" for event in events)
+    assert all(event["requestToken"] == "filter-a" for event in events)
+    assert [event["sequence"] for event in events] == list(range(len(events)))
+    assert events[0]["replace"] is False
+    assert events[-1]["done"] is True
+    chunks = [event for event in events if event["completedLeaf"]]
     assert chunks
-    assert [event["leafDone"] for event in chunks] == list(range(1, len(chunks) + 1))
-    assert all(event["leafTotal"] == len(chunks) for event in chunks)
+    assert [event["progress"]["completed"] for event in chunks] == \
+        list(range(1, len(chunks) + 1))
+    assert all(event["progress"]["total"] == len(chunks) for event in chunks)
+
+    # Every partial response is already an authoritative union: keys are unique, order and
+    # statistics are server-produced, and the browser never needs to merge a leaf model.
+    for event in chunks:
+        model = event["model"]
+        atom_keys = [atom["key"] for group in model["groups"] for atom in group["atoms"]]
+        assert len(atom_keys) == len(set(atom_keys))
+        assert event["statistics"] == model["counts"]
 
     streamed = events[-1]["model"]
     direct = build_my_tasks(client, scope=scope, defer_children=True)
@@ -199,6 +252,19 @@ def test_completed_stream_leaf_is_cached_before_the_browser_can_stop_consuming()
     assert client.cache.get(cache_key) is not None
     for issue in first["issues"]:
         assert client.cache.get(f"issueL:{client.env}:{issue['key']}") is not None
+
+
+def test_fully_warm_subquery_coalesces_leafs_into_one_authoritative_snapshot():
+    client = _client()
+    cold = list(iter_my_task_models(client, scope="assignee", request_token="cold"))
+    warm = list(iter_my_task_models(client, scope="assignee", request_token="warm"))
+
+    cold_leaf_events = [event for event in cold if event["completedLeaves"]]
+    warm_leaf_events = [event for event in warm if event["completedLeaves"]]
+    assert len(cold_leaf_events) > 1
+    assert len(warm_leaf_events) == 1
+    assert len(warm_leaf_events[0]["completedLeaves"]) == warm[-1]["progress"]["total"]
+    assert warm[-1]["model"]["groups"] == cold[-1]["model"]["groups"]
 
 
 def test_leaf_failures_are_isolated_classified_and_later_leaves_still_arrive(monkeypatch):
@@ -238,13 +304,42 @@ def test_partial_task_stream_keeps_successes_and_does_not_publish_partial_mt_cac
     events = list(iter_my_task_models(client, scope="assignee"))
     complete = events[-1]
 
-    assert any(event["type"] == "leaf-error"
-               and event["error"]["kind"] == "permission" for event in events)
-    assert complete["type"] == "complete"
+    assert any((event.get("completedLeaf") or {}).get("status") == "error"
+               and event["completedLeaf"]["error"]["kind"] == "permission"
+               for event in events)
+    assert complete["type"] == "snapshot"
+    assert complete["done"] is True
     assert complete["partial"] is True
-    assert complete["leafFailed"] == 1
+    assert complete["progress"]["failed"] == 1
     assert complete["model"]["groups"]
     assert client.cache.get(f"mt:{client.env}:asg:test.ui01:all.all.1w:light") is None
+
+
+def test_authoritative_snapshot_is_independent_of_leaf_completion_order(monkeypatch):
+    baseline = _client()
+    expected = list(iter_my_task_models(baseline, scope="both"))[-1]["model"]
+
+    candidate = _client()
+    original = candidate.iter_search_issue_chunks
+
+    def reversed_chunks(jql, fields=None, light=True):
+        chunks = list(original(jql, fields=fields, light=light))
+        combined = {}
+        order = candidate._compile_jql(jql).order
+        for chunk in reversed(chunks):
+            for issue in chunk.get("issues") or ():
+                combined[issue["key"]] = issue
+            current = dict(chunk)
+            current["combined"] = sort_issues(combined.values(), order)
+            yield current
+
+    monkeypatch.setattr(candidate, "iter_search_issue_chunks", reversed_chunks)
+    events = list(iter_my_task_models(candidate, scope="both", request_token="reverse"))
+    actual = events[-1]["model"]
+
+    assert actual["groups"] == expected["groups"]
+    assert actual["counts"] == expected["counts"]
+    assert [event["sequence"] for event in events] == list(range(len(events)))
 
 
 def test_epic_metadata_uses_long_ttl_and_ticket_invalidation_evicts_it(monkeypatch):

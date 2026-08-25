@@ -18,6 +18,7 @@
 
 import re
 import secrets
+import threading
 from datetime import date, datetime
 
 from app.domain.names import real_name
@@ -46,6 +47,8 @@ _NO_DUE = 10 ** 6           # 마감 없음 = 맨 뒤. None 정렬 분기를 안
 # '최근 완료' 로 볼 기간 선택지. 1주는 워크로드의 done7d 와 같은 창이다.
 DONE_WINDOWS = {"1w": 7, "1m": 30}
 ASYNC_SYNC_TTL = 30 * 60
+TASK_STREAM_CONTRACT = "task-snapshot.v1"
+_TASK_SYNC_LOCK = threading.RLock()
 
 
 def _days_until(due, today):
@@ -177,7 +180,10 @@ def _hydrated_group(parent, children, context, expected_keys):
     expected = list(dict.fromkeys(expected_keys or loaded))
     missing = [key for key in expected if key not in loaded]
     initial = (context.get("groupMeta") or {}).get(parent["key"], {})
-    mine = [child for child in children if _matches_scope(child, context)]
+    matched = set(context.get("matchedKeys") or ())
+    parent_matched = parent["key"] in matched
+    mine = [child for child in children
+            if child["key"] in matched or (parent_matched and _matches_scope(child, context))]
     mine_keys = {child["key"] for child in mine}
     others = [child for child in children if child["key"] not in mine_keys]
     if not expected and not children:
@@ -235,7 +241,52 @@ def hydrate_my_task_group(client, sync_id, group_key):
     parent = _node(parents[0], today, fields)
     children = [_node(raw, today, fields)
                 for raw in client.issues_by_keys(expected, light=True)]
-    return _hydrated_group(parent, children, state.get("context") or {}, expected)
+    return _normalize_task_groups([
+        _hydrated_group(parent, children, state.get("context") or {}, expected)
+    ])[0]
+
+
+def hydrate_my_task_snapshot(client, sync_id, group_key):
+    """Hydrate one Parent and publish the next authoritative cumulative Task snapshot.
+
+    A full child response can claim rows that the deferred base temporarily rendered as standalone
+    groups. Resolving that ownership in the browser recreates the same append/dedup/sort logic that
+    the Task stream deliberately moved to the server. Keep the mutable sync model server-side and
+    return a monotonically versioned replacement instead.
+    """
+    group = hydrate_my_task_group(client, sync_id, group_key)
+    sync_key = _sync_key(client, sync_id)
+    session_user = (client.current_user() or {}).get("id")
+    with _TASK_SYNC_LOCK:
+        state = client.cache.get(sync_key)
+        if not isinstance(state, dict):
+            raise LookupError("Task 동기화 정보가 만료되었습니다.")
+        if session_user != state.get("sessionUser"):
+            raise PermissionError("다른 사용자 Task 동기화 정보입니다.")
+        model = state.get("model")
+        if not isinstance(model, dict):
+            raise LookupError("Task 동기화 모델이 만료되었습니다.")
+
+        hydrated = set(state.get("hydrated") or ())
+        if group_key not in hydrated:
+            groups = _normalize_task_groups([
+                group if previous.get("key") == group_key else previous
+                for previous in model.get("groups") or ()])
+            atoms = [atom for item in groups for atom in item.get("atoms") or ()]
+            model["groups"] = groups
+            model["counts"] = _counts(atoms)
+            hydrated.add(group_key)
+
+        sequence = int(state.get("snapshotSequence") or 0) + 1
+        model["syncPending"] = max(0, len(state.get("children") or {}) - len(hydrated))
+        model["streamComplete"] = True
+        model["snapshotSequence"] = sequence
+        state["model"] = model
+        state["hydrated"] = sorted(hydrated)
+        state["snapshotSequence"] = sequence
+        client.cache.set(sync_key, state, ASYNC_SYNC_TTL)
+        return {"contract": TASK_STREAM_CONTRACT, "type": "snapshot", "syncId": sync_id,
+                "sequence": sequence, "model": model}
 
 
 def hydrate_my_task_epics(client, sync_id):
@@ -257,10 +308,11 @@ class _TaskRowsClient:
     non-streaming API instead of reimplementing those rules in the HTTP layer.
     """
 
-    def __init__(self, client, rows, recorder=None):
+    def __init__(self, client, rows, recorder=None, cache_only=False):
         self._client = client
         self._rows = list(rows or ())
         self._recorder = recorder
+        self._cache_only = bool(cache_only)
 
     def __getattr__(self, name):
         return getattr(self._client, name)
@@ -270,6 +322,27 @@ class _TaskRowsClient:
             self._recorder.append((cache_key, jql, max_results))
             return []
         return self._rows[:max(0, int(max_results or 0))]
+
+    def issues_by_keys(self, keys, light=False):
+        if not self._cache_only:
+            return self._client.issues_by_keys(keys, light=light)
+        requested = list(dict.fromkeys(key for key in (keys or ()) if key))
+        if not requested:
+            return []
+        by_key = {row.get("key"): row for row in self._rows if (row or {}).get("key")}
+        missing = [key for key in requested if key not in by_key]
+        if missing:
+            full = self._client.cache.get_many(
+                f"issue:{self._client.env}:{key}" for key in missing)
+            light_rows = self._client.cache.get_many(
+                f"issueL:{self._client.env}:{key}" for key in missing) if light else {}
+            for key in missing:
+                row = full.get(f"issue:{self._client.env}:{key}")
+                if row is None and light:
+                    row = light_rows.get(f"issueL:{self._client.env}:{key}")
+                if isinstance(row, dict) and row.get("key") == key:
+                    by_key[key] = row
+        return [by_key[key] for key in requested if key in by_key]
 
 
 def _leaf_status_axis(leaf):
@@ -285,14 +358,51 @@ def _leaf_status_axis(leaf):
 
 
 def iter_my_task_models(client, user=None, include_done=False, limit=200, scope="assignee",
-                        open_filter="all", prog_filter="all", done_filter="1w"):
-    """Yield Task models as normalized JQL leaves complete.
+                        open_filter="all", prog_filter="all", done_filter="1w",
+                        request_token=None):
+    """Yield versioned, authoritative cumulative Task snapshots.
 
-    Events are NDJSON-ready dictionaries.  ``chunk`` models contain only the newly completed leaf;
-    the browser appends them, deduplicates by issue key, sorts again and recomputes statistics.
-    ``complete`` is the authoritative union and carries the one SubTask hydration snapshot.
+    Jira leaves still complete independently and are cached before this iterator sees them.  The
+    server owns append/dedup/order/statistics: after each leaf it rebuilds one cumulative model from
+    all successful rows so the browser only replaces state when ``requestToken`` and monotonic
+    ``sequence`` match its active request.  A disconnected browser therefore cannot corrupt another
+    filter, while every leaf that completed before disconnect remains reusable in the Jira cache.
     """
-    yield {"type": "start", "axes": ["todo", "inprogress", "done"]}
+    token = str(request_token or secrets.token_urlsafe(18))[:128]
+    sequence = 0
+    axes = ["todo", "inprogress", "done"]
+
+    def event(model, *, done=False, replace=True, completed_leaf=None,
+              completed_leaves=None, errors=(), leaf_done=0, leaf_total=0):
+        nonlocal sequence
+        payload = {
+            "contract": TASK_STREAM_CONTRACT,
+            "type": "snapshot",
+            "requestToken": token,
+            "sequence": sequence,
+            "replace": bool(replace),
+            "done": bool(done),
+            "axes": axes,
+            "model": model,
+            "statistics": (model or {}).get("counts") if isinstance(model, dict) else None,
+            "progress": {
+                "completed": leaf_done,
+                "total": leaf_total,
+                "succeeded": leaf_done - len(errors),
+                "failed": len(errors),
+            },
+            # Compatibility aliases make the transition observable without coupling old clients
+            # to the new nested progress shape.
+            "leafDone": leaf_done,
+            "leafTotal": leaf_total,
+            "completedLeaf": completed_leaf,
+            "completedLeaves": list(completed_leaves or (
+                [completed_leaf] if completed_leaf else [])),
+            "partial": bool(errors),
+            "partialErrors": list(errors),
+        }
+        sequence += 1
+        return payload
 
     calls = []
     planner = _TaskRowsClient(client, (), recorder=calls)
@@ -301,10 +411,11 @@ def iter_my_task_models(client, user=None, include_done=False, limit=200, scope=
         open_filter=open_filter, prog_filter=prog_filter, done_filter=done_filter,
         defer_children=True, create_sync=False)
     if not calls:
-        yield {"type": "complete", "model": empty, "leafDone": 0, "leafTotal": 0}
+        yield event(empty, done=True, leaf_done=0, leaf_total=0)
         return
 
-    query_results = []
+    query_results = [[] for _call in calls]
+    query_failed = [False for _call in calls]
     errors = []
     query_total = len(calls)
     leaf_done = 0
@@ -316,63 +427,75 @@ def iter_my_task_models(client, user=None, include_done=False, limit=200, scope=
             leaf_total += len(client._compile_jql(jql).leaves)
         except Exception:
             leaf_total += 1
-    yield {"type": "planned", "leafDone": 0, "leafTotal": leaf_total}
+
+    # Do not replace a warm same-filter browser model with an empty planning shell.  A new filter
+    # already starts from its own empty cache entry, while both cases receive axes/progress now.
+    yield event(empty, replace=False, leaf_done=0, leaf_total=leaf_total)
+
+    def cumulative_model(*, create_sync=False):
+        rows_by_key = {}
+        for rows, (_cache_key, _jql, max_results) in zip(query_results, calls):
+            for row in rows[:max(0, int(max_results or 0))]:
+                key = (row or {}).get("key")
+                if key:
+                    rows_by_key[key] = row
+        return build_my_tasks(
+            _TaskRowsClient(client, rows_by_key.values(), cache_only=not create_sync), user=user,
+            include_done=include_done, limit=limit, scope=scope,
+            open_filter=open_filter, prog_filter=prog_filter, done_filter=done_filter,
+            defer_children=True, create_sync=create_sync)
 
     for query_index, (cache_key, jql, max_results) in enumerate(calls):
-        query_rows = []
-        query_failed = False
+        cached_batch = []
         for chunk in client.iter_search_issue_chunks(jql, light=True):
             leaf_done += 1
+            leaf = chunk.get("leaf")
+            axis = _leaf_status_axis(leaf)
             if chunk.get("error"):
-                query_failed = True
+                query_failed[query_index] = True
                 error = dict(chunk["error"])
                 errors.append(error)
-                yield {
-                    "type": "leaf-error", "error": error,
-                    "axis": _leaf_status_axis(chunk.get("leaf")),
-                    "leaf": chunk.get("leaf"), "leafDone": leaf_done,
-                    "leafTotal": leaf_total, "queryIndex": query_index,
-                    "queryTotal": query_total,
+                completed = {
+                    "leaf": leaf, "axis": axis, "status": "error", "error": error,
+                    "leafIndex": chunk.get("leafIndex"),
+                    "queryIndex": query_index, "queryTotal": query_total,
                 }
+                if chunk.get("coalesceCached"):
+                    cached_batch.append(completed)
+                else:
+                    yield event(
+                        cumulative_model(), errors=errors, leaf_done=leaf_done,
+                        leaf_total=leaf_total, completed_leaf=completed)
                 continue
-            leaf_rows = list(chunk.get("issues") or ())
-            query_rows = list(chunk.get("combined") or ())[:max(0, int(max_results or 0))]
-            leaf_model = build_my_tasks(
-                _TaskRowsClient(client, leaf_rows), user=user, include_done=include_done,
-                limit=limit, scope=scope, open_filter=open_filter,
-                prog_filter=prog_filter, done_filter=done_filter,
-                defer_children=True, create_sync=False)
-            yield {
-                "type": "chunk", "model": leaf_model,
-                "axis": _leaf_status_axis(chunk.get("leaf")),
-                "leaf": chunk.get("leaf"), "leafDone": leaf_done,
-                "leafTotal": leaf_total, "queryIndex": query_index,
-                "queryTotal": query_total,
+            query_results[query_index] = list(chunk.get("combined") or ())[
+                :max(0, int(max_results or 0))]
+            completed = {
+                "leaf": leaf, "axis": axis, "status": "success",
+                "leafIndex": chunk.get("leafIndex"),
+                "queryIndex": query_index, "queryTotal": query_total,
             }
+            if chunk.get("coalesceCached"):
+                cached_batch.append(completed)
+            else:
+                yield event(
+                    cumulative_model(), errors=errors, leaf_done=leaf_done,
+                    leaf_total=leaf_total, completed_leaf=completed)
+        if cached_batch:
+            # A fully warm subquery completes without upstream waiting.  Emit one cumulative
+            # snapshot instead of N near-identical payloads; cold leaves remain one-by-one.
+            yield event(
+                cumulative_model(), errors=errors, leaf_done=leaf_done,
+                leaf_total=leaf_total, completed_leaf=cached_batch[-1],
+                completed_leaves=cached_batch)
         # Preserve the historical mt:* aggregate cache only after this subquery is complete.  A
         # disconnected stream never publishes a partial list as a complete API-cache hit.
-        query_results.append(query_rows)
-        if cache_key is not None and not query_failed:
-            client.cache.set(cache_key + ":light", query_rows,
+        if cache_key is not None and not query_failed[query_index]:
+            client.cache.set(cache_key + ":light", query_results[query_index],
                              client.s.cache_ttl_seconds)
 
-    # Reapply the per-subquery limit before the authoritative union.  Rows from multiple module
-    # queries may overlap, so issue key remains the identity at this final boundary as well.
-    final_rows = {}
-    for rows, (_cache_key, _jql, max_results) in zip(query_results, calls):
-        for row in rows[:max(0, int(max_results or 0))]:
-            key = (row or {}).get("key")
-            if key:
-                final_rows[key] = row
-    complete = build_my_tasks(
-        _TaskRowsClient(client, final_rows.values()), user=user, include_done=include_done,
-        limit=limit, scope=scope, open_filter=open_filter,
-        prog_filter=prog_filter, done_filter=done_filter,
-        defer_children=True, create_sync=True)
-    yield {"type": "complete", "model": complete,
-           "leafDone": leaf_done, "leafTotal": leaf_total,
-           "leafSucceeded": leaf_done - len(errors), "leafFailed": len(errors),
-           "partial": bool(errors), "errors": errors}
+    complete = cumulative_model(create_sync=True)
+    yield event(complete, done=True, errors=errors,
+                leaf_done=leaf_done, leaf_total=leaf_total)
 
 
 def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assignee",
@@ -665,6 +788,7 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
     out = sorted(groups.values(),
                  key=lambda g: (g["urgency"] if g["urgency"] is not None else _NO_DUE,
                                 g["priRank"], g["key"]))
+    out = _normalize_task_groups(out)
 
     # 5) Epic 메타 — 그룹이 참조하는 것만(이름을 보여주려면 제목이 필요하다)
     epic_keys = sorted({g["epic"] for g in out if g["epic"]})
@@ -694,13 +818,15 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
             "groupMeta": {g["key"]: {"mine": g["mine"], "role": g.get("role")}
                           for g in out},
         }
-        client.cache.set(_sync_key(client, sync_id), {
-            "sessionUser": session_user, "context": context,
-            "children": pending_groups, "epics": epic_keys,
-        }, ASYNC_SYNC_TTL)
         result["syncId"] = sync_id
         result["syncPending"] = len(pending_groups)
         result["epicsPending"] = bool(epic_keys)
+        result["snapshotSequence"] = 0
+        client.cache.set(_sync_key(client, sync_id), {
+            "sessionUser": session_user, "context": context,
+            "children": pending_groups, "epics": epic_keys,
+            "model": result, "hydrated": [], "snapshotSequence": 0,
+        }, ASYNC_SYNC_TTL)
     return result
 
 
@@ -714,3 +840,77 @@ def _counts(atoms):
     return {"total": len(atoms), "overdue": over, "today": today_n, "week": week,
             "done": sum(1 for a in atoms if a["statusCategory"] == "done"),
             "noDue": sum(1 for a in atoms if a["dueDays"] is None)}
+
+
+def _normalize_task_groups(groups):
+    """Give every issue key one authoritative owner and refresh group-derived ordering fields."""
+    by_group = {group.get("key"): group for group in groups or () if group.get("key")}
+    mine_by_key = {}
+    for group in groups or ():
+        for atom in group.get("atoms") or ():
+            if atom.get("key"):
+                mine_by_key[atom["key"]] = atom
+
+    rows = []
+    for source in groups or ():
+        group = dict(source)
+        group["atoms"] = [atom for atom in source.get("atoms") or ()
+                          if (not atom.get("parentKey")
+                              or atom.get("parentKey") == group.get("key")
+                              or atom.get("parentKey") not in by_group)]
+        group["others"] = list(source.get("others") or ())
+        if group.get("hasSubs"):
+            promoted = [row for row in group["others"] if row.get("key") in mine_by_key]
+            if promoted:
+                promote_keys = {row.get("key") for row in promoted}
+                merged = {row.get("key"): row for row in group["atoms"] if row.get("key")}
+                for row in promoted:
+                    merged[row["key"]] = mine_by_key[row["key"]]
+                group["atoms"] = list(merged.values())
+                group["others"] = [row for row in group["others"]
+                                   if row.get("key") not in promote_keys]
+        rows.append(group)
+
+    claimed = set()
+    for group in sorted(rows, key=lambda item: not bool(item.get("hasSubs"))):
+        atoms, others = [], []
+        for row in group.get("atoms") or ():
+            key = row.get("key")
+            if not key or key in claimed:
+                continue
+            claimed.add(key)
+            atoms.append(row)
+        for row in group.get("others") or ():
+            key = row.get("key")
+            if not key or key in claimed:
+                continue
+            claimed.add(key)
+            others.append(row)
+        group["atoms"], group["others"] = atoms, others
+
+    normalized = []
+    row_key = lambda row: (
+        row.get("dueDays") if row.get("dueDays") is not None else _NO_DUE,
+        row.get("priRank", 2), row.get("key") or "")
+    for group in rows:
+        if not (group.get("hasSubs") or group["atoms"] or group["others"]):
+            continue
+        group["atoms"] = sorted(group["atoms"], key=row_key)
+        atom_keys = {row.get("key") for row in group["atoms"]}
+        group["others"] = sorted(
+            (row for row in group["others"] if row.get("key") not in atom_keys), key=row_key)
+        children = {row.get("key"): row for row in group["atoms"] + group["others"]
+                    if row.get("key") and row.get("key") != group.get("key")}
+        group["kidsTotal"] = max(int(group.get("kidsTotal") or 0), len(children))
+        group["kidsDone"] = sum(row.get("statusCategory") == "done" for row in children.values())
+        group["othersDone"] = sum(row.get("statusCategory") == "done"
+                                  for row in group["others"])
+        due = [row.get("dueDays") for row in group["atoms"]
+               if row.get("dueDays") is not None]
+        group["urgency"] = min(due) if due else None
+        if group["atoms"]:
+            group["priRank"] = min(row.get("priRank", 2) for row in group["atoms"])
+        normalized.append(group)
+    return sorted(normalized, key=lambda item: (
+        item.get("urgency") if item.get("urgency") is not None else _NO_DUE,
+        item.get("priRank", 2), item.get("key") or ""))

@@ -238,6 +238,16 @@ _ALLOWED_ATTRS = {
     "colgroup": {"span"},
     "ol": {"start", "type"},
 }
+
+# LTM CSS는 Jira 본문에서 로드되지 않는다. 표의 선은 화면 stylesheet가 아니라 저장 HTML 자체에
+# 있어야 한다. Jira DC 8.20의 구형 렌더러도 알아보도록 table에는 legacy border 속성을,
+# table/cell에는 inline border를 함께 넣는다. 값은 사용자 입력이 아닌 상수라 정화 경계를 넓히지
+# 않으며 sanitize를 반복해도 기존 값을 버린 뒤 정확히 한 번 다시 붙으므로 멱등이다.
+_TABLE_REQUIRED_STYLE = {
+    "table": "border-collapse:collapse;border-spacing:0;border:1px solid #dfe1e6",
+    "th": "border:1px solid #dfe1e6;padding:6px 8px;vertical-align:top",
+    "td": "border:1px solid #dfe1e6;padding:6px 8px;vertical-align:top",
+}
 _URL_ATTRS = {"href", "src"}
 _SAFE_SCHEMES = ("http://", "https://", "mailto:", "tel:")
 # Confluence(문서) 링크 판별 — **URL 경로 패턴** 기반(호스트/스페이스 이름과 무관).
@@ -383,7 +393,7 @@ class _Sanitizer(HTMLParser):
 
     def _attrs(self, tag, attrs):
         allowed = _ALLOWED_ATTRS.get(tag, set())
-        parts, classes, href_val, src_val = [], [], None, None
+        parts, classes, href_val, src_val, safe_styles = [], [], None, None, []
         for k, v in attrs:
             k = (k or "").lower()
             if k == "style":
@@ -391,7 +401,7 @@ class _Sanitizer(HTMLParser):
                 # 통과시킨다 — 에디터의 text-align/font-family 가 렌더·재편집에서 살아남게.
                 safe = _safe_style(v)
                 if safe:
-                    parts.append('style="' + escape(safe, quote=True) + '"')
+                    safe_styles.append(safe)
                 continue
             if k.startswith("on") or k in ("srcset", "formaction", "xlink:href"):
                 continue                 # 이벤트 핸들러·기타 위험 속성 제거
@@ -420,6 +430,13 @@ class _Sanitizer(HTMLParser):
             #   file-badge 가 붙기 전이라 여기서는 첨부인지 알 수 없다.
             parts.append('target="_blank"')
             parts.append('rel="noopener noreferrer nofollow"')
+        if tag in _TABLE_REQUIRED_STYLE:
+            safe_styles.append(_TABLE_REQUIRED_STYLE[tag])
+            if tag == "table":
+                # 구형 Jira 테마가 inline CSS를 덮어도 표 선이 남는 폴백.
+                parts.extend(['border="1"', 'cellpadding="0"', 'cellspacing="0"'])
+        if safe_styles:
+            parts.append('style="' + escape(";".join(safe_styles), quote=True) + '"')
         if classes:
             parts.insert(0, 'class="' + escape(" ".join(dict.fromkeys(classes)), quote=True) + '"')
         return (" " + " ".join(parts)) if parts else ""

@@ -83,6 +83,20 @@ def _cell_safe(s):
     return (s or "").replace("|", "\\|").replace("}}", "} }")
 
 
+def _wiki_color_value(value):
+    """TipTap/브라우저의 ``rgb(r, g, b)``를 Jira wiki가 안정적으로 읽는 hex로 바꾼다."""
+    raw = (value or "").strip()
+    match = re.fullmatch(
+        r"rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})"
+        r"(?:\s*,\s*(?:1(?:\.0*)?)\s*)?\)", raw, re.I)
+    if not match:
+        return raw
+    channels = tuple(int(match.group(i)) for i in range(1, 4))
+    if any(channel > 255 for channel in channels):
+        return raw
+    return "#%02x%02x%02x" % channels
+
+
 def _inline(node):
     """인라인 노드/자식들을 wiki 문자열로."""
     out = []
@@ -121,7 +135,7 @@ def _inline(node):
                 inner = "{{" + _cell_safe(inner) + "}}"
             m = re.search(r"(?:^|;)\s*color\s*:\s*([^;]+)", sty)
             if m:
-                inner = "{color:" + m.group(1).strip() + "}" + inner + "{color}"
+                inner = "{color:" + _wiki_color_value(m.group(1)) + "}" + inner + "{color}"
             out.append(inner)
         elif t == "div" and "sec-title-node" in (c.attrs.get("class") or ""):
             # 영역 구분선 — 저장 형태는 사내 관습 그대로 '=== 제목 ==='. 새 문법을 만들면

@@ -13,17 +13,25 @@ async function req(path, opts) {
   const o = Object.assign({}, opts || {});
   const timeoutMs = Number(o.timeoutMs) || REQUEST_TIMEOUT_MS;
   delete o.timeoutMs;
+  const callerSignal = o.signal;
   const ctl = new AbortController();
+  let timedOut = false;
+  const abortFromCaller = () => ctl.abort(callerSignal && callerSignal.reason);
+  if (callerSignal) {
+    if (callerSignal.aborted) abortFromCaller();
+    else callerSignal.addEventListener("abort", abortFromCaller, { once: true });
+  }
   o.signal = ctl.signal;
-  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, timeoutMs);
   let r;
   try {
     r = await fetch(path, o);
   } catch (e) {
-    if (ctl.signal.aborted) throw new Error("요청 시간이 초과되었습니다. 앱은 계속 실행 중이며 잠시 후 다시 시도할 수 있습니다.");
+    if (timedOut) throw new Error("요청 시간이 초과되었습니다. 앱은 계속 실행 중이며 잠시 후 다시 시도할 수 있습니다.");
     throw e;
   } finally {
     clearTimeout(timer);
+    if (callerSignal) callerSignal.removeEventListener("abort", abortFromCaller);
   }
   if (r.status === 401) {
     let b = {}; try { b = await r.clone().json(); } catch (e) {}
@@ -220,7 +228,8 @@ export const api = {
     return streamNdjson("/api/mytasks/stream?scope=" + encodeURIComponent(o.scope || "assignee")
       + "&openFilter=" + encodeURIComponent(o.openFilter || "all")
       + "&progFilter=" + encodeURIComponent(o.progFilter || "all")
-      + "&doneFilter=" + encodeURIComponent(o.doneFilter || "1w"), onEvent, signal);
+      + "&doneFilter=" + encodeURIComponent(o.doneFilter || "1w")
+      + "&requestToken=" + encodeURIComponent(o.requestToken || ""), onEvent, signal);
   },
   myTasksGroup: (syncId, key) => req("/api/mytasks/sync/" + encodeURIComponent(syncId)
     + "/group/" + encodeURIComponent(key)),
@@ -315,8 +324,8 @@ export const api = {
                                        "POST", body).then((r) => { evict(key); evictLists(); return r; }),                                // 본인 댓글 판정
   // 빈 쿼리(팝업 첫 오픈)의 기본 추천 목록은 **memo** — 담당/보고 picker 를 다시 열 때 즉시.
   // (티켓 유관자 기본 목록은 issue+comment 조회라 prod 에서 특히 느렸다.) 질의 입력 시엔 fresh.
-  mentionUsers: (q, key) => { const u = "/api/mention/users?q=" + encodeURIComponent(q || "")
-    + (key ? "&key=" + encodeURIComponent(key) : ""); return q ? req(u) : get(u); },
+  mentionUsers: (q, key, opts) => { const u = "/api/mention/users?q=" + encodeURIComponent(q || "")
+    + (key ? "&key=" + encodeURIComponent(key) : ""); return q ? req(u, opts) : get(u); },
   linkTitle: (u) => req("/api/linktitle?u=" + encodeURIComponent(u || "")),             // 링크 뱃지 제목(og:title)
   commentCreate: (key, html) =>
     jsonReq("/api/ticket/" + encodeURIComponent(key) + "/comment", "POST", { html })

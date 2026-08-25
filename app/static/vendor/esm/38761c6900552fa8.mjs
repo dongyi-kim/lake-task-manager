@@ -1,3 +1,0 @@
-/* esm.sh - highlight.js@11.11.1/lib/languages/gherkin */
-function n(e){return{name:"Gherkin",aliases:["feature"],keywords:"Feature Background Ability Business Need Scenario Scenarios Scenario Outline Scenario Template Examples Given And Then But When",contains:[{className:"symbol",begin:"\\*",relevance:0},{className:"meta",begin:"@[^@\\s]+"},{begin:"\\|",end:"\\|\\w*$",contains:[{className:"string",begin:"[^|]+"}]},{className:"variable",begin:"<",end:">"},e.HASH_COMMENT_MODE,{className:"string",begin:'"""',end:'"""'},e.QUOTE_STRING_MODE]}}export{n as default};
-//# sourceMappingURL=gherkin.mjs.map
