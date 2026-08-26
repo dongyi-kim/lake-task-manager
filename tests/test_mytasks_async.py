@@ -390,6 +390,36 @@ def test_leaf_failures_are_isolated_classified_and_later_leaves_still_arrive(mon
     assert len(chunks) == 4
 
 
+def test_retry_after_partial_failure_only_refetches_the_uncached_leaf(monkeypatch):
+    client = _client()
+    original = client._fetch_jql_leaf
+    upstream = []
+    failed_once = False
+
+    def flaky(leaf, fields, light):
+        nonlocal failed_once
+        upstream.append(leaf)
+        if "DL-9028" in leaf and not failed_once:
+            failed_once = True
+            raise RuntimeError("temporary Jira failure")
+        return original(leaf, fields, light)
+
+    monkeypatch.setattr(client, "_fetch_jql_leaf", flaky)
+    query = "key = DL-9008 OR key = DL-9028 OR key = DL-9030 OR key = DL-9020"
+    first = list(client.iter_search_issue_chunks(query))
+    assert sum(bool(chunk.get("error")) for chunk in first) == 1
+    assert failed_once is True
+
+    upstream.clear()
+    retried = list(client.iter_search_issue_chunks(query))
+    assert not any(chunk.get("error") for chunk in retried)
+    assert len(upstream) == 1
+    assert "DL-9028" in upstream[0]
+    assert {issue["key"] for chunk in retried for issue in chunk.get("issues") or ()} == {
+        "DL-9008", "DL-9028", "DL-9030", "DL-9020",
+    }
+
+
 def test_partial_task_stream_keeps_successes_and_does_not_publish_partial_mt_cache(monkeypatch):
     client = _client()
     original = client._cached_jql_leaf

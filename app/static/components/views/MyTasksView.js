@@ -17,6 +17,7 @@
 //               확장 버튼을 누르면 내가 담당이 아닌 티켓(동료 몫)도 함께 보여준다.
 //
 // 카드 모양은 배치와 무관하게 하나다(.mt-card) — 리스트든 그리드든 같은 것을 읽는다.
+import { reactive } from "../../vendor/vue.esm-browser.prod.js";
 import { api } from "../../lib/api.js";
 import TypeBadge from "../ui/TypeBadge.js";
 import Avatar from "../ui/Avatar.js";
@@ -32,6 +33,18 @@ import { vocBadgeSegs, vocStripTitle } from "../../lib/voc.js";
 import { confirmDoneDespiteOpenSubs } from "../../lib/doneGuard.js";
 
 const NO_DUE = 1e6;
+const TASK_RETRY_DELAYS = [800, 2400];
+
+function taskLoadErrorKind(error) {
+  const message = String((error && error.message) || error || "").toLowerCase();
+  if (/\b403\b|forbidden|permission|not permitted|권한/.test(message)) return "permission";
+  if (/\b401\b|login|required|session|anonymous|인증|로그인/.test(message)) return "auth";
+  return "other";
+}
+
+function retryDelay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 
 // 상태 축 — 순서가 곧 작업 흐름이다.
@@ -168,6 +181,60 @@ export function resolveDefaultModule(selected, explicit, mine, all) {
   return { selected: next, explicit: false, changed: next !== current || !!explicit };
 }
 
+/** Snapshot semantics stay authoritative, but unchanged objects keep their identity so Vue only
+ *  patches the ticket/group whose values or position actually changed. This is reconciliation,
+ *  not a client-side union: membership, ordering and statistics still come entirely from server. */
+function sameTaskData(a, b) {
+  if (Object.is(a, b)) return true;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length
+      && a.every((value, index) => sameTaskData(value, b[index]));
+  }
+  const ak = Object.keys(a), bk = Object.keys(b);
+  return ak.length === bk.length && ak.every((key) => Object.prototype.hasOwnProperty.call(b, key)
+    && sameTaskData(a[key], b[key]));
+}
+
+function patchTaskData(current, incoming, skip) {
+  const ignored = skip || new Set();
+  for (const key of Object.keys(current)) {
+    if (!ignored.has(key) && !Object.prototype.hasOwnProperty.call(incoming, key)) delete current[key];
+  }
+  for (const [key, value] of Object.entries(incoming)) {
+    if (!ignored.has(key) && !sameTaskData(current[key], value)) current[key] = value;
+  }
+  return current;
+}
+
+function reconcileTaskRows(current, incoming, patch) {
+  const rows = Array.isArray(current) ? current : [];
+  const old = new Map(rows.filter((row) => row && row.key).map((row) => [row.key, row]));
+  const next = (incoming || []).map((row) => {
+    const existing = row && old.get(row.key);
+    return existing ? patch(existing, row) : row;
+  });
+  if (rows.length !== next.length || rows.some((row, index) => row !== next[index])) {
+    rows.splice(0, rows.length, ...next);
+  }
+  return rows;
+}
+
+function reconcileTaskGroup(current, incoming) {
+  current.atoms = reconcileTaskRows(current.atoms, incoming.atoms, patchTaskData);
+  current.others = reconcileTaskRows(current.others, incoming.others, patchTaskData);
+  return patchTaskData(current, incoming, new Set(["atoms", "others"]));
+}
+
+export function reconcileTaskModel(current, incoming) {
+  if (!current || !incoming || !Array.isArray(current.groups) || !Array.isArray(incoming.groups)) {
+    return incoming;
+  }
+  current.groups = reconcileTaskRows(current.groups, incoming.groups, reconcileTaskGroup);
+  current.epics = reconcileTaskRows(current.epics || [], incoming.epics || [], patchTaskData);
+  return patchTaskData(current, incoming, new Set(["groups", "epics"]));
+}
+
 export default {
   name: "MyTasksView",
   components: { TypeBadge, Avatar, TaskCard, PriIcon, DueText, FieldEdit, AdvancedSearchDialog, TransitionDialog,
@@ -262,7 +329,12 @@ export default {
     });
     // 재인증(auth-ok) 후 — 세션이 끊긴 채 실패했던 조회를 다시 받는다(그대로 두면 '목록 없음'
     // 으로 굳어 새로고침해야만 떴다). 서버 캐시는 안 비운다(가벼운 재조회).
-    window.addEventListener("auth-ok", this._authok = () => { this.refreshMe(); this.load(); });
+    window.addEventListener("auth-ok", this._authok = () => {
+      this.refreshMe();
+      // 성공한 leaf는 서버 cache에서 즉시 재사용되고 인증 때문에 실패한 leaf만 Jira를 다시 탄다.
+      // 이미 보이는 카드도 유지해, 재로그인이 전체 목록 재로딩처럼 보이지 않게 한다.
+      this.load({ quiet: true });
+    });
     this._mq = window.matchMedia(NARROW);
     this._onMq = (e) => { this.axis = e.matches ? "v" : "h"; };
     this._mq.addEventListener ? this._mq.addEventListener("change", this._onMq)
@@ -271,6 +343,7 @@ export default {
   },
   unmounted() {
     if (this._streamAbort) this._streamAbort.abort();
+    if (this._taskRetryTimer) clearTimeout(this._taskRetryTimer);
     if (this._epicMetaTimer) clearTimeout(this._epicMetaTimer);
     window.removeEventListener("ticket-changed", this._onChanged);
     window.removeEventListener("force-refresh", this._fr);
@@ -481,20 +554,17 @@ export default {
       for (const epic of rows) known.set(epic.key, Object.assign({}, epic, { pending: false }));
       const patch = (model) => {
         if (!model) return model;
-        let changed = false;
-        const nextEpics = (model.epics || []).map((epic) => {
+        for (const epic of (model.epics || [])) {
           const meta = known.get(epic.key);
-          if (!meta || (epic.title === meta.title && !epic.pending)) return epic;
-          changed = true; return Object.assign({}, epic, meta, { pending: false });
-        });
-        if (!changed) return model;
-        return Object.assign({}, model, {
-          epics: nextEpics,
-          epicsPending: nextEpics.some((epic) => epic.pending || !epic.title || epic.title === epic.key),
-        });
+          if (meta && (epic.title !== meta.title || epic.pending)) {
+            Object.assign(epic, meta, { pending: false });
+          }
+        }
+        model.epicsPending = (model.epics || []).some(
+          (epic) => epic.pending || !epic.title || epic.title === epic.key);
+        return model;
       };
       for (const modelKey of Object.keys(cache || {})) cache[modelKey] = patch(cache[modelKey]);
-      if (this._activeCacheKey && cache[this._activeCacheKey]) this.model = cache[this._activeCacheKey];
     },
     _queueEpicMetadata(model, cache) {
       const known = this._epicMetaKnown || (this._epicMetaKnown = new Map());
@@ -531,10 +601,29 @@ export default {
         if (pending.size) this._queueEpicMetadata({ epics: Array.from(pending).map((key) => ({ key })) }, cache);
       }
     },
+    _scheduleTaskRetry(cacheKey, attempt) {
+      if (this._taskRetryTimer) clearTimeout(this._taskRetryTimer);
+      const delay = TASK_RETRY_DELAYS[attempt - 1];
+      if (delay === undefined) return false;
+      this._taskRetryTimer = setTimeout(() => {
+        this._taskRetryTimer = null;
+        if (this._activeCacheKey !== cacheKey) return;
+        // 성공 leaf는 strict cache hit다. 이 quiet stream은 실패해 cache가 생기지 않은 leaf만
+        // upstream에서 다시 받고, 현재 카드/스크롤/폴딩 상태는 그대로 둔다.
+        this.load({ quiet: true, retryAttempt: attempt });
+      }, delay);
+      return true;
+    },
     /** The axes exist before the first upstream result.  The server owns cumulative
      *  append/dedup/sort/statistics; this client only accepts a newer authoritative snapshot. */
     async load(opts) {
+      opts = opts || {};
       const key = this.apiScope + "|" + this.openFilter + "|" + this.progFilter + "|" + this.doneFilter;
+      const retryAttempt = Math.max(0, Number(opts.retryAttempt) || 0);
+      if (this._taskRetryTimer) {
+        clearTimeout(this._taskRetryTimer);
+        this._taskRetryTimer = null;
+      }
       if (this._axisPageKey !== key) {
         this._axisPageKey = key;
         this.resetAxisPages();
@@ -547,17 +636,24 @@ export default {
         ? window.crypto.randomUUID() : Date.now().toString(36) + "-" + seq;
       this._activeRequestToken = requestToken;
       let lastSequence = -1;
+      let streamHadAuthFailure = false;
+      let streamHadOtherFailure = false;
       const cached = cache[key];
+      const preserveVisible = !!(opts.quiet && this.model && this._activeCacheKey === key);
       // 새 필터는 이전 필터 카드를 남기지 않는다. 같은 필터의 완료/부분 캐시만 즉시 재사용한다.
-      this.model = cached || this._emptyTaskModel();
+      if (cached) this.model = cached;
+      else if (!preserveVisible) this.model = this._emptyTaskModel();
+      else cache[key] = this.model;
       this._activeCacheKey = key;
       this._queueEpicMetadata(this.model, cache);
-      this.streamAxes = {
-        todo: { state: "loading", chunks: 0 },
-        inprogress: { state: "loading", chunks: 0 },
-        done: { state: "loading", chunks: 0 },
-      };
-      this.streamProgress = { done: 0, total: 0 };
+      if (!preserveVisible) {
+        this.streamAxes = {
+          todo: { state: "loading", chunks: 0 },
+          inprogress: { state: "loading", chunks: 0 },
+          done: { state: "loading", chunks: 0 },
+        };
+        this.streamProgress = { done: 0, total: 0 };
+      }
       this.loading = false;
       this.err = "";
       if (Object.keys(this.excluded).length) this.excluded = {};   // 실 로딩이면 클라 이탈표시 초기화(목록이 새로 정확)
@@ -572,13 +668,13 @@ export default {
 
           const progress = event.progress || {};
           const active = seq === this._loadSeq && this._activeRequestToken === requestToken;
-          if (active) this.streamProgress = {
+          if (active && !preserveVisible) this.streamProgress = {
             done: progress.completed || 0, total: progress.total || 0,
           };
 
           const completedLeaves = (event.completedLeaves && event.completedLeaves.length)
             ? event.completedLeaves : (event.completedLeaf ? [event.completedLeaf] : []);
-          if (active && completedLeaves.length) {
+          if (active && !preserveVisible && completedLeaves.length) {
             const axes = Object.assign({}, this.streamAxes);
             for (const completed of completedLeaves) {
               if (completed.status !== "success" || !completed.axis || !axes[completed.axis]) continue;
@@ -592,28 +688,35 @@ export default {
           if (active) for (const error of (event.partialErrors || [])) {
             const kind = (error && error.kind) || "other";
             if (kind === "permission") continue;     // Jira 권한 제외는 정상 best-effort 결과
+            if (kind === "auth") streamHadAuthFailure = true;
+            else streamHadOtherFailure = true;
             const notices = this._streamErrorNotices || (this._streamErrorNotices = new Set());
             const noticeKey = requestToken + ":" + kind;
             if (notices.has(noticeKey)) continue;
             notices.add(noticeKey);
             if (kind === "auth") window.dispatchEvent(new CustomEvent("need-login"));
+            // transient 재시도 중간에는 같은 토스트를 반복하지 않는다. 최초 안내와 최종 실패만 보인다.
+            if (kind === "other" && retryAttempt > 0) continue;
             pushToast({
               kind: "error", key: "task-stream-" + noticeKey,
               title: kind === "auth" ? "일부 Task를 인증 문제로 불러오지 못했습니다"
-                                     : "일부 Task를 불러오지 못했습니다",
-              message: "불러온 티켓은 계속 표시합니다.", timeout: 7000,
+                                     : "일부 Task를 불러오지 못해 재시도합니다",
+              message: "성공한 티켓은 그대로 두고 실패분만 다시 받습니다.", timeout: 7000,
             });
           }
 
-          // Planning snapshot(replace=false)은 warm 같은-filter 카드를 비우지 않는다. 이후
-          // 모델은 서버가 정렬·통계까지 끝낸 정본이므로 클라이언트 병합 없이 원자 교체한다.
-          if (event.replace !== false && event.model) {
+          // Quiet mutation refresh keeps the complete visible model until a fully usable final
+          // snapshot. A transient/auth partial must not make previously visible cards disappear
+          // while its failed leaf is waiting for retry. Permission-only best-effort finals may apply.
+          const finalUsable = event.done && !streamHadAuthFailure && !streamHadOtherFailure;
+          if (event.replace !== false && event.model && (!preserveVisible || finalUsable)) {
             const next = Object.assign({}, event.model, { streamComplete: !!event.done });
-            this._cacheModel(cache, key, next);
+            const reconciled = reconcileTaskModel(active ? this.model : cache[key], next);
+            this._cacheModel(cache, key, reconciled);
             // 새 snapshot은 Epic을 key-only로 보낼 수 있다. 먼저 known metadata를 cache에
             // 다시 입힌 뒤 그 정본을 화면에 넣어야, 이미 알던 이름이 "확인 중"으로 되돌아가지 않는다.
-            this._queueEpicMetadata(next, cache);
-            if (active) this.model = cache[key];
+            this._queueEpicMetadata(reconciled, cache);
+            if (active && this.model !== reconciled) this.model = reconciled;
           }
 
           if (active && event.done) {
@@ -622,13 +725,37 @@ export default {
               inprogress: { state: "done", chunks: this.axisChunks("inprogress") },
               done: { state: "done", chunks: this.axisChunks("done") },
             };
-            this._hydrateModel(cache[key], seq, key, cache);
+            if (!preserveVisible || finalUsable) this._hydrateModel(cache[key], seq, key, cache);
+            if (streamHadOtherFailure && !streamHadAuthFailure) {
+              const scheduled = this._scheduleTaskRetry(key, retryAttempt + 1);
+              if (!scheduled) pushToast({
+                kind: "error", key: "task-stream-retry-exhausted-" + requestToken,
+                title: "일부 Task를 계속 불러오지 못했습니다",
+                message: "성공한 티켓은 계속 표시합니다. 다음 새로고침에서 다시 시도합니다.",
+                timeout: 7000,
+              });
+            }
           }
         }, controller.signal);
       }
       catch (e) {
         if (controller.signal.aborted || seq !== this._loadSeq) return;
-        this.err = (e && e.message) || "불러오기 실패";
+        const kind = taskLoadErrorKind(e);
+        if (kind === "auth") {
+          window.dispatchEvent(new CustomEvent("need-login"));
+          this.err = preserveVisible ? "" : ((e && e.message) || "인증이 필요합니다.");
+        } else if (kind === "permission") {
+          // Jira 권한 제외는 카드별 best-effort와 동일하게 침묵 처리한다.
+        } else if (this._scheduleTaskRetry(key, retryAttempt + 1)) {
+          this.err = "";
+          if (retryAttempt === 0) pushToast({
+            kind: "error", key: "task-stream-retry-" + requestToken,
+            title: "Task 연결이 끊겨 재시도합니다",
+            message: "현재 목록은 유지하고 실패한 조회만 다시 받습니다.", timeout: 7000,
+          });
+        } else {
+          this.err = (e && e.message) || "불러오기 실패";
+        }
       }
       finally {
         if (seq === this._loadSeq && this._streamAbort === controller) this._streamAbort = null;
@@ -671,13 +798,40 @@ export default {
                 || Number(result.sequence) <= snapshotSequence || !result.model) continue;
             snapshotSequence = Number(result.sequence);
             const next = Object.assign({}, result.model, { streamComplete: true });
-            cache[cacheKey] = next;             // 지난 필터도 완료된 서버 정본은 캐시에 남긴다
-            this._queueEpicMetadata(next, cache);
+            const active = this._loadSeq === seq && this.model && this.model.syncId === syncId;
+            cache[cacheKey] = reconcileTaskModel(active ? this.model : cache[cacheKey], next);
+            this._queueEpicMetadata(cache[cacheKey], cache);
             if (this._loadSeq === seq && this.model && this.model.syncId === syncId) {
-              this.model = cache[cacheKey];
+              if (this.model !== cache[cacheKey]) this.model = cache[cacheKey];
             }
           } catch (e) {
-            // Parent 하나 실패가 다른 카드나 새 필터를 막지 않는다. 다음 실제 load에서 재시도한다.
+            const kind = taskLoadErrorKind(e);
+            if (kind === "permission") continue;   // 볼 권한 없는 SubTask는 조용히 best-effort 제외
+            if (kind === "auth") {
+              window.dispatchEvent(new CustomEvent("need-login"));
+            } else {
+              const attempt = Number(job.attempt) || 0;
+              const delay = TASK_RETRY_DELAYS[attempt];
+              if (delay !== undefined) {
+                // 이 worker만 잠깐 양보하고 실패한 Parent를 큐 맨 뒤에 넣는다. 다른 Parent의
+                // 성공 응답은 계속 화면/cache에 반영되며, 이미 성공한 job은 다시 실행하지 않는다.
+                await retryDelay(delay);
+                if (seq !== this._loadSeq) return;
+                jobs.push(Object.assign({}, job, { attempt: attempt + 1 }));
+                continue;
+              }
+            }
+            const notices = this._childErrorNotices || (this._childErrorNotices = new Set());
+            const noticeKey = syncId + ":" + job.key + ":" + kind;
+            if (!notices.has(noticeKey)) {
+              notices.add(noticeKey);
+              pushToast({
+                kind: "error", key: "task-child-" + noticeKey,
+                title: kind === "auth" ? "일부 SubTask를 인증 문제로 불러오지 못했습니다"
+                                       : "일부 SubTask를 계속 불러오지 못했습니다",
+                message: "불러온 Parent와 SubTask는 그대로 사용할 수 있습니다.", timeout: 7000,
+              });
+            }
           }
         }
       };
@@ -690,14 +844,25 @@ export default {
     _applyEditLocally(f) {
       const key = f.key;
       const upd = (n) => {
-        if (!n || n.key !== key) return;
+        if (!n || n.key !== key) return 0;
+        const wasDone = n.statusCategory === "done";
         if (f.statusCategory) n.statusCategory = f.statusCategory;
         if ("assigneeId" in f) n.assigneeId = f.assigneeId;
         if ("reporterId" in f) n.reporterId = f.reporterId;
         if (f.components) n.components = f.components;
+        const isDone = n.statusCategory === "done";
+        return wasDone === isDone ? 0 : (isDone ? 1 : -1);
       };
       for (const g of (this.model && this.model.groups) || []) {
-        (g.atoms || []).forEach(upd); (g.others || []).forEach(upd); upd(g);
+        let doneDelta = 0;
+        for (const row of (g.atoms || [])) doneDelta += upd(row);
+        for (const row of (g.others || [])) doneDelta += upd(row);
+        upd(g);
+        if (doneDelta && Number.isFinite(Number(g.kidsDone))) {
+          g.kidsDone = Math.max(0, Math.min(Number(g.kidsTotal) || 0,
+            Number(g.kidsDone) + doneDelta));
+          g.pct = g.kidsTotal ? Math.round(g.kidsDone * 100 / g.kidsTotal) : 0;
+        }
       }
     },
     _toastExcluded(keys) {
@@ -862,7 +1027,7 @@ export default {
       // 일이 안 급한 것처럼 보인다. 다만 빌려 온 값이므로 dueInherited 로 표시해 구분한다.
       const own = t.dueDays !== null && t.dueDays !== undefined;
       const inherit = !own && t.key !== g.key && g.dueDays !== null && g.dueDays !== undefined;
-      return Object.assign({}, t, {
+      const next = Object.assign({}, t, {
         mine,
         parent: g,
         epicKey: t.epic || g.epic || null,
@@ -872,6 +1037,35 @@ export default {
         // 그룹 자체가 카드인 경우(하위 없는 단독 Task)와 하위 카드 구분
         isGroupSelf: t.key === g.key,
       });
+      // rawCards/panels computed가 다시 계산돼도 모든 TaskCard에 새 object prop을 넘기지 않는다.
+      // 원본 티켓 proxy + 부모/내것 여부별 reactive wrapper를 재사용하고 실제 값이 달라진
+      // wrapper만 patch한다. 따라서 한 티켓 수정이 화면의 모든 TaskCard update로 번지지 않는다.
+      const cache = this._cardCache || (this._cardCache = new WeakMap());
+      let variants = cache.get(t);
+      if (!variants) { variants = new Map(); cache.set(t, variants); }
+      const variant = g.key + "\u0000" + (mine ? "mine" : "related");
+      let current = variants.get(variant);
+      if (!current) {
+        current = reactive(next);
+        variants.set(variant, current);
+      } else {
+        patchTaskData(current, next);
+      }
+      return current;
+    },
+    /** 1축 Task의 폴더블 panel만 더한 wrapper도 부모 카드별로 유지한다.
+     *  다른 Task가 바뀌어 panel 계산이 다시 돌아도 동일한 compact 카드 DOM은 건드리지 않는다. */
+    compactCard(card, panel) {
+      const cache = this._compactCardCache || (this._compactCardCache = new WeakMap());
+      const next = Object.assign({}, card, { compactPanel: panel });
+      let current = cache.get(card);
+      if (!current) {
+        current = reactive(next);
+        cache.set(card, current);
+      } else {
+        patchTaskData(current, next);
+      }
+      return current;
     },
     /** 그룹이 아닌(=하위 없는) 카드 묶음용 — 기본은 내 담당만, '유관 기본 펼침' 이면 전부.
         '모두 접기' 는 하위에만 걸리는 말이라 여기선 '내 것만' 과 같게 둔다 — 접을 하위가 없다. */
@@ -961,9 +1155,7 @@ export default {
       // 단독 Task 처럼 취급하므로 열 배치도 부모 Task 자신의 상태를 그대로 쓴다. Sub-Task의
       // 공통 상태는 1컬럼 전환 여부와 아래 하위 목록에만 쓰며 부모 상태를 덮어쓰지 않는다.
       for (const p of compactPanels) {
-        vis.push(Object.assign({}, p.parentCard, {
-          compactPanel: p,
-        }));
+        vis.push(this.compactCard(p.parentCard, p));
       }
       if (!vis.length) return null;
       return { key: "__solo__", kind: "solo", cards: this.sorted(vis), rank: this.rankOf(cards) };
@@ -1198,16 +1390,22 @@ export default {
         const r = await api.doTransition(key, { id: t.id });
         if (r && r.ok === false) throw new Error(r.error || "전이에 실패했습니다.");
         pushToast({ kind: "success", title: key + " → " + (t.to || "전이"), timeout: 3500 });
-        window.dispatchEvent(new CustomEvent("ticket-changed", { detail: { key } }));
+        window.dispatchEvent(new CustomEvent("ticket-changed", { detail: {
+          key, view: { key, statusCategory: zone },
+        } }));
         if (r && r.cascade) window.dispatchEvent(new CustomEvent("cascade-prompt", { detail: r.cascade }));
       } catch (e) {
         pushToast({ kind: "error", title: key + " 전이 실패", message: (e && e.message) || "", timeout: 6000 });
       }
     },
     onDragTrxDone() {
-      const k = this.dragTrx && this.dragTrx.ticket;
+      const trx = this.dragTrx;
+      const k = trx && trx.ticket;
+      const statusCategory = trx && trx.transition && trx.transition.toCategory;
       this.dragTrx = null;
-      if (k) window.dispatchEvent(new CustomEvent("ticket-changed", { detail: { key: k } }));
+      if (k) window.dispatchEvent(new CustomEvent("ticket-changed", { detail: {
+        key: k, view: { key: k, statusCategory },
+      } }));
     },
   },
   template: `
