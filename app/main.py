@@ -1336,7 +1336,8 @@ def api_mytasks_epic_metadata(keys: str = ""):
     requested = [key.strip().upper() for key in keys.split(",") if key.strip()][:100]
     with background_upstream():
         epics = _client.epic_metadata_many(requested)
-    return JSONResponse({"epics": epics})
+    # 브라우저는 부분 성공을 고정하지 않는다. 장기 캐시는 JiraClient 한 곳에서만 관리한다.
+    return JSONResponse({"epics": epics}, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/mytasks/sync/{sync_id}/epics")

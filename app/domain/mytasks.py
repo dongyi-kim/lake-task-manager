@@ -803,9 +803,15 @@ def build_my_tasks(client, user=None, include_done=False, limit=None, scope="ass
     # 5) Epic 메타 — 그룹이 참조하는 것만(이름을 보여주려면 제목이 필요하다)
     epic_keys = sorted({g["epic"] for g in out if g["epic"]})
     epics = []
+    pending_epic_keys = []
     if defer_children:
-        # 제목/상태가 없어도 카드는 Epic key로 즉시 그릴 수 있다. 직렬 badge 조회는 별도 동기화한다.
-        epics = [{"key": key, "title": key, "statusCategory": "todo", "pending": True}
+        # 직렬 badge 조회는 카드 스트림과 분리하되, 아직 살아 있는 장기 Epic 캐시까지 버리고
+        # 매번 '이름 확인 중'으로 되돌리지는 않는다. 캐시 miss만 별도 동기화한다.
+        cached_epics = {epic["key"]: epic
+                        for epic in client.epic_metadata_cached_many(epic_keys)}
+        pending_epic_keys = [key for key in epic_keys if key not in cached_epics]
+        epics = [dict(cached_epics[key], pending=False) if key in cached_epics else
+                 {"key": key, "title": key, "statusCategory": "todo", "pending": True}
                  for key in epic_keys]
     else:
         epics = client.epic_metadata_many(epic_keys)
@@ -816,9 +822,11 @@ def build_my_tasks(client, user=None, include_done=False, limit=None, scope="ass
               "doneWindowDays": DONE_WINDOWS.get(done_filter, 7),
               "today": today.isoformat(), "groups": out, "epics": epics,
               "counts": _counts(atoms)}
+    if defer_children:
+        result["epicsPending"] = bool(pending_epic_keys)
     pending_groups = {g["key"]: expected_kids.get(g["key"], [])
                       for g in out if g.get("childrenPending")}
-    if defer_children and create_sync and (pending_groups or epic_keys):
+    if defer_children and create_sync and (pending_groups or pending_epic_keys):
         sync_id = secrets.token_urlsafe(18)
         session_user = (client.current_user() or {}).get("id")
         context = {
@@ -830,11 +838,10 @@ def build_my_tasks(client, user=None, include_done=False, limit=None, scope="ass
         }
         result["syncId"] = sync_id
         result["syncPending"] = len(pending_groups)
-        result["epicsPending"] = bool(epic_keys)
         result["snapshotSequence"] = 0
         client.cache.set(_sync_key(client, sync_id), {
             "sessionUser": session_user, "context": context,
-            "children": pending_groups, "epics": epic_keys,
+            "children": pending_groups, "epics": pending_epic_keys,
             "model": result, "hydrated": [], "snapshotSequence": 0,
         }, ASYNC_SYNC_TTL)
     return result
