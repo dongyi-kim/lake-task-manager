@@ -538,13 +538,18 @@ def test_new_comment_composer_hides_without_unmounting_and_shows_text_only_previ
     assert 'composeCollapsed: false, composePreview: "", composeHasDraft: false' in dialog
     assert 'v-if="composing" v-show="!composeCollapsed" class="tkt-compose-editor"' in dialog
     assert 'class="tkt-compose-hide"' in dialog and "@click=\"collapseCompose\"" in dialog
-    assert 'class="tkt-compose-hide-chevron"' in dialog and "⌄" not in dialog
+    assert '<b>가리기</b><span class="tkt-compose-hide-chevron"' in dialog and "⌄" not in dialog
+    assert 'class="tkt-compose-resize"' in dialog and '@pointerdown="resizeCompose"' in dialog
+    assert "startResizeFromTop" in dialog and "startResizeFromTop" in editor
+    assert 'height-key="cmtEditorComposeH" :initial-height="180"' in dialog
+    assert "loadEditorHeight(this.heightKey, this.initialHeight)" in editor
     assert 'ref="newCommentEditor"' in dialog and "await ed.flushDraft()" in dialog
     assert 'class="tkt-cmt-draft-v"' in dialog and "{{ composePreview || '텍스트 미리보기 없음' }}" in dialog
     assert "async cancelCompose()" in dialog and "await ed.discardDraft()" in dialog
     assert 'clone.querySelectorAll("img, table, pre, hr, .img-wrap, .tableWrapper")' in editor
     assert "async flushDraft()" in editor and "async discardDraft()" in editor
     assert ".tkt-compose-hide { position: absolute; top: 0; left: 50%" in css
+    assert ".tkt-compose-resize { position: absolute" in css and "cursor: row-resize" in css
     assert ".tkt-compose-hide-chevron" in css and "border-bottom: 1.5px solid currentColor" in css
     assert ".tkt-compose-editor:has(.cmt-editor.maximized) .tkt-compose-hide" in css
     assert ".tkt-compose-editor .cmt-ed-bar > .cmt-ed-btn.ghost { color: var(--danger)" in css
@@ -619,6 +624,8 @@ def test_field_edit_and_mentions_share_user_defaults_and_managed_popup():
     assert "api.mentionUsers(q, ticketKey, { signal })" in shared
     assert "serverItems, localItems, recentUsers()" in shared
     assert "Number(user.contextRank) === 0" in shared
+    assert "user.display !== user.name && currentIsShort" in shared
+    assert "보강한다. 별도 사용자 조회는 하지 않는다." in shared
     assert ':mention-users="mentionUsers"' in dialog
     assert "mentionUsers: (q, key, opts)" in api
     assert package["dependencies"]["@tiptap/suggestion"] == "3.30.3"

@@ -23,11 +23,21 @@ function clean(user) {
 
 /** 여러 출처의 사용자를 앞 출처 우선으로 합친다. */
 export function mergeUserSuggestions(...groups) {
-  const out = [], seen = new Set();
+  const out = [], positions = new Map();
   for (const group of groups) for (const raw of (group || [])) {
     const user = clean(raw);
-    if (!user || seen.has(user.id)) continue;
-    seen.add(user.id); out.push(user);
+    if (!user) continue;
+    const at = positions.get(user.id);
+    if (at === undefined) {
+      positions.set(user.id, out.length); out.push(user); continue;
+    }
+    // 티켓 카드/댓글에서 이미 아는 사람은 먼저 보여 주되, 그 데이터에는 짧은 본명만 있다.
+    // 기존 mention 요청이 같은 id와 full displayName을 돌려주면 순서는 유지하고 표시 문자열만
+    // 보강한다. 별도 사용자 조회는 하지 않는다.
+    const current = out[at];
+    const currentIsShort = !current.display || current.display === current.name || current.display === current.id;
+    if (user.display && user.display !== user.name && currentIsShort) current.display = user.display;
+    if (!current.avatar && user.avatar) current.avatar = user.avatar;
   }
   return out;
 }
