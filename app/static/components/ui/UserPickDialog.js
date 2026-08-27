@@ -3,21 +3,19 @@
 // 전이 화면의 담당자 칸과 **같은 규칙**을 쓴다: 자유 입력이 아니라 목록에서 고르고, 전체
 // 표시이름(본명 + 소속)을 보여 준다 — 동명이인이 있으면 본명만으론 누구인지 못 고른다.
 // 빈 검색어에서는 이 티켓 관련자가 먼저 뜬다(서버가 티켓 key 로 판단).
-import { api } from "../../lib/api.js";
 import Avatar from "./Avatar.js";
-import { createTypeahead } from "../../lib/typeahead.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
+import { createUserTypeahead, defaultUserSuggestions, rememberUser } from "../../lib/userSuggestions.js";
 
 export default {
   name: "UserPickDialog",
   components: { Avatar },
   props: { ticket: { type: String, required: true }, current: { type: String, default: "" } },
   emits: ["close", "pick"],
-  data() { return { q: "", who: [], hi: 0, loading: true }; },
+  data() { return { q: "", who: defaultUserSuggestions([], []), hi: 0, loading: true }; },
   mounted() {
     // ★ allowEmpty 없이는 빈 검색어에서 무조건 빈 목록이라 창을 열자마자 아무것도 안 보인다.
-    this._ta = createTypeahead((q) => api.mentionUsers(q, this.ticket),
-                               { minLen: 1, allowEmpty: true });
+    this._ta = createUserTypeahead(this.ticket, []);
     this.search("");
     this.$nextTick(() => { const el = this.$refs.q; if (el) el.focus(); });
   },
@@ -26,14 +24,16 @@ export default {
     fromBackdrop,
     search(q) {
       this.loading = true; this.hi = 0;
+      if (!String(q || "").trim()) this.who = defaultUserSuggestions([], []);
       this._ta.run(q).then((r) => {
         if (r) { this.who = r.slice(0, 12); this.loading = false; }
       }).catch(() => { this.loading = false; });
     },
+    pick(u) { rememberUser(u); this.$emit("pick", u); },
     onKey(e) {
       if (e.key === "ArrowDown") { e.preventDefault(); this.hi = (this.hi + 1) % (this.who.length || 1); }
       else if (e.key === "ArrowUp") { e.preventDefault(); this.hi = (this.hi + this.who.length - 1) % (this.who.length || 1); }
-      else if (e.key === "Enter" && this.who[this.hi]) { e.preventDefault(); this.$emit("pick", this.who[this.hi]); }
+      else if (e.key === "Enter" && this.who[this.hi]) { e.preventDefault(); this.pick(this.who[this.hi]); }
     },
   },
   template: `
@@ -47,7 +47,7 @@ export default {
         <div class="up-list">
           <button v-for="(u, i) in who" :key="u.id" class="up-i"
                   :class="{ hi: i === hi, cur: u.id === current }"
-                  @click="$emit('pick', u)" @mouseenter="hi = i">
+                  @click="pick(u)" @mouseenter="hi = i">
             <Avatar :user="u.id" :name="u.display || u.name" :size="24" />
             <span>{{ u.display || u.name }}</span>
             <em>{{ u.id }}</em>

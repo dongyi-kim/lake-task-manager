@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -510,4 +511,49 @@ def test_comment_mention_search_enriches_context_name_under_delay(editor_browser
     page.keyboard.press("Escape")
     popup.wait_for(state="detached", timeout=3_000)
     assert page.get_by_text("사용자 없음", exact=True).count() == 0
+    assert not errors, f"browser page errors: {errors}"
+
+
+@pytest.mark.parametrize("editor_browser", [800], indirect=True)
+def test_field_pickers_show_none_context_and_recent_items_before_delayed_results(editor_browser):
+    """800ms Jira 지연 중에도 없음·티켓 관련자·최근 Epic은 첫 프레임에 보인다."""
+    page, base, errors, _upload_path = editor_browser
+    _open_ticket(page, base, "DL-9000")             # 최근 Epic을 UI 동작으로 기록
+    _open_ticket(page, base, DESCRIPTION_TICKET)     # 최근 Task + 소속 Epic을 UI 동작으로 기록
+
+    assignee = page.locator("button[title='담당자 수정']")
+    assignee.wait_for(state="visible", timeout=30_000)
+    started = time.monotonic()
+    assignee.click()
+    people = page.locator(".fe-pop.users")
+    people.get_by_text("없음", exact=True).wait_for(state="visible", timeout=500)
+    people.get_by_text("UI픽스처01 TEST", exact=True).wait_for(state="visible", timeout=500)
+    people.get_by_text("없음", exact=True).click()
+    people.wait_for(state="detached", timeout=500)       # 800ms 저장 요청보다 먼저 닫혀야 한다
+    assert time.monotonic() - started < 0.75
+
+    epic = page.locator("button[title='소속 Epic 수정']")
+    epic.wait_for(state="visible")
+    started = time.monotonic()
+    epic.click()
+    epic_popup = page.locator(".fe-pop.wide")
+    epic_popup.get_by_text("없음", exact=True).wait_for(state="visible", timeout=500)
+    epic_popup.get_by_text("DL-9000", exact=True).wait_for(state="visible", timeout=500)
+    epic_popup.get_by_text("없음", exact=True).click()
+    epic_popup.wait_for(state="detached", timeout=500)
+    assert time.monotonic() - started < 0.75
+
+    # 생성창 상위 Epic 선택도 서버 options보다 `Epic 없음`과 최근 Epic을 먼저 그린다.
+    page.get_by_role("button", name="티켓 추가").click()
+    page.get_by_role("button", name=re.compile(r"^Task 추가하기")).click()
+    candidates = page.locator(".nk-cands")
+    started = time.monotonic()
+    candidates.get_by_text("Epic 없음", exact=True).wait_for(state="visible", timeout=500)
+    candidates.get_by_text("DL-9000", exact=True).wait_for(state="visible", timeout=500)
+    candidates.get_by_text("Epic 없음", exact=True).click()
+    type_trigger = page.locator("button[title='티켓 타입 수정']")
+    type_trigger.wait_for(state="visible", timeout=500)
+    type_trigger.click()
+    page.locator(".fe-pop .fe-i", has_text="Task").first.wait_for(state="visible", timeout=500)
+    assert time.monotonic() - started < 0.75
     assert not errors, f"browser page errors: {errors}"
