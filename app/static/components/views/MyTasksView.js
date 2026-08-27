@@ -301,14 +301,17 @@ export default {
     // 상태 전이 등으로 티켓이 바뀌면 **이 뷰만** 조용히 다시 받는다. 카드가 새 상태의 열로
     // 알아서 옮겨 간다(상태·담당·해결이 한꺼번에 바뀌므로 카드 하나만 손대는 것보다 안전하고,
     // 화면을 다시 그리는 것보다 가볍다 — 스크롤·펼침·옵션이 그대로 남는다).
-    // 티켓 수정 알림. 담당/보고/모듈 퀵필터는 **네트워크 없이** 이 티켓이 필터에서 빠지는지
-    // 판정해 즉시 숨기고(+우하단 토스트) 로컬 카드도 갱신한다. 고급검색(jql)만 서버 재조회로
-    // 사라진 것을 찾아 토스트한다(그쪽은 클라가 조건을 알 수 없다).
+    // 티켓 수정 알림. 로컬 카드는 먼저 갱신하되 목록 membership은 서버가 다시 판정한다.
+    // Parent/SubTask 보강까지 끝난 정본에서 **수정한 그 티켓만** 확인해야, 비동기 보강 중 잠깐
+    // 빠진 유관 티켓을 '필터에서 제외'로 잘못 안내하지 않는다.
     this._onChanged = (e) => {
-      const view = (e && e.detail && e.detail.view) || null;
+      const detail = (e && e.detail) || {};
+      const view = detail.view || null;
+      const changedKey = String((view && view.key) || detail.key || "").trim().toUpperCase();
+      const wasVisible = this._taskModelHasKey(changedKey);
       // LTM에서 Epic 자체를 수정하면 서버 전용 캐시는 즉시 무효화된다. 같은 화면에서 유지하는
       // 이름 map도 해당 key만 버려야 다음 snapshot이 새 이름을 다시 확인할 수 있다.
-      if (view && view.key && this._epicMetaKnown) this._epicMetaKnown.delete(view.key);
+      if (changedKey && this._epicMetaKnown) this._epicMetaKnown.delete(changedKey);
       // 바뀐 필드는 **즉시** 화면에 반영한다(상태·담당이 눈앞에서 바뀌게).
       if (view) this._applyEditLocally(view);
       // ★ 목록에서 빠질지는 **서버가 판정한다.** 예전엔 클라가 흉내 냈는데, 이 목록에 있던
@@ -316,12 +319,13 @@ export default {
       //   '내가 하위를 담당해서' 걸려 있는데, 부모 담당자를 같은 모듈 다른 사람으로 바꾸면
       //   그 필드만 보고 '이탈' 로 단정해 **부모와 하위가 통째로 사라졌다**(리포트된 버그).
       //   순서만 바뀌면 될 일에 티켓을 잃는 쪽이 훨씬 나쁘다 — 판정은 목록을 만든 쪽에 맡긴다.
-      const before = new Set(this.rawCards.map((c) => c.key));
       this._dropModelCache();
-      this.load({ quiet: true }).then(() => {
-        const after = new Set(this.rawCards.map((c) => c.key));
-        const gone = [...before].filter((k) => !after.has(k));
-        if (gone.length) this._toastExcluded(gone);
+      const refreshed = this.load({ quiet: true, awaitHydration: true });
+      const refreshSeq = this._loadSeq;
+      refreshed.then(() => {
+        // 사용자가 그 사이 다른 필터를 골랐거나 더 새 조회가 시작됐으면 옛 판정을 버린다.
+        if (refreshSeq !== this._loadSeq || !changedKey || !wasVisible) return;
+        if (!this._taskModelHasKey(changedKey)) this._toastExcluded([changedKey]);
       });
     };
     window.addEventListener("ticket-changed", this._onChanged);
@@ -686,6 +690,7 @@ export default {
       let lastSequence = -1;
       let streamHadAuthFailure = false;
       let streamHadOtherFailure = false;
+      let hydrationPromise = null;
       const cached = cache[key];
       const preserveVisible = !!(opts.quiet && this.model && this._activeCacheKey === key);
       // 새 필터는 이전 필터 카드를 남기지 않는다. 같은 필터의 완료/부분 캐시만 즉시 재사용한다.
@@ -773,7 +778,9 @@ export default {
               inprogress: { state: "done", chunks: this.axisChunks("inprogress") },
               done: { state: "done", chunks: this.axisChunks("done") },
             };
-            if (!preserveVisible || finalUsable) this._hydrateModel(cache[key], seq, key, cache);
+            if (!preserveVisible || finalUsable) {
+              hydrationPromise = this._hydrateModel(cache[key], seq, key, cache);
+            }
             if (streamHadOtherFailure && !streamHadAuthFailure) {
               const scheduled = this._scheduleTaskRetry(key, retryAttempt + 1);
               if (!scheduled) pushToast({
@@ -808,6 +815,9 @@ export default {
       finally {
         if (seq === this._loadSeq && this._streamAbort === controller) this._streamAbort = null;
       }
+      // 화면은 progressive snapshot을 계속 그린다. 이 대기는 수정 후 membership 토스트처럼
+      // 완전한 Parent/SubTask 정본이 필요한 호출자에게만 load 완료 시점을 늦춘다.
+      if (opts.awaitHydration && hydrationPromise) await hydrationPromise;
     },
     _groupCounts(groups) {
       const seen = new Set(), atoms = [];
@@ -887,6 +897,15 @@ export default {
     },
     /** 티켓이 바뀌면 클라이언트 모델 캐시는 낡는다 — 통째로 비운다(서버 mt: 캐시도 같은 이유로 무효화). */
     _dropModelCache() { this._mcache = {}; },
+    _taskModelHasKey(key) {
+      if (!key) return false;
+      for (const group of this.groups || []) {
+        if (group.key === key) return true;
+        if ((group.atoms || []).some((row) => row.key === key)) return true;
+        if ((group.others || []).some((row) => row.key === key)) return true;
+      }
+      return false;
+    },
     /** 티켓 수정 알림을 화면에 **즉시** 반영 — 로컬 카드의 필드만 갱신한다.
      *  목록에서 빼는 판정은 하지 않는다(서버가 한다 — _onChanged 주석 참고). */
     _applyEditLocally(f) {
