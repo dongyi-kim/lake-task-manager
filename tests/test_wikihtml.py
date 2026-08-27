@@ -37,6 +37,15 @@ def test_links_and_images():
     assert html_to_wiki('<p><img src="paste-1.png"></p>') == "!paste-1.png!"
 
 
+def test_jira_url_link_keeps_explicit_provenance_through_wiki_roundtrip():
+    """라벨이 티켓 키와 같아도 URL 링크면 Detailed 출처 표식이 살아야 한다."""
+    source = "[DL-5003|https://jira.example/browse/DL-5003]"
+    html = wiki_to_html(source)
+    assert 'class="jira-link-explicit"' in html
+    assert 'href="https://jira.example/browse/DL-5003"' in html
+    assert html_to_wiki(html) == "[https://jira.example/browse/DL-5003]"
+
+
 def test_code_block():
     h = '<pre><code class="language-python">print(1)</code></pre>'
     assert html_to_wiki(h) == "{code:python}\nprint(1)\n{code}"

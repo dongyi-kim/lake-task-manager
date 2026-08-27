@@ -368,13 +368,15 @@ def test_agent_ticket_badges_have_compact_and_detail_modes():
     assert '.agent-md a.tkt[data-key]:not([data-filled])' in view
 
 
-def test_auto_converted_jira_links_reuse_short_ticket_badge():
-    """본문·댓글 에디터의 원문 Jira URL은 기존 Short 뱃지 클래스(아이콘+키)를 공통 사용한다."""
+def test_plain_ticket_keys_are_short_but_jira_links_are_detailed():
+    """단순 티켓 번호 자동링크만 Short이고, URL 붙여넣기·링크 삽입은 Detailed다."""
     dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
     editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
     css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
-    assert 'a.classList.add("jira-badge", "jira-badge-list", "tkt")' in dialog
-    assert 'a.className = "jira-badge jira-badge-list tkt"' in editor
+    assert 'plainKey ? "jira-badge-list" : "jira-badge-detail"' in dialog
+    assert '!a.classList.contains("jira-link-explicit")' in dialog
+    assert 'a.className = "jira-badge jira-badge-detail tkt"' in editor
+    assert '"web-badge jira-link-explicit"' in editor
     assert ".tkt-desc .jira-badge-list .jb-name" in css
     assert ".cmt-ed-host .jira-badge-list .jb-meta" in css
 

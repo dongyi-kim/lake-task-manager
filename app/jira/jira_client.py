@@ -22,7 +22,7 @@ from app.domain import progress
 from app.auth.base import (SessionExpired, UpstreamUnavailable,
                            background_upstream, write_upstream)
 from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
-                       flatten_task_lists, lift_mentions_html, proxy_attachment_images,
+                       flatten_task_lists, lift_mentions_html, mark_explicit_jira_links, proxy_attachment_images,
                        proxy_attachment_links, proxy_images, sanitize_html,
                        shorten_mention_names, text_to_html, tidy_html, unproxy_media)
 from app.domain.names import real_name
@@ -422,12 +422,14 @@ def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None):
         # 렌더 HTML 로 리치 내용을 그리되, 체크박스의 상태·id 는 **raw 원문**에서 덧씌운다
         # (prod renderedFields 는 checked 를 input 에 안 실어 늘 해제로 보이던 문제).
         desc = _sync_checkboxes(tidy_html(sanitize_html(_revive_checkboxes(rhtml))), raw_desc)
+        desc = mark_explicit_jira_links(desc, raw_desc)
         desc, fmt = shorten_mention_names(desc), "html"
     elif _looks_like_html(raw_desc):
         # 사내 인스턴스는 WYSIWYG 에디터(Jira Editor 계열 — 'jePanel_*' class)를 써서
         # fields.description **원문 자체가 HTML** 이다. 이때 평문 취급하면 태그가
         # 글자로 보인다(<p>안녕하세요</p>). renderedFields 가 빌 때의 방어. (raw 라 상태 이미 정확)
-        desc, fmt = shorten_mention_names(tidy_html(sanitize_html(raw_desc))), "html"
+        desc = mark_explicit_jira_links(tidy_html(sanitize_html(raw_desc)), raw_desc)
+        desc, fmt = shorten_mention_names(desc), "html"
     else:
         desc, fmt = tidy_html(text_to_html(raw_desc or "")), "text"
     st = f.get("status") or {}
@@ -2051,6 +2053,7 @@ class JiraClient:
             if rb and str(rb).strip() else text_to_html(c.get("body") or "")
         html = tidy_html(html)
         html = _sync_checkboxes(html, c.get("body"))
+        html = mark_explicit_jira_links(html, c.get("body"))
         html = shorten_mention_names(html)
         # Evidence snapshots are consumed as plain text and deliberately avoid environment-
         # dependent media rewriting.  The cached UI path keeps its historical behavior.
