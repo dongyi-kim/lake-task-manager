@@ -677,6 +677,8 @@ def test_field_edit_and_mentions_share_user_defaults_and_managed_popup():
     assert "serverItems, localItems, recentUsers()" in shared
     assert "Number(user.contextRank) === 0" in shared
     assert "user.display !== user.name && currentIsShort" in shared
+    assert "user.displayName || user.display || rawName || id" in shared
+    assert "currentNameIsId" in shared and "current.name = user.name" in shared
     assert "보강한다. 별도 사용자 조회는 하지 않는다." in shared
     assert ':mention-users="mentionUsers"' in dialog
     assert "mentionUsers: (q, key, opts)" in api

@@ -220,6 +220,32 @@ _BB_REPOS = ["etl-pipeline", "catalog-service", "query-engine", "platform-infra"
 _BB_KINDS = [("code", "코드"), ("pullrequest", "PR"), ("repository", "저장소")]
 
 
+def _hydrate_user_suggestions(client, rows):
+    """추천 membership 캐시에 굳은 username을 최신 displayName으로 보강한다.
+
+    티켓·댓글의 경량 사용자 객체는 ``name``만 주는 경우가 있다. 그 값을 표시명으로 캐싱하면
+    일시적인 사용자 조회 실패까지 OPTIONS_TTL 동안 UI에 남는다. 따라서 관련자 순서 캐시와
+    표시명 해석을 분리하고, unresolved(username과 같음) 행만 기존 장기 user 캐시를 통해 매
+    응답 시 다시 해석한다. 성공하면 ``_display_name`` 자체 캐시에 들어가 이후 추가 왕복은 없다.
+    """
+    out = []
+    for raw in rows or []:
+        row = dict(raw or {})
+        uid = str(row.get("id") or row.get("name") or "").strip()
+        if not uid:
+            continue
+        display = str(row.get("display") or row.get("displayName") or "").strip()
+        if not display or display.casefold() == uid.casefold():
+            display = client._display_name(uid) or uid
+        name = str(row.get("name") or "").strip()
+        if not name or name.casefold() == uid.casefold():
+            name = real_name(display) or uid
+        row.update({"id": uid, "name": name, "display": display or uid,
+                    "avatar": row.get("avatar") or "/api/avatar/" + uid})
+        out.append(row)
+    return out
+
+
 def search_users(client, s, q, limit=8):
     """@사람 멘션 자동완성 — Jira 유저 검색. [{id, name, display, avatar}].
     id 는 사번(username) → 본문에 [~id] 로 직렬화(실 Jira 가 사용자 링크로 렌더).
@@ -236,10 +262,9 @@ def search_users(client, s, q, limit=8):
         uid = u.get("name") or u.get("key") or ""
         if not uid:
             continue
-        disp = u.get("displayName") or uid
-        out.append({"id": uid, "name": real_name(disp) or uid, "display": disp,
+        out.append({"id": uid, "display": u.get("displayName"),
                     "avatar": "/api/avatar/" + uid})
-    return out
+    return _hydrate_user_suggestions(client, out)
 
 
 _MENTION_RE = re.compile(r"\[~([^\]]+)\]")
@@ -398,9 +423,8 @@ def mention_suggestions(client, s, q, key, limit=8):
                 if not uid or uid in seen:
                     continue
                 seen.add(uid)
-                disp = client._display_name(uid)
-                out.append({"id": uid, "name": real_name(disp) or uid, "display": disp,
-                            "avatar": "/api/avatar/" + uid})
+                # membership만 캐시한다. displayName 실패 폴백(username)은 캐시에 넣지 않는다.
+                out.append({"id": uid})
                 if len(out) >= 40:
                     break
             return out
@@ -409,7 +433,7 @@ def mention_suggestions(client, s, q, key, limit=8):
                 f"mentiondef:{client.env}", client.EPIC_LIST_TTL, build_default)[0]
         except Exception:
             cached = build_default()
-        return cached[:limit]
+        return _hydrate_user_suggestions(client, cached)[:limit]
     # key 있는 기본 목록(담당/보고 picker 첫 오픈) — 티켓 유관자 조회(issue+comments)라 prod 에서
     # 느리다. **티켓별로 캐시**한다(쓰기 시 _invalidate_ticket 이 mentionctx: 를 비워 담당·댓글 변화 반영).
     # 넉넉히(40) 만들어 두고 요청 limit 만큼 잘라 쓴다.
@@ -417,17 +441,23 @@ def mention_suggestions(client, s, q, key, limit=8):
         acc, order = {}, []                 # uid -> displayName('{본명} {회사}', or None), 순서 보존
 
         def add(uid, display=None):
-            if uid and uid not in acc:
+            if not uid:
+                return
+            if uid not in acc:
                 acc[uid] = display
                 order.append(uid)
+            elif not acc[uid] and display:
+                # 본문 멘션으로 id만 먼저 본 뒤 댓글 author의 displayName을 만난 경우 순서는
+                # 유지하고 표시 정보만 보강한다.
+                acc[uid] = display
 
         # 1) 이 티켓 유관자(만든사람·담당자·본문/댓글 멘션·댓글 작성자)
         try:
             f = (client.get_issue(key) or {}).get("fields") or {}
             rep = f.get("reporter") or {}
             asg = f.get("assignee") or {}
-            add(rep.get("name"), rep.get("displayName") or rep.get("name"))
-            add(asg.get("name"), asg.get("displayName") or asg.get("name"))
+            add(rep.get("name") or rep.get("key"), rep.get("displayName"))
+            add(asg.get("name") or asg.get("key"), asg.get("displayName"))
             for uid in _MENTION_RE.findall(f.get("description") or ""):
                 add(uid)
         except Exception:
@@ -437,7 +467,7 @@ def mention_suggestions(client, s, q, key, limit=8):
                 f"/rest/api/2/issue/{key}/comment", params={"maxResults": 50, "orderBy": "-created"})
             for c in data.get("comments", []):
                 a = c.get("author") or {}
-                add(a.get("name"), a.get("displayName") or a.get("name"))
+                add(a.get("name") or a.get("key"), a.get("displayName"))
                 for uid in _MENTION_RE.findall(c.get("body") or ""):
                     add(uid)
         except Exception:
@@ -452,16 +482,16 @@ def mention_suggestions(client, s, q, key, limit=8):
             add(uid)
         out = []
         for uid in order[:40]:
-            disp = acc[uid] or client._display_name(uid)
-            out.append({"id": uid, "name": real_name(disp) or uid, "display": disp,
-                        "avatar": "/api/avatar/" + uid})
+            # 관련자 membership과 Jira 원본에 이미 있던 표시명만 저장한다. username 폴백은
+            # 반환 직전 hydrate해 transient 실패가 티켓 캐시에 굳지 않게 한다.
+            out.append({"id": uid, "display": acc[uid]})
         return out
 
     try:
         cached = client.cache.get_or_set(f"mentionctx:{client.env}:{key}", client.OPTIONS_TTL, build_ctx)[0]
     except Exception:
         cached = build_ctx()
-    return cached[:limit]
+    return _hydrate_user_suggestions(client, cached)[:limit]
 
 
 def _search_bitbucket(s, q, limit):

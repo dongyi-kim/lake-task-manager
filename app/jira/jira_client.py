@@ -452,8 +452,10 @@ def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None):
         "assignee": _rn(f.get("assignee")),
         "reporter": _rn(f.get("reporter")),
         # 프로필 이미지 조회용 사용자 id (displayName 이 아니라 Jira username)
-        "assigneeId": (f.get("assignee") or {}).get("name"),
-        "reporterId": (f.get("reporter") or {}).get("name"),
+        "assigneeId": ((f.get("assignee") or {}).get("name")
+                       or (f.get("assignee") or {}).get("key")),
+        "reporterId": ((f.get("reporter") or {}).get("name")
+                       or (f.get("reporter") or {}).get("key")),
         "created": f.get("created") or None,
         "updated": f.get("updated") or None,
         # 시작일 — 실 Jira 에 필드가 없어 현안 화면과 동일한 파생 규칙(_started_from)을 쓴다
@@ -3904,6 +3906,17 @@ class JiraClient:
             return None
         view = _build_ticket_view(raw, self.s.sp_field_id, self.s.jira_base,
                                   self.s.epic_link_field_id)
+        # 권한·projection에 따라 issue 응답의 사용자 객체가 username만 담는 경우가 있다. 필드
+        # 트리거에 그 id가 그대로 보이지 않도록 기존 장기 user 캐시로 표시명을 보강한다.
+        fields = raw.get("fields") or {}
+        for field in ("assignee", "reporter"):
+            user = fields.get(field) or {}
+            uid = user.get("name") or user.get("key") or ""
+            display = user.get("displayName") or ""
+            if uid and (not display or str(display).casefold() == str(uid).casefold()):
+                display = self._display_name(uid)
+            if display:
+                view[field] = real_name(display) or uid
         # 화면 표시형 user-hover 앵커는 그대로 유지하고, 편집기에만 TipTap mention 노드를 준다.
         # 같은 descriptionHtml을 양쪽에 쓰면 수정 진입 때 일반 링크로 파싱돼 재저장 후 파란 링크가 된다.
         view["descriptionEditHtml"] = self._description_edit_html(view["descriptionHtml"])
