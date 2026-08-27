@@ -405,9 +405,15 @@ def _wiki_inline_html(text, mr=None):
         return f'<img src="{src}"' + (f' width="{wm.group(1)}"' if wm else "") + ">"
 
     s = _WIKI_IMG.sub(_img, s)
-    s = _WIKI_LINK.sub(
-        lambda m: f'<a href="{escape(m.group(2).strip(), quote=True)}">'
-                  f'{escape(m.group(1), quote=False) if m.group(1) else escape(m.group(2).strip(), quote=False)}</a>', s)
+    def _link(m):
+        href = m.group(2).strip()
+        # URL/링크로 입력된 Jira 티켓임을 보존한다. 읽기 화면은 이 표식으로 일반 텍스트 티켓 키를
+        # auto-link한 Short 뱃지와, 사용자가 넣은 Detailed 링크 뱃지를 구분한다.
+        cls = ' class="jira-link-explicit"' if _BROWSE_URL_RE.search(unescape(href)) else ""
+        label = m.group(1) if m.group(1) else href
+        return f'<a{cls} href="{escape(href, quote=True)}">{escape(label, quote=False)}</a>'
+
+    s = _WIKI_LINK.sub(_link, s)
     s = re.sub(r"(?<![\w*])\*(\S(?:.*?\S)?)\*(?![\w*])", r"<strong>\1</strong>", s)
     s = re.sub(r"(?<![\w_])_(\S(?:.*?\S)?)_(?![\w_])", r"<em>\1</em>", s)
     s = re.sub(r"(?<![\w-])-(\S(?:.*?\S)?)-(?![\w-])", r"<s>\1</s>", s)

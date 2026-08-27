@@ -1098,8 +1098,13 @@ export default {
         const m = _BROWSE_RE.exec(a.getAttribute("href") || "");
         if (!m) return;
         a.dataset.jira = "1";
-        const key = m[1];
-        a.classList.add("jira-badge", "jira-badge-list", "tkt");
+        const key = m[1].toUpperCase();
+        // 라벨이 key와 같은 Jira 링크도 있다. raw source에 URL이 있었는지는 서버가 표식으로 보존한다.
+        // 표식 없는 key-only 앵커만 Jira renderer가 일반 텍스트 키를 auto-link한 Short로 취급한다.
+        const plainKey = !a.classList.contains("jira-link-explicit")
+          && String(a.textContent || "").trim().toUpperCase() === key;
+        a.classList.remove("jira-badge-list", "jira-badge-detail");
+        a.classList.add("jira-badge", plainKey ? "jira-badge-list" : "jira-badge-detail", "tkt");
         a.setAttribute("data-key", key);
         a.setAttribute("role", "button");
         a.setAttribute("tabindex", "0");

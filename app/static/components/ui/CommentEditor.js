@@ -449,7 +449,8 @@ function linkBadgeExt(T) {
     renderText({ node }) { return node.attrs.title || node.attrs.href || ""; },
     renderHTML({ node }) {
       const href = node.attrs.href || "";
-      const attrs = { href, class: "web-badge", rel: "noopener" };
+      const attrs = { href, class: jiraKeyOf(href) ? "web-badge jira-link-explicit" : "web-badge",
+                      rel: "noopener" };
       const fav = favCss(href);
       if (fav) attrs.style = "--fav:" + fav;
       return ["a", attrs, node.attrs.title || href];
@@ -466,9 +467,9 @@ function linkBadgeExt(T) {
           const key = jiraKeyOf(href);
           if (key) {
             // Jira 티켓 — 읽기 렌더(augmentLinks)와 **같은 구조·클래스**로 그려 모양을 일치시킨다.
-            // 원문 Jira URL의 자동 변환은 기존 Short 타입(아이콘+키)을 쓴다. 상세 뱃지는
-            // 사용자가 명시적으로 선택한 참조 UI에만 남겨 긴 제목/상태가 문장을 밀지 않게 한다.
-            a.className = "jira-badge jira-badge-list tkt";
+            // 링크를 붙여넣거나 '/jira'로 넣은 노드이므로 기본은 Detailed다. Short는 읽기 화면이
+            // 일반 텍스트의 단순 티켓 번호를 자동 링크로 받은 경우에만 쓴다.
+            a.className = "jira-badge jira-badge-detail tkt";
             a.style.removeProperty("--fav");
             a.innerHTML = '<span class="tbadge v-solid jb-type"></span><b class="jb-key"></b>'
               + '<span class="jb-name"></span><span class="jb-meta"></span>';

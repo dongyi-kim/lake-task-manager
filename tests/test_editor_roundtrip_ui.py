@@ -255,7 +255,9 @@ def _assert_editor_schema(editor, prefix: str, *, expect_blob: bool = False,
         assert editor.locator(selector).count() >= 1, f"editor lost {name}: {prefix}"
     assert editor.get_by_text(f"{prefix}-PLAIN", exact=False).count() == 1
     assert editor.locator("span[data-type='mention'][data-id='test.ui02']").count() == 1
-    assert editor.locator("a[href='/browse/DL-9001']").count() == 1
+    jira_link = editor.locator("a[href='/browse/DL-9001']")
+    assert jira_link.count() == 1
+    assert "jira-badge-detail" in (jira_link.get_attribute("class") or "")
     style = editor.evaluate(
         """(el, needle) => {
           const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
@@ -308,6 +310,8 @@ def _assert_rendered(scope, prefix: str, *, expect_section: bool = False) -> Non
     assert scope.get_by_text(f"{prefix}-PLAIN", exact=False).count() >= 1
     assert scope.locator(".mention-badge, a.user-hover[href*='ViewProfile.jspa']").count() >= 1
     assert scope.locator("a[href='https://example.com/%s']" % prefix.lower()).count() == 1
+    # 붙여넣은 Jira URL/링크 노드는 게시·수정·재게시 뒤에도 Detailed를 유지한다.
+    assert scope.locator(".jira-badge-detail[data-key='DL-9001']").count() == 1
     images = scope.locator("img[src*='/api/img?u=']")
     assert images.count() >= 3
     for index in range(images.count()):
@@ -424,7 +428,8 @@ def test_existing_editor_regression_fixtures_render_in_browser(editor_browser):
     fixtures = [
         ("DL-9001", ("h2", "table", "pre code", "blockquote", ".callout-info", "img", ".mention-badge")),
         ("DL-9002", ("h1", "h2", "h3", "h4")),
-        ("DL-9004", (".tkt-desc-box .jira-badge[data-key='DL-5005']",)),
+        # wiki 링크 문법으로 URL을 넣은 픽스처이므로 라벨이 키 하나여도 Detailed다.
+        ("DL-9004", (".tkt-desc-box .jira-badge-detail[data-key='DL-5005']",)),
         ("DL-9005", ("a[href*='confluence.corp.example']",)),
         ("DL-9006", (".fchip",)),
         ("DL-9007", (".tkt-cmt-b", ".mention-badge", ".tkt-cmt-b .jira-badge")),

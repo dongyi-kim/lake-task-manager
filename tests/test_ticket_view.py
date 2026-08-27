@@ -52,6 +52,23 @@ def test_builder_falls_back_to_plaintext_when_no_rendered():
     assert "<b>" not in v["descriptionHtml"]
 
 
+def test_builder_distinguishes_plain_ticket_key_autolink_from_explicit_jira_link():
+    """renderer 결과가 같은 key 라벨이어도 raw URL이 있던 링크만 Detailed 표식을 받는다."""
+    raw = {"key": "DL-1", "fields": {
+        "summary": "s",
+        "description": "plain DL-5002 and [DL-5003|https://jira.example/browse/DL-5003]",
+        "issuetype": {"name": "Task"},
+        "status": {"name": "Open", "statusCategory": {"key": "new"}},
+    }, "renderedFields": {"description": (
+        '<p>plain <a href="https://jira.example/browse/DL-5002">DL-5002</a> and '
+        '<a href="https://jira.example/browse/DL-5003">DL-5003</a></p>')}}
+    html = _build_ticket_view(raw, "customfield_10002")["descriptionHtml"]
+    assert 'href="https://jira.example/browse/DL-5002"' in html
+    assert 'href="https://jira.example/browse/DL-5002" class="jira-link-explicit"' not in html
+    explicit = html[html.index('href="https://jira.example/browse/DL-5003"'):]
+    assert "jira-link-explicit" in explicit.split(">", 1)[0]
+
+
 # ── mock 통합: jira820 renderedFields 로 리치 요소가 실제 렌더 + 정화 ──
 def _client():
     return JiraClient(get_settings(), Cache(":memory:"))
