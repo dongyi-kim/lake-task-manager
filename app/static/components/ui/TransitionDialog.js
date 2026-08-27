@@ -18,8 +18,8 @@
 import { api } from "../../lib/api.js";
 import Avatar from "./Avatar.js";
 import CommentEditor from "./CommentEditor.js";
-import { createTypeahead } from "../../lib/typeahead.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
+import { createUserTypeahead, defaultUserSuggestions, rememberUser } from "../../lib/userSuggestions.js";
 
 export default {
   name: "TransitionDialog",
@@ -68,8 +68,8 @@ export default {
     // ★ allowEmpty 가 없으면 **빈 검색어에서 무조건 빈 배열**이라 칸을 눌러도 아무것도 안 뜬다
     //   — 사용자에겐 "검색이 동작 안 한다" 로 보인다. 빈 검색어는 이 티켓 관련자를 먼저 주므로
     //   (서버가 key 로 판단) 오히려 가장 쓸모 있는 첫 화면이다.
-    this._ta = createTypeahead((q) => api.mentionUsers(q, this.ticket),
-                               { minLen: 1, allowEmpty: true });
+    this._ta = createUserTypeahead(this.ticket, []);
+    this.who = defaultUserSuggestions([], []);
     this.searchWho("");
     api.me().then((m) => {                       // 대개 자기 자신이다 — 기본값으로 채운다
       if (m && m.id && !this.user) {
@@ -83,9 +83,10 @@ export default {
     fromBackdrop,
     searchWho(q) {
       this.hi = 0;
+      if (!String(q || "").trim()) this.who = defaultUserSuggestions([], []);
       this._ta.run(q).then((r) => { if (r) this.who = r.slice(0, 8); }).catch(() => {});
     },
-    pickWho(u) { this.user = u; this.whoOpen = false; this.q = ""; this.who = []; },
+    pickWho(u) { rememberUser(u); this.user = u; this.whoOpen = false; this.q = ""; this.who = []; },
     clearWho() {
       this.user = null; this.q = ""; this.whoOpen = true; this.searchWho("");
       this.$nextTick(() => { const el = this.$refs.who; if (el) el.focus(); });

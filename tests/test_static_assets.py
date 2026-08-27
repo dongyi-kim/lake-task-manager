@@ -750,6 +750,52 @@ def test_field_edit_shows_offline_defaults_immediately_and_pins_none_option():
     assert "api.warmGlobals()" not in tasks        # Task 본 데이터 완료 여부에 종속되지 않음
 
 
+def test_ticket_epic_and_person_pickers_render_local_defaults_before_network():
+    """티켓·Epic·사람 선택기는 최근/관련자/없음을 먼저 그리고 서버 결과를 뒤에 합친다."""
+    recent = (STATIC / "lib" / "recent.js").read_text(encoding="utf-8")
+    field = (STATIC / "components" / "ui" / "FieldEdit.js").read_text(encoding="utf-8")
+    child = (STATIC / "components" / "ui" / "NewChildDialog.js").read_text(encoding="utf-8")
+    picker = (STATIC / "components" / "ui" / "LinkPicker.js").read_text(encoding="utf-8")
+    search = (STATIC / "components" / "ui" / "SearchOverlay.js").read_text(encoding="utf-8")
+    dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
+    user_pick = (STATIC / "components" / "ui" / "UserPickDialog.js").read_text(encoding="utf-8")
+    transition = (STATIC / "components" / "ui" / "TransitionDialog.js").read_text(encoding="utf-8")
+
+    assert 'const LOCAL_KEY = "recent.items"' in recent
+    assert recent.index("save(merge(") < recent.index("api.recentAdd(payload)")
+    assert "export function recentItems" in recent and "export function hydrateRecent" in recent
+    assert "recent: recentItems(20" in picker
+    assert picker.index("recent: recentItems(20") < picker.index("api.recent(20")
+    assert "recent: recentItems(RECENT_MAX)" in search
+    assert "this.recent = recentItems(RECENT_MAX)" in search
+
+    epics = field[field.index("searchEpics(q) {"):field.index("searchWho(q) {")]
+    assert epics.index("this._recentEpicOptions()") < epics.index('api.options("epics", "")')
+    assert ':choices="mentionUsers"' in dialog
+    assert dialog.count(':choices="mentionUsers"') == 2
+
+    parents = child[child.index("searchParents(q) {"):child.index("pickParent(item) {")]
+    assert parents.index("this.plist = local;") < parents.index("api.parentTaskCandidates(q)")
+    assert "SPECIALS.filter(matches)" in child
+    assert "defaultUserSuggestions([], [])" in user_pick
+    assert "defaultUserSuggestions([], [])" in transition
+
+
+def test_creation_dialog_keeps_last_options_and_never_deadlocks_on_type_lookup():
+    """타입/기본 선택지는 브라우저에 보존하고 원격 타입 조회 실패가 생성 폼을 먹통으로 만들지 않는다."""
+    child = (STATIC / "components" / "ui" / "NewChildDialog.js").read_text(encoding="utf-8")
+    field = (STATIC / "components" / "ui" / "FieldEdit.js").read_text(encoding="utf-8")
+    assert 'const CREATE_OPTION_CACHE = "newTicket.optionCache.v1"' in child
+    assert 'const DEFAULT_TASK_TYPES = ["Task", "Story", "Bug", "Improvement", "New Feature"]' in child
+    assert 'const DEFAULT_SUBTASK_TYPES = ["Sub-Task"]' in child
+    special = child[child.index("if (item.special)"):child.index("const parent = item.key")]
+    assert special.index("this._resolve(") < special.index("this._loadTypes(")
+    assert "기존 목록을 사용합니다" in child and "rememberOptions(kind, list)" in child
+    save = field[field.index("async save(v, extra) {"):field.index("saveMulti() {")]
+    assert save.index("this.close();") < save.index("await api.updateFields")
+    assert "field-save:" in save and "pushToast" in save
+
+
 def test_feature_guides_explain_search_recents_quick_open_and_browser_access():
     guides = (STATIC / "lib" / "guides.js").read_text(encoding="utf-8")
     spot = (STATIC / "components" / "ui" / "GuideSpot.js").read_text(encoding="utf-8")

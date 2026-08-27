@@ -1412,12 +1412,14 @@ export default {
               </FieldEdit></span></div>
             <div><span class="k">담당자</span><span class="val val-user">
               <FieldEdit :ticket="tk" field="assignee" :meta="fmeta('assignee')"
-                         :value="v.assigneeId" :user-id="v.assigneeId" @saved="onFieldSaved">
+                         :value="v.assigneeId" :user-id="v.assigneeId" :choices="mentionUsers"
+                         @saved="onFieldSaved">
                 <Avatar v-if="v.assigneeId" :user="v.assigneeId" :name="v.assignee" :size="18" />{{ v.assignee || '—' }}
               </FieldEdit></span></div>
             <div><span class="k">보고자</span><span class="val val-user">
               <FieldEdit :ticket="tk" field="reporter" :meta="fmeta('reporter')"
-                         :value="v.reporterId" :user-id="v.reporterId" @saved="onFieldSaved">
+                         :value="v.reporterId" :user-id="v.reporterId" :choices="mentionUsers"
+                         @saved="onFieldSaved">
                 <Avatar v-if="v.reporterId" :user="v.reporterId" :name="v.reporter" :size="18" />{{ v.reporter || '—' }}
               </FieldEdit></span></div>
             <div><span class="k">작업 기한</span><span class="val">

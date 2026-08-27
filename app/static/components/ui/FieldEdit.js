@@ -14,6 +14,8 @@ import TypeBadge from "./TypeBadge.js";
 import { createTypeahead } from "../../lib/typeahead.js";
 import { createUserTypeahead, defaultUserSuggestions, rememberUser } from "../../lib/userSuggestions.js";
 import { categoryColor } from "../../lib/colors.js";
+import { recentItems } from "../../lib/recent.js";
+import { pushToast } from "../../lib/toast.js";
 
 const KO = {
   priority: "우선순위", assignee: "담당자", reporter: "보고자",
@@ -34,8 +36,8 @@ export default {
     // **아직 서버에 없는 티켓**(새로 만드는 줄)도 같은 팝업으로 고르게 한다. 저장은 하지 않고
     // 고른 값을 부모에게 넘긴다 — 새 티켓만 다른 입력기를 쓰면, 만들 때와 고칠 때 조작이 달라진다.
     local: { type: Boolean, default: false },
-    // local 일 때의 선택지(우선순위·타입). 이름을 opts 로 두면 **data 의 opts 와 충돌**해
-    // 목록이 늘 빈 채로 뜬다(실제로 그랬다) — 프롭과 상태는 이름을 겹치면 안 된다.
+    // local 일 때의 선택지(우선순위·타입), 또는 부모 화면이 이미 로드한 사용자 기본 추천.
+    // 이름을 opts 로 두면 **data 의 opts 와 충돌**해 목록이 늘 빈 채로 뜬다(실제로 그랬다).
     choices: { type: Array, default: null },
   },
   emits: ["saved", "pick"],
@@ -128,7 +130,9 @@ export default {
       } else if (this.isEpic) {
         this.searchEpics("");
       } else if (this.isUser) {
-        const localUsers = (this.local ? (this.choices || []) : []).filter((u) => u && typeof u === "object");
+        // 티켓 다이어로그가 이미 가진 담당자·보고자·댓글 작성자는 local 여부와 무관하게 즉시 후보.
+        // editmeta/mention API 지연 때문에 화면이 알고 있는 사람까지 숨길 이유가 없다.
+        const localUsers = (this.choices || []).filter((u) => u && typeof u === "object");
         this._ta = this._ta || createUserTypeahead(this.ticket, localUsers);
         this.searchWho("");
       }
@@ -187,37 +191,62 @@ export default {
     },
     searchEpics(q) {
       q = String(q || "");
+      this.err = "";
       const token = ++this.lookupSeq;
       if (!q) {
-        const base = (this.local ? (this.choices || []) : []).filter((e) => e && typeof e === "object");
+        // 최근 열어본 Epic 및 최근 Task의 소속 Epic은 브라우저 미러에서 바로 만든다.
+        // 서버 options 응답은 뒤에 합쳐지고, 이 목록을 지우거나 가리지 않는다.
+        const base = this._recentEpicOptions().concat(
+          (this.local ? (this.choices || []) : []).filter((e) => e && typeof e === "object"));
         this.opts = this._prepRecent(base, (e) => e.key || e.id);
         if (this._taEp) this._taEp.cancel();
         api.options("epics", "").then((r) => {
           if (this._lookupCurrent(token, q)) this.opts = this._prepRecent(base.concat(r || []), (e) => e.key || e.id);
-        }).catch(() => {});
+        }).catch(() => {
+          if (this._lookupCurrent(token, q)) this.err = "Epic 목록을 불러오지 못했습니다. 없음·최근 항목은 계속 선택할 수 있습니다.";
+        });
         return;
       }
       this._taEp = this._taEp || createTypeahead((x) => api.options("epics", x), { minLen: 1 });
       this._taEp.run(q).then((r) => {
         if (r != null && this._lookupCurrent(token, q)) this.opts = r || [];
-      }).catch(() => {});
+      }).catch(() => {
+        if (this._lookupCurrent(token, q)) this.err = "Epic 검색에 실패했습니다. 잠시 후 다시 입력해 주세요.";
+      });
     },
     searchWho(q) {
       q = String(q || "");
+      this.err = "";
       const token = ++this.lookupSeq;
       if (!q) {
-        const base = (this.local ? (this.choices || []) : []).filter((u) => u && typeof u === "object");
+        const base = (this.choices || []).filter((u) => u && typeof u === "object");
         this.who = defaultUserSuggestions([], base);
       }
       this._ta.run(q).then((r) => {
         if (!r || !this._lookupCurrent(token, q)) return;
         this.who = r;
-      }).catch(() => {});
+      }).catch(() => {
+        if (this._lookupCurrent(token, q)) this.err = "사용자 목록을 불러오지 못했습니다. 없음·최근 항목은 계속 선택할 수 있습니다.";
+      });
     },
     // ── 최근 사용값(이 필드에서 내가 고른 값) — 기본 목록 상단에 우선 노출 ──
     _rkey() { return "fe.recent." + this.field; },
     _recent() {
       try { return JSON.parse(localStorage.getItem(this._rkey()) || "[]") || []; } catch (e) { return []; }
+    },
+    _recentEpicOptions() {
+      const out = [], seen = new Set();
+      for (const item of recentItems(50, "jira")) {
+        const isEpic = String(item.type || item.issuetype || "").toLowerCase() === "epic";
+        const key = String(isEpic ? (item.key || "") : (item.epicKey || "")).toUpperCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        const ownSummary = String(item.summary || item.title || "").replace(
+          new RegExp("^" + key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*"), "");
+        const name = String(item.epicName || (isEpic ? ownSummary : "") || key);
+        out.push({ id: key, key, name, summary: isEpic ? (ownSummary || name) : name });
+      }
+      return out;
     },
     _pushRecent(item) {
       if (!item || !item.id) return;
@@ -260,6 +289,7 @@ export default {
       this.draft.push(v); this.q = ""; this.suggest("");
     },
     async save(v, extra) {
+      if (this.busy) return;
       if (v && !Array.isArray(v)) {
         const recent = this._recItem(v, extra);
         if (this.isUser) rememberUser(recent); else this._pushRecent(recent);  // 사용자는 멘션과 공용
@@ -271,16 +301,19 @@ export default {
         return;
       }
       this.busy = true; this.err = "";
+      // 선택은 요청 완료와 무관하게 즉시 끝낸다. 특히 '없음'을 누른 뒤 800ms 이상 팝업과
+      // backdrop에 갇혀 있으면 사용자는 클릭 실패로 느낀다. 실패는 전역 toast로 되돌려 알린다.
+      this.close();
       const body = {};
       body[this.field === "duedate" ? "duedate" : this.field] = v;
       try {
         const r = await api.updateFields(this.ticket, body);
-        if (r && r.ok === false) { this.err = r.error || "저장 실패"; this.busy = false; return; }
-        this.close();
+        if (r && r.ok === false) throw new Error(r.error || "저장 실패");
         this.$emit("saved");
       } catch (e) {
-        // 거절 사유를 그대로 보인다 — 삼키면 무엇이 문제인지 알 수 없다.
-        this.err = (e && e.message) || "저장 실패";
+        pushToast({ kind: "error", title: this.label + " 저장 실패",
+                    message: (e && e.message) || "저장 실패", timeout: 6000,
+                    key: "field-save:" + this.ticket + ":" + this.field });
       } finally { this.busy = false; }
     },
     saveMulti() {

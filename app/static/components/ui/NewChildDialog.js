@@ -18,10 +18,34 @@ import { fromBackdrop } from "../../lib/backdrop.js";
 import { isBusy, busyLabel } from "../../lib/uibusy.js";
 import { pushToast } from "../../lib/toast.js";
 import { categoryColor } from "../../lib/colors.js";
+import { recentItems } from "../../lib/recent.js";
 
 // Task 상위 고르기에서 Epic 대신 고를 수 있는 특수 옵션(맨 위 고정). ('사용자 VoC' 는 상위가 아니라
 // 아래 토글로 받는다 — Epic 에 속한 VoC 도 있어 상위 선택과 배타적이면 안 된다.)
 const SPECIALS = [{ key: "__none__", special: "none", label: "Epic 없음", desc: "Epic 없이 Task 만들기" }];
+const CREATE_OPTION_CACHE = "newTicket.optionCache.v1";
+const DEFAULT_TASK_TYPES = ["Task", "Story", "Bug", "Improvement", "New Feature"];
+const DEFAULT_SUBTASK_TYPES = ["Sub-Task"];
+
+function optionCache() {
+  try { return JSON.parse(localStorage.getItem(CREATE_OPTION_CACHE) || "{}") || {}; }
+  catch (e) { return {}; }
+}
+
+function cachedOptions(kind) {
+  const value = optionCache()[kind];
+  return Array.isArray(value) ? value.filter(Boolean) : [];
+}
+
+function rememberOptions(kind, values) {
+  const list = Array.from(new Set((values || []).map((x) => String(x || "").trim()).filter(Boolean)));
+  if (!list.length) return list;
+  try {
+    const cache = optionCache(); cache[kind] = list;
+    localStorage.setItem(CREATE_OPTION_CACHE, JSON.stringify(cache));
+  } catch (e) { /* 저장소를 못 써도 현재 다이어로그는 정상 동작 */ }
+  return list;
+}
 
 export default {
   name: "NewChildDialog",
@@ -40,7 +64,7 @@ export default {
   emits: ["close", "created"],
   data() {
     return {
-      busy: false, err: "", priOpts: [], compOpts: [],
+      busy: false, err: "", priOpts: cachedOptions("priorities"), compOpts: cachedOptions("components"),
       descOpen: false, createdKey: "", voc: false,
       nc: { type: "", summary: "", priority: "", components: [],
             duedate: "", assigneeId: "", assigneeName: "" },
@@ -49,7 +73,8 @@ export default {
       resolved: false,     // 상위가 정해졌나 → 입력 폼 노출
       fixed: false,        // 티켓 내부에서 열려 상위가 상수(변경 불가)
       // 상위 선택(FAB) 상태
-      pq: "", plist: [], pbusy: false,
+      pq: "", plist: [], pbusy: false, parentErr: "", parentLookupSeq: 0, resolveSeq: 0,
+      typeLoading: false, typeErr: "",
     };
   },
   computed: {
@@ -62,8 +87,14 @@ export default {
     needPick() { return !!this.pickKind && !this.resolved; },
   },
   mounted() {
-    api.options("components").then((r) => { this.compOpts = (r || []).map((x) => x.name); }).catch(() => {});
-    api.options("priorities").then((r) => { this.priOpts = (r || []).map((x) => x.name); }).catch(() => {});
+    api.options("components").then((r) => {
+      const values = (r || []).map((x) => x.name);
+      if (values.length) this.compOpts = rememberOptions("components", values);
+    }).catch(() => {});
+    api.options("priorities").then((r) => {
+      const values = (r || []).map((x) => x.name);
+      if (values.length) this.priOpts = rememberOptions("priorities", values);
+    }).catch(() => {});
     // 상위 컨텍스트: FAB(pickKind, 상위 미지정) 이면 이 창에서 고르고, 그 외엔 props 로 즉시 해소.
     if (this.pickKind && !this.parent && !this.standalone) {
       this.searchParents("");
@@ -93,45 +124,114 @@ export default {
     },
     // ── 상위 선택(FAB) ──
     searchParents(q) {
+      q = String(q || "");
       this.pq = q;
+      this.parentErr = "";
       clearTimeout(this._t);
+      const token = ++this.parentLookupSeq;
+      const isSub = this.pickKind === "task";
+      // 'Epic 없음'과 이 브라우저의 최근 티켓/Epic은 서버 검색과 무관하다. 먼저 그린다.
+      const local = this._recentParents(q, isSub);
+      this.plist = local;
+      this.pbusy = true;
       this._t = setTimeout(() => {
-        this.pbusy = true;
-        const isSub = this.pickKind === "task";
         const p = isSub
           ? api.parentTaskCandidates(q).then((r) => (r && r.items) || [])
           : api.options("epics", q).then((r) => (r || []).map(
               (e) => ({ key: e.key, summary: e.summary || "", name: e.name || e.key, type: "Epic" })));
         p.then((items) => {
-          let list = items || [];
-          if (!isSub) {                                   // Task 상위 = Epic → 'Epic 없음' 을 맨 위에
-            const q2 = (q || "").trim().toLowerCase();
-            list = SPECIALS.filter((s) => !q2
-              || s.label.toLowerCase().includes(q2) || s.desc.toLowerCase().includes(q2)).concat(list);
+          if (token !== this.parentLookupSeq || this.pq !== q) return;
+          this.plist = this._mergeParents(local, items || []);
+        }).catch(() => {
+          if (token === this.parentLookupSeq) {
+            this.parentErr = "Jira 후보 목록을 불러오지 못했습니다. 없음·최근 항목은 계속 선택할 수 있습니다.";
           }
-          this.plist = list;
-        }).catch(() => { this.plist = []; }).finally(() => { this.pbusy = false; });
+        })
+          .finally(() => { if (token === this.parentLookupSeq) this.pbusy = false; });
       }, 250);
     },
-    async pickParent(item) {
+    _mergeParents(...groups) {
+      const out = [], seen = new Set();
+      for (const group of groups) for (const item of (group || [])) {
+        const id = item && (item.special ? "special:" + item.special : String(item.key || "").toUpperCase());
+        if (!id || seen.has(id)) continue;
+        seen.add(id); out.push(item);
+      }
+      return out;
+    },
+    _recentParents(q, isSub) {
+      const needle = String(q || "").trim().toLocaleLowerCase();
+      const matches = (item) => !needle || [item.key, item.summary, item.name, item.label, item.desc]
+        .some((value) => String(value || "").toLocaleLowerCase().includes(needle));
+      const out = [];
+      if (!isSub) out.push(...SPECIALS.filter(matches));
+      for (const item of recentItems(60, "jira")) {
+        const type = String(item.type || item.issuetype || "");
+        if (isSub) {
+          if (/^epic$/i.test(type) || /sub[ -]?task/i.test(type)) continue;
+          const key = String(item.key || "").toUpperCase();
+          if (!key) continue;
+          const summary = String(item.summary || item.title || "").replace(
+            new RegExp("^" + key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*"), "");
+          const candidate = { key, summary, type: type || "Task", statusCategory: item.statusCategory || "",
+                              epicKey: item.epicKey || "", epicName: item.epicName || "",
+                              assignee: item.assignee || "", assigneeId: item.assigneeId || "" };
+          if (matches(candidate)) out.push(candidate);
+          continue;
+        }
+        const ownEpic = /^epic$/i.test(type);
+        const key = String(ownEpic ? (item.key || "") : (item.epicKey || "")).toUpperCase();
+        if (!key) continue;
+        const rawSummary = String(item.summary || item.title || "").replace(
+          new RegExp("^" + key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*"), "");
+        const name = String(item.epicName || (ownEpic ? rawSummary : "") || key);
+        const candidate = { key, summary: ownEpic ? (rawSummary || name) : name, name, type: "Epic" };
+        if (matches(candidate)) out.push(candidate);
+      }
+      return this._mergeParents(out);
+    },
+    pickParent(item) {
+      const token = ++this.resolveSeq;
+      this.typeErr = "";
       if (item.special) {                               // 'Epic 없음' → 독립 Task
-        const types = await api.taskTypes().catch(() => []);
-        this._resolve({ parent: "", isEpic: false, standalone: true, types: types || [],
+        const initial = cachedOptions("tasktypes");
+        this._resolve({ parent: "", isEpic: false, standalone: true,
+                        types: initial.length ? initial : DEFAULT_TASK_TYPES,
                         due: "", comps: [], plabel: "Epic 없음" });
+        this._loadTypes(token, "tasktypes", api.taskTypes());
         return;
       }
       const parent = item.key;
-      let types = [], due = "", comps = [];
-      try {
-        const [t, v] = await Promise.all([
-          api.childTypes(parent).catch(() => []),
-          api.ticket(parent).catch(() => null),
-        ]);
-        types = t || [];
-        if (v) { due = v.due || ""; comps = (v.components || []).slice(); }
-      } catch (e) { /* 최소값으로 연다 */ }
+      const typeKind = this.pickKind === "epic" ? "childtypes.epic" : "childtypes.task";
+      const cached = cachedOptions(typeKind);
+      const fallback = this.pickKind === "epic" ? DEFAULT_TASK_TYPES : DEFAULT_SUBTASK_TYPES;
       this._resolve({ parent, isEpic: this.pickKind === "epic", standalone: false,
-                      types, due, comps, plabel: item.name || item.summary || "" });
+                      types: cached.length ? cached : fallback,
+                      due: item.due || "", comps: (item.components || []).slice(),
+                      plabel: item.name || item.summary || "" });
+      this._loadTypes(token, typeKind, api.childTypes(parent));
+      api.ticket(parent).then((v) => {
+        if (token !== this.resolveSeq || !v || this.d.parent !== parent) return;
+        this.d.due = v.due || ""; this.d.comps = (v.components || []).slice();
+        if (!this.nc.duedate) this.nc.duedate = this.d.due;
+        if (!this.nc.components.length) this.nc.components = this.d.comps.filter((c) => c !== "사용자 VoC");
+      }).catch(() => { /* 상위 부가정보가 없어도 타입·제목 입력은 계속 가능 */ });
+    },
+    _loadTypes(token, kind, request) {
+      this.typeLoading = true;
+      Promise.resolve(request).then((values) => {
+        if (token !== this.resolveSeq) return;
+        const list = Array.from(new Set((values || []).filter(Boolean)));
+        if (!list.length) {
+          this.typeErr = "Jira에서 생성 가능한 타입을 받지 못했습니다. 기존 목록으로 계속할 수 있습니다.";
+          return;
+        }
+        rememberOptions(kind, list);
+        this.d.types = list;
+        if (!list.includes(this.nc.type)) this.nc.type = list.length === 1 ? list[0] : "";
+      }).catch(() => {
+        if (token === this.resolveSeq) this.typeErr = "타입 조회가 지연·실패해 기존 목록을 사용합니다.";
+      }).finally(() => { if (token === this.resolveSeq) this.typeLoading = false; });
     },
     reopenPick() {                                      // 상위 다시 고르기(고정이 아닐 때만)
       if (this.fixed) return;
@@ -140,6 +240,12 @@ export default {
       this.$nextTick(() => { const el = this.$refs.psearch; if (el) el.focus(); });
     },
     _resolve(ctx) {
+      if (!(ctx.types || []).length) {
+        const kind = (ctx.isEpic || ctx.standalone) ? "tasktypes" : "childtypes.task";
+        const cached = cachedOptions(kind);
+        ctx.types = cached.length ? cached
+          : ((ctx.isEpic || ctx.standalone) ? DEFAULT_TASK_TYPES : DEFAULT_SUBTASK_TYPES);
+      }
       this.d = ctx;
       this.resolved = true;
       // 타입: 고를 게 여럿이면 비우고, 하나뿐이면 박는다.
@@ -216,6 +322,7 @@ export default {
     <!-- 상위 후보(고르는 중) -->
     <div v-if="needPick" class="nk-cands nk-cands-tall">
       <div v-if="pbusy" class="muted nk-cand-empty">찾는 중…</div>
+      <div v-if="parentErr" class="nk-cand-error">{{ parentErr }}</div>
       <template v-for="c in plist" :key="c.key">
         <button v-if="c.special" type="button" class="nk-cand nk-cand-sp" @click="pickParent(c)">
           <span class="nk-sp-ic">⊘</span><b class="nk-sp-t">{{ c.label }}</b><span class="nk-cand-s">{{ c.desc }}</span>
@@ -259,6 +366,9 @@ export default {
         </FieldEdit></span></div>
       <div v-else><span class="k">티켓 타입</span><span class="val">
         <TypeBadge :type="nc.type" /></span></div>
+      <div v-if="typeLoading || typeErr" class="nk-type-note" :class="{ warn: typeErr }">
+        {{ typeErr || 'Jira 타입 목록 확인 중…' }}
+      </div>
 
       <div><span class="k">작업 기한</span><span class="val">
         <FieldEdit :ticket="d.parent" field="duedate" local :value="nc.duedate"

@@ -9,6 +9,7 @@ import { api } from "../../lib/api.js";
 import { createTypeahead } from "../../lib/typeahead.js";
 import TypeBadge from "./TypeBadge.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
+import { hydrateRecent, recentItems } from "../../lib/recent.js";
 
 const _URL_RE = /^https?:\/\/\S+$/i;
 
@@ -27,7 +28,8 @@ export default {
   emits: ["close", "pick"],
   data() {
     return { q: "", items: [], loading: false, serr: "", active: -1,
-             recent: [],                      // 검색어 없을 때의 후보(최근 조회)
+             // 서버 응답 전에 브라우저 미러를 먼저 그린다. 서버 목록은 mounted에서 뒤에 합친다.
+             recent: recentItems(20, this.mode === "jira" ? "jira" : "confluence"),
              types: [], type: "Relates", direction: "outward", title: "" };
   },
   computed: {
@@ -98,7 +100,8 @@ export default {
     // 종류별로 서버에서 잘라 온다. 전체 최근 20건을 받은 뒤 프론트에서 거르면
     // 문서만 연 직후 티켓 선택기가 비는 식으로 서로의 목록을 밀어낼 수 있다.
     api.recent(20, this.isJira ? "jira" : "confluence").then((r) => {
-      this.recent = r || [];
+      hydrateRecent(r || []);
+      this.recent = recentItems(20, this.isJira ? "jira" : "confluence");
       if (!this.q.trim() && this.recentItems.length) this.active = 0;
     }).catch(() => { /* 없으면 그냥 안내문만 */ });
     if (this.isJira) {

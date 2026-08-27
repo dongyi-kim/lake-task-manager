@@ -3,7 +3,7 @@
 // 스코프 토글(소속 한정 ↔ 전체), 키보드 ↑↓/Enter/Esc. updated: 2026-07-15
 import { api } from "../../lib/api.js";
 import { ymdhm } from "../../lib/fmt.js";
-import { recordOpen, stripTags } from "../../lib/recent.js";
+import { forgetRecent, hydrateRecent, recentItems, recordOpen, stripTags } from "../../lib/recent.js";
 import Avatar from "./Avatar.js";
 import { createTypeahead } from "../../lib/typeahead.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
@@ -22,7 +22,7 @@ export default {
     // res 는 늘 세 칸을 갖고, loadingSrc 가 각 칸이 아직 오는 중인지 말한다.
     return { q: "", scope: "scoped", res: null, loading: false, err: "",
              loadingSrc: { jira: false, confluence: false, bitbucket: false },
-             active: -1, optsOpen: false, recent: [] };
+             active: -1, optsOpen: false, recent: recentItems(RECENT_MAX) };
   },
   created() {
     // 소스마다 러너를 따로 둔다 — Jira 가 빨리 와도 Confluence 를 안 기다리고 먼저 그린다.
@@ -55,6 +55,7 @@ export default {
   //   ArrowDown/Enter 가 보이지도 않는 목록을 조작하고 티켓을 열어버린다.
   activated() {
     window.addEventListener("keydown", this._onKey);
+    this.recent = recentItems(RECENT_MAX); // 서버 GET보다 먼저 브라우저가 이미 아는 목록을 표시
     this.loadRecent();                  // 열 때마다 갱신(다른 브라우저에서 연 것도 반영된다)
     // keep-alive 는 검색어를 보존하되 결과까지 영구 보존하면, 티켓 수정 후 같은 검색어로 다시
     // 열었을 때 이전 제목·상태·담당자가 계속 보인다. 활성화 시 소스 캐시를 비우고 현재 검색어를
@@ -137,11 +138,12 @@ export default {
     scrollActive() { this.$nextTick(() => { const el = this.$el.querySelector(".sr-item.active"); if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" }); }); },
     idx(src, i) { return this.flat.findIndex((f) => f.src === src && f.it === (this.view[src].items[i])); },
     async loadRecent() {
-      let r = [];
-      try { r = (await api.recent(RECENT_FETCH)) || []; } catch (e) { r = []; }
+      let r = null;
+      try { r = (await api.recent(RECENT_FETCH)) || []; } catch (e) { /* 로컬 목록 유지 */ }
+      if (r) hydrateRecent(r);
       // 예전에 다른 URL 형태(호스트 다름)로 저장된 같은 티켓/문서를 한 줄로 합친다
       const seen = new Set();
-      this.recent = r.filter((x) => {
+      this.recent = recentItems(RECENT_FETCH).filter((x) => {
         const m = /\/browse\/([A-Za-z][A-Za-z0-9]*-\d+)/.exec(x.url || "");
         const k = m ? m[1].toUpperCase() : String(x.url || "").replace(/\/+$/, "").toLowerCase();
         if (seen.has(k)) return false;
@@ -153,6 +155,7 @@ export default {
     // 최근 목록에서 지우기(잘못 열었던 항목 등). 서버 목록이라 다른 브라우저에서도 사라진다.
     async forget(it) {
       this.recent = this.recent.filter((x) => x.url !== it.url);
+      forgetRecent(it.url);
       try { await api.recentClear(it.url); } catch (e) { /* noop */ }
     },
     pick(f) {
