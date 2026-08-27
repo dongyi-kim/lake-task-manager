@@ -306,6 +306,9 @@ export default {
     // 사라진 것을 찾아 토스트한다(그쪽은 클라가 조건을 알 수 없다).
     this._onChanged = (e) => {
       const view = (e && e.detail && e.detail.view) || null;
+      // LTM에서 Epic 자체를 수정하면 서버 전용 캐시는 즉시 무효화된다. 같은 화면에서 유지하는
+      // 이름 map도 해당 key만 버려야 다음 snapshot이 새 이름을 다시 확인할 수 있다.
+      if (view && view.key && this._epicMetaKnown) this._epicMetaKnown.delete(view.key);
       // 바뀐 필드는 **즉시** 화면에 반영한다(상태·담당이 눈앞에서 바뀌게).
       if (view) this._applyEditLocally(view);
       // ★ 목록에서 빠질지는 **서버가 판정한다.** 예전엔 클라가 흉내 냈는데, 이 목록에 있던
@@ -551,7 +554,11 @@ export default {
       const rows = (epics || []).filter((epic) => epic && epic.key && epic.title);
       if (!rows.length) return;
       const known = this._epicMetaKnown || (this._epicMetaKnown = new Map());
-      for (const epic of rows) known.set(epic.key, Object.assign({}, epic, { pending: false }));
+      const attempts = this._epicMetaAttempts || (this._epicMetaAttempts = new Map());
+      for (const epic of rows) {
+        known.set(epic.key, Object.assign({}, epic, { pending: false }));
+        attempts.delete(epic.key);
+      }
       const patch = (model) => {
         if (!model) return model;
         for (const epic of (model.epics || [])) {
@@ -560,11 +567,37 @@ export default {
             Object.assign(epic, meta, { pending: false });
           }
         }
-        model.epicsPending = (model.epics || []).some(
-          (epic) => epic.pending || !epic.title || epic.title === epic.key);
+        model.epicsPending = (model.epics || []).some((epic) => !!epic.pending);
         return model;
       };
       for (const modelKey of Object.keys(cache || {})) cache[modelKey] = patch(cache[modelKey]);
+    },
+    _settleMissingEpicMetadata(keys, cache) {
+      const missing = new Set(keys || []);
+      if (!missing.size) return;
+      const patch = (model) => {
+        if (!model) return model;
+        for (const epic of (model.epics || [])) {
+          if (missing.has(epic.key)) Object.assign(epic, {
+            title: epic.title || epic.key, pending: false, unavailable: true,
+          });
+        }
+        model.epicsPending = (model.epics || []).some((epic) => !!epic.pending);
+        return model;
+      };
+      for (const modelKey of Object.keys(cache || {})) cache[modelKey] = patch(cache[modelKey]);
+    },
+    _scheduleEpicMetadataFlush(cache) {
+      const pending = this._epicMetaPending || new Set();
+      if (!pending.size || this._epicMetaTimer || this._epicMetaBusy) return;
+      const attempts = this._epicMetaAttempts || new Map();
+      const delay = Math.min(...Array.from(pending).map((key) => {
+        const attempt = Number(attempts.get(key)) || 0;
+        return attempt ? TASK_RETRY_DELAYS[attempt - 1] : 40;
+      }));
+      this._epicMetaTimer = setTimeout(() => {
+        this._epicMetaTimer = null; this._flushEpicMetadata(cache);
+      }, delay);
     },
     _queueEpicMetadata(model, cache) {
       const known = this._epicMetaKnown || (this._epicMetaKnown = new Map());
@@ -579,10 +612,7 @@ export default {
         else if (!inflight.has(epic.key)) pending.add(epic.key);
       }
       this._applyEpicMetadata(ready, cache);
-      if (!pending.size || this._epicMetaTimer || this._epicMetaBusy) return;
-      this._epicMetaTimer = setTimeout(() => {
-        this._epicMetaTimer = null; this._flushEpicMetadata(cache);
-      }, 40);
+      this._scheduleEpicMetadataFlush(cache);
     },
     async _flushEpicMetadata(cache) {
       const pending = this._epicMetaPending || new Set();
@@ -591,14 +621,32 @@ export default {
       const inflight = this._epicMetaInflight || (this._epicMetaInflight = new Set());
       keys.forEach((key) => { pending.delete(key); inflight.add(key); });
       this._epicMetaBusy = true;
+      let rows = [];
       try {
         const result = await api.myTasksEpicMeta(keys);
-        this._applyEpicMetadata((result && result.epics) || [], cache);
+        rows = (result && result.epics) || [];
+        this._applyEpicMetadata(rows, cache);
       } catch (e) { /* 카드/JQL 스트림은 Epic 메타 조회 실패와 독립적으로 계속 동작한다 */ }
       finally {
+        const resolved = new Set(rows.filter((epic) => epic && epic.key && epic.title)
+          .map((epic) => epic.key));
+        const attempts = this._epicMetaAttempts || (this._epicMetaAttempts = new Map());
+        const exhausted = [];
+        for (const key of keys) {
+          if (resolved.has(key)) continue;
+          const attempt = (Number(attempts.get(key)) || 0) + 1;
+          if (attempt <= TASK_RETRY_DELAYS.length) {
+            attempts.set(key, attempt);
+            pending.add(key);
+          } else {
+            attempts.delete(key);
+            exhausted.push(key);
+          }
+        }
+        this._settleMissingEpicMetadata(exhausted, cache);
         keys.forEach((key) => inflight.delete(key));
         this._epicMetaBusy = false;
-        if (pending.size) this._queueEpicMetadata({ epics: Array.from(pending).map((key) => ({ key })) }, cache);
+        this._scheduleEpicMetadataFlush(cache);
       }
     },
     _scheduleTaskRetry(cacheKey, attempt) {
@@ -874,7 +922,15 @@ export default {
       if (this.busy) return;
       this.busy = true;
       this._dropModelCache();
-      try { await api.refresh(); this.model = null; await this.load(); }
+      try {
+        await api.refresh();
+        // 강제 새로고침은 서버 캐시까지 비우는 명시적 동작이다. 컴포넌트 수명 동안 유지한
+        // 이름도 함께 버려야 외부 Jira에서 바뀐 Epic 이름을 다시 받을 수 있다.
+        this._epicMetaKnown = new Map();
+        this._epicMetaAttempts = new Map();
+        this.model = null;
+        await this.load();
+      }
       catch (e) { this.err = (e && e.message) || "다시 받지 못했습니다."; }
       finally { this.busy = false; }
     },
@@ -1246,7 +1302,7 @@ export default {
     epicPending(k) {
       if (!k) return false;
       const epic = this.epicMap[k];
-      return !epic || epic.pending || !epic.title || epic.title === k;
+      return !epic || !!epic.pending;
     },
     epicDisplayTitle(k) { return this.epicPending(k) ? "Epic 이름 확인 중" : this.epicTitle(k); },
     // VoC 티켓 제목 접두 [대분류 - 소분류] → 뱃지 세그먼트 / 제목에서 접두 제거(voc.js).

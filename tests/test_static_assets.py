@@ -227,6 +227,10 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
     assert '"&deferred=1"' in api
     assert "myTasksStream: (opts, onEvent, signal)" in api
     assert "myTasksEpicMeta: (keys)" in api
+    epic_api = api[api.index("myTasksEpicMeta: (keys)"):api.index("search: (q, scope, only)")]
+    assert "return req(" in epic_api
+    assert "get(" not in epic_api
+    assert ".filter(Boolean))).sort()" in epic_api
     assert "response.body.getReader" in api
     assert "myTasksGroup: (syncId, key)" in api
     assert "myTasksEpics: (syncId)" in api
@@ -254,7 +258,13 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
     hydrate_replace = view[hydrate_start:view.index("} catch (e) {", hydrate_start)]
     assert hydrate_replace.index("reconcileTaskModel") < hydrate_replace.index("this._queueEpicMetadata")
     assert "this.model = next" not in hydrate_replace
+    assert 'return !epic || !!epic.pending;' in view
     assert 'epicDisplayTitle(k) { return this.epicPending(k) ? "Epic 이름 확인 중"' in view
+    assert "_epicMetaAttempts" in view
+    assert "_settleMissingEpicMetadata(exhausted, cache)" in view
+    assert "attempt <= TASK_RETRY_DELAYS.length" in view
+    assert "this._epicMetaKnown.delete(view.key)" in view
+    assert "this._epicMetaKnown = new Map();" in view
     assert 'result.contract !== "task-snapshot.v1"' in view
     assert "Number(result.sequence) <= snapshotSequence" in view
     assert 'if (kind === "permission") continue;' in view

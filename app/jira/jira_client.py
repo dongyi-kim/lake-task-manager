@@ -494,9 +494,10 @@ class JiraClient:
     JQL_CACHE_VERSION = 2
     JQL_SNAPSHOT_TTL = 30 * 60
     # Epic 제목/상태는 일반 티켓 본문보다 훨씬 덜 바뀌고 Task·Workload·WBS 전역에서 반복된다.
-    # 일반 issue TTL(기본 15분)보다 길게 유지하되 Epic 수정 성공 시 _invalidate_ticket()이
-    # 즉시 이 전용 항목을 비워, 긴 TTL이 사용자 수정 반영을 늦추지는 않게 한다.
-    EPIC_META_TTL = 6 * 3600
+    # 일반 issue TTL(기본 15분)보다 길고 한 근무일을 넘겨 유지하되 Epic 수정 성공 시
+    # _invalidate_ticket()이 즉시 이 전용 항목을 비워, 긴 TTL이 사용자 수정 반영을 늦추지는
+    # 않게 한다. 외부 Jira에서 직접 바꾼 이름도 다음 근무일에는 자연히 다시 확인한다.
+    EPIC_META_TTL = 12 * 3600
     JQL_LEAF_RESULT_LIMIT = 10_000
     # A serial provider (prod SSO/mock) cannot make a large DNF cold query interactive if every
     # leaf blocks the response.  Build the first exhaustive snapshot with one equivalent Jira
@@ -3822,7 +3823,7 @@ class JiraClient:
 
         The dedicated entry avoids refetching a mostly immutable Epic every time a Task filter is
         revisited.  Only successful Jira data is cached; auth/network failures never become a
-        ticket-key-shaped label for six hours.
+        ticket-key-shaped label for twelve hours.
         """
         key = str(key or "").strip().upper()
         if not key:
@@ -3842,19 +3843,39 @@ class JiraClient:
         self.cache.set(cache_key, result, self.EPIC_META_TTL)
         return result
 
+    def epic_metadata_cached_many(self, keys):
+        """Return only fresh per-Epic metadata without touching Jira.
+
+        Task streaming uses this before it emits the first card snapshot.  A still-valid title must
+        be rendered immediately, while a real miss stays eligible for the independent background
+        metadata request instead of holding the Task query behind an Epic badge lookup.
+        """
+        ordered = list(dict.fromkeys(
+            str(key).strip().upper() for key in (keys or ()) if str(key or "").strip()))
+        if not ordered:
+            return []
+        cached = self.cache.get_many(f"epicmeta:{self.env}:{key}" for key in ordered)
+        result = []
+        for key in ordered:
+            value = cached.get(f"epicmeta:{self.env}:{key}")
+            if isinstance(value, dict) and value.get("title"):
+                result.append(value)
+        return result
+
     def epic_metadata_many(self, keys):
         """Resolve Epic labels in one light prefetch, reusing long-lived per-Epic entries."""
         ordered = list(dict.fromkeys(
             str(key).strip().upper() for key in (keys or ()) if str(key or "").strip()))
         if not ordered:
             return []
-        cached = self.cache.get_many(f"epicmeta:{self.env}:{key}" for key in ordered)
-        missing = [key for key in ordered if f"epicmeta:{self.env}:{key}" not in cached]
+        cached_rows = self.epic_metadata_cached_many(ordered)
+        cached = {row["key"]: row for row in cached_rows}
+        missing = [key for key in ordered if key not in cached]
         if missing:
             self.prefetch_issues(missing, light=True)
         result = []
         for key in ordered:
-            meta = cached.get(f"epicmeta:{self.env}:{key}") or self.epic_metadata(key)
+            meta = cached.get(key) or self.epic_metadata(key)
             if meta:
                 result.append(meta)
         return result
