@@ -321,7 +321,9 @@ class _TaskRowsClient:
         if self._recorder is not None:
             self._recorder.append((cache_key, jql, max_results))
             return []
-        return self._rows[:max(0, int(max_results or 0))]
+        if max_results is None:
+            return list(self._rows)
+        return self._rows[:max(0, int(max_results))]
 
     def issues_by_keys(self, keys, light=False):
         if not self._cache_only:
@@ -357,7 +359,7 @@ def _leaf_status_axis(leaf):
     return None
 
 
-def iter_my_task_models(client, user=None, include_done=False, limit=200, scope="assignee",
+def iter_my_task_models(client, user=None, include_done=False, limit=None, scope="assignee",
                         open_filter="all", prog_filter="all", done_filter="1w",
                         request_token=None):
     """Yield versioned, authoritative cumulative Task snapshots.
@@ -435,7 +437,8 @@ def iter_my_task_models(client, user=None, include_done=False, limit=200, scope=
     def cumulative_model(*, create_sync=False):
         rows_by_key = {}
         for rows, (_cache_key, _jql, max_results) in zip(query_results, calls):
-            for row in rows[:max(0, int(max_results or 0))]:
+            selected = rows if max_results is None else rows[:max(0, int(max_results))]
+            for row in selected:
                 key = (row or {}).get("key")
                 if key:
                     rows_by_key[key] = row
@@ -467,8 +470,10 @@ def iter_my_task_models(client, user=None, include_done=False, limit=200, scope=
                         cumulative_model(), errors=errors, leaf_done=leaf_done,
                         leaf_total=leaf_total, completed_leaf=completed)
                 continue
-            query_results[query_index] = list(chunk.get("combined") or ())[
-                :max(0, int(max_results or 0))]
+            combined = list(chunk.get("combined") or ())
+            query_results[query_index] = (
+                combined if max_results is None else combined[:max(0, int(max_results))]
+            )
             completed = {
                 "leaf": leaf, "axis": axis, "status": "success",
                 "leafIndex": chunk.get("leafIndex"),
@@ -498,7 +503,7 @@ def iter_my_task_models(client, user=None, include_done=False, limit=200, scope=
                 leaf_done=leaf_done, leaf_total=leaf_total)
 
 
-def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assignee",
+def build_my_tasks(client, user=None, include_done=False, limit=None, scope="assignee",
                    open_filter="all", prog_filter="all", done_filter="1w",
                    defer_children=False, create_sync=True):
     """세션 사용자(또는 user 지정)의 '내 Task' 모델.
@@ -672,10 +677,15 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
         return {"user": {"id": me}, "groups": [], "epics": [], "counts": _counts([])}
 
     # 2) 맥락 채우기 — 부모(내가 Sub 담당인 경우)와 하위(내 Task 의 동료 Sub 포함).
-    #    하위는 JQL('parent in ...')이 아니라 이슈의 subtasks 필드로 모은다.
-    #    구버전 Jira 는 parent JQL 지원이 들쭉날쭉이고, subtasks 는 이미 받아온 필드라 공짜다.
+    #    하위는 JQL('parent in ...')이 아니라 공통 direct-child membership 캐시로 모은다.
+    #    이 화면의 JQL row에 subtasks가 이미 있으므로 상류 호출 없이 캐시를 prime하고,
+    #    티켓 다이어로그·PMO_VIT·WBS가 같은 parent를 열 때 그대로 재사용한다.
     def sub_keys(raw):
-        return [x.get("key") for x in ((raw.get("fields") or {}).get("subtasks") or []) if x.get("key")]
+        try:
+            return client.direct_child_keys(raw.get("key"), parent_issue=raw)
+        except Exception:
+            client.miss_add()
+            return []
 
     need_parents = sorted({n["parentKey"] for n in mine if n["isSub"] and n["parentKey"]})
     # Task 화면은 description/attachment/link를 쓰지 않는다. JQL이 이미 채운 issueL 캐시를

@@ -185,6 +185,105 @@ def test_subtask_hydration_writes_light_issue_cache_without_poisoning_full_rows(
         assert client.cache.get(f"issue:{client.env}:{key}") is None
 
 
+def test_direct_child_membership_is_shared_by_tasks_dialog_vit_and_wbs():
+    client = _client()
+    model = build_my_tasks(client, scope="assignee", defer_children=True)
+    expected = ["DL-9021", "DL-9022", "DL-9023", "DL-9024"]
+
+    # MyTasks primes membership from its existing JQL parent row.
+    assert _group(model, "DL-9020")["kidsTotal"] == len(expected)
+    cache_key = client._direct_child_cache_key("DL-9020")
+    assert client.cache.get(cache_key) == expected
+
+    # Ticket dialog and PMO_VIT consume the same membership; only their derived projection differs.
+    dialog_keys = [row["key"] for row in client.ticket_children("DL-9020")]
+    vit_keys = [row["key"] for row in client._vit_tree("DL-9020", "Task")]
+    assert dialog_keys == expected
+    assert vit_keys == expected
+    assert client.cache.get(cache_key) == expected
+
+    # WBS uses the same Epic->Task and Task->SubTask memberships plus issueL detail rows.
+    tree = client.epic_tree("DL-9019")
+    task = next(row for row in tree if row["key"] == "DL-9020")
+    assert [row["key"] for row in task["children"]] == expected
+    assert client.cache.get(cache_key) == expected
+    assert all(client.cache.get(f"issueL:{client.env}:{key}") is not None
+               for key in expected)
+
+
+def test_detail_edit_keeps_membership_but_invalidates_all_derived_child_views(monkeypatch):
+    client = _client()
+    expected = client.direct_child_keys("DL-9020")
+    membership_key = client._direct_child_cache_key("DL-9020")
+    for prefix in ("children", "vit_tree", "epic_tree", "epic_issues"):
+        client.cache.set(f"{prefix}:{client.env}:DL-9020", {"stale": True}, 300)
+    client.cache.set(f"vit_build:{client.env}", {"stale": True}, 300)
+    monkeypatch.setattr(client, "_reprime", lambda *_args, **_kwargs: None)
+
+    client._invalidate_ticket("DL-9021")
+
+    # Status/summary/assignee changes alter child rows, not who the children are.
+    assert client.cache.get(membership_key) == expected
+    for prefix in ("children", "vit_tree", "epic_tree", "epic_issues"):
+        assert client.cache.get(f"{prefix}:{client.env}:DL-9020") is None
+    assert client.cache.get(f"vit_build:{client.env}") is None
+
+
+def test_child_create_and_delete_refresh_shared_membership(monkeypatch):
+    client = _client()
+    before = client.direct_child_keys("DL-9020")
+    monkeypatch.setattr(client, "_reprime", lambda *_args, **_kwargs: None)
+
+    created = client.create_child("DL-9020", "Sub-Task", "[cache] membership mutation")
+    created_key = created["key"]
+    try:
+        after_create = client.direct_child_keys("DL-9020")
+        assert created_key in after_create
+        assert len(after_create) == len(before) + 1
+
+        client.delete_issue(created_key)
+        after_delete = client.direct_child_keys("DL-9020")
+        assert after_delete == before
+    finally:
+        # Keep the shared mock world clean if an assertion before delete fails.
+        try:
+            client.provider.delete(f"/rest/api/2/issue/{created_key}")
+        except Exception:
+            pass
+
+
+def test_epic_field_edit_invalidates_old_and_new_memberships(monkeypatch):
+    client = _client()
+    epic_key = "DL-9019"
+    before = client.direct_child_keys(epic_key, parent_type="Epic")
+    monkeypatch.setattr(client, "_reprime", lambda *_args, **_kwargs: None)
+    created_key = client.create_child(None, "Task", "[cache] epic membership mutation")["key"]
+
+    try:
+        client.update_fields(created_key, {client.s.epic_link_field_id: epic_key})
+        assert created_key in client.direct_child_keys(epic_key, parent_type="Epic")
+
+        client.update_fields(created_key, {client.s.epic_link_field_id: None})
+        assert client.direct_child_keys(epic_key, parent_type="Epic") == before
+    finally:
+        try:
+            client.provider.delete(f"/rest/api/2/issue/{created_key}")
+        except Exception:
+            pass
+
+
+def test_failed_parent_read_does_not_cache_false_empty_membership(monkeypatch):
+    client = _client()
+    partial_parent = {"key": "DL-9020", "fields": {"issuetype": {"name": "Task"}}}
+    monkeypatch.setattr(
+        client, "get_issue_light",
+        lambda _key: (_ for _ in ()).throw(RuntimeError("upstream unavailable")))
+
+    with pytest.raises(RuntimeError, match="upstream unavailable"):
+        client.direct_child_keys("DL-9020", parent_issue=partial_parent)
+    assert client.cache.get(client._direct_child_cache_key("DL-9020")) is None
+
+
 def test_expired_or_invalidated_filter_snapshot_cannot_hydrate():
     client = _client()
     deferred = build_my_tasks(client, scope="assignee", defer_children=True)
@@ -291,6 +390,36 @@ def test_leaf_failures_are_isolated_classified_and_later_leaves_still_arrive(mon
     assert len(chunks) == 4
 
 
+def test_retry_after_partial_failure_only_refetches_the_uncached_leaf(monkeypatch):
+    client = _client()
+    original = client._fetch_jql_leaf
+    upstream = []
+    failed_once = False
+
+    def flaky(leaf, fields, light):
+        nonlocal failed_once
+        upstream.append(leaf)
+        if "DL-9028" in leaf and not failed_once:
+            failed_once = True
+            raise RuntimeError("temporary Jira failure")
+        return original(leaf, fields, light)
+
+    monkeypatch.setattr(client, "_fetch_jql_leaf", flaky)
+    query = "key = DL-9008 OR key = DL-9028 OR key = DL-9030 OR key = DL-9020"
+    first = list(client.iter_search_issue_chunks(query))
+    assert sum(bool(chunk.get("error")) for chunk in first) == 1
+    assert failed_once is True
+
+    upstream.clear()
+    retried = list(client.iter_search_issue_chunks(query))
+    assert not any(chunk.get("error") for chunk in retried)
+    assert len(upstream) == 1
+    assert "DL-9028" in upstream[0]
+    assert {issue["key"] for chunk in retried for issue in chunk.get("issues") or ()} == {
+        "DL-9008", "DL-9028", "DL-9030", "DL-9020",
+    }
+
+
 def test_partial_task_stream_keeps_successes_and_does_not_publish_partial_mt_cache(monkeypatch):
     client = _client()
     original = client._cached_jql_leaf
@@ -340,6 +469,68 @@ def test_authoritative_snapshot_is_independent_of_leaf_completion_order(monkeypa
     assert actual["groups"] == expected["groups"]
     assert actual["counts"] == expected["counts"]
     assert [event["sequence"] for event in events] == list(range(len(events)))
+
+
+def test_done_window_cannot_crowd_active_axes_out_of_the_task_model(monkeypatch):
+    """A Done-only filter change must not compete with To Do/In Progress for one global cap."""
+    client = _client()
+    me = "test.ui01"
+
+    def raw(key, category, *, due=None, resolved=None):
+        category_key = {"todo": "new", "inprogress": "indeterminate", "done": "done"}[category]
+        fields = {
+            "summary": key, "issuetype": {"name": "Task", "subtask": False},
+            "status": {"name": category, "statusCategory": {"key": category_key}},
+            "assignee": {"name": me, "displayName": me},
+            "reporter": {"name": me, "displayName": me},
+            "priority": {"name": "P2-Major"}, "duedate": due,
+            "resolutiondate": resolved, "created": "2026-01-01T09:00:00+0900",
+            "updated": "2026-08-25T09:00:00+0900", "components": [],
+            "subtasks": [], "parent": None,
+        }
+        fields[client.s.sp_field_id] = None
+        fields[client.s.epic_link_field_id] = None
+        return {"key": key, "fields": fields}
+
+    progress = [raw(f"DL-97{i:04d}", "inprogress") for i in range(30)]
+    todo = [raw(f"DL-96{i:04d}", "todo") for i in range(5)]
+    done = [raw(f"DL-98{i:04d}", "done", due="2026-01-01",
+                resolved="2026-08-15T18:00:00+0900") for i in range(230)]
+
+    def chunks(jql, fields=None, light=True):
+        compiled = client._compile_jql(jql)
+        combined = {}
+        for index, leaf in enumerate(compiled.leaves):
+            lowered = leaf.lower()
+            if "statuscategory = done" in lowered:
+                rows = done[:20] if "resolved >= -7d" in jql.lower() else done
+            elif "statuscategory = \"in progress\"" in lowered:
+                rows = progress
+            elif "statuscategory = \"to do\"" in lowered:
+                rows = todo
+            else:
+                rows = []
+            for row in rows:
+                combined[row["key"]] = row
+            yield {
+                "leaf": leaf, "leafIndex": index, "leafTotal": len(compiled.leaves),
+                "issues": rows, "combined": sort_issues(combined.values(), compiled.order),
+                "fallback": False, "coalesceCached": False,
+            }
+
+    monkeypatch.setattr(client, "iter_search_issue_chunks", chunks)
+    week = list(iter_my_task_models(client, scope="assignee", done_filter="1w"))[-1]["model"]
+    month = list(iter_my_task_models(client, scope="assignee", done_filter="1m"))[-1]["model"]
+
+    def keys(model, category):
+        return {atom["key"] for group in model["groups"] for atom in group["atoms"]
+                if atom["statusCategory"] == category}
+
+    expected_progress = {row["key"] for row in progress}
+    assert keys(week, "inprogress") == expected_progress
+    assert keys(month, "inprogress") == expected_progress
+    assert keys(month, "done") == {row["key"] for row in done}
+    assert month["counts"]["total"] == len(progress) + len(todo) + len(done)
 
 
 def test_epic_metadata_uses_long_ttl_and_ticket_invalidation_evicts_it(monkeypatch):

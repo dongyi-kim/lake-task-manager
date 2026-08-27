@@ -1095,7 +1095,7 @@ class JiraClient:
                 f"{str(value or '').lower()}:")
 
     @staticmethod
-    def _jql_changed_predicate_fields(events):
+    def _jql_changed_predicate_fields(events, epic_link_field_id=None):
         """Fields whose predicates can gain or lose a mutated issue.
 
         Every successful Jira write changes ``updated``.  Text predicates can be affected by
@@ -1123,6 +1123,11 @@ class JiraClient:
             fields.add("statuscategory")
         if "key" in fields:
             fields.add("issue")
+        epic_field = str(epic_link_field_id or "").strip().lower()
+        if epic_field and epic_field in fields:
+            # REST writes use the instance-specific customfield id while JQL dependencies are
+            # indexed under the human field name.
+            fields.update({"epic link", "epic"})
         if fields & {"summary", "description", "comment"}:
             fields.add("text")
         if any(event.kind in {"create", "create_epic"} for event in events):
@@ -1148,7 +1153,8 @@ class JiraClient:
         # Delete cannot make an issue enter a previously non-matching leaf.  All other writes may
         # do so, therefore consult the field dependency index as well as the membership index.
         membership_fields = self._jql_changed_predicate_fields(
-            [event for event in events if event.kind != "delete"])
+            [event for event in events if event.kind != "delete"],
+            getattr(self.s, "epic_link_field_id", None))
         for field in membership_fields:
             prefix = self._jql_index_prefix("field", generation, field)
             keys.update(value for value in self.cache.entries_by_prefix(prefix).values()
@@ -1185,7 +1191,7 @@ class JiraClient:
             for prefix in ("workload:", "workload_bucket:", "activity:"):
                 self.cache.invalidate(prefix)
         if structural:
-            for prefix in ("wbs_build:", "vit_bases:", "vit_list:"):
+            for prefix in ("wbs_build:", "vit_build:", "vit_bases:", "vit_list:"):
                 self.cache.invalidate(prefix)
         self.cache.invalidate_keys(self._affected_jql_leaf_keys(events))
         # Rows/snapshots remain generation-scoped so an already issued pagination cursor stays
@@ -1416,7 +1422,7 @@ class JiraClient:
                     key, digest, leaf_generation, issue_keys, predicate_fields)
                 return issue_keys
 
-            issue_keys = self.cache.get_or_set(
+            issue_keys = self.cache.get_or_set_strict(
                 key, self.s.cache_ttl_seconds,
                 produce)[0]
         return self._hydrate_jql_leaf_rows(
@@ -1750,7 +1756,9 @@ class JiraClient:
             compiled = self._compile_jql(jql)
             execution_fields = fields_with_order(fields, compiled.order)
             _sid, snapshot = self._jql_snapshot(compiled, execution_fields, light)
-            issues = list(snapshot.get("issues") or [])[:max(0, int(max_results or 0))]
+            issues = list(snapshot.get("issues") or [])
+            if max_results is not None:
+                issues = issues[:max(0, int(max_results))]
             if cache_key:
                 # Preserve observability/compatibility for existing mt:/epic_* cache namespaces;
                 # normalized leaf and snapshot keys remain the source used for cache hits.
@@ -1798,19 +1806,24 @@ class JiraClient:
                         if isinstance(data, dict) and "issues" in data:
                             batch = data.get("issues", [])
                             issues.extend(batch); start += 100
-                            if start >= data.get("total", 0) or not batch or start >= max_results:
+                            if (start >= data.get("total", 0) or not batch
+                                    or (max_results is not None and start >= max_results)):
                                 break
                             continue
-                    # 자식 없는 Epic 은 Jira DC 가 400 에러로 답한다 — 정상적인 '0건' 이라 조용히.
+                    # 자식 없는 Epic 은 Jira DC 가 400 에러로 답한다 — 첫 페이지의 정상적인
+                    # '0건' 만 허용한다. 중간 페이지의 비정상 응답을 부분 성공으로 돌려주면
+                    # 이미 받은 앞 페이지만 목록 캐시에 굳어 실제 티켓이 사라진다.
                     msgs = " ".join((data or {}).get("errorMessages") or []) if isinstance(data, dict) else ""
-                    if "parent epic" not in msgs.lower():
-                        self._log_once("search-odd",
-                                       f"[search] 검색 응답 아님(무시): {str(data)[:120]}")
-                    break
+                    if "parent epic" in msgs.lower() and start == 0 and not issues:
+                        return []
+                    self._log_once("search-odd",
+                                   f"[search] 검색 응답 아님: {str(data)[:120]}")
+                    raise ValueError(msgs or "Jira 검색 응답 형식이 올바르지 않습니다.")
                 batch = data.get("issues", [])
                 issues.extend(batch)
                 start += 100
-                if start >= data.get("total", 0) or not batch or start >= max_results:
+                if (start >= data.get("total", 0) or not batch
+                        or (max_results is not None and start >= max_results)):
                     break
             return issues
         if cache_key:
@@ -1851,19 +1864,8 @@ class JiraClient:
     def _fetch_epic_children(self, epic_key):
         """Epic 자식 조회 → 정규화. 검색 결과는 티켓 단위 캐시로 write-through."""
         sp = self.s.sp_field_id
-        raw = self._search(f'"Epic Link" = {epic_key}',
-                           cache_key=f"epic_children:{self.env}:{epic_key}")
-        if not raw:
-            try:  # 폴백: Agile API
-                data = self.provider.get_json(
-                    f"/rest/agile/1.0/epic/{epic_key}/issue",
-                    params={"fields": self._issue_fields(), "maxResults": 100})
-                raw = data.get("issues", [])
-                for it in raw:
-                    if it.get("key"):
-                        self.cache.set(f"issue:{self.env}:{it['key']}", it, self.s.cache_ttl_seconds)
-            except Exception:
-                pass
+        keys = self.direct_child_keys(epic_key, parent_type="Epic")
+        raw = self.issues_by_keys(keys, light=True)
         return [_normalize_issue(it, sp) for it in raw]
 
     def epic_tree(self, epic_key):
@@ -1876,17 +1878,28 @@ class JiraClient:
 
     def _build_epic_tree(self, epic_key):
         sp = self.s.sp_field_id
-        raws = self._search(f'"Epic Link" = {epic_key}',
-                            cache_key=f"epic_children:{self.env}:{epic_key}")
-        if not raws:
-            try:  # 폴백: Agile API
-                data = self.provider.get_json(
-                    f"/rest/agile/1.0/epic/{epic_key}/issue",
-                    params={"fields": self._issue_fields(), "maxResults": 100})
-                raws = data.get("issues", [])
-            except Exception:
-                raws = []
-        return [_display_node(it, sp, with_subs=True) for it in raws]
+        task_keys = self.direct_child_keys(epic_key, parent_type="Epic")
+        raws = self.issues_by_keys(task_keys, light=True)
+        sub_keys_by_parent = {
+            raw.get("key"): self.direct_child_keys(raw.get("key"), parent_issue=raw)
+            for raw in raws if raw.get("key")
+        }
+        all_sub_keys = list(dict.fromkeys(
+            sub_key for keys in sub_keys_by_parent.values() for sub_key in keys))
+        sub_by_key = {
+            raw.get("key"): raw for raw in self.issues_by_keys(all_sub_keys, light=True)
+            if raw.get("key")
+        }
+        out = []
+        for raw in raws:
+            node = _display_node(raw, sp)
+            node["children"] = [
+                _display_node(sub_by_key[sub_key], sp)
+                for sub_key in sub_keys_by_parent.get(raw.get("key"), ())
+                if sub_key in sub_by_key
+            ]
+            out.append(node)
+        return out
 
     def epic_name(self, epic_key):
         """Epic 라벨 — Epic Name(단축어) → Summary → 키 순(전 화면 공통). (config 엔 이름 없음)"""
@@ -1993,10 +2006,10 @@ class JiraClient:
         }
         # 하위(Sub-task)도 개별 티켓으로 조회 → 티켓 단위 캐시. 노드는 경량 필드만 쓰므로 경량 조회.
         # (개별 실패는 여기서 miss 로 세므로 경량 조회여도 부분실패 집계는 그대로 동작한다.)
-        for s in (f.get("subtasks") or []):
-            skey = s.get("key")
-            if not skey:
-                continue
+        child_keys = self.direct_child_keys(node["key"], parent_issue=issue,
+                                            parent_type=node["type"])
+        self.prefetch_issues(child_keys, light=True)
+        for skey in child_keys:
             try:
                 node["children"].append(self._node_from_issue(self.get_issue_light(skey)))
             except Exception:
@@ -2008,14 +2021,10 @@ class JiraClient:
         """Root 자손 트리 — 모든 노드를 get_issue_light/_search(티켓 단위 캐시)로 조회.
         노드는 경량 필드(_node_from_issue)만 쓰므로 전 구간 경량으로 받는다(Epic 자식 검색·서브태스크 모두)."""
         try:
-            if itype == "Epic":
-                children = self._search(f'"Epic Link" = {key}',
-                                        cache_key=f"epic_children:{self.env}:{key}")
-                return [self._node_from_issue(c) for c in children]
-            root = self.get_issue_light(key)
-            subs = ((root.get("fields") or {}).get("subtasks")) or []
-            self.prefetch_issues([s.get("key") for s in subs], light=True)   # 자식 원본을 한 번에(경량)
-            return [self._node_from_issue(self.get_issue_light(s["key"])) for s in subs if s.get("key")]
+            child_keys = self.direct_child_keys(key, parent_type=itype)
+            self.prefetch_issues(child_keys, light=True)   # 자식 원본을 한 번에(경량)
+            return [self._node_from_issue(self.get_issue_light(child_key))
+                    for child_key in child_keys]
         except Exception:
             # 트리를 통째로 못 만들었다 — 빈 트리로 내려가되 '못 만들었다' 는 남긴다.
             self.miss_add()
@@ -2407,6 +2416,7 @@ class JiraClient:
                     "ancestors", "related", "timeline", "attachments", "documents",
                     "remotelinks", "epic_children", "epicmeta", "changelog", "editmeta"):
             self.cache.invalidate(f"{pfx}:{env}:{key}")
+        self._invalidate_direct_child_views(key, membership=True)
         self._invalidate_lineage(parent_key, epic_key)    # 형제 목록은 그룹(부모/Epic)별 공유 캐시
         self._record_mutation(MutationEvent("refresh", key, parent_key=parent_key,
                                             epic_key=epic_key))
@@ -2489,18 +2499,46 @@ class JiraClient:
         형제 목록은 부모(subtask)·Epic(Story/Task)별로 **공유 캐시**되므로(각 티켓별이 아니라)
         그룹 키 하나만 비우면 형제 전원의 뷰가 갱신된다."""
         env = self.env
+        # Sub-Task 자체에는 Epic Link가 없으므로 부모 Task에서 한 단계 올려 WBS Epic 트리도
+        # 갱신한다. 보통 issueL hit라 상류 요청은 발생하지 않는다.
+        if parent_key and not epic_key:
+            try:
+                _unused_parent, epic_key = self._lineage_of(parent_key)
+            except Exception:
+                epic_key = None
         if parent_key:
             # 부모의 진척·하위목록·원본(subtasks 필드)·형제 그룹 — 하위 상태변경/추가가 다 여기 반영된다.
             for pfx in ("issue", "issueL", "issueview", "children"):
                 self.cache.invalidate(f"{pfx}:{env}:{parent_key}")
             self.cache.invalidate(f"siblings:{env}:sub:{parent_key}")
             self.cache.invalidate(f"timeline:{env}:{parent_key}")
+            self._invalidate_direct_child_views(parent_key)
             self._reprime(parent_key)               # 부모 진척/뷰를 백그라운드로 즉시 재조회
         if epic_key:
             # Epic 자식 목록(형제·롤업 진척이 공유) — 구성원 상태/소속이 바뀌면 Epic 진척·형제뷰가 낡는다.
             self.cache.invalidate(f"epic_children:{env}:{epic_key}")
             self.cache.invalidate(f"siblings:{env}:epic:{epic_key}")
             self.cache.invalidate(f"timeline:{env}:{epic_key}")
+            self._invalidate_direct_child_views(epic_key)
+
+    def _invalidate_direct_child_views(self, parent_key, *, membership=False):
+        """Invalidate consumers of one parent membership without over-invalidating the IDs.
+
+        Status/summary/assignee edits keep ``childkeys`` because the relationship did not change;
+        create/delete/move callers opt into ``membership=True``. Derived dialog/VIT/WBS projections
+        are always rebuilt from the shared membership plus the freshly invalidated ``issueL`` row.
+        """
+        parent_key = str(parent_key or "").strip().upper()
+        if not parent_key:
+            return
+        if membership:
+            self.cache.invalidate(self._direct_child_cache_key(parent_key))
+            # Compatibility cache used by older Epic readers; keeping it would immediately
+            # repopulate the new membership with the pre-mutation row set.
+            self.cache.invalidate(f"epic_children:{self.env}:{parent_key}")
+        for prefix in ("children", "vit_tree", "epic_tree", "epic_issues"):
+            self.cache.invalidate(f"{prefix}:{self.env}:{parent_key}")
+        self.cache.invalidate(f"vit_build:{self.env}")
 
     # ── 편집 ──────────────────────────────────────────────────────────
     # **무엇을 고칠 수 있는지는 Jira 가 정한다.** 우리가 추측하면(예: 담당자면 다 된다) 화면은
@@ -2537,14 +2575,36 @@ class JiraClient:
 
     def update_fields(self, key, fields):
         """필드 수정(PUT /issue). fields 는 Jira 형식 그대로 — 변환은 라우트가 한다."""
+        fields = fields or {}
+        relationship_change = any(
+            field in fields for field in ("parent", self.s.epic_link_field_id))
+        old_parent, old_epic = self._lineage_of(key) if relationship_change else (None, None)
         self.provider.put_json(f"/rest/api/2/issue/{key}", {"fields": fields})
         self._invalidate_ticket(key)
+        new_parent, new_epic = old_parent, old_epic
+        if "parent" in fields:
+            parent_value = fields.get("parent")
+            new_parent = (parent_value or {}).get("key") if isinstance(parent_value, dict) else None
+        if self.s.epic_link_field_id in fields:
+            epic_value = fields.get(self.s.epic_link_field_id)
+            new_epic = ((epic_value or {}).get("key") if isinstance(epic_value, dict)
+                        else epic_value) or None
+        if relationship_change:
+            for parent_key in {value for value in (old_parent, new_parent) if value}:
+                self._invalidate_direct_child_views(parent_key, membership=True)
+                self.cache.invalidate(f"issue:{self.env}:{parent_key}")
+                self.cache.invalidate(f"issueL:{self.env}:{parent_key}")
+                self.cache.invalidate(f"siblings:{self.env}:sub:{parent_key}")
+            for epic_key in {value for value in (old_epic, new_epic) if value}:
+                self._invalidate_direct_child_views(epic_key, membership=True)
+                self.cache.invalidate(f"siblings:{self.env}:epic:{epic_key}")
         # 담당자를 이 경로로 바꾸기도 한다(필드 편집기) → 워크로드/활동 집계도 갱신.
         if isinstance(fields, dict) and "assignee" in fields:
             self._invalidate_people_views()
         self._record_mutation(MutationEvent(
             "fields", key,
-            changed_fields=tuple(str(field) for field in (fields or {}).keys())))
+            changed_fields=tuple(str(field) for field in fields.keys()),
+            parent_key=new_parent, epic_key=new_epic))
         return {"ok": True}
 
     def toggle_description_checkbox(self, key, index, checked, cbid=None):
@@ -2816,16 +2876,10 @@ class JiraClient:
             res = self.provider.post_json("/rest/api/2/issue", {"fields": fields})
         key = (res or {}).get("key")
         if parent_key:
-            # 부모의 자식 목록이 낡았다 — 새로 만든 게 바로 안 보이면 만들어졌는지 알 수 없다.
-            # ★ children 만 지워선 안 된다. 하위 목록의 출처는 부모 원본의 subtasks 필드(Epic 이면
-            #   Epic Link 검색)라, issue: 캐시가 남아 있으면 새 자식이 **영영 안 보인다**.
-            self.cache.invalidate(f"issue:{self.env}:{parent_key}")
-            self.cache.invalidate(f"issueL:{self.env}:{parent_key}")     # 경량 캐시(형제·자식키 출처)도 함께
-            self.cache.invalidate(f"children:{self.env}:{parent_key}")
-            # Epic 은 자식을 JQL 로 찾는다 — 그 결과도 캐시라 함께 버려야 새 Task 가 보인다.
-            # (prefix 삭제라 epic_children:{parent} 와 :light 변형까지 같이 지워진다.)
-            self.cache.invalidate(f"epic_children:{self.env}:{parent_key}")
+            # _invalidate_ticket가 계보를 읽은 뒤 parent의 issue/issueL projection을 비운다.
+            # 그 다음 membership을 비워야 생성 전 parent row로 다시 prime되는 왕복이 없다.
             self._invalidate_ticket(parent_key)
+            self._invalidate_direct_child_views(parent_key, membership=True)
         else:
             # 독립 Task — 부모가 없다. 대신 이 Task 를 담을 목록/검색 캐시를 넓게 버린다
             # (워크로드·내Task·현안·검색이 낡은 채로 새 Task 를 안 보여 주지 않게).
@@ -2885,12 +2939,15 @@ class JiraClient:
         """기존 Task 들을 Epic 에 넣는다(Epic Link 설정). 각자 PUT — 하나 실패해도 나머지는 진행.
         반환: {ok, linked:[…], failed:[{key,error}]}."""
         enf = self.s.epic_link_field_id
-        linked, failed = [], []
+        linked, failed, old_epics = [], [], set()
         for k in task_keys or []:
             k = (k or "").strip()
             if not k:
                 continue
             try:
+                _old_parent, old_epic = self._lineage_of(k)
+                if old_epic:
+                    old_epics.add(old_epic)
                 self.provider.put_json(f"/rest/api/2/issue/{k}", {"fields": {enf: epic_key}})
                 self._invalidate_ticket(k)
                 self.cache.invalidate(f"issue:{self.env}:{k}")
@@ -2899,8 +2956,9 @@ class JiraClient:
             except Exception as e:
                 failed.append({"key": k, "error": str(e)[:200]})
         # 이 Epic 의 자식 목록 캐시 무효화(새로 든 Task 가 보이게)
-        self.cache.invalidate(f"epic_children:{self.env}:{epic_key}")
-        self.cache.invalidate(f"children:{self.env}:{epic_key}")
+        for affected_epic in {value for value in old_epics | {epic_key} if value}:
+            self._invalidate_direct_child_views(affected_epic, membership=True)
+            self.cache.invalidate(f"siblings:{self.env}:epic:{affected_epic}")
         if linked:
             self._record_mutation(MutationEvent(
                 "epic_link", epic_key, changed_fields=(enf,), epic_key=epic_key,
@@ -3814,14 +3872,26 @@ class JiraClient:
 
     def delete_issue(self, key):
         """티켓 삭제. 되돌릴 수 없다 — 호출부(라우트/화면)가 확인을 받는다."""
+        # 삭제 후에는 Jira에서 계보를 복구할 수 없다. 관계 membership을 정확히 비우기 위해
+        # 성공 전 캐시/경량 조회로 parent와 Epic을 확보한다(실패 시에는 아무 캐시도 건드리지 않음).
+        parent_key, epic_key = self._lineage_of(key)
+        if parent_key and not epic_key:
+            _unused_parent, epic_key = self._lineage_of(parent_key)
         self.provider.delete(f"/rest/api/2/issue/{key}")
         # 이 티켓의 캐시를 전부 버린다. 살아 있으면 지워진 티켓이 목록에 계속 남는다.
         for pre in ("issue", "issueL", "issueview", "comments", "attachments", "documents",
                     "remotelinks", "timeline", "changelog", "children", "related",
                     "siblings", "ancestors", "epicmeta"):
             self.cache.invalidate(f"{pre}:{self.env}:{key}")
+        self._invalidate_direct_child_views(key, membership=True)
+        self._invalidate_direct_child_views(parent_key, membership=True)
+        # SubTask 삭제는 Task의 membership만 바꾼다. 그 Task가 속한 Epic의 Task 목록까지
+        # 버리지는 않고 WBS 파생 트리만 다시 조립한다. 최상위 Task 삭제일 때만 Epic membership 변경.
+        self._invalidate_direct_child_views(epic_key, membership=not bool(parent_key))
+        self._invalidate_lineage(parent_key, epic_key)
         self._invalidate_people_views()   # 삭제된 티켓이 담당자 워크로드/활동에 계속 잡히지 않게
-        self._record_mutation(MutationEvent("delete", key))
+        self._record_mutation(MutationEvent(
+            "delete", key, parent_key=parent_key, epic_key=epic_key))
         return {"ok": True}
 
     def ticket_view(self, key, fresh=False):
@@ -4067,17 +4137,87 @@ class JiraClient:
         rows.sort(key=lambda r: r["date"])
         return rows[-int(limit or 20):]
 
+    def _direct_child_cache_key(self, key):
+        return f"childkeys:v1:{self.env}:{str(key or '').strip().upper()}"
+
+    def direct_child_keys(self, key, *, parent_issue=None, parent_type=None, limit=None):
+        """Return one shared, complete direct-child membership list.
+
+        MyTasks can seed this cache from the parent row already returned by its main JQL. Ticket
+        dialog, PMO_VIT and WBS then reuse the same membership and resolve the rows through the
+        common ``issueL`` cache.  Only identities live here: status/summary edits invalidate issue
+        projections without throwing away a still-correct parent membership.
+
+        ``limit`` is a presentation concern and is applied *after* caching the complete list. An
+        upstream/auth failure is allowed to escape the producer so it can never become a cached
+        successful empty list; ``Cache.get_or_set`` may still serve a previously alive snapshot.
+        """
+        parent_key = str(key or "").strip().upper()
+        if not parent_key:
+            return []
+
+        supplied = parent_issue if isinstance(parent_issue, dict) else None
+        if supplied and str(supplied.get("key") or "").strip().upper() != parent_key:
+            supplied = None
+
+        def build():
+            raw = supplied
+            fields = (raw.get("fields") or {}) if raw else {}
+            issue_type = str(parent_type or (fields.get("issuetype") or {}).get("name") or "")
+            # Non-Epic membership is authoritative only when the requested ``subtasks`` field is
+            # actually present. A partial row must not silently turn "unknown" into an empty list.
+            if not issue_type or (issue_type.casefold() != "epic" and "subtasks" not in fields):
+                raw = self.get_issue_light(parent_key)
+                fields = (raw.get("fields") or {}) if isinstance(raw, dict) else {}
+                issue_type = str((fields.get("issuetype") or {}).get("name") or issue_type)
+
+            if issue_type.casefold() == "epic":
+                rows = self._search(
+                    f'"Epic Link" = {parent_key}',
+                    cache_key=f"epic_children:{self.env}:{parent_key}",
+                    max_results=None, light=True)
+                # Preserve the older Jira Agile fallback for installations where Epic Link JQL
+                # returns no rows. It is only a fallback; the normal JQL path has no hidden cap.
+                if not rows:
+                    try:
+                        data = self.provider.get_json(
+                            f"/rest/agile/1.0/epic/{parent_key}/issue",
+                            params={"fields": self._issue_fields(light=True),
+                                    "maxResults": 100}) or {}
+                        rows = data.get("issues") or []
+                        for row in rows:
+                            child_key = (row or {}).get("key")
+                            if child_key:
+                                self.cache.set(f"issueL:{self.env}:{child_key}", row,
+                                               self.s.cache_ttl_seconds)
+                    except SessionExpired:
+                        raise
+                    except Exception:
+                        rows = []
+                candidates = [(row or {}).get("key") for row in rows]
+            else:
+                subtasks = fields.get("subtasks")
+                if not isinstance(subtasks, list):
+                    raise ValueError(f"{parent_key} direct-child membership is incomplete")
+                candidates = [(row or {}).get("key") for row in subtasks]
+
+            return list(dict.fromkeys(
+                str(child_key).strip().upper() for child_key in candidates if child_key))
+
+        children, _hit = self.cache.get_or_set(
+            self._direct_child_cache_key(parent_key), self.s.cache_ttl_seconds, build)
+        children = list(children or [])
+        if limit is None:
+            return children
+        return children[:max(0, int(limit))]
+
     def _child_keys(self, key, limit=None):
-        """직계 자식 키 — Epic 은 Epic Link 자식, 그 외는 subtasks. (둘 다 기존 캐시 재사용)"""
+        """Compatibility wrapper for timeline/display callers with their historical scan cap."""
         limit = self.CHILD_SCAN_LIMIT if limit is None else limit
         try:
-            f = self.get_issue_light(key).get("fields") or {}   # issuetype·subtasks 만 보면 됨(경량)
+            return self.direct_child_keys(key, limit=limit)
         except Exception:
             return []
-        if (f.get("issuetype") or {}).get("name") == "Epic":
-            kids = self._search(f'"Epic Link" = {key}', cache_key=f"epic_children:{self.env}:{key}")
-            return [k.get("key") for k in kids if k.get("key")][:limit]
-        return [s.get("key") for s in (f.get("subtasks") or []) if s.get("key")][:limit]
 
     STATUS_CATS_TTL = 24 * 3600           # 상태 정의는 거의 안 바뀐다
 

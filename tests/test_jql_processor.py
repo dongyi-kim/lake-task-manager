@@ -344,6 +344,58 @@ def test_failed_write_keeps_cache_and_generation_unchanged():
     assert cache.get(f"issue:{env}:DL-1") == {"key": "DL-1"}
 
 
+def test_incomplete_leaf_page_is_retried_and_never_cached(monkeypatch):
+    client = JiraClient(get_settings(), Cache(":memory:"))
+    client.current_user = lambda: {"id": "test.ui01", "timezone": "Asia/Seoul"}
+    seed = client.get_issue_light("DL-9012")
+    partial = dict(seed, key="DL-77777")
+    calls = []
+
+    def page(_jql, start_at=0, **_kwargs):
+        calls.append(start_at)
+        if start_at == 0:
+            return {"issues": [partial], "total": 2, "hasMore": True, "nextStartAt": 1}
+        raise RuntimeError("injected second-page failure")
+
+    monkeypatch.setattr(client, "_legacy_search_issues_page", page)
+    query = "project = DL ORDER BY key ASC"
+    leaf_key = client._jql_leaf_key(client._compile_jql(query).leaves[0])[2]
+
+    with pytest.raises(RuntimeError, match="second-page"):
+        client.search_issues(query, cache_key="mt:incomplete")
+
+    assert calls == [0, 1]
+    assert client.cache.get(leaf_key) is None
+    assert client.cache.get(f"issueL:{client.env}:DL-77777") is None
+    assert client.cache.get("mt:incomplete:light") is None
+
+
+def test_expired_leaf_failure_cannot_be_promoted_to_a_fresh_snapshot(monkeypatch):
+    client = JiraClient(get_settings(), Cache(":memory:"))
+    client.current_user = lambda: {"id": "test.ui01", "timezone": "Asia/Seoul"}
+    query = "key = DL-9012 ORDER BY key ASC"
+    assert client.search_issues(query, cache_key="mt:prime")
+
+    leaf_key = client._jql_leaf_key(client._compile_jql(query).leaves[0])[2]
+    stale_membership = client.cache.get(leaf_key)
+    client.cache.set(leaf_key, stale_membership, -1)
+    client.cache.bump_epoch(client._jql_epoch_namespace())
+    calls = []
+
+    def fail(*_args, **_kwargs):
+        calls.append(True)
+        raise RuntimeError("injected refresh failure")
+
+    monkeypatch.setattr(client.provider, "get_json", fail)
+
+    with pytest.raises(RuntimeError, match="refresh failure"):
+        client.search_issues(query, cache_key="mt:after-failure")
+
+    assert calls == [True]
+    assert client.cache.get(leaf_key) is None
+    assert client.cache.get("mt:after-failure:light") is None
+
+
 def test_assignee_write_invalidates_workload_but_comment_write_does_not():
     client, cache = _write_client()
     env = client.env

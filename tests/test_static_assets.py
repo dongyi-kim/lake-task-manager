@@ -204,6 +204,22 @@ def test_uniform_subtask_status_reuses_solo_parent_and_foldable_children_in_one_
     assert "mt-gslot.one-status" not in css
 
 
+def test_mytasks_uses_axis_pagination_without_splitting_subtask_groups():
+    view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
+    css = (STATIC / "styles" / "mytasks.css").read_text(encoding="utf-8")
+
+    assert "const AXIS_PAGE_SIZE = 40;" in view
+    assert "axisEntries()" in view and 'add(state.k, "panel:" + panel.key)' in view
+    assert "Task with SubTask는 자식을 쪼개지 않고 한 항목으로 센다" in view
+    assert 'v-for="c in pagedCards(p, st.k)"' in view
+    assert 'panelPageVisibleAny(p)' in view
+    assert 'v-show="panelPageVisible(p, st.k)"' in view
+    assert view.count('class="mt-axis-more-btn"') == 2
+    assert "{{ axisHidden(st.k) }}개 더 보기" in view
+    assert ".mt-axis-more-row { display: grid;" in css
+    assert ".mt-axis-more-btn { display: inline-flex;" in css
+
+
 def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_overwrite():
     view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
     api = (STATIC / "lib" / "api.js").read_text(encoding="utf-8")
@@ -223,17 +239,20 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
     assert "_mergeTaskGroup" not in view
     assert "_normalizeStreamGroups" not in view
     assert "this._streamAbort.abort()" in view
-    assert "this._cacheModel(cache, key, next)" in view
-    assert "this._queueEpicMetadata(next, cache)" in view
-    # Progressive/key-only snapshots must not overwrite already-known Epic titles after
-    # _queueEpicMetadata synchronously reapplies them to the cached authoritative model.
-    stream_replace = view[view.index("if (event.replace !== false && event.model)"):
+    assert "export function reconcileTaskModel(current, incoming)" in view
+    assert "const old = new Map(rows.filter((row) => row && row.key)" in view
+    assert "rows.splice(0, rows.length, ...next);" in view
+    assert "this._cacheModel(cache, key, reconciled)" in view
+    assert "this._queueEpicMetadata(reconciled, cache)" in view
+    # Progressive/key-only snapshots preserve existing object/DOM identity and must not overwrite
+    # already-known Epic titles before metadata is synchronously reapplied.
+    stream_replace = view[view.index("if (event.replace !== false && event.model &&"):
                           view.index("if (active && event.done)")]
-    assert stream_replace.index("this._queueEpicMetadata(next, cache)") < stream_replace.index("this.model = cache[key]")
-    assert "this.model = next" not in stream_replace
-    hydrate_replace = view[view.index("cache[cacheKey] = next;"):
-                           view.index("} catch (e) {", view.index("cache[cacheKey] = next;"))]
-    assert hydrate_replace.index("this._queueEpicMetadata(next, cache)") < hydrate_replace.index("this.model = cache[cacheKey]")
+    assert stream_replace.index("reconcileTaskModel") < stream_replace.index("this._queueEpicMetadata")
+    assert "this.model = next" not in stream_replace and "this.model = cache[key]" not in stream_replace
+    hydrate_start = view.index("cache[cacheKey] = reconcileTaskModel")
+    hydrate_replace = view[hydrate_start:view.index("} catch (e) {", hydrate_start)]
+    assert hydrate_replace.index("reconcileTaskModel") < hydrate_replace.index("this._queueEpicMetadata")
     assert "this.model = next" not in hydrate_replace
     assert 'epicDisplayTitle(k) { return this.epicPending(k) ? "Epic 이름 확인 중"' in view
     assert 'result.contract !== "task-snapshot.v1"' in view
@@ -245,12 +264,43 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
     # A changed filter stops not-yet-started child jobs. The server owns completed leaf caches,
     # while only a matching request token and monotonic sequence may touch visible UI.
     assert 'if (seq !== this._loadSeq) return;   // 아직 시작하지 않은 옛 필터 보강' in view
-    assert "cache[cacheKey] = next;" in view
+    assert "cache[cacheKey] = reconcileTaskModel" in view
     assert "this._loadSeq === seq && this.model && this.model.syncId === syncId" in view
     assert "await Promise.allSettled([worker(), worker()]);" in view
     assert "_mergeHydration" not in view
     assert "if (!seen.has(atom.key))" in view
     assert "if (p?.group?.childrenPending) return null;" in view
+
+
+def test_mytasks_quiet_refresh_keeps_visible_dom_and_patches_only_changed_keys():
+    view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
+
+    assert 'const preserveVisible = !!(opts.quiet && this.model && this._activeCacheKey === key);' in view
+    assert "else if (!preserveVisible) this.model = this._emptyTaskModel();" in view
+    assert "else cache[key] = this.model;" in view
+    assert "event.model && (!preserveVisible || finalUsable)" in view
+    assert "event.done && !streamHadAuthFailure && !streamHadOtherFailure" in view
+    assert "if (!preserveVisible || finalUsable) this._hydrateModel" in view
+    assert "active && !preserveVisible && completedLeaves.length" in view
+    assert "active && !preserveVisible) this.streamProgress" in view
+    assert "reconcileTaskRows(current.groups, incoming.groups, reconcileTaskGroup)" in view
+    assert "reconcileTaskRows(current.atoms, incoming.atoms, patchTaskData)" in view
+    assert "reconcileTaskRows(current.others, incoming.others, patchTaskData)" in view
+    assert 'import { reactive } from "../../vendor/vue.esm-browser.prod.js";' in view
+    assert "this._cardCache || (this._cardCache = new WeakMap())" in view
+    assert "current = reactive(next);" in view
+    assert "patchTaskData(current, next);" in view
+    assert "this._compactCardCache || (this._compactCardCache = new WeakMap())" in view
+    assert "vis.push(this.compactCard(p.parentCard, p));" in view
+    assert "vis.push(Object.assign({}, p.parentCard" not in view
+    assert "const TASK_RETRY_DELAYS = [800, 2400];" in view
+    assert "this.load({ quiet: true, retryAttempt: attempt });" in view
+    assert "streamHadOtherFailure && !streamHadAuthFailure" in view
+    assert "성공한 티켓은 그대로 두고 실패분만 다시 받습니다." in view
+    assert "jobs.push(Object.assign({}, job, { attempt: attempt + 1 }))" in view
+    assert "if (kind === \"permission\") continue" in view
+    assert "key, view: { key, statusCategory: zone }" in view
+    assert "Number(g.kidsDone) + doneDelta" in view
 
 
 def test_mytasks_defaults_to_my_module_and_reloads_identity_after_auth():
@@ -263,7 +313,9 @@ def test_mytasks_defaults_to_my_module_and_reloads_identity_after_auth():
     assert "moduleSelExplicit: false" in view
     assert "this.moduleSel = resolved.selected;" in view
     assert "this.moduleSelExplicit = resolved.explicit;" in view
-    assert 'window.addEventListener("auth-ok", this._authok = () => { this.refreshMe(); this.load(); });' in view
+    auth = view[view.index('window.addEventListener("auth-ok"'):view.index("this._mq = window.matchMedia")]
+    assert "this.refreshMe();" in auth
+    assert "this.load({ quiet: true });" in auth
     assert 'if (this.scope === "module" && before !== this.apiScope) this.load();' in view
     assert 'if (typeof saved.moduleSelExplicit === "boolean")' in view
     assert "else this.moduleSelExplicit = !!saved.moduleSel;" in view

@@ -301,6 +301,29 @@ class Cache:
                 pass                    # 알림 실패가 조회를 깨면 안 된다
         return value, False
 
+    def get_or_set_strict(self, key, ttl, producer):
+        """Return a fresh hit or a freshly produced value; never promote stale data after failure.
+
+        JQL leaf membership is later assembled into new snapshots and aggregate caches. Letting a
+        failed refresh fall back to an expired leaf makes that old membership look freshly proven
+        and hides the failure from progressive UI error handling. Detail/SWR caches still use
+        :meth:`get_or_set`; this stricter contract is intentionally opt-in for authoritative
+        membership sets.
+        """
+        hit = self.get(key)
+        if hit is not None:
+            return hit, True
+        fence = self.fence()
+        value = producer()                    # exceptions intentionally escape; nothing is cached
+        self.set_if_fence(key, value, ttl, fence)
+        self.last_upstream_ok = time.time()
+        if self.on_upstream_ok:
+            try:
+                self.on_upstream_ok()
+            except Exception:
+                pass
+        return value, False
+
     def _needs_revalidate(self, key):
         if not self.revalidator or not self.always_revalidate:
             return False
