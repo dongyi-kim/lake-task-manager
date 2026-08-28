@@ -14,7 +14,10 @@ import TypeBadge from "./TypeBadge.js";
 import { createTypeahead } from "../../lib/typeahead.js";
 import { createUserTypeahead, defaultUserSuggestions, rememberUser } from "../../lib/userSuggestions.js";
 import { categoryColor } from "../../lib/colors.js";
-import { recentItems } from "../../lib/recent.js";
+import {
+  fieldObjectSnapshot, fieldStringSnapshot, recentEpicOptions,
+  rememberFieldOption,
+} from "../../lib/optionRepository.js";
 import { pushToast } from "../../lib/toast.js";
 
 const KO = {
@@ -196,7 +199,7 @@ export default {
       if (!q) {
         // 최근 열어본 Epic 및 최근 Task의 소속 Epic은 브라우저 미러에서 바로 만든다.
         // 서버 options 응답은 뒤에 합쳐지고, 이 목록을 지우거나 가리지 않는다.
-        const base = this._recentEpicOptions().concat(
+        const base = recentEpicOptions().concat(
           (this.local ? (this.choices || []) : []).filter((e) => e && typeof e === "object"));
         this.opts = this._prepRecent(base, (e) => e.key || e.id);
         if (this._taEp) this._taEp.cancel();
@@ -230,30 +233,6 @@ export default {
       });
     },
     // ── 최근 사용값(이 필드에서 내가 고른 값) — 기본 목록 상단에 우선 노출 ──
-    _rkey() { return "fe.recent." + this.field; },
-    _recent() {
-      try { return JSON.parse(localStorage.getItem(this._rkey()) || "[]") || []; } catch (e) { return []; }
-    },
-    _recentEpicOptions() {
-      const out = [], seen = new Set();
-      for (const item of recentItems(50, "jira")) {
-        const isEpic = String(item.type || item.issuetype || "").toLowerCase() === "epic";
-        const key = String(isEpic ? (item.key || "") : (item.epicKey || "")).toUpperCase();
-        if (!key || seen.has(key)) continue;
-        seen.add(key);
-        const ownSummary = String(item.summary || item.title || "").replace(
-          new RegExp("^" + key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*"), "");
-        const name = String(item.epicName || (isEpic ? ownSummary : "") || key);
-        out.push({ id: key, key, name, summary: isEpic ? (ownSummary || name) : name });
-      }
-      return out;
-    },
-    _pushRecent(item) {
-      if (!item || !item.id) return;
-      const cur = this._recent().filter((x) => x.id !== item.id);
-      cur.unshift(item);
-      try { localStorage.setItem(this._rkey(), JSON.stringify(cur.slice(0, 6))); } catch (e) { /* 사파리 등 */ }
-    },
     _recItem(v, extra) {
       if (this.isUser && extra) return { id: extra.id || v, name: extra.name, display: extra.display };
       if (this.isEpic && extra) return { id: v, key: v, name: extra.name, summary: extra.summary };
@@ -261,23 +240,11 @@ export default {
     },
     /** 객체 목록 앞에 최근값(같은 shape)을 끼워 넣고 중복 제거. */
     _prepRecent(list, idOf) {
-      const out = [], seen = new Set();
-      for (const item of this._recent().concat(list || [])) {
-        const id = item && (item.id || idOf(item));
-        if (!id || seen.has(String(id))) continue;
-        seen.add(String(id)); out.push(item);
-      }
-      return out;
+      return fieldObjectSnapshot(this.field, list, idOf);
     },
     /** 문자열 목록(라벨·컴포넌트) 앞에 최근값을 끼워 넣고 중복 제거. */
     _prepRecentStr(list) {
-      const out = [], seen = new Set();
-      for (const value of this._recent().map((x) => x.id).concat(list || [])) {
-        const text = String(value || "");
-        if (!text || seen.has(text)) continue;
-        seen.add(text); out.push(text);
-      }
-      return out;
+      return fieldStringSnapshot(this.field, list);
     },
     toggle(v) {
       const i = this.draft.indexOf(v);
@@ -292,7 +259,8 @@ export default {
       if (this.busy) return;
       if (v && !Array.isArray(v)) {
         const recent = this._recItem(v, extra);
-        if (this.isUser) rememberUser(recent); else this._pushRecent(recent);  // 사용자는 멘션과 공용
+        if (this.isUser) rememberUser(recent);
+        else rememberFieldOption(this.field, recent);  // 사용자는 멘션과 공용
       }
       if (this.local) {
         // 아직 티켓이 없다 — 서버에 보낼 것이 없으므로 고른 값만 넘긴다.

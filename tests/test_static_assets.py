@@ -762,6 +762,7 @@ def test_ticket_epic_and_person_pickers_render_local_defaults_before_network():
     dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
     user_pick = (STATIC / "components" / "ui" / "UserPickDialog.js").read_text(encoding="utf-8")
     transition = (STATIC / "components" / "ui" / "TransitionDialog.js").read_text(encoding="utf-8")
+    options = (STATIC / "lib" / "optionRepository.js").read_text(encoding="utf-8")
 
     assert 'const LOCAL_KEY = "recent.items"' in recent
     assert recent.index("save(merge(") < recent.index("api.recentAdd(payload)")
@@ -772,7 +773,10 @@ def test_ticket_epic_and_person_pickers_render_local_defaults_before_network():
     assert "this.recent = recentItems(RECENT_MAX)" in search
 
     epics = field[field.index("searchEpics(q) {"):field.index("searchWho(q) {")]
-    assert epics.index("this._recentEpicOptions()") < epics.index('api.options("epics", "")')
+    assert epics.index("recentEpicOptions()") < epics.index('api.options("epics", "")')
+    assert "fieldObjectSnapshot" in field and "fieldStringSnapshot" in field
+    assert 'const CACHE_KEY = "optionRepository.v1"' in options
+    assert 'const LEGACY_CREATE_CACHE = "newTicket.optionCache.v1"' in options
     assert ':choices="mentionUsers"' in dialog
     assert dialog.count(':choices="mentionUsers"') == 2
 
@@ -787,7 +791,9 @@ def test_creation_dialog_keeps_last_options_and_never_deadlocks_on_type_lookup()
     """타입/기본 선택지는 브라우저에 보존하고 원격 타입 조회 실패가 생성 폼을 먹통으로 만들지 않는다."""
     child = (STATIC / "components" / "ui" / "NewChildDialog.js").read_text(encoding="utf-8")
     field = (STATIC / "components" / "ui" / "FieldEdit.js").read_text(encoding="utf-8")
-    assert 'const CREATE_OPTION_CACHE = "newTicket.optionCache.v1"' in child
+    options = (STATIC / "lib" / "optionRepository.js").read_text(encoding="utf-8")
+    assert 'const CACHE_KEY = "optionRepository.v1"' in options
+    assert "cachedOptions" in child and "recentEpicOptions" in child and "rememberOptions" in child
     assert 'const DEFAULT_TASK_TYPES = ["Task", "Story", "Bug", "Improvement", "New Feature"]' in child
     assert 'const DEFAULT_SUBTASK_TYPES = ["Sub-Task"]' in child
     special = child[child.index("if (item.special)"):child.index("const parent = item.key")]

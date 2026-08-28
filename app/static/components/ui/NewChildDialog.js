@@ -19,33 +19,13 @@ import { isBusy, busyLabel } from "../../lib/uibusy.js";
 import { pushToast } from "../../lib/toast.js";
 import { categoryColor } from "../../lib/colors.js";
 import { recentItems } from "../../lib/recent.js";
+import { cachedOptions, recentEpicOptions, rememberOptions } from "../../lib/optionRepository.js";
 
 // Task 상위 고르기에서 Epic 대신 고를 수 있는 특수 옵션(맨 위 고정). ('사용자 VoC' 는 상위가 아니라
 // 아래 토글로 받는다 — Epic 에 속한 VoC 도 있어 상위 선택과 배타적이면 안 된다.)
 const SPECIALS = [{ key: "__none__", special: "none", label: "Epic 없음", desc: "Epic 없이 Task 만들기" }];
-const CREATE_OPTION_CACHE = "newTicket.optionCache.v1";
 const DEFAULT_TASK_TYPES = ["Task", "Story", "Bug", "Improvement", "New Feature"];
 const DEFAULT_SUBTASK_TYPES = ["Sub-Task"];
-
-function optionCache() {
-  try { return JSON.parse(localStorage.getItem(CREATE_OPTION_CACHE) || "{}") || {}; }
-  catch (e) { return {}; }
-}
-
-function cachedOptions(kind) {
-  const value = optionCache()[kind];
-  return Array.isArray(value) ? value.filter(Boolean) : [];
-}
-
-function rememberOptions(kind, values) {
-  const list = Array.from(new Set((values || []).map((x) => String(x || "").trim()).filter(Boolean)));
-  if (!list.length) return list;
-  try {
-    const cache = optionCache(); cache[kind] = list;
-    localStorage.setItem(CREATE_OPTION_CACHE, JSON.stringify(cache));
-  } catch (e) { /* 저장소를 못 써도 현재 다이어로그는 정상 동작 */ }
-  return list;
-}
 
 export default {
   name: "NewChildDialog",
@@ -164,28 +144,21 @@ export default {
       const matches = (item) => !needle || [item.key, item.summary, item.name, item.label, item.desc]
         .some((value) => String(value || "").toLocaleLowerCase().includes(needle));
       const out = [];
-      if (!isSub) out.push(...SPECIALS.filter(matches));
+      if (!isSub) {
+        out.push(...SPECIALS.filter(matches));
+        out.push(...recentEpicOptions(60).filter(matches).map((item) => ({ ...item, type: "Epic" })));
+        return this._mergeParents(out);
+      }
       for (const item of recentItems(60, "jira")) {
         const type = String(item.type || item.issuetype || "");
-        if (isSub) {
-          if (/^epic$/i.test(type) || /sub[ -]?task/i.test(type)) continue;
-          const key = String(item.key || "").toUpperCase();
-          if (!key) continue;
-          const summary = String(item.summary || item.title || "").replace(
-            new RegExp("^" + key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*"), "");
-          const candidate = { key, summary, type: type || "Task", statusCategory: item.statusCategory || "",
-                              epicKey: item.epicKey || "", epicName: item.epicName || "",
-                              assignee: item.assignee || "", assigneeId: item.assigneeId || "" };
-          if (matches(candidate)) out.push(candidate);
-          continue;
-        }
-        const ownEpic = /^epic$/i.test(type);
-        const key = String(ownEpic ? (item.key || "") : (item.epicKey || "")).toUpperCase();
+        if (/^epic$/i.test(type) || /sub[ -]?task/i.test(type)) continue;
+        const key = String(item.key || "").toUpperCase();
         if (!key) continue;
-        const rawSummary = String(item.summary || item.title || "").replace(
+        const summary = String(item.summary || item.title || "").replace(
           new RegExp("^" + key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*"), "");
-        const name = String(item.epicName || (ownEpic ? rawSummary : "") || key);
-        const candidate = { key, summary: ownEpic ? (rawSummary || name) : name, name, type: "Epic" };
+        const candidate = { key, summary, type: type || "Task", statusCategory: item.statusCategory || "",
+                            epicKey: item.epicKey || "", epicName: item.epicName || "",
+                            assignee: item.assignee || "", assigneeId: item.assigneeId || "" };
         if (matches(candidate)) out.push(candidate);
       }
       return this._mergeParents(out);

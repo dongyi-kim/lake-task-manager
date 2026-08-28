@@ -410,7 +410,7 @@ def _sync_checkboxes(rendered_html, raw_field):
     return _SANITIZED_CB_RE.sub(repl, rendered_html)
 
 
-def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None):
+def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None, epic_name_field=None):
     """티켓 상세 다이얼로그용 리치 뷰(순수 함수 — 테스트 용이).
     description: prod 의 renderedFields.description(HTML)이 있으면 **sanitize**, 없으면 평문→escape+nl2br.
     """
@@ -439,6 +439,10 @@ def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None):
         u = u or {}
         return real_name(u.get("displayName") or u.get("name")) if u else None
 
+    def _display_name(u):
+        u = u or {}
+        return (u.get("displayName") or u.get("name")) if u else None
+
     key = raw.get("key", "")
     return {
         "key": key,
@@ -453,6 +457,10 @@ def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None):
         "priRank": _pri_rank((f.get("priority") or {}).get("name")),
         "assignee": _rn(f.get("assignee")),
         "reporter": _rn(f.get("reporter")),
+        # FieldEdit/@멘션 기본 후보는 같은 issue 응답의 full displayName을 재사용한다.
+        # 화면 본문은 짧은 본명을 유지하고, 후보 목록만 별도 사용자 호출 없이 완전한 이름을 쓴다.
+        "assigneeDisplay": _display_name(f.get("assignee")),
+        "reporterDisplay": _display_name(f.get("reporter")),
         # 프로필 이미지 조회용 사용자 id (displayName 이 아니라 Jira username)
         "assigneeId": (f.get("assignee") or {}).get("name"),
         "reporterId": (f.get("reporter") or {}).get("name"),
@@ -470,6 +478,9 @@ def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None):
         # 소속 Epic — 편집(Epic Link)과 표시에 함께 쓴다. 계보 패널은 별도 조회지만,
         # 이 값이 있어야 "지금 무엇에 속해 있나" 를 한 번의 응답으로 알 수 있다.
         "epicKey": (f.get(epic_field) if epic_field else None) or None,
+        # Epic 티켓 자체를 최근 항목/선택기에서 즉시 재사용할 때 쓰는 단축 이름.
+        # 상세 응답에 이미 포함된 필드만 전달하므로 사용자 조작 시 추가 Jira 호출은 없다.
+        "epicName": (f.get(epic_name_field) if epic_name_field else None) or None,
         "descriptionHtml": desc,           # 항상 안전(정화됨). 프론트는 그대로 v-html.
         "descriptionFormat": fmt,          # 'html'(정화됨) | 'text'(평문→nl2br)
         # '=== 제목 ===' 구분선으로 나눈 영역. 구분선이 없으면 1개(title=None)라
@@ -3927,7 +3938,7 @@ class JiraClient:
         if not raw:
             return None
         view = _build_ticket_view(raw, self.s.sp_field_id, self.s.jira_base,
-                                  self.s.epic_link_field_id)
+                                  self.s.epic_link_field_id, self.s.epic_name_field_id)
         # 화면 표시형 user-hover 앵커는 그대로 유지하고, 편집기에만 TipTap mention 노드를 준다.
         # 같은 descriptionHtml을 양쪽에 쓰면 수정 진입 때 일반 링크로 파싱돼 재저장 후 파란 링크가 된다.
         view["descriptionEditHtml"] = self._description_edit_html(view["descriptionHtml"])

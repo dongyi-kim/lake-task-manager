@@ -524,6 +524,9 @@ def test_field_pickers_show_none_context_and_recent_items_before_delayed_results
     """800ms Jira 지연 중에도 없음·티켓 관련자·최근 Epic은 첫 프레임에 보인다."""
     page, base, errors, _upload_path = editor_browser
     _open_ticket(page, base, "DL-9000")             # 최근 Epic을 UI 동작으로 기록
+    # `_open_ticket`의 key/header는 본문 응답 전에도 보인다. 실제 티켓이 로드되어 로컬 최근항목에
+    # 기록된 뒤 이동해야, 지연 중 라우트 전환 취소를 최근 열람으로 오인하지 않는다.
+    page.locator(".tb-sum").get_by_text("[UI] UI 회귀 검증 픽스처", exact=True).wait_for()
     _open_ticket(page, base, DESCRIPTION_TICKET)     # 최근 Task + 소속 Epic을 UI 동작으로 기록
 
     assignee = page.locator("button[title='담당자 수정']")
