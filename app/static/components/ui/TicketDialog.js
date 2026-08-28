@@ -19,44 +19,13 @@ import { enhanceMentionBadges } from "../../lib/mentionBadge.js";
 import NewChildDialog from "./NewChildDialog.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
 import { isBusy, busyLabel } from "../../lib/uibusy.js";
-
-// 목록이 이보다 길면 기본으로 접는다. 첨부가 스무 개인 티켓에서 본문·코멘트가 화면 밖으로
-// 밀려나는 걸 막는다 — 몇 개인지는 제목 옆 숫자로 이미 알 수 있다.
-/** 바이트 → 사람이 읽는 크기(업로드 진행 표시용). */
-function fmtBytes(n) {
-  if (!n) return "";
-  if (n < 1024) return n + "B";
-  if (n < 1024 * 1024) return Math.round(n / 1024) + "KB";
-  return (n / (1024 * 1024)).toFixed(1) + "MB";
-}
-
-const FOLD_AT = 5;
-const TIMELINE_POLL_MS = 800;
-const TIMELINE_WAIT_MS = 15 * 1000;
-
-// 하위 Task 정렬 기준 — '내 Task' 와 같은 축(마감·우선순위) + 사람별 보기.
-const KID_SORTS = [
-  { k: "due", label: "마감", hint: "마감일 → 우선순위" },
-  { k: "pri", label: "우선순위", hint: "우선순위 → 마감일" },
-  { k: "who", label: "담당자", hint: "담당자 이름 → 마감일" },
-];
-const KID_SORT_KEY = "tkt.kidSort";
-
-function loadKidSort() {
-  try {
-    const v = localStorage.getItem(KID_SORT_KEY);
-    return KID_SORTS.some((o) => o.k === v) ? v : "due";
-  } catch (e) { return "due"; }
-}
-
-/** 오늘부터 마감까지 남은 날. 없으면 null(= '미정'). */
-function daysTo(iso) {
-  if (!iso) return null;
-  const due = new Date(String(iso).substring(0, 10) + "T00:00:00");
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const d = Math.round((due - today) / 86400000);
-  return isNaN(d) ? null : d;
-}
+import {
+  FOLD_AT, TIMELINE_POLL_MS, TIMELINE_WAIT_MS, KID_SORTS,
+  loadKidSort, saveKidSort, loadSpineW, saveSpineW, loadSpineHidden, saveSpineHidden,
+  loadTlW, saveTlW, loadTlHidden, saveTlHidden, formatBytes, descriptionEmpty,
+  childCard, sortChildren, sortComments, priorityClass, timelineKind, timelineBadged,
+  timelineLabel, timelineBadgeClass, timelineValue, timelineText,
+} from "../ticket-dialog/model.js";
 import { recordOpen } from "../../lib/recent.js";
 import { highlightIn as hljsHighlight, ensureHljsTheme } from "../../lib/hljs.js";
 import { loadTiptap } from "../../lib/tiptap.js";
@@ -74,39 +43,7 @@ function confTitleFromUrl(u) {
   } catch (e) { /* noop */ }
   return null;
 }
-const SPINE_W_KEY = "tkt.spineW";
-const SPINE_HIDE_KEY = "tkt.spineHidden";
-function loadSpineW() {
-  try { const v = parseInt(localStorage.getItem(SPINE_W_KEY), 10); if (v >= 180 && v <= 460) return v; } catch (e) { /* noop */ }
-  return 264;
-}
-function loadSpineHidden() {
-  try { return localStorage.getItem(SPINE_HIDE_KEY) === "1"; } catch (e) { return false; }
-}
-// 우측 타임라인 패널도 좌측 스파인과 같은 규칙으로 폭 조절·접기(각자 저장).
-const TL_W_KEY = "tkt.tlW";
-const TL_HIDE_KEY = "tkt.tlHidden";
-function loadTlW() {
-  try { const v = parseInt(localStorage.getItem(TL_W_KEY), 10); if (v >= 170 && v <= 440) return v; } catch (e) { /* noop */ }
-  return 220;
-}
-function loadTlHidden() {
-  try { return localStorage.getItem(TL_HIDE_KEY) === "1"; } catch (e) { return false; }
-}
-
 const _BROWSE_RE = /\/browse\/([A-Z][A-Z0-9]+-\d+)/;
-
-// 설명이 "실제로" 비었는지 — HTML 문자열이 아니라 **렌더 텍스트**를 trim 해서 본다.
-// (<p></p>, <p class="blank">, &nbsp; 처럼 태그는 있어도 화면엔 아무것도 안 보이는 경우가 흔함)
-// 글자가 없어도 이미지·표·코드·목록이 있으면 내용이 있는 것으로 본다.
-// 입력 HTML 은 서버에서 이미 정화(app/htmlsafe.py)됐고 여기선 읽기만 한다.
-function descEmpty(html) {
-  if (!html) return true;
-  const d = document.createElement("div");
-  d.innerHTML = html;
-  if (d.querySelector("img, table, pre, code, li, blockquote")) return false;
-  return !(d.textContent || "").replace(/\u00a0/g, " ").trim();
-}
 
 export default {
   name: "TicketDialog",
@@ -222,27 +159,7 @@ export default {
      *  완료된 하위는 어느 기준에서도 맨 뒤로 간다(담당자 기준에서는 사람별로).
      *  마감 없음도 맨 뒤다(언제까지인지 모르는 일이 급한 일보다 앞에 설 이유가 없다). */
     kidsSorted() {
-      const NO_DUE = 99999;
-      const dd = (c) => {
-        const v = this.kidCard(c).dueDays;
-        return v === null || v === undefined ? NO_DUE : v;
-      };
-      const pr = (c) => (c.priRank === null || c.priRank === undefined ? 2 : c.priRank);
-      // 미할당은 이름이 없다 — 사람 뒤에 모은다(빈 문자열이 앞에 서면 목록이 '아무도' 로 시작한다)
-      const who = (c) => (c.assignee || "\uffff");
-      // ★ **완료는 늘 맨 뒤.** 끝난 일은 마감이 아무리 지났어도 지금 할 일이 아니다 — 위에 두면
-      //   목록의 첫 줄들이 이미 끝난 일로 채워져 '다음에 뭘 하지' 를 못 읽는다.
-      //   담당자 기준에서는 **사람별로** 뒤로 보낸다(사람 묶음을 깨면 사람별로 보는 뜻이 없다).
-      const fin = (c) => (c.statusCategory === "done" ? 1 : 0);
-      const rest = (a, b) => dd(a) - dd(b) || pr(a) - pr(b) || a.key.localeCompare(b.key);
-      const byDue = (a, b) => fin(a) - fin(b) || rest(a, b);
-      const byPri = (a, b) => fin(a) - fin(b) || pr(a) - pr(b) || dd(a) - dd(b)
-                              || a.key.localeCompare(b.key);
-      const cmp = this.kidSort === "pri" ? byPri
-                : this.kidSort === "who"
-                  ? ((a, b) => who(a).localeCompare(who(b), "ko") || fin(a) - fin(b) || rest(a, b))
-                  : byDue;
-      return (this.children || []).slice().sort(cmp);
+      return sortChildren(this.children, this.kidSort, this.v && this.v.due);
     },
     /** 만들 수 있는 타입이 있고 이 티켓을 손댈 수 있을 때만 추가 UI 를 연다.
      *  못 만드는데 버튼만 있으면 다 적은 뒤 거절당한다 — 그건 기능이 아니라 함정이다. */
@@ -281,10 +198,7 @@ export default {
     tk() { return (this.v && this.v.key) || this.keyId; },   // 쓰기 대상 티켓 키
     // 코멘트 정렬 — created 를 ms 로 파싱해 **초 단위까지** 비교(같은 분에 여러 개 달려도 안정).
     sortedComments() {
-      const list = (this.comments || []).slice();
-      const t = (c) => { const n = Date.parse(c && c.date); return isNaN(n) ? 0 : n; };
-      list.sort((a, b) => (this.cmtSort === "old" ? t(a) - t(b) : t(b) - t(a)));
-      return list;
+      return sortComments(this.comments, this.cmtSort);
     },
     /** 에디터가 서버를 기다리지 않고 먼저 보여 줄 티켓 관련자. 최근 댓글/멘션 순서를 보존한다. */
     mentionUsers() {
@@ -339,7 +253,7 @@ export default {
     isPage() { return this.mode === "page"; },
     // 새 창 링크 — Jira 와 같은 /browse/{키} 형태
     pageHref() { return "/browse/" + encodeURIComponent(this.keyId); },
-    ownDescEmpty() { return descEmpty(this.v && this.v.descriptionHtml); },
+    ownDescEmpty() { return descriptionEmpty(this.v && this.v.descriptionHtml); },
     // 타이틀바 툴팁 — 요청 포맷 그대로 "[타입] [번호] [제목] - 상태"
     barTitle() {
       const v = this.v;
@@ -393,7 +307,7 @@ export default {
     },
     setSpineHidden(v) {
       this.spineHidden = v;
-      try { localStorage.setItem(SPINE_HIDE_KEY, v ? "1" : "0"); } catch (e) { /* noop */ }
+      saveSpineHidden(v);
     },
     startSpineDrag(e) {
       const x0 = e.clientX, w0 = this.spineW;
@@ -406,7 +320,7 @@ export default {
         window.removeEventListener("mousemove", onMove);
         window.removeEventListener("mouseup", onUp);
         document.body.style.userSelect = "";
-        try { localStorage.setItem(SPINE_W_KEY, String(this.spineW)); } catch (e) { /* noop */ }
+        saveSpineW(this.spineW);
       };
       document.body.style.userSelect = "none";   // 드래그 중 글자 선택 방지
       window.addEventListener("mousemove", onMove);
@@ -414,7 +328,7 @@ export default {
     },
     setTlHidden(v) {
       this.tlHidden = v;
-      try { localStorage.setItem(TL_HIDE_KEY, v ? "1" : "0"); } catch (e) { /* noop */ }
+      saveTlHidden(v);
     },
     startTlDrag(e) {
       const x0 = e.clientX, w0 = this.tlW;
@@ -426,7 +340,7 @@ export default {
         window.removeEventListener("mousemove", onMove);
         window.removeEventListener("mouseup", onUp);
         document.body.style.userSelect = "";
-        try { localStorage.setItem(TL_W_KEY, String(this.tlW)); } catch (e) { /* noop */ }
+        saveTlW(this.tlW);
       };
       document.body.style.userSelect = "none";
       window.addEventListener("mousemove", onMove);
@@ -447,7 +361,7 @@ export default {
     setKidSort(k) {
       this.kidSort = k;
       // 고른 기준은 기억한다 — 매번 고르게 하면 그건 기능이 아니라 숙제다.
-      try { localStorage.setItem(KID_SORT_KEY, k); } catch (e) { /* 사파리 프라이빗 등 */ }
+      saveKidSort(k);
     },
     /** 하위가 생기면 하위목록뿐 아니라 **내 진척(계보 캡슐)·형제**(내가 subtask면)도 바뀐다 —
      *  관련 패널을 백그라운드로 함께 갱신하고, 다른 화면(내 Task 등)·부모에도 알린다. */
@@ -681,7 +595,7 @@ export default {
     },
     typeColor(t) { return TYPE_BG[t] || "var(--ty-task)"; },
     typeLabel(t) { return typeLabel(t); },
-    descEmpty(html) { return descEmpty(html); },
+    descEmpty(html) { return descriptionEmpty(html); },
     fsize(n) {
       n = +n || 0;
       if (n < 1024) return n + " B";
@@ -744,7 +658,7 @@ export default {
       try {
         for (let i = 0; i < files.length; i++) {
           const f = files[i];
-          this.upNow = { name: f.name, size: fmtBytes(f.size), i: i + 1, n: files.length };
+          this.upNow = { name: f.name, size: formatBytes(f.size), i: i + 1, n: files.length };
           try { await api.attachmentUpload(this.tk, f); }
           catch (e) { failed.push(f.name + " (" + ((e && e.message) || e) + ")"); }
         }
@@ -884,10 +798,7 @@ export default {
      *  Sub-Task 에 마감을 따로 안 적는 게 흔한데, 그때 '미정' 이라고 하면 실제로는 부모
      *  마감에 묶여 있는 일이 자유로워 보인다. */
     kidCard(c) {
-      const inh = !c.due && this.v && this.v.due ? this.v.due : null;
-      const due = c.due || inh;
-      return { statusCategory: c.statusCategory, resolved: c.resolved, due,
-               dueInherited: !!inh, dueDays: daysTo(due) };
+      return childCard(c, this.v && this.v.due);
     },
     // 본인 댓글 판정은 **서버가 매긴 c.mine 을 우선**한다(세션 사용자로 서버가 대조 — id 형식/
     // 로딩 타이밍에 안 흔들린다). 옛 캐시로 mine 이 없을 때만 클라이언트 비교로 폴백.
@@ -965,41 +876,15 @@ export default {
     // 우선순위 등급 — 사내 체계는 P0-Blocker … P4-Trivial, 그리고 Unclassified.
     // **접두사 숫자**로 등급을 뽑는다(영문 이름 하드코딩 회피 — 이름이 바뀌어도 견딘다).
     // 숫자가 작을수록 중요. 못 읽으면 중립 칩.
-    prioCls(name) {
-      if (!name) return "unset";
-      const m = /^\s*P(\d+)/i.exec(name);
-      return m ? "pr-" + Math.min(+m[1], 4) : "";
-    },
+    prioCls(name) { return priorityClass(name); },
     // 상태/우선순위 변경은 값 부분을 뱃지로 — 텍스트보다 눈에 빨리 들어온다
-    tlKind(e) { return (e.kind || "").replace(/^child-/, ""); },
-    tlBadged(e) { return ["status", "priority", "duedate"].includes(this.tlKind(e)); },
-    tlLabel(e) { return { status: "상태", priority: "우선순위", duedate: "마감일" }[this.tlKind(e)]; },
+    tlKind(e) { return timelineKind(e); },
+    tlBadged(e) { return timelineBadged(e); },
+    tlLabel(e) { return timelineLabel(e); },
     // 뱃지 색: 상태는 statusCategory(인스턴스 조회), 우선순위는 P 등급
-    tlBCls(e, v) {
-      const k = this.tlKind(e);
-      if (k === "priority") return this.prioCls(v);
-      if (k === "duedate") return "";                 // 마감일은 의미색 없음 — 중립 칩
-      const cat = (v === e.from) ? e.fromCat : e.toCat;
-      return cat ? "st-" + cat : "";
-    },
-    tlVal(e, v) {
-      const k = this.tlKind(e);
-      if (v) return k === "duedate" ? (this.fy(v) || v) : v;
-      // 우선순위 미설정은 백엔드가 null 로 정규화(사내 Jira 의 'Unclassified')
-      return k === "priority" ? "미지정" : "없음";
-    },
-    tlText(e) {
-      const f = e.from || "없음", t = e.to || "없음";
-      const kind = (e.kind || "").replace(/^child-/, "");   // 자손 이벤트도 같은 문구 사용
-      if (kind === "created") return "티켓 생성";
-      if (kind === "comment") return "댓글 작성";
-      if (kind === "status") return "상태 " + f + " → " + t;
-      if (kind === "assignee") return "담당자 " + f + " → " + t;
-      if (kind === "resolution") return e.to ? ("해결: " + e.to) : "해결 취소";
-      if (kind === "duedate") return "마감일 " + f + " → " + t;
-      if (kind === "priority") return "우선순위 " + (e.from || "미지정") + " → " + (e.to || "미지정");
-      return (e.field || "변경") + " " + f + " → " + t;
-    },
+    tlBCls(e, v) { return timelineBadgeClass(e, v); },
+    tlVal(e, v) { return timelineValue(e, v); },
+    tlText(e) { return timelineText(e); },
     // 타 모듈 형제 = 흐리게(숨기지는 않는다 — 존재는 알리고 노이즈만 줄임)
     isOther(s) { return !!(this.myComp && s.component && s.component !== this.myComp); },
     fy(s) { return ymd(s); },
