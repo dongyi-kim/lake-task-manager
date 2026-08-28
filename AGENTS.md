@@ -331,7 +331,7 @@ JIRA_ENV=local python run.py                     # 앱(local) → :8080 jira820
 
 - 테스트 데이터 = 결정적 `app/mock/world.py` (jira820 에 주입). Jira·DB·seed 불필요.
 - jira820 은 실 Jira DC 8.20.8 형태 — statusCategory `new/indeterminate/done`, 사내 status(Open/In Progress/Resolved/Closed/Reopened)·type(Bug/Epic/…/Sub-Task), 티켓 키 `DL-xxxx`.
-- **mock·local 모두 같은 jira820(같은 world·직렬화기)** → 출력 100% 일치(전송만 다름, 회귀 기준). `tests/test_local_parity.py` 가 자동 가드.
+- **mock·local 모두 같은 jira820(같은 world·직렬화기)** → 출력 100% 일치(전송만 다름, 회귀 기준). `tests/jira/workload/test_local_parity.py` 가 자동 가드.
 - 한계: 실 Jira 고유 quirk 는 못 잡음 → 사내 **prod(SSO)**에서 소수 대조.
 
 ### 7.1 UI 회귀 검증 픽스처 — Epic `DL-9000` (UI 고칠 때 여기부터 열어라)
@@ -414,7 +414,15 @@ lake-task-manager/               # repo 루트
 │   ├── jira/                    # REST 클라이언트 (jira_client) — AuthProvider 주입, 캐시 경유, env 무관 단일 경로
 │   ├── auth/                    # 인증 추상화 (base·basic·inprocess·sso_session·sso_store) — provider 교체로 환경 전환
 │   └── static/                  # Vue 3 무빌드 SPA: index.html+app.js+components/(app-root·ui·views)+lib/+styles/+vendor/(vue.esm)
-└── tests/                       # world/progress/rollup/config/names/local_parity/app_control 등 유닛테스트
+└── tests/                       # 제품 책임별 회귀 테스트
+    ├── agent/                   # core/contracts/evaluation/integration
+    ├── jira/                    # query/tickets/workload/people/content
+    ├── frontend/                # editor/shell/static_assets/ticket_dialog
+    ├── routes/                  # HTTP route 조합
+    ├── runtime/                 # 인증·설정·런처·프로세스
+    ├── domain/                  # 순수 도메인 계산
+    ├── quality/                 # 의존성·소스·CI 정책
+    └── support/                 # 공통 test-only helper
 ```
 > 각 패키지 폴더의 `README.md` 에 파일별 1줄 설명·규칙이 있다(폴더 진입 시 먼저 읽어라).
 > import 는 **절대경로**(`from app.<pkg>.<mod> import …`). `main.py`(ASGI 진입점)·`auth/` 는 루트/기존 위치 유지.
@@ -443,7 +451,7 @@ lake-task-manager/               # repo 루트
 5. 환경 선택은 `config/jira.yml`(`env`, 환경변수 `JIRA_ENV` 로 override)로만. 커스텀 필드 ID·매핑 하드코딩 금지.
 6. **세 환경(mock/local/prod) 모두 동일한 REST 파서 경로**(`jira_client`). env 분기 없음 — provider 만 다름.
 7. **테스트 데이터는 `app/mock/world.py` 단일 소스** → `app/mock/fakebridge.py` 로 jira820 에 주입. mock(in-process)·local(HTTP)이
-   같은 jira820 을 소비하므로 출력 일치(회귀 기준, `tests/test_local_parity.py`).
+   같은 jira820 을 소비하므로 출력 일치(회귀 기준, `tests/jira/workload/test_local_parity.py`).
 
 ---
 

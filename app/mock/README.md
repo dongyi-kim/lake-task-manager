@@ -2,7 +2,7 @@
 
 실 Jira 없이 개발·테스트하기 위한 **결정적 가짜 데이터**와, 그것을 외부 오픈소스 mock
 [`jira820`](https://pypi.org/project/jira820) 에 주입하는 브리지. **mock·local 이 같은 world·직렬화기를 공유**해
-출력이 100% 일치한다(회귀 기준, `tests/test_local_parity.py`).
+출력이 100% 일치한다(회귀 기준, `tests/jira/workload/test_local_parity.py`).
 
 ## 파일
 - **world.py** — ★ 단일 결정적 데이터 세계. 이슈·설명·코멘트·활동·confluence + **UI 회귀 픽스처**(DL-9000 계열).

@@ -1,14 +1,14 @@
 """Focused TicketDialog model contracts, runnable without the full frontend suite."""
 
 import json
-from pathlib import Path
 import shutil
 import subprocess
 
 import pytest
 
+from support.paths import REPO_ROOT
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = REPO_ROOT
 STATIC = ROOT / "app" / "static"
 MODEL = STATIC / "components" / "ticket-dialog" / "model.js"
 DIALOG = STATIC / "components" / "ui" / "TicketDialog.js"

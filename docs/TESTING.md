@@ -9,7 +9,7 @@ suite를 실행한다.
 - Python 3.11, Ubuntu
 - `JIRA_ENV=mock`
 - Fake Jira, fake LLM, 로컬 fixture·로컬 서버만 사용
-- 실행 명령: `python -m pytest -q --basetemp=.pytest-tmp`
+- 실행 명령: `python -m pytest -q --basetemp=.cache/test-tmp/ci`
 - GitHub secret, 사내 Jira/Confluence, OpenAI/Azure OpenAI API 호출 없음
 
 전체 suite의 최종 판정은 GitHub Actions 결과를 기준으로 한다. CI가 실패하면 실패한 test와
@@ -21,18 +21,20 @@ suite를 실행한다.
 
 | 변경 영역 | 로컬 test |
 |---|---|
-| Agent prompt·role·workflow | `tests/test_agent_prompt_integrity.py tests/test_agent_graph.py tests/test_agent_draft.py` |
-| Agent query·tool·reference | `tests/test_agent_query_v2.py tests/test_agent_tools.py tests/test_agent_references.py` |
-| Agent 답변 렌더링·UI 정적 자산 | `tests/test_static_assets.py tests/test_postcheck.py` |
-| Ticket create/update/action | `tests/test_ticket_actions.py tests/test_epic_create_fields.py tests/test_ticket_view.py` |
-| Jira query·mock world | `tests/test_search.py tests/test_world.py tests/test_local_parity.py` |
+| Agent prompt·role·workflow | `tests/agent/contracts tests/agent/core` |
+| Agent 평가·외부 통합 | `tests/agent/evaluation tests/agent/integration` |
+| Agent 답변 렌더링·UI | `tests/frontend/static_assets/test_agent_ui_contracts.py tests/routes/test_postcheck.py` |
+| Ticket create/update/action | `tests/jira/tickets` |
+| Jira query·mock world | `tests/jira/query tests/domain/test_world.py tests/jira/workload/test_local_parity.py` |
+| MyTasks·workload | `tests/jira/workload tests/frontend/static_assets/test_task_ui_contracts.py` |
+| Ticket dialog·editor | `tests/frontend/ticket_dialog tests/frontend/editor tests/frontend/static_assets/test_ticket_editor_contracts.py` |
 | 특정 회귀 | 해당 test file 또는 `path::test_name` |
 
 예시:
 
 ```powershell
-..\.venv\Scripts\python.exe -m pytest -q --basetemp .test-tmp-local `
-  tests/test_static_assets.py tests/test_postcheck.py
+..\.venv\Scripts\python.exe -B -m pytest -q --basetemp .cache/test-tmp/frontend-local `
+  tests/frontend/static_assets tests/routes/test_postcheck.py
 ```
 
 변경이 여러 영역을 가로지르면 각 영역의 관련 test를 합쳐 한 번 실행한다. 전체 suite의 로컬

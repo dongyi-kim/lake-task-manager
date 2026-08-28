@@ -1,0 +1,1 @@
+"""Static frontend contract tests."""

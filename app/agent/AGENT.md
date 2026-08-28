@@ -185,15 +185,15 @@ LLM 호출은 반드시 `Role → Task Profile → Model Profile → Capability 
 변경한 영역에 필요한 test만 선택해 실행한다. 전체 매핑은 [`docs/TESTING.md`](../../docs/TESTING.md):
 
 ```powershell
-..\.venv\Scripts\python.exe -m pytest -q --basetemp .cache/test-tmp/agent-<고유-실행-ID> `
-  tests/test_agent_prompt_integrity.py `
-  tests/test_agent_draft.py `
-  tests/test_agent_graph.py `
-  tests/test_agent_grounding.py `
-  tests/test_agent_compose.py `
-  tests/test_agent_query_v2.py `
-  tests/test_agent_tools.py `
-  tests/test_ticket_actions.py
+..\.venv\Scripts\python.exe -B -m pytest -q --basetemp .cache/test-tmp/agent-<고유-실행-ID> `
+  tests/agent/contracts/test_agent_prompt_integrity.py `
+  tests/agent/core/test_agent_draft.py `
+  tests/agent/core/test_agent_graph.py `
+  tests/agent/core/test_agent_grounding.py `
+  tests/agent/core/test_agent_compose.py `
+  tests/agent/core/test_agent_query_v2.py `
+  tests/agent/core/test_agent_tools.py `
+  tests/jira/tickets/test_ticket_actions.py
 ```
 
 Windows 공용 pytest temp를 사용하지 않는다. repository 내부
