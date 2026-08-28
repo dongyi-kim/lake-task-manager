@@ -12,8 +12,6 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import date, timedelta
 from html import escape, unescape
 from urllib.parse import quote, unquote, urlparse
@@ -29,6 +27,8 @@ from app.domain.names import real_name
 from app.content.sections import split_sections
 from app.jira.jql import (JqlUnsupported, compile_jql, fields_with_order,
                           sort_issues)
+from app.jira.cache_policy import (JqlCachePolicy, MutationEvent,
+                                   changed_predicate_fields)
 
 
 # 실 Jira DC statusCategory.key → 내부 vocab (new=todo, indeterminate=inprogress, done=done)
@@ -49,18 +49,6 @@ def _repair_leaked_color_macros(html):
     return _LEAKED_COLOR_RE.sub(
         lambda match: '<span style="color:' + match.group(1).lower() + '">' + match.group(2) + "</span>",
         html or "")
-
-
-@dataclass(frozen=True)
-class MutationEvent:
-    """One successful Jira write and the cache dependencies it can affect."""
-
-    kind: str
-    key: str = ""
-    changed_fields: tuple[str, ...] = ()
-    parent_key: str | None = None
-    epic_key: str | None = None
-    related_keys: tuple[str, ...] = ()
 
 
 # 이슈 링크 관계 문구 — 사내 Jira 는 inward/outward 에 서술형 장문을 넣기도 한다
@@ -532,7 +520,7 @@ class JiraClient:
         self._renew_at = {}          # 서비스별 마지막 무음갱신 시도 시각(스로틀)
         self._jql_lock_guard = threading.Lock()
         self._jql_locks = {}
-        self._mutation_batch = threading.local()
+        self._jql_policy = JqlCachePolicy(self)
         # 세션 사용자 캐시도 함께 버린다. 안 그러면 로그인 직후에도 옛 판정(빈 사용자)이
         # TTL 동안 남아 매니저 여부·본인 댓글 판정이 계속 틀린다.
         try:
@@ -1070,167 +1058,45 @@ class JiraClient:
                 }
 
     def _jql_epoch_namespace(self):
-        return f"jql:{self.env}"
+        return self._jql_policy.epoch_namespace()
 
     def _jql_leaf_epoch_namespace(self):
-        return f"jqlleaf:{self.env}"
+        return self._jql_policy.leaf_epoch_namespace()
 
     def _jql_generation(self):
-        return self.cache.epoch(self._jql_epoch_namespace())
+        return self._jql_policy.generation()
 
     def _jql_leaf_generation(self):
-        return self.cache.epoch(self._jql_leaf_epoch_namespace())
+        return self._jql_policy.leaf_generation()
 
     def _jql_user_context(self):
         """Opaque cache partition for Jira permission/current-user context."""
-        user = self.current_user() or {}
-        identity = str(user.get("id") or "anonymous")
-        return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+        return self._jql_policy.user_context()
 
     def advance_jql_generation(self):
         """Invalidate every normalized leaf and snapshot after an explicit global refresh."""
-        self.cache.bump_epoch(self._jql_leaf_epoch_namespace())
-        return self.cache.bump_epoch(self._jql_epoch_namespace())
+        return self._jql_policy.advance_generation()
 
     def _jql_index_prefix(self, kind, leaf_generation, value):
-        return (f"jqlidx{kind}:v{self.JQL_CACHE_VERSION}:{self.env}:"
-                f"e{leaf_generation}:u{self._jql_user_context()}:"
-                f"{str(value or '').lower()}:")
+        return self._jql_policy.index_prefix(kind, leaf_generation, value)
 
     @staticmethod
     def _jql_changed_predicate_fields(events, epic_link_field_id=None):
-        """Fields whose predicates can gain or lose a mutated issue.
-
-        Every successful Jira write changes ``updated``.  Text predicates can be affected by
-        summary/description/comment changes, and Jira's component JQL field is singular while the
-        REST payload field is plural.
-        """
-        events = tuple(events or ())
-        fields = {
-            str(field).strip().lower()
-            for event in events
-            for field in (event.changed_fields or ())
-            if str(field).strip()
-        }
-        if events:
-            fields.add("updated")
-        if "components" in fields:
-            fields.add("component")
-        if "issuetype" in fields:
-            fields.add("type")
-        if "duedate" in fields:
-            fields.add("due")
-        if fields & {"resolution", "resolutiondate"}:
-            fields.add("resolved")
-        if "status" in fields:
-            fields.add("statuscategory")
-        if "key" in fields:
-            fields.add("issue")
-        epic_field = str(epic_link_field_id or "").strip().lower()
-        if epic_field and epic_field in fields:
-            # REST writes use the instance-specific customfield id while JQL dependencies are
-            # indexed under the human field name.
-            fields.update({"epic link", "epic"})
-        if fields & {"summary", "description", "comment"}:
-            fields.add("text")
-        if any(event.kind in {"create", "create_epic"} for event in events):
-            # New issues have implicit/default fields not all present in the create payload.
-            fields.update({"*", "key", "project", "issuetype", "status", "statuscategory",
-                           "created", "updated", "reporter", "resolution"})
-        return fields
+        return changed_predicate_fields(events, epic_link_field_id)
 
     def _affected_jql_leaf_keys(self, events):
         """Resolve active leaf keys affected by successful mutations via persistent indexes."""
-        generation = self._jql_leaf_generation()
-        keys = set()
-        for event in events:
-            # Reverse membership is sufficient for deletion (the issue can only leave leaves),
-            # and is the safe fallback for mutation kinds that provide no changed-field contract.
-            # Ordinary field writes use the dependency index below, so changing a description does
-            # not evict an unrelated assignee/component leaf merely because it contains the issue.
-            if not event.key or (event.kind != "delete" and event.changed_fields):
-                continue
-            prefix = self._jql_index_prefix("issue", generation, event.key)
-            keys.update(value for value in self.cache.entries_by_prefix(prefix).values()
-                        if isinstance(value, str))
-        # Delete cannot make an issue enter a previously non-matching leaf.  All other writes may
-        # do so, therefore consult the field dependency index as well as the membership index.
-        membership_fields = self._jql_changed_predicate_fields(
-            [event for event in events if event.kind != "delete"],
-            getattr(self.s, "epic_link_field_id", None))
-        for field in membership_fields:
-            prefix = self._jql_index_prefix("field", generation, field)
-            keys.update(value for value in self.cache.entries_by_prefix(prefix).values()
-                        if isinstance(value, str))
-        return keys
+        return self._jql_policy.affected_leaf_keys(events)
 
     def _apply_mutation_events(self, events):
         """Invalidate aggregates, affected JQL leaves, and one immutable snapshot generation."""
-        events = tuple(events or ())
-        if not events:
-            return events
-
-        fields = {
-            str(field).lower()
-            for event in events
-            for field in (event.changed_fields or ())
-        }
-        kinds = {event.kind for event in events}
-        structural = bool(kinds & {
-            "create", "create_epic", "delete", "transition", "assignee", "epic_link"
-        }) or bool(fields & {
-            "summary", "issuetype", "status", "assignee", "reporter", "components",
-            "labels", "duedate", "resolution", "resolutiondate", "priority", "parent",
-            str(self.s.epic_link_field_id or "").lower(),
-            str(self.s.sp_field_id or "").lower(),
-        })
-        people = bool(kinds & {"create", "delete", "transition", "assignee", "epic_link"}) \
-            or bool(fields & {"assignee", "components", "status", "resolution",
-                              "resolutiondate", "timespent"})
-        if structural:
-            for prefix in ("mt:", "mytasks:", "search:", "epic_cand:", "epic_options:"):
-                self.cache.invalidate(prefix)
-        if people:
-            for prefix in ("workload:", "workload_bucket:", "activity:"):
-                self.cache.invalidate(prefix)
-        if structural:
-            for prefix in ("wbs_build:", "vit_build:", "vit_bases:", "vit_list:"):
-                self.cache.invalidate(prefix)
-        self.cache.invalidate_keys(self._affected_jql_leaf_keys(events))
-        # Rows/snapshots remain generation-scoped so an already issued pagination cursor stays
-        # immutable.  New first-page searches get a new snapshot, but unaffected leaf membership
-        # survives and is reused.
-        self.cache.bump_epoch(self._jql_epoch_namespace())
-        return events
+        return self._jql_policy.apply_mutation_events(events)
 
     def _record_mutation(self, event: MutationEvent):
-        """Record one successful Jira write.
+        return self._jql_policy.record_mutation(event)
 
-        Detail caches are invalidated by their existing narrow helpers. Snapshot rows are versioned
-        per successful mutation batch, while normalized leaf membership is selectively invalidated
-        through issue/field reverse indexes. Bulk operations collect these events so aggregate
-        invalidation and the snapshot generation bump happen once at batch completion.
-        """
-        pending = getattr(self._mutation_batch, "events", None)
-        if pending is not None:
-            pending.append(event)
-        else:
-            self._apply_mutation_events((event,))
-        return event
-
-    @contextmanager
     def _mutation_batch_scope(self):
-        """Collect nested successful mutation events and flush them once at the outer boundary."""
-        if getattr(self._mutation_batch, "events", None) is not None:
-            yield
-            return
-        self._mutation_batch.events = []
-        try:
-            yield
-        finally:
-            events = tuple(self._mutation_batch.events)
-            del self._mutation_batch.events
-            self._apply_mutation_events(events)
+        return self._jql_policy.mutation_batch_scope()
 
     def _compile_jql(self, jql):
         raw = str(jql or "")
