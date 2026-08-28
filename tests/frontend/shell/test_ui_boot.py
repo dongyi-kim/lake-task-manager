@@ -38,8 +38,19 @@ import pytest
 os.environ.setdefault("JIRA_ENV", "mock")
 
 from support.paths import STATIC_ROOT
+from frontend.static_assets.support import template_literal
 
 STATIC = STATIC_ROOT
+
+
+@pytest.mark.parametrize("relative", [
+    "components/agent/agentViewTemplate.js",
+    "components/editor/commentEditorTemplate.js",
+])
+def test_extracted_component_templates_are_discoverable(relative: str):
+    source = (STATIC / relative).read_text(encoding="utf-8")
+    body = template_literal(source)
+    assert body is not None and "<div" in body
 
 
 # ── ② 정적 — 날 백틱은 template 을 그 자리에서 끊는다 ────────────────────
@@ -102,8 +113,21 @@ def test_the_app_actually_mounts_in_a_browser(live_server):
     with sync_playwright() as p:
         try:
             browser = p.chromium.launch()
-        except Exception as e:                # noqa: BLE001 — 크로미움 미설치도 스킵
-            pytest.skip(f"chromium 없음: {str(e)[:80]}")
+        except Exception as bundled_exc:      # noqa: BLE001 — 설치된 Chrome/Edge로 한 번 더 검증
+            browser = None
+            for executable in (
+                Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+                Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+            ):
+                if not executable.exists():
+                    continue
+                try:
+                    browser = p.chromium.launch(executable_path=str(executable))
+                    break
+                except Exception:             # noqa: BLE001 — 다음 설치 브라우저 시도
+                    pass
+            if browser is None:
+                pytest.skip(f"chromium 없음: {str(bundled_exc)[:80]}")
         page = browser.new_page()
         page.on("pageerror", lambda e: errors.append(str(e)[:300]))
         try:
@@ -114,10 +138,38 @@ def test_the_app_actually_mounts_in_a_browser(live_server):
             except Exception:                 # noqa: BLE001 — 안 떴다는 사실만 쓴다
                 up = False
             body = page.inner_text("body")[:200]
+            page.goto(live_server + "/#/ai", wait_until="load", timeout=30000)
+            try:
+                page.locator(".agentview").wait_for(state="visible", timeout=15000)
+                page.wait_for_timeout(500)       # prefs/status 응답 뒤 updated() 훅 오류까지 수집
+                agent_up = True
+            except Exception:                 # noqa: BLE001 — 외부 template import 회귀 판정
+                agent_up = False
+            agent_body = page.inner_text("body")[:200]
+            transforms = page.evaluate("""async () => {
+              const mod = await import('/components/agent/contentTransforms.js');
+              return {
+                rich: mod.richEditorToText(
+                  '<p>Hello <span data-type="mention" data-id="u1">@Alice</span> '
+                  + '<a href="https://example.com">Doc</a></p>'),
+                text: mod.draftDescriptionText('<h3>Scope</h3><p>Body</p>'),
+                safe: mod.sanitizeDraftDescription(
+                  '<p onclick="bad()">ok</p><script>bad()</script>'
+                  + '<a href="javascript:bad()">x</a>'),
+              };
+            }""")
         finally:
             browser.close()
     assert up, (f"앱이 마운트되지 않았다. 화면: {body!r}\n"
                 f"페이지 오류: {errors[:2]}")
+    assert agent_up, (f"Agent 화면이 마운트되지 않았다. 화면: {agent_body!r}\n"
+                      f"페이지 오류: {errors[:2]}")
+    assert "@Alice(u1)" in transforms["rich"]
+    assert "[Doc](https://example.com)" in transforms["rich"]
+    assert "■ Scope" in transforms["text"]
+    assert "script" not in transforms["safe"].lower()
+    assert "onclick" not in transforms["safe"].lower()
+    assert "javascript:" not in transforms["safe"].lower()
     assert not errors, f"콘솔 페이지 오류: {errors[:2]}"
 
 
@@ -137,10 +189,9 @@ def test_template_div_tags_are_balanced(path: Path):
     """컴포넌트 template 의 여는 `<div`/닫는 `</div>` 개수가 같아야 한다."""
     src = path.read_text(encoding="utf-8")
     # template 리터럴만 본다 — 주석·문자열의 `<div` 문구까지 세면 오탐이 난다.
-    m = re.search(r"template:\s*`(.*?)`,\s*\n\s*\}", src, re.S)
-    if not m:
+    body = template_literal(src)
+    if body is None:
         pytest.skip("template 리터럴이 없다")
-    body = m.group(1)
     body = re.sub(r"<!--.*?-->", "", body, flags=re.S)      # HTML 주석 제외
     opens = len(re.findall(r"<div\b", body))
     closes = len(re.findall(r"</div>", body))

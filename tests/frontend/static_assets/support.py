@@ -23,3 +23,23 @@ def comment_editor_source() -> str:
     paths = [STATIC / "components" / "ui" / "CommentEditor.js"]
     paths.extend(sorted((STATIC / "components" / "editor").glob("*.js")))
     return "\n".join(path.read_text(encoding="utf-8") for path in paths)
+
+
+def agent_view_source() -> str:
+    """Return the AgentView facade plus its feature modules as one contract surface."""
+    paths = [STATIC / "components" / "views" / "AgentView.js"]
+    paths.extend(sorted((STATIC / "components" / "agent").glob("*.js")))
+    return "\n".join(path.read_text(encoding="utf-8") for path in paths)
+
+
+def template_literal(source: str) -> str | None:
+    """Read inline Vue templates and extracted ``*_TEMPLATE`` module constants."""
+    masked = source.replace("\\`", "\0")
+    match = re.search(
+        r"(?:template:\s*|const\s+[A-Z][A-Z0-9_]*TEMPLATE\s*=\s*)`",
+        masked,
+    )
+    if not match:
+        return None
+    end = masked.find("`", match.end())
+    return None if end < 0 else masked[match.end():end]

@@ -13,6 +13,7 @@ from frontend.static_assets.support import (
     STATIC,
     VUE_COMPONENTS,
     asset_id,
+    template_literal,
 )
 
 _rel = asset_id
@@ -73,10 +74,9 @@ def test_templates_do_not_call_imported_modules(path: Path):
     해 뒀는데 한 번도 실행되지 않아, 모델을 바꿔도 좌상단이 옛 값 그대로였다.
     """
     src = path.read_text(encoding="utf-8")
-    m = re.search(r"template:\s*`", src)
-    if not m:
+    tpl = template_literal(src)
+    if tpl is None:
         pytest.skip("템플릿 없음")
-    tpl = src[m.end():]
     mods = re.findall(r"^import\s+(?:\{\s*([\w,\s]+)\s*\}|(\w+))\s+from", src, re.M)
     names = {n.strip() for a, b in mods for n in (a or b or "").split(",") if n.strip()}
     names -= {"h", "ref", "computed"}          # 렌더 함수용 — 템플릿과 무관
