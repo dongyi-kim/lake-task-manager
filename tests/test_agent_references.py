@@ -320,35 +320,22 @@ def test_editor_validator_does_not_treat_literal_h2_inside_prose_as_a_heading():
     assert result["ok"] is True
 
 
-@pytest.mark.parametrize("href", ["javascript:alert(1)", "data:text/html,boom"])
-def test_editor_validator_rejects_non_http_unresolved_anchors(href):
-    result = validate_editor_html(f'<p><a href="{href}">unsafe</a></p>', [])
+def test_editor_validator_rejects_unsafe_link_protocols():
+    unresolved = ["javascript:alert(1)", "data:text/html,boom"]
+    unresolved_failures = []
+    for href in unresolved:
+        result = validate_editor_html(f'<p><a href="{href}">unsafe</a></p>', [])
+        if result["ok"] or not any(item["code"] == "unresolved_reference" for item in result["issues"]):
+            unresolved_failures.append(href)
 
-    assert result["ok"] is False
-    assert any(item["code"] == "unresolved_reference" for item in result["issues"])
+    markdown = ["javascript:alert(1)", "data:text/html,boom", "file:///tmp/private.txt"]
+    markdown_failures = [
+        destination for destination in markdown
+        if validate_editor_html(f"[검토 자료]({destination})", [])["ok"]
+    ]
 
-
-@pytest.mark.parametrize("destination", ["javascript:alert(1)", "data:text/html,boom",
-                                          "file:///tmp/private.txt"])
-def test_editor_validator_rejects_unsafe_markdown_destinations_without_erasing_them(destination):
-    raw = f"[검토 자료]({destination})"
-
-    assert validate_editor_html(raw, [])["ok"] is False
-
-
-@pytest.mark.parametrize("payload", [
-    '<script>alert(1)</script>',
-    '<p onclick="steal()">본문</p>',
-    '<iframe srcdoc="<script>x</script>"></iframe>',
-    '<img src="javascript:alert(1)">',
-    '<span style="background:url(javascript:alert(1))">본문</span>',
-])
-def test_editor_reference_renderer_cannot_bypass_unsafe_html_gate(payload):
-    rendered = render_editor_references(payload, [])
-    result = validate_editor_html(rendered, [])
-
-    assert result["ok"] is False
-    assert any(item["code"] == "noncanonical_html" for item in result["issues"])
+    assert not unresolved_failures, unresolved_failures
+    assert not markdown_failures, markdown_failures
 
 
 def test_canonical_anchor_with_a_void_child_preserves_following_html():
@@ -367,63 +354,43 @@ def test_canonical_anchor_with_a_void_child_preserves_following_html():
     assert validate_editor_html(rendered, resolved)["ok"] is True
 
 
-def test_editor_validator_rejects_any_unclosed_nonvoid_element():
-    result = validate_editor_html("<section><p>본문</p>", [])
+def test_editor_validator_rejects_all_noncanonical_html_shapes():
+    payloads = [
+        "<section><p>본문</p>",
+        '<img src="https://example.invalid/track"/>',
+        '<p>safe<img src="https://evil.invalid/pixel" src></p>',
+        '<p style="background:url(https://evil.invalid/pixel)" style="color:red">safe</p>',
+        '<p style="background-image:image-set(&#x27;https://evil.invalid/p.png&#x27; 1x)">safe</p>',
+        '<svg><rect fill="url(https://evil.invalid/filter.svg)"></rect></svg>',
+        "<p>before<div>block</div>after</p>",
+        "<p>before<p>inner</p>after</p>",
+    ]
+    failures = []
+    for payload in payloads:
+        result = validate_editor_html(payload, [])
+        if result["ok"] or not any(item["code"] == "noncanonical_html" for item in result["issues"]):
+            failures.append(payload)
 
-    assert result["ok"] is False
-    assert any(item["code"] == "noncanonical_html" for item in result["issues"])
-
-
-def test_editor_validator_checks_attributes_on_self_closing_void_elements():
-    result = validate_editor_html('<img src="https://example.invalid/track"/>', [])
-
-    assert result["ok"] is False
-    assert any(item["code"] == "noncanonical_html" for item in result["issues"])
-
-
-@pytest.mark.parametrize("payload", [
-    '<p>safe<img src="https://evil.invalid/pixel" src></p>',
-    '<p style="background:url(https://evil.invalid/pixel)" style="color:red">safe</p>',
-])
-def test_editor_validator_rejects_duplicate_attribute_names(payload):
-    result = validate_editor_html(payload, [])
-
-    assert result["ok"] is False
-    assert any(item["code"] == "noncanonical_html" for item in result["issues"])
+    assert not failures, failures
 
 
-@pytest.mark.parametrize("payload", [
-    '<p style="background-image:image-set(&#x27;https://evil.invalid/p.png&#x27; 1x)">safe</p>',
-    '<svg><rect fill="url(https://evil.invalid/filter.svg)"></rect></svg>',
-])
-def test_editor_validator_uses_a_supported_html_ir_not_css_or_svg_blacklists(payload):
-    result = validate_editor_html(payload, [])
+def test_editor_reference_renderer_rejects_all_unsafe_html_and_network_media():
+    payloads = [
+        '<script>alert(1)</script>',
+        '<p onclick="steal()">본문</p>',
+        '<iframe srcdoc="<script>x</script>"></iframe>',
+        '<img src="javascript:alert(1)">',
+        '<span style="background:url(javascript:alert(1))">본문</span>',
+        '<p>review</p><img src="http://127.0.0.1:4457/api/private">',
+        '<img src="https://example.invalid/track?token=copied-secret">',
+        '<video poster="http://10.0.0.5/private"></video>',
+        '<svg><use xlink:href="https://example.invalid/icon.svg#x"></use></svg>',
+        '<img srcset="https://example.invalid/a 1x, https://example.invalid/b 2x">',
+    ]
+    failures = []
+    for payload in payloads:
+        result = validate_editor_html(render_editor_references(payload, []), [])
+        if result["ok"] or not any(item["code"] == "noncanonical_html" for item in result["issues"]):
+            failures.append(payload)
 
-    assert result["ok"] is False
-    assert any(item["code"] == "noncanonical_html" for item in result["issues"])
-
-
-@pytest.mark.parametrize("payload", [
-    "<p>before<div>block</div>after</p>",
-    "<p>before<p>inner</p>after</p>",
-])
-def test_editor_validator_rejects_block_elements_inside_phrasing_only_parents(payload):
-    result = validate_editor_html(payload, [])
-
-    assert result["ok"] is False
-    assert any(item["code"] == "noncanonical_html" for item in result["issues"])
-
-
-@pytest.mark.parametrize("payload", [
-    '<p>review</p><img src="http://127.0.0.1:4457/api/private">',
-    '<img src="https://example.invalid/track?token=copied-secret">',
-    '<video poster="http://10.0.0.5/private"></video>',
-    '<svg><use xlink:href="https://example.invalid/icon.svg#x"></use></svg>',
-    '<img srcset="https://example.invalid/a 1x, https://example.invalid/b 2x">',
-])
-def test_editor_reference_renderer_rejects_model_controlled_network_media(payload):
-    rendered = render_editor_references(payload, [])
-    result = validate_editor_html(rendered, [])
-
-    assert result["ok"] is False
-    assert any(item["code"] == "noncanonical_html" for item in result["issues"])
+    assert not failures, failures

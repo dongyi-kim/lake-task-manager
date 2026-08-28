@@ -52,21 +52,25 @@ def test_knowledge_projection_keeps_legacy_optional_and_extra_field_semantics():
     assert "references" not in projected
 
 
-@pytest.mark.parametrize(
-    "payload",
-    [
+def test_knowledge_projection_rejects_the_same_wrong_json_shapes():
+    from app.agent.workflow.contracts import validate_role_output
+
+    payloads = [
         {"our_context": "DL-1", "gaps": []},
         {"concepts": {}, "our_context": "DL-1", "gaps": []},
         {"concepts": [], "our_context": 7, "gaps": []},
         {"concepts": [], "our_context": "DL-1", "gaps": "none"},
         {"concepts": ["CDC"], "our_context": "DL-1", "gaps": []},
-    ],
-)
-def test_knowledge_projection_rejects_the_same_wrong_json_shapes(payload):
-    from app.agent.workflow.contracts import validate_role_output
+    ]
+    accepted = []
+    for payload in payloads:
+        try:
+            validate_role_output("knowledge_curator", payload)
+        except ValidationError:
+            continue
+        accepted.append(payload)
 
-    with pytest.raises(ValidationError):
-        validate_role_output("knowledge_curator", payload)
+    assert not accepted, accepted
 
 
 def test_knowledge_projection_keeps_empty_nested_objects_legal():
