@@ -1,0 +1,87 @@
+"""Mechanical JavaScript and CSS integrity checks."""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+
+from frontend.static_assets.support import (
+    ASSETS,
+    CTRL_RE,
+    OURS,
+    STATIC,
+    VUE_COMPONENTS,
+    asset_id,
+)
+
+_rel = asset_id
+
+def test_static_assets_exist():
+    assert len(ASSETS) > 20, "정적 자산을 못 찾았다 — 경로 규약이 바뀌었나"
+
+
+@pytest.mark.parametrize("path", ASSETS, ids=asset_id)
+def test_no_control_characters(path: Path):
+    """제어문자 0개. 특히 0x08 — `\\b` 를 쓴 정규식이 편집 도구를 거치며 박히는 사고가
+    있었다(실측). 파일을 열어 봐도 정상으로 보이는데 정규식은 절대 매칭되지 않는다."""
+    src = path.read_text(encoding="utf-8")
+    hits = [(src[:m.start()].count("\n") + 1, hex(ord(m.group())))
+            for m in CTRL_RE.finditer(src)]
+    assert not hits, f"{_rel(path)} 에 제어문자: {hits[:5]}"
+
+
+OURS = [p for p in ASSETS if p.suffix == ".js" and "vendor" not in p.parts]
+
+
+@pytest.mark.parametrize("path", OURS, ids=asset_id)
+def test_javascript_parses(path: Path):
+    """우리 JS 가 **문법적으로 성립**하는가. 문자열 치환으로 파일을 고치다 보면 토막이
+    남아 파일 전체가 죽는데, 그러면 화면이 통째로 비고 원인은 콘솔에만 남는다.
+    (esprima 가 없는 환경에서는 건너뛴다 — 개발 의존성이다.)"""
+    esprima = pytest.importorskip("esprima")
+    src = path.read_text(encoding="utf-8")
+    # esprima 는 ES2020 이전까지만 안다 — optional chaining·nullish 를 동등한 옛 문법으로
+    # 낮춰 준다(구조 검증이 목적이지 문법 감시가 목적이 아니다).
+    src = src.replace("?.(", "(").replace("?.[", "[").replace("?.", ".").replace("??", "||")
+    try:
+        esprima.parseModule(src)
+    except Exception as e:                       # noqa: BLE001 — 파서가 뭘 던지든 실패다
+        pytest.fail(f"{_rel(path)} 파싱 실패: {e}")
+
+
+@pytest.mark.parametrize("path", [p for p in ASSETS if p.suffix == ".js"], ids=asset_id)
+def test_no_inline_event_handlers(path: Path):
+    """인라인 이벤트 핸들러 금지 — CSP 에서 막히면 **조용히** 동작하지 않는다
+    (프사 실패를 숨기는 onerror 가 안 돌아 깨진 이미지가 그대로 남았다 — 실측).
+    리스너는 코드에서 addEventListener 로 붙인다."""
+    src = path.read_text(encoding="utf-8")
+    hits = re.findall(r"\bon(?:error|load|click|change|input)\s*=\s*[\"']", src)
+    assert not hits, f"{_rel(path)} 인라인 핸들러: {hits[:3]}"
+
+
+VUE_COMPONENTS = [p for p in ASSETS
+                  if p.suffix == ".js" and "components" in p.parts]
+
+
+@pytest.mark.parametrize("path", VUE_COMPONENTS, ids=asset_id)
+def test_templates_do_not_call_imported_modules(path: Path):
+    """Vue 템플릿은 **컴포넌트 인스턴스 프로퍼티만** 본다. 템플릿 표현식에서 import 한
+    모듈(agentApi·api…)을 부르면 예외도 없이 **조용히 아무 일도 일어나지 않는다**.
+
+    실측: 설정 창을 닫을 때 `@close="… agentApi.status() …"` 로 모델 표시를 갱신하게
+    해 뒀는데 한 번도 실행되지 않아, 모델을 바꿔도 좌상단이 옛 값 그대로였다.
+    """
+    src = path.read_text(encoding="utf-8")
+    m = re.search(r"template:\s*`", src)
+    if not m:
+        pytest.skip("템플릿 없음")
+    tpl = src[m.end():]
+    mods = re.findall(r"^import\s+(?:\{\s*([\w,\s]+)\s*\}|(\w+))\s+from", src, re.M)
+    names = {n.strip() for a, b in mods for n in (a or b or "").split(",") if n.strip()}
+    names -= {"h", "ref", "computed"}          # 렌더 함수용 — 템플릿과 무관
+    bad = []
+    for name in names:
+        for mm in re.finditer(r'[@:]?[\w.-]+="[^"]*\b' + re.escape(name) + r"\.\w", tpl):
+            bad.append(mm.group(0)[:60])
+    assert not bad, f"{_rel(path)} 템플릿이 모듈을 직접 부른다: {bad[:3]}"

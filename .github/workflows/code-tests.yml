@@ -45,4 +45,4 @@ jobs:
           python -m pip install -r requirements-test.txt
 
       - name: Run deterministic tests
-        run: python -m pytest -q --basetemp=.pytest-tmp
+        run: python -m pytest -q --basetemp=.cache/test-tmp/ci

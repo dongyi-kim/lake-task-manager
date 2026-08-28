@@ -26,7 +26,7 @@ Jira 를 source of truth 로 두고, 그 위에 **Module → WBS Task → Epic �
 | `prod` | 사내 Jira DC, Playwright SSO 세션 재사용. 실데이터(수동 검증만). | 사내 DC | SSO 세션 |
 
 > **핵심 불변식**: mock(in-process)·local(실 HTTP) 모두 **같은 jira820(같은 world·직렬화기)** → **mock 출력 == local 출력**.
-> 다르면 회귀(`tests/test_local_parity.py` 자동 가드). *(dev fake 는 이전 `tools/fake_jira`·`mockdata.py` → jira820 로 일원화됨.)*
+> 다르면 회귀(`tests/jira/workload/test_local_parity.py` 자동 가드). *(dev fake 는 이전 `tools/fake_jira`·`mockdata.py` → jira820 로 일원화됨.)*
 
 ---
 
@@ -91,7 +91,7 @@ curl http://localhost:4457/api/refresh      # 캐시 + 프론트 memo 무효화
 ## 4. 테스트
 
 ```bash
-python -m pytest tests/test_rollup.py -q   # 로컬: 변경 관련 test만
+python -B -m pytest tests/domain/test_rollup.py -q   # 로컬: 변경 관련 test만
 ```
 
 - PR과 `main` push는 GitHub Actions가 외부 API 없는 전체 `pytest` suite를 자동 실행.
