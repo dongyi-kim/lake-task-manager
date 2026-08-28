@@ -5113,8 +5113,15 @@ def test_the_module_prefix_is_added_to_titles_when_the_model_forgets():
 
 def test_only_the_fields_the_user_asked_for_are_changed():
     """마감만 미뤄 달라고 했는데 우선순위까지 카드에 얹히면 모르고 승인한다(실측 Round P)."""
+    from datetime import date, timedelta
+
+    today = date.today()
+    next_friday = today + timedelta(days=(7 - today.weekday()) + 4)
     out = {"questions": [], "mode": "task", "items": [], "rationale": "",
-           "change": {"key": "DL-9090", "duedate": "2026-08-14", "priority": "P3-Minor"}}
+           # DL-9090의 mock 마감은 today+7이라 특정 금요일에는 계산 결과와 같아져 no-op이 된다.
+           # 이 테스트는 변경 필드 범위만 검증하므로 기존 마감이 없는 고정 fixture를 쓴다.
+           "change": {"key": "DL-9001", "duedate": next_friday.isoformat(),
+                      "priority": "P3-Minor"}}
     r = WorkArchitect().apply(_msg("두 번째 거 마감을 다음 주 금요일로 미뤄줘", intent=Intent.MODIFY), out)
     ch = r["change_plan"].get("changes") or {}
     assert "duedate" in ch and "priority" not in ch, ch

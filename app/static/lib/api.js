@@ -234,8 +234,13 @@ export const api = {
   myTasksGroup: (syncId, key) => req("/api/mytasks/sync/" + encodeURIComponent(syncId)
     + "/group/" + encodeURIComponent(key)),
   myTasksEpics: (syncId) => req("/api/mytasks/sync/" + encodeURIComponent(syncId) + "/epics"),
-  myTasksEpicMeta: (keys) => get("/api/mytasks/epics?keys="
-    + encodeURIComponent((keys || []).join(","))),
+  // Epic 메타의 장기 캐시는 서버가 소유한다. 부분 성공(HTTP 200)을 브라우저 promise memo에
+  // 영구 고정하면 누락 key를 다시 시도할 수 없으므로 이 보강 요청은 매번 서버 캐시를 확인한다.
+  myTasksEpicMeta: (keys) => {
+    const normalized = Array.from(new Set((keys || [])
+      .map((key) => String(key || "").trim().toUpperCase()).filter(Boolean))).sort();
+    return req("/api/mytasks/epics?keys=" + encodeURIComponent(normalized.join(",")));
+  },
   search: (q, scope, only) => req("/api/search?q=" + encodeURIComponent(q)
     + "&scope=" + encodeURIComponent(scope || "scoped")
     + (only ? "&only=" + encodeURIComponent(only) : "")),               // only=jira|confluence

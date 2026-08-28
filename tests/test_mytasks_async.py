@@ -538,10 +538,38 @@ def test_epic_metadata_uses_long_ttl_and_ticket_invalidation_evicts_it(monkeypat
     meta = client.epic_metadata("DL-9019")
 
     assert meta and meta["title"] != "DL-9019"
-    assert client.EPIC_META_TTL > client.s.cache_ttl_seconds
+    assert client.EPIC_META_TTL >= 12 * 3600
     cache_key = f"epicmeta:{client.env}:DL-9019"
     assert client.cache.get(cache_key) == meta
 
     monkeypatch.setattr(client, "_reprime", lambda *args, **kwargs: None)
     client._invalidate_ticket("DL-9019")
     assert client.cache.get(cache_key) is None
+
+
+def test_deferred_task_model_reuses_fresh_epic_metadata_without_loading(monkeypatch):
+    client = _client()
+    expected = client.epic_metadata("DL-9019")
+    assert expected and expected["title"] != "DL-9019"
+
+    # The deferred/streaming path must be cache-only here.  A fresh Epic title cannot trigger a
+    # badge lookup or be replaced by a key-only loading shell while Task cards are assembled.
+    monkeypatch.setattr(client, "epic_metadata_many", lambda _keys: pytest.fail(
+        "deferred Task model must not resolve cached Epic metadata through Jira"))
+    model = build_my_tasks(client, scope="epic:DL-9019", defer_children=True)
+
+    epic = next(row for row in model["epics"] if row["key"] == "DL-9019")
+    assert epic["title"] == expected["title"]
+    assert epic["pending"] is False
+    assert model["epicsPending"] is False
+
+
+def test_cache_only_epic_metadata_omits_misses_without_upstream_calls(monkeypatch):
+    client = _client()
+    expected = client.epic_metadata("DL-9019")
+    monkeypatch.setattr(client, "prefetch_issues", lambda *_args, **_kwargs: pytest.fail(
+        "cache-only Epic metadata lookup must not prefetch issues"))
+    monkeypatch.setattr(client, "ticket_badge", lambda *_args, **_kwargs: pytest.fail(
+        "cache-only Epic metadata lookup must not fetch badges"))
+
+    assert client.epic_metadata_cached_many(["dl-9019", "DL-999999", "DL-9019"]) == [expected]

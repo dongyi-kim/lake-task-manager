@@ -227,6 +227,10 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
     assert '"&deferred=1"' in api
     assert "myTasksStream: (opts, onEvent, signal)" in api
     assert "myTasksEpicMeta: (keys)" in api
+    epic_api = api[api.index("myTasksEpicMeta: (keys)"):api.index("search: (q, scope, only)")]
+    assert "return req(" in epic_api
+    assert "get(" not in epic_api
+    assert ".filter(Boolean))).sort()" in epic_api
     assert "response.body.getReader" in api
     assert "myTasksGroup: (syncId, key)" in api
     assert "myTasksEpics: (syncId)" in api
@@ -234,7 +238,7 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
     assert "event.requestToken !== requestToken" in view
     assert "eventSequence <= lastSequence" in view
     assert "event.completedLeaves && event.completedLeaves.length" in view
-    assert "this._hydrateModel(cache[key], seq, key, cache);" in view
+    assert "hydrationPromise = this._hydrateModel(cache[key], seq, key, cache);" in view
     assert "_mergeStreamModel" not in view
     assert "_mergeTaskGroup" not in view
     assert "_normalizeStreamGroups" not in view
@@ -254,7 +258,13 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
     hydrate_replace = view[hydrate_start:view.index("} catch (e) {", hydrate_start)]
     assert hydrate_replace.index("reconcileTaskModel") < hydrate_replace.index("this._queueEpicMetadata")
     assert "this.model = next" not in hydrate_replace
+    assert 'return !epic || !!epic.pending;' in view
     assert 'epicDisplayTitle(k) { return this.epicPending(k) ? "Epic 이름 확인 중"' in view
+    assert "_epicMetaAttempts" in view
+    assert "_settleMissingEpicMetadata(exhausted, cache)" in view
+    assert "attempt <= TASK_RETRY_DELAYS.length" in view
+    assert "this._epicMetaKnown.delete(changedKey)" in view
+    assert "this._epicMetaKnown = new Map();" in view
     assert 'result.contract !== "task-snapshot.v1"' in view
     assert "Number(result.sequence) <= snapshotSequence" in view
     assert 'if (kind === "permission") continue;' in view
@@ -267,6 +277,13 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
     assert "cache[cacheKey] = reconcileTaskModel" in view
     assert "this._loadSeq === seq && this.model && this.model.syncId === syncId" in view
     assert "await Promise.allSettled([worker(), worker()]);" in view
+    assert "if (opts.awaitHydration && hydrationPromise) await hydrationPromise;" in view
+    assert "const changedKey = String((view && view.key) || detail.key ||" in view
+    assert "const wasVisible = this._taskModelHasKey(changedKey);" in view
+    assert "this.load({ quiet: true, awaitHydration: true })" in view
+    assert "refreshSeq !== this._loadSeq" in view
+    assert "this._toastExcluded([changedKey])" in view
+    assert "const gone = [...before]" not in view
     assert "_mergeHydration" not in view
     assert "if (!seen.has(atom.key))" in view
     assert "if (p?.group?.childrenPending) return null;" in view
@@ -280,7 +297,8 @@ def test_mytasks_quiet_refresh_keeps_visible_dom_and_patches_only_changed_keys()
     assert "else cache[key] = this.model;" in view
     assert "event.model && (!preserveVisible || finalUsable)" in view
     assert "event.done && !streamHadAuthFailure && !streamHadOtherFailure" in view
-    assert "if (!preserveVisible || finalUsable) this._hydrateModel" in view
+    assert "if (!preserveVisible || finalUsable) {" in view
+    assert "hydrationPromise = this._hydrateModel(cache[key], seq, key, cache);" in view
     assert "active && !preserveVisible && completedLeaves.length" in view
     assert "active && !preserveVisible) this.streamProgress" in view
     assert "reconcileTaskRows(current.groups, incoming.groups, reconcileTaskGroup)" in view
@@ -350,13 +368,15 @@ def test_agent_ticket_badges_have_compact_and_detail_modes():
     assert '.agent-md a.tkt[data-key]:not([data-filled])' in view
 
 
-def test_auto_converted_jira_links_reuse_short_ticket_badge():
-    """본문·댓글 에디터의 원문 Jira URL은 기존 Short 뱃지 클래스(아이콘+키)를 공통 사용한다."""
+def test_plain_ticket_keys_are_short_but_jira_links_are_detailed():
+    """단순 티켓 번호 자동링크만 Short이고, URL 붙여넣기·링크 삽입은 Detailed다."""
     dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
     editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
     css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
-    assert 'a.classList.add("jira-badge", "jira-badge-list", "tkt")' in dialog
-    assert 'a.className = "jira-badge jira-badge-list tkt"' in editor
+    assert 'plainKey ? "jira-badge-list" : "jira-badge-detail"' in dialog
+    assert '!a.classList.contains("jira-link-explicit")' in dialog
+    assert 'a.className = "jira-badge jira-badge-detail tkt"' in editor
+    assert '"web-badge jira-link-explicit"' in editor
     assert ".tkt-desc .jira-badge-list .jb-name" in css
     assert ".cmt-ed-host .jira-badge-list .jb-meta" in css
 
@@ -704,7 +724,10 @@ def test_comment_editor_runs_on_one_tiptap_v3_runtime():
     assert bundle.is_file() and bundle.stat().st_size < 1024 * 1024
     assert not (STATIC / "vendor" / "esm").exists()
     assert 'import("/vendor/tiptap.bundle.mjs")' in loader
-    assert "Table, TableRow, TableCell, TableHeader" in entry and "{ TextStyle }" in entry
+    assert "{ TableKit }" in entry and "{ TextStyleKit }" in entry
+    assert "@tiptap/extension-font-family" not in package["dependencies"]
+    assert "fontColorExt" not in editor
+    assert "T.TableKit.configure" in editor and "T.TextStyleKit" in editor
     assert 'T.StarterKit.configure({ codeBlock: false, link: false })' in editor
     assert 'commands.setContent(html, { emitUpdate: false })' in editor
 
@@ -732,6 +755,58 @@ def test_field_edit_shows_offline_defaults_immediately_and_pins_none_option():
     assert ".fe-i > span:not(.avt):not(.fe-empty-mark)" in css
     assert root.count("api.warmGlobals()") == 2    # 최초 인증 성공 + 재인증 복귀
     assert "api.warmGlobals()" not in tasks        # Task 본 데이터 완료 여부에 종속되지 않음
+
+
+def test_ticket_epic_and_person_pickers_render_local_defaults_before_network():
+    """티켓·Epic·사람 선택기는 최근/관련자/없음을 먼저 그리고 서버 결과를 뒤에 합친다."""
+    recent = (STATIC / "lib" / "recent.js").read_text(encoding="utf-8")
+    field = (STATIC / "components" / "ui" / "FieldEdit.js").read_text(encoding="utf-8")
+    child = (STATIC / "components" / "ui" / "NewChildDialog.js").read_text(encoding="utf-8")
+    picker = (STATIC / "components" / "ui" / "LinkPicker.js").read_text(encoding="utf-8")
+    search = (STATIC / "components" / "ui" / "SearchOverlay.js").read_text(encoding="utf-8")
+    dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
+    user_pick = (STATIC / "components" / "ui" / "UserPickDialog.js").read_text(encoding="utf-8")
+    transition = (STATIC / "components" / "ui" / "TransitionDialog.js").read_text(encoding="utf-8")
+    options = (STATIC / "lib" / "optionRepository.js").read_text(encoding="utf-8")
+
+    assert 'const LOCAL_KEY = "recent.items"' in recent
+    assert recent.index("save(merge(") < recent.index("api.recentAdd(payload)")
+    assert "export function recentItems" in recent and "export function hydrateRecent" in recent
+    assert "recent: recentItems(20" in picker
+    assert picker.index("recent: recentItems(20") < picker.index("api.recent(20")
+    assert "recent: recentItems(RECENT_MAX)" in search
+    assert "this.recent = recentItems(RECENT_MAX)" in search
+
+    epics = field[field.index("searchEpics(q) {"):field.index("searchWho(q) {")]
+    assert epics.index("recentEpicOptions()") < epics.index('api.options("epics", "")')
+    assert "fieldObjectSnapshot" in field and "fieldStringSnapshot" in field
+    assert 'const CACHE_KEY = "optionRepository.v1"' in options
+    assert 'const LEGACY_CREATE_CACHE = "newTicket.optionCache.v1"' in options
+    assert ':choices="mentionUsers"' in dialog
+    assert dialog.count(':choices="mentionUsers"') == 2
+
+    parents = child[child.index("searchParents(q) {"):child.index("pickParent(item) {")]
+    assert parents.index("this.plist = local;") < parents.index("api.parentTaskCandidates(q)")
+    assert "SPECIALS.filter(matches)" in child
+    assert "defaultUserSuggestions([], [])" in user_pick
+    assert "defaultUserSuggestions([], [])" in transition
+
+
+def test_creation_dialog_keeps_last_options_and_never_deadlocks_on_type_lookup():
+    """타입/기본 선택지는 브라우저에 보존하고 원격 타입 조회 실패가 생성 폼을 먹통으로 만들지 않는다."""
+    child = (STATIC / "components" / "ui" / "NewChildDialog.js").read_text(encoding="utf-8")
+    field = (STATIC / "components" / "ui" / "FieldEdit.js").read_text(encoding="utf-8")
+    options = (STATIC / "lib" / "optionRepository.js").read_text(encoding="utf-8")
+    assert 'const CACHE_KEY = "optionRepository.v1"' in options
+    assert "cachedOptions" in child and "recentEpicOptions" in child and "rememberOptions" in child
+    assert 'const DEFAULT_TASK_TYPES = ["Task", "Story", "Bug", "Improvement", "New Feature"]' in child
+    assert 'const DEFAULT_SUBTASK_TYPES = ["Sub-Task"]' in child
+    special = child[child.index("if (item.special)"):child.index("const parent = item.key")]
+    assert special.index("this._resolve(") < special.index("this._loadTypes(")
+    assert "기존 목록을 사용합니다" in child and "rememberOptions(kind, list)" in child
+    save = field[field.index("async save(v, extra) {"):field.index("saveMulti() {")]
+    assert save.index("this.close();") < save.index("await api.updateFields")
+    assert "field-save:" in save and "pushToast" in save
 
 
 def test_feature_guides_explain_search_recents_quick_open_and_browser_access():

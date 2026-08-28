@@ -289,14 +289,15 @@ export default {
     /** 에디터가 서버를 기다리지 않고 먼저 보여 줄 티켓 관련자. 최근 댓글/멘션 순서를 보존한다. */
     mentionUsers() {
       const out = [], seen = new Set();
-      const add = (id, name) => {
+      const add = (id, name, display) => {
         id = String(id || "").trim();
         if (!id || seen.has(id)) return;
-        seen.add(id); out.push({ id, name: name || id, display: name || id, avatar: "/api/avatar/" + encodeURIComponent(id) });
+        seen.add(id); out.push({ id, name: name || id, display: display || name || id,
+                                avatar: "/api/avatar/" + encodeURIComponent(id) });
       };
       if (this.v) {
-        add(this.v.reporterId, this.v.reporter);
-        add(this.v.assigneeId, this.v.assignee);
+        add(this.v.reporterId, this.v.reporter, this.v.reporterDisplay);
+        add(this.v.assigneeId, this.v.assignee, this.v.assigneeDisplay);
       }
       for (const comment of this.sortedComments) {
         add(comment.authorId, comment.author);
@@ -1098,8 +1099,13 @@ export default {
         const m = _BROWSE_RE.exec(a.getAttribute("href") || "");
         if (!m) return;
         a.dataset.jira = "1";
-        const key = m[1];
-        a.classList.add("jira-badge", "jira-badge-list", "tkt");
+        const key = m[1].toUpperCase();
+        // 라벨이 key와 같은 Jira 링크도 있다. raw source에 URL이 있었는지는 서버가 표식으로 보존한다.
+        // 표식 없는 key-only 앵커만 Jira renderer가 일반 텍스트 키를 auto-link한 Short로 취급한다.
+        const plainKey = !a.classList.contains("jira-link-explicit")
+          && String(a.textContent || "").trim().toUpperCase() === key;
+        a.classList.remove("jira-badge-list", "jira-badge-detail");
+        a.classList.add("jira-badge", plainKey ? "jira-badge-list" : "jira-badge-detail", "tkt");
         a.setAttribute("data-key", key);
         a.setAttribute("role", "button");
         a.setAttribute("tabindex", "0");
@@ -1412,12 +1418,14 @@ export default {
               </FieldEdit></span></div>
             <div><span class="k">담당자</span><span class="val val-user">
               <FieldEdit :ticket="tk" field="assignee" :meta="fmeta('assignee')"
-                         :value="v.assigneeId" :user-id="v.assigneeId" @saved="onFieldSaved">
+                         :value="v.assigneeId" :user-id="v.assigneeId" :choices="mentionUsers"
+                         @saved="onFieldSaved">
                 <Avatar v-if="v.assigneeId" :user="v.assigneeId" :name="v.assignee" :size="18" />{{ v.assignee || '—' }}
               </FieldEdit></span></div>
             <div><span class="k">보고자</span><span class="val val-user">
               <FieldEdit :ticket="tk" field="reporter" :meta="fmeta('reporter')"
-                         :value="v.reporterId" :user-id="v.reporterId" @saved="onFieldSaved">
+                         :value="v.reporterId" :user-id="v.reporterId" :choices="mentionUsers"
+                         @saved="onFieldSaved">
                 <Avatar v-if="v.reporterId" :user="v.reporterId" :name="v.reporter" :size="18" />{{ v.reporter || '—' }}
               </FieldEdit></span></div>
             <div><span class="k">작업 기한</span><span class="val">

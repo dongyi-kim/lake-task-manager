@@ -262,12 +262,47 @@ _EMOTICON_RE = re.compile(r"/images/icons/emoticons/|/images/icons/emoji|/emotic
 #   user-hover = 실 Jira DC 의 사용자 맨션 앵커 class(볼드+컬러 스타일 대상). conf-link = 아래에서 부여.
 _ALLOWED_CLASSES = {
     "panel", "panel-title", "panel-body", "callout", "code", "jecodeblock", "user-hover", "conf-link",
+    "jira-link-explicit",              # URL/링크로 넣은 Jira 티켓(plain key 자동링크와 구분)
     "emoticon",                        # Jira 이모티콘 이미지 — 확대(줌) 대상에서 제외하려고 표식
     "image-wrap",                      # 실 Jira DC 가 본문 이미지를 감싸는 래퍼
     "attachment", "file-badge",        # 첨부 파일 링크([^name]) — 칩으로 그린다
     "callout-note", "callout-info", "callout-warning", "callout-tip",
     "callout-success", "callout-error",
 }
+
+
+_JIRA_SOURCE_KEY_RE = re.compile(r"/browse/([A-Za-z][A-Za-z0-9]*-\d+)", re.I)
+_SAFE_ANCHOR_TAG_RE = re.compile(r"<a\b[^>]*>", re.I)
+_ANCHOR_HREF_RE = re.compile(r'\bhref="([^"]*)"', re.I)
+_ANCHOR_CLASS_RE = re.compile(r'\bclass="([^"]*)"', re.I)
+
+
+def mark_explicit_jira_links(html, source):
+    """원문에 URL로 존재한 Jira 링크만 ``jira-link-explicit`` 표식을 붙인다.
+
+    Jira renderer는 일반 텍스트 ``DL-123``도 ``/browse/DL-123`` 앵커로 바꿀 수 있어 렌더 HTML만
+    보면 티켓 번호와 사용자가 넣은 링크를 구분할 수 없다. raw source에 실제 ``/browse/KEY``가
+    있었던 key만 Detailed로 표시하고, renderer가 만든 나머지는 Short로 남긴다.
+    """
+    if not html or not source or "/browse/" not in str(source):
+        return html
+    explicit = {m.group(1).upper() for m in _JIRA_SOURCE_KEY_RE.finditer(str(source))}
+    if not explicit:
+        return html
+
+    def repl(match):
+        tag = match.group(0)
+        href = _ANCHOR_HREF_RE.search(tag)
+        key = _JIRA_SOURCE_KEY_RE.search(unescape(href.group(1))) if href else None
+        if not key or key.group(1).upper() not in explicit or "jira-link-explicit" in tag:
+            return tag
+        cm = _ANCHOR_CLASS_RE.search(tag)
+        if cm:
+            classes = (cm.group(1) + " jira-link-explicit").strip()
+            return tag[:cm.start(1)] + classes + tag[cm.end(1):]
+        return tag[:-1] + ' class="jira-link-explicit">'
+
+    return _SAFE_ANCHOR_TAG_RE.sub(repl, html)
 
 # ── 벤더 콜아웃 class 정규화 ──────────────────────────────────────────
 # 실 사내 Jira DC 는 {info} 매크로를 <div class="jePanel_info"> 로 렌더한다(dev mock 은

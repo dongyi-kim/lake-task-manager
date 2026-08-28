@@ -69,8 +69,37 @@ def test_ticket_view_hydrates_partial_assignee_and_reporter_names(monkeypatch):
     view = client.ticket_view("DL-1")
     assert view["assignee"] == "김담당"
     assert view["reporter"] == "이보고"
+    assert view["assigneeDisplay"] == "김담당 SKCC"
+    assert view["reporterDisplay"] == "이보고 SKCC"
     assert view["assigneeId"] == "jira.assignee"
     assert view["reporterId"] == "jira.reporter"
+
+
+def test_builder_reuses_loaded_epic_name_without_another_request():
+    raw = {"key": "DL-9000", "fields": {
+        "summary": "UI 회귀 테스트 Epic", "customfield_10003": "UI Fixture",
+        "issuetype": {"name": "Epic"},
+        "status": {"name": "Open", "statusCategory": {"key": "new"}},
+    }}
+    v = _build_ticket_view(raw, "customfield_10002", epic_name_field="customfield_10003")
+    assert v["epicName"] == "UI Fixture"
+
+
+def test_builder_distinguishes_plain_ticket_key_autolink_from_explicit_jira_link():
+    """renderer 결과가 같은 key 라벨이어도 raw URL이 있던 링크만 Detailed 표식을 받는다."""
+    raw = {"key": "DL-1", "fields": {
+        "summary": "s",
+        "description": "plain DL-5002 and [DL-5003|https://jira.example/browse/DL-5003]",
+        "issuetype": {"name": "Task"},
+        "status": {"name": "Open", "statusCategory": {"key": "new"}},
+    }, "renderedFields": {"description": (
+        '<p>plain <a href="https://jira.example/browse/DL-5002">DL-5002</a> and '
+        '<a href="https://jira.example/browse/DL-5003">DL-5003</a></p>')}}
+    html = _build_ticket_view(raw, "customfield_10002")["descriptionHtml"]
+    assert 'href="https://jira.example/browse/DL-5002"' in html
+    assert 'href="https://jira.example/browse/DL-5002" class="jira-link-explicit"' not in html
+    explicit = html[html.index('href="https://jira.example/browse/DL-5003"'):]
+    assert "jira-link-explicit" in explicit.split(">", 1)[0]
 
 
 # ── mock 통합: jira820 renderedFields 로 리치 요소가 실제 렌더 + 정화 ──

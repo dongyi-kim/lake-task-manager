@@ -24,11 +24,12 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.domain import mytasks, rollup, search, vit, workload
+from app.domain import mytasks, search
 from app.auth.base import SessionExpired, UpstreamUnavailable, background_upstream
 from app.infra.cache import Cache
 from app.jira.jira_client import JiraClient
-from app.infra.settings import STATIC_DIR, get_settings, load_plan, load_people
+from app.infra.settings import STATIC_DIR, get_settings, load_people
+from app.routes.dashboards import build_dashboard_router
 
 
 class _CommentBody(BaseModel):
@@ -951,39 +952,6 @@ def api_login():
     return JSONResponse({"ok": ok}, status_code=200 if ok else 504)
 
 
-@app.get("/api/wbs")
-def api_wbs():
-    _require_manager()
-    plan = load_plan()
-
-    def build():
-        epic_prog = _client.epic_progress_map(plan)
-        # 주의: Epic→Task→Sub-Task 트리는 여기서 미리 안 긁는다(lazy).
-        #       프론트가 Epic 을 펼칠 때만 GET /api/epic/{key}/tree 로 가져간다.
-        return rollup.build(plan, epic_prog)
-
-    # ★ 세는 구간 **안에서** 조립해야 한다 — 다 만든 뒤에 세면 카운터는 늘 0 이다.
-    data = _with_partial(build)
-    # 진척 스냅샷 기록 (기능2/3 시계열 뒷받침)
-    _cache.add_snapshot("pmo", plan.get("project_key", "LAKE"), data["rollup"]["pmo"])
-    return JSONResponse(data)
-
-
-@app.get("/api/epic/{epic_key}/tree")
-def api_epic_tree(epic_key: str):
-    """WBS Gantt 지연 로딩 — Epic 을 펼칠 때 그 Epic 의 자식(Task/Story/Bug) + Sub-Task 트리만 반환."""
-    tree = _with_partial(lambda: {"tree": _client.epic_tree(epic_key)})
-    # 원래 배열을 그대로 주던 자리다 — 배열엔 '못 받았다' 를 실을 데가 없어 객체로 감쌌다.
-    # 프론트는 둘 다 받아 준다(옛 응답도 그대로 읽힌다).
-    return JSONResponse(tree)
-
-
-@app.get("/api/epic/{epic_key}/progress")
-def api_epic_progress(epic_key: str):
-    """단일 Epic 진척률 리소스 (doneSp/totalSp/mockSp/progressPct/name)."""
-    return JSONResponse(_client.epic_progress_one(epic_key))
-
-
 @app.get("/api/issue/{key}")
 def api_issue(key: str):
     """범용 단일 티켓 리소스 — 요약·타입·상태·일정·SP + Sub-Task."""
@@ -1336,7 +1304,8 @@ def api_mytasks_epic_metadata(keys: str = ""):
     requested = [key.strip().upper() for key in keys.split(",") if key.strip()][:100]
     with background_upstream():
         epics = _client.epic_metadata_many(requested)
-    return JSONResponse({"epics": epics})
+    # 브라우저는 부분 성공을 고정하지 않는다. 장기 캐시는 JiraClient 한 곳에서만 관리한다.
+    return JSONResponse({"epics": epics}, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/mytasks/sync/{sync_id}/epics")
@@ -1955,113 +1924,15 @@ def api_me():
     return JSONResponse(me)
 
 
-def _with_partial(build):
-    """조립 도중 **못 가져온 게 있었는지**를 응답에 함께 싣는다.
-
-    없는 것과 못 받은 것은 다르다. 구분해서 주지 않으면 화면은 둘을 같은 '없음' 으로 그리고,
-    보는 사람은 상류가 느렸을 뿐인 목록을 사실로 읽는다.
-    """
-    _client.miss_begin()
-    data = build()
-    n = _client.miss_count()
-    if isinstance(data, dict) and n:
-        data["partial"] = True
-        data["missing"] = n
-    return data
-
-
-@app.get("/api/vit/shell")
-def api_vit_shell():
-    """현안 골격 — 모듈 목록·모듈별 건수(트리 조립 없음). 프론트가 뼈대를 먼저 그린다."""
-    plan = load_plan()
-    return JSONResponse(vit.build_vit_shell(_client, plan, load_people(), jira_base=_settings.jira_base))
-
-
-@app.get("/api/vit/module/{module}")
-def api_vit_module(module: str):
-    """현안 — 모듈 하나만. 프론트가 모듈별로 병렬 호출해 도착하는 대로 렌더한다."""
-    plan = load_plan()
-    return JSONResponse(_with_partial(
-        lambda: vit.build_vit_module(_client, plan, load_people(), module)))
-
-
-@app.get("/api/vit/{key}")
-def api_vit_detail(key: str):
-    """단일 현안 상세 — 자손 트리 + 코멘트 (프론트 [자세히] 지연 로딩)."""
-    plan = load_plan()
-    return JSONResponse(_with_partial(
-        lambda: vit.vit_detail(_client, plan, load_people(), key)))
-
-
-@app.get("/api/vit")
-def api_vit():
-    plan = load_plan()
-    return JSONResponse(_with_partial(
-        lambda: vit.build_vit(_client, plan, load_people(), jira_base=_settings.jira_base)))
-
-
-@app.get("/api/workload")
-def api_workload():
-    # 비매니저는 자기 모듈만(people 을 스코프해 넘긴다). 매니저는 전체.
-    plan = load_plan()
-    return JSONResponse(workload.build_workload(_client, plan, _scoped_people(), jira_base=_settings.jira_base))
-
-
-@app.get("/api/workload/shell")
-def api_workload_shell():
-    """워크로드 골격 — 모듈·인원 수만(Jira 조회 없음). 비매니저는 자기 모듈만."""
-    plan = load_plan()
-    return JSONResponse(workload.build_workload_shell(_client, plan, _scoped_people(),
-                                                      jira_base=_settings.jira_base))
-
-
-@app.get("/api/workload/module/{module}")
-def api_workload_module(module: str):
-    """워크로드 — 모듈 하나만(모듈별 병렬 호출용). 비매니저는 자기 모듈만 조회 가능."""
-    _require_module_access(module)
-    plan = load_plan()
-    return JSONResponse(workload.build_workload_module(_client, plan, load_people(), module))
-
-
-@app.get("/api/workload/person/{user}")
-def api_workload_person(user: str, days: int = 7):
-    """워크로드 — **인력 한 명**의 통계 행(사람 by 사람 비동기 로딩용). 통계는 assignee 기준이라
-    모듈과 무관 → user 만 받는다. days 는 '최근 완료' 기간(7·14·28)."""
-    _require_person_access(user)
-    return JSONResponse(workload.build_workload_person(_client, user, days))
-
-
-@app.get("/api/workload/{user}/{bucket}")
-def api_workload_bucket(user: str, bucket: str, days: int = 7):
-    """인력 상세의 한 버킷(open|inProgress|done7d) — 세 리스트를 각각 병렬 로딩.
-    days 는 done7d 에만 쓰인다('최근 완료' 기간)."""
-    _require_person_access(user)
-    rows = _client.workload_bucket(user, bucket, days)
-    if rows is None:
-        return JSONResponse({"error": "unknown bucket", "bucket": bucket}, status_code=404)
-    return JSONResponse(rows)
-
-
-@app.get("/api/workload/{user}")
-def api_workload_tickets(user: str):
-    """인력 상세 — 진행중 / 최근7일 완료 티켓 리스트 (프론트 [+] 확장)."""
-    _require_person_access(user)
-    return JSONResponse(_client.workload_tickets(user))
-
-
-@app.get("/api/activity/{user}")
-def api_activity(user: str):
-    _require_manager()
-    return JSONResponse(_client.activity(user))
-
-
-@app.post("/api/refresh")
-def api_refresh():
-    _cache.invalidate()          # 전체 캐시 무효화 (epic/workload/activity)
-    _client.advance_jql_generation()  # 진행 중인 leaf warming도 구세대에서 멈추게 한다
-    from app.infra.settings import reload_people
-    reload_people()              # config(people.yaml) 편집분도 다음 조회부터 반영
-    return {"status": "refreshed"}
+app.include_router(build_dashboard_router(
+    client=_client,
+    cache=_cache,
+    settings=_settings,
+    scoped_people=_scoped_people,
+    require_manager=_require_manager,
+    require_module_access=_require_module_access,
+    require_person_access=_require_person_access,
+))
 
 
 # 티켓 단독 페이지 — Jira 와 같은 /browse/{key} URL. SPA 진입점을 그대로 돌려주고

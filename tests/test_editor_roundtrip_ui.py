@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -254,7 +255,9 @@ def _assert_editor_schema(editor, prefix: str, *, expect_blob: bool = False,
         assert editor.locator(selector).count() >= 1, f"editor lost {name}: {prefix}"
     assert editor.get_by_text(f"{prefix}-PLAIN", exact=False).count() == 1
     assert editor.locator("span[data-type='mention'][data-id='test.ui02']").count() == 1
-    assert editor.locator("a[href='/browse/DL-9001']").count() == 1
+    jira_link = editor.locator("a[href='/browse/DL-9001']")
+    assert jira_link.count() == 1
+    assert "jira-badge-detail" in (jira_link.get_attribute("class") or "")
     style = editor.evaluate(
         """(el, needle) => {
           const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
@@ -307,6 +310,8 @@ def _assert_rendered(scope, prefix: str, *, expect_section: bool = False) -> Non
     assert scope.get_by_text(f"{prefix}-PLAIN", exact=False).count() >= 1
     assert scope.locator(".mention-badge, a.user-hover[href*='ViewProfile.jspa']").count() >= 1
     assert scope.locator("a[href='https://example.com/%s']" % prefix.lower()).count() == 1
+    # 붙여넣은 Jira URL/링크 노드는 게시·수정·재게시 뒤에도 Detailed를 유지한다.
+    assert scope.locator(".jira-badge-detail[data-key='DL-9001']").count() == 1
     images = scope.locator("img[src*='/api/img?u=']")
     assert images.count() >= 3
     for index in range(images.count()):
@@ -423,7 +428,8 @@ def test_existing_editor_regression_fixtures_render_in_browser(editor_browser):
     fixtures = [
         ("DL-9001", ("h2", "table", "pre code", "blockquote", ".callout-info", "img", ".mention-badge")),
         ("DL-9002", ("h1", "h2", "h3", "h4")),
-        ("DL-9004", (".tkt-desc-box .jira-badge[data-key='DL-5005']",)),
+        # wiki 링크 문법으로 URL을 넣은 픽스처이므로 라벨이 키 하나여도 Detailed다.
+        ("DL-9004", (".tkt-desc-box .jira-badge-detail[data-key='DL-5005']",)),
         ("DL-9005", ("a[href*='confluence.corp.example']",)),
         ("DL-9006", (".fchip",)),
         ("DL-9007", (".tkt-cmt-b", ".mention-badge", ".tkt-cmt-b .jira-badge")),
@@ -510,4 +516,52 @@ def test_comment_mention_search_enriches_context_name_under_delay(editor_browser
     page.keyboard.press("Escape")
     popup.wait_for(state="detached", timeout=3_000)
     assert page.get_by_text("사용자 없음", exact=True).count() == 0
+    assert not errors, f"browser page errors: {errors}"
+
+
+@pytest.mark.parametrize("editor_browser", [800], indirect=True)
+def test_field_pickers_show_none_context_and_recent_items_before_delayed_results(editor_browser):
+    """800ms Jira 지연 중에도 없음·티켓 관련자·최근 Epic은 첫 프레임에 보인다."""
+    page, base, errors, _upload_path = editor_browser
+    _open_ticket(page, base, "DL-9000")             # 최근 Epic을 UI 동작으로 기록
+    # `_open_ticket`의 key/header는 본문 응답 전에도 보인다. 실제 티켓이 로드되어 로컬 최근항목에
+    # 기록된 뒤 이동해야, 지연 중 라우트 전환 취소를 최근 열람으로 오인하지 않는다.
+    page.locator(".tb-sum").get_by_text("[UI] UI 회귀 검증 픽스처", exact=True).wait_for()
+    _open_ticket(page, base, DESCRIPTION_TICKET)     # 최근 Task + 소속 Epic을 UI 동작으로 기록
+
+    assignee = page.locator("button[title='담당자 수정']")
+    assignee.wait_for(state="visible", timeout=30_000)
+    started = time.monotonic()
+    assignee.click()
+    people = page.locator(".fe-pop.users")
+    people.get_by_text("없음", exact=True).wait_for(state="visible", timeout=500)
+    people.get_by_text("UI픽스처01 TEST", exact=True).wait_for(state="visible", timeout=500)
+    people.get_by_text("없음", exact=True).click()
+    people.wait_for(state="detached", timeout=500)       # 800ms 저장 요청보다 먼저 닫혀야 한다
+    assert time.monotonic() - started < 0.75
+
+    epic = page.locator("button[title='소속 Epic 수정']")
+    epic.wait_for(state="visible")
+    started = time.monotonic()
+    epic.click()
+    epic_popup = page.locator(".fe-pop.wide")
+    epic_popup.get_by_text("없음", exact=True).wait_for(state="visible", timeout=500)
+    epic_popup.get_by_text("DL-9000", exact=True).wait_for(state="visible", timeout=500)
+    epic_popup.get_by_text("없음", exact=True).click()
+    epic_popup.wait_for(state="detached", timeout=500)
+    assert time.monotonic() - started < 0.75
+
+    # 생성창 상위 Epic 선택도 서버 options보다 `Epic 없음`과 최근 Epic을 먼저 그린다.
+    page.get_by_role("button", name="티켓 추가").click()
+    page.get_by_role("button", name=re.compile(r"^Task 추가하기")).click()
+    candidates = page.locator(".nk-cands")
+    started = time.monotonic()
+    candidates.get_by_text("Epic 없음", exact=True).wait_for(state="visible", timeout=500)
+    candidates.get_by_text("DL-9000", exact=True).wait_for(state="visible", timeout=500)
+    candidates.get_by_text("Epic 없음", exact=True).click()
+    type_trigger = page.locator("button[title='티켓 타입 수정']")
+    type_trigger.wait_for(state="visible", timeout=500)
+    type_trigger.click()
+    page.locator(".fe-pop .fe-i", has_text="Task").first.wait_for(state="visible", timeout=500)
+    assert time.monotonic() - started < 0.75
     assert not errors, f"browser page errors: {errors}"

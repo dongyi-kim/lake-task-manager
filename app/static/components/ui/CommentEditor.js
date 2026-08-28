@@ -21,6 +21,13 @@ import { agentApi } from "../../lib/agentApi.js";
 import { beginBusy } from "../../lib/uibusy.js";
 import AgentSettingsDialog from "./AgentSettingsDialog.js";
 import { paintMentionBadge } from "../../lib/mentionBadge.js";
+import { liftCheckboxes, liftSections, normalizeAiHtml } from "../editor/contentTransforms.js";
+import {
+  EDITOR_HEIGHT_KEY, EDITOR_HEIGHT_MIN, EDITOR_HEIGHT_MAX,
+  loadEditorHeight, saveEditorHeight, validEditorHeight,
+} from "../editor/editorHeight.js";
+
+export { normalizeAiHtml } from "../editor/contentTransforms.js";
 
 // 첨부 업로드 재시도 — prod 는 SSO 세션/사내망 탓에 첨부가 간헐적으로 삐끗한다. 한 번 실패했다고
 // 파일을 버리지 않고 최대 이만큼 **다시** 올려 본다(총 시도 횟수).
@@ -248,104 +255,6 @@ function ticketData(key) {
 // 첨부 파일 뱃지 — 이미지가 아닌 파일을 본문에 **한 덩어리**로 박는다.
 // 이미지는 그림 자체가 내용이라 <img> 로 넣지만, 파일은 "무엇이 붙어 있다" 는 사실이 내용이다.
 // 그래서 미리보기 대신 이름과 확장자를 보이는 칩으로 그린다. 제출 시 실제 티켓 첨부가 되고
-// 본문에는 Jira 첨부 링크([^이름])로 저장된다.
-// 영역 구분선 — 본문을 '=== 제목 ===' 으로 나누는 사내 관습. 티켓 뷰는 이미 이 표시를 읽어
-// 영역별 카드로 그리는데(sections.py), **에디터에서는 그냥 글자**라 쓰는 사람이 결과를 못 봤다.
-//
-// 저장 형태는 바꾸지 않는다 — 노드는 '=== 제목 ===' 한 줄짜리 문단으로 직렬화된다. 새 문법을
-// 만들면 Jira 웹에서 연 사람이 못 알아보고, 기존 티켓과도 어긋난다. 화면에서만 선처럼 보인다.
-// 이미 저장된 본문을 편집기로 열 때: '=== 제목 ===' 줄을 구분선 노드로 바꾼다.
-// 안 바꾸면 편집기에선 그냥 글자로 보이고, 사용자가 손대면 형식이 깨진다.
-//
-// ★ **문단 안에 <br> 로 이어진 경우까지** 처리해야 한다. Jira wiki 는 홑 줄바꿈을 <br> 로 내므로
-//   실제 티켓 본문은 `<p>안녕하세요<br/>==== 신청정보 ====<br/>이렇게 신청함</p>` 처럼 한 문단에
-//   뭉쳐 들어온다. 예전엔 '구분선만 담은 <p>' 만 봤던 탓에, 화면에선 영역이 갈려 보이는 본문이
-//   수정 화면에서는 '==== 제목 ====' 맨 글자로 풀렸다(리포트된 버그).
-//   자르는 규칙은 표시 계층(app/content/sections.py)과 같아야 한다 — 한쪽만 고치면 또 어긋난다.
-const SEC_ONELINE = /^\s*={3,}\s*(.+?)\s*={3,}\s*$/;
-const _P_BLOCK = /<p\b[^>]*>([\s\S]*?)<\/p>/gi;
-const _TAGS = /<[^>]*>/g;
-
-function liftSections(html) {
-  if (!html || html.indexOf("===") < 0) return html;
-  return html.replace(_P_BLOCK, (whole, inner) => {
-    if (inner.indexOf("===") < 0) return whole;
-    const lines = inner.split(/<br\s*\/?>/i);
-    const isSec = (l) => SEC_ONELINE.test(l.replace(_TAGS, "").trim());
-    if (!lines.some(isSec)) return whole;                 // 구분선 줄이 없으면 손대지 않는다
-
-    // 구분선 줄에서 문단을 끊고, 그 자리에 노드를 넣는다(앞뒤 줄은 다시 <br> 로 이어 붙인다).
-    const out = [];
-    let buf = [];
-    const flush = () => {
-      const body = buf.join("<br>");
-      if (body.replace(_TAGS, "").trim()) out.push("<p>" + body + "</p>");
-      buf = [];
-    };
-    for (const line of lines) {
-      const plain = line.replace(_TAGS, "").trim();
-      const m = SEC_ONELINE.exec(plain);
-      if (m) {
-        flush();
-        // 제목은 **다시 이스케이프하지 않는다** — 여기 들어온 건 이미 정화된 HTML 조각이라
-        // '&lt;' 같은 엔티티가 그대로다. 한 번 더 걸면 'a &amp;lt; b' 로 글자가 새어 나온다.
-        out.push('<div class="sec-title-node">' + m[1] + "</div>");
-      } else {
-        buf.push(line);
-      }
-    }
-    flush();
-    return out.join("");
-  });
-}
-
-// 저장/표시된 체크박스(<p><input type=checkbox …>글<br><input …>글</p>)를 편집기로 열 때
-// **TipTap TaskList** 로 되살린다. 안 하면 TipTap 이 <input> 노드를 몰라 통째로 버려 — 수정에
-// 들어가면 체크박스가 사라진다(실제 리포트된 버그). 저장 때는 다시 <p><input> 로 평탄화된다.
-const _CB_IN_P = /<p\b[^>]*>([\s\S]*?)<\/p>/gi;
-const _CB_SPLIT = /<input\b([^>]*)>\s*([\s\S]*?)(?=<input\b|$)/gi;
-function liftCheckboxes(html) {
-  if (!html || !/<input[^>]*type=["']?\s*checkbox/i.test(html)) return html;
-  return html.replace(_CB_IN_P, (m, inner) => {
-    if (!/<input[^>]*type=["']?\s*checkbox/i.test(inner)) return m;   // 체크박스 없는 문단은 그대로
-    const items = [];
-    let mm;
-    _CB_SPLIT.lastIndex = 0;
-    while ((mm = _CB_SPLIT.exec(inner)) !== null) {
-      const attrs = mm[1] || "";
-      if (!/type=["']?\s*checkbox/i.test(attrs)) continue;
-      const checked = /\bchecked\b/i.test(attrs);
-      const text = (mm[2] || "").replace(/(?:<br\s*\/?>|\s)+$/i, "");  // 항목 사이 <br>·공백 제거
-      // TipTap TaskItem 은 li[data-type=taskItem] + 본문이 <p> 로 감싸져야 파싱한다(안 그러면 항목이
-      // 합쳐지거나 버려진다). data-type·<p> 래퍼를 정확히 맞춘다.
-      items.push('<li data-checked="' + (checked ? "true" : "false") + '" data-type="taskItem">'
-        + '<label><input type="checkbox"' + (checked ? ' checked="checked"' : "") + '><span></span></label>'
-        + "<div><p>" + (text || "") + "</p></div></li>");
-    }
-    return items.length ? '<ul data-type="taskList">' + items.join("") + "</ul>" : m;
-  });
-}
-
-// AI 자동완성이 낸 HTML 을 **이 편집기가 실제로 파싱하는 모양**으로 맞춘다.
-//
-// 모델에게는 읽기 쉬운 최소 형태(<li data-checked="false">글</li>)로 내게 하고, 편집기가
-// 요구하는 군더더기(data-type·label·<p> 래퍼)는 코드가 채운다 — 프롬프트에 DOM 세부를
-// 적어 두면 모델이 한 군데만 틀려도 조용히 깨진다. liftCheckboxes 가 '불러올 때'를 맡듯이
-// 이 함수가 '끼워 넣을 때'를 맡는다(그쪽은 <input> 평문, 이쪽은 taskList 형태라 짝이 다르다).
-const _AI_TASK_LI = /<li\b([^>]*?)data-checked=["']?(true|false)["']?([^>]*)>([\s\S]*?)<\/li>/gi;
-export function normalizeAiHtml(html) {
-  let out = String(html || "");
-  out = out.replace(_AI_TASK_LI, (m, pre, checked, post, body) => {
-    if (/data-type=["']?taskItem/i.test(pre + post)) return m;      // 이미 맞는 모양
-    const on = String(checked).toLowerCase() === "true";
-    const inner = /<(p|div|ul|ol)\b/i.test(body) ? body : "<p>" + body.trim() + "</p>";
-    return '<li data-checked="' + (on ? "true" : "false") + '" data-type="taskItem">'
-      + '<label><input type="checkbox"' + (on ? ' checked="checked"' : "") + '><span></span></label>'
-      + "<div>" + inner + "</div></li>";
-  });
-  return out;
-}
-
 function sectionExt(T) {
   return T.Node.create({
     name: "sectionTitle",
@@ -449,7 +358,8 @@ function linkBadgeExt(T) {
     renderText({ node }) { return node.attrs.title || node.attrs.href || ""; },
     renderHTML({ node }) {
       const href = node.attrs.href || "";
-      const attrs = { href, class: "web-badge", rel: "noopener" };
+      const attrs = { href, class: jiraKeyOf(href) ? "web-badge jira-link-explicit" : "web-badge",
+                      rel: "noopener" };
       const fav = favCss(href);
       if (fav) attrs.style = "--fav:" + fav;
       return ["a", attrs, node.attrs.title || href];
@@ -466,9 +376,9 @@ function linkBadgeExt(T) {
           const key = jiraKeyOf(href);
           if (key) {
             // Jira 티켓 — 읽기 렌더(augmentLinks)와 **같은 구조·클래스**로 그려 모양을 일치시킨다.
-            // 원문 Jira URL의 자동 변환은 기존 Short 타입(아이콘+키)을 쓴다. 상세 뱃지는
-            // 사용자가 명시적으로 선택한 참조 UI에만 남겨 긴 제목/상태가 문장을 밀지 않게 한다.
-            a.className = "jira-badge jira-badge-list tkt";
+            // 링크를 붙여넣거나 '/jira'로 넣은 노드이므로 기본은 Detailed다. Short는 읽기 화면이
+            // 일반 텍스트의 단순 티켓 번호를 자동 링크로 받은 경우에만 쓴다.
+            a.className = "jira-badge jira-badge-detail tkt";
             a.style.removeProperty("--fav");
             a.innerHTML = '<span class="tbadge v-solid jb-type"></span><b class="jb-key"></b>'
               + '<span class="jb-name"></span><span class="jb-meta"></span>';
@@ -766,37 +676,6 @@ const BGCOLORS = [
   { k: "#fecaca", label: "빨강" }, { k: "#e9d5ff", label: "보라" }, { k: "#e5e7eb", label: "회색" },
 ];
 
-// 글자색·배경색 — TextStyle(<span style>) 위에 color/background-color 속성을 얹는다.
-// 공식 Color/Highlight 확장이 번들에 없어 직접 만든다(콜아웃·구분선과 같은 인라인 확장 방식).
-function fontColorExt(T) {
-  return T.Extension.create({
-    name: "fontColorBg",
-    addGlobalAttributes() {
-      return [{
-        types: ["textStyle"],
-        attributes: {
-          color: {
-            default: null,
-            parseHTML: (el) => el.style.color || null,
-            renderHTML: (a) => (a.color ? { style: "color: " + a.color } : {}),
-          },
-          backgroundColor: {
-            default: null,
-            parseHTML: (el) => el.style.backgroundColor || null,
-            renderHTML: (a) => (a.backgroundColor ? { style: "background-color: " + a.backgroundColor } : {}),
-          },
-        },
-      }];
-    },
-    addCommands() {
-      return {
-        setFontColor: (color) => ({ chain }) => chain().setMark("textStyle", { color }).run(),
-        setFontBg: (backgroundColor) => ({ chain }) => chain().setMark("textStyle", { backgroundColor }).run(),
-      };
-    },
-  });
-}
-
 const SLASH = [
   { g: "삽입", id: "code", ic: "{ }", t: "코드 블록", h: "언어 강조", k: "code 코드 codeblock",
     run: (e, r) => e.chain().focus().deleteRange(r).setCodeBlock().run() },
@@ -956,27 +835,6 @@ function mentionExt(T, ticketKey, localUsers) {
   }).configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion(ticketKey, localUsers) });
 }
 
-// 끌어서 정한 높이는 **기억한다**. 매번 다시 늘리게 하면 늘리는 의미가 없다 —
-// 긴 글을 쓰는 사람은 늘 길게 쓴다. 화면(px)이라 localStorage 로 충분하다.
-const H_KEY = "cmtEditorH";
-const H_MIN = 120;
-const H_MAX = 720;
-
-function validEditorHeight(value) {
-  const v = Number(value);
-  return Number.isFinite(v) && v >= H_MIN && v <= H_MAX ? Math.round(v) : null;
-}
-
-function loadEditorHeight(key, fallback) {
-  try {
-    const saved = validEditorHeight(parseInt(localStorage.getItem(key) || "", 10));
-    return saved === null ? validEditorHeight(fallback) : saved;
-  } catch (e) { return validEditorHeight(fallback); }
-}
-function saveEditorHeight(key, value) {
-  try { localStorage.setItem(key, String(value)); } catch (e) { /* 사파리 프라이빗 등 */ }
-}
-
 export default {
   name: "CommentEditor",
   components: { LinkPicker, MarkdownTableDialog, AgentSettingsDialog },
@@ -1004,7 +862,7 @@ export default {
     mentionUsers: { type: Array, default: () => [] },
     // 설명 편집에서 크게 늘린 값이 새 댓글 작성창까지 화면을 채우지 않도록 자리별 저장 키와
     // 기본 높이를 받을 수 있다. 사용자가 조절한 높이는 각 자리에서 계속 기억한다.
-    heightKey: { type: String, default: H_KEY },
+    heightKey: { type: String, default: EDITOR_HEIGHT_KEY },
     initialHeight: { type: Number, default: 0 },
   },
   emits: ["submitted", "cancel"],
@@ -1057,11 +915,11 @@ export default {
         singleLineHeadingExt(T),
         firstBlockEscapeExt(T),
         mentionExt(T, this.ticketKey, this.mentionUsers),
-        T.Table.configure({ resizable: true }), T.TableRow, T.TableHeader, T.TableCell,
+        T.TableKit.configure({ table: { resizable: true } }),
         // 정렬 — 문단·제목·표 셀에. 표 셀을 포함해야 마크다운 표의 :-: / --: 정렬이 붙는다.
         T.TextAlign.configure({ types: ["heading", "paragraph", "tableCell", "tableHeader"] }),
         // 글꼴 — TextStyle(인라인 style) 위에서 FontFamily·글자색/배경색이 동작한다.
-        T.TextStyle, T.FontFamily, fontColorExt(T),
+        T.TextStyleKit,
         // 체크박스(태스크 리스트) — nested 허용(할 일 안의 할 일)
         T.TaskList, T.TaskItem.configure({ nested: true }),
         // inline:true — 이미지가 같은 줄에 글자와 나란히 놓이게(TipTap 기본은 블록이라 줄이 갈린다)
@@ -1183,12 +1041,12 @@ export default {
     /** 글자색 — 빈 값이면 해제(color 속성 제거). */
     setFontColor(c) {
       this.colorOpen = false;
-      this.cmd((ch) => ch.setMark("textStyle", { color: c || null }).run());
+      this.cmd((ch) => (c ? ch.setColor(c) : ch.unsetColor()).run());
     },
     /** 배경색(형광펜) — 빈 값이면 해제. */
     setFontBg(c) {
       this.bgOpen = false;
-      this.cmd((ch) => ch.setMark("textStyle", { backgroundColor: c || null }).run());
+      this.cmd((ch) => (c ? ch.setBackgroundColor(c) : ch.unsetBackgroundColor()).run());
     },
     tbBold() { this.cmd((c) => c.toggleBold().run()); },
     tbItalic() { this.cmd((c) => c.toggleItalic().run()); },
@@ -1419,7 +1277,7 @@ export default {
       const startH = host.getBoundingClientRect().height;
       const move = (ev) => {
         const delta = direction * (ev.clientY - startY);
-        const h = Math.max(H_MIN, Math.min(H_MAX, Math.round(startH + delta)));
+        const h = Math.max(EDITOR_HEIGHT_MIN, Math.min(EDITOR_HEIGHT_MAX, Math.round(startH + delta)));
         this.hostH = h;
       };
       const up = () => {
