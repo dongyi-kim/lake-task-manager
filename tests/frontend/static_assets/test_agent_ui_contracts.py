@@ -7,12 +7,33 @@ from pathlib import Path
 
 import pytest
 
-from frontend.static_assets.support import ROOT, STATIC, comment_editor_source
+from frontend.static_assets.support import ROOT, STATIC, agent_view_source, comment_editor_source
+
+def test_agent_view_facade_delegates_feature_specific_modules():
+    """대화 orchestration 본체가 템플릿·DOM 보강·변환·패널 저장 구현을 다시 품지 않는다."""
+    agent_dir = STATIC / "components" / "agent"
+    facade = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
+
+    assert len(facade) < 55 * 1024
+    for module in (
+        "agentViewTemplate.js",
+        "badgeHydration.js",
+        "contentTransforms.js",
+        "panelLayout.js",
+    ):
+        assert (agent_dir / module).is_file()
+        assert f'../agent/{module}' in facade
+    assert "augmentAgentBadges(this.$el)" in facade
+    assert "export function augmentAgentBadges(root)" in agent_view_source()
+    assert "template: AGENT_VIEW_TEMPLATE" in facade
+    assert "function dedupeTicketTail" not in facade
+    assert "new DOMParser()" not in facade
+
 
 def test_agent_ticket_badges_have_compact_and_detail_modes():
     """답변 티켓은 목록·소수 인라인·bullet 상세 세 형식을 사용한다."""
     md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
-    view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
+    view = agent_view_source()
     css = (STATIC / "styles" / "agent.css").read_text(encoding="utf-8")
     for variant in ("jira-badge-list", "jira-badge-inline", "jira-badge-detail"):
         assert variant in md or variant in css
@@ -41,7 +62,7 @@ def test_plain_ticket_keys_are_short_but_jira_links_are_detailed():
 def test_agent_ticket_references_always_use_detail_badges():
     """참조의 ticket은 raw key·token·Jira link 입력 모두 detail badge로 정규화한다."""
     md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
-    view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
+    view = agent_view_source()
     css = (STATIC / "styles" / "agent.css").read_text(encoding="utf-8")
     ref_row = md[md.index("function refRow"):md.index("function _render")]
     assert "src.match(KEY_RE)" in ref_row
@@ -65,7 +86,7 @@ def test_agent_evidence_renderer_accepts_canonical_and_legacy_headings():
 def test_agent_evidence_has_one_hierarchical_renderer_without_system_duplicate_panels():
     """답변/시스템 근거를 한 source index로 합치고 소스별 발견은 하위번호로 그린다."""
     md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
-    view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
+    view = agent_view_source()
     css = (STATIC / "styles" / "agent.css").read_text(encoding="utf-8")
 
     assert "export function mergeEvidenceMarkdown" in md
@@ -107,7 +128,7 @@ def test_agent_approval_card_actions_remain_readable_with_preview_open():
 def test_agent_ticket_badges_never_nest_inside_inline_code():
     """`DL-123`은 badge 하나, `key = DL-123`은 code 하나로 렌더해야 한다."""
     md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
-    view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
+    view = agent_view_source()
     code_stash = md.index('.replace(/`([^`]+)`/g')
     key_badge = md.index('.replace(TICKET_TOKEN_RE')
     assert code_stash < key_badge
@@ -121,7 +142,7 @@ def test_agent_reference_picker_keeps_recent_urls_and_sends_them_to_model():
     """빈 검색의 최근 항목과 검색 결과 모두 실제 주소가 포함된 Agent 입력이 되어야 한다."""
     picker = (STATIC / "components" / "ui" / "LinkPicker.js").read_text(encoding="utf-8")
     editor = comment_editor_source()
-    view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
+    view = agent_view_source()
     api = (STATIC / "lib" / "api.js").read_text(encoding="utf-8")
 
     assert 'api.recent(20, this.isJira ? "jira" : "confluence")' in picker
@@ -147,7 +168,7 @@ def test_agent_settings_use_named_configs_instead_of_fixed_provider_tabs():
 
 
 def test_agent_sidebar_identifies_named_environment_and_missing_configs():
-    view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
+    view = agent_view_source()
     assert "status.runtimeConfigSource === 'named'" in view
     assert "status.activeConfig.name" in view
     assert "status.runtimeConfigSource === 'environment'" in view
@@ -156,7 +177,7 @@ def test_agent_sidebar_identifies_named_environment_and_missing_configs():
 
 
 def test_local_agent_chat_copy_includes_progress_diagnostics_but_prod_is_gated():
-    view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
+    view = agent_view_source()
     assert 'this.appMeta.env !== "prod"' in view
     assert '"## Local debug"' in view
     assert "turn.debug.events.push" in view and "turn.debug.plan" in view
@@ -165,7 +186,7 @@ def test_local_agent_chat_copy_includes_progress_diagnostics_but_prod_is_gated()
 
 
 def test_agent_reference_actions_have_visible_ticket_and_document_labels():
-    view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
+    view = agent_view_source()
     css = (STATIC / "styles" / "agent.css").read_text(encoding="utf-8")
     assert '> 티켓 넣기' in view
     assert '> 문서 넣기' in view
