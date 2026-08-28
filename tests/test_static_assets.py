@@ -147,8 +147,11 @@ def test_ticket_create_dialogs_use_wider_responsive_defaults():
 def test_uniform_subtask_status_reuses_solo_parent_and_foldable_children_in_one_column():
     """한 상태 그룹은 단독 Task 목록에 편입되고 모든 그룹이 같은 하단 폴더블 바를 쓴다."""
     view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
+    fold = (STATIC / "components" / "ui" / "SubtaskFoldBar.js").read_text(encoding="utf-8")
+    model = (STATIC / "components" / "mytasks" / "taskModel.js").read_text(encoding="utf-8")
     css = (STATIC / "styles" / "mytasks.css").read_text(encoding="utf-8")
 
+    assert "export function uniformStatusCategory(cards)" in model
     assert "singleStatus: uniformStatusCategory(all)" in view
     assert "parentCard: this.card(g, g, !!g.mine)" in view
     assert 'const compact = this.axis === "h" ? grouped.filter((p) => this.compactStatus(p)) : [];' in view
@@ -161,15 +164,15 @@ def test_uniform_subtask_status_reuses_solo_parent_and_foldable_children_in_one_
     assert '<TaskCard v-if="!c.compactPanel" :card="c"' in view
     assert 'class="mt-compact-flow"' in view
     assert '<TaskCard :card="c" :style="sigStyle(c)"' in view
-    assert "const SubtaskFoldBar = {" in view
-    assert "components: { Avatar }" in view
-    assert '<span class="mt-subfoot-toggle"' in view
-    assert '<strong>{{ total }}</strong> Subtasks' in view
-    assert 'class="mt-subfoot-owners"' in view
-    assert 'v-for="owner in assignees"' in view
-    assert 'class="mt-subfoot-sep mt-subfoot-progress-sep"' in view
-    assert 'role="progressbar"' in view
-    assert '<em>{{ done }} / {{ total }}</em>' in view
+    assert 'import SubtaskFoldBar from "../ui/SubtaskFoldBar.js"' in view
+    assert "components: { Avatar }" in fold
+    assert '<span class="mt-subfoot-toggle"' in fold
+    assert '<strong>{{ total }}</strong> Subtasks' in fold
+    assert 'class="mt-subfoot-owners"' in fold
+    assert 'v-for="owner in assignees"' in fold
+    assert 'class="mt-subfoot-sep mt-subfoot-progress-sep"' in fold
+    assert 'role="progressbar"' in fold
+    assert '<em>{{ done }} / {{ total }}</em>' in fold
     assert "const seenAssignees = new Set();" in view
     assert "allCount: all.length, assignees" in view
     assert view.count("<SubtaskFoldBar") == 3  # 1축 compact + 가로 3축 + 세로 상태축
@@ -206,11 +209,12 @@ def test_uniform_subtask_status_reuses_solo_parent_and_foldable_children_in_one_
 
 def test_mytasks_uses_axis_pagination_without_splitting_subtask_groups():
     view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
+    model = (STATIC / "components" / "mytasks" / "taskModel.js").read_text(encoding="utf-8")
     css = (STATIC / "styles" / "mytasks.css").read_text(encoding="utf-8")
 
-    assert "const AXIS_PAGE_SIZE = 40;" in view
+    assert "export const AXIS_PAGE_SIZE = 40;" in model
     assert "axisEntries()" in view and 'add(state.k, "panel:" + panel.key)' in view
-    assert "Task with SubTask는 자식을 쪼개지 않고 한 항목으로 센다" in view
+    assert "Task with SubTask는 자식을 쪼개지 않고 한 항목으로 센다" in model
     assert 'v-for="c in pagedCards(p, st.k)"' in view
     assert 'panelPageVisibleAny(p)' in view
     assert 'v-show="panelPageVisible(p, st.k)"' in view
@@ -222,6 +226,7 @@ def test_mytasks_uses_axis_pagination_without_splitting_subtask_groups():
 
 def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_overwrite():
     view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
+    model = (STATIC / "components" / "mytasks" / "taskModel.js").read_text(encoding="utf-8")
     api = (STATIC / "lib" / "api.js").read_text(encoding="utf-8")
 
     assert '"&deferred=1"' in api
@@ -243,9 +248,9 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
     assert "_mergeTaskGroup" not in view
     assert "_normalizeStreamGroups" not in view
     assert "this._streamAbort.abort()" in view
-    assert "export function reconcileTaskModel(current, incoming)" in view
-    assert "const old = new Map(rows.filter((row) => row && row.key)" in view
-    assert "rows.splice(0, rows.length, ...next);" in view
+    assert "export function reconcileTaskModel(current, incoming)" in model
+    assert "const old = new Map(rows.filter((row) => row && row.key)" in model
+    assert "rows.splice(0, rows.length, ...next);" in model
     assert "this._cacheModel(cache, key, reconciled)" in view
     assert "this._queueEpicMetadata(reconciled, cache)" in view
     # Progressive/key-only snapshots preserve existing object/DOM identity and must not overwrite
@@ -291,6 +296,7 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
 
 def test_mytasks_quiet_refresh_keeps_visible_dom_and_patches_only_changed_keys():
     view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
+    model = (STATIC / "components" / "mytasks" / "taskModel.js").read_text(encoding="utf-8")
 
     assert 'const preserveVisible = !!(opts.quiet && this.model && this._activeCacheKey === key);' in view
     assert "else if (!preserveVisible) this.model = this._emptyTaskModel();" in view
@@ -301,9 +307,9 @@ def test_mytasks_quiet_refresh_keeps_visible_dom_and_patches_only_changed_keys()
     assert "hydrationPromise = this._hydrateModel(cache[key], seq, key, cache);" in view
     assert "active && !preserveVisible && completedLeaves.length" in view
     assert "active && !preserveVisible) this.streamProgress" in view
-    assert "reconcileTaskRows(current.groups, incoming.groups, reconcileTaskGroup)" in view
-    assert "reconcileTaskRows(current.atoms, incoming.atoms, patchTaskData)" in view
-    assert "reconcileTaskRows(current.others, incoming.others, patchTaskData)" in view
+    assert "reconcileTaskRows(current.groups, incoming.groups, reconcileTaskGroup)" in model
+    assert "reconcileTaskRows(current.atoms, incoming.atoms, patchTaskData)" in model
+    assert "reconcileTaskRows(current.others, incoming.others, patchTaskData)" in model
     assert 'import { reactive } from "../../vendor/vue.esm-browser.prod.js";' in view
     assert "this._cardCache || (this._cardCache = new WeakMap())" in view
     assert "current = reactive(next);" in view
@@ -311,7 +317,7 @@ def test_mytasks_quiet_refresh_keeps_visible_dom_and_patches_only_changed_keys()
     assert "this._compactCardCache || (this._compactCardCache = new WeakMap())" in view
     assert "vis.push(this.compactCard(p.parentCard, p));" in view
     assert "vis.push(Object.assign({}, p.parentCard" not in view
-    assert "const TASK_RETRY_DELAYS = [800, 2400];" in view
+    assert "export const TASK_RETRY_DELAYS = [800, 2400];" in model
     assert "this.load({ quiet: true, retryAttempt: attempt });" in view
     assert "streamHadOtherFailure && !streamHadAuthFailure" in view
     assert "성공한 티켓은 그대로 두고 실패분만 다시 받습니다." in view
@@ -324,10 +330,11 @@ def test_mytasks_quiet_refresh_keeps_visible_dom_and_patches_only_changed_keys()
 def test_mytasks_defaults_to_my_module_and_reloads_identity_after_auth():
     """선택 이력이 없으면 내 모듈을 쓰고, prod 최초 인증 실패 뒤에도 모듈 목록을 복구한다."""
     view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
+    model = (STATIC / "components" / "mytasks" / "taskModel.js").read_text(encoding="utf-8")
 
-    assert "export function resolveDefaultModule(selected, explicit, mine, all)" in view
-    assert 'const next = mineList.find((module) => !allList.length || known.has(module)) || "";' in view
-    assert 'if (explicit && (!current || !allList.length || known.has(current)))' in view
+    assert "export function resolveDefaultModule(selected, explicit, mine, all)" in model
+    assert 'const next = mineList.find((module) => !allList.length || known.has(module)) || "";' in model
+    assert 'if (explicit && (!current || !allList.length || known.has(current)))' in model
     assert "moduleSelExplicit: false" in view
     assert "this.moduleSel = resolved.selected;" in view
     assert "this.moduleSelExplicit = resolved.explicit;" in view
