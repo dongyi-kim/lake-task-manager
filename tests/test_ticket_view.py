@@ -9,6 +9,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.infra.cache import Cache            # noqa: E402
 from app.jira.jira_client import JiraClient, _build_ticket_view   # noqa: E402
+from app.jira.media_service import JiraMediaMixin                  # noqa: E402
 from app.infra.settings import get_settings   # noqa: E402
 from app.mock.world import get_world         # noqa: E402
 
@@ -105,6 +106,13 @@ def test_builder_distinguishes_plain_ticket_key_autolink_from_explicit_jira_link
 # ── mock 통합: jira820 renderedFields 로 리치 요소가 실제 렌더 + 정화 ──
 def _client():
     return JiraClient(get_settings(), Cache(":memory:"))
+
+
+def test_jira_client_preserves_media_service_facade_contract():
+    """분리 뒤에도 기존 JiraClient 호출부가 같은 공개 메서드를 사용한다."""
+    assert issubclass(JiraClient, JiraMediaMixin)
+    for name in ("user_avatar", "conf_title_by_id", "link_title", "favicon", "fetch_media"):
+        assert getattr(JiraClient, name) is getattr(JiraMediaMixin, name)
 
 
 def _key_of_type(t):

@@ -5,7 +5,6 @@ JiraClient — AuthProvider 를 주입받아 REST 호출 (어떤 인증인지 �
 Phase A 범위: Epic 자식 SP 롤업. (기능2·3 의 검색/활동은 후속 Phase 에서 확장)
 """
 
-import base64
 import hashlib
 import re
 import sys
@@ -14,14 +13,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from html import escape, unescape
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import unquote, urlparse
 
 from app.domain import progress
 from app.auth.base import (SessionExpired, UpstreamUnavailable,
                            background_upstream, write_upstream)
 from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
-                       flatten_task_lists, lift_mentions_html, mark_explicit_jira_links, proxy_attachment_images,
-                       proxy_attachment_links, proxy_images, sanitize_html,
+                       flatten_task_lists, lift_mentions_html, mark_explicit_jira_links, sanitize_html,
                        shorten_mention_names, text_to_html, tidy_html, unproxy_media)
 from app.domain.names import real_name
 from app.content.sections import split_sections
@@ -29,6 +27,7 @@ from app.jira.jql import (JqlUnsupported, compile_jql, fields_with_order,
                           sort_issues)
 from app.jira.cache_policy import (JqlCachePolicy, MutationEvent,
                                    changed_predicate_fields)
+from app.jira.media_service import JiraMediaMixin, _is_default_avatar_url
 
 
 # 실 Jira DC statusCategory.key → 내부 vocab (new=todo, indeterminate=inprogress, done=done)
@@ -38,8 +37,6 @@ _BROWSE_KEY_RE = re.compile(r"/browse/([A-Z][A-Z0-9]+-\d+)")
 _ANCHOR_RE = re.compile(r'<a\s[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.S | re.I)
 # Confluence URL 에서 문서 제목 — /pages/{id}/{slug} 또는 /display/{space}/{slug}
 _CONF_TITLE_RE = re.compile(r"/pages/\d+/([^/?#]+)|/display/[^/]+/([^/?#]+)")
-#: Confluence 페이지 id — 옛 링크(`/pages/viewpage.action?pageId=…`)엔 제목이 없고 이것만 있다.
-_CONF_PAGEID_RE = re.compile(r"[?&]pageId=(\d+)|/pages/(\d+)(?:[/?#]|$)")
 _LEAKED_COLOR_RE = re.compile(
     r"\{color:(#[0-9a-f]{6})\}(.*?)\{color\}", re.I | re.S)
 
@@ -480,20 +477,7 @@ def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None, epic_name_f
     }
 
 
-def _is_default_avatar_url(url):
-    """Jira 시스템 **기본 아바타**(프로필 사진 없음) URL 인가.
-    Jira DC 는 커스텀 아바타 URL 에만 `ownerId` 를 담는다 — 없으면 기본 실루엣으로 보고
-    None 처리해 프론트가 시그니처(이름 이니셜)로 폴백하게 한다. (useravatar 형태에만 적용 —
-    외부/그라바타 등 다른 URL 은 건드리지 않는다.)"""
-    low = (url or "").lower()
-    if not low:
-        return True
-    if "useravatar" in low and "ownerid=" not in low:
-        return True
-    return False
-
-
-class JiraClient:
+class JiraClient(JiraMediaMixin):
     JQL_CACHE_VERSION = 2
     JQL_SNAPSHOT_TTL = 30 * 60
     # Epic 제목/상태는 일반 티켓 본문보다 훨씬 덜 바뀌고 Task·Workload·WBS 전역에서 반복된다.
@@ -4447,238 +4431,6 @@ class JiraClient:
                     mention=_is_mention_link(r), rel=r.get("rel") or "")
             return out[:limit]
         return self._swr(f"documents:{self.env}:{key}", build)
-
-    # ── 사용자 프로필 이미지 ──
-    # 아바타는 사실상 불변이라 URL 해석을 아주 길게 캐시(AVATAR_TTL). 바이트도 캐시한다 —
-    # 브라우저 HTTP Cache-Control 이 콜드일 때(새 브라우저 창 = 문서화된 멀티브라우저 시나리오)
-    # 로스터가 매번 아바타를 상류에서 다시 끌었다(prod SSO 는 직렬화된 왕복). 작은 이미지만
-    # 담고(<=128KB) purge 가 죽은 것을 지워 SQLite 크기는 안정적이다.
-    AVATAR_TTL = 30 * 24 * 3600      # 30일
-    AVATAR_BYTES_MAX = 128 * 1024    # 이보다 크면 캐시 안 함(아바타는 보통 수 KB)
-
-    def _avatar_url(self, user):
-        """사용자 아바타 URL(큰 것 우선). 없거나 조회 실패면 None. 성공/실패 모두 길게 캐시하지 않도록
-        실패는 캐시하지 않는다(세션 만료 등 일시 실패가 30일 굳는 것 방지)."""
-        ck = f"avatar_url:{self.env}:{user}"
-        hit = self.cache.get(ck)
-        if hit is not None:
-            return hit or None
-        try:
-            u = self.provider.get_json("/rest/api/2/user", params={"username": user})
-        except Exception:
-            return None                                   # 실패는 캐시 안 함 → 다음에 재시도
-        urls = ((u or {}).get("avatarUrls") or {})
-        url = next((urls[s] for s in ("48x48", "32x32", "24x24", "16x16") if urls.get(s)), None)
-        # Jira 는 **프로필 사진이 없어도** avatarUrls 를 준다(시스템 기본 실루엣). 그걸 그대로 200 으로
-        # 돌려주면 프론트의 시그니처(이름 이니셜) 폴백이 영영 안 뜬다 → prod 에서 실제로 그랬다.
-        # 커스텀 아바타 URL 은 useravatar 에 **ownerId** 를 담는다. 없으면 시스템 기본으로 보고 None.
-        if _is_default_avatar_url(url):
-            url = None
-        self.cache.set(ck, url or "", self.AVATAR_TTL)    # 없음("")도 캐시 — 매번 재조회 방지
-        return url
-
-    def user_avatar(self, user):
-        """(bytes, content_type). 아바타가 없거나 못 가져오면 (None, None) → 프론트가 기본 아이콘으로."""
-        url = self._avatar_url(user)
-        if not url:
-            return (None, None)
-        bk = f"avatar_bytes:{self.env}:{user}"
-        cached = self.cache.get(bk)
-        if isinstance(cached, dict) and cached.get("b64"):
-            try:
-                return (base64.b64decode(cached["b64"]), cached.get("ct") or None)
-            except Exception:
-                pass                                       # 손상된 항목은 무시하고 다시 받는다
-        try:
-            if url.startswith("http://") or url.startswith("https://"):
-                data, ctype = self.fetch_media(url)        # 절대 URL 은 허용 호스트만
-            else:
-                data, ctype = self.provider.get_bytes(url) # 상대 경로 = Jira 자기 호스트
-        except Exception:
-            return (None, None)
-        if data and len(data) <= self.AVATAR_BYTES_MAX:
-            self.cache.set(bk, {"b64": base64.b64encode(data).decode("ascii"),
-                                "ct": ctype or ""}, self.AVATAR_TTL)
-        return (data, ctype)
-
-    # ── 이미지/첨부 프록시 (prod: 인증 세션으로 받아 same-origin 반환) ──
-    def _media_allowed_host(self, host):
-        """이미지 프록시 허용 호스트 판별 — jira base 호스트·동일 상위도메인·config image_hosts."""
-        host = (host or "").split("@")[-1].split(":")[0].lower()
-        if not host:
-            return False
-        jh = urlparse(self.s.jira_base).netloc.split(":")[0].lower()
-        if host == jh:
-            return True
-        if host in [h.lower() for h in getattr(self.s, "image_hosts", [])]:
-            return True
-        parent = ".".join(jh.split(".")[-2:]) if jh.count(".") >= 1 else jh
-        return host == parent or host.endswith("." + parent)
-
-    LINK_TITLE_TTL = 7 * 24 * 3600         # 페이지 제목도 자주 안 바뀐다
-
-    CONF_TITLE_TTL = 24 * 3600        # 문서 제목은 거의 안 바뀐다
-
-    def conf_title_by_id(self, url):
-        """Confluence 페이지 **id 로 진짜 제목**을 받아 온다(없으면 None).
-
-        옛 링크(`/pages/viewpage.action?pageId=123`)에는 제목이 URL 어디에도 없어서, 슬러그만
-        보면 영영 'page' 로 남는다. 페이지를 통째로 받아 og:title 을 훑는 것보다 이 조회가
-        싸고 정확하다 — 실패하면 호출부가 og:title 로 물러선다.
-        """
-        base = (self.s.confluence_base or "").rstrip("/")
-        if not base:
-            return None
-        m = _CONF_PAGEID_RE.search(url or "")
-        pid = (m.group(1) or m.group(2)) if m else None
-        if not pid:
-            return None
-
-        def do():
-            d = self._conf_get_json(f"{base}/rest/api/content/{pid}")   # 401 이면 Confluence 세션 자가갱신
-            return ((d or {}).get("title") or "").strip()
-
-        try:
-            return self.cache.get_or_set(f"conftitle:{self.env}:{pid}",
-                                         self.CONF_TITLE_TTL, do)[0] or None
-        except Exception:
-            return None
-
-    def link_title(self, u):
-        """웹 URL 의 표시 제목 — og:title 우선, 없으면 <title>. 실패 시 None. 캐시.
-        붙여넣기로 만든 링크 뱃지의 라벨(URL 대신 사람이 읽는 제목)로 쓴다."""
-        from html import unescape
-        from urllib.parse import urlsplit
-        try:
-            p = urlsplit(u or "")
-        except Exception:
-            return None
-        if p.scheme not in ("http", "https") or not p.netloc:
-            return None
-        bases = [b for b in (self.s.jira_base, self.s.confluence_base,
-                             getattr(self.s, "bitbucket_base", "")) if b]
-        origin = f"{p.scheme}://{p.netloc}"
-        internal = any(origin.rstrip("/") == b.rstrip("/") for b in bases)
-
-        def do():
-            html = ""
-            try:
-                if internal:                       # 사내 서비스는 인증 세션으로
-                    data, _ct = self.provider.get_bytes(u)
-                    html = (data or b"")[:200000].decode("utf-8", "replace")
-                else:
-                    import requests
-                    r = requests.get(u, timeout=6, headers={"User-Agent": "LakeTaskManager"})
-                    if r.status_code != 200:
-                        return {}
-                    html = r.text[:200000]
-            except Exception:
-                return {}
-            m = (re.search(r'<meta[^>]+property=["\']og:title["\'][^>]*content=["\']([^"\']+)', html, re.I)
-                 or re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]*property=["\']og:title["\']', html, re.I)
-                 or re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S))
-            if not m:
-                return {}
-            t = re.sub(r"\s+", " ", unescape(m.group(1))).strip()[:120]
-            return {"t": t} if t else {}
-
-        got = self.cache.get_or_set(f"linktitle:{u}", self.LINK_TITLE_TTL, do)[0] or {}
-        return got.get("t") or None
-
-    FAVICON_TTL = 7 * 24 * 3600            # favicon 은 거의 안 바뀐다 — 길게 캐시
-
-    def favicon(self, u):
-        """웹 URL origin 의 favicon — (bytes, content_type). 못 가져오면 (None, None).
-        사내 서비스(jira/confluence/bitbucket)는 인증 provider 로, 그 외 공개 사이트는 직접 GET.
-        링크 뱃지 아이콘용. 결과(base64)를 캐시해 매번 외부 요청하지 않는다."""
-        import base64
-        from urllib.parse import urlsplit
-        try:
-            p = urlsplit(u or "")
-        except Exception:
-            return (None, None)
-        if p.scheme not in ("http", "https") or not p.netloc:
-            return (None, None)
-        origin = f"{p.scheme}://{p.netloc}"
-        bases = [b for b in (self.s.jira_base, self.s.confluence_base,
-                             getattr(self.s, "bitbucket_base", "")) if b]
-        internal = any(origin.rstrip("/") == b.rstrip("/") for b in bases)
-
-        def do():
-            for path in ("/favicon.ico", "/favicon.png"):
-                try:
-                    if internal:
-                        data, ct = self.provider.get_bytes(origin + path)
-                    else:
-                        import requests
-                        r = requests.get(origin + path, timeout=5,
-                                         headers={"User-Agent": "LakeTaskManager"})
-                        if r.status_code != 200:
-                            continue
-                        data, ct = r.content, r.headers.get("Content-Type")
-                    if data:
-                        return {"d": base64.b64encode(data).decode(),
-                                "ct": (ct or "image/x-icon").split(";")[0].strip()}
-                except Exception:
-                    continue
-            return {}
-
-        got = self.cache.get_or_set(f"favicon:{origin}", self.FAVICON_TTL, do)[0] or {}
-        if not got.get("d"):
-            return (None, None)
-        try:
-            return (base64.b64decode(got["d"]), got.get("ct") or "image/x-icon")
-        except Exception:
-            return (None, None)
-
-    def _media_url(self, u, download=False):
-        """첨부 URL — **항상 프록시**를 거친다.
-
-        전엔 dev 에서 Jira 주소를 그대로 줬는데, 그러면 앱 창(SSO 세션을 가진 Chromium)에서만
-        열리고 사용자가 평소 쓰는 브라우저에서는 인증이 없어 실패한다. 세 환경이 같은 경로를
-        타야 "여기선 되는데 저기선 안 된다" 가 없다.
-
-        download=True 는 파일용(/api/file) — 원래 이름으로 저장되도록 헤더가 다르다.
-        """
-        if not u:
-            return None
-        base = (self.s.jira_base or "").rstrip("/")
-        target = u if not u.startswith("/") else (base + u if self.env == "prod" else u)
-        return ("/api/file?u=" if download else "/api/img?u=") + quote(target, safe="")
-
-    def _proxy_media(self, html):
-        """<img src> 를 /api/img 프록시로 재작성 — **세 환경 공통**.
-        첨부 이미지는 Jira 상대경로(/secure/attachment/…)라 그대로 두면 앱 오리진에서 404 다
-        (mock 은 jira820 이 in-process, local 은 :8080 — 어느 쪽도 앱이 그 경로를 서빙하지 않는다).
-        프록시는 provider 로 받아 same-origin 으로 돌려주므로 mock/local/prod 가 같은 경로를 탄다.
-        prod 만 절대 URL 로 바꿔 호스트 검증(SSRF 방지)을 태우고, dev 는 상대경로 그대로
-        넘겨 provider 가 base 를 붙이게 한다."""
-        if not html:
-            return html
-        if self.env != "prod":
-            out = proxy_attachment_images(html)
-        else:
-            out = proxy_images(html, self.s.jira_base, self._media_allowed_host)
-        # 첨부 **링크**도 같은 이유로 재작성한다 — 이미지만 프록시하고 링크를 빼 두면
-        # 본문의 파일을 눌렀을 때 앱 오리진에서 404 가 난다.
-        return proxy_attachment_links(out, self.s.jira_base)
-
-    def fetch_media(self, u):
-        """이미지 URL(u) 을 인증 provider 로 받아 (bytes, content_type) 반환. 허용 안 되면 (None, None)."""
-        if not u:
-            return None, None
-        if u.startswith("/"):
-            target = u                         # jira 상대경로 → provider 가 base+path
-        elif u.startswith(("http://", "https://")):
-            if not self._media_allowed_host(urlparse(u).netloc):
-                return None, None              # SSRF 방지 — 허용 호스트만
-            target = u
-        else:
-            return None, None
-        try:
-            return self.provider.get_bytes(target)
-        except Exception:
-            return None, None
 
     def _get_issue_view(self, key, fresh=False):
         """상세 뷰용 단일 티켓 원본 — renderedFields(HTML) 포함 요청. `issueview:{env}:{key}` 캐시.
