@@ -17,8 +17,14 @@ function stored(key) {
 
 function clean(user) {
   if (!user || !user.id) return null;
-  return { id: String(user.id), name: user.name || user.displayName || String(user.id),
-           display: user.display || user.displayName || user.name || String(user.id), avatar: user.avatar || "" };
+  const id = String(user.id);
+  const display = user.display || user.displayName || user.name || id;
+  // Jira 원본 객체는 name=username과 displayName을 함께 준다. 그 shape가 local choice로
+  // 들어와도 username을 사람 이름으로 채택하지 않는다.
+  const rawName = user.name || "";
+  const name = rawName && String(rawName).toLocaleLowerCase() !== id.toLocaleLowerCase()
+    ? rawName : (user.displayName || user.display || rawName || id);
+  return { id, name, display, avatar: user.avatar || "" };
 }
 
 /** 여러 출처의 사용자를 앞 출처 우선으로 합친다. */
@@ -37,6 +43,10 @@ export function mergeUserSuggestions(...groups) {
     const current = out[at];
     const currentIsShort = !current.display || current.display === current.name || current.display === current.id;
     if (user.display && user.display !== user.name && currentIsShort) current.display = user.display;
+    const currentNameIsId = !current.name || current.name.toLocaleLowerCase() === current.id.toLocaleLowerCase();
+    if (user.name && user.name.toLocaleLowerCase() !== user.id.toLocaleLowerCase() && currentNameIsId) {
+      current.name = user.name;
+    }
     if (!current.avatar && user.avatar) current.avatar = user.avatar;
   }
   return out;

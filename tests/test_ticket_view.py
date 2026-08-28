@@ -52,6 +52,29 @@ def test_builder_falls_back_to_plaintext_when_no_rendered():
     assert "<b>" not in v["descriptionHtml"]
 
 
+def test_ticket_view_hydrates_partial_assignee_and_reporter_names(monkeypatch):
+    """상세 응답에 username만 있어도 담당자·보고자 FieldEdit 트리거에는 본명을 표시한다."""
+    client = _client()
+    raw = {"key": "DL-1", "fields": {
+        "summary": "s", "description": "",
+        "issuetype": {"name": "Task"},
+        "status": {"name": "Open", "statusCategory": {"key": "new"}},
+        "assignee": {"name": "jira.assignee"},
+        "reporter": {"name": "jira.reporter"},
+    }}
+    names = {"jira.assignee": "김담당 SKCC", "jira.reporter": "이보고 SKCC"}
+    monkeypatch.setattr(client, "_get_issue_view", lambda key, fresh=False: raw)
+    monkeypatch.setattr(client, "_display_name", lambda uid: names[uid])
+
+    view = client.ticket_view("DL-1")
+    assert view["assignee"] == "김담당"
+    assert view["reporter"] == "이보고"
+    assert view["assigneeDisplay"] == "김담당 SKCC"
+    assert view["reporterDisplay"] == "이보고 SKCC"
+    assert view["assigneeId"] == "jira.assignee"
+    assert view["reporterId"] == "jira.reporter"
+
+
 def test_builder_reuses_loaded_epic_name_without_another_request():
     raw = {"key": "DL-9000", "fields": {
         "summary": "UI 회귀 테스트 Epic", "customfield_10003": "UI Fixture",

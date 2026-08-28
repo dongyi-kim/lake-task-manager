@@ -78,6 +78,67 @@ def test_mention_rank_preserves_ticket_and_recent_context_order(monkeypatch):
     assert rank("reporter") < rank("recent.mention") < rank("module.person") < rank("similar.name")
 
 
+def test_ticket_user_default_retries_unresolved_display_name_without_rebuilding_membership(monkeypatch):
+    """부분 사용자 응답/일시 실패로 얻은 username은 mentionctx 캐시에 표시명으로 굳지 않는다."""
+    from types import SimpleNamespace
+
+    class PartialPeopleClient:
+        env = "display-test"
+        OPTIONS_TTL = 300
+
+        def __init__(self):
+            self.cache = Cache(":memory:")
+            self.provider = self
+            self.name_calls = 0
+            self.issue_calls = 0
+
+        def get_issue(self, key):
+            self.issue_calls += 1
+            return {"fields": {"reporter": {"name": "jira.user"}, "description": ""}}
+
+        def get_json(self, path, params=None):
+            assert path.endswith("/comment")
+            return {"comments": []}
+
+        def _display_name(self, uid):
+            self.name_calls += 1
+            return uid if self.name_calls == 1 else "홍길동 SKCC"
+
+    client = PartialPeopleClient()
+    monkeypatch.setattr(search, "_my_module_people", lambda _client, _settings: [])
+    settings = SimpleNamespace(managers=[])
+
+    first = search.mention_suggestions(client, settings, "", "DL-1")
+    second = search.mention_suggestions(client, settings, "", "DL-1")
+
+    assert first[0]["display"] == "jira.user"       # 첫 조회 실패는 그 응답에만 폴백
+    assert second[0]["display"] == "홍길동 SKCC"   # membership cache hit에서도 이름은 재해석
+    assert second[0]["name"] == "홍길동"
+    assert client.issue_calls == 1                   # 비싼 티켓 관련자 수집은 캐시 재사용
+    assert client.name_calls == 2
+
+
+def test_user_search_hydrates_partial_jira_user_objects():
+    """Jira user/search가 username만 돌려줘도 기존 사용자 캐시로 사람이 읽는 이름을 표시한다."""
+    from types import SimpleNamespace
+
+    class PartialSearchClient:
+        def __init__(self):
+            self.provider = self
+
+        def get_json(self, path, params=None):
+            assert path == "/rest/api/2/user/search"
+            return [{"name": "jira.user"}]
+
+        def _display_name(self, uid):
+            assert uid == "jira.user"
+            return "홍길동 SKCC"
+
+    rows = search.search_users(PartialSearchClient(), SimpleNamespace(), "홍길동")
+    assert rows == [{"id": "jira.user", "name": "홍길동", "display": "홍길동 SKCC",
+                     "avatar": "/api/avatar/jira.user"}]
+
+
 def test_endpoint_ok():
     from fastapi.testclient import TestClient
 
