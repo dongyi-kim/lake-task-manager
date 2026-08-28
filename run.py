@@ -25,6 +25,18 @@ import uvicorn
 
 from app.infra.process_identity import reexec_with_process_name
 from app.infra.settings import APP_ROOT, get_settings
+from app.launcher.hotkey import parse_hotkey as _parse_hotkey
+from app.launcher.instance import (
+    port_is_listening as _port_is_listening,
+    signal_existing_instance as _signal_existing_instance,
+    wait_port_free as _wait_port_free,
+)
+from app.launcher.shortcuts import (
+    autostart_enabled as _autostart_enabled,
+    ensure_start_menu_shortcut as _ensure_start_menu_shortcut,
+    launcher_bat as _launcher_bat,
+    set_autostart as _set_autostart,
+)
 
 
 # 창을 열자마자(서버 준비 전에도) 즉시 보여줄 부팅 로더 — 외부 자원 없는 self-contained data URL.
@@ -69,132 +81,6 @@ def _serve_bg(s, wait=True):
                 pass
         time.sleep(0.1)
     return server
-
-
-def _wait_port_free(port, timeout=12):
-    """포트가 빌 때까지(=직전 인스턴스가 완전히 종료) 잠깐 기다린다. 업데이트 후 재기동 전용."""
-    import socket
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        sk = socket.socket()
-        sk.settimeout(0.4)
-        try:
-            rc = sk.connect_ex(("127.0.0.1", int(port)))
-        except Exception:
-            rc = 1
-        finally:
-            sk.close()
-        if rc != 0:
-            return True          # 연결 실패 = 리스너 없음 = 포트 비었음
-        time.sleep(0.3)
-    return False
-
-
-def _port_is_listening(port):
-    """고정 포트에 TCP listener가 있는지 확인."""
-    import socket
-
-    with socket.socket() as sk:
-        sk.settimeout(0.4)
-        try:
-            return sk.connect_ex(("127.0.0.1", int(port))) == 0
-        except Exception:
-            return False
-
-
-def _ltm_health(base):
-    """base가 임의 HTTP 서버가 아니라 LTM인지 health 계약으로 식별."""
-    import json
-    import urllib.request
-
-    try:
-        body = json.loads(urllib.request.urlopen(base + "/api/health", timeout=1.5).read() or b"{}")
-    except Exception:
-        return None
-    if body.get("status") != "ok" or body.get("env") not in {"mock", "local", "prod"}:
-        return None
-    if "projectKey" not in body or "rev" not in body:
-        return None
-    return body
-
-
-def _disk_rev():
-    """디스크의 현재 앱 코드 버전(릴리즈 태그 우선) — run.bat 이 방금 맞춰 둔 값.
-    못 읽으면 "" (그럼 강제 재시작 판정을 안 한다 = 안전측).
-
-    ★ 아래 _running_rev 와 **문자열로 비교**되므로, 떠 있는 인스턴스(/api/app/rev)와
-      반드시 같은 함수로 구해야 한다. 한쪽만 태그·한쪽만 SHA 면 늘 다르다고 나와
-      무한 재시작이 된다."""
-    from app.infra.version import code_rev
-    return code_rev()
-
-
-def _running_rev(base):
-    """떠 있는 인스턴스가 **기동 시점에 박아둔** 코드 커밋. 못 읽으면 ""."""
-    import json
-    import urllib.request
-    try:
-        body = urllib.request.urlopen(base + "/api/app/rev", timeout=2).read()
-        return ((json.loads(body) or {}).get("rev") or "").strip()
-    except Exception:
-        return ""
-
-
-def _quit_existing(base, port):
-    """떠 있는 (옛) 인스턴스를 **조용히 종료**시키고 포트가 풀릴 때까지 기다린다.
-    트레이 [종료]와 같은 경로(깨끗한 exit 0)라 그 인스턴스의 run.bat 콘솔도 프롬프트 없이 닫힌다
-    (Ctrl+C 종료가 아니라 정상 종료 → '일괄 작업을 끝내시겠습니까' 안 뜬다).
-    종료가 시작돼 포트가 풀리면 True, 스스로 못 끄면(트레이 모드 아님 등) False."""
-    import json
-    import urllib.request
-    try:
-        req = urllib.request.Request(base + "/api/app/quit", data=b"", method="POST")
-        body = urllib.request.urlopen(req, timeout=8).read()
-        action = (json.loads(body or b"{}") or {}).get("action")
-    except Exception:
-        action = None
-    if action != "quit":
-        return False                       # 옛 인스턴스가 스스로 못 끈다 → 강제하지 않음(폴백)
-    return _wait_port_free(port)            # 포트가 풀리면 True
-
-
-def _signal_existing_instance(s):
-    """**단일 인스턴스** — 이미 떠 있는 인스턴스가 있으면:
-      · 그게 **옛 버전**(디스크 rev ≠ 실행 rev)이면 → 조용히 종료시키고 **False**(내가 최신으로 이어받음)
-      · 최신이면 → 창 포커스/열기 시키고 **True**(내가 안 뜸)
-    아무도 없으면(연결 실패) False → 이 프로세스가 정상 기동한다.
-    """
-    import json
-    import urllib.request
-
-    port = s.app_port
-    base = f"http://127.0.0.1:{port}"
-    if not _ltm_health(base):
-        return False
-
-    # 떠 있는 게 옛 버전이면(run.bat 이 방금 최신으로 당겼는데 실행 중인 건 옛 코드) 자동 재시작.
-    disk, running = _disk_rev(), _running_rev(base)
-    if disk and running and disk != running:
-        print(f"실행 중인 앱이 옛 버전입니다(실행 {running} ≠ 최신 {disk}) — 종료 후 최신으로 다시 시작합니다.")
-        if _quit_existing(base, port):
-            return False                              # 옛 인스턴스 종료됨 → 내가 최신으로 기동(수동 확인 불필요)
-        print("(옛 인스턴스를 자동 종료할 수 없어 기존 창을 사용합니다.)")   # 폴백
-    # 최신(또는 rev 미확정/폴백) — 기존 동작: 창 포커스/열기
-    action = None
-    try:
-        req = urllib.request.Request(base + "/api/app/open", data=b"", method="POST")
-        body = urllib.request.urlopen(req, timeout=8).read()
-        if body:
-            action = (json.loads(body) or {}).get("action")
-    except Exception:
-        pass
-    if action == "focus":
-        print("Lake Task Manager 가 이미 실행 중입니다 — 기존 창을 앞으로 가져왔습니다.")
-    elif action == "open":
-        print("Lake Task Manager 백엔드가 실행 중입니다 — 새 앱 창을 엽니다.")
-    else:
-        print(f"Lake Task Manager 가 이미 실행 중입니다: {base}")
-    return True
 
 
 def _warm_session_bg(s):
@@ -889,31 +775,6 @@ def _summon_to_current(open_hook):
     _open_on_current(open_hook, fg, work, mon)       # 창이 아예 없을 때만 새로 연다
 
 
-def _parse_hotkey(spec):
-    """'ctrl+alt+space' / 'ctrl+shift+j' / 'alt+f2' 같은 조합 문자열 → (modifiers, vk, label). 실패 시 None.
-    수식키 ctrl/alt/shift/win 중 하나 이상 + 키(a~z, 0~9, space, F1~F24) 하나."""
-    if not spec:
-        return None
-    MODS = {"ctrl": 0x2, "control": 0x2, "alt": 0x1, "shift": 0x4, "win": 0x8, "super": 0x8, "cmd": 0x8}
-    mods, vk, labels = 0, None, []
-    for pt in [x for x in spec.strip().lower().replace(" ", "").split("+") if x]:
-        if pt in MODS:
-            mods |= MODS[pt]
-            labels.append({"control": "Ctrl", "ctrl": "Ctrl", "alt": "Alt", "shift": "Shift",
-                           "win": "Win", "super": "Win", "cmd": "Win"}[pt])
-        elif pt == "space":
-            vk, _ = 0x20, labels.append("Space")
-        elif len(pt) == 1 and ("a" <= pt <= "z" or "0" <= pt <= "9"):
-            vk, _ = ord(pt.upper()), labels.append(pt.upper())
-        elif pt.startswith("f") and pt[1:].isdigit() and 1 <= int(pt[1:]) <= 24:
-            vk, _ = 0x70 + int(pt[1:]) - 1, labels.append("F" + pt[1:])
-        else:
-            return None
-    if vk is None or mods == 0:
-        return None
-    return mods, vk, "+".join(labels)
-
-
 # 핫키 스레드 상태 — set_hotkey_live 가 여기에 새 조합을 넣고 스레드를 깨워 재등록시킨다.
 _HK = {"tid": 0, "want": None}
 _HK_WM_APP = 0x8000     # 스레드에 '재등록' 을 알리는 사용자 메시지
@@ -1171,84 +1032,6 @@ def _run_app_window(s):
     _window_session(s, auto_login=True, on_ready=_hide_console_win)   # 창 뜨면 run.bat 콘솔 숨김
     try:
         server.should_exit = True
-    except Exception:
-        pass
-
-
-# ── 시작 메뉴 / 자동시작 바로가기 (Windows) ─────────────────────────────────
-# 시작 메뉴 .lnk 를 만들어 두면 '시작'에서 검색해 실행할 수 있다(요구사항). 자동시작은
-# 시작프로그램 폴더의 .lnk 존재로 on/off (트레이 메뉴 토글). .lnk 생성은 PowerShell WScript.Shell.
-_SHORTCUT_NAME = "Lake Task Manager.lnk"
-
-
-def _launcher_bat():
-    """배포 repo 의 run.bat (업데이트+venv+run.py 를 다 하는 런처)."""
-    from app.infra.settings import APP_ROOT
-    return APP_ROOT / "run.bat"
-
-
-def _start_menu_dir():
-    return Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
-
-
-def _startup_dir():
-    return _start_menu_dir() / "Startup"
-
-
-def _make_shortcut(lnk_path, target, icon):
-    """PowerShell 로 .lnk 생성(최소화 실행). best-effort."""
-    if not sys.platform.startswith("win"):
-        return False
-    try:
-        lnk_path.parent.mkdir(parents=True, exist_ok=True)
-        ps = (
-            "$w=New-Object -ComObject WScript.Shell;"
-            f"$s=$w.CreateShortcut('{lnk_path}');"
-            f"$s.TargetPath='{target}';"
-            f"$s.WorkingDirectory='{target.parent}';"
-            f"$s.WindowStyle=7;"                        # 7 = 최소화(콘솔 안 튀게)
-            + (f"$s.IconLocation='{icon}';" if icon else "")
-            + "$s.Save()"
-        )
-        import subprocess
-        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                       capture_output=True, timeout=15)
-        return lnk_path.exists()
-    except Exception:
-        return False
-
-
-def _icon_path():
-    from app.infra.settings import STATIC_DIR
-    ico = STATIC_DIR / "favicon.ico"
-    return str(ico) if ico.exists() else ""
-
-
-def _ensure_start_menu_shortcut():
-    """시작 메뉴에 바로가기가 없으면 만든다(검색 가능하게). 이미 있으면 no-op."""
-    try:
-        lnk = _start_menu_dir() / _SHORTCUT_NAME
-        if not lnk.exists() and _launcher_bat().exists():
-            _make_shortcut(lnk, _launcher_bat(), _icon_path())
-    except Exception:
-        pass
-
-
-def _autostart_enabled():
-    try:
-        return (_startup_dir() / _SHORTCUT_NAME).exists()
-    except Exception:
-        return False
-
-
-def _set_autostart(enable):
-    """자동시작(부팅 시 실행) on/off — 시작프로그램 폴더의 .lnk 생성/삭제."""
-    try:
-        lnk = _startup_dir() / _SHORTCUT_NAME
-        if enable:
-            _make_shortcut(lnk, _launcher_bat(), _icon_path())
-        elif lnk.exists():
-            lnk.unlink()
     except Exception:
         pass
 
