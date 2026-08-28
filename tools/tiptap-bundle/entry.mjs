@@ -3,14 +3,13 @@
 import { Editor, Extension, Node, textblockTypeInputRule, InputRule } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import Mention from "@tiptap/extension-mention";
-import { Table, TableRow, TableCell, TableHeader } from "@tiptap/extension-table";
+import { TableKit } from "@tiptap/extension-table";
 import Image from "@tiptap/extension-image";
 import Placeholder from "@tiptap/extension-placeholder";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import Suggestion from "@tiptap/suggestion";
 import TextAlign from "@tiptap/extension-text-align";
-import { TextStyle } from "@tiptap/extension-text-style";
-import FontFamily from "@tiptap/extension-font-family";
+import { TextStyleKit } from "@tiptap/extension-text-style";
 import TaskList from "@tiptap/extension-task-list";
 import TaskItem from "@tiptap/extension-task-item";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
@@ -24,7 +23,7 @@ const languages = lowlight.listLanguages();
 
 export {
   version, Editor, Extension, Node, textblockTypeInputRule, InputRule, StarterKit, Mention,
-  Table, TableRow, TableCell, TableHeader, Image, Placeholder, Plugin, PluginKey,
-  CodeBlockLowlight, Suggestion, TextAlign, TextStyle, FontFamily, findWrapping,
+  TableKit, Image, Placeholder, Plugin, PluginKey,
+  CodeBlockLowlight, Suggestion, TextAlign, TextStyleKit, findWrapping,
   TaskList, TaskItem, lowlight, languages, hljs,
 };
