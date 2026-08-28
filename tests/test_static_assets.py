@@ -722,7 +722,10 @@ def test_comment_editor_runs_on_one_tiptap_v3_runtime():
     assert bundle.is_file() and bundle.stat().st_size < 1024 * 1024
     assert not (STATIC / "vendor" / "esm").exists()
     assert 'import("/vendor/tiptap.bundle.mjs")' in loader
-    assert "Table, TableRow, TableCell, TableHeader" in entry and "{ TextStyle }" in entry
+    assert "{ TableKit }" in entry and "{ TextStyleKit }" in entry
+    assert "@tiptap/extension-font-family" not in package["dependencies"]
+    assert "fontColorExt" not in editor
+    assert "T.TableKit.configure" in editor and "T.TextStyleKit" in editor
     assert 'T.StarterKit.configure({ codeBlock: false, link: false })' in editor
     assert 'commands.setContent(html, { emitUpdate: false })' in editor
 
