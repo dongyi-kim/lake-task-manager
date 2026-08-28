@@ -16,6 +16,7 @@
 ```powershell
 python -B -m pytest tests/frontend/ticket_dialog -q
 python -B -m pytest tests/jira/workload -q
+python -B -m pytest tests/agent/core/work_architect -q
 python -B -m pytest tests/agent/contracts/test_agent_work_final_contract.py -q
 ```
 

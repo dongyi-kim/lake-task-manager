@@ -4666,31 +4666,6 @@ def test_removed_deployment_dod_uses_deliverable_specific_evidence():
     assert "테스트 리포트" not in body and "배포" not in body
 
 
-def test_relative_due_is_computed_by_code_not_the_model():
-    """상대 날짜("다음주 수요일")는 코드가 계산한다 — 모델 산술이 요일을 틀렸다(실측:
-    같은 질문에 수요일과 일요일을 번갈아 냈다). 과거로 떨어지면 다가오는 그 요일로."""
-    from datetime import date, timedelta
-    from app.agent.workflow.agents.work_architect import _relative_due
-    d = date.fromisoformat(_relative_due("마감 다음주 수요일로 미루고"))
-    assert d.weekday() == 2 and d > date.today()
-    f = date.fromisoformat(_relative_due("이번 주 금요일까지"))
-    assert f.weekday() == 4 and f >= date.today()
-    assert _relative_due("그냥 미뤄줘") == ""
-    assert _relative_due("내일까지") == (date.today() + timedelta(days=1)).isoformat()
-
-
-def test_this_week_due_is_the_current_or_next_workweek_friday():
-    from datetime import date, timedelta
-    from app.agent.workflow.agents.work_architect import _relative_due
-
-    today = date.today()
-    friday = today - timedelta(days=today.weekday()) + timedelta(days=4)
-    if friday < today:
-        friday += timedelta(days=7)
-    assert _relative_due("이번 주까지. 알아서") == friday.isoformat()
-    assert _relative_due("금주까지 처리") == friday.isoformat()
-
-
 def test_question_turn_never_claims_a_parentless_subtask_can_be_created():
     from app.agent.workflow.agents.result_integrator import ResultIntegrator
 
@@ -4776,53 +4751,6 @@ def test_explicit_due_overrides_model_date_and_removes_contradictory_reasoning()
     assert "사용자 지정 마감일 2026-09-30 그대로 적용." in draft["rationale"]
 
 
-def test_explicit_due_accepts_one_repeated_valid_date_across_request_and_followup():
-    from app.agent.workflow.agents.work_architect import _authoritative_explicit_due
-
-    state = _msg(
-        "기한은 2026-09-30으로 확정해",
-        request_text="파이프라인 1차 구현을 2026-09-30까지 완료하는 Task로 만들어줘",
-        turn_continuation=True,
-    )
-
-    assert _authoritative_explicit_due(state) == "2026-09-30"
-
-
-def test_explicit_due_ignores_an_unrelated_history_date_in_the_same_request():
-    from app.agent.workflow.agents.work_architect import _authoritative_explicit_due
-
-    state = _msg(
-        "2026-08-15 장애 후속 NDV Task를 만들어줘. 마감은 2026-09-30으로 해",
-        request_text=(
-            "2026-08-15 장애 후속 NDV Task를 만들어줘. "
-            "마감은 2026-09-30으로 해"
-        ),
-    )
-
-    assert _authoritative_explicit_due(state) == "2026-09-30"
-
-
-def test_explicit_due_does_not_choose_between_distinct_or_invalid_dates():
-    from app.agent.workflow.agents.work_architect import (
-        _apply_relative_due_to_single_draft, _authoritative_explicit_due,
-    )
-
-    ambiguous = _msg(
-        "마감은 2026-09-30 또는 기한은 2026-10-07 중 하나야",
-        request_text="파이프라인 Task를 만들어줘",
-        turn_continuation=True,
-    )
-    invalid = _msg(
-        "마감은 2026-02-30으로 해", request_text="파이프라인 Task를 만들어줘",
-        turn_continuation=True,
-    )
-    for state in (ambiguous, invalid):
-        items = [{"summary": "파이프라인 구현", "duedate": "2099-01-01"}]
-        assert _authoritative_explicit_due(state) == ""
-        assert _apply_relative_due_to_single_draft(state, items) == ""
-        assert items[0]["duedate"] == ""
-
-
 @pytest.mark.parametrize("latest", [
     "마감은 2026-02-30으로 해",
     "마감은 2026-09-30 또는 2026-10-07 중 하나로 해",
@@ -4881,107 +4809,6 @@ def test_explicit_due_clear_removes_model_date_without_an_interview():
 
     assert result["draft"]["items"][0]["duedate"] == ""
     assert not any(question.get("field") == "duedate" for question in result["questions"])
-
-
-def test_explicit_due_ignores_dates_from_stale_topic_messages():
-    from langchain_core.messages import AIMessage, HumanMessage
-    from app.agent.workflow.agents.work_architect import _authoritative_explicit_due
-
-    state = {
-        "request_text": "새 NDV 파이프라인 Task를 만들어줘. 알아서",
-        "turn_continuation": False,
-        "messages": [
-            HumanMessage(content="이전 CDC Task 마감은 2026-08-31로 해줘"),
-            AIMessage(content="CDC Task 초안을 정리했습니다."),
-            HumanMessage(content="새 NDV 파이프라인 Task를 만들어줘. 알아서"),
-        ],
-    }
-
-    assert _authoritative_explicit_due(state) == ""
-
-
-def test_explicit_due_uses_only_frozen_request_and_current_continuation():
-    from langchain_core.messages import AIMessage, HumanMessage
-    from app.agent.workflow.agents.work_architect import _authoritative_explicit_due
-
-    state = {
-        "request_text": "NDV 파이프라인 Task를 2026-09-30까지 만들어줘",
-        "turn_continuation": True,
-        "messages": [
-            HumanMessage(content="이전 CDC Task 마감은 2026-08-31로 해줘"),
-            AIMessage(content="CDC Task 초안을 정리했습니다."),
-            HumanMessage(content="NDV 파이프라인 Task를 2026-09-30까지 만들어줘"),
-            AIMessage(content="기한을 2026-09-30으로 확정할까요?"),
-            HumanMessage(content="2026-09-30"),
-        ],
-    }
-
-    assert _authoritative_explicit_due(state) == "2026-09-30"
-
-
-def test_current_followup_due_supersedes_frozen_original_due():
-    from langchain_core.messages import AIMessage, HumanMessage
-    from app.agent.workflow.agents.work_architect import _authoritative_explicit_due
-
-    state = {
-        "request_text": "NDV 파이프라인 Task를 2026-09-30까지 만들어줘",
-        "turn_continuation": True,
-        "messages": [
-            HumanMessage(content="NDV 파이프라인 Task를 2026-09-30까지 만들어줘"),
-            AIMessage(content="초안을 만들었습니다."),
-            HumanMessage(content="마감은 2026-10-07로 바꿔줘"),
-        ],
-    }
-
-    assert _authoritative_explicit_due(state) == "2026-10-07"
-
-
-def test_title_only_third_turn_preserves_latest_typed_draft_due_not_frozen_due():
-    from langchain_core.messages import AIMessage, HumanMessage
-    from app.agent.workflow.agents.work_architect import (
-        _apply_relative_due_to_single_draft, _authoritative_explicit_due,
-    )
-
-    state = {
-        "request_text": "NDV 파이프라인 Task를 2026-09-30까지 만들어줘",
-        "turn_continuation": True,
-        "draft": {"items": [{
-            "summary": "[ETL] NDV 파이프라인 구현", "type": "Task",
-            "duedate": "2026-10-07",
-        }]},
-        "messages": [
-            HumanMessage(content="NDV 파이프라인 Task를 2026-09-30까지 만들어줘"),
-            AIMessage(content="마감 2026-09-30 초안을 만들었습니다."),
-            HumanMessage(content="마감은 2026-10-07로 바꿔줘"),
-            AIMessage(content="마감을 2026-10-07로 수정했습니다."),
-            HumanMessage(content="제목만 [ETL] NDV 파이프라인 적재 구현으로 바꿔줘"),
-        ],
-    }
-    projected = [{
-        "summary": "[ETL] NDV 파이프라인 적재 구현", "type": "Task",
-        "duedate": "2026-09-30",
-    }]
-
-    assert _authoritative_explicit_due(state) == "2026-10-07"
-    assert _apply_relative_due_to_single_draft(state, projected) == "2026-10-07"
-    assert projected[0]["duedate"] == "2026-10-07"
-
-
-def test_duration_timebox_becomes_a_deterministic_due_date():
-    from datetime import date, timedelta
-    from app.agent.workflow.agents.work_architect import _relative_due
-    assert _relative_due("기간은 2주 정도") == (date.today() + timedelta(days=14)).isoformat()
-
-
-def test_relative_due_does_not_guess_across_multiple_creation_items():
-    """복수 항목의 기한 배분은 사용자 의미 판단 — 하나의 상대 표현을 전부 덮어쓰지 않는다."""
-    from app.agent.workflow.agents.work_architect import _apply_relative_due_to_single_draft
-    items = [{"summary": "[Catalog] A", "type": "Task", "duedate": "2099-01-01"},
-             {"summary": "[Runtime] B", "type": "Task", "duedate": "2099-01-02"}]
-    applied = _apply_relative_due_to_single_draft(
-        _msg("이번 주 금요일까지 A와 B를 각각 만들어줘"), items)
-    assert applied == ""
-    assert [i["duedate"] for i in items] == ["2099-01-01", "2099-01-02"]
 
 
 def test_global_exact_due_is_applied_to_every_creation_root():
