@@ -289,14 +289,15 @@ export default {
     /** 에디터가 서버를 기다리지 않고 먼저 보여 줄 티켓 관련자. 최근 댓글/멘션 순서를 보존한다. */
     mentionUsers() {
       const out = [], seen = new Set();
-      const add = (id, name) => {
+      const add = (id, name, display) => {
         id = String(id || "").trim();
         if (!id || seen.has(id)) return;
-        seen.add(id); out.push({ id, name: name || id, display: name || id, avatar: "/api/avatar/" + encodeURIComponent(id) });
+        seen.add(id); out.push({ id, name: name || id, display: display || name || id,
+                                avatar: "/api/avatar/" + encodeURIComponent(id) });
       };
       if (this.v) {
-        add(this.v.reporterId, this.v.reporter);
-        add(this.v.assigneeId, this.v.assignee);
+        add(this.v.reporterId, this.v.reporter, this.v.reporterDisplay);
+        add(this.v.assigneeId, this.v.assignee, this.v.assigneeDisplay);
       }
       for (const comment of this.sortedComments) {
         add(comment.authorId, comment.author);
