@@ -15,7 +15,6 @@ from datetime import date, timedelta
 from html import escape, unescape
 from urllib.parse import unquote, urlparse
 
-from app.domain import progress
 from app.auth.base import (SessionExpired, UpstreamUnavailable,
                            background_upstream, write_upstream)
 from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
@@ -29,6 +28,7 @@ from app.jira.cache_policy import (JqlCachePolicy, MutationEvent,
                                    changed_predicate_fields)
 from app.jira.identity_service import JiraIdentityMixin
 from app.jira.media_service import JiraMediaMixin, _is_default_avatar_url
+from app.jira.workload_service import JiraWorkloadMixin, workload_category
 
 
 # 실 Jira DC statusCategory.key → 내부 vocab (new=todo, indeterminate=inprogress, done=done)
@@ -157,15 +157,7 @@ from app.domain.progress import VOC_COMPONENT, norm_cat   # VoC 판정 기준 + 
 _norm_cat = norm_cat                             # 하위 호출부 호환용 별칭
 
 
-def _wl_category(component, itype, is_subtask=None):
-    """워크로드 카테고리 — VoC성 / Sub-Task / Task. is_subtask=issuetype.subtask(로케일 무관)."""
-    if component == VOC_COMPONENT:
-        return "voc"
-    if is_subtask if is_subtask is not None else (itype == "Sub-Task"):
-        return "subtask"
-    if itype == "Task":
-        return "task"
-    return None
+_wl_category = workload_category                 # 하위 호출부 호환용 별칭
 
 
 def _started_from(created, updated, cat):
@@ -478,7 +470,7 @@ def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None, epic_name_f
     }
 
 
-class JiraClient(JiraIdentityMixin, JiraMediaMixin):
+class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     JQL_CACHE_VERSION = 2
     JQL_SNAPSHOT_TTL = 30 * 60
     # Epic 제목/상태는 일반 티켓 본문보다 훨씬 덜 바뀌고 Task·Workload·WBS 전역에서 반복된다.
@@ -4342,313 +4334,6 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin):
         if not isinstance(data, dict) or "fields" not in data:
             return None       # 존재하지 않는 티켓(404 에러 바디)
         return data
-
-    def epic_progress_one(self, key):
-        """단일 Epic 진척률 {doneSp,totalSp,mockSp,progressPct,name}."""
-        pr = progress.epic_progress(self.epic_issues(key))
-        pr["name"] = self.epic_name(key)
-        return pr
-
-    # ── 기능3: 인력 워크로드 / 활동 ──
-    def workload(self, plan, people):
-        return self._fetch_workload(plan, people)
-
-    @staticmethod
-    def _wl_zero():
-        return {"count": {"task": 0, "subtask": 0, "voc": 0},
-                "hr": {"task": 0, "subtask": 0, "voc": 0}, "epics": {}}
-
-    def _wl_effective_epics(self, issues):
-        """워크로드 이슈별 실질 Epic.
-
-        Jira 의 SubTask 는 Epic Link 를 직접 갖지 않고 ``parent`` 만 가진다. 따라서 직접
-        Epic Link 가 없는 SubTask 는 상위 Task 의 Epic Link 를 상속한다. 부모는 한 번에
-        prefetch 해 prod SSO 의 직렬 왕복을 늘리지 않는다.
-        """
-        issues = list(issues or [])
-        enf = self.s.epic_link_field_id
-        out, parent_by_issue = {}, {}
-        for it in issues:
-            key = it.get("key")
-            if not key:
-                continue
-            f = it.get("fields", {}) or {}
-            direct = (f.get(enf) if enf else None) or None
-            out[key] = direct
-            itt = f.get("issuetype") or {}
-            parent_key = (f.get("parent") or {}).get("key")
-            if not direct and itt.get("subtask") and parent_key:
-                parent_by_issue[key] = parent_key
-
-        parent_keys = sorted(set(parent_by_issue.values()))
-        if parent_keys:
-            self.prefetch_issues(parent_keys, light=True)
-            parent_epics = {}
-            for parent_key in parent_keys:
-                pf = (self.get_issue_light(parent_key) or {}).get("fields") or {}
-                parent_epics[parent_key] = (pf.get(enf) if enf else None) or None
-            for key, parent_key in parent_by_issue.items():
-                out[key] = parent_epics.get(parent_key)
-        return out
-
-    def _wl_counts(self, jql):
-        # count(티켓수) · hr(소요시간, 표준 timespent 초→시). 카테고리 3분할: task/subtask/voc.
-        # epics: **소속 Epic 별** 분포(막대 색구분 '소속 Epic' 모드용). 키=Epic키 / '__voc__' / '__none__'.
-        #   규칙은 상세 화면(epicDist)과 동일: Epic 이 있으면 그 Epic, 없고 VoC 면 전용버킷, 그 외 Epic 없음.
-        # 주의: 여기서 예외를 삼키면 '조회 실패'가 0 으로 둔갑하고 그게 캐시된다(막대만 0, 상세는 정상).
-        #       → 실패는 그대로 올려보내고 workload_person 이 캐시 없이 error 로 처리한다.
-        by = {"count": {"task": 0, "subtask": 0, "voc": 0},
-              "hr": {"task": 0, "subtask": 0, "voc": 0}, "epics": {}}
-        issues = self._search(jql, max_results=300)   # write-through: 각 티켓 캐시
-        effective_epics = self._wl_effective_epics(issues)
-        for it in issues:
-            f = it.get("fields", {}) or {}
-            comps = [c.get("name") for c in (f.get("components") or [])]
-            comp = VOC_COMPONENT if VOC_COMPONENT in comps else (comps[0] if comps else "")
-            itt = f.get("issuetype") or {}
-            c = _wl_category(comp, itt.get("name", ""), itt.get("subtask"))
-            if not c:
-                continue
-            hr = round((f.get("timespent") or 0) / 3600.0, 1)
-            by["count"][c] += 1
-            by["hr"][c] += hr
-            # Epic 분포 — 상세(epicDist)와 같은 그룹 규칙
-            ek = effective_epics.get(it.get("key"))
-            gk = ek if ek else ("__voc__" if VOC_COMPONENT in comps else "__none__")
-            g = by["epics"].setdefault(gk, {"count": 0, "hr": 0})
-            g["count"] += 1
-            g["hr"] += hr
-        return by
-
-    def workload_person(self, pid, done_days=None):
-        """**인력 1명**의 워크로드 번들 — `workload:{env}:{pid}` 캐시. (사람 by 사람 비동기 로딩용.)
-        displayName 은 카운트 번들과 분리해 매번 재해석(카운트가 캐시돼도 username 이 안 굳게).
-        done_days 는 '최근 완료' 기간(7·14·28) — 캐시 키에 넣어야 기간별 결과가 안 섞인다."""
-        done_days = self.wl_done_days(done_days)
-        key = f'workload:{self.env}:{pid}:{done_days}'
-        bundle = self.cache.get(key)
-        if bundle is None:
-            try:
-                bundle = {
-                    "id": pid,
-                    # 미완료 할당 = 미착수(To Do) + 진행 중(In Progress). 완료는 최근 7일만.
-                    # 미착수는 최근 14일내 update 된 것만(할당 후 잊혀진 오래된 티켓=데이터오염 제외).
-                    "open": self._wl_counts(f'assignee = "{pid}" AND statusCategory = "To Do" AND updated >= -14d'),
-                    "inProgress": self._wl_counts(f'assignee = "{pid}" AND statusCategory = "In Progress"'),
-                    "done7d": self._wl_counts(f'assignee = "{pid}" AND ' + self.wl_done_jql(done_days)),
-                }
-                # '소속 Epic' 색구분 범례용 — 막대에 나온 Epic 키를 이름으로(배치 1회).
-                ekeys = sorted({k for b in ("open", "inProgress", "done7d")
-                                for k in bundle[b]["epics"].keys() if not k.startswith("__")})
-                bundle["epicNames"] = self._epic_name_map(ekeys)
-                self.cache.set(key, bundle, self.s.cache_ttl_seconds)   # 성공한 결과만 캐시
-            except SessionExpired:
-                raise            # 세션 만료/로그인 필요 → 라우트가 401 needLogin 으로 (0 으로 위장 금지)
-            except Exception:
-                # 조회 실패 — 0 을 캐시하지 않는다(다음 로드에서 재시도). UI 는 '조회 실패'로 표시.
-                bundle = {"id": pid, "error": True,
-                          "open": self._wl_zero(), "inProgress": self._wl_zero(), "done7d": self._wl_zero()}
-        return dict(bundle, displayName=self._display_name(pid))
-
-    def _fetch_workload(self, plan, people):
-        """인력별 Task성/VoC성 × 진행중/최근7일완료 티켓 수. (전체 한 방 — /api/workload 용)
-        모듈 목록은 people.yaml(모듈→인력) 이 소스 — plan(wbs) 이 아니다."""
-        modules = list(people.keys())
-        pids = [pid for module in modules for pid in people.get(module, [])]
-        by_pid = {b["id"]: b for b in self._pmap(pids, self.workload_person)}   # 인력 단위 병렬
-        return {module: [by_pid[pid] for pid in people.get(module, []) if pid in by_pid]
-                for module in modules}
-
-    def _wl_ticket(self, it, epic=None):
-        """워크로드 상세용 티켓 투영: 번호·제목·타입·상태·마감·완료일시."""
-        f = it.get("fields", {}) or {}
-        st = f.get("status") or {}
-        itt = f.get("issuetype") or {}
-        # sub-task 는 로케일별 이름이 달라도 뱃지/색이 맞게 "Sub-Task" 로 정규화(issuetype.subtask 기준).
-        tname = "Sub-Task" if itt.get("subtask") else itt.get("name", "")
-        comps = [c.get("name") for c in (f.get("components") or []) if c.get("name")]
-        return {
-            "key": it.get("key", ""),
-            "summary": f.get("summary", ""),
-            "type": tname,
-            "status": st.get("name", ""),
-            "statusCategory": _norm_cat((st.get("statusCategory") or {}).get("key")),
-            "due": f.get("duedate") or None,
-            "resolved": f.get("resolutiondate") or None,
-            # 우선순위 — 하위 목록의 첫 칸. 이름과 등급을 함께 준다(그림은 등급, 툴팁은 이름).
-            "priority": (f.get("priority") or {}).get("name") or None,
-            "priRank": _pri_rank((f.get("priority") or {}).get("name")),
-            # Epic 분포용. epic 이 있으면 그 Epic 소속이고(= VoC 라도 Epic 이 있으면 그쪽으로 센다),
-            # 없고 VoC 컴포넌트면 '사용자 VoC' 를 전용 Epic 처럼 따로 센다.
-            "epic": epic or f.get(self.s.epic_link_field_id) or None,
-            "voc": self.s.voc_component in comps,
-            "components": comps,
-        }
-
-    # 버킷별 JQL — 세 리스트를 각각 따로 부를 수 있게 분리(프론트에서 병렬 로딩·개별 렌더).
-    # 최근 완료로 볼 수 있는 기간(일). 화면에서 고른다 — 주 단위로 일하는 팀이 많아 1·2·4주.
-    WL_DONE_DAYS = (7, 14, 28)
-    WL_DONE_DEFAULT = 7
-
-    @staticmethod
-    def wl_done_days(days):
-        """허용된 값만 — 임의 숫자를 그대로 JQL 에 넣지 않는다."""
-        try:
-            d = int(days)
-        except Exception:
-            return JiraClient.WL_DONE_DEFAULT
-        return d if d in JiraClient.WL_DONE_DAYS else JiraClient.WL_DONE_DEFAULT
-
-    @staticmethod
-    def wl_done_jql(days):
-        """최근 완료 — **resolved 만 보면 안 된다.**
-
-        Resolved 를 거치는 사람의 티켓엔 resolutiondate 가 찍히지만, Closed 로 바로 가거나
-        resolution 없이 완료 상태로 넘어가면 **비어 있다**. 그걸 기준으로만 세면 그런 워크플로를
-        쓰는 사람의 완료가 통째로 빠진다 — '일부 사람만 완료가 누락' 으로 나타났다(리포트된 버그).
-        완료 판정은 statusCategory 로 하고(프로젝트 원칙), 시점은 resolved 가 있으면 그것을,
-        없으면 updated 를 쓴다. 완료 상태인 티켓의 마지막 변경은 대개 그 전이다."""
-        d = JiraClient.wl_done_days(days)
-        return ('statusCategory = Done AND (resolved >= -%dd '
-                'OR (resolved IS EMPTY AND updated >= -%dd))' % (d, d))
-
-    WL_BUCKETS = {
-        "open":       'assignee = "{u}" AND statusCategory = "To Do" AND updated >= -14d',
-        "inProgress": 'assignee = "{u}" AND statusCategory = "In Progress"',
-        # done7d 는 기간이 화면에서 바뀌므로 여기 고정하지 않는다 — workload_bucket 이 만든다.
-    }
-
-    def workload_bucket(self, user, bucket, days=None):
-        """인력 상세의 **한 버킷만** (open|inProgress|done7d). 버킷 단위 캐시.
-        done7d 의 기간은 화면에서 고른다(7·14·28일) — 캐시 키에도 넣어야 섞이지 않는다."""
-        d = self.wl_done_days(days)
-        if bucket == "done7d":
-            jql = 'assignee = "{u}" AND ' + self.wl_done_jql(d)
-        else:
-            jql = self.WL_BUCKETS.get(bucket)
-        if not jql:
-            return None
-        def do():
-            raws = self._search(jql.format(u=user), max_results=200)
-            effective_epics = self._wl_effective_epics(raws)
-            out = [self._wl_ticket(it, effective_epics.get(it.get("key")))
-                   for it in raws if self._wl_keep(it)]
-            self._attach_epic_names(out)
-            return out
-        suffix = f":{d}" if bucket == "done7d" else ""
-        return self.cache.get_or_set(f"workload_bucket:{self.env}:{user}:{bucket}{suffix}",
-                                     self.s.cache_ttl_seconds, do)[0]
-
-    @staticmethod
-    def epic_label(badge, key):
-        """에픽 뱃지 라벨 — **Epic Name(단축어) → Summary → 티켓 키** 순. (전 화면 공통 규칙)
-        badge 는 ticket_badge() 결과(dict|None). 셋 다 없으면 키를 마지막 폴백으로 준다."""
-        b = badge or {}
-        return b.get("epicName") or b.get("summary") or key
-
-    def _epic_name_map(self, keys):
-        """Epic 키들 → {키: 라벨(Epic Name→Summary→키)}. 배치 조회로 왕복 1회(prod SSO 직렬이라 중요)."""
-        keys = sorted({k for k in (keys or []) if k})
-        if not keys:
-            return {}
-        try:
-            self.prefetch_issues(keys, light=True)     # Epic 제목(뱃지)만 필요 → 경량
-        except Exception:
-            pass
-        names = {}
-        for k in keys:
-            try:
-                b = self.ticket_badge(k)
-            except Exception:
-                b = None
-            names[k] = self.epic_label(b, k)
-        return names
-
-    def _attach_epic_names(self, tickets):
-        """Epic 키 → 제목. 분포 막대의 범례에 키가 아니라 이름이 떠야 읽힌다."""
-        names = self._epic_name_map([t.get("epic") for t in tickets if t.get("epic")])
-        for t in tickets:
-            if t.get("epic"):
-                t["epicName"] = names.get(t["epic"], t["epic"])
-
-    def _wl_keep(self, it):
-        """카운트와 동일 필터: Task성/VoC성만 (Epic·Story·Bug 제외)."""
-        f = it.get("fields", {}) or {}
-        comps = [c.get("name") for c in (f.get("components") or [])]
-        comp = VOC_COMPONENT if VOC_COMPONENT in comps else (comps[0] if comps else "")
-        itt = f.get("issuetype") or {}
-        return _wl_category(comp, itt.get("name", ""), itt.get("subtask")) is not None
-
-    def workload_tickets(self, user, days=None):
-        """인력 상세: 진행중 / 최근 완료 **티켓 리스트** (카운트 화면의 [+] 확장용).
-        버킷 캐시를 재사용하므로 개별 호출과 결과가 동일하다."""
-        return {"user": user,
-                "open": self.workload_bucket(user, "open"),
-                "inProgress": self.workload_bucket(user, "inProgress"),
-                "done7d": self.workload_bucket(user, "done7d", days)}
-
-    def activity(self, user):
-        key = f"activity:{self.env}:{user}"
-        data, _ = self.cache.get_or_set(key, self.s.cache_ttl_seconds, lambda: self._fetch_activity(user))
-        return data
-
-    def _fetch_activity(self, user):
-        """최근 Jira(/activity ATOM 파싱) + Confluence(CQL) 활동."""
-        return {"user": user, "jira": self._parse_activity(user),
-                "confluence": self._fetch_confluence(user)}
-
-    def _parse_activity(self, user, limit=20):
-        """실 Jira Activity Streams ATOM 파싱: category term=kind, alternate link=/browse/KEY,
-        activity:object/summary=요약, updated=일시. (title 은 HTML 이라 요약원이 아님 — object/summary 사용)"""
-        import re as _re
-        import xml.etree.ElementTree as ET
-        A = "{http://www.w3.org/2005/Atom}"          # Atom
-        V = "{http://activitystrea.ms/spec/1.0/}"    # activity
-        out = []
-        try:
-            xml = self.provider.get_text("/activity",
-                                         params={"maxResults": limit, "streams": f"user IS {user}"})
-            root = ET.fromstring(xml)
-            for e in root.findall(f"{A}entry"):
-                cat = e.find(f"{A}category")
-                kind = cat.get("term") if cat is not None else ""
-                key = ""
-                for ln in e.findall(f"{A}link"):
-                    if ln.get("rel") == "alternate":
-                        m = _re.search(r"/browse/([A-Z][A-Z0-9]+-\d+)", ln.get("href") or "")
-                        if m:
-                            key = m.group(1)
-                obj = e.find(f"{V}object")
-                summary = ""
-                if obj is not None:
-                    summary = (obj.findtext(f"{A}summary") or "").strip()
-                    if not key:                       # 폴백: activity:object/title = KEY
-                        key = (obj.findtext(f"{A}title") or "").strip()
-                if not summary:                       # 폴백: HTML title 태그 제거
-                    t = _re.sub(r"<[^>]+>", "", (e.findtext(f"{A}title") or ""))
-                    summary = t.split(" - ", 1)[1].strip() if " - " in t else t.strip()
-                out.append({
-                    "date": (e.findtext(f"{A}updated") or e.findtext(f"{A}published") or ""),
-                    "kind": kind, "key": key, "summary": summary,
-                })
-        except Exception:
-            pass
-        return out
-
-    def _fetch_confluence(self, user):
-        if not self.s.confluence_base:
-            return []
-        try:
-            # expand 필수: 실 Confluence 는 expand 없으면 version/space 를 안 준다(당시 date/space 누락).
-            data = self.provider.get_json("/rest/api/content/search", params={
-                "cql": f'contributor = "{user}" and lastmodified >= now("-14d")',
-                "expand": "version,space", "limit": 25})
-            return [{"date": ((r.get("version") or {}).get("when") or ""),
-                     "title": r.get("title", ""),
-                     "space": ((r.get("space") or {}).get("key") or "")}
-                    for r in data.get("results", [])]
-        except Exception:
-            return []
 
     def close(self):
         # 종료는 새 provider 를 만들 이유가 없다. 특히 회로차단기 중 ``self.provider`` 접근은

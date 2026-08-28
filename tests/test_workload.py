@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.auth.base import SessionExpired      # noqa: E402
 from app.infra.cache import Cache                   # noqa: E402
 from app.jira.jira_client import JiraClient        # noqa: E402
+from app.jira.workload_service import JiraWorkloadMixin  # noqa: E402
 from app.infra.settings import get_settings, load_people   # noqa: E402
 from app.mock.world import get_world                 # noqa: E402
 
@@ -22,6 +23,12 @@ PEOPLE = {"ETL": ["skcc.x1042"]}
 
 def _client():
     return JiraClient(get_settings(), Cache(":memory:"))
+
+
+def test_jira_client_preserves_workload_service_facade_contract():
+    assert issubclass(JiraClient, JiraWorkloadMixin)
+    for name in ("workload_person", "workload_bucket", "workload_tickets", "activity"):
+        assert getattr(JiraClient, name) is getattr(JiraWorkloadMixin, name)
 
 
 def _total(bundle):
