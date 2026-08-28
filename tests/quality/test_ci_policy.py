@@ -13,6 +13,7 @@ def test_code_test_workflow_runs_full_offline_suite_on_pr_and_main():
     assert "types: [opened, synchronize, reopened, ready_for_review]" in text
     assert "branches: [main]" in text
     assert "JIRA_ENV: mock" in text
+    assert "mkdir -p .cache/test-tmp" in text
     assert "python -m pytest -q --basetemp=.cache/test-tmp/ci" in text
     assert "requirements-test.txt" in text
     assert "actions/checkout@v5" in text

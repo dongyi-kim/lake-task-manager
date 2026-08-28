@@ -6,10 +6,12 @@ from pathlib import Path
 
 TESTS_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_ROOT.parent
+TEST_TEMP_ROOT = REPO_ROOT / ".cache" / "test-tmp"
 sys.dont_write_bytecode = True
 for root in (TESTS_ROOT, REPO_ROOT):
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
+TEST_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 def pytest_sessionfinish(session, exitstatus):
