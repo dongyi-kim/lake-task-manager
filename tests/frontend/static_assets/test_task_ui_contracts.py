@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from frontend.static_assets.support import ROOT, STATIC
+from frontend.static_assets.support import ROOT, STATIC, comment_editor_source
 
 def test_create_dialog_descriptions_do_not_share_comment_drafts():
     """생성창의 본문은 새 댓글 초안 저장소를 쓰면 안 된다.
@@ -23,7 +23,7 @@ def test_create_dialog_descriptions_do_not_share_comment_drafts():
 
 def test_create_dialogs_send_description_with_create_and_surface_save_failures():
     """본문은 최초 생성 payload에도 포함하고 후속 저장 오류를 삼키지 않는다."""
-    editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    editor = comment_editor_source()
     assert "htmlValue()" in editor and "hasPendingUploads()" in editor
     for name in ("EpicCreateDialog.js", "NewChildDialog.js"):
         src = (STATIC / "components" / "ui" / name).read_text(encoding="utf-8")
