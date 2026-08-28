@@ -30,6 +30,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.infra.cache import Cache                    # noqa: E402
 from app.infra.settings import get_settings          # noqa: E402
 from app.jira.jira_client import JiraClient          # noqa: E402
+from app.jira.identity_service import JiraIdentityMixin  # noqa: E402
+
+
+def test_jira_client_preserves_identity_service_facade_contract():
+    assert issubclass(JiraClient, JiraIdentityMixin)
+    for name in (
+        "current_user", "session_alive", "upstream_state", "_display_name", "user_badge",
+    ):
+        assert getattr(JiraClient, name) is getattr(JiraIdentityMixin, name)
 
 
 def _prod_client():

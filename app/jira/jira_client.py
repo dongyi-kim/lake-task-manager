@@ -27,6 +27,7 @@ from app.jira.jql import (JqlUnsupported, compile_jql, fields_with_order,
                           sort_issues)
 from app.jira.cache_policy import (JqlCachePolicy, MutationEvent,
                                    changed_predicate_fields)
+from app.jira.identity_service import JiraIdentityMixin
 from app.jira.media_service import JiraMediaMixin, _is_default_avatar_url
 
 
@@ -477,7 +478,7 @@ def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None, epic_name_f
     }
 
 
-class JiraClient(JiraMediaMixin):
+class JiraClient(JiraIdentityMixin, JiraMediaMixin):
     JQL_CACHE_VERSION = 2
     JQL_SNAPSHOT_TTL = 30 * 60
     # Epic 제목/상태는 일반 티켓 본문보다 훨씬 덜 바뀌고 Task·Workload·WBS 전역에서 반복된다.
@@ -3497,131 +3498,6 @@ class JiraClient(JiraMediaMixin):
 
         return re.sub(r'(<img\b[^>]*\bsrc=")([^"]*)(")', replace, html, flags=re.I)
 
-    def _mention_name(self, uid):
-        """멘션 라벨 — 본명만(본문에 박히는 이름이라 짧아야 한다)."""
-        return real_name(self._display_name(uid)) or uid
-
-    # ── 상류(Jira) 상태 ─────────────────────────────────────────────────
-    # 세션이 죽었는데도 호출마다 붙어 보면, prod 는 실패 판정에만 최대 JOB_TIMEOUT(180초)를
-    # 쓴다. 화면이 그만큼 멎는다. 한 번 실패하면 잠깐 '상류 죽음' 으로 표시해 두고 그동안은
-    # 캐시로 답한다(회로차단기). 성공하면 즉시 해제한다.
-    UPSTREAM_DOWN_FOR = 20        # 초 — 이 동안은 상류에 붙지 않는다
-
-    def upstream_down(self):
-        return time.time() < getattr(self, "_upstream_down_until", 0)
-
-    #: 세션이 죽은 것으로 확인된 뒤, 되살아났는지 다시 볼 간격(초)
-    SESSION_RECHECK_EVERY = 8
-
-    def mark_upstream_down(self, reason=""):
-        self._upstream_down_until = time.time() + self.UPSTREAM_DOWN_FOR
-        self._upstream_reason = reason or "상류 응답 없음"
-
-    def mark_session_dead(self, reason=""):
-        """세션이 **정말** 죽은 것으로 확인됨(/myself 까지 실패). needs_login 이 이걸 본다.
-        회로차단기와 달리 시간이 지나도 저절로 풀리지 않는다 — 성공해야 풀린다."""
-        self._session_dead = True
-        self._session_recheck_at = 0.0
-        self.mark_upstream_down(reason)
-
-    def mark_upstream_ok(self):
-        """상류가 실제로 응답했다 = 세션도 살아 있다. 차단기와 죽음 표시를 함께 해제한다.
-
-        ★ 예전엔 이 함수를 **아무도 부르지 않았다**(주석엔 '성공하면 즉시 해제한다' 라고
-          적혀 있었는데 호출부가 없었다). 그래서 차단기는 20초 타임아웃으로만 풀렸다."""
-        self._upstream_down_until = 0
-        self._upstream_reason = ""
-        self._session_dead = False
-
-    def session_recheck_async(self):
-        """죽은 세션이나 격리된 transport가 되살아났는지 **뒤에서** 한 번씩 확인한다.
-
-        누가 어떤 경로로 로그인했든(앱 창·런처가 띄운 창·다른 인스턴스) 화면이 스스로
-        살아나야 한다. /api/status 는 즉답해야 하므로 여기서 기다리지 않고 스레드로 돌린다
-        (prod 의 실패 판정은 최대 수십 초가 걸린다). transport 차단도 이 경로로 재확인해야
-        상단 상태 polling만 남은 상황에서 자동으로 새 provider가 만들어진다."""
-        needs_recheck = getattr(self, "_session_dead", False) or self.upstream_down()
-        if self.env != "prod" or not needs_recheck:
-            return
-        now = time.time()
-        if now < getattr(self, "_session_recheck_at", 0) or getattr(self, "_session_rechecking", False):
-            return
-        self._session_recheck_at = now + self.SESSION_RECHECK_EVERY
-        self._session_rechecking = True
-
-        def run():
-            try:
-                if self.session_alive():
-                    self.mark_upstream_ok()
-            except Exception:
-                pass
-            finally:
-                self._session_rechecking = False
-
-        threading.Thread(target=run, name="session-recheck", daemon=True).start()
-
-    def upstream_state(self):
-        """화면 상단 알림이 쓸 상태. authed 는 세션 사용자를 읽을 수 있는지로 본다."""
-        return {
-            "down": self.upstream_down(),
-            "reason": getattr(self, "_upstream_reason", ""),
-            "lastSyncAt": self.cache.last_upstream_ok or None,
-            "servedStaleAt": self.cache.served_stale_at or None,
-            "hasCache": self.cache.has_any(),
-        }
-
-    def current_user(self):
-        """세션 사용자 — 본인 댓글(수정/삭제 노출)·매니저 판정용. {id, name}. **성공만** 캐시.
-
-        ★ 실패를 캐시하지 마라. 예전엔 예외를 삼켜 빈 dict 를 돌려줬고, 그 빈 값이 TTL(기본
-          15분) 동안 캐시에 눌러앉았다. 그래서 prod 첫 실행에서 세션이 아직 없을 때 한 번
-          실패하면, 그 뒤 SSO 로그인에 성공해 로그에 '인증됨' 이 찍혀도 앱은 15분 내내
-          "세션 사용자 없음" 으로 봤다 — 매니저 판정이 계속 False 라 매니저 전용 화면이
-          403 이었고, 새로고침해도 풀리지 않는 '인증 오류' 의 정체가 이것이었다.
-          producer 가 예외를 내면 get_or_set 은 저장하지 않으므로, 밖에서 삼킨다.
-        """
-        def do():
-            u = self.provider.get_json("/rest/api/2/myself")
-            return {"id": u.get("name") or u.get("key") or "",
-                    "name": real_name(u.get("displayName") or u.get("name")) or "",
-                    # display = '{본명} {회사}' 원본 — 동명이인 구분이 필요한 화면(담당자 선택 등)용.
-                    # name 은 짧은 본명이라 소속을 알 수 없다.
-                    "display": u.get("displayName") or u.get("name") or "",
-                    # JQL startOf*/relative-date normalization must follow Jira's user context.
-                    "timezone": u.get("timeZone") or "Asia/Seoul"}
-        try:
-            return self.cache.get_or_set(f"myself:{self.env}", self.USER_TTL, do)[0]
-        except UpstreamUnavailable as exc:
-            self.mark_upstream_down(str(exc))
-            return {}
-        except SessionExpired as exc:
-            # 이 호출 자체가 /myself 이므로 여기서의 401/403은 세션 판정의 근거다. 부팅
-            # warm_session도 이 경로를 타므로 health가 상류를 기다리지 않아도 곧 상태가 갱신된다.
-            self.mark_session_dead(str(exc))
-            return {}
-        except Exception:
-            return {}
-
-    def session_alive(self):
-        """세션이 **정말** 살아 있는가 — /myself 를 캐시 없이 직접 물어본다.
-
-        개별 요청의 401 은 세션이 죽어서가 아닐 때가 많다(XSRF 거절, 특정 엔드포인트 권한,
-        상류의 순간 오류). 그걸 세션 만료로 단정하면 로그인 흐름이 돌고 인증 창이 뜬다.
-        여기서 한 번 확인해, /myself 가 되면 세션은 산 것으로 본다.
-        """
-        try:
-            u = self.provider.get_json("/rest/api/2/myself")
-            if not isinstance(u, dict):
-                return False
-            # 익명 응답이거나 이름이 없으면 세션이 아니다. (Jira 는 미인증에 200+익명 객체를
-            # 주기도 한다 — status 코드만 보면 살아 있는 것처럼 보인다.)
-            name = u.get("name") or u.get("key") or ""
-            if not name or "anonymous" in str(name).lower():
-                return False
-            return True
-        except Exception:
-            return False
-
     def ticket_badge(self, key):
         """티켓 인라인 뱃지·호버용 경량 상세. 없으면 None.
 
@@ -4467,55 +4343,6 @@ class JiraClient(JiraMediaMixin):
             return None       # 존재하지 않는 티켓(404 에러 바디)
         return data
 
-    # 사용자 디렉토리(사번→displayName)·세션 정체는 세션 중 사실상 안 바뀐다. 15분은 짧다 —
-    # prod SSO 에선 재조회가 직렬화된 상류 왕복이라 6h 로 늘린다(로그인은 myself: 를 명시 무효화,
-    # dead-TTL 폴백이 오프라인도 커버).
-    USER_TTL = 6 * 3600
-
-    def _display_name(self, pid):
-        """Jira 사용자 displayName('{본명} {회사}').
-
-        **성공만 캐시**(user:{env}:{pid}). 실패하면 로그 남기고 id 폴백하되 **캐시하지 않는다**
-        → 일시적 실패(예: 세션 만료)로 username 이 굳는 문제 방지(다음 호출에 재시도).
-        """
-        ck = f"user:{self.env}:{pid}"
-        hit = self.cache.get(ck)
-        if hit is not None:
-            return hit
-        dn = None
-        try:
-            u = self.provider.get_json("/rest/api/2/user", params={"username": pid})
-            dn = u.get("displayName")
-        except Exception:
-            # 이름 조회 실패는 흔하고(권한·비활성 사용자) 화면엔 id 로 폴백된다 — 로그로 안 남긴다.
-            pass
-        if dn:
-            self.cache.set(ck, dn, self.USER_TTL)
-            return dn
-        return pid
-
-    def user_badge(self, user_id):
-        """사람 멘션 호버용 정확 조회. 이름 검색이 아니라 username으로 한 명만 조회한다."""
-        uid = str(user_id or "").strip()
-        if not uid:
-            return None
-        ck = f"userbadge:{self.env}:{uid.lower()}"
-        hit = self.cache.get(ck)
-        if hit is not None:
-            return hit
-        try:
-            raw = self.provider.get_json("/rest/api/2/user", params={"username": uid}) or {}
-        except Exception:
-            return None
-        actual = raw.get("name") or raw.get("key")
-        if not actual or str(actual).lower() != uid.lower():
-            return None
-        display = raw.get("displayName") or actual
-        result = {"id": actual, "username": actual, "name": real_name(display) or actual,
-                  "displayName": display, "avatar": "/api/avatar/" + actual}
-        self.cache.set(ck, result, self.USER_TTL)
-        return result
-
     def epic_progress_one(self, key):
         """단일 Epic 진척률 {doneSp,totalSp,mockSp,progressPct,name}."""
         pr = progress.epic_progress(self.epic_issues(key))
@@ -4622,11 +4449,6 @@ class JiraClient(JiraMediaMixin):
                 bundle = {"id": pid, "error": True,
                           "open": self._wl_zero(), "inProgress": self._wl_zero(), "done7d": self._wl_zero()}
         return dict(bundle, displayName=self._display_name(pid))
-
-    def display_name_cached(self, uid):
-        """캐시에 있으면 displayName, 없으면 None — **상류에 안 붙는다**(shell 로스터를 빠르게 그리려고).
-        _display_name(성공 시 user:{env}:{pid} 에 캐시)이 채운 값을 읽는다 — 같은 키를 봐야 히트한다."""
-        return self.cache.get(f"user:{self.env}:{uid}")
 
     def _fetch_workload(self, plan, people):
         """인력별 Task성/VoC성 × 진행중/최근7일완료 티켓 수. (전체 한 방 — /api/workload 용)

@@ -6,6 +6,7 @@ REST 를 호출하고, **모든 호출은 캐시(app/infra)를 경유**한다. m
 
 ## 파일
 - **jira_client.py** — `JiraClient`. 이슈 조회·검색·Epic 트리·워크로드·티켓 뷰·쓰기·변경이력·계보를 조립하는 공개 facade.
+- **identity_service.py** — 사용자 display name/멘션 뱃지 캐시와 `/myself` 기반 세션 상태·회로차단기.
 - **media_service.py** — 사용자 아바타, 링크 제목/favicon, 인증 첨부 미디어 프록시와 SSRF 허용 호스트 정책.
 - **cache_policy.py** — JQL 역인덱스와 mutation 기반 선택적 캐시 무효화 정책.
 - **jql.py** — 앱이 사용하는 JQL subset의 AST 파싱·context 해소·DNF leaf 분해·canonical 정렬과
