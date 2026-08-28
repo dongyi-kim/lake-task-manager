@@ -16,3 +16,10 @@ VUE_COMPONENTS = [p for p in ASSETS if p.suffix == ".js" and "components" in p.p
 
 def asset_id(path: Path) -> str:
     return str(path.relative_to(STATIC.parent.parent))
+
+
+def comment_editor_source() -> str:
+    """Return the editor facade plus its feature modules as one contract surface."""
+    paths = [STATIC / "components" / "ui" / "CommentEditor.js"]
+    paths.extend(sorted((STATIC / "components" / "editor").glob("*.js")))
+    return "\n".join(path.read_text(encoding="utf-8") for path in paths)

@@ -7,11 +7,33 @@ from pathlib import Path
 
 import pytest
 
-from frontend.static_assets.support import ROOT, STATIC
+from frontend.static_assets.support import ROOT, STATIC, comment_editor_source
+
+
+def test_comment_editor_facade_delegates_feature_specific_modules():
+    """대형 Vue 옵션 파일이 확장·뱃지·첨부·템플릿 구현을 다시 끌어안지 않는다."""
+    editor_dir = STATIC / "components" / "editor"
+    facade = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+
+    assert len(facade) < 55 * 1024
+    for module in (
+        "commentEditorTemplate.js",
+        "editorExtensions.js",
+        "editorFiles.js",
+        "editorHtml.js",
+        "linkBadges.js",
+    ):
+        assert (editor_dir / module).is_file()
+        assert f'../editor/{module}' in facade
+    assert "createEditorExtensions(T," in facade
+    assert "template: COMMENT_EDITOR_TEMPLATE" in facade
+    assert "function linkBadgeExt" not in facade
+    assert "function imageResizeExt" not in facade
+
 
 def test_comment_submit_waits_for_pending_draft_before_final_delete():
     """제출 성공 뒤 예약된 saveDraft가 완료 글을 되살리는 경쟁 상태를 막는다."""
-    src = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    src = comment_editor_source()
     success = src.index("await this.submitFn(html);")
     cancel = src.index("clearTimeout(this._dt)", success)
     wait = src.index("await this._draftWrite", cancel)
@@ -79,7 +101,7 @@ def test_new_comment_composer_is_docked_outside_ticket_body_in_dialog_and_page()
 def test_new_comment_composer_hides_without_unmounting_and_shows_text_only_preview():
     """가리기는 에디터 상태를 유지하고, 접힌 바에는 이미지·표를 제외한 텍스트만 보여준다."""
     dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
-    editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    editor = comment_editor_source()
     css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
 
     assert 'composeCollapsed: false, composePreview: "", composeHasDraft: false' in dialog
@@ -105,7 +127,7 @@ def test_new_comment_composer_hides_without_unmounting_and_shows_text_only_previ
 
 def test_editor_root_handles_file_drops_missed_by_prosemirror():
     """툴바·여백에 놓은 파일도 티켓 첨부로 새지 않고 본문 삽입 경로를 탄다."""
-    editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    editor = comment_editor_source()
 
     drop = editor[editor.index("onDropFiles(e) {"):editor.index("startResize(e)")]
     assert "e.defaultPrevented" in drop
@@ -124,7 +146,7 @@ def test_agent_wiki_mentions_render_as_person_badges_even_before_name_hydration(
 def test_editor_and_rendered_mentions_share_stable_avatar_badge_ui():
     """멘션은 로딩 상태로 모양이 바뀌지 않고 사진 성공 시에만 @ 폴백을 덮는다."""
     badge = (STATIC / "lib" / "mentionBadge.js").read_text(encoding="utf-8")
-    editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    editor = comment_editor_source()
     dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
     agent = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
     css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
@@ -147,7 +169,7 @@ def test_field_edit_and_mentions_share_user_defaults_and_managed_popup():
     """추천은 한 구현을 쓰고 팝업 수명·위치는 최신 TipTap Suggestion이 관리한다."""
     shared = (STATIC / "lib" / "userSuggestions.js").read_text(encoding="utf-8")
     field = (STATIC / "components" / "ui" / "FieldEdit.js").read_text(encoding="utf-8")
-    editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    editor = comment_editor_source()
     dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
     popup = (STATIC / "lib" / "suggestionPopup.js").read_text(encoding="utf-8")
     api = (STATIC / "lib" / "api.js").read_text(encoding="utf-8")
@@ -187,7 +209,7 @@ def test_field_edit_and_mentions_share_user_defaults_and_managed_popup():
 def test_comment_editor_runs_on_one_tiptap_v3_runtime():
     """에디터는 lock된 v3 패키지를 하나의 로컬 번들로만 로드한다."""
     loader = (STATIC / "lib" / "tiptap.js").read_text(encoding="utf-8")
-    editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    editor = comment_editor_source()
     package = json.loads((ROOT / "tools" / "tiptap-bundle" / "package.json").read_text(encoding="utf-8"))
     lock = json.loads((ROOT / "tools" / "tiptap-bundle" / "package-lock.json").read_text(encoding="utf-8"))
     entry = (ROOT / "tools" / "tiptap-bundle" / "entry.mjs").read_text(encoding="utf-8")

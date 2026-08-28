@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from frontend.static_assets.support import ROOT, STATIC
+from frontend.static_assets.support import ROOT, STATIC, comment_editor_source
 
 def test_agent_ticket_badges_have_compact_and_detail_modes():
     """답변 티켓은 목록·소수 인라인·bullet 상세 세 형식을 사용한다."""
@@ -28,7 +28,7 @@ def test_agent_ticket_badges_have_compact_and_detail_modes():
 def test_plain_ticket_keys_are_short_but_jira_links_are_detailed():
     """단순 티켓 번호 자동링크만 Short이고, URL 붙여넣기·링크 삽입은 Detailed다."""
     dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
-    editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    editor = comment_editor_source()
     css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
     assert 'plainKey ? "jira-badge-list" : "jira-badge-detail"' in dialog
     assert '!a.classList.contains("jira-link-explicit")' in dialog
@@ -120,7 +120,7 @@ def test_agent_ticket_badges_never_nest_inside_inline_code():
 def test_agent_reference_picker_keeps_recent_urls_and_sends_them_to_model():
     """빈 검색의 최근 항목과 검색 결과 모두 실제 주소가 포함된 Agent 입력이 되어야 한다."""
     picker = (STATIC / "components" / "ui" / "LinkPicker.js").read_text(encoding="utf-8")
-    editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    editor = comment_editor_source()
     view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
     api = (STATIC / "lib" / "api.js").read_text(encoding="utf-8")
 
