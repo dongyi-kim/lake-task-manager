@@ -17,19 +17,24 @@ os.environ.setdefault("JIRA_ENV", "mock")
 from app.agent.tools.people_tools import find_person, strip_title      # noqa: E402
 
 
-@pytest.mark.parametrize("raw,want", [
-    ("김동이 M", "김동이"),          # 영문 약칭 — 낱말로 떨어져 있을 때만 뗀다
-    ("윤산성매니저", "윤산성"),
-    ("박지영차장", "박지영"),
-    ("홍길동 TL", "홍길동"),
-    ("이재민파트장님", "이재민"),    # 두 겹으로 붙는다
-    ("이다은님", "이다은"),
-    ("이다은 책임", "이다은"),
-    ("이다은", "이다은"),            # 뗄 것이 없으면 원문
-])
-def test_titles_are_stripped_before_searching(raw, want):
+def test_titles_are_stripped_before_searching():
     """호칭째로 검색하면 못 찾고, 못 찾으면 **있는 사람을 없다고** 답하게 된다."""
-    assert strip_title(raw) == want
+    cases = [
+        ("김동이 M", "김동이"),          # 영문 약칭 — 낱말로 떨어져 있을 때만 뗀다
+        ("윤산성매니저", "윤산성"),
+        ("박지영차장", "박지영"),
+        ("홍길동 TL", "홍길동"),
+        ("이재민파트장님", "이재민"),    # 두 겹으로 붙는다
+        ("이다은님", "이다은"),
+        ("이다은 책임", "이다은"),
+        ("이다은", "이다은"),            # 뗄 것이 없으면 원문
+    ]
+    failures = {}
+    for raw, expected in cases:
+        actual = strip_title(raw)
+        if actual != expected:
+            failures[raw] = {"expected": expected, "actual": actual}
+    assert not failures, failures
 
 
 def test_a_name_too_short_after_stripping_keeps_the_original():

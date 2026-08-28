@@ -3869,39 +3869,42 @@ def test_bare_person_assertion_is_not_suppressed_as_a_common_noun():
     assert got["fake_people"] == ["김철수"] and got["ok"] is False
 
 
-@pytest.mark.parametrize("text", [
-    "담당자는 김철수 입니다.",
-    "담당자: 김철수",
-    "담당자 - 김철수",
-    "| 담당자 | 김철수 |",
-    "김철수가 진행 담당을 맡았습니다.",
-])
-def test_structural_person_grammar_keeps_fabricated_names_enforceable(text):
-    got = grounding.check(text)
+def test_structural_person_grammar_keeps_fabricated_names_enforceable():
+    texts = [
+        "담당자는 김철수 입니다.",
+        "담당자: 김철수",
+        "담당자 - 김철수",
+        "| 담당자 | 김철수 |",
+        "김철수가 진행 담당을 맡았습니다.",
+    ]
+    failures = []
+    for text in texts:
+        result = grounding.check(text)
+        finding = next(
+            (row for row in result["person_findings"] if row["candidate"] == "김철수"),
+            None,
+        )
+        if "김철수" not in result["fake_people"] or not finding or finding["context_kind"] == "common_noun":
+            failures.append(text)
 
-    assert "김철수" in got["fake_people"]
-    finding = next(row for row in got["person_findings"]
-                   if row["candidate"] == "김철수")
-    assert finding["context_kind"] != "common_noun"
-
-
-@pytest.mark.parametrize("text", ["담당 성능", "담당 기능", "담당 일정"])
-def test_bare_responsibility_noun_is_not_parsed_as_a_person(text):
-    got = grounding.check(text)
-
-    assert not got["fake_people"] and got["ok"] is True
+    assert not failures, failures
 
 
-@pytest.mark.parametrize("text", [
-    "기존 담당자는 변경 이력을 확인했습니다.",
-    "내부 Spark writer 버전은 확인 완료 상태입니다.",
-    "지표 정합성 리샘플이 진행 중입니다.",
-    "reader 검증이 진행 중입니다.",
-])
-def test_domain_state_nouns_are_not_parsed_as_people(text):
-    got = grounding.check(text)
+def test_responsibility_and_domain_state_nouns_are_not_parsed_as_people():
+    texts = [
+        "담당 성능", "담당 기능", "담당 일정",
+        "기존 담당자는 변경 이력을 확인했습니다.",
+        "내부 Spark writer 버전은 확인 완료 상태입니다.",
+        "지표 정합성 리샘플이 진행 중입니다.",
+        "reader 검증이 진행 중입니다.",
+    ]
+    failures = []
+    for text in texts:
+        result = grounding.check(text)
+        if result["fake_people"] or result["ok"] is not True:
+            failures.append({"text": text, "fake_people": result["fake_people"]})
 
-    assert not got["fake_people"] and got["ok"] is True
+    assert not failures, failures
 
 
 def test_result_canonicalizes_verified_plain_person_before_warning(monkeypatch):

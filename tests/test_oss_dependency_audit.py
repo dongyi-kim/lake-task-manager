@@ -15,9 +15,8 @@ from tools.oss_dependency_audit import (
 )
 
 
-@pytest.mark.parametrize(
-    ("license_name", "expected"),
-    [
+def test_license_policy_is_conservative() -> None:
+    cases = [
         ("MIT", "permissive"),
         ("Apache-2.0 OR BSD-2-Clause", "permissive"),
         ("BSL-1.0", "permissive"),
@@ -39,10 +38,13 @@ from tools.oss_dependency_audit import (
         ("MIT AND CC-BY-ND-4.0", "manual_or_block"),
         ("UNKNOWN", "manual_or_block"),
         ("PSF-2.0", "manual_review"),
-    ],
-)
-def test_license_policy_is_conservative(license_name: str, expected: str) -> None:
-    assert classify_license(license_name)[0] == expected
+    ]
+    failures = {}
+    for license_name, expected in cases:
+        actual = classify_license(license_name)[0]
+        if actual != expected:
+            failures[license_name] = {"expected": expected, "actual": actual}
+    assert not failures, failures
 
 
 def test_offline_plan_contains_no_vulnerability_client(tmp_path: Path) -> None:
