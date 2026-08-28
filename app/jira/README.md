@@ -5,8 +5,9 @@ REST 를 호출하고, **모든 호출은 캐시(app/infra)를 경유**한다. m
 (provider 만 교체).
 
 ## 파일
-- **jira_client.py** — `JiraClient`. 이슈 조회·검색·Epic 트리·워크로드 카운트·티켓 뷰 조립·쓰기(편집/전이/코멘트/첨부/링크)·
-  아바타·미디어 프록시·Confluence·Bitbucket·변경이력·계보(조상/형제/자식). 캐시 키 네임스페이스·TTL·무효화 규칙의 소유자.
+- **jira_client.py** — `JiraClient`. 이슈 조회·검색·Epic 트리·워크로드·티켓 뷰·쓰기·변경이력·계보를 조립하는 공개 facade.
+- **media_service.py** — 사용자 아바타, 링크 제목/favicon, 인증 첨부 미디어 프록시와 SSRF 허용 호스트 정책.
+- **cache_policy.py** — JQL 역인덱스와 mutation 기반 선택적 캐시 무효화 정책.
 - **jql.py** — 앱이 사용하는 JQL subset의 AST 파싱·context 해소·DNF leaf 분해·canonical 정렬과
   OR 합성 결과의 로컬 정렬. 미지원 문법·함수·정렬은 `jira_client`의 기존 Jira 실행 경로로 폴백한다.
 
@@ -23,4 +24,5 @@ REST 를 호출하고, **모든 호출은 캐시(app/infra)를 경유**한다. m
   첫 exhaustive snapshot을 동치 전체 JQL로 먼저 만들고, 모든 leaf는 background 우선순위로 빠짐없이
   warming한다. projection과 무관한 leaf membership은 탭 간 공유하고, snapshot은 generation별 issue
   row를 공유해 중복 payload와 SQLite commit을 줄인다.
-- 이 파일은 크다(~3천 줄). 향후 mixin 분할 후보지만 지금은 단일 클래스(공유 `self.cache`/`self.provider`).
+- `JiraClient`의 공개 메서드 계약은 유지하면서 결합도가 낮은 기능군부터 mixin 서비스로 분리한다.
+  서비스는 인증 구현을 알지 않고 facade가 제공하는 `self.cache`/`self.provider`만 사용한다.
