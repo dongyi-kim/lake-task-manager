@@ -256,6 +256,10 @@ def _assert_editor_schema(editor, prefix: str, *, expect_blob: bool = False,
         assert editor.locator(selector).count() >= 1, f"editor lost {name}: {prefix}"
     assert editor.get_by_text(f"{prefix}-PLAIN", exact=False).count() == 1
     assert editor.locator("span[data-type='mention'][data-id='test.ui02']").count() == 1
+    table_wrapper = editor.locator(".tableWrapper").first
+    assert table_wrapper.evaluate("el => getComputedStyle(el).overscrollBehaviorY") == "auto"
+    assert editor.evaluate(
+        "el => getComputedStyle(el.closest('.cmt-ed-host')).overscrollBehaviorY") == "auto"
     jira_link = editor.locator("a[href='/browse/DL-9001']")
     assert jira_link.count() == 1
     assert "jira-badge-detail" in (jira_link.get_attribute("class") or "")
@@ -443,6 +447,77 @@ def test_existing_editor_regression_fixtures_render_in_browser(editor_browser):
         for selector in checks:
             page.locator(selector).first.wait_for(state="visible", timeout=15_000)
         assert not errors, f"{key} browser page errors: {errors}"
+
+
+def test_section_kv_table_does_not_trap_dialog_vertical_wheel(editor_browser):
+    """영역 구분에서 생성된 표 위의 세로 휠은 다이얼로그 본문을 계속 스크롤한다."""
+    page, base, errors, _upload_path = editor_browser
+    page.goto(f"{base}/#/mytasks", wait_until="load", timeout=45_000)
+    page.wait_for_function("() => !!window.__lakeUp", timeout=20_000)
+    page.get_by_role("button", name="검색 /").click()
+    search = page.get_by_role("textbox", name="Jira · Confluence · Bitbucket 통합 검색…")
+    search.fill("DL-9018")
+    result = page.locator(".sr-item", has_text="DL-9018").first
+    result.wait_for(state="visible", timeout=20_000)
+    result.click()
+
+    body = page.locator(".tkt-ov .tkt-body")
+    table = page.locator(".tkt-ov .tkt-desc-box .kv-table").first
+    table.wait_for(state="visible")
+    assert table.evaluate("el => getComputedStyle(el).overscrollBehaviorY") == "auto"
+    table.scroll_into_view_if_needed()
+    box = table.bounding_box()
+    assert box is not None
+    before = body.evaluate("el => el.scrollTop")
+
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    page.mouse.wheel(0, 420)
+    page.wait_for_function(
+        "before => document.querySelector('.tkt-body').scrollTop > before",
+        arg=before,
+        timeout=3_000,
+    )
+
+    assert not errors, f"browser page errors: {errors}"
+
+
+def test_editor_table_does_not_trap_ticket_dialog_vertical_wheel(editor_browser):
+    """TipTap 표와 편집창의 끝을 지난 세로 휠은 다이얼로그 본문으로 이어진다."""
+    page, base, errors, _upload_path = editor_browser
+    page.goto(f"{base}/#/mytasks", wait_until="load", timeout=45_000)
+    page.wait_for_function("() => !!window.__lakeUp", timeout=20_000)
+    page.get_by_role("button", name="검색 /").click()
+    search = page.get_by_role("textbox", name="Jira · Confluence · Bitbucket 통합 검색…")
+    search.fill("DL-9017")
+    result = page.locator(".sr-item", has_text="DL-9017").first
+    result.wait_for(state="visible", timeout=20_000)
+    result.click()
+
+    overlay = page.locator(".tkt-ov")
+    overlay.get_by_role("button", name="수정", exact=True).first.click()
+    host = overlay.locator(".cmt-ed-host")
+    wrapper = overlay.locator(".cmt-ed-host .tableWrapper").last
+    wrapper.wait_for(state="visible")
+    assert wrapper.evaluate("el => getComputedStyle(el).overscrollBehaviorY") == "auto"
+    assert host.evaluate("el => getComputedStyle(el).overscrollBehaviorY") == "auto"
+
+    # 편집창을 끝까지 내린 뒤 표 위에서 더 내리면, 표 래퍼와 편집창 두 경계를 지나
+    # 바깥 티켓 본문이 스크롤되어야 한다.
+    host.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+    wrapper.scroll_into_view_if_needed()
+    box = wrapper.bounding_box()
+    assert box is not None
+    body = overlay.locator(".tkt-body")
+    before = body.evaluate("el => el.scrollTop")
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    page.mouse.wheel(0, 420)
+    page.wait_for_function(
+        "before => document.querySelector('.tkt-ov .tkt-body').scrollTop > before",
+        arg=before,
+        timeout=3_000,
+    )
+
+    assert not errors, f"browser page errors: {errors}"
 
 
 def test_comment_composer_uses_compact_scoped_height(editor_browser):
