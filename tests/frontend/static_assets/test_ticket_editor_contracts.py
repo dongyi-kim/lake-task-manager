@@ -88,6 +88,19 @@ def test_rendered_tables_pass_vertical_wheel_to_ticket_dialog_body():
     assert "overscroll-behavior-y: auto" in table
 
 
+def test_editor_tables_pass_vertical_wheel_to_editor_and_ticket_scroll():
+    """TipTap 표와 편집 영역은 가로만 가두고 세로 휠 chaining은 유지한다."""
+    css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
+    host = css[css.index(".cmt-ed-host {"):css.index("/* 임시저장 복원 안내 */")]
+    wrapper = css[css.index(".cmt-ed-host .tableWrapper {"):
+                  css.index(".cmt-ed-host .ProseMirror table {")]
+    table = css[css.index(".cmt-ed-host .ProseMirror table {"):
+                css.index(".cmt-ed-host .ProseMirror th")]
+    for rule in (host, wrapper, table):
+        assert "overscroll-behavior-x: contain" in rule
+        assert "overscroll-behavior-y: auto" in rule
+
+
 def test_new_comment_composer_is_docked_outside_ticket_body_in_dialog_and_page():
     """새 댓글 작성창은 본문 스크롤과 분리하고, 기존 댓글 수정창은 각 댓글 자리에 둔다."""
     dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
