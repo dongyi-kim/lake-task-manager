@@ -11,14 +11,18 @@ from app.domain.progress import VOC_COMPONENT, norm_cat
 
 
 def workload_category(component, issue_type, is_subtask=None):
-    """Map Jira issue metadata to the workload chart's three supported categories."""
+    """Map every My Tasks execution-ticket type into the workload chart."""
     if component == VOC_COMPONENT:
         return "voc"
     if is_subtask if is_subtask is not None else (issue_type == "Sub-Task"):
         return "subtask"
-    if issue_type == "Task":
-        return "task"
-    return None
+    normalized_type = str(issue_type or "").strip().casefold()
+    if not normalized_type or normalized_type == "epic":
+        return None
+    # My Tasks treats every non-Epic top-level issue as executable work.  Keep the
+    # workload projection aligned so Story/Bug/Improvement/custom Jira types do not
+    # disappear after the broad assignee/status search has already returned them.
+    return "task"
 
 
 class JiraWorkloadMixin:
