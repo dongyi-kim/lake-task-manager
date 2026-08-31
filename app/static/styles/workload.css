@@ -19,9 +19,13 @@
 .wbars { display: flex; gap: 18px; min-width: 0; }
 .wbars > .wside { flex: 1; min-width: 0; }        /* ProgressBar(.pbar-wrap) 또는 헤더 라벨 */
 /* 집계 조회 실패 — 0 으로 위장하지 않고 실패임을 드러낸다(원인 파악/재시도 유도) */
-.wbars.wl-fail { align-items: center; }
+.wbars.wl-fail { align-items: center; gap: 8px; }
 .wl-fail-t { flex: 1; font-size: 11.5px; font-weight: 600; color: var(--today);
   background: var(--panel-2); border: 1px dashed var(--today); border-radius: 8px; padding: 4px 10px; }
+.wl-retry { flex: none; border: 1px solid var(--today); border-radius: 7px; padding: 4px 9px;
+  background: color-mix(in srgb, var(--today) 10%, var(--panel)); color: var(--today);
+  font-size: 11px; font-weight: 700; cursor: pointer; }
+.wl-retry:hover { background: color-mix(in srgb, var(--today) 18%, var(--panel)); }
 /* 통계 도착 전 — 사람 by 사람 로딩 중이라는 자리표시(막대 영역에 옅게) */
 .wbars.wl-pending { align-items: center; }
 .wl-pending-t { flex: 1; font-size: 11.5px; color: var(--muted-2);
