@@ -79,6 +79,15 @@ def test_ticket_timeline_is_deferred_and_never_blocks_loaded_dialog_sections():
     assert "Promise.allSettled([_sib, _tl])" not in dialog
 
 
+def test_rendered_tables_pass_vertical_wheel_to_ticket_dialog_body():
+    """영역 구분에서 생성된 표는 가로만 자체 스크롤하고 세로 휠은 본문에 넘긴다."""
+    css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
+    table = css[css.index(".tkt-desc table {"):css.index(".tkt-desc th, .tkt-desc td")]
+    assert "overflow: auto hidden" in table
+    assert "overscroll-behavior-x: contain" in table
+    assert "overscroll-behavior-y: auto" in table
+
+
 def test_new_comment_composer_is_docked_outside_ticket_body_in_dialog_and_page():
     """새 댓글 작성창은 본문 스크롤과 분리하고, 기존 댓글 수정창은 각 댓글 자리에 둔다."""
     dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")

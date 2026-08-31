@@ -547,7 +547,11 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 
 /* 표 */
 .tkt-desc table { border-collapse: collapse; width: 100%; margin: 0 0 12px; font-size: 12.5px; display: block;
-  overflow: auto hidden; }
+  overflow: auto hidden;
+  /* 다이얼로그는 배경 스크롤 연쇄를 막기 위해 자손에 contain을 건다. 표는 가로 스크롤만
+     자체 처리하므로 세로축까지 contain하면 터치패드의 대각선 휠이 표에서 멎는다. 가로축은
+     표에 남기고 세로축은 실제 스크롤 주체(.tkt-body)로 넘긴다. */
+  overscroll-behavior-x: contain; overscroll-behavior-y: auto; }
 .tkt-desc th, .tkt-desc td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
 .tkt-desc th { background: var(--panel-2); font-weight: 700; }
 

@@ -445,6 +445,38 @@ def test_existing_editor_regression_fixtures_render_in_browser(editor_browser):
         assert not errors, f"{key} browser page errors: {errors}"
 
 
+def test_section_kv_table_does_not_trap_dialog_vertical_wheel(editor_browser):
+    """영역 구분에서 생성된 표 위의 세로 휠은 다이얼로그 본문을 계속 스크롤한다."""
+    page, base, errors, _upload_path = editor_browser
+    page.goto(f"{base}/#/mytasks", wait_until="load", timeout=45_000)
+    page.wait_for_function("() => !!window.__lakeUp", timeout=20_000)
+    page.get_by_role("button", name="검색 /").click()
+    search = page.get_by_role("textbox", name="Jira · Confluence · Bitbucket 통합 검색…")
+    search.fill("DL-9018")
+    result = page.locator(".sr-item", has_text="DL-9018").first
+    result.wait_for(state="visible", timeout=20_000)
+    result.click()
+
+    body = page.locator(".tkt-ov .tkt-body")
+    table = page.locator(".tkt-ov .tkt-desc-box .kv-table").first
+    table.wait_for(state="visible")
+    assert table.evaluate("el => getComputedStyle(el).overscrollBehaviorY") == "auto"
+    table.scroll_into_view_if_needed()
+    box = table.bounding_box()
+    assert box is not None
+    before = body.evaluate("el => el.scrollTop")
+
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    page.mouse.wheel(0, 420)
+    page.wait_for_function(
+        "before => document.querySelector('.tkt-body').scrollTop > before",
+        arg=before,
+        timeout=3_000,
+    )
+
+    assert not errors, f"browser page errors: {errors}"
+
+
 def test_comment_composer_uses_compact_scoped_height(editor_browser):
     """지연과 무관한 높이·폴딩 동작은 기본 0ms fixture에서 검증한다."""
     page, base, errors, _upload_path = editor_browser
