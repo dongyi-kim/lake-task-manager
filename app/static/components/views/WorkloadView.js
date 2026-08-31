@@ -312,7 +312,7 @@ export default {
           const pid = task.pid;
           active++;
           this.pstat[pid] = { id: pid, loading: true, retrying: task.attempt > 0,
-                              retryAttempt: task.attempt, maxRetries: WORKLOAD_PERSON_RETRY_DELAYS.length };
+                              retryAttempt: task.attempt };
         api.workloadPerson(pid, doneDays, assignedWindow)
           .then((r) => {
             if (epoch !== this.peopleLoadEpoch) return;
@@ -323,8 +323,10 @@ export default {
             if (epoch !== this.peopleLoadEpoch) return;
             if (task.attempt < WORKLOAD_PERSON_RETRY_DELAYS.length) {
               const nextAttempt = task.attempt + 1;
-              this.pstat[pid] = { id: pid, error: true, retrying: true,
-                retryAttempt: nextAttempt, maxRetries: WORKLOAD_PERSON_RETRY_DELAYS.length,
+              // 자동 재시도를 모두 소진하기 전에는 실패로 확정하지 않는다. 최초 로딩과 같은
+              // 자리표시를 유지하고 시도 횟수만 알려, 성공할 수 있는 행을 빨갛게 경고하지 않는다.
+              this.pstat[pid] = { id: pid, loading: true, retrying: true,
+                retryAttempt: nextAttempt,
                 message: (e && e.message) || String(e) };
               queue.push({ pid, attempt: nextAttempt,
                            readyAt: Date.now() + WORKLOAD_PERSON_RETRY_DELAYS[task.attempt] });
@@ -803,7 +805,7 @@ export default {
                      성공한 행과 상세 펼침 상태는 그대로 둔다. -->
                 <div v-if="!pstat[p.id]" class="wbars wl-pending"><span class="wl-pending-t">불러오는 중…</span></div>
                 <div v-else-if="pstat[p.id].loading || pstat[p.id].retrying" class="wbars wl-pending">
-                  <span class="wl-pending-t">{{ pstat[p.id].retryAttempt ? '일시 오류 · 자동 재시도 ' + pstat[p.id].retryAttempt + '/' + pstat[p.id].maxRetries : '불러오는 중…' }}</span>
+                  <span class="wl-pending-t">{{ pstat[p.id].retryAttempt ? '불러오는 중… (재시도: ' + pstat[p.id].retryAttempt + ')' : '불러오는 중…' }}</span>
                 </div>
                 <div v-else-if="pstat[p.id].error" class="wbars wl-fail" title="이 인력의 집계 조회에 실패했습니다(0 이 아님). 이 행만 다시 시도할 수 있습니다.">
                   <span class="wl-fail-t">집계 조회 실패</span>
