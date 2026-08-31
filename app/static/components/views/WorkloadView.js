@@ -13,6 +13,11 @@ import Avatar from "../ui/Avatar.js";
 // 상세 3컬럼 — 상태 흐름 순서(할당 → 진행 → 완료). 세 버킷 모두 같은 행 컴포넌트를 쓴다.
 // '최근 완료' 로 볼 기간(일) — 백엔드 JiraClient.WL_DONE_DAYS 와 같아야 한다.
 const DONE_DAYS = [7, 14, 28];
+const ASSIGNED_WINDOWS = [
+  { k: "1w", label: "1주", hint: "최근 1주 안에 갱신된 Open·In Progress Task" },
+  { k: "1m", label: "1달", hint: "최근 1달 안에 갱신된 Open·In Progress Task" },
+  { k: "all", label: "전체", hint: "갱신 시점과 무관한 모든 Open·In Progress Task" },
+];
 const WL_COLS = [
   { k: "open", label: "할당됨", cls: "todo" },
   { k: "inProgress", label: "진행 중", cls: "" },
@@ -41,8 +46,10 @@ export default {
              excludeVoc: pref.excludeVoc === true,
              // '최근 완료' 로 볼 기간(일). 주 단위로 일하는 팀이 많아 1·2·4주로 고른다.
              doneDays: [7, 14, 28].includes(pref.doneDays) ? pref.doneDays : 7,
+             // 할당된 Ticket(Open+In-Progress)의 updated 기간. 누락 없는 '전체'가 기본이다.
+             assignedWindow: ["1w", "1m", "all"].includes(pref.assignedWindow) ? pref.assignedWindow : "all",
              dueRisk: null, dueRiskBusy: false, dueRiskFor: "",
-             pstat: {}, busy: false };   // pstat[pid] = 그 인력의 통계 행(사람 by 사람 로딩)
+             pstat: {}, busy: false, peopleLoadEpoch: 0 };   // pstat[pid] = 그 인력의 통계 행(사람 by 사람 로딩)
   },
   created() {
     this.bodyRefs = {};                // 비반응 DOM 참조(모듈 body)
@@ -68,6 +75,7 @@ export default {
   computed: {
     WL_COLS() { return WL_COLS; },
     DONE_DAYS() { return DONE_DAYS; },
+    ASSIGNED_WINDOWS() { return ASSIGNED_WINDOWS; },
     // 지금 보고 있는 모듈(하단 메뉴에서 고른 것). 없으면 첫 모듈.
     curMod() {
       const ms = (this.d && this.d.modules) || [];
@@ -99,6 +107,10 @@ export default {
     doneUnit() { return this.metric === "hr" ? "h" : "건"; },
     /** '최근 N주 완료' — 기간 선택(doneDays)을 라벨에 그대로 반영한다. */
     doneLabel() { return "최근 " + (this.doneDays / 7) + "주 완료"; },
+    assignedLabel() {
+      const option = ASSIGNED_WINDOWS.find((item) => item.k === this.assignedWindow);
+      return option && option.k !== "all" ? "최근 " + option.label + " 갱신" : "전체";
+    },
     // 막대 스케일 = 현재 모듈 인력 최대값. 사람이 더 로딩되면 커질 수 있다(막대가 자리 잡아간다).
     scale() {
       let ip = 1, dn = 1;
@@ -240,14 +252,24 @@ export default {
      *  하나 끝날 때마다 다음을 채워, 화면은 사람 순으로 채워지되 서버는 안 붐빈다. */
     _loadPeople(pids) {
       const CONC = 3;
+      const epoch = this.peopleLoadEpoch;
+      const doneDays = this.doneDays;
+      const assignedWindow = this.assignedWindow;
       let i = 0;
       const next = () => {
-        if (i >= pids.length) return;
+        if (epoch !== this.peopleLoadEpoch || i >= pids.length) return;
         const pid = pids[i++];
-        api.workloadPerson(pid, this.doneDays)
-          .then((r) => { this.pstat[pid] = r; })
-          .catch((e) => { this.pstat[pid] = { id: pid, error: true, message: (e && e.message) || String(e) }; })
-          .finally(() => { this.scheduleMeasure(); this.loadDueRisk(); next(); });
+        api.workloadPerson(pid, doneDays, assignedWindow)
+          .then((r) => { if (epoch === this.peopleLoadEpoch) this.pstat[pid] = r; })
+          .catch((e) => {
+            if (epoch === this.peopleLoadEpoch) {
+              this.pstat[pid] = { id: pid, error: true, message: (e && e.message) || String(e) };
+            }
+          })
+          .finally(() => {
+            if (epoch !== this.peopleLoadEpoch) return;
+            this.scheduleMeasure(); this.loadDueRisk(); next();
+          });
       };
       for (let k = 0; k < Math.min(CONC, pids.length); k++) next();
     },
@@ -257,6 +279,7 @@ export default {
       this.busy = true;
       try {
         await api.refresh();
+        this.peopleLoadEpoch++;
         this.d = null; this.pstat = {}; this.tkd = {}; this.actOpen = {}; this.linePos = {};
         await this.load();
       } catch (e) {
@@ -366,6 +389,7 @@ export default {
     setDoneDays(d) {
       if (this.doneDays === d) return;
       this.doneDays = d; this._savePrefs();
+      this.peopleLoadEpoch++;
       this.pstat = {}; this.linePos = {};           // 받아 둔 카운트·평균선은 다른 질문의 답이다
       if (this.mod) this.loadModulePeople(this.mod);
       // 이미 펼쳐 둔 상세는 **완료 칸만** 다시 받는다. tkd 를 통째로 비우면 펼친 채로
@@ -375,9 +399,38 @@ export default {
         const box = this.tkd[id];
         if (!box) return;
         box.done7d = null;
-        api.workloadBucket(id, "done7d", d)
-          .then((rows) => { box.done7d = (rows || []).slice().sort(byResolved); })
-          .catch((e) => { box.done7d = []; box.err.done7d = e.message; });
+        api.workloadBucket(id, "done7d", d, this.assignedWindow)
+          .then((rows) => {
+            if (this.doneDays === d) box.done7d = (rows || []).slice().sort(byResolved);
+          })
+          .catch((e) => {
+            if (this.doneDays === d) { box.done7d = []; box.err.done7d = e.message; }
+          });
+      });
+      this.scheduleMeasure();
+    },
+    /** 할당 갱신기간 변경 — Open·In-Progress 통계와 펼친 두 목록만 다시 투영한다. */
+    setAssignedWindow(window) {
+      if (!ASSIGNED_WINDOWS.some((item) => item.k === window) || this.assignedWindow === window) return;
+      this.assignedWindow = window; this._savePrefs();
+      this.peopleLoadEpoch++;
+      this.pstat = {}; this.linePos = {};
+      this.dueRisk = null; this.dueRiskFor = "";
+      if (this.mod) this.loadModulePeople(this.mod);
+      const byDue = (a, b) => this.dueRank(a) - this.dueRank(b);
+      Object.keys(this.tkd).forEach((id) => {
+        const box = this.tkd[id];
+        if (!box) return;
+        ["open", "inProgress"].forEach((bucket) => {
+          box[bucket] = null;
+          api.workloadBucket(id, bucket, this.doneDays, window)
+            .then((rows) => {
+              if (this.assignedWindow === window) box[bucket] = (rows || []).slice().sort(byDue);
+            })
+            .catch((e) => {
+              if (this.assignedWindow === window) { box[bucket] = []; box.err[bucket] = e.message; }
+            });
+        });
       });
       this.scheduleMeasure();
     },
@@ -392,9 +445,12 @@ export default {
     /** 마감 리스크 — 현재 모듈 인력의 할당/진행중 티켓에서 초과(D+)·임박(D-3) 집계(지연 로딩). */
     async loadDueRisk() {
       const mod = this.curMod ? this.curMod.module : "";
-      if (this.dueRiskBusy || (this.dueRisk && this.dueRiskFor === mod)) return;
+      const assignedWindow = this.assignedWindow;
+      const excludeVoc = this.excludeVoc;
+      const requestKey = mod + "|" + assignedWindow + "|" + (excludeVoc ? "no-voc" : "voc");
+      if (this.dueRiskBusy || (this.dueRisk && this.dueRiskFor === requestKey)) return;
       if (!this.statsReady) return;                // 전원 로딩된 뒤에만
-      this.dueRiskBusy = true; this.dueRiskFor = mod;
+      this.dueRiskBusy = true; this.dueRiskFor = requestKey;
       const people = (this.curMod && this.curMod.people) || [];
       const over = [], soon = [];
       const nameOf = (pid) => (this.pstat[pid] && this.pstat[pid].name) || pid;
@@ -402,10 +458,10 @@ export default {
         await Promise.all(people.map(async (p) => {
           for (const bk of ["open", "inProgress"]) {
             let rows = [];
-            try { rows = (await api.workloadBucket(p.id, bk, this.doneDays)) || []; } catch (e) { rows = []; }
+            try { rows = (await api.workloadBucket(p.id, bk, this.doneDays, assignedWindow)) || []; } catch (e) { rows = []; }
             rows.forEach((t) => {
               if (!t.due) return;
-              if (this.excludeVoc && t.voc && !t.epic) return;   // 소속 Epic 없는 VoC 제외
+              if (excludeVoc && t.voc && !t.epic) return;   // 소속 Epic 없는 VoC 제외
               const d = this.dueRank(t);
               if (d < 0) over.push({ t, who: nameOf(p.id) });
               else if (d <= 3) soon.push({ t, who: nameOf(p.id) });
@@ -416,12 +472,14 @@ export default {
         // 임박순 정렬
         over.sort((a, b) => this.dueRank(a.t) - this.dueRank(b.t));
         soon.sort((a, b) => this.dueRank(a.t) - this.dueRank(b.t));
-        if (this.dueRiskFor === mod) this.dueRisk = { over, soon };
+        const ownsRequest = this.dueRiskFor === requestKey;
+        if (ownsRequest) this.dueRisk = { over, soon };
         this.dueRiskBusy = false;
+        if (!ownsRequest) this.$nextTick(() => this.loadDueRisk());
       }
     },
     _savePrefs() {
-      try { localStorage.setItem("workload.opts", JSON.stringify({ metric: this.metric, sortBy: this.sortBy, mod: this.mod, grouping: this.grouping, excludeVoc: this.excludeVoc, doneDays: this.doneDays })); }
+      try { localStorage.setItem("workload.opts", JSON.stringify({ metric: this.metric, sortBy: this.sortBy, mod: this.mod, grouping: this.grouping, excludeVoc: this.excludeVoc, doneDays: this.doneDays, assignedWindow: this.assignedWindow })); }
       catch (e) { /* 사파리 프라이빗 등 */ }
     },
     /** 'VoC 제외' 토글 — 막대·통계·마감리스크 모두 재산출(마감리스크는 필터가 바뀌므로 재로딩). */
@@ -545,9 +603,16 @@ export default {
         const box = this.tkd[id];
         const byDue = (a, b) => this.dueRank(a) - this.dueRank(b);
         const byResolved = (a, b) => (b.resolved || "").localeCompare(a.resolved || "");
-        const load = (bucket, sorter) => api.workloadBucket(id, bucket, this.doneDays)
-          .then((rows) => { box[bucket] = (rows || []).slice().sort(sorter); })
-          .catch((e) => { box[bucket] = []; box.err[bucket] = e.message; });
+        const doneDays = this.doneDays, assignedWindow = this.assignedWindow;
+        const load = (bucket, sorter) => api.workloadBucket(id, bucket, doneDays, assignedWindow)
+          .then((rows) => {
+            const current = bucket === "done7d" ? this.doneDays === doneDays : this.assignedWindow === assignedWindow;
+            if (current) box[bucket] = (rows || []).slice().sort(sorter);
+          })
+          .catch((e) => {
+            const current = bucket === "done7d" ? this.doneDays === doneDays : this.assignedWindow === assignedWindow;
+            if (current) { box[bucket] = []; box.err[bucket] = e.message; }
+          });
         load("inProgress", byDue);
         load("open", byDue);
         load("done7d", byResolved);
@@ -622,6 +687,9 @@ export default {
             <div class="wl-opt"><span class="wl-opt-l">완료 성과</span><div class="fab-seg">
               <button :class="{ on: metric === 'count' }" @click="setMetric('count')">Task 수</button>
               <button :class="{ on: metric === 'hr' }" @click="setMetric('hr')">소요시간</button></div></div>
+            <div class="wl-opt"><span class="wl-opt-l">할당 갱신</span><div class="fab-seg">
+              <button v-for="w in ASSIGNED_WINDOWS" :key="w.k" :class="{ on: assignedWindow === w.k }"
+                      @click="setAssignedWindow(w.k)" :title="w.hint">{{ w.label }}</button></div></div>
             <div class="wl-opt"><span class="wl-opt-l">완료 기간</span><div class="fab-seg">
               <button v-for="d in DONE_DAYS" :key="d" :class="{ on: doneDays === d }"
                       @click="setDoneDays(d)" :title="'최근 ' + d + '일 안에 완료된 Task 만 센다'">{{ d / 7 }}주</button></div></div>
@@ -640,7 +708,7 @@ export default {
           <template v-else>
             <div class="whead">
               <div class="hl">인력</div>
-              <div class="wbars"><div class="wside"><div class="hl">할당된 Ticket (Open + In-Progress)</div></div><div class="wside"><div class="hl">{{ doneLabel }} ({{ doneUnit }})</div></div></div>
+              <div class="wbars"><div class="wside"><div class="hl">할당된 Ticket (Open + In-Progress) · {{ assignedLabel }}</div></div><div class="wside"><div class="hl">{{ doneLabel }} ({{ doneUnit }})</div></div></div>
               <div></div>
             </div>
             <!-- 평균선은 좌표(linePos)와 평균값(avgByMod)이 **둘 다** 있을 때만. 하나만 보고 그리면

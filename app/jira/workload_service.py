@@ -1,5 +1,6 @@
 """Workload rollups, workload ticket buckets, and user activity for JiraClient."""
 
+from datetime import date
 import re
 import xml.etree.ElementTree as ET
 
@@ -25,8 +26,14 @@ class JiraWorkloadMixin:
 
     WL_DONE_DAYS = (7, 14, 28)
     WL_DONE_DEFAULT = 7
+    WL_ASSIGNED_WINDOWS = ("1w", "1m", "all")
+    WL_ASSIGNED_DEFAULT = "all"
+    WL_ASSIGNED_DAYS = {"1w": 7, "1m": 30}
     WL_BUCKETS = {
-        "open": 'assignee = "{u}" AND statusCategory = "To Do" AND updated >= -14d',
+        # Keep these as the broad, canonical status leaves used by MyTasks' ``all`` filters.
+        # Workload applies its 1w/1m window locally so every window can reuse the same JQL leaf
+        # membership and issueL rows instead of creating one Jira cache lineage per date range.
+        "open": 'assignee = "{u}" AND statusCategory = "To Do"',
         "inProgress": 'assignee = "{u}" AND statusCategory = "In Progress"',
     }
 
@@ -77,13 +84,19 @@ class JiraWorkloadMixin:
                 result[key] = parent_epics.get(parent_key)
         return result
 
-    def _wl_counts(self, jql):
+    def _wl_counts(self, jql, assigned_window=None):
         result = {
             "count": {"task": 0, "subtask": 0, "voc": 0},
             "hr": {"task": 0, "subtask": 0, "voc": 0},
             "epics": {},
         }
-        issues = self._search(jql, max_results=300)
+        # The normalized JQL layer already exhaustively caches the leaf.  Do not truncate that
+        # warm result before workload-category filtering; the old 300 cap could hide valid Tasks
+        # merely because unrelated issue types occupied earlier rows.
+        issues = self._search(jql, max_results=None)
+        if assigned_window is not None:
+            issues = [issue for issue in issues
+                      if self._wl_in_assigned_window(issue, assigned_window)]
         effective_epics = self._wl_effective_epics(issues)
         for issue in issues:
             fields = issue.get("fields", {}) or {}
@@ -109,23 +122,27 @@ class JiraWorkloadMixin:
             group["hr"] += hours
         return result
 
-    def workload_person(self, user_id, done_days=None):
+    def workload_person(self, user_id, done_days=None, assigned_window=None):
         done_days = self.wl_done_days(done_days)
-        cache_key = f"workload:{self.env}:{user_id}:{done_days}"
+        assigned_window = self.wl_assigned_window(assigned_window)
+        cache_key = (f"workload:{self.env}:{user_id}:done:{done_days}:"
+                     f"assigned:{assigned_window}")
         bundle = self.cache.get(cache_key)
         if bundle is None:
             try:
                 bundle = {
                     "id": user_id,
                     "open": self._wl_counts(
-                        f'assignee = "{user_id}" AND statusCategory = "To Do" AND updated >= -14d'
+                        self.WL_BUCKETS["open"].format(u=user_id), assigned_window
                     ),
                     "inProgress": self._wl_counts(
-                        f'assignee = "{user_id}" AND statusCategory = "In Progress"'
+                        self.WL_BUCKETS["inProgress"].format(u=user_id), assigned_window
                     ),
                     "done7d": self._wl_counts(
                         f'assignee = "{user_id}" AND ' + self.wl_done_jql(done_days)
                     ),
+                    "assignedWindow": assigned_window,
+                    "doneDays": done_days,
                 }
                 epic_keys = sorted({
                     key
@@ -199,8 +216,29 @@ class JiraWorkloadMixin:
             'OR (resolved IS EMPTY AND updated >= -%dd))' % (days, days)
         )
 
-    def workload_bucket(self, user, bucket, days=None):
+    @staticmethod
+    def wl_assigned_window(window):
+        value = str(window or "").strip().lower()
+        return (value if value in JiraWorkloadMixin.WL_ASSIGNED_WINDOWS
+                else JiraWorkloadMixin.WL_ASSIGNED_DEFAULT)
+
+    def _wl_in_assigned_window(self, issue, window):
+        """Apply the Open/In-Progress updated window to a shared broad status leaf."""
+        window = self.wl_assigned_window(window)
+        days = self.WL_ASSIGNED_DAYS.get(window)
+        if days is None:
+            return True
+        raw = ((issue or {}).get("fields") or {}).get("updated") or ""
+        try:
+            updated = date.fromisoformat(str(raw)[:10])
+        except (TypeError, ValueError):
+            return False
+        today = self.s_today() if hasattr(self, "s_today") else date.today()
+        return (today - updated).days <= days
+
+    def workload_bucket(self, user, bucket, days=None, assigned_window=None):
         done_days = self.wl_done_days(days)
+        assigned_window = self.wl_assigned_window(assigned_window)
         if bucket == "done7d":
             jql = 'assignee = "{u}" AND ' + self.wl_done_jql(done_days)
         else:
@@ -209,7 +247,12 @@ class JiraWorkloadMixin:
             return None
 
         def produce():
-            issues = self._search(jql.format(u=user), max_results=200)
+            # Fetch the complete broad status leaf so MyTasks and every assigned-window choice
+            # share one membership cache.  Windowing is a cheap local projection below.
+            issues = self._search(jql.format(u=user), max_results=None)
+            if bucket != "done7d":
+                issues = [issue for issue in issues
+                          if self._wl_in_assigned_window(issue, assigned_window)]
             effective_epics = self._wl_effective_epics(issues)
             result = [
                 self._wl_ticket(issue, effective_epics.get(issue.get("key")))
@@ -219,7 +262,7 @@ class JiraWorkloadMixin:
             self._attach_epic_names(result)
             return result
 
-        suffix = f":{done_days}" if bucket == "done7d" else ""
+        suffix = f":{done_days}" if bucket == "done7d" else f":{assigned_window}"
         return self.cache.get_or_set(
             f"workload_bucket:{self.env}:{user}:{bucket}{suffix}",
             self.s.cache_ttl_seconds,
@@ -267,11 +310,13 @@ class JiraWorkloadMixin:
             component, issue_type.get("name", ""), issue_type.get("subtask"),
         ) is not None
 
-    def workload_tickets(self, user, days=None):
+    def workload_tickets(self, user, days=None, assigned_window=None):
         return {
             "user": user,
-            "open": self.workload_bucket(user, "open"),
-            "inProgress": self.workload_bucket(user, "inProgress"),
+            "assignedWindow": self.wl_assigned_window(assigned_window),
+            "open": self.workload_bucket(user, "open", assigned_window=assigned_window),
+            "inProgress": self.workload_bucket(
+                user, "inProgress", assigned_window=assigned_window),
             "done7d": self.workload_bucket(user, "done7d", days),
         }
 

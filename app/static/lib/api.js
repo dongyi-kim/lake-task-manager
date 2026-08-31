@@ -209,11 +209,14 @@ export const api = {
   workload: () => get("/api/workload"),
   workloadShell: () => get("/api/workload/shell"),
   workloadModule: (m) => get("/api/workload/module/" + encodeURIComponent(m)),
-  // days = '최근 완료' 로 볼 기간(7·14·28). URL 에 넣어야 memo 도 기간별로 갈린다.
-  workloadPerson: (u, days) => get("/api/workload/person/" + encodeURIComponent(u) + "?days=" + (days || 7)),
-  workloadBucket: (u, b, days) => get("/api/workload/" + encodeURIComponent(u) + "/" + b
-                                      + "?days=" + (days || 7)),
-  workloadDetail: (user) => get("/api/workload/" + encodeURIComponent(user)),
+  // days = 최근 완료(7·14·28), assignedWindow = 할당 Open+In-Progress 갱신기간.
+  // 둘 다 URL 에 넣어야 frontend memo 역시 서로 다른 필터 결과를 섞지 않는다.
+  workloadPerson: (u, days, assignedWindow) => get("/api/workload/person/" + encodeURIComponent(u)
+    + "?days=" + (days || 7) + "&assignedWindow=" + encodeURIComponent(assignedWindow || "all")),
+  workloadBucket: (u, b, days, assignedWindow) => get("/api/workload/" + encodeURIComponent(u) + "/" + b
+    + "?days=" + (days || 7) + "&assignedWindow=" + encodeURIComponent(assignedWindow || "all")),
+  workloadDetail: (user, days, assignedWindow) => get("/api/workload/" + encodeURIComponent(user)
+    + "?days=" + (days || 7) + "&assignedWindow=" + encodeURIComponent(assignedWindow || "all")),
   activity: (user) => get("/api/activity/" + encodeURIComponent(user)),
   myTasks: (opts) => {                                                // 내 Task(옵션은 서버 질의 조건)
     const o = opts || {};

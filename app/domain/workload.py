@@ -86,10 +86,11 @@ def build_workload_shell(client, plan, people, jira_base="", generated_at=None):
     }
 
 
-def build_workload_person(client, pid, done_days=None):
+def build_workload_person(client, pid, done_days=None, assigned_window=None):
     """인력 **한 명**의 통계 행 — 로스터 행에 채워 넣을 값(이름·개발/운영·집계).
-    done_days: '최근 완료' 로 볼 기간(7·14·28일). 화면에서 고른다."""
-    b = client.workload_person(pid, done_days)
+    done_days: '최근 완료' 로 볼 기간(7·14·28일).
+    assigned_window: Open+In-Progress 의 updated 기간(1w·1m·all). 화면에서 고른다."""
+    b = client.workload_person(pid, done_days, assigned_window)
     return dict(b, name=real_name(b.get("displayName") or pid), kind=staff_kind(pid))
 
 
