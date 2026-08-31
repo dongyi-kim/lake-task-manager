@@ -29,5 +29,10 @@ def test_failed_people_retry_individually_without_refreshing_successful_rows():
     assert "retryFailedPeople()" in view
     assert "retryPerson(pid)" in view
     assert '@click.stop="retryPerson(p.id)"' in view
-    assert "일시 오류 · 자동 재시도" in view
+    assert "불러오는 중… (재시도: " in view
+    assert "일시 오류 · 자동 재시도" not in view
+    retry_wait = view[view.index("if (task.attempt < WORKLOAD_PERSON_RETRY_DELAYS.length)"):
+                      view.index("} else {", view.index("if (task.attempt < WORKLOAD_PERSON_RETRY_DELAYS.length)"))]
+    assert "loading: true, retrying: true" in retry_wait
+    assert "error: true" not in retry_wait
     assert "새로고침으로 재시도" not in view

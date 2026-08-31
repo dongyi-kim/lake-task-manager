@@ -285,7 +285,7 @@ export default {
       } finally { this.busy = false; }
     },
     saveMulti() {
-      for (const val of this.draft) this._pushRecent({ id: String(val), label: String(val) });
+      for (const val of this.draft) rememberFieldOption(this.field, this._recItem(val));
       this.save(this.draft.slice());
     },
     clearMulti() { this.draft = []; },

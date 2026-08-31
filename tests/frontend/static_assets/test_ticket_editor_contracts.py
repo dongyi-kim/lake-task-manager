@@ -326,3 +326,6 @@ def test_creation_dialog_keeps_last_options_and_never_deadlocks_on_type_lookup()
     save = field[field.index("async save(v, extra) {"):field.index("saveMulti() {")]
     assert save.index("this.close();") < save.index("await api.updateFields")
     assert "field-save:" in save and "pushToast" in save
+    multi = field[field.index("saveMulti() {"):field.index("clearMulti() {")]
+    assert "rememberFieldOption(this.field, this._recItem(val))" in multi
+    assert "_pushRecent" not in field
