@@ -13,6 +13,9 @@ import Avatar from "../ui/Avatar.js";
 // 상세 3컬럼 — 상태 흐름 순서(할당 → 진행 → 완료). 세 버킷 모두 같은 행 컴포넌트를 쓴다.
 // '최근 완료' 로 볼 기간(일) — 백엔드 JiraClient.WL_DONE_DAYS 와 같아야 한다.
 const DONE_DAYS = [7, 14, 28];
+// 개인별 집계는 서로 독립이다. 한 사람의 일시 실패 때문에 성공한 사람까지 다시 받지 않고,
+// 같은 사람만 동시성 큐 안에서 완만하게 재시도한다.
+const WORKLOAD_PERSON_RETRY_DELAYS = [800, 2400, 5000];
 const ASSIGNED_WINDOWS = [
   { k: "1w", label: "1주", hint: "최근 1주 안에 갱신된 Open·In Progress Task" },
   { k: "1m", label: "1달", hint: "최근 1달 안에 갱신된 Open·In Progress Task" },
@@ -53,13 +56,17 @@ export default {
   },
   created() {
     this.bodyRefs = {};                // 비반응 DOM 참조(모듈 body)
+    this.peopleRetryTimers = new Set();
     // 좌하단 플로팅 새로고침 — 뷰마다 캐시 비우고 다시 받는 함수 이름이 달라 여기서 잇는다.
     window.addEventListener("force-refresh", this._fr = async () => {
       try { await this.hardRefresh(); }
       finally { window.dispatchEvent(new CustomEvent("force-refresh-done")); }
     });
     // 재인증(auth-ok) 후 — 세션 끊긴 채 실패했던 조회를 가볍게 다시 받는다(서버 캐시는 안 비움).
-    window.addEventListener("auth-ok", this._authok = () => { this.load(); });
+    window.addEventListener("auth-ok", this._authok = () => {
+      if (!this.d) this.load();
+      else this.retryFailedPeople();   // 성공 행·펼침 상태는 유지하고 실패한 사람만 다시 받는다
+    });
   },
   async mounted() {
     await this.load();
@@ -67,6 +74,8 @@ export default {
     window.addEventListener("resize", this._onResize);
   },
   unmounted() {
+    this._cancelPeopleRetryTimers();
+    this.peopleLoadEpoch++;
     if (this._onResize) window.removeEventListener("resize", this._onResize);
     window.removeEventListener("force-refresh", this._fr);
     window.removeEventListener("auth-ok", this._authok);
@@ -90,7 +99,8 @@ export default {
     curStats() {
       const m = this.curMod;
       if (!m) return [];
-      return (m.people || []).map((p) => this.pstat[p.id]).filter((s) => s && !s.error);
+      return (m.people || []).map((p) => this.pstat[p.id])
+        .filter((s) => s && !s.error && !s.loading && !s.retrying);
     },
     // 화면엔 선택한 모듈 하나만 (부하↓). 기존 모듈 마크업을 그대로 재사용하려고 배열로 감싼다.
     shownModules() { return this.curMod ? [this.curMod] : []; },
@@ -232,7 +242,10 @@ export default {
     loadModulePeople(mod) {
       const m = (this.d && this.d.modules || []).find((x) => x.module === mod);
       if (!m) return;
-      const pids = (m.people || []).map((p) => p.id).filter((id) => !this.pstat[id]);
+      const pids = (m.people || []).map((p) => p.id).filter((id) => {
+        const state = this.pstat[id];
+        return !state || (state.error && !state.retrying);
+      });
       if (pids.length) this._loadPeople(pids);
     },
     /** 하단 메뉴에서 모듈 전환 — 그 모듈 인력만 로딩하고, 평균선 참조를 초기화한다. */
@@ -250,28 +263,85 @@ export default {
     /** 사람 by 사람 통계 로딩 — **동시 요청 상한(CONC)**을 둔다. 한꺼번에 다 쏘면 서버(로컬 fake·
      *  prod 단일 SSO 큐)를 덮쳐 조회가 통째로 실패한다(각자 3개 검색이라 18명이면 54개 동시).
      *  하나 끝날 때마다 다음을 채워, 화면은 사람 순으로 채워지되 서버는 안 붐빈다. */
+    _cancelPeopleRetryTimers() {
+      for (const timer of (this.peopleRetryTimers || [])) clearTimeout(timer);
+      if (this.peopleRetryTimers) this.peopleRetryTimers.clear();
+    },
+    /** 현재 선택 모듈에서 실패가 확정된 사람만 다시 받는다. 성공 데이터와 상세 펼침은 건드리지 않는다. */
+    retryFailedPeople() {
+      const m = this.curMod;
+      if (!m) return;
+      const pids = (m.people || []).map((p) => p.id)
+        .filter((id) => this.pstat[id] && this.pstat[id].error && !this.pstat[id].retrying);
+      if (pids.length) this._loadPeople(pids);
+    },
+    retryPerson(pid) {
+      const state = this.pstat[pid];
+      if (!state || !state.error || state.retrying || state.loading) return;
+      this._loadPeople([pid]);
+    },
     _loadPeople(pids) {
       const CONC = 3;
       const epoch = this.peopleLoadEpoch;
       const doneDays = this.doneDays;
       const assignedWindow = this.assignedWindow;
-      let i = 0;
-      const next = () => {
-        if (epoch !== this.peopleLoadEpoch || i >= pids.length) return;
-        const pid = pids[i++];
+      const queue = [...new Set(pids)].map((pid) => ({ pid, attempt: 0, readyAt: 0 }));
+      let active = 0, wakeTimer = null;
+      queue.forEach(({ pid }) => { this.pstat[pid] = { id: pid, loading: true, retryAttempt: 0 }; });
+      const clearWake = () => {
+        if (!wakeTimer) return;
+        clearTimeout(wakeTimer); this.peopleRetryTimers.delete(wakeTimer); wakeTimer = null;
+      };
+      const wakeLater = () => {
+        clearWake();
+        if (epoch !== this.peopleLoadEpoch || !queue.length) return;
+        const wait = Math.max(0, Math.min(...queue.map((task) => task.readyAt)) - Date.now());
+        wakeTimer = setTimeout(() => {
+          this.peopleRetryTimers.delete(wakeTimer); wakeTimer = null; pump();
+        }, wait);
+        this.peopleRetryTimers.add(wakeTimer);
+      };
+      const pump = () => {
+        if (epoch !== this.peopleLoadEpoch) return clearWake();
+        clearWake();
+        let now = Date.now();
+        while (active < CONC) {
+          const index = queue.findIndex((task) => task.readyAt <= now);
+          if (index < 0) break;
+          const task = queue.splice(index, 1)[0];
+          const pid = task.pid;
+          active++;
+          this.pstat[pid] = { id: pid, loading: true, retrying: task.attempt > 0,
+                              retryAttempt: task.attempt, maxRetries: WORKLOAD_PERSON_RETRY_DELAYS.length };
         api.workloadPerson(pid, doneDays, assignedWindow)
-          .then((r) => { if (epoch === this.peopleLoadEpoch) this.pstat[pid] = r; })
+          .then((r) => {
+            if (epoch !== this.peopleLoadEpoch) return;
+            this.pstat[pid] = r;
+            this.dueRisk = null; this.dueRiskFor = "";
+          })
           .catch((e) => {
-            if (epoch === this.peopleLoadEpoch) {
+            if (epoch !== this.peopleLoadEpoch) return;
+            if (task.attempt < WORKLOAD_PERSON_RETRY_DELAYS.length) {
+              const nextAttempt = task.attempt + 1;
+              this.pstat[pid] = { id: pid, error: true, retrying: true,
+                retryAttempt: nextAttempt, maxRetries: WORKLOAD_PERSON_RETRY_DELAYS.length,
+                message: (e && e.message) || String(e) };
+              queue.push({ pid, attempt: nextAttempt,
+                           readyAt: Date.now() + WORKLOAD_PERSON_RETRY_DELAYS[task.attempt] });
+            } else {
               this.pstat[pid] = { id: pid, error: true, message: (e && e.message) || String(e) };
             }
           })
           .finally(() => {
+            active--;
             if (epoch !== this.peopleLoadEpoch) return;
-            this.scheduleMeasure(); this.loadDueRisk(); next();
+            this.scheduleMeasure(); this.loadDueRisk(); pump();
           });
+          now = Date.now();
+        }
+        if (active < CONC && queue.length) wakeLater();
       };
-      for (let k = 0; k < Math.min(CONC, pids.length); k++) next();
+      pump();
     },
     /** 캐시를 비우고 전부 다시 받는다 — 낡은 값으로 화면을 지키는 구조라 사람이 끊을 수단이 필요하다. */
     async hardRefresh() {
@@ -279,6 +349,7 @@ export default {
       this.busy = true;
       try {
         await api.refresh();
+        this._cancelPeopleRetryTimers();
         this.peopleLoadEpoch++;
         this.d = null; this.pstat = {}; this.tkd = {}; this.actOpen = {}; this.linePos = {};
         await this.load();
@@ -289,7 +360,10 @@ export default {
     /** 이 모듈 인력이 **전원** 로딩됐는가(성공/실패 불문 — 도착했으면 됨). 평균선/헤더 합계 게이트. */
     moduleComplete(m) {
       const ppl = m.people || [];
-      return ppl.length > 0 && ppl.every((p) => this.pstat[p.id]);
+      return ppl.length > 0 && ppl.every((p) => {
+        const state = this.pstat[p.id];
+        return state && !state.loading && !state.retrying;
+      });
     },
     /** 모듈 헤더 합계 — 로딩된 인력까지 누적(부분 진행도 보여준다). loaded/total 로 진행 표시. */
     moduleAgg(m) {
@@ -297,6 +371,7 @@ export default {
       (m.people || []).forEach((p) => {
         const s = this.pstat[p.id];
         if (!s) return;
+        if (s.loading || s.retrying) return;
         t.loaded++;
         if (s.error) return;
         t.ip += this.barVal(s.inProgress, "count");
@@ -389,6 +464,7 @@ export default {
     setDoneDays(d) {
       if (this.doneDays === d) return;
       this.doneDays = d; this._savePrefs();
+      this._cancelPeopleRetryTimers();
       this.peopleLoadEpoch++;
       this.pstat = {}; this.linePos = {};           // 받아 둔 카운트·평균선은 다른 질문의 답이다
       if (this.mod) this.loadModulePeople(this.mod);
@@ -413,6 +489,7 @@ export default {
     setAssignedWindow(window) {
       if (!ASSIGNED_WINDOWS.some((item) => item.k === window) || this.assignedWindow === window) return;
       this.assignedWindow = window; this._savePrefs();
+      this._cancelPeopleRetryTimers();
       this.peopleLoadEpoch++;
       this.pstat = {}; this.linePos = {};
       this.dueRisk = null; this.dueRiskFor = "";
@@ -546,7 +623,7 @@ export default {
       if (this.sortBy === "name") return ppl.sort((a, b) => nm(a).localeCompare(nm(b), "ko"));
       const val = (p) => {
         const s = this.pstat[p.id];
-        if (!s || s.error) return -1;
+        if (!s || s.error || s.loading || s.retrying) return -1;
         return this.sortBy === "assigned" ? this.assignedCount(s) : this.barVal(s.done7d, this.metric);
       };
       return ppl.sort((a, b) => val(b) - val(a));
@@ -722,10 +799,15 @@ export default {
             <template v-for="p in sortedPeople(m)" :key="p.id">
               <div class="prow">
                 <span class="pname" :title="p.id"><Avatar :user="p.id" :name="(pstat[p.id] && pstat[p.id].name) || p.name" :size="20" /><b>{{ (pstat[p.id] && pstat[p.id].name) || p.name }}</b><span v-if="(pstat[p.id] && pstat[p.id].kind) || p.kind" class="kbadge" :class="(pstat[p.id] && pstat[p.id].kind) || p.kind">{{ ((pstat[p.id] && pstat[p.id].kind) || p.kind) === 'dev' ? '개발' : '운영' }}</span></span>
-                <!-- 통계는 사람 by 사람으로 도착 — 아직이면 로딩, 실패면 재시도 안내, 오면 막대 -->
+                <!-- 통계는 사람 by 사람으로 도착한다. 일시 실패는 그 사람만 자동 재시도하고,
+                     성공한 행과 상세 펼침 상태는 그대로 둔다. -->
                 <div v-if="!pstat[p.id]" class="wbars wl-pending"><span class="wl-pending-t">불러오는 중…</span></div>
-                <div v-else-if="pstat[p.id].error" class="wbars wl-fail" title="이 인력의 집계 조회에 실패했습니다(0 이 아님). 새로고침으로 재시도하세요.">
-                  <span class="wl-fail-t">집계 조회 실패 — 새로고침으로 재시도</span>
+                <div v-else-if="pstat[p.id].loading || pstat[p.id].retrying" class="wbars wl-pending">
+                  <span class="wl-pending-t">{{ pstat[p.id].retryAttempt ? '일시 오류 · 자동 재시도 ' + pstat[p.id].retryAttempt + '/' + pstat[p.id].maxRetries : '불러오는 중…' }}</span>
+                </div>
+                <div v-else-if="pstat[p.id].error" class="wbars wl-fail" title="이 인력의 집계 조회에 실패했습니다(0 이 아님). 이 행만 다시 시도할 수 있습니다.">
+                  <span class="wl-fail-t">집계 조회 실패</span>
+                  <button class="wl-retry" @click.stop="retryPerson(p.id)">다시 시도</button>
                 </div>
                 <div v-else class="wbars">
                   <ProgressBar class="wside" :segments="assignedSegs(pstat[p.id])" :scale="scale.ip" show-total dark-text />

@@ -17,3 +17,17 @@ def test_assigned_updated_window_is_persisted_and_sent_to_summary_and_detail():
     assert "api.workloadBucket(id, bucket, doneDays, assignedWindow)" in view
     assert "assignedWindow: this.assignedWindow" in view
     assert api.count('"&assignedWindow="') >= 2
+
+
+def test_failed_people_retry_individually_without_refreshing_successful_rows():
+    view = (STATIC / "components" / "views" / "WorkloadView.js").read_text(encoding="utf-8")
+
+    assert "const WORKLOAD_PERSON_RETRY_DELAYS = [800, 2400, 5000];" in view
+    assert "queue.push({ pid, attempt: nextAttempt" in view
+    assert "active < CONC" in view
+    assert "this.pstat[pid] = r;" in view
+    assert "retryFailedPeople()" in view
+    assert "retryPerson(pid)" in view
+    assert '@click.stop="retryPerson(p.id)"' in view
+    assert "일시 오류 · 자동 재시도" in view
+    assert "새로고침으로 재시도" not in view
