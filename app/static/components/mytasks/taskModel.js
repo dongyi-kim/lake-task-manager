@@ -40,7 +40,7 @@ export const BAND_FILTERS = {
     { k: "1m", label: "1달", hint: "최근 1달 안에 완료" }] },
 };
 
-const STATE_KEYS = new Set(STATES.map((state) => state.k));
+export const STATE_KEYS = new Set(STATES.map((state) => state.k));
 const VOC_SIG = "var(--ty-story)";
 
 export function taskLoadErrorKind(error) {
@@ -94,7 +94,7 @@ function sameTaskData(a, b) {
     && sameTaskData(a[key], b[key]));
 }
 
-function patchTaskData(current, incoming, skip) {
+export function patchTaskData(current, incoming, skip) {
   const ignored = skip || new Set();
   for (const key of Object.keys(current)) {
     if (!ignored.has(key) && !Object.prototype.hasOwnProperty.call(incoming, key)) delete current[key];

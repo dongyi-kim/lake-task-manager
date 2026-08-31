@@ -205,6 +205,11 @@ def test_mytasks_quiet_refresh_keeps_visible_dom_and_patches_only_changed_keys()
     assert "reconcileTaskRows(current.groups, incoming.groups, reconcileTaskGroup)" in model
     assert "reconcileTaskRows(current.atoms, incoming.atoms, patchTaskData)" in model
     assert "reconcileTaskRows(current.others, incoming.others, patchTaskData)" in model
+    assert "export function patchTaskData(current, incoming, skip)" in model
+    assert "TASK_RETRY_DELAYS, epicSig, patchTaskData, reconcileTaskModel" in view
+    assert "export const STATE_KEYS = new Set" in model
+    assert "STATES, STATE_KEYS, SUB_CAP" in view
+    assert 'import { categoryColor } from "../../lib/colors.js";' in view
     assert 'import { reactive } from "../../vendor/vue.esm-browser.prod.js";' in view
     assert "this._cardCache || (this._cardCache = new WeakMap())" in view
     assert "current = reactive(next);" in view
