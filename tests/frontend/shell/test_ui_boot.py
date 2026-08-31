@@ -146,6 +146,20 @@ def test_the_app_actually_mounts_in_a_browser(live_server):
             except Exception:                 # noqa: BLE001 — 외부 template import 회귀 판정
                 agent_up = False
             agent_body = page.inner_text("body")[:200]
+            page.goto(live_server + "/#/mytasks", wait_until="load", timeout=30000)
+            try:
+                page.locator(".mytasks").wait_for(state="visible", timeout=15000)
+                page.locator(".mt-card").first.wait_for(state="visible", timeout=15000)
+                mytasks_before_reload = page.locator(".mt-card").count()
+                page.reload(wait_until="load", timeout=30000)
+                page.locator(".mt-card").first.wait_for(state="visible", timeout=15000)
+                mytasks_after_reload = page.locator(".mt-card").count()
+                mytasks_up = True
+            except Exception:                 # noqa: BLE001 — 실제 데이터 도착 후 렌더 예외 판정
+                mytasks_up = False
+                mytasks_before_reload = 0
+                mytasks_after_reload = 0
+            mytasks_body = page.inner_text("body")[:200]
             transforms = page.evaluate("""async () => {
               const mod = await import('/components/agent/contentTransforms.js');
               return {
@@ -164,6 +178,9 @@ def test_the_app_actually_mounts_in_a_browser(live_server):
                 f"페이지 오류: {errors[:2]}")
     assert agent_up, (f"Agent 화면이 마운트되지 않았다. 화면: {agent_body!r}\n"
                       f"페이지 오류: {errors[:2]}")
+    assert mytasks_up, (f"My Tasks가 새로고침 후 렌더되지 않았다. 화면: {mytasks_body!r}\n"
+                        f"페이지 오류: {errors[:4]}")
+    assert mytasks_before_reload > 0 and mytasks_after_reload > 0
     assert "@Alice(u1)" in transforms["rich"]
     assert "[Doc](https://example.com)" in transforms["rich"]
     assert "■ Scope" in transforms["text"]

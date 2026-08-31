@@ -28,9 +28,10 @@ import FieldEdit from "../ui/FieldEdit.js";
 import AdvancedSearchDialog from "../ui/AdvancedSearchDialog.js";
 import TransitionDialog from "../ui/TransitionDialog.js";
 import SubtaskFoldBar from "../ui/SubtaskFoldBar.js";
+import { categoryColor } from "../../lib/colors.js";
 import {
-  AXIS_PAGE_SIZE, BAND_FILTERS, NARROW, NO_DUE, OPTIONS, PREF_KEY, STATES, SUB_CAP,
-  TASK_RETRY_DELAYS, epicSig, reconcileTaskModel, resolveDefaultModule, retryDelay,
+  AXIS_PAGE_SIZE, BAND_FILTERS, NARROW, NO_DUE, OPTIONS, PREF_KEY, STATES, STATE_KEYS, SUB_CAP,
+  TASK_RETRY_DELAYS, epicSig, patchTaskData, reconcileTaskModel, resolveDefaultModule, retryDelay,
   taskLoadErrorKind, uniformStatusCategory,
 } from "../mytasks/taskModel.js";
 import { pushToast } from "../../lib/toast.js";
