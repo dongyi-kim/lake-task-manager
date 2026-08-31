@@ -13,7 +13,7 @@ import pytest
 from app.auth.base import SessionExpired      # noqa: E402
 from app.infra.cache import Cache                   # noqa: E402
 from app.jira.jira_client import JiraClient        # noqa: E402
-from app.jira.workload_service import JiraWorkloadMixin  # noqa: E402
+from app.jira.workload_service import JiraWorkloadMixin, workload_category  # noqa: E402
 from app.infra.settings import get_settings, load_people   # noqa: E402
 from app.mock.world import get_world                 # noqa: E402
 
@@ -42,6 +42,61 @@ def test_workload_counts_nonzero_in_mock():
     assert rows and rows[0]["id"] == "skcc.x1042"
     assert not rows[0].get("error")
     assert _total(rows[0]) > 0
+
+
+@pytest.mark.parametrize("issue_type", [
+    "Task", "Story", "Bug", "Improvement", "New Feature", "Custom Work Item",
+])
+def test_every_non_epic_top_level_issue_type_is_workload_task(issue_type):
+    """My Tasks에 보이는 상위 실행 티켓은 Jira 타입 이름과 무관하게 집계한다."""
+    assert workload_category("Workbench", issue_type, False) == "task"
+
+
+def test_workload_category_keeps_epic_subtask_and_voc_boundaries():
+    assert workload_category("Workbench", "Epic", False) is None
+    assert workload_category("Workbench", "Sub-Task", True) == "subtask"
+    assert workload_category("사용자 VoC", "Bug", False) == "voc"
+    assert workload_category("Workbench", "", False) is None
+
+
+def test_workload_detail_keeps_non_task_execution_ticket_returned_by_jql():
+    """조회된 Story가 상세 목록의 후처리 단계에서 사라지던 prod 회귀."""
+    c = _client()
+    story = _assigned_issue(
+        "DL-STORY", (c.s_today() - timedelta(days=3)).isoformat(), "inprogress",
+    )
+    story["fields"]["issuetype"] = {"name": "Story", "subtask": False}
+    c._search = lambda _jql, **_kwargs: [story]
+
+    rows = c.workload_bucket("test.person", "inProgress", assigned_window="1w")
+
+    assert [row["key"] for row in rows] == ["DL-STORY"]
+
+
+def test_workload_in_progress_matches_non_epic_assignee_search_for_all_people():
+    """My Tasks와 공유하는 broad leaf에서 상위 타입 때문에 누락되는 티켓이 없어야 한다."""
+    c = _client()
+    people = sorted({user for users in load_people().values() for user in users})
+    missing = []
+    for user in people:
+        searched = c._search(
+            f'assignee = "{user}" AND statusCategory = "In Progress"',
+            max_results=None,
+        )
+        expected = {
+            row.get("key")
+            for row in searched
+            if row.get("key") and (
+                ((row.get("fields") or {}).get("issuetype") or {}).get("name") != "Epic"
+            )
+        }
+        actual = {
+            row.get("key")
+            for row in c.workload_bucket(user, "inProgress", assigned_window="all")
+        }
+        missing.extend(sorted(expected - actual))
+
+    assert missing == []
 
 
 def test_search_failure_is_not_cached_as_zero():
