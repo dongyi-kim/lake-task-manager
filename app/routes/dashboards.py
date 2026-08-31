@@ -113,22 +113,25 @@ def build_dashboard_router(
         return JSONResponse(workload.build_workload_module(client, plan, load_people(), module))
 
     @router.get("/api/workload/person/{user}")
-    def api_workload_person(user: str, days: int = 7):
+    def api_workload_person(user: str, days: int = 7, assignedWindow: str = "all"):
         require_person_access(user)
-        return JSONResponse(workload.build_workload_person(client, user, days))
+        return JSONResponse(
+            workload.build_workload_person(client, user, days, assignedWindow)
+        )
 
     @router.get("/api/workload/{user}/{bucket}")
-    def api_workload_bucket(user: str, bucket: str, days: int = 7):
+    def api_workload_bucket(user: str, bucket: str, days: int = 7,
+                            assignedWindow: str = "all"):
         require_person_access(user)
-        rows = client.workload_bucket(user, bucket, days)
+        rows = client.workload_bucket(user, bucket, days, assignedWindow)
         if rows is None:
             return JSONResponse({"error": "unknown bucket", "bucket": bucket}, status_code=404)
         return JSONResponse(rows)
 
     @router.get("/api/workload/{user}")
-    def api_workload_tickets(user: str):
+    def api_workload_tickets(user: str, days: int = 7, assignedWindow: str = "all"):
         require_person_access(user)
-        return JSONResponse(client.workload_tickets(user))
+        return JSONResponse(client.workload_tickets(user, days, assignedWindow))
 
     @router.get("/api/activity/{user}")
     def api_activity(user: str):

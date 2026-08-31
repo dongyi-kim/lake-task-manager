@@ -36,6 +36,14 @@ def test_dashboard_router_preserves_public_api_contract():
     assert expected <= routes
 
 
+def test_workload_routes_expose_assigned_updated_window_query():
+    schema = app.openapi()
+    for path in ("/api/workload/person/{user}", "/api/workload/{user}/{bucket}",
+                 "/api/workload/{user}"):
+        params = {row["name"]: row for row in schema["paths"][path]["get"]["parameters"]}
+        assert params["assignedWindow"]["schema"]["default"] == "all"
+
+
 def test_resource_and_mytasks_routers_preserve_public_api_contract():
     expected = {
         ("GET", "/api/issue/{key}"),

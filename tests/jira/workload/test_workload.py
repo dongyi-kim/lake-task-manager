@@ -4,6 +4,7 @@
 `workload:{env}:{pid}` 로 캐시돼, **막대만 0 인데 [자세히] 리스트는 정상**으로 보였다.
 (상세는 `workload_tickets:{env}:{user}` 라는 다른 캐시 키 + 다른 시점 조회)
 """
+from datetime import timedelta
 import os
 import sys
 
@@ -57,7 +58,9 @@ def test_search_failure_is_not_cached_as_zero():
     rows = c.workload(PLAN, PEOPLE)["ETL"]
     assert rows[0].get("error") is True          # 실패를 드러낸다
     assert _total(rows[0]) == 0                  # 값은 0 이지만
-    assert c.cache.get(f"workload:{c.env}:skcc.x1042") is None   # ★ 캐시되지 않았다
+    assert c.cache.get(
+        f"workload:{c.env}:skcc.x1042:done:7:assigned:all"
+    ) is None   # ★ 캐시되지 않았다
 
     c._search = real_search                      # 복구 후 재조회 → 정상값
     rows2 = c.workload(PLAN, PEOPLE)["ETL"]
@@ -75,7 +78,9 @@ def test_session_expired_propagates_not_zero():
     c._search = expired
     with pytest.raises(SessionExpired):
         c.workload(PLAN, PEOPLE)
-    assert c.cache.get(f"workload:{c.env}:skcc.x1042") is None
+    assert c.cache.get(
+        f"workload:{c.env}:skcc.x1042:done:7:assigned:all"
+    ) is None
 
 
 # ── 모듈/버킷 분할 (병렬 로딩용) ──
@@ -104,7 +109,7 @@ def test_workload_bucket_cached_individually():
     c = _client()
     user = PEOPLE["ETL"][0]
     c.workload_bucket(user, "inProgress")
-    assert c.cache.get(f"workload_bucket:{c.env}:{user}:inProgress") is not None
+    assert c.cache.get(f"workload_bucket:{c.env}:{user}:inProgress:all") is not None
     assert c.cache.get(f"workload_bucket:{c.env}:{user}:done7d") is None   # 부른 것만 캐시
 
 
@@ -183,10 +188,93 @@ def test_workload_bucket_period_widens_result():
 def test_workload_person_cache_key_includes_period():
     c = _client()
     pid = PEOPLE["ETL"][0]
-    c.workload_person(pid, 7)
-    c.workload_person(pid, 28)
-    assert c.cache.get(f"workload:{c.env}:{pid}:7") is not None
-    assert c.cache.get(f"workload:{c.env}:{pid}:28") is not None
+    c.workload_person(pid, 7, "all")
+    c.workload_person(pid, 28, "1m")
+    assert c.cache.get(f"workload:{c.env}:{pid}:done:7:assigned:all") is not None
+    assert c.cache.get(f"workload:{c.env}:{pid}:done:28:assigned:1m") is not None
     # 잘못된 기간은 기본값으로 정규화 — 없는 키를 만들지 않는다
-    c.workload_person(pid, 999)
-    assert c.cache.get(f"workload:{c.env}:{pid}:999") is None
+    c.workload_person(pid, 999, "not-a-window")
+    assert c.cache.get(f"workload:{c.env}:{pid}:done:999:assigned:not-a-window") is None
+
+
+# ── 할당(Open + In-Progress) 갱신기간 + MyTasks cache sharing ───────────────
+
+def _assigned_issue(key, updated, status_category):
+    name = "Open" if status_category == "todo" else "In Progress"
+    return {
+        "key": key,
+        "fields": {
+            "summary": key,
+            "updated": updated,
+            "components": [],
+            "issuetype": {"name": "Task", "subtask": False},
+            "status": {"name": name, "statusCategory": {"key": status_category}},
+        },
+    }
+
+
+def test_wl_assigned_window_only_allows_known_values():
+    assert JiraClient.wl_assigned_window("1w") == "1w"
+    assert JiraClient.wl_assigned_window("1M") == "1m"
+    assert JiraClient.wl_assigned_window("all") == "all"
+    for bad in (None, "", "2w", "7 OR 1=1"):
+        assert JiraClient.wl_assigned_window(bad) == JiraClient.WL_ASSIGNED_DEFAULT
+
+
+@pytest.mark.parametrize("bucket,status_category", [
+    ("open", "todo"),
+    ("inProgress", "inprogress"),
+])
+def test_assigned_window_widens_both_open_and_in_progress(bucket, status_category):
+    """두 미완료 상태 모두 1주 ⊂ 1달 ⊂ 전체이며 숨은 200건 cap이 없다."""
+    c = _client()
+    today = c.s_today()
+    source = [
+        _assigned_issue("DL-RECENT", (today - timedelta(days=3)).isoformat(), status_category),
+        _assigned_issue("DL-MONTH", (today - timedelta(days=20)).isoformat(), status_category),
+        _assigned_issue("DL-OLD", (today - timedelta(days=60)).isoformat(), status_category),
+    ]
+    calls = []
+
+    def fake_search(jql, **kwargs):
+        calls.append((jql, kwargs))
+        return list(source)
+
+    c._search = fake_search
+    keys = {
+        window: {row["key"] for row in c.workload_bucket(
+            "test.person", bucket, assigned_window=window)}
+        for window in JiraClient.WL_ASSIGNED_WINDOWS
+    }
+    assert keys["1w"] == {"DL-RECENT"}
+    assert keys["1m"] == {"DL-RECENT", "DL-MONTH"}
+    assert keys["all"] == {"DL-RECENT", "DL-MONTH", "DL-OLD"}
+    assert all("updated" not in jql.lower() for jql, _kwargs in calls)
+    assert all(kwargs.get("max_results", "missing") is None for _jql, kwargs in calls)
+
+
+def test_mytasks_all_assigned_leaves_are_reused_by_every_workload_window():
+    """MyTasks 기본 방문 뒤 Workload 1주·1달·전체는 broad leaf를 Jira에 다시 묻지 않는다."""
+    from app.domain.mytasks import build_my_tasks
+
+    c = _client()
+    user = (c.current_user() or {}).get("id")
+    assert user
+    build_my_tasks(
+        c, user=user, scope="assignee", open_filter="all", prog_filter="all",
+        done_filter="1w", defer_children=True,
+    )
+
+    fetched = []
+    real_fetch = c._fetch_jql_leaf
+
+    def spy_fetch(leaf, fields, light):
+        fetched.append(leaf)
+        return real_fetch(leaf, fields, light)
+
+    c._fetch_jql_leaf = spy_fetch
+    for window in JiraClient.WL_ASSIGNED_WINDOWS:
+        for template in JiraClient.WL_BUCKETS.values():
+            rows = c._search(template.format(u=user), max_results=None)
+            assert isinstance(rows, list)
+    assert fetched == []
