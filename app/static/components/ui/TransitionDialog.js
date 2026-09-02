@@ -63,7 +63,14 @@ export default {
     },
   },
   mounted() {
-    if (this.resolutions.length) this.resolution = this.resolutions[0].name;
+    if (this.resolutions.length) {
+      // 완료 전환에서는 Jira 선택지 순서와 무관하게 Done을 기본 처리 방법으로 둔다.
+      // 워크플로에 Done이 없거나 완료 전환이 아니면 Jira가 준 첫 값을 그대로 존중한다.
+      const done = this.transition.toCategory === "done"
+        ? this.resolutions.find((item) => String(item.name || "").trim().toLowerCase() === "done")
+        : null;
+      this.resolution = (done || this.resolutions[0]).name;
+    }
     api.timetracking().then((t) => { this.tt = t; }).catch(() => {});
     // ★ allowEmpty 가 없으면 **빈 검색어에서 무조건 빈 배열**이라 칸을 눌러도 아무것도 안 뜬다
     //   — 사용자에겐 "검색이 동작 안 한다" 로 보인다. 빈 검색어는 이 티켓 관련자를 먼저 주므로
@@ -71,23 +78,41 @@ export default {
     this._ta = createUserTypeahead(this.ticket, []);
     this.who = defaultUserSuggestions([], []);
     this.searchWho("");
-    api.me().then((m) => {                       // 대개 자기 자신이다 — 기본값으로 채운다
-      if (m && m.id && !this.user) {
-        this.user = { id: m.id, name: m.name || m.id, display: m.display || m.name || m.id,
-                      avatar: "/api/avatar/" + encodeURIComponent(m.id) };
-      }
-    }).catch(() => {});
+    this.initAssignee();
   },
   methods: {
     // 드래그가 창 밖에서 끝났을 뿐인데 닫히지 않게 — lib/backdrop.js 참고
     fromBackdrop,
+    /** 담당자 입력이 있는 전이는 현재 티켓 담당자를 기본값으로 쓴다. ticketBadge는 카드·메뉴가
+     *  이미 데운 가벼운 캐시를 재사용한다. 미할당/조회 실패일 때만 기존 동작대로 나를 넣는다. */
+    async initAssignee() {
+      if (!this.has.assignee) return;
+      try {
+        const current = await api.ticketBadge(this.ticket);
+        if (this._userTouched) return;
+        const id = current && current.assigneeId;
+        if (id) {
+          const name = current.assignee || id;
+          this.user = { id, name, display: current.assigneeDisplay || name,
+                        avatar: "/api/avatar/" + encodeURIComponent(id) };
+          return;
+        }
+      } catch (e) { /* 현재 담당자를 못 읽으면 아래의 나 기본값으로 폴백한다. */ }
+      try {
+        const me = await api.me();
+        if (this._userTouched || !me || !me.id) return;
+        this.user = { id: me.id, name: me.name || me.id, display: me.display || me.name || me.id,
+                      avatar: "/api/avatar/" + encodeURIComponent(me.id) };
+      } catch (e) { /* 필수 여부와 오류 표시는 기존 problems/제출 경로가 담당한다. */ }
+    },
     searchWho(q) {
       this.hi = 0;
       if (!String(q || "").trim()) this.who = defaultUserSuggestions([], []);
       this._ta.run(q).then((r) => { if (r) this.who = r.slice(0, 8); }).catch(() => {});
     },
-    pickWho(u) { rememberUser(u); this.user = u; this.whoOpen = false; this.q = ""; this.who = []; },
+    pickWho(u) { this._userTouched = true; rememberUser(u); this.user = u; this.whoOpen = false; this.q = ""; this.who = []; },
     clearWho() {
+      this._userTouched = true;
       this.user = null; this.q = ""; this.whoOpen = true; this.searchWho("");
       this.$nextTick(() => { const el = this.$refs.who; if (el) el.focus(); });
     },
