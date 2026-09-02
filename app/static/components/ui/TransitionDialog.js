@@ -63,7 +63,14 @@ export default {
     },
   },
   mounted() {
-    if (this.resolutions.length) this.resolution = this.resolutions[0].name;
+    if (this.resolutions.length) {
+      // 완료 전환에서는 Jira 선택지 순서와 무관하게 Done을 기본 처리 방법으로 둔다.
+      // 워크플로에 Done이 없거나 완료 전환이 아니면 Jira가 준 첫 값을 그대로 존중한다.
+      const done = this.transition.toCategory === "done"
+        ? this.resolutions.find((item) => String(item.name || "").trim().toLowerCase() === "done")
+        : null;
+      this.resolution = (done || this.resolutions[0]).name;
+    }
     api.timetracking().then((t) => { this.tt = t; }).catch(() => {});
     // ★ allowEmpty 가 없으면 **빈 검색어에서 무조건 빈 배열**이라 칸을 눌러도 아무것도 안 뜬다
     //   — 사용자에겐 "검색이 동작 안 한다" 로 보인다. 빈 검색어는 이 티켓 관련자를 먼저 주므로

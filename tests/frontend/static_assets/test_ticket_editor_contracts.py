@@ -314,6 +314,10 @@ def test_ticket_epic_and_person_pickers_render_local_defaults_before_network():
     assert "current.assigneeId" in init_assignee and "current.assigneeDisplay || name" in init_assignee
     assert "if (this._userTouched) return" in init_assignee
     assert transition.count("this._userTouched = true") == 2
+    resolution_default = transition[transition.index("mounted() {"):transition.index("api.timetracking()")]
+    assert 'this.transition.toCategory === "done"' in resolution_default
+    assert '.trim().toLowerCase() === "done"' in resolution_default
+    assert "this.resolution = (done || this.resolutions[0]).name" in resolution_default
 
 
 def test_creation_dialog_keeps_last_options_and_never_deadlocks_on_type_lookup():
