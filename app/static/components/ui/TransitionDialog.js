@@ -71,23 +71,41 @@ export default {
     this._ta = createUserTypeahead(this.ticket, []);
     this.who = defaultUserSuggestions([], []);
     this.searchWho("");
-    api.me().then((m) => {                       // 대개 자기 자신이다 — 기본값으로 채운다
-      if (m && m.id && !this.user) {
-        this.user = { id: m.id, name: m.name || m.id, display: m.display || m.name || m.id,
-                      avatar: "/api/avatar/" + encodeURIComponent(m.id) };
-      }
-    }).catch(() => {});
+    this.initAssignee();
   },
   methods: {
     // 드래그가 창 밖에서 끝났을 뿐인데 닫히지 않게 — lib/backdrop.js 참고
     fromBackdrop,
+    /** 담당자 입력이 있는 전이는 현재 티켓 담당자를 기본값으로 쓴다. ticketBadge는 카드·메뉴가
+     *  이미 데운 가벼운 캐시를 재사용한다. 미할당/조회 실패일 때만 기존 동작대로 나를 넣는다. */
+    async initAssignee() {
+      if (!this.has.assignee) return;
+      try {
+        const current = await api.ticketBadge(this.ticket);
+        if (this._userTouched) return;
+        const id = current && current.assigneeId;
+        if (id) {
+          const name = current.assignee || id;
+          this.user = { id, name, display: current.assigneeDisplay || name,
+                        avatar: "/api/avatar/" + encodeURIComponent(id) };
+          return;
+        }
+      } catch (e) { /* 현재 담당자를 못 읽으면 아래의 나 기본값으로 폴백한다. */ }
+      try {
+        const me = await api.me();
+        if (this._userTouched || !me || !me.id) return;
+        this.user = { id: me.id, name: me.name || me.id, display: me.display || me.name || me.id,
+                      avatar: "/api/avatar/" + encodeURIComponent(me.id) };
+      } catch (e) { /* 필수 여부와 오류 표시는 기존 problems/제출 경로가 담당한다. */ }
+    },
     searchWho(q) {
       this.hi = 0;
       if (!String(q || "").trim()) this.who = defaultUserSuggestions([], []);
       this._ta.run(q).then((r) => { if (r) this.who = r.slice(0, 8); }).catch(() => {});
     },
-    pickWho(u) { rememberUser(u); this.user = u; this.whoOpen = false; this.q = ""; this.who = []; },
+    pickWho(u) { this._userTouched = true; rememberUser(u); this.user = u; this.whoOpen = false; this.q = ""; this.who = []; },
     clearWho() {
+      this._userTouched = true;
       this.user = null; this.q = ""; this.whoOpen = true; this.searchWho("");
       this.$nextTick(() => { const el = this.$refs.who; if (el) el.focus(); });
     },
