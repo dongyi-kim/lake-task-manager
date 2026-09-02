@@ -247,6 +247,29 @@ def _replace_with_rich_content(page, editor, prefix: str, *, section: bool,
     editor.dispatch_event("dragover", {"dataTransfer": drag_data})
     editor.dispatch_event("drop", {"dataTransfer": drag_data})
     editor.locator("img[src^='blob:']").nth(2).wait_for(state="visible")
+
+    # 4) Excel 셀 복사는 HTML/TSV와 PNG 미리보기를 동시에 제공한다. 표를 우선해야 하며
+    # PNG는 별도 이미지로 들어가면 안 된다. 이 표도 아래의 두 번 게시 왕복을 함께 통과한다.
+    image_count = editor.locator("img[src^='blob:']").count()
+    editor.evaluate(
+        """(el, payload) => {
+          el.focus();
+          const bytes = Uint8Array.from(atob(payload.base64), c => c.charCodeAt(0));
+          const data = new DataTransfer();
+          data.setData('text/html', '<table><tbody><tr><td>' + payload.prefix +
+            '-EXCEL-A1</td><td>' + payload.prefix + '-EXCEL-B1</td></tr><tr><td>' +
+            payload.prefix + '-EXCEL-A2</td><td>' + payload.prefix + '-EXCEL-B2</td></tr></tbody></table>');
+          data.setData('text/plain', payload.prefix + '-EXCEL-A1\\t' + payload.prefix +
+            '-EXCEL-B1\\r\\n' + payload.prefix + '-EXCEL-A2\\t' + payload.prefix + '-EXCEL-B2');
+          data.items.add(new File([bytes], 'excel-preview.png', {type: 'image/png'}));
+          el.dispatchEvent(new ClipboardEvent('paste', {
+            bubbles: true, cancelable: true, clipboardData: data,
+          }));
+        }""",
+        {"base64": base64.b64encode(PNG_1X1).decode("ascii"), "prefix": prefix},
+    )
+    editor.get_by_text(f"{prefix}-EXCEL-B2", exact=True).wait_for(state="visible")
+    assert editor.locator("img[src^='blob:']").count() == image_count
     _assert_editor_schema(editor, prefix, expect_blob=True, full_styles=True)
 
 
@@ -255,6 +278,7 @@ def _assert_editor_schema(editor, prefix: str, *, expect_blob: bool = False,
     for name, selector in FORMAT_SELECTORS.items():
         assert editor.locator(selector).count() >= 1, f"editor lost {name}: {prefix}"
     assert editor.get_by_text(f"{prefix}-PLAIN", exact=False).count() == 1
+    assert editor.get_by_text(f"{prefix}-EXCEL-B2", exact=True).count() == 1
     assert editor.locator("span[data-type='mention'][data-id='test.ui02']").count() == 1
     table_wrapper = editor.locator(".tableWrapper").first
     assert table_wrapper.evaluate("el => getComputedStyle(el).overscrollBehaviorY") == "auto"
@@ -313,6 +337,7 @@ def _assert_rendered(scope, prefix: str, *, expect_section: bool = False) -> Non
         assert scope.locator(selector).count() >= 1, (
             f"render lost {name}: {prefix}\n{scope.inner_html()[:12000]}")
     assert scope.get_by_text(f"{prefix}-PLAIN", exact=False).count() >= 1
+    assert scope.get_by_text(f"{prefix}-EXCEL-B2", exact=True).count() == 1
     assert scope.locator(".mention-badge, a.user-hover[href*='ViewProfile.jspa']").count() >= 1
     assert scope.locator("a[href='https://example.com/%s']" % prefix.lower()).count() == 1
     # 붙여넣은 Jira URL/링크 노드는 게시·수정·재게시 뒤에도 Detailed를 유지한다.

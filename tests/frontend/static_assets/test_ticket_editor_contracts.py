@@ -228,6 +228,20 @@ def test_field_edit_and_mentions_share_user_defaults_and_managed_popup():
     assert ".ProseMirror-selectednode:not(.mention-badge) img" in css
 
 
+def test_excel_clipboard_prefers_editable_table_over_png_preview():
+    editor = comment_editor_source()
+    clipboard = (STATIC / "components" / "editor" / "editorClipboard.js").read_text(encoding="utf-8")
+
+    paste = editor[editor.index("handlePaste: (view, event) => {"):
+                   editor.index("handleDrop: (view, event) => {")]
+    assert paste.index("hasClipboardTableHtml(html)") < paste.index("const files = cd && cd.files")
+    assert paste.index("tsvTableNode(txt)") < paste.index("const files = cd && cd.files")
+    assert 'if (self.kind !== "agentchat" && hasClipboardTableHtml(html)) return false;' in paste
+    assert paste.count('self.kind !== "agentchat"') == 2
+    assert "export function parseTsv" in clipboard
+    assert 'type: "tableCell"' in clipboard and 'type: "tableRow"' in clipboard
+
+
 def test_comment_editor_runs_on_one_tiptap_v3_runtime():
     """에디터는 lock된 v3 패키지를 하나의 로컬 번들로만 로드한다."""
     loader = (STATIC / "lib" / "tiptap.js").read_text(encoding="utf-8")

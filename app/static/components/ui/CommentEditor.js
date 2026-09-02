@@ -31,6 +31,7 @@ import {
 import {
   createEditorExtensions, STYLES, FONTS, COLORS, BGCOLORS,
 } from "../editor/editorExtensions.js";
+import { hasClipboardTableHtml, tsvTableNode } from "../editor/editorClipboard.js";
 import COMMENT_EDITOR_TEMPLATE from "../editor/commentEditorTemplate.js";
 
 export { normalizeAiHtml } from "../editor/contentTransforms.js";
@@ -119,10 +120,19 @@ export default {
         attributes: { class: "tkt-desc" },
         handlePaste: (view, event) => {
           const cd = event.clipboardData;
+          const html = cd && cd.getData && cd.getData("text/html");
+          const txt = cd && cd.getData && cd.getData("text/plain");
+          // Excel은 표와 PNG 미리보기를 함께 싣는다. 구조화된 표가 있으면 ProseMirror의 HTML
+          // 파서가 처리하게 두고, HTML이 없는 TSV 셀 범위도 편집 가능한 표 노드로 복원한다.
+          if (self.kind !== "agentchat" && hasClipboardTableHtml(html)) return false;
+          const pastedTable = self.kind !== "agentchat" && tsvTableNode(txt);
+          if (pastedTable) {
+            self._ed.chain().focus().insertContent(pastedTable).run();
+            event.preventDefault(); return true;
+          }
           const files = cd && cd.files;
           if (files && files.length && handleFiles(files, view)) { event.preventDefault(); return true; }
           // 순수 URL 붙여넣기 → 자동 링크(문서/웹). 읽기 렌더에서 앱이 Jira/Confluence 뱃지화.
-          const txt = cd && cd.getData && cd.getData("text/plain");
           if (txt && URL_RE.test(txt.trim()) && self._ed.state.selection.empty) {
             const url = txt.trim();
             const norm = normalizeAppUrl(url);                     // 우리 앱 URL 이면 정규화
