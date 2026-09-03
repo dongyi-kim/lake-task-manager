@@ -141,11 +141,16 @@ skip에는 Playwright/Chromium 또는 Windows 선택 기능이 없는 환경에�
 python -m pytest -q --basetemp=.cache/test-tmp/ci
 ```
 
-## 브라우저 검증 제한
+## 브라우저 검증 범위
 
-이 작업 시점에는 Codex in-app Browser 연결 대상이 없어 실제 화면을 열고 quick filter,
-dialog, WBS/VIT 탭을 클릭하는 자동화가 실행되지 않았다. 따라서 다음 항목은 **검증 완료로
-주장하지 않는다**.
+2026-09-03에 실제 Google Chrome을 연결해 지연 없는 local mock(`127.0.0.1:4457`)에서
+`My Tasks → DL-9001 → 진행 중 → Resolved` 순서로 UI를 직접 조작했다. Resolve dialog의
+`.trx .ProseMirror`는 **1개이며 visible**이었고, 접근성 트리에서도 rich editor toolbar와
+`댓글을 입력하세요` 편집 영역, 기본 resolution `Done`이 함께 확인됐다. 전환은 제출하지 않아
+fixture 상태는 바꾸지 않았다. 이 smoke는 이번 prod 제보의 핵심인 “Resolve 폼에서 댓글
+에디터가 사라짐” 회귀가 실제 번들 UI에서 해소됐음을 확인한다.
+
+다만 아래 장시간·장애 주입 여정은 아직 **검증 완료로 주장하지 않는다**.
 
 - prod와 같은 불규칙 지연에서 실제 카드가 주르륵 추가되는 시각적 타임라인
 - 담당자·보고자·모듈·기간 quick filter를 연속 조작했을 때의 클릭 응답 p50/p95
@@ -153,8 +158,8 @@ dialog, WBS/VIT 탭을 클릭하는 자동화가 실행되지 않았다. 따라�
 - 유휴 후 focus 순간의 무음 재인증 UX 및 로그인 창이 중복으로 뜨지 않는지
 - 응답 유실 뒤 브라우저/앱 재시작을 포함한 작성 UI 복원 동작
 
-현재 frontend 검증은 source/static contract와 UI 독립 pure state machine의 Node 실행에
-기반한다. Browser 연결이 가능해지면 위 다섯 항목을 실제 UI E2E로 별도 수행해야 한다.
+나머지 frontend 검증은 source/static contract와 UI 독립 pure state machine의 Node 실행에
+기반한다. 위 다섯 항목은 별도 실제 UI E2E로 수행해야 한다.
 
 ## merge 전 수동 시나리오
 
