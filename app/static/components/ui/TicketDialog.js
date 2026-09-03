@@ -32,6 +32,10 @@ import { loadTiptap } from "../../lib/tiptap.js";
 import { confirmBox } from "../../lib/confirm.js";
 import { pushToast } from "../../lib/toast.js";
 import { copyTicketLink } from "../../lib/ticketlink.js";
+import {
+  DIALOG_PANEL_LABELS, DIALOG_PANEL_ORDER, panelStatus, panelsInState,
+  requestErrorText, setPanelStatus,
+} from "../ticket/panelRecovery.js";
 
 
 // Confluence URL 에서 문서 제목 추출(내부 <a> 텍스트 무시) — /pages/{id}/{slug} 또는 /display/{space}/{slug}.
@@ -44,7 +48,6 @@ function confTitleFromUrl(u) {
   return null;
 }
 const _BROWSE_RE = /\/browse\/([A-Z][A-Z0-9]+-\d+)/;
-
 export default {
   name: "TicketDialog",
   components: { TypeBadge, Avatar, CommentEditor, SettingsMenu, LinkPicker, FieldEdit, PriIcon,
@@ -73,7 +76,7 @@ export default {
                     err: "", expanded: false, zoom: null, zoomLoading: false,
                     // 좌측 계보와 우측 타임라인은 서로 다른 요청이다. 하나가 멈춰도 이미 받은 다른
                     // 패널과 본문을 계속 조작할 수 있도록 로딩·오류 상태를 절대 공유하지 않는다.
-                    spineLoading: true, timelineLoading: true, timelineErr: "",
+                    spineLoading: true, timelineLoading: true, timelineErr: "", panelState: {},
                     // 하위 이력은 최초 진입에서 요청하지 않는다. 사용자가 버튼을 눌렀을 때만
                     // 별도 저우선순위 작업으로 받아 본인 이력 위에 합친다.
                     childTimeline: [], childTimelineLoading: false, childTimelineLoaded: false,
@@ -128,7 +131,14 @@ export default {
     this.$nextTick(() => this.posCollapse());
     // 재인증(auth-ok) 후 — 티켓 로딩 중 세션이 끊겨 본문이 안 뜬 채 굳은 경우 다시 받는다.
     // (정상 로드된 창은 건드리지 않는다 — 쓰던 글·스크롤 보존.)
-    window.addEventListener("auth-ok", this._authok = () => { if (this.err || !this.v) this.load(); });
+    window.addEventListener("auth-ok", this._authok = () => {
+      if (this.err || !this.v) { this.load(); return; }
+      // 인증이 돌아와도 이미 받은 본문·댓글·작성 중인 글은 그대로 둔다. 실패한 패널만 다시
+      // 출발시켜, 한 보조 요청 때문에 다이얼로그 전체가 처음 상태로 되돌아가지 않게 한다.
+      this.retryFailedPanels();
+      if (this.timelineErr) this.retryTimeline();
+      if (this.childTimelineErr && this.showChildTimeline) this.toggleChildTimeline();
+    });
     this.load();
     // 에디터·구문강조 CDN 프리로드 — 티켓 다이얼로그/풀뷰가 열리는 시점에 미리 받아둔다.
     // (버전 고정 URL 이라 브라우저가 장기 캐시 → 이후엔 네트워크 없이 즉시.) '댓글 달기' 지연 제거.
@@ -171,14 +181,21 @@ export default {
     refDocs() { return (this.docs || []).filter((d) => !d.mention); },
     /** 이 티켓을 언급해서 자동으로 생긴 링크 — 좌측 패널에 따로 모은다. */
     mentionDocs() { return (this.docs || []).filter((d) => d.mention); },
-    /** 소속 Epic 의 제목 — 계보 패널이 이미 받아 둔 것을 쓴다(따로 조회하지 않는다).
-     *  아직 안 왔거나 없으면 키를 그대로 — 빈 뱃지를 보이느니 번호라도 보이는 게 낫다. */
+    /** 소속 Epic 의 제목 — 계보 패널과 티켓 본문이 이미 받아 둔 값을 쓴다(따로 조회하지 않는다).
+     *  계보가 지연/권한 실패해도 본문 캐시의 이름을 유지하고, 실제 이름이 전혀 없을 때만 키다. */
     epicTitle() {
       const k = this.v && this.v.epicKey;
       if (!k) return "";
-      const a = (this.ancestors || []).find((x) => x.key === k);
+      const key = String(k).trim();
+      const usable = (value) => {
+        const label = String(value || "").trim();
+        return label && label.toUpperCase() !== key.toUpperCase() ? label : "";
+      };
+      const a = (this.ancestors || []).find(
+        (x) => String((x && x.key) || "").toUpperCase() === key.toUpperCase());
       // 에픽 뱃지 라벨 규칙(전 화면 공통): Epic Name(단축어) → Summary → 티켓 키.
-      return (a && (a.epicName || a.summary)) || k;
+      return usable(a && a.epicName) || usable(a && a.summary)
+        || usable(this.v && this.v.epicName) || usable(this.v && this.v.epicSummary) || key;
     },
     /** 전이 목록·권한 — 우클릭 메뉴와 같은 응답에서 꺼낸다(판정이 갈리면 안 된다). */
     stList() { return (this.stInfo && this.stInfo.transitions) || []; },
@@ -228,7 +245,14 @@ export default {
       return out;
     },
     /** 좌측 부가정보 패널을 그릴 거리가 있는가(계보/형제/타임라인 중 하나라도). */
-    hasSpine() { return this.spine.length > 1 || this.siblings.length > 0 || this.visibleTimeline.length > 0; },
+    hasSpine() {
+      return this.spine.length > 1 || this.siblings.length > 0 || this.related.length > 0
+        || this.mentionDocs.length > 0 || this.visibleTimeline.length > 0;
+    },
+    failedPanels() {
+      return panelsInState(this.panelState, "error");
+    },
+    failedAuxPanels() { return this.failedPanels.filter((name) => name !== "comments"); },
     /** 우측 타임라인 패널을 그릴 거리가 있는가(일정 또는 이력). */
     hasTl() { return !!(this.v || this.visibleTimeline.length); },
     visibleTimeline() {
@@ -354,6 +378,55 @@ export default {
       this.$emit("close");
     },
     extOf,
+    panelLabel(name) { return DIALOG_PANEL_LABELS[name] || name; },
+    panelLoading(name) { return panelStatus(this.panelState, name).state === "loading"; },
+    panelReady(name) { return panelStatus(this.panelState, name).state === "ready"; },
+    panelError(name) { return panelStatus(this.panelState, name).error; },
+    _setPanelState(name, state, error) {
+      this.panelState = setPanelStatus(this.panelState, name, state, error || "");
+      if (name === "ancestors" || name === "siblings") {
+        this.spineLoading = ["ancestors", "siblings"].some((part) => this.panelLoading(part));
+      }
+    },
+    /** 보조 패널은 모두 같은 생명주기를 쓴다. 실패를 빈 배열로 바꾸지 않고, 도착한 패널만
+     *  즉시 반영한다. 호출 순서가 곧 prod 직렬 SSO의 우선순위이므로 spec 순서를 보존한다. */
+    _loadDialogPanel(name, key = this.keyId, requestId = this._req) {
+      const fresh = () => requestId === this._req && this.keyId === key;
+      const specs = {
+        editmeta: { get: () => api.editmeta(key), put: (v) => { this.emeta = v || {}; } },
+        childTypes: { get: () => api.childTypes(key), put: (v) => { this.kidTypes = v || []; } },
+        ancestors: { get: () => api.ticketAncestors(key), put: (v) => { this.ancestors = v || []; } },
+        comments: { get: () => api.ticketComments(key), put: (v) => { this.comments = v || []; } },
+        siblings: { get: () => api.ticketSiblings(key), put: (v) => { this.siblings = v || []; } },
+        attachments: { get: () => api.ticketAttachments(key), put: (v) => {
+          this.atts = v || []; this.attOpen = this.atts.length <= FOLD_AT;
+        } },
+        documents: { get: () => api.ticketDocuments(key), put: (v) => {
+          this.docs = v || []; this.docOpen = this.docs.length <= FOLD_AT;
+        } },
+        children: { get: () => api.ticketChildren(key), put: (v) => { this.children = v || []; } },
+        related: { get: () => api.ticketRelated(key), put: (v) => { this.related = v || []; } },
+      };
+      const spec = specs[name];
+      if (!spec || !fresh()) return Promise.resolve(null);
+      this._setPanelState(name, "loading");
+      let pending;
+      try { pending = spec.get(); }
+      catch (error) { pending = Promise.reject(error); }
+      return Promise.resolve(pending).then((value) => {
+        if (!fresh()) return value;
+        spec.put(value);
+        this._setPanelState(name, "ready");
+        return value;
+      }).catch((error) => {
+        if (fresh()) this._setPanelState(name, "error", requestErrorText(error));
+        return null;
+      });
+    },
+    retryPanel(name) { return this._loadDialogPanel(name, this.keyId, this._req); },
+    retryFailedPanels() {
+      return Promise.all(this.failedPanels.map((name) => this.retryPanel(name)));
+    },
     // 본문(Description)·코멘트·계보(조상/형제)·타임라인을 **동시에 출발**시키고 각자 도착하는 대로
     // 개별 렌더한다(서로 막지 않음). 느린 타임라인이 본문을 기다리지 않게 하는 게 핵심.
     // 다이얼로그는 계보/형제/타임라인 클릭으로 티켓을 갈아타므로, 늦게 온 이전 티켓 응답이
@@ -372,16 +445,12 @@ export default {
       window.dispatchEvent(new CustomEvent("ticket-changed", { detail: { key: this.keyId } }));
     },
     reloadChildren() {
-      const key = this.keyId;
-      return api.ticketChildren(key)
-        .then((c) => { if (this.keyId === key) this.children = c || []; }).catch(() => {});
+      return this.retryPanel("children");
     },
     /** 형제·조상(진척 캡슐) 재조회 — 하위/형제 변화가 이 둘에 반영된다. 형제 목록은 서버에서
      *  부모별 공유 캐시라, 형제 하나가 바뀌면 부모 그룹 무효화로 여기서 최신을 받는다. */
     reloadLineage() {
-      const key = this.keyId;
-      api.ticketSiblings(key).then((s) => { if (this.keyId === key) this.siblings = s || []; }).catch(() => {});
-      api.ticketAncestors(key).then((a) => { if (this.keyId === key) this.ancestors = a || []; }).catch(() => {});
+      return Promise.all([this.retryPanel("ancestors"), this.retryPanel("siblings")]);
     },
     /** 상태 전이 완료 — 내 뷰를 다시 받고(load), 다른 화면·부모에도 알린다(형제·부모 진척 갱신). */
     onTransitioned() { this.stPick = null; this.onFieldSaved(); },
@@ -522,6 +591,7 @@ export default {
       this.err = "";
       if (!quiet) {
         this.spineLoading = true; this.timelineLoading = true; this.timelineErr = "";
+        this.panelState = {};
         this.v = null; this.comments = null;
         this.ancestors = []; this.siblings = []; this.timeline = [];
         this.childTimeline = []; this.childTimelineLoading = false; this.childTimelineLoaded = false;
@@ -557,37 +627,12 @@ export default {
         if (fresh()) this.err = e && e.message === "HTTP 404" ? "티켓을 찾을 수 없습니다: " + key : (e.message || "불러오기 실패");
       });
 
-      // ★ 우선순위를 **틈(await)으로 강제**한다. 브라우저 병렬 + 상류 직렬(prod SSO) 이면 그냥 다
-      //   쏴 두면 도착 순서가 뒤섞인다(계보가 첨부보다 늦게 오는 걸 지연 테스트로 확인). 상류가
-      //   직렬이라 tier 사이 await 는 **추가 지연이 없다**(어차피 한 줄로 처리된다). 로컬(basic,
-      //   parallel)만 미세 손해지만 dev·localhost 라 무시 가능.
+      // 본문을 먼저 큐에 넣어 prod 직렬 SSO에서도 읽을 내용을 최우선으로 둔다.
       await vp;                                          // 1순위: 티켓정보·설명·일정
       if (!fresh()) return;
-      // 2순위: **조작 가능 상태**부터. editmeta가 와야 이미 보이는 제목·필드가 클릭 가능하다.
-      // 타임라인을 이보다 먼저 큐에 넣으면 changelog 지연 하나 때문에 완성된 본문까지 읽기 전용처럼
-      // 굳는다. 계보·댓글도 같은 묶음에서 각자 도착 즉시 그리되, 요청 순서는 editmeta가 먼저다.
-      await Promise.allSettled([
-        api.editmeta(key).then((m) => { if (fresh()) this.emeta = m || {}; })
-          .catch(() => { if (fresh()) this.emeta = {}; }),
-        api.childTypes(key).then((t) => { if (fresh()) this.kidTypes = t || []; }).catch(() => {}),
-        api.ticketAncestors(key).then((a) => { if (fresh()) this.ancestors = a || []; }).catch(() => {}),
-        api.ticketComments(key).then((c) => { if (fresh()) this.comments = c; }).catch(() => { if (fresh()) this.comments = []; }),
-      ]);
-      if (!fresh()) return;
-      // 3순위: 나머지 섹션을 병렬로 채운다. 타임라인은 이 요청들을 **모두 먼저 출발시킨 뒤**
-      // 별도 저우선순위 job으로 시작한다. 그래서 어느 한 섹션이 늦어도 다른 섹션 클릭은 살아 있다.
-      api.ticketSiblings(key).then((s) => { if (fresh()) this.siblings = s || []; }).catch(() => {})
-        .finally(() => { if (fresh()) this.spineLoading = false; });
-      api.ticketAttachments(key).then((a) => {
-        if (!fresh()) return;
-        this.atts = a || []; this.attOpen = this.atts.length <= FOLD_AT;
-      }).catch(() => {});
-      api.ticketDocuments(key).then((d) => {
-        if (!fresh()) return;
-        this.docs = d || []; this.docOpen = this.docs.length <= FOLD_AT;
-      }).catch(() => {});
-      api.ticketChildren(key).then((c) => { if (fresh()) this.children = c || []; }).catch(() => {});
-      api.ticketRelated(key).then((r) => { if (fresh()) this.related = r || []; }).catch(() => {});
+      // 편집 권한을 가장 먼저, 그 뒤 보조 패널을 우선순위 순으로 **모두 출발**시킨다. 어느 하나도
+      // 다음 요청의 시작을 막지 않고, 각 패널은 자기 성공/오류 상태만 갱신한다.
+      DIALOG_PANEL_ORDER.forEach((name) => this._loadDialogPanel(name, key, my));
       this.loadTimeline(key, my);
 
       // 유휴 시 이 티켓의 편집 팝업(담당/보고 기본·상태 전이)·전역 기본목록을 미리 데운다(로그인 상태).
@@ -672,10 +717,7 @@ export default {
     /** 편집 가능 필드를 받아 둔다. 실패하면 아무것도 안 열린다 — 조용히 열어 주는 것보다
      *  조용히 닫는 편이 안전하다(열어 두면 다 입력한 뒤 거절당한다). */
     loadEditmeta() {
-      const key = this.keyId;
-      return api.editmeta(key)
-        .then((m) => { if (this.keyId === key) this.emeta = m || {}; })
-        .catch(() => { if (this.keyId === key) this.emeta = {}; });
+      return this.retryPanel("editmeta");
     },
     fmeta(id) { return (this.emeta && this.emeta[id]) || null; },
     /** 제목(summary) 인라인 수정 — editmeta 에 summary 가 있을 때만(권한). Enter 저장 / Esc 취소. */
@@ -750,9 +792,7 @@ export default {
       this.reloadDocs();
     },
     reloadAttachments() {
-      const key = this.keyId;
-      return api.ticketAttachments(key)
-        .then((a) => { if (this.keyId === key) this.atts = a || []; }).catch(() => {});
+      return this.retryPanel("attachments");
     },
 
     // ── 관련 티켓 / 관련문서 링크 걸기 ──
@@ -767,9 +807,7 @@ export default {
       finally { this.linkBusy = false; }
     },
     reloadRelated() {
-      const key = this.keyId;
-      return api.ticketRelated(key)
-        .then((r) => { if (this.keyId === key) this.related = r || []; }).catch(() => {});
+      return this.retryPanel("related");
     },
     async addDoc(sel) {
       if (this.docBusy) return;
@@ -786,9 +824,7 @@ export default {
       finally { this.docBusy = false; }
     },
     reloadDocs() {
-      const key = this.keyId;
-      return api.ticketDocuments(key)
-        .then((d) => { if (this.keyId === key) this.docs = d || []; }).catch(() => {});
+      return this.retryPanel("documents");
     },
 
     // 글쓴이 시그니처 컬러 — 기본 아바타(프사 없는 사람)와 같은 색이어야 하므로 colors.js 단일 소스.
@@ -809,10 +845,7 @@ export default {
       return !!(this.me && this.me.id && c.authorId === this.me.id);
     },
     reloadComments() {
-      const key = this.keyId;
-      return api.ticketComments(key)
-        .then((c) => { if (this.keyId === key) this.comments = c || []; })
-        .catch(() => {});
+      return this.retryPanel("comments");
     },
     startCompose() {
       this.editingId = null; this.editErr = ""; this.composing = true; this.composeCollapsed = false;
@@ -835,10 +868,10 @@ export default {
     },
     async cancelCompose() {
       const ed = this.$refs.newCommentEditor;
-      if (ed && ed.discardDraft) await ed.discardDraft();
+      if (ed && ed.discardDraft && await ed.discardDraft() === false) return;
       this.composing = false; this.composeCollapsed = false; this.composePreview = ""; this.composeHasDraft = false;
     },
-    submitNew(md) { return api.commentCreate(this.tk, md); },     // CommentEditor 가 await
+    submitNew(md, mutationId) { return api.commentCreate(this.tk, md, mutationId); },
     onComposed() {
       this.composing = false; this.composeCollapsed = false; this.composePreview = ""; this.composeHasDraft = false;
       this.reloadComments(); this.reloadSide();
@@ -1211,7 +1244,7 @@ export default {
                 <span class="spn-stitle">{{ r.summary }}</span>
                 <span class="spn-rel" :class="r.via">{{ r.via === 'link' ? r.rel : '언급' }}</span>
               </div>
-              <div v-if="!related.length" class="muted mini">관련 티켓 없음</div>
+              <div v-if="panelReady('related') && !related.length" class="muted mini">관련 티켓 없음</div>
             </div>
             <!-- 이 티켓을 **저쪽에서 언급해** 자동으로 생긴 링크(Confluence 의 Jira 이슈 매크로 등).
                  참고하라고 사람이 붙인 관련문서와 성질이 달라 자리를 나눈다 — 관련문서에 섞으면
@@ -1270,6 +1303,11 @@ export default {
           </template>
 
           <template v-else>
+          <div v-if="failedAuxPanels.length" class="tkt-cmt-err">
+            일부 부가정보를 불러오지 못했습니다.
+            <button v-for="name in failedAuxPanels" :key="'retry-' + name" type="button" class="tkt-cmt-act"
+                    @click="retryPanel(name)">{{ panelLabel(name) }} 재시도</button>
+          </div>
           <!-- 티켓 제목은 타이틀바가 담당한다. 이 자리는 아래 메타 영역의 헤딩 -->
           <div class="tkt-sec-t first">티켓 정보</div>
 
@@ -1512,7 +1550,7 @@ export default {
                 <em v-if="upElapsed > 3">· {{ upElapsed }}초</em>
                 <em class="hint">큰 파일은 몇 분 걸릴 수 있습니다 — 그대로 두세요</em>
               </div>
-              <div v-if="!atts.length" class="muted mini">첨부파일 없음 — 파일을 이 창에 끌어다 놓아도 됩니다</div>
+              <div v-if="panelReady('attachments') && !atts.length" class="muted mini">첨부파일 없음 — 파일을 이 창에 끌어다 놓아도 됩니다</div>
               <!-- 목록이 길면 기본으로 접는다 — 첨부가 스무 개인 티켓에서 본문·코멘트가 화면
                    밖으로 밀려난다. 앞 5개는 남기고 6번째가 흐려지며, 그 위에 펼침 버튼이 앉는다. -->
               <div v-else class="foldwrap" :class="{ folded: !attOpen }">
@@ -1547,7 +1585,7 @@ export default {
               </div>
               <LinkPicker v-if="docPick" mode="confluence" :busy="docBusy" :err="docErr"
                           @close="docPick = false" @pick="addDoc" />
-              <div v-if="!refDocs.length" class="muted mini">관련문서 없음</div>
+              <div v-if="panelReady('documents') && !refDocs.length" class="muted mini">관련문서 없음</div>
               <div v-else class="foldwrap" :class="{ folded: !docOpen }">
               <div class="chipwrap" :class="{ 'fold-peek': !docOpen }">
                 <span v-for="(d, i) in refDocs" :key="i" class="fchip-w">
@@ -1578,7 +1616,11 @@ export default {
                         @click="cmtSort = 'old'" title="오래된 댓글이 위로">오래된순</button>
               </span>
             </div>
-            <div v-if="!comments" class="loading">코멘트 불러오는 중…</div>
+            <div v-if="panelError('comments')" class="tkt-cmt-err">
+              코멘트를 불러오지 못했습니다: {{ panelError('comments') }}
+              <button type="button" class="tkt-cmt-act" @click="retryPanel('comments')">재시도</button>
+            </div>
+            <div v-else-if="!comments" class="loading">코멘트 불러오는 중…</div>
             <template v-else>
               <div v-if="!comments.length" class="muted">코멘트가 없습니다.</div>
               <div v-else class="tkt-comments">

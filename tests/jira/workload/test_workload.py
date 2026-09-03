@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from app.auth.base import SessionExpired      # noqa: E402
+from app.auth.base import SessionExpired, UpstreamUnavailable      # noqa: E402
 from app.infra.cache import Cache                   # noqa: E402
 from app.jira.jira_client import JiraClient        # noqa: E402
 from app.jira.workload_service import JiraWorkloadMixin, workload_category  # noqa: E402
@@ -196,6 +196,173 @@ def test_subtask_inherits_parent_epic_in_summary_and_detail():
     assert summary["epics"][parent["epicKey"]]["count"] >= 1
 
 
+def _parent_resolution_issues(client):
+    direct = _assigned_issue("DL-DIRECT", client.s_today().isoformat(), "inprogress")
+    direct["fields"][client.s.epic_link_field_id] = "DL-EPIC-DIRECT"
+    known = _assigned_issue("DL-SUB-KNOWN", client.s_today().isoformat(), "inprogress")
+    known["fields"].update({
+        "issuetype": {"name": "Sub-Task", "subtask": True},
+        "parent": {"key": "DL-PARENT-KNOWN"},
+    })
+    missing = _assigned_issue("DL-SUB-MISSING", client.s_today().isoformat(), "inprogress")
+    missing["fields"].update({
+        "issuetype": {"name": "Sub-Task", "subtask": True},
+        "parent": {"key": "DL-PARENT-MISSING"},
+    })
+    parent = {
+        "key": "DL-PARENT-KNOWN",
+        "fields": {client.s.epic_link_field_id: "DL-EPIC-INHERITED"},
+    }
+    return [direct, known, missing], parent
+
+
+def test_parent_batch_partial_keeps_counts_and_assigns_only_proven_epics(monkeypatch):
+    c = _client()
+    issues, parent = _parent_resolution_issues(c)
+    monkeypatch.setattr(c, "_search", lambda *_args, **_kwargs: issues)
+    monkeypatch.setattr(c, "issues_by_keys_result", lambda *_args, **_kwargs: {
+        "issues": [parent],
+        "missing": [{"key": "DL-PARENT-MISSING", "kind": "transport",
+                     "error": "parent timeout"}],
+        "complete": False,
+    })
+
+    result = c._wl_counts('assignee = "person"')
+
+    assert result["count"] == {"task": 1, "subtask": 2, "voc": 0}
+    assert set(result["epics"]) == {"DL-EPIC-DIRECT", "DL-EPIC-INHERITED"}
+    assert result["partial"] is True and result["retryable"] is True
+    assert result["missingParents"] == [{
+        "parentKey": "DL-PARENT-MISSING", "issueKeys": ["DL-SUB-MISSING"],
+        "kind": "transport", "retryable": True, "message": "parent timeout",
+    }]
+
+
+def test_retryable_parent_gap_returns_partial_person_bundle_without_caching(monkeypatch):
+    c = _client()
+    issues, parent = _parent_resolution_issues(c)
+    monkeypatch.setattr(c, "_search", lambda *_args, **_kwargs: issues)
+    monkeypatch.setattr(c, "_display_name", lambda user: user)
+    monkeypatch.setattr(c, "_epic_name_map", lambda _keys: {})
+    monkeypatch.setattr(c, "issues_by_keys_result", lambda *_args, **_kwargs: {
+        "issues": [parent],
+        "missing": [{"key": "DL-PARENT-MISSING", "kind": "transport",
+                     "error": "parent timeout"}],
+        "complete": False,
+    })
+
+    result = c.workload_person("person")
+
+    assert not result.get("error") and result["errorKind"] == "transport"
+    assert result["partial"] is True
+    assert result["inProgress"]["count"]["subtask"] == 2
+    assert c.cache.get(f"workload:{c.env}:person:done:7:assigned:all") is None
+
+
+def test_permission_parent_gap_returns_detail_rows_but_does_not_cache(monkeypatch):
+    c = _client()
+    issues, parent = _parent_resolution_issues(c)
+    monkeypatch.setattr(c, "_search", lambda *_args, **_kwargs: issues)
+    monkeypatch.setattr(c, "_epic_name_map", lambda _keys: {})
+    monkeypatch.setattr(c, "issues_by_keys_result", lambda *_args, **_kwargs: {
+        "issues": [parent],
+        "missing": [{"key": "DL-PARENT-MISSING", "kind": "permission",
+                     "error": "HTTP 403"}],
+        "complete": False,
+    })
+
+    rows = c.workload_bucket("person", "inProgress")
+
+    assert {row["key"] for row in rows} == {row["key"] for row in issues}
+    unresolved = next(row for row in rows if row["key"] == "DL-SUB-MISSING")
+    assert unresolved["epic"] is None
+    assert unresolved["epicResolution"] == {
+        "complete": False, "parentKey": "DL-PARENT-MISSING",
+        "kind": "permission", "retryable": False,
+    }
+    assert c.cache.get(f"workload_bucket:{c.env}:person:inProgress:all") is None
+
+
+def test_transport_parent_gap_returns_all_detail_rows_marked_retryable_and_uncached(monkeypatch):
+    c = _client()
+    issues, parent = _parent_resolution_issues(c)
+    monkeypatch.setattr(c, "_search", lambda *_args, **_kwargs: issues)
+    monkeypatch.setattr(c, "_epic_name_map", lambda _keys: {})
+    monkeypatch.setattr(c, "issues_by_keys_result", lambda *_args, **_kwargs: {
+        "issues": [parent],
+        "missing": [{"key": "DL-PARENT-MISSING", "kind": "transport",
+                     "error": "parent timeout"}],
+        "complete": False,
+    })
+
+    rows = c.workload_bucket("person", "inProgress")
+
+    assert {row["key"] for row in rows} == {row["key"] for row in issues}
+    unresolved = next(row for row in rows if row["key"] == "DL-SUB-MISSING")
+    assert unresolved["epicResolution"] == {
+        "complete": False, "parentKey": "DL-PARENT-MISSING",
+        "kind": "transport", "retryable": True,
+    }
+    assert c.cache.get(f"workload_bucket:{c.env}:person:inProgress:all") is None
+
+
+@pytest.mark.parametrize("failure,kind", [
+    (PermissionError("HTTP 403"), "permission"),
+    (ValueError("invalid activity payload"), "malformed"),
+])
+def test_activity_partial_source_is_not_cached_and_success_source_is_reused(
+        monkeypatch, failure, kind):
+    c = _client()
+    calls = {"jira": 0, "confluence": 0}
+
+    def jira(_user):
+        calls["jira"] += 1
+        return [{"key": "DL-1"}]
+
+    def confluence(_user):
+        calls["confluence"] += 1
+        if calls["confluence"] == 1:
+            raise failure
+        return [{"title": "recovered"}]
+
+    monkeypatch.setattr(c, "_parse_activity", jira)
+    monkeypatch.setattr(c, "_fetch_confluence", confluence)
+
+    first = c.activity("person")
+    assert first["jira"] == [{"key": "DL-1"}]
+    assert first["confluence"] == [] and first["partial"] is True
+    assert first["sourceErrors"][0]["kind"] == kind
+    assert c.cache.get(f"activity:{c.env}:person:jira") == [{"key": "DL-1"}]
+    assert c.cache.get(f"activity:{c.env}:person:confluence") is None
+
+    second = c.activity("person")
+    assert second["partial"] is False and second["confluence"] == [{"title": "recovered"}]
+    assert calls == {"jira": 1, "confluence": 2}
+
+
+def test_activity_transport_propagates_but_keeps_completed_source_cache(monkeypatch):
+    c = _client()
+    calls = {"jira": 0}
+
+    def jira(_user):
+        calls["jira"] += 1
+        return []
+
+    monkeypatch.setattr(c, "_parse_activity", jira)
+    monkeypatch.setattr(
+        c, "_fetch_confluence",
+        lambda _user: (_ for _ in ()).throw(UpstreamUnavailable("offline")),
+    )
+
+    with pytest.raises(UpstreamUnavailable):
+        c.activity("person")
+    assert c.cache.get(f"activity:{c.env}:person:jira") == []
+    assert c.cache.get(f"activity:{c.env}:person:confluence") is None
+    with pytest.raises(UpstreamUnavailable):
+        c.activity("person")
+    assert calls["jira"] == 1
+
+
 # ── '최근 완료' 기간 필터 (1·2·4주) ──────────────────────────────────────────
 # 리포트된 버그: **일부 사람만** 완료 Task 가 누락됐다. 원인은 옛 질의가 `resolved >= -7d`
 # 하나만 봤다는 것 — Resolved 를 거치지 않고 Closed 로 바로 가거나 resolution 없이 완료로
@@ -266,6 +433,44 @@ def _assigned_issue(key, updated, status_category):
             "status": {"name": name, "statusCategory": {"key": status_category}},
         },
     }
+
+
+def test_workload_projects_epic_names_at_read_time_not_into_aggregate_cache(monkeypatch):
+    """An exact epicmeta refresh must update warm Workload rows without refetching ticket lists."""
+    c = _client()
+    epic_key = "DL-EPIC"
+    issue = _assigned_issue("DL-TASK", c.s_today().isoformat(), "inprogress")
+    issue["fields"][c.s.epic_link_field_id] = epic_key
+    searches = {"n": 0}
+    title = {"value": "이전 Epic 이름"}
+
+    def fake_search(_jql, **_kwargs):
+        searches["n"] += 1
+        return [issue]
+
+    monkeypatch.setattr(c, "_search", fake_search)
+    monkeypatch.setattr(
+        c, "epic_metadata_title_map",
+        lambda keys, **_kwargs: {str(key).upper(): title["value"] for key in keys},
+    )
+    monkeypatch.setattr(c, "_display_name", lambda user: user)
+
+    first = c.workload_bucket("test.person", "inProgress")
+    raw_bucket = c.cache.get(f"workload_bucket:{c.env}:test.person:inProgress:all")
+    assert first[0]["epicName"] == "이전 Epic 이름"
+    assert "epicName" not in raw_bucket[0]
+
+    title["value"] = "바뀐 Epic 이름"
+    second = c.workload_bucket("test.person", "inProgress")
+    assert second[0]["epicName"] == "바뀐 Epic 이름"
+    assert searches["n"] == 1                    # warm ticket membership/data reused
+
+    summary = c.workload_person("test.person")
+    raw_summary = c.cache.get(
+        f"workload:{c.env}:test.person:done:7:assigned:all"
+    )
+    assert summary["epicNames"][epic_key] == "바뀐 Epic 이름"
+    assert "epicNames" not in raw_summary
 
 
 def test_wl_assigned_window_only_allows_known_values():

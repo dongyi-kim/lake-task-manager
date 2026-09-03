@@ -138,7 +138,8 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
     assert "event.requestToken !== requestToken" in view
     assert "eventSequence <= lastSequence" in view
     assert "event.completedLeaves && event.completedLeaves.length" in view
-    assert "hydrationPromise = this._hydrateModel(cache[key], seq, key, cache);" in view
+    assert "hydrationPromise = this._hydrateModel(" in view
+    assert "cache[key], seq, key, cache, cacheGeneration, requestToken" in view
     assert "_mergeStreamModel" not in view
     assert "_mergeTaskGroup" not in view
     assert "_normalizeStreamGroups" not in view
@@ -154,9 +155,11 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
                           view.index("if (active && event.done)")]
     assert stream_replace.index("reconcileTaskModel") < stream_replace.index("this._queueEpicMetadata")
     assert "this.model = next" not in stream_replace and "this.model = cache[key]" not in stream_replace
-    hydrate_start = view.index("cache[cacheKey] = reconcileTaskModel")
+    hydrate_start = view.index("workingModel = reconcileTaskModel")
     hydrate_replace = view[hydrate_start:view.index("} catch (e) {", hydrate_start)]
-    assert hydrate_replace.index("reconcileTaskModel") < hydrate_replace.index("this._queueEpicMetadata")
+    assert hydrate_replace.index("reconcileTaskModel") < hydrate_replace.index("publish();")
+    publish = view[view.index("const publish = () => {"):view.index("const settlePermission")]
+    assert publish.index("cache[cacheKey] = workingModel") < publish.index("this._queueEpicMetadata")
     assert "this.model = next" not in hydrate_replace
     assert 'return !epic || !!epic.pending;' in view
     assert 'epicDisplayTitle(k) { return this.epicPending(k) ? "Epic 이름 확인 중"' in view
@@ -167,15 +170,16 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
     assert "this._epicMetaKnown = new Map();" in view
     assert 'result.contract !== "task-snapshot.v1"' in view
     assert "Number(result.sequence) <= snapshotSequence" in view
-    assert 'if (kind === "permission") continue;' in view
+    assert "settlePermission(job, e);" in view
     assert 'title: kind === "auth" ? "일부 Task를 인증 문제로 불러오지 못했습니다"' in view
     assert "Parent Task는 준비됨" not in view
     assert "mt-sub-sync-row" not in view
     # A changed filter stops not-yet-started child jobs. The server owns completed leaf caches,
     # while only a matching request token and monotonic sequence may touch visible UI.
     assert 'if (seq !== this._loadSeq) return;   // 아직 시작하지 않은 옛 필터 보강' in view
-    assert "cache[cacheKey] = reconcileTaskModel" in view
-    assert "this._loadSeq === seq && this.model && this.model.syncId === syncId" in view
+    assert "cache[cacheKey] = workingModel" in view
+    assert "this._taskCacheGenerations[cacheKey] === cacheGeneration" in view
+    assert "this._loadSeq === seq && this._activeRequestToken === requestToken" in view
     assert "await Promise.allSettled([worker(), worker()]);" in view
     assert "if (opts.awaitHydration && hydrationPromise) await hydrationPromise;" in view
     assert "const changedKey = String((view && view.key) || detail.key ||" in view
@@ -199,14 +203,17 @@ def test_mytasks_quiet_refresh_keeps_visible_dom_and_patches_only_changed_keys()
     assert "event.model && (!preserveVisible || finalUsable)" in view
     assert "event.done && !streamHadAuthFailure && !streamHadOtherFailure" in view
     assert "if (!preserveVisible || finalUsable) {" in view
-    assert "hydrationPromise = this._hydrateModel(cache[key], seq, key, cache);" in view
-    assert "active && !preserveVisible && completedLeaves.length" in view
+    assert "hydrationPromise = this._hydrateModel(" in view
+    assert "cache[key], seq, key, cache, cacheGeneration, requestToken" in view
+    assert "active && completedLeaves.length" in view
     assert "active && !preserveVisible) this.streamProgress" in view
     assert "reconcileTaskRows(current.groups, incoming.groups, reconcileTaskGroup)" in model
     assert "reconcileTaskRows(current.atoms, incoming.atoms, patchTaskData)" in model
     assert "reconcileTaskRows(current.others, incoming.others, patchTaskData)" in model
     assert "export function patchTaskData(current, incoming, skip)" in model
-    assert "TASK_RETRY_DELAYS, epicSig, patchTaskData, reconcileTaskModel" in view
+    for symbol in ("TASK_RETRY_DELAYS", "cloneTaskModel", "epicSig", "patchTaskData",
+                   "reconcileTaskModel"):
+        assert symbol in view
     assert "export const STATE_KEYS = new Set" in model
     assert "STATES, STATE_KEYS, SUB_CAP" in view
     assert 'import { categoryColor } from "../../lib/colors.js";' in view

@@ -20,7 +20,10 @@ def _first_transition(client, key):
 
 def test_transition_runs(client):
     key = "DL-9011"                       # Open 상태 픽스처
-    t = _first_transition(client, key)
+    # Exercise the fieldless path; Done is intentionally sorted first but requires the full
+    # completion form and is covered by ``test_transition_with_screen_fields`` below.
+    t = next(item for item in (client.transitions(key) or [])
+             if not (item.get("fields") or {}).get("fields"))
     client.do_transition(key, t["id"])
     b = client.ticket_badge(key)
     assert b and b.get("status")

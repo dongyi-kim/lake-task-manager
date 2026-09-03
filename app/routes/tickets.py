@@ -6,11 +6,13 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
-from app.auth.base import background_upstream
+from app.auth.base import (PermissionDenied, SessionExpired, UpstreamUnavailable,
+                           background_upstream)
 
 
 class CommentBody(BaseModel):
     html: str = ""
+    clientMutationId: str | None = None
 
 
 class CheckboxBody(BaseModel):
@@ -88,7 +90,10 @@ def build_ticket_router(*, get_client) -> APIRouter:
         value = get_client().comment_field_value(body.html or "")
         if not (value or "").strip():
             return JSONResponse({"error": "빈 코멘트"}, status_code=400)
-        return JSONResponse(get_client().add_comment(key, value), status_code=201)
+        return JSONResponse(
+            get_client().add_comment(key, value, mutation_id=body.clientMutationId),
+            status_code=201,
+        )
 
     @router.put("/api/ticket/{key}/comment/{cid}")
     def api_comment_update(key: str, cid: str, body: CommentBody):
@@ -105,6 +110,8 @@ def build_ticket_router(*, get_client) -> APIRouter:
     def api_ticket_refresh(key: str):
         try:
             return JSONResponse(get_client().invalidate_ticket_all(key))
+        except (PermissionDenied, SessionExpired, UpstreamUnavailable):
+            raise
         except Exception as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
@@ -123,6 +130,8 @@ def build_ticket_router(*, get_client) -> APIRouter:
                     key, body.index, bool(body.checked), cbid=body.id,
                 )
             return JSONResponse(result)
+        except (PermissionDenied, SessionExpired, UpstreamUnavailable):
+            raise
         except Exception as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 

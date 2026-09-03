@@ -20,6 +20,8 @@ import { pushToast } from "../../lib/toast.js";
 import { categoryColor } from "../../lib/colors.js";
 import { recentItems } from "../../lib/recent.js";
 import { cachedOptions, recentEpicOptions, rememberOptions } from "../../lib/optionRepository.js";
+import { clearPendingMutation, loadPendingMutation, newMutationId,
+         savePendingMutation } from "../../lib/mutationId.js";
 
 // Task 상위 고르기에서 Epic 대신 고를 수 있는 특수 옵션(맨 위 고정). ('사용자 VoC' 는 상위가 아니라
 // 아래 토글로 받는다 — Epic 에 속한 VoC 도 있어 상위 선택과 배타적이면 안 된다.)
@@ -45,7 +47,7 @@ export default {
   data() {
     return {
       busy: false, err: "", priOpts: cachedOptions("priorities"), compOpts: cachedOptions("components"),
-      descOpen: false, createdKey: "", voc: false,
+      descOpen: false, createdKey: "", createMutationId: "", pendingCreatePayload: null, voc: false,
       nc: { type: "", summary: "", priority: "", components: [],
             duedate: "", assigneeId: "", assigneeName: "" },
       // 해소된 상위 컨텍스트(고정이면 즉시, FAB 이면 고른 뒤 채워진다)
@@ -84,6 +86,7 @@ export default {
       this._resolve({ parent: this.parent, isEpic: this.isEpic, standalone: this.standalone,
                       types: this.types, due: this.parentDue, comps: this.parentComponents, plabel: "" });
     }
+    this.restorePendingCreate();
     document.addEventListener("keydown", this._onEsc = (e) => {
       if (e.key === "Escape") { e.stopPropagation(); this.closeGuarded(); }
     }, true);
@@ -93,6 +96,10 @@ export default {
     fromBackdrop,
     // 생성 중에는 닫지 않는다 — 받아 놓은 글이 사라진다(실패하면 바로 풀린다).
     closeGuarded() {
+      if (this.busy || this.createMutationId) {
+        pushToast("Jira 반영 여부를 확인 중입니다 — 입력을 보존한 채 다시 시도해 주세요.", "warn");
+        return;
+      }
       if (isBusy()) { pushToast(busyLabel() + " — 끝나면 닫을 수 있습니다.", "warn"); return; }
       this.$emit("close");
     },
@@ -101,6 +108,25 @@ export default {
     setWho(id, u) {
       this.nc.assigneeId = id || "";
       this.nc.assigneeName = u ? (u.display || u.name || "") : "";
+    },
+    restorePendingCreate() {
+      const saved = loadPendingMutation("issue-create");
+      if (!saved) return;
+      const p = saved.payload || {}, ctx = saved.context || {};
+      this.createMutationId = saved.id;
+      this.pendingCreatePayload = p;
+      this.nc = {
+        type: p.type || "", summary: p.summary || "", priority: p.priority || "",
+        components: (p.components || []).slice(), duedate: p.duedate || "",
+        assigneeId: p.assignee || "", assigneeName: p.assignee || "",
+      };
+      this._resolve({
+        parent: ctx.parent || "", isEpic: !!ctx.isEpic, standalone: !!ctx.standalone,
+        types: (ctx.isEpic || ctx.standalone) ? DEFAULT_TASK_TYPES : DEFAULT_SUBTASK_TYPES,
+        due: p.duedate || "", comps: (p.components || []).slice(),
+        plabel: ctx.parent || (ctx.standalone ? "Epic 없음" : ""),
+      });
+      this.err = "이전 생성 요청의 Jira 반영 여부를 확인할 수 있습니다. 같은 내용으로 다시 시도해 주세요.";
     },
     // ── 상위 선택(FAB) ──
     searchParents(q) {
@@ -244,20 +270,38 @@ export default {
           ? this.$refs.ded.htmlValue() : null;
         const comps = this.nc.components.filter((c) => c !== "사용자 VoC");
         if (this.voc && this.isTask) comps.push("사용자 VoC");
-        const payload = {
+        let payload = {
           type: this.nc.type, summary: this.nc.summary.trim(), priority: this.nc.priority,
           duedate: this.nc.duedate || null, assignee: this.nc.assigneeId || null,
           components: comps, descriptionHtml: createDesc,
+          parentIsEpic: this.d.parent ? !!this.d.isEpic : null,
         };
+        if (this.pendingCreatePayload && this.createMutationId) {
+          payload = { ...this.pendingCreatePayload };
+        }
         // standalone 은 부모가 없어 /api/task 로, 그 외엔 부모 밑으로(/api/ticket/{parent}/child).
         // 생성 뒤 설명 저장이 실패해도 재시도할 때 티켓을 중복 생성하지 않는다.
         let key = this.createdKey;
         if (!key) {
+          if (!this.createMutationId) this.createMutationId = newMutationId("issue");
+          payload.clientMutationId = this.createMutationId;
+          this.pendingCreatePayload = { ...payload };
+          savePendingMutation("issue-create", this.createMutationId, payload, {
+            parent: this.d.parent, isEpic: this.d.isEpic, standalone: this.d.standalone,
+          });
           const r = this.d.standalone ? await api.createTask(payload)
                                       : await api.createChild(this.d.parent, payload);
-          if (!r || r.ok === false) { this.err = (r && r.error) || "만들지 못했습니다."; return; }
+          if (!r || r.ok === false) {
+            this.createMutationId = "";
+            this.pendingCreatePayload = null;
+            clearPendingMutation("issue-create");
+            this.err = (r && r.error) || "만들지 못했습니다."; return;
+          }
           key = r.key;
           this.createdKey = key;
+          this.createMutationId = "";       // later description retries use the confirmed key
+          this.pendingCreatePayload = null;
+          clearPendingMutation("issue-create");
         }
         if (wantDesc && key) {
           await this.$nextTick();
@@ -266,13 +310,20 @@ export default {
         }
         this.$emit("created", key);
       } catch (e) {
+        // 인증이 끊긴 경우에도 Jira가 쓰기를 받았는지 확정할 수 없는 transport 경로가 섞일 수
+        // 있다. 로그인 복구 뒤 같은 논리 요청 id로 재조사해야 중복 Task가 생기지 않는다.
+        if (!(e && (e.uncertain || e.needLogin))) {
+          this.createMutationId = "";
+          this.pendingCreatePayload = null;
+          clearPendingMutation("issue-create");
+        }
         this.err = (e && e.message) || "만들지 못했습니다.";
       } finally { this.busy = false; }
     },
   },
   template: `
   <Teleport to="body">
-  <div class="nk-ov" @click.self="fromBackdrop($event) && $emit('close')">
+  <div class="nk-ov" @click.self="fromBackdrop($event) && closeGuarded()">
   <div class="nk" @click.stop>
     <div class="nk-h">{{ title }}
       <button class="lp-x" @click="closeGuarded()" aria-label="닫기">✕</button>
@@ -389,7 +440,7 @@ export default {
     <div class="nk-f">
       <span class="nk-hint">{{ canCreate ? '상태는 워크플로의 첫 상태로 시작합니다.'
                                           : '제목 · 우선순위 · 타입을 정해야 만들 수 있습니다.' }}</span>
-      <button class="cmt-ed-btn ghost" @click="$emit('close')">취소</button>
+      <button class="cmt-ed-btn ghost" @click="closeGuarded()">취소</button>
       <button class="cmt-ed-btn primary" :disabled="!canCreate || busy" @click="submit">
         {{ busy ? '만드는 중…' : '만들기' }}</button>
     </div>

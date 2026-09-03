@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from app.auth.base import SessionExpired
+from app.auth.base import SessionExpired, UpstreamUnavailable
 from app.domain.mytasks import (
     build_my_tasks,
     hydrate_my_task_epics,
@@ -55,14 +55,14 @@ def _counts(groups):
 
 def test_deferred_base_returns_parent_before_peer_subtasks_and_hydrates_one_group_only(monkeypatch):
     client = _client()
-    original = client.issues_by_keys
+    original = client.issues_by_keys_result
     calls = []
 
-    def recorded(keys, light=False):
+    def recorded(keys, light=False, **kwargs):
         calls.append((tuple(keys), light))
-        return original(keys, light=light)
+        return original(keys, light=light, **kwargs)
 
-    monkeypatch.setattr(client, "issues_by_keys", recorded)
+    monkeypatch.setattr(client, "issues_by_keys_result", recorded)
     base = build_my_tasks(client, scope="assignee", defer_children=True)
 
     parent = _group(base, "DL-9020")
@@ -282,6 +282,198 @@ def test_failed_parent_read_does_not_cache_false_empty_membership(monkeypatch):
     with pytest.raises(RuntimeError, match="upstream unavailable"):
         client.direct_child_keys("DL-9020", parent_issue=partial_parent)
     assert client.cache.get(client._direct_child_cache_key("DL-9020")) is None
+
+
+def test_issue_batch_contract_retries_only_missing_keys_and_never_caches_failure(monkeypatch):
+    client = _client()
+    keys = ["DL-9021", "DL-9022", "DL-9023"]
+    source = {key: client.get_issue_light(key) for key in keys}
+    for key in keys:
+        client.cache.invalidate_keys([
+            f"issue:{client.env}:{key}", f"issueL:{client.env}:{key}",
+        ])
+    monkeypatch.setattr(client, "prefetch_issues", lambda *_args, **_kwargs: None)
+    calls = {key: 0 for key in keys}
+
+    def flaky(key):
+        cached = client.cache.get(f"issueL:{client.env}:{key}")
+        if cached is not None:
+            return cached
+        calls[key] += 1
+        if key == "DL-9022" and calls[key] == 1:
+            raise UpstreamUnavailable("temporary transport loss")
+        row = source[key]
+        client.cache.set(f"issueL:{client.env}:{key}", row, client.s.cache_ttl_seconds)
+        return row
+
+    monkeypatch.setattr(client, "get_issue_light", flaky)
+    first = client.issues_by_keys_result(keys, light=True)
+
+    assert first["complete"] is False
+    assert {row["key"] for row in first["issues"]} == {"DL-9021", "DL-9023"}
+    assert first["missing"] == [{
+        "key": "DL-9022", "kind": "transport", "error": "temporary transport loss",
+    }]
+    assert client.cache.get(f"issueL:{client.env}:DL-9022") is None
+
+    second = client.issues_by_keys_result(keys, light=True)
+    assert second["complete"] is True
+    assert {row["key"] for row in second["issues"]} == set(keys)
+    assert calls == {"DL-9021": 1, "DL-9022": 2, "DL-9023": 1}
+
+
+def test_legacy_issue_batch_does_not_swallow_session_or_transport(monkeypatch):
+    client = _client()
+    monkeypatch.setattr(client, "prefetch_issues", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        client, "get_issue_light",
+        lambda _key: (_ for _ in ()).throw(SessionExpired("HTTP 401 session expired")))
+
+    with pytest.raises(SessionExpired):
+        client.issues_by_keys(["DL-9021"], light=True)
+
+    monkeypatch.setattr(
+        client, "get_issue_light",
+        lambda _key: (_ for _ in ()).throw(UpstreamUnavailable("provider timeout")))
+    with pytest.raises(UpstreamUnavailable):
+        client.issues_by_keys(["DL-9021"], light=True)
+
+
+def test_stale_issue_fallback_is_not_promoted_to_a_fresh_batch_hit(monkeypatch):
+    client = _client()
+    key = "DL-9021"
+    raw = client.get_issue_light(key)
+    cache_key = f"issueL:{client.env}:{key}"
+    client.cache.set(cache_key, raw, -1)
+    before = client.cache.get_stale_at(cache_key)
+    monkeypatch.setattr(client, "prefetch_issues", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        client.provider, "get_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(UpstreamUnavailable("offline")))
+
+    result = client.issues_by_keys_result([key], light=True)
+
+    assert [row["key"] for row in result["issues"]] == [key]
+    assert client.cache.get(cache_key) is None
+    assert client.cache.get_stale_at(cache_key)[1] == before[1]
+
+
+def test_child_membership_auth_failure_is_retryable_not_false_standalone(monkeypatch):
+    client = _client()
+    original = client.direct_child_keys
+
+    def expired(key, **kwargs):
+        if key == "DL-9020":
+            raise SessionExpired("HTTP 401 session expired")
+        return original(key, **kwargs)
+
+    monkeypatch.setattr(client, "direct_child_keys", expired)
+    model = build_my_tasks(client, scope="assignee", defer_children=True)
+    group = _group(model, "DL-9020")
+
+    assert group["childrenPending"] is True
+    assert group["standalone"] is False
+    assert all(row["key"] != "DL-9020" for row in group["atoms"])
+    assert any(error["key"] == "DL-9020" and error["kind"] == "auth"
+               and error["phase"] == "child-membership"
+               for error in model["loadErrors"])
+    assert "DL-9020" in client.cache.get(
+        f"mytasks:sync:{client.env}:{model['syncId']}")["membershipPending"]
+
+
+def test_progressive_stream_classifies_child_membership_transport_without_aborting(monkeypatch):
+    client = _client()
+    original = client.direct_child_keys
+
+    def disconnected(key, **kwargs):
+        if key == "DL-9020":
+            raise UpstreamUnavailable("provider queue disconnected")
+        return original(key, **kwargs)
+
+    monkeypatch.setattr(client, "direct_child_keys", disconnected)
+    events = list(iter_my_task_models(client, scope="assignee", request_token="membership-loss"))
+    final = events[-1]
+
+    assert final["done"] is True
+    assert final["partial"] is True
+    assert any(error["key"] == "DL-9020" and error["kind"] == "transport"
+               and error["phase"] == "child-membership"
+               for error in final["partialErrors"])
+    assert _group(final["model"], "DL-9020")["childrenPending"] is True
+    assert final["model"].get("syncId")
+
+
+def test_partial_group_hydration_retries_only_failed_child_and_keeps_successes(monkeypatch):
+    client = _client()
+    deferred = build_my_tasks(client, scope="assignee", defer_children=True)
+    expected = list(client.cache.get(
+        f"mytasks:sync:{client.env}:{deferred['syncId']}")["children"]["DL-9020"])
+    source = {key: client.get_issue_light(key) for key in expected}
+    for key in expected:
+        client.cache.invalidate_keys([
+            f"issue:{client.env}:{key}", f"issueL:{client.env}:{key}",
+        ])
+    monkeypatch.setattr(client, "prefetch_issues", lambda *_args, **_kwargs: None)
+    failed_key = expected[-1]
+    calls = {key: 0 for key in expected}
+
+    def flaky(key):
+        cached = client.cache.get(f"issueL:{client.env}:{key}")
+        if cached is not None:
+            return cached
+        calls[key] += 1
+        if key == failed_key and calls[key] == 1:
+            raise UpstreamUnavailable("one child timed out")
+        row = source[key]
+        client.cache.set(f"issueL:{client.env}:{key}", row, client.s.cache_ttl_seconds)
+        return row
+
+    monkeypatch.setattr(client, "get_issue_light", flaky)
+    first = hydrate_my_task_snapshot(client, deferred["syncId"], "DL-9020")
+    assert first["retryable"] is True
+    assert first["missing"][0]["key"] == failed_key
+    assert first["missing"][0]["kind"] == "transport"
+    assert _group(first["model"], "DL-9020")["childrenPending"] is True
+    assert first["model"]["syncPending"] > 0
+
+    second = hydrate_my_task_snapshot(client, deferred["syncId"], "DL-9020")
+    assert second["retryable"] is False
+    assert second["missing"] == []
+    assert _group(second["model"], "DL-9020")["childrenPending"] is False
+    assert calls[failed_key] == 2
+    assert all(calls[key] == 1 for key in expected if key != failed_key)
+
+
+def test_permission_missing_child_settles_group_silently_without_false_cache(monkeypatch):
+    client = _client()
+    deferred = build_my_tasks(client, scope="assignee", defer_children=True)
+    sync_key = f"mytasks:sync:{client.env}:{deferred['syncId']}"
+    expected = list(client.cache.get(sync_key)["children"]["DL-9020"])
+    denied = expected[-1]
+    source = {key: client.get_issue_light(key) for key in expected}
+    for key in expected:
+        client.cache.invalidate_keys([
+            f"issue:{client.env}:{key}", f"issueL:{client.env}:{key}",
+        ])
+    monkeypatch.setattr(client, "prefetch_issues", lambda *_args, **_kwargs: None)
+
+    def visible_except_one(key):
+        if key == denied:
+            raise PermissionError("HTTP 403 permission denied")
+        row = source[key]
+        client.cache.set(f"issueL:{client.env}:{key}", row, client.s.cache_ttl_seconds)
+        return row
+
+    monkeypatch.setattr(client, "get_issue_light", visible_except_one)
+    snapshot = hydrate_my_task_snapshot(client, deferred["syncId"], "DL-9020")
+    group = _group(snapshot["model"], "DL-9020")
+
+    assert snapshot["retryable"] is False
+    assert snapshot["missing"][0]["kind"] == "permission"
+    assert group["childrenPending"] is False
+    assert group["childrenUnavailable"] is True
+    assert group["childrenUnavailableCount"] == 1
+    assert client.cache.get(f"issueL:{client.env}:{denied}") is None
 
 
 def test_expired_or_invalidated_filter_snapshot_cannot_hydrate():
@@ -541,10 +733,15 @@ def test_epic_metadata_uses_long_ttl_and_ticket_invalidation_evicts_it(monkeypat
     assert client.EPIC_META_TTL >= 12 * 3600
     cache_key = f"epicmeta:{client.env}:DL-9019"
     assert client.cache.get(cache_key) == meta
+    similarly_prefixed = f"epicmeta:{client.env}:DL-90190"
+    client.cache.set(similarly_prefixed, {
+        "key": "DL-90190", "title": "다른 Epic", "statusCategory": "todo",
+    }, client.EPIC_META_TTL)
 
     monkeypatch.setattr(client, "_reprime", lambda *args, **kwargs: None)
     client._invalidate_ticket("DL-9019")
     assert client.cache.get(cache_key) is None
+    assert client.cache.get(similarly_prefixed)["title"] == "다른 Epic"
 
 
 def test_deferred_task_model_reuses_fresh_epic_metadata_without_loading(monkeypatch):
@@ -573,3 +770,72 @@ def test_cache_only_epic_metadata_omits_misses_without_upstream_calls(monkeypatc
         "cache-only Epic metadata lookup must not fetch badges"))
 
     assert client.epic_metadata_cached_many(["dl-9019", "DL-999999", "DL-9019"]) == [expected]
+
+
+def test_epic_metadata_never_caches_key_only_fallback_and_retries(monkeypatch):
+    client = _client()
+    key = "DL-FAKE"
+    cache_key = f"epicmeta:{client.env}:{key}"
+    calls = {"n": 0}
+
+    def badge(_key, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"summary": key, "epicName": None, "statusCategory": "todo"}
+        return {"summary": "실제 Epic 요약", "epicName": "실제 Epic", "statusCategory": "todo"}
+
+    monkeypatch.setattr(client, "_ticket_badge_strict", badge)
+    assert client.epic_metadata(key) is None
+    assert client.cache.get_stale(cache_key) is None
+
+    meta = client.epic_metadata(key)
+    assert meta["title"] == "실제 Epic"
+    assert calls["n"] == 2
+    assert client.cache.get(cache_key) == meta
+
+
+def test_epic_metadata_preserves_expired_known_name_during_auth_failure(monkeypatch):
+    client = _client()
+    key = "DL-KNOWN"
+    cache_key = f"epicmeta:{client.env}:{key}"
+    known = {"key": key, "title": "알고 있던 Epic", "statusCategory": "inprogress"}
+    client.cache.set(cache_key, known, -1)  # expired for freshness, alive for offline fallback
+
+    def expired(_key, **_kwargs):
+        raise SessionExpired("HTTP 401 session expired")
+
+    monkeypatch.setattr(client, "_ticket_badge_strict", expired)
+    assert client.epic_metadata(key) == known
+    assert client.epic_metadata_title_map([key], best_effort=True) == {key: "알고 있던 Epic"}
+    # Failure fallback must not promote the expired value to a new 12-hour success.
+    assert client.cache.get(cache_key) is None
+
+
+def test_expired_issue_light_is_not_promoted_to_fresh_epic_metadata(monkeypatch):
+    client = _client()
+    key = "DL-9019"
+    raw = client.get_issue_light(key)
+    client.cache.set(f"issueL:{client.env}:{key}", raw, -1)
+
+    def expired(*_args, **_kwargs):
+        raise SessionExpired("HTTP 401 session expired")
+
+    monkeypatch.setattr(client.provider, "get_json", expired)
+    with pytest.raises(SessionExpired):
+        client.epic_metadata(key)
+    assert client.cache.get_stale(f"epicmeta:{client.env}:{key}") is None
+
+
+def test_old_key_only_epic_cache_is_evicted_instead_of_masking_auth_failure(monkeypatch):
+    client = _client()
+    key = "DL-BAD"
+    cache_key = f"epicmeta:{client.env}:{key}"
+    client.cache.set(cache_key, {"key": key, "title": key, "statusCategory": "todo"}, 9999)
+
+    def expired(_key, **_kwargs):
+        raise SessionExpired("HTTP 401 session expired")
+
+    monkeypatch.setattr(client, "_ticket_badge_strict", expired)
+    with pytest.raises(SessionExpired):
+        client.epic_metadata(key)
+    assert client.cache.get_stale(cache_key) is None

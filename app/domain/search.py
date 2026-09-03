@@ -158,12 +158,8 @@ def _search_jira(client, s, q, scope, limit):
         items.append(row)
     items = items[:max(limit, len(exact))]
     # 소속 Epic 라벨 — Epic Name(단축어) → Summary → 키 순(전 화면 공통). 구별되는 Epic 만 캐시 조회.
-    names = {}
-    for ek in {i.get("epicKey") for i in items if i.get("epicKey")}:
-        try:
-            names[ek] = client.epic_label(client.ticket_badge(ek), ek)
-        except Exception:
-            names[ek] = ek
+    names = client.epic_metadata_title_map(
+        {i.get("epicKey") for i in items if i.get("epicKey")}, best_effort=True)
     for i in items:
         i["epicName"] = names.get(i.get("epicKey")) if i.get("epicKey") else None
     return {"items": items}

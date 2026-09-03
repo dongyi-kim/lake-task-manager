@@ -117,3 +117,29 @@ def test_status_reports_per_service(tmp_path):
     stt = st.status()
     assert stt["jira"]["exists"] and stt["jira"]["savedAt"]
     assert not stt["confluence"]["exists"]
+
+
+def test_conditional_save_rejects_snapshot_older_than_latest_login(tmp_path):
+    """느린 old provider snapshot은 그 사이 저장된 새 로그인 쿠키를 덮을 수 없다."""
+    st = _store(tmp_path)
+    st.save("jira", _state(_ck("OLD", "jira.corp.example")))
+    revision = st.revision("jira")
+    st.save("jira", _state(_ck("NEW_LOGIN", "jira.corp.example")))
+
+    saved = st.save_if_unchanged(
+        "jira", _state(_ck("OLD_ROLLING", "jira.corp.example")), revision)
+
+    assert saved is False
+    cookies = json.load(open(st.path("jira"), encoding="utf-8"))["cookies"]
+    assert [cookie["name"] for cookie in cookies] == ["NEW_LOGIN"]
+
+
+def test_conditional_save_succeeds_when_revision_is_unchanged(tmp_path):
+    st = _store(tmp_path)
+    st.save("jira", _state(_ck("OLD", "jira.corp.example")))
+    revision = st.revision("jira")
+
+    assert st.save_if_unchanged(
+        "jira", _state(_ck("ROLLED", "jira.corp.example")), revision) is True
+    cookies = json.load(open(st.path("jira"), encoding="utf-8"))["cookies"]
+    assert [cookie["name"] for cookie in cookies] == ["ROLLED"]

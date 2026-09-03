@@ -45,6 +45,18 @@ CREATE TABLE IF NOT EXISTS cache_epoch (
     namespace TEXT PRIMARY KEY,
     value     INTEGER NOT NULL
 );
+-- Jira 쓰기는 서버가 반영한 뒤 응답만 유실될 수 있다. 일반 조회 캐시를 새로고침해도
+-- 재제출 중복 방지용 receipt까지 지우면 안 되므로 별도 수명주기 테이블에 둔다.
+CREATE TABLE IF NOT EXISTS mutation_receipt (
+    key          TEXT PRIMARY KEY,
+    fingerprint  TEXT NOT NULL,
+    state        TEXT NOT NULL,
+    result       TEXT NOT NULL DEFAULT '',
+    context      TEXT NOT NULL DEFAULT '',
+    attempted_at REAL NOT NULL,
+    expires_at   REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_mutation_receipt_expiry ON mutation_receipt(expires_at);
 """
 
 
@@ -99,6 +111,12 @@ class Cache:
                 self._conn.execute("ALTER TABLE recent ADD COLUMN type TEXT NOT NULL DEFAULT ''")
             if cols and "data" not in cols:
                 self._conn.execute("ALTER TABLE recent ADD COLUMN data TEXT NOT NULL DEFAULT ''")
+            receipt_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(mutation_receipt)")
+            }
+            if receipt_cols and "context" not in receipt_cols:
+                self._conn.execute(
+                    "ALTER TABLE mutation_receipt ADD COLUMN context TEXT NOT NULL DEFAULT ''")
             self._conn.commit()
         except Exception:
             pass
@@ -248,6 +266,7 @@ class Cache:
             self._conn.execute("DELETE FROM cache WHERE ? - fetched_at > ?", (now, self.dead_ttl))
             self._conn.execute("DELETE FROM snapshot WHERE taken_at < ?",
                                (now - self.SNAPSHOT_KEEP_DAYS * 86400,))
+            self._conn.execute("DELETE FROM mutation_receipt WHERE expires_at < ?", (now,))
         except Exception:
             pass
 
@@ -410,6 +429,65 @@ class Cache:
                 self._conn.execute(f"DELETE FROM cache WHERE key IN ({marks})", batch)
             self._conn.commit()
         return len(unique)
+
+    # ── Jira 쓰기 receipt ────────────────────────────────────────────────────
+    # 일반 cache와 의도적으로 API를 분리한다. `/api/refresh`의 전체 invalidate는 조회 결과만
+    # 비워야 하고, 결과가 불확실한 쓰기의 중복 방지 증거는 TTL 동안 살아 있어야 한다.
+    def mutation_receipt(self, key):
+        now = time.time()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT fingerprint,state,result,context,attempted_at,expires_at "
+                "FROM mutation_receipt WHERE key=?", (str(key),)
+            ).fetchone()
+            if row and float(row[5]) < now:
+                self._conn.execute("DELETE FROM mutation_receipt WHERE key=?", (str(key),))
+                self._conn.commit()
+                row = None
+        if not row:
+            return None
+        try:
+            result = json.loads(row[2]) if row[2] else None
+        except Exception:
+            result = None
+        try:
+            context = json.loads(row[3]) if row[3] else None
+        except Exception:
+            context = None
+        return {
+            "fingerprint": row[0], "state": row[1], "result": result,
+            "context": context,
+            "attemptedAt": float(row[4]), "expiresAt": float(row[5]),
+        }
+
+    def set_mutation_receipt(self, key, fingerprint, state, result, attempted_at, ttl,
+                             context=None):
+        now = time.time()
+        with self._lock:
+            # ``None`` means preserve an existing non-sensitive recovery context.  Tests and old
+            # callers that only move ``attempted_at`` must not accidentally erase the authoritative
+            # transition identity required to reconcile a response-lost write.
+            if context is None:
+                existing = self._conn.execute(
+                    "SELECT context FROM mutation_receipt WHERE key=?", (str(key),)
+                ).fetchone()
+                context_json = existing[0] if existing else ""
+            else:
+                context_json = json.dumps(context, ensure_ascii=False)
+            self._conn.execute(
+                "INSERT OR REPLACE INTO mutation_receipt"
+                "(key,fingerprint,state,result,context,attempted_at,expires_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (str(key), str(fingerprint), str(state),
+                 json.dumps(result, ensure_ascii=False) if result is not None else "",
+                 context_json, float(attempted_at), now + max(1, int(ttl))),
+            )
+            self._conn.commit()
+
+    def delete_mutation_receipt(self, key):
+        with self._lock:
+            self._conn.execute("DELETE FROM mutation_receipt WHERE key=?", (str(key),))
+            self._conn.commit()
 
     # ── 스냅샷(시계열) ──
     def add_snapshot(self, entity, ref, metric):

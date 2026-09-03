@@ -18,7 +18,8 @@ export default {
   name: "VitView",
   components: { TypeBadge, StatusPill },
   data() { return { d: null, err: "", detail: {}, detailOpen: {}, hideDone: false,
-                    mods: {}, modErr: {}, modPartial: {}, busy: false,
+                    mods: {}, modErr: {}, modPartial: {}, modLoading: {},
+                    detailErr: {}, detailLoading: {}, busy: false,
                     briefDays: BRIEF_DAYS }; },
   computed: {
     allIssues() {
@@ -26,7 +27,10 @@ export default {
       return this.d.modules.flatMap((m) => this.mods[m.module] || []);
     },
     // 상단 칩 지표 — 모듈 본문이 전부 도착하면 전체 (완료/전체) 를 보여줄 수 있다.
-    allLoaded() { return !!this.d && this.d.modules.every((m) => this.mods[m.module]); },
+    allLoaded() {
+      return !!this.d && this.d.modules.every((m) => Array.isArray(this.mods[m.module])
+        && !this.modLoading[m.module] && !this.modErr[m.module] && !this.modPartial[m.module]);
+    },
     allDone() { return this.allIssues.filter((it) => it.statusCategory === "done").length; },
     // 상단 '오늘의 브리핑' — 지난 BRIEF_DAYS 일 완료·신규(자손 소식) + 지금 지연·정체인 현안 수.
     brief() {
@@ -54,9 +58,16 @@ export default {
       }
     });
     // 재인증(auth-ok) 후 — 세션 끊긴 채 실패했던 조회를 가볍게 다시 받는다(서버 캐시는 안 비움).
-    window.addEventListener("auth-ok", this._authok = () => { this.load(); });
+    window.addEventListener("auth-ok", this._authok = () => {
+      if (this.err || !this.d) { this.load(); return; }
+      Object.keys(this.modErr).forEach((module) => this.retryModule(module, false));
+      Object.keys(this.detailErr).filter((key) => this.detailOpen[key])
+        .forEach((key) => this.loadDetail({ key }, false));
+    });
   },
   unmounted() {
+    this._loadSeq = (this._loadSeq || 0) + 1;
+    this._detailEpoch = (this._detailEpoch || 0) + 1;
     window.removeEventListener("force-refresh", this._fr);
     window.removeEventListener("auth-ok", this._authok);
   },
@@ -65,19 +76,42 @@ export default {
      *  ★ 이 로직이 예전엔 mounted() 안에 인라인이라, hardRefresh 가 this.load() 를 부르면
      *    'this.load is not a function' 이었다(새로고침 버튼이 그래서 죽었다). 메서드로 뺀다. */
     async load() {
-      this.err = "";
+      const loadSeq = this._loadSeq = (this._loadSeq || 0) + 1;
+      this.err = ""; this.modLoading = {};
       try {
-        this.d = await api.vitShell();
-        this.d.modules.forEach((m) => {
-          api.vitModule(m.module)
-            .then((r) => {
-              this.mods[m.module] = r.issues || [];
-              if (r && r.partial) this.modPartial[m.module] = r.missing || 1;
-            })
-            .catch((e) => { this.modErr[m.module] = e.message; this.mods[m.module] = []; });
-        });
-      } catch (e) { this.err = e.message; }
+        const shell = await api.vitShell();
+        if (loadSeq !== this._loadSeq) return;
+        this.d = shell;
+        shell.modules.forEach((m) => this.loadModule(m.module, loadSeq));
+      } catch (e) { if (loadSeq === this._loadSeq) this.err = e.message; }
     },
+    loadModule(module, loadSeq = this._loadSeq, evict = false) {
+      if (loadSeq !== this._loadSeq) return Promise.resolve(null);
+      if (evict) api.evict(module);
+      this._moduleSeq = this._moduleSeq || {};
+      const requestId = this._moduleSeq[module] = (this._moduleSeq[module] || 0) + 1;
+      const fresh = () => loadSeq === this._loadSeq && requestId === this._moduleSeq[module];
+      this.modLoading = Object.assign({}, this.modLoading, { [module]: true });
+      return api.vitModule(module).then((r) => {
+        if (!fresh()) return r;
+        this.mods = Object.assign({}, this.mods, { [module]: (r && r.issues) || [] });
+        const errors = Object.assign({}, this.modErr); delete errors[module]; this.modErr = errors;
+        const partial = Object.assign({}, this.modPartial);
+        if (r && r.partial) partial[module] = r.missing || 1;
+        else delete partial[module];
+        this.modPartial = partial;
+        return r;
+      }).catch((e) => {
+        if (fresh()) this.modErr = Object.assign({}, this.modErr, {
+          [module]: (e && e.message) || "불러오지 못했습니다.",
+        });
+        return null;
+      }).finally(() => {
+        if (!fresh()) return;
+        const loading = Object.assign({}, this.modLoading); delete loading[module]; this.modLoading = loading;
+      });
+    },
+    retryModule(module, evict = true) { return this.loadModule(module, this._loadSeq, evict); },
     /** 캐시를 비우고 전부 다시 받는다. 화면도 '모른다' 상태로 되돌린 뒤 새로 채운다 —
      *  옛 값을 남겨 두면 무엇이 새로 온 값인지 알 수 없다. */
     async hardRefresh() {
@@ -85,8 +119,10 @@ export default {
       this.busy = true;
       try {
         await api.refresh();
-        this.d = null; this.mods = {}; this.modErr = {}; this.modPartial = {};
-        this.detail = {}; this.detailOpen = {};
+        this._loadSeq = (this._loadSeq || 0) + 1;
+        this._detailEpoch = (this._detailEpoch || 0) + 1;
+        this.d = null; this.mods = {}; this.modErr = {}; this.modPartial = {}; this.modLoading = {};
+        this.detail = {}; this.detailOpen = {}; this.detailErr = {}; this.detailLoading = {};
         await this.load();
       } catch (e) {
         this.err = (e && e.message) || "다시 받지 못했습니다.";
@@ -175,13 +211,34 @@ export default {
       return `<span class='d'>${ymdhm(ev.date)}</span><span class='act ${ev.kind}'>${KLAB[ev.kind] || ev.kind}</span>`
         + `${tkt(ev.key, this.d.jiraBase)} <span class='sm'>${esc(ev.title || "")}</span>`;
     },
-    async toggleDetail(it) {
+    toggleDetail(it) {
       this.detailOpen[it.key] = !this.detailOpen[it.key];
-      if (this.detailOpen[it.key] && !this.detail[it.key]) {
-        try { this.detail[it.key] = await api.vitDetail(it.key); }
-        catch (e) { this.detail[it.key] = { tree: [], comments: [], error: e.message }; }
-      }
+      if (this.detailOpen[it.key] && !this.detail[it.key] && !this.detailLoading[it.key]) this.loadDetail(it);
     },
+    loadDetail(it, evict = false) {
+      const key = it.key;
+      if (evict) api.evict(key);
+      const epoch = this._detailEpoch || 0;
+      this._detailSeq = this._detailSeq || {};
+      const requestId = this._detailSeq[key] = (this._detailSeq[key] || 0) + 1;
+      const fresh = () => epoch === (this._detailEpoch || 0) && requestId === this._detailSeq[key];
+      this.detailLoading = Object.assign({}, this.detailLoading, { [key]: true });
+      return api.vitDetail(key).then((value) => {
+        if (!fresh()) return value;
+        this.detail = Object.assign({}, this.detail, { [key]: value || { tree: [], comments: [] } });
+        const errors = Object.assign({}, this.detailErr); delete errors[key]; this.detailErr = errors;
+        return value;
+      }).catch((e) => {
+        if (fresh()) this.detailErr = Object.assign({}, this.detailErr, {
+          [key]: (e && e.message) || "상세 정보를 불러오지 못했습니다.",
+        });
+        return null;
+      }).finally(() => {
+        if (!fresh()) return;
+        const loading = Object.assign({}, this.detailLoading); delete loading[key]; this.detailLoading = loading;
+      });
+    },
+    retryDetail(it) { return this.loadDetail(it, true); },
     // 자손 트리 → 상태정렬 + 안내선 정보 포함 평탄화
     flatTree(nodes, anc) {
       anc = anc || [];
@@ -221,7 +278,7 @@ export default {
   template: `
   <div class="vit-view">
     <div v-if="err" class="err">현안 데이터를 불러오지 못했습니다: {{ err }}</div>
-    <template v-else-if="d">
+    <template v-if="d">
       <!-- 상단 주요지표 — 전체·모듈별 (완료/전체). 모듈 본문이 도착하는 대로 개수→완료/전체 로 승격 -->
       <div class="chips">
         <div class="chip" style="background:var(--accent);color:#fff;border-color:transparent">
@@ -253,14 +310,22 @@ export default {
           <span v-if="mods[m.module] && modRisk(m.module).late" class="rk late sm">지연 {{ modRisk(m.module).late }}</span>
           <span v-if="mods[m.module] && modRisk(m.module).stale" class="rk stale sm">정체 {{ modRisk(m.module).stale }}</span>
         </div>
-        <div v-if="modErr[m.module]" class="err">· 불러오지 못했습니다: {{ modErr[m.module] }}</div>
-        <div v-else-if="!mods[m.module]" class="loading">· 현안과 하위 티켓을 불러오는 중…</div>
-        <div v-else-if="!mods[m.module].length" class="empty">· 현안 없음</div>
-        <!-- 일부만 왔다 — 목록은 보여 주되 '이게 전부' 라고 말하지 않는다 -->
-        <div v-else-if="modPartial[m.module]" class="err">
-          · 일부를 불러오지 못했습니다({{ modPartial[m.module] }}건) — 새로고침하세요
+        <div v-if="modErr[m.module]" class="err">
+          · 불러오지 못했습니다: {{ modErr[m.module] }}
+          <button type="button" class="btn" :disabled="modLoading[m.module]" @click="retryModule(m.module)">
+            {{ modLoading[m.module] ? '재시도 중…' : '이 모듈 재시도' }}
+          </button>
         </div>
-        <div v-else class="tbl">
+        <div v-if="modLoading[m.module] && !mods[m.module]" class="loading">· 현안과 하위 티켓을 불러오는 중…</div>
+        <div v-if="Array.isArray(mods[m.module]) && !mods[m.module].length && !modErr[m.module] && !modPartial[m.module]" class="empty">· 현안 없음</div>
+        <!-- 일부만 왔다 — 목록은 보여 주되 '이게 전부' 라고 말하지 않는다 -->
+        <div v-if="modPartial[m.module]" class="err">
+          · 일부를 불러오지 못했습니다({{ modPartial[m.module] }}건)
+          <button type="button" class="btn" :disabled="modLoading[m.module]" @click="retryModule(m.module)">
+            {{ modLoading[m.module] ? '재시도 중…' : '이 모듈 재시도' }}
+          </button>
+        </div>
+        <div v-if="mods[m.module] && mods[m.module].length" class="tbl">
           <div class="vhead"><div>티켓</div><div class="ch-head"><span></span><span>상태</span><span>Sub Task</span><span>시작일</span><span>종료일</span><span>담당자</span></div><div></div></div>
           <template v-for="it in sortedIssues(m.module)" :key="it.key">
             <div class="vrow">
@@ -308,8 +373,14 @@ export default {
               <div class="c-x"><button class="xbtn" @click="toggleDetail(it)">{{ detailOpen[it.key] ? "접기 ▴" : "자세히 ▾" }}</button></div>
             </div>
             <div v-if="detailOpen[it.key]" class="vrow"><div class="detail">
-              <div v-if="!detail[it.key]" class="loading">· 불러오는 중…</div>
-              <div v-else class="dcols">
+              <div v-if="detailErr[it.key]" class="err">
+                · 상세 정보를 불러오지 못했습니다: {{ detailErr[it.key] }}
+                <button type="button" class="btn" :disabled="detailLoading[it.key]" @click="retryDetail(it)">
+                  {{ detailLoading[it.key] ? '재시도 중…' : '상세 재시도' }}
+                </button>
+              </div>
+              <div v-if="detailLoading[it.key] && !detail[it.key]" class="loading">· 불러오는 중…</div>
+              <div v-if="detail[it.key]" class="dcols">
                 <div>
                   <div class="sec-t">소속 티켓 트리 ({{ flatTree(detail[it.key].tree).length }}개 · 상태·최근 진척)</div>
                   <div v-for="(r, k) in flatTree(detail[it.key].tree)" :key="k" class="tnode tkt"
@@ -332,6 +403,6 @@ export default {
         <button class="fab-btn" :class="{ on: hideDone }" @click="hideDone = !hideDone">{{ hideDone ? '☑' : '☐' }} 완료 작업 안 보기</button>
       </div>
     </template>
-    <div v-else class="loading page">불러오는 중…</div>
+    <div v-else-if="!err" class="loading page">불러오는 중…</div>
   </div>`,
 };

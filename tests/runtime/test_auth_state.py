@@ -71,12 +71,42 @@ def test_session_dead_does_not_expire_with_the_circuit_breaker():
 
 
 def test_upstream_success_clears_both():
-    """성공하면 차단기와 죽음 표시가 함께 풀린다(예전엔 이 함수를 아무도 안 불렀다)."""
+    """직접 Jira 인증 성공은 차단기와 죽음 표시를 함께 푼다."""
     c = _prod_client()
     c.mark_session_dead("세션 만료")
     assert c.upstream_down() is True and c.needs_login() is True
-    c.mark_upstream_ok()
+    c.mark_session_alive()
     assert c.upstream_down() is False and c.needs_login() is False
+
+
+def test_unrelated_cache_success_does_not_clear_confirmed_jira_session_dead():
+    """Confluence/부분 조립 캐시 성공은 Jira 인증이 살아 있다는 증거가 아니다."""
+    c = _prod_client()
+    c._wire_cache()
+    c.mark_session_dead("HTTP 401 on Jira")
+
+    c.cache.get_or_set("nonjira:successful-producer", 60, lambda: {"ok": True})
+
+    assert c.upstream_down() is False       # transport 회로는 다시 시도할 수 있게 닫는다
+    assert c.needs_login() is True          # 하지만 확인된 Jira 만료는 그대로 유지한다
+
+
+def test_direct_myself_success_clears_confirmed_session_dead(monkeypatch):
+    """세션 dead 해제의 근거는 실제 Jira /myself 성공이다."""
+    c = _prod_client()
+    c.mark_session_dead("HTTP 401 on Jira")
+
+    class _Alive:
+        def get_json(self, path, params=None):
+            assert path == "/rest/api/2/myself"
+            return {"name": "test.ui01"}
+
+    c._provider, c._provider_built = _Alive(), True
+    c._auth_probe_result = {"ok": False, "needLogin": True, "mode": "authenticating"}
+    c._auth_probe_at = time.monotonic()
+    assert c.direct_session_state() == "alive"
+    assert c.upstream_down() is False and c.needs_login() is False
+    assert c._auth_probe_result is None
 
 
 def test_new_session_clears_dead_mark():
@@ -114,7 +144,7 @@ def test_status_endpoint_tells_the_truth_after_a_failed_call():
     m._settings.jira_env = "prod"
     try:
         c = TestClient(m.app)
-        client.mark_upstream_ok()
+        client.mark_session_alive()
         assert c.get("/api/status").json()["needLogin"] is False
         client.mark_session_dead("세션 만료")
         client._upstream_down_until = 0               # 차단기가 아니라 '죽음' 이 근거여야 한다
@@ -125,7 +155,7 @@ def test_status_endpoint_tells_the_truth_after_a_failed_call():
         client.sso_store = old_store
         client.env = env
         m._settings.jira_env = old_env
-        client.mark_upstream_ok()
+        client.mark_session_alive()
 
 
 def test_keepalive_renews_only_dead_non_jira_services():
@@ -180,6 +210,23 @@ def test_myself_auth_failure_marks_session_dead_without_health_probe():
     assert c.needs_login() is True
 
 
+def test_myself_anonymous_200_is_not_cached_or_marked_alive():
+    """HTTP 200이라도 anonymous면 인증 성공도 정상 빈 사용자도 아니다."""
+    c = _prod_client()
+    calls = []
+
+    class _Anonymous:
+        def get_json(self, path, params=None, quiet=False):
+            calls.append(path)
+            return {"name": "anonymous", "displayName": "Anonymous"}
+
+    c._provider, c._provider_built = _Anonymous(), True
+    assert c.current_user() == {}
+    assert c.needs_login() is True
+    assert c.cache.get(f"myself:{c.env}") is None
+    assert calls == ["/rest/api/2/myself"]
+
+
 def test_health_never_calls_jira(monkeypatch):
     """프로세스 health가 상류를 타면 Jira 장애가 곧 localhost 앱 장애가 된다."""
     from fastapi.testclient import TestClient
@@ -213,6 +260,242 @@ def test_status_distinguishes_transport_stall_from_login(monkeypatch):
     body = TestClient(m.app).get("/api/status").json()
     assert body["mode"] == "degraded"
     assert body["needLogin"] is False
+
+
+def test_direct_session_probe_does_not_call_network_failure_expired():
+    """일시 네트워크 실패는 로그인 창을 띄울 근거가 아니다."""
+    from app.auth.base import UpstreamUnavailable
+
+    c = _prod_client()
+
+    class _Unavailable:
+        def get_json(self, path, params=None):
+            raise UpstreamUnavailable("temporary network loss")
+
+    c._provider, c._provider_built = _Unavailable(), True
+    assert c.direct_session_state() == "unknown"
+    result = c.proactive_auth_probe()
+    assert result["mode"] == "degraded"
+    assert result["needLogin"] is False
+
+
+def test_unknown_probe_does_not_reissue_login_for_previously_dead_session(monkeypatch):
+    """이미 dead여도 현재 판정이 망 문제면 새 로그인 이벤트를 만들지 않는다."""
+    c = _prod_client()
+    c.mark_session_dead("earlier confirmed HTTP 401")
+    monkeypatch.setattr(c, "direct_session_state", lambda **_kwargs: "unknown")
+
+    result = c.proactive_auth_probe()
+
+    assert result == {"ok": False, "needLogin": False, "mode": "degraded"}
+    assert c.needs_login() is True       # 내부의 확정 상태 자체는 지우지 않는다
+
+
+def test_probe_lock_timeout_never_opens_a_second_login_flow():
+    """먼저 진행 중인 probe를 기다리다 끝난 요청은 인증 만료의 새 증거가 아니다."""
+    c = _prod_client()
+    c.mark_session_dead("earlier confirmed HTTP 401")
+
+    class _BusyLock:
+        @staticmethod
+        def acquire(timeout=None):
+            assert timeout == 35
+            return False
+
+    c._auth_probe_lock = _BusyLock()
+    result = c.proactive_auth_probe()
+
+    assert result["pending"] is True and result["needLogin"] is False
+
+
+def _auth_cookie(name, value, domain="127.0.0.1"):
+    return {"name": name, "value": value, "domain": domain, "path": "/"}
+
+
+def test_activity_myself_persists_rolling_jira_cookie_with_throttle(tmp_path):
+    """activity-triggered direct probe는 최신 context cookie를 Jira 파일에만 bounded 저장한다."""
+    import json
+    from app.auth.sso_store import SsoStore
+
+    c = _prod_client()
+    store = SsoStore(str(tmp_path / "state.json"), {
+        "jira": c.s.jira_base,
+        "confluence": "https://conf.example.test",
+    })
+    store.save("jira", {"cookies": [_auth_cookie("JSESSIONID", "old")], "origins": []})
+    store.save("confluence", {
+        "cookies": [_auth_cookie("CONF", "keep", "conf.example.test")], "origins": []})
+    conf_before = store.path("confluence").read_bytes()
+    snapshots = []
+
+    class _Rolling:
+        broken = False
+
+        @staticmethod
+        def get_json(path, params=None):
+            assert path == "/rest/api/2/myself"
+            return {"name": "test.ui01"}
+
+        @staticmethod
+        def storage_state_snapshot():
+            snapshots.append(1)
+            return {"cookies": [
+                _auth_cookie("JSESSIONID", "rolled"),
+                _auth_cookie("CONF", "do-not-write", "conf.example.test"),
+            ], "origins": []}
+
+    c._provider, c._provider_built = _Rolling(), True
+    c.sso_store = lambda: store
+
+    assert c.direct_session_state(background=True) == "alive"
+    assert c.direct_session_state(background=True) == "alive"
+
+    saved = json.loads(store.path("jira").read_text(encoding="utf-8"))
+    assert [(row["name"], row["value"]) for row in saved["cookies"]] == [
+        ("JSESSIONID", "rolled")]
+    assert store.path("confluence").read_bytes() == conf_before
+    assert snapshots == [1]                       # 두 번째 probe는 15분 throttle
+
+
+def test_new_login_disk_revision_fences_old_provider_cookie_snapshot(tmp_path):
+    """snapshot 캡처 도중 새 로그인 파일이 생기면 old rolling state는 저장하지 않는다."""
+    import json
+    from app.auth.sso_store import SsoStore
+
+    c = _prod_client()
+    store = SsoStore(str(tmp_path / "state.json"), {"jira": c.s.jira_base})
+    store.save("jira", {"cookies": [_auth_cookie("JSESSIONID", "initial")], "origins": []})
+
+    class _OldProvider:
+        broken = False
+
+        @staticmethod
+        def get_json(path, params=None):
+            return {"name": "test.ui01"}
+
+        @staticmethod
+        def storage_state_snapshot():
+            # This is the exact race: visible login commits after snapshot work was scheduled but
+            # before the old provider attempts its disk write.
+            store.save("jira", {
+                "cookies": [_auth_cookie("JSESSIONID", "new-login")], "origins": []})
+            return {"cookies": [_auth_cookie("JSESSIONID", "old-provider")], "origins": []}
+
+    c._provider, c._provider_built = _OldProvider(), True
+    c.sso_store = lambda: store
+
+    assert c.direct_session_state(background=True) == "alive"
+    saved = json.loads(store.path("jira").read_text(encoding="utf-8"))
+    assert saved["cookies"][0]["value"] == "new-login"
+    assert c._session_state_persist_at == 0.0       # 다음 activity에서 다시 시도 가능
+
+
+def test_provider_generation_fences_snapshot_captured_during_reset(tmp_path):
+    """디스크가 아직 안 바뀌었어도 교체된 provider의 snapshot은 폐기한다."""
+    import json
+    from app.auth.sso_store import SsoStore
+
+    c = _prod_client()
+    store = SsoStore(str(tmp_path / "state.json"), {"jira": c.s.jira_base})
+    store.save("jira", {"cookies": [_auth_cookie("JSESSIONID", "initial")], "origins": []})
+
+    class _OldProvider:
+        broken = False
+
+        @staticmethod
+        def get_json(path, params=None):
+            return {"name": "test.ui01"}
+
+        @staticmethod
+        def storage_state_snapshot():
+            c.reset_provider()
+            return {"cookies": [_auth_cookie("JSESSIONID", "detached-old")], "origins": []}
+
+        @staticmethod
+        def close():
+            return None
+
+    c._provider, c._provider_built = _OldProvider(), True
+    c.sso_store = lambda: store
+
+    assert c.direct_session_state(background=True) == "alive"
+    saved = json.loads(store.path("jira").read_text(encoding="utf-8"))
+    assert saved["cookies"][0]["value"] == "initial"
+    assert c._provider is None and c._provider_built is False
+    assert c._session_state_persist_at == 0.0
+
+
+def test_provider_storage_snapshot_is_marshaled_to_owner_thread():
+    """BrowserContext.storage_state를 FastAPI worker에서 직접 만지지 않는다."""
+    import inspect
+    from app.auth.sso_session import SsoSessionProvider
+
+    source = inspect.getsource(SsoSessionProvider.storage_state_snapshot)
+    assert "self._context.storage_state()" in source
+    assert "self._submit(capture, PRIO_BACKGROUND)" in source
+
+
+def test_proactive_probe_silently_renews_an_expired_jira_session(monkeypatch):
+    """유휴 복귀 확인이 만료를 찾으면 보이는 창 전에 silent SSO를 한 번 시도한다."""
+    c = _prod_client()
+    states = iter(["expired", "alive"])
+    renewed = []
+    monkeypatch.setattr(c, "direct_session_state", lambda **_kwargs: next(states))
+    monkeypatch.setattr(c, "_renew_service", lambda name: renewed.append(name) or True)
+
+    result = c.proactive_auth_probe()
+
+    assert renewed == ["Jira"]
+    assert result == {"ok": True, "needLogin": False, "recovered": True, "mode": "ok"}
+    assert c.needs_login() is False
+
+
+def test_proactive_probe_is_prod_only_and_does_not_build_provider():
+    c = _prod_client()
+    c.env = "mock"
+    result = c.proactive_auth_probe()
+    assert result["skipped"] is True and result["needLogin"] is False
+    assert c._provider_built is False
+
+
+def test_proactive_probe_reuses_recent_result(monkeypatch):
+    """focus와 visibilitychange가 연달아 와도 direct Jira probe는 한 번뿐이다."""
+    c = _prod_client()
+    calls = []
+    monkeypatch.setattr(c, "direct_session_state", lambda **_kwargs: calls.append(1) or "alive")
+    first = c.proactive_auth_probe()
+    second = c.proactive_auth_probe()
+    assert first["ok"] is True
+    assert second["ok"] is True and second["cached"] is True
+    assert calls == [1]
+
+
+def test_auth_probe_endpoint_is_a_noop_outside_prod(monkeypatch):
+    from fastapi.testclient import TestClient
+    import app.main as m
+
+    monkeypatch.setattr(m._client, "proactive_auth_probe", lambda: {
+        "ok": True, "needLogin": False, "skipped": True, "mode": "local",
+    })
+    body = TestClient(m.app).post("/api/auth/probe").json()
+    assert body["ok"] is True and body["skipped"] is True
+
+
+def test_auth_exception_does_not_turn_an_unknown_probe_into_login(monkeypatch):
+    """401처럼 보인 첫 오류 뒤 직접 확인도 망 때문에 실패하면 인증 만료로 단정하지 않는다."""
+    import json
+    import app.main as m
+    from app.auth.base import SessionExpired
+
+    monkeypatch.setattr(m._settings, "jira_env", "prod")
+    monkeypatch.setattr(m._client, "direct_session_state", lambda: "unknown")
+    marked = []
+    monkeypatch.setattr(m._client, "mark_upstream_down", lambda reason="": marked.append(reason))
+    response = m._on_session_expired(None, SessionExpired("HTTP 401 during network flap"))
+    body = json.loads(response.body)
+    assert response.status_code == 503
+    assert body["needLogin"] is False and body["retryable"] is True
+    assert marked
 
 
 def test_sso_queue_timeout_breaks_provider_and_future_calls_fail_fast():

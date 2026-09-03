@@ -21,7 +21,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.auth.base import SessionExpired, UpstreamUnavailable
+from app.auth.base import (MutationOutcomeUnknown, PermissionDenied, SessionExpired,
+                           UpstreamUnavailable)
 from app.infra.cache import Cache
 from app.jira.jira_client import JiraClient
 from app.infra.settings import STATIC_DIR, get_settings, load_people
@@ -285,10 +286,20 @@ def _on_session_expired(request: Request, exc: SessionExpired):
       /myself 로 한 번 확인해서 **세션이 정말 죽었을 때만** needLogin 을 켠다.
       살아 있으면 이 요청만 실패시킨다 — 화면은 그대로다.
     """
-    if _settings.jira_env == "prod" and _client.session_alive():
-        return JSONResponse(
-            status_code=502,
-            content={"error": "요청이 거절되었습니다(세션은 정상) — " + str(exc)[:160]})
+    if _settings.jira_env == "prod":
+        session_state = _client.direct_session_state()
+        if session_state == "alive":
+            return JSONResponse(
+                status_code=502,
+                content={"error": "요청이 거절되었습니다(세션은 정상) — " + str(exc)[:160]})
+        if session_state == "unknown":
+            # 두 번째 /myself까지 네트워크 때문에 판정하지 못한 상태다. 이를 '만료'로 찍으면
+            # 로그인 창이 뜨고, 사용자는 세션이 자꾸 유실된다고 느낀다. 연결 장애로 남겨 둔다.
+            _client.mark_upstream_down(str(exc)[:120])
+            return JSONResponse(
+                status_code=503,
+                content={"error": "Jira 연결 상태를 확인하지 못했습니다. 잠시 후 자동 재시도합니다.",
+                         "retryable": True, "needLogin": False})
     # 세션이 정말 죽었다 — 다음 호출들이 죽은 세션에 붙어 수십 초를 버리지 않게 표시하고,
     # **/api/status 도 이 사실을 알게 한다**(예전엔 세션 파일만 보고 '인증됨' 이라 답해,
     # 프론트 감시자가 거짓 auth-ok 를 쏘고 감시를 멈췄다 → 로그인해도 화면이 안 살아났다).
@@ -296,6 +307,36 @@ def _on_session_expired(request: Request, exc: SessionExpired):
     return JSONResponse(
         status_code=401,
         content={"needLogin": True, "env": _settings.jira_env, "detail": str(exc)})
+
+
+@app.exception_handler(PermissionDenied)
+def _on_permission_denied(request: Request, exc: PermissionDenied):
+    """An authenticated per-issue denial is not an SSO incident.
+
+    The provider already proved Jira ``/myself`` while classifying this 403.  Returning a direct
+    permission response keeps best-effort pages usable and avoids the old duplicate identity
+    probe followed by a misleading 502 or login prompt.
+    """
+    return JSONResponse(
+        status_code=403,
+        content={"error": "이 Jira 항목을 볼 권한이 없습니다.",
+                 "permissionDenied": True, "needLogin": False})
+
+
+@app.exception_handler(MutationOutcomeUnknown)
+def _on_mutation_outcome_unknown(request: Request, exc: MutationOutcomeUnknown):
+    """응답 유실 가능 쓰기는 입력 보존 + 동일 mutation id 재조사를 명시한다."""
+    # 색인 반영 grace/모호한 대조 결과는 Jira transport 장애가 아니다. 실제 network/5xx에서만
+    # 회로를 열어 unrelated 화면의 정상 요청까지 막지 않는다.
+    if exc.upstream_failed:
+        _client.mark_upstream_down(str(exc)[:160])
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": str(exc), "retryable": True, "uncertain": True,
+            "clientMutationId": exc.mutation_id,
+        },
+    )
 
 
 @app.exception_handler(UpstreamUnavailable)
@@ -879,6 +920,17 @@ def api_status():
     return JSONResponse(st)
 
 
+@app.post("/api/auth/probe")
+def api_auth_probe():
+    """사용자가 유휴 상태에서 돌아왔을 때 실행하는 비차단형 프론트 백그라운드 확인.
+
+    mock/local 은 외부 SSO가 없으므로 즉시 no-op. prod 에서만 Jira ``/myself``를 직접
+    확인하고, 만료가 확실할 때 먼저 headless silent SSO 갱신을 시도한다. 사람 입력이
+    필요한 경우에만 ``needLogin``을 반환해 기존 LoginOverlay 흐름으로 넘긴다.
+    """
+    return JSONResponse(_client.proactive_auth_probe())
+
+
 class _PrefsBody(BaseModel):
     bitbucketEnabled: bool | None = None
     quickOpenHotkey: str | None = None
@@ -938,7 +990,11 @@ def _may_edit(key: str) -> bool:
     me = (_session_user().get("id") or "").lower()
     if not me:
         return False                      # 세션을 모르면 남의 티켓일 수 있다 → 열지 않는다
-    b = _client.ticket_badge(key) or {}
+    # Mutation preflight must not turn an expired session into a local 403 merely because the
+    # best-effort badge API suppresses Jira errors. Use the strict variant so global auth recovery
+    # can distinguish idle-session loss from a real authorization denial.
+    strict_badge = getattr(_client, "_ticket_badge_strict", None)
+    b = (strict_badge(key) if callable(strict_badge) else _client.ticket_badge(key)) or {}
     return me in {(b.get("assigneeId") or "").lower(), (b.get("reporterId") or "").lower()}
 
 

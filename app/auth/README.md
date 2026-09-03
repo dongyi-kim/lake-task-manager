@@ -4,7 +4,7 @@
 `JiraClient`(app/jira)는 이 인터페이스만 알고 REST 를 호출한다.
 
 ## 파일
-- **base.py** — `AuthProvider` 인터페이스 + 예외(`SessionExpired`/`LoginRequired`/`UpstreamError`) +
+- **base.py** — `AuthProvider` 인터페이스 + 예외(`SessionExpired`/`LoginRequired`/`PermissionDenied`/`UpstreamError`) +
   스레드로컬 우선순위 스코프(`write_upstream`/`background_upstream`) + XSRF 헤더 상수.
 - **basic.py** — Basic/PAT provider (local/docker).
 - **inprocess.py** — jira820 **in-process** ASGI provider (mock 기본, 소켓 불필요).

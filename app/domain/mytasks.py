@@ -220,30 +220,92 @@ def _sync_key(client, sync_id):
     return "mytasks:sync:%s:%s" % (getattr(client, "env", "?"), sync_id)
 
 
-def hydrate_my_task_group(client, sync_id, group_key):
-    """Hydrate exactly one Task-with-SubTask group from an opaque base-response snapshot."""
+def _load_error(client, exc, *, key, phase):
+    """Serialize a retry decision without losing the issue/relationship that failed."""
+    classifier = getattr(client, "issue_read_error_kind", None)
+    kind = classifier(exc) if callable(classifier) else "other"
+    return {
+        "key": str(key or "").strip().upper(),
+        "kind": kind,
+        "phase": phase,
+        "error": str(exc or "Jira read failed")[:300],
+    }
+
+
+def _retryable_missing(rows):
+    return [row for row in (rows or ())
+            if row.get("kind") not in ("permission", "unavailable")]
+
+
+def _hydrate_my_task_group_result(client, sync_id, group_key):
+    """Hydrate one group and retain every unavailable child as an explicit outcome.
+
+    The base stream already owns an authoritative Parent row, so a child refresh does not need to
+    re-read that Parent.  This matters during an outage: an accessible Parent must stay visible
+    while only the missing SubTask identities are retried.
+    """
     state = client.cache.get(_sync_key(client, sync_id))
     if not isinstance(state, dict):
         raise LookupError("Task 동기화 정보가 만료되었습니다.")
     session_user = (client.current_user() or {}).get("id")
     if session_user != state.get("sessionUser"):
         raise PermissionError("다른 사용자 Task 동기화 정보입니다.")
-    expected = (state.get("children") or {}).get(group_key)
-    if expected is None:
+    expected_by_group = state.get("children") or {}
+    if group_key not in expected_by_group:
         raise KeyError("동기화 대상 Task가 아닙니다.")
+
+    base = next((group for group in ((state.get("model") or {}).get("groups") or ())
+                 if group.get("key") == group_key), None)
+    if not isinstance(base, dict):
+        raise LookupError("Parent Task 동기화 모델이 만료되었습니다.")
+
+    expected = list(expected_by_group.get(group_key) or ())
+    missing = []
+    membership_resolved = group_key not in set(state.get("membershipPending") or ())
+    if not membership_resolved:
+        try:
+            expected = client.direct_child_keys(group_key)
+            membership_resolved = True
+        except Exception as exc:
+            missing.append(_load_error(
+                client, exc, key=group_key, phase="child-membership"))
 
     today = client.s_today() if hasattr(client, "s_today") else date.today()
     fields = {"sp": client.s.sp_field_id, "epic": client.s.epic_link_field_id,
               "voc": client.s.voc_component}
-    parents = client.issues_by_keys([group_key], light=True)
-    if not parents:
-        raise LookupError("Parent Task를 불러오지 못했습니다.")
-    parent = _node(parents[0], today, fields)
-    children = [_node(raw, today, fields)
-                for raw in client.issues_by_keys(expected, light=True)]
-    return _normalize_task_groups([
-        _hydrated_group(parent, children, state.get("context") or {}, expected)
+    details = client.issues_by_keys_result(expected, light=True)
+    missing.extend(dict(row, phase="child-issue") for row in details.get("missing") or ())
+    children = [_node(raw, today, fields) for raw in details.get("issues") or ()]
+    group = _normalize_task_groups([
+        _hydrated_group(base, children, state.get("context") or {}, expected)
     ])[0]
+    retryable = _retryable_missing(missing)
+    terminal = [row for row in missing if row not in retryable]
+    # A permission/not-found row is terminal for this best-effort view: stop the spinner, retain
+    # the known cardinality, and expose an unavailable count without fabricating an empty cache.
+    group["childrenPending"] = bool(retryable)
+    group["childrenLoaded"] = not missing
+    group["childrenUnavailable"] = bool(terminal)
+    group["childrenUnavailableCount"] = len(terminal)
+    if any(row.get("phase") == "child-membership" for row in retryable):
+        group["hasSubs"] = True
+        group["standalone"] = False
+        group["atoms"] = []
+        group["urgency"] = None
+    if missing:
+        group["childrenMissing"] = missing
+    return {
+        "group": group,
+        "missing": missing,
+        "retryable": bool(retryable),
+        "membershipResolved": membership_resolved,
+        "expected": list(expected),
+    }
+
+
+def hydrate_my_task_group(client, sync_id, group_key):
+    """Compatibility view of one group; snapshot callers consume the richer missing contract."""
+    return _hydrate_my_task_group_result(client, sync_id, group_key)["group"]
 
 
 def hydrate_my_task_snapshot(client, sync_id, group_key):
@@ -254,7 +316,8 @@ def hydrate_my_task_snapshot(client, sync_id, group_key):
     the Task stream deliberately moved to the server. Keep the mutable sync model server-side and
     return a monotonically versioned replacement instead.
     """
-    group = hydrate_my_task_group(client, sync_id, group_key)
+    hydrated_result = _hydrate_my_task_group_result(client, sync_id, group_key)
+    group = hydrated_result["group"]
     sync_key = _sync_key(client, sync_id)
     session_user = (client.current_user() or {}).get("id")
     with _TASK_SYNC_LOCK:
@@ -268,13 +331,20 @@ def hydrate_my_task_snapshot(client, sync_id, group_key):
             raise LookupError("Task 동기화 모델이 만료되었습니다.")
 
         hydrated = set(state.get("hydrated") or ())
-        if group_key not in hydrated:
-            groups = _normalize_task_groups([
-                group if previous.get("key") == group_key else previous
-                for previous in model.get("groups") or ()])
-            atoms = [atom for item in groups for atom in item.get("atoms") or ()]
-            model["groups"] = groups
-            model["counts"] = _counts(atoms)
+        groups = _normalize_task_groups([
+            group if previous.get("key") == group_key else previous
+            for previous in model.get("groups") or ()])
+        atoms = [atom for item in groups for atom in item.get("atoms") or ()]
+        model["groups"] = groups
+        model["counts"] = _counts(atoms)
+        if hydrated_result["membershipResolved"]:
+            children = dict(state.get("children") or {})
+            children[group_key] = hydrated_result["expected"]
+            state["children"] = children
+            membership_pending = set(state.get("membershipPending") or ())
+            membership_pending.discard(group_key)
+            state["membershipPending"] = sorted(membership_pending)
+        if not hydrated_result["retryable"]:
             hydrated.add(group_key)
 
         sequence = int(state.get("snapshotSequence") or 0) + 1
@@ -286,7 +356,9 @@ def hydrate_my_task_snapshot(client, sync_id, group_key):
         state["snapshotSequence"] = sequence
         client.cache.set(sync_key, state, ASYNC_SYNC_TTL)
         return {"contract": TASK_STREAM_CONTRACT, "type": "snapshot", "syncId": sync_id,
-                "sequence": sequence, "model": model}
+                "sequence": sequence, "model": model,
+                "missing": hydrated_result["missing"],
+                "retryable": hydrated_result["retryable"]}
 
 
 def hydrate_my_task_epics(client, sync_id):
@@ -346,6 +418,20 @@ class _TaskRowsClient:
                     by_key[key] = row
         return [by_key[key] for key in requested if key in by_key]
 
+    def issues_by_keys_result(self, keys, light=False, *, raise_retryable=False):
+        if not self._cache_only:
+            return self._client.issues_by_keys_result(
+                keys, light=light, raise_retryable=raise_retryable)
+        requested = list(dict.fromkeys(key for key in (keys or ()) if key))
+        rows = self.issues_by_keys(requested, light=light)
+        found = {row.get("key") for row in rows}
+        # A cumulative leaf snapshot can legitimately lack a Parent whose leaf has not completed
+        # yet. This is progressive pending, not an upstream failure and must not raise a toast.
+        missing = [{"key": key, "kind": "pending", "error": "row not in cumulative cache yet"}
+                   for key in requested if key not in found]
+        return {"contract": "jira-issues-by-keys.v1", "requestedKeys": requested,
+                "issues": rows, "missing": missing, "complete": not missing}
+
 
 def _leaf_status_axis(leaf):
     """Best-effort status band for progress display; membership still comes from issue rows."""
@@ -377,6 +463,15 @@ def iter_my_task_models(client, user=None, include_done=False, limit=None, scope
     def event(model, *, done=False, replace=True, completed_leaf=None,
               completed_leaves=None, errors=(), leaf_done=0, leaf_total=0):
         nonlocal sequence
+        partial_errors = []
+        seen_errors = set()
+        for error in list(errors) + list((model or {}).get("loadErrors") or ()):
+            marker = (error.get("key"), error.get("kind"), error.get("phase"),
+                      error.get("leaf"), error.get("message") or error.get("error"))
+            if marker in seen_errors:
+                continue
+            seen_errors.add(marker)
+            partial_errors.append(error)
         payload = {
             "contract": TASK_STREAM_CONTRACT,
             "type": "snapshot",
@@ -400,8 +495,8 @@ def iter_my_task_models(client, user=None, include_done=False, limit=None, scope
             "completedLeaf": completed_leaf,
             "completedLeaves": list(completed_leaves or (
                 [completed_leaf] if completed_leaf else [])),
-            "partial": bool(errors),
-            "partialErrors": list(errors),
+            "partial": bool(partial_errors),
+            "partialErrors": partial_errors,
         }
         sequence += 1
         return payload
@@ -680,18 +775,34 @@ def build_my_tasks(client, user=None, include_done=False, limit=None, scope="ass
     #    하위는 JQL('parent in ...')이 아니라 공통 direct-child membership 캐시로 모은다.
     #    이 화면의 JQL row에 subtasks가 이미 있으므로 상류 호출 없이 캐시를 prime하고,
     #    티켓 다이어로그·PMO_VIT·WBS가 같은 parent를 열 때 그대로 재사용한다.
+    child_lookup_errors = {}
+
     def sub_keys(raw):
+        parent_key = str((raw or {}).get("key") or "").strip().upper()
         try:
-            return client.direct_child_keys(raw.get("key"), parent_issue=raw)
-        except Exception:
+            return client.direct_child_keys(parent_key, parent_issue=raw)
+        except Exception as exc:
             client.miss_add()
-            return []
+            # Unknown membership is not an empty child list.  Carry the exact Parent and failure
+            # kind into the snapshot so auth/transport can retry only this relationship.
+            child_lookup_errors[parent_key] = _load_error(
+                client, exc, key=parent_key, phase="child-membership")
+            return None
 
     need_parents = sorted({n["parentKey"] for n in mine if n["isSub"] and n["parentKey"]})
     # Task 화면은 description/attachment/link를 쓰지 않는다. JQL이 이미 채운 issueL 캐시를
     # 그대로 재사용해야 하므로 Parent도 light projection으로만 보강한다.
-    parent_raw = {r["key"]: r for r in client.issues_by_keys(need_parents, light=True)} \
-        if need_parents else {}
+    parent_lookup_errors = {}
+    parent_result = client.issues_by_keys_result(need_parents, light=True) if need_parents else {
+        "issues": [], "missing": [], "complete": True,
+    }
+    for failure in parent_result.get("missing") or ():
+        # During a cumulative leaf build the Parent may simply belong to a leaf that has not
+        # arrived yet. Real auth/transport/visibility failures retain their key and phase.
+        if failure.get("kind") != "pending":
+            parent_lookup_errors[failure.get("key")] = dict(
+                failure, phase="parent-issue")
+    parent_raw = {r["key"]: r for r in parent_result.get("issues") or ()}
     parents = {k: _node(r, today, ef) for k, r in parent_raw.items()}
 
     # 하위를 알아야 하는 이슈 = 내 Task 들 + 위에서 가져온 부모들
@@ -699,7 +810,7 @@ def build_my_tasks(client, user=None, include_done=False, limit=None, scope="ass
     for r in list(mine_raw) + list(parent_raw.values()):
         key = r.get("key")
         keys = sub_keys(r)
-        if key and keys:
+        if key and keys is not None:
             expected_kids[key] = list(dict.fromkeys(keys))
     kid_keys = [key for keys in expected_kids.values() for key in keys]
     kid_of = {}                                   # 부모키 -> [자식 노드]
@@ -756,12 +867,15 @@ def build_my_tasks(client, user=None, include_done=False, limit=None, scope="ass
             add_atom(g, n)
         else:
             kids = kid_of.get(n["key"]) or []
-            g = group_of(n, bool(expected_kids.get(n["key"]) or kids))
+            g = group_of(n, bool(expected_kids.get(n["key"]) or kids
+                                 or n["key"] in child_lookup_errors))
             my_kids = [c for c in kids if is_mine(c)]
             if my_kids:
                 for c in my_kids:
                     add_atom(g, c)      # 하위가 있으면 하위가 실행 단위 — Task 자체는 원자가 아니다
-            elif not expected_kids.get(n["key"]) and not kids:
+            elif (not expected_kids.get(n["key"]) and not kids
+                  and not _retryable_missing([child_lookup_errors.get(n["key"])]
+                                              if child_lookup_errors.get(n["key"]) else [])):
                 add_atom(g, n)          # 하위가 아예 없는 단독 Task → Task 자체가 원자(soloPanel 로 감)
             # else: 하위는 있으나 전부 남의 것/스코프 밖(예: epic 스코프의 Sub-Task 는 Epic Link 가 없어
             #   is_mine 이 안 잡힌다). 이때 **Task 자신을 하위 원자로 넣지 않는다** — 넣으면 부모 헤더와
@@ -773,14 +887,23 @@ def build_my_tasks(client, user=None, include_done=False, limit=None, scope="ass
         kids = kid_of.get(g["key"]) or []
         expected = expected_kids.get(g["key"]) or [child["key"] for child in kids]
         loaded_keys = {child["key"] for child in kids}
-        pending = bool(defer_children and any(key not in loaded_keys for key in expected))
+        membership_error = child_lookup_errors.get(g["key"])
+        membership_retryable = bool(
+            membership_error and _retryable_missing([membership_error]))
+        pending = bool(defer_children and (
+            any(key not in loaded_keys for key in expected) or membership_retryable))
         mine_keys = {a["key"] for a in g["atoms"]}
         g["others"] = [c for c in kids if c["key"] not in mine_keys]
-        g["hasSubs"] = bool(expected or kids)
+        g["hasSubs"] = bool(expected or kids or membership_retryable)
         g["standalone"] = not g["hasSubs"]
         g["childrenPending"] = pending
-        g["childrenLoaded"] = not pending
+        g["childrenLoaded"] = not pending and not membership_error
         g["childrenLoadedCount"] = len(kids)
+        g["childrenUnavailable"] = bool(
+            membership_error and not membership_retryable)
+        g["childrenUnavailableCount"] = 1 if g["childrenUnavailable"] else 0
+        if membership_error:
+            g["childrenMissing"] = [membership_error]
         # 롤업은 하위 전체 기준(동료 몫 포함) — 부모의 실제 진척이다.
         # 하위가 없으면 그 Task 하나의 상태가 곧 진척이라 별도 바를 그리지 않는다(pct=None).
         g["pct"] = _rollup(kids) if kids and not pending else None
@@ -822,6 +945,9 @@ def build_my_tasks(client, user=None, include_done=False, limit=None, scope="ass
               "doneWindowDays": DONE_WINDOWS.get(done_filter, 7),
               "today": today.isoformat(), "groups": out, "epics": epics,
               "counts": _counts(atoms)}
+    if child_lookup_errors or parent_lookup_errors:
+        result["loadErrors"] = (list(parent_lookup_errors.values())
+                                + list(child_lookup_errors.values()))
     if defer_children:
         result["epicsPending"] = bool(pending_epic_keys)
     pending_groups = {g["key"]: expected_kids.get(g["key"], [])
@@ -842,6 +968,8 @@ def build_my_tasks(client, user=None, include_done=False, limit=None, scope="ass
         client.cache.set(_sync_key(client, sync_id), {
             "sessionUser": session_user, "context": context,
             "children": pending_groups, "epics": pending_epic_keys,
+            "membershipPending": sorted(
+                key for key in pending_groups if key in child_lookup_errors),
             "model": result, "hydrated": [], "snapshotSequence": 0,
         }, ASYNC_SYNC_TTL)
     return result
