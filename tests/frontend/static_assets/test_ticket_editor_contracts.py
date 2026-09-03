@@ -34,7 +34,7 @@ def test_comment_editor_facade_delegates_feature_specific_modules():
 def test_comment_submit_waits_for_pending_draft_before_final_delete():
     """제출 성공 뒤 예약된 saveDraft가 완료 글을 되살리는 경쟁 상태를 막는다."""
     src = comment_editor_source()
-    success = src.index("await this.submitFn(html);")
+    success = src.index("await this.submitFn(html, this.submitMutationId || null);")
     cancel = src.index("clearTimeout(this._dt)", success)
     wait = src.index("await this._draftWrite", cancel)
     delete = src.index("await clearDraft(dk)", wait)
@@ -327,11 +327,32 @@ def test_ticket_epic_and_person_pickers_render_local_defaults_before_network():
     assert init_assignee.index("api.ticketBadge(this.ticket)") < init_assignee.index("api.me()")
     assert "current.assigneeId" in init_assignee and "current.assigneeDisplay || name" in init_assignee
     assert "if (this._userTouched) return" in init_assignee
-    assert transition.count("this._userTouched = true") == 2
+    assert "pickWho(u) { this._userTouched = true" in transition
+    assert "clearWho() {\n      this._userTouched = true" in transition
+    assert "this._userTouched = true;\n      this.user = payload.assignee" in transition
     resolution_default = transition[transition.index("mounted() {"):transition.index("api.timetracking()")]
     assert 'this.transition.toCategory === "done"' in resolution_default
     assert '.trim().toLowerCase() === "done"' in resolution_default
     assert "this.resolution = (done || this.resolutions[0]).name" in resolution_default
+
+
+def test_ticket_epic_title_keeps_cached_view_name_while_lineage_is_delayed_or_denied():
+    dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
+    title = dialog[dialog.index("epicTitle() {"):dialog.index("stList() {")]
+
+    # No extra request is introduced: prefer the richer lineage node when present, then retain the
+    # already loaded ticket-view metadata, and use the key only when all labels are empty/key-only.
+    expected = [
+        "usable(a && a.epicName)",
+        "usable(a && a.summary)",
+        "usable(this.v && this.v.epicName)",
+        "usable(this.v && this.v.epicSummary)",
+        "|| key",
+    ]
+    positions = [title.index(item) for item in expected]
+    assert positions == sorted(positions)
+    assert 'label.toUpperCase() !== key.toUpperCase()' in title
+    assert "api." not in title
 
 
 def test_creation_dialog_keeps_last_options_and_never_deadlocks_on_type_lookup():

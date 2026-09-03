@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from app.auth.base import SessionExpired
+from app.auth.base import PermissionDenied, SessionExpired, UpstreamUnavailable
 
 
 class AssigneeBody(BaseModel):
@@ -21,12 +21,16 @@ class AssigneeBody(BaseModel):
 
 class TransitionBody(BaseModel):
     id: str = ""
+    targetStatusId: str = ""
+    targetStatusName: str = ""
+    targetStatusCategory: str = ""
     days: int = 0
     hours: int = 0
     minutes: int = 0
     assignee: str = ""
     resolution: str = ""
     commentHtml: str = ""
+    clientMutationId: str | None = None
 
 
 class FieldsBody(BaseModel):
@@ -50,6 +54,8 @@ class ChildBody(BaseModel):
     components: list[str] | None = None
     labels: list[str] | None = None
     descriptionHtml: str | None = None
+    clientMutationId: str | None = None
+    parentIsEpic: bool | None = None
 
 
 class TaskBody(ChildBody):
@@ -78,6 +84,7 @@ class EpicBody(BaseModel):
     components: list[str] | None = None
     descriptionHtml: str | None = None
     taskKeys: list[str] | None = None
+    clientMutationId: str | None = None
 
 
 class EpicLinkBody(BaseModel):
@@ -182,7 +189,7 @@ def update_fields_response(client, settings, key: str, body: FieldsBody):
         return JSONResponse({"ok": True, "note": "변경 없음"})
     try:
         return JSONResponse(client.update_fields(key, fields))
-    except SessionExpired:
+    except (PermissionDenied, SessionExpired, UpstreamUnavailable):
         raise
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)[:300]}, status_code=400)
@@ -202,7 +209,7 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
         require_edit(key)
         try:
             return JSONResponse(get_client().delete_issue(key))
-        except SessionExpired:
+        except (PermissionDenied, SessionExpired, UpstreamUnavailable):
             raise
         except Exception as exc:
             return JSONResponse({"ok": False, "error": str(exc)[:300]}, status_code=400)
@@ -236,13 +243,14 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
 
     @router.post("/api/ticket/{key}/child")
     def api_create_child(key: str, body: ChildBody):
-        require_edit(key)
         client = get_client()
         issue_type, summary = (body.type or "").strip(), (body.summary or "").strip()
         if not summary:
             return JSONResponse({"ok": False, "error": "제목을 입력하세요."}, status_code=400)
-        if issue_type not in client.child_types(key):
-            return JSONResponse({"ok": False, "error": f"이 티켓 밑에는 {issue_type} 을(를) 만들 수 없습니다."}, status_code=400)
+        def validate_create():
+            require_edit(key)
+            if issue_type not in client.child_types(key):
+                raise ValueError(f"이 티켓 밑에는 {issue_type} 을(를) 만들 수 없습니다.")
         try:
             result = client.create_child(
                 key, issue_type, summary, priority=body.priority or None,
@@ -250,14 +258,17 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
                 components=body.components or None,
                 description=client.desc_field_value(body.descriptionHtml) or None,
                 labels=body.labels or None,
+                mutation_id=body.clientMutationId,
+                parent_is_epic=body.parentIsEpic,
+                before_write=validate_create,
             )
+        except (PermissionDenied, SessionExpired, UpstreamUnavailable):
+            raise
         except Exception as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
         new_key = (result or {}).get("key")
         try:
             cascade = client.cascade_suggestion(new_key, created=True) if new_key else None
-        except SessionExpired:
-            raise
         except Exception:
             cascade = None
         return JSONResponse({"ok": True, "key": new_key, "cascade": cascade})
@@ -268,8 +279,9 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
         issue_type, summary = (body.type or "").strip(), (body.summary or "").strip()
         if not summary:
             return JSONResponse({"ok": False, "error": "제목을 입력하세요."}, status_code=400)
-        if issue_type not in client.task_types():
-            return JSONResponse({"ok": False, "error": f"{issue_type} 타입은 만들 수 없습니다."}, status_code=400)
+        def validate_create():
+            if issue_type not in client.task_types():
+                raise ValueError(f"{issue_type} 타입은 만들 수 없습니다.")
         try:
             result = client.create_child(
                 None, issue_type, summary, priority=body.priority or None,
@@ -277,7 +289,11 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
                 components=body.components or None,
                 description=client.desc_field_value(body.descriptionHtml) or None,
                 labels=body.labels or None,
+                mutation_id=body.clientMutationId,
+                before_write=validate_create,
             )
+        except (PermissionDenied, SessionExpired, UpstreamUnavailable):
+            raise
         except Exception as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
         return JSONResponse({"ok": True, "key": (result or {}).get("key")})
@@ -339,10 +355,13 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
                 assignee=body.assignee or None, components=body.components or None,
                 description=client.desc_field_value(body.descriptionHtml) or None,
                 epic_name=(body.epicName or "").strip() or None,
+                mutation_id=body.clientMutationId,
             )
             key = (result or {}).get("key")
             linked = client.set_epic_link(key, body.taskKeys) if key and body.taskKeys else None
             return JSONResponse({"ok": True, "key": key, "link": linked})
+        except (PermissionDenied, SessionExpired, UpstreamUnavailable):
+            raise
         except Exception as exc:
             return JSONResponse({"ok": False, "error": str(exc)[:300]}, status_code=400)
 
@@ -350,6 +369,8 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
     def api_epic_link(key: str, body: EpicLinkBody):
         try:
             return JSONResponse(get_client().set_epic_link(key, body.taskKeys))
+        except (PermissionDenied, SessionExpired, UpstreamUnavailable):
+            raise
         except Exception as exc:
             return JSONResponse({"ok": False, "error": str(exc)[:300]}, status_code=400)
 
@@ -357,6 +378,8 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
     def api_parent_task_candidates(q: str = "", limit: int = 20, excludeLinked: int = 0):
         try:
             return JSONResponse(get_client().parent_task_candidates(q, limit, exclude_linked=bool(excludeLinked)))
+        except (PermissionDenied, SessionExpired, UpstreamUnavailable):
+            raise
         except Exception as exc:
             return JSONResponse({"error": str(exc)[:200], "items": []})
 
@@ -398,15 +421,17 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
             client.do_transition(
                 key, body.id, time_spent=duration or None, assignee=body.assignee or None,
                 resolution=body.resolution or None, comment=comment or None,
+                target_status_id=body.targetStatusId or None,
+                target_status_name=body.targetStatusName or None,
+                target_status_category=body.targetStatusCategory or None,
+                mutation_id=body.clientMutationId or None,
             )
-        except SessionExpired:
+        except (PermissionDenied, SessionExpired, UpstreamUnavailable):
             raise
         except Exception as exc:
             return JSONResponse({"ok": False, "error": str(exc)[:400]}, status_code=400)
         try:
             cascade = client.cascade_suggestion(key)
-        except SessionExpired:
-            raise
         except Exception:
             cascade = None
         return JSONResponse({"ok": True, "cascade": cascade})
@@ -435,19 +460,20 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
         return JSONResponse({"ok": True})
 
     @router.post("/api/ticket/{key}/attachment")
-    async def api_attachment_upload(key: str, file: UploadFile = File(...)):
+    async def api_attachment_upload(key: str, file: UploadFile = File(...),
+                                    clientMutationId: str = Form("")):
         client = get_client()
         data = await file.read()
         try:
-            result = client.upload_attachment(key, file.filename or "paste.png", data, file.content_type)
-        except SessionExpired as exc:
-            try:
-                alive = bool(client.current_user())
-            except Exception:
-                alive = False
-            if not alive:
-                raise
-            return JSONResponse({"ok": False, "error": "첨부 업로드가 거절되었습니다 — " + str(exc)[:200]}, status_code=502)
+            result = client.upload_attachment(
+                key, file.filename or "paste.png", data, file.content_type,
+                mutation_id=clientMutationId or None,
+            )
+        except SessionExpired:
+            # Do not consult current_user(): it is cached for hours and can claim a dead idle
+            # session is alive. The global handler performs a direct session_alive probe and
+            # emits the need-login contract when appropriate.
+            raise
         attachment = result[0] if isinstance(result, list) and result else (result or {})
         attachment_id = str(attachment.get("id") or "")
         filename = attachment.get("filename") or (file.filename or "")

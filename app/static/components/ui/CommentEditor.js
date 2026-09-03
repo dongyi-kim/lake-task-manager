@@ -33,6 +33,7 @@ import {
 } from "../editor/editorExtensions.js";
 import { hasClipboardTableHtml, tsvTableNode } from "../editor/editorClipboard.js";
 import COMMENT_EDITOR_TEMPLATE from "../editor/commentEditorTemplate.js";
+import { newMutationId } from "../../lib/mutationId.js";
 
 export { normalizeAiHtml } from "../editor/contentTransforms.js";
 
@@ -63,6 +64,9 @@ export default {
     kind: { type: String, default: "comment" },   // comment | description | transition
     // 티켓 다이어로그가 이미 가진 담당/보고/최근 댓글 맥락. 네트워크 지연 중에도 이들이 먼저 뜬다.
     mentionUsers: { type: Array, default: () => [] },
+    // 일반 새 댓글 외의 일회성 작성 화면도 같은 IndexedDB 초안/이미지 복원 경로를 쓸 수 있다.
+    // 호출자가 목적까지 포함한 scope를 명시해야 하며, "new:TICKET" 댓글 초안과는 별도 키다.
+    draftScope: { type: String, default: "" },
     // 설명 편집에서 크게 늘린 값이 새 댓글 작성창까지 화면을 채우지 않도록 자리별 저장 키와
     // 기본 높이를 받을 수 있다. 사용자가 조절한 높이는 각 자리에서 계속 기억한다.
     heightKey: { type: String, default: EDITOR_HEIGHT_KEY },
@@ -71,6 +75,7 @@ export default {
   emits: ["submitted", "cancel"],
   data() { return { ready: false, loadErr: "", busy: false, err: "", tick: 0, languages: [],
                     maximized: false, restored: false,
+                    submitMutationId: "", pendingSubmitHtml: "",
                     // 인라인 모드에서 사용자가 끌어 정한 본문 높이(px). null = 기본값.
                     // 최대화 모드에는 안 쓴다 — 거기선 창이 높이를 정한다.
                     hostH: loadEditorHeight(this.heightKey, this.initialHeight), resizing: false,
@@ -183,11 +188,26 @@ export default {
     });
     if (this._dead) { try { this._ed.destroy(); } catch (e) { /* noop */ } return; }
     await this.restoreDraft();                                   // 이전에 쓰다 만 내용 복원
+    // renderer reload/page hide는 Vue unmount보다 먼저 일어날 수 있다. 입력 debounce(700ms)가
+    // 끝나기 전이어도 지금 보이는 HTML과 Blob을 즉시 IndexedDB에 넘겨 둔다.
+    this._flushDraftOnExit = () => { if (!this._dead && this.draftKey()) this.flushDraft(); };
+    this._flushDraftWhenHidden = () => {
+      if (document.visibilityState === "hidden") this._flushDraftOnExit();
+    };
+    window.addEventListener("pagehide", this._flushDraftOnExit);
+    document.addEventListener("visibilitychange", this._flushDraftWhenHidden);
     this.ready = true;
   },
   beforeUnmount() {
-    this._dead = true;
     clearTimeout(this._dt); this._dt = null;       // 제출/이동 뒤 예약 저장이 옛 초안을 되살리지 않게
+    // route/dialog unmount는 await할 수 없지만 flushDraft는 첫 await 전에 HTML/Blob snapshot과
+    // write promise를 만든다. 성공 제출 경로는 이 promise를 기다린 뒤 마지막 clear를 수행한다.
+    if (this.draftKey() && this._ed) this.flushDraft();
+    if (this._flushDraftOnExit) window.removeEventListener("pagehide", this._flushDraftOnExit);
+    if (this._flushDraftWhenHidden) {
+      document.removeEventListener("visibilitychange", this._flushDraftWhenHidden);
+    }
+    this._dead = true;
     if (this._upTick) { clearInterval(this._upTick); this._upTick = null; }   // 업로드 경과 타이머
     try { for (const u of this._pending.keys()) URL.revokeObjectURL(u); } catch (e) { /* noop */ }
     try { if (this._ed) this._ed.destroy(); } catch (e) { /* noop */ }
@@ -588,8 +608,10 @@ export default {
     //
     // **본문 편집은 초안을 쓰지 않는다.** 본문은 서버에 이미 있는 글이고, 다른 사람이 고쳤을 수도
     // 있다 — 열 때마다 최신 본문을 그대로 보여 줘야 한다. 지난 초안을 덮어 놓으면 사용자는
-    // 자기가 안 쓴 글을 자기 글로 알고 저장한다. 상태 전이 코멘트도 그 창에서 끝나는 한 줄이다.
+    // 자기가 안 쓴 글을 자기 글로 알고 저장한다. 단, 상태 전이처럼 서버 원본이 없는 일회성
+    // 작성 화면은 호출자가 draftScope를 주어 명시적으로 복구를 켤 수 있다.
     draftKey() {
+      if (this.draftScope) return "scoped:" + String(this.draftScope);
       // **본문 편집은 초안을 남기지 않는다.** 기준이 되는 글이 서버에 있고 남이 고칠 수도 있어,
       // '수정' 을 누를 때마다 최신 본문을 받아 거기서 시작한다. 그 옆에 지난 초안까지 두면
       // 어느 것이 진짜인지가 매번 문제가 된다 — 하나만 둔다.
@@ -619,11 +641,15 @@ export default {
         if (!html.includes(url)) continue;
         const token = "draft:" + info.name;          // objectURL 은 새로고침 후 무효 → 토큰으로
         html = html.split(url).join(token);
-        imgs.push({ token, name: info.name, blob: info.blob });
+        imgs.push({ token, name: info.name, blob: info.blob, uploaded: info.uploaded || null,
+                    uploadMutationId: info.uploadMutationId || "" });
       }
-      const write = (!text && !imgs.length)
+      // 빈 표/체크박스/링크처럼 getText()에는 잡히지 않아도 사용자가 만든 노드는 초안이다.
+      const hasNode = /<img\b|<a\b|<input\b|<table\b|<pre\b|<blockquote\b|<h[1-6]\b|<hr\b/i.test(html);
+      const write = (!text && !imgs.length && !hasNode)
         ? clearDraft(k)                               // 빈 초안은 남기지 않는다
-        : saveDraft(k, { html, images: imgs });
+        : saveDraft(k, { html, images: imgs, mutationId: this.submitMutationId || "",
+                         pendingHtml: this.pendingSubmitHtml || "" });
       this._draftWrite = write;
       try { await write; } catch (_) { /* 임시저장 실패가 작성 자체를 막지는 않는다 */ }
       finally { if (this._draftWrite === write) this._draftWrite = null; }
@@ -634,11 +660,16 @@ export default {
       purgeExpired();                       // 다른 티켓의 만료 초안도 이참에 정리(세션 1회)
       const rec = await loadDraft(k);
       if (!rec || !rec.html || this._dead || !this._ed) return;
+      // A response-lost comment is reconciled by this stable id.  Keeping it with the existing
+      // IndexedDB draft also survives editor close, refresh and app restart.
+      this.submitMutationId = String(rec.mutationId || "");
+      this.pendingSubmitHtml = String(rec.pendingHtml || "");
       let html = rec.html;
       for (const im of (rec.images || [])) {
         try {
           const url = URL.createObjectURL(im.blob);     // 저장된 blob → 새 objectURL
-          this._pending.set(url, { blob: im.blob, name: im.name });
+          this._pending.set(url, { blob: im.blob, name: im.name, uploaded: im.uploaded || null,
+                                   uploadMutationId: im.uploadMutationId || "" });
           html = html.split(im.token).join(url);
         } catch (e) { /* noop */ }
       }
@@ -646,24 +677,52 @@ export default {
       this.restored = true;
     },
     async discardDraft() {
+      if (this.submitMutationId) {
+        this.err = "Jira 반영 여부를 확인하기 전에는 이 초안을 버릴 수 없습니다. 로그인 또는 네트워크 복구 후 다시 등록해 주세요.";
+        pushToast({ kind: "warn", icon: "⚠", title: "확인 중인 댓글",
+                    message: "중복 작성을 막기 위해 반영 여부 확인이 끝날 때까지 초안을 유지합니다." });
+        return false;
+      }
+      // A transition can be cancelled after one image upload succeeded but before the transition
+      // request started (for example, auth failed on the next image). Do not silently orphan that
+      // attachment. If cleanup itself cannot be confirmed, keep the scoped draft so it is retryable.
+      if (this.draftScope) {
+        for (const info of this._pending.values()) {
+          const id = info.uploaded && info.uploaded.id;
+          if (!id) continue;
+          try { await api.attachmentDelete(this.ticketKey, id); }
+          catch (e) {
+            this.err = "첨부 정리를 확인하지 못해 초안을 유지합니다. 로그인 또는 네트워크 복구 후 다시 취소해 주세요.";
+            pushToast({ kind: "warn", icon: "⚠", title: "전환 초안 유지",
+                        message: this.err });
+            return false;
+          }
+          info.uploaded = null;
+          info.uploadMutationId = "";       // 삭제된 attachment receipt를 다음 upload에 재사용 금지
+        }
+      }
       const k = this.draftKey();
       clearTimeout(this._dt); this._dt = null;
       const prior = this._draftWrite;
       if (prior) { try { await prior; } catch (_) { /* 마지막 삭제가 최종 상태를 정한다 */ } }
       try { for (const u of this._pending.keys()) URL.revokeObjectURL(u); } catch (e) { /* noop */ }
       this._pending.clear();
+      this.submitMutationId = "";
+      this.pendingSubmitHtml = "";
       if (this._ed) this._ed.commands.clearContent(false);
       this.restored = false;
       const write = k ? clearDraft(k) : null;
       this._draftWrite = write;
       if (write) { try { await write; } catch (_) { /* IndexedDB 실패는 화면 취소를 막지 않는다 */ } }
       if (this._draftWrite === write) this._draftWrite = null;
+      return true;
     },
     // 바깥(생성 다이얼로그 등)에서 '설명을 쓸지' 판단용 — 글자·이미지·링크·체크박스 하나라도 있으면 false.
     isBlank() {
       if (!this._ed) return true;
       const text = (this._ed.getText() || "").trim();
-      return !text && !/<img\b|<a\b|<input\b/i.test(this._ed.getHTML());
+      return !text && !/<img\b|<a\b|<input\b|<table\b|<pre\b|<blockquote\b|<h[1-6]\b|<hr\b/i
+        .test(this._ed.getHTML());
     },
     /** 접힌 바용 한 줄 미리보기. 이미지·표·코드블록처럼 한 줄로 읽을 수 없는 노드는 제외한다. */
     previewText(limit = 160) {
@@ -683,7 +742,10 @@ export default {
     hasPendingUploads() { return !!(this._pending && this._pending.size); },
     async submit() {
       if (this.busy || !this._ed) return;
-      let html = this._ed.getHTML();
+      // An uncertain retry must send byte-for-byte the same logical body used by the first POST.
+      // The visible editor can be reconstructed from a draft, but async badge/title enrichment
+      // must not silently change the receipt fingerprint between attempts.
+      let html = this.pendingSubmitHtml || this._ed.getHTML();
       // 안전망 — 앱 주소로 남은 티켓 링크(붙여넣기가 health 응답보다 빨랐던 경우)는 실 Jira 주소로.
       // 저장된 댓글은 다른 사람도 읽는다: localhost 링크로 남기면 안 된다.
       const jiraOrigin = await jiraBase();
@@ -699,7 +761,7 @@ export default {
       const hasNode = /<img\b/i.test(html) || /<a\b/i.test(html) || /<input\b/i.test(html);
       if (!text && !hasNode) { this.err = "내용을 입력하세요."; return; }
       this.busy = true; this.err = "";
-      const uploaded = [];
+      const uploaded = [];       // 이번 시도에서 새로 올린 첨부 id(확정 실패 때만 롤백)
       const failed = [];                               // UPLOAD_TRIES 회 재시도 후에도 못 올린 파일 이름
       // 올릴 것부터 센다 — prod 는 첨부 하나에 몇 초씩 걸린다. 몇 개 중 몇 번째인지 모르면
       // 그 몇 초가 '멈춘 것' 으로 느껴진다.
@@ -710,6 +772,7 @@ export default {
       this.upStart = Date.now();
       // 1초마다 경과 시간을 갱신한다(라벨이 살아 있어야 '진행 중'으로 읽힌다).
       this._upTick = setInterval(() => { this.tickNow = Date.now(); }, 1000);
+      this._ed.setEditable(false);
       try {
         for (const [url, info] of queue) {
           this.upName = info.name;
@@ -717,18 +780,25 @@ export default {
           const file = new File([info.blob], info.name,
                                 { type: (info.blob && info.blob.type) || "application/octet-stream" });
           // 최대 UPLOAD_TRIES 회까지 다시 올려 본다 — 간헐 실패(네트워크/세션)로 파일을 버리지 않게.
-          let res = null;
-          for (let attempt = 1; attempt <= UPLOAD_TRIES; attempt++) {
-            try { res = await api.attachmentUpload(this.ticketKey, file); break; }
-            catch (e) {
-              if (attempt < UPLOAD_TRIES) {                        // 아직 기회가 남았으면 잠깐 뒤 재시도
-                this.upName = info.name + " (재시도 " + attempt + "/" + (UPLOAD_TRIES - 1) + ")";
-                await sleep(400 * attempt);                        // 점점 더 기다렸다 다시(백오프)
+          let res = info.uploaded || null;          // 댓글 응답만 유실됐으면 같은 첨부를 다시 올리지 않는다
+          let uncertainUpload = null;
+          if (!res) {
+            if (!info.uploadMutationId) info.uploadMutationId = newMutationId("attachment");
+            for (let attempt = 1; attempt <= UPLOAD_TRIES; attempt++) {
+              try { res = await api.attachmentUpload(this.ticketKey, file, info.uploadMutationId); break; }
+              catch (e) {
+                if (e && (e.uncertain || e.needLogin)) { uncertainUpload = e; break; }
+                if (attempt < UPLOAD_TRIES) {                      // 아직 기회가 남았으면 잠깐 뒤 재시도
+                  this.upName = info.name + " (재시도 " + attempt + "/" + (UPLOAD_TRIES - 1) + ")";
+                  await sleep(400 * attempt);                      // 점점 더 기다렸다 다시(백오프)
+                }
               }
             }
           }
+          if (!res && uncertainUpload) throw uncertainUpload;
           if (res) {
-            uploaded.push(res.id);
+            if (!info.uploaded) uploaded.push(res.id);
+            info.uploaded = res;
             // objectURL → **첨부 콘텐츠 경로**(/secure/attachment/{id}/{name}). 파일명만 박으면
             // html 모드(prod)에서 <img src="name"> 가 앱 오리진 상대경로가 돼 이미지가 엑박이 된다.
             // 경로로 두면 렌더가 실제 첨부로 풀고(프록시 재작성), wiki 모드는 저장 시 !name! 로 축약한다.
@@ -750,7 +820,17 @@ export default {
           this.err = "파일 업로드에 모두 실패했습니다: " + failed.join(", ");
           return;                                                 // finally 가 busy=false
         }
-        await this.submitFn(html);
+        // 새 댓글만 논리 요청 id를 유지한다. 서버 응답이 유실되어도 같은 id로 재시도하면 Jira를
+        // 먼저 대조하므로 중복 댓글을 만들지 않는다. 수정/본문은 기존 PUT 경로를 그대로 쓴다.
+        if (this.kind === "comment" && !this.initial && !this.submitMutationId) {
+          this.submitMutationId = newMutationId("comment");
+        }
+        // Persist the logical write id and any attachments that already succeeded *before* the
+        // comment request. If its response is lost, a refresh can safely reconcile the same write
+        // without uploading the same image or posting the same comment again.
+        this.pendingSubmitHtml = html;
+        if (this.draftKey()) await this.flushDraft();
+        await this.submitFn(html, this.submitMutationId || null);
         const dk = this.draftKey();
         // 제출 직전 onUpdate가 예약한 saveDraft가 clearDraft **뒤에** 끝나면 완료된 글이 다시
         // 살아난다. 예약을 취소하고 이미 시작한 write까지 기다린 다음 마지막으로 삭제한다.
@@ -760,9 +840,14 @@ export default {
         this._draftWrite = null;
         for (const u of this._pending.keys()) URL.revokeObjectURL(u);
         this._pending.clear();
-        // 새 댓글 editor를 부모가 계속 mount해도 다음 입력은 빈 상태여야 한다. 수정/본문은
-        // 서버 원문을 유지해야 하므로 새 comment에만 적용한다. false=onUpdate/draft 저장 미발생.
-        if (this.kind === "comment" && !this.initial && this._ed && !this._dead) {
+        this.submitMutationId = "";
+        this.pendingSubmitHtml = "";
+        // 새 댓글 editor를 부모가 계속 mount해도 다음 입력은 빈 상태여야 한다. scope 기반
+        // 일회성 editor도 성공 직후 비운다. 부모의 done emit이 다음 tick에 unmount되더라도
+        // beforeUnmount가 완료된 본문을 다시 초안으로 저장하는 race를 막는다.
+        // 수정/본문은 서버 원문을 유지한다. false=onUpdate/draft 저장 미발생.
+        if (((this.kind === "comment" && !this.initial) || this.draftScope)
+            && this._ed && !this._dead) {
           this._ed.commands.clearContent(false);
           this.restored = false;
         }
@@ -776,9 +861,38 @@ export default {
         }
         this.$emit("submitted");
       } catch (e) {
-        for (const id of uploaded) { try { await api.attachmentDelete(this.ticketKey, id); } catch (_) { /* noop */ } }
-        this.err = "저장 실패: " + ((e && e.message) || e);
-      } finally { this.busy = false; }
+        // timeout/응답 유실이면 댓글은 이미 생성됐을 수 있다. 이때 첨부를 지우면 게시된 댓글의
+        // 이미지가 즉시 깨지고, 재시도에서 또 업로드된다. 확인 가능한 실패에만 롤백한다.
+        const preserveUpload = !!(e && (e.uncertain || e.needLogin));
+        if (preserveUpload && this.draftKey()) await this.flushDraft();
+        if (!preserveUpload) {
+          for (const id of uploaded) {
+            let removed = false;
+            try { await api.attachmentDelete(this.ticketKey, id); removed = true; } catch (_) { /* noop */ }
+            if (removed) {
+              for (const info of this._pending.values()) {
+                if (info.uploaded && String(info.uploaded.id) === String(id)) {
+                  info.uploaded = null;
+                  // The old mutation receipt points at the now-deleted attachment. A retry needs
+                  // a fresh logical upload id or it could restore a broken attachment path.
+                  info.uploadMutationId = "";
+                }
+              }
+            }
+          }
+          this.submitMutationId = "";
+          this.pendingSubmitHtml = "";
+          // Persist the rollback too. Otherwise reopening the editor could restore the deleted
+          // attachment ids and the old mutation id, producing a broken image on the next submit.
+          if (this.draftKey()) await this.flushDraft();
+        }
+        this.err = (e && e.uncertain ? "반영 여부 확인 필요: "
+          : (e && e.needLogin ? "로그인 후 다시 제출하세요: " : "저장 실패: "))
+          + ((e && e.message) || e);
+      } finally {
+        if (this._ed && !this._dead) this._ed.setEditable(true);
+        this.busy = false;
+      }
     },
   },
   template: COMMENT_EDITOR_TEMPLATE,

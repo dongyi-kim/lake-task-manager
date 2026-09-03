@@ -1,6 +1,8 @@
 // api.js — 백엔드 리소스 호출 래퍼. 401 needLogin 을 전역 이벤트로 알린다(LoginOverlay 가 수신).
 // GET 응답을 URL 키로 memo(프로미스 캐시) → 탭 전환/중복요청 재fetch 방지. refresh() 에서 clear.
 // updated: 2026-07-09
+import { clearPendingMutation, loadPendingMutation, newMutationId,
+         savePendingMutation } from "./mutationId.js";
 const REQUEST_TIMEOUT_MS = 35 * 1000;
 // 타임라인은 보조 정보이고 하위 changelog까지 모아 일반 조회보다 비싸다. 이 요청 하나가
 // 다이얼로그를 오래 붙잡지 않게 더 짧게 끊고, 해당 패널에서만 다시 시도하게 한다.
@@ -11,6 +13,8 @@ async function req(path, opts) {
   // 새로고침은 다시 눌릴 수 있어야 하므로 모든 요청에 상한을 둔다. 로그인·업로드처럼 사람이
   // 오래 기다리는 동작만 호출부에서 timeoutMs 를 넓힌다.
   const o = Object.assign({}, opts || {});
+  const mutation = !!o.mutation;
+  delete o.mutation;                 // fetch 옵션이 아니라 실패 의미를 보존하기 위한 LTM 힌트
   const timeoutMs = Number(o.timeoutMs) || REQUEST_TIMEOUT_MS;
   delete o.timeoutMs;
   const callerSignal = o.signal;
@@ -27,7 +31,12 @@ async function req(path, opts) {
   try {
     r = await fetch(path, o);
   } catch (e) {
-    if (timedOut) throw new Error("요청 시간이 초과되었습니다. 앱은 계속 실행 중이며 잠시 후 다시 시도할 수 있습니다.");
+    if (timedOut) {
+      const error = new Error("요청 시간이 초과되었습니다. 입력은 보존되며 잠시 후 다시 시도할 수 있습니다.");
+      error.uncertain = mutation;
+      throw error;
+    }
+    if (mutation && e) e.uncertain = true;
     throw e;
   } finally {
     clearTimeout(timer);
@@ -36,13 +45,21 @@ async function req(path, opts) {
   if (r.status === 401) {
     let b = {}; try { b = await r.clone().json(); } catch (e) {}
     if (b && b.needLogin) { watchAuth(); window.dispatchEvent(new CustomEvent("need-login")); }
-    throw new Error("HTTP 401");
+    const error = new Error((b && (b.detail || b.error))
+      || "인증이 만료되었습니다. 입력은 보존되며 로그인 후 다시 제출할 수 있습니다.");
+    error.status = 401;
+    error.needLogin = !!(b && b.needLogin);
+    throw error;
   }
   if (!r.ok) {
     // 서버가 남긴 이유를 그대로 올린다 — 'HTTP 502' 만 보여 주면 사용자도 우리도 알 수 없다.
-    let msg = "";
-    try { const b = await r.clone().json(); msg = (b && (b.error || b.detail)) || ""; } catch (e) { /* 본문이 JSON 이 아님 */ }
-    throw new Error(msg || "HTTP " + r.status);
+    let msg = "", body = {};
+    try { body = await r.clone().json(); msg = (body && (body.error || body.detail)) || ""; } catch (e) { /* 본문이 JSON 이 아님 */ }
+    const error = new Error(msg || "HTTP " + r.status);
+    error.status = r.status;
+    error.retryable = !!(body && body.retryable);
+    error.uncertain = !!(body && body.uncertain);
+    throw error;
   }
   return r.json();
 }
@@ -168,9 +185,40 @@ export function watchAuth() {
 // memo 가 이미 비어 있어 진짜 새 요청이 나간다(등록 순서가 곧 실행 순서다).
 window.addEventListener("auth-ok", () => { _memo.clear(); stopAuthWatch(); });
 
-function jsonReq(path, method, body) {
+function jsonReq(path, method, body, opts) {
   return req(path, { method, headers: { "Content-Type": "application/json" },
-                     body: JSON.stringify(body || {}) });
+                     body: JSON.stringify(body || {}), ...(opts || {}) });
+}
+
+/** No-screen transitions (Task drag/cascade) do not have a dialog instance to own retry state.
+ * Keep their exact request in the same durable ledger contract as TransitionDialog so repeating
+ * the action after auth/network recovery reconciles the old write instead of issuing a new one. */
+function transitionReq(key, body) {
+  const requested = Object.assign({}, body || {});
+  const managed = !requested.clientMutationId;
+  const scope = "transition-api:" + String(key || "").toUpperCase()
+    + ":" + String(requested.id || "");
+  let payload = requested;
+  if (managed) {
+    const saved = loadPendingMutation(scope);
+    payload = saved && saved.payload ? saved.payload : Object.assign({}, requested, {
+      clientMutationId: newMutationId("transition"),
+    });
+    if (!saved) savePendingMutation(scope, payload.clientMutationId, payload, {
+      ticket: key, transitionId: String(payload.id || ""),
+    });
+  }
+  return jsonReq("/api/ticket/" + encodeURIComponent(key) + "/transition",
+                 "POST", payload, { mutation: true })
+    .then((result) => {
+      if (managed) clearPendingMutation(scope);
+      evict(key); evictLists(); return result;
+    }).catch((error) => {
+      if (managed && !(error && (error.uncertain || error.needLogin))) {
+        clearPendingMutation(scope);
+      }
+      throw error;
+    });
 }
 
 // 유휴 시간에 **미리 데워 둔다** — get() 은 memo 라, 이때 받아 두면 나중에 팝업/다이얼로그가
@@ -194,6 +242,7 @@ export const api = {
     warmGet("/api/mention/users?q=&key=" + k);
     warmGet("/api/ticket/" + k + "/menu");
   }),
+  authProbe: () => req("/api/auth/probe", { method: "POST", timeoutMs: 45 * 1000 }),
   login: () => req("/api/login", { method: "POST", timeoutMs: 310 * 1000 }),
   updateInfo: () => req("/api/update"),                                // 업데이트 가능 여부(배포 repo) — memo 제외
   updateRestart: () => req("/api/app/update-restart", { method: "POST" }),   // git pull + 재시작(트레이 경로)
@@ -211,13 +260,36 @@ export const api = {
   workloadModule: (m) => get("/api/workload/module/" + encodeURIComponent(m)),
   // days = 최근 완료(7·14·28), assignedWindow = 할당 Open+In-Progress 갱신기간.
   // 둘 다 URL 에 넣어야 frontend memo 역시 서로 다른 필터 결과를 섞지 않는다.
-  workloadPerson: (u, days, assignedWindow) => get("/api/workload/person/" + encodeURIComponent(u)
-    + "?days=" + (days || 7) + "&assignedWindow=" + encodeURIComponent(assignedWindow || "all")),
-  workloadBucket: (u, b, days, assignedWindow) => get("/api/workload/" + encodeURIComponent(u) + "/" + b
-    + "?days=" + (days || 7) + "&assignedWindow=" + encodeURIComponent(assignedWindow || "all")),
+  workloadPerson: (u, days, assignedWindow) => {
+    const path = "/api/workload/person/" + encodeURIComponent(u)
+      + "?days=" + (days || 7) + "&assignedWindow=" + encodeURIComponent(assignedWindow || "all");
+    return get(path).then((result) => {
+      // 부분 실패는 호환상 HTTP 200 + error:true다. 성공 Promise를 memo에 남기면 화면의
+      // 사람별 재시도가 같은 실패 객체만 되받고 Jira에는 두 번째 요청조차 가지 않는다.
+      if (result && (result.error || (result.partial && result.retryable))) _memo.delete(path);
+      return result;
+    });
+  },
+  workloadBucket: (u, b, days, assignedWindow) => {
+    const path = "/api/workload/" + encodeURIComponent(u) + "/" + b
+      + "?days=" + (days || 7) + "&assignedWindow=" + encodeURIComponent(assignedWindow || "all");
+    return get(path).then((rows) => {
+      if (Array.isArray(rows) && rows.some((row) => row && row.epicResolution
+          && row.epicResolution.retryable)) _memo.delete(path);
+      return rows;
+    });
+  },
   workloadDetail: (user, days, assignedWindow) => get("/api/workload/" + encodeURIComponent(user)
     + "?days=" + (days || 7) + "&assignedWindow=" + encodeURIComponent(assignedWindow || "all")),
-  activity: (user) => get("/api/activity/" + encodeURIComponent(user)),
+  activity: (user) => {
+    const path = "/api/activity/" + encodeURIComponent(user);
+    return get(path).then((result) => {
+      // The backend intentionally leaves a failed Jira/Confluence source uncached. Mirror that
+      // here so reopening the row can retry it instead of replaying a partial Promise forever.
+      if (result && result.partial) _memo.delete(path);
+      return result;
+    });
+  },
   myTasks: (opts) => {                                                // 내 Task(옵션은 서버 질의 조건)
     const o = opts || {};
     return req("/api/mytasks?scope=" + encodeURIComponent(o.scope || "assignee")
@@ -311,12 +383,12 @@ export const api = {
   // 생성은 여러 티켓을 한꺼번에 바꾸므로 목록 memo 를 통째로 비운다(어디에 떨어질지 모른다).
   bulkValidate: (body) => jsonReq("/api/bulk/validate", "POST", body),
   bulkCreate: (body) => jsonReq("/api/bulk/create", "POST", body).then((r) => { _memo.clear(); return r; }),
-  createTask: (body) => jsonReq("/api/task", "POST", body).then((r) => { _memo.clear(); return r; }),
-  createEpic: (body) => jsonReq("/api/epic", "POST", body).then((r) => { _memo.clear(); return r; }),
+  createTask: (body) => jsonReq("/api/task", "POST", body, { mutation: true }).then((r) => { _memo.clear(); return r; }),
+  createEpic: (body) => jsonReq("/api/epic", "POST", body, { mutation: true }).then((r) => { _memo.clear(); return r; }),
   // Epic 에 넣을 수 있는 **Task** 후보(Sub-Task 의 상위 피커). 진짜 Epic 목록은 options("epics").
   parentTaskCandidates: (q) => req("/api/parent-task-candidates?limit=25&q=" + encodeURIComponent(q || "")),
   createChild: (key, body) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/child",
-                                      "POST", body)
+                                      "POST", body, { mutation: true })
     // 만든 직후 부모의 하위 목록을 다시 받아야 한다 — memo 를 안 비우면 **늘 만들기 전 목록**이
     // 돌아온다(프로미스 캐시라 서버가 최신을 줘도 소용없다).
     .then((r) => { evict(encodeURIComponent(key)); evictLists(); return r; }),
@@ -328,15 +400,15 @@ export const api = {
   deleteTicket: (key) => req("/api/ticket/" + encodeURIComponent(key), { method: "DELETE" })
                            .then((r) => { evict(key); evictLists(); return r; }),
   transitions: (key) => req("/api/ticket/" + encodeURIComponent(key) + "/transitions"),
-  doTransition: (key, body) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/transition",
-                                       "POST", body).then((r) => { evict(key); evictLists(); return r; }),                                // 본인 댓글 판정
+  doTransition: transitionReq,                                                           // 본인 댓글 판정
   // 빈 쿼리(팝업 첫 오픈)의 기본 추천 목록은 **memo** — 담당/보고 picker 를 다시 열 때 즉시.
   // (티켓 유관자 기본 목록은 issue+comment 조회라 prod 에서 특히 느렸다.) 질의 입력 시엔 fresh.
   mentionUsers: (q, key, opts) => { const u = "/api/mention/users?q=" + encodeURIComponent(q || "")
     + (key ? "&key=" + encodeURIComponent(key) : ""); return q ? req(u, opts) : get(u); },
   linkTitle: (u) => req("/api/linktitle?u=" + encodeURIComponent(u || "")),             // 링크 뱃지 제목(og:title)
-  commentCreate: (key, html) =>
-    jsonReq("/api/ticket/" + encodeURIComponent(key) + "/comment", "POST", { html })
+  commentCreate: (key, html, clientMutationId) =>
+    jsonReq("/api/ticket/" + encodeURIComponent(key) + "/comment", "POST",
+      { html, clientMutationId }, { mutation: true })
       .then((r) => { evict(encodeURIComponent(key)); return r; }),
   commentUpdate: (key, cid, html) =>
     jsonReq("/api/ticket/" + encodeURIComponent(key) + "/comment/" + encodeURIComponent(cid), "PUT", { html })
@@ -350,12 +422,29 @@ export const api = {
   toggleCheckbox: (key, body) =>
     jsonReq("/api/ticket/" + encodeURIComponent(key) + "/checkbox", "POST", body)
       .then((r) => { evict(encodeURIComponent(key)); return r; }),
-  attachmentUpload: (key, file) => {                                   // multipart — Content-Type 자동
+  attachmentUpload: (key, file, suppliedMutationId) => {                // multipart — Content-Type 자동
+    const storageKey = "pending-upload.v1:" + String(key || "").toUpperCase() + ":"
+      + [file.name || "paste.png", file.size || 0, file.lastModified || 0].join(":");
+    let mutationId = suppliedMutationId || "";
+    if (!mutationId) {
+      try { mutationId = sessionStorage.getItem(storageKey) || ""; } catch (_) { /* noop */ }
+    }
+    if (!mutationId) mutationId = newMutationId("attachment");
+    try { sessionStorage.setItem(storageKey, mutationId); } catch (_) { /* noop */ }
     const fd = new FormData();
     fd.append("file", file, file.name || "paste.png");
+    fd.append("clientMutationId", mutationId);
     return req("/api/ticket/" + encodeURIComponent(key) + "/attachment",
-               { method: "POST", body: fd, timeoutMs: 16 * 60 * 1000 })
-      .then((r) => { evict(encodeURIComponent(key)); return r; });
+               { method: "POST", body: fd, timeoutMs: 16 * 60 * 1000, mutation: true })
+      .then((r) => {
+        try { sessionStorage.removeItem(storageKey); } catch (_) { /* noop */ }
+        evict(encodeURIComponent(key)); return r;
+      }).catch((e) => {
+        if (!(e && (e.uncertain || e.needLogin))) {
+          try { sessionStorage.removeItem(storageKey); } catch (_) { /* noop */ }
+        }
+        throw e;
+      });
   },
   documentDelete: (key, lid) =>
     req("/api/ticket/" + encodeURIComponent(key) + "/document/" + encodeURIComponent(lid),

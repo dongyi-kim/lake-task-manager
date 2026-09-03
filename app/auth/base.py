@@ -113,6 +113,36 @@ class LoginRequired(SessionExpired):
     """세션 파일이 아직 없음 — 최초 SSO 로그인이 필요. (SessionExpired 로 함께 처리됨)"""
 
 
+class PendingUpstreamOperation:
+    """Observable result of an upstream job whose caller stopped waiting.
+
+    A Playwright request cannot safely be cancelled from the FastAPI caller thread. When its
+    local wait budget expires, the owner thread can still be inside Jira and can commit a write
+    later. Mutation recovery keeps this process-local handle and must not issue a replacement
+    write while :attr:`done` is false.
+
+    Only non-blocking observation is exposed: an HTTP retry should return promptly with the same
+    mutation id instead of creating another waiter around a hung browser call.
+    """
+
+    def __init__(self, done, result_box):
+        self._done = done
+        self._result_box = result_box
+
+    @property
+    def done(self):
+        return bool(self._done.is_set())
+
+    def result_now(self):
+        """Return or raise the completed owner-thread outcome without waiting."""
+        if not self.done:
+            raise RuntimeError("upstream operation is still running")
+        error = self._result_box[1]
+        if error is not None:
+            raise error
+        return self._result_box[0]
+
+
 class UpstreamUnavailable(RuntimeError):
     """인증 문제가 아니라 상류/브라우저 transport 가 응답하지 않는 상태.
 
@@ -120,6 +150,39 @@ class UpstreamUnavailable(RuntimeError):
     멎은 provider 큐에 한 번 더 매달리고, 단순 망 장애를 SSO 만료로 오인해 로그인 창까지
     띄우게 된다. 호출부는 이 예외를 503 + 회로차단기로 처리한다.
     """
+
+
+class MutationOutcomeUnknown(UpstreamUnavailable):
+    """A Jira write may have committed, but its result cannot yet be proven safely.
+
+    Retrying the write blindly can create duplicate comments or tickets.  The client keeps the
+    same mutation id and asks the user to retry; that retry reconciles Jira before issuing another
+    write.
+    """
+
+    def __init__(self, mutation_id, message="", *, upstream_failed=False):
+        self.mutation_id = str(mutation_id or "")
+        self.upstream_failed = bool(upstream_failed)
+        super().__init__(message or "Jira 반영 여부를 아직 확인할 수 없습니다.")
+
+
+class PermissionDenied(RuntimeError):
+    """The session is authenticated, but this Jira object is not visible/editable.
+
+    Jira DC often returns the same HTTP 403 for an expired SSO session and for an issue that the
+    current user cannot access.  Providers may raise this exception only after independently
+    proving that the Jira identity is still alive.  Keeping it outside ``SessionExpired`` avoids
+    a second global ``/myself`` probe and, more importantly, avoids opening the login flow for a
+    permission problem.
+    """
+
+    status = 403
+
+    def __init__(self, path, body=""):
+        self.path = str(path or "")
+        self.body = (body or "")[:400]
+        super().__init__(
+            f"HTTP 403 on {self.path}" + (f" — {self.body}" if self.body else ""))
 
 
 class UpstreamError(SessionExpired):

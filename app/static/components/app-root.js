@@ -23,6 +23,7 @@ import { api, watchAuth } from "../lib/api.js";
 import { confirmBox } from "../lib/confirm.js";
 import { pushToast } from "../lib/toast.js";
 import { installReferenceHover } from "../lib/referenceHover.js";
+import { installAuthActivityProbe } from "../lib/authActivity.js";
 
 // 메인 페이지는 **정보성 랜딩**(서비스 안내·릴리스 노트)이다 — 사용자 결정으로 복원.
 // 에이전트는 #/ai 탭. 다만 홈에 심플한 입력창을 두어, 입력하면 AI 탭으로 넘어가
@@ -98,6 +99,9 @@ export default {
   mounted() {
     // 티켓 링크·뱃지와 사람 멘션은 화면별 구현 대신 앱 전체가 같은 상세 호버를 사용한다.
     installReferenceHover();
+    // 5분 이상 유휴 후 포커스/가시성/첫 입력이 돌아오면, 사용자의 첫 쓰기보다 먼저 Jira
+    // 세션을 뒤에서 확인한다. 정상 화면은 기다리지 않으며 중복 이벤트는 모듈이 합친다.
+    this._stopAuthActivity = installAuthActivityProbe(api);
     // 로그인 왕복(앱 창이 Jira 로 갔다 돌아옴) 뒤 **보던 자리로** 되돌린다.
     // 없으면 늘 홈에서 다시 시작하게 되는데, 그건 로그인이 아니라 사고처럼 느껴진다.
     try {
@@ -179,6 +183,7 @@ export default {
     this.checkUpdate();
     setInterval(() => this.checkUpdate(), 30 * 60 * 1000);
   },
+  unmounted() { if (this._stopAuthActivity) this._stopAuthActivity(); },
   methods: {
     /** 볼 수 없는 주소면 워커 기본 화면(내 Task)으로. 화면만 바꿔치지 않고 **주소까지** 고친다
      *  — 안 그러면 탭 강조가 아무 데도 안 걸리고 새로고침마다 같은 상황이 되풀이된다. */
@@ -193,9 +198,14 @@ export default {
         { okLabel: (t.to || "변경") + " 로 변경", cancelLabel: "아니오",
           ticket: { key: c.parentKey, summary: c.parentSummary, type: c.parentType, assignee: c.parentAssignee } });
       if (!ok) return;
-      if (t.needsScreen) { this.cascadeTrx = { ticket: c.parentKey, transition: t }; return; }
+      if (t.needsScreen || t.toCategory === "done") {
+        this.cascadeTrx = { ticket: c.parentKey, transition: t }; return;
+      }
       try {
-        const r = await api.doTransition(c.parentKey, { id: t.id });
+        const r = await api.doTransition(c.parentKey, {
+          id: t.id, targetStatusId: t.toId || "", targetStatusName: t.to || "",
+          targetStatusCategory: t.toCategory || "",
+        });
         if (r && r.ok === false) throw new Error(r.error || "전이에 실패했습니다.");
         pushToast({ kind: "success", title: c.parentKey + " → " + (t.to || "전이"), timeout: 4000 });
         window.dispatchEvent(new CustomEvent("ticket-changed", { detail: { key: c.parentKey } }));

@@ -20,6 +20,7 @@
 import json
 import os
 import tempfile
+import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -49,6 +50,10 @@ class SsoStore:
     def __init__(self, legacy_state_path, service_bases=None):
         self.legacy = Path(legacy_state_path)
         self.dir = self.legacy.parent / "sso"
+        # Login, silent renewal and rolling-cookie persistence can finish on different threads.
+        # Atomic replace prevents torn JSON, while this lock also gives conditional writes a
+        # process-local compare-and-swap boundary so an old provider cannot overwrite a new login.
+        self._lock = threading.Lock()
         # {"jira": "https://jira.corp", ...} — 쿠키를 서비스에 배분할 때 쓴다
         self.bases = {k: v for k, v in (service_bases or {}).items() if v}
 
@@ -108,6 +113,10 @@ class SsoStore:
         """한 서비스 세션만 저장. state 는 Playwright storage_state dict.
         그 서비스 호스트의 쿠키만 남긴다 — 안 그러면 서비스별로 나눈 의미가 없다.
         (호스트를 모르면 통째로 저장: 최소한 잃지는 않는다.)"""
+        with self._lock:
+            self._save_unlocked(service, state)
+
+    def _save_unlocked(self, service, state):
         service = service.lower()
         host = _host(self.bases.get(service, ""))
         cookies = state.get("cookies") or []
@@ -118,6 +127,26 @@ class SsoStore:
         origins = [o for o in (state.get("origins") or [])
                    if not host or _host(o.get("origin", "")) == host] if host else (state.get("origins") or [])
         self._atomic_write(self.path(service), {"cookies": cookies, "origins": origins})
+
+    def _revision_unlocked(self, service):
+        try:
+            stat = self.path(service).stat()
+            return stat.st_mtime_ns, stat.st_size
+        except OSError:
+            return None
+
+    def revision(self, service):
+        """Opaque disk revision used to fence a delayed rolling-cookie snapshot."""
+        with self._lock:
+            return self._revision_unlocked(service)
+
+    def save_if_unchanged(self, service, state, expected_revision):
+        """Save only if no login/renewal replaced this service state in the meantime."""
+        with self._lock:
+            if self._revision_unlocked(service) != expected_revision:
+                return False
+            self._save_unlocked(service, state)
+            return True
 
     def save_all_from(self, state):
         """로그인 창 하나에서 세 서비스를 모두 돌았을 때 — 도메인별로 갈라 각각 저장한다."""

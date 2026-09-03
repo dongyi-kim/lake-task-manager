@@ -31,7 +31,8 @@ import SubtaskFoldBar from "../ui/SubtaskFoldBar.js";
 import { categoryColor } from "../../lib/colors.js";
 import {
   AXIS_PAGE_SIZE, BAND_FILTERS, NARROW, NO_DUE, OPTIONS, PREF_KEY, STATES, STATE_KEYS, SUB_CAP,
-  TASK_RETRY_DELAYS, epicSig, patchTaskData, reconcileTaskModel, resolveDefaultModule, retryDelay,
+  TASK_RETRY_DELAYS, cloneTaskModel, epicSig, patchTaskData, reconcileTaskModel,
+  resolveDefaultModule, retryDelay,
   taskLoadErrorKind, uniformStatusCategory,
 } from "../mytasks/taskModel.js";
 import { pushToast } from "../../lib/toast.js";
@@ -357,7 +358,29 @@ export default {
       const keys = Object.keys(cache);
       if (keys.length > 12) delete cache[keys[0]];
     },
-    axisLoading(key) { return (this.streamAxes[key] || {}).state !== "done"; },
+    axisState(key) { return (this.streamAxes[key] || {}).state || "loading"; },
+    axisLoading(key) { return ["loading", "retrying"].includes(this.axisState(key)); },
+    axisPending(key) { return this.axisState(key) !== "done"; },
+    axisDegraded(key) { return this.axisState(key) === "degraded"; },
+    axisLoadText(key) {
+      const state = this.axisState(key), chunks = this.axisChunks(key);
+      if (state === "retrying") return "실패한 티켓 재시도 중";
+      if (state === "degraded") return "일부 티켓을 불러오지 못함";
+      return chunks ? chunks + "차 반영" : "수집 중";
+    },
+    axisEmptyText(key) {
+      if (this.axisDegraded(key)) return "일부 티켓을 불러오지 못했습니다";
+      if (this.axisLoading(key)) return "완료되는 티켓부터 표시합니다";
+      return "해당 상태의 티켓 없음";
+    },
+    _markPendingAxes(state, errorKind) {
+      this.streamAxes = Object.fromEntries(STATES.map((axis) => {
+        const current = this.streamAxes[axis.k] || { chunks: 0 };
+        return [axis.k, current.state === "done" ? current : {
+          state, chunks: current.chunks || 0, errorKind,
+        }];
+      }));
+    },
     axisChunks(key) { return (this.streamAxes[key] || {}).chunks || 0; },
     _applyEpicMetadata(epics, cache) {
       const rows = (epics || []).filter((epic) => epic && epic.key && epic.title);
@@ -489,12 +512,17 @@ export default {
       if (this._streamAbort) this._streamAbort.abort();
       const controller = this._streamAbort = new AbortController();
       const seq = this._loadSeq = (this._loadSeq || 0) + 1;
+      // Global seq switches the visible filter immediately.  Per-key generation additionally
+      // fences two overlapping loads of the *same* filter, where both otherwise alias cache[key].
+      const cacheGenerations = this._taskCacheGenerations || (this._taskCacheGenerations = {});
+      const cacheGeneration = cacheGenerations[key] = (cacheGenerations[key] || 0) + 1;
       const requestToken = (window.crypto && window.crypto.randomUUID)
         ? window.crypto.randomUUID() : Date.now().toString(36) + "-" + seq;
       this._activeRequestToken = requestToken;
       let lastSequence = -1;
       let streamHadAuthFailure = false;
       let streamHadOtherFailure = false;
+      const failedAxes = new Map();
       let hydrationPromise = null;
       const cached = cache[key];
       const preserveVisible = !!(opts.quiet && this.model && this._activeCacheKey === key);
@@ -503,6 +531,12 @@ export default {
       else if (!preserveVisible) this.model = this._emptyTaskModel();
       else cache[key] = this.model;
       this._activeCacheKey = key;
+      // Stream callbacks can already be buffered when AbortController switches to another load.
+      // Work on a request-owned snapshot so an old callback never mutates cache[key]/visible state
+      // through their shared alias. Same-filter supersession is fenced by its key generation.
+      let streamModel = cloneTaskModel(cache[key] || this.model);
+      const streamGenerationCurrent = () => this._taskCacheGenerations
+        && this._taskCacheGenerations[key] === cacheGeneration;
       this._queueEpicMetadata(this.model, cache);
       if (!preserveVisible) {
         this.streamAxes = {
@@ -532,12 +566,35 @@ export default {
 
           const completedLeaves = (event.completedLeaves && event.completedLeaves.length)
             ? event.completedLeaves : (event.completedLeaf ? [event.completedLeaf] : []);
-          if (active && !preserveVisible && completedLeaves.length) {
+          if (active && completedLeaves.length) {
             const axes = Object.assign({}, this.streamAxes);
             for (const completed of completedLeaves) {
-              if (completed.status !== "success" || !completed.axis || !axes[completed.axis]) continue;
+              if (!completed.axis || !axes[completed.axis]) continue;
+              if (completed.status === "success") {
+                const prior = axes[completed.axis].state;
+                axes[completed.axis] = {
+                  // quiet retry에서 이미 완료된 축은 다시 로딩처럼 보이지 않는다. 같은 축의 다른
+                  // leaf가 먼저 실패했다면 뒤의 성공 leaf가 그 실패 표시를 덮어서도 안 된다.
+                  state: failedAxes.has(completed.axis) ? prior : (prior === "done" ? "done" : "loading"),
+                  chunks: axes[completed.axis].chunks + 1,
+                };
+                continue;
+              }
+              if (completed.status !== "error") continue;
+              const kind = (completed.error && completed.error.kind) || "other";
+              // 권한 오류는 토스트/무한 spinner 없이 best-effort로 끝낸다. 인증/transport는
+              // 성공적인 빈 축으로 가장하지 않고 재인증·부분 retry 대상으로 남긴다.
+              if (kind === "permission" || kind === "unavailable") {
+                axes[completed.axis] = {
+                  state: "done", chunks: axes[completed.axis].chunks, unavailable: true,
+                };
+                continue;
+              }
+              failedAxes.set(completed.axis, kind);
               axes[completed.axis] = {
-                state: "loading", chunks: axes[completed.axis].chunks + 1,
+                state: kind === "auth" ? "degraded" : "retrying",
+                chunks: axes[completed.axis].chunks,
+                errorKind: kind,
               };
             }
             this.streamAxes = axes;
@@ -546,6 +603,9 @@ export default {
           if (active) for (const error of (event.partialErrors || [])) {
             const kind = (error && error.kind) || "other";
             if (kind === "permission") continue;     // Jira 권한 제외는 정상 best-effort 결과
+            // Parent별 sync가 이 exact membership만 다시 받는다. 전체 필터 스트림까지 재실행하면
+            // 성공 leaf를 다시 조립하고 동일 실패를 두 경로에서 동시에 재시도하게 된다.
+            if (error && error.phase === "child-membership") continue;
             if (kind === "auth") streamHadAuthFailure = true;
             else streamHadOtherFailure = true;
             const notices = this._streamErrorNotices || (this._streamErrorNotices = new Set());
@@ -567,9 +627,14 @@ export default {
           // snapshot. A transient/auth partial must not make previously visible cards disappear
           // while its failed leaf is waiting for retry. Permission-only best-effort finals may apply.
           const finalUsable = event.done && !streamHadAuthFailure && !streamHadOtherFailure;
-          if (event.replace !== false && event.model && (!preserveVisible || finalUsable)) {
+          if (event.replace !== false && event.model && (!preserveVisible || finalUsable)
+              && streamGenerationCurrent()) {
             const next = Object.assign({}, event.model, { streamComplete: !!event.done });
-            const reconciled = reconcileTaskModel(active ? this.model : cache[key], next);
+            // Quiet current refreshes may patch the still-visible model at the final usable
+            // snapshot to preserve card DOM identity. Every other case remains request-owned.
+            const target = active && preserveVisible ? this.model : streamModel;
+            const reconciled = reconcileTaskModel(target, next);
+            streamModel = reconciled;
             this._cacheModel(cache, key, reconciled);
             // 새 snapshot은 Epic을 key-only로 보낼 수 있다. 먼저 known metadata를 cache에
             // 다시 입힌 뒤 그 정본을 화면에 넣어야, 이미 알던 이름이 "확인 중"으로 되돌아가지 않는다.
@@ -578,16 +643,13 @@ export default {
           }
 
           if (active && event.done) {
-            this.streamAxes = {
-              todo: { state: "done", chunks: this.axisChunks("todo") },
-              inprogress: { state: "done", chunks: this.axisChunks("inprogress") },
-              done: { state: "done", chunks: this.axisChunks("done") },
-            };
             if (!preserveVisible || finalUsable) {
-              hydrationPromise = this._hydrateModel(cache[key], seq, key, cache);
+              hydrationPromise = this._hydrateModel(
+                cache[key], seq, key, cache, cacheGeneration, requestToken);
             }
+            let scheduled = false;
             if (streamHadOtherFailure && !streamHadAuthFailure) {
-              const scheduled = this._scheduleTaskRetry(key, retryAttempt + 1);
+              scheduled = this._scheduleTaskRetry(key, retryAttempt + 1);
               if (!scheduled) pushToast({
                 kind: "error", key: "task-stream-retry-exhausted-" + requestToken,
                 title: "일부 Task를 계속 불러오지 못했습니다",
@@ -595,6 +657,17 @@ export default {
                 timeout: 7000,
               });
             }
+            const axes = {};
+            for (const state of STATES) {
+              const current = this.streamAxes[state.k] || { state: "loading", chunks: 0 };
+              const failure = failedAxes.get(state.k);
+              axes[state.k] = failure ? {
+                state: failure !== "auth" && scheduled ? "retrying" : "degraded",
+                chunks: current.chunks || 0,
+                errorKind: failure,
+              } : { state: "done", chunks: current.chunks || 0 };
+            }
+            this.streamAxes = axes;
           }
         }, controller.signal);
       }
@@ -604,10 +677,13 @@ export default {
         if (kind === "auth") {
           window.dispatchEvent(new CustomEvent("need-login"));
           this.err = preserveVisible ? "" : ((e && e.message) || "인증이 필요합니다.");
+          this._markPendingAxes("degraded", kind);
         } else if (kind === "permission") {
-          // Jira 권한 제외는 카드별 best-effort와 동일하게 침묵 처리한다.
+          // Jira 권한 제외는 카드별 best-effort와 동일하게 침묵 처리하고 spinner를 끝낸다.
+          this._markPendingAxes("done", kind);
         } else if (this._scheduleTaskRetry(key, retryAttempt + 1)) {
           this.err = "";
+          this._markPendingAxes("retrying", kind);
           if (retryAttempt === 0) pushToast({
             kind: "error", key: "task-stream-retry-" + requestToken,
             title: "Task 연결이 끊겨 재시도합니다",
@@ -615,6 +691,7 @@ export default {
           });
         } else {
           this.err = (e && e.message) || "불러오기 실패";
+          this._markPendingAxes("degraded", kind);
         }
       }
       finally {
@@ -639,13 +716,41 @@ export default {
         noDue: atoms.filter((atom) => atom.dueDays === null || atom.dueDays === undefined).length,
       };
     },
-    async _hydrateModel(model, seq, cacheKey, cache) {
+    async _hydrateModel(model, seq, cacheKey, cache, cacheGeneration, requestToken) {
       const syncId = model && model.syncId;
       if (!syncId) return;
-      const jobs = (model.groups || []).filter((group) => group.childrenPending)
+      // Never reconcile into ``model`` directly: for a warm same-filter load it is commonly both
+      // the visible Vue object and cache[cacheKey].  A superseded response mutating that alias was
+      // how old SubTasks briefly (or permanently) replaced a newer filter snapshot.
+      let workingModel = cloneTaskModel(model);
+      const jobs = (workingModel.groups || []).filter((group) => group.childrenPending)
         .map((group) => ({ type: "group", key: group.key }));
       let cursor = 0;
-      let snapshotSequence = Number(model.snapshotSequence) || 0;
+      let snapshotSequence = Number(workingModel.snapshotSequence) || 0;
+      const generationCurrent = () => this._taskCacheGenerations
+        && this._taskCacheGenerations[cacheKey] === cacheGeneration;
+      const publish = () => {
+        // Same filter, newer request: discard this hydrate entirely. Different active filter:
+        // retain this completed response in its own filter cache, but never touch visible state.
+        if (!generationCurrent()) return false;
+        cache[cacheKey] = workingModel;
+        this._queueEpicMetadata(workingModel, cache);
+        const active = this._loadSeq === seq && this._activeRequestToken === requestToken
+          && this.model && this.model.syncId === syncId;
+        if (active && this.model !== workingModel) this.model = workingModel;
+        return true;
+      };
+      const settlePermission = (job, error) => {
+        const group = (workingModel.groups || []).find((row) => row.key === job.key);
+        if (!group) return;
+        group.childrenPending = false;
+        group.childrenLoaded = false;
+        group.childrenUnavailable = true;
+        group.childrenUnavailableCount = Math.max(1, Number(group.childrenUnavailableCount) || 0);
+        group.childrenMissing = [{ key: job.key, kind: "permission", phase: "child-issue",
+                                   error: String((error && error.message) || error || "") }];
+        publish();
+      };
       // 브라우저 요청은 둘만 병렬화한다. 서버에서는 background priority라 새 퀵필터 JQL이
       // 이 작업들을 앞지르고, 이미 시작된 옛 필터 결과만 해당 필터 캐시에 안전하게 남는다.
       const worker = async () => {
@@ -659,17 +764,49 @@ export default {
             if (!result || result.contract !== "task-snapshot.v1" || result.type !== "snapshot"
                 || result.syncId !== syncId || !Number.isInteger(Number(result.sequence))
                 || Number(result.sequence) <= snapshotSequence || !result.model) continue;
+            if (!generationCurrent()) return;
             snapshotSequence = Number(result.sequence);
             const next = Object.assign({}, result.model, { streamComplete: true });
-            const active = this._loadSeq === seq && this.model && this.model.syncId === syncId;
-            cache[cacheKey] = reconcileTaskModel(active ? this.model : cache[cacheKey], next);
-            this._queueEpicMetadata(cache[cacheKey], cache);
-            if (this._loadSeq === seq && this.model && this.model.syncId === syncId) {
-              if (this.model !== cache[cacheKey]) this.model = cache[cacheKey];
+            workingModel = reconcileTaskModel(workingModel, next);
+            publish();
+
+            const missing = result.missing || [];
+            if (result.retryable) {
+              const kinds = new Set(missing.map((row) => row.kind || "other"));
+              const kind = kinds.has("auth") ? "auth"
+                : (kinds.has("transport") ? "transport" : "other");
+              if (kind === "auth") {
+                window.dispatchEvent(new CustomEvent("need-login"));
+              } else {
+                const attempt = Number(job.attempt) || 0;
+                const delay = TASK_RETRY_DELAYS[attempt];
+                if (delay !== undefined) {
+                  await retryDelay(delay);
+                  if (seq !== this._loadSeq || !generationCurrent()) return;
+                  jobs.push(Object.assign({}, job, { attempt: attempt + 1 }));
+                  continue;
+                }
+              }
+              const notices = this._childErrorNotices || (this._childErrorNotices = new Set());
+              const noticeKey = syncId + ":" + job.key + ":" + kind;
+              if (!notices.has(noticeKey)) {
+                notices.add(noticeKey);
+                pushToast({
+                  kind: "error", key: "task-child-" + noticeKey,
+                  title: kind === "auth" ? "일부 SubTask를 인증 문제로 불러오지 못했습니다"
+                                         : "일부 SubTask를 계속 불러오지 못했습니다",
+                  message: "불러온 Parent와 SubTask는 그대로 사용할 수 있습니다.", timeout: 7000,
+                });
+              }
             }
           } catch (e) {
             const kind = taskLoadErrorKind(e);
-            if (kind === "permission") continue;   // 볼 권한 없는 SubTask는 조용히 best-effort 제외
+            if (kind === "permission") {
+              // Per-ticket visibility is a terminal best-effort outcome. Keep the Parent and stop
+              // this group's spinner without a toast or a false successful child cache.
+              settlePermission(job, e);
+              continue;
+            }
             if (kind === "auth") {
               window.dispatchEvent(new CustomEvent("need-login"));
             } else {
@@ -701,7 +838,7 @@ export default {
       await Promise.allSettled([worker(), worker()]);
     },
     /** 티켓이 바뀌면 클라이언트 모델 캐시는 낡는다 — 통째로 비운다(서버 mt: 캐시도 같은 이유로 무효화). */
-    _dropModelCache() { this._mcache = {}; },
+    _dropModelCache() { this._mcache = {}; this._taskCacheGenerations = {}; },
     _taskModelHasKey(key) {
       if (!key) return false;
       for (const group of this.groups || []) {
@@ -1262,12 +1399,15 @@ export default {
         return;
       }
       const fld = t.fields || {};
-      if ((fld.fields || []).length || (fld.unsupported || []).length) {
+      if (t.toCategory === "done" || (fld.fields || []).length || (fld.unsupported || []).length) {
         this.dragTrx = { ticket: key, transition: t };   // 필수 입력 → 다이얼로그
         return;
       }
       try {
-        const r = await api.doTransition(key, { id: t.id });
+        const r = await api.doTransition(key, {
+          id: t.id, targetStatusId: t.toId || "", targetStatusName: t.to || "",
+          targetStatusCategory: t.toCategory || "",
+        });
         if (r && r.ok === false) throw new Error(r.error || "전이에 실패했습니다.");
         pushToast({ kind: "success", title: key + " → " + (t.to || "전이"), timeout: 3500 });
         window.dispatchEvent(new CustomEvent("ticket-changed", { detail: {
@@ -1371,9 +1511,10 @@ export default {
             <template v-if="bandOpen(st.k)">{{ st.label }}</template>
             <b>{{ allCards.filter(c => c.statusCategory === st.k && (subView === 'all' || c.mine)).length }}</b>
           </button>
-          <span v-if="bandOpen(st.k) && axisLoading(st.k)" class="mt-axis-load"
+          <span v-if="bandOpen(st.k) && axisPending(st.k)" class="mt-axis-load"
+                :class="{ degraded: axisDegraded(st.k) }"
                 :title="'완료된 JQL leaf ' + axisChunks(st.k) + '개 반영'">
-            <i aria-hidden="true"></i>{{ axisChunks(st.k) ? axisChunks(st.k) + '차 반영' : '수집 중' }}
+            <i v-if="axisLoading(st.k)" aria-hidden="true"></i>{{ axisLoadText(st.k) }}
           </span>
           <!-- 표시 범위는 **그 칸에만** 걸리는 조건이라 그 칸의 제목에 둔다 -->
           <span v-if="bandOpen(st.k) && bandFilter(st.k)" class="mt-colf">
@@ -1393,8 +1534,7 @@ export default {
 
       <div v-if="!panels.length" class="mt-axis-shell">
         <div v-for="st in states" :key="'shell-' + st.k" :class="'c-' + st.k">
-          <span v-if="axisLoading(st.k)"><i aria-hidden="true"></i>완료되는 티켓부터 표시합니다</span>
-          <span v-else>해당 상태의 티켓 없음</span>
+          <span><i v-if="axisLoading(st.k)" aria-hidden="true"></i>{{ axisEmptyText(st.k) }}</span>
         </div>
       </div>
 
@@ -1526,9 +1666,10 @@ export default {
             <span class="chev" :class="{ open: bandOpen(st.k) }">▸</span>{{ st.label }}
             <b>{{ bandCount(st.k) }}</b>
           </button>
-          <span v-if="axisLoading(st.k)" class="mt-axis-load"
+          <span v-if="axisPending(st.k)" class="mt-axis-load"
+                :class="{ degraded: axisDegraded(st.k) }"
                 :title="'완료된 JQL leaf ' + axisChunks(st.k) + '개 반영'">
-            <i aria-hidden="true"></i>{{ axisChunks(st.k) ? axisChunks(st.k) + '차 반영' : '수집 중' }}
+            <i v-if="axisLoading(st.k)" aria-hidden="true"></i>{{ axisLoadText(st.k) }}
           </span>
           <span v-if="bandFilter(st.k)" class="mt-colf">
             <button v-for="o in bandFilter(st.k).opts" :key="o.k" type="button"
@@ -1542,13 +1683,11 @@ export default {
           <TaskCard v-for="c in pagedCards(panels[0], st.k)" :key="c.key" :card="c"
                    :style="sigStyle(c)" :epic-title="epicDisplayTitle(c.epicKey)"
                    :epic-pending="epicPending(c.epicKey)" />
-          <div v-if="!pagedCards(panels[0], st.k).length" class="mt-none">{{
-            axisLoading(st.k) ? '완료되는 티켓부터 표시합니다' : '해당 상태의 티켓 없음' }}</div>
+          <div v-if="!pagedCards(panels[0], st.k).length" class="mt-none">{{ axisEmptyText(st.k) }}</div>
         </div>
         <!-- 그룹화 있음 → 그룹이 좌우로 늘어서고 각 그룹 안이 그리드 -->
         <div v-else class="mt-grouprow">
-          <div v-if="!bandCount(st.k)" class="mt-none">{{
-            axisLoading(st.k) ? '완료되는 티켓부터 표시합니다' : '해당 상태의 티켓 없음' }}</div>
+          <div v-if="!bandCount(st.k)" class="mt-none">{{ axisEmptyText(st.k) }}</div>
           <template v-for="p in panels" :key="p.key">
             <!-- 하위 없는 Task 묶음 — 카드로만 -->
             <template v-if="p.kind === 'solo'">

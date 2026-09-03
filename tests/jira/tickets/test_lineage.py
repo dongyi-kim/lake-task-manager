@@ -6,6 +6,9 @@
 import os
 import sys
 
+import pytest
+
+from app.auth.base import SessionExpired
 from app.infra.cache import Cache            # noqa: E402
 from app.jira.jira_client import JiraClient  # noqa: E402
 from app.infra.settings import get_settings   # noqa: E402
@@ -98,6 +101,81 @@ def test_lineage_reuses_per_ticket_cache():
     c.ticket_siblings(sub)
     # 형제 목록은 **그룹(부모)별 공유 캐시** — 각 티켓별이 아니라 부모 키로 캐시된다(형제 전원 공유).
     assert c.cache.get(f"siblings:{env}:sub:{parent}") is not None
+
+
+@pytest.mark.parametrize("message", [
+    "HTTP 401 session expired",
+    "HTTP 403 on /rest/api/2/issue/DL-1 — 세션 만료 가능. login 재실행.",
+])
+def test_transient_ancestor_failure_is_not_cached_as_empty(monkeypatch, message):
+    """A cold auth/transport failure must stay retryable, not become a 15-minute empty lineage."""
+    c = _client()
+    key = "DL-AUTH-FAIL"
+    calls = {"n": 0}
+
+    def fail(_key, **_kwargs):
+        calls["n"] += 1
+        raise SessionExpired(message)
+
+    monkeypatch.setattr(c, "get_issue", fail)
+    for expected_calls in (1, 2):
+        with pytest.raises(SessionExpired):
+            c.ticket_ancestors(key)
+        assert calls["n"] == expected_calls
+        assert c.cache.get_stale(f"ancestors:{c.env}:{key}") is None
+
+
+def test_expired_issue_fallback_cannot_be_promoted_into_fresh_ancestry(monkeypatch):
+    """Derived ancestry uses strict refresh even though ordinary issue views may serve stale."""
+    c = _client()
+    key = _key_of_type("Epic")                  # legitimate result would be an empty list
+    raw = c.get_issue(key)
+    c.cache.set(f"issue:{c.env}:{key}", raw, -1)
+
+    def expired(*_args, **_kwargs):
+        raise SessionExpired("HTTP 401 session expired")
+
+    monkeypatch.setattr(c.provider, "get_json", expired)
+    with pytest.raises(SessionExpired):
+        c.ticket_ancestors(key)
+    assert c.cache.get_stale(f"ancestors:{c.env}:{key}") is None
+
+
+def test_permission_denied_ancestor_is_best_effort_but_not_cached(monkeypatch):
+    """Per-ticket visibility failures stay silent and retryable instead of poisoning ancestry."""
+    c = _client()
+    key = "DL-HIDDEN"
+    calls = {"n": 0}
+
+    def denied(_key, **_kwargs):
+        calls["n"] += 1
+        raise PermissionError("403 forbidden")
+
+    monkeypatch.setattr(c, "get_issue", denied)
+    assert c.ticket_ancestors(key) == []
+    assert c.ticket_ancestors(key) == []
+    assert calls["n"] == 2
+    assert c.cache.get_stale(f"ancestors:{c.env}:{key}") is None
+
+
+def test_warm_ancestor_structure_projects_latest_targeted_epic_metadata():
+    """An Epic rename need not evict every child's cached ancestry to show the new label."""
+    sub, _parent, epic = _subtask_chain()
+    c = _client()
+    first = c.ticket_ancestors(sub)
+    assert c.cache.get(f"ancestors:{c.env}:{sub}") is not None
+    epic_node = next(node for node in first if node.get("key") == epic)
+
+    cache_key = f"epicmeta:{c.env}:{epic}"
+    changed = dict(c.cache.get(cache_key))
+    changed["title"] = "새 Epic 이름"
+    changed["epicName"] = "새 Epic 이름"
+    c.cache.set(cache_key, changed, c.EPIC_META_TTL)
+
+    second = c.ticket_ancestors(sub)
+    updated = next(node for node in second if node.get("key") == epic)
+    assert updated["epicName"] == "새 Epic 이름"
+    assert updated["epicName"] != epic_node["epicName"]
 
 
 def test_sibling_cache_is_shared_by_parent_and_invalidated_together():

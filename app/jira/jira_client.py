@@ -15,7 +15,7 @@ from datetime import date, timedelta
 from html import escape, unescape
 from urllib.parse import unquote, urlparse
 
-from app.auth.base import (SessionExpired, UpstreamUnavailable,
+from app.auth.base import (PermissionDenied, SessionExpired, UpstreamUnavailable,
                            background_upstream, write_upstream)
 from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
                        flatten_task_lists, lift_mentions_html, mark_explicit_jira_links, sanitize_html,
@@ -28,6 +28,11 @@ from app.jira.cache_policy import (JqlCachePolicy, MutationEvent,
                                    changed_predicate_fields)
 from app.jira.identity_service import JiraIdentityMixin
 from app.jira.media_service import JiraMediaMixin, _is_default_avatar_url
+from app.jira.mutation_recovery import (MutationReceiptStore,
+                                        reconcile_attachment,
+                                        reconcile_comment,
+                                        reconcile_created_issue,
+                                        reconcile_transition)
 from app.jira.workload_service import JiraWorkloadMixin, workload_category
 
 
@@ -40,6 +45,23 @@ _ANCHOR_RE = re.compile(r'<a\s[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.S | re.I)
 _CONF_TITLE_RE = re.compile(r"/pages/\d+/([^/?#]+)|/display/[^/]+/([^/?#]+)")
 _LEAKED_COLOR_RE = re.compile(
     r"\{color:(#[0-9a-f]{6})\}(.*?)\{color\}", re.I | re.S)
+
+
+class _UncacheableAncestors(RuntimeError):
+    """Carry a usable partial relationship result without letting Cache store it.
+
+    A Jira 403 or an accessible-but-unlabelled ancestor does not prove the relationship is empty.
+    Raising through the SWR producer preserves an older complete value when one exists; on a cold
+    lookup :meth:`ticket_ancestors` unwraps ``value`` for best-effort UI without caching it.
+    """
+
+    def __init__(self, value):
+        super().__init__("Jira ancestor is not visible to the current user")
+        self.value = value
+
+
+class _EpicMetadataUnavailable(LookupError):
+    """An Epic response had no real label and therefore must not be cached as its key."""
 
 
 def _repair_leaked_color_macros(html):
@@ -507,10 +529,19 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         self._provider = None
         self._provider_built = False
         self._provider_lock = threading.Lock()   # provider lazy 생성 경쟁 방지(부팅 warm + 첫 요청 동시 접근)
+        self._provider_generation = 0            # old storage snapshot이 새 로그인 state를 덮지 못하게
+        self._session_state_persist_lock = threading.Lock()
+        self._session_state_persist_at = 0.0
         self._renew_at = {}          # 서비스별 마지막 무음갱신 시도 시각(스로틀)
+        # 포커스 복귀가 여러 번 겹치거나 브라우저 탭이 둘 이상이어도 /myself 확인과
+        # silent SSO 갱신은 하나만 수행한다. 기다리는 HTTP 요청은 같은 결과를 재사용한다.
+        self._auth_probe_lock = threading.Lock()
+        self._auth_probe_at = 0.0
+        self._auth_probe_result = None
         self._jql_lock_guard = threading.Lock()
         self._jql_locks = {}
         self._jql_policy = JqlCachePolicy(self)
+        self._mutation_receipts = MutationReceiptStore(self.cache, self.env)
         # 세션 사용자 캐시도 함께 버린다. 안 그러면 로그인 직후에도 옛 판정(빈 사용자)이
         # TTL 동안 남아 매니저 여부·본인 댓글 판정이 계속 틀린다.
         try:
@@ -532,6 +563,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     old = self._provider
                     self._provider = None
                     self._provider_built = False
+                    self._provider_generation += 1
                     try:
                         old.close()
                     except Exception:
@@ -541,6 +573,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 if not self._provider_built:          # 락 안에서 재확인(더블체크)
                     self._provider = self._make_provider()
                     self._provider_built = True
+                    self._provider_generation += 1
         return self._provider
 
     def warm_session(self):
@@ -671,15 +704,24 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
     def reset_provider(self):
         """세션 갱신 후 다음 호출 때 새 세션으로 provider 를 재생성하도록 초기화."""
-        if self._provider is not None:
+        # Detach under the same lock used by rolling-cookie persistence.  A snapshot captured from
+        # the old context can no longer pass the object/generation fence after this point.
+        with self._provider_lock:
+            old = self._provider
+            self._provider = None
+            self._provider_built = False
+            self._provider_generation += 1
+            self._session_state_persist_at = 0.0
+        if old is not None:
             try:
-                self._provider.close()
+                old.close()
             except Exception:
                 pass
-        self._provider = None
-        self._provider_built = False
+        # 로그인 완료 전에 캐시한 proactive probe의 needLogin 결과를 다시 내보내지 않는다.
+        self._auth_probe_result = None
+        self._auth_probe_at = 0.0
         # 새 세션으로 갈아끼우는 참이다 — '죽었다' 표시도 함께 지운다(다시 실패하면 다시 선다).
-        self.mark_upstream_ok()
+        self.mark_session_alive()
         # 세션 사용자 캐시도 함께 버린다. 안 그러면 로그인 직후에도 옛 판정(빈 사용자)이
         # TTL 동안 남아 매니저 여부·본인 댓글 판정이 계속 틀린다.
         try:
@@ -781,8 +823,13 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         self._log_seen[key] = now
         print(msg, file=sys.stderr, flush=True)
 
-    def get_issue(self, key):
-        """단일 티켓 원본(fields 포함) — `issue:{env}:{key}` 로 티켓 단위 캐시."""
+    def get_issue(self, key, *, strict=False):
+        """단일 티켓 원본(fields 포함) — `issue:{env}:{key}` 로 티켓 단위 캐시.
+
+        ``strict`` keeps fresh hits but does not turn an expired issue into an apparently fresh
+        derived relationship after an auth/transport failure.  It is reserved for cache producers
+        such as ancestry; ordinary detail views retain stale-offline resilience.
+        """
         ck = f"issue:{self.env}:{key}"
 
         def fetch():
@@ -796,10 +843,11 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                                            params={"fields": self._issue_fields()})
             return d
 
-        data, _ = self.cache.get_or_set(ck, self.s.cache_ttl_seconds, fetch)
+        getter = self.cache.get_or_set_strict if strict else self.cache.get_or_set
+        data, _ = getter(ck, self.s.cache_ttl_seconds, fetch)
         return data
 
-    def get_issue_light(self, key):
+    def get_issue_light(self, key, *, strict=False):
         """단일 티켓 — **경량 필드만**(무거운 description·issuelinks·attachment 제외).
 
         뱃지·형제·자식키처럼 가벼운 정보만 필요할 때 쓴다. **포함관계 + 최신성**으로 캐시를 고른다:
@@ -828,7 +876,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                                            params={"fields": self._issue_fields(light=True)})
             return d
 
-        data, _ = self.cache.get_or_set(ck, self.s.cache_ttl_seconds, fetch)
+        getter = self.cache.get_or_set_strict if strict else self.cache.get_or_set
+        data, _ = getter(ck, self.s.cache_ttl_seconds, fetch)
         return data
 
     ISSUE_BATCH = 50                  # JQL "key in (...)" 한 번에 담을 최대 개수
@@ -854,8 +903,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         self.cache.always_revalidate = self.REVALIDATE_PREFIXES
         self.cache.revalidator = self._refresh_bg
         self.cache.skip_producer = self.upstream_down
-        # 상류에서 실제로 받아 왔다 = 세션이 살아 있다 → 차단기·죽음 표시 해제.
-        self.cache.on_upstream_ok = self.mark_upstream_ok
+        # Cache producers include Confluence and best-effort aggregates.  Their success proves
+        # transport recovery only; Jira auth is cleared exclusively by a direct /myself or login.
+        self.cache.on_upstream_ok = self.mark_transport_ok
 
     # ── 못 가져온 것 세기 ──────────────────────────────────────────────
     # 트리·목록 조립은 티켓을 하나씩 받아 붙이는데, 그중 몇 개가 실패해도 조립은 계속된다
@@ -1537,29 +1587,98 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             "nextStartAt": next_start if has_more else None,
         }
 
+    def issue_read_error_kind(self, exc):
+        """Classify one issue read without confusing visibility with a dead session.
+
+        Jira commonly hides an issue with either 403 or 404.  Both are terminal for a
+        best-effort list row, whereas authentication and transport failures must remain
+        retryable and must never be converted into a successful empty relationship.
+        """
+        status = getattr(exc, "status", None)
+        if self._is_permission_failure(exc):
+            return "permission"
+        if status == 404 or isinstance(exc, (KeyError, LookupError)):
+            return "unavailable"
+        if isinstance(exc, SessionExpired):
+            return "auth"
+        if isinstance(exc, (UpstreamUnavailable, TimeoutError, ConnectionError)):
+            return "transport"
+        return "other"
+
+    def issues_by_keys_result(self, keys, light=False, *, raise_retryable=False):
+        """Return rows plus an explicit per-key missing contract.
+
+        Successful rows are warmed in the normal ``issue``/``issueL`` cache.  A failed row is
+        never cached.  Callers assembling a progressive UI can therefore keep the successes,
+        retry only the missing identities, and silently settle visibility failures without
+        pretending auth/network loss was an authoritative empty result.
+
+        ``raise_retryable`` preserves the legacy list API's fail-fast contract for session and
+        transport loss while allowing this structured API to return usable partial data.
+        """
+        requested = [str(key).strip().upper() for key in dict.fromkeys(keys or ()) if key]
+        result = {
+            "contract": "jira-issues-by-keys.v1",
+            "requestedKeys": requested,
+            "issues": [],
+            "missing": [],
+            "complete": True,
+        }
+        if not requested:
+            return result
+
+        # Batch prefetch is only an optimisation.  If it fails, individual reads below retain
+        # exact per-key outcomes (and can still use rows already warmed before the failure).
+        try:
+            self.prefetch_issues(requested, light=light)
+        except Exception as exc:
+            if raise_retryable and self.issue_read_error_kind(exc) in ("auth", "transport"):
+                raise
+
+        for key in requested:
+            try:
+                # The normal getter owns projection precedence, fresh/stale policy, and cache
+                # warming.  Do not copy its returned row into cache here: it may be a deliberate
+                # stale fallback after a failed refresh and must not be promoted to a fresh hit.
+                raw = self.get_issue_light(key) if light else self.get_issue(key)
+            except Exception as exc:
+                kind = self.issue_read_error_kind(exc)
+                if raise_retryable and kind in ("auth", "transport"):
+                    raise
+                result["missing"].append({
+                    "key": key, "kind": kind, "error": str(exc)[:300],
+                })
+                continue
+            if isinstance(raw, dict) and str(raw.get("key") or "").upper() == key:
+                result["issues"].append(raw)
+                continue
+            result["missing"].append({
+                "key": key, "kind": "other",
+                "error": "Jira issue response did not contain the requested key",
+            })
+            # A login/error-shaped HTTP-200 payload may have passed through a provider and the
+            # generic getter. It is not an issue cache hit; leave both projections retryable.
+            self.cache.invalidate_keys([
+                f"issue:{self.env}:{key}", f"issueL:{self.env}:{key}",
+            ])
+
+        result["complete"] = not result["missing"]
+        return result
+
     def issues_by_keys(self, keys, light=False):
-        """키 목록 → 원본 이슈들. 캐시에 있으면 그대로 쓰고 없는 것만 한 번에 받는다.
+        """키 목록 → 원본 이슈들. 인증/transport 손실은 빈 목록으로 삼키지 않는다.
 
         ``light=True`` is for list/card projections. It reuses JQL write-through ``issueL`` rows
-        instead of fetching full descriptions, attachments and links again.
+        instead of fetching full descriptions, attachments and links again.  Visibility and
+        isolated malformed-row failures remain best-effort for legacy callers; progressive callers
+        use :meth:`issues_by_keys_result` to retain their exact missing-key contract.
         """
-        keys = [k for k in dict.fromkeys(keys) if k]
-        if not keys:
-            return []
-        self.prefetch_issues(keys, light=light)
-        out = []
-        for k in keys:
-            try:
-                raw = self.get_issue_light(k) if light else self.get_issue(k)
-            except Exception:
-                raw = None
-            if isinstance(raw, dict) and raw.get("key"):
-                out.append(raw)
-            else:
-                # 못 받은 티켓은 목록에서 그냥 빠진다 — 그 사실을 세어 두지 않으면
-                # 화면은 '원래 그만큼뿐' 이라고 말하게 된다(WBS 트리가 그렇게 비었다).
-                self.miss_add()
-        return out
+        result = self.issues_by_keys_result(keys, light=light, raise_retryable=True)
+        if result["missing"]:
+            # 못 받은 티켓은 목록에서 그냥 빠진다 — 그 사실을 세어 두지 않으면
+            # 화면은 '원래 그만큼뿐' 이라고 말하게 된다(WBS 트리가 그렇게 비었다).
+            self.miss_add(len(result["missing"]))
+        return result["issues"]
 
     def s_today(self):
         """오늘 — mock/local 은 world 기준일이 '오늘'이라 실제 날짜와 다르다.
@@ -1600,7 +1719,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 data = self.search_issues_page(
                     "key in (%s)" % ",".join(chunk), start_at=0,
                     max_results=len(chunk), fields=fields, light=light)
-            except SessionExpired:
+            except (SessionExpired, UpstreamUnavailable, TimeoutError, ConnectionError):
                 raise
             except Exception:
                 return
@@ -1761,11 +1880,17 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         return out
 
     def epic_name(self, epic_key):
-        """Epic 라벨 — Epic Name(단축어) → Summary → 키 순(전 화면 공통). (config 엔 이름 없음)"""
+        """Epic label backed by the shared 12-hour metadata cache.
+
+        The key remains a presentation fallback only.  It is deliberately never written back as
+        a successful name, so a temporary Jira/auth failure remains retryable.
+        """
+        key = str(self._resolve(epic_key) or "").strip().upper()
+        if not key:
+            return epic_key
         try:
-            f = (self.get_issue_light(self._resolve(epic_key)).get("fields") or {})
-            nf = self.s.epic_name_field_id
-            return (f.get(nf) if nf else None) or f.get("summary") or epic_key
+            meta = self.epic_metadata(key)
+            return (meta or {}).get("title") or epic_key
         except Exception:
             return epic_key
 
@@ -2274,8 +2399,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         parent_key, epic_key = self._lineage_of(key)      # 그룹 형제 캐시(부모/Epic)까지 함께 털기 위해
         for pfx in ("issue", "issueL", "issueview", "comments", "children", "siblings",
                     "ancestors", "related", "timeline", "attachments", "documents",
-                    "remotelinks", "epic_children", "epicmeta", "changelog", "editmeta"):
+                    "remotelinks", "epic_children", "changelog", "editmeta"):
             self.cache.invalidate(f"{pfx}:{env}:{key}")
+        self._invalidate_epic_metadata(key)
         self._invalidate_direct_child_views(key, membership=True)
         self._invalidate_lineage(parent_key, epic_key)    # 형제 목록은 그룹(부모/Epic)별 공유 캐시
         self._record_mutation(MutationEvent("refresh", key, parent_key=parent_key,
@@ -2305,7 +2431,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         # 조상(Epic Link/parent)을 읽는다. 이걸 안 비우면 소속 Epic 을 바꿔도 옛 원본을 읽어
         # 계보가 안 바뀌고, 새 Epic 요약을 못 찾아 뱃지가 키로 뜬다(방금 그 버그).
         self.cache.invalidate(f"issue:{self.env}:{key}")
-        self.cache.invalidate(f"epicmeta:{self.env}:{key}")
+        self._invalidate_epic_metadata(key)
         # 계보(조상/형제) 조립결과도 비운다 — _swr 로 따로 캐시되기 때문.
         self.cache.invalidate(f"ancestors:{self.env}:{key}")
         self.cache.invalidate(f"mentionctx:{self.env}:{key}")   # 담당/보고/댓글 변화 → @멘션 기본목록도 낡음
@@ -2322,6 +2448,12 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         # 드는지가 달라지므로 함께 비운다(뷰모드 체크박스 경량 무효화 경로는 이 메서드를 안 탄다).
         self.cache.invalidate("mt:")
         self._reprime(key, comments=comments)
+
+    def _invalidate_epic_metadata(self, key):
+        """Invalidate one exact Epic metadata row, never similarly-prefixed issue keys."""
+        normalized = str(key or "").strip().upper()
+        if normalized:
+            self.cache.invalidate_keys([f"epicmeta:{self.env}:{normalized}"])
 
     def _invalidate_people_views(self):
         """담당자 변경·상태 전이는 **인력별 집계**(워크로드·활동)를 바꾼다. 이 뷰들은 사람(사번)으로
@@ -2520,6 +2652,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     for x in (self.provider.get_json("/rest/api/2/priority") or [])]
         try:
             return self.cache.get_or_set(f"priorities:{self.env}", self.OPTIONS_TTL, do)[0]
+        except (SessionExpired, UpstreamUnavailable):
+            raise
         except Exception:
             return []
 
@@ -2532,6 +2666,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     for x in (self.provider.get_json("/rest/api/2/issuetype") or [])]
         try:
             return self.cache.get_or_set(f"issuetypes:{self.env}", self.OPTIONS_TTL, do)[0]
+        except (SessionExpired, UpstreamUnavailable):
+            raise
         except Exception:
             return []
 
@@ -2552,12 +2688,16 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                         if its:
                             return [{"name": x.get("name") or "", "subtask": bool(x.get("subtask"))}
                                     for x in its]
+            except (SessionExpired, UpstreamUnavailable):
+                raise
             except Exception:
                 pass
             return [{"name": x.get("name") or "", "subtask": bool(x.get("subtask"))}
                     for x in (self.provider.get_json("/rest/api/2/issuetype") or [])]
         try:
             return self.cache.get_or_set(f"projtypes:{self.env}", self.OPTIONS_TTL, do)[0]
+        except (SessionExpired, UpstreamUnavailable):
+            raise
         except Exception:
             return self.issue_types()
 
@@ -2682,6 +2822,27 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         fmt = (getattr(self.s, "comment_format", "") or "").lower()
         return fmt if fmt in ("html", "wiki") else ("html" if self.env == "prod" else "wiki")
 
+    def _mutation_actor_for(self, kind, mutation_id):
+        """Resolve the writer once, then reuse its durable receipt context on every retry.
+
+        A timed-out Playwright write may still be running while a new provider is unavailable.
+        Looking up ``/myself`` before consulting that receipt would hide the in-flight proof behind
+        another network failure. Persisting only Jira identity aliases (never content) lets the
+        coordinator inspect the old operation first and prevents a different login from claiming
+        the same client mutation id.
+        """
+        if not mutation_id:
+            return None, None
+        receipt = self._mutation_receipts.receipt(kind, mutation_id)
+        if receipt:
+            context = receipt.get("context")
+            actor = context.get("actor") if isinstance(context, dict) else None
+            if not isinstance(actor, dict) or not actor.get("aliases"):
+                raise ValueError(
+                    "이전 Jira 요청의 사용자 식별 정보가 부족합니다. 중복 방지를 위해 Jira에서 결과를 확인해 주세요.")
+            return actor, receipt
+        return self.mutation_actor_identity(), None
+
     def comment_field_value(self, html):
         """에디터 HTML → 코멘트 본문에 저장할 값. description 과 **같은 규칙**(comment_format).
         prod=HTML(정화) — 위키로 넣으면 인라인코드의 '(*)' 가 별 이모티콘으로 변환되고 '{{}}' 가
@@ -2696,7 +2857,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
     def create_child(self, parent_key, itype, summary, priority=None,
                      duedate=None, assignee=None, components=None, description=None,
-                     labels=None):
+                     labels=None, mutation_id=None, parent_is_epic=None, before_write=None):
         """하위/독립 티켓 생성. 부모가 Epic 이면 Epic Link 로, 일반 이슈면 parent(Sub-Task)로 잇는다.
         **parent_key 가 없으면(=None) Epic 없이 최상위 Task** 로 만든다('Epic 없음'/'사용자 VoC').
 
@@ -2726,32 +2887,64 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             # 중간에 실패하면 라벨 없는 티켓이 남았다). Jira 라벨엔 공백이 못 들어가 '_' 로 바꾼다.
             fields["labels"] = [str(x).strip().replace(" ", "_") for x in labels if str(x).strip()]
         if parent_key:
-            b = self.ticket_badge(parent_key) or {}
-            if (b.get("type") or "") == "Epic":
+            # The UI already resolved this relation. Reusing it means an uncertain retry reaches
+            # its receipt before any new Jira lookup can fail or classify the parent differently.
+            # Legacy callers can omit it and keep the original best-effort lookup.
+            is_epic = parent_is_epic
+            if is_epic is None:
+                b = self.ticket_badge(parent_key) or {}
+                is_epic = (b.get("type") or "") == "Epic"
+            if is_epic:
                 fields[self.s.epic_link_field_id] = parent_key
             else:
                 fields["parent"] = {"key": parent_key}
-        # 쓰기는 큐 맨 앞으로 — 뒤에 밀리면 사용자는 '만들어졌나?' 하고 또 누른다.
-        with write_upstream():
-            res = self.provider.post_json("/rest/api/2/issue", {"fields": fields})
-        key = (res or {}).get("key")
-        if parent_key:
-            # _invalidate_ticket가 계보를 읽은 뒤 parent의 issue/issueL projection을 비운다.
-            # 그 다음 membership을 비워야 생성 전 parent row로 다시 prime되는 왕복이 없다.
-            self._invalidate_ticket(parent_key)
-            self._invalidate_direct_child_views(parent_key, membership=True)
-        else:
-            # 독립 Task — 부모가 없다. 대신 이 Task 를 담을 목록/검색 캐시를 넓게 버린다
-            # (워크로드·내Task·현안·검색이 낡은 채로 새 Task 를 안 보여 주지 않게).
-            for pfx in ("wbs_build", "vit_bases", "vit_list", "workload", "mytasks", "search"):
-                self.cache.invalidate(f"{pfx}:")
-        # 새 Task 는 상위 피커의 후보가 될 수 있다 → 후보 풀 무효화(길게 캐시하므로).
-        self.cache.invalidate("epic_cand:")
-        # 새 티켓이 담당자에게 배정됐으면 그 사람 워크로드/활동도 낡는다(하위 Task 생성 포함).
-        self._invalidate_people_views()
-        self._record_mutation(MutationEvent(
-            "create", key or "", changed_fields=tuple(fields.keys()), parent_key=parent_key))
-        return {"key": key}
+        # Resolve identity before the durable receipt is created. A response-lost create can only
+        # be attributed safely when Jira's creator matches this authenticated actor.
+        mutation_actor, _existing_receipt = self._mutation_actor_for(
+            "issue-create", mutation_id)
+
+        def validate_result(result):
+            if not isinstance(result, dict) or not result.get("key"):
+                raise UpstreamUnavailable("Jira가 생성 결과 키를 반환하지 않았습니다.")
+            return result
+
+        def write():
+            # 쓰기는 큐 맨 앞으로 — 뒤에 밀리면 사용자는 '만들어졌나?' 하고 또 누른다.
+            with write_upstream():
+                if before_write:
+                    before_write()
+                result = self.provider.post_json("/rest/api/2/issue", {"fields": fields})
+                return validate_result(result)
+
+        def after_success(res):
+            key = (res or {}).get("key")
+            if parent_key:
+                # _invalidate_ticket가 계보를 읽은 뒤 parent의 issue/issueL projection을 비운다.
+                # 그 다음 membership을 비워야 생성 전 parent row로 다시 prime되는 왕복이 없다.
+                self._invalidate_ticket(parent_key)
+                self._invalidate_direct_child_views(parent_key, membership=True)
+            else:
+                # 독립 Task — 부모가 없다. 대신 이 Task 를 담을 목록/검색 캐시를 넓게 버린다.
+                for pfx in ("wbs_build", "vit_bases", "vit_list", "workload", "mytasks", "search"):
+                    self.cache.invalidate(f"{pfx}:")
+            self.cache.invalidate("epic_cand:")
+            self._invalidate_people_views()
+            self._record_mutation(MutationEvent(
+                "create", key or "", changed_fields=tuple(fields.keys()), parent_key=parent_key))
+
+        res = self._mutation_receipts.execute(
+            kind="issue-create", mutation_id=mutation_id,
+            payload={"fields": fields, "actor": mutation_actor}, write=write,
+            reconcile=lambda receipt: reconcile_created_issue(
+                self.provider, self.s.project_key, fields,
+                getattr(self.s, "epic_link_field_id", ""), receipt, mutation_actor),
+            after_success=after_success,
+            recover_inflight=validate_result,
+            context={"actor": mutation_actor} if mutation_actor else None,
+            before_retry=(lambda: self.assert_mutation_actor_identity(mutation_actor))
+            if mutation_actor else None,
+        )
+        return {"key": (res or {}).get("key")}
 
     def task_types(self):
         """Epic 없이 만들 수 있는 **최상위 티켓 타입** — Sub-Task·Epic 을 뺀 일반 이슈들.
@@ -2760,7 +2953,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 if not t.get("subtask") and (t.get("name") or "") != "Epic"]
 
     def create_epic(self, summary, priority=None, duedate=None, assignee=None,
-                    components=None, description=None, epic_name=None):
+                    components=None, description=None, epic_name=None, mutation_id=None):
         """최상위 Epic 생성(부모 없음). Epic Name(단축어) 커스텀 필드가 있으면 채운다.
         생성 후 목록/검색 캐시가 낡으므로 관련 캐시를 넓게 버린다."""
         etype = next((t["name"] for t in self.issue_types()
@@ -2785,15 +2978,40 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         enf = self.epic_name_create_field(etype)
         if enf:
             fields[enf] = epic_name or summary
-        with write_upstream():
-            res = self.provider.post_json("/rest/api/2/issue", {"fields": fields})
-        key = (res or {}).get("key")
-        # WBS/현안/에픽 목록이 이 Epic 을 담으려면 관련 목록 캐시를 비운다(넓게).
-        for pfx in ("wbs_build", "vit_bases", "vit_list", "epic_options"):
-            self.cache.invalidate(f"{pfx}:")
-        self._record_mutation(MutationEvent(
-            "create_epic", key or "", changed_fields=tuple(fields.keys())))
-        return {"key": key}
+        mutation_actor, _existing_receipt = self._mutation_actor_for(
+            "issue-create", mutation_id)
+
+        def validate_result(result):
+            if not isinstance(result, dict) or not result.get("key"):
+                raise UpstreamUnavailable("Jira가 Epic 생성 결과 키를 반환하지 않았습니다.")
+            return result
+
+        def write():
+            with write_upstream():
+                result = self.provider.post_json("/rest/api/2/issue", {"fields": fields})
+                return validate_result(result)
+
+        def after_success(res):
+            key = (res or {}).get("key")
+            # WBS/현안/에픽 목록이 이 Epic 을 담으려면 관련 목록 캐시를 비운다(넓게).
+            for pfx in ("wbs_build", "vit_bases", "vit_list", "epic_options"):
+                self.cache.invalidate(f"{pfx}:")
+            self._record_mutation(MutationEvent(
+                "create_epic", key or "", changed_fields=tuple(fields.keys())))
+
+        res = self._mutation_receipts.execute(
+            kind="issue-create", mutation_id=mutation_id,
+            payload={"fields": fields, "actor": mutation_actor}, write=write,
+            reconcile=lambda receipt: reconcile_created_issue(
+                self.provider, self.s.project_key, fields,
+                getattr(self.s, "epic_link_field_id", ""), receipt, mutation_actor),
+            after_success=after_success,
+            recover_inflight=validate_result,
+            context={"actor": mutation_actor} if mutation_actor else None,
+            before_retry=(lambda: self.assert_mutation_actor_identity(mutation_actor))
+            if mutation_actor else None,
+        )
+        return {"key": (res or {}).get("key")}
 
     def set_epic_link(self, epic_key, task_keys):
         """기존 Task 들을 Epic 에 넣는다(Epic Link 설정). 각자 PUT — 하나 실패해도 나머지는 진행.
@@ -3046,12 +3264,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             i.pop("_comp", None); i.pop("_asgId", None)
         # 소속 Epic 이름 — 검색 결과엔 Epic 키만 있다. **구별되는 Epic 만** ticket_badge(캐시·경량)로
         # 이름을 채운다(내 Task 화면이 쓰는 것과 같은 방식). 후보들이 Epic 을 공유해 조회 수는 적다.
-        names = {}
-        for ek in {i["epicKey"] for i in out if i["epicKey"]}:
-            try:
-                names[ek] = self.epic_label(self.ticket_badge(ek), ek)   # Epic Name→Summary→키
-            except Exception:
-                names[ek] = ek
+        names = self.epic_metadata_title_map(
+            {i["epicKey"] for i in out if i["epicKey"]}, best_effort=True)
         for i in out:
             i["epicName"] = names.get(i["epicKey"]) if i["epicKey"] else None
         return {"items": out}
@@ -3162,7 +3376,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             cat = norm_cat((to.get("statusCategory") or {}).get("key"))
             out.append({
                 "id": str(t.get("id")), "name": t.get("name") or "",
-                "to": to.get("name") or "", "toCategory": cat,
+                "to": to.get("name") or "", "toId": str(to.get("id") or ""),
+                "toCategory": cat,
                 "hasScreen": bool(t.get("hasScreen")),
                 "fields": self._screen_fields(t.get("fields") or {}),
             })
@@ -3202,8 +3417,124 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             return {"fields": out, "unsupported": unsupported}
         return {"fields": out, "unsupported": []}
 
+    def _authoritative_transition(self, key, transition_id):
+        """Read one transition directly from Jira and freeze its security-relevant metadata.
+
+        ``targetStatus*`` values sent by the browser are presentation hints from an earlier GET;
+        they are never authority for completion/comment policy.  In particular, a stale or forged
+        client must not turn an ordinary transition into a Done transition (or the inverse) by
+        changing ``targetStatusCategory``.
+        """
+        tid = str(transition_id or "").strip()
+        if not tid:
+            raise ValueError("전환 ID가 없습니다.")
+        data = self.provider.get_json(
+            f"/rest/api/2/issue/{key}/transitions",
+            params={"expand": "transitions.fields"},
+        ) or {}
+        rows = data.get("transitions") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            raise UpstreamUnavailable("Jira 전환 정보를 확인할 수 없습니다.")
+        raw = next((row for row in rows if isinstance(row, dict)
+                    and str(row.get("id") or "").strip() == tid), None)
+        if raw is None:
+            raise ValueError("현재 상태에서는 이 전환을 실행할 수 없습니다. 화면을 다시 열어 주세요.")
+        target = raw.get("to") if isinstance(raw.get("to"), dict) else {}
+        target_id = str(target.get("id") or "").strip()
+        target_name = str(target.get("name") or "").strip()
+        if not target_id and not target_name:
+            raise UpstreamUnavailable("Jira 전환 목적 상태를 확인할 수 없습니다.")
+
+        screen = self._screen_fields(raw.get("fields") or {})
+        if screen.get("unsupported"):
+            raise ValueError(
+                "앱에서 처리할 수 없는 필수 항목이 있습니다: "
+                + ", ".join(screen["unsupported"]))
+        allowed, required, resolution_values = set(), set(), []
+        supported_semantics = {"worklog", "assignee", "resolution", "comment"}
+        unsupported_required = []
+        for field in screen.get("fields") or []:
+            field_id = str(field.get("id") or "").strip().lower()
+            system = str(field.get("system") or "").strip().lower()
+            semantic = system or field_id
+            allowed.update(value for value in (field_id, system) if value)
+            if field.get("required"):
+                required.add(semantic)
+                if semantic not in supported_semantics:
+                    unsupported_required.append(field.get("name") or semantic)
+            if semantic == "resolution":
+                resolution_values = sorted({
+                    str(value.get("name") or "").strip()
+                    for value in (field.get("allowedValues") or [])
+                    if str(value.get("name") or "").strip()
+                }, key=str.casefold)
+        if unsupported_required:
+            raise ValueError(
+                "앱에서 입력할 수 없는 필수 전환 항목이 있습니다: "
+                + ", ".join(unsupported_required))
+        return {
+            "transitionId": tid,
+            "targetStatusId": target_id,
+            "targetStatusName": target_name,
+            "targetStatusCategory": norm_cat(
+                ((target.get("statusCategory") or {}).get("key"))),
+            "allowedFields": sorted(allowed),
+            "requiredFields": sorted(required),
+            "resolutionValues": resolution_values,
+        }
+
+    @staticmethod
+    def _validate_transition_hint(authority, *, target_status_id=None,
+                                  target_status_name=None, target_status_category=None):
+        """Reject a stale UI target when it supplied one; missing legacy hints remain valid."""
+        comparisons = (
+            (target_status_id, authority.get("targetStatusId"), "상태 ID"),
+            (target_status_name, authority.get("targetStatusName"), "상태 이름"),
+        )
+        for supplied, actual, label in comparisons:
+            if (str(supplied or "").strip()
+                    and str(supplied).strip().casefold() != str(actual or "").strip().casefold()):
+                raise ValueError(f"전환 목적 {label}가 변경되었습니다. 화면을 다시 열어 주세요.")
+        supplied_category = str(target_status_category or "").strip().lower()
+        if supplied_category:
+            if supplied_category in {"new", "indeterminate", "undefined"}:
+                supplied_category = norm_cat(supplied_category)
+            if supplied_category != authority.get("targetStatusCategory"):
+                raise ValueError("전환 목적 상태 분류가 변경되었습니다. 화면을 다시 열어 주세요.")
+
+    @staticmethod
+    def _validate_transition_inputs(authority, *, time_spent=None, assignee=None,
+                                    resolution=None, comment=None):
+        allowed = set(authority.get("allowedFields") or ())
+        required = set(authority.get("requiredFields") or ())
+        done = authority.get("targetStatusCategory") == "done"
+        supplied = {
+            "worklog": bool(str(time_spent or "").strip()),
+            "assignee": bool(str(assignee or "").strip()),
+            "resolution": bool(str(resolution or "").strip()),
+            "comment": bool(str(comment or "").strip()),
+        }
+        for semantic in ("worklog", "assignee", "resolution"):
+            if supplied[semantic] and semantic not in allowed:
+                raise ValueError(f"현재 전환 화면에는 {semantic} 항목이 없습니다. 다시 열어 주세요.")
+        # Done comments are an explicit LTM policy even when Jira DC omits comment metadata.
+        if supplied["comment"] and "comment" not in allowed and not done:
+            raise ValueError("현재 전환 화면에는 코멘트 항목이 없습니다. 다시 열어 주세요.")
+        for semantic in required:
+            if semantic in supplied and not supplied[semantic]:
+                raise ValueError(f"필수 전환 항목을 입력해 주세요: {semantic}")
+        if done and not supplied["comment"]:
+            raise ValueError("완료 전환에는 코멘트가 필요합니다.")
+        choices = authority.get("resolutionValues") or []
+        if supplied["resolution"] and choices and not any(
+                str(resolution).strip().casefold() == str(choice).strip().casefold()
+                for choice in choices):
+            raise ValueError("선택한 처리 방법이 현재 전환에서 허용되지 않습니다.")
+
     def do_transition(self, key, transition_id, *, time_spent=None, assignee=None,
-                      resolution=None, comment=None):
+                      resolution=None, comment=None, target_status_id=None,
+                      target_status_name=None, target_status_category=None,
+                      mutation_id=None):
         """전이 실행. 화면 필드는 Jira 규약대로 fields/update 에 나눠 싣는다
         (worklog·comment 는 '추가' 라 update, resolution·assignee 는 '설정' 이라 fields).
 
@@ -3213,37 +3544,99 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
           있는지는 transitions() 응답이 이미 알고 있으니 그걸로 거른다.
         """
         tid = str(transition_id)
-        allowed = set()
-        for t in (self.transitions(key) or []):
-            if str(t.get("id")) == tid:
-                allowed = {f.get("id") for f in (t.get("fields") or {}).get("fields", [])}
-                break
-        body = {"transition": {"id": tid}}
-        fields, update = {}, {}
-        if resolution and "resolution" in allowed:
-            fields["resolution"] = {"name": resolution}
-        if assignee and "assignee" in allowed:
-            fields["assignee"] = {"name": assignee}
-        if time_spent and "worklog" in allowed:
-            update["worklog"] = [{"add": {"timeSpent": time_spent}}]
-        # 코멘트는 화면에 없어도 대개 받아 준다(transition comment 는 특별 취급) — 다만 화면이
-        # comment 를 선언했거나, 아무 제약 정보가 없을 때만 넣어 불필요한 400 을 피한다.
-        if comment and ("comment" in allowed or not allowed):
-            update["comment"] = [{"add": {"body": comment}}]
-        if fields:
-            body["fields"] = fields
-        if update:
-            body["update"] = update
-        res = self.provider.post_json(f"/rest/api/2/issue/{key}/transitions", body)
-        # 상태·담당·해결이 한꺼번에 바뀐다 → 본문/댓글을 즉시 다시 채운다(쓰기 우선순위).
-        self._invalidate_ticket(key, comments=bool(comment))
-        self._invalidate_people_views()   # 상태·담당 변경 → 워크로드/활동 집계도 낡는다
-        changed = ["status", "resolution", "assignee", "timespent"]
-        if comment:
-            changed.append("comment")
-        self._record_mutation(MutationEvent(
-            "transition", key, changed_fields=tuple(changed)))
-        return res
+        mutation_actor, existing_receipt = self._mutation_actor_for(
+            "transition", mutation_id)
+        if existing_receipt:
+            stored_context = existing_receipt.get("context")
+            authority = (stored_context or {}).get("authority") \
+                if isinstance(stored_context, dict) else None
+            if not isinstance(authority, dict) or authority.get("transitionId") != tid:
+                # Pre-context receipts cannot safely reconstruct the authoritative target after a
+                # response-lost transition has removed itself from the available list.
+                raise ValueError(
+                    "이전 전환 복구 정보가 부족합니다. Jira에서 현재 상태를 확인해 주세요.")
+        else:
+            authority = self._authoritative_transition(key, tid)
+        self._validate_transition_hint(
+            authority, target_status_id=target_status_id,
+            target_status_name=target_status_name,
+            target_status_category=target_status_category)
+        self._validate_transition_inputs(
+            authority, time_spent=time_spent, assignee=assignee,
+            resolution=resolution, comment=comment)
+        logical_payload = {
+            "key": str(key or "").upper(), "transitionId": tid,
+            "timeSpent": time_spent or "", "assignee": assignee or "",
+            "resolution": resolution or "", "comment": comment or "",
+            # Security and recovery identity comes only from the fresh Jira transition metadata
+            # (or its durable receipt on response-loss retry), never from browser hints.
+            "targetStatusId": authority.get("targetStatusId") or "",
+            "targetStatusName": authority.get("targetStatusName") or "",
+            "targetStatusCategory": authority.get("targetStatusCategory") or "",
+            "allowedFields": authority.get("allowedFields") or [],
+            "requiredFields": authority.get("requiredFields") or [],
+            "actor": mutation_actor,
+        }
+
+        def validate_result(result):
+            return result if isinstance(result, dict) and result else {"ok": True}
+
+        def write():
+            # Re-read immediately before every POST and require the screen to match the frozen
+            # authority. Pending retries reconcile *before* arriving here, so a proven commit does
+            # not pay this fetch, while a proven-absent retry cannot use a stale workflow screen.
+            fresh = self._authoritative_transition(key, tid)
+            if fresh != authority:
+                raise ValueError("전환 화면 정보가 바뀌었습니다. 화면을 다시 열어 주세요.")
+            allowed = set(authority.get("allowedFields") or ())
+            body = {"transition": {"id": tid}}
+            fields, update = {}, {}
+            if resolution and "resolution" in allowed:
+                fields["resolution"] = {"name": resolution}
+            if assignee and "assignee" in allowed:
+                fields["assignee"] = {"name": assignee}
+            if time_spent and "worklog" in allowed:
+                update["worklog"] = [{"add": {"timeSpent": time_spent}}]
+            # 코멘트는 화면에 없어도 대개 받아 준다(transition comment 는 특별 취급). 일반 전이는
+            # 화면 선언을 따르되, 완료 전이는 LTM 정책상 근거 댓글이 필수라 prod 메타데이터가
+            # comment를 누락하더라도 update.comment를 함께 보낸다.
+            if comment and ("comment" in allowed
+                            or authority.get("targetStatusCategory") == "done"):
+                update["comment"] = [{"add": {"body": comment}}]
+            if fields:
+                body["fields"] = fields
+            if update:
+                body["update"] = update
+            result = self.provider.post_json(
+                f"/rest/api/2/issue/{key}/transitions", body)
+            # Jira's transition API commonly answers 204 No Content. Normalize that confirmed
+            # success so a durable receipt can replay a stable JSON value.
+            return validate_result(result)
+
+        def after_success(_result):
+            # 상태·담당·해결이 한꺼번에 바뀐다 → 본문/댓글을 즉시 다시 채운다(쓰기 우선순위).
+            self._invalidate_ticket(key, comments=bool(comment))
+            self._invalidate_people_views()   # 상태·담당 변경 → 워크로드/활동 집계도 낡는다
+            changed = ["status", "resolution", "assignee", "timespent"]
+            if comment:
+                changed.append("comment")
+            self._record_mutation(MutationEvent(
+                "transition", key, changed_fields=tuple(changed)))
+
+        return self._mutation_receipts.execute(
+            kind="transition", mutation_id=mutation_id, payload=logical_payload,
+            write=write,
+            reconcile=lambda receipt: reconcile_transition(
+                self.provider, key, tid,
+                authority.get("targetStatusId"), authority.get("targetStatusName"),
+                receipt, comment or "", mutation_actor),
+            after_success=after_success,
+            context={"authority": authority, "actor": mutation_actor}
+            if mutation_actor else None,
+            recover_inflight=validate_result,
+            before_retry=(lambda: self.assert_mutation_actor_identity(mutation_actor))
+            if mutation_actor else None,
+        )
 
     def cascade_suggestion(self, child_key, *, created=False):
         """전이/생성 **후처리** — 하위 티켓 변화가 부모 상태 규칙을 촉발하면 '부모도 바꿀까?' 제안을 만든다.
@@ -3312,18 +3705,44 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             "parentAssignee": real_name(pa.get("displayName") or pa.get("name")) if pa else None,
             "transition": {
                 "id": pick["id"], "name": pick.get("name") or "",
-                "to": pick.get("to") or "", "toCategory": pick.get("toCategory") or "",
+                "to": pick.get("to") or "", "toId": pick.get("toId") or "",
+                "toCategory": pick.get("toCategory") or "",
                 "needsScreen": bool(fld.get("fields")) or bool(fld.get("unsupported")),
                 "fields": pick.get("fields"),
             },
         }
 
-    def add_comment(self, key, body):
+    def add_comment(self, key, body, mutation_id=None):
         """코멘트 작성 (body = Jira wiki markup). 반환: 생성된 코멘트 객체."""
-        res = self.provider.post_json(f"/rest/api/2/issue/{key}/comment", {"body": body})
-        self._invalidate_ticket(key, comments=True)
-        self._record_mutation(MutationEvent("comment", key, changed_fields=("comment",)))
-        return res
+        mutation_actor, _existing_receipt = self._mutation_actor_for(
+            "comment-create", mutation_id)
+
+        def after_success(_result):
+            self._invalidate_ticket(key, comments=True)
+            self._record_mutation(MutationEvent("comment", key, changed_fields=("comment",)))
+
+        def validate_result(result):
+            if not isinstance(result, dict) or not result.get("id"):
+                raise UpstreamUnavailable("Jira가 생성된 댓글 ID를 반환하지 않았습니다.")
+            return result
+
+        def write():
+            result = self.provider.post_json(
+                f"/rest/api/2/issue/{key}/comment", {"body": body})
+            return validate_result(result)
+
+        return self._mutation_receipts.execute(
+            kind="comment-create", mutation_id=mutation_id,
+            payload={"key": str(key).upper(), "body": body, "actor": mutation_actor},
+            write=write,
+            reconcile=lambda receipt: reconcile_comment(
+                self.provider, key, body, receipt, mutation_actor),
+            after_success=after_success,
+            recover_inflight=validate_result,
+            context={"actor": mutation_actor} if mutation_actor else None,
+            before_retry=(lambda: self.assert_mutation_actor_identity(mutation_actor))
+            if mutation_actor else None,
+        )
 
     def update_comment(self, key, comment_id, body):
         """코멘트 수정 (본인 것). body = Jira wiki markup."""
@@ -3340,15 +3759,44 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         self._record_mutation(MutationEvent("comment", key, changed_fields=("comment",)))
         return {"ok": True}
 
-    def upload_attachment(self, key, filename, data, content_type=None):
+    def upload_attachment(self, key, filename, data, content_type=None, mutation_id=None):
         """첨부 단일 파일 업로드. 반환: 첨부 객체 리스트(확정 파일명·id — !파일명! 참조에 사용).
         이미지 붙여넣기 제출 시 파일당 한 번씩 호출한다."""
-        res = self.provider.post_multipart(
-            f"/rest/api/2/issue/{key}/attachments", filename, data, content_type)
-        self._invalidate_ticket(key, attachments=True)
-        self._record_mutation(MutationEvent(
-            "attachment", key, changed_fields=("attachment",)))
-        return res
+        mutation_actor, _existing_receipt = self._mutation_actor_for(
+            "attachment-create", mutation_id)
+
+        def validate_result(result):
+            rows = result if isinstance(result, list) else ([result] if isinstance(result, dict) else [])
+            if not rows or not (rows[0] or {}).get("id"):
+                raise UpstreamUnavailable("Jira가 생성된 첨부 ID를 반환하지 않았습니다.")
+            return rows
+
+        def write():
+            result = self.provider.post_multipart(
+                f"/rest/api/2/issue/{key}/attachments", filename, data, content_type)
+            return validate_result(result)
+
+        def after_success(_result):
+            self._invalidate_ticket(key, attachments=True)
+            self._record_mutation(MutationEvent(
+                "attachment", key, changed_fields=("attachment",)))
+
+        return self._mutation_receipts.execute(
+            kind="attachment-create", mutation_id=mutation_id,
+            payload={
+                "key": str(key).upper(), "filename": str(filename or ""),
+                "size": len(data or b""), "sha256": hashlib.sha256(data or b"").hexdigest(),
+                "actor": mutation_actor,
+            },
+            write=write,
+            reconcile=lambda receipt: reconcile_attachment(
+                self.provider, key, filename, len(data or b""), receipt, mutation_actor),
+            after_success=after_success,
+            recover_inflight=validate_result,
+            context={"actor": mutation_actor} if mutation_actor else None,
+            before_retry=(lambda: self.assert_mutation_actor_identity(mutation_actor))
+            if mutation_actor else None,
+        )
 
     def delete_attachment(self, attachment_id, key=None):
         """첨부 삭제 (제출 취소·부분실패 롤백용). key 주면 그 티켓 첨부 캐시도 무효화."""
@@ -3498,9 +3946,21 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         description을 요청하지 않는다.
         """
         try:
-            raw = self.get_issue_light(key)      # 뱃지는 경량 필드만 → 전체 캐시 있으면 재사용, 없으면 경량
+            return self._ticket_badge_strict(key)
         except Exception:
             return None
+
+    def _ticket_badge_strict(self, key, *, strict_cache=False):
+        """``ticket_badge`` without suppressing a primary issue/auth/transport failure.
+
+        User-facing badge lookups remain best-effort, but ancestry and the long-lived Epic
+        metadata cache need to tell a real empty result apart from a failed Jira read.
+        """
+        raw = self.get_issue_light(
+            key, strict=strict_cache)        # 전체 캐시 있으면 재사용, 없으면 경량
+        return self._ticket_badge_from_raw(key, raw)
+
+    def _ticket_badge_from_raw(self, key, raw):
         if not isinstance(raw, dict) or "fields" not in raw:
             return None
         f = raw.get("fields") or {}
@@ -3521,8 +3981,10 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         epic_summary = None
         if epic_key:
             try:
-                ef = (self.get_issue_light(epic_key) or {}).get("fields") or {}
-                epic_summary = ef.get("summary") or None
+                meta = self.epic_metadata(epic_key)
+                epic_summary = ((meta or {}).get("epicName")
+                                or (meta or {}).get("summary")
+                                or (meta or {}).get("title"))
             except Exception:
                 pass
         return {
@@ -3564,18 +4026,66 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             return None
         cache_key = f"epicmeta:{self.env}:{key}"
         hit = self.cache.get(cache_key)
-        if isinstance(hit, dict) and hit.get("title"):
+        if self._usable_epic_metadata(hit, key):
             return hit
-        badge = self.ticket_badge(key)
-        if not badge:
+
+        # Older builds could store ``{"title": "DL-123"}`` after a failed badge lookup.  A fresh
+        # key-only row would otherwise keep winning for the full 12-hour TTL.  Keep a valid stale
+        # name for offline fallback, but evict malformed/key-only rows before get_or_set sees them.
+        stale = self.cache.get_stale(cache_key)
+        if stale is not None and not self._usable_epic_metadata(stale, key):
+            self.cache.invalidate_keys([cache_key])
+
+        def produce():
+            badge = self._ticket_badge_strict(key, strict_cache=True)
+            if not badge:
+                raise _EpicMetadataUnavailable(key)
+            title = str(badge.get("epicName") or badge.get("summary") or "").strip()
+            if not title or title.casefold() == key.casefold():
+                raise _EpicMetadataUnavailable(key)
+            # Store enough of the same authoritative record for ancestry/WBS/search to share the
+            # one 12-hour policy.  The original three fields remain backward-compatible.
+            return {
+                "key": key,
+                "title": title,
+                "summary": badge.get("summary") or None,
+                "epicName": badge.get("epicName") or None,
+                "status": badge.get("status") or None,
+                "statusCategory": badge.get("statusCategory") or "todo",
+                "assignee": badge.get("assignee") or None,
+            }
+
+        try:
+            result, _hit = self.cache.get_or_set(cache_key, self.EPIC_META_TTL, produce)
+        except _EpicMetadataUnavailable:
             return None
-        result = {
-            "key": key,
-            "title": self.epic_label(badge, key),
-            "statusCategory": badge.get("statusCategory") or "todo",
-        }
-        self.cache.set(cache_key, result, self.EPIC_META_TTL)
-        return result
+        return result if self._usable_epic_metadata(result, key) else None
+
+    @staticmethod
+    def _usable_epic_metadata(value, key=None):
+        if not isinstance(value, dict):
+            return False
+        title = str(value.get("title") or "").strip()
+        if not title:
+            return False
+        return not key or title.casefold() != str(key).strip().casefold()
+
+    @staticmethod
+    def _is_permission_failure(exc):
+        """Identify per-ticket visibility failures without swallowing real auth/network loss."""
+        if isinstance(exc, (PermissionDenied, PermissionError)) \
+                or getattr(exc, "status", None) == 403:
+            return True
+        message = str(exc or "").lower()
+        # The prod SSO provider explains its ambiguous HTTP 403 as a possible expired session.
+        # Let that reach the global 401 recovery path; plain per-issue 403 remains best-effort.
+        if isinstance(exc, SessionExpired) and re.search(
+                r"session expired|세션 만료|login 재실행|anonymous|익명 응답", message):
+            return False
+        return bool(re.search(
+            r"(?:http\s*)?403\b|forbidden|permission denied|not permitted|권한",
+            message,
+        ))
 
     def epic_metadata_cached_many(self, keys):
         """Return only fresh per-Epic metadata without touching Jira.
@@ -3592,7 +4102,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         result = []
         for key in ordered:
             value = cached.get(f"epicmeta:{self.env}:{key}")
-            if isinstance(value, dict) and value.get("title"):
+            if self._usable_epic_metadata(value, key):
                 result.append(value)
         return result
 
@@ -3606,13 +4116,47 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         cached = {row["key"]: row for row in cached_rows}
         missing = [key for key in ordered if key not in cached]
         if missing:
-            self.prefetch_issues(missing, light=True)
+            try:
+                self.prefetch_issues(missing, light=True)
+            except Exception as exc:
+                # One inaccessible Epic must not hide otherwise valid Tasks.  Auth/network loss is
+                # different: propagate it so the route can recover the session or report failure.
+                if not self._is_permission_failure(exc):
+                    raise
         result = []
         for key in ordered:
-            meta = cached.get(key) or self.epic_metadata(key)
+            try:
+                meta = cached.get(key) or self.epic_metadata(key)
+            except Exception as exc:
+                if self._is_permission_failure(exc):
+                    continue
+                raise
             if meta:
                 result.append(meta)
         return result
+
+    def epic_metadata_title_map(self, keys, *, best_effort=False):
+        """Return genuine Epic titles, shared by Workload/WBS/pickers/search.
+
+        ``best_effort`` keeps already-known 12-hour names when a non-critical enrichment request
+        fails.  Missing names are omitted; callers may display a temporary key, but that fallback
+        is never promoted into ``epicmeta`` or another successful aggregate cache.
+        """
+        ordered = list(dict.fromkeys(
+            str(key).strip().upper() for key in (keys or ()) if str(key or "").strip()))
+        if not ordered:
+            return {}
+        try:
+            rows = self.epic_metadata_many(ordered)
+        except Exception:
+            if not best_effort:
+                raise
+            # Re-read after the attempt: earlier keys may have resolved before a later one failed.
+            rows = self.epic_metadata_cached_many(ordered)
+        return {
+            row["key"]: row["title"] for row in rows
+            if self._usable_epic_metadata(row, row.get("key"))
+        }
 
     # ── 담당자 ────────────────────────────────────────────────────────
     def set_assignee(self, key, user_id):
@@ -3636,8 +4180,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         # 이 티켓의 캐시를 전부 버린다. 살아 있으면 지워진 티켓이 목록에 계속 남는다.
         for pre in ("issue", "issueL", "issueview", "comments", "attachments", "documents",
                     "remotelinks", "timeline", "changelog", "children", "related",
-                    "siblings", "ancestors", "epicmeta"):
+                    "siblings", "ancestors"):
             self.cache.invalidate(f"{pre}:{self.env}:{key}")
+        self._invalidate_epic_metadata(key)
         self._invalidate_direct_child_views(key, membership=True)
         self._invalidate_direct_child_views(parent_key, membership=True)
         # SubTask 삭제는 Task의 membership만 바꾼다. 그 Task가 속한 Epic의 Task 목록까지
@@ -3685,8 +4230,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     # ── 계보(좌측 스파인 패널) — 조상 체인 + 형제 ──
     # 모든 조회는 티켓단위 캐시(get_issue / epic_children write-through)를 재사용하고,
     # 조립 결과도 ancestors|siblings:{env}:{key} 로 캐시한다.
-    def _lineage_node(self, key, pct=None):
-        b = self.ticket_badge(key)
+    def _lineage_node(self, key, pct=None, *, strict=False):
+        b = self._ticket_badge_strict(key) if strict else self.ticket_badge(key)
         if not b:
             return None
         return {"key": b["key"], "summary": b["summary"], "type": b["type"],
@@ -3694,6 +4239,41 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 "assignee": b["assignee"], "pct": pct,
                 # Epic 노드는 뱃지/칩이 Epic Name(단축어)→Summary→키 순으로 라벨하도록 함께 싣는다.
                 "epicName": b.get("epicName")}
+
+    def _epic_lineage_node(self, key, pct=None):
+        """Build an Epic ancestor from the shared long-lived metadata record."""
+        meta = self.epic_metadata(key)
+        if not meta:
+            return None
+        return {
+            "key": meta["key"],
+            "summary": meta.get("summary") or meta["title"],
+            "type": "Epic",
+            "status": meta.get("status"),
+            "statusCategory": meta.get("statusCategory") or "todo",
+            "assignee": meta.get("assignee"),
+            "pct": pct,
+            "epicName": meta["title"],
+        }
+
+    def _refresh_ancestor_epic_labels(self, nodes):
+        """Overlay cached relationship rows with current shared Epic metadata.
+
+        Ancestor structure may safely stay in its 15-minute SWR cache, while an Epic rename
+        invalidates only the exact ``epicmeta`` entry.  This read-time projection prevents that
+        composite cache from keeping an old name and preserves its known label if refresh fails.
+        """
+        result = [dict(node) for node in (nodes or [])]
+        epic_keys = [
+            node.get("key") for node in result
+            if node.get("key") and str(node.get("type") or "").casefold() == "epic"
+        ]
+        names = self.epic_metadata_title_map(epic_keys, best_effort=True)
+        for node in result:
+            name = names.get(str(node.get("key") or "").upper())
+            if name:
+                node["epicName"] = name
+        return result
 
     def _parent_pct(self, key):
         """부모(Task/Story)의 진척 — 자식 Sub-Task 완료 개수 비율(%). 자식 없으면 None."""
@@ -3713,39 +4293,68 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         각 노드에 진척률(pct)까지 얹는다 — Epic 은 SP 롤업, 부모는 Sub-Task 완료 비율."""
         def build():
             try:
-                f = self.get_issue(key).get("fields") or {}
-            except Exception:
-                return []
+                f = self.get_issue(key, strict=True).get("fields") or {}
+            except Exception as exc:
+                if self._is_permission_failure(exc):
+                    raise _UncacheableAncestors([]) from exc
+                raise
             parent_key = (f.get("parent") or {}).get("key")
             epic_key = f.get(self.s.epic_link_field_id)
             chain = []
+            incomplete = False
             if parent_key:                      # Sub-Task: 부모의 Epic Link 를 조부모로 함께
                 try:
-                    epic_key = (self.get_issue(parent_key).get("fields")
+                    epic_key = (self.get_issue(parent_key, strict=True).get("fields")
                                 or {}).get(self.s.epic_link_field_id)
-                except Exception:
-                    epic_key = None
+                except Exception as exc:
+                    if self._is_permission_failure(exc):
+                        incomplete = True
+                        epic_key = None
+                    else:
+                        raise
                 if epic_key:
-                    chain.append((epic_key, self._epic_pct(epic_key)))
-                chain.append((parent_key, self._parent_pct(parent_key)))
+                    chain.append((epic_key, self._epic_pct(epic_key), True))
+                chain.append((parent_key, self._parent_pct(parent_key), False))
             elif epic_key:
-                chain.append((epic_key, self._epic_pct(epic_key)))
-            nodes = [n for n in (self._lineage_node(k, p) for k, p in chain) if n]
+                chain.append((epic_key, self._epic_pct(epic_key), True))
+            nodes = []
+            for ancestor_key, pct, is_epic in chain:
+                try:
+                    node = (self._epic_lineage_node(ancestor_key, pct) if is_epic
+                            else self._lineage_node(ancestor_key, pct, strict=True))
+                except Exception as exc:
+                    if self._is_permission_failure(exc):
+                        incomplete = True
+                        continue
+                    raise
+                if node:
+                    nodes.append(node)
+                else:
+                    # A known relation whose current response has no usable label is not proof
+                    # that the relation disappeared.  Return what is known, but retry next time.
+                    incomplete = True
             issue_type = ((f.get("issuetype") or {}).get("name") or "").lower()
-            if not epic_key and issue_type != "epic" and _comp_of(f) != VOC_COMPONENT:
+            if (not incomplete and not epic_key and issue_type != "epic"
+                    and _comp_of(f) != VOC_COMPONENT):
                 # Keep lineage visible for unlinked work instead of making an empty result
                 # indistinguishable from a loading failure. A virtual node cannot be opened.
                 nodes.insert(0, {"key": None, "summary": "Epic 없음", "type": "Epic",
                                  "status": None, "statusCategory": None, "assignee": None,
                                  "pct": None, "virtual": True})
-            if not nodes and _comp_of(f) == VOC_COMPONENT:
+            if not incomplete and not nodes and _comp_of(f) == VOC_COMPONENT:
                 # VoC 는 Epic/부모에 안 붙는 경우가 많아 계보가 통째로 비어 버린다.
                 # 실제 티켓은 아니지만 '어디 소속인지' 는 보여주는 게 낫다 → 가상 상위 노드.
                 nodes = [{"key": None, "summary": VOC_COMPONENT, "type": "VoC",
                           "status": None, "statusCategory": None, "assignee": None,
                           "pct": None, "virtual": True}]
+            if incomplete:
+                raise _UncacheableAncestors(nodes)
             return nodes
-        return self._swr(f"ancestors:{self.env}:{key}", build)
+        try:
+            nodes = self._swr(f"ancestors:{self.env}:{key}", build)
+        except _UncacheableAncestors as exc:
+            nodes = exc.value
+        return self._refresh_ancestor_epic_labels(nodes)
 
     def _epic_pct(self, epic_key):
         try:
@@ -3907,6 +4516,89 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     def _direct_child_cache_key(self, key):
         return f"childkeys:v1:{self.env}:{str(key or '').strip().upper()}"
 
+    def _fetch_agile_epic_children(self, epic_key):
+        """Fetch a complete Agile Epic membership without turning a partial page into empty.
+
+        Some Jira DC installations return no rows for ``"Epic Link" = KEY`` even though the
+        Agile endpoint can see the children.  That endpoint is paginated too: its server-side
+        page cap may be lower than the requested 100, so advancing by the requested size silently
+        skips rows.  Every page must also agree on ``total``; otherwise a changing or malformed
+        response is not an authoritative membership and must never enter ``childkeys``.
+
+        Valid pages still warm ``issueL`` immediately.  Thus a later-page failure preserves useful
+        ticket rows for the retry while the incomplete relationship itself remains uncached.
+        """
+        path = f"/rest/agile/1.0/epic/{epic_key}/issue"
+        page_size = 100
+        start = 0
+        total = None
+        rows = []
+        seen = set()
+
+        while total is None or start < total:
+            params = {
+                "fields": self._issue_fields(light=True),
+                "startAt": start,
+                "maxResults": page_size,
+            }
+            data = self.provider.get_json(path, params=params)
+            if (not isinstance(data, dict) or not isinstance(data.get("issues"), list)) \
+                    and self._note_bad_field(data):
+                params["fields"] = self._issue_fields(light=True)
+                data = self.provider.get_json(path, params=params)
+
+            if self._looks_anonymous(data):
+                raise SessionExpired("익명 응답(Agile Epic 자식) — 세션 끊김(재인증 필요).")
+            if not isinstance(data, dict) or not isinstance(data.get("issues"), list):
+                messages = " ".join((data or {}).get("errorMessages") or []) \
+                    if isinstance(data, dict) else str(data or "")
+                if re.search(r"(?:http\s*)?403\b|forbidden|permission|not permitted|권한", messages,
+                             re.I):
+                    raise PermissionDenied(path, messages)
+                raise UpstreamUnavailable(
+                    messages or "Jira Agile Epic 자식 응답 형식이 올바르지 않습니다.")
+
+            page_start = data.get("startAt")
+            page_total = data.get("total")
+            if (isinstance(page_start, bool) or not isinstance(page_start, int)
+                    or page_start != start):
+                raise UpstreamUnavailable("Jira Agile Epic 자식 페이지 위치가 일치하지 않습니다.")
+            if (isinstance(page_total, bool) or not isinstance(page_total, int)
+                    or page_total < 0):
+                raise UpstreamUnavailable("Jira Agile Epic 자식 전체 개수를 확인할 수 없습니다.")
+            if total is None:
+                total = page_total
+            elif page_total != total:
+                raise UpstreamUnavailable("조회 중 Jira Agile Epic 자식 개수가 변경되었습니다.")
+
+            batch = data["issues"]
+            batch_keys = []
+            for row in batch:
+                if not isinstance(row, dict):
+                    raise UpstreamUnavailable("Jira Agile Epic 자식 페이지에 잘못된 티켓이 있습니다.")
+                child_key = str(row.get("key") or "").strip().upper()
+                if not child_key or child_key in seen:
+                    raise UpstreamUnavailable("Jira Agile Epic 자식 페이지가 중복되거나 불완전합니다.")
+                seen.add(child_key)
+                batch_keys.append(child_key)
+
+            next_start = start + len(batch)
+            if next_start > total or (next_start < total and not batch):
+                raise UpstreamUnavailable("Jira Agile Epic 자식 페이지가 끝까지 반환되지 않았습니다.")
+            if data.get("isLast") is True and next_start < total:
+                raise UpstreamUnavailable("Jira Agile Epic 자식 페이지 종료 정보가 불일치합니다.")
+
+            for child_key, row in zip(batch_keys, batch):
+                rows.append(row)
+                self.cache.set(f"issueL:{self.env}:{child_key}", row,
+                               self.s.cache_ttl_seconds)
+
+            start = next_start
+            if start >= total:
+                break
+
+        return rows
+
     def direct_child_keys(self, key, *, parent_issue=None, parent_type=None, limit=None):
         """Return one shared, complete direct-child membership list.
 
@@ -3946,21 +4638,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 # Preserve the older Jira Agile fallback for installations where Epic Link JQL
                 # returns no rows. It is only a fallback; the normal JQL path has no hidden cap.
                 if not rows:
-                    try:
-                        data = self.provider.get_json(
-                            f"/rest/agile/1.0/epic/{parent_key}/issue",
-                            params={"fields": self._issue_fields(light=True),
-                                    "maxResults": 100}) or {}
-                        rows = data.get("issues") or []
-                        for row in rows:
-                            child_key = (row or {}).get("key")
-                            if child_key:
-                                self.cache.set(f"issueL:{self.env}:{child_key}", row,
-                                               self.s.cache_ttl_seconds)
-                    except SessionExpired:
-                        raise
-                    except Exception:
-                        rows = []
+                    rows = self._fetch_agile_epic_children(parent_key)
                 candidates = [(row or {}).get("key") for row in rows]
             else:
                 subtasks = fields.get("subtasks")
@@ -3979,12 +4657,14 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         return children[:max(0, int(limit))]
 
     def _child_keys(self, key, limit=None):
-        """Compatibility wrapper for timeline/display callers with their historical scan cap."""
+        """Compatibility wrapper that only applies the historical timeline/display cap.
+
+        Failures must escape: returning ``[]`` here lets the caller's derived SWR cache turn an
+        unproven relationship into a fresh empty children/timeline entry.  Those callers already
+        isolate panel failures and can serve their own alive stale value when one exists.
+        """
         limit = self.CHILD_SCAN_LIMIT if limit is None else limit
-        try:
-            return self.direct_child_keys(key, limit=limit)
-        except Exception:
-            return []
+        return self.direct_child_keys(key, limit=limit)
 
     STATUS_CATS_TTL = 24 * 3600           # 상태 정의는 거의 안 바뀐다
 

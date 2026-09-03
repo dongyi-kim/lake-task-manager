@@ -54,6 +54,12 @@ export function retryDelay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** MyTasks snapshots are plain JSON.  Hydration works on a request-owned copy so an obsolete
+ *  same-filter response cannot mutate the object currently rendered (or its cache alias). */
+export function cloneTaskModel(model) {
+  return model == null ? model : JSON.parse(JSON.stringify(model));
+}
+
 export function uniformStatusCategory(cards) {
   let only = null;
   for (const card of cards || []) {

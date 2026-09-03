@@ -12,6 +12,8 @@ import CommentEditor from "./CommentEditor.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
 import { isBusy, busyLabel } from "../../lib/uibusy.js";
 import { pushToast } from "../../lib/toast.js";
+import { clearPendingMutation, loadPendingMutation, newMutationId,
+         savePendingMutation } from "../../lib/mutationId.js";
 
 export default {
   name: "EpicCreateDialog",
@@ -20,7 +22,7 @@ export default {
   data() {
     return {
       busy: false, err: "", priOpts: [], compOpts: [],
-      descOpen: false, createdKey: "",
+      descOpen: false, createdKey: "", createMutationId: "", pendingCreatePayload: null,
       ep: { summary: "", epicName: "", priority: "", components: [],
             duedate: "", assigneeId: "", assigneeName: "" },
       // 기존 Task 선택
@@ -43,12 +45,17 @@ export default {
       if (e.key === "Escape") { e.stopPropagation(); this.closeGuarded(); }
     }, true);
     this.searchCands("");
+    this.restorePendingCreate();
   },
   unmounted() { document.removeEventListener("keydown", this._onEsc, true); clearTimeout(this._t); },
   methods: {
     fromBackdrop,
     // 생성 중에는 닫지 않는다 — 받아 놓은 글이 사라진다(실패하면 바로 풀린다).
     closeGuarded() {
+      if (this.busy || this.createMutationId) {
+        pushToast("Jira 반영 여부를 확인 중입니다 — 입력을 보존한 채 다시 시도해 주세요.", "warn");
+        return;
+      }
       if (isBusy()) { pushToast(busyLabel() + " — 끝나면 닫을 수 있습니다.", "warn"); return; }
       this.$emit("close");
     },
@@ -56,6 +63,20 @@ export default {
     setWho(id, u) {
       this.ep.assigneeId = id || "";
       this.ep.assigneeName = u ? (u.display || u.name || "") : "";
+    },
+    restorePendingCreate() {
+      const saved = loadPendingMutation("epic-create");
+      if (!saved) return;
+      const p = saved.payload || {};
+      this.createMutationId = saved.id;
+      this.pendingCreatePayload = p;
+      this.ep = {
+        summary: p.summary || "", epicName: p.epicName || "", priority: p.priority || "",
+        components: (p.components || []).slice(), duedate: p.duedate || "",
+        assigneeId: p.assignee || "", assigneeName: p.assignee || "",
+      };
+      this.selected = (p.taskKeys || []).map((key) => ({ key, summary: "", type: "" }));
+      this.err = "이전 Epic 생성 요청의 Jira 반영 여부를 확인할 수 있습니다. 같은 내용으로 다시 시도해 주세요.";
     },
     searchCands(q) {
       this.candQ = q;
@@ -94,15 +115,30 @@ export default {
         let key = this.createdKey;
         let r = null;
         if (!key) {
-          r = await api.createEpic({
+          if (!this.createMutationId) this.createMutationId = newMutationId("epic");
+          let payload = this.pendingCreatePayload && this.createMutationId
+            ? { ...this.pendingCreatePayload }
+            : {
             summary: this.ep.summary.trim(), epicName: this.ep.epicName.trim() || null,
             priority: this.ep.priority || null, components: this.ep.components.slice(),
             duedate: this.ep.duedate || null, assignee: this.ep.assigneeId || null,
             descriptionHtml: createDesc, taskKeys: this.selectedKeys,
-          });
-          if (!r || r.ok === false) { this.err = (r && r.error) || "만들지 못했습니다."; return; }
+          };
+          payload.clientMutationId = this.createMutationId;
+          this.pendingCreatePayload = { ...payload };
+          savePendingMutation("epic-create", this.createMutationId, payload);
+          r = await api.createEpic(payload);
+          if (!r || r.ok === false) {
+            this.createMutationId = "";
+            this.pendingCreatePayload = null;
+            clearPendingMutation("epic-create");
+            this.err = (r && r.error) || "만들지 못했습니다."; return;
+          }
           key = r.key;
           this.createdKey = key;
+          this.createMutationId = "";
+          this.pendingCreatePayload = null;
+          clearPendingMutation("epic-create");
         }
         if (wantDesc && key) {
           await this.$nextTick();
@@ -115,13 +151,18 @@ export default {
         }
         this.$emit("created", key);
       } catch (e) {
+        if (!(e && (e.uncertain || e.needLogin))) {
+          this.createMutationId = "";
+          this.pendingCreatePayload = null;
+          clearPendingMutation("epic-create");
+        }
         this.err = (e && e.message) || "만들지 못했습니다.";
       } finally { this.busy = false; }
     },
   },
   template: `
   <Teleport to="body">
-  <div class="nk-ov" @click.self="fromBackdrop($event) && $emit('close')">
+  <div class="nk-ov" @click.self="fromBackdrop($event) && closeGuarded()">
   <div class="nk nk-epic" @click.stop>
     <div class="nk-h">Epic 만들기
       <span class="nk-h-s">최상위 Epic 을 만들고, 기존 Task 를 담을 수 있습니다</span>
@@ -213,7 +254,7 @@ export default {
     <div v-if="err" class="tkt-cmt-err">{{ err }}</div>
     <div class="nk-f">
       <span class="nk-hint">{{ canCreate ? (selected.length ? selected.length + '개 Task 를 함께 담습니다.' : 'Task 는 나중에 담아도 됩니다.') : '제목을 입력하세요.' }}</span>
-      <button class="cmt-ed-btn ghost" @click="$emit('close')">취소</button>
+      <button class="cmt-ed-btn ghost" @click="closeGuarded()">취소</button>
       <button class="cmt-ed-btn primary" :disabled="!canCreate || busy" @click="submit">
         {{ busy ? '만드는 중…' : 'Epic 만들기' }}</button>
     </div>

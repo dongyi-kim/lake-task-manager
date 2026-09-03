@@ -19,7 +19,10 @@ import { api } from "../../lib/api.js";
 import Avatar from "./Avatar.js";
 import CommentEditor from "./CommentEditor.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
+import { confirmBox } from "../../lib/confirm.js";
 import { createUserTypeahead, defaultUserSuggestions, rememberUser } from "../../lib/userSuggestions.js";
+import { clearPendingMutation, loadPendingMutation, newMutationId,
+         savePendingMutation } from "../../lib/mutationId.js";
 
 export default {
   name: "TransitionDialog",
@@ -34,12 +37,46 @@ export default {
       // 남은 글자와 실제 값이 어긋날 수 있다 — 다 치고 못 고른 채 제출하는 사고가 난다.
       user: null, q: "", who: [], whoOpen: false, hi: 0,
       busy: false, err: "",
+      transitionMutationId: "", pendingTransitionPayload: null,
     };
   },
   computed: {
-    fields() { return (this.transition.fields && this.transition.fields.fields) || []; },
-    unsupported() { return (this.transition.fields && this.transition.fields.unsupported) || []; },
-    has() { const m = {}; for (const f of this.fields) m[f.id] = f; return m; },
+    fields() {
+      const raw = this.transition.fields;
+      if (Array.isArray(raw)) return raw;
+      const source = raw && Object.prototype.hasOwnProperty.call(raw, "fields")
+        ? raw.fields : raw;
+      if (Array.isArray(source)) return source;
+      // Tolerate un-normalized Jira DC metadata too (`fields: {comment: {...}}` or the direct
+      // field map). Normal API responses use the array form, but a cached older shell/cascade
+      // should not make the Resolve editor disappear during a rolling app upgrade.
+      if (source && typeof source === "object") {
+        return Object.entries(source).filter(([, value]) => value && typeof value === "object")
+          .map(([id, value]) => Object.assign({ id }, value));
+      }
+      return [];
+    },
+    unsupported() {
+      const raw = this.transition.fields;
+      return (raw && Array.isArray(raw.unsupported)) ? raw.unsupported : [];
+    },
+    has() {
+      const mapped = {};
+      for (const field of this.fields) {
+        if (field.id) mapped[field.id] = field;
+        // Jira DC may expose a custom field key while schema.system carries the stable semantic
+        // name used by the form. Keep the explicit id authoritative and add the system alias.
+        if (field.system && !mapped[field.system]) mapped[field.system] = field;
+      }
+      return mapped;
+    },
+    // Some Jira DC workflows omit `comment` from transition screen metadata even though the
+    // transition REST endpoint accepts update.comment. LTM completion policy still requires a
+    // record, so a Done transition always exposes the shared rich comment editor.
+    needsComment() { return this.transition.toCategory === "done" || !!this.has.comment; },
+    pendingCommentHtml() {
+      return (this.pendingTransitionPayload && this.pendingTransitionPayload.commentHtml) || "";
+    },
     resolutions() { return (this.has.resolution && this.has.resolution.allowedValues) || []; },
     timeText() {
       const p = [];
@@ -62,8 +99,30 @@ export default {
       return out;
     },
   },
+  created() {
+    // Restore before child components mount. CommentEditor reads `initial` only while creating its
+    // TipTap instance, so restoring in mounted() would leave a response-lost comment visually blank.
+    const saved = loadPendingMutation(this.pendingScope());
+    if (saved && saved.payload) {
+      const payload = saved.payload;
+      this.transitionMutationId = String(saved.id || payload.clientMutationId || "");
+      this.pendingTransitionPayload = payload;
+      this.days = Number(payload.days) || 0;
+      this.hours = Number(payload.hours) || 0;
+      this.minutes = Number(payload.minutes) || 0;
+      this.resolution = payload.resolution || "";
+      // Empty is also a deliberate value in the exact request; do not let async defaults change
+      // a response-lost transition after a renderer/app restart.
+      this._userTouched = true;
+      this.user = payload.assignee ? {
+        id: payload.assignee, name: payload.assignee, display: payload.assignee,
+        avatar: "/api/avatar/" + encodeURIComponent(payload.assignee),
+      } : null;
+      this.err = "이전 전환의 Jira 반영 여부를 확인해야 합니다. 같은 내용으로 다시 시도해 주세요.";
+    }
+  },
   mounted() {
-    if (this.resolutions.length) {
+    if (!this.pendingTransitionPayload && this.resolutions.length) {
       // 완료 전환에서는 Jira 선택지 순서와 무관하게 Done을 기본 처리 방법으로 둔다.
       // 워크플로에 Done이 없거나 완료 전환이 아니면 Jira가 준 첫 값을 그대로 존중한다.
       const done = this.transition.toCategory === "done"
@@ -78,11 +137,57 @@ export default {
     this._ta = createUserTypeahead(this.ticket, []);
     this.who = defaultUserSuggestions([], []);
     this.searchWho("");
-    this.initAssignee();
+    if (!this.pendingTransitionPayload) this.initAssignee();
+    // Parent menus also listen for Escape and can otherwise unmount this dialog without calling
+    // closeGuarded(). Capture it first so unsaved text gets the same explicit discard choice and
+    // an in-flight/uncertain payload remains visible instead of disappearing behind the parent.
+    this._guardEscape = (event) => {
+      // confirmBox owns Escape while its own overlay is open.
+      if (event.key !== "Escape" || this._confirmingClose) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      this.closeGuarded();
+    };
+    window.addEventListener("keydown", this._guardEscape, true);
+  },
+  unmounted() {
+    if (this._guardEscape) window.removeEventListener("keydown", this._guardEscape, true);
   },
   methods: {
     // 드래그가 창 밖에서 끝났을 뿐인데 닫히지 않게 — lib/backdrop.js 참고
     fromBackdrop,
+    pendingScope() {
+      return "transition:" + String(this.ticket || "").toUpperCase()
+        + ":" + String(this.transition.id || "");
+    },
+    async closeGuarded() {
+      if (this._confirmingClose) return;
+      if (this.busy || this.transitionMutationId) {
+        this.err = this.busy
+          ? "전환 처리 중에는 창을 닫을 수 없습니다."
+          : "Jira 반영 여부 확인이 끝날 때까지 창을 유지하고 같은 요청으로 다시 시도해 주세요.";
+        return;
+      }
+      const editor = this.$refs.ed;
+      if (editor && editor.isBlank && !editor.isBlank()) {
+        // X/배경/Escape/취소가 작성 중인 코멘트와 붙여넣은 이미지를 조용히 버리지 않게 한다.
+        // "계속 작성"은 창과 초안을 그대로 두고, 명시적으로 버린 경우에만 scope를 지운다.
+        this._confirmingClose = true;
+        let discard = false;
+        try {
+          discard = await confirmBox("작성 중인 전환 코멘트를 버리고 닫을까요?", {
+            okLabel: "버리고 닫기", cancelLabel: "계속 작성", danger: true,
+          });
+        } finally { this._confirmingClose = false; }
+        if (!discard) {
+          if (editor.flushDraft) await editor.flushDraft();
+          return;
+        }
+      }
+      // 비어 보이는 scope에도 이전 debounce/write가 남을 수 있다. 닫기 전에 명시적으로 지워
+      // 다음에 같은 전이를 열었을 때 지운 코멘트가 되살아나지 않게 한다.
+      if (editor && editor.discardDraft && await editor.discardDraft() === false) return;
+      this.$emit("close");
+    },
     /** 담당자 입력이 있는 전이는 현재 티켓 담당자를 기본값으로 쓴다. ticketBadge는 카드·메뉴가
      *  이미 데운 가벼운 캐시를 재사용한다. 미할당/조회 실패일 때만 기존 동작대로 나를 넣는다. */
     async initAssignee() {
@@ -127,7 +232,7 @@ export default {
     async submit() {
       if (this.problems.length || this.busy) return;
       this.err = "";
-      if (this.has.comment && this.$refs.ed) { this.$refs.ed.submit(); return; }
+      if (this.needsComment && this.$refs.ed) { this.$refs.ed.submit(); return; }
       this.busy = true;
       await this.sendTransition("");
     },
@@ -136,34 +241,58 @@ export default {
     async sendTransition(html) {
       this.busy = true;
       let r;
-      try {
-        r = await api.doTransition(this.ticket, {
-          id: this.transition.id, days: Number(this.days) || 0,
+      let payload = this.pendingTransitionPayload;
+      if (!payload) {
+        this.transitionMutationId = newMutationId("transition");
+        payload = {
+          id: this.transition.id,
+          targetStatusId: this.transition.toId || "",
+          targetStatusName: this.transition.to || "",
+          targetStatusCategory: this.transition.toCategory || "",
+          days: Number(this.days) || 0,
           hours: Number(this.hours) || 0,
           minutes: Number(this.minutes) || 0,
           assignee: (this.user && this.user.id) || "",
           resolution: this.resolution,
           commentHtml: html || "",
+          clientMutationId: this.transitionMutationId,
+        };
+        this.pendingTransitionPayload = payload;
+        savePendingMutation(this.pendingScope(), this.transitionMutationId, payload, {
+          ticket: this.ticket, transitionId: String(this.transition.id || ""),
         });
+      }
+      try {
+        r = await api.doTransition(this.ticket, payload);
         if (r && r.ok === false) throw new Error(r.error || "전이에 실패했습니다.");
       } catch (e) {
         this.busy = false;
+        if (!(e && (e.uncertain || e.needLogin))) {
+          clearPendingMutation(this.pendingScope());
+          this.transitionMutationId = "";
+          this.pendingTransitionPayload = null;
+        }
         // Jira 가 거절한 이유를 그대로 보인다 — 삼키면 무엇을 고쳐야 할지 알 수 없다.
-        this.err = (e && e.message) || "전이에 실패했습니다.";
+        this.err = (e && e.uncertain ? "반영 여부 확인 필요: "
+          : (e && e.needLogin ? "로그인 후 같은 내용으로 다시 시도하세요: " : ""))
+          + ((e && e.message) || "전이에 실패했습니다.");
         throw e;
       }
+      clearPendingMutation(this.pendingScope());
+      this.transitionMutationId = "";
+      this.pendingTransitionPayload = null;
       this.$emit("done");
       // 후처리: 이 전이가 부모 상태 규칙을 촉발하면(하위 완료/진행중/재열림) 상위도 바꿀지 물어본다.
       if (r && r.cascade) window.dispatchEvent(new CustomEvent("cascade-prompt", { detail: r.cascade }));
     },
   },
   template: `
-  <div class="trx-ov" @click.self="fromBackdrop($event) && $emit('close')">
+  <div class="trx-ov" @click.self="fromBackdrop($event) && closeGuarded()">
     <div class="trx">
       <div class="trx-h">
         <b>{{ transition.name || ('→ ' + transition.to) }}</b>
         <span class="trx-key">{{ ticket }}</span>
-        <button class="trx-x" @click="$emit('close')" title="닫기">×</button>
+        <button class="trx-x" @click="closeGuarded" title="닫기">×</button>
       </div>
 
       <div v-if="unsupported.length" class="trx-block">
@@ -171,7 +300,7 @@ export default {
         Jira 에서 진행해 주세요.
       </div>
 
-      <div v-else class="trx-b">
+      <div v-else class="trx-b" :inert="busy || !!transitionMutationId">
         <label v-if="has.worklog" class="trx-f">
           <span class="trx-l">소요시간 <i v-if="has.worklog.required">필수</i></span>
           <span class="trx-time">
@@ -216,19 +345,21 @@ export default {
           </select>
         </label>
 
-        <div v-if="has.comment" class="trx-f">
-          <span class="trx-l">코멘트 <i v-if="has.comment.required">필수</i></span>
+        <div v-if="needsComment" class="trx-f">
+          <span class="trx-l">코멘트 <i v-if="transition.toCategory === 'done' || (has.comment && has.comment.required)">필수</i></span>
           <!-- 댓글과 **같은 에디터** — 표·코드·이미지 붙여넣기·멘션이 그대로 된다.
                버튼 줄은 감추고(제출은 아래 한 곳) ref 로 submit() 을 부른다. -->
           <CommentEditor ref="ed" :ticket-key="ticket" hide-footer kind="transition"
-                         :submit-fn="sendTransition" @cancel="$emit('close')" />
+                         :draft-scope="pendingScope()"
+                         :initial="pendingCommentHtml" :submit-fn="sendTransition"
+                         @cancel="closeGuarded" />
         </div>
       </div>
 
       <div class="trx-f2">
         <span v-if="err" class="trx-err">{{ err }}</span>
         <span v-else-if="problems.length" class="trx-need">입력 필요: {{ problems.join(' · ') }}</span>
-        <button class="trx-cancel" @click="$emit('close')">취소</button>
+        <button class="trx-cancel" @click="closeGuarded">취소</button>
         <button class="trx-ok" :disabled="busy || problems.length || unsupported.length" @click="submit">
           {{ busy ? '처리 중…' : (transition.to || '전이') + ' 로 이동' }}
         </button>

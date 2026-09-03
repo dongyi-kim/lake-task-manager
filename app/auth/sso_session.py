@@ -18,8 +18,10 @@ playwright 는 prod 전용 의존(requirements-sso.txt). import 는 지연.
 import os
 import itertools
 import queue
+import re
 import sys
 import time as _time
+from urllib.parse import urlsplit
 
 # 같은 [auth] 메시지를 초당 여러 번 찍지 않게 — prod 는 상류가 단일 큐라 같은 401 이 연달아 온다.
 _auth_seen = {}
@@ -33,9 +35,9 @@ def _auth_log(msg):
     print(msg, file=sys.stderr, flush=True)
 import threading
 
-from .base import (AuthProvider, LoginRequired, SessionExpired, UpstreamError,
-                   UpstreamUnavailable,
-                   WRITE_HEADERS, PRIO_WRITE, upstream_priority)
+from .base import (AuthProvider, LoginRequired, PendingUpstreamOperation,
+                   PermissionDenied, SessionExpired, UpstreamError, UpstreamUnavailable,
+                   WRITE_HEADERS, PRIO_BACKGROUND, PRIO_WRITE, upstream_priority)
 
 
 def _launch(p, headless):
@@ -182,7 +184,7 @@ class SsoSessionProvider(AuthProvider):
                 or "browser has been closed" in msg or "connection closed" in msg
                 or "socket hang up" in msg or "econn" in msg)
 
-    def _submit(self, fn, priority=0, wait=None):
+    def _submit(self, fn, priority=0, wait=None, *, may_commit=False):
         """fn 을 Playwright 전용 스레드에서 실행하고 결과/예외를 호출자 스레드로 반환.
 
         priority: -1=쓰기 · 0=사용자 요청(기본) · 1=백그라운드 갱신. 작은 값이 먼저다.
@@ -196,13 +198,23 @@ class SsoSessionProvider(AuthProvider):
             raise UpstreamUnavailable(self._broken_reason)
         done = threading.Event()
         box = [None, None]   # [result, error]
+        operation = PendingUpstreamOperation(done, box)
         self._jobs.put((priority, next(self._seq), (fn, done, box)))
         limit = wait if wait else self.JOB_TIMEOUT      # 업로드는 크기에 맞춘 한도를 받는다
         if not done.wait(limit):
             self._mark_broken("Jira/SSO 응답 시간 초과(%ds)" % int(limit))
-            raise UpstreamUnavailable(
+            error = UpstreamUnavailable(
                 "Jira 응답이 없습니다(%ds 초과). 앱은 계속 실행되며 잠시 후 자동 재시도합니다."
                 % int(limit))
+            # Retiring the provider cannot interrupt the current Playwright call. Preserve its
+            # real completion so mutation recovery never treats an empty read as permission to
+            # POST while this old call can still commit.
+            if may_commit:
+                # Only a POST/PUT/DELETE owner job may become proof of a committed mutation. A
+                # timed-out preflight GET can also finish late, but interpreting that read result
+                # as the enclosing transition/create result would be incorrect.
+                error.pending_operation = operation
+            raise error
         if box[1] is not None:
             if self._is_transport_error(box[1]):
                 self._mark_broken(box[1])
@@ -211,24 +223,133 @@ class SsoSessionProvider(AuthProvider):
             raise box[1]
         return box[0]
 
+    @staticmethod
+    def _response_text(resp):
+        try:
+            return resp.text() or ""
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _response_headers(resp):
+        try:
+            return {
+                str(name or "").lower(): str(value or "")
+                for name, value in (resp.headers or {}).items()
+            }
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _has_explicit_auth_denial(headers, body):
+        """Return True only for response signals that explicitly describe authentication.
+
+        Jira commonly uses the same HTTP 403 for an expired/anonymous SSO session and for a
+        perfectly authenticated user who cannot see one issue.  A bare ``403`` or a body saying
+        merely "no permission" is therefore deliberately *not* enough here.
+        """
+        denied_reason = headers.get("x-authentication-denied-reason", "")
+        seraph_reason = headers.get("x-seraph-loginreason", "")
+        challenge = headers.get("www-authenticate", "")
+        location = headers.get("location", "")
+        if denied_reason or challenge:
+            return True
+        if seraph_reason and seraph_reason.strip().upper() not in {"OK", "NONE"}:
+            return True
+        if re.search(r"(?:/login(?:\.jsp)?\b|/signin\b|/sso\b)", location, re.I):
+            return True
+        return bool(re.search(
+            r'"authenticated"\s*:\s*false|"loginrequired"\s*:\s*true|'
+            r'not\s+authenticated|authentication\s+(?:is\s+)?required|'
+            r'authentication\s+(?:has\s+)?failed|session\s+(?:has\s+)?expired|'
+            r'you\s+are\s+not\s+logged\s+in|anonymous\s+user|'
+            r'(?:id|name)=["\']login-form["\']|\bos_username\b|/login\.jsp\b|'
+            r'로그인(?:이|을)?\s*(?:필요|실패)|세션(?:이|은)?\s*만료',
+            body or "",
+            re.I,
+        ))
+
+    def _is_jira_issue_read_url(self, url):
+        target, jira = urlsplit(url), urlsplit(self.base)
+        same_origin = (target.scheme.lower(), target.netloc.lower()) == (
+            jira.scheme.lower(), jira.netloc.lower())
+        base_path = (jira.path or "").rstrip("/")
+        target_path = target.path or "/"
+        if base_path:
+            if not (target_path == base_path or target_path.startswith(base_path + "/")):
+                return False
+            target_path = target_path[len(base_path):] or "/"
+        # Only an issue-scoped read has the expected "this object is hidden from this user"
+        # semantics.  A 403 from search/config/myself can describe a broader authentication or
+        # application-access failure and must retain the normal recovery path.
+        return same_origin and bool(re.match(
+            r"^/rest/api/(?:2|latest)/issue/[^/]+(?:/|$)", target_path, re.I))
+
+    def _probe_jira_identity_after_403(self, failed_url):
+        """Return True(alive), False(expired), or None(transport/response unknown).
+
+        This runs inside the provider's Playwright owner thread, so it calls the request context
+        directly rather than recursively enqueueing ``get_json``.  A successful ``/myself`` must
+        contain a concrete Jira identity; a proxy/login HTML response with HTTP 200 is unknown.
+        """
+        if not self._is_jira_issue_read_url(failed_url):
+            return None
+        try:
+            probe = self._context.request.get(
+                self.base + "/rest/api/2/myself", timeout=self.REQUEST_TIMEOUT_MS)
+        except Exception:
+            return None
+        if probe.status in (401, 403):
+            return False
+        if probe.status != 200:
+            return None
+        try:
+            raw = probe.json()
+        except Exception:
+            return None
+        if not isinstance(raw, dict):
+            return None
+        identity = raw.get("name") or raw.get("key") or raw.get("accountId") or ""
+        return bool(identity and "anonymous" not in str(identity).lower())
+
+    def _raise_read_access_error(self, resp, path, url, *, quiet=False, label="GET"):
+        """Classify a Jira read denial without turning every per-ticket 403 into logout.
+
+        401 and explicit authentication signals retain the existing recovery path.  An otherwise
+        ambiguous Jira 403 becomes a permission error only after a direct identity probe proves
+        that the same browser session is still authenticated.  If that proof cannot be obtained,
+        fail closed as ``SessionExpired``; the app-level handler performs its own tri-state probe
+        and converts a transport-unknown result to a retryable 503 rather than opening login.
+        """
+        body = self._response_text(resp)
+        headers = self._response_headers(resp)
+        auth_hint = self._has_explicit_auth_denial(headers, body)
+        reason = (headers.get("x-authentication-denied-reason")
+                  or headers.get("x-seraph-loginreason") or "")
+        session_alive = None
+        if resp.status == 403 and not auth_hint:
+            session_alive = self._probe_jira_identity_after_403(url)
+        if resp.status == 403 and session_alive is True:
+            if not quiet:
+                _auth_log(f"[permission] {label} 403 {path}")
+            # This class is intentionally outside SessionExpired: the global auth handler must
+            # not probe /myself a second time or turn an issue visibility denial into 502/login.
+            raise PermissionDenied(path, body)
+        if not quiet:
+            suffix = f" [{reason}]" if reason else ""
+            _auth_log(f"[auth] {label} {resp.status} {path}{suffix}")
+        detail = reason or (
+            "인증 세션이 만료되었습니다." if session_alive is False or auth_hint
+            else "인증 상태를 확인하지 못했습니다.")
+        raise SessionExpired(f"HTTP {resp.status} on {path} — {detail}")
+
     def _fetch(self, path, params, as_text, quiet=False):
         # Playwright 스레드에서 실행 — body 추출(json()/text())도 반드시 이 스레드에서.
         # path 가 절대 URL(http…)이면 그대로(Confluence 등 별도 호스트), 아니면 jira base + path.
         url = path if path.startswith(("http://", "https://")) else self.base + path
         resp = self._context.request.get(url, params=params or {}, timeout=self.REQUEST_TIMEOUT_MS)
         if resp.status in (401, 403):
-            # ★ **무엇이** 401 인지 찍는다. '인증 계속 풀림' 이 어느 요청에서 시작되는지
-            #   여기 없이는 알 수 없다(401 은 세션 만료·XSRF·권한이 다 같은 코드로 온다).
-            reason = ""
-            try:
-                reason = resp.headers.get("x-authentication-denied-reason") or ""
-            except Exception:
-                pass
-            # quiet=상태 확인(트레이·설정창 주기 프로브). 401 은 오류가 아니라 '아직 미인증'
-            # 이라는 **정상 응답**이라, 매분 로그를 남기면 진짜 문제의 로그가 파묻힌다.
-            if not quiet:
-                _auth_log(f"[auth] GET {resp.status} {path}" + (f" [{reason}]" if reason else ""))
-            raise SessionExpired(f"HTTP {resp.status} on {path} — 세션 만료 가능. login 재실행.")
+            self._raise_read_access_error(resp, path, url, quiet=quiet)
         if resp.status >= 500:
             raise UpstreamUnavailable(f"HTTP {resp.status} on {path} — Jira 서버 응답 오류")
         return resp.text() if as_text else resp.json()
@@ -321,14 +442,18 @@ class SsoSessionProvider(AuthProvider):
     # 쓰기는 **무조건 큐 맨 앞**이다. 읽기가 앞에 쌓여 있으면 그만큼 늦어지고, 늦어지다
     # 타임아웃에 걸리면 사용자가 쓴 글이 그대로 사라진다(스레드 로컬 우선순위와 무관하게 고정).
     def post_json(self, path, json_body=None, params=None):
-        return self._submit(lambda: self._write("post", path, json_body, params), PRIO_WRITE)
+        return self._submit(
+            lambda: self._write("post", path, json_body, params), PRIO_WRITE,
+            may_commit=True)
 
     def put_json(self, path, json_body=None, params=None):
-        return self._submit(lambda: self._write("put", path, json_body, params), PRIO_WRITE)
+        return self._submit(
+            lambda: self._write("put", path, json_body, params), PRIO_WRITE,
+            may_commit=True)
 
     def delete(self, path, params=None):
         return self._submit(lambda: self._write("delete", path, None, params, want_json=False),
-                            PRIO_WRITE)
+                            PRIO_WRITE, may_commit=True)
 
     def _write_multipart(self, path, field, filename, data, content_type):
         """멀티파트 단일 파일 업로드 — Playwright context.request.post(multipart=...).
@@ -404,7 +529,8 @@ class SsoSessionProvider(AuthProvider):
         # 있는데 큐가 180초에 끊어 버리면 결국 같은 실패가 된다(층이 둘이라 둘 다 맞춰야 한다).
         return self._submit(lambda: self._write_multipart(path, field, filename, data, content_type),
                             PRIO_WRITE,
-                            wait=self._upload_timeout_ms(len(data or b"")) / 1000 + 30)
+                            wait=self._upload_timeout_ms(len(data or b"")) / 1000 + 30,
+                            may_commit=True)
 
     def get_text(self, path, params=None):
         return self._submit(lambda: self._fetch(path, params, True))
@@ -414,8 +540,7 @@ class SsoSessionProvider(AuthProvider):
         url = path if path.startswith(("http://", "https://")) else self.base + path
         resp = self._context.request.get(url, params=params or {}, timeout=self.REQUEST_TIMEOUT_MS)
         if resp.status in (401, 403):
-            _auth_log(f"[auth] GET(bytes) {resp.status} {path}")
-            raise SessionExpired(f"HTTP {resp.status} on {path} — 세션 만료 가능. login 재실행.")
+            self._raise_read_access_error(resp, path, url, label="GET(bytes)")
         if resp.status >= 500:
             raise UpstreamUnavailable(f"HTTP {resp.status} on {path} — Jira 서버 응답 오류")
         return resp.body(), resp.headers.get("content-type")
@@ -446,6 +571,19 @@ class SsoSessionProvider(AuthProvider):
 
     def get_bytes(self, path, params=None):
         return self._submit(lambda: self._fetch_bytes(path, params))
+
+    def storage_state_snapshot(self):
+        """Capture the current rolling cookies on the Playwright owner thread.
+
+        BrowserContext objects are not thread-safe.  The caller may persist the returned plain
+        dict, but must generation-fence it against a concurrent login/provider replacement.
+        """
+        def capture():
+            if self._closed.is_set() or self._broken.is_set():
+                raise UpstreamUnavailable("SSO provider가 교체되어 세션 상태 저장을 건너뜁니다.")
+            return self._context.storage_state()
+
+        return self._submit(capture, PRIO_BACKGROUND)
 
     def renew_silent(self, targets, save_cb=None):
         """**창을 띄우지 않고** 세션을 되살린다 — 리다이렉트만으로 끝나는 흔한 경우를 위해서다.
