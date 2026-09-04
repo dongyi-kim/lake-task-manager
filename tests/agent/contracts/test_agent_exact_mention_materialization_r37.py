@@ -670,6 +670,12 @@ def test_unbound_visible_jira_rows_block_compound_fast_acquisition(monkeypatch, 
     combined = {**state, **got}
 
     assert _completed_typed_write_action(combined) == ""
+    if any(row.get("key") == "OTHER-9" for row in tickets):
+        jira = next(row for row in got["query_results"] if row["source"] == "jira")
+        assert jira["result"]["evidenceValidationFailed"] is True
+        assert "tickets" not in jira["result"]
+        proof = got["query_evidence_attestations"]["jira:ticket"]
+        assert proof["partial"] is True and proof["scopes"] == ["WK"]
 
 
 def test_exact_candidate_scalar_contradiction_is_removed_before_synthesis(monkeypatch):
@@ -793,6 +799,13 @@ def test_comment_identity_or_cardinality_contradiction_blocks_receipt(
     assert receipt is not None and receipt.complete is False
     assert receipt.outcomes[0].error_kind == "comments_incomplete"
     assert _completed_typed_write_action(combined) == ""
+    if defect == "wrong_comment":
+        comments = next(row for row in got["query_results"]
+                        if row["source"] == "comments")
+        assert comments["result"]["evidenceValidationFailed"] is True
+        assert "comments" not in comments["result"]
+        proof = got["query_evidence_attestations"]["comments:comments"]
+        assert proof["partial"] is True and proof["scopes"] == ["WK"]
 
 
 @pytest.mark.parametrize("extra", [
@@ -969,6 +982,7 @@ def test_resume_and_new_turn_share_one_checkpoint_lock(monkeypatch):
     import threading
     import time
     from app.agent import tools as T
+    import app.agent.maxis.backend as maxis_backend
     import app.agent.workflow.session as session
 
     resume_entered = threading.Event()
@@ -976,7 +990,7 @@ def test_resume_and_new_turn_share_one_checkpoint_lock(monkeypatch):
     ask_entered = threading.Event()
 
     class Snapshot:
-        values = {}
+        values = maxis_backend.thread_runtime_pin(engine="local")
         config = {}
 
     class Graph:
@@ -994,6 +1008,7 @@ def test_resume_and_new_turn_share_one_checkpoint_lock(monkeypatch):
     graph = Graph()
     monkeypatch.setattr(session, "get_graph", lambda: graph)
     monkeypatch.setattr(session, "_apply_overrides", lambda *_args: "")
+    monkeypatch.setattr(session.approval, "verify_actor", lambda *_args: (True, ""))
     monkeypatch.setattr(session.approval, "approve", lambda *_args: True)
     monkeypatch.setattr(session, "_shape", lambda tid, state, snap=None: {
         "thread_id": tid, "ok": True, "state": state,

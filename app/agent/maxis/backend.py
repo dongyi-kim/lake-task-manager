@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import re
 import secrets
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ RuntimeRoute = Literal["local", "shadow", "maxis"]
 _ROUTES = frozenset({"local", "shadow", "maxis"})
 _PRIVATE_STATE_KEYS = frozenset({
     "approval_token", "comment_token", "execution_receipt", "question_receipt_projection",
+    "change_audit_binding",
 })
 _PSEUDONYM_KEY = secrets.token_bytes(32)
 _EVIDENCE_ATTESTATION_KEY = secrets.token_bytes(32)
@@ -132,6 +134,9 @@ class RoleResolution:
     knowledge_version: str = ""
     knowledge_dataset_id: str = ""
     knowledge_manifest_sha256: str = ""
+    remote_log_policy_id: str = ""
+    remote_log_mode: str = ""
+    remote_log_retention_days: int | None = None
 
 
 @dataclass(frozen=True)
@@ -318,7 +323,13 @@ def _profile_snapshot(profile_name: str = "", *, required: bool = False) -> dict
         "knowledge_manifest_sha256": str(
             profile.get("knowledge_manifest_sha256") or ""
         ),
+        "knowledge_sentinel_sha256": str(
+            profile.get("knowledge_sentinel_sha256") or ""
+        ),
         "knowledge_document_count": int(profile.get("knowledge_document_count") or 0),
+        "remote_log_policy_id": str(profile.get("remote_log_policy_id") or ""),
+        "remote_log_mode": str(profile.get("remote_log_mode") or ""),
+        "remote_log_retention_days": profile.get("remote_log_retention_days"),
         "workflows": profile.get("workflows") if isinstance(profile.get("workflows"), dict) else {},
         "enabled": bool(profile.get("enabled")),
     }
@@ -534,6 +545,9 @@ def resolve_role(role_id: str, state: dict) -> RoleResolution:
         knowledge_manifest_sha256=str(
             metadata.get("knowledge_manifest_sha256") or ""
         ),
+        remote_log_policy_id=str(metadata.get("remote_log_policy_id") or ""),
+        remote_log_mode=str(metadata.get("remote_log_mode") or ""),
+        remote_log_retention_days=metadata.get("remote_log_retention_days"),
     )
 
 
@@ -853,7 +867,7 @@ def _role_context(role_id: str, state: dict) -> tuple[list[dict], frozenset[str]
     denied = {
         "messages", "query_results", "query_artifacts", "materialized_ticket_sources",
         "approval_token", "comment_token", "execution_receipt",
-        "question_receipt_projection", "trace", "error", "user_id",
+        "question_receipt_projection", "change_audit_binding", "trace", "error", "user_id",
         "request_text", "prompt",  # carried once in the guarded query
     }
     # This is an outbound allowlist, not a mirror of the much wider local Role input
@@ -1414,6 +1428,95 @@ def _record_remote_audit(
         raise MaxisRuntimeError("MAXIS metadata 감사 로그를 기록하지 못했습니다.") from exc
 
 
+def _profile_execution_identity(metadata: dict, workflow_key: str) -> tuple:
+    """Return the content-free profile fields that may not change during one call."""
+
+    workflow = (metadata.get("workflows") or {}).get(workflow_key) or {}
+    return (
+        str(metadata.get("name") or ""),
+        str(metadata.get("stage") or ""),
+        str(metadata.get("fingerprint") or ""),
+        str(metadata.get("base_url") or ""),
+        str(metadata.get("data_policy") or ""),
+        str(metadata.get("workflow_bundle_version") or ""),
+        str(metadata.get("knowledge_version") or ""),
+        str(metadata.get("knowledge_dataset_id") or ""),
+        str(metadata.get("knowledge_manifest_sha256") or ""),
+        str(metadata.get("knowledge_sentinel_sha256") or ""),
+        str(workflow.get("binding") or ""),
+        str(workflow.get("version") or ""),
+        bool(metadata.get("enabled")),
+    )
+
+
+def _revalidate_after_remote(
+    state: dict,
+    *,
+    profile_name: str,
+    metadata: dict,
+    workflow_key: str,
+) -> None:
+    """Discard an in-flight result when its pinned runtime stopped being valid."""
+
+    has_full_pin = all(str(state.get(key) or "").strip() for key in (
+        "runtime_profile_fingerprint",
+        "runtime_registry_digest",
+        "runtime_contract_build",
+    ))
+    if has_full_pin:
+        # This rechecks the kill switch, profile, routes, registry, contract build and
+        # Knowledge pins against the immutable thread snapshot.
+        verify_thread_runtime(state)
+        return
+    current = _profile_snapshot(profile_name, required=True)
+    if _profile_execution_identity(current, workflow_key) != (
+        _profile_execution_identity(metadata, workflow_key)
+    ):
+        raise RuntimeProfileChanged(
+            "MAXIS 호출 중 실행 프로필이 변경되었습니다. 원격 결과를 폐기합니다."
+        )
+
+
+def _verified_retrieval_metadata(response: Any) -> dict[str, Any]:
+    """Project only bounded retrieval verification statistics, never resource data."""
+
+    from app.agent.maxis.client import MAX_RETRIEVER_RESOURCES
+
+    retrieval = getattr(response, "retrieval", None)
+    if retrieval is None or getattr(retrieval, "dataset_verified", None) is not True:
+        raise MaxisRuntimeError("MAXIS Knowledge dataset 검색 결과를 검증하지 못했습니다.")
+    count = int(getattr(retrieval, "resource_count", 0) or 0)
+    scored = int(getattr(retrieval, "scored_resource_count", 0) or 0)
+    if not 1 <= count <= MAX_RETRIEVER_RESOURCES or not 0 <= scored <= count:
+        raise MaxisRuntimeError("MAXIS Knowledge dataset 검색 결과를 검증하지 못했습니다.")
+    minimum = getattr(retrieval, "minimum_score", None)
+    maximum = getattr(retrieval, "maximum_score", None)
+    for score in (minimum, maximum):
+        if score is not None and (
+            isinstance(score, bool)
+            or not isinstance(score, (int, float))
+            or not math.isfinite(float(score))
+        ):
+            raise MaxisRuntimeError("MAXIS Knowledge 검색 점수 요약이 올바르지 않습니다.")
+    if (
+        (scored == 0 and (minimum is not None or maximum is not None))
+        or (scored > 0 and (minimum is None or maximum is None))
+        or (
+            minimum is not None
+            and maximum is not None
+            and float(minimum) > float(maximum)
+        )
+    ):
+        raise MaxisRuntimeError("MAXIS Knowledge 검색 점수 요약이 올바르지 않습니다.")
+    return {
+        "verified": True,
+        "resourceCount": count,
+        "scoredResourceCount": scored,
+        "minimumScore": minimum,
+        "maximumScore": maximum,
+    }
+
+
 def record_change_audit(
     state: dict,
     *,
@@ -1422,11 +1525,13 @@ def record_change_audit(
     ],
     status: Literal["started", "succeeded", "failed", "blocked"],
     error_code: str = "",
+    change_binding: dict | None = None,
 ) -> bool:
     """Append one metadata-only HITL/change event joined to the Role correlation.
 
-    The API intentionally has no payload, prompt, result, key, or approval-token argument.
-    Legacy/direct checkpoints without a correlation id are left unchanged.
+    The API intentionally has no payload, prompt, result, key, actor or approval-token argument.
+    Its binding accepts only a server-HMAC-sealed digest projection. Legacy/direct checkpoints
+    without a correlation id are left unchanged.
     """
     correlation = str((state or {}).get("correlation_id") or "").strip()
     if not correlation:
@@ -1475,6 +1580,7 @@ def record_change_audit(
             ) if (state or {}).get("knowledge_version") else "",
             role_id="action_executor",
             error_code=error_code,
+            change_binding=change_binding,
         )
         record_audit_event(audit_event)
     except Exception as exc:
@@ -1530,6 +1636,9 @@ def invoke(
     knowledge_dataset_id = str(metadata.get("knowledge_dataset_id") or "").strip()
     knowledge_manifest_sha256 = str(
         metadata.get("knowledge_manifest_sha256") or ""
+    ).strip().lower()
+    knowledge_sentinel_sha256 = str(
+        metadata.get("knowledge_sentinel_sha256") or ""
     ).strip().lower()
     raw_pack = payload.get("evidencePack") or {}
     raw_request_id = raw_pack.get("request_id") if isinstance(raw_pack, dict) else ""
@@ -1604,7 +1713,11 @@ def invoke(
         raise MaxisRuntimeError(
             "MAXIS Knowledge dataset/manifest가 고정된 프로필과 다릅니다."
         )
-    if not workflow_version or not knowledge_version:
+    if (
+        not workflow_version
+        or not knowledge_version
+        or not re.fullmatch(r"[0-9a-f]{64}", knowledge_sentinel_sha256)
+    ):
         _record_remote_audit(
             status="blocked", error_code="revision_pin_missing", **audit_common,
         )
@@ -1651,6 +1764,7 @@ def invoke(
                 user=evidence.pseudonymous_user,
                 inputs=invoke_inputs,
                 workflow_id=workflow_version,
+                expected_knowledge_dataset_id=knowledge_dataset_id,
             )
     except MaxisRuntimeError:
         raise
@@ -1667,6 +1781,38 @@ def invoke(
             **audit_common,
         )
         raise MaxisRuntimeError(f"MAXIS Role 호출에 실패했습니다: {role_id}") from exc
+
+    # A manager may flip the kill switch or change routes/profile while the blocking
+    # Dify call is in flight.  Revalidate before reading or projecting any remote
+    # content so the completed response cannot cross the local trust boundary.
+    try:
+        _revalidate_after_remote(
+            state,
+            profile_name=resolution.profile,
+            metadata=metadata,
+            workflow_key=workflow_key,
+        )
+    except Exception as exc:
+        _record_remote_audit(
+            status="blocked",
+            error_code="runtime_changed_in_flight",
+            latency_ms=int(getattr(response, "latency_ms", 0) or 0),
+            **audit_common,
+        )
+        raise MaxisRuntimeError(
+            "MAXIS 호출 중 실행 설정이 변경되어 원격 결과를 폐기했습니다."
+        ) from exc
+
+    try:
+        retrieval_metadata = _verified_retrieval_metadata(response)
+    except MaxisRuntimeError:
+        _record_remote_audit(
+            status="blocked",
+            error_code="knowledge_dataset_unverified",
+            latency_ms=int(getattr(response, "latency_ms", 0) or 0),
+            **audit_common,
+        )
+        raise
 
     answer = str(getattr(response, "answer", "") or "")
     if not answer:
@@ -1701,6 +1847,14 @@ def invoke(
         expected_knowledge = knowledge_version
         if expected_knowledge and envelope.knowledge_version != expected_knowledge:
             raise MaxisRuntimeError("MAXIS Knowledge version이 고정된 프로필과 다릅니다.")
+        proof_digest = hashlib.sha256(
+            envelope.knowledge_proof.encode("utf-8")
+        ).hexdigest()
+        if not hmac.compare_digest(proof_digest, knowledge_sentinel_sha256):
+            response_block_code = "knowledge_sentinel_mismatch"
+            raise MaxisRuntimeError(
+                "MAXIS Knowledge release가 활성 프로필과 다릅니다."
+            )
     except MaxisRuntimeError:
         _record_remote_audit(
             status="blocked", error_code=response_block_code,
@@ -1735,8 +1889,12 @@ def invoke(
             "knowledgeVersion": resolution.knowledge_version,
             "knowledgeDatasetId": resolution.knowledge_dataset_id,
             "knowledgeManifestSha256": resolution.knowledge_manifest_sha256,
+            "remoteLogPolicyId": resolution.remote_log_policy_id,
+            "remoteLogMode": resolution.remote_log_mode,
+            "remoteLogRetentionDays": resolution.remote_log_retention_days,
             "correlationId": correlation,
             "messageId": str(getattr(response, "message_id", "") or ""),
+            "knowledgeRetrieval": retrieval_metadata,
             "latencyMs": latency_ms,
             "usage": {
                 "promptTokens": int(getattr(usage, "prompt_tokens", 0) or 0),
@@ -1820,8 +1978,12 @@ def invoke(
             "knowledgeVersion": resolution.knowledge_version,
             "knowledgeDatasetId": resolution.knowledge_dataset_id,
             "knowledgeManifestSha256": resolution.knowledge_manifest_sha256,
+            "remoteLogPolicyId": resolution.remote_log_policy_id,
+            "remoteLogMode": resolution.remote_log_mode,
+            "remoteLogRetentionDays": resolution.remote_log_retention_days,
             "correlationId": correlation,
             "messageId": str(getattr(response, "message_id", "") or ""),
+            "knowledgeRetrieval": retrieval_metadata,
             "latencyMs": latency_ms,
             "usage": {
                 "promptTokens": int(getattr(usage, "prompt_tokens", 0) or 0),

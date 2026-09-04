@@ -174,6 +174,8 @@ $env:FAKE_LATENCY_MS="800"
 - [`config/people.yaml`](config/people.yaml) — 모듈별 인력과 표시 설정
 - [`config/module-aliases.yaml`](config/module-aliases.yaml) — 모듈 명칭 정규화
 - [`config/maxis-workflows.yml`](config/maxis-workflows.yml) — canonical Agent Role과 Dify 앱의 논리 binding
+- [`config/maxis-knowledge.yml`](config/maxis-knowledge.yml) — Knowledge 문서 소유자·등급·Role·revision과 불변 릴리스 정책
+- [`deploy/maxis-dify/`](deploy/maxis-dify/) — Dify Chatflow build spec, 응답 계약, smoke/Knowledge 평가와 validator
 - `CONFIG_DIR` — 별도 설정 디렉터리를 지정하는 override
 
 환경변수는 YAML보다 우선한다. 대표적으로 `JIRA_ENV`, `JIRA_BASE`, `APP_PORT`, `CONFIG_DIR`,

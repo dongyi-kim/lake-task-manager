@@ -1011,6 +1011,12 @@ def _produce_exact_mention_artifact(
                 attempted[key] = value
 
     coverage = _exact_comment_coverage(state.get("query_plan") or {}, results)
+    evidence_validation_failed = any(
+        row.get("source") in {"jira", "comments"}
+        and isinstance(row.get("result"), dict)
+        and row["result"].get("evidenceValidationFailed") is True
+        for row in results if isinstance(row, dict)
+    )
     focus_terms = _projection_focus_terms("\n".join(value for value in (
         request_text(state).strip(), last_user_text(state).strip(),
     ) if value))
@@ -1021,6 +1027,10 @@ def _produce_exact_mention_artifact(
         error_kind = _exact_detail_error(key, raw)
         if not error_kind and key in coverage and not coverage[key]:
             error_kind = "comments_incomplete"
+        if not error_kind and evidence_validation_failed:
+            # Never recover a compound exact acquisition by issuing a second detail GET
+            # after one of its authoritative provider rows contradicted its own scope.
+            error_kind = "provider_error"
         if not error_kind:
             error_kind = ("" if exact_ticket_detail_prompt_complete(
                 raw, comments_proven=coverage.get(key) is True,
@@ -1207,6 +1217,7 @@ class QueryRunner:
             return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
         from app.agent.maxis.backend import (
+            MaxisRuntimeError, attest_query_result,
             begin_local_acquisition, finish_local_acquisition,
         )
 
@@ -1245,6 +1256,30 @@ class QueryRunner:
                     if prior else bool(provenance.get("tracked"))
                 ),
             }
+
+        def _discard_unattestable_result(row: dict, artifact_id: str) -> dict:
+            source = str(row.get("source") or "")
+            current = row.get("result") if isinstance(row.get("result"), dict) else {}
+            scope_field = {
+                "jira": "scopeProjects",
+                "comments": "scopeProjects",
+                "confluence": "scopeSpaces",
+                "bitbucket": "scopeRepositories",
+            }.get(source)
+            safe_result = {
+                "error": "조회 결과의 canonical scope/내용을 검증하지 못해 폐기했습니다.",
+                "complete": False,
+                "incomplete": True,
+                "evidenceValidationFailed": True,
+            }
+            declared = current.get(scope_field) if scope_field else None
+            if isinstance(declared, (list, tuple)):
+                safe_result[scope_field] = [
+                    str(value).strip() for value in declared if str(value).strip()
+                ]
+            artifacts[artifact_id] = safe_result
+            row["result"] = safe_result
+            return safe_result
 
         target_resolution_artifacts = {}
         materialized = {
@@ -1470,6 +1505,31 @@ class QueryRunner:
                     compact["artifactId"] = qid
             row = {"id": qid, "source": source, "result": compact}
             _merge_acquisition(row, acquisition)
+            expected_scopes: tuple[str, ...] = ()
+            if source in {"jira", "comments"}:
+                from app.agent.workflow.exact_mention_materialization import exact_where_key
+
+                exact_key = exact_where_key(spec.get("where") or "", source)
+                if exact_key:
+                    expected_scopes = (exact_key.split("-", 1)[0],)
+            row["_remoteExpectedScopes"] = expected_scopes
+            # Scope/content attestation is also the last trust-boundary validation for
+            # provider rows.  A contradictory provider envelope must not abort the whole
+            # QueryRunner turn, but its untrusted contents must not remain available to
+            # local synthesis or later exact-read materialization either.  Keep only the
+            # declared scope (there is no data left for it to over-authorize) and a bounded
+            # incomplete marker that can itself be attested below.
+            try:
+                attest_query_result(
+                    qid or "query", source, compact,
+                    retrieved_at=row.get("_remoteRetrievedAt"),
+                    scopes=expected_scopes,
+                    partial=True if (row.get("_remoteProvenance") or {}).get("partial")
+                    else None,
+                    provenance=row.get("_remoteProvenance"),
+                )
+            except MaxisRuntimeError:
+                _discard_unattestable_result(row, qid)
             results.append(row)
         if _needs_evidence_materialization(state, results):
             research_expansion = any(
@@ -1534,22 +1594,40 @@ class QueryRunner:
         # Sign only after materialization, so the digest covers the exact compact value
         # semantic Roles will see, while retaining the acquisition receipt time captured
         # immediately above.  A later model/state mutation cannot invent either value.
-        from app.agent.maxis.backend import attest_query_result
-
         evidence_attestations = {}
         for row in results:
             retrieved_at = row.pop("_remoteRetrievedAt", None)
             provenance = row.pop("_remoteProvenance", None)
+            expected_scopes = row.pop("_remoteExpectedScopes", ())
             source = str(row.get("source") or "")
             query_id = str(row.get("id") or "query")
-            proof = attest_query_result(
-                query_id,
-                source,
-                row.get("result") if isinstance(row.get("result"), dict) else {},
-                retrieved_at=retrieved_at,
-                partial=True if (provenance or {}).get("partial") else None,
-                provenance=provenance,
+            final_result = row.get("result") if isinstance(row.get("result"), dict) else {}
+            attested_scopes = (
+                expected_scopes
+                if final_result.get("evidenceValidationFailed") is True else ()
             )
+            try:
+                proof = attest_query_result(
+                    query_id,
+                    source,
+                    final_result,
+                    retrieved_at=retrieved_at,
+                    scopes=attested_scopes,
+                    partial=True if (provenance or {}).get("partial") else None,
+                    provenance=provenance,
+                )
+            except MaxisRuntimeError:
+                # Materialization can attach nested provider details after the first
+                # boundary check. Re-run the same fail-closed projection against the
+                # final semantic row and attest only that content-free diagnostic.
+                safe_result = _discard_unattestable_result(row, query_id)
+                proof = attest_query_result(
+                    query_id, source, safe_result,
+                    retrieved_at=retrieved_at,
+                    scopes=expected_scopes,
+                    partial=True,
+                    provenance=provenance,
+                )
             evidence_attestations[f"{source}:{query_id}"] = proof
         return {"query_results": results, "query_artifacts": artifacts,
                 "query_evidence_attestations": evidence_attestations,

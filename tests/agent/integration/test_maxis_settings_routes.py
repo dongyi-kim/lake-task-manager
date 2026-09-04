@@ -52,7 +52,7 @@ def _save_candidate(client, *, all_apps=False):
         "baseUrl": "https://dev.maxis.example/v1",
         "dataPolicy": "synthetic_only",
         "workflowBundleVersion": "ltm-agent-1",
-        "knowledgeVersion": "ltm-knowledge-1",
+        "knowledgeVersion": "ltm-knowledge-2026.09",
         "knowledgeDatasetId": DATASET_A,
         "knowledgeSentinelSha256": SENTINEL_SHA,
         "workflows": {
@@ -65,7 +65,9 @@ def _save_candidate(client, *, all_apps=False):
     })
 
 
-def _fake_dify_transport(monkeypatch, answer_factory):
+def _fake_dify_transport(
+    monkeypatch, answer_factory, *, retrieval_dataset_id=DATASET_A,
+):
     """Run the real Dify client against deterministic in-process response bytes."""
     from app.agent.maxis.client import DifyClient, REQUIRED_START_VARIABLES
 
@@ -92,7 +94,17 @@ def _fake_dify_transport(monkeypatch, answer_factory):
                 "message_id": "probe-message",
                 "conversation_id": "probe-conversation",
                 "answer": answer,
-                "metadata": {"usage": {}},
+                "metadata": {
+                    "usage": {},
+                    "retriever_resources": [{
+                        "dataset_id": retrieval_dataset_id,
+                        "document_id": "private-probe-document",
+                        "document_name": "private-probe-document.md",
+                        "segment_id": "private-probe-segment",
+                        "score": 0.91,
+                        "content": "private Knowledge chunk",
+                    }],
+                },
             }
             return json.dumps(body).encode("utf-8"), 200, 3
         raise AssertionError(f"unexpected fake Dify path: {path}")
@@ -241,15 +253,19 @@ def test_probe_adapter_uses_foundation_client_contract_without_network(client, m
     monkeypatch.setattr(
         DifyClient,
         "probe_contract",
-        lambda self, binding, **kwargs: DifyContractProbeResult(
-            ok=True,
-            status_code=200,
-            latency_ms=5,
-            role_id="knowledge_curator",
-            contract_verified=True,
-            version_verified=True,
-            citation_verified=True,
-            knowledge_retrieval_verified=True,
+        lambda self, binding, **kwargs: (
+            seen.update(dataset=kwargs["expected_knowledge_dataset_id"])
+            or DifyContractProbeResult(
+                ok=True,
+                status_code=200,
+                latency_ms=5,
+                role_id="knowledge_curator",
+                contract_verified=True,
+                version_verified=True,
+                citation_verified=True,
+                knowledge_retrieval_verified=True,
+                retrieval_resource_count=1,
+            )
         ),
     )
     profile = __import__("app.agent.maxis.profiles", fromlist=["resolve"]).resolve("dev")
@@ -269,7 +285,7 @@ def test_probe_adapter_uses_foundation_client_contract_without_network(client, m
         "roleId": "knowledge_curator",
     }
     assert seen == {"profile": "dev", "base": "https://dev.maxis.example/v1",
-                    "key": "fake-key"}
+                    "key": "fake-key", "dataset": DATASET_A}
 
     failed = routes._maxis_probe_result(DifyProbeResult(
         ok=False,
@@ -380,6 +396,27 @@ def test_probe_rejects_missing_or_wrong_knowledge_retrieval_proof(
     assert client.post("/api/agent/maxis/activate/dev", json={}).status_code == 409
 
 
+def test_probe_rejects_retrieval_from_an_unpinned_dataset(client, monkeypatch):
+    _save_candidate(client)
+    client.put("/api/agent/maxis/credentials/dev", json={
+        "agentCoreApiKey": "fake-contract-key",
+    })
+    calls = _fake_dify_transport(
+        monkeypatch,
+        _valid_probe_answer,
+        retrieval_dataset_id="22222222-2222-4222-8222-222222222222",
+    )
+
+    probed = client.post("/api/agent/maxis/probe/dev", json={}).json()
+
+    assert [call["path"] for call in calls] == ["/parameters", "/chat-messages"]
+    core = probed["workflows"]["agent_core"]
+    assert core["ok"] is False
+    assert core["knowledgeRetrievalVerified"] is False
+    assert core["errorCode"] == "policy"
+    assert client.post("/api/agent/maxis/activate/dev", json={}).status_code == 409
+
+
 def test_three_apps_pass_synthetic_chat_contract_and_can_activate(client, monkeypatch):
     assert _save_candidate(client, all_apps=True).status_code == 200
     saved = client.put("/api/agent/maxis/credentials/dev", json={
@@ -459,7 +496,7 @@ def test_profile_edit_and_credential_rotation_invalidate_probe(client, monkeypat
     client.post("/api/agent/maxis/activate/dev", json={})
     assert client.get("/api/agent/maxis/status").json()["profiles"][0]["enabled"] is True
 
-    changed = client.put("/api/agent/maxis/profiles/dev", json={"knowledgeVersion": "ltm-knowledge-2"}).json()
+    changed = client.put("/api/agent/maxis/profiles/dev", json={"knowledgeDatasetId": "33333333-3333-4333-8333-333333333333"}).json()
     assert changed["profiles"][0]["verified"] is False
     assert changed["profiles"][0]["enabled"] is False
 

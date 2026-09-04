@@ -36,8 +36,6 @@ from __future__ import annotations
 
 import os
 
-os.environ.setdefault("JIRA_ENV", "mock")
-
 
 def _mcp(**server_kwargs):
     from mcp.server import MCPServer
@@ -82,9 +80,12 @@ def assert_http_subject_bound() -> dict:
         user = client().current_user_fresh() or {}
     except Exception as exc:
         raise PermissionError("LTM user identity could not be verified") from exc
+    # Only identifiers issued by Jira itself are authorization material.  Human-facing
+    # profile fields (display name and email) are neither unique nor immutable and must
+    # never make two principals equivalent.
     candidates = {
         str(user.get(key) or "").strip().casefold()
-        for key in ("id", "name", "key", "accountId", "emailAddress")
+        for key in ("id", "key", "accountId")
         if str(user.get(key) or "").strip()
     } if isinstance(user, dict) else set()
     if isinstance(user, dict):
@@ -220,6 +221,11 @@ def build_server(
 
 
 def main():
+    # The stdio command is a local developer entrypoint and historically starts the
+    # deterministic Jira world when no environment is supplied.  Keep that convenience
+    # here, after import, so importing the shared server from the HTTP deployment cannot
+    # silently turn an ambiguous/production process into mock mode.
+    os.environ.setdefault("JIRA_ENV", "mock")
     build_server().run()        # stdio — MCP 클라이언트가 이 프로세스를 띄우고 파이프로 말한다
 
 

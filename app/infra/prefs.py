@@ -12,6 +12,7 @@ config/jira.yml 은 **배포 시 손으로 채우는 템플릿**이라, 앱을 �
 from __future__ import annotations
 
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -99,3 +100,70 @@ def save(patch: dict) -> dict:
         except Exception:
             pass
         return cur
+
+
+class PrefsPersistenceError(RuntimeError):
+    """A security-sensitive runtime preference could not be durably persisted."""
+
+
+def _load_strict(path: Path) -> dict:
+    """Load the preference document without treating corruption as an empty store."""
+    out = dict(_DEFAULTS)
+    if not path.exists():
+        return out
+    try:
+        with path.open(encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception as exc:
+        raise PrefsPersistenceError("Runtime preferences could not be read safely.") from exc
+    if not isinstance(data, dict):
+        raise PrefsPersistenceError("Runtime preferences are not a JSON object.")
+    for key in _DEFAULTS:
+        if key in data:
+            out[key] = data[key]
+    return out
+
+
+def save_strict(patch: dict) -> dict:
+    """Atomically save and read back security-sensitive preferences or raise.
+
+    ``save`` remains deliberately fail-soft for non-critical UI preferences.  MAXIS
+    activation, routing, probes and the kill switch use this path: reporting success
+    when the file was not replaced would leave an operator with a false rollback signal.
+    """
+    changes = dict(patch or {})
+    unknown = set(changes) - set(_DEFAULTS)
+    if unknown:
+        raise ValueError("Unsupported runtime preference field.")
+    with _LOCK:
+        path = _path()
+        current = _load_strict(path)
+        current.update(changes)
+        # Compare JSON-normalized values on readback (tuples, if supplied by a caller,
+        # are serialized as arrays).  This proves the exact document now on disk.
+        expected = json.loads(json.dumps(current, ensure_ascii=False))
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.strict.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with temporary.open("w", encoding="utf-8") as handle:
+                json.dump(expected, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            observed = _load_strict(path)
+            if observed != expected:
+                raise PrefsPersistenceError(
+                    "Runtime preference readback did not match the requested update."
+                )
+        except PrefsPersistenceError:
+            raise
+        except Exception as exc:
+            raise PrefsPersistenceError(
+                "Runtime preferences could not be persisted safely."
+            ) from exc
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return observed

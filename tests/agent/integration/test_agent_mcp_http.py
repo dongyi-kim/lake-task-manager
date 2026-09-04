@@ -104,6 +104,8 @@ def _post_asgi(app, *, token: str | None = None, host: str = "ltm-mcp.example.te
 
 def _base_env() -> dict[str, str]:
     return {
+        "LTM_MCP_DEPLOYMENT_MODE": "production",
+        "JIRA_ENV": "prod",
         "LTM_MCP_RESOURCE_URL": "https://ltm-mcp.example.test/mcp",
         "LTM_MCP_OAUTH_ISSUER_URL": "https://id.example.test",
         "LTM_MCP_OAUTH_INTROSPECTION_URL": "https://id.example.test/introspect",
@@ -120,6 +122,43 @@ def test_production_settings_require_mtls_or_declared_terminating_proxy():
         HttpMcpSettings.from_env(env)
 
 
+@pytest.mark.parametrize("missing", ["LTM_MCP_DEPLOYMENT_MODE", "JIRA_ENV"])
+def test_http_startup_requires_explicit_deployment_and_jira_modes(missing):
+    env = _base_env()
+    env.pop(missing)
+
+    with pytest.raises(RuntimeError, match=missing):
+        HttpMcpSettings.from_env(env)
+
+
+@pytest.mark.parametrize(
+    "deployment_mode,jira_env,expected",
+    [
+        ("production", "mock", "JIRA_ENV=prod"),
+        ("production", "local", "JIRA_ENV=prod"),
+        ("development", "prod", "JIRA_ENV=mock or local"),
+        ("staging", "prod", "development or production"),
+    ],
+)
+def test_http_startup_rejects_ambiguous_or_crossed_runtime_modes(
+    deployment_mode, jira_env, expected,
+):
+    env = _base_env()
+    env["LTM_MCP_DEPLOYMENT_MODE"] = deployment_mode
+    env["JIRA_ENV"] = jira_env
+
+    with pytest.raises(RuntimeError, match=expected):
+        HttpMcpSettings.from_env(env)
+
+
+def test_production_cannot_enable_the_loopback_http_escape_hatch():
+    env = _base_env()
+    env["LTM_MCP_ALLOW_HTTP_LOOPBACK"] = "1"
+
+    with pytest.raises(RuntimeError, match="production MCP cannot enable"):
+        HttpMcpSettings.from_env(env)
+
+
 def test_plain_http_is_only_allowed_for_explicit_loopback_development():
     env = _base_env()
     env["LTM_MCP_RESOURCE_URL"] = "http://ltm.internal/mcp"
@@ -127,6 +166,8 @@ def test_plain_http_is_only_allowed_for_explicit_loopback_development():
         HttpMcpSettings.from_env(env)
 
     env.update(
+        LTM_MCP_DEPLOYMENT_MODE="development",
+        JIRA_ENV="mock",
         LTM_MCP_RESOURCE_URL="http://127.0.0.1:4460/mcp",
         LTM_MCP_OAUTH_ISSUER_URL="http://127.0.0.1:9000",
         LTM_MCP_OAUTH_INTROSPECTION_URL="http://127.0.0.1:9000/introspect",
@@ -134,6 +175,22 @@ def test_plain_http_is_only_allowed_for_explicit_loopback_development():
     )
     settings = HttpMcpSettings.from_env(env)
     assert settings.resource_url.startswith("http://127.0.0.1")
+
+
+def test_development_mock_http_server_cannot_bind_or_advertise_non_loopback():
+    env = _base_env()
+    env.update(
+        LTM_MCP_DEPLOYMENT_MODE="development",
+        JIRA_ENV="mock",
+        LTM_MCP_RESOURCE_URL="https://ltm-dev.example.test/mcp",
+    )
+    with pytest.raises(RuntimeError, match="remain on loopback"):
+        HttpMcpSettings.from_env(env)
+
+    env["LTM_MCP_RESOURCE_URL"] = "https://127.0.0.1:4460/mcp"
+    env["LTM_MCP_HOST"] = "0.0.0.0"
+    with pytest.raises(RuntimeError, match="remain on loopback"):
+        HttpMcpSettings.from_env(env)
 
 
 @pytest.mark.parametrize(
@@ -310,7 +367,13 @@ def test_http_mcp_subject_must_match_the_jira_session_user(monkeypatch):
 
     class Jira:
         def current_user_fresh(self):
-            return {"id": "test.ui01", "displayName": "Test User"}
+            return {
+                "id": "test.ui01",
+                "key": "jira-key-001",
+                "accountId": "jira-account-001",
+                "actorAliases": ["test.ui01", "legacy-alias-001"],
+                "displayName": "Test User",
+            }
 
     monkeypatch.setattr(_ctx, "client", lambda: Jira())
 
@@ -325,13 +388,52 @@ def test_http_mcp_subject_must_match_the_jira_session_user(monkeypatch):
         )
         return auth_context_var.set(AuthenticatedUser(access))
 
-    marker = bind("test.ui01")
+    for identity in (
+        "test.ui01", "jira-key-001", "jira-account-001", "legacy-alias-001",
+    ):
+        marker = bind(identity)
+        try:
+            assert_http_subject_bound()
+        finally:
+            auth_context_var.reset(marker)
+
+    marker = bind("different.user")
     try:
-        assert_http_subject_bound()
+        with pytest.raises(PermissionError, match="does not match"):
+            assert_http_subject_bound()
     finally:
         auth_context_var.reset(marker)
 
-    marker = bind("different.user")
+
+@pytest.mark.parametrize("delegated", ["Shared Display", "shared@example.test"])
+def test_http_mcp_never_binds_from_display_name_or_email(monkeypatch, delegated):
+    from mcp.server.auth.middleware.auth_context import auth_context_var
+    from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
+    from mcp.server.auth.provider import AccessToken
+    from app.agent.tools import _ctx
+
+    class Jira:
+        def current_user_fresh(self):
+            return {
+                "id": "jira-account-001",
+                "key": "JIRAKEY001",
+                "accountId": "account-id-001",
+                "displayName": "Shared Display",
+                "name": "Shared Display",
+                "emailAddress": "shared@example.test",
+                "actorAliases": ["jira-account-001", "JIRAKEY001", "account-id-001"],
+            }
+
+    monkeypatch.setattr(_ctx, "client", lambda: Jira())
+    access = AccessToken(
+        token="opaque",
+        client_id="dify",
+        scopes=["ltm:read"],
+        expires_at=int(time.time()) + 60,
+        subject="oauth-subject",
+        claims={"ltm_user_id": delegated},
+    )
+    marker = auth_context_var.set(AuthenticatedUser(access))
     try:
         with pytest.raises(PermissionError, match="does not match"):
             assert_http_subject_bound()
@@ -481,6 +583,70 @@ def test_introspection_can_map_an_approved_jira_identity_claim():
     assert access is not None
     assert access.subject == "opaque-corporate-subject"
     assert access.claims["ltm_user_id"] == "test.ui01"
+
+
+def test_custom_identity_claim_carrying_a_display_name_cannot_bind(monkeypatch):
+    from mcp.server.auth.middleware.auth_context import auth_context_var
+    from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
+    from app.agent.tools import _ctx
+
+    response = {
+        "active": True,
+        "client_id": "maxis-dify",
+        "sub": "opaque-corporate-subject",
+        "employee_label": "Shared Display",
+        "scope": "ltm:read",
+        "aud": "ltm-mcp",
+        "exp": int(time.time()) + 60,
+    }
+    verifier = OAuthIntrospectionTokenVerifier(
+        introspection_url="https://id.example.test/introspect",
+        client_id="resource-server",
+        client_secret="test-only",
+        audience="ltm-mcp",
+        identity_claim="employee_label",
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=response)),
+    )
+
+    async def verify():
+        return await verifier.verify_token("opaque-user-token")
+
+    access = anyio.run(verify)
+    assert access is not None
+    assert access.claims["ltm_user_id"] == "Shared Display"
+
+    class Jira:
+        def current_user_fresh(self):
+            return {
+                "id": "jira-account-001",
+                "displayName": "Shared Display",
+                "actorAliases": ["jira-account-001"],
+            }
+
+    monkeypatch.setattr(_ctx, "client", lambda: Jira())
+    marker = auth_context_var.set(AuthenticatedUser(access))
+    try:
+        with pytest.raises(PermissionError, match="does not match"):
+            assert_http_subject_bound()
+    finally:
+        auth_context_var.reset(marker)
+
+
+@pytest.mark.parametrize("claim", ["displayName", "email", "mail", "name"])
+def test_introspection_rejects_human_facing_identity_claim_configuration(claim):
+    with pytest.raises(ValueError, match="stable Jira principal"):
+        OAuthIntrospectionTokenVerifier(
+            introspection_url="https://id.example.test/introspect",
+            client_id="resource-server",
+            client_secret="test-only",
+            audience="ltm-mcp",
+            identity_claim=claim,
+        )
+
+    env = _base_env()
+    env["LTM_MCP_OAUTH_IDENTITY_CLAIM"] = claim
+    with pytest.raises(RuntimeError, match="stable Jira principal"):
+        HttpMcpSettings.from_env(env)
 
 
 @pytest.mark.parametrize(

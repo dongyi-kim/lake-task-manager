@@ -129,6 +129,14 @@ def route_after_request_architect(state: AgentState) -> str:
     my_day·progress·activity 를 ResearchAnalyst 에 태우지 않는 이유: 그 요청들은 과거 발굴이 아니라
     **지금 상태의 집계**다. 검색-열람-링크추적은 낭비이고, 느린 데다 답도 더 나빠진다.
 """
+    # RequestArchitect owns the first semantic decision.  If that boundary fails (for
+    # example, a MAXIS dataset/sentinel/runtime attestation is rejected), no later Role
+    # may reinterpret the still-empty intent and start a fresh acquisition path.  Route
+    # only to ResultIntegrator's error projection; otherwise the default ``investigate``
+    # branch can accidentally run QuerySpecialist under whichever local provider happens
+    # to be configured in this process.
+    if state.get("error"):
+        return "respond"
     intent = state.get("intent") or ""
     if intent == Intent.CHITCHAT:
         return "respond"
@@ -195,6 +203,19 @@ def route_after_request_architect(state: AgentState) -> str:
             return "investigate"
         return Node.PORTFOLIO_ANALYST
     return "investigate"
+
+
+def route_after_query_specialist(state: AgentState) -> str:
+    """조회 계획이 확정된 경우에만 실제 acquisition을 시작한다.
+
+    QuerySpecialist도 RequestArchitect와 같은 원격 의미 경계다. MAXIS 계약 검증 실패나
+    ``needs_input``은 각각 ``error``/``questions``로 투영되므로, 이를 QueryRunner로 넘기면
+    실패한 계획을 빈 계획처럼 해석해 Jira·외부 조회 또는 후속 작성 흐름을 시작할 수 있다.
+    이 턴은 ResultIntegrator의 결정적 오류/질문 렌더링에서 끝낸다.
+    """
+    if state.get("error") or state.get("questions"):
+        return "respond"
+    return "acquire"
 
 
 def route_after_query_runner(state: AgentState) -> str:
@@ -657,8 +678,18 @@ def _propose(state: AgentState) -> dict:
             try:
                 from app.agent.maxis.backend import record_change_audit
 
+                correlation_id = str(projected.get("correlation_id") or "")
+                binding = (
+                    approval.change_audit_binding(
+                        token, correlation_id=correlation_id,
+                    )
+                    if correlation_id else None
+                )
+                if binding is not None:
+                    result["change_audit_binding"] = binding
                 record_change_audit(
                     projected, event="change.proposal", status="started",
+                    change_binding=binding,
                 )
             except Exception:
                 # An unaudited proposal must not leave a live capability behind.
@@ -680,6 +711,23 @@ def _propose(state: AgentState) -> dict:
     state = projected
 
     tid = state.get("thread_id") or ""
+    actor_binding = None
+
+    def staged(action: str, payload: dict) -> str:
+        nonlocal actor_binding
+        if actor_binding is None:
+            actor_binding = approval.current_actor_fresh()
+        return approval.stage(tid, action, payload, actor=actor_binding)
+
+    def staged_pair(primary_action: str, primary_payload: dict,
+                    secondary_action: str, secondary_payload: dict) -> tuple[str, str]:
+        nonlocal actor_binding
+        if actor_binding is None:
+            actor_binding = approval.current_actor_fresh()
+        return approval.stage_pair(
+            tid, primary_action, primary_payload, secondary_action, secondary_payload,
+            actor=actor_binding,
+        )
 
     # modify 갈래 — 변경 승인. 토큰은 update_ticket 도구가 만들 payload 와 **같은 모양**이어야
     # 지문이 맞는다(도구는 kwargs 를 compact 해서 {"key","changes"} 로 만든다).
@@ -728,18 +776,18 @@ def _propose(state: AgentState) -> dict:
         """Stage one primary mutation and bind its optional comment fingerprint."""
         secondary_action, secondary_payload = comment_effect()
         if secondary_action and secondary_payload:
-            primary, secondary = approval.stage_pair(
-                tid, action, payload, secondary_action, secondary_payload,
+            primary, secondary = staged_pair(
+                action, payload, secondary_action, secondary_payload,
             )
             return {"approval_token": primary, "comment_token": secondary}
-        return {"approval_token": approval.stage(tid, action, payload)}
+        return {"approval_token": staged(action, payload)}
     # 상태 전이 — 지문은 transition_ticket 도구의 payload 와 같은 모양(comment 없을 때).
     if plan.get("key") and (plan.get("transition") or {}).get("id"):
         p = {"key": plan["key"], "transition": str(plan["transition"]["id"])}
         cmt = (plan.get("comment") or "").strip()
         if cmt:
             p["comment"] = cmt
-        return emit({"approval_token": approval.stage(tid, "transition_ticket", p)})
+        return emit({"approval_token": staged("transition_ticket", p)})
     # 티켓 링크 — link_tickets 도구의 payload 와 같은 모양.
     if plan.get("key") and (plan.get("link") or {}).get("other"):
         lk = plan["link"]
@@ -766,8 +814,7 @@ def _propose(state: AgentState) -> dict:
                 or [{"key": str(k).strip(), "body": (plan.get("comment") or "").strip()}
                     for k in plan["keys"] if str(k).strip()])
         if rows:
-            return emit({"approval_token": approval.stage(tid, "add_ticket_comments",
-                                                     {"items": rows}),
+            return emit({"approval_token": staged("add_ticket_comments", {"items": rows}),
                     "change_plan": plan})
     if plan.get("key") and (plan.get("changes") or (plan.get("comment") or "").strip()):
         cmt = (plan.get("comment") or "").strip()
@@ -775,8 +822,8 @@ def _propose(state: AgentState) -> dict:
             payload = {"key": plan["key"], "changes": plan["changes"]}
             return emit(stage_primary_effect("update_ticket", payload))
         # 댓글만 — 그 토큰이 곧 승인 토큰이다(변경 필드가 없으니 update 토큰은 없다).
-        return emit({"approval_token": approval.stage(tid, "add_ticket_comment",
-                                                 {"key": plan["key"], "body": cmt}),
+        return emit({"approval_token": staged(
+                    "add_ticket_comment", {"key": plan["key"], "body": cmt}),
                 "change_plan": plan})
 
     draft = state.get("draft") or {}
@@ -791,7 +838,7 @@ def _propose(state: AgentState) -> dict:
         # intentionally handled above under their separate deterministic contract.
         if review.get("ok") is not True:
             return emit({"approval_token": "", "comment_token": ""})
-        return emit({"approval_token": approval.stage(tid, "create_epic", p)})
+        return emit({"approval_token": staged("create_epic", p)})
     items = as_bulk_items(draft)
     if not items:
         return emit({})
@@ -804,7 +851,7 @@ def _propose(state: AgentState) -> dict:
     kids = child_items(draft)
     if kids:
         payload["children"] = kids
-    return emit({"approval_token": approval.stage(tid, "create_tickets", payload)})
+    return emit({"approval_token": staged("create_tickets", payload)})
 
 
 def build(checkpointer=None):
@@ -836,7 +883,9 @@ def build(checkpointer=None):
                              Node.PORTFOLIO_ANALYST: Node.PORTFOLIO_ANALYST,
                              "curate": Node.KNOWLEDGE_CURATOR,
                              "refine": Node.WORK_ARCHITECT, "respond": Node.RESULT_INTEGRATOR})
-    g.add_edge(Node.QUERY_SPECIALIST, Node.QUERY_RUNNER)
+    g.add_conditional_edges(Node.QUERY_SPECIALIST, route_after_query_specialist,
+                            {"acquire": Node.QUERY_RUNNER,
+                             "respond": Node.RESULT_INTEGRATOR})
     g.add_conditional_edges(Node.QUERY_RUNNER, route_after_query_runner,
                             {"investigate": Node.RESEARCH_ANALYST,
                              "refine": Node.WORK_ARCHITECT,

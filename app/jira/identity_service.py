@@ -200,7 +200,10 @@ class JiraIdentityMixin:
         mutation is not sent: without an actor, reconciliation could mistake another person's
         simultaneous same-body comment, same-name attachment, or same-fields issue for ours.
         """
-        current = self.current_user() or {}
+        # A six-hour cached /myself value can outlive an SSO user switch.  Writes and
+        # their durable reconciliation receipts must always be attributed to the
+        # session that is authenticated at the mutation boundary.
+        current = self.current_user_fresh() or {}
         actor_id = str(current.get("id") or "").strip()
         aliases = sorted({
             str(value or "").strip().casefold()

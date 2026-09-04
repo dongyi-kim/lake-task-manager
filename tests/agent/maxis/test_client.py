@@ -53,18 +53,21 @@ def _config(**overrides):
     return DifyClientConfig(**values)
 
 
-def _success(answer="{}"):
+def _success(answer="{}", *, retriever_resources=None):
+    metadata = {"usage": {
+        "prompt_tokens": 10,
+        "completion_tokens": 5,
+        "total_tokens": 15,
+    }}
+    if retriever_resources is not None:
+        metadata["retriever_resources"] = retriever_resources
     return {
         "event": "message",
         "task_id": "task-1",
         "message_id": "message-1",
         "conversation_id": "conversation-created-by-server",
         "answer": answer,
-        "metadata": {"usage": {
-            "prompt_tokens": 10,
-            "completion_tokens": 5,
-            "total_tokens": 15,
-        }},
+        "metadata": metadata,
     }
 
 
@@ -139,12 +142,115 @@ def test_invoke_is_blocking_stateless_and_uses_canonical_v1_url():
     assert observed["auth"] == "Bearer app-test-key"
     assert observed["body"]["response_mode"] == "blocking"
     assert observed["body"]["workflow_id"] == "wf-1"
-    assert "conversation_id" not in observed["body"]
+    assert observed["body"]["conversation_id"] == ""
+    assert observed["body"]["auto_generate_name"] is False
     serialized_pack = observed["body"]["inputs"]["context_pack"]
     assert isinstance(serialized_pack, str)
     assert json.loads(serialized_pack)["contract"] == "evidence-pack.v1"
     assert result.message_id == "message-1"
     assert result.usage.total_tokens == 15
+    assert result.retrieval.dataset_verified is False
+
+
+def test_invoke_verifies_bounded_retrieval_without_preserving_resource_data():
+    resources = [
+        {
+            "position": 1,
+            "dataset_id": "11111111-1111-4111-8111-111111111111",
+            "dataset_name": "RAW_DATASET_NAME_MUST_NOT_SURVIVE",
+            "document_id": "RAW_DOCUMENT_ID_MUST_NOT_SURVIVE",
+            "document_name": "RAW_DOCUMENT_NAME_MUST_NOT_SURVIVE",
+            "segment_id": "RAW_SEGMENT_ID_MUST_NOT_SURVIVE",
+            "score": 0.81234567,
+            "content": "RAW_RETRIEVED_CONTENT_MUST_NOT_SURVIVE",
+        },
+        {
+            "position": 2,
+            "dataset_id": "11111111-1111-4111-8111-111111111111",
+            "document_id": "another-private-document",
+            "score": 0.4,
+            "content": "another private chunk",
+        },
+    ]
+    http = httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, json=_success(retriever_resources=resources),
+        )
+    ))
+
+    result = DifyClient(_config(), client=http).invoke(
+        _binding(), api_key="app-key", query="질문",
+        user="ltm_0123456789abcdef", inputs=_inputs(), workflow_id="wf-1",
+        expected_knowledge_dataset_id=(
+            "11111111-1111-4111-8111-111111111111"
+        ),
+    )
+
+    assert result.retrieval.dataset_verified is True
+    assert result.retrieval.resource_count == 2
+    assert result.retrieval.scored_resource_count == 2
+    assert result.retrieval.minimum_score == 0.4
+    assert result.retrieval.maximum_score == 0.812346
+    encoded = result.model_dump_json()
+    assert "11111111-1111-4111-8111-111111111111" not in encoded
+    assert "RAW_DATASET_NAME_MUST_NOT_SURVIVE" not in encoded
+    assert "RAW_DOCUMENT_ID_MUST_NOT_SURVIVE" not in encoded
+    assert "RAW_DOCUMENT_NAME_MUST_NOT_SURVIVE" not in encoded
+    assert "RAW_SEGMENT_ID_MUST_NOT_SURVIVE" not in encoded
+    assert "RAW_RETRIEVED_CONTENT_MUST_NOT_SURVIVE" not in encoded
+
+
+@pytest.mark.parametrize(
+    "resources",
+    [
+        None,
+        [],
+        [{"dataset_id": "22222222-2222-4222-8222-222222222222"}],
+        [{"score": 0.9}],
+    ],
+)
+def test_invoke_fails_closed_when_expected_knowledge_dataset_is_not_proven(resources):
+    http = httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, json=_success(retriever_resources=resources),
+        )
+    ))
+
+    with pytest.raises(MaxisGatewayError) as caught:
+        DifyClient(_config(), client=http).invoke(
+            _binding(), api_key="app-key", query="질문",
+            user="ltm_0123456789abcdef", inputs=_inputs(), workflow_id="wf-1",
+            expected_knowledge_dataset_id=(
+                "11111111-1111-4111-8111-111111111111"
+            ),
+        )
+
+    assert caught.value.code is MaxisErrorCode.POLICY
+
+
+def test_invoke_rejects_unbounded_or_invalid_retrieval_metadata():
+    resources = [
+        {
+            "dataset_id": "11111111-1111-4111-8111-111111111111",
+            "score": 0.5,
+        }
+    ] * 21
+    http = httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, json=_success(retriever_resources=resources),
+        )
+    ))
+
+    with pytest.raises(MaxisGatewayError) as caught:
+        DifyClient(_config(), client=http).invoke(
+            _binding(), api_key="app-key", query="질문",
+            user="ltm_0123456789abcdef", inputs=_inputs(), workflow_id="wf-1",
+            expected_knowledge_dataset_id=(
+                "11111111-1111-4111-8111-111111111111"
+            ),
+        )
+
+    assert caught.value.code is MaxisErrorCode.INVALID_RESPONSE
 
 
 def test_http_failure_is_classified_and_never_retried():
@@ -406,7 +512,7 @@ def test_probe_response_size_cap_is_enforced():
         (lambda answer: {
             **answer,
             "claims": [{
-                **answer["claims"][0], "kind": "inference", "citation_ids": [],
+                **answer["claims"][0], "kind": "open_fact", "citation_ids": [],
             }],
             "citations": [],
         },
@@ -449,7 +555,15 @@ def test_contract_probe_rejects_version_or_citation_mismatch(mutate, error_code)
             "knowledge_manifest_sha256": pack["knowledge_manifest_sha256"],
             "knowledge_proof": sentinel,
         }
-        return httpx.Response(200, json=_success(json.dumps(mutate(answer))))
+        return httpx.Response(200, json=_success(
+            json.dumps(mutate(answer)),
+            retriever_resources=[{
+                "dataset_id": "11111111-1111-4111-8111-111111111111",
+                "document_id": "private-probe-document",
+                "content": "private probe chunk",
+                "score": 0.75,
+            }],
+        ))
 
     result = DifyClient(
         _config(), client=httpx.Client(transport=httpx.MockTransport(handler))
@@ -460,6 +574,9 @@ def test_contract_probe_rejects_version_or_citation_mismatch(mutate, error_code)
         knowledge_sentinel_sha256=hashlib.sha256(
             sentinel.encode("utf-8")
         ).hexdigest(),
+        expected_knowledge_dataset_id=(
+            "11111111-1111-4111-8111-111111111111"
+        ),
     )
     assert result.ok is False
     assert result.contract_verified is (

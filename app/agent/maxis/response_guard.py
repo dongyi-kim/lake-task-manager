@@ -318,7 +318,7 @@ class ResponseGuard:
         metrics = tuple(evidence.metrics)
 
         for index, claim in enumerate(remote.claims):
-            if claim.kind not in {"fact", "recommendation"}:
+            if claim.kind not in {"fact", "inference", "recommendation"}:
                 continue
             cited_source_ids = {
                 citations[citation_id].source_id
@@ -417,7 +417,8 @@ class ResponseGuard:
                 raise ResponseGuardError("payload_claim_path_not_text", pointer)
             linked = [claims[claim_id] for claim_id in binding.claim_ids]
             if any(
-                claim.kind in {"fact", "recommendation"} and not claim.citation_ids
+                claim.kind in {"fact", "inference", "recommendation"}
+                and not claim.citation_ids
                 for claim in linked
             ):
                 raise ResponseGuardError("payload_claim_citation_required", pointer)

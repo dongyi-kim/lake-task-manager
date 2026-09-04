@@ -153,7 +153,7 @@ def _initial(thread_id, text, user_role, user_id) -> dict:
             # 새 턴이 시작되면 지난 턴의 승인·실행 결과는 지운다 — 안 지우면 옛 토큰으로
             # result_integrator 가 다시 '승인 대기'로 흘러간다.
             "approval_token": "", "comment_token": "", "result": {},
-            "execution_receipt": {}, "revisions": 0,
+            "execution_receipt": {}, "change_audit_binding": {}, "revisions": 0,
             "repair_budget": zero_typed_repair_budget(),
             "runtime_role_engines": ROLE_ENGINES_RESET,
             "runtime_role_telemetry": ROLE_TELEMETRY_RESET,
@@ -462,6 +462,7 @@ _TURN_DERIVED_EMPTY = {
     "interpretation": "", "structure_plan": [], "structure_ok": False,
     "structure_notes": [], "draft": {}, "assignments": [], "review": {},
     "reply": "", "error": "", "turns": 0, "execution_receipt": {},
+    "change_audit_binding": {},
     "query_evidence_attestations": {},
     "evidence_workspace": {}, "freshness": {}, "quality_gate": {},
     "repair_budget": zero_typed_repair_budget(),
@@ -951,6 +952,9 @@ def resume(thread_id: str, token: str, overrides: dict = None) -> dict:
                         approval.reject(candidate)
                 return {"thread_id": thread_id, "ok": False, "error": str(exc)[:300]}
             raise
+        actor_ok, actor_error = approval.verify_actor(token, thread_id)
+        if not actor_ok:
+            return {"thread_id": thread_id, "ok": False, "error": actor_error}
         err = _apply_overrides(thread_id, token, overrides)
         if err:
             return {"thread_id": thread_id, "ok": False, "error": err}
@@ -965,12 +969,25 @@ def resume(thread_id: str, token: str, overrides: dict = None) -> dict:
                 approval.approve(vals["comment_token"], thread_id)
         except Exception:
             pass
+        change_binding = None
         try:
             from app.agent.maxis.backend import record_change_audit
 
+            correlation_id = str(pinned.get("correlation_id") or "")
+            if correlation_id:
+                approved_record = approval.peek(token)
+                change_binding = approval.change_audit_binding(
+                    token, correlation_id=correlation_id, record=approved_record,
+                )
             record_change_audit(
                 dict(pinned), event="change.approved", status="succeeded",
+                change_binding=change_binding,
             )
+            if change_binding is not None:
+                get_graph().update_state(
+                    _config(thread_id), {"change_audit_binding": change_binding},
+                )
+                pinned = {**dict(pinned), "change_audit_binding": change_binding}
         except Exception as exc:
             # No external write has started yet. Revoke the capabilities rather than
             # allowing an unaudited mutation to proceed.
@@ -992,9 +1009,16 @@ def resume(thread_id: str, token: str, overrides: dict = None) -> dict:
         except Exception:
             try:
                 from app.agent.maxis.backend import record_change_audit
+                failed_binding = (
+                    approval.finalize_change_audit_binding(
+                        change_binding, token=token, thread_id=thread_id,
+                    )
+                    if change_binding is not None else None
+                )
                 record_change_audit(
                     dict(pinned), event="change.execution", status="failed",
                     error_code="execution_exception",
+                    change_binding=failed_binding,
                 )
             except Exception:
                 log.warning("[%s] execution 감사 기록 실패", thread_id)
@@ -1015,6 +1039,7 @@ def resume(thread_id: str, token: str, overrides: dict = None) -> dict:
                 dict(state or pinned), event="change.execution",
                 status="succeeded" if succeeded else "failed",
                 error_code="" if succeeded else "execution_failed",
+                change_binding=(state or pinned).get("change_audit_binding"),
             )
         except Exception:
             # The write may already have happened; never invite a duplicate retry merely
@@ -1157,6 +1182,18 @@ def cancel(thread_id: str, token: str) -> dict:
     except Exception:
         pass
     record = approval.peek(token)
+    change_binding = None
+    if record and str(record.get("thread") or "") == str(thread_id or ""):
+        correlation_id = str(audit_state.get("correlation_id") or "")
+        if correlation_id:
+            try:
+                # Capture the server-owned fingerprint and capability digest before reject()
+                # destroys the one-use record.
+                change_binding = approval.change_audit_binding(
+                    token, correlation_id=correlation_id, record=record,
+                )
+            except Exception:
+                change_binding = None
     rejected = approval.reject(token)
     if rejected and record and str(record.get("thread") or "") == str(thread_id or ""):
         try:
@@ -1164,6 +1201,7 @@ def cancel(thread_id: str, token: str) -> dict:
             record_change_audit(
                 audit_state, event="change.cancelled", status="blocked",
                 error_code="user_cancelled",
+                change_binding=change_binding,
             )
         except Exception:
             log.warning("[%s] cancellation 감사 기록 실패", thread_id)

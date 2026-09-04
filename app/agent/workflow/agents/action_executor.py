@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import hmac
 from copy import deepcopy
 
 from app.agent.workflow.agents.base import Agent
@@ -78,6 +79,36 @@ class ActionExecutor(Agent):
             approval.reject(token)
             return self._failed(state, "승인된 실행 payload 형식이 올바르지 않습니다.")
 
+        action = str(record.get("action") or "")
+        correlation_id = str(state.get("correlation_id") or "")
+        change_binding = None
+        if correlation_id:
+            try:
+                change_binding = approval.verify_change_audit_binding(
+                    state.get("change_audit_binding"), token=token,
+                    correlation_id=correlation_id, record=record,
+                )
+            except Exception:
+                # The rejected binding is never rebuilt from record data.  A pre-existing,
+                # server-sealed binding may still be moved to the honest `not_issued` terminal
+                # state so proposal→approval→failed audit continuity is not lost.
+                terminal_binding = self._terminal_existing_change_binding(
+                    approval, state.get("change_audit_binding"), token=token,
+                    thread_id=thread_id, correlation_id=correlation_id,
+                    record=record,
+                )
+                approval.reject(token)
+                comment_token = str(state.get("comment_token") or "")
+                comment_record = approval.peek(comment_token) if comment_token else None
+                if (comment_token and comment_record
+                        and str(comment_record.get("thread") or "") == thread_id):
+                    approval.reject(comment_token)
+                return self._failed(
+                    state,
+                    "변경 승인 감사 결속이 없거나 변조되어 실행하지 않았습니다.",
+                    change_audit_binding=terminal_binding,
+                )
+
         # Compound cards are two separately consumable fingerprints. Validate their reciprocal
         # server-owned binding before executing the primary; otherwise a missing/stale token can
         # silently drop the comment, or a valid comment capability for another ticket can be
@@ -119,9 +150,13 @@ class ActionExecutor(Agent):
                 if (comment_token and comment_token != bound_peer and comment_record
                         and str(comment_record.get("thread") or "") == thread_id):
                     approval.reject(comment_token)
+                terminal_binding = self._terminal_change_binding(
+                    approval, change_binding, token=token, thread_id=thread_id,
+                )
                 return self._failed(
                     state,
                     "같은 승인 카드의 primary·comment 실행 지문이 서로 결속되지 않아 실행하지 않았습니다.",
+                    change_audit_binding=terminal_binding,
                 )
         elif comment_token:
             # A loose secondary token is never a compound approval, even when action/thread
@@ -129,11 +164,13 @@ class ActionExecutor(Agent):
             approval.reject(token)
             if comment_record and str(comment_record.get("thread") or "") == thread_id:
                 approval.reject(comment_token)
+            terminal_binding = self._terminal_change_binding(
+                approval, change_binding, token=token, thread_id=thread_id,
+            )
             return self._failed(
                 state, "서로 결속되지 않은 코멘트 승인 토큰이 있어 변경을 실행하지 않았습니다.",
+                change_audit_binding=terminal_binding,
             )
-
-        action = str(record.get("action") or "")
         primary_cancelled = False
         try:
             result, label, consumption_attestation = self._dispatch_once(
@@ -159,7 +196,11 @@ class ActionExecutor(Agent):
             blocked = scrub_execution_sidecars(
                 blocked, secrets_to_remove=(token, comment_token),
             )
+            terminal_binding = self._terminal_change_binding(
+                approval, change_binding, token=token, thread_id=thread_id,
+            )
             return {"result": blocked, "execution_receipt": {},
+                    "change_audit_binding": terminal_binding,
                     "trace": note(state, self.name, "외부 실행 응답 중단 · 결과 확인 필요")}
         raw_execution = result.pop("_execution_raw", None)
 
@@ -289,7 +330,21 @@ class ActionExecutor(Agent):
                 result = self._verification_needed_result(
                     action, "외부 실행 결과를 안전하게 표시할 수 없어 실제 반영 여부를 확인해야 합니다.",
                 )
+        terminal_binding = self._terminal_change_binding(
+            approval, change_binding, token=token, thread_id=thread_id,
+            execution_receipt=receipt,
+        )
+        if change_binding is not None and not terminal_binding:
+            # The Jira mutation may already have happened.  Do not raise/retry, but also do not
+            # present an unauditable success as a proven terminal result.
+            receipt = None
+            result = receipt_contract.scrub_execution_sidecars(
+                self._verification_needed_result(
+                    action, "실행 결과와 감사 증빙을 결속하지 못해 실제 반영 여부를 확인해야 합니다.",
+                ), secrets_to_remove=secrets,
+            )
         return {"result": result, "execution_receipt": receipt or {},
+                "change_audit_binding": terminal_binding,
                 "trace": note(state, self.name, label)}
 
     @staticmethod
@@ -301,6 +356,59 @@ class ActionExecutor(Agent):
         result = cls._empty_result()
         result["failed"] = [{"summary": action or "승인 작업", "error": error}]
         return result
+
+    @staticmethod
+    def _terminal_change_binding(
+            approval_module, binding, *, token: str, thread_id: str,
+            execution_receipt=None) -> dict:
+        if binding is None:
+            return {}
+        try:
+            return approval_module.finalize_change_audit_binding(
+                binding, token=token, thread_id=thread_id,
+                execution_receipt=execution_receipt,
+            )
+        except Exception:
+            return {}
+
+    @classmethod
+    def _terminal_existing_change_binding(
+            cls, approval_module, binding, *, token: str, thread_id: str,
+            correlation_id: str, record: dict) -> dict:
+        """Terminalize only an existing authentic binding; never mint a replacement.
+
+        Canonical capability verification can reject before dispatch.  The audit binding may
+        nevertheless be the valid server-sealed proposal/approval identity.  Its HMAC and current
+        approval record are checked here; token and thread are checked again by the finalizer.
+        Any injected, pre-edit, stale or unrelated value is discarded rather than re-signed.
+        """
+        try:
+            from app.agent.maxis.audit import validate_change_audit_binding
+
+            observed = validate_change_audit_binding(binding)
+            expected = validate_change_audit_binding(
+                approval_module.change_audit_binding(
+                    token, correlation_id=correlation_id, record=record,
+                )
+            )
+            comparable_fields = (
+                "contract", "actor_sha256", "approval_payload_sha256", "capability_sha256",
+                "correlation_sha256", "thread_sha256", "action_sha256", "scope",
+                "receipt_status", "execution_receipt_sha256",
+                "execution_receipt_signature", "binding_seal",
+            )
+            if any(
+                not hmac.compare_digest(str(getattr(observed, field)),
+                                        str(getattr(expected, field)))
+                for field in comparable_fields
+            ):
+                return {}
+        except Exception:
+            return {}
+        return cls._terminal_change_binding(
+            approval_module, observed.model_dump(mode="python"),
+            token=token, thread_id=thread_id,
+        )
 
     def _dispatch_once(self, action: str, payload: dict, token: str,
                        thread_id: str) -> tuple[dict, str, dict | None]:
@@ -324,11 +432,19 @@ class ActionExecutor(Agent):
         )
         return result, label, attestation
 
-    def _failed(self, state, message: str, summary: str = "승인 작업") -> dict:
+    def _failed(
+            self, state, message: str, summary: str = "승인 작업", *,
+            change_audit_binding: dict | None = None) -> dict:
         result = self._empty_result()
         result["failed"] = [{"summary": summary, "error": str(message or "")[:300]}]
-        return {"result": result, "execution_receipt": {},
-                "trace": note(state, self.name, f"실행 거부 — {str(message or '')[:80]}")}
+        output = {
+            "result": result,
+            "execution_receipt": {},
+            "trace": note(state, self.name, f"실행 거부 — {str(message or '')[:80]}"),
+        }
+        if change_audit_binding is not None:
+            output["change_audit_binding"] = change_audit_binding
+        return output
 
     @staticmethod
     def _failure_rows(raw: dict, summary: str) -> list[dict]:

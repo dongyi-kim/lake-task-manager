@@ -35,6 +35,27 @@ def test_chitchat_skips_investigation():
     assert G.route_after_request_architect({"intent": Intent.CHITCHAT}) == "respond"
 
 
+def test_request_architect_failure_never_starts_an_acquisition_role():
+    assert G.route_after_request_architect({
+        "intent": "",
+        "error": "MAXIS knowledge attestation rejected",
+    }) == "respond"
+
+
+@pytest.mark.parametrize("terminal", [
+    {"error": "MAXIS query plan rejected"},
+    {"questions": [{"question": "조회 대상을 알려 주세요."}]},
+])
+def test_query_specialist_control_outcome_never_starts_acquisition(terminal):
+    assert G.route_after_query_specialist(terminal) == "respond"
+
+
+def test_query_specialist_valid_plan_starts_acquisition():
+    assert G.route_after_query_specialist({
+        "query_plan": {"queries": [], "joins": []},
+    }) == "acquire"
+
+
 def test_memory_only_context_is_acknowledged_without_research():
     from langchain_core.messages import HumanMessage
 

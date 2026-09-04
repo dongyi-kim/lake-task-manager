@@ -65,6 +65,92 @@ def test_failed_audit_event_requires_safe_error_code():
         )
 
 
+def _change_event(binding=None, *, event="change.proposal", status="started",
+                  error_code=""):
+    return make_audit_event(
+        correlation_id="corr-change-binding",
+        event=event,
+        status=status,
+        profile="dev",
+        stage="dev",
+        route_mode="local",
+        workflow_key="ltm-change",
+        role_id="action_executor",
+        error_code=error_code,
+        change_binding=binding,
+    )
+
+
+def test_change_event_requires_sealed_content_free_binding_and_rejects_tampering():
+    from app.agent import approval
+
+    approval.clear()
+    payload = {
+        "key": "SECRET-482", "changes": {"description": "사용자 원문 비밀"},
+    }
+    token = approval.stage(
+        "audit-thread", "update_ticket", payload,
+        actor={"id": "stable.jira.actor", "aliases": ["stable.jira.actor"]},
+    )
+    try:
+        binding = approval.change_audit_binding(
+            token, correlation_id="corr-change-binding",
+        )
+        row = audit_log_fields(_change_event(binding))
+        encoded = json.dumps(row, ensure_ascii=False)
+        assert row["change_binding"]["actor_sha256"]
+        assert row["change_binding"]["approval_payload_sha256"] == approval.fingerprint(payload)
+        assert "stable.jira.actor" not in encoded
+        assert "SECRET-482" not in encoded
+        assert "사용자 원문 비밀" not in encoded
+        assert token not in encoded
+
+        with pytest.raises(ValidationError, match="sealed change binding"):
+            _change_event()
+        tampered = dict(binding)
+        tampered["actor_sha256"] = "f" * 64
+        with pytest.raises(ValueError, match="invalid change audit binding"):
+            _change_event(tampered)
+        valid_event = _change_event(binding)
+        bypassed_binding = valid_event.change_binding.model_copy(
+            update={"actor_sha256": "f" * 64},
+        )
+        bypassed = valid_event.model_copy(update={"change_binding": bypassed_binding})
+        with pytest.raises(ValueError, match="invalid audit event"):
+            audit_log_fields(bypassed)
+    finally:
+        approval.reject(token)
+        approval.clear()
+
+
+def test_change_execution_cannot_claim_an_unverified_receipt():
+    from app.agent import approval
+
+    approval.clear()
+    token = approval.stage(
+        "audit-thread", "add_ticket_comment",
+        {"key": "SECRET-1", "body": "원문"},
+        actor={"id": "jira.actor", "aliases": ["jira.actor"]},
+    )
+    try:
+        binding = approval.change_audit_binding(
+            token, correlation_id="corr-change-binding",
+        )
+        with pytest.raises(ValidationError, match="explicit receipt outcome"):
+            _change_event(binding, event="change.execution", status="succeeded")
+        terminal = approval.finalize_change_audit_binding(
+            binding, token=token, thread_id="audit-thread",
+        )
+        event = _change_event(
+            terminal, event="change.execution", status="succeeded",
+        )
+        assert event.change_binding.receipt_status == "not_issued"
+        assert event.change_binding.execution_receipt_sha256 == ""
+    finally:
+        approval.reject(token)
+        approval.clear()
+
+
 def _event(index: int, *, status="succeeded", error_code=""):
     return make_audit_event(
         correlation_id=f"req-{index}",

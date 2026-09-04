@@ -12,7 +12,7 @@ import os
 import re
 import threading
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit, urlunsplit
 
 from app.infra import prefs
@@ -29,12 +29,28 @@ PROFILE_NAMES = ("dev", "prod")
 WORKFLOW_KEYS = credentials.WORKFLOW_KEYS
 ROUTE_MODES = ("local", "shadow", "maxis")
 DATA_POLICIES = ("synthetic_only", "internal_read_only")
+REMOTE_LOG_MODES = ("redacted", "approved_bounded_content")
+DEV_REMOTE_LOG_POLICY_ID = "synthetic-only"
+PROBE_TTL_SECONDS = 24 * 60 * 60
+KNOWLEDGE_EVAL_ATTESTATION_CONTRACT = "ltm-maxis-knowledge-eval-attestation.v1"
+KNOWLEDGE_EVAL_MATERIAL_CONTRACT = "ltm-maxis-knowledge-eval-material.v1"
+_UTC_INSTANT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$")
+_KNOWLEDGE_EVAL_ATTESTATION_FIELDS = frozenset({
+    "contract", "evidence_id", "outcome", "case_count", "artifact_sha256",
+    "passed_at", "suite_sha256",
+    "dataset_id", "knowledge_manifest_sha256", "workflow_versions",
+    "profile_material_sha256",
+})
 CONFIG_ENV_NAMES = {
     "base_url": "LAKE_MAXIS_BASE_URL",
     "workflow_bundle_version": "LAKE_MAXIS_WORKFLOW_BUNDLE_VERSION",
     "knowledge_version": "LAKE_MAXIS_KNOWLEDGE_VERSION",
     "knowledge_dataset_id": "LAKE_MAXIS_KNOWLEDGE_DATASET_ID",
     "knowledge_sentinel_sha256": "LAKE_MAXIS_KNOWLEDGE_SENTINEL_SHA256",
+    "remote_log_policy_id": "LAKE_MAXIS_REMOTE_LOG_POLICY_ID",
+    "remote_log_mode": "LAKE_MAXIS_REMOTE_LOG_MODE",
+    "remote_log_retention_days": "LAKE_MAXIS_REMOTE_LOG_RETENTION_DAYS",
+    "knowledge_eval_attestation": "LAKE_MAXIS_KNOWLEDGE_EVAL_ATTESTATION",
 }
 WORKFLOW_VERSION_ENV_NAMES = {
     "agent_core": "LAKE_MAXIS_AGENT_CORE_VERSION",
@@ -76,6 +92,15 @@ def _default_profile(name: str) -> dict:
         "knowledge_version": "",
         "knowledge_dataset_id": "",
         "knowledge_sentinel_sha256": "",
+        # This is a manager attestation about the approved remote service policy,
+        # not technical proof of Dify's workspace settings.  Production activation
+        # therefore also requires a successful post-configuration probe.
+        "remote_log_policy_id": DEV_REMOTE_LOG_POLICY_ID if name == "dev" else "",
+        "remote_log_mode": "redacted" if name == "dev" else "",
+        "remote_log_retention_days": 0 if name == "dev" else None,
+        # Human/CI attestation pointing at an externally retained remote 25-case
+        # result artifact. LTM verifies only metadata bindings, never artifact content.
+        "knowledge_eval_attestation": {},
         "workflows": {
             key: {"binding": binding, "version": ""}
             for key, binding in _DEFAULT_BINDINGS.items()
@@ -102,10 +127,15 @@ def _merged_profile(name: str) -> dict:
     for key in (
         "base_url", "data_policy", "workflow_bundle_version", "knowledge_version",
         "knowledge_dataset_id",
-        "knowledge_sentinel_sha256",
+        "knowledge_sentinel_sha256", "remote_log_policy_id", "remote_log_mode",
     ):
         if key in saved:
             out[key] = str(saved.get(key) or "").strip()
+    if "remote_log_retention_days" in saved:
+        out["remote_log_retention_days"] = saved.get("remote_log_retention_days")
+    if "knowledge_eval_attestation" in saved:
+        value = saved.get("knowledge_eval_attestation")
+        out["knowledge_eval_attestation"] = deepcopy(value) if isinstance(value, dict) else value
     saved_workflows = saved.get("workflows") if isinstance(saved.get("workflows"), dict) else {}
     for workflow_key in WORKFLOW_KEYS:
         row = saved_workflows.get(workflow_key)
@@ -170,6 +200,130 @@ def _clean_digest(value: object, label: str) -> str:
     return candidate
 
 
+def _clean_retention_days(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise ValueError("Remote log retention days must be an integer from 0 to 90.")
+    if isinstance(value, int):
+        result = value
+    elif isinstance(value, str) and re.fullmatch(r"(?:0|[1-9][0-9]*)", value.strip()):
+        result = int(value.strip())
+    else:
+        raise ValueError("Remote log retention days must be an integer from 0 to 90.")
+    if not 0 <= result <= 90:
+        raise ValueError("Remote log retention days must be between 0 and 90.")
+    return result
+
+
+def _clean_utc_instant(value: object, label: str) -> str:
+    raw = str(value or "").strip()
+    if not _UTC_INSTANT.fullmatch(raw):
+        raise ValueError(f"{label} must be a canonical UTC ISO timestamp ending in Z.")
+    try:
+        datetime.fromisoformat(raw[:-1] + "+00:00")
+    except ValueError as exc:
+        raise ValueError(f"Invalid {label}.") from exc
+    return raw
+
+
+def _clean_knowledge_eval_attestation(value: object) -> dict:
+    """Validate untrusted attestation metadata without treating it as proof.
+
+    The referenced artifact stays outside LTM.  These fields only let the runtime bind
+    an operator/CI assertion to one exact, non-secret profile material snapshot.
+    """
+
+    if value in (None, ""):
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("Knowledge eval attestation must be an object.")
+    if not value:
+        return {}
+    if set(value) != _KNOWLEDGE_EVAL_ATTESTATION_FIELDS:
+        raise ValueError("Knowledge eval attestation fields are incomplete.")
+    if value.get("contract") != KNOWLEDGE_EVAL_ATTESTATION_CONTRACT:
+        raise ValueError("Unsupported Knowledge eval attestation contract.")
+    if value.get("outcome") != "passed" or value.get("case_count") != 25:
+        raise ValueError(
+            "Knowledge eval attestation must record outcome=passed and case_count=25."
+        )
+    evidence_id = _clean_version(value.get("evidence_id"), "Knowledge eval evidence id")
+    if not evidence_id:
+        raise ValueError("Knowledge eval evidence id is required.")
+    workflow_versions = value.get("workflow_versions")
+    if not isinstance(workflow_versions, dict) or set(workflow_versions) != set(WORKFLOW_KEYS):
+        raise ValueError("Knowledge eval workflow_versions must cover every workflow.")
+    clean_versions = {
+        key: _clean_version(workflow_versions.get(key), f"{key} eval workflow version")
+        for key in WORKFLOW_KEYS
+    }
+    if any(not version for version in clean_versions.values()):
+        raise ValueError(
+            "Knowledge eval workflow_versions must identify every evaluated workflow."
+        )
+    dataset_id = _clean_dataset_id(value.get("dataset_id"))
+    if not dataset_id:
+        raise ValueError("Knowledge eval dataset_id is required.")
+    digests = {
+        "artifact_sha256": _clean_digest(
+            value.get("artifact_sha256"), "Knowledge eval artifact"
+        ),
+        "suite_sha256": _clean_digest(
+            value.get("suite_sha256"), "Knowledge eval suite"
+        ),
+        "knowledge_manifest_sha256": _clean_digest(
+            value.get("knowledge_manifest_sha256"), "Knowledge eval manifest"
+        ),
+        "profile_material_sha256": _clean_digest(
+            value.get("profile_material_sha256"), "Knowledge eval profile material"
+        ),
+    }
+    if any(not digest for digest in digests.values()):
+        raise ValueError("Every Knowledge eval SHA-256 binding is required.")
+    return {
+        "contract": KNOWLEDGE_EVAL_ATTESTATION_CONTRACT,
+        "evidence_id": evidence_id,
+        "outcome": "passed",
+        "case_count": 25,
+        "artifact_sha256": digests["artifact_sha256"],
+        "passed_at": _clean_utc_instant(
+            value.get("passed_at"), "Knowledge eval passed_at"
+        ),
+        "suite_sha256": digests["suite_sha256"],
+        "dataset_id": dataset_id,
+        "knowledge_manifest_sha256": digests["knowledge_manifest_sha256"],
+        "workflow_versions": clean_versions,
+        "profile_material_sha256": digests["profile_material_sha256"],
+    }
+
+
+def _validate_remote_log_attestation(profile: dict, *, required: bool) -> None:
+    """Validate a manager attestation; this does not inspect Dify workspace settings."""
+    name = str(profile.get("name") or "").strip().lower()
+    policy_id = str(profile.get("remote_log_policy_id") or "").strip()
+    mode = str(profile.get("remote_log_mode") or "").strip().lower()
+    retention = profile.get("remote_log_retention_days")
+    if name == "dev":
+        if (policy_id != DEV_REMOTE_LOG_POLICY_ID or mode != "redacted"
+                or retention != 0):
+            raise ValueError(
+                "The dev synthetic-only profile requires the fixed redacted/0-day "
+                "remote log policy."
+            )
+        return
+    if mode and mode not in REMOTE_LOG_MODES:
+        raise ValueError(
+            "Remote log mode must be redacted or approved_bounded_content."
+        )
+    if required and (not policy_id or not mode or retention is None):
+        raise ValueError(
+            "Prod MAXIS requires a manager-attested remote log policy id, mode, and "
+            "retention days before probe/activation. This attestation does not "
+            "technically verify the Dify workspace settings."
+        )
+
+
 def _build_profile_manifest(
     profile: dict, *, required: bool,
 ) -> KnowledgeManifest | None:
@@ -188,6 +342,161 @@ def _build_profile_manifest(
         )
     except KnowledgeManifestError as exc:
         raise ValueError(f"Invalid MAXIS knowledge manifest: {exc}") from exc
+
+
+def knowledge_eval_attestation_binding(profile: dict | str = "") -> dict:
+    """Return the exact non-secret material an external eval must attest.
+
+    This digest intentionally excludes API keys and the attestation itself.  It is a
+    binding target, not verification that LTM opened, signed, or replayed the external
+    result artifact.
+    """
+
+    if isinstance(profile, dict):
+        candidate = profile
+    else:
+        name = str(profile or active_profile_name()).strip().lower()
+        if not name:
+            raise ValueError("No MAXIS profile for Knowledge eval attestation.")
+        candidate = _effective(get(name))
+    manifest = _build_profile_manifest(candidate, required=True)
+    assert manifest is not None
+    workflows = candidate.get("workflows") or {}
+    workflow_versions = {
+        key: str((workflows.get(key) or {}).get("version") or "").strip()
+        for key in WORKFLOW_KEYS
+    }
+    material = {
+        "contract": KNOWLEDGE_EVAL_MATERIAL_CONTRACT,
+        "profile": {
+            key: candidate.get(key)
+            for key in (
+                "name", "stage", "base_url", "data_policy",
+                "workflow_bundle_version", "knowledge_version",
+                "knowledge_dataset_id", "knowledge_sentinel_sha256",
+                "remote_log_policy_id", "remote_log_mode",
+                "remote_log_retention_days",
+            )
+        },
+        "knowledge_manifest_sha256": manifest.sha256,
+        "workflows": {
+            key: {
+                "binding": str((workflows.get(key) or {}).get("binding") or ""),
+                "version": workflow_versions[key],
+            }
+            for key in WORKFLOW_KEYS
+        },
+    }
+    encoded = json.dumps(
+        material, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return {
+        "suite_sha256": str(manifest.governance["eval_suite_sha256"]),
+        "dataset_id": str(candidate.get("knowledge_dataset_id") or ""),
+        "knowledge_manifest_sha256": manifest.sha256,
+        "workflow_versions": workflow_versions,
+        "profile_material_sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+
+
+def knowledge_eval_attestation_status(profile: dict | str = "") -> dict:
+    """Expose a secret-free binding status; external artifact content is not read."""
+
+    if isinstance(profile, dict):
+        candidate = profile
+    else:
+        name = str(profile or active_profile_name()).strip().lower()
+        if not name:
+            raise ValueError("No MAXIS profile for Knowledge eval attestation.")
+        candidate = _effective(get(name))
+    raw = candidate.get("knowledge_eval_attestation")
+    try:
+        attestation = _clean_knowledge_eval_attestation(raw)
+    except ValueError as exc:
+        return {
+            "configured": bool(raw),
+            "valid": False,
+            "verification": "metadata_binding_only_external_artifact_not_read",
+            "reasons": [str(exc)],
+            "attestation": {},
+            "expectedBinding": {},
+        }
+    if str(candidate.get("stage") or "") != "prod":
+        return {
+            "configured": bool(attestation),
+            "valid": False,
+            "verification": "metadata_binding_only_external_artifact_not_read",
+            "reasons": ["Knowledge eval attestation is required only for prod authority."],
+            "attestation": {},
+            "expectedBinding": {},
+        }
+    try:
+        expected = knowledge_eval_attestation_binding(candidate)
+    except ValueError as exc:
+        return {
+            "configured": bool(attestation),
+            "valid": False,
+            "verification": "metadata_binding_only_external_artifact_not_read",
+            "reasons": [str(exc)],
+            "attestation": {},
+            "expectedBinding": {},
+        }
+    reasons: list[str] = []
+    if not attestation:
+        reasons.append("A remote 25-case Knowledge eval attestation is not configured.")
+    else:
+        for field in (
+            "suite_sha256", "dataset_id", "knowledge_manifest_sha256",
+            "workflow_versions", "profile_material_sha256",
+        ):
+            if attestation.get(field) != expected[field]:
+                reasons.append(f"Knowledge eval {field} is not bound to the current profile.")
+        passed = datetime.fromisoformat(attestation["passed_at"][:-1] + "+00:00")
+        if passed > datetime.now(timezone.utc):
+            reasons.append("Knowledge eval passed_at cannot be in the future.")
+    public_attestation = ({
+        "contract": attestation["contract"],
+        "evidenceId": attestation["evidence_id"],
+        "outcome": attestation["outcome"],
+        "caseCount": attestation["case_count"],
+        "artifactSha256": attestation["artifact_sha256"],
+        "passedAt": attestation["passed_at"],
+        "suiteSha256": attestation["suite_sha256"],
+        "datasetId": attestation["dataset_id"],
+        "knowledgeManifestSha256": attestation["knowledge_manifest_sha256"],
+        "workflowVersions": dict(attestation["workflow_versions"]),
+        "profileMaterialSha256": attestation["profile_material_sha256"],
+    } if attestation else {})
+    workflow_versions_sha256 = hashlib.sha256(json.dumps(
+        expected["workflow_versions"], ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+    return {
+        "configured": bool(attestation),
+        "valid": bool(attestation) and not reasons,
+        "verification": "metadata_binding_only_external_artifact_not_read",
+        "reasons": reasons,
+        "attestation": public_attestation,
+        "expectedBinding": {
+            "suiteSha256": expected["suite_sha256"],
+            "datasetId": expected["dataset_id"],
+            "knowledgeManifestSha256": expected["knowledge_manifest_sha256"],
+            "workflowVersionsSha256": workflow_versions_sha256,
+            "profileMaterialSha256": expected["profile_material_sha256"],
+        },
+    }
+
+
+def _require_current_knowledge_eval_attestation(profile: dict) -> None:
+    if str(profile.get("stage") or "") != "prod":
+        return
+    status = knowledge_eval_attestation_status(profile)
+    if not status["valid"]:
+        raise ValueError(
+            "Prod MAXIS authority requires a current external 25-case Knowledge eval "
+            "attestation: " + "; ".join(status["reasons"])
+        )
 
 
 def _validate(profile: dict, *, activation: bool = False) -> dict:
@@ -212,6 +521,19 @@ def _validate(profile: dict, *, activation: bool = False) -> dict:
     result["knowledge_sentinel_sha256"] = _clean_digest(
         profile.get("knowledge_sentinel_sha256"), "Knowledge release sentinel"
     )
+    result["remote_log_policy_id"] = _clean_version(
+        profile.get("remote_log_policy_id"), "remote log policy id"
+    )
+    result["remote_log_mode"] = str(
+        profile.get("remote_log_mode") or ""
+    ).strip().lower()
+    result["remote_log_retention_days"] = _clean_retention_days(
+        profile.get("remote_log_retention_days")
+    )
+    result["knowledge_eval_attestation"] = _clean_knowledge_eval_attestation(
+        profile.get("knowledge_eval_attestation")
+    )
+    _validate_remote_log_attestation(result, required=activation and name == "prod")
     workflows = profile.get("workflows")
     if not isinstance(workflows, dict):
         raise ValueError("workflows must be an object.")
@@ -271,7 +593,9 @@ def save(profile_name: str, patch: dict | None = None) -> dict:
     patch = patch or {}
     allowed = {"base_url", "data_policy", "workflow_bundle_version",
                "knowledge_version", "knowledge_dataset_id",
-               "knowledge_sentinel_sha256", "workflows"}
+               "knowledge_sentinel_sha256", "remote_log_policy_id",
+               "remote_log_mode", "remote_log_retention_days",
+               "knowledge_eval_attestation", "workflows"}
     if set(patch) - allowed:
         raise ValueError("Unsupported MAXIS profile field.")
     for key in allowed - {"workflows"}:
@@ -299,9 +623,9 @@ def save(profile_name: str, patch: dict | None = None) -> dict:
         last_probe = dict(state.get("maxisLastProbeByProfile") or {})
         verified.pop(name, None)
         last_probe.pop(name, None)
-        prefs.save({"maxisProfiles": [rows[key] for key in PROFILE_NAMES],
-                    "maxisProbeOkByProfile": verified,
-                    "maxisLastProbeByProfile": last_probe})
+        prefs.save_strict({"maxisProfiles": [rows[key] for key in PROFILE_NAMES],
+                           "maxisProbeOkByProfile": verified,
+                           "maxisLastProbeByProfile": last_probe})
     return get(name)
 
 
@@ -332,12 +656,49 @@ def _effective(profile: dict) -> dict:
         result["knowledge_sentinel_sha256"] = _clean_digest(
             sentinel_sha256, "Knowledge release sentinel"
         )
+    # The process-level attestation overrides describe production MAXIS.  Applying
+    # them to the dev row would silently defeat dev's fixed synthetic/redacted/0-day
+    # contract (and make the status endpoint fail whenever prod env config exists).
+    if str(result.get("name") or "").strip().lower() == "prod":
+        remote_policy_id = str(
+            os.getenv(CONFIG_ENV_NAMES["remote_log_policy_id"]) or ""
+        ).strip()
+        if remote_policy_id:
+            result["remote_log_policy_id"] = _clean_version(
+                remote_policy_id, "remote log policy id"
+            )
+        remote_mode = str(
+            os.getenv(CONFIG_ENV_NAMES["remote_log_mode"]) or ""
+        ).strip()
+        if remote_mode:
+            result["remote_log_mode"] = remote_mode.lower()
+        remote_retention = str(
+            os.getenv(CONFIG_ENV_NAMES["remote_log_retention_days"]) or ""
+        ).strip()
+        if remote_retention:
+            result["remote_log_retention_days"] = _clean_retention_days(remote_retention)
+        raw_eval_attestation = str(
+            os.getenv(CONFIG_ENV_NAMES["knowledge_eval_attestation"]) or ""
+        ).strip()
+        if raw_eval_attestation:
+            if len(raw_eval_attestation) > 8192:
+                raise ValueError("Knowledge eval attestation environment JSON is too large.")
+            try:
+                decoded_eval_attestation = json.loads(raw_eval_attestation)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    "Knowledge eval attestation environment value must be valid JSON."
+                ) from exc
+            result["knowledge_eval_attestation"] = _clean_knowledge_eval_attestation(
+                decoded_eval_attestation
+            )
     for workflow_key, env_name in WORKFLOW_VERSION_ENV_NAMES.items():
         value = str(os.getenv(env_name) or "").strip()
         if value:
             result["workflows"][workflow_key]["version"] = _clean_version(
                 value, f"{workflow_key} workflow version"
             )
+    _validate_remote_log_attestation(result, required=False)
     return result
 
 
@@ -347,7 +708,8 @@ def profile_fingerprint(profile: dict) -> str:
     clean = {key: profile[key] for key in (
         "name", "stage", "base_url", "data_policy", "workflow_bundle_version",
         "knowledge_version", "knowledge_dataset_id", "workflows",
-        "knowledge_sentinel_sha256",
+        "knowledge_sentinel_sha256", "remote_log_policy_id", "remote_log_mode",
+        "remote_log_retention_days", "knowledge_eval_attestation",
     )}
     clean["knowledge_manifest_sha256"] = manifest.sha256 if manifest else ""
     encoded = json.dumps(clean, ensure_ascii=False, sort_keys=True,
@@ -362,13 +724,42 @@ def _probe_signature(profile_name: str) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+def _probe_timestamp_fresh(value: object) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    try:
+        instant = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if instant.tzinfo is None or instant.utcoffset() is None:
+        return False
+    age = datetime.now(timezone.utc) - instant.astimezone(timezone.utc)
+    return timedelta(0) <= age <= timedelta(seconds=PROBE_TTL_SECONDS)
+
+
 def probe_ok(profile_name: str) -> bool:
     try:
         expected = _probe_signature(profile_name)
     except Exception:
         return False
-    stored = (prefs.load().get("maxisProbeOkByProfile") or {}).get(profile_name)
-    return bool(stored) and stored == expected
+    state = prefs.load()
+    stored = (state.get("maxisProbeOkByProfile") or {}).get(profile_name)
+    last_probe = (state.get("maxisLastProbeByProfile") or {}).get(profile_name)
+    return bool(
+        stored and stored == expected and isinstance(last_probe, dict)
+        and last_probe.get("ok") is True
+        and _probe_timestamp_fresh(last_probe.get("at"))
+    )
+
+
+def probe_candidate(profile_name: str) -> dict:
+    """Return a probeable profile after enforcing prod policy attestation."""
+    profile = resolve(profile_name)
+    _validate_remote_log_attestation(
+        profile, required=str(profile.get("stage") or "") == "prod",
+    )
+    return profile
 
 
 def _probe_contract_verified(profile_name: str, details: dict | None) -> bool:
@@ -379,6 +770,12 @@ def _probe_contract_verified(profile_name: str, details: dict | None) -> bool:
     if not isinstance(workflow_results, dict):
         return False
     profile = _effective(get(profile_name))
+    try:
+        _validate_remote_log_attestation(
+            profile, required=str(profile.get("stage") or "") == "prod",
+        )
+    except ValueError:
+        return False
     try:
         manifest = _build_profile_manifest(profile, required=True)
     except ValueError:
@@ -433,8 +830,8 @@ def mark_probe(profile_name: str, ok: bool, details: dict | None = None) -> bool
         "workflows": deepcopy(safe_details.get("workflows") or {}),
         "error": str(safe_details.get("error") or "")[:240],
     }
-    prefs.save({"maxisProbeOkByProfile": verified,
-                "maxisLastProbeByProfile": last_probe})
+    prefs.save_strict({"maxisProbeOkByProfile": verified,
+                       "maxisLastProbeByProfile": last_probe})
     return verified_ok
 
 
@@ -445,8 +842,8 @@ def credential_changed(profile_name: str) -> None:
     last_probe = dict(state.get("maxisLastProbeByProfile") or {})
     verified.pop(name, None)
     last_probe.pop(name, None)
-    prefs.save({"maxisProbeOkByProfile": verified,
-                "maxisLastProbeByProfile": last_probe})
+    prefs.save_strict({"maxisProbeOkByProfile": verified,
+                       "maxisLastProbeByProfile": last_probe})
 
 
 def activate(profile_name: str) -> dict:
@@ -473,8 +870,8 @@ def activate(profile_name: str) -> dict:
             [key for key, mode in routes().items() if mode == "maxis"],
         )
     fingerprint = profile_fingerprint(profile)
-    prefs.save({"maxisActiveProfile": name,
-                "maxisActiveProfileFingerprint": fingerprint})
+    prefs.save_strict({"maxisActiveProfile": name,
+                       "maxisActiveProfileFingerprint": fingerprint})
     return resolve(name)
 
 
@@ -537,7 +934,8 @@ def profile_metadata(profile_name: str = "") -> dict:
     return {key: profile[key] for key in (
         "name", "stage", "enabled", "base_url", "data_policy",
         "workflow_bundle_version", "knowledge_version", "knowledge_dataset_id",
-        "knowledge_sentinel_sha256",
+        "knowledge_sentinel_sha256", "remote_log_policy_id", "remote_log_mode",
+        "remote_log_retention_days",
         "knowledge_manifest_sha256", "knowledge_document_count", "fingerprint",
     )}
 
@@ -631,7 +1029,11 @@ def _workflow_promotion(profile: dict, workflow_key: str) -> dict:
 def _require_prod_promotion(profile: dict, workflow_keys) -> None:
     if str(profile.get("stage") or "") != "prod":
         return
-    for workflow_key in sorted(set(workflow_keys)):
+    required_workflows = sorted(set(workflow_keys))
+    if not required_workflows:
+        return
+    _require_current_knowledge_eval_attestation(profile)
+    for workflow_key in required_workflows:
         status = _workflow_promotion(profile, workflow_key)
         if not status["ready"]:
             raise ValueError(
@@ -666,8 +1068,11 @@ def set_routes(patch: dict | None) -> dict[str, str]:
             if mode == "maxis":
                 _require_prod_promotion(profile, [key])
         updated[key] = mode
-    prefs.save({"maxisRoutes": updated})
-    return updated
+    saved = prefs.save_strict({"maxisRoutes": updated})
+    return {
+        key: str((saved.get("maxisRoutes") or {}).get(key) or "local")
+        for key in WORKFLOW_KEYS
+    }
 
 
 def kill_switch_enabled() -> bool:
@@ -675,8 +1080,8 @@ def kill_switch_enabled() -> bool:
 
 
 def set_kill_switch(enabled: bool) -> bool:
-    prefs.save({"maxisKillSwitch": bool(enabled)})
-    return kill_switch_enabled()
+    saved = prefs.save_strict({"maxisKillSwitch": bool(enabled)})
+    return bool(saved.get("maxisKillSwitch"))
 
 
 def _public_profile(name: str) -> dict:
@@ -710,6 +1115,7 @@ def _public_profile(name: str) -> dict:
                 promotion[workflow_key] = _workflow_promotion(
                     effective, workflow_key,
                 )
+    eval_attestation = knowledge_eval_attestation_status(effective)
     return {
         "name": name,
         "stage": name,
@@ -727,6 +1133,15 @@ def _public_profile(name: str) -> dict:
         ),
         "knowledgeManifestSha256": manifest.sha256 if manifest else "",
         "knowledgeDocumentCount": manifest.document_count if manifest else 0,
+        "remoteLogPolicyId": stored["remote_log_policy_id"],
+        "effectiveRemoteLogPolicyId": effective.get("remote_log_policy_id", ""),
+        "remoteLogMode": stored["remote_log_mode"],
+        "effectiveRemoteLogMode": effective.get("remote_log_mode", ""),
+        "remoteLogRetentionDays": stored["remote_log_retention_days"],
+        "effectiveRemoteLogRetentionDays": effective.get(
+            "remote_log_retention_days"
+        ),
+        "knowledgeEvalAttestation": eval_attestation,
         "workflows": deepcopy(stored["workflows"]),
         "credentials": credentials.status_for(name),
         "fingerprint": fingerprint,
@@ -759,6 +1174,14 @@ def status() -> dict:
             "knowledgeDatasetId": config_overrides["knowledge_dataset_id"],
             "knowledgeSentinelSha256": config_overrides[
                 "knowledge_sentinel_sha256"
+            ],
+            "remoteLogPolicyId": config_overrides["remote_log_policy_id"],
+            "remoteLogMode": config_overrides["remote_log_mode"],
+            "remoteLogRetentionDays": config_overrides[
+                "remote_log_retention_days"
+            ],
+            "knowledgeEvalAttestation": config_overrides[
+                "knowledge_eval_attestation"
             ],
             "workflowVersions": {
                 key: env_name

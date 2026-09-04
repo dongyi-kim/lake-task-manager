@@ -29,7 +29,7 @@ def test_contract_is_frozen_and_uses_versioned_name():
         plan.contract = "other"
 
 
-def test_remote_result_rejects_uncited_fact_and_unknown_citation():
+def test_remote_result_rejects_uncited_evidence_claim_and_unknown_citation():
     base = {
         "role_id": "research_analyst",
         "status": "ok",
@@ -41,6 +41,10 @@ def test_remote_result_rejects_uncited_fact_and_unknown_citation():
     with pytest.raises(ValidationError):
         RemoteRoleResultV1(**base, claims=({
             "claim_id": "claim-1", "kind": "fact", "text": "확인됨",
+        },))
+    with pytest.raises(ValidationError):
+        RemoteRoleResultV1(**base, claims=({
+            "claim_id": "claim-1", "kind": "inference", "text": "추론됨",
         },))
     with pytest.raises(ValidationError):
         RemoteRoleResultV1(**base, claims=({

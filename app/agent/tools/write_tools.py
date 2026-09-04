@@ -96,6 +96,17 @@ def _denied(why: str) -> dict:
     return {"ok": False, "needsApproval": True, "error": why}
 
 
+def _actor_guard_kwargs(jira) -> dict:
+    """Pass a bound-actor callback only for an ActionExecutor capability.
+
+    Leaving the keyword out for legacy/unbound direct tests preserves the small
+    historical client-double interface. Production graph capabilities always
+    produce a guard after successful consumption.
+    """
+    guard = approval.bound_actor_write_guard(jira)
+    return {"before_write": guard} if guard is not None else {}
+
+
 _TICKET_KEY = re.compile(r"^[A-Z][A-Z0-9]*-\d+$", re.I)
 
 
@@ -169,7 +180,10 @@ def create_tickets(mode: str, items: list, approval_token: str, children: list =
     if not ok:
         return _denied(why)
     try:
-        r = c.bulk_create(mode, items, desc_to_field=c.desc_field_value)
+        actor_guard = _actor_guard_kwargs(c)
+        r = c.bulk_create(
+            mode, items, desc_to_field=c.desc_field_value, **actor_guard,
+        )
     except Exception as e:
         return {"ok": False, "created": [], "failed": [], "error": str(e)[:300]}
     r = dict(r or {})
@@ -206,7 +220,9 @@ def create_tickets(mode: str, items: list, approval_token: str, children: list =
     # ``rows`` contains only Jira fields.  The parallel source-index list is kept locally and
     # applied to provider receipts after the call, so internal target ids never reach Jira.
     try:
-        r2 = c.bulk_create("subtask", rows, desc_to_field=c.desc_field_value)
+        r2 = c.bulk_create(
+            "subtask", rows, desc_to_field=c.desc_field_value, **actor_guard,
+        )
     except Exception as e:
         r.setdefault("failed", []).append({"summary": f"Sub-Task {len(rows)}건",
                                            "error": str(e)[:200]})
@@ -300,7 +316,7 @@ def update_ticket(key: str, approval_token: str, assignee: str = None, duedate: 
     if not fields:
         return {"ok": False, "error": f"이 티켓에서 편집할 수 없는 필드입니다: {', '.join(denied)}"}
     try:
-        c.update_fields(key, fields)
+        c.update_fields(key, fields, **_actor_guard_kwargs(c))
     except Exception as e:
         return {"ok": False, "error": str(e)[:300]}
     return bind_single_execution_result(
@@ -334,7 +350,7 @@ def create_epic(summary: str, approval_token: str, epic_name: str = "",
                           description=c.desc_field_value(description) if description else None,
                           components=[x for x in (components or []) if x] or None,
                           priority=priority or None, duedate=duedate or None,
-                          assignee=assignee or None)
+                          assignee=assignee or None, **_actor_guard_kwargs(c))
         key = (r or {}).get("key")
         if not key:
             return {"ok": False, "error": "Epic 생성 응답에 키가 없습니다."}
@@ -358,8 +374,9 @@ def add_ticket_comment(key: str, body: str, approval_token: str) -> dict:
     ok, why = approval.consume(approval_token, "add_ticket_comment", {"key": key, "body": body})
     if not ok:
         return _denied(why)
+    c = client()
     try:
-        client().add_comment(key, body)
+        c.add_comment(key, body, **_actor_guard_kwargs(c))
     except Exception as e:
         return {"ok": False, "error": str(e)[:300]}
     return {"ok": True, "key": key, "body": trim(body, 120)}
@@ -377,8 +394,11 @@ def link_tickets(key: str, other_key: str, relation: str, approval_token: str) -
                                {"key": key, "other": other_key, "relation": relation})
     if not ok:
         return _denied(why)
+    c = client()
     try:
-        client().add_issue_link(key, other_key, relation or "Relates")
+        c.add_issue_link(
+            key, other_key, relation or "Relates", **_actor_guard_kwargs(c),
+        )
     except Exception as e:
         return {"ok": False, "error": str(e)[:300]}
     return {"ok": True, "key": key, "other": other_key, "relation": relation or "Relates"}
@@ -395,8 +415,11 @@ def attach_document(key: str, url: str, title: str, approval_token: str) -> dict
                                {"key": key, "url": url, "title": title})
     if not ok:
         return _denied(why)
+    c = client()
     try:
-        client().add_remote_link(key, url, title=title or "")
+        c.add_remote_link(
+            key, url, title=title or "", **_actor_guard_kwargs(c),
+        )
     except Exception as e:
         return {"ok": False, "error": str(e)[:300]}
     return {"ok": True, "key": key, "url": url, "title": trim(title, 80)}
@@ -434,8 +457,12 @@ def transition_ticket(key: str, transition_id: str, approval_token: str,
     ok, why = approval.consume(approval_token, "transition_ticket", payload)
     if not ok:
         return _denied(why)
+    c = client()
     try:
-        client().do_transition(key, transition_id, comment=comment, assignee=assignee)
+        c.do_transition(
+            key, transition_id, comment=comment, assignee=assignee,
+            **_actor_guard_kwargs(c),
+        )
     except Exception as e:
         return {"ok": False, "error": str(e)[:300]}
     return {"ok": True, "key": key, "transition": transition_id}
@@ -485,7 +512,9 @@ def update_tickets(items: list, approval_token: str) -> dict:
                     out[name] = value
             return out
     try:
-        result = dict(c.bulk_update(rows, _fields_for_update) or {})
+        result = dict(c.bulk_update(
+            rows, _fields_for_update, **_actor_guard_kwargs(c),
+        ) or {})
     except Exception as e:
         return {"ok": False, "updated": [], "failed": [], "error": str(e)[:300]}
     result["updated"] = bind_execution_rows(
@@ -523,6 +552,8 @@ def add_ticket_comments(items: list, approval_token: str) -> dict:
     if not ok:
         return _denied(why)
     try:
-        return c.bulk_comment(rows, to_body=c.desc_field_value)
+        return c.bulk_comment(
+            rows, to_body=c.desc_field_value, **_actor_guard_kwargs(c),
+        )
     except Exception as e:
         return {"ok": False, "created": [], "failed": [], "error": str(e)[:300]}

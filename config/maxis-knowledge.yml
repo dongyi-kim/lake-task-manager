@@ -1,19 +1,163 @@
-contract: ltm-knowledge-source.v1
+contract: ltm-knowledge-source.v2
 
-# This tracked manifest is the source of truth for the static rules mirrored into
-# the MAXIS/Dify Knowledge dataset.  Runtime profiles add their environment-specific
-# Dify dataset UUID; the resulting SHA-256 pins both content and deployment identity.
+# Source of truth for the governed static documents mirrored into each environment's
+# immutable MAXIS/Dify Knowledge release. Runtime profiles bind this source release to
+# one environment-specific dataset UUID and release sentinel.
+role_registry: config/maxis-workflows.yml
+
+governance:
+  review_cycle_days: 90
+  immutable_release: true
+  deployment_strategy: blue_green
+  # Raw-file SHA-256 of deploy/maxis-dify/knowledge-evals.yml. The bundle validator
+  # rejects drift; runtime attestation still does not inspect the external result file.
+  eval_suite_sha256: 02c6309e618cc6a706d6887ac14491ba397e49bab48399f769e61a8d8e597fec
+
 chunking:
   strategy: markdown-headings-then-length.v1
   max_chars: 1200
   overlap_chars: 120
 
 documents:
-  - knowledge/01-ticket-rules.md
-  - knowledge/02-progress-formula.md
-  - knowledge/03-modules-and-people.md
-  - knowledge/04-work-breakdown.md
-  - knowledge/05-ltm-guide.md
-  - knowledge/06-data-assets.md
-  - knowledge/07-ticket-body-guide.md
-  - knowledge/08-editor-and-rendering.md
+  - id: ticket-rules
+    path: knowledge/01-ticket-rules.md
+    revision: 1
+    reviewed_for_release: true
+    reviewed_for_version: ltm-knowledge-2026.09
+    reviewed_at: "2026-09-04T15:00:00Z"
+    # SHA-256("ltm-repository-review-checkpoint:2026-09-05"): a non-personal
+    # repository checkpoint for correlation, not a claim about a named human approver.
+    reviewer_digest: 7d558f837e1439283f08f8cab987fddb3442115d1a3fa83338094d6585518862
+    owner: pmo-governance
+    classification: internal
+    audience: all_ltm_users
+    allowed_roles:
+      - request_architect
+      - knowledge_curator
+      - work_architect
+      - auditor
+      - result_integrator
+      - editor_author
+
+  - id: progress-formula
+    path: knowledge/02-progress-formula.md
+    revision: 1
+    reviewed_for_release: true
+    reviewed_for_version: ltm-knowledge-2026.09
+    reviewed_at: "2026-09-04T15:00:00Z"
+    reviewer_digest: 7d558f837e1439283f08f8cab987fddb3442115d1a3fa83338094d6585518862
+    owner: pmo-governance
+    classification: internal
+    audience: all_ltm_users
+    allowed_roles:
+      - query_specialist
+      - research_analyst
+      - knowledge_curator
+      - portfolio_analyst
+      - auditor
+      - result_integrator
+
+  - id: modules-and-people
+    path: knowledge/03-modules-and-people.md
+    revision: 1
+    reviewed_for_release: true
+    reviewed_for_version: ltm-knowledge-2026.09
+    reviewed_at: "2026-09-04T15:00:00Z"
+    reviewer_digest: 7d558f837e1439283f08f8cab987fddb3442115d1a3fa83338094d6585518862
+    owner: pmo-governance
+    classification: internal
+    audience: all_ltm_users
+    allowed_roles:
+      - request_architect
+      - query_specialist
+      - knowledge_curator
+      - work_architect
+      - people_advisor
+      - portfolio_analyst
+      - auditor
+
+  - id: work-breakdown
+    path: knowledge/04-work-breakdown.md
+    revision: 1
+    reviewed_for_release: true
+    reviewed_for_version: ltm-knowledge-2026.09
+    reviewed_at: "2026-09-04T15:00:00Z"
+    reviewer_digest: 7d558f837e1439283f08f8cab987fddb3442115d1a3fa83338094d6585518862
+    owner: pmo-governance
+    classification: internal
+    audience: all_ltm_users
+    allowed_roles:
+      - request_architect
+      - knowledge_curator
+      - work_architect
+      - people_advisor
+      - auditor
+      - result_integrator
+
+  - id: ltm-guide
+    path: knowledge/05-ltm-guide.md
+    revision: 1
+    reviewed_for_release: true
+    reviewed_for_version: ltm-knowledge-2026.09
+    reviewed_at: "2026-09-04T15:00:00Z"
+    reviewer_digest: 7d558f837e1439283f08f8cab987fddb3442115d1a3fa83338094d6585518862
+    owner: ltm-product
+    classification: internal
+    audience: all_ltm_users
+    allowed_roles:
+      - request_architect
+      - knowledge_curator
+      - result_integrator
+      - editor_author
+
+  - id: data-assets
+    path: knowledge/06-data-assets.md
+    revision: 1
+    reviewed_for_release: true
+    reviewed_for_version: ltm-knowledge-2026.09
+    reviewed_at: "2026-09-04T15:00:00Z"
+    reviewer_digest: 7d558f837e1439283f08f8cab987fddb3442115d1a3fa83338094d6585518862
+    owner: data-platform
+    classification: internal
+    audience: all_ltm_users
+    allowed_roles:
+      - query_specialist
+      - research_analyst
+      - knowledge_curator
+      - portfolio_analyst
+      - auditor
+      - result_integrator
+
+  - id: ticket-body-guide
+    path: knowledge/07-ticket-body-guide.md
+    revision: 1
+    reviewed_for_release: true
+    reviewed_for_version: ltm-knowledge-2026.09
+    reviewed_at: "2026-09-04T15:00:00Z"
+    reviewer_digest: 7d558f837e1439283f08f8cab987fddb3442115d1a3fa83338094d6585518862
+    owner: ltm-product
+    classification: internal
+    audience: all_ltm_users
+    allowed_roles:
+      - request_architect
+      - knowledge_curator
+      - work_architect
+      - auditor
+      - result_integrator
+      - editor_author
+
+  - id: editor-and-rendering
+    path: knowledge/08-editor-and-rendering.md
+    revision: 1
+    reviewed_for_release: true
+    reviewed_for_version: ltm-knowledge-2026.09
+    reviewed_at: "2026-09-04T15:00:00Z"
+    reviewer_digest: 7d558f837e1439283f08f8cab987fddb3442115d1a3fa83338094d6585518862
+    owner: ltm-editor
+    classification: internal
+    audience: all_ltm_users
+    allowed_roles:
+      - knowledge_curator
+      - auditor
+      - result_integrator
+      - editor_author

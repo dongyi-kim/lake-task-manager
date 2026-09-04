@@ -27,7 +27,11 @@ For each entry in `bundle.yml`:
    Start variable.
 4. Enable JSON output and use `contracts/remote-role-result.v1.schema.json` as the
    response contract where the selected MAXIS model supports schema-constrained
-   output.  The Answer node must return only that JSON object.
+   output.  The Answer node must return only that JSON object. Apply
+   `execution_policy` as builder settings: critical Knowledge/LLM/Answer failures
+   terminate the run; disable automatic node retries, default-value recovery,
+   failure-branch answers, and model fallback. A failure must return to LTM as a
+   failure, not as a plausible-looking answer.
 5. Before publishing, generate a different random release marker for each environment
    and add a dataset document containing exactly
    `LTM_RELEASE_SENTINEL_V1=<random-value>`.  Bind the Knowledge node output to the LLM;
@@ -36,7 +40,15 @@ For each entry in `bundle.yml`:
    `LAKE_MAXIS_KNOWLEDGE_SENTINEL_SHA256`).  Do not put the marker or its digest in a
    Start input or prompt.
 6. Run the three cases in `smoke-cases.yml`, then run
-   `python deploy/maxis-dify/validate_bundle.py`.  LTM activation performs an
+   `python deploy/maxis-dify/validate_bundle.py`. This command validates only checked-in
+   contracts and golden-eval coverage; it does **not** claim that a remote MAXIS/Dify
+   retrieval test passed. Execute every case in `knowledge-evals.yml` against the
+   candidate remote dataset and retain the environment/release-bound result as an
+   external release artifact before authoritative prod use. Register a
+   `ltm-maxis-knowledge-eval-attestation.v1` metadata record containing the evidence
+   ID, `outcome: passed`, `case_count: 25`, pass time, artifact/suite SHA-256 values,
+   and the exact dataset, manifest, workflow-version, and profile-material bindings.
+   LTM activation performs an
    additional live `/parameters` plus synthetic `/chat-messages` probe and refuses
    activation unless the retrieved sentinel hashes to the locally pinned digest.
 7. Publish the Chatflow and record its immutable published workflow UUID and
@@ -53,10 +65,63 @@ hard-codes the marker.
 Likewise, every response payload is checked locally against the exact schema/digest
 pair carried by that request; a generic Role-shaped object is not accepted.
 
+## Governed Knowledge release
+
+`config/maxis-knowledge.yml` is the source inventory. Every row has a stable document
+ID and path, owner, classification, audience, Role allow-list, revision, and explicit
+`reviewed_for_release`, `reviewed_for_version`, `reviewed_at`, and non-identifying
+`reviewer_digest` evidence. The builder accepts a profile `knowledge_version` only when
+every document was reviewed for that exact version and the UTC checkpoint remains
+inside `review_cycle_days`; it never manufactures a reviewed version from runtime input.
+A content, revision, review checkpoint, policy, Role registry, dataset UUID, or version
+change therefore creates a different digest. The release reviewer must re-check every
+document whenever a new release is cut; the global `review_cycle_days` is the maximum
+governance interval, not permission to skip release review. Governance also pins the
+raw SHA-256 of `knowledge-evals.yml`, and the bundle validator rejects suite drift.
+
+The `markdown-headings-then-length.v1` builder also commits a deterministic segment
+ledger into the digest. Each ledger row contains only document ID, heading path,
+one-based ordinal, normalized-text SHA-256, and a half-open normalized character range.
+Segment body text is never exposed through manifest metadata.
+
+Knowledge releases are immutable and promoted blue-green: build and evaluate a new
+dataset, switch the candidate workflow binding after the gate passes, and retain the
+previous dataset for rollback. Do not edit the active dataset in place.
+
+The current single-dataset runtime has no audience-entitlement or metadata-filter
+enforcement. Consequently the validator permits only `classification: internal` and
+`audience: all_ltm_users`; restricted documents must not be added until a separate
+dataset or enforced retrieval filter exists. `allowed_roles` records the intended
+retrieval policy and drives the ACL-negative golden cases, but is **not** itself a live
+authorization boundary today. A prod release cannot claim this gate complete until the
+remote ACL-negative cases prove that the deployed retrieval layer enforces it.
+
+`knowledge-evals.yml` covers every document with positive, prompt-injection, and
+ACL-negative cases plus a no-hit abstention case. The repository intentionally records
+these as `specification_only_not_executed`; only the separately captured remote result
+artifact can satisfy the prod release gate.
+
+The attestation can be stored in the prod profile as
+`knowledge_eval_attestation` (API: `knowledgeEvalAttestation`) or supplied as JSON in
+`LAKE_MAXIS_KNOWLEDGE_EVAL_ATTESTATION`. Its workflow map must cover all three published
+apps. A prod profile may still be activated for `shadow` without it. Transitioning a
+route to authoritative `maxis`, or activating prod while a `maxis` route already
+exists, requires a current exact binding. Any profile, dataset, manifest, suite,
+workflow-version, or attestation change invalidates the active fingerprint and blocks
+the old authoritative runtime.
+
+This is deliberately an **attestation**, not artifact verification: LTM validates the
+metadata shape and current binding but does not fetch, parse, signature-check, or replay
+the external result artifact. The artifact and its independent integrity/signature
+evidence remain release-governance responsibilities; public status reports
+`metadata_binding_only_external_artifact_not_read` so it cannot be mistaken for a live
+remote test result.
+
 ## Ownership boundary
 
 - Dify/MAXIS: semantic decomposition, synthesis, drafting, and review proposals.
 - LTM: scoped Jira/Confluence/Bitbucket reads, freshness and citation validation,
   deterministic calculations, schema checks, user approval, writes, and audit logs.
 - Chatflows are stateless.  LTM sends a bounded pseudonymous evidence pack for every
-  call; no prior Dify conversation is reused.
+  call; no prior Dify conversation is reused. The client explicitly sends an empty
+  `conversation_id` and `auto_generate_name: false` on every request.

@@ -11,6 +11,7 @@ DATASET_A = "11111111-1111-4111-8111-111111111111"
 DATASET_B = "22222222-2222-4222-8222-222222222222"
 SENTINEL_A = "a" * 64
 SENTINEL_B = "b" * 64
+KNOWLEDGE_VERSION = "ltm-knowledge-2026.09"
 
 
 class _TestCipher:
@@ -41,7 +42,7 @@ def _configured_dev() -> None:
     profiles.save("dev", {
         "base_url": "https://dev.maxis.example/v1/",
         "workflow_bundle_version": "ltm-agent-1",
-        "knowledge_version": "ltm-knowledge-1",
+        "knowledge_version": KNOWLEDGE_VERSION,
         "knowledge_dataset_id": DATASET_A,
         "knowledge_sentinel_sha256": SENTINEL_A,
         "workflows": {"agent_core": {"binding": "agent_core", "version": "1.2.0"}},
@@ -164,7 +165,7 @@ def test_deployment_version_overrides_are_effective_private_and_invalidate_probe
 
     overrides = {
         "LAKE_MAXIS_WORKFLOW_BUNDLE_VERSION": "bundle-from-deployment",
-        "LAKE_MAXIS_KNOWLEDGE_VERSION": "knowledge-from-deployment",
+        "LAKE_MAXIS_KNOWLEDGE_VERSION": KNOWLEDGE_VERSION,
         "LAKE_MAXIS_KNOWLEDGE_DATASET_ID": DATASET_B,
         "LAKE_MAXIS_KNOWLEDGE_SENTINEL_SHA256": SENTINEL_B,
         "LAKE_MAXIS_AGENT_CORE_VERSION": "core-from-deployment",
@@ -176,7 +177,7 @@ def test_deployment_version_overrides_are_effective_private_and_invalidate_probe
 
     effective = profiles.resolve("dev")
     assert effective["workflow_bundle_version"] == "bundle-from-deployment"
-    assert effective["knowledge_version"] == "knowledge-from-deployment"
+    assert effective["knowledge_version"] == KNOWLEDGE_VERSION
     assert effective["knowledge_dataset_id"] == DATASET_B
     assert effective["knowledge_sentinel_sha256"] == SENTINEL_B
     assert len(effective["knowledge_manifest_sha256"]) == 64
@@ -200,7 +201,8 @@ def test_deployment_version_overrides_are_effective_private_and_invalidate_probe
     assert DATASET_B in rendered  # dataset identity and manifest digest are public metadata
     assert not any(
         value in rendered for key, value in overrides.items()
-        if key not in {
+         if key not in {
+            "LAKE_MAXIS_KNOWLEDGE_VERSION",
             "LAKE_MAXIS_KNOWLEDGE_DATASET_ID",
             "LAKE_MAXIS_KNOWLEDGE_SENTINEL_SHA256",
         }
@@ -252,13 +254,13 @@ def test_profile_or_key_change_invalidates_prior_probe_and_activation():
     profiles.activate("dev")
     before = profiles.active_fingerprint()
 
-    profiles.save("dev", {"knowledge_version": "ltm-knowledge-2"})
+    profiles.save("dev", {"knowledge_dataset_id": DATASET_B})
     assert profiles.active_fingerprint() != before
     assert profiles.probe_ok("dev") is False
     assert profiles.resolve("dev")["enabled"] is False
 
     before_dataset = profiles.profile_fingerprint(profiles.get("dev"))
-    profiles.save("dev", {"knowledge_dataset_id": DATASET_B})
+    profiles.save("dev", {"knowledge_dataset_id": DATASET_A})
     after_dataset = profiles.profile_fingerprint(profiles.get("dev"))
     assert after_dataset != before_dataset
 
@@ -273,6 +275,14 @@ def test_profile_or_key_change_invalidates_prior_probe_and_activation():
     profiles.credential_changed("dev")
     assert profiles.active_fingerprint() == public_before_key_rotation
     assert profiles.resolve("dev")["enabled"] is False
+
+
+def test_unreviewed_knowledge_version_environment_override_fails_closed(monkeypatch):
+    _configured_dev()
+    monkeypatch.setenv("LAKE_MAXIS_KNOWLEDGE_VERSION", "unreviewed-version")
+
+    with pytest.raises(ValueError, match="exact knowledge version"):
+        profiles.resolve("dev")
 
 
 def test_activation_requires_credentials_for_existing_remote_routes():

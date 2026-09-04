@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import re
 import ssl
 import threading
@@ -44,6 +45,11 @@ _USER_RE = re.compile(r"^ltm_[0-9a-f]{16}$")
 _PARAMETER_VARIABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 _PARAMETER_CONTROL_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _CONTROL_VALUE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_DATASET_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.I,
+)
+MAX_RETRIEVER_RESOURCES = 20
 
 # This is the complete, content-bounded Start contract shared by every LTM
 # Chatflow. ``query`` and ``user`` are Dify Chat API fields, not Start variables.
@@ -81,12 +87,28 @@ class DifyUsage(_StrictResult):
     total_tokens: int = Field(default=0, ge=0)
 
 
+class DifyRetrievalSummary(_StrictResult):
+    """Content-free proof summary for Dify Knowledge Retrieval metadata.
+
+    Document, segment, dataset and tenant identifiers are deliberately not fields on
+    this model.  The parser uses a dataset id only for an in-memory constant-time
+    comparison with the locally pinned deployment and immediately discards it.
+    """
+
+    dataset_verified: bool = False
+    resource_count: int = Field(default=0, ge=0, le=MAX_RETRIEVER_RESOURCES)
+    scored_resource_count: int = Field(default=0, ge=0, le=MAX_RETRIEVER_RESOURCES)
+    minimum_score: float | None = Field(default=None, ge=-1_000_000, le=1_000_000)
+    maximum_score: float | None = Field(default=None, ge=-1_000_000, le=1_000_000)
+
+
 class DifyChatResponse(_StrictResult):
     answer: str
     message_id: str
     conversation_id: str
     task_id: str = ""
     usage: DifyUsage
+    retrieval: DifyRetrievalSummary
     latency_ms: int = Field(ge=0)
 
 
@@ -109,7 +131,67 @@ class DifyContractProbeResult(_StrictResult):
     version_verified: bool = False
     citation_verified: bool = False
     knowledge_retrieval_verified: bool = False
+    retrieval_resource_count: int = Field(
+        default=0, ge=0, le=MAX_RETRIEVER_RESOURCES
+    )
     error_code: str = ""
+
+
+class _RetrievalVerificationError(ValueError):
+    """A content-free signal that remote retrieval did not match the pinned dataset."""
+
+
+def _canonical_expected_dataset_id(value: str) -> str:
+    expected = str(value or "").strip().lower()
+    if expected and not _DATASET_ID_RE.fullmatch(expected):
+        raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION)
+    return expected
+
+
+def _retrieval_summary(
+    metadata: Mapping[str, Any], *, expected_dataset_id: str,
+) -> DifyRetrievalSummary:
+    """Validate bounded retriever metadata and retain no retrieved content or ids."""
+
+    raw = metadata.get("retriever_resources")
+    if raw is None:
+        if expected_dataset_id:
+            raise _RetrievalVerificationError
+        return DifyRetrievalSummary()
+    if not isinstance(raw, list) or len(raw) > MAX_RETRIEVER_RESOURCES:
+        raise TypeError("invalid retriever resource collection")
+    if expected_dataset_id and not raw:
+        raise _RetrievalVerificationError
+
+    scores: list[float] = []
+    for row in raw:
+        if not isinstance(row, dict):
+            raise TypeError("invalid retriever resource")
+        if expected_dataset_id:
+            candidate = row.get("dataset_id")
+            if not isinstance(candidate, str):
+                raise _RetrievalVerificationError
+            actual = candidate.strip().lower()
+            if not _DATASET_ID_RE.fullmatch(actual) or not hmac.compare_digest(
+                actual, expected_dataset_id
+            ):
+                raise _RetrievalVerificationError
+        score = row.get("score")
+        if score is not None:
+            if isinstance(score, bool) or not isinstance(score, (int, float)):
+                raise TypeError("invalid retriever score")
+            numeric_score = float(score)
+            if not math.isfinite(numeric_score) or not -1_000_000 <= numeric_score <= 1_000_000:
+                raise TypeError("invalid retriever score")
+            scores.append(numeric_score)
+
+    return DifyRetrievalSummary(
+        dataset_verified=bool(expected_dataset_id and raw),
+        resource_count=len(raw),
+        scored_resource_count=len(scores),
+        minimum_score=round(min(scores), 6) if scores else None,
+        maximum_score=round(max(scores), 6) if scores else None,
+    )
 
 
 _PROBE_ROLE_BY_WORKFLOW = {
@@ -692,6 +774,7 @@ class DifyClient:
         user: str,
         inputs: Mapping[str, Any],
         workflow_id: str = "",
+        expected_knowledge_dataset_id: str = "",
     ) -> DifyChatResponse:
         if binding.endpoint != "/chat-messages" or binding.response_mode != "blocking":
             raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION)
@@ -722,11 +805,16 @@ class DifyClient:
             raise MaxisGatewayError(MaxisErrorCode.POLICY)
         if pinned_workflow and clean_inputs["workflow_version"] != pinned_workflow:
             raise MaxisGatewayError(MaxisErrorCode.POLICY)
+        expected_dataset_id = _canonical_expected_dataset_id(
+            expected_knowledge_dataset_id
+        )
         payload = {
             "inputs": _jsonable(clean_inputs),
             "query": clean_query,
             "response_mode": "blocking",
             "user": clean_user,
+            "conversation_id": "",
+            "auto_generate_name": False,
         }
         if pinned_workflow:
             payload["workflow_id"] = pinned_workflow
@@ -758,6 +846,9 @@ class DifyClient:
                 raise TypeError("invalid task id")
             metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
             usage = metadata.get("usage") if isinstance(metadata.get("usage"), dict) else {}
+            retrieval = _retrieval_summary(
+                metadata, expected_dataset_id=expected_dataset_id,
+            )
             usage_result = DifyUsage(
                 prompt_tokens=_bounded_int(usage.get("prompt_tokens")),
                 completion_tokens=_bounded_int(usage.get("completion_tokens")),
@@ -769,10 +860,16 @@ class DifyClient:
                 conversation_id=conversation_id,
                 task_id=task_id,
                 usage=usage_result,
+                retrieval=retrieval,
                 latency_ms=latency_ms,
             )
             active_breaker.record_success()
             return result
+        except _RetrievalVerificationError as exc:
+            # The gateway completed normally; a wrong or empty Knowledge binding is a
+            # non-retryable integrity failure, not evidence of transport instability.
+            active_breaker.record_success()
+            raise MaxisGatewayError(MaxisErrorCode.POLICY) from exc
         except (ValueError, TypeError, ValidationError) as exc:
             active_breaker.record_failure()
             raise MaxisGatewayError(
@@ -788,6 +885,7 @@ class DifyClient:
         knowledge_version: str,
         knowledge_manifest_sha256: str,
         knowledge_sentinel_sha256: str,
+        expected_knowledge_dataset_id: str = "",
     ) -> DifyContractProbeResult:
         """Execute and verify a synthetic role call without returning its content.
 
@@ -819,6 +917,7 @@ class DifyClient:
                     "knowledge_version": knowledge_version,
                 },
                 workflow_id=workflow_version,
+                expected_knowledge_dataset_id=expected_knowledge_dataset_id,
             )
             remote, _ = ResponseGuard().validate_remote_role(
                 response.answer,
@@ -899,8 +998,14 @@ class DifyClient:
         proof_digest = hashlib.sha256(
             remote.knowledge_proof.encode("utf-8")
         ).hexdigest()
-        knowledge_retrieval_verified = hmac.compare_digest(
-            proof_digest, knowledge_sentinel_sha256
+        dataset_verified = True
+        if expected_knowledge_dataset_id:
+            dataset_verified = (
+                response.retrieval.dataset_verified
+                and response.retrieval.resource_count > 0
+            )
+        knowledge_retrieval_verified = dataset_verified and hmac.compare_digest(
+            proof_digest, knowledge_sentinel_sha256,
         )
         if not knowledge_retrieval_verified:
             return DifyContractProbeResult(
@@ -911,6 +1016,7 @@ class DifyClient:
                 contract_verified=contract_verified,
                 version_verified=True,
                 citation_verified=True,
+                retrieval_resource_count=response.retrieval.resource_count,
                 error_code="knowledge_retrieval_failed",
             )
         return DifyContractProbeResult(
@@ -922,6 +1028,7 @@ class DifyClient:
             version_verified=True,
             citation_verified=True,
             knowledge_retrieval_verified=True,
+            retrieval_resource_count=response.retrieval.resource_count,
         )
 
     def probe_parameters(self, *, api_key: str) -> DifyProbeResult:
@@ -990,7 +1097,9 @@ __all__ = [
     "DifyClientConfig",
     "DifyContractProbeResult",
     "DifyProbeResult",
+    "DifyRetrievalSummary",
     "DifyUsage",
+    "MAX_RETRIEVER_RESOURCES",
     "REQUIRED_START_VARIABLES",
     "canonical_api_base",
 ]

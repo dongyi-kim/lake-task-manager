@@ -20,6 +20,7 @@ const ROUTE_MODES = [
 function blankForm() {
   return { baseUrl: "", dataPolicy: "synthetic_only", workflowBundleVersion: "",
     knowledgeVersion: "", knowledgeDatasetId: "", knowledgeSentinelSha256: "",
+    remoteLogPolicyId: "", remoteLogMode: "", remoteLogRetentionDays: null,
     workflows: Object.fromEntries(WORKFLOWS.map((w) =>
       [w.key, { binding: "", version: "" }])) };
 }
@@ -42,13 +43,32 @@ export default {
     deploymentOverrideNames() {
       const env = (this.st && this.st.environmentOverrides) || {};
       return [env.profile, env.baseUrl, env.workflowBundleVersion, env.knowledgeVersion,
-        env.knowledgeDatasetId, env.knowledgeSentinelSha256,
+        env.knowledgeDatasetId, env.knowledgeSentinelSha256, env.remoteLogPolicyId,
+        env.remoteLogMode, env.remoteLogRetentionDays, env.knowledgeEvalAttestation,
         ...Object.values(env.workflowVersions || {}), ...Object.values(env.credentials || {})]
         .filter(Boolean);
+    },
+    remoteLogReady() {
+      if (!this.selected || this.selected.stage !== "prod") return true;
+      return !!this.selected.effectiveRemoteLogPolicyId &&
+        ["redacted", "approved_bounded_content"].includes(
+          this.selected.effectiveRemoteLogMode) &&
+        Number.isInteger(this.selected.effectiveRemoteLogRetentionDays) &&
+        this.selected.effectiveRemoteLogRetentionDays >= 0 &&
+        this.selected.effectiveRemoteLogRetentionDays <= 90;
+    },
+    knowledgeEval() {
+      return (this.selected && this.selected.knowledgeEvalAttestation) || null;
+    },
+    knowledgeEvalReady() {
+      if (!this.selected || this.selected.stage !== "prod") return true;
+      return !!(this.knowledgeEval && this.knowledgeEval.valid);
     },
     canActivate() {
       if (!this.canManage) return false;
       if (!this.selected || !this.selected.verified || this.selected.configError) return false;
+      if (!this.remoteLogReady) return false;
+      if (Object.values(this.routes || {}).includes("maxis") && !this.knowledgeEvalReady) return false;
       if (this.selected.dataPolicy === "synthetic_only" &&
           Object.values(this.routes || {}).includes("maxis")) return false;
       if (this.st.environmentOverrides.profile && !this.selected.active) return false;
@@ -91,6 +111,10 @@ export default {
         knowledgeVersion: row.knowledgeVersion || "",
         knowledgeDatasetId: row.knowledgeDatasetId || "",
         knowledgeSentinelSha256: row.knowledgeSentinelSha256 || "", workflows: {} };
+      this.form.remoteLogPolicyId = row.remoteLogPolicyId || "";
+      this.form.remoteLogMode = row.remoteLogMode || "";
+      this.form.remoteLogRetentionDays = row.remoteLogRetentionDays == null
+        ? null : row.remoteLogRetentionDays;
       WORKFLOWS.forEach((w) => {
         const value = (row.workflows && row.workflows[w.key]) || {};
         this.form.workflows[w.key] = { binding: value.binding || "", version: value.version || "" };
@@ -265,6 +289,38 @@ export default {
             <span><b>Knowledge manifest</b>{{ selected.knowledgeManifestSha256.slice(0, 16) }}…</span>
             <span><b>Tracked docs</b>{{ selected.knowledgeDocumentCount }}</span>
           </div>
+          <div v-if="selected.stage === 'prod' && knowledgeEval" class="mx-promotion-gate"
+               :class="knowledgeEvalReady ? 'on' : 'off'">
+            <b>Knowledge 원격 평가 {{ knowledgeEvalReady ? '증빙 결속 완료' : '대기' }}</b>
+            <span v-if="knowledgeEvalReady">
+              25 / 25 passed · {{ knowledgeEval.attestation.evidenceId }} · {{ knowledgeEval.attestation.passedAt }}
+            </span>
+            <span v-else>
+              현재 dataset·manifest·workflow에 결속된 25-case 결과물이 필요합니다.
+              <template v-if="knowledgeEval.expectedBinding && knowledgeEval.expectedBinding.profileMaterialSha256">
+                예상 binding {{ knowledgeEval.expectedBinding.profileMaterialSha256.slice(0, 16) }}…
+              </template>
+            </span>
+          </div>
+          <div v-if="selected.stage === 'prod'" class="ag-warn">
+            Knowledge 평가 값은 외부 결과물의 ID·SHA-256을 현재 배포에 결속하는 관리자 증빙입니다.
+            LTM이 결과물 원문이나 실제 Dify 평가 실행을 자동 검증했다는 뜻은 아닙니다.
+          </div>
+          <div v-if="selected.stage === 'prod'" class="mx-workflow">
+            <div><b>Dify 원격 실행 로그 정책</b><span>운영 전 관리자 승인 증빙</span></div>
+            <label class="ag-f"><span>승인 정책 ID</span><input v-model="form.remoteLogPolicyId" :readonly="!canManage" placeholder="예: ISMS-AI-LOG-2026-014"></label>
+            <label class="ag-f"><span>로그 내용 범위</span><select v-model="form.remoteLogMode" :disabled="!canManage">
+              <option value="">선택 필요</option>
+              <option value="redacted">redacted — 민감 내용 제거</option>
+              <option value="approved_bounded_content">approved_bounded_content — 승인된 최소 내용</option>
+            </select></label>
+            <label class="ag-f"><span>보존 기간(일)</span><input type="number" min="0" max="90" step="1"
+              v-model.number="form.remoteLogRetentionDays" :readonly="!canManage"></label>
+            <div class="ag-warn">이 값은 관리자 승인 증빙이며 Dify 설정을 자동 검사하지 않습니다. Dify 실행 이력에는 입력·출력 원문이 남을 수 있으므로 실제 Workspace 로그 설정을 별도로 대조해야 합니다.</div>
+          </div>
+          <div v-else class="mx-help">
+            DEV 원격 로그는 synthetic-only · redacted · 0일 정책으로 고정됩니다.
+          </div>
           <div v-for="w in workflowRows" :key="w.key" class="mx-workflow">
             <div><b>{{ w.label }}</b><span>{{ w.hint }}</span></div>
             <label class="ag-f"><span>Binding</span><input v-model="form.workflows[w.key].binding" readonly></label>
@@ -292,6 +348,9 @@ export default {
 
         <section class="ag-sec">
           <div class="ag-lab">연결 확인과 적용</div>
+          <div v-if="selected.stage === 'prod' && !remoteLogReady" class="ag-warn">
+            운영 프로필은 원격 로그 승인 정책 ID·내용 범위·0~90일 보존 기간을 저장해야 연결 확인과 적용이 가능합니다.
+          </div>
           <div class="ag-gate" :class="selected.enabled ? 'on' : 'off'">
             <b>{{ selected.enabled ? 'MAXIS 사용 가능' : (selected.verified ? '확인됨 · 적용 전' : '연결 미확인') }}</b>
             <span>{{ selected.active ? '활성 프로필' : '후보 프로필' }} · {{ selected.lastProbe && selected.lastProbe.at ? selected.lastProbe.at : '확인 기록 없음' }}</span>
@@ -313,11 +372,14 @@ export default {
           <div v-for="w in workflowRows" :key="'route-'+w.key" class="ag-f">
             <span>{{ w.label }}</span><select v-model="routes[w.key]" :disabled="!!busy || !canManage">
               <option v-for="mode in routeModes" :key="mode.key" :value="mode.key"
-                      :disabled="selected.dataPolicy === 'synthetic_only' && mode.key === 'maxis'">{{ mode.label }} — {{ mode.hint }}</option>
+                      :disabled="mode.key === 'maxis' && (selected.dataPolicy === 'synthetic_only' || !knowledgeEvalReady)">{{ mode.label }} — {{ mode.hint }}</option>
             </select>
           </div>
           <div v-if="selected.dataPolicy === 'synthetic_only'" class="ag-warn">
             DEV는 합성 데이터 canary·Shadow 검증 전용이며 MAXIS를 최종 응답 주체로 지정할 수 없습니다.
+          </div>
+          <div v-if="selected.stage === 'prod' && !knowledgeEvalReady" class="ag-warn">
+            원격 Knowledge 25-case 통과 증빙 전에는 Shadow만 사용할 수 있으며 MAXIS 운영 경로는 저장할 수 없습니다.
           </div>
           <div v-for="w in workflowRows" :key="'promotion-'+w.key">
             <div v-if="selected.stage === 'prod' && promotion(w.key)" class="mx-promotion-gate"

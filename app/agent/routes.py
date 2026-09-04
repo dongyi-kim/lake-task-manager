@@ -25,6 +25,7 @@ from app.agent import config as _cfg
 from app.agent import profiles as _profiles
 from app.agent import secrets as _secrets
 from app.agent.workflow.contracts import QuestionAnswerReceipt
+from app.infra import prefs as _prefs
 
 log = logging.getLogger("agent.api")
 router = APIRouter(prefix="/api/agent")
@@ -101,6 +102,10 @@ class _MaxisProfileBody(_MaxisBody):
     knowledgeVersion: str | None = None
     knowledgeDatasetId: str | None = None
     knowledgeSentinelSha256: str | None = None
+    remoteLogPolicyId: str | None = None
+    remoteLogMode: str | None = None
+    remoteLogRetentionDays: int | None = None
+    knowledgeEvalAttestation: dict | None = None
     workflows: dict | None = None
 
 
@@ -188,12 +193,18 @@ def api_maxis_profile_save(profile_name: str, body: _MaxisProfileBody):
                        ("knowledgeVersion", "knowledge_version"),
                        ("knowledgeDatasetId", "knowledge_dataset_id"),
                        ("knowledgeSentinelSha256", "knowledge_sentinel_sha256"),
+                       ("remoteLogPolicyId", "remote_log_policy_id"),
+                       ("remoteLogMode", "remote_log_mode"),
+                       ("remoteLogRetentionDays", "remote_log_retention_days"),
+                       ("knowledgeEvalAttestation", "knowledge_eval_attestation"),
                        ("workflows", "workflows")):
         value = getattr(body, field)
         if value is not None:
             patch[key] = value
     try:
         maxis_profiles.save(profile_name, patch)
+    except _prefs.PrefsPersistenceError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
     except (KeyError, ValueError) as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     return JSONResponse({"ok": True, **maxis_profiles.status()})
@@ -234,6 +245,8 @@ def api_maxis_credentials_save(profile_name: str, body: _MaxisCredentialBody):
             clear.append(field_map[field])
         status = maxis_credentials.save_for(profile_name, patch, clear)
         maxis_profiles.credential_changed(profile_name)
+    except _prefs.PrefsPersistenceError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
     except maxis_credentials.CredentialStoreUnavailable as exc:
         log.warning("MAXIS credential persistence unavailable: %s", type(exc).__name__)
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
@@ -392,6 +405,9 @@ def _run_maxis_probe(profile: dict, keys: dict[str, str]) -> dict:
                         knowledge_sentinel_sha256=profile[
                             "knowledge_sentinel_sha256"
                         ],
+                        expected_knowledge_dataset_id=profile[
+                            "knowledge_dataset_id"
+                        ],
                     ),
                     knowledge_manifest_sha256=manifest.sha256,
                 )
@@ -413,7 +429,7 @@ def api_maxis_probe(profile_name: str):
     from app.agent.maxis import credentials as maxis_credentials
     from app.agent.maxis import profiles as maxis_profiles
     try:
-        profile = maxis_profiles.resolve(profile_name)
+        profile = maxis_profiles.probe_candidate(profile_name)
         if not profile.get("base_url"):
             raise ValueError("Save a MAXIS Base URL before probing.")
         keys = maxis_credentials.resolved_for(profile_name)
@@ -427,16 +443,30 @@ def api_maxis_probe(profile_name: str):
                 "ok": False,
                 "error": "One or more workflow contract proofs are incomplete.",
             }
+    except _prefs.PrefsPersistenceError as exc:
+        return JSONResponse(
+            {"ok": False, "workflows": {}, "error": str(exc)}, status_code=503,
+        )
     except (KeyError, ValueError) as exc:
         result = {"ok": False, "workflows": {}, "error": str(exc)}
         try:
             maxis_profiles.mark_probe(profile_name, False, result)
+        except _prefs.PrefsPersistenceError as persistence_exc:
+            return JSONResponse(
+                {"ok": False, "workflows": {}, "error": str(persistence_exc)},
+                status_code=503,
+            )
         except Exception:
             pass
     except maxis_credentials.CredentialStoreUnavailable as exc:
         result = {"ok": False, "workflows": {}, "error": str(exc)}
         try:
             maxis_profiles.mark_probe(profile_name, False, result)
+        except _prefs.PrefsPersistenceError as persistence_exc:
+            return JSONResponse(
+                {"ok": False, "workflows": {}, "error": str(persistence_exc)},
+                status_code=503,
+            )
         except Exception:
             pass
     except Exception as exc:
@@ -445,6 +475,11 @@ def api_maxis_probe(profile_name: str):
                   "error": "MAXIS connection probe is unavailable."}
         try:
             maxis_profiles.mark_probe(profile_name, False, result)
+        except _prefs.PrefsPersistenceError as persistence_exc:
+            return JSONResponse(
+                {"ok": False, "workflows": {}, "error": str(persistence_exc)},
+                status_code=503,
+            )
         except Exception:
             pass
     return JSONResponse(result)
@@ -458,6 +493,8 @@ def api_maxis_activate(profile_name: str):
     from app.agent.maxis import profiles as maxis_profiles
     try:
         maxis_profiles.activate(profile_name)
+    except _prefs.PrefsPersistenceError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
     except (KeyError, ValueError) as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
     return JSONResponse({"ok": True, **maxis_profiles.status()})
@@ -471,6 +508,8 @@ def api_maxis_routes(body: _MaxisRoutesBody):
     from app.agent.maxis import profiles as maxis_profiles
     try:
         maxis_profiles.set_routes(body.routes)
+    except _prefs.PrefsPersistenceError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
     return JSONResponse({"ok": True, **maxis_profiles.status()})
@@ -482,7 +521,10 @@ def api_maxis_kill_switch(body: _MaxisKillSwitchBody):
     if denied is not None:
         return denied
     from app.agent.maxis import profiles as maxis_profiles
-    maxis_profiles.set_kill_switch(body.enabled)
+    try:
+        maxis_profiles.set_kill_switch(body.enabled)
+    except _prefs.PrefsPersistenceError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
     return JSONResponse({"ok": True, **maxis_profiles.status()})
 
 

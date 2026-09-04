@@ -118,7 +118,7 @@
       },
       "allOf": [
         {
-          "if": {"properties": {"kind": {"enum": ["fact", "recommendation"]}}, "required": ["kind"]},
+          "if": {"properties": {"kind": {"enum": ["fact", "inference", "recommendation"]}}, "required": ["kind"]},
           "then": {"properties": {"citation_ids": {"minItems": 1}}}
         }
       ]

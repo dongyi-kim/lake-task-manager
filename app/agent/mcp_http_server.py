@@ -5,7 +5,9 @@ It exposes the same canonical read tools as :mod:`app.agent.mcp_server`, but it
 never exposes Jira mutation tools.  A corporate OAuth2 token-introspection
 endpoint validates the caller's on-behalf-of access token.  Production refuses
 plain HTTP and refuses to start without TLS (or an explicitly declared mTLS
-terminating proxy).
+terminating proxy).  Startup also requires an explicit deployment mode paired
+with an explicit Jira environment; it never inherits the stdio server's mock
+development default.
 
 The corporate issuer, audience and certificate paths are deployment inputs;
 they are not guessed or committed to the repository.  Dify should receive an
@@ -35,6 +37,14 @@ log = logging.getLogger(__name__)
 
 READ_SCOPE = "ltm:read"
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+_DEPLOYMENT_MODES = {"development", "production"}
+# These profile claims are deliberately human-facing or mutable.  A deployment may map
+# another corporately approved stable Jira claim, but it cannot opt back into these weak
+# identities merely by changing an environment variable.
+_NON_STABLE_IDENTITY_CLAIMS = {
+    "name", "displayname", "display_name", "email", "mail", "emailaddress",
+    "email_address", "given_name", "family_name", "upn",
+}
 
 
 def _required(env: Mapping[str, str], name: str) -> str:
@@ -97,6 +107,15 @@ def _audiences(value: object) -> set[str]:
     return set()
 
 
+def _validate_identity_claim_name(identity_claim: str) -> str:
+    value = str(identity_claim or "").strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.:-]{0,63}", value):
+        raise ValueError("identity_claim is invalid")
+    if value.casefold() in _NON_STABLE_IDENTITY_CLAIMS:
+        raise ValueError("identity_claim must identify an approved stable Jira principal")
+    return value
+
+
 class OAuthIntrospectionTokenVerifier:
     """Validate opaque/JWT access tokens at an RFC 7662 introspection endpoint."""
 
@@ -117,9 +136,7 @@ class OAuthIntrospectionTokenVerifier:
         self._client_secret = client_secret
         self._audience = audience
         self._required_scope = required_scope
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.:-]{0,63}", identity_claim):
-            raise ValueError("identity_claim is invalid")
-        self._identity_claim = identity_claim
+        self._identity_claim = _validate_identity_claim_name(identity_claim)
         self._timeout = timeout_seconds
         self._transport = transport
 
@@ -180,6 +197,8 @@ class OAuthIntrospectionTokenVerifier:
 
 @dataclass(frozen=True)
 class HttpMcpSettings:
+    deployment_mode: str
+    jira_env: str
     issuer_url: str
     resource_url: str
     audience: str
@@ -198,7 +217,22 @@ class HttpMcpSettings:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "HttpMcpSettings":
         values = os.environ if env is None else env
+        deployment_mode = _required(values, "LTM_MCP_DEPLOYMENT_MODE").casefold()
+        if deployment_mode not in _DEPLOYMENT_MODES:
+            raise RuntimeError(
+                "LTM_MCP_DEPLOYMENT_MODE must be development or production"
+            )
+        jira_env = _required(values, "JIRA_ENV").casefold()
+        if deployment_mode == "production" and jira_env != "prod":
+            raise RuntimeError("production MCP requires JIRA_ENV=prod")
+        if deployment_mode == "development" and jira_env not in {"mock", "local"}:
+            raise RuntimeError("development MCP requires JIRA_ENV=mock or local")
+
         allow_loopback_http = values.get("LTM_MCP_ALLOW_HTTP_LOOPBACK", "") == "1"
+        if deployment_mode == "production" and allow_loopback_http:
+            raise RuntimeError(
+                "production MCP cannot enable LTM_MCP_ALLOW_HTTP_LOOPBACK"
+            )
         resource_url = _required(values, "LTM_MCP_RESOURCE_URL")
         issuer_url = _required(values, "LTM_MCP_OAUTH_ISSUER_URL")
         introspection_url = _required(values, "LTM_MCP_OAUTH_INTROSPECTION_URL")
@@ -233,11 +267,19 @@ class HttpMcpSettings:
         ca_certs = values.get("LTM_MCP_TLS_CA_CERTS", "").strip() or None
         behind_proxy = values.get("LTM_MCP_BEHIND_MTLS_PROXY", "") == "1"
         identity_claim = values.get("LTM_MCP_OAUTH_IDENTITY_CLAIM", "sub").strip() or "sub"
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.:-]{0,63}", identity_claim):
-            raise RuntimeError("LTM_MCP_OAUTH_IDENTITY_CLAIM is invalid")
+        try:
+            identity_claim = _validate_identity_claim_name(identity_claim)
+        except ValueError as exc:
+            raise RuntimeError(f"LTM_MCP_OAUTH_IDENTITY_CLAIM {exc}") from exc
         bind_host = values.get("LTM_MCP_HOST", "127.0.0.1").strip() or "127.0.0.1"
-        is_dev_loopback = urlparse(resource_url).scheme == "http" and allow_loopback_http
-        if not is_dev_loopback and not behind_proxy and not (certfile and keyfile and ca_certs):
+        if deployment_mode == "development":
+            resource_host = (urlparse(resource_url).hostname or "").casefold()
+            if resource_host not in _LOOPBACK_HOSTS or bind_host.casefold() not in _LOOPBACK_HOSTS:
+                raise RuntimeError(
+                    "development MCP with mock/local Jira must remain on loopback"
+                )
+        if (deployment_mode == "production" and not behind_proxy
+                and not (certfile and keyfile and ca_certs)):
             raise RuntimeError(
                 "production MCP requires mTLS certificate/key/CA or LTM_MCP_BEHIND_MTLS_PROXY=1"
             )
@@ -247,6 +289,8 @@ class HttpMcpSettings:
             )
 
         return cls(
+            deployment_mode=deployment_mode,
+            jira_env=jira_env,
             issuer_url=issuer_url,
             resource_url=resource_url,
             audience=values.get("LTM_MCP_OAUTH_AUDIENCE", "").strip() or resource_url,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from datetime import datetime, timedelta, timezone
@@ -19,6 +20,10 @@ from app.agent.workflow.role_manifest import ROLE_SPECS, remote_execution_allowe
 
 DATASET_A = "11111111-1111-4111-8111-111111111111"
 MANIFEST_SHA = "a" * 64
+SENTINEL_VALUE = "LTM_RELEASE_SENTINEL_V1=runtime-test-release"
+SENTINEL_SHA = hashlib.sha256(
+    SENTINEL_VALUE.encode("utf-8")
+).hexdigest()
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +48,7 @@ def _profile(name="dev", fingerprint="profile-a"):
         "knowledge_version": "knowledge-1",
         "knowledge_dataset_id": DATASET_A,
         "knowledge_manifest_sha256": MANIFEST_SHA,
+        "knowledge_sentinel_sha256": SENTINEL_SHA,
         "knowledge_document_count": 3,
         "workflows": {
             "agent_core": {"binding": "agent_core", "version": "wf-core-1"},
@@ -172,12 +178,18 @@ def test_change_audit_sequence_reuses_correlation_without_content(monkeypatch, a
     monkeypatch.setattr(backend, "_profile_snapshot", lambda *_a, **_k: _profile())
     staged = workflow_graph._propose(state)
     token = staged["approval_token"]
+    binding = staged["change_audit_binding"]
     try:
         backend.record_change_audit(
             state, event="change.approved", status="succeeded",
+            change_binding=binding,
+        )
+        execution_binding = approval.finalize_change_audit_binding(
+            binding, token=token, thread_id=state["thread_id"],
         )
         backend.record_change_audit(
             state, event="change.execution", status="succeeded",
+            change_binding=execution_binding,
         )
     finally:
         approval.reject(token)
@@ -190,6 +202,8 @@ def test_change_audit_sequence_reuses_correlation_without_content(monkeypatch, a
     )
     assert "RAW_TOKEN_MUST_NOT_CROSS" not in encoded
     assert "RAW_REQUEST_MUST_NOT_CROSS" not in encoded
+    assert audit_events[0].change_binding.actor_sha256
+    assert audit_events[-1].change_binding.receipt_status == "not_issued"
 
 
 def test_guarded_payload_ignores_role_task_transcript_and_pseudonymizes_people():
@@ -663,6 +677,7 @@ def test_query_runner_preserves_23h_swr_cache_age_and_blocks_remote_draft(monkey
 
 def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_events):
     state = _runtime_state("request_architect")
+    runtime_route = {"value": "maxis"}
     schema = {
         "type": "object", "additionalProperties": False,
         "properties": {"value": {"type": "string"}}, "required": ["value"],
@@ -675,7 +690,7 @@ def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_e
     monkeypatch.setattr(
         backend, "resolve_role",
         lambda *_a, **_k: backend.RoleResolution(
-            route="maxis", binding=binding, profile="prod",
+            route=runtime_route["value"], binding=binding, profile="prod",
             workflow_bundle_version="bundle-1", knowledge_version="knowledge-1",
             knowledge_dataset_id=DATASET_A,
             knowledge_manifest_sha256=MANIFEST_SHA,
@@ -691,6 +706,7 @@ def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_e
         "remote_status": "ok",
         "remote_value": "remote",
         "remote_manifest": MANIFEST_SHA,
+        "knowledge_proof": SENTINEL_VALUE,
     }
 
     class FakeClient:
@@ -714,7 +730,7 @@ def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_e
                             if status == "ok" else {}),
                 "claims": ([{
                     "claim_id": "value_claim",
-                    "kind": "inference",
+                    "kind": "open_fact",
                     "text": observed["remote_value"],
                     "citation_ids": [],
                 }] if status == "ok" else []),
@@ -728,10 +744,18 @@ def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_e
                 "workflow_version": "wf-core-1",
                 "knowledge_version": "knowledge-1",
                 "knowledge_manifest_sha256": observed["remote_manifest"],
+                "knowledge_proof": observed["knowledge_proof"],
             }
             return SimpleNamespace(
                 answer=json.dumps(answer, ensure_ascii=False), message_id="message-1",
                 latency_ms=12,
+                retrieval=SimpleNamespace(
+                    dataset_verified=True,
+                    resource_count=2,
+                    scored_resource_count=2,
+                    minimum_score=0.4,
+                    maximum_score=0.9,
+                ),
             )
 
     monkeypatch.setattr(client_module, "DifyClient", FakeClient)
@@ -744,25 +768,45 @@ def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_e
     }
     assert observed["user"] == observed["inputs"]["context_pack"].pseudonymous_user
     assert observed["workflow_id"] == "wf-core-1"
+    assert observed["expected_knowledge_dataset_id"] == DATASET_A
     assert observed["inputs"]["context_pack"].knowledge_manifest_sha256 == MANIFEST_SHA
     assert "outputSchema" not in json.dumps(
         observed["inputs"]["context_pack"].model_dump(mode="json"))
     assert result["output"] == {"value": "remote"}
     assert result["metadata"]["knowledgeDatasetId"] == DATASET_A
     assert result["metadata"]["knowledgeManifestSha256"] == MANIFEST_SHA
+    assert result["metadata"]["knowledgeRetrieval"] == {
+        "verified": True,
+        "resourceCount": 2,
+        "scoredResourceCount": 2,
+        "minimumScore": 0.4,
+        "maximumScore": 0.9,
+    }
     assert result["statePatch"]["quality_gate"]["schemaValid"] is True
     assert [event.status for event in audit_events] == ["started", "succeeded"]
     assert all(event.correlation_id == "corr-1" for event in audit_events)
     assert all(not hasattr(event, "prompt") and not hasattr(event, "answer")
                for event in audit_events)
 
+    observed["knowledge_proof"] = "LTM_RELEASE_SENTINEL_V1=drifted"
+    with pytest.raises(backend.MaxisRuntimeError, match="Knowledge release"):
+        backend.invoke("request_architect", payload, "thread-1", "corr-1")
+    assert audit_events[-1].error_code == "knowledge_sentinel_mismatch"
+
+    # Shadow evaluation invokes this same boundary asynchronously and must discard
+    # the same drifted result instead of persisting it as a comparison candidate.
+    runtime_route["value"] = "shadow"
+    with pytest.raises(backend.MaxisRuntimeError, match="Knowledge release"):
+        backend.invoke("request_architect", payload, "thread-1", "corr-1")
+    assert audit_events[-1].error_code == "knowledge_sentinel_mismatch"
+    runtime_route["value"] = "maxis"
+    observed["knowledge_proof"] = SENTINEL_VALUE
+
     # A Dify blocked state is a control outcome, never applicable partial state.
     observed["remote_status"] = "blocked"
     with pytest.raises(backend.MaxisRuntimeError, match="적용 가능한 결과"):
         backend.invoke("request_architect", payload, "thread-1", "corr-1")
-    assert [event.status for event in audit_events] == [
-        "started", "succeeded", "started", "blocked",
-    ]
+    assert [event.status for event in audit_events[-2:]] == ["started", "blocked"]
     assert audit_events[-1].error_code == "remote_status_blocked"
 
     observed["remote_status"] = "needs_input"
@@ -1105,7 +1149,9 @@ def test_remote_fanout_needs_input_joins_questions_and_routes_to_response(monkey
     graph.add_node(Node.PEOPLE_ADVISOR, PeopleAdvisor().node())
     graph.add_node(Node.AUDITOR, Auditor().node())
     graph.add_node("merge_assignments", workflow_graph._merge_assignments)
-    graph.add_node("responded", lambda _state: {"answer": "responded"})
+    # Use a real AgentState channel as the route sentinel. Unknown node-output keys
+    # are intentionally discarded by StateGraph and cannot prove which edge ran.
+    graph.add_node("responded", lambda _state: {"interpretation": "responded"})
     graph.add_node("unexpected", lambda _state: {"error": "unexpected route"})
     graph.add_edge(START, Node.PEOPLE_ADVISOR)
     graph.add_edge(START, Node.AUDITOR)
@@ -1136,8 +1182,8 @@ def test_remote_fanout_needs_input_joins_questions_and_routes_to_response(monkey
         }]},
     })
 
-    assert result.get("answer") == "responded", result
-    assert "error" not in result
+    assert result.get("interpretation") == "responded", result
+    assert not result.get("error"), result.get("error")
     assert set(result["runtime_role_questions"]) == {"people_advisor", "auditor"}
     assert len(result["questions"]) == 3
     assert [row["field"] for row in result["questions"]] == [

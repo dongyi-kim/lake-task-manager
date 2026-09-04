@@ -2568,12 +2568,14 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             }
         return out
 
-    def update_fields(self, key, fields):
+    def update_fields(self, key, fields, before_write=None):
         """필드 수정(PUT /issue). fields 는 Jira 형식 그대로 — 변환은 라우트가 한다."""
         fields = fields or {}
         relationship_change = any(
             field in fields for field in ("parent", self.s.epic_link_field_id))
         old_parent, old_epic = self._lineage_of(key) if relationship_change else (None, None)
+        if before_write:
+            before_write()
         self.provider.put_json(f"/rest/api/2/issue/{key}", {"fields": fields})
         self._invalidate_ticket(key)
         new_parent, new_epic = old_parent, old_epic
@@ -2956,7 +2958,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 if not t.get("subtask") and (t.get("name") or "") != "Epic"]
 
     def create_epic(self, summary, priority=None, duedate=None, assignee=None,
-                    components=None, description=None, epic_name=None, mutation_id=None):
+                    components=None, description=None, epic_name=None, mutation_id=None,
+                    before_write=None):
         """최상위 Epic 생성(부모 없음). Epic Name(단축어) 커스텀 필드가 있으면 채운다.
         생성 후 목록/검색 캐시가 낡으므로 관련 캐시를 넓게 버린다."""
         etype = next((t["name"] for t in self.issue_types()
@@ -2991,6 +2994,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
         def write():
             with write_upstream():
+                if before_write:
+                    before_write()
                 result = self.provider.post_json("/rest/api/2/issue", {"fields": fields})
                 return validate_result(result)
 
@@ -3097,7 +3102,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             lk.may_edit = may_edit          # 권한 판정은 라우트(세션)가 안다 — 주입받는다
         return lk
 
-    def bulk_create(self, mode, items, desc_to_field=None):
+    def bulk_create(self, mode, items, desc_to_field=None, before_write=None):
         """검증을 통과한 항목들을 **차례로** 만든다. 하나 실패해도 나머지는 진행(Jira 는 롤백이 없다).
         반환: {ok, created:[{index,key,summary}], failed:[{index,summary,error}]} — set_epic_link 와 같은 형태.
 
@@ -3113,13 +3118,13 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     desc = it.get("description")
                     if desc and desc_to_field:
                         kw["description"] = desc_to_field(desc)
-                    r = self.create_child(**kw)
+                    r = self.create_child(**kw, before_write=before_write)
                     created.append({"index": i, "key": (r or {}).get("key"), "summary": summary})
                 except Exception as e:
                     failed.append({"index": i, "summary": summary, "error": str(e)[:300]})
         return {"ok": not failed, "created": created, "failed": failed}
 
-    def bulk_update(self, items, to_fields):
+    def bulk_update(self, items, to_fields, before_write=None):
         """여러 티켓의 필드를 **차례로** 고친다. 하나 실패해도 나머지는 진행(롤백은 없다).
 
         `to_fields(key, changes) -> dict|None` 은 라우트가 준다 — editmeta 대조·Epic Link
@@ -3137,13 +3142,13 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                         failed.append({"index": i, "summary": key,
                                        "error": "편집 권한이 없거나 바꿀 필드가 없습니다."})
                         continue
-                    self.update_fields(key, fields)
+                    self.update_fields(key, fields, before_write=before_write)
                     updated.append({"index": i, "key": key, "fields": sorted(changes)})
                 except Exception as e:
                     failed.append({"index": i, "summary": key, "error": str(e)[:300]})
         return {"ok": not failed, "updated": updated, "failed": failed}
 
-    def bulk_comment(self, items, to_body=None):
+    def bulk_comment(self, items, to_body=None, before_write=None):
         """여러 티켓에 코멘트를 **차례로** 남긴다. `to_body(html)` 로 저장 형식을 맞춘다."""
         created, failed = [], []
         with self._mutation_batch_scope():
@@ -3151,7 +3156,10 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 key = (it.get("key") or "").strip()
                 body = it.get("body") or ""
                 try:
-                    self.add_comment(key, to_body(body) if to_body else body)
+                    self.add_comment(
+                        key, to_body(body) if to_body else body,
+                        before_write=before_write,
+                    )
                     created.append({"index": i, "key": key})
                 except Exception as e:
                     failed.append({"index": i, "summary": key, "error": str(e)[:300]})
@@ -3537,7 +3545,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     def do_transition(self, key, transition_id, *, time_spent=None, assignee=None,
                       resolution=None, comment=None, target_status_id=None,
                       target_status_name=None, target_status_category=None,
-                      mutation_id=None):
+                      mutation_id=None, before_write=None):
         """전이 실행. 화면 필드는 Jira 규약대로 fields/update 에 나눠 싣는다
         (worklog·comment 는 '추가' 라 update, resolution·assignee 는 '설정' 이라 fields).
 
@@ -3610,6 +3618,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 body["fields"] = fields
             if update:
                 body["update"] = update
+            if before_write:
+                before_write()
             result = self.provider.post_json(
                 f"/rest/api/2/issue/{key}/transitions", body)
             # Jira's transition API commonly answers 204 No Content. Normalize that confirmed
@@ -3715,7 +3725,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             },
         }
 
-    def add_comment(self, key, body, mutation_id=None):
+    def add_comment(self, key, body, mutation_id=None, before_write=None):
         """코멘트 작성 (body = Jira wiki markup). 반환: 생성된 코멘트 객체."""
         mutation_actor, _existing_receipt = self._mutation_actor_for(
             "comment-create", mutation_id)
@@ -3730,6 +3740,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             return result
 
         def write():
+            if before_write:
+                before_write()
             result = self.provider.post_json(
                 f"/rest/api/2/issue/{key}/comment", {"body": body})
             return validate_result(result)
@@ -3834,12 +3846,15 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             {"name": "Cloners", "inward": "is cloned by", "outward": "clones"},
         ]
 
-    def add_issue_link(self, key, other_key, type_name, direction="outward"):
+    def add_issue_link(self, key, other_key, type_name, direction="outward",
+                       before_write=None):
         """이슈 링크 생성. direction=outward 면 `key --(type.outward)--> other_key`.
         (예: Blocks/outward = 이 티켓이 상대를 막는다. inward 면 반대.)"""
         if not other_key or other_key.upper() == (key or "").upper():
             raise ValueError("자기 자신에는 링크할 수 없습니다.")
         inward, outward = (key, other_key) if direction == "outward" else (other_key, key)
+        if before_write:
+            before_write()
         self.provider.post_json("/rest/api/2/issueLink", {
             "type": {"name": type_name or "Relates"},
             "inwardIssue": {"key": inward}, "outwardIssue": {"key": outward}})
@@ -3860,7 +3875,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             related_keys=tuple(k for k in (key, other_key) if k)))
         return {"ok": True}
 
-    def add_remote_link(self, key, url, title="", relationship=""):
+    def add_remote_link(self, key, url, title="", relationship="", before_write=None):
         """원격 링크(Confluence 문서·웹 링크) 추가 — '관련문서'에 붙는다.
         globalId 를 URL 로 두면 같은 문서를 다시 걸어도 한 줄로 갱신된다(실 Jira 동작)."""
         url = (url or "").strip()
@@ -3870,6 +3885,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 "object": {"url": url, "title": (title or "").strip() or url}}
         if relationship:
             body["relationship"] = relationship
+        if before_write:
+            before_write()
         res = self.provider.post_json(f"/rest/api/2/issue/{key}/remotelink", body)
         self._invalidate_ticket(key, documents=True)
         self._record_mutation(MutationEvent(

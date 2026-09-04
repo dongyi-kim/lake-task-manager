@@ -2,6 +2,8 @@ contract: ltm-maxis-dify-bundle.v1
 registry: config/maxis-workflows.yml
 response_schema: deploy/maxis-dify/contracts/remote-role-result.v1.schema.json
 common_prompt: deploy/maxis-dify/prompts/common.md
+knowledge_source_manifest: config/maxis-knowledge.yml
+knowledge_evals: deploy/maxis-dify/knowledge-evals.yml
 
 # query and user are Dify Chat API fields, not Start variables.
 required_start_variables:
@@ -36,6 +38,18 @@ knowledge_retrieval_contract:
   sentinel_prefix: LTM_RELEASE_SENTINEL_V1=
   response_field: knowledge_proof
   expected_digest_source: active_profile_only
+
+# These are builder settings, not prompt suggestions. A remote node failure must be
+# visible to LTM so it can fail closed and preserve a truthful audit trail.
+execution_policy:
+  critical_node_failure: terminate
+  automatic_retry: disabled
+  default_value_on_error: forbidden
+  failure_branch_answer: forbidden
+  model_fallback: forbidden
+  conversation_mode: stateless
+  client_conversation_id: empty
+  auto_generate_name: false
 
 workflows:
   agent_core:

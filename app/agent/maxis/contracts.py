@@ -351,8 +351,8 @@ class RemoteClaimV1(StrictFrozenModel):
     citation_ids: tuple[Identifier, ...] = Field(default=(), max_length=8)
 
     @model_validator(mode="after")
-    def factual_claims_are_cited(self):
-        if self.kind in {"fact", "recommendation"} and not self.citation_ids:
+    def evidence_bearing_claims_are_cited(self):
+        if self.kind in {"fact", "inference", "recommendation"} and not self.citation_ids:
             raise ValueError(f"{self.kind} claim requires at least one citation")
         if len(self.citation_ids) != len(set(self.citation_ids)):
             raise ValueError("citation_ids must be unique")

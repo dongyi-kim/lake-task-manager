@@ -250,6 +250,8 @@ def test_maxis_settings_are_a_separate_workflow_surface_with_safe_credentials():
     assert "MAXIS / Dify Workflow" in dialog and "LLM 연결" in dialog
     for label in ("Workflow bundle", "Knowledge version", "Dify Knowledge dataset UUID",
                   "Knowledge release sentinel SHA-256", "Knowledge manifest",
+                  "Knowledge 원격 평가", "25-case 결과물",
+                  "Dify 원격 실행 로그 정책", "승인 정책 ID", "보존 기간(일)",
                   "Data policy", "Fingerprint",
                   "기능별 실행 경로", "MAXIS 긴급 중단", "AI 효과", "운영 승격"):
         assert label in panel
@@ -261,6 +263,11 @@ def test_maxis_settings_are_a_separate_workflow_surface_with_safe_credentials():
     assert "deploymentOverrideNames" in panel and "workflowVersions" in panel
     assert "missingParameters" in panel and "필수 변수 누락" in panel
     assert "knowledgeRetrievalVerified" in panel and "Knowledge 조회 확인" in panel
+    assert "remoteLogPolicyId" in panel and "remoteLogRetentionDays" in panel
+    assert "Dify 설정을 자동 검사하지 않습니다" in panel
+    assert "실제 Dify 평가 실행을 자동 검증했다는 뜻은 아닙니다" in panel
+    assert "knowledgeEvalReady" in panel and "knowledgeEvalAttestation" in panel
+    assert "Shadow만 사용할 수 있으며 MAXIS 운영 경로는 저장할 수 없습니다" in panel
     assert "합성 데이터 canary·Shadow 검증 전용" in panel
     assert "canManage" in panel and "읽기 전용입니다" in panel and "매니저만" in panel
     assert "promotionDetail" in panel and "minimumSamples" in panel
