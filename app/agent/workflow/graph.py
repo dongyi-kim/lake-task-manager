@@ -293,6 +293,11 @@ def route_after_auditor(state: AgentState) -> str:
         먼저 제거하므로, 여기 남은 blocking problem과 실행 가능한 승인 카드를 동시에
         노출하지 않는다.
     """
+    # A validated MAXIS ``needs_input`` outcome uses the shared questions channel.
+    # The fan-out join may still produce a deterministic review, but it must not mint
+    # an approval token until the requested user input has been answered.
+    if state.get("questions"):
+        return "respond"
     review = state.get("review") or {}
     if review.get("ok"):
         return "propose"
@@ -487,7 +492,65 @@ def _merge_assignments(state: AgentState) -> dict:
     result["review"] = final_authority_review(
         merged_state, locks=field_locks, require_effect=True,
     )
+    result.update(_fanout_runtime_projection(state))
     return result
+
+
+def _fanout_runtime_projection(state: AgentState) -> dict:
+    """Project one remote fan-out sidecar only after all branches have joined.
+
+    Auditor is selected first to match the existing serial schedule (People Advisor,
+    then Auditor).  If only People Advisor ran remotely, its projection remains visible.
+    The complete per-Role map stays in State for audit/debug use.
+    """
+    projected = {}
+    sidecars = state.get("runtime_role_sidecars") or {}
+    if isinstance(sidecars, dict):
+        for role in (Node.AUDITOR, Node.PEOPLE_ADVISOR):
+            value = sidecars.get(role)
+            if not isinstance(value, dict):
+                continue
+            allowed = {key: dict(item) for key, item in value.items()
+                       if key in {"evidence_workspace", "freshness", "quality_gate"}
+                       and isinstance(item, dict)}
+            if not allowed:
+                continue
+            engines = state.get("runtime_role_engines") or {}
+            engine = str(engines.get(role) or "") if isinstance(engines, dict) else ""
+            projected.update({
+                **allowed,
+                "runtime_last_role": role,
+                **({"runtime_last_role_engine": engine}
+                   if engine in {"local", "maxis"} else {}),
+            })
+            break
+
+    # Both remote fan-out Roles may independently need user input.  Their branch
+    # deltas cannot write the plain questions channel in the same superstep, so the
+    # explicit join gives Auditor questions first and caps the shared contract at 3.
+    role_questions = state.get("runtime_role_questions") or {}
+    selected_questions = []
+    if isinstance(role_questions, dict):
+        seen = set()
+        for role in (Node.AUDITOR, Node.PEOPLE_ADVISOR):
+            rows = role_questions.get(role)
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                identity = (str(row.get("field") or ""), str(row.get("question") or ""))
+                if not identity[1] or identity in seen:
+                    continue
+                seen.add(identity)
+                selected_questions.append(dict(row))
+                if len(selected_questions) == 3:
+                    break
+            if len(selected_questions) == 3:
+                break
+    if selected_questions:
+        projected["questions"] = selected_questions
+    return projected
 
 
 def _align_assignments_to_draft(assignments: list, draft: dict) -> list:
@@ -588,7 +651,23 @@ def _propose(state: AgentState) -> dict:
     } if typed_action else {})
 
     def emit(values: dict) -> dict:
-        return {**delta, **values}
+        result = {**delta, **values}
+        token = str(result.get("approval_token") or "")
+        if token:
+            try:
+                from app.agent.maxis.backend import record_change_audit
+
+                record_change_audit(
+                    projected, event="change.proposal", status="started",
+                )
+            except Exception:
+                # An unaudited proposal must not leave a live capability behind.
+                approval.reject(token)
+                secondary = str(result.get("comment_token") or "")
+                if secondary:
+                    approval.reject(secondary)
+                raise
+        return result
 
     # Empty strings clear any token retained from an earlier state. Change plans keep their
     # established deterministic approval path; only CREATE requires Auditor review.ok=true.

@@ -172,6 +172,7 @@ def progress_report(key: str, comment_limit: int = 10) -> dict:
     # mock 은 밀리초라 티가 안 나지만 prod Jira/Confluence 는 호출당 수백 ms~수 초라
     # 직렬 5갈래(+링크 내부 N회)가 통째로 대기 시간이 된다(사용자 지적: prod 는 느리다).
     from concurrent.futures import ThreadPoolExecutor
+    from app.infra.cache import propagate_provenance_context
 
     def _changes():
         # ① 필드 변동 — 상태 전이·마감 연기·우선순위 상향은 그 자체가 진척 사건이다
@@ -227,7 +228,7 @@ def progress_report(key: str, comment_limit: int = 10) -> dict:
         if not rels:
             return []
         with ThreadPoolExecutor(max_workers=4) as ex2:
-            return list(ex2.map(_one, rels))
+            return list(ex2.map(propagate_provenance_context(_one), rels))
 
     def _docs():
         # ③ 유관 문서 — **결과를 적는 문서의 최근 수정**이 곧 진척 근거다. 본문도 조금 싣는다
@@ -247,7 +248,7 @@ def progress_report(key: str, comment_limit: int = 10) -> dict:
         return docs
 
     with ThreadPoolExecutor(max_workers=5) as ex:
-        futs = {k: ex.submit(f) for k, f in (
+        futs = {k: ex.submit(propagate_provenance_context(f)) for k, f in (
             ("changes", _changes), ("comments", _comments), ("children", _children),
             ("links", _links), ("documents", _docs))}
 

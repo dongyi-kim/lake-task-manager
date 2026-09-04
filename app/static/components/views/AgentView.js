@@ -189,6 +189,64 @@ export default {
     resetSideW() { this.sideW = 0; saveLS(SIDE_W_KEY, 0); },
     md(t) { return renderMarkdown(t.text, t.people, t.evidence, t.docs); },
     evidenceText(t) { return mergeEvidenceMarkdown(t.text, t.evidence, t.docs); },
+    /** MAXIS/Dify가 사용한 근거의 검토용 projection. 서버가 source 본문과 raw 응답을
+     *  제거한 `evidenceWorkspace`만 내린다. 기존 답변 하단의 근거 인덱스와 달리 여기서는
+     *  사실/추론/미확인 및 신선도·충돌 경고를 분리해 판단 과정을 검토한다. */
+    evidenceWorkspace(t) { return (t && t.evidenceWorkspace) || {}; },
+    workspaceSources(t) {
+      const rows = this.evidenceWorkspace(t).sources;
+      return Array.isArray(rows) ? rows : [];
+    },
+    workspaceFacts(t) {
+      const ws = this.evidenceWorkspace(t);
+      const rows = Array.isArray(ws.facts) ? ws.facts : [];
+      const claims = Array.isArray(ws.claims) ? ws.claims.filter((row) => row && row.kind === "fact") : [];
+      return rows.concat(claims);
+    },
+    workspaceClaims(t, kinds) {
+      const allowed = new Set(kinds || []);
+      const rows = this.evidenceWorkspace(t).claims;
+      return (Array.isArray(rows) ? rows : []).filter((row) => row && allowed.has(row.kind));
+    },
+    workspaceMissing(t) {
+      const ws = this.evidenceWorkspace(t);
+      const direct = Array.isArray(ws.missingInputs) ? ws.missingInputs : [];
+      const claims = this.workspaceClaims(t, ["open_fact"]);
+      return direct.concat(claims.map((row) => row.text).filter(Boolean));
+    },
+    workspaceWarnings(t) {
+      const rows = this.evidenceWorkspace(t).warnings;
+      return Array.isArray(rows) ? rows : [];
+    },
+    hasEvidenceWorkspace(t) {
+      return this.workspaceSources(t).length || this.workspaceFacts(t).length ||
+        this.workspaceClaims(t, ["inference", "recommendation"]).length ||
+        this.workspaceMissing(t).length || this.workspaceWarnings(t).length;
+    },
+    freshnessLabel(value) {
+      return ({ fresh: "최신", mixed: "시점 혼재", stale: "오래됨", empty: "근거 없음" })[value] || "미확인";
+    },
+    workspaceFreshness(t) {
+      const value = this.evidenceWorkspace(t).freshness;
+      return value && typeof value === "object" ? (value.status || "empty") : (value || "empty");
+    },
+    sourceKindLabel(value) {
+      return ({ jira: "Jira", confluence: "Confluence", bitbucket: "Bitbucket",
+                web: "외부", knowledge: "MAXIS 지식", ltm: "LTM 집계" })[value] || value || "출처";
+    },
+    sourceUrl(row) {
+      // Evidence Workspace links are constructed by LTM. Never turn a remote/external
+      // string into a navigable link on this review surface.
+      const value = String((row && row.url) || "").trim();
+      return /^\/browse\/[A-Z][A-Z0-9]*-\d+$/.test(value) ? value : "";
+    },
+    sourceTime(row) {
+      if (!row) return "시점 미확인";
+      const updated = row.updatedAt || row.updated_at;
+      const retrieved = row.retrievedAt || row.retrieved_at;
+      return updated ? `갱신 ${updated}` : (retrieved ? `조회 ${retrieved}` : "시점 미확인");
+    },
+    runtimeMeta(t) { return (t && t.runtime) || {}; },
     /** [n] 마커 호버 — **하단 참조 목록과 같은 모양의** 커스텀 상자를 띄운다.
      *
      *  브라우저 기본 툴팁(title)을 쓰지 않는 이유가 셋이다: ①노란 기본 상자가 하단 참조
@@ -435,6 +493,14 @@ export default {
               pending: ev.pending || null, result: ev.result || null,
               usage: ev.usage || null, people: ev.people || {},
               draftItems: ev.draft_items || [],
+              runtime: ev.runtime || {
+                engine: ev.engine || "", profile: ev.profile || "",
+                workflowBundleVersion: ev.workflowBundleVersion || ev.workflow_bundle_version || "",
+                knowledgeVersion: ev.knowledgeVersion || ev.knowledge_version || "",
+                correlationId: ev.correlationId || ev.correlation_id || "",
+                qualityGate: ev.qualityGate || ev.quality_gate || null,
+              },
+              evidenceWorkspace: ev.evidenceWorkspace || ev.evidence_workspace || null,
             });
             settle();
             this.saveConvo(myTid, myTurns);

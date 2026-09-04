@@ -1846,7 +1846,7 @@ class ResearchAnalyst(ToolAgent):
         if _compound_plan_requires_research_synthesis(direct_state):
             synthesis_state = {**direct_state, "_research_analyst_prefetched": True}
             try:
-                out = self.apply(
+                out = self.apply_routed(
                     synthesis_state,
                     self._synthesize_prefetched_query_plan(synthesis_state),
                 )
@@ -1856,6 +1856,8 @@ class ResearchAnalyst(ToolAgent):
                 }]
                 return out
             except Exception:
+                if self._maxis_is_authoritative(synthesis_state):
+                    raise
                 # A provider/format failure cannot be repaired by repeating acquisition.  Preserve the
                 # real cross-source ledger, ranked only by typed outcome terms.
                 try:
@@ -2319,7 +2321,7 @@ class ResearchAnalyst(ToolAgent):
                 if _compound_plan_requires_research_synthesis(state):
                     direct_state = {**state, "_research_analyst_prefetched": True}
                     try:
-                        out = self.apply(
+                        out = self.apply_routed(
                             direct_state,
                             self._synthesize_prefetched_query_plan(direct_state),
                         )
@@ -2329,6 +2331,8 @@ class ResearchAnalyst(ToolAgent):
                         }]
                         return out
                     except Exception:
+                        if self._maxis_is_authoritative(direct_state):
+                            raise
                         # Acquisition succeeded; a formatting/provider failure must neither repeat the
                         # searches nor fall back to first-hit truncation. Keep a deterministic, bounded,
                         # cross-source ledger ranked only by the typed research outcome's subject terms.
@@ -2384,7 +2388,7 @@ class ResearchAnalyst(ToolAgent):
             if (state.get("intent") or "") == Intent.ASK and completed_query_plan:
                 try:
                     direct_state = {**state, "_research_analyst_prefetched": True}
-                    out = self.apply(
+                    out = self.apply_routed(
                         direct_state,
                         self._synthesize_prefetched_query_plan(direct_state),
                     )
@@ -2394,6 +2398,8 @@ class ResearchAnalyst(ToolAgent):
                     }]
                     return out
                 except Exception:
+                    if self._maxis_is_authoritative(direct_state):
+                        raise
                     pass          # 최적화 실패는 기존 ReAct로 복구한다
 
             # ── L3a 직결: 주제 자료(dossier)를 **코드가 이미 다 모았으면** 걷지 않는다.
@@ -2412,12 +2418,15 @@ class ResearchAnalyst(ToolAgent):
                 # 걸어야 나온다(실측: 직결이 잡아 목록만 답하고 내용은 '없음').
                 try:
                     direct_state = {**state, "_research_analyst_prefetched": True}
-                    out = self.apply(direct_state, self._conclude(direct_state, []))
+                    out = self.apply_routed(
+                        direct_state, self._conclude(direct_state, []))
                     out["trace"] = (out.get("trace") or []) + [
                         {"node": self.name, "label": "과거 이력 조사",
                          "note": "사전 취합 자료로 바로 정리(조사 생략)"}]
                     return out
                 except Exception:
+                    if self._maxis_is_authoritative(direct_state):
+                        raise
                     pass          # 직결이 죽으면 정상 경로로 — 최적화가 답을 막으면 안 된다
 
             # ── legacy 생성/계획 직결 ─────────────────────────────────────
@@ -2430,12 +2439,15 @@ class ResearchAnalyst(ToolAgent):
                     and prefetched and not typed_write_action:
                 try:
                     direct_state = {**state, "_research_analyst_prefetched": True}
-                    out = self.apply(direct_state, self._conclude(direct_state, []))
+                    out = self.apply_routed(
+                        direct_state, self._conclude(direct_state, []))
                     out["trace"] = (out.get("trace") or []) + [
                         {"node": self.name, "label": "과거 이력 조사",
                          "note": "사전 조회 결과로 바로 정리(도구 재호출 생략)"}]
                     return out
                 except Exception as exc:
+                    if self._maxis_is_authoritative(direct_state):
+                        raise
                     # Acquisition is already complete. A second search loop repeats the
                     # same tools and cannot fix malformed synthesis JSON. Preserve the
                     # compatibility response instead of asserting facts from malformed output.

@@ -221,6 +221,27 @@ def _house_rules(kind: str, prompt: str) -> str:
         return ""
 
 
+def _maxis_ticket_identity_values(context: str) -> list[str]:
+    """Extract Jira person ids from the locally-built, trusted context positions.
+
+    Jira Cloud account ids and older usernames are not limited to the LTM roster's
+    ``skcc.x1234`` convention. These candidates are used for irreversible
+    pseudonymization. The exact subset valid as a Jira mention also forms a per-call,
+    process-local opaque-ref map; the lookup table itself is never sent to MAXIS/Dify.
+    """
+    text = str(context or "")
+    values: list[str] = []
+    values.extend(
+        match.group(1).strip()
+        for match in re.finditer(r"\[~([^\]\s]{2,160})\]", text)
+    )
+    values.extend(
+        match.group(1).strip()
+        for match in re.finditer(r"(?m)^-\s+\S+\s+([^:\n]{2,120}):", text)
+    )
+    return list(dict.fromkeys(value for value in values if value))
+
+
 class EditorAuthor:
     """Canonical Editor Author entrypoint. API endpoint 이름과 Role 식별자를 섞지 않는다."""
 
@@ -253,13 +274,36 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
             seed_html: str = "", user_id: str = "") -> dict:
     """에디터에 꽂을 HTML 을 만든다. 돌려주는 것: {ok, html, note}."""
     from app.agent import config as C
+    from app.agent.maxis import backend as maxis_backend
     from app.agent.prompts.roles import SYSTEM_EDITOR_AUTHOR
     from app.agent.workflow.prompts import data_block, persona, wrap_data
 
-    ready, why = C.llm_ready()
-    if not ready:
-        return {"ok": False, "needsSetup": True,
-                "error": why + " 설정에서 LLM 연결을 먼저 등록하세요."}
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    correlation_id = uuid4().hex
+    try:
+        runtime_state = maxis_backend.thread_runtime_pin()
+        runtime_state.update({
+            "thread_id": "editor-" + correlation_id,
+            "user_id": str(user_id or "").strip(),
+            "correlation_id": correlation_id,
+            "correlation_started_at": datetime.now(timezone.utc).isoformat(),
+        })
+        runtime_resolution = maxis_backend.resolve_role(EditorAuthor.name, runtime_state)
+    except Exception as exc:
+        from app.agent.workflow.session import _friendly_error
+
+        error = _friendly_error(str(exc))
+        if not error and isinstance(exc, maxis_backend.MaxisRuntimeError):
+            error = str(exc)
+        return {"ok": False, "error": error, "usage": {}}
+
+    if runtime_resolution.route != "maxis":
+        ready, why = C.llm_ready()
+        if not ready:
+            return {"ok": False, "needsSetup": True,
+                    "error": why + " 설정에서 LLM 연결을 먼저 등록하세요."}
     prompt = (prompt or "").strip()
     seed = (seed_html or "").strip()[:MAX_SEED]
     kind = (kind or "comment").strip()
@@ -276,7 +320,15 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
                 "error": ("이대로는 정확한 글을 쓸 수 없습니다 — 무엇에 대한 글인지 목적과 "
                           "대상을 한 줄만 적어 주세요 (예: '수집 파이프라인 개선 작업 본문')")}
 
+    context_marker = (
+        maxis_backend.begin_local_acquisition()
+        if runtime_resolution.route in {"shadow", "maxis"} else None
+    )
     ctx = _ticket_context(ticket_key, kind)
+    context_provenance = (
+        maxis_backend.finish_local_acquisition(context_marker)
+        if runtime_resolution.route in {"shadow", "maxis"} else None
+    )
     # A generic status-sharing comment is a projection of progress_report, not a writing
     # task.  Free-form generation repeatedly converted explicit remaining work to completed
     # work and then had to be rejected.  Deterministic rendering is faster and preserves
@@ -288,6 +340,49 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
                     "usage": {"calls": 0, "promptTokens": 0,
                               "completionTokens": 0, "totalTokens": 0}}
     rules = _house_rules(kind, prompt)
+    # MAXIS receives only freshly attested acquisition rows plus a very small guarded
+    # editor intent context.  The local prompt below remains the local provider contract;
+    # it is never copied to Dify.
+    runtime_state.update({
+        "request_text": prompt,
+        "prompt": prompt,
+        "ticket_key": str(ticket_key or "").strip().upper(),
+        "kind": kind,
+        "seed_html": re.sub(
+            r"https?://[^\s<>\"']+", "[url omitted]", seed, flags=re.I,
+        ),
+    })
+    remote_rows = []
+    project_match = re.fullmatch(
+        r"([A-Z][A-Z0-9]*)-\d+", str(ticket_key or "").strip().upper(), re.I,
+    )
+    if ctx:
+        result = {"ticketContext": ctx}
+        proof = maxis_backend.attest_query_result(
+            "editor-ticket", "jira", result,
+            scopes=((project_match.group(1).upper(),) if project_match else ()),
+            retrieved_at=(context_provenance or {}).get("retrieved_at"),
+            partial=True if (context_provenance or {}).get("partial") else None,
+            provenance=context_provenance,
+        )
+        remote_rows.append({
+            "id": "editor-ticket", "source": "jira", "result": result,
+            "_remoteEvidence": proof,
+        })
+    if rules:
+        result = {"authoringRules": rules}
+        remote_rows.append({
+            "id": "editor-rules", "source": "knowledge", "result": result,
+            "_remoteEvidence": maxis_backend.attest_query_result(
+                "editor-rules", "knowledge", result,
+                provenance={
+                    "served_stale": False, "upstream_observed": False,
+                    "read_count": 0, "tracked": True,
+                },
+            ),
+        })
+    runtime_state["_maxis_evidence_rows"] = remote_rows
+    runtime_state["_maxis_identity_values"] = _maxis_ticket_identity_values(ctx)
     what = {"description": "ticket description", "comment": "comment",
             "transition": "comment accompanying a status transition"}.get(kind, "comment")
 
@@ -323,40 +418,122 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
     data_block("Verified Ticket Context: Do Not Add Facts Absent Here", ctx),
     data_block("Applicable Internal Authoring Rules", rules))}"""
 
+    from app.agent.maxis.contracts import EditorDraftV1
+
+    expected_remote_mode = "description" if kind == "description" else "comment"
+    editor_remote_schema = EditorDraftV1.model_json_schema()
+    editor_remote_schema["properties"]["mode"] = {
+        "type": "string", "const": expected_remote_mode,
+    }
+
     llm_usage = {}
+    runtime_public = {}
     meter = None
     try:
-        from app.agent.usage import Meter, callback
         from app.agent.workflow.role_manifest import ROLE_SPECS
-        meter = Meter()
-        handler = callback(meter)
-        state = {"user_id": user_id or "", "user_identity": ""}
         role = ROLE_SPECS[EditorAuthor.name]
-        layer = role.execution_layer
-        invoke_config = {
-            "metadata": {
-                "ltm_role_id": role.id,
-                "ltm_output_contract": "text",
-                "ltm_execution_layer": layer,
-                "ltm_execution_stage": "synthesis",
+        if runtime_resolution.route == "maxis":
+            remote = maxis_backend.invoke_role(
+                role.id,
+                runtime_state,
+                [],
+                editor_remote_schema,
+                output_kind="structured",
+            )
+            if remote.get("unsupported_claims"):
+                raise maxis_backend.MaxisRuntimeError(
+                    "MAXIS Editor 초안에 근거 없는 claim이 포함되어 삽입하지 않았습니다."
+                )
+            html = str(remote.get("content_html") or "").strip()
+            remote_metadata = getattr(remote, "metadata", {}) or {}
+            remote_usage = remote_metadata.get("usage") or {}
+            llm_usage = {
+                "calls": 1,
+                "promptTokens": int(remote_usage.get("promptTokens") or 0),
+                "completionTokens": int(remote_usage.get("completionTokens") or 0),
+                "totalTokens": int(remote_usage.get("totalTokens") or 0),
             }
+            runtime_public = {
+                "engine": "maxis",
+                "profile": str(remote_metadata.get("profile")
+                               or runtime_resolution.profile or ""),
+                "workflowBundleVersion": str(
+                    remote_metadata.get("workflowBundleVersion")
+                    or runtime_state.get("workflow_bundle_version") or ""
+                ),
+                "knowledgeVersion": str(
+                    remote_metadata.get("knowledgeVersion")
+                    or runtime_state.get("knowledge_version") or ""
+                ),
+                "correlationId": str(
+                    remote_metadata.get("correlationId") or correlation_id
+                ),
+            }
+            remote_patch = getattr(remote, "state_patch", {}) or {}
+            if isinstance(remote_patch.get("evidence_workspace"), dict):
+                runtime_public["evidenceWorkspace"] = remote_patch["evidence_workspace"]
+            if isinstance(remote_patch.get("freshness"), dict):
+                runtime_public["freshness"] = remote_patch["freshness"]
+            if isinstance(remote_patch.get("quality_gate"), dict):
+                runtime_public["qualityGate"] = remote_patch["quality_gate"]
+        else:
+            from app.agent.usage import Meter, callback
+
+            meter = Meter()
+            handler = callback(meter)
+            state = {"user_id": user_id or "", "user_identity": ""}
+            layer = role.execution_layer
+            invoke_config = {
+                "metadata": {
+                    "ltm_role_id": role.id,
+                    "ltm_output_contract": "text",
+                    "ltm_execution_layer": layer,
+                    "ltm_execution_stage": "synthesis",
+                }
+            }
+            if handler:
+                invoke_config["callbacks"] = [handler]
+            llm = C.get_llm(tier=C.execution_tier(layer), profile=role.task_profile,
+                            role_id=role.id)
+            messages = [("system", persona(state, SYSTEM_EDITOR_AUTHOR, role_id=role.id)),
+                        ("user", task)]
+            try:
+                msg = llm.invoke(messages, config=invoke_config)
+            except TypeError as exc:
+                # 최소 custom/OpenAI-compatible adapter 중 Runnable ``config`` 인자를 구현하지
+                # 않은 것도 있다. 계량 때문에 본 기능을 막지 않고 unmetered 호출로 폴백한다.
+                if "unexpected keyword argument 'config'" not in str(exc):
+                    raise
+                msg = llm.invoke(messages)
+            llm_usage = meter.snapshot()
+            html = str(getattr(msg, "content", msg) or "").strip()
+            if runtime_resolution.route == "shadow":
+                maxis_backend.run_shadow(
+                    role.id,
+                    runtime_state,
+                    [],
+                    editor_remote_schema,
+                    output_kind="structured",
+                    local_output={
+                        "contract": "editor-draft.v1",
+                        "mode": expected_remote_mode,
+                        "content_html": html,
+                        "source_ids": [],
+                        "unsupported_claims": [],
+                        "warnings": [],
+                    },
+                )
+    except maxis_backend.MaxisNeedsInput as e:
+        questions = list(e.missing_inputs[:3])
+        return {
+            "ok": False,
+            "needsInfo": True,
+            "error": (
+                "이대로는 정확한 글을 쓸 수 없습니다 — "
+                + " / ".join(questions)
+            ),
+            "usage": llm_usage,
         }
-        if handler:
-            invoke_config["callbacks"] = [handler]
-        llm = C.get_llm(tier=C.execution_tier(layer), profile=role.task_profile,
-                        role_id=role.id)
-        messages = [("system", persona(state, SYSTEM_EDITOR_AUTHOR, role_id=role.id)),
-                    ("user", task)]
-        try:
-            msg = llm.invoke(messages, config=invoke_config)
-        except TypeError as exc:
-            # 최소 custom/OpenAI-compatible adapter 중 Runnable ``config`` 인자를 구현하지
-            # 않은 것도 있다. 계량 때문에 본 기능을 막지 않고 unmetered 호출로 폴백한다.
-            if "unexpected keyword argument 'config'" not in str(exc):
-                raise
-            msg = llm.invoke(messages)
-        llm_usage = meter.snapshot()
-        html = str(getattr(msg, "content", msg) or "").strip()
     except Exception as e:
         from app.agent.workflow.session import _friendly_error
         # The callback records an error call as soon as the provider invocation fails.
@@ -364,7 +541,10 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
         # explains an editor failure.  A factory/configuration error before invocation is
         # still represented by the same zero-call snapshot shape as other compose paths.
         llm_usage = meter.snapshot() if meter is not None else llm_usage
-        return {"ok": False, "error": _friendly_error(str(e)), "usage": llm_usage}
+        error = _friendly_error(str(e))
+        if not error and isinstance(e, maxis_backend.MaxisRuntimeError):
+            error = str(e)
+        return {"ok": False, "error": error, "usage": llm_usage}
 
     from app.agent.references import normalize_editor_markup, run_editor_stage
     normalization_stage = run_editor_stage(
@@ -549,7 +729,7 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
     # UI가 ticket/person/document를 다시 regex 추측하지 않도록 canonical reference bundle을
     # 함께 보낸다. 해결 실패는 위의 final authority gate에서 성공 응답 전에 차단한다.
     return {"ok": True, "html": html, "note": "", "references": references,
-            "usage": llm_usage}
+            "usage": llm_usage, **runtime_public}
 
 
 def _re_strip(html: str) -> str:

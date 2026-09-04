@@ -465,6 +465,119 @@ class Agent(ABC):
     def apply(self, state: AgentState, out: dict) -> dict:
         """모델 출력 → State 갱신분. 여기서만 State 를 만진다."""
 
+    def apply_routed(self, state: AgentState, out: dict) -> dict:
+        """Apply a Role result and its explicit per-call MAXIS metadata projection."""
+        return self._with_runtime_projection(
+            state,
+            self.apply(state, out),
+            runtime_patch=getattr(out, "state_patch", None),
+            metadata=getattr(out, "metadata", None),
+        )
+
+    def _with_runtime_projection(
+        self,
+        state: AgentState,
+        patch: dict,
+        *,
+        runtime_patch=None,
+        metadata=None,
+    ) -> dict:
+        """Attach validated remote sidecars/telemetry to a Role-owned State delta."""
+        patch = dict(patch or {})
+        if runtime_patch is not None:
+            if not isinstance(runtime_patch, dict):
+                raise RuntimeError("MAXIS runtime state projection 계약이 올바르지 않습니다.")
+            allowed = {"evidence_workspace", "freshness", "quality_gate"}
+            if set(runtime_patch) - allowed or any(
+                    not isinstance(runtime_patch.get(key), dict) for key in runtime_patch):
+                raise RuntimeError("MAXIS runtime state projection 계약이 올바르지 않습니다.")
+            patch["runtime_role_sidecars"] = {self.name: dict(runtime_patch)}
+            # These Roles can share one LangGraph superstep.  Writing the three plain
+            # dict channels from both branches raises INVALID_CONCURRENT_GRAPH_UPDATE;
+            # the explicit join projects one deterministic sidecar after both finish.
+            if self.name not in {"people_advisor", "auditor"}:
+                patch = {**patch, **runtime_patch}
+
+        # Old/direct tests and pre-runtime checkpoints retain their exact output shape.
+        # Pinned threads additionally record the engine that actually supplied each Role's
+        # authoritative result; the thread's legacy ``runtime_engine`` remains its default
+        # route and must not mislabel a mixed local/MAXIS workflow.
+        if isinstance(state.get("runtime_role_routes"), dict):
+            from app.agent.maxis import backend as maxis_backend
+
+            route = maxis_backend.resolve_role(self.name, state).route
+            authoritative_engine = "maxis" if route == "maxis" else "local"
+            patch = {
+                **patch,
+                "runtime_role_engines": {self.name: authoritative_engine},
+                "runtime_last_role": self.name,
+                "runtime_last_role_engine": authoritative_engine,
+            }
+            if authoritative_engine == "maxis" and isinstance(metadata, dict):
+                usage = metadata.get("usage") if isinstance(metadata.get("usage"), dict) else {}
+                patch["runtime_role_telemetry"] = {self.name: {
+                    "engine": "maxis", "calls": 1,
+                    "promptTokens": max(0, int(usage.get("promptTokens") or 0)),
+                    "completionTokens": max(0, int(usage.get("completionTokens") or 0)),
+                    "totalTokens": max(0, int(usage.get("totalTokens") or 0)),
+                    "latencyMs": max(0, int(metadata.get("latencyMs") or 0)),
+                    "workflowBundleVersion": str(
+                        metadata.get("workflowBundleVersion") or ""
+                    )[:120],
+                }}
+        return patch
+
+    def _maxis_needs_input_patch(self, state: AgentState, err: Exception) -> dict | None:
+        """Turn a validated remote interview outcome into the normal question channel."""
+        from app.agent.maxis.backend import MaxisNeedsInput
+
+        if not isinstance(err, MaxisNeedsInput):
+            return None
+        if str(err.role_id or "") != str(self.name or ""):
+            raise RuntimeError("MAXIS needs-input Role 식별자가 호출 Role과 다릅니다.")
+        from app.agent.workflow.contracts import QuestionContract
+
+        questions = []
+        for index, missing in enumerate(err.missing_inputs[:3], start=1):
+            text = str(missing or "").strip()[:500]
+            if not text:
+                continue
+            questions.append(QuestionContract(
+                question=text,
+                kind="text",
+                options=[],
+                field=f"maxis:{self.name}:{index}"[:120],
+                ownership="user_required",
+                required_input=True,
+                why_required=(
+                    f"MAXIS {self.name} Role이 결과를 확정하려면 이 입력이 필요함"
+                )[:500],
+                fallback="",
+            ).model_dump())
+        if not questions:
+            raise RuntimeError("MAXIS needs-input 응답에 유효한 질문이 없습니다.")
+        question_patch = {
+            "runtime_role_questions": {self.name: questions},
+            "trace": note(state, self.name, f"추가 입력 필요 {len(questions)}건"),
+        }
+        # These two Roles can write in the same LangGraph superstep.  Keep their
+        # questions namespaced until merge_assignments deterministically selects at
+        # most three for the shared user-facing interview channel.
+        if self.name not in {"people_advisor", "auditor"}:
+            question_patch["questions"] = questions
+        return self._with_runtime_projection(
+            state,
+            question_patch,
+            runtime_patch=err.state_patch,
+            metadata=err.metadata,
+        )
+
+    def _maxis_is_authoritative(self, state: AgentState) -> bool:
+        """Tell optimization fallbacks when a failed remote result must stay failed."""
+        from app.agent.maxis import backend as maxis_backend
+
+        return maxis_backend.resolve_role(self.name, state).route == "maxis"
+
     def _role_spec(self):
         from app.agent.workflow.role_manifest import ROLE_SPECS
         spec = ROLE_SPECS.get(str(self.name))
@@ -812,8 +925,8 @@ class Agent(ABC):
             output_contract="typed_projection_correction",
         )
 
-    def invoke_structured(self, state: AgentState, messages: list) -> dict:
-        """Choose native/direct or semantic→typed projection from capabilities + manifest."""
+    def _invoke_local_structured(self, state: AgentState, messages: list) -> dict:
+        """Choose native/direct or semantic→typed projection for the local model runtime."""
         projection_tier = self._semantic_projection_tier()
         if projection_tier:
             return self._invoke_semantic_projection(state, messages, projection_tier)
@@ -850,6 +963,48 @@ class Agent(ABC):
             execution_layer=semantic_layer, output_contract="structured_correction",
         )
 
+    def _invoke_remote_structured(self, state: AgentState, messages: list) -> dict:
+        """Invoke Dify once, then retain every existing local Role contract guard."""
+        from app.agent.maxis import backend as maxis_backend
+
+        schema = self.schema_for(state)
+        remote = maxis_backend.invoke_role(
+            self.name, state, messages, schema, output_kind="structured",
+        )
+        candidate = self.pre_validate_structured_output(
+            state, _as_dict(remote), output_contract="maxis_remote",
+            execution_stage="synthesis",
+        )
+        out = _validate_output(candidate, schema)
+        # A remote semantic result may not escape a Role-specific deterministic
+        # projection invariant.  Do not repair it with the local LLM because that would
+        # silently turn one authoritative MAXIS request into a chained dual orchestrator.
+        violation = str(self.post_projection_correction(state, out) or "").strip()
+        if violation:
+            raise RuntimeError(
+                f"MAXIS Role 결과가 로컬 결정적 계약을 충족하지 못했습니다: {self.name}"
+            )
+        return maxis_backend.RemoteRoleOutput(
+            out, getattr(remote, "state_patch", None), getattr(remote, "metadata", None),
+        )
+
+    def invoke_structured(self, state: AgentState, messages: list) -> dict:
+        """Route one semantic call while keeping local validation authoritative."""
+        from app.agent.maxis import backend as maxis_backend
+
+        resolution = maxis_backend.resolve_role(self.name, state)
+        if resolution.route == "maxis":
+            return self._invoke_remote_structured(state, messages)
+        out = self._invoke_local_structured(state, messages)
+        if resolution.route == "shadow":
+            # Shadow output is intentionally discarded.  It cannot influence state,
+            # approval payloads, trace text, or the user-visible result.
+            maxis_backend.run_shadow(
+                self.name, state, messages, self.schema_for(state),
+                output_kind="structured", local_output=out,
+            )
+        return out
+
     @abstractmethod
     def node(self):
         """바깥 그래프에 붙일 함수. State 의 **갱신분**만 돌려줘야 한다."""
@@ -871,9 +1026,10 @@ class StructuredAgent(Agent):
             out = self.invoke_structured(state, [
                 SystemMessage(content=self.system(state)),
                 HumanMessage(content=self.task(state))])
-            return self.apply(state, out)
+            return self.apply_routed(state, out)
         except Exception as e:
-            return self.fallback(state, e)
+            interview = self._maxis_needs_input_patch(state, e)
+            return interview if interview is not None else self.fallback(state, e)
 
 class TextAgent(Agent):
     """사용자에게 그대로 보여줄 문장을 만드는 역할. 스키마를 씌우지 않는 유일한 자리다.
@@ -889,14 +1045,30 @@ class TextAgent(Agent):
 
     def _run(self, state: AgentState) -> dict:
         try:
+            from app.agent.maxis import backend as maxis_backend
+
+            messages = [SystemMessage(content=self.system(state)),
+                        HumanMessage(content=self.task(state))]
+            resolution = maxis_backend.resolve_role(self.name, state)
+            if resolution.route == "maxis":
+                out = maxis_backend.invoke_role(
+                    self.name, state, messages, {}, output_kind="text",
+                )
+                return self.apply_routed(state, out)
             layer = self.execution_layer("synthesis")
             msg = self.llm(execution_layer=layer, execution_stage="synthesis").invoke(
-                [SystemMessage(content=self.system(state)),
-                 HumanMessage(content=self.task(state))],
-                config=_call_config(self.name, "text", layer, "synthesis"))
-            return self.apply(state, {"text": str(getattr(msg, "content", msg) or "").strip()})
+                messages, config=_call_config(
+                    self.name, "text", layer, "synthesis"))
+            out = {"text": str(getattr(msg, "content", msg) or "").strip()}
+            if resolution.route == "shadow":
+                maxis_backend.run_shadow(
+                    self.name, state, messages, {}, output_kind="text",
+                    local_output=out,
+                )
+            return self.apply_routed(state, out)
         except Exception as e:
-            return self.fallback(state, e)
+            interview = self._maxis_needs_input_patch(state, e)
+            return interview if interview is not None else self.fallback(state, e)
 
 
 class _Scratch(TypedDict, total=False):
@@ -936,13 +1108,25 @@ class ToolAgent(Agent):
 
         def run(state: AgentState) -> dict:
             try:
+                from app.agent.maxis import backend as maxis_backend
+
+                if maxis_backend.resolve_role(self.name, state).route == "maxis":
+                    # The remote workflow owns tool selection in this mode.  Calling the
+                    # local ReAct loop as well would duplicate acquisition and allow two
+                    # independent orchestrators to shape one authoritative result.
+                    out = self.invoke_structured(state, [
+                        SystemMessage(content=self.system(state)),
+                        HumanMessage(content=self.task(state)),
+                    ])
+                    return self.apply_routed(state, out)
                 scratch = sub.invoke({"messages": [
                     SystemMessage(content=self.system(state)),
                     HumanMessage(content=self.task(state))], "steps": 0})
                 out = self._conclude(state, scratch["messages"])
-                return self.apply(state, out)
+                return self.apply_routed(state, out)
             except Exception as e:
-                return self.fallback(state, e)
+                interview = self._maxis_needs_input_patch(state, e)
+                return interview if interview is not None else self.fallback(state, e)
 
         return run
 

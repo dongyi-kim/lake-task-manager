@@ -107,6 +107,44 @@
 /* 답변에는 표·긴 URL 이 섞인다. 말풍선이 화면을 밀어내지 않게 안에서 감싼다. */
 .agent-bubble.agent { overflow-wrap:anywhere; }
 
+/* MAXIS/Dify 결과의 재현 정보와 Evidence Workspace. 답변의 canonical 근거 인덱스를
+   복제하지 않고, 원격 실행에서 받은 검토용 projection만 별도 층으로 보여 준다. */
+.agent-runtime { display:flex; flex-wrap:wrap; gap:5px; margin-top:10px; }
+.agent-runtime span { padding:2px 7px; border:1px solid var(--border); border-radius:999px;
+  background:var(--panel-2); color:var(--muted); font-size:10.5px; }
+.agent-runtime span.bad { color:var(--danger); border-color:color-mix(in srgb, var(--danger) 40%, var(--border)); }
+.evidence-workspace { margin-top:10px; border:1px solid var(--border); border-radius:9px;
+  background:var(--panel-2); overflow:hidden; }
+.evidence-workspace > summary { display:flex; align-items:center; flex-wrap:wrap; gap:6px;
+  padding:8px 10px; cursor:pointer; list-style:none; font-size:11.5px; color:var(--muted); }
+.evidence-workspace > summary::-webkit-details-marker { display:none; }
+.evidence-workspace > summary::before { content:"▸"; color:var(--accent); }
+.evidence-workspace[open] > summary::before { content:"▾"; }
+.evidence-workspace > summary b { color:var(--text); }
+.ew-fresh { border-radius:999px; padding:1px 6px; background:var(--panel); }
+.ew-fresh.fresh { color:var(--success); }
+.ew-fresh.mixed, .ew-fresh.stale { color:var(--warning); }
+.ew-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:8px;
+  padding:0 10px 10px; }
+.ew-grid section, .ew-sources { min-width:0; padding:8px; border:1px solid var(--border);
+  border-radius:7px; background:var(--panel); }
+.evidence-workspace h4 { margin:0 0 5px; font-size:11.5px; color:var(--text); }
+.evidence-workspace ul { margin:0; padding-left:17px; }
+.evidence-workspace li { margin:3px 0; color:var(--muted); font-size:11.5px; }
+.evidence-workspace li small { display:block; color:var(--muted-2); }
+.evidence-workspace li em { margin-left:5px; color:var(--accent); font-size:10px; font-style:normal; }
+.ew-missing { border-color:color-mix(in srgb, var(--warning) 35%, var(--border)) !important; }
+.ew-sources { margin:0 10px 10px; }
+.ew-source { display:flex; flex-wrap:wrap; align-items:center; gap:5px 8px; padding:4px 0;
+  border-top:1px solid var(--border); font-size:10.5px; color:var(--muted); }
+.ew-source:first-of-type { border-top:0; }
+.ew-source b,.ew-source > a { flex:1 1 220px; min-width:0; color:var(--text); font-size:11.5px; }
+.ew-source > a { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:650; }
+.ew-source em { color:var(--warning); font-style:normal; }
+.ew-warnings { display:flex; flex-direction:column; gap:3px; margin:0 10px 10px; padding:8px;
+  border-left:3px solid var(--warning); background:var(--panel); color:var(--muted);
+  font-size:11px; }
+
 /* 답변 본문 — 헤딩·목록·인용·콜아웃·표·코드·뱃지·멘션은 **티켓 본문/댓글과 같은 CSS**를
    쓴다(컨테이너에 .tkt-desc 를 함께 단다). 여기에는 채팅에서만 다른 것(글자 크기·행간·
    표의 가로 스크롤)만 남긴다 — 같은 요소를 두 벌로 정의하면 두 화면이 갈라진다. */
@@ -603,6 +641,60 @@
 .ag-err { padding:9px 12px; border-radius:7px; font-size:12.5px;
   background:color-mix(in srgb, var(--danger) 12%, transparent); color:var(--danger); }
 .ag-act { display:flex; gap:8px; padding:12px 16px; border-top:1px solid var(--border); }
+
+/* MAXIS/Dify는 LLM provider가 아니라 versioned workflow 실행층이다. 같은 설정 창을 쓰되
+ * 별도 component/surface로 구분해 Key·route·kill switch의 소유권을 섞지 않는다. */
+.mx-mode-nav { display:flex; gap:4px; padding:8px 16px; border-bottom:1px solid var(--border); background:var(--panel-2); }
+.mx-mode-nav button { padding:6px 12px; border:1px solid transparent; border-radius:7px; color:var(--muted);
+  background:transparent; cursor:pointer; font:inherit; font-size:12px; }
+.mx-mode-nav button.on { color:var(--text); background:var(--panel); border-color:var(--border-hi); font-weight:700; }
+.mx-panel { flex:1; min-height:0; display:flex; flex-direction:column; }
+.mx-profile-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:13px 18px;
+  border-bottom:1px solid var(--border); }
+.mx-profile-bar > div:first-child { display:flex; flex-direction:column; gap:2px; }
+.mx-profile-bar b { font-size:13px; }.mx-profile-bar span { color:var(--muted-2); font-size:11px; }
+.mx-stage-pick { display:flex; gap:5px; }.mx-stage-pick .ag-mini.on { color:#fff; background:var(--accent); border-color:var(--accent); }
+.mx-stage-pick em { margin-left:5px; font-style:normal; font-size:9px; }
+.mx-scroll { flex:1; overflow-y:auto; padding:16px 18px; }
+.mx-meta { display:grid; grid-template-columns:1fr 1fr; gap:5px 12px; margin-bottom:12px; padding:9px 11px;
+  border:1px solid var(--border); border-radius:8px; background:var(--panel-2); }
+.mx-meta span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font-size:11px; }
+.mx-meta b { margin-right:6px; color:var(--text); }
+.mx-workflow { padding:9px 0; border-top:1px dashed var(--border); }
+.mx-workflow > div { display:flex; gap:8px; margin-bottom:7px; }.mx-workflow > div b { font-size:12px; }
+.mx-workflow > div span { color:var(--muted-2); font-size:11px; }
+.mx-key-row { padding:7px 0; border-bottom:1px dashed var(--border); }.mx-key-row:last-of-type { margin-bottom:8px; }
+.mx-key-row .ag-f { margin-bottom:2px; }.mx-key-row small { display:block; margin-left:160px; color:var(--muted-2); font-size:10.5px; }
+.mx-clear { display:flex; align-items:center; gap:4px; margin-left:160px; color:var(--danger); font-size:10.5px; }
+.mx-actions { display:flex; align-items:center; gap:8px; margin-top:10px; }
+.mx-promotion-gate { display:flex; justify-content:space-between; gap:10px; margin:5px 0; padding:7px 9px;
+  border:1px solid var(--border); border-radius:7px; background:var(--panel-2); font-size:10.5px; }
+.mx-promotion-gate b { font-size:11px; }.mx-promotion-gate span { color:var(--muted-2); text-align:right; }
+.mx-promotion-gate.on { border-color:color-mix(in srgb, var(--good) 40%, var(--border)); }
+.mx-promotion-gate.on b { color:var(--good); }.mx-promotion-gate.off b { color:var(--warn); }
+.mx-kill { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:12px; padding:10px 12px;
+  border:1px solid var(--border); border-radius:8px; background:var(--panel-2); }
+.mx-kill > div { display:flex; flex-direction:column; gap:2px; }.mx-kill b { font-size:12px; }
+.mx-kill span { color:var(--muted-2); font-size:10.5px; }
+.mx-impact { display:grid; grid-template-columns:repeat(4, 1fr); gap:7px; }
+.mx-impact span { display:flex; flex-direction:column; align-items:center; gap:2px; padding:10px 6px; border:1px solid var(--border);
+  border-radius:8px; color:var(--muted-2); font-size:10.5px; background:var(--panel-2); }
+.mx-impact b { color:var(--text); font-size:16px; }
+.mx-impact-note { margin:8px 0; color:var(--muted-2); font-size:10.5px; line-height:1.55; }
+.mx-impact-segments { overflow-x:auto; border:1px solid var(--border); border-radius:8px; }
+.mx-impact-row { display:grid; grid-template-columns:minmax(150px,1.3fr) minmax(145px,1.2fr) repeat(4,minmax(78px,.7fr));
+  min-width:700px; border-top:1px solid var(--border); }
+.mx-impact-row:first-child { border-top:0; }
+.mx-impact-row > span { min-width:0; padding:7px 8px; color:var(--muted); font-size:10.5px; }
+.mx-impact-row > span:not(:first-child) { border-left:1px solid var(--border); }
+.mx-impact-row b,.mx-impact-row small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mx-impact-row b { color:var(--text); font-size:11px; }.mx-impact-row small { color:var(--muted-2); }
+.mx-impact-row.head { background:var(--panel-2); }.mx-impact-row.head > span { color:var(--text); font-weight:650; }
+.mx-note { margin-bottom:10px; color:var(--good); font-size:12px; }
+@media (max-width:720px) {
+  .mx-profile-bar { align-items:flex-start; flex-direction:column; }.mx-meta,.mx-impact { grid-template-columns:1fr 1fr; }
+  .mx-key-row small,.mx-clear { margin-left:0; }
+}
 
 .sm-hint { font-size:11.5px; color:var(--muted-2); line-height:1.6; padding:2px 0; }
 

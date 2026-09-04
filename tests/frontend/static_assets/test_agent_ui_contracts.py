@@ -105,6 +105,25 @@ def test_agent_evidence_has_one_hierarchical_renderer_without_system_duplicate_p
     assert '.ref-observation[data-ref="' in view
 
 
+def test_maxis_evidence_workspace_separates_fact_inference_and_open_facts():
+    """원격 workflow의 판단 근거는 raw 응답 없이 검토 가능한 projection으로 표시한다."""
+    view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
+    template = (STATIC / "components" / "agent" / "agentViewTemplate.js").read_text(encoding="utf-8")
+    css = (STATIC / "styles" / "agent.css").read_text(encoding="utf-8")
+
+    assert "evidenceWorkspace: ev.evidenceWorkspace || ev.evidence_workspace || null" in view
+    assert "workspaceFacts(t)" in view and 'row.kind === "fact"' in view and '"open_fact"' in view
+    assert "workspaceFreshness(t)" in view and "qualityGate.ok" in template
+    assert "source 본문" in view and "제거" in view
+    assert "Evidence Workspace" in template
+    assert "확인된 사실" in template and "추론·제안" in template and "미확인·추가 확인" in template
+    assert "출처와 데이터 시점" in template and "검증 경고" in template
+    assert 'v-if="sourceUrl(row)"' in template
+    assert "sourceUrl(row)" in view and "^\\/browse\\/" in view
+    assert "row.content" not in template
+    assert ".evidence-workspace" in css and ".ew-fresh.stale" in css
+
+
 def test_agent_source_quality_table_keeps_readable_columns_in_narrow_chat():
     """출처 평가 detail badge가 판정·한계 열을 한 글자 폭으로 밀어내지 않는다."""
     md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
@@ -218,3 +237,40 @@ def test_reference_hover_is_shared_by_all_ticket_links_and_person_mentions():
     dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
     assert 'a.setAttribute("role", "button")' in dialog
     assert 'a.setAttribute("tabindex", "0")' in dialog
+
+
+def test_maxis_settings_are_a_separate_workflow_surface_with_safe_credentials():
+    dialog = (STATIC / "components" / "ui" / "AgentSettingsDialog.js").read_text(encoding="utf-8")
+    panel = (STATIC / "components" / "ui" / "MaxisSettingsPanel.js").read_text(encoding="utf-8")
+    api_src = (STATIC / "lib" / "agentApi.js").read_text(encoding="utf-8")
+    css = (STATIC / "styles" / "agent.css").read_text(encoding="utf-8")
+
+    assert 'import MaxisSettingsPanel from "./MaxisSettingsPanel.js"' in dialog
+    assert '<MaxisSettingsPanel v-if="mode === \'maxis\'"' in dialog
+    assert "MAXIS / Dify Workflow" in dialog and "LLM 연결" in dialog
+    for label in ("Workflow bundle", "Knowledge version", "Dify Knowledge dataset UUID",
+                  "Knowledge release sentinel SHA-256", "Knowledge manifest",
+                  "Data policy", "Fingerprint",
+                  "기능별 실행 경로", "MAXIS 긴급 중단", "AI 효과", "운영 승격"):
+        assert label in panel
+    for mode in ("local", "shadow", "maxis"):
+        assert f'key: "{mode}"' in panel
+    for field in ("agentCoreApiKey", "editorAuthorApiKey", "pmoBriefApiKey"):
+        assert field in panel
+    assert 'type="password"' in panel and "Windows DPAPI" in panel
+    assert "deploymentOverrideNames" in panel and "workflowVersions" in panel
+    assert "missingParameters" in panel and "필수 변수 누락" in panel
+    assert "knowledgeRetrievalVerified" in panel and "Knowledge 조회 확인" in panel
+    assert "합성 데이터 canary·Shadow 검증 전용" in panel
+    assert "canManage" in panel and "읽기 전용입니다" in panel and "매니저만" in panel
+    assert "promotionDetail" in panel and "minimumSamples" in panel
+    assert "impactSegments" in panel and "LTM Local과 MAXIS/Dify" in panel
+    assert "기존 Jira Dashboard/수작업 기준선" in panel
+    assert "API Key" not in panel[panel.index("mx-impact"):]
+    for path in ("/api/agent/maxis/status", "/api/agent/maxis/profiles/",
+                 "/api/agent/maxis/credentials/", "/api/agent/maxis/probe/",
+                 "/api/agent/maxis/activate/", "/api/agent/maxis/routes",
+                 "/api/agent/maxis/kill-switch", "/api/agent/maxis/impact"):
+        assert path in api_src
+    assert ".mx-panel" in css and ".mx-impact" in css and ".mx-promotion-gate" in css
+    assert ".mx-impact-segments" in css and ".mx-impact-row" in css

@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from app.auth.base import SessionExpired
 from app.domain.names import real_name
 from app.domain.progress import norm_cat
+from app.infra.cache import propagate_provenance_context
 
 
 def _cat(status):
@@ -109,7 +110,7 @@ def search_all(client, settings, q, scope="scoped", limit=8, only=None):
     if not funcs:
         return out
     with ThreadPoolExecutor(max_workers=3) as ex:
-        futs = {k: ex.submit(f) for k, f in funcs.items()}
+        futs = {k: ex.submit(propagate_provenance_context(f)) for k, f in funcs.items()}
         for k, fut in futs.items():
             try:
                 out[k] = fut.result()

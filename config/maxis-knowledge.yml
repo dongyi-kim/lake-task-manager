@@ -1,0 +1,19 @@
+contract: ltm-knowledge-source.v1
+
+# This tracked manifest is the source of truth for the static rules mirrored into
+# the MAXIS/Dify Knowledge dataset.  Runtime profiles add their environment-specific
+# Dify dataset UUID; the resulting SHA-256 pins both content and deployment identity.
+chunking:
+  strategy: markdown-headings-then-length.v1
+  max_chars: 1200
+  overlap_chars: 120
+
+documents:
+  - knowledge/01-ticket-rules.md
+  - knowledge/02-progress-formula.md
+  - knowledge/03-modules-and-people.md
+  - knowledge/04-work-breakdown.md
+  - knowledge/05-ltm-guide.md
+  - knowledge/06-data-assets.md
+  - knowledge/07-ticket-body-guide.md
+  - knowledge/08-editor-and-rendering.md

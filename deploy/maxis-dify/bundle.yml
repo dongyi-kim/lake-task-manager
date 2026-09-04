@@ -1,0 +1,76 @@
+contract: ltm-maxis-dify-bundle.v1
+registry: config/maxis-workflows.yml
+response_schema: deploy/maxis-dify/contracts/remote-role-result.v1.schema.json
+common_prompt: deploy/maxis-dify/prompts/common.md
+
+# query and user are Dify Chat API fields, not Start variables.
+required_start_variables:
+  - context_pack
+  - role_id
+  - correlation_id
+  - output_contract
+  - workflow_version
+  - knowledge_version
+
+start_variable_control:
+  context_pack: paragraph
+  role_id: text-input
+  correlation_id: text-input
+  output_contract: text-input
+  workflow_version: text-input
+  knowledge_version: text-input
+
+start_variable_min_capacity:
+  context_pack: 20000
+  role_id: 128
+  correlation_id: 128
+  output_contract: 128
+  workflow_version: 128
+  knowledge_version: 128
+
+knowledge_retrieval_contract:
+  required: true
+  nodes: release_sentinel_and_role_knowledge
+  query: LTM_RELEASE_SENTINEL_V1
+  role_query_source: sys.query
+  sentinel_prefix: LTM_RELEASE_SENTINEL_V1=
+  response_field: knowledge_proof
+  expected_digest_source: active_profile_only
+
+workflows:
+  agent_core:
+    app_type: chatflow
+    endpoint: /chat-messages
+    response_mode: blocking
+    conversation_mode: stateless
+    output_contract: remote-role-result.v1
+    prompt: deploy/maxis-dify/prompts/agent_core.md
+    roles:
+      - request_architect
+      - query_specialist
+      - research_analyst
+      - knowledge_curator
+      - work_architect
+      - people_advisor
+      - auditor
+      - result_integrator
+  pmo_brief:
+    app_type: chatflow
+    endpoint: /chat-messages
+    response_mode: blocking
+    conversation_mode: stateless
+    output_contract: remote-role-result.v1
+    prompt: deploy/maxis-dify/prompts/pmo_brief.md
+    roles:
+      - portfolio_analyst
+  editor_author:
+    app_type: chatflow
+    endpoint: /chat-messages
+    response_mode: blocking
+    conversation_mode: stateless
+    output_contract: remote-role-result.v1
+    prompt: deploy/maxis-dify/prompts/editor_author.md
+    roles:
+      - editor_author
+
+smoke_cases: deploy/maxis-dify/smoke-cases.yml

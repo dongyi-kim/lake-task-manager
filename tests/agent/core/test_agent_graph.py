@@ -1853,6 +1853,47 @@ def test_resume_after_approval_actually_creates_the_ticket(real_draft):
     assert _ctx.client().get_issue(key), "생성됐다는데 실물이 없다"
 
 
+def test_resume_revokes_approval_when_the_runtime_route_changed(real_draft):
+    from app.agent.tools import _ctx
+    from app.agent.workflow import session
+    from app.infra import prefs
+
+    out = session.ask("실시간 수집에 CDC 를 도입해야 한다")
+    token = out["pending"]["token"]
+    before = len(_ctx.client().search_issues("ORDER BY created DESC", max_results=200))
+    prefs.save({"maxisRoutes": {
+        "agent_core": "shadow", "editor_author": "local", "pmo_brief": "local",
+    }})
+
+    rejected = session.resume(out["thread_id"], token)
+
+    after = len(_ctx.client().search_issues("ORDER BY created DESC", max_results=200))
+    assert rejected["ok"] is False and "route" in rejected["error"]
+    assert after == before
+    assert approval.peek(token) is None
+
+
+def test_resume_revokes_approval_when_pre_write_audit_fails(real_draft, monkeypatch):
+    from app.agent.maxis import backend
+    from app.agent.tools import _ctx
+    from app.agent.workflow import session
+
+    out = session.ask("실시간 수집에 CDC 를 도입해야 한다")
+    token = out["pending"]["token"]
+    before = len(_ctx.client().search_issues("ORDER BY created DESC", max_results=200))
+
+    def fail_audit(*_args, **_kwargs):
+        raise RuntimeError("audit sink unavailable")
+
+    monkeypatch.setattr(backend, "record_change_audit", fail_audit)
+    rejected = session.resume(out["thread_id"], token)
+
+    after = len(_ctx.client().search_issues("ORDER BY created DESC", max_results=200))
+    assert rejected["ok"] is False and "audit sink unavailable" in rejected["error"]
+    assert after == before
+    assert approval.peek(token) is None
+
+
 def test_cancelling_leaves_nothing_behind(real_draft):
     from app.agent.workflow import session
     out = session.ask("실시간 수집에 CDC 를 도입해야 한다")

@@ -52,6 +52,16 @@ const getJson = (p) => fetch(p).then((r) => {
 
 export const agentApi = {
   status: () => getJson("/api/agent/status"),
+  maxisStatus: () => getJson("/api/agent/maxis/status"),
+  maxisSaveProfile: (name, body) => put(
+    "/api/agent/maxis/profiles/" + encodeURIComponent(name), body),
+  maxisSaveCredentials: (name, body) => put(
+    "/api/agent/maxis/credentials/" + encodeURIComponent(name), body),
+  maxisProbe: (name) => post("/api/agent/maxis/probe/" + encodeURIComponent(name), {}),
+  maxisActivate: (name) => post("/api/agent/maxis/activate/" + encodeURIComponent(name), {}),
+  maxisSaveRoutes: (routes) => put("/api/agent/maxis/routes", { routes }),
+  maxisSetKillSwitch: (enabled) => put("/api/agent/maxis/kill-switch", { enabled }),
+  maxisImpact: (days = 30) => getJson("/api/agent/maxis/impact?days=" + encodeURIComponent(days)),
   saveSettings: (body) => put("/api/agent/settings", body),
   createConfig: (name, provider) => post("/api/agent/configs", { name, provider }),
   updateConfig: (id, body) => put("/api/agent/configs/" + encodeURIComponent(id), body),

@@ -144,6 +144,199 @@ def test_editor_author_requests_its_manifest_profile_without_numeric_sampling_ov
     }
 
 
+def test_editor_author_maxis_route_skips_local_provider_and_keeps_local_guards(monkeypatch):
+    """MAXIS owns only generation; canonical editor normalization still runs locally."""
+    from app.agent import config as CFG
+    from app.agent.maxis import backend
+
+    routes = {role_id: "local" for role_id in __import__(
+        "app.agent.workflow.role_manifest", fromlist=["ROLE_SPECS"]
+    ).ROLE_SPECS}
+    routes["editor_author"] = "maxis"
+    pin = {
+        "runtime_engine": "local",
+        "runtime_profile": "dev",
+        "runtime_profile_fingerprint": "runtime-pin",
+        "runtime_role_routes": routes,
+        "runtime_engine_source": "profile",
+        "workflow_bundle_version": "bundle-1",
+        "knowledge_version": "knowledge-1",
+    }
+    monkeypatch.setattr(backend, "thread_runtime_pin", lambda: dict(pin))
+    monkeypatch.setattr(
+        backend, "resolve_role",
+        lambda *_a, **_k: backend.RoleResolution(
+            route="maxis", profile="dev", workflow_bundle_version="bundle-1",
+            knowledge_version="knowledge-1",
+        ),
+    )
+    monkeypatch.setattr(
+        CFG, "get_llm",
+        lambda **_k: pytest.fail("maxis route must not call the local provider"),
+    )
+    monkeypatch.setattr(
+        CFG, "llm_ready",
+        lambda: pytest.fail("maxis route must not require local LLM setup"),
+    )
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: "")
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+    observed = {}
+
+    def remote(role_id, state, messages, schema, *, output_kind):
+        observed.update({
+            "role": role_id, "state": state, "messages": messages,
+            "schema": schema, "output_kind": output_kind,
+        })
+        return backend.RemoteRoleOutput(
+            {
+                "contract": "editor-draft.v1", "mode": "comment",
+                "content_html": "<p>MAXIS 검토 요청 초안</p>",
+                "source_ids": [], "unsupported_claims": [], "warnings": [],
+            },
+            {
+                "evidence_workspace": {"sources": [], "claims": []},
+                "freshness": {"status": "empty"},
+                "quality_gate": {"ok": True},
+            },
+            {
+                "profile": "dev", "workflowBundleVersion": "bundle-1",
+                "knowledgeVersion": "knowledge-1", "correlationId": "corr-remote",
+                "usage": {"promptTokens": 7, "completionTokens": 3, "totalTokens": 10},
+            },
+        )
+
+    monkeypatch.setattr(backend, "invoke_role", remote)
+    result = C.compose("__new__", "comment", "검토 요청 초안을 작성해 줘")
+
+    assert result["ok"] is True
+    assert "MAXIS 검토 요청 초안" in result["html"]
+    assert result["engine"] == "maxis" and result["profile"] == "dev"
+    assert result["correlationId"] == "corr-remote"
+    assert result["evidenceWorkspace"] == {"sources": [], "claims": []}
+    assert result["usage"]["totalTokens"] == 10
+    assert observed["role"] == "editor_author"
+    assert observed["messages"] == [] and observed["output_kind"] == "structured"
+    assert observed["schema"]["properties"]["mode"]["const"] == "comment"
+    assert observed["state"]["request_text"] == "검토 요청 초안을 작성해 줘"
+
+
+def test_editor_maxis_identity_candidates_include_general_jira_username():
+    context = (
+        '[DL-9090] "검토" — Open · 담당 [~alice.smith] · 마감 없음\n\n'
+        "최근 코멘트(오래된 것부터):\n"
+        "- 2026-09-04 Alice Kim: 확인 부탁드립니다"
+    )
+    assert C._maxis_ticket_identity_values(context) == ["alice.smith", "Alice Kim"]
+
+
+def test_editor_author_shadow_discards_remote_candidate(monkeypatch):
+    """Shadow may execute, but only the local HTML can reach the editor response."""
+    from app.agent import config as CFG
+    from app.agent.maxis import backend
+
+    monkeypatch.setattr(backend, "thread_runtime_pin", lambda: {
+        "runtime_engine": "local", "runtime_profile": "dev",
+        "runtime_profile_fingerprint": "runtime-pin",
+        "runtime_role_routes": {"editor_author": "shadow"},
+        "runtime_engine_source": "profile",
+        "workflow_bundle_version": "bundle-1", "knowledge_version": "knowledge-1",
+    })
+    monkeypatch.setattr(
+        backend, "resolve_role",
+        lambda *_a, **_k: backend.RoleResolution(route="shadow", profile="dev"),
+    )
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: "")
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+
+    class _Reply:
+        content = "<p>로컬 권위 초안</p>"
+
+    class _Llm:
+        def invoke(self, *_a, **_k):
+            return _Reply()
+
+    monkeypatch.setattr(CFG, "get_llm", lambda **_k: _Llm())
+    shadow_calls = []
+    monkeypatch.setattr(
+        backend, "run_shadow",
+        lambda *args, **kwargs: shadow_calls.append((args, kwargs)),
+    )
+
+    result = C.compose("__new__", "comment", "검토 요청 초안을 작성해 줘")
+
+    assert result["ok"] is True and "로컬 권위 초안" in result["html"]
+    assert "engine" not in result and "evidenceWorkspace" not in result
+    assert len(shadow_calls) == 1
+
+
+def test_editor_author_maxis_failure_never_falls_back_to_local_provider(monkeypatch):
+    from app.agent import config as CFG
+    from app.agent.maxis import backend
+
+    monkeypatch.setattr(backend, "thread_runtime_pin", lambda: {
+        "runtime_engine": "maxis", "runtime_profile": "dev",
+        "runtime_profile_fingerprint": "runtime-pin",
+        "runtime_role_routes": {"editor_author": "maxis"},
+        "runtime_engine_source": "explicit",
+        "workflow_bundle_version": "bundle-1", "knowledge_version": "knowledge-1",
+    })
+    monkeypatch.setattr(
+        backend, "resolve_role",
+        lambda *_a, **_k: backend.RoleResolution(route="maxis", profile="dev"),
+    )
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: "")
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+    monkeypatch.setattr(
+        CFG, "get_llm", lambda **_k: pytest.fail("no local fallback is allowed"),
+    )
+    monkeypatch.setattr(
+        backend, "invoke_role",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            backend.MaxisRuntimeError("MAXIS 호출 실패")
+        ),
+    )
+
+    result = C.compose("__new__", "comment", "검토 요청 초안을 작성해 줘")
+
+    assert result["ok"] is False
+    assert "MAXIS" in result["error"]
+
+
+def test_editor_author_maxis_needs_input_is_a_visible_interview(monkeypatch):
+    from app.agent import config as CFG
+    from app.agent.maxis import backend
+
+    monkeypatch.setattr(backend, "thread_runtime_pin", lambda: {
+        "runtime_engine": "maxis", "runtime_profile": "prod",
+        "runtime_profile_fingerprint": "runtime-pin",
+        "runtime_role_routes": {"editor_author": "maxis"},
+        "runtime_engine_source": "profile",
+        "workflow_bundle_version": "bundle-1", "knowledge_version": "knowledge-1",
+    })
+    monkeypatch.setattr(
+        backend, "resolve_role",
+        lambda *_a, **_k: backend.RoleResolution(route="maxis", profile="prod"),
+    )
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: "")
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+    monkeypatch.setattr(
+        CFG, "get_llm", lambda **_k: pytest.fail("no local fallback is allowed"),
+    )
+    monkeypatch.setattr(
+        backend, "invoke_role",
+        lambda *_a, **_k: (_ for _ in ()).throw(backend.MaxisNeedsInput(
+            "editor_author", ["검토 대상 문서를 알려 주세요"],
+            state_patch={"quality_gate": {"ok": False}},
+        )),
+    )
+
+    result = C.compose("__new__", "comment", "검토 요청 초안을 작성해 줘")
+
+    assert result["ok"] is False and result["needsInfo"] is True
+    assert "검토 대상 문서" in result["error"]
+    assert "html" not in result
+
+
 def test_editor_author_preserves_error_call_usage(monkeypatch):
     """Provider failures retain the call/stage that explains the empty editor response."""
     from app.agent import config as CFG

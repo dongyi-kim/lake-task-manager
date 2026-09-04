@@ -19,7 +19,7 @@ import logging
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent import config as _cfg
 from app.agent import profiles as _profiles
@@ -90,11 +90,415 @@ class _VerifyBody(BaseModel):
     models: list = []
 
 
+class _MaxisBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class _MaxisProfileBody(_MaxisBody):
+    baseUrl: str | None = None
+    dataPolicy: str | None = None
+    workflowBundleVersion: str | None = None
+    knowledgeVersion: str | None = None
+    knowledgeDatasetId: str | None = None
+    knowledgeSentinelSha256: str | None = None
+    workflows: dict | None = None
+
+
+class _MaxisCredentialBody(_MaxisBody):
+    agentCoreApiKey: str | None = None
+    editorAuthorApiKey: str | None = None
+    pmoBriefApiKey: str | None = None
+    clear: list[str] = Field(default_factory=list)
+
+
+class _MaxisRoutesBody(_MaxisBody):
+    routes: dict = Field(default_factory=dict)
+
+
+class _MaxisKillSwitchBody(_MaxisBody):
+    enabled: bool
+
+
+_MAXIS_REQUIRED_START_VARIABLES = frozenset({
+    "context_pack",
+    "role_id",
+    "correlation_id",
+    "output_contract",
+    "workflow_version",
+    "knowledge_version",
+})
+
+
 # ── 상태 · 설정 ────────────────────────────────────────────────────
 @router.get("/status")
 def api_status():
     """설정 패널이 처음 여는 것. 비밀값 원문은 절대 싣지 않는다."""
     return JSONResponse(_cfg.status())
+
+
+# ── MAXIS/Dify Workflow 설정 ──────────────────────────────────────
+# Dify app은 model provider가 아니다. 기존 /status·/configs와 섞지 않고 별도의
+# namespace에서 후보 저장 → 실제 연결 확인 → 명시적 활성화 순서를 강제한다.
+def _maxis_can_manage() -> bool:
+    """Fail closed when the current Jira/LTM identity cannot administer AI runtime."""
+    try:
+        from app.agent.tools.pmo_tools import _is_manager
+
+        # Runtime, credential and kill-switch mutations are security-sensitive.  A
+        # six-hour cached Jira identity must not survive an SSO user/session switch.
+        return bool(_is_manager(fresh=True))
+    except Exception:
+        return False
+
+
+def _maxis_mutation_denied() -> JSONResponse | None:
+    if _maxis_can_manage():
+        return None
+    return JSONResponse(
+        {"ok": False, "error": "Manager permission is required."}, status_code=403,
+    )
+
+
+@router.get("/maxis/status")
+def api_maxis_status():
+    from app.agent.maxis import profiles as maxis_profiles
+    return JSONResponse({**maxis_profiles.status(), "canManage": _maxis_can_manage()})
+
+
+@router.get("/maxis/profiles")
+def api_maxis_profiles():
+    from app.agent.maxis import profiles as maxis_profiles
+    state = maxis_profiles.status()
+    return JSONResponse({"profiles": state["profiles"],
+                         "activeProfile": state["activeProfile"],
+                         "environmentOverrides": state["environmentOverrides"],
+                         "environmentError": state["environmentError"],
+                         "canManage": _maxis_can_manage()})
+
+
+@router.put("/maxis/profiles/{profile_name}")
+def api_maxis_profile_save(profile_name: str, body: _MaxisProfileBody):
+    denied = _maxis_mutation_denied()
+    if denied is not None:
+        return denied
+    from app.agent.maxis import profiles as maxis_profiles
+    patch = {}
+    for field, key in (("baseUrl", "base_url"), ("dataPolicy", "data_policy"),
+                       ("workflowBundleVersion", "workflow_bundle_version"),
+                       ("knowledgeVersion", "knowledge_version"),
+                       ("knowledgeDatasetId", "knowledge_dataset_id"),
+                       ("knowledgeSentinelSha256", "knowledge_sentinel_sha256"),
+                       ("workflows", "workflows")):
+        value = getattr(body, field)
+        if value is not None:
+            patch[key] = value
+    try:
+        maxis_profiles.save(profile_name, patch)
+    except (KeyError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, **maxis_profiles.status()})
+
+
+@router.get("/maxis/credentials/{profile_name}")
+def api_maxis_credentials(profile_name: str):
+    from app.agent.maxis import credentials as maxis_credentials
+    try:
+        status = maxis_credentials.status_for(profile_name)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"profile": profile_name, "credentials": status})
+
+
+@router.put("/maxis/credentials/{profile_name}")
+def api_maxis_credentials_save(profile_name: str, body: _MaxisCredentialBody):
+    denied = _maxis_mutation_denied()
+    if denied is not None:
+        return denied
+    from app.agent.maxis import credentials as maxis_credentials
+    from app.agent.maxis import profiles as maxis_profiles
+    field_map = {
+        "agentCoreApiKey": "agent_core",
+        "editorAuthorApiKey": "editor_author",
+        "pmoBriefApiKey": "pmo_brief",
+    }
+    patch = {}
+    for public, internal in field_map.items():
+        value = getattr(body, public)
+        if value is not None and str(value).strip():
+            patch[internal] = str(value).strip()
+    clear = []
+    try:
+        for field in body.clear or []:
+            if field not in field_map:
+                raise ValueError("Unsupported MAXIS credential field.")
+            clear.append(field_map[field])
+        status = maxis_credentials.save_for(profile_name, patch, clear)
+        maxis_profiles.credential_changed(profile_name)
+    except maxis_credentials.CredentialStoreUnavailable as exc:
+        log.warning("MAXIS credential persistence unavailable: %s", type(exc).__name__)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+    except (KeyError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    # Only presence/source metadata crosses the HTTP boundary.
+    return JSONResponse({"ok": True, "profile": profile_name, "credentials": status})
+
+
+def _maxis_probe_result(result) -> dict:
+    """Convert the foundation client's typed result without echoing response bodies."""
+    if isinstance(result, dict):
+        src = result
+        read = lambda *names: next((src[n] for n in names if n in src), None)
+    else:
+        read = lambda *names: next((getattr(result, n) for n in names
+                                    if hasattr(result, n)), None)
+    transport_ok = bool(read("ok", "available"))
+    status = read("status_code", "statusCode", "http_status")
+    elapsed = read("elapsed_ms", "latency_ms", "ms")
+    code = read("error_code", "errorCode", "code")
+    raw_parameters = read("parameter_keys", "parameterKeys")
+    has_parameter_metadata = isinstance(raw_parameters, (list, tuple, set, frozenset))
+    parameter_keys = {
+        str(value).strip()
+        for value in raw_parameters if str(value).strip()
+    } if has_parameter_metadata else set()
+    contract_response = (
+        transport_ok
+        or (status == 200 and has_parameter_metadata)
+        or str(code or "") == "missing_start_variables"
+    )
+    missing = sorted(
+        _MAXIS_REQUIRED_START_VARIABLES - parameter_keys
+    ) if contract_response else []
+    ok = transport_ok and not missing
+    if missing:
+        code = "missing_start_variables"
+    return {"ok": ok,
+            "statusCode": int(status) if isinstance(status, (int, float)) else None,
+            "ms": int(elapsed) if isinstance(elapsed, (int, float)) else None,
+            "errorCode": str(code or ("" if ok else "probe_failed"))[:80],
+            "missingParameters": missing}
+
+
+def _maxis_contract_probe_result(
+    parameters: dict, result, *, knowledge_manifest_sha256: str,
+) -> dict:
+    """Merge the metadata-only parameter and synthetic execution probes."""
+    if isinstance(result, dict):
+        src = result
+        read = lambda *names: next((src[n] for n in names if n in src), None)
+    else:
+        read = lambda *names: next((getattr(result, n) for n in names
+                                    if hasattr(result, n)), None)
+    contract_verified = bool(read("contract_verified", "contractVerified"))
+    version_verified = bool(read("version_verified", "versionVerified"))
+    citation_verified = bool(read("citation_verified", "citationVerified"))
+    knowledge_retrieval_verified = bool(read(
+        "knowledge_retrieval_verified", "knowledgeRetrievalVerified"
+    ))
+    execution_ok = bool(read("ok", "available"))
+    ok = bool(
+        parameters.get("ok")
+        and execution_ok
+        and contract_verified
+        and version_verified
+        and citation_verified
+        and knowledge_retrieval_verified
+    )
+    contract_status = read("status_code", "statusCode", "http_status")
+    contract_ms = read("elapsed_ms", "latency_ms", "ms")
+    base_ms = parameters.get("ms")
+    elapsed = sum(
+        int(value) for value in (base_ms, contract_ms)
+        if isinstance(value, (int, float))
+    )
+    code = read("error_code", "errorCode", "code")
+    return {
+        **parameters,
+        "ok": ok,
+        "statusCode": (
+            int(contract_status)
+            if isinstance(contract_status, (int, float))
+            else parameters.get("statusCode")
+        ),
+        "ms": elapsed,
+        "errorCode": str(code or ("" if ok else "contract_probe_failed"))[:80],
+        "executionContractVerified": contract_verified,
+        "versionBindingVerified": version_verified,
+        "citationContractVerified": citation_verified,
+        "knowledgeRetrievalVerified": knowledge_retrieval_verified,
+        "knowledgeManifestSha256": knowledge_manifest_sha256,
+        "roleId": str(read("role_id", "roleId") or "")[:80],
+    }
+
+
+def _run_maxis_probe(profile: dict, keys: dict[str, str]) -> dict:
+    """Verify both Dify input metadata and an end-to-end synthetic role call."""
+    from app.agent.maxis.client import DifyClient, DifyClientConfig
+    from app.agent.maxis import profiles as maxis_profiles
+    from app.agent.maxis.registry import load_registry
+
+    cfg = DifyClientConfig(
+        profile=profile["name"],
+        base_url=profile["base_url"],
+        stage=profile["stage"],
+        profile_fingerprint=str(profile.get("fingerprint") or ""),
+        require_https=profile["stage"] == "prod",
+        verify_tls=True,
+    )
+    results = {}
+    required_workflows = {"agent_core"}
+    required_workflows.update(
+        key for key, mode in maxis_profiles.routes().items()
+        if mode in ("shadow", "maxis")
+    )
+    manifest = maxis_profiles.resolve_knowledge_manifest(profile, required=True)
+    assert manifest is not None
+    registry = load_registry()
+    with DifyClient(cfg) as client:
+        for workflow_key, workflow in profile["workflows"].items():
+            configured = bool(
+                workflow_key in required_workflows
+                or workflow.get("version")
+                or keys.get(workflow_key)
+            )
+            if not configured:
+                continue
+            if not workflow.get("binding") or not workflow.get("version"):
+                results[workflow_key] = {"ok": False, "statusCode": None, "ms": None,
+                                         "errorCode": "binding_not_configured"}
+                continue
+            if not keys.get(workflow_key):
+                results[workflow_key] = {"ok": False, "statusCode": None, "ms": None,
+                                         "errorCode": "credential_not_configured"}
+                continue
+            try:
+                parameter_result = _maxis_probe_result(
+                    client.probe_parameters(api_key=keys[workflow_key])
+                )
+                if not parameter_result["ok"]:
+                    results[workflow_key] = parameter_result
+                    continue
+                binding = registry.resolve(workflow["binding"])
+                if binding.key != workflow_key:
+                    raise ValueError("MAXIS workflow binding mismatch.")
+                results[workflow_key] = _maxis_contract_probe_result(
+                    parameter_result,
+                    client.probe_contract(
+                        binding,
+                        api_key=keys[workflow_key],
+                        workflow_version=workflow["version"],
+                        knowledge_version=profile["knowledge_version"],
+                        knowledge_manifest_sha256=manifest.sha256,
+                        knowledge_sentinel_sha256=profile[
+                            "knowledge_sentinel_sha256"
+                        ],
+                    ),
+                    knowledge_manifest_sha256=manifest.sha256,
+                )
+            except Exception as exc:
+                log.warning("MAXIS %s probe failed: %s", workflow_key, type(exc).__name__)
+                results[workflow_key] = {"ok": False, "statusCode": None, "ms": None,
+                                         "errorCode": type(exc).__name__[:80]}
+    ok = bool(results) and all(row["ok"] for row in results.values())
+    return {"ok": ok, "workflows": results,
+            "error": "" if ok else ("No configured workflow to probe." if not results
+                                       else "One or more workflow probes failed.")}
+
+
+@router.post("/maxis/probe/{profile_name}")
+def api_maxis_probe(profile_name: str):
+    denied = _maxis_mutation_denied()
+    if denied is not None:
+        return denied
+    from app.agent.maxis import credentials as maxis_credentials
+    from app.agent.maxis import profiles as maxis_profiles
+    try:
+        profile = maxis_profiles.resolve(profile_name)
+        if not profile.get("base_url"):
+            raise ValueError("Save a MAXIS Base URL before probing.")
+        keys = maxis_credentials.resolved_for(profile_name)
+        result = _run_maxis_probe(profile, keys)
+        verified = maxis_profiles.mark_probe(
+            profile_name, bool(result.get("ok")), result
+        )
+        if result.get("ok") and not verified:
+            result = {
+                **result,
+                "ok": False,
+                "error": "One or more workflow contract proofs are incomplete.",
+            }
+    except (KeyError, ValueError) as exc:
+        result = {"ok": False, "workflows": {}, "error": str(exc)}
+        try:
+            maxis_profiles.mark_probe(profile_name, False, result)
+        except Exception:
+            pass
+    except maxis_credentials.CredentialStoreUnavailable as exc:
+        result = {"ok": False, "workflows": {}, "error": str(exc)}
+        try:
+            maxis_profiles.mark_probe(profile_name, False, result)
+        except Exception:
+            pass
+    except Exception as exc:
+        log.warning("MAXIS profile probe unavailable: %s", type(exc).__name__)
+        result = {"ok": False, "workflows": {},
+                  "error": "MAXIS connection probe is unavailable."}
+        try:
+            maxis_profiles.mark_probe(profile_name, False, result)
+        except Exception:
+            pass
+    return JSONResponse(result)
+
+
+@router.post("/maxis/activate/{profile_name}")
+def api_maxis_activate(profile_name: str):
+    denied = _maxis_mutation_denied()
+    if denied is not None:
+        return denied
+    from app.agent.maxis import profiles as maxis_profiles
+    try:
+        maxis_profiles.activate(profile_name)
+    except (KeyError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+    return JSONResponse({"ok": True, **maxis_profiles.status()})
+
+
+@router.put("/maxis/routes")
+def api_maxis_routes(body: _MaxisRoutesBody):
+    denied = _maxis_mutation_denied()
+    if denied is not None:
+        return denied
+    from app.agent.maxis import profiles as maxis_profiles
+    try:
+        maxis_profiles.set_routes(body.routes)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+    return JSONResponse({"ok": True, **maxis_profiles.status()})
+
+
+@router.put("/maxis/kill-switch")
+def api_maxis_kill_switch(body: _MaxisKillSwitchBody):
+    denied = _maxis_mutation_denied()
+    if denied is not None:
+        return denied
+    from app.agent.maxis import profiles as maxis_profiles
+    maxis_profiles.set_kill_switch(body.enabled)
+    return JSONResponse({"ok": True, **maxis_profiles.status()})
+
+
+@router.get("/maxis/impact")
+def api_maxis_impact(days: int = 30):
+    """Aggregate-only productivity evidence requested by the competition review."""
+    from app.agent.tools.pmo_tools import _is_manager
+    try:
+        is_manager = _is_manager()
+    except Exception:
+        is_manager = False
+    if not is_manager:
+        return JSONResponse({"ok": False, "error": "Manager permission is required."},
+                            status_code=403)
+    from app.agent import impact
+    return JSONResponse(impact.summary(days=days))
 
 
 @router.put("/settings")

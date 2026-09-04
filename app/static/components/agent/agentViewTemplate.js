@@ -115,6 +115,66 @@ const AGENT_VIEW_TEMPLATE = `
                 v-if="t.usage.costUsd"> · {{ '$' + t.usage.costUsd.toFixed(4) }}</template>
             </div>
 
+            <!-- 어떤 실행 경로와 검증본이 답을 만들었는지 한 줄로 남긴다. profile 전환은
+                 설정 문제가 아니라 결과 재현성 문제이므로 대화마다 고정된 값을 보여 준다. -->
+            <div v-if="runtimeMeta(t).engine" class="agent-runtime" aria-label="AI 실행 정보">
+              <span>{{ runtimeMeta(t).engine === 'maxis' ? 'MAXIS/Dify' : 'LTM Local' }}</span>
+              <span v-if="runtimeMeta(t).profile">{{ runtimeMeta(t).profile }}</span>
+              <span v-if="runtimeMeta(t).workflowBundleVersion">Workflow {{ runtimeMeta(t).workflowBundleVersion }}</span>
+              <span v-if="runtimeMeta(t).knowledgeVersion">Knowledge {{ runtimeMeta(t).knowledgeVersion }}</span>
+              <span v-if="runtimeMeta(t).qualityGate"
+                    :class="{ bad: runtimeMeta(t).qualityGate.ok === false }">
+                Quality Gate {{ runtimeMeta(t).qualityGate.ok === false ? '차단' : '통과' }}
+              </span>
+            </div>
+
+            <!-- Evidence Workspace — 원문/secret/raw Dify 응답을 보이지 않고 검토에 필요한
+                 source metadata와 정리된 사실·추론·미확인만 표시한다. -->
+            <details v-if="hasEvidenceWorkspace(t)" class="evidence-workspace">
+              <summary>
+                <b>Evidence Workspace</b>
+                <span class="ew-fresh" :class="workspaceFreshness(t)">
+                  {{ freshnessLabel(workspaceFreshness(t)) }}</span>
+                <span>{{ workspaceSources(t).length }}개 출처</span>
+                <span v-if="evidenceWorkspace(t).partial">일부 결과</span>
+              </summary>
+              <div class="ew-grid">
+                <section v-if="workspaceFacts(t).length">
+                  <h4>확인된 사실</h4>
+                  <ul><li v-for="(row, i) in workspaceFacts(t)" :key="row.factId || row.fact_id || i">
+                    <span>{{ row.text || row }}</span>
+                    <small v-if="row.sourceIds || row.source_ids">{{ (row.sourceIds || row.source_ids).join(', ') }}</small>
+                  </li></ul>
+                </section>
+                <section v-if="workspaceClaims(t, ['inference', 'recommendation']).length">
+                  <h4>추론·제안</h4>
+                  <ul><li v-for="(row, i) in workspaceClaims(t, ['inference', 'recommendation'])"
+                          :key="row.claimId || row.claim_id || i">
+                    <span>{{ row.text }}</span><em>{{ row.kind === 'recommendation' ? '제안' : '추론' }}</em>
+                  </li></ul>
+                </section>
+                <section v-if="workspaceMissing(t).length" class="ew-missing">
+                  <h4>미확인·추가 확인</h4>
+                  <ul><li v-for="(row, i) in workspaceMissing(t)" :key="i">{{ row.text || row }}</li></ul>
+                </section>
+              </div>
+              <div v-if="workspaceSources(t).length" class="ew-sources">
+                <h4>출처와 데이터 시점</h4>
+                <div v-for="(row, i) in workspaceSources(t)" :key="row.sourceId || row.source_id || i"
+                     class="ew-source">
+                  <a v-if="sourceUrl(row)" :href="sourceUrl(row)">
+                    {{ row.title || row.canonicalId || row.canonical_id || row.sourceId || row.source_id }}
+                  </a>
+                  <b v-else>{{ row.title || row.canonicalId || row.canonical_id || row.sourceId || row.source_id }}</b>
+                  <span>{{ sourceKindLabel(row.kind) }}</span><span>{{ sourceTime(row) }}</span>
+                  <em v-if="row.partial">부분 조회</em><em v-if="row.truncated">내용 축약</em>
+                </div>
+              </div>
+              <div v-if="workspaceWarnings(t).length" class="ew-warnings">
+                <b>검증 경고</b><span v-for="(warning, i) in workspaceWarnings(t)" :key="i">{{ warning.text || warning }}</span>
+              </div>
+            </details>
+
             <!-- 실행 결과: 실패를 눈에 띄게. 조용히 넘어가면 다 만들어진 줄 안다 -->
             <div v-if="t.result && (t.result.created || []).length" class="agent-made">
               <div class="agent-ev-h">생성됨</div>

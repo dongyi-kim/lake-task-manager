@@ -729,6 +729,7 @@ def _materialize_evidence(results: list[dict], *, focus: str = "",
     """
     from concurrent.futures import ThreadPoolExecutor
     from app.agent import tools as T
+    from app.infra.cache import propagate_provenance_context
 
     # Reserve two exact-read slots only when research entity expansion is active and a
     # structural root is visible in the lightweight hit set.  Listing/create paths retain
@@ -786,8 +787,12 @@ def _materialize_evidence(results: list[dict], *, focus: str = "",
             return {"url": ref, "error": str(exc)[:240]}
 
     with ThreadPoolExecutor(max_workers=max(1, min(6, len(ticket_keys) + len(document_refs)))) as pool:
-        ticket_details = list(pool.map(open_ticket, ticket_keys)) if ticket_keys else []
-        document_bodies = list(pool.map(open_document, document_refs)) if document_refs else []
+        ticket_details = list(pool.map(
+            propagate_provenance_context(open_ticket), ticket_keys,
+        )) if ticket_keys else []
+        document_bodies = list(pool.map(
+            propagate_provenance_context(open_document), document_refs,
+        )) if document_refs else []
 
     focus_terms = _projection_focus_terms(" ".join((
         str(focus or ""),
@@ -816,7 +821,9 @@ def _materialize_evidence(results: list[dict], *, focus: str = "",
             }
         if expanded_keys:
             with ThreadPoolExecutor(max_workers=min(4, len(expanded_keys))) as pool:
-                expanded_details = list(pool.map(open_ticket, expanded_keys))
+                expanded_details = list(pool.map(
+                    propagate_provenance_context(open_ticket), expanded_keys,
+                ))
             ticket_keys.extend(expanded_keys)
             ticket_details.extend(expanded_details)
             entity_coverage["materializedKeys"] = [
@@ -965,6 +972,7 @@ def _produce_exact_mention_artifact(
     """
     from concurrent.futures import ThreadPoolExecutor
     from app.agent import tools as T
+    from app.infra.cache import propagate_provenance_context
     from app.agent.workflow.exact_mention_materialization import (
         ExactMentionOutcomeV1,
         exact_mention_plan_keys,
@@ -998,7 +1006,8 @@ def _produce_exact_mention_artifact(
 
     if missing:
         with ThreadPoolExecutor(max_workers=min(4, len(missing))) as pool:
-            for key, value in pool.map(open_ticket, missing):
+            for key, value in pool.map(
+                    propagate_provenance_context(open_ticket), missing):
                 attempted[key] = value
 
     coverage = _exact_comment_coverage(state.get("query_plan") or {}, results)
@@ -1192,6 +1201,51 @@ class QueryRunner:
             }
 
         results, artifacts = [], {}
+        from datetime import datetime, timezone
+
+        def _received_at() -> str:
+            return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        from app.agent.maxis.backend import (
+            begin_local_acquisition, finish_local_acquisition,
+        )
+
+        def _acquisition(marker) -> dict:
+            provenance = finish_local_acquisition(marker)
+            observed = provenance.get("retrieved_at")
+            if isinstance(observed, datetime):
+                received = observed.astimezone(timezone.utc).isoformat().replace(
+                    "+00:00", "Z"
+                )
+            else:
+                received = _received_at()
+            return {**provenance, "retrieved_at": received}
+
+        def _merge_acquisition(row: dict, provenance: dict) -> None:
+            current = str(row.get("_remoteRetrievedAt") or "")
+            incoming = str(provenance.get("retrieved_at") or "")
+            candidates = [value for value in (current, incoming) if value]
+            row["_remoteRetrievedAt"] = min(candidates) if candidates else _received_at()
+            prior = row.get("_remoteProvenance") or {}
+            row["_remoteProvenance"] = {
+                "partial": bool(prior.get("partial") or provenance.get("partial")),
+                "served_stale": bool(
+                    prior.get("served_stale") or provenance.get("served_stale")
+                ),
+                "upstream_observed": bool(
+                    prior.get("upstream_observed") or provenance.get("upstream_observed")
+                ),
+                "read_count": min(
+                    10000,
+                    int(prior.get("read_count") or 0)
+                    + int(provenance.get("read_count") or 0),
+                ),
+                "tracked": (
+                    bool(prior.get("tracked") and provenance.get("tracked"))
+                    if prior else bool(provenance.get("tracked"))
+                ),
+            }
+
         target_resolution_artifacts = {}
         materialized = {
             "ticketKeys": [], "ticketDetails": [], "projectedTicketDetails": [],
@@ -1206,14 +1260,20 @@ class QueryRunner:
         )
         from app.agent.workflow.state import last_user_text
         if asks_incomplete_assignees(last_user_text(state)):
+            acquisition_marker = begin_local_acquisition()
             completion = lookup_incomplete_assignees(
                 last_user_text(state), state.get("keywords") or [])
             artifacts["incomplete-assignees"] = completion
-            results.append({"id": "incomplete-assignees", "source": "jira",
-                            "result": completion})
+            row = {
+                "id": "incomplete-assignees", "source": "jira",
+                "result": completion,
+            }
+            _merge_acquisition(row, _acquisition(acquisition_marker))
+            results.append(row)
         for spec in (state.get("query_plan") or {}).get("queries") or []:
             qid, source = str(spec.get("id") or ""), str(spec.get("source") or "")
             complete = spec.get("completeness") or "page"
+            acquisition_marker = begin_local_acquisition()
             try:
                 if source == "jira":
                     selector_id = str(spec.get("target_selector_id") or "").strip()
@@ -1293,7 +1353,9 @@ class QueryRunner:
                         raw = {"error": "빈 댓글 전수조회는 허용되지 않습니다.",
                                "comments": [], "returned": 0}
                         artifacts[qid] = raw
-                        results.append({"id": qid, "source": source, "result": raw})
+                        row = {"id": qid, "source": source, "result": raw}
+                        _merge_acquisition(row, _acquisition(acquisition_marker))
+                        results.append(row)
                         continue
                     args = {"query": spec.get("query") or "", "jql_where": spec.get("where") or "",
                             "page_size": min(spec.get("page_size") or 20, 25)}
@@ -1348,6 +1410,9 @@ class QueryRunner:
                     raw = {"error": f"지원하지 않는 source: {source}"}
             except Exception as exc:
                 raw = {"error": str(exc)[:240]}
+            # Preserve the actual cache-row/upstream acquisition time. Projection and
+            # materialization below may take longer, but may not make an old read look newer.
+            acquisition = _acquisition(acquisition_marker)
             if (source == "jira" and isinstance(raw, dict) and not raw.get("error")
                     and _is_parent_candidate_result({"source": "jira", "result": raw})):
                 parent_candidate_search_attempted = True
@@ -1403,16 +1468,23 @@ class QueryRunner:
                     compact[field] = compact[field][:cap]
                     compact["contextTruncated"] = True
                     compact["artifactId"] = qid
-            results.append({"id": qid, "source": source, "result": compact})
+            row = {"id": qid, "source": source, "result": compact}
+            _merge_acquisition(row, acquisition)
+            results.append(row)
         if _needs_evidence_materialization(state, results):
             research_expansion = any(
                 isinstance(task, dict) and str(task.get("kind") or "") == "research"
                 for task in ((state.get("request_plan") or {}).get("tasks") or [])
             )
+            materialization_marker = begin_local_acquisition()
             materialized = _materialize_evidence(results, focus="\n".join(value for value in (
                 request_text(state).strip(), last_user_text(state).strip(),
             ) if value), expand_entities=research_expansion,
                 entity_root_keys=state.get("mentioned_keys") or ())
+            materialization_provenance = _acquisition(materialization_marker)
+            for row in results:
+                if row.get("source") in {"jira", "comments", "confluence"}:
+                    _merge_acquisition(row, materialization_provenance)
             if materialized["tickets"] or materialized["documents"] or materialized["errors"]:
                 artifacts["evidence-materialization"] = materialized
             successful_details = [dict(row) for row in
@@ -1459,7 +1531,28 @@ class QueryRunner:
         materialized_ticket_sources = _merge_materialized_ticket_sources(
             state, materialized_ticket_sources,
         )
+        # Sign only after materialization, so the digest covers the exact compact value
+        # semantic Roles will see, while retaining the acquisition receipt time captured
+        # immediately above.  A later model/state mutation cannot invent either value.
+        from app.agent.maxis.backend import attest_query_result
+
+        evidence_attestations = {}
+        for row in results:
+            retrieved_at = row.pop("_remoteRetrievedAt", None)
+            provenance = row.pop("_remoteProvenance", None)
+            source = str(row.get("source") or "")
+            query_id = str(row.get("id") or "query")
+            proof = attest_query_result(
+                query_id,
+                source,
+                row.get("result") if isinstance(row.get("result"), dict) else {},
+                retrieved_at=retrieved_at,
+                partial=True if (provenance or {}).get("partial") else None,
+                provenance=provenance,
+            )
+            evidence_attestations[f"{source}:{query_id}"] = proof
         return {"query_results": results, "query_artifacts": artifacts,
+                "query_evidence_attestations": evidence_attestations,
                 "materialized_ticket_sources": materialized_ticket_sources,
                 "assignment_completion": artifacts.get("incomplete-assignees") or {},
                 "trace": note(state, self.name, f"조회 {len(results)}개 실행")}

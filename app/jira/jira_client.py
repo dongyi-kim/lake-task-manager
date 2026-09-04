@@ -34,6 +34,7 @@ from app.jira.mutation_recovery import (MutationReceiptStore,
                                         reconcile_created_issue,
                                         reconcile_transition)
 from app.jira.workload_service import JiraWorkloadMixin, workload_category
+from app.infra.cache import propagate_provenance_context
 
 
 # 실 Jira DC statusCategory.key → 내부 vocab (new=todo, indeterminate=inprogress, done=done)
@@ -863,6 +864,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         light_ok = light is not None and (now - light[1]) <= ttl
         # 전체가 살아 있고(TTL내) 경량보다 더(또는 같이) 최신이면 전체를 쓴다 — 굳이 다시 안 받는다.
         if full_ok and (not light_ok or full[1] >= light[1]):
+            self.cache.record_cached_value(full[1], stale=False)
             return full[0]
         # 그 외(경량이 더 최신이거나 전체가 만료) → issueL 경유(SWR). 만료면 여기서 경량 조회.
 
@@ -1048,7 +1050,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         provider = self.provider
         if getattr(provider, "supports_parallel", False) and len(items) > 1:
             with ThreadPoolExecutor(max_workers=min(8, len(items))) as executor:
-                futures = {executor.submit(fetch, item): item for item in items}
+                worker = propagate_provenance_context(fetch)
+                futures = {executor.submit(worker, item): item for item in items}
                 for future in as_completed(futures):
                     fallback_index, (fallback_leaf, _predicate_fields) = futures[future]
                     try:
@@ -1901,7 +1904,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         prov = self.provider
         if prov is not None and getattr(prov, "supports_parallel", False) and len(items) > 1:
             with ThreadPoolExecutor(max_workers=min(8, len(items))) as ex:
-                return list(ex.map(fn, items))
+                return list(ex.map(propagate_provenance_context(fn), items))
         return [fn(x) for x in items]
 
     def epic_progress_map(self, plan):
@@ -4032,7 +4035,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         # Older builds could store ``{"title": "DL-123"}`` after a failed badge lookup.  A fresh
         # key-only row would otherwise keep winning for the full 12-hour TTL.  Keep a valid stale
         # name for offline fallback, but evict malformed/key-only rows before get_or_set sees them.
-        stale = self.cache.get_stale(cache_key)
+        stale_row = self.cache.get_stale_at(cache_key)
+        stale = stale_row[0] if stale_row else None
         if stale is not None and not self._usable_epic_metadata(stale, key):
             self.cache.invalidate_keys([cache_key])
 

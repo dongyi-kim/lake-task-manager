@@ -136,31 +136,44 @@ class JiraIdentityMixin:
             "hasCache": self.cache.has_any(),
         }
 
+    @staticmethod
+    def _normalized_current_user(raw):
+        raw = raw if isinstance(raw, dict) else {}
+        user_id = raw.get("name") or raw.get("key") or raw.get("accountId") or ""
+        # Some Jira/SSO front doors answer 200 with an anonymous identity.  Treating that as
+        # a successful producer would cache a false login for six hours and clear auth-dead.
+        if not user_id or "anonymous" in str(user_id).lower():
+            raise SessionExpired("익명 응답 — Jira 세션이 만료되었습니다.")
+        aliases = sorted({
+            str(raw.get(field) or "").strip().casefold()
+            for field in ("name", "key", "accountId")
+            if str(raw.get(field) or "").strip()
+        })
+        return {
+            "id": user_id,
+            "name": real_name(raw.get("displayName") or raw.get("name")) or "",
+            "display": raw.get("displayName") or raw.get("name") or "",
+            "timezone": raw.get("timeZone") or "Asia/Seoul",
+            # Recovery compares Jira's author/uploader/creator object. Different Jira DC
+            # endpoints expose different identifiers (name, key, or accountId), so retain all
+            # authenticated aliases rather than guessing that one field is universal.
+            "actorAliases": aliases,
+        }
+
+    def current_user_fresh(self):
+        """Prove the provider's current Jira session identity without any cache."""
+        raw = self.provider.get_json("/rest/api/2/myself")
+        result = self._normalized_current_user(raw)
+        self.mark_session_alive()
+        return result
+
     def current_user(self):
         """Return the authenticated Jira user, caching successful responses only."""
 
         def produce():
-            raw = self.provider.get_json("/rest/api/2/myself")
-            user_id = raw.get("name") or raw.get("key") or raw.get("accountId") or ""
-            # Some Jira/SSO front doors answer 200 with an anonymous identity.  Treating that as
-            # a successful producer would cache a false login for six hours and clear auth-dead.
-            if not user_id or "anonymous" in str(user_id).lower():
-                raise SessionExpired("익명 응답 — Jira 세션이 만료되었습니다.")
-            aliases = sorted({
-                str(raw.get(field) or "").strip().casefold()
-                for field in ("name", "key", "accountId")
-                if str(raw.get(field) or "").strip()
-            })
-            return {
-                "id": user_id,
-                "name": real_name(raw.get("displayName") or raw.get("name")) or "",
-                "display": raw.get("displayName") or raw.get("name") or "",
-                "timezone": raw.get("timeZone") or "Asia/Seoul",
-                # Recovery compares Jira's author/uploader/creator object. Different Jira DC
-                # endpoints expose different identifiers (name, key, or accountId), so retain all
-                # authenticated aliases rather than guessing that one field is universal.
-                "actorAliases": aliases,
-            }
+            return self._normalized_current_user(
+                self.provider.get_json("/rest/api/2/myself")
+            )
 
         try:
             result, hit = self.cache.get_or_set(

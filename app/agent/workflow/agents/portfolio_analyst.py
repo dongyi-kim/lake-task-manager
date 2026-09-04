@@ -762,6 +762,8 @@ class PortfolioAnalyst(ToolAgent):
                         state = {**state, "ticket_progress":
                                  ((state.get("ticket_progress") or "") + "\n\n" + blk).strip()}
                 except Exception:
+                    if self._maxis_is_authoritative(state):
+                        raise
                     pass
             # "오늘 뭐 해야 할까" — 부를 도구가 정해져 있다. 코드가 병렬로 조회한다.
             try:
@@ -842,7 +844,7 @@ class PortfolioAnalyst(ToolAgent):
                         out["ticket_progress"] = prog
                     return out
                 try:
-                    out = self.apply(state, self._conclude(state, []))
+                    out = self.apply_routed(state, self._conclude(state, []))
                     if pre:
                         out["group_activity"] = pre
                     if prog:
@@ -851,6 +853,8 @@ class PortfolioAnalyst(ToolAgent):
                         state, self.name, "typed 불완전 · 기존 중간 합성 사용", fast_path_decision)
                     return out
                 except Exception:
+                    if self._maxis_is_authoritative(state):
+                        raise
                     pass
             out = react(state)
             if pre:

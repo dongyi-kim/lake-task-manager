@@ -140,9 +140,13 @@ def test_runner_preserves_full_page_as_artifact_but_caps_llm_context():
         "order_by": "updated DESC", "page_size": 50, "completeness": "page"}]}})
     raw = got["query_artifacts"]["all-open"]
     compact = got["query_results"][0]["result"]
+    proof = got["query_evidence_attestations"]["jira:all-open"]
     assert len(raw["tickets"]) == 50
     assert len(compact["tickets"]) == 12
     assert compact["contextTruncated"] and compact["artifactId"] == "all-open"
+    assert proof["contract"] == "ltm-evidence-attestation.v1"
+    assert proof["retrievedAt"].endswith("Z")
+    assert "_remoteRetrievedAt" not in got["query_results"][0]
 
 
 def test_runner_filters_generic_web_navigation_before_evidence_but_keeps_raw_artifact(

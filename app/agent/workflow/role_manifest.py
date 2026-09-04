@@ -182,6 +182,28 @@ def execution_layer_for_role(role_id: str, stage: str = "synthesis") -> Executio
     return spec.execution_layer
 
 
+def remote_execution_allowed(role_id: str) -> bool:
+    """Whether MAXIS may own this Role's semantic decision.
+
+    The manifest kind remains the authority: deterministic services never cross the
+    remote boundary.  In particular Query Runner keeps scoped reads local and Action
+    Executor remains the sole approval-bound writer. People Advisor also stays local
+    until a reviewed pseudonym-to-roster mapping contract exists; MAXIS must never
+    invent or directly return executable assignee identifiers. Research Analyst stays
+    local while it consumes public web/GitHub evidence: that source class does not yet
+    have the tenant scope/host contract required by ``EvidencePackV1``. Its curated
+    findings can still feed downstream remote Knowledge/Work roles.
+    """
+    spec = ROLE_SPECS.get(str(role_id or ""))
+    if spec is None:
+        raise KeyError(f"알 수 없는 Role manifest id: {role_id}")
+    return (
+        spec.kind != "service"
+        and spec.has_prompt
+        and spec.id not in {"people_advisor", "research_analyst"}
+    )
+
+
 def tools_for_role(role_id: str, *, include_dynamic: bool = True) -> list:
     """Resolve one canonical Role's effective tool catalog from ``ROLE_SPECS``.
 
@@ -249,5 +271,5 @@ def validate_role_tool_groups() -> None:
 
 
 __all__ = ["RoleSpec", "RoleKind", "SemanticContract", "ExecutionLayer", "ROLE_SPECS",
-           "role_specs", "execution_layer_for_role", "tools_for_role",
+           "role_specs", "execution_layer_for_role", "remote_execution_allowed", "tools_for_role",
            "validate_role_tool_groups"]

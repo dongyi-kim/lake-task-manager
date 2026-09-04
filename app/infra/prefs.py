@@ -48,6 +48,16 @@ _DEFAULTS = {"bitbucketEnabled": False,
              "agentAuthOkByConfig": {},
              "agentModelOkByConfig": {},
              "agentImportedLegacyProviders": [],
+             # ── MAXIS/Dify Workflow ──
+             # Dify app은 LLM provider가 아니므로 agentConfigs와 분리한다. API key는 여기 두지 않고
+             # Windows current-user DPAPI 저장소(app/agent/maxis/credentials.py)에 보관한다.
+             "maxisProfiles": [],
+             "maxisActiveProfile": "",
+             "maxisActiveProfileFingerprint": "",
+             "maxisProbeOkByProfile": {},
+             "maxisLastProbeByProfile": {},
+             "maxisRoutes": {"agent_core": "local", "editor_author": "local", "pmo_brief": "local"},
+             "maxisKillSwitch": False,
              # 사용자별 시스템 프롬프트 추가분 — 모든 역할의 페르소나 뒤에 붙는다.
              # 프로젝트 공용 추가분은 여기가 아니라 config/agent-prompt.md (repo 커밋 대상).
              "agentUserPrompt": ""}

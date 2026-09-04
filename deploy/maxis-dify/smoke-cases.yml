@@ -1,0 +1,227 @@
+contract: ltm-maxis-dify-smoke.v1
+cases:
+  - id: agent-core-ready
+    workflow: agent_core
+    inputs:
+      context_pack:
+        contract: evidence-pack.v1
+        request_id: smoke_agent_core
+        use_case: knowledge_curator
+        query: supplied smoke state를 요약하라
+        pseudonymous_user: ltm_0123456789abcdef
+        requested_at: "2026-09-04T00:00:00Z"
+        scope: {projects: [], spaces: [], repositories: []}
+        sources:
+          - source_id: smoke_source_core
+            kind: ltm
+            canonical_id: ltm:smoke:core
+            title: Synthetic smoke source
+            scope: ""
+            url: ""
+            content: supplied smoke state는 ready다.
+            retrieved_at: "2026-09-04T00:00:00Z"
+            updated_at: null
+            content_sha256: b0480fe94dd11c240a95a488feeaeea65b649a2647105dc185d556b0a0b20f32
+            partial: false
+            truncated: false
+        facts: []
+        metrics: []
+        role_context: []
+        freshness: fresh
+        partial: false
+        flags: []
+        knowledge_manifest_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        payload_schema_json: '{"$defs":{"KnowledgeConcept":{"additionalProperties":true,"properties":{"explanation":{"description":"One concise Korean sentence: what it is and why it matters here.","title":"Explanation","type":"string"},"term":{"title":"Term","type":"string"}},"title":"KnowledgeConcept","type":"object"},"KnowledgeReference":{"additionalProperties":true,"properties":{"ref":{"description":"Only a ticket key, document title, or URL in the input.","title":"Ref","type":"string"},"why":{"description":"Why this source is worth opening.","title":"Why","type":"string"}},"title":"KnowledgeReference","type":"object"}},"additionalProperties":true,"properties":{"concepts":{"description":"Two to five concepts required to understand the subject.","items":{"$ref":"#/$defs/KnowledgeConcept"},"title":"Concepts","type":"array"},"gaps":{"description":"Unknown or undecided points and the follow-up verification needed.","items":{"type":"string"},"title":"Gaps","type":"array"},"our_context":{"description":"Verified internal work, decisions, and attempts. Cite a ticket key or document title for each claim. If absent, write the Korean phrase 사내 이력 없음.","title":"Our Context","type":"string"},"references":{"items":{"$ref":"#/$defs/KnowledgeReference"},"title":"References","type":"array"}},"required":["concepts","our_context","gaps"],"title":"knowledge_curator","type":"object"}'
+        payload_schema_sha256: 38eb5b5a1cf7efb0879590e2ff4b7dc30ddc3ef5045f399b4fadcc60e5dccd20
+      role_id: knowledge_curator
+      correlation_id: smoke_agent_core
+      output_contract: remote-role-result.v1
+      workflow_version: 11111111-1111-4111-8111-111111111111
+      knowledge_version: kb-smoke-v1
+    expected:
+      role_id: knowledge_curator
+      narrative_path: /our_context
+      narrative_text: supplied smoke state는 ready다.
+      source_id: smoke_source_core
+    expected_response:
+      contract: remote-role-result.v1
+      role_id: knowledge_curator
+      status: ok
+      payload:
+        concepts:
+          - term: supplied smoke state
+            explanation: supplied smoke state는 ready다.
+        our_context: supplied smoke state는 ready다.
+        references: []
+        gaps: []
+      claims:
+        - claim_id: claim_core_ready
+          kind: fact
+          text: supplied smoke state는 ready다.
+          citation_ids: [citation_core_ready]
+      payload_claims:
+        - path: /concepts/0/term
+          claim_ids: [claim_core_ready]
+        - path: /concepts/0/explanation
+          claim_ids: [claim_core_ready]
+        - path: /our_context
+          claim_ids: [claim_core_ready]
+      citations:
+        - citation_id: citation_core_ready
+          source_id: smoke_source_core
+          locator: content
+      missing_inputs: []
+      warnings: []
+      workflow_version: 11111111-1111-4111-8111-111111111111
+      knowledge_version: kb-smoke-v1
+      knowledge_manifest_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      knowledge_proof: LTM_RELEASE_SENTINEL_V1=smoke-bundle-v1
+
+  - id: pmo-progress
+    workflow: pmo_brief
+    inputs:
+      context_pack:
+        contract: evidence-pack.v1
+        request_id: smoke_pmo_brief
+        use_case: portfolio_analyst
+        query: supplied PMO 진척을 해석하라
+        pseudonymous_user: ltm_0123456789abcdef
+        requested_at: "2026-09-04T00:00:00Z"
+        scope: {projects: [], spaces: [], repositories: []}
+        sources:
+          - source_id: smoke_source_pmo
+            kind: ltm
+            canonical_id: ltm:smoke:pmo
+            title: Synthetic PMO source
+            scope: ""
+            url: ""
+            content: 공급된 Story Point 진척률은 50%다.
+            retrieved_at: "2026-09-04T00:00:00Z"
+            updated_at: null
+            content_sha256: a1423959d7bf3ab3a0bb6bfea74eef7eb52d23b662c108c080b3c28c31eb09d5
+            partial: false
+            truncated: false
+        facts: []
+        metrics:
+          - metric_id: smoke_progress
+            label: Story Point 진척률
+            value: 50
+            unit: "%"
+            formula_version: epic-sp.v1
+            source_ids: [smoke_source_pmo]
+        role_context: []
+        freshness: fresh
+        partial: false
+        flags: []
+        knowledge_manifest_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        payload_schema_json: '{"properties":{"caution":{"description":"Korean interpretation caution, or empty; sparse activity is not proof of inactivity.","type":"string"},"findings":{"description":"At most ten findings directly verified by tool output.","items":{"properties":{"action":{"description":"Recommended Korean action, or empty.","type":"string"},"key":{"description":"Verified related ticket key, or empty when none.","type":"string"},"point":{"description":"One Korean factual sentence. Preserve the exact tool-returned title and include relevant metrics or dates; never return a bare key.","type":"string"}},"type":"object"},"type":"array"},"headline":{"description":"A specific one-line Korean conclusion, not a generic status label.","type":"string"}},"required":["headline","findings"],"type":"object"}'
+        payload_schema_sha256: 7be1af1f037631bb969d81f1fbd9397fce62fc509d09e732c2cf7768757a5042
+      role_id: portfolio_analyst
+      correlation_id: smoke_pmo_brief
+      output_contract: remote-role-result.v1
+      workflow_version: 22222222-2222-4222-8222-222222222222
+      knowledge_version: kb-smoke-v1
+    expected:
+      role_id: portfolio_analyst
+      narrative_path: /headline
+      narrative_text: 공급된 Story Point 진척률은 50%다.
+      source_id: smoke_source_pmo
+    expected_response:
+      contract: remote-role-result.v1
+      role_id: portfolio_analyst
+      status: ok
+      payload:
+        headline: 공급된 Story Point 진척률은 50%다.
+        findings: []
+        caution: ""
+      claims:
+        - claim_id: claim_pmo_progress
+          kind: fact
+          text: 공급된 Story Point 진척률은 50%다.
+          citation_ids: [citation_pmo_progress]
+      payload_claims:
+        - path: /headline
+          claim_ids: [claim_pmo_progress]
+      citations:
+        - citation_id: citation_pmo_progress
+          source_id: smoke_source_pmo
+          locator: metrics/smoke_progress
+      missing_inputs: []
+      warnings: []
+      workflow_version: 22222222-2222-4222-8222-222222222222
+      knowledge_version: kb-smoke-v1
+      knowledge_manifest_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      knowledge_proof: LTM_RELEASE_SENTINEL_V1=smoke-bundle-v1
+
+  - id: editor-preserve
+    workflow: editor_author
+    inputs:
+      context_pack:
+        contract: evidence-pack.v1
+        request_id: smoke_editor_author
+        use_case: editor_author
+        query: supplied 상태를 HTML 초안으로 작성하라
+        pseudonymous_user: ltm_0123456789abcdef
+        requested_at: "2026-09-04T00:00:00Z"
+        scope: {projects: [], spaces: [], repositories: []}
+        sources:
+          - source_id: smoke_source_editor
+            kind: ltm
+            canonical_id: ltm:smoke:editor
+            title: Synthetic editor source
+            scope: ""
+            url: ""
+            content: supplied 상태는 ready다.
+            retrieved_at: "2026-09-04T00:00:00Z"
+            updated_at: null
+            content_sha256: b926ea2578483e412a51cd639d3a6b7597ddaa1be43ae63a9567161c016f96c4
+            partial: false
+            truncated: false
+        facts: []
+        metrics: []
+        role_context: []
+        freshness: fresh
+        partial: false
+        flags: []
+        knowledge_manifest_sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+        payload_schema_json: '{"additionalProperties":false,"properties":{"content_html":{"maxLength":24000,"minLength":1,"title":"Content Html","type":"string"},"contract":{"const":"editor-draft.v1","default":"editor-draft.v1","title":"Contract","type":"string"},"mode":{"const":"description","type":"string"},"source_ids":{"default":[],"items":{"maxLength":128,"minLength":1,"pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]*$","type":"string"},"maxItems":10,"title":"Source Ids","type":"array"},"unsupported_claims":{"default":[],"items":{"maxLength":500,"minLength":1,"type":"string"},"maxItems":16,"title":"Unsupported Claims","type":"array"},"warnings":{"default":[],"items":{"maxLength":500,"minLength":1,"type":"string"},"maxItems":16,"title":"Warnings","type":"array"}},"required":["mode","content_html"],"title":"EditorDraftV1","type":"object"}'
+        payload_schema_sha256: b65e6851c31fa1ea127999391f063c23257a4a6ca312152b9a30776e362f100e
+      role_id: editor_author
+      correlation_id: smoke_editor_author
+      output_contract: remote-role-result.v1
+      workflow_version: 33333333-3333-4333-8333-333333333333
+      knowledge_version: kb-smoke-v1
+    expected:
+      role_id: editor_author
+      narrative_path: /content_html
+      narrative_text: supplied 상태는 ready다.
+      source_id: smoke_source_editor
+    expected_response:
+      contract: remote-role-result.v1
+      role_id: editor_author
+      status: ok
+      payload:
+        contract: editor-draft.v1
+        mode: description
+        content_html: <p>supplied 상태는 ready다.</p>
+        source_ids: [smoke_source_editor]
+        unsupported_claims: []
+        warnings: []
+      claims:
+        - claim_id: claim_editor_ready
+          kind: fact
+          text: supplied 상태는 ready다.
+          citation_ids: [citation_editor_ready]
+      payload_claims:
+        - path: /content_html
+          claim_ids: [claim_editor_ready]
+      citations:
+        - citation_id: citation_editor_ready
+          source_id: smoke_source_editor
+          locator: content
+      missing_inputs: []
+      warnings: []
+      workflow_version: 33333333-3333-4333-8333-333333333333
+      knowledge_version: kb-smoke-v1
+      knowledge_manifest_sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+      knowledge_proof: LTM_RELEASE_SENTINEL_V1=smoke-bundle-v1

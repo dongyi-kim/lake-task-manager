@@ -15,6 +15,50 @@ import json
 import sqlite3
 import threading
 import time
+from contextvars import ContextVar, copy_context
+from functools import wraps
+
+
+class _ProvenanceWindow:
+    """One request-owned, thread-safe ledger shared with its child workers."""
+
+    def __init__(self, cache):
+        self.cache = cache
+        self._lock = threading.Lock()
+        self._events = []
+        self._closed = False
+
+    def append(self, event):
+        with self._lock:
+            if not self._closed and len(self._events) < 4096:
+                self._events.append(event)
+
+    def close(self):
+        with self._lock:
+            self._closed = True
+            return list(self._events)
+
+
+_ACTIVE_PROVENANCE_WINDOWS = ContextVar(
+    "ltm_active_cache_provenance_windows", default=(),
+)
+
+
+def propagate_provenance_context(fn):
+    """Capture the current acquisition context for a synchronous worker task.
+
+    ``contextvars`` intentionally do not jump into ``ThreadPoolExecutor`` workers.
+    Every read fan-out that participates in an evidence acquisition wraps its callable
+    with this helper.  Each invocation uses a copy, so the same wrapper is safe when a
+    pool executes several items concurrently.
+    """
+    captured = copy_context()
+
+    @wraps(fn)
+    def run(*args, **kwargs):
+        return captured.copy().run(fn, *args, **kwargs)
+
+    return run
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS cache (
@@ -101,6 +145,57 @@ class Cache:
         # 화면 상단 알림이 "언제 기준 데이터인지" 를 말하려면 이 두 개가 필요하다.
         self.last_upstream_ok = 0.0
         self.served_stale_at = 0.0
+    def _record_read_provenance(self, fetched_at, *, stale=False, upstream=False):
+        try:
+            observed = float(fetched_at)
+        except (TypeError, ValueError):
+            return
+        event = {
+            "fetchedAt": observed,
+            "servedStale": bool(stale),
+            "upstream": bool(upstream),
+        }
+        for window in _ACTIVE_PROVENANCE_WINDOWS.get():
+            if window.cache is self:
+                window.append(event)
+
+    def provenance_marker(self):
+        """Open an opaque request-owned ledger for subsequent cache reads.
+
+        The ledger is a mutable object referenced by copied worker contexts, not a
+        process-global event stream. Concurrent requests therefore cannot make each
+        other's old/fresh evidence appear in their own attestation.
+        """
+        window = _ProvenanceWindow(self)
+        active = _ACTIVE_PROVENANCE_WINDOWS.get()
+        _ACTIVE_PROVENANCE_WINDOWS.set((*active, window))
+        return window
+
+    def provenance_since(self, marker):
+        """Close and summarize one acquisition ledger without retaining payloads."""
+        if not isinstance(marker, _ProvenanceWindow) or marker.cache is not self:
+            return {"count": 0, "oldestFetchedAt": None,
+                    "newestFetchedAt": None, "servedStale": False,
+                    "upstream": False}
+        active = _ACTIVE_PROVENANCE_WINDOWS.get()
+        _ACTIVE_PROVENANCE_WINDOWS.set(tuple(row for row in active if row is not marker))
+        events = marker.close()
+        timestamps = [float(row["fetchedAt"]) for row in events]
+        return {
+            "count": len(events),
+            "oldestFetchedAt": min(timestamps) if timestamps else None,
+            "newestFetchedAt": max(timestamps) if timestamps else None,
+            "servedStale": any(row.get("servedStale") is True for row in events),
+            "upstream": any(row.get("upstream") is True for row in events),
+        }
+
+    def record_cached_value(self, fetched_at, *, stale=False):
+        """Record a cache row selected by a caller that compares multiple candidates."""
+        self._record_read_provenance(fetched_at, stale=stale, upstream=False)
+
+    def _mark_served_stale(self, fetched_at):
+        self.served_stale_at = time.time()
+        self._record_read_provenance(fetched_at, stale=True, upstream=False)
 
     def _migrate(self):
         """CREATE TABLE IF NOT EXISTS 는 **기존 DB에 새 컬럼을 더해 주지 않는다** —
@@ -132,7 +227,9 @@ class Cache:
         payload, fetched_at, ttl = row
         if time.time() - fetched_at > ttl:
             return None                      # 만료
-        return json.loads(payload)
+        value = json.loads(payload)
+        self._record_read_provenance(fetched_at, stale=False, upstream=False)
+        return value
 
     def set(self, key, value, ttl):
         with self._lock:
@@ -210,6 +307,9 @@ class Cache:
                     if now - fetched_at <= ttl:
                         try:
                             found[key] = json.loads(payload)
+                            self._record_read_provenance(
+                                fetched_at, stale=False, upstream=False,
+                            )
                         except Exception:
                             pass
         return found
@@ -233,6 +333,9 @@ class Cache:
             if now - fetched_at <= ttl:
                 try:
                     found[key] = json.loads(payload)
+                    self._record_read_provenance(
+                        fetched_at, stale=False, upstream=False,
+                    )
                 except Exception:
                     pass
         return found
@@ -300,7 +403,7 @@ class Cache:
         if self.skip_producer and self.skip_producer():
             alive = self.get_alive(key)
             if alive is not None:
-                self.served_stale_at = time.time()
+                self._mark_served_stale(alive[1])
                 return alive[0], True
         fence = self.fence()
         try:
@@ -309,10 +412,13 @@ class Cache:
             alive = self.get_alive(key)
             if alive is None:
                 raise                       # 낡은 값조차 없으면 숨길 게 없다 — 그대로 알린다
-            self.served_stale_at = time.time()
+            self._mark_served_stale(alive[1])
             return alive[0], True
         self.set_if_fence(key, value, ttl, fence)
         self.last_upstream_ok = time.time()
+        self._record_read_provenance(
+            self.last_upstream_ok, stale=False, upstream=True,
+        )
         if self.on_upstream_ok:
             try:
                 self.on_upstream_ok()
@@ -336,6 +442,9 @@ class Cache:
         value = producer()                    # exceptions intentionally escape; nothing is cached
         self.set_if_fence(key, value, ttl, fence)
         self.last_upstream_ok = time.time()
+        self._record_read_provenance(
+            self.last_upstream_ok, stale=False, upstream=True,
+        )
         if self.on_upstream_ok:
             try:
                 self.on_upstream_ok()
@@ -353,7 +462,10 @@ class Cache:
     def get_stale(self, key):
         """TTL 이 지났어도 남아 있으면 값을 준다(SWR 용). 없으면 None."""
         got = self.get_stale_at(key)
-        return got[0] if got else None
+        if not got:
+            return None
+        self._record_read_provenance(got[1], stale=True, upstream=False)
+        return got[0]
 
     def get_stale_at(self, key):
         """(값, 받아온 시각) — 낡았는지·얼마나 낡았는지 판단해야 하는 쪽을 위해."""
@@ -400,11 +512,18 @@ class Cache:
             return hit, "fresh"
         stale = self.get_stale(key)
         if stale is not None:
+            # ``get_stale`` records the cache row timestamp; this event also drives the
+            # existing UI-level stale-session signal that SWR previously omitted.
+            self.served_stale_at = time.time()
             background(key, ttl, producer)
             return stale, "stale"
         fence = self.fence()
         value = producer()
         self.set_if_fence(key, value, ttl, fence)
+        self.last_upstream_ok = time.time()
+        self._record_read_provenance(
+            self.last_upstream_ok, stale=False, upstream=True,
+        )
         return value, "miss"
 
     def invalidate(self, prefix=None):
