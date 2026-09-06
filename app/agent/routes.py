@@ -256,6 +256,30 @@ def api_maxis_credentials_save(profile_name: str, body: _MaxisCredentialBody):
     return JSONResponse({"ok": True, "profile": profile_name, "credentials": status})
 
 
+def _maxis_info_probe_result(result) -> dict:
+    """Project only the non-secret, fixed Chatflow-mode attestation."""
+    if isinstance(result, dict):
+        src = result
+        read = lambda *names: next((src[n] for n in names if n in src), None)
+    else:
+        read = lambda *names: next((getattr(result, n) for n in names
+                                    if hasattr(result, n)), None)
+    transport_ok = bool(read("ok", "available"))
+    mode_verified = bool(read("app_mode_verified", "appModeVerified"))
+    status = read("status_code", "statusCode", "http_status")
+    elapsed = read("elapsed_ms", "latency_ms", "ms")
+    code = read("error_code", "errorCode", "code")
+    ok = transport_ok and mode_verified
+    return {
+        "ok": ok,
+        "statusCode": int(status) if isinstance(status, (int, float)) else None,
+        "ms": int(elapsed) if isinstance(elapsed, (int, float)) else None,
+        "errorCode": str(code or ("" if ok else "unexpected_app_mode"))[:80],
+        "missingParameters": [],
+        "appModeVerified": mode_verified,
+    }
+
+
 def _maxis_probe_result(result) -> dict:
     """Convert the foundation client's typed result without echoing response bodies."""
     if isinstance(result, dict):
@@ -311,6 +335,7 @@ def _maxis_contract_probe_result(
     execution_ok = bool(read("ok", "available"))
     ok = bool(
         parameters.get("ok")
+        and parameters.get("appModeVerified") is True
         and execution_ok
         and contract_verified
         and version_verified
@@ -385,9 +410,24 @@ def _run_maxis_probe(profile: dict, keys: dict[str, str]) -> dict:
                                          "errorCode": "credential_not_configured"}
                 continue
             try:
+                info_result = _maxis_info_probe_result(
+                    client.probe_info(api_key=keys[workflow_key])
+                )
+                if not info_result["ok"]:
+                    results[workflow_key] = info_result
+                    continue
                 parameter_result = _maxis_probe_result(
                     client.probe_parameters(api_key=keys[workflow_key])
                 )
+                parameter_result = {
+                    **parameter_result,
+                    "appModeVerified": info_result["appModeVerified"],
+                    "ms": sum(
+                        int(value)
+                        for value in (info_result.get("ms"), parameter_result.get("ms"))
+                        if isinstance(value, (int, float))
+                    ),
+                }
                 if not parameter_result["ok"]:
                     results[workflow_key] = parameter_result
                     continue
@@ -429,13 +469,18 @@ def api_maxis_probe(profile_name: str):
     from app.agent.maxis import credentials as maxis_credentials
     from app.agent.maxis import profiles as maxis_profiles
     try:
-        profile = maxis_profiles.probe_candidate(profile_name)
+        profile, keys, start_binding = maxis_profiles.start_probe(profile_name)
         if not profile.get("base_url"):
             raise ValueError("Save a MAXIS Base URL before probing.")
-        keys = maxis_credentials.resolved_for(profile_name)
-        result = _run_maxis_probe(profile, keys)
+        try:
+            result = _run_maxis_probe(profile, keys)
+        finally:
+            keys.clear()
         verified = maxis_profiles.mark_probe(
-            profile_name, bool(result.get("ok")), result
+            profile_name,
+            bool(result.get("ok")),
+            result,
+            start_binding=start_binding,
         )
         if result.get("ok") and not verified:
             result = {

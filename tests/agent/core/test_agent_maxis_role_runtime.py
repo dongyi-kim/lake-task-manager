@@ -19,6 +19,9 @@ from app.agent.workflow.role_manifest import ROLE_SPECS, remote_execution_allowe
 
 
 DATASET_A = "11111111-1111-4111-8111-111111111111"
+AGENT_WORKFLOW_ID = "22222222-2222-4222-8222-222222222222"
+PMO_WORKFLOW_ID = "33333333-3333-4333-8333-333333333333"
+EDITOR_WORKFLOW_ID = "44444444-4444-4444-8444-444444444444"
 MANIFEST_SHA = "a" * 64
 SENTINEL_VALUE = "LTM_RELEASE_SENTINEL_V1=runtime-test-release"
 SENTINEL_SHA = hashlib.sha256(
@@ -32,6 +35,7 @@ def audit_events(monkeypatch):
     from app.agent.maxis import audit
 
     events = []
+    monkeypatch.setenv("LAKE_MAXIS_PROD_ALLOWED_HOSTS", "maxis.example")
     monkeypatch.setattr(audit, "record_audit_event", events.append)
     return events
 
@@ -51,9 +55,13 @@ def _profile(name="dev", fingerprint="profile-a"):
         "knowledge_sentinel_sha256": SENTINEL_SHA,
         "knowledge_document_count": 3,
         "workflows": {
-            "agent_core": {"binding": "agent_core", "version": "wf-core-1"},
-            "pmo_brief": {"binding": "pmo_brief", "version": "wf-pmo-1"},
-            "editor_author": {"binding": "editor_author", "version": "wf-editor-1"},
+            "agent_core": {
+                "binding": "agent_core", "version": AGENT_WORKFLOW_ID,
+            },
+            "pmo_brief": {"binding": "pmo_brief", "version": PMO_WORKFLOW_ID},
+            "editor_author": {
+                "binding": "editor_author", "version": EDITOR_WORKFLOW_ID,
+            },
         },
         "enabled": True,
     }
@@ -107,6 +115,9 @@ def test_thread_pin_rejects_profile_or_route_change(monkeypatch):
         backend, "_profile_snapshot",
         lambda profile_name="", required=False: dict(current["profile"]),
     )
+    # This unit isolates immutable pin drift. Authority is covered against the real
+    # profile gate in ``test_shadow_profile_gate``.
+    monkeypatch.setattr(backend, "_require_authoritative_routes", lambda *_a: None)
     pin = backend.thread_runtime_pin()
     backend.verify_thread_runtime(pin)
     assert pin["knowledge_dataset_id"] == DATASET_A
@@ -153,6 +164,199 @@ def test_old_checkpoint_can_only_migrate_to_explicit_local():
     assert migrated["knowledge_manifest_sha256"] == ""
     with pytest.raises(backend.RuntimeProfileChanged):
         backend.prepare_thread_runtime({"messages": []}, engine="maxis")
+
+
+def test_old_checkpoint_with_empty_langgraph_reducers_migrates_to_explicit_local():
+    migrated = backend.prepare_thread_runtime({
+        "messages": [HumanMessage(content="old")],
+        "runtime_role_engines": {},
+        "runtime_role_telemetry": {},
+        "runtime_role_sidecars": {},
+        "runtime_role_questions": {},
+        "runtime_last_role": "",
+        "runtime_last_role_engine": "",
+    })
+
+    assert migrated["runtime_engine"] == "local"
+    assert migrated["runtime_profile"] == ""
+    assert set(migrated["runtime_role_routes"].values()) == {"local"}
+
+
+@pytest.mark.parametrize(
+    "remote_marker",
+    [
+        {"runtime_engine": "maxis"},
+        {"runtime_profile": "prod"},
+        {"runtime_engine_source": "profile"},
+        {"runtime_role_routes": {}},
+        {"runtime_role_routes": {"request_architect": "shadow"}},
+        {"runtime_role_engines": {"request_architect": "maxis"}},
+        {"runtime_role_engines": []},
+        {"knowledge_dataset_id": DATASET_A},
+        {"runtime_role_telemetry": {"request_architect": {"status": "ok"}}},
+    ],
+)
+def test_unpinned_checkpoint_with_remote_or_ambiguous_marker_never_migrates(
+    remote_marker,
+):
+    with pytest.raises(backend.RuntimeProfileChanged, match="기존 대화"):
+        backend.prepare_thread_runtime({
+            "messages": [HumanMessage(content="old")],
+            **remote_marker,
+        })
+
+
+def test_new_all_local_pin_does_not_read_or_bind_active_maxis_profile(monkeypatch):
+    monkeypatch.setattr(
+        backend, "_canonical_role_routes",
+        lambda *, explicit_engine="": _routes("local"),
+    )
+    monkeypatch.setattr(
+        backend, "_profile_snapshot",
+        lambda *_a, **_k: pytest.fail("pure local pin must not read an active profile"),
+    )
+
+    pin = backend.thread_runtime_pin()
+
+    assert pin["runtime_profile"] == ""
+    assert pin["workflow_bundle_version"] == ""
+    assert pin["knowledge_dataset_id"] == ""
+
+
+def test_explicit_profile_still_binds_an_all_local_pin(monkeypatch):
+    reads = []
+    monkeypatch.setattr(
+        backend, "_canonical_role_routes",
+        lambda *, explicit_engine="": _routes("local"),
+    )
+
+    def profile_snapshot(profile_name="", *, required=False):
+        reads.append((profile_name, required))
+        return _profile("dev")
+
+    monkeypatch.setattr(backend, "_profile_snapshot", profile_snapshot)
+
+    pin = backend.thread_runtime_pin(profile="dev")
+
+    assert reads == [("dev", False)]
+    assert pin["runtime_profile"] == "dev"
+
+
+def test_approval_resume_persists_legacy_local_pin_before_verification(monkeypatch):
+    from app.agent.workflow import session
+
+    state = {"messages": [HumanMessage(content="legacy paused conversation")]}
+    updates = []
+
+    class FakeGraph:
+        def get_state(self, _config):
+            return SimpleNamespace(values=dict(state))
+
+        def update_state(self, _config, patch):
+            updates.append(dict(patch))
+            state.update(patch)
+
+    monkeypatch.setattr(
+        backend, "_canonical_role_routes",
+        lambda *, explicit_engine="": _routes("local"),
+    )
+    monkeypatch.setattr(
+        backend, "_profile_snapshot",
+        lambda *_a, **_k: pytest.fail("legacy local resume must not read a profile"),
+    )
+
+    pinned = session._prepare_resume_runtime(FakeGraph(), "legacy-thread")
+
+    assert len(updates) == 1
+    assert pinned["runtime_profile_fingerprint"]
+    assert pinned["runtime_profile"] == ""
+    assert set(pinned["runtime_role_routes"].values()) == {"local"}
+
+
+def test_approval_resume_never_repairs_an_unpinned_remote_checkpoint():
+    from app.agent.workflow import session
+
+    state = {
+        "messages": [HumanMessage(content="ambiguous paused conversation")],
+        "runtime_role_routes": {"request_architect": "maxis"},
+    }
+    updates = []
+
+    class FakeGraph:
+        def get_state(self, _config):
+            return SimpleNamespace(values=dict(state))
+
+        def update_state(self, _config, patch):
+            updates.append(dict(patch))
+
+    with pytest.raises(backend.RuntimeProfileChanged, match="기존 대화"):
+        session._prepare_resume_runtime(FakeGraph(), "remote-thread")
+
+    assert updates == []
+
+
+def test_migrated_local_checkpoint_ignores_a_later_active_profile(monkeypatch):
+    monkeypatch.setattr(
+        backend, "_canonical_role_routes",
+        lambda *, explicit_engine="": _routes("local"),
+    )
+    profile_reads = []
+
+    def active_profile_snapshot(*_args, **_kwargs):
+        profile_reads.append(True)
+        return _profile(fingerprint="later-active-profile")
+
+    monkeypatch.setattr(backend, "_profile_snapshot", active_profile_snapshot)
+    migrated = backend.prepare_thread_runtime({
+        "messages": [HumanMessage(content="old")],
+    })
+
+    backend.verify_thread_runtime(migrated)
+
+    assert migrated["runtime_profile"] == ""
+    assert profile_reads == []
+
+
+def test_pinned_checkpoint_cannot_fallback_when_role_route_is_missing(monkeypatch):
+    monkeypatch.setattr(
+        backend, "_canonical_role_routes",
+        lambda *, explicit_engine="": _routes("local"),
+    )
+    state = {
+        "runtime_profile_fingerprint": "pinned-runtime",
+        "runtime_role_routes": {"editor_author": "maxis"},
+    }
+
+    with pytest.raises(backend.RuntimeProfileChanged, match="route pin"):
+        backend.resolve_role("request_architect", state)
+
+
+def test_pinned_local_route_is_verified_before_local_return(monkeypatch):
+    state = {
+        "runtime_profile_fingerprint": "pinned-runtime",
+        "runtime_role_routes": {"request_architect": "local"},
+    }
+
+    def reject_damaged_pin(_state, **_kwargs):
+        raise backend.RuntimeProfileChanged("damaged pinned runtime")
+
+    monkeypatch.setattr(backend, "verify_thread_runtime", reject_damaged_pin)
+    with pytest.raises(backend.RuntimeProfileChanged, match="damaged pinned runtime"):
+        backend.resolve_role("request_architect", state)
+
+
+def test_unpinned_direct_partial_route_map_remains_compatible(monkeypatch):
+    monkeypatch.setattr(
+        backend, "verify_thread_runtime",
+        lambda *_a, **_k: pytest.fail("an unpinned direct call must not be verified"),
+    )
+
+    resolved = backend.resolve_role(
+        "request_architect",
+        {"runtime_role_routes": {"request_architect": "local"}},
+    )
+
+    assert resolved.route == "local"
 
 
 def test_change_audit_sequence_reuses_correlation_without_content(monkeypatch, audit_events):
@@ -243,7 +447,11 @@ def test_guarded_payload_ignores_role_task_transcript_and_pseudonymizes_people()
     assert "홍길동" not in pack.sources[0].content
     assert "[[person:" in pack.sources[0].content
     assert pack.query.endswith("DL 업무 초안을 작성해 줘")
-    assert [row.name for row in pack.role_context] == ["query_plan"]
+    # Research stays local until public web/GitHub evidence has a tenant scope and
+    # host contract.  Its raw query plan therefore must not acquire an accidental
+    # outbound path merely because a guarded pack is constructed in isolation.
+    assert remote_execution_allowed("research_analyst") is False
+    assert pack.role_context == ()
     assert pack.knowledge_manifest_sha256 == MANIFEST_SHA
     assert payload["runtime"]["knowledgeDatasetId"] == DATASET_A
     assert payload["runtime"]["knowledgeManifestSha256"] == MANIFEST_SHA
@@ -304,6 +512,120 @@ def test_missing_request_text_never_falls_back_to_messages_or_prompt():
     assert "RAW_PROMPT_STATE_MUST_NOT_CROSS" not in encoded
     assert "RAW_TRANSCRIPT_MUST_NOT_CROSS" not in encoded
     assert "RAW_ROLE_TASK_MUST_NOT_CROSS" not in encoded
+    assert payload["evidencePack"]["sources"] == []
+    assert payload["evidencePack"]["freshness"] == "empty"
+
+
+def test_source_free_prod_role_uses_only_guarded_intent_as_provenance():
+    state = _runtime_state("request_architect")
+    state["messages"] = [HumanMessage(content="RAW_TRANSCRIPT_MUST_NOT_CROSS")]
+
+    payload = backend.role_payload(
+        "request_architect", state,
+        [HumanMessage(content="RAW_ROLE_TASK_MUST_NOT_CROSS")],
+        {"type": "object"}, output_kind="structured",
+    )
+    pack = EvidencePackV1.model_validate_json(
+        json.dumps(payload["evidencePack"], ensure_ascii=False), strict=True,
+    )
+
+    assert len(pack.sources) == 1
+    source = pack.sources[0]
+    assert source.kind == "ltm"
+    assert source.source_id.startswith("src_intent_")
+    assert source.canonical_id.startswith("ltm:user-intent:")
+    assert source.title == "LTM guarded user intent"
+    assert source.content == "DL 업무 초안을 작성해 줘"
+    assert source.url == "" and source.scope == ""
+    assert source.retrieved_at == pack.requested_at
+    assert source.updated_at is None
+    assert source.partial is False and source.truncated is False
+    assert pack.freshness == "fresh"
+    encoded = json.dumps(pack.model_dump(mode="json"), ensure_ascii=False)
+    assert "RAW_TRANSCRIPT_MUST_NOT_CROSS" not in encoded
+    assert "RAW_ROLE_TASK_MUST_NOT_CROSS" not in encoded
+
+
+def test_guarded_intent_source_reuses_query_dlp_projection():
+    state = _runtime_state("request_architect")
+    state["request_text"] = (
+        "담당 skcc.x1103에게 https://internal.example/private 검토를 요청해 줘"
+    )
+
+    payload = backend.role_payload(
+        "request_architect", state, [], {"type": "object"},
+        output_kind="structured",
+    )
+    pack = EvidencePackV1.model_validate_json(
+        json.dumps(payload["evidencePack"], ensure_ascii=False), strict=True,
+    )
+
+    content = pack.sources[0].content
+    assert "skcc.x1103" not in content and "skcc.x1103" not in pack.query
+    assert "https://internal.example" not in content
+    assert "[[person:" in content
+    assert "[url omitted]" in content
+    assert content in pack.query
+
+
+def test_verified_query_source_is_not_diluted_by_user_intent_source():
+    state = _runtime_state("request_architect")
+    result = {"scopeProjects": ["DL"], "tickets": [{"key": "DL-1"}]}
+    state["query_results"] = [{
+        "id": "jira-1", "source": "jira", "result": result,
+        "_remoteEvidence": backend.attest_query_result(
+            "jira-1", "jira", result, scopes=("DL",),
+        ),
+    }]
+
+    payload = backend.role_payload(
+        "request_architect", state, [], {"type": "object"},
+        output_kind="structured",
+    )
+    pack = EvidencePackV1.model_validate_json(
+        json.dumps(payload["evidencePack"], ensure_ascii=False), strict=True,
+    )
+
+    assert [source.kind for source in pack.sources] == ["jira"]
+    assert all(not source.source_id.startswith("src_intent_") for source in pack.sources)
+
+
+def test_request_architect_receives_only_bounded_explicit_continuation_answer():
+    state = _runtime_state("request_architect")
+    state.update(
+        turn_continuation=True,
+        continuation_answer="마감은 2026-09-30으로 해줘",
+        messages=[HumanMessage(content="RAW_TRANSCRIPT_MUST_NOT_CROSS")],
+    )
+
+    payload = backend.role_payload(
+        "request_architect", state,
+        [HumanMessage(content="RAW_ROLE_TASK_MUST_NOT_CROSS")],
+        {"type": "object"}, output_kind="structured",
+    )
+    query = payload["evidencePack"]["query"]
+
+    assert "Original request:" in query
+    assert "DL 업무 초안을 작성해 줘" in query
+    assert "Current continuation answer:" in query
+    assert "마감은 2026-09-30으로 해줘" in query
+    assert "RAW_TRANSCRIPT_MUST_NOT_CROSS" not in query
+    assert "RAW_ROLE_TASK_MUST_NOT_CROSS" not in query
+
+
+def test_non_request_role_never_receives_continuation_answer():
+    state = _runtime_state("work_architect")
+    state.update(
+        turn_continuation=True,
+        continuation_answer="CURRENT_ANSWER_MUST_NOT_CROSS_TO_OTHER_ROLE",
+    )
+    payload = backend.role_payload(
+        "work_architect", state, [], {"type": "object"},
+        output_kind="structured",
+    )
+    assert "CURRENT_ANSWER_MUST_NOT_CROSS_TO_OTHER_ROLE" not in json.dumps(
+        payload["evidencePack"], ensure_ascii=False,
+    )
 
 
 def test_dev_profile_replaces_all_content_with_a_fixed_synthetic_fixture():
@@ -338,12 +660,122 @@ def test_dev_profile_replaces_all_content_with_a_fixed_synthetic_fixture():
     assert pack.query.endswith("canonical role request_architect.")
     assert len(pack.sources) == 1
     assert pack.sources[0].canonical_id == "ltm:maxis-dev:synthetic-fixture"
+    assert pack.scope.model_dump(mode="json") == {
+        "projects": [], "spaces": [], "repositories": [],
+    }
     assert pack.role_context == ()
     for forbidden in (
         "REAL_INTERNAL_PROMPT_MUST_NOT_CROSS", "REAL_ROLE_CONTEXT_MUST_NOT_CROSS",
         "REAL_TICKET_MUST_NOT_CROSS", "real.user@example.test",
     ):
         assert forbidden not in encoded
+
+
+def test_dev_profile_can_run_safe_synthetic_probe_from_real_jira_process(monkeypatch):
+    from app.agent.maxis import profiles
+    from app.agent.maxis import credentials
+    from app.agent.maxis import client as client_module
+    from app.agent.tools import _ctx
+
+    profile = _profile("dev")
+    monkeypatch.setattr(profiles, "resolve", lambda *_args, **_kwargs: dict(profile))
+    monkeypatch.setattr(profiles, "kill_switch_enabled", lambda: False)
+    _ctx.bind(SimpleNamespace(), SimpleNamespace(
+        search_jira_projects=["REAL_JIRA_PROJECT_MUST_NOT_CROSS"],
+        search_confluence_spaces=["REAL_CONFLUENCE_SPACE_MUST_NOT_CROSS"],
+        search_bitbucket_projects=["REAL_BITBUCKET_REPO_MUST_NOT_CROSS"],
+        jira_env="prod", jira_user="real-user", managers=[],
+        jira_base="https://real-jira.internal.example",
+        confluence_base="https://real-confluence.internal.example",
+        bitbucket_base="https://real-bitbucket.internal.example",
+    ))
+    try:
+        metadata = backend._profile_snapshot("dev", required=True)
+        state = _runtime_state("request_architect")
+        state.update(runtime_profile="dev", request_text="REAL_MUST_NOT_CROSS")
+        payload = backend.role_payload(
+            "request_architect", state, [], {"type": "object"},
+            output_kind="structured",
+        )
+    finally:
+        _ctx.bind()
+
+    observed = {}
+
+    class CapturingClient:
+        def __init__(self, _config):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def invoke(self, _binding, **kwargs):
+            observed["dify_request"] = json.dumps(
+                kwargs["inputs"]["context_pack"].model_dump(mode="json"),
+                ensure_ascii=False,
+            )
+            raise RuntimeError("stop after capturing the Dify request")
+
+    monkeypatch.setattr(
+        backend, "resolve_role",
+        lambda *_a, **_k: backend.RoleResolution(
+            route="maxis", binding=SimpleNamespace(), profile="dev",
+        ),
+    )
+    monkeypatch.setattr(backend, "_profile_snapshot", lambda *_a, **_k: dict(profile))
+    monkeypatch.setattr(credentials, "get_for", lambda *_a, **_k: "dev-app-key")
+    monkeypatch.setattr(client_module, "DifyClient", CapturingClient)
+    with pytest.raises(backend.MaxisRuntimeError, match="Role 호출"):
+        backend.invoke("request_architect", payload, "thread-1", "corr-1")
+
+    assert metadata["name"] == "dev"
+    encoded = json.dumps(payload["evidencePack"], ensure_ascii=False)
+    assert "REAL_MUST_NOT_CROSS" not in encoded
+    assert payload["evidencePack"]["flags"] == ["synthetic_only"]
+    assert payload["evidencePack"]["scope"] == {
+        "projects": [], "spaces": [], "repositories": [],
+    }
+    assert payload["evidencePack"]["sources"][0]["canonical_id"] == (
+        "ltm:maxis-dev:synthetic-fixture"
+    )
+    for forbidden in (
+        "REAL_JIRA_PROJECT_MUST_NOT_CROSS",
+        "REAL_CONFLUENCE_SPACE_MUST_NOT_CROSS",
+        "REAL_BITBUCKET_REPO_MUST_NOT_CROSS",
+        "real-jira.internal.example",
+        "real-confluence.internal.example",
+        "real-bitbucket.internal.example",
+    ):
+        assert forbidden not in encoded
+        assert forbidden not in observed["dify_request"]
+
+
+def test_synthetic_fixture_scope_is_rechecked_before_dify_request(monkeypatch):
+    state = _runtime_state("request_architect")
+    state["runtime_profile"] = "dev"
+    payload = backend.role_payload(
+        "request_architect", state, [], {"type": "object"},
+        output_kind="structured",
+    )
+    payload["evidencePack"]["scope"]["projects"] = ["REAL_PROJECT_TAMPER"]
+    monkeypatch.setattr(
+        backend, "resolve_role",
+        lambda *_a, **_k: backend.RoleResolution(
+            route="maxis", binding=SimpleNamespace(), profile="dev",
+        ),
+    )
+    monkeypatch.setattr(backend, "_profile_snapshot", lambda *_a, **_k: _profile("dev"))
+    from app.agent.maxis import client as client_module
+    monkeypatch.setattr(
+        client_module, "DifyClient",
+        lambda *_a, **_k: pytest.fail("tampered synthetic scope reached Dify client"),
+    )
+
+    with pytest.raises(backend.MaxisRuntimeError, match="합성 fixture"):
+        backend.invoke("request_architect", payload, "thread-1", "corr-1")
 
 
 def test_nested_jira_cloud_person_fields_are_pseudonymized():
@@ -543,7 +975,35 @@ def test_downstream_remote_role_omits_local_only_web_and_github_rows():
     assert {row.name for row in pack.role_context} == {"situation", "evidence"}
 
 
-def test_interview_continuation_refreshes_role_context_observation_time():
+def test_portfolio_remote_context_projects_prefetched_pmo_material():
+    state = _runtime_state("portfolio_analyst")
+    state.update({
+        "intent": "progress",
+        "mentioned_keys": ["DL-1"],
+        "module": "ETL",
+        "portfolio_snapshot": {
+            "version": "portfolio.snapshot.v1",
+            "materials": [{"kind": "ticket_progress", "complete": True}],
+        },
+        "group_activity": "모듈 활동을 결정적으로 취합했다.",
+        "ticket_progress": "DL-1의 완료·잔여 작업을 결정적으로 취합했다.",
+    })
+
+    payload = backend.role_payload(
+        "portfolio_analyst", state, [], {"type": "object"},
+        output_kind="structured",
+    )
+    pack = EvidencePackV1.model_validate_json(
+        json.dumps(payload["evidencePack"], ensure_ascii=False), strict=True,
+    )
+
+    assert [row.name for row in pack.role_context] == [
+        "intent", "mentioned_keys", "module", "portfolio_snapshot",
+        "group_activity", "ticket_progress",
+    ]
+
+
+def test_interview_continuation_preserves_carried_role_context_observation_time():
     from app.agent.workflow.session import _turn_start_patch
 
     old = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
@@ -569,7 +1029,24 @@ def test_interview_continuation_refreshes_role_context_observation_time():
         json.dumps(payload["evidencePack"], ensure_ascii=False), strict=True,
     )
     assert pack.role_context
-    assert pack.freshness == "fresh"
+    assert pack.role_context[0].observed_at.isoformat() == datetime.fromisoformat(old).isoformat()
+    # The newly observed user-intent provenance is fresh, but it must not refresh the
+    # one-hour-old carried RoleContext. Aggregate freshness therefore stays visibly mixed.
+    assert pack.freshness == "mixed"
+    assert pack.sources[0].canonical_id.startswith("ltm:user-intent:")
+    assert "stale_role_context" in pack.flags
+
+    # A Role that actually recomputes the value changes the digest and receives the
+    # current turn timestamp instead of inheriting the stale provenance entry.
+    refreshed = {**prior, **turn, "situation": "현재 턴에서 다시 계산한 상황"}
+    payload = backend.role_payload(
+        "knowledge_curator", refreshed, [], {"type": "object"},
+        output_kind="structured",
+    )
+    refreshed_pack = EvidencePackV1.model_validate_json(
+        json.dumps(payload["evidencePack"], ensure_ascii=False), strict=True,
+    )
+    assert refreshed_pack.freshness == "fresh"
 
 
 def test_stale_or_partial_work_evidence_is_blocked_before_network(monkeypatch):
@@ -722,6 +1199,9 @@ def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_e
         def invoke(self, _binding, **kwargs):
             observed.update(kwargs)
             status = observed["remote_status"]
+            evidence = kwargs["inputs"]["context_pack"]
+            assert len(evidence.sources) == 1
+            intent_source_id = evidence.sources[0].source_id
             answer = {
                 "contract": "remote-role-result.v1",
                 "role_id": "request_architect",
@@ -730,18 +1210,22 @@ def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_e
                             if status == "ok" else {}),
                 "claims": ([{
                     "claim_id": "value_claim",
-                    "kind": "open_fact",
+                    "kind": "recommendation",
                     "text": observed["remote_value"],
-                    "citation_ids": [],
+                    "citation_ids": ["value_citation"],
                 }] if status == "ok" else []),
                 "payload_claims": ([{
                     "path": "/value", "claim_ids": ["value_claim"],
                 }] if status == "ok" else []),
-                "citations": [],
+                "citations": ([{
+                    "citation_id": "value_citation",
+                    "source_id": intent_source_id,
+                    "locator": "",
+                }] if status == "ok" else []),
                 "missing_inputs": (["완료 기준을 알려 주세요"]
                                    if status == "needs_input" else []),
                 "warnings": [],
-                "workflow_version": "wf-core-1",
+                "workflow_version": AGENT_WORKFLOW_ID,
                 "knowledge_version": "knowledge-1",
                 "knowledge_manifest_sha256": observed["remote_manifest"],
                 "knowledge_proof": observed["knowledge_proof"],
@@ -767,7 +1251,7 @@ def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_e
         "workflow_version", "knowledge_version",
     }
     assert observed["user"] == observed["inputs"]["context_pack"].pseudonymous_user
-    assert observed["workflow_id"] == "wf-core-1"
+    assert observed["workflow_id"] == AGENT_WORKFLOW_ID
     assert observed["expected_knowledge_dataset_id"] == DATASET_A
     assert observed["inputs"]["context_pack"].knowledge_manifest_sha256 == MANIFEST_SHA
     assert "outputSchema" not in json.dumps(

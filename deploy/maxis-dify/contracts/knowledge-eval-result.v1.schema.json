@@ -1,0 +1,545 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ltm:maxis:knowledge-eval-result:v1",
+  "title": "LTM MAXIS Knowledge evaluation result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "evidenceId",
+    "environment",
+    "profileName",
+    "outcome",
+    "releaseEligible",
+    "executionScope",
+    "profileFingerprint",
+    "knowledgeVersion",
+    "suiteSha256",
+    "harnessDefinitionSha256",
+    "artifactSchemaSha256",
+    "retrievalEvidenceSource",
+    "responseGroundingSource",
+    "semanticAnswerCorrectnessAssessed",
+    "profileMaterialSha256",
+    "datasetId",
+    "knowledgeManifestSha256",
+    "workflowVersions",
+    "sourceFileSha256",
+    "startedAt",
+    "completedAt",
+    "plannedCaseCount",
+    "executedCaseCount",
+    "pilotCaseId",
+    "privacy",
+    "automationLimits",
+    "cases",
+    "summary"
+  ],
+  "properties": {
+    "contract": {"const": "ltm-maxis-knowledge-eval-result.v1"},
+    "evidenceId": {"$ref": "#/$defs/safeId"},
+    "environment": {"const": "dev"},
+    "profileName": {"const": "dev"},
+    "outcome": {"enum": ["passed", "failed", "aborted"]},
+    "releaseEligible": {"const": false},
+    "executionScope": {"enum": ["pilot_only", "full_suite"]},
+    "profileFingerprint": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "knowledgeVersion": {"$ref": "#/$defs/safeId"},
+    "suiteSha256": {"$ref": "#/$defs/digest"},
+    "harnessDefinitionSha256": {
+      "const": "df2f1890ce2cd61a95639f49d9697127deb1bdb57d9340b76ccb2c3d27c5a3f1"
+    },
+    "artifactSchemaSha256": {"$ref": "#/$defs/digest"},
+    "retrievalEvidenceSource": {"const": "dify_retriever_resources"},
+    "responseGroundingSource": {
+      "const": "evaluator_owned_synthetic_control"
+    },
+    "semanticAnswerCorrectnessAssessed": {"const": false},
+    "profileMaterialSha256": {"$ref": "#/$defs/digest"},
+    "datasetId": {"$ref": "#/$defs/uuid"},
+    "knowledgeManifestSha256": {"$ref": "#/$defs/digest"},
+    "workflowVersions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent_core", "editor_author", "pmo_brief"],
+      "properties": {
+        "agent_core": {"$ref": "#/$defs/uuid"},
+        "editor_author": {"$ref": "#/$defs/uuid"},
+        "pmo_brief": {"$ref": "#/$defs/uuid"}
+      }
+    },
+    "sourceFileSha256": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workflowRegistry",
+        "knowledgeSource",
+        "environment",
+        "evaluationSuite",
+        "evaluationEngine",
+        "evaluationLauncher",
+        "evaluationRunner",
+        "responseGuard",
+        "contractModels",
+        "commonPrompt",
+        "agentCoreDsl",
+        "pmoBriefDsl",
+        "editorAuthorDsl",
+        "contractGuard",
+        "knowledgeGuard"
+      ],
+      "properties": {
+        "workflowRegistry": {"$ref": "#/$defs/digest"},
+        "knowledgeSource": {"$ref": "#/$defs/digest"},
+        "environment": {"$ref": "#/$defs/digest"},
+        "evaluationSuite": {"$ref": "#/$defs/digest"},
+        "evaluationEngine": {"$ref": "#/$defs/digest"},
+        "evaluationLauncher": {"$ref": "#/$defs/digest"},
+        "evaluationRunner": {"$ref": "#/$defs/digest"},
+        "responseGuard": {"$ref": "#/$defs/digest"},
+        "contractModels": {"$ref": "#/$defs/digest"},
+        "commonPrompt": {"$ref": "#/$defs/digest"},
+        "agentCoreDsl": {"$ref": "#/$defs/digest"},
+        "pmoBriefDsl": {"$ref": "#/$defs/digest"},
+        "editorAuthorDsl": {"$ref": "#/$defs/digest"},
+        "contractGuard": {"$ref": "#/$defs/digest"},
+        "knowledgeGuard": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "startedAt": {"$ref": "#/$defs/utcInstant"},
+    "completedAt": {"$ref": "#/$defs/utcInstant"},
+    "plannedCaseCount": {"const": 25},
+    "executedCaseCount": {"type": "integer", "minimum": 0, "maximum": 25},
+    "pilotCaseId": {"$ref": "#/$defs/safeId"},
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dataPolicy",
+        "rawPromptStored",
+        "rawResponseStored",
+        "rawAnswerStored",
+        "retrievedContentStored",
+        "ephemeralRemoteIdentifiersStored",
+        "credentialMaterialStored",
+        "sentinelMarkerStored"
+      ],
+      "properties": {
+        "dataPolicy": {"const": "synthetic_only"},
+        "rawPromptStored": {"const": false},
+        "rawResponseStored": {"const": false},
+        "rawAnswerStored": {"const": false},
+        "retrievedContentStored": {"const": false},
+        "ephemeralRemoteIdentifiersStored": {"const": false},
+        "credentialMaterialStored": {"const": false},
+        "sentinelMarkerStored": {"const": false}
+      }
+    },
+    "automationLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "injectionAssessment",
+        "semanticHumanReviewRequired",
+        "promptInjectionCasesRequireSignedHumanReview",
+        "localRunnerAcceptsHumanReviewSignatures",
+        "signedExternalArtifactRequiredForProd",
+        "notAssessed"
+      ],
+      "properties": {
+        "injectionAssessment": {
+          "const": "contract_patterns_and_96_char_verbatim_overlap"
+        },
+        "semanticHumanReviewRequired": {"const": true},
+        "promptInjectionCasesRequireSignedHumanReview": {"const": true},
+        "localRunnerAcceptsHumanReviewSignatures": {"const": false},
+        "signedExternalArtifactRequiredForProd": {"const": true},
+        "notAssessed": {
+          "const": [
+            "semantic_answer_correctness",
+            "paraphrased_source_disclosure",
+            "ranking_quality_beyond_declared_expectations"
+          ]
+        }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "maxItems": 25,
+      "items": {"$ref": "#/$defs/caseResult"}
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "passedCases",
+        "failedCases",
+        "failureCaseIds",
+        "timedOutCases",
+        "timeoutCaseIds",
+        "pendingSignedHumanReviewCaseIds",
+        "categoryResults",
+        "retrievalQuality",
+        "latencyMsTotal",
+        "latencyMsMean",
+        "latencyMsP50",
+        "latencyMsP95",
+        "usageObservedCases",
+        "usageUnobservedCases",
+        "usageComplete",
+        "promptTokens",
+        "completionTokens",
+        "totalTokens"
+      ],
+      "properties": {
+        "passedCases": {"$ref": "#/$defs/nonNegativeInteger"},
+        "failedCases": {"$ref": "#/$defs/nonNegativeInteger"},
+        "failureCaseIds": {
+          "type": "array",
+          "maxItems": 25,
+          "items": {"$ref": "#/$defs/safeId"},
+          "uniqueItems": true
+        },
+        "timedOutCases": {"$ref": "#/$defs/nonNegativeInteger"},
+        "timeoutCaseIds": {
+          "type": "array",
+          "maxItems": 25,
+          "items": {"$ref": "#/$defs/safeId"},
+          "uniqueItems": true
+        },
+        "pendingSignedHumanReviewCaseIds": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {"$ref": "#/$defs/safeId"},
+          "uniqueItems": true
+        },
+        "categoryResults": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["positive", "noHit", "acl", "injection"],
+          "properties": {
+            "positive": {"$ref": "#/$defs/categoryResult"},
+            "noHit": {"$ref": "#/$defs/categoryResult"},
+            "acl": {"$ref": "#/$defs/categoryResult"},
+            "injection": {"$ref": "#/$defs/categoryResult"}
+          }
+        },
+        "retrievalQuality": {"$ref": "#/$defs/retrievalQuality"},
+        "latencyMsTotal": {"$ref": "#/$defs/nonNegativeInteger"},
+        "latencyMsMean": {"$ref": "#/$defs/nonNegativeInteger"},
+        "latencyMsP50": {"$ref": "#/$defs/nonNegativeInteger"},
+        "latencyMsP95": {"$ref": "#/$defs/nonNegativeInteger"},
+        "usageObservedCases": {"$ref": "#/$defs/nonNegativeInteger"},
+        "usageUnobservedCases": {"$ref": "#/$defs/nonNegativeInteger"},
+        "usageComplete": {"type": "boolean"},
+        "promptTokens": {"$ref": "#/$defs/nonNegativeInteger"},
+        "completionTokens": {"$ref": "#/$defs/nonNegativeInteger"},
+        "totalTokens": {"$ref": "#/$defs/nonNegativeInteger"}
+      }
+    }
+  },
+  "$defs": {
+    "safeId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "utcInstant": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+    },
+    "nonNegativeInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2147483647
+    },
+    "logicalDocumentId": {
+      "enum": [
+        "ticket-rules",
+        "progress-formula",
+        "modules-and-people",
+        "work-breakdown",
+        "ltm-guide",
+        "data-assets",
+        "ticket-body-guide",
+        "editor-and-rendering"
+      ]
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observed", "promptTokens", "completionTokens", "totalTokens"],
+      "allOf": [
+        {
+          "if": {
+            "properties": {"observed": {"const": true}},
+            "required": ["observed"]
+          },
+          "then": {
+            "properties": {
+              "promptTokens": {"$ref": "#/$defs/nonNegativeInteger"},
+              "completionTokens": {"$ref": "#/$defs/nonNegativeInteger"},
+              "totalTokens": {"$ref": "#/$defs/nonNegativeInteger"}
+            }
+          },
+          "else": {
+            "properties": {
+              "promptTokens": {"type": "null"},
+              "completionTokens": {"type": "null"},
+              "totalTokens": {"type": "null"}
+            }
+          }
+        }
+      ],
+      "properties": {
+        "observed": {"type": "boolean"},
+        "promptTokens": {"type": ["integer", "null"]},
+        "completionTokens": {"type": ["integer", "null"]},
+        "totalTokens": {"type": ["integer", "null"]}
+      }
+    },
+    "retrievalQuality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metricScope",
+        "k",
+        "plannedCases",
+        "evaluatedCases",
+        "notRunCases",
+        "hitCases",
+        "hitRateAtK",
+        "meanReciprocalRankAtK",
+        "complete"
+      ],
+      "properties": {
+        "metricScope": {"const": "positive_declared_target_document"},
+        "k": {"const": 2},
+        "plannedCases": {"const": 8},
+        "evaluatedCases": {"type": "integer", "minimum": 0, "maximum": 8},
+        "notRunCases": {"type": "integer", "minimum": 0, "maximum": 8},
+        "hitCases": {"type": "integer", "minimum": 0, "maximum": 8},
+        "hitRateAtK": {"type": "number", "minimum": 0, "maximum": 1},
+        "meanReciprocalRankAtK": {"type": "number", "minimum": 0, "maximum": 1},
+        "complete": {"type": "boolean"}
+      }
+    },
+    "categoryResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plannedCases",
+        "executedCases",
+        "notRunCases",
+        "automatedPassedCases",
+        "passedCases",
+        "failedCases",
+        "timedOutCases",
+        "passed",
+        "signedHumanReviewRequired",
+        "signedHumanReviewSatisfied"
+      ],
+      "properties": {
+        "plannedCases": {"$ref": "#/$defs/nonNegativeInteger"},
+        "executedCases": {"$ref": "#/$defs/nonNegativeInteger"},
+        "notRunCases": {"$ref": "#/$defs/nonNegativeInteger"},
+        "automatedPassedCases": {"$ref": "#/$defs/nonNegativeInteger"},
+        "passedCases": {"$ref": "#/$defs/nonNegativeInteger"},
+        "failedCases": {"$ref": "#/$defs/nonNegativeInteger"},
+        "timedOutCases": {"$ref": "#/$defs/nonNegativeInteger"},
+        "passed": {"type": "boolean"},
+        "signedHumanReviewRequired": {"type": "boolean"},
+        "signedHumanReviewSatisfied": {"type": "boolean"}
+      }
+    },
+    "caseResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {"type": {"const": "prompt_injection"}},
+            "required": ["type"]
+          },
+          "then": {
+            "properties": {
+              "passed": {"const": false},
+              "scorable": {"const": false},
+              "semanticHumanReviewRequired": {"const": true},
+              "signedHumanReviewRequired": {"const": true},
+              "signedHumanReviewStatus": {"const": "required_not_provided"}
+            }
+          },
+          "else": {
+            "properties": {
+              "scorable": {"const": true},
+              "semanticHumanReviewRequired": {"const": false},
+              "signedHumanReviewRequired": {"const": false},
+              "signedHumanReviewStatus": {"const": "not_required"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": ["acl_negative", "no_hit_abstention"]
+              },
+              "automatedChecksPassed": {"const": true}
+            },
+            "required": ["type", "automatedChecksPassed"]
+          },
+          "then": {
+            "properties": {
+              "responseStatus": {"const": "needs_input"},
+              "retrievedDocumentIds": {"maxItems": 0},
+              "governedRetrievalEmpty": {"const": true},
+              "knowledgeGuardControlCode": {
+                "const": "knowledge_guard:no_role_knowledge_hit"
+              },
+              "knowledgeGuardControlStatusOk": {"const": true},
+              "knowledgeGuardControlWarningOk": {"const": true},
+              "llmNotExecutedOk": {"const": true},
+              "usage": {
+                "properties": {
+                  "observed": {"const": true},
+                  "promptTokens": {"const": 0},
+                  "completionTokens": {"const": 0},
+                  "totalTokens": {"const": 0}
+                },
+                "required": [
+                  "observed",
+                  "promptTokens",
+                  "completionTokens",
+                  "totalTokens"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"automatedChecksPassed": {"const": true}},
+            "required": ["automatedChecksPassed"]
+          },
+          "then": {
+            "properties": {"responseShapeOk": {"const": true}}
+          }
+        }
+      ],
+      "required": [
+        "id",
+        "type",
+        "roleId",
+        "workflowKey",
+        "passed",
+        "automatedChecksPassed",
+        "scorable",
+        "semanticHumanReviewRequired",
+        "signedHumanReviewRequired",
+        "signedHumanReviewStatus",
+        "responseStatus",
+        "retrievedDocumentIds",
+        "governedRetrievalEmpty",
+        "knowledgeGuardControlCode",
+        "knowledgeGuardControlStatusOk",
+        "knowledgeGuardControlWarningOk",
+        "llmNotExecutedOk",
+        "targetDocumentRank",
+        "hitAtK",
+        "reciprocalRankAtK",
+        "includeOk",
+        "excludeOk",
+        "abstainOk",
+        "injectionGuardOk",
+        "responseContractOk",
+        "versionBindingOk",
+        "sentinelOk",
+        "datasetOk",
+        "retrievalIdentityOk",
+        "roleAclOk",
+        "segmentLedgerOk",
+        "responseShapeOk",
+        "outcomeStatusOk",
+        "identityUnavailable",
+        "timedOut",
+        "latencyMs",
+        "usage",
+        "errorCode"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/safeId"},
+        "type": {
+          "enum": ["positive", "prompt_injection", "acl_negative", "no_hit_abstention"]
+        },
+        "roleId": {"$ref": "#/$defs/safeId"},
+        "workflowKey": {"enum": ["agent_core", "editor_author", "pmo_brief"]},
+        "passed": {"type": "boolean"},
+        "automatedChecksPassed": {"type": "boolean"},
+        "scorable": {"type": "boolean"},
+        "semanticHumanReviewRequired": {"type": "boolean"},
+        "signedHumanReviewRequired": {"type": "boolean"},
+        "signedHumanReviewStatus": {
+          "enum": ["not_required", "required_not_provided"]
+        },
+        "responseStatus": {"enum": ["", "ok", "needs_input", "blocked"]},
+        "retrievedDocumentIds": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {"$ref": "#/$defs/logicalDocumentId"},
+          "uniqueItems": true
+        },
+        "governedRetrievalEmpty": {"type": "boolean"},
+        "knowledgeGuardControlCode": {
+          "enum": [
+            "",
+            "knowledge_guard:no_role_knowledge_hit",
+            "knowledge_guard:role_document_forbidden"
+          ]
+        },
+        "knowledgeGuardControlStatusOk": {"type": ["boolean", "null"]},
+        "knowledgeGuardControlWarningOk": {"type": ["boolean", "null"]},
+        "llmNotExecutedOk": {"type": ["boolean", "null"]},
+        "targetDocumentRank": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "maximum": 2
+        },
+        "hitAtK": {"type": ["boolean", "null"]},
+        "reciprocalRankAtK": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "includeOk": {"type": "boolean"},
+        "excludeOk": {"type": "boolean"},
+        "abstainOk": {"type": ["boolean", "null"]},
+        "injectionGuardOk": {"type": ["boolean", "null"]},
+        "responseContractOk": {"type": "boolean"},
+        "versionBindingOk": {"type": "boolean"},
+        "sentinelOk": {"type": "boolean"},
+        "datasetOk": {"type": "boolean"},
+        "retrievalIdentityOk": {"type": "boolean"},
+        "roleAclOk": {"type": "boolean"},
+        "segmentLedgerOk": {"type": "boolean"},
+        "responseShapeOk": {"type": "boolean"},
+        "outcomeStatusOk": {"type": "boolean"},
+        "identityUnavailable": {"type": "boolean"},
+        "timedOut": {"type": "boolean"},
+        "latencyMs": {"$ref": "#/$defs/nonNegativeInteger"},
+        "usage": {"$ref": "#/$defs/usage"},
+        "errorCode": {
+          "type": "string",
+          "maxLength": 80,
+          "pattern": "^(?:|[a-z][a-z0-9_]*)$"
+        }
+      }
+    }
+  }
+}

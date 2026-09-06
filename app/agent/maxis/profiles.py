@@ -7,21 +7,32 @@ profiles can be edited and probed without changing the active runtime profile.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
 import threading
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit
 
 from app.infra import prefs
 from app.agent.maxis import credentials
+from app.agent.maxis.destination_policy import (
+    ALLOWED_HOSTS_ENV_NAMES,
+    DestinationPolicyError,
+    canonical_maxis_api_base,
+)
 from app.agent.maxis.knowledge_manifest import (
     KnowledgeManifest,
     KnowledgeManifestError,
     build_manifest,
     canonical_dataset_id,
+)
+from app.agent.maxis.identifiers import canonical_published_workflow_id
+from app.agent.maxis.public_metadata import (
+    credential_shaped_public_text,
+    require_safe_public_text,
 )
 
 
@@ -32,9 +43,64 @@ DATA_POLICIES = ("synthetic_only", "internal_read_only")
 REMOTE_LOG_MODES = ("redacted", "approved_bounded_content")
 DEV_REMOTE_LOG_POLICY_ID = "synthetic-only"
 PROBE_TTL_SECONDS = 24 * 60 * 60
+PROBE_CONTRACT_VERSION = "ltm-maxis-probe.v2"
 KNOWLEDGE_EVAL_ATTESTATION_CONTRACT = "ltm-maxis-knowledge-eval-attestation.v1"
 KNOWLEDGE_EVAL_MATERIAL_CONTRACT = "ltm-maxis-knowledge-eval-material.v1"
+# Release capabilities are explicit so configuration cannot claim a control that the
+# implementation does not provide.  The validated 11-node Dify 1.11.1 bundle builds
+# one delimiter-wrapped Role key, applies its metadata filter before retrieval reaches
+# the LLM, and gates that same retrieval result through Knowledge Guard.  Immutable,
+# signed external evaluation-artifact verification is still not implemented, so prod
+# authority remains fail-closed even when operator-supplied metadata bindings match.
+SIGNED_EXTERNAL_EVAL_VERIFICATION_IMPLEMENTED = False
+DETERMINISTIC_PRE_LLM_ROLE_ACL_IMPLEMENTED = True
 _UTC_INSTANT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$")
+_PUBLIC_METADATA_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$")
+_PUBLIC_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_PUBLIC_WORKFLOW_UUID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+    r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+_PUBLIC_PROBE_PARAMETERS = frozenset({
+    "context_pack", "role_id", "correlation_id", "output_contract",
+    "workflow_version", "knowledge_version",
+})
+_PUBLIC_PROBE_CODES = frozenset({
+    "",
+    "authentication",
+    "bad_request",
+    "binding_not_configured",
+    "citation_contract_failed",
+    "circuit_open",
+    "configuration",
+    "conflict",
+    "contract_probe_failed",
+    "credential_not_configured",
+    "forbidden",
+    "http",
+    "invalid_response",
+    "knowledge_retrieval_failed",
+    "knowledge_version_mismatch",
+    "missing_start_variables",
+    "network",
+    "not_found",
+    "policy",
+    "probe_failed",
+    "rate_limited",
+    "remote_status_not_ok",
+    "response_too_large",
+    "timeout",
+    "unexpected_app_mode",
+    "unexpected_start_variables",
+    "upstream",
+    "workflow_version_mismatch",
+})
+_PUBLIC_PROBE_ERRORS = frozenset({
+    "",
+    "Probe result binding is stale or missing.",
+    "No configured workflow to probe.",
+    "One or more workflow probes failed.",
+})
 _KNOWLEDGE_EVAL_ATTESTATION_FIELDS = frozenset({
     "contract", "evidence_id", "outcome", "case_count", "artifact_sha256",
     "passed_at", "suite_sha256",
@@ -80,6 +146,17 @@ _DEFAULT_BINDINGS = {
     "pmo_brief": "pmo_brief",
 }
 _LOCK = threading.RLock()
+
+
+class _CrossEnvironmentSeparationError(ValueError):
+    """A fixed-vocabulary error safe to project onto the status API."""
+
+    def __init__(self, categories: list[str]):
+        self.categories = tuple(categories)
+        super().__init__(
+            "Dev/prod MAXIS assets must be independent; overlapping asset "
+            "categories: " + ", ".join(self.categories) + "."
+        )
 
 
 def _default_profile(name: str) -> dict:
@@ -151,29 +228,13 @@ def _normal_base_url(raw: str, stage: str) -> str:
     value = str(raw or "").strip().rstrip("/")
     if not value:
         return ""
-    parts = urlsplit(value)
-    if not parts.scheme or not parts.netloc or parts.username or parts.password:
-        raise ValueError("MAXIS Base URL must be an absolute URL without credentials.")
-    if parts.query or parts.fragment:
-        raise ValueError("MAXIS Base URL cannot contain a query or fragment.")
-    scheme = parts.scheme.lower()
-    host = (parts.hostname or "").lower()
-    if scheme not in ("http", "https"):
-        raise ValueError("MAXIS Base URL must use HTTP or HTTPS.")
-    if scheme == "http" and not (stage == "dev" and host in ("127.0.0.1", "localhost", "::1")):
-        raise ValueError("HTTPS is required except for a loopback dev endpoint.")
-    if stage == "prod" and host in ("127.0.0.1", "localhost", "::1"):
-        raise ValueError("The prod MAXIS profile cannot target loopback.")
-    path = parts.path.rstrip("/")
-    if not path:
-        path = "/v1"
-    elif not path.endswith("/v1"):
-        raise ValueError("MAXIS Base URL must end with /v1.")
-    return urlunsplit((scheme, parts.netloc, path, "", ""))
+    return canonical_maxis_api_base(
+        value, stage=stage, require_https=stage == "prod",
+    )
 
 
 def _clean_version(value: object, label: str) -> str:
-    result = str(value or "").strip()
+    result = require_safe_public_text(value, label)
     # Keep activation-time validation aligned with the Dify ``workflow_id`` and
     # audit wire contracts. This prevents a candidate from probing successfully and
     # then failing only on its first real request, and avoids storing pasted secrets
@@ -401,7 +462,18 @@ def knowledge_eval_attestation_binding(profile: dict | str = "") -> dict:
 
 
 def knowledge_eval_attestation_status(profile: dict | str = "") -> dict:
-    """Expose a secret-free binding status; external artifact content is not read."""
+    """Expose binding diagnostics without treating self-attested metadata as proof."""
+
+    verification = "metadata_binding_only_signed_artifact_not_verified"
+    implementation_reasons = []
+    if not SIGNED_EXTERNAL_EVAL_VERIFICATION_IMPLEMENTED:
+        implementation_reasons.append(
+            "Signed external Knowledge eval artifact verification is not implemented."
+        )
+    if not DETERMINISTIC_PRE_LLM_ROLE_ACL_IMPLEMENTED:
+        implementation_reasons.append(
+            "Deterministic pre-LLM Role ACL enforcement is not implemented."
+        )
 
     if isinstance(profile, dict):
         candidate = profile
@@ -413,32 +485,41 @@ def knowledge_eval_attestation_status(profile: dict | str = "") -> dict:
     raw = candidate.get("knowledge_eval_attestation")
     try:
         attestation = _clean_knowledge_eval_attestation(raw)
-    except ValueError as exc:
+    except ValueError:
         return {
             "configured": bool(raw),
+            "bindingValid": False,
             "valid": False,
-            "verification": "metadata_binding_only_external_artifact_not_read",
-            "reasons": [str(exc)],
+            "verification": verification,
+            "reasons": [
+                "Knowledge eval attestation metadata is invalid.",
+                *implementation_reasons,
+            ],
             "attestation": {},
             "expectedBinding": {},
         }
     if str(candidate.get("stage") or "") != "prod":
         return {
             "configured": bool(attestation),
+            "bindingValid": False,
             "valid": False,
-            "verification": "metadata_binding_only_external_artifact_not_read",
+            "verification": verification,
             "reasons": ["Knowledge eval attestation is required only for prod authority."],
             "attestation": {},
             "expectedBinding": {},
         }
     try:
         expected = knowledge_eval_attestation_binding(candidate)
-    except ValueError as exc:
+    except ValueError:
         return {
             "configured": bool(attestation),
+            "bindingValid": False,
             "valid": False,
-            "verification": "metadata_binding_only_external_artifact_not_read",
-            "reasons": [str(exc)],
+            "verification": verification,
+            "reasons": [
+                "Knowledge eval profile binding is invalid.",
+                *implementation_reasons,
+            ],
             "attestation": {},
             "expectedBinding": {},
         }
@@ -472,11 +553,16 @@ def knowledge_eval_attestation_status(profile: dict | str = "") -> dict:
         expected["workflow_versions"], ensure_ascii=False, sort_keys=True,
         separators=(",", ":"), allow_nan=False,
     ).encode("utf-8")).hexdigest()
+    binding_valid = bool(attestation) and not reasons
     return {
         "configured": bool(attestation),
-        "valid": bool(attestation) and not reasons,
-        "verification": "metadata_binding_only_external_artifact_not_read",
-        "reasons": reasons,
+        "bindingValid": binding_valid,
+        # ``valid`` is an authority signal.  A matching metadata object can make
+        # ``bindingValid`` true, but cannot make this true while any required
+        # implementation capability above remains unavailable.
+        "valid": binding_valid and not implementation_reasons,
+        "verification": verification,
+        "reasons": [*reasons, *implementation_reasons],
         "attestation": public_attestation,
         "expectedBinding": {
             "suiteSha256": expected["suite_sha256"],
@@ -494,8 +580,9 @@ def _require_current_knowledge_eval_attestation(profile: dict) -> None:
     status = knowledge_eval_attestation_status(profile)
     if not status["valid"]:
         raise ValueError(
-            "Prod MAXIS authority requires a current external 25-case Knowledge eval "
-            "attestation: " + "; ".join(status["reasons"])
+            "Prod MAXIS authority requires deterministic pre-LLM Role ACL enforcement "
+            "and signed external Knowledge eval verification: "
+            + "; ".join(status["reasons"])
         )
 
 
@@ -543,7 +630,9 @@ def _validate(profile: dict, *, activation: bool = False) -> dict:
         if not isinstance(row, dict):
             raise ValueError("Each workflow binding must be an object.")
         binding = _clean_version(row.get("binding"), f"{key} binding")
-        version = _clean_version(row.get("version"), f"{key} workflow version")
+        version = canonical_published_workflow_id(
+            row.get("version"), allow_empty=True,
+        )
         if binding != key:
             raise ValueError(f"{key} must keep its registry binding '{key}'.")
         clean_workflows[key] = {"binding": binding, "version": version}
@@ -570,7 +659,11 @@ def _validate(profile: dict, *, activation: bool = False) -> dict:
             workflow = result["workflows"][workflow_key]
             if not workflow["binding"] or not workflow["version"]:
                 missing.append(f"{workflow_key} binding/version")
-            if not credentials.get_for(name, workflow_key):
+            try:
+                has_credential = bool(credentials.get_for(name, workflow_key))
+            except credentials.CredentialStoreUnavailable as exc:
+                raise ValueError(str(exc)) from exc
+            if not has_credential:
                 missing.append(f"{workflow_key} API key")
         if missing:
             raise ValueError("Cannot activate MAXIS profile; missing " + ", ".join(missing) + ".")
@@ -616,8 +709,17 @@ def save(profile_name: str, patch: dict | None = None) -> dict:
             }
     clean = _validate(current)
     with _LOCK:
-        rows = {row["name"]: row for row in list_all()}
-        rows[name] = clean
+        # One or both rows may have become invalid after an allowlist rotation.  Do
+        # not re-validate persisted siblings while replacing this target: if both
+        # destinations rotated, validating either stale sibling would deadlock both
+        # repair actions.  ``_merged_profile`` preserves the unrelated candidate;
+        # resolve/probe/activate still validate it before any network use.
+        rows = {
+            profile_name: (
+                clean if profile_name == name else _merged_profile(profile_name)
+            )
+            for profile_name in PROFILE_NAMES
+        }
         state = prefs.load()
         verified = dict(state.get("maxisProbeOkByProfile") or {})
         last_probe = dict(state.get("maxisLastProbeByProfile") or {})
@@ -639,6 +741,14 @@ def active_profile_name() -> str:
 
 def _effective(profile: dict) -> dict:
     result = deepcopy(profile)
+    name = str(result.get("name") or "").strip().lower()
+    selected = str(os.getenv("LAKE_MAXIS_PROFILE") or "").strip().lower()
+    # Shared deployment variables do not encode a profile.  Bind them only when the
+    # same process explicitly selects that profile; otherwise an inactive-candidate
+    # probe could send its stored key to the other environment's URL/workflow.
+    if selected != name:
+        _validate_remote_log_attestation(result, required=False)
+        return result
     env_base = str(os.getenv(CONFIG_ENV_NAMES["base_url"]) or "").strip()
     if env_base:
         result["base_url"] = _normal_base_url(env_base, result["stage"])
@@ -659,7 +769,7 @@ def _effective(profile: dict) -> dict:
     # The process-level attestation overrides describe production MAXIS.  Applying
     # them to the dev row would silently defeat dev's fixed synthetic/redacted/0-day
     # contract (and make the status endpoint fail whenever prod env config exists).
-    if str(result.get("name") or "").strip().lower() == "prod":
+    if name == "prod":
         remote_policy_id = str(
             os.getenv(CONFIG_ENV_NAMES["remote_log_policy_id"]) or ""
         ).strip()
@@ -695,8 +805,8 @@ def _effective(profile: dict) -> dict:
     for workflow_key, env_name in WORKFLOW_VERSION_ENV_NAMES.items():
         value = str(os.getenv(env_name) or "").strip()
         if value:
-            result["workflows"][workflow_key]["version"] = _clean_version(
-                value, f"{workflow_key} workflow version"
+            result["workflows"][workflow_key]["version"] = (
+                canonical_published_workflow_id(value)
             )
     _validate_remote_log_attestation(result, required=False)
     return result
@@ -717,11 +827,131 @@ def profile_fingerprint(profile: dict) -> str:
     return hashlib.sha256(encoded).hexdigest()[:32]
 
 
+def _separation_asset_profile(profile_name: str) -> dict:
+    """Read only separation-relevant dev assets without coupling prod to dev URL policy."""
+
+    name = str(profile_name or "").strip().lower()
+    candidate = deepcopy(_merged_profile(name))
+    if str(os.getenv("LAKE_MAXIS_PROFILE") or "").strip().lower() != name:
+        return candidate
+
+    dataset_id = str(os.getenv(CONFIG_ENV_NAMES["knowledge_dataset_id"]) or "").strip()
+    if dataset_id:
+        candidate["knowledge_dataset_id"] = dataset_id
+    sentinel = str(
+        os.getenv(CONFIG_ENV_NAMES["knowledge_sentinel_sha256"]) or ""
+    ).strip()
+    if sentinel:
+        candidate["knowledge_sentinel_sha256"] = sentinel
+    workflows = candidate.get("workflows")
+    if not isinstance(workflows, dict):
+        workflows = {}
+        candidate["workflows"] = workflows
+    for workflow_key, env_name in WORKFLOW_VERSION_ENV_NAMES.items():
+        version = str(os.getenv(env_name) or "").strip()
+        if version:
+            row = workflows.get(workflow_key)
+            if not isinstance(row, dict):
+                row = {}
+                workflows[workflow_key] = row
+            row["version"] = version
+    return candidate
+
+
+def _require_cross_environment_asset_separation(profile: dict) -> None:
+    """Fail closed before either environment contacts assets assigned to its peer.
+
+    MAXIS may expose dev and prod through the same API host, and both profiles may
+    carry the same human-readable release labels.  The actual Dify dataset, release
+    sentinel, published workflow UUIDs, and credentials must nevertheless be
+    independent.  Saving remains intentionally permissive so the recovery UI can
+    hold a partially migrated profile while an operator replaces each asset.
+    """
+
+    name = str(profile.get("stage") or "").strip().lower()
+    if name not in PROFILE_NAMES:
+        raise ValueError("MAXIS profile stage is invalid.")
+    sibling_name = "prod" if name == "dev" else "dev"
+
+    # Do not validate or compare the sibling's host and release labels here. A stale
+    # destination policy must remain independently repairable and cannot redefine
+    # which concrete assets the current environment is allowed to use.
+    sibling = _separation_asset_profile(sibling_name)
+    overlaps: list[str] = []
+
+    sibling_dataset = str(
+        sibling.get("knowledge_dataset_id") or ""
+    ).strip().lower()
+    profile_dataset = str(
+        profile.get("knowledge_dataset_id") or ""
+    ).strip().lower()
+    if sibling_dataset and profile_dataset and sibling_dataset == profile_dataset:
+        overlaps.append("Knowledge dataset")
+
+    sibling_sentinel = str(
+        sibling.get("knowledge_sentinel_sha256") or ""
+    ).strip().lower()
+    profile_sentinel = str(
+        profile.get("knowledge_sentinel_sha256") or ""
+    ).strip().lower()
+    if (
+        sibling_sentinel
+        and profile_sentinel
+        and sibling_sentinel == profile_sentinel
+    ):
+        overlaps.append("Knowledge release sentinel")
+
+    def workflow_versions(candidate: dict) -> set[str]:
+        workflows = candidate.get("workflows") or {}
+        return {
+            str((workflows.get(key) or {}).get("version") or "").strip().lower()
+            for key in WORKFLOW_KEYS
+            if str((workflows.get(key) or {}).get("version") or "").strip()
+        }
+
+    if workflow_versions(sibling) & workflow_versions(profile):
+        overlaps.append("published workflow")
+
+    try:
+        shared_credential = credentials.profiles_share_any_credential(name, sibling_name)
+    except credentials.CredentialStoreUnavailable as exc:
+        raise ValueError(
+            "Cannot verify dev/prod MAXIS credential separation because the secure "
+            "credential store is unavailable."
+        ) from exc
+    if shared_credential:
+        overlaps.append("API credential")
+
+    if overlaps:
+        raise _CrossEnvironmentSeparationError(overlaps)
+
+
+def _probe_snapshot_signature(profile: dict, keys: dict[str, str]) -> str:
+    """Bind one probe to the exact non-secret profile and credential snapshot used.
+
+    The returned digest is persistence-only metadata.  API keys are included only in
+    the one-way private material and must never be returned by an HTTP/status surface.
+    """
+
+    if not isinstance(keys, dict) or set(keys) != set(WORKFLOW_KEYS):
+        raise ValueError("Probe credential snapshot must cover every workflow.")
+    normalized = {
+        key: str(keys.get(key) or "").strip() for key in WORKFLOW_KEYS
+    }
+    private_material = json.dumps(
+        normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    private = hashlib.sha256(private_material).hexdigest()
+    material = f"{PROBE_CONTRACT_VERSION}|{profile_fingerprint(profile)}|{private}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
 def _probe_signature(profile_name: str) -> str:
     profile = _effective(get(profile_name))
-    private = credentials.verification_digest(profile_name)
-    material = f"{profile_fingerprint(profile)}|{private}"
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+    _require_cross_environment_asset_separation(profile)
+    return _probe_snapshot_signature(
+        profile, credentials.resolved_for(profile_name),
+    )
 
 
 def _probe_timestamp_fresh(value: object) -> bool:
@@ -756,10 +986,28 @@ def probe_ok(profile_name: str) -> bool:
 def probe_candidate(profile_name: str) -> dict:
     """Return a probeable profile after enforcing prod policy attestation."""
     profile = resolve(profile_name)
+    _require_cross_environment_asset_separation(profile)
     _validate_remote_log_attestation(
         profile, required=str(profile.get("stage") or "") == "prod",
     )
     return profile
+
+
+def start_probe(profile_name: str) -> tuple[dict, dict[str, str], str]:
+    """Freeze the exact profile/key material that one network probe will exercise.
+
+    Callers retain the keys only for the duration of the network operation and pass
+    the opaque binding back to :func:`mark_probe`.  Taking the profile snapshot under
+    the control-plane lock prevents a concurrent profile save from being interleaved
+    with the persisted start binding; completion performs the matching check again.
+    """
+
+    name = str(profile_name or "").strip().lower()
+    with _LOCK:
+        profile = probe_candidate(name)
+        keys = credentials.resolved_for(name)
+        binding = _probe_snapshot_signature(profile, keys)
+    return profile, keys, binding
 
 
 def _probe_contract_verified(profile_name: str, details: dict | None) -> bool:
@@ -800,6 +1048,7 @@ def _probe_contract_verified(profile_name: str, details: dict | None) -> bool:
             row.get(field) is not True
             for field in (
                 "ok",
+                "appModeVerified",
                 "executionContractVerified",
                 "versionBindingVerified",
                 "citationContractVerified",
@@ -812,26 +1061,65 @@ def _probe_contract_verified(profile_name: str, details: dict | None) -> bool:
     return bool(workflow_results)
 
 
-def mark_probe(profile_name: str, ok: bool, details: dict | None = None) -> bool:
+def mark_probe(
+    profile_name: str,
+    ok: bool,
+    details: dict | None = None,
+    *,
+    start_binding: str = "",
+) -> bool:
     name = str(profile_name or "").strip().lower()
-    get(name)  # validate name and stored configuration
-    state = prefs.load()
-    verified = dict(state.get("maxisProbeOkByProfile") or {})
-    last_probe = dict(state.get("maxisLastProbeByProfile") or {})
-    verified_ok = bool(ok) and _probe_contract_verified(name, details)
-    if verified_ok:
-        verified[name] = _probe_signature(name)
-    else:
-        verified.pop(name, None)
     safe_details = details if isinstance(details, dict) else {}
-    last_probe[name] = {
-        "ok": verified_ok,
-        "at": datetime.now(timezone.utc).isoformat(),
-        "workflows": deepcopy(safe_details.get("workflows") or {}),
-        "error": str(safe_details.get("error") or "")[:240],
-    }
-    prefs.save_strict({"maxisProbeOkByProfile": verified,
-                       "maxisLastProbeByProfile": last_probe})
+    supplied_binding = str(start_binding or "").strip().lower()
+    # Successful legacy callers without a start binding are deliberately rejected.
+    # Failure results may still clear verification, which is the fail-closed behavior.
+    binding_shape_ok = bool(re.fullmatch(r"[0-9a-f]{64}", supplied_binding))
+    with _LOCK:
+        get(name)  # validate name and stored configuration
+        state = prefs.load()
+        verified = dict(state.get("maxisProbeOkByProfile") or {})
+        last_probe = dict(state.get("maxisLastProbeByProfile") or {})
+        try:
+            current_binding = _probe_signature(name)
+        except Exception:
+            current_binding = ""
+        binding_current = bool(
+            binding_shape_ok
+            and current_binding
+            and hmac.compare_digest(supplied_binding, current_binding)
+        )
+        verified_ok = bool(
+            ok and binding_current and _probe_contract_verified(name, details)
+        )
+        # Re-read credential/environment material immediately before persistence.
+        # Profile mutations share this RLock; credential mutation invalidates the
+        # persisted proof after its own secure-store write.
+        if verified_ok:
+            final_binding = _probe_signature(name)
+            verified_ok = hmac.compare_digest(supplied_binding, final_binding)
+            current_binding = final_binding
+        if verified_ok:
+            verified[name] = current_binding
+        else:
+            verified.pop(name, None)
+        stale_completion = bool(ok and not binding_current)
+        last_probe[name] = {
+            "ok": verified_ok,
+            "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "workflows": (
+                {} if stale_completion
+                else _safe_public_probe_workflows(
+                    safe_details.get("workflows")
+                )
+            ),
+            "error": (
+                "Probe result binding is stale or missing."
+                if stale_completion
+                else _safe_public_probe_error(safe_details.get("error"))
+            ),
+        }
+        prefs.save_strict({"maxisProbeOkByProfile": verified,
+                           "maxisLastProbeByProfile": last_probe})
     return verified_ok
 
 
@@ -854,6 +1142,7 @@ def activate(profile_name: str) -> dict:
             f"LAKE_MAXIS_PROFILE selects {env_name}; {name} cannot be activated in this process."
         )
     profile = _validate(_effective(get(name)), activation=True)
+    _require_cross_environment_asset_separation(profile)
     if not probe_ok(name):
         raise ValueError("Save and successfully probe this MAXIS profile before activation.")
     if name == "dev" and any(mode == "maxis" for mode in routes().values()):
@@ -880,7 +1169,9 @@ def active_fingerprint() -> str:
     if not name:
         return ""
     try:
-        return profile_fingerprint(_effective(get(name)))
+        profile = _effective(get(name))
+        _require_cross_environment_asset_separation(profile)
+        return profile_fingerprint(profile)
     except Exception:
         return ""
 
@@ -895,6 +1186,7 @@ def resolve(profile_name: str = "") -> dict:
     if not name:
         raise ValueError("No active MAXIS profile.")
     profile = _effective(get(name))
+    _require_cross_environment_asset_separation(profile)
     manifest = _build_profile_manifest(profile, required=False)
     fingerprint = profile_fingerprint(profile)
     stored_fingerprint = str(prefs.load().get("maxisActiveProfileFingerprint") or "")
@@ -1042,6 +1334,35 @@ def _require_prod_promotion(profile: dict, workflow_keys) -> None:
             )
 
 
+def require_authoritative(profile_name: str, workflow_keys) -> None:
+    """Enforce the single authority gate used by every ``maxis`` route boundary.
+
+    Activation and shadow execution remain available for validation.  The published
+    Dify bundle enforces the selected Role before any Knowledge chunk reaches the LLM;
+    authoritative output is nevertheless unavailable until LTM also verifies the
+    signed external evaluation artifact.  Self-reported attestation metadata cannot
+    satisfy that remaining control.
+    """
+
+    name = str(profile_name or "").strip().lower()
+    if name not in PROFILE_NAMES:
+        raise ValueError("Authoritative MAXIS requires an explicit dev or prod profile.")
+    required_workflows = sorted(set(str(key or "").strip() for key in workflow_keys))
+    if not required_workflows or set(required_workflows) - set(WORKFLOW_KEYS):
+        raise ValueError("Authoritative MAXIS requires known workflow bindings.")
+    profile = resolve(name)
+    if not profile.get("enabled") or kill_switch_enabled():
+        raise ValueError(
+            "Activate a verified MAXIS profile and release the kill switch first."
+        )
+    if str(profile.get("stage") or "") != "prod":
+        raise ValueError(
+            "The dev synthetic-only profile cannot become authoritative; "
+            "use its canary/shadow path or activate prod."
+        )
+    _require_prod_promotion(profile, required_workflows)
+
+
 def set_routes(patch: dict | None) -> dict[str, str]:
     patch = patch or {}
     if set(patch) - set(WORKFLOW_KEYS):
@@ -1066,7 +1387,7 @@ def set_routes(patch: dict | None) -> dict[str, str]:
             if not credentials.get_for(profile["name"], key):
                 raise ValueError(f"Configure the {key} API key first.")
             if mode == "maxis":
-                _require_prod_promotion(profile, [key])
+                require_authoritative(str(profile.get("name") or ""), [key])
         updated[key] = mode
     saved = prefs.save_strict({"maxisRoutes": updated})
     return {
@@ -1084,72 +1405,496 @@ def set_kill_switch(enabled: bool) -> bool:
     return bool(saved.get("maxisKillSwitch"))
 
 
-def _public_profile(name: str) -> dict:
-    stored = get(name)
-    manifest = None
+def _safe_public_text(
+    value: object,
+    *,
+    pattern: re.Pattern[str],
+    max_length: int,
+) -> str:
+    """Project one persisted scalar without coercing containers or reflecting keys."""
+
+    if not isinstance(value, str):
+        return ""
+    candidate = value.strip()
+    if (
+        not candidate
+        or len(candidate) > max_length
+        or any(ord(character) < 32 or ord(character) == 127 for character in candidate)
+        or credential_shaped_public_text(candidate)
+        or not pattern.fullmatch(candidate)
+    ):
+        return ""
+    return candidate
+
+
+def _safe_public_dataset_id(value: object) -> str:
+    if not isinstance(value, str) or credential_shaped_public_text(value):
+        return ""
     try:
+        return canonical_dataset_id(value)
+    except KnowledgeManifestError:
+        return ""
+
+
+def _safe_public_digest(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    candidate = value.strip()
+    if credential_shaped_public_text(candidate):
+        return ""
+    return candidate if _PUBLIC_DIGEST.fullmatch(candidate) else ""
+
+
+def _safe_public_workflow_version(value: object) -> str:
+    if not isinstance(value, str) or credential_shaped_public_text(value):
+        return ""
+    candidate = value.strip().lower()
+    return candidate if _PUBLIC_WORKFLOW_UUID.fullmatch(candidate) else ""
+
+
+def _safe_public_retention_days(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= 90 else None
+
+
+def _safe_public_workflows(value: object) -> dict[str, dict[str, str]]:
+    source = value if isinstance(value, dict) else {}
+    result: dict[str, dict[str, str]] = {}
+    for key in WORKFLOW_KEYS:
+        row = source.get(key)
+        row = row if isinstance(row, dict) else {}
+        result[key] = {
+            "binding": key if row.get("binding") == key else "",
+            "version": _safe_public_workflow_version(row.get("version")),
+        }
+    return result
+
+
+def _safe_public_profile_values(name: str, value: object) -> dict:
+    """Return the exact browser-visible profile metadata shape from untrusted prefs."""
+
+    source = value if isinstance(value, dict) else {}
+    return {
+        "base_url": _safe_public_base_url(source.get("base_url")),
+        "data_policy": (
+            "synthetic_only" if name == "dev" else "internal_read_only"
+        ),
+        "workflow_bundle_version": _safe_public_text(
+            source.get("workflow_bundle_version"),
+            pattern=_PUBLIC_METADATA_ID,
+            max_length=120,
+        ),
+        "knowledge_version": _safe_public_text(
+            source.get("knowledge_version"),
+            pattern=_PUBLIC_METADATA_ID,
+            max_length=120,
+        ),
+        "knowledge_dataset_id": _safe_public_dataset_id(
+            source.get("knowledge_dataset_id")
+        ),
+        "knowledge_sentinel_sha256": _safe_public_digest(
+            source.get("knowledge_sentinel_sha256")
+        ),
+        "remote_log_policy_id": _safe_public_text(
+            source.get("remote_log_policy_id"),
+            pattern=_PUBLIC_METADATA_ID,
+            max_length=120,
+        ),
+        "remote_log_mode": (
+            source.get("remote_log_mode")
+            if source.get("remote_log_mode") in REMOTE_LOG_MODES else ""
+        ),
+        "remote_log_retention_days": _safe_public_retention_days(
+            source.get("remote_log_retention_days")
+        ),
+        "workflows": _safe_public_workflows(source.get("workflows")),
+    }
+
+
+def _safe_public_probe_code(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    candidate = value.strip()
+    return candidate if candidate in _PUBLIC_PROBE_CODES else "probe_failed"
+
+
+def _safe_public_utc_instant(value: object, label: str) -> str:
+    if not isinstance(value, str) or credential_shaped_public_text(value):
+        return ""
+    try:
+        return _clean_utc_instant(value, label)
+    except ValueError:
+        return ""
+
+
+def _safe_public_probe_workflows(value: object) -> dict[str, dict]:
+    source = value if isinstance(value, dict) else {}
+    result: dict[str, dict] = {}
+    for key in WORKFLOW_KEYS:
+        raw = source.get(key)
+        if not isinstance(raw, dict):
+            continue
+        status = raw.get("statusCode")
+        elapsed = raw.get("ms")
+        missing = raw.get("missingParameters")
+        role_id = raw.get("roleId")
+        role_id = role_id.strip() if isinstance(role_id, str) else ""
+        result[key] = {
+            "ok": raw.get("ok") is True,
+            "statusCode": (
+                status
+                if isinstance(status, int) and not isinstance(status, bool)
+                and 100 <= status <= 599 else None
+            ),
+            "ms": (
+                elapsed
+                if isinstance(elapsed, int) and not isinstance(elapsed, bool)
+                and 0 <= elapsed <= 86_400_000 else None
+            ),
+            "errorCode": _safe_public_probe_code(raw.get("errorCode")),
+            "missingParameters": sorted({
+                item for item in missing
+                if isinstance(item, str) and item in _PUBLIC_PROBE_PARAMETERS
+            }) if isinstance(missing, list) else [],
+            "appModeVerified": raw.get("appModeVerified") is True,
+            "executionContractVerified": (
+                raw.get("executionContractVerified") is True
+            ),
+            "versionBindingVerified": raw.get("versionBindingVerified") is True,
+            "citationContractVerified": raw.get("citationContractVerified") is True,
+            "knowledgeRetrievalVerified": (
+                raw.get("knowledgeRetrievalVerified") is True
+            ),
+            "knowledgeManifestSha256": _safe_public_digest(
+                raw.get("knowledgeManifestSha256")
+            ),
+            "roleId": role_id if role_id in _ROLE_WORKFLOW else "",
+        }
+    return result
+
+
+def _safe_public_probe_error(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    candidate = value.strip()
+    return candidate if candidate in _PUBLIC_PROBE_ERRORS else "MAXIS probe failed."
+
+
+def _safe_public_last_probe(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    return {
+        "ok": value.get("ok") is True,
+        "at": _safe_public_utc_instant(value.get("at"), "Probe timestamp"),
+        "workflows": _safe_public_probe_workflows(value.get("workflows")),
+        "error": _safe_public_probe_error(value.get("error")),
+    }
+
+
+def _safe_public_credentials(profile_name: str) -> dict[str, dict[str, object]]:
+    try:
+        source = credentials.status_for(profile_name)
+    except Exception:
+        source = {}
+    source = source if isinstance(source, dict) else {}
+    result: dict[str, dict[str, object]] = {}
+    for key in WORKFLOW_KEYS:
+        raw = source.get(key)
+        raw = raw if isinstance(raw, dict) else {}
+        status_source = raw.get("source")
+        if status_source not in {"environment", "blocked", "dpapi", "none"}:
+            status_source = "none"
+        environment_name = raw.get("environmentVariable")
+        if environment_name != credentials.ENV_NAMES[key]:
+            environment_name = ""
+        store_error = ""
+        if raw.get("storeError"):
+            store_error = (
+                f"{credentials.ENV_NAMES[key]} is not bound to this profile."
+                if status_source == "blocked"
+                else "The secure MAXIS credential store is unavailable."
+            )
+        result[key] = {
+            "configured": raw.get("configured") is True,
+            "source": status_source,
+            "environmentVariable": environment_name,
+            "storeError": store_error,
+        }
+    return result
+
+
+def _safe_public_knowledge_eval_status(value: object) -> dict:
+    """Re-project generated attestation diagnostics onto one closed public shape."""
+
+    source = value if isinstance(value, dict) else {}
+    raw_reasons = source.get("reasons")
+    reasons: list[str] = []
+    if isinstance(raw_reasons, list):
+        for reason in raw_reasons[:16]:
+            if (
+                isinstance(reason, str)
+                and reason
+                and len(reason) <= 240
+                and not any(
+                    ord(character) < 32 or ord(character) == 127
+                    for character in reason
+                )
+                and not credential_shaped_public_text(reason)
+            ):
+                reasons.append(reason)
+            else:
+                reasons.append("Knowledge eval attestation status is unavailable.")
+
+    raw_attestation = source.get("attestation")
+    attestation = {}
+    if isinstance(raw_attestation, dict) and raw_attestation:
+        raw_versions = raw_attestation.get("workflowVersions")
+        attestation = {
+            "contract": (
+                KNOWLEDGE_EVAL_ATTESTATION_CONTRACT
+                if raw_attestation.get("contract")
+                == KNOWLEDGE_EVAL_ATTESTATION_CONTRACT else ""
+            ),
+            "evidenceId": _safe_public_text(
+                raw_attestation.get("evidenceId"),
+                pattern=_PUBLIC_METADATA_ID,
+                max_length=120,
+            ),
+            "outcome": (
+                "passed" if raw_attestation.get("outcome") == "passed" else ""
+            ),
+            "caseCount": (
+                25 if raw_attestation.get("caseCount") == 25 else 0
+            ),
+            "artifactSha256": _safe_public_digest(
+                raw_attestation.get("artifactSha256")
+            ),
+            "passedAt": _safe_public_utc_instant(
+                raw_attestation.get("passedAt"), "Knowledge eval passed_at"
+            ),
+            "suiteSha256": _safe_public_digest(
+                raw_attestation.get("suiteSha256")
+            ),
+            "datasetId": _safe_public_dataset_id(
+                raw_attestation.get("datasetId")
+            ),
+            "knowledgeManifestSha256": _safe_public_digest(
+                raw_attestation.get("knowledgeManifestSha256")
+            ),
+            "workflowVersions": {
+                key: _safe_public_workflow_version(
+                    raw_versions.get(key) if isinstance(raw_versions, dict) else ""
+                )
+                for key in WORKFLOW_KEYS
+            },
+            "profileMaterialSha256": _safe_public_digest(
+                raw_attestation.get("profileMaterialSha256")
+            ),
+        }
+
+    raw_expected = source.get("expectedBinding")
+    expected = {}
+    if isinstance(raw_expected, dict) and raw_expected:
+        expected = {
+            "suiteSha256": _safe_public_digest(raw_expected.get("suiteSha256")),
+            "datasetId": _safe_public_dataset_id(raw_expected.get("datasetId")),
+            "knowledgeManifestSha256": _safe_public_digest(
+                raw_expected.get("knowledgeManifestSha256")
+            ),
+            "workflowVersionsSha256": _safe_public_digest(
+                raw_expected.get("workflowVersionsSha256")
+            ),
+            "profileMaterialSha256": _safe_public_digest(
+                raw_expected.get("profileMaterialSha256")
+            ),
+        }
+
+    binding_valid = source.get("bindingValid") is True and bool(attestation)
+    return {
+        "configured": source.get("configured") is True,
+        "bindingValid": binding_valid,
+        "valid": source.get("valid") is True and binding_valid,
+        "verification": "metadata_binding_only_signed_artifact_not_verified",
+        "reasons": reasons,
+        "attestation": attestation,
+        "expectedBinding": expected,
+    }
+
+
+def _safe_public_config_error(error: Exception) -> str:
+    if isinstance(error, _CrossEnvironmentSeparationError):
+        return str(error)
+    if isinstance(error, DestinationPolicyError):
+        return (
+            "MAXIS destination allowlist, URL, or credentials configuration is invalid."
+        )
+    if isinstance(error, credentials.CredentialStoreUnavailable):
+        return "The secure MAXIS credential store is unavailable."
+    return "MAXIS profile configuration is invalid."
+
+
+def _safe_public_base_url(value: object) -> str:
+    """Return a recoverable URL value without ever reflecting URL credentials.
+
+    A manually edited or legacy preference may fail the current destination policy.
+    Status still exposes a structurally safe, now-disallowed host so an operator can
+    repair it, but malformed/userinfo-bearing values are blanked rather than echoed.
+    """
+
+    if not isinstance(value, str):
+        return ""
+    raw = value.strip()
+    decoded = raw
+    for _ in range(2):
+        decoded = unquote(decoded)
+    if (
+        not raw
+        or len(raw) > 2048
+        or "\\" in raw
+        or "\\" in decoded
+        or any(
+            ord(character) <= 32 or ord(character) == 127
+            for character in raw + decoded
+        )
+        or credential_shaped_public_text(raw)
+        or credential_shaped_public_text(decoded)
+    ):
+        return ""
+    try:
+        parsed = urlsplit(raw)
+        decoded_parsed = urlsplit(decoded)
+        _ = parsed.port
+        _ = decoded_parsed.port
+    except (TypeError, ValueError):
+        return ""
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or decoded_parsed.scheme.lower() not in {"http", "https"}
+        or not decoded_parsed.hostname
+        or decoded_parsed.username is not None
+        or decoded_parsed.password is not None
+        or decoded_parsed.query
+        or decoded_parsed.fragment
+    ):
+        return ""
+    return raw
+
+
+def _public_profile(name: str) -> dict:
+    # Status is also the recovery UI.  Read the raw merged row before validation so
+    # an allowlist rotation can disable an old URL without turning this endpoint into
+    # a 500 that prevents the manager from editing it.
+    raw_stored = _merged_profile(name)
+    manifest = None
+    config_valid = False
+    try:
+        stored = _validate(raw_stored)
         effective = _effective(stored)
+        _require_cross_environment_asset_separation(effective)
         manifest = _build_profile_manifest(effective, required=False)
         config_error = ""
         fingerprint = profile_fingerprint(effective)
+        config_valid = True
     except Exception as exc:
-        effective = stored
-        config_error = str(exc)
+        stored = raw_stored
+        effective = raw_stored
+        config_error = _safe_public_config_error(exc)
         fingerprint = ""
+    public_stored = _safe_public_profile_values(name, stored)
+    public_effective = _safe_public_profile_values(name, effective)
     active_name = active_profile_name()
     active_sig = str(prefs.load().get("maxisActiveProfileFingerprint") or "")
     verified = probe_ok(name)
     enabled = bool(name == active_name and fingerprint and active_sig == fingerprint
                    and verified and not kill_switch_enabled())
+    public_stored_base = public_stored["base_url"]
+    public_effective_base = public_effective["base_url"]
     host = ""
-    if effective.get("base_url"):
+    if public_effective_base:
         try:
-            host = urlsplit(effective["base_url"]).netloc
+            host = urlsplit(public_effective_base).netloc
         except Exception:
             host = ""
     promotion = {}
-    if not config_error and str(effective.get("stage") or "") == "prod":
+    if config_valid and str(effective.get("stage") or "") == "prod":
         for workflow_key in WORKFLOW_KEYS:
             workflow = (effective.get("workflows") or {}).get(workflow_key) or {}
             if workflow.get("version"):
                 promotion[workflow_key] = _workflow_promotion(
                     effective, workflow_key,
                 )
-    eval_attestation = knowledge_eval_attestation_status(effective)
+    if config_valid:
+        try:
+            eval_attestation = knowledge_eval_attestation_status(effective)
+        except Exception:
+            eval_attestation = {
+                "configured": False,
+                "bindingValid": False,
+                "valid": False,
+                "verification": (
+                    "metadata_binding_only_signed_artifact_not_verified"
+                ),
+                "reasons": ["Knowledge eval attestation status is unavailable."],
+                "attestation": {},
+                "expectedBinding": {},
+            }
+    else:
+        eval_attestation = {
+            "configured": bool(raw_stored.get("knowledge_eval_attestation")),
+            "bindingValid": False,
+            "valid": False,
+            "verification": "metadata_binding_only_signed_artifact_not_verified",
+            "reasons": [
+                "Knowledge eval attestation is unavailable while profile "
+                "configuration is invalid."
+            ],
+            "attestation": {},
+            "expectedBinding": {},
+        }
+    eval_attestation = _safe_public_knowledge_eval_status(eval_attestation)
+    state = prefs.load()
     return {
         "name": name,
         "stage": name,
-        "baseUrl": stored["base_url"],
-        "effectiveBaseUrl": effective.get("base_url", ""),
+        "baseUrl": public_stored_base,
+        "effectiveBaseUrl": public_effective_base,
         "effectiveHost": host,
-        "dataPolicy": stored["data_policy"],
-        "workflowBundleVersion": stored["workflow_bundle_version"],
-        "knowledgeVersion": stored["knowledge_version"],
-        "knowledgeDatasetId": stored["knowledge_dataset_id"],
-        "effectiveKnowledgeDatasetId": effective.get("knowledge_dataset_id", ""),
-        "knowledgeSentinelSha256": stored["knowledge_sentinel_sha256"],
-        "effectiveKnowledgeSentinelSha256": effective.get(
-            "knowledge_sentinel_sha256", ""
-        ),
+        "dataPolicy": public_stored["data_policy"],
+        "workflowBundleVersion": public_stored["workflow_bundle_version"],
+        "knowledgeVersion": public_stored["knowledge_version"],
+        "knowledgeDatasetId": public_stored["knowledge_dataset_id"],
+        "effectiveKnowledgeDatasetId": public_effective["knowledge_dataset_id"],
+        "knowledgeSentinelSha256": public_stored["knowledge_sentinel_sha256"],
+        "effectiveKnowledgeSentinelSha256": public_effective[
+            "knowledge_sentinel_sha256"
+        ],
         "knowledgeManifestSha256": manifest.sha256 if manifest else "",
         "knowledgeDocumentCount": manifest.document_count if manifest else 0,
-        "remoteLogPolicyId": stored["remote_log_policy_id"],
-        "effectiveRemoteLogPolicyId": effective.get("remote_log_policy_id", ""),
-        "remoteLogMode": stored["remote_log_mode"],
-        "effectiveRemoteLogMode": effective.get("remote_log_mode", ""),
-        "remoteLogRetentionDays": stored["remote_log_retention_days"],
-        "effectiveRemoteLogRetentionDays": effective.get(
+        "remoteLogPolicyId": public_stored["remote_log_policy_id"],
+        "effectiveRemoteLogPolicyId": public_effective["remote_log_policy_id"],
+        "remoteLogMode": public_stored["remote_log_mode"],
+        "effectiveRemoteLogMode": public_effective["remote_log_mode"],
+        "remoteLogRetentionDays": public_stored["remote_log_retention_days"],
+        "effectiveRemoteLogRetentionDays": public_effective[
             "remote_log_retention_days"
-        ),
+        ],
         "knowledgeEvalAttestation": eval_attestation,
-        "workflows": deepcopy(stored["workflows"]),
-        "credentials": credentials.status_for(name),
+        "workflows": public_stored["workflows"],
+        "credentials": _safe_public_credentials(name),
         "fingerprint": fingerprint,
         "active": name == active_name,
         "verified": verified,
         "enabled": enabled,
         "configError": config_error,
-        "lastProbe": deepcopy((prefs.load().get("maxisLastProbeByProfile") or {}).get(name)),
+        "lastProbe": _safe_public_last_probe(
+            (state.get("maxisLastProbeByProfile") or {}).get(name)
+        ),
         "promotion": promotion,
     }
 
@@ -1160,6 +1905,16 @@ def status() -> dict:
         key: env_name if str(os.getenv(env_name) or "").strip() else ""
         for key, env_name in CONFIG_ENV_NAMES.items()
     }
+    workflow_overrides = {
+        key: env_name
+        for key, env_name in WORKFLOW_VERSION_ENV_NAMES.items()
+        if str(os.getenv(env_name) or "").strip()
+    }
+    credential_overrides = credentials.environment_overrides()
+    unbound_shared_overrides = bool(
+        not env_profile
+        and (any(config_overrides.values()) or workflow_overrides or credential_overrides)
+    )
     return {
         "profiles": [_public_profile(name) for name in PROFILE_NAMES],
         "activeProfile": active_profile_name(),
@@ -1183,15 +1938,19 @@ def status() -> dict:
             "knowledgeEvalAttestation": config_overrides[
                 "knowledge_eval_attestation"
             ],
-            "workflowVersions": {
-                key: env_name
-                for key, env_name in WORKFLOW_VERSION_ENV_NAMES.items()
+            "workflowVersions": workflow_overrides,
+            "credentials": credential_overrides,
+            "allowedHosts": {
+                stage: env_name
+                for stage, env_name in ALLOWED_HOSTS_ENV_NAMES.items()
                 if str(os.getenv(env_name) or "").strip()
             },
-            "credentials": credentials.environment_overrides(),
         },
         "environmentError": (
             "LAKE_MAXIS_PROFILE must be dev or prod."
             if env_profile and env_profile.lower() not in PROFILE_NAMES else ""
+        ) or (
+            "Shared MAXIS environment overrides require LAKE_MAXIS_PROFILE=dev|prod."
+            if unbound_shared_overrides else ""
         ),
     }

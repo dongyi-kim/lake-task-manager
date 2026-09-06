@@ -1,14 +1,16 @@
 """MAXIS/Dify app keys stored with Windows current-user DPAPI.
 
 The browser can write replacement keys and read their presence/source, but it never
-receives plaintext back.  Environment variables always win at runtime.  A normal
-file fallback is intentionally not provided: persisting secrets without DPAPI on a
-non-Windows host fails closed.  Tests may inject an in-memory/encrypting backend.
+receives plaintext back.  Environment variables win only for the explicitly selected
+dev/prod process profile.  A normal file fallback is intentionally not provided:
+persisting secrets without DPAPI on a non-Windows host fails closed.  Tests may inject
+an in-memory/encrypting backend.
 """
 from __future__ import annotations
 
 import ctypes
 import hashlib
+import hmac
 import json
 import os
 import threading
@@ -24,6 +26,7 @@ ENV_NAMES = {
     "pmo_brief": "LAKE_MAXIS_PMO_BRIEF_API_KEY",
 }
 _MAGIC = b"LTM-MAXIS-DPAPI-v1\x00"
+_MIGRATION_MARKER = b"LTM-MAXIS-NEW-STORE-v1\n"
 _LOCK = threading.RLock()
 
 
@@ -58,8 +61,33 @@ class WindowsDpapiBackend:
             raise CredentialStoreUnavailable(
                 "MAXIS credential persistence requires Windows current-user DPAPI."
             )
-        self._crypt32 = ctypes.windll.crypt32
-        self._kernel32 = ctypes.windll.kernel32
+        # Pin the Unicode and pointer-width ABI explicitly.  This avoids ctypes'
+        # platform-dependent implicit conversions in 64-bit packaged/local runtimes.
+        self._crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        blob_pointer = ctypes.POINTER(_DATA_BLOB)
+        self._crypt32.CryptProtectData.argtypes = (
+            blob_pointer,
+            wintypes.LPCWSTR,
+            blob_pointer,
+            wintypes.LPVOID,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            blob_pointer,
+        )
+        self._crypt32.CryptProtectData.restype = wintypes.BOOL
+        self._crypt32.CryptUnprotectData.argtypes = (
+            blob_pointer,
+            ctypes.POINTER(wintypes.LPWSTR),
+            blob_pointer,
+            wintypes.LPVOID,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            blob_pointer,
+        )
+        self._crypt32.CryptUnprotectData.restype = wintypes.BOOL
+        self._kernel32.LocalFree.argtypes = (wintypes.HLOCAL,)
+        self._kernel32.LocalFree.restype = wintypes.HLOCAL
 
     def protect(self, value: bytes) -> bytes:
         source, source_buf = _blob(value)
@@ -108,7 +136,30 @@ def _backend() -> CredentialBackend:
 
 def _path() -> Path:
     from app.infra.settings import CACHE_DIR
+
+    return Path(CACHE_DIR) / "maxis" / "credentials.dpapi"
+
+
+def _legacy_path() -> Path:
+    """Return the pre-migration store path used only as a read fallback.
+
+    The legacy file is deliberately never removed or overwritten here.  The first
+    subsequent credential mutation writes the complete decrypted payload to the new
+    path; because reads prefer that path, clearing credentials cannot accidentally
+    resurrect a value left in the legacy store.
+    """
+
+    from app.infra.settings import CACHE_DIR
+
     return Path(CACHE_DIR) / "maxis_credentials.dpapi"
+
+
+def _migration_marker_path() -> Path:
+    """A non-secret tombstone preventing deleted new stores from reviving legacy keys."""
+
+    from app.infra.settings import CACHE_DIR
+
+    return Path(CACHE_DIR) / "maxis" / "legacy-store-disabled"
 
 
 def _normal_profile(profile_name: str) -> str:
@@ -121,7 +172,14 @@ def _normal_profile(profile_name: str) -> str:
 def _load_all() -> dict[str, dict[str, str]]:
     path = _path()
     if not path.exists():
-        return {}
+        # Once any mutation established the new store as authoritative, absence means
+        # empty/revoked.  Never fall back to stale legacy keys after deletion.
+        if _migration_marker_path().exists():
+            return {}
+        legacy = _legacy_path()
+        if not legacy.exists():
+            return {}
+        path = legacy
     try:
         blob = path.read_bytes()
         if not blob.startswith(_MAGIC):
@@ -154,13 +212,21 @@ def _write_all(rows: dict[str, dict[str, str]]) -> None:
                          separators=(",", ":")).encode("utf-8")
     protected = _backend().protect(payload)
     tmp = path.with_suffix(path.suffix + ".tmp")
+    marker = _migration_marker_path()
+    marker_tmp = marker.with_suffix(".tmp")
     try:
+        # Commit the no-secret tombstone first.  A crash can therefore make legacy
+        # credentials unavailable, but can never resurrect them after a revocation.
+        marker_tmp.write_bytes(_MIGRATION_MARKER)
+        os.replace(marker_tmp, marker)
         tmp.write_bytes(_MAGIC + protected)
         os.replace(tmp, path)
     except Exception:
         try:
             if tmp.exists():
                 tmp.unlink()
+            if marker_tmp.exists():
+                marker_tmp.unlink()
         except Exception:
             pass
         raise
@@ -171,6 +237,42 @@ def load_for(profile_name: str) -> dict[str, str]:
     name = _normal_profile(profile_name)
     with _LOCK:
         return dict(_load_all().get(name) or {})
+
+
+def _separation_values(profile_name: str) -> tuple[bytes, ...]:
+    """Return effective secrets solely for cross-environment equality checks.
+
+    Stored values from the inactive profile remain part of the comparison.  Shared
+    deployment environment variables replace stored values only for the explicitly
+    selected profile, matching the process binding contract without ever returning a
+    digest or plaintext through a public API.
+    """
+
+    name = _normal_profile(profile_name)
+    values = load_for(name)
+    selected = str(os.getenv("LAKE_MAXIS_PROFILE") or "").strip().lower()
+    if selected == name:
+        for key, env_name in ENV_NAMES.items():
+            override = str(os.getenv(env_name) or "").strip()
+            if override:
+                values[key] = override
+    return tuple(
+        value.encode("utf-8")
+        for key in WORKFLOW_KEYS
+        if (value := str(values.get(key) or "").strip())
+    )
+
+
+def profiles_share_any_credential(left_profile: str, right_profile: str) -> bool:
+    """Compare profile credentials without exposing either values or digests."""
+
+    left = _separation_values(left_profile)
+    right = _separation_values(right_profile)
+    return any(
+        hmac.compare_digest(left_value, right_value)
+        for left_value in left
+        for right_value in right
+    )
 
 
 def save_for(profile_name: str, patch: dict | None = None,
@@ -203,19 +305,41 @@ def delete_for(profile_name: str) -> None:
         _write_all(rows)
 
 
-def environment_overrides() -> dict[str, str]:
-    return {key: env for key, env in ENV_NAMES.items() if str(os.getenv(env) or "").strip()}
+def environment_overrides(profile_name: str = "") -> dict[str, str]:
+    """Return configured environment key names, optionally bound to one profile.
+
+    The legacy environment variable names do not encode dev/prod.  They are therefore
+    usable for a credential lookup only when ``LAKE_MAXIS_PROFILE`` explicitly selects
+    that same profile.  This prevents a prod process key from being sent while a manager
+    probes an inactive dev candidate (or vice versa).  Calling without a profile remains
+    a browser-safe inventory of variable *names* for the global settings status.
+    """
+
+    configured = {
+        key: env for key, env in ENV_NAMES.items()
+        if str(os.getenv(env) or "").strip()
+    }
+    if not profile_name:
+        return configured
+    name = _normal_profile(profile_name)
+    selected = str(os.getenv("LAKE_MAXIS_PROFILE") or "").strip().lower()
+    return configured if selected == name else {}
 
 
 def get_for(profile_name: str, workflow_key: str) -> str:
-    """Resolve one key for backend use.  Environment always wins."""
+    """Resolve one key for backend use; a profile-bound environment key wins."""
     name = _normal_profile(profile_name)
     key = str(workflow_key or "").strip().lower()
     if key not in WORKFLOW_KEYS:
         raise ValueError("Unsupported MAXIS workflow key.")
-    env_value = str(os.getenv(ENV_NAMES[key]) or "").strip()
-    if env_value:
-        return env_value
+    configured = environment_overrides()
+    overrides = environment_overrides(name)
+    if key in overrides:
+        return str(os.getenv(ENV_NAMES[key]) or "").strip()
+    if key in configured:
+        raise CredentialStoreUnavailable(
+            f"{configured[key]} requires LAKE_MAXIS_PROFILE={name} before use."
+        )
     return str(load_for(name).get(key) or "").strip()
 
 
@@ -226,7 +350,8 @@ def resolved_for(profile_name: str) -> dict[str, str]:
 def status_for(profile_name: str) -> dict[str, dict[str, object]]:
     """Browser-safe status.  No suffix, digest, or plaintext key is returned."""
     name = _normal_profile(profile_name)
-    overrides = environment_overrides()
+    configured_environment = environment_overrides()
+    overrides = environment_overrides(name)
     try:
         stored = load_for(name)
         store_error = ""
@@ -235,12 +360,21 @@ def status_for(profile_name: str) -> dict[str, dict[str, object]]:
         store_error = str(exc)
     return {
         key: {
-            "configured": bool(os.getenv(ENV_NAMES[key]) or stored.get(key)),
-            "source": "environment" if key in overrides else (
-                "dpapi" if stored.get(key) else "none"
+            "configured": bool(
+                key in overrides
+                or (key not in configured_environment and stored.get(key))
             ),
-            "environmentVariable": overrides.get(key, ""),
-            "storeError": store_error,
+            "source": "environment" if key in overrides else (
+                "blocked" if key in configured_environment else (
+                    "dpapi" if stored.get(key) else "none"
+                )
+            ),
+            "environmentVariable": configured_environment.get(key, ""),
+            "storeError": (
+                f"{configured_environment[key]} is not bound to this profile."
+                if key in configured_environment and key not in overrides
+                else store_error
+            ),
         }
         for key in WORKFLOW_KEYS
     }

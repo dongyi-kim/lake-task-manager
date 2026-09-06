@@ -311,7 +311,9 @@ def test_session_resume_records_terminal_execution_audit_for_pre_dispatch_reject
                 "messages": [HumanMessage(content="변경 요청")],
                 "thread_id": thread_id,
                 "correlation_id": correlation_id,
-                "runtime_profile": "local",
+                # Legacy all-local checkpoints had no named MAXIS profile.  A literal
+                # ``local`` profile is ambiguous under the immutable runtime-pin contract.
+                "runtime_engine": "local",
                 "approval_token": token,
                 "comment_token": loose_comment,
                 "change_audit_binding": proposal_binding,

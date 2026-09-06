@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">LTM MAXIS Dify TO-BE 아키텍처</title>
+  <desc id="desc">로컬 LTM의 조회, 보안, 승인, 실행 책임과 MAXIS Dify의 지식 검색 및 의미 생성 책임, 향후 중앙 읽기 전용 MCP 경계를 나타낸 그림</desc>
+  <defs>
+    <linearGradient id="hero" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#102a43"/>
+      <stop offset="1" stop-color="#1f6feb"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="7" stdDeviation="9" flood-color="#102a43" flood-opacity="0.13"/>
+    </filter>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto">
+      <path d="M0,0 L11,5.5 L0,11 Z" fill="#3273b9"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto">
+      <path d="M0,0 L11,5.5 L0,11 Z" fill="#16794b"/>
+    </marker>
+    <style>
+      text{font-family:'Noto Sans KR','Malgun Gothic',Arial,sans-serif;fill:#243b53}
+      .zone-title{font-size:24px;font-weight:800}
+      .zone-sub{font-size:14px;fill:#627d98}
+      .box-title{font-size:18px;font-weight:800}
+      .box-sub{font-size:13px;fill:#526b84}
+      .small{font-size:13px}
+      .label{font-size:13px;font-weight:700;fill:#245d96}
+      .arrow{fill:none;stroke:#3273b9;stroke-width:3;marker-end:url(#arrow)}
+      .green-arrow{fill:none;stroke:#16794b;stroke-width:3;marker-end:url(#arrowGreen)}
+      .dash{stroke-dasharray:8 7}
+    </style>
+  </defs>
+
+  <rect width="1440" height="900" fill="#f4f7fb"/>
+  <rect x="0" y="0" width="1440" height="128" fill="url(#hero)"/>
+  <text x="64" y="54" font-size="14" font-weight="700" letter-spacing="2" fill="#cde2ff">LAKE TASK MANAGER · TO-BE</text>
+  <text x="64" y="94" font-size="34" font-weight="800" fill="#ffffff">MAXIS / Dify 적용 책임 경계</text>
+  <text x="1376" y="88" font-size="15" text-anchor="end" fill="#d9ecff">제안은 원격 · 통제와 실행은 LTM</text>
+
+  <rect x="42" y="164" width="698" height="610" rx="22" fill="#ffffff" stroke="#b7cee6" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="770" y="164" width="628" height="386" rx="22" fill="#eef5ff" stroke="#9ec5ee" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="770" y="578" width="628" height="196" rx="22" fill="#edf9f1" stroke="#9ed4b5" stroke-width="2" filter="url(#shadow)"/>
+
+  <text class="zone-title" x="72" y="205">① LTM 신뢰 영역</text>
+  <text class="zone-sub" x="72" y="230">사용자 PC 또는 사내 LTM 서버 · 원천 사실과 변경 권한 보유</text>
+  <text class="zone-title" x="800" y="205">② MAXIS 관리 + Dify 실행</text>
+  <text class="zone-sub" x="800" y="230">사내 Project·모델·Knowledge 거버넌스 아래 역할별 Chatflow 실행</text>
+  <text class="zone-title" x="800" y="619">③ 중앙 Read-only MCP (2단계)</text>
+  <text class="zone-sub" x="800" y="644">로컬 PC를 노출하지 않고 OAuth/OBO·mTLS로 제한된 최신 조회만 제공</text>
+
+  <rect x="76" y="270" width="185" height="92" rx="14" fill="#eaf3ff" stroke="#8bb9e8"/>
+  <text class="box-title" x="168" y="306" text-anchor="middle">Query Runner</text>
+  <text class="box-sub" x="168" y="332" text-anchor="middle">Jira · Confluence · Bitbucket</text>
+  <text class="box-sub" x="168" y="352" text-anchor="middle">최신 원천 조회</text>
+
+  <rect x="302" y="270" width="185" height="92" rx="14" fill="#fff8e6" stroke="#e5c675"/>
+  <text class="box-title" x="394" y="306" text-anchor="middle">Context Guard</text>
+  <text class="box-sub" x="394" y="332" text-anchor="middle">범위 · DLP · 가명화</text>
+  <text class="box-sub" x="394" y="352" text-anchor="middle">20k 직렬화 한도</text>
+
+  <rect x="528" y="270" width="175" height="92" rx="14" fill="#eaf3ff" stroke="#8bb9e8"/>
+  <text class="box-title" x="615" y="306" text-anchor="middle">Dify Adapter</text>
+  <text class="box-sub" x="615" y="332" text-anchor="middle">/parameters</text>
+  <text class="box-sub" x="615" y="352" text-anchor="middle">/chat-messages</text>
+
+  <path class="arrow" d="M261 316 H292"/>
+  <path class="arrow" d="M487 316 H518"/>
+  <text class="label" x="392" y="250" text-anchor="middle">EvidencePack v1 생성</text>
+
+  <rect x="76" y="428" width="185" height="92" rx="14" fill="#f4edff" stroke="#b9a0e6"/>
+  <text class="box-title" x="168" y="464" text-anchor="middle">Response Guard</text>
+  <text class="box-sub" x="168" y="490" text-anchor="middle">계약 · 인용 · 버전 · RAG</text>
+  <text class="box-sub" x="168" y="510" text-anchor="middle">불일치 시 차단</text>
+
+  <rect x="302" y="428" width="185" height="92" rx="14" fill="#edf9f1" stroke="#9ed4b5"/>
+  <text class="box-title" x="394" y="464" text-anchor="middle">검토와 승인</text>
+  <text class="box-sub" x="394" y="490" text-anchor="middle">근거 표시 · Diff 확인</text>
+  <text class="box-sub" x="394" y="510" text-anchor="middle">일회성 승인 토큰</text>
+
+  <rect x="528" y="428" width="175" height="92" rx="14" fill="#ffeef0" stroke="#e6a1aa"/>
+  <text class="box-title" x="615" y="464" text-anchor="middle">Action Executor</text>
+  <text class="box-sub" x="615" y="490" text-anchor="middle">직전 권한 재검사</text>
+  <text class="box-sub" x="615" y="510" text-anchor="middle">Jira 변경 + 감사로그</text>
+
+  <path class="green-arrow" d="M261 474 H292"/>
+  <path class="green-arrow" d="M487 474 H518"/>
+
+  <rect x="76" y="586" width="627" height="142" rx="14" fill="#f8fafc" stroke="#d9e2ec"/>
+  <text class="box-title" x="102" y="620">LTM이 끝까지 보유하는 통제</text>
+  <circle cx="108" cy="654" r="5" fill="#1f6feb"/><text class="small" x="124" y="659">원천 사실·산식과 대화 상태</text>
+  <circle cx="108" cy="687" r="5" fill="#1f6feb"/><text class="small" x="124" y="692">쓰기 권한·승인 토큰·실행 영수증</text>
+  <circle cx="393" cy="654" r="5" fill="#1f6feb"/><text class="small" x="409" y="659">최종 Schema·인용 검증</text>
+  <circle cx="393" cy="687" r="5" fill="#1f6feb"/><text class="small" x="409" y="692">감사로그·효과 KPI·Kill switch</text>
+
+  <rect x="806" y="270" width="168" height="116" rx="14" fill="#ffffff" stroke="#8bb9e8"/>
+  <text class="box-title" x="890" y="306" text-anchor="middle">MAXIS</text>
+  <text class="box-sub" x="890" y="332" text-anchor="middle">Project · 모델 승인</text>
+  <text class="box-sub" x="890" y="354" text-anchor="middle">Knowledge · 권한</text>
+  <text class="box-sub" x="890" y="376" text-anchor="middle">운영 거버넌스</text>
+
+  <rect x="1008" y="270" width="354" height="214" rx="14" fill="#ffffff" stroke="#8bb9e8"/>
+  <text class="box-title" x="1185" y="306" text-anchor="middle">Dify 역할별 3-App</text>
+  <rect x="1032" y="328" width="94" height="54" rx="10" fill="#eaf3ff"/><text class="small" x="1079" y="360" text-anchor="middle">Agent Core</text>
+  <rect x="1138" y="328" width="94" height="54" rx="10" fill="#eaf3ff"/><text class="small" x="1185" y="352" text-anchor="middle">Editor</text><text class="small" x="1185" y="370" text-anchor="middle">Author</text>
+  <rect x="1244" y="328" width="94" height="54" rx="10" fill="#eaf3ff"/><text class="small" x="1291" y="352" text-anchor="middle">PMO</text><text class="small" x="1291" y="370" text-anchor="middle">Brief</text>
+  <text class="box-sub" x="1185" y="413" text-anchor="middle">Sentinel RAG + Role RAG + LLM</text>
+  <text class="box-sub" x="1185" y="438" text-anchor="middle">결정적 Contract Guard → JSON 답변</text>
+  <text class="box-sub" x="1185" y="463" text-anchor="middle">제안·분류·초안만 담당</text>
+
+  <path class="arrow" d="M703 316 C742 316 752 328 796 328"/>
+  <text class="label" x="750" y="300" text-anchor="middle">가명화 JSON</text>
+  <path class="arrow" d="M1008 420 C925 548 556 560 271 474"/>
+  <text class="label" x="820" y="535" text-anchor="middle">RemoteRoleResult v1</text>
+  <path class="arrow" d="M974 328 H998"/>
+
+  <rect x="806" y="674" width="168" height="64" rx="12" fill="#ffffff" stroke="#83c59f"/>
+  <text class="box-title" x="890" y="702" text-anchor="middle">Identity Gateway</text>
+  <text class="box-sub" x="890" y="724" text-anchor="middle">OAuth/OBO · mTLS</text>
+  <rect x="1008" y="674" width="330" height="64" rx="12" fill="#ffffff" stroke="#83c59f"/>
+  <text class="box-title" x="1173" y="702" text-anchor="middle">허용된 조회 Tool만</text>
+  <text class="box-sub" x="1173" y="724" text-anchor="middle">Jira · Confluence · Bitbucket read-only</text>
+  <path class="green-arrow" d="M974 706 H998"/>
+  <path class="green-arrow dash" d="M1185 674 V560 C1185 548 1185 530 1185 494"/>
+
+  <rect x="42" y="808" width="1356" height="56" rx="12" fill="#102a43"/>
+  <text x="720" y="842" text-anchor="middle" font-size="16" font-weight="700" fill="#ffffff">운영 원칙: MAXIS/Dify 실패 시 자동 쓰기·조용한 우회 금지 · 합성 Probe 통과 전 활성화 금지 · PROD는 별도 프로필로 승격</text>
+</svg>

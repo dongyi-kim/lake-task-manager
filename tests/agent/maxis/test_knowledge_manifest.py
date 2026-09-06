@@ -13,6 +13,7 @@ from app.agent.maxis.knowledge_manifest import KnowledgeManifestError, build_man
 
 DATASET_A = "11111111-1111-4111-8111-111111111111"
 DATASET_B = "22222222-2222-4222-8222-222222222222"
+ROOT = Path(__file__).resolve().parents[3]
 
 
 def _write_registry(root: Path) -> None:
@@ -125,6 +126,26 @@ def test_manifest_binds_governance_content_segments_version_and_dataset(tmp_path
         "char_start", "char_end",
     }
     assert "original" not in json.dumps(public, ensure_ascii=False)
+
+
+def test_checked_in_manifest_loads_and_excludes_local_only_remote_roles():
+    environment = yaml.safe_load(
+        (
+            ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+        ).read_text(encoding="utf-8")
+    )
+    manifest = build_manifest(
+        knowledge_version=environment["knowledge"]["version"],
+        dataset_id=environment["knowledge"]["dataset_id"],
+    )
+
+    allowed_roles = {
+        role_id
+        for document in manifest.documents
+        for role_id in document["allowed_roles"]
+    }
+    assert "research_analyst" not in allowed_roles
+    assert "people_advisor" not in allowed_roles
 
 
 def test_segment_ledger_is_deterministic_bounded_and_contains_no_body(tmp_path):

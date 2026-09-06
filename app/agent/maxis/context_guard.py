@@ -28,6 +28,10 @@ from app.agent.maxis.contracts import (
 
 
 _SOURCE_KINDS = frozenset({"jira", "confluence", "bitbucket", "knowledge", "ltm"})
+MAX_CONTEXT_PACK_UTF8_BYTES = 6_144
+MAX_QUERY_UTF8_BYTES = 1_024
+MAX_SOURCE_UTF8_BYTES = 1_500
+MAX_ROLE_CONTEXT_UTF8_BYTES = 4_000
 _EMAIL = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
 _USER_ID = re.compile(
     r"(?i)(?<![A-Za-z0-9_])(?:sk[a-z]{1,8}|user|emp)\.[a-z0-9_-]{3,}"
@@ -126,12 +130,29 @@ def _string_values(value: Any, path: str = "evidence_pack"):
             yield from _string_values(item, f"{path}[{index}]")
 
 
-def validate_pack_safety(pack: EvidencePackV1, *, max_total_chars: int = 20_000) -> None:
+def canonical_evidence_pack_json(pack: EvidencePackV1) -> str:
+    """Return the exact compact string accepted by the Dify ``context_pack`` input."""
+
+    return json.dumps(
+        pack.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def validate_pack_safety(
+    pack: EvidencePackV1,
+    *,
+    max_total_utf8_bytes: int = MAX_CONTEXT_PACK_UTF8_BYTES,
+) -> None:
     """Second-line validation for callers that did not retain the originating guard."""
 
     dumped = pack.model_dump(mode="json")
     for path, value in _string_values(dumped):
         assert_safe_outbound_text(value, path)
+    if _utf8_bytes(pack.query) > MAX_QUERY_UTF8_BYTES:
+        raise ContextGuardError("query_too_large", "query")
     try:
         canonical_schema, schema_digest = canonical_payload_schema(
             pack.payload_schema_json
@@ -155,7 +176,10 @@ def validate_pack_safety(pack: EvidencePackV1, *, max_total_chars: int = 20_000)
                 validate_schema_keys(item, f"{path}[{index}]")
 
     validate_schema_keys(schema)
-    if _text_chars(dumped) > max_total_chars:
+    # Dify's paragraph limit counts characters and cannot bound multibyte text. Count
+    # the exact UTF-8 representation emitted by the client so Korean, emoji, quotes,
+    # separators and JSON escaping all consume the same conservative model budget.
+    if _utf8_bytes(canonical_evidence_pack_json(pack)) > max_total_utf8_bytes:
         raise ContextGuardError("context_too_large", "evidence_pack")
 
 
@@ -200,8 +224,8 @@ class ContextPolicy:
     allowed_source_hosts: Mapping[str, Iterable[str]] = field(default_factory=dict)
     allowed_context_keys: frozenset[str] = frozenset()
     max_sources: int = 10
-    max_chars_per_source: int = 1500
-    max_total_chars: int = 20_000
+    max_utf8_bytes_per_source: int = MAX_SOURCE_UTF8_BYTES
+    max_total_utf8_bytes: int = MAX_CONTEXT_PACK_UTF8_BYTES
     freshness_seconds: int = 900
     allow_http_urls: bool = False
 
@@ -243,8 +267,8 @@ class ContextPolicy:
             raise ValueError("allowed_context_keys contains an invalid key")
         numeric_values = (
             self.max_sources,
-            self.max_chars_per_source,
-            self.max_total_chars,
+            self.max_utf8_bytes_per_source,
+            self.max_total_utf8_bytes,
             self.freshness_seconds,
         )
         if any(isinstance(value, bool) or not isinstance(value, int) for value in numeric_values):
@@ -253,10 +277,10 @@ class ContextPolicy:
             raise ValueError("allow_http_urls must be boolean")
         if not 1 <= self.max_sources <= 10:
             raise ValueError("max_sources must be between 1 and 10")
-        if not 1 <= self.max_chars_per_source <= 1500:
-            raise ValueError("max_chars_per_source must be between 1 and 1500")
-        if not 1000 <= self.max_total_chars <= 20_000:
-            raise ValueError("max_total_chars must be between 1000 and 20000")
+        if not 1 <= self.max_utf8_bytes_per_source <= MAX_SOURCE_UTF8_BYTES:
+            raise ValueError("max_utf8_bytes_per_source must be between 1 and 1500")
+        if not 1000 <= self.max_total_utf8_bytes <= MAX_CONTEXT_PACK_UTF8_BYTES:
+            raise ValueError("max_total_utf8_bytes must be between 1000 and 6144")
         if not 1 <= self.freshness_seconds <= 86_400:
             raise ValueError("freshness_seconds must be between 1 and 86400")
         object.__setattr__(self, "allowed_scopes", MappingProxyType(scopes))
@@ -300,16 +324,70 @@ def _optional_text(row: Mapping[str, Any], name: str, path: str, *, max_length: 
     return clean
 
 
-def _text_chars(value: Any) -> int:
-    if isinstance(value, str):
-        return len(value)
+def _wire_json_value(value: Any) -> Any:
+    """Project an in-progress pack skeleton exactly like Pydantic JSON mode."""
+
     if isinstance(value, datetime):
-        return len(value.isoformat())
+        rendered = value.isoformat()
+        return rendered[:-6] + "Z" if rendered.endswith("+00:00") else rendered
     if isinstance(value, Mapping):
-        return sum(len(str(key)) + _text_chars(item) for key, item in value.items())
+        return {str(key): _wire_json_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple, set, frozenset)):
-        return sum(_text_chars(item) for item in value)
-    return 0
+        return [_wire_json_value(item) for item in value]
+    return value
+
+
+def _utf8_bytes(value: str) -> int:
+    return len(value.encode("utf-8"))
+
+
+def _serialized_utf8_bytes(value: Any) -> int:
+    return _utf8_bytes(json.dumps(
+        _wire_json_value(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ))
+
+
+def _json_string_payload_utf8_bytes(value: str) -> int:
+    # Subtract the two surrounding JSON quotes; the skeleton already contains them
+    # for its empty source-content placeholder.
+    return _utf8_bytes(json.dumps(value, ensure_ascii=False)) - 2
+
+
+def _truncate_to_json_utf8_bytes(value: str, maximum: int) -> str:
+    """Return the longest prefix whose escaped JSON payload fits a UTF-8 budget."""
+
+    if maximum <= 0:
+        return ""
+    if _json_string_payload_utf8_bytes(value) <= maximum:
+        return value
+    low, high = 0, len(value)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if _json_string_payload_utf8_bytes(value[:middle]) <= maximum:
+            low = middle
+        else:
+            high = middle - 1
+    return value[:low]
+
+
+def _truncate_to_utf8_bytes(value: str, maximum: int) -> str:
+    """Return the longest Unicode prefix whose UTF-8 encoding fits ``maximum``."""
+
+    if maximum <= 0:
+        return ""
+    if _utf8_bytes(value) <= maximum:
+        return value
+    low, high = 0, len(value)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if _utf8_bytes(value[:middle]) <= maximum:
+            low = middle
+        else:
+            high = middle - 1
+    return value[:low]
 
 
 class ContextGuard:
@@ -496,8 +574,10 @@ class ContextGuard:
         if not isinstance(query, str) or not query.strip():
             raise ContextGuardError("query_required", "query")
         clean_query = self._pseudonymize(query.strip(), identities)
-        if len(clean_query) > 4000:
-            raise ContextGuardError("text_too_long", "query")
+        if _utf8_bytes(clean_query) > MAX_QUERY_UTF8_BYTES:
+            # A query is intent, not optional context. Silent prefix truncation can
+            # change its meaning, so overflow must stop before any remote call.
+            raise ContextGuardError("query_too_large", "query")
         self._check_sensitive(clean_query, "query")
 
         selected_plus_one = list(islice(iter(sources), self.policy.max_sources + 1))
@@ -544,9 +624,13 @@ class ContextGuard:
                 content.strip(), identities, f"{path}.content"
             )
             self._check_sensitive(title, f"{path}.title")
-            truncated = len(content) > self.policy.max_chars_per_source
+            truncated = (
+                _utf8_bytes(content) > self.policy.max_utf8_bytes_per_source
+            )
             if truncated:
-                content = content[: self.policy.max_chars_per_source]
+                content = _truncate_to_utf8_bytes(
+                    content, self.policy.max_utf8_bytes_per_source,
+                )
             url = _optional_text(raw, "url", path, max_length=2048)
             self._validate_url(kind, url, f"{path}.url")
             partial = raw.get("partial", False)
@@ -597,7 +681,7 @@ class ContextGuard:
                 separators=(",", ":"),
                 allow_nan=False,
             )
-            if len(content_json) > 4000:
+            if _utf8_bytes(content_json) > MAX_ROLE_CONTEXT_UTF8_BYTES:
                 raise ContextGuardError("role_context_too_large", f"{path}.value")
             observed_at = _datetime(raw.get("observed_at"), f"{path}.observed_at")
             if observed_at > now and (observed_at - now).total_seconds() > 60:
@@ -706,19 +790,48 @@ class ContextGuard:
             "payload_schema_json": payload_schema_json,
             "payload_schema_sha256": payload_schema_sha256,
         }
-        # ``RoleContextV1`` bounds each value, but eight individually valid 4k values
-        # can still exceed the EvidencePack-wide 20k budget before source content is
+        # Reserve every flag that the budget reducer itself can add.  This makes the
+        # skeleton conservatively at least as large as the final JSON envelope while
+        # still allocating all remaining capacity to source content.
+        budget_flags = tuple(dict.fromkeys((
+            *flags,
+            "partial_role_context",
+            "role_context_limit",
+            "stale_role_context",
+            "total_truncated",
+            "source_truncated",
+        )))
+
+        def budget_skeleton() -> dict[str, Any]:
+            return {
+                **skeleton,
+                "role_context": prepared_context,
+                "freshness": "mixed",
+                # ``false`` is one character longer than ``true`` in JSON.
+                "partial": False,
+                "flags": budget_flags,
+            }
+
+        # ``RoleContextV1`` bounds each value, but eight individually valid values can
+        # still exceed the EvidencePack-wide byte budget before source content is
         # considered.  Keep the upstream priority order and progressively redact/drop
         # only the lowest-priority context rows until metadata fits.  Never slice JSON:
         # a typed omission remains valid, is integrity-hashed, and makes the pack
         # explicitly partial so freshness-sensitive drafting Roles fail closed.
         budget_omitted_context_rows: set[int] = set()
-        while _text_chars(skeleton) > self.policy.max_total_chars and prepared_context:
+        while (
+            _serialized_utf8_bytes(budget_skeleton())
+            > self.policy.max_total_utf8_bytes
+            and prepared_context
+        ):
             row = prepared_context[-1]
             row_marker = id(row)
             if row_marker not in budget_omitted_context_rows:
                 omitted_json = json.dumps(
-                    {"omitted": True, "originalChars": len(row["content_json"])},
+                    {
+                        "omitted": True,
+                        "originalUtf8Bytes": _utf8_bytes(row["content_json"]),
+                    },
                     ensure_ascii=False,
                     sort_keys=True,
                     separators=(",", ":"),
@@ -736,20 +849,23 @@ class ContextGuard:
                 budget_omitted_context_rows.discard(row_marker)
                 if "role_context_limit" not in flags:
                     flags.append("role_context_limit")
-            skeleton["role_context"] = prepared_context
-        remaining = self.policy.max_total_chars - _text_chars(skeleton)
+        remaining = (
+            self.policy.max_total_utf8_bytes
+            - _serialized_utf8_bytes(budget_skeleton())
+        )
         if remaining < 0:
             raise ContextGuardError("context_too_large", "metadata")
         for row in prepared_sources:
             content = row["content"]
-            if len(content) > remaining:
-                row["content"] = content[:remaining]
+            encoded_bytes = _json_string_payload_utf8_bytes(content)
+            if encoded_bytes > remaining:
+                row["content"] = _truncate_to_json_utf8_bytes(content, remaining)
                 row["truncated"] = True
                 if "total_truncated" not in flags:
                     flags.append("total_truncated")
                 if "source_truncated" not in flags:
                     flags.append("source_truncated")
-            remaining -= len(row["content"])
+            remaining -= _json_string_payload_utf8_bytes(row["content"])
             row["content_sha256"] = hashlib.sha256(
                 row["content"].encode("utf-8")
             ).hexdigest()
@@ -800,14 +916,21 @@ class ContextGuard:
             )
         except ValidationError as exc:
             raise ContextGuardError("contract_validation_failed", "evidence_pack") from exc
-        validate_pack_safety(pack, max_total_chars=self.policy.max_total_chars)
+        validate_pack_safety(
+            pack, max_total_utf8_bytes=self.policy.max_total_utf8_bytes,
+        )
         return pack
 
 
 __all__ = [
+    "canonical_evidence_pack_json",
     "ContextGuard",
     "ContextGuardError",
     "ContextPolicy",
+    "MAX_CONTEXT_PACK_UTF8_BYTES",
+    "MAX_QUERY_UTF8_BYTES",
+    "MAX_ROLE_CONTEXT_UTF8_BYTES",
+    "MAX_SOURCE_UTF8_BYTES",
     "assert_safe_outbound_text",
     "forbidden_authority_key",
     "validate_pack_safety",

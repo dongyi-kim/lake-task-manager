@@ -111,6 +111,7 @@ def test_typed_target_answer_may_replace_the_prior_jira_key():
     patch = session._turn_start_patch("DL-9201로 할게", prior)
 
     assert patch["turn_continuation"] is True
+    assert patch["continuation_answer"] == "DL-9201로 할게"
     assert patch["request_plan"] == prior["request_plan"]
     assert patch["continuation_contract"]["target_keys"] == ["DL-9201"]
     assert patch["continuation_contract"]["decisions"][-1]["value"] == "DL-9201"
@@ -1646,7 +1647,13 @@ def test_modify_end_to_end_updates_the_real_ticket(monkeypatch):
     from app.agent.tools import _ctx
     import app.agent.tools as T
 
-    key = _ctx.client().search_issues("ORDER BY created DESC", max_results=5)[0]["key"]
+    # The mock world's newest fixture may legitimately be Done.  This scenario is
+    # specifically the editable-ticket path; completed-ticket rejection is covered
+    # separately and must not be weakened to make this end-to-end test pass.
+    key = _ctx.client().search_issues(
+        "statusCategory != done ORDER BY created DESC", max_results=5,
+    )[0]["key"]
+    assert _ctx.client().ticket_badge(key)["statusCategory"] != "done"
     plan = {"key": key, "changes": {"duedate": "2026-11-11"},
             "comment": "의존 작업 지연으로 일정 조정", "why": "일정 조정"}
 

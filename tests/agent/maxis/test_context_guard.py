@@ -6,6 +6,11 @@ import json
 import pytest
 
 from app.agent.maxis import ContextGuard, ContextGuardError, ContextPolicy
+from app.agent.maxis.context_guard import (
+    MAX_CONTEXT_PACK_UTF8_BYTES,
+    MAX_QUERY_UTF8_BYTES,
+    canonical_evidence_pack_json,
+)
 
 
 _PAYLOAD_SCHEMA = {
@@ -408,7 +413,7 @@ def test_context_guard_reduces_low_priority_role_context_to_total_budget(now):
     rows = [{
         "context_id": f"rctx-{index}",
         "name": key,
-        "value": "가" * 3900,
+        "value": "a" * 3900,
         "observed_at": now,
         "partial": False,
     } for index, key in enumerate(keys)]
@@ -428,3 +433,59 @@ def test_context_guard_reduces_low_priority_role_context_to_total_budget(now):
     assert {"partial_role_context", "role_context_limit"}.issubset(pack.flags)
     assert len(pack.role_context) < len(rows)
     assert json.loads(pack.role_context[-1].content_json)["omitted"] is True
+
+
+def test_context_guard_budgets_exact_serialized_json_including_escaping(
+    context_guard, now,
+):
+    # Bound the exact wire representation: escaping and multibyte text must consume
+    # the same conservative budget as the serialized Dify paragraph.
+    rows = [
+        _source(index, now, content=("\\\"" * 750))
+        for index in range(10)
+    ]
+    pack = context_guard.build(
+        request_id="req-exact-wire-budget",
+        use_case="task_planner",
+        query="\\" * MAX_QUERY_UTF8_BYTES,
+        payload_schema=_PAYLOAD_SCHEMA,
+        user_identity="employee",
+        sources=rows,
+        requested_at=now,
+    )
+    wire = canonical_evidence_pack_json(pack)
+
+    assert len(wire.encode("utf-8")) <= MAX_CONTEXT_PACK_UTF8_BYTES
+    assert len(pack.query.encode("utf-8")) <= MAX_QUERY_UTF8_BYTES
+    assert pack.partial is True
+    assert {"total_truncated", "source_truncated"}.issubset(pack.flags)
+
+
+def test_context_guard_accepts_exact_query_byte_boundary_and_rejects_overflow(
+    context_guard, now,
+):
+    exact = "가" * 341 + "a"
+    assert len(exact.encode("utf-8")) == MAX_QUERY_UTF8_BYTES
+    pack = context_guard.build(
+        request_id="req-query-boundary",
+        use_case="task_planner",
+        query=exact,
+        payload_schema=_PAYLOAD_SCHEMA,
+        user_identity="employee",
+        sources=[],
+        requested_at=now,
+    )
+    assert pack.query == exact
+    assert "query_truncated" not in pack.flags
+
+    with pytest.raises(ContextGuardError) as caught:
+        context_guard.build(
+            request_id="req-query-overflow",
+            use_case="task_planner",
+            query=exact + "a",
+            payload_schema=_PAYLOAD_SCHEMA,
+            user_identity="employee",
+            sources=[],
+            requested_at=now,
+        )
+    assert caught.value.code == "query_too_large"

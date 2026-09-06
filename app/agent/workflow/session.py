@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import re as _re
 import copy as _copy
+import hashlib as _hashlib
+import json as _json
 
 from dataclasses import dataclass
 import logging
@@ -450,7 +452,8 @@ def _draft_refinement_repeats_subject(text: str, prior: dict) -> bool:
 _TURN_DERIVED_EMPTY = {
     "intent": "", "playbook": "", "keywords": [], "module": "", "mentioned_keys": [],
     "sufficient": False, "answer_depth": "", "request_plan": {}, "request_refinement": {},
-    "continuation_contract": {}, "question_receipt_projection": {},
+    "continuation_contract": {}, "continuation_answer": "",
+    "question_receipt_projection": {},
     "query_plan": {}, "query_results": [], "query_artifacts": {},
     "materialized_ticket_sources": {},
     "assignment_completion": {}, "bulk_targets": [],
@@ -464,6 +467,7 @@ _TURN_DERIVED_EMPTY = {
     "reply": "", "error": "", "turns": 0, "execution_receipt": {},
     "change_audit_binding": {},
     "query_evidence_attestations": {},
+    "role_context_carryover": {},
     "evidence_workspace": {}, "freshness": {}, "quality_gate": {},
     "repair_budget": zero_typed_repair_budget(),
 }
@@ -724,13 +728,18 @@ def _turn_start_patch(
                  turn_reset_reason="interview-answer" if continuation else "new-or-revised-request",
                  turn_attempt_id=uuid.uuid4().hex,
                  correlation_id=current_correlation or uuid.uuid4().hex,
-                 correlation_started_at=turn_started_at)
+                 correlation_started_at=turn_started_at,
+                 # Keep only this turn's bounded answer.  The durable ``messages``
+                 # transcript remains local and never crosses the MAXIS boundary.
+                 continuation_answer=(str(text or "").strip()[:1000]
+                                      if continuation else ""))
     if continuation:
         # RequestArchitect owns these bounded planning fields.  A true continuation keeps
         # them so a deterministic field-only fast path can reuse the already classified
         # request without reconstructing its subject from the short answer.  Query plans and
         # query results deliberately stay in ``_TURN_DERIVED_EMPTY``: a changed parent/scope/
         # due field may require a fresh bounded query, and graph routing decides that below.
+        carried_keys = []
         for key in ("intent", "request_text", "request_plan", "playbook", "keywords",
                     "module", "mentioned_keys", "sufficient", "answer_depth",
                     "pre_survey", "seed_map", "web_context", "topic_dossier",
@@ -741,6 +750,37 @@ def _turn_start_patch(
                 patch[key] = (_bounded_materialized_ticket_sources(prior[key])
                               if key == "materialized_ticket_sources"
                               else _copy.deepcopy(prior[key]))
+                carried_keys.append(key)
+        # Preserve the original observation time only while the carried value is byte-for-
+        # byte equivalent in canonical JSON.  A later Role that genuinely recomputes the
+        # field changes its digest and therefore receives this turn's timestamp in the
+        # outbound ContextGuard.  This prevents stale state from becoming fresh merely
+        # because the user answered an unrelated interview question.
+        previous_carryover = (
+            prior.get("role_context_carryover")
+            if isinstance(prior.get("role_context_carryover"), dict)
+            else {}
+        )
+        previous_default = str(prior.get("correlation_started_at") or "").strip()
+        carryover = {}
+        for key in carried_keys:
+            try:
+                encoded = _json.dumps(
+                    patch[key], ensure_ascii=False, sort_keys=True,
+                    separators=(",", ":"), allow_nan=False,
+                )
+            except (TypeError, ValueError):
+                continue
+            digest = _hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+            old = previous_carryover.get(key)
+            observed_at = (
+                str(old.get("observed_at") or "").strip()
+                if isinstance(old, dict) and old.get("sha256") == digest
+                else previous_default
+            )
+            if observed_at:
+                carryover[key] = {"sha256": digest, "observed_at": observed_at}
+        patch["role_context_carryover"] = carryover
         contract = build_continuation_contract(
             {**prior, "turn_continuation": True},
             existing=prior.get("continuation_contract"),
@@ -920,6 +960,32 @@ def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "",
     return out
 
 
+def _prepare_resume_runtime(
+    graph, thread_id: str, *, checkpoint_state: dict | None = None,
+) -> dict:
+    """Verify a resume pin, migrating only a clearly all-local legacy checkpoint."""
+
+    from app.agent.maxis.backend import prepare_thread_runtime, verify_thread_runtime
+
+    pinned = dict(
+        checkpoint_state
+        if checkpoint_state is not None
+        else (graph.get_state(_config(thread_id)).values or {})
+    )
+    if not pinned.get("runtime_profile_fingerprint"):
+        # An absent checkpoint is not a legacy conversation and must retain the old
+        # fail-closed behavior. ``prepare_thread_runtime({})`` would otherwise create a
+        # fresh pin for an approval resume that has no paused graph state.
+        if not pinned:
+            verify_thread_runtime(pinned)
+            return pinned
+        runtime_pin = prepare_thread_runtime(pinned)
+        graph.update_state(_config(thread_id), runtime_pin)
+        pinned.update(runtime_pin)
+    verify_thread_runtime(pinned)
+    return pinned
+
+
 def resume(thread_id: str, token: str, overrides: dict = None) -> dict:
     """사용자가 승인했다. 멈춰 있던 자리(ActionExecutor)에서 다시 굴린다.
 
@@ -934,10 +1000,11 @@ def resume(thread_id: str, token: str, overrides: dict = None) -> dict:
     with question_turn_lock(thread_id):
         pinned = {}
         try:
-            from app.agent.maxis.backend import verify_thread_runtime
-
-            pinned = get_graph().get_state(_config(thread_id)).values or {}
-            verify_thread_runtime(dict(pinned))
+            graph = get_graph()
+            pinned = dict(graph.get_state(_config(thread_id)).values or {})
+            pinned = _prepare_resume_runtime(
+                graph, thread_id, checkpoint_state=pinned,
+            )
         except Exception as exc:
             from app.agent.maxis.backend import MaxisRuntimeError
             if isinstance(exc, MaxisRuntimeError):

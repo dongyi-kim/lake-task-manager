@@ -1,6 +1,8 @@
 contract: ltm-maxis-dify-bundle.v1
 registry: config/maxis-workflows.yml
 response_schema: deploy/maxis-dify/contracts/remote-role-result.v1.schema.json
+contract_guard_code: deploy/maxis-dify/code/contract_guard.py
+knowledge_guard_code: deploy/maxis-dify/code/knowledge_guard.py
 common_prompt: deploy/maxis-dify/prompts/common.md
 knowledge_source_manifest: config/maxis-knowledge.yml
 knowledge_evals: deploy/maxis-dify/knowledge-evals.yml
@@ -23,7 +25,7 @@ start_variable_control:
   knowledge_version: text-input
 
 start_variable_min_capacity:
-  context_pack: 20000
+  context_pack: 6144
   role_id: 128
   correlation_id: 128
   output_contract: 128
@@ -32,12 +34,63 @@ start_variable_min_capacity:
 
 knowledge_retrieval_contract:
   required: true
-  nodes: release_sentinel_and_role_knowledge
+  # Native Dify applies the environment-bound Role ACL metadata filter before
+  # retrieval; the pre-LLM guard independently enforces the same policy.
+  nodes: release_sentinel_role_acl_key_role_knowledge_and_pre_llm_guard
   query: LTM_RELEASE_SENTINEL_V1
   role_query_source: sys.query
+  llm_input_source: knowledge_guard.model_input_plus_validated_role_knowledge_context
+  llm_context_source: role_knowledge.result
+  llm_context_gate: knowledge_guard_policy_allow_only
+  role_top_k: 2
+  role_score_threshold_enabled: false
+  role_score_threshold: 0
+  role_metadata_filtering_mode: manual
+  role_metadata_filter_name: ltm_allowed_roles_v1
+  role_metadata_filter_operator: contains
+  # Dify 1.11.1 reads only the first segment of a multi-segment condition value.
+  # Build the delimited key first, then pass one selector segment to retrieval.
+  role_acl_key_template: '|{{ role_id }}|'
+  role_metadata_filter_value: '{{#role_acl_key.output#}}'
+  role_metadata_filter_value_segments: 1
+  role_metadata_filter_runtime_compatibility: dify-1.11.1
+  role_metadata_filter_field_binding: knowledge.role_metadata_field_id
+  role_metadata_filter_condition_id: workflow_unique_stable_uuid
+  sentinel_top_k: 1
+  sentinel_score_threshold_enabled: false
+  sentinel_score_threshold: 0
+  sentinel_transport: knowledge_guard_verified_proof
   sentinel_prefix: LTM_RELEASE_SENTINEL_V1=
   response_field: knowledge_proof
   expected_digest_source: active_profile_only
+
+knowledge_guard_contract:
+  required: true
+  input_shape: dify_array_object_content_and_metadata
+  identity_source: metadata_only
+  required_metadata_fields:
+    - dataset_id
+    - document_id
+    - document_name
+  role_policy: exact_workflow_role_document_allowlist
+  context_pack_max_utf8_bytes: 6144
+  query_max_utf8_bytes: 1024
+  max_items: 2
+  max_utf8_bytes_per_item: 768
+  max_total_utf8_bytes: 1024
+  sentinel_max_utf8_bytes: 512
+  scalar_max_utf8_bytes: 128
+  model_input_max_utf8_bytes: 9000
+  output_type: canonical_json_string_verified_proof_and_policy_decision
+  policy_decision_output: policy_decision
+  allow_value: allow
+  denied_result_output: denied_result
+  llm_receives_role_retrieval_context: true
+  llm_receives_unvalidated_retrieval: false
+  llm_context_identity: same_role_knowledge_result_as_guard_input
+  llm_context_treatment: untrusted_policy_attribution_only
+  knowledge_context_duplication: intentional_for_contract_and_native_attribution
+  llm_receives_direct_start_or_query: false
 
 # These are builder settings, not prompt suggestions. A remote node failure must be
 # visible to LTM so it can fail closed and preserve a truthful audit trail.
@@ -46,14 +99,24 @@ execution_policy:
   automatic_retry: disabled
   default_value_on_error: forbidden
   failure_branch_answer: forbidden
+  policy_denial_branch_answer: deterministic_guard_output
   model_fallback: forbidden
   conversation_mode: stateless
   client_conversation_id: empty
   auto_generate_name: false
 
+# Bound generated JSON before it reaches either the Dify Code node or LTM's byte guard.
+# Editor output keeps the larger budget because it can contain complete rich-text drafts;
+# the compact PMO brief is intentionally tighter.
+llm_output_token_limits:
+  agent_core: 4096
+  pmo_brief: 2048
+  editor_author: 4096
+
 workflows:
   agent_core:
     app_type: chatflow
+    dsl: deploy/maxis-dify/dsl/ltm-agent-core-2026.09.yml
     endpoint: /chat-messages
     response_mode: blocking
     conversation_mode: stateless
@@ -62,14 +125,13 @@ workflows:
     roles:
       - request_architect
       - query_specialist
-      - research_analyst
       - knowledge_curator
       - work_architect
-      - people_advisor
       - auditor
       - result_integrator
   pmo_brief:
     app_type: chatflow
+    dsl: deploy/maxis-dify/dsl/ltm-pmo-brief-2026.09.yml
     endpoint: /chat-messages
     response_mode: blocking
     conversation_mode: stateless
@@ -79,6 +141,7 @@ workflows:
       - portfolio_analyst
   editor_author:
     app_type: chatflow
+    dsl: deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml
     endpoint: /chat-messages
     response_mode: blocking
     conversation_mode: stateless

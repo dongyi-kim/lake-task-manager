@@ -14,6 +14,11 @@ from app.agent.maxis import profiles  # noqa: E402
 from app.infra import prefs  # noqa: E402
 
 
+AGENT_WORKFLOW_ID = "22222222-2222-4222-8222-222222222222"
+EDITOR_WORKFLOW_ID = "33333333-3333-4333-8333-333333333333"
+PMO_WORKFLOW_ID = "44444444-4444-4444-8444-444444444444"
+
+
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     import app.infra.settings as settings
@@ -21,8 +26,13 @@ def client(monkeypatch, tmp_path):
     from app.main import app
 
     monkeypatch.setattr(settings, "CACHE_DIR", tmp_path)
-    for name in ("LAKE_MAXIS_PROFILE", *profiles.CONFIG_ENV_NAMES.values()):
+    for name in (
+        "LAKE_MAXIS_PROFILE", *profiles.CONFIG_ENV_NAMES.values(),
+        *profiles.ALLOWED_HOSTS_ENV_NAMES.values(),
+    ):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LAKE_MAXIS_DEV_ALLOWED_HOSTS", "dev.maxis.example")
+    monkeypatch.setenv("LAKE_MAXIS_PROD_ALLOWED_HOSTS", "prod.maxis.example")
     monkeypatch.setattr(pmo_tools, "_is_manager", lambda **_kwargs: True)
     yield TestClient(app)
 
@@ -102,9 +112,15 @@ def test_knowledge_eval_attestation_round_trips_and_omitted_ui_field_is_preserve
         "remoteLogMode": "redacted",
         "remoteLogRetentionDays": 14,
         "workflows": {
-            "agent_core": {"binding": "agent_core", "version": "core-1"},
-            "editor_author": {"binding": "editor_author", "version": "editor-1"},
-            "pmo_brief": {"binding": "pmo_brief", "version": "pmo-1"},
+            "agent_core": {
+                "binding": "agent_core", "version": AGENT_WORKFLOW_ID,
+            },
+            "editor_author": {
+                "binding": "editor_author", "version": EDITOR_WORKFLOW_ID,
+            },
+            "pmo_brief": {
+                "binding": "pmo_brief", "version": PMO_WORKFLOW_ID,
+            },
         },
     })
     assert configured.status_code == 200
@@ -123,10 +139,11 @@ def test_knowledge_eval_attestation_round_trips_and_omitted_ui_field_is_preserve
     })
     assert response.status_code == 200
     public = response.json()["profiles"][1]["knowledgeEvalAttestation"]
-    assert public["valid"] is True
+    assert public["bindingValid"] is True
+    assert public["valid"] is False
     assert public["attestation"]["outcome"] == "passed"
     assert public["attestation"]["caseCount"] == 25
-    assert public["verification"] == "metadata_binding_only_external_artifact_not_read"
+    assert public["verification"] == "metadata_binding_only_signed_artifact_not_verified"
 
     # Older clients/UI do not know this field; an unrelated partial patch must not
     # silently clear the already-attested release metadata.

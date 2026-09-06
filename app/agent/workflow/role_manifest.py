@@ -43,6 +43,10 @@ class RoleSpec:
     # ToolAgent may use a cheaper qualified lane to choose tools while keeping evidence
     # synthesis on ``execution_layer``. None means the main layer is used for both stages.
     decision_layer: ExecutionLayer | None = None
+    # Explicit outbound state projection for the MAXIS semantic runtime. This stays
+    # deliberately narrower than ``input_keys``: transcripts, identities, capabilities,
+    # raw connector rows, and execution receipts must never cross by implication.
+    remote_context_keys: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         expected = "deterministic" if self.execution_layer == "deterministic" else "complex"
@@ -68,11 +72,15 @@ ROLE_SPECS: dict[str, RoleSpec] = {
          "keywords", "module", "mentioned_keys", "sufficient", "answer_depth",
          "turn_continuation", "situation", "evidence", "materialized_ticket_sources",
          "structure_plan", "draft", "questions", "approval_token", "continuation_contract",
-         "question_receipt_projection"),
+         "question_receipt_projection", "request_refinement"),
         ("intent", "keywords", "module", "mentioned_keys", "sufficient", "playbook",
          "answer_depth", "request_plan", "request_refinement", "request_text", "questions", "trace",
          "continuation_contract"),
         execution_layer="lightweight_semantic",
+        remote_context_keys=(
+            "request_plan", "continuation_contract", "request_refinement",
+            "structure_plan", "draft", "questions", "situation", "evidence",
+        ),
     ),
     "query_specialist": RoleSpec(
         "query_specialist", "Query Specialist", "complex", "fast_structured",
@@ -81,6 +89,9 @@ ROLE_SPECS: dict[str, RoleSpec] = {
          "turn_continuation", "continuation_contract"),
         ("query_plan",),
         execution_layer="lightweight_semantic",
+        remote_context_keys=(
+            "request_plan", "keywords", "mentioned_keys", "continuation_contract",
+        ),
     ),
     "query_runner": RoleSpec(
         "query_runner", "Query Runner", "deterministic", "fast_structured",
@@ -107,15 +118,22 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         "Curates research into a reusable brief of concepts, internal context, sources, and gaps.",
         ("situation", "evidence", "related_docs", "web_context", "topic_dossier"),
         ("knowledge_brief",),
+        remote_context_keys=("situation", "evidence", "related_docs"),
     ),
     "portfolio_analyst": RoleSpec(
         "portfolio_analyst", "Portfolio Analyst", "complex", "reasoning",
         "Interprets progress, workload, staleness, and activity as PMO risks and priorities.",
         ("messages", "intent", "mentioned_keys", "module", "user_id", "user_role",
-         "pre_survey", "query_results", "group_activity", "ticket_progress"),
+         "pre_survey", "query_results", "group_activity", "ticket_progress",
+         "portfolio_snapshot", "person_work_snapshot", "daily_priority_snapshot"),
         ("pmo_findings", "pmo_caution", "person_work_snapshot", "daily_priority_snapshot",
          "portfolio_snapshot", "group_activity", "ticket_progress"),
         ("portfolio",), decision_layer="lightweight_semantic",
+        remote_context_keys=(
+            "intent", "mentioned_keys", "module", "portfolio_snapshot",
+            "group_activity", "ticket_progress", "person_work_snapshot",
+            "daily_priority_snapshot",
+        ),
     ),
     "work_architect": RoleSpec(
         "work_architect", "Work Architect", "complex", "reasoning",
@@ -125,6 +143,11 @@ ROLE_SPECS: dict[str, RoleSpec] = {
          "structure_notes", "request_refinement", "continuation_contract", "draft", "change_plan"),
         ("interpretation", "structure_plan", "structure_ok", "questions", "draft", "change_plan"),
         effect="draft", semantic_contract="semantic_projection",
+        remote_context_keys=(
+            "request_plan", "situation", "evidence", "related_docs", "pre_survey",
+            "structure_plan", "structure_notes", "request_refinement",
+            "continuation_contract", "draft", "change_plan",
+        ),
     ),
     "people_advisor": RoleSpec(
         "people_advisor", "People Advisor", "complex", "balanced",
@@ -135,9 +158,14 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         "auditor", "Auditor", "complex", "reasoning",
         "Audits schema, hierarchy, evidence, references, and request coverage; separates errors from warnings.",
         ("messages", "request_text", "request_plan", "keywords", "turn_continuation",
-         "materialized_ticket_sources", "continuation_contract", "structure_ok", "draft",
+         "materialized_ticket_sources", "continuation_contract", "structure_ok",
+         "structure_plan", "draft",
          "change_plan", "evidence", "revisions"),
         ("review", "revisions"), effect="draft", kind="guardrail",
+        remote_context_keys=(
+            "request_plan", "structure_ok", "structure_plan", "draft",
+            "change_plan", "evidence", "continuation_contract", "revisions",
+        ),
     ),
     "action_executor": RoleSpec(
         "action_executor", "Action Executor", "deterministic", "fast_structured",
@@ -159,12 +187,19 @@ ROLE_SPECS: dict[str, RoleSpec] = {
          "draft", "assignments", "change_plan", "continuation_contract", "review",
          "approval_token", "result", "execution_receipt", "error"),
         ("reply",), effect="respond",
+        remote_context_keys=(
+            "result", "review", "draft", "change_plan", "questions", "situation",
+            "evidence", "knowledge_brief", "pmo_findings", "pmo_caution",
+            "portfolio_snapshot", "group_activity", "ticket_progress",
+            "person_work_snapshot", "daily_priority_snapshot", "interpretation",
+        ),
     ),
     "editor_author": RoleSpec(
         "editor_author", "Editor Author", "complex", "balanced",
         "Drafts a description or comment while preserving existing editor content and ticket context.",
         ("ticket_key", "kind", "prompt", "seed_html", "user_id"),
         ("html", "note", "references"), effect="draft",
+        remote_context_keys=("ticket_key", "kind", "seed_html"),
     ),
 }
 

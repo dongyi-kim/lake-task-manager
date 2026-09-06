@@ -15,10 +15,8 @@ workflows:
     roles:
       - request_architect
       - query_specialist
-      - research_analyst
       - knowledge_curator
       - work_architect
-      - people_advisor
       - auditor
       - result_integrator
 

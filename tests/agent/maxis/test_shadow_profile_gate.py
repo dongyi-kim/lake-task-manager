@@ -10,6 +10,8 @@ from app.agent.maxis import backend, credentials, profiles, shadow_eval
 
 DATASET_ID = "11111111-1111-4111-8111-111111111111"
 WORKFLOW_ID = "22222222-2222-4222-8222-222222222222"
+EDITOR_WORKFLOW_ID = "33333333-3333-4333-8333-333333333333"
+PMO_WORKFLOW_ID = "44444444-4444-4444-8444-444444444444"
 SENTINEL_SHA = "a" * 64
 KNOWLEDGE_VERSION = "ltm-knowledge-2026.09"
 
@@ -29,9 +31,11 @@ def isolated_store(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "CACHE_DIR", tmp_path)
     for env in (
         "LAKE_MAXIS_PROFILE", *profiles.CONFIG_ENV_NAMES.values(),
-        *profiles.WORKFLOW_VERSION_ENV_NAMES.values(), *credentials.ENV_NAMES.values(),
+        *profiles.WORKFLOW_VERSION_ENV_NAMES.values(),
+        *profiles.ALLOWED_HOSTS_ENV_NAMES.values(), *credentials.ENV_NAMES.values(),
     ):
         monkeypatch.delenv(env, raising=False)
+    monkeypatch.setenv("LAKE_MAXIS_PROD_ALLOWED_HOSTS", "maxis.example")
     credentials.set_backend_for_tests(_TestCipher())
     yield
     shadow_eval.reset_for_tests()
@@ -62,8 +66,10 @@ def _configure_verified_prod(*, with_eval_attestation: bool = True) -> dict:
         "remote_log_retention_days": 0,
         "workflows": {
             "agent_core": {"binding": "agent_core", "version": WORKFLOW_ID},
-            "editor_author": {"binding": "editor_author", "version": "editor-1"},
-            "pmo_brief": {"binding": "pmo_brief", "version": "pmo-1"},
+            "editor_author": {
+                "binding": "editor_author", "version": EDITOR_WORKFLOW_ID,
+            },
+            "pmo_brief": {"binding": "pmo_brief", "version": PMO_WORKFLOW_ID},
         },
     })
     if with_eval_attestation:
@@ -76,9 +82,12 @@ def _configure_verified_prod(*, with_eval_attestation: bool = True) -> dict:
     profiles.credential_changed("prod")
     manifest = profiles.resolve_knowledge_manifest("prod", required=True)
     assert manifest is not None
+    _, keys, start_binding = profiles.start_probe("prod")
+    keys.clear()
     assert profiles.mark_probe("prod", True, {"workflows": {
         key: {
             "ok": True,
+            "appModeVerified": True,
             "executionContractVerified": True,
             "versionBindingVerified": True,
             "citationContractVerified": True,
@@ -86,7 +95,7 @@ def _configure_verified_prod(*, with_eval_attestation: bool = True) -> dict:
             "knowledgeManifestSha256": manifest.sha256,
         }
         for key in profiles.WORKFLOW_KEYS
-    }})
+    }}, start_binding=start_binding)
     return profiles.get("prod")
 
 
@@ -106,12 +115,12 @@ def _passing_sample(profile: dict, role_id: str) -> None:
     )
 
 
-def test_prod_candidate_can_shadow_but_cannot_promote_before_quality_gate():
+def test_prod_candidate_can_shadow_but_metadata_never_unlocks_authority():
     profile = _configure_verified_prod()
     assert profiles.activate("prod")["enabled"] is True
     assert profiles.set_routes({"agent_core": "shadow"})["agent_core"] == "shadow"
 
-    with pytest.raises(ValueError, match="shadow samples 0/5"):
+    with pytest.raises(ValueError, match="Signed external|signed external"):
         profiles.set_routes({"agent_core": "maxis"})
 
     roles = profiles._promotion_roles("agent_core")
@@ -122,16 +131,27 @@ def test_prod_candidate_can_shadow_but_cannot_promote_before_quality_gate():
         for _ in range(shadow_eval.MIN_PROMOTION_SAMPLES):
             _passing_sample(profile, role_id)
 
-    assert profiles.set_routes({"agent_core": "maxis"})["agent_core"] == "maxis"
+    with pytest.raises(ValueError, match="Signed external|signed external"):
+        profiles.set_routes({"agent_core": "maxis"})
+    assert profiles.route_for("agent_core") == "shadow"
     public = next(row for row in profiles.status()["profiles"] if row["name"] == "prod")
     assert public["promotion"]["agent_core"]["ready"] is True
     assert public["promotion"]["agent_core"]["privacy"] == "aggregate_metadata_only"
     assert set(public["promotion"]["agent_core"]["roles"]) == set(roles)
-    assert public["knowledgeEvalAttestation"]["valid"] is True
+    assert public["knowledgeEvalAttestation"]["bindingValid"] is True
+    assert public["knowledgeEvalAttestation"]["valid"] is False
     assert public["knowledgeEvalAttestation"]["attestation"]["outcome"] == "passed"
     assert public["knowledgeEvalAttestation"]["attestation"]["caseCount"] == 25
     assert public["knowledgeEvalAttestation"]["verification"] == (
-        "metadata_binding_only_external_artifact_not_read"
+        "metadata_binding_only_signed_artifact_not_verified"
+    )
+    assert any(
+        "Signed external Knowledge eval" in reason
+        for reason in public["knowledgeEvalAttestation"]["reasons"]
+    )
+    assert not any(
+        "Role ACL enforcement is not implemented" in reason
+        for reason in public["knowledgeEvalAttestation"]["reasons"]
     )
 
 
@@ -142,55 +162,35 @@ def test_one_agent_core_role_cannot_promote_the_whole_workflow():
     for _ in range(shadow_eval.MIN_PROMOTION_SAMPLES):
         _passing_sample(profile, "knowledge_curator")
 
-    with pytest.raises(ValueError, match="work_architect: shadow samples 0/5"):
-        profiles.set_routes({"agent_core": "maxis"})
+    status = profiles._workflow_promotion(profiles.resolve("prod"), "agent_core")
+    assert status["ready"] is False
+    assert any("work_architect: shadow samples 0/5" in reason for reason in status["reasons"])
 
 
-def test_prod_activation_with_existing_maxis_route_requires_exact_new_profile_gate():
+def test_prod_activation_with_legacy_maxis_route_is_hard_blocked():
+    from app.infra import prefs
+
     profile = _configure_verified_prod()
-    profiles.activate("prod")
-    profiles.set_routes({"agent_core": "shadow"})
     for role_id in profiles._promotion_roles("agent_core"):
         for _ in range(shadow_eval.MIN_PROMOTION_SAMPLES):
             _passing_sample(profile, role_id)
-    profiles.set_routes({"agent_core": "maxis"})
-
-    profiles.save("prod", {"knowledge_dataset_id": "33333333-3333-4333-8333-333333333333"})
-    credentials.save_for("prod", {
-        "agent_core": "prod-secret",
-        "editor_author": "editor-secret",
-        "pmo_brief": "pmo-secret",
-    })
-    profiles.credential_changed("prod")
-    manifest = profiles.resolve_knowledge_manifest("prod", required=True)
-    assert manifest is not None
-    profiles.mark_probe("prod", True, {"workflows": {
-        key: {
-            "ok": True,
-            "executionContractVerified": True,
-            "versionBindingVerified": True,
-            "citationContractVerified": True,
-            "knowledgeRetrievalVerified": True,
-            "knowledgeManifestSha256": manifest.sha256,
-        }
-        for key in profiles.WORKFLOW_KEYS
+    prefs.save_strict({"maxisRoutes": {
+        "agent_core": "maxis", "editor_author": "local", "pmo_brief": "local",
     }})
 
-    with pytest.raises(ValueError, match="Knowledge eval dataset_id"):
-        profiles.activate("prod")
-
-    profiles.save("prod", {"knowledge_eval_attestation": _eval_attestation()})
-    _mark_prod_probe_after_profile_change()
-    with pytest.raises(ValueError, match="shadow samples 0/5"):
+    with pytest.raises(ValueError, match="Signed external|signed external"):
         profiles.activate("prod")
 
 
 def _mark_prod_probe_after_profile_change() -> None:
     manifest = profiles.resolve_knowledge_manifest("prod", required=True)
     assert manifest is not None
+    _, keys, start_binding = profiles.start_probe("prod")
+    keys.clear()
     assert profiles.mark_probe("prod", True, {"workflows": {
         key: {
             "ok": True,
+            "appModeVerified": True,
             "executionContractVerified": True,
             "versionBindingVerified": True,
             "citationContractVerified": True,
@@ -198,7 +198,7 @@ def _mark_prod_probe_after_profile_change() -> None:
             "knowledgeManifestSha256": manifest.sha256,
         }
         for key in profiles.WORKFLOW_KEYS
-    }})
+    }}, start_binding=start_binding)
 
 
 def test_prod_shadow_activation_allowed_but_authority_requires_eval_attestation():
@@ -206,7 +206,7 @@ def test_prod_shadow_activation_allowed_but_authority_requires_eval_attestation(
     assert profiles.activate("prod")["enabled"] is True
     assert profiles.set_routes({"agent_core": "shadow"})["agent_core"] == "shadow"
 
-    with pytest.raises(ValueError, match="25-case Knowledge eval attestation"):
+    with pytest.raises(ValueError, match="not configured"):
         profiles.set_routes({"agent_core": "maxis"})
 
 
@@ -222,41 +222,33 @@ def test_eval_attestation_requires_an_explicit_25_case_pass_result(patch):
         profiles.save("prod", {"knowledge_eval_attestation": attestation})
 
 
-def test_removing_attestation_disables_existing_authoritative_runtime():
-    profile = _configure_verified_prod()
+def test_removing_attestation_invalidates_active_shadow_profile():
+    _configure_verified_prod()
     profiles.activate("prod")
     profiles.set_routes({"agent_core": "shadow"})
-    for role_id in profiles._promotion_roles("agent_core"):
-        for _ in range(shadow_eval.MIN_PROMOTION_SAMPLES):
-            _passing_sample(profile, role_id)
-    profiles.set_routes({"agent_core": "maxis"})
     assert profiles.active()["enabled"] is True
     pinned = backend.thread_runtime_pin()
 
     profiles.save("prod", {"knowledge_eval_attestation": {}})
 
-    assert profiles.route_for("agent_core") == "maxis"
+    assert profiles.route_for("agent_core") == "shadow"
     assert profiles.active()["enabled"] is False
     with pytest.raises(backend.MaxisRuntimeError, match="검증·활성화"):
         backend.verify_thread_runtime(pinned)
     _mark_prod_probe_after_profile_change()
-    with pytest.raises(ValueError, match="not configured"):
-        profiles.activate("prod")
+    assert profiles.activate("prod")["enabled"] is True
 
 
 def test_environment_attestation_change_invalidates_existing_authority(monkeypatch):
-    profile = _configure_verified_prod()
+    _configure_verified_prod()
     profiles.activate("prod")
     profiles.set_routes({"agent_core": "shadow"})
-    for role_id in profiles._promotion_roles("agent_core"):
-        for _ in range(shadow_eval.MIN_PROMOTION_SAMPLES):
-            _passing_sample(profile, role_id)
-    profiles.set_routes({"agent_core": "maxis"})
     before = profiles.active_fingerprint()
 
     changed = _eval_attestation()
     changed["evidence_id"] = "EVAL-ROTATED"
     changed["artifact_sha256"] = "c" * 64
+    monkeypatch.setenv("LAKE_MAXIS_PROFILE", "prod")
     monkeypatch.setenv(
         "LAKE_MAXIS_KNOWLEDGE_EVAL_ATTESTATION",
         json.dumps(changed, separators=(",", ":")),
@@ -264,3 +256,36 @@ def test_environment_attestation_change_invalidates_existing_authority(monkeypat
 
     assert profiles.active_fingerprint() != before
     assert profiles.active()["enabled"] is False
+
+
+def test_explicit_engine_cannot_bypass_thread_pin_verify_or_role_boundary():
+    _configure_verified_prod()
+    profiles.activate("prod")
+
+    with pytest.raises(backend.MaxisRuntimeError, match="release security gate"):
+        backend.thread_runtime_pin(engine="maxis", profile="prod")
+
+    pin = backend.thread_runtime_pin(engine="shadow", profile="prod")
+    maxis_routes = {
+        role_id: ("maxis" if mode == "shadow" else mode)
+        for role_id, mode in pin["runtime_role_routes"].items()
+    }
+    metadata = backend._profile_snapshot("prod", required=True)
+    forged = {
+        **pin,
+        "runtime_engine": "maxis",
+        "runtime_role_routes": maxis_routes,
+        "runtime_profile_fingerprint": backend._runtime_fingerprint(
+            metadata,
+            maxis_routes,
+            registry_digest=pin["runtime_registry_digest"],
+        ),
+    }
+    with pytest.raises(backend.MaxisRuntimeError, match="release security gate"):
+        backend.verify_thread_runtime(forged)
+
+    with pytest.raises(backend.MaxisRuntimeError, match="release security gate"):
+        backend.resolve_role("request_architect", {
+            "runtime_profile": "prod",
+            "runtime_role_routes": {"request_architect": "maxis"},
+        })

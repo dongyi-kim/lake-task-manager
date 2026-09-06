@@ -42,6 +42,7 @@ _PAYLOAD_CONTROL_FIELDS = frozenset({
     "outcome_refs", "outcome_contract_id", "user",
 })
 _GROUND_TOKEN = re.compile(r"[0-9A-Za-z가-힣]{2,}")
+_USER_INTENT_CANONICAL_PREFIX = "ltm:user-intent:"
 _DANGEROUS = (
     ("script", re.compile(r"<\s*/?\s*script\b", re.I)),
     ("active_content", re.compile(r"<\s*(?:iframe|object|embed|base|meta)\b", re.I)),
@@ -167,6 +168,46 @@ def _payload_control_field(field: str) -> bool:
     )
 
 
+def _source_free_control_payload(payload: Any, schema: Mapping[str, Any]) -> bool:
+    """Accept only a closed, schema-owned control object without source evidence.
+
+    A one-value ``const``/``enum`` is server-owned data, so the model has no freedom
+    to invent it.  Reject optional, narrative, defaulted, composite, or otherwise
+    open fields even when a general JSON Schema validator would accept the value.
+    """
+
+    properties = schema.get("properties")
+    required = schema.get("required")
+    if (
+        schema.get("type") != "object"
+        or schema.get("additionalProperties") is not False
+        or not isinstance(properties, Mapping)
+        or not isinstance(required, list)
+        or any(not isinstance(field, str) for field in required)
+        or len(required) != len(set(required))
+        or set(required) != set(properties)
+        or not isinstance(payload, Mapping)
+        or set(payload) != set(properties)
+    ):
+        return False
+    for field, raw_field_schema in properties.items():
+        if not isinstance(field, str) or not _payload_control_field(field):
+            return False
+        if not isinstance(raw_field_schema, Mapping) or "default" in raw_field_schema:
+            return False
+        has_const = "const" in raw_field_schema
+        raw_enum = raw_field_schema.get("enum")
+        has_single_enum = isinstance(raw_enum, list) and len(raw_enum) == 1
+        if has_const == has_single_enum:
+            return False
+        expected = raw_field_schema["const"] if has_const else raw_enum[0]
+        if isinstance(expected, (dict, list)) or type(payload[field]) is not type(expected):
+            return False
+        if payload[field] != expected:
+            return False
+    return True
+
+
 def _payload_assertions(value: Any, path: str = "", field: str = ""):
     """Yield non-empty narrative strings and their canonical JSON Pointers."""
     if isinstance(value, dict):
@@ -264,10 +305,15 @@ class ResponseGuard:
                 "knowledge_manifest_mismatch", "knowledge_manifest_sha256"
             )
         # `needs_input` and `blocked` are control outcomes, not partial Role results.
-        # Never validate/apply a half-built payload under the normal Role schema.
+        # Never retain a half-built payload or model-authored provenance sidecar
+        # under a control outcome.  The latter is projected into LTM state by
+        # ``_remote_state_patch`` and would otherwise become an uncoupled narrative
+        # channel even though no Role result was accepted.
         if remote.status != "ok":
             if remote.payload:
                 raise ResponseGuardError("non_ok_payload_must_be_empty", "payload")
+            if remote.claims or remote.payload_claims or remote.citations:
+                raise ResponseGuardError("non_ok_provenance_must_be_empty")
             return remote, None
         payload: T | dict[str, Any] | None = None
         if isinstance(payload_model, Mapping):
@@ -320,6 +366,7 @@ class ResponseGuard:
         for index, claim in enumerate(remote.claims):
             if claim.kind not in {"fact", "inference", "recommendation"}:
                 continue
+            path = f"claims[{index}].text"
             cited_source_ids = {
                 citations[citation_id].source_id
                 for citation_id in claim.citation_ids
@@ -330,6 +377,16 @@ class ResponseGuard:
                 for source_id in cited_source_ids
                 if source_id in sources
             ]
+            if claim.kind == "fact" and any(
+                source.kind == "ltm"
+                and source.canonical_id.startswith(_USER_INTENT_CANONICAL_PREFIX)
+                for source in cited_sources
+            ):
+                # A guarded user request proves only what should be planned or
+                # answered. It is not authoritative evidence about Jira, Knowledge,
+                # people, dates, status, or metrics and therefore cannot ground a
+                # remotely asserted fact.
+                raise ResponseGuardError("intent_source_fact_forbidden", path)
             supporting_text = [
                 text
                 for source in cited_sources
@@ -340,6 +397,15 @@ class ResponseGuard:
                 fact.text
                 for fact in facts
                 if cited_source_ids.intersection(fact.source_ids)
+            )
+            linked_metrics = [
+                metric
+                for metric in metrics
+                if cited_source_ids.intersection(metric.source_ids)
+            ]
+            supporting_text.extend(
+                " ".join((metric.label, str(metric.value), metric.unit))
+                for metric in linked_metrics
             )
 
             allowed_numbers: set[str] = set()
@@ -352,9 +418,8 @@ class ResponseGuard:
                 )
                 allowed_urls.update(_canonical_url(url) for url in _URL.findall(text))
                 allowed_identifiers.update(_ISSUE_IDENTIFIER.findall(text.upper()))
-            for metric in metrics:
-                if cited_source_ids.intersection(metric.source_ids):
-                    allowed_numbers.add(_number_token(str(metric.value), metric.unit))
+            for metric in linked_metrics:
+                allowed_numbers.add(_number_token(str(metric.value), metric.unit))
             allowed_urls.update(
                 _canonical_url(source.url) for source in cited_sources if source.url
             )
@@ -363,8 +428,6 @@ class ResponseGuard:
                 for source in cited_sources
                 for identifier in _ISSUE_IDENTIFIER.findall(source.canonical_id.upper())
             )
-
-            path = f"claims[{index}].text"
             for number, unit in _NUMERIC_CLAIM.findall(claim.text):
                 if _number_token(number, unit) not in allowed_numbers:
                     raise ResponseGuardError("citation_assertion_mismatch", path)
@@ -400,8 +463,6 @@ class ResponseGuard:
             return
 
         required = dict(_payload_assertions(remote.payload))
-        if not required:
-            return
         bindings = {row.path: row for row in remote.payload_claims}
         missing = sorted(set(required) - set(bindings))
         if missing:
@@ -416,11 +477,10 @@ class ResponseGuard:
             if not isinstance(pointed, str) or not pointed.strip():
                 raise ResponseGuardError("payload_claim_path_not_text", pointer)
             linked = [claims[claim_id] for claim_id in binding.claim_ids]
-            if any(
-                claim.kind in {"fact", "inference", "recommendation"}
-                and not claim.citation_ids
-                for claim in linked
-            ):
+            if any(not claim.citation_ids for claim in linked):
+                # An open_fact may remain an explicitly typed, unbound gap, but it
+                # cannot become a source-free justification for payload text merely
+                # because an unrelated source exists elsewhere in the pack.
                 raise ResponseGuardError("payload_claim_citation_required", pointer)
             assertion = _normalized_assertion(pointed)
             support = _normalized_assertion(" ".join(claim.text for claim in linked))
@@ -434,6 +494,33 @@ class ResponseGuard:
         result: BaseModel,
         evidence: EvidencePackV1 | None,
     ) -> None:
+        if (
+            isinstance(result, RemoteRoleResultV1)
+            and evidence is not None
+            and not evidence.sources
+        ):
+            if result.claims or result.payload_claims or result.citations:
+                # ``open_fact`` is not an escape hatch: allowing it here would let
+                # model-authored text cross the boundary without a server-owned source.
+                raise ResponseGuardError("source_free_provenance_forbidden")
+            if result.status == "ok" and not _source_free_control_payload(
+                result.payload, evidence.payload_schema()
+            ):
+                raise ResponseGuardError("source_free_payload_forbidden", "payload")
+        if isinstance(result, RemoteRoleResultV1):
+            if result.status == "ok" and result.warnings:
+                # ``warnings`` is otherwise an ungrounded free-text side channel.
+                # Successful results must express caveats as typed claims or use a
+                # non-ok control outcome instead.
+                raise ResponseGuardError("ok_has_warnings", "warnings")
+            for index, citation in enumerate(result.citations):
+                if citation.locator:
+                    # EvidencePack binds sources, facts, and metrics but supplies no
+                    # independent locator ledger.  A model-authored locator therefore
+                    # cannot cross the remote trust boundary.
+                    raise ResponseGuardError(
+                        "citation_locator_forbidden", f"citations[{index}].locator"
+                    )
         self._validate_data(result.model_dump(mode="json"), evidence)
         if isinstance(result, RemoteRoleResultV1):
             self._validate_claim_citations(result, evidence)

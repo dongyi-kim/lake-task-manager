@@ -11,7 +11,7 @@ governance:
   deployment_strategy: blue_green
   # Raw-file SHA-256 of deploy/maxis-dify/knowledge-evals.yml. The bundle validator
   # rejects drift; runtime attestation still does not inspect the external result file.
-  eval_suite_sha256: 02c6309e618cc6a706d6887ac14491ba397e49bab48399f769e61a8d8e597fec
+  eval_suite_sha256: 7b820caaaa8f4a8f6a9973d08898d5bdaa9eee6fd68994b8dc75fd9f2642b9d9
 
 chunking:
   strategy: markdown-headings-then-length.v1
@@ -51,7 +51,6 @@ documents:
     audience: all_ltm_users
     allowed_roles:
       - query_specialist
-      - research_analyst
       - knowledge_curator
       - portfolio_analyst
       - auditor
@@ -72,7 +71,6 @@ documents:
       - query_specialist
       - knowledge_curator
       - work_architect
-      - people_advisor
       - portfolio_analyst
       - auditor
 
@@ -90,7 +88,6 @@ documents:
       - request_architect
       - knowledge_curator
       - work_architect
-      - people_advisor
       - auditor
       - result_integrator
 
@@ -122,7 +119,6 @@ documents:
     audience: all_ltm_users
     allowed_roles:
       - query_specialist
-      - research_analyst
       - knowledge_curator
       - portfolio_analyst
       - auditor

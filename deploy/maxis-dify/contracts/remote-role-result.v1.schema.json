@@ -16,7 +16,8 @@
     "warnings",
     "workflow_version",
     "knowledge_version",
-    "knowledge_manifest_sha256"
+    "knowledge_manifest_sha256",
+    "knowledge_proof"
   ],
   "properties": {
     "contract": {"const": "remote-role-result.v1"},
@@ -24,11 +25,9 @@
       "enum": [
         "request_architect",
         "query_specialist",
-        "research_analyst",
         "knowledge_curator",
         "portfolio_analyst",
         "work_architect",
-        "people_advisor",
         "auditor",
         "result_integrator",
         "editor_author"
@@ -80,7 +79,14 @@
         "properties": {"status": {"enum": ["needs_input", "blocked"]}},
         "required": ["status"]
       },
-      "then": {"properties": {"payload": {"maxProperties": 0}}}
+      "then": {
+        "properties": {
+          "payload": {"maxProperties": 0},
+          "claims": {"maxItems": 0},
+          "payload_claims": {"maxItems": 0},
+          "citations": {"maxItems": 0}
+        }
+      }
     }
   ],
   "$defs": {

@@ -291,20 +291,22 @@ export default {
           </div>
           <div v-if="selected.stage === 'prod' && knowledgeEval" class="mx-promotion-gate"
                :class="knowledgeEvalReady ? 'on' : 'off'">
-            <b>Knowledge 원격 평가 {{ knowledgeEvalReady ? '증빙 결속 완료' : '대기' }}</b>
+            <b>Knowledge 원격 평가 {{ knowledgeEvalReady ? '권한 검증 완료' : '운영 권한 차단' }}</b>
             <span v-if="knowledgeEvalReady">
               25 / 25 passed · {{ knowledgeEval.attestation.evidenceId }} · {{ knowledgeEval.attestation.passedAt }}
             </span>
             <span v-else>
-              현재 dataset·manifest·workflow에 결속된 25-case 결과물이 필요합니다.
+              서명된 외부 25-case 결과물 검증과 pre-LLM Role ACL 구현이 필요합니다.
+              <template v-if="knowledgeEval.bindingValid"> metadata binding 확인됨 · 권한 증명 아님</template>
               <template v-if="knowledgeEval.expectedBinding && knowledgeEval.expectedBinding.profileMaterialSha256">
                 예상 binding {{ knowledgeEval.expectedBinding.profileMaterialSha256.slice(0, 16) }}…
               </template>
             </span>
           </div>
           <div v-if="selected.stage === 'prod'" class="ag-warn">
-            Knowledge 평가 값은 외부 결과물의 ID·SHA-256을 현재 배포에 결속하는 관리자 증빙입니다.
-            LTM이 결과물 원문이나 실제 Dify 평가 실행을 자동 검증했다는 뜻은 아닙니다.
+            Knowledge 평가 값은 외부 결과물의 ID·SHA-256을 현재 배포에 묶는 metadata입니다.
+            실제 Dify 평가 실행을 자동 검증했다는 뜻은 아닙니다. LTM이 artifact 본문·서명을
+            검증하지 않는 동안에는 운영 권한을 부여하지 않습니다.
           </div>
           <div v-if="selected.stage === 'prod'" class="mx-workflow">
             <div><b>Dify 원격 실행 로그 정책</b><span>운영 전 관리자 승인 증빙</span></div>
@@ -324,7 +326,7 @@ export default {
           <div v-for="w in workflowRows" :key="w.key" class="mx-workflow">
             <div><b>{{ w.label }}</b><span>{{ w.hint }}</span></div>
             <label class="ag-f"><span>Binding</span><input v-model="form.workflows[w.key].binding" readonly></label>
-            <label class="ag-f"><span>Workflow version</span><input v-model="form.workflows[w.key].version" :readonly="!canManage"></label>
+            <label class="ag-f"><span>게시 Workflow UUID</span><input v-model="form.workflows[w.key].version" placeholder="xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx" :readonly="!canManage"></label>
           </div>
           <button class="ag-ok inline" :disabled="!!busy || !canManage" @click="saveProfile">
             {{ busy === 'profile' ? '저장 중…' : '후보 프로필 저장' }}
@@ -379,7 +381,7 @@ export default {
             DEV는 합성 데이터 canary·Shadow 검증 전용이며 MAXIS를 최종 응답 주체로 지정할 수 없습니다.
           </div>
           <div v-if="selected.stage === 'prod' && !knowledgeEvalReady" class="ag-warn">
-            원격 Knowledge 25-case 통과 증빙 전에는 Shadow만 사용할 수 있으며 MAXIS 운영 경로는 저장할 수 없습니다.
+            서명된 원격 평가 검증과 결정적 pre-LLM Role ACL 전에는 Shadow만 사용할 수 있으며 MAXIS 운영 경로는 저장할 수 없습니다.
           </div>
           <div v-for="w in workflowRows" :key="'promotion-'+w.key">
             <div v-if="selected.stage === 'prod' && promotion(w.key)" class="mx-promotion-gate"

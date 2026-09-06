@@ -12,6 +12,7 @@ from app.infra import prefs
 DATASET_ID = "11111111-1111-4111-8111-111111111111"
 SENTINEL_SHA = hashlib.sha256(b"release-sentinel").hexdigest()
 KNOWLEDGE_VERSION = "ltm-knowledge-2026.09"
+WORKFLOW_ID = "22222222-2222-4222-8222-222222222222"
 
 
 class _TestCipher:
@@ -32,9 +33,11 @@ def isolated_store(monkeypatch, tmp_path):
         "LAKE_MAXIS_PROFILE",
         *profiles.CONFIG_ENV_NAMES.values(),
         *profiles.WORKFLOW_VERSION_ENV_NAMES.values(),
+        *profiles.ALLOWED_HOSTS_ENV_NAMES.values(),
         *credentials.ENV_NAMES.values(),
     ):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LAKE_MAXIS_PROD_ALLOWED_HOSTS", "prod.maxis.example")
     credentials.set_backend_for_tests(_TestCipher())
     yield
     credentials.set_backend_for_tests(None)
@@ -48,7 +51,7 @@ def _save_prod(*, with_log_attestation: bool) -> None:
         "knowledge_dataset_id": DATASET_ID,
         "knowledge_sentinel_sha256": SENTINEL_SHA,
         "workflows": {
-            "agent_core": {"binding": "agent_core", "version": "1.0.0"},
+            "agent_core": {"binding": "agent_core", "version": WORKFLOW_ID},
         },
     }
     if with_log_attestation:
@@ -65,16 +68,19 @@ def _save_prod(*, with_log_attestation: bool) -> None:
 def _mark_prod_verified() -> None:
     manifest = profiles.resolve_knowledge_manifest("prod", required=True)
     assert manifest is not None
+    _, keys, start_binding = profiles.start_probe("prod")
+    keys.clear()
     assert profiles.mark_probe("prod", True, {"workflows": {
         "agent_core": {
             "ok": True,
+            "appModeVerified": True,
             "executionContractVerified": True,
             "versionBindingVerified": True,
             "citationContractVerified": True,
             "knowledgeRetrievalVerified": True,
             "knowledgeManifestSha256": manifest.sha256,
         },
-    }})
+    }}, start_binding=start_binding)
 
 
 def test_strict_save_raises_and_preserves_previous_control_value(monkeypatch):
@@ -120,6 +126,7 @@ def test_remote_log_environment_override_invalidates_probe_and_active_fingerprin
     _mark_prod_verified()
     before = profiles.activate("prod")["fingerprint"]
 
+    monkeypatch.setenv("LAKE_MAXIS_PROFILE", "prod")
     monkeypatch.setenv("LAKE_MAXIS_REMOTE_LOG_POLICY_ID", "SEC-2026-ROTATED")
     resolved = profiles.resolve("prod")
     public = profiles.status()["profiles"][1]

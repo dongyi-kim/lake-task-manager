@@ -23,7 +23,25 @@ Identifier = Annotated[
 ]
 ShortText = Annotated[str, Field(min_length=1, max_length=500)]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
-MAX_PAYLOAD_SCHEMA_CHARS = 16_000
+MAX_PAYLOAD_SCHEMA_CHARS = 4_096
+MAX_PAYLOAD_SCHEMA_UTF8_BYTES = 4_096
+
+# JSON Schema annotations help humans and local prompt authors, but they do not
+# participate in instance validation.  Removing them from the MAXIS wire schema keeps
+# the model-visible contract small without weakening the full local Role validator.
+_SCHEMA_ANNOTATION_KEYS = frozenset({
+    "$comment", "default", "deprecated", "description", "examples", "readOnly",
+    "title", "writeOnly",
+})
+_SCHEMA_MAP_KEYWORDS = frozenset({
+    "$defs", "definitions", "dependentSchemas", "patternProperties", "properties",
+})
+_SCHEMA_SINGLE_KEYWORDS = frozenset({
+    "additionalItems", "additionalProperties", "contains", "contentSchema", "else",
+    "if", "items", "not", "propertyNames", "then", "unevaluatedItems",
+    "unevaluatedProperties",
+})
+_SCHEMA_ARRAY_KEYWORDS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
 
 
 def _strict_json_object(value: str) -> dict[str, Any]:
@@ -96,8 +114,38 @@ def _validate_schema_shape(value: Any, *, depth: int = 0, counter: list[int] | N
     raise TypeError("payload schema must contain JSON values only")
 
 
+def _model_schema(value: Any) -> Any:
+    """Drop only validation-neutral annotations from schema-bearing positions.
+
+    Property and definition *names* are data, so a field literally named ``title`` or
+    ``default`` must survive.  Recursion therefore follows JSON Schema applicator
+    keywords instead of deleting matching keys from arbitrary objects such as ``const``.
+    """
+
+    if not isinstance(value, dict):
+        return value
+    projected: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in _SCHEMA_ANNOTATION_KEYS:
+            continue
+        if key in _SCHEMA_MAP_KEYWORDS and isinstance(item, dict):
+            projected[key] = {
+                name: _model_schema(child) for name, child in item.items()
+            }
+        elif key in _SCHEMA_SINGLE_KEYWORDS and isinstance(item, dict):
+            projected[key] = _model_schema(item)
+        elif key in _SCHEMA_ARRAY_KEYWORDS and isinstance(item, list):
+            projected[key] = [
+                _model_schema(child) if isinstance(child, dict) else child
+                for child in item
+            ]
+        else:
+            projected[key] = item
+    return projected
+
+
 def canonical_payload_schema(value: Any) -> tuple[str, str]:
-    """Return a bounded canonical JSON Schema and its lowercase SHA-256 binding."""
+    """Return the bounded model-facing JSON Schema and its SHA-256 binding."""
 
     if isinstance(value, str):
         schema = _strict_json_object(value)
@@ -128,14 +176,18 @@ def canonical_payload_schema(value: Any) -> tuple[str, str]:
         validator_type.check_schema(schema)
     except Exception as exc:
         raise ValueError("payload schema is invalid") from exc
+    model_schema = _model_schema(schema)
     encoded = json.dumps(
-        schema,
+        model_schema,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
     )
-    if len(encoded) > MAX_PAYLOAD_SCHEMA_CHARS:
+    if (
+        len(encoded) > MAX_PAYLOAD_SCHEMA_CHARS
+        or len(encoded.encode("utf-8")) > MAX_PAYLOAD_SCHEMA_UTF8_BYTES
+    ):
         raise ValueError("payload schema is too large")
     return encoded, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -385,15 +437,16 @@ class PayloadClaimBindingV1(StrictFrozenModel):
 
 
 class RemoteRoleResultV1(StrictFrozenModel):
+    # correlation_id is intentionally absent. It is an input-only request/audit
+    # binding checked against EvidencePackV1.request_id before dispatch; accepting it
+    # here would contradict the closed remote response contract.
     contract: Literal["remote-role-result.v1"] = "remote-role-result.v1"
     role_id: Literal[
         "request_architect",
         "query_specialist",
-        "research_analyst",
         "knowledge_curator",
         "portfolio_analyst",
         "work_architect",
-        "people_advisor",
         "auditor",
         "result_integrator",
         "editor_author",
@@ -408,10 +461,10 @@ class RemoteRoleResultV1(StrictFrozenModel):
     workflow_version: Annotated[str, Field(min_length=1, max_length=120)]
     knowledge_version: Annotated[str, Field(min_length=1, max_length=120)]
     knowledge_manifest_sha256: Digest
-    # Populated from the Dify Knowledge Retrieval node.  Normal Role execution may
-    # omit it, while the activation canary compares its digest with the value pinned
-    # locally in the selected profile.  The expected value is never sent to Dify.
-    knowledge_proof: Annotated[str, Field(max_length=240)] = ""
+    # Populated from the Dify Knowledge Retrieval node on every remote Role call.
+    # The activation canary compares its digest with the value pinned locally in the
+    # selected profile.  The expected value is never sent to Dify.
+    knowledge_proof: Annotated[str, Field(max_length=240)]
 
     @model_validator(mode="after")
     def validate_result(self):
@@ -438,6 +491,10 @@ class RemoteRoleResultV1(StrictFrozenModel):
             raise ValueError("ok cannot contain missing inputs")
         if self.status != "ok" and self.payload:
             raise ValueError("non-ok results must keep payload empty")
+        if self.status != "ok" and (
+            self.claims or self.payload_claims or self.citations
+        ):
+            raise ValueError("non-ok results must keep provenance empty")
         return self
 
 
@@ -597,6 +654,7 @@ __all__ = [
     "EvidenceScopeV1",
     "EvidenceSourceV1",
     "MAX_PAYLOAD_SCHEMA_CHARS",
+    "MAX_PAYLOAD_SCHEMA_UTF8_BYTES",
     "PayloadClaimBindingV1",
     "PortfolioFindingV1",
     "PortfolioResultV1",

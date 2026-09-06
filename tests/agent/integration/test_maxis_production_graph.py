@@ -21,7 +21,7 @@ os.environ.setdefault("JIRA_ENV", "mock")
 
 pytest.importorskip("langchain_core", reason="requirements-agent.txt 미설치")
 
-from app.agent.maxis import backend, credentials
+from app.agent.maxis import backend, credentials, profiles
 from app.agent.maxis import client as client_module
 from app.agent.maxis.client import REQUIRED_START_VARIABLES
 from app.agent.workflow import graph as workflow_graph
@@ -30,6 +30,9 @@ from app.agent.workflow.role_manifest import ROLE_SPECS
 
 
 DATASET_ID = "11111111-1111-4111-8111-111111111111"
+AGENT_WORKFLOW_ID = "22222222-2222-4222-8222-222222222222"
+PMO_WORKFLOW_ID = "33333333-3333-4333-8333-333333333333"
+EDITOR_WORKFLOW_ID = "44444444-4444-4444-8444-444444444444"
 MANIFEST_SHA256 = "a" * 64
 PROFILE_FINGERPRINT = "profile-prod-graph-v1"
 SENTINEL_VALUE = "LTM_RELEASE_SENTINEL_V1=production-graph-release"
@@ -50,11 +53,13 @@ def _profile() -> dict:
         "knowledge_document_count": 3,
         "knowledge_sentinel_sha256": SENTINEL_SHA256,
         "workflows": {
-            "agent_core": {"binding": "agent_core", "version": "wf-core-graph-1"},
-            "pmo_brief": {"binding": "pmo_brief", "version": "wf-pmo-graph-1"},
+            "agent_core": {
+                "binding": "agent_core", "version": AGENT_WORKFLOW_ID,
+            },
+            "pmo_brief": {"binding": "pmo_brief", "version": PMO_WORKFLOW_ID},
             "editor_author": {
                 "binding": "editor_author",
-                "version": "wf-editor-graph-1",
+                "version": EDITOR_WORKFLOW_ID,
             },
         },
         "enabled": True,
@@ -68,10 +73,30 @@ def _remote_routes() -> dict[str, str]:
     return routes
 
 
+def test_production_authority_remains_fail_closed_without_signed_eval_verifier(
+    monkeypatch,
+):
+    """Implemented Role ACL alone must not unlock production authority."""
+
+    assert profiles.SIGNED_EXTERNAL_EVAL_VERIFICATION_IMPLEMENTED is False
+    assert profiles.DETERMINISTIC_PRE_LLM_ROLE_ACL_IMPLEMENTED is True
+    monkeypatch.setattr(profiles, "resolve", lambda _name: _profile())
+    monkeypatch.setattr(profiles, "kill_switch_enabled", lambda: False)
+
+    with pytest.raises(
+        backend.MaxisRuntimeError, match="Signed external Knowledge eval",
+    ) as caught:
+        backend._require_authoritative_routes(
+            _profile(), {"request_architect": "maxis"},
+        )
+    assert "Role ACL enforcement is not implemented" not in str(caught.value)
+
+
 @pytest.fixture
 def production_graph_transport(monkeypatch, request):
     """Install a real DifyClient backed by MockTransport and return its controller."""
 
+    monkeypatch.setenv("LAKE_MAXIS_PROD_ALLOWED_HOSTS", "maxis.example")
     routes = _remote_routes()
     profile = _profile()
     audit_events = []
@@ -87,6 +112,24 @@ def production_graph_transport(monkeypatch, request):
         "runtime_valid": True,
         "invalidate_after_response": False,
     }
+
+    # This suite covers production-shaped graph/transport wiring, not promotion proof.
+    # Simulate only the remaining signed-artifact capability and replace the
+    # deployment-owned verifier with a narrow assertion over this fixed test identity.
+    # The separate test above exercises the real default and proves it remains blocked.
+    monkeypatch.setattr(
+        profiles, "SIGNED_EXTERNAL_EVAL_VERIFICATION_IMPLEMENTED", True,
+    )
+
+    def simulated_authority_verifier(profile_name, workflow_keys):
+        assert profiles.SIGNED_EXTERNAL_EVAL_VERIFICATION_IMPLEMENTED is True
+        assert profiles.DETERMINISTIC_PRE_LLM_ROLE_ACL_IMPLEMENTED is True
+        assert profile_name == "prod"
+        assert set(workflow_keys) == {"agent_core"}
+
+    monkeypatch.setattr(
+        profiles, "require_authoritative", simulated_authority_verifier,
+    )
 
     monkeypatch.setattr(
         backend,
@@ -105,7 +148,10 @@ def production_graph_transport(monkeypatch, request):
 
     monkeypatch.setattr(audit, "record_audit_event", audit_events.append)
 
-    def answer_for(role_id: str) -> dict:
+    def answer_for(role_id: str, context_pack: dict) -> dict:
+        sources = context_pack.get("sources") or []
+        assert len(sources) == 1
+        intent_source_id = sources[0]["source_id"]
         if role_id == "request_architect":
             status = controller["request_architect_status"]
         elif role_id == "query_specialist":
@@ -127,9 +173,9 @@ def production_graph_transport(monkeypatch, request):
             payload_claims = []
             missing_inputs = []
         elif role_id == "request_architect":
-            # Every non-empty string is a structural control field, so this classification
-            # needs no evidence claim.  RequestArchitect's normal local apply() still owns
-            # the resulting RequestPlan and graph route.
+            # The classification is a recommendation derived from the guarded user-intent
+            # source. RequestArchitect's normal local apply() still owns the resulting
+            # RequestPlan and graph route.
             payload = {
                 "intent": controller["request_architect_intent"],
                 "keywords": [],
@@ -138,8 +184,16 @@ def production_graph_transport(monkeypatch, request):
                 "requested_effects": [],
                 "target_selectors": [],
             }
-            claims = []
-            payload_claims = []
+            claims = [{
+                "claim_id": "intent_claim",
+                "kind": "recommendation",
+                "text": controller["request_architect_intent"],
+                "citation_ids": ["intent_citation"],
+            }]
+            payload_claims = [{
+                "path": "/intent",
+                "claim_ids": ["intent_claim"],
+            }]
             missing_inputs = []
         elif role_id == "query_specialist":
             payload = {
@@ -147,7 +201,12 @@ def production_graph_transport(monkeypatch, request):
                 "joins": [],
                 "uncertainty": [],
             }
-            claims = []
+            claims = [{
+                "claim_id": "query_plan_claim",
+                "kind": "recommendation",
+                "text": "조회 계획 없음",
+                "citation_ids": ["intent_citation"],
+            }]
             payload_claims = []
             missing_inputs = []
         elif role_id == "result_integrator":
@@ -155,9 +214,9 @@ def production_graph_transport(monkeypatch, request):
             payload = {"text": text}
             claims = [{
                 "claim_id": "reply_claim",
-                "kind": "open_fact",
+                "kind": "recommendation",
                 "text": text,
-                "citation_ids": [],
+                "citation_ids": ["intent_citation"],
             }]
             payload_claims = [{
                 "path": "/text",
@@ -173,10 +232,14 @@ def production_graph_transport(monkeypatch, request):
             "payload": payload,
             "claims": claims,
             "payload_claims": payload_claims,
-            "citations": [],
+            "citations": ([{
+                "citation_id": "intent_citation",
+                "source_id": intent_source_id,
+                "locator": "",
+            }] if claims else []),
             "missing_inputs": missing_inputs,
             "warnings": [],
-            "workflow_version": "wf-core-graph-1",
+            "workflow_version": AGENT_WORKFLOW_ID,
             "knowledge_version": "knowledge-graph-1",
             "knowledge_manifest_sha256": MANIFEST_SHA256,
             "knowledge_proof": controller["knowledge_proof"],
@@ -190,7 +253,7 @@ def production_graph_transport(monkeypatch, request):
         body = json.loads(http_request.content)
         assert set(body["inputs"]) == REQUIRED_START_VARIABLES
         assert body["response_mode"] == "blocking"
-        assert body["workflow_id"] == "wf-core-graph-1"
+        assert body["workflow_id"] == AGENT_WORKFLOW_ID
         assert body["conversation_id"] == ""
         assert body["auto_generate_name"] is False
         context_pack = json.loads(body["inputs"]["context_pack"])
@@ -204,7 +267,9 @@ def production_graph_transport(monkeypatch, request):
         role_id = body["inputs"]["role_id"]
         response = httpx.Response(200, json={
             "event": "message",
-            "answer": json.dumps(answer_for(role_id), ensure_ascii=False),
+            "answer": json.dumps(
+                answer_for(role_id, context_pack), ensure_ascii=False,
+            ),
             "message_id": f"message-{len(observed_requests)}",
             "conversation_id": f"conversation-{len(observed_requests)}",
             "metadata": {
@@ -278,9 +343,9 @@ def test_session_runs_authoritative_maxis_roles_through_real_compiled_graph(
     assert result["qualityGate"]["ok"] is True
     assert result["qualityGate"]["schemaValid"] is True
     assert result["evidenceWorkspace"]["claims"] == [{
-        "kind": "open_fact",
+        "kind": "recommendation",
         "text": "반갑습니다. 요청하실 업무를 말씀해 주세요.",
-        "sourceIds": [],
+        "sourceIds": [requests[-1]["context_pack"]["sources"][0]["source_id"]],
     }]
     # Public Session state includes only the allow-listed projection, never wire payloads.
     rendered = json.dumps(result, ensure_ascii=False)

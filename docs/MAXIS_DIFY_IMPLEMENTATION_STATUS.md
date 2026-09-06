@@ -1,115 +1,343 @@
 # MAXIS / Dify 적용 구현 상태
 
-> 기준 시점: 2026-09-05<br>
-> 상태: **LTM 측 연동·통제 프레임워크 구현 및 전체 회귀 완료 — 운영 MAXIS/Dify 구성은 별도 필요**
+> 기준 시점: 2026-09-06<br>
+> 결론: **DEV Native V2·Sentinel V3·11노드 Workflow v8의 게시와 카나리는 완료했지만, LTM 활성 경로는 여전히 local이며 품질 기준 미달로 승격은 차단되어 있다.**
 
-## 작업 위치
+이 문서는 구현·배포 증적과 공모전 심사 피드백을 한 화면에서 검토하기 위한
+현황판이다. API key, 프롬프트, 모델 응답, 사용자 데이터, release sentinel 원문은
+기록하지 않는다.
 
-- 앱 worktree: `C:\Users\PC\repo\dongyi-kim\lake-task-manager-deploy\.cache\worktrees\maxis-dify-migration`
-- 브랜치: `codex/maxis-dify-migration`
-- 기준 커밋: `7799e39 release: add v2026.09.03 notes`
-- 재개 checkpoint: `98f8ff7 chore: checkpoint MAXIS Dify migration`
-- 원래 checkout과 현재 `main`은 변경하지 않았고 원격 저장소에도 push하지 않았다.
+## 1. 한눈에 보는 현재 상태
 
-## 현재 범위
+| 영역 | 확인된 DEV 상태 | 승격 판단 |
+|---|---|---|
+| Dify Workflow | 앱 3개 모두 **11노드·11엣지 Native v8** 게시 | 카나리 3/3 통과 |
+| Policy Knowledge | Governed Native V2 **8문서·513 segments** | Role metadata **8/8** 검증 |
+| Release 증명 | 독립 Sentinel V3 dataset·document·SHA 결속 | 단일 문서·단일 segment 검증 |
+| LTM profile | 후보 bundle과 fingerprint 저장 | active profile은 비어 있고 세 route는 local |
+| PROD | 독립 자산·profile 미구성 | fail closed, authoritative route 불가 |
+| 품질 평가 | full suite **25/25 실행, 13 pass / 12 fail** | <code>releaseEligible=false</code>, PoC 개선 필요 |
+| MAXIS MCP | Phase 1 등록 노드 **0개** | 향후 read-only 경계만 검토 |
 
-현재 LTM은 별도 MAXIS API가 아니라 **MAXIS가 관리하는 Dify Service API**의
-`/parameters`와 `/chat-messages`를 호출한다. 전체 LangGraph와 대화 상태는 LTM에 남고,
-Dify는 한 번에 하나의 의미 Role을 stateless로 실행한다.
+기계 판독 가능한 비밀 비포함 증적은
+[DEV 배포 증적](../deploy/maxis-dify/deployments/dev-2026.09.yml)에 있다.
 
-| 영역 | 정확한 상태 |
+## 2. AS-IS와 TO-BE
+
+### AS-IS — LTM 단독 실행
+
+~~~mermaid
+flowchart LR
+    U[사용자] --> UI[LTM UI]
+    UI --> LG[Local LangGraph]
+    LG --> C[Jira·Confluence·Bitbucket<br/>local connector]
+    C --> E[Local EvidencePack]
+    E --> A[Local semantic agents]
+    A --> G[Local ResponseGuard]
+    G --> H[사용자 검토·승인]
+    H --> W[Jira write]
+~~~
+
+### TO-BE — 역할은 분리하되 권한은 LTM에 유지
+
+~~~mermaid
+flowchart LR
+    U[사용자] --> UI[LTM UI]
+
+    subgraph LTM["LTM 신뢰·실행 영역"]
+        UI --> O[Orchestrator]
+        O --> Q[사실 조회·결정적 계산]
+        Q --> EP[Citation-grade<br/>EvidencePack]
+        EP --> AD[Dify Adapter]
+        RG[ResponseGuard] --> HITL[검토·일회 승인]
+        HITL --> EX[Action Executor]
+        EX --> SYS[(Jira 등 업무 시스템)]
+        AUD[감사·KPI·freshness] --- HITL
+    end
+
+    subgraph MAXIS["MAXIS 거버넌스"]
+        PRJ[Project·접근정책]
+        KG[Governed Knowledge]
+        REL[Release Sentinel]
+    end
+
+    subgraph DIFY["Dify 실행"]
+        WF[3개 Advanced Chatflow<br/>11 nodes / 11 edges]
+        PRAG[Policy RAG]
+        CG[Knowledge Guard<br/>Contract Guard]
+    end
+
+    AD -->|검증된 최소 입력| WF
+    KG --> PRAG --> WF
+    REL --> WF
+    WF --> CG -->|RemoteRoleResult| AD
+    AD --> RG
+    PRJ -. governance .-> WF
+~~~
+
+핵심은 “모든 에이전트를 원격으로 옮긴다”가 아니다. 의미 판단과 초안은
+MAXIS/Dify가 담당하고, 최신 사실 조회·인용 근거·결정적 계산·권한·승인·쓰기는
+LTM이 계속 통제한다.
+
+## 3. 실제 DEV 자산
+
+### Knowledge와 release binding
+
+| 자산 | 현재 값 |
 |---|---|
-| Agent | 8개 의미 Role 원격 실행 가능. Research·People·Query Runner·Action Executor는 local |
-| Workflow | LTM 오케스트레이션과 Dify Role별 3-App 계약·버전 pin 구현 |
-| Knowledge/RAG | 8문서 manifest v2, segment hash, 25-case 명세, dataset/sentinel/eval gate 구현 |
-| MCP | OAuth·mTLS·Host·stable Jira identity를 요구하는 read-only HTTP 서버 구현 |
-| HITL/쓰기 | Jira actor·승인 payload·일회 capability·감사 digest 결속과 write 직전 재확인 구현 |
-| Eval | local 계약 회귀, live canary 계약, Role별 shadow 승격, prod attestation gate 구현 |
-| 관측/KPI | 내용 없는 local audit·impact·PMO delta 집계 구현 |
-| Release | dev/prod profile, fingerprint, 24시간 probe, kill switch, 변경 시 실행 무효화 구현 |
+| Governed dataset | LTM Governed Knowledge 2026.09 Native V2 |
+| Governed dataset ID | <code>97823b6c-2e14-4d13-a2cc-f6082e0a453d</code> |
+| 문서 / segment | **8 / 513**, 최대 segment 151 UTF-8 bytes |
+| Role metadata | <code>ltm_allowed_roles_v1</code>, 8/8 결속, missing·drift·substring collision 0 |
+| Sentinel dataset | LTM Release Sentinel dev 2026.09 V3 |
+| Sentinel dataset ID | <code>7953d6ec-094e-470e-b262-26a6a561b091</code> |
+| Sentinel document ID | <code>b4cfe6ce-65b6-4116-a575-3c2607c9116f</code> |
+| Sentinel proof SHA-256 | <code>c4146f938c309f2130355b8febd212745f9799359ddb2d90b83480c5ba177ecb</code> |
+| Manifest SHA-256 | <code>f126c2d3deb6134bac1db937fa19e135c3dcb98c363f942c11f76d01fbbff329</code> |
 
-원격 허용 Role은 Request Architect, Query Specialist, Knowledge Curator, Portfolio Analyst,
-Work Architect, Auditor, Result Integrator, Editor Author다. MAXIS Auditor는 의미 검토만 하며
-최종 schema·인용·권한·승인·쓰기는 LTM 코드가 통제한다. Registry/build spec의 Research
-Analyst와 People Advisor 계약은 향후 검토용이고 현재 runtime은 항상 local로 강제한다.
+Sentinel 평문은 저장소 문서와 증적에 남기지 않는다. LTM은 평문 대신 환경별 SHA와
+Dify 실행 소유 Workflow ID를 결속해 잘못 게시된 앱·Knowledge를 차단한다.
 
-## 구현 완료
+### Dify 앱과 Workflow v8
 
-### 프로필·Workflow
+| 앱 | App ID | 게시 Workflow ID | 카나리 |
+|---|---|---|---|
+| Agent Core | <code>d061c2e6-72cf-4fc4-b835-4cb124e1f96c</code> | <code>85add2bc-455e-4155-b0af-d8e939e24565</code> | 통과, 2,311 ms |
+| Editor Author | <code>dbda2328-0547-4e0c-967d-c14265b27459</code> | <code>a5f28cc2-9ef2-4651-8e77-a1ccde5feb3e</code> | 통과, 2,342 ms |
+| PMO Brief | <code>ceb6bdc2-0276-4736-8c8b-59fc69f85cd6</code> | <code>cf3a11c6-c237-4889-a9c4-89dbdd9b00b2</code> | 통과, 2,013 ms |
 
-- dev/prod의 URL, workflow version, dataset, Knowledge version, API Key를 분리했다.
-- Key는 공개 상태와 prefs에서 제거하고 Windows DPAPI 또는 환경변수만 사용한다.
-- `local → shadow → maxis` 승격과 즉시 차단 kill switch를 기능별로 제공한다.
-- prod는 HTTPS, 원격 로그 정책 metadata, 24시간 이내 probe, 현재 profile fingerprint를
-  모두 요구한다. 호출 도중 설정이 바뀌어도 응답을 폐기한다.
-- Dify 실패를 local 결과로 조용히 바꾸지 않고 Request Architect 실패 후 다른 조회 경로로
-  재해석되는 우회도 차단했다.
+- Bundle: <code>ltm-maxis-dify-2026.09.06-native-acl-v8</code>
+- Candidate fingerprint: <code>cb40a03650a170d74ced6bf26bed764c</code>
+- Candidate verification: <code>profile_verified_at_probe=true</code>, <code>candidate_probe_ok=true</code>
+- Persisted Service API canary: **3/3 HTTP 200 및 계약·Knowledge binding 통과**
+- Active profile: **없음**
+- Active route: agent_core / editor_author / pmo_brief 모두 **local**
+- PROD: <code>profile_configured=false</code>, <code>active=false</code>, authoritative route **fail closed**
 
-### Knowledge/RAG·평가
+카나리 통과는 최종 품질 승인과 다르다. v8 full suite는 전 건 실행됐지만
+13/25만 통과했고, injection 서명 검토와 의미 정답성 평가도 남아 있다. 후보 profile은
+활성화하지 않았으며 로컬 경로가 기준이다.
 
-- `config/maxis-knowledge.yml`에 문서 owner·revision·분류·대상 Role·원문/segment hash,
-  검토 버전·UTC 시각·reviewer digest를 고정했다.
-- 25개 positive/no-hit/injection/ACL 평가 명세의 SHA-256을 governance에 결속했다.
-- Dify 응답의 `retriever_resources`가 현재 dataset UUID인지 검증하고 문서명·본문·내부 ID는
-  보존하지 않는다. release sentinel, manifest, workflow/knowledge version도 함께 검증한다.
-- prod authoritative route는 현재 dataset·manifest·세 Workflow version에 정확히 결속된
-  25/25 외부 평가 attestation과 Role별 shadow gate 없이는 저장할 수 없다.
-- 설정 화면에 Knowledge 평가 상태, 기대 binding, metadata-only 검증 한계를 표시했다.
+## 4. 최종 11노드 / 11엣지 그래프
 
-### MCP·승인·감사
+~~~mermaid
+flowchart LR
+    S([Start])
+    SQ[Sentinel Query]
+    RS[(Release Sentinel)]
+    AK[Role ACL Key]
+    RK[(Role Knowledge)]
+    KG[Knowledge Guard]
+    PD{Policy Decision}
+    LLM[Contract LLM]
+    CG[Contract Guard]
+    AA([Allowed Answer])
+    DA([Denied Answer])
 
-- HTTP MCP는 `LTM_MCP_DEPLOYMENT_MODE`와 `JIRA_ENV`를 명시적으로 요구한다. production은
-  `JIRA_ENV=prod`와 mTLS 또는 승인 proxy, development는 mock/local loopback만 허용한다.
-- Dify에는 Jira/Confluence/Bitbucket 읽기 Tool만 노출한다. display name·email은 OAuth와
-  Jira 사용자를 같다고 판단하는 근거로 쓰지 않는다.
-- 승인 capability는 제안 당시 fresh Jira actor와 payload hash에 묶고, 승인 재개와 각 Jira
-  mutation 직전에 사용자를 다시 확인한다. bulk 중 사용자가 바뀌면 남은 항목을 중단한다.
-- 변경 proposal/approved/cancelled/execution을 actor·payload·capability·correlation의
-  SHA-256 및 process HMAC으로 결속한다. 지원되는 경로는 검증된 execution receipt digest와
-  signature까지 연결하고, 미지원 경로는 `not_issued`로 명시한다.
-- control-plane prefs는 임시 파일 fsync, 원자 교체, read-back 검증이 실패하면 성공으로
-  응답하지 않는다.
+    S --> SQ
+    SQ --> RS
+    S --> AK
+    AK --> RK
+    RS --> KG
+    RK --> KG
+    KG --> PD
+    PD -->|allow| LLM
+    LLM --> CG
+    CG --> AA
+    PD -->|deny / no-hit| DA
+~~~
 
-## 실제 검증 결과
+이 구조는 ACL 거부와 no-hit을 LLM에 보내지 않고 결정적으로 Denied Answer로
+직렬화한다. allow 경로도 Contract Guard를 통과해야만 응답을 내보낸다.
 
-| 검증 | 결과 |
-|---|---:|
-| MAXIS/Knowledge/MCP/HITL 핵심 경로 재검증 | 316 passed |
-| 전체 pytest | **3,959 passed, 35 skipped** |
-| Dify bundle validator | 3 workflows, 6 Start variables, Knowledge/eval coverage 통과 |
-| Python compileall | 통과 |
-| 브라우저 QA | DEV/PROD, Knowledge 대기, MAXIS 차단·Shadow 허용, 640px 레이아웃, console 오류 없음 |
+정적 뷰어용:
+[11노드 Native flow SVG](images/maxis-dify-implementation/06-dify-eleven-node-native-flow.svg)
 
-전체 테스트의 경고 1건은 기존 `langchain-community` sunset 안내이며 이번 기능 실패가 아니다.
+## 5. Policy RAG와 EvidencePack은 다른 근거다
 
-## 운영 구성이 필요한 항목
+~~~mermaid
+flowchart TB
+    PK[Policy RAG<br/>규칙·템플릿·허용 행동] -->|생성 제약| LLM[Contract LLM]
+    EP[EvidencePack<br/>업무 시스템 사실·계산·source IDs] -->|claim·citation 근거| LLM
+    LLM --> GUARD[Contract Guard + LTM ResponseGuard]
+    GUARD --> OUT[검증된 결과]
 
-1. MAXIS/Dify prod Project와 세 Chatflow를 실제로 만들고 승인된 HTTPS endpoint에 게시한다.
-2. dev/prod Knowledge dataset과 환경별 sentinel을 업로드하고 실제 UUID·게시 Workflow ID를
-   profile에 입력한다.
-3. 후보 dataset에서 25-case를 실제 실행하고 결과 artifact를 보관한 뒤 exact-binding
-   attestation을 등록한다. 저장소의 25건은 아직 **실행 명세**다.
-4. Dify 로그 보존·접근 ACL·마스킹을 관리자 화면에서 대조하고 승인 metadata를 등록한다.
-5. 실제 API Key를 Secret 경로에 넣고 `/parameters` 및 합성 `/chat-messages` probe를 수행한다.
-6. 제한 사용자 PoC에서 Role별 shadow 표본과 사람이 검토한 업무 품질을 확보한다.
+    PK -. 금지 .-> FC[사실 claim·업무 citation]
+    EP --> FC
+~~~
 
-## 후속 구현·잔여 위험
+| 구분 | Policy RAG | Citation-grade EvidencePack |
+|---|---|---|
+| 생성 위치 | Dify Governed Knowledge 검색 | LTM connector와 결정적 계산 |
+| 용도 | 형식, 정책, 검증 절차, 허용 행동 제한 | 현재 업무 사실, 수치, 인용의 근거 |
+| citation 자격 | 없음 | 검증된 source만 있음 |
+| 최신성 책임 | Knowledge owner·manifest | LTM 조회 시각·source freshness |
+| source가 비었을 때 | claim을 만들 수 없음 | 폐쇄형 control-only payload만 허용 |
 
-- 현재 Dify 자산은 import 가능한 DSL/export가 아닌 build spec이다. 실제 export/hash와 node
-  failure-injection을 release gate에 추가해야 한다.
-- 단일 Knowledge dataset의 `allowed_roles`는 실행 ACL이 아니다. 제한 문서 도입 전 Role별
-  dataset 또는 서버측 metadata filter와 ACL-negative 원격 검증이 필요하다.
-- eval attestation과 remote-log 값은 외부 artifact를 읽거나 서명 검증한 결과가 아니라
-  관리자 metadata다. 서명된 증적과 owner별 승인 record가 필요하다.
-- HTTP MCP는 아직 중앙 배포하지 않았고 Jira OBO credential 교환도 없다. 다중 사용자 운영은
-  사용자별 sidecar 또는 delegated Jira gateway를 먼저 결정해야 한다.
-- prod 공유 Dify Key를 PC별 DPAPI에 배포하기보다 OAuth/OBO gateway가 중앙 보관하는 구조와
-  exact outbound host allowlist가 필요하다.
-- `/myself` 확인과 Jira POST는 provider-atomic하지 않다. 일부 댓글·링크·전이·복합 작업은
-  typed receipt 미지원이며 고위험 2인 승인·부분실패 보상도 남아 있다.
-- audit·impact는 local 파일이다. 중앙 immutable/WORM audit, 수작업 baseline, 처리량·p95·비용,
-  fleet-wide 지표가 필요하다.
-- kill switch와 두 profile은 PC별 상태다. 이전 prod export/profile 이력과 전사 kill switch,
-  실제 rollback 자동화·복구 훈련은 운영 과제다.
+즉 Policy 문서가 검색됐다는 이유만으로 실제 Jira 상태나 사람·일정에 관한 사실을
+말할 수 없다. claim, citation, payload claim은 EvidencePack의 검증된 source에
+결속되어야 한다. <code>ltm:user-intent:</code> source는 사용자의 요청·선호·계획
+판단만 지지하며 Jira·Confluence·Bitbucket·Knowledge 사실의 근거로 사용할 수 없다.
 
-상세 아키텍처·환경변수·승격 절차·시각자료는 `docs/MAXIS_DIFY_MIGRATION.md`를 기준으로 한다.
+## 6. 요청에서 응답까지
+
+~~~mermaid
+sequenceDiagram
+    actor User as 사용자
+    participant LTM
+    participant API as 업무 시스템 API
+    participant Dify
+    participant KB as Policy Knowledge
+
+    User->>LTM: 분석·초안 요청
+    LTM->>API: read-only 최신 사실 조회
+    API-->>LTM: source ID·조회시각·원문 일부
+    LTM->>LTM: 최소 EvidencePack·DLP·schema 구성
+    LTM->>Dify: 6개 Start control + EvidencePack
+    Dify->>KB: Sentinel / Role metadata-filtered retrieval
+    KB-->>Dify: release proof + policy context
+    Dify->>Dify: Knowledge Guard → Policy Decision
+    alt allow
+        Dify->>Dify: Contract LLM → Contract Guard
+    else deny 또는 no-hit
+        Dify->>Dify: Denied Answer
+    end
+    Dify-->>LTM: closed RemoteRoleResult
+    LTM->>LTM: ResponseGuard·freshness·권한 재검증
+    LTM-->>User: 근거와 제안 표시
+    User->>LTM: 명시적 일회 승인
+    LTM->>API: 직전 재조회 후 제한된 write
+~~~
+
+## 7. Agent / MCP / 권한 경계
+
+~~~mermaid
+flowchart LR
+    subgraph READ["읽기"]
+        J[Jira]
+        C[Confluence]
+        B[Bitbucket]
+        RO[향후 read-only MCP]
+    end
+    subgraph REASON["판단·작성"]
+        M[MAXIS 정책·권한]
+        D[Dify semantic roles]
+    end
+    subgraph CONTROL["통제·쓰기"]
+        L[LTM schema·DLP·audit]
+        H[사용자 HITL]
+        X[일회 capability write]
+    end
+
+    J --> L
+    C --> L
+    B --> L
+    RO -. Phase 2 후보 .-> L
+    L --> D
+    M -. governance .-> D
+    D --> L
+    L --> H --> X
+    X --> J
+    D -. 직접 credential·write 금지 .-> X
+~~~
+
+Phase 1의 MAXIS node registry/MCP 등록 수는 **0**이다. Dify에는 업무 시스템
+credential과 write tool을 주지 않는다. 향후 MCP를 도입하더라도 stable identity,
+OAuth/mTLS, host allow-list, 필드 최소화가 적용된 **read-only** 경계부터 별도
+승격한다.
+
+## 8. 심사 피드백 대응
+
+| 심사 보완점 | 구현·검증으로 연결한 내용 | 아직 필요한 증적 |
+|---|---|---|
+| 기존 Dashboard 대비 정량 효과 | audit event와 KPI baseline, latency·오류·처리량 측정 지점 | 동일 과제군 전/후 시간절감·오류율·처리량의 signed 결과 |
+| Task 생성 판단 지식 체계 | manifest pin, Native V2, Role metadata 8/8, Sentinel V3 | 지식 owner 승인·변경 주기 운영 기록 |
+| LTM / Agent / MCP 역할 분담 | 의미 생성은 Dify, 사실·계산·검증·승인·write는 LTM, MCP Phase 1=0 | read-only MCP Phase 2 위협 모델·별도 PoC |
+| API 권한·민감정보·HITL·감사 | DLP 최소화, closed schema, dual guard, one-shot 승인, write 직전 재검증·audit digest | 운영 계정 최소 권한 검토와 사용자 수용성 평가 |
+| 데이터 최신성·정확도·좁은 PoC | source freshness, sentinel/workflow binding, preflight 25/25, 세 앱 canary와 full-suite baseline | positive 실패 개선, injection 서명 검토, 의미 정답성·shadow 승인 |
+
+## 9. 현재 검증과 남은 게이트
+
+### 확인 완료
+
+- Governed Knowledge: **8문서 / 513 segments**
+- Role metadata: **8/8**, 누락·drift·substring collision 0
+- Filtered retrieval preflight: **25/25**
+  - positive 8/8 target top-2
+  - injection fixture 8/8 target top-2
+  - ACL-negative 8/8 forbidden absent
+  - no-hit 1/1 zero result
+- Dify Service API canary: **3/3**
+- 세 앱 모두 11노드·11엣지, execution/version/citation/knowledge contract 확인
+
+### v8 full-suite PoC baseline
+
+실행 artifact는
+<code>.cache/maxis/evals/dev-keval-20260906T052144589439Z-7b820caa.json</code>이며
+SHA-256은
+<code>10270e72b8f19baca11a3dbc405bb418fd431094b3a21071042953a9293870bd</code>다.
+Harness SHA-256은
+<code>df2f1890ce2cd61a95639f49d9697127deb1bdb57d9340b76ccb2c3d27c5a3f1</code>다.
+Artifact schema SHA-256은
+<code>44a0c94b936bb65909a58dfdd5ef24b7b4aa62ceee83b94c50e470a11c015576</code>다.
+실행은 승인된 [평가 launcher](../deploy/maxis-dify/launch_knowledge_evals.py)를 사용했다.
+<code>evaluationLauncher</code>를 포함한 source hash 15개도 artifact와 배포 증적에 모두
+결속했다.
+Artifact 자체도 privacy flags상 원시 prompt·response·answer·검색 content·credential·
+sentinel marker를 저장하지 않는 content-free 증적이다.
+소스 전환 검증 실행에서는 통과 수가 **13~16/25**로 변동했다. 생성 안정성은 아직
+입증되지 않았으며, 아래 공식 수치는 현재 소스와 hash가 일치하는 이 artifact만 기준으로
+삼는다.
+
+| 지표 | 실제 결과 | 해석 |
+|---|---:|---|
+| 전체 | **25/25 실행, 13 pass / 12 fail** | outcome failed, <code>releaseEligible=false</code> |
+| Positive | automated **4/8** | 4건 개선 필요 |
+| Injection | automated **2/8**, 최종 **0/8** | 8건 모두 signed human review pending |
+| Injection Guard | **8/8** | guard 신호 통과와 end-to-end 품질 통과는 다름 |
+| ACL | **8/8** | forbidden retrieval 차단 |
+| No-hit | **1/1** | deterministic abstention |
+| Retrieval | Hit@2 **1.0**, MRR@2 **0.9375** | 대상 문서 검색은 강함 |
+| Response shape / outcome status | 각각 **15/25** | 구조화 응답 안정성 개선 필요 |
+| Contract / version / sentinel / dataset / identity / Role ACL / ledger / include / exclude | 각각 **25/25** | 계약·binding·정책 무결성은 전 건 통과 |
+| Timeout | **0** | 실행 중 timeout 없음 |
+| Latency | mean **1,741 ms**, p50 **2,118 ms**, p95 **2,957 ms** | 총 43,529 ms |
+| Usage | prompt 50,834 / completion 4,686 / total **55,520 tokens** | 25/25 완전 관측 |
+
+이 결과는 성공 수치가 아니라 **현 상태를 숨기지 않은 PoC baseline**이다. 검색
+적중과 ACL 통제는 확인됐지만 positive 응답 품질, response shape, injection human
+review가 승격 기준에 미달한다. semantic answer correctness는 아직 평가하지 않았다.
+
+### 아직 완료로 주장하지 않는 항목
+
+- injection 8건 signed human review: **pending**
+- semantic answer correctness: **not assessed**
+- positive/response-shape 실패 원인 개선과 재평가: **pending**
+- dev authoritative activation과 shadow acceptance: **pending**
+- PROD 독립 dataset/app/key/profile: **unconfigured**
+- PROD remote logging·보안 승인: **pending**
+
+PROD는 DEV dataset, app, key, fingerprint를 재사용하지 않는다. 독립 자산과 서명 평가가
+없으면 활성화를 거부하는 fail-closed 상태다.
+
+## 10. 직접 확인 화면
+
+| 화면 | 용도 |
+|---|---|
+| [01 · Dify Workflow](images/maxis-dify-implementation/01-dify-workflow.png) | Workflow canvas와 노드 구성 확인 |
+| [02 · Dify MCP/HTTP](images/maxis-dify-implementation/02-dify-mcp-http.png) | 연계 기능 검토 화면 |
+| [03 · Dify Knowledge](images/maxis-dify-implementation/03-dify-knowledge.png) | Knowledge 관리 기능 확인 |
+| [04 · Dify Service API](images/maxis-dify-implementation/04-dify-service-api.png) | API 제공 화면 확인 |
+| [05 · LTM TO-BE](images/maxis-dify-implementation/05-ltm-maxis-tobe.svg) | 전체 책임 경계 정적 도식 |
+| [06 · Native 11-node flow](images/maxis-dify-implementation/06-dify-eleven-node-native-flow.svg) | 현재 게시 topology 정적 도식 |
+
+01~04는 기능 이해를 위한 당시 직접 확인 화면이다. ID·상태의 기준은 화면 캡처가 아니라
+현재 환경 binding과 DEV 배포 증적이다.
+
+## 11. 재개 기준
+
+1. positive 4건과 response shape 실패를 분석·개선하고 같은 25-case를 재실행한다.
+2. injection 8건의 signed human review와 semantic answer correctness 평가를 완료한다.
+3. DEV shadow와 사용자 수용 기준을 통과한 경우에만 dev route 활성화를 검토한다.
+4. PROD는 독립 Knowledge·Sentinel·앱·key·profile을 만든 뒤 같은 게이트를 처음부터
+   통과시킨다.

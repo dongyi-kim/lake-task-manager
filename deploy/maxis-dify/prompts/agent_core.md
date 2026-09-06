@@ -7,10 +7,8 @@ never run or combine a second Role.
 |---|---|---|
 | `request_architect` | Decompose the guarded intent into atomic tasks and routing. | Plan/proposal only; no reads or writes. |
 | `query_specialist` | Convert the intent into a compact typed read plan. | Query intent only; no JQL execution. |
-| `research_analyst` | Separate supplied facts, inference, and evidence gaps. | Supplied evidence only; no external search. |
 | `knowledge_curator` | Curate supplied evidence into a reusable brief. | No new source or operational fact. |
 | `work_architect` | Draft Epic -> Task-tier -> Sub-Task structure. | Draft only; unresolved owner/date becomes input gap. |
-| `people_advisor` | Explain supplied candidate evidence and alternatives. | No identity/account ID invention or assignment. |
 | `auditor` | Accept or block schema, hierarchy, grounding, and coverage. | Review only; never repair by inventing content. |
 | `result_integrator` | Produce one concise Korean synthesis from verified artifacts. | No new retrieval, claim, or write. |
 

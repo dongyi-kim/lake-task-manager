@@ -4,8 +4,13 @@ import importlib
 from pathlib import Path
 
 from app.agent.workflow.contracts import ContinuationContract, ContinuationDecision
-from app.agent.workflow.role_manifest import (ROLE_SPECS, role_specs, tools_for_role,
-                                               validate_role_tool_groups)
+from app.agent.workflow.role_manifest import (
+    ROLE_SPECS,
+    remote_execution_allowed,
+    role_specs,
+    tools_for_role,
+    validate_role_tool_groups,
+)
 from app.agent.workflow.state import AgentState, Node, RequestRefinement
 from support.paths import REPO_ROOT
 
@@ -60,6 +65,21 @@ def test_graph_role_state_contracts_name_real_state_keys():
         unknown_outputs = set(spec.output_keys) - state_keys - {"html", "note", "references"}
         assert not unknown_inputs, (spec.id, unknown_inputs)
         assert not unknown_outputs, (spec.id, unknown_outputs)
+
+
+def test_remote_context_projection_is_explicit_and_narrower_than_role_inputs():
+    forbidden = {
+        "messages", "user_id", "user_identity", "approval_token", "comment_token",
+        "execution_receipt", "question_receipt_projection", "query_results",
+        "query_artifacts", "materialized_ticket_sources", "error", "trace",
+    }
+    for spec in ROLE_SPECS.values():
+        if remote_execution_allowed(spec.id):
+            assert spec.remote_context_keys, spec.id
+            assert set(spec.remote_context_keys) <= set(spec.input_keys), spec.id
+            assert not (set(spec.remote_context_keys) & forbidden), spec.id
+        else:
+            assert spec.remote_context_keys == (), spec.id
 
 
 def test_only_action_executor_has_write_tools_and_write_effect():

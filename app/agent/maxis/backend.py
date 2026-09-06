@@ -33,6 +33,11 @@ _PRIVATE_STATE_KEYS = frozenset({
 })
 _PSEUDONYM_KEY = secrets.token_bytes(32)
 _EVIDENCE_ATTESTATION_KEY = secrets.token_bytes(32)
+_SYNTHETIC_USER_IDENTITY = "synthetic-maxis-dev-user"
+_SYNTHETIC_SOURCE_ID = "synthetic_dev_fixture"
+_SYNTHETIC_CANONICAL_ID = "ltm:maxis-dev:synthetic-fixture"
+_SYNTHETIC_TITLE = "Synthetic MAXIS development fixture"
+_USER_INTENT_SOURCE_TITLE = "LTM guarded user intent"
 _PERSON_REFERENCE = re.compile(r"\[\[person:([0-9a-f]{12})\]\]")
 _JIRA_KEY = re.compile(r"^[A-Z][A-Z0-9]*-[1-9][0-9]*$")
 REMOTE_CONTRACT_BUILD_VERSION = "ltm-maxis-runtime.v1"
@@ -54,44 +59,6 @@ _QUERY_SOURCE_KINDS = {
 # Role context.  The raw rows never cross MAXIS until EvidencePack gains an explicit
 # public-source host/scope contract.
 _LOCAL_ONLY_QUERY_SOURCES = frozenset({"web", "github"})
-_ROLE_CONTEXT_PRIORITY: dict[str, tuple[str, ...]] = {
-    "request_architect": (
-        "request_text", "request_plan", "continuation_contract", "request_refinement",
-        "structure_plan", "draft", "questions", "situation", "evidence",
-    ),
-    "query_specialist": (
-        "request_text", "request_plan", "keywords", "mentioned_keys",
-        "continuation_contract",
-    ),
-    "research_analyst": (
-        "request_text", "request_plan", "query_plan",
-    ),
-    "knowledge_curator": (
-        "situation", "evidence", "related_docs",
-    ),
-    "portfolio_analyst": (
-        "intent", "pmo_findings", "pmo_caution",
-    ),
-    "work_architect": (
-        "request_text", "request_plan", "situation", "evidence", "related_docs",
-        "query_artifacts", "materialized_ticket_sources", "continuation_contract",
-        "structure_plan", "draft", "change_plan",
-    ),
-    "people_advisor": ("draft", "evidence", "query_results"),
-    "auditor": (
-        "request_text", "request_plan", "materialized_ticket_sources", "structure_plan",
-        "draft", "change_plan", "evidence", "continuation_contract", "revisions",
-    ),
-    "result_integrator": (
-        "result", "review", "draft", "change_plan", "questions", "situation", "evidence",
-        "knowledge_brief", "pmo_findings", "portfolio_snapshot", "request_text",
-    ),
-    "editor_author": (
-        "ticket_key", "kind", "seed_html",
-    ),
-}
-
-
 class MaxisRuntimeError(RuntimeError):
     """A fail-closed runtime/profile/remote-contract error."""
 
@@ -300,17 +267,13 @@ def _profile_snapshot(profile_name: str = "", *, required: bool = False) -> dict
             raise MaxisRuntimeError("MAXIS kill switch가 활성화되어 있습니다.")
         if not bool(profile.get("enabled")):
             raise MaxisRuntimeError("검증·활성화된 MAXIS 프로필이 아닙니다.")
-        if str(profile.get("data_policy") or "") == "synthetic_only":
-            try:
-                from app.agent.tools._ctx import settings
-                if str(settings().jira_env or "").strip().lower() != "mock":
-                    raise MaxisRuntimeError(
-                        "dev MAXIS 프로필에는 mock 합성 데이터만 전송할 수 있습니다."
-                    )
-            except MaxisRuntimeError:
-                raise
-            except Exception as exc:
-                raise MaxisRuntimeError("Jira 데이터 환경을 확인할 수 없습니다.") from exc
+        # A dev profile is safe to exercise from a normal local LTM process as well as
+        # from a mock-Jira process.  The trust boundary is the outbound payload, not the
+        # unrelated local Jira connection: ``_context_pack`` replaces every
+        # content-bearing value with a fixed fixture and ``invoke`` independently checks
+        # that exact fixture before opening the network connection.  Requiring
+        # ``jira_env=mock`` here made the local desktop app unable to run even that safe
+        # canary/shadow path while providing no additional data-leak protection.
     return {
         "name": str(profile.get("name") or ""),
         "stage": str(profile.get("stage") or ""),
@@ -333,6 +296,31 @@ def _profile_snapshot(profile_name: str = "", *, required: bool = False) -> dict
         "workflows": profile.get("workflows") if isinstance(profile.get("workflows"), dict) else {},
         "enabled": bool(profile.get("enabled")),
     }
+
+
+def _require_authoritative_routes(metadata: dict, role_routes: dict[str, str]) -> None:
+    """Apply the profile authority gate to every requested ``maxis`` Role route."""
+
+    authoritative_roles = sorted(
+        role_id for role_id, route in role_routes.items() if route == "maxis"
+    )
+    if not authoritative_roles:
+        return
+    try:
+        from app.agent.maxis import profiles
+
+        workflow_keys = {
+            profiles._workflow_key(role_id)  # package-private canonical mapping
+            for role_id in authoritative_roles
+        }
+        profiles.require_authoritative(
+            str(metadata.get("name") or ""), workflow_keys,
+        )
+    except Exception as exc:
+        raise MaxisRuntimeError(
+            "MAXIS authoritative route가 release security gate에 의해 차단되었습니다: "
+            + str(exc)
+        ) from exc
 
 
 def _registry_digest(*, required: bool) -> str:
@@ -378,7 +366,16 @@ def thread_runtime_pin(*, engine: str = "", profile: str = "") -> dict:
     """Create the immutable runtime sidecar stored at the first turn of a thread."""
     routes = _canonical_role_routes(explicit_engine=engine)
     remote = any(route != "local" for route in routes.values())
-    metadata = _profile_snapshot(profile, required=remote)
+    profile_name = str(profile or "").strip()
+    # An all-local thread has no MAXIS dependency unless its caller deliberately pins
+    # a named profile.  Reading the active candidate here used to bind unrelated local
+    # conversations to later control-plane edits and made them fail on resume.
+    metadata = (
+        _profile_snapshot(profile_name, required=remote)
+        if remote or profile_name
+        else {}
+    )
+    _require_authoritative_routes(metadata, routes)
     registry_digest = _registry_digest(required=remote)
     fingerprint = _runtime_fingerprint(
         metadata, routes, registry_digest=registry_digest,
@@ -446,7 +443,18 @@ def verify_thread_runtime(state: dict, *, engine: str = "", profile: str = "") -
             "이 대화를 시작한 뒤 MAXIS Workflow route가 변경되었습니다. 새 대화를 시작해 주세요."
         )
     remote = any(route != "local" for route in current_routes.values())
-    metadata = _profile_snapshot(str(state.get("runtime_profile") or ""), required=remote)
+    pinned_profile_name = str(state.get("runtime_profile") or "").strip()
+    # Legacy checkpoints are migrated to an explicit all-local pin with no profile.
+    # Keep that pin independent from a MAXIS candidate that may later become active;
+    # otherwise a harmless control-plane change would invalidate an unrelated local
+    # conversation.  New local pins that deliberately captured a named profile keep
+    # their original profile binding and continue to be checked below.
+    metadata = (
+        _profile_snapshot(pinned_profile_name, required=remote)
+        if remote or pinned_profile_name
+        else {}
+    )
+    _require_authoritative_routes(metadata, current_routes)
     current_registry = _registry_digest(required=remote)
     if remote and (
         str(state.get("knowledge_dataset_id") or "")
@@ -468,6 +476,64 @@ def verify_thread_runtime(state: dict, *, engine: str = "", profile: str = "") -
         )
 
 
+def _legacy_checkpoint_is_clearly_local(prior: dict) -> bool:
+    """Return whether an unpinned checkpoint has no evidence of remote execution.
+
+    Pre-MAXIS checkpoints have no runtime fields at all.  Partially written newer
+    checkpoints may have lost their fingerprint, so every surviving runtime marker
+    must still be compatible with an all-local conversation before migration is
+    allowed.  Ambiguous or remote-bearing state is deliberately not repaired.
+    """
+
+    if not prior or prior.get("runtime_profile_fingerprint"):
+        return False
+    if any(str(prior.get(key) or "").strip() for key in (
+        "runtime_profile",
+        "runtime_registry_digest",
+        "runtime_contract_build",
+        "workflow_bundle_version",
+        "knowledge_version",
+        "knowledge_dataset_id",
+        "knowledge_manifest_sha256",
+    )):
+        return False
+    for key in ("runtime_engine", "runtime_last_role_engine"):
+        value = str(prior.get(key) or "").strip().lower()
+        if value not in {"", "local"}:
+            return False
+    if str(prior.get("runtime_engine_source") or "").strip().lower() not in {
+        "", "explicit",
+    }:
+        return False
+    if "runtime_role_routes" in prior:
+        routes = prior.get("runtime_role_routes")
+        if not isinstance(routes, dict) or not routes or any(
+            str(route or "").strip().lower() != "local"
+            for route in routes.values()
+        ):
+            return False
+    if "runtime_role_engines" in prior:
+        engines = prior.get("runtime_role_engines")
+        # LangGraph materializes the reducer identity (``{}``) when it hydrates
+        # checkpoints created before this field existed.  An empty map therefore
+        # carries no remote-execution evidence; populated or malformed state still
+        # has to prove that every recorded execution was local.
+        if not isinstance(engines, dict) or any(
+            str(engine or "").strip().lower() != "local"
+            for engine in engines.values()
+        ):
+            return False
+    # These reducers exist only in the MAXIS-era runtime.  Non-empty values without
+    # their immutable pin are ambiguous even when their public fields look harmless.
+    if any(prior.get(key) for key in (
+        "runtime_role_telemetry",
+        "runtime_role_sidecars",
+        "runtime_role_questions",
+    )):
+        return False
+    return True
+
+
 def prepare_thread_runtime(
     prior: dict,
     *,
@@ -481,7 +547,11 @@ def prepare_thread_runtime(
     if prior:
         # Checkpoints created before the runtime contract cannot safely become remote
         # mid-conversation.  They remain explicitly local and acquire a stable migration pin.
-        if str(engine or "").strip().lower() in {"shadow", "maxis"} or profile:
+        if (
+            str(engine or "").strip().lower() in {"shadow", "maxis"}
+            or profile
+            or not _legacy_checkpoint_is_clearly_local(prior)
+        ):
             raise RuntimeProfileChanged(
                 "기존 대화는 MAXIS 실행 경로로 전환할 수 없습니다. 새 대화를 시작해 주세요."
             )
@@ -511,8 +581,21 @@ def resolve_role(role_id: str, state: dict) -> RoleResolution:
     if not _remote_execution_allowed(role_id):
         return RoleResolution(route="local")
 
+    pinned = bool(state.get("runtime_profile_fingerprint"))
     pinned_routes = state.get("runtime_role_routes")
-    if isinstance(pinned_routes, dict) and role_id in pinned_routes:
+    if pinned:
+        # A thread pin is an immutable decision for every canonical Role.  Falling
+        # back to today's global setting when one entry disappeared from a damaged
+        # checkpoint could silently turn a previously authoritative MAXIS Role into
+        # a local execution.  Validate the complete pin before *any* local return.
+        if not isinstance(pinned_routes, dict) or role_id not in pinned_routes:
+            raise RuntimeProfileChanged(
+                "이 대화의 MAXIS Role route pin이 누락되거나 손상되었습니다. "
+                "새 대화를 시작해 주세요."
+            )
+        verify_thread_runtime(state)
+        route = str(pinned_routes.get(role_id) or "local").lower()
+    elif isinstance(pinned_routes, dict) and role_id in pinned_routes:
         route = str(pinned_routes.get(role_id) or "local").lower()
     else:
         route = str(_canonical_role_routes().get(role_id) or "local").lower()
@@ -523,8 +606,7 @@ def resolve_role(role_id: str, state: dict) -> RoleResolution:
 
     profile_name = str(state.get("runtime_profile") or "")
     metadata = _profile_snapshot(profile_name, required=True)
-    if state.get("runtime_profile_fingerprint"):
-        verify_thread_runtime(state)
+    _require_authoritative_routes(metadata, {role_id: route})
     try:
         from app.agent.maxis.registry import load_registry
 
@@ -863,30 +945,57 @@ def _role_context(role_id: str, state: dict) -> tuple[list[dict], frozenset[str]
     """Project only the Role's declared, non-authority state into bounded context."""
     from app.agent.workflow.role_manifest import ROLE_SPECS
 
-    ROLE_SPECS[role_id]  # canonical-id assertion
+    spec = ROLE_SPECS[role_id]  # canonical-id assertion
     denied = {
         "messages", "query_results", "query_artifacts", "materialized_ticket_sources",
         "approval_token", "comment_token", "execution_receipt",
         "question_receipt_projection", "change_audit_binding", "trace", "error", "user_id",
-        "request_text", "prompt",  # carried once in the guarded query
+        "request_text", "prompt", "role_context_carryover",
+        # request_text is carried once in the guarded query; the carryover ledger is
+        # local provenance metadata and never model context.
     }
     # This is an outbound allowlist, not a mirror of the much wider local Role input
     # contract.  Adding a new local State field must never make it cross MAXIS by accident.
     allowed = {
-        key for key in _ROLE_CONTEXT_PRIORITY.get(role_id, ())
+        key for key in spec.remote_context_keys
         if key not in denied and not key.startswith("runtime_")
     }
-    order = list(_ROLE_CONTEXT_PRIORITY.get(role_id, ()))
+    order = list(spec.remote_context_keys)
     values = [key for key in order if key in allowed and state.get(key) not in (
         None, "", [], {},
     )]
-    observed_at = _context_time(state)
-    has_observed_at = bool(str(state.get("correlation_started_at") or "").strip())
+    current_observed_at = _context_time(state)
+    current_has_observed_at = bool(
+        str(state.get("correlation_started_at") or "").strip()
+    )
+    carryover = (
+        state.get("role_context_carryover")
+        if isinstance(state.get("role_context_carryover"), dict)
+        else {}
+    )
     rows: list[dict] = []
     omitted = max(0, len(values) - 8)
     for index, key in enumerate(values[:8]):
         value = _json_value(state[key])
         encoded = _canonical_json(value)
+        observed_at = current_observed_at
+        has_observed_at = current_has_observed_at
+        carried = carryover.get(key)
+        digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        if isinstance(carried, dict) and carried.get("sha256") == digest:
+            raw_observed_at = str(carried.get("observed_at") or "").strip()
+            try:
+                parsed_observed_at = datetime.fromisoformat(
+                    raw_observed_at.replace("Z", "+00:00")
+                )
+                if (
+                    parsed_observed_at.tzinfo is not None
+                    and parsed_observed_at.utcoffset() is not None
+                ):
+                    observed_at = parsed_observed_at
+                    has_observed_at = True
+            except ValueError:
+                has_observed_at = False
         partial = not has_observed_at
         if len(encoded) > 3900:
             # Do not slice JSON into an invalid or misleading value. A typed omission is
@@ -1147,6 +1256,23 @@ def _context_pack(
     # contain raw query results/state and would bypass source scope/freshness attestation.
     synthetic_only = str(state.get("runtime_profile") or "").strip().lower() == "dev"
     task_text = str(state.get("request_text") or "").strip()
+    continuation_answer = (
+        str(state.get("continuation_answer") or "").strip()
+        if role_id == "request_architect" and state.get("turn_continuation") is True
+        else ""
+    )
+    # A continuation needs both the durable root request and the current bounded answer.
+    # Never recover that answer from ``messages``: the transcript can contain unrelated
+    # history, tool output, or secrets. ContextGuard performs the same URL/identity/
+    # sensitive-value checks over this explicit query as for every other outbound field.
+    if continuation_answer:
+        task_text = (
+            "Original request:\n"
+            f"{task_text[:2500]}\n"
+            "Current continuation answer:\n"
+            f"{continuation_answer[:800]}"
+        )
+    explicit_user_intent = bool(task_text)
     user_intent = (
         f"Synthetic MAXIS integration exercise for canonical role {role_id}."
         if synthetic_only else (
@@ -1165,10 +1291,10 @@ def _context_pack(
         # every content-bearing field with one fixed fixture before crossing the boundary.
         synthetic_content = f"Synthetic LTM fixture for {role_id}; state is ready."
         sources = [{
-            "source_id": "synthetic_dev_fixture",
+            "source_id": _SYNTHETIC_SOURCE_ID,
             "kind": "ltm",
-            "canonical_id": "ltm:maxis-dev:synthetic-fixture",
-            "title": "Synthetic MAXIS development fixture",
+            "canonical_id": _SYNTHETIC_CANONICAL_ID,
+            "title": _SYNTHETIC_TITLE,
             "scope": "",
             "url": "",
             "content": synthetic_content,
@@ -1178,19 +1304,52 @@ def _context_pack(
         }]
         role_context = []
         allowed_context_keys = ()
-    policy = ContextPolicy(
-        allowed_scopes={
+    elif not sources and explicit_user_intent:
+        # RequestArchitect and other pre-retrieval semantic Roles legitimately derive
+        # plans or responses from the user's guarded intent before QueryRunner has any
+        # citation-grade connector result.  The intent already crosses the boundary in
+        # ``query``; represent that same bounded material as an LTM-owned source so a
+        # remote Role must cite it instead of using the source-free provenance escape
+        # hatch.  Do this only when the verified retrieval ledger is empty: an intent
+        # row must never displace or dilute one of the ten authoritative read sources.
+        intent_identity = hashlib.sha256(
+            f"{request_id}:{role_id}".encode("utf-8")
+        ).hexdigest()
+        sources = [{
+            "source_id": "src_intent_" + intent_identity[:20],
+            "kind": "ltm",
+            "canonical_id": "ltm:user-intent:" + intent_identity[:32],
+            "title": _USER_INTENT_SOURCE_TITLE,
+            "scope": "",
+            "url": "",
+            "content": user_intent,
+            "retrieved_at": requested_at,
+            "updated_at": None,
+            "partial": False,
+        }]
+    allowed_scopes = (
+        {"jira": (), "confluence": (), "bitbucket": ()}
+        if synthetic_only else {
             "jira": tuple(getattr(cfg, "search_jira_projects", None) or ()),
             "confluence": tuple(getattr(cfg, "search_confluence_spaces", None) or ()),
             "bitbucket": tuple(getattr(cfg, "search_bitbucket_projects", None) or ()),
-        },
-        allowed_source_hosts=_allowed_source_hosts(cfg),
+        }
+    )
+    policy = ContextPolicy(
+        # synthetic_only is independent of the locally configured Jira process.  Do
+        # not even project its project/space/repository or host inventory into the
+        # EvidencePack that crosses the MAXIS boundary.
+        allowed_scopes=allowed_scopes,
+        allowed_source_hosts=({} if synthetic_only else _allowed_source_hosts(cfg)),
         allowed_context_keys=allowed_context_keys,
-        allow_http_urls=str(getattr(cfg, "jira_env", "mock")).lower() != "prod",
+        allow_http_urls=(
+            False if synthetic_only
+            else str(getattr(cfg, "jira_env", "mock")).lower() != "prod"
+        ),
     )
     guard = ContextGuard(policy, _PSEUDONYM_KEY)
     identity = (
-        "synthetic-maxis-dev-user" if synthetic_only
+        _SYNTHETIC_USER_IDENTITY if synthetic_only
         else str(state.get("user_id") or state.get("thread_id") or "anonymous")
     )
     knowledge_manifest_sha256 = str(
@@ -1683,15 +1842,41 @@ def invoke(
             f"Synthetic MAXIS integration exercise for canonical role {role_id}."
         )
         synthetic_sources = tuple(evidence.sources)
+        expected_pseudonym = "ltm_" + hmac.new(
+            _PSEUDONYM_KEY,
+            _SYNTHETIC_USER_IDENTITY.casefold().encode("utf-8"),
+            "sha256",
+        ).hexdigest()[:16]
+        source = synthetic_sources[0] if len(synthetic_sources) == 1 else None
         if (
-            "synthetic_only" not in evidence.flags
+            evidence.contract != "evidence-pack.v1"
+            or evidence.use_case != role_id
             or evidence.query != expected_query
-            or len(synthetic_sources) != 1
-            or synthetic_sources[0].kind != "ltm"
-            or synthetic_sources[0].canonical_id
-            != "ltm:maxis-dev:synthetic-fixture"
-            or synthetic_sources[0].content != expected_content
+            or evidence.pseudonymous_user != expected_pseudonym
+            or evidence.scope.projects
+            or evidence.scope.spaces
+            or evidence.scope.repositories
+            or evidence.facts
+            or evidence.metrics
             or evidence.role_context
+            or evidence.freshness != "fresh"
+            or evidence.partial
+            or evidence.flags != ("synthetic_only",)
+            or source is None
+            or source.source_id != _SYNTHETIC_SOURCE_ID
+            or source.kind != "ltm"
+            or source.canonical_id != _SYNTHETIC_CANONICAL_ID
+            or source.title != _SYNTHETIC_TITLE
+            or source.scope
+            or source.url
+            or source.content != expected_content
+            or source.retrieved_at != evidence.requested_at
+            or source.updated_at is not None
+            or source.content_sha256 != hashlib.sha256(
+                expected_content.encode("utf-8")
+            ).hexdigest()
+            or source.partial
+            or source.truncated
         ):
             _record_remote_audit(
                 status="blocked", error_code="synthetic_policy", **audit_common,

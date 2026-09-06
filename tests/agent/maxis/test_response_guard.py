@@ -7,6 +7,7 @@ import pytest
 
 from app.agent.maxis import (
     EditorDraftV1,
+    EvidenceMetricV1,
     EvidenceSourceV1,
     PortfolioResultV1,
     ResponseGuard,
@@ -40,6 +41,7 @@ def _remote(
         "workflow_version": "wf-1",
         "knowledge_version": "kb-1",
         "knowledge_manifest_sha256": manifest_sha,
+        "knowledge_proof": "LTM_RELEASE_SENTINEL_V1=test",
     }
 
 
@@ -167,6 +169,85 @@ def test_response_guard_rejects_value_supported_only_by_a_different_source(evide
     assert caught.value.code == "citation_assertion_mismatch"
 
 
+def _metric_only_evidence(evidence, now, *, include_unlinked_source=False):
+    base_content = "Archived baseline record without a progress statement."
+    base = EvidenceSourceV1(
+        source_id="src-1",
+        kind="ltm",
+        canonical_id="ltm:baseline:one",
+        title="Archived baseline",
+        content=base_content,
+        retrieved_at=now,
+        content_sha256=hashlib.sha256(base_content.encode("utf-8")).hexdigest(),
+    )
+    sources = (base,)
+    if include_unlinked_source:
+        other_content = "Independent archive without metric evidence."
+        other = EvidenceSourceV1(
+            source_id="src-2",
+            kind="ltm",
+            canonical_id="ltm:baseline:two",
+            title="Independent archive",
+            content=other_content,
+            retrieved_at=now,
+            content_sha256=hashlib.sha256(
+                other_content.encode("utf-8")
+            ).hexdigest(),
+        )
+        sources += (other,)
+    metric = EvidenceMetricV1(
+        metric_id="metric-progress",
+        label="Story Point progress",
+        value=50,
+        unit="percent",
+        formula_version="epic-sp.v1",
+        source_ids=("src-1",),
+    )
+    return evidence.model_copy(update={
+        "sources": sources,
+        "facts": (),
+        "metrics": (metric,),
+    })
+
+
+def test_response_guard_accepts_metric_only_lexical_support(evidence, now):
+    metric_only = _metric_only_evidence(evidence, now)
+    remote, _ = ResponseGuard().validate_remote_role(
+        json.dumps(
+            _remote(text="Story Point progress 50 percent"),
+            ensure_ascii=False,
+        ),
+        expected_role_id="work_architect",
+        evidence=metric_only,
+    )
+
+    assert remote.claims[0].text == "Story Point progress 50 percent"
+
+
+def test_response_guard_rejects_metric_lexical_support_from_wrong_source(
+    evidence, now,
+):
+    metric_only = _metric_only_evidence(
+        evidence, now, include_unlinked_source=True,
+    )
+
+    with pytest.raises(ResponseGuardError) as caught:
+        ResponseGuard().validate_remote_role(
+            json.dumps(
+                _remote(
+                    source_id="src-2",
+                    text="Story Point progress 50 percent",
+                ),
+                ensure_ascii=False,
+            ),
+            expected_role_id="work_architect",
+            evidence=metric_only,
+        )
+
+    assert caught.value.code == "citation_assertion_mismatch"
+    assert caught.value.path == "claims[0].text"
+
+
 def test_response_guard_requires_claims_for_evidence_backed_payload(evidence):
     answer = _remote(payload={"summary": "배포 완료"})
     answer["claims"] = []
@@ -178,6 +259,328 @@ def test_response_guard_requires_claims_for_evidence_backed_payload(evidence):
             evidence=evidence,
         )
     assert caught.value.code == "payload_claims_required"
+
+
+def _source_free_evidence(evidence, schema=None):
+    schema = schema or {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"status": {"const": "ready"}},
+        "required": ["status"],
+    }
+    encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    return evidence.model_copy(update={
+        "sources": (),
+        "facts": (),
+        "metrics": (),
+        "payload_schema_json": encoded,
+        "payload_schema_sha256": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+    })
+
+
+def _intent_evidence(evidence):
+    content = "사용자가 업무 계획 작성을 요청했다."
+    source = EvidenceSourceV1(
+        source_id="src-intent",
+        kind="ltm",
+        canonical_id="ltm:user-intent:0123456789abcdef",
+        title="LTM guarded user intent",
+        content=content,
+        retrieved_at=evidence.requested_at,
+        content_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+    )
+    return evidence.model_copy(update={
+        "sources": (source,),
+        "facts": (),
+        "metrics": (),
+    })
+
+
+def test_response_guard_accepts_cited_intent_recommendation(evidence):
+    intent_evidence = _intent_evidence(evidence)
+    answer = _remote(
+        source_id="src-intent",
+        payload={"summary": "업무 계획을 작성한다."},
+        text="업무 계획을 작성한다.",
+        kind="recommendation",
+        payload_claims=[{"path": "/summary", "claim_ids": ["claim-1"]}],
+    )
+
+    remote, payload = ResponseGuard().validate_remote_role(
+        json.dumps(answer, ensure_ascii=False),
+        expected_role_id="work_architect",
+        payload_model=intent_evidence.payload_schema(),
+        evidence=intent_evidence,
+    )
+
+    assert remote.claims[0].kind == "recommendation"
+    assert payload == {"summary": "업무 계획을 작성한다."}
+
+
+def test_response_guard_rejects_intent_source_as_fact(evidence):
+    intent_evidence = _intent_evidence(evidence)
+    answer = _remote(
+        source_id="src-intent",
+        payload={"summary": "사용자가 업무 계획 작성을 요청했다."},
+        text="사용자가 업무 계획 작성을 요청했다.",
+        payload_claims=[{"path": "/summary", "claim_ids": ["claim-1"]}],
+    )
+
+    with pytest.raises(ResponseGuardError) as caught:
+        ResponseGuard().validate_remote_role(
+            json.dumps(answer, ensure_ascii=False),
+            expected_role_id="work_architect",
+            payload_model=intent_evidence.payload_schema(),
+            evidence=intent_evidence,
+        )
+
+    assert caught.value.code == "intent_source_fact_forbidden"
+
+
+@pytest.mark.parametrize(
+    ("payload", "schema", "path", "text"),
+    [
+        (
+            {"summary": "확인이 필요한 항목"},
+            None,
+            "/summary",
+            "확인이 필요한 항목",
+        ),
+        (
+            {"status": "ready"},
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"status": {"type": "string"}},
+                "required": ["status"],
+            },
+            "/status",
+            "ready",
+        ),
+    ],
+    ids=("narrative", "control"),
+)
+def test_response_guard_rejects_uncited_open_fact_payload_binding(
+    evidence, payload, schema, path, text,
+):
+    answer = _remote(
+        payload=payload,
+        text=text,
+        kind="open_fact",
+        payload_claims=[{"path": path, "claim_ids": ["claim-1"]}],
+    )
+    answer["claims"][0]["citation_ids"] = []
+    answer["citations"] = []
+
+    with pytest.raises(ResponseGuardError) as caught:
+        ResponseGuard().validate_remote_role(
+            json.dumps(answer, ensure_ascii=False),
+            expected_role_id="work_architect",
+            payload_model=schema or evidence.payload_schema(),
+            evidence=evidence,
+        )
+
+    assert caught.value.code == "payload_claim_citation_required"
+    assert caught.value.path == path
+
+
+def test_response_guard_keeps_unbound_open_fact_sidecar(evidence):
+    answer = _remote(
+        payload={"summary": "진척률은 50%다."},
+        payload_claims=[{"path": "/summary", "claim_ids": ["claim-1"]}],
+    )
+    answer["claims"].append({
+        "claim_id": "open-1",
+        "kind": "open_fact",
+        "text": "담당자는 아직 확인되지 않았다.",
+        "citation_ids": [],
+    })
+
+    remote, _payload = ResponseGuard().validate_remote_role(
+        json.dumps(answer, ensure_ascii=False),
+        expected_role_id="work_architect",
+        payload_model=evidence.payload_schema(),
+        evidence=evidence,
+    )
+
+    assert remote.claims[-1].kind == "open_fact"
+    assert remote.claims[-1].citation_ids == ()
+
+
+def test_response_guard_rejects_model_authored_citation_locator(evidence):
+    answer = _remote()
+    answer["citations"][0]["locator"] = "content"
+
+    with pytest.raises(ResponseGuardError) as caught:
+        ResponseGuard().validate_remote_role(
+            json.dumps(answer, ensure_ascii=False),
+            expected_role_id="work_architect",
+            evidence=evidence,
+        )
+
+    assert caught.value.code == "citation_locator_forbidden"
+    assert caught.value.path == "citations[0].locator"
+
+
+def test_response_guard_rejects_warnings_beside_ok_result(evidence):
+    answer = _remote()
+    answer["warnings"] = ["모델이 생성한 주의 문구"]
+
+    with pytest.raises(ResponseGuardError) as caught:
+        ResponseGuard().validate_remote_role(
+            json.dumps(answer, ensure_ascii=False),
+            expected_role_id="work_architect",
+            evidence=evidence,
+        )
+
+    assert caught.value.code == "ok_has_warnings"
+    assert caught.value.path == "warnings"
+
+
+@pytest.mark.parametrize("provenance", ("claim", "citation", "payload_claim"))
+def test_response_guard_rejects_provenance_beside_non_ok_result(
+    evidence, provenance,
+):
+    answer = _remote(payload={})
+    answer.update(status="needs_input", missing_inputs=["role_knowledge"])
+    if provenance == "citation":
+        answer["claims"] = []
+        answer["payload_claims"] = []
+    elif provenance == "claim":
+        answer["payload_claims"] = []
+        answer["citations"] = []
+        answer["claims"][0].update(kind="open_fact", citation_ids=[])
+    else:
+        answer["citations"] = []
+        answer["claims"][0].update(kind="open_fact", citation_ids=[])
+
+    with pytest.raises(ResponseGuardError) as caught:
+        ResponseGuard().validate_remote_role(
+            json.dumps(answer, ensure_ascii=False),
+            expected_role_id="work_architect",
+            evidence=evidence,
+        )
+
+    assert caught.value.code == "contract_validation_failed"
+
+
+def test_response_guard_accepts_empty_provenance_beside_non_ok_result(evidence):
+    answer = _remote(payload={})
+    answer.update(
+        status="needs_input",
+        claims=[],
+        payload_claims=[],
+        citations=[],
+        missing_inputs=["role_knowledge"],
+        warnings=["knowledge_guard:no_role_knowledge"],
+    )
+
+    remote, payload = ResponseGuard().validate_remote_role(
+        json.dumps(answer, ensure_ascii=False),
+        expected_role_id="work_architect",
+        evidence=evidence,
+    )
+
+    assert remote.status == "needs_input"
+    assert payload is None
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    ("open_fact", "citation", "payload_claim"),
+)
+def test_response_guard_rejects_all_source_free_provenance(evidence, provenance):
+    answer = _remote(payload={"status": "ready"})
+    answer.update(claims=[], payload_claims=[], citations=[])
+    if provenance in {"open_fact", "payload_claim"}:
+        answer["claims"] = [{
+            "claim_id": "claim-open",
+            "kind": "open_fact",
+            "text": "모델이 생성한 미확인 사실",
+            "citation_ids": [],
+        }]
+    if provenance == "citation":
+        answer["citations"] = [{
+            "citation_id": "cite-ghost",
+            "source_id": "source-ghost",
+        }]
+    if provenance == "payload_claim":
+        answer["payload_claims"] = [{
+            "path": "/status",
+            "claim_ids": ["claim-open"],
+        }]
+
+    with pytest.raises(ResponseGuardError) as caught:
+        ResponseGuard().validate_remote_role(
+            json.dumps(answer, ensure_ascii=False),
+            expected_role_id="work_architect",
+            evidence=_source_free_evidence(evidence),
+        )
+
+    assert caught.value.code == "source_free_provenance_forbidden"
+
+
+@pytest.mark.parametrize("fixed", ({"const": "ready"}, {"enum": ["ready"]}))
+def test_response_guard_accepts_source_free_control_only_payload(evidence, fixed):
+    answer = _remote(payload={"status": "ready"})
+    answer.update(claims=[], payload_claims=[], citations=[])
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"status": fixed},
+        "required": ["status"],
+    }
+
+    remote, payload = ResponseGuard().validate_remote_role(
+        json.dumps(answer, ensure_ascii=False),
+        expected_role_id="work_architect",
+        payload_model=schema,
+        evidence=_source_free_evidence(evidence, schema),
+        expected_knowledge_manifest_sha256=MANIFEST_SHA,
+    )
+
+    assert remote.status == "ok"
+    assert payload == {"status": "ready"}
+
+
+@pytest.mark.parametrize(
+    ("schema", "payload"),
+    (
+        ({"properties": {"status": {"const": "ready"}}, "required": []},
+         {"status": "ready"}),
+        ({"properties": {"status": {"type": "string"}}, "required": ["status"]},
+         {"status": "ready"}),
+        ({"properties": {"status": {"default": "ready", "type": "string"}},
+          "required": ["status"]}, {"status": "ready"}),
+        ({"properties": {"status": {"enum": ["ready", "pending"]}},
+          "required": ["status"]}, {"status": "ready"}),
+        ({"properties": {"summary": {"const": "ready"}}, "required": ["summary"]},
+         {"summary": "ready"}),
+        ({"properties": {"status": {"const": "ready"}}, "required": [{}]},
+         {"status": "ready"}),
+    ),
+    ids=(
+        "optional", "free-text", "default", "multi-enum", "narrative",
+        "malformed-required",
+    ),
+)
+def test_response_guard_rejects_open_source_free_payloads(evidence, schema, payload):
+    schema = {
+        "type": "object", "additionalProperties": False, **schema,
+    }
+    answer = _remote(payload=payload)
+    answer.update(claims=[], payload_claims=[], citations=[])
+
+    with pytest.raises(ResponseGuardError) as caught:
+        ResponseGuard().validate_remote_role(
+            json.dumps(answer, ensure_ascii=False),
+            expected_role_id="work_architect",
+            payload_model=schema,
+            evidence=_source_free_evidence(evidence, schema),
+        )
+
+    assert caught.value.code == "source_free_payload_forbidden"
+    assert caught.value.path == "payload"
 
 
 def test_response_guard_rejects_qualitative_fact_unrelated_to_cited_source(evidence):

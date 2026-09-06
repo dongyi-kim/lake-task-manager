@@ -14,13 +14,14 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Literal, Mapping
-from urllib.parse import unquote, urlsplit, urlunsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.agent.maxis.context_guard import (
+    canonical_evidence_pack_json,
     ContextGuardError,
+    MAX_CONTEXT_PACK_UTF8_BYTES,
     assert_safe_outbound_text,
     validate_pack_safety,
 )
@@ -28,6 +29,10 @@ from app.agent.maxis.errors import (
     MaxisErrorCode,
     MaxisGatewayError,
     classify_http_status,
+)
+from app.agent.maxis.destination_policy import (
+    DestinationPolicyError,
+    canonical_maxis_api_base,
 )
 from app.agent.maxis.contracts import (
     canonical_payload_schema,
@@ -38,6 +43,7 @@ from app.agent.maxis.contracts import (
     RoleContextV1,
 )
 from app.agent.maxis.registry import WorkflowBinding
+from app.agent.maxis.identifiers import canonical_published_workflow_id
 from app.agent.maxis.response_guard import ResponseGuard, ResponseGuardError
 
 
@@ -50,6 +56,8 @@ _DATASET_ID_RE = re.compile(
     re.I,
 )
 MAX_RETRIEVER_RESOURCES = 20
+MAX_GOVERNED_RETRIEVER_RESOURCES = 2
+MAX_NON_GOVERNED_RETRIEVER_RESOURCES = 1
 
 # This is the complete, content-bounded Start contract shared by every LTM
 # Chatflow. ``query`` and ``user`` are Dify Chat API fields, not Start variables.
@@ -69,10 +77,11 @@ _REQUIRED_START_CONTROLS = {
     "workflow_version": "text-input",
     "knowledge_version": "text-input",
 }
-# ContextGuard bounds content-bearing strings to 20k characters.  A deployed Dify
-# paragraph must at least accommodate that contract; ``null``/missing max_length is
-# treated as unbounded.  Short controls must accommodate our 128-character wire IDs.
-_MIN_START_CAPACITY = {"context_pack": 20_000, **{
+# ContextGuard and the final client boundary cap the exact serialized EvidencePack at
+# 6 KiB of UTF-8. A deployed Dify paragraph must accommodate the all-ASCII worst case;
+# ``null``/missing max_length is treated as unbounded. Short controls must accommodate
+# our 128-character wire IDs.
+_MIN_START_CAPACITY = {"context_pack": MAX_CONTEXT_PACK_UTF8_BYTES, **{
     key: 128 for key in REQUIRED_START_VARIABLES if key != "context_pack"
 }}
 
@@ -91,12 +100,20 @@ class DifyRetrievalSummary(_StrictResult):
     """Content-free proof summary for Dify Knowledge Retrieval metadata.
 
     Document, segment, dataset and tenant identifiers are deliberately not fields on
-    this model.  The parser uses a dataset id only for an in-memory constant-time
-    comparison with the locally pinned deployment and immediately discards it.
+    this model. The parser classifies UUIDs against the locally pinned governed
+    dataset in memory and immediately discards them. Counts distinguish governed
+    hits from the one permitted native Release Sentinel hit without retaining either
+    dataset identity.
     """
 
     dataset_verified: bool = False
     resource_count: int = Field(default=0, ge=0, le=MAX_RETRIEVER_RESOURCES)
+    governed_resource_count: int = Field(
+        default=0, ge=0, le=MAX_GOVERNED_RETRIEVER_RESOURCES
+    )
+    non_governed_resource_count: int = Field(
+        default=0, ge=0, le=MAX_NON_GOVERNED_RETRIEVER_RESOURCES
+    )
     scored_resource_count: int = Field(default=0, ge=0, le=MAX_RETRIEVER_RESOURCES)
     minimum_score: float | None = Field(default=None, ge=-1_000_000, le=1_000_000)
     maximum_score: float | None = Field(default=None, ge=-1_000_000, le=1_000_000)
@@ -117,6 +134,16 @@ class DifyProbeResult(_StrictResult):
     status_code: int | None = None
     latency_ms: int = Field(ge=0)
     parameter_keys: tuple[str, ...] = ()
+    error_code: str = ""
+
+
+class DifyInfoProbeResult(_StrictResult):
+    """Content-free proof that an app key targets a published Chatflow app."""
+
+    ok: bool
+    status_code: int | None = None
+    latency_ms: int = Field(ge=0)
+    app_mode_verified: bool = False
     error_code: str = ""
 
 
@@ -164,6 +191,8 @@ def _retrieval_summary(
         raise _RetrievalVerificationError
 
     scores: list[float] = []
+    governed_resource_count = 0
+    non_governed_resource_count = 0
     for row in raw:
         if not isinstance(row, dict):
             raise TypeError("invalid retriever resource")
@@ -172,10 +201,12 @@ def _retrieval_summary(
             if not isinstance(candidate, str):
                 raise _RetrievalVerificationError
             actual = candidate.strip().lower()
-            if not _DATASET_ID_RE.fullmatch(actual) or not hmac.compare_digest(
-                actual, expected_dataset_id
-            ):
+            if not _DATASET_ID_RE.fullmatch(actual):
                 raise _RetrievalVerificationError
+            if hmac.compare_digest(actual, expected_dataset_id):
+                governed_resource_count += 1
+            else:
+                non_governed_resource_count += 1
         score = row.get("score")
         if score is not None:
             if isinstance(score, bool) or not isinstance(score, (int, float)):
@@ -185,9 +216,23 @@ def _retrieval_summary(
                 raise TypeError("invalid retriever score")
             scores.append(numeric_score)
 
+    if expected_dataset_id and (
+        not 1 <= governed_resource_count <= MAX_GOVERNED_RETRIEVER_RESOURCES
+        or non_governed_resource_count > MAX_NON_GOVERNED_RETRIEVER_RESOURCES
+    ):
+        # A native Dify graph aggregates the role retriever (top_k <= 2) and the
+        # independently pinned Release Sentinel retriever (top_k == 1) into this
+        # flat metadata list.  We intentionally retain neither dataset id.  The
+        # sentinel is authenticated later by ``knowledge_proof``; here we only
+        # permit its single non-governed metadata row and require a governed hit.
+        # Zero non-governed rows remains valid for legacy/direct retrievers.
+        raise _RetrievalVerificationError
+
     return DifyRetrievalSummary(
-        dataset_verified=bool(expected_dataset_id and raw),
+        dataset_verified=bool(expected_dataset_id and governed_resource_count),
         resource_count=len(raw),
+        governed_resource_count=governed_resource_count,
+        non_governed_resource_count=non_governed_resource_count,
         scored_resource_count=len(scores),
         minimum_score=round(min(scores), 6) if scores else None,
         maximum_score=round(max(scores), 6) if scores else None,
@@ -198,6 +243,11 @@ _PROBE_ROLE_BY_WORKFLOW = {
     "agent_core": "knowledge_curator",
     "editor_author": "editor_author",
     "pmo_brief": "portfolio_analyst",
+}
+_PROBE_KNOWLEDGE_QUERY_BY_WORKFLOW = {
+    "agent_core": "Story Point Epic Link",
+    "editor_author": "TipTap Editor HTML Jira Description rendering",
+    "pmo_brief": "Confluence People Directory Snowflake BI Mart module owner",
 }
 _PROBE_PAYLOAD_SCHEMA = {
     "type": "object",
@@ -255,9 +305,13 @@ def _synthetic_contract_probe_pack(
         observed_at=now,
         content_sha256=hashlib.sha256(context_json.encode("utf-8")).hexdigest(),
     )
+    knowledge_query = _PROBE_KNOWLEDGE_QUERY_BY_WORKFLOW.get(
+        binding.key, "Story Point Epic Link",
+    )
     query = (
-        "Read only the supplied synthetic evidence and return its ready state "
-        "as one cited fact."
+        f"Use the phrase '{knowledge_query}' only to exercise governed "
+        "Knowledge retrieval. Read only the supplied synthetic evidence and "
+        "return its ready state as one cited fact."
     )
     payload_schema_json, payload_schema_sha256 = canonical_payload_schema(
         _PROBE_PAYLOAD_SCHEMA
@@ -286,35 +340,21 @@ def _synthetic_contract_probe_pack(
     return pack, role_id
 
 
-def canonical_api_base(value: str, *, require_https: bool) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION)
+def canonical_api_base(
+    value: str,
+    *,
+    stage: Literal["dev", "prod", "test"],
+    require_https: bool,
+) -> str:
+    """Apply the shared deployment-owned destination policy for every client."""
+
     try:
-        parsed = urlsplit(raw)
-        port = parsed.port
-    except ValueError as exc:
-        raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION) from exc
-    scheme = parsed.scheme.casefold()
-    if scheme not in {"http", "https"} or not parsed.hostname:
-        raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION)
-    if require_https and scheme != "https":
-        raise MaxisGatewayError(MaxisErrorCode.POLICY)
-    if parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise MaxisGatewayError(MaxisErrorCode.POLICY)
-    host = parsed.hostname.casefold()
-    if ":" in host and not host.startswith("["):
-        host = f"[{host}]"
-    if port is not None:
-        host += f":{port}"
-    path = (parsed.path or "").rstrip("/")
-    if any(part == ".." for part in unquote(path).split("/")):
-        raise MaxisGatewayError(MaxisErrorCode.POLICY)
-    if path.endswith("/chat-messages") or path.endswith("/parameters"):
-        raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION)
-    if not path.endswith("/v1"):
-        path = path + "/v1" if path else "/v1"
-    return urlunsplit((scheme, host, path, "", ""))
+        return canonical_maxis_api_base(
+            value, stage=stage, require_https=require_https,
+        )
+    except DestinationPolicyError as exc:
+        code = MaxisErrorCode.POLICY if exc.policy else MaxisErrorCode.CONFIGURATION
+        raise MaxisGatewayError(code) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -356,7 +396,9 @@ class DifyClientConfig:
             raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION)
         if not 1024 <= self.max_response_bytes <= 4 * 1024 * 1024:
             raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION)
-        canonical = canonical_api_base(self.base_url, require_https=self.require_https)
+        canonical = canonical_api_base(
+            self.base_url, stage=self.stage, require_https=self.require_https,
+        )
         object.__setattr__(self, "profile", str(self.profile).strip())
         object.__setattr__(self, "profile_fingerprint", fingerprint)
         object.__setattr__(self, "base_url", canonical)
@@ -561,12 +603,7 @@ def _validated_inputs(
     # deployments.  Serialize only after strict validation; callers cannot smuggle an
     # arbitrary pre-serialized state blob through this field.
     clean: dict[str, Any] = {
-        "context_pack": json.dumps(
-            pack.model_dump(mode="json"),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        "context_pack": canonical_evidence_pack_json(pack)
     }
     for key in _INPUT_KEYS - {"context_pack"}:
         if key not in inputs:
@@ -694,6 +731,14 @@ class DifyClient:
         active_breaker.before_call()
         started = self._clock()
         try:
+            # Re-evaluate the deployment allowlist at the last HTTP boundary as well
+            # as config construction.  A probe and a normal invocation therefore
+            # cannot bypass policy by retaining a stale or manually forged config.
+            base_url = canonical_api_base(
+                self.config.base_url,
+                stage=self.config.stage,
+                require_https=self.config.require_https,
+            )
             kwargs: dict[str, Any] = {
                 "headers": self._headers(api_key, json_body=payload is not None),
                 "timeout": self.config.timeout,
@@ -702,7 +747,7 @@ class DifyClient:
                 kwargs["json"] = payload
             with self._client.stream(
                 method,
-                self.config.base_url + path,
+                base_url + path,
                 follow_redirects=False,
                 **kwargs,
             ) as response:
@@ -765,7 +810,7 @@ class DifyClient:
             clock=self._clock,
         )
 
-    def invoke(
+    def _request_validated_chat_bytes(
         self,
         binding: WorkflowBinding,
         *,
@@ -775,7 +820,15 @@ class DifyClient:
         inputs: Mapping[str, Any],
         workflow_id: str = "",
         expected_knowledge_dataset_id: str = "",
-    ) -> DifyChatResponse:
+    ) -> tuple[bytes, int, int, str, CircuitBreaker]:
+        """Return one validated Chatflow response for package-internal consumers.
+
+        Normal runtime callers must use :meth:`invoke`, whose public result deliberately
+        discards document, segment, and tenant identifiers.  The separate Knowledge
+        evaluation module uses this package-private seam to inspect retrieval identity
+        transiently and project it onto the checked-in logical document allow-list.
+        """
+
         if binding.endpoint != "/chat-messages" or binding.response_mode != "blocking":
             raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION)
         if binding.conversation_mode != "stateless":
@@ -795,12 +848,16 @@ class DifyClient:
             raise MaxisGatewayError(MaxisErrorCode.BAD_REQUEST)
         if clean_user != evidence_pack.pseudonymous_user:
             raise MaxisGatewayError(MaxisErrorCode.POLICY)
-        pinned_workflow = str(workflow_id or "").strip()
-        if pinned_workflow and (
-            len(pinned_workflow) > 120
-            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", pinned_workflow)
-        ):
-            raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION)
+        try:
+            input_workflow = canonical_published_workflow_id(
+                clean_inputs["workflow_version"]
+            )
+            pinned_workflow = canonical_published_workflow_id(
+                workflow_id, allow_empty=True,
+            )
+        except ValueError as exc:
+            raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION) from exc
+        clean_inputs["workflow_version"] = input_workflow
         if self.config.stage == "prod" and not pinned_workflow:
             raise MaxisGatewayError(MaxisErrorCode.POLICY)
         if pinned_workflow and clean_inputs["workflow_version"] != pinned_workflow:
@@ -820,7 +877,7 @@ class DifyClient:
             payload["workflow_id"] = pinned_workflow
         limit = min(binding.max_response_bytes, self.config.max_response_bytes)
         active_breaker = self._invoke_breaker(binding, api_key)
-        body, _, latency_ms = self._request_bytes(
+        body, status, latency_ms = self._request_bytes(
             "POST",
             binding.endpoint,
             api_key=api_key,
@@ -828,11 +885,35 @@ class DifyClient:
             response_limit=limit,
             breaker=active_breaker,
         )
+        return body, status, latency_ms, expected_dataset_id, active_breaker
+
+    def invoke(
+        self,
+        binding: WorkflowBinding,
+        *,
+        api_key: str,
+        query: str,
+        user: str,
+        inputs: Mapping[str, Any],
+        workflow_id: str = "",
+        expected_knowledge_dataset_id: str = "",
+    ) -> DifyChatResponse:
+        body, _, latency_ms, expected_dataset_id, active_breaker = (
+            self._request_validated_chat_bytes(
+                binding,
+                api_key=api_key,
+                query=query,
+                user=user,
+                inputs=inputs,
+                workflow_id=workflow_id,
+                expected_knowledge_dataset_id=expected_knowledge_dataset_id,
+            )
+        )
         try:
             raw = _strict_json_loads(body)
             if not isinstance(raw, dict):
                 raise TypeError("object required")
-            if raw.get("event") not in {None, "message", "agent_message"}:
+            if raw.get("event") != "message":
                 raise TypeError("unexpected event")
             answer = raw.get("answer")
             message_id = raw.get("message_id") or raw.get("id")
@@ -889,10 +970,11 @@ class DifyClient:
     ) -> DifyContractProbeResult:
         """Execute and verify a synthetic role call without returning its content.
 
-        A successful ``/parameters`` response only proves that an app exposes the
-        expected fields.  Activation additionally requires this canary to prove that
-        the published Chatflow accepts an EvidencePack/RoleContext and returns the
-        exact remote envelope, pinned versions, and a citation to supplied evidence.
+        Successful ``/info`` and ``/parameters`` responses only prove that an app is
+        an advanced Chatflow exposing the expected fields. Activation additionally
+        requires this canary to prove that the pinned published workflow accepts an
+        EvidencePack/RoleContext and returns the exact remote envelope, pinned
+        versions, and a citation to supplied evidence.
         """
 
         started = self._clock()
@@ -1002,7 +1084,7 @@ class DifyClient:
         if expected_knowledge_dataset_id:
             dataset_verified = (
                 response.retrieval.dataset_verified
-                and response.retrieval.resource_count > 0
+                and response.retrieval.governed_resource_count > 0
             )
         knowledge_retrieval_verified = dataset_verified and hmac.compare_digest(
             proof_digest, knowledge_sentinel_sha256,
@@ -1016,7 +1098,11 @@ class DifyClient:
                 contract_verified=contract_verified,
                 version_verified=True,
                 citation_verified=True,
-                retrieval_resource_count=response.retrieval.resource_count,
+                retrieval_resource_count=(
+                    response.retrieval.governed_resource_count
+                    if expected_knowledge_dataset_id
+                    else response.retrieval.resource_count
+                ),
                 error_code="knowledge_retrieval_failed",
             )
         return DifyContractProbeResult(
@@ -1028,8 +1114,66 @@ class DifyClient:
             version_verified=True,
             citation_verified=True,
             knowledge_retrieval_verified=True,
-            retrieval_resource_count=response.retrieval.resource_count,
+            retrieval_resource_count=(
+                response.retrieval.governed_resource_count
+                if expected_knowledge_dataset_id
+                else response.retrieval.resource_count
+            ),
         )
+
+    def probe_info(self, *, api_key: str) -> DifyInfoProbeResult:
+        """Require the API key's application to be exactly an advanced Chatflow.
+
+        Only the fixed boolean is retained. App names, descriptions, tags, authors,
+        and unexpected remote mode strings never cross the settings API boundary.
+        """
+
+        started = self._clock()
+        status: int | None = None
+        try:
+            body, status, latency_ms = self._request_bytes(
+                "GET",
+                "/info",
+                api_key=api_key,
+                payload=None,
+                response_limit=min(self.config.max_response_bytes, 64 * 1024),
+            )
+            raw = _strict_json_loads(body)
+            if not isinstance(raw, dict):
+                raise TypeError("object required")
+            if raw.get("mode") != "advanced-chat":
+                self.breaker.record_success()
+                return DifyInfoProbeResult(
+                    ok=False,
+                    status_code=status,
+                    latency_ms=latency_ms,
+                    error_code="unexpected_app_mode",
+                )
+            result = DifyInfoProbeResult(
+                ok=True,
+                status_code=status,
+                latency_ms=latency_ms,
+                app_mode_verified=True,
+            )
+            self.breaker.record_success()
+            return result
+        except (ValueError, TypeError):
+            self.breaker.record_failure()
+            elapsed = max(0, int((self._clock() - started) * 1000))
+            return DifyInfoProbeResult(
+                ok=False,
+                status_code=status,
+                latency_ms=elapsed,
+                error_code=MaxisErrorCode.INVALID_RESPONSE.value,
+            )
+        except MaxisGatewayError as exc:
+            elapsed = max(0, int((self._clock() - started) * 1000))
+            return DifyInfoProbeResult(
+                ok=False,
+                status_code=exc.status_code,
+                latency_ms=elapsed,
+                error_code=exc.code.value,
+            )
 
     def probe_parameters(self, *, api_key: str) -> DifyProbeResult:
         started = self._clock()
@@ -1096,6 +1240,7 @@ __all__ = [
     "DifyClient",
     "DifyClientConfig",
     "DifyContractProbeResult",
+    "DifyInfoProbeResult",
     "DifyProbeResult",
     "DifyRetrievalSummary",
     "DifyUsage",
