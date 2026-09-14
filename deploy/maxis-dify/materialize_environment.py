@@ -60,7 +60,7 @@ DEV_ENVIRONMENT_BINDING_PATH = (
 CONTRACT_GUARD_SOURCE = (
     ROOT / "deploy" / "maxis-dify" / "code" / "contract_guard.py"
 ).read_text(encoding="utf-8").rstrip()
-EDITOR_ASSEMBLER_SHA256 = "6c5f23d46f7636088761ec1782bfc5f6a9d6e454512ce7d9d605f76d66a382bd"
+EDITOR_ASSEMBLER_SHA256 = "8d5cb437c5cdc7b1a32c5f08b82d45cee101da4b4024c2d10fe6dcf880d74957"
 KNOWLEDGE_GUARD_TEMPLATE_SOURCE = (
     ROOT / "deploy" / "maxis-dify" / "code" / "knowledge_guard.py"
 ).read_text(encoding="utf-8").rstrip()

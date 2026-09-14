@@ -20,6 +20,13 @@ _SECTIONS = ("background", "scope", "work", "dod")
 _HEADINGS = dict(zip(_SECTIONS, ("배경", "작업 범위", "작업", "완료 조건 (DoD)")))
 _URL = re.compile(r"(?<![A-Za-z0-9_])(?:https?://|javascript:|data:)", re.I)
 _PERSON = re.compile(r"\[\[person:[0-9a-f]{12}\]\]")
+# This version binds display decisions as well as original source bytes. It does
+# not register the derived display text as new evidence or relax either guard.
+_UNIT_DISPLAY_POLICY = "editor-units.v2-wiki-body-display"
+_WIKI_PREFIX = re.compile(r"^(?:h[1-6][.]|[*#]+)[ \t]+(?=\S)")
+_JIRA_BODY = re.compile(r"^/content(?:/[0-9]+)*(?:/fields)?/(?:description|(?:comments?|latestComment)(?:/[0-9]+)?(?:/(?:body|text))?)$")
+_CONFLUENCE_BODY = re.compile(r"^/content(?:(?:/[0-9]+)*/body)?$")
+_CODE_LEAF = re.compile(r"\{(?:code(?::[^}\r\n]*)?|noformat)\}|<\s*/?\s*(?:pre|code)(?=[\s>])|^[ \t]*(?:`{3,}|~{3,})", re.I | re.M)
 _ANNOTATIONS = {"$comment", "default", "deprecated", "description", "examples",
                 "readOnly", "title", "writeOnly"}
 _EDITOR_SCHEMA = {
@@ -270,8 +277,14 @@ def _paths(value, path, depth=0):
             yield from _paths(item, path + "/" + str(index), depth + 1)
 
 
-def _original_units(source):
-    yield "/title", source["title"]
+def _unit_rows(source):
+    """Keep authoritative original spans separate from bounded body display.
+
+    Only typed Jira body/comment paths and Confluence bodies interpret leading
+    wiki headings/lists. Any code/pre/noformat/fence marker opts the entire leaf
+    out: do not guess which later lines are prose after incomplete code markup.
+    """
+    yield "/title", source["title"], source["title"]
     content = source["content"]
     try:
         parsed = _decode(content)
@@ -282,6 +295,9 @@ def _original_units(source):
     else:
         leaves = _paths(parsed, "/content")
     for path, text in leaves:
+        body = ((source.get("kind") == "jira" and _JIRA_BODY.fullmatch(path))
+                or (source.get("kind") == "confluence" and _CONFLUENCE_BODY.fullmatch(path)))
+        normalize = body and not _CODE_LEAF.search(text)
         # Existing line boundaries are extractive units, not generated summaries.
         lines = text.splitlines() or [text]
         for index, line in enumerate(lines):
@@ -290,7 +306,13 @@ def _original_units(source):
                 continue
             if len(line) > 1200:
                 _fail()  # Never silently crop a factual unit.
-            yield path + ("/line:" + str(index) if len(lines) > 1 else ""), line
+            display = _WIKI_PREFIX.sub("", line, count=1) if normalize else line
+            yield path + ("/line:" + str(index) if len(lines) > 1 else ""), line, display
+
+
+def _original_units(source):
+    for path, original, _ in _unit_rows(source):
+        yield path, original
 
 
 def _reference_text(text, source_id, sources):
@@ -374,12 +396,13 @@ def _catalog(sources):
         if _intent(source):
             continue
         units = []
-        for path, original in _original_units(source):
+        for path, original, body_display in _unit_rows(source):
             if not original.strip():
                 continue
-            display, markup, refs = _reference_text(original, source_id, sources)
-            binding = ["editor-units.v1", source_id, source.get("canonical_id"),
-                       source["content_sha256"], source["title"], source.get("url", ""), path, original]
+            display, markup, refs = _reference_text(body_display, source_id, sources)
+            binding = [_UNIT_DISPLAY_POLICY, source_id, source.get("kind"), source.get("canonical_id"),
+                       source["content_sha256"], source["title"], source.get("url", ""), path, original,
+                       display, markup, refs]
             unit_id = "u_" + hashlib.sha256(_canonical(binding).encode("utf-8")).hexdigest()[:20]
             if unit_id in lookup or len(lookup) >= 96:
                 _fail()

@@ -22,7 +22,7 @@ deployment evidence에 기록하지 않는다.
 | <code>dsl/*.yml</code> | Dify 0.5.0 import source DSL |
 | <code>code/knowledge_guard.py</code> | retrieval identity·ACL·크기·policy decision 검증 |
 | <code>code/contract_guard.py</code> | output contract·source graph·payload schema 검증 |
-| <code>code/editor_assembler.py</code> | Editor-only typed plan을 source-bound HTML·claim·citation 후보로 조립 |
+| <code>code/editor_assembler.py</code> | Editor Input 원문 단위 투영 + typed plan의 source-bound HTML·claim·citation 조립 |
 | <code>prompts/*.md</code> | 공통 및 앱별 instruction source |
 | <code>contracts/*.json</code> | RemoteRoleResult canonical schema 및 Editor 내부 plan schema |
 | <code>environments/dev-2026.09.yml</code> | 비밀 없는 DEV dataset/document/model binding |
@@ -50,8 +50,8 @@ label은 결과 그룹과 순서만 구분한다. 둘 다 **현재 게시된 프
 
 ## 실제 게시 topology
 
-아래는 Core/PMO의 공통 11노드·11엣지 topology다. Editor는 9번 edge를
-`Contract LLM → Editor Assembler → Contract Guard`로 나누어 12노드·12엣지다.
+아래는 Core/PMO의 공통 11노드·11엣지 topology다. Editor는 allow 경로에
+`Editor Input → Contract LLM → Editor Assembler → Contract Guard`를 사용해 **13노드·13엣지**다.
 
 ~~~mermaid
 flowchart LR
@@ -92,9 +92,21 @@ flowchart LR
 10. Contract Guard → Allowed Answer
 11. Policy Decision deny/no-hit → Denied Answer
 
-Editor Assembler는 `editor-draft.v1` 요청에서만 `editor-plan.v1`을 받아 원문 인용·제안·seed·링크를
-조립한다. non-Editor control/probe 응답은 그대로 기존 Contract Guard에 전달한다. 이 내부 출력은
-검증 전 후보이며 Assembler가 Guard를 대체하지 않는다. 모델의 형식 분기와 요청 이해 실패는 아직 남아 있다.
+Editor Input은 `editor-draft.v1` 요청의 원본 EvidencePack을 바꾸지 않고, 모델용 요청과
+출처별 원문 단위 ID 목록(`editor-input.v1`)을 만든다. 사용자의 요청은 별도 intent로 분리하며
+사실 단위로 제공하지 않는다. intent ID는 질문·제안의 출처로만 사용할 수 있다.
+
+모델은 `editor-plan.v2`의 section과 fact unit ID·proposal·link를 선택한다. Assembler가
+description의 네 섹션 제목, 기존 seed, HTML·claim·citation을 함께 구성하고, 원본 pack으로
+단위 ID를 다시 확인한다. 모델이 원문을 다시 복사하거나 없는 seed를 지정하지 않는다.
+v1 schema는 과거 증적용으로 남지만 새 Editor 경로에서는 수락하지 않는다.
+
+non-Editor control/probe 입력과 출력은 그대로 통과한다. 최종 승인 권한은 Assembler가 아니라
+기존 ContractGuard와 로컬 ResponseGuard에 있다. 두 가드는 원본 EvidencePack을 사용한다.
+형식 검증 통과는 문장 의미·업무 적합성 통과가 아니므로 별도 원문 평가가 필요하다.
+
+현재 단위 투영은 문자열 본문·제목에 한정한다. JSON 숫자/불리언과 pack facts/metrics의
+독립 단위화는 미구현이며, 크기 초과·알 수 없는 URL 등은 부분 삭제 대신 실패 처리한다.
 
 ACL deny와 no-hit은 LLM을 호출하지 않는다. 인프라 오류는 정상 Denied Answer로
 위장하지 않고 실패로 전달한다. 공통 부분의 정적 뷰어에서는

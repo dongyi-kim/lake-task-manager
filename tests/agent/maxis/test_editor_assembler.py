@@ -126,6 +126,71 @@ def _fact(pack, text="조회 전용이다.", tag="p"):
     return {"type": "fact", "unit_id": unit, "tag": tag}
 
 
+@pytest.mark.parametrize("kind,content", [
+    ("jira", {"description": "검토 안내\nh3. 완료 기준\n* 검증 결과를 기록한다."}),
+    ("jira", {"latestComment": {"text": "h3. 완료 기준\n# 검증 결과를 기록한다."}}),
+    ("jira", {"comments": [{"body": "h3. 완료 기준\n** 검증 결과를 기록한다."}]}),
+    ("confluence", "h3. 완료 기준\n* 검증 결과를 기록한다."),
+    ("confluence", {"body": "h3. 완료 기준\n* 검증 결과를 기록한다."}),
+])
+def test_body_wiki_display_removes_only_prefix_and_passes_both_guards(pack, kind, content):
+    source = pack["sources"][0]
+    source["kind"] = kind
+    _set_content(source, content)
+    before = copy.deepcopy(pack)
+    result = _call(pack, _plan(pack, [_fact(pack, "완료 기준"),
+                                    _fact(pack, "검증 결과를 기록한다.", "li")]))
+    remote, payload = _both_guards(pack, result)
+    assert remote.status == "ok"
+    assert payload.content_html == "<p>완료 기준</p><ul><li>검증 결과를 기록한다.</li></ul>"
+    assert [claim["text"] for claim in result["claims"]] == ["완료 기준", "검증 결과를 기록한다."]
+    assert all(citation["source_id"] == source["source_id"] for citation in result["citations"])
+    assert pack == before
+
+
+@pytest.mark.parametrize("kind,content", [
+    ("jira", {"key": "h2. identifier", "status": "* pending", "summary": "h3. summary"}),
+    ("jira", "h2. plain source\n* not a typed body"),
+    ("jira", {"metadata": {"description": "h2. metadata"}}),
+    ("confluence", {"summary": "h2. metadata", "title": "* literal title"}),
+    ("bitbucket", {"description": "h2. commit text\n* literal text"}),
+    ("web", {"body": "h2. plain text\n* literal text"}),
+])
+def test_wiki_display_does_not_rewrite_metadata_or_other_source_kinds(pack, kind, content):
+    source = pack["sources"][0]
+    source.update(kind=kind, title="h2. literal source title")
+    _set_content(source, content)
+    catalog, _ = ASSEMBLER._catalog(ASSEMBLER._sources(pack))
+    assert [(unit["path"], unit["text"]) for unit in catalog[0]["units"]] == list(ASSEMBLER._original_units(source))
+
+
+@pytest.mark.parametrize("body", [
+    "h2. before\n{code:python}\n* literal code\n{code}\n# after",
+    "h2. before\n{noformat}\n* literal code\n{noformat}\n# after",
+    "h2. before\n```python\n* literal code\n```\n# after",
+    "h2. before\n~~~\n* literal code\n~~~\n# after",
+    "h2. before\n<pre>\n* literal code\n</pre>\n# after",
+    "h2. before\n<code class=\"literal\">\n* literal code\n</code>\n# after",
+    "h2. before\n{code}\n* unterminated code",
+])
+def test_code_marked_leaf_is_entirely_excluded_from_wiki_display(pack, body):
+    source = pack["sources"][0]
+    source["kind"] = "jira"
+    _set_content(source, {"description": body})
+    catalog, _ = ASSEMBLER._catalog(ASSEMBLER._sources(pack))
+    assert [(unit["path"], unit["text"]) for unit in catalog[0]["units"]] == list(ASSEMBLER._original_units(source))
+
+
+def test_wiki_display_preserves_nonsyntax_numbers_negation_and_inline_markers(pack):
+    source = pack["sources"][0]
+    source["kind"] = "jira"
+    lines = ["h3.0 version", "h7. literal", "h2.no whitespace", "3. 측정값은 1.2초다.",
+             "완료 아님: h2. 작업", "*inline*", "h2.", "*", "#value"]
+    _set_content(source, {"description": "\n".join(lines)})
+    catalog, _ = ASSEMBLER._catalog(ASSEMBLER._sources(pack))
+    assert [unit["text"] for unit in catalog[0]["units"][1:]] == lines
+
+
 def _proposal(text="확인해 주세요.", refs=None, tag="p"):
     return {"type": "proposal", "text": text, "source_ids": ["src-doc"] if refs is None else refs, "tag": tag}
 

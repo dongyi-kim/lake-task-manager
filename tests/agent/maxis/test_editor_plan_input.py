@@ -123,6 +123,98 @@ def test_unit_id_rebinds_when_original_source_changes(input_pack):
     assert old_ids.isdisjoint(new_ids)
 
 
+def test_body_display_policy_keeps_prepare_assemble_and_original_binding_consistent(input_pack):
+    source = input_pack["sources"][0]
+    source.update(kind="jira", content=canonical({"description": "h3. 완료 기준\n* 원문 근거를 보존한다."}))
+    source["content_sha256"] = hashlib.sha256(source["content"].encode()).hexdigest()
+    before = copy.deepcopy(input_pack)
+    projected = view(input_pack)
+    selected = next(unit for unit in projected["sources"][0]["units"] if unit["text"] == "완료 기준")
+    originals = dict(ASSET._original_units(source))
+    assert originals[selected["path"]] == "h3. 완료 기준"
+    binding = [ASSET._UNIT_DISPLAY_POLICY, source["source_id"], source["kind"], source["canonical_id"],
+               source["content_sha256"], source["title"], source["url"], selected["path"],
+               originals[selected["path"]], "완료 기준", "완료 기준", [source["source_id"]]]
+    assert ASSET._UNIT_DISPLAY_POLICY == "editor-units.v2-wiki-body-display"
+    assert selected["unit_id"] == "u_" + hashlib.sha256(canonical(binding).encode()).hexdigest()[:20]
+    plan = {"contract": "editor-plan.v2", "status": "ok", "missing_inputs": [],
+        "sections": [{"section": "comment", "blocks": [{"type": "fact", "tag": "p",
+            "unit_id": selected["unit_id"]}]}]}
+    request = json.loads(model_input(input_pack))
+    response = ASSET.main(canonical(plan), canonical(input_pack), "editor_author", input_pack["request_id"],
+        "remote-role-result.v1", request["workflow_version"], request["knowledge_version"], request["knowledge_proof"])
+    assert json.loads(response["candidate"])["payload"]["content_html"] == "<p>완료 기준</p>"
+    assert projected == view(input_pack) and input_pack == before
+    source["content"] = source["content"].replace("h3.", "h2.")
+    source["content_sha256"] = hashlib.sha256(source["content"].encode()).hexdigest()
+    rebound = next(unit for unit in view(input_pack)["sources"][0]["units"] if unit["text"] == "완료 기준")
+    assert rebound["unit_id"] != selected["unit_id"]  # Same display, different authoritative bytes.
+
+
+@pytest.mark.parametrize("kind,other_kind,field", [
+    ("confluence", "web", "body"), ("jira", "bitbucket", "description"),
+])
+def test_unit_id_binds_source_kind_display_policy_without_changing_source(input_pack, kind, other_kind, field):
+    source = input_pack["sources"][0]
+    source.update(kind=kind, content=canonical({field: "h3. 완료 기준"}))
+    source["content_sha256"] = hashlib.sha256(source["content"].encode()).hexdigest()
+    before = copy.deepcopy(input_pack)
+    first = next(unit for unit in view(input_pack)["sources"][0]["units"] if unit["path"] != "/title")
+    assert first["text"] == "완료 기준" and input_pack == before
+    source["kind"] = other_kind
+    after_kind_change = copy.deepcopy(input_pack)
+    second = next(unit for unit in view(input_pack)["sources"][0]["units"] if unit["path"] != "/title")
+    assert second["text"] == "h3. 완료 기준"
+    assert second["unit_id"] != first["unit_id"]
+    assert input_pack == after_kind_change
+    assert {key: value for key, value in source.items() if key != "kind"} == {
+        key: value for key, value in before["sources"][0].items() if key != "kind"}
+
+
+def test_unit_id_binds_cross_source_anchor_display_and_prepare_main_stay_in_sync(input_pack):
+    source = input_pack["sources"][0]
+    target = copy.deepcopy(source)
+    target.update(source_id="source-link", canonical_id="doc-linked", title="첫 번째 검토 기준",
+                  url="https://wiki.example.local/linked", content="원본 검토 근거를 보존한다.")
+    target["content_sha256"] = hashlib.sha256(target["content"].encode()).hexdigest()
+    source["content"] = "참고 자료 " + target["url"]
+    source["content_sha256"] = hashlib.sha256(source["content"].encode()).hexdigest()
+    input_pack["sources"].append(target)
+    before = copy.deepcopy(input_pack)
+
+    def selected_unit():
+        return next(unit for unit in view(input_pack)["sources"][0]["units"] if unit["path"] == "/content")
+
+    def assemble(unit):
+        plan = {"contract": "editor-plan.v2", "status": "ok", "missing_inputs": [],
+            "sections": [{"section": "comment", "blocks": [{"type": "fact", "tag": "p",
+                "unit_id": unit["unit_id"]}]}]}
+        request = json.loads(model_input(input_pack))
+        response = ASSET.main(canonical(plan), canonical(input_pack), "editor_author", input_pack["request_id"],
+            "remote-role-result.v1", request["workflow_version"], request["knowledge_version"], request["knowledge_proof"])
+        return json.loads(response["candidate"])
+
+    first = selected_unit()
+    original_result = assemble(first)
+    assert first["text"] == "참고 자료 첫 번째 검토 기준"
+    assert original_result["status"] == "ok"
+    assert original_result["claims"][0]["text"] == first["text"]
+    assert input_pack == before
+
+    target["title"] = "변경된 검토 기준"
+    after_title_change = copy.deepcopy(input_pack)
+    second = selected_unit()
+    assert second["text"] == "참고 자료 변경된 검토 기준"
+    assert second["unit_id"] != first["unit_id"]
+    updated_result = assemble(second)
+    assert updated_result["status"] == "ok"
+    assert updated_result["claims"][0]["text"] == second["text"]
+    assert '>변경된 검토 기준</a>' in updated_result["payload"]["content_html"]
+    assert {citation["source_id"] for citation in updated_result["citations"]} == {source["source_id"], target["source_id"]}
+    assert assemble(first)["status"] == "blocked"  # A stale selection cannot silently change its display.
+    assert source == before["sources"][0] and input_pack == after_title_change
+
+
 def test_catalog_overflow_fails_without_silent_truncation(input_pack):
     source = input_pack["sources"][0]
     source["content"] = canonical(["항목" + str(x) for x in range(140)])
