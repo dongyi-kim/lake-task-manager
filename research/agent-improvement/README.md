@@ -10,6 +10,7 @@ LakeTaskManager Agent의 prompt 언어 구성, role contract, 구조적 품질, 
 
 ## 주요 보고서
 
+- [`maxis-dify-quality-20260914.md`](maxis-dify-quality-20260914.md): MAXIS/Dify 실측 품질 실패·58-case 재사용·Editor v8/v9 비교
 - [`AGENT-STRUCTURAL-QUALITY-TOKEN-V3-REPORT.md`](reports/AGENT-STRUCTURAL-QUALITY-TOKEN-V3-REPORT.md): V2와 V3의 최종 구조·품질·토큰 비교
 - [`AGENT-ROLE-CONTRACT-V2-COMPARISON.md`](reports/AGENT-ROLE-CONTRACT-V2-COMPARISON.md): BASE, KO-R, V2 role contract 비교
 - [`PROMPT-KO-REFACTORED-COMPARISON.md`](reports/PROMPT-KO-REFACTORED-COMPARISON.md): 한국어 재작성 버전 비교

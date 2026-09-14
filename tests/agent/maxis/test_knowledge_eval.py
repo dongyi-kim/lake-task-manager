@@ -335,6 +335,13 @@ def test_separate_harness_attestation_changes_on_semantic_drift():
     assert drifted_sha != suite.harness_sha256
 
 
+def test_runtime_aligned_checker_has_a_distinct_harness_version():
+    assert knowledge_eval.HARNESS_CONTRACT == "ltm-maxis-knowledge-eval-harness.v2"
+    assert knowledge_eval.EVALUATION_HARNESS_SHA256 != (
+        "df2f1890ce2cd61a95639f49d9697127deb1bdb57d9340b76ccb2c3d27c5a3f1"
+    )
+
+
 def test_evaluation_source_hashes_bind_exact_remote_execution_assets():
     root = Path(__file__).resolve().parents[3]
     expected = {
@@ -566,52 +573,57 @@ def test_raw_response_projects_only_logical_document_identity():
     "deviation",
     (
         "warning",
-        "claim_text",
-        "claim_kind",
         "citation_locator",
-        "extra_citation",
-        "extra_claim",
     ),
 )
-def test_retrieval_success_rejects_every_noncanonical_grounding_shape(deviation):
+def test_retrieval_success_still_enforces_runtime_warning_and_locator_rules(deviation):
     case = _case()
     answer = _answer(case)
     if deviation == "warning":
         answer["warnings"] = ["model_warning"]
-    elif deviation == "claim_text":
-        answer["claims"][0]["text"] = "retrieved"
-    elif deviation == "claim_kind":
-        answer["claims"][0]["kind"] = "inference"
     elif deviation == "citation_locator":
         answer["citations"][0]["locator"] = "synthetic"
-    elif deviation == "extra_citation":
+
+    with pytest.raises(KnowledgeEvalError) as caught:
+        _evaluate(case, body=_body(case, answer=answer))
+    assert caught.value.code.startswith("response_")
+
+
+@pytest.mark.parametrize("variation", (
+    "grounded_value", "cited_inference", "extra_citation", "extra_claim",
+    "unbound_control_field",
+))
+def test_retrieval_smoke_accepts_runtime_valid_source_cited_variations(variation):
+    case = _case()
+    answer = _answer(case)
+    if variation == "grounded_value":
+        answer["claims"][0]["text"] = "retrieved"
+    elif variation == "cited_inference":
+        answer["claims"][0]["kind"] = "inference"
+    elif variation == "extra_citation":
         answer["citations"].append({
             "citation_id": "eval-retrieval-health-citation-extra",
             "source_id": knowledge_eval.SYNTHETIC_RETRIEVAL_HEALTH_SOURCE_ID,
         })
-    elif deviation == "extra_claim":
+    elif variation == "extra_claim":
         answer["claims"].append({
             "claim_id": "eval-retrieval-health-claim-extra",
             "kind": "fact",
             "text": SYNTHETIC_HEALTH_CONTENT,
             "citation_ids": ["eval-retrieval-health-citation"],
         })
-
-    if deviation in {"warning", "citation_locator"}:
-        with pytest.raises(KnowledgeEvalError) as caught:
-            _evaluate(case, body=_body(case, answer=answer))
-        assert caught.value.code.startswith("response_")
-        return
+    elif variation == "unbound_control_field":
+        answer["payload_claims"] = []
 
     observation = _evaluate(case, body=_body(case, answer=answer))
     row = knowledge_eval.case_result(
         case, workflow_key="agent_core", observation=observation,
     )
 
-    assert observation.response_shape_ok is False
-    assert row["responseShapeOk"] is False
-    assert row["automatedChecksPassed"] is False
-    assert row["passed"] is False
+    assert observation.response_contract_ok is True
+    assert row["responseShapeOk"] is True
+    assert row["automatedChecksPassed"] is True
+    assert row["passed"] is True
 
 
 @pytest.mark.parametrize("missing", ("claim", "citation"))
@@ -628,10 +640,14 @@ def test_retrieval_success_fails_closed_when_grounding_link_is_missing(missing):
     assert caught.value.code.startswith("response_")
 
 
-def test_retrieval_success_rejects_missing_status_payload_binding():
+def test_retrieval_smoke_rejects_a_constant_status_with_only_uncited_open_fact():
     case = _case()
-    answer = _answer(case)
-    answer["payload_claims"] = []
+    answer = _answer(case, claims=[{
+        "claim_id": "unresolved",
+        "kind": "open_fact",
+        "text": "근거 확인 필요",
+        "citation_ids": [],
+    }])
 
     observation = _evaluate(case, body=_body(case, answer=answer))
     row = knowledge_eval.case_result(
@@ -640,6 +656,71 @@ def test_retrieval_success_rejects_missing_status_payload_binding():
 
     assert observation.response_shape_ok is False
     assert row["automatedChecksPassed"] is False
+
+
+def test_retrieval_smoke_still_rejects_ungrounded_claims():
+    case = _case()
+    answer = _answer(case)
+    answer["claims"][0]["text"] = "프로젝트 일정 확정 완료"
+    answer["payload_claims"] = []
+
+    with pytest.raises(KnowledgeEvalError, match="response_citation_assertion_mismatch"):
+        _evaluate(case, body=_body(case, answer=answer))
+
+
+@pytest.mark.parametrize(("status", "warnings", "expected"), (
+    ("blocked", [], "remote_blocked_without_guard_code"),
+    ("needs_input", [], "remote_needs_input_without_guard_code"),
+    ("blocked", ["contract_guard:claim_not_grounded"],
+     "contract_guard_claim_not_grounded"),
+    ("blocked", ["contract_guard:non_ok_provenance_not_empty"],
+     "contract_guard_non_ok_provenance_not_empty"),
+    ("blocked", ["knowledge_guard:role_document_forbidden"],
+     "knowledge_guard_role_document_forbidden"),
+    ("blocked", ["contract_guard:untrusted_diagnostic_canary"],
+     "remote_control_warning_unrecognized"),
+    ("blocked", ["contract_guard:claim_not_grounded", "untrusted_diagnostic_canary"],
+     "remote_control_warning_unrecognized"),
+    ("blocked", ["contract_guard:claim_not_grounded untrusted_diagnostic_canary"],
+     "remote_control_warning_unrecognized"),
+))
+def test_control_diagnostics_project_only_exact_allowlisted_warning_codes(
+    status, warnings, expected,
+):
+    case = _case()
+    observation = _evaluate(case, body=_body(
+        case, answer=_answer(case, status=status, warnings=warnings),
+    ))
+    row = knowledge_eval.case_result(
+        case, workflow_key="agent_core", observation=observation,
+    )
+
+    assert observation.failure_reason_code == expected
+    assert row["errorCode"] == expected
+    assert row["passed"] is False
+    assert "untrusted_diagnostic_canary" not in repr(observation)
+    assert "untrusted_diagnostic_canary" not in json.dumps(row)
+
+
+def test_observation_rejects_unregistered_diagnostic_values():
+    with pytest.raises(KnowledgeEvalError, match="evaluation_failure_reason_invalid"):
+        replace(_evaluate(), failure_reason_code="untrusted_diagnostic_canary")
+
+
+def test_reported_guard_diagnostic_cannot_replace_zero_hit_and_no_llm_evidence():
+    case = _case(case_type="acl_negative", outcome="deny")
+    observation = _evaluate(case, body=_body(
+        case,
+        answer=_answer(case, status="needs_input"),
+    ))
+    row = knowledge_eval.case_result(
+        case, workflow_key="agent_core", observation=observation,
+    )
+
+    assert observation.failure_reason_code == "knowledge_guard_no_role_knowledge_hit"
+    assert row["governedRetrievalEmpty"] is False
+    assert row["llmNotExecutedOk"] is False
+    assert row["passed"] is False
 
 
 def test_retrieval_document_order_drives_hit_at_k_and_reciprocal_rank():
@@ -1055,6 +1136,7 @@ def test_explicit_empty_role_retrieval_is_valid_only_for_control_outcomes(
     assert row["llmNotExecutedOk"] is True
     assert row["responseShapeOk"] is True
     assert row["passed"] is True
+    assert row["errorCode"] == ""
 
 
 @pytest.mark.parametrize(
@@ -1734,6 +1816,16 @@ def test_atomic_artifact_is_schema_valid_and_never_contains_raw_provider_values(
     forged["harnessDefinitionSha256"] = "0" * 64
     with pytest.raises(KnowledgeEvalError, match="artifact_schema_validation_failed"):
         knowledge_eval.validate_artifact(forged)
+    # Older artifacts retain their original checker and schema digest. Supporting
+    # their shape is not permission to relabel or compare them as v2 evaluations.
+    historical = json.loads(encoded)
+    historical["harnessDefinitionSha256"] = (
+        "df2f1890ce2cd61a95639f49d9697127deb1bdb57d9340b76ccb2c3d27c5a3f1"
+    )
+    historical["artifactSchemaSha256"] = (
+        "44a0c94b936bb65909a58dfdd5ef24b7b4aa62ceee83b94c50e470a11c015576"
+    )
+    knowledge_eval.validate_artifact(historical)
 
 
 def test_injection_case_cannot_make_artifact_pass_without_semantic_review():

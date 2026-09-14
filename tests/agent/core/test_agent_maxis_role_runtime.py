@@ -498,6 +498,31 @@ def test_editor_person_ref_is_opaque_outbound_and_rehydrates_only_verified_id():
         )
 
 
+@pytest.mark.parametrize("profile", ("dev", "prod"))
+def test_editor_policy_search_terms_keep_dev_fixture_boundary(profile):
+    from app.agent.maxis.contracts import EditorDraftV1
+    state = _runtime_state("editor_author")
+    state.update(runtime_profile=profile, request_text="본문 써줘")
+    payload = backend.role_payload(
+        "editor_author", state, [], EditorDraftV1.model_json_schema(),
+        output_kind="structured",
+    )
+    pack = payload["evidencePack"]
+    if profile == "dev":
+        assert pack["query"] == (
+            "Canonical LTM role editor_author. Process this guarded user intent:\n"
+            "Synthetic MAXIS integration exercise for canonical role editor_author."
+        )
+        assert "본문 써줘" not in json.dumps(pack, ensure_ascii=False)
+        assert pack["flags"] == ["synthetic_only"]
+    else:
+        assert pack["query"].startswith(
+            "Canonical LTM role editor_author. Process this guarded user intent:\n본문 써줘"
+        )
+        assert pack["query"].endswith("Policy search terms: HTML TipTap Description")
+        assert pack["sources"][0]["content"] == "본문 써줘"
+
+
 def test_missing_request_text_never_falls_back_to_messages_or_prompt():
     state = _runtime_state("request_architect")
     state["request_text"] = ""

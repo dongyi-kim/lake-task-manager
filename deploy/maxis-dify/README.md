@@ -4,10 +4,11 @@
 source bundle이다. DEV와 PROD의 환경 binding을 분리하고, import DSL을 materialize한
 뒤 validator와 원격 release gate를 통과시키는 구조다.
 
-> 현재 상태: DEV Native v8 **11노드·11엣지**, Governed Native V2
-> **8문서·513 segments**, Role metadata **8/8**, Service API canary **3/3**.
-> Full suite는 **13/25**로 <code>releaseEligible=false</code>다. LTM active profile은
-> 비어 있고 세 route는 local이며, PROD는 미구성·inactive·fail closed다.
+> 2026-09-14: DEV 품질 후보 **v9, 11노드·11엣지** 게시, canary **3/3**.
+> Editor component는 v8/v9 모두 **0/5**, Knowledge harness v2는 **12/25**다.
+> 활성 profile은 비어 있고 모든 route는 local이다. PROD는 변경하지 않았다.
+> [최신 증적](deployments/dev-quality-2026.09.14.yml)과
+> [품질 보고서](../../research/agent-improvement/maxis-dify-quality-20260914.md)를 먼저 확인한다.
 
 API key, 프롬프트 전문, 모델 응답, 사용자 데이터, release sentinel 원문은 이 문서나
 deployment evidence에 기록하지 않는다.
@@ -25,15 +26,23 @@ deployment evidence에 기록하지 않는다.
 | <code>environments/dev-2026.09.yml</code> | 비밀 없는 DEV dataset/document/model binding |
 | <code>environments/prod.template.yml</code> | 독립 PROD 자산 체크리스트 |
 | <code>deployments/dev-2026.09.yml</code> | 게시 ID·카나리·평가 상태의 비밀 없는 증적 |
+| <code>deployments/dev-quality-2026.09.14.yml</code> | v9 최신 게시 ID·실측 실패·비활성 상태 |
 | <code>materialize_environment.py</code> | source DSL에 환경 binding을 주입한 import copy 생성 |
 | <code>validate_bundle.py</code> | DSL·prompt·code·contract·Knowledge binding 정적 검증 |
 | <code>knowledge-evals.yml</code> | release-bound retrieval 평가 명세 |
 | <code>launch_knowledge_evals.py</code> | credential-free DEV endpoint preflight 후 평가 runner에 일회성 handoff |
 | <code>run_knowledge_evals.py</code> | handoff 없이는 credential 접근 전 종료하는 metadata-only 평가 runner |
+| <code>launch_editor_evals.py / run_editor_evals.py</code> | 기존 Editor 5-case 재사용, 고정 가명 fixture의 실제 작성 품질 평가 |
 | <code>smoke-cases.yml</code> | 세 앱 최소 contract smoke case |
 
 source DSL은 직접 환경값으로 수정하지 않는다. DEV/PROD 차이는 environment binding과
 배포 후 생성된 app/workflow ID를 통해 관리한다.
+
+Editor component 재실행은 `python deploy/maxis-dify/launch_editor_evals.py --label candidate`를
+사용한다. `baseline` label은 **현재 게시된 프로필의** 기존 검색어 정책을 측정하며 과거 v8로
+자동 전환하지 않는다. 과거 v8/v9 비교는 보고서의 고정 UUID·raw 증적을 사용한다.
+정답/checker/rubric과 raw fixture UID는 원격에 보내지 않는다. 이 평가가 통과해도 full compose/UI
+검증이나 activation 승인이 되지 않는다. 아래 v8 수치는 과거 배포 기록으로 읽는다.
 
 ## 실제 게시 topology
 

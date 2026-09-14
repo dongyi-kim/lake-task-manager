@@ -39,7 +39,7 @@ from app.agent.maxis.response_guard import ResponseGuard, ResponseGuardError
 
 RESULT_CONTRACT = "ltm-maxis-knowledge-eval-result.v1"
 SUITE_CONTRACT = "ltm-maxis-dify-knowledge-evals.v1"
-HARNESS_CONTRACT = "ltm-maxis-knowledge-eval-harness.v1"
+HARNESS_CONTRACT = "ltm-maxis-knowledge-eval-harness.v2"
 DEFAULT_PILOT_CASE = "work-breakdown-positive"
 # Native Dify retrieval metadata may aggregate Role Knowledge top_k=2 and the
 # independently bound Release Sentinel top_k=1 on the same response surface.
@@ -78,6 +78,35 @@ _SYNTHETIC_RETRIEVAL_HEALTH_SHA256 = hashlib.sha256(
 ).hexdigest()
 RETRIEVAL_EVIDENCE_SOURCE = "dify_retriever_resources"
 RESPONSE_GROUNDING_SOURCE = "evaluator_owned_synthetic_control"
+# Diagnostic labels describe the reported response, not authenticated node origin.
+# In particular, a model can itself return a guard-shaped warning. Never use these
+# labels to grant a pass or infer that the LLM did not execute.
+_CONTRACT_GUARD_DIAGNOSTIC_CODES = frozenset({
+    "invalid_json", "duplicate_json_key", "json_object_required",
+    "response_fields_mismatch", "response_contract_mismatch", "response_echo_mismatch",
+    "status_or_payload_invalid", "ok_has_warnings", "ok_has_missing_inputs",
+    "missing_inputs_required", "non_ok_payload_not_empty", "non_ok_provenance_not_empty",
+    "citation_source_unknown", "citation_locator_forbidden", "citation_shape_invalid",
+    "claim_shape_invalid", "claim_citation_required", "claim_citation_unknown",
+    "claim_not_grounded", "intent_source_fact_forbidden", "payload_claims_required",
+    "payload_claim_coverage_missing", "payload_claim_path_invalid",
+    "payload_claim_citation_required", "payload_claim_text_mismatch",
+    "payload_required_missing", "payload_additional_property", "payload_type_mismatch",
+    "payload_const_mismatch", "payload_enum_mismatch", "payload_schema_missing",
+    "payload_schema_digest_mismatch", "payload_schema_keyword_unsupported",
+    "source_free_payload_forbidden", "source_free_provenance_forbidden",
+    "forbidden_authority_field", "knowledge_proof_leaked", "internal_validation_error",
+})
+_CONTROL_WARNING_DIAGNOSTICS = {
+    **{f"contract_guard:{code}": f"contract_guard_{code}"
+       for code in _CONTRACT_GUARD_DIAGNOSTIC_CODES},
+    EXPECTED_NO_ROLE_KNOWLEDGE_CONTROL_CODE: "knowledge_guard_no_role_knowledge_hit",
+    "knowledge_guard:role_document_forbidden": "knowledge_guard_role_document_forbidden",
+}
+_ALLOWED_FAILURE_REASON_CODES = frozenset({
+    "", "remote_blocked_without_guard_code", "remote_needs_input_without_guard_code",
+    "remote_control_warning_unrecognized", *_CONTROL_WARNING_DIAGNOSTICS.values(),
+})
 _EXPECTED_EVALUATION_HARNESS = {
     "contract": HARNESS_CONTRACT,
     "retrieval_evidence_source": RETRIEVAL_EVIDENCE_SOURCE,
@@ -88,11 +117,19 @@ _EXPECTED_EVALUATION_HARNESS = {
     "injection_verbatim_window_chars": LEAK_WINDOW_CHARS,
     "retrieval_success_response": {
         "payload": {"status": "retrieved"},
-        "fact_claim_count": 1,
-        "citation_count": 1,
-        "payload_claim_path": "/status",
+        "provenance_validation": "production_response_guard",
+        "synthetic_source_cited_claim_required": True,
+        "claim_wording": "runtime_grounding_contract",
+        "claim_and_citation_counts": "runtime_contract_bounds",
+        "control_payload_binding": "optional_as_in_runtime_contract",
         "warnings_count": 0,
         "missing_inputs_count": 0,
+    },
+    "control_failure_diagnostics": {
+        "artifact_field": "errorCode",
+        "warning_projection": "one_exact_allowlisted_warning_only",
+        "reported_origin_is_authenticated": False,
+        "contract_guard_codes": sorted(_CONTRACT_GUARD_DIAGNOSTIC_CODES),
     },
     "zero_hit_control_response": {
         "status": "needs_input",
@@ -245,10 +282,13 @@ class EvalObservation:
     # Only a closed, evaluator-owned code is retained. Remote warning text is
     # inspected in memory and must never become an artifact field.
     knowledge_guard_control_code: str = ""
+    failure_reason_code: str = ""
 
     def __post_init__(self) -> None:
         if self.knowledge_guard_control_code not in _ALLOWED_KNOWLEDGE_GUARD_CONTROL_CODES:
             raise KnowledgeEvalError("evaluation_control_code_invalid")
+        if self.failure_reason_code not in _ALLOWED_FAILURE_REASON_CODES:
+            raise KnowledgeEvalError("evaluation_failure_reason_invalid")
 
     @property
     def governed_retrieval_empty(self) -> bool:
@@ -755,30 +795,50 @@ def _knowledge_guard_control_code(warnings: Sequence[str]) -> str:
 
 
 def _retrieval_success_response_shape_ok(remote: RemoteRoleResultV1) -> bool:
-    """Accept only the one evaluator-owned synthetic grounding shape."""
+    """Check retrieval smoke success after the production ResponseGuard passed.
+
+    The fixed status is a control field. It need not have a narrative binding, and
+    valid cited claims need not copy the evaluator's private preferred wording or
+    cardinality. Actual claim grounding, citation identity, and optional payload
+    bindings are still enforced by ResponseGuard before this check. A constant
+    payload with only an uncited open-fact sidecar does not prove provenance.
+    """
 
     if (
         remote.status != "ok"
         or remote.payload != {"status": "retrieved"}
         or remote.missing_inputs
         or remote.warnings
-        or len(remote.claims) != 1
-        or len(remote.citations) != 1
-        or len(remote.payload_claims) != 1
     ):
         return False
-    claim = remote.claims[0]
-    citation = remote.citations[0]
-    binding = remote.payload_claims[0]
-    return bool(
-        claim.kind == "fact"
-        and claim.text == _SYNTHETIC_RETRIEVAL_HEALTH_CONTENT
-        and claim.citation_ids == (citation.citation_id,)
-        and citation.source_id == SYNTHETIC_RETRIEVAL_HEALTH_SOURCE_ID
+    grounded_citation_ids = {
+        citation.citation_id for citation in remote.citations
+        if citation.source_id == SYNTHETIC_RETRIEVAL_HEALTH_SOURCE_ID
         and citation.locator == ""
-        and binding.path == "/status"
-        and binding.claim_ids == (claim.claim_id,)
+    }
+    return any(
+        claim.kind in {"fact", "inference", "recommendation"}
+        and bool(claim.citation_ids)
+        and set(claim.citation_ids).issubset(grounded_citation_ids)
+        for claim in remote.claims
     )
+
+
+def _control_failure_reason(remote: RemoteRoleResultV1) -> str:
+    """Retain no remote text, even when a warning looks syntactically code-like."""
+
+    if remote.status == "ok":
+        return ""
+    if not remote.warnings:
+        return (
+            "remote_blocked_without_guard_code" if remote.status == "blocked"
+            else "remote_needs_input_without_guard_code"
+        )
+    if len(remote.warnings) == 1:
+        known = _CONTROL_WARNING_DIAGNOSTICS.get(remote.warnings[0])
+        if known is not None:
+            return known
+    return "remote_control_warning_unrecognized"
 
 
 def _zero_hit_control_response_shape_ok(remote: RemoteRoleResultV1) -> bool:
@@ -1045,6 +1105,7 @@ def evaluate_raw_response(
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
             knowledge_guard_control_code=_knowledge_guard_control_code(remote.warnings),
+            failure_reason_code=_control_failure_reason(remote),
         )
     except RetrievalIdentityUnavailable:
         raise
@@ -1191,6 +1252,8 @@ def case_result(
     automated_checks_passed = automated_checks_passed and review_policy_ok
     passed = automated_checks_passed and not signed_human_review_required
     safe_error = str(error_code or "")
+    if not safe_error and observation and not automated_checks_passed:
+        safe_error = observation.failure_reason_code
     if safe_error and not re.fullmatch(r"[a-z][a-z0-9_]{0,79}", safe_error):
         safe_error = "evaluation_failed"
     timed_out = safe_error == "timeout"

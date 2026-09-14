@@ -47,7 +47,11 @@
     "knowledgeVersion": {"$ref": "#/$defs/safeId"},
     "suiteSha256": {"$ref": "#/$defs/digest"},
     "harnessDefinitionSha256": {
-      "const": "df2f1890ce2cd61a95639f49d9697127deb1bdb57d9340b76ccb2c3d27c5a3f1"
+      "description": "Known checker definitions: historical v1 and runtime-aligned v2. Different definitions are not directly score-comparable.",
+      "enum": [
+        "df2f1890ce2cd61a95639f49d9697127deb1bdb57d9340b76ccb2c3d27c5a3f1",
+        "99b12bb01dc8b8dd0cd37bbf5b7c6e849cf265c862bb3af81cc6f4e1f716f672"
+      ]
     },
     "artifactSchemaSha256": {"$ref": "#/$defs/digest"},
     "retrievalEvidenceSource": {"const": "dify_retriever_resources"},

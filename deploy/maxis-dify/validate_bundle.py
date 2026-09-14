@@ -86,15 +86,15 @@ ROLE_METADATA_CONDITION_IDS = {
 # file and DSL is deliberately insufficient without this explicit review step.
 DIFY_PROMPT_SHA256 = {
     "agent_core": {
-        "system": "f41b724e35399967cf12284438879de1c25179fc8977e145e353b48728d8b2a7",
+        "system": "e487d58797ef2165178b079c65e1effaea3c75d994d2a74655aff2522a6c9e33",
         "user": "d45a2fc4c15eb03e587937fef35f5fef7ff930e5b994860d8b33e44cf2d38f15",
     },
     "pmo_brief": {
-        "system": "69c7bb22df4d8f6f7d425b16a3dee9303419757deea84d78807c660b525d05f5",
+        "system": "cc5abe43fdad9f31de282d926404f50758a5a12d122c71719ab562a1fdd61af0",
         "user": "d45a2fc4c15eb03e587937fef35f5fef7ff930e5b994860d8b33e44cf2d38f15",
     },
     "editor_author": {
-        "system": "ccfde75f5269706a853718a9740066279e45404b1a30d143b51faf99ae3b62ad",
+        "system": "a232680fba1dcab1b818f3b696c686a08272c424c05ea26141604beaa1fad0d8",
         "user": "d45a2fc4c15eb03e587937fef35f5fef7ff930e5b994860d8b33e44cf2d38f15",
     },
 }

@@ -1,0 +1,65 @@
+contract: ltm-maxis-dify-quality-evidence.v1
+captured_date: '2026-09-14'
+environment: dev
+status: experimental_inactive_quality_gate_failed
+authoritative_ready: false
+workflow_bundle_version: ltm-maxis-dify-2026.09.14-quality-v9
+profile_fingerprint: d612434cfde4fa1bda119455c03b25fb
+prior_evidence: deploy/maxis-dify/deployments/dev-2026.09.yml
+environment_binding: deploy/maxis-dify/environments/dev-2026.09.yml
+report: research/agent-improvement/maxis-dify-quality-20260914.md
+workflows:
+  agent_core:
+    app_id: d061c2e6-72cf-4fc4-b835-4cb124e1f96c
+    published_workflow_id: 06caa833-87f8-4ae2-af69-8dbc00d81c5f
+  editor_author:
+    app_id: dbda2328-0547-4e0c-967d-c14265b27459
+    published_workflow_id: 58d22f63-0519-403c-9784-f3fe7e7a9eb3
+  pmo_brief:
+    app_id: ceb6bdc2-0276-4736-8c8b-59fc69f85cd6
+    published_workflow_id: 83a648ef-3f2d-435b-9769-ebe48f802d49
+graph: {nodes: 11, edges: 11, guard_changed: false, retry_enabled: false}
+service_api_canary: {executed: 3, passed: 3, profile_verified: true}
+local_validation: {passed_tests: 795, full_ui_tested: false, review_loop_score: 8, review_loop_rounds: 2}
+editor_component:
+  battery_version: '2.0.0'
+  source_battery: editor
+  source_battery_version: '4.0.0'
+  case_ids: [CMP2, CMP3, CMP6, CMP8, CMP9]
+  run_kind: exploratory
+  repetitions_per_candidate: 1
+  baseline:
+    artifact: .cache/agent-evaluation/maxis-editor-20260914T012540Z-bdd04f79/baseline.json
+    artifact_sha256: 7499f16bb54947a79980e9d514be39871e4c6749174ddb1d527d61d663bab293
+    passed: 0
+    executed: 5
+  candidate:
+    artifact: .cache/agent-evaluation/maxis-editor-20260914T013255Z-8c1d3a17/candidate.json
+    artifact_sha256: fbb3fccace84e4d7d12c688c3e8c8961d2761d5593a4bdeda063bd5414efc4aa
+    passed: 0
+    executed: 5
+  benchmark_key: dedab77e712a5c1e3319ba9fd9a18335910f0a12f24f53d6cb2e50f12a45103c
+  accepted_output_quality_gain_demonstrated: false
+  full_ltm_ui_tested: false
+knowledge_eval:
+  artifact: .cache/maxis/evals/dev-keval-20260914T013653916197Z-7b820caa.json
+  artifact_sha256: 54efe8abe72771daf718811c8a5d2c78e0f113af022a5e5cbfccd2292d5a64dd
+  harness_sha256: 99b12bb01dc8b8dd0cd37bbf5b7c6e849cf265c862bb3af81cc6f4e1f716f672
+  executed: 25
+  passed: 12
+  positive_passed: 3
+  acl_passed: 8
+  no_hit_passed: 1
+  injection_automated_passed: 2
+  injection_signed_review: pending
+  semantic_answer_correctness_assessed: false
+  release_eligible: false
+runtime:
+  active_profile: ''
+  routes: {agent_core: local, editor_author: local, pmo_brief: local}
+  prod_changed: false
+privacy:
+  credentials_recorded: false
+  sentinel_plaintext_recorded: false
+  business_data_sent: false
+  synthetic_raw_location: .cache/agent-evaluation
