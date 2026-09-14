@@ -1,0 +1,129 @@
+contract: ltm-maxis-dify-quality-evidence.v1
+captured_date: '2026-09-14'
+environment: dev
+status: experimental_inactive_quality_gate_failed
+authoritative_ready: false
+workflow_bundle_version: ltm-maxis-dify-2026.09.14-editor-plan-v11
+profile_fingerprint: ecbad7176af35de6dff053aedf36f4db
+prior_evidence: deploy/maxis-dify/deployments/dev-quality-2026.09.14.yml
+environment_binding: deploy/maxis-dify/environments/dev-2026.09.yml
+report: research/agent-improvement/maxis-editor-plan-quality-20260914.md
+direct_review: research/agent-improvement/evaluations/maxis-editor-20260914-v4.md
+workflows:
+  agent_core:
+    app_id: d061c2e6-72cf-4fc4-b835-4cb124e1f96c
+    published_workflow_id: 0fe436fd-5bef-4679-911f-38c239671a33
+    graph: {nodes: 11, edges: 11}
+  editor_author:
+    app_id: dbda2328-0547-4e0c-967d-c14265b27459
+    published_workflow_id: 9b0d3460-904d-4578-a4d6-776639c3518f
+    graph: {nodes: 12, edges: 12}
+  pmo_brief:
+    app_id: ceb6bdc2-0276-4736-8c8b-59fc69f85cd6
+    published_workflow_id: c396021a-36ad-4bf5-812c-e19e2bc48c78
+    graph: {nodes: 11, edges: 11}
+editor_assembly:
+  contract: editor-plan.v1
+  source_normalized_sha256: 42c3983eb5beff78c876c8939d3798893d20630e572e89483e3d3c86abc03cb6
+  embedded_dsl_sha256: 26dd3584878affbc6a27a98d4607377b53ff25ed322b2d084c1e2b52651edf09
+  rendered_system_prompt_sha256: f8133b2bcd7e30472e6461459f21a3a720afd6cd60493ef83ac7304c83cf3ce4
+  knowledge_guard_changed: false
+  contract_guard_changed: false
+  local_response_guard_changed: false
+  retry_enabled: false
+  guard_bypass_enabled: false
+service_api_canary:
+  artifact: .cache/maxis/dev-canary-quality-20260914-v11.json
+  completed_at: '2026-09-14T02:29:46.861519Z'
+  executed: 3
+  passed: 3
+  profile_verified_at_probe: true
+  answer_quality_certified: false
+  prior_failed_canary: .cache/maxis/dev-canary-quality-20260914-v10.json
+local_validation:
+  passed_tests: 925
+  elapsed_seconds: 84.63
+  full_ui_tested: false
+  review_loop_scores: [5, 8, 7.5, 9]
+  review_loop_rounds: 4
+  final_two_rounds_same_critic: true
+  review_loop_score_is_llm_quality: false
+  after_last_review: two_minor_input_consistency_fixes_with_six_tests_no_further_independent_review
+editor_component:
+  protocol_version: '3.0.0'
+  rubric_version: '2.0.0'
+  battery_version: '4.0.0'
+  source_battery: editor
+  source_battery_version: '4.0.0'
+  case_adapter_version: '2.0.0'
+  case_ids: [CMP2, CMP3, CMP6, CMP8, CMP9]
+  run_kind: exploratory
+  repetitions_per_candidate: 1
+  balanced_order: false
+  candidate_commit_at_run: 37cb14a9f6a5776595bbaf4937851bc2df01b823
+  candidate_dirty_at_run: true
+  benchmark_key: f4f807c9036af03977a78d384783ac6a1d1ba9e4b80430502ee4f7e8e3e84a74
+  baseline:
+    remote_bundle: ltm-maxis-dify-2026.09.14-quality-v9
+    artifact: .cache/agent-evaluation/maxis-editor-20260914T015648Z-9ca2f09e/baseline.json
+    artifact_sha256: 9a985abd5ea48271c03ddac393a8be258dce8c4ca75b4ca8048bf828770de95e
+    executed: 5
+    guard_accepted: 0
+    checker_and_renderer_passed: 0
+    direct_review_usable: 0
+    direct_review_mean_out_of_5: 2.00
+    input_delivery_verified: 5
+    total_tokens: 24464
+    latency_total_ms: 21715
+    latency_p50_ms: 4797
+    latency_p95_ms: 5507
+  candidate:
+    remote_bundle: ltm-maxis-dify-2026.09.14-editor-plan-v11
+    artifact: .cache/agent-evaluation/maxis-editor-20260914T023018Z-5dcfcc6e/candidate.json
+    artifact_sha256: e51caf063610a2eaac7c5058023d6410d46afef7b930cde9d73502ab1d07f0a9
+    executed: 5
+    guard_accepted: 1
+    checker_and_renderer_passed: 0
+    direct_review_usable: 0
+    direct_review_mean_out_of_5: 2.12
+    input_delivery_verified: 5
+    total_tokens: 27649
+    latency_total_ms: 20372
+    latency_p50_ms: 3860
+    latency_p95_ms: 5659
+  source_binding_unchanged_within_each_run: true
+  accepted_output_quality_gain_demonstrated: false
+  qualification_eligible: false
+  full_ltm_ui_tested: false
+knowledge_eval:
+  artifact: .cache/maxis/evals/dev-keval-20260914T023356427873Z-7b820caa.json
+  artifact_sha256: 9ccd443b904af4dc3ebe5691c5aec28558ed563f9e74dc30e04aa5c1a2278397
+  harness_sha256: 99b12bb01dc8b8dd0cd37bbf5b7c6e849cf265c862bb3af81cc6f4e1f716f672
+  executed: 25
+  passed: 12
+  positive_passed: 3
+  positive_total: 8
+  acl_passed: 8
+  acl_total: 8
+  no_hit_passed: 1
+  no_hit_total: 1
+  injection_automated_passed: 1
+  injection_total: 8
+  injection_final_passed: 0
+  injection_signed_review: pending
+  retrieval_hit_at_2: 1.0
+  retrieval_mrr_at_2: 0.9375
+  total_tokens: 58816
+  latency_p50_ms: 1932
+  latency_p95_ms: 2727
+  semantic_answer_correctness_assessed: false
+  release_eligible: false
+runtime:
+  active_profile: ''
+  routes: {agent_core: local, editor_author: local, pmo_brief: local}
+  prod_changed: false
+privacy:
+  credentials_recorded: false
+  sentinel_plaintext_recorded: false
+  business_data_sent: false
+  synthetic_raw_location: .cache/agent-evaluation

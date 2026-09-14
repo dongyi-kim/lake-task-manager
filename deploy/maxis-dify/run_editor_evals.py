@@ -30,7 +30,7 @@ from run_knowledge_evals import (  # noqa: E402
 )
 from app.agent.maxis import credentials, profiles  # noqa: E402
 from app.agent.maxis.contracts import (  # noqa: E402
-    EditorDraftV1, EvidencePackV1, EvidenceScopeV1, EvidenceSourceV1,
+    EditorDraftV1, EvidencePackV1, EvidenceScopeV1, EvidenceSourceV1, RoleContextV1,
     canonical_payload_schema,
 )
 from app.agent.maxis.context_guard import (  # noqa: E402
@@ -46,7 +46,7 @@ from tools.agent_eval_protocol import (  # noqa: E402
     build_run_metadata, quantitative_metrics, reserve_raw_result_path, write_raw_result,
 )
 
-COMPONENT_VERSION = '2.0.0'
+COMPONENT_VERSION = '4.0.0'
 
 
 def _digest(value) -> str:
@@ -59,6 +59,10 @@ def build_pack(spec: dict, manifest: str, request_id: str, observed: datetime,
     from tools.maxis_editor_eval_cases import project_case, validate_case_spec
     validate_case_spec(spec)
     projection = project_case(spec)
+    # The component must preserve the explicit target/mode/seed, just as the app
+    # carries those fields in Editor's bounded Role context. They are requests,
+    # never external facts. Both candidates receive this exact same projection.
+    intent = json.dumps(projection['input'], ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     query = 'Canonical LTM role editor_author. Process this guarded user intent:\n' + projection['instruction']
     if query_policy == 'role-terms':
         from app.agent.maxis.retrieval_query import enrich_role_query
@@ -68,7 +72,6 @@ def build_pack(spec: dict, manifest: str, request_id: str, observed: datetime,
     schema, schema_hash = canonical_payload_schema(spec['payload_schema'])
     sources = [EvidenceSourceV1(**row, retrieved_at=observed, updated_at=observed)
                for row in projection['evidence']]
-    intent = json.dumps(projection['input'], ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     sources.append(EvidenceSourceV1(
         source_id='eval.editor.intent', kind='ltm', canonical_id='ltm:user-intent:editor-eval',
         title='Synthetic author request and existing seed', scope='synthetic-evaluation',
@@ -79,6 +82,9 @@ def build_pack(spec: dict, manifest: str, request_id: str, observed: datetime,
         request_id=request_id, use_case='editor_author', query=query,
         pseudonymous_user='ltm_' + hashlib.sha256(request_id.encode()).hexdigest()[:16],
         requested_at=observed, scope=EvidenceScopeV1(), sources=tuple(sources),
+        role_context=(RoleContextV1(context_id='editor_request', name='editor_request',
+            content_json=intent, content_sha256=hashlib.sha256(intent.encode()).hexdigest(),
+            observed_at=observed),),
         freshness='fresh', partial=False, flags=('synthetic_evaluation',),
         knowledge_manifest_sha256=manifest, payload_schema_json=schema,
         payload_schema_sha256=schema_hash,
@@ -119,10 +125,13 @@ def safe_answer(answer: str) -> dict:
 
 def metrics_for(rows: list[dict]) -> dict:
     observed = [r.get('usage') for r in rows]
-    complete = all(isinstance(u, dict) and u.get('total_tokens', 0) > 0 for u in observed)
+    complete = all(isinstance(u, dict) and all(
+        type(u.get(key)) is int and u[key] >= 0
+        for key in ('prompt_tokens', 'completion_tokens', 'total_tokens')
+    ) for u in observed)
     metrics = quantitative_metrics(
         attempts=len(rows), duration_seconds=sum(r.get('latencyMs', 0) for r in rows) / 1000,
-        calls=sum(isinstance(u, dict) for u in observed),
+        calls=sum(r.get('responseReceived') is True for r in rows),
         prompt_tokens=sum((u or {}).get('prompt_tokens', 0) for u in observed),
         completion_tokens=sum((u or {}).get('completion_tokens', 0) for u in observed),
         total_tokens=sum((u or {}).get('total_tokens', 0) for u in observed),
@@ -223,7 +232,7 @@ def run(label: str) -> Path:
         'LTM_AGENT_STRUCTURED_OUTPUT_FALLBACK': 'forbid',
     })
     # Validate every canonical case and byte budget before reading an app key.
-    query_policy = 'current' if label == 'baseline' else 'role-terms'
+    query_policy = 'role-terms'
     packs = [build_pack(c, deployment['knowledge_manifest_sha256'],
                         'eval_' + uuid.uuid4().hex[:24], observed, query_policy) for c in cases]
     sources = _source_binding()
@@ -245,7 +254,7 @@ def run(label: str) -> Path:
     metadata['maxisBinding'] = {
         'deployment': deployment, 'sourceFiles': sources,
         'publishedWorkflowId': workflow_version, 'profileFingerprint': profile['fingerprint'],
-        'retrievalQueryPolicy': query_policy,
+        'retrievalQueryPolicy': 'structured-context-' + query_policy,
     }
     metadata['benchmarkKey'] = _digest({'base': metadata['benchmarkKey'], 'componentHarness': {
         key: value for key, value in sources.items() if key in {
@@ -281,6 +290,7 @@ def run(label: str) -> Path:
             raw = _strict_json_loads(body)
             if status_code != 200 or not isinstance(raw, dict) or raw.get('event') != 'message' or not isinstance(raw.get('answer'), str):
                 raise ValueError('invalid Dify response')
+            row['responseReceived'] = True
             answer = raw['answer']
             row['response'] = safe_answer(answer)
             row['answerSha256'] = hashlib.sha256(answer.encode()).hexdigest()

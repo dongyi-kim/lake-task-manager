@@ -71,7 +71,10 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
         assert path.parent == output
         dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
         nodes = dsl["workflow"]["graph"]["nodes"]
-        assert len(nodes) == 11
+        is_editor = path.name == "ltm-editor-author-2026.09.yml"
+        assert len(nodes) == (12 if is_editor else 11)
+        assembler_nodes = [node for node in nodes if node["data"].get("title") == "Editor Assembler"]
+        assert len(assembler_nodes) == int(is_editor)
         retrievals = [
             node["data"]
             for node in nodes
@@ -183,7 +186,7 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
             (edge["source"], edge["sourceHandle"], edge["target"])
             for edge in dsl["workflow"]["graph"]["edges"]
         }
-        assert len(edge_routes) == 11
+        assert len(edge_routes) == (12 if is_editor else 11)
         assert ("start", "source", role_acl_key["id"]) in edge_routes
         assert (
             role_acl_key["id"], "source", role_knowledge["id"]
@@ -240,6 +243,19 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
             node["data"] for node in nodes
             if node["data"].get("title") == "Contract Guard"
         )
+        llm_id = next(node["id"] for node in nodes if node["data"].get("type") == "llm")
+        candidate_selector = next(row["value_selector"] for row in guard["variables"]
+                                  if row["variable"] == "candidate")
+        assert candidate_selector == ([assembler_nodes[0]["id"], "candidate"]
+                                      if is_editor else [llm_id, "text"])
+        if is_editor:
+            assembler = assembler_nodes[0]["data"]
+            assert assembler["code"].rstrip() == (
+                ROOT / "deploy/maxis-dify/code/editor_assembler.py"
+            ).read_text(encoding="utf-8").rstrip()
+            assert assembler["outputs"] == {"candidate": {"children": None, "type": "string"}}
+            assert next(row["value_selector"] for row in assembler["variables"]
+                        if row["variable"] == "knowledge_proof") == [knowledge_guard["id"], "knowledge_proof"]
         assert [
             row["value_selector"] for row in guard["variables"]
             if row["variable"] == "executed_workflow_id"
@@ -248,6 +264,57 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
             row["value_selector"] for row in guard["variables"]
             if row["variable"] == "sentinel_result"
         ] == [[knowledge_guard["id"], "knowledge_proof"]]
+
+
+@pytest.mark.parametrize("mutation", [
+    "source", "joint_source", "candidate_selector", "proof_selector", "output",
+    "extra_input", "retry", "guard_bypass", "edge_bypass", "schema",
+])
+def test_materializer_rejects_editor_assembler_drift(tmp_path, monkeypatch, mutation):
+    environment = materializer.load_environment(
+        ROOT / "deploy/maxis-dify/environments/dev-2026.09.yml"
+    )
+    fake_root = tmp_path / "repo"
+    shutil.copytree(ROOT / "deploy/maxis-dify", fake_root / "deploy/maxis-dify")
+    path = fake_root / environment["workflows"]["editor_author"]["source_dsl"]
+    dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
+    graph = dsl["workflow"]["graph"]
+    assembler_node = next(node for node in graph["nodes"]
+                          if node["data"].get("title") == "Editor Assembler")
+    assembler = assembler_node["data"]
+    llm_id = next(node["id"] for node in graph["nodes"] if node["data"].get("type") == "llm")
+    guard = next(node for node in graph["nodes"] if node["data"].get("title") == "Contract Guard")
+    if mutation in {"source", "joint_source"}:
+        assembler["code"] += "\n# unreviewed assembly"
+        if mutation == "joint_source":
+            (fake_root / "deploy/maxis-dify/code/editor_assembler.py").write_text(
+                assembler["code"], encoding="utf-8",
+            )
+    elif mutation in {"candidate_selector", "proof_selector"}:
+        field = "candidate" if mutation == "candidate_selector" else "knowledge_proof"
+        next(row for row in assembler["variables"] if row["variable"] == field)[
+            "value_selector"
+        ] = ["start", "context_pack"]
+    elif mutation == "output":
+        assembler["outputs"]["candidate"]["type"] = "object"
+    elif mutation == "extra_input":
+        assembler["variables"].append({"variable": "query", "value_selector": ["sys", "query"]})
+    elif mutation == "retry":
+        assembler["retry_config"] = {"retry_enabled": True}
+    elif mutation == "guard_bypass":
+        next(row for row in guard["data"]["variables"] if row["variable"] == "candidate")[
+            "value_selector"
+        ] = [llm_id, "text"]
+    elif mutation == "schema":
+        next(node["data"] for node in graph["nodes"] if node["id"] == llm_id)[
+            "structured_output"
+        ]["schema"] = {"type": "object"}
+    else:
+        next(edge for edge in graph["edges"] if edge["source"] == llm_id)["target"] = guard["id"]
+    path.write_text(yaml.safe_dump(dsl, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr(materializer, "ROOT", fake_root)
+    with pytest.raises(materializer.EnvironmentBindingError, match="Assembler|topology|input selectors|schema"):
+        materializer._materialize_dsl(environment, "editor_author")
 
 
 def test_prod_template_cannot_materialize_until_prod_assets_exist(tmp_path):

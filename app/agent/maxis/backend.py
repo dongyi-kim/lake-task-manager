@@ -977,6 +977,10 @@ def _role_context(role_id: str, state: dict) -> tuple[list[dict], frozenset[str]
     omitted = max(0, len(values) - 8)
     for index, key in enumerate(values[:8]):
         value = _json_value(state[key])
+        if role_id == "editor_author" and key == "seed_html":
+            # The same bounded seed also appears in the intent source. Do not let
+            # its parallel Role context retain URLs removed by the source policy.
+            value = _outbound_content_projection(value)
         encoded = _canonical_json(value)
         observed_at = current_observed_at
         has_observed_at = current_has_observed_at
@@ -1309,25 +1313,40 @@ def _context_pack(
         }]
         role_context = []
         allowed_context_keys = ()
-    elif not sources and explicit_user_intent:
+    elif explicit_user_intent and (not sources or role_id == "editor_author"):
         # RequestArchitect and other pre-retrieval semantic Roles legitimately derive
         # plans or responses from the user's guarded intent before QueryRunner has any
         # citation-grade connector result.  The intent already crosses the boundary in
         # ``query``; represent that same bounded material as an LTM-owned source so a
         # remote Role must cite it instead of using the source-free provenance escape
-        # hatch.  Do this only when the verified retrieval ledger is empty: an intent
-        # row must never displace or dilute one of the ten authoritative read sources.
+        # hatch. Outside Editor this applies only with an empty retrieval ledger;
+        # an intent row must never displace any authoritative read source.
+        # Editor additionally needs its exact requested target/mode/seed to be a
+        # citeable *intent*, not an external fact. This enables verbatim seed
+        # preservation in the remote assembler without inventing provenance.
+        intent_content = user_intent
+        if role_id == "editor_author":
+            if len(sources) >= 10:
+                raise MaxisRuntimeError("MAXIS Editor 요청 근거를 추가할 공간이 없습니다.")
+            intent_content = _canonical_json(_outbound_content_projection({
+                "ticket_key": str(state.get("ticket_key") or ""),
+                "kind": str(state.get("kind") or ""),
+                "prompt": user_intent,
+                "seed_html": str(state.get("seed_html") or ""),
+            }))
+            if len(intent_content) > 1500:
+                raise MaxisRuntimeError("MAXIS Editor 요청·seed가 안전한 전송 한도를 초과했습니다.")
         intent_identity = hashlib.sha256(
             f"{request_id}:{role_id}".encode("utf-8")
         ).hexdigest()
-        sources = [{
+        sources = [*sources, {
             "source_id": "src_intent_" + intent_identity[:20],
             "kind": "ltm",
             "canonical_id": "ltm:user-intent:" + intent_identity[:32],
             "title": _USER_INTENT_SOURCE_TITLE,
             "scope": "",
             "url": "",
-            "content": user_intent,
+            "content": intent_content,
             "retrieved_at": requested_at,
             "updated_at": None,
             "partial": False,
@@ -1914,7 +1933,7 @@ def invoke(
         raise MaxisRuntimeError(
             "MAXIS Workflow/Knowledge published revision이 프로필에 고정되지 않았습니다."
         )
-    if role_id in {"work_architect", "auditor"} and (
+    if role_id in {"work_architect", "auditor", "editor_author"} and (
             evidence.freshness in {"mixed", "stale"} or evidence.partial):
         _record_remote_audit(
             status="blocked", error_code="freshness_policy", **audit_common,

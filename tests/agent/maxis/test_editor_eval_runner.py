@@ -79,9 +79,32 @@ def test_renderer_never_reads_live_settings(runner, monkeypatch):
 
 
 def test_mixed_metrics_do_not_hide_failed_attempts(runner):
-    rows = [{'latencyMs': 1000, 'usage': {'prompt_tokens': 2, 'completion_tokens': 1, 'total_tokens': 3}},
+    rows = [{'latencyMs': 1000, 'responseReceived': True, 'usage': {'prompt_tokens': 2, 'completion_tokens': 1, 'total_tokens': 3}},
             {'latencyMs': 2000, 'errorCode': 'timeout'}]
     metrics = runner.metrics_for(rows)
     assert metrics['attempts'] == 2 and metrics['durationSeconds'] == 3
     assert metrics['calls'] == 1 and metrics['totalTokens'] is None
     assert metrics['costUsd'] is None and metrics['cachedTokens'] is None
+
+
+def test_received_response_without_usage_still_counts(runner):
+    metrics = runner.metrics_for([{'latencyMs': 10, 'responseReceived': True}])
+    assert metrics['calls'] == 1
+    assert metrics['totalTokens'] is None
+
+
+def test_observed_zero_usage_is_not_missing(runner):
+    metrics = runner.metrics_for([{'latencyMs': 10, 'responseReceived': True,
+        'usage': {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}}])
+    assert metrics['calls'] == 1
+    assert metrics['tokenUsageComplete'] is True
+    assert metrics['totalTokens'] == 0
+
+
+def test_structured_request_keeps_target_mode_and_seed(runner):
+    from tools.maxis_editor_eval_cases import load_case, project_case
+    case = load_case('CMP3')
+    pack = runner.build_pack(case, 'a' * 64, 'eval_test', datetime.now(timezone.utc), 'role-terms')
+    assert pack.role_context[0].name == 'editor_request'
+    assert json.loads(pack.role_context[0].content_json) == project_case(case)['input']
+    assert pack.query.startswith('Canonical LTM role editor_author. Process this guarded user intent:\n이어서 완성해줘')

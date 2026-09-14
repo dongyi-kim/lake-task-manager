@@ -520,7 +520,50 @@ def test_editor_policy_search_terms_keep_dev_fixture_boundary(profile):
             "Canonical LTM role editor_author. Process this guarded user intent:\n본문 써줘"
         )
         assert pack["query"].endswith("Policy search terms: HTML TipTap Description")
-        assert pack["sources"][0]["content"] == "본문 써줘"
+        assert json.loads(pack["sources"][0]["content"])["prompt"] == "본문 써줘"
+
+
+def test_editor_preserves_citeable_intent_without_replacing_verified_evidence():
+    from app.agent.maxis.contracts import EditorDraftV1
+    state = _runtime_state("editor_author")
+    state.update(ticket_key="DL-1", kind="comment", seed_html="<p>미완성 측정 결과</p>")
+    result = {"scopeProjects": ["DL"], "tickets": [{"key": "DL-1", "summary": "현재 업무"}]}
+    state["_maxis_evidence_rows"] = [{
+        "id": "editor-ticket", "source": "jira", "result": result,
+        "_remoteEvidence": backend.attest_query_result("editor-ticket", "jira", result, scopes=("DL",)),
+    }]
+    pack = backend.role_payload("editor_author", state, [], EditorDraftV1.model_json_schema(),
+                                output_kind="structured")["evidencePack"]
+    assert len(pack["sources"]) == 2
+    assert pack["sources"][0]["kind"] == "jira"
+    intent = pack["sources"][1]
+    assert intent["kind"] == "ltm" and intent["canonical_id"].startswith("ltm:user-intent:")
+    assert json.loads(intent["content"]) == {
+        "ticket_key": "DL-1", "kind": "comment", "prompt": state["request_text"],
+        "seed_html": "<p>미완성 측정 결과</p>",
+    }
+
+
+def test_editor_intent_does_not_displace_ten_verified_sources(monkeypatch):
+    monkeypatch.setattr(backend, "_verified_evidence_sources", lambda _state: [{}] * 10)
+    with pytest.raises(backend.MaxisRuntimeError, match="공간"):
+        backend._context_pack("editor_author", _runtime_state("editor_author"), [], {"type": "object"})
+
+
+def test_editor_intent_never_silently_truncates_seed():
+    state = _runtime_state("editor_author")
+    state.update(kind="comment", seed_html="가" * 1501)
+    with pytest.raises(backend.MaxisRuntimeError, match="한도"):
+        backend._context_pack("editor_author", state, [], {"type": "object"})
+
+
+def test_editor_intent_removes_nested_seed_urls():
+    state = _runtime_state("editor_author")
+    state.update(kind="comment", seed_html="<p>자료 https://untrusted.example/private</p>")
+    pack = backend._context_pack("editor_author", state, [], {"type": "object"})
+    wire = json.dumps(pack.model_dump(mode="json"))
+    assert "untrusted.example" not in wire
+    assert "[url omitted]" in wire
 
 
 def test_missing_request_text_never_falls_back_to_messages_or_prompt():
@@ -1074,8 +1117,9 @@ def test_interview_continuation_preserves_carried_role_context_observation_time(
     assert refreshed_pack.freshness == "fresh"
 
 
-def test_stale_or_partial_work_evidence_is_blocked_before_network(monkeypatch):
-    state = _runtime_state("work_architect")
+@pytest.mark.parametrize("role_id", ("work_architect", "auditor", "editor_author"))
+def test_stale_or_partial_work_evidence_is_blocked_before_network(monkeypatch, role_id):
+    state = _runtime_state(role_id)
     result = {"scopeProjects": ["DL"], "tickets": [{"key": "DL-1"}]}
     old = datetime.now(timezone.utc) - timedelta(minutes=30)
     state["query_results"] = [{
@@ -1085,10 +1129,10 @@ def test_stale_or_partial_work_evidence_is_blocked_before_network(monkeypatch):
         ),
     }]
     payload = backend.role_payload(
-        "work_architect", state, [], {"type": "object"},
+        role_id, state, [], {"type": "object"},
         output_kind="structured",
     )
-    assert payload["evidencePack"]["freshness"] == "stale"
+    assert payload["evidencePack"]["freshness"] in {"stale", "mixed"}
     monkeypatch.setattr(
         backend, "resolve_role",
         lambda *_a, **_k: backend.RoleResolution(
@@ -1096,7 +1140,7 @@ def test_stale_or_partial_work_evidence_is_blocked_before_network(monkeypatch):
     )
     monkeypatch.setattr(backend, "_profile_snapshot", lambda *_a, **_k: _profile("prod"))
     with pytest.raises(backend.MaxisRuntimeError, match="freshness"):
-        backend.invoke("work_architect", payload, "thread-1", "corr-1")
+        backend.invoke(role_id, payload, "thread-1", "corr-1")
 
 
 def test_query_runner_preserves_23h_swr_cache_age_and_blocks_remote_draft(monkeypatch):

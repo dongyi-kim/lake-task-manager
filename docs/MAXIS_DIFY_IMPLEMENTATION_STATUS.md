@@ -1,20 +1,26 @@
 # MAXIS / Dify 적용 구현 상태
 
 > 최신 기준: 2026-09-14<br>
-> **DEV 품질 후보 v9를 게시·검증했지만 Editor 5-case는 v8/v9 모두 0/5로 품질 개선을 입증하지 못했다. 활성 경로는 local이며 승격하지 않았다.**
+> **DEV 구조적 후보 v11을 게시했다. Editor Guard 수락은 0/5 → 1/5지만 실제 사용 가능 결과는 여전히 0/5다. 활성 경로는 local이며 승격하지 않았다.**
 
 ## 2026-09-14 품질 평가 업데이트
 
 - 기존 5종·58개 벤치마크 중 Editor 5개를 합성 fixture·가명화·동일 checker/rubric으로 재사용했다.
-- v9의 역할 검색어·공통/Editor 지침을 실제 DEV에 적용했다. 3개 canary는 통과했으나
-  본문 생성은 근거·인용 검사에서 모두 차단됐다. 안전 검사를 완화하지 않았다.
+- 모델이 원문 인용·제안·seed·링크의 계획을 선택하고 서버의 Editor Assembler가 HTML·claim·citation을
+  함께 조립하도록 바꿨다. Editor는 12노드·12엣지, 나머지 2앱은 11·11이다. 기존 Guard는 유지했다.
+- 동일 component v4의 원격 v9/v11 비교에서 Guard 수락은 0/5 → 1/5, 실제 요청·렌더 기준은
+  0/5 → 0/5였다. seed 없는 입력에 seed 블록을 만든 4건은 차단됐고, 수락한 댓글도 확인 질문을 놓쳤다.
+- 최신 v11 연결 canary는 3/3이다. 앞선 v10의 Editor canary 실패도 보존했으며 우회하지 않았다.
 - 기존 Knowledge suite의 숨은 채점 조건을 실제 계약에 맞춰 harness v2로 정리했다.
-  v9 실측은 12/25, ACL 8/8, no-hit 1/1이며 의미 품질 점수가 아니다. 이전 v1 13/25와 직접 비교하지 않는다.
-- 다음 핵심은 대상/부모/seed를 명시하는 입력 구조와 짧은 사실 근거 단위다. 프롬프트 확장만으로 해결되지 않았다.
-- 로컬 검증 795건 통과. full UI·58-case 전체 qualification·PROD 전환은 수행하지 않았다.
+  최신 v11 실측은 12/25, positive 3/8, ACL 8/8, no-hit 1/1이다. Injection 8건은 서명 검토 미충족이다.
+  이는 의미 품질 점수가 아니며 이전 v1 13/25와 직접 비교하지 않는다.
+- 다음 핵심은 description/comment의 결정적 분리, 선택 가능한 원문 단위와 참조 정규화다.
+  구조화 요청은 모델까지 손실 없이 전달됐지만 프롬프트의 분기 지시만으로 품질을 확보하지 못했다.
+- 최종 관련 테스트 925건 통과. full UI·58-case 전체 qualification·PROD 전환은 수행하지 않았다.
 
-[최신 품질 보고서](../research/agent-improvement/maxis-dify-quality-20260914.md) ·
-[최신 DEV 게시·실측 증적](../deploy/maxis-dify/deployments/dev-quality-2026.09.14.yml)
+[최신 품질 보고서](../research/agent-improvement/maxis-editor-plan-quality-20260914.md) ·
+[최신 DEV 게시·실측 증적](../deploy/maxis-dify/deployments/dev-editor-plan-2026.09.14.yml) ·
+[앞선 v8/v9 비교](../research/agent-improvement/maxis-dify-quality-20260914.md)
 
 아래 본문은 **2026-09-06 v8 기준 기록**이다. 현재 게시 UUID와 최종 평가 결과는 위 최신 증적을 따른다.
 

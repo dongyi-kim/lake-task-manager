@@ -4,11 +4,12 @@
 source bundle이다. DEV와 PROD의 환경 binding을 분리하고, import DSL을 materialize한
 뒤 validator와 원격 release gate를 통과시키는 구조다.
 
-> 2026-09-14: DEV 품질 후보 **v9, 11노드·11엣지** 게시, canary **3/3**.
-> Editor component는 v8/v9 모두 **0/5**, Knowledge harness v2는 **12/25**다.
+> 2026-09-14: DEV 구조적 후보 **v11** 게시. Editor **12노드·12엣지**, 나머지 **11·11**, canary **3/3**.
+> 동일 component v4에서 원격 v9/v11 Guard 수락 **0/5 → 1/5**, 실제 요청·렌더 통과는 **0/5 → 0/5**다.
+> Knowledge harness v2는 최신 **12/25**, 관련 코드 테스트는 **925건 통과**다. 서로 다른 품질 지표다.
 > 활성 profile은 비어 있고 모든 route는 local이다. PROD는 변경하지 않았다.
-> [최신 증적](deployments/dev-quality-2026.09.14.yml)과
-> [품질 보고서](../../research/agent-improvement/maxis-dify-quality-20260914.md)를 먼저 확인한다.
+> [최신 증적](deployments/dev-editor-plan-2026.09.14.yml)과
+> [품질 보고서](../../research/agent-improvement/maxis-editor-plan-quality-20260914.md)를 먼저 확인한다.
 
 API key, 프롬프트 전문, 모델 응답, 사용자 데이터, release sentinel 원문은 이 문서나
 deployment evidence에 기록하지 않는다.
@@ -21,12 +22,14 @@ deployment evidence에 기록하지 않는다.
 | <code>dsl/*.yml</code> | Dify 0.5.0 import source DSL |
 | <code>code/knowledge_guard.py</code> | retrieval identity·ACL·크기·policy decision 검증 |
 | <code>code/contract_guard.py</code> | output contract·source graph·payload schema 검증 |
+| <code>code/editor_assembler.py</code> | Editor-only typed plan을 source-bound HTML·claim·citation 후보로 조립 |
 | <code>prompts/*.md</code> | 공통 및 앱별 instruction source |
-| <code>contracts/*.json</code> | RemoteRoleResult canonical schema |
+| <code>contracts/*.json</code> | RemoteRoleResult canonical schema 및 Editor 내부 plan schema |
 | <code>environments/dev-2026.09.yml</code> | 비밀 없는 DEV dataset/document/model binding |
 | <code>environments/prod.template.yml</code> | 독립 PROD 자산 체크리스트 |
 | <code>deployments/dev-2026.09.yml</code> | 게시 ID·카나리·평가 상태의 비밀 없는 증적 |
-| <code>deployments/dev-quality-2026.09.14.yml</code> | v9 최신 게시 ID·실측 실패·비활성 상태 |
+| <code>deployments/dev-quality-2026.09.14.yml</code> | 앞선 v9 게시·실측 실패 기록 |
+| <code>deployments/dev-editor-plan-2026.09.14.yml</code> | 최신 v11 게시 ID·실측 실패·비활성 상태 |
 | <code>materialize_environment.py</code> | source DSL에 환경 binding을 주입한 import copy 생성 |
 | <code>validate_bundle.py</code> | DSL·prompt·code·contract·Knowledge binding 정적 검증 |
 | <code>knowledge-evals.yml</code> | release-bound retrieval 평가 명세 |
@@ -39,14 +42,16 @@ source DSL은 직접 환경값으로 수정하지 않는다. DEV/PROD 차이는 
 배포 후 생성된 app/workflow ID를 통해 관리한다.
 
 Editor component 재실행은 `python deploy/maxis-dify/launch_editor_evals.py --label candidate`를
-사용한다. `baseline` label은 **현재 게시된 프로필의** 기존 검색어 정책을 측정하며 과거 v8로
-자동 전환하지 않는다. 과거 v8/v9 비교는 보고서의 고정 UUID·raw 증적을 사용한다.
+사용한다. component v4에서 `baseline`과 `candidate`는 같은 입력 투영·검색어 정책을 사용하며,
+label은 결과 그룹과 순서만 구분한다. 둘 다 **현재 게시된 프로필**을 측정하고 과거 Workflow로
+자동 전환하지 않는다. 과거 비교는 보고서의 고정 UUID·raw 증적을 사용한다.
 정답/checker/rubric과 raw fixture UID는 원격에 보내지 않는다. 이 평가가 통과해도 full compose/UI
 검증이나 activation 승인이 되지 않는다. 아래 v8 수치는 과거 배포 기록으로 읽는다.
 
 ## 실제 게시 topology
 
-세 앱은 같은 보안 topology와 정확히 11개 edge를 가진다.
+아래는 Core/PMO의 공통 11노드·11엣지 topology다. Editor는 9번 edge를
+`Contract LLM → Editor Assembler → Contract Guard`로 나누어 12노드·12엣지다.
 
 ~~~mermaid
 flowchart LR
@@ -87,10 +92,14 @@ flowchart LR
 10. Contract Guard → Allowed Answer
 11. Policy Decision deny/no-hit → Denied Answer
 
+Editor Assembler는 `editor-draft.v1` 요청에서만 `editor-plan.v1`을 받아 원문 인용·제안·seed·링크를
+조립한다. non-Editor control/probe 응답은 그대로 기존 Contract Guard에 전달한다. 이 내부 출력은
+검증 전 후보이며 Assembler가 Guard를 대체하지 않는다. 모델의 형식 분기와 요청 이해 실패는 아직 남아 있다.
+
 ACL deny와 no-hit은 LLM을 호출하지 않는다. 인프라 오류는 정상 Denied Answer로
-위장하지 않고 실패로 전달한다. 정적 뷰어에서는
+위장하지 않고 실패로 전달한다. 공통 부분의 정적 뷰어에서는
 [11-node Native flow](../../docs/images/maxis-dify-implementation/06-dify-eleven-node-native-flow.svg)를
-사용한다.
+사용한다. 해당 기존 그림에는 Editor 추가 노드가 없다.
 
 ## Start와 stateless contract
 

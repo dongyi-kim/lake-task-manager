@@ -94,7 +94,7 @@ DIFY_PROMPT_SHA256 = {
         "user": "d45a2fc4c15eb03e587937fef35f5fef7ff930e5b994860d8b33e44cf2d38f15",
     },
     "editor_author": {
-        "system": "a232680fba1dcab1b818f3b696c686a08272c424c05ea26141604beaa1fad0d8",
+        "system": "f8133b2bcd7e30472e6461459f21a3a720afd6cd60493ef83ac7304c83cf3ce4",
         "user": "d45a2fc4c15eb03e587937fef35f5fef7ff930e5b994860d8b33e44cf2d38f15",
     },
 }
@@ -104,6 +104,11 @@ DIFY_PROMPT_SHA256 = {
 DIFY_CONTRACT_GUARD_SHA256 = (
     "68b0be35e9fdaef2f35cb3e949e5b1826ada2419748c898818e90555797c4bc3"
 )
+# An Editor-only assembly step is not authority to repair or bypass either Guard.
+# Pin the reviewed asset independently of its embedded DSL copy.
+DIFY_EDITOR_ASSEMBLER_SHA256 = "42c3983eb5beff78c876c8939d3798893d20630e572e89483e3d3c86abc03cb6"
+EDITOR_ASSEMBLER_PATH = "deploy/maxis-dify/code/editor_assembler.py"
+DIFY_EDITOR_PLAN_SCHEMA_SHA256 = "2aa982386e5ca47f1a93741beb311ddbf84cde09c4f37ce1399c2f7e775365a0"
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
@@ -633,6 +638,22 @@ def _english_list(values: list[str]) -> str:
     return ", ".join(values[:-1]) + ", and " + values[-1]
 
 
+def _editor_structured_output_schema(root: Path, remote_schema: dict[str, Any]) -> dict[str, Any]:
+    """Keep the legacy control schema and exact reviewed editor plan disjoint."""
+    path = _tracked_path(
+        root, "deploy/maxis-dify/contracts/editor-plan.v1.schema.json", "editor_plan_schema",
+    )
+    plan = _mapping(json.loads(path.read_text(encoding="utf-8")), "editor_plan_schema")
+    validator_for(plan).check_schema(plan)
+    encoded = json.dumps(plan, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if hashlib.sha256(encoded.encode("utf-8")).hexdigest() != DIFY_EDITOR_PLAN_SCHEMA_SHA256:
+        raise BundleValidationError("reviewed Editor Plan schema digest drifted")
+    return {"type": "object", "oneOf": [
+        _dify_structured_output_schema(remote_schema),
+        _dify_structured_output_schema(plan),
+    ]}
+
+
 def _canonical_dify_prompts(
     *,
     common: str,
@@ -856,6 +877,19 @@ def _validate_dify_dsls(
 
     for workflow_key, raw in workflows.items():
         workflow_spec = _mapping(raw, f"workflows.{workflow_key}")
+        editor_assembly = workflow_key == "editor_author"
+        editor_assembler_source = ""
+        if editor_assembly:
+            editor_assembler_source = _tracked_path(
+                root, EDITOR_ASSEMBLER_PATH, "editor_assembler_code",
+            ).read_text(encoding="utf-8").rstrip()
+            if hashlib.sha256(editor_assembler_source.encode("utf-8")).hexdigest() \
+                    != DIFY_EDITOR_ASSEMBLER_SHA256:
+                raise BundleValidationError("reviewed Editor Assembler digest drifted")
+        workflow_dify_schema = (
+            _editor_structured_output_schema(root, response_schema)
+            if editor_assembly else expected_dify_schema
+        )
         dsl_path = _tracked_path(
             root, workflow_spec.get("dsl"), f"workflows.{workflow_key}.dsl"
         )
@@ -995,7 +1029,7 @@ def _validate_dify_dsls(
             "template-transform": 2,
             "knowledge-retrieval": 2,
             "llm": 1,
-            "code": 2,
+            "code": 3 if editor_assembly else 2,
             "if-else": 1,
             "answer": 2,
         }
@@ -1179,7 +1213,10 @@ def _validate_dify_dsls(
             _mapping(node.get("data"), f"{workflow_key}.code").get("title"): node
             for node in nodes_by_type["code"]
         }
-        if set(titled_code_nodes) != {"Knowledge Guard", "Contract Guard"}:
+        expected_code_titles = {"Knowledge Guard", "Contract Guard"}
+        if editor_assembly:
+            expected_code_titles.add("Editor Assembler")
+        if set(titled_code_nodes) != expected_code_titles:
             raise BundleValidationError(
                 f"{workflow_key} Dify guard node roles drifted"
             )
@@ -1283,6 +1320,43 @@ def _validate_dify_dsls(
 
         llm_node = nodes_by_type["llm"][0]
         llm_id = str(llm_node["id"])
+        editor_assembler_id = ""
+        if editor_assembly:
+            editor_assembler_node = titled_code_nodes["Editor Assembler"]
+            editor_assembler_id = str(editor_assembler_node["id"])
+            assembler = _mapping(
+                editor_assembler_node.get("data"), f"{workflow_key}.Editor Assembler",
+            )
+            expected_assembler_variables = [
+                {"variable": name, "value_selector": selector}
+                for name, selector in [
+                    ("candidate", [llm_id, "text"]),
+                    ("context_pack", [start_id, "context_pack"]),
+                    ("role_id", [start_id, "role_id"]),
+                    ("correlation_id", [start_id, "correlation_id"]),
+                    ("output_contract", [start_id, "output_contract"]),
+                    ("workflow_version", [start_id, "workflow_version"]),
+                    ("knowledge_version", [start_id, "knowledge_version"]),
+                    ("knowledge_proof", [knowledge_guard_id, "knowledge_proof"]),
+                ]
+            ]
+            if (
+                set(assembler) != {
+                    "code", "code_language", "desc", "outputs", "selected",
+                    "title", "type", "variables",
+                }
+                or assembler.get("code_language") != "python3"
+                or not isinstance(assembler.get("code"), str)
+                or assembler["code"].rstrip() != editor_assembler_source
+                or assembler.get("outputs") != {
+                    "candidate": {"children": None, "type": "string"},
+                }
+                or assembler.get("variables") != expected_assembler_variables
+                or assembler.get("selected") is not False
+            ):
+                raise BundleValidationError(
+                    f"{workflow_key} Editor Assembler binding or source drifted"
+                )
         llm = _mapping(llm_node.get("data"), f"{workflow_key}.LLM")
         model = _mapping(llm.get("model"), f"{workflow_key}.LLM.model")
         completion_params = _mapping(
@@ -1314,7 +1388,7 @@ def _validate_dify_dsls(
             or _mapping(
                 llm.get("structured_output"),
                 f"{workflow_key}.LLM.structured_output",
-            ).get("schema") != expected_dify_schema
+            ).get("schema") != workflow_dify_schema
         ):
             raise BundleValidationError(
                 f"{workflow_key} Dify LLM model or structured output drifted"
@@ -1417,7 +1491,8 @@ def _validate_dify_dsls(
             for row in raw_guard_variables
         ]
         expected_guard_variables = [
-            ("candidate", [llm_id, "text"]),
+            ("candidate", [editor_assembler_id, "candidate"] if editor_assembly
+             else [llm_id, "text"]),
             ("context_pack", [start_id, "context_pack"]),
             ("role_id", [start_id, "role_id"]),
             ("correlation_id", [start_id, "correlation_id"]),
@@ -1550,6 +1625,12 @@ def _validate_dify_dsls(
             (llm_id, "source", guard_id),
             (guard_id, "source", allowed_answer_id),
         }
+        if editor_assembly:
+            expected_edges.remove((llm_id, "source", guard_id))
+            expected_edges.update({
+                (llm_id, "source", editor_assembler_id),
+                (editor_assembler_id, "source", guard_id),
+            })
         if edge_routes != expected_edges:
             raise BundleValidationError(
                 f"{workflow_key} Dify graph edges drifted"

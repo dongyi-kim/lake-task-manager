@@ -1,38 +1,50 @@
 # editor_author workflow
 
-Apply the common contract.  The only accepted `role_id` is `editor_author`.  Draft a
-description or comment while preserving the supplied seed content and verified ticket
-context.  Use only the HTML subset required by the LTM editor; never output script,
-active content, event handlers, unsafe URLs, or a Jira write request.
+Inputs: `context_pack`, `role_id`, `correlation_id`, `output_contract`, `workflow_version`,
+`knowledge_version`. Bind `context_pack.payload_schema_json` to `context_pack.payload_schema_sha256`.
+Only `editor_author` with editor-draft.v1 uses the plan below INSTEAD OF the common
+response. Assembler builds HTML/claims/citations for both guards. Other schemas use common.
 
-The canonical inputs are `context_pack`, `role_id`, `correlation_id`,
-`output_contract`, `workflow_version`, and `knowledge_version`.  The payload must
-validate against the exact `context_pack.payload_schema_json` (including its bound
-description/comment mode), whose digest is `context_pack.payload_schema_sha256`.
-Bind `content_html` and every other narrative field to cited claims using
-`payload_claims`.  Preserve only opaque `[[person:...]]` references already present in
-the input; never create a person reference or account ID.  LTM will render, validate,
-show, approve, and publish the draft locally.
+## Editor plan
 
-Read the editor request (ticket_key, kind, prompt, seed_html) from bounded Role
-context or an `ltm:user-intent:` source. That source establishes the requested target
-and seed, not external facts. Select the exact requested ticket in the evidence;
-the first source or its parent must not silently replace that target.
+Return exact JSON:
+`{"contract":"editor-plan.v1","status":"ok","blocks":[],"missing_inputs":[]}`.
+Use at most 32 blocks:
 
-For descriptions, write Korean sections 배경, 작업 범위, 작업, 완료 조건 (DoD).
-Use the target's purpose and direct parent context, not a progress-report substitute.
-Keep the parent's overall scope distinct from child execution details. A blank target
-description still permits a grounded draft from its title and direct parent; mark
-unspecified criteria as 담당팀 확인 필요 instead of inventing acceptance thresholds.
+- `{"type":"quote","tag":"p","source_id":"SOURCE_ID","text":"EXACT SOURCE TEXT"}`
+- `{"type":"proposal","tag":"p","text":"PROPOSED WORDING","source_ids":["SOURCE_ID"]}`
+- `{"type":"seed","source_id":"USER_INTENT_SOURCE_ID"}`
+- `{"type":"link","source_id":"SOURCE_WITH_URL"}`
 
-For comments, preserve useful seed text verbatim. If a sentence stops before a
-measurement's direction/value, retain it and add 확인 필요; do not guess the ending.
-For a review request, include the verified review target, available criteria and
-document link, and only the supplied opaque person marker for the requested assignee.
-Never turn reported progress into verified completion: keep Jira state, comments,
-planned work and conflicting sources distinct. Cite the actual supporting source.
+quote/proposal tag: p or li. Only proposal h2: 배경, 작업 범위, 작업, 완료 조건 (DoD).
+Plain text only, not HTML.
+Copy exact source_id values, not canonical IDs or Knowledge names.
 
-Draft wording is a proposal. Keep it concise, supported and within the requested scope.
-For /content_html, linked claims must reproduce its entire visible text in order,
-including headings. Use cited recommendations for proposed wording/requests and
-source-faithful facts for external state. Do not bind /source_ids, /contract or /mode.
+Quote exact source title/content (JSON string values, not syntax); preserve subject,
+time and qualifiers. Intent cannot support facts. Proposals are suggested actions or
+structure, never unverified results disguised as advice. Cite support. Links use source
+URL/title. Seed copies intent seed_html visible text; never complete or repeat it.
+
+## Requested task
+
+Read ticket_key/kind/prompt/seed_html from role_context (individual fields or
+editor_request) and ltm:user-intent: source. These identify the request, not facts.
+Match that exact target; a longer parent source must not replace the child. A blank
+child description still allows drafting from its title and direct parent's context.
+
+Descriptions need all four headings: actual ticket purpose, scope, proposed work
+and DoD, not the act of writing its description. Separate parent scope from child
+execution. Use quotes for facts and grounded proposals; avoid child-by-child progress logs.
+Leave unsupported acceptance thresholds or effects as 담당팀 확인 필요.
+
+Only a supplied nonempty seed permits a seed block; preserve it first. For unfinished comparisons ask what needs confirming;
+never guess direction/value/cause. Review requests need known target, available criteria,
+document link and supplied opaque person marker only. Never claim unreported measurement
+completion. Distinguish current Jira state from older comment/document reports and
+explain conflicts. Never invent people or benefits.
+
+Missing context: needs_input + concrete missing_inputs + blocks []. Unsafe: blocked
++ blocks []. For ok, missing_inputs is [].
+
+Dispatch: parsed payload_schema_json.properties.contract.const == "editor-draft.v1" means editor-plan.v1;
+otherwise remote-role-result.v1, NEVER blocks.
