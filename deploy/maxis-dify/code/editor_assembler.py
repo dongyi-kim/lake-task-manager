@@ -1,4 +1,4 @@
-"""Dify stdlib Code node: assemble explicit editor plans, never approve them.
+"""Dify stdlib Editor Input and Assembler: project/select facts, never approve.
 
 Wire ``candidate`` to the existing Contract Guard, then retain LTM's ResponseGuard.
 Only exact EditorDraftV1 schemas select this path. Other payload contracts pass
@@ -16,7 +16,10 @@ from urllib.parse import urlsplit
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _INTENT = "ltm:user-intent:"
-_HEADINGS = {"배경", "작업 범위", "작업", "완료 조건 (DoD)"}
+_SECTIONS = ("background", "scope", "work", "dod")
+_HEADINGS = dict(zip(_SECTIONS, ("배경", "작업 범위", "작업", "완료 조건 (DoD)")))
+_URL = re.compile(r"(?<![A-Za-z0-9_])(?:https?://|javascript:|data:)", re.I)
+_PERSON = re.compile(r"\[\[person:[0-9a-f]{12}\]\]")
 _ANNOTATIONS = {"$comment", "default", "deprecated", "description", "examples",
                 "readOnly", "title", "writeOnly"}
 _EDITOR_SCHEMA = {
@@ -170,6 +173,8 @@ def _sources(pack):
             _fail()
         if not isinstance(row.get("title"), str) or not isinstance(row.get("content"), str):
             _fail()
+        if hashlib.sha256(row["content"].encode("utf-8")).hexdigest() != row.get("content_sha256"):
+            _fail()
         sources[source_id] = row
     return sources
 
@@ -208,9 +213,7 @@ def _fresh_editor_evidence(pack, sources):
             _fail()
 
 
-def _comment_seed(pack, sources, blocks, mode):
-    if mode != "comment":
-        return
+def _trusted_seed(pack, sources):
     intent_seeds = {}
     for source_id, source in sources.items():
         if _intent(source):
@@ -240,39 +243,7 @@ def _comment_seed(pack, sources, blocks, mode):
         visible = _visible(_text(seed, 24000)) if seed.strip() else ""
         if visible != next(iter(intent_seeds.values()), ""):
             _fail()
-    if intent_seeds:
-        seed_source = next(iter(intent_seeds))
-        seed_blocks = [row for row in blocks if isinstance(row, dict) and row.get("type") == "seed"]
-        if (len(seed_blocks) != 1 or blocks[0] is not seed_blocks[0]
-                or seed_blocks[0].get("source_id") != seed_source):
-            _fail()
-
-
-def _leaves(value, depth=0):
-    if depth > 24:
-        _fail()
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for item in value.values():
-            yield from _leaves(item, depth + 1)
-    elif isinstance(value, list):
-        for item in value:
-            yield from _leaves(item, depth + 1)
-
-
-def _quote_texts(source):
-    yield source["title"]
-    content = source["content"]
-    try:
-        parsed = _decode(content)
-    except (ValueError, TypeError):
-        if content.lstrip().startswith(("{", "[", '"')):
-            _fail()
-        yield content
-    else:
-        # JSON syntax/keys are not factual text. Only actual string values support quotes.
-        yield from _leaves(parsed)
+    return next(iter(intent_seeds.items()), ("", ""))
 
 
 def _link(source):
@@ -285,59 +256,244 @@ def _link(source):
     return url, _text(source["title"])
 
 
-def _blocks(plan, sources):
+def _paths(value, path, depth=0):
+    if depth > 24:
+        _fail()
+    if isinstance(value, str):
+        yield path, value
+    elif isinstance(value, dict):
+        for key in sorted(value):
+            escaped = key.replace("~", "~0").replace("/", "~1")
+            yield from _paths(value[key], path + "/" + escaped, depth + 1)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from _paths(item, path + "/" + str(index), depth + 1)
+
+
+def _original_units(source):
+    yield "/title", source["title"]
+    content = source["content"]
+    try:
+        parsed = _decode(content)
+    except (ValueError, TypeError):
+        if content.lstrip().startswith(("{", "[", '"')):
+            _fail()
+        leaves = [("/content", content)]
+    else:
+        leaves = _paths(parsed, "/content")
+    for path, text in leaves:
+        # Existing line boundaries are extractive units, not generated summaries.
+        lines = text.splitlines() or [text]
+        for index, line in enumerate(lines):
+            line = line.strip()
+            if not line:
+                continue
+            if len(line) > 1200:
+                _fail()  # Never silently crop a factual unit.
+            yield path + ("/line:" + str(index) if len(lines) > 1 else ""), line
+
+
+def _reference_text(text, source_id, sources):
+    """Derive visible text+HTML only from exact known source URLs/opaque markers.
+
+    Original EvidencePack remains authoritative. Display text is never added to
+    facts. Unknown URL authority fails rather than being hidden behind a label.
+    """
+    text = _text(text)
+    known = {}
+    for other_id, source in sources.items():
+        if not _intent(source) and source.get("url"):
+            url, label = _link(source)
+            known.setdefault(url, []).append((other_id, label))
+    fragments, refs = [], [source_id]
+    cursor = 0
+    while True:
+        match = _URL.search(text, cursor)
+        if match is None:
+            tail = text[cursor:]
+            fragments.append(html.escape(tail, quote=True))
+            break
+        start = match.start()
+        matches = [url for url in known if text.startswith(url, start)]
+        if not matches:
+            _fail()
+        url = max(matches, key=len)
+        end = start + len(url)
+        targets = known[url]
+        if len(targets) != 1:
+            _fail()  # Competing titles/identities need upstream resolution.
+        target_id, label = targets[0]
+        replace_start, replace_end = start, end
+        if start > cursor and text[start - 1] == "|" and end < len(text) and text[end] == "]":
+            depth, opening = 0, None
+            for index in range(start - 2, max(cursor - 1, start - 602), -1):
+                char = text[index]
+                if char in "\r\n":
+                    break
+                if char == "]":
+                    depth += 1
+                elif char == "[":
+                    if depth:
+                        depth -= 1
+                    else:
+                        opening = index
+                        break
+            if opening is None:
+                _fail()
+            label = _text(text[opening + 1:start - 1])
+            replace_start, replace_end = opening, end + 1
+        else:
+            # Compare the whole plain URL token, allowing only trailing sentence
+            # punctuation. A '?' query, '#fragment', '.suffix' or extra path is
+            # NOT covered by a known prefix, even on the same host.
+            token = re.match(r"[^\s<>\"']+", text[start:]).group(0)
+            if token != url and token.rstrip(".,;:!?)]}") != url:
+                _fail()
+        prefix = text[cursor:replace_start]
+        fragments.append(html.escape(prefix, quote=True))
+        fragments.append('<a href="' + html.escape(url, quote=True) + '">' + html.escape(label, quote=True) + "</a>")
+        if target_id not in refs:
+            refs.append(target_id)
+        cursor = replace_end
+    markup = "".join(fragments)
+    # Match the two unchanged guards' visible-text normalization, including
+    # whitespace at anchor boundaries next to sentence punctuation.
+    display = _text(_visible(markup))
+    if len(refs) > 8 or _URL.search(display):
+        _fail()
+    # Opaque person tokens stay in text nodes until the local identity resolver.
+    for marker in re.findall(r"\[\[person:[^\]]*\]\]", display):
+        if not _PERSON.fullmatch(marker):
+            _fail()
+    return display, markup, refs
+
+
+def _catalog(sources):
+    catalog, lookup = [], {}
+    for source_id, source in sources.items():
+        if _intent(source):
+            continue
+        units = []
+        for path, original in _original_units(source):
+            if not original.strip():
+                continue
+            display, markup, refs = _reference_text(original, source_id, sources)
+            binding = ["editor-units.v1", source_id, source.get("canonical_id"),
+                       source["content_sha256"], source["title"], source.get("url", ""), path, original]
+            unit_id = "u_" + hashlib.sha256(_canonical(binding).encode("utf-8")).hexdigest()[:20]
+            if unit_id in lookup or len(lookup) >= 96:
+                _fail()
+            lookup[unit_id] = {"text": display, "html": markup, "source_ids": refs}
+            units.append({"unit_id": unit_id, "path": path, "text": display})
+        if not units:
+            _fail()
+        available_link = bool(source.get("url"))
+        if available_link:
+            _link(source)
+        catalog.append({"source_id": source_id, "kind": source.get("kind"),
+                        "title": source["title"], "available_link": available_link, "units": units})
+    return catalog, lookup
+
+
+def _request(pack, sources, mode):
+    values = {"prompt": set(), "ticket_key": set()}
+    requests = [_object(source["content"]) for source in sources.values() if _intent(source)]
+    for row in pack.get("role_context", []):
+        if row.get("name") == "editor_request":
+            requests.append(_object(row["content_json"]))
+        elif row.get("name") in values:
+            requests.append({row["name"]: _decode(row["content_json"])})
+    for request in requests:
+        for key in values:
+            if key in request:
+                value = request[key]
+                if not isinstance(value, str) or len(value) > 3600:
+                    _fail()
+                values[key].add(value)
+    if any(len(items) > 1 for items in values.values()):
+        _fail()
+    _, seed = _trusted_seed(pack, sources)
+    return {"kind": mode, "target": next(iter(values["ticket_key"]), ""),
+            "source_ids": [key for key, source in sources.items() if _intent(source)],
+            "prompt": next(iter(values["prompt"]), ""), "seed_visible": seed}
+
+
+def prepare(model_input):
+    """Project trusted KnowledgeGuard output for the model, never mint evidence."""
+    try:
+        if not isinstance(model_input, str) or len(model_input.encode("utf-8")) > 9000:
+            _fail()
+        incoming = _object(model_input)
+        if incoming.get("contract") != "ltm-model-input.v1":
+            _fail()
+        pack = incoming.get("context_pack")
+        if not isinstance(pack, dict) or len(_canonical(pack).encode("utf-8")) > 6144:
+            _fail()
+        mode_schema = _schema(pack)
+        if mode_schema is None:
+            return {"model_input": model_input}  # Non-Editor canary: exact bytes.
+        if (incoming.get("role_id") != "editor_author" or pack.get("use_case") != "editor_author"
+                or incoming.get("correlation_id") != pack.get("request_id")
+                or pack.get("contract") != "evidence-pack.v1"
+                or incoming.get("output_contract") != "remote-role-result.v1"):
+            _fail()
+        sources = _sources(pack)
+        _fresh_editor_evidence(pack, sources)
+        mode = _mode(pack, sources, mode_schema)
+        catalog, _ = _catalog(sources)
+        knowledge = incoming.get("knowledge_context")
+        if not isinstance(knowledge, list) or len(knowledge) > 2:
+            _fail()
+        total = 0
+        for row in knowledge:
+            if not isinstance(row, dict) or set(row) != {"document_name", "content"}:
+                _fail()
+            _text(row["document_name"])
+            content = _text(row["content"])
+            total += len(content.encode("utf-8"))
+            if len(content.encode("utf-8")) > 768 or total > 1024:
+                _fail()
+        projected = _canonical({"contract": "editor-input.v1", "role_id": "editor_author",
+            "request": _request(pack, sources, mode), "knowledge_context": knowledge, "sources": catalog})
+        if len(projected.encode("utf-8")) > 9000:
+            _fail()
+        return {"model_input": projected}
+    except Exception:
+        raise ValueError("invalid_editor_input") from None
+
+
+def _blocks(plan, sources, lookup, mode, seed):
     claims, citations, fragments, used_sources = [], [], [], []
     citation_ids = {}
     list_open = False
-    for block in plan["blocks"]:
-        if not isinstance(block, dict):
+    rows = []
+    seed_source, seed_text = seed
+    if seed_text:
+        rows.append(("p", seed_text, html.escape(seed_text, quote=True), "inference", [seed_source], True))
+    expected = list(_SECTIONS) if mode == "description" else ["comment"]
+    sections = plan["sections"]
+    if [row.get("section") for row in sections if isinstance(row, dict)] != expected:
+        _fail()
+    count = 0
+    for section in sections:
+        if set(section) != {"section", "blocks"} or not isinstance(section["blocks"], list) or not section["blocks"]:
             _fail()
-        kind = block.get("type")
-        shapes = {
-            "quote": {"type", "tag", "source_id", "text"},
-            "proposal": {"type", "tag", "text", "source_ids"},
-            "seed": {"type", "source_id"}, "link": {"type", "source_id"},
-        }
-        if kind not in shapes or set(block) != shapes[kind]:
+        count += len(section["blocks"])
+        if count > 32:
             _fail()
-        refs = block.get("source_ids") if kind == "proposal" else [block["source_id"]]
-        if (not isinstance(refs, list) or not 0 < len(refs) <= 8
-                or any(not isinstance(ref, str) or ref not in sources for ref in refs)
-                or len(refs) != len(set(refs))):
-            _fail()
-        source = sources[refs[0]]
-        tag = block.get("tag", "p")
-        if kind == "quote":
-            text = _text(block["text"])
-            if _intent(source) or tag not in {"p", "li"} or not any(
-                text in original for original in _quote_texts(source)
-            ):
-                _fail()
-            claim_kind = "fact"
-        elif kind == "proposal":
-            text = _text(block["text"])
-            if tag not in {"h2", "p", "li"} or (tag == "h2" and text not in _HEADINGS):
-                _fail()
-            if tag != "h2":
-                # Preserve the proposed nature in user-visible HTML as well as the
-                # sidecar. This label is NOT semantic grounding or hallucination
-                # approval; disguised factual assertions still need direct review.
-                text = _text("제안: " + text)
-            claim_kind = "recommendation"
-        elif kind == "seed":
-            if not _intent(source):
-                _fail()
-            seed = _text(_object(source["content"]).get("seed_html"), 24000)
-            text = _text(_visible(seed), 24000)
-            claim_kind = "inference"
-        else:
-            if _intent(source):
-                _fail()
-            url, text = _link(source)
-            claim_kind = "fact"
-        rendered = html.escape(text, quote=True)
-        if kind == "link":
-            rendered = '<a href="' + html.escape(url, quote=True) + '">' + rendered + "</a>"
+        section_rows = []
+        for block in section["blocks"]:
+            section_rows.append(_block(block, sources, lookup))
+        if mode == "description":
+            refs = list(dict.fromkeys(ref for row in section_rows for ref in row[4]))[:8]
+            heading = _HEADINGS[section["section"]]
+            rows.append(("h2", heading, html.escape(heading), "recommendation", refs, False))
+        rows.extend(section_rows)
+    if seed_text:
+        additional = _visible(" ".join(row[1] for row in rows if not row[5]))
+        if _visible(seed_text) in additional:
+            _fail()  # Never accept a second model-selected copy of the seed.
+    for tag, text, rendered, claim_kind, refs, is_seed in rows:
         if tag == "li" and not list_open:
             fragments.append("<ul>")
             list_open = True
@@ -353,7 +509,7 @@ def _blocks(plan, sources):
                 citations.append({"citation_id": cite_id, "source_id": source_id, "locator": ""})
                 used_sources.append(source_id)
             linked.append(citation_ids[source_id])
-        for claim_text in _seed_claims(text) if kind == "seed" else [text]:
+        for claim_text in _seed_claims(text) if is_seed else [text]:
             if len(claims) >= 40:
                 _fail()
             claims.append({"claim_id": "claim-" + str(len(claims) + 1), "kind": claim_kind,
@@ -364,6 +520,46 @@ def _blocks(plan, sources):
     if len(content) > 24000 or _visible(content) != _visible(" ".join(row["text"] for row in claims)):
         _fail()
     return content, claims, citations, used_sources
+
+
+def _block(block, sources, lookup):
+    if not isinstance(block, dict):
+        _fail()
+    kind = block.get("type")
+    shapes = {"fact": {"type", "unit_id", "tag"},
+              "proposal": {"type", "tag", "text", "source_ids"},
+              "link": {"type", "source_id"}}
+    if not isinstance(kind, str) or kind not in shapes or set(block) != shapes[kind]:
+        _fail()
+    tag = block.get("tag", "p")
+    if tag not in {"p", "li"}:
+        _fail()
+    if kind == "fact":
+        unit_id = block["unit_id"]
+        if not isinstance(unit_id, str) or unit_id not in lookup:
+            _fail()
+        unit = lookup[unit_id]
+        return tag, unit["text"], unit["html"], "fact", unit["source_ids"], False
+    refs = block["source_ids"] if kind == "proposal" else [block["source_id"]]
+    if (not isinstance(refs, list) or not 0 < len(refs) <= 8
+            or any(not isinstance(ref, str) or ref not in sources for ref in refs)
+            or len(refs) != len(set(refs))):
+        _fail()
+    if kind == "proposal":
+        text = _text("제안: " + _text(block["text"]))
+        # Text may be a concrete question. This label does not ground assertions.
+        if _URL.search(text):
+            _fail()  # Model-authored URL syntax never acquires link authority.
+        for marker in re.findall(r"\[\[person:[^\]]*\]\]", text):
+            if not _PERSON.fullmatch(marker) or not any(marker in sources[ref]["content"] for ref in refs):
+                _fail()
+        return tag, text, html.escape(text, quote=True), "recommendation", refs, False
+    source = sources[refs[0]]
+    if _intent(source):
+        _fail()
+    url, text = _link(source)
+    rendered = '<a href="' + html.escape(url, quote=True) + '">' + html.escape(text, quote=True) + "</a>"
+    return "p", text, rendered, "fact", refs, False
 
 
 def main(candidate, context_pack, role_id, correlation_id, output_contract,
@@ -399,22 +595,24 @@ def main(candidate, context_pack, role_id, correlation_id, output_contract,
         sources = _sources(pack)
         mode = _mode(pack, sources, mode_schema)
         plan = _object(candidate)
-        if set(plan) != {"contract", "status", "blocks", "missing_inputs"} or plan["contract"] != "editor-plan.v1":
+        if set(plan) != {"contract", "status", "sections", "missing_inputs"} or plan["contract"] != "editor-plan.v2":
             _fail()
-        status, blocks, missing = plan["status"], plan["blocks"], plan["missing_inputs"]
-        if (status not in {"ok", "needs_input", "blocked"} or not isinstance(blocks, list)
-                or len(blocks) > 32 or not isinstance(missing, list) or len(missing) > 8):
+        status, sections, missing = plan["status"], plan["sections"], plan["missing_inputs"]
+        if (status not in {"ok", "needs_input", "blocked"} or not isinstance(sections, list)
+                or len(sections) > 4 or not isinstance(missing, list) or len(missing) > 8):
             _fail()
         for question in missing:
             _text(question, 500)
-        if (status == "ok" and (not blocks or missing)) or (
-            status != "ok" and blocks
+        if (status == "ok" and (not sections or missing)) or (
+            status != "ok" and sections
         ) or (status == "needs_input" and not missing) or (status == "blocked" and missing):
             _fail()
         if status == "ok":
             _fresh_editor_evidence(pack, sources)
-            _comment_seed(pack, sources, blocks, mode)
-            content, claims, citations, source_ids = _blocks(plan, sources)
+            seed = _trusted_seed(pack, sources)
+            _, lookup = _catalog(sources)
+            _request(pack, sources, mode)  # Reject conflicting trusted author fields.
+            content, claims, citations, source_ids = _blocks(plan, sources, lookup, mode, seed)
             result.update(payload={"contract": "editor-draft.v1", "mode": mode,
                 "content_html": content, "source_ids": source_ids,
                 "unsupported_claims": [], "warnings": []}, claims=claims, citations=citations,
