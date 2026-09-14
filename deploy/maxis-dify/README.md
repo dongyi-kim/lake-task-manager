@@ -4,12 +4,13 @@
 source bundle이다. DEV와 PROD의 환경 binding을 분리하고, import DSL을 materialize한
 뒤 validator와 원격 release gate를 통과시키는 구조다.
 
-> 2026-09-14: DEV 구조적 후보 **v11** 게시. Editor **12노드·12엣지**, 나머지 **11·11**, canary **3/3**.
-> 동일 component v4에서 원격 v9/v11 Guard 수락 **0/5 → 1/5**, 실제 요청·렌더 통과는 **0/5 → 0/5**다.
-> Knowledge harness v2는 최신 **12/25**, 관련 코드 테스트는 **925건 통과**다. 서로 다른 품질 지표다.
+> 2026-09-14: DEV **v13** 게시. Editor **13노드·13엣지**, 나머지 **11·11**, canary **3/3**.
+> 동일 component v4의 신규 v11 baseline → v13: Guard **0/5 → 4/5**, 자동 **0/5 → 3/5**,
+> 직접 판독 사용 가능 **0/5 → 1/5**다. 대상 혼동·미완성 댓글 처리 때문에 아직 활성화하지 않는다.
+> Knowledge harness v2는 최신 **11/25**. 통합 **1,116 통과·1 제외**, 제외된 DPAPI 1건은 별도 사용자 환경에서 통과했다.
 > 활성 profile은 비어 있고 모든 route는 local이다. PROD는 변경하지 않았다.
-> [최신 증적](deployments/dev-editor-plan-2026.09.14.yml)과
-> [품질 보고서](../../research/agent-improvement/maxis-editor-plan-quality-20260914.md)를 먼저 확인한다.
+> [최신 증적](deployments/dev-editor-units-2026.09.14.yml)과
+> [품질 보고서](../../research/agent-improvement/maxis-editor-units-quality-20260914.md)를 먼저 확인한다.
 
 API key, 프롬프트 전문, 모델 응답, 사용자 데이터, release sentinel 원문은 이 문서나
 deployment evidence에 기록하지 않는다.
@@ -29,7 +30,8 @@ deployment evidence에 기록하지 않는다.
 | <code>environments/prod.template.yml</code> | 독립 PROD 자산 체크리스트 |
 | <code>deployments/dev-2026.09.yml</code> | 게시 ID·카나리·평가 상태의 비밀 없는 증적 |
 | <code>deployments/dev-quality-2026.09.14.yml</code> | 앞선 v9 게시·실측 실패 기록 |
-| <code>deployments/dev-editor-plan-2026.09.14.yml</code> | 최신 v11 게시 ID·실측 실패·비활성 상태 |
+| <code>deployments/dev-editor-plan-2026.09.14.yml</code> | 앞선 v11 게시 ID·실측 실패 기록 |
+| <code>deployments/dev-editor-units-2026.09.14.yml</code> | 최신 v13 게시 ID·baseline/v12/v13 실측·비활성 상태 |
 | <code>materialize_environment.py</code> | source DSL에 환경 binding을 주입한 import copy 생성 |
 | <code>validate_bundle.py</code> | DSL·prompt·code·contract·Knowledge binding 정적 검증 |
 | <code>knowledge-evals.yml</code> | release-bound retrieval 평가 명세 |
@@ -107,6 +109,9 @@ non-Editor control/probe 입력과 출력은 그대로 통과한다. 최종 승�
 
 현재 단위 투영은 문자열 본문·제목에 한정한다. JSON 숫자/불리언과 pack facts/metrics의
 독립 단위화는 미구현이며, 크기 초과·알 수 없는 URL 등은 부분 삭제 대신 실패 처리한다.
+v13은 명시된 Jira·Confluence 본문의 위키 제목/목록 접두부만 표시층에서 정리한다.
+코드 표식이 있는 leaf와 메타데이터는 제외한다. 원문·종류·표시문·HTML·인용 ID를 함께
+단위 ID에 묶으므로, 다른 출처의 링크 제목이 바뀌어도 예전 선택 ID를 재사용하지 않는다.
 
 ACL deny와 no-hit은 LLM을 호출하지 않는다. 인프라 오류는 정상 Denied Answer로
 위장하지 않고 실패로 전달한다. 공통 부분의 정적 뷰어에서는
@@ -196,7 +201,9 @@ failure answer, model fallback을 사용하지 않는다.
 Sentinel은 Governed Knowledge와 별도 dataset이다. 문서는 1개, segment는 1개이며
 LTM profile에는 평문이 아니라 proof SHA만 저장한다.
 
-## 현재 앱·Workflow binding
+## 이전 v8 앱·Workflow binding (보존용)
+
+아래는 과거 기록이다. 최신 v13 UUID는 [최신 증적](deployments/dev-editor-units-2026.09.14.yml)을 사용한다.
 
 | 앱 | App ID | published Workflow ID | 카나리 |
 |---|---|---|---:|

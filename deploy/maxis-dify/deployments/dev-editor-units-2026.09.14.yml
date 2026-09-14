@@ -1,0 +1,155 @@
+contract: ltm-maxis-dify-quality-evidence.v1
+captured_date: '2026-09-14'
+environment: dev
+status: experimental_inactive_quality_gate_failed
+authoritative_ready: false
+workflow_bundle_version: ltm-maxis-dify-2026.09.14-editor-plan-v13
+profile_fingerprint: 1cd12eb7b1b33a4e1a00295af93c6e68
+prior_evidence: deploy/maxis-dify/deployments/dev-editor-plan-2026.09.14.yml
+environment_binding: deploy/maxis-dify/environments/dev-2026.09.yml
+report: research/agent-improvement/maxis-editor-units-quality-20260914.md
+direct_review: research/agent-improvement/evaluations/maxis-editor-20260914T044750Z-candidate.md
+workflows:
+  agent_core:
+    app_id: d061c2e6-72cf-4fc4-b835-4cb124e1f96c
+    published_workflow_id: 5dc68c95-aaa5-44ac-ac02-79d350f0b40b
+    graph: {nodes: 11, edges: 11}
+  editor_author:
+    app_id: dbda2328-0547-4e0c-967d-c14265b27459
+    published_workflow_id: ca52fea2-e4c8-40bf-8d00-5ea438e7ecd9
+    graph: {nodes: 13, edges: 13}
+  pmo_brief:
+    app_id: ceb6bdc2-0276-4736-8c8b-59fc69f85cd6
+    published_workflow_id: 83dc69bc-d425-4225-b2ec-2c9d73e4f13a
+    graph: {nodes: 11, edges: 11}
+editor_assembly:
+  input_contract: editor-input.v1
+  plan_contract: editor-plan.v2
+  payload_contract: editor-draft.v1
+  display_policy: editor-units.v2-wiki-body-display
+  source_normalized_sha256: 8d5cb437c5cdc7b1a32c5f08b82d45cee101da4b4024c2d10fe6dcf880d74957
+  embedded_dsl_sha256: 63e9ca47923b14fb35eeb2f4f0b8ca8b19c76ca2c2a7e9ffacab86a1e8a6c705
+  rendered_system_prompt_sha256: 31627bc58563e5e5ff1ca181decbb875c34891b9b85e2e0468ea39897dae36b1
+  system_prompt_utf8_bytes: 8124
+  original_evidence_pack_changed: false
+  knowledge_guard_changed: false
+  contract_guard_changed: false
+  local_response_guard_changed: false
+  retry_enabled: false
+  guard_bypass_enabled: false
+service_api_canary:
+  artifact: .cache/maxis/dev-canary-quality-20260914-v13.json
+  artifact_sha256: 169b1c58832b10fc24a257ee433bd45e89e5db09a0e3747de90fb81fcb1fc4ee
+  completed_at: '2026-09-14T04:47:35.321096+00:00'
+  executed: 3
+  passed: 3
+  profile_verified_at_probe: true
+  answer_quality_certified: false
+local_validation:
+  final_integrated_passed: 1116
+  final_integrated_skipped: 1
+  elapsed_seconds: 138.86
+  skipped_case: Windows current-user DPAPI unavailable inside sandbox
+  unchanged_dpapi_case_separate_user_context_passed: 1
+  dpapi_elapsed_seconds: 0.33
+  unique_related_tests_verified_across_runs: 1117
+  full_ui_tested: false
+  review_loop_scores: [7, 8.5, 8, 9]
+  review_loop_rounds: 4
+  fresh_critic_each_round: true
+  review_loop_score_is_llm_quality: false
+  intermediate_v13_test: interrupted_after_two_failures_due_to_concurrent_review_fix_before_final_resync
+editor_component:
+  protocol_version: '3.0.0'
+  rubric_version: '2.0.0'
+  battery_version: '4.0.0'
+  source_battery: editor
+  source_battery_version: '4.0.0'
+  case_adapter_version: '2.0.0'
+  case_ids: [CMP2, CMP3, CMP6, CMP8, CMP9]
+  run_kind: exploratory
+  repetitions_per_candidate: 1
+  balanced_order: false
+  benchmark_key: f4f807c9036af03977a78d384783ac6a1d1ba9e4b80430502ee4f7e8e3e84a74
+  baseline:
+    remote_bundle: ltm-maxis-dify-2026.09.14-editor-plan-v11
+    artifact: .cache/agent-evaluation/maxis-editor-20260914T035709Z-53ace571/baseline.json
+    artifact_sha256: ed80900bc254f7b2c2cdb60d727ff864689c8dd8b046a143c2c0d35dfd6ab16f
+    candidate_commit: c7eca692d46e1562f7a4fadbe48c176003073449
+    candidate_dirty: false
+    executed: 5
+    guard_accepted: 0
+    checker_and_renderer_passed: 0
+    direct_review_usable: 0
+    direct_review_mean_out_of_5: 2.00
+    total_tokens: 26141
+    latency_total_ms: 18917
+  intermediate_v12:
+    remote_bundle: ltm-maxis-dify-2026.09.14-editor-plan-v12
+    artifact: .cache/agent-evaluation/maxis-editor-20260914T042709Z-ab7bef4d/candidate.json
+    artifact_sha256: b9c86a0f40eea42557053f9d5dbe73b8a385ec9177a5a708dae7ccdfc5a8a434
+    candidate_commit: ab55e2807a3d74ab0175e1514a31b0cfc160d385
+    candidate_dirty: false
+    executed: 5
+    guard_accepted: 4
+    checker_and_renderer_passed: 1
+    direct_review_usable: 0
+    direct_review_mean_out_of_5: 2.30
+    automated_false_positives: [CMP2]
+    total_tokens: 23411
+    latency_total_ms: 16169
+  candidate:
+    remote_bundle: ltm-maxis-dify-2026.09.14-editor-plan-v13
+    artifact: .cache/agent-evaluation/maxis-editor-20260914T044750Z-f012127f/candidate.json
+    artifact_sha256: a32526ff5ee39ba429ae7552c3c4809fe4a9ec7ce21e4af126631e5aa6e2dcc0
+    candidate_commit: 7be1779086e8ee535f666728a201c74d6098410c
+    candidate_dirty: false
+    executed: 5
+    guard_accepted: 4
+    checker_and_renderer_passed: 3
+    direct_review_usable: 1
+    direct_review_mean_out_of_5: 2.96
+    direct_review_artifact: .cache/agent-evaluation/maxis-editor-20260914T044750Z-f012127f/direct-review-candidate.json
+    direct_review_artifact_sha256: 8aa1e6b4bf73058eb0c8525f2173977f2359f3901f27d20c337fca821485916c
+    automated_false_positives: [CMP2, CMP9]
+    prepared_input_delivery_verified: 5
+    total_tokens: 23755
+    latency_total_ms: 17391
+    latency_p50_ms: 3721
+    latency_p95_ms: 4308
+  source_binding_unchanged_within_each_run: true
+  qualification_eligible: false
+  full_ltm_ui_tested: false
+knowledge_eval:
+  artifact: .cache/maxis/evals/dev-keval-20260914T044934307505Z-7b820caa.json
+  artifact_sha256: dac8ca8b210d4d41be6dce9afa43f15283a6a51c8b1fc614d3a154d0802549b8
+  harness_sha256: 99b12bb01dc8b8dd0cd37bbf5b7c6e849cf265c862bb3af81cc6f4e1f716f672
+  outcome: failed
+  executed: 25
+  passed: 11
+  positive_passed: 2
+  positive_total: 8
+  acl_passed: 8
+  acl_total: 8
+  no_hit_passed: 1
+  no_hit_total: 1
+  injection_automated_passed: 3
+  injection_total: 8
+  injection_final_passed: 0
+  injection_signed_review: pending
+  retrieval_hit_at_2: 1.0
+  retrieval_mrr_at_2: 0.9375
+  total_tokens: 58650
+  latency_p50_ms: 1980
+  latency_p95_ms: 2736
+  semantic_answer_correctness_assessed: false
+  release_eligible: false
+runtime:
+  active_profile: ''
+  routes: {agent_core: local, editor_author: local, pmo_brief: local}
+  prod_changed: false
+privacy:
+  credentials_recorded: false
+  sentinel_plaintext_recorded: false
+  business_data_sent: false
+  synthetic_raw_location: .cache/agent-evaluation
