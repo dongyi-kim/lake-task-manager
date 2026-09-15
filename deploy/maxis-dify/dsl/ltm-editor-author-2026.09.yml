@@ -1809,15 +1809,16 @@ workflow:
           \ target):\n    \"\"\"Attribution hints from explicit Jira keys/edges, never\
           \ new evidence.\n\n    Missing/null parent is not proof of a root. Conflicting\
           \ declarations remain\n    unresolved regardless of source order; cycles\
-          \ do too. No prose, URL or document inference.\n    \"\"\"\n    parents\
-          \ = {}\n    for source in sources.values():\n        if source.get(\"kind\"\
-          ) != \"jira\":\n            continue\n        try:\n            content\
-          \ = _decode(source[\"content\"])\n        except (ValueError, TypeError):\n\
-          \            continue  # _unit_rows still rejects malformed structured content.\n\
-          \        for issue in _issue_objects(content):\n            key = issue[\"\
-          key\"]\n            declared = parents.setdefault(key, set())\n        \
-          \    candidates = []\n            if \"parentKey\" in issue:\n         \
-          \       candidates.append(issue[\"parentKey\"])\n            containers\
+          \ do too. No prose, URL or document inference.\n    \"\"\"\n    parents,\
+          \ identity_sources = {}, {}\n    for source_id, source in sources.items():\n\
+          \        if source.get(\"kind\") != \"jira\":\n            continue\n  \
+          \      try:\n            content = _decode(source[\"content\"])\n      \
+          \  except (ValueError, TypeError):\n            continue  # _unit_rows still\
+          \ rejects malformed structured content.\n        for issue in _issue_objects(content):\n\
+          \            key = issue[\"key\"]\n            identity_sources.setdefault(key,\
+          \ set()).add(source_id)\n            declared = parents.setdefault(key,\
+          \ set())\n            candidates = []\n            if \"parentKey\" in issue:\n\
+          \                candidates.append(issue[\"parentKey\"])\n            containers\
           \ = [issue]\n            if isinstance(issue.get(\"fields\"), dict):\n \
           \               containers.append(issue[\"fields\"])\n            for container\
           \ in containers:\n                if \"parent\" in container:\n        \
@@ -1840,7 +1841,8 @@ workflow:
           \ cyclic and parent == target:\n            relation = \"child\"\n     \
           \   result.append({\"key\": key, \"parent_key\": parent, \"relation\": relation,\n\
           \                       \"parent_conflict\": len(parents[key]) > 1 or key\
-          \ in cyclic})\n    return result\n\n\ndef _unit_rows(source):\n    \"\"\"\
+          \ in cyclic,\n                       \"source_ids\": sorted(identity_sources.get(key,\
+          \ set()))})\n    return result\n\n\ndef _unit_rows(source):\n    \"\"\"\
           Keep authoritative original spans separate from bounded body display.\n\n\
           \    Only typed Jira body/comment paths and Confluence bodies interpret\
           \ leading\n    wiki headings/lists. Any code/pre/noformat/fence marker opts\
@@ -1948,28 +1950,23 @@ workflow:
           prompt\"]), \"\"), \"seed_visible\": seed}\n\n\ndef _section_order(mode):\n\
           \    return list(_SECTIONS) if mode == \"description\" else [\"comment\"\
           ]\n\n\ndef _draft_contract(mode):\n    names = _section_order(mode)\n  \
-          \  purpose = (\n        \"Write the TARGET ticket's purpose, boundary, concrete\
-          \ work and acceptance criteria. \"\n        \"Parent/document context informs\
-          \ background; child completion is not the parent's DoD. \"\n        \"Use\
-          \ the target's own summary/current fields; do not copy a different ticket's\
-          \ scope.\"\n        if mode == \"description\" else\n        \"Write one\
-          \ concise comment only. Preserve seed once (server inserts it). \"\n   \
-          \     \"Only if the request/unfinished seed asks for an unresolved measurement,\
-          \ ask a concrete 확인 필요 \"\n        \"question for its missing value/comparison;\
-          \ do not ask measurement questions for other comments. \"\n        \"For\
-          \ review, address the verified person marker and include known criteria\
-          \ and the document link.\"\n    )\n    return {\"section_order\": names,\
-          \ \"purpose\": purpose,\n            \"skeleton\": {\"contract\": \"editor-plan.v2\"\
-          , \"status\": \"ok\",\n                         \"sections\": [{\"section\"\
-          : name, \"blocks\": []} for name in names], \"missing_inputs\": []}}\n\n\
-          \ndef prepare(model_input):\n    \"\"\"Project trusted KnowledgeGuard output\
-          \ for the model, never mint evidence.\"\"\"\n    try:\n        if not isinstance(model_input,\
-          \ str) or len(model_input.encode(\"utf-8\")) > 9000:\n            _fail()\n\
-          \        incoming = _object(model_input)\n        if incoming.get(\"contract\"\
-          ) != \"ltm-model-input.v1\":\n            _fail()\n        pack = incoming.get(\"\
-          context_pack\")\n        if not isinstance(pack, dict) or len(_canonical(pack).encode(\"\
-          utf-8\")) > 6144:\n            _fail()\n        mode_schema = _schema(pack)\n\
-          \        if mode_schema is None:\n            return {\"model_input\": model_input}\
+          \  purpose = (\n        \"Target-only purpose, work and DoD; parent/history\
+          \ is context.\"\n        if mode == \"description\" else\n        \"One\
+          \ comment; server inserts seed. Only for unresolved measurement in request/seed:\
+          \ \"\n        \"ask its value/comparison (확인 필요). Review: verified person,\
+          \ known criteria, document link.\"\n    )\n    return {\"section_order\"\
+          : names, \"purpose\": purpose,\n            \"skeleton\": {\"contract\"\
+          : \"editor-plan.v2\", \"status\": \"ok\",\n                         \"sections\"\
+          : [{\"section\": name, \"blocks\": []} for name in names], \"missing_inputs\"\
+          : []}}\n\n\ndef prepare(model_input):\n    \"\"\"Project trusted KnowledgeGuard\
+          \ output for the model, never mint evidence.\"\"\"\n    try:\n        if\
+          \ not isinstance(model_input, str) or len(model_input.encode(\"utf-8\"))\
+          \ > 9000:\n            _fail()\n        incoming = _object(model_input)\n\
+          \        if incoming.get(\"contract\") != \"ltm-model-input.v1\":\n    \
+          \        _fail()\n        pack = incoming.get(\"context_pack\")\n      \
+          \  if not isinstance(pack, dict) or len(_canonical(pack).encode(\"utf-8\"\
+          )) > 6144:\n            _fail()\n        mode_schema = _schema(pack)\n \
+          \       if mode_schema is None:\n            return {\"model_input\": model_input}\
           \  # Non-Editor canary: exact bytes.\n        if (incoming.get(\"role_id\"\
           ) != \"editor_author\" or pack.get(\"use_case\") != \"editor_author\"\n\
           \                or incoming.get(\"correlation_id\") != pack.get(\"request_id\"\
@@ -2339,15 +2336,16 @@ workflow:
           \ target):\n    \"\"\"Attribution hints from explicit Jira keys/edges, never\
           \ new evidence.\n\n    Missing/null parent is not proof of a root. Conflicting\
           \ declarations remain\n    unresolved regardless of source order; cycles\
-          \ do too. No prose, URL or document inference.\n    \"\"\"\n    parents\
-          \ = {}\n    for source in sources.values():\n        if source.get(\"kind\"\
-          ) != \"jira\":\n            continue\n        try:\n            content\
-          \ = _decode(source[\"content\"])\n        except (ValueError, TypeError):\n\
-          \            continue  # _unit_rows still rejects malformed structured content.\n\
-          \        for issue in _issue_objects(content):\n            key = issue[\"\
-          key\"]\n            declared = parents.setdefault(key, set())\n        \
-          \    candidates = []\n            if \"parentKey\" in issue:\n         \
-          \       candidates.append(issue[\"parentKey\"])\n            containers\
+          \ do too. No prose, URL or document inference.\n    \"\"\"\n    parents,\
+          \ identity_sources = {}, {}\n    for source_id, source in sources.items():\n\
+          \        if source.get(\"kind\") != \"jira\":\n            continue\n  \
+          \      try:\n            content = _decode(source[\"content\"])\n      \
+          \  except (ValueError, TypeError):\n            continue  # _unit_rows still\
+          \ rejects malformed structured content.\n        for issue in _issue_objects(content):\n\
+          \            key = issue[\"key\"]\n            identity_sources.setdefault(key,\
+          \ set()).add(source_id)\n            declared = parents.setdefault(key,\
+          \ set())\n            candidates = []\n            if \"parentKey\" in issue:\n\
+          \                candidates.append(issue[\"parentKey\"])\n            containers\
           \ = [issue]\n            if isinstance(issue.get(\"fields\"), dict):\n \
           \               containers.append(issue[\"fields\"])\n            for container\
           \ in containers:\n                if \"parent\" in container:\n        \
@@ -2370,7 +2368,8 @@ workflow:
           \ cyclic and parent == target:\n            relation = \"child\"\n     \
           \   result.append({\"key\": key, \"parent_key\": parent, \"relation\": relation,\n\
           \                       \"parent_conflict\": len(parents[key]) > 1 or key\
-          \ in cyclic})\n    return result\n\n\ndef _unit_rows(source):\n    \"\"\"\
+          \ in cyclic,\n                       \"source_ids\": sorted(identity_sources.get(key,\
+          \ set()))})\n    return result\n\n\ndef _unit_rows(source):\n    \"\"\"\
           Keep authoritative original spans separate from bounded body display.\n\n\
           \    Only typed Jira body/comment paths and Confluence bodies interpret\
           \ leading\n    wiki headings/lists. Any code/pre/noformat/fence marker opts\
@@ -2478,28 +2477,23 @@ workflow:
           prompt\"]), \"\"), \"seed_visible\": seed}\n\n\ndef _section_order(mode):\n\
           \    return list(_SECTIONS) if mode == \"description\" else [\"comment\"\
           ]\n\n\ndef _draft_contract(mode):\n    names = _section_order(mode)\n  \
-          \  purpose = (\n        \"Write the TARGET ticket's purpose, boundary, concrete\
-          \ work and acceptance criteria. \"\n        \"Parent/document context informs\
-          \ background; child completion is not the parent's DoD. \"\n        \"Use\
-          \ the target's own summary/current fields; do not copy a different ticket's\
-          \ scope.\"\n        if mode == \"description\" else\n        \"Write one\
-          \ concise comment only. Preserve seed once (server inserts it). \"\n   \
-          \     \"Only if the request/unfinished seed asks for an unresolved measurement,\
-          \ ask a concrete 확인 필요 \"\n        \"question for its missing value/comparison;\
-          \ do not ask measurement questions for other comments. \"\n        \"For\
-          \ review, address the verified person marker and include known criteria\
-          \ and the document link.\"\n    )\n    return {\"section_order\": names,\
-          \ \"purpose\": purpose,\n            \"skeleton\": {\"contract\": \"editor-plan.v2\"\
-          , \"status\": \"ok\",\n                         \"sections\": [{\"section\"\
-          : name, \"blocks\": []} for name in names], \"missing_inputs\": []}}\n\n\
-          \ndef prepare(model_input):\n    \"\"\"Project trusted KnowledgeGuard output\
-          \ for the model, never mint evidence.\"\"\"\n    try:\n        if not isinstance(model_input,\
-          \ str) or len(model_input.encode(\"utf-8\")) > 9000:\n            _fail()\n\
-          \        incoming = _object(model_input)\n        if incoming.get(\"contract\"\
-          ) != \"ltm-model-input.v1\":\n            _fail()\n        pack = incoming.get(\"\
-          context_pack\")\n        if not isinstance(pack, dict) or len(_canonical(pack).encode(\"\
-          utf-8\")) > 6144:\n            _fail()\n        mode_schema = _schema(pack)\n\
-          \        if mode_schema is None:\n            return {\"model_input\": model_input}\
+          \  purpose = (\n        \"Target-only purpose, work and DoD; parent/history\
+          \ is context.\"\n        if mode == \"description\" else\n        \"One\
+          \ comment; server inserts seed. Only for unresolved measurement in request/seed:\
+          \ \"\n        \"ask its value/comparison (확인 필요). Review: verified person,\
+          \ known criteria, document link.\"\n    )\n    return {\"section_order\"\
+          : names, \"purpose\": purpose,\n            \"skeleton\": {\"contract\"\
+          : \"editor-plan.v2\", \"status\": \"ok\",\n                         \"sections\"\
+          : [{\"section\": name, \"blocks\": []} for name in names], \"missing_inputs\"\
+          : []}}\n\n\ndef prepare(model_input):\n    \"\"\"Project trusted KnowledgeGuard\
+          \ output for the model, never mint evidence.\"\"\"\n    try:\n        if\
+          \ not isinstance(model_input, str) or len(model_input.encode(\"utf-8\"))\
+          \ > 9000:\n            _fail()\n        incoming = _object(model_input)\n\
+          \        if incoming.get(\"contract\") != \"ltm-model-input.v1\":\n    \
+          \        _fail()\n        pack = incoming.get(\"context_pack\")\n      \
+          \  if not isinstance(pack, dict) or len(_canonical(pack).encode(\"utf-8\"\
+          )) > 6144:\n            _fail()\n        mode_schema = _schema(pack)\n \
+          \       if mode_schema is None:\n            return {\"model_input\": model_input}\
           \  # Non-Editor canary: exact bytes.\n        if (incoming.get(\"role_id\"\
           ) != \"editor_author\" or pack.get(\"use_case\") != \"editor_author\"\n\
           \                or incoming.get(\"correlation_id\") != pack.get(\"request_id\"\

@@ -402,3 +402,55 @@ def test_unidentified_link_endpoint_is_not_the_owning_ticket(input_pack, endpoin
     assert units["식별 불가 연결 본문"]["entity_key"] == ""
     assert units["식별된 연결 티켓"]["entity_key"] == "TS-12"
     assert all(row["relation"] == "unknown" for row in result["entities"])
+
+
+def test_entity_source_ids_are_actual_own_key_sources_not_constructed_ticket_ids(input_pack):
+    set_source(input_pack["sources"][0], [
+        {"key": "TS-11", "parentKey": "TS-10", "summary": "현재 작업"},
+        {"key": "TS-12", "summary": "연결 작업"}], kind="jira")
+    add_intent(input_pack, ticket_key="TS-11")
+    result = view(input_pack)
+    entities = {row["key"]: row for row in result["entities"]}
+    assert entities["TS-11"]["source_ids"] == ["source-doc"]
+    assert entities["TS-12"]["source_ids"] == ["source-doc"]
+    assert entities["TS-10"]["source_ids"] == []  # Edge alone is not an own-key snapshot.
+    assert "intent" not in {ref for row in entities.values() for ref in row["source_ids"]}
+
+
+def test_entity_source_binding_is_sorted_and_rebinds_on_other_snapshot_id_change(input_pack):
+    set_source(input_pack["sources"][0], {"key": "TS-11", "summary": "현재 작업"}, kind="jira")
+    other = copy.deepcopy(input_pack["sources"][0])
+    other.update(source_id="another-source", url="")
+    input_pack["sources"].append(other)
+    add_intent(input_pack, ticket_key="TS-11")
+    first = view(input_pack)
+    assert first["entities"][0]["source_ids"] == ["another-source", "source-doc"]
+    original_units = first["sources"][0]["units"]
+    other["source_id"] = "different-source"
+    second = view(input_pack)
+    assert second["sources"][0]["units"] != original_units
+    input_pack["sources"].reverse()
+    assert view(input_pack)["entities"] == second["entities"]
+
+
+@pytest.mark.parametrize("case_id", ["CMP2", "CMP3", "CMP6", "CMP8", "CMP9"])
+def test_frozen_editor_cases_fit_with_max_knowledge_and_100_byte_names(case_id, monkeypatch):
+    from datetime import datetime, timezone
+    from tools.maxis_editor_eval_cases import load_case
+
+    monkeypatch.syspath_prepend(str(ROOT / "deploy/maxis-dify"))
+    runner_spec = importlib.util.spec_from_file_location(
+        "editor_input_budget_runner", ROOT / "deploy/maxis-dify/run_editor_evals.py")
+    runner = importlib.util.module_from_spec(runner_spec)
+    runner_spec.loader.exec_module(runner)
+    pack = runner.build_pack(load_case(case_id), "a" * 64, "req-budget",
+        datetime(2026, 9, 15, tzinfo=timezone.utc)).model_dump(mode="json")
+    incoming = json.loads(model_input(pack))
+    incoming["knowledge_context"] = [
+        {"document_name": "a" * 100, "content": "x" * 768},
+        {"document_name": "b" * 100, "content": "y" * 256}]
+    original = copy.deepcopy(incoming)
+    result = ASSET.prepare(canonical(incoming))["model_input"]
+    assert len(result.encode("utf-8")) <= 9000
+    assert json.loads(result)["knowledge_context"] == incoming["knowledge_context"]
+    assert incoming == original

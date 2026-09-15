@@ -324,8 +324,8 @@ def _entity_scope(sources, target):
     Missing/null parent is not proof of a root. Conflicting declarations remain
     unresolved regardless of source order; cycles do too. No prose, URL or document inference.
     """
-    parents = {}
-    for source in sources.values():
+    parents, identity_sources = {}, {}
+    for source_id, source in sources.items():
         if source.get("kind") != "jira":
             continue
         try:
@@ -334,6 +334,7 @@ def _entity_scope(sources, target):
             continue  # _unit_rows still rejects malformed structured content.
         for issue in _issue_objects(content):
             key = issue["key"]
+            identity_sources.setdefault(key, set()).add(source_id)
             declared = parents.setdefault(key, set())
             candidates = []
             if "parentKey" in issue:
@@ -372,7 +373,8 @@ def _entity_scope(sources, target):
         elif target and target not in cyclic and parent == target:
             relation = "child"
         result.append({"key": key, "parent_key": parent, "relation": relation,
-                       "parent_conflict": len(parents[key]) > 1 or key in cyclic})
+                       "parent_conflict": len(parents[key]) > 1 or key in cyclic,
+                       "source_ids": sorted(identity_sources.get(key, set()))})
     return result
 
 
@@ -552,14 +554,10 @@ def _section_order(mode):
 def _draft_contract(mode):
     names = _section_order(mode)
     purpose = (
-        "Write the TARGET ticket's purpose, boundary, concrete work and acceptance criteria. "
-        "Parent/document context informs background; child completion is not the parent's DoD. "
-        "Use the target's own summary/current fields; do not copy a different ticket's scope."
+        "Target-only purpose, work and DoD; parent/history is context."
         if mode == "description" else
-        "Write one concise comment only. Preserve seed once (server inserts it). "
-        "Only if the request/unfinished seed asks for an unresolved measurement, ask a concrete 확인 필요 "
-        "question for its missing value/comparison; do not ask measurement questions for other comments. "
-        "For review, address the verified person marker and include known criteria and the document link."
+        "One comment; server inserts seed. Only for unresolved measurement in request/seed: "
+        "ask its value/comparison (확인 필요). Review: verified person, known criteria, document link."
     )
     return {"section_order": names, "purpose": purpose,
             "skeleton": {"contract": "editor-plan.v2", "status": "ok",
