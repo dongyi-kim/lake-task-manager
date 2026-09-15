@@ -4,17 +4,18 @@
 source bundle이다. DEV와 PROD의 환경 binding을 분리하고, import DSL을 materialize한
 뒤 validator와 원격 release gate를 통과시키는 구조다.
 
-> 2026-09-15: 아래는 **v15의 과거 측정**이다. 새 Editor 단위 분기 후보는 로컬 구현·검증 중이다.
-> v15 DEV 게시 당시 Editor **13노드·13엣지**, 나머지 **11·11**, canary **3/3**.
-> 동일 component v4의 신규 v13 baseline → v14 → v15: Guard **3/5 → 3/5 → 5/5**,
-> 자동 **3/5 → 2/5 → 4/5**. 자동 green은 실제 사용 가능한 초안을 뜻하지 않는다.
-> 직접 평균은 **2.52 → 3.04 → 3.54/5**. v15의 유용한 결과 2건은 **초안 1건 + 구체 확인 질문 1건**이다.
-> 대상별 근거·부모/자식 관계·모드별 작성 틀·실제 출처 ID를 보강했다. 직접 평가는 아래 보고서로 구별한다.
-> 통합 **1,146 통과·1 제외**, 제외된 DPAPI 1건은 별도 사용자 환경에서 통과했다.
-> Knowledge 25-case는 이번에 실행하지 않았다. 9월 14일의 11/25는 과거 결과이며 v15 검증이 아니다.
+> 2026-09-15: **v16 Editor 단위 분기 구현·DEV 게시 완료, 품질 미통과**.
+> 본문·댓글·합성 제어를 분리했다. Editor **17노드·19엣지**, 나머지 **11·11**이며
+> 실제 작성 요청 5건 모두 올바른 분기의 **LLM 1회**, 원본 근거 전달을 확인했다. canary **3/3**.
+> 동일 component v4의 새 v15 baseline → v16: Guard **5/5 → 5/5**, 자동 **4/5 → 3/5**.
+> 총 tokens **22,841 → 11,518(49.6% 감소)**, 시간 **17.6 → 19.6초**로 시간 개선은 없다.
+> 직접 평균 **3.38 → 3.52/5**. 양쪽 모두 유용한 결과 1건은 **초안 0건 + 필수 확인 질문 1건**이다.
+> 문서 링크·대상 범위·현재/과거 상태 결함이 남아 운영 품질 향상을 주장하지 않는다.
+> 통합 **1,284 통과·1 제외**, 제외된 DPAPI 1건은 별도 사용자 환경에서 통과했다.
+> Knowledge 25-case·전체 58-case·full compose/UI는 이번에 실행하지 않았다.
 > 활성 profile은 비어 있고 모든 route는 local이다. PROD는 변경하지 않았다.
-> [최신 증적](deployments/dev-editor-scope-2026.09.15.yml)과
-> [품질 보고서](../../research/agent-improvement/maxis-editor-scope-quality-20260915.md)를 먼저 확인한다.
+> [최신 증적](deployments/dev-editor-branches-2026.09.15.yml)과
+> [구조·품질 보고서](../../research/agent-improvement/maxis-editor-branches-quality-20260915.md)를 먼저 확인한다.
 
 API key, 프롬프트 전문, 모델 응답, 사용자 데이터, release sentinel 원문은 이 문서나
 deployment evidence에 기록하지 않는다.
@@ -39,7 +40,8 @@ deployment evidence에 기록하지 않는다.
 | <code>deployments/dev-quality-2026.09.14.yml</code> | 앞선 v9 게시·실측 실패 기록 |
 | <code>deployments/dev-editor-plan-2026.09.14.yml</code> | 앞선 v11 게시 ID·실측 실패 기록 |
 | <code>deployments/dev-editor-units-2026.09.14.yml</code> | 이전 v13 게시 ID·baseline/v12/v13 실측·비활성 상태 |
-| <code>deployments/dev-editor-scope-2026.09.15.yml</code> | 최신 v15 게시 ID·신규 baseline/v14/v15 실측·비활성 상태 |
+| <code>deployments/dev-editor-scope-2026.09.15.yml</code> | 이전 v15 게시 ID·당시 baseline/v14/v15 실측·비활성 상태 |
+| <code>deployments/dev-editor-branches-2026.09.15.yml</code> | 최신 v16 게시 ID·새 v15/v16 비교·실제 분기 확인·비활성 상태 |
 | <code>materialize_environment.py</code> | source DSL에 환경 binding을 주입한 import copy 생성 |
 | <code>validate_bundle.py</code> | DSL·prompt·code·contract·Knowledge binding 정적 검증 |
 | <code>knowledge-evals.yml</code> | release-bound retrieval 평가 명세 |
@@ -58,9 +60,9 @@ label은 결과 그룹과 순서만 구분한다. 둘 다 **현재 게시된 프
 정답/checker/rubric과 raw fixture UID는 원격에 보내지 않는다. 이 평가가 통과해도 full compose/UI
 검증이나 activation 승인이 되지 않는다. 아래 v8 수치는 과거 배포 기록으로 읽는다.
 
-## Editor 단위 분기 후보
+## Editor 단위 분기 — DEV v16
 
-Editor 후보는 **17노드·19엣지**이며, 새 semantic Role이나 앱을 만들지 않는다.
+DEV에 게시한 Editor 후보는 **17노드·19엣지**이며, 새 semantic Role이나 앱을 만들지 않는다.
 코드가 검증한 mode로 한 경로만 선택하므로 정상 요청의 LLM 실행은 **1회**다.
 DEV/PROD의 endpoint·key·모델·Knowledge·게시 UUID는 기존 환경 binding에 남는다.
 

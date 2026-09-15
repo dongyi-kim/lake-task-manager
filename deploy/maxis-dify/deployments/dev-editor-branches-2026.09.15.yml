@@ -1,0 +1,264 @@
+contract: ltm-maxis-dify-quality-evidence.v1
+captured_date: '2026-09-15'
+environment: dev
+status: experimental_inactive_quality_gate_failed
+authoritative_ready: false
+workflow_bundle_version: ltm-maxis-dify-2026.09.15-editor-units-v16
+profile_fingerprint: 7d1429a00e290ae05807101b0039dd00
+prior_evidence: deploy/maxis-dify/deployments/dev-editor-scope-2026.09.15.yml
+environment_binding: deploy/maxis-dify/environments/dev-2026.09.yml
+report: research/agent-improvement/maxis-editor-branches-quality-20260915.md
+direct_review: research/agent-improvement/evaluations/maxis-editor-20260915T140612Z-candidate.md
+candidate_commit: 70f510400c8a05b21c099d1e8ad44b1945afc3f2
+publish_receipt:
+  artifact: .cache/maxis/dev-editor-branches-20260915-v16.json
+  artifact_sha256: 2ce56e4466b67c5d8d20c87812a5d500cb27ae2f2e216a5af20f9abc48d0d615
+  status: published
+  completed_at: '2026-09-15T14:04:42.925952+00:00'
+  published_keys: [editor_author]
+  semantic_graph_sha256: 24644e46565f2d4d4ac184347afbb244e396d3406a4e7376bafa50b89c719ed8
+  api_key_bindings_unchanged: true
+workflows:
+  agent_core:
+    previous_published_workflow_id: 840834fb-5faa-4c03-bccb-9e1e5e8372b2
+    published_workflow_id: 840834fb-5faa-4c03-bccb-9e1e5e8372b2
+    republished_this_turn: false
+  editor_author:
+    previous_published_workflow_id: c4ddedaf-b400-48de-8d8b-1294b21ec92a
+    published_workflow_id: 6cdcdff7-c34e-45e4-8f7e-3f5d5f4311f4
+    republished_this_turn: true
+    graph: {nodes: 17, edges: 19}
+  pmo_brief:
+    previous_published_workflow_id: 4c56d3fb-4e07-42ee-9f25-4ec2b4f4d7b5
+    published_workflow_id: 4c56d3fb-4e07-42ee-9f25-4ec2b4f4d7b5
+    republished_this_turn: false
+editor_assembly:
+  input_contract: editor-input.v1
+  plan_contract: editor-plan.v2
+  payload_contract: editor-draft.v1
+  control_contract: remote-role-result.v1
+  display_policy: editor-units.v3-entity-scope
+  source_normalized_sha256: a3e8bb15da89918516eca365312b7478c96bfb0ac00b5076770593c90d30f360
+  embedded_dsl_sha256: d69d0d97db7b4741111a9150489be4fe448d5515db4ba434f7d497f956f64f0a
+  branch_policy: validated-mode-exclusive-one-llm-then-shared-assembler-and-guards
+  new_semantic_roles: 0
+  new_apps: 0
+  branches:
+    description:
+      node_id: '1909000000001004'
+      title: Description LLM
+      output_contract: editor-plan.v2
+      section_enum: [background, scope, work, dod]
+      system_prompt_utf8_bytes: 3230
+      system_prompt_sha256: 9e514f2d95a2e2c127749a55687406d2e7508554c38c116a5caac9a50b1275dd
+    comment:
+      node_id: '1909000000001014'
+      title: Comment LLM
+      output_contract: editor-plan.v2
+      section_enum: [comment]
+      system_prompt_utf8_bytes: 3325
+      system_prompt_sha256: 49834484e64a289b5c8342672ebc748305d7d8397b89f74f3089a1d91cfed1dd
+    control:
+      node_id: '1909000000001015'
+      title: Control LLM
+      output_contract: remote-role-result.v1
+      system_prompt_utf8_bytes: 5360
+      system_prompt_sha256: 31f9e5c83d094f5321555647f5501e198b24daa760326c2ff791081dce1feb1e
+  shared_user_prompt_sha256: 41e3faa78a5f4d63a4302d6defc5e119c1c7b834d92c272bc6de18c629fb2b99
+  original_evidence_pack_changed: false
+  evidence_preservation_scope: Exact within each candidate request; cross-run source timestamps are recorded separately below.
+  knowledge_guard_changed: false
+  contract_guard_changed: false
+  local_response_guard_changed: false
+  retry_enabled: false
+  guard_bypass_enabled: false
+  single_variable_causal_isolation: false
+service_api_canary:
+  artifact: .cache/maxis/dev-canary-editor-branches-20260915-v16.json
+  artifact_sha256: e5c3f628318bcf9522690b1fa100e5c6142d27a25d5f343ad61ff29abb694cd8
+  completed_at: '2026-09-15T14:05:25.995884+00:00'
+  executed: 3
+  passed: 3
+  profile_verified_at_probe: true
+  latency_ms: {agent_core: 3044, editor_author: 3172, pmo_brief: 2671}
+  answer_quality_certified: false
+local_validation:
+  evidence_source: implementation_owner_test_results
+  final_integrated_passed: 1284
+  final_integrated_skipped: 1
+  elapsed_seconds: 202.53
+  skipped_case: Windows current-user DPAPI unavailable inside sandbox
+  unchanged_dpapi_case_separate_user_context_passed: 1
+  dpapi_elapsed_seconds: 0.35
+  dpapi_cache_warning: PermissionError writing .cache/pytest/v/cache/nodeids and lastfailed from prior sandbox cache ownership; the separate current-user test passed.
+  full_app_suite_tested: false
+  full_ui_tested: false
+  review_loop_scores: [7, 8]
+  review_loop_rounds: 2
+  fresh_critic_each_round: false
+  critic_reuse_reason: agent_thread_limit
+  blinded_review: false
+  review_loop_score_is_llm_quality: false
+editor_component:
+  protocol_version: '3.0.0'
+  rubric_version: '2.0.0'
+  battery: maxis-editor-component
+  battery_version: '4.0.0'
+  battery_manifest_sha256: 6a6cc370d7506dbbc285fa71b805553e5079ea07bc9d533afd14a85dd9ce4406
+  specialized_review_spec_sha256: 877ceaa039dbe81dc85ad0671fee54065f87179b0cf50cb1c267c2b118dfdb5b
+  data_manifest_sha256: d14b02a0c052ef3ae0854259d0fe43025682129578181bde417161ba445ae16d
+  benchmark_key: f4f807c9036af03977a78d384783ac6a1d1ba9e4b80430502ee4f7e8e3e84a74
+  case_ids: [CMP2, CMP3, CMP6, CMP8, CMP9]
+  run_kind: exploratory
+  repetitions_per_candidate: 1
+  qualification_minimum_repetitions: 5
+  balanced_order: false
+  candidate_order: [baseline, candidate]
+  selection_policy: complete-run-no-substitution
+  attempt_policy: retain-every-attempt
+  retry_policy: no-retry-no-fallback-all-attempts-retained
+  cache_policy: no-client-history-no-local-state
+  process_isolation: separate-process-stateless-fresh-pack-each-case
+  model: gpt-5.4-mini
+  simple_model: not-used
+  provider: dify
+  provider_endpoint_identity_sha256: ee68fff6621a9537414a9109539aef2de6442c485b07a6d6271dfa5f1e710af7
+  structured_output_backend: dify
+  structured_backend_version: legacy-internal
+  structured_backend_fallback_policy: forbid
+  runtime_profile: dev-inactive-stateless-component-v1
+  runtime_package_set_sha256: 9624da562efdce4b14d340bdd9a68a08cf6ce52bced0e3ee5e482b51ffac9645
+  evaluation_harness_tree_sha256: c2afa056e444152f0332b0f3aa0dfc0d1b1f777252bcf45d8903746642cf1ca0
+  raw_candidate_tree_sha256: ffc0a679728c0b429d76208f4620cdfb412761722ae551d9a45124b0eeedc5d6
+  raw_candidate_tree_caveat: Same raw value in both runs; deployment identity is separately bound by commit, published UUID, and DSL/semantic graph digests.
+  metrics_source: metrics
+  latency_ms_source: cases[*].latencyMs
+  calls_meaning: received Dify responses; candidate internal LLM count verified separately from node execution records
+  percentile_method: nearest-rank-over-all-case-attempts
+  baseline:
+    remote_bundle: ltm-maxis-dify-2026.09.15-editor-scope-v15
+    run_group_id: maxis-editor-20260915T133810Z-1225be87
+    artifact: .cache/agent-evaluation/maxis-editor-20260915T133810Z-1225be87/baseline.json
+    artifact_sha256: ed669769f8066cb25780093b12cb747e9f5648f8eee49a3264261e022cdf2d50
+    candidate_commit: f1ee823ba854314cd4bfad7861a76df12b607b44
+    candidate_dirty: false
+    candidate_key: e31828bf1027fafcb6924920f6a02c144e0eee839cf0d3b23fd0ad7215fb4861
+    comparability_key: 33a00004c522ae60d42bb4cef3a2132b68e9f2fd85d4d38e79cc6dbdceb16fcd
+    executed: 5
+    guard_accepted: 5
+    checker_and_renderer_passed: 4
+    automatic_failed_cases: [CMP6]
+    direct_review_status: complete
+    direct_review_usable: 1
+    completed_usable_drafts: {count: 0, cases: []}
+    useful_clarifications: {count: 1, cases: [CMP3], publishable_draft: false}
+    requires_material_revision: [CMP2, CMP6, CMP8, CMP9]
+    direct_review_mean_out_of_5: 3.38
+    direct_review_case_scores: {CMP2: 3.80, CMP3: 4.20, CMP6: 3.00, CMP8: 3.30, CMP9: 2.60}
+    direct_review_artifact: .cache/agent-evaluation/maxis-editor-20260915T133810Z-1225be87/direct-review-baseline.json
+    direct_review_artifact_sha256: caa6b300c93510a295e118e77f27b57abd0fe97a6ea5f0d4f78508d7aacf1feb
+    direct_review_report: research/agent-improvement/evaluations/maxis-editor-20260915T133810Z-baseline.md
+    automated_false_positives: [CMP2, CMP8, CMP9]
+    direct_review_dimension_means: {request_fulfillment: 3.0, factual_grounding: 4.0, contract_actionability: 3.2, safety_uncertainty: 3.7, communication_rendering: 3.5}
+    common_checklist_counts: {pass: 67, minor: 28, major: 24, na: 41}
+    specialized_checklist_counts: {pass: 4, minor: 5, major: 6, na: 0}
+    capped_failure_count: 2
+    calls: 5
+    prompt_tokens: 19970
+    completion_tokens: 2871
+    total_tokens: 22841
+    cached_tokens: null
+    cost_usd: null
+    metrics_duration_seconds: 17.6
+    latency_total_ms: 17566
+    latency_p50_ms: 3863
+    latency_p95_ms: 5104
+  candidate:
+    remote_bundle: ltm-maxis-dify-2026.09.15-editor-units-v16
+    run_group_id: maxis-editor-20260915T140612Z-c475c70f
+    artifact: .cache/agent-evaluation/maxis-editor-20260915T140612Z-c475c70f/candidate.json
+    artifact_sha256: a0e86a8180a5c454c2107f35766b1365c1f23489759a2ff40aa45defee51feea
+    candidate_commit: 70f510400c8a05b21c099d1e8ad44b1945afc3f2
+    candidate_dirty: false
+    candidate_key: 29213e28ec37afcf71d6f56b8decfab4b144985ba28f757d0b5aa8c360a69b15
+    comparability_key: 104d40e9c2729453c74fa88486b833b0cd772d55e8c559f52aab748d4d1bdbcb
+    executed: 5
+    guard_accepted: 5
+    checker_and_renderer_passed: 3
+    automatic_failed_cases: [CMP3, CMP6]
+    direct_review_status: complete
+    direct_review_usable: 1
+    completed_usable_drafts: {count: 0, cases: []}
+    useful_clarifications: {count: 1, cases: [CMP3], publishable_draft: false}
+    requires_material_revision: [CMP2, CMP6, CMP8, CMP9]
+    direct_review_mean_out_of_5: 3.52
+    direct_review_case_scores: {CMP2: 4.20, CMP3: 4.60, CMP6: 3.00, CMP8: 2.90, CMP9: 2.90}
+    direct_review_artifact: .cache/agent-evaluation/maxis-editor-20260915T140612Z-c475c70f/direct-review-candidate.json
+    direct_review_artifact_sha256: 8196f7c3676a3d9d5d3f955d73b83b1fcd64729753b79f2f0c873480c19d83a7
+    direct_review_report: research/agent-improvement/evaluations/maxis-editor-20260915T140612Z-candidate.md
+    automated_false_positives: [CMP2, CMP8, CMP9]
+    automatic_red_but_useful_clarification: [CMP3]
+    clarification_caveat: CMP3 asks a necessary factual question but omits the frozen exact seed; it is not a completed draft and its request-fulfillment axis remains 3.0.
+    direct_review_dimension_means: {request_fulfillment: 3.0, factual_grounding: 4.1, contract_actionability: 3.6, safety_uncertainty: 4.0, communication_rendering: 3.7}
+    common_checklist_counts: {pass: 75, minor: 23, major: 21, na: 41}
+    specialized_checklist_counts: {pass: 3, minor: 7, major: 5, na: 0}
+    capped_failure_count: 1
+    calls: 5
+    prompt_tokens: 8339
+    completion_tokens: 3179
+    total_tokens: 11518
+    cached_tokens: null
+    cost_usd: null
+    metrics_duration_seconds: 19.6
+    latency_total_ms: 19552
+    latency_p50_ms: 4765
+    latency_p95_ms: 5342
+    prepared_input_delivery:
+      artifact: .cache/agent-evaluation/maxis-editor-20260915T140612Z-c475c70f/editor-branch-delivery.json
+      artifact_sha256: 8014531d1316571aa35d90d5303c6315d7cdc8df31aa8461b698ab81a33312a3
+      exact_synthetic_request_bound: true
+      expected_cases: 5
+      verified_cases: 5
+      one_executed_llm_per_request: 5
+      expected_branch_only: 5
+      start_pack_equals_local: 5
+      knowledge_guard_pack_equals_local: 5
+      prepared_view_equals_local: 5
+      contract_guard_succeeded: 5
+      routes: {CMP2: description, CMP3: comment, CMP6: comment, CMP8: description, CMP9: description}
+      prepared_utf8_bytes: {CMP2: 7972, CMP3: 7969, CMP6: 7949, CMP8: 7908, CMP9: 7907}
+      prepared_utf8_byte_range: [7907, 7972]
+      limit: 9000
+      fact_units_per_case: 46
+  source_binding_unchanged_within_each_run: true
+  cross_run_source_content_and_ids_equal: true
+  cross_run_source_bytes_identical: false
+  cross_run_source_differences: [updated_at, retrieved_at]
+  qualification_eligible: false
+  component_scope: EditorDraft plus pure markup; not full compose or UI
+  comparable_to_source_suite: false
+  full_ltm_ui_tested: false
+  qualitative_evaluation:
+    status: complete
+    policy: codex-or-claude-direct-raw-output-review
+    agent_family: codex
+    agent_model: current Codex agent; exact runtime model ID not exposed
+    direct_raw_output_review: true
+    same_reviewer_across_candidates: true
+    reviewer_count: 1
+    blinded_review: false
+    reviewer_prior_code_critic_exposure: true
+    reviewer_independence_caveat: Same non-blind reviewer reused across both candidates and previously reviewed the candidate implementation.
+    ltm_llm_used_as_judge: false
+    common_items_per_run: 160
+    specialized_items_per_run: 15
+runtime:
+  active_profile: ''
+  routes: {agent_core: local, editor_author: local, pmo_brief: local}
+  prod_changed: false
+privacy:
+  credentials_recorded: false
+  sentinel_plaintext_recorded: false
+  business_data_sent: false
+  raw_outputs_committed: false
+  synthetic_raw_location: .cache/agent-evaluation

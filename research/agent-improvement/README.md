@@ -10,7 +10,8 @@ LakeTaskManager Agent의 prompt 언어 구성, role contract, 구조적 품질, 
 
 ## 주요 보고서
 
-- [`maxis-editor-scope-quality-20260915.md`](maxis-editor-scope-quality-20260915.md): 최신 v15 대상·계층·출처 투영, 새 baseline/v14/v15 보존; 직접 2.52→3.04→3.54/5, 최종 초안 1건·구체 확인 질문 1건, 비활성 유지
+- [`maxis-editor-branches-quality-20260915.md`](maxis-editor-branches-quality-20260915.md): 최신 v16 본문·댓글·제어 분리, 실제 1요청1LLM·토큰49.6% 감소; 새 v15/v16 직접3.38→3.52/5, 완성초안0·필수질문1로 품질 미통과·비활성 유지
+- [`maxis-editor-scope-quality-20260915.md`](maxis-editor-scope-quality-20260915.md): 이전 v15 대상·계층·출처 투영, 당시 baseline/v14/v15 보존; 직접 2.52→3.04→3.54/5, 최종 초안 1건·구체 확인 질문 1건, 비활성 유지
 - [`maxis-editor-units-quality-20260914.md`](maxis-editor-units-quality-20260914.md): 이전 v13 원문 단위·서식 개선, 당시 baseline 대비 자동 0/5→3/5·직접 사용 가능 0/5→1/5; 비활성 유지
 - [`maxis-editor-plan-quality-20260914.md`](maxis-editor-plan-quality-20260914.md): 앞선 v11 구조적 조립 실험, Guard 1/5·사용 가능 0/5, 직접 판독·실패 원인
 - [`maxis-dify-quality-20260914.md`](maxis-dify-quality-20260914.md): MAXIS/Dify 실측 품질 실패·58-case 재사용·Editor v8/v9 비교
