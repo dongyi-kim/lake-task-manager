@@ -4,13 +4,16 @@
 source bundle이다. DEV와 PROD의 환경 binding을 분리하고, import DSL을 materialize한
 뒤 validator와 원격 release gate를 통과시키는 구조다.
 
-> 2026-09-14: DEV **v13** 게시. Editor **13노드·13엣지**, 나머지 **11·11**, canary **3/3**.
-> 동일 component v4의 신규 v11 baseline → v13: Guard **0/5 → 4/5**, 자동 **0/5 → 3/5**,
-> 직접 판독 사용 가능 **0/5 → 1/5**다. 대상 혼동·미완성 댓글 처리 때문에 아직 활성화하지 않는다.
-> Knowledge harness v2는 최신 **11/25**. 통합 **1,116 통과·1 제외**, 제외된 DPAPI 1건은 별도 사용자 환경에서 통과했다.
+> 2026-09-15: DEV **v15** 게시. Editor **13노드·13엣지**, 나머지 **11·11**, canary **3/3**.
+> 동일 component v4의 신규 v13 baseline → v14 → v15: Guard **3/5 → 3/5 → 5/5**,
+> 자동 **3/5 → 2/5 → 4/5**. 자동 green은 실제 사용 가능한 초안을 뜻하지 않는다.
+> 직접 평균은 **2.52 → 3.04 → 3.54/5**. v15의 유용한 결과 2건은 **초안 1건 + 구체 확인 질문 1건**이다.
+> 대상별 근거·부모/자식 관계·모드별 작성 틀·실제 출처 ID를 보강했다. 직접 평가는 아래 보고서로 구별한다.
+> 통합 **1,146 통과·1 제외**, 제외된 DPAPI 1건은 별도 사용자 환경에서 통과했다.
+> Knowledge 25-case는 이번에 실행하지 않았다. 9월 14일의 11/25는 과거 결과이며 v15 검증이 아니다.
 > 활성 profile은 비어 있고 모든 route는 local이다. PROD는 변경하지 않았다.
-> [최신 증적](deployments/dev-editor-units-2026.09.14.yml)과
-> [품질 보고서](../../research/agent-improvement/maxis-editor-units-quality-20260914.md)를 먼저 확인한다.
+> [최신 증적](deployments/dev-editor-scope-2026.09.15.yml)과
+> [품질 보고서](../../research/agent-improvement/maxis-editor-scope-quality-20260915.md)를 먼저 확인한다.
 
 API key, 프롬프트 전문, 모델 응답, 사용자 데이터, release sentinel 원문은 이 문서나
 deployment evidence에 기록하지 않는다.
@@ -31,7 +34,8 @@ deployment evidence에 기록하지 않는다.
 | <code>deployments/dev-2026.09.yml</code> | 게시 ID·카나리·평가 상태의 비밀 없는 증적 |
 | <code>deployments/dev-quality-2026.09.14.yml</code> | 앞선 v9 게시·실측 실패 기록 |
 | <code>deployments/dev-editor-plan-2026.09.14.yml</code> | 앞선 v11 게시 ID·실측 실패 기록 |
-| <code>deployments/dev-editor-units-2026.09.14.yml</code> | 최신 v13 게시 ID·baseline/v12/v13 실측·비활성 상태 |
+| <code>deployments/dev-editor-units-2026.09.14.yml</code> | 이전 v13 게시 ID·baseline/v12/v13 실측·비활성 상태 |
+| <code>deployments/dev-editor-scope-2026.09.15.yml</code> | 최신 v15 게시 ID·신규 baseline/v14/v15 실측·비활성 상태 |
 | <code>materialize_environment.py</code> | source DSL에 환경 binding을 주입한 import copy 생성 |
 | <code>validate_bundle.py</code> | DSL·prompt·code·contract·Knowledge binding 정적 검증 |
 | <code>knowledge-evals.yml</code> | release-bound retrieval 평가 명세 |
@@ -104,6 +108,11 @@ Jira 단위의 `entity_key`와 명시된 `parentKey`/`parent.key`/`fields.parent
 target/parent/child를 표시한다. 문서·복수 티켓 제목으로 계층을 추측하지 않으며,
 식별 불가 하위 객체와 충돌·순환 관계는 unknown으로 남긴다. 표시는 새 사실 근거가 아니고,
 target·교차 출처 관계가 바뀌면 unit ID도 바뀌어 예전 선택을 차단한다.
+v15의 entity별 `source_ids`는 해당 key 객체를 실제로 포함한 Jira 출처만 나열한다.
+`parentKey`만 언급된 부모나 문서·intent로 가상의 티켓 출처를 만들지 않는다.
+이 출처 대응도 unit ID에 묶인다. 최대 Knowledge 본문 1,024바이트와 100바이트 문서명 두 개를
+넣은 고정 5-case가 8,924–8,998바이트임을 검사했다. 임의 크기의 입력 전체를 보장하는 것은
+아니며, 원문을 잘라 넣거나 9,000바이트 한도를 높이지 않고 초과 시 실패한다.
 이 투영은 의미상 대상 선택을 돕지만 문장 의미나 최신성 충돌의 해결을 보증하지 않는다.
 
 모델은 `editor-plan.v2`의 section과 fact unit ID·proposal·link를 선택한다. Assembler가
@@ -211,7 +220,7 @@ LTM profile에는 평문이 아니라 proof SHA만 저장한다.
 
 ## 이전 v8 앱·Workflow binding (보존용)
 
-아래는 과거 기록이다. 최신 v13 UUID는 [최신 증적](deployments/dev-editor-units-2026.09.14.yml)을 사용한다.
+아래는 과거 기록이다. 최신 v15 UUID는 [최신 증적](deployments/dev-editor-scope-2026.09.15.yml)을 사용한다.
 
 | 앱 | App ID | published Workflow ID | 카나리 |
 |---|---|---|---:|
