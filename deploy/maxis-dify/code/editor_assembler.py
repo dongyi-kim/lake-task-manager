@@ -1,8 +1,8 @@
 """Dify stdlib Editor Input and Assembler: project/select facts, never approve.
 
 Wire ``candidate`` to the existing Contract Guard, then retain LTM's ResponseGuard.
-Only exact EditorDraftV1 schemas select this path. Other payload contracts pass
-through unchanged for their normal final validation. No evidence is created or
+Only exact EditorDraftV1 schemas select writing paths. Two closed synthetic
+control contracts pass through for normal final validation. No evidence is created or
 changed: quote support comes from original source text, not model-authored facts.
 """
 
@@ -137,7 +137,7 @@ def _schema_without_annotations(value, depth=0):
     return value
 
 
-def _schema(pack):
+def _payload_schema(pack):
     raw = pack.get("payload_schema_json")
     if not isinstance(raw, str) or len(raw.encode("utf-8")) > 4096:
         _fail()
@@ -146,7 +146,11 @@ def _schema(pack):
     schema = _object(raw)
     if _canonical(schema) != raw:
         _fail()
-    schema = _schema_without_annotations(schema)
+    return _schema_without_annotations(schema)
+
+
+def _schema(pack):
+    schema = _payload_schema(pack)
     props = schema.get("properties", {})
     if not isinstance(props, dict):
         _fail()
@@ -164,6 +168,76 @@ def _schema(pack):
     if _canonical(schema) != _canonical(expected):
         _fail()
     return mode_schema
+
+
+def _control(pack, sources):
+    """Allow only existing synthetic probes, never a generic non-Editor fallback.
+
+    This is routing, not authentication or output acceptance. Query/Knowledge
+    text is deliberately not a selector. ContextGuard owns observation clocks;
+    the two unchanged final guards still validate every control candidate.
+    """
+    schema = _canonical(_payload_schema(pack))
+    ready = {"type": "object", "additionalProperties": False,
+             "properties": {"state": {"type": "string", "const": "ready"}}, "required": ["state"]}
+    retrieved = {"type": "object", "additionalProperties": False,
+                 "properties": {"status": {"type": "string", "const": "retrieved"}}, "required": ["status"]}
+    when = _text(pack.get("requested_at"), 80)
+    if schema == _canonical(ready):
+        match = re.fullmatch(r"probe_editor_author_([0-9a-f]{12})", pack.get("request_id", ""))
+        if not match:
+            _fail()
+        nonce = match.group(1)
+        source_id, fact_id = "probe_source_" + nonce, "probe_fact_" + nonce
+        content = "The supplied synthetic activation canary has state ready."
+        canonical_id, title, scope, updated = (
+            "ltm:maxis-probe:editor_author", "Synthetic MAXIS activation canary", "", None)
+        context = _canonical({"expected_state": "ready", "probe_kind": "synthetic_contract",
+                              "workflow": "editor_author"})
+        contexts = [{"context_id": "probe_context_" + nonce, "name": "activation_probe",
+            "content_json": context, "content_sha256": hashlib.sha256(context.encode("utf-8")).hexdigest(),
+            "observed_at": when, "partial": False}]
+        flags = []
+    elif schema == _canonical(retrieved):
+        if not re.fullmatch(r"eval_[0-9a-f]{24}", pack.get("request_id", "")):
+            _fail()
+        source_id, fact_id = "eval.synthetic-retrieval-health.v1", "eval.synthetic-retrieval-health-status.v1"
+        content = "synthetic_retrieval_health_status=retrieved"
+        canonical_id, title, scope, updated = (
+            "ltm:synthetic:retrieval-health:v1", "Synthetic retrieval health fixture", "synthetic-evaluation", when)
+        contexts, flags = [], ["synthetic_evaluation"]
+    else:
+        _fail()
+    expected_source = {"source_id": source_id, "kind": "ltm", "canonical_id": canonical_id,
+        "title": title, "scope": scope, "url": "", "content": content, "retrieved_at": when,
+        "updated_at": updated, "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "partial": False, "truncated": False}
+    expected_facts = [{"fact_id": fact_id, "text": content, "source_ids": [source_id], "observed_at": when}]
+    if (len(sources) != 1 or _canonical(list(sources.values())) != _canonical([expected_source])
+            or _canonical(pack.get("facts")) != _canonical(expected_facts)
+            or _canonical(pack.get("role_context")) != _canonical(contexts)
+            or pack.get("scope") != {"projects": [], "spaces": [], "repositories": []}
+            or pack.get("metrics") != [] or pack.get("flags") != flags):
+        _fail()
+    _fresh_editor_evidence(pack, sources)
+
+
+def route(context_pack, role_id, correlation_id, output_contract):
+    """Select one contract: description, comment, or a closed synthetic control."""
+    pack = _object(context_pack)
+    if (len(_canonical(pack).encode("utf-8")) > 6144 or role_id != "editor_author"
+            or pack.get("contract") != "evidence-pack.v1" or pack.get("use_case") != role_id
+            or not isinstance(correlation_id, str) or not _ID.fullmatch(correlation_id)
+            or pack.get("request_id") != correlation_id or output_contract != "remote-role-result.v1"
+            or not isinstance(pack.get("knowledge_manifest_sha256"), str)
+            or not _DIGEST.fullmatch(pack["knowledge_manifest_sha256"])):
+        _fail()
+    mode_schema = _schema(pack)  # A malformed Editor schema must raise, never select control.
+    sources = _sources(pack)
+    if mode_schema is not None:
+        return _mode(pack, sources, mode_schema)
+    _control(pack, sources)
+    return "control"
 
 
 def _intent(source):
@@ -556,8 +630,8 @@ def _draft_contract(mode):
     purpose = (
         "Target-only purpose, work and DoD; parent/history is context."
         if mode == "description" else
-        "One comment; server inserts seed. Only for unresolved measurement in request/seed: "
-        "ask its value/comparison (확인 필요). Review: verified person, known criteria, document link."
+        "One comment; server inserts seed. Unresolved measurement: needs_input, sections=[], "
+        "missing_inputs asks value/comparison. Review: known person, criteria, document link."
     )
     return {"section_order": names, "purpose": purpose,
             "skeleton": {"contract": "editor-plan.v2", "status": "ok",
@@ -570,24 +644,19 @@ def prepare(model_input):
         if not isinstance(model_input, str) or len(model_input.encode("utf-8")) > 9000:
             _fail()
         incoming = _object(model_input)
-        if incoming.get("contract") != "ltm-model-input.v1":
+        if (set(incoming) != {"contract", "context_pack", "role_id", "correlation_id", "output_contract",
+                "workflow_version", "knowledge_version", "knowledge_proof", "knowledge_context"}
+                or incoming.get("contract") != "ltm-model-input.v1"):
             _fail()
         pack = incoming.get("context_pack")
-        if not isinstance(pack, dict) or len(_canonical(pack).encode("utf-8")) > 6144:
+        if not isinstance(pack, dict):
             _fail()
-        mode_schema = _schema(pack)
-        if mode_schema is None:
-            return {"model_input": model_input}  # Non-Editor canary: exact bytes.
-        if (incoming.get("role_id") != "editor_author" or pack.get("use_case") != "editor_author"
-                or incoming.get("correlation_id") != pack.get("request_id")
-                or pack.get("contract") != "evidence-pack.v1"
-                or incoming.get("output_contract") != "remote-role-result.v1"):
-            _fail()
+        mode = route(pack, incoming.get("role_id"), incoming.get("correlation_id"), incoming.get("output_contract"))
+        for key, maximum in (("workflow_version", 120), ("knowledge_version", 120), ("knowledge_proof", 240)):
+            if not _safe_metadata(incoming.get(key), maximum):
+                _fail()
         sources = _sources(pack)
         _fresh_editor_evidence(pack, sources)
-        mode = _mode(pack, sources, mode_schema)
-        request = _request(pack, sources, mode)
-        catalog, _ = _catalog(sources, request["target"])
         knowledge = incoming.get("knowledge_context")
         if not isinstance(knowledge, list) or len(knowledge) > 2:
             _fail()
@@ -600,13 +669,17 @@ def prepare(model_input):
             total += len(content.encode("utf-8"))
             if len(content.encode("utf-8")) > 768 or total > 1024:
                 _fail()
+        if mode == "control":
+            return {"model_input": model_input, "route": mode}  # Preserve exact guarded bytes.
+        request = _request(pack, sources, mode)
+        catalog, _ = _catalog(sources, request["target"])
         projected = _canonical({"contract": "editor-input.v1", "role_id": "editor_author",
             "request": request, "draft_contract": _draft_contract(mode),
             "entities": _entity_scope(sources, request["target"]),
             "knowledge_context": knowledge, "sources": catalog})
         if len(projected.encode("utf-8")) > 9000:
             _fail()
-        return {"model_input": projected}
+        return {"model_input": projected, "route": mode}
     except Exception:
         raise ValueError("invalid_editor_input") from None
 
@@ -732,17 +805,11 @@ def main(candidate, context_pack, role_id, correlation_id, output_contract,
             result["knowledge_manifest_sha256"] = digest
         else:
             _fail()
-        if (pack.get("contract") != "evidence-pack.v1" or pack.get("request_id") != correlation_id
-                or pack.get("use_case") != role_id or output_contract != "remote-role-result.v1"):
-            _fail()
-        mode_schema = _schema(pack)
-        if mode_schema is None:
+        mode = route(pack, role_id, correlation_id, output_contract)
+        if mode == "control":
             # No acceptance is implied: the unchanged final Contract Guard is mandatory.
             return {"candidate": candidate if isinstance(candidate, str) else _canonical(candidate)}
-        if role_id != "editor_author":
-            _fail()
         sources = _sources(pack)
-        mode = _mode(pack, sources, mode_schema)
         plan = _object(candidate)
         if set(plan) != {"contract", "status", "sections", "missing_inputs"} or plan["contract"] != "editor-plan.v2":
             _fail()

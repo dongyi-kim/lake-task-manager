@@ -87,12 +87,13 @@ def test_intent_is_request_not_fact_units(input_pack):
     assert all(x["source_id"] != "intent" for x in result["sources"])
 
 
-def test_non_editor_canary_is_byte_identical_passthrough(input_pack):
+def test_unregistered_non_editor_schema_is_not_a_control_passthrough(input_pack):
     schema = {"type": "object", "additionalProperties": False,
               "properties": {"status": {"const": "ready"}}, "required": ["status"]}
     input_pack["payload_schema_json"], input_pack["payload_schema_sha256"] = canonical_payload_schema(schema)
     raw = "  " + model_input(input_pack) + "\n"
-    assert ASSET.prepare(raw) == {"model_input": raw}
+    with pytest.raises(ValueError, match="^invalid_editor_input$"):
+        ASSET.prepare(raw)
 
 
 @pytest.mark.parametrize("mutation", ["digest", "mode", "partial", "stale", "role", "request"])

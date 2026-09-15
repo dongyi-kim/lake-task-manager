@@ -4,7 +4,8 @@
 source bundle이다. DEV와 PROD의 환경 binding을 분리하고, import DSL을 materialize한
 뒤 validator와 원격 release gate를 통과시키는 구조다.
 
-> 2026-09-15: DEV **v15** 게시. Editor **13노드·13엣지**, 나머지 **11·11**, canary **3/3**.
+> 2026-09-15: 아래는 **v15의 과거 측정**이다. 새 Editor 단위 분기 후보는 로컬 구현·검증 중이다.
+> v15 DEV 게시 당시 Editor **13노드·13엣지**, 나머지 **11·11**, canary **3/3**.
 > 동일 component v4의 신규 v13 baseline → v14 → v15: Guard **3/5 → 3/5 → 5/5**,
 > 자동 **3/5 → 2/5 → 4/5**. 자동 green은 실제 사용 가능한 초안을 뜻하지 않는다.
 > 직접 평균은 **2.52 → 3.04 → 3.54/5**. v15의 유용한 결과 2건은 **초안 1건 + 구체 확인 질문 1건**이다.
@@ -27,6 +28,9 @@ deployment evidence에 기록하지 않는다.
 | <code>code/knowledge_guard.py</code> | retrieval identity·ACL·크기·policy decision 검증 |
 | <code>code/contract_guard.py</code> | output contract·source graph·payload schema 검증 |
 | <code>code/editor_assembler.py</code> | Editor Input 원문 단위 투영 + typed plan의 source-bound HTML·claim·citation 조립 |
+| <code>editor_graph.py</code> | 본문·댓글·제어 분기별 schema/prompt 정본과 재현 가능한 Editor DSL 생성기 |
+| <code>editor_graph_validation.py</code> | 세 분기를 각각 검사하는 공유 검증기; 환경 생성에도 재사용 |
+| <code>graph_receipt.py</code> | 검증한 로컬 graph와 Dify export의 실행 설정 비교 |
 | <code>prompts/*.md</code> | 공통 및 앱별 instruction source |
 | <code>contracts/*.json</code> | RemoteRoleResult canonical schema 및 Editor 내부 plan schema |
 | <code>environments/dev-2026.09.yml</code> | 비밀 없는 DEV dataset/document/model binding |
@@ -54,10 +58,43 @@ label은 결과 그룹과 순서만 구분한다. 둘 다 **현재 게시된 프
 정답/checker/rubric과 raw fixture UID는 원격에 보내지 않는다. 이 평가가 통과해도 full compose/UI
 검증이나 activation 승인이 되지 않는다. 아래 v8 수치는 과거 배포 기록으로 읽는다.
 
-## 실제 게시 topology
+## Editor 단위 분기 후보
 
-아래는 Core/PMO의 공통 11노드·11엣지 topology다. Editor는 allow 경로에
-`Editor Input → Contract LLM → Editor Assembler → Contract Guard`를 사용해 **13노드·13엣지**다.
+Editor 후보는 **17노드·19엣지**이며, 새 semantic Role이나 앱을 만들지 않는다.
+코드가 검증한 mode로 한 경로만 선택하므로 정상 요청의 LLM 실행은 **1회**다.
+DEV/PROD의 endpoint·key·모델·Knowledge·게시 UUID는 기존 환경 binding에 남는다.
+
+~~~mermaid
+flowchart LR
+    K[Knowledge Guard] --> P{Policy Decision}
+    P -->|allow| I[Editor Input: 검증·근거 투영]
+    P -->|deny| N[Denied Answer]
+    I --> R{Editor Route: typed mode}
+    R -->|description| D[Description LLM: 본문 계획]
+    R -->|comment| C[Comment LLM: 댓글 계획]
+    R -->|allowlisted probe| H[Control LLM: 연결 확인]
+    D --> M[Editor Candidate: 단일 결과 선택]
+    C --> M
+    H --> M
+    M --> A[Editor Assembler]
+    A --> G[Contract Guard]
+    G --> L[LTM ResponseGuard]
+~~~
+
+본문·댓글은 `editor-plan.v2`만, 제어 검사는 `remote-role-result.v1`만 생성한다.
+본문 schema에는 네 본문 section만, 댓글 schema에는 comment만 허용한다.
+Control은 기존 activation/retrieval 합성 검사의 닫힌 입력만 허용하며, 깨진 Editor 입력이나
+임의 schema가 Control로 우회되지 않는다. 정보가 부족하면 `needs_input`으로 반환하고 초안을 비운다.
+단순 연결 canary는 실제 작성 품질 검증을 대체하지 않는다.
+
+재생성: `python deploy/maxis-dify/editor_graph.py` → `python deploy/maxis-dify/validate_bundle.py`.
+환경 생성은 기존 `materialize_environment.py`를 사용한다. 분기별 prompt digest와 code digest를
+검토 없이 자동 갱신하지 않는다. [Dify Variable Aggregator](https://docs.dify.ai/en/cloud/use-dify/nodes/variable-aggregator)는
+배타적 경로 하나의 결과를 공통 후처리에 연결하는 노드이며 병렬 출력들을 합치는 기능이 아니다.
+
+## 공통 게시 topology
+
+아래는 변경하지 않은 Core/PMO의 공통 11노드·11엣지 topology다.
 
 ~~~mermaid
 flowchart LR
@@ -120,7 +157,7 @@ description의 네 섹션 제목, 기존 seed, HTML·claim·citation을 함께 �
 단위 ID를 다시 확인한다. 모델이 원문을 다시 복사하거나 없는 seed를 지정하지 않는다.
 v1 schema는 과거 증적용으로 남지만 새 Editor 경로에서는 수락하지 않는다.
 
-non-Editor control/probe 입력과 출력은 그대로 통과한다. 최종 승인 권한은 Assembler가 아니라
+허용된 합성 control/probe 입력·출력만 검증 후 원형으로 전달한다. 최종 출력 수락 권한은 Assembler가 아니라
 기존 ContractGuard와 로컬 ResponseGuard에 있다. 두 가드는 원본 EvidencePack을 사용한다.
 형식 검증 통과는 문장 의미·업무 적합성 통과가 아니므로 별도 원문 평가가 필요하다.
 

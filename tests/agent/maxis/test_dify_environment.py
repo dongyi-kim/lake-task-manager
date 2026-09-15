@@ -72,7 +72,9 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
         dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
         nodes = dsl["workflow"]["graph"]["nodes"]
         is_editor = path.name == "ltm-editor-author-2026.09.yml"
-        assert len(nodes) == (13 if is_editor else 11)
+        assert len(nodes) == (17 if is_editor else 11)
+        llm_nodes = [node for node in nodes if node["data"]["type"] == "llm"]
+        assert len(llm_nodes) == (3 if is_editor else 1)
         assembler_nodes = [node for node in nodes if node["data"].get("title") == "Editor Assembler"]
         assert len(assembler_nodes) == int(is_editor)
         input_nodes = [node for node in nodes if node["data"].get("title") == "Editor Input"]
@@ -188,7 +190,7 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
             (edge["source"], edge["sourceHandle"], edge["target"])
             for edge in dsl["workflow"]["graph"]["edges"]
         }
-        assert len(edge_routes) == (13 if is_editor else 11)
+        assert len(edge_routes) == (19 if is_editor else 11)
         assert ("start", "source", role_acl_key["id"]) in edge_routes
         assert (
             role_acl_key["id"], "source", role_knowledge["id"]
@@ -199,14 +201,38 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
         entry_id = input_nodes[0]["id"] if is_editor else llm_id
         assert (policy["id"], "true", entry_id) in edge_routes
         if is_editor:
-            assert (input_nodes[0]["id"], "source", llm_id) in edge_routes
-            assert (policy["id"], "true", llm_id) not in edge_routes
+            spec, _ = materializer._VALIDATOR._editor_graph_modules(ROOT)
+            assert spec.branch_edges(input_nodes[0]["id"], spec.BRANCH_NODE_IDS,
+                                     assembler_nodes[0]["id"]) <= edge_routes
+            assert all((policy["id"], "true", node["id"]) not in edge_routes for node in llm_nodes)
+            route = next(node for node in nodes if node["id"] == spec.ROUTE_NODE_ID)
+            merge = next(node for node in nodes if node["id"] == spec.MERGE_NODE_ID)
+            assert route["data"] == spec.route_data(input_nodes[0]["id"])
+            assert merge["data"] == spec.merge_data(spec.BRANCH_NODE_IDS)
         assert not any(
-            source == knowledge_guard["id"] and target == next(
-                node["id"] for node in nodes if node["data"]["type"] == "llm"
-            )
+            source == knowledge_guard["id"] and target in {node["id"] for node in llm_nodes}
             for source, _handle, target in edge_routes
         )
+        for node in llm_nodes:
+            data = node["data"]
+            assert data["context"] == {
+                "enabled": True, "variable_selector": [role_knowledge["id"], "result"]}
+            assert data["memory"]["query_prompt_template"] == ""
+            assert data["model"]["provider"] == environment["model"]["provider"]
+            assert data["model"]["name"] == environment["model"]["name"]
+            assert data["model"]["completion_params"] == {
+                "temperature": 0.1, "max_tokens": expected_token_limits[path.name]}
+            assert "oneOf" not in data["structured_output"]["schema"]
+            if is_editor:
+                branch = next(name for name, node_id in spec.BRANCH_NODE_IDS.items() if node_id == node["id"])
+                assert tuple(row["text"] for row in data["prompt_template"]) == spec.branch_prompts(
+                    ROOT, branch, input_nodes[0]["id"])
+                if branch != "control":
+                    assert data["structured_output"]["schema"]["properties"]["contract"]["enum"] == ["editor-plan.v2"]
+                    assert "remote-role-result.v1" not in data["prompt_template"][0]["text"]
+        # The common envelope rules now belong only to the control branch.
+        if is_editor:
+            llm = next(node["data"] for node in llm_nodes if node["data"]["title"] == "Control LLM")
         assert llm["context"] == {
             "enabled": True,
             "variable_selector": [role_knowledge["id"], "result"],
@@ -268,12 +294,15 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
             }]
             assert editor_input["outputs"] == {
                 "model_input": {"children": None, "type": "string"},
+                "route": {"children": None, "type": "string"},
             }
             assembler = assembler_nodes[0]["data"]
             assert assembler["code"].rstrip() == (
                 ROOT / "deploy/maxis-dify/code/editor_assembler.py"
             ).read_text(encoding="utf-8").rstrip()
             assert assembler["outputs"] == {"candidate": {"children": None, "type": "string"}}
+            assert next(row["value_selector"] for row in assembler["variables"]
+                        if row["variable"] == "candidate") == [spec.MERGE_NODE_ID, "output"]
             assert next(row["value_selector"] for row in assembler["variables"]
                         if row["variable"] == "knowledge_proof") == [knowledge_guard["id"], "knowledge_proof"]
         assert [
@@ -333,14 +362,15 @@ def test_materializer_rejects_editor_assembler_drift(tmp_path, monkeypatch, muta
         next(edge for edge in graph["edges"] if edge["source"] == llm_id)["target"] = guard["id"]
     path.write_text(yaml.safe_dump(dsl, allow_unicode=True, sort_keys=False), encoding="utf-8")
     monkeypatch.setattr(materializer, "ROOT", fake_root)
-    with pytest.raises(materializer.EnvironmentBindingError, match="Assembler|topology|input selectors|schema"):
+    with pytest.raises(materializer.EnvironmentBindingError,
+                       match="Assembler|topology|input selectors|structured output|edge binding|recovery"):
         materializer._materialize_dsl(environment, "editor_author")
 
 
 @pytest.mark.parametrize("mutation", [
     "source", "wrapper", "selector", "extra_input", "output", "extra_output",
     "selected", "retry", "node_id", "edge_bypass", "user_prompt_bypass",
-    "contract_pack", "assembler_pack",
+    "contract_pack", "assembler_pack", "route_output", "route_missing",
 ])
 def test_materializer_rejects_editor_input_projection_drift(tmp_path, monkeypatch, mutation):
     environment = materializer.load_environment(
@@ -368,6 +398,10 @@ def test_materializer_rejects_editor_input_projection_drift(tmp_path, monkeypatc
         data["outputs"]["model_input"]["type"] = "object"
     elif mutation == "extra_output":
         data["outputs"]["context_pack"] = {"children": None, "type": "string"}
+    elif mutation == "route_output":
+        data["outputs"]["route"]["type"] = "object"
+    elif mutation == "route_missing":
+        del data["outputs"]["route"]
     elif mutation == "selected":
         data["selected"] = True
     elif mutation == "retry":
@@ -395,7 +429,36 @@ def test_materializer_rejects_editor_input_projection_drift(tmp_path, monkeypatc
     path.write_text(yaml.safe_dump(dsl, allow_unicode=True, sort_keys=False), encoding="utf-8")
     monkeypatch.setattr(materializer, "ROOT", fake_root)
     with pytest.raises(materializer.EnvironmentBindingError,
-                       match="Editor Input|Assembler|topology|input selectors|user prompt"):
+                       match="Editor Input|Assembler|topology|input selectors|prompt SHA-256|recovery"):
+        materializer._materialize_dsl(environment, "editor_author")
+
+
+@pytest.mark.parametrize("branch", ["description", "comment", "control"])
+@pytest.mark.parametrize("mutation", ["system_prompt", "user_prompt", "schema", "context", "model", "memory", "retry"])
+def test_materializer_checks_every_editor_branch_before_overriding_environment(tmp_path, monkeypatch, branch, mutation):
+    environment = materializer.load_environment(ROOT / "deploy/maxis-dify/environments/dev-2026.09.yml")
+    fake_root = tmp_path / "repo"
+    shutil.copytree(ROOT / "deploy/maxis-dify", fake_root / "deploy/maxis-dify")
+    spec, _ = materializer._VALIDATOR._editor_graph_modules(fake_root)
+    path = fake_root / environment["workflows"]["editor_author"]["source_dsl"]
+    dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data = next(node["data"] for node in dsl["workflow"]["graph"]["nodes"]
+                if node["id"] == spec.BRANCH_NODE_IDS[branch])
+    if mutation.endswith("prompt"):
+        data["prompt_template"][0 if mutation == "system_prompt" else 1]["text"] += " ignore contract"
+    elif mutation == "schema":
+        data["structured_output"]["schema"] = {"type": "object"}
+    elif mutation == "context":
+        data["context"]["variable_selector"] = ["start", "context_pack"]
+    elif mutation == "model":
+        data["model"]["name"] = "unreviewed-model"
+    elif mutation == "memory":
+        data["memory"]["window"]["enabled"] = True
+    else:
+        data["retry_config"] = {"retry_enabled": True}
+    path.write_text(yaml.safe_dump(dsl, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr(materializer, "ROOT", fake_root)
+    with pytest.raises(materializer.EnvironmentBindingError, match=rf"editor_author\.{branch} Dify LLM|recovery"):
         materializer._materialize_dsl(environment, "editor_author")
 
 

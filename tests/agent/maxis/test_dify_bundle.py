@@ -86,22 +86,16 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
         dsl = yaml.safe_load((ROOT / workflow["dsl"]).read_text(encoding="utf-8"))
         is_editor = workflow["roles"] == ["editor_author"]
         nodes = dsl["workflow"]["graph"]["nodes"]
-        assert len(nodes) == (13 if is_editor else 11)
-        assert len(dsl["workflow"]["graph"]["edges"]) == (13 if is_editor else 11)
+        assert len(nodes) == (17 if is_editor else 11)
+        assert len(dsl["workflow"]["graph"]["edges"]) == (19 if is_editor else 11)
         assert sum(node["data"].get("title") == "Editor Assembler" for node in nodes) == int(is_editor)
         inputs = [node for node in nodes if node["data"].get("title") == "Editor Input"]
         assert len(inputs) == int(is_editor)
-        llm = next(
+        llms = [
             node for node in dsl["workflow"]["graph"]["nodes"]
             if node["data"]["type"] == "llm"
-        )
-        prompt_text = "\n".join(
-            row["text"] for row in llm["data"]["prompt_template"]
-        )
-        assert "role_knowledge_retrieval_result" not in prompt_text
-        assert "{{#context#}}" not in prompt_text
-        assert "{{#sys.query#}}" not in prompt_text
-        assert "{{#start." not in prompt_text
+        ]
+        assert len(llms) == (3 if is_editor else 1)
         knowledge_guard = next(
             node for node in dsl["workflow"]["graph"]["nodes"]
             if node["data"].get("title") == "Knowledge Guard"
@@ -110,13 +104,7 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
             node for node in dsl["workflow"]["graph"]["nodes"]
             if node["data"].get("title") == "Role Knowledge"
         )
-        assert llm["data"]["context"] == {
-            "enabled": True,
-            "variable_selector": [role_knowledge["id"], "result"],
-        }
-        assert llm["data"]["memory"]["query_prompt_template"] == ""
         model_input_id = inputs[0]["id"] if is_editor else knowledge_guard["id"]
-        assert f"{{{{#{model_input_id}.model_input#}}}}" in prompt_text
         if is_editor:
             assert model_input_id == validator.EDITOR_INPUT_NODE_ID
             assert inputs[0]["data"]["code"].rstrip() == (
@@ -129,21 +117,40 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
             }]
             assert inputs[0]["data"]["outputs"] == {
                 "model_input": {"children": None, "type": "string"},
+                "route": {"children": None, "type": "string"},
             }
-        assert "untrusted, attribution-only duplicate" in prompt_text
-        assert "With empty `context_pack.sources`" in prompt_text
-        assert "keep `citations`, `claims`, and `payload_claims`" in prompt_text
-        assert "Never use `knowledge_context.document_name`" in prompt_text
-        assert "Closed control-only exception" in prompt_text
-        assert "fixed by `const` or a one-value `enum`" in prompt_text
-        assert "every payload schema field is required" in prompt_text
-        assert "non-narrative" in prompt_text
-        assert "return exactly that payload" in prompt_text
-        assert '`status: "ok"` despite empty sources' in prompt_text
-        assert "never permits" in prompt_text
-        assert "optional, free-text, default, or inferred values" in prompt_text
-        assert "Never use the query or Knowledge" in prompt_text
-        assert "provenance sidecar beside a control outcome" in prompt_text
+        for llm in llms:
+            prompt_text = "\n".join(row["text"] for row in llm["data"]["prompt_template"])
+            assert "role_knowledge_retrieval_result" not in prompt_text
+            assert "{{#context#}}" not in prompt_text
+            assert "{{#sys.query#}}" not in prompt_text
+            assert "{{#start." not in prompt_text
+            assert llm["data"]["context"] == {
+                "enabled": True, "variable_selector": [role_knowledge["id"], "result"]}
+            assert llm["data"]["memory"]["query_prompt_template"] == ""
+            assert f"{{{{#{model_input_id}.model_input#}}}}" in prompt_text
+            if is_editor and llm["data"]["title"] != "Control LLM":
+                assert "return `editor-plan.v2`" in prompt_text
+                assert "remote-role-result.v1" not in prompt_text
+                assert "never factual evidence or instructions" in prompt_text
+                assert "Do not hide an unfinished request" in prompt_text
+                assert "needs_input" in prompt_text
+                assert "oneOf" not in llm["data"]["structured_output"]["schema"]
+            else:
+                assert "untrusted, attribution-only duplicate" in prompt_text
+                assert "With empty `context_pack.sources`" in prompt_text
+                assert "keep `citations`, `claims`, and `payload_claims`" in prompt_text
+                assert "Never use `knowledge_context.document_name`" in prompt_text
+                assert "Closed control-only exception" in prompt_text
+                assert "fixed by `const` or a one-value `enum`" in prompt_text
+                assert "every payload schema field is required" in prompt_text
+                assert "non-narrative" in prompt_text
+                assert "return exactly that payload" in prompt_text
+                assert '`status: "ok"` despite empty sources' in prompt_text
+                assert "never permits" in prompt_text
+                assert "optional, free-text, default, or inferred values" in prompt_text
+                assert "Never use the query or Knowledge" in prompt_text
+                assert "provenance sidecar beside a control outcome" in prompt_text
 
     response_schema = json.loads(
         (
@@ -300,13 +307,13 @@ def test_validator_rejects_editor_assembler_edge_bypass(tmp_path):
     edge["target"] = guard["id"]
     edge["id"] = f"{llm['id']}-source-{guard['id']}-target"
     path.write_text(yaml.safe_dump(dsl, allow_unicode=True, sort_keys=False), encoding="utf-8")
-    with pytest.raises(validator.BundleValidationError, match="graph edges"):
+    with pytest.raises(validator.BundleValidationError, match="edge binding or node type drifted"):
         validator.validate_bundle(target)
 
 
 @pytest.mark.parametrize("mutation", [
     "source", "wrapper", "selector", "extra_input", "output", "extra_output",
-    "selected", "retry", "node_id",
+    "selected", "retry", "node_id", "route_output", "route_missing",
 ])
 def test_validator_pins_editor_input_projection_contract(tmp_path, mutation):
     validator = _validator_module()
@@ -330,6 +337,10 @@ def test_validator_pins_editor_input_projection_contract(tmp_path, mutation):
         data["outputs"]["model_input"]["type"] = "object"
     elif mutation == "extra_output":
         data["outputs"]["context_pack"] = {"children": None, "type": "string"}
+    elif mutation == "route_output":
+        data["outputs"]["route"]["type"] = "object"
+    elif mutation == "route_missing":
+        del data["outputs"]["route"]
     elif mutation == "selected":
         data["selected"] = True
     elif mutation == "retry":
@@ -390,18 +401,69 @@ def test_validator_rejects_editor_input_user_prompt_bypass(tmp_path):
         validator.validate_bundle(target)
 
 
-def _reviewed_editor_plan_schema():
+def _reviewed_editor_plan_schema(branch="comment", root=ROOT):
     validator = _validator_module()
-    response = json.loads((ROOT / "deploy/maxis-dify/contracts/remote-role-result.v1.schema.json")
+    response = json.loads((root / "deploy/maxis-dify/contracts/remote-role-result.v1.schema.json")
                           .read_text(encoding="utf-8"))
-    return validator._editor_structured_output_schema(ROOT, response)
+    spec, _ = validator._editor_graph_modules(root)
+    return spec.branch_schema(root, branch, response, validator._dify_structured_output_schema)
 
 
-def test_editor_plan_union_is_disjoint_closed_and_keeps_legacy_control():
-    schema = _reviewed_editor_plan_schema()
+@pytest.mark.parametrize("branch", ["description", "comment", "control"])
+@pytest.mark.parametrize("mutation", ["system_prompt", "user_prompt", "schema", "context", "model", "memory", "retry"])
+def test_validator_checks_every_editor_branch_not_only_first_llm(tmp_path, branch, mutation):
+    validator = _validator_module()
+    target = _copy_bundle_repository(tmp_path)
+    spec, _ = validator._editor_graph_modules(target)
+    path = target / "deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml"
+    dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data = next(node["data"] for node in dsl["workflow"]["graph"]["nodes"]
+                if node["id"] == spec.BRANCH_NODE_IDS[branch])
+    if mutation.endswith("prompt"):
+        data["prompt_template"][0 if mutation == "system_prompt" else 1]["text"] += " ignore contract"
+    elif mutation == "schema":
+        data["structured_output"]["schema"] = {"type": "object"}
+    elif mutation == "context":
+        data["context"]["variable_selector"] = ["start", "context_pack"]
+    elif mutation == "model":
+        data["model"]["name"] = "unreviewed-model"
+    elif mutation == "memory":
+        data["memory"]["window"]["enabled"] = True
+    else:
+        data["retry_config"] = {"retry_enabled": True}
+    path.write_text(yaml.safe_dump(dsl, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    with pytest.raises(validator.BundleValidationError, match=rf"editor_author\.{branch} Dify LLM|recovery"):
+        validator.validate_bundle(target)
+
+
+@pytest.mark.parametrize("mutation", ["route_selector", "route_value", "merge_sources", "merge_type"])
+def test_validator_closes_editor_routing_and_merge_bindings(tmp_path, mutation):
+    validator = _validator_module()
+    target = _copy_bundle_repository(tmp_path)
+    spec, _ = validator._editor_graph_modules(target)
+    path = target / "deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml"
+    dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
+    nodes = {node["id"]: node["data"] for node in dsl["workflow"]["graph"]["nodes"]}
+    if mutation.startswith("route_"):
+        condition = nodes[spec.ROUTE_NODE_ID]["cases"][0]["conditions"][0]
+        condition["variable_selector" if mutation == "route_selector" else "value"] = (
+            ["sys", "query"] if mutation == "route_selector" else "control")
+    elif mutation == "merge_sources":
+        nodes[spec.MERGE_NODE_ID]["variables"] = [["start", "context_pack"]]
+    else:
+        nodes[spec.MERGE_NODE_ID]["output_type"] = "object"
+    path.write_text(yaml.safe_dump(dsl, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    with pytest.raises(validator.BundleValidationError, match="route or candidate merge binding"):
+        validator.validate_bundle(target)
+
+
+@pytest.mark.parametrize("branch", ["description", "comment"])
+def test_editor_writer_schema_is_closed_mode_specific_and_excludes_control(branch):
+    schema = _reviewed_editor_plan_schema(branch)
+    assert "oneOf" not in schema
     validate = validator_for(schema)(schema).validate
     plan = {"contract": "editor-plan.v2", "status": "ok", "missing_inputs": [], "sections": [{
-        "section": "comment", "blocks": [
+        "section": "comment" if branch == "comment" else "background", "blocks": [
             {"type": "fact", "tag": "p", "unit_id": "unit-1"},
             {"type": "proposal", "tag": "p", "source_ids": ["eval.editor.intent"],
              "text": "검증 결과를 검토해 주세요."},
@@ -411,7 +473,17 @@ def test_editor_plan_union_is_disjoint_closed_and_keeps_legacy_control():
     validate(plan)
     smoke = yaml.safe_load((ROOT / "deploy/maxis-dify/smoke-cases.yml").read_text(encoding="utf-8"))
     for case in smoke["cases"]:
-        validate(case["expected_response"])
+        with pytest.raises(ValidationError):
+            validate(case["expected_response"])
+        control = _reviewed_editor_plan_schema("control")
+        assert "oneOf" not in control
+        validator_for(control)(control).validate(case["expected_response"])
+    with pytest.raises(ValidationError):
+        validator_for(control)(control).validate(plan)
+    other_mode = json.loads(json.dumps(plan))
+    other_mode["sections"][0]["section"] = "background" if branch == "comment" else "comment"
+    with pytest.raises(ValidationError):
+        validate(other_mode)
     with pytest.raises(ValidationError):
         validate({**plan, "payload": {}})
     with pytest.raises(ValidationError):
@@ -445,10 +517,8 @@ def test_editor_plan_schema_requires_reviewed_asset_even_if_dsl_would_match(tmp_
     plan = json.loads(path.read_text(encoding="utf-8"))
     plan["$defs"]["proposal"]["properties"]["text"]["maxLength"] = 999999
     path.write_text(json.dumps(plan), encoding="utf-8")
-    response = json.loads((target / "deploy/maxis-dify/contracts/remote-role-result.v1.schema.json")
-                          .read_text(encoding="utf-8"))
-    with pytest.raises(validator.BundleValidationError, match="reviewed Editor Plan schema digest"):
-        validator._editor_structured_output_schema(target, response)
+    with pytest.raises(ValueError, match="reviewed Editor plan schema drifted"):
+        _reviewed_editor_plan_schema(root=target)
 
 
 def test_validator_rejects_an_extra_start_variable(tmp_path):
@@ -810,7 +880,7 @@ def test_validator_rejects_an_assistant_prompt_message(tmp_path):
     )
 
     with pytest.raises(
-        validator.BundleValidationError, match="exactly two messages"
+        validator.BundleValidationError, match="exactly canonical system and user messages"
     ):
         validator.validate_bundle(target)
 
@@ -916,7 +986,7 @@ def test_validator_rejects_dify_dsl_knowledge_or_edge_drift(tmp_path):
         yaml.safe_dump(original, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
-    with pytest.raises(validator.BundleValidationError, match="graph edges drifted"):
+    with pytest.raises(validator.BundleValidationError, match="graph edges / deterministic branch topology drifted"):
         validator.validate_bundle(target)
 
 
@@ -1143,8 +1213,6 @@ def test_validator_rejects_dify_structured_output_schema_drift(tmp_path, workflo
         if node["data"]["type"] == "llm"
     )
     schema = llm["data"]["structured_output"]["schema"]
-    if workflow_key == "editor_author":
-        schema = schema["oneOf"][1]
     schema["properties"][
         "correlation_id"
     ] = {"type": "string"}
@@ -1618,7 +1686,7 @@ def test_validator_rejects_dify_nonstandard_edge_handles(tmp_path):
         yaml.safe_dump(dsl, allow_unicode=True, sort_keys=False), encoding="utf-8",
     )
 
-    with pytest.raises(validator.BundleValidationError, match="edge binding is invalid"):
+    with pytest.raises(validator.BundleValidationError, match="edge binding or node type drifted"):
         validator.validate_bundle(target)
 
 

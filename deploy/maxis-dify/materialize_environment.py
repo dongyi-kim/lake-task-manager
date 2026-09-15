@@ -60,7 +60,7 @@ DEV_ENVIRONMENT_BINDING_PATH = (
 CONTRACT_GUARD_SOURCE = (
     ROOT / "deploy" / "maxis-dify" / "code" / "contract_guard.py"
 ).read_text(encoding="utf-8").rstrip()
-EDITOR_ASSEMBLER_SHA256 = "86a35a60c464e973a3aaeb3f46da6551490f30c4dad1ba49b4d2d5b162e95d5e"
+EDITOR_ASSEMBLER_SHA256 = "a3e8bb15da89918516eca365312b7478c96bfb0ac00b5076770593c90d30f360"
 KNOWLEDGE_GUARD_TEMPLATE_SOURCE = (
     ROOT / "deploy" / "maxis-dify" / "code" / "knowledge_guard.py"
 ).read_text(encoding="utf-8").rstrip()
@@ -530,7 +530,6 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
             remote_schema = json.loads((
                 ROOT / "deploy/maxis-dify/contracts/remote-role-result.v1.schema.json"
             ).read_text(encoding="utf-8"))
-            editor_output_schema = _VALIDATOR._editor_structured_output_schema(ROOT, remote_schema)
         except Exception as exc:
             raise EnvironmentBindingError("Editor Plan schema is not reviewed.") from exc
     workflow = _mapping(environment["workflows"][workflow_key], f"workflows.{workflow_key}")
@@ -556,17 +555,23 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
         str(_mapping(node, "Dify node").get("id") or "") for node in nodes
     ]
     if (
-        len(nodes) != (13 if editor_assembly else 11)
+        len(nodes) != (17 if editor_assembly else 11)
         or any(not node_id for node_id in node_ids)
         or len(set(node_ids)) != len(node_ids)
     ):
         raise EnvironmentBindingError(
-            f"{workflow_key} must have exactly {13 if editor_assembly else 11} "
+            f"{workflow_key} must have exactly {17 if editor_assembly else 11} "
             "uniquely identified nodes."
         )
     edges = graph.get("edges")
     if not isinstance(edges, list):
         raise EnvironmentBindingError(f"{workflow_key} graph edges must be a list.")
+    # Validate every branch before any model binding is patched. This also rejects
+    # extra routes, raw-input shortcuts, cross-branch edges, and merge bypasses.
+    editor_graph = _VALIDATOR._validate_editor_graph(
+        ROOT, nodes, edges, remote_schema, editor_assembler_source,
+        error_type=EnvironmentBindingError,
+    ) if editor_assembly else None
     start_nodes = [
         node for node in nodes
         if _mapping(
@@ -691,10 +696,8 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
     contract_guard_node_id = ""
     editor_assembler_count = 0
     editor_assembler_node_id = ""
-    editor_assembler_data = None
     editor_input_count = 0
     editor_input_node_id = ""
-    editor_input_data = None
     knowledge_guard_count = 0
     knowledge_guard_node_id = str(source_knowledge_guard_nodes[0].get("id") or "")
     sentinel_node_id = ""
@@ -818,12 +821,6 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
         elif data.get("type") == "llm":
             llm_count += 1
             llm_node_id = str(node.get("id") or "")
-            if editor_assembly and (
-                data.get("structured_output_enabled") is not True
-                or _mapping(data.get("structured_output"), "Editor structured output").get("schema")
-                != editor_output_schema
-            ):
-                raise EnvironmentBindingError("Editor structured output schema drifted.")
             context = _mapping(data.get("context"), f"{workflow_key} LLM context")
             if context.get("enabled") is not True:
                 raise EnvironmentBindingError(
@@ -872,14 +869,12 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
                     raise EnvironmentBindingError("Editor Input is forbidden outside Editor.")
                 editor_input_count += 1
                 editor_input_node_id = str(node.get("id") or "")
-                editor_input_data = data
                 continue
             if data.get("title") == "Editor Assembler":
                 if not editor_assembly:
                     raise EnvironmentBindingError("Editor Assembler is forbidden outside Editor.")
                 editor_assembler_count += 1
                 editor_assembler_node_id = str(node.get("id") or "")
-                editor_assembler_data = data
                 continue
             if data.get("title") == "Knowledge Guard":
                 knowledge_guard_count += 1
@@ -975,6 +970,9 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
                     f"{workflow_key} Contract Guard must bind sys.workflow_id exactly."
                 )
         elif data.get("type") == "if-else":
+            if editor_assembly and data.get("title") == "Editor Route":
+                # Its complete cases and bindings were checked in the shared preflight.
+                continue
             policy_branch_count += 1
             policy_branch_node_id = str(node.get("id") or "")
             expected_cases = [{
@@ -1000,7 +998,7 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
             answer_count += 1
     if (
         retrieval_count != 2 or sentinel_count != 1
-        or role_query_count != 1 or llm_count != 1
+        or role_query_count != 1 or llm_count != (3 if editor_assembly else 1)
         or knowledge_guard_count != 1 or contract_guard_count != 1
         or policy_branch_count != 1 or answer_count != 2
         or editor_assembler_count != int(editor_assembly)
@@ -1008,61 +1006,9 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
     ):
         raise EnvironmentBindingError(
             f"{workflow_key} must contain one Release Sentinel, one sys.query Role "
-            "Knowledge retrieval, one Knowledge Guard, one LLM node, and one "
+            "Knowledge retrieval, one Knowledge Guard, the expected LLM branches, and one "
             "Contract Guard."
         )
-    if editor_assembly:
-        if (
-            editor_input_node_id != _VALIDATOR.EDITOR_INPUT_NODE_ID
-            or not isinstance(editor_input_data, dict)
-            or set(editor_input_data) != {
-                "code", "code_language", "desc", "outputs", "selected",
-                "title", "type", "variables",
-            }
-            or editor_input_data.get("code_language") != "python3"
-            or not isinstance(editor_input_data.get("code"), str)
-            or editor_input_data["code"].rstrip() != (
-                editor_assembler_source + _VALIDATOR.EDITOR_INPUT_ENTRYPOINT
-            ).rstrip()
-            or editor_input_data.get("outputs") != {
-                "model_input": {"children": None, "type": "string"},
-            }
-            or editor_input_data.get("variables") != [{
-                "variable": "model_input",
-                "value_selector": [knowledge_guard_node_id, "model_input"],
-            }]
-            or editor_input_data.get("selected") is not False
-        ):
-            raise EnvironmentBindingError("Editor Input binding or source drifted.")
-        expected_assembler_variables = [
-            {"variable": name, "value_selector": selector}
-            for name, selector in [
-                ("candidate", [llm_node_id, "text"]),
-                ("context_pack", [start_node_id, "context_pack"]),
-                ("role_id", [start_node_id, "role_id"]),
-                ("correlation_id", [start_node_id, "correlation_id"]),
-                ("output_contract", [start_node_id, "output_contract"]),
-                ("workflow_version", [start_node_id, "workflow_version"]),
-                ("knowledge_version", [start_node_id, "knowledge_version"]),
-                ("knowledge_proof", [knowledge_guard_node_id, "knowledge_proof"]),
-            ]
-        ]
-        if (
-            not isinstance(editor_assembler_data, dict)
-            or set(editor_assembler_data) != {
-                "code", "code_language", "desc", "outputs", "selected",
-                "title", "type", "variables",
-            }
-            or editor_assembler_data.get("code_language") != "python3"
-            or not isinstance(editor_assembler_data.get("code"), str)
-            or editor_assembler_data["code"].rstrip() != editor_assembler_source
-            or editor_assembler_data.get("outputs") != {
-                "candidate": {"children": None, "type": "string"},
-            }
-            or editor_assembler_data.get("variables") != expected_assembler_variables
-            or editor_assembler_data.get("selected") is not False
-        ):
-            raise EnvironmentBindingError("Editor Assembler binding or source drifted.")
     answer_nodes = {
         _mapping(
             _mapping(node, "Dify Answer").get("data"), "Dify Answer.data"
@@ -1117,14 +1063,7 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
         (contract_guard_node_id, "source", allowed_answer_id),
     }
     if editor_assembly:
-        expected_edge_routes.remove((policy_branch_node_id, "true", llm_node_id))
-        expected_edge_routes.remove((llm_node_id, "source", contract_guard_node_id))
-        expected_edge_routes.update({
-            (policy_branch_node_id, "true", editor_input_node_id),
-            (editor_input_node_id, "source", llm_node_id),
-            (llm_node_id, "source", editor_assembler_node_id),
-            (editor_assembler_node_id, "source", contract_guard_node_id),
-        })
+        expected_edge_routes = editor_graph["edges"]
     if len(edges) != len(edge_routes) or edge_routes != expected_edge_routes:
         raise EnvironmentBindingError(
             f"{workflow_key} deterministic branch topology drifted."

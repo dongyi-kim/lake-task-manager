@@ -402,13 +402,14 @@ def test_changed_editor_schema_never_becomes_legacy_passthrough(pack, mutation):
     _assert_blocked(_call(pack, plan))
 
 
-def test_non_editor_passthrough_is_byte_exact_not_an_acceptance(pack):
+def test_unregistered_non_editor_schema_does_not_bypass_assembler(pack):
     schema = {"type": "object", "additionalProperties": False,
               "properties": {"state": {"const": "ready"}}, "required": ["state"]}
     pack["payload_schema_json"], pack["payload_schema_sha256"] = canonical_payload_schema(schema)
     raw = ' { "invalid_for_final_guard" : true } '
-    assert ASSEMBLER.main(raw, _canonical(pack), "editor_author", pack["request_id"],
-        "remote-role-result.v1", WORKFLOW, "kb-test", PROOF) == {"candidate": raw}
+    result = ASSEMBLER.main(raw, _canonical(pack), "editor_author", pack["request_id"],
+        "remote-role-result.v1", WORKFLOW, "kb-test", PROOF)
+    _assert_blocked(json.loads(result["candidate"]))
 
 
 def test_proposal_is_labelled_but_does_not_become_fact_or_bypass_numeric_guard(pack):
