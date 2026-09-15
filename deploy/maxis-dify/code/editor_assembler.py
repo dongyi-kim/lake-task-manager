@@ -22,7 +22,10 @@ _URL = re.compile(r"(?<![A-Za-z0-9_])(?:https?://|javascript:|data:)", re.I)
 _PERSON = re.compile(r"\[\[person:[0-9a-f]{12}\]\]")
 # This version binds display decisions as well as original source bytes. It does
 # not register the derived display text as new evidence or relax either guard.
-_UNIT_DISPLAY_POLICY = "editor-units.v2-wiki-body-display"
+_UNIT_DISPLAY_POLICY = "editor-units.v3-entity-scope"
+_ISSUE_KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,63}-[1-9][0-9]{0,18}$")
+_JIRA_METADATA = {"status", "statusCategory", "issuetype", "priority", "resolution",
+                  "assignee", "reporter", "creator", "author", "updateAuthor"}
 _WIKI_PREFIX = re.compile(r"^(?:h[1-6][.]|[*#]+)[ \t]+(?=\S)")
 _JIRA_BODY = re.compile(r"^/content(?:/[0-9]+)*(?:/fields)?/(?:description|(?:comments?|latestComment)(?:/[0-9]+)?(?:/(?:body|text))?)$")
 _CONFLUENCE_BODY = re.compile(r"^/content(?:(?:/[0-9]+)*/body)?$")
@@ -263,18 +266,114 @@ def _link(source):
     return url, _text(source["title"])
 
 
-def _paths(value, path, depth=0):
+def _issue_key(value):
+    return value if isinstance(value, str) and _ISSUE_KEY.fullmatch(value) else ""
+
+
+def _owner(value, path, inherited):
+    if any(part in _JIRA_METADATA for part in path.split("/")):
+        return inherited  # User/status keys may look exactly like issue keys.
+    key = _issue_key(value.get("key"))
+    if key:
+        return key
+    # Raw Jira status/category keys are metadata, not new issue identities.
+    # Incomplete issue-shaped objects must not inherit the enclosing issue.
+    field = path.rsplit("/", 1)[-1]
+    if (field != "fields" and (
+            "summary" in value or "fields" in value or "parentKey" in value
+            or "key" in value
+            or field in {"parent", "outwardIssue", "inwardIssue"}
+            or re.search(r"/(?:subtasks|issues|children|linkedIssues|issuelinks)/[0-9]+$", path))):
+        return ""
+    return inherited
+
+
+def _paths(value, path, depth=0, entity_key="", jira=False):
     if depth > 24:
         _fail()
     if isinstance(value, str):
-        yield path, value
+        yield path, value, entity_key
     elif isinstance(value, dict):
+        if jira:
+            entity_key = _owner(value, path, entity_key)
         for key in sorted(value):
             escaped = key.replace("~", "~0").replace("/", "~1")
-            yield from _paths(value[key], path + "/" + escaped, depth + 1)
+            yield from _paths(value[key], path + "/" + escaped, depth + 1, entity_key, jira)
     elif isinstance(value, list):
         for index, item in enumerate(value):
-            yield from _paths(item, path + "/" + str(index), depth + 1)
+            yield from _paths(item, path + "/" + str(index), depth + 1, entity_key, jira)
+
+
+def _issue_objects(value, depth=0):
+    if depth > 24:
+        _fail()
+    if isinstance(value, dict):
+        if _issue_key(value.get("key")):
+            yield value
+        for name, child in value.items():
+            if name not in _JIRA_METADATA:
+                yield from _issue_objects(child, depth + 1)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _issue_objects(child, depth + 1)
+
+
+def _entity_scope(sources, target):
+    """Attribution hints from explicit Jira keys/edges, never new evidence.
+
+    Missing/null parent is not proof of a root. Conflicting declarations remain
+    unresolved regardless of source order; cycles do too. No prose, URL or document inference.
+    """
+    parents = {}
+    for source in sources.values():
+        if source.get("kind") != "jira":
+            continue
+        try:
+            content = _decode(source["content"])
+        except (ValueError, TypeError):
+            continue  # _unit_rows still rejects malformed structured content.
+        for issue in _issue_objects(content):
+            key = issue["key"]
+            declared = parents.setdefault(key, set())
+            candidates = []
+            if "parentKey" in issue:
+                candidates.append(issue["parentKey"])
+            containers = [issue]
+            if isinstance(issue.get("fields"), dict):
+                containers.append(issue["fields"])
+            for container in containers:
+                if "parent" in container:
+                    parent = container["parent"]
+                    candidates.append(parent.get("key") if isinstance(parent, dict) else parent)
+            for candidate in candidates:
+                parent = _issue_key(candidate)
+                declared.add(parent)  # Unknown/null also prevents arbitrary selection.
+                if parent:
+                    parents.setdefault(parent, set())
+    unique = {key: next(iter(values)) if len(values) == 1 else "" for key, values in parents.items()}
+    cyclic = set()
+    for key in unique:
+        chain, cursor = [], key
+        while cursor in unique and cursor not in chain:
+            chain.append(cursor)
+            cursor = unique[cursor]
+        if cursor in chain:
+            cyclic.update(chain[chain.index(cursor):])
+    for key in cyclic:
+        unique[key] = ""
+    result = []
+    for key in sorted(parents):
+        parent = unique[key]
+        relation = "unknown"
+        if target and key == target:
+            relation = "target"
+        elif target and target not in cyclic and unique.get(target) == key:
+            relation = "parent"
+        elif target and target not in cyclic and parent == target:
+            relation = "child"
+        result.append({"key": key, "parent_key": parent, "relation": relation,
+                       "parent_conflict": len(parents[key]) > 1 or key in cyclic})
+    return result
 
 
 def _unit_rows(source):
@@ -284,17 +383,20 @@ def _unit_rows(source):
     wiki headings/lists. Any code/pre/noformat/fence marker opts the entire leaf
     out: do not guess which later lines are prose after incomplete code markup.
     """
-    yield "/title", source["title"], source["title"]
     content = source["content"]
+    jira = source.get("kind") == "jira"
     try:
         parsed = _decode(content)
     except (ValueError, TypeError):
         if content.lstrip().startswith(("{", "[", '"')):
             _fail()
-        leaves = [("/content", content)]
+        title_owner = ""
+        leaves = [("/content", content, "")]
     else:
-        leaves = _paths(parsed, "/content")
-    for path, text in leaves:
+        title_owner = _issue_key(parsed.get("key")) if jira and isinstance(parsed, dict) else ""
+        leaves = _paths(parsed, "/content", jira=jira)
+    yield "/title", source["title"], source["title"], title_owner
+    for path, text, entity_key in leaves:
         body = ((source.get("kind") == "jira" and _JIRA_BODY.fullmatch(path))
                 or (source.get("kind") == "confluence" and _CONFLUENCE_BODY.fullmatch(path)))
         normalize = body and not _CODE_LEAF.search(text)
@@ -307,11 +409,11 @@ def _unit_rows(source):
             if len(line) > 1200:
                 _fail()  # Never silently crop a factual unit.
             display = _WIKI_PREFIX.sub("", line, count=1) if normalize else line
-            yield path + ("/line:" + str(index) if len(lines) > 1 else ""), line, display
+            yield path + ("/line:" + str(index) if len(lines) > 1 else ""), line, display, entity_key
 
 
 def _original_units(source):
-    for path, original, _ in _unit_rows(source):
+    for path, original, _, _ in _unit_rows(source):
         yield path, original
 
 
@@ -390,24 +492,26 @@ def _reference_text(text, source_id, sources):
     return display, markup, refs
 
 
-def _catalog(sources):
+def _catalog(sources, target=""):
     catalog, lookup = [], {}
+    # Every selected ID binds cross-source relationship interpretation and target.
+    scope = [target, _entity_scope(sources, target)]
     for source_id, source in sources.items():
         if _intent(source):
             continue
         units = []
-        for path, original, body_display in _unit_rows(source):
+        for path, original, body_display, entity_key in _unit_rows(source):
             if not original.strip():
                 continue
             display, markup, refs = _reference_text(body_display, source_id, sources)
             binding = [_UNIT_DISPLAY_POLICY, source_id, source.get("kind"), source.get("canonical_id"),
                        source["content_sha256"], source["title"], source.get("url", ""), path, original,
-                       display, markup, refs]
+                       display, markup, refs, entity_key, scope]
             unit_id = "u_" + hashlib.sha256(_canonical(binding).encode("utf-8")).hexdigest()[:20]
             if unit_id in lookup or len(lookup) >= 96:
                 _fail()
             lookup[unit_id] = {"text": display, "html": markup, "source_ids": refs}
-            units.append({"unit_id": unit_id, "path": path, "text": display})
+            units.append({"unit_id": unit_id, "path": path, "text": display, "entity_key": entity_key})
         if not units:
             _fail()
         available_link = bool(source.get("url"))
@@ -441,6 +545,27 @@ def _request(pack, sources, mode):
             "prompt": next(iter(values["prompt"]), ""), "seed_visible": seed}
 
 
+def _section_order(mode):
+    return list(_SECTIONS) if mode == "description" else ["comment"]
+
+
+def _draft_contract(mode):
+    names = _section_order(mode)
+    purpose = (
+        "Write the TARGET ticket's purpose, boundary, concrete work and acceptance criteria. "
+        "Parent/document context informs background; child completion is not the parent's DoD. "
+        "Use the target's own summary/current fields; do not copy a different ticket's scope."
+        if mode == "description" else
+        "Write one concise comment only. Preserve seed once (server inserts it). "
+        "Only if the request/unfinished seed asks for an unresolved measurement, ask a concrete 확인 필요 "
+        "question for its missing value/comparison; do not ask measurement questions for other comments. "
+        "For review, address the verified person marker and include known criteria and the document link."
+    )
+    return {"section_order": names, "purpose": purpose,
+            "skeleton": {"contract": "editor-plan.v2", "status": "ok",
+                         "sections": [{"section": name, "blocks": []} for name in names], "missing_inputs": []}}
+
+
 def prepare(model_input):
     """Project trusted KnowledgeGuard output for the model, never mint evidence."""
     try:
@@ -463,7 +588,8 @@ def prepare(model_input):
         sources = _sources(pack)
         _fresh_editor_evidence(pack, sources)
         mode = _mode(pack, sources, mode_schema)
-        catalog, _ = _catalog(sources)
+        request = _request(pack, sources, mode)
+        catalog, _ = _catalog(sources, request["target"])
         knowledge = incoming.get("knowledge_context")
         if not isinstance(knowledge, list) or len(knowledge) > 2:
             _fail()
@@ -477,7 +603,9 @@ def prepare(model_input):
             if len(content.encode("utf-8")) > 768 or total > 1024:
                 _fail()
         projected = _canonical({"contract": "editor-input.v1", "role_id": "editor_author",
-            "request": _request(pack, sources, mode), "knowledge_context": knowledge, "sources": catalog})
+            "request": request, "draft_contract": _draft_contract(mode),
+            "entities": _entity_scope(sources, request["target"]),
+            "knowledge_context": knowledge, "sources": catalog})
         if len(projected.encode("utf-8")) > 9000:
             _fail()
         return {"model_input": projected}
@@ -493,7 +621,7 @@ def _blocks(plan, sources, lookup, mode, seed):
     seed_source, seed_text = seed
     if seed_text:
         rows.append(("p", seed_text, html.escape(seed_text, quote=True), "inference", [seed_source], True))
-    expected = list(_SECTIONS) if mode == "description" else ["comment"]
+    expected = _section_order(mode)
     sections = plan["sections"]
     if [row.get("section") for row in sections if isinstance(row, dict)] != expected:
         _fail()
@@ -633,8 +761,8 @@ def main(candidate, context_pack, role_id, correlation_id, output_contract,
         if status == "ok":
             _fresh_editor_evidence(pack, sources)
             seed = _trusted_seed(pack, sources)
-            _, lookup = _catalog(sources)
-            _request(pack, sources, mode)  # Reject conflicting trusted author fields.
+            request = _request(pack, sources, mode)  # Reject conflicting trusted author fields.
+            _, lookup = _catalog(sources, request["target"])
             content, claims, citations, source_ids = _blocks(plan, sources, lookup, mode, seed)
             result.update(payload={"contract": "editor-draft.v1", "mode": mode,
                 "content_html": content, "source_ids": source_ids,

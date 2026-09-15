@@ -98,6 +98,14 @@ Editor Input은 `editor-draft.v1` 요청의 원본 EvidencePack을 바꾸지 않
 출처별 원문 단위 ID 목록(`editor-input.v1`)을 만든다. 사용자의 요청은 별도 intent로 분리하며
 사실 단위로 제공하지 않는다. intent ID는 질문·제안의 출처로만 사용할 수 있다.
 
+현재 source의 Editor Input에는 `draft_contract`와 `entities`도 있다. 작성 틀은 이번
+요청 모드의 section만 제공하며, Assembler와 같은 section 순서 함수를 사용한다.
+Jira 단위의 `entity_key`와 명시된 `parentKey`/`parent.key`/`fields.parent.key`만으로
+target/parent/child를 표시한다. 문서·복수 티켓 제목으로 계층을 추측하지 않으며,
+식별 불가 하위 객체와 충돌·순환 관계는 unknown으로 남긴다. 표시는 새 사실 근거가 아니고,
+target·교차 출처 관계가 바뀌면 unit ID도 바뀌어 예전 선택을 차단한다.
+이 투영은 의미상 대상 선택을 돕지만 문장 의미나 최신성 충돌의 해결을 보증하지 않는다.
+
 모델은 `editor-plan.v2`의 section과 fact unit ID·proposal·link를 선택한다. Assembler가
 description의 네 섹션 제목, 기존 seed, HTML·claim·citation을 함께 구성하고, 원본 pack으로
 단위 ID를 다시 확인한다. 모델이 원문을 다시 복사하거나 없는 seed를 지정하지 않는다.

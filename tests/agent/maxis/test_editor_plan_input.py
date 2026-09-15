@@ -66,7 +66,7 @@ def test_prepare_is_deterministic_bounded_and_does_not_mint_evidence(input_pack)
     first = view(input_pack)
     assert first == view(input_pack)
     assert input_pack == before
-    assert set(first) == {"contract", "role_id", "request", "knowledge_context", "sources"}
+    assert set(first) == {"contract", "role_id", "request", "draft_contract", "entities", "knowledge_context", "sources"}
     assert first["contract"] == "editor-input.v1"
     assert first["role_id"] == "editor_author"
     assert len(canonical(first).encode()) <= 9000
@@ -75,7 +75,7 @@ def test_prepare_is_deterministic_bounded_and_does_not_mint_evidence(input_pack)
     assert source["available_link"] is True and "url" not in source
     assert {x["text"] for x in source["units"]} == {
         "검토 기준", "조회 전용이다.", "검토 기준을 확인한다.", "상태를 확인한다."}
-    assert all(set(x) == {"unit_id", "path", "text"} for x in source["units"])
+    assert all(set(x) == {"unit_id", "path", "text", "entity_key"} for x in source["units"])
     assert any(x["path"] == "/content/criteria/0" for x in source["units"])
 
 
@@ -134,8 +134,8 @@ def test_body_display_policy_keeps_prepare_assemble_and_original_binding_consist
     assert originals[selected["path"]] == "h3. 완료 기준"
     binding = [ASSET._UNIT_DISPLAY_POLICY, source["source_id"], source["kind"], source["canonical_id"],
                source["content_sha256"], source["title"], source["url"], selected["path"],
-               originals[selected["path"]], "완료 기준", "완료 기준", [source["source_id"]]]
-    assert ASSET._UNIT_DISPLAY_POLICY == "editor-units.v2-wiki-body-display"
+               originals[selected["path"]], "완료 기준", "완료 기준", [source["source_id"]], "", ["", []]]
+    assert ASSET._UNIT_DISPLAY_POLICY == "editor-units.v3-entity-scope"
     assert selected["unit_id"] == "u_" + hashlib.sha256(canonical(binding).encode()).hexdigest()[:20]
     plan = {"contract": "editor-plan.v2", "status": "ok", "missing_inputs": [],
         "sections": [{"section": "comment", "blocks": [{"type": "fact", "tag": "p",
@@ -254,3 +254,151 @@ def test_request_only_projection_can_cite_intent_as_proposal_through_both_guards
         expected_knowledge_manifest_sha256=input_pack["knowledge_manifest_sha256"])
     assert accepted.status == "ok" and payload.content_html.startswith("<p>검토를 요청하려는데</p>")
     assert {claim.kind for claim in accepted.claims} == {"inference", "recommendation"}
+
+
+def set_source(source, content, **metadata):
+    source.update(metadata, content=canonical(content))
+    source["content_sha256"] = hashlib.sha256(source["content"].encode()).hexdigest()
+
+
+def test_entity_scope_uses_explicit_edges_and_nearest_issue_not_prose(input_pack):
+    source = input_pack["sources"][0]
+    set_source(source, [
+        {"key": "TS-10", "summary": "상위 목적", "fields": {
+            "status": {"key": "indeterminate", "name": "In Progress"},
+            "subtasks": [{"key": "TS-11", "summary": "자식 작업", "parentKey": "TS-10"}]}},
+        {"key": "TS-12", "summary": "연결 이슈", "parentKey": None},
+        {"key": None, "summary": "식별 불가 작업"},
+    ], kind="jira", title="TS-11의 부모는 TS-12라는 제목")
+    add_intent(input_pack, ticket_key="TS-11")
+    result = view(input_pack)
+    entities = {row["key"]: row for row in result["entities"]}
+    assert entities["TS-11"]["relation"] == "target"
+    assert entities["TS-10"]["relation"] == "parent"
+    assert entities["TS-12"]["relation"] == "unknown"
+    units = {unit["text"]: unit for unit in result["sources"][0]["units"]}
+    assert units["In Progress"]["entity_key"] == "TS-10"
+    assert units["자식 작업"]["entity_key"] == "TS-11"
+    assert units["연결 이슈"]["entity_key"] == "TS-12"
+    assert units["식별 불가 작업"]["entity_key"] == ""
+    assert units[source["title"]]["entity_key"] == ""
+
+
+@pytest.mark.parametrize("parent_field", ["parentKey", "parent", "fields"])
+def test_direct_parent_shapes_are_supported_without_inherited_edges(input_pack, parent_field):
+    relation = {"parentKey": "TS-10"} if parent_field == "parentKey" else (
+        {"parent": {"key": "TS-10"}} if parent_field == "parent" else {"fields": {"parent": {"key": "TS-10"}}})
+    set_source(input_pack["sources"][0], {"key": "TS-11", **relation,
+        "metadata": {"parentKey": "TS-999"}}, kind="jira")
+    add_intent(input_pack, ticket_key="TS-10")
+    result = view(input_pack)
+    entity = next(row for row in result["entities"] if row["key"] == "TS-11")
+    assert entity["parent_key"] == "TS-10" and entity["relation"] == "child"
+
+
+def test_scope_conflicts_are_order_independent_and_not_guessed(input_pack):
+    set_source(input_pack["sources"][0], {"key": "TS-11", "parentKey": "TS-10"}, kind="jira")
+    other = copy.deepcopy(input_pack["sources"][0])
+    other.update(source_id="other-source", canonical_id="other-snapshot", url="")
+    set_source(other, {"key": "TS-11", "parentKey": "TS-20"})
+    input_pack["sources"].append(other)
+    add_intent(input_pack, ticket_key="TS-10")
+    first = view(input_pack)
+    entity = next(row for row in first["entities"] if row["key"] == "TS-11")
+    assert entity["relation"] == "unknown" and entity["parent_conflict"] is True
+    input_pack["sources"].reverse()
+    assert view(input_pack)["entities"] == first["entities"]
+
+
+def test_unit_id_binds_target_and_cross_source_parent_scope(input_pack):
+    set_source(input_pack["sources"][0], {"key": "TS-11", "summary": "자식 작업"}, kind="jira")
+    other = copy.deepcopy(input_pack["sources"][0])
+    other.update(source_id="edge-source", canonical_id="edge-snapshot", url="")
+    set_source(other, {"key": "TS-11", "parentKey": "TS-10"})
+    input_pack["sources"].append(other)
+    add_intent(input_pack, ticket_key="TS-10")
+    first = view(input_pack)
+    first_unit = next(unit for unit in first["sources"][0]["units"] if unit["text"] == "자식 작업")
+    plan = {"contract": "editor-plan.v2", "status": "ok", "missing_inputs": [],
+        "sections": [{"section": "comment", "blocks": [{"type": "fact", "tag": "p", "unit_id": first_unit["unit_id"]}]}]}
+    set_source(other, {"key": "TS-11", "parentKey": "TS-20"})
+    second = view(input_pack)
+    assert second["sources"][0]["units"] != first["sources"][0]["units"]
+    request = json.loads(model_input(input_pack))
+    result = ASSET.main(canonical(plan), canonical(input_pack), "editor_author", input_pack["request_id"],
+        "remote-role-result.v1", request["workflow_version"], request["knowledge_version"], request["knowledge_proof"])
+    assert json.loads(result["candidate"])["status"] == "blocked"
+    intent = input_pack["sources"][-1]
+    intent_value = json.loads(intent["content"])
+    intent_value["ticket_key"] = "TS-20"
+    set_source(intent, intent_value)
+    assert view(input_pack)["sources"][0]["units"] != second["sources"][0]["units"]
+
+
+@pytest.mark.parametrize("kind,names", [("comment", ["comment"]),
+    ("description", ["background", "scope", "work", "dod"])])
+def test_prepared_draft_contract_contains_only_requested_mode(input_pack, kind, names):
+    schema = EditorDraftV1.model_json_schema()
+    schema["properties"]["mode"] = {"type": "string", "const": kind}
+    input_pack["payload_schema_json"], input_pack["payload_schema_sha256"] = canonical_payload_schema(schema)
+    add_intent(input_pack, kind=kind)
+    contract = view(input_pack)["draft_contract"]
+    assert contract["section_order"] == names
+    assert [row["section"] for row in contract["skeleton"]["sections"]] == names
+    assert all(row["blocks"] == [] for row in contract["skeleton"]["sections"])
+    assert contract["skeleton"]["contract"] == "editor-plan.v2"
+
+
+def test_non_jira_keys_cannot_establish_ticket_scope(input_pack):
+    set_source(input_pack["sources"][0], {"key": "TS-10", "parentKey": "TS-11"})
+    add_intent(input_pack, ticket_key="TS-11")
+    result = view(input_pack)
+    assert result["entities"] == []
+    assert all(unit["entity_key"] == "" for unit in result["sources"][0]["units"])
+
+
+@pytest.mark.parametrize("key", [None, "", "bad", 17])
+def test_malformed_nested_issue_never_inherits_parent(input_pack, key):
+    set_source(input_pack["sources"][0], {"key": "TS-10", "fields": {
+        "status": {"key": "indeterminate", "name": "In Progress"},
+        "subtasks": [{"key": key, "description": "불명확한 자식 본문"},
+                     {"description": "키 없는 자식 본문"}]}}, kind="jira")
+    units = {unit["text"]: unit for unit in view(input_pack)["sources"][0]["units"]}
+    assert units["불명확한 자식 본문"]["entity_key"] == ""
+    assert units["키 없는 자식 본문"]["entity_key"] == ""
+    assert units["In Progress"]["entity_key"] == "TS-10"
+
+
+@pytest.mark.parametrize("edges", [[("TS-10", "TS-10")],
+    [("TS-10", "TS-11"), ("TS-11", "TS-10")],
+    [("TS-10", "TS-11"), ("TS-11", "TS-12"), ("TS-12", "TS-10")]])
+def test_cyclic_parent_edges_are_unresolved_not_valid_hierarchy(input_pack, edges):
+    set_source(input_pack["sources"][0], [{"key": key, "parentKey": parent} for key, parent in edges], kind="jira")
+    add_intent(input_pack, ticket_key="TS-10")
+    entities = view(input_pack)["entities"]
+    assert all(row["parent_conflict"] and row["parent_key"] == "" for row in entities)
+    assert all(row["relation"] == ("target" if row["key"] == "TS-10" else "unknown") for row in entities)
+
+
+@pytest.mark.parametrize("field", ["assignee", "author", "updateAuthor", "status", "statusCategory"])
+def test_metadata_key_shape_never_creates_ticket_identity(input_pack, field):
+    set_source(input_pack["sources"][0], {"key": "TS-10", "fields": {
+        field: {"key": "TEAM-42", "name": "식별된 메타데이터", "parentKey": "TS-10"}}}, kind="jira")
+    add_intent(input_pack, ticket_key="TEAM-42")
+    result = view(input_pack)
+    assert [row["key"] for row in result["entities"]] == ["TS-10"]
+    assert result["entities"][0]["relation"] == "unknown"
+    unit = next(unit for unit in result["sources"][0]["units"] if unit["text"] == "식별된 메타데이터")
+    assert unit["entity_key"] == "TS-10"
+
+
+@pytest.mark.parametrize("endpoint", ["outwardIssue", "inwardIssue"])
+def test_unidentified_link_endpoint_is_not_the_owning_ticket(input_pack, endpoint):
+    set_source(input_pack["sources"][0], {"key": "TS-10", "fields": {"issuelinks": [
+        {endpoint: {"description": "식별 불가 연결 본문"}},
+        {endpoint: {"key": "TS-12", "fields": {"summary": "식별된 연결 티켓"}}}]}}, kind="jira")
+    result = view(input_pack)
+    units = {unit["text"]: unit for unit in result["sources"][0]["units"]}
+    assert units["식별 불가 연결 본문"]["entity_key"] == ""
+    assert units["식별된 연결 티켓"]["entity_key"] == "TS-12"
+    assert all(row["relation"] == "unknown" for row in result["entities"])

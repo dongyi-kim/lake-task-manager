@@ -94,7 +94,7 @@ DIFY_PROMPT_SHA256 = {
         "user": "d45a2fc4c15eb03e587937fef35f5fef7ff930e5b994860d8b33e44cf2d38f15",
     },
     "editor_author": {
-        "system": "31627bc58563e5e5ff1ca181decbb875c34891b9b85e2e0468ea39897dae36b1",
+        "system": "adee9916c3aafd981978a693fc96cb73f013ab0a8661a489c308ab21dc7e41fe",
         "user": "41e3faa78a5f4d63a4302d6defc5e119c1c7b834d92c272bc6de18c629fb2b99",
     },
 }
@@ -106,7 +106,7 @@ DIFY_CONTRACT_GUARD_SHA256 = (
 )
 # An Editor-only assembly step is not authority to repair or bypass either Guard.
 # Pin the reviewed asset independently of its embedded DSL copy.
-DIFY_EDITOR_ASSEMBLER_SHA256 = "8d5cb437c5cdc7b1a32c5f08b82d45cee101da4b4024c2d10fe6dcf880d74957"
+DIFY_EDITOR_ASSEMBLER_SHA256 = "091507f2420438aea64a9095723041295f86a3dc87171994ce8a3132a9894179"
 EDITOR_ASSEMBLER_PATH = "deploy/maxis-dify/code/editor_assembler.py"
 EDITOR_INPUT_NODE_ID = "1909000000001012"
 EDITOR_INPUT_ENTRYPOINT = (
