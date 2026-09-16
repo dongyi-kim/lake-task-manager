@@ -4,18 +4,21 @@
 source bundle이다. DEV와 PROD의 환경 binding을 분리하고, import DSL을 materialize한
 뒤 validator와 원격 release gate를 통과시키는 구조다.
 
-> 2026-09-16: 근거 선택 → 제한된 문안 작성의 **v18 DEV 게시 완료, 품질 미통과**.
-> Editor **23노드·26엣지**. 실제 5건 모두 selector+해당 writer의 **LLM 2회**,
-> 원본 근거·축소 입력·검증 결과의 일치를 확인했다. canary **3/3**.
-> 새 v16 baseline → v17 → v18 자동 통과 **3/5 → 1/5 → 3/5**, 유용한 결과 **1/5 → 0/5 → 0/5**.
-> 직접 품질 평균은 **3.58 → 2.34 → 2.58/5**. 개선 실험 결과이며 운영 품질은 미달이다.
-> 기존 유용한 1건도 완성 초안이 아니라 필수 확인 질문이다. 초안 품질 향상을 주장하지 않는다.
-> baseline → v18 전체 tokens **12,050 → 22,570**, 시간 **18.0 → 30.7초**로 증가했다.
-> v17의 실패·미관측 token도 보존했다. v18의 대상 범위·재질문·mention/검토 기준 결함이 남았다.
+> 2026-09-16: writer 전용 문안 계약의 **v19 DEV 게시 완료, 품질 미통과**.
+> Editor **23노드·26엣지**. 후보 5건 모두 selector+writer **LLM 2회**이며,
+> 원본 근거·축소 입력·compiler 결과의 일치 **5/5**, writer 입력 **897–1,813바이트**, canary **3/3**.
+> fresh v18 baseline → v19 자동 통과 **0/5 → 2/5**, 직접 품질 **2.14 → 2.40/5**,
+> 유용한 결과 **0/5 → 0/5**다. 완성 초안·필수 확인 질문 모두 0건이며 의미 품질 개선은 미입증이다.
+> 후보는 **17,727 tokens·23.3초**. baseline은 **24.3초**, CMP3 실패로 전체 token이 미관측이다.
+> baseline의 부분 합계와 후보 전체를 비교해 절감률을 주장하지 않는다.
+> 부모 범위 혼입·비교 방향 발명·미확인 완료 주장·검토 기준 누락이 남았다.
 > 활성 profile은 비어 있고 모든 route는 local이다. Core/PMO·API key·PROD는 그대로다.
 > Knowledge 25-case·전체 58-case·full compose/UI는 이번에 실행하지 않았다.
-> [최신 증적](deployments/dev-editor-draftspec-2026.09.16.yml)과
-> [구조·품질 보고서](../../research/agent-improvement/maxis-editor-draftspec-quality-20260916.md)를 먼저 확인한다.
+> [최신 증적](deployments/dev-editor-writing-2026.09.16.yml)과
+> [구조·품질 보고서](../../research/agent-improvement/maxis-editor-writing-quality-20260916.md)를 먼저 확인한다.
+
+앞선 v16 3.58/5·v18 2.58/5는 [과거 실행](deployments/dev-editor-draftspec-2026.09.16.yml) 기록이며,
+이번 fresh v18 baseline 2.14/5를 대체하지 않는다. 모두 단일 탐색 실행이다.
 
 API key, 프롬프트 전문, 모델 응답, 사용자 데이터, release sentinel 원문은 이 문서나
 deployment evidence에 기록하지 않는다.
@@ -29,12 +32,12 @@ deployment evidence에 기록하지 않는다.
 | <code>code/knowledge_guard.py</code> | retrieval identity·ACL·크기·policy decision 검증 |
 | <code>code/contract_guard.py</code> | output contract·source graph·payload schema 검증 |
 | <code>code/editor_assembler.py</code> | Editor Input 원문 단위 투영 + typed plan의 source-bound HTML·claim·citation 조립 |
-| <code>code/editor_draft_spec.py</code> | 내부 근거 선택 계약 검증·writer 입력 축소·작성 후 선택 범위 재검사 |
+| <code>code/editor_draft_spec.py</code> | 내부 근거 선택 검증·writer 입력 축소·문안 계약을 기존 assembler plan으로 컴파일 |
 | <code>editor_graph.py</code> | 본문·댓글·제어 분기별 schema/prompt 정본과 재현 가능한 Editor DSL 생성기 |
 | <code>editor_graph_validation.py</code> | selector·writer·control·stop과 원본 binding 공유 검증기; 환경 생성에도 재사용 |
 | <code>graph_receipt.py</code> | 검증한 로컬 graph와 Dify export의 실행 설정 비교 |
 | <code>prompts/*.md</code> | 공통 및 앱별 instruction source |
-| <code>contracts/*.json</code> | RemoteRoleResult canonical schema 및 Editor 내부 plan schema |
+| <code>contracts/*.json</code> | RemoteRoleResult와 Editor 선택·문안·assembler plan schema |
 | <code>environments/dev-2026.09.yml</code> | 비밀 없는 DEV dataset/document/model binding |
 | <code>environments/prod.template.yml</code> | 독립 PROD 자산 체크리스트 |
 | <code>deployments/dev-2026.09.yml</code> | 게시 ID·카나리·평가 상태의 비밀 없는 증적 |
@@ -43,7 +46,8 @@ deployment evidence에 기록하지 않는다.
 | <code>deployments/dev-editor-units-2026.09.14.yml</code> | 이전 v13 게시 ID·baseline/v12/v13 실측·비활성 상태 |
 | <code>deployments/dev-editor-scope-2026.09.15.yml</code> | 이전 v15 게시 ID·당시 baseline/v14/v15 실측·비활성 상태 |
 | <code>deployments/dev-editor-branches-2026.09.15.yml</code> | 이전 v16 게시 ID·당시 v15/v16 비교·실제 분기 확인 |
-| <code>deployments/dev-editor-draftspec-2026.09.16.yml</code> | 최신 v18 게시 ID·새 v16/v17/v18 비교·단계 실행 확인·비활성 상태 |
+| <code>deployments/dev-editor-draftspec-2026.09.16.yml</code> | 이전 v18 게시 ID·당시 v16/v17/v18 비교·단계 실행 확인·비활성 상태 |
+| <code>deployments/dev-editor-writing-2026.09.16.yml</code> | 최신 v19 게시 ID·fresh v18/v19 비교·writer 계약과 native 실행 확인·비활성 상태 |
 | <code>materialize_environment.py</code> | source DSL에 환경 binding을 주입한 import copy 생성 |
 | <code>validate_bundle.py</code> | DSL·prompt·code·contract·Knowledge binding 정적 검증 |
 | <code>knowledge-evals.yml</code> | release-bound retrieval 평가 명세 |
@@ -79,13 +83,13 @@ flowchart LR
     S -->|allowlisted probe| H[Control LLM: 연결 확인]
     E --> V[DraftSpec Guard: 검증·입력 축소]
     V --> R{Editor Route: 검증된 상태·mode}
-    R -->|description| D[Description LLM: 본문 계획]
-    R -->|comment| C[Comment LLM: 댓글 계획]
+    R -->|description| D[Description LLM: 본문 문안]
+    R -->|comment| C[Comment LLM: 댓글 문안]
     R -->|needs_input / blocked| T[Stop Plan: writer 생략]
     D --> W[Writer Candidate]
     C --> W
     T --> W
-    W --> F[DraftSpec Enforcer: 선택 범위 재검사]
+    W --> F[DraftSpec Enforcer: 선택 검증·plan 컴파일]
     F --> M[Editor Candidate]
     H --> M
     M --> A[Editor Assembler]
@@ -93,19 +97,23 @@ flowchart LR
     G --> L[LTM ResponseGuard]
 ~~~
 
-본문·댓글은 `editor-plan.v2`만, 제어 검사는 `remote-role-result.v1`만 생성한다.
+본문·댓글 writer는 `editor-writing.v1`만, 제어 검사는 `remote-role-result.v1`만 생성한다.
 selector는 `editor-draft-spec.v1`의 원문 ID 분류·필수 링크·부족한 사실만 선택한다.
-writer는 선택된 원문만 받으며 native Knowledge context를 다시 주입하지 않는다.
+writer의 `editor-writer-input.v2`는 요청, section 순서·목적·블록 예산, 선택된 원문과
+허용 section만 제공한다. source ID·선택 bucket·링크 목록·native Knowledge context는 주지 않는다.
 부모 맥락 fact는 description.background에서만, 역사·충돌 fact는 작성에서 제외한다.
-필수 링크는 정확히 한 번씩 포함해야 하며 미선택 fact/source/link는 차단한다.
-자동 렌더링되는 원문 링크도 원본 pack에서 계산해 중복·범위를 확인한다. writer에는
-섹션별 허용 출처 ID와 각 단위의 허용 section을 주며 enforcer와 같은 함수로 계산한다.
-다만 `constraint`의 의미상 적용 범위나 필수 문서 선택의 완전성은 모델 판단이다.
-이 검증이 내용 정확도나 부모 범위 혼입까지 보증한다고 간주하지 않는다.
-본문 schema에는 네 본문 section만, 댓글 schema에는 comment만 허용한다.
+본문 schema는 네 section, 댓글은 comment 하나이며 fact ID·proposal text만 허용한다.
+status·missing_inputs·source_ids·link 블록은 writer 출력에 없다. compiler가 proposal에
+원본 사용자 intent 출처만 결속하고, 선택된 필수 링크를 기존 `editor-plan.v2`로 조립한다.
+원문에서 자동 렌더링되는 링크도 원본 pack으로 계산하며 중복·미선택 링크는 차단한다.
+32개 전체 블록 한도에서 추가 링크 예산을 미리 제외해 writer에 알린다.
+부모·형제 Jira fact를 constraint로 승격하는 것도 차단하지만, 문서 constraint의 의미상
+적용 범위나 필수 문서 선택의 완전성은 모델 판단이다. proposal의 intent citation 역시
+사실성 보증이 아니므로 내용 정확도나 부모 범위 혼입이 해결됐다고 간주하지 않는다.
 Control은 기존 activation/retrieval 합성 검사의 닫힌 입력만 허용하며, 깨진 Editor 입력이나
 임의 schema가 Control로 우회되지 않는다. 유효한 `needs_input` 선택이면 초안을 비우고 writer를 생략한다.
-이 경로는 로컬 테스트로 검증했지만 이번 v17/v18 실측에서 성공한 Stop 경로는 관측하지 못했다.
+이 경로는 로컬 테스트로 검증했지만 이번 fresh v18/v19 실측에서 성공한 Stop은 관측하지 못했다.
+baseline CMP3은 selector 계약 위반으로 writer 전에 실패했으며 native 완전 일치는 4/5다.
 단순 연결 canary는 실제 작성 품질 검증을 대체하지 않는다.
 
 재생성: `python deploy/maxis-dify/editor_graph.py` → `python deploy/maxis-dify/validate_bundle.py`.
@@ -173,10 +181,10 @@ v15의 entity별 `source_ids`는 해당 key 객체를 실제로 포함한 Jira �
 아니며, 원문을 잘라 넣거나 9,000바이트 한도를 높이지 않고 초과 시 실패한다.
 이 투영은 의미상 대상 선택을 돕지만 문장 의미나 최신성 충돌의 해결을 보증하지 않는다.
 
-모델은 `editor-plan.v2`의 section과 fact unit ID·proposal·link를 선택한다. Assembler가
-description의 네 섹션 제목, 기존 seed, HTML·claim·citation을 함께 구성하고, 원본 pack으로
-단위 ID를 다시 확인한다. 모델이 원문을 다시 복사하거나 없는 seed를 지정하지 않는다.
-v1 schema는 과거 증적용으로 남지만 새 Editor 경로에서는 수락하지 않는다.
+모델은 `editor-writing.v1`의 section과 fact unit ID·proposal 문안을 선택하고 compiler가
+출처·필수 링크를 결속한 `editor-plan.v2`로 변환한다. 기존 Assembler가 description의 네
+섹션 제목, 원래 seed, HTML·claim·citation을 구성하며 원본 pack으로 단위 ID를 다시 확인한다.
+모델이 원문을 다시 복사하거나 없는 seed를 지정하지 않는다. 과거 `editor-plan.v1`은 수락하지 않는다.
 
 허용된 합성 control/probe 입력·출력만 검증 후 원형으로 전달한다. 최종 출력 수락 권한은 Assembler가 아니라
 기존 ContractGuard와 로컬 ResponseGuard에 있다. 두 가드는 원본 EvidencePack을 사용한다.
@@ -278,7 +286,7 @@ LTM profile에는 평문이 아니라 proof SHA만 저장한다.
 
 ## 이전 v8 앱·Workflow binding (보존용)
 
-아래는 과거 기록이다. 최신 v15 UUID는 [최신 증적](deployments/dev-editor-scope-2026.09.15.yml)을 사용한다.
+아래는 과거 기록이다. 최신 v19 UUID는 [최신 증적](deployments/dev-editor-writing-2026.09.16.yml)을 사용한다.
 
 | 앱 | App ID | published Workflow ID | 카나리 |
 |---|---|---|---:|
