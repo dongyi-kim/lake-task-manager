@@ -1025,13 +1025,13 @@ def _validate_dify_dsls(
             "start": 1,
             "template-transform": 2,
             "knowledge-retrieval": 2,
-            "llm": 3 if editor_assembly else 1,
-            "code": 4 if editor_assembly else 2,
-            "if-else": 2 if editor_assembly else 1,
+            "llm": 4 if editor_assembly else 1,
+            "code": 7 if editor_assembly else 2,
+            "if-else": 3 if editor_assembly else 1,
             "answer": 2,
         }
         if editor_assembly:
-            expected_node_counts["variable-aggregator"] = 1
+            expected_node_counts["variable-aggregator"] = 2
         actual_node_counts = {
             key: len(value) for key, value in nodes_by_type.items()
         }
@@ -1214,7 +1214,7 @@ def _validate_dify_dsls(
         }
         expected_code_titles = {"Knowledge Guard", "Contract Guard"}
         if editor_assembly:
-            expected_code_titles.update({"Editor Assembler", "Editor Input"})
+            expected_code_titles.update({"Editor Assembler", "Editor Input", "DraftSpec Guard", "Stop Plan", "DraftSpec Enforcer"})
         if set(titled_code_nodes) != expected_code_titles:
             raise BundleValidationError(
                 f"{workflow_key} Dify guard node roles drifted"

@@ -26,7 +26,7 @@ def reject_recovery_settings(value: Any, *, path: str,
 def validate_llm(data: dict, *, label: str, schema: dict, prompts: tuple[str, str],
                  hashes: dict, knowledge_id: str, model_provider: str,
                  model_name: str, max_tokens: int, max_system_bytes: int,
-                 error_type: type[Exception]) -> None:
+                 error_type: type[Exception], knowledge_enabled: bool = True) -> None:
     def fail(message: str) -> None:
         raise error_type(f"{label} Dify LLM {message}")
 
@@ -36,10 +36,11 @@ def validate_llm(data: dict, *, label: str, schema: dict, prompts: tuple[str, st
         "variables", "vision",
     }:
         fail("fields or recovery/fallback settings drifted")
-    if data.get("context") != {
-        "enabled": True, "variable_selector": [knowledge_id, "result"],
-    }:
-        fail("context must select the guarded Role Knowledge result")
+    expected_context = {"enabled": knowledge_enabled,
+                        "variable_selector": [knowledge_id, "result"] if knowledge_enabled else []}
+    if data.get("context") != expected_context:
+        fail("context must select the guarded Role Knowledge result" if knowledge_enabled
+             else "context must remain disabled after DraftSpec selection")
     if (
         data.get("model") != {
             "provider": model_provider, "name": model_name, "mode": "chat",
@@ -59,7 +60,7 @@ def validate_llm(data: dict, *, label: str, schema: dict, prompts: tuple[str, st
         fail("model or structured output drifted (including memory/vision/state)")
     if (data["memory"]["window"]["enabled"] is not False
             or data["vision"]["enabled"] is not False
-            or data["context"]["enabled"] is not True):
+            or data["context"]["enabled"] is not knowledge_enabled):
         fail("memory, vision, or context enablement drifted")
     rows = data.get("prompt_template")
     if (
@@ -108,8 +109,8 @@ def validate_editor_graph(root, nodes: list[dict], edges: list[dict], *, spec,
         by_id[node_id], by_title[title] = node, node
         counts[kind] = counts.get(kind, 0) + 1
     if counts != {"start": 1, "template-transform": 2, "knowledge-retrieval": 2,
-                  "llm": 3, "code": 4, "if-else": 2, "answer": 2,
-                  "variable-aggregator": 1}:
+                  "llm": 4, "code": 7, "if-else": 3, "answer": 2,
+                  "variable-aggregator": 2}:
         fail("Dify node topology drifted")
 
     def titled(title: str, kind: str) -> dict:
@@ -144,7 +145,8 @@ def validate_editor_graph(root, nodes: list[dict], edges: list[dict], *, spec,
                      prompts=prompts, hashes=spec.BRANCH_PROMPT_SHA256[branch],
                      knowledge_id=role["id"], model_provider=model_provider,
                      model_name=model_name, max_tokens=max_tokens,
-                     max_system_bytes=max_system_bytes, error_type=error_type)
+                     max_system_bytes=max_system_bytes, error_type=error_type,
+                     knowledge_enabled=branch not in {"description", "comment"})
     code_fields = {"code", "code_language", "desc", "outputs", "selected", "title", "type", "variables"}
     data = editor_input["data"]
     if (editor_input["id"] != input_id or set(data) != code_fields
@@ -168,10 +170,18 @@ def validate_editor_graph(root, nodes: list[dict], edges: list[dict], *, spec,
             or data.get("variables") != [{"variable": name, "value_selector": selector} for name, selector in selectors]
             or data.get("selected") is not False):
         fail("Editor Assembler binding or source drifted")
-    for node_id, expected in ((spec.ROUTE_NODE_ID, spec.route_data(input_id)),
-                              (spec.MERGE_NODE_ID, spec.merge_data(branch_ids))):
+    try:
+        combined_source = assembler_source + "\n\n" + spec.reviewed_spec_source(root)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise error_type("reviewed DraftSpec source cannot be loaded") from exc
+    expected_nodes = {spec.STAGE_NODE_ID: spec.stage_data(input_id),
+                      spec.ROUTE_NODE_ID: spec.route_data(spec.SPEC_GUARD_NODE_ID),
+                      spec.WRITER_MERGE_NODE_ID: spec.writer_merge_data(branch_ids),
+                      spec.MERGE_NODE_ID: spec.merge_data(branch_ids)}
+    expected_nodes.update(spec.spec_nodes_data(input_id, combined_source, start["id"]))
+    for node_id, expected in expected_nodes.items():
         if node_id not in by_id or by_id[node_id]["data"] != expected:
-            fail("Dify Editor route or candidate merge binding drifted")
+            fail("Dify Editor route, DraftSpec, or candidate merge binding drifted")
 
     routes = {
         (start["id"], "source", sentinel_query["id"]),

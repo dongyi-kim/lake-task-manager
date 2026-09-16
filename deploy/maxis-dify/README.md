@@ -4,7 +4,8 @@
 source bundle이다. DEV와 PROD의 환경 binding을 분리하고, import DSL을 materialize한
 뒤 validator와 원격 release gate를 통과시키는 구조다.
 
-> 2026-09-15: **v16 Editor 단위 분기 구현·DEV 게시 완료, 품질 미통과**.
+> 2026-09-16: 새 DraftSpec 2단계 후보는 로컬 구현·검증 중이다. 아래 수치는 **이전 v16 게시 결과**다.
+> 2026-09-15: v16 Editor 단위 분기 구현·DEV 게시 완료, 품질 미통과.
 > 본문·댓글·합성 제어를 분리했다. Editor **17노드·19엣지**, 나머지 **11·11**이며
 > 실제 작성 요청 5건 모두 올바른 분기의 **LLM 1회**, 원본 근거 전달을 확인했다. canary **3/3**.
 > 동일 component v4의 새 v15 baseline → v16: Guard **5/5 → 5/5**, 자동 **4/5 → 3/5**.
@@ -29,6 +30,7 @@ deployment evidence에 기록하지 않는다.
 | <code>code/knowledge_guard.py</code> | retrieval identity·ACL·크기·policy decision 검증 |
 | <code>code/contract_guard.py</code> | output contract·source graph·payload schema 검증 |
 | <code>code/editor_assembler.py</code> | Editor Input 원문 단위 투영 + typed plan의 source-bound HTML·claim·citation 조립 |
+| <code>code/editor_draft_spec.py</code> | 내부 근거 선택 계약 검증·writer 입력 축소·작성 후 선택 범위 재검사 |
 | <code>editor_graph.py</code> | 본문·댓글·제어 분기별 schema/prompt 정본과 재현 가능한 Editor DSL 생성기 |
 | <code>editor_graph_validation.py</code> | 세 분기를 각각 검사하는 공유 검증기; 환경 생성에도 재사용 |
 | <code>graph_receipt.py</code> | 검증한 로컬 graph와 Dify export의 실행 설정 비교 |
@@ -60,10 +62,11 @@ label은 결과 그룹과 순서만 구분한다. 둘 다 **현재 게시된 프
 정답/checker/rubric과 raw fixture UID는 원격에 보내지 않는다. 이 평가가 통과해도 full compose/UI
 검증이나 activation 승인이 되지 않는다. 아래 v8 수치는 과거 배포 기록으로 읽는다.
 
-## Editor 단위 분기 — DEV v16
+## Editor 근거 선택 → 문안 작성 후보
 
-DEV에 게시한 Editor 후보는 **17노드·19엣지**이며, 새 semantic Role이나 앱을 만들지 않는다.
-코드가 검증한 mode로 한 경로만 선택하므로 정상 요청의 LLM 실행은 **1회**다.
+현재 source는 **23노드·26엣지**이며, 새 semantic Role이나 앱을 만들지 않는다.
+정상 작성은 selector + 해당 writer의 **LLM 2회**, 필수 정보 확인은 selector만 **1회**,
+합성 control 검사는 기존 **1회**, Knowledge 정책 거절은 **0회**다.
 DEV/PROD의 endpoint·key·모델·Knowledge·게시 UUID는 기존 환경 binding에 남는다.
 
 ~~~mermaid
@@ -71,12 +74,19 @@ flowchart LR
     K[Knowledge Guard] --> P{Policy Decision}
     P -->|allow| I[Editor Input: 검증·근거 투영]
     P -->|deny| N[Denied Answer]
-    I --> R{Editor Route: typed mode}
+    I --> S{Editor Stage}
+    S -->|writing| E[DraftSpec LLM: 근거·범위 선택]
+    S -->|allowlisted probe| H[Control LLM: 연결 확인]
+    E --> V[DraftSpec Guard: 검증·입력 축소]
+    V --> R{Editor Route: 검증된 상태·mode}
     R -->|description| D[Description LLM: 본문 계획]
     R -->|comment| C[Comment LLM: 댓글 계획]
-    R -->|allowlisted probe| H[Control LLM: 연결 확인]
-    D --> M[Editor Candidate: 단일 결과 선택]
-    C --> M
+    R -->|needs_input / blocked| T[Stop Plan: writer 생략]
+    D --> W[Writer Candidate]
+    C --> W
+    T --> W
+    W --> F[DraftSpec Enforcer: 선택 범위 재검사]
+    F --> M[Editor Candidate]
     H --> M
     M --> A[Editor Assembler]
     A --> G[Contract Guard]
@@ -84,6 +94,12 @@ flowchart LR
 ~~~
 
 본문·댓글은 `editor-plan.v2`만, 제어 검사는 `remote-role-result.v1`만 생성한다.
+selector는 `editor-draft-spec.v1`의 원문 ID 분류·필수 링크·부족한 사실만 선택한다.
+writer는 선택된 원문만 받으며 native Knowledge context를 다시 주입하지 않는다.
+부모 맥락 fact는 description.background에서만, 역사·충돌 fact는 작성에서 제외한다.
+필수 링크는 정확히 한 번씩 포함해야 하며 미선택 fact/source/link는 차단한다.
+다만 `constraint`의 의미상 적용 범위나 필수 문서 선택의 완전성은 모델 판단이다.
+이 검증이 내용 정확도나 부모 범위 혼입까지 보증한다고 간주하지 않는다.
 본문 schema에는 네 본문 section만, 댓글 schema에는 comment만 허용한다.
 Control은 기존 activation/retrieval 합성 검사의 닫힌 입력만 허용하며, 깨진 Editor 입력이나
 임의 schema가 Control로 우회되지 않는다. 정보가 부족하면 `needs_input`으로 반환하고 초안을 비운다.

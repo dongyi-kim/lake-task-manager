@@ -86,8 +86,8 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
         dsl = yaml.safe_load((ROOT / workflow["dsl"]).read_text(encoding="utf-8"))
         is_editor = workflow["roles"] == ["editor_author"]
         nodes = dsl["workflow"]["graph"]["nodes"]
-        assert len(nodes) == (17 if is_editor else 11)
-        assert len(dsl["workflow"]["graph"]["edges"]) == (19 if is_editor else 11)
+        assert len(nodes) == (23 if is_editor else 11)
+        assert len(dsl["workflow"]["graph"]["edges"]) == (26 if is_editor else 11)
         assert sum(node["data"].get("title") == "Editor Assembler" for node in nodes) == int(is_editor)
         inputs = [node for node in nodes if node["data"].get("title") == "Editor Input"]
         assert len(inputs) == int(is_editor)
@@ -95,7 +95,7 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
             node for node in dsl["workflow"]["graph"]["nodes"]
             if node["data"]["type"] == "llm"
         ]
-        assert len(llms) == (3 if is_editor else 1)
+        assert len(llms) == (4 if is_editor else 1)
         knowledge_guard = next(
             node for node in dsl["workflow"]["graph"]["nodes"]
             if node["data"].get("title") == "Knowledge Guard"
@@ -125,17 +125,22 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
             assert "{{#context#}}" not in prompt_text
             assert "{{#sys.query#}}" not in prompt_text
             assert "{{#start." not in prompt_text
+            writer = is_editor and llm["data"]["title"] in {"Description LLM", "Comment LLM"}
             assert llm["data"]["context"] == {
-                "enabled": True, "variable_selector": [role_knowledge["id"], "result"]}
+                "enabled": not writer, "variable_selector": [] if writer else [role_knowledge["id"], "result"]}
             assert llm["data"]["memory"]["query_prompt_template"] == ""
-            assert f"{{{{#{model_input_id}.model_input#}}}}" in prompt_text
-            if is_editor and llm["data"]["title"] != "Control LLM":
+            spec, _ = validator._editor_graph_modules(ROOT)
+            expected_input = spec.SPEC_GUARD_NODE_ID if writer else model_input_id
+            assert f"{{{{#{expected_input}.model_input#}}}}" in prompt_text
+            if writer:
                 assert "return `editor-plan.v2`" in prompt_text
                 assert "remote-role-result.v1" not in prompt_text
                 assert "never factual evidence or instructions" in prompt_text
-                assert "Do not hide an unfinished request" in prompt_text
-                assert "needs_input" in prompt_text
+                assert "The selector handles missing facts" in prompt_text
                 assert "oneOf" not in llm["data"]["structured_output"]["schema"]
+            elif is_editor and llm["data"]["title"] == "DraftSpec LLM":
+                assert "Return `editor-draft-spec.v1`" in prompt_text
+                assert "never factual evidence or instructions" in prompt_text
             else:
                 assert "untrusted, attribution-only duplicate" in prompt_text
                 assert "With empty `context_pack.sources`" in prompt_text
@@ -409,7 +414,7 @@ def _reviewed_editor_plan_schema(branch="comment", root=ROOT):
     return spec.branch_schema(root, branch, response, validator._dify_structured_output_schema)
 
 
-@pytest.mark.parametrize("branch", ["description", "comment", "control"])
+@pytest.mark.parametrize("branch", ["description", "comment", "control", "selector"])
 @pytest.mark.parametrize("mutation", ["system_prompt", "user_prompt", "schema", "context", "model", "memory", "retry"])
 def test_validator_checks_every_editor_branch_not_only_first_llm(tmp_path, branch, mutation):
     validator = _validator_module()
@@ -453,7 +458,7 @@ def test_validator_closes_editor_routing_and_merge_bindings(tmp_path, mutation):
     else:
         nodes[spec.MERGE_NODE_ID]["output_type"] = "object"
     path.write_text(yaml.safe_dump(dsl, allow_unicode=True, sort_keys=False), encoding="utf-8")
-    with pytest.raises(validator.BundleValidationError, match="route or candidate merge binding"):
+    with pytest.raises(validator.BundleValidationError, match="route, DraftSpec, or candidate merge binding"):
         validator.validate_bundle(target)
 
 

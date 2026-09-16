@@ -72,9 +72,9 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
         dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
         nodes = dsl["workflow"]["graph"]["nodes"]
         is_editor = path.name == "ltm-editor-author-2026.09.yml"
-        assert len(nodes) == (17 if is_editor else 11)
+        assert len(nodes) == (23 if is_editor else 11)
         llm_nodes = [node for node in nodes if node["data"]["type"] == "llm"]
-        assert len(llm_nodes) == (3 if is_editor else 1)
+        assert len(llm_nodes) == (4 if is_editor else 1)
         assembler_nodes = [node for node in nodes if node["data"].get("title") == "Editor Assembler"]
         assert len(assembler_nodes) == int(is_editor)
         input_nodes = [node for node in nodes if node["data"].get("title") == "Editor Input"]
@@ -190,7 +190,7 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
             (edge["source"], edge["sourceHandle"], edge["target"])
             for edge in dsl["workflow"]["graph"]["edges"]
         }
-        assert len(edge_routes) == (19 if is_editor else 11)
+        assert len(edge_routes) == (26 if is_editor else 11)
         assert ("start", "source", role_acl_key["id"]) in edge_routes
         assert (
             role_acl_key["id"], "source", role_knowledge["id"]
@@ -207,7 +207,7 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
             assert all((policy["id"], "true", node["id"]) not in edge_routes for node in llm_nodes)
             route = next(node for node in nodes if node["id"] == spec.ROUTE_NODE_ID)
             merge = next(node for node in nodes if node["id"] == spec.MERGE_NODE_ID)
-            assert route["data"] == spec.route_data(input_nodes[0]["id"])
+            assert route["data"] == spec.route_data(spec.SPEC_GUARD_NODE_ID)
             assert merge["data"] == spec.merge_data(spec.BRANCH_NODE_IDS)
         assert not any(
             source == knowledge_guard["id"] and target in {node["id"] for node in llm_nodes}
@@ -215,8 +215,9 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
         )
         for node in llm_nodes:
             data = node["data"]
+            writer = is_editor and data["title"] in {"Description LLM", "Comment LLM"}
             assert data["context"] == {
-                "enabled": True, "variable_selector": [role_knowledge["id"], "result"]}
+                "enabled": not writer, "variable_selector": [] if writer else [role_knowledge["id"], "result"]}
             assert data["memory"]["query_prompt_template"] == ""
             assert data["model"]["provider"] == environment["model"]["provider"]
             assert data["model"]["name"] == environment["model"]["name"]
@@ -228,7 +229,8 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
                 assert tuple(row["text"] for row in data["prompt_template"]) == spec.branch_prompts(
                     ROOT, branch, input_nodes[0]["id"])
                 if branch != "control":
-                    assert data["structured_output"]["schema"]["properties"]["contract"]["enum"] == ["editor-plan.v2"]
+                    assert data["structured_output"]["schema"]["properties"]["contract"]["enum"] == [
+                        "editor-draft-spec.v1" if branch == "selector" else "editor-plan.v2"]
                     assert "remote-role-result.v1" not in data["prompt_template"][0]["text"]
         # The common envelope rules now belong only to the control branch.
         if is_editor:
@@ -433,7 +435,7 @@ def test_materializer_rejects_editor_input_projection_drift(tmp_path, monkeypatc
         materializer._materialize_dsl(environment, "editor_author")
 
 
-@pytest.mark.parametrize("branch", ["description", "comment", "control"])
+@pytest.mark.parametrize("branch", ["description", "comment", "control", "selector"])
 @pytest.mark.parametrize("mutation", ["system_prompt", "user_prompt", "schema", "context", "model", "memory", "retry"])
 def test_materializer_checks_every_editor_branch_before_overriding_environment(tmp_path, monkeypatch, branch, mutation):
     environment = materializer.load_environment(ROOT / "deploy/maxis-dify/environments/dev-2026.09.yml")
