@@ -9,6 +9,12 @@ Copy request.kind into mode and request.target into target exactly. Decide what
 the user is asking this target to do BEFORE choosing any units. Distinguish the
 current ticket's responsibility from the parent project and completed siblings.
 An empty target description is not permission to substitute the parent document.
+Choose a minimal working set: target summary/responsibility, applicable constraints,
+and only essential parent context. Keys, issue types, status labels and document
+headings alone are not useful draft facts. For a person-directed review, select the
+verified intended addressee's person-marker unit (the target assignee only when
+that is the requested recipient) and the supplied review criteria;
+the writer cannot recover omitted people or criteria from the original pack.
 
 All fields are required; unused arrays are []. Classify only useful original IDs:
 - target_unit_ids: current TARGET Jira facts, especially its actual summary and
@@ -36,6 +42,9 @@ not a new percentile result. Do not ask again for known criteria or draft permis
 status=needs_input: ask the exact missing values in Korean. Empty all three writing
 buckets and required links. status=blocked: the same empty selections and no questions.
 History/conflicts may remain diagnostic but are never writer facts.
+For needs_input, do NOT keep preliminary writable selections. Return this shape
+with the exact request mode/target and your concrete questions:
+`{"contract":"editor-draft-spec.v1","status":"needs_input","mode":"COPY_REQUEST_KIND","target":"COPY_REQUEST_TARGET","target_unit_ids":[],"context_unit_ids":[],"constraint_unit_ids":[],"history_unit_ids":[],"conflicts":[],"required_link_source_ids":[],"missing_inputs":["구체적으로 필요한 값은 무엇인가요?"]}`.
 
 Inspect the selection once: correct target, only relevant constraints, historical
 facts isolated, required document link selected, no fabricated IDs or measurements.

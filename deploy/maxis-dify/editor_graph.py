@@ -23,7 +23,7 @@ STOP_NODE_ID = "1909000000001020"
 WRITER_MERGE_NODE_ID = "1909000000001021"
 ENFORCER_NODE_ID = "1909000000001022"
 SPEC_ASSET_PATH = "deploy/maxis-dify/code/editor_draft_spec.py"
-SPEC_ASSET_SHA256 = "0a34e19dfe9beff05de1c6e70d6b06a644b7a6248e862b5313c2c2bcef1a6e8a"
+SPEC_ASSET_SHA256 = "6fe7f84b5e454dbee43e1598175738c4f4ca6f477660055a9914e8da753ff2ad"
 SPEC_SCHEMA_SHA256 = "b54b7cb8617e15a4977089a9cf3fad4390628193076d3fee693a0001f2793643"
 SPEC_GUARD_ENTRYPOINT = "\n\ndef main(model_input, draft_spec, context_pack):\n    return prepare_spec(model_input, draft_spec, context_pack)\n"
 SPEC_ENFORCER_ENTRYPOINT = "\n\ndef main(candidate, model_input, draft_spec, context_pack):\n    return enforce_spec(candidate, model_input, draft_spec, context_pack)\n"
@@ -35,13 +35,13 @@ BRANCH_TITLES = {"description": "Description LLM", "comment": "Comment LLM",
                  "control": "Control LLM", "selector": "DraftSpec LLM"}
 # Reviewed complete rendered messages, independent of embedded DSL copies.
 BRANCH_PROMPT_SHA256 = {
-    "description": {"system": "bebef636b968dd60a6acf5ada5f84f60d6a5bafd9a7272fdfe3454744c5a4d4b",
+    "description": {"system": "39957322df7c53c5a46a72cd6bcbbf252be26ed00bfd4a88ce6bfe186a542b24",
                     "user": "0b882243f2e854a7fcf11e1844d9159187d9944a6b2ac53092ec829f43f07436"},
-    "comment": {"system": "13f2341fbad4f09d1d1f53660cf6e2062fd2e8933aa0aa15a44c6952c44ea653",
+    "comment": {"system": "48be085fdff9b1fc8f92d57790c122e55c678da47730b2473946f0ac3c22fd01",
                 "user": "0b882243f2e854a7fcf11e1844d9159187d9944a6b2ac53092ec829f43f07436"},
     "control": {"system": "31f9e5c83d094f5321555647f5501e198b24daa760326c2ff791081dce1feb1e",
                 "user": "41e3faa78a5f4d63a4302d6defc5e119c1c7b834d92c272bc6de18c629fb2b99"},
-    "selector": {"system": "854acddefcec103cd1f59c59788278e03fbaad11aadbb80462f670c61d4f2e5c",
+    "selector": {"system": "6bf92cdee5e893c0f01155284a86b13bccd849c6c002c3591c3a5a55e7ef4cca",
                  "user": "41e3faa78a5f4d63a4302d6defc5e119c1c7b834d92c272bc6de18c629fb2b99"},
 }
 

@@ -70,6 +70,10 @@ def test_narrow_writer_view_excludes_history_conflicts_unselected_and_knowledge(
     assert "knowledge_context" not in writer and "entities" not in writer
     assert {u["unit_id"] for s in writer["sources"] for u in s["units"]} == {"u_target", "u_parent", "u_constraint"}
     assert {s["source_id"] for s in writer["sources"]} == {"ticket", "design"}
+    assert writer["draft_contract"]["proposal_source_ids_by_section"] == {
+        section: ["design", "intent", "ticket"] for section in ("background", "scope", "work", "dod")}
+    parent = next(u for s in writer["sources"] for u in s["units"] if u["unit_id"] == "u_parent")
+    assert parent["allowed_sections"] == ["background"]
     assert enforce(sample) == plan
     assert sample == original
 
@@ -106,14 +110,28 @@ def test_writer_cannot_promote_context_or_unselected_units_into_work(sample, uni
     assert enforce(sample)["status"] == "blocked"
 
 
-@pytest.mark.parametrize("mutation", ["missing_link", "wrong_valid_link", "unselected_proposal_source", "invented_plan_key", "reopen_interview"])
+@pytest.mark.parametrize("mutation", ["missing_link", "wrong_valid_link", "unselected_proposal_source", "unit_as_source", "invented_plan_key", "reopen_interview"])
 def test_writer_closure_is_checked_even_when_original_source_exists(sample, mutation):
     plan = sample[2]
     if mutation == "missing_link": plan["sections"][-1]["blocks"].pop()
     elif mutation == "wrong_valid_link": plan["sections"][-1]["blocks"][-1]["source_id"] = "ticket"
     elif mutation == "unselected_proposal_source": plan["sections"][2]["blocks"][0]["source_ids"] = ["other"]
+    elif mutation == "unit_as_source": plan["sections"][2]["blocks"][0]["source_ids"] = ["u_target"]
     elif mutation == "invented_plan_key": plan["raw_html"] = "private"
     else: plan.update(status="needs_input", sections=[], missing_inputs=["다시 확인해 주세요."])
+    assert enforce(sample)["status"] == "blocked"
+
+
+def test_background_only_source_permissions_match_the_enforcer(sample):
+    view, spec, plan = sample
+    ticket = view["sources"][0]
+    parent = ticket["units"].pop(1)
+    view["sources"].append({"source_id": "parent", "kind": "jira", "title": "부모",
+                            "available_link": True, "units": [parent]})
+    writer = json.loads(ASSET["prepare_spec"](encoded(view), encoded(spec), "{}")["model_input"])
+    permissions = writer["draft_contract"]["proposal_source_ids_by_section"]
+    assert "parent" in permissions["background"] and "parent" not in permissions["work"]
+    plan["sections"][2]["blocks"][0]["source_ids"] = ["parent"]
     assert enforce(sample)["status"] == "blocked"
 
 

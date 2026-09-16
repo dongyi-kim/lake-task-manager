@@ -2571,9 +2571,11 @@ workflow:
             Allowed blocks (32 total; tag p/li):
 
             - `{"type":"fact","unit_id":"EXACT_UNIT_ID","tag":"p"}` selects original
-            text.
+            text, only in that unit''s allowed_sections.
 
-            - `{"type":"proposal","text":"조회 경로를 점검한다.","source_ids":["EXACT_SOURCE_ID"],"tag":"li"}`.
+            - `{"type":"proposal","text":"조회 경로를 점검한다.","source_ids":["EXACT_SOURCE_ID"],"tag":"li"}`:
+            copy source_ids ONLY from draft_contract.proposal_source_ids_by_section
+            for this section. A u_... unit_id is NEVER a source_id.
 
             - `{"type":"link","source_id":"EXACT_REQUIRED_LINK_SOURCE_ID"}`.
 
@@ -2600,9 +2602,6 @@ workflow:
 
             or repeated link_source_ids. Do not replace a document with the ticket.
             No other links.
-
-            Proposal source_ids must come from the selected units, required links
-            or intent.
 
             request.source_ids prove intent only: cite them for questions/actions,
             not facts.
@@ -2859,9 +2858,11 @@ workflow:
             Allowed blocks (32 total; tag p/li):
 
             - `{"type":"fact","unit_id":"EXACT_UNIT_ID","tag":"p"}` selects original
-            text.
+            text, only in that unit''s allowed_sections.
 
-            - `{"type":"proposal","text":"조회 경로를 점검한다.","source_ids":["EXACT_SOURCE_ID"],"tag":"li"}`.
+            - `{"type":"proposal","text":"조회 경로를 점검한다.","source_ids":["EXACT_SOURCE_ID"],"tag":"li"}`:
+            copy source_ids ONLY from draft_contract.proposal_source_ids_by_section
+            for this section. A u_... unit_id is NEVER a source_id.
 
             - `{"type":"link","source_id":"EXACT_REQUIRED_LINK_SOURCE_ID"}`.
 
@@ -2888,9 +2889,6 @@ workflow:
 
             or repeated link_source_ids. Do not replace a document with the ticket.
             No other links.
-
-            Proposal source_ids must come from the selected units, required links
-            or intent.
 
             request.source_ids prove intent only: cite them for questions/actions,
             not facts.
@@ -3383,10 +3381,17 @@ workflow:
             \ what\nthe user is asking this target to do BEFORE choosing any units.\
             \ Distinguish the\ncurrent ticket's responsibility from the parent project\
             \ and completed siblings.\nAn empty target description is not permission\
-            \ to substitute the parent document.\n\nAll fields are required; unused\
-            \ arrays are []. Classify only useful original IDs:\n- target_unit_ids:\
-            \ current TARGET Jira facts, especially its actual summary and\n  responsibility.\
-            \ entity_key must equal target. Do not select bare field dumps.\n- context_unit_ids:\
+            \ to substitute the parent document.\nChoose a minimal working set: target\
+            \ summary/responsibility, applicable constraints,\nand only essential\
+            \ parent context. Keys, issue types, status labels and document\nheadings\
+            \ alone are not useful draft facts. For a person-directed review, select\
+            \ the\nverified intended addressee's person-marker unit (the target assignee\
+            \ only when\nthat is the requested recipient) and the supplied review\
+            \ criteria;\nthe writer cannot recover omitted people or criteria from\
+            \ the original pack.\n\nAll fields are required; unused arrays are [].\
+            \ Classify only useful original IDs:\n- target_unit_ids: current TARGET\
+            \ Jira facts, especially its actual summary and\n  responsibility. entity_key\
+            \ must equal target. Do not select bare field dumps.\n- context_unit_ids:\
             \ parent/document purpose needed for background only. Never\n  choose\
             \ parent work as this target's responsibility. Omit redundant background.\n\
             - constraint_unit_ids: verified constraints applicable to this request,\
@@ -3411,8 +3416,14 @@ workflow:
             \ permission.\nstatus=needs_input: ask the exact missing values in Korean.\
             \ Empty all three writing\nbuckets and required links. status=blocked:\
             \ the same empty selections and no questions.\nHistory/conflicts may remain\
-            \ diagnostic but are never writer facts.\n\nInspect the selection once:\
-            \ correct target, only relevant constraints, historical\nfacts isolated,\
+            \ diagnostic but are never writer facts.\nFor needs_input, do NOT keep\
+            \ preliminary writable selections. Return this shape\nwith the exact request\
+            \ mode/target and your concrete questions:\n`{\"contract\":\"editor-draft-spec.v1\"\
+            ,\"status\":\"needs_input\",\"mode\":\"COPY_REQUEST_KIND\",\"target\"\
+            :\"COPY_REQUEST_TARGET\",\"target_unit_ids\":[],\"context_unit_ids\":[],\"\
+            constraint_unit_ids\":[],\"history_unit_ids\":[],\"conflicts\":[],\"required_link_source_ids\"\
+            :[],\"missing_inputs\":[\"구체적으로 필요한 값은 무엇인가요?\"]}`.\n\nInspect the selection\
+            \ once: correct target, only relevant constraints, historical\nfacts isolated,\
             \ required document link selected, no fabricated IDs or measurements."
         - id: 16d2c405-4277-4339-8f8b-b42c4b8f1661
           role: user
@@ -4262,18 +4273,24 @@ workflow:
           \ \"blocked\" and missing):\n        _fail()\n    return view, spec, sources,\
           \ units, buckets\n\n\ndef _spec_terminal(spec):\n    return {\"contract\"\
           : \"editor-plan.v2\", \"status\": spec[\"status\"],\n            \"sections\"\
-          : [], \"missing_inputs\": spec[\"missing_inputs\"]}\n\n\ndef _spec_link_dependencies(view,\
-          \ context_pack):\n    \"\"\"Rebind the projection and count links in the\
-          \ assembler's exact markup.\"\"\"\n    pack = _object(context_pack)\n  \
-          \  mode = route(pack, \"editor_author\", pack.get(\"request_id\"), \"remote-role-result.v1\"\
-          )\n    sources = _sources(pack)\n    _fresh_editor_evidence(pack, sources)\n\
-          \    request = _request(pack, sources, mode)\n    catalog, lookup = _catalog(sources,\
-          \ request[\"target\"])\n    expected = {\"request\": request, \"sources\"\
-          : catalog, \"draft_contract\": _draft_contract(mode),\n                \"\
-          entities\": _entity_scope(sources, request[\"target\"])}\n    if any(_canonical(view[key])\
-          \ != _canonical(value) for key, value in expected.items()):\n        _fail()\n\
-          \    urls = {}\n    for key, source in sources.items():\n        if not\
-          \ _intent(source) and source.get(\"url\"):\n            urls.setdefault(_link(source)[0],\
+          : [], \"missing_inputs\": spec[\"missing_inputs\"]}\n\n\ndef _spec_section_permissions(view,\
+          \ spec, units, buckets, section):\n    facts = buckets[\"target_unit_ids\"\
+          ] | buckets[\"constraint_unit_ids\"]\n    if section == \"background\":\n\
+          \        facts |= buckets[\"context_unit_ids\"]\n    sources = ({units[key][1][\"\
+          source_id\"] for key in facts}\n               | set(spec[\"required_link_source_ids\"\
+          ]) | set(view[\"request\"][\"source_ids\"]))\n    return facts, sources\n\
+          \n\ndef _spec_link_dependencies(view, context_pack):\n    \"\"\"Rebind the\
+          \ projection and count links in the assembler's exact markup.\"\"\"\n  \
+          \  pack = _object(context_pack)\n    mode = route(pack, \"editor_author\"\
+          , pack.get(\"request_id\"), \"remote-role-result.v1\")\n    sources = _sources(pack)\n\
+          \    _fresh_editor_evidence(pack, sources)\n    request = _request(pack,\
+          \ sources, mode)\n    catalog, lookup = _catalog(sources, request[\"target\"\
+          ])\n    expected = {\"request\": request, \"sources\": catalog, \"draft_contract\"\
+          : _draft_contract(mode),\n                \"entities\": _entity_scope(sources,\
+          \ request[\"target\"])}\n    if any(_canonical(view[key]) != _canonical(value)\
+          \ for key, value in expected.items()):\n        _fail()\n    urls = {}\n\
+          \    for key, source in sources.items():\n        if not _intent(source)\
+          \ and source.get(\"url\"):\n            urls.setdefault(_link(source)[0],\
           \ []).append(key)\n    dependencies = {}\n    for key, unit in lookup.items():\n\
           \        refs = []\n        # Only _reference_text creates markup; all source\
           \ text is HTML-escaped.\n        # Keep repeated/self links: deduplicated\
@@ -4290,54 +4307,56 @@ workflow:
           \        selected = buckets[\"target_unit_ids\"] | buckets[\"context_unit_ids\"\
           ] | buckets[\"constraint_unit_ids\"]\n        used = {units[key][1][\"source_id\"\
           ] for key in selected} | set(spec[\"required_link_source_ids\"])\n     \
-          \   # History/conflict text cannot accidentally become the writer's evidence.\n\
-          \        writer_sources = [{**source, \"units\": [{**unit, \"link_source_ids\"\
-          : dependencies[unit[\"unit_id\"]]}\n                          for unit in\
+          \   permissions = {section: _spec_section_permissions(view, spec, units,\
+          \ buckets, section)\n                       for section in _section_order(spec[\"\
+          mode\"])}\n        # History/conflict text cannot accidentally become the\
+          \ writer's evidence.\n        writer_sources = [{**source, \"units\": [{**unit,\
+          \ \"link_source_ids\": dependencies[unit[\"unit_id\"]],\n              \
+          \            \"allowed_sections\": [name for name, (facts, _) in permissions.items()\
+          \ if unit[\"unit_id\"] in facts]}\n                          for unit in\
           \ source[\"units\"] if unit[\"unit_id\"] in selected]}\n               \
           \           for key, source in sources.items() if key in used]\n       \
           \ writer_contract = {**view[\"draft_contract\"], \"purpose\": (\n      \
           \      \"Write only the admitted target purpose, work and DoD; parent is\
           \ background.\"\n            if spec[\"mode\"] == \"description\" else\n\
           \            \"Write one admitted comment using known person, criteria and\
-          \ document references; server inserts seed.\"\n        )}\n        projected\
-          \ = {\"contract\": \"editor-writer-input.v1\", \"request\": view[\"request\"\
-          ],\n                     \"draft_contract\": writer_contract, \"selection\"\
-          : {\n                         key: spec[key] for key in (\"target_unit_ids\"\
-          , \"context_unit_ids\", \"constraint_unit_ids\",\n                     \
-          \                              \"required_link_source_ids\")}, \"sources\"\
-          : writer_sources}\n        encoded = _canonical(projected)\n        if len(encoded.encode(\"\
-          utf-8\")) > 9000:\n            _fail()\n        return {\"model_input\"\
-          : encoded, \"route\": spec[\"mode\"], \"candidate\": \"\"}\n    except Exception:\n\
-          \        raise ValueError(\"invalid_editor_draft_spec\") from None\n\n\n\
-          def enforce_spec(candidate, model_input, draft_spec, context_pack):\n  \
-          \  \"\"\"Enforce selection closure before the unchanged original-pack assembler.\"\
-          \"\"\n    blocked = {\"contract\": \"editor-plan.v2\", \"status\": \"blocked\"\
-          , \"sections\": [], \"missing_inputs\": []}\n    try:\n        view, spec,\
-          \ sources, units, buckets = _validated_spec(model_input, draft_spec)\n \
-          \       dependencies = _spec_link_dependencies(view, context_pack)\n   \
-          \     plan = _object(candidate)\n        if spec[\"status\"] != \"ok\":\n\
-          \            if _canonical(plan) != _canonical(_spec_terminal(spec)):\n\
+          \ document references; server inserts seed.\"\n        ), \"proposal_source_ids_by_section\"\
+          : {name: sorted(refs) for name, (_, refs) in permissions.items()}}\n   \
+          \     projected = {\"contract\": \"editor-writer-input.v1\", \"request\"\
+          : view[\"request\"],\n                     \"draft_contract\": writer_contract,\
+          \ \"selection\": {\n                         key: spec[key] for key in (\"\
+          target_unit_ids\", \"context_unit_ids\", \"constraint_unit_ids\",\n    \
+          \                                               \"required_link_source_ids\"\
+          )}, \"sources\": writer_sources}\n        encoded = _canonical(projected)\n\
+          \        if len(encoded.encode(\"utf-8\")) > 9000:\n            _fail()\n\
+          \        return {\"model_input\": encoded, \"route\": spec[\"mode\"], \"\
+          candidate\": \"\"}\n    except Exception:\n        raise ValueError(\"invalid_editor_draft_spec\"\
+          ) from None\n\n\ndef enforce_spec(candidate, model_input, draft_spec, context_pack):\n\
+          \    \"\"\"Enforce selection closure before the unchanged original-pack\
+          \ assembler.\"\"\"\n    blocked = {\"contract\": \"editor-plan.v2\", \"\
+          status\": \"blocked\", \"sections\": [], \"missing_inputs\": []}\n    try:\n\
+          \        view, spec, sources, units, buckets = _validated_spec(model_input,\
+          \ draft_spec)\n        dependencies = _spec_link_dependencies(view, context_pack)\n\
+          \        plan = _object(candidate)\n        if spec[\"status\"] != \"ok\"\
+          :\n            if _canonical(plan) != _canonical(_spec_terminal(spec)):\n\
           \                _fail()\n            return {\"candidate\": _canonical(plan)}\n\
           \        if (set(plan) != {\"contract\", \"status\", \"sections\", \"missing_inputs\"\
           }\n                or plan[\"contract\"] != \"editor-plan.v2\" or plan[\"\
           status\"] != \"ok\"\n                or plan[\"missing_inputs\"] != [] or\
           \ not isinstance(plan[\"sections\"], list)\n                or [row.get(\"\
           section\") for row in plan[\"sections\"]] != _section_order(spec[\"mode\"\
-          ])):\n            _fail()\n        base = buckets[\"target_unit_ids\"] |\
-          \ buckets[\"constraint_unit_ids\"]\n        links, used_links, count = set(spec[\"\
+          ])):\n            _fail()\n        links, used_links, count = set(spec[\"\
           required_link_source_ids\"]), set(), 0\n        for section in plan[\"sections\"\
           ]:\n            if (set(section) != {\"section\", \"blocks\"} or not isinstance(section[\"\
           blocks\"], list)\n                    or not section[\"blocks\"]):\n   \
-          \             _fail()\n            allowed_units = base | (buckets[\"context_unit_ids\"\
-          ] if section[\"section\"] == \"background\" else set())\n            allowed_sources\
-          \ = {units[key][1][\"source_id\"] for key in allowed_units} | links | set(view[\"\
-          request\"][\"source_ids\"])\n            for block in section[\"blocks\"\
-          ]:\n                count += 1\n                if count > 32 or not isinstance(block,\
-          \ dict):\n                    _fail()\n                kind = block.get(\"\
-          type\")\n                rendered_links = []\n                if kind ==\
-          \ \"fact\":\n                    if set(block) != {\"type\", \"unit_id\"\
-          , \"tag\"} or block[\"unit_id\"] not in allowed_units:\n               \
-          \         _fail()\n                    rendered_links = dependencies[block[\"\
+          \             _fail()\n            allowed_units, allowed_sources = _spec_section_permissions(view,\
+          \ spec, units, buckets, section[\"section\"])\n            for block in\
+          \ section[\"blocks\"]:\n                count += 1\n                if count\
+          \ > 32 or not isinstance(block, dict):\n                    _fail()\n  \
+          \              kind = block.get(\"type\")\n                rendered_links\
+          \ = []\n                if kind == \"fact\":\n                    if set(block)\
+          \ != {\"type\", \"unit_id\", \"tag\"} or block[\"unit_id\"] not in allowed_units:\n\
+          \                        _fail()\n                    rendered_links = dependencies[block[\"\
           unit_id\"]]\n                elif kind == \"proposal\":\n              \
           \      if set(block) != {\"type\", \"text\", \"source_ids\", \"tag\"}:\n\
           \                        _fail()\n                    _text(block[\"text\"\
@@ -5006,18 +5025,24 @@ workflow:
           \ \"blocked\" and missing):\n        _fail()\n    return view, spec, sources,\
           \ units, buckets\n\n\ndef _spec_terminal(spec):\n    return {\"contract\"\
           : \"editor-plan.v2\", \"status\": spec[\"status\"],\n            \"sections\"\
-          : [], \"missing_inputs\": spec[\"missing_inputs\"]}\n\n\ndef _spec_link_dependencies(view,\
-          \ context_pack):\n    \"\"\"Rebind the projection and count links in the\
-          \ assembler's exact markup.\"\"\"\n    pack = _object(context_pack)\n  \
-          \  mode = route(pack, \"editor_author\", pack.get(\"request_id\"), \"remote-role-result.v1\"\
-          )\n    sources = _sources(pack)\n    _fresh_editor_evidence(pack, sources)\n\
-          \    request = _request(pack, sources, mode)\n    catalog, lookup = _catalog(sources,\
-          \ request[\"target\"])\n    expected = {\"request\": request, \"sources\"\
-          : catalog, \"draft_contract\": _draft_contract(mode),\n                \"\
-          entities\": _entity_scope(sources, request[\"target\"])}\n    if any(_canonical(view[key])\
-          \ != _canonical(value) for key, value in expected.items()):\n        _fail()\n\
-          \    urls = {}\n    for key, source in sources.items():\n        if not\
-          \ _intent(source) and source.get(\"url\"):\n            urls.setdefault(_link(source)[0],\
+          : [], \"missing_inputs\": spec[\"missing_inputs\"]}\n\n\ndef _spec_section_permissions(view,\
+          \ spec, units, buckets, section):\n    facts = buckets[\"target_unit_ids\"\
+          ] | buckets[\"constraint_unit_ids\"]\n    if section == \"background\":\n\
+          \        facts |= buckets[\"context_unit_ids\"]\n    sources = ({units[key][1][\"\
+          source_id\"] for key in facts}\n               | set(spec[\"required_link_source_ids\"\
+          ]) | set(view[\"request\"][\"source_ids\"]))\n    return facts, sources\n\
+          \n\ndef _spec_link_dependencies(view, context_pack):\n    \"\"\"Rebind the\
+          \ projection and count links in the assembler's exact markup.\"\"\"\n  \
+          \  pack = _object(context_pack)\n    mode = route(pack, \"editor_author\"\
+          , pack.get(\"request_id\"), \"remote-role-result.v1\")\n    sources = _sources(pack)\n\
+          \    _fresh_editor_evidence(pack, sources)\n    request = _request(pack,\
+          \ sources, mode)\n    catalog, lookup = _catalog(sources, request[\"target\"\
+          ])\n    expected = {\"request\": request, \"sources\": catalog, \"draft_contract\"\
+          : _draft_contract(mode),\n                \"entities\": _entity_scope(sources,\
+          \ request[\"target\"])}\n    if any(_canonical(view[key]) != _canonical(value)\
+          \ for key, value in expected.items()):\n        _fail()\n    urls = {}\n\
+          \    for key, source in sources.items():\n        if not _intent(source)\
+          \ and source.get(\"url\"):\n            urls.setdefault(_link(source)[0],\
           \ []).append(key)\n    dependencies = {}\n    for key, unit in lookup.items():\n\
           \        refs = []\n        # Only _reference_text creates markup; all source\
           \ text is HTML-escaped.\n        # Keep repeated/self links: deduplicated\
@@ -5034,54 +5059,56 @@ workflow:
           \        selected = buckets[\"target_unit_ids\"] | buckets[\"context_unit_ids\"\
           ] | buckets[\"constraint_unit_ids\"]\n        used = {units[key][1][\"source_id\"\
           ] for key in selected} | set(spec[\"required_link_source_ids\"])\n     \
-          \   # History/conflict text cannot accidentally become the writer's evidence.\n\
-          \        writer_sources = [{**source, \"units\": [{**unit, \"link_source_ids\"\
-          : dependencies[unit[\"unit_id\"]]}\n                          for unit in\
+          \   permissions = {section: _spec_section_permissions(view, spec, units,\
+          \ buckets, section)\n                       for section in _section_order(spec[\"\
+          mode\"])}\n        # History/conflict text cannot accidentally become the\
+          \ writer's evidence.\n        writer_sources = [{**source, \"units\": [{**unit,\
+          \ \"link_source_ids\": dependencies[unit[\"unit_id\"]],\n              \
+          \            \"allowed_sections\": [name for name, (facts, _) in permissions.items()\
+          \ if unit[\"unit_id\"] in facts]}\n                          for unit in\
           \ source[\"units\"] if unit[\"unit_id\"] in selected]}\n               \
           \           for key, source in sources.items() if key in used]\n       \
           \ writer_contract = {**view[\"draft_contract\"], \"purpose\": (\n      \
           \      \"Write only the admitted target purpose, work and DoD; parent is\
           \ background.\"\n            if spec[\"mode\"] == \"description\" else\n\
           \            \"Write one admitted comment using known person, criteria and\
-          \ document references; server inserts seed.\"\n        )}\n        projected\
-          \ = {\"contract\": \"editor-writer-input.v1\", \"request\": view[\"request\"\
-          ],\n                     \"draft_contract\": writer_contract, \"selection\"\
-          : {\n                         key: spec[key] for key in (\"target_unit_ids\"\
-          , \"context_unit_ids\", \"constraint_unit_ids\",\n                     \
-          \                              \"required_link_source_ids\")}, \"sources\"\
-          : writer_sources}\n        encoded = _canonical(projected)\n        if len(encoded.encode(\"\
-          utf-8\")) > 9000:\n            _fail()\n        return {\"model_input\"\
-          : encoded, \"route\": spec[\"mode\"], \"candidate\": \"\"}\n    except Exception:\n\
-          \        raise ValueError(\"invalid_editor_draft_spec\") from None\n\n\n\
-          def enforce_spec(candidate, model_input, draft_spec, context_pack):\n  \
-          \  \"\"\"Enforce selection closure before the unchanged original-pack assembler.\"\
-          \"\"\n    blocked = {\"contract\": \"editor-plan.v2\", \"status\": \"blocked\"\
-          , \"sections\": [], \"missing_inputs\": []}\n    try:\n        view, spec,\
-          \ sources, units, buckets = _validated_spec(model_input, draft_spec)\n \
-          \       dependencies = _spec_link_dependencies(view, context_pack)\n   \
-          \     plan = _object(candidate)\n        if spec[\"status\"] != \"ok\":\n\
-          \            if _canonical(plan) != _canonical(_spec_terminal(spec)):\n\
+          \ document references; server inserts seed.\"\n        ), \"proposal_source_ids_by_section\"\
+          : {name: sorted(refs) for name, (_, refs) in permissions.items()}}\n   \
+          \     projected = {\"contract\": \"editor-writer-input.v1\", \"request\"\
+          : view[\"request\"],\n                     \"draft_contract\": writer_contract,\
+          \ \"selection\": {\n                         key: spec[key] for key in (\"\
+          target_unit_ids\", \"context_unit_ids\", \"constraint_unit_ids\",\n    \
+          \                                               \"required_link_source_ids\"\
+          )}, \"sources\": writer_sources}\n        encoded = _canonical(projected)\n\
+          \        if len(encoded.encode(\"utf-8\")) > 9000:\n            _fail()\n\
+          \        return {\"model_input\": encoded, \"route\": spec[\"mode\"], \"\
+          candidate\": \"\"}\n    except Exception:\n        raise ValueError(\"invalid_editor_draft_spec\"\
+          ) from None\n\n\ndef enforce_spec(candidate, model_input, draft_spec, context_pack):\n\
+          \    \"\"\"Enforce selection closure before the unchanged original-pack\
+          \ assembler.\"\"\"\n    blocked = {\"contract\": \"editor-plan.v2\", \"\
+          status\": \"blocked\", \"sections\": [], \"missing_inputs\": []}\n    try:\n\
+          \        view, spec, sources, units, buckets = _validated_spec(model_input,\
+          \ draft_spec)\n        dependencies = _spec_link_dependencies(view, context_pack)\n\
+          \        plan = _object(candidate)\n        if spec[\"status\"] != \"ok\"\
+          :\n            if _canonical(plan) != _canonical(_spec_terminal(spec)):\n\
           \                _fail()\n            return {\"candidate\": _canonical(plan)}\n\
           \        if (set(plan) != {\"contract\", \"status\", \"sections\", \"missing_inputs\"\
           }\n                or plan[\"contract\"] != \"editor-plan.v2\" or plan[\"\
           status\"] != \"ok\"\n                or plan[\"missing_inputs\"] != [] or\
           \ not isinstance(plan[\"sections\"], list)\n                or [row.get(\"\
           section\") for row in plan[\"sections\"]] != _section_order(spec[\"mode\"\
-          ])):\n            _fail()\n        base = buckets[\"target_unit_ids\"] |\
-          \ buckets[\"constraint_unit_ids\"]\n        links, used_links, count = set(spec[\"\
+          ])):\n            _fail()\n        links, used_links, count = set(spec[\"\
           required_link_source_ids\"]), set(), 0\n        for section in plan[\"sections\"\
           ]:\n            if (set(section) != {\"section\", \"blocks\"} or not isinstance(section[\"\
           blocks\"], list)\n                    or not section[\"blocks\"]):\n   \
-          \             _fail()\n            allowed_units = base | (buckets[\"context_unit_ids\"\
-          ] if section[\"section\"] == \"background\" else set())\n            allowed_sources\
-          \ = {units[key][1][\"source_id\"] for key in allowed_units} | links | set(view[\"\
-          request\"][\"source_ids\"])\n            for block in section[\"blocks\"\
-          ]:\n                count += 1\n                if count > 32 or not isinstance(block,\
-          \ dict):\n                    _fail()\n                kind = block.get(\"\
-          type\")\n                rendered_links = []\n                if kind ==\
-          \ \"fact\":\n                    if set(block) != {\"type\", \"unit_id\"\
-          , \"tag\"} or block[\"unit_id\"] not in allowed_units:\n               \
-          \         _fail()\n                    rendered_links = dependencies[block[\"\
+          \             _fail()\n            allowed_units, allowed_sources = _spec_section_permissions(view,\
+          \ spec, units, buckets, section[\"section\"])\n            for block in\
+          \ section[\"blocks\"]:\n                count += 1\n                if count\
+          \ > 32 or not isinstance(block, dict):\n                    _fail()\n  \
+          \              kind = block.get(\"type\")\n                rendered_links\
+          \ = []\n                if kind == \"fact\":\n                    if set(block)\
+          \ != {\"type\", \"unit_id\", \"tag\"} or block[\"unit_id\"] not in allowed_units:\n\
+          \                        _fail()\n                    rendered_links = dependencies[block[\"\
           unit_id\"]]\n                elif kind == \"proposal\":\n              \
           \      if set(block) != {\"type\", \"text\", \"source_ids\", \"tag\"}:\n\
           \                        _fail()\n                    _text(block[\"text\"\

@@ -81,6 +81,15 @@ def _spec_terminal(spec):
             "sections": [], "missing_inputs": spec["missing_inputs"]}
 
 
+def _spec_section_permissions(view, spec, units, buckets, section):
+    facts = buckets["target_unit_ids"] | buckets["constraint_unit_ids"]
+    if section == "background":
+        facts |= buckets["context_unit_ids"]
+    sources = ({units[key][1]["source_id"] for key in facts}
+               | set(spec["required_link_source_ids"]) | set(view["request"]["source_ids"]))
+    return facts, sources
+
+
 def _spec_link_dependencies(view, context_pack):
     """Rebind the projection and count links in the assembler's exact markup."""
     pack = _object(context_pack)
@@ -120,15 +129,18 @@ def prepare_spec(model_input, draft_spec, context_pack):
             return {"model_input": "{}", "route": "stop", "candidate": _canonical(_spec_terminal(spec))}
         selected = buckets["target_unit_ids"] | buckets["context_unit_ids"] | buckets["constraint_unit_ids"]
         used = {units[key][1]["source_id"] for key in selected} | set(spec["required_link_source_ids"])
+        permissions = {section: _spec_section_permissions(view, spec, units, buckets, section)
+                       for section in _section_order(spec["mode"])}
         # History/conflict text cannot accidentally become the writer's evidence.
-        writer_sources = [{**source, "units": [{**unit, "link_source_ids": dependencies[unit["unit_id"]]}
+        writer_sources = [{**source, "units": [{**unit, "link_source_ids": dependencies[unit["unit_id"]],
+                          "allowed_sections": [name for name, (facts, _) in permissions.items() if unit["unit_id"] in facts]}
                           for unit in source["units"] if unit["unit_id"] in selected]}
                           for key, source in sources.items() if key in used]
         writer_contract = {**view["draft_contract"], "purpose": (
             "Write only the admitted target purpose, work and DoD; parent is background."
             if spec["mode"] == "description" else
             "Write one admitted comment using known person, criteria and document references; server inserts seed."
-        )}
+        ), "proposal_source_ids_by_section": {name: sorted(refs) for name, (_, refs) in permissions.items()}}
         projected = {"contract": "editor-writer-input.v1", "request": view["request"],
                      "draft_contract": writer_contract, "selection": {
                          key: spec[key] for key in ("target_unit_ids", "context_unit_ids", "constraint_unit_ids",
@@ -157,14 +169,12 @@ def enforce_spec(candidate, model_input, draft_spec, context_pack):
                 or plan["missing_inputs"] != [] or not isinstance(plan["sections"], list)
                 or [row.get("section") for row in plan["sections"]] != _section_order(spec["mode"])):
             _fail()
-        base = buckets["target_unit_ids"] | buckets["constraint_unit_ids"]
         links, used_links, count = set(spec["required_link_source_ids"]), set(), 0
         for section in plan["sections"]:
             if (set(section) != {"section", "blocks"} or not isinstance(section["blocks"], list)
                     or not section["blocks"]):
                 _fail()
-            allowed_units = base | (buckets["context_unit_ids"] if section["section"] == "background" else set())
-            allowed_sources = {units[key][1]["source_id"] for key in allowed_units} | links | set(view["request"]["source_ids"])
+            allowed_units, allowed_sources = _spec_section_permissions(view, spec, units, buckets, section["section"])
             for block in section["blocks"]:
                 count += 1
                 if count > 32 or not isinstance(block, dict):
