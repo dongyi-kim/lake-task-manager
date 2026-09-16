@@ -48,6 +48,10 @@ def _validated_spec(model_input, draft_spec):
         unit, source = units[unit_id]
         if source["kind"] == "jira" and unit["entity_key"] not in parents:
             _fail()
+    for unit_id in buckets["constraint_unit_ids"]:
+        unit, source = units[unit_id]
+        if source["kind"] == "jira" and unit["entity_key"] != spec["target"]:
+            _fail()  # A constraint label cannot promote parent/sibling ownership.
     conflicts = spec["conflicts"]
     if not isinstance(conflicts, list) or len(conflicts) > 8:
         _fail()
@@ -81,13 +85,11 @@ def _spec_terminal(spec):
             "sections": [], "missing_inputs": spec["missing_inputs"]}
 
 
-def _spec_section_permissions(view, spec, units, buckets, section):
+def _spec_section_units(buckets, section):
     facts = buckets["target_unit_ids"] | buckets["constraint_unit_ids"]
     if section == "background":
         facts |= buckets["context_unit_ids"]
-    sources = ({units[key][1]["source_id"] for key in facts}
-               | set(spec["required_link_source_ids"]) | set(view["request"]["source_ids"]))
-    return facts, sources
+    return facts
 
 
 def _spec_link_dependencies(view, context_pack):
@@ -124,27 +126,25 @@ def prepare_spec(model_input, draft_spec, context_pack):
     """Validate selection and narrow writer input; a non-ok selection skips it."""
     try:
         view, spec, sources, units, buckets = _validated_spec(model_input, draft_spec)
-        dependencies = _spec_link_dependencies(view, context_pack)
+        _spec_link_dependencies(view, context_pack)
         if spec["status"] != "ok":
             return {"model_input": "{}", "route": "stop", "candidate": _canonical(_spec_terminal(spec))}
-        selected = buckets["target_unit_ids"] | buckets["context_unit_ids"] | buckets["constraint_unit_ids"]
-        used = {units[key][1]["source_id"] for key in selected} | set(spec["required_link_source_ids"])
-        permissions = {section: _spec_section_permissions(view, spec, units, buckets, section)
+        permissions = {section: _spec_section_units(buckets, section)
                        for section in _section_order(spec["mode"])}
-        # History/conflict text cannot accidentally become the writer's evidence.
-        writer_sources = [{**source, "units": [{**unit, "link_source_ids": dependencies[unit["unit_id"]],
-                          "allowed_sections": [name for name, (facts, _) in permissions.items() if unit["unit_id"] in facts]}
-                          for unit in source["units"] if unit["unit_id"] in selected]}
-                          for key, source in sources.items() if key in used]
-        writer_contract = {**view["draft_contract"], "purpose": (
+        # Writers choose semantic content, not source IDs or link bookkeeping.
+        # Omit units unusable in this mode, including background-only comments.
+        writer_units = [{"unit_id": key, "text": unit["text"],
+                         "allowed_sections": [name for name, facts in permissions.items() if key in facts]}
+                        for key, (unit, _) in units.items() if any(key in facts for facts in permissions.values())]
+        writer_contract = {"section_order": _section_order(spec["mode"]),
+                           "max_blocks": 32 - len(spec["required_link_source_ids"]), "purpose": (
             "Write only the admitted target purpose, work and DoD; parent is background."
             if spec["mode"] == "description" else
-            "Write one admitted comment using known person, criteria and document references; server inserts seed."
-        ), "proposal_source_ids_by_section": {name: sorted(refs) for name, (_, refs) in permissions.items()}}
-        projected = {"contract": "editor-writer-input.v1", "request": view["request"],
-                     "draft_contract": writer_contract, "selection": {
-                         key: spec[key] for key in ("target_unit_ids", "context_unit_ids", "constraint_unit_ids",
-                                                   "required_link_source_ids")}, "sources": writer_sources}
+            "Write one admitted comment using selected facts for known people and criteria; server inserts seed and links."
+        )}
+        projected = {"contract": "editor-writer-input.v2",
+                     "request": {key: value for key, value in view["request"].items() if key != "source_ids"},
+                     "draft_contract": writer_contract, "units": writer_units}
         encoded = _canonical(projected)
         if len(encoded.encode("utf-8")) > 9000:
             _fail()
@@ -154,7 +154,11 @@ def prepare_spec(model_input, draft_spec, context_pack):
 
 
 def enforce_spec(candidate, model_input, draft_spec, context_pack):
-    """Enforce selection closure before the unchanged original-pack assembler."""
+    """Compile a small writer contract into the unchanged assembler contract.
+
+    Proposal citations attest only to user intent, never to source facts. Facts
+    stay extractive and selected links are supplied by code, not model output.
+    """
     blocked = {"contract": "editor-plan.v2", "status": "blocked", "sections": [], "missing_inputs": []}
     try:
         view, spec, sources, units, buckets = _validated_spec(model_input, draft_spec)
@@ -164,17 +168,20 @@ def enforce_spec(candidate, model_input, draft_spec, context_pack):
             if _canonical(plan) != _canonical(_spec_terminal(spec)):
                 _fail()
             return {"candidate": _canonical(plan)}
-        if (set(plan) != {"contract", "status", "sections", "missing_inputs"}
-                or plan["contract"] != "editor-plan.v2" or plan["status"] != "ok"
-                or plan["missing_inputs"] != [] or not isinstance(plan["sections"], list)
+        if (set(plan) != {"contract", "sections"}
+                or plan["contract"] != "editor-writing.v1" or not isinstance(plan["sections"], list)
                 or [row.get("section") for row in plan["sections"]] != _section_order(spec["mode"])):
             _fail()
+        intent_refs = view["request"]["source_ids"]
+        _spec_ids(intent_refs, set(intent_refs), 8, 1)
+        compiled = {"contract": "editor-plan.v2", "status": "ok", "sections": [], "missing_inputs": []}
         links, used_links, count = set(spec["required_link_source_ids"]), set(), 0
         for section in plan["sections"]:
             if (set(section) != {"section", "blocks"} or not isinstance(section["blocks"], list)
                     or not section["blocks"]):
                 _fail()
-            allowed_units, allowed_sources = _spec_section_permissions(view, spec, units, buckets, section["section"])
+            allowed_units = _spec_section_units(buckets, section["section"])
+            compiled_blocks = []
             for block in section["blocks"]:
                 count += 1
                 if count > 32 or not isinstance(block, dict):
@@ -185,25 +192,28 @@ def enforce_spec(candidate, model_input, draft_spec, context_pack):
                     if set(block) != {"type", "unit_id", "tag"} or block["unit_id"] not in allowed_units:
                         _fail()
                     rendered_links = dependencies[block["unit_id"]]
+                    compiled_blocks.append(dict(block))
                 elif kind == "proposal":
-                    if set(block) != {"type", "text", "source_ids", "tag"}:
+                    if set(block) != {"type", "text", "tag"}:
                         _fail()
-                    _text(block["text"])
-                    _spec_ids(block["source_ids"], allowed_sources, 8, 1)
-                elif kind == "link":
-                    if set(block) != {"type", "source_id"}:
+                    text = _text(block["text"])
+                    if _URL.search(text) or "[[person:" in text or re.search(r"(?<!\w)@\S+", text):
                         _fail()
-                    rendered_links = [block["source_id"]]
+                    compiled_blocks.append({**block, "source_ids": list(intent_refs)})
                 else:
                     _fail()
-                if kind != "link" and block["tag"] not in {"p", "li"}:
+                if block["tag"] not in {"p", "li"}:
                     _fail()
                 for source_id in rendered_links:
                     if source_id not in links or source_id in used_links:
                         _fail()
                     used_links.add(source_id)
-        if used_links != links:
+            compiled["sections"].append({"section": section["section"], "blocks": compiled_blocks})
+        # Preserve selected order; never repair duplicate or unselected inline links.
+        missing_links = [key for key in spec["required_link_source_ids"] if key not in used_links]
+        if count + len(missing_links) > 32:
             _fail()
-        return {"candidate": _canonical(plan)}
+        compiled["sections"][-1]["blocks"].extend({"type": "link", "source_id": key} for key in missing_links)
+        return {"candidate": _canonical(compiled)}
     except Exception:
         return {"candidate": _canonical(blocked)}

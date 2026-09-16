@@ -40,12 +40,11 @@ def sample(monkeypatch):
             "target_unit_ids": ["u_target"], "context_unit_ids": ["u_parent"],
             "constraint_unit_ids": ["u_constraint"], "history_unit_ids": ["u_history"],
             "conflicts": [], "required_link_source_ids": ["design"], "missing_inputs": []}
-    plan = {"contract": "editor-plan.v2", "status": "ok", "missing_inputs": [], "sections": [
+    plan = {"contract": "editor-writing.v1", "sections": [
         {"section": "background", "blocks": [{"type": "fact", "unit_id": "u_parent", "tag": "p"}]},
         {"section": "scope", "blocks": [{"type": "fact", "unit_id": "u_target", "tag": "p"}]},
-        {"section": "work", "blocks": [{"type": "proposal", "text": "현재 연동을 점검한다.", "source_ids": ["ticket"], "tag": "li"}]},
-        {"section": "dod", "blocks": [{"type": "fact", "unit_id": "u_constraint", "tag": "p"},
-                                       {"type": "link", "source_id": "design"}]},
+        {"section": "work", "blocks": [{"type": "proposal", "text": "현재 연동을 점검한다.", "tag": "li"}]},
+        {"section": "dod", "blocks": [{"type": "fact", "unit_id": "u_constraint", "tag": "p"}]},
     ]}
     # Isolate contract tests from the original-pack renderer. Integration tests
     # below exercise the real dependency helper without this fixture/mock.
@@ -66,21 +65,24 @@ def test_narrow_writer_view_excludes_history_conflicts_unselected_and_knowledge(
     assert first == ASSET["prepare_spec"](encoded(view), encoded(spec), "{}")
     assert first["route"] == "description"
     writer = json.loads(first["model_input"])
-    assert writer["contract"] == "editor-writer-input.v1"
+    assert writer["contract"] == "editor-writer-input.v2"
     assert "knowledge_context" not in writer and "entities" not in writer
-    assert {u["unit_id"] for s in writer["sources"] for u in s["units"]} == {"u_target", "u_parent", "u_constraint"}
-    assert {s["source_id"] for s in writer["sources"]} == {"ticket", "design"}
-    assert writer["draft_contract"]["proposal_source_ids_by_section"] == {
-        section: ["design", "intent", "ticket"] for section in ("background", "scope", "work", "dod")}
-    parent = next(u for s in writer["sources"] for u in s["units"] if u["unit_id"] == "u_parent")
+    assert {u["unit_id"] for u in writer["units"]} == {"u_target", "u_parent", "u_constraint"}
+    assert "source_ids" not in encoded(writer) and "required_link" not in encoded(writer)
+    assert writer["draft_contract"]["max_blocks"] == 31  # Reserve the server-owned link.
+    parent = next(u for u in writer["units"] if u["unit_id"] == "u_parent")
     assert parent["allowed_sections"] == ["background"]
-    assert enforce(sample) == plan
+    compiled = enforce(sample)
+    assert compiled["contract"] == "editor-plan.v2" and compiled["status"] == "ok"
+    assert compiled["sections"][2]["blocks"][0]["source_ids"] == ["intent"]
+    assert compiled["sections"][-1]["blocks"][-1] == {"type": "link", "source_id": "design"}
     assert sample == original
 
 
 @pytest.mark.parametrize("mutation", ["unknown", "duplicate", "cross_bucket", "mode", "target", "parent_target",
                                      "sibling_target", "sibling_context", "cycle_context", "extra", "unavailable_link",
-                                     "intent_link", "blocking_conflict", "selected_conflict", "nonbool", "missing_with_ok"])
+                                     "intent_link", "blocking_conflict", "selected_conflict", "nonbool", "missing_with_ok",
+                                     "parent_constraint", "sibling_constraint"])
 def test_invalid_selection_is_content_free_and_never_reaches_writer(sample, mutation):
     view, spec, _ = sample
     if mutation == "unknown": spec["target_unit_ids"] = ["private-unknown"]
@@ -91,6 +93,8 @@ def test_invalid_selection_is_content_free_and_never_reaches_writer(sample, muta
     elif mutation == "parent_target": spec["target_unit_ids"] = ["u_parent"]; spec["context_unit_ids"] = []
     elif mutation == "sibling_target": spec["target_unit_ids"] = ["u_sibling"]
     elif mutation == "sibling_context": spec["context_unit_ids"] = ["u_sibling"]
+    elif mutation == "parent_constraint": spec["context_unit_ids"] = []; spec["constraint_unit_ids"] = ["u_parent"]
+    elif mutation == "sibling_constraint": spec["constraint_unit_ids"] = ["u_sibling"]
     elif mutation == "cycle_context": view["entities"][0]["parent_conflict"] = True
     elif mutation == "extra": spec["private-extra"] = "secret"
     elif mutation == "unavailable_link": spec["required_link_source_ids"] = ["other"]
@@ -110,11 +114,10 @@ def test_writer_cannot_promote_context_or_unselected_units_into_work(sample, uni
     assert enforce(sample)["status"] == "blocked"
 
 
-@pytest.mark.parametrize("mutation", ["missing_link", "wrong_valid_link", "unselected_proposal_source", "unit_as_source", "invented_plan_key", "reopen_interview"])
+@pytest.mark.parametrize("mutation", ["explicit_link", "unselected_proposal_source", "unit_as_source", "invented_plan_key", "reopen_interview"])
 def test_writer_closure_is_checked_even_when_original_source_exists(sample, mutation):
     plan = sample[2]
-    if mutation == "missing_link": plan["sections"][-1]["blocks"].pop()
-    elif mutation == "wrong_valid_link": plan["sections"][-1]["blocks"][-1]["source_id"] = "ticket"
+    if mutation == "explicit_link": plan["sections"][-1]["blocks"].append({"type": "link", "source_id": "design"})
     elif mutation == "unselected_proposal_source": plan["sections"][2]["blocks"][0]["source_ids"] = ["other"]
     elif mutation == "unit_as_source": plan["sections"][2]["blocks"][0]["source_ids"] = ["u_target"]
     elif mutation == "invented_plan_key": plan["raw_html"] = "private"
@@ -122,15 +125,15 @@ def test_writer_closure_is_checked_even_when_original_source_exists(sample, muta
     assert enforce(sample)["status"] == "blocked"
 
 
-def test_background_only_source_permissions_match_the_enforcer(sample):
+def test_proposals_only_cite_intent_not_parent_or_selected_fact_sources(sample):
     view, spec, plan = sample
     ticket = view["sources"][0]
     parent = ticket["units"].pop(1)
     view["sources"].append({"source_id": "parent", "kind": "jira", "title": "부모",
                             "available_link": True, "units": [parent]})
     writer = json.loads(ASSET["prepare_spec"](encoded(view), encoded(spec), "{}")["model_input"])
-    permissions = writer["draft_contract"]["proposal_source_ids_by_section"]
-    assert "parent" in permissions["background"] and "parent" not in permissions["work"]
+    assert "parent" not in writer["request"] and "sources" not in writer
+    assert enforce(sample)["sections"][2]["blocks"][0]["source_ids"] == ["intent"]
     plan["sections"][2]["blocks"][0]["source_ids"] = ["parent"]
     assert enforce(sample)["status"] == "blocked"
 
@@ -139,6 +142,32 @@ def test_background_only_source_permissions_match_the_enforcer(sample):
 def test_each_required_link_can_only_be_used_once_across_all_sections(sample, section_index):
     sample[2]["sections"][section_index]["blocks"].append({"type": "link", "source_id": "design"})
     assert enforce(sample)["status"] == "blocked"
+
+
+@pytest.mark.parametrize("text", ["https://wiki.example.local/forged", "[[person:abcdef123456]] 확인 요청", "@담당자 확인 요청"])
+def test_writer_prose_cannot_author_link_or_person_syntax(sample, text):
+    sample[2]["sections"][2]["blocks"][0]["text"] = text
+    assert enforce(sample)["status"] == "blocked"
+
+
+def test_comment_projection_omits_parent_context_even_if_selected(sample):
+    view, spec, _ = sample
+    view["request"]["kind"] = spec["mode"] = "comment"
+    view["draft_contract"] = ASSET["_draft_contract"]("comment")
+    writer = json.loads(ASSET["prepare_spec"](encoded(view), encoded(spec), "{}")["model_input"])
+    assert {u["unit_id"] for u in writer["units"]} == {"u_target", "u_constraint"}
+
+
+def test_missing_intent_cannot_be_replaced_by_selected_sources(sample):
+    sample[0]["request"]["source_ids"] = []
+    assert enforce(sample)["status"] == "blocked"
+
+
+def test_inserted_links_count_toward_original_assembler_block_limit(sample):
+    sample[2]["sections"][2]["blocks"] *= 29  # 32 writer blocks plus one server link.
+    assert enforce(sample)["status"] == "blocked"
+    sample[2]["sections"][2]["blocks"].pop()
+    assert enforce(sample)["status"] == "ok"
 
 
 @pytest.mark.parametrize("status", ["needs_input", "blocked"])
@@ -205,8 +234,8 @@ def selected_plan(pack, helper):
     selection = {"contract": "editor-draft-spec.v1", "status": "ok", "mode": "comment", "target": "",
                  "target_unit_ids": [], "context_unit_ids": [], "constraint_unit_ids": [unit_id],
                  "history_unit_ids": [], "conflicts": [], "required_link_source_ids": ["doc"], "missing_inputs": []}
-    plan = {"contract": "editor-plan.v2", "status": "ok", "missing_inputs": [], "sections": [{"section": "comment", "blocks": [
-        {"type": "fact", "unit_id": unit_id, "tag": "p"}, {"type": "link", "source_id": "doc"}]}]}
+    plan = {"contract": "editor-writing.v1", "sections": [{"section": "comment", "blocks": [
+        {"type": "fact", "unit_id": unit_id, "tag": "p"}]}]}
     return view, selection, plan
 
 
@@ -234,6 +263,92 @@ def test_selected_plan_and_seed_remain_bound_to_original_pack_through_both_guard
         ASSET["prepare_spec"](view, encoded(selection), encoded(pack))
 
 
+@pytest.mark.parametrize("mutation", ["valid", "forged_source", "forged_person", "raw_mention", "raw_url", "repeat_seed"])
+def test_compiled_review_through_original_assembler_and_both_guards(original_pack_case, mutation):
+    import hashlib
+    pack, helper = original_pack_case
+    marker = "[[person:123456789abc]]"
+    pack["sources"][0]["content"] = "검토자 " + marker + " — 2홉 100노드에서 조회 기준을 검토한다."
+    pack["sources"][0]["content_sha256"] = hashlib.sha256(pack["sources"][0]["content"].encode()).hexdigest()
+    view, selection, plan = selected_plan(pack, helper)
+    proposal = {"type": "proposal", "text": "변경 범위와 제외 사항의 검토를 요청합니다.", "tag": "p"}
+    if mutation == "forged_source": proposal["source_ids"] = ["doc"]
+    elif mutation == "forged_person": proposal["text"] = "[[person:aaaaaaaaaaaa]] 검토 요청"
+    elif mutation == "raw_mention": proposal["text"] = "@담당자 검토 요청"
+    elif mutation == "raw_url": proposal["text"] = "https://wiki.example.local/design 검토 요청"
+    elif mutation == "repeat_seed": proposal["text"] = "검토 부탁드립니다."
+    plan["sections"][0]["blocks"].append(proposal)
+    constrained = ASSET["enforce_spec"](encoded(plan), view, encoded(selection), encoded(pack))["candidate"]
+    remote, payload = helper.both_guards(pack, helper.assembled(pack, constrained))
+    if mutation != "valid":
+        assert remote.status == "blocked" and payload is None
+        return
+    assert remote.status == "ok" and payload["content_html"].count(marker) == 1
+    assert payload["content_html"].count("검토 부탁드립니다.") == 1
+    assert "2홉 100노드" in payload["content_html"] and payload["content_html"].count("<a ") == 1
+    compiled = json.loads(constrained)
+    assert compiled["sections"][0]["blocks"][1]["source_ids"] == ["intent"]
+    assert compiled["sections"][0]["blocks"][0] == plan["sections"][0]["blocks"][0]
+
+
+def test_valid_missing_measurement_skips_writer_through_both_guards(original_pack_case):
+    pack, helper = original_pack_case
+    view, selection, _ = selected_plan(pack, helper)
+    selection.update(status="needs_input", constraint_unit_ids=[], required_link_source_ids=[],
+                     missing_inputs=["측정 p95 값과 비교 기준을 알려주세요."])
+    stopped = ASSET["prepare_spec"](view, encoded(selection), encoded(pack))
+    assert stopped["route"] == "stop" and stopped["model_input"] == "{}"
+    constrained = ASSET["enforce_spec"](stopped["candidate"], view, encoded(selection), encoded(pack))["candidate"]
+    remote, payload = helper.both_guards(pack, helper.assembled(pack, constrained))
+    assert remote.status == "needs_input" and payload is None
+    assert list(remote.missing_inputs) == selection["missing_inputs"]
+
+
+@pytest.mark.parametrize("constraint_owner", ["target", "parent", "sibling"])
+def test_description_family_scope_through_original_pack_and_both_guards(original_pack_case, constraint_owner):
+    import hashlib
+    from app.agent.maxis import EditorDraftV1
+    pack, helper = original_pack_case
+    schema = EditorDraftV1.model_json_schema()
+    schema["properties"]["mode"] = {"type": "string", "const": "description"}
+    helper.set_schema(pack, schema)
+    pack["sources"][0].update(kind="jira", content=encoded({"issues": [
+        {"key": "DL-42", "parentKey": "DL-40", "summary": "다운스트림 연동", "description": "조회 전용"},
+        {"key": "DL-40", "summary": "전체 탐색 기능"},
+        {"key": "DL-41", "parentKey": "DL-40", "summary": "업스트림 완료"}]}))
+    pack["sources"][1]["content"] = encoded({"kind": "description", "ticket_key": "DL-42", "prompt": "본문 작성"})
+    for source in pack["sources"]:
+        source["content_sha256"] = hashlib.sha256(source["content"].encode()).hexdigest()
+    before = copy.deepcopy(pack)
+    view = ASSET["prepare"](encoded(helper.incoming(pack)))["model_input"]
+    units = {u["text"]: u["unit_id"] for u in json.loads(view)["sources"][0]["units"]}
+    constraint = {"target": "조회 전용", "parent": "전체 탐색 기능", "sibling": "업스트림 완료"}[constraint_owner]
+    selection = {"contract": "editor-draft-spec.v1", "status": "ok", "mode": "description", "target": "DL-42",
+                 "target_unit_ids": [units["다운스트림 연동"]],
+                 "context_unit_ids": [units["전체 탐색 기능"]] if constraint_owner != "parent" else [],
+                 "constraint_unit_ids": [units[constraint]], "history_unit_ids": [], "conflicts": [],
+                 "required_link_source_ids": [], "missing_inputs": []}
+    plan = {"contract": "editor-writing.v1", "sections": [
+        {"section": "background", "blocks": [{"type": "fact", "unit_id": units["전체 탐색 기능"], "tag": "p"}]},
+        {"section": "scope", "blocks": [{"type": "fact", "unit_id": units["다운스트림 연동"], "tag": "p"}]},
+        {"section": "work", "blocks": [{"type": "proposal", "text": "하위 조회 경로를 연동한다.", "tag": "li"}]},
+        {"section": "dod", "blocks": [{"type": "proposal", "text": "연동 후 조회 결과를 확인한다.", "tag": "li"}]}]}
+    if constraint_owner != "target":
+        with pytest.raises(ValueError, match="^invalid_editor_draft_spec$"):
+            ASSET["prepare_spec"](view, encoded(selection), encoded(pack))
+    else:
+        assert ASSET["prepare_spec"](view, encoded(selection), encoded(pack))["route"] == "description"
+    compiled = ASSET["enforce_spec"](encoded(plan), view, encoded(selection), encoded(pack))["candidate"]
+    remote, payload = helper.both_guards(pack, helper.assembled(pack, compiled))
+    if constraint_owner == "target":
+        assert remote.status == "ok" and "다운스트림 연동" in payload["content_html"]
+        assert "업스트림 완료" not in payload["content_html"]
+        assert json.loads(compiled)["sections"][2]["blocks"][0]["source_ids"] == ["intent"]
+    else:
+        assert remote.status == "blocked" and payload is None
+    assert pack == before
+
+
 @pytest.mark.parametrize("scenario", ["inline_only", "unselected", "explicit_duplicate", "inline_duplicate", "self_link"])
 def test_implicit_links_obey_original_pack_selection_and_multiplicity(original_pack_case, scenario):
     import hashlib
@@ -255,12 +370,10 @@ def test_implicit_links_obey_original_pack_selection_and_multiplicity(original_p
     view, selection, plan = selected_plan(pack, helper)
     selection["required_link_source_ids"] = [] if scenario == "unselected" else [linked["source_id"]]
     blocks = plan["sections"][0]["blocks"]
-    blocks.pop()  # The implicit anchor supplies the one required link.
     if scenario == "explicit_duplicate":
         blocks.append({"type": "link", "source_id": linked["source_id"]})
     projected = json.loads(ASSET["prepare_spec"](view, encoded(selection), encoded(pack))["model_input"])
-    selected_unit = projected["sources"][0]["units"][0]
-    assert selected_unit["link_source_ids"] == [linked["source_id"]] * (2 if scenario == "inline_duplicate" else 1)
+    assert "link_source_ids" not in encoded(projected)
     constrained = ASSET["enforce_spec"](encoded(plan), view, encoded(selection), encoded(pack))["candidate"]
     remote, payload = helper.both_guards(pack, helper.assembled(pack, constrained))
     if scenario in {"inline_only", "self_link"}:

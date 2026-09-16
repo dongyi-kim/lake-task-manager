@@ -23,8 +23,9 @@ STOP_NODE_ID = "1909000000001020"
 WRITER_MERGE_NODE_ID = "1909000000001021"
 ENFORCER_NODE_ID = "1909000000001022"
 SPEC_ASSET_PATH = "deploy/maxis-dify/code/editor_draft_spec.py"
-SPEC_ASSET_SHA256 = "6fe7f84b5e454dbee43e1598175738c4f4ca6f477660055a9914e8da753ff2ad"
+SPEC_ASSET_SHA256 = "23dcc694c4f6e75b6e6becc9af9c614d6c39480c902c38906773feeef5877844"
 SPEC_SCHEMA_SHA256 = "b54b7cb8617e15a4977089a9cf3fad4390628193076d3fee693a0001f2793643"
+WRITING_SCHEMA_SHA256 = "accbafa04039e32a9b06aade48b0cffc4f4b765baa130ba4d6619bc052d8b134"
 SPEC_GUARD_ENTRYPOINT = "\n\ndef main(model_input, draft_spec, context_pack):\n    return prepare_spec(model_input, draft_spec, context_pack)\n"
 SPEC_ENFORCER_ENTRYPOINT = "\n\ndef main(candidate, model_input, draft_spec, context_pack):\n    return enforce_spec(candidate, model_input, draft_spec, context_pack)\n"
 STOP_CODE = 'def main(candidate):\n    return {"candidate": candidate}\n'
@@ -35,9 +36,9 @@ BRANCH_TITLES = {"description": "Description LLM", "comment": "Comment LLM",
                  "control": "Control LLM", "selector": "DraftSpec LLM"}
 # Reviewed complete rendered messages, independent of embedded DSL copies.
 BRANCH_PROMPT_SHA256 = {
-    "description": {"system": "39957322df7c53c5a46a72cd6bcbbf252be26ed00bfd4a88ce6bfe186a542b24",
+    "description": {"system": "3d24c37653c8dbb031f6b56a1e2493bc32be49e960286e5bbdc0e2c8d18338fd",
                     "user": "0b882243f2e854a7fcf11e1844d9159187d9944a6b2ac53092ec829f43f07436"},
-    "comment": {"system": "48be085fdff9b1fc8f92d57790c122e55c678da47730b2473946f0ac3c22fd01",
+    "comment": {"system": "37e391b4c4235e32c4482fa371095bc4a9b2142ffc1ea18732ad2c1ab45d55cf",
                 "user": "0b882243f2e854a7fcf11e1844d9159187d9944a6b2ac53092ec829f43f07436"},
     "control": {"system": "31f9e5c83d094f5321555647f5501e198b24daa760326c2ff791081dce1feb1e",
                 "user": "41e3faa78a5f4d63a4302d6defc5e119c1c7b834d92c272bc6de18c629fb2b99"},
@@ -77,14 +78,19 @@ def branch_schema(root: Path, branch: str, remote_schema: dict, project) -> dict
             raise ValueError("reviewed DraftSpec schema drifted")
         return project(plan)
     plan = json.loads((root / "deploy/maxis-dify/contracts/editor-plan.v2.schema.json").read_text(encoding="utf-8"))
-    # Keep the canonical semantic schema pin authoritative before specializing it.
+    # The compiler still targets the unchanged assembler contract.
     encoded = json.dumps(plan, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     if hashlib.sha256(encoded.encode("utf-8")).hexdigest() != "3eff157b515bad585b5a08b69484c23f027e2d4c3f3c415f7476540c6561b22e":
         raise ValueError("reviewed Editor plan schema drifted")
-    plan["$defs"]["section"]["properties"]["section"]["enum"] = (
+    writing = json.loads((root / "deploy/maxis-dify/contracts/editor-writing.v1.schema.json").read_text(encoding="utf-8"))
+    encoded = json.dumps(writing, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if hashlib.sha256(encoded.encode("utf-8")).hexdigest() != WRITING_SCHEMA_SHA256:
+        raise ValueError("reviewed Editor writing schema drifted")
+    sections = (
         ["background", "scope", "work", "dod"] if branch == "description" else ["comment"])
-    plan["properties"]["sections"]["maxItems"] = 4 if branch == "description" else 1
-    return project(plan)
+    writing["$defs"]["section"]["properties"]["section"]["enum"] = sections
+    writing["properties"]["sections"].update(minItems=len(sections), maxItems=len(sections))
+    return project(writing)
 
 
 def route_data(input_id: str) -> dict:

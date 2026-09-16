@@ -113,7 +113,7 @@ def test_selection_boundary_rejects_graph_shortcuts(mutation):
         validator._validate_editor_graph(ROOT, graph["nodes"], graph["edges"], remote, assembler)
 
 
-@pytest.mark.parametrize("asset", ["source", "schema", "prompt"])
+@pytest.mark.parametrize("asset", ["source", "schema", "writing_schema", "prompt"])
 def test_selection_assets_need_review_even_when_graph_is_regenerated(tmp_path, asset):
     spec, dsl = _build()
     validator = _load("validate_bundle")
@@ -122,12 +122,13 @@ def test_selection_assets_need_review_even_when_graph_is_regenerated(tmp_path, a
         path = tmp_path / spec.SPEC_ASSET_PATH
         path.write_text(path.read_text(encoding="utf-8") + "\n# changed source", encoding="utf-8")
         changed = spec.rebuild(tmp_path, dsl, validator)
-    elif asset == "schema":
-        path = tmp_path / "deploy/maxis-dify/contracts/editor-draft-spec.v1.schema.json"
+    elif asset in {"schema", "writing_schema"}:
+        filename = "editor-draft-spec.v1" if asset == "schema" else "editor-writing.v1"
+        path = tmp_path / f"deploy/maxis-dify/contracts/{filename}.schema.json"
         schema = json.loads(path.read_text(encoding="utf-8"))
         schema["additionalProperties"] = True
         path.write_text(json.dumps(schema), encoding="utf-8")
-        with pytest.raises(ValueError, match="reviewed DraftSpec schema"):
+        with pytest.raises(ValueError, match="reviewed (DraftSpec|Editor writing) schema"):
             spec.rebuild(tmp_path, dsl, validator)
         return
     else:
@@ -147,12 +148,39 @@ def test_writer_contract_contains_no_control_envelope(branch, sections):
     node = next(n["data"] for n in dsl["workflow"]["graph"]["nodes"] if n["id"] == spec.BRANCH_NODE_IDS[branch])
     schema = node["structured_output"]["schema"]
     assert "oneOf" not in schema
-    assert schema["properties"]["contract"]["enum"] == ["editor-plan.v2"]
+    assert schema["properties"]["contract"]["enum"] == ["editor-writing.v1"]
+    assert set(schema["properties"]) == {"contract", "sections"}
+    assert schema["required"] == ["contract", "sections"]
+    assert schema["properties"]["sections"]["minItems"] == len(sections)
+    assert schema["properties"]["sections"]["maxItems"] == len(sections)
     assert schema["properties"]["sections"]["items"]["properties"]["section"]["enum"] == sections
     prompt = node["prompt_template"][0]["text"]
     assert "remote-role-result" not in prompt
     assert "payload_schema_sha256" not in prompt
     assert len(prompt.encode("utf-8")) < 8192
+
+
+@pytest.mark.parametrize("branch", ["description", "comment"])
+@pytest.mark.parametrize("mutation", ["status", "source_ids", "link"])
+def test_writer_schema_cannot_restore_compiler_owned_fields(branch, mutation):
+    spec, dsl = _build()
+    validator = _load("validate_bundle")
+    graph = dsl["workflow"]["graph"]
+    data = next(node["data"] for node in graph["nodes"] if node["id"] == spec.BRANCH_NODE_IDS[branch])
+    schema = data["structured_output"]["schema"]
+    variants = schema["properties"]["sections"]["items"]["properties"]["blocks"]["items"]["oneOf"]
+    if mutation == "status":
+        schema["properties"]["status"] = {"type": "string", "enum": ["ok", "blocked"]}
+    elif mutation == "source_ids":
+        proposal = next(row for row in variants if row["properties"]["type"]["enum"] == ["proposal"])
+        proposal["properties"]["source_ids"] = {"type": "array", "items": {"type": "string"}}
+    else:
+        variants.append({"type": "object", "properties": {"type": {"enum": ["link"]},
+                                                               "source_id": {"type": "string"}}})
+    remote = json.loads((ROOT / "deploy/maxis-dify/contracts/remote-role-result.v1.schema.json").read_text(encoding="utf-8"))
+    assembler = (ROOT / validator.EDITOR_ASSEMBLER_PATH).read_text(encoding="utf-8").rstrip()
+    with pytest.raises(validator.BundleValidationError, match=rf"editor_author\.{branch} Dify LLM model or structured output"):
+        validator._validate_editor_graph(ROOT, graph["nodes"], graph["edges"], remote, assembler)
 
 
 def test_builder_does_not_change_its_input():
