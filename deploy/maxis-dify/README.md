@@ -4,19 +4,18 @@
 source bundle이다. DEV와 PROD의 환경 binding을 분리하고, import DSL을 materialize한
 뒤 validator와 원격 release gate를 통과시키는 구조다.
 
-> 2026-09-16: 새 DraftSpec 2단계 후보는 로컬 구현·검증 중이다. 아래 수치는 **이전 v16 게시 결과**다.
-> 2026-09-15: v16 Editor 단위 분기 구현·DEV 게시 완료, 품질 미통과.
-> 본문·댓글·합성 제어를 분리했다. Editor **17노드·19엣지**, 나머지 **11·11**이며
-> 실제 작성 요청 5건 모두 올바른 분기의 **LLM 1회**, 원본 근거 전달을 확인했다. canary **3/3**.
-> 동일 component v4의 새 v15 baseline → v16: Guard **5/5 → 5/5**, 자동 **4/5 → 3/5**.
-> 총 tokens **22,841 → 11,518(49.6% 감소)**, 시간 **17.6 → 19.6초**로 시간 개선은 없다.
-> 직접 평균 **3.38 → 3.52/5**. 양쪽 모두 유용한 결과 1건은 **초안 0건 + 필수 확인 질문 1건**이다.
-> 문서 링크·대상 범위·현재/과거 상태 결함이 남아 운영 품질 향상을 주장하지 않는다.
-> 통합 **1,284 통과·1 제외**, 제외된 DPAPI 1건은 별도 사용자 환경에서 통과했다.
+> 2026-09-16: 근거 선택 → 제한된 문안 작성의 **v18 DEV 게시 완료, 품질 미통과**.
+> Editor **23노드·26엣지**. 실제 5건 모두 selector+해당 writer의 **LLM 2회**,
+> 원본 근거·축소 입력·검증 결과의 일치를 확인했다. canary **3/3**.
+> 새 v16 baseline → v17 → v18 자동 통과 **3/5 → 1/5 → 3/5**, 유용한 결과 **1/5 → 0/5 → 0/5**.
+> 직접 품질 평균은 **3.58 → 2.34 → 2.58/5**. 개선 실험 결과이며 운영 품질은 미달이다.
+> 기존 유용한 1건도 완성 초안이 아니라 필수 확인 질문이다. 초안 품질 향상을 주장하지 않는다.
+> baseline → v18 전체 tokens **12,050 → 22,570**, 시간 **18.0 → 30.7초**로 증가했다.
+> v17의 실패·미관측 token도 보존했다. v18의 대상 범위·재질문·mention/검토 기준 결함이 남았다.
+> 활성 profile은 비어 있고 모든 route는 local이다. Core/PMO·API key·PROD는 그대로다.
 > Knowledge 25-case·전체 58-case·full compose/UI는 이번에 실행하지 않았다.
-> 활성 profile은 비어 있고 모든 route는 local이다. PROD는 변경하지 않았다.
-> [최신 증적](deployments/dev-editor-branches-2026.09.15.yml)과
-> [구조·품질 보고서](../../research/agent-improvement/maxis-editor-branches-quality-20260915.md)를 먼저 확인한다.
+> [최신 증적](deployments/dev-editor-draftspec-2026.09.16.yml)과
+> [구조·품질 보고서](../../research/agent-improvement/maxis-editor-draftspec-quality-20260916.md)를 먼저 확인한다.
 
 API key, 프롬프트 전문, 모델 응답, 사용자 데이터, release sentinel 원문은 이 문서나
 deployment evidence에 기록하지 않는다.
@@ -32,7 +31,7 @@ deployment evidence에 기록하지 않는다.
 | <code>code/editor_assembler.py</code> | Editor Input 원문 단위 투영 + typed plan의 source-bound HTML·claim·citation 조립 |
 | <code>code/editor_draft_spec.py</code> | 내부 근거 선택 계약 검증·writer 입력 축소·작성 후 선택 범위 재검사 |
 | <code>editor_graph.py</code> | 본문·댓글·제어 분기별 schema/prompt 정본과 재현 가능한 Editor DSL 생성기 |
-| <code>editor_graph_validation.py</code> | 세 분기를 각각 검사하는 공유 검증기; 환경 생성에도 재사용 |
+| <code>editor_graph_validation.py</code> | selector·writer·control·stop과 원본 binding 공유 검증기; 환경 생성에도 재사용 |
 | <code>graph_receipt.py</code> | 검증한 로컬 graph와 Dify export의 실행 설정 비교 |
 | <code>prompts/*.md</code> | 공통 및 앱별 instruction source |
 | <code>contracts/*.json</code> | RemoteRoleResult canonical schema 및 Editor 내부 plan schema |
@@ -43,7 +42,8 @@ deployment evidence에 기록하지 않는다.
 | <code>deployments/dev-editor-plan-2026.09.14.yml</code> | 앞선 v11 게시 ID·실측 실패 기록 |
 | <code>deployments/dev-editor-units-2026.09.14.yml</code> | 이전 v13 게시 ID·baseline/v12/v13 실측·비활성 상태 |
 | <code>deployments/dev-editor-scope-2026.09.15.yml</code> | 이전 v15 게시 ID·당시 baseline/v14/v15 실측·비활성 상태 |
-| <code>deployments/dev-editor-branches-2026.09.15.yml</code> | 최신 v16 게시 ID·새 v15/v16 비교·실제 분기 확인·비활성 상태 |
+| <code>deployments/dev-editor-branches-2026.09.15.yml</code> | 이전 v16 게시 ID·당시 v15/v16 비교·실제 분기 확인 |
+| <code>deployments/dev-editor-draftspec-2026.09.16.yml</code> | 최신 v18 게시 ID·새 v16/v17/v18 비교·단계 실행 확인·비활성 상태 |
 | <code>materialize_environment.py</code> | source DSL에 환경 binding을 주입한 import copy 생성 |
 | <code>validate_bundle.py</code> | DSL·prompt·code·contract·Knowledge binding 정적 검증 |
 | <code>knowledge-evals.yml</code> | release-bound retrieval 평가 명세 |
@@ -98,11 +98,14 @@ selector는 `editor-draft-spec.v1`의 원문 ID 분류·필수 링크·부족한
 writer는 선택된 원문만 받으며 native Knowledge context를 다시 주입하지 않는다.
 부모 맥락 fact는 description.background에서만, 역사·충돌 fact는 작성에서 제외한다.
 필수 링크는 정확히 한 번씩 포함해야 하며 미선택 fact/source/link는 차단한다.
+자동 렌더링되는 원문 링크도 원본 pack에서 계산해 중복·범위를 확인한다. writer에는
+섹션별 허용 출처 ID와 각 단위의 허용 section을 주며 enforcer와 같은 함수로 계산한다.
 다만 `constraint`의 의미상 적용 범위나 필수 문서 선택의 완전성은 모델 판단이다.
 이 검증이 내용 정확도나 부모 범위 혼입까지 보증한다고 간주하지 않는다.
 본문 schema에는 네 본문 section만, 댓글 schema에는 comment만 허용한다.
 Control은 기존 activation/retrieval 합성 검사의 닫힌 입력만 허용하며, 깨진 Editor 입력이나
-임의 schema가 Control로 우회되지 않는다. 정보가 부족하면 `needs_input`으로 반환하고 초안을 비운다.
+임의 schema가 Control로 우회되지 않는다. 유효한 `needs_input` 선택이면 초안을 비우고 writer를 생략한다.
+이 경로는 로컬 테스트로 검증했지만 이번 v17/v18 실측에서 성공한 Stop 경로는 관측하지 못했다.
 단순 연결 canary는 실제 작성 품질 검증을 대체하지 않는다.
 
 재생성: `python deploy/maxis-dify/editor_graph.py` → `python deploy/maxis-dify/validate_bundle.py`.

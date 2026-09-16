@@ -1,0 +1,297 @@
+contract: ltm-maxis-dify-quality-evidence.v1
+captured_date: '2026-09-16'
+environment: dev
+status: experimental_inactive_quality_gate_failed
+authoritative_ready: false
+workflow_bundle_version: ltm-maxis-dify-2026.09.16-editor-draftspec-v18
+candidate_commit: 45cfd10b0ebc7518e1f5bb2d938b3796c3e86207
+profile_fingerprint: a2ba20679f63ef4881c88132ef10b9dc
+prior_evidence: deploy/maxis-dify/deployments/dev-editor-branches-2026.09.15.yml
+environment_binding: deploy/maxis-dify/environments/dev-2026.09.yml
+report: research/agent-improvement/maxis-editor-draftspec-quality-20260916.md
+scope: Editor-only internal selection and writing; no activation or qualification
+publish_attempts:
+  v17_attempt1:
+    artifact: .cache/maxis/dev-editor-draftspec-20260916-v17.json
+    artifact_sha256: 6cbcda3d64029a5801299e9ecba2ffde47b9c52ba77805864d908ed6db90e856
+    status: failed
+    phase: publish
+    completed_at: '2026-09-16T00:30:45.069961+00:00'
+    published_keys: []
+    published_workflows_unchanged: true
+    failure_reason: Publish name likely exceeded the Dify 20-character limit
+    failure_reason_inferred: true
+    failure_reason_source: 24-character name versus Dify 1.11.1 maximum of 20; same draft succeeded after shortening only the name to 17 characters
+    first_error_body_preserved: false
+  v17_attempt2:
+    artifact: .cache/maxis/dev-editor-draftspec-20260916-v17-attempt2.json
+    artifact_sha256: cf0ee40e637017b7766fd54fa91ce442792366678682f9e1e3cf17db5cc276ff
+    status: published
+    completed_at: '2026-09-16T00:31:45.183817+00:00'
+    published_keys: [editor_author]
+    previous_editor_workflow_id: 6cdcdff7-c34e-45e4-8f7e-3f5d5f4311f4
+    published_editor_workflow_id: 99b5abfd-eaf0-4c22-894d-f2b82148b023
+    semantic_graph_sha256: 542f500958f126d9ef704965a876fd166a63ea97a9d1145c49f96725c244ae23
+    api_key_bindings_unchanged: true
+  v18:
+    artifact: .cache/maxis/dev-editor-draftspec-20260916-v18.json
+    artifact_sha256: cfd8494c99306d94c7762472b5bcc795cc251a86b94688269d0925e0cda65b23
+    status: published
+    completed_at: '2026-09-16T00:42:43.375410+00:00'
+    published_keys: [editor_author]
+    previous_editor_workflow_id: 99b5abfd-eaf0-4c22-894d-f2b82148b023
+    published_editor_workflow_id: 0cf80e5e-ff06-4b43-900c-ea5c4ed91ddc
+    semantic_graph_sha256: 339bd6728b318e5b015e49ec97850790310e04f8bde8669eed0f203c6d4d3353
+    api_key_bindings_unchanged: true
+unchanged_workflows:
+  agent_core: {published_workflow_id: 840834fb-5faa-4c03-bccb-9e1e5e8372b2, republished: false}
+  pmo_brief: {published_workflow_id: 4c56d3fb-4e07-42ee-9f25-4ec2b4f4d7b5, republished: false}
+editor_contract:
+  graph: {nodes: 23, edges: 26, configured_llm_nodes: 4}
+  input: editor-input.v1
+  selection: editor-draft-spec.v1
+  writer_input: editor-writer-input.v1
+  plan: editor-plan.v2
+  payload: editor-draft.v1
+  control: remote-role-result.v1
+  new_canonical_roles: 0
+  new_apps: 0
+  expected_llm_calls: {normal_write: 2, valid_needs_input_or_blocked: 1, control: 1, policy_denied: 0}
+  live_stop_branch_verified: false
+  stop_branch_evidence: Deterministic local tests only; v17 CMP3 was invalid, and all v18 selections were ok
+  original_evidence_pack_changed: false
+  knowledge_guard_changed: false
+  assembler_changed: false
+  contract_guard_changed: false
+  local_response_guard_changed: false
+  exact_payload_approval_boundary_changed: false
+  writer_native_knowledge_context_enabled: false
+  retry_enabled: false
+  fallback_enabled: false
+  guard_bypass_enabled: false
+  assembler_normalized_sha256: a3e8bb15da89918516eca365312b7478c96bfb0ac00b5076770593c90d30f360
+  draftspec_normalized_sha256: 6fe7f84b5e454dbee43e1598175738c4f4ca6f477660055a9914e8da753ff2ad
+  selection_schema_canonical_sha256: b54b7cb8617e15a4977089a9cf3fad4390628193076d3fee693a0001f2793643
+service_api_canary:
+  quality_certification: false
+  v17:
+    artifact: .cache/maxis/dev-canary-editor-draftspec-20260916-v17.json
+    artifact_sha256: a782e9164e42a2f4648cedfbad4703266997a6868a738afbf00bb98c4f4be578
+    completed_at: '2026-09-16T00:32:08.895432+00:00'
+    executed: 3
+    passed: 3
+    profile_verified: true
+    profile_fingerprint: 8432de29bf572e21c223ad99e541c081
+  v18:
+    artifact: .cache/maxis/dev-canary-editor-draftspec-20260916-v18.json
+    artifact_sha256: 07e09bcd766f0047255ce4e0045aa98579e8e50ccef0e686d957c2904d01068a
+    completed_at: '2026-09-16T00:43:10.780602+00:00'
+    executed: 3
+    passed: 3
+    profile_verified: true
+    profile_fingerprint: a2ba20679f63ef4881c88132ef10b9dc
+local_validation:
+  evidence_source: implementation_owner_test_results
+  earlier_integrated_run: {passed: 1047, skipped: 1, stage: before_review_round_2_fixes}
+  earlier_skipped_case: Windows current-user DPAPI unavailable inside sandbox
+  separate_current_user_dpapi: {passed: 1}
+  final_core_contract_tests: {passed: 45}
+  final_graph_environment_bundle_tests: {passed: 307}
+  final_recipient_prompt_polish_tests: {passed: 69, graph: 36, prompt_integrity: 33}
+  counts_overlap: true
+  counts_must_not_be_summed: true
+  final_static_bundle_validation: passed
+  review_loop_scores: [8, 7, 9, 8]
+  review_loop_rounds: 4
+  round_4_recipient_finding: Fixed after review; final prompt, graph and static validation passed
+  review_loop_score_is_output_quality: false
+  full_app_suite_tested: false
+  full_ui_tested: false
+editor_component:
+  protocol_version: '3.0.0'
+  rubric_version: '2.0.0'
+  battery: maxis-editor-component
+  battery_version: '4.0.0'
+  battery_manifest_sha256: 6a6cc370d7506dbbc285fa71b805553e5079ea07bc9d533afd14a85dd9ce4406
+  specialized_review_spec_sha256: 877ceaa039dbe81dc85ad0671fee54065f87179b0cf50cb1c267c2b118dfdb5b
+  data_manifest_sha256: d14b02a0c052ef3ae0854259d0fe43025682129578181bde417161ba445ae16d
+  benchmark_key: f4f807c9036af03977a78d384783ac6a1d1ba9e4b80430502ee4f7e8e3e84a74
+  runtime_package_set_sha256: 9624da562efdce4b14d340bdd9a68a08cf6ce52bced0e3ee5e482b51ffac9645
+  evaluation_harness_tree_sha256: c2afa056e444152f0332b0f3aa0dfc0d1b1f777252bcf45d8903746642cf1ca0
+  raw_candidate_tree_sha256: ffc0a679728c0b429d76208f4620cdfb412761722ae551d9a45124b0eeedc5d6
+  raw_tree_caveat: Shared unchanged app evaluation tree; deployment identities use each commit, published UUID and graph or DSL digest
+  case_ids: [CMP2, CMP3, CMP6, CMP8, CMP9]
+  run_kind: exploratory
+  repetitions_per_candidate: 1
+  observed_run_order: [baseline_v16, candidate_v17, candidate_v18]
+  recorded_candidate_order_indices: {baseline_v16: '1', candidate_v17: '2', candidate_v18: '2'}
+  balanced_order: false
+  single_variable_causal_isolation: false
+  qualification_eligible: false
+  qualification_minimum_repetitions: 5
+  selection_policy: complete-run-no-substitution
+  attempt_policy: retain-every-attempt
+  retry_policy: no-retry-no-fallback-all-attempts-retained
+  cache_policy: no-client-history-no-local-state
+  process_isolation: separate-process-stateless-fresh-pack-each-case
+  model: gpt-5.4-mini
+  simple_model: not-used
+  provider: dify
+  provider_endpoint_identity_sha256: ee68fff6621a9537414a9109539aef2de6442c485b07a6d6271dfa5f1e710af7
+  structured_output_backend: dify
+  structured_backend_version: legacy-internal
+  structured_backend_fallback_policy: forbid
+  runtime_profile: dev-inactive-stateless-component-v1
+  component_scope: EditorDraft plus pure markup; not full compose or UI
+  metrics_source: metrics
+  calls_meaning: Received Dify responses; internal LLM execution counts are separate native trace observations
+  percentile_method: nearest-rank-over-all-case-attempts
+  percentile_source: cases[*].metrics.durationSeconds
+  cached_tokens: null
+  cost_usd: null
+  pricing_snapshot: unrecorded
+  baseline_v16:
+    version: ltm-maxis-dify-2026.09.15-editor-units-v16
+    run_group_id: maxis-editor-20260915T235858Z-c4864e8e
+    artifact: .cache/agent-evaluation/maxis-editor-20260915T235858Z-c4864e8e/baseline.json
+    artifact_sha256: 8659023b83ae9d0b6331ae5a86c81f4ab04fa74f07576bbf130ae87bb1d852a0
+    candidate_commit: e2272a688f0e97d8139310a8ac8a01d1cc5afbd7
+    candidate_dirty: false
+    candidate_key: 36e71a2a656276afe3812ecb1c7768c345416ae7ec28533feef70c620ab2bd0a
+    comparability_key: 8e3f2f56dd3f259c3d878375f034f041e7c0229e451eb8545b455b6104b35e79
+    published_workflow_id: 6cdcdff7-c34e-45e4-8f7e-3f5d5f4311f4
+    profile_fingerprint: 7d1429a00e290ae05807101b0039dd00
+    dsl_sha256: d69d0d97db7b4741111a9150489be4fe448d5515db4ba434f7d497f956f64f0a
+    attempts: 5
+    received_response_calls: 5
+    automatic_passed: 3
+    automatic_failed_cases: [CMP3, CMP6]
+    final_statuses: {ok: 4, needs_input: 1, blocked: 0, unavailable: 0}
+    metrics: {duration_seconds: 18.0, prompt_tokens: 8339, completion_tokens: 3711, total_tokens: 12050, token_usage_complete: true}
+    latency_seconds: {p50: 4.0, p95: 5.4}
+    direct_review:
+      status: complete
+      artifact: .cache/agent-evaluation/maxis-editor-20260915T235858Z-c4864e8e/direct-review-baseline.json
+      artifact_sha256: 793fdb2c39c272b132366e2b8a6546939be7b3db3f6c78748bcc2281ea8b1e8a
+      mean_out_of_5: 3.58
+      usable_count: 1
+      completed_usable_drafts: 0
+      necessary_factual_clarifications: 1
+      common_checklist_counts: {pass: 66, minor: 28, major: 20, na: 46}
+      specialized_checklist_counts: {pass: 2, minor: 7, major: 6, na: 0}
+  candidate_v17:
+    version: ltm-maxis-dify-2026.09.16-editor-draftspec-v17
+    run_group_id: maxis-editor-20260916T003227Z-d84e52ed
+    artifact: .cache/agent-evaluation/maxis-editor-20260916T003227Z-d84e52ed/candidate.json
+    artifact_sha256: f08df8c09d1b5d258b410a6220bc5250782d6d9b9f63e961f88621bfdaf9d2a1
+    candidate_commit: dddfc92667bf056a842c9946a8069e0b4c21c03f
+    candidate_dirty: false
+    candidate_key: c61ec05aad535d391f80d77c80b16338d5f473619de47fc9fd4633c1efd4c575
+    comparability_key: a2a383ee240677e6dbcd3dfa77ff9dfabb99b19036b8db15cb2123cef901725c
+    published_workflow_id: 99b5abfd-eaf0-4c22-894d-f2b82148b023
+    profile_fingerprint: 8432de29bf572e21c223ad99e541c081
+    dsl_sha256: 32acb6f4edbc5274f4774376003a0a55400ccc70ecf80148f45cfae8fc8b7d60
+    attempts: 5
+    received_response_calls: 4
+    actual_internal_llm_executions: 9
+    automatic_passed: 1
+    automatic_failed_cases: [CMP2, CMP3, CMP6, CMP8]
+    final_statuses: {ok: 2, needs_input: 0, blocked: 2, unavailable: 1}
+    failed_request: {case_id: CMP3, error_code: bad_request, selector_executed: true, writer_executed: false}
+    failure_classification: Invalid needs_input selection rejected by DraftSpec Guard; not network unavailability or a verified live stop branch
+    metrics: {duration_seconds: 26.6, prompt_tokens: null, completion_tokens: null, total_tokens: null, token_usage_complete: false}
+    partial_token_sums_are_run_totals: false
+    latency_seconds: {p50: 5.6, p95: 8.0}
+    delivery:
+      artifact: .cache/agent-evaluation/maxis-editor-20260916T003227Z-d84e52ed/editor-draftspec-delivery.json
+      artifact_sha256: c79acc156188d70cf5a360c85eef1995911d6c583f13889e8c753d4525e4f1a5
+      exact_synthetic_request_bound: true
+      original_start_and_guard_pack_matches: 5
+      prepared_selector_view_matches: 5
+      bounded_writer_projection_matches: 4
+      rejected_before_writer_projection: [CMP3]
+      enforcer_execution_succeeded: 4
+      contract_guard_execution_succeeded: 4
+      actual_llm_calls_by_case: {CMP2: 2, CMP3: 1, CMP6: 2, CMP8: 2, CMP9: 2}
+      routes: {CMP2: description, CMP3: null, CMP6: comment, CMP8: description, CMP9: description}
+    direct_review:
+      status: complete
+      artifact: .cache/agent-evaluation/maxis-editor-20260916T003227Z-d84e52ed/direct-review-candidate.json
+      artifact_sha256: bafb26baf546cd0613793eca66448ae765e78af28944f44368d44d28413468dd
+      mean_out_of_5: 2.34
+      usable_count: 0
+      completed_usable_drafts: 0
+      necessary_factual_clarifications: 0
+      common_checklist_counts: {pass: 31, minor: 11, major: 43, na: 75}
+      specialized_checklist_counts: {pass: 0, minor: 1, major: 14, na: 0}
+  candidate_v18:
+    version: ltm-maxis-dify-2026.09.16-editor-draftspec-v18
+    run_group_id: maxis-editor-20260916T004317Z-54a98b10
+    artifact: .cache/agent-evaluation/maxis-editor-20260916T004317Z-54a98b10/candidate.json
+    artifact_sha256: 0c6ee24d64198c84d8e4bc835faa97fb3c4e4941111bae3ff9e12fb969d74d93
+    candidate_commit: 45cfd10b0ebc7518e1f5bb2d938b3796c3e86207
+    candidate_dirty: false
+    candidate_key: 13f6280f9507cc4b9c89fac8a82b6c949bc0e33870d463985e9ac7035fe730d1
+    comparability_key: 73d92b65aa252a7bd7db0717f19837a37f63f3e0985c05aec5553c26a0ed8c9f
+    published_workflow_id: 0cf80e5e-ff06-4b43-900c-ea5c4ed91ddc
+    profile_fingerprint: a2ba20679f63ef4881c88132ef10b9dc
+    dsl_sha256: 33b8b6311211f9a70787517468b9faa8d46162eeaf66ff2495bade220140a56a
+    attempts: 5
+    received_response_calls: 5
+    actual_internal_llm_executions: 10
+    automatic_passed: 3
+    automatic_failed_cases: [CMP2, CMP6]
+    final_statuses: {ok: 4, needs_input: 0, blocked: 1, unavailable: 0}
+    metrics: {duration_seconds: 30.7, prompt_tokens: 17873, completion_tokens: 4697, total_tokens: 22570, token_usage_complete: true}
+    latency_seconds: {p50: 6.7, p95: 7.8}
+    delivery:
+      artifact: .cache/agent-evaluation/maxis-editor-20260916T004317Z-54a98b10/editor-draftspec-delivery.json
+      artifact_sha256: a2d34462c01aee8386cbe02f20b5d05be43ed4a1b60051c16ebdf2b642993834
+      exact_synthetic_request_bound: true
+      original_start_and_guard_pack_matches: 5
+      prepared_selector_view_matches: 5
+      bounded_writer_projection_matches: 5
+      enforcer_execution_succeeded: 5
+      contract_guard_execution_succeeded: 5
+      actual_llm_calls_by_case: {CMP2: 2, CMP3: 2, CMP6: 2, CMP8: 2, CMP9: 2}
+      routes: {CMP2: description, CMP3: comment, CMP6: comment, CMP8: description, CMP9: description}
+    direct_review:
+      status: complete
+      artifact: .cache/agent-evaluation/maxis-editor-20260916T004317Z-54a98b10/direct-review-candidate.json
+      artifact_sha256: 0893794662665fe4facad69f1ec788956f998e007977d6f66e85f3957f7ab2d6
+      evaluator_task: /root/scope_quality_review
+      mean_out_of_5: 2.58
+      usable_count: 0
+      completed_usable_drafts: 0
+      necessary_factual_clarifications: 0
+      common_checklist_counts: {pass: 45, minor: 27, major: 35, na: 53}
+      specialized_checklist_counts: {pass: 1, minor: 5, major: 9, na: 0}
+      capped_failure_count: 5
+      actual_score_reduced_by_cap_count: 3
+      automatic_pass_false_positives: [CMP3, CMP8, CMP9]
+  qualitative_evaluation:
+    policy: codex-or-claude-direct-raw-output-review
+    agent_family: codex
+    agent_model: current Codex agent; exact runtime model ID not exposed
+    direct_raw_output_review: true
+    ltm_llm_used_as_judge: false
+    reviewer_count: 1
+    blinded_review: false
+    same_evaluator_panel_across_candidates: true
+    reused_reviewer: true
+    implementation_and_review_same_agent: false
+    aggregation: Case-level equal-weight mean of five rubric axes with applicable ceilings and caps, then arithmetic mean of all five original attempts
+    common_items_per_run: 160
+    specialized_items_per_run: 15
+runtime:
+  active_profile: ''
+  routes: {agent_core: local, editor_author: local, pmo_brief: local}
+  prod_changed: false
+privacy:
+  credentials_recorded: false
+  sentinel_plaintext_recorded: false
+  prompts_or_responses_recorded: false
+  business_data_sent: false
+  raw_outputs_committed: false
+  raw_outputs_modified: false
+  synthetic_raw_location: .cache/agent-evaluation
