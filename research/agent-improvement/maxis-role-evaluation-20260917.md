@@ -89,4 +89,62 @@ rubric과 case별 특수 항목을 확인해야 한다. LTM runtime LLM이나 pr
   이 시도는 원격 요청을 보내지 않았으며 모델 품질 실패로 세지 않는다. 실제 평가는 처음부터
   승인된 네트워크/사용자 권한의 launcher 프로세스로 실행해야 한다.
 
-후속 독립 검토와 실제 실행 증적은 아래에 추가한다.
+## 실제 DEV 실행 결과
+
+소스 commit **`2851c282d51f77693fd2a846d62a2fece6a11454`**, `candidateDirty=false`에서 실행했다.
+배포 bundle은 기존 v19, profile fingerprint `a32fd440f030354eaf4aa947c3a07dc2`, 설정 모델은
+`gpt-5.4-mini`다. 실제 native node별 호출/지연/가격은 측정하지 않았다.
+
+첫 launcher 시도는 `dev_profile_not_verified`로 **사례 0건 전송** 상태에서 종료됐다.
+기존 검증 시각은 `2026-09-16T01:21:56.593202Z`, TTL 86,400초가 만료된 것이 확인됐다.
+이를 우회하지 않고, 자격 증명 없는 접속 preflight 후 기존 3개 앱의 고정 합성 canary를
+다시 수행했다. **3/3 통과**해 검증 기록만 갱신했다. 활성 profile은 빈 값, 모든 route는 local,
+PROD는 불변이었다. 그 뒤 미실행 11개 사례를 1회 평가했다. 재시도·후보 선택·원본 대체는 없다.
+
+| 관측 | 결과 |
+|---|---|
+| 전체/선택/시도/미시도 | 11 / 11 / 11 / 0 |
+| 정상 수신 응답 / 계약 검사 수락 | 10 / 10 |
+| `ok` / `blocked` / `needs_input` / 오류 | 0 / 5 / 5 / 1 |
+| Knowledge identity·ACL·ledger 수락 | 5/11 |
+| 요청 지연 합계 / p50 / p95 | 21,697 / 1,967 / 4,973 ms |
+| 관측 token | 10/11; 부분 합계 20,961 (prompt 16,515 + completion 4,446) |
+| 전체 token / native 호출 / 비용 | 모두 미관측 `null` |
+| source/profile 실행 전후 결속 | 불변 |
+| 품질/운영 승격 | 불가 |
+
+`complete=true`는 선택한 시도의 기록 완료다. 업무 성공이나 품질 통과가 아니다.
+`automaticContractPass=true`인 blocked 5건도 빈 payload여서 정상 업무 출력으로 세지 않는다.
+다수 응답이 작성 전에 막혔으므로 낮은 지연을 과거 Editor보다 빨라진 성능으로 비교하지 않는다.
+
+### 직접 검토 및 다음 우선순위
+
+Codex가 실제 전송 pack과 응답 11건을 직접 검토했다. LTM LLM judge는 사용하지 않았고,
+단일 비블라인드 검토이며 수치 품질 점수는 부여하지 않는다.
+case별 증거·제약은 [직접 검토 기록](evaluations/maxis-role-component-20260917-baseline.md)에 보관한다.
+
+1. Query/Work/Auditor/Portfolio/stale의 `no_role_knowledge_hit`와
+   `missing_inputs=[role_knowledge]`를 우선 분석한다. 업무 사실 부족과 정책 검색 실패를 구분하고,
+   역할별 검색 입력·ACL·검색 조항을 검증한다. 필요 없는 재질문이나 guard 해제로 해결하지 않는다.
+2. Request의 `citation_source_unknown`, Knowledge/Result/overflow의 `claim_not_grounded`,
+   missing의 `source_free_provenance_forbidden`를 분리한다. 현재 raw는 차단된 원래 claim을
+   포함하지 않아 모델의 허구 생성과 보수적인 검사 오탐 중 어느 것인지 확정할 수 없다.
+3. Editor `bad_request`는 현재 기록만으로 HTTP 400/422 또는 client validation의 어느
+   지점인지 확정할 수 없다. 비밀 없는 오류 단계/상태 관측과 실제 app payload→게시 graph의
+   호환성 진단이 다음 작업이다. 기존 Editor 전용 축소 fixture 성공으로 대체하지 않는다.
+4. 별도 `codex/maxis-context-utf8`의 **`90a99bd`**에서 한글/이모지 입력 크기 불일치를 수정했다.
+   확대 회귀 174개, 독립 검토 2회 모두 9/10이다. 이번 remote baseline은 수정 전 소스이며,
+   이 수정이 위 11건의 품질을 개선했다고 주장하지 않는다. 두 변경은 공통 기준선에서 분리한
+   형제 branch다. 병합·배포하지 않았다.
+
+### 불변 증적
+
+아래 경로는 이 worktree의 `.cache/agent-evaluation/` 기준이며 원본은 덮어쓰지 않는다.
+
+| 파일 | SHA-256 |
+|---|---|
+| `maxis-role-preflight-20260917T072214Z-b3ad6f6c/canary.json` | `68a9e0541ab472e51c3464b2b0b977003c9a83f42eb4dd4c71636cc7342adca6` |
+| `maxis-roles-20260917T072313Z-c095e091/baseline.json` | `221b9943ed74255cfcc09824e92978538f14df8e374e17db14e0bb4f9a00135a` |
+
+전체 app 58건, Knowledge 25건, UI, holdout, 5회 반복 qualification, 수동 Jira 대비 작업/수정 시간,
+전체 계획의 모델/구조 A/B 및 운영 전환은 아직 하지 않았다.
