@@ -22,7 +22,7 @@ from app.agent.maxis import backend
 BATTERY_VERSION = "2.0.0"  # missing-evidence case now declares its absent required inputs
 FIXTURE_VERSION = "ltm-maxis-role-offline.v1"
 _NOW = datetime(2026, 9, 17, 0, 0, tzinfo=timezone.utc)
-# Public deterministic keys belong ONLY to these fixed offline fixtures.
+# Public deterministic keys belong ONLY to closed synthetic fixtures, never runtime.
 _KEY = hashlib.sha256(b"ltm-maxis-role-offline-synthetic-v1").digest()
 _BUG = "리니지 뷰어에서 2홉 이상 펼치면 화면이 빈다. 크롬에서 재현되고 기대는 그래프가 그려지는 것. 버그로 올려줘."
 _HISTORY = "fdc.fdc_trace_summary_ic 데이터에 대해 히스토리 정리"
@@ -82,12 +82,6 @@ def load_cases() -> list[dict]:
     return [json.loads(value) for value in _CASES.values()]
 
 
-class _FixedClock(datetime):
-    @classmethod
-    def now(cls, tz=None):
-        return _NOW.astimezone(tz) if tz else _NOW.replace(tzinfo=None)
-
-
 def _schema(role: str) -> tuple[dict, str]:
     """Use the schema the real Role sends, including any actual budget failure."""
     if role == "result_integrator":
@@ -108,11 +102,11 @@ def _schema(role: str) -> tuple[dict, str]:
     return import_module(f"app.agent.workflow.agents.{role}").SCHEMA, "structured"
 
 
-def _state(spec: dict) -> dict:
+def _state(spec: dict, observed_at: datetime) -> dict:
     role, case_id = spec["role_id"], spec["id"]
     state = {
         "thread_id": "offline-role-fixture", "correlation_id": case_id,
-        "correlation_started_at": _NOW.isoformat(), "user_id": "user.fixture",
+        "correlation_started_at": observed_at.isoformat(), "user_id": "user.fixture",
         "runtime_engine": "offline", "runtime_profile": "offline-fixture",
         "knowledge_manifest_sha256": hashlib.sha256(FIXTURE_VERSION.encode()).hexdigest(),
         "request_text": _HISTORY,
@@ -155,7 +149,7 @@ def _state(spec: dict) -> dict:
                     "situation", "evidence", "knowledge_brief", "interpretation"):
             state[key] = {"fixture_text": "합성 근거 설명 " * 120}
     if case_id == "role-stale":
-        state["correlation_started_at"] = (_NOW - timedelta(hours=1)).isoformat()
+        state["correlation_started_at"] = (observed_at - timedelta(hours=1)).isoformat()
     if case_id == "role-missing":
         for key in ("situation", "evidence", "knowledge_brief"):
             state.pop(key, None)
@@ -163,7 +157,7 @@ def _state(spec: dict) -> dict:
     return state
 
 
-def _attach_sources(state: dict, spec: dict) -> None:
+def _attach_sources(state: dict, spec: dict, observed_at: datetime) -> None:
     role, case_id = spec["role_id"], spec["id"]
     if role in {"request_architect", "query_specialist"} or case_id == "role-missing":
         return
@@ -184,7 +178,7 @@ def _attach_sources(state: dict, spec: dict) -> None:
         query_id = f"fixture-{index}"
         proof = backend.attest_query_result(
             query_id, "jira", result, scopes=("DL",), partial=stale,
-            retrieved_at=_NOW - timedelta(hours=1) if stale else _NOW,
+            retrieved_at=observed_at - timedelta(hours=1) if stale else observed_at,
             provenance={"tracked": True, "read_count": 1, "served_stale": stale,
                         "upstream_observed": False},
         )
@@ -198,9 +192,30 @@ def build_fixture_payload(case_id: str) -> dict:
     Guard/schema failures propagate so a runner can report them as observations.
     Returned state is synthetic LOCAL evidence, never an outbound request body.
     """
+    return _build_controlled_fixture(
+        case_id, observed_at=_NOW,
+        manifest_sha256=hashlib.sha256(FIXTURE_VERSION.encode()).hexdigest(),
+        runtime_profile="offline-fixture",
+    )
+
+
+def _build_controlled_fixture(
+    case_id: str, *, observed_at: datetime, manifest_sha256: str, runtime_profile: str,
+) -> dict:
+    """Shared closed fixture path; deployment binding never changes fixture text.
+
+    Private callers validate their binding contract before entering. Patches must
+    run synchronously in an isolated evaluation process, never an app worker.
+    """
     if type(case_id) is not str or case_id not in _CASES:
         raise ValueError("case_id must select repository-owned offline fixture data")
     spec = json.loads(_CASES[case_id])
+
+    class _FixtureClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return observed_at.astimezone(tz) if tz else observed_at.replace(tzinfo=None)
+
     from app.agent.tools import _ctx
     settings = SimpleNamespace(
         search_jira_projects=("DL",), search_confluence_spaces=("DL",),
@@ -210,11 +225,13 @@ def build_fixture_payload(case_id: str) -> dict:
     with patch.object(_ctx, "settings", return_value=settings), \
             patch.object(backend, "_known_identity_values", return_value=(
                 "user.fixture", "fixture@example.invalid")), \
-            patch.object(backend, "datetime", _FixedClock), \
+            patch.object(backend, "datetime", _FixtureClock), \
             patch.object(backend, "_PSEUDONYM_KEY", _KEY), \
             patch.object(backend, "_EVIDENCE_ATTESTATION_KEY", _KEY):
-        state = _state(spec)
-        _attach_sources(state, spec)
+        state = _state(spec, observed_at)
+        state["knowledge_manifest_sha256"] = manifest_sha256
+        state["runtime_profile"] = runtime_profile
+        _attach_sources(state, spec, observed_at)
         schema, output_kind = _schema(spec["role_id"])
         payload = backend.role_payload(spec["role_id"], state, [], schema,
                                        output_kind=output_kind)

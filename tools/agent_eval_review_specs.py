@@ -807,4 +807,7 @@ CASE_REVIEW_SPECS["perf"] = {
 
 def review_specs(suite: str) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     """Return the immutable suite elements and per-case review contracts."""
+    if suite == "maxis-role-component":
+        from tools.maxis_role_remote_cases import review_specs as role_review_specs
+        return role_review_specs()
     return SUITE_REVIEW_ELEMENTS[suite], CASE_REVIEW_SPECS[suite]

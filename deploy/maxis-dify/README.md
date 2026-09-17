@@ -410,6 +410,31 @@ exact host allow-list, field minimization을 갖춘 **read-only** adapter로만 
 
 ## Source of truth
 
+### Exploratory Role component evaluation
+
+`python -B deploy/maxis-dify/launch_role_evals.py --label baseline` runs at most
+11 repository-owned synthetic cases across the 8 remotely bound Roles. Invoke the
+launcher in an explicitly network-authorized separate process. It checks the DEV
+destination without credentials, then validates the inactive synthetic-only profile,
+all-local routes and pinned deployment before reading existing approved app keys.
+No app activation, live Jira input, prompt override, workflow publication or retry is
+performed. `--cases role-request role-query` selects only fixed IDs for a new focused
+attempt; it does not replace the original run. `baseline`/`candidate` are labels, not
+deployment switches. Both use the currently pinned published DEV workflow.
+
+The actual `role_payload`/ContextGuard projection, fresh synthetic attestations and
+ResponseGuard contracts are exercised. Sources and profile pins are rechecked before
+each request. Transport/auth/rate-limit failures stop remaining calls; attempted and
+unattempted IDs are recorded separately. Redacted output, per-role latency, available
+usage, retrieval identity/ACL and contract failures remain in a new immutable raw
+group under `.cache/agent-evaluation/`. Missing costs/native LLM counts remain unknown.
+
+This is a **component diagnostic, not whole-app qualification**: Work covers one
+create-shaped input, Editor covers a compact seed, and overflow is an artificial
+structural stress case, not a representative work task. Contract acceptance is not
+usefulness. Evaluate raw output directly with Codex/Claude; never use LTM's runtime
+LLM as the judge. Production DEV fixed-fixture protection remains unchanged.
+
 - 현재 environment binding:
   [environments/dev-2026.09.yml](environments/dev-2026.09.yml)
 - 현재 비밀 없는 배포 증적:

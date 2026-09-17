@@ -125,3 +125,4 @@ python -m pytest src/tests -q                      # 21 passed
 - **2026-07-07** — Phase A 완료. FastAPI 앱(mock/local/prod) + config(YAML) + SQLite 캐시 + docker/exe 패키징 + seed + 테스트(10 passed). mock 모드 end-to-end 검증(/api/wbs PMO 40.3%).
 - **2026-07-07** — 데모 확정: `demo/` 단일 HTML 간트차트(시간축 일/주/월, 모듈별 색, WBS 일정 바 + 진척 채움, ㄴ자 트리 연결선). 모듈 7 = ETL/DevOps/Observability/Workbench/Runtime/Catalog/DataOps.
 - **2026-09-17** — MAXIS 성능 계획의 오프라인 입력 진단·기존 측정 재사용 기반 구현. 8개 원격 Role·11개 합성 사례, 문맥 누락/미관측/실패 보존. 실 LLM·생산 설정·DEV 보호 변경 없음. 범위·검증·남은 작업: [성능 기반 보고서](research/agent-improvement/maxis-performance-baseline-20260917.md).
+- **2026-09-17** — 별도 `codex/maxis-role-evaluation`에서 8개 Role·11개 고정 합성 사례의 실제 응답 평가 경로 구현. source/profile 결속, 응답/Knowledge 독립 검사, 중단·미시도·usage 미관측 보존. 관련 테스트 199개 통과, 독립 검토 6→8→9/10. 활성 route/게시 Workflow 변경 없음. 범위·증적: [역할 평가 보고서](research/agent-improvement/maxis-role-evaluation-20260917.md).
