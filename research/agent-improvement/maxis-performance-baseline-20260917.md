@@ -57,7 +57,21 @@ python -B tools/maxis_performance_baseline.py replay-editor .cache/agent-evaluat
 - 초기 CLI 통합에서 strict datetime JSON 역직렬화 오류를 발견하고 `model_validate_json`과 실제 11-case runner 회귀 테스트로 수정. 최초 실패 예약은 보존.
 - 첫 진단의 missing 사례가 빈 required 목록을 갖던 문제를 수정하고 battery를 `1.0.0 → 2.0.0`으로 올림. 초기 raw는 덮어쓰지 않음.
 - 독립 검토 1차 8/10의 지적을 반영: 링크/junction 해석 후 cache 내부 경계 재검사, guard 실패의 고정 원인 코드 보존. CLI 실패 artifact도 비밀 없는 실패 상태로 기록하며 기존 예약/결과는 덮어쓰지 않는다.
-- 최종 source commit, 재실행 raw 및 독립 검토 결과는 아래 실행 기록에 연결한다.
+- 독립 검토 2차 **9/10**, 중요 수정 사항 없음. 이는 코드/설계 검토 점수이며 모델 품질 점수가 아니다.
+
+### 최종 실행 기록
+
+구현 commit **`a083cdc4909142655c7458c01c996d75d00334ec`**에서 아래 3개 작업을 실행했다. 모두 `dirtyTrackedFiles=false`, `dirtyUntrackedFiles=false`다. 이번에 만든 실행별 pytest 임시 디렉터리는 정리했고, 진단 raw·실패 예약·과거 raw는 보존했다.
+
+| 증적 (`.cache/agent-evaluation/` 기준) | SHA-256 |
+|---|---|
+| `maxis-offline-20260917-a083cdc/diagnose-b2.0.0-r01.json` | `51160811c219fe3a4f45f1d85c46ac822a64c4a27810d8c69051b68d7a0fac43` |
+| `maxis-offline-20260917-a083cdc/replay-editor-b1.0.0-r01.json` | `7ddc0f623cf31431d3bf54add0d03e53f1ccebdf694b6f189af386fe164da8be` |
+| `maxis-offline-20260917-a083cdc-v18/replay-editor-b1.0.0-r01.json` | `696144e34035524f53f70d6ba1aea153454f61f063732356f0bc123eb0adbb97` |
+
+입력 구성 성공 11/11, fixture 지정 필드 전달 9/11. 두 부족 사례는 overflow와 missing이며, stale 사례를 현재 업무에 사용 가능하다고 판정한 수치가 아니다.
+
+v18 재집계에서도 5개 시도 중 토큰 관측은 4개라는 상태를 보존했다. 부분 토큰 합계 18,202와 전체 합계 `null`을 분리하고 v19 대비 비용 절감률은 계산하지 않았다. 과거 raw의 SHA-256은 각각 v19 `f7403652bcd63b8323462fdee3447098e5b7be1913742b069bf3f81ba9342483`, v18 `52ec4a05608f24598dca59f35e39bfa64c0b7e2bf9b306e5102b114c0d909d25`로 기존 기록과 일치한다. 원본은 불변이다.
 
 ## 남은 계획과 다음 변경 경계
 
