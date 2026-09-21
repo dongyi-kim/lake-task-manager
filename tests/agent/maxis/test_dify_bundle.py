@@ -87,8 +87,8 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
         dsl = yaml.safe_load((ROOT / workflow["dsl"]).read_text(encoding="utf-8"))
         is_editor = workflow["roles"] == ["editor_author"]
         nodes = dsl["workflow"]["graph"]["nodes"]
-        assert len(nodes) == (23 if is_editor else 11)
-        assert len(dsl["workflow"]["graph"]["edges"]) == (26 if is_editor else 11)
+        assert len(nodes) == (23 if is_editor else 12)
+        assert len(dsl["workflow"]["graph"]["edges"]) == (26 if is_editor else 12)
         assert sum(node["data"].get("title") == "Editor Assembler" for node in nodes) == int(is_editor)
         inputs = [node for node in nodes if node["data"].get("title") == "Editor Input"]
         assert len(inputs) == int(is_editor)

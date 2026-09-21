@@ -169,6 +169,17 @@ def _mapping(value: Any, label: str) -> dict[str, Any]:
     return value
 
 
+def _policy_query_module():
+    spec = importlib.util.spec_from_file_location(
+        "ltm_dify_policy_query", Path(__file__).with_name("policy_query_graph.py"),
+    )
+    if spec is None or spec.loader is None:
+        raise BundleValidationError("Policy Query builder cannot be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_yaml(path: Path) -> dict[str, Any]:
     try:
         return _mapping(yaml.safe_load(path.read_text(encoding="utf-8")), str(path))
@@ -1026,7 +1037,7 @@ def _validate_dify_dsls(
             "template-transform": 2,
             "knowledge-retrieval": 2,
             "llm": 4 if editor_assembly else 1,
-            "code": 7 if editor_assembly else 2,
+            "code": 7 if editor_assembly else 3,
             "if-else": 3 if editor_assembly else 1,
             "answer": 2,
         }
@@ -1042,6 +1053,10 @@ def _validate_dify_dsls(
 
         start_node = nodes_by_type["start"][0]
         start_id = str(start_node["id"])
+        policy_query = _policy_query_module()
+        policy_query.validate_node(
+            list(nodes.values()), workflow_key, start_id, BundleValidationError,
+        )
         start_data = _mapping(start_node.get("data"), f"{workflow_key}.start")
         variables = start_data.get("variables")
         if not isinstance(variables, list):
@@ -1203,7 +1218,8 @@ def _validate_dify_dsls(
         validate_retrieval(
             role_node,
             expected_dataset_id=role_dataset_id,
-            expected_selector=["sys", "query"],
+            expected_selector=(["sys", "query"] if editor_assembly
+                               else [policy_query.NODE_ID, "query"]),
             expected_top_k=2,
             label="Role Knowledge",
         )
@@ -1213,6 +1229,8 @@ def _validate_dify_dsls(
             for node in nodes_by_type["code"]
         }
         expected_code_titles = {"Knowledge Guard", "Contract Guard"}
+        if not editor_assembly:
+            expected_code_titles.add("Policy Query")
         if editor_assembly:
             expected_code_titles.update({"Editor Assembler", "Editor Input", "DraftSpec Guard", "Stop Plan", "DraftSpec Enforcer"})
         if set(titled_code_nodes) != expected_code_titles:
@@ -1512,6 +1530,12 @@ def _validate_dify_dsls(
         }
         if editor_assembly:
             expected_edges = editor_graph["edges"]
+        else:
+            expected_edges.remove((role_acl_key_id, "source", role_id))
+            expected_edges.update({
+                (role_acl_key_id, "source", policy_query.NODE_ID),
+                (policy_query.NODE_ID, "source", role_id),
+            })
         if edge_routes != expected_edges:
             raise BundleValidationError(
                 f"{workflow_key} Dify graph edges drifted"
@@ -1688,7 +1712,11 @@ def validate_bundle(root: Path | None = None) -> None:
         "required": True,
         "nodes": "release_sentinel_role_acl_key_role_knowledge_and_pre_llm_guard",
         "query": "LTM_RELEASE_SENTINEL_V1",
-        "role_query_source": "sys.query",
+        "role_query_source": {
+            "agent_core": "policy_query.query", "pmo_brief": "policy_query.query",
+            "editor_author": "sys.query",
+        },
+        "guard_query_source": "sys.query",
         "llm_input_source": (
             "knowledge_guard.model_input_plus_validated_role_knowledge_context"
         ),

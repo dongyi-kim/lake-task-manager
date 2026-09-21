@@ -38,7 +38,11 @@ knowledge_retrieval_contract:
   # retrieval; the pre-LLM guard independently enforces the same policy.
   nodes: release_sentinel_role_acl_key_role_knowledge_and_pre_llm_guard
   query: LTM_RELEASE_SENTINEL_V1
-  role_query_source: sys.query
+  role_query_source:
+    agent_core: policy_query.query
+    pmo_brief: policy_query.query
+    editor_author: sys.query
+  guard_query_source: sys.query
   llm_input_source: knowledge_guard.model_input_plus_validated_role_knowledge_context
   llm_context_source: role_knowledge.result
   llm_context_gate: knowledge_guard_policy_allow_only

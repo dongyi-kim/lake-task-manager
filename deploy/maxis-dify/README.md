@@ -35,6 +35,7 @@ deployment evidence에 기록하지 않는다.
 | <code>code/editor_draft_spec.py</code> | 내부 근거 선택 검증·writer 입력 축소·문안 계약을 기존 assembler plan으로 컴파일 |
 | <code>editor_graph.py</code> | 본문·댓글·제어 분기별 schema/prompt 정본과 재현 가능한 Editor DSL 생성기 |
 | <code>editor_graph_validation.py</code> | selector·writer·control·stop과 원본 binding 공유 검증기; 환경 생성에도 재사용 |
+| <code>policy_query_graph.py</code> | LTM 정본 selector를 Core/PMO Policy Query 노드로 생성·검증; 검색 입력만 분리 |
 | <code>graph_receipt.py</code> | 검증한 로컬 graph와 Dify export의 실행 설정 비교 |
 | <code>prompts/*.md</code> | 공통 및 앱별 instruction source |
 | <code>contracts/*.json</code> | RemoteRoleResult와 Editor 선택·문안·assembler plan schema |
@@ -123,7 +124,9 @@ baseline CMP3은 selector 계약 위반으로 writer 전에 실패했으며 nati
 
 ## 공통 게시 topology
 
-아래는 변경하지 않은 Core/PMO의 공통 11노드·11엣지 topology다.
+아래는 Core/PMO source 후보의 공통 **12노드·12엣지** topology다. 기존 게시 버전의
+11노드·11엣지 증적을 대체하지 않으며, 원격 게시·검증 전에는 로컬 후보일 뿐이다.
+Editor source의 23노드·26엣지와 검색 입력은 변경하지 않는다.
 
 ~~~mermaid
 flowchart LR
@@ -131,6 +134,7 @@ flowchart LR
     SQ[Sentinel Query]
     RS[(Release Sentinel)]
     AK[Role ACL Key]
+    PQ[Policy Query: 결정적 검색어 선택]
     RK[(Role Knowledge)]
     KG[Knowledge Guard]
     PD{Policy Decision}
@@ -142,7 +146,8 @@ flowchart LR
     S --> SQ
     SQ --> RS
     S --> AK
-    AK --> RK
+    AK --> PQ
+    PQ --> RK
     RS --> KG
     RK --> KG
     KG --> PD
@@ -155,14 +160,25 @@ flowchart LR
 1. Start → Sentinel Query
 2. Sentinel Query → Release Sentinel
 3. Start → Role ACL Key
-4. Role ACL Key → Role Knowledge
-5. Release Sentinel → Knowledge Guard
-6. Role Knowledge → Knowledge Guard
-7. Knowledge Guard → Policy Decision
-8. Policy Decision allow → Contract LLM
-9. Contract LLM → Contract Guard
-10. Contract Guard → Allowed Answer
-11. Policy Decision deny/no-hit → Denied Answer
+4. Role ACL Key → Policy Query
+5. Policy Query → Role Knowledge
+6. Release Sentinel → Knowledge Guard
+7. Role Knowledge → Knowledge Guard
+8. Knowledge Guard → Policy Decision
+9. Policy Decision allow → Contract LLM
+10. Contract LLM → Contract Guard
+11. Contract Guard → Allowed Answer
+12. Policy Decision deny/no-hit → Denied Answer
+
+Policy Query는 Query Specialist·Work Architect·Auditor·Portfolio Analyst의 정확한
+Role id와 LTM이 덧붙인 bounded 정책어 suffix가 일치할 때만 정책어를 검색한다.
+나머지 Role, control/probe, suffix 불일치 입력은 원래 query를 그대로 사용한다.
+어휘와 selector는 `app/agent/maxis/retrieval_query.py` 한 곳에 정의하고 빌더가
+dependency-free code로 생성한다. `python -B deploy/maxis-dify/policy_query_graph.py`로
+재생성한 뒤 bundle validator와 environment materializer를 통과시킨다.
+Knowledge Guard는 계속 원래 `sys.query`와 EvidencePack의 equality를 검사하며,
+사용자 의도·근거·LLM 입력·ACL·Sentinel·top-k·출력 가드를 바꾸지 않는다.
+이는 모델 호출을 늘리지 않는 검색용 단위 기능이며, 의미 품질 통과를 보장하지 않는다.
 
 Editor Input은 `editor-draft.v1` 요청의 원본 EvidencePack을 바꾸지 않고, 모델용 요청과
 출처별 원문 단위 ID 목록(`editor-input.v1`)을 만든다. 사용자의 요청은 별도 intent로 분리하며

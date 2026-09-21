@@ -72,7 +72,7 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
         dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
         nodes = dsl["workflow"]["graph"]["nodes"]
         is_editor = path.name == "ltm-editor-author-2026.09.yml"
-        assert len(nodes) == (23 if is_editor else 11)
+        assert len(nodes) == (23 if is_editor else 12)
         llm_nodes = [node for node in nodes if node["data"]["type"] == "llm"]
         assert len(llm_nodes) == (4 if is_editor else 1)
         assembler_nodes = [node for node in nodes if node["data"].get("title") == "Editor Assembler"]
@@ -117,7 +117,9 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
                 "variable": "role_id",
             }],
         }
-        assert role_knowledge["data"]["query_variable_selector"] == ["sys", "query"]
+        policy_query = materializer._VALIDATOR._policy_query_module()
+        assert role_knowledge["data"]["query_variable_selector"] == (
+            ["sys", "query"] if is_editor else [policy_query.NODE_ID, "query"])
         assert role_knowledge["data"]["multiple_retrieval_config"] == {
             "reranking_enable": False,
             "score_threshold": 0,
@@ -190,11 +192,14 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
             (edge["source"], edge["sourceHandle"], edge["target"])
             for edge in dsl["workflow"]["graph"]["edges"]
         }
-        assert len(edge_routes) == (26 if is_editor else 11)
+        assert len(edge_routes) == (26 if is_editor else 12)
         assert ("start", "source", role_acl_key["id"]) in edge_routes
-        assert (
-            role_acl_key["id"], "source", role_knowledge["id"]
-        ) in edge_routes
+        if is_editor:
+            assert (role_acl_key["id"], "source", role_knowledge["id"]) in edge_routes
+        else:
+            assert (role_acl_key["id"], "source", policy_query.NODE_ID) in edge_routes
+            assert (policy_query.NODE_ID, "source", role_knowledge["id"]) in edge_routes
+            assert (role_acl_key["id"], "source", role_knowledge["id"]) not in edge_routes
         assert ("start", "source", role_knowledge["id"]) not in edge_routes
         assert (policy["id"], "false", answers["Denied Answer"]["id"]) in edge_routes
         llm_id = next(node["id"] for node in nodes if node["data"]["type"] == "llm")
@@ -801,7 +806,7 @@ def test_materializer_rejects_legacy_start_sys_query_selector(tmp_path, monkeypa
 
     with pytest.raises(
         materializer.EnvironmentBindingError,
-        match="Role Knowledge must select sys.query",
+        match="Role Knowledge query selector drifted",
     ):
         materializer._materialize_dsl(environment, "agent_core")
 
@@ -1071,6 +1076,7 @@ def test_materializer_rejects_policy_branch_bypass_to_llm(tmp_path, monkeypatch)
         if row["source"] == policy["id"] and row["target"] == denied["id"]
     )
     edge["sourceHandle"] = "true"
+    edge["id"] = f"{policy['id']}-true-{denied['id']}-target"
     agent_source.write_text(
         yaml.safe_dump(dsl, allow_unicode=True, sort_keys=False), encoding="utf-8",
     )

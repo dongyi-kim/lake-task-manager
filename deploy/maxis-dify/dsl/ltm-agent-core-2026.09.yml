@@ -103,18 +103,6 @@ workflow:
     - data:
         isInIteration: false
         isInLoop: false
-        sourceType: template-transform
-        targetType: knowledge-retrieval
-      id: 1909000000001010-source-1909000000001003-target
-      source: '1909000000001010'
-      sourceHandle: source
-      target: '1909000000001003'
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
         sourceType: knowledge-retrieval
         targetType: code
       id: 1909000000001002-source-1909000000001006-target
@@ -193,6 +181,30 @@ workflow:
       source: '1909000000001005'
       sourceHandle: source
       target: answer
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: template-transform
+        targetType: code
+      id: 1909000000001010-source-1909000000001023-target
+      source: '1909000000001010'
+      sourceHandle: source
+      target: '1909000000001023'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: knowledge-retrieval
+      id: 1909000000001023-source-1909000000001003-target
+      source: '1909000000001023'
+      sourceHandle: source
+      target: '1909000000001003'
       targetHandle: target
       type: custom
       zIndex: 0
@@ -335,7 +347,7 @@ workflow:
           score_threshold_enabled: false
           top_k: 2
         query_variable_selector:
-        - sys
+        - '1909000000001023'
         - query
         retrieval_mode: multiple
         selected: false
@@ -1489,6 +1501,57 @@ workflow:
       positionAbsolute:
         x: 1590
         y: 560
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "# Generated from app.agent.maxis.retrieval_query; do not edit inline.\n\
+          _POLICY_TERMS = {\"auditor\": \"Story Point Epic Link\", \"portfolio_analyst\"\
+          : \"진척률 SP statusCategory\", \"query_specialist\": \"Confluence changelog\
+          \ 검색\", \"work_architect\": \"Epic Sub-Task 완료 조건\"}\n_POLICY_SUFFIX_PREFIX\
+          \ = '\\n\\nPolicy search terms: '\nMAX_QUERY_UTF8_BYTES = 1024\n\ndef select_policy_query(query:\
+          \ str, role_id: str) -> str:\n    \"\"\"Select only an exact, bounded policy\
+          \ suffix; never edit model/user input.\n\n    This pure unit is also embedded\
+          \ in Core/PMO's Dify Policy Query node. It is\n    retrieval optimization,\
+          \ not an authority boundary: Role ACL and both guards\n    still validate\
+          \ the original request. Control and unknown queries are unchanged.\n   \
+          \ \"\"\"\n    if not isinstance(query, str) or not isinstance(role_id, str):\n\
+          \        return query\n    terms = _POLICY_TERMS.get(role_id)\n    if terms\
+          \ is None:\n        return query\n    suffix = _POLICY_SUFFIX_PREFIX + terms\n\
+          \    if not query.endswith(suffix) or not query[:-len(suffix)].strip():\n\
+          \        return query\n    try:\n        if len(query.encode(\"utf-8\"))\
+          \ > MAX_QUERY_UTF8_BYTES:\n            return query\n    except UnicodeEncodeError:\n\
+          \        return query\n    return terms\n\ndef main(query, role_id):\n \
+          \   return {\"query\": select_policy_query(query, role_id)}"
+        code_language: python3
+        desc: Select exact LTM policy suffix for retrieval only; preserve original
+          guard/model request
+        outputs:
+          query:
+            children: null
+            type: string
+        selected: false
+        title: Policy Query
+        type: code
+        variables:
+        - value_selector:
+          - sys
+          - query
+          variable: query
+        - value_selector:
+          - start
+          - role_id
+          variable: role_id
+      height: 54
+      id: '1909000000001023'
+      position:
+        x: 520
+        y: 660
+      positionAbsolute:
+        x: 520
+        y: 660
       selected: false
       sourcePosition: right
       targetPosition: left

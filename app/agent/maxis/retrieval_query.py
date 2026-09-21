@@ -25,9 +25,33 @@ _EDITOR_POLICY_SUFFIX = "\n\nPolicy search terms: HTML TipTap Description"
 _POLICY_TERMS = MappingProxyType({
     "query_specialist": "Confluence changelog 검색",
     "work_architect": "Epic Sub-Task 완료 조건",
-    "auditor": "검증 승인 근거",
+    "auditor": "Story Point Epic Link",
     "portfolio_analyst": "진척률 SP statusCategory",
 })
+_POLICY_SUFFIX_PREFIX = "\n\nPolicy search terms: "
+
+
+def select_policy_query(query: str, role_id: str) -> str:
+    """Select only an exact, bounded policy suffix; never edit model/user input.
+
+    This pure unit is also embedded in Core/PMO's Dify Policy Query node. It is
+    retrieval optimization, not an authority boundary: Role ACL and both guards
+    still validate the original request. Control and unknown queries are unchanged.
+    """
+    if not isinstance(query, str) or not isinstance(role_id, str):
+        return query
+    terms = _POLICY_TERMS.get(role_id)
+    if terms is None:
+        return query
+    suffix = _POLICY_SUFFIX_PREFIX + terms
+    if not query.endswith(suffix) or not query[:-len(suffix)].strip():
+        return query
+    try:
+        if len(query.encode("utf-8")) > MAX_QUERY_UTF8_BYTES:
+            return query
+    except UnicodeEncodeError:
+        return query
+    return terms
 
 
 @lru_cache(maxsize=4)
@@ -95,7 +119,7 @@ def enrich_role_query(query: str, role_id: str, payload_schema: Any) -> str:
     if canonical_schema not in accepted:
         return query
     suffix = (_EDITOR_POLICY_SUFFIX if role_id == "editor_author"
-              else "\n\nPolicy search terms: " + _POLICY_TERMS[role_id])
+              else _POLICY_SUFFIX_PREFIX + _POLICY_TERMS[role_id])
     if query.endswith(suffix):
         return query
     enriched = query + suffix

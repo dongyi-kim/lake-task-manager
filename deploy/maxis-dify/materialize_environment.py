@@ -555,12 +555,12 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
         str(_mapping(node, "Dify node").get("id") or "") for node in nodes
     ]
     if (
-        len(nodes) != (23 if editor_assembly else 11)
+        len(nodes) != (23 if editor_assembly else 12)
         or any(not node_id for node_id in node_ids)
         or len(set(node_ids)) != len(node_ids)
     ):
         raise EnvironmentBindingError(
-            f"{workflow_key} must have exactly {23 if editor_assembly else 11} "
+            f"{workflow_key} must have exactly {23 if editor_assembly else 12} "
             "uniquely identified nodes."
         )
     edges = graph.get("edges")
@@ -581,6 +581,8 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
     if len(start_nodes) != 1:
         raise EnvironmentBindingError(f"{workflow_key} must have one Start node.")
     start_node_id = str(start_nodes[0].get("id") or "")
+    policy_query = _VALIDATOR._policy_query_module()
+    policy_query.validate_node(nodes, workflow_key, start_node_id, EnvironmentBindingError)
     sentinel_query_nodes = [
         node for node in nodes
         if _mapping(
@@ -736,9 +738,11 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
             if retrieval_title == "Role Knowledge":
                 role_query_count += 1
                 role_knowledge_node_id = str(node.get("id") or "")
-                if data.get("query_variable_selector") != ["sys", "query"]:
+                expected_query = (["sys", "query"] if editor_assembly
+                                  else [policy_query.NODE_ID, "query"])
+                if data.get("query_variable_selector") != expected_query:
                     raise EnvironmentBindingError(
-                        f"{workflow_key} Role Knowledge must select sys.query."
+                        f"{workflow_key} Role Knowledge query selector drifted."
                     )
                 if (
                     data.get("metadata_filtering_mode") != "manual"
@@ -864,6 +868,8 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
             model["provider"] = environment["model"]["provider"]
             model["name"] = environment["model"]["name"]
         elif data.get("type") == "code":
+            if not editor_assembly and data.get("title") == "Policy Query":
+                continue  # Exact source, I/O and node identity were checked above.
             if editor_assembly and data.get("title") in {"DraftSpec Guard", "Stop Plan", "DraftSpec Enforcer"}:
                 continue  # Exact source and selectors were checked before binding changes.
             if data.get("title") == "Editor Input":
@@ -1007,7 +1013,7 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
         or editor_input_count != int(editor_assembly)
     ):
         raise EnvironmentBindingError(
-            f"{workflow_key} must contain one Release Sentinel, one sys.query Role "
+            f"{workflow_key} must contain one Release Sentinel, one reviewed Role "
             "Knowledge retrieval, one Knowledge Guard, the expected LLM branches, and one "
             "Contract Guard."
         )
@@ -1043,14 +1049,29 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
         raise EnvironmentBindingError(
             f"{workflow_key} deterministic Answer binding drifted."
         )
-    edge_routes = {
-        (
-            str(_mapping(edge, "Dify edge").get("source") or ""),
-            str(_mapping(edge, "Dify edge").get("sourceHandle") or ""),
-            str(_mapping(edge, "Dify edge").get("target") or ""),
-        )
-        for edge in edges
-    }
+    edge_routes = set()
+    nodes_by_id = {node["id"]: node for node in nodes}
+    for raw_edge in edges:
+        edge = _mapping(raw_edge, "Dify edge")
+        src, dst, handle = edge.get("source"), edge.get("target"), edge.get("sourceHandle")
+        if (
+            not isinstance(src, str) or src not in nodes_by_id
+            or not isinstance(dst, str) or dst not in nodes_by_id
+            or not isinstance(handle, str) or (src, handle, dst) in edge_routes
+            or edge.get("id") != f"{src}-{handle}-{dst}-target"
+            or edge.get("targetHandle") != "target"
+            or edge.get("type") != "custom" or edge.get("zIndex") != 0
+        ):
+            raise EnvironmentBindingError(f"{workflow_key} Dify edge binding drifted.")
+        data = _mapping(edge.get("data"), "Dify edge.data")
+        if (
+            set(data) != {"isInIteration", "isInLoop", "sourceType", "targetType"}
+            or data.get("isInIteration") is not False or data.get("isInLoop") is not False
+            or data.get("sourceType") != nodes_by_id[src]["data"]["type"]
+            or data.get("targetType") != nodes_by_id[dst]["data"]["type"]
+        ):
+            raise EnvironmentBindingError(f"{workflow_key} Dify edge node type drifted.")
+        edge_routes.add((src, handle, dst))
     expected_edge_routes = {
         (start_node_id, "source", sentinel_query_node_id),
         (sentinel_query_node_id, "source", sentinel_node_id),
@@ -1066,6 +1087,12 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
     }
     if editor_assembly:
         expected_edge_routes = editor_graph["edges"]
+    else:
+        expected_edge_routes.remove((role_acl_key_node_id, "source", role_knowledge_node_id))
+        expected_edge_routes.update({
+            (role_acl_key_node_id, "source", policy_query.NODE_ID),
+            (policy_query.NODE_ID, "source", role_knowledge_node_id),
+        })
     if len(edges) != len(edge_routes) or edge_routes != expected_edge_routes:
         raise EnvironmentBindingError(
             f"{workflow_key} deterministic branch topology drifted."
