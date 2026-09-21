@@ -544,6 +544,41 @@ def test_editor_preserves_citeable_intent_without_replacing_verified_evidence():
     }
 
 
+@pytest.mark.parametrize("role_id", (
+    "query_specialist", "work_architect", "auditor", "portfolio_analyst",
+))
+@pytest.mark.parametrize("profile", ("dev", "prod"))
+def test_role_policy_search_preserves_intent_sources_and_dev_isolation(role_id, profile):
+    from copy import deepcopy
+    from app.agent.workflow.contracts import role_output_schema
+    from app.agent.workflow.work_architect.contracts import CREATE_SCHEMA
+    from app.agent.workflow.agents.auditor import SCHEMA as audit
+    from app.agent.workflow.agents.portfolio_analyst import SCHEMA as portfolio
+    schema = {
+        "query_specialist": role_output_schema("query_specialist"),
+        "work_architect": CREATE_SCHEMA, "auditor": audit, "portfolio_analyst": portfolio,
+    }[role_id]
+    state = _runtime_state(role_id)
+    state.update(runtime_profile=profile, request_text="원문 요청 보존")
+    before = deepcopy(state)
+    pack = backend.role_payload(role_id, state, [], schema, output_kind="structured")["evidencePack"]
+    assert state == before
+    if profile == "dev":
+        assert pack["query"] == (
+            f"Canonical LTM role {role_id}. Process this guarded user intent:\n"
+            f"Synthetic MAXIS integration exercise for canonical role {role_id}."
+        )
+        assert pack["flags"] == ["synthetic_only"]
+        assert "원문 요청 보존" not in json.dumps(pack, ensure_ascii=False)
+    else:
+        assert pack["query"].startswith(
+            f"Canonical LTM role {role_id}. Process this guarded user intent:\n원문 요청 보존\n\n"
+        )
+        assert "Policy search terms:" in pack["query"]
+        assert pack["sources"][0]["content"] == "원문 요청 보존"
+        assert "Policy search terms:" not in json.dumps(pack["role_context"], ensure_ascii=False)
+
+
 def test_editor_intent_does_not_displace_ten_verified_sources(monkeypatch):
     monkeypatch.setattr(backend, "_verified_evidence_sources", lambda _state: [{}] * 10)
     with pytest.raises(backend.MaxisRuntimeError, match="공간"):

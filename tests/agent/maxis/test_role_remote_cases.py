@@ -126,6 +126,12 @@ def test_specialized_reviews_registered_canonically_and_detached():
 
 def test_offline_outputs_remain_byte_identical_to_pre_refactor_baseline():
     # This adapter refactor must not silently revise the existing offline battery.
+    # Freeze the pre-policy-retrieval runtime for this fixture-input regression;
+    # actual candidate projections are exercised by the tests above and runtime tests.
+    from app.agent.maxis.retrieval_query import enrich_role_query
+
+    def baseline_query(query, role_id, schema):
+        return enrich_role_query(query, role_id, schema) if role_id == "editor_author" else query
     expected = {
         "role-request": "6bdb057ce99fcee97e1f7368dbad5b899850261f536729a1e8c9a5097b7dd809",
         "role-query": "89aec58d6306dddb42ff197b8076a3be62f3367f8fa98ef518b2a77fbba8bfa3",
@@ -140,6 +146,29 @@ def test_offline_outputs_remain_byte_identical_to_pre_refactor_baseline():
         "role-missing": "26ecbd6472a5d7ec5d55b4abee7ae04b474e6a79f6ce96900da73b4d55940d8f",
     }
     for case_id, digest in expected.items():
-        encoded = json.dumps(offline.build_fixture_payload(case_id), ensure_ascii=False,
-                             sort_keys=True, separators=(",", ":"))
+        with patch("app.agent.maxis.retrieval_query.enrich_role_query", baseline_query):
+            encoded = json.dumps(offline.build_fixture_payload(case_id), ensure_ascii=False,
+                                 sort_keys=True, separators=(",", ":"))
         assert hashlib.sha256(encoded.encode()).hexdigest() == digest
+
+
+@pytest.mark.parametrize("case_id", [case["id"] for case in remote.load_remote_cases()])
+def test_candidate_only_changes_policy_query_not_sources_context_or_fixture(case_id):
+    from app.agent.maxis.retrieval_query import enrich_role_query
+
+    def baseline_query(query, role_id, schema):
+        return enrich_role_query(query, role_id, schema) if role_id == "editor_author" else query
+
+    with patch("app.agent.maxis.retrieval_query.enrich_role_query", baseline_query):
+        baseline = _build(case_id)
+    candidate = _build(case_id)
+    before = baseline["payload"]["evidencePack"]["query"]
+    pack = candidate["payload"]["evidencePack"]
+    if candidate["case"]["role_id"] in {
+        "query_specialist", "work_architect", "auditor", "portfolio_analyst",
+    }:
+        assert pack["query"].startswith(before + "\n\nPolicy search terms: ")
+    else:
+        assert pack["query"] == before
+    pack["query"] = before
+    assert candidate == baseline

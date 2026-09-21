@@ -1286,8 +1286,8 @@ def _context_pack(
         )
     )
     query = f"Canonical LTM role {role_id}. Process this guarded user intent:\n{user_intent}"
-    if not synthetic_only and role_id == "editor_author":
-        # Keep DEV's exact fixed-fixture gate unchanged. Real Editor payloads add
+    if not synthetic_only:
+        # Keep DEV's exact fixed-fixture gate unchanged. Supported Role payloads add
         # policy vocabulary, never facts, before the ordinary ContextGuard checks.
         from app.agent.maxis.retrieval_query import enrich_role_query
         query = enrich_role_query(query, role_id, payload_schema)
