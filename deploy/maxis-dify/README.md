@@ -4,6 +4,17 @@
 source bundle이다. DEV와 PROD의 환경 binding을 분리하고, import DSL을 materialize한
 뒤 validator와 원격 release gate를 통과시키는 구조다.
 
+> 2026-09-21: **v20 DEV 게시 완료, 운영 비활성·품질 미통과**.
+> Core/PMO에 결정적 Policy Query 노드를 추가해 각각 **12노드·12엣지**로 분리했다.
+> 동일 Role 11-case에서 정책 no-hit **5→0**, 검색/ACL 검증 **5→10건**이지만
+> 정상 답변은 **0/11**, 최종 blocked 10건·Editor 오류 1건이다.
+> 지연 합계 **28.154→36.704초**로 증가했으며 속도·token 절감이나 최종 품질 개선은 주장하지 않는다.
+> 회귀 **642개**, canary **3/3**. Editor·키·모델·Knowledge·PROD 불변, active profile 없음·모든 route local.
+> [최신 증적](deployments/dev-policy-query-2026.09.21.yml)과
+> [실측·실패·후속 개선](../../research/agent-improvement/evaluations/maxis-role-component-20260921-policy-query.md)을 확인한다.
+
+아래는 Editor를 마지막으로 변경한 v19의 과거 기록이다.
+
 > 2026-09-16: writer 전용 문안 계약의 **v19 DEV 게시 완료, 품질 미통과**.
 > Editor **23노드·26엣지**. 후보 5건 모두 selector+writer **LLM 2회**이며,
 > 원본 근거·축소 입력·compiler 결과의 일치 **5/5**, writer 입력 **897–1,813바이트**, canary **3/3**.
@@ -14,7 +25,7 @@ source bundle이다. DEV와 PROD의 환경 binding을 분리하고, import DSL�
 > 부모 범위 혼입·비교 방향 발명·미확인 완료 주장·검토 기준 누락이 남았다.
 > 활성 profile은 비어 있고 모든 route는 local이다. Core/PMO·API key·PROD는 그대로다.
 > Knowledge 25-case·전체 58-case·full compose/UI는 이번에 실행하지 않았다.
-> [최신 증적](deployments/dev-editor-writing-2026.09.16.yml)과
+> [v19 증적](deployments/dev-editor-writing-2026.09.16.yml)과
 > [구조·품질 보고서](../../research/agent-improvement/maxis-editor-writing-quality-20260916.md)를 먼저 확인한다.
 
 앞선 v16 3.58/5·v18 2.58/5는 [과거 실행](deployments/dev-editor-draftspec-2026.09.16.yml) 기록이며,
@@ -48,7 +59,8 @@ deployment evidence에 기록하지 않는다.
 | <code>deployments/dev-editor-scope-2026.09.15.yml</code> | 이전 v15 게시 ID·당시 baseline/v14/v15 실측·비활성 상태 |
 | <code>deployments/dev-editor-branches-2026.09.15.yml</code> | 이전 v16 게시 ID·당시 v15/v16 비교·실제 분기 확인 |
 | <code>deployments/dev-editor-draftspec-2026.09.16.yml</code> | 이전 v18 게시 ID·당시 v16/v17/v18 비교·단계 실행 확인·비활성 상태 |
-| <code>deployments/dev-editor-writing-2026.09.16.yml</code> | 최신 v19 게시 ID·fresh v18/v19 비교·writer 계약과 native 실행 확인·비활성 상태 |
+| <code>deployments/dev-editor-writing-2026.09.16.yml</code> | 이전 v19 게시 ID·fresh v18/v19 비교·writer 계약과 native 실행 확인·비활성 상태 |
+| <code>deployments/dev-policy-query-2026.09.21.yml</code> | 최신 v20 Core/PMO 게시 ID·Role 11-case 검색 개선과 남은 출력 실패·비활성 상태 |
 | <code>materialize_environment.py</code> | source DSL에 환경 binding을 주입한 import copy 생성 |
 | <code>validate_bundle.py</code> | DSL·prompt·code·contract·Knowledge binding 정적 검증 |
 | <code>knowledge-evals.yml</code> | release-bound retrieval 평가 명세 |
@@ -124,8 +136,8 @@ baseline CMP3은 selector 계약 위반으로 writer 전에 실패했으며 nati
 
 ## 공통 게시 topology
 
-아래는 Core/PMO source 후보의 공통 **12노드·12엣지** topology다. 기존 게시 버전의
-11노드·11엣지 증적을 대체하지 않으며, 원격 게시·검증 전에는 로컬 후보일 뿐이다.
+아래는 v20 DEV에 게시한 Core/PMO의 공통 **12노드·12엣지** topology다. 이전 버전의
+11노드·11엣지 증적은 보존한다. 연결·검색 검증 통과는 최종 업무 품질이나 운영 활성화 승인이 아니다.
 Editor source의 23노드·26엣지와 검색 입력은 변경하지 않는다.
 
 ~~~mermaid

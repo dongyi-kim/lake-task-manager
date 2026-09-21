@@ -10,6 +10,8 @@ LakeTaskManager Agent의 prompt 언어 구성, role contract, 구조적 품질, 
 
 ## 주요 보고서
 
+- [`evaluations/maxis-role-component-20260921-policy-query.md`](evaluations/maxis-role-component-20260921-policy-query.md): v20 검색 전용 단위 분리; 실제 no-hit 5→0이나 정상 답변 0/11·지연 증가, 비활성 유지. 별도 Editor 후보와 다음 단위별 개선 포함
+- [`evaluations/maxis-role-component-20260921-query-suffix.md`](evaluations/maxis-role-component-20260921-query-suffix.md): 선행 접미어 후보의 개선 실패와 native 정책 검색·Editor 오류 진단
 - [`maxis-role-evaluation-20260917.md`](maxis-role-evaluation-20260917.md): 8개 Role·11개 고정 합성 사례의 실제 원격 응답 평가 경로; 운영 활성화 없는 독립 component 진단
 - [`maxis-performance-baseline-20260917.md`](maxis-performance-baseline-20260917.md): 전체 성능 계획 1차 구현; 8개 Role·11개 오프라인 입력 진단, 정보 누락 재현과 기존 실측 재집계. 실 LLM/전체 업무 품질 미평가
 - [`maxis-editor-writing-quality-20260916.md`](maxis-editor-writing-quality-20260916.md): v19 작성 계약 단순화; 직접 2.14→2.40/5, 유용한 결과 0/5로 비활성 유지
