@@ -81,7 +81,19 @@ component_observations:
     bad_request: 1
     duration_seconds_primary: 19.6
     token_usage_complete: false
-    direct_review_status: in_progress_separate_sidecar
+    direct_review_status: completed_fresh_same_panel_baseline_and_candidate
+    direct_review_artifact: .cache/agent-evaluation/maxis-editor-20261008T055552Z-04102b02/human-review-candidate-v23-panel.json
+    direct_review_artifact_sha256: b3c87775c3f08fd280c60bc1d7c7e1445b4014be965fcc4d44548ca70947588f
+    baseline_review_artifact: .cache/agent-evaluation/maxis-editor-20261008T055552Z-04102b02/human-review-baseline-v23-panel.json
+    baseline_review_artifact_sha256: b99570989dc482dac5fbd0b2d34cc89f757c1d003f4157a70bcdef5d0d4e7f7e
+    baseline_quality_score: 2.54
+    candidate_quality_score: 2.68
+    quality_scale_maximum: 5
+    baseline_usable_cases: 1
+    candidate_usable_cases: 1
+    reviewed_checklist_judgments: 350
+    prior_panel_preserved: true
+    quality_report: research/agent-improvement/evaluations/maxis-editor-component-20261008-core-control.md
   role:
     artifact: .cache/agent-evaluation/maxis-roles-20261008T055648Z-85723e05/candidate.json
     artifact_sha256: 958a406d944755b242e9dc1d0d128d8525847356a94dfa009aceab878940dc90
@@ -93,7 +105,15 @@ component_observations:
     bad_request: 1
     duration_seconds_primary: 36.799
     token_usage_complete: false
-    direct_review_status: in_progress_separate_sidecar
+    direct_review_status: completed_candidate_only
+    direct_review_artifact: .cache/agent-evaluation/maxis-roles-20261008T055648Z-85723e05/human-review-candidate-v23-panel.json
+    direct_review_artifact_sha256: c73fd80ec134ead5e70a7a4841f7880af704b9f08ec22d96d175eabf866ff221
+    candidate_quality_score: 2.11
+    quality_scale_maximum: 5
+    candidate_usable_business_outputs: 0
+    reviewed_checklist_judgments: 385
+    paired_baseline_quality_comparison: false
+    quality_report: research/agent-improvement/evaluations/maxis-role-component-20261008-core-control.md
 native_supplement:
   artifact: .cache/maxis/core-v23-native-20261008.json
   artifact_sha256: 1eb72cbdba5be8c0898c78e92ed20674cc07493c9c930862bd29096de4e4cb8d
@@ -140,6 +160,9 @@ qualification:
   repetitions: 1
   balanced_order: false
   ltm_llm_used_as_judge: false
+  direct_review_single_nonblind_panel_per_component: true
+  quality_improvement_proven: false
+  ui_and_end_to_end_qualification: false
 privacy:
   credentials_recorded: false
   private_glossary_uploaded: false

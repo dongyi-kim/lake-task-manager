@@ -13,7 +13,9 @@ DEV Core v23에 게시했으며 [Core 계약과 검증 범위](core-control-rout
 > 2026-10-08: **Core v23 DEV 게시 완료, canary 3/3·운영 비활성**.
 > 연결 검사만 Control LLM으로 분리했고 실제 Core 업무 9건은 기존 semantic LLM을 각각 한 번 사용했다.
 > 기존 배터리 재실행은 Editor 자동 3/5, Role 정상 0/11(blocked 10·오류 1)이다.
-> 직접 품질 검토는 별도이며 canary·자동 계약 통과를 업무 성공으로 해석하지 않는다.
+> 같은 패널의 [Editor 직접 평가](../../research/agent-improvement/evaluations/maxis-editor-component-20261008-core-control.md)는 2.54→2.68/5이나 사용 가능 1/5→1/5다.
+> [Role 후보 직접 평가](../../research/agent-improvement/evaluations/maxis-role-component-20261008-core-control.md)는 2.11/5·사용 가능한 업무 산출물 0/11이다.
+> 단일 탐색 실행과 비블라인드 평가이며 전반 품질 향상은 미입증이다. canary·자동 계약 통과를 업무 성공으로 해석하지 않는다.
 > Editor v22·PMO v20·모델·Knowledge·PROD 불변, active profile 없음·모든 route local.
 > [v23 게시·실측 증적](deployments/dev-core-control-2026.10.08.yml)을 확인한다.
 
