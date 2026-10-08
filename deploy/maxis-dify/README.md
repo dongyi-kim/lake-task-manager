@@ -4,17 +4,27 @@
 source bundle이다. DEV와 PROD의 환경 binding을 분리하고, import DSL을 materialize한
 뒤 validator와 원격 release gate를 통과시키는 구조다.
 
+> 2026-10-08: **v22 DEV Editor 게시 완료, 공통 canary 실패로 후보 품질 평가 미실행**.
+> 내부 DraftSpec v2에서 동등한 target/constraint 선택을 current 하나로 통합했다.
+> 회귀 **917개**와 두 독립 코드 검토를 통과했으나, 이것은 LLM 품질 검증이 아니다.
+> 새 v21 기준선은 자동 **2/5**, 직접 품질 **2.52/5**, 사용 가능 **0/5**다.
+> v22 연결 검사는 Editor·PMO 통과, Core의 모델 응답이 blocked여서 **2/3**이다.
+> 공통 profile verified=false를 우회하지 않았다. 후보 Editor 5건·Role 11건은 아직 실행하지 않았다.
+> Core/PMO·모델·Knowledge·PROD 불변, active profile 없음·모든 route local.
+> [최신 증적](deployments/dev-editor-selection-2026.10.08.yml),
+> [기준선 품질과 후보 평가 제한](../../research/agent-improvement/evaluations/maxis-editor-component-20261008-selection-v2.md)을 확인한다.
+
+아래 v21·v20·v19는 이전 게시 기록이다.
+
 > 2026-10-08: **v21 DEV Editor 게시 완료, 운영 비활성·품질 미통과**.
 > 소유 티켓이 없는 Jira 검색 wrapper 제목을 선택 단위에서 제외했다. 23노드·26엣지와 모든 Guard는 유지한다.
 > 회귀 **907개**, canary **3/3**. 실제 Editor 자동 통과 **2/5**, Role은 **정상 0·blocked 10·오류 1**이다.
 > Editor의 fresh baseline과는 protocol 파일 줄바꿈으로 benchmark identity가 달라 직접 개선율을 주장하지 않는다.
 > selector의 타입·중복 선택·없는 링크 선택 오류를 실제 native 입력으로 재현했다. fixed 4457 bind 실패로 UI는 미검증이다.
 > Core/PMO·모델·Knowledge·PROD 불변, active profile 없음·모든 route local.
-> [최신 증적](deployments/dev-editor-scope-2026.10.08.yml),
+> [v21 증적](deployments/dev-editor-scope-2026.10.08.yml),
 > [Editor 직접 품질](../../research/agent-improvement/evaluations/maxis-editor-component-20261008-unit-scope.md),
 > [Role 진단](../../research/agent-improvement/evaluations/maxis-role-component-20261008-editor-scope.md)을 확인한다.
-
-아래 v20·v19는 이전 게시 기록이다.
 
 > 2026-09-21: **v20 DEV 게시 완료, 운영 비활성·품질 미통과**.
 > Core/PMO에 결정적 Policy Query 노드를 추가해 각각 **12노드·12엣지**로 분리했다.
@@ -73,7 +83,8 @@ deployment evidence에 기록하지 않는다.
 | <code>deployments/dev-editor-draftspec-2026.09.16.yml</code> | 이전 v18 게시 ID·당시 v16/v17/v18 비교·단계 실행 확인·비활성 상태 |
 | <code>deployments/dev-editor-writing-2026.09.16.yml</code> | 이전 v19 게시 ID·fresh v18/v19 비교·writer 계약과 native 실행 확인·비활성 상태 |
 | <code>deployments/dev-policy-query-2026.09.21.yml</code> | 이전 v20 Core/PMO 게시 ID·Role 11-case 검색 개선과 남은 출력 실패·비활성 상태 |
-| <code>deployments/dev-editor-scope-2026.10.08.yml</code> | 최신 v21 Editor 게시·import 실패와 재개 증거·두 배터리의 실패·비활성 상태 |
+| <code>deployments/dev-editor-scope-2026.10.08.yml</code> | 이전 v21 Editor 게시·import 실패와 재개 증거·두 배터리의 실패·비활성 상태 |
+| <code>deployments/dev-editor-selection-2026.10.08.yml</code> | 최신 v22 Editor 게시·공통 canary 실패·후보 품질 미실행·비활성 상태 |
 | <code>materialize_environment.py</code> | source DSL에 환경 binding을 주입한 import copy 생성 |
 | <code>validate_bundle.py</code> | DSL·prompt·code·contract·Knowledge binding 정적 검증 |
 | <code>knowledge-evals.yml</code> | release-bound retrieval 평가 명세 |
@@ -130,7 +141,7 @@ current 내부와 context/history 간 중복, v1·혼합 계약은 그대로 거
 DraftSpec은 한 workflow 실행 안에서 사용하는 중간값이다. selector/schema/Guard/Enforcer를
 같은 workflow 게시본으로 함께 교체하며, v1 중간값을 v2 실행에 재개·재생하지 않는다.
 앱의 외부 저장 계약은 바꾸지 않는다. Dify의 진행 중 실행 snapshot·재개 동작은 아직 검증하지 않았다.
-이는 로컬 계약 단순화이며 아직 원격 게시·LLM 재평가 결과는 없다.
+이 계약은 DEV v22에 게시했다. 공통 canary 실패로 실제 작성 품질 재평가는 아직 실행하지 못했다.
 writer의 `editor-writer-input.v2`는 요청, section 순서·목적·블록 예산, 선택된 원문과
 허용 section만 제공한다. source ID·선택 bucket·링크 목록·native Knowledge context는 주지 않는다.
 부모 맥락 fact는 description.background에서만, 역사·충돌 fact는 작성에서 제외한다.
@@ -333,7 +344,7 @@ LTM profile에는 평문이 아니라 proof SHA만 저장한다.
 
 ## 이전 v8 앱·Workflow binding (보존용)
 
-아래는 과거 기록이다. 최신 v19 UUID는 [최신 증적](deployments/dev-editor-writing-2026.09.16.yml)을 사용한다.
+아래는 과거 기록이다. 최신 UUID와 실패 상태는 [v22 증적](deployments/dev-editor-selection-2026.10.08.yml)을 사용한다.
 
 | 앱 | App ID | published Workflow ID | 카나리 |
 |---|---|---|---:|
@@ -395,7 +406,7 @@ flowchart LR
     A --> P[독립 PROD release]
 ~~~
 
-현재 확인된 원격 증거:
+아래는 2026-09-06 v8에서 확인한 과거 원격 증거다. 최신 v22의 canary 2/3 및 품질 미실행 상태와 구분한다.
 
 - filtered retrieval preflight: **25/25**
   - positive 8/8 target top-2
@@ -428,9 +439,9 @@ Harness SHA-256:
 <br>승인된 [평가 launcher](launch_knowledge_evals.py) 사용,
 <code>evaluationLauncher</code> 포함 source hash ledger: **15/15 결속**
 <br>소스 전환 검증 실행의 통과 수는 **13~16/25**로 변동했으므로 생성 안정성은
-미입증 상태다. 공식 기준은 현재 소스와 hash가 일치하는 위 artifact 하나뿐이다.
+미입증 상태였다. 당시 기준은 당시 소스와 hash가 일치하는 위 artifact 하나뿐이다.
 
-이 수치는 현 v8의 **PoC baseline**이며 성공으로 해석하지 않는다. preflight와 canary,
+이 수치는 과거 v8의 **PoC baseline**이며 성공으로 해석하지 않는다. preflight와 canary,
 높은 retrieval 지표만으로 authoritative route를 열지 않는다. positive 4건과
 response-shape 실패를 개선해 재실행하고, injection 서명 검토와 의미 정답성 검토를
 마쳐야 한다. Artifact는 dataset, manifest, workflow version, profile, suite digest에
@@ -485,7 +496,7 @@ LLM as the judge. Production DEV fixed-fixture protection remains unchanged.
 - 현재 environment binding:
   [environments/dev-2026.09.yml](environments/dev-2026.09.yml)
 - 현재 비밀 없는 배포 증적:
-  [deployments/dev-2026.09.yml](deployments/dev-2026.09.yml)
+  [deployments/dev-editor-selection-2026.10.08.yml](deployments/dev-editor-selection-2026.10.08.yml)
 - 구현 상태와 남은 gate:
   [MAXIS_DIFY_IMPLEMENTATION_STATUS.md](../../docs/MAXIS_DIFY_IMPLEMENTATION_STATUS.md)
 - 아키텍처와 운영 경계:
