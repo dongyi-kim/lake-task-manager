@@ -134,3 +134,30 @@ Role은 여전히 정상 0/11, blocked 10·Editor bad_request 1이며 31.719초�
 단일 탐색·비블라인드 검토로 인과 효과나 운영 적격을 주장하지 않는다.
 CMP8과 Role Editor의 오류를 새 모델 호출로 덮지 않고, 같은 pack에 결속된 native 실행 정보를
 읽기 전용으로 진단하는 것을 다음 단위로 삼는다. 운영은 inactive/local을 유지한다.
+
+### 후속 읽기 전용 진단 — 08:17 UTC
+
+기존 두 실패의 전체 canonical pack과 요청·앱·고정 시간창을 대조했다.
+selector 출력→Guard 입력과 Editor Input→Guard 입력은 각각 일치했다.
+조회한 입력을 메모리에서 hash 고정된 로컬 `ff5daa4` Guard로 재현한 결과는 다음과 같다.
+
+| 사례 | 로컬 재현에서 거부한 조건 | 의미 |
+|---|---|---|
+| Role `role-editor` | `editor_draft_spec.py:65`의 `available_link is not True` | 존재하는 출처 ID지만 링크 사용이 불가능한 출처를 필수 링크로 선택 |
+| Editor `CMP8` | `editor_draft_spec.py:46`의 Jira `entity_key not in parents` | 검증된 부모에 속하지 않는 Jira unit을 부모 배경 bucket에 선택 |
+
+이는 **정확한 요청에 결속된 실제 포트 관측과 로컬 검증 재현**이다. 두 과거 실행의
+workflow UUID는 조회 결과에서 직접 관측하지 못했다. 현재 게시 UUID·graph/config는 확인했지만
+그것만으로 과거 실행 코드까지 확정하지 않는다. 전체 원격 오류 원인이나 유일한 실패를 모두
+찾았다고 주장하지 않으며, 이번 진단으로 primary 품질 점수나 실패 상태를 바꾸지 않았다.
+
+인증된 Console GET 8회(게시본 1·목록 1·node 6), 별도 credential-free preflight와 인증 1회,
+모델 호출·graph/profile 쓰기 0회다. 원격 자유 텍스트·reasoning·오류 원문은 저장하지 않았다.
+보조 receipt `.cache/maxis/editor-v24-failures-native-20261008-ff5daa4.json`의 SHA-256은
+`7def74ad3c33b8ee33ca5aa4a5864f68e3c3ededaa62ab36bfd92ef0c04c85df`다.
+진단 도구는 오프라인 46개와 독립 재실행 46개·검토 9/10을 통과했다. 앱 826회귀와 별도다.
+
+다음 후보는 semantic selector 앞에서 결정적 코드가 unit의 허용 bucket과 사용 가능한 링크를
+명확히 제시하는 작은 입력 계약이다. 기존 Guard를 완화하거나 잘못된 출력을 조용히 수정하지 않는다.
+새 표현의 9,000 UTF-8 byte 한도·원본 재결속·호환 경계를 먼저 검증하고, 의미 품질 개선은
+별도 새 후보의 같은 전체 배터리로 확인해야 한다. 아직 해당 후보를 구현하거나 게시하지 않았다.

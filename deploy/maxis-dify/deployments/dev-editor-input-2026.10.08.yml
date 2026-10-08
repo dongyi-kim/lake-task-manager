@@ -146,6 +146,28 @@ evaluations:
       sidecar: .cache/agent-evaluation/maxis-roles-20261008T074133Z-ad5321ce/human-review-candidate-v24-panel.json
       sidecar_sha256: 0675ae49f077ce7a9108abffdc048eeb3ceebaa895ddf72281b39db4fd3a8e8e
       report: research/agent-improvement/evaluations/maxis-role-component-20261008-input-v2.md
+supplemental_native_diagnosis:
+  artifact: .cache/maxis/editor-v24-failures-native-20261008-ff5daa4.json
+  artifact_sha256: 7def74ad3c33b8ee33ca5aa4a5864f68e3c3ededaa62ab36bfd92ef0c04c85df
+  helper_sha256: 340bc371fcd235d194ffab81f871c08ca0ad4d212a49d2a2f78bca11780fc7e5
+  started_at_utc: '2026-10-08T08:17:02.270467+00:00'
+  console_get_requests: 8
+  credential_free_preflight_budget: 1
+  authentication_post_budget: 1
+  model_calls: 0
+  graph_writes: 0
+  profile_writes: 0
+  exact_pack_matches: 2
+  selector_and_input_ports_exact: true
+  historical_executed_workflow_uuid_observed: false
+  local_replay_source_commit: ff5daa4cb88142939550253d67e78d379c42f0cb
+  local_replay_failures:
+    role-editor: required-link-source-is-not-available
+    CMP8: jira-context-unit-entity-is-not-a-verified-parent
+  historical_source_proof: false
+  primary_quality_results_replaced: false
+  remote_free_text_or_reasoning_persisted: false
+  profiles_unchanged: true
 qualification:
   eligible: false
   balanced_order: false
