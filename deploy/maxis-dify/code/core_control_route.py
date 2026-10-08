@@ -1,0 +1,133 @@
+"""Unwired, stdlib-only activation classifier; never an authorization decision.
+
+The caller must supply Knowledge Guard's bounded model input after policy allow.
+This unit neither verifies policy/proof nor validates ordinary business evidence.
+It emits only a route, never a model response, citation, or successful canary.
+"""
+import hashlib
+import json
+import re
+from datetime import datetime
+
+
+_INPUT_FIELDS = {"contract", "context_pack", "role_id", "correlation_id", "output_contract",
+                 "workflow_version", "knowledge_version", "knowledge_proof", "knowledge_context"}
+_NONCE = re.compile(r"probe_agent_core_([0-9a-f]{12})")
+_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,119}")
+_DIGEST = re.compile(r"[0-9a-f]{64}")
+_UTC_TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z")
+
+
+def _fail():
+    raise ValueError("invalid_core_control_input")
+
+
+def _canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _digest(value):
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _pairs(rows):
+    value = {}
+    for key, item in rows:
+        if key in value:
+            _fail()
+        value[key] = item
+    return value
+
+
+def _text(value, maximum):
+    if not isinstance(value, str) or not value.strip() or len(value.encode("utf-8")) > maximum:
+        _fail()
+    return value
+
+
+def _reserved(pack):
+    """Reserved identity metadata only; never inspect query or Knowledge text."""
+    for field in ("sources", "role_context"):
+        rows = pack.get(field)
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            _fail()
+    request = pack.get("request_id")
+    if isinstance(request, str) and request.startswith("probe_"):
+        return True
+    for source in pack.get("sources", []):
+        if isinstance(source, dict):
+            identity = source.get("canonical_id")
+            if isinstance(identity, str) and identity.startswith("ltm:maxis-probe:"):
+                return True
+    return any(isinstance(row, dict) and row.get("name") == "activation_probe"
+               for row in pack.get("role_context", []))
+
+
+def _activation(incoming, pack):
+    match = _NONCE.fullmatch(_text(pack.get("request_id"), 128))
+    if (not match or incoming["role_id"] != "knowledge_curator"
+            or incoming["correlation_id"] != pack["request_id"]
+            or incoming["output_contract"] != "remote-role-result.v1"
+            or not _UUID.fullmatch(_text(incoming["workflow_version"], 120))
+            or not _ID.fullmatch(_text(incoming["knowledge_version"], 120))):
+        _fail()
+    _text(incoming["knowledge_proof"], 240)  # Shape only; not Sentinel authentication.
+    nonce = match.group(1)
+    when = _text(pack.get("requested_at"), 80)
+    if not _UTC_TIME.fullmatch(when):
+        _fail()
+    datetime.fromisoformat(when)  # Calendar validity, not wall-clock freshness.
+    manifest = _text(pack.get("knowledge_manifest_sha256"), 64)
+    if not _DIGEST.fullmatch(manifest):
+        _fail()
+    source_id = "probe_source_" + nonce
+    content = "The supplied synthetic activation canary has state ready."
+    context = _canonical({"expected_state": "ready", "probe_kind": "synthetic_contract", "workflow": "agent_core"})
+    schema = _canonical({"type": "object", "additionalProperties": False,
+                         "properties": {"state": {"type": "string", "const": "ready"}}, "required": ["state"]})
+    expected = {
+        "contract": "evidence-pack.v1", "request_id": "probe_agent_core_" + nonce,
+        "use_case": "knowledge_curator", "query": _text(pack.get("query"), 1024),
+        "pseudonymous_user": "ltm_" + nonce + "0000", "requested_at": when,
+        "scope": {"projects": [], "spaces": [], "repositories": []},
+        "sources": [{"source_id": source_id, "kind": "ltm", "canonical_id": "ltm:maxis-probe:agent_core",
+            "title": "Synthetic MAXIS activation canary", "scope": "", "url": "", "content": content,
+            "retrieved_at": when, "updated_at": None, "content_sha256": _digest(content),
+            "partial": False, "truncated": False}],
+        "facts": [{"fact_id": "probe_fact_" + nonce, "text": content,
+                   "source_ids": [source_id], "observed_at": when}],
+        "metrics": [], "role_context": [{"context_id": "probe_context_" + nonce,
+            "name": "activation_probe", "content_json": context, "content_sha256": _digest(context),
+            "observed_at": when, "partial": False}],
+        "freshness": "fresh", "partial": False, "flags": [],
+        "knowledge_manifest_sha256": manifest,
+        "payload_schema_json": schema, "payload_schema_sha256": _digest(schema),
+    }
+    # JSON comparison also rejects Python's bool/int aliases and extra fields.
+    if _canonical(pack) != _canonical(expected):
+        _fail()
+
+
+def main(model_input):
+    """Return only semantic/control; malformed reserved probes raise a safe error.
+
+    No I/O, clock reads, mutation, evidence rewriting, or fallback repair. A semantic
+    result says only 'not this activation'; all existing validation remains required.
+    """
+    try:
+        if not isinstance(model_input, str) or len(model_input.encode("utf-8")) > 9000:
+            _fail()
+        incoming = json.loads(model_input, object_pairs_hook=_pairs, parse_constant=lambda _: _fail())
+        if (not isinstance(incoming, dict) or set(incoming) != _INPUT_FIELDS
+                or incoming["contract"] != "ltm-model-input.v1" or _canonical(incoming) != model_input):
+            _fail()
+        pack = incoming["context_pack"]
+        if not isinstance(pack, dict) or len(_canonical(pack).encode("utf-8")) > 6144:
+            _fail()
+        if not _reserved(pack):
+            return {"route": "semantic"}
+        _activation(incoming, pack)
+        return {"route": "control"}
+    except Exception:
+        raise ValueError("invalid_core_control_input") from None
