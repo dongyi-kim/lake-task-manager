@@ -10,6 +10,16 @@ DEV Core v23에 게시했으며 [Core 계약과 검증 범위](core-control-rout
 공유 schema 검증은 JSON 불리언과 숫자를 구분한다. 원본 보존·환경 변환을 포함한 관련 1,004회귀와
 독립 검토를 통과했으며, 이 오프라인 결과를 실제 모델 품질 점수로 해석하지 않는다.
 
+> 2026-10-08: **Editor 입력 v2를 DEV v24에 게시, canary 3/3·운영 비활성**.
+> selector에서 writer의 plan 계약만 제거했다. 23노드·26엣지, 모델·Knowledge·최종 Guard는 유지한다.
+> 기존 전체 배터리 재실행은 Editor 자동 **2/5**, Role 정상 **0/11**(blocked 10·오류 1)이다.
+> 새 동일 패널의 [Editor 직접 평가](../../research/agent-improvement/evaluations/maxis-editor-component-20261008-input-v2.md)는 3.08→2.48/5·사용 가능 1/5→0/5다.
+> 별도 [Role 후보 직접 평가](../../research/agent-improvement/evaluations/maxis-role-component-20261008-input-v2.md)는 2.02/5·업무 산출물 사용 가능 0/11이다.
+> 이전 v23 패널 2.68은 별도 관측으로 보존한다. 단일 탐색·비블라인드 결과이며 품질 향상은 미입증이다. 운영 경로는 모두 local이다.
+> [v24 게시·실측 증적](deployments/dev-editor-input-2026.10.08.yml)을 확인한다.
+
+아래 v23은 Editor v24 게시 전의 이력이다. Core 게시 UUID는 v24에서도 유지했다.
+
 > 2026-10-08: **Core v23 DEV 게시 완료, canary 3/3·운영 비활성**.
 > 연결 검사만 Control LLM으로 분리했고 실제 Core 업무 9건은 기존 semantic LLM을 각각 한 번 사용했다.
 > 기존 배터리 재실행은 Editor 자동 3/5, Role 정상 0/11(blocked 10·오류 1)이다.
@@ -244,13 +254,14 @@ Editor Input은 `editor-draft.v1` 요청의 원본 EvidencePack을 바꾸지 않
 출처별 원문 단위 ID 목록(`editor-input.v2`)을 만든다. 사용자의 요청은 별도 intent로 분리하며
 사실 단위로 제공하지 않는다. intent ID는 질문·제안의 출처로만 사용할 수 있다.
 
-현재 **로컬 후보 source**는 selector 입력에서 작성용 `draft_contract`를 제거했다.
+현재 source는 selector 입력에서 작성용 `draft_contract`를 제거했다.
 Selector는 요청·seed·근거 단위·`entities`를 받아 `editor-draft-spec.v2`만 선택한다.
 선택 검증 뒤 writer에게만 별도 `draft_contract`와 허용된 section을 제공한다.
 따라서 selector에 `editor-plan.v2` skeleton이나 writer의 `sections=[]` 지시를 섞지 않는다.
 입력 필드 제거에 맞춰 내부 버전을 v2로 올렸으며 v1/혼합 입력은 거부한다.
 `editor-writer-input.v2`, `editor-writing.v1`, `editor-plan.v2`와 외부 응답 계약은 바꾸지 않았다.
-위 DEV v23의 게시된 Editor는 아직 이전 입력 계약이며 이 후보를 게시·재평가한 결과가 아니다.
+이 입력 v2는 DEV v24에 게시했다. 위 과거 v23 Editor 기록은 이전 입력 계약의 결과다.
+v24의 자동 결과는 Editor 2/5·Role 정상 0/11이며, 계약 단순화만으로 의미 품질 개선을 주장하지 않는다.
 [변경 경계와 검증 기록](../../research/agent-improvement/maxis-editor-selector-input-v2-20261008.md)을 참고한다.
 
 Jira 단위의 `entity_key`와 명시된 `parentKey`/`parent.key`/`fields.parent.key`만으로

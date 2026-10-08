@@ -111,3 +111,26 @@ Git의 줄바꿈 정규화 blob 또는 semantic graph 해시와 혼동하지 않
 Role component battery 1.0.0을 유지한 새 전체 실행으로 확인해야 한다. 과거 실패를
 focused 성공이나 native 중간 출력으로 대체하지 않는다. 승인된 DEV·합성 데이터 범위만
 사용하며 운영 route local, PROD·main·push는 변경하지 않는다.
+
+## 후속 DEV 실측 — 2026-10-08
+
+위 내용은 로컬 구현 시점의 기록이다. 이후 clean source
+`ff5daa4cb88142939550253d67e78d379c42f0cb`에서 DEV Editor v24를 게시했다.
+Core/PMO·Knowledge·모델·키·PROD는 유지했고 canary는 3/3 통과했다.
+게시 보조검사 205개와 연결 검사 보조검사 8개는 앱 회귀 826개와 별도이며,
+모델의 업무 품질 통과를 뜻하지 않는다. [게시 증적](../../deploy/maxis-dify/deployments/dev-editor-input-2026.10.08.yml).
+
+기존 protocol/rubric/battery와 합성 입력을 유지한 전체 배터리를 각각 한 번 실행했다.
+Editor 자동 통과는 v23 3/5에서 v24 2/5, 지연 합계는 19.6→22.6초였다.
+Role은 여전히 정상 0/11, blocked 10·Editor bad_request 1이며 31.719초였다.
+두 실행 모두 binding 유지·측정 source clean이다. 실패 응답이 없는 사례 때문에
+전체 token/cost는 미관측으로 보존하며, 응답 수를 내부 LLM 호출 수로 해석하지 않는다.
+
+입력 계약 단순화의 품질 개선은 입증되지 않았다.
+[Editor 직접 paired 검토](evaluations/maxis-editor-component-20261008-input-v2.md)는 새 동일 패널
+3.08→2.48/5·사용 가능 1/5→0/5다. 이전 v23 패널 2.68과 합산하지 않는다.
+[Role 후보 직접 검토](evaluations/maxis-role-component-20261008-input-v2.md)는 별도 패널
+2.02/5·업무 산출물 사용 가능 0/11이며 baseline 재채점에 의한 비교가 아니다.
+단일 탐색·비블라인드 검토로 인과 효과나 운영 적격을 주장하지 않는다.
+CMP8과 Role Editor의 오류를 새 모델 호출로 덮지 않고, 같은 pack에 결속된 native 실행 정보를
+읽기 전용으로 진단하는 것을 다음 단위로 삼는다. 운영은 inactive/local을 유지한다.
