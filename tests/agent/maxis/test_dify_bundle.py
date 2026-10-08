@@ -111,6 +111,7 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
             assert model_input_id == validator.EDITOR_INPUT_NODE_ID
             assert inputs[0]["data"]["code"].rstrip() == (
                 (ROOT / validator.EDITOR_ASSEMBLER_PATH).read_text(encoding="utf-8").rstrip()
+                + "\n\n" + (ROOT / "deploy/maxis-dify/code/editor_selector_input.py").read_text(encoding="utf-8").rstrip()
                 + validator.EDITOR_INPUT_ENTRYPOINT
             ).rstrip()
             assert inputs[0]["data"]["variables"] == [{
@@ -119,6 +120,7 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
             }]
             assert inputs[0]["data"]["outputs"] == {
                 "model_input": {"children": None, "type": "string"},
+                "selector_input": {"children": None, "type": "string"},
                 "route": {"children": None, "type": "string"},
             }
         for llm in llms:
@@ -133,7 +135,8 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
             assert llm["data"]["memory"]["query_prompt_template"] == ""
             spec, _ = validator._editor_graph_modules(ROOT)
             expected_input = spec.SPEC_GUARD_NODE_ID if writer else model_input_id
-            assert f"{{{{#{expected_input}.model_input#}}}}" in prompt_text
+            port = "selector_input" if is_editor and llm["data"]["title"] == "DraftSpec LLM" else "model_input"
+            assert f"{{{{#{expected_input}.{port}#}}}}" in prompt_text
             if writer:
                 assert "Return `editor-writing.v1`" in prompt_text
                 assert "remote-role-result.v1" not in prompt_text
@@ -334,8 +337,10 @@ def test_validator_pins_editor_input_projection_contract(tmp_path, mutation):
     if mutation == "source":
         data["code"] += "\n# unreviewed input projection"
     elif mutation == "wrapper":
+        old_selector = "return prepare_selector_input(model_input)"
+        assert old_selector in data["code"]
         data["code"] = data["code"].replace(
-            "return prepare(model_input)", 'return {"model_input": model_input}',
+            old_selector, 'return {"model_input": model_input}',
         )
     elif mutation == "selector":
         data["variables"][0]["value_selector"] = ["start", "context_pack"]

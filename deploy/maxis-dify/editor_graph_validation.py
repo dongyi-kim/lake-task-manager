@@ -183,13 +183,17 @@ def validate_editor_graph(root, nodes: list[dict], edges: list[dict], *, spec,
                      max_system_bytes=max_system_bytes, error_type=error_type,
                      knowledge_enabled=branch not in {"description", "comment"})
     code_fields = {"code", "code_language", "desc", "outputs", "selected", "title", "type", "variables"}
+    try:
+        input_source = assembler_source + "\n\n" + spec.reviewed_selector_source(root) + input_entrypoint
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise error_type("reviewed selector input source cannot be loaded") from exc
     data = editor_input["data"]
     if (editor_input["id"] != input_id or set(data) != code_fields
             or data.get("code_language") != "python3"
             or not isinstance(data.get("code"), str)
-            or data["code"].rstrip() != (assembler_source + input_entrypoint).rstrip()
+            or data["code"].rstrip() != input_source.rstrip()
             or data.get("outputs") != {name: {"children": None, "type": "string"}
-                                       for name in ("model_input", "route")}
+                                       for name in ("model_input", "selector_input", "route")}
             or data.get("variables") != [{"variable": "model_input", "value_selector": [knowledge["id"], "model_input"]}]
             or data.get("selected") is not False):
         fail("Editor Input binding or source drifted")

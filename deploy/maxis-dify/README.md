@@ -92,6 +92,7 @@ deployment evidence에 기록하지 않는다.
 | <code>code/knowledge_guard.py</code> | retrieval identity·ACL·크기·policy decision 검증 |
 | <code>code/contract_guard.py</code> | output contract·source graph·payload schema 검증 |
 | <code>code/editor_assembler.py</code> | Editor Input 원문 단위 투영 + typed plan의 source-bound HTML·claim·citation 조립 |
+| <code>code/editor_selector_input.py</code> | Input 전용 선택 범위 투영; 원본 v2와 분리된 selector 입력을 만들며 Guard는 변경하지 않음 |
 | <code>code/editor_draft_spec.py</code> | 내부 근거 선택 검증·writer 입력 축소·문안 계약을 기존 assembler plan으로 컴파일 |
 | <code>editor_graph.py</code> | 본문·댓글·제어 분기별 schema/prompt 정본과 재현 가능한 Editor DSL 생성기 |
 | <code>editor_graph_validation.py</code> | selector·writer·control·stop과 원본 binding 공유 검증기; 환경 생성에도 재사용 |
@@ -132,6 +133,14 @@ label은 결과 그룹과 순서만 구분한다. 둘 다 **현재 게시된 프
 검증이나 activation 승인이 되지 않는다. 아래 v8 수치는 과거 배포 기록으로 읽는다.
 
 ## Editor 근거 선택 → 문안 작성 후보
+
+로컬 후보는 selector 전용 `editor-selector-input.v1`을 추가한다. 원문 unit을 구조상 가능한
+`current/context/shared/neither` 그룹으로 묶고, 실제 링크가 있는 출처만 `link_choices`로 제시한다.
+그룹은 관련성·최신성·현재 사실의 보증이 아니다. 원래 `editor-input.v2` 문자열은 Guard·Enforcer에
+그대로 전달하며 Control도 기존 입력을 유지한다. 새 포트는 DraftSpec LLM만 읽는다.
+각 입력은 9,000 UTF-8 bytes 이하여야 하며 초과 시 잘라내거나 옛 입력으로 대체하지 않는다.
+아직 DEV에 게시하지 않았고 실제 품질 향상은 미검증이다.
+[변경 범위와 회귀 기록](../../research/agent-improvement/maxis-editor-selector-eligibility-20261008.md)을 참고한다.
 
 현재 source는 **23노드·26엣지**이며, 새 semantic Role이나 앱을 만들지 않는다.
 정상 작성은 selector + 해당 writer의 **LLM 2회**, 필수 정보 확인은 selector만 **1회**,

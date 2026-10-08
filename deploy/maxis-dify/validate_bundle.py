@@ -108,7 +108,7 @@ EDITOR_INPUT_NODE_ID = "1909000000001012"
 EDITOR_INPUT_ENTRYPOINT = (
     "\n\n# Reviewed Editor Input entrypoint.\n"
     "def main(model_input):\n"
-    "    return prepare(model_input)\n"
+    "    return prepare_selector_input(model_input)\n"
 )
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 UUID_RE = re.compile(

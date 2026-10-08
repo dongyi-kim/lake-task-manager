@@ -294,6 +294,7 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
             assert editor_input["code"].rstrip() == (
                 (ROOT / "deploy/maxis-dify/code/editor_assembler.py")
                 .read_text(encoding="utf-8").rstrip()
+                + "\n\n" + (ROOT / "deploy/maxis-dify/code/editor_selector_input.py").read_text(encoding="utf-8").rstrip()
                 + materializer._VALIDATOR.EDITOR_INPUT_ENTRYPOINT
             ).rstrip()
             assert editor_input["variables"] == [{
@@ -302,6 +303,7 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
             }]
             assert editor_input["outputs"] == {
                 "model_input": {"children": None, "type": "string"},
+                "selector_input": {"children": None, "type": "string"},
                 "route": {"children": None, "type": "string"},
             }
             assembler = assembler_nodes[0]["data"]
@@ -395,8 +397,10 @@ def test_materializer_rejects_editor_input_projection_drift(tmp_path, monkeypatc
     if mutation == "source":
         data["code"] += "\n# unreviewed input projection"
     elif mutation == "wrapper":
+        old_selector = "return prepare_selector_input(model_input)"
+        assert old_selector in data["code"]
         data["code"] = data["code"].replace(
-            "return prepare(model_input)", 'return {"model_input": model_input}',
+            old_selector, 'return {"model_input": model_input}',
         )
     elif mutation == "selector":
         data["variables"][0]["value_selector"] = ["start", "context_pack"]

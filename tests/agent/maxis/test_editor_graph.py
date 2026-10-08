@@ -80,13 +80,18 @@ def test_selector_prompt_and_both_boundaries_use_selection_only_input_v2():
     nodes = {node["id"]: node["data"] for node in dsl["workflow"]["graph"]["nodes"]}
     selector = nodes[spec.SELECTOR_NODE_ID]
     prompt = selector["prompt_template"][0]["text"]
-    assert "editor-input.v2" in prompt and "editor-input.v1" not in prompt
+    assert "editor-selector-input.v1" in prompt and "editor-input.v2" not in prompt
     assert "editor-draft-spec.v2" in prompt and "editor-plan.v2" not in prompt
     input_id = _load("validate_bundle").EDITOR_INPUT_NODE_ID
     for node_id in (input_id, spec.SPEC_GUARD_NODE_ID, spec.ENFORCER_NODE_ID):
         code = nodes[node_id]["code"]
         assert "editor-input.v2" in code and "editor-input.v1" not in code
         assert "def _draft_contract(" not in code
+    assert set(nodes[input_id]["outputs"]) == {"model_input", "selector_input", "route"}
+    assert selector["prompt_template"][1]["text"].endswith(f"{{{{#{input_id}.selector_input#}}}}")
+    for title in ("DraftSpec Guard", "DraftSpec Enforcer", "Editor Assembler", "Contract Guard"):
+        data = next(row for row in nodes.values() if row["title"] == title)
+        assert "editor-selector-input.v1" not in data["code"]
 
 
 @pytest.mark.parametrize("mutation", ["raw_writer_input", "raw_writer_context", "selector_bypass",
@@ -127,11 +132,17 @@ def test_selection_boundary_rejects_graph_shortcuts(mutation):
         validator._validate_editor_graph(ROOT, graph["nodes"], graph["edges"], remote, assembler)
 
 
-@pytest.mark.parametrize("asset", ["source", "schema", "writing_schema", "prompt"])
+@pytest.mark.parametrize("asset", ["source", "selector_source", "schema", "writing_schema", "prompt"])
 def test_selection_assets_need_review_even_when_graph_is_regenerated(tmp_path, asset):
     spec, dsl = _build()
     validator = _load("validate_bundle")
     shutil.copytree(ROOT / "deploy/maxis-dify", tmp_path / "deploy/maxis-dify")
+    if asset == "selector_source":
+        path = tmp_path / spec.SELECTOR_ASSET_PATH
+        path.write_text(path.read_text(encoding="utf-8") + "\n# changed source", encoding="utf-8")
+        with pytest.raises(ValueError, match="reviewed selector input source"):
+            spec.rebuild(tmp_path, dsl, validator)
+        return
     if asset == "source":
         path = tmp_path / spec.SPEC_ASSET_PATH
         path.write_text(path.read_text(encoding="utf-8") + "\n# changed source", encoding="utf-8")
@@ -154,6 +165,39 @@ def test_selection_assets_need_review_even_when_graph_is_regenerated(tmp_path, a
     assembler = (ROOT / validator.EDITOR_ASSEMBLER_PATH).read_text(encoding="utf-8").rstrip()
     with pytest.raises(validator.BundleValidationError, match="reviewed DraftSpec source|canonical prompt SHA-256"):
         validator._validate_editor_graph(tmp_path, graph["nodes"], graph["edges"], remote, assembler)
+
+
+@pytest.mark.parametrize("mutation", ["selector_port", "guard_port", "enforcer_port", "control_port",
+                                     "missing_port", "old_entrypoint", "source", "prompt_version"])
+def test_selector_projection_is_pinned_in_both_validators(tmp_path, monkeypatch, mutation):
+    spec, dsl = _build()
+    validator, materializer = _load("validate_bundle"), _load("materialize_environment")
+    graph = dsl["workflow"]["graph"]
+    nodes = {node["id"]: node["data"] for node in graph["nodes"]}
+    data = nodes[validator.EDITOR_INPUT_NODE_ID]
+    if mutation in {"selector_port", "control_port"}:
+        branch = "selector" if mutation == "selector_port" else "control"
+        message = nodes[spec.BRANCH_NODE_IDS[branch]]["prompt_template"][1]
+        old, new = ("selector_input", "model_input") if branch == "selector" else ("model_input", "selector_input")
+        message["text"] = message["text"].replace("." + old + "#", "." + new + "#")
+    elif mutation in {"guard_port", "enforcer_port"}:
+        node_id = spec.SPEC_GUARD_NODE_ID if mutation == "guard_port" else spec.ENFORCER_NODE_ID
+        next(v for v in nodes[node_id]["variables"] if v["variable"] == "model_input")["value_selector"][-1] = "selector_input"
+    elif mutation == "missing_port": del data["outputs"]["selector_input"]
+    elif mutation == "old_entrypoint": data["code"] = data["code"].replace("return prepare_selector_input(model_input)", "return prepare(model_input)")
+    elif mutation == "source": data["code"] += "\n# unreviewed projection"
+    else:
+        nodes[spec.SELECTOR_NODE_ID]["prompt_template"][0]["text"] = nodes[spec.SELECTOR_NODE_ID]["prompt_template"][0]["text"].replace("editor-selector-input.v1", "editor-input.v2")
+    remote = json.loads((ROOT / "deploy/maxis-dify/contracts/remote-role-result.v1.schema.json").read_text(encoding="utf-8"))
+    assembler = (ROOT / validator.EDITOR_ASSEMBLER_PATH).read_text(encoding="utf-8").rstrip()
+    with pytest.raises(validator.BundleValidationError):
+        validator._validate_editor_graph(ROOT, graph["nodes"], graph["edges"], remote, assembler)
+    shutil.copytree(ROOT / "deploy/maxis-dify", tmp_path / "deploy/maxis-dify")
+    (tmp_path / "deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml").write_text(yaml.safe_dump(dsl, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr(materializer, "ROOT", tmp_path)
+    environment = materializer.load_environment(ROOT / "deploy/maxis-dify/environments/dev-2026.09.yml")
+    with pytest.raises(materializer.EnvironmentBindingError):
+        materializer._materialize_dsl(environment, "editor_author")
 
 
 @pytest.mark.parametrize("branch,sections", [("description", ["background", "scope", "work", "dod"]), ("comment", ["comment"])])
