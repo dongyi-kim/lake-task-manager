@@ -1698,14 +1698,19 @@ workflow:
           \        if _intent(source):\n            continue\n        units = []\n\
           \        for path, original, body_display, entity_key in _unit_rows(source):\n\
           \            if not original.strip():\n                continue\n      \
-          \      display, markup, refs = _reference_text(body_display, source_id,\
-          \ sources)\n            binding = [_UNIT_DISPLAY_POLICY, source_id, source.get(\"\
-          kind\"), source.get(\"canonical_id\"),\n                       source[\"\
-          content_sha256\"], source[\"title\"], source.get(\"url\", \"\"), path, original,\n\
-          \                       display, markup, refs, entity_key, scope]\n    \
-          \        unit_id = \"u_\" + hashlib.sha256(_canonical(binding).encode(\"\
-          utf-8\")).hexdigest()[:20]\n            if unit_id in lookup or len(lookup)\
-          \ >= 96:\n                _fail()\n            lookup[unit_id] = {\"text\"\
+          \      # A search/list wrapper title identifies the source, not an issue.\n\
+          \            # Keep it as catalog metadata but do not offer an unowned fact\
+          \ ID:\n            # the selector could otherwise misclassify it as parent\
+          \ context.\n            if source.get(\"kind\") == \"jira\" and path ==\
+          \ \"/title\" and not entity_key:\n                continue\n           \
+          \ display, markup, refs = _reference_text(body_display, source_id, sources)\n\
+          \            binding = [_UNIT_DISPLAY_POLICY, source_id, source.get(\"kind\"\
+          ), source.get(\"canonical_id\"),\n                       source[\"content_sha256\"\
+          ], source[\"title\"], source.get(\"url\", \"\"), path, original,\n     \
+          \                  display, markup, refs, entity_key, scope]\n         \
+          \   unit_id = \"u_\" + hashlib.sha256(_canonical(binding).encode(\"utf-8\"\
+          )).hexdigest()[:20]\n            if unit_id in lookup or len(lookup) >=\
+          \ 96:\n                _fail()\n            lookup[unit_id] = {\"text\"\
           : display, \"html\": markup, \"source_ids\": refs}\n            units.append({\"\
           unit_id\": unit_id, \"path\": path, \"text\": display, \"entity_key\": entity_key})\n\
           \        if not units:\n            _fail()\n        available_link = bool(source.get(\"\
@@ -2279,14 +2284,19 @@ workflow:
           \        if _intent(source):\n            continue\n        units = []\n\
           \        for path, original, body_display, entity_key in _unit_rows(source):\n\
           \            if not original.strip():\n                continue\n      \
-          \      display, markup, refs = _reference_text(body_display, source_id,\
-          \ sources)\n            binding = [_UNIT_DISPLAY_POLICY, source_id, source.get(\"\
-          kind\"), source.get(\"canonical_id\"),\n                       source[\"\
-          content_sha256\"], source[\"title\"], source.get(\"url\", \"\"), path, original,\n\
-          \                       display, markup, refs, entity_key, scope]\n    \
-          \        unit_id = \"u_\" + hashlib.sha256(_canonical(binding).encode(\"\
-          utf-8\")).hexdigest()[:20]\n            if unit_id in lookup or len(lookup)\
-          \ >= 96:\n                _fail()\n            lookup[unit_id] = {\"text\"\
+          \      # A search/list wrapper title identifies the source, not an issue.\n\
+          \            # Keep it as catalog metadata but do not offer an unowned fact\
+          \ ID:\n            # the selector could otherwise misclassify it as parent\
+          \ context.\n            if source.get(\"kind\") == \"jira\" and path ==\
+          \ \"/title\" and not entity_key:\n                continue\n           \
+          \ display, markup, refs = _reference_text(body_display, source_id, sources)\n\
+          \            binding = [_UNIT_DISPLAY_POLICY, source_id, source.get(\"kind\"\
+          ), source.get(\"canonical_id\"),\n                       source[\"content_sha256\"\
+          ], source[\"title\"], source.get(\"url\", \"\"), path, original,\n     \
+          \                  display, markup, refs, entity_key, scope]\n         \
+          \   unit_id = \"u_\" + hashlib.sha256(_canonical(binding).encode(\"utf-8\"\
+          )).hexdigest()[:20]\n            if unit_id in lookup or len(lookup) >=\
+          \ 96:\n                _fail()\n            lookup[unit_id] = {\"text\"\
           : display, \"html\": markup, \"source_ids\": refs}\n            units.append({\"\
           unit_id\": unit_id, \"path\": path, \"text\": display, \"entity_key\": entity_key})\n\
           \        if not units:\n            _fail()\n        available_link = bool(source.get(\"\
@@ -3890,14 +3900,19 @@ workflow:
           \        if _intent(source):\n            continue\n        units = []\n\
           \        for path, original, body_display, entity_key in _unit_rows(source):\n\
           \            if not original.strip():\n                continue\n      \
-          \      display, markup, refs = _reference_text(body_display, source_id,\
-          \ sources)\n            binding = [_UNIT_DISPLAY_POLICY, source_id, source.get(\"\
-          kind\"), source.get(\"canonical_id\"),\n                       source[\"\
-          content_sha256\"], source[\"title\"], source.get(\"url\", \"\"), path, original,\n\
-          \                       display, markup, refs, entity_key, scope]\n    \
-          \        unit_id = \"u_\" + hashlib.sha256(_canonical(binding).encode(\"\
-          utf-8\")).hexdigest()[:20]\n            if unit_id in lookup or len(lookup)\
-          \ >= 96:\n                _fail()\n            lookup[unit_id] = {\"text\"\
+          \      # A search/list wrapper title identifies the source, not an issue.\n\
+          \            # Keep it as catalog metadata but do not offer an unowned fact\
+          \ ID:\n            # the selector could otherwise misclassify it as parent\
+          \ context.\n            if source.get(\"kind\") == \"jira\" and path ==\
+          \ \"/title\" and not entity_key:\n                continue\n           \
+          \ display, markup, refs = _reference_text(body_display, source_id, sources)\n\
+          \            binding = [_UNIT_DISPLAY_POLICY, source_id, source.get(\"kind\"\
+          ), source.get(\"canonical_id\"),\n                       source[\"content_sha256\"\
+          ], source[\"title\"], source.get(\"url\", \"\"), path, original,\n     \
+          \                  display, markup, refs, entity_key, scope]\n         \
+          \   unit_id = \"u_\" + hashlib.sha256(_canonical(binding).encode(\"utf-8\"\
+          )).hexdigest()[:20]\n            if unit_id in lookup or len(lookup) >=\
+          \ 96:\n                _fail()\n            lookup[unit_id] = {\"text\"\
           : display, \"html\": markup, \"source_ids\": refs}\n            units.append({\"\
           unit_id\": unit_id, \"path\": path, \"text\": display, \"entity_key\": entity_key})\n\
           \        if not units:\n            _fail()\n        available_link = bool(source.get(\"\
@@ -4646,14 +4661,19 @@ workflow:
           \        if _intent(source):\n            continue\n        units = []\n\
           \        for path, original, body_display, entity_key in _unit_rows(source):\n\
           \            if not original.strip():\n                continue\n      \
-          \      display, markup, refs = _reference_text(body_display, source_id,\
-          \ sources)\n            binding = [_UNIT_DISPLAY_POLICY, source_id, source.get(\"\
-          kind\"), source.get(\"canonical_id\"),\n                       source[\"\
-          content_sha256\"], source[\"title\"], source.get(\"url\", \"\"), path, original,\n\
-          \                       display, markup, refs, entity_key, scope]\n    \
-          \        unit_id = \"u_\" + hashlib.sha256(_canonical(binding).encode(\"\
-          utf-8\")).hexdigest()[:20]\n            if unit_id in lookup or len(lookup)\
-          \ >= 96:\n                _fail()\n            lookup[unit_id] = {\"text\"\
+          \      # A search/list wrapper title identifies the source, not an issue.\n\
+          \            # Keep it as catalog metadata but do not offer an unowned fact\
+          \ ID:\n            # the selector could otherwise misclassify it as parent\
+          \ context.\n            if source.get(\"kind\") == \"jira\" and path ==\
+          \ \"/title\" and not entity_key:\n                continue\n           \
+          \ display, markup, refs = _reference_text(body_display, source_id, sources)\n\
+          \            binding = [_UNIT_DISPLAY_POLICY, source_id, source.get(\"kind\"\
+          ), source.get(\"canonical_id\"),\n                       source[\"content_sha256\"\
+          ], source[\"title\"], source.get(\"url\", \"\"), path, original,\n     \
+          \                  display, markup, refs, entity_key, scope]\n         \
+          \   unit_id = \"u_\" + hashlib.sha256(_canonical(binding).encode(\"utf-8\"\
+          )).hexdigest()[:20]\n            if unit_id in lookup or len(lookup) >=\
+          \ 96:\n                _fail()\n            lookup[unit_id] = {\"text\"\
           : display, \"html\": markup, \"source_ids\": refs}\n            units.append({\"\
           unit_id\": unit_id, \"path\": path, \"text\": display, \"entity_key\": entity_key})\n\
           \        if not units:\n            _fail()\n        available_link = bool(source.get(\"\

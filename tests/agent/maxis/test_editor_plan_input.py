@@ -282,7 +282,8 @@ def test_entity_scope_uses_explicit_edges_and_nearest_issue_not_prose(input_pack
     assert units["자식 작업"]["entity_key"] == "TS-11"
     assert units["연결 이슈"]["entity_key"] == "TS-12"
     assert units["식별 불가 작업"]["entity_key"] == ""
-    assert units[source["title"]]["entity_key"] == ""
+    assert source["title"] not in units
+    assert result["sources"][0]["title"] == source["title"]
 
 
 @pytest.mark.parametrize("parent_field", ["parentKey", "parent", "fields"])

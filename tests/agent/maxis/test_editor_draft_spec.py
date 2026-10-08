@@ -304,6 +304,40 @@ def test_valid_missing_measurement_skips_writer_through_both_guards(original_pac
     assert list(remote.missing_inputs) == selection["missing_inputs"]
 
 
+def test_wrapper_title_not_offered_to_selector_and_parent_scope_guard_stays_closed(original_pack_case):
+    """Minimize the native failure: no parent, Jira envelope title has no owner."""
+    import hashlib
+    pack, helper = original_pack_case
+    source, intent = pack["sources"]
+    source.update(kind="jira", canonical_id="DL-42", title="Jira result wrapper", url="",
+                  content=encoded({"complete": True, "issues": [{"key": "DL-42",
+                      "summary": "대상 작업", "description": "30분 주기 보존"}], "total": 1}))
+    request = json.loads(intent["content"])
+    request["ticket_key"] = "DL-42"
+    intent["content"] = encoded(request)
+    for row in pack["sources"]:
+        row["content_sha256"] = hashlib.sha256(row["content"].encode()).hexdigest()
+    before = copy.deepcopy(pack)
+
+    view = ASSET["prepare"](encoded(helper.incoming(pack)))["model_input"]
+    projected = json.loads(view)
+    units = projected["sources"][0]["units"]
+    assert all(row["path"] != "/title" for row in units)
+    assert projected["request"]["seed_visible"] == "검토 부탁드립니다."
+    unit_id = next(row["unit_id"] for row in units if row["text"] == "30분 주기 보존")
+    selection = {"contract": "editor-draft-spec.v1", "status": "ok", "mode": "comment", "target": "DL-42",
+                 "target_unit_ids": [unit_id], "context_unit_ids": [], "constraint_unit_ids": [],
+                 "history_unit_ids": [], "conflicts": [], "required_link_source_ids": [], "missing_inputs": []}
+    prepared = ASSET["prepare_spec"](view, encoded(selection), encoded(pack))
+    assert prepared["route"] == "comment"
+    assert json.loads(prepared["model_input"])["units"][0]["text"] == "30분 주기 보존"
+    # Actual target facts cannot be relabeled as parent context to bypass the guard.
+    selection.update(target_unit_ids=[], context_unit_ids=[unit_id])
+    with pytest.raises(ValueError, match="^invalid_editor_draft_spec$"):
+        ASSET["prepare_spec"](view, encoded(selection), encoded(pack))
+    assert pack == before
+
+
 @pytest.mark.parametrize("constraint_owner", ["target", "parent", "sibling"])
 def test_description_family_scope_through_original_pack_and_both_guards(original_pack_case, constraint_owner):
     import hashlib

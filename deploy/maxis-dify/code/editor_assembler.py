@@ -579,6 +579,11 @@ def _catalog(sources, target=""):
         for path, original, body_display, entity_key in _unit_rows(source):
             if not original.strip():
                 continue
+            # A search/list wrapper title identifies the source, not an issue.
+            # Keep it as catalog metadata but do not offer an unowned fact ID:
+            # the selector could otherwise misclassify it as parent context.
+            if source.get("kind") == "jira" and path == "/title" and not entity_key:
+                continue
             display, markup, refs = _reference_text(body_display, source_id, sources)
             binding = [_UNIT_DISPLAY_POLICY, source_id, source.get("kind"), source.get("canonical_id"),
                        source["content_sha256"], source["title"], source.get("url", ""), path, original,

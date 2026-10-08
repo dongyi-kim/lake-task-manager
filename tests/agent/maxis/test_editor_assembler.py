@@ -161,7 +161,10 @@ def test_wiki_display_does_not_rewrite_metadata_or_other_source_kinds(pack, kind
     source.update(kind=kind, title="h2. literal source title")
     _set_content(source, content)
     catalog, _ = ASSEMBLER._catalog(ASSEMBLER._sources(pack))
-    assert [(unit["path"], unit["text"]) for unit in catalog[0]["units"]] == list(ASSEMBLER._original_units(source))
+    expected = [(path, text) for path, text in ASSEMBLER._original_units(source)
+                if not (kind == "jira" and path == "/title")]
+    assert [(unit["path"], unit["text"]) for unit in catalog[0]["units"]] == expected
+    assert catalog[0]["title"] == "h2. literal source title"
 
 
 @pytest.mark.parametrize("body", [
@@ -178,7 +181,9 @@ def test_code_marked_leaf_is_entirely_excluded_from_wiki_display(pack, body):
     source["kind"] = "jira"
     _set_content(source, {"description": body})
     catalog, _ = ASSEMBLER._catalog(ASSEMBLER._sources(pack))
-    assert [(unit["path"], unit["text"]) for unit in catalog[0]["units"]] == list(ASSEMBLER._original_units(source))
+    expected = [(path, text) for path, text in ASSEMBLER._original_units(source) if path != "/title"]
+    assert [(unit["path"], unit["text"]) for unit in catalog[0]["units"]] == expected
+    assert catalog[0]["title"] == source["title"]
 
 
 def test_wiki_display_preserves_nonsyntax_numbers_negation_and_inline_markers(pack):
@@ -188,7 +193,7 @@ def test_wiki_display_preserves_nonsyntax_numbers_negation_and_inline_markers(pa
              "완료 아님: h2. 작업", "*inline*", "h2.", "*", "#value"]
     _set_content(source, {"description": "\n".join(lines)})
     catalog, _ = ASSEMBLER._catalog(ASSEMBLER._sources(pack))
-    assert [unit["text"] for unit in catalog[0]["units"][1:]] == lines
+    assert [unit["text"] for unit in catalog[0]["units"]] == lines
 
 
 def _proposal(text="확인해 주세요.", refs=None, tag="p"):
@@ -560,3 +565,60 @@ def test_metadata_word_is_not_an_active_data_url_scheme(pack):
 def test_real_active_scheme_is_not_mistaken_for_metadata(pack, text):
     _set_content(pack["sources"][0], text)
     with pytest.raises(ValueError): ASSEMBLER._catalog(ASSEMBLER._sources(pack))
+
+
+@pytest.mark.parametrize("envelope", ["issues", "list"])
+def test_unowned_jira_wrapper_title_is_not_a_selectable_unit(pack, envelope):
+    source = pack["sources"][0]
+    source.update(kind="jira", canonical_id="DL-42", title="Jira result wrapper", url="")
+    issues = [{"key": "DL-42", "summary": "대상 작업", "description": "30분 주기 보존",
+               "parent": {"key": "DL-40"}},
+              {"key": "DL-40", "summary": "상위 작업", "description": "상위 배경"}]
+    _set_content(source, {"complete": True, "issues": issues, "total": 2} if envelope == "issues" else issues)
+    before = copy.deepcopy(pack)
+
+    catalog, lookup = ASSEMBLER._catalog(ASSEMBLER._sources(pack), "DL-42")
+
+    assert catalog[0]["title"] == "Jira result wrapper"  # Still source metadata, never evidence.
+    assert all(row["path"] != "/title" for row in catalog[0]["units"])
+    by_text = {row["text"]: row for row in catalog[0]["units"]}
+    for text in ("대상 작업", "30분 주기 보존"):
+        assert by_text[text]["entity_key"] == "DL-42"
+        assert lookup[by_text[text]["unit_id"]]["text"] == text
+    for text in ("상위 작업", "상위 배경"):
+        assert by_text[text]["entity_key"] == "DL-40"
+    assert pack == before
+
+
+def test_owned_issue_title_and_document_evidence_stay_selectable(pack):
+    document = copy.deepcopy(pack["sources"][0])
+    source = pack["sources"][0]
+    source.update(source_id="src-ticket", kind="jira", canonical_id="DL-42", title="직접 조회한 티켓", url="")
+    _set_content(source, {"key": "DL-42", "summary": "대상 작업", "description": "30분 주기 보존"})
+    pack["sources"].append(document)
+    _intent(pack)
+    before = copy.deepcopy(pack)
+
+    catalog, _ = ASSEMBLER._catalog(ASSEMBLER._sources(pack), "DL-42")
+
+    assert len(catalog) == 2  # Intent remains a separate seed/request source.
+    title = next(row for row in catalog[0]["units"] if row["path"] == "/title")
+    assert title["entity_key"] == "DL-42" and title["text"] == "직접 조회한 티켓"
+    assert {row["text"] for row in catalog[1]["units"]} >= {"검증 기준", "조회 전용이다."}
+    assert pack == before
+
+
+@pytest.mark.parametrize("with_document", [False, True])
+def test_empty_jira_wrapper_does_not_bypass_existing_no_units_guard(pack, with_document):
+    document = copy.deepcopy(pack["sources"][0])
+    source = pack["sources"][0]
+    source.update(source_id="src-empty", kind="jira", canonical_id="jira-search-empty", title="Empty Jira search", url="")
+    _set_content(source, {"complete": True, "issues": [], "total": 0})
+    if with_document:
+        pack["sources"].append(document)
+    before = copy.deepcopy(pack)
+
+    with pytest.raises(ValueError, match="^invalid_editor_plan$"):
+        ASSEMBLER._catalog(ASSEMBLER._sources(pack), "DL-42")
+
+    assert pack == before  # No fake owner/fact and no silent evidence-source removal.
