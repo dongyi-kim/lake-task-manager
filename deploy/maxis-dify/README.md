@@ -7,6 +7,8 @@ source bundle이다. DEV와 PROD의 환경 binding을 분리하고, import DSL�
 로컬 Core source는 연결 검사와 업무 판단을 분리한 **16노드·17엣지 후보**다.
 양쪽 LLM과 원본 그래프를 검증한 뒤 환경값을 적용하며, 정책 거절과 기존 Guard는 유지한다.
 원격 DEV Core는 아래 v20 게시본 그대로다. [Core 계약과 검증 범위](core-control-route.md)를 참고한다.
+공유 schema 검증은 JSON 불리언과 숫자를 구분한다. 원본 보존·환경 변환을 포함한 관련 1,004회귀와
+독립 검토를 통과했으며, 이 오프라인 결과를 실제 모델 품질 점수로 해석하지 않는다.
 
 > 2026-10-08: **v22 DEV Editor 게시 완료, 공통 canary 실패로 후보 품질 평가 미실행**.
 > 내부 DraftSpec v2에서 동등한 target/constraint 선택을 current 하나로 통합했다.

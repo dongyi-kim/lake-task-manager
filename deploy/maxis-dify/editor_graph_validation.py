@@ -6,7 +6,38 @@ Environment materialization calls this before changing any model bindings.
 from __future__ import annotations
 
 import hashlib
+import math
 from typing import Any
+
+
+def _json_schema_equal(actual: Any, expected: Any) -> bool:
+    """Compare JSON values without Python's bool/number or container coercions.
+
+    Finite int/float values share JSON's number type (1 equals 1.0). Object key
+    order is irrelevant; array order is exact. Unsupported or too-deep/cyclic
+    Python values are invalid even when compared with themselves.
+    """
+    def equal(left: Any, right: Any) -> bool:
+        left_type, right_type = type(left), type(right)
+        if left_type in (int, float) and right_type in (int, float):
+            return ((left_type is int or math.isfinite(left))
+                    and (right_type is int or math.isfinite(right)) and left == right)
+        if left_type is not right_type:
+            return False
+        if left_type is dict:
+            return (all(type(key) is str for key in left)
+                    and all(type(key) is str for key in right)
+                    and left.keys() == right.keys()
+                    and all(equal(left[key], right[key]) for key in left))
+        if left_type is list:
+            return len(left) == len(right) and all(
+                equal(a, b) for a, b in zip(left, right))
+        return left_type in (str, bool, type(None)) and left == right
+
+    try:
+        return equal(actual, expected)
+    except RecursionError:
+        return False
 
 
 def reject_recovery_settings(value: Any, *, path: str,
@@ -17,6 +48,10 @@ def reject_recovery_settings(value: Any, *, path: str,
             key = str(raw_key).lower().replace("-", "_")
             if key in {"error_strategy", "retry_config", "retry_enabled"} or "fallback" in key:
                 raise error_type(f"{path} Dify recovery or fallback setting is forbidden")
+            # This scan precedes validate_llm; reject malformed schemas before
+            # recursive recovery scanning can overflow or inspect Python objects.
+            if key == "structured_output" and not _json_schema_equal(nested, nested):
+                raise error_type(f"{path} Dify LLM structured output must contain finite JSON values")
             reject_recovery_settings(nested, path=f"{path}.{raw_key}", error_type=error_type)
     elif isinstance(value, list):
         for index, nested in enumerate(value):
@@ -51,7 +86,7 @@ def validate_llm(data: dict, *, label: str, schema: dict, prompts: tuple[str, st
             "window": {"enabled": False, "size": 1},
         }
         or data.get("structured_output_enabled") is not True
-        or data.get("structured_output") != {"schema": schema}
+        or not _json_schema_equal(data.get("structured_output"), {"schema": schema})
         or data.get("variables") != []
         or data.get("vision") != {"enabled": False}
         or data.get("selected") is not False
