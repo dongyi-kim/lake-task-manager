@@ -381,6 +381,35 @@ def test_binding_change_before_attempt_opens_no_credentials(runner, monkeypatch,
     assert result["cases"] == [] and result["notAttemptedCaseIds"] == ["role-request"]
 
 
+def test_retrieval_query_source_change_stops_before_next_attempt(runner, monkeypatch, tmp_path):
+    source_binding = runner.source_binding
+    _run_setup(runner, monkeypatch, tmp_path)
+    monkeypatch.setattr(runner, "source_binding", source_binding)
+    monkeypatch.setattr(runner, "evaluation_source_file_sha256", lambda: {})
+    query_name = "app/agent/maxis/retrieval_query.py"
+    for name in (*runner.HARNESS_FILES, *runner.CANDIDATE_FILES, query_name):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# synthetic source\n", encoding="utf-8")
+    attempted = []
+
+    def changed_source(case, *args):
+        attempted.append(case["id"])
+        (tmp_path / query_name).write_text("# changed source\n", encoding="utf-8")
+        return {"attemptId": case["id"], "caseId": case["id"], "roleId": case["role_id"],
+                "status": "needs_input", "errorCode": "", "responseReceived": True,
+                "contractOk": True, "retrievalOk": True, "latencyMs": 100, "usage": None}
+
+    monkeypatch.setattr(runner, "attempt", changed_source)
+    path = runner.run("candidate", ["role-request", "role-query"])
+    result = json.loads(path.read_text(encoding="utf-8"))
+    assert attempted == ["role-request"]
+    assert result["stopReason"] == "binding_changed"
+    assert result["bindingUnchanged"] is False and not result["complete"]
+    assert result["notAttemptedCaseIds"] == ["role-query"]
+    assert query_name in result["metadata"]["maxisBinding"]["sourceFiles"]
+
+
 def test_resolved_cache_escape_rejected(runner, monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "ROOT", tmp_path)
     original_resolve = Path.resolve

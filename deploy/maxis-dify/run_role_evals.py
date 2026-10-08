@@ -55,6 +55,7 @@ HARNESS_FILES = (
 )
 CANDIDATE_FILES = (
     'app/agent/maxis/backend.py', 'app/agent/maxis/context_guard.py',
+    'app/agent/maxis/retrieval_query.py',
     'app/agent/workflow/role_manifest.py', 'app/agent/workflow/contracts.py',
     'app/agent/workflow/work_architect/contracts.py',
     'app/agent/workflow/agents/request_architect.py', 'app/agent/workflow/agents/auditor.py',
