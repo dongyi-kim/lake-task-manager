@@ -5,7 +5,7 @@ unchanged Editor Input to both entrypoints; the original EvidencePack remains
 authoritative in the assembler and both final guards.
 """
 
-_SPEC_BUCKETS = ("target_unit_ids", "context_unit_ids", "constraint_unit_ids", "history_unit_ids")
+_SPEC_BUCKETS = ("current_unit_ids", "context_unit_ids", "history_unit_ids")
 _SPEC_FIELDS = {"contract", "status", "mode", "target", *_SPEC_BUCKETS,
                 "conflicts", "required_link_source_ids", "missing_inputs"}
 
@@ -24,7 +24,7 @@ def _validated_spec(model_input, draft_spec):
     view, spec = _object(model_input), _object(draft_spec)
     if (set(view) != {"contract", "role_id", "request", "draft_contract", "entities", "knowledge_context", "sources"}
             or view["contract"] != "editor-input.v1" or view["role_id"] != "editor_author"
-            or set(spec) != _SPEC_FIELDS or spec["contract"] != "editor-draft-spec.v1"):
+            or set(spec) != _SPEC_FIELDS or spec["contract"] != "editor-draft-spec.v2"):
         _fail()
     request = view["request"]
     if (spec["mode"] not in {"description", "comment"} or spec["mode"] != request["kind"]
@@ -41,17 +41,14 @@ def _validated_spec(model_input, draft_spec):
         selected |= bucket
     parents = {entity["key"] for entity in view["entities"] if entity["relation"] == "parent"
                and entity["parent_conflict"] is False}
-    for unit_id in buckets["target_unit_ids"]:
-        if not spec["target"] or units[unit_id][0]["entity_key"] != spec["target"]:
-            _fail()
     for unit_id in buckets["context_unit_ids"]:
         unit, source = units[unit_id]
         if source["kind"] == "jira" and unit["entity_key"] not in parents:
             _fail()
-    for unit_id in buckets["constraint_unit_ids"]:
+    for unit_id in buckets["current_unit_ids"]:
         unit, source = units[unit_id]
         if source["kind"] == "jira" and unit["entity_key"] != spec["target"]:
-            _fail()  # A constraint label cannot promote parent/sibling ownership.
+            _fail()  # Current facts/constraints cannot promote parent/sibling ownership.
     conflicts = spec["conflicts"]
     if not isinstance(conflicts, list) or len(conflicts) > 8:
         _fail()
@@ -61,7 +58,7 @@ def _validated_spec(model_input, draft_spec):
                 or type(conflict["blocking"]) is not bool):
             _fail()
         conflicted |= _spec_ids(conflict["unit_ids"], units, 8, 2)
-    writable = buckets["target_unit_ids"] | buckets["context_unit_ids"] | buckets["constraint_unit_ids"]
+    writable = buckets["current_unit_ids"] | buckets["context_unit_ids"]
     if writable & conflicted or len(selected | conflicted) > 32:
         _fail()
     links = _spec_ids(spec["required_link_source_ids"], sources, 8)
@@ -86,7 +83,7 @@ def _spec_terminal(spec):
 
 
 def _spec_section_units(buckets, section):
-    facts = buckets["target_unit_ids"] | buckets["constraint_unit_ids"]
+    facts = set(buckets["current_unit_ids"])
     if section == "background":
         facts |= buckets["context_unit_ids"]
     return facts

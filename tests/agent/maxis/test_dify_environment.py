@@ -235,7 +235,7 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
                     ROOT, branch, input_nodes[0]["id"])
                 if branch != "control":
                     assert data["structured_output"]["schema"]["properties"]["contract"]["enum"] == [
-                        "editor-draft-spec.v1" if branch == "selector" else "editor-writing.v1"]
+                        "editor-draft-spec.v2" if branch == "selector" else "editor-writing.v1"]
                     assert "remote-role-result.v1" not in data["prompt_template"][0]["text"]
         # The common envelope rules now belong only to the control branch.
         if is_editor:

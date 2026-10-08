@@ -23,8 +23,8 @@ STOP_NODE_ID = "1909000000001020"
 WRITER_MERGE_NODE_ID = "1909000000001021"
 ENFORCER_NODE_ID = "1909000000001022"
 SPEC_ASSET_PATH = "deploy/maxis-dify/code/editor_draft_spec.py"
-SPEC_ASSET_SHA256 = "23dcc694c4f6e75b6e6becc9af9c614d6c39480c902c38906773feeef5877844"
-SPEC_SCHEMA_SHA256 = "b54b7cb8617e15a4977089a9cf3fad4390628193076d3fee693a0001f2793643"
+SPEC_ASSET_SHA256 = "f0fe20ac0fc1f60ae289920ac0f9febc0f1ef7c28a1bd1b50183492a1c612aa1"
+SPEC_SCHEMA_SHA256 = "5bf30f8b288ae5fa7daabee782fd2ef62cc80e9d46b44d20a339662715a62b92"
 WRITING_SCHEMA_SHA256 = "accbafa04039e32a9b06aade48b0cffc4f4b765baa130ba4d6619bc052d8b134"
 SPEC_GUARD_ENTRYPOINT = "\n\ndef main(model_input, draft_spec, context_pack):\n    return prepare_spec(model_input, draft_spec, context_pack)\n"
 SPEC_ENFORCER_ENTRYPOINT = "\n\ndef main(candidate, model_input, draft_spec, context_pack):\n    return enforce_spec(candidate, model_input, draft_spec, context_pack)\n"
@@ -42,7 +42,7 @@ BRANCH_PROMPT_SHA256 = {
                 "user": "0b882243f2e854a7fcf11e1844d9159187d9944a6b2ac53092ec829f43f07436"},
     "control": {"system": "31f9e5c83d094f5321555647f5501e198b24daa760326c2ff791081dce1feb1e",
                 "user": "41e3faa78a5f4d63a4302d6defc5e119c1c7b834d92c272bc6de18c629fb2b99"},
-    "selector": {"system": "6bf92cdee5e893c0f01155284a86b13bccd849c6c002c3591c3a5a55e7ef4cca",
+    "selector": {"system": "999788deafcb51a596101feb74bfb6a10448e6c95f31a29ea2edff9a33685fba",
                  "user": "41e3faa78a5f4d63a4302d6defc5e119c1c7b834d92c272bc6de18c629fb2b99"},
 }
 
@@ -72,7 +72,7 @@ def branch_schema(root: Path, branch: str, remote_schema: dict, project) -> dict
     if branch == "control":
         return project(remote_schema)
     if branch == "selector":
-        plan = json.loads((root / "deploy/maxis-dify/contracts/editor-draft-spec.v1.schema.json").read_text(encoding="utf-8"))
+        plan = json.loads((root / "deploy/maxis-dify/contracts/editor-draft-spec.v2.schema.json").read_text(encoding="utf-8"))
         encoded = json.dumps(plan, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         if hashlib.sha256(encoded.encode("utf-8")).hexdigest() != SPEC_SCHEMA_SHA256:
             raise ValueError("reviewed DraftSpec schema drifted")

@@ -109,6 +109,8 @@ python -m pytest src/tests -q                      # 21 passed
 
 ## History (append-only)
 
+- **2026-10-08** — 별도 `codex/maxis-editor-selection-v2`에서 Editor 내부 DraftSpec의 동등한 target/constraint 배열을 `current_unit_ids`로 통합. v1/혼합·중복·타입·소유권·링크·terminal Guard와 외부 계약 유지. frozen 회귀 917개, 독립 검토 두 번 9/10; 별도 유효 v1 768조합의 writer/plan parity 확인. 실제 DEV 게시·품질 비교와 UI는 이 커밋의 검증 범위가 아님.
+
 - **2026-07-09** — **정리/성능**: 죽은 코드 제거(`_ptotal`, `subsPreview`, ProgressBar marker/`.pbar-mark`, `.mini .tb`, fmt 미사용 export), 스테일 문서 현행화(plan.yaml→wbs_config.yaml, docker/seed/native 폐기 반영). **성능**: local 백엔드 fan-out(epic/vit/workload) **ThreadPool 병렬**(`_pmap`, `supports_parallel`; SSO 순차 폴백), VIT 조립 캐시(`vit_build:`)+코멘트 lazy(리스트에서 미조회), 프론트 **keep-alive**+GET memo(탭 재fetch 제거)+간트 렌더 coalesce.
 - **2026-07-09** — **Vue 3 무빌드 SPA 전환 완료**: 3개 self-contained HTML → 단일 SPA(`static/{index.html,app.js,components/,lib/,styles/,vendor(vue.esm)}`), 해시 라우팅. 색/헬퍼/컴포넌트(`tokens.css`,`colors.js`,`fmt.js`,`ProgressBar`,`StatusPill`,`TypeBadge`) 단일 소스화. `auth.js`→`LoginOverlay`, `callout.js`→`FormulaCallout`. `/` = SPA(옛 페이지 은퇴). 폰트 Pretendard(CDN).
 - **2026-07-08** — **world 시간·VoC**: 이슈 created/updated/resolved + 활동/Confluence 에 결정적 hh:MM 부여(뉴스·활동 시간표시). VoC 판정 Component `VoC`→**`사용자 VoC`**. world 대규모 보강(비-WBS epic·독립 task·1~6월 과거 데이터).

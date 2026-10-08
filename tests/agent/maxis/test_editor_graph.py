@@ -123,7 +123,7 @@ def test_selection_assets_need_review_even_when_graph_is_regenerated(tmp_path, a
         path.write_text(path.read_text(encoding="utf-8") + "\n# changed source", encoding="utf-8")
         changed = spec.rebuild(tmp_path, dsl, validator)
     elif asset in {"schema", "writing_schema"}:
-        filename = "editor-draft-spec.v1" if asset == "schema" else "editor-writing.v1"
+        filename = "editor-draft-spec.v2" if asset == "schema" else "editor-writing.v1"
         path = tmp_path / f"deploy/maxis-dify/contracts/{filename}.schema.json"
         schema = json.loads(path.read_text(encoding="utf-8"))
         schema["additionalProperties"] = True

@@ -1,18 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:ltm:maxis:editor-draft-spec.v1",
-  "title": "EditorDraftSpecV1",
+  "$id": "urn:ltm:maxis:editor-draft-spec.v2",
+  "title": "EditorDraftSpecV2",
   "type": "object",
   "additionalProperties": false,
-  "required": ["contract", "status", "mode", "target", "target_unit_ids", "context_unit_ids", "constraint_unit_ids", "history_unit_ids", "conflicts", "required_link_source_ids", "missing_inputs"],
+  "required": ["contract", "status", "mode", "target", "current_unit_ids", "context_unit_ids", "history_unit_ids", "conflicts", "required_link_source_ids", "missing_inputs"],
   "properties": {
-    "contract": {"type": "string", "const": "editor-draft-spec.v1"},
+    "contract": {"type": "string", "const": "editor-draft-spec.v2"},
     "status": {"type": "string", "enum": ["ok", "needs_input", "blocked"]},
     "mode": {"type": "string", "enum": ["description", "comment"]},
     "target": {"type": "string", "maxLength": 128},
-    "target_unit_ids": {"$ref": "#/$defs/units"},
+    "current_unit_ids": {"$ref": "#/$defs/units"},
     "context_unit_ids": {"$ref": "#/$defs/units"},
-    "constraint_unit_ids": {"$ref": "#/$defs/units"},
     "history_unit_ids": {"$ref": "#/$defs/units"},
     "conflicts": {"type": "array", "maxItems": 8, "items": {
       "type": "object", "additionalProperties": false, "required": ["unit_ids", "blocking"],

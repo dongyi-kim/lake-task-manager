@@ -124,7 +124,13 @@ flowchart LR
 ~~~
 
 본문·댓글 writer는 `editor-writing.v1`만, 제어 검사는 `remote-role-result.v1`만 생성한다.
-selector는 `editor-draft-spec.v1`의 원문 ID 분류·필수 링크·부족한 사실만 선택한다.
+selector는 `editor-draft-spec.v2`의 원문 ID 분류·필수 링크·부족한 사실만 선택한다.
+기존 target/constraint 두 배열은 writer 권한이 같아 `current_unit_ids`로 통합했다.
+current 내부와 context/history 간 중복, v1·혼합 계약은 그대로 거부하며 자동 변환하지 않는다.
+DraftSpec은 한 workflow 실행 안에서 사용하는 중간값이다. selector/schema/Guard/Enforcer를
+같은 workflow 게시본으로 함께 교체하며, v1 중간값을 v2 실행에 재개·재생하지 않는다.
+앱의 외부 저장 계약은 바꾸지 않는다. Dify의 진행 중 실행 snapshot·재개 동작은 아직 검증하지 않았다.
+이는 로컬 계약 단순화이며 아직 원격 게시·LLM 재평가 결과는 없다.
 writer의 `editor-writer-input.v2`는 요청, section 순서·목적·블록 예산, 선택된 원문과
 허용 section만 제공한다. source ID·선택 bucket·링크 목록·native Knowledge context는 주지 않는다.
 부모 맥락 fact는 description.background에서만, 역사·충돌 fact는 작성에서 제외한다.
@@ -133,7 +139,7 @@ status·missing_inputs·source_ids·link 블록은 writer 출력에 없다. comp
 원본 사용자 intent 출처만 결속하고, 선택된 필수 링크를 기존 `editor-plan.v2`로 조립한다.
 원문에서 자동 렌더링되는 링크도 원본 pack으로 계산하며 중복·미선택 링크는 차단한다.
 32개 전체 블록 한도에서 추가 링크 예산을 미리 제외해 writer에 알린다.
-부모·형제 Jira fact를 constraint로 승격하는 것도 차단하지만, 문서 constraint의 의미상
+부모·형제 Jira fact를 current로 승격하는 것도 차단하지만, 문서 constraint의 의미상
 적용 범위나 필수 문서 선택의 완전성은 모델 판단이다. proposal의 intent citation 역시
 사실성 보증이 아니므로 내용 정확도나 부모 범위 혼입이 해결됐다고 간주하지 않는다.
 Control은 기존 activation/retrieval 합성 검사의 닫힌 입력만 허용하며, 깨진 Editor 입력이나
