@@ -10,6 +10,8 @@ DEV Core v23에 게시했으며 [Core 계약과 검증 범위](core-control-rout
 공유 schema 검증은 JSON 불리언과 숫자를 구분한다. 원본 보존·환경 변환을 포함한 관련 1,004회귀와
 독립 검토를 통과했으며, 이 오프라인 결과를 실제 모델 품질 점수로 해석하지 않는다.
 
+아래 v24는 [v25 게시·실측](deployments/dev-editor-eligibility-2026.10.08.yml) 전의 이력이다.
+
 > 2026-10-08: **Editor 입력 v2를 DEV v24에 게시, canary 3/3·운영 비활성**.
 > selector에서 writer의 plan 계약만 제거했다. 23노드·26엣지, 모델·Knowledge·최종 Guard는 유지한다.
 > 기존 전체 배터리 재실행은 Editor 자동 **2/5**, Role 정상 **0/11**(blocked 10·오류 1)이다.
@@ -113,7 +115,8 @@ deployment evidence에 기록하지 않는다.
 | <code>deployments/dev-editor-writing-2026.09.16.yml</code> | 이전 v19 게시 ID·fresh v18/v19 비교·writer 계약과 native 실행 확인·비활성 상태 |
 | <code>deployments/dev-policy-query-2026.09.21.yml</code> | 이전 v20 Core/PMO 게시 ID·Role 11-case 검색 개선과 남은 출력 실패·비활성 상태 |
 | <code>deployments/dev-editor-scope-2026.10.08.yml</code> | 이전 v21 Editor 게시·import 실패와 재개 증거·두 배터리의 실패·비활성 상태 |
-| <code>deployments/dev-editor-selection-2026.10.08.yml</code> | 최신 v22 Editor 게시·공통 canary 실패·후보 품질 미실행·비활성 상태 |
+| <code>deployments/dev-editor-selection-2026.10.08.yml</code> | 이전 v22 Editor 게시·공통 canary 실패·후보 품질 미실행·비활성 상태 |
+| <code>deployments/dev-editor-eligibility-2026.10.08.yml</code> | v25 Editor 게시·전체 두 배터리 실측·운영 비활성 상태 |
 | <code>materialize_environment.py</code> | source DSL에 환경 binding을 주입한 import copy 생성 |
 | <code>validate_bundle.py</code> | DSL·prompt·code·contract·Knowledge binding 정적 검증 |
 | <code>knowledge-evals.yml</code> | release-bound retrieval 평가 명세 |
@@ -134,12 +137,17 @@ label은 결과 그룹과 순서만 구분한다. 둘 다 **현재 게시된 프
 
 ## Editor 근거 선택 → 문안 작성 후보
 
-로컬 후보는 selector 전용 `editor-selector-input.v1`을 추가한다. 원문 unit을 구조상 가능한
+v25 후보는 selector 전용 `editor-selector-input.v1`을 추가한다. 원문 unit을 구조상 가능한
 `current/context/shared/neither` 그룹으로 묶고, 실제 링크가 있는 출처만 `link_choices`로 제시한다.
 그룹은 관련성·최신성·현재 사실의 보증이 아니다. 원래 `editor-input.v2` 문자열은 Guard·Enforcer에
 그대로 전달하며 Control도 기존 입력을 유지한다. 새 포트는 DraftSpec LLM만 읽는다.
 각 입력은 9,000 UTF-8 bytes 이하여야 하며 초과 시 잘라내거나 옛 입력으로 대체하지 않는다.
-아직 DEV에 게시하지 않았고 실제 품질 향상은 미검증이다.
+clean `c595d0a`를 DEV에 게시하고 합성 canary 3/3을 확인했다. 같은 전체 탐색 평가에서
+Editor 자동 통과는 1/5, Role은 응답 status=`ok` 1/11·차단 10건이다. 전반 품질 향상이나 운영 적격은 입증하지 못했다.
+[새 동일 패널 Editor 직접 평가](../../research/agent-improvement/evaluations/maxis-editor-component-20261008-eligibility.md)는
+2.82→2.18/5·사용 가능 1/5→0/5이며, [Role 후보 단독 평가](../../research/agent-improvement/evaluations/maxis-role-component-20261008-eligibility.md)는
+2.32/5·사용 가능 0/11이다. 단일 탐색·비블라인드 결과이며 이전 패널 점수와 섞어 개선율을 계산하지 않는다.
+[게시·실측 증적](deployments/dev-editor-eligibility-2026.10.08.yml)에 원본과 범위를 기록했으며 운영 경로는 local로 유지한다.
 [변경 범위와 회귀 기록](../../research/agent-improvement/maxis-editor-selector-eligibility-20261008.md)을 참고한다.
 
 현재 source는 **23노드·26엣지**이며, 새 semantic Role이나 앱을 만들지 않는다.
@@ -389,7 +397,7 @@ LTM profile에는 평문이 아니라 proof SHA만 저장한다.
 
 ## 이전 v8 앱·Workflow binding (보존용)
 
-아래는 과거 기록이다. 최신 UUID와 측정 상태는 [v23 증적](deployments/dev-core-control-2026.10.08.yml)을 사용한다.
+아래는 과거 기록이다. 최신 UUID와 측정 상태는 [v25 증적](deployments/dev-editor-eligibility-2026.10.08.yml)을 사용한다.
 
 | 앱 | App ID | published Workflow ID | 카나리 |
 |---|---|---|---:|

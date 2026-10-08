@@ -1,0 +1,135 @@
+# Content-free DEV evidence; immutable receipts/raw remain under ignored .cache/.
+environment: dev
+workflow_bundle_version: ltm-maxis-dify-2026.10.08-editor-eligibility-v25
+candidate_source_commit: c595d0a34bcd394f58e213fc237dd382dfc7428d
+implementation_baseline_commit: 5804573edb232522046d88330d71d168b34eca8b
+comparison_v24_measurement_source_commit: ff5daa4cb88142939550253d67e78d379c42f0cb
+publication:
+  completed_at_utc: '2026-10-08T09:35:44.066730+00:00'
+  changed_workflow: editor_author
+  import_requests: 1
+  publish_requests: 1
+  model_calls: 0
+  import_status: completed-with-warnings
+  source_dsl_format: '0.5.0'
+  server_export_dsl_format: '0.6.0'
+  server_product_version: unverified
+  warning_disposition: minor-version-envelope-reconciled
+  native_graph_config_uuid_checks: exact-before-reconcile-after
+  export_comparison: six-pinned-opaque-leaves-excluded-copied-projection-exact
+  dataset_identity_authority: native-workflow-graph-not-opaque-hash
+  export_evidence_sha256: 4a2fbb61c098564dbed9187c0b2e9f40482d59c2185a6d97bdd3b4d154bc116f
+  export_evidence_original_candidate: ff5daa4cb88142939550253d67e78d379c42f0cb
+  export_evidence_original_baseline: 1392751247f6176c5b6a06e1068e42a6cac2825a
+  receipt: .cache/maxis/dev-editor-eligibility-20261008-v25.json
+  receipt_sha256: b4ed2b97ef6b0b319c876282c2cdc9b4bb27c02a7e951300116afcd3e5e863ce
+  publisher_sha256: bbcff2fbb2b0a2dd2fbd728e35cf7230e6489ac4cc3e991086e76104e772b82e
+  api_key_bindings_unchanged_observed: true
+  core_pmo_unchanged: true
+  knowledge_content_modified_by_this_attempt: false
+  knowledge_content_freshness_reverified: false
+  models_changed: false
+  prod_unchanged: true
+  atomic_remote_transaction: false
+workflows:
+  agent_core:
+    published_id: 2ec82ccb-b3f5-4c05-8f7c-71c309e6d3f5
+    graph_sha256: 5a2c46a7b190f849788f767fb33fbbe100dc82a69bfbe5a373dfe8b5a99ca0fc
+  pmo_brief:
+    published_id: 8bf05f64-8c39-49af-a781-a563ef0e4b27
+    graph_sha256: a2e29b7de1e5c749d0e332c0b83f478a7e7e591d269aa244a3ec4ebda92adf52
+  editor_author:
+    previous_published_id: 479ce3d0-27f7-40b1-af0d-612b89ad2be3
+    published_id: b3cdd09e-2ca0-415c-86b0-f64f66f268ab
+    graph_sha256: 30ac4a31d7f712fb1f99c411d98ec6579a1b72e9f9bd1af20bc40e044bcdb734
+    raw_dsl_sha256: 7df340b3aeeb232013e92048cf3d96a312f5c34eb87808e0154c9f11271f87cf
+    nodes: 23
+    edges: 26
+local_verification:
+  application_regressions_passed: 857
+  helper_offline_cases_passed: 295
+  helper_offline_seconds: 186.24
+  publisher_final_reviews: [9, 9]
+  canary_final_reviews: [9, 9]
+  optimized_python_guard: non-assert-before-import-and-public-entrypoints
+  quality_proven_by_offline_tests: false
+canary:
+  artifact: .cache/agent-evaluation/maxis-editor-eligibility-v25-canary-20261008-c595d0a/canary.json
+  artifact_sha256: 50fb4ea20f95bbaa869058706065d89a50feebd743f82baedff67fc712c13745
+  launcher_sha256: cb076866fc998854a2463c30b2d7198a92f76fefaf0f6c68994dd32efd55884b
+  passed: 3
+  total: 3
+  verified_at_final_check: true
+  elapsed_ms: {agent_core: 2671, editor_author: 2796, pmo_brief: 2342}
+  quality_or_activation_approval: false
+runtime:
+  observation_scope: post-canary-snapshot-not-continuous-live-verification
+  profile_fingerprint: 256722648ebe7f579e4d0b4bbd975ef4
+  verified: true
+  active: false
+  enabled: false
+  active_profile: ''
+  routes: {agent_core: local, editor_author: local, pmo_brief: local}
+evaluations:
+  protocol: '4.0.0'
+  rubric: '2.0.0'
+  model: gpt-5.4-mini
+  simple_model: not-used
+  run_kind: exploratory
+  repetitions: 1
+  selection: complete-run-no-substitution
+  candidate_clean: true
+  complete_and_binding_unchanged: true
+  all_twenty_receipt_source_and_benchmark_pins_unchanged_after_both_runs: true
+  actual_native_model_calls: null
+  cost_usd: null
+  editor:
+    battery_version: '4.0.0'
+    raw: .cache/agent-evaluation/maxis-editor-20261008T093641Z-72a28d37/candidate.json
+    raw_sha256: 003367e82a76f87ccf0f963ad95ed27314e99c0f5098a895ab1c6bba1d313d46
+    benchmark_key: fddff41446ab984b0f0acac8ea3b333d09eb7def5b765e9be0ef40f3261b4b0c
+    candidate_key: c137d6a6341dd00c48ceeb484c0bb9d06d70344af058d4d541766b1c6ea9db22
+    comparability_key: 328b00155ae0f5255044c12b4488f35029b8d15302729a1ca020c78812280645
+    automatic_passed: 1
+    cases: 5
+    duration_seconds: 25.1
+    case_latency_ms: {sum: 25135, p50: 5019, p95: 6539}
+    received_dify_responses: 5
+    observed_dify_usage: {prompt: 14807, completion: 3997, total: 18804}
+    direct_quality_review:
+      scope: fresh-single-panel-paired-nonblind-v24-v25
+      report: research/agent-improvement/evaluations/maxis-editor-component-20261008-eligibility.md
+      baseline_score: 2.82
+      candidate_score: 2.18
+      baseline_usable: 1
+      candidate_usable: 0
+      total_direct_judgments: 350
+      baseline_sidecar_sha256: b2bc8a7029a918e7d2fc0ddcb977cabaab51da02d4ce6b22638920fe9b872298
+      candidate_sidecar_sha256: 9eb5f8a4d260f4991dafb38b77de5fabb24469a953615997cf8253bd5ba08c4d
+      independent_quality_replication: false
+  roles:
+    battery_version: '1.0.0'
+    raw: .cache/agent-evaluation/maxis-roles-20261008T093745Z-e304cae3/candidate.json
+    raw_sha256: d8389bcebba5e3f2da7fb1c08076d12d3429bb6f9b598a9929122ad4b319cd44
+    benchmark_key: fa36911d7c13f531f85235684b78a21ae261994f79dc2e2f9ef3d469e2ee39b2
+    candidate_key: 6778c1d0da0cd865d5499747122a6abaf579867c55bee01cd4028c4158340367
+    comparability_key: 89e04a52524322d64223fbf1da23a31055c98ee252da21b6df1b7b2f1735943d
+    cases: 11
+    statuses: {ok: 1, blocked: 10}
+    duration_seconds: 31.889
+    case_latency_ms: {sum: 31889, p50: 2696, p95: 5643}
+    received_dify_responses: 11
+    observed_dify_usage: {prompt: 35464, completion: 6103, total: 41567}
+    direct_quality_review:
+      scope: fresh-single-panel-candidate-only-nonblind
+      report: research/agent-improvement/evaluations/maxis-role-component-20261008-eligibility.md
+      candidate_score: 2.32
+      usable_business_outputs: 0
+      positive_cases: 8
+      accepted_empty_input_boundary_cases: 1
+      total_direct_judgments: 385
+      candidate_sidecar_sha256: 3e19c71e836afc3397c18fb4112a65c16a99499dde17c12418afbdaf99beede4
+      baseline_paired_rescored: false
+      independent_quality_replication: false
+release_eligible: false
+overall_quality_improvement_proven: false

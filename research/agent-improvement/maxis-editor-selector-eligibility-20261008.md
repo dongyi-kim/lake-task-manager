@@ -3,7 +3,8 @@
 Editor가 사용할 수 없는 링크나 부모가 아닌 Jira 근거를 선택하는 실수를 줄이기 위한 작은 입력 변경이다.
 선택 모델에 허용 범위를 먼저 표시하되, 최종 검증과 업무 의미 판단은 분리한다.
 별도 앱 브랜치 `codex/maxis-editor-selector-eligibility`, 기준 커밋
-`5804573edb232522046d88330d71d168b34eca8b`에서 로컬 구현·검증을 마쳤다. 아직 DEV에 게시하지 않았다.
+`5804573edb232522046d88330d71d168b34eca8b`에서 로컬 구현·검증을 마쳤다.
+이후 clean `c595d0a34bcd394f58e213fc237dd382dfc7428d`를 DEV에 게시하고 아래 탐색 평가를 수행했다. 운영 활성화는 하지 않았다.
 
 ## 근거와 변경 목적
 
@@ -51,7 +52,7 @@ Input 전용 코드만 새로 결합한다. 기존 Assembler·DraftSpec 검증/�
 서로 다른 게시본의 중간값을 혼용하거나 재생하지 않는다. Dify의 진행 중 실행 재개는 미검증이다.
 
 아래는 오프라인 검증 결과다. 회귀 통과나 입력 크기 적합성만으로 실제 모델의
-품질 향상을 주장하지 않는다. 새 후보의 같은 전체 배터리와 직접 원문 평가가 다음 실측 기준이다.
+품질 향상을 주장하지 않는다. 당시 새 후보의 같은 전체 배터리와 직접 원문 평가를 다음 실측 기준으로 정했다.
 
 ## 로컬 검증
 
@@ -73,7 +74,7 @@ fixture import 경로 5건과 이전 포트 assertion 1건이 실패해 테스�
 독립 검토 두 차례 모두 9/10이다. 1차는 17회귀·순수 반례 57개, 2차는 22회귀와 원본/핀 보존을 확인했다.
 정확한 byte 경계는 기존
 `prepare` 반환을 주입한 단위 검사이고, 실제 원본 pack을 거치는 보존·초과 검사는 별도로 유지한다.
-정적 bundle CLI는 3개 workflow를 통과했다. 실제 API·모델 호출은 0회다.
+정적 bundle CLI는 3개 workflow를 통과했다. 이 로컬 검증 단계에서 실제 API·모델 호출은 0회였다.
 
 ## 고정 입력의 크기 변화
 
@@ -91,3 +92,28 @@ fixture import 경로 5건과 이전 포트 assertion 1건이 실패해 테스�
 새 표현은 160–161바이트 늘어난다. 예산 여유는 이 다섯 입력에서 327–403바이트이고,
 다른 큰 입력의 수락을 보장하지 않는다. 기존 v2가 통과해도 새 포트의 크기 초과로 거부될 수 있다.
 이는 원문을 보존하는 선택의 비용이며 실제 token·지연·의미 품질 측정값은 아니다.
+
+## 후속 DEV 실측
+
+2026-10-08 09:35 UTC에 v25 전용 단발 도구로 Editor만 import 1회·publish 1회 했다.
+사전·import 후·publish 후 세 앱의 native graph/config/UUID·dependency·기존 key를 대조했다.
+export 비교는 과거 증적에 고정한 opaque dataset leaf 6개만 복사본에서 투영하며, 실제 dataset 식별은
+native graph로 확인한다. import의 `completed-with-warnings`는 0.5.0→0.6.0 형식 차이와 빈 상세를
+명시한 제한적 재조정 정책으로 처리했다. 서버 제품 버전이나 원자적 게시를 증명한 것은 아니다.
+
+게시 도구와 canary는 최적화 모드에서도 제거되지 않는 조기 거부를 포함한다. 관련 두 파일의
+전체 오프라인 검사 295개(186.24초), 각 도구의 독립 검토 두 차례 9/10을 통과했다.
+별도의 합성 canary는 3/3 통과했지만 품질 검사가 아니며, 운영 경로는 계속 local이다.
+새 Editor UUID는 `b3cdd09e-2ca0-415c-86b0-f64f66f268ab`이다. Core·PMO·모델·Knowledge·PROD는 변경하지 않았다.
+
+같은 benchmark·모델·harness로 전체 Editor 5건과 Role 11건을 각각 새 process에서 1회 실행했다.
+두 primary raw 모두 complete/bindingUnchanged이며 clean c595d0a에 결속된다.
+Editor는 자동 2/5→1/5, 25.1초이고 CMP8 요청 오류는 없어졌으나 CMP2·CMP9가 차단됐다.
+Role은 Editor 요청 오류가 status=`ok` 응답으로 바뀌어 `ok` 1/11·차단 10건, 31.889초다.
+[새 동일 패널의 Editor 직접 검토](evaluations/maxis-editor-component-20261008-eligibility.md)는
+v24 2.82→v25 2.18/5·사용 가능 1/5→0/5다. CMP8은 개선됐지만 CMP2·CMP9가 차단됐고,
+CMP3은 미확정 성능 방향을 전제했다. [Role 후보 단독 검토](evaluations/maxis-role-component-20261008-eligibility.md)는
+2.32/5·사용 가능 0/11이다. 빈 요청의 안전 중단 1건은 별도 경계 성공으로 기록했다.
+단일 탐색·비블라인드 결과이며 국소 계약 성공을 전체 업무 사용성 향상으로 확대하지 않는다.
+실제 내부 모델 호출 수·비용은 미관측이다. 실패 raw를 후속 성공으로 교체하지 않는다.
+[게시·배터리 식별자](../../deploy/maxis-dify/deployments/dev-editor-eligibility-2026.10.08.yml)에 경로·SHA를 보존했다.
