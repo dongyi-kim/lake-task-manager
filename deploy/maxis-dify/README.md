@@ -4,16 +4,28 @@
 source bundle이다. DEV와 PROD의 환경 binding을 분리하고, import DSL을 materialize한
 뒤 validator와 원격 release gate를 통과시키는 구조다.
 
+> 2026-10-08: **v21 DEV Editor 게시 완료, 운영 비활성·품질 미통과**.
+> 소유 티켓이 없는 Jira 검색 wrapper 제목을 선택 단위에서 제외했다. 23노드·26엣지와 모든 Guard는 유지한다.
+> 회귀 **907개**, canary **3/3**. 실제 Editor 자동 통과 **2/5**, Role은 **정상 0·blocked 10·오류 1**이다.
+> Editor의 fresh baseline과는 protocol 파일 줄바꿈으로 benchmark identity가 달라 직접 개선율을 주장하지 않는다.
+> selector의 타입·중복 선택·없는 링크 선택 오류를 실제 native 입력으로 재현했다. fixed 4457 bind 실패로 UI는 미검증이다.
+> Core/PMO·모델·Knowledge·PROD 불변, active profile 없음·모든 route local.
+> [최신 증적](deployments/dev-editor-scope-2026.10.08.yml),
+> [Editor 직접 품질](../../research/agent-improvement/evaluations/maxis-editor-component-20261008-unit-scope.md),
+> [Role 진단](../../research/agent-improvement/evaluations/maxis-role-component-20261008-editor-scope.md)을 확인한다.
+
+아래 v20·v19는 이전 게시 기록이다.
+
 > 2026-09-21: **v20 DEV 게시 완료, 운영 비활성·품질 미통과**.
 > Core/PMO에 결정적 Policy Query 노드를 추가해 각각 **12노드·12엣지**로 분리했다.
 > 동일 Role 11-case에서 정책 no-hit **5→0**, 검색/ACL 검증 **5→10건**이지만
 > 정상 답변은 **0/11**, 최종 blocked 10건·Editor 오류 1건이다.
 > 지연 합계 **28.154→36.704초**로 증가했으며 속도·token 절감이나 최종 품질 개선은 주장하지 않는다.
 > 회귀 **642개**, canary **3/3**. Editor·키·모델·Knowledge·PROD 불변, active profile 없음·모든 route local.
-> [최신 증적](deployments/dev-policy-query-2026.09.21.yml)과
+> [v20 증적](deployments/dev-policy-query-2026.09.21.yml)과
 > [실측·실패·후속 개선](../../research/agent-improvement/evaluations/maxis-role-component-20260921-policy-query.md)을 확인한다.
 
-아래는 Editor를 마지막으로 변경한 v19의 과거 기록이다.
+아래는 Editor writer 계약을 변경한 v19의 과거 기록이다.
 
 > 2026-09-16: writer 전용 문안 계약의 **v19 DEV 게시 완료, 품질 미통과**.
 > Editor **23노드·26엣지**. 후보 5건 모두 selector+writer **LLM 2회**이며,
@@ -60,7 +72,8 @@ deployment evidence에 기록하지 않는다.
 | <code>deployments/dev-editor-branches-2026.09.15.yml</code> | 이전 v16 게시 ID·당시 v15/v16 비교·실제 분기 확인 |
 | <code>deployments/dev-editor-draftspec-2026.09.16.yml</code> | 이전 v18 게시 ID·당시 v16/v17/v18 비교·단계 실행 확인·비활성 상태 |
 | <code>deployments/dev-editor-writing-2026.09.16.yml</code> | 이전 v19 게시 ID·fresh v18/v19 비교·writer 계약과 native 실행 확인·비활성 상태 |
-| <code>deployments/dev-policy-query-2026.09.21.yml</code> | 최신 v20 Core/PMO 게시 ID·Role 11-case 검색 개선과 남은 출력 실패·비활성 상태 |
+| <code>deployments/dev-policy-query-2026.09.21.yml</code> | 이전 v20 Core/PMO 게시 ID·Role 11-case 검색 개선과 남은 출력 실패·비활성 상태 |
+| <code>deployments/dev-editor-scope-2026.10.08.yml</code> | 최신 v21 Editor 게시·import 실패와 재개 증거·두 배터리의 실패·비활성 상태 |
 | <code>materialize_environment.py</code> | source DSL에 환경 binding을 주입한 import copy 생성 |
 | <code>validate_bundle.py</code> | DSL·prompt·code·contract·Knowledge binding 정적 검증 |
 | <code>knowledge-evals.yml</code> | release-bound retrieval 평가 명세 |

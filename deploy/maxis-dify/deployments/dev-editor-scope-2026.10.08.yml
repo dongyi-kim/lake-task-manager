@@ -1,0 +1,169 @@
+contract: ltm-maxis-dify-quality-evidence.v1
+captured_date: '2026-10-08'
+environment: dev
+status: experimental_inactive_quality_gate_failed
+authoritative_ready: false
+workflow_bundle_version: ltm-maxis-dify-2026.10.08-editor-scope-v21
+candidate_commit: 8739a8c59892a6d4080a5fcc3ef4b5409cbd4bd0
+profile_fingerprint: b24e8d69f4b9c19cde92691c9c84820c
+prior_evidence: deploy/maxis-dify/deployments/dev-policy-query-2026.09.21.yml
+environment_binding: deploy/maxis-dify/environments/dev-2026.09.yml
+reports:
+  editor: research/agent-improvement/evaluations/maxis-editor-component-20261008-unit-scope.md
+  roles: research/agent-improvement/evaluations/maxis-role-component-20261008-editor-scope.md
+publication:
+  first_attempt:
+    artifact: .cache/maxis/dev-editor-scope-20261008-v21.json
+    artifact_sha256: a52f17a324aa0c7ca20f695dcfde19424db4406d0c8ecaf5c93c0b671631ca80
+    status: failed_after_import_response_assertion
+    editor_draft_applied: true
+    published: false
+  reconciliation:
+    artifact: .cache/maxis/editor-scope-import-state-20261008.json
+    artifact_sha256: 889bf8279d1da07154f47e22a3ad375e66cfa1fb8ec810e6c23b61e76f44a6ac
+    read_only: true
+    exact_candidate_editor_draft: true
+    old_published_workflows_retained: true
+  resume:
+    artifact: .cache/maxis/dev-editor-scope-20261008-v21-resume.json
+    artifact_sha256: 8fb67e2ccfa865931dae597234ea4047773bbf94d14e088df0d5d9464ddea817
+    status: published
+    completed_at: '2026-10-08T02:54:16.761465+00:00'
+    import_replayed: false
+    published_keys: [editor_author]
+    api_key_bindings_unchanged_since_resume: true
+    api_key_full_import_interval_identity_proven: false
+  workflows:
+    agent_core:
+      published: 290173d5-f950-46d0-869e-7c3b0885049c
+      graph_sha256: a6da66d522c333b9ae2b7dd33407b89dcf8f7b0ac30c440ad4ac58da989af211
+      republished: false
+      nodes: 12
+      edges: 12
+    pmo_brief:
+      published: 8bf05f64-8c39-49af-a781-a563ef0e4b27
+      graph_sha256: a2e29b7de1e5c749d0e332c0b83f478a7e7e591d269aa244a3ec4ebda92adf52
+      republished: false
+      nodes: 12
+      edges: 12
+    editor_author:
+      previous: 0b618d12-4247-45c3-8d5b-1790804621d4
+      published: a55929e9-dd6c-4660-8365-df1ff58327bb
+      graph_sha256: 0db02246668824c73af7de6d0c71cf2114780fc548a60801bc4772c6e26cfd90
+      nodes: 23
+      edges: 26
+  model_unchanged: true
+  knowledge_unchanged: true
+  acl_and_guards_unchanged: true
+  extra_llm_nodes: 0
+service_api_canary:
+  artifact: .cache/agent-evaluation/maxis-role-preflight-20261008T025430Z-1b228b92/canary.json
+  artifact_sha256: 91146bf390a6a603b5ab05c318ac75656d58b049662266432dfb569c8258bcc8
+  passed: 3
+  executed: 3
+  profile_verified: true
+  quality_certification: false
+editor_component:
+  protocol_version: '4.0.0'
+  rubric_version: '2.0.0'
+  battery: maxis-editor-component
+  battery_version: '4.0.0'
+  battery_manifest_sha256: 5d9791ee39b3ab2a74fee15b69a38ceb5dfe5a1f1cc571b32422c568549e9241
+  specialized_review_spec_sha256: 877ceaa039dbe81dc85ad0671fee54065f87179b0cf50cb1c267c2b118dfdb5b
+  benchmark_key: fddff41446ab984b0f0acac8ea3b333d09eb7def5b765e9be0ef40f3261b4b0c
+  candidate_key: 2ac526b984ea3163e2ac33bc05bdd5b9c4e04a20d0339733525328564b4d9a89
+  comparability_key: eabe93f8958f884971618a62bfe0f8830da7c3e01386d6858e4d7e814124e47f
+  raw: .cache/agent-evaluation/maxis-editor-20261008T025454Z-1d9de92a/candidate.json
+  raw_sha256: 922c38e1b6906c7ee22d8a3b4ea189fab61f4de020f32cc2f5900cedc5547d81
+  run_kind: exploratory
+  repetitions: 1
+  qualification_eligible: false
+  complete: true
+  attempted: 5
+  automatic_pass: 2
+  response_received: 3
+  bad_request: 2
+  same_benchmark_as_fresh_baseline: false
+  comparison_limitation: protocol source LF-to-CRLF byte difference; parsed JSON and substantive inputs equal, formal benchmark identity different
+  direct_quality_delta_claimed: false
+  metrics:
+    duration_seconds_primary_rounded: 17.5
+    duration_seconds_attempt_sum: 17.504
+    p50_seconds: 3.614
+    p95_seconds: 4.721
+    percentile_method: nearest_rank_all_attempts
+    observed_token_attempts: 3
+    observed_token_subtotal: 10642
+    total_tokens_primary: null
+    native_llm_calls_supplement: 8
+    native_total_tokens_supplement: 14862
+    cost_usd: null
+  additional_model_calls_for_diagnosis: 0
+  primary_raw_modified: false
+role_component:
+  protocol_version: '4.0.0'
+  rubric_version: '2.0.0'
+  battery: maxis-role-component
+  battery_version: '1.0.0'
+  battery_manifest_sha256: 967b14832b8eea63aff0c46cf66aefc4288679bcd171e03fa9d152c4a4a8f555
+  specialized_review_spec_sha256: aa706802c1770993d2fc10e3cdf2e6edd8a9ca0dd59329080db867db2c98ceff
+  data_manifest_sha256: d14b02a0c052ef3ae0854259d0fe43025682129578181bde417161ba445ae16d
+  benchmark_key: fa36911d7c13f531f85235684b78a21ae261994f79dc2e2f9ef3d469e2ee39b2
+  candidate_key: 4d8333c9e810f30213411ad62ec423c8041024837eda8f114403201a7c72980f
+  comparability_key: 68aea0a3467d917eb0097d932bae6498d61982e73d3de0eff0d9ffcc5ae273a1
+  raw: .cache/agent-evaluation/maxis-roles-20261008T025552Z-4dedad4c/candidate.json
+  raw_sha256: 2f16c61149c5a0685f3712c78bcb13f7cbfcc6fae1d1c7c72f3915e3e4b5e6d6
+  run_kind: exploratory
+  repetitions: 1
+  balanced_order: false
+  qualification_eligible: false
+  complete: true
+  attempted: 11
+  response_received: 10
+  statuses: {ok: 0, blocked: 10, needs_input: 0, error: 1}
+  retrieval_verified: 10
+  automatic_contract_pass: 10
+  automatic_contract_pass_is_task_success: false
+  same_benchmark_as_protocol4_baseline: true
+  quality_score: null
+  direct_review: qualitative_diagnostics_only_not_complete_rubric
+  ltm_llm_judge_used: false
+  metrics:
+    duration_seconds: 25.995
+    p50_seconds: 2.260
+    p95_seconds: 3.255
+    percentile_method: nearest_rank_all_attempts
+    observed_token_attempts: 10
+    observed_token_subtotal: 38134
+    total_tokens: null
+    native_llm_calls: null
+    cost_usd: null
+  retry: false
+  fallback: false
+  primary_raw_modified: false
+source_identity:
+  candidate_tree_sha256: 64989c0c440de49aa71c7edf6684bb33e2751218474903d5f391b1dd63556972
+  candidate_dirty_at_run_start: false
+  source_and_profile_binding_unchanged_both_batteries: true
+local_validation:
+  new_regressions_failed_before_fix: 5
+  final_frozen_11_file_tests_passed: 907
+  duration_seconds: 218.75
+  bundle_and_dev_materialization_passed: true
+  independent_code_review_scores: [9, 9]
+  review_score_is_output_quality: false
+  full_app_ui_tested: false
+  ui_blocker: fixed port 4457 bind denied; Windows excluded range 4360-4459
+  normal_and_escalated_bind_attempts_failed: true
+  ui_800ms_tested: false
+  os_or_port_configuration_changed: false
+runtime:
+  active_profile: ''
+  routes: {agent_core: local, editor_author: local, pmo_brief: local}
+  prod_changed: false
+privacy:
+  credentials_recorded: false
+  sentinel_plaintext_recorded: false
+  raw_outputs_committed: false
+  business_data_sent: false
+  private_glossary_uploaded: false
