@@ -72,9 +72,10 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
         dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
         nodes = dsl["workflow"]["graph"]["nodes"]
         is_editor = path.name == "ltm-editor-author-2026.09.yml"
-        assert len(nodes) == (23 if is_editor else 12)
+        is_core = path.name == "ltm-agent-core-2026.09.yml"
+        assert len(nodes) == (23 if is_editor else 16 if is_core else 12)
         llm_nodes = [node for node in nodes if node["data"]["type"] == "llm"]
-        assert len(llm_nodes) == (4 if is_editor else 1)
+        assert len(llm_nodes) == (4 if is_editor else 2 if is_core else 1)
         assembler_nodes = [node for node in nodes if node["data"].get("title") == "Editor Assembler"]
         assert len(assembler_nodes) == int(is_editor)
         input_nodes = [node for node in nodes if node["data"].get("title") == "Editor Input"]
@@ -192,7 +193,7 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
             (edge["source"], edge["sourceHandle"], edge["target"])
             for edge in dsl["workflow"]["graph"]["edges"]
         }
-        assert len(edge_routes) == (26 if is_editor else 12)
+        assert len(edge_routes) == (26 if is_editor else 17 if is_core else 12)
         assert ("start", "source", role_acl_key["id"]) in edge_routes
         if is_editor:
             assert (role_acl_key["id"], "source", role_knowledge["id"]) in edge_routes
@@ -203,7 +204,7 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
         assert ("start", "source", role_knowledge["id"]) not in edge_routes
         assert (policy["id"], "false", answers["Denied Answer"]["id"]) in edge_routes
         llm_id = next(node["id"] for node in nodes if node["data"]["type"] == "llm")
-        entry_id = input_nodes[0]["id"] if is_editor else llm_id
+        entry_id = input_nodes[0]["id"] if is_editor else "1909000000001024" if is_core else llm_id
         assert (policy["id"], "true", entry_id) in edge_routes
         if is_editor:
             spec, _ = materializer._VALIDATOR._editor_graph_modules(ROOT)
@@ -286,7 +287,7 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
         candidate_selector = next(row["value_selector"] for row in guard["variables"]
                                   if row["variable"] == "candidate")
         assert candidate_selector == ([assembler_nodes[0]["id"], "candidate"]
-                                      if is_editor else [llm_id, "text"])
+                                      if is_editor else ["1909000000001027", "output"] if is_core else [llm_id, "text"])
         if is_editor:
             editor_input = input_nodes[0]["data"]
             assert input_nodes[0]["id"] == materializer._VALIDATOR.EDITOR_INPUT_NODE_ID
@@ -370,7 +371,7 @@ def test_materializer_rejects_editor_assembler_drift(tmp_path, monkeypatch, muta
     path.write_text(yaml.safe_dump(dsl, allow_unicode=True, sort_keys=False), encoding="utf-8")
     monkeypatch.setattr(materializer, "ROOT", fake_root)
     with pytest.raises(materializer.EnvironmentBindingError,
-                       match="Assembler|topology|input selectors|structured output|edge binding|recovery"):
+                       match="Assembler|topology|Contract Guard binding|structured output|edge binding|recovery"):
         materializer._materialize_dsl(environment, "editor_author")
 
 
@@ -436,7 +437,7 @@ def test_materializer_rejects_editor_input_projection_drift(tmp_path, monkeypatc
     path.write_text(yaml.safe_dump(dsl, allow_unicode=True, sort_keys=False), encoding="utf-8")
     monkeypatch.setattr(materializer, "ROOT", fake_root)
     with pytest.raises(materializer.EnvironmentBindingError,
-                       match="Editor Input|Assembler|topology|input selectors|prompt SHA-256|recovery"):
+                       match="Editor Input|Assembler|topology|Contract Guard binding|prompt SHA-256|recovery"):
         materializer._materialize_dsl(environment, "editor_author")
 
 
@@ -802,7 +803,7 @@ def test_materializer_rejects_legacy_start_sys_query_selector(tmp_path, monkeypa
 
     with pytest.raises(
         materializer.EnvironmentBindingError,
-        match="Role Knowledge query selector drifted",
+        match="Role Knowledge Dify Knowledge binding drifted",
     ):
         materializer._materialize_dsl(environment, "agent_core")
 
@@ -839,7 +840,7 @@ def test_materializer_requires_guarded_role_knowledge_llm_retrieval_context(
 
     with pytest.raises(
         materializer.EnvironmentBindingError,
-        match="LLM retrieval context",
+        match="LLM context must select the guarded Role Knowledge result",
     ):
         materializer._materialize_dsl(environment, "agent_core")
 
@@ -868,7 +869,7 @@ def test_materializer_requires_workflow_specific_llm_output_limit(
 
     with pytest.raises(
         materializer.EnvironmentBindingError,
-        match="LLM completion params must pin",
+        match="LLM model or structured output drifted",
     ):
         materializer._materialize_dsl(environment, "agent_core")
 
@@ -899,7 +900,7 @@ def test_materializer_requires_bounded_role_knowledge_retrieval_policy(
 
     with pytest.raises(
         materializer.EnvironmentBindingError,
-        match="Role Knowledge must use top_k=2 with threshold and reranking disabled",
+        match="Role Knowledge Dify Knowledge binding drifted",
     ):
         materializer._materialize_dsl(environment, "agent_core")
 
@@ -1016,7 +1017,7 @@ def test_materializer_rejects_role_acl_key_dependency_bypass(tmp_path, monkeypat
 
     with pytest.raises(
         materializer.EnvironmentBindingError,
-        match="deterministic branch topology drifted",
+        match="Dify graph edges drifted",
     ):
         materializer._materialize_dsl(environment, "agent_core")
 
@@ -1052,7 +1053,7 @@ def test_materializer_rejects_policy_branch_bypass_to_llm(tmp_path, monkeypatch)
 
     with pytest.raises(
         materializer.EnvironmentBindingError,
-        match="deterministic branch topology drifted",
+        match="Dify graph edges drifted",
     ):
         materializer._materialize_dsl(environment, "agent_core")
 
@@ -1085,7 +1086,7 @@ def test_materializer_requires_contract_guard_sys_workflow_id(
 
     with pytest.raises(
         materializer.EnvironmentBindingError,
-        match="Contract Guard must bind sys.workflow_id exactly",
+        match="Dify Contract Guard binding or source drifted",
     ):
         materializer._materialize_dsl(environment, "agent_core")
 
@@ -1118,7 +1119,7 @@ def test_materializer_rejects_contract_guard_execution_check_drift(
 
     with pytest.raises(
         materializer.EnvironmentBindingError,
-        match="Contract Guard source drifted",
+        match="Dify Contract Guard binding or source drifted",
     ):
         materializer._materialize_dsl(environment, "agent_core")
 

@@ -1,4 +1,4 @@
-"""Provider-free construction only: the checked-in runtime DSL stays unwired."""
+"""Provider-free construction of the checked-in Core control graph."""
 import copy
 import hashlib
 import importlib.util
@@ -31,14 +31,34 @@ def _nodes(dsl):
     return {node["id"]: node for node in dsl["workflow"]["graph"]["nodes"]}
 
 
-def test_builder_adds_only_the_literal_control_subgraph():
+def _baseline():
+    """Reconstruct the pre-control input so construction tests remain meaningful."""
     dsl = _dsl()
+    graph = dsl["workflow"]["graph"]
+    added = {"1909000000001024", "1909000000001025", "1909000000001026", "1909000000001027"}
+    graph["nodes"] = [node for node in graph["nodes"] if node["id"] not in added]
+    graph["edges"] = [edge for edge in graph["edges"] if not {edge["source"], edge["target"]} & added]
+    nodes = _nodes(dsl)
+    for source, handle, target in [("1909000000001007", "true", "1909000000001004"),
+                                    ("1909000000001004", "source", "1909000000001005")]:
+        graph["edges"].append({"source": source, "sourceHandle": handle, "target": target,
+            "targetHandle": "target", "id": f"{source}-{handle}-{target}-target", "type": "custom", "zIndex": 0,
+            "data": {"isInIteration": False, "isInLoop": False,
+                     "sourceType": nodes[source]["data"]["type"], "targetType": nodes[target]["data"]["type"]}})
+    next(row for row in nodes["1909000000001005"]["data"]["variables"] if row["variable"] == "candidate")[
+        "value_selector"] = ["1909000000001004", "text"]
+    return dsl
+
+
+def test_builder_adds_only_the_literal_control_subgraph():
+    dsl = _baseline()
     before = copy.deepcopy(dsl)
     result = _build(dsl)
     graph = result["workflow"]["graph"]
     assert len(graph["nodes"]) == 16
     assert len(graph["edges"]) == 17
     assert dsl == before
+    assert result == _dsl()
     old = {(e["source"], e["sourceHandle"], e["target"]) for e in dsl["workflow"]["graph"]["edges"]}
     actual = {(e["source"], e["sourceHandle"], e["target"]) for e in graph["edges"]}
     assert old - actual == {
@@ -63,7 +83,7 @@ def test_builder_adds_only_the_literal_control_subgraph():
 
 
 def test_original_models_guards_and_input_bindings_are_preserved():
-    before, after = _nodes(_dsl()), _nodes(_build())
+    before, after = _nodes(_baseline()), _nodes(_build())
     for key, node in before.items():
         expected = copy.deepcopy(node["data"])
         if key == "1909000000001005":
@@ -140,7 +160,7 @@ def test_builder_rejects_non_core_apps_without_mutation(filename):
 @pytest.mark.parametrize("mutation", ["duplicate_node", "node_id", "title", "missing_edge", "extra_edge",
                                      "duplicate_edge", "edge_metadata", "candidate", "raw_input"])
 def test_builder_does_not_hide_ambiguous_or_bypassed_input_graphs(built, mutation):
-    dsl = _build() if built else _dsl()
+    dsl = _build() if built else _baseline()
     graph, nodes = dsl["workflow"]["graph"], _nodes(dsl)
     if mutation == "duplicate_node":
         graph["nodes"].append(copy.deepcopy(graph["nodes"][0]))

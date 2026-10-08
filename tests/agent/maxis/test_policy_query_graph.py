@@ -100,10 +100,15 @@ def test_built_graph_matches_source_and_only_changes_retrieval_unit(key):
     rebuilt = graph.rebuild(dsl, key)
     assert rebuilt == graph.rebuild(rebuilt, key)
     assert dsl == before
-    assert rebuilt == dsl
+    if key == "agent_core":
+        # The two mechanical builders use different list order; every object is identical.
+        for field in ("nodes", "edges"):
+            rebuilt["workflow"]["graph"][field].sort(key=lambda row: row["id"])
+            before["workflow"]["graph"][field].sort(key=lambda row: row["id"])
+    assert rebuilt == before
     nodes = {node["data"]["title"]: node for node in dsl["workflow"]["graph"]["nodes"]}
-    assert len(nodes) == 12
-    assert len(dsl["workflow"]["graph"]["edges"]) == 12
+    assert len(nodes) == (16 if key == "agent_core" else 12)
+    assert len(dsl["workflow"]["graph"]["edges"]) == (17 if key == "agent_core" else 12)
     graph.validate_node(list(nodes.values()), key, "start")
     assert nodes["Policy Query"]["data"]["code"] == graph.source()
     assert nodes["Role Knowledge"]["data"]["query_variable_selector"] == [graph.NODE_ID, "query"]

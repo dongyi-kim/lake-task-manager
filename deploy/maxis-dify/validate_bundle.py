@@ -687,6 +687,17 @@ def _validate_editor_graph(
         raise error_type(str(exc)) from exc
 
 
+def _core_graph_module():
+    spec = importlib.util.spec_from_file_location(
+        "_maxis_core_graph_validation", Path(__file__).with_name("core_graph_validation.py"),
+    )
+    if spec is None or spec.loader is None:
+        raise BundleValidationError("Core graph validator cannot be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _canonical_dify_prompts(
     *,
     common: str,
@@ -760,10 +771,14 @@ def _validate_dify_dsls(
     bundle: dict[str, Any],
     workflows: dict[str, Any],
     knowledge_documents: dict[str, dict[str, Any]],
+    *, source_dsls: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """Validate the importable Dify graph, not only its prose build spec."""
 
     _, graph_checks = _editor_graph_modules(root)
+    if source_dsls is not None and set(source_dsls) != set(workflows):
+        raise BundleValidationError("raw Dify source selection must exactly match workflows")
+    core_graph = _core_graph_module() if "agent_core" in workflows else None
 
     if (
         set(ROLE_METADATA_CONDITION_IDS) != set(DIFY_APP_NAMES)
@@ -914,6 +929,7 @@ def _validate_dify_dsls(
     for workflow_key, raw in workflows.items():
         workflow_spec = _mapping(raw, f"workflows.{workflow_key}")
         editor_assembly = workflow_key == "editor_author"
+        core_control = workflow_key == "agent_core"
         editor_assembler_source = ""
         if editor_assembly:
             editor_assembler_source = _tracked_path(
@@ -926,7 +942,8 @@ def _validate_dify_dsls(
         dsl_path = _tracked_path(
             root, workflow_spec.get("dsl"), f"workflows.{workflow_key}.dsl"
         )
-        dsl = _load_yaml(dsl_path)
+        dsl = (_mapping(source_dsls[workflow_key], f"{workflow_key} raw Dify DSL")
+               if source_dsls is not None else _load_yaml(dsl_path))
         if set(dsl) != {"app", "dependencies", "kind", "version", "workflow"}:
             raise BundleValidationError(f"{workflow_key} Dify DSL root fields drifted")
         app = _mapping(dsl.get("app"), f"{workflow_key} Dify app")
@@ -1007,6 +1024,10 @@ def _validate_dify_dsls(
                 raise BundleValidationError(
                     f"{workflow_key}.{node_id} omits its Dify node type"
                 )
+            if not isinstance(data.get("title"), str):
+                raise BundleValidationError(
+                    f"{workflow_key}.{node_id} Dify node title must be a string"
+                )
             graph_checks.reject_recovery_settings(
                 data, path=f"{workflow_key}.{node_id}.data",
                 error_type=BundleValidationError,
@@ -1043,6 +1064,8 @@ def _validate_dify_dsls(
         }
         if editor_assembly:
             expected_node_counts["variable-aggregator"] = 2
+        elif core_control:
+            expected_node_counts.update({"llm": 2, "code": 4, "if-else": 2, "variable-aggregator": 1})
         actual_node_counts = {
             key: len(value) for key, value in nodes_by_type.items()
         }
@@ -1231,6 +1254,8 @@ def _validate_dify_dsls(
         expected_code_titles = {"Knowledge Guard", "Contract Guard"}
         if not editor_assembly:
             expected_code_titles.add("Policy Query")
+        if core_control:
+            expected_code_titles.add("Core Control Route")
         if editor_assembly:
             expected_code_titles.update({"Editor Assembler", "Editor Input", "DraftSpec Guard", "Stop Plan", "DraftSpec Enforcer"})
         if set(titled_code_nodes) != expected_code_titles:
@@ -1335,8 +1360,9 @@ def _validate_dify_dsls(
                 f"{workflow_key} Dify Knowledge Guard binding or source drifted"
             )
 
-        llm_node = nodes_by_type["llm"][0]
-        llm_id = str(llm_node["id"])
+        llm_node = (nodes.get(core_graph.SEMANTIC_ID, {}) if core_control
+                    else nodes_by_type["llm"][0])
+        llm_id = str(llm_node.get("id", ""))
         editor_assembler_id = ""
         editor_input_id = ""
         editor_graph = None
@@ -1358,15 +1384,23 @@ def _validate_dify_dsls(
                 knowledge_documents=knowledge_documents,
                 knowledge_guard_node_id=knowledge_guard_id,
             )
-            graph_checks.validate_llm(
-                _mapping(llm_node.get("data"), f"{workflow_key}.LLM"),
-                label=workflow_key, schema=workflow_dify_schema, prompts=prompts,
-                hashes=DIFY_PROMPT_SHA256.get(workflow_key), knowledge_id=role_id,
-                model_provider=DIFY_MODEL_PROVIDER, model_name="gpt-5.4-mini",
-                max_tokens=output_token_limits[workflow_key],
-                max_system_bytes=MAX_SYSTEM_PROMPT_UTF8_BYTES,
-                error_type=BundleValidationError,
-            )
+            if core_control:
+                core_graph.validate_core_graph(
+                    root, nodes, checks=graph_checks, schema=workflow_dify_schema,
+                    semantic_prompts=prompts, semantic_hashes=DIFY_PROMPT_SHA256[workflow_key],
+                    model_provider=DIFY_MODEL_PROVIDER, max_tokens=output_token_limits[workflow_key],
+                    max_system_bytes=MAX_SYSTEM_PROMPT_UTF8_BYTES, error_type=BundleValidationError,
+                )
+            else:
+                graph_checks.validate_llm(
+                    _mapping(llm_node.get("data"), f"{workflow_key}.LLM"),
+                    label=workflow_key, schema=workflow_dify_schema, prompts=prompts,
+                    hashes=DIFY_PROMPT_SHA256.get(workflow_key), knowledge_id=role_id,
+                    model_provider=DIFY_MODEL_PROVIDER, model_name="gpt-5.4-mini",
+                    max_tokens=output_token_limits[workflow_key],
+                    max_system_bytes=MAX_SYSTEM_PROMPT_UTF8_BYTES,
+                    error_type=BundleValidationError,
+                )
 
         guard_id = contract_guard_id
         guard = _mapping(
@@ -1391,7 +1425,7 @@ def _validate_dify_dsls(
         ]
         expected_guard_variables = [
             ("candidate", [editor_assembler_id, "candidate"] if editor_assembly
-             else [llm_id, "text"]),
+             else [core_graph.MERGE_ID, "output"] if core_control else [llm_id, "text"]),
             ("context_pack", [start_id, "context_pack"]),
             ("role_id", [start_id, "role_id"]),
             ("correlation_id", [start_id, "correlation_id"]),
@@ -1530,6 +1564,8 @@ def _validate_dify_dsls(
         }
         if editor_assembly:
             expected_edges = editor_graph["edges"]
+        elif core_control:
+            expected_edges = core_graph.EDGES
         else:
             expected_edges.remove((role_acl_key_id, "source", role_id))
             expected_edges.update({
