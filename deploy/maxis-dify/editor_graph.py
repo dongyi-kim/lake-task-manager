@@ -23,7 +23,7 @@ STOP_NODE_ID = "1909000000001020"
 WRITER_MERGE_NODE_ID = "1909000000001021"
 ENFORCER_NODE_ID = "1909000000001022"
 SPEC_ASSET_PATH = "deploy/maxis-dify/code/editor_draft_spec.py"
-SPEC_ASSET_SHA256 = "f0fe20ac0fc1f60ae289920ac0f9febc0f1ef7c28a1bd1b50183492a1c612aa1"
+SPEC_ASSET_SHA256 = "b71475705c3600037f43186310459338a9445b08f50d259742b6155cc1dc95ad"
 SPEC_SCHEMA_SHA256 = "5bf30f8b288ae5fa7daabee782fd2ef62cc80e9d46b44d20a339662715a62b92"
 WRITING_SCHEMA_SHA256 = "accbafa04039e32a9b06aade48b0cffc4f4b765baa130ba4d6619bc052d8b134"
 SPEC_GUARD_ENTRYPOINT = "\n\ndef main(model_input, draft_spec, context_pack):\n    return prepare_spec(model_input, draft_spec, context_pack)\n"
@@ -42,7 +42,7 @@ BRANCH_PROMPT_SHA256 = {
                 "user": "0b882243f2e854a7fcf11e1844d9159187d9944a6b2ac53092ec829f43f07436"},
     "control": {"system": "31f9e5c83d094f5321555647f5501e198b24daa760326c2ff791081dce1feb1e",
                 "user": "41e3faa78a5f4d63a4302d6defc5e119c1c7b834d92c272bc6de18c629fb2b99"},
-    "selector": {"system": "999788deafcb51a596101feb74bfb6a10448e6c95f31a29ea2edff9a33685fba",
+    "selector": {"system": "4b996f087bd0a37a3e759d9b5a6464d829ce4c41adf84412086e32d27ab26216",
                  "user": "41e3faa78a5f4d63a4302d6defc5e119c1c7b834d92c272bc6de18c629fb2b99"},
 }
 

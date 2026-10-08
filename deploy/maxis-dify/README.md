@@ -241,19 +241,26 @@ Knowledge Guard는 계속 원래 `sys.query`와 EvidencePack의 equality를 검�
 이는 모델 호출을 늘리지 않는 검색용 단위 기능이며, 의미 품질 통과를 보장하지 않는다.
 
 Editor Input은 `editor-draft.v1` 요청의 원본 EvidencePack을 바꾸지 않고, 모델용 요청과
-출처별 원문 단위 ID 목록(`editor-input.v1`)을 만든다. 사용자의 요청은 별도 intent로 분리하며
+출처별 원문 단위 ID 목록(`editor-input.v2`)을 만든다. 사용자의 요청은 별도 intent로 분리하며
 사실 단위로 제공하지 않는다. intent ID는 질문·제안의 출처로만 사용할 수 있다.
 
-현재 source의 Editor Input에는 `draft_contract`와 `entities`도 있다. 작성 틀은 이번
-요청 모드의 section만 제공하며, Assembler와 같은 section 순서 함수를 사용한다.
+현재 **로컬 후보 source**는 selector 입력에서 작성용 `draft_contract`를 제거했다.
+Selector는 요청·seed·근거 단위·`entities`를 받아 `editor-draft-spec.v2`만 선택한다.
+선택 검증 뒤 writer에게만 별도 `draft_contract`와 허용된 section을 제공한다.
+따라서 selector에 `editor-plan.v2` skeleton이나 writer의 `sections=[]` 지시를 섞지 않는다.
+입력 필드 제거에 맞춰 내부 버전을 v2로 올렸으며 v1/혼합 입력은 거부한다.
+`editor-writer-input.v2`, `editor-writing.v1`, `editor-plan.v2`와 외부 응답 계약은 바꾸지 않았다.
+위 DEV v23의 게시된 Editor는 아직 이전 입력 계약이며 이 후보를 게시·재평가한 결과가 아니다.
+[변경 경계와 검증 기록](../../research/agent-improvement/maxis-editor-selector-input-v2-20261008.md)을 참고한다.
+
 Jira 단위의 `entity_key`와 명시된 `parentKey`/`parent.key`/`fields.parent.key`만으로
 target/parent/child를 표시한다. 문서·복수 티켓 제목으로 계층을 추측하지 않으며,
 식별 불가 하위 객체와 충돌·순환 관계는 unknown으로 남긴다. 표시는 새 사실 근거가 아니고,
 target·교차 출처 관계가 바뀌면 unit ID도 바뀌어 예전 선택을 차단한다.
 v15의 entity별 `source_ids`는 해당 key 객체를 실제로 포함한 Jira 출처만 나열한다.
 `parentKey`만 언급된 부모나 문서·intent로 가상의 티켓 출처를 만들지 않는다.
-이 출처 대응도 unit ID에 묶인다. 최대 Knowledge 본문 1,024바이트와 100바이트 문서명 두 개를
-넣은 고정 5-case가 8,924–8,998바이트임을 검사했다. 임의 크기의 입력 전체를 보장하는 것은
+이 출처 대응도 unit ID에 묶인다. v15 당시 최대 Knowledge 본문 1,024바이트와 100바이트 문서명 두 개를
+넣은 고정 5-case는 8,924–8,998바이트였다. 이 과거 관측은 현재 입력 v2의 측정값이 아니다. 임의 크기의 입력 전체를 보장하는 것은
 아니며, 원문을 잘라 넣거나 9,000바이트 한도를 높이지 않고 초과 시 실패한다.
 이 투영은 의미상 대상 선택을 돕지만 문장 의미나 최신성 충돌의 해결을 보증하지 않는다.
 

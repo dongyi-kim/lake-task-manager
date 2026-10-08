@@ -630,19 +630,6 @@ def _section_order(mode):
     return list(_SECTIONS) if mode == "description" else ["comment"]
 
 
-def _draft_contract(mode):
-    names = _section_order(mode)
-    purpose = (
-        "Target-only purpose, work and DoD; parent/history is context."
-        if mode == "description" else
-        "One comment; server inserts seed. Unresolved measurement: needs_input, sections=[], "
-        "missing_inputs asks value/comparison. Review: known person, criteria, document link."
-    )
-    return {"section_order": names, "purpose": purpose,
-            "skeleton": {"contract": "editor-plan.v2", "status": "ok",
-                         "sections": [{"section": name, "blocks": []} for name in names], "missing_inputs": []}}
-
-
 def prepare(model_input):
     """Project trusted KnowledgeGuard output for the model, never mint evidence."""
     try:
@@ -678,8 +665,8 @@ def prepare(model_input):
             return {"model_input": model_input, "route": mode}  # Preserve exact guarded bytes.
         request = _request(pack, sources, mode)
         catalog, _ = _catalog(sources, request["target"])
-        projected = _canonical({"contract": "editor-input.v1", "role_id": "editor_author",
-            "request": request, "draft_contract": _draft_contract(mode),
+        projected = _canonical({"contract": "editor-input.v2", "role_id": "editor_author",
+            "request": request,
             "entities": _entity_scope(sources, request["target"]),
             "knowledge_context": knowledge, "sources": catalog})
         if len(projected.encode("utf-8")) > 9000:

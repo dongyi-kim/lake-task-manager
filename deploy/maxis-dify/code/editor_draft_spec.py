@@ -22,8 +22,8 @@ def _validated_spec(model_input, draft_spec):
     if not isinstance(model_input, str) or len(model_input.encode("utf-8")) > 9000:
         _fail()
     view, spec = _object(model_input), _object(draft_spec)
-    if (set(view) != {"contract", "role_id", "request", "draft_contract", "entities", "knowledge_context", "sources"}
-            or view["contract"] != "editor-input.v1" or view["role_id"] != "editor_author"
+    if (set(view) != {"contract", "role_id", "request", "entities", "knowledge_context", "sources"}
+            or view["contract"] != "editor-input.v2" or view["role_id"] != "editor_author"
             or set(spec) != _SPEC_FIELDS or spec["contract"] != "editor-draft-spec.v2"):
         _fail()
     request = view["request"]
@@ -97,7 +97,7 @@ def _spec_link_dependencies(view, context_pack):
     _fresh_editor_evidence(pack, sources)
     request = _request(pack, sources, mode)
     catalog, lookup = _catalog(sources, request["target"])
-    expected = {"request": request, "sources": catalog, "draft_contract": _draft_contract(mode),
+    expected = {"request": request, "sources": catalog,
                 "entities": _entity_scope(sources, request["target"])}
     if any(_canonical(view[key]) != _canonical(value) for key, value in expected.items()):
         _fail()

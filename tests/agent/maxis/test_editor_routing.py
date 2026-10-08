@@ -132,8 +132,7 @@ def test_editor_route_comes_from_bound_mode_not_query_or_probe_words(editor_pack
     assert set(result) == {"model_input", "route"}
     projected = json.loads(result["model_input"])
     assert projected["request"]["kind"] == mode
-    assert projected["draft_contract"]["section_order"] == (
-        ["background", "scope", "work", "dod"] if mode == "description" else ["comment"])
+    assert projected["contract"] == "editor-input.v2" and "draft_contract" not in projected
 
 
 @pytest.mark.parametrize("mutation", ["schema", "schema_digest", "schema_not_canonical", "schema_boolean_alias", "source",
@@ -226,8 +225,7 @@ def test_malformed_editor_schema_is_never_control(editor_pack, mutation):
 
 def test_unresolved_measurement_contract_requests_non_publishable_missing_input(editor_pack):
     projected = json.loads(ASSET.prepare(canonical(incoming(editor_pack)))["model_input"])
-    purpose = projected["draft_contract"]["purpose"]
-    assert "needs_input" in purpose and "missing_inputs" in purpose and "sections=[]" in purpose
+    assert projected["contract"] == "editor-input.v2" and "draft_contract" not in projected
     candidate = canonical({"contract": "editor-plan.v2", "status": "needs_input", "sections": [],
                            "missing_inputs": ["측정 p95 값과 비교 기준을 알려 주세요."]})
     result = json.loads(assembled(editor_pack, candidate))

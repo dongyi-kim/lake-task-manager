@@ -66,8 +66,8 @@ def test_prepare_is_deterministic_bounded_and_does_not_mint_evidence(input_pack)
     first = view(input_pack)
     assert first == view(input_pack)
     assert input_pack == before
-    assert set(first) == {"contract", "role_id", "request", "draft_contract", "entities", "knowledge_context", "sources"}
-    assert first["contract"] == "editor-input.v1"
+    assert set(first) == {"contract", "role_id", "request", "entities", "knowledge_context", "sources"}
+    assert first["contract"] == "editor-input.v2"
     assert first["role_id"] == "editor_author"
     assert len(canonical(first).encode()) <= 9000
     assert not {"facts", "payload_schema_json", "knowledge_proof", "context_pack"} & set(first)
@@ -337,18 +337,20 @@ def test_unit_id_binds_target_and_cross_source_parent_scope(input_pack):
     assert view(input_pack)["sources"][0]["units"] != second["sources"][0]["units"]
 
 
-@pytest.mark.parametrize("kind,names", [("comment", ["comment"]),
-    ("description", ["background", "scope", "work", "dod"])])
-def test_prepared_draft_contract_contains_only_requested_mode(input_pack, kind, names):
+@pytest.mark.parametrize("kind", ["comment", "description"])
+def test_selector_input_v2_preserves_request_without_writer_contract(input_pack, kind):
     schema = EditorDraftV1.model_json_schema()
     schema["properties"]["mode"] = {"type": "string", "const": kind}
     input_pack["payload_schema_json"], input_pack["payload_schema_sha256"] = canonical_payload_schema(schema)
-    add_intent(input_pack, kind=kind)
-    contract = view(input_pack)["draft_contract"]
-    assert contract["section_order"] == names
-    assert [row["section"] for row in contract["skeleton"]["sections"]] == names
-    assert all(row["blocks"] == [] for row in contract["skeleton"]["sections"])
-    assert contract["skeleton"]["contract"] == "editor-plan.v2"
+    add_intent(input_pack, kind=kind, ticket_key="DL-42", seed_html="<p>기존 수치 30분 보존.</p>")
+    before = copy.deepcopy(input_pack)
+    projected = view(input_pack)
+    assert projected["contract"] == "editor-input.v2"
+    assert projected["request"] == {"kind": kind, "target": "DL-42", "source_ids": ["intent"],
+        "prompt": "확인할 사항을 작성해 줘", "seed_visible": "기존 수치 30분 보존."}
+    assert "draft_contract" not in projected
+    assert "editor-plan.v2" not in canonical(projected) and "sections=[]" not in canonical(projected)
+    assert input_pack == before
 
 
 def test_non_jira_keys_cannot_establish_ticket_scope(input_pack):

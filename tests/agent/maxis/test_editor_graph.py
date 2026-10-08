@@ -75,6 +75,20 @@ def test_writer_input_cannot_reintroduce_unselected_knowledge_or_raw_evidence():
         "variable": "context_pack", "value_selector": ["start", "context_pack"]}
 
 
+def test_selector_prompt_and_both_boundaries_use_selection_only_input_v2():
+    spec, dsl = _build()
+    nodes = {node["id"]: node["data"] for node in dsl["workflow"]["graph"]["nodes"]}
+    selector = nodes[spec.SELECTOR_NODE_ID]
+    prompt = selector["prompt_template"][0]["text"]
+    assert "editor-input.v2" in prompt and "editor-input.v1" not in prompt
+    assert "editor-draft-spec.v2" in prompt and "editor-plan.v2" not in prompt
+    input_id = _load("validate_bundle").EDITOR_INPUT_NODE_ID
+    for node_id in (input_id, spec.SPEC_GUARD_NODE_ID, spec.ENFORCER_NODE_ID):
+        code = nodes[node_id]["code"]
+        assert "editor-input.v2" in code and "editor-input.v1" not in code
+        assert "def _draft_contract(" not in code
+
+
 @pytest.mark.parametrize("mutation", ["raw_writer_input", "raw_writer_context", "selector_bypass",
                                      "guard_source", "guard_output", "stop_source", "enforcer_input",
                                      "enforcer_source", "guard_pack", "enforcer_pack", "writer_merge", "control_stage", "recovery"])

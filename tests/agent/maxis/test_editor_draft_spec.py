@@ -31,9 +31,9 @@ def sample(monkeypatch):
         {"source_id": "other", "kind": "confluence", "title": "관련 없음", "available_link": False, "units": [
             {"unit_id": "u_other", "entity_key": "", "path": "/body", "text": "선택하지 않은 자료"}]},
     ]
-    view = {"contract": "editor-input.v1", "role_id": "editor_author",
+    view = {"contract": "editor-input.v2", "role_id": "editor_author",
             "request": {"kind": "description", "target": "DL-42", "prompt": "본문 작성", "seed_visible": "",
-                        "source_ids": ["intent"]}, "draft_contract": ASSET["_draft_contract"]("description"),
+                        "source_ids": ["intent"]},
             "entities": [{"key": "DL-40", "relation": "parent", "parent_conflict": False}],
             "knowledge_context": [{"document_name": "policy", "content": "정책은 사실이 아니다."}], "sources": sources}
     spec = {"contract": "editor-draft-spec.v2", "status": "ok", "mode": "description", "target": "DL-42",
@@ -60,10 +60,9 @@ def enforce(sample):
 
 @pytest.mark.parametrize("mode", ["description", "comment"])
 def test_v1_successful_writer_input_and_compiled_plan_are_preserved(sample, mode):
-    """Golden outputs verified on v1 before the selection-only v2 migration."""
+    """Keep pre-DraftSpec-v2 golden writer/plan outputs with editor-input.v2."""
     view, spec, plan = sample
     view["request"]["kind"] = spec["mode"] = mode
-    view["draft_contract"] = ASSET["_draft_contract"](mode)
     sections = ["background", "scope", "work", "dod"] if mode == "description" else ["comment"]
     if mode == "comment":
         plan["sections"] = [{"section": "comment", "blocks": [
@@ -121,6 +120,21 @@ def test_v1_selection_has_no_runtime_fallback(sample):
     with pytest.raises(ValueError, match="^invalid_editor_draft_spec$"):
         ASSET["prepare_spec"](encoded(view), encoded(spec), "{}")
     assert enforce(sample)["status"] == "blocked"
+
+
+@pytest.mark.parametrize("contract,writer_contract", [
+    ("editor-input.v1", True), ("editor-input.v1", False), ("editor-input.v2", True)])
+def test_selector_input_rejects_legacy_and_mixed_writer_contract(sample, contract, writer_contract):
+    view, spec, _ = sample
+    view["contract"] = contract
+    if writer_contract:
+        view["draft_contract"] = {"purpose": "needs_input, sections=[]",
+            "skeleton": {"contract": "editor-plan.v2", "status": "ok", "sections": [], "missing_inputs": []}}
+    before = copy.deepcopy(sample)
+    with pytest.raises(ValueError, match="^invalid_editor_draft_spec$"):
+        ASSET["prepare_spec"](encoded(view), encoded(spec), "{}")
+    assert enforce(sample) == {"contract": "editor-plan.v2", "status": "blocked", "sections": [], "missing_inputs": []}
+    assert sample == before
 
 
 def test_narrow_writer_view_excludes_history_conflicts_unselected_and_knowledge(sample):
@@ -228,7 +242,6 @@ def test_writer_prose_cannot_author_link_or_person_syntax(sample, text):
 def test_comment_projection_omits_parent_context_even_if_selected(sample):
     view, spec, _ = sample
     view["request"]["kind"] = spec["mode"] = "comment"
-    view["draft_contract"] = ASSET["_draft_contract"]("comment")
     writer = json.loads(ASSET["prepare_spec"](encoded(view), encoded(spec), "{}")["model_input"])
     assert {u["unit_id"] for u in writer["units"]} == {"u_target", "u_constraint"}
 
@@ -319,9 +332,14 @@ def test_selected_plan_and_seed_remain_bound_to_original_pack_through_both_guard
     pack, helper = original_pack_case
     before = copy.deepcopy(pack)
     view, selection, plan = selected_plan(pack, helper)
+    selector = json.loads(view)
+    assert selector["contract"] == "editor-input.v2" and "draft_contract" not in selector
     prepared = ASSET["prepare_spec"](view, encoded(selection), encoded(pack))
     assert prepared["route"] == "comment"
-    purpose = json.loads(prepared["model_input"])["draft_contract"]["purpose"]
+    writer = json.loads(prepared["model_input"])
+    assert writer["contract"] == "editor-writer-input.v2"
+    assert writer["request"] == {key: value for key, value in selector["request"].items() if key != "source_ids"}
+    purpose = writer["draft_contract"]["purpose"]
     assert "needs_input" not in purpose and "missing_inputs" not in purpose
     constrained = ASSET["enforce_spec"](encoded(plan), view, encoded(selection), encoded(pack))["candidate"]
     remote, payload = helper.both_guards(pack, helper.assembled(pack, constrained))
@@ -336,6 +354,23 @@ def test_selected_plan_and_seed_remain_bound_to_original_pack_through_both_guard
         ASSET["prepare_spec"](changed_view, encoded(selection), encoded(pack))
     with pytest.raises(ValueError, match="^invalid_editor_draft_spec$"):
         ASSET["prepare_spec"](view, encoded(selection), encoded(pack))
+
+
+@pytest.mark.parametrize("field", ["target", "seed_visible"])
+def test_selector_input_v2_keeps_original_request_binding(original_pack_case, field):
+    pack, helper = original_pack_case
+    view, selection, plan = selected_plan(pack, helper)
+    projected = json.loads(view)
+    projected["request"][field] = "DL-999" if field == "target" else "임의로 바꾼 seed"
+    if field == "target":
+        selection["target"] = "DL-999"  # Agreeing model fields cannot replace the original target.
+    before = copy.deepcopy(pack)
+    with pytest.raises(ValueError, match="^invalid_editor_draft_spec$"):
+        ASSET["prepare_spec"](encoded(projected), encoded(selection), encoded(pack))
+    compiled = ASSET["enforce_spec"](encoded(plan), encoded(projected), encoded(selection), encoded(pack))["candidate"]
+    remote, payload = helper.both_guards(pack, helper.assembled(pack, compiled))
+    assert remote.status == "blocked" and payload is None
+    assert pack == before
 
 
 @pytest.mark.parametrize("mutation", ["valid", "forged_source", "forged_person", "raw_mention", "raw_url", "repeat_seed"])
