@@ -1,4 +1,4 @@
-"""Unwired, provider-free Core activation classification against the real factory."""
+"""Provider-free Core activation classification against the real factory."""
 import copy
 import hashlib
 import importlib.util

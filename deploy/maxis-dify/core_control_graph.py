@@ -1,4 +1,4 @@
-"""Unwired Core activation subgraph; no CLI, file writes or runtime registration.
+"""Pure Core activation subgraph builder; no CLI or file writes.
 
 rebuild takes a canonical Core DSL and reviewed source/prompt strings, returning a
 deep copy. It checks graph identity/topology, not policy or complete DSL safety;

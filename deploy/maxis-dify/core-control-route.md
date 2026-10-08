@@ -1,4 +1,10 @@
-# Core activation classifier API (아직 runtime 미연결)
+# Core 연결 검사 분리
+
+로컬 source DSL의 Core는 16노드·17엣지다. 연결 검사와 업무 판단을 각각 한 LLM에
+맡기되, 두 경로 모두 기존 Knowledge Guard와 Contract Guard 사이에서 실행한다.
+원격 DEV는 아직 이전 12노드 Core이며, 이 변경의 실제 연결 성공·업무 품질은 미검증이다.
+
+## 분류기 계약
 
 `code/core_control_route.py`의 `main(model_input)`은 표준 라이브러리만 사용하는
 순수 함수다. Knowledge Guard가 policy allow 후 만든 canonical `ltm-model-input.v1`
@@ -23,9 +29,8 @@ JSON 문자열(최대 9,000 UTF-8 bytes, `context_pack` 최대 6,144 bytes)을 �
 Knowledge Guard/Policy Decision, 실제 LLM, Contract Guard/ResponseGuard가 그대로 필요하다.
 ready 응답·citation·canary 성공 결과를 만들지 않으며 모델 실행 증명도 제공하지 않는다.
 
-이 단위는 graph/DSL/prompt/모델/Guard/profile/evaluation에 연결되지 않았다.
-실제 factory를 이용한 provider-free 회귀만 수행하며 canary 실패 또는 업무 품질의
-개선을 주장하지 않는다. runtime 연결과 게시·실측은 별도 검토 대상이다.
+실제 factory를 이용한 provider-free 회귀는 아래에 기록한다. 분류기의 로컬 통합은
+canary 실패 해결이나 업무 품질 개선의 증거가 아니며, 게시·실측은 별도 검토 대상이다.
 
 ## 오프라인 검증 (2026-10-08)
 
@@ -43,7 +48,7 @@ ready 응답·citation·canary 성공 결과를 만들지 않으며 모델 실�
 실행 결과가 아니라 API 의존성을 제한한 합성 회귀다.
 보완 뒤 동일 5파일은 **297 passed (18.74초)**였고, 분류기 회귀는 103개다.
 
-## 그래프 생성 단위 A (미연결)
+## 그래프 생성 단위
 
 `core_control_graph.py::rebuild`는 정본 Core DSL과 검토된 분류기·system prompt를
 입력받아 **메모리 안의 복사본**만 반환한다. CLI·파일 쓰기·runtime 등록은 없다.
@@ -55,12 +60,42 @@ Control LLM 또는 기존 Contract LLM의 `text` 하나를 합류시켜 기존 C
 업무용 prompt, ACL·검색·Sentinel·policy deny, Guard source 및 candidate 이외 binding은 유지한다.
 
 빌더는 **배포 검증기가 아니다**. 알려진 생성 노드의 data는 재생성하며, 기존 Guard의
-안전성이나 전체 DSL의 적격성을 증명하지 않는다. 후속 B 단계에서는 raw DSL의 양쪽
-LLM·분류기 source·prompt·전체 배선을 먼저 검증하고 그 뒤에 환경 binding을 바꿔야 한다.
-기존 DSL·bundle validator·materializer는 아직 변경하지 않았으므로 이 생성물을 게시하지 않는다.
+안전성이나 전체 DSL의 적격성을 증명하지 않는다. 아래 배포 검증을 통과해야 환경별
+import copy를 만들 수 있으며, 생성기로 raw DSL을 먼저 수리해서는 안 된다.
 
 신규 그래프 회귀 30개는 독립 literal edge 기대값, 입력 보존, 0/1 LLM 경로의 정적 도달성,
 멱등성·순서 변경·복사본 독립성, 잘못된 앱/배선/자산 거절을 포함한다.
-최종 동결본은 분류기·client·ContextGuard·Editor routing·Knowledge Guard·bundle·environment·
+통합 전 생성 단위 A의 동결본은 분류기·client·ContextGuard·Editor routing·Knowledge Guard·bundle·environment·
 Policy Query·prompt integrity를 합친 **10파일 730 passed (226.19초)**였다.
 별도 독립 코드 검토를 거치며, 정적 경로 확인을 실제 Dify 실행이나 LLM 품질 결과로 해석하지 않는다.
+
+## 원본 검증과 환경 전환
+
+`validate_bundle.py`는 `core_graph_validation.py`를 통해 두 LLM의 prompt·schema·모델·입력,
+분류기 source와 I/O, 분기 조건·합류 값·전체 배선을 검증한다. source 파일과 DSL을 함께
+바꿔도 기존 독립 SHA pin과 다르면 거부한다. 기존 정책·근거·workflow 검증은 유지한다.
+
+`materialize_environment.py`도 읽어 들인 원본 DSL을 같은 검증기에 먼저 전달한다.
+검증 뒤에만 앱 이름·모델·Knowledge 등 환경 binding을 교체한다. DEV/PROD 전환 시
+두 Core LLM 모두 해당 환경의 모델을 적용하며, prompt와 원래 model_input은 유지한다.
+원격 게시·profile 검증·운영 활성화는 이 오프라인 변환과 별개다.
+
+정상 업무와 합성 연결 검사는 배타적 경로로 LLM 한 번만 호출하도록 연결했으며,
+정책 거절은 기존 0회 경로를 유지한다. 이는 정적 경로의 속성이다. 실제 호출 횟수,
+지연·token·결과 정확도는 게시 후 native 실행 증적과 기존 평가 배터리로 확인해야 한다.
+
+## 통합 검증 결과
+
+2026-10-08 통합 코드 `c411514`의 동결 소스와 배포 증적 회귀를 함께 검증했다.
+관련 **13파일 863 passed (275.14초)**, bundle CLI와 DEV 환경의 세 import copy 생성이 통과했다.
+검증 대상은 위 A의 10파일에 Core 원본 검증·Core receipt·Editor graph 테스트를 더한 것이다.
+테스트 자료 준비는 `9ecadb8`로 분리했으며 통합의 비기계 변경은 484줄이다.
+
+독립 검토 두 번은 모두 **9/10**이다. 잘못된 node title의 일반 예외를 3건 재현한 뒤
+검증 오류로 거부하도록 수정했다. 초기 전체 실행의 25건 실패는 원본 검증 강화에 따른
+기존 fixture·오류 문구·목록 순서 기대값이었으며, 수정 후 25건과 최종 전체 회귀가 통과했다.
+두 모델의 검증·환경 전환, 원본 보존, source와 DSL 동시 변조 거부를 포함한다.
+
+공유 LLM 검증기의 기존 Python 동등 비교가 schema의 `false`와 숫자 `0`을 같게 보는
+별도 보강 항목은 남아 있다. 이번 Core 통합으로 새로 생긴 문제는 아니며 다음 작은 변경으로 다룬다.
+이 검토 점수와 테스트 수는 모델 품질 점수가 아니다. 원격 게시·LLM 호출·운영 활성화는 하지 않았다.

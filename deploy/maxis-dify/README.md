@@ -4,6 +4,10 @@
 source bundle이다. DEV와 PROD의 환경 binding을 분리하고, import DSL을 materialize한
 뒤 validator와 원격 release gate를 통과시키는 구조다.
 
+로컬 Core source는 연결 검사와 업무 판단을 분리한 **16노드·17엣지 후보**다.
+양쪽 LLM과 원본 그래프를 검증한 뒤 환경값을 적용하며, 정책 거절과 기존 Guard는 유지한다.
+원격 DEV Core는 아래 v20 게시본 그대로다. [Core 계약과 검증 범위](core-control-route.md)를 참고한다.
+
 > 2026-10-08: **v22 DEV Editor 게시 완료, 공통 canary 실패로 후보 품질 평가 미실행**.
 > 내부 DraftSpec v2에서 동등한 target/constraint 선택을 current 하나로 통합했다.
 > 회귀 **917개**와 두 독립 코드 검토를 통과했으나, 이것은 LLM 품질 검증이 아니다.
@@ -69,6 +73,7 @@ deployment evidence에 기록하지 않는다.
 | <code>editor_graph.py</code> | 본문·댓글·제어 분기별 schema/prompt 정본과 재현 가능한 Editor DSL 생성기 |
 | <code>editor_graph_validation.py</code> | selector·writer·control·stop과 원본 binding 공유 검증기; 환경 생성에도 재사용 |
 | <code>policy_query_graph.py</code> | LTM 정본 selector를 Core/PMO Policy Query 노드로 생성·검증; 검색 입력만 분리 |
+| <code>core_control_graph.py / core_graph_validation.py</code> | Core 합성 연결 검사와 업무 판단 분리; 생성과 원본 검증을 별도 수행 |
 | <code>graph_receipt.py</code> | 검증한 로컬 graph와 Dify export의 실행 설정 비교 |
 | <code>prompts/*.md</code> | 공통 및 앱별 instruction source |
 | <code>contracts/*.json</code> | RemoteRoleResult와 Editor 선택·문안·assembler plan schema |

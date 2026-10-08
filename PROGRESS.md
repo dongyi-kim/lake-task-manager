@@ -109,6 +109,8 @@ python -m pytest src/tests -q                      # 21 passed
 
 ## History (append-only)
 
+- **2026-10-08** — 별도 `codex/maxis-core-control-graph`에서 Core 연결 검사와 업무 LLM의 배타적 분기를 16노드·17엣지 source에 통합(`c411514`). 원본 DSL을 환경값 적용 전에 검증하고 두 모델·분류기·합류·기존 Guard 결속을 유지. malformed title 3건 재현·수정, 관련 13파일 863회귀·독립 검토 두 번 9/10 통과. [검증 범위](deploy/maxis-dify/core-control-route.md)에 초기 실패와 공유 schema 비교 후속 항목 기록. 실제 DEV 게시·품질 향상 미검증, API/PROD/route·main·push 변경 없음.
+
 - **2026-10-08** — 별도 `codex/maxis-editor-selection-v2`에서 Editor 내부 DraftSpec의 동등한 target/constraint 배열을 `current_unit_ids`로 통합. v1/혼합·중복·타입·소유권·링크·terminal Guard와 외부 계약 유지. frozen 회귀 917개, 독립 검토 두 번 9/10; 별도 유효 v1 768조합의 writer/plan parity 확인. 실제 DEV 게시·품질 비교와 UI는 이 커밋의 검증 범위가 아님.
 
 - **2026-07-09** — **정리/성능**: 죽은 코드 제거(`_ptotal`, `subsPreview`, ProgressBar marker/`.pbar-mark`, `.mini .tb`, fmt 미사용 export), 스테일 문서 현행화(plan.yaml→wbs_config.yaml, docker/seed/native 폐기 반영). **성능**: local 백엔드 fan-out(epic/vit/workload) **ThreadPool 병렬**(`_pmap`, `supports_parallel`; SSO 순차 폴백), VIT 조립 캐시(`vit_build:`)+코멘트 lazy(리스트에서 미조회), 프론트 **keep-alive**+GET memo(탭 재fetch 제거)+간트 렌더 coalesce.
