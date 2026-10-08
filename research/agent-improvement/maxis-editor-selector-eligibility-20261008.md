@@ -155,3 +155,54 @@ Console GET은 8회(진단 조회 전후 published graph 2·목록 1·고정 win
 `5653c896fee89114ec4832b17f47e71238209d3a867bc9355f8de3e34d12897f`다. 이것은 후속 보조 증거이며
 primary 실패나 앞의 정성 점수를 교체하지 않는다. 다음 단계는 동일한 검증 조건을 유지한 채
 고정 로컬 Enforcer의 거부 지점을 좁히는 것이다. 운영 경로는 local로 유지한다.
+
+### 고정 로컬 코드의 fact 검증 위치 확인
+
+10:44:22–10:44:24 UTC에 같은 두 실행을 별도 단발 helper로 조회했다. 고정 로컬 `enforce_spec`의
+trace 결과는 이전 진단의 case별 증거 전체 일치를 확인한 뒤에만 채택했다. 두 case 모두
+`code/editor_draft_spec.py:190`에서 예외가 발생했다. 이 줄은 fact의 키가 정확히
+`{type, unit_id, tag}`가 아니거나 `unit_id`가 해당 section의 허용 집합에 없으면 호출하는
+`_fail()`이다. **키 불일치와 허용 집합 위반 중 어느 쪽인지는 아직 구분하지 못했다.**
+
+이는 서버 stack이 아니라 같은 native 포트로 재현한 고정 로컬 함수의 예외 위치다.
+`unique`는 소스 위치가 하나라는 뜻이며, 전체 초안에 불량 block이 하나뿐이라는 뜻이 아니다.
+첫 거부 이후의 block은 검사되지 않았고 Writer의 native 입력 미관측 한계도 유지된다.
+trace는 원본 함수 결과를 바꾸지 않으며 기존 trace를 복구했다. 원문·locals·예외 값은 저장하지 않았다.
+
+Console GET은 5회(현재 published graph 전후 2·목록 1·같은 두 run의 node 조회 2),
+별도 preflight GET·login POST는 각 1회다. 모델 호출·graph/profile 쓰기는 0회다.
+오프라인 44검사(작성자 17.01초·root 17.11초), 독립 검토 두 번 9/10을 거쳤다.
+receipt는 `.cache/maxis/editor-v25-enforcer-locations-20261008-c595d0a.json`, SHA는
+`faba08519423a6b1495aefda3c5ff6b29053da0bb15db8f87bd4f5f32778b951`이다.
+helper SHA는 `f8b1d497b4581ebcfa7cebacd5ecdbe0f6fe284c7b5dcb51915967c59dc5efc7`이다.
+이 증거도 primary 실패·점수를 대체하지 않으며, 다음 최소 진단은 첫 거부 fact의 형식과 사용 범위를
+원문 없는 고정 분류로 구분하는 것이다.
+
+### 첫 거부 fact: 상위 Jira 배경을 DoD에 사용
+
+10:58:16–10:58:18 UTC의 마지막 원인 분류에서 같은 두 run·이전 case 증거 전체·로컬 line 190을
+다시 대조했다. 두 case의 첫 거부 fact는 모두 **키 집합이 정확하고 원본 catalog에 존재**하지만,
+`context`로 선택된 **상위 Jira 티켓**의 unit을 `dod`에 사용한 경우였다.
+`context`는 background에만 허용되므로 기존 Enforcer의 차단은 계약상 정상이다.
+
+| 첫 거부 위치·분류 | CMP2 | CMP9 |
+|---|---|---|
+| section / section 내부 block 위치(1부터) | dod / 1 | dod / 1 |
+| 초안 전체 block 위치(1부터) | 12 | 10 |
+| 키 집합 / 원본 catalog 소속 | 정확 / 있음 | 정확 / 있음 |
+| 선택 bucket / source / entity 관계 | context / jira / parent | context / jira / parent |
+| 거부 분류 | selected_section_disallowed | selected_section_disallowed |
+
+원문·ID·원문 키 이름은 저장하지 않고 고정 분류·index·bool·해시만 보존했다. Writer가 왜 이런
+선택을 했는지나 native 입력 전문은 아직 확인한 것이 아니다. `tag` 검사는 해당 거부 뒤이므로
+이 block의 tag까지 검증됐다는 뜻은 아니다. 첫 거부 뒤 추가 결함의 부재도
+증명하지 않는다. 따라서 이 관측은 **출력의 범위 위반**을 확정하며, 입력 표현이 원인이라는 것은
+후속 실험 가설이다. scope 검증을 완화하거나 상위 근거를 현재 티켓의 사실로 승격하지 않는다.
+
+Console GET 5회, 별도 preflight GET·login POST 각 1회, 모델 호출·graph/profile 쓰기 0회다.
+오프라인 49검사(작성자 17.76초·root 17.35초), 독립 검토 두 번 9/10을 거쳤다.
+receipt `.cache/maxis/editor-v25-fact-admission-20261008-c595d0a.json`의 SHA는
+`300a99b96654aa51f3a121bb780c24eb5916f5dbc8203335c0367bb3c955fdcb`, helper SHA는
+`1daf83cae92e99722667802bc6b8fed5414240661bb7e04cd491fbfc37d3da34`다.
+다음 후보는 동일 권한의 Writer unit을 그룹으로 묶는 입력 투영 한 가지다. fact 출력 형식·ID 변환이나
+CMP3의 별도 의미 품질 수정을 섞지 않고 새 브랜치에서 같은 배터리로 확인한다.

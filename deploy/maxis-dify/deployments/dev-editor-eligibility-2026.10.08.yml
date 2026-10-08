@@ -152,3 +152,48 @@ supplemental_native_diagnostic:
   both_writer_inputs_directly_observed: false
   exact_enforcer_rejection_predicate_identified: false
   profiles_unchanged_observed: true
+supplemental_first_fact_diagnostic:
+  scope: first-local-line190-fact-only-not-full-defect-inventory
+  raw: .cache/maxis/editor-v25-fact-admission-20261008-c595d0a.json
+  raw_sha256: 300a99b96654aa51f3a121bb780c24eb5916f5dbc8203335c0367bb3c955fdcb
+  helper_sha256: 1daf83cae92e99722667802bc6b8fed5414240661bb7e04cd491fbfc37d3da34
+  completed_at_utc: '2026-10-08T10:58:18.693667+00:00'
+  status: diagnosed
+  authenticated_console_gets: 5
+  credential_free_preflight_gets: 1
+  login_posts: 1
+  model_calls: 0
+  graph_writes: 0
+  profile_writes: 0
+  both_cases:
+    reason: selected_section_disallowed
+    section: dod
+    block_index: 0
+    key_set_exact: true
+    catalog_exists: true
+    selector_bucket: context
+    source_kind: jira
+    entity_relation: parent
+  global_block_ordinals: {CMP2: 12, CMP9: 10}
+  prior_case_evidence_exact: true
+  profiles_unchanged_observed: true
+supplemental_local_exception_diagnostic:
+  scope: pinned-local-exception-caller-line-not-server-stack
+  raw: .cache/maxis/editor-v25-enforcer-locations-20261008-c595d0a.json
+  raw_sha256: faba08519423a6b1495aefda3c5ff6b29053da0bb15db8f87bd4f5f32778b951
+  helper_sha256: f8b1d497b4581ebcfa7cebacd5ecdbe0f6fe284c7b5dcb51915967c59dc5efc7
+  status: diagnosed
+  completed_at_utc: '2026-10-08T10:44:24.396597+00:00'
+  authenticated_console_gets: 5
+  credential_free_preflight_gets: 1
+  login_posts: 1
+  model_calls: 0
+  graph_writes: 0
+  profile_writes: 0
+  source: deploy/maxis-dify/code/editor_draft_spec.py
+  source_sha256: b944d3b9d15cffcdbd1acedad0dc238466a5595cca432fac2df3f2e406bf47f3
+  local_exception_lines: {CMP2: 190, CMP9: 190}
+  line_sha256: bb7438b0dee944e7c32375be0e4205aebbe321021cedeeac1758b21389999566
+  prior_case_evidence_exact: true
+  exact_enforcer_rejection_predicate_identified: false
+  profiles_unchanged_observed: true
