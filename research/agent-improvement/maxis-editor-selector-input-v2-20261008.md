@@ -161,3 +161,16 @@ workflow UUID는 조회 결과에서 직접 관측하지 못했다. 현재 게�
 명확히 제시하는 작은 입력 계약이다. 기존 Guard를 완화하거나 잘못된 출력을 조용히 수정하지 않는다.
 새 표현의 9,000 UTF-8 byte 한도·원본 재결속·호환 경계를 먼저 검증하고, 의미 품질 개선은
 별도 새 후보의 같은 전체 배터리로 확인해야 한다. 아직 해당 후보를 구현하거나 게시하지 않았다.
+
+### 진단 helper 재사용 안전성 정정
+
+후속 독립 감사에서 기존 native 진단 helper와 첫 offline catalog replay helper의
+`assert not sys.flags.optimize`가 `-O/-OO`에서 함께 제거되는 결함을 확인했다.
+기존 도구의 **재사용 안전성 평가는 7/10으로 정정**하며 두 동결 도구의 재사용을 금지한다.
+실제 native 실행은 `PYTHONOPTIMIZE=''`와 `python -B`로 비최적화 실행했으므로 기존 실행 증적은
+유효하다. 기존 helper·receipt·첫 offline artifact와 primary 결과·점수·해시는 수정하지 않았다.
+
+새 pure-offline **R2만 9/10**으로 검토했다. 제거되지 않는 명시적 gate가 증적 읽기·claim·network
+이전에 동작하며, 실제 `-O/-OO`와 `PYTHONOPTIMIZE=1/2` subprocess를 포함한 16개 오프라인
+테스트를 통과했다. R2의 실제 API·모델 호출은 0회이며 artifact·claim은 아직 생성하지 않았다.
+R2는 부분 입력 재구성용 도구이며 과거 실행 UUID나 원격 입력의 byte identity를 입증하지 않는다.
