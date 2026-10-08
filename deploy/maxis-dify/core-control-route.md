@@ -34,3 +34,33 @@ ready 응답·citation·canary 성공 결과를 만들지 않으며 모델 실�
 동일 5개 테스트 파일에서 **290 passed (18.22초)**였다. 이 중 분류기 회귀는 96개이며,
 실제 probe factory → source DSL의 Knowledge Guard → 분류기 연결과 깊은 JSON의
 내용을 노출하지 않는 오류 반환을 포함한다. 외부 API·실제 모델 호출은 없었다.
+
+후속 호환성 보완: UTC 정규식과 원본 timestamp 결속은 유지하면서 날짜·시간의
+숫자 성분으로 달력을 검사한다. ISO `Z` 파싱 지원의 Python 버전 차이에 의존하지 않는다
+([Python 3.10 datetime API](https://docs.python.org/3.10/library/datetime.html#datetime.datetime.fromisoformat)).
+실제 Dify Python 버전을 확인했거나 기존 원격 canary 실패 원인을 규명한 것은 아니다.
+생성자 API만 제공하는 경계 테스트 7건에서 수정 전 실패를 재현했다. 이는 Python 3.10
+실행 결과가 아니라 API 의존성을 제한한 합성 회귀다.
+보완 뒤 동일 5파일은 **297 passed (18.74초)**였고, 분류기 회귀는 103개다.
+
+## 그래프 생성 단위 A (미연결)
+
+`core_control_graph.py::rebuild`는 정본 Core DSL과 검토된 분류기·system prompt를
+입력받아 **메모리 안의 복사본**만 반환한다. CLI·파일 쓰기·runtime 등록은 없다.
+`reviewed_assets`는 source와 `common.md + core_control.md`를 읽고 독립 SHA pin을 확인한다.
+
+생성 결과는 16노드·17엣지다. 기존 policy allow 뒤에 분류기와 배타적 분기를 넣고,
+Control LLM 또는 기존 Contract LLM의 `text` 하나를 합류시켜 기존 Contract Guard로 보낸다.
+두 LLM 모두 원래 Knowledge Guard의 `model_input`과 같은 모델·schema를 사용한다.
+업무용 prompt, ACL·검색·Sentinel·policy deny, Guard source 및 candidate 이외 binding은 유지한다.
+
+빌더는 **배포 검증기가 아니다**. 알려진 생성 노드의 data는 재생성하며, 기존 Guard의
+안전성이나 전체 DSL의 적격성을 증명하지 않는다. 후속 B 단계에서는 raw DSL의 양쪽
+LLM·분류기 source·prompt·전체 배선을 먼저 검증하고 그 뒤에 환경 binding을 바꿔야 한다.
+기존 DSL·bundle validator·materializer는 아직 변경하지 않았으므로 이 생성물을 게시하지 않는다.
+
+신규 그래프 회귀 30개는 독립 literal edge 기대값, 입력 보존, 0/1 LLM 경로의 정적 도달성,
+멱등성·순서 변경·복사본 독립성, 잘못된 앱/배선/자산 거절을 포함한다.
+최종 동결본은 분류기·client·ContextGuard·Editor routing·Knowledge Guard·bundle·environment·
+Policy Query·prompt integrity를 합친 **10파일 730 passed (226.19초)**였다.
+별도 독립 코드 검토를 거치며, 정적 경로 확인을 실제 Dify 실행이나 LLM 품질 결과로 해석하지 않는다.

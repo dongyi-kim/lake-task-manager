@@ -77,7 +77,9 @@ def _activation(incoming, pack):
     when = _text(pack.get("requested_at"), 80)
     if not _UTC_TIME.fullmatch(when):
         _fail()
-    datetime.fromisoformat(when)  # Calendar validity, not wall-clock freshness.
+    # Calendar validity only; avoid Python-version-specific ISO 'Z' parsing.
+    datetime(int(when[:4]), int(when[5:7]), int(when[8:10]),
+             int(when[11:13]), int(when[14:16]), int(when[17:19]))
     manifest = _text(pack.get("knowledge_manifest_sha256"), 64)
     if not _DIGEST.fullmatch(manifest):
         _fail()

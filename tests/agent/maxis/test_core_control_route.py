@@ -123,6 +123,27 @@ def test_rebound_timestamps_check_calendar_and_binding_not_wall_clock(activation
         rejected(activation)
 
 
+@pytest.mark.parametrize("fraction", ["", ".1", ".12", ".123", ".1234", ".12345", ".123456"])
+def test_calendar_validation_uses_portable_components(activation, monkeypatch, fraction):
+    real_datetime, observed = ROUTE.datetime, []
+
+    def calendar_only(*fields):
+        observed.append(fields)
+        return real_datetime(*fields)
+
+    # Only the long-standing constructor API is available at this boundary;
+    # do not require a runtime with Python 3.11's ISO 'Z' parsing extension.
+    monkeypatch.setattr(ROUTE, "datetime", calendar_only)
+    when = "2026-10-08T12:34:56" + fraction + "Z"
+    pack = activation["context_pack"]
+    pack["requested_at"] = pack["sources"][0]["retrieved_at"] = when
+    pack["facts"][0]["observed_at"] = pack["role_context"][0]["observed_at"] = when
+    before = copy.deepcopy(activation)
+    assert ROUTE.main(encoded(activation)) == {"route": "control"}
+    assert observed == [(2026, 10, 8, 12, 34, 56)]
+    assert activation == before
+
+
 def test_ready_schema_alone_does_not_select_control(semantic, activation):
     for field in ("payload_schema_json", "payload_schema_sha256"):
         semantic["context_pack"][field] = activation["context_pack"][field]
