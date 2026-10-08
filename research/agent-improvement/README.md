@@ -10,6 +10,7 @@ LakeTaskManager Agent의 prompt 언어 구성, role contract, 구조적 품질, 
 
 ## 주요 보고서
 
+- [`evaluations/maxis-role-component-20261008-identity-baseline.md`](evaluations/maxis-role-component-20261008-identity-baseline.md): source identity 수정·protocol 4 fresh DEV baseline, 11건 ok 0·blocked 10·오류 1; 비교 기준 복구이며 모델 품질 개선 아님
 - [`evaluations/maxis-role-component-20260921-policy-query.md`](evaluations/maxis-role-component-20260921-policy-query.md): v20 검색 전용 단위 분리; 실제 no-hit 5→0이나 정상 답변 0/11·지연 증가, 비활성 유지. 별도 Editor 후보와 다음 단위별 개선 포함
 - [`evaluations/maxis-role-component-20260921-query-suffix.md`](evaluations/maxis-role-component-20260921-query-suffix.md): 선행 접미어 후보의 개선 실패와 native 정책 검색·Editor 오류 진단
 - [`maxis-role-evaluation-20260917.md`](maxis-role-evaluation-20260917.md): 8개 Role·11개 고정 합성 사례의 실제 원격 응답 평가 경로; 운영 활성화 없는 독립 component 진단
