@@ -1,0 +1,146 @@
+contract: ltm-maxis-dify-quality-evidence.v1
+captured_date: '2026-10-08'
+environment: dev
+status: experimental_inactive_semantic_quality_not_qualified
+authoritative_ready: false
+workflow_bundle_version: ltm-maxis-dify-2026.10.08-core-control-v23
+candidate_commit: 7cc40a56035fde7bbd72cb5e62c6ba3f5be4b938
+profile_fingerprint: 9c8b5598da8210f8608de8d6f137eb60
+prior_evidence: deploy/maxis-dify/deployments/dev-editor-selection-2026.10.08.yml
+environment_binding: deploy/maxis-dify/environments/dev-2026.09.yml
+publication:
+  first_attempt:
+    artifact: .cache/maxis/dev-core-control-20261008-v23.json
+    artifact_sha256: 041846d2a89de46303e0254eadfd6889532e63e39e3cb169cc464652898af389
+    status: publisher_stopped_after_import_completed_with_warnings
+    import_requests: 1
+    publish_requests: 0
+    exact_error_line_recorded: true
+  reconciliation:
+    artifact: .cache/maxis/core-import-reconciliation-20261008.json
+    artifact_sha256: 4fcf69c0d176ae3ea3bb7354d7d1983053dad5e1fca529b2e028be44b263d1ef
+    read_only: true
+    exact_candidate_core_draft: true
+    old_published_workflows_retained: true
+    features_environment_conversation_variables_match: true
+    imported_source_dsl_version: '0.5.0'
+    current_export_dsl_version: '0.6.0'
+    missing_dependency_count: 0
+    server_product_version_inferred: false
+  resume:
+    artifact: .cache/maxis/dev-core-control-20261008-v23-resume.json
+    artifact_sha256: 6eb04a20a102d62b4c747707c1213a9812d9df21d603603dbe2ac110dfd13ebf
+    status: published
+    completed_at: '2026-10-08T05:55:05.459166+00:00'
+    import_replayed: false
+    publish_requests: 1
+    published_keys: [agent_core]
+    api_key_bindings_unchanged_since_resume: true
+    api_key_full_import_interval_identity_proven: false
+  workflows:
+    agent_core:
+      previous: 290173d5-f950-46d0-869e-7c3b0885049c
+      published: 2ec82ccb-b3f5-4c05-8f7c-71c309e6d3f5
+      graph_sha256: 5a2c46a7b190f849788f767fb33fbbe100dc82a69bfbe5a373dfe8b5a99ca0fc
+      nodes: 16
+      edges: 17
+    pmo_brief:
+      published: 8bf05f64-8c39-49af-a781-a563ef0e4b27
+      graph_sha256: a2e29b7de1e5c749d0e332c0b83f478a7e7e591d269aa244a3ec4ebda92adf52
+      republished: false
+      nodes: 12
+      edges: 12
+    editor_author:
+      published: 0291c025-a092-4f43-8ba5-5130e2b8563d
+      graph_sha256: 6dd5e699d0aab3c219cdc59df8a73b47a1ef25b5871e95dc90a1720195f73489
+      republished: false
+      nodes: 23
+      edges: 26
+  model_unchanged: true
+  knowledge_unchanged: true
+  semantic_prompt_unchanged: true
+  common_acl_and_guard_sources_unchanged: true
+service_api_canary:
+  artifact: .cache/agent-evaluation/maxis-role-preflight-20261008T055517Z-2bfb8d19/canary.json
+  artifact_sha256: 86c3c1a3ff793b27d8e9a16f714140e1d7a8361c38e0cbe9e0a676763ed4c78a
+  passed: 3
+  executed: 3
+  profile_verified: true
+  retry_performed: false
+  quality_certification: false
+component_observations:
+  editor:
+    artifact: .cache/agent-evaluation/maxis-editor-20261008T055552Z-04102b02/candidate.json
+    artifact_sha256: 735b46d3f1b264c461c19a16a3dc127a6382880547b2b5b038e07f9af71c4fc0
+    complete: true
+    binding_unchanged: true
+    attempted: 5
+    automatic_pass: 3
+    ok: 3
+    needs_input: 1
+    bad_request: 1
+    duration_seconds_primary: 19.6
+    token_usage_complete: false
+    direct_review_status: in_progress_separate_sidecar
+  role:
+    artifact: .cache/agent-evaluation/maxis-roles-20261008T055648Z-85723e05/candidate.json
+    artifact_sha256: 958a406d944755b242e9dc1d0d128d8525847356a94dfa009aceab878940dc90
+    complete: true
+    binding_unchanged: true
+    attempted: 11
+    ok: 0
+    blocked: 10
+    bad_request: 1
+    duration_seconds_primary: 36.799
+    token_usage_complete: false
+    direct_review_status: in_progress_separate_sidecar
+native_supplement:
+  artifact: .cache/maxis/core-v23-native-20261008.json
+  artifact_sha256: 1eb72cbdba5be8c0898c78e92ed20674cc07493c9c930862bd29096de4e4cb8d
+  exact_pack_matches: 16
+  expected_cases: 16
+  additional_model_calls: 0
+  core_canary:
+    matching: unique_core_app_15_second_window_canonical_synthetic_pack
+    primary_nonce_match: false
+    executed_workflow_id_observed: true
+    classifier_route: control
+    native_llm_nodes: 1
+    llm_node: Control LLM
+    model_and_guard_status: ok
+    total_tokens: 3144
+  core_role_cases:
+    matched: 9
+    classifier_route: semantic
+    native_llm_nodes_per_case: 1
+    executed_workflow_id_observed: true
+  editor_failed_cases:
+    case_ids: ['editor:CMP8', 'role:role-editor']
+    failure_node: DraftSpec Guard
+    error_code: invalid_editor_draft_spec
+    native_llm_nodes_per_case: 1
+    executed_workflow_id_observed: false
+    exact_pack_match: true
+local_validation:
+  frozen_related_tests: 1004
+  test_files: 14
+  duration_seconds: 344.03
+  independent_code_review_scores: [9, 9]
+  publisher_offline_tests: 34
+  publisher_review_scores: [9, 9]
+  resume_offline_tests: 9
+  resume_review_scores: [9, 9]
+  full_app_ui_tested: false
+runtime:
+  active_profile: ''
+  routes: {agent_core: local, editor_author: local, pmo_brief: local}
+  prod_changed: false
+qualification:
+  eligible: false
+  repetitions: 1
+  balanced_order: false
+  ltm_llm_used_as_judge: false
+privacy:
+  credentials_recorded: false
+  private_glossary_uploaded: false
+  input_scope: repository_synthetic_only

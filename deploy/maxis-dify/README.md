@@ -4,13 +4,22 @@
 source bundle이다. DEV와 PROD의 환경 binding을 분리하고, import DSL을 materialize한
 뒤 validator와 원격 release gate를 통과시키는 구조다.
 
-로컬 Core source는 연결 검사와 업무 판단을 분리한 **16노드·17엣지 후보**다.
+Core source는 연결 검사와 업무 판단을 분리한 **16노드·17엣지**다.
 양쪽 LLM과 원본 그래프를 검증한 뒤 환경값을 적용하며, 정책 거절과 기존 Guard는 유지한다.
-원격 DEV Core는 아래 v20 게시본 그대로다. [Core 계약과 검증 범위](core-control-route.md)를 참고한다.
+DEV Core v23에 게시했으며 [Core 계약과 검증 범위](core-control-route.md)를 참고한다.
 공유 schema 검증은 JSON 불리언과 숫자를 구분한다. 원본 보존·환경 변환을 포함한 관련 1,004회귀와
 독립 검토를 통과했으며, 이 오프라인 결과를 실제 모델 품질 점수로 해석하지 않는다.
 
-> 2026-10-08: **v22 DEV Editor 게시 완료, 공통 canary 실패로 후보 품질 평가 미실행**.
+> 2026-10-08: **Core v23 DEV 게시 완료, canary 3/3·운영 비활성**.
+> 연결 검사만 Control LLM으로 분리했고 실제 Core 업무 9건은 기존 semantic LLM을 각각 한 번 사용했다.
+> 기존 배터리 재실행은 Editor 자동 3/5, Role 정상 0/11(blocked 10·오류 1)이다.
+> 직접 품질 검토는 별도이며 canary·자동 계약 통과를 업무 성공으로 해석하지 않는다.
+> Editor v22·PMO v20·모델·Knowledge·PROD 불변, active profile 없음·모든 route local.
+> [v23 게시·실측 증적](deployments/dev-core-control-2026.10.08.yml)을 확인한다.
+
+아래 v22는 Core v23 게시 전의 이력이다.
+
+> 2026-10-08: **v22 DEV Editor 게시 완료, 당시 공통 canary 실패로 후보 품질 평가 미실행**.
 > 내부 DraftSpec v2에서 동등한 target/constraint 선택을 current 하나로 통합했다.
 > 회귀 **917개**와 두 독립 코드 검토를 통과했으나, 이것은 LLM 품질 검증이 아니다.
 > 새 v21 기준선은 자동 **2/5**, 직접 품질 **2.52/5**, 사용 가능 **0/5**다.
@@ -148,7 +157,7 @@ current 내부와 context/history 간 중복, v1·혼합 계약은 그대로 거
 DraftSpec은 한 workflow 실행 안에서 사용하는 중간값이다. selector/schema/Guard/Enforcer를
 같은 workflow 게시본으로 함께 교체하며, v1 중간값을 v2 실행에 재개·재생하지 않는다.
 앱의 외부 저장 계약은 바꾸지 않는다. Dify의 진행 중 실행 snapshot·재개 동작은 아직 검증하지 않았다.
-이 계약은 DEV v22에 게시했다. 공통 canary 실패로 실제 작성 품질 재평가는 아직 실행하지 못했다.
+이 계약은 DEV v22에 게시했다. 당시 공통 canary 실패로 보류됐던 배터리는 Core v23 게시 후 실행했다.
 writer의 `editor-writer-input.v2`는 요청, section 순서·목적·블록 예산, 선택된 원문과
 허용 section만 제공한다. source ID·선택 bucket·링크 목록·native Knowledge context는 주지 않는다.
 부모 맥락 fact는 description.background에서만, 역사·충돌 fact는 작성에서 제외한다.
@@ -351,7 +360,7 @@ LTM profile에는 평문이 아니라 proof SHA만 저장한다.
 
 ## 이전 v8 앱·Workflow binding (보존용)
 
-아래는 과거 기록이다. 최신 UUID와 실패 상태는 [v22 증적](deployments/dev-editor-selection-2026.10.08.yml)을 사용한다.
+아래는 과거 기록이다. 최신 UUID와 측정 상태는 [v23 증적](deployments/dev-core-control-2026.10.08.yml)을 사용한다.
 
 | 앱 | App ID | published Workflow ID | 카나리 |
 |---|---|---|---:|
@@ -413,7 +422,8 @@ flowchart LR
     A --> P[독립 PROD release]
 ~~~
 
-아래는 2026-09-06 v8에서 확인한 과거 원격 증거다. 최신 v22의 canary 2/3 및 품질 미실행 상태와 구분한다.
+아래는 2026-09-06 v8에서 확인한 과거 원격 증거다. v22 게시 당시 canary 2/3·배터리 미실행 및
+v23의 canary 3/3·배터리 실행 상태와 각각 구분한다.
 
 - filtered retrieval preflight: **25/25**
   - positive 8/8 target top-2

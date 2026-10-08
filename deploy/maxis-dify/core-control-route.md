@@ -2,7 +2,8 @@
 
 로컬 source DSL의 Core는 16노드·17엣지다. 연결 검사와 업무 판단을 각각 한 LLM에
 맡기되, 두 경로 모두 기존 Knowledge Guard와 Contract Guard 사이에서 실행한다.
-원격 DEV는 아직 이전 12노드 Core이며, 이 변경의 실제 연결 성공·업무 품질은 미검증이다.
+2026-10-08 DEV v23 게시 후 canary 3/3을 확인했다. 운영은 비활성이며 실제 Role 배터리는
+정상 응답 0/11로 업무 품질 개선은 미입증이다. [게시·실측 증적](deployments/dev-core-control-2026.10.08.yml)을 구분해 본다.
 
 ## 분류기 계약
 
@@ -113,4 +114,29 @@ Core 두 노드, Editor 네 노드, PMO 한 노드의 타입 치환 21건이 수
 실제 YAML 순환 anchor와 비유한 수의 별도 읽기 전용 진단도 통과했다.
 
 prompt·source DSL·모델·Guard는 변경하지 않았다. 이 결과는 배포 입력 검증의 보강이며
-LLM 응답 품질이나 속도 향상을 의미하지 않는다. Core 후보의 DEV 게시·실측은 별도 단계다.
+LLM 응답 품질이나 속도 향상을 의미하지 않는다.
+
+## DEV 게시와 실제 분기
+
+Core만 새 UUID `2ec82ccb-b3f5-4c05-8f7c-71c309e6d3f5`로 게시했다.
+Editor v22·PMO v20, 모델·Knowledge·공통 Guard source와 PROD는 유지했다.
+첫 import는 `completed-with-warnings`로 응답해 publish 전에 멈췄다. 읽기 전용 대조에서
+Core draft는 정확한 후보, published는 기존 그래프이며 설정도 일치함을 확인했다.
+누락 의존성은 0개였다. import를 재전송하지 않고 별도 검토한 publish-only 절차로 게시했다.
+키 불변 증거는 재개 직전·직후 구간에 한정되며 최초 import 전체 구간의 증명은 아니다.
+
+source DSL 형식은 `0.5.0`, 서버 export 형식은 `0.6.0`이었다. Dify 공식 구현은
+이전 minor 형식의 import를 경고 상태로 완료할 수 있다
+([Dify import 구현](https://github.com/langgenius/dify/blob/1.11.1/api/services/app_dsl_service.py)).
+이는 이번 경고와 부합하지만 실제 서버 제품 버전을 확인한 결과나 과거 Editor import 중단 원인의 확정은 아니다.
+
+한 번의 합성 canary는 3/3이다. Core native 실행에서 `control → Control LLM → Contract Guard`와
+LLM 한 번, 모델·Guard의 `ok`를 관측했다. canary는 앱·15초 구간·합성 입력의 유일 실행으로
+대조했으며 primary에 없는 nonce를 정확히 비교했다고 주장하지 않는다.
+Role 배터리의 Core 9건은 모두 `semantic → Contract LLM`으로 LLM 한 번씩 실행됐다.
+이를 통해 연결 검사가 일반 업무 경로를 대체하지 않음을 관측했다.
+
+Editor 5건은 자동 통과 3·needs_input 1·bad_request 1, Role 11건은 blocked 10·bad_request 1이다.
+원본과 직접 정성 검토는 별도로 보존하며 자동 통과를 사용 가능한 초안으로 해석하지 않는다.
+서버 기록은 16건 모두 입력 pack hash와 일치했다. 실패한 Editor 두 건은 DraftSpec Guard에서
+중단됐으며, 해당 실행에는 실제 workflow ID를 별도로 관측하지 못한 한계도 남긴다.
