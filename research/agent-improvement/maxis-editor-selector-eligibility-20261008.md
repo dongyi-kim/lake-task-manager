@@ -117,3 +117,41 @@ CMP3은 미확정 성능 방향을 전제했다. [Role 후보 단독 검토](eva
 단일 탐색·비블라인드 결과이며 국소 계약 성공을 전체 업무 사용성 향상으로 확대하지 않는다.
 실제 내부 모델 호출 수·비용은 미관측이다. 실패 raw를 후속 성공으로 교체하지 않는다.
 [게시·배터리 식별자](../../deploy/maxis-dify/deployments/dev-editor-eligibility-2026.10.08.yml)에 경로·SHA를 보존했다.
+
+## 후속 진단: 선택 통과 후 문안 검증에서 차단
+
+2026-10-08 10:26:58–10:27:00 UTC에 CMP2·CMP9 진단을 위해 고정 시간창의 기존 합성 실행
+후보 5개를 읽고, 정확히 일치하는 두 pack만 증거로 채택했다.
+두 경우 모두 selector는 `ok`, DraftSpec Guard도 통과했고 Description LLM이 네 section을 반환했다.
+이후 **DraftSpec Enforcer가 `blocked` plan으로 변환**했다. 조회한 native 포트를 메모리에서 고정 로컬
+`prepare_spec`·`enforce_spec`을 재현한 결과가 각각 일치하며, 후단 전달과 primary 응답 SHA도 같다.
+따라서 이 두 차단은 selector가 스스로 중단한 경우가 아니다. 정확히 어떤 거부 조건인지는 아직 미확정이다.
+두 최종 응답은 같은 빈 blocked envelope이므로 최종 hash만으로 실행을 식별하지 않았다.
+고정 시간창·case별 전체 pack hash·단일 일치 실행·포트 연결을 함께 대조했다.
+
+| 확인 항목 | CMP2 | CMP9 |
+|---|---|---|
+| 선택 current / context / history / 필수 link 수 | 5 / 9 / 8 / 1 | 5 / 9 / 18 / 1 |
+| Selector / Guard / Description 실행 | ok / 통과 / 성공 | ok / 통과 / 성공 |
+| Enforcer local·native 결과 | blocked·일치 | blocked·일치 |
+| 실제 primary 응답 hash 일치 | true | true |
+| Contract Guard의 executed UUID 직접 관측 | v25와 일치 | v25와 일치 |
+| Writer 입력 포트 직접 관측 | false | false |
+
+관측된 UUID는 `b3cdd09e-2ca0-415c-86b0-f64f66f268ab`다. 이는 요청의 workflow_version이나
+최종 응답 echo를 대신 사용한 값이 아니라 native `executed_workflow_id` 포트다. 현재 게시 graph의
+해당 변수는 `sys.workflow_id`에 연결돼 있다. Writer 입력 자체는 직접 확인하지 못했으며,
+native 포트와 로컬 코드의 일치를 전체 서버 구현·당시 모든 단계의 모델·의미 품질 보증으로 확대하지 않는다.
+전후에 검증한 graph/config는 이번 조회 당시의 게시본이다. 과거 시점의 code bytes를 별도로 직접
+조회해 보존했다는 뜻이 아니며, selector의 구조 계약 통과도 선택 내용의 의미 품질 통과가 아니다.
+
+Console GET은 8회(진단 조회 전후 published graph 2·목록 1·고정 window 내 후보 5), credential-free preflight GET과
+로그인 POST는 각 1회 별도다. 모델·graph·profile 쓰기는 0회이고 프로필·게시 binding 전후 일치를 확인했다.
+새 단발 helper의 오프라인 85검사(작성자 8.58초·root 8.43초)와 독립 검토 두 번 9/10을 거쳤다.
+원문·추론·remote 예외를 저장하지 않고 상태·해시·횟수만 기록했다. 2MiB 제한은 수신 body와
+정규화 JSON에 적용되며 압축된 전송 바이트 자체의 계측은 아니다. 동일 helper/claim은 재실행하지 않는다.
+
+진단 raw는 `.cache/maxis/editor-v25-boundaries-native-20261008-c595d0a.json`, SHA는
+`5653c896fee89114ec4832b17f47e71238209d3a867bc9355f8de3e34d12897f`다. 이것은 후속 보조 증거이며
+primary 실패나 앞의 정성 점수를 교체하지 않는다. 다음 단계는 동일한 검증 조건을 유지한 채
+고정 로컬 Enforcer의 거부 지점을 좁히는 것이다. 운영 경로는 local로 유지한다.

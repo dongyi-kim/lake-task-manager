@@ -133,3 +133,22 @@ evaluations:
       independent_quality_replication: false
 release_eligible: false
 overall_quality_improvement_proven: false
+supplemental_native_diagnostic:
+  scope: exact-pack-native-ports-and-pinned-local-replay-not-quality
+  raw: .cache/maxis/editor-v25-boundaries-native-20261008-c595d0a.json
+  raw_sha256: 5653c896fee89114ec4832b17f47e71238209d3a867bc9355f8de3e34d12897f
+  helper_sha256: e1609cf43faa897cfbf99377ca307d8d145491ec20a05cf42ae6fed930ecebe0
+  completed_at_utc: '2026-10-08T10:27:00.782336+00:00'
+  status: diagnosed
+  authenticated_console_gets: 8
+  credential_free_preflight_gets: 1
+  login_posts: 1
+  model_calls: 0
+  graph_writes: 0
+  profile_writes: 0
+  cases: {CMP2: enforcer_blocked, CMP9: enforcer_blocked}
+  both_primary_answers_exact: true
+  both_executed_workflow_ids_directly_observed: true
+  both_writer_inputs_directly_observed: false
+  exact_enforcer_rejection_predicate_identified: false
+  profiles_unchanged_observed: true
