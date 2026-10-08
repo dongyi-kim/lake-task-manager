@@ -785,11 +785,7 @@ def test_materializer_rejects_legacy_start_sys_query_selector(tmp_path, monkeypa
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
-    for workflow in environment["workflows"].values():
-        relative = Path(workflow["source_dsl"])
-        destination = fake_root / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / relative, destination)
+    shutil.copytree(ROOT / "deploy/maxis-dify", fake_root / "deploy/maxis-dify")
 
     agent_source = fake_root / environment["workflows"]["agent_core"]["source_dsl"]
     dsl = yaml.safe_load(agent_source.read_text(encoding="utf-8"))
@@ -827,11 +823,7 @@ def test_materializer_requires_guarded_role_knowledge_llm_retrieval_context(
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
-    for workflow in environment["workflows"].values():
-        relative = Path(workflow["source_dsl"])
-        destination = fake_root / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / relative, destination)
+    shutil.copytree(ROOT / "deploy/maxis-dify", fake_root / "deploy/maxis-dify")
 
     agent_source = fake_root / environment["workflows"]["agent_core"]["source_dsl"]
     dsl = yaml.safe_load(agent_source.read_text(encoding="utf-8"))
@@ -860,11 +852,7 @@ def test_materializer_requires_workflow_specific_llm_output_limit(
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
-    for workflow in environment["workflows"].values():
-        relative = Path(workflow["source_dsl"])
-        destination = fake_root / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / relative, destination)
+    shutil.copytree(ROOT / "deploy/maxis-dify", fake_root / "deploy/maxis-dify")
 
     agent_source = fake_root / environment["workflows"]["agent_core"]["source_dsl"]
     dsl = yaml.safe_load(agent_source.read_text(encoding="utf-8"))
@@ -893,11 +881,7 @@ def test_materializer_requires_bounded_role_knowledge_retrieval_policy(
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
-    for workflow in environment["workflows"].values():
-        relative = Path(workflow["source_dsl"])
-        destination = fake_root / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / relative, destination)
+    shutil.copytree(ROOT / "deploy/maxis-dify", fake_root / "deploy/maxis-dify")
 
     agent_source = fake_root / environment["workflows"]["agent_core"]["source_dsl"]
     dsl = yaml.safe_load(agent_source.read_text(encoding="utf-8"))
@@ -939,11 +923,7 @@ def test_materializer_requires_server_side_role_metadata_acl_filter(
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
-    for workflow in environment["workflows"].values():
-        relative = Path(workflow["source_dsl"])
-        destination = fake_root / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / relative, destination)
+    shutil.copytree(ROOT / "deploy/maxis-dify", fake_root / "deploy/maxis-dify")
 
     agent_source = fake_root / environment["workflows"]["agent_core"]["source_dsl"]
     dsl = yaml.safe_load(agent_source.read_text(encoding="utf-8"))
@@ -983,11 +963,7 @@ def test_materializer_requires_dify_111_role_acl_key_transform(
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
-    for workflow in environment["workflows"].values():
-        relative = Path(workflow["source_dsl"])
-        destination = fake_root / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / relative, destination)
+    shutil.copytree(ROOT / "deploy/maxis-dify", fake_root / "deploy/maxis-dify")
 
     agent_source = fake_root / environment["workflows"]["agent_core"]["source_dsl"]
     dsl = yaml.safe_load(agent_source.read_text(encoding="utf-8"))
@@ -1014,11 +990,7 @@ def test_materializer_rejects_role_acl_key_dependency_bypass(tmp_path, monkeypat
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
-    for workflow in environment["workflows"].values():
-        relative = Path(workflow["source_dsl"])
-        destination = fake_root / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / relative, destination)
+    shutil.copytree(ROOT / "deploy/maxis-dify", fake_root / "deploy/maxis-dify")
 
     agent_source = fake_root / environment["workflows"]["agent_core"]["source_dsl"]
     dsl = yaml.safe_load(agent_source.read_text(encoding="utf-8"))
@@ -1055,11 +1027,7 @@ def test_materializer_rejects_policy_branch_bypass_to_llm(tmp_path, monkeypatch)
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
-    for workflow in environment["workflows"].values():
-        relative = Path(workflow["source_dsl"])
-        destination = fake_root / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / relative, destination)
+    shutil.copytree(ROOT / "deploy/maxis-dify", fake_root / "deploy/maxis-dify")
 
     agent_source = fake_root / environment["workflows"]["agent_core"]["source_dsl"]
     dsl = yaml.safe_load(agent_source.read_text(encoding="utf-8"))
@@ -1097,11 +1065,7 @@ def test_materializer_requires_contract_guard_sys_workflow_id(
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
-    for workflow in environment["workflows"].values():
-        relative = Path(workflow["source_dsl"])
-        destination = fake_root / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / relative, destination)
+    shutil.copytree(ROOT / "deploy/maxis-dify", fake_root / "deploy/maxis-dify")
 
     agent_source = fake_root / environment["workflows"]["agent_core"]["source_dsl"]
     dsl = yaml.safe_load(agent_source.read_text(encoding="utf-8"))
@@ -1134,11 +1098,7 @@ def test_materializer_rejects_contract_guard_execution_check_drift(
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
-    for workflow in environment["workflows"].values():
-        relative = Path(workflow["source_dsl"])
-        destination = fake_root / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / relative, destination)
+    shutil.copytree(ROOT / "deploy/maxis-dify", fake_root / "deploy/maxis-dify")
 
     agent_source = fake_root / environment["workflows"]["agent_core"]["source_dsl"]
     dsl = yaml.safe_load(agent_source.read_text(encoding="utf-8"))
