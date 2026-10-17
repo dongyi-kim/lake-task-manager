@@ -1,9 +1,12 @@
 """Network-free regressions for the repository-bound DEV component runner."""
 import importlib.util
+import hashlib
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -85,6 +88,7 @@ def test_mixed_metrics_do_not_hide_failed_attempts(runner):
     assert metrics['attempts'] == 2 and metrics['durationSeconds'] == 3
     assert metrics['calls'] == 1 and metrics['totalTokens'] is None
     assert metrics['costUsd'] is None and metrics['cachedTokens'] is None
+    assert metrics['nativeLlmCalls'] is None
 
 
 def test_received_response_without_usage_still_counts(runner):
@@ -108,3 +112,69 @@ def test_structured_request_keeps_target_mode_and_seed(runner):
     assert pack.role_context[0].name == 'editor_request'
     assert json.loads(pack.role_context[0].content_json) == project_case(case)['input']
     assert pack.query.startswith('Canonical LTM role editor_author. Process this guarded user intent:\n이어서 완성해줘')
+
+
+def _failed_run(runner, monkeypatch, tmp_path, error):
+    from tools import maxis_editor_eval_cases
+    profile = {'base_url': 'https://dify.example.invalid/v1', 'fingerprint': 'a' * 32,
+        'knowledge_version': 'synthetic-knowledge-v1', 'knowledge_dataset_id': '',
+        'workflow_bundle_version': 'synthetic-bundle-v1',
+        'workflows': {'editor_author': {'version': '11111111-1111-4111-8111-111111111111'}}}
+    endpoint = runner._destination_identity(profile['base_url'])
+    monkeypatch.setattr(runner, '_require_network_handoff', lambda: endpoint)
+    monkeypatch.setattr(runner, '_credential_free_dev_api_base', lambda: profile['base_url'])
+    monkeypatch.setattr(runner, '_preflight', lambda: (profile, {'knowledge_manifest_sha256': 'a' * 64}, None, None))
+    monkeypatch.setattr(runner, 'ROOT', tmp_path)
+    monkeypatch.setattr(runner, 'os', SimpleNamespace(environ=dict(os.environ)))
+    monkeypatch.setattr(runner, '_source_binding', lambda: {'app/agent/maxis/errors.py': 'a' * 64})
+    monkeypatch.setattr(runner.profiles, 'resolve', lambda stage: profile)
+    monkeypatch.setattr(runner.credentials, 'get_for', lambda *args: 'synthetic-key')
+    monkeypatch.setattr(runner, 'build_run_metadata', lambda **kw: {
+        'benchmarkKey': 'benchmark', 'candidateKey': 'candidate', 'qualificationIneligibilityReasons': []})
+    case = maxis_editor_eval_cases.load_case('CMP2')
+    monkeypatch.setattr(maxis_editor_eval_cases, 'load_cases', lambda: [case])
+
+    class Client:
+        def _request_validated_chat_bytes(self, *args, **kwargs):
+            if error is not None:
+                raise error
+            return b'{"event":"error","answer":"synthetic-private-body"}', 200, 12, '', self
+
+        def record_success(self):
+            pass
+
+    monkeypatch.setattr(runner, 'make_client', lambda *args: Client())
+    path = runner.run('baseline')
+    return json.loads(path.read_text(encoding='utf-8'))
+
+
+@pytest.mark.parametrize('status', [400, 422, 401, 403])
+def test_editor_http_failure_preserves_status_without_error_body(runner, monkeypatch, tmp_path, status):
+    from app.agent.maxis.errors import classify_http_status
+    from app.agent.maxis.telemetry import request_observation
+    error = classify_http_status(status)
+    error.telemetry = request_observation(transport_status='failed', http_status=status, latency_ms=12)
+    result = _failed_run(runner, monkeypatch, tmp_path, error)
+    row = result['cases'][0]
+    assert row['failure']['stage'] == 'http_response' and row['failure']['httpStatus'] == status
+    assert row['failure']['requestIdSha256'] == hashlib.sha256(row['pack']['request_id'].encode()).hexdigest()
+    assert row['nativeLlmCalls'] is None and row['failure']['nativeModelCallCount'] is None
+    assert not row['automaticPass'] and not result['releaseEligible']
+    assert row['metrics']['calls'] == 0 and row['metrics']['nativeLlmCalls'] is None
+    assert 'synthetic-key' not in json.dumps(result)
+
+
+def test_editor_local_bad_request_is_distinct_from_server_rejection(runner, monkeypatch, tmp_path):
+    from app.agent.maxis.errors import MaxisErrorCode, MaxisGatewayError
+    result = _failed_run(runner, monkeypatch, tmp_path, MaxisGatewayError(MaxisErrorCode.BAD_REQUEST))
+    failure = result['cases'][0]['failure']
+    assert failure['stage'] == 'local_validation' and failure['httpStatus'] is None
+    assert failure['transportStatus'] == 'not_attempted' and failure['nativeModelCallCount'] is None
+
+
+def test_editor_bad_envelope_retains_http_observation_without_body(runner, monkeypatch, tmp_path):
+    result = _failed_run(runner, monkeypatch, tmp_path, None)
+    failure = result['cases'][0]['failure']
+    assert failure['stage'] == 'response_envelope' and failure['httpStatus'] == 200
+    assert failure['transportStatus'] == 'succeeded' and failure['nativeModelCallCount'] is None
+    assert 'synthetic-private-body' not in json.dumps(result)

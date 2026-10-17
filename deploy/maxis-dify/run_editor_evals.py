@@ -40,8 +40,10 @@ from app.agent.maxis.context_guard import (  # noqa: E402
 from app.agent.maxis.knowledge_eval import (  # noqa: E402
     evaluation_source_file_sha256, make_client, safe_remote_error,
 )
+from app.agent.maxis.errors import evaluation_failure_diagnostics  # noqa: E402
 from app.agent.maxis.response_guard import ResponseGuard  # noqa: E402
 from app.agent.maxis.registry import load_registry  # noqa: E402
+from app.agent.maxis.telemetry import request_observation  # noqa: E402
 from tools.agent_eval_protocol import (  # noqa: E402
     build_run_metadata, quantitative_metrics, reserve_raw_result_path, write_raw_result,
 )
@@ -140,6 +142,7 @@ def metrics_for(rows: list[dict]) -> dict:
     metrics['cachedTokens'] = None  # Dify usage projection does not observe caching.
     metrics['tokenUsageComplete'] = bool(rows) and complete
     metrics['callsMeaning'] = 'received Dify responses, not internal model step count'
+    metrics['nativeLlmCalls'] = None  # No native step-count observation on this surface.
     if not complete:
         for key in ('promptTokens', 'completionTokens', 'totalTokens'):
             metrics[key] = None
@@ -202,6 +205,7 @@ def _source_binding() -> dict:
         'tools/maxis_editor_eval_cases.py', 'deploy/maxis-dify/run_editor_evals.py',
         'deploy/maxis-dify/launch_editor_evals.py', 'deploy/maxis-dify/prompts/editor_author.md',
         'app/agent/maxis/retrieval_query.py',
+        'app/agent/maxis/errors.py', 'app/agent/maxis/telemetry.py',
     ):
         sources[relative] = hashlib.sha256((ROOT / relative).read_bytes()).hexdigest()
     return sources
@@ -260,6 +264,7 @@ def run(label: str) -> Path:
         key: value for key, value in sources.items() if key in {
             'tools/maxis_editor_eval_cases.py', 'deploy/maxis-dify/run_editor_evals.py',
             'deploy/maxis-dify/launch_editor_evals.py',
+            'app/agent/maxis/errors.py', 'app/agent/maxis/telemetry.py',
         }
     }})
     metadata['candidateKey'] = _digest({'base': metadata['candidateKey'], 'maxis': metadata['maxisBinding']})
@@ -274,20 +279,28 @@ def run(label: str) -> Path:
     api_key = credentials.get_for('dev', 'editor_author')
     for case, pack in zip(cases, packs):
         row = {'caseId': case['case_id'], 'input': case, 'pack': pack.model_dump(mode='json'),
-               'response': {}, 'rendered': {}, 'automaticPass': False, 'errorCode': ''}
+               'response': {}, 'rendered': {}, 'automaticPass': False, 'errorCode': '',
+               'nativeLlmCalls': None}
         started = time.perf_counter()
         client = make_client(profile, binding)
+        stage, observation = 'gateway', None
         try:
-            body, status_code, _, expected_dataset, breaker = client._request_validated_chat_bytes(
+            body, status_code, gateway_ms, expected_dataset, breaker = client._request_validated_chat_bytes(
                 binding, api_key=api_key, query=pack.query, user=pack.pseudonymous_user,
                 inputs={'context_pack': pack, 'role_id': pack.use_case, 'correlation_id': pack.request_id,
                         'output_contract': binding.output_contract, 'workflow_version': workflow_version,
                         'knowledge_version': profile['knowledge_version']},
                 workflow_id=workflow_version, expected_knowledge_dataset_id=profile['knowledge_dataset_id'])
+            observation = request_observation(transport_status='succeeded', http_status=status_code,
+                latency_ms=gateway_ms, workflow_id=workflow_version)
             breaker.record_success()
+            stage = 'response_decode'
             from app.agent.maxis.client import _strict_json_loads, _retrieval_summary
             from app.agent.maxis.knowledge_eval import _usage_observation
             raw = _strict_json_loads(body)
+            observation = request_observation(transport_status='succeeded', http_status=status_code,
+                latency_ms=gateway_ms, workflow_id=workflow_version, raw=raw)
+            stage = 'response_envelope'
             if status_code != 200 or not isinstance(raw, dict) or raw.get('event') != 'message' or not isinstance(raw.get('answer'), str):
                 raise ValueError('invalid Dify response')
             row['responseReceived'] = True
@@ -298,22 +311,29 @@ def run(label: str) -> Path:
             usage_values = _usage_observation(remote_metadata)
             if all(value is not None for value in usage_values):
                 row['usage'] = dict(zip(('prompt_tokens', 'completion_tokens', 'total_tokens'), usage_values))
+            stage = 'retrieval_validation'
             row['retrieval'] = _retrieval_summary(remote_metadata, expected_dataset_id=expected_dataset).model_dump()
+            stage = 'response_guard'
             remote, _ = ResponseGuard().validate_remote_role(answer,
                 expected_role_id='editor_author', payload_model=pack.payload_schema(), evidence=pack,
                 expected_knowledge_manifest_sha256=pack.knowledge_manifest_sha256)
+            stage = 'binding_validation'
             proof_ok = hmac.compare_digest(hashlib.sha256(remote.knowledge_proof.encode()).hexdigest(),
                                            profile['knowledge_sentinel_sha256'])
             if remote.workflow_version != workflow_version or remote.knowledge_version != profile['knowledge_version'] or not proof_ok:
                 raise ValueError('remote binding mismatch')
             row['contractOk'] = True
+            stage = 'rendering'
             from tools.maxis_editor_eval_cases import project_case
             row['rendered'] = render_component(remote.payload, project_case(case)['person_map']) if remote.status == 'ok' else {
                 'ok': False, 'needsInfo': remote.status == 'needs_input', 'error': list(remote.missing_inputs), 'html': ''}
+            stage = 'output_check'
             row['checks'] = check_output(case['case_id'], row['rendered'])
             row['automaticPass'] = bool(row['checks']['automaticPass'])
         except Exception as exc:
             row['errorCode'] = safe_remote_error(exc)
+            row['failure'] = evaluation_failure_diagnostics(exc, stage=stage,
+                correlation_id=pack.request_id, response_telemetry=observation)
         row['latencyMs'] = round((time.perf_counter() - started) * 1000)
         row['metrics'] = metrics_for([row])
         artifact['cases'].append(row)

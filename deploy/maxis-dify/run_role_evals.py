@@ -30,12 +30,14 @@ from run_editor_evals import safe_answer  # noqa: E402
 from app.agent.maxis import credentials  # noqa: E402
 from app.agent.maxis.client import _strict_json_loads  # noqa: E402
 from app.agent.maxis.contracts import EvidencePackV1  # noqa: E402
+from app.agent.maxis.errors import evaluation_failure_diagnostics  # noqa: E402
 from app.agent.maxis.knowledge_eval import (  # noqa: E402
     KnowledgeEvalError, _project_resources, _usage_observation,
     evaluation_source_file_sha256, make_client, safe_remote_error,
 )
 from app.agent.maxis.registry import load_registry  # noqa: E402
 from app.agent.maxis.response_guard import ResponseGuard, ResponseGuardError  # noqa: E402
+from app.agent.maxis.telemetry import request_observation  # noqa: E402
 from tools.agent_eval_protocol import (  # noqa: E402
     build_run_metadata, reserve_raw_result_path, write_raw_result,
 )
@@ -52,6 +54,7 @@ HARNESS_FILES = (
     'deploy/maxis-dify/run_editor_evals.py', 'tools/maxis_role_eval_cases.py',
     'tools/maxis_role_remote_cases.py', 'tools/maxis_context_diagnostics.py',
     'tools/maxis_performance_metrics.py', 'tools/agent_eval_review_specs.py',
+    'app/agent/maxis/errors.py', 'app/agent/maxis/telemetry.py',
 )
 CANDIDATE_FILES = (
     'app/agent/maxis/backend.py', 'app/agent/maxis/context_guard.py',
@@ -121,8 +124,10 @@ def attempt(case: dict, profile: dict, deployment: dict, identity) -> dict:
            'contractOk': False, 'retrievalOk': False, 'response': {}, 'errorCode': '',
            'usage': None, 'nativeLlmCalls': None, 'costUsd': None, 'latencyMs': None}
     started, client = time.perf_counter(), None
+    stage, observation, correlation_id = 'preparation', None, ''
     try:
         fixture, pack = build(case, deployment)
+        correlation_id = pack.request_id
         row['pack'] = pack.model_dump(mode='json')
         row['inputPackSha256'] = digest(row['pack'])
         row['context'] = describe_context(case['role_id'], fixture['state'], pack)
@@ -133,8 +138,9 @@ def attempt(case: dict, profile: dict, deployment: dict, identity) -> dict:
         row['requestAttempted'] = True
         request_started = time.perf_counter()
         row['preparationMs'] = round((request_started - started) * 1000)
+        stage = 'gateway'
         try:
-            body, status, _, _, breaker = client._request_validated_chat_bytes(
+            body, status, gateway_ms, _, breaker = client._request_validated_chat_bytes(
                 binding, api_key=api_key, query=pack.query, user=pack.pseudonymous_user,
                 inputs={'context_pack': pack, 'role_id': pack.use_case, 'correlation_id': pack.request_id,
                         'output_contract': binding.output_contract, 'workflow_version': version,
@@ -145,8 +151,14 @@ def attempt(case: dict, profile: dict, deployment: dict, identity) -> dict:
             # Fixture/key/client setup, response verification and close are excluded.
             row['latencyMs'] = round((time.perf_counter() - request_started) * 1000)
         row['responseReceived'] = True
+        observation = request_observation(transport_status='succeeded', http_status=status,
+            latency_ms=gateway_ms, workflow_id=version)
         breaker.record_success()
+        stage = 'response_decode'
         raw = _strict_json_loads(body)
+        observation = request_observation(transport_status='succeeded', http_status=status,
+            latency_ms=gateway_ms, workflow_id=version, raw=raw)
+        stage = 'response_envelope'
         if not isinstance(raw, dict):
             raise KnowledgeEvalError('invalid_response')
         meta = raw.get('metadata') if isinstance(raw.get('metadata'), dict) else {}
@@ -167,25 +179,36 @@ def attempt(case: dict, profile: dict, deployment: dict, identity) -> dict:
             row['retrievalOk'] = True
         except Exception as exc:
             row['retrievalErrorCode'] = error_code(exc)
+            row['retrievalFailure'] = evaluation_failure_diagnostics(exc,
+                stage='retrieval_validation', correlation_id=correlation_id,
+                response_telemetry=observation)
+        stage = 'response_guard'
         remote, _ = ResponseGuard().validate_remote_role(answer, expected_role_id=pack.use_case,
             payload_model=pack.payload_schema(), evidence=pack,
             expected_knowledge_manifest_sha256=pack.knowledge_manifest_sha256)
+        stage = 'binding_validation'
         proof_ok = hmac.compare_digest(hashlib.sha256(remote.knowledge_proof.encode()).hexdigest(),
                                        profile['knowledge_sentinel_sha256'])
         if (remote.workflow_version != version or remote.knowledge_version != profile['knowledge_version']
                 or not proof_ok):
             raise KnowledgeEvalError('response_binding_mismatch')
         row.update(contractOk=True, status=remote.status)
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as exc:
         row.update(errorCode='interrupted', status='error')
+        row['failure'] = evaluation_failure_diagnostics(exc, stage=stage,
+            correlation_id=correlation_id, response_telemetry=observation)
     except Exception as exc:
         row['errorCode'] = error_code(exc)
+        row['failure'] = evaluation_failure_diagnostics(exc, stage=stage,
+            correlation_id=correlation_id, response_telemetry=observation)
     finally:
         if client is not None:
             try:
                 client.close()
-            except Exception:
+            except Exception as exc:
                 row['closeFailed'] = True
+                row['closeFailure'] = evaluation_failure_diagnostics(exc, stage='client_close',
+                    correlation_id=correlation_id, response_telemetry=observation)
                 if not row['errorCode']:
                     row.update(errorCode='client_close_failed', status='error', contractOk=False)
         row['attemptElapsedMs'] = round((time.perf_counter() - started) * 1000)
@@ -199,6 +222,7 @@ def metrics(rows: list[dict]) -> tuple[dict, dict]:
     measured_ms = total['latencyMs']['total']
     return ({'attempts': len(rows), 'durationSeconds': measured_ms / 1000 if measured_ms is not None else None,
              'calls': total['responsesReceived'], 'callsMeaning': 'received Dify responses, not native LLM calls',
+             'nativeLlmCalls': total['nativeLlmCalls']['total'],
              **{k: total['tokens'][v]['total'] for k, v in (
                  ('promptTokens', 'prompt_tokens'), ('completionTokens', 'completion_tokens'), ('totalTokens', 'total_tokens'))},
              'cachedTokens': None, 'costUsd': None}, observations)

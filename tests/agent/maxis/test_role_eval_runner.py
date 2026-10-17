@@ -90,7 +90,7 @@ def _transport(runner, monkeypatch, *, raw=None, error=None):
             requests.append((binding, kwargs))
             if error:
                 raise error
-            return json.dumps(raw or _raw()).encode(), 200, {}, 1, self
+            return json.dumps(raw or _raw()).encode(), 200, 1, 1, self
 
         def record_success(self):
             self.successes += 1
@@ -204,6 +204,9 @@ def test_responseguard_failure_keeps_response_usage_and_closes(runner, monkeypat
     assert row["retrievalOk"] and not row["contractOk"]
     assert row["response"]["role_id"] == "auditor" and row["usage"]["total_tokens"] == 15
     assert row["responseReceived"] and client.closed
+    assert row['failure']['stage'] == 'response_guard'
+    assert row['failure']['httpStatus'] == 200
+    assert row['failure']['nativeModelCallCount'] is None
 
 
 @pytest.mark.parametrize('field,value', [('event', 'error'), ('answer', None), ('answer', 123)])
@@ -257,6 +260,22 @@ def test_transport_failure_closes_and_preserves_unknown_usage(runner, monkeypatc
     assert len(requests) == 1
 
 
+@pytest.mark.parametrize('status', [400, 422, 401, 403])
+def test_http_error_preserves_provenance_without_counting_a_model_call(runner, monkeypatch, status):
+    from app.agent.maxis.errors import classify_http_status
+    from app.agent.maxis.telemetry import request_observation
+    error = classify_http_status(status)
+    error.telemetry = request_observation(transport_status='failed', http_status=status, latency_ms=12)
+    _transport(runner, monkeypatch, error=error)
+    row = _attempt(runner)
+    assert row['failure']['stage'] == 'http_response' and row['failure']['httpStatus'] == status
+    assert row['failure']['requestIdSha256'] == hashlib.sha256(row['pack']['request_id'].encode()).hexdigest()
+    assert row['failure']['nativeModelCallCount'] is None and row['nativeLlmCalls'] is None
+    assert row['usage'] is None and not row['responseReceived'] and not row['automaticContractPass']
+    measured, _ = runner.metrics([row])
+    assert measured['calls'] == 0 and measured['nativeLlmCalls'] is None
+
+
 def test_keyboard_interrupt_retains_attempt_and_closes(runner, monkeypatch):
     client, requests, _ = _transport(runner, monkeypatch, error=KeyboardInterrupt())
     row = _attempt(runner)
@@ -279,6 +298,8 @@ def test_failure_before_request_has_unknown_request_latency(runner, monkeypatch)
     monkeypatch.setattr(runner, 'build', lambda *a: (_ for _ in ()).throw(ValueError('synthetic build error')))
     row = _attempt(runner)
     assert row['latencyMs'] is None and row['requestAttempted'] is False
+    assert row['failure']['stage'] == 'preparation'
+    assert row['failure']['transportStatus'] == 'not_attempted'
     measured, _ = runner.metrics([row])
     assert measured['durationSeconds'] is None
 
