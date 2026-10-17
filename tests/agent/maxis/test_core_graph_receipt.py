@@ -17,18 +17,25 @@ SPEC.loader.exec_module(RECEIPT)
 def graph():
     value = yaml.safe_load((ROOT / "deploy/maxis-dify/dsl/ltm-agent-core.yml")
                            .read_text(encoding="utf-8"))["workflow"]["graph"]
-    assert len(value["nodes"]) == 18 and len(value["edges"]) == 20
+    assert len(value["nodes"]) == 19 and len(value["edges"]) == 21
     return value
 
 
 @pytest.mark.parametrize("change", (
     "classifier", "stage", "merge", "control_system", "control_input",
     "semantic_input", "guard_input", "edge", "recovery", "query_schema", "query_prompt", "query_assembler",
+    "query_projection", "query_projection_selector", "query_input",
 ))
 def test_core_receipt_detects_execution_changes(graph, change):
     altered = deepcopy(graph)
     nodes = {node["id"]: node["data"] for node in altered["nodes"]}
-    if change == "query_assembler":
+    if change == "query_projection":
+        nodes["1909000000001030"]["code"] += "\n# changed projection"
+    elif change == "query_projection_selector":
+        nodes["1909000000001030"]["variables"][0]["value_selector"] = ["start", "context_pack"]
+    elif change == "query_input":
+        nodes["1909000000001028"]["prompt_template"][1]["text"] = "{{#1909000000001006.model_input#}}"
+    elif change == "query_assembler":
         nodes["1909000000001029"]["code"] += "\n# changed assembler"
     elif change == "classifier":
         nodes["1909000000001024"]["code"] += "\n# changed classifier"

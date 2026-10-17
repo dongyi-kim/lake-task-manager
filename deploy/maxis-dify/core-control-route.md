@@ -33,12 +33,21 @@ ContextGuard → Knowledge Guard → 실제 LLM → Contract Guard/ResponseGuard
 
 `core_control_graph.py::rebuild`는 Core source와 검토된 분류기/prompt를 받아 메모리 복사본을
 반환한다. CLI·파일 쓰기·runtime 등록은 없으며 reviewed asset의 독립 SHA pin을 확인한다.
-18노드·20엣지에서 policy allow 뒤 배타 분기를 둔다. Control/Contract LLM은 text를,
+19노드·21엣지에서 policy allow 뒤 배타 분기를 둔다. Control/Contract LLM은 text를,
 Query LLM은 Query Assembler가 조립한 후보를 합류시켜 기존 Contract Guard로 전달한다.
-세 LLM은 같은 검증된 model input을 받는다.
+Control/Contract LLM은 원본 model input, Query LLM은 그 업무 내용·근거를 보존한 전용 입력을 받는다.
 policy deny는 0회, 허용된 세 경로는 각각 1회 LLM을 지나도록 구성한다.
 
-Query LLM은 내부 `query-draft.v1`의 status/payload/missing_inputs만 작성한다.
+`code/core_query_input.py`는 Query 분기에서만 `query-input.v1`을 만든다. `context`는
+원본 pack에서 contract·payload_schema_json·payload_schema_sha256·knowledge_manifest_sha256만
+제외한 나머지 값이고, `knowledge_context`는 그대로 유지한다. 요청·scope·출처 ID/본문·
+facts·metrics·role_context·시각·freshness·partial·flags를 요약·재분류하지 않는다.
+최종 payload schema와 초안 schema를 모델에 동시에 요구하지 않기 위한 입력 투영이며,
+원본 pack과 proof·metadata는 조립기 및 양쪽 guard에 계속 전달한다.
+canonical JSON·정확한 field·9000/6144 UTF-8 bytes·깊이32/노드4096 한도를 검사하지만
+권한·source hash·schema 진실성의 별도 판단 주체가 되지는 않는다.
+
+Query LLM은 내부 `query-draft.v1`의 contract/status/payload/missing_inputs만 작성한다.
 `core_query_contract.py`가 canonical CompactQueryPlan에서 값의 enum·길이·개수와 optional
 제약을 가져오고 narrative leaf만 `{value, kind, source_ids}`로 감싼다. 별도의 payload 정본을
 유지하지 않는다. Query 전용 prompt는 이 내부 계약만 요구하며 full remote envelope를 요구하는
@@ -61,7 +70,7 @@ guard는 그대로이며 문자열·숫자를 boolean으로 변환하지 않는�
 모델 output은 4,096 tokens, 각 system prompt는 최대 8,192 UTF-8 bytes로 유지한다.
 
 빌더는 배포 검증기가 아니다. 원본을 생성기로 먼저 수리하지 않는다.
-`core_graph_validation.py`는 세 LLM의 prompt/schema/model/input, 분류기와 조립기 source/I/O,
+`core_graph_validation.py`는 세 LLM의 prompt/schema/model/input, 분류기·입력 투영·조립기 source/I/O,
 분기·합류·전체 배선을 검증한다. source와 DSL을 함께 바꿔도 독립 pin과 다르면 거부한다.
 `validate_bundle.py`와 `materialize_environment.py`가 같은 검증기를 사용한다.
 materializer는 원본 검증 뒤에만 앱 이름·모델·Knowledge binding을 교체하며 DEV/PROD의

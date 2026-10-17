@@ -15,6 +15,7 @@ from app.agent.workflow.contracts import CompactQueryPlan, role_output_schema
 ROOT = Path(__file__).resolve().parents[3]
 QUERY_ID = "1909000000001028"
 ASSEMBLER_ID = "1909000000001029"
+INPUT_ID = "1909000000001030"
 VERSION = "11111111-1111-4111-8111-111111111111"
 PROOF = "LTM_RELEASE_SENTINEL_V1=" + "a" * 64
 
@@ -199,7 +200,7 @@ def test_query_unit_does_not_receive_conflicting_remote_envelope_instructions(no
 
 def test_query_citation_instruction_names_the_exact_identifier_field(nodes, query_case):
     prompt = nodes[QUERY_ID]["prompt_template"][0]["text"]
-    assert "context_pack.sources[].source_id" in prompt
+    assert "context.sources[].source_id" in prompt
     assert "canonical_id" in prompt and "not a citation ID" in prompt
     pack, model_input, candidate = query_case
     selected = draft(candidate)
@@ -208,6 +209,41 @@ def test_query_citation_instruction_names_the_exact_identifier_field(nodes, quer
         assemble(nodes, model_input, selected)
     selected["payload"]["reads"][0]["source"]["source_ids"] = [pack.sources[0].source_id]
     assembled = assemble(nodes, model_input, selected)
+    assert remote(nodes, pack, assembled) == assembled
+    assert local(pack, assembled)[0].status == "ok"
+
+
+def test_query_projection_preserves_task_and_evidence_but_excludes_final_schema(nodes, query_case):
+    pack, model_input, candidate = query_case
+    original = json.loads(model_input)
+    projected = json.loads(code(nodes[INPUT_ID])["main"](model_input)["query_input"])
+    assert projected["contract"] == "query-input.v1"
+    assert projected["knowledge_context"] == original["knowledge_context"]
+    hidden = {"contract", "payload_schema_json", "payload_schema_sha256", "knowledge_manifest_sha256"}
+    assert projected["context"] == {key: value for key, value in original["context_pack"].items() if key not in hidden}
+    assert all(key not in projected["context"] for key in hidden)
+    assert original["context_pack"] == pack.model_dump(mode="json")
+    assert "query-input.v1" in nodes[QUERY_ID]["prompt_template"][0]["text"]
+    assert nodes[QUERY_ID]["prompt_template"][1]["text"].endswith("{{#1909000000001030.query_input#}}")
+    # Projection is not a replacement for the complete original assembler input.
+    with pytest.raises(ValueError, match="invalid_core_query_draft"):
+        assemble(nodes, encoded(projected), draft(candidate))
+    assembled = assemble(nodes, model_input, draft(candidate))
+    assert remote(nodes, pack, assembled) == assembled
+    assert local(pack, assembled)[0].status == "ok"
+
+
+def test_query_uncertainty_requires_wrapped_meaning_without_string_repair(nodes, query_case):
+    pack, model_input, candidate = query_case
+    selected = draft(candidate)
+    selected["payload"]["uncertainty"] = ["조회 기간 확인 필요"]
+    assert not Draft202012Validator(nodes[QUERY_ID]["structured_output"]["schema"]).is_valid(selected)
+    with pytest.raises(ValueError, match="invalid_core_query_draft"):
+        assemble(nodes, model_input, selected)
+    selected["payload"]["uncertainty"] = [
+        {"value": "조회 기간 확인 필요", "kind": "recommendation", "source_ids": [pack.sources[0].source_id]}]
+    assembled = assemble(nodes, model_input, selected)
+    assert assembled["payload"]["uncertainty"] == ["조회 기간 확인 필요"]
     assert remote(nodes, pack, assembled) == assembled
     assert local(pack, assembled)[0].status == "ok"
 
