@@ -45,7 +45,7 @@ def test_actual_architect_schema_pin_and_internal_root_closed(contract, canonica
     assert canonical_payload_schema(SCHEMA)[1] == contract.REQUEST_SCHEMA_SHA256
     assert canonical == before and "additionalProperties" not in canonical
     assert payload(contract, canonical)["additionalProperties"] is False
-    assert draft["properties"]["contract"]["enum"] == ["request-draft.v1"]
+    assert draft["properties"]["contract"]["enum"] == ["request-draft.v2"]
     assert set(draft["properties"]) == {"contract", "status", "payload", "missing_inputs"}
     assert draft["additionalProperties"] is False
     Draft202012Validator.check_schema(draft)
@@ -64,7 +64,8 @@ def test_wrappers_cover_exact_guard_narratives_plus_model_owned_intent(contract,
                 assert derived["properties"]["value"] == original
                 assert derived["required"] == ["value", "kind", "source_ids"]
                 assert derived["additionalProperties"] is False
-                assert derived["properties"]["kind"]["enum"] == ["fact", "inference", "recommendation"]
+                kinds = ["inference", "recommendation"] if path in {"/intent", "/keywords/*"} else ["fact", "inference", "recommendation"]
+                assert derived["properties"]["kind"]["enum"] == kinds
             else:
                 assert derived == original
         elif original["type"] == "array":
@@ -171,7 +172,45 @@ def draftify(value, field=""):
 
 
 def example_draft(example):
-    return {"contract": "request-draft.v1", "status": "ok", "payload": draftify(example), "missing_inputs": []}
+    return {"contract": "request-draft.v2", "status": "ok", "payload": draftify(example), "missing_inputs": []}
+
+
+@pytest.mark.parametrize("path", [("intent",), ("keywords", 0)])
+@pytest.mark.parametrize("refs", [["intent-only"], ["evidence-only"], ["intent-only", "evidence-only"]])
+@pytest.mark.parametrize("kind", ["fact", "inference", "recommendation"])
+def test_selection_kind_is_independent_of_source_authority(contract, canonical, examples, path, refs, kind):
+    draft = example_draft(examples[1])
+    native = contract.build_draft_schema(canonical, project)
+    draft["contract"] = native["properties"]["contract"]["enum"][0]
+    target = draft["payload"]
+    for key in path:
+        target = target[key]
+    target.update(kind=kind, source_ids=refs)
+    assert Draft202012Validator(native).is_valid(draft) is (kind != "fact")
+
+
+@pytest.mark.parametrize("path", [
+    ("module",), ("playbook",), ("answer_depth",), ("research_readiness",),
+    ("tasks", 0, "id"), ("tasks", 0, "kind"), ("tasks", 1, "depends_on", 0), ("tasks", 0, "effect"),
+    ("request_questions", 0, "field"), ("requested_effects", 0, "field"),
+    ("target_selectors", 0, "task_id"), ("target_selectors", 0, "anchor_key"),
+    ("target_selectors", 0, "relation"), ("target_selectors", 0, "state"),
+])
+def test_plain_controls_reject_annotations_without_coercion(contract, canonical, examples, path):
+    draft = example_draft(examples[1])
+    validator = Draft202012Validator(contract.build_draft_schema(canonical, project))
+    validator.validate(draft)
+    target = draft["payload"]
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = {"value": target[path[-1]], "kind": "recommendation", "source_ids": ["intent-only"]}
+    assert not validator.is_valid(draft)
+
+
+def test_old_native_discriminator_is_rejected(contract, canonical, examples):
+    draft = example_draft(examples[0])
+    draft["contract"] = "request-draft.v1"
+    assert not Draft202012Validator(contract.build_draft_schema(canonical, project)).is_valid(draft)
 
 
 def test_real_minimal_and_complete_payloads_satisfy_both_schema_shapes(contract, canonical, examples):

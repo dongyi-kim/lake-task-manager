@@ -1,6 +1,7 @@
 """Request semantics come from the local role, separately from native transport."""
 import copy
 import importlib.util
+import json
 from pathlib import Path
 import re
 
@@ -161,10 +162,10 @@ def test_transport_explains_only_wire_evidence_and_status_boundaries(contract, r
     transport = (DIRECTORY / "prompts/core_request.md").read_text(encoding="utf-8").strip()
     prompt = contract.build_request_system_prompt(SCHEMA, role, transport)
     assert len(prompt.encode("utf-8")) <= 8192
-    for marker in ("request-input.v1", "request-draft.v1", "context.sources[].source_id",
+    for marker in ("request-input.v1", "request-draft.v2", "context.sources[].source_id",
                    "context.query", "context.role_context", "source_authority", "allowed_claim_kinds",
                    "user_intent", "evidence_source", "do not verify facts or grant approval",
-                   "canonical_id", "{value, kind, source_ids}", "including intent", "tasks[].kind",
+                   "canonical_id", "{value, kind, source_ids}", "tasks[].kind",
                    "research_readiness", "needs_clarification", "no_write_requested",
                    "canonical flat schema", "even when research_readiness is needs_clarification"):
         assert marker in transport
@@ -175,3 +176,30 @@ def test_transport_explains_only_wire_evidence_and_status_boundaries(contract, r
         if "description" in row:
             assert row["description"] not in transport
     assert section(role, "Ticket Semantics").strip() not in transport
+
+
+def test_transport_lists_exact_wrapped_and_plain_payload_paths(contract):
+    transport = (DIRECTORY / "prompts/core_request.md").read_text(encoding="utf-8")
+    canonical = json.loads(canonical_payload_schema(SCHEMA)[0])
+    native = contract.build_draft_schema(canonical, lambda schema: schema)
+    expected = {"Wrapped paths": set(), "Plain paths": set()}
+
+    def walk(row, path=()):
+        if path in contract._NARRATIVE_PATHS:
+            expected["Wrapped paths"].add(".".join(path).replace(".*", "[]"))
+        elif row["type"] == "object":
+            for key, item in row["properties"].items():
+                walk(item, path + (key,))
+        elif row["type"] == "array":
+            walk(row["items"], path + ("*",))
+        else:
+            expected["Plain paths"].add(".".join(path).replace(".*", "[]"))
+
+    walk(native["properties"]["payload"]["anyOf"][1])
+    for label, paths in expected.items():
+        lines = [line for line in transport.splitlines() if line.startswith(label + ": ")]
+        assert len(lines) == 1
+        assert set(re.findall(r"`([^`]+)`", lines[0])) == paths
+    assert "intent and keywords[] select the request route and future retrieval terms" in transport
+    assert "even when copied from evidence" in transport
+    assert "Never annotate a plain value" in transport

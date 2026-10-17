@@ -212,15 +212,15 @@ def test_output_bound_fails_without_truncation(compiled, case, monkeypatch):
 
 
 @pytest.mark.parametrize("kind,ref,text,blocked", [
-    ("inference", "intent-exact", "변경 초안", False), ("recommendation", "intent-exact", "변경 초안", False),
-    ("fact", "intent-exact", "변경 초안", True), ("fact", "record-exact", "DL-123", False),
+    ("inference", "intent-exact", "DL-123", False), ("recommendation", "intent-exact", "DL-123", False),
+    ("fact", "intent-exact", "DL-123", True), ("fact", "record-exact", "DL-123", False),
 ])
 def test_original_assembler_and_final_guards_keep_exact_refs_and_claim_kinds(compiled, case, kind, ref, text, blocked):
     pack, incoming = case
     view = encoded(projected(compiled, incoming))
-    draft = {"contract": "request-draft.v1", "status": "ok", "missing_inputs": [], "payload": {
+    draft = {"contract": "request-draft.v2", "status": "ok", "missing_inputs": [], "payload": {
         "intent": {"value": "modify", "kind": "inference", "source_ids": ["intent-exact"]},
-        "keywords": [{"value": text, "kind": kind, "source_ids": [ref]}], "research_readiness": "ready",
+        "keywords": [], "mentioned_keys": [{"value": text, "kind": kind, "source_ids": [ref]}], "research_readiness": "ready",
         "request_questions": [], "requested_effects": [], "target_selectors": []}}
     before = encoded((incoming, draft))
     assemble = compiled["assembler"]["main"]

@@ -60,7 +60,7 @@ def case(context_guard, now):
         "request_questions": [], "requested_effects": [], "target_selectors": [], "tasks": [
             {"id": "model-task-77", "kind": "plan", "instruction": leaf("변경 초안을 작성한다"),
              "depends_on": [], "effect": "no_write_requested", "completion_criteria": [leaf("초안 검토")]}]}
-    draft = {"contract": "request-draft.v1", "status": "ok", "payload": payload, "missing_inputs": []}
+    draft = {"contract": "request-draft.v2", "status": "ok", "payload": payload, "missing_inputs": []}
     expected = {"intent": "plan_work", "keywords": ["변경 초안"], "sufficient": True,
         "request_questions": [], "requested_effects": [], "target_selectors": [], "tasks": [
             {"id": "model-task-77", "kind": "plan", "instruction": "변경 초안을 작성한다", "depends_on": [],
@@ -170,15 +170,66 @@ def test_canonical_unique_items_revalidated_after_unwrap(compiled, case, annotat
         assemble(compiled, incoming, draft)
 
 
-def test_fact_kind_is_not_repaired_to_bypass_final_guards(compiled, case):
+@pytest.mark.parametrize("refs", [["src-intent-73"], ["src-intent-73", "src-record-29"]])
+def test_fact_kind_is_not_repaired_to_bypass_final_guards(compiled, case, refs):
     pack, incoming, draft, _ = case
-    draft["payload"]["intent"]["kind"] = "fact"
+    draft["payload"]["mentioned_keys"] = [leaf("DL-123", "fact", refs)]
     result = assemble(compiled, incoming, draft)
-    assert any(row["text"] == "plan_work" and row["kind"] == "fact" for row in result["claims"])
+    assert any(row["text"] == "DL-123" and row["kind"] == "fact" for row in result["claims"])
     remote, local = guards(pack, result)
     assert remote["warnings"] == ["contract_guard:intent_source_fact_forbidden"]
     with pytest.raises(ResponseGuardError, match="intent_source_fact_forbidden"):
         local()
+
+
+@pytest.mark.parametrize("path", [("intent",), ("keywords", 0)])
+@pytest.mark.parametrize("refs", [["src-intent-73"], ["src-record-29"], ["src-intent-73", "src-record-29"]])
+@pytest.mark.parametrize("kind", ["fact", "inference", "recommendation"])
+def test_selection_kinds_preserve_values_and_refs_or_fail_without_candidate(compiled, case, path, refs, kind):
+    pack, incoming, draft, _ = case
+    target = draft["payload"]
+    for key in path:
+        target = target[key]
+    target.update(kind=kind, source_ids=refs)
+    if path[0] == "keywords":
+        target["value"] = "DL-123"
+    before = copy.deepcopy((incoming, draft))
+    if kind == "fact":
+        with pytest.raises(ValueError, match="^invalid_core_request_draft$"):
+            assemble(compiled, incoming, draft)
+    else:
+        result = assemble(compiled, incoming, draft)
+        pointer = "/" + "/".join(map(str, path))
+        binding = next(row for row in result["payload_claims"] if row["path"] == pointer)
+        claim = next(row for row in result["claims"] if row["claim_id"] == binding["claim_ids"][0])
+        citations = {row["citation_id"]: row["source_id"] for row in result["citations"]}
+        assert (claim["text"], claim["kind"]) == (target["value"], kind)
+        assert [citations[key] for key in claim["citation_ids"]] == refs
+        remote, local = guards(pack, result)
+        assert remote == result and local()[0].status == "ok"
+    assert (incoming, draft) == before
+
+
+@pytest.mark.parametrize("depth", ["brief", "explain"])
+def test_answer_depth_is_plain_and_wrapped_value_is_never_repaired(compiled, case, depth):
+    pack, incoming, draft, _ = case
+    draft["payload"]["answer_depth"] = depth
+    result = assemble(compiled, incoming, draft)
+    assert result["payload"]["answer_depth"] == depth
+    remote, local = guards(pack, result)
+    assert remote == result and local()[0].status == "ok"
+    draft["payload"]["answer_depth"] = leaf(depth)
+    before = copy.deepcopy((incoming, draft))
+    with pytest.raises(ValueError, match="^invalid_core_request_draft$"):
+        assemble(compiled, incoming, draft)
+    assert (incoming, draft) == before
+
+
+def test_previous_native_version_has_no_assembler_fallback(compiled, case):
+    _, incoming, draft, _ = case
+    draft["contract"] = "request-draft.v1"
+    with pytest.raises(ValueError, match="^invalid_core_request_draft$"):
+        assemble(compiled, incoming, draft)
 
 
 @pytest.mark.parametrize("status", ["blocked", "needs_input"])

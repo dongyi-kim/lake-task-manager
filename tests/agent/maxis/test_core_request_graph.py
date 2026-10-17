@@ -56,7 +56,7 @@ def request_case(context_guard, now, nodes):
         "request_architect", pack.request_id, "remote-role-result.v1", VERSION, VERSION, "kb-test")
     assert guarded["policy_decision"] == "allow"
     wrap = lambda text: {"value": text, "kind": "recommendation", "source_ids": ["src_intent_request"]}
-    draft = {"contract": "request-draft.v1", "status": "ok", "missing_inputs": [], "payload": {
+    draft = {"contract": "request-draft.v2", "status": "ok", "missing_inputs": [], "payload": {
         "intent": wrap("plan_work"), "keywords": [wrap("배치 오류")], "module": "",
         "mentioned_keys": [], "research_readiness": "ready", "playbook": "bug_report",
         "goal": wrap("신규 배치 오류의 Bug 초안을 작성한다"), "tasks": [{

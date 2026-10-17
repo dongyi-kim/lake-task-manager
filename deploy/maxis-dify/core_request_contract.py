@@ -25,6 +25,9 @@ _NARRATIVE_PATHS = {
     ("requested_effects", "*", "literal"), ("target_selectors", "*", "cardinality"),
     ("assumptions", "*"), ("plan",),
 }
+# Route interpretation and retrieval selection are model judgments, including
+# selections copied from evidence. Other narrative fields retain fact support.
+_SELECTION_PATHS = {("intent",), ("keywords", "*")}
 
 
 def build_request_system_prompt(schema: dict, local_role_markdown: str, transport_markdown: str) -> str:
@@ -125,7 +128,8 @@ def build_draft_schema(canonical_schema: dict, project) -> dict:
         if path in _NARRATIVE_PATHS:
             return {"type": "object", "additionalProperties": False, "required": ["value", "kind", "source_ids"],
                 "properties": {"value": copy.deepcopy(row),
-                    "kind": {"type": "string", "enum": ["fact", "inference", "recommendation"]},
+                    "kind": {"type": "string", "enum": ["inference", "recommendation"]
+                        if path in _SELECTION_PATHS else ["fact", "inference", "recommendation"]},
                     "source_ids": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": True,
                         "items": {"type": "string", "minLength": 1, "maxLength": 128,
                                   "pattern": r"^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])"}}}}
@@ -157,7 +161,7 @@ def build_draft_schema(canonical_schema: dict, project) -> dict:
                      ["write_requested", "no_write_requested"])
         return {"type": "object", "additionalProperties": False,
             "required": ["contract", "status", "payload", "missing_inputs"], "properties": {
-                "contract": {"type": "string", "enum": ["request-draft.v1"]},
+                "contract": {"type": "string", "enum": ["request-draft.v2"]},
                 "status": {"type": "string", "enum": ["ok", "needs_input", "blocked"]},
                 "payload": {"anyOf": [{"type": "object", "additionalProperties": False, "maxProperties": 0}, payload]},
                 "missing_inputs": {"type": "array", "maxItems": 8,

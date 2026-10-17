@@ -169,7 +169,7 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
                 assert "Code copies it unchanged" in prompt_text
                 assert "## Required response" not in prompt_text
             elif is_core and llm["data"]["title"] == "Request LLM":
-                assert "request-draft.v1" in prompt_text
+                assert "request-draft.v2" in prompt_text
                 assert "research_readiness" in prompt_text and "no_write_requested" in prompt_text
                 assert "## Required response" not in prompt_text
                 assert llm["data"]["prompt_template"][1]["text"] == (

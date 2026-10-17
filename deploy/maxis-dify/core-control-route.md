@@ -98,7 +98,11 @@ Request 분기는 Stage → Request Input → Request LLM → Request Assembler 
 projection은 9,000 UTF-8 bytes를 넘으면 자르거나 원본으로 fallback하지 않고 실패한다.
 조립기와 양쪽 guard는 계속 원본 input을 사용한다. 조립기는 잘못된 참조를 거부하고,
 양쪽 최종 guard는 intent fact를 거부한다.
-`core_request.md`는 이 전용 view와 출처, 내부 `request-draft.v1`의 wire 형식만 안내한다.
+`core_request.md`는 이 전용 view와 출처, 내부 `request-draft.v2`의 wire 형식만 안내한다.
+`intent`와 `keywords[]`는 경로 해석·검색어 선택이므로 evidence에서 복사해도
+`inference|recommendation`만 허용한다. 다른 서술 경로의 `fact` 가능성과 출처 제한은 유지한다.
+transport는 정확한 wrapper 경로와 plain 경로를 한곳에서 구분한다. `answer_depth` 등 plain
+값에 annotation 객체를 보내거나 이전 draft 버전을 보내면 변환·기본값 보충 없이 거부한다.
 공유 의미 규칙은 최종 LTM 계약의 참고이며 native 출력 형식이 아니다.
 `research_readiness=ready|needs_clarification`, `tasks[].effect=write_requested|no_write_requested`는
 각각 정본 `sufficient`와 `write_intent` boolean으로만 대응한다. 이는 승인이나 실제 실행이 아니다.

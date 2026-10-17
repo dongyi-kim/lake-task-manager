@@ -25,7 +25,7 @@ def main(model_input, candidate):
         draft = _decode(candidate, _MAX_DRAFT_UTF8_BYTES, _fail)
         _validate(draft, _DRAFT_SCHEMA, _DRAFT_SCHEMA, _fail)
         status, payload, missing = draft["status"], draft["payload"], draft["missing_inputs"]
-        if (draft["contract"] != "request-draft.v1" or any(not value.strip() for value in missing)
+        if (draft["contract"] != "request-draft.v2" or any(not value.strip() for value in missing)
                 or status == "ok" and missing or status != "ok" and payload
                 or status == "needs_input" and not missing or status == "blocked" and missing):
             _fail()
