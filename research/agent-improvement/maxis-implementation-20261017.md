@@ -7,8 +7,23 @@
 릴리스는 기반 모듈이며 사용자 session 및 실제 서버에 아직 연결하지 않았다.
 내부 시범 프로필은 설정 가능하지만 실제 서버 통제 검증기 없이 실행할 수 없다.
 
-현재 Dify 로그인은 저장된 승인 자격증명으로 HTTP 401이다. 인증 실패를 모델 품질 실패나
-플랫폼 기능 미지원으로 해석하지 않는다. 기존 실행 앱·route·활성 profile·서버 자산은 변경하지 않았다.
+후속 확인으로 인증 문제를 정정했다. 이전 probe의 비밀번호 형식이 잘못됐으며, 현재 Dify의
+UTF-8→Base64 형식에 맞추자 **기존 승인 자격증명으로 HTTP 200**이다. Core/Editor/PMO
+Service API `/parameters`도 모두 200/계약 일치다. 접속정보 변경은 필요하지 않았다.
+아래 기반 구현 당시에는 서버 자산을 변경하지 않았다. 후속 합성 실험의 생성 자산과 실행 결과는
+별도 기록으로 구분하며 기존 실행 앱·route·활성 profile은 유지한다.
+
+후속 [실서버 점검 기록](evaluations/2026-10-17-maxis-native-synthetic-capability.md):
+합성 Knowledge 1개와 신규 Workflow 5개를 게시했다. 조회 도구 3개는 실행 성공했으나
+Research ReAct는 `stop` 미지원, Function Calling은 도구 호출 없이 `not_found`를 반환해 실패했다.
+현재 공유 모델의 `function_calling_type=no_call`을 확인했고, 13개 LTM 앱에 영향을 줄 수 있는
+옵션 변경은 안전 검토가 차단하여 **미실행**이다. 범위를 명시한 사용자 승인 뒤 재검증해야 한다.
+MAXIS 등록 Node는 여전히 0개이며 Dify Agent와 구분한다.
+
+후속 로컬 작업은 `codex/maxis-taskflow-synthetic`에서 진행한다. 전송 계층만 분리한
+`codex/maxis-taskflow-transport`의 커밋은 `ddd103b`다. 최소 도입 단위는 이 전송 계층이며,
+그 위에 합성 DSL/fixture/테스트(`3f6d568`), 마지막으로 서버 실행 기록을 나눠 검토한다. 합성 생성기와 테스트는
+서로의 노드 연결·계약을 검증하므로 함께 유지한다. 어느 단계도 기본 사용자 경로를 활성화하지 않는다.
 
 ## 브랜치와 변경 범위
 
@@ -66,13 +81,25 @@
 - 전체 repository suite·GitHub Actions·브라우저 UI 렌더링·실 LLM 품질 배터리는 미실행.
   테스트 통과로 p95/token/품질 향상을 주장하지 않는다.
 
+후속 최종 회귀: **231 passed, 경고 0, 2.64초**. TaskFlow transport, synthetic bundle,
+기존 client, TaskFlow integration, contracts registry, prompt integrity의 6개 파일이다.
+실서버 capability 점검은 별도이며 이 테스트 수에 포함하지 않는다.
+후속 코드 독립 검토는 transport 9→9/10, bundle 9/10·8.5/10 이후 icon 교정 및 전략 변경분 9/10.
+운영 점검 스크립트는 7→9/10, 최종 기록은 9/10이며 native 실행 성공과 기능 실패의 표현을 정정했다.
+이 점수는 구현·기록 검토 의견이지 LLM 업무 품질 점수가 아니다.
+
+```powershell
+$env:JIRA_ENV = 'mock'
+python -B -m pytest -q --basetemp=.cache/test-tmp/taskflow-final-validation-20261017 -o cache_dir=.cache/pytest tests/agent/maxis/test_taskflow_client.py tests/agent/maxis/test_taskflow_synthetic_bundle.py tests/agent/maxis/test_client.py tests/agent/integration/test_maxis_taskflow.py tests/agent/maxis/test_contracts_registry.py tests/agent/contracts/test_agent_prompt_integrity.py
+```
+
 재현 경로는 통합 worktree이며 Python은 deploy 저장소의 `.venv/Scripts/python.exe`를 사용했다.
 pytest cache는 `.cache/pytest`, 각 실행 tmp는 `.cache/test-tmp/` 아래만 사용했다.
 이번 실행별 tmp만 정리하며 다른 worktree·raw 평가·credential cache는 보존한다.
 
-## 실서버 확인과 중단 근거
+## 최초 인증 관측 및 후속 정정
 
-2026-10-17 12:55:38 KST에 기존 검증된 Dify console 로그인 프로토콜로 1회 요청했다.
+2026-10-17 12:55:38 KST에 Dify console 로그인으로 1회 요청했다.
 첫 요청부터 network-enabled process와 TLS 검증을 사용했으며 응답은 **HTTP 401**이었다.
 세션 미수립으로 API 자산 조회 0, 자산 변경 0, 모델 호출 0. 이후 반복하지 않았다.
 브라우저 로그인 시도도 로그인 화면에 머물러, 사이트 투어를 완료했다고 보고하지 않는다.
@@ -82,17 +109,31 @@ pytest cache는 `.cache/pytest`, 각 실행 tmp는 `.cache/test-tmp/` 아래만 
 
 SHA-256: `a5dc709b137767b684451545a6c0db8195f719d2dcbd504c0ebb0f4f7e2c710f`.
 credential·cookie·token·응답 본문은 증적에 없다.
-현재 native Agent 전략, 서버 버전, retention, nested version pin, 총예산 enforcement, 사용자별 ACL은
-**unknown**이다. MAXIS 자체의 추측한 인증 API 호출은 하지 않았다.
+당시 이 401을 차단 사유로 기록했지만, 후속 조사에서 **probe가 raw 비밀번호를 보내고 있던
+오류**를 확인했다. 현재 사이트 번들과 공식 signin 구현은 UTF-8→Base64를 사용한다.
+수정한 요청은 200이며 인증 실패를 자격증명 만료나 서버 기능 제한으로 해석하면 안 된다.
+
+후속 읽기 전용 확인: LTM 앱 8개는 advanced-chat이며, 최신 Core/Editor/PMO 그래프에
+native Agent 노드는 0개다. 설치된 `langgenius/agent:0.0.18`은 `ReAct`와 `function_calling`을
+제공한다. 현재 Core 모델은 `gpt-5.4-mini`, 실제 export DSL은 `0.6.0`이다.
+플러그인 존재가 실행·모델 tool-call 지원·전체 예산 집행의 증거는 아니다.
+`rbac_enabled=false`를 관찰했으나 이를 모든 ACL 기능 부재로 확대 해석하지 않는다.
+retention·사용자별 ACL·중첩 총예산·불변 배포 통제는 아직 별도 검증 대상이다.
+
+정정 증적: `codex/maxis-taskflow-synthetic` worktree의
+`.cache/maxis/auth-observation-20261017.json`, `agent-strategies-20261017.json`.
+비밀값·세션·전체 프롬프트는 저장하지 않았다. 최초 401 관측 파일도 삭제하지 않는다.
 
 ## 재개 순서
 
-1. `.cache/maxis/dify.json` 접속정보 또는 서버 인증 상태 복구 확인. 비밀값은 채팅이나 Git에 넣지 않는다.
-2. 실제 MAXIS/Dify에서 지원 Agent 전략·tool 방식·불변 버전·retention·권한·예산 통제를 확인한다.
-   구현되지 않은 서버 기능을 boolean config로 대체하지 않는다.
-3. 합성 DEV에서 작은 단위로 glossary lookup → research-only native Agent → 근거 정리 →
-   WorkDraft 생성 workflow와 private MAXIS Agent wrapper를 구현·게시한다. 신규 실험 자산만 사용하며
-   기존 게시본을 덮어쓰지 않는다. 내부 Knowledge는 검증된 별도 pilot 자산에만 둔다.
+1. **완료:** 기존 `.cache/maxis/dify.json` 승인 자격증명으로 올바른 로그인 형식과 Service API 접속 확인.
+   비밀값은 채팅이나 Git에 넣지 않는다.
+2. **일부 완료:** 실제 설치 Agent 전략과 조회 도구 3개의 실행 확인. 공유 모델 옵션 변경은
+   13개 LTM 앱 영향 범위에 대한 승인 대기다. 승인 후 새 실행으로 도구 CALL·근거 반환과 기존 앱
+   회귀를 확인한다. 불변 버전·retention·권한·총예산은 미검증이며 boolean config로 대체하지 않는다.
+3. 이미 게시한 합성 Research 앱을 사용해 근거 정리까지 검증하고 WorkDraft 부모 workflow를
+   구현한다. MAXIS Node 저장에 수반되는 Git/Jenkins 생성과 비공개·secret binding을 확인한 뒤
+   private wrapper를 만든다. 기존 게시본은 덮어쓰지 않으며 내부 Knowledge는 검증된 pilot에만 둔다.
 4. 실서버 adapter와 기존 session/Query Runner를 연결한다. scoped read/full pagination,
    현재 권한 재검사, 요청 전체 예산, 릴리스 pin, native request 계측을 end-to-end 검증한다.
 5. 선별 Knowledge의 새 릴리스·서버 청크 parity·exact/semantic 검색을 검증한다.

@@ -9,14 +9,17 @@
 | 소유자 | 책임 | 이번 구현 |
 |---|---|---|
 | LTM | 현재 권한·scope, snapshot, 추가 조회, 취소, 결과 검증, 승인·Jira 쓰기 | 계약·local continuation coordinator, 실제 조회 adapter는 후속 |
-| Dify | 요청 분류 → bounded research → 근거 정리 → WorkDraft 생성 | 배포·실행 미구현 |
-| MAXIS | 모델·Knowledge·private Research Agent 등록 | 등록·업로드 미실행 |
+| Dify | 요청 분류 → bounded research → 근거 정리 → WorkDraft 생성 | 합성 조회 3개 실행 성공, Research 기능 검증 실패; 부모 WorkDraft 미배포 |
+| MAXIS | private Research wrapper 등록·서비스 제공 | 등록 미실행; Dify의 합성 Knowledge와 구분 |
 
 목표 호출 관계는 LTM → 부모 TaskFlow → private MAXIS Agent wrapper → 고정된 research-only
 workflow다. wrapper에 별도 모델·대화 상태를 만들지 않고 재귀 호출을 허용하지 않는다.
 Research Agent의 tool은 `glossary_lookup`, `domain_retrieve`, `evidence_lookup` 세 가지로 제한한다.
-이것은 **후속 서버 구현 계약**이며 지금 사용 가능한 tool 목록이라는 뜻이 아니다.
+도구 세 개는 고정 합성 입력으로만 배포·검증했다. 실제 업무 snapshot과 연결된 목록이 아니며
+전체 호출 관계는 여전히 **후속 서버 구현 계약**이다.
 LTM의 로컬 PC를 공개하거나 Jira 세션·credential을 원격 모델에 넘기지 않는다.
+
+합성 자산·실패·남은 승인 범위: [2026-10-17 실서버 점검](../../research/agent-improvement/evaluations/2026-10-17-maxis-native-synthetic-capability.md).
 
 ## 실행 계약
 
