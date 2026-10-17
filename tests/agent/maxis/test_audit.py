@@ -65,6 +65,37 @@ def test_failed_audit_event_requires_safe_error_code():
         )
 
 
+def test_audit_separates_http_success_from_completed_and_blocked_results(tmp_path):
+    from app.agent.maxis.telemetry import RemoteRequestTelemetryV1
+
+    path = tmp_path / "request-audit.jsonl"
+    for result, status in (("completed", "succeeded"), ("blocked", "blocked"), ("needs_input", "succeeded")):
+        event = make_audit_event(
+            correlation_id="request-1", event="remote_role.invoke", status=status,
+            profile="prod", stage="prod", route_mode="maxis", workflow_key="agent_core",
+            error_code="remote_status_blocked" if status == "blocked" else "",
+            remote_request=RemoteRequestTelemetryV1(
+                transport_status="succeeded", http_status=200, result_status=result,
+            ),
+            runtime_latency_ms=25,
+        )
+        record_audit_event(event, path=path)
+    summary = read_audit_summary(path=path)
+    assert {row.key: row.count for row in summary.transport_counts} == {"succeeded": 3}
+    assert {row.key: row.count for row in summary.result_counts} == {
+        "completed": 1, "blocked": 1, "needs_input": 1,
+    }
+    # Historical rows without new metadata remain readable; unknown is not success.
+    record_audit_event(_event(7), path=path)
+    assert read_audit_summary(path=path).total_rows == 4
+    assert sum(row.count for row in read_audit_summary(path=path).result_counts) == 3
+    forged = event.model_copy(update={
+        "remote_request": event.remote_request.model_copy(update={"workflow_run_id": "app-private-secret"}),
+    })
+    with pytest.raises(ValueError, match="invalid audit event"):
+        audit_log_fields(forged)
+
+
 def _change_event(binding=None, *, event="change.proposal", status="started",
                   error_code=""):
     return make_audit_event(

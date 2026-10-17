@@ -1257,6 +1257,9 @@ def test_query_runner_preserves_23h_swr_cache_age_and_blocks_remote_draft(monkey
 
 
 def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_events):
+    import httpx
+    from app.agent.maxis.registry import WorkflowBinding
+
     state = _runtime_state("request_architect")
     runtime_route = {"value": "maxis"}
     schema = {
@@ -1265,8 +1268,12 @@ def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_e
     }
     payload = backend.role_payload(
         "request_architect", state, [], schema, output_kind="structured")
-    binding = SimpleNamespace(
+    binding = WorkflowBinding(
+        key="agent_core", app_type="chatflow", endpoint="/chat-messages",
+        response_mode="blocking", conversation_mode="stateless",
+        api_key_env="LAKE_MAXIS_AGENT_CORE_API_KEY",
         output_contract="remote-role-result.v1", max_response_bytes=1048576,
+        roles=("request_architect",),
     )
     monkeypatch.setattr(
         backend, "resolve_role",
@@ -1281,6 +1288,7 @@ def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_e
 
     from app.agent.maxis import client as client_module
     from app.agent.maxis import credentials
+    real_client = client_module.DifyClient
 
     monkeypatch.setattr(credentials, "get_for", lambda *_a: "secret-read-locally")
     observed = {
@@ -1334,17 +1342,23 @@ def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_e
                 "knowledge_manifest_sha256": observed["remote_manifest"],
                 "knowledge_proof": observed["knowledge_proof"],
             }
-            return SimpleNamespace(
-                answer=json.dumps(answer, ensure_ascii=False), message_id="message-1",
-                latency_ms=12,
-                retrieval=SimpleNamespace(
-                    dataset_verified=True,
-                    resource_count=2,
-                    scored_resource_count=2,
-                    minimum_score=0.4,
-                    maximum_score=0.9,
-                ),
-            )
+            def handler(request):
+                if observed.get("http_error"):
+                    return httpx.Response(503, text="private upstream content")
+                return httpx.Response(200, json={
+                    "event": "message", "message_id": "message-1",
+                    "conversation_id": "private-conversation-id",
+                    "workflow_run_id": EDITOR_WORKFLOW_ID,
+                    "answer": json.dumps(answer, ensure_ascii=False),
+                    "metadata": {
+                        "usage": {"prompt_tokens": 8, "completion_tokens": 7, "total_tokens": 15},
+                        "retriever_resources": [
+                            {"dataset_id": DATASET_A, "score": score} for score in (0.4, 0.9)
+                        ],
+                    },
+                })
+            with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+                return real_client(observed["config"], client=http).invoke(_binding, **kwargs)
 
     monkeypatch.setattr(client_module, "DifyClient", FakeClient)
     result = backend.invoke("request_architect", payload, "thread-1", "corr-1")
@@ -1372,6 +1386,17 @@ def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_e
     }
     assert result["statePatch"]["quality_gate"]["schemaValid"] is True
     assert [event.status for event in audit_events] == ["started", "succeeded"]
+    request_metrics = audit_events[-1].remote_request
+    assert request_metrics.transport_status == "succeeded"
+    assert request_metrics.result_status == "completed"
+    assert request_metrics.quality_status == "not_evaluated"
+    assert request_metrics.total_tokens == 15
+    assert request_metrics.native_model_call_count is None
+    assert request_metrics.reported_cost is None
+    assert request_metrics.workflow_run_id == EDITOR_WORKFLOW_ID
+    assert request_metrics.requested_workflow_id == AGENT_WORKFLOW_ID
+    assert audit_events[-1].runtime_latency_ms >= 0
+    assert result["metadata"]["requestTelemetry"]["result_status"] == "completed"
     assert all(event.correlation_id == "corr-1" for event in audit_events)
     assert all(not hasattr(event, "prompt") and not hasattr(event, "answer")
                for event in audit_events)
@@ -1380,6 +1405,8 @@ def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_e
     with pytest.raises(backend.MaxisRuntimeError, match="Knowledge release"):
         backend.invoke("request_architect", payload, "thread-1", "corr-1")
     assert audit_events[-1].error_code == "knowledge_sentinel_mismatch"
+    assert audit_events[-1].remote_request.transport_status == "succeeded"
+    assert audit_events[-1].remote_request.result_status == "blocked"
 
     # Shadow evaluation invokes this same boundary asynchronously and must discard
     # the same drifted result instead of persisting it as a comparison candidate.
@@ -1396,6 +1423,7 @@ def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_e
         backend.invoke("request_architect", payload, "thread-1", "corr-1")
     assert [event.status for event in audit_events[-2:]] == ["started", "blocked"]
     assert audit_events[-1].error_code == "remote_status_blocked"
+    assert audit_events[-1].remote_request.result_status == "blocked"
 
     observed["remote_status"] = "needs_input"
     with pytest.raises(backend.MaxisNeedsInput) as needs:
@@ -1403,6 +1431,8 @@ def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_e
     assert needs.value.missing_inputs == ("완료 기준을 알려 주세요",)
     assert needs.value.state_patch["quality_gate"]["ok"] is False
     assert [event.status for event in audit_events[-2:]] == ["started", "succeeded"]
+    assert audit_events[-1].remote_request.result_status == "needs_input"
+    assert needs.value.metadata["requestTelemetry"]["result_status"] == "needs_input"
 
     observed.update(remote_status="ok", remote_value="[[person:0123456789ab]]")
     with pytest.raises(backend.MaxisRuntimeError, match="person reference"):
@@ -1414,6 +1444,18 @@ def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_e
         backend.invoke("request_architect", payload, "thread-1", "corr-1")
     assert audit_events[-1].status == "blocked"
     assert audit_events[-1].error_code == "response_knowledge_manifest_mismatch"
+
+    observed["http_error"] = True
+    with pytest.raises(backend.MaxisRuntimeError, match="호출에 실패"):
+        backend.invoke("request_architect", payload, "thread-1", "corr-1")
+    assert audit_events[-1].remote_request.transport_status == "failed"
+    assert audit_events[-1].remote_request.http_status == 503
+    assert audit_events[-1].remote_request.result_status == "failed"
+    assert audit_events[-1].remote_request.total_tokens is None
+    serialized = json.dumps([event.model_dump(mode="json") for event in audit_events])
+    assert "private upstream" not in serialized
+    assert "secret-read-locally" not in serialized
+    assert "private-conversation" not in serialized
 
 
 def test_role_payload_binds_exact_structured_and_text_schemas_inside_evidence_pack():

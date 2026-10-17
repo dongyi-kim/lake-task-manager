@@ -45,6 +45,7 @@ from app.agent.maxis.contracts import (
 from app.agent.maxis.registry import WorkflowBinding
 from app.agent.maxis.identifiers import canonical_published_workflow_id
 from app.agent.maxis.response_guard import ResponseGuard, ResponseGuardError
+from app.agent.maxis.telemetry import RemoteRequestTelemetryV1, request_observation
 
 
 _USER_RE = re.compile(r"^ltm_[0-9a-f]{16}$")
@@ -127,6 +128,7 @@ class DifyChatResponse(_StrictResult):
     usage: DifyUsage
     retrieval: DifyRetrievalSummary
     latency_ms: int = Field(ge=0)
+    telemetry: RemoteRequestTelemetryV1 | None = None
 
 
 class DifyProbeResult(_StrictResult):
@@ -343,7 +345,7 @@ def _synthetic_contract_probe_pack(
 def canonical_api_base(
     value: str,
     *,
-    stage: Literal["dev", "prod", "test"],
+    stage: Literal["dev", "internal-pilot", "prod", "test"],
     require_https: bool,
 ) -> str:
     """Apply the shared deployment-owned destination policy for every client."""
@@ -360,7 +362,7 @@ def canonical_api_base(
 @dataclass(frozen=True, slots=True)
 class DifyClientConfig:
     profile: str
-    stage: Literal["dev", "prod", "test"]
+    stage: Literal["dev", "internal-pilot", "prod", "test"]
     base_url: str
     profile_fingerprint: str = ""
     require_https: bool = True
@@ -378,11 +380,11 @@ class DifyClientConfig:
             r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", fingerprint
         ):
             raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION)
-        if self.stage not in {"dev", "prod", "test"}:
+        if self.stage not in {"dev", "internal-pilot", "prod", "test"}:
             raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION)
-        if self.stage == "prod" and not self.require_https:
+        if self.stage in {"internal-pilot", "prod"} and not self.require_https:
             raise MaxisGatewayError(MaxisErrorCode.POLICY)
-        if self.stage == "prod" and self.verify_tls is False:
+        if self.stage in {"internal-pilot", "prod"} and self.verify_tls is False:
             raise MaxisGatewayError(MaxisErrorCode.POLICY)
         if not 0 < self.connect_timeout_seconds <= 3.0:
             raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION)
@@ -730,6 +732,15 @@ class DifyClient:
         active_breaker = breaker or self.breaker
         active_breaker.before_call()
         started = self._clock()
+        attempted = False
+        status = None
+        def observation():
+            return request_observation(
+                transport_status="failed" if attempted else "not_attempted",
+                http_status=status,
+                latency_ms=max(0, int((self._clock() - started) * 1000)),
+                workflow_id=str((payload or {}).get("workflow_id") or ""),
+            )
         try:
             # Re-evaluate the deployment allowlist at the last HTTP boundary as well
             # as config construction.  A probe and a normal invocation therefore
@@ -745,12 +756,14 @@ class DifyClient:
             }
             if payload is not None:
                 kwargs["json"] = payload
+            attempted = True
             with self._client.stream(
                 method,
                 base_url + path,
                 follow_redirects=False,
                 **kwargs,
             ) as response:
+                status = response.status_code
                 if not 200 <= response.status_code < 300:
                     raise classify_http_status(response.status_code)
                 content_length = response.headers.get("content-length", "")
@@ -778,6 +791,7 @@ class DifyClient:
                 body = b"".join(chunks)
                 status = response.status_code
         except MaxisGatewayError as exc:
+            exc.telemetry = observation()
             if exc.retryable:
                 active_breaker.record_failure()
             else:
@@ -786,12 +800,12 @@ class DifyClient:
         except (httpx.TimeoutException, TimeoutError) as exc:
             active_breaker.record_failure()
             raise MaxisGatewayError(
-                MaxisErrorCode.TIMEOUT, retryable=True
+                MaxisErrorCode.TIMEOUT, retryable=True, telemetry=observation(),
             ) from exc
         except httpx.RequestError as exc:
             active_breaker.record_failure()
             raise MaxisGatewayError(
-                MaxisErrorCode.NETWORK, retryable=True
+                MaxisErrorCode.NETWORK, retryable=True, telemetry=observation(),
             ) from exc
         latency_ms = max(0, int((self._clock() - started) * 1000))
         return body, status, latency_ms
@@ -858,7 +872,7 @@ class DifyClient:
         except ValueError as exc:
             raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION) from exc
         clean_inputs["workflow_version"] = input_workflow
-        if self.config.stage == "prod" and not pinned_workflow:
+        if self.config.stage in {"internal-pilot", "prod"} and not pinned_workflow:
             raise MaxisGatewayError(MaxisErrorCode.POLICY)
         if pinned_workflow and clean_inputs["workflow_version"] != pinned_workflow:
             raise MaxisGatewayError(MaxisErrorCode.POLICY)
@@ -898,8 +912,9 @@ class DifyClient:
         workflow_id: str = "",
         expected_knowledge_dataset_id: str = "",
     ) -> DifyChatResponse:
-        body, _, latency_ms, expected_dataset_id, active_breaker = (
-            self._request_validated_chat_bytes(
+        started = self._clock()
+        try:
+            body, status, latency_ms, expected_dataset_id, active_breaker = self._request_validated_chat_bytes(
                 binding,
                 api_key=api_key,
                 query=query,
@@ -908,11 +923,26 @@ class DifyClient:
                 workflow_id=workflow_id,
                 expected_knowledge_dataset_id=expected_knowledge_dataset_id,
             )
+        except MaxisGatewayError as exc:
+            if exc.telemetry is None:
+                exc.telemetry = request_observation(
+                    transport_status="not_attempted",
+                    latency_ms=max(0, int((self._clock() - started) * 1000)),
+                    workflow_id=workflow_id,
+                )
+            raise
+        telemetry = request_observation(
+            transport_status="succeeded", http_status=status,
+            latency_ms=latency_ms, workflow_id=workflow_id,
         )
         try:
             raw = _strict_json_loads(body)
             if not isinstance(raw, dict):
                 raise TypeError("object required")
+            telemetry = request_observation(
+                transport_status="succeeded", http_status=status,
+                latency_ms=latency_ms, workflow_id=workflow_id, raw=raw,
+            )
             if raw.get("event") != "message":
                 raise TypeError("unexpected event")
             answer = raw.get("answer")
@@ -943,6 +973,7 @@ class DifyClient:
                 usage=usage_result,
                 retrieval=retrieval,
                 latency_ms=latency_ms,
+                telemetry=telemetry,
             )
             active_breaker.record_success()
             return result
@@ -950,11 +981,11 @@ class DifyClient:
             # The gateway completed normally; a wrong or empty Knowledge binding is a
             # non-retryable integrity failure, not evidence of transport instability.
             active_breaker.record_success()
-            raise MaxisGatewayError(MaxisErrorCode.POLICY) from exc
+            raise MaxisGatewayError(MaxisErrorCode.POLICY, telemetry=telemetry) from exc
         except (ValueError, TypeError, ValidationError) as exc:
             active_breaker.record_failure()
             raise MaxisGatewayError(
-                MaxisErrorCode.INVALID_RESPONSE, retryable=True
+                MaxisErrorCode.INVALID_RESPONSE, retryable=True, telemetry=telemetry,
             ) from exc
 
     def probe_contract(

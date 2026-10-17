@@ -132,6 +132,111 @@ def _parameters(keys=REQUIRED_START_VARIABLES):
     }
 
 
+def test_native_request_telemetry_correlates_pin_and_preserves_unknowns():
+    raw = _success("private answer must never reach telemetry")
+    raw["workflow_run_id"] = OTHER_WORKFLOW_ID
+    raw["metadata"]["usage"].update(total_price="0.000125", currency="USD")
+    raw["metadata"]["native_model_call_count"] = 99  # Unsupported, not trusted.
+    raw["metadata"]["reasoning"] = "private reasoning"
+    response = DifyClient(
+        _config(), client=httpx.Client(transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json=raw),
+        )),
+    ).invoke(
+        _binding(), api_key="app-private-secret", query="질문",
+        user="ltm_0123456789abcdef", inputs=_inputs(), workflow_id=WORKFLOW_ID,
+    )
+    observation = response.telemetry
+    assert observation.transport_status == "succeeded"
+    assert observation.http_status == 200
+    assert observation.requested_workflow_id == WORKFLOW_ID
+    assert observation.workflow_run_id == OTHER_WORKFLOW_ID
+    assert observation.total_tokens == 15
+    assert observation.reported_cost == 0.000125
+    assert observation.cost_currency == "USD"
+    assert observation.native_model_call_count is None
+    assert observation.result_status == "not_evaluated"
+    assert observation.quality_status == "not_evaluated"
+    assert observation.message_id_sha256 == hashlib.sha256(b"message-1").hexdigest()
+    encoded = observation.model_dump_json()
+    for forbidden in ("private answer", "private reasoning", "app-private-secret", "conversation-created", "message-1"):
+        assert forbidden not in encoded
+
+
+def test_token_triple_is_observed_not_repaired_or_claimed_as_accounting_total():
+    from app.agent.maxis.telemetry import request_observation
+
+    observation = request_observation(
+        transport_status="succeeded", latency_ms=1, http_status=200,
+        raw={"metadata": {"usage": {
+            "prompt_tokens": 8, "completion_tokens": 7, "total_tokens": 999,
+        }}},
+    )
+    assert (observation.prompt_tokens, observation.completion_tokens, observation.total_tokens) == (8, 7, 999)
+    assert observation.usage_scope == "response_metadata"
+    assert observation.native_model_call_count is None
+
+
+@pytest.mark.parametrize("usage", [{}, {"total_price": "NaN", "currency": "USD"}, {"total_price": 0.1}])
+def test_request_metrics_missing_or_invalid_usage_is_unknown_not_zero(usage):
+    raw = _success()
+    raw["metadata"]["usage"] = usage
+    raw["workflow_run_id"] = "app-secret-cannot-be-a-native-run-id"
+    response = DifyClient(
+        _config(), client=httpx.Client(transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json=raw),
+        )),
+    ).invoke(_binding(), api_key="app-key", query="질문",
+             user="ltm_0123456789abcdef", inputs=_inputs())
+    assert response.telemetry.total_tokens is None
+    assert response.telemetry.reported_cost is None
+    assert response.telemetry.native_model_call_count is None
+    assert response.telemetry.workflow_run_id is None
+
+
+@pytest.mark.parametrize(("failure", "transport", "status"), [
+    ("http", "failed", 503), ("timeout", "failed", None),
+    ("network", "failed", None), ("json", "succeeded", 200),
+    ("retrieval", "succeeded", 200), ("policy", "not_attempted", None),
+    ("circuit", "not_attempted", None),
+])
+def test_request_failure_preserves_transport_observation(failure, transport, status):
+    clock = [0.0]
+    def handler(request):
+        clock[0] = 0.125
+        if failure == "timeout":
+            raise httpx.ReadTimeout("private network description", request=request)
+        if failure == "network":
+            raise httpx.ConnectError("private network description", request=request)
+        if failure == "http":
+            return httpx.Response(503, text="private upstream body")
+        if failure == "json":
+            return httpx.Response(200, text="not json private body")
+        return httpx.Response(200, json=_success())
+    breaker = CircuitBreaker(failure_threshold=1)
+    if failure == "circuit":
+        breaker.record_failure()
+    client = DifyClient(
+        _config(), client=httpx.Client(transport=httpx.MockTransport(handler)),
+        breaker=breaker, clock=lambda: clock[0],
+    )
+    with pytest.raises(MaxisGatewayError) as caught:
+        client.invoke(
+            _binding(), api_key="app-key", query="invalid" if failure == "policy" else "질문",
+            user="ltm_0123456789abcdef", inputs=_inputs(), workflow_id=WORKFLOW_ID,
+            expected_knowledge_dataset_id=(
+                "11111111-1111-4111-8111-111111111111" if failure == "retrieval" else ""
+            ),
+        )
+    observation = caught.value.telemetry
+    assert observation.transport_status == transport
+    assert observation.http_status == status
+    assert observation.latency_ms == (0 if transport == "not_attempted" else 125)
+    assert observation.requested_workflow_id == WORKFLOW_ID
+    assert observation.native_model_call_count is None
+    assert "private" not in observation.model_dump_json()
+
+
 def test_invoke_is_blocking_stateless_and_uses_canonical_v1_url():
     observed = {}
 

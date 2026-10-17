@@ -21,6 +21,26 @@ Epic/Story/Sub-Task 트리를 만든다. 모든 쓰기는 **사용자 승인 후
 - **retrieval/** — RAG 2계층(정적 규칙 + 동적 증분) → [retrieval/README.md](retrieval/README.md)
 - **workflow/** — `role_manifest.py` 기반 LangGraph 멀티 에이전트 + HITL 중단/재개
   → [workflow/README.md](workflow/README.md). 바깥에서 부르는 것은 `workflow/session.py` 하나다.
+- **maxis/** — 환경별 MAXIS/Dify 호출·근거·응답·감사 경계. 기존 Role 호출은
+  `backend.invoke()`에서 `DifyClient`를 거쳐 원격으로 전달된다.
+
+## MAXIS 요청 계측
+
+- `telemetry.py`의 `maxis-request-telemetry.v1`은 원격 요청의 실제 전송 결과와
+  요청한 published workflow ID, 서버가 반환한 native workflow run UUID를 연결한다.
+  UUID가 없거나 유효하지 않으면 누락 상태를 유지하며, message/task ID는 해시만 감사 로그에 기록한다.
+- 기존 `remote_role.invoke` 감사 행의 `remote_request`와 반환 metadata의
+  `requestTelemetry`에 동일 관측을 연결한다. HTTP 전송 성공과 로컬 응답 검증 결과
+  (`completed`, `needs_input`, `blocked`, `failed`)를 구별한다. `completed`는 계약 수용이지
+  사람이 실제 사용할 수 있는 품질의 증명이 아니며, `quality_status`는 `not_evaluated`다.
+- `latency_ms`는 HTTP 요청 구간, 감사 행의 `runtime_latency_ms`는 해당 Role 호출의
+  로컬 검증을 포함한 구간이다. 사용자 요청 전체나 중첩 Workflow별 소요시간이 아니다.
+- 토큰·비용은 Dify 응답의 `metadata.usage`에서 제공된 값만 기록한다. 비용은 유효한 통화가
+  함께 제공되어야 하며, 이는 중첩 모델 전체의 합계라는 보장이 없다. 누락 값과 native 모델 호출
+  수는 `null`로 유지한다. 기존 `usage` 호환 필드 대신 `requestTelemetry`를 미측정 구분에 사용한다.
+  서로 맞지 않는 prompt/completion/total 값도 임의로 보정하지 않으며, 회계 정합성을 검증한 합계가 아니다.
+- 원문 질문·응답·조회 내용·추론·키는 이 계측에 저장하지 않는다. HTTP 실패·시간 초과·JSON/근거
+  거부도 내용 없는 관측을 감사 로그에 남기며, 감사 요약은 전송·결과별 건수만 추가로 제공한다.
 
 ## 규칙
 

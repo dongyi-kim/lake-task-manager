@@ -17,10 +17,13 @@ import logging
 import math
 import re
 import secrets
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, Protocol, runtime_checkable
 from urllib.parse import urlsplit
+
+from app.agent.maxis.telemetry import with_result_status
 
 
 log = logging.getLogger("agent.maxis.runtime")
@@ -1582,10 +1585,19 @@ def _record_remote_audit(
     citation_count: int = 0,
     warning_count: int = 0,
     error_code: str = "",
+    remote_request=None,
+    runtime_started: float | None = None,
+    result_status: str = "",
 ) -> None:
     """Append one bounded lifecycle row; content and exception text are impossible inputs."""
     try:
         from app.agent.maxis.audit import make_audit_event, record_audit_event
+
+        outcome = result_status or {
+            "started": "not_evaluated", "succeeded": "completed",
+            "blocked": "blocked", "failed": "failed",
+        }[status]
+        observed = with_result_status(remote_request, outcome)
 
         event = make_audit_event(
             correlation_id=_audit_correlation(correlation_id),
@@ -1605,6 +1617,11 @@ def _record_remote_audit(
             citation_count=min(100, max(0, int(citation_count or 0))),
             warning_count=min(100, max(0, int(warning_count or 0))),
             error_code=error_code,
+            remote_request=observed,
+            runtime_latency_ms=(
+                min(3_600_000, max(0, int((time.monotonic() - runtime_started) * 1000)))
+                if runtime_started is not None else None
+            ),
         )
         record_audit_event(event)
     except Exception as exc:
@@ -1781,6 +1798,7 @@ def invoke(
     allow_guarded_person_references: bool = False,
 ) -> dict:
     """Invoke one configured Dify Role and normalize only its typed envelope."""
+    runtime_started = time.monotonic()
     state = {
         "runtime_engine": (payload.get("runtime") or {}).get("engine", ""),
         "runtime_profile": (payload.get("runtime") or {}).get("profile", ""),
@@ -1845,6 +1863,7 @@ def invoke(
         "role_id": role_id,
         "input_bytes": input_bytes,
         "source_count": source_count,
+        "runtime_started": runtime_started,
     }
     _record_remote_audit(status="started", **audit_common)
     try:
@@ -1987,9 +2006,15 @@ def invoke(
         _record_remote_audit(
             status="blocked" if blocked else "failed",
             error_code=("gateway_" + code)[:80],
+            remote_request=getattr(exc, "telemetry", None),
+            latency_ms=getattr(getattr(exc, "telemetry", None), "latency_ms", 0),
             **audit_common,
         )
         raise MaxisRuntimeError(f"MAXIS Role 호출에 실패했습니다: {role_id}") from exc
+
+    # Carry the native request observation through every post-HTTP rejection branch.
+    # HTTP success alone is neither contract acceptance nor measured human usefulness.
+    audit_common["remote_request"] = getattr(response, "telemetry", None)
 
     # A manager may flip the kill switch or change routes/profile while the blocking
     # Dify call is in flight.  Revalidate before reading or projecting any remote
@@ -2105,6 +2130,10 @@ def invoke(
             "messageId": str(getattr(response, "message_id", "") or ""),
             "knowledgeRetrieval": retrieval_metadata,
             "latencyMs": latency_ms,
+            "requestTelemetry": (
+                with_result_status(response.telemetry, "needs_input").model_dump(mode="json")
+                if getattr(response, "telemetry", None) is not None else None
+            ),
             "usage": {
                 "promptTokens": int(getattr(usage, "prompt_tokens", 0) or 0),
                 "completionTokens": int(getattr(usage, "completion_tokens", 0) or 0),
@@ -2113,6 +2142,7 @@ def invoke(
         }
         _record_remote_audit(
             status="succeeded", latency_ms=latency_ms,
+            result_status="needs_input",
             output_bytes=len(answer.encode("utf-8")),
             citation_count=len(envelope.citations),
             warning_count=len(envelope.warnings), **audit_common,
@@ -2194,6 +2224,10 @@ def invoke(
             "messageId": str(getattr(response, "message_id", "") or ""),
             "knowledgeRetrieval": retrieval_metadata,
             "latencyMs": latency_ms,
+            "requestTelemetry": (
+                with_result_status(response.telemetry, "completed").model_dump(mode="json")
+                if getattr(response, "telemetry", None) is not None else None
+            ),
             "usage": {
                 "promptTokens": int(getattr(usage, "prompt_tokens", 0) or 0),
                 "completionTokens": int(getattr(usage, "completion_tokens", 0) or 0),

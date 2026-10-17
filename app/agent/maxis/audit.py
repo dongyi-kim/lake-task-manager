@@ -18,6 +18,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
 
 from app.agent.maxis.context_guard import ContextGuardError, assert_safe_outbound_text
+from app.agent.maxis.telemetry import RemoteRequestTelemetryV1
 
 
 DEFAULT_AUDIT_PATH = Path(".cache") / "maxis_audit.jsonl"
@@ -173,7 +174,7 @@ class AuditEventV1(BaseModel):
     ]
     status: Literal["started", "succeeded", "failed", "blocked"]
     profile: Annotated[str, Field(min_length=1, max_length=64, pattern=_SAFE_CODE)]
-    stage: Literal["dev", "prod", "test"]
+    stage: Literal["dev", "internal-pilot", "prod", "test"]
     route_mode: Literal["local", "shadow", "maxis", "disabled"]
     workflow_key: Annotated[
         str, Field(min_length=1, max_length=64, pattern=_SAFE_CODE)
@@ -204,6 +205,8 @@ class AuditEventV1(BaseModel):
         str, Field(default="", pattern=r"^(?:|[0-9a-f]{64})$")
     ] = ""
     change_binding: ChangeAuditBindingV1 | None = None
+    remote_request: RemoteRequestTelemetryV1 | None = None
+    runtime_latency_ms: int | None = Field(default=None, ge=0, le=3_600_000)
 
     @model_validator(mode="after")
     def validate_event(self, info: ValidationInfo):
@@ -259,6 +262,8 @@ class AuditLogSummaryV1(BaseModel):
     status_counts: tuple[AuditCountV1, ...] = ()
     event_counts: tuple[AuditCountV1, ...] = ()
     error_counts: tuple[AuditCountV1, ...] = ()
+    transport_counts: tuple[AuditCountV1, ...] = ()
+    result_counts: tuple[AuditCountV1, ...] = ()
     latest_at: datetime | None = None
 
 
@@ -268,7 +273,7 @@ def make_audit_event(
     event: str,
     status: Literal["started", "succeeded", "failed", "blocked"],
     profile: str,
-    stage: Literal["dev", "prod", "test"],
+    stage: Literal["dev", "internal-pilot", "prod", "test"],
     route_mode: Literal["local", "shadow", "maxis", "disabled"],
     workflow_key: str,
     workflow_version: str = "",
@@ -285,6 +290,8 @@ def make_audit_event(
     request_sha256: str = "",
     change_binding: ChangeAuditBindingV1 | dict | None = None,
     occurred_at: datetime | None = None,
+    remote_request: RemoteRequestTelemetryV1 | None = None,
+    runtime_latency_ms: int | None = None,
 ) -> AuditEventV1:
     """Build a safe audit row; no prompt, answer, payload, key, or token parameter exists."""
 
@@ -314,6 +321,8 @@ def make_audit_event(
             validate_change_audit_binding(change_binding)
             if change_binding is not None else None
         ),
+        remote_request=remote_request,
+        runtime_latency_ms=runtime_latency_ms,
     )
 
 
@@ -497,6 +506,12 @@ def read_audit_summary(
         status_counts=_counts(row.status for row in rows),
         event_counts=_counts(row.event for row in rows),
         error_counts=_counts(row.error_code for row in rows),
+        transport_counts=_counts(
+            row.remote_request.transport_status for row in rows if row.remote_request
+        ),
+        result_counts=_counts(
+            row.remote_request.result_status for row in rows if row.remote_request
+        ),
         latest_at=latest,
     )
 

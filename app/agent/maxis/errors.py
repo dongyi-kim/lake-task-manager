@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.agent.maxis.telemetry import RemoteRequestTelemetryV1
 
 
 class MaxisErrorCode(str, Enum):
@@ -32,10 +36,12 @@ class MaxisGatewayError(RuntimeError):
         *,
         status_code: int | None = None,
         retryable: bool = False,
+        telemetry: RemoteRequestTelemetryV1 | None = None,
     ):
         self.code = code
         self.status_code = status_code
         self.retryable = retryable
+        self.telemetry = telemetry
         suffix = f" (HTTP {status_code})" if status_code is not None else ""
         super().__init__(f"MAXIS gateway error: {code.value}{suffix}")
 
