@@ -1276,7 +1276,9 @@ def test_query_runner_preserves_23h_swr_cache_age_and_blocks_remote_draft(monkey
             "work_architect", state, [], {"type": "object"},
             output_kind="structured",
         )
-        assert payload["evidencePack"]["freshness"] == "stale"
+        # A fresh request citation does not refresh the stale connector observation.
+        assert payload["evidencePack"]["freshness"] == "mixed"
+        assert "stale_source" in payload["evidencePack"]["flags"]
         assert payload["evidencePack"]["partial"] is True
         monkeypatch.setattr(
             backend, "resolve_role",

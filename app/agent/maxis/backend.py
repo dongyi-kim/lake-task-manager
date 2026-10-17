@@ -1105,6 +1105,36 @@ def _known_identity_values(state: dict, cfg: Any) -> tuple[str, ...]:
     return tuple(sorted(identities))
 
 
+def _reference_work_intent_context(
+    rows: list[dict], intent: str, source_index: int,
+) -> list[dict]:
+    """Deduplicate exact request text in read-only Work context, not local State.
+
+    ``{"source_content_index": N}`` in request_plan.goal or a task's instruction
+    denotes sources[N].content in this EvidencePack: complete guarded user-intent
+    text, never factual authority. The integer survives identity redaction without
+    exempting any user text. Citation IDs still come from that source row.
+    Other plan fields/values are unchanged.
+    Call only after _role_context checks carryover digests and observation times
+    against the original value; projected references must not refresh old context.
+    """
+    projected = []
+    for row in rows:
+        if row["name"] != "request_plan" or not isinstance(row["value"], dict):
+            projected.append(row)
+            continue
+        plan = _json_value(row["value"])
+        if plan.get("goal") == intent:
+            plan["goal"] = {"source_content_index": source_index}
+        tasks = plan.get("tasks")
+        if isinstance(tasks, list):
+            for task in tasks:
+                if isinstance(task, dict) and task.get("instruction") == intent:
+                    task["instruction"] = {"source_content_index": source_index}
+        projected.append({**row, "value": plan})
+    return projected
+
+
 def _allowed_source_hosts(cfg: Any) -> dict[str, tuple[str, ...]]:
     hosts: dict[str, tuple[str, ...]] = {}
     for kind, attr in (
@@ -1306,6 +1336,7 @@ def _context_pack(
         # policy vocabulary, never facts, before the ordinary ContextGuard checks.
         from app.agent.maxis.retrieval_query import enrich_role_query
         query = enrich_role_query(query, role_id, payload_schema)
+    original_query = query
     cfg = settings()
     role_context, allowed_context_keys = _role_context(role_id, state)
     requested_at = datetime.now(timezone.utc)
@@ -1328,18 +1359,24 @@ def _context_pack(
         }]
         role_context = []
         allowed_context_keys = ()
-    elif explicit_user_intent and (not sources or role_id == "editor_author"):
+    elif explicit_user_intent and (
+        not sources or role_id in {"editor_author", "work_architect"}
+    ):
         # RequestArchitect and other pre-retrieval semantic Roles legitimately derive
         # plans or responses from the user's guarded intent before QueryRunner has any
         # citation-grade connector result.  The intent already crosses the boundary in
         # ``query``; represent that same bounded material as an LTM-owned source so a
         # remote Role must cite it instead of using the source-free provenance escape
-        # hatch. Outside Editor this applies only with an empty retrieval ledger;
-        # an intent row must never displace any authoritative read source.
+        # hatch. Work Architect also needs the requested work as a citeable
+        # recommendation beside connector facts; a read does not attest the user's
+        # reproduction, scope, or desired outcome. Other Roles retain the empty-ledger
+        # policy. An intent row must never displace an authoritative read source.
         # Editor additionally needs its exact requested target/mode/seed to be a
         # citeable *intent*, not an external fact. This enables verbatim seed
         # preservation in the remote assembler without inventing provenance.
         intent_content = user_intent
+        if role_id == "work_architect" and len(sources) >= 10:
+            raise MaxisRuntimeError("MAXIS Work Architect 요청 근거를 추가할 공간이 없습니다.")
         if role_id == "editor_author":
             if len(sources) >= 10:
                 raise MaxisRuntimeError("MAXIS Editor 요청 근거를 추가할 공간이 없습니다.")
@@ -1354,8 +1391,9 @@ def _context_pack(
         intent_identity = hashlib.sha256(
             f"{request_id}:{role_id}".encode("utf-8")
         ).hexdigest()
+        intent_source_id = "src_intent_" + intent_identity[:20]
         sources = [*sources, {
-            "source_id": "src_intent_" + intent_identity[:20],
+            "source_id": intent_source_id,
             "kind": "ltm",
             "canonical_id": "ltm:user-intent:" + intent_identity[:32],
             "title": _USER_INTENT_SOURCE_TITLE,
@@ -1366,6 +1404,18 @@ def _context_pack(
             "updated_at": None,
             "partial": False,
         }]
+        if role_id == "work_architect" and len(sources) > 1:
+            # Keep the request once, in citation-grade *intent*, alongside reads.
+            # The original query also passes ContextGuard below, including identity
+            # expansion; references cannot admit an otherwise oversized request.
+            # ContextGuard checks all content and marks budget truncation as partial;
+            # invoke's existing freshness policy blocks such draft inputs.
+            query = enrich_role_query(
+                "Use the guarded user intent source.", role_id, payload_schema,
+            )
+            role_context = _reference_work_intent_context(
+                role_context, user_intent, len(sources) - 1,
+            )
     allowed_scopes = (
         {"jira": (), "confluence": (), "bitbucket": ()}
         if synthetic_only else {
@@ -1398,6 +1448,12 @@ def _context_pack(
         raise MaxisRuntimeError(
             "MAXIS Knowledge manifest SHA-256이 대화에 고정되지 않았습니다."
         )
+    identity_values = () if synthetic_only else _known_identity_values(state, cfg)
+    if query != original_query:
+        original_identities = tuple(dict.fromkeys(
+            value.strip() for value in (*identity_values, identity) if value.strip()
+        ))
+        guard.guard_query(original_query, original_identities)
     return guard.build(
         request_id=request_id,
         use_case=role_id,
@@ -1406,7 +1462,7 @@ def _context_pack(
         user_identity=identity,
         sources=sources,
         role_context=role_context,
-        identity_values=(() if synthetic_only else _known_identity_values(state, cfg)),
+        identity_values=identity_values,
         additional_flags=(("synthetic_only",) if synthetic_only else ()),
         requested_at=requested_at,
         knowledge_manifest_sha256=knowledge_manifest_sha256,

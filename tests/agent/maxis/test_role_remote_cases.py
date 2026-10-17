@@ -130,8 +130,11 @@ def test_specialized_reviews_registered_canonically_and_detached():
         "expected"]["caseOutcomes"]["role-request"]["kind"] == "payload"
 
 
-def test_offline_outputs_remain_byte_identical_to_pre_refactor_baseline():
-    # This adapter refactor must not silently revise the existing offline battery.
+def test_offline_projections_pin_explicit_work_intent_revision_and_other_roles():
+    # Work's runtime projection intentionally adds citeable intent and lossless text
+    # references. Its old digest was c0da8ce977201243e1365aa607c19720191c7a65621c1078d8e76e2419f38c2f;
+    # this pins the new projection, not a rewrite of historical raw evaluation data.
+    # All other fixtures remain identical to the pre-adapter-refactor baseline.
     # Freeze the pre-policy-retrieval runtime for this fixture-input regression;
     # actual candidate projections are exercised by the tests above and runtime tests.
     from app.agent.maxis.retrieval_query import enrich_role_query
@@ -142,7 +145,7 @@ def test_offline_outputs_remain_byte_identical_to_pre_refactor_baseline():
         "role-request": "6bdb057ce99fcee97e1f7368dbad5b899850261f536729a1e8c9a5097b7dd809",
         "role-query": "89aec58d6306dddb42ff197b8076a3be62f3367f8fa98ef518b2a77fbba8bfa3",
         "role-knowledge": "a183fa5abd1960b4531040ced6941209d9c2cefe7bec21efc40d22c2196fd9e3",
-        "role-work": "c0da8ce977201243e1365aa607c19720191c7a65621c1078d8e76e2419f38c2f",
+        "role-work": "f6159f40b07330ffb436b21e9963823f9b7337d7a171a69ff179b10c4868921e",
         "role-auditor": "8dcb5612eb5d8b03125cf7941b79ef302d9471714e5dcfda4bd1372add4ceb4f",
         "role-result": "c10afa5157a3f34402141c84af0e623a30b17be5a3fa5bb85f74cf92abba80e6",
         "role-portfolio": "f585f21c92ba86f8021ad5145e98875fbae9f1c92352b1fed8ef57f71554b2c2",

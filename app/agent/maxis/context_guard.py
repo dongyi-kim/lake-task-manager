@@ -498,6 +498,22 @@ class ContextGuard:
     def _check_sensitive(value: str, path: str) -> None:
         assert_safe_outbound_text(value, path)
 
+    def guard_query(self, query: str, identities: tuple[str, ...]) -> str:
+        """Enforce the query boundary before any lossless reference projection.
+
+        Callers supply the same normalized local identities used for pack building;
+        byte limits apply after pseudonymization, which can expand short names.
+        """
+        if not isinstance(query, str) or not query.strip():
+            raise ContextGuardError("query_required", "query")
+        clean_query = self._pseudonymize(query.strip(), identities)
+        if _utf8_bytes(clean_query) > MAX_QUERY_UTF8_BYTES:
+            # A query is intent, not optional context. Silent prefix truncation can
+            # change its meaning, so overflow must stop before any remote call.
+            raise ContextGuardError("query_too_large", "query")
+        self._check_sensitive(clean_query, "query")
+        return clean_query
+
     def _validate_scope(self, kind: str, scope: str, path: str) -> None:
         if kind in {"knowledge", "ltm"}:
             return
@@ -571,14 +587,7 @@ class ContextGuard:
                 if value.strip()
             )
         )
-        if not isinstance(query, str) or not query.strip():
-            raise ContextGuardError("query_required", "query")
-        clean_query = self._pseudonymize(query.strip(), identities)
-        if _utf8_bytes(clean_query) > MAX_QUERY_UTF8_BYTES:
-            # A query is intent, not optional context. Silent prefix truncation can
-            # change its meaning, so overflow must stop before any remote call.
-            raise ContextGuardError("query_too_large", "query")
-        self._check_sensitive(clean_query, "query")
+        clean_query = self.guard_query(query, identities)
 
         selected_plus_one = list(islice(iter(sources), self.policy.max_sources + 1))
         selected = selected_plus_one[: self.policy.max_sources]

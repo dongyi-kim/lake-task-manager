@@ -29,6 +29,16 @@ Epic/Story/Sub-Task 트리를 만든다. 모든 쓰기는 **사용자 승인 후
   preview 결과는 graph draft/승인으로 채택하지 않으며 기존 route·쓰기 권한을 변경하지 않는다.
   [TaskFlow 계약과 활성화 전 조건](../../deploy/maxis-dify/taskflow-v1.md)을 참고한다.
 
+## MAXIS Work 입력 근거
+
+Work Architect는 조회 근거가 있을 때도 사용자 요청을 별도의 `ltm:user-intent:` 출처로
+보존한다. 중복 없는 전송을 위해 query는 이 출처를 안내하고, remote `request_plan`의
+`goal`·`tasks[].instruction` 중 요청과 정확히 같은 문자열만
+`{"source_content_index": N}`으로 표현한다. 이는 해당 EvidencePack의 `sources[N].content`
+전체를 뜻하는 읽기 전용 텍스트 참조이며 외부 사실의 근거가 아니다. 숫자 index에는 사용자
+문자열 redaction 예외가 필요 없다. 원래 query의 DLP·크기 검사, 원래 plan의 관측 시각,
+출처·전체 입력 한도와 partial/stale 초안 차단은 그대로 적용한다.
+
 ## MAXIS 요청 계측
 
 - `telemetry.py`의 `maxis-request-telemetry.v1`은 원격 요청의 실제 전송 결과와
