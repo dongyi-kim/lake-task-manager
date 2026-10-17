@@ -56,7 +56,7 @@ def case(context_guard, now):
     incoming = {"contract": "ltm-model-input.v1", "context_pack": pack.model_dump(mode="json"),
         "role_id": "query_specialist", "correlation_id": pack.request_id, "output_contract": "remote-role-result.v1",
         "workflow_version": VERSION, "knowledge_version": "kb-test", "knowledge_proof": PROOF, "knowledge_context": []}
-    draft = {"contract": "query-draft.v1", "status": "ok", "payload": {"reads": [{
+    draft = {"contract": "query-draft.v2", "status": "ok", "payload": {"reads": [{
         "source": leaf("confluence"), "subject": leaf("데이터 자산"), "where": leaf("변경 이력", "inference")}]},
         "missing_inputs": []}
     return pack, incoming, draft
@@ -84,7 +84,10 @@ def test_schema_derives_value_constraints_and_retains_optional_fields(compiled):
     assert "required" not in payload
     for field in ("source", "subject", "where"):
         assert row["properties"][field]["properties"]["value"] == original["properties"][field]
-    assert row["properties"]["exhaustive"] == {"enum": [False, True]}
+    assert original["properties"]["exhaustive"] == {"type": "boolean"}
+    assert "exhaustive" not in row["properties"]
+    assert row["properties"]["coverage"] == {"type": "string", "enum": ["exhaustive", "standard"]}
+    assert draft["properties"]["contract"]["enum"] == ["query-draft.v2"]
     assert payload["properties"]["reads"]["maxItems"] == canonical["properties"]["reads"]["maxItems"]
     assert "$ref" not in encoded(draft) and "$defs" not in encoded(draft)
     assert ns["_MAX_CONTEXT_PACK_UTF8_BYTES"] == MAX_CONTEXT_PACK_UTF8_BYTES
@@ -121,17 +124,89 @@ def test_assembly_uses_exact_values_kinds_and_metadata_then_both_guards(compiled
     assert remote == result and local()[0].status == "ok"
 
 
-@pytest.mark.parametrize("value", [False, True])
-def test_actual_boolean_and_uncertainty_are_preserved_without_boolean_binding(compiled, case, value):
+@pytest.mark.parametrize("coverage,value", [("standard", False), ("exhaustive", True)])
+def test_coverage_maps_exactly_to_canonical_boolean_without_changing_narratives(compiled, case, coverage, value):
     pack, incoming, draft = case
-    draft["payload"]["reads"][0]["exhaustive"] = value
+    draft["payload"]["reads"][0]["coverage"] = coverage
     draft["payload"]["uncertainty"] = [leaf("이력의 조회 기간 확인 필요", "inference")]
+    original = copy.deepcopy((incoming, draft))
+    Draft202012Validator(compiled[1]).validate(draft)
     result = assemble(compiled, incoming, draft)
+    assert (incoming, draft) == original
     assert result["payload"]["reads"][0]["exhaustive"] is value
-    assert not any(row["path"].endswith("exhaustive") for row in result["payload_claims"])
+    assert result["payload"]["reads"][0] == {
+        "source": "confluence", "subject": "데이터 자산", "where": "변경 이력", "exhaustive": value}
+    assert [row["text"] for row in result["claims"]] == ["confluence", "데이터 자산", "변경 이력", "이력의 조회 기간 확인 필요"]
+    assert [row["kind"] for row in result["claims"]] == ["recommendation", "recommendation", "inference", "inference"]
+    assert result["citations"] == [{"citation_id": "cite-1", "source_id": "src_intent_query", "locator": ""}]
+    assert not any(row["path"].endswith(("exhaustive", "coverage")) for row in result["payload_claims"])
     assert result["payload_claims"][-1]["path"] == "/uncertainty/0"
     remote, local = guards(pack, result)
     assert remote == result and local()[1].reads[0].exhaustive is value
+
+
+def test_omitted_coverage_preserves_absent_canonical_exhaustive(compiled, case):
+    pack, incoming, draft = case
+    Draft202012Validator(compiled[1]).validate(draft)
+    result = assemble(compiled, incoming, draft)
+    assert "coverage" not in result["payload"]["reads"][0]
+    assert "exhaustive" not in result["payload"]["reads"][0]
+    remote, local = guards(pack, result)
+    assert remote == result and local()[0].status == "ok"
+
+
+@pytest.mark.parametrize("value", ["false", "true", False, True, 0, 1, 1.0, None, "", "EXHAUSTIVE",
+                                   "Standard", "exhaustive ", " standard", "unknown", [], {}])
+def test_invalid_coverage_is_rejected_without_repair_or_default(compiled, case, value):
+    _, incoming, draft = case
+    draft["payload"]["reads"][0]["coverage"] = value
+    original = copy.deepcopy(draft)
+    assert not Draft202012Validator(compiled[1]).is_valid(draft)
+    with pytest.raises(ValueError, match="^invalid_core_query_draft$"):
+        assemble(compiled, incoming, draft)
+    assert draft == original
+
+
+@pytest.mark.parametrize("value", [False, True, "false", "true", 0, 1])
+def test_canonical_exhaustive_field_is_forbidden_in_internal_v2_draft(compiled, case, value):
+    _, incoming, draft = case
+    draft["payload"]["reads"][0]["exhaustive"] = value
+    assert not Draft202012Validator(compiled[1]).is_valid(draft)
+    with pytest.raises(ValueError, match="^invalid_core_query_draft$"):
+        assemble(compiled, incoming, draft)
+
+
+@pytest.mark.parametrize("coverage", [None, "standard", "exhaustive"])
+def test_previous_draft_version_is_rejected_without_alias(compiled, case, coverage):
+    _, incoming, draft = case
+    draft["contract"] = "query-draft.v1"
+    if coverage is not None:
+        draft["payload"]["reads"][0]["coverage"] = coverage
+    assert not Draft202012Validator(compiled[1]).is_valid(draft)
+    with pytest.raises(ValueError, match="^invalid_core_query_draft$"):
+        assemble(compiled, incoming, draft)
+
+
+def test_coverage_wire_has_no_boolean_type_for_dify_to_rewrite(compiled):
+    schema = compiled[1]
+    rewritten = json.loads(encoded(schema), object_hook=lambda row:
+        {**row, "type": "string"} if row.get("type") == "boolean" else row)
+    assert rewritten == schema
+    fields = rewritten["properties"]["payload"]["anyOf"][1]["properties"]["reads"]["items"]["properties"]
+    assert fields["coverage"] == {"type": "string", "enum": ["exhaustive", "standard"]}
+    assert "exhaustive" not in fields
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None])
+def test_internal_adapter_does_not_loosen_external_boolean_guards(compiled, case, value):
+    pack, incoming, draft = case
+    draft["payload"]["reads"][0]["coverage"] = "standard"
+    result = assemble(compiled, incoming, draft)
+    result["payload"]["reads"][0]["exhaustive"] = value
+    remote, local = guards(pack, result)
+    assert remote["warnings"] == ["contract_guard:payload_type_mismatch"]
+    with pytest.raises(ResponseGuardError):
+        local()
 
 
 def test_fact_is_never_relabelled_to_bypass_intent_source_guard(compiled, case):

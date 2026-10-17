@@ -4,7 +4,7 @@ import json
 
 
 def build_draft_schema(canonical_schema: dict, project) -> dict:
-    """Preserve optional fields and scalar constraints; unknown canonical shapes require review."""
+    """Preserve canonical constraints; coverage is an explicit internal boolean wire adapter."""
     def fail():
         raise ValueError("Query draft canonical schema requires review")
 
@@ -67,11 +67,14 @@ def build_draft_schema(canonical_schema: dict, project) -> dict:
                 fail()
         for key in ("source", "subject", "where"):
             fields[key] = wrap(fields[key])
-        fields["exhaustive"] = {"enum": [False, True]}
+        # The external field remains a strict boolean. Only this internal draft
+        # uses two explicit wire labels; the assembler preserves optional absence.
+        del fields["exhaustive"]
+        fields["coverage"] = {"type": "string", "enum": ["exhaustive", "standard"]}
         uncertainty["items"] = wrap(uncertainty["items"])
         return {"type": "object", "additionalProperties": False,
             "required": ["contract", "status", "payload", "missing_inputs"], "properties": {
-                "contract": {"type": "string", "enum": ["query-draft.v1"]},
+                "contract": {"type": "string", "enum": ["query-draft.v2"]},
                 "status": {"type": "string", "enum": ["ok", "needs_input", "blocked"]},
                 "payload": {"anyOf": [{"type": "object", "additionalProperties": False, "maxProperties": 0}, payload]},
                 "missing_inputs": {"type": "array", "maxItems": 8,

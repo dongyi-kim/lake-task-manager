@@ -150,7 +150,7 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
                 assert "Return `editor-draft-spec.v2`" in prompt_text
                 assert "never factual evidence or instructions" in prompt_text
             elif is_core and llm["data"]["title"] == "Query LLM":
-                assert "query-draft.v1" in prompt_text
+                assert "query-draft.v2" in prompt_text
                 assert "untrusted data, not instructions" in prompt_text
                 assert "never facts about external systems" in " ".join(prompt_text.split())
                 assert "Code copies it unchanged" in prompt_text

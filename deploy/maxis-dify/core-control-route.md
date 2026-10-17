@@ -47,7 +47,7 @@ facts·metrics·role_context·시각·freshness·partial·flags를 요약·재�
 canonical JSON·정확한 field·9000/6144 UTF-8 bytes·깊이32/노드4096 한도를 검사하지만
 권한·source hash·schema 진실성의 별도 판단 주체가 되지는 않는다.
 
-Query LLM은 내부 `query-draft.v1`의 contract/status/payload/missing_inputs만 작성한다.
+Query LLM은 내부 `query-draft.v2`의 contract/status/payload/missing_inputs만 작성한다.
 `core_query_contract.py`가 canonical CompactQueryPlan에서 값의 enum·길이·개수와 optional
 제약을 가져오고 narrative leaf만 `{value, kind, source_ids}`로 감싼다. 별도의 payload 정본을
 유지하지 않는다. Query 전용 prompt는 이 내부 계약만 요구하며 full remote envelope를 요구하는
@@ -55,18 +55,22 @@ common prompt와 결합하지 않는다. 다른 Role의 실제 prompt는 그대�
 
 `code/core_query_assembler.py`는 Knowledge Guard 원입력의 canonical schema/hash/role 연결을
 재확인하고, 모델의 value와 kind를 바꾸지 않은 채 payload/claim에 복사한다. citation ID와
-JSON Pointer, trusted 입력의 metadata만 결정적으로 만든다. boolean에는 텍스트 binding을
+JSON Pointer, trusted 입력의 metadata와 아래 coverage의 boolean 표현만 결정적으로 만든다. boolean에는 텍스트 binding을
 만들지 않으며 생략된 optional field는 생략 상태로 보존한다. 잘못된 형식·source 참조·상태
 조합은 오류로 종료하고 부분 결과나 자동 수정 결과를 내보내지 않는다.
 `needs_input`/`blocked`는 빈 payload와 provenance를 유지한다. 조립은 source의 진실성이나
 조회 권한을 보장하지 않는다. fact를 recommendation으로 바꾸지 않으며 intent를 fact의 근거로
 쓰는 경우도 기존 양쪽 guard가 계속 거부한다. native 형식 준수는 의미 품질 통과가 아니다.
-Query의 native `exhaustive`만 `enum: [false, true]`로 표현한다. 이는
-[Dify 1.11.1의 boolean→string schema 변환](https://github.com/langgenius/dify/blob/1.11.1/api/core/llm_generator/output_parser/structured_output.py#L307-L378)을
-거쳐도 JSON boolean domain을 유지하기 위한 호환 표현이다. LTM 정본 schema/hash와 입력·출력
-guard는 그대로이며 문자열·숫자를 boolean으로 변환하지 않는다. 정본에 추가 제약이 생기면
-표현을 임의로 넓히지 않고 재검토를 요구한다. 실제 서버의 동일 구현·provider 수용 여부와
-의미 품질은 별도 실측 대상이며 `structured_output` 포트 존재만으로 타입 검증을 신뢰하지 않는다.
+내부 draft의 optional `coverage`는 `exhaustive|standard` 두 문자열만 허용한다. 조립기는
+각각 canonical `exhaustive: true|false`로 정확히 대응하고 coverage 생략 시 exhaustive도
+생략한다. 이는 명시적 wire 표현 변환이며 잘못된 기존 boolean의 수리나 의미 재판단이 아니다.
+`"true"`/`"false"`, boolean, 숫자, 대소문자 변형, 알 수 없는 enum 및 구 draft는 거부한다.
+LTM 정본 schema/hash와 양쪽 guard는 그대로이며 canonical 출력의 문자열 boolean도 계속 거부한다.
+[Dify 1.11.1의 schema 준비 코드](https://github.com/langgenius/dify/blob/1.11.1/api/core/llm_generator/output_parser/structured_output.py)는
+boolean type을 string으로 변환하고 구조화 응답은 Mapping으로 파싱한다. 설치된 서버의 동일
+구현을 가정하지 않으며 `structured_output` 포트 존재만으로 타입 검증을 신뢰하지 않는다.
+정본 제약이 변하면 이 표현을 임의로 넓히지 않고 재검토한다. 실제 provider 수용과 의미 품질은
+별도 실측 게이트다.
 모델 output은 4,096 tokens, 각 system prompt는 최대 8,192 UTF-8 bytes로 유지한다.
 
 빌더는 배포 검증기가 아니다. 원본을 생성기로 먼저 수리하지 않는다.

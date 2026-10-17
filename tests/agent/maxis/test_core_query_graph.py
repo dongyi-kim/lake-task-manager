@@ -87,9 +87,13 @@ def draft(candidate):
         for field in ("source", "subject", "where"):
             if field in read:
                 read[field] = wrap(read[field])
+        if "exhaustive" in read:
+            value = read.pop("exhaustive")
+            assert type(value) is bool
+            read["coverage"] = "exhaustive" if value else "standard"
     if "uncertainty" in payload:
         payload["uncertainty"] = [wrap(value) for value in payload["uncertainty"]]
-    return {"contract": "query-draft.v1", "status": candidate["status"], "payload": payload,
+    return {"contract": "query-draft.v2", "status": candidate["status"], "payload": payload,
             "missing_inputs": list(candidate["missing_inputs"])}
 
 
@@ -115,9 +119,10 @@ def test_query_native_contract_is_resolved_and_both_guards_accept_complete_candi
 @pytest.mark.parametrize("bad", ["true", "false", "TRUE", 0, 1, None])
 def test_query_native_schema_and_both_guards_reject_non_boolean_without_coercion(nodes, query_case, bad):
     pack, model_input, candidate = query_case
+    selected = draft(candidate)
+    selected["payload"]["reads"][0]["coverage"] = bad
     candidate["payload"]["reads"][0]["exhaustive"] = bad
     before = copy.deepcopy(candidate)
-    selected = draft(candidate)
     assert not Draft202012Validator(nodes[QUERY_ID]["structured_output"]["schema"]).is_valid(selected)
     with pytest.raises(ValueError, match="invalid_core_query_draft"):
         assemble(nodes, model_input, selected)
@@ -130,7 +135,8 @@ def test_query_native_schema_and_both_guards_reject_non_boolean_without_coercion
 @pytest.mark.parametrize("value", [False, True])
 def test_query_boolean_domain_survives_dify_native_schema_preparation(nodes, query_case, value):
     # Dify 1.11.1 structured_output.py::convert_boolean_to_string rewrites type
-    # declarations recursively before the native call, but not boolean enum values.
+    # declarations recursively before the native call. The draft uses an explicit
+    # string enum; only the assembler emits the canonical JSON boolean.
     # Simulate that documented transformation, not an assumed provider response.
     schema = nodes[QUERY_ID]["structured_output"]["schema"]
     transformed = json.loads(encoded(schema), object_hook=lambda row:
@@ -139,6 +145,8 @@ def test_query_boolean_domain_survives_dify_native_schema_preparation(nodes, que
     pack, model_input, candidate = query_case
     candidate["payload"]["reads"][0]["exhaustive"] = value
     selected = draft(candidate)
+    assert selected["payload"]["reads"][0]["coverage"] == ("exhaustive" if value else "standard")
+    assert "exhaustive" not in selected["payload"]["reads"][0]
     Draft202012Validator(transformed).validate(selected)
     assembled = assemble(nodes, model_input, selected)
     assert remote(nodes, pack, assembled) == assembled
@@ -146,6 +154,34 @@ def test_query_boolean_domain_survives_dify_native_schema_preparation(nodes, que
     assert all(not row["path"].endswith("/exhaustive") for row in assembled["payload_claims"])
     canonical = json.loads(pack.payload_schema_json)
     assert canonical["$defs"]["QueryIntent"]["properties"]["exhaustive"]["type"] == "boolean"
+
+
+@pytest.mark.parametrize("bad", ["", False, True, "Standard", "exhaustive ", "all"])
+def test_embedded_coverage_adapter_never_guesses_an_unknown_choice(nodes, query_case, bad):
+    _, model_input, candidate = query_case
+    selected = draft(candidate)
+    selected["payload"]["reads"][0]["coverage"] = bad
+    before = copy.deepcopy(selected)
+    assert not Draft202012Validator(nodes[QUERY_ID]["structured_output"]["schema"]).is_valid(selected)
+    with pytest.raises(ValueError, match="invalid_core_query_draft"):
+        assemble(nodes, model_input, selected)
+    assert selected == before
+
+
+@pytest.mark.parametrize("mutation", ["old_contract", "old_boolean_field", "both_fields"])
+def test_embedded_coverage_adapter_rejects_legacy_or_mixed_wire_contract(nodes, query_case, mutation):
+    _, model_input, candidate = query_case
+    selected = draft(candidate)
+    read = selected["payload"]["reads"][0]
+    if mutation == "old_contract":
+        selected["contract"] = "query-draft.v1"
+    else:
+        read["exhaustive"] = True
+        if mutation == "old_boolean_field":
+            del read["coverage"]
+    assert not Draft202012Validator(nodes[QUERY_ID]["structured_output"]["schema"]).is_valid(selected)
+    with pytest.raises(ValueError, match="invalid_core_query_draft"):
+        assemble(nodes, model_input, selected)
 
 
 @pytest.mark.parametrize("status", ["blocked", "needs_input"])
@@ -194,7 +230,7 @@ def test_assembler_never_relabels_intent_facts_to_make_them_acceptable(nodes, qu
 def test_query_unit_does_not_receive_conflicting_remote_envelope_instructions(nodes):
     prompt = nodes[QUERY_ID]["prompt_template"][0]["text"]
     assert prompt == (ROOT / "deploy/maxis-dify/prompts/core_query.md").read_text(encoding="utf-8").strip()
-    assert "query-draft.v1" in prompt and "## Required response" not in prompt
+    assert "query-draft.v2" in prompt and "## Required response" not in prompt
     assert "Echo input `knowledge_proof`" not in prompt
 
 

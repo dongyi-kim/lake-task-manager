@@ -2,6 +2,8 @@
 
 Standalone Dify Code node, stdlib only. The builder appends the three reviewed
 schema constants. Unbound or malformed inputs fail without a partial candidate.
+Internal coverage labels map exactly to the unchanged canonical boolean; this
+wire adapter does not coerce malformed booleans or infer an omitted value.
 """
 import hashlib
 import json
@@ -14,6 +16,7 @@ _DRAFT_SCHEMA = None
 _MAX_CONTEXT_PACK_UTF8_BYTES = 6144  # app.agent.maxis.context_guard / Knowledge Guard
 _MAX_MODEL_INPUT_UTF8_BYTES = 9000  # Knowledge Guard output bound
 _MAX_DRAFT_UTF8_BYTES = 32768
+_COVERAGE_TO_EXHAUSTIVE = {"exhaustive": True, "standard": False}
 _INPUT_FIELDS = {"contract", "context_pack", "role_id", "correlation_id", "output_contract",
                  "workflow_version", "knowledge_version", "knowledge_proof", "knowledge_context"}
 _PACK_FIELDS = {"contract", "request_id", "use_case", "query", "pseudonymous_user", "requested_at", "scope",
@@ -159,7 +162,7 @@ def main(model_input, candidate):
         plan = _decode(candidate, _MAX_DRAFT_UTF8_BYTES)
         _validate(plan, _DRAFT_SCHEMA, _DRAFT_SCHEMA)
         status, payload, missing = plan["status"], plan["payload"], plan["missing_inputs"]
-        if (plan["contract"] != "query-draft.v1" or any(not value.strip() for value in missing)
+        if (plan["contract"] != "query-draft.v2" or any(not value.strip() for value in missing)
                 or status == "ok" and missing or status != "ok" and payload
                 or status == "needs_input" and not missing or status == "blocked" and missing):
             _fail()
@@ -186,8 +189,8 @@ def main(model_input, candidate):
             for index, read in enumerate(payload["reads"]):
                 row = {key: narrative(read[key], f"/reads/{index}/{key}")
                        for key in ("source", "subject", "where") if key in read}
-                if "exhaustive" in read:
-                    row["exhaustive"] = read["exhaustive"]
+                if "coverage" in read:
+                    row["exhaustive"] = _COVERAGE_TO_EXHAUSTIVE[read["coverage"]]
                 output["reads"].append(row)
         if "uncertainty" in payload:
             output["uncertainty"] = [narrative(row, f"/uncertainty/{index}") for index, row in enumerate(payload["uncertainty"])]

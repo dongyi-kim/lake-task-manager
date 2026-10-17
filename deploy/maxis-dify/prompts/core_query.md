@@ -29,7 +29,7 @@ and technical names exactly; do not create redundant reads with paraphrased subj
 Omit optional empty fields. Use `uncertainty` only for a specific unresolved planning
 choice, not generic warnings or questions about already supplied information.
 
-## Output: `query-draft.v1` only
+## Output: `query-draft.v2` only
 
 Return one JSON object: `contract`, `status`, `payload`, `missing_inputs`.
 Do not emit Markdown, an outer remote-role envelope, metadata, claim/citation IDs,
@@ -44,7 +44,10 @@ its narrative strings are wrapped so you write each value only once:
 - `value` is the final text. Code copies it unchanged into the payload and linked
   claim, preserving your `kind` and selected sources. Do not write a second summary
   or manually construct its binding. Each populated narrative needs supporting refs.
-- `exhaustive`, when supplied, is a JSON boolean, never a string or numeric value.
+- Optional `coverage` is exactly `exhaustive` for exhaustive reading or `standard`
+  for standard reading. Code maps these wire labels to the canonical boolean
+  `exhaustive` field; omitting `coverage` preserves its absence. Do not emit an
+  `exhaustive` field, boolean, numeric value or other label in this draft.
   Source enums such as `confluence` remain exact lowercase values, not display names.
 - `ok` requires `missing_inputs: []`. If a necessary planning choice cannot be made,
   use `needs_input` with concrete questions and `payload: {}`. Use `blocked` with
