@@ -36,9 +36,9 @@ ContextGuard → Knowledge Guard → 실제 LLM → Contract Guard/ResponseGuard
 
 `core_control_graph.py::rebuild`는 Core source와 검토된 분류기/prompt를 받아 메모리 복사본을
 반환한다. CLI·파일 쓰기·runtime 등록은 없으며 reviewed asset의 독립 SHA pin을 확인한다.
-21노드·24엣지에서 policy allow 뒤 배타 분기를 둔다. Control/Contract LLM은 text를,
+22노드·25엣지에서 policy allow 뒤 배타 분기를 둔다. Control/Contract LLM은 text를,
 Query/Request LLM은 각 조립기의 후보를 합류시켜 기존 Contract Guard로 전달한다.
-Control/Contract/Request LLM은 원본 model input, Query LLM은 그 업무 내용·근거를 보존한 전용 입력을 받는다.
+Control/Contract LLM은 원본 model input, Query/Request LLM은 각각 전용 입력 투영을 받는다.
 policy deny는 0회, 허용된 네 경로는 각각 1회 LLM을 지나도록 구성한다.
 
 `code/core_query_input.py`는 Query 분기에서만 `query-input.v1`을 만든다. `context`는
@@ -84,8 +84,18 @@ Request는 실제 RequestArchitect schema의 의미 설명과 로컬 역할의 �
 읽어 전달한다. 의미를 별도로 복사하거나 boolean 용어를 문자열 치환하지 않는다. 누락·중복된
 선택 section, 변경된 목록 구조, UTF-8 예산 초과는 오류다. 최종 prompt의 독립 pin은 구조
 schema에서 제외되는 description-only 변경까지 재검토 대상으로 만든다.
-`core_request.md`는 원본 model input과 출처, 내부 `request-draft.v1`의 wire 형식만 안내한다.
-원본의 flat payload schema와 공유 의미 규칙은 최종 LTM 계약의 참고이며 native 출력 형식이 아니다.
+Request 분기는 Stage → Request Input → Request LLM → Request Assembler 순서다.
+`code/core_request_input.py`는 공유 원본 결속 검사를 거쳐 `request-input.v1`을 만든다.
+최종 schema·envelope metadata와 source content hash를 제외하고 source ID·원문·순서·scope·
+시각·partial·facts·metrics·role_context·정책을 보존한다. 양쪽 guard와 같은 intent 판정
+(`kind=ltm` 및 `canonical_id`의 `ltm:user-intent:` 접두사)에만 opaque canonical ID를 숨긴다.
+다른 source의 업무 canonical ID는 보존하므로 전체 pack의 무손실 복사로 표현하지 않는다.
+`source_authority`와 `allowed_claim_kinds`는 기존 claim 제한의 설명이며 사실 검증이나 승인이 아니다.
+projection은 9,000 UTF-8 bytes를 넘으면 자르거나 원본으로 fallback하지 않고 실패한다.
+조립기와 양쪽 guard는 계속 원본 input을 사용한다. 조립기는 잘못된 참조를 거부하고,
+양쪽 최종 guard는 intent fact를 거부한다.
+`core_request.md`는 이 전용 view와 출처, 내부 `request-draft.v1`의 wire 형식만 안내한다.
+공유 의미 규칙은 최종 LTM 계약의 참고이며 native 출력 형식이 아니다.
 `research_readiness=ready|needs_clarification`, `tasks[].effect=write_requested|no_write_requested`는
 각각 정본 `sufficient`와 `write_intent` boolean으로만 대응한다. 이는 승인이나 실제 실행이 아니다.
 유효한 Request 계획은 확인 질문을 포함해도 `ok`일 수 있으며, `needs_input`과 `blocked`는

@@ -161,11 +161,15 @@ def test_transport_explains_only_wire_evidence_and_status_boundaries(contract, r
     transport = (DIRECTORY / "prompts/core_request.md").read_text(encoding="utf-8").strip()
     prompt = contract.build_request_system_prompt(SCHEMA, role, transport)
     assert len(prompt.encode("utf-8")) <= 8192
-    for marker in ("ltm-model-input.v1", "request-draft.v1", "context_pack.sources[].source_id",
+    for marker in ("request-input.v1", "request-draft.v1", "context.sources[].source_id",
+                   "context.query", "context.role_context", "source_authority", "allowed_claim_kinds",
+                   "user_intent", "evidence_source", "do not verify facts or grant approval",
                    "canonical_id", "{value, kind, source_ids}", "including intent", "tasks[].kind",
                    "research_readiness", "needs_clarification", "no_write_requested",
                    "canonical flat schema", "even when research_readiness is needs_clarification"):
         assert marker in transport
+    assert "ltm-model-input.v1" not in transport
+    assert "context_pack." not in transport
     assert "Bug" not in transport
     for row in SCHEMA["properties"].values():
         if "description" in row:

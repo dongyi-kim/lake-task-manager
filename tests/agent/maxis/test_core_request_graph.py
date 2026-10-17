@@ -13,6 +13,7 @@ from app.agent.workflow.agents.request_architect import SCHEMA
 ROOT = Path(__file__).resolve().parents[3]
 REQUEST_ID = "1909000000001031"
 ASSEMBLER_ID = "1909000000001032"
+INPUT_ID = "1909000000001033"
 VERSION = "11111111-1111-4111-8111-111111111111"
 PROOF = "LTM_RELEASE_SENTINEL_V1=" + "a" * 64
 
@@ -41,7 +42,9 @@ def request_case(context_guard, now, nodes):
         user_identity="synthetic-user", requested_at=now,
         sources=[{"source_id": "src_intent_request", "kind": "ltm",
             "canonical_id": "ltm:user-intent:request", "title": "Guarded intent", "scope": "",
-            "content": intent, "retrieved_at": now}])
+            "content": intent, "retrieved_at": now},
+            {"source_id": "record-exact", "kind": "jira", "canonical_id": "DL-123",
+             "title": "조회 자료", "scope": "DL", "content": "원문 자료", "retrieved_at": now}])
     guard = code(nodes["1909000000001006"])
     name = guard["_ALLOWED_DOCUMENT_NAMES_BY_ROLE"]["request_architect"][0]
     policy = {"content": "Synthetic authoring policy.", "metadata": {
@@ -83,6 +86,27 @@ def test_request_native_route_uses_real_schema_and_both_final_guards(nodes, requ
     pack, incoming, draft = request_case
     before = copy.deepcopy((incoming, draft))
     assert code(nodes["1909000000001024"])["main"](incoming) == {"route": "request"}
+    projection = code(nodes[INPUT_ID])["main"](incoming)
+    view = json.loads(projection["request_input"])
+    assert view["contract"] == "request-input.v1"
+    expected = copy.deepcopy(json.loads(incoming)["context_pack"])
+    for key in ("contract", "payload_schema_json", "payload_schema_sha256", "knowledge_manifest_sha256"):
+        del expected[key]
+    for row in expected["sources"]:
+        intent = row["kind"] == "ltm" and row["canonical_id"].startswith("ltm:user-intent:")
+        del row["content_sha256"]
+        if intent:
+            del row["canonical_id"]
+        row.update(source_authority="user_intent" if intent else "evidence_source",
+                   allowed_claim_kinds=["inference", "recommendation"] if intent else ["fact", "inference", "recommendation"])
+    assert view["context"] == expected
+    assert view["context"]["sources"][1]["canonical_id"] == "DL-123"
+    assert view["knowledge_context"] == json.loads(incoming)["knowledge_context"]
+    assert nodes[INPUT_ID]["variables"] == [
+        {"variable": "model_input", "value_selector": ["1909000000001006", "model_input"]}]
+    assert nodes[ASSEMBLER_ID]["variables"][0]["value_selector"] == ["1909000000001006", "model_input"]
+    with pytest.raises(ValueError, match="invalid_core_request_draft"):
+        assembled(nodes, projection["request_input"], draft)
     schema = nodes[REQUEST_ID]["structured_output"]["schema"]
     Draft202012Validator(schema).validate(draft)
     result = assembled(nodes, incoming, draft)

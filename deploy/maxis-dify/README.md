@@ -13,14 +13,14 @@ copy는 ignored `.cache/`에 두며 커밋하지 않는다. 변경 이력·검�
 |---|---|
 | `bundle.yml` | 세 Workflow의 Start·검색·Guard·실행 계약 |
 | `dsl/*.yml` | Core, PMO, Editor별 하나의 Dify import source |
-| `code/*.py` | Knowledge/Contract Guard, Core 분류·Query 입력 투영·조립, Editor 입력 투영·선택 검증·조립 |
+| `code/*.py` | Knowledge/Contract Guard, Core 분류·Query/Request 입력 투영·조립, Editor 입력 투영·선택 검증·조립 |
 | `prompts/*.md` | 공통 및 단위 기능별 instruction 정본 |
 | `contracts/*.json` | 서로 다른 단계의 응답·선택·문안·조립·용어·평가 형식 |
 | `editor_graph.py`, `editor_graph_validation.py` | Editor 그래프 생성과 원본 검증 |
 | `policy_query_graph.py` | Core/PMO의 업무 입력과 정책 검색어 분리 |
 | `core_control_graph.py`, `core_graph_validation.py` | Core 제어/업무 분기 생성과 원본 검증 |
 | `core_query_contract.py` | canonical Query 값 제약에서 내부 단위 계약 생성 |
-| `core_request_contract.py`, `code/core_request_assembler.py` | 실제 RequestArchitect 계약·의미 지시 전달과 draft 생성·의미 보존 조립 |
+| `core_request_contract.py`, `code/core_request_input.py`, `code/core_request_assembler.py` | 실제 RequestArchitect 계약·의미 지시 전달, 입력 metadata 분리와 draft 의미 보존 조립 |
 | `code/core_draft_validation.py` | 역할 의미를 다루지 않는 엄격한 JSON·schema 검사; builder가 조립 코드 앞에 결합 |
 | `code/core_draft_context.py` | 원본 입력의 Role·schema·출처 hash 결속 검사; 의미·승인 판단 없음 |
 | `graph_receipt.py` | 로컬 graph와 서버 export의 설정 비교 코드(실행 결과가 아님) |
@@ -44,12 +44,14 @@ Editor의 `editor-draft-spec.v2`, `editor-writing.v1`, `editor-plan.v2`는 각�
 공통 흐름은 Start → release sentinel / Role ACL 검색 → Knowledge Guard → policy 분기 →
 검증된 입력의 LLM 처리 → Contract Guard → Answer다. policy deny는 LLM 없이 종료한다.
 
-- **Core:** 21노드·24엣지. 검증된 연결 검사, canonical Query·Request 계약, 일반 업무를 분류해
+- **Core:** 22노드·25엣지. 검증된 연결 검사, canonical Query·Request 계약, 일반 업무를 분류해
   control/query/request/semantic 중 한 LLM 경로만 사용한다. Query는 기존 `query_specialist`의 typed
   입력에서 업무 내용·근거를 보존하고 최종 계약 metadata를 분리한다. LLM은 의미 값·kind·근거를
   작성하고 Code 조립기가 원본 입력으로 ID·인용 연결·metadata만 구성한다. 새 Role이나
   추가 LLM 호출은 없다. Request는 실제 RequestArchitect 필드 설명과 선택된 로컬 역할 규칙을
-  전달하고, 사용자 요청 의미와 명시 label을 기존 정본 payload로 조립한다. 분류·조립은 인증이나
+  전달한다. Request Input은 원문·출처 ID·업무 식별자를 보존하면서 opaque intent 식별자와
+  최종 계약 metadata를 분리하고 기존 claim 제한을 표시한다. 조립기는 원본 입력을 사용해
+  사용자 요청 의미와 명시 label을 기존 정본 payload로 조립한다. 분류·조립은 인증이나
   근거 검증을 대신하지 않는다. [분류 계약](core-control-route.md).
 - **PMO:** 12노드·12엣지. 결정적으로 계산된 LTM 수치와 검증된 근거를 해석한다.
   수치 집계의 정본은 LTM이며 모델이 Jira 상태를 추정하지 않는다.

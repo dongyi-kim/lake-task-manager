@@ -17,7 +17,7 @@ SPEC.loader.exec_module(RECEIPT)
 def graph():
     value = yaml.safe_load((ROOT / "deploy/maxis-dify/dsl/ltm-agent-core.yml")
                            .read_text(encoding="utf-8"))["workflow"]["graph"]
-    assert len(value["nodes"]) == 21 and len(value["edges"]) == 24
+    assert len(value["nodes"]) == 22 and len(value["edges"]) == 25
     return value
 
 
@@ -27,6 +27,7 @@ def graph():
     "query_projection", "query_projection_selector", "query_input",
     "request_schema", "request_prompt", "request_input", "request_assembler",
     "request_assembler_input", "request_stage", "request_merge", "request_edge",
+    "request_projection", "request_projection_selector",
 ))
 def test_core_receipt_detects_execution_changes(graph, change):
     altered = deepcopy(graph)
@@ -37,6 +38,10 @@ def test_core_receipt_detects_execution_changes(graph, change):
         nodes["1909000000001031"]["prompt_template"][int(change == "request_input")]["text"] += " changed"
     elif change == "request_assembler":
         nodes["1909000000001032"]["code"] += "\n# changed assembler"
+    elif change == "request_projection":
+        nodes["1909000000001033"]["code"] += "\n# changed projection"
+    elif change == "request_projection_selector":
+        nodes["1909000000001033"]["variables"][0]["value_selector"] = ["start", "context_pack"]
     elif change == "request_assembler_input":
         nodes["1909000000001032"]["variables"][0]["value_selector"] = ["sys", "query"]
     elif change == "request_stage":
