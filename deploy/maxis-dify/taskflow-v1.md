@@ -1,8 +1,8 @@
 # Research → Task draft: TaskFlow v1 기반 계약
 
-상태: **로컬 계약·조정기 구현, 제품 경로 미연결**. 기존 Role 호출을 바꾸거나 MAXIS/Dify에
-게시한 변경이 아니다. `workflow/session.py`, HTTP API, 기본 route와 승인/쓰기 경로는 그대로다.
-실제 서버 adapter와 capability 검증을 구현하기 전 이 모듈을 사용자 경로에 연결하지 않는다.
+상태: **로컬 계약·조정기·Workflow API transport 구현, 제품 경로 미연결**.
+`workflow/session.py`, HTTP API, 기본 route와 승인/쓰기 경로는 그대로다.
+실제 권한/조회 adapter와 capability 검증을 구현하기 전 이 모듈을 사용자 경로에 연결하지 않는다.
 
 ## 소유권과 경계
 
@@ -71,5 +71,24 @@ tombstone으로 재실행을 막는다. 30분 만료는 접근/`prune()` 때 처
 동일 조건의 5회 균형 비교 순으로 진행한다. 자동 계약 성공과 실제 사용 가능한 초안의 비율을
 분리하며, 기대 source recall·직접 품질·지연·tokens·비용의 미관측값을 0으로 바꾸지 않는다.
 
-현재 배포 차단: Dify 기존 저장 자격증명의 로그인 응답 HTTP 401(2026-10-17).
-인증을 복구해도 위 adapter·서버 통제·품질 조건을 별도로 완료해야 한다.
+## Workflow API transport
+
+`TaskFlowClient`는 기존 DifyClient의 destination/TLS/size/timeout 처리를 재사용하며
+`POST /v1/workflows/{published_workflow_uuid}/run`을 호출한다. `taskflow_request` 하나에
+정규화한 요청 JSON을 보내고 `data.outputs.result_json`에서 결과를 읽는다. 이 경로는
+기존 Chatflow role registry와 분리되어 있으며, 일반 `/workflows/run` body에
+`workflow_id`를 넣는 것으로 버전이 고정된다고 가정하지 않는다.
+
+native workflow/run UUID와 성공 상태, result의 request/revision/pin/evidence digest를
+각각 대조한다. 요청은 16KiB, 응답은 64KiB 이하다. native tokens/elapsed만 관측하고
+비용·중첩 모델 호출·품질은 미확인으로 남긴다. 계약 통과 이후 실제 ResponseGuard와
+권한 검사를 받기 전 telemetry result_status는 `not_evaluated`다.
+
+HTTP timeout은 남은 시간으로 줄이지만 HTTPX의 phase별 timeout이다. 늦은 결과를
+거부하는 것과 서버 실행의 즉시 취소는 다르다. pin echo도 상관관계 확인이지 서버
+graph hash·Knowledge ACL·중첩 예산 검증의 대체물이 아니다.
+
+인증 정정(2026-10-17): 이전 probe는 비밀번호를 raw 문자열로 보냈다. 현재 Dify의
+UTF-8→Base64 로그인 형식에 맞춘 요청은 기존 승인 자격증명으로 **HTTP 200**이다.
+기존 Core/Editor/PMO Service API `/parameters`도 모두 200/Start 계약 일치다.
+인증은 더 이상 확인된 차단 사유가 아니다. 위 adapter·서버 통제·품질 조건은 여전히 별도다.

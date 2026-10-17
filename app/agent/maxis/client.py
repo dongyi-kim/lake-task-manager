@@ -728,7 +728,21 @@ class DifyClient:
         payload: dict[str, Any] | None,
         response_limit: int,
         breaker: CircuitBreaker | None = None,
+        timeout_seconds: float | None = None,
+        requested_workflow_id: str = "",
     ) -> tuple[bytes, int, int]:
+        total_timeout = self.config.total_timeout_seconds
+        if timeout_seconds is not None:
+            if (type(timeout_seconds) not in (int, float)
+                    or timeout_seconds <= 0
+                    or (type(timeout_seconds) is float and not math.isfinite(timeout_seconds))):
+                raise MaxisGatewayError(MaxisErrorCode.BAD_REQUEST)
+            total_timeout = min(total_timeout, timeout_seconds)
+        timeout = httpx.Timeout(
+            total_timeout, connect=min(self.config.connect_timeout_seconds, total_timeout),
+            read=min(self.config.read_timeout_seconds, total_timeout),
+            write=total_timeout, pool=min(self.config.connect_timeout_seconds, total_timeout),
+        )
         active_breaker = breaker or self.breaker
         active_breaker.before_call()
         started = self._clock()
@@ -739,7 +753,7 @@ class DifyClient:
                 transport_status="failed" if attempted else "not_attempted",
                 http_status=status,
                 latency_ms=max(0, int((self._clock() - started) * 1000)),
-                workflow_id=str((payload or {}).get("workflow_id") or ""),
+                workflow_id=requested_workflow_id or str((payload or {}).get("workflow_id") or ""),
             )
         try:
             # Re-evaluate the deployment allowlist at the last HTTP boundary as well
@@ -752,7 +766,7 @@ class DifyClient:
             )
             kwargs: dict[str, Any] = {
                 "headers": self._headers(api_key, json_body=payload is not None),
-                "timeout": self.config.timeout,
+                "timeout": timeout,
             }
             if payload is not None:
                 kwargs["json"] = payload
@@ -774,7 +788,7 @@ class DifyClient:
                 chunks: list[bytes] = []
                 size = 0
                 for chunk in response.iter_bytes():
-                    if self._clock() - started > self.config.total_timeout_seconds:
+                    if self._clock() - started > total_timeout:
                         raise MaxisGatewayError(
                             MaxisErrorCode.TIMEOUT, retryable=True
                         )
@@ -784,7 +798,7 @@ class DifyClient:
                             MaxisErrorCode.RESPONSE_TOO_LARGE, retryable=True
                         )
                     chunks.append(chunk)
-                if self._clock() - started > self.config.total_timeout_seconds:
+                if self._clock() - started > total_timeout:
                     raise MaxisGatewayError(
                         MaxisErrorCode.TIMEOUT, retryable=True
                     )
@@ -809,6 +823,35 @@ class DifyClient:
             ) from exc
         latency_ms = max(0, int((self._clock() - started) * 1000))
         return body, status, latency_ms
+
+    def request_taskflow_bytes(self, request, *, api_key: str,
+                               timeout_seconds: float | None = None):
+        """Narrow HTTP seam for TaskFlowClient, not an arbitrary Workflow API proxy.
+
+        Revalidate the typed request here even when the facade is bypassed. The
+        published revision is part of the URL: Dify ignores a body workflow_id for
+        the unversioned /workflows/run endpoint. Remaining wall time caps each HTTP
+        phase timeout and late results are rejected after receive. HTTPX cannot
+        interrupt an in-flight phase at a cumulative deadline; neither that hard
+        wall-clock interruption nor remote computation cancellation is promised.
+        """
+        from app.agent.maxis.taskflow_client import (
+            MAX_TASKFLOW_RESPONSE_BYTES, prepare_taskflow_request,
+        )
+
+        request, payload = prepare_taskflow_request(request, self.config)
+        workflow_id = request.pin.workflow_release
+        breaker = self._injected_breaker or _shared_circuit_breaker(
+            profile_fingerprint=self.config.profile_fingerprint,
+            workflow_key="taskflow:" + workflow_id, api_key=api_key, clock=self._clock,
+        )
+        body, status, latency_ms = self._request_bytes(
+            "POST", f"/workflows/{workflow_id}/run", api_key=api_key, payload=payload,
+            response_limit=min(self.config.max_response_bytes, MAX_TASKFLOW_RESPONSE_BYTES),
+            breaker=breaker, timeout_seconds=timeout_seconds,
+            requested_workflow_id=workflow_id,
+        )
+        return body, status, latency_ms, breaker
 
     def _invoke_breaker(
         self, binding: WorkflowBinding, api_key: str
