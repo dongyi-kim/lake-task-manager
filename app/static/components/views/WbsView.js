@@ -42,7 +42,6 @@ export default {
   activated() { this.$nextTick(() => this.renderGantt()); },   // keep-alive 재활성 시 재렌더
   computed: {
     pmo() { return this.D ? this.D.rollup.pmo : null; },
-    deltaBrief() { return this.D ? this.D.deltaBrief : null; },
     kpis() {
       if (!this.pmo) return [];
       const p = this.pmo;
@@ -64,15 +63,6 @@ export default {
   },
   methods: {
     pctStr(n) { return Number(n).toFixed(1) + "%"; },   // 진척률 소수점 1자리 고정
-    deltaValue(row) {
-      const n = Number(row && row.delta);
-      if (!Number.isFinite(n)) return "신규";
-      return `${n > 0 ? "+" : ""}${n.toFixed(1)}${row.unit === "%p" ? "%p" : " " + row.unit}`;
-    },
-    deltaClass(row) {
-      const n = Number(row && row.delta);
-      return n > 0 ? "up" : (n < 0 ? "down" : "same");
-    },
     mcolor(i) { return moduleColor(i); },
     unitLabel(u) { return { day: "일", week: "주", month: "월" }[u]; },
     setUnit(u) { this.unit = u; this.renderGantt(); },
@@ -427,34 +417,6 @@ export default {
           <div v-for="(x, i) in kpis" :key="i" class="kpi"><div class="v" :class="{ mock: x.mock }">{{ x.v }}</div><div class="k">{{ x.k }}</div></div>
         </div>
       </div>
-
-      <section v-if="deltaBrief" class="pmo-delta" aria-label="PMO 변화 브리핑">
-        <div class="pd-head">
-          <div><b>PMO Delta Briefing</b><span>현재 vs 이전 스냅샷 · 산식은 LTM이 계산</span></div>
-          <time v-if="deltaBrief.baselineAt">기준 {{ deltaBrief.baselineAt }}</time>
-        </div>
-        <div v-if="deltaBrief.status === 'first_snapshot'" class="pd-empty">
-          첫 기준 스냅샷을 저장했습니다. 다음 조회부터 동일 산식으로 변화를 비교합니다.
-        </div>
-        <template v-else>
-          <div class="pd-facts">
-            <div v-for="row in deltaBrief.facts" :key="row.metric">
-              <span>{{ row.label }}</span><b :class="deltaClass(row)">{{ deltaValue(row) }}</b>
-              <small>{{ row.before }} → {{ row.current }} {{ row.unit === '%p' ? '%' : row.unit }}</small>
-            </div>
-          </div>
-          <div class="pd-columns">
-            <div><b>관측·위험</b><ul><li v-for="(row, i) in deltaBrief.risks" :key="i">{{ row }}</li></ul></div>
-            <div><b>다음 검토</b><ul><li v-for="(row, i) in deltaBrief.actions" :key="i">{{ row }}</li></ul></div>
-          </div>
-          <div v-if="deltaBrief.changedModules.length" class="pd-modules">
-            변화 모듈
-            <span v-for="row in deltaBrief.changedModules" :key="row.id">
-              {{ row.id }} <b :class="deltaClass(row)">{{ deltaValue({ delta: row.delta, unit: '%p' }) }}</b>
-            </span>
-          </div>
-        </template>
-      </section>
 
       <div class="bar-head">
         <div><h2>진척률 간트차트</h2><div class="hint">▸ 클릭으로 WBS → Epic → Task → Sub-Task 단계별 펼침. WBS·Epic 은 진척률 바, Task 는 상태색 바, Sub-Task 는 상태만.</div></div>

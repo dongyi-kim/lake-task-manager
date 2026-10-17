@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from app.domain import pmo_delta, rollup, vit, workload
+from app.domain import rollup, vit, workload
 from app.infra.settings import load_people, load_plan, reload_people
 
 
@@ -49,12 +49,7 @@ def build_dashboard_router(
             return rollup.build(plan, epic_progress)
 
         data = with_partial(build)
-        project_key = plan.get("project_key", "LAKE")
-        history = cache.recent_snapshots("pmo-detail", project_key, limit=30)
-        data["deltaBrief"] = pmo_delta.build(data, history)
-        cache.add_snapshot("pmo-detail", project_key, pmo_delta.snapshot(data))
-        # Keep the legacy compact series for existing installations and diagnostics.
-        cache.add_snapshot("pmo", project_key, data["rollup"]["pmo"])
+        cache.add_snapshot("pmo", plan.get("project_key", "LAKE"), data["rollup"]["pmo"])
         return JSONResponse(data)
 
     @router.get("/api/epic/{epic_key}/tree")
