@@ -183,7 +183,7 @@ def validate_editor_graph(root, nodes: list[dict], edges: list[dict], *, spec,
                      knowledge_id=role["id"], model_provider=model_provider,
                      model_name=model_name, max_tokens=max_tokens,
                      max_system_bytes=max_system_bytes, error_type=error_type,
-                     knowledge_enabled=branch not in {"description", "comment"})
+                     knowledge_enabled=branch not in {"description", "comment"}, expected_memory=None)
     code_fields = {"code", "code_language", "desc", "outputs", "selected", "title", "type", "variables"}
     try:
         input_source = assembler_source + "\n\n" + spec.reviewed_selector_source(root) + input_entrypoint

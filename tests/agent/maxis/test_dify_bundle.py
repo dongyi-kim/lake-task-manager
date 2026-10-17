@@ -140,7 +140,7 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
             writer = is_editor and llm["data"]["title"] in {"Description LLM", "Comment LLM"}
             assert llm["data"]["context"] == {
                 "enabled": not writer, "variable_selector": [] if writer else [role_knowledge["id"], "result"]}
-            if is_core:
+            if is_core or is_editor:
                 assert llm["data"]["memory"] is None
             else:
                 assert llm["data"]["memory"]["query_prompt_template"] == ""
@@ -468,7 +468,7 @@ def test_validator_checks_every_editor_branch_not_only_first_llm(tmp_path, branc
     elif mutation == "model":
         data["model"]["name"] = "unreviewed-model"
     elif mutation == "memory":
-        data["memory"]["window"]["enabled"] = True
+        data["memory"] = {"window": {"enabled": True, "size": 1}}
     else:
         data["retry_config"] = {"retry_enabled": True}
     path.write_text(yaml.safe_dump(dsl, allow_unicode=True, sort_keys=False), encoding="utf-8")

@@ -846,9 +846,9 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
                     f"{workflow_key} LLM retrieval context must be enabled."
                 )
             llm_context_selectors[current_llm_id] = context.get("variable_selector")
-            if core_control:
+            if core_control or editor_assembly:
                 if "memory" not in data or data["memory"] is not None:
-                    raise EnvironmentBindingError("agent_core LLM memory must be explicit null.")
+                    raise EnvironmentBindingError(f"{workflow_key} LLM memory must be explicit null.")
             else:
                 memory = _mapping(data.get("memory"), f"{workflow_key} LLM memory")
                 if memory.get("query_prompt_template") != "":

@@ -233,7 +233,7 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
             writer = is_editor and data["title"] in {"Description LLM", "Comment LLM"}
             assert data["context"] == {
                 "enabled": not writer, "variable_selector": [] if writer else [role_knowledge["id"], "result"]}
-            if is_core:
+            if is_core or is_editor:
                 assert data["memory"] is None
             else:
                 assert data["memory"]["query_prompt_template"] == ""
@@ -267,7 +267,7 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
             if row["variable"] == "retrieval_items"
         )
         assert llm["context"]["variable_selector"] == retrieval_items_binding
-        if is_core:
+        if is_core or is_editor:
             assert llm["memory"] is None
         else:
             assert llm["memory"]["query_prompt_template"] == ""
@@ -485,7 +485,7 @@ def test_materializer_checks_every_editor_branch_before_overriding_environment(t
     elif mutation == "model":
         data["model"]["name"] = "unreviewed-model"
     elif mutation == "memory":
-        data["memory"]["window"]["enabled"] = True
+        data["memory"] = {"window": {"enabled": True, "size": 1}}
     else:
         data["retry_config"] = {"retry_enabled": True}
     path.write_text(yaml.safe_dump(dsl, allow_unicode=True, sort_keys=False), encoding="utf-8")

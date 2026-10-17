@@ -352,3 +352,73 @@ def test_description_source_and_embedded_prompt_cannot_drift_together(tmp_path, 
     environment = materializer.load_environment(ROOT / "deploy/maxis-dify/environments/dev.yml")
     with pytest.raises(materializer.EnvironmentBindingError, match="canonical prompt SHA-256"):
         materializer._materialize_dsl(environment, "editor_author")
+
+
+def test_editor_model_inputs_have_no_implicit_query_or_history():
+    spec, rebuilt = _build()
+    source = yaml.safe_load((ROOT / "deploy/maxis-dify/dsl/ltm-editor-author.yml").read_text(encoding="utf-8"))
+    assert rebuilt == source
+    llms = [node["data"] for node in source["workflow"]["graph"]["nodes"] if node["data"]["type"] == "llm"]
+    assert len(llms) == len(spec.BRANCHES) == 4
+    assert all("memory" in data and data["memory"] is None for data in llms)
+    validator, materializer = _load("validate_bundle"), _load("materialize_environment")
+    validator.validate_bundle(ROOT)
+    environment = materializer.load_environment(ROOT / "deploy/maxis-dify/environments/dev.yml")
+    _, imported = materializer._materialize_dsl(environment, "editor_author")
+    assert all("memory" in node["data"] and node["data"]["memory"] is None
+               for node in imported["workflow"]["graph"]["nodes"] if node["data"]["type"] == "llm")
+
+
+def _change_editor_memory(data, mutation):
+    if mutation == "history_binding":
+        data["variables"] = [{"variable": "history", "value_selector": ["sys", "conversation"]}]
+        return
+    if mutation == "extra_field":
+        data["conversation_history"] = {"enabled": True}
+        return
+    memory = {"query_prompt_template": "", "role_prefix": {"assistant": "", "user": ""},
+              "window": {"enabled": False, "size": 1}}
+    if mutation == "missing":
+        data.pop("memory")
+        return
+    if mutation == "history":
+        memory["window"]["enabled"] = True
+    elif mutation == "query":
+        memory["query_prompt_template"] = "{{#sys.query#}}"
+    elif mutation == "unknown":
+        memory["enabled"] = False
+    data["memory"] = {} if mutation == "empty" else memory
+
+
+@pytest.mark.parametrize("branch", ["description", "comment", "control", "selector"])
+@pytest.mark.parametrize("mutation", ["missing", "empty", "implicit", "history", "query", "unknown"])
+def test_editor_memory_drift_is_rejected_before_branch_cloning(branch, mutation):
+    spec, dsl = _build()
+    data = next(node["data"] for node in dsl["workflow"]["graph"]["nodes"]
+                if node["id"] == spec.BRANCH_NODE_IDS[branch])
+    _change_editor_memory(data, mutation)
+    original = copy.deepcopy(dsl)
+    with pytest.raises(ValueError, match="explicit null memory"):
+        spec.rebuild(ROOT, dsl, _load("validate_bundle"))
+    assert dsl == original
+
+
+@pytest.mark.parametrize("branch", ["description", "comment", "control", "selector"])
+@pytest.mark.parametrize("mutation", ["missing", "empty", "implicit", "history", "query", "unknown",
+                                     "history_binding", "extra_field"])
+def test_editor_raw_memory_contract_is_strict_in_both_validators(monkeypatch, branch, mutation):
+    spec, validator, materializer = _load("editor_graph"), _load("validate_bundle"), _load("materialize_environment")
+    text = (ROOT / "deploy/maxis-dify/dsl/ltm-editor-author.yml").read_text(encoding="utf-8")
+    raw = yaml.safe_load(text)
+    data = next(node["data"] for node in raw["workflow"]["graph"]["nodes"]
+                if node["id"] == spec.BRANCH_NODE_IDS[branch])
+    _change_editor_memory(data, mutation)
+    original = yaml.safe_load
+    monkeypatch.setattr(yaml, "safe_load", lambda value: raw if value == text else original(value))
+    before = copy.deepcopy(raw)
+    with pytest.raises(validator.BundleValidationError):
+        validator.validate_bundle(ROOT)
+    environment = materializer.load_environment(ROOT / "deploy/maxis-dify/environments/dev.yml")
+    with pytest.raises(materializer.EnvironmentBindingError):
+        materializer._materialize_dsl(environment, "editor_author")
+    assert raw == before, "raw validation must precede every repair or deployment mutation"

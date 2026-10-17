@@ -2525,14 +2525,7 @@ workflow:
           enabled: false
           variable_selector: []
         desc: 'description: 단일 책임·단일 출력 계약'
-        memory:
-          query_prompt_template: ''
-          role_prefix:
-            assistant: ''
-            user: ''
-          window:
-            enabled: false
-            size: 1
+        memory: null
         model:
           completion_params:
             temperature: 0.1
@@ -2695,14 +2688,7 @@ workflow:
           enabled: false
           variable_selector: []
         desc: 'comment: 단일 책임·단일 출력 계약'
-        memory:
-          query_prompt_template: ''
-          role_prefix:
-            assistant: ''
-            user: ''
-          window:
-            enabled: false
-            size: 1
+        memory: null
         model:
           completion_params:
             temperature: 0.1
@@ -2915,14 +2901,7 @@ workflow:
           - '1909000000001003'
           - result
         desc: 'control: 단일 책임·단일 출력 계약'
-        memory:
-          query_prompt_template: ''
-          role_prefix:
-            assistant: ''
-            user: ''
-          window:
-            enabled: false
-            size: 1
+        memory: null
         model:
           completion_params:
             temperature: 0.1
@@ -3192,14 +3171,7 @@ workflow:
           - '1909000000001003'
           - result
         desc: 'selector: 단일 책임·단일 출력 계약'
-        memory:
-          query_prompt_template: ''
-          role_prefix:
-            assistant: ''
-            user: ''
-          window:
-            enabled: false
-            size: 1
+        memory: null
         model:
           completion_params:
             temperature: 0.1

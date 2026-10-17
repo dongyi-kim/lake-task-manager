@@ -363,14 +363,10 @@ def test_core_memory_boundary_rejects_every_non_null_input(modules, raw_source, 
 
 
 @pytest.mark.parametrize("workflow_key,file_name,title", [
-    ("editor_author", "ltm-editor-author.yml", "Control LLM"),
-    ("editor_author", "ltm-editor-author.yml", "DraftSpec LLM"),
-    ("editor_author", "ltm-editor-author.yml", "Description LLM"),
-    ("editor_author", "ltm-editor-author.yml", "Comment LLM"),
     ("pmo_brief", "ltm-pmo-brief.yml", "Contract LLM"),
 ])
 @pytest.mark.parametrize("mutation", ["missing", "null"])
-def test_other_app_memory_contracts_remain_unchanged(modules, monkeypatch, workflow_key, file_name, title, mutation):
+def test_pmo_memory_contract_remains_unchanged(modules, monkeypatch, workflow_key, file_name, title, mutation):
     materializer, validator = modules
     text = (DSL_PATH.parent / file_name).read_text(encoding="utf-8")
     raw = yaml.safe_load(text)

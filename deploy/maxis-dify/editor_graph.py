@@ -179,6 +179,10 @@ def rebuild(root: Path, dsl: dict, validator) -> dict:
     graph = result["workflow"]["graph"]
     nodes = {node["id"]: node for node in graph["nodes"]}
     titles = {node["data"]["title"]: node for node in graph["nodes"]}
+    # Cloning the Description base must not hide memory drift on another branch.
+    if any(node_id not in nodes or "memory" not in nodes[node_id]["data"]
+           or nodes[node_id]["data"]["memory"] is not None for node_id in BRANCH_NODE_IDS.values()):
+        raise ValueError("Editor LLM inputs require explicit null memory before branch cloning")
     base = nodes[BRANCH_NODE_IDS["description"]]
     editor_input, assembler = titles["Editor Input"], titles["Editor Assembler"]
     knowledge = titles["Knowledge Guard"]
