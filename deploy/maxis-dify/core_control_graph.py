@@ -265,6 +265,11 @@ def _check_graph(dsl):
     if len(nodes) != len(graph["nodes"]) or set(nodes) != set(expected) or any(
             (nodes[key]["data"]["title"], nodes[key]["data"]["type"]) != value for key, value in expected.items()):
         raise ValueError("Core control node identity drifted")
+    # Check existing branches before cloning: rebuilding must not hide raw query
+    # or history bindings on a branch whose data would otherwise be replaced.
+    if any("memory" not in node["data"] or node["data"]["memory"] is not None
+           for node in nodes.values() if node["data"]["type"] == "llm"):
+        raise ValueError("Core LLM inputs require explicit null memory")
     routes = (_BASE_EDGES - _REPLACED_EDGES) | branch_edges() if built else _BASE_EDGES
     actual = {(edge["source"], edge["sourceHandle"], edge["target"]) for edge in graph["edges"]}
     if len(actual) != len(graph["edges"]) or actual != routes or any(

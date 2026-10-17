@@ -233,7 +233,10 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
             writer = is_editor and data["title"] in {"Description LLM", "Comment LLM"}
             assert data["context"] == {
                 "enabled": not writer, "variable_selector": [] if writer else [role_knowledge["id"], "result"]}
-            assert data["memory"]["query_prompt_template"] == ""
+            if is_core:
+                assert data["memory"] is None
+            else:
+                assert data["memory"]["query_prompt_template"] == ""
             assert data["model"]["provider"] == environment["model"]["provider"]
             assert data["model"]["name"] == environment["model"]["name"]
             assert data["model"]["completion_params"] == {
@@ -264,7 +267,10 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
             if row["variable"] == "retrieval_items"
         )
         assert llm["context"]["variable_selector"] == retrieval_items_binding
-        assert llm["memory"]["query_prompt_template"] == ""
+        if is_core:
+            assert llm["memory"] is None
+        else:
+            assert llm["memory"]["query_prompt_template"] == ""
         user_prompt = next(
             row["text"] for row in llm["prompt_template"] if row["role"] == "user"
         )

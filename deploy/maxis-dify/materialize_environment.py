@@ -846,11 +846,15 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
                     f"{workflow_key} LLM retrieval context must be enabled."
                 )
             llm_context_selectors[current_llm_id] = context.get("variable_selector")
-            memory = _mapping(data.get("memory"), f"{workflow_key} LLM memory")
-            if memory.get("query_prompt_template") != "":
-                raise EnvironmentBindingError(
-                    f"{workflow_key} LLM query prompt binding must be empty."
-                )
+            if core_control:
+                if "memory" not in data or data["memory"] is not None:
+                    raise EnvironmentBindingError("agent_core LLM memory must be explicit null.")
+            else:
+                memory = _mapping(data.get("memory"), f"{workflow_key} LLM memory")
+                if memory.get("query_prompt_template") != "":
+                    raise EnvironmentBindingError(
+                        f"{workflow_key} LLM query prompt binding must be empty."
+                    )
             prompts = data.get("prompt_template")
             if not isinstance(prompts, list) or len(prompts) != 2:
                 raise EnvironmentBindingError(

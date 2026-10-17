@@ -58,10 +58,15 @@ def reject_recovery_settings(value: Any, *, path: str,
             reject_recovery_settings(nested, path=f"{path}[{index}]", error_type=error_type)
 
 
+_IMPLICIT_MEMORY = {"query_prompt_template": "", "role_prefix": {"assistant": "", "user": ""},
+                    "window": {"enabled": False, "size": 1}}
+
+
 def validate_llm(data: dict, *, label: str, schema: dict, prompts: tuple[str, str],
                  hashes: dict, knowledge_id: str, model_provider: str,
                  model_name: str, max_tokens: int, max_system_bytes: int,
-                 error_type: type[Exception], knowledge_enabled: bool = True) -> None:
+                 error_type: type[Exception], knowledge_enabled: bool = True,
+                 expected_memory: dict | None = _IMPLICIT_MEMORY) -> None:
     def fail(message: str) -> None:
         raise error_type(f"{label} Dify LLM {message}")
 
@@ -81,10 +86,7 @@ def validate_llm(data: dict, *, label: str, schema: dict, prompts: tuple[str, st
             "provider": model_provider, "name": model_name, "mode": "chat",
             "completion_params": {"temperature": 0.1, "max_tokens": max_tokens},
         }
-        or data.get("memory") != {
-            "query_prompt_template": "", "role_prefix": {"assistant": "", "user": ""},
-            "window": {"enabled": False, "size": 1},
-        }
+        or data.get("memory") != expected_memory
         or data.get("structured_output_enabled") is not True
         or not _json_schema_equal(data.get("structured_output"), {"schema": schema})
         or data.get("variables") != []
@@ -93,7 +95,7 @@ def validate_llm(data: dict, *, label: str, schema: dict, prompts: tuple[str, st
         or data.get("type") != "llm"
     ):
         fail("model or structured output drifted (including memory/vision/state)")
-    if (data["memory"]["window"]["enabled"] is not False
+    if ((expected_memory is not None and data["memory"]["window"]["enabled"] is not False)
             or data["vision"]["enabled"] is not False
             or data["context"]["enabled"] is not knowledge_enabled):
         fail("memory, vision, or context enablement drifted")

@@ -60,7 +60,7 @@ def test_each_raw_core_llm_is_fully_validated_before_materialization(modules, ra
     elif mutation in {"retry", "fallback"}:
         llm["retry_config" if mutation == "retry" else "fallback_model"] = {"retry_enabled": True}
     elif mutation == "memory":
-        llm["memory"]["window"]["enabled"] = True
+        llm["memory"] = {"window": {"enabled": True, "size": 1}}
     elif mutation == "vision":
         llm["vision"]["enabled"] = True
     elif mutation == "context":
@@ -328,3 +328,64 @@ def test_canonical_request_architect_schema_drift_requires_independent_review(mo
         changed["properties"]["sufficient"]["description"] += " Different readiness semantics."
     monkeypatch.setattr(request_architect, "SCHEMA", changed)
     _reject_both(modules, raw_source)
+
+
+def test_core_model_inputs_have_no_implicit_query_or_history(modules):
+    materializer, validator = modules
+    source = yaml.safe_load(DSL_PATH.read_text(encoding="utf-8"))
+    llms = [node["data"] for node in source["workflow"]["graph"]["nodes"] if node["data"]["type"] == "llm"]
+    assert len(llms) == 4
+    assert all("memory" in data and data["memory"] is None for data in llms)
+    validator.validate_bundle(ROOT)
+    environment = materializer.load_environment(ENV_PATH)
+    _, imported = materializer._materialize_dsl(environment, "agent_core")
+    assert all(node["data"]["memory"] is None for node in imported["workflow"]["graph"]["nodes"]
+               if node["data"]["type"] == "llm")
+
+
+@pytest.mark.parametrize("title", ["Contract LLM", "Control LLM", "Query LLM", "Request LLM"])
+@pytest.mark.parametrize("mutation", ["missing", "empty", "implicit", "history", "query", "unknown"])
+def test_core_memory_boundary_rejects_every_non_null_input(modules, raw_source, title, mutation):
+    data = _nodes(raw_source)[title]
+    memory = {"query_prompt_template": "", "role_prefix": {"assistant": "", "user": ""},
+              "window": {"enabled": False, "size": 1}}
+    if mutation == "missing":
+        data.pop("memory")
+    else:
+        if mutation == "history":
+            memory["window"]["enabled"] = True
+        elif mutation == "query":
+            memory["query_prompt_template"] = "{{#sys.query#}}"
+        elif mutation == "unknown":
+            memory["enabled"] = False
+        data["memory"] = {} if mutation == "empty" else memory
+    _reject_both(modules, raw_source)
+
+
+@pytest.mark.parametrize("workflow_key,file_name,title", [
+    ("editor_author", "ltm-editor-author.yml", "Control LLM"),
+    ("editor_author", "ltm-editor-author.yml", "DraftSpec LLM"),
+    ("editor_author", "ltm-editor-author.yml", "Description LLM"),
+    ("editor_author", "ltm-editor-author.yml", "Comment LLM"),
+    ("pmo_brief", "ltm-pmo-brief.yml", "Contract LLM"),
+])
+@pytest.mark.parametrize("mutation", ["missing", "null"])
+def test_other_app_memory_contracts_remain_unchanged(modules, monkeypatch, workflow_key, file_name, title, mutation):
+    materializer, validator = modules
+    text = (DSL_PATH.parent / file_name).read_text(encoding="utf-8")
+    raw = yaml.safe_load(text)
+    memory_owner = _nodes(raw)[title]
+    assert isinstance(memory_owner["memory"], dict)
+    if mutation == "missing":
+        memory_owner.pop("memory")
+    else:
+        memory_owner["memory"] = None
+    original = yaml.safe_load
+    monkeypatch.setattr(yaml, "safe_load", lambda value: raw if value == text else original(value))
+    before = copy.deepcopy(raw)
+    with pytest.raises(validator.BundleValidationError):
+        validator.validate_bundle(ROOT)
+    environment = materializer.load_environment(ENV_PATH)
+    with pytest.raises(materializer.EnvironmentBindingError):
+        materializer._materialize_dsl(environment, workflow_key)
+    assert raw == before

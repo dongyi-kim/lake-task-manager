@@ -188,5 +188,5 @@ def validate_core_graph(root, nodes, *, checks, schema, semantic_prompts,
             nodes[node_id]["data"], label=f"agent_core.{node_id}", schema=native_schema,
             prompts=prompts, hashes=hashes, knowledge_id="1909000000001003",
             model_provider=model_provider, model_name="gpt-5.4-mini", max_tokens=max_tokens,
-            max_system_bytes=max_system_bytes, error_type=error_type,
+            max_system_bytes=max_system_bytes, error_type=error_type, expected_memory=None,
         )

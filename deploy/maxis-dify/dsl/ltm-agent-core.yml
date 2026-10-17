@@ -538,14 +538,7 @@ workflow:
           - '1909000000001003'
           - result
         desc: stateless 의미 Role 실행 및 계약 JSON 생성
-        memory:
-          query_prompt_template: ''
-          role_prefix:
-            assistant: ''
-            user: ''
-          window:
-            enabled: false
-            size: 1
+        memory: null
         model:
           completion_params:
             temperature: 0.1
@@ -1971,14 +1964,7 @@ workflow:
           - '1909000000001003'
           - result
         desc: 'activation: 단일 합성 연결 계약'
-        memory:
-          query_prompt_template: ''
-          role_prefix:
-            assistant: ''
-            user: ''
-          window:
-            enabled: false
-            size: 1
+        memory: null
         model:
           completion_params:
             temperature: 0.1
@@ -2279,14 +2265,7 @@ workflow:
           - '1909000000001003'
           - result
         desc: 'query_specialist: 의미 값과 근거를 한 번만 작성'
-        memory:
-          query_prompt_template: ''
-          role_prefix:
-            assistant: ''
-            user: ''
-          window:
-            enabled: false
-            size: 1
+        memory: null
         model:
           completion_params:
             temperature: 0.1
@@ -2911,14 +2890,7 @@ workflow:
           - '1909000000001003'
           - result
         desc: 'request_architect: 사용자 요청 의미만 typed draft로 작성'
-        memory:
-          query_prompt_template: ''
-          role_prefix:
-            assistant: ''
-            user: ''
-          window:
-            enabled: false
-            size: 1
+        memory: null
         model:
           completion_params:
             temperature: 0.1

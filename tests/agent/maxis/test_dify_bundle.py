@@ -140,7 +140,10 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
             writer = is_editor and llm["data"]["title"] in {"Description LLM", "Comment LLM"}
             assert llm["data"]["context"] == {
                 "enabled": not writer, "variable_selector": [] if writer else [role_knowledge["id"], "result"]}
-            assert llm["data"]["memory"]["query_prompt_template"] == ""
+            if is_core:
+                assert llm["data"]["memory"] is None
+            else:
+                assert llm["data"]["memory"]["query_prompt_template"] == ""
             spec, _ = validator._editor_graph_modules(ROOT)
             expected_input = spec.SPEC_GUARD_NODE_ID if writer else model_input_id
             port = "selector_input" if is_editor and llm["data"]["title"] == "DraftSpec LLM" else "model_input"
@@ -1194,7 +1197,8 @@ def test_validator_rejects_implicit_sys_query_memory_binding(tmp_path):
         node for node in dsl["workflow"]["graph"]["nodes"]
         if node["data"]["type"] == "llm"
     )
-    llm["data"]["memory"]["query_prompt_template"] = "{{#sys.query#}}"
+    llm["data"]["memory"] = {"query_prompt_template": "{{#sys.query#}}",
+                             "window": {"enabled": False, "size": 1}}
     dsl_path.write_text(
         yaml.safe_dump(dsl, allow_unicode=True, sort_keys=False), encoding="utf-8",
     )

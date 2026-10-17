@@ -27,6 +27,28 @@ def _build(dsl=None):
     return GRAPH.rebuild(_dsl() if dsl is None else dsl, **GRAPH.reviewed_assets(ROOT))
 
 
+@pytest.mark.parametrize("node_id", [GRAPH.SEMANTIC_NODE_ID, GRAPH.CONTROL_NODE_ID,
+                                    GRAPH.QUERY_NODE_ID, GRAPH.REQUEST_NODE_ID])
+@pytest.mark.parametrize("memory", [{}, {"window": {"enabled": True, "size": 1}},
+    {"query_prompt_template": "", "role_prefix": {"assistant": "", "user": ""},
+     "window": {"enabled": False, "size": 1}},
+    {"query_prompt_template": "{{#sys.query#}}", "window": {"enabled": False, "size": 1}}])
+def test_builder_rejects_implicit_memory_before_cloning(node_id, memory):
+    source = _dsl()
+    _nodes(source)[node_id]["data"]["memory"] = copy.deepcopy(memory)
+    before = copy.deepcopy(source)
+    with pytest.raises(ValueError, match="explicit null memory"):
+        _build(source)
+    assert source == before
+
+
+def test_builder_rejects_missing_memory_before_cloning():
+    source = _dsl()
+    _nodes(source)[GRAPH.QUERY_NODE_ID]["data"].pop("memory")
+    with pytest.raises(ValueError, match="explicit null memory"):
+        _build(source)
+
+
 def _nodes(dsl):
     return {node["id"]: node for node in dsl["workflow"]["graph"]["nodes"]}
 
