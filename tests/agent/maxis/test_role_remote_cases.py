@@ -130,11 +130,12 @@ def test_specialized_reviews_registered_canonically_and_detached():
         "expected"]["caseOutcomes"]["role-request"]["kind"] == "payload"
 
 
-def test_offline_projections_pin_explicit_work_intent_revision_and_other_roles():
+def test_offline_projections_pin_work_and_query_intent_revisions():
     # Work's runtime projection intentionally adds citeable intent and lossless text
     # references. Its old digest was c0da8ce977201243e1365aa607c19720191c7a65621c1078d8e76e2419f38c2f;
     # this pins the new projection, not a rewrite of historical raw evaluation data.
-    # All other fixtures remain identical to the pre-adapter-refactor baseline.
+    # Query adds only its backend-owned task row; all other fixture pins are unchanged.
+    # This is an input identity assertion, not benchmark fixture/checker metadata.
     # Freeze the pre-policy-retrieval runtime for this fixture-input regression;
     # actual candidate projections are exercised by the tests above and runtime tests.
     from app.agent.maxis.retrieval_query import enrich_role_query
@@ -143,7 +144,7 @@ def test_offline_projections_pin_explicit_work_intent_revision_and_other_roles()
         return enrich_role_query(query, role_id, schema) if role_id == "editor_author" else query
     expected = {
         "role-request": "6bdb057ce99fcee97e1f7368dbad5b899850261f536729a1e8c9a5097b7dd809",
-        "role-query": "89aec58d6306dddb42ff197b8076a3be62f3367f8fa98ef518b2a77fbba8bfa3",
+        "role-query": "0f54c4a9f66425f0b96ab8bb32ad974ae76c3b2b551df528dbf9f849765aee06",
         "role-knowledge": "a183fa5abd1960b4531040ced6941209d9c2cefe7bec21efc40d22c2196fd9e3",
         "role-work": "f6159f40b07330ffb436b21e9963823f9b7337d7a171a69ff179b10c4868921e",
         "role-auditor": "8dcb5612eb5d8b03125cf7941b79ef302d9471714e5dcfda4bd1372add4ceb4f",

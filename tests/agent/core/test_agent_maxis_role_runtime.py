@@ -775,7 +775,12 @@ def test_dev_profile_replaces_all_content_with_a_fixed_synthetic_fixture():
         assert forbidden not in encoded
 
 
-def test_dev_profile_can_run_safe_synthetic_probe_from_real_jira_process(monkeypatch):
+@pytest.mark.parametrize("role_id,canonical", [
+    ("request_architect", False), ("query_specialist", False), ("query_specialist", True),
+])
+def test_dev_profile_can_run_safe_synthetic_probe_from_real_jira_process(
+    monkeypatch, role_id, canonical,
+):
     from app.agent.maxis import profiles
     from app.agent.maxis import credentials
     from app.agent.maxis import client as client_module
@@ -795,16 +800,18 @@ def test_dev_profile_can_run_safe_synthetic_probe_from_real_jira_process(monkeyp
     ))
     try:
         metadata = backend._profile_snapshot("dev", required=True)
-        state = _runtime_state("request_architect")
+        state = _runtime_state(role_id)
         state.update(runtime_profile="dev", request_text="REAL_MUST_NOT_CROSS")
+        from app.agent.workflow.contracts import role_output_schema
+        schema = role_output_schema(role_id) if canonical else {"type": "object"}
         payload = backend.role_payload(
-            "request_architect", state, [], {"type": "object"},
+            role_id, state, [], schema,
             output_kind="structured",
         )
     finally:
         _ctx.bind()
 
-    observed = {}
+    observed = {"calls": 0}
 
     class CapturingClient:
         def __init__(self, _config):
@@ -817,6 +824,7 @@ def test_dev_profile_can_run_safe_synthetic_probe_from_real_jira_process(monkeyp
             return None
 
         def invoke(self, _binding, **kwargs):
+            observed["calls"] += 1
             observed["dify_request"] = json.dumps(
                 kwargs["inputs"]["context_pack"].model_dump(mode="json"),
                 ensure_ascii=False,
@@ -833,8 +841,11 @@ def test_dev_profile_can_run_safe_synthetic_probe_from_real_jira_process(monkeyp
     monkeypatch.setattr(credentials, "get_for", lambda *_a, **_k: "dev-app-key")
     monkeypatch.setattr(client_module, "DifyClient", CapturingClient)
     with pytest.raises(backend.MaxisRuntimeError, match="Role 호출"):
-        backend.invoke("request_architect", payload, "thread-1", "corr-1")
+        backend.invoke(role_id, payload, "thread-1", "corr-1")
 
+    assert observed["calls"] == 1
+    contexts = payload["evidencePack"]["role_context"]
+    assert [row["name"] for row in contexts] == (["query_business_input"] if canonical else [])
     assert metadata["name"] == "dev"
     encoded = json.dumps(payload["evidencePack"], ensure_ascii=False)
     assert "REAL_MUST_NOT_CROSS" not in encoded
@@ -1939,3 +1950,70 @@ def test_session_shape_projects_no_source_content_or_unknown_remote_fields():
     assert shaped["evidenceWorkspace"]["sources"][0]["sourceId"] == "src-1"
     assert "RAW MUST NOT LEAK" not in encoded
     assert "RAW TRACE" not in encoded
+
+
+@pytest.mark.parametrize("mutation", [
+    "missing", "extra", "name", "text", "shape", "id", "time", "partial", "hash",
+    "schema", "source", "scope", "query", "pseudonym", "flags",
+])
+def test_dev_query_context_is_checked_before_credentials_and_client(monkeypatch, mutation):
+    from app.agent.maxis import credentials
+    from app.agent.maxis import client as client_module
+    from app.agent.maxis.contracts import canonical_payload_schema
+    from app.agent.workflow.contracts import role_output_schema
+
+    state = _runtime_state("query_specialist")
+    state.update(runtime_profile="dev", request_text="PRIVATE_TEXT_MUST_NOT_CROSS")
+    payload = backend.role_payload(
+        "query_specialist", state, [], role_output_schema("query_specialist"),
+        output_kind="structured",
+    )
+    pack = payload["evidencePack"]
+    assert len(pack["role_context"]) == 1
+    row = pack["role_context"][0]
+    if mutation == "missing":
+        pack["role_context"] = []
+    elif mutation == "extra":
+        pack["role_context"].append({**row, "name": "extra", "context_id": "extra"})
+    elif mutation == "name":
+        row["name"] = "foreign_context"
+    elif mutation in {"text", "shape"}:
+        value = {"text": "PRIVATE_TEXT_MUST_NOT_CROSS"}
+        if mutation == "shape":
+            value = {"text": json.loads(row["content_json"])["text"], "extra": True}
+        row["content_json"] = backend._canonical_json(value)
+        row["content_sha256"] = hashlib.sha256(row["content_json"].encode()).hexdigest()
+    elif mutation == "id":
+        row["context_id"] = "another-request"
+    elif mutation == "time":
+        row["observed_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    elif mutation == "partial":
+        row["partial"] = True
+    elif mutation == "hash":
+        row["content_sha256"] = "0" * 64
+    elif mutation == "schema":
+        pack["payload_schema_json"], pack["payload_schema_sha256"] = canonical_payload_schema(
+            {"type": "object"})
+    elif mutation == "source":
+        pack["sources"][0]["content"] = "different synthetic source"
+        pack["sources"][0]["content_sha256"] = hashlib.sha256(
+            pack["sources"][0]["content"].encode()).hexdigest()
+    elif mutation == "scope":
+        pack["scope"]["projects"] = ["PRIVATE_PROJECT"]
+    elif mutation == "query":
+        pack["query"] = "PRIVATE_TEXT_MUST_NOT_CROSS"
+    elif mutation == "pseudonym":
+        pack["pseudonymous_user"] = "ltm_" + "0" * 16
+    else:
+        pack["flags"] = []
+
+    monkeypatch.setattr(backend, "resolve_role", lambda *_a, **_k: backend.RoleResolution(
+        route="maxis", binding=SimpleNamespace(), profile="dev"))
+    monkeypatch.setattr(backend, "_profile_snapshot", lambda *_a, **_k: _profile("dev"))
+    monkeypatch.setattr(credentials, "get_for", lambda *_a, **_k: pytest.fail(
+        "invalid synthetic Query reached credentials"))
+    monkeypatch.setattr(client_module, "DifyClient", lambda *_a, **_k: pytest.fail(
+        "invalid synthetic Query reached client construction"))
+    with pytest.raises(backend.MaxisRuntimeError, match="합성 fixture|계약 검증") as error:
+        backend.invoke("query_specialist", payload, "thread-1", "corr-1")
+    assert "PRIVATE_" not in str(error.value)

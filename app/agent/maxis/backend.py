@@ -964,7 +964,7 @@ def _role_context(role_id: str, state: dict) -> tuple[list[dict], frozenset[str]
         "messages", "query_results", "query_artifacts", "materialized_ticket_sources",
         "approval_token", "comment_token", "execution_receipt",
         "question_receipt_projection", "change_audit_binding", "trace", "error", "user_id",
-        "request_text", "prompt", "role_context_carryover",
+        "request_text", "prompt", "role_context_carryover", "query_business_input",
         # request_text is carried once in the guarded query; the carryover ledger is
         # local provenance metadata and never model context.
     }
@@ -1280,6 +1280,109 @@ def _verified_evidence_sources(state: dict) -> list[dict]:
     return sources
 
 
+def _query_business_pack(
+    guard, *, state: dict, user_intent: str, explicit_user_intent: bool,
+    synthetic_only: bool, **inputs,
+):
+    """Admit a backend-owned task only when the entire prior pack is unchanged."""
+    from dataclasses import replace
+    from app.agent.maxis.context_guard import ContextGuard, ContextGuardError
+    from app.agent.maxis.contracts import canonical_payload_schema
+    from app.agent.workflow.contracts import role_output_schema
+
+    # Snapshot iterables once, before either independent guard consumes them.
+    for key in ("sources", "role_context", "identity_values"):
+        inputs[key] = tuple(inputs[key])
+    baseline = guard.build(**inputs)
+    if inputs["use_case"] != "query_specialist":
+        return baseline
+    canonical_schema, _ = canonical_payload_schema(role_output_schema("query_specialist"))
+    if baseline.payload_schema_json != canonical_schema:
+        return baseline
+    name = "query_business_input"
+    carryover = state.get("role_context_carryover")
+    if (name in state or (isinstance(carryover, dict) and name in carryover)
+            or any(row["name"] == name for row in inputs["role_context"])):
+        raise MaxisRuntimeError(
+            "query_business_input_reserved: MAXIS Query 예약 입력과 충돌합니다. 새 요청으로 다시 시도해 주세요."
+        )
+    if not explicit_user_intent and not synthetic_only:
+        raise MaxisRuntimeError(
+            "query_business_input_required: MAXIS Query에 명시적인 원 요청이 필요합니다."
+        )
+    if len(inputs["role_context"]) >= 8:
+        raise MaxisRuntimeError(
+            "query_business_input_capacity: MAXIS Query 요청을 추가할 문맥 공간이 없습니다."
+        )
+    identities = tuple(dict.fromkeys(
+        value.strip() for value in (*inputs["identity_values"], inputs["user_identity"])
+        if value.strip()
+    ))
+    # This is the captured pre-enrichment intent, never recovered from query/source text.
+    expected_json = _canonical_json({"text": guard.guard_query(user_intent, identities)})
+    context_id = "rctx_" + hashlib.sha256(
+        f"{inputs['request_id']}:query_specialist:{name}".encode("utf-8")
+    ).hexdigest()[:20]
+    row = {"context_id": context_id, "name": name, "value": {"text": user_intent},
+           "observed_at": inputs["requested_at"], "partial": False}
+    candidate_guard = ContextGuard(
+        replace(guard.policy, allowed_context_keys=guard.policy.allowed_context_keys | {name}),
+        guard._pseudonym_key,
+    )
+    error = (
+        "query_business_input_no_loss: 기존 근거와 문맥을 바꾸지 않고 MAXIS Query 요청을 "
+        "추가할 수 없습니다. 근거를 새로 조회하거나 요청 범위를 줄여 다시 시도해 주세요."
+    )
+    try:
+        candidate = candidate_guard.build(**{
+            **inputs, "role_context": (*inputs["role_context"], row),
+        })
+    except ContextGuardError as exc:
+        raise MaxisRuntimeError(error) from exc
+    task_rows = [item for item in candidate.role_context if item.name == name]
+    if len(task_rows) != 1:
+        raise MaxisRuntimeError(error)
+    task = task_rows[0]
+    if (task.context_id != context_id or task.observed_at != inputs["requested_at"]
+            or task.partial or task.content_json != expected_json
+            or task.content_sha256 != hashlib.sha256(expected_json.encode("utf-8")).hexdigest()):
+        raise MaxisRuntimeError(error)
+    without_task = candidate.model_dump(mode="json")
+    without_task["role_context"] = [
+        item for item in without_task["role_context"] if item["name"] != name
+    ]
+    if without_task != baseline.model_dump(mode="json"):
+        raise MaxisRuntimeError(error)
+    return candidate
+
+
+def _synthetic_query_context_allowed(role_id: str, evidence) -> bool:
+    """Only canonical Query may carry its exact request-bound synthetic task."""
+    if role_id != "query_specialist":
+        return not evidence.role_context
+    from app.agent.maxis.contracts import canonical_payload_schema
+    from app.agent.workflow.contracts import role_output_schema
+
+    canonical_schema, _ = canonical_payload_schema(role_output_schema("query_specialist"))
+    if evidence.payload_schema_json != canonical_schema:
+        return not evidence.role_context
+    if len(evidence.role_context) != 1:
+        return False
+    row = evidence.role_context[0]
+    expected_json = _canonical_json({
+        "text": "Synthetic MAXIS integration exercise for canonical role query_specialist.",
+    })
+    expected_id = "rctx_" + hashlib.sha256(
+        f"{evidence.request_id}:query_specialist:query_business_input".encode("utf-8")
+    ).hexdigest()[:20]
+    return (
+        row.name == "query_business_input" and row.context_id == expected_id
+        and row.content_json == expected_json
+        and row.content_sha256 == hashlib.sha256(expected_json.encode("utf-8")).hexdigest()
+        and row.observed_at == evidence.requested_at and row.partial is False
+    )
+
+
 def _context_pack(
     role_id: str,
     state: dict,
@@ -1454,7 +1557,9 @@ def _context_pack(
             value.strip() for value in (*identity_values, identity) if value.strip()
         ))
         guard.guard_query(original_query, original_identities)
-    return guard.build(
+    return _query_business_pack(
+        guard, state=state, user_intent=user_intent,
+        explicit_user_intent=explicit_user_intent, synthetic_only=synthetic_only,
         request_id=request_id,
         use_case=role_id,
         query=query,
@@ -1969,7 +2074,7 @@ def invoke(
             or evidence.scope.repositories
             or evidence.facts
             or evidence.metrics
-            or evidence.role_context
+            or not _synthetic_query_context_allowed(role_id, evidence)
             or evidence.freshness != "fresh"
             or evidence.partial
             or evidence.flags != ("synthetic_only",)
