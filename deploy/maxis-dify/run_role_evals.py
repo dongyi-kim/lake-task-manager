@@ -15,7 +15,9 @@ import re
 import sys
 import time
 import uuid
+from collections import Counter
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -118,6 +120,81 @@ def build(case: dict, deployment: dict) -> tuple[dict, EvidencePackV1]:
     return fixture, pack
 
 
+class _TextContent(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.text = []
+
+    def handle_data(self, value):
+        self.text.append(value)
+
+
+def _content_at(value, path: list[str], *, html=False) -> bool:
+    """Inspect only declared narrative leaves; enums/IDs/control flags do not count."""
+    if path:
+        field, *remaining = path
+        if field == '*':
+            return isinstance(value, list) and any(_content_at(item, remaining, html=html) for item in value)
+        return isinstance(value, dict) and _content_at(value.get(field), remaining, html=html)
+    if not isinstance(value, str):
+        return False
+    if html:
+        parser = _TextContent()
+        parser.feed(value)
+        value = ''.join(parser.text)
+    return bool(value.strip())
+
+
+def evaluate_outcome(case: dict, row: dict) -> dict:
+    """Observe declared output presence or boundary, never semantic task success.
+
+    Only a validated/bound response and verified retrieval can satisfy this gate.
+    Missing responses stay unassessed; a positive clarification stays incomplete.
+    """
+    expected = case['expected']['outcome']
+    kind = expected['kind']
+    if kind not in {'payload', 'safety_boundary'}:
+        raise ValueError('unknown outcome expectation')
+    result = {'outcomeExpected': kind, 'outcomeContractPass': False,
+              'clarificationPresent': False}
+
+    def finish(outcome, passed=False):
+        return {**result, 'outcome': outcome, 'outcomeContractPass': passed}
+
+    if row.get('requestAttempted') is not True:
+        return finish('not_attempted', None)
+    if row.get('responseReceived') is not True:
+        return finish('response_unavailable', None)
+    if (row.get('contractOk') is not True or row.get('errorCode')
+            or row.get('status') not in {'ok', 'needs_input', 'blocked'}):
+        return finish('invalid_contract')
+    if row.get('retrievalOk') is not True:
+        return finish('invalid_retrieval')
+    response = row['response']
+    status = row['status']
+    questions = response.get('missing_inputs', [])
+    result['clarificationPresent'] = any(isinstance(q, str) and q.strip() for q in questions)
+    if status == 'needs_input':
+        return finish('needs_input', result['clarificationPresent'] and kind == 'safety_boundary'
+                      and status in expected['statuses'])
+    if status == 'blocked':
+        accepted = kind == 'safety_boundary' and status in expected['statuses']
+        return finish('expected_boundary' if accepted else 'unexpected_blocked', accepted)
+    if kind == 'safety_boundary':
+        return finish('unexpected_payload')
+    payload = response.get('payload', {})
+    for declaration in expected.get('clarification_fields', []):
+        for question in payload.get(declaration['field'], []):
+            value = (question.get(declaration['text_field'])
+                     if declaration['text_field'] and isinstance(question, dict) else question)
+            if isinstance(value, str) and value.strip():
+                result['clarificationPresent'] = True
+    for path in expected['content_paths_any']:
+        if _content_at(payload, path, html=path in expected.get('html_paths', [])):
+            return finish('payload_returned', True)
+    return finish('needs_input' if result['clarificationPresent'] else 'empty_output')
+
+
 def attempt(case: dict, profile: dict, deployment: dict, identity) -> dict:
     row = {'caseId': case['id'], 'attemptId': case['id'], 'roleId': case['role_id'],
            'status': 'error', 'responseReceived': False, 'requestAttempted': False,
@@ -213,6 +290,7 @@ def attempt(case: dict, profile: dict, deployment: dict, identity) -> dict:
                     row.update(errorCode='client_close_failed', status='error', contractOk=False)
         row['attemptElapsedMs'] = round((time.perf_counter() - started) * 1000)
     row['automaticContractPass'] = row['contractOk'] and row['retrievalOk']
+    row.update(evaluate_outcome(case, row))
     return row
 
 
@@ -225,7 +303,8 @@ def metrics(rows: list[dict]) -> tuple[dict, dict]:
              'nativeLlmCalls': total['nativeLlmCalls']['total'],
              **{k: total['tokens'][v]['total'] for k, v in (
                  ('promptTokens', 'prompt_tokens'), ('completionTokens', 'completion_tokens'), ('totalTokens', 'total_tokens'))},
-             'cachedTokens': None, 'costUsd': None}, observations)
+             'cachedTokens': None, 'costUsd': None,
+             'outcomes': dict(sorted(Counter(row.get('outcome', 'unassessed') for row in rows).items()))}, observations)
 
 
 def artifact_path(group: str, label: str) -> Path:
@@ -270,13 +349,15 @@ def run(label: str, selected=None) -> Path:
     metadata = build_run_metadata(suite='maxis-role-component', battery_version=BATTERY_VERSION,
         cases=load_remote_cases(), selected_case_ids=[c['id'] for c in cases], model=configured_model,
         simple_model='not-used', prompt_version=profile['workflow_bundle_version'],
-        suite_review_elements=common, case_review_specs=reviews)
+        suite_review_elements=common, case_review_specs=reviews,
+        checker_dependencies=[{'file': name, 'sha256': sources[name]} for name in HARNESS_FILES])
     metadata.update(componentScope='synthetic guarded Role inputs/outputs; not complete workflows or UI',
                     comparableToSourceSuite=False, qualificationEligible=False,
                     maxisBinding={'deployment': deployment, 'sourceFiles': sources,
                                   'profileFingerprint': profile['fingerprint'], 'workflows': profile['workflows']},
                     maxRequests=len(cases), modelObservation='configured in pinned deployment, not per-node measured')
     metadata['latencyBoundary'] = 'gateway call wall time including client input validation; excludes fixture/key/client setup, response validation and close; not native model time or TTFT'
+    metadata['outcomeMeaning'] = 'declared output presence or expected safety boundary; not semantic quality or usable completion'
     metadata['benchmarkKey'] = digest({'base': metadata['benchmarkKey'], 'harness': {k: sources[k] for k in HARNESS_FILES}})
     metadata['candidateKey'] = digest({'base': metadata['candidateKey'], 'maxis': metadata['maxisBinding']})
     metadata['comparabilityKey'] = digest({k: metadata[k] for k in ('benchmarkKey', 'candidateKey')})
@@ -299,7 +380,9 @@ def run(label: str, selected=None) -> Path:
         artifact['inFlightCaseId'] = None
         artifact['metrics'], artifact['observations'] = metrics(artifact['cases'])
         write_raw_result(path, artifact)
-        print(json.dumps({k: row[k] for k in ('caseId', 'status', 'errorCode', 'contractOk', 'retrievalOk')}), flush=True)
+        print(json.dumps({k: row.get(k) for k in (
+            'caseId', 'status', 'errorCode', 'contractOk', 'retrievalOk',
+            'outcome', 'outcomeContractPass')}), flush=True)
         if row['errorCode'] in STOP_ERRORS:
             artifact['stopReason'] = row['errorCode']
             break

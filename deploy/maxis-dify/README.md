@@ -551,6 +551,24 @@ structural stress case, not a representative work task. Contract acceptance is n
 usefulness. Evaluate raw output directly with Codex/Claude; never use LTM's runtime
 LLM as the judge. Production DEV fixed-fixture protection remains unchanged.
 
+Remote Role battery **2.0.0** keeps `automaticContractPass` as envelope/binding plus
+retrieval acceptance and adds a separate deterministic `outcomeContractPass`.
+Each closed case explicitly declares either nonempty payload fields or an expected
+safety boundary. `payload_returned` means those fields contain data after the real
+guards pass. `expected_boundary` means an expected `blocked` response; the three
+overflow/stale/missing cases are not positive work requests. `needs_input` remains a
+separate observation: nonblank questions satisfy an expected boundary, but do not
+count as a returned positive payload. Their necessity and specificity still need
+direct review. Empty positive blocks, empty output, unexpected payloads, and invalid
+contract/retrieval have a false outcome gate. Missing responses or preparation
+failures remain unassessed (`null`), with unattempted case IDs recorded separately.
+`metrics.outcomes` counts these categories without combining safe boundaries and
+payloads into a usefulness rate. `complete` only describes attempt completion;
+semantic quality, usable completions, qualification and release eligibility remain
+unchanged. Checker source digests and the case expectations bind the new battery
+manifest. Version 1 raw results and reports are not regraded or overwritten; a
+focused version 2 run is new exploratory evidence, not a replacement full baseline.
+
 - 현재 environment binding:
   [environments/dev-2026.09.yml](environments/dev-2026.09.yml)
 - 현재 비밀 없는 배포 증적:

@@ -43,7 +43,7 @@ def test_time_requires_explicit_aware_utc_before_builder(observed):
 def test_remote_closed_cases_reject_content_and_detach_metadata():
     original = remote.load_remote_cases()
     assert len(original) == 11
-    assert remote.BATTERY_VERSION == "1.0.0" != offline.BATTERY_VERSION
+    assert remote.BATTERY_VERSION == "2.0.0"
     changed = remote.load_remote_cases()
     changed[0]["role_id"] = "action_executor"
     changed[0]["specialized_review"][0]["expected"]["private"] = "caller input"
@@ -87,6 +87,7 @@ def test_every_case_uses_current_attestations_and_real_bounded_schema():
             assert "user.fixture" not in wire and "fixture@example.invalid" not in wire
             assert "specialized_review" not in wire and "majorWhen" not in wire
             assert "case_metadata_sha256" not in wire and "benchmark_refs" not in wire
+            assert "content_paths_any" not in wire and "safety_boundary" not in wire
     assert actual.call_count == 22  # 11 remote builds + 11 original schema comparisons.
     assert backend.datetime is original_clock and backend._PSEUDONYM_KEY == original_salt
 
@@ -122,6 +123,11 @@ def test_specialized_reviews_registered_canonically_and_detached():
         assert all(row.values())
     cases["role-request"]["elements"][0]["expected"]["private"] = True
     assert "private" not in review_specs("maxis-role-component")[1]["role-request"]["elements"][0]["expected"]
+    outcomes = next(row for row in common if row["id"] == "role_component_outcome_contract")
+    outcomes["expected"]["caseOutcomes"]["role-request"]["kind"] = "injected"
+    fresh, _ = review_specs("maxis-role-component")
+    assert next(row for row in fresh if row["id"] == outcomes["id"])[
+        "expected"]["caseOutcomes"]["role-request"]["kind"] == "payload"
 
 
 def test_offline_outputs_remain_byte_identical_to_pre_refactor_baseline():

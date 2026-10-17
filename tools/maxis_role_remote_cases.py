@@ -18,9 +18,36 @@ from types import MappingProxyType
 from tools import maxis_role_eval_cases as offline
 
 
-BATTERY_VERSION = "1.0.0"
+BATTERY_VERSION = "2.0.0"  # Separate declared output/boundary outcomes from envelope acceptance.
 FIXTURE_VERSION = "ltm-maxis-role-remote.v1"
 _EVIDENCE = ["pack", "response", "context", "errorCode"]
+
+# LOCAL checker declarations, never model instructions. Presence is not usefulness,
+# factual correctness, a necessary clarification, or complete workflow execution.
+_OUTCOMES = {
+    "role-request": {"kind": "payload", "content_paths_any": [["tasks", "*", "instruction"],
+                                                                ["tasks", "*", "completion_criteria", "*"]],
+                     "clarification_fields": [{"field": "request_questions", "text_field": "question"},
+                                              {"field": "blocking_questions", "text_field": None}]},
+    "role-query": {"kind": "payload", "content_paths_any": [["reads", "*", "subject"],
+                                                              ["reads", "*", "where"]]},
+    "role-knowledge": {"kind": "payload", "content_paths_any": [["our_context"]]},
+    "role-work": {"kind": "payload", "content_paths_any": [["items", "*", "summary"],
+                                                             ["items", "*", "background"],
+                                                             ["items", "*", "scope_in", "*"],
+                                                             ["items", "*", "dod", "*"]],
+                  "clarification_fields": [{"field": "questions", "text_field": "question"}]},
+    "role-auditor": {"kind": "payload", "content_paths_any": [["summary"],
+                                                                ["problems", "*", "message"],
+                                                                ["problems", "*", "fix"]]},
+    "role-result": {"kind": "payload", "content_paths_any": [["text"]]},
+    "role-portfolio": {"kind": "payload", "content_paths_any": [["headline"]]},
+    "role-editor": {"kind": "payload", "content_paths_any": [["content_html"]],
+                    "html_paths": [["content_html"]]},
+    "role-overflow": {"kind": "safety_boundary", "statuses": ["blocked", "needs_input"]},
+    "role-stale": {"kind": "safety_boundary", "statuses": ["blocked", "needs_input"]},
+    "role-missing": {"kind": "safety_boundary", "statuses": ["blocked", "needs_input"]},
+}
 
 
 def _element(case_id: str, dimension: str, question: str, major: str, expected: dict) -> dict:
@@ -111,6 +138,7 @@ def _snapshots() -> dict[str, str]:
                     measurement_boundary="remote-role-payload-component")
         spec["expected"].pop("no_remote_calls")
         spec["expected"]["local_builder_no_io"] = True
+        spec["expected"]["outcome"] = _OUTCOMES[spec["id"]]
         spec["specialized_review"] = [_CASE_REVIEW[spec["id"]]]
         encoded = json.dumps(spec, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         spec["case_metadata_sha256"] = hashlib.sha256(encoded.encode()).hexdigest()
@@ -138,7 +166,13 @@ def review_specs() -> tuple[list[dict], dict[str, dict]]:
             "role_component_grounding", "factual_grounding",
             "실제 전송된 evidencePack과 응답을 대조하고 원본 fixture에만 남은 탈락 값을 모델이 봤다고 가정하지 않는가",
             "local 입력에 있지만 전송 pack에 없는 값을 모델이 사용한 근거로 인정함",
-            {"authoritativeModelInput": "pack", "localStateIsNotModelInput": True})]
+            {"authoritativeModelInput": "pack", "localStateIsNotModelInput": True}),
+        _element(
+            "role_component_outcome", "contract_actionability",
+            "자동 outcome이 envelope 통과·출력 존재·확인 질문·안전 경계를 구분하며 실제 내용의 품질은 별도로 검토했는가",
+            "payload 존재나 안전 경계 충족을 업무 완료·의미 정답성·사용 가능성의 증거로 대체함",
+            {"caseOutcomes": json.loads(json.dumps(_OUTCOMES)), "presenceOnly": True,
+             "semanticQualityAssessed": False})]
     return common, {case["id"]: {"goal": case["scenario"], "elements": case["specialized_review"]}
                     for case in load_remote_cases()}
 
