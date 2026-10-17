@@ -64,5 +64,6 @@ LTM 모델이나 동일 production endpoint를 별도 judge로 호출하지 않�
 - release 후보의 정성 품질·비용·latency 확인
 - 사용자가 실 API 실행을 명시적으로 승인한 실험
 
-실행 결과와 실제 응답 전문은 `research/agent-improvement/{results,logs,reports}`에 보존한다.
+실행 결과·채점 보고서·실제 응답 전문은 ignored `.cache/agent-evaluation/<runGroupId>/`에 보존하고
+커밋하지 않는다. 재사용하는 평가 코드·spec·합성 fixture·회귀 test만 소스로 유지하며 검증 요약은 PR 본문에 기록한다.
 자동 점수만으로 품질 통과를 선언하지 않고 사람이 출력 전문을 읽어 평가한다.

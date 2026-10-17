@@ -388,8 +388,9 @@ Primary battery harness는 매 실행의 raw response, 질문 form, card/payload
 `.cache/agent-evaluation/<runGroupId>/` 아래 JSON으로 항상 저장. 사용자가 `--out`을 지정해도 이 경로
 밖은 거부. `.cache/`는 gitignore 대상이며 raw 파일을 commit하지 않음
 
-Codex/Claude 직접 평가가 끝나면 `research/agent-improvement/evaluations/`에 경량 Markdown 보고서를
-항상 저장. 하나의 보고서는 한 candidate commit과 한 비교 가능한 run group을 기본 단위로 하며 다음을 포함
+Codex/Claude 직접 평가가 끝나면 `.cache/agent-evaluation/<runGroupId>/review.md`에 경량 Markdown 보고서를
+항상 저장하고 커밋하지 않음. 평가 결과는 raw·채점·최신 보고서 모두 ignored `.cache/`에만 유지하며,
+검증 요약은 PR 본문에 기록. 하나의 보고서는 한 candidate commit과 한 비교 가능한 run group을 기본 단위로 하며 다음을 포함
 
 - candidate commit, `promptVersion`, `protocolVersion`, `rubricVersion`
 - suite별 `batteryVersion`, `batteryManifestSha256`, `specializedReviewSpecSha256`,

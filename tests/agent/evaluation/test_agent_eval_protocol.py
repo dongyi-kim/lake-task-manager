@@ -1269,13 +1269,29 @@ def test_primary_batteries_always_write_raw_results_through_the_cache_helper():
         assert "write_raw_result(" in text, relative
 
 
-def test_evaluation_rules_require_a_tracked_compact_markdown_report():
-    guide = (ROOT / "app/agent/EVALUATION.md").read_text(encoding="utf-8")
-    agent_guide = (ROOT / "app/agent/AGENT.md").read_text(encoding="utf-8")
-    archive = (ROOT / "research/agent-improvement/README.md").read_text(encoding="utf-8")
-    for text in (guide, agent_guide, archive):
-        assert ".cache/agent-evaluation/" in text
-        assert "research/agent-improvement/evaluations/" in text
+def test_evaluation_rules_keep_raw_and_markdown_results_in_ignored_cache():
+    policy_paths = (
+        "AGENTS.md", "app/agent/AGENT.md", "app/agent/EVALUATION.md",
+        "docs/TESTING.md", ".agents/skills/ltm-agent-development/SKILL.md",
+    )
+    policies = {
+        relative: (ROOT / relative).read_text(encoding="utf-8")
+        for relative in policy_paths
+    }
+    for relative, text in policies.items():
+        assert ".cache/agent-evaluation/<runGroupId>/" in text, relative
+        assert "커밋하지" in text, relative
+        assert "research/agent-improvement/evaluations/" not in text, relative
+    for relative in ("app/agent/EVALUATION.md", "app/agent/AGENT.md"):
+        # Moving results out of Git must not remove the direct-review report obligation.
+        assert ".cache/agent-evaluation/<runGroupId>/review.md" in policies[relative]
+        assert "Markdown" in policies[relative]
+    for relative in ("AGENTS.md", "docs/TESTING.md",
+                     ".agents/skills/ltm-agent-development/SKILL.md"):
+        # Reusable evaluation sources are not disposable run results.
+        for token in ("재사용", "평가 코드", "spec", "fixture", "test", "유지"):
+            assert token in policies[relative], (relative, token)
+    guide = policies["app/agent/EVALUATION.md"]
     for token in ("candidate commit", "protocolVersion", "rubricVersion",
                   "batteryVersion", "batteryManifestSha256", "specializedReviewSpecSha256"):
         assert token in guide
