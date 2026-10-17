@@ -34,9 +34,10 @@ def _copy_bundle_sources(target):
     (target / "config").mkdir()
     for filename in ("maxis-workflows.yml", "maxis-knowledge.yml"):
         shutil.copy2(ROOT / "config" / filename, target / "config" / filename)
-    request_prompt = Path("app/agent/prompts/roles/request_architect.md")
-    (target / request_prompt).parent.mkdir(parents=True)
-    shutil.copy2(ROOT / request_prompt, target / request_prompt)
+    for role in ("request_architect", "query_specialist"):
+        prompt = Path("app/agent/prompts/roles") / (role + ".md")
+        (target / prompt).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / prompt, target / prompt)
 
 
 def test_policy_shortcut_fixture_is_valid_before_mutation(tmp_path):

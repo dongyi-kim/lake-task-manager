@@ -54,7 +54,11 @@ Query LLM은 내부 `query-draft.v2`의 contract/status/payload/missing_inputs�
 `core_query_contract.py`가 canonical CompactQueryPlan에서 값의 enum·길이·개수와 optional
 제약을 가져오고 narrative leaf만 `{value, kind, source_ids}`로 감싼다. 별도의 payload 정본을
 유지하지 않는다. Query 전용 prompt는 이 내부 계약만 요구하며 full remote envelope를 요구하는
-common prompt와 결합하지 않는다. 다른 Role의 실제 prompt는 그대로 유지한다.
+common prompt와 결합하지 않는다. `query_specialist.md`의 Query Design, Scope and Tool
+Contract, Preflight Check 절만 strict 추출해 원문과 순서를 유지한 채 최종 draft 출력 계약
+앞에 배치한다. 누락·빈 절·중복·heading 구조 변경은 실패하며 문자열 의미를 치환하지 않는다.
+필터 문법·구성 scope·근거별 source coverage는 로컬 정본 한 곳이 소유하고 remote prompt는
+wrapper/provenance/coverage wire 형식만 안내한다. 다른 Role의 실제 prompt는 그대로 유지한다.
 
 `code/core_query_assembler.py`는 Knowledge Guard 원입력의 canonical schema/hash/role 연결을
 재확인하고, 모델의 value와 kind를 바꾸지 않은 채 payload/claim에 복사한다. citation ID와

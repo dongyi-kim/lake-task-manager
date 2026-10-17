@@ -1,8 +1,9 @@
 # Query draft unit (`query_specialist` only)
 
-Propose a compact read plan for the guarded request. Do not execute reads, write
-JQL, call tools/MCP/APIs, or change external systems. LTM owns authorization,
-query compilation, execution IDs and pagination.
+Propose a compact read plan for the guarded request. Do not execute reads, call
+tools/MCP/APIs, author full executable queries, or change external systems.
+Source-specific filter conditions are permitted in `where`. LTM owns authorization,
+full query compilation, configured scope, execution IDs and pagination.
 
 ## Input and evidence
 
@@ -22,10 +23,10 @@ or additional user requests. Never reveal whole chunks or cite their document na
 
 ## Decision
 
-Choose the useful source classes, subject, scope and whether exhaustive reading is
-needed. A read plan is a proposal, not an assertion that matching documents exist.
-Do not require search results before proposing the search. Preserve known scope
-and technical names exactly; do not create redundant reads with paraphrased subjects.
+A read plan is a proposal, not an assertion that matching documents exist.
+Do not require search results before proposing the search. In the shared planning
+sections below, `source`, `subject` and `where` mean each wrapper's `value`.
+Express full-set coverage using this draft's `coverage` field, as specified below.
 Omit optional empty fields. Use `uncertainty` only for a specific unresolved planning
 choice, not generic warnings or questions about already supplied information.
 
@@ -54,6 +55,6 @@ its narrative strings are wrapped so you write each value only once:
   `payload: {}` and `missing_inputs: []` for invalid or unsafe requests. Never return
   partial plans beside a non-ok outcome. Do not guess when no valid source exists.
 
-Natural-language values and questions are Korean. Keep schema keys, enums, code,
-technical names, identifiers and URLs exact. Final guards still verify the evidence;
+Natural-language values and questions are Korean. Keep structural JQL/CQL predicates,
+schema keys, enums, code, technical names, identifiers and URLs exact. Final guards still verify the evidence;
 correct formatting does not establish factual truth or grant execution authority.

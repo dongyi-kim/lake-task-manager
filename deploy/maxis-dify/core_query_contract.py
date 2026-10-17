@@ -3,6 +3,55 @@ import copy
 import json
 
 
+def build_query_system_prompt(local_role_markdown: str, transport_markdown: str) -> str:
+    """Deliver exact reviewed semantic sections, without rewriting wire meanings."""
+    def fail():
+        raise ValueError("Query system prompt requires review")
+
+    def normalized(value):
+        if not isinstance(value, str) or not value.strip():
+            fail()
+        return value.replace("\r\n", "\n").replace("\r", "\n")
+
+    local, wire = normalized(local_role_markdown), normalized(transport_markdown).strip()
+    expected = ("Purpose", "Inputs", "Output Contract", "Query Design",
+                "Scope and Tool Contract", "Stop and Escalate", "Preflight Check")
+    selected = ("Query Design", "Scope and Tool Contract", "Preflight Check")
+    lines, sections = local.splitlines(keepends=True), []
+    for index, line in enumerate(lines):
+        if line.lstrip(" \t").startswith("##") and not line.startswith("##"):
+            fail()
+        if line.startswith("##"):
+            if not line.startswith("## "):
+                fail()
+            sections.append((line.removesuffix("\n")[3:], index))
+    if tuple(title for title, _ in sections) != expected:
+        fail()
+    blocks = {}
+    for offset, (title, start) in enumerate(sections):
+        end = sections[offset + 1][1] if offset + 1 < len(sections) else len(lines)
+        if title in selected:
+            if not "".join(lines[start + 1:end]).strip():
+                fail()
+            # Normalize section separators only; preserve every selected line.
+            blocks[title] = "".join(lines[start:end]).rstrip("\n")
+    marker = "## Output: `query-draft.v2` only"
+    if (wire.splitlines().count(marker) != 1
+            or any("## " + title in wire.splitlines() for title in selected)):
+        fail()
+    parts = wire.split("\n" + marker + "\n")
+    if len(parts) != 2:
+        fail()
+    prefix, output = parts
+    if not prefix.strip() or not output.strip():
+        fail()
+    prompt = "\n\n".join((prefix.rstrip("\n"), *(blocks[title] for title in selected),
+                           marker + "\n" + output.lstrip("\n")))
+    if len(prompt.encode("utf-8")) > 8192:
+        fail()
+    return prompt
+
+
 def build_draft_schema(canonical_schema: dict, project) -> dict:
     """Preserve canonical constraints; coverage is an explicit internal boolean wire adapter."""
     def fail():

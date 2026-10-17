@@ -276,6 +276,22 @@ def test_boolean_projection_never_broadens_new_canonical_constraints(monkeypatch
         GRAPH.reviewed_assets(ROOT)
 
 
+def test_query_prompt_reads_selected_text_from_the_supplied_source_root(monkeypatch):
+    path = ROOT / "app/agent/prompts/roles/query_specialist.md"
+    original = Path.read_text
+    changed = original(path, encoding="utf-8").replace(
+        "1. Preserve every user filter", "1. Preserve every  user filter", 1)
+    monkeypatch.setattr(Path, "read_text", lambda self, *args, **kwargs:
+        changed if self == path else original(self, *args, **kwargs))
+    spec = importlib.util.spec_from_file_location("query_prompt_projection", ROOT / "deploy/maxis-dify/validate_bundle.py")
+    validator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(validator)
+    assets = GRAPH.query_assets(ROOT, validator._dify_structured_output_schema)
+    assert "1. Preserve every  user filter" in assets["query_system_prompt"]
+    with pytest.raises(ValueError, match="digest drifted"):
+        GRAPH.reviewed_assets(ROOT)
+
+
 def test_actual_factory_and_knowledge_guard_drive_embedded_classifier_only():
     dsl = _build()
     nodes = _nodes(dsl)

@@ -29,7 +29,7 @@ CONTRACT_GUARD_ID = "1909000000001005"
 ROUTE_SOURCE_PATH = "deploy/maxis-dify/code/core_control_route.py"
 ROUTE_SOURCE_SHA256 = "c5f0e928901cdbbac78a9c6f90a9627cef6b0bcc7be4ac6586c281f17fc5b377"
 CONTROL_SYSTEM_SHA256 = "7017b30253765eab4e41723de73a3d5014c1f5c2b820fedcbaab80cf08ddae60"
-QUERY_SYSTEM_SHA256 = "eb67823623c14941b9cd6142b7fc0ffb0c73f13ddc8510a84e68a0e364f431c7"
+QUERY_SYSTEM_SHA256 = "d8e5263bf0098423f42317be7b0b1cfbd506533cea864f98d73a0e165c543471"
 QUERY_SCHEMA_SHA256 = "87365a165718e4ef5597083f1be9f88a09170796927154d8e2e82fdaa2d8e1ad"
 QUERY_ASSEMBLER_SHA256 = "dbbc9ea755ed2eb17dc0094d85745b97d57661cb45098c025252953a94161de4"
 QUERY_INPUT_SHA256 = "e0eaf402ee038b001946e38c36212eee2f1973c6abadc26b0d2622507fa7779f"
@@ -95,7 +95,9 @@ def query_assets(root: Path, project) -> dict:
     directory = root / "deploy/maxis-dify/prompts"
     # This internal unit does not author the full remote-role envelope. As with
     # Editor's writer, do not combine conflicting full-envelope instructions.
-    prompt = directory.joinpath("core_query.md").read_text(encoding="utf-8").strip()
+    prompt = contract.build_query_system_prompt(
+        (root / "app/agent/prompts/roles/query_specialist.md").read_text(encoding="utf-8"),
+        directory.joinpath("core_query.md").read_text(encoding="utf-8"))
     return {"route_source": route, "query_system_prompt": prompt, "query_schema": native,
             "query_assembler_source": assembler,
             "query_input_source": (root / "deploy/maxis-dify/code/core_query_input.py").read_text(encoding="utf-8").rstrip()}

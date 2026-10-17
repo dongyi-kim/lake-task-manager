@@ -227,9 +227,42 @@ def test_assembler_never_relabels_intent_facts_to_make_them_acceptable(nodes, qu
         local(pack, assembled)
 
 
+@pytest.mark.parametrize("source,where", [
+    ("jira", "status = Open"), ("confluence", 'label = "release"'),
+    ("comments", "status = Open"), ("people", "ETL"), ("confluence", None),
+])
+def test_typed_plan_keeps_lexical_subject_and_structural_filter_through_guards_and_compiler(nodes, query_case, source, where):
+    from app.agent.workflow.agents.query_specialist import _compile_compact_query_plan
+    pack, model_input, candidate = query_case
+    selected = draft(candidate)
+    read = selected["payload"]["reads"][0]
+    read["source"]["value"], read["subject"]["value"] = source, "배포 이력"
+    if where is None:
+        del read["where"]
+    else:
+        read["where"]["value"] = where
+    assembled = assemble(nodes, model_input, selected)
+    assert remote(nodes, pack, assembled) == assembled
+    assert local(pack, assembled)[0].status == "ok"
+    runtime = _compile_compact_query_plan(assembled["payload"])["queries"][0]
+    assert runtime["source"] == source and runtime["query"] == "배포 이력"
+    assert runtime["where"] == (where or "") and runtime["completeness"] == "all"
+    assert ("where" in assembled["payload"]["reads"][0]) is (where is not None)
+
+
 def test_query_unit_does_not_receive_conflicting_remote_envelope_instructions(nodes):
     prompt = nodes[QUERY_ID]["prompt_template"][0]["text"]
-    assert prompt == (ROOT / "deploy/maxis-dify/prompts/core_query.md").read_text(encoding="utf-8").strip()
+    local_role = (ROOT / "app/agent/prompts/roles/query_specialist.md").read_text(encoding="utf-8")
+    titles = ("Query Design", "Scope and Tool Contract", "Preflight Check")
+    positions = []
+    for title in titles:
+        block = ("## " + title + "\n" + local_role.split("## " + title + "\n", 1)[1].split("\n## ", 1)[0]).rstrip("\n")
+        assert prompt.count(block) == 1
+        positions.append(prompt.index(block))
+    assert positions == sorted(positions)
+    assert positions[-1] < prompt.index("## Output: `query-draft.v2` only")
+    assert all("## " + title not in prompt for title in ("Inputs", "Output Contract", "Stop and Escalate"))
+    assert "Set `exhaustive=true`" not in prompt
     assert "query-draft.v2" in prompt and "## Required response" not in prompt
     assert "Echo input `knowledge_proof`" not in prompt
 

@@ -19,9 +19,10 @@ SPEC.loader.exec_module(materializer)
 
 def _copy_materializer_sources(target):
     shutil.copytree(ROOT / "deploy/maxis-dify", target / "deploy/maxis-dify")
-    request_prompt = Path("app/agent/prompts/roles/request_architect.md")
-    (target / request_prompt).parent.mkdir(parents=True)
-    shutil.copy2(ROOT / request_prompt, target / request_prompt)
+    for role in ("request_architect", "query_specialist"):
+        prompt = Path("app/agent/prompts/roles") / (role + ".md")
+        (target / prompt).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / prompt, target / prompt)
 
 
 def _ready_prod_environment() -> dict:

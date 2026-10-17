@@ -43,9 +43,10 @@ def _copy_bundle_repository(tmp_path: Path) -> Path:
     for name in ("maxis-workflows.yml", "maxis-knowledge.yml"):
         shutil.copy2(ROOT / "config" / name, target / "config" / name)
     shutil.copytree(ROOT / "knowledge", target / "knowledge")
-    request_prompt = Path("app/agent/prompts/roles/request_architect.md")
-    (target / request_prompt).parent.mkdir(parents=True)
-    shutil.copy2(ROOT / request_prompt, target / request_prompt)
+    for role in ("request_architect", "query_specialist"):
+        prompt = Path("app/agent/prompts/roles") / (role + ".md")
+        (target / prompt).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / prompt, target / prompt)
     return target
 
 
