@@ -59,6 +59,23 @@ def test_aggregate_budget_omission_and_removal_are_separate():
     assert result["packUtf8Bytes"] <= result["limits"]["packUtf8Bytes"]
 
 
+@pytest.mark.parametrize("value", ["가" * 1500, "🙂" * 1000], ids=["korean", "emoji"])
+def test_utf8_field_omission_is_reported_without_leaking_or_changing_state(value):
+    state = {"situation": value, "correlation_started_at": NOW.isoformat()}
+    before_state = deepcopy(state)
+    pack = _pack("knowledge_curator", state)
+    before_pack = pack.model_dump()
+
+    result = describe_context("knowledge_curator", state, pack)
+
+    assert result["perFieldSizeOmittedKeys"] == ["situation"]
+    assert result["packBudgetOmittedKeys"] == result["packBudgetRemovedKeys"] == []
+    assert result["freshnessMissingKeys"] == []
+    assert result["partialKeys"] == ["situation"]
+    assert value not in json.dumps(result, ensure_ascii=False)
+    assert (state, pack.model_dump()) == (before_state, before_pack)
+
+
 def test_missing_value_freshness_unknown_names_and_values_never_leak():
     state = {"situation": "private-value", "private-field-name": "private-secret",
              "approval_token": "Authorization: Bearer private-secret-value"}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -1106,7 +1107,42 @@ def test_portfolio_remote_context_projects_prefetched_pmo_material():
     ]
 
 
-def test_interview_continuation_preserves_carried_role_context_observation_time():
+@pytest.mark.parametrize(("situation", "omitted"), [
+    pytest.param("a" * 3898, False, id="ascii-exact-char-limit"),
+    pytest.param("a" * 3899, True, id="ascii-over-char-limit"),
+    pytest.param("가" * 1332, False, id="korean-below-byte-limit"),
+    pytest.param("가" * 1332 + "ab", False, id="korean-exact-byte-limit"),
+    pytest.param("가" * 1332 + "abc", True, id="korean-over-byte-limit"),
+    pytest.param("가" * 1500, True, id="korean-original-reproduction"),
+    pytest.param("🙂" * 999 + "ab", False, id="emoji-exact-byte-limit"),
+    pytest.param("🙂" * 1000, True, id="emoji-over-byte-limit"),
+])
+def test_role_context_size_boundaries_preserve_state_and_mark_omission(situation, omitted):
+    state = _runtime_state("knowledge_curator")
+    state["situation"] = situation
+    before = deepcopy(state)
+
+    payload = backend.role_payload(
+        "knowledge_curator", state, [], {"type": "object"},
+        output_kind="structured",
+    )
+    pack = EvidencePackV1.model_validate_json(
+        json.dumps(payload["evidencePack"], ensure_ascii=False), strict=True,
+    )
+
+    assert state == before
+    assert len(pack.role_context) == 1
+    row = pack.role_context[0]
+    expected = {"omitted": True, "originalChars": len(backend._canonical_json(situation))}
+    assert json.loads(row.content_json) == (expected if omitted else situation)
+    assert row.partial is omitted
+    assert pack.partial is omitted
+    assert ("partial_role_context" in pack.flags) is omitted
+    assert row.observed_at == datetime.fromisoformat(state["correlation_started_at"])
+
+
+@pytest.mark.parametrize("situation", ["직전 질문까지 정리한 상황", "가" * 1500], ids=["small", "omitted"])
+def test_interview_continuation_preserves_carried_role_context_observation_time(situation):
     from app.agent.workflow.session import _turn_start_patch
 
     old = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
@@ -1114,7 +1150,7 @@ def test_interview_continuation_preserves_carried_role_context_observation_time(
     prior.update({
         "correlation_id": "corr-kept",
         "correlation_started_at": old,
-        "situation": "직전 질문까지 정리한 상황",
+        "situation": situation,
     })
     turn = _turn_start_patch(
         "마감은 9월 30일이야",
@@ -1138,6 +1174,11 @@ def test_interview_continuation_preserves_carried_role_context_observation_time(
     assert pack.freshness == "mixed"
     assert pack.sources[0].canonical_id.startswith("ltm:user-intent:")
     assert "stale_role_context" in pack.flags
+    if situation == "가" * 1500:
+        assert json.loads(pack.role_context[0].content_json) == {
+            "omitted": True, "originalChars": 1502,
+        }
+        assert pack.role_context[0].partial is True
 
     # A Role that actually recomputes the value changes the digest and receives the
     # current turn timestamp instead of inheriting the stale provenance entry.

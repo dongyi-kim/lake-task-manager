@@ -59,7 +59,10 @@ def describe_context(role_id: str, state: dict, pack: EvidencePackV1) -> dict:
     projected = {row["name"]: row for row in rows if row["name"] in allowed}
     final = {row.name: row for row in pack.role_context if row.name in allowed}
     encoded = {key: _encoded_value(role_id, key, state) for key in projected}
-    per_field = {key for key, value in encoded.items() if len(value) > 3900}
+    per_field = {
+        key for key, value in encoded.items()
+        if len(value) > 3900 or len(value.encode("utf-8")) > MAX_ROLE_CONTEXT_UTF8_BYTES
+    }
     flags = sorted(set(pack.flags) & _SAFE_FLAGS)
     removed = set(projected) - set(final)
     synthetic = "synthetic_only" in flags

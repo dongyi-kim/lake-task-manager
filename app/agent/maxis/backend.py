@@ -946,6 +946,7 @@ def _context_time(state: dict) -> datetime:
 
 def _role_context(role_id: str, state: dict) -> tuple[list[dict], frozenset[str]]:
     """Project only the Role's declared, non-authority state into bounded context."""
+    from app.agent.maxis.context_guard import MAX_ROLE_CONTEXT_UTF8_BYTES
     from app.agent.workflow.role_manifest import ROLE_SPECS
 
     spec = ROLE_SPECS[role_id]  # canonical-id assertion
@@ -985,10 +986,11 @@ def _role_context(role_id: str, state: dict) -> tuple[list[dict], frozenset[str]
             # its parallel Role context retain URLs removed by the source policy.
             value = _outbound_content_projection(value)
         encoded = _canonical_json(value)
+        encoded_utf8 = encoded.encode("utf-8")
         observed_at = current_observed_at
         has_observed_at = current_has_observed_at
         carried = carryover.get(key)
-        digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        digest = hashlib.sha256(encoded_utf8).hexdigest()
         if isinstance(carried, dict) and carried.get("sha256") == digest:
             raw_observed_at = str(carried.get("observed_at") or "").strip()
             try:
@@ -1004,7 +1006,7 @@ def _role_context(role_id: str, state: dict) -> tuple[list[dict], frozenset[str]
             except ValueError:
                 has_observed_at = False
         partial = not has_observed_at
-        if len(encoded) > 3900:
+        if len(encoded) > 3900 or len(encoded_utf8) > MAX_ROLE_CONTEXT_UTF8_BYTES:
             # Do not slice JSON into an invalid or misleading value. A typed omission is
             # visible through ``partial`` and blocks freshness-sensitive draft Roles.
             value = {"omitted": True, "originalChars": len(encoded)}

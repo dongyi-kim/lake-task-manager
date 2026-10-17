@@ -9,6 +9,7 @@ from app.agent.maxis import ContextGuard, ContextGuardError, ContextPolicy
 from app.agent.maxis.context_guard import (
     MAX_CONTEXT_PACK_UTF8_BYTES,
     MAX_QUERY_UTF8_BYTES,
+    MAX_ROLE_CONTEXT_UTF8_BYTES,
     canonical_evidence_pack_json,
 )
 
@@ -252,6 +253,32 @@ def test_role_context_rejects_unlisted_keys_and_nested_authority(now):
             "observed_at": now,
         }])
     assert authority_error.value.code == "forbidden_authority_field"
+
+
+@pytest.mark.parametrize(
+    "value", ["a" * 3998, "가" * 1332 + "ab", "🙂" * 999 + "ab"],
+    ids=["ascii", "korean", "emoji"],
+)
+def test_role_context_guard_keeps_exact_utf8_boundary_and_rejects_overflow(now, value):
+    guard = ContextGuard(
+        ContextPolicy(allowed_scopes={}, allowed_context_keys=frozenset({"situation"})),
+        b"test-pseudonym-key-32-bytes-long",
+    )
+    base = dict(
+        request_id="req-context-boundary", use_case="knowledge_curator",
+        query="정리해 줘", payload_schema=_PAYLOAD_SCHEMA, user_identity="operator",
+        sources=[], requested_at=now,
+    )
+    row = {"context_id": "ctx-1", "name": "situation", "value": value, "observed_at": now}
+    assert len(json.dumps(value, ensure_ascii=False).encode("utf-8")) == MAX_ROLE_CONTEXT_UTF8_BYTES
+
+    pack = guard.build(**base, role_context=[row])
+
+    assert json.loads(pack.role_context[0].content_json) == value
+    assert pack.partial is False
+    with pytest.raises(ContextGuardError) as caught:
+        guard.build(**base, role_context=[{**row, "value": value + "a"}])
+    assert caught.value.code == "role_context_too_large"
 
 
 def test_stale_role_context_controls_freshness_without_sources(now):
