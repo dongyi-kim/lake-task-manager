@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from contextlib import contextmanager
+from copy import deepcopy
 from datetime import datetime, timezone
 
 import pytest
@@ -142,6 +144,139 @@ def test_dev_and_prod_profiles_have_fixed_data_policies():
     assert rows["prod"]["data_policy"] == "internal_read_only"
     with pytest.raises(ValueError, match="dataPolicy"):
         profiles.save("dev", {"data_policy": "internal_read_only"})
+
+
+@pytest.mark.parametrize("storage_shape", ["list", "dict"])
+@pytest.mark.parametrize("target_exists", [False, True])
+def test_profile_save_preserves_unrelated_stored_rows_and_probe_records(
+    storage_shape, target_exists, monkeypatch,
+):
+    from app.infra import prefs
+
+    # A rotated/invalid sibling must remain repairable, including fields this
+    # version does not understand and operator-entered whitespace.
+    sibling = {
+        "name": "prod", "base_url": " https://retired.maxis.example/v1/ ",
+        "data_policy": "not-a-policy", "knowledge_version": " old-release ",
+        "workflows": {"agent_core": {"binding": " old-binding ",
+                                     "version": " old-version ",
+                                     "extension": {"labels": [" keep "]}}},
+        "operator_metadata": {"note": " retain whitespace ", "nested": [1, {"x": 2}]},
+    }
+    rows = [profiles.get("dev"), sibling] if target_exists else [sibling]
+    stored = rows if storage_shape == "list" else {row["name"]: row for row in rows}
+    verified = {name: {"fingerprint": " keep "} for name in profiles.PROFILE_NAMES}
+    last_probe = {name: {"result": {"items": [" keep "]}} for name in profiles.PROFILE_NAMES}
+    prefs.save_strict({"maxisProfiles": stored, "maxisProbeOkByProfile": verified,
+                       "maxisLastProbeByProfile": last_probe})
+    before = deepcopy(prefs.load())
+    monkeypatch.setattr(credentials, "get_for", lambda *_args, **_kwargs: pytest.fail(
+        "Saving profile metadata must not read credentials."))
+
+    saved = profiles.save("dev", {"workflow_bundle_version": "updated-release"})
+
+    after = prefs.load()
+    assert [row["name"] for row in after["maxisProfiles"]] == (
+        ["dev", "prod"] if target_exists else ["prod", "dev"]
+    )
+    assert next(row for row in after["maxisProfiles"] if row["name"] == "prod") == sibling
+    assert saved["workflow_bundle_version"] == "updated-release"
+    assert after["maxisProbeOkByProfile"] == {key: value for key, value in verified.items() if key != "dev"}
+    assert after["maxisLastProbeByProfile"] == {key: value for key, value in last_probe.items() if key != "dev"}
+    changed_keys = {"maxisProfiles", "maxisProbeOkByProfile", "maxisLastProbeByProfile"}
+    assert {key: value for key, value in after.items() if key not in changed_keys} == {
+        key: value for key, value in before.items() if key not in changed_keys
+    }
+
+
+def test_profile_save_creates_only_the_requested_profile():
+    from app.infra import prefs
+
+    profiles.save("dev", {"workflow_bundle_version": "first-release"})
+
+    assert [row["name"] for row in prefs.load()["maxisProfiles"]] == ["dev"]
+    assert profiles.get("prod")["name"] == "prod"
+    assert profiles.get("internal-pilot")["name"] == "internal-pilot"
+
+
+def test_profile_save_preserves_unrecognized_stored_rows():
+    from app.infra import prefs
+
+    siblings = [{"name": "future-profile", "extension": {"note": " keep "}},
+                "legacy-row", None]
+    prefs.save_strict({"maxisProfiles": siblings})
+
+    profiles.save("dev", {"workflow_bundle_version": "first-release"})
+
+    stored = prefs.load()["maxisProfiles"]
+    assert stored[:-1] == siblings
+    assert stored[-1]["name"] == "dev"
+
+
+@pytest.mark.parametrize("stored", [7, True, "legacy-value"])
+def test_profile_save_recovers_a_noncontainer_profile_store(stored):
+    from app.infra import prefs
+
+    prefs.save_strict({"maxisProfiles": stored})
+
+    profiles.save("dev", {"workflow_bundle_version": "first-release"})
+
+    assert [row["name"] for row in prefs.load()["maxisProfiles"]] == ["dev"]
+
+
+def test_profile_save_propagates_persistence_failure_without_changing_state(monkeypatch):
+    from app.infra import prefs
+
+    prefs.save_strict({"maxisProfiles": [profiles.get("dev")],
+                       "maxisProbeOkByProfile": {"dev": {"fingerprint": "keep"}}})
+    before = deepcopy(prefs.load())
+    failure = OSError("test persistence failure")
+
+    def fail_save(_patch):
+        raise failure
+
+    monkeypatch.setattr(prefs, "save_strict", fail_save)
+    with pytest.raises(OSError) as caught:
+        profiles.save("dev", {"workflow_bundle_version": "updated-release"})
+
+    assert caught.value is failure
+    assert prefs.load() == before
+
+
+def test_invalid_profile_save_preserves_stored_profiles_and_probe_records():
+    from app.infra import prefs
+
+    prefs.save_strict({"maxisProfiles": [profiles.get("dev"), profiles.get("prod")],
+                       "maxisProbeOkByProfile": {"dev": {"fingerprint": "keep"}},
+                       "maxisLastProbeByProfile": {"dev": {"result": "keep"}}})
+    before = deepcopy(prefs.load())
+
+    with pytest.raises(ValueError, match="dataPolicy"):
+        profiles.save("dev", {"data_policy": "internal_read_only"})
+
+    assert prefs.load() == before
+
+
+def test_profile_save_merges_the_target_snapshot_after_acquiring_the_lock(monkeypatch):
+    from app.infra import prefs
+
+    prefs.save_strict({"maxisProfiles": [profiles.get("dev")]})
+
+    @contextmanager
+    def acquired_after_another_save():
+        state = prefs.load()
+        state["maxisProfiles"][0]["workflow_bundle_version"] = "concurrent-release"
+        prefs.save_strict({"maxisProfiles": state["maxisProfiles"],
+                           "maxisLastProbeByProfile": {"prod": {"result": "concurrent"}}})
+        yield
+
+    monkeypatch.setattr(profiles, "_LOCK", acquired_after_another_save())
+
+    saved = profiles.save("dev", {"knowledge_version": KNOWLEDGE_VERSION})
+
+    assert saved["workflow_bundle_version"] == "concurrent-release"
+    assert saved["knowledge_version"] == KNOWLEDGE_VERSION
+    assert prefs.load()["maxisLastProbeByProfile"] == {"prod": {"result": "concurrent"}}
 
 
 def test_profile_url_policy_allows_only_loopback_http_in_dev():

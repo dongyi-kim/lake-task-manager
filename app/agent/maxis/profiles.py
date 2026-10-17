@@ -189,8 +189,8 @@ def _default_profile(name: str) -> dict:
     }
 
 
-def _stored_rows() -> dict[str, dict]:
-    raw = prefs.load().get("maxisProfiles") or []
+def _stored_rows(state: dict | None = None) -> dict[str, dict]:
+    raw = (prefs.load() if state is None else state).get("maxisProfiles") or []
     if isinstance(raw, dict):
         raw = list(raw.values())
     rows = {}
@@ -200,11 +200,11 @@ def _stored_rows() -> dict[str, dict]:
     return rows
 
 
-def _merged_profile(name: str) -> dict:
+def _merged_profile(name: str, *, stored_rows: dict[str, dict] | None = None) -> dict:
     if name not in PROFILE_NAMES:
         raise KeyError("MAXIS profile must be dev, internal-pilot, or prod.")
     out = _default_profile(name)
-    saved = _stored_rows().get(name) or {}
+    saved = (_stored_rows() if stored_rows is None else stored_rows).get(name) or {}
     for key in (
         "base_url", "data_policy", "workflow_bundle_version", "knowledge_version",
         "knowledge_dataset_id",
@@ -721,7 +721,6 @@ def list_all() -> list[dict]:
 
 def save(profile_name: str, patch: dict | None = None) -> dict:
     name = str(profile_name or "").strip().lower()
-    current = _merged_profile(name)
     patch = patch or {}
     allowed = {"base_url", "data_policy", "workflow_bundle_version",
                "knowledge_version", "knowledge_dataset_id",
@@ -730,41 +729,43 @@ def save(profile_name: str, patch: dict | None = None) -> dict:
                "knowledge_eval_attestation", "internal_pilot_policy", "workflows"}
     if set(patch) - allowed:
         raise ValueError("Unsupported MAXIS profile field.")
-    for key in allowed - {"workflows"}:
-        if key in patch:
-            current[key] = patch[key]
-    if "workflows" in patch:
-        incoming = patch.get("workflows")
-        if not isinstance(incoming, dict):
-            raise ValueError("workflows must be an object.")
-        if set(incoming) - set(WORKFLOW_KEYS):
-            raise ValueError("Unsupported MAXIS workflow binding.")
-        for workflow_key, row in incoming.items():
-            if not isinstance(row, dict):
-                raise ValueError("Each workflow binding must be an object.")
-            current["workflows"][workflow_key] = {
-                **current["workflows"][workflow_key],
-                **{k: row[k] for k in ("binding", "version") if k in row},
-            }
-    clean = _validate(current)
     with _LOCK:
-        # One or both rows may have become invalid after an allowlist rotation.  Do
-        # not re-validate persisted siblings while replacing this target: if both
-        # destinations rotated, validating either stale sibling would deadlock both
-        # repair actions.  ``_merged_profile`` preserves the unrelated candidate;
-        # resolve/probe/activate still validate it before any network use.
-        rows = {
-            profile_name: (
-                clean if profile_name == name else _merged_profile(profile_name)
-            )
-            for profile_name in PROFILE_NAMES
-        }
         state = prefs.load()
+        stored_rows = _stored_rows(state)
+        current = _merged_profile(name, stored_rows=stored_rows)
+        for key in allowed - {"workflows"}:
+            if key in patch:
+                current[key] = patch[key]
+        if "workflows" in patch:
+            incoming = patch.get("workflows")
+            if not isinstance(incoming, dict):
+                raise ValueError("workflows must be an object.")
+            if set(incoming) - set(WORKFLOW_KEYS):
+                raise ValueError("Unsupported MAXIS workflow binding.")
+            for workflow_key, row in incoming.items():
+                if not isinstance(row, dict):
+                    raise ValueError("Each workflow binding must be an object.")
+                current["workflows"][workflow_key] = {
+                    **current["workflows"][workflow_key],
+                    **{k: row[k] for k in ("binding", "version") if k in row},
+                }
+        clean = _validate(current)
+        # Preserve stored siblings exactly, including invalid/rotated candidates.
+        # Only the requested row is normalized; absent profiles remain absent.
+        raw = state.get("maxisProfiles") or []
+        if isinstance(raw, dict):
+            raw = list(raw.values())
+        rows = [
+            clean if isinstance(row, dict) and row.get("name") == name else row
+            for row in (raw if isinstance(raw, list) else [])
+        ]
+        if name not in stored_rows:
+            rows.append(clean)
         verified = dict(state.get("maxisProbeOkByProfile") or {})
         last_probe = dict(state.get("maxisLastProbeByProfile") or {})
         verified.pop(name, None)
         last_probe.pop(name, None)
-        prefs.save_strict({"maxisProfiles": [rows[key] for key in PROFILE_NAMES],
+        prefs.save_strict({"maxisProfiles": rows,
                            "maxisProbeOkByProfile": verified,
                            "maxisLastProbeByProfile": last_probe})
     return get(name)
