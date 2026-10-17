@@ -21,6 +21,8 @@ _UTC_TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?
 # An unbound source cannot silently send query requests to the generic model.
 _QUERY_SCHEMA_JSON = None
 _QUERY_SCHEMA_SHA256 = None
+_REQUEST_SCHEMA_JSON = None
+_REQUEST_SCHEMA_SHA256 = None
 
 
 def _fail():
@@ -116,7 +118,7 @@ def _activation(incoming, pack):
 
 
 def main(model_input):
-    """Return semantic/control/query; malformed reserved inputs raise a safe error.
+    """Return semantic/control/query/request; malformed bound inputs raise a safe error.
 
     No I/O, clock reads, mutation, evidence rewriting, or fallback repair. A semantic
     result says only 'not this activation'; all existing validation remains required.
@@ -140,6 +142,14 @@ def main(model_input):
                         or pack.get("payload_schema_sha256") != _QUERY_SCHEMA_SHA256):
                     _fail()
                 return {"route": "query"}
+            if incoming["role_id"] == "request_architect" or pack.get("use_case") == "request_architect":
+                if (incoming["role_id"] != "request_architect" or pack.get("use_case") != "request_architect"
+                        or not isinstance(_REQUEST_SCHEMA_JSON, str)
+                        or _digest(_REQUEST_SCHEMA_JSON) != _REQUEST_SCHEMA_SHA256
+                        or pack.get("payload_schema_json") != _REQUEST_SCHEMA_JSON
+                        or pack.get("payload_schema_sha256") != _REQUEST_SCHEMA_SHA256):
+                    _fail()
+                return {"route": "request"}
             return {"route": "semantic"}
         _activation(incoming, pack)
         return {"route": "control"}

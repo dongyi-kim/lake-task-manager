@@ -1,4 +1,4 @@
-"""Adversarial raw-artifact checks for both Core model branches; no provider calls."""
+"""Adversarial raw-artifact checks for all Core model branches; no provider calls."""
 import copy
 import importlib.util
 from pathlib import Path
@@ -43,7 +43,7 @@ def _reject_both(modules, raw):
     assert raw == before, "raw validation must precede every repair or deployment mutation"
 
 
-@pytest.mark.parametrize("title", ["Contract LLM", "Control LLM", "Query LLM"])
+@pytest.mark.parametrize("title", ["Contract LLM", "Control LLM", "Query LLM", "Request LLM"])
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("mutation", ["model", "system", "schema", "retry", "fallback", "memory", "vision",
                                       "context", "raw_user", "extra_prompt", "variables", "structured_disabled"])
@@ -143,7 +143,7 @@ def test_query_branch_cannot_weaken_types_or_bypass_its_selected_output(modules,
     elif mutation == "assembler_bypass":
         nodes["Core Candidate"]["variables"][2] = ["1909000000001028", "text"]
     else:
-        nodes["Core Candidate"]["variables"].pop()
+        nodes["Core Candidate"]["variables"].pop(2)
     _reject_both(modules, raw_source)
 
 
@@ -161,7 +161,8 @@ def test_canonical_query_contract_change_requires_independent_review(modules, ra
 
 
 @pytest.mark.parametrize("asset", ["code/core_control_route.py", "code/core_query_assembler.py", "code/core_draft_validation.py", "code/core_draft_context.py",
-                                  "code/core_query_input.py", "prompts/core_control.md", "prompts/core_query.md"])
+                                  "code/core_query_input.py", "code/core_request_assembler.py", "prompts/core_control.md",
+                                  "prompts/core_query.md", "prompts/core_request.md"])
 def test_asset_and_embedded_content_cannot_drift_together(modules, raw_source, monkeypatch, asset):
     path = ROOT / "deploy/maxis-dify" / asset
     original = Path.read_text
@@ -170,10 +171,16 @@ def test_asset_and_embedded_content_cannot_drift_together(modules, raw_source, m
     nodes = _nodes(raw_source)
     if asset.startswith("code/"):
         title = {"code/core_query_assembler.py": "Query Assembler", "code/core_draft_validation.py": "Query Assembler", "code/core_draft_context.py": "Query Assembler",
-                 "code/core_control_route.py": "Core Control Route", "code/core_query_input.py": "Query Input"}[asset]
+                 "code/core_control_route.py": "Core Control Route", "code/core_query_input.py": "Query Input",
+                 "code/core_request_assembler.py": "Request Assembler"}[asset]
         original_fragment = original(path, encoding="utf-8").rstrip()
         assert original_fragment in nodes[title]["code"]
         nodes[title]["code"] = nodes[title]["code"].replace(original_fragment, changed, 1)
+    elif asset.endswith("core_request.md"):
+        prompt = nodes["Request LLM"]["prompt_template"][0]
+        original_fragment = original(path, encoding="utf-8").strip()
+        assert original_fragment in prompt["text"]
+        prompt["text"] = prompt["text"].replace(original_fragment, changed, 1)
     else:
         common = (ROOT / "deploy/maxis-dify/prompts/common.md").read_text(encoding="utf-8").strip()
         nodes["Query LLM" if asset.endswith("core_query.md") else "Control LLM"]["prompt_template"][0]["text"] = (
@@ -232,7 +239,7 @@ def test_materialization_binds_all_models_independently_of_node_order(modules, r
     environment["workflows"]["agent_core"]["app_name"] += " Target"
     _, result = materializer._materialize_dsl(environment, "agent_core")
     nodes = _nodes(result)
-    for title in ("Contract LLM", "Control LLM", "Query LLM"):
+    for title in ("Contract LLM", "Control LLM", "Query LLM", "Request LLM"):
         assert nodes[title]["model"]["name"] == "target-model"
         assert nodes[title]["context"]["variable_selector"] == ["1909000000001003", "result"]
         selector = "{{#1909000000001030.query_input#}}" if title == "Query LLM" else "{{#1909000000001006.model_input#}}"
@@ -272,4 +279,46 @@ def test_query_projection_is_pinned_and_never_replaces_authority_input(modules, 
         edge = next(row for row in raw_source["workflow"]["graph"]["edges"] if row["sourceHandle"] == "query")
         edge.update(target="1909000000001028", id="1909000000001025-query-1909000000001028-target")
         edge["data"]["targetType"] = "llm"
+    _reject_both(modules, raw_source)
+
+
+@pytest.mark.parametrize("mutation", ["native_contract", "boolean_wire", "stage_fallback", "stage_selector", "missing_merge",
+    "assembler_source", "assembler_input", "assembler_candidate", "assembler_output", "assembler_bypass", "edge_bypass"])
+def test_request_branch_types_and_exact_selectors_cannot_be_bypassed(modules, raw_source, mutation):
+    nodes = _nodes(raw_source)
+    assembler = nodes["Request Assembler"]
+    if mutation == "native_contract":
+        nodes["Request LLM"]["structured_output"]["schema"]["properties"]["contract"]["enum"] = ["remote-role-result.v1"]
+    elif mutation == "boolean_wire":
+        nodes["Request LLM"]["structured_output"]["schema"]["properties"]["payload"]["anyOf"][1]["properties"][
+            "research_readiness"] = {"type": "boolean"}
+    elif mutation.startswith("stage_"):
+        condition = next(row for row in nodes["Core Stage"]["cases"] if row["case_id"] == "request")["conditions"][0]
+        condition.update({"value": "semantic"} if mutation == "stage_fallback" else {"variable_selector": ["sys", "query"]})
+    elif mutation == "missing_merge":
+        nodes["Core Candidate"]["variables"].pop(3)
+    elif mutation == "assembler_source":
+        assembler["code"] += "\n# changed"
+    elif mutation in {"assembler_input", "assembler_candidate"}:
+        assembler["variables"][0 if mutation == "assembler_input" else 1]["value_selector"] = ["sys", "query"]
+    elif mutation == "assembler_output":
+        assembler["outputs"]["candidate"]["type"] = "object"
+    elif mutation == "assembler_bypass":
+        nodes["Core Candidate"]["variables"][3] = ["1909000000001031", "text"]
+    else:
+        edge = next(row for row in raw_source["workflow"]["graph"]["edges"] if row["source"] == "1909000000001031")
+        edge.update(target="1909000000001027", id="1909000000001031-source-1909000000001027-target")
+        edge["data"]["targetType"] = "variable-aggregator"
+    _reject_both(modules, raw_source)
+
+
+@pytest.mark.parametrize("mutation", ["constraint", "meaning"])
+def test_canonical_request_architect_schema_drift_requires_independent_review(modules, raw_source, monkeypatch, mutation):
+    from app.agent.workflow.agents import request_architect
+    changed = copy.deepcopy(request_architect.SCHEMA)
+    if mutation == "constraint":
+        changed["properties"]["sufficient"]["const"] = True
+    else:
+        changed["properties"]["sufficient"]["description"] += " Different readiness semantics."
+    monkeypatch.setattr(request_architect, "SCHEMA", changed)
     _reject_both(modules, raw_source)
