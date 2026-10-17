@@ -41,12 +41,16 @@ Query/Request LLM은 각 조립기의 후보를 합류시켜 기존 Contract Gua
 Control/Contract LLM은 원본 model input, Query/Request LLM은 각각 전용 입력 투영을 받는다.
 policy deny는 0회, 허용된 네 경로는 각각 1회 LLM을 지나도록 구성한다.
 
-`code/core_query_input.py`는 Query 분기에서만 `query-input.v1`을 만든다. `context`는
-원본 pack에서 contract·payload_schema_json·payload_schema_sha256·knowledge_manifest_sha256만
-제외한 나머지 값이고, `knowledge_context`는 그대로 유지한다. 요청·scope·출처 ID/본문·
-facts·metrics·role_context·시각·freshness·partial·flags를 요약·재분류하지 않는다.
-최종 payload schema와 초안 schema를 모델에 동시에 요구하지 않기 위한 입력 투영이며,
-원본 pack과 proof·metadata는 조립기 및 양쪽 guard에 계속 전달한다.
+`code/core_query_input.py`는 Query 분기에서만 `query-input.v2`를 만든다. `task.text`는
+backend가 검색 정책 query 보강 전에 캡처한 bounded 요청이다. 원본 pack의 예약 context
+`query_business_input` 하나를 정확한 name·요청 결속 ID·canonical JSON/hash·동일 시각·
+nonpartial·닫힌 text 형식·1,024 UTF-8 bytes로 검증해 task로 옮긴다. 누락·중복·변조는
+실패하며 transport query나 source에서 복원하지 않는다. 이름/hash 자체가 권한 증명은 아니다.
+`context`는 기존 metadata 네 필드와 transport query 및 옮긴 task row만 제외한다.
+나머지 scope·출처 ID/본문·facts·metrics·role_context·시각·freshness·partial·flags와
+`knowledge_context`는 값·순서 그대로다. 원본 API query·pack·proof·metadata는 변경 없이
+Knowledge Guard, 조립기 및 양쪽 최종 guard에 전달한다. v2 게시에는 backend producer가
+필수이며 이미 만들어진 구 pack은 거부한다. 원격 consumer를 먼저 되돌린 뒤 producer를 롤백한다.
 canonical JSON·정확한 field·9000/6144 UTF-8 bytes·깊이32/노드4096 한도를 검사하지만
 권한·source hash·schema 진실성의 별도 판단 주체가 되지는 않는다.
 

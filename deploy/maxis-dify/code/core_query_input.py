@@ -2,8 +2,10 @@
 
 Standalone stdlib Dify Code node. Wire only from KnowledgeGuard's allow output;
 the assembler and final guards must still receive the ORIGINAL model_input.
-This projection checks framing/bounds, not schema, source or policy authority.
+This projection checks framing/bounds and the backend task binding, not authority.
 """
+from datetime import datetime
+import hashlib
 import json
 import math
 import re
@@ -17,7 +19,7 @@ _PACK_STRINGS = {"contract", "request_id", "use_case", "query", "pseudonymous_us
                  "freshness", "knowledge_manifest_sha256", "payload_schema_json", "payload_schema_sha256"}
 _PACK_ARRAYS = {"sources", "facts", "metrics", "role_context", "flags"}
 _PACK_FIELDS = _PACK_STRINGS | _PACK_ARRAYS | {"scope", "partial"}
-_HIDDEN_PACK_FIELDS = {"contract", "payload_schema_json", "payload_schema_sha256", "knowledge_manifest_sha256"}
+_HIDDEN_PACK_FIELDS = {"contract", "payload_schema_json", "payload_schema_sha256", "knowledge_manifest_sha256", "query"}
 _REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 
@@ -55,6 +57,29 @@ def _decode(raw):
     return value
 
 
+def _business_task(pack):
+    # The original KnowledgeGuard/backend boundary owns this row, not its name/hash.
+    rows = [row for row in pack["role_context"]
+            if isinstance(row, dict) and row.get("name") == "query_business_input"]
+    if len(rows) != 1:
+        _fail()
+    row = rows[0]
+    expected_id = "rctx_" + hashlib.sha256(
+        (pack["request_id"] + ":query_specialist:query_business_input").encode("utf-8")
+    ).hexdigest()[:20]
+    if (set(row) != {"context_id", "name", "content_json", "content_sha256", "observed_at", "partial"}
+            or row["context_id"] != expected_id or row["partial"] is not False
+            or row["observed_at"] != pack["requested_at"]
+            or datetime.fromisoformat(pack["requested_at"].replace("Z", "+00:00")).utcoffset() is None):
+        _fail()
+    task = _decode(row["content_json"])
+    if (set(task) != {"text"} or type(task["text"]) is not str or not task["text"].strip()
+            or len(task["text"].encode("utf-8")) > 1024
+            or row["content_sha256"] != hashlib.sha256(row["content_json"].encode("utf-8")).hexdigest()):
+        _fail()
+    return task, row
+
+
 def main(model_input):
     """Return only a canonical semantic view; no repairs, I/O or acceptance decision."""
     try:
@@ -77,8 +102,11 @@ def main(model_input):
                 or pack["request_id"] != incoming["correlation_id"]
                 or len(_canonical(pack).encode("utf-8")) > _MAX_CONTEXT_PACK_UTF8_BYTES):
             _fail()
-        return {"query_input": _canonical({"contract": "query-input.v1",
-            "context": {key: value for key, value in pack.items() if key not in _HIDDEN_PACK_FIELDS},
+        task, task_row = _business_task(pack)
+        context = {key: value for key, value in pack.items() if key not in _HIDDEN_PACK_FIELDS}
+        context["role_context"] = [row for row in pack["role_context"] if row is not task_row]
+        return {"query_input": _canonical({"contract": "query-input.v2", "task": task,
+            "context": context,
             "knowledge_context": incoming["knowledge_context"]})}
     except Exception:
         raise ValueError("invalid_core_query_input") from None

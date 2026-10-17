@@ -3,12 +3,15 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
 from jsonschema import Draft202012Validator
 
 from app.agent.maxis import ResponseGuard, ResponseGuardError
+from app.agent.maxis import backend
+from app.agent.tools import _ctx
 from app.agent.maxis.contracts import canonical_payload_schema
 from app.agent.workflow.contracts import CompactQueryPlan, role_output_schema
 
@@ -37,13 +40,22 @@ def code(node):
 
 
 @pytest.fixture
-def query_case(context_guard, now, nodes):
-    pack = context_guard.build(request_id="query-business", use_case="query_specialist",
-        query="데이터 자산 이력을 찾아줘", payload_schema=role_output_schema("query_specialist"),
-        knowledge_manifest_sha256="a" * 64, user_identity="synthetic-user", requested_at=now,
-        sources=[{"source_id": "src_intent_query", "kind": "ltm",
-            "canonical_id": "ltm:user-intent:query", "title": "Guarded intent", "scope": "",
-            "content": "데이터 자산 이력을 찾아줘", "retrieved_at": now}])
+def query_case(now, nodes, monkeypatch):
+    class Clock(backend.datetime):
+        @staticmethod
+        def now(tz):
+            return now
+
+    monkeypatch.setattr(backend, "datetime", Clock)
+    monkeypatch.setattr(backend, "_known_identity_values", lambda *_: ())
+    monkeypatch.setattr(_ctx, "settings", lambda: SimpleNamespace(
+        search_jira_projects=("DL",), search_confluence_spaces=("DATALAKE",),
+        search_bitbucket_projects=(), jira_env="mock", jira_user="synthetic-user", managers=()))
+    state = {"correlation_id": "query-business", "correlation_started_at": now.isoformat(),
+        "thread_id": "query-thread", "user_id": "synthetic-user",
+        "request_text": "데이터 자산 이력을 찾아줘", "knowledge_manifest_sha256": "a" * 64,
+        "runtime_profile": "synthetic-component-fixture"}
+    pack = backend._context_pack("query_specialist", state, [], role_output_schema("query_specialist"))
     guard = code(nodes["1909000000001006"])
     name = guard["_ALLOWED_DOCUMENT_NAMES_BY_ROLE"]["query_specialist"][0]
     policy = {"content": "Synthetic policy.", "metadata": {"dataset_id": guard["_DATASET_ID"],
@@ -62,7 +74,7 @@ def query_case(context_guard, now, nodes):
         "claims": [{"claim_id": f"c{i}", "kind": "recommendation", "text": text,
                     "citation_ids": ["cite"]} for i, (_, text) in enumerate(texts)],
         "payload_claims": [{"path": path, "claim_ids": [f"c{i}"]} for i, (path, _) in enumerate(texts)],
-        "citations": [{"citation_id": "cite", "source_id": "src_intent_query", "locator": ""}],
+        "citations": [{"citation_id": "cite", "source_id": pack.sources[0].source_id, "locator": ""}],
         "missing_inputs": [], "warnings": [], "workflow_version": VERSION,
         "knowledge_version": "kb-test", "knowledge_manifest_sha256": "a" * 64, "knowledge_proof": PROOF}
     return pack, guarded["model_input"], candidate
@@ -82,7 +94,8 @@ def local(pack, candidate):
 def draft(candidate):
     """Synthetic semantic values; the model never authors IDs or JSON pointers."""
     payload = copy.deepcopy(candidate["payload"])
-    wrap = lambda value: {"value": value, "kind": "recommendation", "source_ids": ["src_intent_query"]}
+    wrap = lambda value: {"value": value, "kind": "recommendation",
+                          "source_ids": [candidate["citations"][0]["source_id"]]}
     for read in payload.get("reads", []):
         for field in ("source", "subject", "where"):
             if field in read:
@@ -286,13 +299,17 @@ def test_query_projection_preserves_task_and_evidence_but_excludes_final_schema(
     pack, model_input, candidate = query_case
     original = json.loads(model_input)
     projected = json.loads(code(nodes[INPUT_ID])["main"](model_input)["query_input"])
-    assert projected["contract"] == "query-input.v1"
+    assert projected["contract"] == "query-input.v2"
+    assert projected["task"] == {"text": "데이터 자산 이력을 찾아줘"}
+    assert pack.query != projected["task"]["text"] and "Policy search terms:" in pack.query
     assert projected["knowledge_context"] == original["knowledge_context"]
-    hidden = {"contract", "payload_schema_json", "payload_schema_sha256", "knowledge_manifest_sha256"}
-    assert projected["context"] == {key: value for key, value in original["context_pack"].items() if key not in hidden}
+    hidden = {"contract", "payload_schema_json", "payload_schema_sha256", "knowledge_manifest_sha256", "query"}
+    expected = {key: value for key, value in original["context_pack"].items() if key not in hidden}
+    expected["role_context"] = [row for row in expected["role_context"] if row["name"] != "query_business_input"]
+    assert projected["context"] == expected
     assert all(key not in projected["context"] for key in hidden)
     assert original["context_pack"] == pack.model_dump(mode="json")
-    assert "query-input.v1" in nodes[QUERY_ID]["prompt_template"][0]["text"]
+    assert "query-input.v2" in nodes[QUERY_ID]["prompt_template"][0]["text"]
     assert nodes[QUERY_ID]["prompt_template"][1]["text"].endswith("{{#1909000000001030.query_input#}}")
     # Projection is not a replacement for the complete original assembler input.
     with pytest.raises(ValueError, match="invalid_core_query_draft"):
@@ -300,6 +317,27 @@ def test_query_projection_preserves_task_and_evidence_but_excludes_final_schema(
     assembled = assemble(nodes, model_input, draft(candidate))
     assert remote(nodes, pack, assembled) == assembled
     assert local(pack, assembled)[0].status == "ok"
+
+
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "hash", "id", "time", "partial", "closed_shape"])
+def test_embedded_projection_rejects_malformed_backend_row_without_transport_fallback(nodes, query_case, mutation):
+    _, model_input, _ = query_case
+    incoming = json.loads(model_input)
+    rows = incoming["context_pack"]["role_context"]
+    row = next(row for row in rows if row["name"] == "query_business_input")
+    if mutation == "missing": rows.remove(row)
+    elif mutation == "duplicate": rows.append(copy.deepcopy(row))
+    elif mutation == "hash": row["content_sha256"] = "0" * 64
+    elif mutation == "id": row["context_id"] += "x"
+    elif mutation == "time": row["observed_at"] = "2026-09-04T11:59:59Z"
+    elif mutation == "partial": row["partial"] = True
+    else:
+        row["content_json"] = '{"extra":0,"text":"x"}'
+        row["content_sha256"] = hashlib.sha256(row["content_json"].encode()).hexdigest()
+    original = encoded(incoming)
+    with pytest.raises(ValueError, match="^invalid_core_query_input$"):
+        code(nodes[INPUT_ID])["main"](original)
+    assert encoded(incoming) == original
 
 
 def test_query_uncertainty_requires_wrapped_meaning_without_string_repair(nodes, query_case):

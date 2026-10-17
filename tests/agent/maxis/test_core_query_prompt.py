@@ -32,6 +32,8 @@ def test_exact_sections_once_in_order_without_other_local_contracts(compiler):
     assert "Set `exhaustive=true`" not in "\n\n".join(blocks)
     assert "query-draft.v2" in prompt and "coverage" in prompt
     assert "## Required response" not in prompt
+    assert "query-input.v2" in prompt and "`task.text`" in prompt
+    assert "query-input.v1" not in prompt and "`context.query`" not in prompt
 
 
 @pytest.mark.parametrize("title", SELECTED)

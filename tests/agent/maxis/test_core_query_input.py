@@ -1,5 +1,6 @@
 """Query input is a lossless view, not a replacement source/authority guard."""
 import copy
+import hashlib
 import json
 from pathlib import Path
 
@@ -10,11 +11,26 @@ from app.agent.workflow.contracts import role_output_schema
 
 
 SOURCE = Path(__file__).resolve().parents[3] / "deploy/maxis-dify/code/core_query_input.py"
-HIDDEN = {"contract", "payload_schema_json", "payload_schema_sha256", "knowledge_manifest_sha256"}
+HIDDEN = {"contract", "payload_schema_json", "payload_schema_sha256", "knowledge_manifest_sha256", "query"}
 
 
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def task_row(pack, text):
+    content = canonical({"text": text})
+    return {"name": "query_business_input", "context_id": "rctx_" + hashlib.sha256(
+        (pack["request_id"] + ":query_specialist:query_business_input").encode()).hexdigest()[:20],
+        "content_json": content, "content_sha256": hashlib.sha256(content.encode()).hexdigest(),
+        "observed_at": pack["requested_at"], "partial": False}
+
+
+def context_view(pack):
+    result = {key: value for key, value in pack.items() if key not in HIDDEN}
+    result["role_context"] = [row for row in pack["role_context"]
+                              if not isinstance(row, dict) or row.get("name") != "query_business_input"]
+    return result
 
 
 @pytest.fixture
@@ -32,7 +48,9 @@ def incoming(context_guard, now):
         sources=[{"source_id": "src_query", "kind": "ltm", "canonical_id": "ltm:user-intent:query",
                   "title": "Guarded intent", "scope": "", "content": "데이터 자산 이력을 찾아줘",
                   "retrieved_at": now}])
-    return {"contract": "ltm-model-input.v1", "context_pack": pack.model_dump(mode="json"),
+    dumped = pack.model_dump(mode="json")
+    dumped["role_context"] = [task_row(dumped, "데이터 자산 이력을 찾아줘")]
+    return {"contract": "ltm-model-input.v1", "context_pack": dumped,
         "role_id": "query_specialist", "correlation_id": pack.request_id,
         "output_contract": "remote-role-result.v1", "workflow_version": "11111111-1111-4111-8111-111111111111",
         "knowledge_version": "kb-test", "knowledge_proof": "LTM_RELEASE_SENTINEL_V1=" + "b" * 64,
@@ -55,8 +73,8 @@ def rejected(projector, raw):
 def test_projection_removes_only_competing_contract_and_metadata(projector, incoming):
     original = copy.deepcopy(incoming)
     output = project(projector, incoming)
-    assert output == {"contract": "query-input.v1",
-        "context": {key: value for key, value in incoming["context_pack"].items() if key not in HIDDEN},
+    assert output == {"contract": "query-input.v2", "task": {"text": "데이터 자산 이력을 찾아줘"},
+        "context": context_view(incoming["context_pack"]),
         "knowledge_context": incoming["knowledge_context"]}
     assert incoming == original
     assert not HIDDEN.intersection(output["context"])
@@ -69,13 +87,13 @@ def test_nested_values_and_order_are_preserved_without_normalization(projector, 
     pack = incoming["context_pack"]
     pack["facts"] = [{"text": "가\r\n가", "value": [False, 0, True, 1, 1.5, None], "extra": {"schema": "data"}}]
     pack["metrics"] = [{"value": 0.0, "unit": "%"}]
-    pack["role_context"] = [{"content_json": '{"uncertainty":["확인 필요"]}', "partial": True}]
+    pack["role_context"] += [{"content_json": '{"uncertainty":["확인 필요"]}', "partial": True}, None, 0]
     pack["flags"] = ["z", "a", "z"]
     pack["partial"] = True
     incoming["knowledge_context"] = [{"document_name": "정책", "content": "줄1\r\n줄2  ", "extra": [False, None]}]
     before = canonical(incoming)
     output = project(projector, incoming)
-    assert canonical(output["context"]) == canonical({key: value for key, value in pack.items() if key not in HIDDEN})
+    assert canonical(output["context"]) == canonical(context_view(pack))
     assert canonical(output["knowledge_context"]) == canonical(incoming["knowledge_context"])
     assert canonical(incoming) == before
 
@@ -145,6 +163,7 @@ def test_matching_but_invalid_request_ids_are_rejected(projector, incoming, requ
 @pytest.mark.parametrize("request_id", ["x", "x" * 128], ids=["minimum", "maximum"])
 def test_matching_request_id_boundaries_are_preserved(projector, incoming, request_id):
     incoming["correlation_id"] = incoming["context_pack"]["request_id"] = request_id
+    incoming["context_pack"]["role_context"] = [task_row(incoming["context_pack"], "데이터 자산 이력을 찾아줘")]
     assert project(projector, incoming)["context"]["request_id"] == request_id
 
 
@@ -222,12 +241,13 @@ def test_node_budget_is_inclusive_without_relying_on_byte_limit(projector, incom
     for field in ("workflow_version", "knowledge_version", "knowledge_proof"):
         value[field] = ""
     pack = value["context_pack"]
-    for field in ("query", "pseudonymous_user", "requested_at", "payload_schema_json",
+    for field in ("query", "pseudonymous_user", "payload_schema_json",
                   "payload_schema_sha256", "knowledge_manifest_sha256", "freshness"):
         pack[field] = ""
-    for field in ("sources", "facts", "metrics", "role_context", "flags"):
+    for field in ("sources", "facts", "metrics", "flags"):
         pack[field] = []
     pack["scope"] = {}
+    pack["role_context"] = [task_row(pack, "x")]
     value["knowledge_context"] = []
 
     def nodes(item):
@@ -240,3 +260,59 @@ def test_node_budget_is_inclusive_without_relying_on_byte_limit(projector, incom
     value["knowledge_context"].append(0)
     assert len(canonical(value).encode("utf-8")) < 9000
     rejected(projector, canonical(value))
+
+
+@pytest.mark.parametrize("mutation", [
+    "missing", "duplicate", "foreign_name", "extra_field", "id", "time", "partial", "partial_number",
+    "hash", "uppercase_hash", "nonstring_content", "invalid_equal_time", "naive_equal_time",
+])
+def test_business_row_requires_exact_backend_binding(projector, incoming, mutation):
+    pack = incoming["context_pack"]
+    row = pack["role_context"][0]
+    if mutation == "missing": pack["role_context"] = []
+    elif mutation == "duplicate": pack["role_context"].append(copy.deepcopy(row))
+    elif mutation == "foreign_name": row["name"] = "request_plan"
+    elif mutation == "extra_field": row["authority"] = "trusted"
+    elif mutation == "id": row["context_id"] += "x"
+    elif mutation == "time": row["observed_at"] = "2026-09-04T11:59:59Z"
+    elif mutation == "partial": row["partial"] = True
+    elif mutation == "partial_number": row["partial"] = 0
+    elif mutation == "hash": row["content_sha256"] = "0" * 64
+    elif mutation == "uppercase_hash": row["content_sha256"] = row["content_sha256"].upper()
+    elif mutation == "nonstring_content": row["content_json"] = {}
+    else:
+        pack["requested_at"] = row["observed_at"] = (
+            "not-a-time" if mutation == "invalid_equal_time" else "2026-09-04T12:00:00")
+    rejected(projector, canonical(incoming))
+
+
+@pytest.mark.parametrize("field", ["name", "context_id", "content_json", "content_sha256", "observed_at", "partial"])
+def test_business_row_requires_all_fields(projector, incoming, field):
+    del incoming["context_pack"]["role_context"][0][field]
+    rejected(projector, canonical(incoming))
+
+
+@pytest.mark.parametrize("content", [
+    '{}', '[]', '{"text":""}', '{"text":"  \\n"}', '{"text":0}', '{"text":false}',
+    '{"text":null}', '{"text":[]}', '{"text":{}}', '{"extra":0,"text":"x"}',
+    '{"text":"a","text":"b"}', '{"text":NaN}', '{"text":Infinity}', '{"text":1e999}',
+    '{"text": "x"}', '{"text":"\\u0061"}', '{"text":"\\ud800"}',
+], ids=lambda value: value[:30])
+def test_business_text_is_closed_canonical_json_even_when_rehashed(projector, incoming, content):
+    row = incoming["context_pack"]["role_context"][0]
+    row["content_json"], row["content_sha256"] = content, hashlib.sha256(content.encode()).hexdigest()
+    rejected(projector, canonical(incoming))
+
+
+@pytest.mark.parametrize("unit", ["x", "한", "😀"])
+def test_business_text_utf8_limit_and_literal_transport_language(projector, incoming, unit):
+    pack = incoming["context_pack"]
+    width = len(unit.encode())
+    text = unit * (1024 // width) + "x" * (1024 % width)
+    pack["role_context"] = [task_row(pack, text)]
+    assert project(projector, incoming)["task"] == {"text": text}
+    pack["role_context"] = [task_row(pack, text + "x")]
+    rejected(projector, canonical(incoming))
+    text = "Canonical LTM role query_specialist.\nPolicy search terms: Confluence changelog 검색"
+    pack["role_context"] = [task_row(pack, text)]
+    assert project(projector, incoming)["task"] == {"text": text}
