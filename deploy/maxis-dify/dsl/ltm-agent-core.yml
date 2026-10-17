@@ -2428,14 +2428,71 @@ workflow:
         selected: false
         desc: Query 의미 원문을 유지하며 ID·인용 연결·metadata만 조립
         code_language: python3
-        code: "\"\"\"Assemble Query provenance without changing model meaning; both\
-          \ final guards remain mandatory.\n\nStandalone Dify Code node, stdlib only.\
-          \ The builder appends the three reviewed\nschema constants. Unbound or malformed\
+        code: "\"\"\"Pure draft JSON/schema primitives; callers own errors and canonical-input\
+          \ policy.\n\nThe fail callback MUST never return and MUST raise ValueError\
+          \ or a subclass.\nReturning would allow invalid values to continue; anyOf\
+          \ catches only ValueError,\nso a different exception type would prevent\
+          \ trying later valid branches.\nSchema keyword checks apply only to visited\
+          \ nodes, matching the existing Query\nvalidator. Unused definitions/properties\
+          \ and later anyOf branches are not scanned;\nthis helper does not validate\
+          \ an entire raw schema independently of a value.\n\"\"\"\nimport json\n\
+          import math\nimport re\n\n_SCHEMA_KEYS = {\"$defs\", \"$ref\", \"type\"\
+          , \"enum\", \"properties\", \"required\", \"additionalProperties\", \"items\"\
+          ,\n                \"maxItems\", \"minItems\", \"maxLength\", \"minLength\"\
+          , \"pattern\", \"uniqueItems\", \"maxProperties\", \"anyOf\"}\n\n\ndef _canonical(value):\n\
+          \    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(\"\
+          ,\", \":\"), allow_nan=False)\n\n\ndef _pairs(rows, fail):\n    result =\
+          \ {}\n    for key, value in rows:\n        if key in result:\n         \
+          \   fail()\n        result[key] = value\n    return result\n\n\ndef _decode(raw,\
+          \ maximum, fail):\n    if not isinstance(raw, str) or len(raw.encode(\"\
+          utf-8\")) > maximum:\n        fail()\n    value = json.loads(raw, object_pairs_hook=lambda\
+          \ rows: _pairs(rows, fail), parse_constant=lambda _: fail())\n    remaining\
+          \ = [4096]\n\n    def bounded(item, depth=0):\n        remaining[0] -= 1\n\
+          \        if depth > 32 or remaining[0] < 0 or (isinstance(item, float) and\
+          \ not math.isfinite(item)):\n            fail()\n        for child in item.values()\
+          \ if isinstance(item, dict) else item if isinstance(item, list) else []:\n\
+          \            bounded(child, depth + 1)\n\n    bounded(value)\n    if not\
+          \ isinstance(value, dict):\n        fail()\n    return value\n\n\ndef _validate(value,\
+          \ schema, root, fail, depth=0):\n    \"\"\"Validate the reviewed subset;\
+          \ unknown keywords on visited nodes fail closed.\"\"\"\n    if depth > 32\
+          \ or not isinstance(schema, dict) or set(schema) - _SCHEMA_KEYS:\n     \
+          \   fail()\n    if \"$ref\" in schema:\n        ref = schema[\"$ref\"]\n\
+          \        if set(schema) != {\"$ref\"} or not isinstance(ref, str) or not\
+          \ ref.startswith(\"#/\"):\n            fail()\n        target = root\n \
+          \       for part in ref[2:].split(\"/\"):\n            target = target[part.replace(\"\
+          ~1\", \"/\").replace(\"~0\", \"~\")]\n        return _validate(value, target,\
+          \ root, fail, depth + 1)\n    if \"anyOf\" in schema:\n        for branch\
+          \ in schema[\"anyOf\"]:\n            try:\n                _validate(value,\
+          \ branch, root, fail, depth + 1)\n                break\n            except\
+          \ ValueError:\n                pass\n        else:\n            fail()\n\
+          \    expected = schema.get(\"type\")\n    if expected is not None and type(value)\
+          \ is not {\"object\": dict, \"array\": list, \"string\": str, \"boolean\"\
+          : bool}.get(expected):\n        fail()\n    if \"enum\" in schema and not\
+          \ any(type(value) is type(row) and value == row for row in schema[\"enum\"\
+          ]):\n        fail()\n    if isinstance(value, dict):\n        properties\
+          \ = schema.get(\"properties\", {})\n        if (any(key not in value for\
+          \ key in schema.get(\"required\", []))\n                or schema.get(\"\
+          additionalProperties\") is False and set(value) - set(properties)\n    \
+          \            or len(value) > schema.get(\"maxProperties\", len(value))):\n\
+          \            fail()\n        for key, item in value.items():\n         \
+          \   if key in properties:\n                _validate(item, properties[key],\
+          \ root, fail, depth + 1)\n    elif isinstance(value, list):\n        if\
+          \ (not schema.get(\"minItems\", 0) <= len(value) <= schema.get(\"maxItems\"\
+          , len(value))\n                or schema.get(\"uniqueItems\") and len({_canonical(row)\
+          \ for row in value}) != len(value)):\n            fail()\n        if \"\
+          items\" in schema:\n            for item in value:\n                _validate(item,\
+          \ schema[\"items\"], root, fail, depth + 1)\n    elif isinstance(value,\
+          \ str):\n        if (not schema.get(\"minLength\", 0) <= len(value) <= schema.get(\"\
+          maxLength\", len(value))\n                or \"pattern\" in schema and re.fullmatch(schema[\"\
+          pattern\"], value) is None):\n            fail()\n\n\"\"\"Assemble Query\
+          \ provenance without changing model meaning; both final guards remain mandatory.\n\
+          \nDify Code fragment, stdlib only. The builder prepends shared draft validation\n\
+          primitives and appends the three reviewed schema constants. Unbound or malformed\
           \ inputs fail without a partial candidate.\nInternal coverage labels map\
           \ exactly to the unchanged canonical boolean; this\nwire adapter does not\
           \ coerce malformed booleans or infer an omitted value.\n\"\"\"\nimport hashlib\n\
-          import json\nimport math\nimport re\n\n_QUERY_SCHEMA_JSON = None\n_QUERY_SCHEMA_SHA256\
-          \ = None\n_DRAFT_SCHEMA = None\n_MAX_CONTEXT_PACK_UTF8_BYTES = 6144  # app.agent.maxis.context_guard\
+          import re\n\n_QUERY_SCHEMA_JSON = None\n_QUERY_SCHEMA_SHA256 = None\n_DRAFT_SCHEMA\
+          \ = None\n_MAX_CONTEXT_PACK_UTF8_BYTES = 6144  # app.agent.maxis.context_guard\
           \ / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES = 9000  # Knowledge Guard\
           \ output bound\n_MAX_DRAFT_UTF8_BYTES = 32768\n_COVERAGE_TO_EXHAUSTIVE =\
           \ {\"exhaustive\": True, \"standard\": False}\n_INPUT_FIELDS = {\"contract\"\
@@ -2445,65 +2502,18 @@ workflow:
           \ \"use_case\", \"query\", \"pseudonymous_user\", \"requested_at\", \"scope\"\
           ,\n                \"sources\", \"facts\", \"metrics\", \"role_context\"\
           , \"freshness\", \"partial\", \"flags\",\n                \"knowledge_manifest_sha256\"\
-          , \"payload_schema_json\", \"payload_schema_sha256\"}\n_SCHEMA_KEYS = {\"\
-          $defs\", \"$ref\", \"type\", \"enum\", \"properties\", \"required\", \"\
-          additionalProperties\", \"items\",\n                \"maxItems\", \"minItems\"\
-          , \"maxLength\", \"minLength\", \"pattern\", \"uniqueItems\", \"maxProperties\"\
-          , \"anyOf\"}\n_ID = re.compile(r\"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\")\n\
-          _DIGEST = re.compile(r\"[0-9a-f]{64}\")\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
+          , \"payload_schema_json\", \"payload_schema_sha256\"}\n_ID = re.compile(r\"\
+          [A-Za-z0-9][A-Za-z0-9._:-]{0,127}\")\n_DIGEST = re.compile(r\"[0-9a-f]{64}\"\
+          )\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
           )\n\n\ndef _fail():\n    raise ValueError(\"invalid_core_query_draft\")\n\
-          \n\ndef _canonical(value):\n    return json.dumps(value, ensure_ascii=False,\
-          \ sort_keys=True, separators=(\",\", \":\"), allow_nan=False)\n\n\ndef _digest(value):\n\
-          \    return hashlib.sha256(value.encode(\"utf-8\")).hexdigest()\n\n\ndef\
-          \ _pairs(rows):\n    result = {}\n    for key, value in rows:\n        if\
-          \ key in result:\n            _fail()\n        result[key] = value\n   \
-          \ return result\n\n\ndef _decode(raw, maximum):\n    if not isinstance(raw,\
-          \ str) or len(raw.encode(\"utf-8\")) > maximum:\n        _fail()\n    value\
-          \ = json.loads(raw, object_pairs_hook=_pairs, parse_constant=lambda _: _fail())\n\
-          \    remaining = [4096]\n\n    def bounded(item, depth=0):\n        remaining[0]\
-          \ -= 1\n        if depth > 32 or remaining[0] < 0 or (isinstance(item, float)\
-          \ and not math.isfinite(item)):\n            _fail()\n        for child\
-          \ in item.values() if isinstance(item, dict) else item if isinstance(item,\
-          \ list) else []:\n            bounded(child, depth + 1)\n\n    bounded(value)\n\
-          \    if not isinstance(value, dict):\n        _fail()\n    return value\n\
-          \n\ndef _validate(value, schema, root, depth=0):\n    \"\"\"Only the reviewed\
-          \ Query subset; new schema keywords fail closed.\"\"\"\n    if depth > 32\
-          \ or not isinstance(schema, dict) or set(schema) - _SCHEMA_KEYS:\n     \
-          \   _fail()\n    if \"$ref\" in schema:\n        ref = schema[\"$ref\"]\n\
-          \        if set(schema) != {\"$ref\"} or not isinstance(ref, str) or not\
-          \ ref.startswith(\"#/\"):\n            _fail()\n        target = root\n\
-          \        for part in ref[2:].split(\"/\"):\n            target = target[part.replace(\"\
-          ~1\", \"/\").replace(\"~0\", \"~\")]\n        return _validate(value, target,\
-          \ root, depth + 1)\n    if \"anyOf\" in schema:\n        for branch in schema[\"\
-          anyOf\"]:\n            try:\n                _validate(value, branch, root,\
-          \ depth + 1)\n                break\n            except ValueError:\n  \
-          \              pass\n        else:\n            _fail()\n    expected =\
-          \ schema.get(\"type\")\n    if expected is not None and type(value) is not\
-          \ {\"object\": dict, \"array\": list, \"string\": str, \"boolean\": bool}.get(expected):\n\
-          \        _fail()\n    if \"enum\" in schema and not any(type(value) is type(row)\
-          \ and value == row for row in schema[\"enum\"]):\n        _fail()\n    if\
-          \ isinstance(value, dict):\n        properties = schema.get(\"properties\"\
-          , {})\n        if (any(key not in value for key in schema.get(\"required\"\
-          , []))\n                or schema.get(\"additionalProperties\") is False\
-          \ and set(value) - set(properties)\n                or len(value) > schema.get(\"\
-          maxProperties\", len(value))):\n            _fail()\n        for key, item\
-          \ in value.items():\n            if key in properties:\n               \
-          \ _validate(item, properties[key], root, depth + 1)\n    elif isinstance(value,\
-          \ list):\n        if (not schema.get(\"minItems\", 0) <= len(value) <= schema.get(\"\
-          maxItems\", len(value))\n                or schema.get(\"uniqueItems\")\
-          \ and len({_canonical(row) for row in value}) != len(value)):\n        \
-          \    _fail()\n        if \"items\" in schema:\n            for item in value:\n\
-          \                _validate(item, schema[\"items\"], root, depth + 1)\n \
-          \   elif isinstance(value, str):\n        if (not schema.get(\"minLength\"\
-          , 0) <= len(value) <= schema.get(\"maxLength\", len(value))\n          \
-          \      or \"pattern\" in schema and re.fullmatch(schema[\"pattern\"], value)\
-          \ is None):\n            _fail()\n\n\ndef _input(raw):\n    incoming = _decode(raw,\
-          \ _MAX_MODEL_INPUT_UTF8_BYTES)\n    if (set(incoming) != _INPUT_FIELDS or\
-          \ _canonical(incoming) != raw\n            or incoming[\"contract\"] !=\
-          \ \"ltm-model-input.v1\" or incoming[\"role_id\"] != \"query_specialist\"\
-          \n            or incoming[\"output_contract\"] != \"remote-role-result.v1\"\
-          ):\n        _fail()\n    pack = incoming[\"context_pack\"]\n    if (not\
-          \ isinstance(pack, dict) or set(pack) != _PACK_FIELDS\n            or len(_canonical(pack).encode(\"\
+          \n\ndef _digest(value):\n    return hashlib.sha256(value.encode(\"utf-8\"\
+          )).hexdigest()\n\n\ndef _input(raw):\n    incoming = _decode(raw, _MAX_MODEL_INPUT_UTF8_BYTES,\
+          \ _fail)\n    if (set(incoming) != _INPUT_FIELDS or _canonical(incoming)\
+          \ != raw\n            or incoming[\"contract\"] != \"ltm-model-input.v1\"\
+          \ or incoming[\"role_id\"] != \"query_specialist\"\n            or incoming[\"\
+          output_contract\"] != \"remote-role-result.v1\"):\n        _fail()\n   \
+          \ pack = incoming[\"context_pack\"]\n    if (not isinstance(pack, dict)\
+          \ or set(pack) != _PACK_FIELDS\n            or len(_canonical(pack).encode(\"\
           utf-8\")) > _MAX_CONTEXT_PACK_UTF8_BYTES\n            or pack[\"contract\"\
           ] != \"evidence-pack.v1\" or pack[\"use_case\"] != \"query_specialist\"\n\
           \            or not isinstance(incoming[\"correlation_id\"], str) or not\
@@ -2512,14 +2522,14 @@ workflow:
           \            or not isinstance(_QUERY_SCHEMA_JSON, str) or _digest(_QUERY_SCHEMA_JSON)\
           \ != _QUERY_SCHEMA_SHA256\n            or pack[\"payload_schema_json\"]\
           \ != _QUERY_SCHEMA_JSON or pack[\"payload_schema_sha256\"] != _QUERY_SCHEMA_SHA256):\n\
-          \        _fail()\n    schema = _decode(_QUERY_SCHEMA_JSON, 4096)\n    if\
-          \ _canonical(schema) != _QUERY_SCHEMA_JSON:\n        _fail()\n    for value,\
-          \ pattern in ((pack[\"knowledge_manifest_sha256\"], _DIGEST), (incoming[\"\
-          workflow_version\"], _UUID)):\n        if not isinstance(value, str) or\
-          \ not pattern.fullmatch(value):\n            _fail()\n    if (not isinstance(incoming[\"\
-          knowledge_version\"], str) or not 0 < len(incoming[\"knowledge_version\"\
-          ]) <= 120\n            or not isinstance(incoming[\"knowledge_proof\"],\
-          \ str)\n            or not re.fullmatch(r\"LTM_RELEASE_SENTINEL_V1=[^\\\
+          \        _fail()\n    schema = _decode(_QUERY_SCHEMA_JSON, 4096, _fail)\n\
+          \    if _canonical(schema) != _QUERY_SCHEMA_JSON:\n        _fail()\n   \
+          \ for value, pattern in ((pack[\"knowledge_manifest_sha256\"], _DIGEST),\
+          \ (incoming[\"workflow_version\"], _UUID)):\n        if not isinstance(value,\
+          \ str) or not pattern.fullmatch(value):\n            _fail()\n    if (not\
+          \ isinstance(incoming[\"knowledge_version\"], str) or not 0 < len(incoming[\"\
+          knowledge_version\"]) <= 120\n            or not isinstance(incoming[\"\
+          knowledge_proof\"], str)\n            or not re.fullmatch(r\"LTM_RELEASE_SENTINEL_V1=[^\\\
           r\\n]{1,216}\", incoming[\"knowledge_proof\"])):\n        _fail()\n    rows\
           \ = pack[\"sources\"]\n    if not isinstance(rows, list) or len(rows) >\
           \ 10:\n        _fail()\n    sources = set()\n    for row in rows:\n    \
@@ -2531,41 +2541,41 @@ workflow:
           \ incoming, pack, schema, sources\n\n\ndef main(model_input, candidate):\n\
           \    \"\"\"Return an unaccepted remote candidate; no I/O, repair, or meaning\
           \ reclassification.\"\"\"\n    try:\n        incoming, pack, schema, sources\
-          \ = _input(model_input)\n        plan = _decode(candidate, _MAX_DRAFT_UTF8_BYTES)\n\
-          \        _validate(plan, _DRAFT_SCHEMA, _DRAFT_SCHEMA)\n        status,\
-          \ payload, missing = plan[\"status\"], plan[\"payload\"], plan[\"missing_inputs\"\
-          ]\n        if (plan[\"contract\"] != \"query-draft.v2\" or any(not value.strip()\
-          \ for value in missing)\n                or status == \"ok\" and missing\
-          \ or status != \"ok\" and payload\n                or status == \"needs_input\"\
-          \ and not missing or status == \"blocked\" and missing):\n            _fail()\n\
-          \        claims, bindings, citations, citation_ids = [], [], [], {}\n\n\
-          \        def narrative(wrapped, pointer):\n            value, kind, refs\
-          \ = (wrapped[key] for key in (\"value\", \"kind\", \"source_ids\"))\n  \
-          \          if any(ref not in sources for ref in refs):\n               \
-          \ _fail()\n            if value.strip():\n                for ref in refs:\n\
-          \                    if ref not in citation_ids:\n                     \
-          \   citation_ids[ref] = \"cite-\" + str(len(citations) + 1)\n          \
-          \              citations.append({\"citation_id\": citation_ids[ref], \"\
-          source_id\": ref, \"locator\": \"\"})\n                claim_id = \"claim-\"\
-          \ + str(len(claims) + 1)\n                claims.append({\"claim_id\": claim_id,\
-          \ \"kind\": kind, \"text\": value,\n                               \"citation_ids\"\
-          : [citation_ids[ref] for ref in refs]})\n                bindings.append({\"\
-          path\": pointer, \"claim_ids\": [claim_id]})\n            return value\n\
-          \n        output = {}\n        if \"reads\" in payload:\n            output[\"\
-          reads\"] = []\n            for index, read in enumerate(payload[\"reads\"\
-          ]):\n                row = {key: narrative(read[key], f\"/reads/{index}/{key}\"\
-          )\n                       for key in (\"source\", \"subject\", \"where\"\
-          ) if key in read}\n                if \"coverage\" in read:\n          \
-          \          row[\"exhaustive\"] = _COVERAGE_TO_EXHAUSTIVE[read[\"coverage\"\
-          ]]\n                output[\"reads\"].append(row)\n        if \"uncertainty\"\
-          \ in payload:\n            output[\"uncertainty\"] = [narrative(row, f\"\
-          /uncertainty/{index}\") for index, row in enumerate(payload[\"uncertainty\"\
+          \ = _input(model_input)\n        plan = _decode(candidate, _MAX_DRAFT_UTF8_BYTES,\
+          \ _fail)\n        _validate(plan, _DRAFT_SCHEMA, _DRAFT_SCHEMA, _fail)\n\
+          \        status, payload, missing = plan[\"status\"], plan[\"payload\"],\
+          \ plan[\"missing_inputs\"]\n        if (plan[\"contract\"] != \"query-draft.v2\"\
+          \ or any(not value.strip() for value in missing)\n                or status\
+          \ == \"ok\" and missing or status != \"ok\" and payload\n              \
+          \  or status == \"needs_input\" and not missing or status == \"blocked\"\
+          \ and missing):\n            _fail()\n        claims, bindings, citations,\
+          \ citation_ids = [], [], [], {}\n\n        def narrative(wrapped, pointer):\n\
+          \            value, kind, refs = (wrapped[key] for key in (\"value\", \"\
+          kind\", \"source_ids\"))\n            if any(ref not in sources for ref\
+          \ in refs):\n                _fail()\n            if value.strip():\n  \
+          \              for ref in refs:\n                    if ref not in citation_ids:\n\
+          \                        citation_ids[ref] = \"cite-\" + str(len(citations)\
+          \ + 1)\n                        citations.append({\"citation_id\": citation_ids[ref],\
+          \ \"source_id\": ref, \"locator\": \"\"})\n                claim_id = \"\
+          claim-\" + str(len(claims) + 1)\n                claims.append({\"claim_id\"\
+          : claim_id, \"kind\": kind, \"text\": value,\n                         \
+          \      \"citation_ids\": [citation_ids[ref] for ref in refs]})\n       \
+          \         bindings.append({\"path\": pointer, \"claim_ids\": [claim_id]})\n\
+          \            return value\n\n        output = {}\n        if \"reads\" in\
+          \ payload:\n            output[\"reads\"] = []\n            for index, read\
+          \ in enumerate(payload[\"reads\"]):\n                row = {key: narrative(read[key],\
+          \ f\"/reads/{index}/{key}\")\n                       for key in (\"source\"\
+          , \"subject\", \"where\") if key in read}\n                if \"coverage\"\
+          \ in read:\n                    row[\"exhaustive\"] = _COVERAGE_TO_EXHAUSTIVE[read[\"\
+          coverage\"]]\n                output[\"reads\"].append(row)\n        if\
+          \ \"uncertainty\" in payload:\n            output[\"uncertainty\"] = [narrative(row,\
+          \ f\"/uncertainty/{index}\") for index, row in enumerate(payload[\"uncertainty\"\
           ])]\n        if status == \"ok\":\n            _validate(output, schema,\
-          \ schema)\n        if len(claims) > 40:\n            _fail()\n        result\
-          \ = {\"contract\": \"remote-role-result.v1\", \"role_id\": \"query_specialist\"\
-          , \"status\": status,\n            \"payload\": output, \"claims\": claims,\
-          \ \"payload_claims\": bindings, \"citations\": citations,\n            \"\
-          missing_inputs\": missing, \"warnings\": [], \"knowledge_manifest_sha256\"\
+          \ schema, _fail)\n        if len(claims) > 40:\n            _fail()\n  \
+          \      result = {\"contract\": \"remote-role-result.v1\", \"role_id\": \"\
+          query_specialist\", \"status\": status,\n            \"payload\": output,\
+          \ \"claims\": claims, \"payload_claims\": bindings, \"citations\": citations,\n\
+          \            \"missing_inputs\": missing, \"warnings\": [], \"knowledge_manifest_sha256\"\
           : pack[\"knowledge_manifest_sha256\"],\n            **{key: incoming[key]\
           \ for key in (\"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
           )}}\n        return {\"candidate\": _canonical(result)}\n    except Exception:\n\
