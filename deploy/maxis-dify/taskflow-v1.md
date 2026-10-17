@@ -10,17 +10,17 @@ runtime composition은 비어 있다. HTTP/UI 실행 진입점, 기본 route, �
 | 소유자 | 책임 | 이번 구현 |
 |---|---|---|
 | LTM | 현재 권한·scope, snapshot, 추가 조회, 취소, 결과 검증, 승인·Jira 쓰기 | coordinator + session preview 수명 + 실제 QueryRunner 조회; 승인 채택은 후속 |
-| Dify | 요청 분류 → bounded research → 근거 정리 → WorkDraft 생성 | 합성 조회 3개 실행 성공, Research 기능 검증 실패; 부모 WorkDraft 미배포 |
+| Dify | 요청 분류 → bounded research → 근거 정리 → WorkDraft 생성 | 목표 서버 흐름; 제품 실행 경로와 부모 WorkDraft는 미연결 |
 | MAXIS | private Research wrapper 등록·서비스 제공 | 등록 미실행; Dify의 합성 Knowledge와 구분 |
 
 목표 호출 관계는 LTM → 부모 TaskFlow → private MAXIS Agent wrapper → 고정된 research-only
 workflow다. wrapper에 별도 모델·대화 상태를 만들지 않고 재귀 호출을 허용하지 않는다.
 Research Agent의 tool은 `glossary_lookup`, `domain_retrieve`, `evidence_lookup` 세 가지로 제한한다.
-도구 세 개는 고정 합성 입력으로만 배포·검증했다. 실제 업무 snapshot과 연결된 목록이 아니며
-전체 호출 관계는 여전히 **후속 서버 구현 계약**이다.
+이 도구 목록은 실제 업무 snapshot과 연결된 제품 구현이 아니라
+**후속 서버 구현 계약**이다. 독립 합성 PoC와 그 결과는 제품 소스에 포함하지 않는다.
 LTM의 로컬 PC를 공개하거나 Jira 세션·credential을 원격 모델에 넘기지 않는다.
 
-합성 자산·실패·남은 승인 범위: [2026-10-17 실서버 점검](../../research/agent-improvement/evaluations/2026-10-17-maxis-native-synthetic-capability.md).
+평가·배포 결과는 ignored `.cache/`에 보관하고 검증 요약·미완료 TODO는 PR 본문에서 관리한다.
 
 ## 실행 계약
 
@@ -113,8 +113,3 @@ native workflow/run UUID와 성공 상태, result의 request/revision/pin/eviden
 HTTP timeout은 남은 시간으로 줄이지만 HTTPX의 phase별 timeout이다. 늦은 결과를
 거부하는 것과 서버 실행의 즉시 취소는 다르다. pin echo도 상관관계 확인이지 서버
 graph hash·Knowledge ACL·중첩 예산 검증의 대체물이 아니다.
-
-인증 정정(2026-10-17): 이전 probe는 비밀번호를 raw 문자열로 보냈다. 현재 Dify의
-UTF-8→Base64 로그인 형식에 맞춘 요청은 기존 승인 자격증명으로 **HTTP 200**이다.
-기존 Core/Editor/PMO Service API `/parameters`도 모두 200/Start 계약 일치다.
-인증은 더 이상 확인된 차단 사유가 아니다. 위 adapter·서버 통제·품질 조건은 여전히 별도다.

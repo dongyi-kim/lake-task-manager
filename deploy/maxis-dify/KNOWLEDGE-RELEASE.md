@@ -1,7 +1,7 @@
 # Knowledge 릴리스 준비·조회 계약
 
 이 경로는 **오프라인 후보 생성·검토 도구**다. 서버 업로드, 기존 dataset 수정, runtime route
-활성화는 하지 않는다. 기존 `ltm-knowledge-source.v2` 및 9월 배포 binding은 변경하지 않는다.
+활성화는 하지 않는다. 기존 `ltm-knowledge-source.v2` 및 현재 배포 binding은 변경하지 않는다.
 새 계약을 기존 `ResponseGuard`에서 승인된 사실 근거로 자동 간주하지 않는다.
 
 ## 입력과 생성
@@ -25,7 +25,7 @@
 - Source 및 청크 hash·revision이 후보 hash에 결속된다. upstream repository/path/URL은
   출처 표시일 뿐 자동으로 파일을 열거나 네트워크로 조회하지 않는다.
 - 로컬 private 용어집·설계 내용과 후보 JSON은 `.cache/`에 유지한다. tracked 테스트는
-  합성 문서만 사용한다. 48개 실제 용어를 서버에 업로드한 상태가 아니다.
+  합성 문서만 사용한다. 로컬 후보 생성은 서버 업로드가 아니다.
 
 ## 조회와 현재 권한
 
@@ -63,5 +63,5 @@ false다. 서버 청크 일치, 검색 품질, 권한·주입 방어, 보존 정
 기존 릴리스의 만료 때문에 막히지 않는다.
 
 검증: `tests/agent/maxis/test_knowledge_release.py`는 실제 후보 생성 → 조회 → 철회·revision
-변경 → 캐시 재검증과 CLI를 합성 파일로 실행한다. glossary lookup/validation은 이전
-`0ff790be`의 검토된 오프라인 구현을 importable 앱 모듈로 옮겼으며 이름 기반 추측 확장은 없다.
+변경 → 캐시 재검증과 CLI를 합성 파일로 실행한다. glossary lookup/validation은
+importable 앱 모듈이며 이름 기반 추측 확장은 없다. 실행 결과는 ignored `.cache/`에만 보관한다.
