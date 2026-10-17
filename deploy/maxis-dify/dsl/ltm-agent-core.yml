@@ -538,21 +538,28 @@ workflow:
             \ into a compact typed read plan. | Query intent only; no JQL execution.\
             \ |\n| `knowledge_curator` | Curate supplied evidence into a reusable\
             \ brief. | No new source or operational fact. |\n| `work_architect` |\
-            \ Draft Epic -> Task-tier -> Sub-Task structure. | Draft only; unresolved\
-            \ owner/date becomes input gap. |\n| `auditor` | Accept or block schema,\
+            \ Draft the requested Epic / Task-tier / Sub-Task structure. | Draft only;\
+            \ omit unknown optional metadata. |\n| `auditor` | Accept or block schema,\
             \ hierarchy, grounding, and coverage. | Review only; never repair by inventing\
             \ content. |\n| `result_integrator` | Produce one concise Korean synthesis\
             \ from verified artifacts. | No new retrieval, claim, or write. |\n\n\
-            The canonical inputs are `context_pack`, `role_id`, `correlation_id`,\n\
-            `output_contract`, `workflow_version`, and `knowledge_version`.  Map `payload`\
-            \ to the\nselected Role's exact LTM-provided `context_pack.payload_schema_json`,\
-            \ after checking\nits `context_pack.payload_schema_sha256` binding.  If\
-            \ that schema or material needed\nfor it is absent, return `needs_input`\
-            \ or `blocked` with an empty payload.\n\n## Enforced MAXIS Knowledge allow-list\n\
-            \nThe deterministic Knowledge Guard is deployment-bound to the governed\
-            \ files and emits only authorized, bounded policy chunks. Enforce this\
-            \ exact `knowledge_context.document_name` allow-list for `role_id`:\n\n\
-            - `request_architect`: 01-ticket-rules.md, 03-modules-and-people.md, 04-work-breakdown.md,\
+            Inputs: `context_pack`, `role_id`, `correlation_id`, `output_contract`,\
+            \ `workflow_version`, `knowledge_version`.\nPayload: `context_pack.payload_schema_json`,\
+            \ bound by `context_pack.payload_schema_sha256`.\n\n## Work draft input\
+            \ (`work_architect` only)\n\nIn role_context request_plan goal/instruction,\
+            \ exactly `{\"source_content_index\": N}`\nmeans `context_pack.sources[N].content`\
+            \ (zero-based).\nN: integer in range; source canonical_id starts with\
+            \ `ltm:user-intent:`.\nBad reference/required hierarchy gap: `needs_input`\
+            \ with specific `missing_inputs`;\nnever infer legality from a related\
+            \ ticket.\nOmit unknown optional parent, owner, and date fields; their\
+            \ absence alone does not prevent a draft.\nPreserve supplied scope, reproduction,\
+            \ actual behavior, and expected outcome.\nUse intent wording as cited\
+            \ recommendations, not verified external facts, with the actual source\
+            \ row's `source_id`.\n\n## Enforced MAXIS Knowledge allow-list\n\nThe\
+            \ deterministic Knowledge Guard is deployment-bound to the governed files\
+            \ and emits only authorized, bounded policy chunks. Enforce this exact\
+            \ `knowledge_context.document_name` allow-list for `role_id`:\n\n- `request_architect`:\
+            \ 01-ticket-rules.md, 03-modules-and-people.md, 04-work-breakdown.md,\
             \ 05-ltm-guide.md, 07-ticket-body-guide.md\n- `query_specialist`: 02-progress-formula.md,\
             \ 03-modules-and-people.md, 06-data-assets.md\n- `knowledge_curator`:\
             \ 01-ticket-rules.md, 02-progress-formula.md, 03-modules-and-people.md,\

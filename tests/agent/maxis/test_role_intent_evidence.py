@@ -6,6 +6,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
 import hashlib
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -125,6 +126,57 @@ def test_source_backed_work_draft_can_cite_request_and_read_separately():
     answer = _draft_response(pack)
     remote, payload = _validate(answer, pack)
     assert remote.status == "ok" and payload == answer["payload"]
+
+
+def test_work_prompt_explains_compact_intent_and_optional_draft_metadata():
+    prompt = (Path(__file__).resolve().parents[3] /
+              "deploy/maxis-dify/prompts/agent_core.md").read_text(encoding="utf-8")
+    for fragment in (
+        'exactly `{"source_content_index": N}`', "zero-based",
+        "integer in range", "`ltm:user-intent:`", "actual source row's `source_id`",
+        "Omit unknown optional parent, owner, and date fields",
+        "their absence alone does not prevent a draft",
+        "never infer legality from a related ticket",
+        "cited recommendations, not verified external facts",
+    ):
+        assert fragment in prompt
+    assert "unresolved owner/date becomes input gap" not in prompt
+
+
+def test_canonical_work_draft_needs_no_optional_execution_metadata():
+    from tools.maxis_role_remote_cases import build_remote_fixture
+    import runpy
+
+    built = build_remote_fixture(
+        "role-work", observed_at=datetime.now(timezone.utc), manifest_sha256=MANIFEST,
+    )
+    pack = EvidencePackV1.model_validate_json(json.dumps(built["payload"]["evidencePack"]))
+    intent = _intent(pack)
+    answer = _draft_response(pack, proposal=intent.content)
+    answer["workflow_version"] = "10000000-0000-4000-8000-000000000001"
+    item = answer["payload"]["items"][0]
+    item["background"] = intent.content
+    answer["claims"] = [answer["claims"][0]]
+    answer["citations"] = [answer["citations"][0]]
+    answer["citations"][0]["locator"] = ""
+    answer["payload_claims"][-1]["claim_ids"] = ["request"]
+    assert not {"parent", "epic", "assignee", "owner", "duedate"} & item.keys()
+    assert _validate(answer, pack)[1] == answer["payload"]
+
+    root = Path(__file__).resolve().parents[3]
+    guard = runpy.run_path(str(root / "deploy/maxis-dify/code/contract_guard.py"))["main"]
+    result = guard(
+        candidate=json.dumps(answer, ensure_ascii=False),
+        context_pack=canonical_evidence_pack_json(pack), role_id="work_architect",
+        correlation_id=pack.request_id, output_contract="remote-role-result.v1",
+        workflow_version=answer["workflow_version"],
+        executed_workflow_id=answer["workflow_version"],
+        knowledge_version=answer["knowledge_version"],
+        sentinel_result=[{"content": answer["knowledge_proof"]}],
+    )
+    guarded = json.loads(result["result"])
+    assert guarded["status"] == "ok" and guarded["warnings"] == [], guarded["warnings"]
+    assert guarded["payload"] == answer["payload"]
 
 
 def test_user_request_cannot_attest_external_facts():
