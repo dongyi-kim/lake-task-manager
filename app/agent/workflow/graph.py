@@ -72,6 +72,7 @@ from app.agent.workflow.effect_contract import (
     project_final_authority_state,
 )
 from app.agent.workflow.resolved_slots import parent_selection_authority
+from app.agent.workflow.maxis_blocked import has_blocked_terminal
 from app.agent.workflow.state import (MAX_MACHINE_REVISIONS, MAX_REVISIONS,
                                       MAX_TOTAL_REPAIR_ATTEMPTS, AgentState, Intent, Node,
                                       is_memory_only_request, reads_as_bug, request_text,
@@ -84,7 +85,16 @@ _compiled = {"graph": None}
 def _node(agent):
     """붙는 것은 언제나 **함수**다 — 컴파일된 서브그래프를 그대로 노드로 쓰면 전체 State 가
     반환값이 되어 부모의 `add_messages` 리듀서에 통째로 다시 먹힌다."""
-    return agent.node()
+    run = agent.node()
+    if agent.name == Node.RESULT_INTEGRATOR:
+        return run
+
+    def guarded(state):
+        # A serial edge may already be scheduled when the preceding Role blocks.
+        # Do not start it; parallel peers already in flight keep their own outcome.
+        return {} if has_blocked_terminal(state) else run(state)
+
+    return guarded
 
 
 # ── 라우터: State 만 보고 결정한다(부작용 없음) ──────────────────────
@@ -135,7 +145,7 @@ def route_after_request_architect(state: AgentState) -> str:
     # only to ResultIntegrator's error projection; otherwise the default ``investigate``
     # branch can accidentally run QuerySpecialist under whichever local provider happens
     # to be configured in this process.
-    if state.get("error"):
+    if has_blocked_terminal(state) or state.get("error"):
         return "respond"
     intent = state.get("intent") or ""
     if intent == Intent.CHITCHAT:
@@ -213,13 +223,15 @@ def route_after_query_specialist(state: AgentState) -> str:
     실패한 계획을 빈 계획처럼 해석해 Jira·외부 조회 또는 후속 작성 흐름을 시작할 수 있다.
     이 턴은 ResultIntegrator의 결정적 오류/질문 렌더링에서 끝낸다.
     """
-    if state.get("error") or state.get("questions"):
+    if has_blocked_terminal(state) or state.get("error") or state.get("questions"):
         return "respond"
     return "acquire"
 
 
 def route_after_query_runner(state: AgentState) -> str:
     """결정적 집계만으로 답이 완성된 요청은 일반 Research ReAct를 건너뛴다."""
+    if has_blocked_terminal(state):
+        return "respond"
     completion = state.get("assignment_completion") or {}
     guard = (state.get("query_artifacts") or {}).get("creation-subject-guard") or {}
     if (guard.get("kind") == "creation_target_required"
@@ -236,6 +248,8 @@ def route_after_research_analyst(state: AgentState) -> str:
     지식형 질문("X가 뭐야", "정리해줘")은 KnowledgeCurator 를 거친다 — 조사 결과를 개념/우리 상황/
     참고/공백 스키마로 정리해야 답이 재사용 가능한 브리프가 된다(사용자 요청으로 신설).
     """
+    if has_blocked_terminal(state):
+        return "respond"
     intent = state.get("intent") or ""
     # 조사 단계가 확인 질문을 냈다(표기 후보 등) — 정리(curate)로 갈 것이 없다. 바로 묻는다.
     if state.get("questions"):
@@ -272,7 +286,7 @@ def route_after_work_architect(state: AgentState):
     **변경 계획(modify)은 승인으로 직행**한다 — 담당자 추천(새 티켓용)도, validate_bulk
     (생성 검증)도 여기엔 해당이 없다. 안전장치는 승인 카드와 editmeta(편집 불가 필드 거부)다.
     """
-    if current_work_failed(state):
+    if has_blocked_terminal(state) or current_work_failed(state):
         return "respond"
     if state.get("questions"):
         return "respond"
@@ -317,7 +331,7 @@ def route_after_auditor(state: AgentState) -> str:
     # A validated MAXIS ``needs_input`` outcome uses the shared questions channel.
     # The fan-out join may still produce a deterministic review, but it must not mint
     # an approval token until the requested user input has been answered.
-    if state.get("questions"):
+    if has_blocked_terminal(state) or state.get("questions"):
         return "respond"
     review = state.get("review") or {}
     if review.get("ok"):
@@ -347,7 +361,7 @@ def route_after_result_integrator(state: AgentState) -> str:
 
     이미 실행한 뒤(result 가 있음)라면 끝이다 — 안 그러면 result_integrator↔action_executor 를 맴돈다.
     """
-    if state.get("result"):
+    if has_blocked_terminal(state) or state.get("result"):
         return "end"
     return "execute" if state.get("approval_token") else "end"
 
@@ -361,6 +375,8 @@ def _merge_assignments(state: AgentState) -> dict:
     Auditor 가 배정 **전** 초안을 검증하므로(병렬), 배정된 사용자가 실재하는지는
     여기 코드가 보장한다 — validate_bulk 와 같은 lookup 을 쓴다.
     """
+    if has_blocked_terminal(state):
+        return {}
     from app.agent.workflow.anchors import seal_work_item_identities
 
     source_draft = dict(state.get("draft") or {})
@@ -640,6 +656,8 @@ def _propose(state: AgentState) -> dict:
     이 노드가 따로 있는 이유: 토큰 발급은 라우터가 할 수 없고(라우터는 부작용이 없어야 한다),
     Auditor 가 할 일도 아니다(검열자가 실행 허가를 내주면 검열이 아니다).
     """
+    if has_blocked_terminal(state):
+        return {"approval_token": "", "comment_token": ""}
     from app.agent import approval
     from app.agent.workflow.agents.work_architect import as_bulk_items
 

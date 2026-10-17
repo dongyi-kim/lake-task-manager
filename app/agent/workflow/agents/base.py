@@ -1011,6 +1011,11 @@ class Agent(ABC):
 
     def fallback(self, state: AgentState, err: Exception) -> dict:
         """모델/도구가 죽어도 그래프는 답을 내야 한다 — 빈 화면보다 사유가 낫다."""
+        from app.agent.workflow.maxis_blocked import blocked_failure_patch
+
+        blocked = blocked_failure_patch(state, self.name, err)
+        if blocked is not None:
+            return blocked
         return {"error": f"[{self.name}] {str(err)[:300]}",
                 "trace": note(state, self.name, f"실패: {str(err)[:120]}")}
 

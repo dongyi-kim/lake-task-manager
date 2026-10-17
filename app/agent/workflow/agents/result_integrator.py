@@ -294,6 +294,9 @@ class ResultIntegrator(TextAgent):
             project_final_authority_state,
         )
         projected = project_final_authority_state(state)
+        from app.agent.workflow.maxis_blocked import blocked_terminal_patch
+
+        blocked = blocked_terminal_patch(projected)
         # Execution is terminal even though the consumed approval token remains in graph state.
         # A signed receipt outranks stale questions/review/card data.  A malformed receipt may
         # trigger the semantic reporter only when a legacy execution result also exists; by
@@ -306,6 +309,8 @@ class ResultIntegrator(TextAgent):
                                    "_fast_path_decision": decision,
                                    "_fast_path_note": "승인 실행 영수증 결정적 렌더링"},
                                   {"text": rendered})
+            if blocked is not None:
+                return blocked
             if projected.get("result"):
                 out = super()._run(projected)
                 out["trace"] = [*(out.get("trace") or []), *typed_fast_path_note(
@@ -315,12 +320,16 @@ class ResultIntegrator(TextAgent):
             # A malformed sidecar is not branch authority.  With no legacy execution result it
             # cannot bypass the existing review/question/approval decision below.
         elif projected.get("result"):
+            if blocked is not None:
+                return blocked
             decision, _receipt, _rendered = _execution_receipt_fast_path(projected)
             out = super()._run(projected)
             out["trace"] = [*(out.get("trace") or []), *typed_fast_path_note(
                 projected, self.name, "승인 실행 영수증 없음 · 기존 합성 사용", decision,
             )]
             return out
+        if blocked is not None:
+            return blocked
         completion = state.get("assignment_completion") or {}
         if completion.get("kind") == "incomplete_assignees":
             return self.apply(state, {"text": _assignment_completion_reply(completion)})

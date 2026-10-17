@@ -24,6 +24,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
 from app.agent.maxis.telemetry import with_result_status
+from app.agent.maxis.recovery import BlockedRecovery, blocked_recovery
 
 
 log = logging.getLogger("agent.maxis.runtime")
@@ -64,6 +65,15 @@ _QUERY_SOURCE_KINDS = {
 _LOCAL_ONLY_QUERY_SOURCES = frozenset({"web", "github"})
 class MaxisRuntimeError(RuntimeError):
     """A fail-closed runtime/profile/remote-contract error."""
+
+
+class MaxisBlockedResult(MaxisRuntimeError):
+    """Validated refusal with local guidance, never a draft or an interview."""
+
+    def __init__(self, role_id: str, recovery: BlockedRecovery):
+        self.role_id = role_id
+        self.recovery = recovery
+        super().__init__(recovery.message + " " + recovery.next_action)
 
 
 class MaxisNeedsInput(MaxisRuntimeError):
@@ -2072,11 +2082,6 @@ def invoke(
             evidence=evidence,
             expected_knowledge_manifest_sha256=knowledge_manifest_sha256,
         )
-        if envelope.status == "blocked":
-            response_block_code = "remote_status_" + str(envelope.status)
-            raise MaxisRuntimeError(
-                f"MAXIS Role이 적용 가능한 결과를 반환하지 않았습니다: {role_id}"
-            )
         expected_workflow = workflow_version
         if expected_workflow and envelope.workflow_version != expected_workflow:
             raise MaxisRuntimeError("MAXIS Workflow version이 고정된 프로필과 다릅니다.")
@@ -2091,6 +2096,11 @@ def invoke(
             raise MaxisRuntimeError(
                 "MAXIS Knowledge release가 활성 프로필과 다릅니다."
             )
+        if envelope.status == "blocked":
+            response_block_code = "remote_status_blocked"
+            raise MaxisBlockedResult(role_id, blocked_recovery(
+                warnings=envelope.warnings, evidence_flags=evidence.flags,
+            ))
     except MaxisRuntimeError:
         _record_remote_audit(
             status="blocked", error_code=response_block_code,
@@ -2358,7 +2368,7 @@ def run_shadow(
 
 
 __all__ = [
-    "AcquisitionMarker", "MaxisNeedsInput", "MaxisRuntimeError",
+    "AcquisitionMarker", "MaxisBlockedResult", "MaxisNeedsInput", "MaxisRuntimeError",
     "REMOTE_CONTRACT_BUILD_VERSION",
     "RemoteRoleOutput", "RoleResolution",
     "RoleRuntime", "RuntimeProfileChanged", "attest_query_result",

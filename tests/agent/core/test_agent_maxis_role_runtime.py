@@ -1377,7 +1377,7 @@ def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_e
                 }] if status == "ok" else []),
                 "missing_inputs": (["완료 기준을 알려 주세요"]
                                    if status == "needs_input" else []),
-                "warnings": [],
+                "warnings": observed.get("remote_warnings", []),
                 "workflow_version": AGENT_WORKFLOW_ID,
                 "knowledge_version": "knowledge-1",
                 "knowledge_manifest_sha256": observed["remote_manifest"],
@@ -1460,11 +1460,31 @@ def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_e
 
     # A Dify blocked state is a control outcome, never applicable partial state.
     observed["remote_status"] = "blocked"
-    with pytest.raises(backend.MaxisRuntimeError, match="적용 가능한 결과"):
+    with pytest.raises(backend.MaxisBlockedResult, match="적용 가능한 결과") as blocked:
         backend.invoke("request_architect", payload, "thread-1", "corr-1")
+    assert blocked.value.recovery.code == "unusable_result"
+    assert "이 응답은 변경에 적용하지 않았습니다" in str(blocked.value)
+    assert not hasattr(blocked.value, "state_patch")
+    assert not hasattr(blocked.value, "missing_inputs")
     assert [event.status for event in audit_events[-2:]] == ["started", "blocked"]
     assert audit_events[-1].error_code == "remote_status_blocked"
     assert audit_events[-1].remote_request.result_status == "blocked"
+
+    observed["remote_warnings"] = ["contract_guard:payload_type_mismatch"]
+    with pytest.raises(backend.MaxisBlockedResult) as blocked:
+        backend.invoke("request_architect", payload, "thread-1", "corr-1")
+    assert blocked.value.recovery.code == "invalid_result_contract"
+    assert "필수 필드" in str(blocked.value)
+
+    # A rejected remote result still has to match the pinned release. Its warning
+    # codes cannot produce trusted recovery guidance before that check passes.
+    observed["knowledge_proof"] = "LTM_RELEASE_SENTINEL_V1=drifted"
+    with pytest.raises(backend.MaxisRuntimeError, match="Knowledge release") as drifted:
+        backend.invoke("request_architect", payload, "thread-1", "corr-1")
+    assert not isinstance(drifted.value, backend.MaxisBlockedResult)
+    assert audit_events[-1].error_code == "knowledge_sentinel_mismatch"
+    observed["knowledge_proof"] = SENTINEL_VALUE
+    observed["remote_warnings"] = []
 
     observed["remote_status"] = "needs_input"
     with pytest.raises(backend.MaxisNeedsInput) as needs:
