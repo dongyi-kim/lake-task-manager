@@ -1,0 +1,23 @@
+{
+  "baseUrl": "",
+  "dataPolicy": "internal_read_only",
+  "workflowBundleVersion": "",
+  "knowledgeVersion": "",
+  "knowledgeDatasetId": "",
+  "knowledgeSentinelSha256": "",
+  "remoteLogPolicyId": "",
+  "remoteLogMode": "approved_bounded_content",
+  "remoteLogRetentionDays": 1,
+  "internalPilotPolicy": {
+    "contract": "ltm-maxis-internal-pilot-policy.v1",
+    "content_retention_hours": 24,
+    "metadata_retention_days": 7,
+    "audience_scope_sha256": "",
+    "controls_attestation": {}
+  },
+  "workflows": {
+    "agent_core": {"binding": "agent_core", "version": ""},
+    "editor_author": {"binding": "editor_author", "version": ""},
+    "pmo_brief": {"binding": "pmo_brief", "version": ""}
+  }
+}

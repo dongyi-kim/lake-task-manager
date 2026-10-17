@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import unquote, urlsplit
 
 from app.infra import prefs
-from app.agent.maxis import credentials
+from app.agent.maxis import credentials, pilot_policy
 from app.agent.maxis.destination_policy import (
     ALLOWED_HOSTS_ENV_NAMES,
     DestinationPolicyError,
@@ -36,7 +36,8 @@ from app.agent.maxis.public_metadata import (
 )
 
 
-PROFILE_NAMES = ("dev", "prod")
+# Append to preserve the existing status order for dev/prod clients.
+PROFILE_NAMES = ("dev", "prod", "internal-pilot")
 WORKFLOW_KEYS = credentials.WORKFLOW_KEYS
 ROUTE_MODES = ("local", "shadow", "maxis")
 DATA_POLICIES = ("synthetic_only", "internal_read_only")
@@ -117,6 +118,7 @@ CONFIG_ENV_NAMES = {
     "remote_log_mode": "LAKE_MAXIS_REMOTE_LOG_MODE",
     "remote_log_retention_days": "LAKE_MAXIS_REMOTE_LOG_RETENTION_DAYS",
     "knowledge_eval_attestation": "LAKE_MAXIS_KNOWLEDGE_EVAL_ATTESTATION",
+    "internal_pilot_policy": "LAKE_MAXIS_INTERNAL_PILOT_POLICY",
 }
 WORKFLOW_VERSION_ENV_NAMES = {
     "agent_core": "LAKE_MAXIS_AGENT_CORE_VERSION",
@@ -154,7 +156,7 @@ class _CrossEnvironmentSeparationError(ValueError):
     def __init__(self, categories: list[str]):
         self.categories = tuple(categories)
         super().__init__(
-            "Dev/prod MAXIS assets must be independent; overlapping asset "
+            "Dev/prod/internal-pilot MAXIS assets must be independent; overlapping asset "
             "categories: " + ", ".join(self.categories) + "."
         )
 
@@ -178,6 +180,8 @@ def _default_profile(name: str) -> dict:
         # Human/CI attestation pointing at an externally retained remote 25-case
         # result artifact. LTM verifies only metadata bindings, never artifact content.
         "knowledge_eval_attestation": {},
+        **({"internal_pilot_policy": pilot_policy.default_policy()}
+           if name == "internal-pilot" else {}),
         "workflows": {
             key: {"binding": binding, "version": ""}
             for key, binding in _DEFAULT_BINDINGS.items()
@@ -198,7 +202,7 @@ def _stored_rows() -> dict[str, dict]:
 
 def _merged_profile(name: str) -> dict:
     if name not in PROFILE_NAMES:
-        raise KeyError("MAXIS profile must be dev or prod.")
+        raise KeyError("MAXIS profile must be dev, internal-pilot, or prod.")
     out = _default_profile(name)
     saved = _stored_rows().get(name) or {}
     for key in (
@@ -213,6 +217,8 @@ def _merged_profile(name: str) -> dict:
     if "knowledge_eval_attestation" in saved:
         value = saved.get("knowledge_eval_attestation")
         out["knowledge_eval_attestation"] = deepcopy(value) if isinstance(value, dict) else value
+    if "internal_pilot_policy" in saved:
+        out["internal_pilot_policy"] = deepcopy(saved["internal_pilot_policy"])
     saved_workflows = saved.get("workflows") if isinstance(saved.get("workflows"), dict) else {}
     for workflow_key in WORKFLOW_KEYS:
         row = saved_workflows.get(workflow_key)
@@ -229,7 +235,7 @@ def _normal_base_url(raw: str, stage: str) -> str:
     if not value:
         return ""
     return canonical_maxis_api_base(
-        value, stage=stage, require_https=stage == "prod",
+        value, stage=stage, require_https=stage != "dev",
     )
 
 
@@ -379,7 +385,7 @@ def _validate_remote_log_attestation(profile: dict, *, required: bool) -> None:
         )
     if required and (not policy_id or not mode or retention is None):
         raise ValueError(
-            "Prod MAXIS requires a manager-attested remote log policy id, mode, and "
+            "Internal MAXIS requires a manager-attested remote log policy id, mode, and "
             "retention days before probe/activation. This attestation does not "
             "technically verify the Dify workspace settings."
         )
@@ -448,6 +454,10 @@ def knowledge_eval_attestation_binding(profile: dict | str = "") -> dict:
             for key in WORKFLOW_KEYS
         },
     }
+    if candidate.get("stage") == "internal-pilot":
+        material["internal_pilot_policy"] = pilot_policy.binding_policy(
+            candidate.get("internal_pilot_policy")
+        )
     encoded = json.dumps(
         material, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         allow_nan=False,
@@ -498,13 +508,13 @@ def knowledge_eval_attestation_status(profile: dict | str = "") -> dict:
             "attestation": {},
             "expectedBinding": {},
         }
-    if str(candidate.get("stage") or "") != "prod":
+    if str(candidate.get("stage") or "") not in {"prod", "internal-pilot"}:
         return {
             "configured": bool(attestation),
             "bindingValid": False,
             "valid": False,
             "verification": verification,
-            "reasons": ["Knowledge eval attestation is required only for prod authority."],
+            "reasons": ["Knowledge eval attestation is required only for internal authority."],
             "attestation": {},
             "expectedBinding": {},
         }
@@ -575,7 +585,7 @@ def knowledge_eval_attestation_status(profile: dict | str = "") -> dict:
 
 
 def _require_current_knowledge_eval_attestation(profile: dict) -> None:
-    if str(profile.get("stage") or "") != "prod":
+    if str(profile.get("stage") or "") not in {"prod", "internal-pilot"}:
         return
     status = knowledge_eval_attestation_status(profile)
     if not status["valid"]:
@@ -586,10 +596,31 @@ def _require_current_knowledge_eval_attestation(profile: dict) -> None:
         )
 
 
+def internal_pilot_controls_status(profile: dict | str = "internal-pilot") -> dict:
+    """Expose deployment blockers without treating metadata binding as enforcement."""
+    candidate = profile if isinstance(profile, dict) else _effective(get(profile))
+    material_sha = ""
+    try:
+        material_sha = knowledge_eval_attestation_binding(candidate)["profile_material_sha256"]
+    except ValueError:
+        pass
+    return pilot_policy.controls_status(
+        candidate.get("internal_pilot_policy"), profile_material_sha256=material_sha,
+    )
+
+
+def _require_internal_pilot_controls(profile: dict) -> None:
+    if profile.get("stage") != "internal-pilot":
+        return
+    state = internal_pilot_controls_status(profile)
+    if not state["valid"]:
+        raise ValueError("Internal-pilot server controls are not verified: " + "; ".join(state["reasons"]))
+
+
 def _validate(profile: dict, *, activation: bool = False) -> dict:
     name = str(profile.get("name") or "").strip().lower()
     if name not in PROFILE_NAMES or profile.get("stage") != name:
-        raise ValueError("MAXIS profile stage is immutable and must be dev or prod.")
+        raise ValueError("MAXIS profile stage is immutable and must be dev, internal-pilot, or prod.")
     policy = str(profile.get("data_policy") or "").strip()
     required_policy = "synthetic_only" if name == "dev" else "internal_read_only"
     if policy != required_policy:
@@ -620,7 +651,14 @@ def _validate(profile: dict, *, activation: bool = False) -> dict:
     result["knowledge_eval_attestation"] = _clean_knowledge_eval_attestation(
         profile.get("knowledge_eval_attestation")
     )
-    _validate_remote_log_attestation(result, required=activation and name == "prod")
+    if name == "internal-pilot":
+        result["internal_pilot_policy"] = pilot_policy.clean_policy(profile.get("internal_pilot_policy"))
+        retention = result["remote_log_retention_days"]
+        if retention is not None and retention * 24 > result["internal_pilot_policy"]["content_retention_hours"]:
+            raise ValueError("Pilot remote content log retention exceeds the pilot policy bound.")
+    elif "internal_pilot_policy" in profile:
+        raise ValueError("Internal-pilot policy cannot be applied to another profile.")
+    _validate_remote_log_attestation(result, required=activation and name != "dev")
     workflows = profile.get("workflows")
     if not isinstance(workflows, dict):
         raise ValueError("workflows must be an object.")
@@ -640,6 +678,7 @@ def _validate(profile: dict, *, activation: bool = False) -> dict:
         raise ValueError("Unsupported MAXIS workflow binding.")
     result["workflows"] = clean_workflows
     if activation:
+        _require_internal_pilot_controls(result)
         missing = []
         if not result["base_url"]:
             missing.append("Base URL")
@@ -688,7 +727,7 @@ def save(profile_name: str, patch: dict | None = None) -> dict:
                "knowledge_version", "knowledge_dataset_id",
                "knowledge_sentinel_sha256", "remote_log_policy_id",
                "remote_log_mode", "remote_log_retention_days",
-               "knowledge_eval_attestation", "workflows"}
+               "knowledge_eval_attestation", "internal_pilot_policy", "workflows"}
     if set(patch) - allowed:
         raise ValueError("Unsupported MAXIS profile field.")
     for key in allowed - {"workflows"}:
@@ -769,7 +808,7 @@ def _effective(profile: dict) -> dict:
     # The process-level attestation overrides describe production MAXIS.  Applying
     # them to the dev row would silently defeat dev's fixed synthetic/redacted/0-day
     # contract (and make the status endpoint fail whenever prod env config exists).
-    if name == "prod":
+    if name != "dev":
         remote_policy_id = str(
             os.getenv(CONFIG_ENV_NAMES["remote_log_policy_id"]) or ""
         ).strip()
@@ -802,6 +841,15 @@ def _effective(profile: dict) -> dict:
             result["knowledge_eval_attestation"] = _clean_knowledge_eval_attestation(
                 decoded_eval_attestation
             )
+    if name == "internal-pilot":
+        raw_policy = str(os.getenv(CONFIG_ENV_NAMES["internal_pilot_policy"]) or "").strip()
+        if raw_policy:
+            if len(raw_policy) > 8192:
+                raise ValueError("Internal-pilot policy environment JSON is too large.")
+            try:
+                result["internal_pilot_policy"] = pilot_policy.clean_policy(json.loads(raw_policy))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Internal-pilot policy environment JSON is invalid.") from exc
     for workflow_key, env_name in WORKFLOW_VERSION_ENV_NAMES.items():
         value = str(os.getenv(env_name) or "").strip()
         if value:
@@ -809,7 +857,7 @@ def _effective(profile: dict) -> dict:
                 canonical_published_workflow_id(value)
             )
     _validate_remote_log_attestation(result, required=False)
-    return result
+    return _validate(result)
 
 
 def profile_fingerprint(profile: dict) -> str:
@@ -822,13 +870,15 @@ def profile_fingerprint(profile: dict) -> str:
         "remote_log_retention_days", "knowledge_eval_attestation",
     )}
     clean["knowledge_manifest_sha256"] = manifest.sha256 if manifest else ""
+    if profile.get("stage") == "internal-pilot":
+        clean["internal_pilot_policy"] = pilot_policy.clean_policy(profile.get("internal_pilot_policy"))
     encoded = json.dumps(clean, ensure_ascii=False, sort_keys=True,
                          separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:32]
 
 
 def _separation_asset_profile(profile_name: str) -> dict:
-    """Read only separation-relevant dev assets without coupling prod to dev URL policy."""
+    """Read sibling assets without coupling profiles to a sibling's URL policy."""
 
     name = str(profile_name or "").strip().lower()
     candidate = deepcopy(_merged_profile(name))
@@ -859,9 +909,9 @@ def _separation_asset_profile(profile_name: str) -> dict:
 
 
 def _require_cross_environment_asset_separation(profile: dict) -> None:
-    """Fail closed before either environment contacts assets assigned to its peer.
+    """Fail closed before any environment contacts assets assigned to another.
 
-    MAXIS may expose dev and prod through the same API host, and both profiles may
+    MAXIS may expose environments through the same API host, and their profiles may
     carry the same human-readable release labels.  The actual Dify dataset, release
     sentinel, published workflow UUIDs, and credentials must nevertheless be
     independent.  Saving remains intentionally permissive so the recovery UI can
@@ -871,7 +921,13 @@ def _require_cross_environment_asset_separation(profile: dict) -> None:
     name = str(profile.get("stage") or "").strip().lower()
     if name not in PROFILE_NAMES:
         raise ValueError("MAXIS profile stage is invalid.")
-    sibling_name = "prod" if name == "dev" else "dev"
+    for sibling_name in PROFILE_NAMES:
+        if sibling_name != name:
+            _require_asset_pair_separation(profile, sibling_name)
+
+
+def _require_asset_pair_separation(profile: dict, sibling_name: str) -> None:
+    name = str(profile["stage"])
 
     # Do not validate or compare the sibling's host and release labels here. A stale
     # destination policy must remain independently repairable and cannot redefine
@@ -916,7 +972,7 @@ def _require_cross_environment_asset_separation(profile: dict) -> None:
         shared_credential = credentials.profiles_share_any_credential(name, sibling_name)
     except credentials.CredentialStoreUnavailable as exc:
         raise ValueError(
-            "Cannot verify dev/prod MAXIS credential separation because the secure "
+            "Cannot verify MAXIS cross-environment credential separation because the secure "
             "credential store is unavailable."
         ) from exc
     if shared_credential:
@@ -948,6 +1004,7 @@ def _probe_snapshot_signature(profile: dict, keys: dict[str, str]) -> str:
 
 def _probe_signature(profile_name: str) -> str:
     profile = _effective(get(profile_name))
+    _require_internal_pilot_controls(profile)
     _require_cross_environment_asset_separation(profile)
     return _probe_snapshot_signature(
         profile, credentials.resolved_for(profile_name),
@@ -984,11 +1041,11 @@ def probe_ok(profile_name: str) -> bool:
 
 
 def probe_candidate(profile_name: str) -> dict:
-    """Return a probeable profile after enforcing prod policy attestation."""
+    """Return a probeable profile after enforcing its internal-data policy gates."""
     profile = resolve(profile_name)
     _require_cross_environment_asset_separation(profile)
     _validate_remote_log_attestation(
-        profile, required=str(profile.get("stage") or "") == "prod",
+        profile, required=str(profile.get("stage") or "") != "dev",
     )
     return profile
 
@@ -1020,8 +1077,9 @@ def _probe_contract_verified(profile_name: str, details: dict | None) -> bool:
     profile = _effective(get(profile_name))
     try:
         _validate_remote_log_attestation(
-            profile, required=str(profile.get("stage") or "") == "prod",
+            profile, required=str(profile.get("stage") or "") != "dev",
         )
+        _require_internal_pilot_controls(profile)
     except ValueError:
         return False
     try:
@@ -1150,7 +1208,7 @@ def activate(profile_name: str) -> dict:
             "The dev synthetic-only profile cannot be activated while an "
             "authoritative MAXIS route exists; move it to local or shadow first."
         )
-    if name == "prod":
+    if name != "dev":
         # Activation is allowed as a shadow candidate.  However, if global routing is
         # already authoritative MAXIS (for example after switching from dev to prod),
         # every affected prod deployment must have its own exact-version shadow proof.
@@ -1187,6 +1245,7 @@ def resolve(profile_name: str = "") -> dict:
         raise ValueError("No active MAXIS profile.")
     profile = _effective(get(name))
     _require_cross_environment_asset_separation(profile)
+    _require_internal_pilot_controls(profile)
     manifest = _build_profile_manifest(profile, required=False)
     fingerprint = profile_fingerprint(profile)
     stored_fingerprint = str(prefs.load().get("maxisActiveProfileFingerprint") or "")
@@ -1319,7 +1378,7 @@ def _workflow_promotion(profile: dict, workflow_key: str) -> dict:
 
 
 def _require_prod_promotion(profile: dict, workflow_keys) -> None:
-    if str(profile.get("stage") or "") != "prod":
+    if str(profile.get("stage") or "") not in {"prod", "internal-pilot"}:
         return
     required_workflows = sorted(set(workflow_keys))
     if not required_workflows:
@@ -1337,7 +1396,8 @@ def _require_prod_promotion(profile: dict, workflow_keys) -> None:
 def require_authoritative(profile_name: str, workflow_keys) -> None:
     """Enforce the single authority gate used by every ``maxis`` route boundary.
 
-    Activation and shadow execution remain available for validation.  The published
+    DEV/PROD activation and shadow remain available for validation; internal-pilot
+    requires server control verification before any execution. The published
     Dify bundle enforces the selected Role before any Knowledge chunk reaches the LLM;
     authoritative output is nevertheless unavailable until LTM also verifies the
     signed external evaluation artifact.  Self-reported attestation metadata cannot
@@ -1346,7 +1406,7 @@ def require_authoritative(profile_name: str, workflow_keys) -> None:
 
     name = str(profile_name or "").strip().lower()
     if name not in PROFILE_NAMES:
-        raise ValueError("Authoritative MAXIS requires an explicit dev or prod profile.")
+        raise ValueError("Authoritative MAXIS requires an explicit dev, internal-pilot, or prod profile.")
     required_workflows = sorted(set(str(key or "").strip() for key in workflow_keys))
     if not required_workflows or set(required_workflows) - set(WORKFLOW_KEYS):
         raise ValueError("Authoritative MAXIS requires known workflow bindings.")
@@ -1355,7 +1415,7 @@ def require_authoritative(profile_name: str, workflow_keys) -> None:
         raise ValueError(
             "Activate a verified MAXIS profile and release the kill switch first."
         )
-    if str(profile.get("stage") or "") != "prod":
+    if str(profile.get("stage") or "") == "dev":
         raise ValueError(
             "The dev synthetic-only profile cannot become authoritative; "
             "use its canary/shadow path or activate prod."
@@ -1885,6 +1945,8 @@ def _public_profile(name: str) -> dict:
             "remote_log_retention_days"
         ],
         "knowledgeEvalAttestation": eval_attestation,
+        **({"internalPilotControls": internal_pilot_controls_status(effective)}
+           if name == "internal-pilot" else {}),
         "workflows": public_stored["workflows"],
         "credentials": _safe_public_credentials(name),
         "fingerprint": fingerprint,
@@ -1938,6 +2000,7 @@ def status() -> dict:
             "knowledgeEvalAttestation": config_overrides[
                 "knowledge_eval_attestation"
             ],
+            "internalPilotPolicy": config_overrides["internal_pilot_policy"],
             "workflowVersions": workflow_overrides,
             "credentials": credential_overrides,
             "allowedHosts": {
@@ -1947,10 +2010,10 @@ def status() -> dict:
             },
         },
         "environmentError": (
-            "LAKE_MAXIS_PROFILE must be dev or prod."
+            "LAKE_MAXIS_PROFILE must be dev, internal-pilot, or prod."
             if env_profile and env_profile.lower() not in PROFILE_NAMES else ""
         ) or (
-            "Shared MAXIS environment overrides require LAKE_MAXIS_PROFILE=dev|prod."
+            "Shared MAXIS environment overrides require LAKE_MAXIS_PROFILE=dev|internal-pilot|prod."
             if unbound_shared_overrides else ""
         ),
     }

@@ -4,6 +4,10 @@
 source bundle이다. DEV와 PROD의 환경 binding을 분리하고, import DSL을 materialize한
 뒤 validator와 원격 release gate를 통과시키는 구조다.
 
+내부 시범은 별도 `internal-pilot` 후보 프로필로 준비한다.
+[설정·통제 검증 경계](internal-pilot.md)를 따르며 서버 보존·사용자 ACL·불변 릴리스 검증기가
+구현되기 전에는 접속 검사와 실행이 차단된다. 설정 저장은 내부 데이터 사용 승인이나 게시 완료가 아니다.
+
 Core source는 연결 검사와 업무 판단을 분리한 **16노드·17엣지**다.
 양쪽 LLM과 원본 그래프를 검증한 뒤 환경값을 적용하며, 정책 거절과 기존 Guard는 유지한다.
 DEV Core v23에 게시했으며 [Core 계약과 검증 범위](core-control-route.md)를 참고한다.

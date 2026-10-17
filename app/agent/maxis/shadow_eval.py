@@ -38,7 +38,7 @@ _FUTURES: set[Future] = set()
 _SAFE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$")
 _TOKEN = re.compile(r"[0-9A-Za-z가-힣]{2,}")
 _NUMBER = re.compile(r"(?<![A-Za-z0-9])[-+]?\d+(?:\.\d+)?%?")
-_PROFILES = frozenset({"dev", "prod"})
+_PROFILES = frozenset({"dev", "internal-pilot", "prod"})
 _WORKFLOWS = frozenset({"agent_core", "editor_author", "pmo_brief"})
 _ROLES = frozenset({
     "all_roles", "request_architect", "query_specialist", "knowledge_curator",

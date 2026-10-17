@@ -106,6 +106,7 @@ class _MaxisProfileBody(_MaxisBody):
     remoteLogMode: str | None = None
     remoteLogRetentionDays: int | None = None
     knowledgeEvalAttestation: dict | None = None
+    internalPilotPolicy: dict | None = None
     workflows: dict | None = None
 
 
@@ -197,6 +198,7 @@ def api_maxis_profile_save(profile_name: str, body: _MaxisProfileBody):
                        ("remoteLogMode", "remote_log_mode"),
                        ("remoteLogRetentionDays", "remote_log_retention_days"),
                        ("knowledgeEvalAttestation", "knowledge_eval_attestation"),
+                       ("internalPilotPolicy", "internal_pilot_policy"),
                        ("workflows", "workflows")):
         value = getattr(body, field)
         if value is not None:
@@ -380,7 +382,7 @@ def _run_maxis_probe(profile: dict, keys: dict[str, str]) -> dict:
         base_url=profile["base_url"],
         stage=profile["stage"],
         profile_fingerprint=str(profile.get("fingerprint") or ""),
-        require_https=profile["stage"] == "prod",
+        require_https=profile["stage"] in {"internal-pilot", "prod"},
         verify_tls=True,
     )
     results = {}

@@ -194,10 +194,52 @@ def _verified_probe_result(*workflow_keys):
 
 def test_maxis_status_is_separate_from_llm_provider_status(client):
     body = client.get("/api/agent/maxis/status").json()
-    assert [p["name"] for p in body["profiles"]] == ["dev", "prod"]
+    assert [p["name"] for p in body["profiles"]] == ["dev", "prod", "internal-pilot"]
     assert body["routes"] == {"agent_core": "local", "editor_author": "local", "pmo_brief": "local"}
     assert "provider" not in body and "chatModel" not in body
     assert body["canManage"] is True
+
+
+def test_internal_pilot_settings_are_visible_but_cannot_enable_execution(client, monkeypatch):
+    from app.agent.maxis import pilot_policy
+    import app.agent.routes as agent_routes
+
+    def no_network(*_args, **_kwargs):
+        pytest.fail("An unverified pilot must not reach the remote probe.")
+
+    monkeypatch.setattr(agent_routes, "_run_maxis_probe", no_network)
+
+    monkeypatch.setenv("LAKE_MAXIS_INTERNAL_PILOT_ALLOWED_HOSTS", "pilot.maxis.example")
+    saved = client.put("/api/agent/maxis/profiles/internal-pilot", json={
+        "baseUrl": "https://pilot.maxis.example/v1",
+        "dataPolicy": "internal_read_only",
+        "remoteLogPolicyId": "SEC-PILOT",
+        "remoteLogMode": "redacted",
+        "remoteLogRetentionDays": 0,
+        "internalPilotPolicy": pilot_policy.default_policy(),
+    })
+    assert saved.status_code == 200
+    row = next(row for row in saved.json()["profiles"] if row["name"] == "internal-pilot")
+    assert row["internalPilotControls"]["valid"] is False
+    assert row["internalPilotControls"]["policy"]["content_retention_hours"] == 24
+    assert row["internalPilotControls"]["policy"]["metadata_retention_days"] == 7
+    assert row["enabled"] is False
+    for operation, status_code in (("probe", 200), ("activate", 409)):
+        response = client.post(f"/api/agent/maxis/{operation}/internal-pilot")
+        assert response.status_code == status_code
+        assert response.json()["ok"] is False
+        assert "server controls are not verified" in response.json()["error"]
+    assert profiles.active_profile_name() == ""
+
+
+def test_pilot_policy_api_rejects_claimed_capability_flags(client):
+    from app.agent.maxis import pilot_policy
+
+    policy = {**pilot_policy.default_policy(), "server_controls_verified": True}
+    response = client.put("/api/agent/maxis/profiles/internal-pilot", json={
+        "internalPilotPolicy": policy,
+    })
+    assert response.status_code == 400
 
 
 def test_maxis_runtime_mutations_are_manager_only(client, monkeypatch):

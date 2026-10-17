@@ -320,8 +320,14 @@ export default {
               v-model.number="form.remoteLogRetentionDays" :readonly="!canManage"></label>
             <div class="ag-warn">이 값은 관리자 승인 증빙이며 Dify 설정을 자동 검사하지 않습니다. Dify 실행 이력에는 입력·출력 원문이 남을 수 있으므로 실제 Workspace 로그 설정을 별도로 대조해야 합니다.</div>
           </div>
-          <div v-else class="mx-help">
+          <div v-else-if="selected.stage === 'dev'" class="mx-help">
             DEV 원격 로그는 synthetic-only · redacted · 0일 정책으로 고정됩니다.
+          </div>
+          <div v-else-if="selected.stage === 'internal-pilot'" class="ag-warn">
+            내부 시범은 DEV와 별도 환경이며 아직 실행할 수 없습니다.
+            신규 자산의 콘텐츠 보존 상한 24시간·메타데이터 7일, 사용자 접근권한과
+            불변 릴리스의 실제 서버 검증이 필요합니다. 설정·증적 등록만으로 활성화되지 않습니다.
+            정책 세부 설정은 관리자 API와 내부 시범 템플릿을 사용합니다.
           </div>
           <div v-for="w in workflowRows" :key="w.key" class="mx-workflow">
             <div><b>{{ w.label }}</b><span>{{ w.hint }}</span></div>

@@ -164,8 +164,8 @@ def _migration_marker_path() -> Path:
 
 def _normal_profile(profile_name: str) -> str:
     value = str(profile_name or "").strip().lower()
-    if value not in ("dev", "prod"):
-        raise ValueError("MAXIS profile must be dev or prod.")
+    if value not in ("dev", "internal-pilot", "prod"):
+        raise ValueError("MAXIS profile must be dev, internal-pilot, or prod.")
     return value
 
 
@@ -194,7 +194,7 @@ def _load_all() -> dict[str, dict[str, str]]:
         raise CredentialStoreUnavailable("MAXIS credential store could not be read.") from exc
 
     out: dict[str, dict[str, str]] = {}
-    for name in ("dev", "prod"):
+    for name in ("dev", "internal-pilot", "prod"):
         row = decoded.get(name)
         if not isinstance(row, dict):
             continue

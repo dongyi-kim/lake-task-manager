@@ -1472,7 +1472,7 @@ def _client_config(metadata: dict, binding: Any):
         stage=stage,
         base_url=str(metadata.get("base_url") or ""),
         profile_fingerprint=str(metadata.get("fingerprint") or ""),
-        require_https=stage == "prod",
+        require_https=stage in {"internal-pilot", "prod"},
         verify_tls=True,
         max_response_bytes=int(_binding_value(
             binding, "max_response_bytes", default=1024 * 1024
@@ -1749,7 +1749,7 @@ def record_change_audit(
         except Exception:
             metadata = {}
     stage = str(metadata.get("stage") or "").strip().lower()
-    if stage not in {"dev", "prod", "test"}:
+    if stage not in {"dev", "internal-pilot", "prod", "test"}:
         stage = "test" if profile_name == "local" else "dev"
 
     executed = (state or {}).get("runtime_role_engines") or {}

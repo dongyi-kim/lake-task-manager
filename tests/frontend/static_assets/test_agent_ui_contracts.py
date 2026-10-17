@@ -242,6 +242,10 @@ def test_reference_hover_is_shared_by_all_ticket_links_and_person_mentions():
 def test_maxis_settings_are_a_separate_workflow_surface_with_safe_credentials():
     dialog = (STATIC / "components" / "ui" / "AgentSettingsDialog.js").read_text(encoding="utf-8")
     panel = (STATIC / "components" / "ui" / "MaxisSettingsPanel.js").read_text(encoding="utf-8")
+    assert 'v-else-if="selected.stage === \'dev\'"' in panel
+    assert 'v-else-if="selected.stage === \'internal-pilot\'"' in panel
+    assert "내부 시범은 DEV와 별도 환경이며 아직 실행할 수 없습니다" in panel
+    assert "설정·증적 등록만으로 활성화되지 않습니다" in panel
     api_src = (STATIC / "lib" / "agentApi.js").read_text(encoding="utf-8")
     css = (STATIC / "styles" / "agent.css").read_text(encoding="utf-8")
 

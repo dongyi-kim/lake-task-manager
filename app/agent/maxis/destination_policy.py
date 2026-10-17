@@ -14,11 +14,12 @@ from typing import Literal
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 
-RuntimeStage = Literal["dev", "prod", "test"]
+RuntimeStage = Literal["dev", "internal-pilot", "prod", "test"]
 
 DEFAULT_ALLOWED_HOSTS = frozenset({"dify.maxis.skax.co.kr"})
 ALLOWED_HOSTS_ENV_NAMES = {
     "dev": "LAKE_MAXIS_DEV_ALLOWED_HOSTS",
+    "internal-pilot": "LAKE_MAXIS_INTERNAL_PILOT_ALLOWED_HOSTS",
     "prod": "LAKE_MAXIS_PROD_ALLOWED_HOSTS",
 }
 DEV_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -77,9 +78,11 @@ def allowed_hosts(stage: RuntimeStage | str) -> frozenset[str]:
     if name not in ALLOWED_HOSTS_ENV_NAMES:
         if name == "test":
             return frozenset()
-        raise DestinationPolicyError("MAXIS stage must be dev or prod.")
+        raise DestinationPolicyError("MAXIS stage must be dev, internal-pilot, or prod.")
     raw = str(os.getenv(ALLOWED_HOSTS_ENV_NAMES[name]) or "").strip()
     if not raw:
+        if name == "internal-pilot":
+            raise DestinationPolicyError("Internal-pilot requires an explicit destination allowlist.")
         return DEFAULT_ALLOWED_HOSTS
     if len(raw) > 4096:
         raise DestinationPolicyError("MAXIS allowed-host environment value is too large.")
@@ -99,8 +102,8 @@ def canonical_maxis_api_base(
 ) -> str:
     """Canonicalize and authorize one Dify Service API base URL.
 
-    Dev/prod callers are allowlisted.  ``test`` exists solely for isolated transport
-    unit tests; production profiles have immutable dev/prod stages and cannot select it.
+    Runtime callers are allowlisted. ``test`` exists solely for isolated transport
+    unit tests; configured profiles have immutable stages and cannot select it.
     """
 
     raw = str(value or "").strip()
@@ -109,13 +112,13 @@ def canonical_maxis_api_base(
     if "\\" in raw or any(ord(character) <= 32 for character in raw):
         raise DestinationPolicyError("MAXIS Base URL contains invalid characters.")
     name = str(stage or "").strip().lower()
-    if name not in {"dev", "prod", "test"}:
-        raise DestinationPolicyError("MAXIS stage must be dev, prod, or test.")
+    if name not in {"dev", "internal-pilot", "prod", "test"}:
+        raise DestinationPolicyError("MAXIS stage must be dev, internal-pilot, prod, or test.")
     # Parse deployment policy before inspecting the destination.  A malformed
     # allowlist must disable the whole stage, including the dev loopback stub;
     # otherwise an operator typo could remain latent until a later remote call.
     deployment_hosts = (
-        allowed_hosts(name) if name in {"dev", "prod"} else frozenset()
+        allowed_hosts(name) if name != "test" else frozenset()
     )
     try:
         parsed = urlsplit(raw)
@@ -140,9 +143,9 @@ def canonical_maxis_api_base(
 
     host = parsed.hostname.lower()
     is_dev_stub = name == "dev" and host in DEV_LOOPBACK_HOSTS
-    if name == "prod" and host in DEV_LOOPBACK_HOSTS:
+    if name in {"internal-pilot", "prod"} and host in DEV_LOOPBACK_HOSTS:
         raise DestinationPolicyError(
-            "The prod MAXIS profile cannot target loopback.", policy=True,
+            f"The {name} MAXIS profile cannot target loopback.", policy=True,
         )
     if scheme != "https" and (
         require_https or (name != "test" and not is_dev_stub)
@@ -155,7 +158,7 @@ def canonical_maxis_api_base(
             "Remote MAXIS endpoints must use the default HTTPS port 443.", policy=True,
         )
 
-    if name in {"dev", "prod"} and not is_dev_stub:
+    if name != "test" and not is_dev_stub:
         try:
             ipaddress.ip_address(host)
         except ValueError:
@@ -178,7 +181,7 @@ def canonical_maxis_api_base(
     # Normalize an explicit allowlisted remote :443 to the same HTTPS origin.  The
     # isolated ``test`` transport retains whatever port its mock URL declared.
     normalize_remote_443 = (
-        name in {"dev", "prod"} and not is_dev_stub
+        name != "test" and not is_dev_stub
         and scheme == "https" and port == 443
     )
     if port is not None and not normalize_remote_443:
