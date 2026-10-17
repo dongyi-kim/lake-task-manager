@@ -197,6 +197,21 @@ def test_query_unit_does_not_receive_conflicting_remote_envelope_instructions(no
     assert "Echo input `knowledge_proof`" not in prompt
 
 
+def test_query_citation_instruction_names_the_exact_identifier_field(nodes, query_case):
+    prompt = nodes[QUERY_ID]["prompt_template"][0]["text"]
+    assert "context_pack.sources[].source_id" in prompt
+    assert "canonical_id" in prompt and "not a citation ID" in prompt
+    pack, model_input, candidate = query_case
+    selected = draft(candidate)
+    selected["payload"]["reads"][0]["source"]["source_ids"] = [pack.sources[0].canonical_id]
+    with pytest.raises(ValueError, match="invalid_core_query_draft"):
+        assemble(nodes, model_input, selected)
+    selected["payload"]["reads"][0]["source"]["source_ids"] = [pack.sources[0].source_id]
+    assembled = assemble(nodes, model_input, selected)
+    assert remote(nodes, pack, assembled) == assembled
+    assert local(pack, assembled)[0].status == "ok"
+
+
 @pytest.mark.parametrize("mask", range(16))
 def test_embedded_assembler_preserves_every_optional_field_omission(nodes, query_case, mask):
     pack, model_input, candidate = query_case
