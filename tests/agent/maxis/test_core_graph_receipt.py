@@ -17,13 +17,13 @@ SPEC.loader.exec_module(RECEIPT)
 def graph():
     value = yaml.safe_load((ROOT / "deploy/maxis-dify/dsl/ltm-agent-core.yml")
                            .read_text(encoding="utf-8"))["workflow"]["graph"]
-    assert len(value["nodes"]) == 16 and len(value["edges"]) == 17
+    assert len(value["nodes"]) == 17 and len(value["edges"]) == 19
     return value
 
 
 @pytest.mark.parametrize("change", (
     "classifier", "stage", "merge", "control_system", "control_input",
-    "semantic_input", "guard_input", "edge", "recovery",
+    "semantic_input", "guard_input", "edge", "recovery", "query_schema", "query_prompt",
 ))
 def test_core_receipt_detects_execution_changes(graph, change):
     altered = deepcopy(graph)
@@ -38,6 +38,10 @@ def test_core_receipt_detects_execution_changes(graph, change):
         node_id = "1909000000001004" if change == "semantic_input" else "1909000000001026"
         index = 0 if change == "control_system" else 1
         nodes[node_id]["prompt_template"][index]["text"] += " changed"
+    elif change == "query_schema":
+        nodes["1909000000001028"]["structured_output"]["schema"]["properties"]["payload"] = {"type": "object"}
+    elif change == "query_prompt":
+        nodes["1909000000001028"]["prompt_template"][0]["text"] += " changed"
     elif change == "guard_input":
         row = next(row for row in nodes["1909000000001005"]["variables"]
                    if row["variable"] == "candidate")

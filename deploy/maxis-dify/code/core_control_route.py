@@ -1,4 +1,4 @@
-"""Unwired, stdlib-only activation classifier; never an authorization decision.
+"""Stdlib-only Core unit classifier; never an authorization decision.
 
 The caller must supply Knowledge Guard's bounded model input after policy allow.
 This unit neither verifies policy/proof nor validates ordinary business evidence.
@@ -17,6 +17,10 @@ _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,119}")
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _UTC_TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z")
+# The pure graph builder appends the canonical CompactQueryPlan JSON and digest.
+# An unbound source cannot silently send query requests to the generic model.
+_QUERY_SCHEMA_JSON = None
+_QUERY_SCHEMA_SHA256 = None
 
 
 def _fail():
@@ -112,7 +116,7 @@ def _activation(incoming, pack):
 
 
 def main(model_input):
-    """Return only semantic/control; malformed reserved probes raise a safe error.
+    """Return semantic/control/query; malformed reserved inputs raise a safe error.
 
     No I/O, clock reads, mutation, evidence rewriting, or fallback repair. A semantic
     result says only 'not this activation'; all existing validation remains required.
@@ -128,6 +132,14 @@ def main(model_input):
         if not isinstance(pack, dict) or len(_canonical(pack).encode("utf-8")) > 6144:
             _fail()
         if not _reserved(pack):
+            if incoming["role_id"] == "query_specialist":
+                if (pack.get("use_case") != "query_specialist"
+                        or not isinstance(_QUERY_SCHEMA_JSON, str)
+                        or _digest(_QUERY_SCHEMA_JSON) != _QUERY_SCHEMA_SHA256
+                        or pack.get("payload_schema_json") != _QUERY_SCHEMA_JSON
+                        or pack.get("payload_schema_sha256") != _QUERY_SCHEMA_SHA256):
+                    _fail()
+                return {"route": "query"}
             return {"route": "semantic"}
         _activation(incoming, pack)
         return {"route": "control"}

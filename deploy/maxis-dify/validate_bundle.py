@@ -1065,7 +1065,7 @@ def _validate_dify_dsls(
         if editor_assembly:
             expected_node_counts["variable-aggregator"] = 2
         elif core_control:
-            expected_node_counts.update({"llm": 2, "code": 4, "if-else": 2, "variable-aggregator": 1})
+            expected_node_counts.update({"llm": 3, "code": 4, "if-else": 2, "variable-aggregator": 1})
         actual_node_counts = {
             key: len(value) for key, value in nodes_by_type.items()
         }
@@ -1389,7 +1389,8 @@ def _validate_dify_dsls(
                     root, nodes, checks=graph_checks, schema=workflow_dify_schema,
                     semantic_prompts=prompts, semantic_hashes=DIFY_PROMPT_SHA256[workflow_key],
                     model_provider=DIFY_MODEL_PROVIDER, max_tokens=output_token_limits[workflow_key],
-                    max_system_bytes=MAX_SYSTEM_PROMPT_UTF8_BYTES, error_type=BundleValidationError,
+                    max_system_bytes=MAX_SYSTEM_PROMPT_UTF8_BYTES,
+                    project=_dify_structured_output_schema, error_type=BundleValidationError,
                 )
             else:
                 graph_checks.validate_llm(

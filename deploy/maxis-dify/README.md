@@ -40,8 +40,9 @@ Editor의 `editor-draft-spec.v2`, `editor-writing.v1`, `editor-plan.v2`는 각�
 공통 흐름은 Start → release sentinel / Role ACL 검색 → Knowledge Guard → policy 분기 →
 검증된 입력의 LLM 처리 → Contract Guard → Answer다. policy deny는 LLM 없이 종료한다.
 
-- **Core:** 16노드·17엣지. 검증된 연결 검사와 일반 업무를 분류해 control/semantic 중 한 LLM
-  경로만 사용한다. 분류는 인증이나 근거 검증을 대신하지 않는다. [분류 계약](core-control-route.md).
+- **Core:** 17노드·19엣지. 검증된 연결 검사, canonical Query 계약, 일반 업무를 분류해
+  control/query/semantic 중 한 LLM 경로만 사용한다. Query는 기존 `query_specialist`의 typed
+  출력 단위이며 새 Role이 아니다. 분류는 인증이나 근거 검증을 대신하지 않는다. [분류 계약](core-control-route.md).
 - **PMO:** 12노드·12엣지. 결정적으로 계산된 LTM 수치와 검증된 근거를 해석한다.
   수치 집계의 정본은 LTM이며 모델이 Jira 상태를 추정하지 않는다.
 - **Editor:** 23노드·26엣지. 입력 투영 → 본문/댓글 선택 → DraftSpec 검증 → 문안 작성 →

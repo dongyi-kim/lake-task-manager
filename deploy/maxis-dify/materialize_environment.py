@@ -566,7 +566,7 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
     node_ids = [
         str(_mapping(node, "Dify node").get("id") or "") for node in nodes
     ]
-    expected_node_count = 23 if editor_assembly else 16 if core_control else 12
+    expected_node_count = 23 if editor_assembly else 17 if core_control else 12
     if (
         len(nodes) != expected_node_count
         or any(not node_id for node_id in node_ids)
@@ -1025,7 +1025,7 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
             answer_count += 1
     if (
         retrieval_count != 2 or sentinel_count != 1
-        or role_query_count != 1 or llm_count != (4 if editor_assembly else 2 if core_control else 1)
+        or role_query_count != 1 or llm_count != (4 if editor_assembly else 3 if core_control else 1)
         or knowledge_guard_count != 1 or contract_guard_count != 1
         or policy_branch_count != 1 or answer_count != 2
         or editor_assembler_count != int(editor_assembly)

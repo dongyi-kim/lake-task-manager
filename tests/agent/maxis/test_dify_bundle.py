@@ -88,8 +88,8 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
         is_editor = workflow["roles"] == ["editor_author"]
         is_core = "knowledge_curator" in workflow["roles"]
         nodes = dsl["workflow"]["graph"]["nodes"]
-        assert len(nodes) == (23 if is_editor else 16 if is_core else 12)
-        assert len(dsl["workflow"]["graph"]["edges"]) == (26 if is_editor else 17 if is_core else 12)
+        assert len(nodes) == (23 if is_editor else 17 if is_core else 12)
+        assert len(dsl["workflow"]["graph"]["edges"]) == (26 if is_editor else 19 if is_core else 12)
         assert sum(node["data"].get("title") == "Editor Assembler" for node in nodes) == int(is_editor)
         inputs = [node for node in nodes if node["data"].get("title") == "Editor Input"]
         assert len(inputs) == int(is_editor)
@@ -97,7 +97,7 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
             node for node in dsl["workflow"]["graph"]["nodes"]
             if node["data"]["type"] == "llm"
         ]
-        assert len(llms) == (4 if is_editor else 2 if is_core else 1)
+        assert len(llms) == (4 if is_editor else 3 if is_core else 1)
         knowledge_guard = next(
             node for node in dsl["workflow"]["graph"]["nodes"]
             if node["data"].get("title") == "Knowledge Guard"

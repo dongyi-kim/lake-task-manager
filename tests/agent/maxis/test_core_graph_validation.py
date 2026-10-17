@@ -43,7 +43,7 @@ def _reject_both(modules, raw):
     assert raw == before, "raw validation must precede every repair or deployment mutation"
 
 
-@pytest.mark.parametrize("title", ["Contract LLM", "Control LLM"])
+@pytest.mark.parametrize("title", ["Contract LLM", "Control LLM", "Query LLM"])
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("mutation", ["model", "system", "schema", "retry", "fallback", "memory", "vision",
                                       "context", "raw_user", "extra_prompt", "variables", "structured_disabled"])
@@ -121,7 +121,35 @@ def test_raw_core_route_merge_guards_and_topology_cannot_be_repaired(modules, ra
     _reject_both(modules, raw_source)
 
 
-@pytest.mark.parametrize("asset", ["code/core_control_route.py", "prompts/core_control.md"])
+@pytest.mark.parametrize("mutation", ["open_empty_branch", "string_boolean", "query_to_generic", "query_missing_merge"])
+def test_query_branch_cannot_weaken_types_or_bypass_its_selected_output(modules, raw_source, mutation):
+    nodes = _nodes(raw_source)
+    payload = nodes["Query LLM"]["structured_output"]["schema"]["properties"]["payload"]
+    if mutation == "open_empty_branch":
+        payload["anyOf"][0] = {"type": "object"}
+    elif mutation == "string_boolean":
+        payload["anyOf"][1]["properties"]["reads"]["items"]["properties"]["exhaustive"] = {"type": "string"}
+    elif mutation == "query_to_generic":
+        nodes["Core Stage"]["cases"][1]["conditions"][0]["value"] = "semantic"
+    else:
+        nodes["Core Candidate"]["variables"].pop()
+    _reject_both(modules, raw_source)
+
+
+def test_canonical_query_contract_change_requires_independent_review(modules, raw_source, monkeypatch):
+    from app.agent.workflow import contracts
+    original = contracts.role_output_schema
+
+    def changed(role):
+        schema = original(role)
+        schema["additionalProperties"] = True
+        return schema
+
+    monkeypatch.setattr(contracts, "role_output_schema", changed)
+    _reject_both(modules, raw_source)
+
+
+@pytest.mark.parametrize("asset", ["code/core_control_route.py", "prompts/core_control.md", "prompts/core_query.md"])
 def test_asset_and_embedded_content_cannot_drift_together(modules, raw_source, monkeypatch, asset):
     path = ROOT / "deploy/maxis-dify" / asset
     original = Path.read_text
@@ -132,7 +160,7 @@ def test_asset_and_embedded_content_cannot_drift_together(modules, raw_source, m
         nodes["Core Control Route"]["code"] = changed
     else:
         common = (ROOT / "deploy/maxis-dify/prompts/common.md").read_text(encoding="utf-8").strip()
-        nodes["Control LLM"]["prompt_template"][0]["text"] = common + "\n\n" + changed
+        nodes["Query LLM" if asset.endswith("core_query.md") else "Control LLM"]["prompt_template"][0]["text"] = common + "\n\n" + changed
     _reject_both(modules, raw_source)
 
 
@@ -177,7 +205,7 @@ def test_materializer_preflights_exact_raw_object_before_any_mutation(modules, r
     assert list(output.iterdir()) == [existing]
 
 
-def test_materialization_binds_both_models_independently_of_node_order(modules, raw_source):
+def test_materialization_binds_all_models_independently_of_node_order(modules, raw_source):
     materializer, validator = modules
     raw_source["workflow"]["graph"]["nodes"].reverse()
     raw_source["workflow"]["graph"]["edges"].reverse()
@@ -187,7 +215,7 @@ def test_materialization_binds_both_models_independently_of_node_order(modules, 
     environment["workflows"]["agent_core"]["app_name"] += " Target"
     _, result = materializer._materialize_dsl(environment, "agent_core")
     nodes = _nodes(result)
-    for title in ("Contract LLM", "Control LLM"):
+    for title in ("Contract LLM", "Control LLM", "Query LLM"):
         assert nodes[title]["model"]["name"] == "target-model"
         assert nodes[title]["context"]["variable_selector"] == ["1909000000001003", "result"]
         assert nodes[title]["prompt_template"][1]["text"].endswith("{{#1909000000001006.model_input#}}")
