@@ -26,7 +26,7 @@ ROUTE_SOURCE_PATH = "deploy/maxis-dify/code/core_control_route.py"
 ROUTE_SOURCE_SHA256 = "b0acefe215463bff0787243da2423057b009315f5504e91ffa544adf6fa79c09"
 CONTROL_SYSTEM_SHA256 = "7017b30253765eab4e41723de73a3d5014c1f5c2b820fedcbaab80cf08ddae60"
 QUERY_SYSTEM_SHA256 = "cff3721d2cd166d5405c28127d381b37b727fb56fd1771031644364336812b8e"
-QUERY_SCHEMA_SHA256 = "663a6991292021411241d45807b4598f681a8de92dca3b229498c03d2651752e"
+QUERY_SCHEMA_SHA256 = "c68785368d2887b492d06383844c3ac14fc3b5628e4bf11146a9bc24394a9d7a"
 _BASE_NODES = {
     "start": ("시작", "start"), "answer": ("Allowed Answer", "answer"),
     "denied_answer": ("Denied Answer", "answer"),
@@ -73,9 +73,17 @@ def query_assets(root: Path, project) -> dict:
     remote = json.loads((root / "deploy/maxis-dify/contracts/remote-role-result.schema.json").read_text(encoding="utf-8"))
     native = project(remote)
     native["properties"]["role_id"] = {"enum": ["query_specialist"]}
+    payload = project(json.loads(schema_json))
+    exhaustive = payload["properties"]["reads"]["items"]["properties"]["exhaustive"]
+    # Dify 1.11.1's native preparation rewrites type:boolean to type:string.
+    # Preserve the exact JSON boolean domain, without repairing model output.
+    # Reject new canonical restrictions rather than silently broadening them.
+    if exhaustive != {"type": "boolean"}:
+        raise ValueError("Query exhaustive boolean schema requires review")
+    payload["properties"]["reads"]["items"]["properties"]["exhaustive"] = {"enum": [False, True]}
     native["properties"]["payload"] = {"anyOf": [
         {"type": "object", "additionalProperties": False, "maxProperties": 0},
-        project(json.loads(schema_json)),
+        payload,
     ]}
     directory = root / "deploy/maxis-dify/prompts"
     prompt = "\n\n".join(directory.joinpath(name).read_text(encoding="utf-8").strip()

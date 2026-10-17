@@ -41,6 +41,12 @@ Query native payload는 strict empty object와 canonical CompactQueryPlan의 `an
 정본의 local reference를 먼저 해소하고 envelope에 삽입하며 문자열 boolean을 변환하지 않는다.
 `needs_input`/`blocked`의 빈 payload는 유지한다. source/claim/binding의 의미 검증은 기존 양쪽
 guard가 그대로 수행한다. native 형식 준수는 의미 품질이나 근거 통과의 증명이 아니다.
+Query의 native `exhaustive`만 `enum: [false, true]`로 표현한다. 이는
+[Dify 1.11.1의 boolean→string schema 변환](https://github.com/langgenius/dify/blob/1.11.1/api/core/llm_generator/output_parser/structured_output.py#L307-L378)을
+거쳐도 JSON boolean domain을 유지하기 위한 호환 표현이다. LTM 정본 schema/hash와 입력·출력
+guard는 그대로이며 문자열·숫자를 boolean으로 변환하지 않는다. 정본에 추가 제약이 생기면
+표현을 임의로 넓히지 않고 재검토를 요구한다. 실제 서버의 동일 구현·provider 수용 여부와
+의미 품질은 별도 실측 대상이며 `structured_output` 포트 존재만으로 타입 검증을 신뢰하지 않는다.
 모델 output은 4,096 tokens, 각 system prompt는 최대 8,192 UTF-8 bytes로 유지한다.
 
 빌더는 배포 검증기가 아니다. 원본을 생성기로 먼저 수리하지 않는다.

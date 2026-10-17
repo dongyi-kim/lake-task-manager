@@ -2291,7 +2291,9 @@ workflow:
                         additionalProperties: false
                         properties:
                           exhaustive:
-                            type: boolean
+                            enum:
+                            - false
+                            - true
                           source:
                             enum:
                             - jira

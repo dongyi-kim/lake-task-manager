@@ -208,6 +208,21 @@ def test_pins_cover_canonical_source_and_complete_common_control_message():
     assert _nodes(_build())["1909000000001026"]["data"]["prompt_template"][0]["text"] == assets["control_system_prompt"]
 
 
+@pytest.mark.parametrize("restriction", [{"const": False}, {"enum": [True]}, {"type": ["boolean"]}])
+def test_boolean_projection_never_broadens_new_canonical_constraints(monkeypatch, restriction):
+    from app.agent.workflow import contracts
+    original = contracts.role_output_schema
+
+    def changed(role):
+        schema = original(role)
+        schema["$defs"]["QueryIntent"]["properties"]["exhaustive"].update(restriction)
+        return schema
+
+    monkeypatch.setattr(contracts, "role_output_schema", changed)
+    with pytest.raises(ValueError, match="exhaustive boolean schema requires review"):
+        GRAPH.reviewed_assets(ROOT)
+
+
 def test_actual_factory_and_knowledge_guard_drive_embedded_classifier_only():
     dsl = _build()
     nodes = _nodes(dsl)

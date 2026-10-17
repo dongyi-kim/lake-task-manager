@@ -121,7 +121,7 @@ def test_raw_core_route_merge_guards_and_topology_cannot_be_repaired(modules, ra
     _reject_both(modules, raw_source)
 
 
-@pytest.mark.parametrize("mutation", ["open_empty_branch", "string_boolean", "query_to_generic", "query_missing_merge"])
+@pytest.mark.parametrize("mutation", ["open_empty_branch", "string_boolean", "boolean_enum_number", "query_to_generic", "query_missing_merge"])
 def test_query_branch_cannot_weaken_types_or_bypass_its_selected_output(modules, raw_source, mutation):
     nodes = _nodes(raw_source)
     payload = nodes["Query LLM"]["structured_output"]["schema"]["properties"]["payload"]
@@ -129,6 +129,8 @@ def test_query_branch_cannot_weaken_types_or_bypass_its_selected_output(modules,
         payload["anyOf"][0] = {"type": "object"}
     elif mutation == "string_boolean":
         payload["anyOf"][1]["properties"]["reads"]["items"]["properties"]["exhaustive"] = {"type": "string"}
+    elif mutation == "boolean_enum_number":
+        payload["anyOf"][1]["properties"]["reads"]["items"]["properties"]["exhaustive"] = {"enum": [0, 1]}
     elif mutation == "query_to_generic":
         nodes["Core Stage"]["cases"][1]["conditions"][0]["value"] = "semantic"
     else:

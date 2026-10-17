@@ -91,7 +91,7 @@ def test_query_native_contract_is_resolved_and_both_guards_accept_complete_candi
     assert result.status == "ok" and payload.reads[0].exhaustive is True
 
 
-@pytest.mark.parametrize("bad", ["true", "false", 1, None])
+@pytest.mark.parametrize("bad", ["true", "false", "TRUE", 0, 1, None])
 def test_query_native_schema_and_both_guards_reject_non_boolean_without_coercion(nodes, query_case, bad):
     pack, _, candidate = query_case
     candidate["payload"]["reads"][0]["exhaustive"] = bad
@@ -101,6 +101,24 @@ def test_query_native_schema_and_both_guards_reject_non_boolean_without_coercion
     with pytest.raises(ResponseGuardError):
         local(pack, candidate)
     assert candidate == before
+
+
+@pytest.mark.parametrize("value", [False, True])
+def test_query_boolean_domain_survives_dify_native_schema_preparation(nodes, query_case, value):
+    # Dify 1.11.1 structured_output.py::convert_boolean_to_string rewrites type
+    # declarations recursively before the native call, but not boolean enum values.
+    # Simulate that documented transformation, not an assumed provider response.
+    schema = nodes[QUERY_ID]["structured_output"]["schema"]
+    transformed = json.loads(encoded(schema), object_hook=lambda row:
+        {**row, "type": "string"} if row.get("type") == "boolean" else row)
+    assert transformed == schema
+    pack, _, candidate = query_case
+    candidate["payload"]["reads"][0]["exhaustive"] = value
+    Draft202012Validator(transformed).validate(candidate)
+    assert remote(nodes, pack, candidate) == candidate
+    assert local(pack, candidate)[1].reads[0].exhaustive is value
+    canonical = json.loads(pack.payload_schema_json)
+    assert canonical["$defs"]["QueryIntent"]["properties"]["exhaustive"]["type"] == "boolean"
 
 
 @pytest.mark.parametrize("status", ["blocked", "needs_input"])
