@@ -84,8 +84,11 @@ python deploy/maxis-dify/taskflow_synthetic/bundle.py --output .cache/maxis/synt
   실제 Node 등록, 내부 데이터 적용, 전체 성능 향상을 증명하지 않는다.
 
 [실서버 실행 기록](../../../research/agent-improvement/evaluations/2026-10-17-maxis-native-synthetic-capability.md)에
-생성 자산과 두 실패를 구분해 남겼다. 공유 모델 옵션 변경은 13개 LTM 앱에 영향을 줄 수 있어
-안전 검토에서 차단되었으며 미실행이다. 해당 범위의 명시적 승인 전에는 재시도하거나 우회하지 않는다.
+생성 자산과 두 실패를 구분해 남겼다. 최초 공유 옵션 변경은 13개 LTM 앱 영향 때문에 실행 전
+차단됐으나, 이후 사용자의 범위 승인을 받았다. 승인된 동일 credential의 한 필드 변경 요청은
+서버 credential validation에 실패하여 현재도 `no_call`이다. 승인 대기가 현재 차단 원인은 아니다.
+명시적 credential ID 조회와 기본 credential 조회의 불일치는 운영자가 비밀을 제외한 연결 metadata로
+확인해야 한다. credential 만료로 단정하거나 새 키 생성·검증 우회·변경 요청 반복으로 해결하지 않는다.
 
 공식 구현 근거: [Agent schema](https://raw.githubusercontent.com/langgenius/dify/1.11.1/api/core/workflow/nodes/agent/entities.py),
 [Agent parameter binding](https://raw.githubusercontent.com/langgenius/dify/1.11.1/api/core/workflow/nodes/agent/agent_node.py),

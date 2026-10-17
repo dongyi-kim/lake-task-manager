@@ -7,8 +7,9 @@
 
 현재 공유 모델의 `function_calling_type=no_call` 설정을 확인했다. Function Calling Agent가
 도구 없이 답한 현상과 부합하는 구체적인 설정 결함이다. 설정 교정 전후 재검증은 아직 못 했으므로
-유일한 원인 또는 교정만으로 해결된다고 단정하지 않는다. 공유 설정 변경은 자동 안전 검토에서
-차단되었고 **실행되지 않았다**. 13개 LTM 앱에 공통 적용될 수 있는 변경 범위에 대한 승인이 필요하다.
+유일한 원인 또는 교정만으로 해결된다고 단정하지 않는다. 최초 공유 설정 변경은 자동 안전 검토에서
+차단되어 실행되지 않았다. **후속 범위 승인은 완료됐지만 승인된 PUT는 credential validation에
+실패하여 옵션은 `no_call`로 유지**됐다. 아래 최초 점검 기록과 후속 상태를 구분한다.
 
 이 문서는 플랫폼 기능 점검 기록이며 정식 품질 배터리 평가서가 아니다. 아래의 성공은 고정 합성
 입력 1회에 한정한다. 업무 완료율·성능 개선율·모델 간 우열·production 적합성을 뜻하지 않는다.
@@ -95,11 +96,20 @@ run: `496b300f-dfb5-4571-b2e2-e8c51d21acb7`.
 [SDK 설정 처리](https://raw.githubusercontent.com/langgenius/dify-plugin-sdks/main/src/dify_plugin/interfaces/model/openai_compatible/llm.py).
 
 준비한 변경은 같은 credential ID·키·endpoint·모델을 유지하고 해당 옵션만 `tool_call`로 바꾸는
-것이었다. **실행 전 안전 검토가 거부하여 요청 자체가 발송되지 않았다.** 공유 모델 설정으로
-영향을 받을 수 있는 앱 13개를 범위로 명시해 승인받은 뒤에만 재시도한다. 다른 credential 생성이나
-간접 호출로 이 제한을 우회하지 않는다. 승인 전까지 현재 `no_call` 상태를 유지한다.
+것이었다. 최초에는 **실행 전 안전 검토가 거부하여 요청 자체가 발송되지 않았다.** 이후 공유 모델
+설정으로 영향받을 수 있는 앱 13개 범위에 대해 사용자가 승인했다. 승인된 PUT 두 시도는 HTTP 400
+credential validation(상위 인증 검사 401)으로 실패했고, read-back의 옵션은 `no_call`이었다.
+이 실패는 credential 만료를 확정하는 증거가 아니다.
 
-승인 후 순서: 비밀 없는 옵션 read-back → 한 필드 교정 → 새 run group에서 실제 3개 tool CALL 및
+추가 읽기 전용 확인에서 기본 credential 조회는 현재 ID로 성공했으나 동일 ID를 명시한 조회는
+`credential not found`였다. custom model 목록의 연결 ID는 같고 available credential 목록은
+비어 있었다. 모델/credential metadata 연결 불일치가 유력하나 서버 DB·배포 버전을 확인하지
+못했으므로 원인을 확정하지 않는다. 현재 차단은 사용자 승인 부재가 아니라 서버 조회/검증 불일치다.
+운영자가 tenant·provider·model·model type·연결 ID와 migration/version을 확인해야 한다.
+키나 encrypted config 공개, 새 credential 생성, 검증 우회 또는 동일 PUT 반복은 하지 않았다.
+
+운영자 교정 후 순서: 명시적 ID 조회 성공과 동일 identity 확인 → 비밀 없는 옵션 read-back →
+정상 검증을 거친 한 필드 교정 → 새 run group에서 실제 3개 tool CALL 및
 source 반환 확인 → 기존 Core/Editor/PMO 회귀 → 원치 않는 영향이 있으면 원래 옵션 복원.
 설정 저장 자체의 provider 검증 호출 수·비용도 미확인이므로 0으로 기록하지 않는다.
 
@@ -148,5 +158,7 @@ raw는 다음 ignored 경로에 원본 그대로 보존한다. Git에는 이 요
 - `.cache/agent-evaluation/maxis-native-synthetic-20261017-function-calling/` — Function Calling JSON 1개.
 
 과거 [Role component 진단](maxis-role-component-20261008-eligibility.md)은 비교 조건이 달라
-증감 기준선으로 쓰지 않는다. 다음 단계는 공유 모델 옵션 변경 승인과 기능 재검증이며, 그 후
-TaskFlow 부모·MAXIS wrapper·사용자 session을 연결하고 정식 업무 배터리를 수행한다.
+증감 기준선으로 쓰지 않는다. 다음 단계는 공유 모델 credential 조회 불일치 교정과 기능 재검증이다.
+후속 [component baseline 직접 평가](maxis-component-baseline-20261017.md)는 별도의 고정 입력
+16건이며 이 native canary의 재실행이 아니다. 로컬 session preview 연결은 별도 구현으로 진행하되,
+TaskFlow 부모·MAXIS wrapper 게시·운영 활성화·정식 업무 배터리 완료로 해석하지 않는다.
