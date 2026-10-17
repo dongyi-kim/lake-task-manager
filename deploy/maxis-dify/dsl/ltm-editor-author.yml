@@ -3011,7 +3011,7 @@ workflow:
             \ If it cannot be parsed or followed exactly, return empty `blocked`.\n\
             \nNever reveal whole Knowledge chunks or treat policy as narrative evidence.\n\
             \n## Required response\n\nReturn one JSON object and no Markdown or prose\
-            \ around it.  It must validate against\n`remote-role-result.v1.schema.json`,\
+            \ around it.  It must validate against\n`remote-role-result.schema.json`,\
             \ including `additionalProperties: false`.\n\n- Echo `role_id`, `workflow_version`,\
             \ and `knowledge_version` exactly.\n- Do not emit `correlation_id`; it\
             \ is input-only.\n- Echo `context_pack.knowledge_manifest_sha256` exactly\

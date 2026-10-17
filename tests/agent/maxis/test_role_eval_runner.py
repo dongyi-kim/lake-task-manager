@@ -339,7 +339,7 @@ def _run_setup(runner, monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "_preflight", lambda: (profile, {"knowledge_manifest_sha256": MANIFEST}, None, None))
     monkeypatch.setattr(runner, "_binding_unchanged", lambda *a: True)
     monkeypatch.setattr(runner, "ROOT", tmp_path)
-    config = tmp_path / "deploy/maxis-dify/environments/dev-2026.09.yml"
+    config = tmp_path / "deploy/maxis-dify/environments/dev.yml"
     config.parent.mkdir(parents=True)
     config.write_text("model:\n  name: synthetic-test-model\n", encoding="utf-8")
     monkeypatch.setattr(runner, "source_binding", lambda: {key: "c" * 64 for key in runner.HARNESS_FILES})

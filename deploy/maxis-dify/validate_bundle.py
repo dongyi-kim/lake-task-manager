@@ -86,11 +86,11 @@ ROLE_METADATA_CONDITION_IDS = {
 # file and DSL is deliberately insufficient without this explicit review step.
 DIFY_PROMPT_SHA256 = {
     "agent_core": {
-        "system": "e487d58797ef2165178b079c65e1effaea3c75d994d2a74655aff2522a6c9e33",
+        "system": "6fd0c5b0bd2efd03f647e21d6de67748348706e3e26947305e025940db529df7",
         "user": "d45a2fc4c15eb03e587937fef35f5fef7ff930e5b994860d8b33e44cf2d38f15",
     },
     "pmo_brief": {
-        "system": "cc5abe43fdad9f31de282d926404f50758a5a12d122c71719ab562a1fdd61af0",
+        "system": "2cdbf000b2c706d7ac37453706944cf7399f027631dee62d5ff7726d62a1d714",
         "user": "d45a2fc4c15eb03e587937fef35f5fef7ff930e5b994860d8b33e44cf2d38f15",
     },
 }
@@ -829,7 +829,7 @@ def _validate_dify_dsls(
         bundle.get("llm_output_token_limits"), "llm_output_token_limits"
     )
     environment = _load_yaml(
-        root / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+        root / "deploy" / "maxis-dify" / "environments" / "dev.yml"
     )
     environment_knowledge = _mapping(
         environment.get("knowledge"), "dev environment Knowledge binding"

@@ -25,7 +25,7 @@ encoded = HELPER.canonical
 
 
 def nodes():
-    graph = yaml.safe_load((DEPLOY / "dsl/ltm-editor-author-2026.09.yml").read_text(encoding="utf-8"))["workflow"]["graph"]
+    graph = yaml.safe_load((DEPLOY / "dsl/ltm-editor-author.yml").read_text(encoding="utf-8"))["workflow"]["graph"]
     return {row["data"]["title"]: row["data"] for row in graph["nodes"]}
 
 

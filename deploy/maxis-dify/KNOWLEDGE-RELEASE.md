@@ -20,7 +20,7 @@
 
 - Policy/design: heading 계층·코드 fence를 보존한다. 한 섹션이 제한을 넘으면 조용히
   자르지 않고 실패하므로, 사람이 의미 단위를 재구성해야 한다.
-- Glossary: 기존 `glossary.v1.json` 형식 그대로 사용한다. 정의·상태·주의사항·모든 출처를
+- Glossary: 기존 `glossary.json` 형식 그대로 사용한다. 정의·상태·주의사항·모든 출처를
   하나의 청크로 유지한다. 별칭 충돌은 오류로 숨기지 않고 조회 시 `ambiguous`로 반환한다.
 - Source 및 청크 hash·revision이 후보 hash에 결속된다. upstream repository/path/URL은
   출처 표시일 뿐 자동으로 파일을 열거나 네트워크로 조회하지 않는다.

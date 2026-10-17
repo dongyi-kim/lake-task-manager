@@ -41,7 +41,7 @@ def raw_case(request, modules, monkeypatch):
 def _entrypoints(modules, workflow):
     materializer, validator = modules
     environment = materializer.load_environment(
-        ROOT / "deploy/maxis-dify/environments/dev-2026.09.yml")
+        ROOT / "deploy/maxis-dify/environments/dev.yml")
     return [
         (lambda: validator.validate_bundle(ROOT), validator.BundleValidationError),
         (lambda: materializer._materialize_dsl(environment, workflow),

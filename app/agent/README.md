@@ -27,7 +27,7 @@ Epic/Story/Sub-Task 트리를 만든다. 모든 쓰기는 **사용자 승인 후
   **maxis/taskflow_session.py**는 session 소유 preview 수명과 기존 QueryRunner 조회를 연결한다.
   실제 서버 통제 verifier가 없어 기본 composition은 비활성이고 HTTP/UI 실행 진입점은 없다.
   preview 결과는 graph draft/승인으로 채택하지 않으며 기존 route·쓰기 권한을 변경하지 않는다.
-  [TaskFlow 계약과 활성화 전 조건](../../deploy/maxis-dify/taskflow-v1.md)을 참고한다.
+  [TaskFlow 계약과 활성화 전 조건](../../deploy/maxis-dify/taskflow.md)을 참고한다.
 
 ## MAXIS Work 입력 근거
 

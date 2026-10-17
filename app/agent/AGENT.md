@@ -191,7 +191,7 @@ LLM 호출은 반드시 `Role → Task Profile → Model Profile → Capability 
   tests/agent/core/test_agent_graph.py `
   tests/agent/core/test_agent_grounding.py `
   tests/agent/core/test_agent_compose.py `
-  tests/agent/core/test_agent_query_v2.py `
+  tests/agent/core/test_agent_query.py `
   tests/agent/core/test_agent_tools.py `
   tests/jira/tickets/test_ticket_actions.py
 ```

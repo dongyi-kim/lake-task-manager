@@ -166,7 +166,7 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
     response_schema = json.loads(
         (
             ROOT / "deploy" / "maxis-dify" / "contracts"
-            / "remote-role-result.v1.schema.json"
+            / "remote-role-result.schema.json"
         ).read_text(encoding="utf-8")
     )
     assert "correlation_id" not in response_schema["properties"]
@@ -231,7 +231,7 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
 def test_validator_pins_editor_assembler_source_and_contract(tmp_path, mutation):
     validator = _validator_module()
     target = _copy_bundle_repository(tmp_path)
-    path = target / "deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml"
+    path = target / "deploy/maxis-dify/dsl/ltm-editor-author.yml"
     dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
     assembler = next(node["data"] for node in dsl["workflow"]["graph"]["nodes"]
                      if node["data"].get("title") == "Editor Assembler")
@@ -261,7 +261,7 @@ def test_validator_rejects_joint_editor_assembler_asset_and_dsl_tampering(tmp_pa
     asset = target / "deploy/maxis-dify/code/editor_assembler.py"
     source = asset.read_text(encoding="utf-8").rstrip() + "\n# unreviewed assembly"
     asset.write_text(source, encoding="utf-8")
-    path = target / "deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml"
+    path = target / "deploy/maxis-dify/dsl/ltm-editor-author.yml"
     dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
     next(node["data"] for node in dsl["workflow"]["graph"]["nodes"]
          if node["data"].get("title") == "Editor Assembler")["code"] = source
@@ -273,7 +273,7 @@ def test_validator_rejects_joint_editor_assembler_asset_and_dsl_tampering(tmp_pa
 def test_validator_rejects_editor_assembler_candidate_bypass(tmp_path):
     validator = _validator_module()
     target = _copy_bundle_repository(tmp_path)
-    path = target / "deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml"
+    path = target / "deploy/maxis-dify/dsl/ltm-editor-author.yml"
     dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
     nodes = dsl["workflow"]["graph"]["nodes"]
     llm_id = next(node["id"] for node in nodes if node["data"].get("type") == "llm")
@@ -292,11 +292,11 @@ def test_validator_forbids_assembler_in_other_workflows(tmp_path, workflow_key, 
     validator = _validator_module()
     target = _copy_bundle_repository(tmp_path)
     directory = target / "deploy/maxis-dify/dsl"
-    editor = yaml.safe_load((directory / "ltm-editor-author-2026.09.yml").read_text(encoding="utf-8"))
+    editor = yaml.safe_load((directory / "ltm-editor-author.yml").read_text(encoding="utf-8"))
     node = next(row for row in editor["workflow"]["graph"]["nodes"]
                 if row["data"].get("title") == node_title)
-    path = directory / ("ltm-agent-core-2026.09.yml" if workflow_key == "agent_core"
-                        else "ltm-pmo-brief-2026.09.yml")
+    path = directory / ("ltm-agent-core.yml" if workflow_key == "agent_core"
+                        else "ltm-pmo-brief.yml")
     dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
     node["position"] = {"x": 90000, "y": 90000}
     node["positionAbsolute"] = dict(node["position"])
@@ -309,7 +309,7 @@ def test_validator_forbids_assembler_in_other_workflows(tmp_path, workflow_key, 
 def test_validator_rejects_editor_assembler_edge_bypass(tmp_path):
     validator = _validator_module()
     target = _copy_bundle_repository(tmp_path)
-    path = target / "deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml"
+    path = target / "deploy/maxis-dify/dsl/ltm-editor-author.yml"
     dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
     graph = dsl["workflow"]["graph"]
     llm = next(node for node in graph["nodes"] if node["data"].get("type") == "llm")
@@ -329,7 +329,7 @@ def test_validator_rejects_editor_assembler_edge_bypass(tmp_path):
 def test_validator_pins_editor_input_projection_contract(tmp_path, mutation):
     validator = _validator_module()
     target = _copy_bundle_repository(tmp_path)
-    path = target / "deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml"
+    path = target / "deploy/maxis-dify/dsl/ltm-editor-author.yml"
     dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
     node = next(row for row in dsl["workflow"]["graph"]["nodes"]
                 if row["data"].get("title") == "Editor Input")
@@ -369,7 +369,7 @@ def test_validator_pins_editor_input_projection_contract(tmp_path, mutation):
 def test_validator_keeps_editor_guards_bound_to_original_pack(tmp_path, target_title):
     validator = _validator_module()
     target = _copy_bundle_repository(tmp_path)
-    path = target / "deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml"
+    path = target / "deploy/maxis-dify/dsl/ltm-editor-author.yml"
     dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
     data = next(node["data"] for node in dsl["workflow"]["graph"]["nodes"]
                 if node["data"].get("title") == target_title)
@@ -384,7 +384,7 @@ def test_validator_keeps_editor_guards_bound_to_original_pack(tmp_path, target_t
 def test_validator_rejects_editor_input_control_flow_bypass(tmp_path):
     validator = _validator_module()
     target = _copy_bundle_repository(tmp_path)
-    path = target / "deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml"
+    path = target / "deploy/maxis-dify/dsl/ltm-editor-author.yml"
     dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
     graph = dsl["workflow"]["graph"]
     llm = next(node for node in graph["nodes"] if node["data"]["type"] == "llm")
@@ -400,7 +400,7 @@ def test_validator_rejects_editor_input_control_flow_bypass(tmp_path):
 def test_validator_rejects_editor_input_user_prompt_bypass(tmp_path):
     validator = _validator_module()
     target = _copy_bundle_repository(tmp_path)
-    path = target / "deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml"
+    path = target / "deploy/maxis-dify/dsl/ltm-editor-author.yml"
     dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
     nodes = dsl["workflow"]["graph"]["nodes"]
     guard_id = next(node["id"] for node in nodes if node["data"].get("title") == "Knowledge Guard")
@@ -416,7 +416,7 @@ def test_validator_rejects_editor_input_user_prompt_bypass(tmp_path):
 
 def _reviewed_editor_writing_schema(branch="comment", root=ROOT):
     validator = _validator_module()
-    response = json.loads((root / "deploy/maxis-dify/contracts/remote-role-result.v1.schema.json")
+    response = json.loads((root / "deploy/maxis-dify/contracts/remote-role-result.schema.json")
                           .read_text(encoding="utf-8"))
     spec, _ = validator._editor_graph_modules(root)
     return spec.branch_schema(root, branch, response, validator._dify_structured_output_schema)
@@ -428,7 +428,7 @@ def test_validator_checks_every_editor_branch_not_only_first_llm(tmp_path, branc
     validator = _validator_module()
     target = _copy_bundle_repository(tmp_path)
     spec, _ = validator._editor_graph_modules(target)
-    path = target / "deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml"
+    path = target / "deploy/maxis-dify/dsl/ltm-editor-author.yml"
     dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
     data = next(node["data"] for node in dsl["workflow"]["graph"]["nodes"]
                 if node["id"] == spec.BRANCH_NODE_IDS[branch])
@@ -454,7 +454,7 @@ def test_validator_closes_editor_routing_and_merge_bindings(tmp_path, mutation):
     validator = _validator_module()
     target = _copy_bundle_repository(tmp_path)
     spec, _ = validator._editor_graph_modules(target)
-    path = target / "deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml"
+    path = target / "deploy/maxis-dify/dsl/ltm-editor-author.yml"
     dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
     nodes = {node["id"]: node["data"] for node in dsl["workflow"]["graph"]["nodes"]}
     if mutation.startswith("route_"):
@@ -528,7 +528,7 @@ def test_editor_writing_schema_rejects_unbounded_or_invented_block_fields(block)
         })
 
 
-@pytest.mark.parametrize("contract,label", [("editor-plan.v2", "plan"), ("editor-writing.v1", "writing")])
+@pytest.mark.parametrize("contract,label", [("editor-plan", "plan"), ("editor-writing", "writing")])
 def test_editor_schema_requires_reviewed_asset_even_if_dsl_would_match(tmp_path, contract, label):
     validator = _validator_module()
     target = _copy_bundle_repository(tmp_path)
@@ -549,7 +549,7 @@ def test_editor_writing_schema_rejects_empty_or_unbounded_section(block_count):
 
 
 def test_original_assembler_plan_schema_remains_unchanged_and_accepts_compiled_links():
-    schema = json.loads((ROOT / "deploy/maxis-dify/contracts/editor-plan.v2.schema.json").read_text(encoding="utf-8"))
+    schema = json.loads((ROOT / "deploy/maxis-dify/contracts/editor-plan.schema.json").read_text(encoding="utf-8"))
     encoded = json.dumps(schema, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     assert hashlib.sha256(encoded.encode("utf-8")).hexdigest() == "3eff157b515bad585b5a08b69484c23f027e2d4c3f3c415f7476540c6561b22e"
     validator_for(schema)(schema).validate({"contract": "editor-plan.v2", "status": "ok", "missing_inputs": [],
@@ -755,7 +755,7 @@ def test_validator_rejects_dify_dsl_start_control_drift(tmp_path):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-agent-core-2026.09.yml"
+        / "ltm-agent-core.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     start = next(
@@ -796,7 +796,7 @@ def test_validator_requires_dify_retriever_resource_feature(tmp_path):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-agent-core-2026.09.yml"
+        / "ltm-agent-core.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     dsl["workflow"]["features"]["retriever_resource"]["enabled"] = False
@@ -817,7 +817,7 @@ def test_validator_rejects_dify_dsl_missing_runtime_prompt_binding(tmp_path):
     _sync_copied_contract_guard(target)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-pmo-brief-2026.09.yml"
+        / "ltm-pmo-brief.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     llm = next(
@@ -899,7 +899,7 @@ def test_validator_rejects_an_assistant_prompt_message(tmp_path):
     _sync_copied_contract_guard(target)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-agent-core-2026.09.yml"
+        / "ltm-agent-core.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     llm = next(
@@ -928,7 +928,7 @@ def test_validator_rejects_an_extra_system_instruction(tmp_path):
     _sync_copied_contract_guard(target)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-editor-author-2026.09.yml"
+        / "ltm-editor-author.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     llm = next(
@@ -965,7 +965,7 @@ def test_validator_requires_a_reviewed_hash_when_prompt_source_and_dsl_match(tmp
 
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-pmo-brief-2026.09.yml"
+        / "ltm-pmo-brief.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     llm = next(
@@ -996,7 +996,7 @@ def test_validator_rejects_dify_dsl_knowledge_or_edge_drift(tmp_path):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-editor-author-2026.09.yml"
+        / "ltm-editor-author.yml"
     )
     original = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     role_knowledge = next(
@@ -1015,7 +1015,7 @@ def test_validator_rejects_dify_dsl_knowledge_or_edge_drift(tmp_path):
     original = yaml.safe_load(
         (
             ROOT / "deploy" / "maxis-dify" / "dsl"
-            / "ltm-editor-author-2026.09.yml"
+            / "ltm-editor-author.yml"
         ).read_text(encoding="utf-8")
     )
     original["workflow"]["graph"]["edges"].pop()
@@ -1032,7 +1032,7 @@ def test_validator_rejects_legacy_start_sys_query_selector(tmp_path):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-agent-core-2026.09.yml"
+        / "ltm-agent-core.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     role_knowledge = next(
@@ -1081,7 +1081,7 @@ def test_validator_requires_bounded_role_knowledge_retrieval_policy(
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-agent-core-2026.09.yml"
+        / "ltm-agent-core.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     role_knowledge = next(
@@ -1105,7 +1105,7 @@ def test_validator_rejects_maxis_custom_retrieval_extension_fields(tmp_path):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-agent-core-2026.09.yml"
+        / "ltm-agent-core.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     role_knowledge = next(
@@ -1138,7 +1138,7 @@ def test_validator_requires_guarded_role_knowledge_llm_retrieval_context(
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-agent-core-2026.09.yml"
+        / "ltm-agent-core.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     llm = next(
@@ -1163,7 +1163,7 @@ def test_validator_rejects_implicit_sys_query_memory_binding(tmp_path):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-agent-core-2026.09.yml"
+        / "ltm-agent-core.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     llm = next(
@@ -1188,7 +1188,7 @@ def test_validator_requires_pinned_llm_completion_params(tmp_path, field, value)
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-pmo-brief-2026.09.yml"
+        / "ltm-pmo-brief.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     llm = next(
@@ -1212,7 +1212,7 @@ def test_validator_requires_single_model_input_selector_in_llm_user_prompt(tmp_p
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-agent-core-2026.09.yml"
+        / "ltm-agent-core.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     llm = next(
@@ -1240,8 +1240,8 @@ def test_validator_rejects_dify_structured_output_schema_drift(tmp_path, workflo
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / ("ltm-agent-core-2026.09.yml" if workflow_key == "agent_core"
-           else "ltm-editor-author-2026.09.yml")
+        / ("ltm-agent-core.yml" if workflow_key == "agent_core"
+           else "ltm-editor-author.yml")
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     llm = next(
@@ -1268,7 +1268,7 @@ def test_validator_requires_contract_guard_answer_binding(tmp_path):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-pmo-brief-2026.09.yml"
+        / "ltm-pmo-brief.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     llm = next(
@@ -1295,7 +1295,7 @@ def test_validator_requires_guarded_denied_answer_binding(tmp_path):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-pmo-brief-2026.09.yml"
+        / "ltm-pmo-brief.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     denied = next(
@@ -1316,7 +1316,7 @@ def test_validator_requires_server_side_role_metadata_acl_filter(tmp_path):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-agent-core-2026.09.yml"
+        / "ltm-agent-core.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     role_knowledge = next(
@@ -1353,7 +1353,7 @@ def test_validator_rejects_role_metadata_acl_condition_drift(
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-agent-core-2026.09.yml"
+        / "ltm-agent-core.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     role_knowledge = next(
@@ -1390,7 +1390,7 @@ def test_validator_requires_dify_111_role_acl_key_transform(
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-agent-core-2026.09.yml"
+        / "ltm-agent-core.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     role_acl_key = next(
@@ -1414,7 +1414,7 @@ def test_validator_rejects_role_acl_key_dependency_bypass(tmp_path):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-agent-core-2026.09.yml"
+        / "ltm-agent-core.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     role_acl_key = next(
@@ -1452,7 +1452,7 @@ def test_validator_rejects_dev_role_metadata_field_binding_drift(tmp_path, value
     validator = _validator_module()
     target = _copy_bundle_repository(tmp_path)
     environment_path = (
-        target / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+        target / "deploy" / "maxis-dify" / "environments" / "dev.yml"
     )
     environment = yaml.safe_load(environment_path.read_text(encoding="utf-8"))
     environment["knowledge"]["role_metadata_field_id"] = value
@@ -1473,7 +1473,7 @@ def test_validator_rejects_policy_decision_condition_drift(tmp_path):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-agent-core-2026.09.yml"
+        / "ltm-agent-core.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     policy = next(
@@ -1494,7 +1494,7 @@ def test_validator_rejects_dify_contract_guard_source_drift(tmp_path):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-agent-core-2026.09.yml"
+        / "ltm-agent-core.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     guard = next(
@@ -1539,7 +1539,7 @@ def test_validator_rejects_dify_knowledge_guard_source_drift(tmp_path):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-agent-core-2026.09.yml"
+        / "ltm-agent-core.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     guard = next(
@@ -1564,7 +1564,7 @@ def test_validator_rejects_dify_knowledge_guard_selector_drift(tmp_path):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-editor-author-2026.09.yml"
+        / "ltm-editor-author.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     guard = next(
@@ -1591,7 +1591,7 @@ def test_validator_requires_knowledge_guard_executed_workflow_binding(tmp_path):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-editor-author-2026.09.yml"
+        / "ltm-editor-author.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     guard = next(
@@ -1619,7 +1619,7 @@ def test_validator_rejects_dify_contract_guard_selector_drift(tmp_path):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-editor-author-2026.09.yml"
+        / "ltm-editor-author.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     guard = next(
@@ -1647,7 +1647,7 @@ def test_validator_requires_contract_guard_executed_workflow_binding(tmp_path):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-editor-author-2026.09.yml"
+        / "ltm-editor-author.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     guard = next(
@@ -1680,7 +1680,7 @@ def test_validator_rejects_dify_fail_open_node_settings(tmp_path, mutation):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-agent-core-2026.09.yml"
+        / "ltm-agent-core.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     llm = next(
@@ -1715,7 +1715,7 @@ def test_validator_rejects_dify_nonstandard_edge_handles(tmp_path):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-editor-author-2026.09.yml"
+        / "ltm-editor-author.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     dsl["workflow"]["graph"]["edges"][0]["sourceHandle"] = "fail-branch"
@@ -1732,7 +1732,7 @@ def test_validator_rejects_overlapping_dify_nodes(tmp_path):
     target = _copy_bundle_repository(tmp_path)
     dsl_path = (
         target / "deploy" / "maxis-dify" / "dsl"
-        / "ltm-pmo-brief-2026.09.yml"
+        / "ltm-pmo-brief.yml"
     )
     dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
     nodes = dsl["workflow"]["graph"]["nodes"]

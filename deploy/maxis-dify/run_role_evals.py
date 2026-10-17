@@ -344,7 +344,7 @@ def run(label: str, selected=None) -> Path:
         'LTM_AGENT_STRUCTURED_OUTPUT_BACKEND': 'dify', 'LTM_AGENT_STRUCTURED_OUTPUT_FALLBACK': 'forbid',
     })
     import yaml
-    configured_model = yaml.safe_load((ROOT / 'deploy/maxis-dify/environments/dev-2026.09.yml').read_text(encoding='utf-8'))['model']['name']
+    configured_model = yaml.safe_load((ROOT / 'deploy/maxis-dify/environments/dev.yml').read_text(encoding='utf-8'))['model']['name']
     common, reviews = review_specs('maxis-role-component')
     metadata = build_run_metadata(suite='maxis-role-component', battery_version=BATTERY_VERSION,
         cases=load_remote_cases(), selected_case_ids=[c['id'] for c in cases], model=configured_model,

@@ -38,7 +38,7 @@ Never reveal whole Knowledge chunks or treat policy as narrative evidence.
 ## Required response
 
 Return one JSON object and no Markdown or prose around it.  It must validate against
-`remote-role-result.v1.schema.json`, including `additionalProperties: false`.
+`remote-role-result.schema.json`, including `additionalProperties: false`.
 
 - Echo `role_id`, `workflow_version`, and `knowledge_version` exactly.
 - Do not emit `correlation_id`; it is input-only.

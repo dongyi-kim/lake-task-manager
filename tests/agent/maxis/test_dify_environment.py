@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import shutil
 from pathlib import Path
 
@@ -19,7 +20,7 @@ SPEC.loader.exec_module(materializer)
 def _ready_prod_environment() -> dict:
     source = yaml.safe_load(
         (
-            ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+            ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
         ).read_text(encoding="utf-8")
     )
     source.update(environment="prod", status="ready")
@@ -46,7 +47,7 @@ def _ready_prod_environment() -> dict:
 
 def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
     environment_path = (
-        ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+        ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
     )
     environment = materializer.load_environment(environment_path)
     output = tmp_path / "materialized"
@@ -71,8 +72,8 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
         assert path.parent == output
         dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
         nodes = dsl["workflow"]["graph"]["nodes"]
-        is_editor = path.name == "ltm-editor-author-2026.09.yml"
-        is_core = path.name == "ltm-agent-core-2026.09.yml"
+        is_editor = path.name == "ltm-editor-author.yml"
+        is_core = path.name == "ltm-agent-core.yml"
         assert len(nodes) == (23 if is_editor else 16 if is_core else 12)
         llm_nodes = [node for node in nodes if node["data"]["type"] == "llm"]
         assert len(llm_nodes) == (4 if is_editor else 2 if is_core else 1)
@@ -331,7 +332,7 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
 ])
 def test_materializer_rejects_editor_assembler_drift(tmp_path, monkeypatch, mutation):
     environment = materializer.load_environment(
-        ROOT / "deploy/maxis-dify/environments/dev-2026.09.yml"
+        ROOT / "deploy/maxis-dify/environments/dev.yml"
     )
     fake_root = tmp_path / "repo"
     shutil.copytree(ROOT / "deploy/maxis-dify", fake_root / "deploy/maxis-dify")
@@ -384,7 +385,7 @@ def test_materializer_rejects_editor_assembler_drift(tmp_path, monkeypatch, muta
 ])
 def test_materializer_rejects_editor_input_projection_drift(tmp_path, monkeypatch, mutation):
     environment = materializer.load_environment(
-        ROOT / "deploy/maxis-dify/environments/dev-2026.09.yml"
+        ROOT / "deploy/maxis-dify/environments/dev.yml"
     )
     fake_root = tmp_path / "repo"
     shutil.copytree(ROOT / "deploy/maxis-dify", fake_root / "deploy/maxis-dify")
@@ -448,7 +449,7 @@ def test_materializer_rejects_editor_input_projection_drift(tmp_path, monkeypatc
 @pytest.mark.parametrize("branch", ["description", "comment", "control", "selector"])
 @pytest.mark.parametrize("mutation", ["system_prompt", "user_prompt", "schema", "context", "model", "memory", "retry"])
 def test_materializer_checks_every_editor_branch_before_overriding_environment(tmp_path, monkeypatch, branch, mutation):
-    environment = materializer.load_environment(ROOT / "deploy/maxis-dify/environments/dev-2026.09.yml")
+    environment = materializer.load_environment(ROOT / "deploy/maxis-dify/environments/dev.yml")
     fake_root = tmp_path / "repo"
     shutil.copytree(ROOT / "deploy/maxis-dify", fake_root / "deploy/maxis-dify")
     spec, _ = materializer._VALIDATOR._editor_graph_modules(fake_root)
@@ -488,7 +489,7 @@ def test_prod_template_cannot_materialize_until_prod_assets_exist(tmp_path):
 def test_environment_requires_distinct_native_role_and_sentinel_datasets(tmp_path):
     source = yaml.safe_load(
         (
-            ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+            ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
         ).read_text(encoding="utf-8")
     )
     source["knowledge"]["sentinel_dataset_id"] = source["knowledge"]["dataset_id"]
@@ -506,7 +507,7 @@ def test_environment_requires_distinct_native_role_and_sentinel_datasets(tmp_pat
 def test_environment_requires_role_metadata_field_binding(tmp_path):
     source = yaml.safe_load(
         (
-            ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+            ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
         ).read_text(encoding="utf-8")
     )
     source["knowledge"].pop("role_metadata_field_id")
@@ -525,7 +526,7 @@ def test_environment_requires_role_metadata_field_binding(tmp_path):
 def test_ready_environment_requires_valid_role_metadata_field_uuid(tmp_path, value):
     source = yaml.safe_load(
         (
-            ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+            ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
         ).read_text(encoding="utf-8")
     )
     source["knowledge"]["role_metadata_field_id"] = value
@@ -543,7 +544,7 @@ def test_ready_environment_requires_valid_role_metadata_field_uuid(tmp_path, val
 def test_environment_rejects_swapped_workflow_source_dsls(tmp_path):
     source = yaml.safe_load(
         (
-            ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+            ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
         ).read_text(encoding="utf-8")
     )
     source["workflows"]["agent_core"]["source_dsl"], source["workflows"][
@@ -786,7 +787,7 @@ def test_prod_materialization_allows_shared_host_and_human_readable_names(
 
 def test_materializer_rejects_legacy_start_sys_query_selector(tmp_path, monkeypatch):
     environment_path = (
-        ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+        ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
@@ -824,7 +825,7 @@ def test_materializer_requires_guarded_role_knowledge_llm_retrieval_context(
     tmp_path, monkeypatch, context_patch,
 ):
     environment_path = (
-        ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+        ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
@@ -853,7 +854,7 @@ def test_materializer_requires_workflow_specific_llm_output_limit(
     tmp_path, monkeypatch,
 ):
     environment_path = (
-        ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+        ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
@@ -882,7 +883,7 @@ def test_materializer_requires_bounded_role_knowledge_retrieval_policy(
     tmp_path, monkeypatch,
 ):
     environment_path = (
-        ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+        ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
@@ -924,7 +925,7 @@ def test_materializer_requires_server_side_role_metadata_acl_filter(
     tmp_path, monkeypatch, field, value,
 ):
     environment_path = (
-        ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+        ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
@@ -964,7 +965,7 @@ def test_materializer_requires_dify_111_role_acl_key_transform(
     tmp_path, monkeypatch, field, value,
 ):
     environment_path = (
-        ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+        ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
@@ -991,7 +992,7 @@ def test_materializer_requires_dify_111_role_acl_key_transform(
 
 def test_materializer_rejects_role_acl_key_dependency_bypass(tmp_path, monkeypatch):
     environment_path = (
-        ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+        ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
@@ -1028,7 +1029,7 @@ def test_materializer_rejects_role_acl_key_dependency_bypass(tmp_path, monkeypat
 
 def test_materializer_rejects_policy_branch_bypass_to_llm(tmp_path, monkeypatch):
     environment_path = (
-        ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+        ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
@@ -1066,7 +1067,7 @@ def test_materializer_requires_contract_guard_sys_workflow_id(
     tmp_path, monkeypatch,
 ):
     environment_path = (
-        ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+        ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
@@ -1099,7 +1100,7 @@ def test_materializer_rejects_contract_guard_execution_check_drift(
     tmp_path, monkeypatch,
 ):
     environment_path = (
-        ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+        ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
     )
     environment = materializer.load_environment(environment_path)
     fake_root = tmp_path / "repo"
@@ -1131,7 +1132,7 @@ def test_materializer_rejects_contract_guard_execution_check_drift(
 def test_environment_contract_rejects_credential_fields(tmp_path):
     source = yaml.safe_load(
         (
-            ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+            ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
         ).read_text(encoding="utf-8")
     )
     source["api_key"] = "must-not-be-accepted"
@@ -1152,7 +1153,7 @@ def test_environment_contract_rejects_credential_shaped_values_without_echo(
 ):
     source = yaml.safe_load(
         (
-            ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+            ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
         ).read_text(encoding="utf-8")
     )
     source["maxis_project_name"] = value
@@ -1182,7 +1183,7 @@ def test_environment_contract_reuses_runtime_destination_policy(
 ):
     source = yaml.safe_load(
         (
-            ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+            ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
         ).read_text(encoding="utf-8")
     )
     source["service_base_url"] = service_base_url
@@ -1199,19 +1200,23 @@ def test_environment_contract_reuses_runtime_destination_policy(
 
 def test_deployment_assets_keep_only_current_reusable_sources():
     directory = ROOT / "deploy" / "maxis-dify"
+    snapshot_suffix = re.compile(r"(?:^|[._-])[vr]\d+(?=[._-]|$)|20\d{2}[-._]?\d{2}", re.I)
+    for path in directory.rglob("*"):
+        if path.is_file() and path.suffix in {".json", ".yml", ".yaml", ".md", ".py"}:
+            assert not snapshot_suffix.search(path.name), path.relative_to(directory)
     assert {path.name for path in (directory / "contracts").glob("*.json")} == {
-        "editor-draft-spec.v2.schema.json",
-        "editor-plan.v2.schema.json",
-        "editor-writing.v1.schema.json",
-        "glossary.v1.json",
-        "knowledge-eval-result.v1.schema.json",
-        "remote-role-result.v1.schema.json",
+        "editor-draft-spec.schema.json",
+        "editor-plan.schema.json",
+        "editor-writing.schema.json",
+        "glossary.json",
+        "knowledge-eval-result.schema.json",
+        "remote-role-result.schema.json",
     }
     bundle = yaml.safe_load((directory / "bundle.yml").read_text(encoding="utf-8"))
     declared_dsls = {ROOT / workflow["dsl"] for workflow in bundle["workflows"].values()}
     assert set((directory / "dsl").glob("*.yml")) == declared_dsls
     assert {path.name for path in (directory / "environments").glob("*.yml")} == {
-        "dev-2026.09.yml", "prod.template.yml",
+        "dev.yml", "prod.template.yml",
     }
     # Published-run receipts and disconnected capability experiments are local
     # artifacts, not reusable deployment inputs. Even the latest result stays

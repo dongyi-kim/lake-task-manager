@@ -7,8 +7,8 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
-DSL_PATH = ROOT / "deploy/maxis-dify/dsl/ltm-agent-core-2026.09.yml"
-ENV_PATH = ROOT / "deploy/maxis-dify/environments/dev-2026.09.yml"
+DSL_PATH = ROOT / "deploy/maxis-dify/dsl/ltm-agent-core.yml"
+ENV_PATH = ROOT / "deploy/maxis-dify/environments/dev.yml"
 
 
 @pytest.fixture(scope="module")

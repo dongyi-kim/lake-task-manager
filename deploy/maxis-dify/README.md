@@ -20,15 +20,20 @@ copy는 ignored `.cache/`에 두며 커밋하지 않는다. 변경 이력·검�
 | `policy_query_graph.py` | Core/PMO의 업무 입력과 정책 검색어 분리 |
 | `core_control_graph.py`, `core_graph_validation.py` | Core 제어/업무 분기 생성과 원본 검증 |
 | `graph_receipt.py` | 로컬 graph와 서버 export의 설정 비교 코드(실행 결과가 아님) |
-| `environments/dev-2026.09.yml` | 현재 DEV 환경의 비밀 없는 binding |
+| `environments/dev.yml` | 현재 DEV 환경의 비밀 없는 binding |
 | `environments/prod.template.yml` | 독립 PROD 환경을 준비하는 template |
 | `materialize_environment.py`, `validate_bundle.py` | 환경별 import copy 생성과 정적 검증 |
 | `launch_*_evals.py`, `run_*_evals.py` | 승인된 수동 평가 launcher/runner |
 | `knowledge-evals.yml`, `smoke-cases.yml` | 재사용하는 평가·smoke 명세 |
 
-파일명의 날짜는 현재 source의 기존 식별자이며 버전별 복사본을 추가하는 규칙이 아니다.
+파일명에는 날짜나 버전 접미사를 붙이지 않는다. 각 목적의 안정된 경로 하나를 갱신하고,
+이전 내용은 Git 이력으로 관리한다. 계약의 호환성 식별자는 파일명과 별개로 유지한다.
 Editor의 `editor-draft-spec.v2`, `editor-writing.v1`, `editor-plan.v2`는 각각 선택·문안·조립
 계약으로 서로 대체하지 않는다. wire contract version과 파일의 과거 복사본을 구분한다.
+
+경로·prompt의 파일명 참조가 바뀌면 source/prompt digest와 graph receipt도 달라질 수 있다.
+기존 평가 원본·서명·profile pin을 새 hash로 덮어쓰지 않는다. 현재 소스의 재게시·검증 전에는
+이전 배포 증적을 현재 후보의 활성화 근거로 재사용하지 않는다.
 
 ## Workflow와 단위 기능
 
@@ -44,7 +49,7 @@ Editor의 `editor-draft-spec.v2`, `editor-writing.v1`, `editor-plan.v2`는 각�
   제어/중단 경로와 실제 작성 경로는 별개이며 선택 단계에 전체 HTML 생성을 맡기지 않는다.
 
 위 수는 로컬 source topology이며 현재 서버 실행·품질·활성화 상태의 증명이 아니다.
-TaskFlow/Native Agent의 목표 연결과 아직 필요한 trusted adapter는 [TaskFlow 계약](taskflow-v1.md)에
+TaskFlow/Native Agent의 목표 연결과 아직 필요한 trusted adapter는 [TaskFlow 계약](taskflow.md)에
 분리해 둔다. 독립 합성 PoC는 이 번들의 제품 소스에 포함하지 않는다.
 
 ## 입력·근거·승인 경계
@@ -78,7 +83,7 @@ source DSL을 환경별로 복제·수정하거나 코드에 DEV credential을 �
 
 ```powershell
 python -B deploy/maxis-dify/validate_bundle.py
-python -B deploy/maxis-dify/materialize_environment.py deploy/maxis-dify/environments/dev-2026.09.yml --output-dir .cache/maxis-dify-materialized/dev
+python -B deploy/maxis-dify/materialize_environment.py deploy/maxis-dify/environments/dev.yml --output-dir .cache/maxis-dify-materialized/dev
 ```
 
 materializer는 원본 DSL을 먼저 검증한 뒤 환경값을 주입한다. 불완전한 UUID, 비 HTTPS 원격
@@ -116,7 +121,7 @@ UI·전체 qualification·activation 승인과 다르다. [평가 규약](../../
 - [LTM 아키텍처와 현재 운영 제약](../../docs/MAXIS_DIFY_MIGRATION.md)
 - [Workflow registry](../../config/maxis-workflows.yml), [Knowledge manifest](../../config/maxis-knowledge.yml)
 - [Knowledge 릴리스 계약](KNOWLEDGE-RELEASE.md), [내부 시범 계약](internal-pilot.md)
-- [TaskFlow preview/transport 계약](taskflow-v1.md), [Core 분류 계약](core-control-route.md)
+- [TaskFlow preview/transport 계약](taskflow.md), [Core 분류 계약](core-control-route.md)
 
 MCP는 선택적 중앙 read-only 연계다. 초기 흐름은 LTM이 outbound로 Dify를 호출하고 필요한
 EvidencePack을 전달하므로 로컬 PC의 공개 URL이 필요하지 않다. MAXIS Node/Agent 등록·중앙 MCP

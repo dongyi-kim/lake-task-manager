@@ -288,7 +288,7 @@ def test_noncanonical_model_json_is_rejected(sample, raw):
 
 def test_canonical_schema_accepts_the_same_contract(sample):
     import jsonschema
-    schema = json.loads((ROOT / "deploy/maxis-dify/contracts/editor-draft-spec.v2.schema.json").read_text(encoding="utf-8"))
+    schema = json.loads((ROOT / "deploy/maxis-dify/contracts/editor-draft-spec.schema.json").read_text(encoding="utf-8"))
     jsonschema.Draft202012Validator(schema).validate(sample[1])
 
 

@@ -20,7 +20,7 @@ MAX_INPUT_BYTES = 2 * 1024 * 1024
 MAX_STRUCTURE_NODES = 50_000
 MAX_STRUCTURE_DEPTH = 24
 MAX_DIAGNOSTICS = 100
-SCHEMA_PATH = Path(__file__).resolve().parents[3] / "deploy/maxis-dify/contracts/glossary.v1.json"
+SCHEMA_PATH = Path(__file__).resolve().parents[3] / "deploy/maxis-dify/contracts/glossary.json"
 _PATH_FIELDS = frozenset({
     "schemaVersion", "glossaryId", "version", "classification", "asOf", "sources",
     "terms", "id", "repository", "revision", "path", "section", "observedAt",

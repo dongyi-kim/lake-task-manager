@@ -22,6 +22,7 @@ description: LakeTaskManager의 app/agent, Agent용 domain rule, prompt, role, t
    끝내지 말고 별도 branch/PR로 옮긴다.
 5. 사용자의 일회성 혼합 승인은 해당 PR에만 적용한다.
 6. 같은 목적의 소스는 현행 정본 하나만 유지한다. 구버전 복사본·독립 PoC·배포 영수증·평가 결과 보고서는 커밋하지 않고 필요한 자료만 ignored `.cache/`에 보존한다. 재사용하는 평가 코드·spec·합성 fixture·test는 유지한다.
+7. 정본 파일명에도 날짜·버전·개발 회차 접미사를 붙이지 않는다. 목적 중심의 안정된 경로를 사용하고 wire 계약의 version 값은 별도로 유지한다.
 
 ## 원인 분류
 

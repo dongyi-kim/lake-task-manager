@@ -57,10 +57,10 @@ model:
 workflows:
   agent_core:
     app_name: LTM Agent Core 2026.09
-    source_dsl: deploy/maxis-dify/dsl/ltm-agent-core-2026.09.yml
+    source_dsl: deploy/maxis-dify/dsl/ltm-agent-core.yml
   pmo_brief:
     app_name: LTM PMO Brief 2026.09
-    source_dsl: deploy/maxis-dify/dsl/ltm-pmo-brief-2026.09.yml
+    source_dsl: deploy/maxis-dify/dsl/ltm-pmo-brief.yml
   editor_author:
     app_name: LTM Editor Author 2026.09
-    source_dsl: deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml
+    source_dsl: deploy/maxis-dify/dsl/ltm-editor-author.yml

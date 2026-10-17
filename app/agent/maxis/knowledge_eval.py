@@ -168,7 +168,7 @@ _ALLOWED_KNOWLEDGE_GUARD_CONTROL_CODES = frozenset({
 _SOURCE_FILE_PATHS = {
     "workflowRegistry": "config/maxis-workflows.yml",
     "knowledgeSource": "config/maxis-knowledge.yml",
-    "environment": "deploy/maxis-dify/environments/dev-2026.09.yml",
+    "environment": "deploy/maxis-dify/environments/dev.yml",
     "evaluationSuite": "deploy/maxis-dify/knowledge-evals.yml",
     "evaluationEngine": "app/agent/maxis/knowledge_eval.py",
     "evaluationLauncher": "deploy/maxis-dify/launch_knowledge_evals.py",
@@ -176,9 +176,9 @@ _SOURCE_FILE_PATHS = {
     "responseGuard": "app/agent/maxis/response_guard.py",
     "contractModels": "app/agent/maxis/contracts.py",
     "commonPrompt": "deploy/maxis-dify/prompts/common.md",
-    "agentCoreDsl": "deploy/maxis-dify/dsl/ltm-agent-core-2026.09.yml",
-    "pmoBriefDsl": "deploy/maxis-dify/dsl/ltm-pmo-brief-2026.09.yml",
-    "editorAuthorDsl": "deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml",
+    "agentCoreDsl": "deploy/maxis-dify/dsl/ltm-agent-core.yml",
+    "pmoBriefDsl": "deploy/maxis-dify/dsl/ltm-pmo-brief.yml",
+    "editorAuthorDsl": "deploy/maxis-dify/dsl/ltm-editor-author.yml",
     "contractGuard": "deploy/maxis-dify/code/contract_guard.py",
     "knowledgeGuard": "deploy/maxis-dify/code/knowledge_guard.py",
 }
@@ -439,7 +439,7 @@ def load_identity_map(
 ) -> RetrievalIdentityMap:
     root = _root()
     environment = _load_yaml((environment_path or (
-        root / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+        root / "deploy" / "maxis-dify" / "environments" / "dev.yml"
     )).resolve())
     manifest_path = (knowledge_manifest_path or (
         root / "config" / "maxis-knowledge.yml"
@@ -1578,7 +1578,7 @@ def build_artifact(
 
 
 def result_schema_path() -> Path:
-    return _root() / "deploy" / "maxis-dify" / "contracts" / "knowledge-eval-result.v1.schema.json"
+    return _root() / "deploy" / "maxis-dify" / "contracts" / "knowledge-eval-result.schema.json"
 
 
 def validate_artifact(artifact: Mapping[str, Any]) -> None:

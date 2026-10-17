@@ -346,9 +346,9 @@ def test_evaluation_source_hashes_bind_exact_remote_execution_assets():
     root = Path(__file__).resolve().parents[3]
     expected = {
         "commonPrompt": "deploy/maxis-dify/prompts/common.md",
-        "agentCoreDsl": "deploy/maxis-dify/dsl/ltm-agent-core-2026.09.yml",
-        "pmoBriefDsl": "deploy/maxis-dify/dsl/ltm-pmo-brief-2026.09.yml",
-        "editorAuthorDsl": "deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml",
+        "agentCoreDsl": "deploy/maxis-dify/dsl/ltm-agent-core.yml",
+        "pmoBriefDsl": "deploy/maxis-dify/dsl/ltm-pmo-brief.yml",
+        "editorAuthorDsl": "deploy/maxis-dify/dsl/ltm-editor-author.yml",
         "contractGuard": "deploy/maxis-dify/code/contract_guard.py",
         "knowledgeGuard": "deploy/maxis-dify/code/knowledge_guard.py",
         "evaluationLauncher": "deploy/maxis-dify/launch_knowledge_evals.py",
@@ -463,7 +463,7 @@ def test_binding_rejects_agent_core_role_without_an_acl_probe(tmp_path):
 def test_identity_map_rejects_environment_documents_not_in_current_manifest(tmp_path):
     root = Path(__file__).resolve().parents[3]
     source = yaml.safe_load(
-        (root / "deploy/maxis-dify/environments/dev-2026.09.yml").read_text(
+        (root / "deploy/maxis-dify/environments/dev.yml").read_text(
             encoding="utf-8"
         )
     )

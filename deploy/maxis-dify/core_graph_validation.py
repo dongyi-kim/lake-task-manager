@@ -13,7 +13,7 @@ POLICY_ID = "1909000000001007"
 GUARD_ID = "1909000000001005"
 # Independent review pins: matching a changed artifact to a changed asset is insufficient.
 ROUTE_SHA256 = "2c2b97b1de58d91e676e05d3da9516f1347370d80ae7094513cbd17a9a5d4859"
-CONTROL_SYSTEM_SHA256 = "c651a4ee8d613374e90502f157c9e7aceb50ceeefcfbd60d8c1b518074eb0c46"
+CONTROL_SYSTEM_SHA256 = "7017b30253765eab4e41723de73a3d5014c1f5c2b820fedcbaab80cf08ddae60"
 NODE_IDENTITIES = {
     "start": ("시작", "start"), "answer": ("Allowed Answer", "answer"),
     "denied_answer": ("Denied Answer", "answer"),

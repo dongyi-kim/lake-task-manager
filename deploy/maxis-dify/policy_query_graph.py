@@ -91,8 +91,8 @@ def rebuild(dsl: dict, workflow_key: str) -> dict:
 
 if __name__ == "__main__":
     import yaml
-    for key, filename in (("agent_core", "ltm-agent-core-2026.09.yml"),
-                          ("pmo_brief", "ltm-pmo-brief-2026.09.yml")):
+    for key, filename in (("agent_core", "ltm-agent-core.yml"),
+                          ("pmo_brief", "ltm-pmo-brief.yml")):
         path = ROOT / "deploy/maxis-dify/dsl" / filename
         rebuilt = rebuild(yaml.safe_load(path.read_text(encoding="utf-8")), key)
         path.write_text(yaml.safe_dump(rebuilt, allow_unicode=True, sort_keys=False), encoding="utf-8")

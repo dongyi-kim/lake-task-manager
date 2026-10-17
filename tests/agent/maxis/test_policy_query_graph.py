@@ -89,7 +89,7 @@ def test_editor_and_existing_knowledge_controls_are_unchanged():
 
 
 def _dsl(key):
-    name = {"agent_core": "ltm-agent-core-2026.09.yml", "pmo_brief": "ltm-pmo-brief-2026.09.yml"}[key]
+    name = {"agent_core": "ltm-agent-core.yml", "pmo_brief": "ltm-pmo-brief.yml"}[key]
     return yaml.safe_load((ROOT / "deploy/maxis-dify/dsl" / name).read_text(encoding="utf-8"))
 
 
@@ -147,7 +147,7 @@ def test_core_and_pmo_selectors_are_identical_and_editor_has_none():
         nodes = _dsl(key)["workflow"]["graph"]["nodes"]
         sources.append(next(node["data"]["code"] for node in nodes if node["id"] == graph.NODE_ID))
     assert sources[0] == sources[1] == graph.source()
-    editor = yaml.safe_load((ROOT / "deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml").read_text(encoding="utf-8"))
+    editor = yaml.safe_load((ROOT / "deploy/maxis-dify/dsl/ltm-editor-author.yml").read_text(encoding="utf-8"))
     graph.validate_node(editor["workflow"]["graph"]["nodes"], "editor_author", "start")
 
 
@@ -159,7 +159,7 @@ def test_core_and_pmo_selectors_are_identical_and_editor_has_none():
 ))
 def test_bundle_and_materializer_reject_policy_shortcuts(tmp_path, monkeypatch, key, mutation):
     materializer, validator = _load("materialize_environment"), _load("validate_bundle")
-    environment = materializer.load_environment(ROOT / "deploy/maxis-dify/environments/dev-2026.09.yml")
+    environment = materializer.load_environment(ROOT / "deploy/maxis-dify/environments/dev.yml")
     target = tmp_path / "repo"
     shutil.copytree(ROOT / "deploy/maxis-dify", target / "deploy/maxis-dify")
     shutil.copytree(ROOT / "knowledge", target / "knowledge")

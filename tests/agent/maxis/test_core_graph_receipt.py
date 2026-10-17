@@ -15,7 +15,7 @@ SPEC.loader.exec_module(RECEIPT)
 
 @pytest.fixture
 def graph():
-    value = yaml.safe_load((ROOT / "deploy/maxis-dify/dsl/ltm-agent-core-2026.09.yml")
+    value = yaml.safe_load((ROOT / "deploy/maxis-dify/dsl/ltm-agent-core.yml")
                            .read_text(encoding="utf-8"))["workflow"]["graph"]
     assert len(value["nodes"]) == 16 and len(value["edges"]) == 17
     return value

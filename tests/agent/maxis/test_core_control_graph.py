@@ -16,7 +16,7 @@ SPEC = importlib.util.spec_from_file_location(
     "core_control_graph", ROOT / "deploy/maxis-dify/core_control_graph.py")
 GRAPH = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(GRAPH)
-CORE_DSL = ROOT / "deploy/maxis-dify/dsl/ltm-agent-core-2026.09.yml"
+CORE_DSL = ROOT / "deploy/maxis-dify/dsl/ltm-agent-core.yml"
 
 
 def _dsl():
@@ -147,7 +147,7 @@ def test_rebuild_is_idempotent_order_independent_and_has_no_mutable_aliases():
     assert _build()["workflow"]["graph"]["nodes"] != built["workflow"]["graph"]["nodes"]
 
 
-@pytest.mark.parametrize("filename", ["ltm-editor-author-2026.09.yml", "ltm-pmo-brief-2026.09.yml"])
+@pytest.mark.parametrize("filename", ["ltm-editor-author.yml", "ltm-pmo-brief.yml"])
 def test_builder_rejects_non_core_apps_without_mutation(filename):
     dsl = yaml.safe_load(CORE_DSL.with_name(filename).read_text(encoding="utf-8"))
     before = copy.deepcopy(dsl)

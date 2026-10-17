@@ -1,6 +1,6 @@
 contract: ltm-maxis-dify-bundle.v1
 registry: config/maxis-workflows.yml
-response_schema: deploy/maxis-dify/contracts/remote-role-result.v1.schema.json
+response_schema: deploy/maxis-dify/contracts/remote-role-result.schema.json
 contract_guard_code: deploy/maxis-dify/code/contract_guard.py
 knowledge_guard_code: deploy/maxis-dify/code/knowledge_guard.py
 common_prompt: deploy/maxis-dify/prompts/common.md
@@ -120,7 +120,7 @@ llm_output_token_limits:
 workflows:
   agent_core:
     app_type: chatflow
-    dsl: deploy/maxis-dify/dsl/ltm-agent-core-2026.09.yml
+    dsl: deploy/maxis-dify/dsl/ltm-agent-core.yml
     endpoint: /chat-messages
     response_mode: blocking
     conversation_mode: stateless
@@ -135,7 +135,7 @@ workflows:
       - result_integrator
   pmo_brief:
     app_type: chatflow
-    dsl: deploy/maxis-dify/dsl/ltm-pmo-brief-2026.09.yml
+    dsl: deploy/maxis-dify/dsl/ltm-pmo-brief.yml
     endpoint: /chat-messages
     response_mode: blocking
     conversation_mode: stateless
@@ -145,7 +145,7 @@ workflows:
       - portfolio_analyst
   editor_author:
     app_type: chatflow
-    dsl: deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml
+    dsl: deploy/maxis-dify/dsl/ltm-editor-author.yml
     endpoint: /chat-messages
     response_mode: blocking
     conversation_mode: stateless

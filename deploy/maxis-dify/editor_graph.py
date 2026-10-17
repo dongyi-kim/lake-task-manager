@@ -42,7 +42,7 @@ BRANCH_PROMPT_SHA256 = {
                     "user": "0b882243f2e854a7fcf11e1844d9159187d9944a6b2ac53092ec829f43f07436"},
     "comment": {"system": "37e391b4c4235e32c4482fa371095bc4a9b2142ffc1ea18732ad2c1ab45d55cf",
                 "user": "0b882243f2e854a7fcf11e1844d9159187d9944a6b2ac53092ec829f43f07436"},
-    "control": {"system": "31f9e5c83d094f5321555647f5501e198b24daa760326c2ff791081dce1feb1e",
+    "control": {"system": "8d678b29f7677d1dc7790d5620c8e3dd7d6726c529d16ad55d58d2cfddd42817",
                 "user": "41e3faa78a5f4d63a4302d6defc5e119c1c7b834d92c272bc6de18c629fb2b99"},
     "selector": {"system": "be2cd684efbd0ca016b59ca7dd3dbe0e610cdaa2250710eaf46f9b16080053e9",
                  "user": "7241996b070a0e06f95443c4b41503246a5ce6bac9a066c48879d778a20c0419"},
@@ -82,17 +82,17 @@ def branch_schema(root: Path, branch: str, remote_schema: dict, project) -> dict
     if branch == "control":
         return project(remote_schema)
     if branch == "selector":
-        plan = json.loads((root / "deploy/maxis-dify/contracts/editor-draft-spec.v2.schema.json").read_text(encoding="utf-8"))
+        plan = json.loads((root / "deploy/maxis-dify/contracts/editor-draft-spec.schema.json").read_text(encoding="utf-8"))
         encoded = json.dumps(plan, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         if hashlib.sha256(encoded.encode("utf-8")).hexdigest() != SPEC_SCHEMA_SHA256:
             raise ValueError("reviewed DraftSpec schema drifted")
         return project(plan)
-    plan = json.loads((root / "deploy/maxis-dify/contracts/editor-plan.v2.schema.json").read_text(encoding="utf-8"))
+    plan = json.loads((root / "deploy/maxis-dify/contracts/editor-plan.schema.json").read_text(encoding="utf-8"))
     # The compiler still targets the unchanged assembler contract.
     encoded = json.dumps(plan, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     if hashlib.sha256(encoded.encode("utf-8")).hexdigest() != "3eff157b515bad585b5a08b69484c23f027e2d4c3f3c415f7476540c6561b22e":
         raise ValueError("reviewed Editor plan schema drifted")
-    writing = json.loads((root / "deploy/maxis-dify/contracts/editor-writing.v1.schema.json").read_text(encoding="utf-8"))
+    writing = json.loads((root / "deploy/maxis-dify/contracts/editor-writing.schema.json").read_text(encoding="utf-8"))
     encoded = json.dumps(writing, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     if hashlib.sha256(encoded.encode("utf-8")).hexdigest() != WRITING_SCHEMA_SHA256:
         raise ValueError("reviewed Editor writing schema drifted")
@@ -188,7 +188,7 @@ def rebuild(root: Path, dsl: dict, validator) -> dict:
     editor_input["data"]["outputs"] = {key: {"children": None, "type": "string"} for key in ("model_input", "selector_input", "route")}
     assembler["data"]["code"] = source
     assembler["data"]["variables"][0] = {"variable": "candidate", "value_selector": [MERGE_NODE_ID, "output"]}
-    remote = json.loads((root / "deploy/maxis-dify/contracts/remote-role-result.v1.schema.json").read_text(encoding="utf-8"))
+    remote = json.loads((root / "deploy/maxis-dify/contracts/remote-role-result.schema.json").read_text(encoding="utf-8"))
     branch_nodes = []
     for index, branch in enumerate(BRANCHES):
         node = copy.deepcopy(base)
@@ -254,7 +254,7 @@ if __name__ == "__main__":
     import yaml
     import validate_bundle
     root = Path(__file__).resolve().parents[2]
-    path = root / "deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml"
+    path = root / "deploy/maxis-dify/dsl/ltm-editor-author.yml"
     dsl = rebuild(root, yaml.safe_load(path.read_text(encoding="utf-8")), validate_bundle)
     path.write_text(yaml.safe_dump(dsl, allow_unicode=True, sort_keys=False), encoding="utf-8")
     print(json.dumps({"nodes": len(dsl["workflow"]["graph"]["nodes"]), "edges": len(dsl["workflow"]["graph"]["edges"])}))

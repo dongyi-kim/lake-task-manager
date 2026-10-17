@@ -131,7 +131,7 @@ def test_manifest_binds_governance_content_segments_version_and_dataset(tmp_path
 def test_checked_in_manifest_loads_and_excludes_local_only_remote_roles():
     environment = yaml.safe_load(
         (
-            ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+            ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
         ).read_text(encoding="utf-8")
     )
     manifest = build_manifest(

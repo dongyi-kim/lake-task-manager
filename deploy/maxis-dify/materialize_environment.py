@@ -50,12 +50,12 @@ ROLE_METADATA_CONDITION_IDS = {
     "editor_author": "9cd39434-5ac0-4c78-ad38-cf614a3fa7cb",
 }
 REVIEWED_SOURCE_DSLS = {
-    "agent_core": "deploy/maxis-dify/dsl/ltm-agent-core-2026.09.yml",
-    "pmo_brief": "deploy/maxis-dify/dsl/ltm-pmo-brief-2026.09.yml",
-    "editor_author": "deploy/maxis-dify/dsl/ltm-editor-author-2026.09.yml",
+    "agent_core": "deploy/maxis-dify/dsl/ltm-agent-core.yml",
+    "pmo_brief": "deploy/maxis-dify/dsl/ltm-pmo-brief.yml",
+    "editor_author": "deploy/maxis-dify/dsl/ltm-editor-author.yml",
 }
 DEV_ENVIRONMENT_BINDING_PATH = (
-    ROOT / "deploy" / "maxis-dify" / "environments" / "dev-2026.09.yml"
+    ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
 )
 CONTRACT_GUARD_SOURCE = (
     ROOT / "deploy" / "maxis-dify" / "code" / "contract_guard.py"
@@ -529,7 +529,7 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
             raise EnvironmentBindingError("reviewed Editor Assembler digest drifted.")
         try:
             remote_schema = json.loads((
-                ROOT / "deploy/maxis-dify/contracts/remote-role-result.v1.schema.json"
+                ROOT / "deploy/maxis-dify/contracts/remote-role-result.schema.json"
             ).read_text(encoding="utf-8"))
         except Exception as exc:
             raise EnvironmentBindingError("Editor Plan schema is not reviewed.") from exc
