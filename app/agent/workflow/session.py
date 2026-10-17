@@ -44,6 +44,7 @@ from app.agent.workflow.state import (
     Node, Role, as_dict,
 )
 from app.agent.workflow.typed_fast_path import zero_typed_repair_budget
+from app.agent.maxis.taskflow_session import TaskFlowPreviewHost
 from app.agent.workflow.question_receipt import (
     ReceiptClaim,
     claim_question_receipt,
@@ -56,6 +57,9 @@ from app.agent.workflow.question_receipt import (
 log = logging.getLogger("agent.chat")
 
 RECURSION_LIMIT = 40        # 왕복 상한을 코드로 걸어 두었지만, 그래프 차원의 안전망도 둔다
+# No production composition is installed until immutable release, ACL/retention and
+# nested budget enforcement have real verifiers. This is not a user preference.
+_taskflow_previews = TaskFlowPreviewHost()
 
 
 def new_thread() -> str:
@@ -852,6 +856,7 @@ def _prepare_turn(
     question_receipt=None,
     engine: str = "",
     profile: str = "",
+    taskflow_admission: str | None = None,
 ) -> _PreparedTurn:
     """Build one ask/stream input from the same checkpoint and turn-reset boundary."""
     try:
@@ -891,6 +896,7 @@ def _prepare_turn(
             ))
         else:
             initial.update(_turn_start_patch(message_text, prior))
+        _taskflow_previews.begin_turn(thread_id, message_text, taskflow_admission)
     except Exception as exc:
         if claim and claim.owns_lease:
             release_question_receipt(claim)
@@ -930,6 +936,9 @@ def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "",
     too_long = _guard(text)
     if too_long:
         return {"thread_id": tid, "ok": False, "reply": too_long, "error": too_long, "trace": []}
+    # Invalidate at admission, before waiting for a preview's turn lock. The old
+    # remote call may finish, but it must not start another read/dispatch meanwhile.
+    taskflow_admission = _taskflow_previews.admit(tid)
     log.info("[%s] 요청 수신 chars=%d receipt=%s", tid, len(text or ""),
              bool(question_receipt))
     meter = _usage.Meter()
@@ -938,6 +947,7 @@ def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "",
         prepared = _prepare_turn(
             graph, thread_id=tid, text=text, user_role=user_role, user_id=user_id,
             question_receipt=question_receipt, engine=engine, profile=profile,
+            taskflow_admission=taskflow_admission,
         )
         if prepared.error:
             return {"thread_id": tid, "ok": False, "reply": "",
@@ -1287,7 +1297,27 @@ def snapshot(thread_id: str) -> dict:
         st = get_graph().get_state(_config(thread_id))
     except Exception:
         return {}
-    return _shape(thread_id, dict(st.values or {}), st)
+    out = _shape(thread_id, dict(st.values or {}), st)
+    preview = _taskflow_previews.status(thread_id)
+    if preview:
+        out["taskflowPreview"] = preview
+    return out
+
+
+def taskflow_preview(thread_id: str):
+    """Internal read-only preview; no HTTP entry point or user-selectable adapter.
+
+    A successful result is not adopted as the graph draft or issued an approval.
+    Future admission still needs the ordinary Auditor/propose/ActionExecutor path.
+    """
+    graph = get_graph()
+    with question_turn_lock(thread_id):
+        snap = graph.get_state(_config(thread_id))
+        revision = _checkpoint_revision(snap)
+        return _taskflow_previews.run(
+            thread_id, dict(snap.values or {}), revision,
+            lambda: _checkpoint_revision(graph.get_state(_config(thread_id))),
+        )
 
 
 def evaluation_snapshot(thread_id: str) -> dict:
@@ -1737,6 +1767,7 @@ def request_stop(thread_id: str) -> bool:
     if not tid:
         return False
     _STOP.add(tid)
+    _taskflow_previews.cancel(tid)
     log.info("[%s] 중단 요청", tid)
     return True
 
@@ -1761,6 +1792,8 @@ def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = "
         yield {"type": "final", "thread_id": tid, "ok": False, "reply": too_long,
                "error": too_long, "trace": []}
         return
+    # Same admission boundary as ask(); do not wait for remote preview completion.
+    taskflow_admission = _taskflow_previews.admit(tid)
     log.info("[%s] 스트림 요청 수신 chars=%d receipt=%s", tid, len(text or ""),
              bool(question_receipt))
     meter = _usage.Meter()
@@ -1771,6 +1804,7 @@ def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = "
         prepared = _prepare_turn(
             graph, thread_id=tid, text=text, user_role=user_role, user_id=user_id,
             question_receipt=question_receipt, engine=engine, profile=profile,
+            taskflow_admission=taskflow_admission,
         )
         if prepared.error:
             yield {"type": "final", "thread_id": tid, "ok": False, "reply": "",

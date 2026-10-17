@@ -1,14 +1,15 @@
 # Research → Task draft: TaskFlow v1 기반 계약
 
-상태: **로컬 계약·조정기·Workflow API transport 구현, 제품 경로 미연결**.
-`workflow/session.py`, HTTP API, 기본 route와 승인/쓰기 경로는 그대로다.
-실제 권한/조회 adapter와 capability 검증을 구현하기 전 이 모듈을 사용자 경로에 연결하지 않는다.
+상태: **로컬 계약·조정기·Workflow API transport와 session preview/조회 연결 구현**.
+`workflow/session.py`의 내부 `taskflow_preview()`가 실제 QueryRunner를 호출하지만 기본
+runtime composition은 비어 있다. HTTP/UI 실행 진입점, 기본 route, 승인/쓰기 경로는 변경하지 않는다.
+서버의 불변 릴리스·Knowledge ACL/보존·중첩 예산 verifier 구현 전 사용자 실행을 활성화하지 않는다.
 
 ## 소유권과 경계
 
 | 소유자 | 책임 | 이번 구현 |
 |---|---|---|
-| LTM | 현재 권한·scope, snapshot, 추가 조회, 취소, 결과 검증, 승인·Jira 쓰기 | 계약·local continuation coordinator, 실제 조회 adapter는 후속 |
+| LTM | 현재 권한·scope, snapshot, 추가 조회, 취소, 결과 검증, 승인·Jira 쓰기 | coordinator + session preview 수명 + 실제 QueryRunner 조회; 승인 채택은 후속 |
 | Dify | 요청 분류 → bounded research → 근거 정리 → WorkDraft 생성 | 합성 조회 3개 실행 성공, Research 기능 검증 실패; 부모 WorkDraft 미배포 |
 | MAXIS | private Research wrapper 등록·서비스 제공 | 등록 미실행; Dify의 합성 Knowledge와 구분 |
 
@@ -68,8 +69,30 @@ tombstone으로 재실행을 막는다. 30분 만료는 접근/`prune()` 때 처
 
 ## 검증과 배포 조건
 
+### 로컬 session preview 연결
+
+`TaskFlowPreviewHost`는 기존 ask/stream 새 턴에서 fresh Jira actor와 실제 제출 문장의
+digest를 결속한다. 기존 checkpoint를 뒤늦게 채택하거나, 다른 actor·thread·문장·revision으로
+재사용하지 않는다. 초기 근거는 그 턴의 사용자 의도만 보내며 과거 checkpoint 조회 내용은
+재수출하지 않는다. 추가 근거는 `LocalTaskFlowReader`가 기존 compact compiler → QueryRunner →
+조회 HMAC/provenance → ContextGuard/DLP 경로로 다시 획득한다. source별 독립 실행으로
+묵시적 다중-source 추가 조회를 막고 기존 scope·pagination·불완전 범위 표시를 유지한다.
+
+기존 stop/새 턴은 preview를 취소하고 snapshot은 내용 없는 상태만 보여 준다.
+새 턴 취소는 ask/stream이 turn lock을 기다리기 전에 수행한다. 이미 진행 중인 원격 호출은
+강제 종료하지 못하지만 그 응답으로 추가 조회·재호출을 진행하지 않는다. checkpoint 변경은
+기존 turn lock 안에서 직렬화하며, 이후 실제 준비된 턴만 새 actor/문장 결속을 갖는다.
+입장 시 발급한 process-local 단조 증가 admission token도 검증한다. 더 새 요청 또는 stop이
+도착한 뒤 늦게 끝난 이전 턴 준비는 새 eligibility를 만들거나 새 admission을 취소할 수 없다.
+이 내부 preview는 draft/pending/approval token을 만들거나 graph checkpoint를 수정하지 않는다.
+서버 verifier 구현은 별도이며 `enabled=true` 같은 설정으로 통과할 수 없다. DEV의 고정
+합성 데이터 정책은 유지하고 로컬 업무 snapshot preview는 허용하지 않는다. 만료 정리는
+session 접근 때 수행하며 idle sweep, 실제 UI 진입·승인 채택·실서버 검증은 아직 후속이다.
+
 `tests/agent/integration/test_maxis_taskflow.py`는 실제 계약·ResponseGuard와 fake trusted adapter를
 조합한다. 실제 Dify/native Agent, 네트워크 중단, 사용자 UI, 실제 품질을 검증한 결과가 아니다.
+`test_maxis_taskflow_session.py`는 실제 session/QueryRunner/ContextGuard와 in-process jira820을
+연결하고 외부 authority/release/remote 실행만 test double로 대체한다.
 실서버 확인·synthetic DEV 배포·canary → 20 positive/10 edge 독립 사례 → 기존 배터리 회귀 →
 동일 조건의 5회 균형 비교 순으로 진행한다. 자동 계약 성공과 실제 사용 가능한 초안의 비율을
 분리하며, 기대 source recall·직접 품질·지연·tokens·비용의 미관측값을 0으로 바꾸지 않는다.
