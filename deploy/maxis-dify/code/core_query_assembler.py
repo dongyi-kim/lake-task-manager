@@ -1,74 +1,23 @@
 """Assemble Query provenance without changing model meaning; both final guards remain mandatory.
 
-Dify Code fragment, stdlib only. The builder prepends shared draft validation
+Dify Code fragment, stdlib only. The builder prepends shared draft validation and context
 primitives and appends the three reviewed schema constants. Unbound or malformed inputs fail without a partial candidate.
 Internal coverage labels map exactly to the unchanged canonical boolean; this
 wire adapter does not coerce malformed booleans or infer an omitted value.
 """
-import hashlib
-import re
-
 _QUERY_SCHEMA_JSON = None
 _QUERY_SCHEMA_SHA256 = None
 _DRAFT_SCHEMA = None
-_MAX_CONTEXT_PACK_UTF8_BYTES = 6144  # app.agent.maxis.context_guard / Knowledge Guard
-_MAX_MODEL_INPUT_UTF8_BYTES = 9000  # Knowledge Guard output bound
 _MAX_DRAFT_UTF8_BYTES = 32768
 _COVERAGE_TO_EXHAUSTIVE = {"exhaustive": True, "standard": False}
-_INPUT_FIELDS = {"contract", "context_pack", "role_id", "correlation_id", "output_contract",
-                 "workflow_version", "knowledge_version", "knowledge_proof", "knowledge_context"}
-_PACK_FIELDS = {"contract", "request_id", "use_case", "query", "pseudonymous_user", "requested_at", "scope",
-                "sources", "facts", "metrics", "role_context", "freshness", "partial", "flags",
-                "knowledge_manifest_sha256", "payload_schema_json", "payload_schema_sha256"}
-_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
-_DIGEST = re.compile(r"[0-9a-f]{64}")
-_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 
 
 def _fail():
     raise ValueError("invalid_core_query_draft")
 
 
-def _digest(value):
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
 def _input(raw):
-    incoming = _decode(raw, _MAX_MODEL_INPUT_UTF8_BYTES, _fail)
-    if (set(incoming) != _INPUT_FIELDS or _canonical(incoming) != raw
-            or incoming["contract"] != "ltm-model-input.v1" or incoming["role_id"] != "query_specialist"
-            or incoming["output_contract"] != "remote-role-result.v1"):
-        _fail()
-    pack = incoming["context_pack"]
-    if (not isinstance(pack, dict) or set(pack) != _PACK_FIELDS
-            or len(_canonical(pack).encode("utf-8")) > _MAX_CONTEXT_PACK_UTF8_BYTES
-            or pack["contract"] != "evidence-pack.v1" or pack["use_case"] != "query_specialist"
-            or not isinstance(incoming["correlation_id"], str) or not _ID.fullmatch(incoming["correlation_id"])
-            or pack["request_id"] != incoming["correlation_id"] or not isinstance(_DRAFT_SCHEMA, dict)
-            or not isinstance(_QUERY_SCHEMA_JSON, str) or _digest(_QUERY_SCHEMA_JSON) != _QUERY_SCHEMA_SHA256
-            or pack["payload_schema_json"] != _QUERY_SCHEMA_JSON or pack["payload_schema_sha256"] != _QUERY_SCHEMA_SHA256):
-        _fail()
-    schema = _decode(_QUERY_SCHEMA_JSON, 4096, _fail)
-    if _canonical(schema) != _QUERY_SCHEMA_JSON:
-        _fail()
-    for value, pattern in ((pack["knowledge_manifest_sha256"], _DIGEST), (incoming["workflow_version"], _UUID)):
-        if not isinstance(value, str) or not pattern.fullmatch(value):
-            _fail()
-    if (not isinstance(incoming["knowledge_version"], str) or not 0 < len(incoming["knowledge_version"]) <= 120
-            or not isinstance(incoming["knowledge_proof"], str)
-            or not re.fullmatch(r"LTM_RELEASE_SENTINEL_V1=[^\r\n]{1,216}", incoming["knowledge_proof"])):
-        _fail()
-    rows = pack["sources"]
-    if not isinstance(rows, list) or len(rows) > 10:
-        _fail()
-    sources = set()
-    for row in rows:
-        if (not isinstance(row, dict) or not isinstance(row.get("source_id"), str)
-                or not _ID.fullmatch(row["source_id"]) or row["source_id"] in sources
-                or not isinstance(row.get("content"), str) or _digest(row["content"]) != row.get("content_sha256")):
-            _fail()
-        sources.add(row["source_id"])
-    return incoming, pack, schema, sources
+    return _draft_context(raw, "query_specialist", _QUERY_SCHEMA_JSON, _QUERY_SCHEMA_SHA256, _DRAFT_SCHEMA, _fail)
 
 
 def main(model_input, candidate):

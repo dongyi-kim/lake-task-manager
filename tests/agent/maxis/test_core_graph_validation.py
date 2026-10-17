@@ -160,7 +160,7 @@ def test_canonical_query_contract_change_requires_independent_review(modules, ra
     _reject_both(modules, raw_source)
 
 
-@pytest.mark.parametrize("asset", ["code/core_control_route.py", "code/core_query_assembler.py", "code/core_draft_validation.py",
+@pytest.mark.parametrize("asset", ["code/core_control_route.py", "code/core_query_assembler.py", "code/core_draft_validation.py", "code/core_draft_context.py",
                                   "code/core_query_input.py", "prompts/core_control.md", "prompts/core_query.md"])
 def test_asset_and_embedded_content_cannot_drift_together(modules, raw_source, monkeypatch, asset):
     path = ROOT / "deploy/maxis-dify" / asset
@@ -169,7 +169,7 @@ def test_asset_and_embedded_content_cannot_drift_together(modules, raw_source, m
     monkeypatch.setattr(Path, "read_text", lambda self, *args, **kwargs: changed if self == path else original(self, *args, **kwargs))
     nodes = _nodes(raw_source)
     if asset.startswith("code/"):
-        title = {"code/core_query_assembler.py": "Query Assembler", "code/core_draft_validation.py": "Query Assembler",
+        title = {"code/core_query_assembler.py": "Query Assembler", "code/core_draft_validation.py": "Query Assembler", "code/core_draft_context.py": "Query Assembler",
                  "code/core_control_route.py": "Core Control Route", "code/core_query_input.py": "Query Input"}[asset]
         original_fragment = original(path, encoding="utf-8").rstrip()
         assert original_fragment in nodes[title]["code"]

@@ -2484,18 +2484,13 @@ workflow:
           \ schema[\"items\"], root, fail, depth + 1)\n    elif isinstance(value,\
           \ str):\n        if (not schema.get(\"minLength\", 0) <= len(value) <= schema.get(\"\
           maxLength\", len(value))\n                or \"pattern\" in schema and re.fullmatch(schema[\"\
-          pattern\"], value) is None):\n            fail()\n\n\"\"\"Assemble Query\
-          \ provenance without changing model meaning; both final guards remain mandatory.\n\
-          \nDify Code fragment, stdlib only. The builder prepends shared draft validation\n\
-          primitives and appends the three reviewed schema constants. Unbound or malformed\
-          \ inputs fail without a partial candidate.\nInternal coverage labels map\
-          \ exactly to the unchanged canonical boolean; this\nwire adapter does not\
-          \ coerce malformed booleans or infer an omitted value.\n\"\"\"\nimport hashlib\n\
-          import re\n\n_QUERY_SCHEMA_JSON = None\n_QUERY_SCHEMA_SHA256 = None\n_DRAFT_SCHEMA\
-          \ = None\n_MAX_CONTEXT_PACK_UTF8_BYTES = 6144  # app.agent.maxis.context_guard\
-          \ / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES = 9000  # Knowledge Guard\
-          \ output bound\n_MAX_DRAFT_UTF8_BYTES = 32768\n_COVERAGE_TO_EXHAUSTIVE =\
-          \ {\"exhaustive\": True, \"standard\": False}\n_INPUT_FIELDS = {\"contract\"\
+          pattern\"], value) is None):\n            fail()\n\n\"\"\"Original-input\
+          \ binding only; no role payload traversal or meaning decisions.\n\nPrepend\
+          \ core_draft_validation.py. The role supplies its exact schema constants\
+          \ and\na nonreturning fail callback raising ValueError. Final guards remain\
+          \ mandatory.\n\"\"\"\nimport hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES\
+          \ = 6144  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
+          \ = 9000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
           , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
           ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
           , \"knowledge_context\"}\n_PACK_FIELDS = {\"contract\", \"request_id\",\
@@ -2505,71 +2500,81 @@ workflow:
           , \"payload_schema_json\", \"payload_schema_sha256\"}\n_ID = re.compile(r\"\
           [A-Za-z0-9][A-Za-z0-9._:-]{0,127}\")\n_DIGEST = re.compile(r\"[0-9a-f]{64}\"\
           )\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
-          )\n\n\ndef _fail():\n    raise ValueError(\"invalid_core_query_draft\")\n\
-          \n\ndef _digest(value):\n    return hashlib.sha256(value.encode(\"utf-8\"\
-          )).hexdigest()\n\n\ndef _input(raw):\n    incoming = _decode(raw, _MAX_MODEL_INPUT_UTF8_BYTES,\
-          \ _fail)\n    if (set(incoming) != _INPUT_FIELDS or _canonical(incoming)\
+          )\n\n\ndef _digest(value):\n    return hashlib.sha256(value.encode(\"utf-8\"\
+          )).hexdigest()\n\n\ndef _draft_context(raw, role_id, schema_json, schema_sha256,\
+          \ draft_schema, fail):\n    incoming = _decode(raw, _MAX_MODEL_INPUT_UTF8_BYTES,\
+          \ fail)\n    if (set(incoming) != _INPUT_FIELDS or _canonical(incoming)\
           \ != raw\n            or incoming[\"contract\"] != \"ltm-model-input.v1\"\
-          \ or incoming[\"role_id\"] != \"query_specialist\"\n            or incoming[\"\
-          output_contract\"] != \"remote-role-result.v1\"):\n        _fail()\n   \
-          \ pack = incoming[\"context_pack\"]\n    if (not isinstance(pack, dict)\
-          \ or set(pack) != _PACK_FIELDS\n            or len(_canonical(pack).encode(\"\
-          utf-8\")) > _MAX_CONTEXT_PACK_UTF8_BYTES\n            or pack[\"contract\"\
-          ] != \"evidence-pack.v1\" or pack[\"use_case\"] != \"query_specialist\"\n\
-          \            or not isinstance(incoming[\"correlation_id\"], str) or not\
-          \ _ID.fullmatch(incoming[\"correlation_id\"])\n            or pack[\"request_id\"\
-          ] != incoming[\"correlation_id\"] or not isinstance(_DRAFT_SCHEMA, dict)\n\
-          \            or not isinstance(_QUERY_SCHEMA_JSON, str) or _digest(_QUERY_SCHEMA_JSON)\
-          \ != _QUERY_SCHEMA_SHA256\n            or pack[\"payload_schema_json\"]\
-          \ != _QUERY_SCHEMA_JSON or pack[\"payload_schema_sha256\"] != _QUERY_SCHEMA_SHA256):\n\
-          \        _fail()\n    schema = _decode(_QUERY_SCHEMA_JSON, 4096, _fail)\n\
-          \    if _canonical(schema) != _QUERY_SCHEMA_JSON:\n        _fail()\n   \
-          \ for value, pattern in ((pack[\"knowledge_manifest_sha256\"], _DIGEST),\
-          \ (incoming[\"workflow_version\"], _UUID)):\n        if not isinstance(value,\
-          \ str) or not pattern.fullmatch(value):\n            _fail()\n    if (not\
+          \ or incoming[\"role_id\"] != role_id\n            or incoming[\"output_contract\"\
+          ] != \"remote-role-result.v1\"):\n        fail()\n    pack = incoming[\"\
+          context_pack\"]\n    if (not isinstance(pack, dict) or set(pack) != _PACK_FIELDS\n\
+          \            or len(_canonical(pack).encode(\"utf-8\")) > _MAX_CONTEXT_PACK_UTF8_BYTES\n\
+          \            or pack[\"contract\"] != \"evidence-pack.v1\" or pack[\"use_case\"\
+          ] != role_id\n            or not isinstance(incoming[\"correlation_id\"\
+          ], str) or not _ID.fullmatch(incoming[\"correlation_id\"])\n           \
+          \ or pack[\"request_id\"] != incoming[\"correlation_id\"] or not isinstance(draft_schema,\
+          \ dict)\n            or not isinstance(schema_json, str) or _digest(schema_json)\
+          \ != schema_sha256\n            or pack[\"payload_schema_json\"] != schema_json\
+          \ or pack[\"payload_schema_sha256\"] != schema_sha256):\n        fail()\n\
+          \    schema = _decode(schema_json, 4096, fail)\n    if _canonical(schema)\
+          \ != schema_json:\n        fail()\n    for value, pattern in ((pack[\"knowledge_manifest_sha256\"\
+          ], _DIGEST), (incoming[\"workflow_version\"], _UUID)):\n        if not isinstance(value,\
+          \ str) or not pattern.fullmatch(value):\n            fail()\n    if (not\
           \ isinstance(incoming[\"knowledge_version\"], str) or not 0 < len(incoming[\"\
           knowledge_version\"]) <= 120\n            or not isinstance(incoming[\"\
           knowledge_proof\"], str)\n            or not re.fullmatch(r\"LTM_RELEASE_SENTINEL_V1=[^\\\
-          r\\n]{1,216}\", incoming[\"knowledge_proof\"])):\n        _fail()\n    rows\
+          r\\n]{1,216}\", incoming[\"knowledge_proof\"])):\n        fail()\n    rows\
           \ = pack[\"sources\"]\n    if not isinstance(rows, list) or len(rows) >\
-          \ 10:\n        _fail()\n    sources = set()\n    for row in rows:\n    \
-          \    if (not isinstance(row, dict) or not isinstance(row.get(\"source_id\"\
+          \ 10:\n        fail()\n    sources = set()\n    for row in rows:\n     \
+          \   if (not isinstance(row, dict) or not isinstance(row.get(\"source_id\"\
           ), str)\n                or not _ID.fullmatch(row[\"source_id\"]) or row[\"\
           source_id\"] in sources\n                or not isinstance(row.get(\"content\"\
           ), str) or _digest(row[\"content\"]) != row.get(\"content_sha256\")):\n\
-          \            _fail()\n        sources.add(row[\"source_id\"])\n    return\
-          \ incoming, pack, schema, sources\n\n\ndef main(model_input, candidate):\n\
-          \    \"\"\"Return an unaccepted remote candidate; no I/O, repair, or meaning\
-          \ reclassification.\"\"\"\n    try:\n        incoming, pack, schema, sources\
-          \ = _input(model_input)\n        plan = _decode(candidate, _MAX_DRAFT_UTF8_BYTES,\
-          \ _fail)\n        _validate(plan, _DRAFT_SCHEMA, _DRAFT_SCHEMA, _fail)\n\
-          \        status, payload, missing = plan[\"status\"], plan[\"payload\"],\
-          \ plan[\"missing_inputs\"]\n        if (plan[\"contract\"] != \"query-draft.v2\"\
-          \ or any(not value.strip() for value in missing)\n                or status\
-          \ == \"ok\" and missing or status != \"ok\" and payload\n              \
-          \  or status == \"needs_input\" and not missing or status == \"blocked\"\
-          \ and missing):\n            _fail()\n        claims, bindings, citations,\
-          \ citation_ids = [], [], [], {}\n\n        def narrative(wrapped, pointer):\n\
-          \            value, kind, refs = (wrapped[key] for key in (\"value\", \"\
-          kind\", \"source_ids\"))\n            if any(ref not in sources for ref\
-          \ in refs):\n                _fail()\n            if value.strip():\n  \
-          \              for ref in refs:\n                    if ref not in citation_ids:\n\
-          \                        citation_ids[ref] = \"cite-\" + str(len(citations)\
-          \ + 1)\n                        citations.append({\"citation_id\": citation_ids[ref],\
-          \ \"source_id\": ref, \"locator\": \"\"})\n                claim_id = \"\
-          claim-\" + str(len(claims) + 1)\n                claims.append({\"claim_id\"\
-          : claim_id, \"kind\": kind, \"text\": value,\n                         \
-          \      \"citation_ids\": [citation_ids[ref] for ref in refs]})\n       \
-          \         bindings.append({\"path\": pointer, \"claim_ids\": [claim_id]})\n\
-          \            return value\n\n        output = {}\n        if \"reads\" in\
-          \ payload:\n            output[\"reads\"] = []\n            for index, read\
-          \ in enumerate(payload[\"reads\"]):\n                row = {key: narrative(read[key],\
-          \ f\"/reads/{index}/{key}\")\n                       for key in (\"source\"\
-          , \"subject\", \"where\") if key in read}\n                if \"coverage\"\
-          \ in read:\n                    row[\"exhaustive\"] = _COVERAGE_TO_EXHAUSTIVE[read[\"\
-          coverage\"]]\n                output[\"reads\"].append(row)\n        if\
-          \ \"uncertainty\" in payload:\n            output[\"uncertainty\"] = [narrative(row,\
-          \ f\"/uncertainty/{index}\") for index, row in enumerate(payload[\"uncertainty\"\
+          \            fail()\n        sources.add(row[\"source_id\"])\n    return\
+          \ incoming, pack, schema, sources\n\n\"\"\"Assemble Query provenance without\
+          \ changing model meaning; both final guards remain mandatory.\n\nDify Code\
+          \ fragment, stdlib only. The builder prepends shared draft validation and\
+          \ context\nprimitives and appends the three reviewed schema constants. Unbound\
+          \ or malformed inputs fail without a partial candidate.\nInternal coverage\
+          \ labels map exactly to the unchanged canonical boolean; this\nwire adapter\
+          \ does not coerce malformed booleans or infer an omitted value.\n\"\"\"\n\
+          _QUERY_SCHEMA_JSON = None\n_QUERY_SCHEMA_SHA256 = None\n_DRAFT_SCHEMA =\
+          \ None\n_MAX_DRAFT_UTF8_BYTES = 32768\n_COVERAGE_TO_EXHAUSTIVE = {\"exhaustive\"\
+          : True, \"standard\": False}\n\n\ndef _fail():\n    raise ValueError(\"\
+          invalid_core_query_draft\")\n\n\ndef _input(raw):\n    return _draft_context(raw,\
+          \ \"query_specialist\", _QUERY_SCHEMA_JSON, _QUERY_SCHEMA_SHA256, _DRAFT_SCHEMA,\
+          \ _fail)\n\n\ndef main(model_input, candidate):\n    \"\"\"Return an unaccepted\
+          \ remote candidate; no I/O, repair, or meaning reclassification.\"\"\"\n\
+          \    try:\n        incoming, pack, schema, sources = _input(model_input)\n\
+          \        plan = _decode(candidate, _MAX_DRAFT_UTF8_BYTES, _fail)\n     \
+          \   _validate(plan, _DRAFT_SCHEMA, _DRAFT_SCHEMA, _fail)\n        status,\
+          \ payload, missing = plan[\"status\"], plan[\"payload\"], plan[\"missing_inputs\"\
+          ]\n        if (plan[\"contract\"] != \"query-draft.v2\" or any(not value.strip()\
+          \ for value in missing)\n                or status == \"ok\" and missing\
+          \ or status != \"ok\" and payload\n                or status == \"needs_input\"\
+          \ and not missing or status == \"blocked\" and missing):\n            _fail()\n\
+          \        claims, bindings, citations, citation_ids = [], [], [], {}\n\n\
+          \        def narrative(wrapped, pointer):\n            value, kind, refs\
+          \ = (wrapped[key] for key in (\"value\", \"kind\", \"source_ids\"))\n  \
+          \          if any(ref not in sources for ref in refs):\n               \
+          \ _fail()\n            if value.strip():\n                for ref in refs:\n\
+          \                    if ref not in citation_ids:\n                     \
+          \   citation_ids[ref] = \"cite-\" + str(len(citations) + 1)\n          \
+          \              citations.append({\"citation_id\": citation_ids[ref], \"\
+          source_id\": ref, \"locator\": \"\"})\n                claim_id = \"claim-\"\
+          \ + str(len(claims) + 1)\n                claims.append({\"claim_id\": claim_id,\
+          \ \"kind\": kind, \"text\": value,\n                               \"citation_ids\"\
+          : [citation_ids[ref] for ref in refs]})\n                bindings.append({\"\
+          path\": pointer, \"claim_ids\": [claim_id]})\n            return value\n\
+          \n        output = {}\n        if \"reads\" in payload:\n            output[\"\
+          reads\"] = []\n            for index, read in enumerate(payload[\"reads\"\
+          ]):\n                row = {key: narrative(read[key], f\"/reads/{index}/{key}\"\
+          )\n                       for key in (\"source\", \"subject\", \"where\"\
+          ) if key in read}\n                if \"coverage\" in read:\n          \
+          \          row[\"exhaustive\"] = _COVERAGE_TO_EXHAUSTIVE[read[\"coverage\"\
+          ]]\n                output[\"reads\"].append(row)\n        if \"uncertainty\"\
+          \ in payload:\n            output[\"uncertainty\"] = [narrative(row, f\"\
+          /uncertainty/{index}\") for index, row in enumerate(payload[\"uncertainty\"\
           ])]\n        if status == \"ok\":\n            _validate(output, schema,\
           \ schema, _fail)\n        if len(claims) > 40:\n            _fail()\n  \
           \      result = {\"contract\": \"remote-role-result.v1\", \"role_id\": \"\

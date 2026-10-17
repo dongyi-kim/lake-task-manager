@@ -29,7 +29,7 @@ ROUTE_SOURCE_SHA256 = "b0acefe215463bff0787243da2423057b009315f5504e91ffa544adf6
 CONTROL_SYSTEM_SHA256 = "7017b30253765eab4e41723de73a3d5014c1f5c2b820fedcbaab80cf08ddae60"
 QUERY_SYSTEM_SHA256 = "eb67823623c14941b9cd6142b7fc0ffb0c73f13ddc8510a84e68a0e364f431c7"
 QUERY_SCHEMA_SHA256 = "87365a165718e4ef5597083f1be9f88a09170796927154d8e2e82fdaa2d8e1ad"
-QUERY_ASSEMBLER_SHA256 = "399eac4d924d9aaa2afaaa139ba1e0b1df2b0bf11ea7fdbda0b73ace6267be96"
+QUERY_ASSEMBLER_SHA256 = "dbbc9ea755ed2eb17dc0094d85745b97d57661cb45098c025252953a94161de4"
 QUERY_INPUT_SHA256 = "e0eaf402ee038b001946e38c36212eee2f1973c6abadc26b0d2622507fa7779f"
 QUERY_USER_SHA256 = "28e26f7e1fa1605b12d6b1c4835417cd444005403f724908d92e04575071c1d0"
 _BASE_NODES = {
@@ -81,7 +81,7 @@ def query_assets(root: Path, project) -> dict:
     spec.loader.exec_module(contract)
     native = contract.build_draft_schema(json.loads(schema_json), project)
     assembler = "\n\n".join((root / "deploy/maxis-dify/code" / name).read_text(encoding="utf-8").rstrip()
-                            for name in ("core_draft_validation.py", "core_query_assembler.py"))
+                            for name in ("core_draft_validation.py", "core_draft_context.py", "core_query_assembler.py"))
     assembler += (f"\n\n# Generated canonical bindings; not model-authored metadata.\n"
                   f"_QUERY_SCHEMA_JSON = {schema_json!r}\n_QUERY_SCHEMA_SHA256 = {digest!r}\n"
                   f"_DRAFT_SCHEMA = {native!r}")

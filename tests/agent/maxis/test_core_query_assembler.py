@@ -36,7 +36,7 @@ def compiled():
     schema, digest = canonical_payload_schema(role_output_schema("query_specialist"))
     draft = contract.build_draft_schema(json.loads(schema), project)
     source = "\n\n".join((DIRECTORY / "code" / name).read_text(encoding="utf-8").rstrip()
-                         for name in ("core_draft_validation.py", "core_query_assembler.py"))
+                         for name in ("core_draft_validation.py", "core_draft_context.py", "core_query_assembler.py"))
     namespace = {"__name__": "query_assembler_test"}
     exec(compile(source + f"\n_QUERY_SCHEMA_JSON = {schema!r}\n_QUERY_SCHEMA_SHA256 = {digest!r}\n_DRAFT_SCHEMA = {draft!r}\n",
                  "<query-assembler>", "exec"), namespace)

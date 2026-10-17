@@ -20,7 +20,9 @@ copy는 ignored `.cache/`에 두며 커밋하지 않는다. 변경 이력·검�
 | `policy_query_graph.py` | Core/PMO의 업무 입력과 정책 검색어 분리 |
 | `core_control_graph.py`, `core_graph_validation.py` | Core 제어/업무 분기 생성과 원본 검증 |
 | `core_query_contract.py` | canonical Query 값 제약에서 내부 단위 계약 생성 |
+| `core_request_contract.py`, `code/core_request_assembler.py` | 실제 RequestArchitect 계약에서 draft 생성·의미 보존 조립; 그래프 연결 전 단위 |
 | `code/core_draft_validation.py` | 역할 의미를 다루지 않는 엄격한 JSON·schema 검사; builder가 조립 코드 앞에 결합 |
+| `code/core_draft_context.py` | 원본 입력의 Role·schema·출처 hash 결속 검사; 의미·승인 판단 없음 |
 | `graph_receipt.py` | 로컬 graph와 서버 export의 설정 비교 코드(실행 결과가 아님) |
 | `environments/dev.yml` | 현재 DEV 환경의 비밀 없는 binding |
 | `environments/prod.template.yml` | 독립 PROD 환경을 준비하는 template |
