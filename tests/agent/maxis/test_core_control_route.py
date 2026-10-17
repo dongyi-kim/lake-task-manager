@@ -93,7 +93,7 @@ def test_actual_factory_through_knowledge_guard_selects_control(activation):
     assert ROUTE.main(result["model_input"]) == {"route": "control"}
 
 
-@pytest.mark.parametrize("role", ["request_architect", "knowledge_curator",
+@pytest.mark.parametrize("role", ["knowledge_curator",
                                   "work_architect", "auditor", "result_integrator"])
 def test_business_defaults_to_semantic_despite_control_words(semantic, role):
     semantic["role_id"] = semantic["context_pack"]["use_case"] = role
@@ -104,8 +104,9 @@ def test_business_defaults_to_semantic_despite_control_words(semantic, role):
     assert semantic == before
 
 
-def test_unbound_query_template_fails_closed(semantic):
-    semantic["role_id"] = semantic["context_pack"]["use_case"] = "query_specialist"
+@pytest.mark.parametrize("role", ["query_specialist", "request_architect"])
+def test_unbound_typed_role_template_fails_closed(semantic, role):
+    semantic["role_id"] = semantic["context_pack"]["use_case"] = role
     rejected(semantic)
 
 

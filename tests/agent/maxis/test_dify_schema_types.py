@@ -10,7 +10,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[3]
 CASES = [
     ("agent_core", "Contract LLM"), ("agent_core", "Control LLM"),
-    ("agent_core", "Query LLM"),
+    ("agent_core", "Query LLM"), ("agent_core", "Request LLM"),
     ("editor_author", "DraftSpec LLM"), ("editor_author", "Description LLM"),
     ("editor_author", "Comment LLM"), ("editor_author", "Control LLM"),
     ("pmo_brief", "Contract LLM"),

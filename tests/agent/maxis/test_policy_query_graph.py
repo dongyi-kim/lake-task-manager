@@ -28,6 +28,22 @@ def _load(name):
 graph = _load("policy_query_graph")
 
 
+def _copy_bundle_sources(target):
+    shutil.copytree(ROOT / "deploy/maxis-dify", target / "deploy/maxis-dify")
+    shutil.copytree(ROOT / "knowledge", target / "knowledge")
+    (target / "config").mkdir()
+    for filename in ("maxis-workflows.yml", "maxis-knowledge.yml"):
+        shutil.copy2(ROOT / "config" / filename, target / "config" / filename)
+    request_prompt = Path("app/agent/prompts/roles/request_architect.md")
+    (target / request_prompt).parent.mkdir(parents=True)
+    shutil.copy2(ROOT / request_prompt, target / request_prompt)
+
+
+def test_policy_shortcut_fixture_is_valid_before_mutation(tmp_path):
+    _copy_bundle_sources(tmp_path / "repo")
+    _load("validate_bundle").validate_bundle(tmp_path / "repo")
+
+
 @pytest.mark.parametrize("role", _POLICY_TERMS)
 @pytest.mark.parametrize("prefix", ("원문 요청", "variant 사용자 요청 [[person:opaque-ref]]\n  ",
                                      "No invented facts; preserve 2 hours / 30 minutes."))
@@ -107,8 +123,8 @@ def test_built_graph_matches_source_and_only_changes_retrieval_unit(key):
             before["workflow"]["graph"][field].sort(key=lambda row: row["id"])
     assert rebuilt == before
     nodes = {node["data"]["title"]: node for node in dsl["workflow"]["graph"]["nodes"]}
-    assert len(nodes) == (19 if key == "agent_core" else 12)
-    assert len(dsl["workflow"]["graph"]["edges"]) == (21 if key == "agent_core" else 12)
+    assert len(nodes) == (21 if key == "agent_core" else 12)
+    assert len(dsl["workflow"]["graph"]["edges"]) == (24 if key == "agent_core" else 12)
     graph.validate_node(list(nodes.values()), key, "start")
     assert nodes["Policy Query"]["data"]["code"] == graph.source()
     assert nodes["Role Knowledge"]["data"]["query_variable_selector"] == [graph.NODE_ID, "query"]
@@ -161,11 +177,7 @@ def test_bundle_and_materializer_reject_policy_shortcuts(tmp_path, monkeypatch, 
     materializer, validator = _load("materialize_environment"), _load("validate_bundle")
     environment = materializer.load_environment(ROOT / "deploy/maxis-dify/environments/dev.yml")
     target = tmp_path / "repo"
-    shutil.copytree(ROOT / "deploy/maxis-dify", target / "deploy/maxis-dify")
-    shutil.copytree(ROOT / "knowledge", target / "knowledge")
-    (target / "config").mkdir()
-    for filename in ("maxis-workflows.yml", "maxis-knowledge.yml"):
-        shutil.copy2(ROOT / "config" / filename, target / "config" / filename)
+    _copy_bundle_sources(target)
     path = target / environment["workflows"][key]["source_dsl"]
     dsl = yaml.safe_load(path.read_text(encoding="utf-8"))
     nodes = {node["data"]["title"]: node for node in dsl["workflow"]["graph"]["nodes"]}
