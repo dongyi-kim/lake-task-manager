@@ -454,12 +454,9 @@ def test_query_specialist_control_outcome_stops_before_reads_or_writes(
     assert visited == []
     remote_roles = [row["body"]["inputs"]["role_id"] for row in requests]
     assert remote_roles[:2] == ["request_architect", "query_specialist"]
-    # A generic error is rendered by the configured ResultIntegrator; needs_input has a
-    # deterministic renderer and needs no third semantic call. Neither path may visit an
-    # acquisition, research, drafting, approval, or execution Role.
-    assert remote_roles[2:] == (
-        ["result_integrator"] if query_status == "blocked" else []
-    )
+    # Both validated blocked guidance and needs_input use local terminal rendering.
+    # Neither may call another semantic Role or acquire, draft, approve, or execute.
+    assert remote_roles[2:] == []
     assert "pending" not in result
     snapshot = workflow_graph.get_graph().get_state({
         "configurable": {"thread_id": thread_id},
@@ -469,8 +466,16 @@ def test_query_specialist_control_outcome_stops_before_reads_or_writes(
         assert result["ok"] is True
         assert result["questions"][0]["field"] == "maxis:query_specialist:1"
     else:
+        from app.agent.maxis.recovery import recovery_for_code
+
+        recovery = recovery_for_code("unusable_result")
+        expected = recovery.message + " " + recovery.next_action
         assert result["ok"] is False
-        assert result["error"]
+        assert result["reply"] == expected
+        assert result["error"] == f"[query_specialist] {expected}"
+        assert result["questions"] == []
+        assert snapshot.values["messages"][-1].content == expected
+        assert "runtime_role_sidecars" not in result
 
 
 @pytest.mark.parametrize(
