@@ -401,6 +401,66 @@ def test_compiled_review_through_original_assembler_and_both_guards(original_pac
     assert compiled["sections"][0]["blocks"][0] == plan["sections"][0]["blocks"][0]
 
 
+@pytest.mark.parametrize("case", ["action", "missing_criterion", "document"])
+def test_description_dod_uses_existing_contract_without_rewriting_values(original_pack_case, case):
+    """Synthetic writer output tests transport, not the model's semantic quality."""
+    import hashlib
+    from app.agent.maxis import EditorDraftV1
+
+    pack, helper = original_pack_case
+    schema = EditorDraftV1.model_json_schema()
+    schema["properties"]["mode"] = {"type": "string", "const": "description"}
+    helper.set_schema(pack, schema)
+    marker, seed = "[[person:123456789abc]]", "기존 수치 7분 유지."
+    criterion = "입력 12건을 조회 전용으로 처리한다."
+    action, acceptance = "조회 처리 경로를 점검한다.", "입력별 조회 결과를 확인한다."
+    if case == "missing_criterion":
+        acceptance = "조회 결과를 어떤 기대 결과와 대조해 점검해야 하나요?"
+    elif case == "document":
+        criterion = "운영 안내는 입력 12건의 조회 전용 절차를 다룬다."
+        action = "운영 안내의 조회 절차를 작성한다."
+        acceptance = "운영 안내의 절차로 입력별 조회 결과를 확인할 수 있는지 검토한다."
+    pack["sources"][0]["content"] = "검토자 " + marker + " — " + criterion
+    pack["sources"][1]["content"] = encoded({
+        "kind": "description", "prompt": "업무의 작업과 완료 조건을 갖춰 본문을 작성해줘.",
+        "seed_html": "<p>" + seed + "</p>"})
+    for source in pack["sources"]:
+        source["content_sha256"] = hashlib.sha256(source["content"].encode()).hexdigest()
+    before = copy.deepcopy(pack)
+    view = ASSET["prepare"](encoded(helper.incoming(pack)))["model_input"]
+    units = {unit["path"]: unit for unit in json.loads(view)["sources"][0]["units"]}
+    selection = {"contract": "editor-draft-spec.v2", "status": "ok", "mode": "description", "target": "",
+                 "current_unit_ids": [units["/title"]["unit_id"], units["/content"]["unit_id"]],
+                 "context_unit_ids": [], "history_unit_ids": [], "conflicts": [],
+                 "required_link_source_ids": ["doc"], "missing_inputs": []}
+    writing = {"contract": "editor-writing.v1", "sections": [
+        {"section": "background", "blocks": [
+            {"type": "fact", "unit_id": units["/title"]["unit_id"], "tag": "p"}]},
+        {"section": "scope", "blocks": [
+            {"type": "fact", "unit_id": units["/content"]["unit_id"], "tag": "p"}]},
+        {"section": "work", "blocks": [{"type": "proposal", "text": action, "tag": "li"}]},
+        {"section": "dod", "blocks": [{"type": "proposal", "text": acceptance, "tag": "li"}]}]}
+    prepared = ASSET["prepare_spec"](view, encoded(selection), encoded(pack))
+    writer = json.loads(prepared["model_input"])
+    assert prepared["route"] == "description" and writer["request"]["seed_visible"] == seed
+    assert {unit["text"] for unit in writer["units"]} == {
+        pack["sources"][0]["title"], pack["sources"][0]["content"]}
+    compiled = ASSET["enforce_spec"](encoded(writing), view, encoded(selection), encoded(pack))["candidate"]
+    remote, payload = helper.both_guards(pack, helper.assembled(pack, compiled))
+    assert remote.status == "ok" and payload["mode"] == "description"
+    html = payload["content_html"]
+    for unchanged in (seed, marker, criterion, action, acceptance):
+        assert html.count(unchanged) == 1
+    assert html.count('href="https://wiki.example.local/design"') == 1
+    result = json.loads(compiled)
+    for index in (0, 1):
+        assert result["sections"][index]["blocks"] == writing["sections"][index]["blocks"]
+    for index in (2, 3):
+        assert result["sections"][index]["blocks"][0] == {
+            **writing["sections"][index]["blocks"][0], "source_ids": ["intent"]}
+    assert pack == before
+
+
 def test_valid_missing_measurement_skips_writer_through_both_guards(original_pack_case):
     pack, helper = original_pack_case
     view, selection, _ = selected_plan(pack, helper)

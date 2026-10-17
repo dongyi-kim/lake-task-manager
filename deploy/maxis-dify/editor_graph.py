@@ -38,7 +38,7 @@ BRANCH_TITLES = {"description": "Description LLM", "comment": "Comment LLM",
                  "control": "Control LLM", "selector": "DraftSpec LLM"}
 # Reviewed complete rendered messages, independent of embedded DSL copies.
 BRANCH_PROMPT_SHA256 = {
-    "description": {"system": "3d24c37653c8dbb031f6b56a1e2493bc32be49e960286e5bbdc0e2c8d18338fd",
+    "description": {"system": "cbbb5fa60015bb3d8fe3eb07b80b9eff17c87298d0b03fa81343d3314a5f0c0f",
                     "user": "0b882243f2e854a7fcf11e1844d9159187d9944a6b2ac53092ec829f43f07436"},
     "comment": {"system": "37e391b4c4235e32c4482fa371095bc4a9b2142ffc1ea18732ad2c1ab45d55cf",
                 "user": "0b882243f2e854a7fcf11e1844d9159187d9944a6b2ac53092ec829f43f07436"},

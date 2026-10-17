@@ -314,3 +314,41 @@ def test_publication_failure_records_phase_without_exception_text(tmp_path, erro
     assert '"failed"' in result and '"login"' in result
     assert "private failure detail" not in result
     assert path.with_suffix(".json.claim").exists()
+
+
+def test_description_prompt_rebuild_changes_only_its_system_message(monkeypatch):
+    spec, before = _build()
+    validator = _load("validate_bundle")
+    path = ROOT / "deploy/maxis-dify/prompts/editor_description.md"
+    original = Path.read_text
+    marker = "Focused description-only test instruction."
+    changed = original(path, encoding="utf-8").rstrip() + "\n\n" + marker
+    monkeypatch.setattr(Path, "read_text", lambda self, *args, **kwargs:
+        changed if self == path else original(self, *args, **kwargs))
+    after = spec.rebuild(ROOT, before, validator)
+    expected = copy.deepcopy(before)
+    description = next(node["data"] for node in expected["workflow"]["graph"]["nodes"]
+                       if node["id"] == spec.BRANCH_NODE_IDS["description"])
+    description["prompt_template"][0]["text"] += "\n\n" + marker
+    assert after == expected
+    assert after != before
+
+
+def test_description_source_and_embedded_prompt_cannot_drift_together(tmp_path, monkeypatch):
+    spec, dsl = _build()
+    validator, materializer = _load("validate_bundle"), _load("materialize_environment")
+    shutil.copytree(ROOT / "deploy/maxis-dify", tmp_path / "deploy/maxis-dify")
+    path = tmp_path / "deploy/maxis-dify/prompts/editor_description.md"
+    path.write_text(path.read_text(encoding="utf-8") + "\nUnreviewed description change.", encoding="utf-8")
+    changed = spec.rebuild(tmp_path, dsl, validator)
+    graph = changed["workflow"]["graph"]
+    remote = json.loads((ROOT / "deploy/maxis-dify/contracts/remote-role-result.schema.json").read_text(encoding="utf-8"))
+    assembler = (ROOT / validator.EDITOR_ASSEMBLER_PATH).read_text(encoding="utf-8").rstrip()
+    with pytest.raises(validator.BundleValidationError, match="canonical prompt SHA-256"):
+        validator._validate_editor_graph(tmp_path, graph["nodes"], graph["edges"], remote, assembler)
+    (tmp_path / "deploy/maxis-dify/dsl/ltm-editor-author.yml").write_text(
+        yaml.safe_dump(changed, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr(materializer, "ROOT", tmp_path)
+    environment = materializer.load_environment(ROOT / "deploy/maxis-dify/environments/dev.yml")
+    with pytest.raises(materializer.EnvironmentBindingError, match="canonical prompt SHA-256"):
+        materializer._materialize_dsl(environment, "editor_author")
