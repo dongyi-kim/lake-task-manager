@@ -19,14 +19,16 @@ CONTROL_NODE_ID = "1909000000001026"
 MERGE_NODE_ID = "1909000000001027"
 SEMANTIC_NODE_ID = "1909000000001004"
 QUERY_NODE_ID = "1909000000001028"
+QUERY_ASSEMBLER_ID = "1909000000001029"
 KNOWLEDGE_GUARD_ID = "1909000000001006"
 POLICY_NODE_ID = "1909000000001007"
 CONTRACT_GUARD_ID = "1909000000001005"
 ROUTE_SOURCE_PATH = "deploy/maxis-dify/code/core_control_route.py"
 ROUTE_SOURCE_SHA256 = "b0acefe215463bff0787243da2423057b009315f5504e91ffa544adf6fa79c09"
 CONTROL_SYSTEM_SHA256 = "7017b30253765eab4e41723de73a3d5014c1f5c2b820fedcbaab80cf08ddae60"
-QUERY_SYSTEM_SHA256 = "cff3721d2cd166d5405c28127d381b37b727fb56fd1771031644364336812b8e"
-QUERY_SCHEMA_SHA256 = "c68785368d2887b492d06383844c3ac14fc3b5628e4bf11146a9bc24394a9d7a"
+QUERY_SYSTEM_SHA256 = "8ee23851bf58a9d0abf96dab441915ec372450f4ccbbb33bb7ac8ff19e558045"
+QUERY_SCHEMA_SHA256 = "e942796729aa98e739c76bace91c0c8bbb305082e9546818ad24ac2aaec769d2"
+QUERY_ASSEMBLER_SHA256 = "622b1e171d6dc94565099449014e06a40f4c48ddbe427ece30bffc998429b9d1"
 _BASE_NODES = {
     "start": ("시작", "start"), "answer": ("Allowed Answer", "answer"),
     "denied_answer": ("Denied Answer", "answer"),
@@ -40,7 +42,8 @@ _BASE_NODES = {
 }
 _NEW_NODES = {CLASSIFIER_NODE_ID: ("Core Control Route", "code"),
               STAGE_NODE_ID: ("Core Stage", "if-else"), CONTROL_NODE_ID: ("Control LLM", "llm"),
-              MERGE_NODE_ID: ("Core Candidate", "variable-aggregator"), QUERY_NODE_ID: ("Query LLM", "llm")}
+              MERGE_NODE_ID: ("Core Candidate", "variable-aggregator"), QUERY_NODE_ID: ("Query LLM", "llm"),
+              QUERY_ASSEMBLER_ID: ("Query Assembler", "code")}
 _BASE_EDGES = {
     ("start", "source", "1909000000001001"), ("1909000000001001", "source", "1909000000001002"),
     ("start", "source", "1909000000001010"), ("1909000000001010", "source", "1909000000001023"),
@@ -70,30 +73,26 @@ def query_assets(root: Path, project) -> dict:
     schema_json, digest = canonical_payload_schema(role_output_schema("query_specialist"))
     route = (root / ROUTE_SOURCE_PATH).read_text(encoding="utf-8").rstrip()
     route += f"\n\n# Generated from canonical CompactQueryPlan; not a second contract.\n_QUERY_SCHEMA_JSON = {schema_json!r}\n_QUERY_SCHEMA_SHA256 = {digest!r}"
-    remote = json.loads((root / "deploy/maxis-dify/contracts/remote-role-result.schema.json").read_text(encoding="utf-8"))
-    native = project(remote)
-    native["properties"]["role_id"] = {"enum": ["query_specialist"]}
-    payload = project(json.loads(schema_json))
-    exhaustive = payload["properties"]["reads"]["items"]["properties"]["exhaustive"]
-    # Dify 1.11.1's native preparation rewrites type:boolean to type:string.
-    # Preserve the exact JSON boolean domain, without repairing model output.
-    # Reject new canonical restrictions rather than silently broadening them.
-    if exhaustive != {"type": "boolean"}:
-        raise ValueError("Query exhaustive boolean schema requires review")
-    payload["properties"]["reads"]["items"]["properties"]["exhaustive"] = {"enum": [False, True]}
-    native["properties"]["payload"] = {"anyOf": [
-        {"type": "object", "additionalProperties": False, "maxProperties": 0},
-        payload,
-    ]}
+    spec = importlib.util.spec_from_file_location("_core_query_contract", root / "deploy/maxis-dify/core_query_contract.py")
+    contract = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(contract)
+    native = contract.build_draft_schema(json.loads(schema_json), project)
+    assembler = (root / "deploy/maxis-dify/code/core_query_assembler.py").read_text(encoding="utf-8").rstrip()
+    assembler += (f"\n\n# Generated canonical bindings; not model-authored metadata.\n"
+                  f"_QUERY_SCHEMA_JSON = {schema_json!r}\n_QUERY_SCHEMA_SHA256 = {digest!r}\n"
+                  f"_DRAFT_SCHEMA = {native!r}")
     directory = root / "deploy/maxis-dify/prompts"
-    prompt = "\n\n".join(directory.joinpath(name).read_text(encoding="utf-8").strip()
-                         for name in ("common.md", "core_query.md"))
-    return {"route_source": route, "query_system_prompt": prompt, "query_schema": native}
+    # This internal unit does not author the full remote-role envelope. As with
+    # Editor's writer, do not combine conflicting full-envelope instructions.
+    prompt = directory.joinpath("core_query.md").read_text(encoding="utf-8").strip()
+    return {"route_source": route, "query_system_prompt": prompt, "query_schema": native,
+            "query_assembler_source": assembler}
 
 
-def _check_assets(route_source, control_system_prompt, query_system_prompt, query_schema):
+def _check_assets(route_source, control_system_prompt, query_system_prompt, query_schema, query_assembler_source):
     for text, digest in ((route_source, ROUTE_SOURCE_SHA256), (control_system_prompt, CONTROL_SYSTEM_SHA256),
-                         (query_system_prompt, QUERY_SYSTEM_SHA256), (_canonical(query_schema), QUERY_SCHEMA_SHA256)):
+                         (query_system_prompt, QUERY_SYSTEM_SHA256), (_canonical(query_schema), QUERY_SCHEMA_SHA256),
+                         (query_assembler_source, QUERY_ASSEMBLER_SHA256)):
         if not isinstance(text, str) or hashlib.sha256(text.encode("utf-8")).hexdigest() != digest:
             raise ValueError("Core control reviewed asset digest drifted")
 
@@ -131,15 +130,25 @@ def stage_data() -> dict:
 
 def merge_data() -> dict:
     return {"title": "Core Candidate", "type": "variable-aggregator", "selected": False,
-            "desc": "실행된 단일 모델의 text를 기존 Contract Guard에 전달", "output_type": "string",
-            "variables": [[CONTROL_NODE_ID, "text"], [SEMANTIC_NODE_ID, "text"], [QUERY_NODE_ID, "text"]],
+            "desc": "단일 모델 경로의 후보를 기존 Contract Guard에 전달", "output_type": "string",
+            "variables": [[CONTROL_NODE_ID, "text"], [SEMANTIC_NODE_ID, "text"], [QUERY_ASSEMBLER_ID, "candidate"]],
             "advanced_settings": {"group_enabled": False, "groups": []}}
+
+
+def assembler_data(source: str) -> dict:
+    return {"title": "Query Assembler", "type": "code", "selected": False,
+            "desc": "Query 의미 원문을 유지하며 ID·인용 연결·metadata만 조립", "code_language": "python3",
+            "code": source, "variables": [
+                {"variable": "model_input", "value_selector": [KNOWLEDGE_GUARD_ID, "model_input"]},
+                {"variable": "candidate", "value_selector": [QUERY_NODE_ID, "text"]}],
+            "outputs": {"candidate": {"children": None, "type": "string"}}}
 
 
 def branch_edges() -> set[tuple[str, str, str]]:
     return {(POLICY_NODE_ID, "true", CLASSIFIER_NODE_ID), (CLASSIFIER_NODE_ID, "source", STAGE_NODE_ID),
             (STAGE_NODE_ID, "true", CONTROL_NODE_ID), (STAGE_NODE_ID, "false", SEMANTIC_NODE_ID),
-            (STAGE_NODE_ID, "query", QUERY_NODE_ID), (QUERY_NODE_ID, "source", MERGE_NODE_ID),
+            (STAGE_NODE_ID, "query", QUERY_NODE_ID), (QUERY_NODE_ID, "source", QUERY_ASSEMBLER_ID),
+            (QUERY_ASSEMBLER_ID, "source", MERGE_NODE_ID),
             (CONTROL_NODE_ID, "source", MERGE_NODE_ID), (SEMANTIC_NODE_ID, "source", MERGE_NODE_ID),
             (MERGE_NODE_ID, "source", CONTRACT_GUARD_ID)}
 
@@ -174,9 +183,9 @@ def _check_graph(dsl):
 
 
 def rebuild(dsl: dict, *, route_source: str, control_system_prompt: str,
-            query_system_prompt: str, query_schema: dict) -> dict:
+            query_system_prompt: str, query_schema: dict, query_assembler_source: str) -> dict:
     """Build only in memory; unknown topology is rejected, never silently repaired."""
-    _check_assets(route_source, control_system_prompt, query_system_prompt, query_schema)
+    _check_assets(route_source, control_system_prompt, query_system_prompt, query_schema, query_assembler_source)
     result = copy.deepcopy(dsl)
     try:
         nodes = _check_graph(result)
@@ -189,11 +198,12 @@ def rebuild(dsl: dict, *, route_source: str, control_system_prompt: str,
         control.update(title="Control LLM", desc="activation: 단일 합성 연결 계약")
         control["prompt_template"][0]["text"] = control_system_prompt
         query = copy.deepcopy(base["data"])
-        query.update(title="Query LLM", desc="query_specialist: canonical typed read intent")
+        query.update(title="Query LLM", desc="query_specialist: 의미 값과 근거를 한 번만 작성")
         query["prompt_template"][0]["text"] = query_system_prompt
         query["structured_output"]["schema"] = copy.deepcopy(query_schema)
         data = {CLASSIFIER_NODE_ID: classifier_data(route_source), STAGE_NODE_ID: stage_data(),
-                CONTROL_NODE_ID: control, MERGE_NODE_ID: merge_data(), QUERY_NODE_ID: query}
+                CONTROL_NODE_ID: control, MERGE_NODE_ID: merge_data(), QUERY_NODE_ID: query,
+                QUERY_ASSEMBLER_ID: assembler_data(query_assembler_source)}
         for key, value in data.items():
             node = copy.deepcopy(base)
             node.update(id=key, data=value)
@@ -202,9 +212,9 @@ def rebuild(dsl: dict, *, route_source: str, control_system_prompt: str,
             if row["variable"] == "candidate":
                 row["value_selector"] = [MERGE_NODE_ID, "output"]
         layout = {CLASSIFIER_NODE_ID: (1590, 420), STAGE_NODE_ID: (1890, 420),
-                  QUERY_NODE_ID: (2190, 1100),
+                  QUERY_NODE_ID: (2190, 1100), QUERY_ASSEMBLER_ID: (2490, 1100),
                   CONTROL_NODE_ID: (2190, 760), SEMANTIC_NODE_ID: (2190, 240),
-                  MERGE_NODE_ID: (2490, 420), CONTRACT_GUARD_ID: (2790, 420), "answer": (3090, 420)}
+                  MERGE_NODE_ID: (2790, 420), CONTRACT_GUARD_ID: (3090, 420), "answer": (3390, 420)}
         for key, (x, y) in layout.items():
             nodes[key]["position"] = {"x": x, "y": y}
             nodes[key]["positionAbsolute"] = {"x": x, "y": y}

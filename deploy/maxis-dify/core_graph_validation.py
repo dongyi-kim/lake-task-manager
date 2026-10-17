@@ -8,6 +8,7 @@ import json
 SEMANTIC_ID = "1909000000001004"
 CONTROL_ID = "1909000000001026"
 QUERY_ID = "1909000000001028"
+QUERY_ASSEMBLER_ID = "1909000000001029"
 CLASSIFIER_ID = "1909000000001024"
 STAGE_ID = "1909000000001025"
 MERGE_ID = "1909000000001027"
@@ -17,8 +18,9 @@ GUARD_ID = "1909000000001005"
 # Independent review pins: matching a changed artifact to a changed asset is insufficient.
 ROUTE_SHA256 = "b0acefe215463bff0787243da2423057b009315f5504e91ffa544adf6fa79c09"
 CONTROL_SYSTEM_SHA256 = "7017b30253765eab4e41723de73a3d5014c1f5c2b820fedcbaab80cf08ddae60"
-QUERY_SYSTEM_SHA256 = "cff3721d2cd166d5405c28127d381b37b727fb56fd1771031644364336812b8e"
-QUERY_SCHEMA_SHA256 = "c68785368d2887b492d06383844c3ac14fc3b5628e4bf11146a9bc24394a9d7a"
+QUERY_SYSTEM_SHA256 = "8ee23851bf58a9d0abf96dab441915ec372450f4ccbbb33bb7ac8ff19e558045"
+QUERY_SCHEMA_SHA256 = "e942796729aa98e739c76bace91c0c8bbb305082e9546818ad24ac2aaec769d2"
+QUERY_ASSEMBLER_SHA256 = "622b1e171d6dc94565099449014e06a40f4c48ddbe427ece30bffc998429b9d1"
 NODE_IDENTITIES = {
     "start": ("시작", "start"), "answer": ("Allowed Answer", "answer"),
     "denied_answer": ("Denied Answer", "answer"),
@@ -28,7 +30,7 @@ NODE_IDENTITIES = {
     "1909000000001010": ("Role ACL Key", "template-transform"),
     "1909000000001023": ("Policy Query", "code"),
     SEMANTIC_ID: ("Contract LLM", "llm"), CONTROL_ID: ("Control LLM", "llm"),
-    QUERY_ID: ("Query LLM", "llm"),
+    QUERY_ID: ("Query LLM", "llm"), QUERY_ASSEMBLER_ID: ("Query Assembler", "code"),
     KNOWLEDGE_ID: ("Knowledge Guard", "code"), GUARD_ID: ("Contract Guard", "code"),
     POLICY_ID: ("Policy Decision", "if-else"), CLASSIFIER_ID: ("Core Control Route", "code"),
     STAGE_ID: ("Core Stage", "if-else"), MERGE_ID: ("Core Candidate", "variable-aggregator"),
@@ -41,7 +43,8 @@ EDGES = {
     (KNOWLEDGE_ID, "source", POLICY_ID), (POLICY_ID, "false", "denied_answer"),
     (POLICY_ID, "true", CLASSIFIER_ID), (CLASSIFIER_ID, "source", STAGE_ID),
     (STAGE_ID, "true", CONTROL_ID), (STAGE_ID, "false", SEMANTIC_ID),
-    (STAGE_ID, "query", QUERY_ID), (QUERY_ID, "source", MERGE_ID),
+    (STAGE_ID, "query", QUERY_ID), (QUERY_ID, "source", QUERY_ASSEMBLER_ID),
+    (QUERY_ASSEMBLER_ID, "source", MERGE_ID),
     (SEMANTIC_ID, "source", MERGE_ID), (CONTROL_ID, "source", MERGE_ID),
     (MERGE_ID, "source", GUARD_ID), (GUARD_ID, "source", "answer"),
 }
@@ -67,13 +70,14 @@ def validate_core_graph(root, nodes, *, checks, schema, semantic_prompts,
         source = query_assets["route_source"]
         prompt = "\n\n".join((root / "deploy/maxis-dify/prompts" / name).read_text(encoding="utf-8").strip()
                              for name in ("common.md", "core_control.md"))
-    except (OSError, UnicodeError) as exc:
+    except (OSError, ValueError) as exc:
         raise error_type("reviewed Core control assets cannot be loaded") from exc
     if any(hashlib.sha256(value.encode("utf-8")).hexdigest() != pin
            for value, pin in ((source, ROUTE_SHA256), (prompt, CONTROL_SYSTEM_SHA256),
                               (query_assets["query_system_prompt"], QUERY_SYSTEM_SHA256),
                               (json.dumps(query_assets["query_schema"], ensure_ascii=False, sort_keys=True,
-                                          separators=(",", ":")), QUERY_SCHEMA_SHA256))):
+                                          separators=(",", ":")), QUERY_SCHEMA_SHA256),
+                              (query_assets["query_assembler_source"], QUERY_ASSEMBLER_SHA256))):
         fail("reviewed Core control asset digest drifted")
     classifier = nodes[CLASSIFIER_ID]["data"]
     if classifier != {
@@ -98,11 +102,21 @@ def validate_core_graph(root, nodes, *, checks, schema, semantic_prompts,
     merge = nodes[MERGE_ID]["data"]
     if merge != {
         "title": "Core Candidate", "type": "variable-aggregator", "selected": False,
-        "desc": "실행된 단일 모델의 text를 기존 Contract Guard에 전달", "output_type": "string",
-        "variables": [[CONTROL_ID, "text"], [SEMANTIC_ID, "text"], [QUERY_ID, "text"]],
+        "desc": "단일 모델 경로의 후보를 기존 Contract Guard에 전달", "output_type": "string",
+        "variables": [[CONTROL_ID, "text"], [SEMANTIC_ID, "text"], [QUERY_ASSEMBLER_ID, "candidate"]],
         "advanced_settings": {"group_enabled": False, "groups": []},
     } or merge.get("selected") is not False or merge["advanced_settings"].get("group_enabled") is not False:
         fail("Dify Core candidate merge drifted")
+    assembler = nodes[QUERY_ASSEMBLER_ID]["data"]
+    if assembler != {
+        "title": "Query Assembler", "type": "code", "selected": False,
+        "desc": "Query 의미 원문을 유지하며 ID·인용 연결·metadata만 조립", "code_language": "python3",
+        "code": query_assets["query_assembler_source"], "variables": [
+            {"variable": "model_input", "value_selector": [KNOWLEDGE_ID, "model_input"]},
+            {"variable": "candidate", "value_selector": [QUERY_ID, "text"]}],
+        "outputs": {"candidate": {"children": None, "type": "string"}},
+    } or assembler.get("selected") is not False:
+        fail("Dify Query assembler source or binding drifted")
     for node_id, prompts, hashes, native_schema in (
         (SEMANTIC_ID, semantic_prompts, semantic_hashes, schema),
         (CONTROL_ID, (prompt, semantic_prompts[1]),

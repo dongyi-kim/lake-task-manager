@@ -33,14 +33,25 @@ ContextGuard → Knowledge Guard → 실제 LLM → Contract Guard/ResponseGuard
 
 `core_control_graph.py::rebuild`는 Core source와 검토된 분류기/prompt를 받아 메모리 복사본을
 반환한다. CLI·파일 쓰기·runtime 등록은 없으며 reviewed asset의 독립 SHA pin을 확인한다.
-17노드·19엣지에서 policy allow 뒤 배타 분기를 두고 Control LLM, Query LLM, Contract LLM의 text
-하나를 합류시켜 기존 Contract Guard로 전달한다. 세 LLM은 같은 검증된 model input을 받는다.
+18노드·20엣지에서 policy allow 뒤 배타 분기를 둔다. Control/Contract LLM은 text를,
+Query LLM은 Query Assembler가 조립한 후보를 합류시켜 기존 Contract Guard로 전달한다.
+세 LLM은 같은 검증된 model input을 받는다.
 policy deny는 0회, 허용된 세 경로는 각각 1회 LLM을 지나도록 구성한다.
 
-Query native payload는 strict empty object와 canonical CompactQueryPlan의 `anyOf`다.
-정본의 local reference를 먼저 해소하고 envelope에 삽입하며 문자열 boolean을 변환하지 않는다.
-`needs_input`/`blocked`의 빈 payload는 유지한다. source/claim/binding의 의미 검증은 기존 양쪽
-guard가 그대로 수행한다. native 형식 준수는 의미 품질이나 근거 통과의 증명이 아니다.
+Query LLM은 내부 `query-draft.v1`의 status/payload/missing_inputs만 작성한다.
+`core_query_contract.py`가 canonical CompactQueryPlan에서 값의 enum·길이·개수와 optional
+제약을 가져오고 narrative leaf만 `{value, kind, source_ids}`로 감싼다. 별도의 payload 정본을
+유지하지 않는다. Query 전용 prompt는 이 내부 계약만 요구하며 full remote envelope를 요구하는
+common prompt와 결합하지 않는다. 다른 Role의 실제 prompt는 그대로 유지한다.
+
+`code/core_query_assembler.py`는 Knowledge Guard 원입력의 canonical schema/hash/role 연결을
+재확인하고, 모델의 value와 kind를 바꾸지 않은 채 payload/claim에 복사한다. citation ID와
+JSON Pointer, trusted 입력의 metadata만 결정적으로 만든다. boolean에는 텍스트 binding을
+만들지 않으며 생략된 optional field는 생략 상태로 보존한다. 잘못된 형식·source 참조·상태
+조합은 오류로 종료하고 부분 결과나 자동 수정 결과를 내보내지 않는다.
+`needs_input`/`blocked`는 빈 payload와 provenance를 유지한다. 조립은 source의 진실성이나
+조회 권한을 보장하지 않는다. fact를 recommendation으로 바꾸지 않으며 intent를 fact의 근거로
+쓰는 경우도 기존 양쪽 guard가 계속 거부한다. native 형식 준수는 의미 품질 통과가 아니다.
 Query의 native `exhaustive`만 `enum: [false, true]`로 표현한다. 이는
 [Dify 1.11.1의 boolean→string schema 변환](https://github.com/langgenius/dify/blob/1.11.1/api/core/llm_generator/output_parser/structured_output.py#L307-L378)을
 거쳐도 JSON boolean domain을 유지하기 위한 호환 표현이다. LTM 정본 schema/hash와 입력·출력
@@ -50,7 +61,7 @@ guard는 그대로이며 문자열·숫자를 boolean으로 변환하지 않는�
 모델 output은 4,096 tokens, 각 system prompt는 최대 8,192 UTF-8 bytes로 유지한다.
 
 빌더는 배포 검증기가 아니다. 원본을 생성기로 먼저 수리하지 않는다.
-`core_graph_validation.py`는 세 LLM의 prompt/schema/model/input, 분류기 source/I/O,
+`core_graph_validation.py`는 세 LLM의 prompt/schema/model/input, 분류기와 조립기 source/I/O,
 분기·합류·전체 배선을 검증한다. source와 DSL을 함께 바꿔도 독립 pin과 다르면 거부한다.
 `validate_bundle.py`와 `materialize_environment.py`가 같은 검증기를 사용한다.
 materializer는 원본 검증 뒤에만 앱 이름·모델·Knowledge binding을 교체하며 DEV/PROD의

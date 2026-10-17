@@ -121,18 +121,27 @@ def test_raw_core_route_merge_guards_and_topology_cannot_be_repaired(modules, ra
     _reject_both(modules, raw_source)
 
 
-@pytest.mark.parametrize("mutation", ["open_empty_branch", "string_boolean", "boolean_enum_number", "query_to_generic", "query_missing_merge"])
+@pytest.mark.parametrize("mutation", ["open_payload", "string_boolean", "boolean_enum_number", "query_to_generic", "query_missing_merge",
+    "assembler_source", "assembler_input", "assembler_candidate", "assembler_output", "assembler_bypass"])
 def test_query_branch_cannot_weaken_types_or_bypass_its_selected_output(modules, raw_source, mutation):
     nodes = _nodes(raw_source)
     payload = nodes["Query LLM"]["structured_output"]["schema"]["properties"]["payload"]
-    if mutation == "open_empty_branch":
-        payload["anyOf"][0] = {"type": "object"}
+    if mutation == "open_payload":
+        nodes["Query LLM"]["structured_output"]["schema"]["properties"]["payload"] = {"type": "object"}
     elif mutation == "string_boolean":
         payload["anyOf"][1]["properties"]["reads"]["items"]["properties"]["exhaustive"] = {"type": "string"}
     elif mutation == "boolean_enum_number":
         payload["anyOf"][1]["properties"]["reads"]["items"]["properties"]["exhaustive"] = {"enum": [0, 1]}
     elif mutation == "query_to_generic":
         nodes["Core Stage"]["cases"][1]["conditions"][0]["value"] = "semantic"
+    elif mutation == "assembler_source":
+        nodes["Query Assembler"]["code"] += "\n# altered"
+    elif mutation in {"assembler_input", "assembler_candidate"}:
+        nodes["Query Assembler"]["variables"][0 if mutation == "assembler_input" else 1]["value_selector"] = ["sys", "query"]
+    elif mutation == "assembler_output":
+        nodes["Query Assembler"]["outputs"]["candidate"]["type"] = "object"
+    elif mutation == "assembler_bypass":
+        nodes["Core Candidate"]["variables"][2] = ["1909000000001028", "text"]
     else:
         nodes["Core Candidate"]["variables"].pop()
     _reject_both(modules, raw_source)
@@ -151,7 +160,7 @@ def test_canonical_query_contract_change_requires_independent_review(modules, ra
     _reject_both(modules, raw_source)
 
 
-@pytest.mark.parametrize("asset", ["code/core_control_route.py", "prompts/core_control.md", "prompts/core_query.md"])
+@pytest.mark.parametrize("asset", ["code/core_control_route.py", "code/core_query_assembler.py", "prompts/core_control.md", "prompts/core_query.md"])
 def test_asset_and_embedded_content_cannot_drift_together(modules, raw_source, monkeypatch, asset):
     path = ROOT / "deploy/maxis-dify" / asset
     original = Path.read_text
@@ -159,10 +168,11 @@ def test_asset_and_embedded_content_cannot_drift_together(modules, raw_source, m
     monkeypatch.setattr(Path, "read_text", lambda self, *args, **kwargs: changed if self == path else original(self, *args, **kwargs))
     nodes = _nodes(raw_source)
     if asset.startswith("code/"):
-        nodes["Core Control Route"]["code"] = changed
+        nodes["Query Assembler" if asset.endswith("core_query_assembler.py") else "Core Control Route"]["code"] = changed
     else:
         common = (ROOT / "deploy/maxis-dify/prompts/common.md").read_text(encoding="utf-8").strip()
-        nodes["Query LLM" if asset.endswith("core_query.md") else "Control LLM"]["prompt_template"][0]["text"] = common + "\n\n" + changed
+        nodes["Query LLM" if asset.endswith("core_query.md") else "Control LLM"]["prompt_template"][0]["text"] = (
+            changed if asset.endswith("core_query.md") else common + "\n\n" + changed)
     _reject_both(modules, raw_source)
 
 

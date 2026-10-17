@@ -17,18 +17,20 @@ SPEC.loader.exec_module(RECEIPT)
 def graph():
     value = yaml.safe_load((ROOT / "deploy/maxis-dify/dsl/ltm-agent-core.yml")
                            .read_text(encoding="utf-8"))["workflow"]["graph"]
-    assert len(value["nodes"]) == 17 and len(value["edges"]) == 19
+    assert len(value["nodes"]) == 18 and len(value["edges"]) == 20
     return value
 
 
 @pytest.mark.parametrize("change", (
     "classifier", "stage", "merge", "control_system", "control_input",
-    "semantic_input", "guard_input", "edge", "recovery", "query_schema", "query_prompt",
+    "semantic_input", "guard_input", "edge", "recovery", "query_schema", "query_prompt", "query_assembler",
 ))
 def test_core_receipt_detects_execution_changes(graph, change):
     altered = deepcopy(graph)
     nodes = {node["id"]: node["data"] for node in altered["nodes"]}
-    if change == "classifier":
+    if change == "query_assembler":
+        nodes["1909000000001029"]["code"] += "\n# changed assembler"
+    elif change == "classifier":
         nodes["1909000000001024"]["code"] += "\n# changed classifier"
     elif change == "stage":
         nodes["1909000000001025"]["cases"][0]["conditions"][0]["value"] = "semantic"

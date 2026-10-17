@@ -14,6 +14,7 @@ from app.agent.workflow.contracts import CompactQueryPlan, role_output_schema
 
 ROOT = Path(__file__).resolve().parents[3]
 QUERY_ID = "1909000000001028"
+ASSEMBLER_ID = "1909000000001029"
 VERSION = "11111111-1111-4111-8111-111111111111"
 PROOF = "LTM_RELEASE_SENTINEL_V1=" + "a" * 64
 
@@ -77,26 +78,48 @@ def local(pack, candidate):
         payload_model=CompactQueryPlan, evidence=pack, expected_knowledge_manifest_sha256="a" * 64)
 
 
+def draft(candidate):
+    """Synthetic semantic values; the model never authors IDs or JSON pointers."""
+    payload = copy.deepcopy(candidate["payload"])
+    wrap = lambda value: {"value": value, "kind": "recommendation", "source_ids": ["src_intent_query"]}
+    for read in payload.get("reads", []):
+        for field in ("source", "subject", "where"):
+            if field in read:
+                read[field] = wrap(read[field])
+    if "uncertainty" in payload:
+        payload["uncertainty"] = [wrap(value) for value in payload["uncertainty"]]
+    return {"contract": "query-draft.v1", "status": candidate["status"], "payload": payload,
+            "missing_inputs": list(candidate["missing_inputs"])}
+
+
+def assemble(nodes, model_input, selected):
+    return json.loads(code(nodes[ASSEMBLER_ID])["main"](model_input, encoded(selected))["candidate"])
+
+
 def test_query_native_contract_is_resolved_and_both_guards_accept_complete_candidate(nodes, query_case):
     pack, model_input, candidate = query_case
     assert code(nodes["1909000000001024"])["main"](model_input) == {"route": "query"}
     schema = nodes[QUERY_ID]["structured_output"]["schema"]
     assert "$ref" not in encoded(schema) and "$defs" not in encoded(schema)
-    assert schema["properties"]["role_id"] == {"enum": ["query_specialist"]}
-    assert schema["properties"]["payload"]["anyOf"][0] == {
-        "type": "object", "additionalProperties": False, "maxProperties": 0}
-    Draft202012Validator(schema).validate(candidate)
-    assert remote(nodes, pack, candidate) == candidate
-    result, payload = local(pack, candidate)
+    assert set(schema["properties"]) == {"contract", "status", "payload", "missing_inputs"}
+    selected = draft(candidate)
+    Draft202012Validator(schema).validate(selected)
+    assembled = assemble(nodes, model_input, selected)
+    assert assembled["payload"] == candidate["payload"]
+    assert remote(nodes, pack, assembled) == assembled
+    result, payload = local(pack, assembled)
     assert result.status == "ok" and payload.reads[0].exhaustive is True
 
 
 @pytest.mark.parametrize("bad", ["true", "false", "TRUE", 0, 1, None])
 def test_query_native_schema_and_both_guards_reject_non_boolean_without_coercion(nodes, query_case, bad):
-    pack, _, candidate = query_case
+    pack, model_input, candidate = query_case
     candidate["payload"]["reads"][0]["exhaustive"] = bad
     before = copy.deepcopy(candidate)
-    assert not Draft202012Validator(nodes[QUERY_ID]["structured_output"]["schema"]).is_valid(candidate)
+    selected = draft(candidate)
+    assert not Draft202012Validator(nodes[QUERY_ID]["structured_output"]["schema"]).is_valid(selected)
+    with pytest.raises(ValueError, match="invalid_core_query_draft"):
+        assemble(nodes, model_input, selected)
     assert remote(nodes, pack, candidate)["warnings"] == ["contract_guard:payload_type_mismatch"]
     with pytest.raises(ResponseGuardError):
         local(pack, candidate)
@@ -112,23 +135,30 @@ def test_query_boolean_domain_survives_dify_native_schema_preparation(nodes, que
     transformed = json.loads(encoded(schema), object_hook=lambda row:
         {**row, "type": "string"} if row.get("type") == "boolean" else row)
     assert transformed == schema
-    pack, _, candidate = query_case
+    pack, model_input, candidate = query_case
     candidate["payload"]["reads"][0]["exhaustive"] = value
-    Draft202012Validator(transformed).validate(candidate)
-    assert remote(nodes, pack, candidate) == candidate
-    assert local(pack, candidate)[1].reads[0].exhaustive is value
+    selected = draft(candidate)
+    Draft202012Validator(transformed).validate(selected)
+    assembled = assemble(nodes, model_input, selected)
+    assert remote(nodes, pack, assembled) == assembled
+    assert local(pack, assembled)[1].reads[0].exhaustive is value
+    assert all(not row["path"].endswith("/exhaustive") for row in assembled["payload_claims"])
     canonical = json.loads(pack.payload_schema_json)
     assert canonical["$defs"]["QueryIntent"]["properties"]["exhaustive"]["type"] == "boolean"
 
 
 @pytest.mark.parametrize("status", ["blocked", "needs_input"])
 def test_query_native_contract_preserves_empty_control_outcomes(nodes, query_case, status):
-    pack, _, candidate = query_case
+    pack, model_input, candidate = query_case
     candidate.update(status=status, payload={}, claims=[], payload_claims=[], citations=[],
                      missing_inputs=["조회 대상을 알려주세요"] if status == "needs_input" else [])
-    Draft202012Validator(nodes[QUERY_ID]["structured_output"]["schema"]).validate(candidate)
-    assert remote(nodes, pack, candidate) == candidate
-    assert local(pack, candidate)[0].status == status
+    selected = draft(candidate)
+    Draft202012Validator(nodes[QUERY_ID]["structured_output"]["schema"]).validate(selected)
+    assembled = assemble(nodes, model_input, selected)
+    assert remote(nodes, pack, assembled) == assembled
+    assert local(pack, assembled)[0].status == status
+    assert all(assembled[key] == empty for key, empty in (
+        ("payload", {}), ("claims", []), ("payload_claims", []), ("citations", [])))
 
 
 @pytest.mark.parametrize("mutation", ["missing_leaf", "array_binding", "unknown_source", "intent_fact", "different_text"])
@@ -144,10 +174,46 @@ def test_query_native_types_never_replace_existing_grounding_and_binding_guards(
         candidate["claims"][0]["kind"] = "fact"
     else:
         candidate["claims"][0]["text"] = "Confluence"
-    assert Draft202012Validator(nodes[QUERY_ID]["structured_output"]["schema"]).is_valid(candidate)
     assert remote(nodes, pack, candidate)["status"] == "blocked"
     with pytest.raises(ResponseGuardError):
         local(pack, candidate)
+
+
+def test_assembler_never_relabels_intent_facts_to_make_them_acceptable(nodes, query_case):
+    pack, model_input, candidate = query_case
+    selected = draft(candidate)
+    selected["payload"]["reads"][0]["subject"]["kind"] = "fact"
+    assembled = assemble(nodes, model_input, selected)
+    assert any(row["kind"] == "fact" and row["text"] == "데이터 자산" for row in assembled["claims"])
+    assert remote(nodes, pack, assembled)["warnings"] == ["contract_guard:intent_source_fact_forbidden"]
+    with pytest.raises(ResponseGuardError, match="intent_source_fact_forbidden"):
+        local(pack, assembled)
+
+
+def test_query_unit_does_not_receive_conflicting_remote_envelope_instructions(nodes):
+    prompt = nodes[QUERY_ID]["prompt_template"][0]["text"]
+    assert prompt == (ROOT / "deploy/maxis-dify/prompts/core_query.md").read_text(encoding="utf-8").strip()
+    assert "query-draft.v1" in prompt and "## Required response" not in prompt
+    assert "Echo input `knowledge_proof`" not in prompt
+
+
+@pytest.mark.parametrize("mask", range(16))
+def test_embedded_assembler_preserves_every_optional_field_omission(nodes, query_case, mask):
+    pack, model_input, candidate = query_case
+    read = {"source": "confluence"}
+    for index, (field, value) in enumerate((("subject", "데이터 자산"), ("where", "변경 이력"), ("exhaustive", True))):
+        if mask & (1 << index):
+            read[field] = value
+    expected = {"reads": [read]}
+    if mask & 8:
+        expected["uncertainty"] = ["조회 기간 확인 필요"]
+    candidate["payload"] = copy.deepcopy(expected)
+    selected = draft(candidate)
+    Draft202012Validator(nodes[QUERY_ID]["structured_output"]["schema"]).validate(selected)
+    assembled = assemble(nodes, model_input, selected)
+    assert assembled["payload"] == expected
+    assert remote(nodes, pack, assembled) == assembled
+    assert local(pack, assembled)[0].status == "ok"
 
 
 @pytest.mark.parametrize("mutation", ["digest", "schema", "rehashed_schema", "noncanonical", "use_case"])
