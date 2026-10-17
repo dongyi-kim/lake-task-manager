@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Versioned offline glossary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "glossaryId", "version", "classification", "asOf", "sources", "terms"],
+  "properties": {
+    "schemaVersion": {"const": "1.0.0"},
+    "glossaryId": {"$ref": "#/$defs/id"},
+    "version": {
+      "type": "string",
+      "maxLength": 120,
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![\\s\\S])"
+    },
+    "classification": {"$ref": "#/$defs/classification"},
+    "asOf": {"$ref": "#/$defs/date"},
+    "sources": {
+      "type": "array", "minItems": 1, "maxItems": 256,
+      "items": {"$ref": "#/$defs/source"}
+    },
+    "terms": {
+      "type": "array", "minItems": 1, "maxItems": 1024,
+      "items": {"$ref": "#/$defs/term"}
+    }
+  },
+  "$defs": {
+    "id": {"type": "string", "maxLength": 64, "pattern": "^[a-z][a-z0-9._-]{0,63}(?![\\s\\S])"},
+    "classification": {"type": "string", "enum": ["public", "internal"]},
+    "date": {"type": "string", "format": "date", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 120, "pattern": "\\S"},
+    "references": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "repository", "revision", "path", "section", "observedAt", "classification"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "repository": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "\\S"},
+        "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$", "maxLength": 40},
+        "path": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "\\S"},
+        "section": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "\\S"},
+        "observedAt": {"$ref": "#/$defs/date"},
+        "classification": {"$ref": "#/$defs/classification"}
+      }
+    },
+    "term": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "name", "aliases", "scope", "definition", "status", "sourceRefs", "notEquivalentTo", "caveats"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "name": {"$ref": "#/$defs/name"},
+        "aliases": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"$ref": "#/$defs/name"}},
+        "scope": {"type": "string", "minLength": 1, "maxLength": 240, "pattern": "\\S"},
+        "definition": {"type": "string", "minLength": 1, "maxLength": 2000, "pattern": "\\S"},
+        "status": {"type": "string", "enum": ["documented", "proposed", "historical", "unknown"]},
+        "sourceRefs": {"$ref": "#/$defs/references"},
+        "ownerModule": {"$ref": "#/$defs/name"},
+        "notEquivalentTo": {"$ref": "#/$defs/references"},
+        "caveats": {
+          "type": "array", "maxItems": 16, "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 1000, "pattern": "\\S"}
+        }
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"enum": ["documented", "historical"]}}}, "then": {"properties": {"sourceRefs": {"minItems": 1}}}},
+        {"if": {"properties": {"status": {"const": "unknown"}}}, "then": {"properties": {"caveats": {"minItems": 1}}}}
+      ]
+    }
+  }
+}
