@@ -87,6 +87,43 @@ export default {
       return (this.probe && this.probe.workflows) ||
         (this.selected && this.selected.lastProbe && this.selected.lastProbe.workflows) || {};
     },
+    remoteObservationState() {
+      const value = this.st && this.st.lastRemoteObservations;
+      if (!value || !["observed", "none_recorded", "unavailable"].includes(value.state)) return "unavailable";
+      return value.state === "observed" && !Array.isArray(value.observations) ? "unavailable" : value.state;
+    },
+    remoteObservations() {
+      const value = this.st && this.st.lastRemoteObservations;
+      if (this.remoteObservationState !== "observed" ||
+          !["dev", "prod", "internal-pilot"].includes(this.selectedName)) return [];
+      const rows = value.observations.slice(0, 9).filter((row) =>
+        row && typeof row === "object" && row.profile === this.selectedName);
+      const text = (value, pattern) => typeof value === "string" && pattern.test(value) ? value : "미확인";
+      const label = (value, labels) => typeof value === "string" &&
+        Object.prototype.hasOwnProperty.call(labels, value) ? labels[value] : "미확인";
+      const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      const instant = (value) => typeof value === "string" &&
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/.test(value) &&
+        Number.isFinite(Date.parse(value)) ? value : "미확인";
+      const rank = (row) => instant(row.observedAt) === "미확인" ? -Infinity : Date.parse(row.observedAt);
+      return WORKFLOWS.map((workflow) => {
+        const row = rows.filter((item) => item.workflowKey === workflow.key)
+          .sort((a, b) => rank(b) - rank(a))[0];
+        if (!row) return null;
+        return {
+          key: workflow.key, label: workflow.label, observedAt: instant(row.observedAt),
+          route: label(row.routeMode, { shadow: "Shadow · 원격 평가", maxis: "MAXIS/Dify" }),
+          outputOwner: row.routeMode === "shadow" && row.outputOwner === "local" ? "Local" : "미확인",
+          audit: label(row.auditStatus, { started: "시작", succeeded: "수용", blocked: "차단", failed: "실패" }),
+          transport: label(row.transportStatus, { not_attempted: "미시도", succeeded: "성공", failed: "실패" }),
+          result: label(row.resultStatus, { not_evaluated: "평가 안 됨", completed: "계약 수용",
+            needs_input: "입력 필요", blocked: "차단", failed: "실패" }),
+          http: Number.isInteger(row.httpStatus) && row.httpStatus >= 100 && row.httpStatus <= 599 ? row.httpStatus : "미확인",
+          workflowVersion: text(row.workflowVersion, uuid), workflowRunId: text(row.workflowRunId, uuid),
+          knowledgeVersion: text(row.knowledgeVersion, /^ltm-knowledge-\d{4}\.\d{2}(?:\.\d+)?$/),
+        };
+      }).filter(Boolean);
+    },
   },
   mounted() { this.load(); this.loadImpact(); },
   methods: {
@@ -257,7 +294,7 @@ export default {
         <div class="mx-stage-pick">
           <button v-for="p in profiles" :key="p.name" class="ag-mini"
                   :class="{ on: selectedName === p.name }" @click="selectProfile(p.name)">
-            {{ p.stage.toUpperCase() }}<em v-if="p.active">{{ p.enabled ? '사용 중' : '재확인' }}</em>
+            {{ p.stage.toUpperCase() }}<em v-if="p.active">{{ p.enabled ? '활성 설정' : '재확인' }}</em>
           </button>
         </div>
       </div>
@@ -361,7 +398,7 @@ export default {
           </div>
           <div class="ag-gate" :class="selected.enabled ? 'on' : 'off'">
             <b>{{ selected.enabled ? 'MAXIS 사용 가능' : (selected.verified ? '확인됨 · 적용 전' : '연결 미확인') }}</b>
-            <span>{{ selected.active ? '활성 프로필' : '후보 프로필' }} · {{ selected.lastProbe && selected.lastProbe.at ? selected.lastProbe.at : '확인 기록 없음' }}</span>
+            <span>{{ selected.active ? '활성 프로필' : '후보 프로필' }} · 마지막 검사 시도: {{ selected.lastProbe && selected.lastProbe.at ? selected.lastProbe.at : '확인 기록 없음' }}</span>
           </div>
           <div v-if="Object.keys(probeRows).length" class="ag-probe">
             <div v-for="(row,key) in probeRows" :key="key" class="ag-row" :class="row.ok ? 'ok' : 'no'">
@@ -372,6 +409,21 @@ export default {
           <div class="mx-actions">
             <button class="ag-mini" :disabled="!!busy || !canManage" @click="runProbe">{{ busy === 'probe' ? '확인 중…' : '저장된 설정 연결 확인' }}</button>
             <button class="ag-ok inline" :disabled="!!busy || !canActivate" @click="activate">{{ busy === 'activate' ? '적용 중…' : '이 프로필 사용' }}</button>
+          </div>
+        </section>
+
+        <section class="ag-sec mx-observations" style="overflow-wrap:anywhere;min-width:0">
+          <div class="ag-lab">과거 원격 요청 관측</div>
+          <p class="mx-help">현재 설정과 일치: 미확인 · 요청 기록은 현재 활성화나 응답 품질의 증명이 아닙니다.</p>
+          <p v-if="remoteObservationState === 'unavailable'" class="ag-warn">관측 기록 조회 불가 · 실제 처리 경로 미확인</p>
+          <p v-else-if="!remoteObservations.length" class="mx-help">선택한 프로필의 원격 요청 기록 없음 · 실제 처리 경로 미확인</p>
+          <div v-for="row in remoteObservations" :key="row.key" class="mx-workflow">
+            <b>{{ row.label }}</b>
+            <p class="mx-help" style="margin:4px 0">관측 시각: {{ row.observedAt }}</p>
+            <p class="mx-help" style="margin:4px 0">경로: {{ row.route }} · 사용자 결과 주체: {{ row.outputOwner }}</p>
+            <p class="mx-help" style="margin:4px 0">요청 기록: {{ row.audit }} · 전송: {{ row.transport }} · HTTP: {{ row.http }} · 결과: {{ row.result }}</p>
+            <p class="mx-help" style="margin:4px 0">게시 Workflow UUID: {{ row.workflowVersion }} · Knowledge 버전: {{ row.knowledgeVersion }}</p>
+            <p class="mx-help" style="margin:4px 0">원격 실행 UUID: {{ row.workflowRunId }}</p>
           </div>
         </section>
 

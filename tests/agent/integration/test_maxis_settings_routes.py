@@ -192,12 +192,16 @@ def _verified_probe_result(*workflow_keys):
     }
 
 
-def test_maxis_status_is_separate_from_llm_provider_status(client):
-    body = client.get("/api/agent/maxis/status").json()
+def test_maxis_status_is_separate_from_llm_provider_status(client, tmp_path):
+    response = client.get("/api/agent/maxis/status")
+    assert response.status_code == 200
+    body = response.json()
     assert [p["name"] for p in body["profiles"]] == ["dev", "prod", "internal-pilot"]
     assert body["routes"] == {"agent_core": "local", "editor_author": "local", "pmo_brief": "local"}
     assert "provider" not in body and "chatModel" not in body
     assert body["canManage"] is True
+    assert body["lastRemoteObservations"] == {"state": "none_recorded", "observations": []}
+    assert not (tmp_path / "maxis_audit.jsonl").exists()
 
 
 def test_internal_pilot_settings_are_visible_but_cannot_enable_execution(client, monkeypatch):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import hashlib
 import hmac
@@ -451,12 +452,15 @@ def _read_rows(path: Path, *, max_read_bytes: int) -> list[AuditEventV1]:
     rows: list[AuditEventV1] = []
     try:
         with path.open("rb") as stream:
-            for line in stream:
-                if not line.strip():
-                    raise ValueError("empty audit row")
-                rows.append(AuditEventV1.model_validate_json(
-                    line, strict=True, context={"historical_audit_row": True},
-                ))
+            data = stream.read(max_read_bytes + 1)
+        if len(data) > max_read_bytes:
+            raise ValueError("audit ledger cannot be read safely")
+        for line in io.BytesIO(data):
+            if not line.strip():
+                raise ValueError("empty audit row")
+            rows.append(AuditEventV1.model_validate_json(
+                line, strict=True, context={"historical_audit_row": True},
+            ))
     except Exception as exc:
         raise ValueError("invalid audit ledger") from exc
     return rows
@@ -514,6 +518,73 @@ def read_audit_summary(
         ),
         latest_at=latest,
     )
+
+
+def read_last_remote_observations(*, path=None) -> dict:
+    """Bounded historical metadata; absence never proves local execution."""
+    import re
+    from app.agent.maxis import profiles
+    from app.agent.maxis.registry import _KNOWN_ROLES
+
+    unavailable = {"state": "unavailable", "observations": []}
+    try:
+        target = _resolved_path(path)
+        with _AUDIT_LOCK:
+            rows = _read_rows(_backup_path(target), max_read_bytes=2 * 1024 * 1024)
+            rows += _read_rows(target, max_read_bytes=2 * 1024 * 1024)
+        latest = {}
+        for row in rows:
+            if row.event != "remote_role.invoke":
+                continue
+            if (row.profile not in profiles.PROFILE_NAMES
+                    or row.stage != row.profile
+                    or row.role_id not in _KNOWN_ROLES
+                    or row.workflow_key not in profiles.WORKFLOW_KEYS
+                    or profiles._workflow_key(row.role_id) != row.workflow_key
+                    or row.route_mode not in {"shadow", "maxis"}):
+                return unavailable
+            versions = profiles._safe_public_profile_values(row.profile, {
+                "knowledge_version": row.knowledge_version,
+            })
+            knowledge = versions["knowledge_version"]
+            workflow = profiles._safe_public_workflow_version(row.workflow_version)
+            if ((row.knowledge_version and not knowledge)
+                    or (row.workflow_version and not workflow)):
+                return unavailable
+            # Only the documented release label is displayable here. Other legacy
+            # labels stay unknown instead of reflecting possible internal addresses.
+            if knowledge and not re.fullmatch(
+                    r"ltm-knowledge-[0-9]{4}\.[0-9]{2}(?:\.[0-9]+)?", knowledge):
+                knowledge = ""
+            assert_safe_outbound_text(knowledge, "observation.version")
+            identity = (row.profile, row.workflow_key)
+            if identity in latest and latest[identity][0] > row.occurred_at:
+                continue
+            request = row.remote_request
+            request_fields = request.model_fields_set if request is not None else set()
+            latest[identity] = (row.occurred_at, {
+                "profile": row.profile,
+                "workflowKey": row.workflow_key,
+                "roleId": row.role_id,
+                "observedAt": row.occurred_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "routeMode": row.route_mode,
+                "outputOwner": "local" if row.route_mode == "shadow" else "unknown",
+                "workflowVersion": workflow or None,
+                "knowledgeVersion": knowledge or None,
+                "currentBindingMatch": "unknown",
+                "auditStatus": row.status,
+                "transportStatus": request.transport_status if "transport_status" in request_fields else None,
+                "resultStatus": request.result_status if "result_status" in request_fields else None,
+                "httpStatus": request.http_status if "http_status" in request_fields else None,
+                "workflowRunId": request.workflow_run_id if "workflow_run_id" in request_fields else None,
+            })
+        observations = [latest[key][1] for key in sorted(latest)]
+        return {
+            "state": "observed" if observations else "none_recorded",
+            "observations": observations,
+        }
+    except (OSError, ValueError, OverflowError, ContextGuardError):
+        return unavailable
 
 
 __all__ = [

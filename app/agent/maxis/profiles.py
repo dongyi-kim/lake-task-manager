@@ -1963,6 +1963,8 @@ def _public_profile(name: str) -> dict:
 
 
 def status() -> dict:
+    from app.agent.maxis.audit import read_last_remote_observations
+
     env_profile = str(os.getenv("LAKE_MAXIS_PROFILE") or "").strip()
     config_overrides = {
         key: env_name if str(os.getenv(env_name) or "").strip() else ""
@@ -1980,6 +1982,7 @@ def status() -> dict:
     )
     return {
         "profiles": [_public_profile(name) for name in PROFILE_NAMES],
+        "lastRemoteObservations": read_last_remote_observations(),
         "activeProfile": active_profile_name(),
         "activeFingerprint": active_fingerprint(),
         "routes": routes(),

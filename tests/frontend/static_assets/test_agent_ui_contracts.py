@@ -285,3 +285,16 @@ def test_maxis_settings_are_a_separate_workflow_surface_with_safe_credentials():
         assert path in api_src
     assert ".mx-panel" in css and ".mx-impact" in css and ".mx-promotion-gate" in css
     assert ".mx-impact-segments" in css and ".mx-impact-row" in css
+    assert "p.enabled ? '활성 설정' : '재확인'" in panel
+    assert "마지막 검사 시도:" in panel
+    assert '["observed", "none_recorded", "unavailable"]' in panel
+    assert "value.observations.slice(0, 9)" in panel
+    assert "row.profile === this.selectedName" in panel
+    assert "item.workflowKey === workflow.key" in panel
+    assert "Object.prototype.hasOwnProperty.call(labels, value)" in panel
+    history = panel.split('<section class="ag-sec mx-observations"', 1)[1].split("</section>", 1)[0]
+    for text in ("과거 원격 요청 관측", "현재 설정과 일치: 미확인", "관측 기록 조회 불가",
+                 "실제 처리 경로 미확인", "row.transport", "row.result", "row.workflowRunId"):
+        assert text in history
+    assert "overflow-wrap:anywhere" in history and "min-width:0" in history
+    assert all(token not in history for token in ("v-html", "@click", "<input", "<button", "row.error"))
