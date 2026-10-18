@@ -54,7 +54,7 @@ def test_rendered_source_is_same_for_validator_materializer_and_all_dsl_guards()
     materializer = load(ROOT / "deploy/maxis-dify/materialize_environment.py")
     assert api.EMITTED_SOURCE == materializer.CONTRACT_GUARD_SOURCE
     assert hashlib.sha256(api.EMITTED_SOURCE.encode()).hexdigest() == validator.DIFY_CONTRACT_GUARD_SHA256
-    for name, counts in (("agent-core", (25, 29)), ("pmo-brief", (12, 12)), ("editor-author", (23, 26))):
+    for name, counts in (("agent-core", (28, 33)), ("pmo-brief", (12, 12)), ("editor-author", (23, 26))):
         dsl = yaml.safe_load((ROOT / f"deploy/maxis-dify/dsl/ltm-{name}.yml").read_text(encoding="utf-8"))
         graph = dsl["workflow"]["graph"]
         assert (len(graph["nodes"]), len(graph["edges"])) == counts
