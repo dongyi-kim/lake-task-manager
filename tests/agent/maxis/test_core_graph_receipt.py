@@ -17,7 +17,7 @@ SPEC.loader.exec_module(RECEIPT)
 def graph():
     value = yaml.safe_load((ROOT / "deploy/maxis-dify/dsl/ltm-agent-core.yml")
                            .read_text(encoding="utf-8"))["workflow"]["graph"]
-    assert len(value["nodes"]) == 22 and len(value["edges"]) == 25
+    assert len(value["nodes"]) == 25 and len(value["edges"]) == 29
     return value
 
 
@@ -98,3 +98,27 @@ def test_core_receipt_ignores_only_presentation_and_list_order(graph):
             for index, row in enumerate(node["data"]["prompt_template"]):
                 row["id"] = f"editor-local-{index}"
     assert RECEIPT.graph_sha256(altered) == RECEIPT.graph_sha256(graph)
+
+
+@pytest.mark.parametrize("change", ["schema", "system", "user", "input_source", "input_selector",
+    "assembler_source", "assembler_input", "assembler_candidate", "stage", "merge", "edge", "memory"])
+def test_core_receipt_detects_work_execution_boundaries(graph, change):
+    altered = deepcopy(graph)
+    nodes = {node["id"]: node["data"] for node in altered["nodes"]}
+    work, assembler, projection = (nodes[key] for key in
+        ("1909000000001034", "1909000000001035", "1909000000001036"))
+    if change == "schema": work["structured_output"]["schema"] = {"type": "object"}
+    elif change in {"system", "user"}:
+        work["prompt_template"][int(change == "user")]["text"] += " changed"
+    elif change == "memory": work["memory"] = {}
+    elif change == "input_source": projection["code"] += "\n# changed"
+    elif change == "input_selector": projection["variables"][0]["value_selector"] = ["sys", "query"]
+    elif change == "assembler_source": assembler["code"] += "\n# changed"
+    elif change in {"assembler_input", "assembler_candidate"}:
+        assembler["variables"][int(change == "assembler_candidate")]["value_selector"] = ["sys", "query"]
+    elif change == "stage":
+        next(row for row in nodes["1909000000001025"]["cases"] if row["case_id"] == "work")[
+            "conditions"][0]["value"] = "semantic"
+    elif change == "merge": nodes["1909000000001027"]["variables"][4] = ["1909000000001034", "text"]
+    else: altered["edges"] = [row for row in altered["edges"] if row["source"] != "1909000000001034"]
+    assert RECEIPT.graph_sha256(altered) != RECEIPT.graph_sha256(graph)

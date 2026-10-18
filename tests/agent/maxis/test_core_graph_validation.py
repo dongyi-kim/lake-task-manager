@@ -43,7 +43,7 @@ def _reject_both(modules, raw):
     assert raw == before, "raw validation must precede every repair or deployment mutation"
 
 
-@pytest.mark.parametrize("title", ["Contract LLM", "Control LLM", "Query LLM", "Request LLM"])
+@pytest.mark.parametrize("title", ["Contract LLM", "Control LLM", "Query LLM", "Request LLM", "Work LLM"])
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("mutation", ["model", "system", "schema", "retry", "fallback", "memory", "vision",
                                       "context", "raw_user", "extra_prompt", "variables", "structured_disabled"])
@@ -241,11 +241,12 @@ def test_materialization_binds_all_models_independently_of_node_order(modules, r
     environment["workflows"]["agent_core"]["app_name"] += " Target"
     _, result = materializer._materialize_dsl(environment, "agent_core")
     nodes = _nodes(result)
-    for title in ("Contract LLM", "Control LLM", "Query LLM", "Request LLM"):
+    for title in ("Contract LLM", "Control LLM", "Query LLM", "Request LLM", "Work LLM"):
         assert nodes[title]["model"]["name"] == "target-model"
         assert nodes[title]["context"]["variable_selector"] == ["1909000000001003", "result"]
         selector = {"Query LLM": "{{#1909000000001030.query_input#}}",
-                    "Request LLM": "{{#1909000000001033.request_input#}}"}.get(title, "{{#1909000000001006.model_input#}}")
+                    "Request LLM": "{{#1909000000001033.request_input#}}",
+                    "Work LLM": "{{#1909000000001036.work_input#}}"}.get(title, "{{#1909000000001006.model_input#}}")
         assert nodes[title]["prompt_template"][1]["text"].endswith(selector)
     assert next(row["value_selector"] for row in nodes["Contract Guard"]["variables"]
                 if row["variable"] == "candidate") == ["1909000000001027", "output"]
@@ -256,7 +257,8 @@ def test_materialization_binds_all_models_independently_of_node_order(modules, r
     "assembler_projection", "guard_projection", "bypass",
 ])
 @pytest.mark.parametrize("role,input_id,llm_id", [("Query", "1909000000001030", "1909000000001028"),
-                                                 ("Request", "1909000000001033", "1909000000001031")])
+                                                 ("Request", "1909000000001033", "1909000000001031"),
+                                                 ("Work", "1909000000001036", "1909000000001034")])
 def test_projection_is_pinned_and_never_replaces_authority_input(modules, raw_source, mutation, role, input_id, llm_id):
     nodes = _nodes(raw_source)
     projection = nodes[role + " Input"]
@@ -334,7 +336,7 @@ def test_core_model_inputs_have_no_implicit_query_or_history(modules):
     materializer, validator = modules
     source = yaml.safe_load(DSL_PATH.read_text(encoding="utf-8"))
     llms = [node["data"] for node in source["workflow"]["graph"]["nodes"] if node["data"]["type"] == "llm"]
-    assert len(llms) == 4
+    assert len(llms) == 5
     assert all("memory" in data and data["memory"] is None for data in llms)
     validator.validate_bundle(ROOT)
     environment = materializer.load_environment(ENV_PATH)
@@ -343,7 +345,7 @@ def test_core_model_inputs_have_no_implicit_query_or_history(modules):
                if node["data"]["type"] == "llm")
 
 
-@pytest.mark.parametrize("title", ["Contract LLM", "Control LLM", "Query LLM", "Request LLM"])
+@pytest.mark.parametrize("title", ["Contract LLM", "Control LLM", "Query LLM", "Request LLM", "Work LLM"])
 @pytest.mark.parametrize("mutation", ["missing", "empty", "implicit", "history", "query", "unknown"])
 def test_core_memory_boundary_rejects_every_non_null_input(modules, raw_source, title, mutation):
     data = _nodes(raw_source)[title]
@@ -385,3 +387,77 @@ def test_pmo_memory_contract_remains_unchanged(modules, monkeypatch, workflow_ke
     with pytest.raises(materializer.EnvironmentBindingError):
         materializer._materialize_dsl(environment, workflow_key)
     assert raw == before
+
+@pytest.mark.parametrize("mutation", ["native_contract", "boolean_wire", "stage_fallback", "stage_selector",
+    "missing_merge", "assembler_source", "assembler_input", "assembler_candidate", "assembler_output",
+    "assembler_bypass", "edge_bypass"])
+def test_work_branch_types_and_exact_selectors_cannot_be_bypassed(modules, raw_source, mutation):
+    nodes = _nodes(raw_source)
+    assembler = nodes["Work Assembler"]
+    if mutation == "native_contract":
+        nodes["Work LLM"]["structured_output"]["schema"]["properties"]["contract"]["enum"] = ["remote-role-result.v1"]
+    elif mutation == "boolean_wire":
+        nodes["Work LLM"]["structured_output"]["schema"]["properties"]["payload"]["anyOf"][1]["properties"][
+            "questions"]["items"]["properties"]["input_need"] = {"type": "boolean"}
+    elif mutation.startswith("stage_"):
+        condition = next(row for row in nodes["Core Stage"]["cases"] if row["case_id"] == "work")["conditions"][0]
+        condition.update({"value": "semantic"} if mutation == "stage_fallback" else {"variable_selector": ["sys", "query"]})
+    elif mutation == "missing_merge":
+        nodes["Core Candidate"]["variables"].pop(4)
+    elif mutation == "assembler_source":
+        assembler["code"] += "\n# changed"
+    elif mutation in {"assembler_input", "assembler_candidate"}:
+        assembler["variables"][0 if mutation == "assembler_input" else 1]["value_selector"] = ["sys", "query"]
+    elif mutation == "assembler_output":
+        assembler["outputs"]["candidate"]["type"] = "object"
+    elif mutation == "assembler_bypass":
+        nodes["Core Candidate"]["variables"][4] = ["1909000000001034", "text"]
+    else:
+        edge = next(row for row in raw_source["workflow"]["graph"]["edges"] if row["source"] == "1909000000001034")
+        edge.update(target="1909000000001027", id="1909000000001034-source-1909000000001027-target")
+        edge["data"]["targetType"] = "variable-aggregator"
+    _reject_both(modules, raw_source)
+
+
+@pytest.mark.parametrize("asset,title", [
+    ("code/core_work_input.py", "Work Input"), ("code/core_work_assembler.py", "Work Assembler"),
+    ("prompts/core_work.md", "Work LLM")])
+def test_work_source_and_embedded_content_cannot_drift_together(modules, raw_source, monkeypatch, asset, title):
+    path = ROOT / "deploy/maxis-dify" / asset
+    original = Path.read_text
+    fragment = original(path, encoding="utf-8").rstrip()
+    changed = fragment + "\nchanged"
+    monkeypatch.setattr(Path, "read_text", lambda self, *args, **kwargs:
+        changed if self == path else original(self, *args, **kwargs))
+    node = _nodes(raw_source)[title]
+    if title == "Work LLM":
+        node["prompt_template"][0]["text"] = node["prompt_template"][0]["text"].replace(fragment, changed, 1)
+    else:
+        assert fragment in node["code"]
+        node["code"] = node["code"].replace(fragment, changed, 1)
+    _reject_both(modules, raw_source)
+
+
+@pytest.mark.parametrize("mutation", ["constraint", "meaning"])
+def test_work_create_schema_drift_requires_review(modules, raw_source, monkeypatch, mutation):
+    from app.agent.workflow.work_architect import contracts
+    changed = copy.deepcopy(contracts.CREATE_SCHEMA)
+    if mutation == "constraint": changed["properties"]["items"]["maxItems"] += 1
+    else: changed["properties"]["questions"]["items"]["properties"]["question"]["description"] += " Changed."
+    monkeypatch.setattr(contracts, "CREATE_SCHEMA", changed)
+    _reject_both(modules, raw_source)
+
+
+def test_work_only_system_cap_does_not_raise_other_role_caps(modules, monkeypatch):
+    _, validator = modules
+    spec, checks = validator._editor_graph_modules(ROOT)
+    observed = {}
+    original = checks.validate_llm
+    def record(data, **kwargs):
+        observed[kwargs["label"]] = kwargs["max_system_bytes"]
+        return original(data, **kwargs)
+    monkeypatch.setattr(checks, "validate_llm", record)
+    monkeypatch.setattr(validator, "_editor_graph_modules", lambda root: (spec, checks))
+    validator.validate_bundle(ROOT)
+    assert observed["agent_core.1909000000001034"] == 16384
+    assert all(value == 8192 for key, value in observed.items() if key != "agent_core.1909000000001034")

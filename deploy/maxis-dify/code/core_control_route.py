@@ -23,6 +23,8 @@ _QUERY_SCHEMA_JSON = None
 _QUERY_SCHEMA_SHA256 = None
 _REQUEST_SCHEMA_JSON = None
 _REQUEST_SCHEMA_SHA256 = None
+_WORK_SCHEMA_JSON = None
+_WORK_SCHEMA_SHA256 = None
 
 
 def _fail():
@@ -118,7 +120,7 @@ def _activation(incoming, pack):
 
 
 def main(model_input):
-    """Return semantic/control/query/request; malformed bound inputs raise a safe error.
+    """Return semantic/control/query/request/work; malformed bound inputs raise a safe error.
 
     No I/O, clock reads, mutation, evidence rewriting, or fallback repair. A semantic
     result says only 'not this activation'; all existing validation remains required.
@@ -150,6 +152,23 @@ def main(model_input):
                         or pack.get("payload_schema_sha256") != _REQUEST_SCHEMA_SHA256):
                     _fail()
                 return {"route": "request"}
+            if incoming["role_id"] == "work_architect" or pack.get("use_case") == "work_architect":
+                if (incoming["role_id"] != "work_architect" or pack.get("use_case") != "work_architect"
+                        or not isinstance(_WORK_SCHEMA_JSON, str)
+                        or _digest(_WORK_SCHEMA_JSON) != _WORK_SCHEMA_SHA256):
+                    _fail()
+                raw = pack.get("payload_schema_json")
+                digest = pack.get("payload_schema_sha256")
+                if not isinstance(raw, str) or _digest(raw) != digest:
+                    _fail()
+                schema = json.loads(raw, object_pairs_hook=_pairs, parse_constant=lambda _: _fail())
+                if not isinstance(schema, dict) or _canonical(schema) != raw:
+                    _fail()
+                if raw == _WORK_SCHEMA_JSON and digest == _WORK_SCHEMA_SHA256:
+                    return {"route": "work"}
+                if raw == _WORK_SCHEMA_JSON or digest == _WORK_SCHEMA_SHA256:
+                    _fail()
+                # Other valid Work modes retain their existing semantic path.
             return {"route": "semantic"}
         _activation(incoming, pack)
         return {"route": "control"}
