@@ -130,3 +130,27 @@ def test_noop_preserves_edge_whitespace(owner, newline, raw):
 @pytest.mark.parametrize('heading', ['# 명령서', '## 명령서', '### 명령서'])
 def test_actual_instruction_heading_still_removed(heading):
     assert result._strip_instruction_echo('  ' + heading + '\n\n  답변') == '답변'
+
+
+@pytest.mark.parametrize('owner', [result._dedupe_sentences, result._enforce_reply_style])
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+@pytest.mark.parametrize('raw', [
+    '   ~~~~text\n keep  α  \n\n\n   ~~~~~  \n\n',
+    '\n   ````text\n keep  α  \n~~~\n keep  β  ',
+])
+def test_later_literal_noop_keeps_exact_outer_separators(owner, newline, raw):
+    raw = raw.replace('\n', newline)
+    assert owner(raw) == raw
+
+
+def test_actual_sentence_deduplication_still_executes_next_to_literal():
+    sentence = '이것은 중복 제거가 필요한 충분히 긴 문장입니다.'
+    literal = '~~~text\n keep  bytes  \n~~~\n'
+    got = result._dedupe_sentences(sentence + '\n' + sentence + '\n\n' + literal)
+    assert got.count(sentence) == 1 and literal in got
+
+
+def test_actual_korean_style_change_still_executes_next_to_literal():
+    literal = '~~~text\n keep  bytes  \n~~~'
+    got = result._enforce_reply_style('현재 검토가 필요합니다.\n\n' + literal)
+    assert got == '현재 검토 필요\n\n' + literal

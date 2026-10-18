@@ -1704,6 +1704,8 @@ def _enforce_reply_style(text: str) -> str:
     if spans and not spans[-1][0]:
         spans[-1] = (False, spans[-1][1].rstrip())
     value = "".join(value for _literal, value in spans)
+    if has_literals and value.strip() == str(text or "").strip():
+        return str(text or "")
     # Auto-sectioning is prose-only: splitting opaque literals would alter code.
     # Explicit headings remain intact even when the reply contains literal spans.
     if not has_literals and not _re.search(r"^#{2,4}\s+\S", value, _re.M):
@@ -2442,7 +2444,10 @@ def _dedupe_sentences(text: str) -> str:
         spans[0] = (False, spans[0][1].lstrip())
     if spans and not spans[-1][0]:
         spans[-1] = (False, spans[-1][1].rstrip())
-    return "".join(value for _literal, value in spans)
+    rendered = "".join(value for _literal, value in spans)
+    if any(literal for literal, _value in spans) and rendered.strip() == str(text or "").strip():
+        return str(text or "")
+    return rendered
 
 
 def _normalize_ticket_detail_sections(text: str) -> str:
@@ -3732,7 +3737,10 @@ def _drop_direct_input_source_rows(text: str) -> str:
         spans[0] = (False, spans[0][1].lstrip())
     if spans and not spans[-1][0]:
         spans[-1] = (False, spans[-1][1].rstrip())
-    return "".join(value for _literal, value in spans)
+    rendered = "".join(value for _literal, value in spans)
+    if any(literal for literal, _value in spans) and rendered.strip() == str(text or "").strip():
+        return str(text or "")
+    return rendered
 
 
 def _selected_final_evidence(state) -> list[dict]:
