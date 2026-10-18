@@ -1,5 +1,6 @@
 """Provider-free construction of the checked-in Core control graph."""
 import copy
+from functools import lru_cache
 import hashlib
 import importlib.util
 import json
@@ -19,12 +20,63 @@ SPEC.loader.exec_module(GRAPH)
 CORE_DSL = ROOT / "deploy/maxis-dify/dsl/ltm-agent-core.yml"
 
 
-def _dsl():
+@lru_cache(maxsize=1)
+def _dsl_template():
+    # This module's tracked input is fixed; every mutation gets a detached copy.
     return yaml.safe_load(CORE_DSL.read_text(encoding="utf-8"))
+
+
+def _dsl():
+    return copy.deepcopy(_dsl_template())
 
 
 def _build(dsl=None):
     return GRAPH.rebuild(_dsl() if dsl is None else dsl, **GRAPH.reviewed_assets(ROOT))
+
+
+def test_dsl_fixture_does_not_share_nested_mutations():
+    first = _dsl()
+    expected = copy.deepcopy(first)
+    model = _nodes(first)[GRAPH.WORK_NODE_ID]["data"]
+    model["structured_output"]["schema"]["properties"].clear()
+    model["prompt_template"].append({"role": "assistant", "text": "case-local"})
+    first["workflow"]["graph"]["edges"].clear()
+    assert first != expected
+    assert _dsl() == expected
+
+
+def test_build_parses_template_once_but_revalidates_and_rebuilds(monkeypatch):
+    _dsl_template.cache_clear()
+    text = CORE_DSL.read_text(encoding="utf-8")
+    original_parse = yaml.safe_load
+    original_assets, original_rebuild = GRAPH.reviewed_assets, GRAPH.rebuild
+    parsed, assets, rebuilt = [], [], []
+
+    def counted_parse(value):
+        if value == text:
+            parsed.append(value)
+        return original_parse(value)
+
+    def counted_assets(root):
+        result = original_assets(root)
+        assets.append(result)
+        return result
+
+    def counted_rebuild(dsl, **kwargs):
+        rebuilt.append(dsl)
+        return original_rebuild(dsl, **kwargs)
+
+    monkeypatch.setattr(yaml, "safe_load", counted_parse)
+    monkeypatch.setattr(GRAPH, "reviewed_assets", counted_assets)
+    monkeypatch.setattr(GRAPH, "rebuild", counted_rebuild)
+    try:
+        first, second = _build(), _build()
+        assert len(parsed) == 1
+        assert len(assets) == len(rebuilt) == 2
+        assert assets[0] is not assets[1] and rebuilt[0] is not rebuilt[1]
+        assert first == second and first is not second
+    finally:
+        _dsl_template.cache_clear()
 
 
 @pytest.mark.parametrize("node_id", [GRAPH.SEMANTIC_NODE_ID, GRAPH.CONTROL_NODE_ID,
