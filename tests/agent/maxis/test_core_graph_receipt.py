@@ -13,12 +13,28 @@ RECEIPT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RECEIPT)
 
 
-@pytest.fixture
-def graph():
+@pytest.fixture(scope="module")
+def _graph_template():
     value = yaml.safe_load((ROOT / "deploy/maxis-dify/dsl/ltm-agent-core.yml")
                            .read_text(encoding="utf-8"))["workflow"]["graph"]
     assert len(value["nodes"]) == 25 and len(value["edges"]) == 29
     return value
+
+
+@pytest.fixture
+def graph(_graph_template):
+    return deepcopy(_graph_template)
+
+
+def test_graph_fixture_does_not_share_nested_mutations(_graph_template, graph):
+    before = deepcopy(_graph_template)
+    assert graph == _graph_template
+    work = next(row["data"] for row in graph["nodes"] if row["data"]["title"] == "Work LLM")
+    work["structured_output"]["schema"]["properties"].clear()
+    work["prompt_template"].append({"role": "assistant", "text": "case-local mutation"})
+    graph["edges"].clear()
+    assert graph != before
+    assert _graph_template == before
 
 
 @pytest.mark.parametrize("change", (

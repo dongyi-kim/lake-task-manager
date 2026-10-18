@@ -19,13 +19,33 @@ def modules():
     return materializer, materializer._VALIDATOR
 
 
-@pytest.fixture
-def raw_source(monkeypatch):
+@pytest.fixture(scope="module")
+def _raw_source_template():
+    # The tracked artifact is fixed for this module; mutations use isolated copies.
     text = DSL_PATH.read_text(encoding="utf-8")
-    raw = yaml.safe_load(text)
+    return text, yaml.safe_load(text)
+
+
+@pytest.fixture
+def raw_source(_raw_source_template, monkeypatch):
+    text, template = _raw_source_template
+    raw = copy.deepcopy(template)
     original = yaml.safe_load
     monkeypatch.setattr(yaml, "safe_load", lambda value: raw if value == text else original(value))
     return raw
+
+
+def test_raw_source_fixture_does_not_share_nested_mutations(_raw_source_template, raw_source):
+    _, template = _raw_source_template
+    before = copy.deepcopy(template)
+    assert raw_source == template
+    graph = raw_source["workflow"]["graph"]
+    work = next(row["data"] for row in graph["nodes"] if row["data"]["title"] == "Work LLM")
+    work["structured_output"]["schema"]["properties"].clear()
+    work["prompt_template"].append({"role": "assistant", "text": "case-local mutation"})
+    graph["edges"].clear()
+    assert raw_source != before
+    assert template == before
 
 
 def _nodes(raw):
