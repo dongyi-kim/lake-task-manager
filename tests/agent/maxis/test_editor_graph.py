@@ -1,5 +1,6 @@
 """Selection and writing stay bounded behind the original authoritative guards."""
 import copy
+from functools import lru_cache
 import importlib.util
 import json
 import shutil
@@ -18,9 +19,14 @@ def _load(name):
     return module
 
 
+@lru_cache(maxsize=1)
+def _editor_dsl_baseline():
+    return yaml.safe_load((ROOT / "deploy/maxis-dify/dsl/ltm-editor-author.yml").read_text(encoding="utf-8"))
+
+
 def _build():
     spec, validator = _load("editor_graph"), _load("validate_bundle")
-    dsl = yaml.safe_load((ROOT / "deploy/maxis-dify/dsl/ltm-editor-author.yml").read_text(encoding="utf-8"))
+    dsl = copy.deepcopy(_editor_dsl_baseline())
     return spec, spec.rebuild(ROOT, dsl, validator)
 
 
@@ -29,6 +35,52 @@ def _copy_editor_sources(target):
     helper = Path("app/agent/maxis/source_grounding.py")
     (target / helper).parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / helper, target / helper)
+
+
+def test_build_returns_independent_graphs():
+    _, first = _build()
+    expected = copy.deepcopy(first)
+    first["workflow"]["graph"]["nodes"].clear()
+    _, second = _build()
+    assert second == expected
+
+
+def test_build_parses_baseline_once_but_reloads_and_rebuilds(monkeypatch):
+    _editor_dsl_baseline.cache_clear()
+    original_load, original_parse = _load, yaml.safe_load
+    baseline_text = (ROOT / "deploy/maxis-dify/dsl/ltm-editor-author.yml").read_text(encoding="utf-8")
+    parsed, loaded, rebuilt = [], [], []
+
+    def counted_parse(value):
+        if value == baseline_text:
+            parsed.append(value)
+        return original_parse(value)
+
+    def counted_load(name):
+        module = original_load(name)
+        loaded.append((name, module))
+        if name == "editor_graph":
+            original_rebuild = module.rebuild
+
+            def counted_rebuild(root, dsl, validator):
+                rebuilt.append(dsl)
+                return original_rebuild(root, dsl, validator)
+
+            module.rebuild = counted_rebuild
+        return module
+
+    monkeypatch.setattr(yaml, "safe_load", counted_parse)
+    monkeypatch.setitem(globals(), "_load", counted_load)
+    try:
+        _build()
+        _build()
+        assert len(parsed) == 1
+        assert [name for name, _ in loaded] == ["editor_graph", "validate_bundle"] * 2
+        assert loaded[0][1] is not loaded[2][1]
+        assert loaded[1][1] is not loaded[3][1]
+        assert len(rebuilt) == 2 and rebuilt[0] is not rebuilt[1]
+    finally:
+        _editor_dsl_baseline.cache_clear()
 
 
 def test_builder_is_idempotent_and_preserves_common_guards():
@@ -416,7 +468,7 @@ def test_editor_memory_drift_is_rejected_before_branch_cloning(branch, mutation)
 def test_editor_raw_memory_contract_is_strict_in_both_validators(monkeypatch, branch, mutation):
     spec, validator, materializer = _load("editor_graph"), _load("validate_bundle"), _load("materialize_environment")
     text = (ROOT / "deploy/maxis-dify/dsl/ltm-editor-author.yml").read_text(encoding="utf-8")
-    raw = yaml.safe_load(text)
+    raw = copy.deepcopy(_editor_dsl_baseline())
     data = next(node["data"] for node in raw["workflow"]["graph"]["nodes"]
                 if node["id"] == spec.BRANCH_NODE_IDS[branch])
     _change_editor_memory(data, mutation)
