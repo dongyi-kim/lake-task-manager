@@ -3697,6 +3697,9 @@ def _add_approval_research_limit(text: str, state, evidence: list[dict]) -> str:
 
 def _drop_direct_input_source_rows(text: str) -> str:
     """Remove pseudo-source prose rows without rewriting literal source spans."""
+    from urllib.parse import parse_qs, urlsplit
+    from app.agent.workflow.evidence_index import _valid_url
+
     spans = _reply_literal_spans(text)
     dropping = False
     for index, (literal, value) in enumerate(spans):
@@ -3714,9 +3717,25 @@ def _drop_direct_input_source_rows(text: str) -> str:
             if root:
                 label = root.group(2).strip()
                 markdown = _re.fullmatch(r"\[([^]]+)\]\(([^)]+)\)", label)
-                if markdown and (markdown.group(2).strip().casefold() == "verified url"
-                                 or _DIRECT_INPUT_SOURCE_RE.fullmatch(markdown.group(1).strip())):
-                    label = markdown.group(1).strip()
+                if markdown:
+                    destination = markdown.group(2).strip()
+                    try:
+                        parsed = urlsplit(destination)
+                        absolute = _valid_url(destination) and bool(parsed.hostname)
+                        relative = not parsed.scheme and not parsed.netloc and bool(
+                            _re.fullmatch(r"/spaces/[^/]+/pages/[0-9]+(?:/[^/]*)?", parsed.path)
+                            or _re.fullmatch(r"/display/[^/]+/[^/]+/?", parsed.path)
+                            or (parsed.path == "/pages/viewpage.action"
+                                and len(parse_qs(parsed.query).get("pageId", [])) == 1
+                                and _re.fullmatch(r"[0-9]+", parse_qs(parsed.query)["pageId"][0]))
+                        )
+                        linked = (absolute or relative) and not any(
+                            char.isspace() or char in "<>\\" for char in destination
+                        )
+                    except ValueError:
+                        linked = False
+                    if not linked:
+                        label = markdown.group(1).strip()
                 else:
                     label = _re.sub(r"\s*[—–-].*$", "", label).strip()
                 dropping = bool(_DIRECT_INPUT_SOURCE_RE.fullmatch(label))
