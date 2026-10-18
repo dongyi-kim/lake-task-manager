@@ -2955,6 +2955,9 @@ workflow:
             remote-role-result envelope, metadata echoes, claims, citations, payload_claims
             or JSON Pointers.
 
+            Every JSON object must have unique keys, including nested objects. Resolve
+            revisions before output; never append a revised object or repeat a field.
+
             Within payload, wrap only the following paths exactly once as {value,
             kind, source_ids}; [] denotes each array item.
 

@@ -178,6 +178,19 @@ def test_transport_explains_only_wire_evidence_and_status_boundaries(contract, r
     assert section(role, "Ticket Semantics").strip() not in transport
 
 
+def test_transport_requires_unique_keys_before_final_native_output(contract, role):
+    transport = (DIRECTORY / "prompts/core_request.md").read_text(encoding="utf-8").strip()
+    prompt = contract.build_request_system_prompt(SCHEMA, role, transport)
+    for rule in (
+        "Every JSON object must have unique keys, including nested objects.",
+        "Resolve revisions before output; never append a revised object or repeat a field.",
+    ):
+        assert transport.count(rule) == 1
+        assert prompt.count(rule) == 1
+    assert prompt.startswith(transport + "\n\n")
+    assert len(prompt.encode("utf-8")) < 8192
+
+
 def test_transport_lists_exact_wrapped_and_plain_payload_paths(contract):
     transport = (DIRECTORY / "prompts/core_request.md").read_text(encoding="utf-8")
     canonical = json.loads(canonical_payload_schema(SCHEMA)[0])

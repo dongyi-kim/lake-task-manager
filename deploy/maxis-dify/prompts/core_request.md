@@ -7,6 +7,7 @@ Every source_ids item must exactly equal context.sources[].source_id. canonical_
 
 ## Native output
 Return only one request-draft.v2 JSON object with contract, status, payload and missing_inputs, using the attached native schema. Code maps this native draft into the final canonical payload contract. Do not return the outer remote-role-result envelope, metadata echoes, claims, citations, payload_claims or JSON Pointers.
+Every JSON object must have unique keys, including nested objects. Resolve revisions before output; never append a revised object or repeat a field.
 Within payload, wrap only the following paths exactly once as {value, kind, source_ids}; [] denotes each array item.
 Wrapped paths: `intent`, `keywords[]`, `mentioned_keys[]`, `goal`, `tasks[].instruction`, `tasks[].completion_criteria[]`, `blocking_questions[]`, `request_questions[].question`, `requested_effects[].target`, `requested_effects[].value`, `requested_effects[].literal`, `target_selectors[].cardinality`, `assumptions[]`, `plan`.
 Plain paths: `module`, `playbook`, `answer_depth`, `research_readiness`, `tasks[].id`, `tasks[].kind`, `tasks[].depends_on[]`, `tasks[].effect`, `request_questions[].field`, `requested_effects[].field`, `target_selectors[].task_id`, `target_selectors[].anchor_key`, `target_selectors[].relation`, `target_selectors[].state`.
