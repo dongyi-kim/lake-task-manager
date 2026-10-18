@@ -23,6 +23,7 @@ copy는 ignored `.cache/`에 두며 커밋하지 않는다. 변경 이력·검�
 | `core_query_contract.py` | canonical Query 값 제약에서 내부 단위 계약 생성 |
 | `core_request_contract.py`, `code/core_request_input.py`, `code/core_request_assembler.py` | 실제 RequestArchitect 계약·의미 지시 전달, 입력 metadata 분리와 draft 의미 보존 조립 |
 | `core_work_contract.py`, `code/core_work_input.py`, `code/core_work_assembler.py` | exact CREATE Work 정책·native 계약과 원입력 기반 의미 보존 조립 |
+| `core_knowledge_contract.py`, `code/core_knowledge_input.py`, `code/core_knowledge_assembler.py` | exact KnowledgeBrief 계약·입력 투영과 원입력 결속 조립 |
 | `code/core_draft_validation.py` | 역할 의미를 다루지 않는 엄격한 JSON·schema 검사; builder가 조립 코드 앞에 결합 |
 | `code/core_draft_context.py` | 원본 입력의 Role·schema·출처 hash 결속 검사; 의미·승인 판단 없음 |
 | `graph_receipt.py` | 로컬 graph와 서버 export의 설정 비교 코드(실행 결과가 아님) |
@@ -46,8 +47,8 @@ Editor의 `editor-draft-spec.v2`, `editor-writing.v1`, `editor-plan.v2`는 각�
 공통 흐름은 Start → release sentinel / Role ACL 검색 → Knowledge Guard → policy 분기 →
 검증된 입력의 LLM 처리 → Contract Guard → Answer다. policy deny는 LLM 없이 종료한다.
 
-- **Core:** 25노드·29엣지. 검증된 연결 검사, canonical Query·Request·CREATE Work 계약, 일반 업무를 분류해
-  control/query/request/work/semantic 중 한 LLM 경로만 사용한다. Query는 기존 `query_specialist`의 typed
+- **Core:** 28노드·33엣지. 검증된 연결 검사, canonical Query·Request·CREATE Work·KnowledgeBrief 계약, 일반 업무를 분류해
+  control/query/request/work/knowledge/semantic 중 한 LLM 경로만 사용한다. Query는 기존 `query_specialist`의 typed
   입력에서 업무 내용·근거를 보존하고 최종 계약 metadata를 분리한다. LLM은 의미 값·kind·근거를
   작성하고 Code 조립기가 원본 입력으로 ID·인용 연결·metadata만 구성한다. 새 Role이나
   추가 LLM 호출은 없다. Request는 실제 RequestArchitect 필드 설명과 선택된 로컬 역할 규칙을
@@ -58,6 +59,8 @@ Editor의 `editor-draft-spec.v2`, `editor-writing.v1`, `editor-plan.v2`는 각�
   Work는 exact CREATE에만 전용 입력·native draft·조립 경로를 사용하며 다른 Work schema는
   기존 일반 경로를 유지한다. 필수 CREATE 정책을 보존하기 위해 Work system만 16,384 UTF-8
   bytes 한도이며 다른 역할·원본 context·출력 token 한도는 그대로다. 실측 품질·효율 보장은 아니다.
+  Knowledge는 exact KnowledgeBrief에 전용 입력 투영 → native draft → 원입력 결속 조립 경로를
+  사용한다. 로컬 Knowledge 역할의 의미 규칙과 양쪽 최종 guard를 유지한다.
 - **PMO:** 12노드·12엣지. 결정적으로 계산된 LTM 수치와 검증된 근거를 해석한다.
   수치 집계의 정본은 LTM이며 모델이 Jira 상태를 추정하지 않는다.
 - **Editor:** 23노드·26엣지. 입력 투영 → 본문/댓글 선택 → DraftSpec 검증 → 문안 작성 →
