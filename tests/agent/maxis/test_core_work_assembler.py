@@ -171,6 +171,23 @@ def test_control_outcomes_are_empty_without_synthesized_provenance(compiled, cas
     assert remote == result and local()[0].status == status
 
 
+@pytest.mark.parametrize("missing", ["questions", "mode", "items"])
+def test_each_missing_payload_field_is_rejected_without_diagnostic_key_inference(compiled, case, missing):
+    _, incoming, draft, _ = case
+    del draft["payload"][missing]
+    errors = list(Draft202012Validator(compiled[1]).iter_errors(draft))
+    assert len(errors) == 1 and errors[0].validator == "anyOf"
+    branches = errors[0].context
+    assert [error.validator for error in branches] == ["additionalProperties", "maxProperties", "required"]
+    assert all(list(error.absolute_path) == ["payload"] for error in branches)
+    assert all(list(error.schema_path)[0] == 0 for error in branches[:2])
+    assert list(branches[2].schema_path)[0] == 1
+    # The compact diagnostic stores this complete required set, not the omitted key.
+    assert branches[2].validator_value == ["questions", "mode", "items"]
+    with pytest.raises(ValueError, match=ERROR):
+        assemble(compiled, incoming, draft)
+
+
 @pytest.mark.parametrize("value", [True, False, 0, 1, 1.0, "true", "false", "REQUIRED", "required ", "", None, [], {}])
 def test_question_label_rejects_coercion_and_defaults(compiled, case, value):
     _, incoming, draft, _ = case
