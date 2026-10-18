@@ -128,4 +128,3 @@ def assert_public_contract(runtime, report_contract, result, service):
     del expected[("issue_comments", ("T-1", 6))]
     expected[("issue_comments", ("T-1", 10))] = 1
     assert Counter(public_service.calls) == expected
-
