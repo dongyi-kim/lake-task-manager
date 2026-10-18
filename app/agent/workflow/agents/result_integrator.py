@@ -1559,17 +1559,94 @@ def _assignment_completion_reply(data: dict) -> str:
     return "\n".join(lines)
 
 
-def _enforce_reply_style(text: str) -> str:
-    """최종 reply를 짧은 업무 브리프 문체로 정규화한다.
+def _reply_section_heading(raw: str) -> bool:
+    """Recognize a heading only after the shared scanner establishes its context."""
+    return _re.fullmatch(
+        r" {0,3}(?:#{1,6}[^\S\r\n]+\S[^\r\n]*|\*\*[^\r\n*]+\*\*[^\S\r\n]*)",
+        raw.rstrip("\r\n"),
+    ) is not None
 
-    사실의 구조나 markdown token은 바꾸지 않는다. 확실히 기계화 가능한 존댓말 종결만
-    명사형으로 바꾸고, 여러 내용 block인데 heading이 전혀 없을 때만 요약/상세 section을
-    보완한다. 직접 인용·blockquote·질문·code fence는 구술 문맥이라 그대로 둔다.
+
+def _reply_literal_spans(text: str, *, structural_headings: bool = False) -> list[tuple[bool, str]]:
+    """Partition raw lines; extend matched inline runs within nonblank prose.
+
+    Fence and indented blocks bound inline matching. Backtick-bearing lines stay
+    opaque even for escaped/unmatched runs. This preserves source, not rendering.
     """
-    value = str(text or "").strip()
-    if not value:
-        return value
+    raw_lines = str(text or "").splitlines(keepends=True)
+    literals, blocks, runs = [], [], []
+    coverage = [0] * (len(raw_lines) + 1)
+    continuations = [0] * (len(raw_lines) + 1)
 
+    def protect_inline_runs():
+        # Each run is visited once in reverse and at most once while pairing.
+        next_run = [-1] * len(runs)
+        nearest = {}
+        for i in range(len(runs) - 1, -1, -1):
+            size = runs[i][1]
+            next_run[i] = nearest.get(size, -1)
+            nearest[size] = i
+        i = 0
+        while i < len(runs):
+            close = next_run[i]
+            if not runs[i][2] and close >= 0:
+                coverage[runs[i][0]] += 1
+                coverage[runs[close][0] + 1] -= 1
+                continuations[runs[i][0] + 1] += 1
+                continuations[runs[close][0] + 1] -= 1
+                i = close + 1
+            else:
+                i += 1
+        runs.clear()
+
+    fence_char, fence_size, indented = "", 0, False
+    for index, raw in enumerate(raw_lines):
+        line = raw.rstrip("\r\n")
+        fence = _re.match(r"^ {0,3}(`{3,}|~{3,})([^\r\n]*)$", line)
+        if fence_char:
+            block = True
+            if (fence and fence[1][0] == fence_char and len(fence[1]) >= fence_size
+                    and not fence[2].strip()):
+                fence_char, fence_size = "", 0
+        elif fence and not (fence[1][0] == "`" and "`" in fence[2]):
+            block = True
+            fence_char, fence_size, indented = fence[1][0], len(fence[1]), False
+        else:
+            indented = line.startswith(("    ", "\t")) or (indented and not line.strip())
+            block = indented
+        blocks.append(block)
+        literals.append(block or "`" in line)
+        if block or not line.strip():
+            protect_inline_runs()
+            continue
+        slash_end, slash_count = -1, 0
+        for match in _re.finditer(r"\\+|`+", line):
+            if match[0][0] == "\\":
+                slash_end, slash_count = match.end(), len(match[0])
+            else:
+                escaped = slash_end == match.start() and slash_count % 2 == 1
+                runs.append((index, len(match[0]), escaped))
+    protect_inline_runs()
+
+    spans, active, continued = [], 0, 0
+    for index, raw in enumerate(raw_lines):
+        active += coverage[index]
+        continued += continuations[index]
+        literal = literals[index] or active > 0
+        # Only headings starting outside block/continued inline code are structural.
+        if structural_headings and not blocks[index] and not continued and _reply_section_heading(raw):
+            literal = False
+        if spans and spans[-1][0] == literal:
+            spans[-1][1].append(raw)
+        else:
+            spans.append((literal, [raw]))
+    return [(literal, "".join(lines)) for literal, lines in spans]
+
+
+def _enforce_reply_style(text: str) -> str:
+    """Compact ordinary Korean prose without modifying literal source spans."""
+    if not str(text or "").strip():
+        return ""
     def compact_line(line: str) -> str:
         stripped = line.strip()
         if not stripped or stripped.startswith(">") or stripped.startswith("#"):
@@ -1612,18 +1689,23 @@ def _enforce_reply_style(text: str) -> str:
         out = _re.sub(r"([가-힣]+)[이가] 필요(?=\s|[,.!?]|$)", r"\1 필요", out)
         return _re.sub(r"\.(?=\s*$)", "", out)
 
-    rendered, in_code = [], False
-    for line in value.splitlines():
-        if line.strip().startswith("```"):
-            in_code = not in_code
-            rendered.append(line)
-        else:
-            rendered.append(line if in_code else compact_line(line))
-    value = "\n".join(rendered).strip()
-
-    # 한 줄 답에 장식 heading 금지. 둘 이상의 내용 block인데 heading이 하나도 없을 때만
-    # 첫 block=요약, 나머지=상세로 최소 구조를 보완한다.
-    if not _re.search(r"^#{2,4}\s+\S", value, _re.M):
+    spans = _reply_literal_spans(text)
+    has_literals = any(literal for literal, _value in spans)
+    for index, (literal, value) in enumerate(spans):
+        if literal:
+            continue
+        rendered = "\n".join(compact_line(line) for line in value.splitlines())
+        if value.endswith(("\n", "\r")):
+            rendered += "\n"
+        spans[index] = (False, rendered)
+    if spans and not spans[0][0]:
+        spans[0] = (False, spans[0][1].lstrip())
+    if spans and not spans[-1][0]:
+        spans[-1] = (False, spans[-1][1].rstrip())
+    value = "".join(value for _literal, value in spans)
+    # Auto-sectioning is prose-only: splitting opaque literals would alter code.
+    # Explicit headings remain intact even when the reply contains literal spans.
+    if not has_literals and not _re.search(r"^#{2,4}\s+\S", value, _re.M):
         blocks = [b.strip() for b in _re.split(r"\n\s*\n", value) if b.strip()]
         substantive = [b for b in blocks if not b.startswith(">")]
         if len(substantive) >= 2:
@@ -2313,33 +2395,37 @@ def _drop_boilerplate_closers(text: str) -> str:
 
 
 def _dedupe_sentences(text: str) -> str:
-    """평문에서 **똑같이 반복된 문장**을 뒤엣것부터 지운다.
-
-    표(`|`)·목록(`-`,`1.`)·인용·참조 줄은 건드리지 않는다 — 거기서는 같은 문구가
-    정당하게 되풀이된다. 문장 하나가 통째로 겹칠 때만 접으므로, 비슷하지만 다른
-    문장은 둘 다 남는다.
-    """
-    import re as _re
-    seen, out_lines = set(), []
-    for line in (text or "").splitlines():
-        s = line.strip()
-        if not s or s.startswith(("|", "-", "*", ">", "#", "[")) or _re.match(r"^\d+[.)]", s):
-            out_lines.append(line)
+    """Deduplicate ordinary prose, never literal code or structured rows."""
+    seen, spans = set(), _reply_literal_spans(text)
+    for index, (literal, value) in enumerate(spans):
+        if literal:
             continue
-        parts = _re.split(r"(?<=[.!?])\s+|(?<=다\.)\s+", s)
-        kept = []
-        for p in parts:
-            k = _re.sub(r"\s+", " ", p).strip()
-            if len(k) >= 10 and k in seen:
-                continue                    # 이미 한 말이다
-            if len(k) >= 10:
-                seen.add(k)
-            kept.append(p)
-        joined = " ".join(x for x in kept if x.strip())
-        if joined.strip():
-            out_lines.append(line[:len(line) - len(line.lstrip())] + joined)
-    # 문장이 통째로 빠져 생긴 빈 줄 3연속은 2줄로
-    return _re.sub(r"\n{3,}", "\n\n", "\n".join(out_lines)).strip()
+        lines = []
+        for raw in value.splitlines(keepends=True):
+            line = raw.rstrip("\r\n")
+            s = line.strip()
+            ending = "\n" if raw[len(line):] else ""
+            if (not s or s.startswith(("|", "-", "*", "+", ">", "#", "["))
+                    or _re.match(r"^\d+[.)]", s)):
+                lines.append(line + ending)
+                continue
+            kept = []
+            for part in _re.split(r"(?<=[.!?])\s+|(?<=다\.)\s+", s):
+                key = _re.sub(r"\s+", " ", part).strip()
+                if len(key) >= 10 and key in seen:
+                    continue
+                if len(key) >= 10:
+                    seen.add(key)
+                kept.append(part)
+            joined = " ".join(part for part in kept if part.strip())
+            if joined:
+                lines.append(line[:len(line) - len(line.lstrip())] + joined + ending)
+        spans[index] = (False, _re.sub(r"\n{3,}", "\n\n", "".join(lines)))
+    if spans and not spans[0][0]:
+        spans[0] = (False, spans[0][1].lstrip())
+    if spans and not spans[-1][0]:
+        spans[-1] = (False, spans[-1][1].rstrip())
+    return "".join(value for _literal, value in spans)
 
 
 def _normalize_ticket_detail_sections(text: str) -> str:
@@ -3542,34 +3628,48 @@ def _add_approval_research_limit(text: str, state, evidence: list[dict]) -> str:
 
 
 def _drop_direct_input_source_rows(text: str) -> str:
-    """Remove legacy pseudo-source rows before canonical numbering and late grounding."""
-    lines = str(text or "").splitlines()
-    out: list[str] = []
+    """Remove pseudo-source prose rows without rewriting literal source spans."""
+    spans = _reply_literal_spans(text)
     dropping = False
-    for line in lines:
-        root = _re.match(r"^\s*\[(\d+)\]\s+(.+?)\s*$", line)
-        if root:
-            label = root.group(2).strip()
-            markdown = _re.fullmatch(r"\[([^]]+)\]\(([^)]+)\)", label)
-            if markdown and (markdown.group(2).strip().casefold() == "verified url"
-                             or _DIRECT_INPUT_SOURCE_RE.fullmatch(markdown.group(1).strip())):
-                label = markdown.group(1).strip()
-            else:
-                label = _re.sub(r"\s*[—–-].*$", "", label).strip()
-            dropping = bool(_DIRECT_INPUT_SOURCE_RE.fullmatch(label))
-            if dropping:
-                continue
-        elif dropping:
-            if _re.match(r"^\s*[-*+]\s+", line) or not line.strip():
-                continue
-            dropping = False
-        if not dropping:
-            out.append(line)
-    value = "\n".join(out)
-    # The sole pseudo source commonly leaves an empty heading.  The canonical index can
-    # later append real sources if any exist.
-    value = _re.sub(r"(?ms)^###\s*(?:근거|참조)\s*$\s*(?=^###\s|\Z)", "", value)
-    return _re.sub(r"\n{3,}", "\n\n", value).strip()
+    for index, (literal, value) in enumerate(spans):
+        if literal:
+            # Opaque child rows do not end a source; a standalone fence does.
+            dropping = dropping and all(
+                not line.strip() or _re.match(r"^\s*[-*+]\s+", line)
+                for line in value.splitlines()
+            )
+            continue
+        out: list[str] = []
+        for raw in value.splitlines(keepends=True):
+            line = raw.rstrip("\r\n")
+            root = _re.match(r"^\s*\[(\d+)\]\s+(.+?)\s*$", line)
+            if root:
+                label = root.group(2).strip()
+                markdown = _re.fullmatch(r"\[([^]]+)\]\(([^)]+)\)", label)
+                if markdown and (markdown.group(2).strip().casefold() == "verified url"
+                                 or _DIRECT_INPUT_SOURCE_RE.fullmatch(markdown.group(1).strip())):
+                    label = markdown.group(1).strip()
+                else:
+                    label = _re.sub(r"\s*[—–-].*$", "", label).strip()
+                dropping = bool(_DIRECT_INPUT_SOURCE_RE.fullmatch(label))
+                if dropping:
+                    continue
+            elif dropping:
+                if _re.match(r"^\s*[-*+]\s+", line) or not line.strip():
+                    continue
+                dropping = False
+            if not dropping:
+                out.append(line + ("\n" if raw[len(line):] else ""))
+        value = "".join(out)
+        # A following literal is content, so the end of a prose span is not EOF.
+        end = r"(?=^###\s|\Z)" if index == len(spans) - 1 else r"(?=^###\s)"
+        value = _re.sub(r"(?m)^###\s*(?:근거|참조)\s*" + end, "", value)
+        spans[index] = (False, _re.sub(r"\n{3,}", "\n\n", value))
+    if spans and not spans[0][0]:
+        spans[0] = (False, spans[0][1].lstrip())
+    if spans and not spans[-1][0]:
+        spans[-1] = (False, spans[-1][1].rstrip())
+    return "".join(value for _literal, value in spans)
 
 
 def _selected_final_evidence(state) -> list[dict]:
