@@ -1012,6 +1012,8 @@ def enforce_atomic_fact_boundaries(text: str, facts: Iterable[AtomicFact]) -> st
     value = str(text or "")
     heading = EVIDENCE_HEADING_RE.search(value)
     body, tail = (value[:heading.start()], value[heading.start():]) if heading else (value, "")
+    # Compare against this owner's legacy two line joins only after all semantic gates.
+    unmodified = ("\n".join("\n".join(body.splitlines()).splitlines()) + tail).strip()
     body = _enforce_exact_date_math(body)
     rows = list(facts)
     due_by_subject: dict[str, set[str]] = {}
@@ -1124,7 +1126,8 @@ def enforce_atomic_fact_boundaries(text: str, facts: Iterable[AtomicFact]) -> st
                 )
     if current_additions:
         body = body.rstrip() + "\n\n" + "\n".join(current_additions) + "\n"
-    return (body + tail).strip()
+    rendered = (body + tail).strip()
+    return value if rendered == unmodified else rendered
 
 
 def _atomic_literal_is_present(value: str, literal: str) -> bool:

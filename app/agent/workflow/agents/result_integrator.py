@@ -2452,7 +2452,8 @@ def _normalize_ticket_detail_sections(text: str) -> str:
                 out.append(f"{indent}- {{{{ticket-detail:{found.group(1)}}}}}")
                 continue
         out.append(line)
-    return "\n".join(out)
+    rendered = "\n".join(out)
+    return str(text or "") if rendered == "\n".join(str(text or "").splitlines()) else rendered
 
 
 def _normalize_badge_repetitions(text: str) -> str:
@@ -2481,7 +2482,8 @@ def _normalize_badge_repetitions(text: str) -> str:
             elif suffix != matched.group(2):
                 line = matched.group(1) + " — " + suffix
         out.append(line.rstrip())
-    return "\n".join(out)
+    rendered = "\n".join(out)
+    return str(text or "") if rendered == "\n".join(line.rstrip() for line in str(text or "").splitlines()) else rendered
 
 
 def _badgeify_known_ticket_mentions(text: str, state) -> str:
