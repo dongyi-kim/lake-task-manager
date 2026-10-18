@@ -18,7 +18,9 @@ Return the exact compact retrieval AST schema. Each `reads` item contains only `
 
 1. Preserve every user filter and distinguish required conditions from ranking hints.
 2. Put only the evidence subject in `subject`. Ticket creation, update, selection, approval, and workflow instructions are actions, not search terms; never copy them into `subject`.
-3. For each required evidence facet of the atomic task, choose the narrowest adequate source; use complementary sources when one source cannot cover every required facet. Avoid redundant reads with paraphrased subjects.
+3. For each required evidence facet of the atomic task, choose the narrowest adequate source, honoring explicit source requests and known evidence locations.
+   Typically, `jira` provides work and change records; `confluence` provides design, decisions, and documented context.
+   Use complementary sources only when one source cannot cover the required facets. Avoid redundant reads with paraphrased subjects.
 4. Require full-set coverage for "all", "every", audit coverage, or any bulk-write target.
 5. For informal meeting material, search the discussed technology, decision, asset, and explicit ticket keys;
    never search formatting words such as `회의 메모`, `from`, an attachment filename, or a speaker label as the topic.

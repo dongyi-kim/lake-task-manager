@@ -2429,23 +2429,25 @@ workflow:
             2. Put only the evidence subject in `subject`. Ticket creation, update,\
             \ selection, approval, and workflow instructions are actions, not search\
             \ terms; never copy them into `subject`.\n3. For each required evidence\
-            \ facet of the atomic task, choose the narrowest adequate source; use\
-            \ complementary sources when one source cannot cover every required facet.\
-            \ Avoid redundant reads with paraphrased subjects.\n4. Require full-set\
-            \ coverage for \"all\", \"every\", audit coverage, or any bulk-write target.\n\
-            5. For informal meeting material, search the discussed technology, decision,\
-            \ asset, and explicit ticket keys;\n   never search formatting words such\
-            \ as `회의 메모`, `from`, an attachment filename, or a speaker label as the\
-            \ topic.\n\n## Scope and Tool Contract\n\n- Do not add a Jira project\
-            \ clause. `run_jql_v2` applies every project in `search.jira.projects`\
-            \ as an outer `AND` filter. Empty config must fail; there is no `project_key`\
-            \ fallback.\n- Do not add a Confluence space clause. `search_documents`\
-            \ applies only `search.confluence.spaces`. Empty config does not mean\
-            \ every space.\n- Use `where` only for a justified, source-specific filter:\
-            \ an additional JQL condition for `jira` or `comments`, an additional\
-            \ CQL condition for `confluence`, or an exact module filter for `people`.\
-            \ Omit it when no such filter is justified; `web` and `github` do not\
-            \ consume this field. Never put task instructions, configured project/space\
+            \ facet of the atomic task, choose the narrowest adequate source, honoring\
+            \ explicit source requests and known evidence locations.\n   Typically,\
+            \ `jira` provides work and change records; `confluence` provides design,\
+            \ decisions, and documented context.\n   Use complementary sources only\
+            \ when one source cannot cover the required facets. Avoid redundant reads\
+            \ with paraphrased subjects.\n4. Require full-set coverage for \"all\"\
+            , \"every\", audit coverage, or any bulk-write target.\n5. For informal\
+            \ meeting material, search the discussed technology, decision, asset,\
+            \ and explicit ticket keys;\n   never search formatting words such as\
+            \ `회의 메모`, `from`, an attachment filename, or a speaker label as the topic.\n\
+            \n## Scope and Tool Contract\n\n- Do not add a Jira project clause. `run_jql_v2`\
+            \ applies every project in `search.jira.projects` as an outer `AND` filter.\
+            \ Empty config must fail; there is no `project_key` fallback.\n- Do not\
+            \ add a Confluence space clause. `search_documents` applies only `search.confluence.spaces`.\
+            \ Empty config does not mean every space.\n- Use `where` only for a justified,\
+            \ source-specific filter: an additional JQL condition for `jira` or `comments`,\
+            \ an additional CQL condition for `confluence`, or an exact module filter\
+            \ for `people`. Omit it when no such filter is justified; `web` and `github`\
+            \ do not consume this field. Never put task instructions, configured project/space\
             \ scope, or `ORDER BY` in `where`; runtime owns query assembly and ordering.\n\
             - Use `people` queries for candidates and evidence, not recommendations.\n\
             - Use `comments` when the requested evidence lives in comment bodies;\
