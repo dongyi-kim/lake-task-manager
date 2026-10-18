@@ -93,8 +93,7 @@ def test_actual_factory_through_knowledge_guard_selects_control(activation):
     assert ROUTE.main(result["model_input"]) == {"route": "control"}
 
 
-@pytest.mark.parametrize("role", ["knowledge_curator",
-                                  "auditor", "result_integrator"])
+@pytest.mark.parametrize("role", ["auditor", "result_integrator"])
 def test_business_defaults_to_semantic_despite_control_words(semantic, role):
     semantic["role_id"] = semantic["context_pack"]["use_case"] = role
     semantic["context_pack"]["query"] = "activation_probe ready probe_agent_core synthetic_contract"
@@ -104,7 +103,7 @@ def test_business_defaults_to_semantic_despite_control_words(semantic, role):
     assert semantic == before
 
 
-@pytest.mark.parametrize("role", ["query_specialist", "request_architect", "work_architect"])
+@pytest.mark.parametrize("role", ["query_specialist", "request_architect", "work_architect", "knowledge_curator"])
 def test_unbound_typed_role_template_fails_closed(semantic, role):
     semantic["role_id"] = semantic["context_pack"]["use_case"] = role
     rejected(semantic)
@@ -153,7 +152,7 @@ def test_calendar_validation_uses_portable_components(activation, monkeypatch, f
 def test_ready_schema_alone_does_not_select_control(semantic, activation):
     for field in ("payload_schema_json", "payload_schema_sha256"):
         semantic["context_pack"][field] = activation["context_pack"][field]
-    assert ROUTE.main(encoded(semantic)) == {"route": "semantic"}
+    rejected(semantic)  # Knowledge's ready schema requires the complete reserved activation identity.
 
 
 @pytest.mark.parametrize("marker", ["request", "source", "context"])

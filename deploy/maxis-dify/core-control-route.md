@@ -1,6 +1,6 @@
 # Core 단일 실행 분기 계약
 
-Core는 연결 검사, typed Query·Request·CREATE Work와 일반 업무 판단을 각각 한 LLM에 맡기며 모든 경로가 기존 Knowledge Guard와
+Core는 연결 검사, typed Query·Request·CREATE Work·Knowledge와 일반 업무 판단을 각각 한 LLM에 맡기며 모든 경로가 기존 Knowledge Guard와
 Contract Guard 사이에서 실행한다. 이 문서는 현행 소스 계약이다. 배포·평가 실행 결과는
 ignored `.cache/`에 보관하며 커밋하지 않는다.
 
@@ -26,13 +26,16 @@ object 형식을 요구하며 중복 key·비유한 수·비정규 JSON을 거�
 - Core factory의 activation만 `control`로 분류한다. `knowledge_curator`, canonical ready
   schema/digest, nonce와 source/fact/context/가명 사용자, UTC timestamp 연결, 빈 scope/metrics/flags,
   fresh/nonpartial 상태를 검사한다.
+- 예약 activation 식별자가 없는 `knowledge_curator`는 Role/use_case와 canonical KnowledgeBrief
+  JSON/SHA가 모두 정확할 때만 `knowledge`다. 불일치·ready schema만 있는 입력은 오류이며
+  semantic으로 우회하지 않는다. 예약 식별자 검사는 이 업무 분기보다 먼저 실행한다.
 - `probe_` request ID, `ltm:maxis-probe:` source ID, `activation_probe` context 중 하나라도
   있으면 전체 activation 계약을 요구한다. 변조·다른 앱/Role은 `invalid_core_control_input` 오류다.
 - 요청 query 본문은 bounded text인지만 확인하고 내용으로 분기하지 않는다. Knowledge 본문을 읽거나
   ready schema만으로 control을 선택하지 않는다. 입력 repair·정규화는 하지 않는다.
 
 인증·ACL·sentinel/proof·실제 Workflow binding·wall-clock freshness는 이 함수의 보장이 아니다.
-UTC 달력 유효성과 timestamp 간 동일성만 확인한다. 다섯 route 모두 실행/출력 허가가 아니며
+UTC 달력 유효성과 timestamp 간 동일성만 확인한다. 여섯 route 모두 실행/출력 허가가 아니며
 ContextGuard → Knowledge Guard → 실제 LLM → Contract Guard/ResponseGuard가 필요하다.
 분류기는 ready 응답·citation·canary 성공 결과나 모델 실행 증명을 만들지 않는다.
 
@@ -40,10 +43,10 @@ ContextGuard → Knowledge Guard → 실제 LLM → Contract Guard/ResponseGuard
 
 `core_control_graph.py::rebuild`는 Core source와 검토된 분류기/prompt를 받아 메모리 복사본을
 반환한다. CLI·파일 쓰기·runtime 등록은 없으며 reviewed asset의 독립 SHA pin을 확인한다.
-25노드·29엣지에서 policy allow 뒤 배타 분기를 둔다. Control/Contract LLM은 text를,
-Query/Request/Work LLM은 각 조립기의 후보를 합류시켜 기존 Contract Guard로 전달한다.
-Control/Contract LLM은 원본 model input, Query/Request/Work LLM은 각각 전용 입력 투영을 받는다.
-policy deny는 0회, 허용된 다섯 경로는 각각 1회 LLM을 지나도록 구성한다.
+28노드·33엣지에서 policy allow 뒤 배타 분기를 둔다. Control/Contract LLM은 text를,
+Query/Request/Work/Knowledge LLM은 각 조립기의 후보를 합류시켜 기존 Contract Guard로 전달한다.
+Control/Contract LLM은 원본 model input, 나머지 LLM은 각각 전용 입력 투영을 받는다.
+policy deny는 0회, 허용된 여섯 경로는 각각 1회 LLM을 지나도록 구성한다.
 
 `code/core_query_input.py`는 Query 분기에서만 `query-input.v2`를 만든다. `task.text`는
 backend가 검색 정책 query 보강 전에 캡처한 bounded 요청이다. 원본 pack의 예약 context
@@ -140,12 +143,28 @@ assignee/parent_ref는 native 필드가 아니므로 추가하지 않는다. 새
 필수 정책 보존을 위해 검토된 Work system 예산만 16,384 UTF-8 bytes로 구분한다.
 다른 역할·model·output 예산은 바뀌지 않는다. 실제 품질·token·latency 효과는 별도 측정 대상이다.
 
+Knowledge는 Stage → Knowledge Input → Knowledge LLM → Knowledge Assembler로 연결한다.
+`knowledge-input.v1`은 기존 source 원문·순서·ID, facts/metrics/role_context와 정책을 보존한다.
+최종 envelope/schema metadata와 source hash는 숨기고, opaque intent canonical ID 외의 업무 ID는
+`entity_reference`로 표시한다. 인용에는 원본 `source_id`만 사용하며 `allowed_claim_kinds`는
+기존 양쪽 guard의 intent 판정 설명이지 새 사실 권한이 아니다. 조립기는 원입력에 계속 결속한다.
+canonical KnowledgeBrief에서 닫힌 내부 `knowledge-draft.v1`을 파생하고 모든 서술 문자열을
+value/kind/source_ids로 한 번만 작성하게 한다. 로컬 Knowledge 역할 전체가 의미 규칙의 정본이며
+전용 prompt는 trust boundary와 wire 형식만 추가한다. 생략/빈 값·kind·출처 순서를 보존하고
+같은 value/kind/refs 조합만 claim을 공유하며 public 확장을 조용히 삭제하지 않고 거부한다.
+`core_knowledge_contract.PRODUCER_LIMITS` 한 곳에서 32,768-byte draft·98,304-byte envelope·
+40 claims·256 bindings를 입력 안내와 조립기에 결속한다. 출력은 한 번 직렬화해 strict UTF-8와
+크기를 확인하며 초과·잘못된 surrogate는 repair/truncation 없이 실패한다. 고정 schema의
+문자열 복사·binding/citation/metadata 최악값 합계는 92,024 bytes 이하로 보수 계산한다.
+96 KiB는 내부 방어 한도이지 실제 Dify 설정의 증거가 아니다. 4,096-token 모델 예산은 그대로이며
+native Code/Answer/API 전송과 실제 의미 품질은 별도 실측해야 한다. 양쪽 최종 guard는 그대로다.
+
 빌더는 배포 검증기가 아니다. 원본을 생성기로 먼저 수리하지 않는다.
-`core_graph_validation.py`는 다섯 LLM의 prompt/schema/model/input, 분류기·입력 투영·조립기 source/I/O,
+`core_graph_validation.py`는 여섯 LLM의 prompt/schema/model/input, 분류기·입력 투영·조립기 source/I/O,
 분기·합류·전체 배선을 검증한다. source와 DSL을 함께 바꿔도 독립 pin과 다르면 거부한다.
 `validate_bundle.py`와 `materialize_environment.py`가 같은 검증기를 사용한다.
 materializer는 원본 검증 뒤에만 앱 이름·모델·Knowledge binding을 교체하며 DEV/PROD의
-다섯 Core LLM에 같은 환경 모델을 적용한다.
+여섯 Core LLM에 같은 환경 모델을 적용한다.
 
 공유 schema 비교는 JSON 타입을 보존한다. boolean과 number는 다르고 숫자 1/1.0은 동등하다.
 객체 키 순서는 무시하고 배열 순서는 유지한다. 비문자 키·비유한 수·비 JSON 객체·순환·

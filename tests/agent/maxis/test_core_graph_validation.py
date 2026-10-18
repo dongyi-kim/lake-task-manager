@@ -63,7 +63,7 @@ def _reject_both(modules, raw):
     assert raw == before, "raw validation must precede every repair or deployment mutation"
 
 
-@pytest.mark.parametrize("title", ["Contract LLM", "Control LLM", "Query LLM", "Request LLM", "Work LLM"])
+@pytest.mark.parametrize("title", ["Contract LLM", "Control LLM", "Query LLM", "Request LLM", "Work LLM", "Knowledge LLM"])
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("mutation", ["model", "system", "schema", "retry", "fallback", "memory", "vision",
                                       "context", "raw_user", "extra_prompt", "variables", "structured_disabled"])
@@ -261,12 +261,13 @@ def test_materialization_binds_all_models_independently_of_node_order(modules, r
     environment["workflows"]["agent_core"]["app_name"] += " Target"
     _, result = materializer._materialize_dsl(environment, "agent_core")
     nodes = _nodes(result)
-    for title in ("Contract LLM", "Control LLM", "Query LLM", "Request LLM", "Work LLM"):
+    for title in ("Contract LLM", "Control LLM", "Query LLM", "Request LLM", "Work LLM", "Knowledge LLM"):
         assert nodes[title]["model"]["name"] == "target-model"
         assert nodes[title]["context"]["variable_selector"] == ["1909000000001003", "result"]
         selector = {"Query LLM": "{{#1909000000001030.query_input#}}",
                     "Request LLM": "{{#1909000000001033.request_input#}}",
-                    "Work LLM": "{{#1909000000001036.work_input#}}"}.get(title, "{{#1909000000001006.model_input#}}")
+                    "Work LLM": "{{#1909000000001036.work_input#}}",
+                    "Knowledge LLM": "{{#1909000000001039.knowledge_input#}}"}.get(title, "{{#1909000000001006.model_input#}}")
         assert nodes[title]["prompt_template"][1]["text"].endswith(selector)
     assert next(row["value_selector"] for row in nodes["Contract Guard"]["variables"]
                 if row["variable"] == "candidate") == ["1909000000001027", "output"]
@@ -278,7 +279,8 @@ def test_materialization_binds_all_models_independently_of_node_order(modules, r
 ])
 @pytest.mark.parametrize("role,input_id,llm_id", [("Query", "1909000000001030", "1909000000001028"),
                                                  ("Request", "1909000000001033", "1909000000001031"),
-                                                 ("Work", "1909000000001036", "1909000000001034")])
+                                                 ("Work", "1909000000001036", "1909000000001034"),
+                                                 ("Knowledge", "1909000000001039", "1909000000001037")])
 def test_projection_is_pinned_and_never_replaces_authority_input(modules, raw_source, mutation, role, input_id, llm_id):
     nodes = _nodes(raw_source)
     projection = nodes[role + " Input"]
@@ -356,7 +358,7 @@ def test_core_model_inputs_have_no_implicit_query_or_history(modules):
     materializer, validator = modules
     source = yaml.safe_load(DSL_PATH.read_text(encoding="utf-8"))
     llms = [node["data"] for node in source["workflow"]["graph"]["nodes"] if node["data"]["type"] == "llm"]
-    assert len(llms) == 5
+    assert len(llms) == 6
     assert all("memory" in data and data["memory"] is None for data in llms)
     validator.validate_bundle(ROOT)
     environment = materializer.load_environment(ENV_PATH)
@@ -365,7 +367,7 @@ def test_core_model_inputs_have_no_implicit_query_or_history(modules):
                if node["data"]["type"] == "llm")
 
 
-@pytest.mark.parametrize("title", ["Contract LLM", "Control LLM", "Query LLM", "Request LLM", "Work LLM"])
+@pytest.mark.parametrize("title", ["Contract LLM", "Control LLM", "Query LLM", "Request LLM", "Work LLM", "Knowledge LLM"])
 @pytest.mark.parametrize("mutation", ["missing", "empty", "implicit", "history", "query", "unknown"])
 def test_core_memory_boundary_rejects_every_non_null_input(modules, raw_source, title, mutation):
     data = _nodes(raw_source)[title]
@@ -481,3 +483,17 @@ def test_work_only_system_cap_does_not_raise_other_role_caps(modules, monkeypatc
     validator.validate_bundle(ROOT)
     assert observed["agent_core.1909000000001034"] == 16384
     assert all(value == 8192 for key, value in observed.items() if key != "agent_core.1909000000001034")
+
+
+@pytest.mark.parametrize("mutation", ["source", "original", "structured_channel", "output", "budget", "merge", "stage"])
+def test_knowledge_assembler_and_route_cannot_bypass_review(modules, raw_source, mutation):
+    nodes = _nodes(raw_source)
+    assembler = nodes["Knowledge Assembler"]
+    if mutation == "source": assembler["code"] += "\n# drift"
+    elif mutation == "original": assembler["variables"][0]["value_selector"] = ["1909000000001039", "knowledge_input"]
+    elif mutation == "structured_channel": assembler["variables"][1]["value_selector"][-1] = "structured_output"
+    elif mutation == "output": assembler["outputs"]["candidate"]["type"] = "object"
+    elif mutation == "budget": assembler["code"] = assembler["code"].replace("98304", "1048576")
+    elif mutation == "merge": nodes["Core Candidate"]["variables"][-1] = ["1909000000001037", "text"]
+    else: nodes["Core Stage"]["cases"][-1]["conditions"][0]["value"] = "semantic"
+    _reject_both(modules, raw_source)

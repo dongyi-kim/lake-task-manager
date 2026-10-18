@@ -1,0 +1,67 @@
+"""Knowledge wire assembly only: one leaf value, one exact claim text.
+
+Prepend unchanged core_draft_validation/context and bind canonical/native schemas.
+No evidence retrieval, inference, semantic relabeling, repair or I/O. Returns an
+unaccepted candidate; the existing remote and local final guards remain required.
+"""
+_KNOWLEDGE_SCHEMA_JSON = None
+_KNOWLEDGE_SCHEMA_SHA256 = None
+_DRAFT_SCHEMA = None
+_PRODUCER_LIMITS = None
+
+
+def _fail():
+    raise ValueError("invalid_core_knowledge_draft")
+
+
+def main(model_input, candidate):
+    try:
+        incoming, pack, schema, sources = _draft_context(model_input, "knowledge_curator",
+            _KNOWLEDGE_SCHEMA_JSON, _KNOWLEDGE_SCHEMA_SHA256, _DRAFT_SCHEMA, _fail)
+        draft = _decode(candidate, _PRODUCER_LIMITS["draft_utf8_bytes"], _fail)
+        _validate(draft, _DRAFT_SCHEMA, _DRAFT_SCHEMA, _fail)
+        status, payload, missing = draft["status"], draft["payload"], draft["missing_inputs"]
+        if (draft["contract"] != "knowledge-draft.v1" or any(not value.strip() for value in missing)
+                or status == "ok" and missing or status != "ok" and payload
+                or status == "needs_input" and not missing or status == "blocked" and missing):
+            _fail()
+        claims, bindings, citations, citation_ids, claim_ids = [], [], [], {}, {}
+
+        def unwrap(value, path=""):
+            if isinstance(value, list):
+                return [unwrap(row, path + "/" + str(index)) for index, row in enumerate(value)]
+            if set(value) != {"value", "kind", "source_ids"}:
+                return {key: unwrap(value[key], path + "/" + key.replace("~", "~0").replace("/", "~1"))
+                        for key in sorted(value)}
+            text, kind, refs = (value[key] for key in ("value", "kind", "source_ids"))
+            if any(ref not in sources for ref in refs):
+                _fail()
+            if text.strip():
+                if len(text) > 1200: _fail()
+                key = (text, kind, tuple(refs))
+                if key not in claim_ids:
+                    for ref in refs:
+                        if ref not in citation_ids:
+                            citation_ids[ref] = "cite-" + str(len(citations) + 1)
+                            citations.append({"citation_id": citation_ids[ref], "source_id": ref, "locator": ""})
+                    claim_ids[key] = "claim-" + str(len(claims) + 1)
+                    claims.append({"claim_id": claim_ids[key], "kind": kind, "text": text,
+                                   "citation_ids": [citation_ids[ref] for ref in refs]})
+                bindings.append({"path": path, "claim_ids": [claim_ids[key]]})
+            return text
+
+        output = unwrap(payload)
+        if status == "ok":
+            _validate(output, schema, schema, _fail)
+        if len(claims) > _PRODUCER_LIMITS["claims"] or len(bindings) > _PRODUCER_LIMITS["bindings"] or len(citations) > 40:
+            _fail()
+        result = {"contract": "remote-role-result.v1", "role_id": "knowledge_curator", "status": status,
+            "payload": output, "claims": claims, "payload_claims": bindings, "citations": citations,
+            "missing_inputs": missing, "warnings": [], "knowledge_manifest_sha256": pack["knowledge_manifest_sha256"],
+            **{key: incoming[key] for key in ("workflow_version", "knowledge_version", "knowledge_proof")}}
+        serialized = _canonical(result)
+        if len(serialized.encode("utf-8", errors="strict")) > _PRODUCER_LIMITS["envelope_utf8_bytes"]:
+            _fail()
+        return {"candidate": serialized}
+    except Exception:
+        raise ValueError("invalid_core_knowledge_draft") from None

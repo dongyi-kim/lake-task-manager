@@ -28,7 +28,7 @@ def _build(dsl=None):
 
 
 @pytest.mark.parametrize("node_id", [GRAPH.SEMANTIC_NODE_ID, GRAPH.CONTROL_NODE_ID,
-                                    GRAPH.QUERY_NODE_ID, GRAPH.REQUEST_NODE_ID, "1909000000001034"])
+                                    GRAPH.QUERY_NODE_ID, GRAPH.REQUEST_NODE_ID, "1909000000001034", "1909000000001037"])
 @pytest.mark.parametrize("memory", [{}, {"window": {"enabled": True, "size": 1}},
     {"query_prompt_template": "", "role_prefix": {"assistant": "", "user": ""},
      "window": {"enabled": False, "size": 1}},
@@ -60,7 +60,8 @@ def _baseline():
     added = {"1909000000001024", "1909000000001025", "1909000000001026", "1909000000001027",
              "1909000000001028", "1909000000001029", "1909000000001030",
              "1909000000001031", "1909000000001032", "1909000000001033",
-             "1909000000001034", "1909000000001035", "1909000000001036"}
+             "1909000000001034", "1909000000001035", "1909000000001036",
+             "1909000000001037", "1909000000001038", "1909000000001039"}
     graph["nodes"] = [node for node in graph["nodes"] if node["id"] not in added]
     graph["edges"] = [edge for edge in graph["edges"] if not {edge["source"], edge["target"]} & added]
     nodes = _nodes(dsl)
@@ -80,8 +81,8 @@ def test_builder_adds_only_the_literal_control_subgraph():
     before = copy.deepcopy(dsl)
     result = _build(dsl)
     graph = result["workflow"]["graph"]
-    assert len(graph["nodes"]) == 25
-    assert len(graph["edges"]) == 29
+    assert len(graph["nodes"]) == 28
+    assert len(graph["edges"]) == 33
     assert dsl == before
     assert result == _dsl()
     old = {(e["source"], e["sourceHandle"], e["target"]) for e in dsl["workflow"]["graph"]["edges"]}
@@ -107,6 +108,10 @@ def test_builder_adds_only_the_literal_control_subgraph():
         ("1909000000001036", "source", "1909000000001034"),
         ("1909000000001034", "source", "1909000000001035"),
         ("1909000000001035", "source", "1909000000001027"),
+        ("1909000000001025", "knowledge", "1909000000001039"),
+        ("1909000000001039", "source", "1909000000001037"),
+        ("1909000000001037", "source", "1909000000001038"),
+        ("1909000000001038", "source", "1909000000001027"),
         ("1909000000001026", "source", "1909000000001027"),
         ("1909000000001004", "source", "1909000000001027"),
         ("1909000000001027", "source", "1909000000001005"),
@@ -114,7 +119,7 @@ def test_builder_adds_only_the_literal_control_subgraph():
     types = [node["data"]["type"] for node in graph["nodes"]]
     assert {name: types.count(name) for name in set(types)} == {
         "start": 1, "answer": 2, "template-transform": 2, "knowledge-retrieval": 2,
-        "llm": 5, "code": 10, "if-else": 2, "variable-aggregator": 1}
+        "llm": 6, "code": 12, "if-else": 2, "variable-aggregator": 1}
     old_edges = {row["id"]: row for row in before["workflow"]["graph"]["edges"]}
     assert all(row == old_edges[row["id"]] for row in graph["edges"] if row["id"] in old_edges)
 
@@ -135,13 +140,13 @@ def test_original_models_guards_and_input_bindings_are_preserved():
     assert route["variables"] == [{"variable": "model_input", "value_selector": ["1909000000001006", "model_input"]}]
     assert route["outputs"] == {"route": {"children": None, "type": "string"}}
     stage = after["1909000000001025"]["data"]["cases"]
-    assert len(stage) == 4 and [row["case_id"] for row in stage] == ["true", "query", "request", "work"]
+    assert len(stage) == 5 and [row["case_id"] for row in stage] == ["true", "query", "request", "work", "knowledge"]
     assert stage[0]["conditions"] == [{"comparison_operator": "is", "id": "3918d5de-3625-41ba-a218-5630ca1724e7",
         "value": "control", "varType": "string", "variable_selector": ["1909000000001024", "route"]}]
     merge = after["1909000000001027"]["data"]
     assert merge["variables"] == [["1909000000001026", "text"], ["1909000000001004", "text"],
                                  ["1909000000001029", "candidate"], ["1909000000001032", "candidate"],
-                                 ["1909000000001035", "candidate"]]
+                                 ["1909000000001035", "candidate"], ["1909000000001038", "candidate"]]
     assembler = after["1909000000001029"]["data"]
     assert assembler["variables"] == [
         {"variable": "model_input", "value_selector": ["1909000000001006", "model_input"]},
@@ -174,13 +179,13 @@ def test_original_models_guards_and_input_bindings_are_preserved():
 
 @pytest.mark.parametrize("branch,expected", [("deny", set()), ("semantic", {"1909000000001004"}),
     ("control", {"1909000000001026"}), ("query", {"1909000000001028"}), ("request", {"1909000000001031"}),
-    ("work", {"1909000000001034"})])
+    ("work", {"1909000000001034"}), ("knowledge", {"1909000000001037"})])
 def test_literal_paths_reach_zero_or_one_model_and_the_original_guard(branch, expected):
     dsl = _build()
     nodes = _nodes(dsl)
     reached, pending = set(), ["start"]
     handles = {"1909000000001007": "false" if branch == "deny" else "true",
-               "1909000000001025": "true" if branch == "control" else branch if branch in {"query", "request", "work"} else "false"}
+               "1909000000001025": "true" if branch == "control" else branch if branch in {"query", "request", "work", "knowledge"} else "false"}
     while pending:
         key = pending.pop()
         if key in reached:
@@ -199,6 +204,9 @@ def test_literal_paths_reach_zero_or_one_model_and_the_original_guard(branch, ex
     assert ("1909000000001033" in reached) == (branch == "request")
     assert ("1909000000001035" in reached) == (branch == "work")
     assert ("1909000000001036" in reached) == (branch == "work")
+    assert ("1909000000001037" in reached) == (branch == "knowledge")
+    assert ("1909000000001038" in reached) == (branch == "knowledge")
+    assert ("1909000000001039" in reached) == (branch == "knowledge")
 
 
 def test_rebuild_is_idempotent_order_independent_and_has_no_mutable_aliases():
@@ -262,7 +270,8 @@ def test_builder_does_not_hide_ambiguous_or_bypassed_input_graphs(built, mutatio
 
 @pytest.mark.parametrize("asset", ["route_source", "control_system_prompt", "query_system_prompt",
                                   "query_assembler_source", "query_input_source", "request_system_prompt", "request_assembler_source",
-                                  "request_input_source", "work_system_prompt", "work_assembler_source", "work_input_source"])
+                                  "request_input_source", "work_system_prompt", "work_assembler_source", "work_input_source",
+                                  "knowledge_system_prompt", "knowledge_assembler_source", "knowledge_input_source"])
 def test_builder_rejects_changed_assets_even_when_supplied_together(asset):
     assets = GRAPH.reviewed_assets(ROOT)
     assets[asset] += "\nchanged"
@@ -292,7 +301,7 @@ def test_pins_cover_canonical_source_and_complete_common_control_message():
     assert hashlib.sha256(user.encode()).hexdigest() == GRAPH.REQUEST_USER_SHA256 == independent.REQUEST_USER_SHA256
 
 
-@pytest.mark.parametrize("role", ["query", "request", "work"])
+@pytest.mark.parametrize("role", ["query", "request", "work", "knowledge"])
 def test_builder_rejects_changed_native_draft_contract(role):
     assets = GRAPH.reviewed_assets(ROOT)
     assets[role + "_schema"]["properties"]["contract"]["enum"] = ["remote-role-result.v1"]

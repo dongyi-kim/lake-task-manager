@@ -25,6 +25,8 @@ _REQUEST_SCHEMA_JSON = None
 _REQUEST_SCHEMA_SHA256 = None
 _WORK_SCHEMA_JSON = None
 _WORK_SCHEMA_SHA256 = None
+_KNOWLEDGE_SCHEMA_JSON = None
+_KNOWLEDGE_SCHEMA_SHA256 = None
 
 
 def _fail():
@@ -120,7 +122,7 @@ def _activation(incoming, pack):
 
 
 def main(model_input):
-    """Return semantic/control/query/request/work; malformed bound inputs raise a safe error.
+    """Return semantic/control/query/request/work/knowledge; malformed inputs raise a safe error.
 
     No I/O, clock reads, mutation, evidence rewriting, or fallback repair. A semantic
     result says only 'not this activation'; all existing validation remains required.
@@ -136,6 +138,14 @@ def main(model_input):
         if not isinstance(pack, dict) or len(_canonical(pack).encode("utf-8")) > 6144:
             _fail()
         if not _reserved(pack):
+            if incoming["role_id"] == "knowledge_curator" or pack.get("use_case") == "knowledge_curator":
+                if (incoming["role_id"] != "knowledge_curator" or pack.get("use_case") != "knowledge_curator"
+                        or not isinstance(_KNOWLEDGE_SCHEMA_JSON, str)
+                        or _digest(_KNOWLEDGE_SCHEMA_JSON) != _KNOWLEDGE_SCHEMA_SHA256
+                        or pack.get("payload_schema_json") != _KNOWLEDGE_SCHEMA_JSON
+                        or pack.get("payload_schema_sha256") != _KNOWLEDGE_SCHEMA_SHA256):
+                    _fail()
+                return {"route": "knowledge"}
             if incoming["role_id"] == "query_specialist":
                 if (pack.get("use_case") != "query_specialist"
                         or not isinstance(_QUERY_SCHEMA_JSON, str)
