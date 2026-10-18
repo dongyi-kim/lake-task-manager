@@ -24,6 +24,13 @@ def _build():
     return spec, spec.rebuild(ROOT, dsl, validator)
 
 
+def _copy_editor_sources(target):
+    shutil.copytree(ROOT / "deploy/maxis-dify", target / "deploy/maxis-dify")
+    helper = Path("app/agent/maxis/source_grounding.py")
+    (target / helper).parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / helper, target / helper)
+
+
 def test_builder_is_idempotent_and_preserves_common_guards():
     spec, dsl = _build()
     assert spec.rebuild(ROOT, dsl, _load("validate_bundle")) == dsl
@@ -136,7 +143,7 @@ def test_selection_boundary_rejects_graph_shortcuts(mutation):
 def test_selection_assets_need_review_even_when_graph_is_regenerated(tmp_path, asset):
     spec, dsl = _build()
     validator = _load("validate_bundle")
-    shutil.copytree(ROOT / "deploy/maxis-dify", tmp_path / "deploy/maxis-dify")
+    _copy_editor_sources(tmp_path)
     if asset == "selector_source":
         path = tmp_path / spec.SELECTOR_ASSET_PATH
         path.write_text(path.read_text(encoding="utf-8") + "\n# changed source", encoding="utf-8")
@@ -192,7 +199,7 @@ def test_selector_projection_is_pinned_in_both_validators(tmp_path, monkeypatch,
     assembler = (ROOT / validator.EDITOR_ASSEMBLER_PATH).read_text(encoding="utf-8").rstrip()
     with pytest.raises(validator.BundleValidationError):
         validator._validate_editor_graph(ROOT, graph["nodes"], graph["edges"], remote, assembler)
-    shutil.copytree(ROOT / "deploy/maxis-dify", tmp_path / "deploy/maxis-dify")
+    _copy_editor_sources(tmp_path)
     (tmp_path / "deploy/maxis-dify/dsl/ltm-editor-author.yml").write_text(yaml.safe_dump(dsl, allow_unicode=True, sort_keys=False), encoding="utf-8")
     monkeypatch.setattr(materializer, "ROOT", tmp_path)
     environment = materializer.load_environment(ROOT / "deploy/maxis-dify/environments/dev.yml")
@@ -337,7 +344,7 @@ def test_description_prompt_rebuild_changes_only_its_system_message(monkeypatch)
 def test_description_source_and_embedded_prompt_cannot_drift_together(tmp_path, monkeypatch):
     spec, dsl = _build()
     validator, materializer = _load("validate_bundle"), _load("materialize_environment")
-    shutil.copytree(ROOT / "deploy/maxis-dify", tmp_path / "deploy/maxis-dify")
+    _copy_editor_sources(tmp_path)
     path = tmp_path / "deploy/maxis-dify/prompts/editor_description.md"
     path.write_text(path.read_text(encoding="utf-8") + "\nUnreviewed description change.", encoding="utf-8")
     changed = spec.rebuild(tmp_path, dsl, validator)

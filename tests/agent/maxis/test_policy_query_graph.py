@@ -30,6 +30,9 @@ graph = _load("policy_query_graph")
 
 def _copy_bundle_sources(target):
     shutil.copytree(ROOT / "deploy/maxis-dify", target / "deploy/maxis-dify")
+    helper = Path("app/agent/maxis/source_grounding.py")
+    (target / helper).parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / helper, target / helper)
     shutil.copytree(ROOT / "knowledge", target / "knowledge")
     (target / "config").mkdir()
     for filename in ("maxis-workflows.yml", "maxis-knowledge.yml"):
