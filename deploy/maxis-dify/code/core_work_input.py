@@ -1,7 +1,7 @@
-"""CREATE Work view after Knowledge Guard; original input still owns acceptance.
+"""CREATE Work v2 view; original input still owns acceptance.
 
-Prepend unchanged draft validation/context and bind the UNIT1 schema constants.
-Retain source identities and role-context hashes; never repair or resolve content.
+Prepend unchanged draft validation/context and bind the existing schema constants.
+Entity references are display metadata, never replacement citation identities.
 """
 _WORK_SCHEMA_JSON = None
 _WORK_SCHEMA_SHA256 = None
@@ -32,9 +32,12 @@ def _source_view(row):
             or row["updated_at"] is not None and type(row["updated_at"]) is not str
             or type(row["partial"]) is not bool or type(row["truncated"]) is not bool):
         _fail()
-    visible = {key: value for key, value in row.items() if key != "content_sha256"}
-    return dict(visible, source_authority="user_intent" if _intent(row) else "evidence_source",
-                allowed_claim_kinds=["inference", "recommendation"] if _intent(row)
+    intent = _intent(row)
+    visible = {key: value for key, value in row.items() if key not in {"content_sha256", "canonical_id"}}
+    if not intent:
+        visible["entity_reference"] = row["canonical_id"]
+    return dict(visible, source_authority="user_intent" if intent else "evidence_source",
+                allowed_claim_kinds=["inference", "recommendation"] if intent
                 else ["fact", "inference", "recommendation"])
 
 
@@ -93,7 +96,7 @@ def main(model_input):
         context = {key: value for key, value in pack.items() if key not in _HIDDEN_PACK_FIELDS}
         context["sources"] = [_source_view(row) for row in pack["sources"]]
         _check_context(pack["role_context"], pack["sources"])
-        view = _canonical({"contract": "work-input.v1", "context": context,
+        view = _canonical({"contract": "work-input.v2", "context": context,
                            "knowledge_context": incoming["knowledge_context"]})
         if len(view.encode("utf-8")) > _MAX_WORK_INPUT_UTF8_BYTES:
             _fail()

@@ -90,7 +90,7 @@ def test_generated_work_path_preserves_meaning_and_both_guard_decisions(nodes, w
     draft["payload"]["items"][0]["summary"]["kind"] = kind
     before = copy.deepcopy((incoming, draft))
     projected = code(nodes[INPUT])["main"](incoming)["work_input"]
-    assert json.loads(projected)["contract"] == "work-input.v1"
+    assert json.loads(projected)["contract"] == "work-input.v2"
     assemble = code(nodes[ASSEMBLER])["main"]
     with pytest.raises(ValueError, match="invalid_core_work_draft"):
         assemble(projected, encoded(draft))
@@ -137,6 +137,6 @@ def test_work_compiled_assets_match_independent_review_pins(nodes):
         (nodes[WORK]["prompt_template"][1]["text"], "WORK_USER_SHA256"),
     ):
         assert hashlib.sha256(value.encode()).hexdigest() == getattr(GRAPH, pin) == getattr(independent, pin)
-    assert len(assets["work_system_prompt"].encode()) == 16195
+    assert len(assets["work_system_prompt"].encode()) == 16340
     assert independent.WORK_MAX_SYSTEM_BYTES == 16384
     assert assets["work_schema"]["properties"]["contract"]["enum"] == ["work-draft.v1"]

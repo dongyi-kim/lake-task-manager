@@ -126,8 +126,10 @@ Work는 exact CREATE에만 Stage → Work Input → Work LLM → Work Assembler�
 서술 leaf만 value/kind/source_ids로 감싸며 required_input 대신 명시적 input_need
 required/optional을 사용한다. 조립기는 그 선택을 boolean에 대응하고 원문·kind·참조와
 optional 생략/빈 값을 보존하며 정본 전체를 unwrap 후 재검사한다. source 선택·repair는 없다.
-`work-input.v1`은 출처 원문·순서·업무 및 intent canonical ID, role_context hash와
-compact source_content_index를 유지한다. compact ref는 request_plan.goal/tasks[].instruction의
+`work-input.v2`는 출처 원문·순서·source_id, role_context hash와 compact source_content_index를
+유지한다. opaque intent canonical ID는 숨기고, 나머지 canonical ID는 업무 표기용
+entity_reference로 전달한다. 인용은 source_id만 사용하며 entity_reference로 치환하지 않는다.
+compact ref는 request_plan.goal/tasks[].instruction의
 정확한 정수 인덱스에만 허용한다. 업무 문자열을 ref로 해석하지 않는다.
 intent 판정은 양쪽 guard와 같은 kind=ltm+canonical 접두사이며 fact 권한을 주지 않는다.
 조립기·최종 guard는 원본 입력을 계속 사용한다. 40 claims/40 citations/256 bindings와

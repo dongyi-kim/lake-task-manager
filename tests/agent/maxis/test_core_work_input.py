@@ -54,9 +54,11 @@ def test_exact_view_keeps_order_identity_hashes_refs_and_business_text(compiled,
         del expected[key]
     for index, row in enumerate(expected["sources"]):
         del row["content_sha256"]
+        canonical = row.pop("canonical_id")
+        if index != 0: row["entity_reference"] = canonical
         row["source_authority"] = "user_intent" if index == 0 else "evidence_source"
         row["allowed_claim_kinds"] = ["inference", "recommendation"] if index == 0 else ["fact", "inference", "recommendation"]
-    assert view(compiled, incoming) == {"contract": "work-input.v1", "context": expected,
+    assert view(compiled, incoming) == {"contract": "work-input.v2", "context": expected,
         "knowledge_context": incoming["knowledge_context"]}
     assert incoming == before
 
@@ -71,7 +73,8 @@ def test_authority_matches_final_guards_not_source_id_or_content(compiled, assem
     row = incoming["context_pack"]["sources"][0]
     row.update(kind=kind, canonical_id=canonical, scope="DL")
     result = view(compiled, incoming)["context"]["sources"][0]
-    assert result["canonical_id"] == canonical and result["content"] == row["content"]
+    assert "canonical_id" not in result and result["content"] == row["content"]
+    assert ("entity_reference" not in result) if intent else result["entity_reference"] == canonical
     assert result["allowed_claim_kinds"] == (["inference", "recommendation"] if intent else ["fact", "inference", "recommendation"])
     pack = type(pack).model_validate_json(encoded(incoming["context_pack"]))
     draft["payload"]["items"][0]["summary"] = leaf(row["content"], "fact")
