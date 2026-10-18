@@ -30,6 +30,8 @@ from app.agent.maxis.destination_policy import (  # noqa: E402
 from app.agent.maxis.public_metadata import (  # noqa: E402
     credential_shaped_public_text,
 )
+from app.agent.maxis.knowledge_config import resolve_path as knowledge_path
+from app.agent.maxis.knowledge_manifest import build_manifest
 
 
 CONTRACT = "ltm-maxis-dify-environment.v1"
@@ -142,13 +144,16 @@ def _render_environment_knowledge_guard(
     source_names_by_remote_name: dict[str, str],
     sentinel_document_name: str,
     sentinel_document_id: str,
+    allowed_roles_by_stem: dict[str, frozenset[str]] | None = None,
 ) -> str:
+    role_policy = (_DOCUMENT_ALLOWED_ROLES_BY_STEM if allowed_roles_by_stem is None
+                   else allowed_roles_by_stem)
     expected_roles = _WORKFLOW_ROLES[workflow_key]
     allowed_by_role = {
         role_id: sorted(
             name
             for name in document_ids_by_name
-            if role_id in _DOCUMENT_ALLOWED_ROLES_BY_STEM.get(
+            if role_id in role_policy.get(
                 Path(name).stem, frozenset()
             )
         )
@@ -225,6 +230,22 @@ def _mapping(value: Any, label: str) -> dict[str, Any]:
     return value
 
 
+def _selected_knowledge_documents(environment: dict[str, Any]) -> list[dict[str, Any]]:
+    knowledge = environment["knowledge"]
+    if "source_manifest" not in knowledge:
+        return _KNOWLEDGE_SOURCE_SPEC["documents"]
+    try:
+        path = knowledge_path(knowledge["source_manifest"], root=ROOT)
+        if path is None:
+            raise ValueError("missing manifest")
+        manifest = build_manifest(knowledge_version=knowledge["version"],
+                                  dataset_id=knowledge["dataset_id"],
+                                  config_path=path, source_root=ROOT)
+        return list(manifest.documents)
+    except (ValueError, OSError) as exc:
+        raise EnvironmentBindingError("Private Knowledge source manifest is invalid.") from exc
+
+
 def _required_text(value: Any, label: str) -> str:
     result = str(value or "").strip()
     if not result:
@@ -261,7 +282,9 @@ def _environment_owned_asset_ids(
             f"{label}.knowledge.sentinel_file.document_id",
         ),
     }
-    for logical_id in sorted(_DOCUMENT_SOURCE_NAME_BY_ID):
+    source_names = {row["id"]: Path(row["path"]).name
+                    for row in _selected_knowledge_documents(environment)}
+    for logical_id in sorted(source_names):
         binding = _mapping(
             documents.get(logical_id),
             f"{label}.knowledge.documents.{logical_id}",
@@ -271,7 +294,7 @@ def _environment_owned_asset_ids(
             f"{label}.knowledge.documents.{logical_id}.document_id",
         )
     if (
-        len(assets) != 12
+        len(assets) != len(source_names) + 4
         or any(not UUID_RE.fullmatch(value) for value in assets.values())
         or len(set(assets.values())) != len(assets)
     ):
@@ -294,6 +317,22 @@ def _require_prod_asset_separation(environment: dict[str, Any]) -> None:
             "Checked-in dev environment binding is unavailable or malformed; "
             "prod materialization is blocked."
         ) from exc
+    knowledge = environment["knowledge"]
+    if "source_manifest" in knowledge:
+        try:
+            sibling = knowledge_path(knowledge.get("dev_environment_binding"), root=ROOT)
+            if sibling is None:
+                raise ValueError("missing private dev binding")
+            sibling_raw = yaml.safe_load(sibling.read_text(encoding="utf-8"))
+            if not isinstance(sibling_raw, dict) or sibling_raw.get("environment") != "dev":
+                raise ValueError("not a dev binding")
+            private_dev = load_environment(sibling)
+            dev_assets.update({"private." + key: value for key, value in
+                               _environment_owned_asset_ids(private_dev, label="private dev").items()})
+        except (ValueError, OSError, yaml.YAMLError) as exc:
+            raise EnvironmentBindingError(
+                "Private prod requires a valid private dev comparison binding."
+            ) from exc
     prod_assets = _environment_owned_asset_ids(environment, label="prod")
     dev_values = set(dev_assets.values())
     reused_fields = sorted(
@@ -301,7 +340,8 @@ def _require_prod_asset_separation(environment: dict[str, Any]) -> None:
     )
     if reused_fields:
         raise EnvironmentBindingError(
-            "Prod environment must not reuse checked-in dev-owned asset UUIDs: "
+            "Prod environment must not reuse checked-in dev-owned asset UUIDs "
+            "or private dev-owned asset UUIDs: "
             + ", ".join(reused_fields)
         )
 
@@ -388,11 +428,15 @@ def load_environment(path: Path | str) -> dict[str, Any]:
         ) from exc
 
     knowledge = _mapping(environment.get("knowledge"), "knowledge")
-    if set(knowledge) != {
+    if set(knowledge) - {"source_manifest", "dev_environment_binding"} != {
         "version", "name", "dataset_id", "sentinel_dataset_id",
         "role_metadata_field_id", "sentinel_file", "documents",
     }:
         raise EnvironmentBindingError("Knowledge binding fields are incomplete.")
+    if "dev_environment_binding" in knowledge and (
+        stage != "prod" or "source_manifest" not in knowledge
+    ):
+        raise EnvironmentBindingError("Private dev comparison is only valid for private prod.")
     for field in ("version", "name"):
         _required_text(knowledge.get(field), f"knowledge.{field}")
     dataset_id = _required_text(knowledge.get("dataset_id"), "knowledge.dataset_id")
@@ -441,8 +485,10 @@ def load_environment(path: Path | str) -> dict[str, Any]:
             "Knowledge sentinel source, remote name, or document UUID is invalid."
         )
     documents = _mapping(knowledge.get("documents"), "knowledge.documents")
-    if set(documents) != set(_DOCUMENT_SOURCE_NAME_BY_ID):
-        raise EnvironmentBindingError("knowledge.documents must contain eight files.")
+    source_names = {row["id"]: Path(row["path"]).name
+                    for row in _selected_knowledge_documents(environment)}
+    if set(documents) != set(source_names):
+        raise EnvironmentBindingError("knowledge.documents must match the governed source manifest.")
     remote_names: set[str] = set()
     document_ids: set[str] = set()
     for logical_id, raw_binding in documents.items():
@@ -466,7 +512,7 @@ def load_environment(path: Path | str) -> dict[str, Any]:
             f"knowledge.documents.{logical_id}.document_id",
         )
         if (
-            source_name != _DOCUMENT_SOURCE_NAME_BY_ID[logical_id]
+            source_name != source_names[logical_id]
             or not remote_name.endswith(".txt")
             or Path(source_name).stem != Path(remote_name).stem
             or not UUID_RE.fullmatch(document_id)
@@ -479,7 +525,7 @@ def load_environment(path: Path | str) -> dict[str, Any]:
         remote_names.add(remote_name)
         document_ids.add(document_id)
     if (
-        remote_names != _EXPECTED_REMOTE_DOCUMENT_NAMES
+        remote_names != {Path(name).stem + ".txt" for name in source_names.values()}
         or sentinel_remote_name in remote_names
         or sentinel_id in document_ids
     ):
@@ -697,6 +743,8 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
         },
         sentinel_document_name=knowledge["sentinel_file"]["remote_name"],
         sentinel_document_id=knowledge["sentinel_file"]["document_id"],
+        allowed_roles_by_stem={Path(row["path"]).stem: frozenset(row["allowed_roles"])
+                               for row in _selected_knowledge_documents(environment)},
     )
     retrieval_count = 0
     sentinel_count = 0

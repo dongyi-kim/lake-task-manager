@@ -16,6 +16,70 @@ DATASET_B = "22222222-2222-4222-8222-222222222222"
 ROOT = Path(__file__).resolve().parents[3]
 
 
+@pytest.mark.parametrize("value", ["/tmp/source.yml", "C:/source.yml", "../source.yml",
+    ".cache/maxis/../source.yml", "config//source.yml", "config/./source.yml",
+    "config/source.json", "knowledge/source.yml", True, 42, {}])
+def test_private_knowledge_configuration_path_rejects_nonlocal_values(value):
+    from app.agent.maxis.knowledge_config import clean_path
+    with pytest.raises(ValueError):
+        clean_path(value)
+
+
+def test_private_knowledge_configuration_path_stays_inside_cache(tmp_path):
+    from app.agent.maxis.knowledge_config import resolve_path
+    destination = tmp_path / ".cache/maxis/project/source.yml"
+    destination.parent.mkdir(parents=True)
+    destination.write_text("contract: example", encoding="utf-8")
+    assert resolve_path(".cache/maxis/project/source.yml", root=tmp_path) == destination.resolve()
+    assert resolve_path("", root=tmp_path) is None
+    with pytest.raises(ValueError):
+        resolve_path(".cache/maxis/project/missing.yml", root=tmp_path)
+
+
+def test_private_profile_manifest_uses_ordinary_content_and_role_validation(tmp_path, monkeypatch):
+    from app.agent.maxis import profiles
+    from app.infra import settings
+    (tmp_path / "knowledge").mkdir()
+    (tmp_path / "knowledge/rules.md").write_text("# Rules\n\nReviewed rule", encoding="utf-8")
+    source = _write_manifest(tmp_path)
+    selected = tmp_path / ".cache/maxis/project/source.yml"
+    selected.parent.mkdir(parents=True)
+    selected.write_bytes(source.read_bytes())
+    environment = selected.with_name("environment.yml")
+    binding = {"contract": "ltm-maxis-dify-environment.v1", "status": "ready",
+               "environment": "dev", "knowledge": {"version": "kb-1", "dataset_id": DATASET_A,
+               "source_manifest": ".cache/maxis/project/source.yml", "documents": {"rules": "synthetic"}}}
+    environment.write_text(yaml.safe_dump(binding), encoding="utf-8")
+    monkeypatch.setattr(settings, "SRC_DIR", tmp_path)
+    profile = profiles._default_profile("dev")
+    profile.update(knowledge_version="kb-1", knowledge_dataset_id=DATASET_A,
+                   knowledge_source_manifest=".cache/maxis/project/source.yml",
+                   knowledge_environment_binding=".cache/maxis/project/environment.yml")
+    expected = build_manifest(knowledge_version="kb-1", dataset_id=DATASET_A,
+                             config_path=selected, source_root=tmp_path)
+    assert profiles._build_profile_manifest(profile, required=True).sha256 == expected.sha256
+    keys = {key: "synthetic" for key in profiles.WORKFLOW_KEYS}
+    signature = profiles._probe_snapshot_signature(profile, keys)
+    attestation = profiles.knowledge_eval_attestation_binding(profile)
+    binding["knowledge"]["documents"]["rules"] = "changed-synthetic-uuid"
+    environment.write_text(yaml.safe_dump(binding), encoding="utf-8")
+    assert profiles._probe_snapshot_signature(profile, keys) != signature
+    assert profiles.knowledge_eval_attestation_binding(profile) != attestation
+    for field, value in (("version", "other"), ("dataset_id", DATASET_B),
+                         ("source_manifest", None)):
+        changed = {**binding, "knowledge": {**binding["knowledge"], field: value}}
+        environment.write_text(yaml.safe_dump(changed), encoding="utf-8")
+        with pytest.raises(ValueError):
+            profiles.profile_fingerprint(profile)
+    environment.unlink()
+    with pytest.raises(ValueError):
+        profiles.profile_fingerprint(profile)
+    environment.write_text(yaml.safe_dump(binding), encoding="utf-8")
+    selected.write_text("contract: invalid", encoding="utf-8")
+    with pytest.raises(ValueError, match="Invalid MAXIS knowledge manifest"):
+        profiles._build_profile_manifest(profile, required=True)
+
+
 def _write_registry(root: Path) -> None:
     config = root / "config"
     config.mkdir(exist_ok=True)

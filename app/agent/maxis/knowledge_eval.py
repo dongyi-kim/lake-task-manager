@@ -330,11 +330,18 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     return value
 
 
-def evaluation_source_file_sha256() -> dict[str, str]:
+def evaluation_source_file_sha256(profile: dict[str, Any] | None = None) -> dict[str, str]:
     """Hash every checked-in source that defines one local evaluation run."""
 
+    paths = dict(_SOURCE_FILE_PATHS)
+    if profile:
+        from app.agent.maxis.knowledge_config import resolve_path as knowledge_path
+        for key, field in (("environment", "knowledge_environment_binding"),
+                           ("knowledgeSource", "knowledge_source_manifest")):
+            if profile.get(field):
+                paths[key] = knowledge_path(profile[field], root=_root())
     result: dict[str, str] = {}
-    for key, relative in _SOURCE_FILE_PATHS.items():
+    for key, relative in paths.items():
         try:
             result[key] = hashlib.sha256((_root() / relative).read_bytes()).hexdigest()
         except OSError as exc:
@@ -443,7 +450,20 @@ def load_identity_map(
     environment = _load_yaml((environment_path or (
         root / "deploy" / "maxis-dify" / "environments" / "dev.yml"
     )).resolve())
-    manifest_path = (knowledge_manifest_path or (
+    from app.agent.maxis.knowledge_config import resolve_path as knowledge_path
+    if not isinstance(environment.get("knowledge"), dict):
+        raise KnowledgeEvalError("evaluation_identity_map_invalid")
+    selected = environment["knowledge"].get("source_manifest")
+    try:
+        selected_path = knowledge_path(selected, root=root)
+    except ValueError as exc:
+        raise KnowledgeEvalError("evaluation_manifest_invalid") from exc
+    default_manifest = (root / "config" / "maxis-knowledge.yml").resolve()
+    if (("source_manifest" in environment["knowledge"] and selected_path is None)
+            or (knowledge_manifest_path is not None
+                and knowledge_manifest_path.resolve() != (selected_path or default_manifest))):
+        raise KnowledgeEvalError("evaluation_manifest_binding_mismatch")
+    manifest_path = (knowledge_manifest_path or selected_path or (
         root / "config" / "maxis-knowledge.yml"
     )).resolve()
     manifest = _load_yaml(manifest_path)
@@ -616,7 +636,9 @@ def validate_evaluation_binding(
         or binding.get("dataset_id") != identity.dataset_id
         or binding.get("knowledge_manifest_sha256") != identity.manifest_sha256
         or not _DIGEST.fullmatch(str(binding.get("profile_material_sha256") or ""))
-        or binding.get("source_file_sha256") != evaluation_source_file_sha256()
+        or binding.get("source_file_sha256") != (
+            evaluation_source_file_sha256(profile) if profile.get("knowledge_source_manifest")
+            else evaluation_source_file_sha256())
         or not isinstance(profile_workflows, Mapping)
         or set(profile_workflows) != set(_WORKFLOW_KEYS)
         or not isinstance(bound_workflows, Mapping)

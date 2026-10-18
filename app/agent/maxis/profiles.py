@@ -30,6 +30,7 @@ from app.agent.maxis.knowledge_manifest import (
     canonical_dataset_id,
 )
 from app.agent.maxis.identifiers import canonical_published_workflow_id
+from app.agent.maxis.knowledge_config import clean_path as clean_knowledge_path, resolve_path as knowledge_path
 from app.agent.maxis.public_metadata import (
     credential_shaped_public_text,
     require_safe_public_text,
@@ -170,6 +171,8 @@ def _default_profile(name: str) -> dict:
         "workflow_bundle_version": "",
         "knowledge_version": "",
         "knowledge_dataset_id": "",
+        "knowledge_source_manifest": "",
+        "knowledge_environment_binding": "",
         "knowledge_sentinel_sha256": "",
         # This is a manager attestation about the approved remote service policy,
         # not technical proof of Dify's workspace settings.  Production activation
@@ -207,7 +210,7 @@ def _merged_profile(name: str, *, stored_rows: dict[str, dict] | None = None) ->
     saved = (_stored_rows() if stored_rows is None else stored_rows).get(name) or {}
     for key in (
         "base_url", "data_policy", "workflow_bundle_version", "knowledge_version",
-        "knowledge_dataset_id",
+        "knowledge_dataset_id", "knowledge_source_manifest", "knowledge_environment_binding",
         "knowledge_sentinel_sha256", "remote_log_policy_id", "remote_log_mode",
     ):
         if key in saved:
@@ -403,11 +406,14 @@ def _build_profile_manifest(
             )
         return None
     try:
+        from app.agent.maxis.knowledge_config import profile_binding_sha256
+        profile_binding_sha256(profile)
         return build_manifest(
             knowledge_version=version,
             dataset_id=dataset_id,
+            config_path=knowledge_path(profile.get("knowledge_source_manifest")),
         )
-    except KnowledgeManifestError as exc:
+    except (KnowledgeManifestError, ValueError) as exc:
         raise ValueError(f"Invalid MAXIS knowledge manifest: {exc}") from exc
 
 
@@ -454,6 +460,10 @@ def knowledge_eval_attestation_binding(profile: dict | str = "") -> dict:
             for key in WORKFLOW_KEYS
         },
     }
+    from app.agent.maxis.knowledge_config import profile_binding_sha256
+    private_binding = profile_binding_sha256(candidate)
+    if private_binding:
+        material["knowledge_environment_sha256"] = private_binding
     if candidate.get("stage") == "internal-pilot":
         material["internal_pilot_policy"] = pilot_policy.binding_policy(
             candidate.get("internal_pilot_policy")
@@ -636,6 +646,10 @@ def _validate(profile: dict, *, activation: bool = False) -> dict:
     result["knowledge_dataset_id"] = _clean_dataset_id(
         profile.get("knowledge_dataset_id")
     )
+    for field in ("knowledge_source_manifest", "knowledge_environment_binding"):
+        result[field] = clean_knowledge_path(profile.get(field))
+    if bool(result["knowledge_source_manifest"]) != bool(result["knowledge_environment_binding"]):
+        raise ValueError("Private Knowledge requires both source manifest and environment binding.")
     result["knowledge_sentinel_sha256"] = _clean_digest(
         profile.get("knowledge_sentinel_sha256"), "Knowledge release sentinel"
     )
@@ -724,6 +738,7 @@ def save(profile_name: str, patch: dict | None = None) -> dict:
     patch = patch or {}
     allowed = {"base_url", "data_policy", "workflow_bundle_version",
                "knowledge_version", "knowledge_dataset_id",
+               "knowledge_source_manifest", "knowledge_environment_binding",
                "knowledge_sentinel_sha256", "remote_log_policy_id",
                "remote_log_mode", "remote_log_retention_days",
                "knowledge_eval_attestation", "internal_pilot_policy", "workflows"}
@@ -871,6 +886,10 @@ def profile_fingerprint(profile: dict) -> str:
         "remote_log_retention_days", "knowledge_eval_attestation",
     )}
     clean["knowledge_manifest_sha256"] = manifest.sha256 if manifest else ""
+    from app.agent.maxis.knowledge_config import profile_binding_sha256
+    private_binding = profile_binding_sha256(profile)
+    if private_binding:
+        clean["knowledge_environment_sha256"] = private_binding
     if profile.get("stage") == "internal-pilot":
         clean["internal_pilot_policy"] = pilot_policy.clean_policy(profile.get("internal_pilot_policy"))
     encoded = json.dumps(clean, ensure_ascii=False, sort_keys=True,

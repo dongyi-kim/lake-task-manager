@@ -17,6 +17,77 @@ materializer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(materializer)
 
 
+def test_private_manifest_can_add_documents_without_changing_reviewed_graph(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    root = tmp_path / "repo"
+    _copy_materializer_sources(root)
+    shutil.copytree(ROOT / "config", root / "config")
+    shutil.copytree(ROOT / "knowledge", root / "knowledge")
+    private = root / ".cache/maxis/project"
+    private.mkdir(parents=True)
+    (private / "project-rules.md").write_text("# Project\n\nSynthetic project definition.", encoding="utf-8")
+    manifest = yaml.safe_load((ROOT / "config/maxis-knowledge.yml").read_text(encoding="utf-8"))
+    row = {**manifest["documents"][0], "id": "project-rules",
+           "path": ".cache/maxis/project/project-rules.md", "allowed_roles": ["knowledge_curator"],
+           "reviewed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    manifest["documents"].append(row)
+    (private / "source.yml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    environment = yaml.safe_load((ROOT / "deploy/maxis-dify/environments/dev.yml").read_text(encoding="utf-8"))
+    environment["knowledge"]["source_manifest"] = ".cache/maxis/project/source.yml"
+    environment["knowledge"]["documents"]["project-rules"] = {
+        "source_name": "project-rules.md", "remote_name": "project-rules.txt",
+        "document_id": "11111111-5555-4555-8555-111111111111"}
+    from uuid import uuid4
+    for field in ("dataset_id", "sentinel_dataset_id", "role_metadata_field_id"):
+        environment["knowledge"][field] = str(uuid4())
+    environment["knowledge"]["sentinel_file"]["document_id"] = str(uuid4())
+    for document in environment["knowledge"]["documents"].values():
+        document["document_id"] = str(uuid4())
+    target = private / "environment.yml"
+    target.write_text(yaml.safe_dump(environment), encoding="utf-8")
+    monkeypatch.setattr(materializer, "ROOT", root)
+    loaded = materializer.load_environment(target)
+    assert len(materializer._environment_owned_asset_ids(loaded, label="private")) == 13
+    outputs = materializer.materialize(target, tmp_path / "out")
+    for output in outputs:
+        dsl = yaml.safe_load(output.read_text(encoding="utf-8"))
+        node = next(n for n in dsl["workflow"]["graph"]["nodes"] if n["data"]["title"] == "Knowledge Guard")
+        namespace = {}
+        exec(node["data"]["code"], namespace)
+        assert namespace["_DOCUMENT_IDS_BY_NAME"]["project-rules.txt"] == environment["knowledge"]["documents"]["project-rules"]["document_id"]
+        allowed = namespace["_ALLOWED_DOCUMENT_NAMES_BY_ROLE"]
+        for role, names in allowed.items():
+            assert ("project-rules.txt" in names) == (role == "knowledge_curator")
+    import copy
+    prod = copy.deepcopy(environment)
+    prod["environment"] = "prod"
+    for workflow in prod["workflows"].values():
+        workflow["app_name"] += " PROD"
+    prod_path = private / "prod.yml"
+    prod_path.write_text(yaml.safe_dump(prod), encoding="utf-8")
+    with pytest.raises(materializer.EnvironmentBindingError, match="private dev comparison"):
+        materializer.load_environment(prod_path)
+    prod["knowledge"]["dev_environment_binding"] = ".cache/maxis/project/environment.yml"
+    prod_path.write_text(yaml.safe_dump(prod), encoding="utf-8")
+    with pytest.raises(materializer.EnvironmentBindingError, match="dev-owned"):
+        materializer.load_environment(prod_path)
+    for field in ("dataset_id", "sentinel_dataset_id", "role_metadata_field_id"):
+        prod["knowledge"][field] = str(uuid4())
+    prod["knowledge"]["sentinel_file"]["document_id"] = str(uuid4())
+    for document in prod["knowledge"]["documents"].values():
+        document["document_id"] = str(uuid4())
+    prod_path.write_text(yaml.safe_dump(prod), encoding="utf-8")
+    materializer.load_environment(prod_path)
+    prod["knowledge"]["documents"]["project-rules"]["document_id"] = environment["knowledge"]["sentinel_file"]["document_id"]
+    prod_path.write_text(yaml.safe_dump(prod), encoding="utf-8")
+    with pytest.raises(materializer.EnvironmentBindingError, match="dev-owned"):
+        materializer.load_environment(prod_path)
+    manifest["documents"][-1]["allowed_roles"] = ["invented_role"]
+    (private / "source.yml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    with pytest.raises(materializer.EnvironmentBindingError, match="source manifest"):
+        materializer.load_environment(target)
+
+
 def _copy_materializer_sources(target):
     shutil.copytree(ROOT / "deploy/maxis-dify", target / "deploy/maxis-dify")
     helper = Path("app/agent/maxis/source_grounding.py")

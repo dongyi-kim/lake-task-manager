@@ -27,6 +27,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.agent.maxis import credentials, profiles  # noqa: E402
+from app.agent.maxis.knowledge_config import resolve_path as knowledge_path
 from app.agent.maxis.knowledge_eval import (  # noqa: E402
     DEFAULT_PILOT_CASE,
     KnowledgeEvalError,
@@ -182,10 +183,23 @@ def _validate_bundle() -> None:
         raise KnowledgeEvalError("bundle_validation_failed") from exc
 
 
+def _profile_identity(profile: dict[str, Any]) -> Any:
+    if not profile.get("knowledge_environment_binding") and not profile.get("knowledge_source_manifest"):
+        return load_identity_map()
+    return load_identity_map(
+        environment_path=knowledge_path(profile.get("knowledge_environment_binding")),
+        knowledge_manifest_path=knowledge_path(profile.get("knowledge_source_manifest")),
+    )
+
+
+def _profile_source_hashes(profile: dict[str, Any]) -> dict[str, str]:
+    return (evaluation_source_file_sha256(profile) if profile.get("knowledge_source_manifest")
+            else evaluation_source_file_sha256())
+
+
 def _preflight() -> tuple[dict[str, Any], dict[str, Any], Any, Any]:
     _validate_bundle()
     suite = load_suite()
-    identity = load_identity_map()
     try:
         profile = profiles.resolve("dev")
     except Exception as exc:
@@ -199,13 +213,14 @@ def _preflight() -> tuple[dict[str, Any], dict[str, Any], Any, Any]:
         raise KnowledgeEvalError("dev_profile_not_verified")
     if profile.get("active") is True or profile.get("enabled") is True:
         raise KnowledgeEvalError("dev_profile_must_remain_inactive")
+    identity = _profile_identity(profile)
     route_snapshot = profiles.routes()
     if set(route_snapshot.values()) != {"local"}:
         raise KnowledgeEvalError("dev_routes_must_remain_local")
     try:
         binding = {
             **profiles.knowledge_eval_attestation_binding(profile),
-            "source_file_sha256": evaluation_source_file_sha256(),
+            "source_file_sha256": _profile_source_hashes(profile),
         }
     except Exception as exc:
         raise KnowledgeEvalError("evaluation_binding_invalid") from exc
@@ -227,10 +242,10 @@ def _binding_unchanged(
     try:
         current_profile = profiles.resolve("dev")
         current_suite = load_suite()
-        current_identity = load_identity_map()
+        current_identity = _profile_identity(current_profile)
         current_binding = {
             **profiles.knowledge_eval_attestation_binding(current_profile),
-            "source_file_sha256": evaluation_source_file_sha256(),
+            "source_file_sha256": _profile_source_hashes(current_profile),
         }
         validate_evaluation_binding(
             profile=current_profile,

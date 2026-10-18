@@ -386,6 +386,25 @@ def test_suite_rejects_a_type_outcome_mismatch(tmp_path):
         knowledge_eval.load_suite(path)
 
 
+@pytest.mark.parametrize("pointer", [".cache/maxis/project/source.yml", "", None])
+def test_private_identity_requires_environment_and_manifest_to_agree(tmp_path, pointer):
+    root = tmp_path / "repo"
+    root.mkdir()
+    private = root / ".cache/maxis/project"
+    private.mkdir(parents=True)
+    selected = private / "source.yml"
+    selected.write_text("contract: synthetic", encoding="utf-8")
+    other = private / "other.yml"
+    other.write_text("contract: synthetic", encoding="utf-8")
+    environment = private / "environment.yml"
+    knowledge = {} if pointer is None else {"source_manifest": pointer}
+    environment.write_text(yaml.safe_dump({"environment": "dev", "knowledge": knowledge}), encoding="utf-8")
+    from unittest.mock import patch
+    with patch.object(knowledge_eval, "_root", return_value=root):
+        with pytest.raises(KnowledgeEvalError, match="evaluation_manifest_binding_mismatch"):
+            knowledge_eval.load_identity_map(environment_path=environment, knowledge_manifest_path=other)
+
+
 def test_suite_requires_injection_cases_to_be_marked_as_ignored_instructions(tmp_path):
     source = (
         Path(__file__).resolve().parents[3]
