@@ -1775,17 +1775,13 @@ class WorkArchitect(StructuredAgent):
                       "evidence; do not emit an `assignee`. Record only "
                       "material defaults or open facts in Korean `rationale`."
                       if defaults else "")
-        # 버그는 새 기능과 초안 규칙이 다르다 — 갈래를 지시문으로 가른다(Prompt Chaining 의 분기).
-        # ★ **버그 초안은 의도가 아니라 요청의 낱말로 고른다**(사용자 지적 — "결국 버그
-        #   신고도 Task 생성 아니야? type 이 Bug 일 뿐이지"). 예전에는 `report_bug` 라는
-        #   갈래가 있었지만 `plan_work` 와 지나는 노드도 도구도 같았고, 코드에서 다르게
-        #   쓰이는 곳이 이 goal 하나뿐이었다 — **갈래가 아니라 산출물 유형**이다.
-        #   낱말로 고르면 분류가 흔들려도 본문 규율이 안 바뀐다: "적재 배치가 계속
-        #   실패한다"가 어느 갈래로 가든 재현·기대·실제가 유지된다.
+        # 생성 권한이 있는 create/mixed 안에서만 요청 내용으로 Bug 본문 정책을 고른다.
+        # Bug는 별도 실행 갈래가 아니라 생성할 티켓의 유형이다. 증상 문구만으로
+        # update/comment를 생성으로 바꾸지 않으며, schema·정규화·apply와 같은
+        # _is_create_action 권한 판정을 따른다.
         _said = _current_request_boundary_text(state)
         _is_bug = reads_as_bug(_said)      # 판정은 state.reads_as_bug 한 곳에만 있다
-        if (_is_bug and (_is_create_action(state)
-                         or not _typed_continuation_contract(state))):
+        if _is_bug and _is_create_action(state):
             goal = "Draft the reported symptom using the shared Bug creation policy."
         elif (action == "create" and (state.get("intent") or "") == Intent.MODIFY
                 and not state.get("mentioned_keys")

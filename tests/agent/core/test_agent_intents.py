@@ -372,25 +372,59 @@ def test_link_without_approval_is_refused():
     assert r["ok"] is False and r.get("needsApproval") is True
 
 
-def test_bug_body_rules_follow_the_request_not_the_intent():
-    """버그 초안 규율은 **요청의 내용**으로 고른다 — 의도가 미끄러져도 바뀌면 안 된다.
+@pytest.mark.parametrize("lane", ["direct", "semantic_projection"])
+@pytest.mark.parametrize("intent,action,utterance,mentioned", [
+    (Intent.MODIFY, None, "배치가 실패한다. 새 Bug로 올려줘", []),
+    (Intent.MODIFY, None, "배치가 실패한다. DL-9090 제목을 배치 실패 조사로 바꿔줘", []),
+    (Intent.MODIFY, None, "배치가 실패한다. 제목을 배치 실패 조사로 바꿔줘", ["DL-9090"]),
+    (Intent.PLAN_WORK, "update", "배치가 실패한다. DL-9090 제목을 배치 실패 조사로 바꿔줘", ["DL-9090"]),
+    (Intent.PLAN_WORK, "comment", "DL-9090에 '배치가 실패한다'를 댓글로 남겨줘", ["DL-9090"]),
+    (Intent.MODIFY, "update", "배치가 실패한다", []),
+    (Intent.MODIFY, "comment", "배치가 실패한다", []),
+])
+def test_bug_symptom_does_not_override_existing_ticket_action(monkeypatch, lane, intent, action, utterance, mentioned):
+    """Symptom prose cannot turn an existing-ticket action/schema into creation authority."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from app.agent.workflow.agents import work_architect as work
+    from test_agent_draft import _run_work_with_fake_transport
 
-    ★ 이 테스트는 원래 "intent 로 분기한다"를 단언했다. 그런데 `report_bug` 는 `plan_work`
-    와 지나는 노드도 도구도 같고 다른 것은 이 goal 하나뿐이었다(사용자 지적: "결국 Task
-    생성 아니야? type 이 Bug 일 뿐이지"). 갈래로 두면 **분류가 틀릴 때 본문 템플릿이
-    통째로 바뀐다** — 재현·기대·실제가 배경·범위·DoD 로 뒤바뀐다. 그래서 판정을 요청의
-    낱말로 옮겼고(갈래는 §7 16-b 에서 제거), 이 테스트도 그 규율을 잰다.
-    """
-    from langchain_core.messages import HumanMessage
-    from app.agent.workflow.agents.work_architect import WorkArchitect
-    st = {"messages": [HumanMessage(content="배치가 실패한다")], "intent": Intent.PLAN_WORK}
-    assert "재현 경로" in WorkArchitect().task(st)
-    # 의도가 modify 로 미끄러져도 **버그 이야기면** 규율이 유지된다
-    assert "재현 경로" in WorkArchitect().task(dict(st, intent=Intent.MODIFY))
-    # 버그 이야기가 아니면 평소 규율 — 아무 요청에나 버그 템플릿을 씌우면 안 된다
-    plain = {"messages": [HumanMessage(content="메타데이터 등록 작업이 필요해")],
-             "intent": Intent.PLAN_WORK}
-    assert "재현 경로" not in WorkArchitect().task(plain)
+    assert work.reads_as_bug(utterance)
+    state = {"messages": [HumanMessage(content=utterance)], "intent": intent,
+             "mentioned_keys": mentioned}
+    if action:
+        state["continuation_contract"] = {
+            "version": "continuation.v1", "action": action, "intent": intent,
+            "root_request": utterance, "target_keys": mentioned,
+            "outcome_ids": [], "decisions": [],
+        }
+    output = {"questions": [], "mode": "task", "structure": "single_task",
+              "items": [{"summary": "무권한 Bug 생성", "type": "Bug"}], "rationale": "배치 실패 요청 확인"}
+    has_target = bool(mentioned or "DL-9090" in utterance)
+    if has_target:
+        field, value = ("comment", "배치가 실패한다") if action == "comment" else ("summary", "배치 실패 조사")
+        output["change"] = {"key": "DL-9090", field: value}
+    result, seen = _run_work_with_fake_transport(monkeypatch, state, output, lane)
+    assert work._work_action(state) == (action or "update")
+    assert set(seen["schemas"][0]["properties"]) == {"questions", "change", "rationale"}
+    assert not {"mode", "structure", "items"} & seen["applied"][0].keys()
+    assert not result["draft"]["items"]
+    if has_target:
+        assert seen["applied"][0]["change"] == output["change"]
+        plan = result["change_plan"]
+        assert plan["key"] == "DL-9090"
+        if action == "comment":
+            assert "배치가 실패한다" in plan["comment"] and not plan["changes"]
+        else:
+            assert plan["changes"] == {"summary": "배치 실패 조사"}
+    else:
+        assert not result["change_plan"]
+        assert result["questions"], result
+    system, task = seen["calls"][0][1][:2]
+    assert isinstance(system, SystemMessage) and isinstance(task, HumanMessage)
+    assert "shared Bug creation policy" not in task.content
+    assert "## Ticket Body Contract" not in system.content
+    assert "## Existing Ticket Changes" in system.content
+    assert "Build an existing-ticket `change` plan" in task.content
 
 
 def test_planner_schema_covers_all_new_intents():
