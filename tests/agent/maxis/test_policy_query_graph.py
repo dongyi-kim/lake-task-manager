@@ -34,7 +34,7 @@ def _copy_bundle_sources(target):
     (target / "config").mkdir()
     for filename in ("maxis-workflows.yml", "maxis-knowledge.yml"):
         shutil.copy2(ROOT / "config" / filename, target / "config" / filename)
-    for role in ("request_architect", "query_specialist"):
+    for role in ("request_architect", "query_specialist", "work_architect"):
         prompt = Path("app/agent/prompts/roles") / (role + ".md")
         (target / prompt).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / prompt, target / prompt)
@@ -124,8 +124,8 @@ def test_built_graph_matches_source_and_only_changes_retrieval_unit(key):
             before["workflow"]["graph"][field].sort(key=lambda row: row["id"])
     assert rebuilt == before
     nodes = {node["data"]["title"]: node for node in dsl["workflow"]["graph"]["nodes"]}
-    assert len(nodes) == (22 if key == "agent_core" else 12)
-    assert len(dsl["workflow"]["graph"]["edges"]) == (25 if key == "agent_core" else 12)
+    assert len(nodes) == (25 if key == "agent_core" else 12)
+    assert len(dsl["workflow"]["graph"]["edges"]) == (29 if key == "agent_core" else 12)
     graph.validate_node(list(nodes.values()), key, "start")
     assert nodes["Policy Query"]["data"]["code"] == graph.source()
     assert nodes["Role Knowledge"]["data"]["query_variable_selector"] == [graph.NODE_ID, "query"]
