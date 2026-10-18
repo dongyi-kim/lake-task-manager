@@ -114,3 +114,19 @@ def test_ordinary_full_apply_preserves_literal_code(marker, closed):
     patch = result.ResultIntegrator().apply_routed(state, {"text": value})
     assert patch["reply"] == value
     assert patch["messages"][0].content == value
+
+
+@pytest.mark.parametrize('owner', [result._strip_instruction_echo])
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+@pytest.mark.parametrize('raw', [
+    '', '\t ', '  prose  \n\n', '\tkeep  α  \n\tkeep  β  ',
+    '   ~~~~text\nkeep  bytes  \n   ~~~~~  ', '~~~text\nkeep  bytes  ',
+])
+def test_noop_preserves_edge_whitespace(owner, newline, raw):
+    value = raw.replace('\n', newline)
+    assert owner(value) == value
+
+
+@pytest.mark.parametrize('heading', ['# 명령서', '## 명령서', '### 명령서'])
+def test_actual_instruction_heading_still_removed(heading):
+    assert result._strip_instruction_echo('  ' + heading + '\n\n  답변') == '답변'

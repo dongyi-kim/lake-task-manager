@@ -1781,7 +1781,8 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
         # Remove only an empty legacy heading.  Never invent a source index.
         if _HEADING_RE.search(str(text or "")):
             body = _CITATION_RE.sub("(근거 확인 필요)", body)
-        return (body + ("\n\n" + tail if tail else "")).strip()
+        rendered = (body + ("\n\n" + tail if tail else "")).strip()
+        return str(text or "") if rendered == str(text or "").strip() else rendered
 
     row_by_old = {row["old"]: row for row in parsed_rows}
     identity_order: list[str] = []

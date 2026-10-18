@@ -1332,8 +1332,9 @@ def _fill_empty_approval_heading(text: str, state) -> str:
 
 def _strip_instruction_echo(text: str) -> str:
     """사용자에게 보이면 안 되는 내부 `# 명령서` 머리말을 제거한다."""
-    return _re.sub(r"^\s*#{1,3}\s*명령서\s*\n+", "", str(text or ""), count=1,
-                   flags=_re.I).lstrip()
+    value, removed = _re.subn(r"^\s*#{1,3}\s*명령서\s*\n+", "", str(text or ""), count=1,
+                             flags=_re.I)
+    return value.lstrip() if removed else value
 
 
 def _render_reply_tokens(text: str) -> str:
@@ -2634,7 +2635,7 @@ def _ensure_internal_source_coverage_disclosure(
     value = _re.sub(
         r"(?ms)^###\s*조회된\s*내부\s*출처\s*범위\s*$.*?(?=^###\s|\Z)",
         "", str(text or ""),
-    ).strip()
+    )
     materialized = _materialized_internal_source_rows(state)
     if not materialized:
         return value
@@ -2661,7 +2662,7 @@ def _ensure_internal_source_coverage_disclosure(
     omitted = [row for row in materialized
                if f"ticket:{row['key']}" not in selected]
     if not omitted:
-        return _re.sub(r"\n{3,}", "\n\n", value).strip()
+        return value
     lines = ["### 조회된 내부 출처 범위", ""]
     for row in omitted:
         lines.append(
@@ -2772,7 +2773,7 @@ def _ensure_entity_coverage_disclosure(text: str, state) -> str:
     value = _re.sub(
         r"(?ms)^###\s*연관\s*엔티티\s*조사\s*한계\s*$.*?(?=^###\s|\Z)",
         "", str(text or ""),
-    ).strip()
+    )
     rows = []
     for query in (state.get("query_results") or []):
         if not isinstance(query, dict) or not isinstance(query.get("result"), dict):

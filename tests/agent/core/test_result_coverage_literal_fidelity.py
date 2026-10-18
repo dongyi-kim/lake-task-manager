@@ -1,4 +1,6 @@
 """Coverage disclosure changes are required, but unrelated literals are not owned."""
+import copy
+from langchain_core.messages import HumanMessage
 import pytest
 
 from app.agent.workflow.agents import result_integrator as result
@@ -174,3 +176,90 @@ def test_heading_literal_crosses_real_guards_then_ordinary_apply(newline, closed
     assert output["evidence_workspace"] == sidecar["evidence_workspace"]
     assert heading.strip() in output["reply"] and literal in output["reply"] and HEADING not in output["reply"]
 
+
+ENTITY_HEADING = '### 연관 엔티티 조사 한계'
+
+
+ENTITY_COMPLETE = {'query_results': [{'result': {'entityCoverage': {
+    'complete': True, 'truncated': False, 'rootKeys': ['DL-10'], 'selectedKeys': ['DL-11']}}}]}
+
+
+ENTITY_BOUNDED = {'query_results': [{'result': {'entityCoverage': {
+    'complete': False, 'truncated': True, 'rootKeys': ['DL-10'], 'selectedKeys': ['DL-11', 'DL-12']}}}]}
+
+
+@pytest.mark.parametrize('state', [{}, ENTITY_COMPLETE])
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+@pytest.mark.parametrize('original', [
+    '', '  \n\t ', '  prose  \n\n', '~~~text\n  literal  ',
+    '\tkeep  α  \n\tkeep  β  ', 'prefix `literal  `  \n',
+    '   ~~~~text\nkeep  bytes  \n   ~~~~~  \n\n',
+])
+def test_no_entity_limitation_preserves_exact_input(state, newline, original):
+    original = original.replace('\n', newline)
+    before = copy.deepcopy(state)
+    assert result._ensure_entity_coverage_disclosure(original, state) == original
+    assert state == before
+
+
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+@pytest.mark.parametrize('literal', [
+    '~~~text\n  literal  ', '\tkeep  α  \n\tkeep  β  ',
+    'prefix `literal  `  \n', '   ~~~~text\nkeep  bytes  \n   ~~~~~  ',
+])
+def test_noop_literal_spaces_survive_ordinary_result_apply(newline, literal):
+    literal = literal.replace('\n', newline)
+    state = {'intent': 'ask', 'request_text': '검토 요청',
+             'messages': [HumanMessage(content='검토 요청')]}
+    payload = {'text': literal}
+    before = copy.deepcopy(payload)
+    reply = result.ResultIntegrator().apply_routed(state, payload)['reply']
+    assert literal in reply
+    assert payload == before
+
+
+def test_required_entity_limitation_is_still_regenerated_and_removed():
+    raw = '요약\n\n' + ENTITY_HEADING + '\n\n- obsolete\n\n### 근거\n[1] 자료'
+    got = result._ensure_entity_coverage_disclosure(raw, ENTITY_BOUNDED)
+    assert 'obsolete' not in got
+    assert got.count(ENTITY_HEADING) == 1
+    assert '루트 1건·확장 2건·상한 도달' in got
+    assert '전체 관련 엔티티를 확인한 것은 아님' in got
+    assert got.index(ENTITY_HEADING) < got.index('### 근거')
+    assert result._ensure_entity_coverage_disclosure(got, ENTITY_BOUNDED) == got
+    covered = result._ensure_entity_coverage_disclosure(got, ENTITY_COMPLETE)
+    assert ENTITY_HEADING not in covered and '### 근거\n[1] 자료' in covered
+
+
+INTERNAL_HEADING = '### 조회된 내부 출처 범위'
+
+
+INTERNAL_MATERIALIZED = {'materialized_ticket_sources': {'ticketDetails': [{'key': 'DL-10'}]}}
+
+
+@pytest.mark.parametrize('materialized', [False, True])
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+@pytest.mark.parametrize('original', [
+    '', '  \n\t ', '  prose  \n\n', '~~~text\n  literal  ',
+    '\tkeep  α  \n\tkeep  β  ', 'prefix `literal  `  \n',
+    '   ~~~~text\nkeep  bytes  \n\n\n   ~~~~~  \n\n',
+])
+def test_no_omitted_sources_preserves_exact_input(materialized, newline, original):
+    original = original.replace('\n', newline)
+    state = INTERNAL_MATERIALIZED if materialized else {}
+    selected = [{'key': 'DL-10', 'why': '검증된 자료'}] if materialized else []
+    before = copy.deepcopy((state, selected))
+    assert result._ensure_internal_source_coverage_disclosure(original, state, selected) == original
+    assert (state, selected) == before
+
+
+@pytest.mark.parametrize('selected', [[], [{'key': 'DL-10'}],
+    [{'key': 'DL-10', 'observations': [{'text': '검색 결과', 'source': 'query'}]}]])
+def test_omitted_or_query_only_source_keeps_required_disclosure(selected):
+    raw = '요약\n\n' + INTERNAL_HEADING + '\n\n- obsolete\n\n### 근거\n[1] 자료'
+    got = result._ensure_internal_source_coverage_disclosure(raw, INTERNAL_MATERIALIZED, selected)
+    assert 'obsolete' not in got and got.count(INTERNAL_HEADING) == 1
+    assert '{{ticket-inline:DL-10}}' in got
+    assert '실물 조회 완료, 최종 결론 근거로 선택하지 않음' in got
+    assert got.index(INTERNAL_HEADING) < got.index('### 근거')
+    assert result._ensure_internal_source_coverage_disclosure(got, INTERNAL_MATERIALIZED, selected) == got

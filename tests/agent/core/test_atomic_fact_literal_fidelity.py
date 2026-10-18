@@ -1,4 +1,5 @@
 """Atomic semantic gates run in literals; their no-op result must not reformat bytes."""
+from app.agent.workflow.evidence_index import canonicalize_evidence_index
 import pytest
 
 from app.agent.workflow.evidence_index import (
@@ -54,3 +55,26 @@ def test_supported_shared_status_is_an_exact_noop(newline):
     ]}})
     raw = "   ~~~text" + newline + "ACME-83 및 ACME-84는 Jira 상태 Closed입니다." + newline + "   ~~~" + newline
     assert enforce_atomic_fact_boundaries(raw, facts) == raw
+
+
+@pytest.mark.parametrize('owner', [canonicalize_evidence_index])
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+@pytest.mark.parametrize('raw', [
+    '', '\t ', '  prose  \n\n', '\tkeep  α  \n\tkeep  β  ',
+    '   ~~~~text\nkeep  bytes  \n   ~~~~~  ', '~~~text\nkeep  bytes  ',
+])
+def test_noop_preserves_edge_whitespace(owner, newline, raw):
+    value = raw.replace('\n', newline)
+    assert owner(value) == value
+
+
+def test_empty_index_removed_and_orphan_citation_still_downgraded():
+    assert canonicalize_evidence_index('답변 [1]\n\n### 근거\n') == '답변 (근거 확인 필요)'
+
+
+def test_known_index_still_canonicalized():
+    raw = '답변 [8]\n\n### 참조\n[8] DL-9095 — 검증된 기록'
+    output = canonicalize_evidence_index(raw)
+    assert '답변 [1]' in output and '### 근거' in output
+    assert '{{ticket-detail:DL-9095}}' in output and '검증된 기록' in output
+    assert '[8]' not in output and '### 참조' not in output
