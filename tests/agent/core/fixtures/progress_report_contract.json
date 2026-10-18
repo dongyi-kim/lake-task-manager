@@ -1,0 +1,272 @@
+{
+  "sourceSha256": "45a6a08ce648d8f9a0914b06e5abd93620d075f8c5bbd207294a19bf433168d6",
+  "report": {
+    "key": "T-1",
+    "title": "Target",
+    "done": false,
+    "updated": "2026-10-18",
+    "changes": [
+      {
+        "date": "2026-10-18",
+        "who": "past-user",
+        "field": "status",
+        "from": "Open",
+        "to": "Done"
+      },
+      {
+        "date": "2026-10-18",
+        "who": "past-user",
+        "field": "status",
+        "from": "Open",
+        "to": "Done"
+      },
+      {
+        "date": "2026-10-18",
+        "who": "past-user",
+        "field": "status",
+        "from": "Open",
+        "to": "Done"
+      },
+      {
+        "date": "2026-10-18",
+        "who": "past-user",
+        "field": "status",
+        "from": "Open",
+        "to": "Done"
+      },
+      {
+        "date": "2026-10-18",
+        "who": "past-user",
+        "field": "status",
+        "from": "Open",
+        "to": "Done"
+      },
+      {
+        "date": "2026-10-18",
+        "who": "past-user",
+        "field": "status",
+        "from": "Open",
+        "to": "Done"
+      },
+      {
+        "date": "2026-10-18",
+        "who": "past-user",
+        "field": "status",
+        "from": "Open",
+        "to": "Done"
+      },
+      {
+        "date": "2026-10-18",
+        "who": "past-user",
+        "field": "status",
+        "from": "Open",
+        "to": "Done"
+      }
+    ],
+    "comments": [
+      {
+        "date": "2026-10-18",
+        "who": "past-user",
+        "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      }
+    ],
+    "children": [
+      {
+        "key": "T-2",
+        "title": "Child",
+        "done": true,
+        "assigneeId": "child-user",
+        "updated": "2026-10-18"
+      }
+    ],
+    "children_done": "1/1",
+    "links": [
+      {
+        "key": "T-3",
+        "rel": "mentioned",
+        "done": false,
+        "updated": "2026-10-18"
+      },
+      {
+        "key": "T-4",
+        "rel": "mentioned",
+        "done": false,
+        "updated": "2026-10-18"
+      },
+      {
+        "key": "T-5",
+        "rel": "mentioned",
+        "done": false,
+        "updated": "2026-10-18"
+      },
+      {
+        "key": "T-6",
+        "rel": "mentioned",
+        "done": false,
+        "updated": "2026-10-18"
+      },
+      {
+        "key": "T-7",
+        "rel": "mentioned",
+        "done": false,
+        "updated": "2026-10-18"
+      },
+      {
+        "key": "T-8",
+        "rel": "mentioned",
+        "done": false,
+        "updated": "2026-10-18"
+      },
+      {
+        "key": "T-9",
+        "rel": "mentioned",
+        "done": false,
+        "updated": "2026-10-18"
+      },
+      {
+        "key": "T-10",
+        "rel": "mentioned",
+        "done": false,
+        "updated": "2026-10-18"
+      }
+    ],
+    "documents": [
+      {
+        "title": "Remote link",
+        "url": "https://example.invalid/pages/31",
+        "updated": "2026-10-18",
+        "excerpt": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz…(총 920자)"
+      },
+      {
+        "title": "Body reference",
+        "url": "https://example.invalid/pages/32",
+        "updated": "2026-10-18",
+        "excerpt": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz…(총 920자)"
+      },
+      {
+        "title": "Unresolved",
+        "url": "https://example.invalid/no-id"
+      }
+    ],
+    "note": "진척은 상태 한 단어가 아니라 이 네 갈래(필드 변동·코멘트·하위 티켓·유관 문서)를 이어 붙인 이야기다. 문서의 '최종 수정'은 결과 기록 시점이다."
+  },
+  "calls": [
+    [
+      "confluence_page",
+      [
+        "31"
+      ]
+    ],
+    [
+      "confluence_page",
+      [
+        "32"
+      ]
+    ],
+    [
+      "get_issue",
+      [
+        "T-1"
+      ]
+    ],
+    [
+      "get_issue",
+      [
+        "T-10"
+      ]
+    ],
+    [
+      "get_issue",
+      [
+        "T-3"
+      ]
+    ],
+    [
+      "get_issue",
+      [
+        "T-4"
+      ]
+    ],
+    [
+      "get_issue",
+      [
+        "T-5"
+      ]
+    ],
+    [
+      "get_issue",
+      [
+        "T-6"
+      ]
+    ],
+    [
+      "get_issue",
+      [
+        "T-7"
+      ]
+    ],
+    [
+      "get_issue",
+      [
+        "T-8"
+      ]
+    ],
+    [
+      "get_issue",
+      [
+        "T-9"
+      ]
+    ],
+    [
+      "issue_comments",
+      [
+        "T-1",
+        6
+      ]
+    ],
+    [
+      "ticket_badge",
+      [
+        "T-2"
+      ]
+    ],
+    [
+      "ticket_children",
+      [
+        "T-1"
+      ]
+    ],
+    [
+      "ticket_documents",
+      [
+        "T-1"
+      ]
+    ],
+    [
+      "ticket_field_history",
+      [
+        "T-1"
+      ]
+    ],
+    [
+      "ticket_related",
+      [
+        "T-1"
+      ]
+    ]
+  ],
+  "tool_schema": {
+    "description": "Investigate the evidence-backed progress of one ticket.\n\nA status such as `In Progress` is not enough. This tool gathers changes to ticket fields,\noriginal progress comments with author and date, child Sub-Task completion, linked tickets,\nand the last update plus excerpt of relevant Confluence documents.\n\nUse `get_progress` for an Epic-, module-, or portfolio-level percentage. This tool is only for\nthe progress narrative of one ticket.",
+    "properties": {
+      "ticket_key": {
+        "title": "Ticket Key",
+        "type": "string"
+      }
+    },
+    "required": [
+      "ticket_key"
+    ],
+    "title": "get_ticket_progress",
+    "type": "object"
+  }
+}
