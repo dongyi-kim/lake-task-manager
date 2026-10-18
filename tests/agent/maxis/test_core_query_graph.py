@@ -306,6 +306,10 @@ def test_query_projection_preserves_task_and_evidence_but_excludes_final_schema(
     hidden = {"contract", "payload_schema_json", "payload_schema_sha256", "knowledge_manifest_sha256", "query"}
     expected = {key: value for key, value in original["context_pack"].items() if key not in hidden}
     expected["role_context"] = [row for row in expected["role_context"] if row["name"] != "query_business_input"]
+    expected["sources"] = [dict(row,
+        source_authority="user_intent" if row["kind"] == "ltm" and row["canonical_id"].startswith("ltm:user-intent:") else "evidence_source",
+        allowed_claim_kinds=["inference", "recommendation"] if row["kind"] == "ltm" and row["canonical_id"].startswith("ltm:user-intent:") else ["fact", "inference", "recommendation"])
+        for row in expected["sources"]]
     assert projected["context"] == expected
     assert all(key not in projected["context"] for key in hidden)
     assert original["context_pack"] == pack.model_dump(mode="json")
@@ -391,3 +395,46 @@ def test_query_schema_mismatch_never_falls_back_to_generic_semantic(nodes, query
             pack["payload_schema_sha256"] = hashlib.sha256(pack["payload_schema_json"].encode()).hexdigest()
     with pytest.raises(ValueError, match="invalid_core_control_input"):
         code(nodes["1909000000001024"])["main"](encoded(incoming))
+
+
+def test_query_authority_reaches_selected_llm_frame_without_replacing_original(nodes, query_case):
+    _, model_input, _ = query_case
+    output = code(nodes[INPUT_ID])["main"](model_input)["query_input"]
+    user_template = nodes[QUERY_ID]["prompt_template"][1]["text"]
+    marker = "{{#1909000000001030.query_input#}}"
+    assert user_template.count(marker) == 1
+    user_frame = user_template.replace(marker, output)
+    visible = json.loads(user_frame.split("\n", 1)[1])
+    assert visible == json.loads(output)
+    assert visible["context"]["sources"][0]["source_authority"] == "user_intent"
+    assert visible["context"]["sources"][0]["allowed_claim_kinds"] == ["inference", "recommendation"]
+    assert nodes[ASSEMBLER_ID]["variables"] == [
+        {"variable": "model_input", "value_selector": ["1909000000001006", "model_input"]},
+        {"variable": "candidate", "value_selector": [QUERY_ID, "text"]}]
+    assert "source_authority" not in json.loads(model_input)["context_pack"]["sources"][0]
+
+
+@pytest.mark.parametrize("subject_kind", ["fact", "recommendation"])
+def test_query_observed_draft_shape_retains_kind_and_original_guard_verdict(nodes, query_case, subject_kind):
+    # Reconstruct observed draft VALUES on synthetic local evidence, not a native replay.
+    pack, model_input, _ = query_case
+    incoming = json.loads(model_input)
+    row = incoming["context_pack"]["sources"][0]
+    row.update(source_id="src_intent_d48024cf581e43c943d7", content="fdc.fdc_trace_summary_ic 이력을 찾아줘")
+    row["content_sha256"] = hashlib.sha256(row["content"].encode()).hexdigest()
+    pack = type(pack).model_validate_json(encoded(incoming["context_pack"]))
+    selected = {"contract": "query-draft.v2", "status": "ok", "payload": {"reads": [{
+        "source": {"value": "jira", "kind": "recommendation", "source_ids": [row["source_id"]]},
+        "subject": {"value": "fdc.fdc_trace_summary_ic", "kind": subject_kind, "source_ids": [row["source_id"]]},
+        "coverage": "standard"}]}, "missing_inputs": []}
+    before = copy.deepcopy(selected)
+    assembled = assemble(nodes, encoded(incoming), selected)
+    assert selected == before
+    assert any(c["text"] == "fdc.fdc_trace_summary_ic" and c["kind"] == subject_kind for c in assembled["claims"])
+    if subject_kind == "fact":
+        assert remote(nodes, pack, assembled)["warnings"] == ["contract_guard:intent_source_fact_forbidden"]
+        with pytest.raises(ResponseGuardError, match="intent_source_fact_forbidden"):
+            local(pack, assembled)
+    else:
+        assert remote(nodes, pack, assembled) == assembled
+        assert local(pack, assembled)[0].status == "ok"

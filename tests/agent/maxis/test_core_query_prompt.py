@@ -89,3 +89,11 @@ def test_utf8_budget_is_strict_without_truncation(compiler):
         compiler(local, "x" + exact)
     with pytest.raises(ValueError, match="Query system prompt requires review"):
         compiler(local, "가" * (remaining // 3 + 1) + wire)
+
+
+def test_query_prompt_explains_projected_authority_without_granting_facts(compiler):
+    prompt = compiler(LOCAL.read_text(encoding="utf-8"), WIRE.read_text(encoding="utf-8"))
+    for marker in ("source_authority", "allowed_claim_kinds", "user_intent", "evidence_source"):
+        assert prompt.count(marker) == 1
+    assert "not fact verification or execution authority" in prompt
+    assert "preserving your `kind` and selected sources" in prompt

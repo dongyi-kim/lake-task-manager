@@ -52,7 +52,12 @@ nonpartial·닫힌 text 형식·1,024 UTF-8 bytes로 검증해 task로 옮긴다
 실패하며 transport query나 source에서 복원하지 않는다. 이름/hash 자체가 권한 증명은 아니다.
 `context`는 기존 metadata 네 필드와 transport query 및 옮긴 task row만 제외한다.
 나머지 scope·출처 ID/본문·facts·metrics·role_context·시각·freshness·partial·flags와
-`knowledge_context`는 값·순서 그대로다. 원본 API query·pack·proof·metadata는 변경 없이
+`knowledge_context`는 값·순서 그대로다. 출처에는 양쪽 guard와 같은 `kind=ltm` 및
+`canonical_id`의 `ltm:user-intent:` 접두사 판정으로 `source_authority`와
+`allowed_claim_kinds`를 덧붙인다. 기존 출처 필드는 숨기거나 수정하지 않으며, 이 표시는
+사실 검증이나 실행 권한이 아니다. 표시를 포함한 출력이 9,000 UTF-8 bytes를 넘으면
+잘라내지 않고 거부하므로 이전에 허용되던 한도 근처 입력도 실패할 수 있다.
+원본 API query·pack·proof·metadata는 변경 없이
 Knowledge Guard, 조립기 및 양쪽 최종 guard에 전달한다. v2 게시에는 backend producer가
 필수이며 이미 만들어진 구 pack은 거부한다. 원격 consumer를 먼저 되돌린 뒤 producer를 롤백한다.
 canonical JSON·정확한 field·9000/6144 UTF-8 bytes·깊이32/노드4096 한도를 검사하지만

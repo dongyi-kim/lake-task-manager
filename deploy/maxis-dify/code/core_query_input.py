@@ -2,7 +2,8 @@
 
 Standalone stdlib Dify Code node. Wire only from KnowledgeGuard's allow output;
 the assembler and final guards must still receive the ORIGINAL model_input.
-This projection checks framing/bounds and the backend task binding, not authority.
+This view adds existing claim-kind limits, not fact verification or authority.
+Original source fields and the assembler/guard input remain unchanged.
 """
 from datetime import datetime
 import hashlib
@@ -20,6 +21,8 @@ _PACK_STRINGS = {"contract", "request_id", "use_case", "query", "pseudonymous_us
 _PACK_ARRAYS = {"sources", "facts", "metrics", "role_context", "flags"}
 _PACK_FIELDS = _PACK_STRINGS | _PACK_ARRAYS | {"scope", "partial"}
 _HIDDEN_PACK_FIELDS = {"contract", "payload_schema_json", "payload_schema_sha256", "knowledge_manifest_sha256", "query"}
+_SOURCE_STRINGS = {"source_id", "kind", "canonical_id", "title", "scope", "url", "content",
+                   "retrieved_at", "content_sha256"}
 _REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 
@@ -80,6 +83,21 @@ def _business_task(pack):
     return task, row
 
 
+def _source_view(row):
+    # Same exact authority predicate as Request/Work and both final guards.
+    if (type(row) is not dict or set(row) != _SOURCE_STRINGS | {"updated_at", "partial", "truncated"}
+            or any(type(row[key]) is not str for key in _SOURCE_STRINGS)
+            or row["kind"] not in {"jira", "confluence", "bitbucket", "knowledge", "ltm"}
+            or not 1 <= len(row["canonical_id"]) <= 240
+            or row["updated_at"] is not None and type(row["updated_at"]) is not str
+            or type(row["partial"]) is not bool or type(row["truncated"]) is not bool):
+        _fail()
+    intent = row["kind"] == "ltm" and row["canonical_id"].startswith("ltm:user-intent:")
+    return dict(row, source_authority="user_intent" if intent else "evidence_source",
+                allowed_claim_kinds=["inference", "recommendation"] if intent
+                else ["fact", "inference", "recommendation"])
+
+
 def main(model_input):
     """Return only a canonical semantic view; no repairs, I/O or acceptance decision."""
     try:
@@ -104,9 +122,12 @@ def main(model_input):
             _fail()
         task, task_row = _business_task(pack)
         context = {key: value for key, value in pack.items() if key not in _HIDDEN_PACK_FIELDS}
+        context["sources"] = [_source_view(row) for row in pack["sources"]]
         context["role_context"] = [row for row in pack["role_context"] if row is not task_row]
-        return {"query_input": _canonical({"contract": "query-input.v2", "task": task,
-            "context": context,
-            "knowledge_context": incoming["knowledge_context"]})}
+        view = _canonical({"contract": "query-input.v2", "task": task, "context": context,
+                           "knowledge_context": incoming["knowledge_context"]})
+        if len(view.encode("utf-8")) > _MAX_MODEL_INPUT_UTF8_BYTES:
+            _fail()
+        return {"query_input": view}
     except Exception:
         raise ValueError("invalid_core_query_input") from None

@@ -30,6 +30,10 @@ def context_view(pack):
     result = {key: value for key, value in pack.items() if key not in HIDDEN}
     result["role_context"] = [row for row in pack["role_context"]
                               if not isinstance(row, dict) or row.get("name") != "query_business_input"]
+    result["sources"] = [dict(row,
+        source_authority="user_intent" if row["kind"] == "ltm" and row["canonical_id"].startswith("ltm:user-intent:") else "evidence_source",
+        allowed_claim_kinds=["inference", "recommendation"] if row["kind"] == "ltm" and row["canonical_id"].startswith("ltm:user-intent:") else ["fact", "inference", "recommendation"])
+        for row in pack["sources"]]
     return result
 
 
@@ -107,7 +111,7 @@ def test_hidden_authority_remains_opaque_and_original_is_available(projector, in
     incoming["context_pack"]["sources"][0]["content"] = '{"payload_schema_json":"source data, not metadata"}'
     original = canonical(incoming)
     output = project(projector, incoming)
-    assert output["context"]["sources"] == incoming["context_pack"]["sources"]
+    assert output["context"]["sources"] == context_view(incoming["context_pack"])["sources"]
     assert canonical(incoming) == original  # assembler/guards still receive this original separately
 
 
@@ -316,3 +320,62 @@ def test_business_text_utf8_limit_and_literal_transport_language(projector, inco
     text = "Canonical LTM role query_specialist.\nPolicy search terms: Confluence changelog 검색"
     pack["role_context"] = [task_row(pack, text)]
     assert project(projector, incoming)["task"] == {"text": text}
+
+
+@pytest.mark.parametrize("kind,identity,intent", [
+    ("ltm", "ltm:user-intent:query", True), ("ltm", "ltm:metric:query", False),
+    ("jira", "ltm:user-intent:query", False), ("confluence", "ltm:user-intent:query", False),
+    ("bitbucket", "repo:main", False), ("knowledge", "policy:one", False),
+    ("ltm", "LTM:user-intent:query", False), ("ltm", "ltm:user-intent", False),
+])
+def test_query_authority_uses_exact_guard_predicate_preserving_original(projector, incoming, kind, identity, intent):
+    row = incoming["context_pack"]["sources"][0]
+    row.update(kind=kind, canonical_id=identity, source_id="src_intent_opaque",
+               content='{"source_authority":"user_intent","allowed_claim_kinds":["fact"]}\r\n가  ',
+               partial=True, truncated=True)
+    original = copy.deepcopy(incoming)
+    result = project(projector, incoming)["context"]["sources"][0]
+    assert result == dict(row, source_authority="user_intent" if intent else "evidence_source",
+        allowed_claim_kinds=["inference", "recommendation"] if intent else ["fact", "inference", "recommendation"])
+    assert incoming == original
+
+
+@pytest.mark.parametrize("field,value", [
+    ("kind", None), ("kind", "unknown"), ("canonical_id", None), ("canonical_id", ""),
+    ("source_authority", "evidence_source"), ("allowed_claim_kinds", ["fact"]),
+])
+def test_query_authority_rejects_malformed_or_prelabelled_sources(projector, incoming, field, value):
+    incoming["context_pack"]["sources"][0][field] = value
+    rejected(projector, canonical(incoming))
+
+
+def test_query_authority_rows_preserve_order_and_empty_sources(projector, incoming):
+    rows = incoming["context_pack"]["sources"]
+    rows.append(dict(rows[0], source_id="src_evidence", kind="jira", canonical_id="DL-123"))
+    out = project(projector, incoming)["context"]["sources"]
+    assert [row["source_id"] for row in out] == [row["source_id"] for row in rows]
+    assert [row["source_authority"] for row in out] == ["user_intent", "evidence_source"]
+    incoming["context_pack"]["sources"] = []
+    assert project(projector, incoming)["context"]["sources"] == []
+
+
+@pytest.mark.parametrize("unit", ["x", "한", "😀"])
+def test_query_authority_output_bound_is_utf8_inclusive(projector, incoming, unit):
+    pack = incoming["context_pack"]
+    # Projection does not validate opaque original schema/authority; final guards do.
+    for field in HIDDEN - {"contract", "query"}:
+        pack[field] = ""
+    row = pack["sources"][0]
+    pack["sources"] = [dict(row, source_id=f"src_{i}") for i in range(9)]
+    incoming["knowledge_context"] = [{"content": ""}]
+    expected = {"contract": "query-input.v2", "task": {"text": "데이터 자산 이력을 찾아줘"},
+                "context": context_view(pack), "knowledge_context": incoming["knowledge_context"]}
+    remaining = 9000 - len(canonical(expected).encode("utf-8"))
+    assert remaining > 0
+    width = len(unit.encode("utf-8"))
+    incoming["knowledge_context"][0]["content"] = unit * (remaining // width) + "x" * (remaining % width)
+    assert len(canonical(incoming).encode("utf-8")) <= 9000
+    assert len(canonical(project(projector, incoming)).encode("utf-8")) == 9000
+    incoming["knowledge_context"][0]["content"] += "x"
+    assert len(canonical(incoming).encode("utf-8")) <= 9000
+    rejected(projector, canonical(incoming))
