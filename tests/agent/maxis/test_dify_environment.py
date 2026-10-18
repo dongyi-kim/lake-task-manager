@@ -56,6 +56,60 @@ def _ready_prod_environment() -> dict:
     return source
 
 
+@pytest.mark.parametrize("stage", ["dev", "prod"])
+def test_materializer_preserves_core_disabled_upload_metadata(
+    tmp_path, monkeypatch, stage,
+):
+    monkeypatch.delenv("LAKE_MAXIS_PROD_ALLOWED_HOSTS", raising=False)
+    environment_path = ROOT / "deploy/maxis-dify/environments/dev.yml"
+    if stage == "prod":
+        environment_path = tmp_path / "prod-ready.yml"
+        environment_path.write_text(
+            yaml.safe_dump(_ready_prod_environment(), allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+    environment = materializer.load_environment(environment_path)
+    candidate = {
+        path.name: yaml.safe_load(path.read_text(encoding="utf-8"))
+        for path in materializer.materialize(environment_path, tmp_path / "candidate")
+    }
+    for workflow in environment["workflows"].values():
+        source_path = ROOT / workflow["source_dsl"]
+        source = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+        features = candidate[source_path.name]["workflow"]["features"]
+        assert features == source["workflow"]["features"]
+        assert features["file_upload"]["enabled"] is False
+        assert features["file_upload"]["image"]["enabled"] is False
+
+    limits = candidate["ltm-agent-core.yml"]["workflow"]["features"]["file_upload"][
+        "fileUploadConfig"
+    ]
+    reviewed_limits = {"attachment_image_file_size_limit": 2, "file_upload_limit": 20}
+    for key, value in reviewed_limits.items():
+        assert type(limits.get(key)) is int
+        assert limits[key] == value
+
+    # Compare with the source before only these two metadata additions. The
+    # complete outputs must otherwise match, including other apps and graphs.
+    baseline_root = tmp_path / "baseline"
+    _copy_materializer_sources(baseline_root)
+    baseline_path = baseline_root / environment["workflows"]["agent_core"]["source_dsl"]
+    baseline_dsl = yaml.safe_load(baseline_path.read_text(encoding="utf-8"))
+    baseline_limits = baseline_dsl["workflow"]["features"]["file_upload"]["fileUploadConfig"]
+    for key in reviewed_limits:
+        del baseline_limits[key]
+        del limits[key]
+    baseline_path.write_text(
+        yaml.safe_dump(baseline_dsl, allow_unicode=True, sort_keys=False), encoding="utf-8",
+    )
+    monkeypatch.setattr(materializer, "ROOT", baseline_root)
+    baseline = {
+        path.name: yaml.safe_load(path.read_text(encoding="utf-8"))
+        for path in materializer.materialize(environment_path, tmp_path / "baseline-output")
+    }
+    assert candidate == baseline
+
+
 def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
     environment_path = (
         ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
