@@ -27,6 +27,9 @@ _SCHEMA = frozenset({
 })
 _GROUNDING = frozenset({
     "contract_guard:claim_not_grounded", "contract_guard:payload_claims_required",
+    "contract_guard:intent_source_fact_forbidden",
+    "contract_guard:payload_claim_coverage_missing",
+    "contract_guard:payload_claim_text_mismatch",
 })
 _GUIDANCE = {
     "stale_evidence": (

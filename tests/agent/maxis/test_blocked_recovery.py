@@ -11,6 +11,9 @@ from app.agent.maxis.recovery import blocked_recovery
     ("contract_guard:payload_type_mismatch", "invalid_result_contract"),
     ("contract_guard:payload_claims_required", "ungrounded_result"),
     ("contract_guard:claim_not_grounded", "ungrounded_result"),
+    ("contract_guard:intent_source_fact_forbidden", "ungrounded_result"),
+    ("contract_guard:payload_claim_coverage_missing", "ungrounded_result"),
+    ("contract_guard:payload_claim_text_mismatch", "ungrounded_result"),
 ])
 def test_known_guard_codes_have_specific_constant_recovery(warning, code):
     recovery = blocked_recovery(warnings=(warning,), evidence_flags=())
@@ -32,8 +35,14 @@ def test_trusted_evidence_limit_explains_requery(flag, code):
     assert "조회" in recovery.next_action
 
 
-def test_unknown_and_adversarial_warning_text_is_not_displayed():
-    warnings = ("contract_guard:payload_type_mismatch secret-value", "private-url",)
+@pytest.mark.parametrize("known_code", [
+    "contract_guard:payload_type_mismatch",
+    "contract_guard:intent_source_fact_forbidden",
+    "contract_guard:payload_claim_coverage_missing",
+    "contract_guard:payload_claim_text_mismatch",
+])
+def test_unknown_and_adversarial_warning_text_is_not_displayed(known_code):
+    warnings = (known_code + " secret-value", "private-url",)
     recovery = blocked_recovery(warnings=warnings, evidence_flags=("unknown_flag",))
     assert recovery.code == "unusable_result"
     output = json.dumps(recovery.__dict__, ensure_ascii=False)

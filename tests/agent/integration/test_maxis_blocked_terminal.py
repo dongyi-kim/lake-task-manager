@@ -26,20 +26,26 @@ def _state():
     }
 
 
-def _blocked(role="request_architect"):
+def _blocked(role="request_architect", warning="contract_guard:payload_type_mismatch"):
     return MaxisBlockedResult(role, blocked_recovery(
-        warnings=("contract_guard:payload_type_mismatch", "private-remote-body"),
+        warnings=(warning, "private-remote-body"),
         evidence_flags=(),
     ))
 
 
-def test_blocked_fallback_graph_and_public_shape_keep_guidance_without_model(monkeypatch):
+@pytest.mark.parametrize("warning", [
+    "contract_guard:payload_type_mismatch",
+    "contract_guard:intent_source_fact_forbidden",
+    "contract_guard:payload_claim_coverage_missing",
+    "contract_guard:payload_claim_text_mismatch",
+])
+def test_blocked_fallback_graph_and_public_shape_keep_guidance_without_model(monkeypatch, warning):
     def no_model(*_args, **_kwargs):
         raise AssertionError("validated blocked result must not call another model")
 
     monkeypatch.setattr(TextAgent, "_run", no_model)
     graph = StateGraph(AgentState)
-    graph.add_node("blocked", lambda state: RequestArchitect().fallback(state, _blocked()))
+    graph.add_node("blocked", lambda state: RequestArchitect().fallback(state, _blocked(warning=warning)))
     graph.add_node("respond", ResultIntegrator().node())
     graph.add_edge(START, "blocked")
     graph.add_edge("blocked", "respond")
@@ -47,7 +53,7 @@ def test_blocked_fallback_graph_and_public_shape_keep_guidance_without_model(mon
 
     result = graph.compile().invoke(_state())
     shaped = _shape("blocked-thread", result)
-    expected = _blocked().recovery
+    expected = _blocked(warning=warning).recovery
     assert shaped["reply"] == expected.message + " " + expected.next_action
     assert shaped["error"] == "[request_architect] " + shaped["reply"]
     assert shaped["ok"] is False
