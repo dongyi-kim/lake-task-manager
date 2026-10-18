@@ -143,6 +143,54 @@ def test_request_user_intent_cannot_be_relabelled_as_external_fact(nodes, reques
         local(pack, result)
 
 
+@pytest.mark.parametrize("kind", ["fact", "inference", "recommendation"])
+@pytest.mark.parametrize("refs", [["src_intent_request"], ["record-exact"],
+    ["record-exact", "src_intent_request"]])
+def test_completion_criteria_planning_kinds_preserve_values_order_and_sources(nodes, request_case, kind, refs):
+    pack, incoming, draft = request_case
+    criteria = [{"value": value, "kind": kind, "source_ids": refs[:]}
+        for value in ("오류 재현 조건을 초안에 명시한다", "검토자가 기대 동작을 확인할 수 있게 작성한다")]
+    draft["payload"]["tasks"][0]["completion_criteria"] = criteria
+    before = copy.deepcopy((incoming, draft))
+    schema = nodes[REQUEST_ID]["structured_output"]["schema"]
+    assert Draft202012Validator(schema).is_valid(draft) is (kind != "fact")
+    if kind == "fact":
+        with pytest.raises(ValueError, match="^invalid_core_request_draft$"):
+            assembled(nodes, incoming, draft)
+    else:
+        result = assembled(nodes, incoming, draft)
+        assert result["payload"]["tasks"][0]["completion_criteria"] == [row["value"] for row in criteria]
+        claims = {row["claim_id"]: row for row in result["claims"]}
+        citations = {row["citation_id"]: row["source_id"] for row in result["citations"]}
+        bindings = {row["path"]: row["claim_ids"] for row in result["payload_claims"]}
+        for index, criterion in enumerate(criteria):
+            claim = claims[bindings[f"/tasks/0/completion_criteria/{index}"][0]]
+            assert (claim["text"], claim["kind"]) == (criterion["value"], kind)
+            assert [citations[key] for key in claim["citation_ids"]] == refs
+        assert remote(nodes, pack, result) == result and local(pack, result)[1] == result["payload"]
+    assert (incoming, draft) == before
+
+
+def test_completion_rule_does_not_ban_unrelated_evidence_backed_facts(nodes, request_case):
+    pack, incoming, draft = request_case
+    draft["payload"]["goal"] = {"value": "원문 자료", "kind": "fact", "source_ids": ["record-exact"]}
+    result = assembled(nodes, incoming, draft)
+    assert result["payload"]["goal"] == "원문 자료"
+    binding = next(row for row in result["payload_claims"] if row["path"] == "/goal")
+    assert next(row for row in result["claims"] if row["claim_id"] == binding["claim_ids"][0])["kind"] == "fact"
+    assert remote(nodes, pack, result) == result and local(pack, result)[1] == result["payload"]
+
+
+def test_final_guards_still_reject_forged_intent_backed_fact_criteria(nodes, request_case):
+    pack, incoming, draft = request_case
+    result = assembled(nodes, incoming, draft)
+    binding = next(row for row in result["payload_claims"] if row["path"] == "/tasks/0/completion_criteria/0")
+    next(row for row in result["claims"] if row["claim_id"] == binding["claim_ids"][0])["kind"] = "fact"
+    assert remote(nodes, pack, result)["warnings"] == ["contract_guard:intent_source_fact_forbidden"]
+    with pytest.raises(ResponseGuardError, match="intent_source_fact_forbidden"):
+        local(pack, result)
+
+
 @pytest.mark.parametrize("mutation", ["wrong_role", "wrong_schema", "unknown_source", "string_boolean"])
 def test_request_assembly_rejects_unbound_inputs_without_a_partial_candidate(nodes, request_case, mutation):
     _, incoming, draft = request_case

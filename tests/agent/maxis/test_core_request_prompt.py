@@ -213,6 +213,9 @@ def test_transport_lists_exact_wrapped_and_plain_payload_paths(contract):
         lines = [line for line in transport.splitlines() if line.startswith(label + ": ")]
         assert len(lines) == 1
         assert set(re.findall(r"`([^`]+)`", lines[0])) == paths
-    assert "intent and keywords[] select the request route and future retrieval terms" in transport
-    assert "even when copied from evidence" in transport
+    planning = ("intent, keywords[], and tasks[].completion_criteria[] are planning judgments "
+        "about routes, retrieval terms, or future acceptance conditions: their kind is only "
+        "inference|recommendation, even when supported by evidence.")
+    assert transport.count(planning) == 1
+    assert "Other wrapped paths allow fact|inference|recommendation" in transport
     assert "Never annotate a plain value" in transport

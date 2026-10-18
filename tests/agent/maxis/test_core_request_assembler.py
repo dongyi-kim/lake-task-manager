@@ -182,10 +182,10 @@ def test_fact_kind_is_not_repaired_to_bypass_final_guards(compiled, case, refs):
         local()
 
 
-@pytest.mark.parametrize("path", [("intent",), ("keywords", 0)])
+@pytest.mark.parametrize("path", [("intent",), ("keywords", 0), ("tasks", 0, "completion_criteria", 0)])
 @pytest.mark.parametrize("refs", [["src-intent-73"], ["src-record-29"], ["src-intent-73", "src-record-29"]])
 @pytest.mark.parametrize("kind", ["fact", "inference", "recommendation"])
-def test_selection_kinds_preserve_values_and_refs_or_fail_without_candidate(compiled, case, path, refs, kind):
+def test_planning_kinds_preserve_values_and_refs_or_fail_without_candidate(compiled, case, path, refs, kind):
     pack, incoming, draft, _ = case
     target = draft["payload"]
     for key in path:
@@ -193,6 +193,8 @@ def test_selection_kinds_preserve_values_and_refs_or_fail_without_candidate(comp
     target.update(kind=kind, source_ids=refs)
     if path[0] == "keywords":
         target["value"] = "DL-123"
+    elif path[0] == "tasks":
+        target["value"] = "변경 초안에 대상과 검토 방법을 명시한다"
     before = copy.deepcopy((incoming, draft))
     if kind == "fact":
         with pytest.raises(ValueError, match="^invalid_core_request_draft$"):
@@ -208,6 +210,19 @@ def test_selection_kinds_preserve_values_and_refs_or_fail_without_candidate(comp
         remote, local = guards(pack, result)
         assert remote == result and local()[0].status == "ok"
     assert (incoming, draft) == before
+
+
+def test_evidence_backed_goal_retains_fact_support(compiled, case):
+    pack, incoming, draft, _ = case
+    draft["payload"]["goal"] = leaf("DL-123 제목은 변경 제목이다", "fact", ["src-record-29"])
+    before = copy.deepcopy(draft)
+    result = assemble(compiled, incoming, draft)
+    assert draft == before and result["payload"]["goal"] == draft["payload"]["goal"]["value"]
+    binding = next(row for row in result["payload_claims"] if row["path"] == "/goal")
+    claim = next(row for row in result["claims"] if row["claim_id"] == binding["claim_ids"][0])
+    assert claim["kind"] == "fact"
+    remote, local = guards(pack, result)
+    assert remote == result and local()[1] == result["payload"]
 
 
 @pytest.mark.parametrize("depth", ["brief", "explain"])

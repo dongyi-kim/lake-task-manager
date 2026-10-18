@@ -25,9 +25,9 @@ _NARRATIVE_PATHS = {
     ("requested_effects", "*", "literal"), ("target_selectors", "*", "cardinality"),
     ("assumptions", "*"), ("plan",),
 }
-# Route interpretation and retrieval selection are model judgments, including
-# selections copied from evidence. Other narrative fields retain fact support.
-_SELECTION_PATHS = {("intent",), ("keywords", "*")}
+# Routes, retrieval terms, and future acceptance conditions are planning judgments,
+# even when evidence-backed. Other narrative fields retain fact support.
+_PLANNING_PATHS = {("intent",), ("keywords", "*"), ("tasks", "*", "completion_criteria", "*")}
 
 
 def build_request_system_prompt(schema: dict, local_role_markdown: str, transport_markdown: str) -> str:
@@ -129,7 +129,7 @@ def build_draft_schema(canonical_schema: dict, project) -> dict:
             return {"type": "object", "additionalProperties": False, "required": ["value", "kind", "source_ids"],
                 "properties": {"value": copy.deepcopy(row),
                     "kind": {"type": "string", "enum": ["inference", "recommendation"]
-                        if path in _SELECTION_PATHS else ["fact", "inference", "recommendation"]},
+                        if path in _PLANNING_PATHS else ["fact", "inference", "recommendation"]},
                     "source_ids": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": True,
                         "items": {"type": "string", "minLength": 1, "maxLength": 128,
                                   "pattern": r"^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])"}}}}
