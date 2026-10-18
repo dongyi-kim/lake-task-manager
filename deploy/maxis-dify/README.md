@@ -14,6 +14,7 @@ copy는 ignored `.cache/`에 두며 커밋하지 않는다. 변경 이력·검�
 | `bundle.yml` | 세 Workflow의 Start·검색·Guard·실행 계약 |
 | `dsl/*.yml` | Core, PMO, Editor별 하나의 Dify import source |
 | `code/*.py` | Knowledge/Contract Guard, Core 분류·Query/Request/Work 입력 투영·조립, Editor 입력 투영·선택 검증·조립 |
+| `contract_guard_asset.py` | Contract Guard template의 정상 import를 canonical `app/agent/maxis/source_grounding.py` 소스로 치환하는 공통 stdlib-only 배포 렌더러 |
 | `prompts/*.md` | 공통 및 단위 기능별 instruction 정본 |
 | `contracts/*.json` | 서로 다른 단계의 응답·선택·문안·조립·용어·평가 형식 |
 | `editor_graph.py`, `editor_graph_validation.py` | Editor 그래프 생성과 원본 검증 |

@@ -75,6 +75,10 @@
     "sourceFileSha256": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": {
+        "sourceGrounding": ["contractGuardRenderer"],
+        "contractGuardRenderer": ["sourceGrounding"]
+      },
       "required": [
         "workflowRegistry",
         "knowledgeSource",
@@ -107,6 +111,8 @@
         "pmoBriefDsl": {"$ref": "#/$defs/digest"},
         "editorAuthorDsl": {"$ref": "#/$defs/digest"},
         "contractGuard": {"$ref": "#/$defs/digest"},
+        "sourceGrounding": {"$ref": "#/$defs/digest"},
+        "contractGuardRenderer": {"$ref": "#/$defs/digest"},
         "knowledgeGuard": {"$ref": "#/$defs/digest"}
       }
     },

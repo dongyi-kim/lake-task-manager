@@ -18,6 +18,7 @@ from app.agent.maxis.context_guard import (
     forbidden_authority_key,
 )
 from app.agent.maxis.contracts import EvidencePackV1, RemoteRoleResultV1
+from app.agent.maxis.source_grounding import source_lexical_parts
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -362,6 +363,8 @@ class ResponseGuard:
         citations = {row.citation_id: row for row in remote.citations}
         facts = tuple(evidence.facts)
         metrics = tuple(evidence.metrics)
+        # Validation-call-local only: never retain private source text between calls.
+        source_tokens: dict[str, set[str]] = {}
 
         for index, claim in enumerate(remote.claims):
             if claim.kind not in {"fact", "inference", "recommendation"}:
@@ -445,9 +448,23 @@ class ResponseGuard:
             # their separate typed kind.
             if claim.kind == "fact":
                 claim_tokens = _ground_tokens(claim.text)
-                support_tokens = set().union(*(
-                    _ground_tokens(text) for text in supporting_text
-                )) if supporting_text else set()
+                support_tokens: set[str] = set()
+                for source in cited_sources:
+                    if source.source_id not in source_tokens:
+                        source_tokens[source.source_id] = set().union(*(
+                            _ground_tokens(text) for text in (
+                                source.canonical_id, source.title, source.url,
+                                *source_lexical_parts(source.content),
+                            ) if text
+                        ))
+                    support_tokens.update(source_tokens[source.source_id])
+                for fact in facts:
+                    if cited_source_ids.intersection(fact.source_ids):
+                        support_tokens.update(_ground_tokens(fact.text))
+                for metric in linked_metrics:
+                    support_tokens.update(_ground_tokens(
+                        " ".join((metric.label, str(metric.value), metric.unit))
+                    ))
                 overlap = claim_tokens & support_tokens
                 required = max(1, (len(claim_tokens) * 7 + 9) // 10)
                 if not claim_tokens or len(overlap) < required:

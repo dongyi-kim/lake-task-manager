@@ -1,7 +1,7 @@
-"""Self-contained fail-closed guard for a Dify 1.11.1 Python Code node.
+"""Fail-closed guard template for a Dify 1.11.1 Python Code node.
 
-The file is deliberately limited to Python standard-library imports because the same
-source is embedded verbatim in each deployed Dify DSL. The Code node must bind the
+The shared renderer replaces the canonical lexical helper import with its source,
+producing a standard-library-only asset for each deployed DSL. The Code node binds the
 LLM ``text`` output, all six Start variables, Dify's ``sys.workflow_id``, and the
 Knowledge Guard's verified Release Sentinel proof to :func:`main`; its single declared
 output is the string field ``result``.
@@ -12,6 +12,8 @@ import html
 import json
 import math
 import re
+
+from app.agent.maxis.source_grounding import source_lexical_parts
 
 
 _CONTRACT = "remote-role-result.v1"
@@ -238,11 +240,10 @@ def _source_context(pack, role_id, correlation_id):
             _fail("source_id_invalid")
         if source_id in sources:
             _fail("source_id_duplicate")
-        content = " ".join(
-            str(row.get(key) or "")
-            for key in ("canonical_id", "title", "url", "content")
-        )
-        sources[source_id] = [content]
+        sources[source_id] = [
+            str(row.get(key) or "") for key in ("canonical_id", "title", "url")
+        ]
+        sources[source_id].extend(source_lexical_parts(str(row.get("content") or "")))
         if row.get("kind") == "ltm" and str(row.get("canonical_id") or "").startswith(
             _USER_INTENT_CANONICAL_PREFIX
         ):
@@ -321,7 +322,8 @@ def _source_context(pack, role_id, correlation_id):
         metric_ids.add(metric_id)
 
     return schema, {
-        source_id: " ".join(parts) for source_id, parts in sources.items()
+        source_id: set().union(*(_ground_tokens(part) for part in parts))
+        for source_id, parts in sources.items()
     }, intent_sources
 
 
@@ -671,9 +673,9 @@ def _validate_candidate(candidate, pack, schema, sources, intent_sources,
         ):
             _fail("intent_source_fact_forbidden")
         if kind == "fact":
-            support = " ".join(sources[citation_map[row_id]] for row_id in citation_ids)
+            support = set().union(*(sources[citation_map[row_id]] for row_id in citation_ids))
             tokens = _ground_tokens(text)
-            overlap = tokens & _ground_tokens(support)
+            overlap = tokens & support
             required = max(1, (len(tokens) * 7 + 9) // 10)
             if not tokens or len(overlap) < required:
                 _fail("claim_not_grounded")

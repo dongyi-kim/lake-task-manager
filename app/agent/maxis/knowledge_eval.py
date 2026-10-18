@@ -180,6 +180,8 @@ _SOURCE_FILE_PATHS = {
     "pmoBriefDsl": "deploy/maxis-dify/dsl/ltm-pmo-brief.yml",
     "editorAuthorDsl": "deploy/maxis-dify/dsl/ltm-editor-author.yml",
     "contractGuard": "deploy/maxis-dify/code/contract_guard.py",
+    "sourceGrounding": "app/agent/maxis/source_grounding.py",
+    "contractGuardRenderer": "deploy/maxis-dify/contract_guard_asset.py",
     "knowledgeGuard": "deploy/maxis-dify/code/knowledge_guard.py",
 }
 _UUID = re.compile(

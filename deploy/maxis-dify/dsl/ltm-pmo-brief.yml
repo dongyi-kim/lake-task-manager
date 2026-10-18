@@ -664,15 +664,48 @@ workflow:
       type: custom
       width: 242
     - data:
-        code: "\"\"\"Self-contained fail-closed guard for a Dify 1.11.1 Python Code\
-          \ node.\n\nThe file is deliberately limited to Python standard-library imports\
-          \ because the same\nsource is embedded verbatim in each deployed Dify DSL.\
-          \ The Code node must bind the\nLLM ``text`` output, all six Start variables,\
+        code: "\"\"\"Fail-closed guard template for a Dify 1.11.1 Python Code node.\n\
+          \nThe shared renderer replaces the canonical lexical helper import with\
+          \ its source,\nproducing a standard-library-only asset for each deployed\
+          \ DSL. The Code node binds the\nLLM ``text`` output, all six Start variables,\
           \ Dify's ``sys.workflow_id``, and the\nKnowledge Guard's verified Release\
           \ Sentinel proof to :func:`main`; its single declared\noutput is the string\
           \ field ``result``.\n\"\"\"\n\nimport hashlib\nimport html\nimport json\n\
-          import math\nimport re\n\n\n_CONTRACT = \"remote-role-result.v1\"\n_VALID_ROLES\
-          \ = {\n    \"request_architect\",\n    \"query_specialist\",\n    \"knowledge_curator\"\
+          import math\nimport re\n\n\"\"\"One canonical stdlib-only lexical view for\
+          \ local and embedded Dify guards.\"\"\"\nimport json\nimport math\n\n\n\
+          def source_lexical_parts(value):\n    \"\"\"Return original keys/scalars\
+          \ separately; do not modify evidence or claims.\n\n    Decode exactly one\
+          \ fully strict bounded JSON container. Unsupported input keeps\n    its\
+          \ literal interpretation. Numeric spellings are retained; no Unicode/HTML\n\
+          \    normalization occurs here. The guard tokenizes each part once, independently.\n\
+          \    \"\"\"\n    class Number(str):\n        pass\n\n    def pairs(rows):\n\
+          \        out = {}\n        for key, item in rows:\n            if key in\
+          \ out:\n                raise ValueError(\"duplicate key\")\n          \
+          \  out[key] = item\n        return out\n\n    def invalid(_):\n        raise\
+          \ ValueError(\"nonfinite number\")\n\n    def number(raw):\n        if not\
+          \ math.isfinite(float(raw)):\n            raise ValueError(\"nonfinite number\"\
+          )\n        return Number(raw)\n\n    try:\n        if (not isinstance(value,\
+          \ str) or len(value.encode(\"utf-8\")) > 1500\n                or not value.lstrip().startswith((\"\
+          {\", \"[\"))):\n            return (value,)\n        parsed = json.loads(value,\
+          \ object_pairs_hook=pairs, parse_constant=invalid,\n                   \
+          \         parse_int=Number, parse_float=number)\n        if not isinstance(parsed,\
+          \ (dict, list)):\n            return (value,)\n        parts, remaining\
+          \ = [], [1024]\n\n        def collect(item, depth=0):\n            remaining[0]\
+          \ -= 1\n            if depth > 8 or remaining[0] < 0:\n                raise\
+          \ ValueError(\"shape limit\")\n            if isinstance(item, str):\n \
+          \               item.encode(\"utf-8\")\n                parts.append(item)\n\
+          \            elif isinstance(item, (dict, list)):\n                if len(item)\
+          \ > 100:\n                    raise ValueError(\"collection limit\")\n \
+          \               for key, child in item.items() if isinstance(item, dict)\
+          \ else enumerate(item):\n                    if isinstance(item, dict):\n\
+          \                        key.encode(\"utf-8\")\n                       \
+          \ parts.append(key)\n                    collect(child, depth + 1)\n   \
+          \         else:\n                parts.append(\"null\" if item is None else\
+          \ \"true\" if item else \"false\")\n\n        collect(parsed)\n        return\
+          \ tuple(parts)\n    except (ValueError, TypeError, OverflowError, RecursionError):\n\
+          \        return (value,)  # No prefix extraction, duplicate winner or partial\
+          \ decode.\n\n\n_CONTRACT = \"remote-role-result.v1\"\n_VALID_ROLES = {\n\
+          \    \"request_architect\",\n    \"query_specialist\",\n    \"knowledge_curator\"\
           ,\n    \"portfolio_analyst\",\n    \"work_architect\",\n    \"auditor\"\
           ,\n    \"result_integrator\",\n    \"editor_author\",\n}\n_TOP_FIELDS =\
           \ {\n    \"contract\",\n    \"role_id\",\n    \"status\",\n    \"payload\"\
@@ -784,19 +817,20 @@ workflow:
           )\n        source_id = row.get(\"source_id\")\n        if not isinstance(source_id,\
           \ str) or not _IDENTIFIER.fullmatch(source_id):\n            _fail(\"source_id_invalid\"\
           )\n        if source_id in sources:\n            _fail(\"source_id_duplicate\"\
-          )\n        content = \" \".join(\n            str(row.get(key) or \"\")\n\
-          \            for key in (\"canonical_id\", \"title\", \"url\", \"content\"\
-          )\n        )\n        sources[source_id] = [content]\n        if row.get(\"\
-          kind\") == \"ltm\" and str(row.get(\"canonical_id\") or \"\").startswith(\n\
-          \            _USER_INTENT_CANONICAL_PREFIX\n        ):\n            intent_sources.add(source_id)\n\
-          \n    def source_ids(value, label):\n        if not isinstance(value, list)\
-          \ or not 0 < len(value) <= 10 \\\n                or any(not isinstance(source_id,\
-          \ str) for source_id in value) \\\n                or len(set(value)) !=\
-          \ len(value):\n            _fail(label + \"_source_ids_invalid\")\n    \
-          \    for source_id in value:\n            if not _IDENTIFIER.fullmatch(source_id):\n\
-          \                _fail(label + \"_source_ids_invalid\")\n            if\
-          \ source_id not in sources:\n                _fail(label + \"_source_unknown\"\
-          )\n        return value\n\n    facts = pack.get(\"facts\")\n    if not isinstance(facts,\
+          )\n        sources[source_id] = [\n            str(row.get(key) or \"\"\
+          ) for key in (\"canonical_id\", \"title\", \"url\")\n        ]\n       \
+          \ sources[source_id].extend(source_lexical_parts(str(row.get(\"content\"\
+          ) or \"\")))\n        if row.get(\"kind\") == \"ltm\" and str(row.get(\"\
+          canonical_id\") or \"\").startswith(\n            _USER_INTENT_CANONICAL_PREFIX\n\
+          \        ):\n            intent_sources.add(source_id)\n\n    def source_ids(value,\
+          \ label):\n        if not isinstance(value, list) or not 0 < len(value)\
+          \ <= 10 \\\n                or any(not isinstance(source_id, str) for source_id\
+          \ in value) \\\n                or len(set(value)) != len(value):\n    \
+          \        _fail(label + \"_source_ids_invalid\")\n        for source_id in\
+          \ value:\n            if not _IDENTIFIER.fullmatch(source_id):\n       \
+          \         _fail(label + \"_source_ids_invalid\")\n            if source_id\
+          \ not in sources:\n                _fail(label + \"_source_unknown\")\n\
+          \        return value\n\n    facts = pack.get(\"facts\")\n    if not isinstance(facts,\
           \ list) or len(facts) > 40:\n        _fail(\"facts_invalid\")\n    fact_ids\
           \ = set()\n    for row in facts:\n        if not isinstance(row, dict) or\
           \ set(row) != {\n            \"fact_id\", \"text\", \"source_ids\", \"observed_at\"\
@@ -831,13 +865,13 @@ workflow:
           \ = source_ids(row[\"source_ids\"], \"metric\")\n        support = \" \"\
           .join((label, str(value), unit))\n        for source_id in linked_sources:\n\
           \            sources[source_id].append(support)\n        metric_ids.add(metric_id)\n\
-          \n    return schema, {\n        source_id: \" \".join(parts) for source_id,\
-          \ parts in sources.items()\n    }, intent_sources\n\n\ndef _resolve_ref(root,\
-          \ ref):\n    if not isinstance(ref, str) or not ref.startswith(\"#/\"):\n\
-          \        _fail(\"payload_schema_ref_unsupported\")\n    current = root\n\
-          \    for raw in ref[2:].split(\"/\"):\n        part = raw.replace(\"~1\"\
-          , \"/\").replace(\"~0\", \"~\")\n        if not isinstance(current, dict)\
-          \ or part not in current:\n            _fail(\"payload_schema_ref_missing\"\
+          \n    return schema, {\n        source_id: set().union(*(_ground_tokens(part)\
+          \ for part in parts))\n        for source_id, parts in sources.items()\n\
+          \    }, intent_sources\n\n\ndef _resolve_ref(root, ref):\n    if not isinstance(ref,\
+          \ str) or not ref.startswith(\"#/\"):\n        _fail(\"payload_schema_ref_unsupported\"\
+          )\n    current = root\n    for raw in ref[2:].split(\"/\"):\n        part\
+          \ = raw.replace(\"~1\", \"/\").replace(\"~0\", \"~\")\n        if not isinstance(current,\
+          \ dict) or part not in current:\n            _fail(\"payload_schema_ref_missing\"\
           )\n        current = current[part]\n    return current\n\n\ndef _schema_matches(value,\
           \ schema, root, depth):\n    try:\n        _validate_schema_value(value,\
           \ schema, root, depth)\n        return True\n    except GuardError:\n  \
@@ -1045,11 +1079,11 @@ workflow:
           \ _fail(\"claim_citation_required\")\n        if kind == \"fact\" and any(\n\
           \            citation_map[citation_id] in intent_sources\n            for\
           \ citation_id in citation_ids\n        ):\n            _fail(\"intent_source_fact_forbidden\"\
-          )\n        if kind == \"fact\":\n            support = \" \".join(sources[citation_map[row_id]]\
-          \ for row_id in citation_ids)\n            tokens = _ground_tokens(text)\n\
-          \            overlap = tokens & _ground_tokens(support)\n            required\
-          \ = max(1, (len(tokens) * 7 + 9) // 10)\n            if not tokens or len(overlap)\
-          \ < required:\n                _fail(\"claim_not_grounded\")\n        claim_map[claim_id]\
+          )\n        if kind == \"fact\":\n            support = set().union(*(sources[citation_map[row_id]]\
+          \ for row_id in citation_ids))\n            tokens = _ground_tokens(text)\n\
+          \            overlap = tokens & support\n            required = max(1, (len(tokens)\
+          \ * 7 + 9) // 10)\n            if not tokens or len(overlap) < required:\n\
+          \                _fail(\"claim_not_grounded\")\n        claim_map[claim_id]\
           \ = row\n\n    binding_map = {}\n    for row in bindings:\n        if not\
           \ isinstance(row, dict) or set(row) != {\"path\", \"claim_ids\"}:\n    \
           \        _fail(\"payload_claim_shape_invalid\")\n        pointer = row[\"\

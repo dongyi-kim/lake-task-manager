@@ -43,6 +43,9 @@ def _copy_bundle_repository(tmp_path: Path) -> Path:
     for name in ("maxis-workflows.yml", "maxis-knowledge.yml"):
         shutil.copy2(ROOT / "config" / name, target / "config" / name)
     shutil.copytree(ROOT / "knowledge", target / "knowledge")
+    helper = Path("app/agent/maxis/source_grounding.py")
+    (target / helper).parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / helper, target / helper)
     for role in ("request_architect", "query_specialist", "work_architect"):
         prompt = Path("app/agent/prompts/roles") / (role + ".md")
         (target / prompt).parent.mkdir(parents=True, exist_ok=True)
@@ -53,9 +56,9 @@ def _copy_bundle_repository(tmp_path: Path) -> Path:
 def _sync_copied_contract_guard(target: Path) -> None:
     """Keep prompt-negative fixtures focused while the tracked DSL is regenerated."""
 
-    guard_source = (
+    guard_source = _validator_module()._contract_guard_source(target, (
         target / "deploy" / "maxis-dify" / "code" / "contract_guard.py"
-    ).read_text(encoding="utf-8").rstrip()
+    ).read_text(encoding="utf-8"))
     for dsl_path in (target / "deploy" / "maxis-dify" / "dsl").glob("*.yml"):
         dsl = yaml.safe_load(dsl_path.read_text(encoding="utf-8"))
         guard = next(
@@ -1566,6 +1569,32 @@ def test_validator_rejects_joint_contract_guard_asset_and_dsl_tampering(tmp_path
         validator.BundleValidationError,
         match="reviewed Contract Guard digest drifted",
     ):
+        validator.validate_bundle(target)
+
+
+@pytest.mark.parametrize("dependency,changed", [
+    ("app/agent/maxis/source_grounding.py", ('> 1500', '> 15000')),
+    ("deploy/maxis-dify/contract_guard_asset.py", ('helper_source.rstrip()', 'helper_source.rstrip() + "\\n# changed renderer"')),
+])
+@pytest.mark.parametrize("sync_dsl", [False, True])
+def test_validator_rejects_guard_dependency_and_joint_dsl_tampering(tmp_path, dependency, changed, sync_dsl):
+    validator = _validator_module()
+    target = _copy_bundle_repository(tmp_path)
+    path = target / dependency
+    original = path.read_text(encoding="utf-8")
+    assert changed[0] in original
+    path.write_text(original.replace(*changed), encoding="utf-8")
+    if sync_dsl:
+        _sync_copied_contract_guard(target)
+    with pytest.raises(validator.BundleValidationError, match="reviewed Contract Guard digest drifted"):
+        validator.validate_bundle(target)
+
+
+def test_copied_bundle_requires_canonical_guard_helper(tmp_path):
+    validator = _validator_module()
+    target = _copy_bundle_repository(tmp_path)
+    (target / "app/agent/maxis/source_grounding.py").unlink()
+    with pytest.raises(validator.BundleValidationError, match="Contract Guard source cannot be rendered"):
         validator.validate_bundle(target)
 
 

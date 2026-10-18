@@ -98,7 +98,7 @@ DIFY_PROMPT_SHA256 = {
 # This prevents an attacker from changing both the asset and all embedded copies while
 # retaining a self-consistent but weaker bundle.
 DIFY_CONTRACT_GUARD_SHA256 = (
-    "68b0be35e9fdaef2f35cb3e949e5b1826ada2419748c898818e90555797c4bc3"
+    "9dd34c3502e022a1b614cd0a0ab4973a7f91fbc713effbaf42d20e776280095b"
 )
 # An Editor-only assembly step is not authority to repair or bypass either Guard.
 # Pin the reviewed asset independently of its embedded DSL copy.
@@ -289,6 +289,20 @@ def _knowledge_guard_renderer(root: Path):
     if not callable(renderer):
         raise BundleValidationError("Knowledge Guard renderer is invalid")
     return renderer
+
+
+def _contract_guard_source(root: Path, template: str) -> str:
+    path = _tracked_path(root, "deploy/maxis-dify/contract_guard_asset.py", "Contract Guard renderer")
+    spec = importlib.util.spec_from_file_location("ltm_dify_contract_guard_asset", path)
+    if spec is None or spec.loader is None:
+        raise BundleValidationError("Contract Guard renderer cannot be loaded")
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+        helper = _tracked_path(root, module.HELPER_PATH, "Contract Guard helper")
+        return module.render_contract_guard(template, helper.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, AttributeError, ValueError) as exc:
+        raise BundleValidationError("Contract Guard source cannot be rendered") from exc
 
 
 def _validate_knowledge_source(
@@ -813,9 +827,10 @@ def _validate_dify_dsls(
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise BundleValidationError("cannot load Dify structured output schema") from exc
     expected_dify_schema = _dify_structured_output_schema(response_schema)
-    contract_guard_source = _tracked_path(
+    contract_guard_template = _tracked_path(
         root, bundle.get("contract_guard_code"), "contract_guard_code"
     ).read_text(encoding="utf-8").rstrip()
+    contract_guard_source = _contract_guard_source(root, contract_guard_template)
     if (
         hashlib.sha256(contract_guard_source.encode("utf-8")).hexdigest()
         != DIFY_CONTRACT_GUARD_SHA256

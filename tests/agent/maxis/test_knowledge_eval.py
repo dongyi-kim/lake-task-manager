@@ -103,6 +103,8 @@ def _binding(suite, *, source_hashes=None):
             "pmoBriefDsl": "8" * 64,
             "editorAuthorDsl": "9" * 64,
             "contractGuard": "a" * 64,
+            "sourceGrounding": "c" * 64,
+            "contractGuardRenderer": "d" * 64,
             "knowledgeGuard": "b" * 64,
         },
     }
@@ -350,6 +352,8 @@ def test_evaluation_source_hashes_bind_exact_remote_execution_assets():
         "pmoBriefDsl": "deploy/maxis-dify/dsl/ltm-pmo-brief.yml",
         "editorAuthorDsl": "deploy/maxis-dify/dsl/ltm-editor-author.yml",
         "contractGuard": "deploy/maxis-dify/code/contract_guard.py",
+        "sourceGrounding": "app/agent/maxis/source_grounding.py",
+        "contractGuardRenderer": "deploy/maxis-dify/contract_guard_asset.py",
         "knowledgeGuard": "deploy/maxis-dify/code/knowledge_guard.py",
         "evaluationLauncher": "deploy/maxis-dify/launch_knowledge_evals.py",
     }
@@ -1785,7 +1789,7 @@ def test_atomic_artifact_is_schema_valid_and_never_contains_raw_provider_values(
         "evaluationEngine", "evaluationLauncher", "evaluationRunner",
         "responseGuard", "contractModels",
         "commonPrompt", "agentCoreDsl", "pmoBriefDsl", "editorAuthorDsl",
-        "contractGuard", "knowledgeGuard",
+        "contractGuard", "knowledgeGuard", "sourceGrounding", "contractGuardRenderer",
     }
     assert artifact["privacy"]["rawPromptStored"] is False
     assert artifact["privacy"]["rawResponseStored"] is False
@@ -1825,7 +1829,36 @@ def test_atomic_artifact_is_schema_valid_and_never_contains_raw_provider_values(
     historical["artifactSchemaSha256"] = (
         "44a0c94b936bb65909a58dfdd5ef24b7b4aa62ceee83b94c50e470a11c015576"
     )
+    for dependency in ("sourceGrounding", "contractGuardRenderer"):
+        historical["sourceFileSha256"].pop(dependency)
     knowledge_eval.validate_artifact(historical)
+
+    for dependency in ("sourceGrounding", "contractGuardRenderer"):
+        partial = json.loads(encoded)
+        partial["sourceFileSha256"].pop(dependency)
+        with pytest.raises(KnowledgeEvalError, match="artifact_schema_validation_failed"):
+            knowledge_eval.validate_artifact(partial)
+        invalid = json.loads(encoded)
+        invalid["sourceFileSha256"][dependency] = "not-a-digest"
+        with pytest.raises(KnowledgeEvalError, match="artifact_schema_validation_failed"):
+            knowledge_eval.validate_artifact(invalid)
+
+
+@pytest.mark.parametrize("dependency", ["sourceGrounding", "contractGuardRenderer"])
+def test_new_artifact_requires_both_current_grounding_dependencies(dependency):
+    suite = knowledge_eval.load_suite()
+    case = suite.case("ticket-rules-positive")
+    row = knowledge_eval.case_result(case, workflow_key="agent_core", observation=_evaluate(case))
+    binding = _binding(suite)
+    binding["source_file_sha256"].pop(dependency)
+    with pytest.raises(KnowledgeEvalError, match="artifact_binding_invalid"):
+        knowledge_eval.build_artifact(
+            evidence_id="dev-keval-missing-dependency", profile=_profile(), binding=binding,
+            suite=suite, schema_sha256=hashlib.sha256(knowledge_eval.result_schema_path().read_bytes()).hexdigest(),
+            cases=[row], started_at=datetime(2026, 9, 5, tzinfo=timezone.utc),
+            completed_at=datetime(2026, 9, 5, 0, 0, 1, tzinfo=timezone.utc),
+            pilot_case_id=case.case_id, aborted=False, execution_scope="pilot_only",
+        )
 
 
 def test_injection_case_cannot_make_artifact_pass_without_semantic_review():
@@ -2604,6 +2637,8 @@ def test_end_of_run_binding_recheck_detects_profile_or_source_file_drift(monkeyp
         "pmoBriefDsl": "e" * 64,
         "editorAuthorDsl": "f" * 64,
         "contractGuard": "0" * 64,
+        "sourceGrounding": "2" * 64,
+        "contractGuardRenderer": "3" * 64,
         "knowledgeGuard": "1" * 64,
     }
     profile = _profile()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import ast
 import hashlib
 import importlib.util
 import json
@@ -611,12 +612,17 @@ def test_guard_blocks_invalid_executed_workflow_id(executed_workflow_id):
 
 
 def test_guard_source_uses_only_dify_standard_library_modules():
-    source = GUARD_PATH.read_text(encoding="utf-8")
-
-    assert "import hashlib" in source
-    assert "import html" in source
-    assert "import json" in source
-    assert "import math" in source
-    assert "import re" in source
+    spec = importlib.util.spec_from_file_location(
+        "guard_asset_test", ROOT / "deploy/maxis-dify/contract_guard_asset.py")
+    renderer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(renderer)
+    source = renderer.render_contract_guard(
+        GUARD_PATH.read_text(encoding="utf-8"),
+        (ROOT / renderer.HELPER_PATH).read_text(encoding="utf-8"))
+    tree = ast.parse(source)
+    imports = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+    assert imports == {"hashlib", "html", "json", "math", "re"}
+    assert not any(isinstance(node, ast.ImportFrom) for node in ast.walk(tree))
+    compile(tree, "emitted-contract-guard", "exec")
     assert "requests" not in source
     assert "open(" not in source

@@ -57,9 +57,6 @@ REVIEWED_SOURCE_DSLS = {
 DEV_ENVIRONMENT_BINDING_PATH = (
     ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
 )
-CONTRACT_GUARD_SOURCE = (
-    ROOT / "deploy" / "maxis-dify" / "code" / "contract_guard.py"
-).read_text(encoding="utf-8").rstrip()
 EDITOR_ASSEMBLER_SHA256 = "7071595b59c418bccb11b39dbd9db9f8d0924cc32272cb9378fbd99367afb500"
 KNOWLEDGE_GUARD_TEMPLATE_SOURCE = (
     ROOT / "deploy" / "maxis-dify" / "code" / "knowledge_guard.py"
@@ -87,6 +84,9 @@ if _VALIDATOR_SPEC is None or _VALIDATOR_SPEC.loader is None:
     raise RuntimeError("Dify schema validator cannot be loaded.")
 _VALIDATOR = importlib.util.module_from_spec(_VALIDATOR_SPEC)
 _VALIDATOR_SPEC.loader.exec_module(_VALIDATOR)
+CONTRACT_GUARD_SOURCE = _VALIDATOR._contract_guard_source(ROOT, (
+    ROOT / "deploy" / "maxis-dify" / "code" / "contract_guard.py"
+).read_text(encoding="utf-8"))
 
 _BUNDLE_BUILD_SPEC = yaml.safe_load(
     (ROOT / "deploy" / "maxis-dify" / "bundle.yml").read_text(encoding="utf-8")
