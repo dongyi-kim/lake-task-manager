@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from jsonschema import Draft202012Validator
 
 from app.agent.maxis import ResponseGuard, ResponseGuardError
 from app.agent.workflow.contracts import KnowledgeBrief, role_output_schema
@@ -96,6 +97,70 @@ def test_input_and_prompt_have_one_semantic_owner(nodes, knowledge_case):
     assert prompt.count(local) == 1 and "## Required response" not in prompt
     assert "knowledge-draft.v1" in prompt and len(prompt.encode()) <= 8192
     assert nodes[LLM]["structured_output"]["schema"]["properties"]["contract"]["enum"] == ["knowledge-draft.v1"]
+
+
+def test_output_shapes_reach_the_actual_knowledge_system_boundary_once(nodes):
+    transport = (ROOT / "deploy/maxis-dify/prompts/core_knowledge.md").read_text(encoding="utf-8").strip()
+    shape_rule = ("Author each present known string leaf once as a {value, kind, source_ids} wrapper: "
+        "our_context is one wrapper object, not an array; concepts is an array of objects with optional "
+        "wrapped term and explanation fields; references, when present, is an array of objects with "
+        "optional wrapped ref and why fields; gaps is an array of wrapper objects.")
+    prompt = nodes[LLM]["prompt_template"][0]["text"]
+    local = (ROOT / "app/agent/prompts/roles/knowledge_curator.md").read_text(encoding="utf-8").strip()
+    assert prompt == local + "\n\n" + transport
+    assert transport.count(shape_rule) == prompt.count(shape_rule) == 1
+    assert "Optional fields may remain absent; do not add defaults or extensions." in transport
+    schema = nodes[LLM]["structured_output"]["schema"]["properties"]["payload"]["anyOf"][1]
+    fields = schema["properties"]
+    assert fields["our_context"]["type"] == "object"
+    assert set(fields["our_context"]["properties"]) == {"value", "kind", "source_ids"}
+    for name, children in (("concepts", {"term", "explanation"}), ("references", {"ref", "why"})):
+        assert fields[name]["type"] == "array" and fields[name]["items"]["type"] == "object"
+        assert set(fields[name]["items"]["properties"]) == children
+    assert fields["gaps"]["type"] == "array"
+    assert set(fields["gaps"]["items"]["properties"]) == {"value", "kind", "source_ids"}
+
+
+@pytest.mark.parametrize("field", ["our_context", "concepts", "references", "gaps"])
+def test_native_output_collection_shape_mismatches_are_not_repaired(nodes, knowledge_case, field):
+    _, incoming, draft = knowledge_case
+    leaf = copy.deepcopy(draft["payload"]["our_context"])
+    # Synthetic shape regression, not a reconstruction of any historical native text.
+    wrong_shape = {"our_context": [leaf, {**leaf, "value": "별도의 합성 설명"}],
+        "concepts": {"term": leaf}, "references": {"ref": leaf}, "gaps": leaf}
+    draft["payload"][field] = wrong_shape[field]
+    before = copy.deepcopy((incoming, draft))
+    schema = nodes[LLM]["structured_output"]["schema"]
+    assert not Draft202012Validator(schema).is_valid(draft)
+    expected_field = schema["properties"]["payload"]["anyOf"][1]["properties"][field]
+    assert any(error.validator == "type" for error in Draft202012Validator(expected_field).iter_errors(wrong_shape[field]))
+    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"):
+        code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))
+    assert (incoming, draft) == before
+
+
+@pytest.mark.parametrize("kind", ["inference", "recommendation"])
+@pytest.mark.parametrize("refs", [["record-a", "intent-b"], ["intent-b", "record-a"]])
+def test_single_our_context_preserves_authored_value_kind_and_ordered_sources(nodes, knowledge_case, kind, refs):
+    pack, incoming, draft = knowledge_case
+    leaf = {"value": "  배치 근거를 검토한다.\n담당자 확인 방법을 정리한다.  ", "kind": kind, "source_ids": refs}
+    draft["payload"].update(our_context=leaf, concepts=[{}, {"explanation": copy.deepcopy(leaf)}],
+        gaps=[copy.deepcopy(leaf)])
+    before = copy.deepcopy((incoming, draft))
+    Draft202012Validator(nodes[LLM]["structured_output"]["schema"]).validate(draft)
+    result = json.loads(code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))["candidate"])
+    assert result["payload"] == {"our_context": leaf["value"], "concepts": [{}, {"explanation": leaf["value"]}],
+        "gaps": [leaf["value"]]}
+    assert "references" not in result["payload"]
+    assert len(result["claims"]) == 1
+    claim = result["claims"][0]
+    assert (claim["text"], claim["kind"]) == (leaf["value"], kind)
+    citations = {row["citation_id"]: row["source_id"] for row in result["citations"]}
+    assert [citations[key] for key in claim["citation_ids"]] == refs
+    assert {row["path"] for row in result["payload_claims"]} == {"/our_context", "/concepts/1/explanation", "/gaps/0"}
+    remote, local = both(nodes, pack, result)
+    assert remote == result and local()[1].model_dump(exclude_unset=True) == result["payload"]
+    assert (incoming, draft) == before
 
 
 @pytest.mark.parametrize("fault", ["role", "use_case", "schema", "digest", "unbound", "ready_without_identity"])

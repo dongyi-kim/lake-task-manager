@@ -6517,17 +6517,20 @@ workflow:
             JSON Pointers, or a remote-role-result envelope. Do not repeat JSON keys
             or append revisions. missing_inputs is only at root, never inside payload.
 
-            The native schema is a closed internal subset of KnowledgeBrief. Its known
-            string leaves are authored once as {value, kind, source_ids}: concepts[].term,
-            concepts[].explanation, our_context, references[].ref, references[].why,
-            gaps[]. kind is fact|inference|recommendation with 1–8 distinct actual
-            source IDs. Code copies the same unmodified value into payload and claim
-            text, preserving kind and ordered source IDs; it does not repair unsupported
-            meaning. Use short source-faithful excerpts for facts. Preserve uncertainty
-            for inference and make recommendations visibly proposed, not accomplished
-            facts. An unresolved gap is a cited inference or proposed verification,
-            not an invented fact. Optional fields may remain absent; do not add defaults
-            or extensions. Empty strings/lists remain empty, not fabricated content.
+            The native schema is a closed internal subset of KnowledgeBrief. Author
+            each present known string leaf once as a {value, kind, source_ids} wrapper:
+            our_context is one wrapper object, not an array; concepts is an array
+            of objects with optional wrapped term and explanation fields; references,
+            when present, is an array of objects with optional wrapped ref and why
+            fields; gaps is an array of wrapper objects. kind is fact|inference|recommendation
+            with 1–8 distinct actual source IDs. Code copies the same unmodified value
+            into payload and claim text, preserving kind and ordered source IDs; it
+            does not repair unsupported meaning. Use short source-faithful excerpts
+            for facts. Preserve uncertainty for inference and make recommendations
+            visibly proposed, not accomplished facts. An unresolved gap is a cited
+            inference or proposed verification, not an invented fact. Optional fields
+            may remain absent; do not add defaults or extensions. Empty strings/lists
+            remain empty, not fabricated content.
 
             ok requires a complete valid brief and missing_inputs: []. If required
             evidence prevents a valid brief, needs_input requires payload: {} with
