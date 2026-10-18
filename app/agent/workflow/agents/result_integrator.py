@@ -2373,25 +2373,41 @@ def _align_assigned_owner_cautions(text: str, items: list) -> str:
 
 
 def _drop_boilerplate_closers(text: str) -> str:
-    """답 **끝에 달린 상투 맺음말**을 지운다. 문장 단위로 본다(줄 끝에 붙어 오기도 한다)."""
-    lines = (text or "").splitlines()
-    # 뒤에서부터 본다 — 상투구는 마지막 문단에 붙는다. 표·목록·참조 줄은 지나친다.
+    """Remove trailing prose boilerplate without formatting unrelated raw spans."""
+    spans = list(_reply_literal_spans(str(text or "")))
     checked = 0
-    for i in range(len(lines) - 1, -1, -1):
-        s = lines[i].strip()
-        if not s:
+    separator = r"(?<=[.!?])\s+|(?<=다\.)\s+"
+    for span_index in range(len(spans) - 1, -1, -1):
+        literal, span = spans[span_index]
+        if literal:
             continue
-        if s.startswith(("|", "- ", "* ", ">", "#", "[")) or _re.match(r"^\d+[.)]", s):
-            continue                       # 표·목록·참조 — 여기서 끝나는 답이 흔하다
-        parts = _re.split(r"(?<=[.!?])\s+|(?<=다\.)\s+", s)
-        while parts and _CLOSER_RE.match(parts[-1].strip()) and "DL-" not in parts[-1]:
-            parts.pop()
-        lines[i] = " ".join(p for p in parts if p.strip())
-        checked += 1
-        if checked >= 2:                   # 마지막 두 문단이면 충분하다
+        lines = span.splitlines(keepends=True)
+        for index in range(len(lines) - 1, -1, -1):
+            raw = lines[index]
+            body = raw.rstrip("\r\n")
+            sentence = body.strip()
+            if (not sentence or sentence.startswith(("|", "- ", "* ", ">", "#", "["))
+                    or _re.match(r"^\d+[.)]", sentence)):
+                continue
+            parts = _re.split(separator, sentence)
+            count = len(parts)
+            while parts and _CLOSER_RE.match(parts[-1].strip()) and "DL-" not in parts[-1]:
+                parts.pop()
+            if len(parts) != count:
+                if parts:
+                    boundaries = [match.start() for match in _re.finditer(separator, sentence)]
+                    kept = sentence[:boundaries[len(parts) - 1]]
+                    leading = body[:len(body) - len(body.lstrip())]
+                    lines[index] = leading + kept + raw[len(body):]
+                else:
+                    lines[index] = ""
+            checked += 1
+            if checked >= 2:
+                break
+        spans[span_index] = (False, "".join(lines))
+        if checked >= 2:
             break
-    out = "\n".join(lines)
-    return _re.sub(r"\n{3,}", "\n\n", out).strip()
+    return "".join(span for _, span in spans)
 
 
 def _dedupe_sentences(text: str) -> str:
@@ -2664,16 +2680,40 @@ def _ensure_internal_source_coverage_disclosure(
 
 def _ensure_requested_source_coverage(text: str, state) -> str:
     """Render each explicitly requested but unavailable source class exactly once."""
-    value = str(text or "").strip()
-    heading_pattern = (
-        r"(?ms)^###\s*요청\s*출처\s*조사\s*한계\s*$.*?(?=^###\s|\Z)"
-    )
-    # Idempotence also clears a stale generated block when a later continuation now has hits.
-    value = _re.sub(heading_pattern, "", value).strip()
+    spans = _reply_literal_spans(str(text or ""), structural_headings=True)
+    generated_heading = r" {0,3}###[^\S\r\n]*요청[^\S\r\n]*출처[^\S\r\n]*조사[^\S\r\n]*한계[^\S\r\n]*"
+    # Only prose headings own generated disclosures. Code can quote their exact text.
+    for index, (literal, span) in enumerate(spans):
+        if literal:
+            continue
+        lines = span.splitlines(keepends=True)
+        offsets = [0]
+        for raw in lines:
+            offsets.append(offsets[-1] + len(raw))
+        ranges, cursor = [], 0
+        while cursor < len(lines):
+            if not _re.fullmatch(generated_heading, lines[cursor].rstrip("\r\n")):
+                cursor += 1
+                continue
+            end = cursor + 1
+            while end < len(lines) and not _reply_section_heading(lines[end]):
+                end += 1
+            ranges.append((offsets[cursor], offsets[end]))
+            cursor = end
+        for start, end in reversed(ranges):
+            # Only document EOF owns this separator; a following literal still needs it.
+            if index == len(spans) - 1 and end == len(span):
+                for separator in ("\r\n\r\n", "\n\n"):
+                    if span[:start].endswith(separator):
+                        start -= len(separator)
+                        break
+            span = span[:start] + span[end:]
+        spans[index] = (False, span)
+    value = "".join(span for _, span in spans)
     missing = [row for row in _requested_source_coverage(state)
                if row.get("status") != "covered"]
     if not missing:
-        return _re.sub(r"\n{3,}", "\n\n", value).strip()
+        return value
     lines = ["### 요청 출처 조사 한계", ""]
     for row in missing[:len(_SOURCE_COVERAGE_ORDER)]:
         limitation = _SOURCE_COVERAGE_LIMIT_TEXT.get(
@@ -2698,13 +2738,33 @@ def _ensure_requested_source_coverage(text: str, state) -> str:
             f"- **{row.get('label')}** — {limitation}. 해당 출처는 결론 근거에 사용하지 않음"
         )
     block = "\n".join(lines)
-    anchor = _re.search(r"(?m)^###\s*(?:근거|참조)\s*$", value)
-    if anchor:
-        value = (value[:anchor.start()].rstrip() + "\n\n" + block + "\n\n"
-                 + value[anchor.start():].lstrip())
+    # Select an actual prose source heading. If the response ends in an opaque
+    # block, place the disclosure before it: that block may be an unclosed fence.
+    offset, insertion = 0, len(value)
+    for literal, span in spans:
+        if not literal:
+            anchor = _re.search(r"(?m)^###[^\S\r\n]*(?:근거|참조)[^\S\r\n]*\r?$", span)
+            if anchor:
+                insertion = offset + anchor.start()
+                break
+        offset += len(span)
     else:
-        value = value.rstrip() + "\n\n" + block
-    return _re.sub(r"\n{3,}", "\n\n", value).strip()
+        if spans and spans[-1][0]:
+            insertion -= len(spans[-1][1])
+            # Keep a heading with its literal content; insertion must not orphan it.
+            if len(spans) > 1:
+                prose = spans[-2][1]
+                start = len(prose)
+                for raw in reversed(prose.splitlines(keepends=True)):
+                    start -= len(raw)
+                    if not raw.strip():
+                        continue
+                    if _reply_section_heading(raw):
+                        insertion -= len(prose) - start
+                    break
+    before, after = value[:insertion], value[insertion:]
+    separator = "" if not before or before.endswith(("\n\n", "\r\n\r\n")) else "\n" if before.endswith("\n") else "\n\n"
+    return before + separator + block + ("\n\n" if after else "") + after
 
 
 def _ensure_entity_coverage_disclosure(text: str, state) -> str:
@@ -4368,35 +4428,38 @@ def _ensure_requested_body_citations(text: str, state) -> str:
 
 
 def _prune_empty_rows(text: str) -> str:
-    """'확인된 기록 없음'만으로 채워진 표 행·참조 줄·그 결과 빈 표를 걷어낸다."""
+    """Remove empty prose rows/sections without consuming literal source lines."""
     import re as _re
-    out = []
-    rows_removed = False
-    for ln in (text or "").split("\n"):
-        s = ln.strip()
-        # 표 행: 첫 셀이 '없음'이거나 두 셀 이상이 '없음'이면 정보가 아니다(변형 실측).
-        if s.startswith("|"):
-            cells = [c.strip() for c in s.strip("|").split("|")]
-            if cells and (cells[0].startswith("확인된 기록 없음")
-                          or s.count("확인된 기록 없음") >= 2):
-                rows_removed = True
-                continue
-        # 참조 줄: 출처 자리가 '없음'으로 시작하면 참조가 아니다("[3] 확인된 기록 없음 — …").
-        if _re.match(r"-?\s*\[\d+\]\s*확인된 기록 없음", s):
+    spans = _reply_literal_spans(text, structural_headings=True)
+    for index, (literal, text) in enumerate(spans):
+        if literal:
             continue
-        out.append(ln)
-    text = "\n".join(out)
-    if rows_removed:
-        # 헤더+구분선만 남은 표(내용 행 0)는 표째 제거
-        text = _re.sub(r"(?:^|\n)\|[^\n]*\|\n\|[\s:|-]+\|(?=\n(?!\|)|$)", "", text)
-    # 내용 없는 섹션 헤딩("### 히스토리" 뒤가 바로 다음 헤딩/근거/끝) — 헤딩만 남기지 않는다
-    # (실측: 표를 걷어낸 뒤, 또는 모델이 애초에 빈 헤딩을 냈다).
-    # 맺음말("…더 궁금하면 말씀 주세요")도 섹션 내용이 아니다 — 그 앞의 빈 헤딩을 살려
-    # 두면 "### 히스토리" 밑에 안내문만 붙는 꼴이 된다(실측 Round P).
-    text = _re.sub(r"(?:^|\n)(#{2,4}\s+[^\n]+|\*\*[^\n*]+\*\*)\n+"
-                   r"(?=(#{2,4}\s|\*\*(?:근거|참조)\*\*|[^\n]*(?:궁금하면 말씀|말씀 주세요)|$))",
-                   "\n", text)
-    return text
+        out = []
+        rows_removed = False
+        for ln in text.split("\n"):
+            s = ln.strip()
+            # 표 행: 첫 셀이 '없음'이거나 두 셀 이상이 '없음'이면 정보가 아니다.
+            if s.startswith("|"):
+                cells = [c.strip() for c in s.strip("|").split("|")]
+                if cells and (cells[0].startswith("확인된 기록 없음")
+                              or s.count("확인된 기록 없음") >= 2):
+                    rows_removed = True
+                    continue
+            # 출처 자리가 '없음'으로 시작하면 참조가 아니다.
+            if _re.match(r"-?\s*\[\d+\]\s*확인된 기록 없음", s):
+                continue
+            out.append(ln)
+        text = "\n".join(out)
+        if rows_removed:
+            # 헤더+구분선만 남은 표(내용 행 0)는 표째 제거.
+            text = _re.sub(r"(?:^|\n)\|[^\n]*\|\n\|[\s:|-]+\|(?=\n(?!\|)|$)", "", text)
+        # A following literal is section content, not document EOF.
+        end = "|$" if index == len(spans) - 1 else ""
+        text = _re.sub(r"(?:^|\n)(#{2,4}\s+[^\n]+|\*\*[^\n*]+\*\*)\n+"
+                       r"(?=(#{2,4}\s|\*\*(?:근거|참조)\*\*|[^\n]*(?:궁금하면 말씀|말씀 주세요)"
+                       + end + "))", "\n", text)
+        spans[index] = (False, text)
+    return "".join(span for _, span in spans)
 
 
 def _key_titles(keys) -> str:
