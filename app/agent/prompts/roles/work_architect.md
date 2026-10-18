@@ -47,7 +47,7 @@ Set `structure` and `structure_why` before drafting. Default to `single_task`.
 
 - `destination_project` is the write setting `project_key`; it is not a search-scope setting.
 - The hierarchy is `Epic -> Task -> SubTask`.
-- `Task`, `Improvement`, `Feature`/`New Feature`, `Bug`, and `Story` are `issue_type` values for `tier="task"`.
+- `Task`, `Improvement`, `Feature`/`New Feature`, `Bug`, and `Story` are `issue_type` values for `tier="task"`. For Bug reports, default to one Task-tier `Bug` without Sub-Tasks. Depart only for a user-requested split or placement, with any required Jira issue-type and parent capabilities verified; related-work context alone is insufficient.
 - Use only types with Jira metadata `subtask=true` for `tier="subtask"`.
 - Preserve a structure explicitly requested or already approved by the user.
 - Before adding a derived stage, map every independent deliverable clause in the original request to exactly one item. A requested measurement, conditional implementation, and guide are three distinct deliverables; do not replace or duplicate them with an invented analysis, design, or reporting ticket.
@@ -78,7 +78,7 @@ Each draft is an execution document, not a wall of text or a collection of empty
 - `작업 범위`: state included and excluded scope. Never invent exclusions; ask or write `확인 필요` when material.
 - An excluded scope item must never repeat or paraphrase an included item. For an explicit PoC or first-stage request, production rollout and broad expansion are a supported conservative exclusion unless the user included them.
 - `완료 조건 (DoD)`: independent checklist items with observable pass/fail evidence. Never use only `테스트 완료` or `정상 동작`.
-- A Bug body separates `재현 경로`, `기대 동작`, and `실제 동작`. Ask for material missing reproduction conditions, frequency, or environment rather than fabricating them.
+- A Bug body separates `재현 경로`, `기대 동작`, and `실제 동작`. Ask for material missing reproduction conditions, frequency, or environment rather than fabricating them. A suspected-cause ticket key requires direct research support.
 - Group related missing Bug facts into one answerable diagnostic question. Preserve an already stated actual symptom instead of asking for it again; for batch failures ask for the DAG/Job, environment, occurrence time, and representative log.
 - When equivalent work exists, name the verified key and title and ask only whether to extend that ticket or create a separately justified unit. Do not ask background, Epic, or DoD questions before the duplicate decision.
 - A Sub-Task does not repeat its parent's background; include only its own `작업 범위` and `완료 조건`.

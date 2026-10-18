@@ -1786,13 +1786,7 @@ class WorkArchitect(StructuredAgent):
         _is_bug = reads_as_bug(_said)      # 판정은 state.reads_as_bug 한 곳에만 있다
         if (_is_bug and (_is_create_action(state)
                          or not _typed_continuation_contract(state))):
-            goal = """Draft one Task-tier `Bug`.
-
-- Use `type="Bug"` and a Korean summary that names the observed symptom.
-- Separate the Korean body sections `재현 경로`, `기대 동작`, and `실제 동작`. Ask only for a missing material reproduction fact; never fabricate it.
-- Add a verified suspected-cause ticket key only when research directly supports that relationship.
-- If an open Bug already has the same symptom, do not draft a duplicate; ask the user to choose how to proceed.
-- Default to one Bug without Sub-Tasks unless the user explicitly requests a valid split."""
+            goal = "Draft the reported symptom using the shared Bug creation policy."
         elif (action == "create" and (state.get("intent") or "") == Intent.MODIFY
                 and not state.get("mentioned_keys")
                 and (state.get("draft") or {}).get("items")):

@@ -4721,11 +4721,10 @@ workflow:
             \ when no questions are needed; necessary questions may use items=[] without\
             \ changing status, but mode remains task|subtask|epic. needs_input: payload={},\
             \ specific missing_inputs. blocked: payload={}, missing_inputs=[]. No\
-            \ competing draft with blocking questions.\nPayload-level planning fields:\
-            \ interpretation, structure, structure_why, rationale are optional siblings\
-            \ of questions, mode, items directly inside payload. They describe the\
-            \ whole draft and never belong inside items[] or children[]. Per-ticket\
-            \ fields belong in payload.items[]; nested child work belongs in that\
+            \ competing draft with blocking questions.\nOptional planning fields\
+            \ interpretation, structure, structure_why, rationale belong directly\
+            \ in payload, never in items[] or children[]. Per-ticket\
+            \ fields belong in payload.items[]; new child work belongs in that\
             \ item's children[].\nWrapped leaves: exactly {value,kind,source_ids};\
             \ kind=fact|inference|recommendation, 1–8 distinct source IDs. Controls\
             \ use ordinary schema values. Preserve optional absence/blank values.\
@@ -4734,9 +4733,7 @@ workflow:
             \ or input_need=optional respectively, never required_input.\nEmit only\
             \ native-schema fields; assignee and parent_ref are unsupported. Ownership\
             \ references preserve context, not extra fields; use children for new\
-            \ nested child work.\nBody fields: background/scope_in/scope_out/dod/references;\
-            \ Bug fields: reproduction/expected/actual. Preserve supplied details.\
-            \ Omit unknown optional metadata; related tickets do not prove legal parentage.\n\
+            \ nested child work.\nOmit unknown optional metadata.\n\
             \nWrapped: /interpretation, /items/*/actual, /items/*/background, /items/*/children/*/dod/*,\
             \ /items/*/children/*/scope_in/*, /items/*/children/*/summary, /items/*/dod/*,\
             \ /items/*/expected, /items/*/references/*, /items/*/reproduction/*, /items/*/scope_in/*,\
@@ -4798,7 +4795,10 @@ workflow:
             \ below are met |\n\n- `destination_project` is the write setting `project_key`;\
             \ it is not a search-scope setting.\n- The hierarchy is `Epic -> Task\
             \ -> SubTask`.\n- `Task`, `Improvement`, `Feature`/`New Feature`, `Bug`,\
-            \ and `Story` are `issue_type` values for `tier=\"task\"`.\n- Use only\
+            \ and `Story` are `issue_type` values for `tier=\"task\"`. For Bug reports, default\
+            \ to one Task-tier `Bug` without Sub-Tasks. Depart only for a user-requested\
+            \ split or placement, with any required Jira issue-type and parent capabilities verified;\
+            \ related-work context alone is insufficient.\n- Use only\
             \ types with Jira metadata `subtask=true` for `tier=\"subtask\"`.\n- Preserve\
             \ a structure explicitly requested or already approved by the user.\n\
             - Before adding a derived stage, map every independent deliverable clause\
@@ -4841,7 +4841,8 @@ workflow:
             \ checklist items with observable pass/fail evidence. Never use only `테스트\
             \ 완료` or `정상 동작`.\n- A Bug body separates `재현 경로`, `기대 동작`, and `실제 동작`.\
             \ Ask for material missing reproduction conditions, frequency, or environment\
-            \ rather than fabricating them.\n- Group related missing Bug facts into\
+            \ rather than fabricating them. A suspected-cause ticket key requires direct\
+            \ research support.\n- Group related missing Bug facts into\
             \ one answerable diagnostic question. Preserve an already stated actual\
             \ symptom instead of asking for it again; for batch failures ask for the\
             \ DAG/Job, environment, occurrence time, and representative log.\n- When\

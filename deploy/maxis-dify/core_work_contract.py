@@ -23,7 +23,7 @@ _NARRATIVE_PATHS = {
     ("questions", "*", "why_required"),
 }
 
-WORK_ROLE_SHA256 = "1588f1fd3cfa5b715ef422e3a66ec2d722ba9078c313b18fb43ceff06365728c"
+WORK_ROLE_SHA256 = "b5efac944b6079c697804d8371806688f5a68781af14460fc42fc77d7b576af7"
 WORK_MAX_SYSTEM_UTF8_BYTES = 16384  # Work-only: preserve required CREATE policy, not a global budget change.
 _ANNOTATED_CREATE_SHA256 = "1edacfc695c5c73e0654a2d6ceb56e1fc58c7f2fc264750c48168d240a5ee555"
 _POLICY_SELECTION = {
