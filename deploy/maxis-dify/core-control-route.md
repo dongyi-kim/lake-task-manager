@@ -1,6 +1,6 @@
 # Core 단일 실행 분기 계약
 
-Core는 연결 검사, typed Query·Request·CREATE Work·Knowledge와 일반 업무 판단을 각각 한 LLM에 맡기며 모든 경로가 기존 Knowledge Guard와
+Core는 연결 검사, typed Query·Request·CREATE Work·Knowledge·Result와 일반 업무 판단을 각각 한 LLM에 맡기며 모든 경로가 기존 Knowledge Guard와
 Contract Guard 사이에서 실행한다. 이 문서는 현행 소스 계약이다. 배포·평가 실행 결과는
 ignored `.cache/`에 보관하며 커밋하지 않는다.
 
@@ -29,13 +29,15 @@ object 형식을 요구하며 중복 key·비유한 수·비정규 JSON을 거�
 - 예약 activation 식별자가 없는 `knowledge_curator`는 Role/use_case와 canonical KnowledgeBrief
   JSON/SHA가 모두 정확할 때만 `knowledge`다. 불일치·ready schema만 있는 입력은 오류이며
   semantic으로 우회하지 않는다. 예약 식별자 검사는 이 업무 분기보다 먼저 실행한다.
+- `result_integrator`는 Role/use_case와 backend의 canonical text schema JSON/SHA가 모두
+  정확할 때만 `result`다. 한쪽 Role 또는 schema 결속이 다르면 semantic 우회 없이 오류다.
 - `probe_` request ID, `ltm:maxis-probe:` source ID, `activation_probe` context 중 하나라도
   있으면 전체 activation 계약을 요구한다. 변조·다른 앱/Role은 `invalid_core_control_input` 오류다.
 - 요청 query 본문은 bounded text인지만 확인하고 내용으로 분기하지 않는다. Knowledge 본문을 읽거나
   ready schema만으로 control을 선택하지 않는다. 입력 repair·정규화는 하지 않는다.
 
 인증·ACL·sentinel/proof·실제 Workflow binding·wall-clock freshness는 이 함수의 보장이 아니다.
-UTC 달력 유효성과 timestamp 간 동일성만 확인한다. 여섯 route 모두 실행/출력 허가가 아니며
+UTC 달력 유효성과 timestamp 간 동일성만 확인한다. 일곱 route 모두 실행/출력 허가가 아니며
 ContextGuard → Knowledge Guard → 실제 LLM → Contract Guard/ResponseGuard가 필요하다.
 분류기는 ready 응답·citation·canary 성공 결과나 모델 실행 증명을 만들지 않는다.
 
@@ -43,10 +45,10 @@ ContextGuard → Knowledge Guard → 실제 LLM → Contract Guard/ResponseGuard
 
 `core_control_graph.py::rebuild`는 Core source와 검토된 분류기/prompt를 받아 메모리 복사본을
 반환한다. CLI·파일 쓰기·runtime 등록은 없으며 reviewed asset의 독립 SHA pin을 확인한다.
-28노드·33엣지에서 policy allow 뒤 배타 분기를 둔다. Control/Contract LLM은 text를,
-Query/Request/Work/Knowledge LLM은 각 조립기의 후보를 합류시켜 기존 Contract Guard로 전달한다.
+31노드·37엣지에서 policy allow 뒤 배타 분기를 둔다. Control/Contract LLM은 text를,
+Query/Request/Work/Knowledge/Result LLM은 각 조립기의 후보를 합류시켜 기존 Contract Guard로 전달한다.
 Control/Contract LLM은 원본 model input, 나머지 LLM은 각각 전용 입력 투영을 받는다.
-policy deny는 0회, 허용된 여섯 경로는 각각 1회 LLM을 지나도록 구성한다.
+policy deny는 0회, 허용된 일곱 경로는 각각 1회 LLM을 지나도록 구성한다.
 
 `code/core_query_input.py`는 Query 분기에서만 `query-input.v2`를 만든다. `task.text`는
 backend가 검색 정책 query 보강 전에 캡처한 bounded 요청이다. 원본 pack의 예약 context
@@ -160,12 +162,23 @@ value/kind/source_ids로 한 번만 작성하게 한다. 로컬 Knowledge 역할
 96 KiB는 내부 방어 한도이지 실제 Dify 설정의 증거가 아니다. 4,096-token 모델 예산은 그대로이며
 native Code/Answer/API 전송과 실제 의미 품질은 별도 실측해야 한다. 양쪽 최종 guard는 그대로다.
 
+Result는 Stage → Result Input → Result LLM → Result Assembler로 연결한다.
+`result-input.v1`은 이미 허용된 source·facts·metrics·role_context·정책과 partial 상태를 보존하고
+schema/proof/version metadata와 source/context hash를 숨긴다. 로컬 task나 raw messages가
+원격에 있다고 가정하지 않는다. 조립기와 최종 guard에는 원입력을 그대로 전달한다.
+닫힌 `result-draft.v1`의 ordered value/kind/source_ids를 payload와 claim에 그대로 복사하고
+두 줄바꿈으로 합친 전체 `/text`에 모든 claim을 결속한다. 제목·label·marker도 같은 값에 속한다.
+40 segments·값당 1,200자·32,768 UTF-8 bytes 한도를 넘으면 자르거나 repair하지 않는다.
+한 값에 들어갈 수 없는 필수 Markdown 구성은 `blocked`로 표현하고 업무 근거 누락으로 꾸미지 않는다.
+로컬 Result 의미 규칙을 사용하며 양쪽 최종 guard·일반 apply·승인/receipt 권한은 그대로다.
+기계적 일치는 사실의 진실성·완전성·native 생성 품질의 증명이 아니다.
+
 빌더는 배포 검증기가 아니다. 원본을 생성기로 먼저 수리하지 않는다.
-`core_graph_validation.py`는 여섯 LLM의 prompt/schema/model/input, 분류기·입력 투영·조립기 source/I/O,
+`core_graph_validation.py`는 일곱 LLM의 prompt/schema/model/input, 분류기·입력 투영·조립기 source/I/O,
 분기·합류·전체 배선을 검증한다. source와 DSL을 함께 바꿔도 독립 pin과 다르면 거부한다.
 `validate_bundle.py`와 `materialize_environment.py`가 같은 검증기를 사용한다.
 materializer는 원본 검증 뒤에만 앱 이름·모델·Knowledge binding을 교체하며 DEV/PROD의
-여섯 Core LLM에 같은 환경 모델을 적용한다.
+일곱 Core LLM에 같은 환경 모델을 적용한다.
 
 공유 schema 비교는 JSON 타입을 보존한다. boolean과 number는 다르고 숫자 1/1.0은 동등하다.
 객체 키 순서는 무시하고 배열 순서는 유지한다. 비문자 키·비유한 수·비 JSON 객체·순환·

@@ -17,7 +17,7 @@ SPEC.loader.exec_module(RECEIPT)
 def _graph_template():
     value = yaml.safe_load((ROOT / "deploy/maxis-dify/dsl/ltm-agent-core.yml")
                            .read_text(encoding="utf-8"))["workflow"]["graph"]
-    assert len(value["nodes"]) == 28 and len(value["edges"]) == 33
+    assert len(value["nodes"]) == 31 and len(value["edges"]) == 37
     return value
 
 

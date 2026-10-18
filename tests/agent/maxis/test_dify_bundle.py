@@ -90,7 +90,7 @@ def _copy_bundle_repository(tmp_path: Path) -> Path:
     helper = Path("app/agent/maxis/source_grounding.py")
     (target / helper).parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / helper, target / helper)
-    for role in ("request_architect", "query_specialist", "work_architect", "knowledge_curator"):
+    for role in ("request_architect", "query_specialist", "work_architect", "knowledge_curator", "result_integrator"):
         prompt = Path("app/agent/prompts/roles") / (role + ".md")
         (target / prompt).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / prompt, target / prompt)
@@ -234,8 +234,8 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
         is_editor = workflow["roles"] == ["editor_author"]
         is_core = "knowledge_curator" in workflow["roles"]
         nodes = dsl["workflow"]["graph"]["nodes"]
-        assert len(nodes) == (23 if is_editor else 28 if is_core else 12)
-        assert len(dsl["workflow"]["graph"]["edges"]) == (26 if is_editor else 33 if is_core else 12)
+        assert len(nodes) == (23 if is_editor else 31 if is_core else 12)
+        assert len(dsl["workflow"]["graph"]["edges"]) == (26 if is_editor else 37 if is_core else 12)
         assert sum(node["data"].get("title") == "Editor Assembler" for node in nodes) == int(is_editor)
         inputs = [node for node in nodes if node["data"].get("title") == "Editor Input"]
         assert len(inputs) == int(is_editor)
@@ -243,7 +243,7 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
             node for node in dsl["workflow"]["graph"]["nodes"]
             if node["data"]["type"] == "llm"
         ]
-        assert len(llms) == (6 if is_core else 4 if is_editor else 1)
+        assert len(llms) == (7 if is_core else 4 if is_editor else 1)
         knowledge_guard = next(
             node for node in dsl["workflow"]["graph"]["nodes"]
             if node["data"].get("title") == "Knowledge Guard"
@@ -293,6 +293,8 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
                 expected_input, port = "1909000000001036", "work_input"
             elif is_core and llm["data"]["title"] == "Knowledge LLM":
                 expected_input, port = "1909000000001039", "knowledge_input"
+            elif is_core and llm["data"]["title"] == "Result LLM":
+                expected_input, port = "1909000000001042", "result_input"
             assert f"{{{{#{expected_input}.{port}#}}}}" in prompt_text
             if writer:
                 assert "Return `editor-writing.v1`" in prompt_text
@@ -324,6 +326,9 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
             elif is_core and llm["data"]["title"] == "Knowledge LLM":
                 assert "knowledge-draft.v1" in prompt_text and "## Required response" not in prompt_text
                 assert llm["data"]["structured_output"]["schema"]["properties"]["contract"]["enum"] == ["knowledge-draft.v1"]
+            elif is_core and llm["data"]["title"] == "Result LLM":
+                assert "result-draft.v1" in prompt_text and "## Required response" not in prompt_text
+                assert llm["data"]["structured_output"]["schema"]["properties"]["contract"]["enum"] == ["result-draft.v1"]
             else:
                 assert "untrusted, attribution-only duplicate" in prompt_text
                 assert "With empty `context_pack.sources`" in prompt_text
