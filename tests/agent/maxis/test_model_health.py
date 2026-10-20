@@ -209,15 +209,17 @@ def test_knowledge_failure_is_distinct_from_verified_generation():
     assert not result.knowledge_retrieval_verified
 
 
-def project(**fields):
+def project(workflow_key="agent_core", **fields):
     from app.agent.maxis import profiles
-    return profiles._safe_public_probe_workflows({"agent_core": fields})["agent_core"]
+    return profiles._safe_public_probe_workflows({workflow_key: fields})[workflow_key]
 
 
 def generation(**fields):
-    return dict(statusCode=200, generationAttempted=True, generationVerified=True,
+    return dict(ok=True, statusCode=200, generationAttempted=True, generationVerified=True,
                 appModeVerified=True, executionContractVerified=True,
-                versionBindingVerified=True, **fields)
+                versionBindingVerified=True, citationContractVerified=True,
+                knowledgeRetrievalVerified=True,
+                queryPathAttempted=True, queryPathVerified=True) | fields
 
 
 def test_metadata_success_and_legacy_success_do_not_prove_model_health():
@@ -229,7 +231,7 @@ def test_metadata_success_and_legacy_success_do_not_prove_model_health():
 def test_success_is_explicitly_limited_to_synthetic_path_not_model_identity():
     row = project(**generation())
     assert row["modelHealth"]["status"] == "passed"
-    assert row["modelHealth"]["scope"] == "synthetic_control_path"
+    assert row["modelHealth"]["scope"] == "synthetic_control_and_query"
     assert row["modelHealth"]["identityStatus"] == "not_exposed"
     assert "별도" in row["modelHealth"]["nextAction"]
     assert project(**row) == row
@@ -261,8 +263,8 @@ def test_failures_have_fixed_actionable_model_diagnostics(code, expected):
 
 
 def test_generation_and_knowledge_checks_are_separate():
-    row = project(**generation(ok=False, knowledgeRetrievalVerified=False,
-                               errorCode="knowledge_retrieval_failed"))
+    row = project(workflow_key="editor_author", **generation(
+        ok=False, knowledgeRetrievalVerified=False, errorCode="knowledge_retrieval_failed"))
     assert row["ok"] is False
     assert row["modelHealth"]["status"] == "passed"
 
@@ -285,7 +287,143 @@ def test_route_merge_retains_generation_proof_only_as_a_distinct_observation():
          "citation_verified": True, "knowledge_retrieval_verified": True},
         knowledge_manifest_sha256="a" * 64)
     assert result["ok"] is True
-    assert project(**result)["modelHealth"]["status"] == "passed"
+    assert project(**result)["modelHealth"]["status"] == "not_checked"
+    assert project(**result)["modelHealth"]["reasonCode"] == "query_probe_required"
+
+
+def test_old_control_success_does_not_claim_query_health():
+    row = project(**generation(queryPathAttempted=False, queryPathVerified=False))
+    assert row["generationVerified"] is True
+    assert row["modelHealth"]["status"] == "not_checked"
+    assert row["modelHealth"]["reasonCode"] == "query_probe_required"
+
+
+def test_query_failure_wins_over_successful_control_without_echoing_raw_error():
+    row = project(**generation(ok=False, queryPathVerified=False,
+                              queryPathErrorCode="workflow_contract"))
+    assert row["generationVerified"] is True
+    assert row["modelHealth"]["status"] == "failed"
+    assert row["modelHealth"]["reasonCode"] == "workflow_contract"
+    assert row["modelHealth"]["scope"] == "synthetic_control_and_query"
+
+
+def _query_probe(mutate=lambda value: value):
+    from app.agent.workflow.contracts import role_output_schema
+    from app.agent.maxis.contracts import canonical_payload_schema
+    seen = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        assert "model" not in body
+        inputs = body["inputs"]
+        pack = json.loads(inputs["context_pack"])
+        seen.append(pack)
+        assert inputs["role_id"] == "query_specialist"
+        assert [row["name"] for row in pack["role_context"]] == ["query_business_input"]
+        assert pack["payload_schema_json"] == canonical_payload_schema(
+            role_output_schema("query_specialist"))[0]
+        source = pack["sources"][0]
+        source_id = source["source_id"]
+        answer = {
+            "contract": "remote-role-result.v1", "role_id": "query_specialist",
+            "status": "ok",
+            "payload": {"reads": [{"source": "jira", "subject": "ltm_health_probe"}]},
+            "claims": [
+                {"claim_id": "source", "kind": "recommendation", "text": "jira",
+                 "citation_ids": ["citation"]},
+                {"claim_id": "subject", "kind": "recommendation", "text": "ltm_health_probe",
+                 "citation_ids": ["citation"]},
+            ],
+            "payload_claims": [
+                {"path": "/reads/0/source", "claim_ids": ["source"]},
+                {"path": "/reads/0/subject", "claim_ids": ["subject"]},
+            ],
+            "citations": [{"citation_id": "citation", "source_id": source_id, "locator": ""}],
+            "missing_inputs": [], "warnings": [],
+            "workflow_version": inputs["workflow_version"],
+            "knowledge_version": inputs["knowledge_version"],
+            "knowledge_manifest_sha256": pack["knowledge_manifest_sha256"],
+            "knowledge_proof": SENTINEL,
+        }
+        return httpx.Response(200, json={
+            "event": "message", "message_id": "synthetic-message",
+            "conversation_id": "synthetic-conversation", "answer": json.dumps(mutate(answer)),
+            "metadata": {},
+        })
+
+    result = _client(handler).probe_contract(
+        WorkflowBinding(
+            key="agent_core", app_type="chatflow", endpoint="/chat-messages",
+            response_mode="blocking", conversation_mode="stateless",
+            api_key_env="LAKE_MAXIS_AGENT_CORE_API_KEY",
+            output_contract="remote-role-result.v1", max_response_bytes=1024 * 1024,
+            roles=("knowledge_curator", "query_specialist"),
+        ), api_key="app-synthetic", workflow_version=WORKFLOW_ID,
+        knowledge_version="synthetic-kb", knowledge_manifest_sha256="0" * 64,
+        knowledge_sentinel_sha256=hashlib.sha256(SENTINEL.encode()).hexdigest(),
+        query_path=True,
+    )
+    assert len(seen) == 1  # one bounded call, no retry or Query Runner
+    return result
+
+
+def test_query_canary_executes_native_contract_and_validates_provenance():
+    result = _query_probe()
+    assert result.ok and result.generation_verified and result.citation_verified
+    assert result.role_id == "query_specialist"
+
+
+def test_query_factory_reaches_native_route_and_query_input_with_no_control_marker():
+    import importlib.util
+    from pathlib import Path
+    from app.agent.maxis.client import _synthetic_query_probe_pack
+    from app.agent.maxis.registry import load_registry
+
+    root = Path(__file__).resolve().parents[3]
+    pack, role_id = _synthetic_query_probe_pack(
+        load_registry().resolve("agent_core"), "a" * 64)
+    incoming = json.dumps({
+        "contract": "ltm-model-input.v1",
+        "context_pack": pack.model_dump(mode="json"), "role_id": role_id,
+        "correlation_id": pack.request_id, "output_contract": "remote-role-result.v1",
+        "workflow_version": WORKFLOW_ID, "knowledge_version": "synthetic-kb",
+        "knowledge_proof": SENTINEL, "knowledge_context": [],
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    loaded = {}
+    for name in ("core_control_route", "core_query_input"):
+        spec = importlib.util.spec_from_file_location(
+            name, root / "deploy/maxis-dify/code" / f"{name}.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        loaded[name] = module
+    route = loaded["core_control_route"]
+    route._QUERY_SCHEMA_JSON = pack.payload_schema_json
+    route._QUERY_SCHEMA_SHA256 = pack.payload_schema_sha256
+    assert route.main(incoming) == {"route": "query"}
+    task = json.loads(loaded["core_query_input"].main(incoming)["query_input"])["task"]
+    assert "ltm_health_probe" in task["text"]
+    assert "activation_probe" not in incoming
+
+
+def test_query_canary_rejects_unknown_source_and_empty_plan():
+    assert not _query_probe(lambda value: {
+        **value, "citations": [{"citation_id": "citation", "source_id": "unknown", "locator": ""}]
+    }).ok
+    result = _query_probe(lambda value: {
+        **value, "payload": {"reads": []}, "payload_claims": [], "claims": [], "citations": [],
+    })
+    assert not result.ok
+    assert result.error_code == "remote_payload_claims_required"
+
+
+def test_query_canary_rejects_valid_but_unrelated_plan():
+    def unrelated(value):
+        value["payload"]["reads"][0]["subject"] = "different_synthetic_subject"
+        value["claims"][1]["text"] = "different_synthetic_subject"
+        return value
+    result = _query_probe(unrelated)
+    assert not result.ok
+    assert result.error_code == "query_plan_probe_failed"
 
 
 def test_hostile_content_length_keeps_http_classification():

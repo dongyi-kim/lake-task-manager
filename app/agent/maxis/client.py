@@ -345,6 +345,60 @@ def _synthetic_contract_probe_pack(
     return pack, role_id
 
 
+def _synthetic_query_probe_pack(
+    binding: WorkflowBinding, knowledge_manifest_sha256: str,
+) -> tuple[EvidencePackV1, str]:
+    """Exercise the native Query path with one fresh, non-tenant read request.
+
+    No activation_probe context or constant-state schema is present: the normal
+    Query Input, model, assembler and both response guards must all run. The
+    returned plan is checked locally and is never submitted to Query Runner.
+    """
+    from app.agent.workflow.contracts import role_output_schema
+
+    role_id = "query_specialist"
+    if binding.key != "agent_core" or role_id not in binding.roles:
+        raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION)
+    now = datetime.now(timezone.utc)
+    nonce = hashlib.sha256(str(time.time_ns()).encode()).hexdigest()[:20]
+    request_id = f"query_health_{nonce}"
+    task = "Jira에서 ltm_health_probe 데이터의 변경 이력을 조회할 계획을 작성하세요."
+    content = json.dumps({"text": task}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    schema, digest = canonical_payload_schema(role_output_schema(role_id))
+    pack = EvidencePackV1(
+        request_id=request_id,
+        use_case=role_id,
+        query=f"{task} Story Point Epic Link",
+        pseudonymous_user=f"ltm_{nonce[:16]}",
+        requested_at=now,
+        scope=EvidenceScopeV1(),
+        sources=(EvidenceSourceV1(
+            source_id=f"src_{nonce}",
+            kind="ltm",
+            canonical_id=f"ltm:user-intent:{request_id}",
+            title="Synthetic query health request",
+            content=task,
+            retrieved_at=now,
+            content_sha256=hashlib.sha256(task.encode("utf-8")).hexdigest(),
+        ),),
+        role_context=(RoleContextV1(
+            context_id="rctx_" + hashlib.sha256(
+                f"{request_id}:query_specialist:query_business_input".encode()
+            ).hexdigest()[:20],
+            name="query_business_input",
+            content_json=content,
+            content_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            observed_at=now,
+        ),),
+        freshness="fresh",
+        partial=False,
+        knowledge_manifest_sha256=knowledge_manifest_sha256,
+        payload_schema_json=schema,
+        payload_schema_sha256=digest,
+    )
+    return pack, role_id
+
+
 def canonical_api_base(
     value: str,
     *,
@@ -1082,6 +1136,7 @@ class DifyClient:
         knowledge_manifest_sha256: str,
         knowledge_sentinel_sha256: str,
         expected_knowledge_dataset_id: str = "",
+        query_path: bool = False,
     ) -> DifyContractProbeResult:
         """Execute and verify a synthetic role call without returning its content.
 
@@ -1097,7 +1152,8 @@ class DifyClient:
         try:
             if not re.fullmatch(r"[0-9a-f]{64}", knowledge_sentinel_sha256 or ""):
                 raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION)
-            pack, role_id = _synthetic_contract_probe_pack(
+            factory = _synthetic_query_probe_pack if query_path else _synthetic_contract_probe_pack
+            pack, role_id = factory(
                 binding, knowledge_manifest_sha256
             )
             response = self.invoke(
@@ -1176,12 +1232,30 @@ class DifyClient:
         }
         expected_source = pack.sources[0].source_id
         citation_verified = any(
-            claim.kind == "fact"
+            claim.kind in ({"inference", "recommendation"} if query_path else {"fact"})
             and expected_source in {
                 citation_sources.get(citation_id) for citation_id in claim.citation_ids
             }
             for claim in remote.claims
         )
+        if query_path:
+            from app.agent.workflow.contracts import validate_role_output
+
+            try:
+                payload = validate_role_output("query_specialist", remote.payload)
+                planned_query = any(
+                    read.get("source") == "jira"
+                    and "ltm_health_probe" in read.get("subject", "")
+                    for read in payload.get("reads", [])
+                )
+            except (ValueError, TypeError):
+                planned_query = False
+            if not planned_query:
+                return DifyContractProbeResult(
+                    ok=False, status_code=200, latency_ms=latency_ms,
+                    role_id=role_id, contract_verified=contract_verified,
+                    version_verified=True, error_code="query_plan_probe_failed",
+                )
         if not citation_verified:
             return DifyContractProbeResult(
                 ok=False,

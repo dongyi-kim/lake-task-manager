@@ -518,6 +518,33 @@ def _run_maxis_probe(profile: dict, keys: dict[str, str]) -> dict:
                     ),
                     knowledge_manifest_sha256=manifest.sha256,
                 )
+                if workflow_key == "agent_core" and results[workflow_key]["ok"]:
+                    # One bounded semantic canary, no QueryRunner or Jira write.
+                    query_result = _maxis_contract_probe_result(
+                        parameter_result,
+                        client.probe_contract(
+                            binding, api_key=keys[workflow_key],
+                            workflow_version=workflow["version"],
+                            knowledge_version=profile["knowledge_version"],
+                            knowledge_manifest_sha256=manifest.sha256,
+                            knowledge_sentinel_sha256=profile["knowledge_sentinel_sha256"],
+                            expected_knowledge_dataset_id=profile["knowledge_dataset_id"],
+                            query_path=True,
+                        ),
+                        knowledge_manifest_sha256=manifest.sha256,
+                    )
+                    row = results[workflow_key]
+                    row.update(
+                        queryPathAttempted=True,
+                        queryPathVerified=query_result["ok"],
+                        queryPathErrorCode=query_result["errorCode"],
+                        queryPathStatusCode=query_result["statusCode"],
+                        queryPathMs=query_result["ms"] - parameter_result["ms"],
+                        ok=query_result["ok"],
+                        errorCode=query_result["errorCode"],
+                        # The metadata requests were already counted by Control.
+                        ms=row["ms"] + query_result["ms"] - parameter_result["ms"],
+                    )
             except Exception as exc:
                 log.warning("MAXIS %s probe failed: %s", workflow_key, type(exc).__name__)
                 results[workflow_key] = {"ok": False, "statusCode": None, "ms": None,

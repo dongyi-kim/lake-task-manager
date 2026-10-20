@@ -78,6 +78,8 @@ def _mark_prod_verified() -> None:
             "versionBindingVerified": True,
             "citationContractVerified": True,
             "knowledgeRetrievalVerified": True,
+            "queryPathAttempted": True,
+            "queryPathVerified": True,
             "knowledgeManifestSha256": manifest.sha256,
         },
     }}, start_binding=start_binding)

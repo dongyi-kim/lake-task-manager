@@ -47,7 +47,7 @@ EXECUTION_POLICIES = ("connected", "qualified")
 REMOTE_LOG_MODES = ("redacted", "approved_bounded_content")
 DEV_REMOTE_LOG_POLICY_ID = "synthetic-only"
 PROBE_TTL_SECONDS = 24 * 60 * 60
-PROBE_CONTRACT_VERSION = "ltm-maxis-probe.v2"
+PROBE_CONTRACT_VERSION = "ltm-maxis-probe.v3"
 KNOWLEDGE_EVAL_ATTESTATION_CONTRACT = "ltm-maxis-knowledge-eval-attestation.v1"
 KNOWLEDGE_EVAL_MATERIAL_CONTRACT = "ltm-maxis-knowledge-eval-material.v1"
 # Release capabilities are explicit so configuration cannot claim a control that the
@@ -94,6 +94,8 @@ _PUBLIC_PROBE_CODES = frozenset({
     "not_found",
     "policy",
     "probe_failed",
+    "query_plan_probe_failed",
+    "query_probe_required",
     "rate_limited",
     "remote_status_not_ok",
     "remote_contract_validation_failed",
@@ -1198,6 +1200,11 @@ def _probe_contract_verified(profile_name: str, details: dict | None) -> bool:
             return False
         if row.get("knowledgeManifestSha256") != manifest.sha256:
             return False
+        if workflow_key == "agent_core" and (
+            row.get("queryPathAttempted") is not True
+            or row.get("queryPathVerified") is not True
+        ):
+            return False
     return bool(workflow_results)
 
 
@@ -1777,16 +1784,41 @@ def _safe_public_probe_workflows(value: object) -> dict[str, dict]:
                 and raw.get("versionBindingVerified") is True
                 and type(status) is int and status == 200
             ),
+            "queryPathAttempted": key == "agent_core" and raw.get("queryPathAttempted") is True,
+            "queryPathVerified": (
+                key == "agent_core" and raw.get("queryPathAttempted") is True
+                and raw.get("queryPathVerified") is True
+                and raw.get("ok") is True
+                and raw.get("generationVerified") is True
+                and raw.get("knowledgeRetrievalVerified") is True
+                and raw.get("citationContractVerified") is True
+                and raw.get("versionBindingVerified") is True
+                and raw.get("executionContractVerified") is True
+            ),
+            "queryPathErrorCode": (
+                _safe_public_probe_code(raw.get("queryPathErrorCode"))
+                if key == "agent_core" else ""
+            ),
+            "queryPathStatusCode": (
+                raw["queryPathStatusCode"] if key == "agent_core"
+                and type(raw.get("queryPathStatusCode")) is int
+                and 100 <= raw["queryPathStatusCode"] <= 599 else None
+            ),
+            "queryPathMs": (
+                raw["queryPathMs"] if key == "agent_core"
+                and type(raw.get("queryPathMs")) is int
+                and 0 <= raw["queryPathMs"] <= 86_400_000 else None
+            ),
             "knowledgeManifestSha256": _safe_public_digest(
                 raw.get("knowledgeManifestSha256")
             ),
             "roleId": role_id if role_id in _ROLE_WORKFLOW else "",
         }
-        result[key]["modelHealth"] = _model_health(result[key])
+        result[key]["modelHealth"] = _model_health(result[key], workflow_key=key)
     return result
 
 
-def _model_health(row: dict) -> dict:
+def _model_health(row: dict, *, workflow_key: str) -> dict:
     """Describe only the exercised synthetic path, never infer a model identity.
 
     App Service API credentials do not grant model catalogue/console access.
@@ -1807,16 +1839,24 @@ def _model_health(row: dict) -> dict:
         "workflow_version_mismatch": "게시 Workflow ID를 현재 게시본으로 등록하고 다시 검사하세요.",
         "network": "선택한 MAXIS 서버의 네트워크 연결을 확인하세요.",
         "timeout": "MAXIS 서버 및 모델 응답 시간을 확인한 뒤 다시 검사하세요.",
+        "query_plan_probe_failed": "Query 노드가 합성 조회 요청을 올바른 조회 계획으로 반환하지 못했습니다. 게시 Workflow를 확인하세요.",
+        "query_probe_required": "이전 제어 경로 기록만 있습니다. 연결·모델 검사로 실제 Query 경로도 검사하세요.",
     }
     passed = row["generationVerified"]
     attempted = row["generationAttempted"]
+    query_required = workflow_key == "agent_core"
+    query_attempted = row["queryPathAttempted"]
+    if query_required and passed:
+        passed = row["queryPathVerified"]
+        attempted = query_attempted
+        code = row["queryPathErrorCode"] or ("query_probe_required" if not query_attempted else code)
     return {
         "status": "passed" if passed else ("failed" if attempted else "not_checked"),
-        "scope": "synthetic_control_path",
+        "scope": "synthetic_control_and_query" if query_attempted else "synthetic_control_path",
         "identityStatus": "not_exposed",
         "reasonCode": "" if passed else (code or "probe_required"),
         "nextAction": (
-            "검사한 합성 호출 경로만 통과했습니다. 실제 본문·댓글 작성 품질은 별도 확인하세요."
+            "검사한 합성 호출 경로만 통과했습니다. 전체 Agent·본문·댓글 작성 품질은 별도 확인하세요."
             if passed else actions.get(code, "연결·입력 계약을 확인한 뒤 연결·모델 검사를 실행하세요.")
         ),
     }

@@ -92,6 +92,8 @@ def _configure_verified_prod(*, with_eval_attestation: bool = True) -> dict:
             "versionBindingVerified": True,
             "citationContractVerified": True,
             "knowledgeRetrievalVerified": True,
+            "queryPathAttempted": True,
+            "queryPathVerified": True,
             "knowledgeManifestSha256": manifest.sha256,
         }
         for key in profiles.WORKFLOW_KEYS
@@ -112,7 +114,8 @@ def test_disabled_pmo_does_not_inherit_previous_route_or_stored_key(monkeypatch)
     assert profiles.mark_probe("prod", True, {"workflows": {
         key: {"ok": True, "appModeVerified": True, "executionContractVerified": True,
               "versionBindingVerified": True, "citationContractVerified": True,
-              "knowledgeRetrievalVerified": True, "knowledgeManifestSha256": manifest.sha256}
+              "knowledgeRetrievalVerified": True, "knowledgeManifestSha256": manifest.sha256,
+              "queryPathAttempted": True, "queryPathVerified": True}
         for key in ("agent_core", "editor_author")
     }}, start_binding=signature)
     keys.clear()
@@ -222,6 +225,8 @@ def _mark_prod_probe_after_profile_change() -> None:
             "versionBindingVerified": True,
             "citationContractVerified": True,
             "knowledgeRetrievalVerified": True,
+            "queryPathAttempted": True,
+            "queryPathVerified": True,
             "knowledgeManifestSha256": manifest.sha256,
         }
         for key in profiles.WORKFLOW_KEYS

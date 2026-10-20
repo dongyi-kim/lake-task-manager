@@ -137,10 +137,12 @@ def _valid_probe_answer(payload):
     inputs = payload["inputs"]
     pack = json.loads(inputs["context_pack"])
     assert pack["contract"] == "evidence-pack.v1"
-    assert pack["role_context"][0]["name"] == "activation_probe"
+    query_path = inputs["role_id"] == "query_specialist"
+    assert pack["role_context"][0]["name"] == (
+        "query_business_input" if query_path else "activation_probe")
     assert len(pack["knowledge_manifest_sha256"]) == 64
     source = pack["sources"][0]
-    return json.dumps({
+    answer = {
         "contract": "remote-role-result.v1",
         "role_id": inputs["role_id"],
         "status": "ok",
@@ -165,7 +167,20 @@ def _valid_probe_answer(payload):
         "knowledge_version": inputs["knowledge_version"],
         "knowledge_manifest_sha256": pack["knowledge_manifest_sha256"],
         "knowledge_proof": SENTINEL_VALUE,
-    })
+    }
+    if query_path:
+        answer["payload"] = {"reads": [{"source": "jira", "subject": "ltm_health_probe"}]}
+        answer["claims"] = [
+            {"claim_id": "source", "kind": "recommendation", "text": "jira",
+             "citation_ids": ["probe_citation"]},
+            {"claim_id": "subject", "kind": "recommendation", "text": "ltm_health_probe",
+             "citation_ids": ["probe_citation"]},
+        ]
+        answer["payload_claims"] = [
+            {"path": "/reads/0/source", "claim_ids": ["source"]},
+            {"path": "/reads/0/subject", "claim_ids": ["subject"]},
+        ]
+    return json.dumps(answer)
 
 
 def _verified_probe_result(*workflow_keys):
@@ -184,6 +199,8 @@ def _verified_probe_result(*workflow_keys):
                 "versionBindingVerified": True,
                 "citationContractVerified": True,
                 "knowledgeRetrievalVerified": True,
+                "queryPathAttempted": key == "agent_core",
+                "queryPathVerified": key == "agent_core",
                 "knowledgeManifestSha256": manifest.sha256,
             }
             for key in workflow_keys
@@ -394,7 +411,7 @@ def test_inactive_candidate_probe_keeps_its_stored_origin_and_versions(
     assert response.status_code == 200
     assert response.json()["ok"] is True
     assert [call["path"] for call in calls] == [
-        "/info", "/parameters", "/chat-messages",
+        "/info", "/parameters", "/chat-messages", "/chat-messages",
     ]
     assert {call["baseUrl"] for call in calls} == {"https://dev.maxis.example/v1"}
     assert {call["apiKey"] for call in calls} == {"stored-dev-secret"}
@@ -581,6 +598,11 @@ def test_status_projects_malicious_legacy_profile_and_probe_to_closed_shapes(
         "roleId": "",
         "generationAttempted": False,
         "generationVerified": False,
+        "queryPathAttempted": False,
+        "queryPathVerified": False,
+        "queryPathErrorCode": "",
+        "queryPathStatusCode": None,
+        "queryPathMs": None,
         "modelHealth": {
             "status": "not_checked", "scope": "synthetic_control_path",
             "identityStatus": "not_exposed", "reasonCode": "probe_failed",
@@ -697,7 +719,7 @@ def test_probe_adapter_uses_foundation_client_contract_without_network(client, m
     })
     assert result["ok"] is True
     expected = {
-        "ok": True, "statusCode": 200, "ms": 16, "errorCode": "",
+        "ok": True, "statusCode": 200, "ms": 21, "errorCode": "",
         "missingParameters": [],
         "appModeVerified": True,
         "executionContractVerified": True,
@@ -914,7 +936,7 @@ def test_three_apps_pass_synthetic_chat_contract_and_can_activate(client, monkey
 
     assert probed["ok"] is True
     assert set(probed["workflows"]) == {"agent_core", "editor_author", "pmo_brief"}
-    for row in probed["workflows"].values():
+    for key, row in probed["workflows"].items():
         assert row["ok"] is True
         assert row["appModeVerified"] is True
         assert row["executionContractVerified"] is True
@@ -922,11 +944,12 @@ def test_three_apps_pass_synthetic_chat_contract_and_can_activate(client, monkey
         assert row["citationContractVerified"] is True
         assert row["knowledgeRetrievalVerified"] is True
         assert row["modelHealth"]["status"] == "passed"
-        assert row["modelHealth"]["scope"] == "synthetic_control_path"
+        assert row["modelHealth"]["scope"] == (
+            "synthetic_control_and_query" if key == "agent_core" else "synthetic_control_path")
     chat_calls = [call for call in calls if call["path"] == "/chat-messages"]
     info_calls = [call for call in calls if call["path"] == "/info"]
     assert len(info_calls) == 3
-    assert len(chat_calls) == 3
+    assert len(chat_calls) == 4
     assert {call["apiKey"] for call in chat_calls} == {
         "fake-core-key", "fake-editor-key", "fake-pmo-key",
     }
@@ -937,6 +960,41 @@ def test_three_apps_pass_synthetic_chat_contract_and_can_activate(client, monkey
     activated = client.post("/api/agent/maxis/activate/dev", json={})
     assert activated.status_code == 200
     assert activated.json()["activeProfile"] == "dev"
+
+
+def test_successful_control_cannot_hide_native_query_failure(client, monkeypatch):
+    _save_candidate(client)
+    client.put("/api/agent/maxis/credentials/dev", json={"agentCoreApiKey": "fake-core-key"})
+
+    def answer(payload):
+        value = json.loads(_valid_probe_answer(payload))
+        if payload["inputs"]["role_id"] == "query_specialist":
+            value["citations"][0]["source_id"] += "_invented"
+        return json.dumps(value)
+
+    calls = _fake_dify_transport(monkeypatch, answer)
+    response = client.post("/api/agent/maxis/probe/dev", json={}).json()
+    assert response["ok"] is False
+    core = response["workflows"]["agent_core"]
+    assert core["generationVerified"] is True
+    assert core["queryPathAttempted"] is True
+    assert core["queryPathVerified"] is False
+    assert core["modelHealth"]["status"] == "failed"
+    assert profiles.probe_ok("dev") is False
+    assert client.post("/api/agent/maxis/activate/dev", json={}).status_code == 409
+    assert len([row for row in calls if row["path"] == "/chat-messages"]) == 2
+
+
+def test_control_only_proof_cannot_be_registered_as_current_probe(client):
+    _save_candidate(client)
+    client.put("/api/agent/maxis/credentials/dev", json={"agentCoreApiKey": "fake-core-key"})
+    _, keys, start_binding = profiles.start_probe("dev")
+    keys.clear()
+    details = _verified_probe_result("agent_core")
+    details["workflows"]["agent_core"].pop("queryPathAttempted")
+    details["workflows"]["agent_core"].pop("queryPathVerified")
+    assert not profiles.mark_probe("dev", True, details, start_binding=start_binding)
+    assert not profiles.probe_ok("dev")
 
 
 def test_candidate_must_be_saved_probed_and_explicitly_activated(client, monkeypatch):

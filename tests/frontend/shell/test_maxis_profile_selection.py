@@ -366,7 +366,7 @@ def test_model_health_is_scoped_to_selected_profile_and_missing_is_not_success(p
     page, state, _, calls = profile_ui
     state["profiles"][0]["lastProbe"]["workflows"] = {
         "agent_core": {"ok": True, "modelHealth": {
-            "status": "passed", "scope": "synthetic_control_path", "identityStatus": "not_exposed"}},
+            "status": "passed", "scope": "synthetic_control_and_query", "identityStatus": "not_exposed"}},
         "editor_author": {"ok": True},
     }
     state["profiles"][1]["lastProbe"] = {
@@ -377,12 +377,14 @@ def test_model_health_is_scoped_to_selected_profile_and_missing_is_not_success(p
         }}
     open_profiles(page)
     health = page.get_by_role("region", name="선택한 프로필의 모델 응답 검사")
-    assert health.get_by_text("합성 모델 응답 통과", exact=True).count() == 1
+    assert health.get_by_text("제어·실제 Query 경로 통과", exact=True).count() == 1
+    assert "Jira 조회·쓰기는 실행하지 않습니다" in health.inner_text()
     assert health.get_by_text("모델 응답 미검사", exact=True).count() == 2
     assert "2026-01-01T00:00:00Z" in health.inner_text()
     assert "전체 LLM 노드" in health.inner_text()
     assert "Service API가 실제 모델 이름을 제공하지 않습니다" in health.inner_text()
     page.locator('[data-profile="prod"]').click()
+    assert health.get_by_text("제어·실제 Query 경로 통과", exact=True).count() == 0
     assert health.get_by_text("합성 모델 응답 통과", exact=True).count() == 0
     assert health.get_by_text("합성 모델 응답 실패", exact=True).count() == 1
     assert "2026-02-02T03:04:05Z" in health.inner_text()

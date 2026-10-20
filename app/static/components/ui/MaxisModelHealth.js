@@ -15,8 +15,10 @@ export default {
       const results = (this.probe && this.probe.workflows) || {};
       return this.workflows.map((workflow) => {
         const health = results[workflow.key] && results[workflow.key].modelHealth;
-        const status = health && health.scope === "synthetic_control_path" ? health.status : "not_checked";
-        const label = status === "passed" ? "합성 모델 응답 통과" :
+        const hasQuery = health && health.scope === "synthetic_control_and_query";
+        const knownScope = hasQuery || (health && health.scope === "synthetic_control_path");
+        const status = knownScope ? health.status : "not_checked";
+        const label = status === "passed" ? (hasQuery ? "제어·실제 Query 경로 통과" : "합성 모델 응답 통과") :
           status === "failed" ? "합성 모델 응답 실패" : "모델 응답 미검사";
         return { key: workflow.key, label: workflow.label, status: label,
           nextAction: status !== "passed" && health && health.nextAction
@@ -31,6 +33,6 @@ export default {
       <b>{{ row.label }}</b><span>{{ row.status }}</span>
       <small v-if="row.nextAction">{{ row.nextAction }}</small>
     </div>
-    <p class="mx-help" style="margin:0">검사 시점의 합성 제어 경로 기록입니다. 모델 변경 후에는 재검사하세요. 전체 LLM 노드·본문·댓글 생성 품질을 검증한 결과는 아닙니다. Service API가 실제 모델 이름을 제공하지 않습니다.</p>
+    <p class="mx-help" style="margin:0">합성 입력으로 Core의 제어·실제 Query 경로를 검사합니다. 조회 계획만 만들며 Jira 조회·쓰기는 실행하지 않습니다. 모델 변경 후에는 재검사하세요. 전체 LLM 노드·본문·댓글 생성 품질을 검증한 결과는 아닙니다. Service API가 실제 모델 이름을 제공하지 않습니다.</p>
   </section>`,
 };

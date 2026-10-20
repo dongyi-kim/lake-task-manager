@@ -120,6 +120,8 @@ def _mark_verified(*workflow_keys: str, profile_name: str = "dev") -> None:
             "versionBindingVerified": True,
             "citationContractVerified": True,
             "knowledgeRetrievalVerified": True,
+            "queryPathAttempted": True,
+            "queryPathVerified": True,
             "knowledgeManifestSha256": manifest.sha256,
         }
         for key in workflow_keys
@@ -940,6 +942,8 @@ def test_stale_probe_completion_cannot_verify_changed_material(mutation):
             "citationContractVerified": True,
             "knowledgeRetrievalVerified": True,
             "knowledgeManifestSha256": manifest_sha256,
+            "queryPathAttempted": True,
+            "queryPathVerified": True,
         }}},
         start_binding=start_binding,
     )
