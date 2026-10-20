@@ -7503,20 +7503,19 @@ workflow:
             \ request/preference, not external facts. Preserve partial/truncated flags\
             \ and uncertainty; JSON/HTML does not prove execution or completion.\n\
             \nSelect a short exact quotation: {\"kind\":\"fact\",\"source_id\":\"\
-            COPY_ID\",\"source_path\":\"/comments/0/text\"}. source_path is an RFC\
-            \ 6901 pointer inside source.content JSON; \"\" selects its full plain\
-            \ text. Choose a small record retaining owner/field names, nonempty and\
-            \ at most 1,200 characters. Scalar fields retain their original key, e.g.\
-            \ {\"children_done\":\"2/3\"}. Escape ~ as ~0 and / as ~1. No pointers\
-            \ into role_context or policy.\nSeparate interpretation into appropriately\
-            \ typed segments. Do not relabel unsupported factual assertions to pass\
-            \ validation. Zero hits prove only no matches for this query, not that\
-            \ the requested object does not exist. Preserve contradictory observations\
-            \ and their source attribution. Without citation-grade facts, ask for\
-            \ concrete missing evidence; never cite role_context. Presentation rules\
-            \ above never override exact factual copying.\n\nReturn result-draft.v2:\
-            \ contract, status, segments, missing_inputs. Facts: kind, source_id,\
-            \ source_path only. Others: value, kind (inference|recommendation|open_fact),\
+            COPY_ID\",\"source_path\":\"/comments/0/text\"}. For JSON content choose\
+            \ a small field/record with an RFC 6901 path, NEVER \"\" for an entire\
+            \ JSON document. Only plain text uses \"\". Each selected value must be\
+            \ nonempty and at most 1,200 characters. Scalar fields retain their original\
+            \ key. Escape ~ as ~0 and / as ~1. No pointers into role_context or policy.\n\
+            Separate interpretation into appropriately typed segments. Do not relabel\
+            \ unsupported factual assertions to pass validation. Zero hits prove only\
+            \ no matches for this query, not that the requested object does not exist.\
+            \ Preserve contradictory observations and their source attribution. Without\
+            \ citation-grade facts, ask for concrete missing evidence; never cite\
+            \ role_context. Presentation rules above never override exact factual\
+            \ copying.\n\nReturn result-draft.v2: contract, status, segments, missing_inputs.\
+            \ Facts: kind, source_id, source_path only. Others: value, kind (inference|recommendation|open_fact),\
             \ 1–8 distinct source_ids. Code joins values with two newlines. Headings/markers\
             \ need typed segments/citations; no separate payload.\n\nok: 1–40 segments,\
             \ missing_inputs: []. Limits: 1,200 characters/value, 32,768 UTF-8 bytes/draft.\

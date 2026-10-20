@@ -2525,7 +2525,9 @@ def invoke_role(
                 attempts.append(observation)
             cause = exc.__cause__
             regenerate = (
-                attempt == 0 and resolution.route == "maxis" and output_kind == "structured"
+                attempt == 0 and resolution.route == "maxis"
+                and (output_kind == "structured"
+                     or (role_id == "result_integrator" and output_kind == "text"))
                 and isinstance(cause, MaxisGatewayError)
                 and ((cause.draft_regeneration_role == "editor_author" and role_id == "editor_author")
                      or (not cause.draft_regeneration_role and role_id in {

@@ -67,6 +67,28 @@ def test_second_rejection_is_not_hidden_or_retried(runtime):
     assert role_usage_observation(error.value.metadata)["failedCalls"] == 2
 
 
+@pytest.mark.parametrize("second_fails", [False, True])
+def test_result_text_api_regenerates_native_structured_draft_once(runtime, second_fails):
+    calls = runtime([failure("invalid_core_result_draft"),
+                     failure("invalid_core_result_draft") if second_fails else success()])
+    def invoke():
+        return backend.invoke_role("result_integrator", {}, [], {}, output_kind="text")
+    if second_fails:
+        with pytest.raises(backend.MaxisRuntimeError) as error:
+            invoke()
+        assert role_usage_observation(error.value.metadata)["failedCalls"] == 2
+    else:
+        assert role_usage_observation(invoke().metadata)["failedCalls"] == 1
+    assert len(calls) == 2 and calls[0] == calls[1]
+
+
+def test_other_text_outputs_do_not_gain_native_result_regeneration(runtime):
+    calls = runtime([failure("invalid_core_result_draft")])
+    with pytest.raises(backend.MaxisRuntimeError):
+        backend.invoke_role("knowledge_curator", {}, [], {}, output_kind="text")
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize("marker", ["invalid_editor_selection_id", "invalid_editor_selection_limit"])
 def test_editor_unknown_selection_regenerates_once_without_repair(runtime, marker):
     calls = runtime([failure(marker), success()])
