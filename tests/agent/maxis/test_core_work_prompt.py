@@ -65,10 +65,18 @@ def test_wrapped_and_control_paths_exhaust_exact_native_schema(contract, canonic
 
 def test_ok_payload_required_fields_stay_explicit_even_when_arrays_are_empty(contract, texts):
     prompt = build(contract, texts)
-    assert "ok: payload must always contain questions, mode, and items" in prompt
-    assert "Use questions=[] when no questions are needed" in prompt
-    assert "items=[] without changing status, but mode remains task|subtask|epic" in prompt
-    assert "needs_input: payload={}, specific missing_inputs" in prompt
+    import json
+    def unique_object(pairs):
+        assert len({key for key, _ in pairs}) == len(pairs), "duplicate JSON key"
+        return dict(pairs)
+    example = next(line for line in prompt.splitlines() if line.startswith('{"contract":'))
+    assert json.loads(example, object_pairs_hook=unique_object) == {
+        "contract": "work-draft.v1", "status": "ok", "missing_inputs": [],
+        "payload": {"mode": "task", "questions": [], "items": []}}
+    assert "ok requires mode=task|subtask|epic, questions and items" in prompt
+    assert "Write each key once, close every object/array" in prompt
+    assert "mode occurs once in payload" in prompt
+    assert "needs_input: payload={}, concrete missing_inputs" in prompt
     assert "blocked: payload={}, missing_inputs=[]" in prompt
 
 

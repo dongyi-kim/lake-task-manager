@@ -9,11 +9,15 @@ never run or combine a second Role.
 | `query_specialist` | Convert the intent into a compact typed read plan. | Query intent only; no JQL execution. |
 | `knowledge_curator` | Curate supplied evidence into a reusable brief. | No new source or operational fact. |
 | `work_architect` | Draft the requested Epic / Task-tier / Sub-Task structure. | Draft only; omit unknown optional metadata. |
-| `auditor` | Accept or block schema, hierarchy, grounding, and coverage. | Review only; never repair by inventing content. |
+| `auditor` | Report schema, hierarchy, grounding, and coverage findings. | Review only; never repair by inventing content. |
 | `result_integrator` | Produce one concise Korean synthesis from verified artifacts. | No new retrieval, claim, or write. |
 
 Inputs: `context_pack`, `role_id`, `correlation_id`, `output_contract`, `workflow_version`, `knowledge_version`.
 Payload: `context_pack.payload_schema_json`, bound by `context_pack.payload_schema_sha256`.
+
+Auditor: a completed audit is status=ok even with false flags and problems.
+Review role_context.draft/request_plan; never invent a pass. LTM handles findings.
+needs_input/blocked mean audit cannot be completed, not that the draft needs correction.
 
 ## Work draft input (`work_architect` only)
 

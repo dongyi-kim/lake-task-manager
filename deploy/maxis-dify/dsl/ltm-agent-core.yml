@@ -786,15 +786,18 @@ workflow:
             \ |\n| `knowledge_curator` | Curate supplied evidence into a reusable\
             \ brief. | No new source or operational fact. |\n| `work_architect` |\
             \ Draft the requested Epic / Task-tier / Sub-Task structure. | Draft only;\
-            \ omit unknown optional metadata. |\n| `auditor` | Accept or block schema,\
-            \ hierarchy, grounding, and coverage. | Review only; never repair by inventing\
+            \ omit unknown optional metadata. |\n| `auditor` | Report schema, hierarchy,\
+            \ grounding, and coverage findings. | Review only; never repair by inventing\
             \ content. |\n| `result_integrator` | Produce one concise Korean synthesis\
             \ from verified artifacts. | No new retrieval, claim, or write. |\n\n\
             Inputs: `context_pack`, `role_id`, `correlation_id`, `output_contract`,\
             \ `workflow_version`, `knowledge_version`.\nPayload: `context_pack.payload_schema_json`,\
-            \ bound by `context_pack.payload_schema_sha256`.\n\n## Work draft input\
-            \ (`work_architect` only)\n\nIn role_context request_plan goal/instruction,\
-            \ exactly `{\"source_content_index\": N}`\nmeans `context_pack.sources[N].content`\
+            \ bound by `context_pack.payload_schema_sha256`.\n\nAuditor: a completed\
+            \ audit is status=ok even with false flags and problems.\nReview role_context.draft/request_plan;\
+            \ never invent a pass. LTM handles findings.\nneeds_input/blocked mean\
+            \ audit cannot be completed, not that the draft needs correction.\n\n\
+            ## Work draft input (`work_architect` only)\n\nIn role_context request_plan\
+            \ goal/instruction, exactly `{\"source_content_index\": N}`\nmeans `context_pack.sources[N].content`\
             \ (zero-based).\nN: integer in range; source canonical_id starts with\
             \ `ltm:user-intent:`.\nBad reference/required hierarchy gap: `needs_input`\
             \ with specific `missing_inputs`;\nnever infer legality from a related\
@@ -4824,42 +4827,41 @@ workflow:
             \ evidence. Preserve time/status/partial limits.\nOnly request_plan.goal/tasks[].instruction\
             \ may use {\"source_content_index\": N}: zero-based integer N selects\
             \ context.sources[N].content from an intent source. JSON-looking business\
-            \ strings are not references.\n\n## Native output\nEmit one complete JSON\
-            \ object with root keys contract=\"work-draft.v1\", status, payload, missing_inputs;\
-            \ missing_inputs belongs only at root, never in payload. ok: payload must\
-            \ always contain questions, mode, and items; missing_inputs=[]. Use questions=[]\
-            \ when no questions are needed; necessary questions may use items=[] without\
-            \ changing status, but mode remains task|subtask|epic. needs_input: payload={},\
-            \ specific missing_inputs. blocked: payload={}, missing_inputs=[]. No\
-            \ competing draft with blocking questions.\nOptional planning fields interpretation,\
-            \ structure, structure_why, rationale belong directly in payload, never\
-            \ in items[] or children[]. Per-ticket fields belong in payload.items[];\
-            \ new child work belongs in that item's children[].\nWrapped leaves: exactly\
-            \ {value,kind,source_ids}; kind=fact|inference|recommendation, 1–8 distinct\
-            \ source IDs. Controls use ordinary schema values. Preserve optional absence/blank\
-            \ values. Limits: 40 claims, 40 citations, 256 bindings; no truncation.\n\
-            Canonical policy/help below uses required_input=true/false: emit input_need=required\
-            \ or input_need=optional respectively, never required_input.\nEmit only\
-            \ native-schema fields; assignee and parent_ref are unsupported. Ownership\
-            \ references preserve context, not extra fields; use children for new\
-            \ nested child work.\nOmit unknown optional metadata.\n\nWrapped: /interpretation,\
-            \ /items/*/actual, /items/*/background, /items/*/children/*/dod/*, /items/*/children/*/scope_in/*,\
-            \ /items/*/children/*/summary, /items/*/dod/*, /items/*/expected, /items/*/references/*,\
-            \ /items/*/reproduction/*, /items/*/scope_in/*, /items/*/scope_out/*,\
-            \ /items/*/summary, /questions/*/options/*, /questions/*/question, /questions/*/why_required,\
-            \ /rationale, /structure_why\nControls: /items/*/children/*/duedate, /items/*/components/*,\
-            \ /items/*/duedate, /items/*/epic, /items/*/epic_name, /items/*/issue_type,\
-            \ /items/*/labels/*, /items/*/parent, /items/*/priority, /items/*/tier,\
-            \ /items/*/type, /mode, /questions/*/field, /questions/*/input_need, /questions/*/kind,\
-            \ /structure\n\n## Canonical question meanings (reference only)\n- question:\
-            \ One concise Korean question.\n- kind: choice=one option, multi=multiple\
-            \ options, date=calendar value, text=free prose. Prefer choice whenever\
-            \ a recommendation is possible; reserve text for facts such as reproduction\
-            \ steps or background. The UI adds a custom-input option.\n- options:\
-            \ Two to five Korean options for choice, with the recommended option first\
-            \ and an optional short reason.\n- field: Ticket field being asked; the\
-            \ UI supplies field-specific autocomplete.\n- required_input: True only\
-            \ when no valid and truthful draft can be produced without user-owned\
+            \ strings are not references.\n\n## Native output\nJSON shape (fill items/questions\
+            \ from evidence, not this empty example):\n{\"contract\":\"work-draft.v1\"\
+            ,\"status\":\"ok\",\"missing_inputs\":[],\"payload\":{\"mode\":\"task\"\
+            ,\"questions\":[],\"items\":[]}}\nWrite each key once, close every object/array,\
+            \ no trailing text. mode occurs once in payload, never in items. missing_inputs\
+            \ is root-only. ok requires mode=task|subtask|epic, questions and items;\
+            \ no competing draft with blocking questions. needs_input: payload={},\
+            \ concrete missing_inputs. blocked: payload={}, missing_inputs=[].\ninterpretation,\
+            \ structure, structure_why, rationale are payload fields. Ticket fields\
+            \ go in payload.items[]; new children in items[].children[].\nWrapped\
+            \ leaves: exactly {value,kind,source_ids}; kind=fact|inference|recommendation,\
+            \ 1–8 distinct source IDs. Controls use ordinary schema values. Preserve\
+            \ optional absence/blank values. Limits: 40 claims, 40 citations, 256\
+            \ bindings; no truncation.\nCanonical policy/help below uses required_input=true/false:\
+            \ emit input_need=required or input_need=optional respectively, never\
+            \ required_input.\nEmit only native-schema fields; assignee and parent_ref\
+            \ are unsupported. Ownership references preserve context, not extra fields;\
+            \ use children for new nested child work.\nOmit unknown optional metadata.\n\
+            \nWrapped: /interpretation, /items/*/actual, /items/*/background, /items/*/children/*/dod/*,\
+            \ /items/*/children/*/scope_in/*, /items/*/children/*/summary, /items/*/dod/*,\
+            \ /items/*/expected, /items/*/references/*, /items/*/reproduction/*, /items/*/scope_in/*,\
+            \ /items/*/scope_out/*, /items/*/summary, /questions/*/options/*, /questions/*/question,\
+            \ /questions/*/why_required, /rationale, /structure_why\nControls: /items/*/children/*/duedate,\
+            \ /items/*/components/*, /items/*/duedate, /items/*/epic, /items/*/epic_name,\
+            \ /items/*/issue_type, /items/*/labels/*, /items/*/parent, /items/*/priority,\
+            \ /items/*/tier, /items/*/type, /mode, /questions/*/field, /questions/*/input_need,\
+            \ /questions/*/kind, /structure\n\n## Canonical question meanings (reference\
+            \ only)\n- question: One concise Korean question.\n- kind: choice=one\
+            \ option, multi=multiple options, date=calendar value, text=free prose.\
+            \ Prefer choice whenever a recommendation is possible; reserve text for\
+            \ facts such as reproduction steps or background. The UI adds a custom-input\
+            \ option.\n- options: Two to five Korean options for choice, with the\
+            \ recommended option first and an optional short reason.\n- field: Ticket\
+            \ field being asked; the UI supplies field-specific autocomplete.\n- required_input:\
+            \ True only when no valid and truthful draft can be produced without user-owned\
             \ information. False for a preference with a safe default or omission.\n\
             - why_required: One concise Korean reason naming the unresolved decision\
             \ or payload field when required_input is true; otherwise an empty string.\n\

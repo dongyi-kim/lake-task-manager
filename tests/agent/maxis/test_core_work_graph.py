@@ -138,6 +138,6 @@ def test_work_compiled_assets_match_independent_review_pins(nodes):
         (nodes[WORK]["prompt_template"][1]["text"], "WORK_USER_SHA256"),
     ):
         assert hashlib.sha256(value.encode()).hexdigest() == getattr(GRAPH, pin) == getattr(independent, pin)
-    assert len(assets["work_system_prompt"].encode()) == 16362
+    assert len(assets["work_system_prompt"].encode()) <= 16384
     assert independent.WORK_MAX_SYSTEM_BYTES == 16384
     assert assets["work_schema"]["properties"]["contract"]["enum"] == ["work-draft.v1"]
