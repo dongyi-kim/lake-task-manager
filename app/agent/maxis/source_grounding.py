@@ -30,7 +30,8 @@ def source_lexical_parts(value):
         return Number(raw)
 
     try:
-        if (not isinstance(value, str) or len(value.encode("utf-8")) > 1500
+        if (not isinstance(value, str) or len(value) > 1500
+                or len(value.encode("utf-8")) > 4500
                 or not value.lstrip().startswith(("{", "["))):
             return (value,)
         parsed = json.loads(value, object_pairs_hook=pairs, parse_constant=invalid,

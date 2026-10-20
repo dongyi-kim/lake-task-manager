@@ -79,6 +79,47 @@ def test_context_guard_rejects_secret_without_echoing_it(context_guard, now):
     assert "top-secret" not in str(caught.value)
 
 
+def test_complete_korean_json_is_not_truncated_at_ascii_byte_limit(context_guard, now):
+    raw = json.dumps({"summary": "정상 조회 결과 " * 75}, ensure_ascii=False, separators=(",", ":"))
+    assert len(raw) < 1500 < len(raw.encode()) < 4500
+    pack = context_guard.build(
+        request_id="korean-source", use_case="editor_author", query="검토 요청",
+        payload_schema=_PAYLOAD_SCHEMA, user_identity="synthetic",
+        sources=[_source(1, now, content=raw)], requested_at=now,
+    )
+    assert pack.sources[0].content == raw
+    assert not pack.partial and not pack.sources[0].truncated
+    assert len(canonical_evidence_pack_json(pack).encode()) <= 6144
+
+
+@pytest.mark.parametrize("text", ["a" * 1501, "😀" * 1126])
+def test_source_character_and_byte_bounds_remain_fail_closed(context_guard, now, text):
+    pack = context_guard.build(
+        request_id="bounded-source", use_case="editor_author", query="검토 요청",
+        payload_schema=_PAYLOAD_SCHEMA, user_identity="synthetic",
+        sources=[_source(1, now, content=text)], requested_at=now,
+    )
+    assert pack.partial and pack.sources[0].truncated
+    assert len(pack.sources[0].content) <= 1500
+    assert len(pack.sources[0].content.encode()) <= 4500
+    assert len(canonical_evidence_pack_json(pack).encode()) <= 6144
+
+
+def test_direct_pack_cannot_bypass_per_source_utf8_bound(context_guard, now):
+    import hashlib
+    from app.agent.maxis.context_guard import validate_pack_safety
+    pack = context_guard.build(
+        request_id="direct-pack", use_case="editor_author", query="검토 요청",
+        payload_schema=_PAYLOAD_SCHEMA, user_identity="synthetic",
+        sources=[_source(1, now)], requested_at=now,
+    )
+    content = "😀" * 1126
+    source = pack.sources[0].model_copy(update={
+        "content": content, "content_sha256": hashlib.sha256(content.encode()).hexdigest()})
+    with pytest.raises(ContextGuardError, match="source_too_large"):
+        validate_pack_safety(pack.model_copy(update={"sources": (source,)}))
+
+
 @pytest.mark.parametrize(
     "field", [
         "password", "db_password", "token", "authToken", "api_key",

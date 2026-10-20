@@ -196,7 +196,12 @@ def test_exact_resource_boundaries_and_utf8_bytes():
         assert guard.source_lexical_parts(over_limit) == (over_limit,)
         multibyte = '{"x":"' + "가" * 498 + '"}'
         assert len(multibyte) < 1500 < len(multibyte.encode())
-        assert guard.source_lexical_parts(multibyte) == (multibyte,)
+        assert guard.source_lexical_parts(multibyte) == ("x", "가" * 498)
+        at_byte_limit = '["' + "😀" * 1001 + "가" * 164 + '"]'
+        assert len(at_byte_limit.encode()) == 4500 and len(at_byte_limit) <= 1500
+        assert guard.source_lexical_parts(at_byte_limit) != (at_byte_limit,)
+        over_byte_limit = at_byte_limit[:-2] + '가"]'
+        assert guard.source_lexical_parts(over_byte_limit) == (over_byte_limit,)
         depth8 = "[" * 8 + '"aa\\nbb"' + "]" * 8
         assert guard.source_lexical_parts(depth8) == ("aa\nbb",)
         hundred = json.dumps(["aa"] * 100)
@@ -300,7 +305,7 @@ def test_dictionary_collection_boundary_and_utf8_boundary():
         assert len(guard.source_lexical_parts(hundred)) == 200
         assert guard.source_lexical_parts(hundred_one) == (hundred_one,)
         assert guard.source_lexical_parts(at_bytes) != (at_bytes,)
-        assert guard.source_lexical_parts(over_bytes) == (over_bytes,)
+        assert guard.source_lexical_parts(over_bytes) == ("x", "가" * 497 + "aa")
 
 
 def test_keys_values_do_not_complete_markup_or_character_entities():

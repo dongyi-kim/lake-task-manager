@@ -40,7 +40,13 @@ def main(model_input):
             _fail()
         context = {key: value for key, value in pack.items() if key not in _HIDDEN}
         context["sources"] = [_source_view(row) for row in pack["sources"]]
-        # Original order, facts, metrics and role_context survive; policy is not evidence.
+        # Role context is not citable evidence. Do not expose its opaque integrity
+        # identifiers alongside genuine source IDs; retain values and provenance.
+        context["role_context"] = [
+            {key: value for key, value in row.items() if key not in {"context_id", "content_sha256"}}
+            for row in pack["role_context"]
+        ]
+        # Original order, facts, metrics and context values survive unchanged.
         view = _canonical({"contract": "knowledge-input.v1", "context": context,
             "knowledge_context": incoming["knowledge_context"], "producer_limits": _PRODUCER_LIMITS})
         if len(view.encode("utf-8", errors="strict")) > _MAX_MODEL_INPUT_UTF8_BYTES: _fail()

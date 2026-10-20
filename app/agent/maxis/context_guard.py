@@ -30,7 +30,10 @@ from app.agent.maxis.contracts import (
 _SOURCE_KINDS = frozenset({"jira", "confluence", "bitbucket", "knowledge", "ltm"})
 MAX_CONTEXT_PACK_UTF8_BYTES = 6_144
 MAX_QUERY_UTF8_BYTES = 1_024
-MAX_SOURCE_UTF8_BYTES = 1_500
+# The wire schema bounds characters separately. Korean text needs three UTF-8
+# bytes per character; keep the unchanged 6 KiB aggregate pack budget.
+MAX_SOURCE_CHARACTERS = 1_500
+MAX_SOURCE_UTF8_BYTES = 4_500
 MAX_ROLE_CONTEXT_UTF8_BYTES = 4_000
 _EMAIL = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
 _USER_ID = re.compile(
@@ -153,6 +156,10 @@ def validate_pack_safety(
         assert_safe_outbound_text(value, path)
     if _utf8_bytes(pack.query) > MAX_QUERY_UTF8_BYTES:
         raise ContextGuardError("query_too_large", "query")
+    for index, source in enumerate(pack.sources):
+        if (len(source.content) > MAX_SOURCE_CHARACTERS
+                or _utf8_bytes(source.content) > MAX_SOURCE_UTF8_BYTES):
+            raise ContextGuardError("source_too_large", f"sources[{index}].content")
     try:
         canonical_schema, schema_digest = canonical_payload_schema(
             pack.payload_schema_json
@@ -278,7 +285,7 @@ class ContextPolicy:
         if not 1 <= self.max_sources <= 10:
             raise ValueError("max_sources must be between 1 and 10")
         if not 1 <= self.max_utf8_bytes_per_source <= MAX_SOURCE_UTF8_BYTES:
-            raise ValueError("max_utf8_bytes_per_source must be between 1 and 1500")
+            raise ValueError("max_utf8_bytes_per_source must be between 1 and 4500")
         if not 1000 <= self.max_total_utf8_bytes <= MAX_CONTEXT_PACK_UTF8_BYTES:
             raise ValueError("max_total_utf8_bytes must be between 1000 and 6144")
         if not 1 <= self.freshness_seconds <= 86_400:
@@ -634,11 +641,12 @@ class ContextGuard:
             )
             self._check_sensitive(title, f"{path}.title")
             truncated = (
-                _utf8_bytes(content) > self.policy.max_utf8_bytes_per_source
+                len(content) > MAX_SOURCE_CHARACTERS
+                or _utf8_bytes(content) > self.policy.max_utf8_bytes_per_source
             )
             if truncated:
                 content = _truncate_to_utf8_bytes(
-                    content, self.policy.max_utf8_bytes_per_source,
+                    content[:MAX_SOURCE_CHARACTERS], self.policy.max_utf8_bytes_per_source,
                 )
             url = _optional_text(raw, "url", path, max_length=2048)
             self._validate_url(kind, url, f"{path}.url")

@@ -45,8 +45,10 @@ ContextGuard → Knowledge Guard → 실제 LLM → Contract Guard/ResponseGuard
 
 `core_control_graph.py::rebuild`는 Core source와 검토된 분류기/prompt를 받아 메모리 복사본을
 반환한다. CLI·파일 쓰기·runtime 등록은 없으며 reviewed asset의 독립 SHA pin을 확인한다.
-31노드·37엣지에서 policy allow 뒤 배타 분기를 둔다. Control/Contract LLM은 text를,
-Query/Request/Work/Knowledge/Result LLM은 각 조립기의 후보를 합류시켜 기존 Contract Guard로 전달한다.
+32노드·38엣지에서 policy allow 뒤 배타 분기를 둔다. Control/Contract LLM은 text를,
+Query/Request/Work/Knowledge/Result LLM은 각 조립기의 후보를 합류시킨다.
+Candidate Binding은 검증된 원래 요청의 transport metadata만 결속한 뒤 기존 Contract Guard로 전달한다.
+본문·claim·citation·status는 바꾸지 않으며 실제 실행 UUID와 의미 검증은 최종 guard가 독립 수행한다.
 Control/Contract LLM은 원본 model input, 나머지 LLM은 각각 전용 입력 투영을 받는다.
 policy deny는 0회, 허용된 일곱 경로는 각각 1회 LLM을 지나도록 구성한다.
 

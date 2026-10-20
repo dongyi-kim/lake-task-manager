@@ -121,6 +121,27 @@ def test_output_shapes_reach_the_actual_knowledge_system_boundary_once(nodes):
     assert set(fields["gaps"]["items"]["properties"]) == {"value", "kind", "source_ids"}
 
 
+def test_role_context_integrity_id_is_not_exposed_as_a_citable_source(nodes, knowledge_case):
+    import hashlib
+    _, incoming, draft = knowledge_case
+    value = json.loads(incoming)
+    text = encoded({"summary": "합성 조회 범위의 결과만 해석한다."})
+    context = {"context_id": "rctx-synthetic", "name": "situation", "content_json": text,
+               "observed_at": value["context_pack"]["requested_at"],
+               "content_sha256": hashlib.sha256(text.encode()).hexdigest(), "partial": False}
+    value["context_pack"]["role_context"] = [context]
+    raw = encoded(value)
+    view = json.loads(code(nodes[INPUT])["main"](raw)["knowledge_input"])
+    assert view["context"]["role_context"] == [{
+        key: item for key, item in context.items() if key not in {"context_id", "content_sha256"}}]
+    assert "rctx-synthetic" not in encoded(view)
+    assert [s["source_id"] for s in view["context"]["sources"]] == ["record-a", "intent-b"]
+    # Even a producer that invents the hidden ID is still rejected, not repaired.
+    draft["payload"]["our_context"]["source_ids"] = ["rctx-synthetic"]
+    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"):
+        code(nodes[ASSEMBLER])["main"](raw, encoded(draft))
+
+
 @pytest.mark.parametrize("field", ["our_context", "concepts", "references", "gaps"])
 def test_native_output_collection_shape_mismatches_are_not_repaired(nodes, knowledge_case, field):
     _, incoming, draft = knowledge_case

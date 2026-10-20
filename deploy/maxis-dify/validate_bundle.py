@@ -81,7 +81,7 @@ DIFY_PROMPT_SHA256 = {
 # This prevents an attacker from changing both the asset and all embedded copies while
 # retaining a self-consistent but weaker bundle.
 DIFY_CONTRACT_GUARD_SHA256 = (
-    "9dd34c3502e022a1b614cd0a0ab4973a7f91fbc713effbaf42d20e776280095b"
+    "6a724bc91462d70eb96a2c138916793ac7f809330cb31a1954cf481e8c0adf9d"
 )
 # An Editor-only assembly step is not authority to repair or bypass either Guard.
 # Pin the reviewed asset independently of its embedded DSL copy.

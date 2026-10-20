@@ -1017,34 +1017,34 @@ workflow:
           \ ValueError(\"nonfinite number\")\n\n    def number(raw):\n        if not\
           \ math.isfinite(float(raw)):\n            raise ValueError(\"nonfinite number\"\
           )\n        return Number(raw)\n\n    try:\n        if (not isinstance(value,\
-          \ str) or len(value.encode(\"utf-8\")) > 1500\n                or not value.lstrip().startswith((\"\
-          {\", \"[\"))):\n            return (value,)\n        parsed = json.loads(value,\
-          \ object_pairs_hook=pairs, parse_constant=invalid,\n                   \
-          \         parse_int=Number, parse_float=number)\n        if not isinstance(parsed,\
-          \ (dict, list)):\n            return (value,)\n        parts, remaining\
-          \ = [], [1024]\n\n        def collect(item, depth=0):\n            remaining[0]\
-          \ -= 1\n            if depth > 8 or remaining[0] < 0:\n                raise\
-          \ ValueError(\"shape limit\")\n            if isinstance(item, str):\n \
-          \               item.encode(\"utf-8\")\n                parts.append(item)\n\
-          \            elif isinstance(item, (dict, list)):\n                if len(item)\
-          \ > 100:\n                    raise ValueError(\"collection limit\")\n \
-          \               for key, child in item.items() if isinstance(item, dict)\
-          \ else enumerate(item):\n                    if isinstance(item, dict):\n\
-          \                        key.encode(\"utf-8\")\n                       \
-          \ parts.append(key)\n                    collect(child, depth + 1)\n   \
-          \         else:\n                parts.append(\"null\" if item is None else\
-          \ \"true\" if item else \"false\")\n\n        collect(parsed)\n        return\
-          \ tuple(parts)\n    except (ValueError, TypeError, OverflowError, RecursionError):\n\
-          \        return (value,)  # No prefix extraction, duplicate winner or partial\
-          \ decode.\n\n\n_CONTRACT = \"remote-role-result.v1\"\n_VALID_ROLES = {\n\
-          \    \"request_architect\",\n    \"query_specialist\",\n    \"knowledge_curator\"\
-          ,\n    \"portfolio_analyst\",\n    \"work_architect\",\n    \"auditor\"\
-          ,\n    \"result_integrator\",\n    \"editor_author\",\n}\n_TOP_FIELDS =\
-          \ {\n    \"contract\",\n    \"role_id\",\n    \"status\",\n    \"payload\"\
-          ,\n    \"claims\",\n    \"payload_claims\",\n    \"citations\",\n    \"\
-          missing_inputs\",\n    \"warnings\",\n    \"workflow_version\",\n    \"\
-          knowledge_version\",\n    \"knowledge_manifest_sha256\",\n    \"knowledge_proof\"\
-          ,\n}\n_IDENTIFIER = re.compile(r\"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\"\
+          \ str) or len(value) > 1500\n                or len(value.encode(\"utf-8\"\
+          )) > 4500\n                or not value.lstrip().startswith((\"{\", \"[\"\
+          ))):\n            return (value,)\n        parsed = json.loads(value, object_pairs_hook=pairs,\
+          \ parse_constant=invalid,\n                            parse_int=Number,\
+          \ parse_float=number)\n        if not isinstance(parsed, (dict, list)):\n\
+          \            return (value,)\n        parts, remaining = [], [1024]\n\n\
+          \        def collect(item, depth=0):\n            remaining[0] -= 1\n  \
+          \          if depth > 8 or remaining[0] < 0:\n                raise ValueError(\"\
+          shape limit\")\n            if isinstance(item, str):\n                item.encode(\"\
+          utf-8\")\n                parts.append(item)\n            elif isinstance(item,\
+          \ (dict, list)):\n                if len(item) > 100:\n                \
+          \    raise ValueError(\"collection limit\")\n                for key, child\
+          \ in item.items() if isinstance(item, dict) else enumerate(item):\n    \
+          \                if isinstance(item, dict):\n                        key.encode(\"\
+          utf-8\")\n                        parts.append(key)\n                  \
+          \  collect(child, depth + 1)\n            else:\n                parts.append(\"\
+          null\" if item is None else \"true\" if item else \"false\")\n\n       \
+          \ collect(parsed)\n        return tuple(parts)\n    except (ValueError,\
+          \ TypeError, OverflowError, RecursionError):\n        return (value,)  #\
+          \ No prefix extraction, duplicate winner or partial decode.\n\n\n_CONTRACT\
+          \ = \"remote-role-result.v1\"\n_VALID_ROLES = {\n    \"request_architect\"\
+          ,\n    \"query_specialist\",\n    \"knowledge_curator\",\n    \"portfolio_analyst\"\
+          ,\n    \"work_architect\",\n    \"auditor\",\n    \"result_integrator\"\
+          ,\n    \"editor_author\",\n}\n_TOP_FIELDS = {\n    \"contract\",\n    \"\
+          role_id\",\n    \"status\",\n    \"payload\",\n    \"claims\",\n    \"payload_claims\"\
+          ,\n    \"citations\",\n    \"missing_inputs\",\n    \"warnings\",\n    \"\
+          workflow_version\",\n    \"knowledge_version\",\n    \"knowledge_manifest_sha256\"\
+          ,\n    \"knowledge_proof\",\n}\n_IDENTIFIER = re.compile(r\"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\"\
           )\n_DIGEST = re.compile(r\"^[0-9a-f]{64}$\")\n_PUBLISHED_WORKFLOW_UUID =\
           \ re.compile(\n    r\"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$\"\
           \n)\n_POINTER = re.compile(r\"^/(?:[^~/]|~[01])+(?:/(?:[^~/]|~[01])+)*$\"\
@@ -6605,6 +6605,13 @@ workflow:
             facts, policy, or role_context into evidence, or relabel an unsupported
             fact merely to pass a guard.
 
+            Before returning, verify every source_ids member against context.sources[].source_id.
+            Context names, display references, integrity hashes and IDs from narrative
+            text are not source IDs. A complete zero-hit search supports only a statement
+            about that exact searched scope; it does not establish that the entity
+            or history does not exist. Use needs_input when the requested history
+            cannot be grounded in the returned records.
+
 
             ### Native output: knowledge-draft.v1 only
 
@@ -7264,8 +7271,13 @@ workflow:
           \ list or type(_PRODUCER_LIMITS) is not dict):\n            _fail()\n  \
           \      context = {key: value for key, value in pack.items() if key not in\
           \ _HIDDEN}\n        context[\"sources\"] = [_source_view(row) for row in\
-          \ pack[\"sources\"]]\n        # Original order, facts, metrics and role_context\
-          \ survive; policy is not evidence.\n        view = _canonical({\"contract\"\
+          \ pack[\"sources\"]]\n        # Role context is not citable evidence. Do\
+          \ not expose its opaque integrity\n        # identifiers alongside genuine\
+          \ source IDs; retain values and provenance.\n        context[\"role_context\"\
+          ] = [\n            {key: value for key, value in row.items() if key not\
+          \ in {\"context_id\", \"content_sha256\"}}\n            for row in pack[\"\
+          role_context\"]\n        ]\n        # Original order, facts, metrics and\
+          \ context values survive unchanged.\n        view = _canonical({\"contract\"\
           : \"knowledge-input.v1\", \"context\": context,\n            \"knowledge_context\"\
           : incoming[\"knowledge_context\"], \"producer_limits\": _PRODUCER_LIMITS})\n\
           \        if len(view.encode(\"utf-8\", errors=\"strict\")) > _MAX_MODEL_INPUT_UTF8_BYTES:\
