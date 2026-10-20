@@ -225,6 +225,26 @@ def test_intent_keeps_existing_identity_and_url_projection():
     assert pack.query == "Use the guarded user intent source."
 
 
+def test_work_continuation_is_citable_intent_not_external_fact():
+    state = _state(age_seconds=3600)
+    state.update(turn_continuation=True, continuation_answer="3회 재현하는 PoC 초안을 작성해 줘.")
+    pack = _pack(state, schema=CREATE_SCHEMA)
+    assert "Current continuation answer:\n3회 재현하는 PoC" in _intent(pack).content
+    assert (pack.requested_at - pack.sources[0].retrieved_at).total_seconds() >= 3600
+    answer = _draft_response(pack, proposal="3회 재현 확인")
+    assert _validate(answer, pack)[0].status == "ok"
+    answer["claims"][0]["kind"] = "fact"
+    with pytest.raises(ResponseGuardError, match="intent_source_fact_forbidden"):
+        _validate(answer, pack)
+
+
+@pytest.mark.parametrize("continuing", [False, "true", 1])
+def test_non_continuation_never_borrows_a_previous_answer(continuing):
+    state = _state()
+    state.update(turn_continuation=continuing, continuation_answer="STALE_ANSWER_MUST_NOT_CROSS")
+    assert "STALE_ANSWER_MUST_NOT_CROSS" not in canonical_evidence_pack_json(_pack(state))
+
+
 def test_fresh_request_does_not_refresh_stale_connector_source():
     pack = _pack(_state(age_seconds=3600))
     assert _intent(pack).retrieved_at == pack.requested_at

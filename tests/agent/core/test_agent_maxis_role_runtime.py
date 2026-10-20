@@ -766,8 +766,9 @@ def test_verified_query_source_is_not_diluted_by_user_intent_source():
     assert all(not source.source_id.startswith("src_intent_") for source in pack.sources)
 
 
-def test_request_architect_receives_only_bounded_explicit_continuation_answer():
-    state = _runtime_state("request_architect")
+@pytest.mark.parametrize("role", ["request_architect", "query_specialist", "work_architect", "knowledge_curator"])
+def test_resuming_roles_receive_only_bounded_explicit_continuation_answer(role):
+    state = _runtime_state(role)
     state.update(
         turn_continuation=True,
         continuation_answer="마감은 2026-09-30으로 해줘",
@@ -775,7 +776,7 @@ def test_request_architect_receives_only_bounded_explicit_continuation_answer():
     )
 
     payload = backend.role_payload(
-        "request_architect", state,
+        role, state,
         [HumanMessage(content="RAW_ROLE_TASK_MUST_NOT_CROSS")],
         {"type": "object"}, output_kind="structured",
     )
@@ -789,19 +790,28 @@ def test_request_architect_receives_only_bounded_explicit_continuation_answer():
     assert "RAW_ROLE_TASK_MUST_NOT_CROSS" not in query
 
 
-def test_non_request_role_never_receives_continuation_answer():
-    state = _runtime_state("work_architect")
+def test_independent_editor_never_receives_agent_continuation_answer():
+    state = _runtime_state("editor_author")
     state.update(
         turn_continuation=True,
         continuation_answer="CURRENT_ANSWER_MUST_NOT_CROSS_TO_OTHER_ROLE",
     )
     payload = backend.role_payload(
-        "work_architect", state, [], {"type": "object"},
+        "editor_author", state, [], {"type": "object"},
         output_kind="structured",
     )
     assert "CURRENT_ANSWER_MUST_NOT_CROSS_TO_OTHER_ROLE" not in json.dumps(
         payload["evidencePack"], ensure_ascii=False,
     )
+
+
+@pytest.mark.parametrize("role", ["request_architect", "query_specialist", "work_architect", "knowledge_curator"])
+@pytest.mark.parametrize("root", [None, "", "  "])
+def test_continuation_without_root_never_exports_orphan_answer(role, root):
+    state = _runtime_state(role)
+    state.update(request_text=root, turn_continuation=True, continuation_answer="ORPHAN_ANSWER_MUST_NOT_CROSS")
+    payload = backend.role_payload(role, state, [], {"type": "object"}, output_kind="structured")
+    assert "ORPHAN_ANSWER_MUST_NOT_CROSS" not in json.dumps(payload["evidencePack"], ensure_ascii=False)
 
 
 def test_dev_profile_replaces_all_content_with_a_fixed_synthetic_fixture():

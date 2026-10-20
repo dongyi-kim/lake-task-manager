@@ -1464,7 +1464,8 @@ def _context_pack(
     task_text = str(state.get("request_text") or "").strip()
     continuation_answer = (
         str(state.get("continuation_answer") or "").strip()
-        if role_id == "request_architect" and state.get("turn_continuation") is True
+        if role_id in {"request_architect", "query_specialist", "work_architect", "knowledge_curator"}
+        and task_text and state.get("turn_continuation") is True
         else ""
     )
     # A continuation needs both the durable root request and the current bounded answer.

@@ -302,7 +302,7 @@ class AgentState(TypedDict, total=False):
     request_text: str               # ★ 생성 갈래의 **원 요청**(첫 요청 턴의 사용자 문장).
                                     #   last_user_text 는 후속 턴(질문 답변)에서 원 요청을 잃는다 —
                                     #   실측: 제목·본문의 주제가 Epic 본문 쪽으로 끌려갔다.
-    continuation_answer: str        # 현재 후속 턴의 bounded 답변. 원격 RequestArchitect에만 전달
+    continuation_answer: str        # 현재 후속 턴의 bounded 답변. 원격 요청·조회·업무·지식 역할에 전달
                                     # 하며 전체 messages/transcript를 경계 밖으로 보내지 않는다.
     keywords: list                  # 검색에 쓸 말들(원문 그대로가 아니라 뽑아낸 것)
     module: str                     # 짐작한 모듈. 확신 없으면 빈 문자열

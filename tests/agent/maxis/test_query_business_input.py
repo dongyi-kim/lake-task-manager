@@ -93,6 +93,13 @@ def _record_builds(monkeypatch):
     return calls
 
 
+def test_canonical_query_receives_current_continuation_without_refreshing_sources():
+    state = _state(age=60)
+    state.update(turn_continuation=True, continuation_answer="DL-9044 댓글까지 확인해 줘")
+    pack = _pack(state)
+    assert _task(pack) == f"Original request:\n{REQUEST}\nCurrent continuation answer:\nDL-9044 댓글까지 확인해 줘"
+    assert pack.sources[0].retrieved_at == NOW - timedelta(seconds=60)
+
 def test_query_intent_comes_from_request_without_an_intent_source(monkeypatch):
     calls = _record_builds(monkeypatch)
     state = _state(count=3)
