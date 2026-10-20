@@ -138,6 +138,14 @@ def test_lexical_paraphrase_stays_blocked_after_mechanical_equality(nodes, resul
     with pytest.raises(ResponseGuardError, match="citation_assertion_mismatch"): local()
 
 
+def test_result_prompt_requires_extracts_without_promoting_context_to_sources(nodes):
+    prompt = nodes[LLM]["prompt_template"][0]["text"]
+    assert "short exact quotation" in prompt
+    assert "never context_id or a ticket key" in prompt
+    assert "not that the requested object does not exist" in prompt
+    assert "Do not relabel unsupported factual assertions" in prompt
+
+
 @pytest.mark.parametrize("fault", ["prefix", "missing_binding"])
 def test_independent_payload_is_red_while_same_value_assembly_is_green(nodes, result_case, fault):
     pack, incoming, draft = result_case
