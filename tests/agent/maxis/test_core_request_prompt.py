@@ -65,6 +65,16 @@ def test_annotation_changes_reach_prompt_without_changing_the_canonical_schema(c
     assert changed["properties"]["intent"]["description"] in revised
 
 
+def test_required_wire_fields_include_empty_mutation_arrays(contract, role):
+    prompt = contract.build_request_system_prompt(SCHEMA, role, "Native transport")
+    required = ["research_readiness" if name == "sufficient" else name
+                for name in SCHEMA["required"]]
+    assert "payload must include ALL of: " + ", ".join(required) + "." in prompt
+    assert "Do not omit required arrays when empty." in prompt
+    assert "requested_effects and target_selectors must be []" in prompt
+    assert "This is not permission to infer an effect." in prompt
+
+
 def test_selected_continuation_lines_survive_without_semantic_rewriting(contract, role):
     changed = role.replace("2. Treat the latest", "2. Preserve true/false literally.\n   Treat the latest")
     changed = changed.replace("8. Set `write_intent", "8. Keep this line.\n   Set `write_intent")

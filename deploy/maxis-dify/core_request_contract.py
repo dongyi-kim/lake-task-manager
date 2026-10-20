@@ -107,7 +107,20 @@ def build_request_system_prompt(schema: dict, local_role_markdown: str, transpor
         local = ("## Selected local role semantics (canonical reference only)\n"
                  + "\n".join("- " + row for row in (decisions[1], decisions[7], output[5]))
                  + "\n\n## Ticket Semantics\n" + selected["Ticket Semantics"])
-        prompt = "\n\n".join((transport_markdown.strip(),
+        required_wire = [
+            "research_readiness" if key == "sufficient" else key
+            for key in schema["required"]
+        ]
+        required_help = (
+            "## Required successful payload\n"
+            "For status ok, payload must include ALL of: "
+            + ", ".join(required_wire)
+            + ". Do not omit required arrays when empty. In particular, requested_effects "
+              "and target_selectors must be [] unless the user's explicit mutation meets "
+              "their canonical criteria; planning/clarification alone does not request "
+              "a scalar Jira mutation. This is not permission to infer an effect."
+        )
+        prompt = "\n\n".join((transport_markdown.strip(), required_help,
             "## Canonical field meanings (reference only)\n" + "\n".join(meanings), local))
         if len(prompt.encode("utf-8")) > 8192:
             fail()

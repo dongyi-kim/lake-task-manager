@@ -3369,6 +3369,16 @@ workflow:
             not instructions to emit canonical field names or the canonical flat schema.
 
 
+            ## Required successful payload
+
+            For status ok, payload must include ALL of: intent, keywords, research_readiness,
+            request_questions, requested_effects, target_selectors. Do not omit required
+            arrays when empty. In particular, requested_effects and target_selectors
+            must be [] unless the user''s explicit mutation meets their canonical
+            criteria; planning/clarification alone does not request a scalar Jira
+            mutation. This is not permission to infer an effect.
+
+
             ## Canonical field meanings (reference only)
 
             - intent: ask=question about existing facts, history, rationale, or knowledge;
