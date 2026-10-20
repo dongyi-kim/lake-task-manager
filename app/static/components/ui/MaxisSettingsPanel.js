@@ -19,7 +19,7 @@ const ROUTE_MODES = [
 ];
 
 function blankForm() {
-  return { baseUrl: "", dataPolicy: "synthetic_only", workflowBundleVersion: "",
+  return { displayName: "", executionPolicy: "connected", baseUrl: "", workflowBundleVersion: "",
     knowledgeVersion: "", knowledgeDatasetId: "", knowledgeSentinelSha256: "",
     remoteLogPolicyId: "", remoteLogMode: "", remoteLogRetentionDays: null,
     workflows: Object.fromEntries(WORKFLOWS.map((w) =>
@@ -29,12 +29,13 @@ function blankForm() {
 export default {
   name: "MaxisSettingsPanel",
   components: { MaxisSetupWizard },
-  emits: ["saved"],
+  emits: ["saved", "applied"],
   data() {
     return {
       workflowRows: WORKFLOWS, routeModes: ROUTE_MODES,
       st: null, selectedName: "", form: blankForm(), routes: {},
-      view: "profiles", setupMode: "", addProfileName: "dev",
+      view: "profiles", setupMode: "", setupProfileName: "", newDisplayName: "",
+      setupDirty: false, setupBusy: false,
       profileEditorOpen: false, keysEditorOpen: false, formSnapshot: "",
       runtime: null, statusUnavailable: false,
       keys: { agentCoreApiKey: "", editorAuthorApiKey: "", pmoBriefApiKey: "" },
@@ -43,8 +44,13 @@ export default {
     };
   },
   computed: {
-    profiles() { return (this.st && this.st.profiles) || []; },
+    profiles() {
+      return ((this.st && this.st.profiles) || []).filter((row) => !row.isLegacy ||
+        row.baseUrl || row.effectiveBaseUrl || row.effectiveHost ||
+        Object.values(row.credentials || {}).some((key) => key && key.configured));
+    },
     selected() { return this.profiles.find((p) => p.name === this.selectedName) || null; },
+    setupProfile() { return this.profiles.find((p) => p.name === this.setupProfileName) || null; },
     canManage() { return !!this.st && this.st.canManage === true && !this.statusUnavailable; },
     profileDirty() {
       return !!this.selected && JSON.stringify(this.form) !== this.formSnapshot;
@@ -56,7 +62,7 @@ export default {
     routesDirty() {
       return WORKFLOWS.some((w) => this.routes[w.key] !== ((this.st && this.st.routes) || {})[w.key]);
     },
-    hasUnsavedChanges() { return this.profileDirty || this.keysDirty || this.routesDirty; },
+    hasUnsavedChanges() { return this.profileDirty || this.keysDirty || this.routesDirty || this.setupDirty; },
     runtimeRows() {
       return [{ key: "conversation", label: "Agent 대화" }, { key: "editor", label: "에디터 AI" }]
         .map((feature) => {
@@ -65,7 +71,7 @@ export default {
             row.profile === this.selectedName && !!this.selected && this.selected.enabled;
           return { ...feature, usingSelected,
             labelText: !row ? "실행 상태 확인 불가" : usingSelected ? "현재 사용 중 · MAXIS" :
-              `${row.engine === "maxis" ? "MAXIS" : row.engine === "mixed" ? "Local + MAXIS" : "Local"}${row.profile ? " · " + row.profile : ""} · ${row.ready ? "사용 가능" : "사용 불가"}`,
+              `${row.engine === "maxis" ? "MAXIS" : row.engine === "mixed" ? "Local + MAXIS" : "Local"}${row.profile ? " · " + this.profileLabel(row.profile) : ""} · ${row.ready ? "사용 가능" : "사용 불가"}`,
             reason: row && !row.ready ? row.reason || "실행 설정을 확인하세요." : "" };
         });
     },
@@ -77,46 +83,25 @@ export default {
         ...Object.values(env.workflowVersions || {}), ...Object.values(env.credentials || {})]
         .filter(Boolean);
     },
-    remoteLogReady() {
-      if (!this.selected || this.selected.stage !== "prod") return true;
-      return !!this.selected.effectiveRemoteLogPolicyId &&
-        ["redacted", "approved_bounded_content"].includes(
-          this.selected.effectiveRemoteLogMode) &&
-        Number.isInteger(this.selected.effectiveRemoteLogRetentionDays) &&
-        this.selected.effectiveRemoteLogRetentionDays >= 0 &&
-        this.selected.effectiveRemoteLogRetentionDays <= 90;
-    },
     knowledgeEval() {
       return (this.selected && this.selected.knowledgeEvalAttestation) || null;
     },
     knowledgeEvalReady() {
-      if (!this.selected || this.selected.stage !== "prod") return true;
+      if (!this.selected || this.selected.executionPolicy !== "qualified") return true;
       return !!(this.selected.qualification && this.selected.qualification.valid);
     },
     activationDisabledReason() {
       if (!this.canManage) return "연결 설정 변경은 매니저만 할 수 있습니다.";
       if (!this.selected) return "프로필을 선택하세요.";
+      if (this.setupBusy) return "서버 자산 준비 작업이 끝난 뒤 적용하세요.";
       if (this.hasUnsavedChanges) return "변경한 설정·API Key·실행 경로를 먼저 저장하세요.";
       if (this.selected.configError) return this.selected.configError;
-      if (this.selected.disabledReason) return this.selected.disabledReason;
-      if (!this.selected.verified) return "저장된 설정의 연결을 먼저 확인하세요.";
-      if (!this.remoteLogReady) return "원격 로그 승인 정책을 먼저 저장하세요.";
-      if (Object.values(this.routes || {}).includes("maxis") && !this.knowledgeEvalReady) {
-        return "MAXIS 실행 경로를 사용하려면 서명된 PROD 평가 검증이 필요합니다.";
-      }
-      if (this.selected.dataPolicy === "synthetic_only" &&
-          Object.values(this.routes || {}).includes("maxis")) {
-        return "DEV는 합성 연결·Shadow 검증 전용입니다. MAXIS 최종 응답 경로를 사용할 수 없습니다.";
-      }
+      if (!this.selected.baseUrl && !this.selected.effectiveBaseUrl) return "Service API 주소를 먼저 저장하세요.";
       if ((this.st.environmentOverrides || {}).profile && !this.selected.active) {
         return "배포 환경변수로 연결 프로필이 고정되어 있습니다.";
       }
       const versionEnv = ((this.st.environmentOverrides || {}).workflowVersions) || {};
-      const required = new Set(["agent_core"]);
-      Object.entries(this.routes || {}).forEach(([key, mode]) => {
-        if (mode === "shadow" || mode === "maxis") required.add(key);
-      });
-      const incomplete = [...required].find((key) => {
+      const incomplete = ["agent_core", "editor_author"].find((key) => {
         const workflow = (this.selected.workflows && this.selected.workflows[key]) || {};
         return !workflow.binding || !(workflow.version || versionEnv[key]) ||
           !this.credential(key).configured;
@@ -135,8 +120,7 @@ export default {
     },
     remoteObservations() {
       const value = this.st && this.st.lastRemoteObservations;
-      if (this.remoteObservationState !== "observed" ||
-          !["dev", "prod", "internal-pilot"].includes(this.selectedName)) return [];
+      if (this.remoteObservationState !== "observed" || !this.selectedName) return [];
       const rows = value.observations.slice(0, 9).filter((row) =>
         row && typeof row === "object" && row.profile === this.selectedName);
       const text = (value, pattern) => typeof value === "string" && pattern.test(value) ? value : "미확인";
@@ -177,7 +161,6 @@ export default {
         const configured = (p) => !!(p.effectiveHost || p.effectiveBaseUrl || p.baseUrl);
         const preferred = [prefer, this.selectedName,
           (this.profiles.find((p) => p.active && configured(p)) || {}).name,
-          (this.profiles.find((p) => p.name === "dev" && configured(p)) || {}).name,
           (this.profiles.find(configured) || {}).name, this.st.activeProfile,
           (this.profiles[0] || {}).name];
         const selected = preferred.find((name) => this.profiles.some((p) => p.name === name));
@@ -218,7 +201,8 @@ export default {
         this.profileEditorOpen = false; this.keysEditorOpen = false;
       }
       this.selectedName = name;
-      this.form = { baseUrl: row.baseUrl || "", dataPolicy: row.dataPolicy || "",
+      this.form = { displayName: this.profileLabel(row.name), executionPolicy: row.executionPolicy || "connected",
+        baseUrl: row.baseUrl || "",
         workflowBundleVersion: row.workflowBundleVersion || "",
         knowledgeVersion: row.knowledgeVersion || "",
         knowledgeDatasetId: row.knowledgeDatasetId || "",
@@ -238,26 +222,67 @@ export default {
       return true;
     },
     canLeaveDraft() {
-      if (!this.hasUnsavedChanges) return true;
+      // Repository setup stays mounted between tabs; its draft blocks applying,
+      // not navigation back to the saved-profile view.
+      if (!this.profileDirty && !this.keysDirty && !this.routesDirty) return true;
       this.err = "저장하지 않은 변경이 있습니다. 저장하거나 변경 취소 후 이동하세요.";
       return false;
     },
     changeView(view) {
       if (this.busy || !this.canLeaveDraft()) return;
       this.view = view; this.err = ""; this.note = "";
-      this.addProfileName = this.selectedName || (this.profiles[0] || {}).name || "dev";
     },
     discardChanges() {
       if (this.busy) return;
       this.selectProfile(this.selectedName, true);
       this.routes = { ...((this.st && this.st.routes) || {}) };
+      if (this.$refs.setupWizard) this.$refs.setupWizard.discardChanges();
     },
-    openManualSetup() {
-      if (!this.selectProfile(this.addProfileName)) return;
-      this.view = "profiles"; this.profileEditorOpen = true; this.keysEditorOpen = true;
+    profileLabel(name) {
+      const row = this.profiles.find((p) => p.name === name);
+      return (row && row.displayName) || "MAXIS 연결";
+    },
+    async createProfile() {
+      if (this.busy || !this.canManage || !this.canLeaveDraft()) return;
+      const displayName = this.newDisplayName.trim();
+      if (!displayName) { this.err = "새 설정의 이름을 입력하세요."; return; }
+      this.busy = "create"; this.err = "";
+      try {
+        const result = this.ensureOk(await agentApi.maxisCreateProfile(displayName));
+        const name = result.name || (result.profile && result.profile.name);
+        if (!name) throw new Error("새 프로필의 식별자를 확인하지 못했습니다.");
+        if (!await this.load(name)) return;
+        this.view = "profiles"; this.newDisplayName = "";
+        this.profileEditorOpen = true; this.keysEditorOpen = true;
+        this.$emit("saved");
+      } catch (error) { this.err = error.message || "설정을 추가하지 못했습니다."; }
+      finally { this.busy = ""; }
+    },
+    openRepositorySetup() {
+      if (this.busy || !this.canManage || !this.selected || !this.canLeaveDraft()) return;
+      if (this.setupProfileName && this.setupProfileName !== this.selectedName) {
+        this.err = "다른 프로필의 준비 작업이 열려 있습니다. 해당 작업을 마친 뒤 설정창을 다시 열어 주세요.";
+        return;
+      }
+      this.setupProfileName = this.selectedName;
+      this.setupMode = "repository"; this.view = "add";
     },
     async setupConfigured() {
-      if (await this.load("prod")) this.$emit("saved");
+      const preserve = { form: this.profileDirty, keys: this.keysDirty, routes: this.routesDirty };
+      if (await this.load(this.selectedName || this.setupProfileName, preserve)) this.$emit("saved");
+    },
+    applied(result, name = this.selectedName) {
+      const runtime = result && result.runtime;
+      if (!runtime || !["conversation", "editor"].every((feature) => {
+        const row = runtime[feature];
+        return row && row.engine === "maxis" && row.profile === name && row.ready === true;
+      })) {
+        this.err = "MAXIS 적용 후 Agent·에디터 실행 상태를 확인하지 못했습니다. 설정을 다시 확인하세요.";
+        return false;
+      }
+      this.runtime = runtime;
+      this.$emit("applied", result);
+      return true;
     },
     ensureOk(result) {
       if (result && result.ok === false) throw new Error(result.error || "설정을 확인하세요.");
@@ -274,12 +299,20 @@ export default {
     },
     async saveProfile() {
       if (this.busy || !this.canManage || !this.selected) return;
+      const saved = JSON.parse(this.formSnapshot || "{}");
+      const patch = Object.fromEntries(Object.entries(this.form).filter(([key, value]) =>
+        JSON.stringify(value) !== JSON.stringify(saved[key])));
+      if (!Object.keys(patch).length) {
+        this.err = ""; this.note = "변경한 프로필 설정이 없습니다."; return;
+      }
       this.busy = "profile"; this.err = ""; this.note = "";
       try {
-        this.ensureOk(await agentApi.maxisSaveProfile(this.selectedName, this.form));
+        this.ensureOk(await agentApi.maxisSaveProfile(this.selectedName, patch));
         if (!await this.load(this.selectedName, { keys: true, routes: true })) return;
         this.$emit("saved");
-        this.note = "프로필을 저장했습니다. 변경된 조합은 다시 확인해야 합니다.";
+        this.note = Object.keys(patch).every((key) => key === "displayName")
+          ? "설정 이름을 저장했습니다. 현재 AI 연결은 유지됩니다."
+          : "프로필을 저장했습니다. 변경된 조합은 다시 확인해야 합니다.";
       } catch (e) { this.err = (e && e.message) || "프로필을 저장하지 못했습니다"; }
       finally { this.busy = ""; }
     },
@@ -320,10 +353,9 @@ export default {
       if (this.busy || !this.canActivate) return;
       this.busy = "activate"; this.err = ""; this.note = "";
       try {
-        this.ensureOk(await agentApi.maxisActivate(this.selectedName));
-        if (!await this.load(this.selectedName)) return;
-        this.$emit("saved");
-        this.note = `${this.selectedName} 프로필을 연결 설정으로 선택했습니다. 실제 사용 경로는 아래 실행 상태를 따릅니다.`;
+        const result = this.ensureOk(await agentApi.maxisApplyProfile(
+          this.selectedName, ["agent_core", "editor_author"]));
+        this.applied(result);
       } catch (e) { this.err = (e && e.message) || "프로필을 적용하지 못했습니다"; }
       finally { this.busy = ""; }
     },
@@ -367,7 +399,7 @@ export default {
       if (!row) return "—";
       const engine = row.engine === "maxis" ? "MAXIS/Dify" :
         (row.engine === "local" ? "LTM Local" : (row.engine || "미확인"));
-      return row.profile ? `${engine} · ${row.profile}` : engine;
+      return row.profile ? `${engine} · ${this.profileLabel(row.profile)}` : engine;
     },
     probeDetail(row) {
       if (row && Array.isArray(row.missingParameters) && row.missingParameters.length) {
@@ -419,7 +451,7 @@ export default {
           <button v-for="p in profiles" :key="p.name" class="ag-mini"
                   :data-profile="p.name" :aria-pressed="selectedName === p.name" :disabled="!!busy"
                   :class="{ on: selectedName === p.name }" @click="selectProfile(p.name)">
-            {{ p.name }}<em v-if="p.active">선택됨</em>
+            {{ profileLabel(p.name) }}<em v-if="p.active">선택됨</em>
           </button>
         </div>
       </div>
@@ -436,8 +468,8 @@ export default {
       <div v-if="selected" class="mx-scroll">
         <section class="ag-sec mx-profile-summary" aria-label="선택한 MAXIS 설정">
           <div class="mx-summary-title">
-            <b>{{ selected.name }} 프로필</b>
-            <span :class="selected.enabled ? 'mx-selected' : ''">{{ selected.active ? '연결 설정 선택됨' : '연결 설정 후보' }}</span>
+            <b>{{ profileLabel(selected.name) }}</b>
+            <span :class="runtimeRows.every(row => row.usingSelected) ? 'mx-selected' : ''">{{ runtimeRows.every(row => row.usingSelected) ? '현재 사용 중' : '저장된 설정' }}</span>
           </div>
           <p class="mx-profile-host">{{ selected.effectiveBaseUrl || selected.effectiveHost || selected.baseUrl || '연결 주소 미설정' }}</p>
           <div class="mx-meta">
@@ -451,9 +483,7 @@ export default {
                     @click="runProbe">{{ busy === 'probe' ? '확인 중…' : '연결 확인' }}</button>
           </div>
           <p v-if="activationDisabledReason" class="mx-help mx-disabled-reason">{{ activationDisabledReason }}</p>
-          <p v-if="selected.dataPolicy === 'synthetic_only'" class="mx-help">
-            DEV는 합성 데이터 연결·Shadow 검증용입니다. 연결 설정을 선택해도 Agent 최종 응답이 MAXIS로 바뀌지는 않습니다.
-          </p>
+          <p class="mx-help">이 설정 사용을 누르면 연결을 확인하고 Agent·본문·댓글 AI에 함께 적용한 뒤 설정창을 닫습니다. 로컬 LLM 설정은 필요하지 않습니다.</p>
           <div class="mx-runtime-status" aria-label="현재 기능별 실행 상태">
             <div v-for="row in runtimeRows" :key="row.key" class="mx-runtime-row">
               <b>{{ row.label }}</b><span :class="row.usingSelected ? 'mx-selected' : ''">{{ row.labelText }}</span>
@@ -474,13 +504,18 @@ export default {
 
         <details class="ag-sec mx-details" :open="profileEditorOpen" @toggle="profileEditorOpen=$event.target.open">
           <summary>연결 설정 편집</summary>
-          <p class="mx-help">저장 위치: {{ selected.name }} 프로필</p>
+          <p class="mx-help">저장 위치: {{ profileLabel(selected.name) }}</p>
           <div class="mx-meta">
-            <span><b>Stage</b>{{ selected.stage }}</span><span><b>Host</b>{{ selected.effectiveHost || '미설정' }}</span>
-            <span><b>Data policy</b>{{ selected.dataPolicy }}</span><span><b>Fingerprint</b>{{ selected.fingerprint || '미확정' }}</span>
+            <span><b>Host</b>{{ selected.effectiveHost || '미설정' }}</span>
+            <span><b>Fingerprint</b>{{ selected.fingerprint || '미확정' }}</span>
           </div>
+          <label class="ag-f"><span>설정 이름</span><input v-model="form.displayName" maxlength="80" :readonly="!canManage || !!busy" placeholder="예: 팀 MAXIS"></label>
           <label class="ag-f"><span>Base URL</span><input v-model="form.baseUrl" :readonly="!canManage || !!busy" placeholder="https://maxis.example/v1"></label>
-          <label class="ag-f"><span>Data policy</span><input :value="form.dataPolicy" readonly></label>
+          <label class="ag-f"><span>사용 정책</span><select v-model="form.executionPolicy" :disabled="!canManage || !!busy">
+            <option value="connected">일반 사용</option>
+            <option value="qualified">사전 품질 검증 필수</option>
+          </select></label>
+          <p class="mx-help">모든 연결은 같은 MAXIS 프로필입니다. 사용 정책은 연결 이름이나 서버 위치가 아니라 필요한 검증 수준을 정합니다. 일반 사용도 연결·입력 계약·권한 검사를 거칩니다.</p>
           <label class="ag-f"><span>Workflow bundle</span><input v-model="form.workflowBundleVersion" :readonly="!canManage || !!busy" placeholder="예: ltm-agent-2026.09.1"></label>
           <label class="ag-f"><span>Knowledge version</span><input v-model="form.knowledgeVersion" :readonly="!canManage || !!busy" placeholder="예: ltm-knowledge-2026.09"></label>
           <label class="ag-f"><span>Dify Knowledge dataset UUID</span><input v-model="form.knowledgeDatasetId" :readonly="!canManage || !!busy" placeholder="예: 12345678-1234-4123-8123-123456789abc"></label>
@@ -490,26 +525,26 @@ export default {
             <span><b>Knowledge manifest</b>{{ selected.knowledgeManifestSha256.slice(0, 16) }}…</span>
             <span><b>Tracked docs</b>{{ selected.knowledgeDocumentCount }}</span>
           </div>
-          <div v-if="selected.stage === 'prod' && knowledgeEval" class="mx-promotion-gate"
+          <div v-if="selected.executionPolicy === 'qualified' && knowledgeEval" class="mx-promotion-gate"
                :class="knowledgeEvalReady ? 'on' : 'off'">
             <b>Knowledge 원격 평가 {{ knowledgeEvalReady ? '권한 검증 완료' : '운영 권한 차단' }}</b>
             <span v-if="knowledgeEvalReady">
-              현재 PROD 배포의 독립 검수와 서명 검증 완료
+              현재 연결의 독립 검수와 서명 검증 완료
             </span>
             <span v-else>
-              현재 PROD 배포에 결속된 서명 평가 결과물 검증이 필요합니다.
+              현재 연결에 결속된 서명 평가 결과물 검증이 필요합니다.
               <template v-if="knowledgeEval.bindingValid"> metadata binding 확인됨 · 권한 증명 아님</template>
               <template v-if="knowledgeEval.expectedBinding && knowledgeEval.expectedBinding.profileMaterialSha256">
                 예상 binding {{ knowledgeEval.expectedBinding.profileMaterialSha256.slice(0, 16) }}…
               </template>
             </span>
           </div>
-          <div v-if="selected.stage === 'prod'" class="ag-warn">
+          <div v-if="selected.executionPolicy === 'qualified'" class="ag-warn">
             Knowledge 평가 값은 외부 결과물의 ID·SHA-256을 현재 배포에 묶는 metadata입니다.
             실제 Dify 평가 실행을 자동 검증했다는 뜻은 아닙니다. LTM이 artifact 본문·서명을
             검증하지 않는 동안에는 운영 권한을 부여하지 않습니다.
           </div>
-          <div v-if="selected.stage === 'prod'" class="mx-workflow">
+          <div class="mx-workflow">
             <div><b>Dify 원격 실행 로그 정책</b><span>운영 전 관리자 승인 증빙</span></div>
             <label class="ag-f"><span>승인 정책 ID</span><input v-model="form.remoteLogPolicyId" :readonly="!canManage || !!busy" placeholder="예: ISMS-AI-LOG-2026-014"></label>
             <label class="ag-f"><span>로그 내용 범위</span><select v-model="form.remoteLogMode" :disabled="!canManage || !!busy">
@@ -520,15 +555,6 @@ export default {
             <label class="ag-f"><span>보존 기간(일)</span><input type="number" min="0" max="90" step="1"
               v-model.number="form.remoteLogRetentionDays" :readonly="!canManage || !!busy"></label>
             <div class="ag-warn">이 값은 관리자 승인 증빙이며 Dify 설정을 자동 검사하지 않습니다. Dify 실행 이력에는 입력·출력 원문이 남을 수 있으므로 실제 Workspace 로그 설정을 별도로 대조해야 합니다.</div>
-          </div>
-          <div v-else-if="selected.stage === 'dev'" class="mx-help">
-            DEV 원격 로그는 synthetic-only · redacted · 0일 정책으로 고정됩니다.
-          </div>
-          <div v-else-if="selected.stage === 'internal-pilot'" class="ag-warn">
-            내부 시범은 DEV와 별도 환경이며 아직 실행할 수 없습니다.
-            신규 자산의 콘텐츠 보존 상한 24시간·메타데이터 7일, 사용자 접근권한과
-            불변 릴리스의 실제 서버 검증이 필요합니다. 설정·증적 등록만으로 활성화되지 않습니다.
-            정책 세부 설정은 관리자 API와 내부 시범 템플릿을 사용합니다.
           </div>
           <div v-for="w in workflowRows" :key="w.key" class="mx-workflow">
             <div><b>{{ w.label }}</b><span>{{ w.hint }}</span></div>
@@ -573,21 +599,18 @@ export default {
 
         <details class="ag-sec mx-details">
           <summary>기능별 실행 경로와 긴급 중단</summary>
-          <p class="mx-help">실행 경로는 현재 연결 설정({{ st.activeProfile || '미선택' }})에 적용됩니다.</p>
+          <p class="mx-help">실행 경로는 현재 연결 설정({{ st.activeProfile ? profileLabel(st.activeProfile) : '미선택' }})에 적용됩니다. 보통은 위의 이 설정 사용 버튼으로 Agent·에디터를 함께 적용하세요.</p>
           <div v-for="w in workflowRows" :key="'route-'+w.key" class="ag-f">
             <span>{{ w.label }}</span><select v-model="routes[w.key]" :disabled="!!busy || !canManage">
               <option v-for="mode in routeModes" :key="mode.key" :value="mode.key"
-                      :disabled="mode.key === 'maxis' && (selected.dataPolicy === 'synthetic_only' || !knowledgeEvalReady)">{{ mode.label }} — {{ mode.hint }}</option>
+                      :disabled="mode.key === 'maxis' && !knowledgeEvalReady">{{ mode.label }} — {{ mode.hint }}</option>
             </select>
           </div>
-          <div v-if="selected.dataPolicy === 'synthetic_only'" class="ag-warn">
-            DEV는 합성 데이터 canary·Shadow 검증 전용이며 MAXIS를 최종 응답 주체로 지정할 수 없습니다.
-          </div>
-          <div v-if="selected.stage === 'prod' && !knowledgeEvalReady" class="ag-warn">
-            서명된 PROD 평가 검증 전에는 Shadow만 사용할 수 있으며 MAXIS 운영 경로는 저장할 수 없습니다.
+          <div v-if="selected.executionPolicy === 'qualified' && !knowledgeEvalReady" class="ag-warn">
+            사전 품질 검증 필수 정책에서는 서명 평가 검증 후 MAXIS 실행 경로를 적용할 수 있습니다.
           </div>
           <div v-for="w in workflowRows" :key="'promotion-'+w.key">
-            <div v-if="selected.stage === 'prod' && promotion(w.key)" class="mx-promotion-gate"
+            <div v-if="selected.executionPolicy === 'qualified' && promotion(w.key)" class="mx-promotion-gate"
                  :class="promotion(w.key).ready ? 'on' : 'off'">
               <b>{{ w.label }} 운영 승격 {{ promotion(w.key).ready ? '통과' : '대기' }}</b>
               <span>{{ promotionDetail(w.key) }}</span>
@@ -635,19 +658,23 @@ export default {
     <div v-show="view==='add'" class="mx-add-content">
       <section class="ag-sec">
         <div class="ag-lab">MAXIS 설정 추가</div>
-        <p class="mx-help">연결할 MAXIS의 주소와 앱 API Key를 저장할 프로필을 선택하세요. 기존 프로필에 설정을 입력하거나 수정합니다.</p>
-        <label class="ag-f"><span>저장할 프로필</span><select v-model="addProfileName">
-          <option v-for="p in profiles" :key="p.name" :value="p.name">{{ p.name }}{{ p.effectiveHost ? ' · ' + p.effectiveHost : ' · 주소 미설정' }}</option>
-        </select></label>
-        <button class="ag-ok inline" @click="openManualSetup">선택한 프로필 설정</button>
+        <p class="mx-help">알아보기 쉬운 이름으로 새 연결을 추가하세요. 기존 설정과 API Key는 그대로 유지됩니다.</p>
+        <label class="ag-f"><span>새 설정 이름</span><input v-model="newDisplayName" maxlength="80"
+          :readonly="!!busy || !canManage" placeholder="예: 팀 MAXIS"></label>
+        <button class="ag-ok inline" :disabled="!!busy || !canManage || !newDisplayName.trim()"
+          @click="createProfile">{{ busy === 'create' ? '추가 중…' : '설정 추가' }}</button>
       </section>
       <section class="ag-sec mx-setup-choice">
         <div class="ag-lab">저장소 파일로 준비</div>
-        <p class="mx-help">새 PROD 포털에 Knowledge와 Chatflow를 준비할 때 사용합니다. 저장 위치: prod 프로필.</p>
-        <button v-if="setupMode!=='repository'" class="ag-mini" :disabled="!canManage"
-                @click="setupMode='repository'">저장소 파일로 PROD 설정</button>
+        <p v-if="selected" class="mx-help">선택한 {{ profileLabel(selected.name) }} 연결의 포털에 Knowledge와 Chatflow를 준비합니다.</p>
+        <p v-else class="mx-help">먼저 MAXIS 설정을 추가하세요.</p>
+        <button v-if="setupMode!=='repository'" class="ag-mini" :disabled="!!busy || !canManage || !selected"
+                @click="openRepositorySetup">선택한 설정의 서버 자산 준비</button>
       </section>
-      <MaxisSetupWizard v-if="setupMode==='repository'" :can-manage="canManage" @configured="setupConfigured" />
+      <MaxisSetupWizard v-if="setupMode==='repository' && setupProfile" ref="setupWizard" :can-manage="canManage"
+        :profile-name="setupProfileName" :display-name="profileLabel(setupProfileName)"
+        @configured="setupConfigured" @applied="applied($event, setupProfileName)"
+        @dirty-change="setupDirty=$event" @busy-change="setupBusy=$event" />
     </div>
   </div>`,
 };

@@ -32,7 +32,7 @@ const AGENT_VIEW_TEMPLATE = `
         <!-- 모델·설정은 좌상단 — 지금 무엇으로 도는지가 먼저 보인다(사용자 요청) -->
         <div class="an-top">
           <span v-if="conversationRuntime.engine === 'maxis'" class="agent-prov">
-            MAXIS / Dify · {{ conversationRuntime.profile || '프로필 확인 필요' }}
+            MAXIS / Dify · {{ conversationRuntime.profileLabel || '선택한 연결' }}
             <template v-if="!conversationRuntime.ready"> · 설정 확인</template>
           </span>
           <span v-else-if="status && status.runtimeConfigSource === 'named'" class="agent-prov"

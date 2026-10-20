@@ -740,7 +740,10 @@ export default {
     /** 지금 무엇으로 도는지(provider·모델)를 다시 읽는다 — 설정에서 바꾸면 즉시.
      *  ★ 템플릿에서 직접 agentApi 를 부르면 안 된다(템플릿 스코프에 모듈이 없어
      *  조용히 실행되지 않는다 — 모델을 바꿔도 좌상단이 그대로였던 실측 원인). */
-    async refreshStatus() {
+    async refreshStatus(applied) {
+      if (applied && applied.ok === true && applied.runtime) {
+        this.status = { ...(this.status || {}), runtime: applied.runtime };
+      }
       try { this.status = await agentApi.status(); } catch (e) { /* 표시만 못 할 뿐 */ }
     },
     openRuntimeSettings() {

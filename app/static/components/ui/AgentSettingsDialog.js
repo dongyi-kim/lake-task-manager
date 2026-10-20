@@ -76,6 +76,10 @@ export default {
     document.removeEventListener("keydown", this._esc);
   },
   methods: {
+    maxisApplied(result) {
+      this.$emit("saved", result);
+      this.$emit("close");
+    },
     providerLabel(k) { return (PROVIDERS.find((x) => x.k === k) || {}).label || k; },
     async load(preferId) {
       try {
@@ -238,7 +242,7 @@ export default {
         <button :class="{ on: mode === 'llm' }" @click="mode = 'llm'">LLM 연결</button>
         <button :class="{ on: mode === 'maxis' }" @click="mode = 'maxis'">MAXIS / Dify Workflow</button>
       </div>
-      <MaxisSettingsPanel v-if="mode === 'maxis'" @saved="$emit('saved', $event)" />
+      <MaxisSettingsPanel v-if="mode === 'maxis'" @saved="$emit('saved', $event)" @applied="maxisApplied" />
       <div v-else-if="!st" class="ag-body">불러오는 중…</div>
       <div v-else class="ag-config-layout">
         <aside class="ag-config-list">
