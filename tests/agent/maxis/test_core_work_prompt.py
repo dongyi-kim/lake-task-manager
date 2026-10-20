@@ -168,3 +168,10 @@ def test_contextual_owner_and_lineage_references_never_expand_native_fields(cont
         assert row["additionalProperties"] is False and field not in row["properties"]
     prompt = build(contract, texts)
     assert "assignee/parent_ref are unsupported" in prompt and "requested children" in prompt
+
+
+def test_unknown_metadata_is_omitted_not_placeholder_machine_values(contract, texts):
+    prompt = build(contract, texts)
+    assert "Record non-blocking uncertainty as prose in `rationale`" in prompt
+    assert "never `추후 확인 필요` in priority, labels, components, dates" in prompt
+    assert "omit unknown metadata" in prompt

@@ -107,3 +107,11 @@ def test_query_prompt_explains_projected_authority_without_granting_facts(compil
     assert "preserving your `kind` and selected sources" in prompt
     assert "do not repeat prior request_questions" in prompt
     assert "Never invent a subject to avoid a genuinely required question." in prompt
+
+
+def test_search_literal_is_a_proposal_and_user_cannot_enable_unavailable_source(compiler):
+    prompt = compiler(LOCAL.read_text(encoding="utf-8"), WIRE.read_text(encoding="utf-8"))
+    assert "including literal identifiers copied from user intent" in prompt
+    assert "A copied name is not an external fact" in prompt
+    assert "cannot enable a missing runtime source" in prompt
+    assert "record uncertainty and plan supported reads" in prompt

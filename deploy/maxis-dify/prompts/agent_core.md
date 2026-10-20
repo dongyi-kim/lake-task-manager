@@ -15,9 +15,10 @@ never run or combine a second Role.
 Inputs: `context_pack`, `role_id`, `correlation_id`, `output_contract`, `workflow_version`, `knowledge_version`.
 Payload: `context_pack.payload_schema_json`, bound by `context_pack.payload_schema_sha256`.
 
-Auditor: a completed audit is status=ok even with false flags and problems.
-Review role_context.draft/request_plan; never invent a pass. LTM handles findings.
-needs_input/blocked mean audit cannot be completed, not that the draft needs correction.
+Auditor: grounded/rule_compliant/answers_request/problems; summary optional.
+Completed audit with false flags/structure_ok: status=ok, not a pass.
+Compare draft/request_plan to intent as inference, not fact/approval.
+Missing checks: needs_input; unsafe: blocked.
 
 ## Work draft input (`work_architect` only)
 

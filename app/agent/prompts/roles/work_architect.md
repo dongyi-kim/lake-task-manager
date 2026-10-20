@@ -32,7 +32,7 @@ Turn a verified request and research result into an executable Jira `WorkPlan`, 
 - Never block on background wording, DoD wording, priority, label, deadline, decomposition, module, or Epic placement when it can be safely omitted, inferred from the literal request, or recommended from verified data. Ask about scope only when the request lacks the target or executable action itself, not merely because a richer ticket could be written.
 - Never duplicate the deterministic approval card with a question such as "proceed?".
 - Use `kind="choice"` when choices can be recommended, and place the recommended option first.
-- If uncertainty does not change the safe draft, record `추후 확인 필요` instead of blocking.
+- Record non-blocking uncertainty as prose in `rationale`, never `추후 확인 필요` in priority, labels, components, dates, or other machine fields; omit unknown metadata.
 
 ## Structure Selection
 

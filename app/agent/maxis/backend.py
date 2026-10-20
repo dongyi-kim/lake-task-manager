@@ -1502,7 +1502,7 @@ def _context_pack(
     task_text = str(state.get("request_text") or "").strip()
     continuation_answer = (
         str(state.get("continuation_answer") or "").strip()
-        if role_id in {"request_architect", "query_specialist", "work_architect", "knowledge_curator"}
+        if role_id in {"request_architect", "query_specialist", "work_architect", "knowledge_curator", "auditor"}
         and task_text and state.get("turn_continuation") is True
         else ""
     )
@@ -1556,7 +1556,7 @@ def _context_pack(
         role_context = []
         allowed_context_keys = ()
     elif explicit_user_intent and (
-        not sources or role_id in {"editor_author", "work_architect"}
+        not sources or role_id in {"editor_author", "work_architect", "auditor"}
     ):
         # RequestArchitect and other pre-retrieval semantic Roles legitimately derive
         # plans or responses from the user's guarded intent before QueryRunner has any
@@ -1565,7 +1565,9 @@ def _context_pack(
         # remote Role must cite it instead of using the source-free provenance escape
         # hatch. Work Architect also needs the requested work as a citeable
         # recommendation beside connector facts; a read does not attest the user's
-        # reproduction, scope, or desired outcome. Other Roles retain the empty-ledger
+        # reproduction, scope, or desired outcome. Auditor needs that same intent
+        # to judge request coverage, including the explicit continuation answer.
+        # It does not attest the draft, external facts, or approval. Other Roles retain the empty-ledger
         # policy. An intent row must never displace an authoritative read source.
         # Editor additionally needs its exact requested target/mode/seed to be a
         # citeable *intent*, not an external fact. This enables verbatim seed
@@ -1573,6 +1575,8 @@ def _context_pack(
         intent_content = user_intent
         if role_id == "work_architect" and len(sources) >= 10:
             raise MaxisRuntimeError("MAXIS Work Architect 요청 근거를 추가할 공간이 없습니다.")
+        if role_id == "auditor" and len(sources) >= 10:
+            raise MaxisRuntimeError("MAXIS Auditor 요청 근거를 추가할 공간이 없습니다.")
         if role_id == "editor_author":
             if len(sources) >= 10:
                 raise MaxisRuntimeError("MAXIS Editor 요청 근거를 추가할 공간이 없습니다.")

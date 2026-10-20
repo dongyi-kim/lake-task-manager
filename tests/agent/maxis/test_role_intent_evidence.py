@@ -245,23 +245,26 @@ def test_non_continuation_never_borrows_a_previous_answer(continuing):
     assert "STALE_ANSWER_MUST_NOT_CROSS" not in canonical_evidence_pack_json(_pack(state))
 
 
-def test_fresh_request_does_not_refresh_stale_connector_source():
-    pack = _pack(_state(age_seconds=3600))
+@pytest.mark.parametrize("role", ["work_architect", "auditor"])
+def test_fresh_request_does_not_refresh_stale_connector_source(role):
+    pack = _pack(_state(age_seconds=3600), role=role)
     assert _intent(pack).retrieved_at == pack.requested_at
     assert pack.freshness == "mixed" and "stale_source" in pack.flags
     assert (pack.requested_at - pack.sources[0].retrieved_at).total_seconds() >= 3600
 
 
-def test_work_intent_never_displaces_ten_verified_sources():
+@pytest.mark.parametrize("role", ["work_architect", "auditor"])
+def test_work_intent_never_displaces_ten_verified_sources(role):
     state = _state(count=10)
     before = deepcopy(state)
     with pytest.raises(backend.MaxisRuntimeError, match="공간"):
-        _pack(state)
+        _pack(state, role=role)
     assert state == before
 
 
-def test_nine_read_sources_keep_their_slots_with_work_intent():
-    pack = _pack(_state(count=9))
+@pytest.mark.parametrize("role", ["work_architect", "auditor"])
+def test_nine_read_sources_keep_their_slots_with_work_intent(role):
+    pack = _pack(_state(count=9), role=role)
     assert len(pack.sources) == 10
     assert [row.canonical_id for row in pack.sources[:9]] == [
         f"DL-{9000 + index}" for index in range(9)
@@ -271,11 +274,47 @@ def test_nine_read_sources_keep_their_slots_with_work_intent():
 
 
 @pytest.mark.parametrize("role", (
-    "request_architect", "query_specialist", "knowledge_curator", "auditor",
+    "request_architect", "query_specialist", "knowledge_curator",
     "portfolio_analyst", "result_integrator",
 ))
 def test_other_role_read_provenance_policy_is_unchanged(role):
     assert [row.kind for row in _pack(_state(), role=role).sources] == ["jira"]
+
+
+@pytest.mark.parametrize("kind", ["recommendation", "fact"])
+def test_auditor_request_comparison_is_not_external_fact_or_approval(kind):
+    import runpy
+    from app.agent.workflow.agents.auditor import SCHEMA
+
+    pack = _pack(_state(), role="auditor", schema=SCHEMA)
+    answer = _draft_response(pack, proposal=REQUEST)
+    answer.update(role_id="auditor",
+                  payload={"grounded": False, "rule_compliant": False, "answers_request": False,
+                           "problems": [], "summary": REQUEST},
+                  claims=[{**answer["claims"][0], "kind": kind}],
+                  citations=[{**answer["citations"][0], "locator": ""}],
+                  payload_claims=[{"path": "/summary", "claim_ids": ["request"]}],
+                  workflow_version="10000000-0000-4000-8000-000000000001")
+    local = lambda: ResponseGuard().validate_remote_role(
+        json.dumps(answer, ensure_ascii=False), expected_role_id="auditor",
+        payload_model=SCHEMA, evidence=pack, expected_knowledge_manifest_sha256=MANIFEST)
+    root = Path(__file__).resolve().parents[3]
+    remote = runpy.run_path(str(root / "deploy/maxis-dify/code/contract_guard.py"))["main"]
+    guarded = json.loads(remote(
+        candidate=json.dumps(answer, ensure_ascii=False),
+        context_pack=canonical_evidence_pack_json(pack), role_id="auditor",
+        correlation_id=pack.request_id, output_contract="remote-role-result.v1",
+        workflow_version=answer["workflow_version"], executed_workflow_id=answer["workflow_version"],
+        knowledge_version=answer["knowledge_version"],
+        sentinel_result=[{"content": answer["knowledge_proof"]}])["result"])
+    if kind == "fact":
+        assert guarded["warnings"] == ["contract_guard:intent_source_fact_forbidden"]
+        with pytest.raises(ResponseGuardError, match="intent_source_fact_forbidden"):
+            local()
+    else:
+        assert guarded["status"] == "ok"
+        assert local()[1] == answer["payload"]
+        assert not any(local()[1][key] for key in ("grounded", "rule_compliant", "answers_request"))
 
 
 def test_dev_uses_only_fixed_synthetic_source():

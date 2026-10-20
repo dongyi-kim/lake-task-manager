@@ -765,8 +765,39 @@ def test_verified_query_source_is_not_diluted_by_user_intent_source():
     assert [source.kind for source in pack.sources] == ["jira"]
     assert all(not source.source_id.startswith("src_intent_") for source in pack.sources)
 
+def test_auditor_preserves_verified_reads_and_cites_only_guarded_current_intent():
+    state = _runtime_state("auditor")
+    result = {"scopeProjects": ["DL"], "tickets": [{"key": "DL-1"}]}
+    state.update(turn_continuation=True, continuation_answer="미할당으로 초안 작성",
+                 request_text="skcc.x1103의 https://internal.example/private 요청 검토",
+                 messages=[HumanMessage(content="RAW_TRANSCRIPT_MUST_NOT_CROSS")])
+    state["query_results"] = [{
+        "id": "jira-1", "source": "jira", "result": result,
+        "_remoteEvidence": backend.attest_query_result("jira-1", "jira", result, scopes=("DL",)),
+    }]
+    before = deepcopy(state)
+    verified = backend._verified_evidence_sources(state)
+    pack = backend._context_pack("auditor", state, [], {"type": "object"})
+    assert [source.kind for source in pack.sources] == ["jira", "ltm"]
+    assert pack.sources[0].content == verified[0]["content"]
+    assert pack.sources[0].source_id == verified[0]["source_id"]
+    intent = pack.sources[-1]
+    assert intent.canonical_id.startswith("ltm:user-intent:")
+    assert "Current continuation answer:\n미할당으로 초안 작성" in intent.content
+    assert intent.content in pack.query
+    assert "RAW_TRANSCRIPT_MUST_NOT_CROSS" not in pack.model_dump_json()
+    assert "skcc.x1103" not in intent.content and "[[person:" in intent.content
+    assert "internal.example" not in intent.content and "[url omitted]" in intent.content
+    assert state == before
 
-@pytest.mark.parametrize("role", ["request_architect", "query_specialist", "work_architect", "knowledge_curator"])
+
+def test_auditor_intent_never_displaces_full_verified_ledger(monkeypatch):
+    monkeypatch.setattr(backend, "_verified_evidence_sources", lambda _state: [{}] * 10)
+    with pytest.raises(backend.MaxisRuntimeError, match="Auditor.*공간"):
+        backend._context_pack("auditor", _runtime_state("auditor"), [], {"type": "object"})
+
+
+@pytest.mark.parametrize("role", ["request_architect", "query_specialist", "work_architect", "knowledge_curator", "auditor"])
 def test_resuming_roles_receive_only_bounded_explicit_continuation_answer(role):
     state = _runtime_state(role)
     state.update(
@@ -805,7 +836,7 @@ def test_independent_editor_never_receives_agent_continuation_answer():
     )
 
 
-@pytest.mark.parametrize("role", ["request_architect", "query_specialist", "work_architect", "knowledge_curator"])
+@pytest.mark.parametrize("role", ["request_architect", "query_specialist", "work_architect", "knowledge_curator", "auditor"])
 @pytest.mark.parametrize("root", [None, "", "  "])
 def test_continuation_without_root_never_exports_orphan_answer(role, root):
     state = _runtime_state(role)
