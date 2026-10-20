@@ -107,12 +107,12 @@ def _configured_prod(*, base_url: str = "https://prod.maxis.example/v1") -> None
     profiles.credential_changed("prod")
 
 
-def _mark_verified(*workflow_keys: str) -> None:
-    manifest = profiles.resolve_knowledge_manifest("dev", required=True)
+def _mark_verified(*workflow_keys: str, profile_name: str = "dev") -> None:
+    manifest = profiles.resolve_knowledge_manifest(profile_name, required=True)
     assert manifest is not None
-    _, keys, start_binding = profiles.start_probe("dev")
+    _, keys, start_binding = profiles.start_probe(profile_name)
     keys.clear()
-    profiles.mark_probe("dev", True, {"workflows": {
+    profiles.mark_probe(profile_name, True, {"workflows": {
         key: {
             "ok": True,
             "appModeVerified": True,
@@ -136,14 +136,15 @@ def test_successful_probe_status_preserves_canonical_utc_timestamp():
     assert datetime.fromisoformat(timestamp[:-1] + "+00:00").tzinfo is not None
 
 
-def test_dev_and_prod_profiles_have_fixed_data_policies():
+def test_legacy_profiles_keep_ids_and_independent_explicit_usage_policies():
     rows = {row["name"]: row for row in profiles.list_all()}
     assert rows["dev"]["stage"] == "dev"
     assert rows["dev"]["data_policy"] == "synthetic_only"
     assert rows["prod"]["stage"] == "prod"
     assert rows["prod"]["data_policy"] == "internal_read_only"
-    with pytest.raises(ValueError, match="dataPolicy"):
-        profiles.save("dev", {"data_policy": "internal_read_only"})
+    assert rows["dev"]["execution_policy"] == "connected"
+    assert rows["prod"]["execution_policy"] == "qualified"
+    assert profiles.save("dev", {"data_policy": "internal_read_only"})["stage"] == "dev"
 
 
 @pytest.mark.parametrize("storage_shape", ["list", "dict"])
@@ -252,7 +253,7 @@ def test_invalid_profile_save_preserves_stored_profiles_and_probe_records():
     before = deepcopy(prefs.load())
 
     with pytest.raises(ValueError, match="dataPolicy"):
-        profiles.save("dev", {"data_policy": "internal_read_only"})
+        profiles.save("dev", {"data_policy": "unknown-policy"})
 
     assert prefs.load() == before
 
@@ -284,7 +285,7 @@ def test_profile_url_policy_allows_only_loopback_http_in_dev():
     assert profiles.get("dev")["base_url"] == "http://127.0.0.1:5001/v1"
     with pytest.raises(ValueError, match="HTTPS"):
         profiles.save("dev", {"base_url": "http://dev.maxis.example/v1"})
-    with pytest.raises(ValueError, match="prod"):
+    with pytest.raises(ValueError, match="loopback"):
         profiles.save("prod", {"base_url": "https://localhost/v1"})
 
 
@@ -1043,3 +1044,169 @@ def test_dev_activation_rejects_an_existing_authoritative_route():
 
     with pytest.raises(ValueError, match="authoritative MAXIS route"):
         profiles.activate("dev")
+
+
+def test_generic_profiles_preserve_all_encrypted_credential_rows():
+    first = profiles.create("기존 MAXIS")
+    second = profiles.create("팀 MAXIS")
+    assert first["name"] != second["name"]
+    assert first["name"].startswith("maxis-")
+    assert first["stage"] == "prod"
+    assert first["execution_policy"] == "connected"
+    credentials.save_for("dev", {"agent_core": "legacy-key"})
+    credentials.save_for(first["name"], {"agent_core": "first-key"})
+    credentials.save_for(second["name"], {"editor_author": "second-key"})
+    credentials.save_for("dev", {"pmo_brief": "new-legacy-key"})
+    assert credentials.get_for(first["name"], "agent_core") == "first-key"
+    assert credentials.get_for(second["name"], "editor_author") == "second-key"
+    assert credentials.get_for("dev", "agent_core") == "legacy-key"
+    public = {row["name"]: row for row in profiles.status()["profiles"]}
+    assert public[first["name"]]["displayName"] == "기존 MAXIS"
+    assert public[first["name"]]["isLegacy"] is False
+    assert public["dev"]["isLegacy"] is True
+    assert public[second["name"]]["executionPolicy"] == "connected"
+    assert "first-key" not in repr(public)
+
+
+def test_reading_existing_profile_does_not_promote_or_mutate_it():
+    from app.infra import prefs
+    _configured_dev()
+    before = deepcopy(prefs.load())
+    assert profiles.get("dev")["data_policy"] == "synthetic_only"
+    assert profiles.status()["profiles"][0]["displayName"] == "MAXIS 연결 1"
+    assert prefs.load() == before
+
+
+def test_display_name_change_keeps_probe_and_runtime_fingerprint():
+    _configured_dev()
+    _mark_verified("agent_core")
+    active = profiles.activate("dev")
+    profiles.save("dev", {"display_name": "내 MAXIS"})
+    assert profiles.probe_ok("dev")
+    assert profiles.resolve("dev")["enabled"]
+    assert profiles.active_fingerprint() == active["fingerprint"]
+    assert profiles.status()["profiles"][0]["displayName"] == "내 MAXIS"
+
+
+def test_explicit_prepare_then_probe_and_apply_uses_existing_connection(monkeypatch):
+    from app.infra import prefs
+    _configured_dev()
+    profiles.save("dev", {"workflows": {
+        "editor_author": {"version": EDITOR_WORKFLOW_ID},
+    }})
+    credentials.save_for("dev", {"editor_author": "existing-editor-key"})
+    _mark_verified("agent_core", "editor_author")
+    before = profiles.get("dev")
+    prepared = profiles.prepare_use("dev")
+    assert prepared["data_policy"] == "internal_read_only"
+    assert prepared["stage"] == before["stage"]
+    for field in ("base_url", "knowledge_dataset_id", "knowledge_sentinel_sha256", "workflows"):
+        assert prepared[field] == before[field]
+    assert credentials.get_for("dev", "editor_author") == "existing-editor-key"
+    assert not profiles.probe_ok("dev")
+    assert all(mode == "local" for mode in profiles.routes().values())
+    with pytest.raises(ValueError, match="probe"):
+        profiles.apply_profile("dev", ["agent_core", "editor_author"])
+    _mark_verified("agent_core", "editor_author")
+    result = profiles.apply_profile("dev", ["agent_core", "editor_author"])
+    assert result["routes"] == {
+        "agent_core": "maxis", "editor_author": "maxis", "pmo_brief": "local",
+    }
+    assert profiles.resolve("dev")["enabled"]
+    profiles.require_authoritative("dev", ["agent_core", "editor_author"])
+    persisted = deepcopy(prefs.load())
+    monkeypatch.setenv("LAKE_MAXIS_PROFILE", "prod")
+    with pytest.raises(ValueError, match="different"):
+        profiles.apply_profile("dev", ["agent_core", "editor_author"])
+    assert prefs.load() == persisted
+
+
+def test_connected_apply_retains_kill_key_and_probe_guards():
+    _configured_dev()
+    profiles.prepare_use("dev")
+    _mark_verified("agent_core")
+    profiles.set_kill_switch(True)
+    with pytest.raises(ValueError, match="kill switch"):
+        profiles.apply_profile("dev", ["agent_core", "editor_author"])
+    with pytest.raises(ValueError, match="kill switch"):
+        profiles.prepare_use("dev")
+    profiles.set_kill_switch(False)
+    with pytest.raises(ValueError, match="editor_author"):
+        profiles.apply_profile("dev", ["agent_core", "editor_author"])
+    credentials.save_for("dev", clear=["agent_core"])
+    profiles.credential_changed("dev")
+    with pytest.raises(ValueError, match="API key"):
+        profiles.apply_profile("dev", ["agent_core", "editor_author"])
+
+
+def test_qualified_policy_is_not_skipped_for_legacy_or_generic_profile(monkeypatch):
+    _configured_dev()
+    profiles.prepare_use("dev")
+    profiles.save("dev", {"workflows": {"editor_author": {"version": EDITOR_WORKFLOW_ID}}})
+    credentials.save_for("dev", {"editor_author": "existing-editor-key"})
+    profiles.save("dev", {"execution_policy": "qualified"})
+    _mark_verified("agent_core", "editor_author")
+    from app.agent.maxis import qualification
+    monkeypatch.setattr(qualification, "status", lambda _: {"valid": False, "workflows": []})
+    with pytest.raises(ValueError, match="qualification"):
+        profiles.apply_profile("dev", ["agent_core", "editor_author"])
+
+
+def test_named_profile_can_apply_existing_server_assets_without_renaming_keys(monkeypatch):
+    _configured_dev()
+    profiles.save("dev", {"workflows": {"editor_author": {"version": EDITOR_WORKFLOW_ID}}})
+    credentials.save_for("dev", {"editor_author": "existing-editor-key"})
+    named = profiles.create("팀 공유 연결")
+    source = profiles.get("dev")
+    monkeypatch.setenv("LAKE_MAXIS_PROD_ALLOWED_HOSTS", "dev.maxis.example,other.maxis.example")
+    profiles.save(named["name"], {
+        key: source[key] for key in (
+            "base_url", "workflow_bundle_version", "knowledge_version",
+            "knowledge_dataset_id", "knowledge_sentinel_sha256", "workflows",
+            "remote_log_policy_id", "remote_log_mode", "remote_log_retention_days",
+        )
+    })
+    credentials.save_for(named["name"], credentials.load_for("dev"))
+    _mark_verified("agent_core", "editor_author", profile_name=named["name"])
+    profiles.apply_profile(named["name"], ["agent_core", "editor_author"])
+    assert profiles.active_profile_name() == named["name"]
+    profiles.require_authoritative(named["name"], ["agent_core", "editor_author"])
+    assert profiles.get("dev")["data_policy"] == "synthetic_only"
+    # Reusing a key at a different destination is still an explicit separation error.
+    profiles.save(named["name"], {"base_url": "https://other.maxis.example/v1"})
+    with pytest.raises(ValueError, match="API credential"):
+        profiles.resolve(named["name"])
+
+
+@pytest.mark.parametrize("url", [
+    "http://127.0.0.1:5001/v1", "https://127.0.0.1:9443/v1",
+    "https://localhost/v1", "https://[::1]:443/v1",
+])
+def test_actual_request_policy_does_not_allow_loopback(url):
+    profiles.save("dev", {"base_url": url})
+    with pytest.raises(ValueError, match="HTTPS"):
+        profiles.prepare_use("dev")
+    assert profiles.get("dev")["data_policy"] == "synthetic_only"
+
+
+@pytest.mark.parametrize("label", ["", "x" * 81, "a\nb", "app-" + "x" * 24])
+def test_invalid_display_names_are_not_persisted(label):
+    from app.infra import prefs
+    before = deepcopy(prefs.load())
+    with pytest.raises(ValueError, match="display name"):
+        profiles.create(label)
+    assert prefs.load() == before
+
+
+def test_status_redacts_invalid_profile_identity_policy_metadata():
+    from app.infra import prefs
+    secret = "app-" + "s" * 25
+    prefs.save_strict({"maxisProfiles": [{
+        "name": "dev", "stage": secret, "display_name": secret,
+        "execution_policy": secret,
+    }]})
+    public = profiles.status()["profiles"][0]
+    assert public["stage"] == ""
+    assert public["executionPolicy"] == ""
+    assert public["displayName"] == "MAXIS 연결 1"
+    assert secret not in repr(profiles.status())

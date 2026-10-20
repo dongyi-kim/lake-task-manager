@@ -1,8 +1,8 @@
 """MAXIS/Dify app keys stored with Windows current-user DPAPI.
 
 The browser can write replacement keys and read their presence/source, but it never
-receives plaintext back.  Environment variables win only for the explicitly selected
-dev/prod process profile.  A normal file fallback is intentionally not provided:
+receives plaintext back. Environment variables win only for the explicitly selected
+stable profile ID. A normal file fallback is intentionally not provided:
 persisting secrets without DPAPI on a non-Windows host fails closed.  Tests may inject
 an in-memory/encrypting backend.
 """
@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import threading
 from ctypes import wintypes
 from pathlib import Path
@@ -162,11 +163,18 @@ def _migration_marker_path() -> Path:
     return Path(CACHE_DIR) / "maxis" / "legacy-store-disabled"
 
 
-def _normal_profile(profile_name: str) -> str:
+def normal_profile_name(profile_name: str) -> str:
+    """Validate a stable storage ID, independently of its user-facing label."""
     value = str(profile_name or "").strip().lower()
-    if value not in ("dev", "internal-pilot", "prod"):
-        raise ValueError("MAXIS profile must be dev, internal-pilot, or prod.")
+    if value not in ("dev", "internal-pilot", "prod") and not re.fullmatch(
+        r"maxis-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+        value,
+    ):
+        raise ValueError("Invalid MAXIS profile ID.")
     return value
+
+
+_normal_profile = normal_profile_name
 
 
 def _load_all() -> dict[str, dict[str, str]]:
@@ -194,8 +202,12 @@ def _load_all() -> dict[str, dict[str, str]]:
         raise CredentialStoreUnavailable("MAXIS credential store could not be read.") from exc
 
     out: dict[str, dict[str, str]] = {}
-    for name in ("dev", "internal-pilot", "prod"):
-        row = decoded.get(name)
+    for name, row in decoded.items():
+        try:
+            if normal_profile_name(name) != name:
+                continue
+        except ValueError:
+            continue
         if not isinstance(row, dict):
             continue
         out[name] = {
@@ -308,10 +320,10 @@ def delete_for(profile_name: str) -> None:
 def environment_overrides(profile_name: str = "") -> dict[str, str]:
     """Return configured environment key names, optionally bound to one profile.
 
-    The legacy environment variable names do not encode dev/prod.  They are therefore
+    The environment variable names do not encode connection identity. They are therefore
     usable for a credential lookup only when ``LAKE_MAXIS_PROFILE`` explicitly selects
-    that same profile.  This prevents a prod process key from being sent while a manager
-    probes an inactive dev candidate (or vice versa).  Calling without a profile remains
+    that same profile. This prevents one connection's process key from being sent while
+    a manager probes another inactive candidate. Calling without a profile remains
     a browser-safe inventory of variable *names* for the global settings status.
     """
 

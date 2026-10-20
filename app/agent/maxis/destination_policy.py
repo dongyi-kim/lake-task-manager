@@ -83,12 +83,10 @@ def allowed_hosts(stage: RuntimeStage | str) -> frozenset[str]:
     if not raw:
         if name == "internal-pilot":
             raise DestinationPolicyError("Internal-pilot requires an explicit destination allowlist.")
-        if name == "prod":
-            from app.agent.maxis.setup import registered_prod_hosts
-            return DEFAULT_ALLOWED_HOSTS | frozenset(
-                _ascii_fqdn(host) for host in registered_prod_hosts()
-            )
-        return DEFAULT_ALLOWED_HOSTS
+        from app.agent.maxis.setup import registered_profile_hosts
+        return DEFAULT_ALLOWED_HOSTS | frozenset(
+            _ascii_fqdn(host) for host in registered_profile_hosts(name)
+        )
     if len(raw) > 4096:
         raise DestinationPolicyError("MAXIS allowed-host environment value is too large.")
     parts = [part.strip() for part in raw.split(",")]
@@ -104,6 +102,7 @@ def canonical_maxis_api_base(
     *,
     stage: RuntimeStage | str,
     require_https: bool,
+    allow_dev_stub: bool = True,
 ) -> str:
     """Canonicalize and authorize one Dify Service API base URL.
 
@@ -147,10 +146,10 @@ def canonical_maxis_api_base(
         raise DestinationPolicyError("MAXIS Base URL port is invalid.")
 
     host = parsed.hostname.lower()
-    is_dev_stub = name == "dev" and host in DEV_LOOPBACK_HOSTS
-    if name in {"internal-pilot", "prod"} and host in DEV_LOOPBACK_HOSTS:
+    is_dev_stub = name == "dev" and allow_dev_stub and host in DEV_LOOPBACK_HOSTS
+    if not is_dev_stub and name != "test" and host in DEV_LOOPBACK_HOSTS:
         raise DestinationPolicyError(
-            f"The {name} MAXIS profile cannot target loopback.", policy=True,
+            "This MAXIS connection cannot target loopback; use an allowlisted HTTPS host.", policy=True,
         )
     if scheme != "https" and (
         require_https or (name != "test" and not is_dev_stub)
