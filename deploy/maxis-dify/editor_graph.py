@@ -25,8 +25,8 @@ ENFORCER_NODE_ID = "1909000000001022"
 SPEC_ASSET_PATH = "deploy/maxis-dify/code/editor_draft_spec.py"
 SELECTOR_ASSET_PATH = "deploy/maxis-dify/code/editor_selector_input.py"
 SELECTOR_ASSET_SHA256 = "4cf86203607f7d3a9b6273978a6384d8e9d5124828b4caca7c7a0d1914d1a10a"
-SPEC_ASSET_SHA256 = "21bd020647d35398be7e15ff987ad2ac67beec0940b8678f5ab7797b8cd7b818"
-SPEC_SCHEMA_SHA256 = "5bf30f8b288ae5fa7daabee782fd2ef62cc80e9d46b44d20a339662715a62b92"
+SPEC_ASSET_SHA256 = "1f35018e1d5854650417c336d9bfc1199433aae23d9847d6ee67473ade9cdcdb"
+SPEC_SCHEMA_SHA256 = "ccb6989699fd6159861176e6aca9b5f7aeaa8589cb35cdf262ae15fc1730beea"
 WRITING_SCHEMA_SHA256 = "accbafa04039e32a9b06aade48b0cffc4f4b765baa130ba4d6619bc052d8b134"
 SPEC_GUARD_ENTRYPOINT = "\n\ndef main(model_input, draft_spec, context_pack):\n    return prepare_spec(model_input, draft_spec, context_pack)\n"
 SPEC_ENFORCER_ENTRYPOINT = "\n\ndef main(candidate, model_input, draft_spec, context_pack):\n    return enforce_spec(candidate, model_input, draft_spec, context_pack)\n"
@@ -44,7 +44,7 @@ BRANCH_PROMPT_SHA256 = {
                 "user": "0b882243f2e854a7fcf11e1844d9159187d9944a6b2ac53092ec829f43f07436"},
     "control": {"system": "8d678b29f7677d1dc7790d5620c8e3dd7d6726c529d16ad55d58d2cfddd42817",
                 "user": "41e3faa78a5f4d63a4302d6defc5e119c1c7b834d92c272bc6de18c629fb2b99"},
-    "selector": {"system": "29e4c1ba85d6a687b2bb564a5e68b703abd45bb52107963a293a7f1370077796",
+    "selector": {"system": "b27bf081add6aac0e8a7ba31649b088f40e19ba39954cbbd00723a7220c0bc3b",
                  "user": "7241996b070a0e06f95443c4b41503246a5ce6bac9a066c48879d778a20c0419"},
 }
 

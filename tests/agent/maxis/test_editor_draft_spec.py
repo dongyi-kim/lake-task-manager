@@ -193,7 +193,7 @@ def test_invalid_selection_is_content_free_and_never_reaches_writer(sample, muta
 def test_selection_limit_may_regenerate_only_after_known_fault_checks(sample, fault):
     view, spec, _ = sample
     units = [{"unit_id": f"u_{index}", "entity_key": "DL-42", "path": f"/{index}",
-              "text": "확인한 내용"} for index in range(33)]
+              "text": "확인한 내용"} for index in range(65)]
     view["sources"][0]["units"].extend(units)
     spec["current_unit_ids"] = [unit["unit_id"] for unit in units]
     spec["context_unit_ids"], spec["history_unit_ids"] = [], []
@@ -207,6 +207,21 @@ def test_selection_limit_may_regenerate_only_after_known_fault_checks(sample, fa
     with pytest.raises(ValueError, match=f"^{reason}$"):
         ASSET["prepare_spec"](encoded(view), encoded(spec), "{}")
     assert enforce(sample)["status"] == "blocked"
+
+
+def test_selection_pool_is_larger_than_writer_block_budget(sample):
+    import jsonschema
+    view, spec, _ = sample
+    units = [{"unit_id": f"u_{index}", "entity_key": "DL-42", "path": f"/{index}",
+              "text": "확인한 내용"} for index in range(64)]
+    view["sources"][0]["units"].extend(units)
+    spec["current_unit_ids"] = [unit["unit_id"] for unit in units]
+    spec["context_unit_ids"], spec["history_unit_ids"] = [], []
+    schema = json.loads((ROOT / "deploy/maxis-dify/contracts/editor-draft-spec.schema.json").read_text(encoding="utf-8"))
+    jsonschema.Draft202012Validator(schema).validate(spec)
+    writer = json.loads(ASSET["prepare_spec"](encoded(view), encoded(spec), "{}")["model_input"])
+    assert len(writer["units"]) == 64
+    assert writer["draft_contract"]["max_blocks"] == 31  # One required link.
 
 
 @pytest.mark.parametrize("blocking", ["false", "true", "False", "True"])

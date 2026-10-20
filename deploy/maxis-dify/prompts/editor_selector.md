@@ -43,7 +43,8 @@ All fields are required; unused arrays are []. Classify only useful original IDs
   ticket merely pointing to that topic. A verified person is a marker, not a link.
 - missing_inputs: only concrete user-owned facts necessary to finish this request.
 
-Do not duplicate IDs across buckets. At most 32 distinct unit IDs in total.
+Do not duplicate IDs across buckets. Prefer 4–8 useful units; at most 64 distinct
+unit IDs in total. The writer may use a subset and still has at most 32 output blocks.
 status=ok: missing_inputs=[], no blocking conflict. A review request can be written
 without inventing the result being reviewed. A request to finish a measurement
 result needs the actual measurement and relevant comparison; old API timings are

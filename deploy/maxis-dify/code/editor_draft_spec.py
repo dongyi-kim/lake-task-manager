@@ -91,7 +91,9 @@ def _validated_spec(model_input, draft_spec):
     # unrelated unknown ID is also present. No filtered selection is returned.
     if (selected | conflicted) - units.keys() or links - sources.keys():
         raise _UnknownSelectionId()
-    if len(selected | conflicted) > 32:
+    # Selection is a pool for the writer, not rendered blocks. Keep the output
+    # limit at 32 independently; valid rich-ticket evidence need not all be used.
+    if len(selected | conflicted) > 64:
         raise _SelectionLimit()
     return view, spec, sources, units, buckets
 
