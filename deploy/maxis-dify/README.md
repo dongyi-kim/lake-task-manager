@@ -7,6 +7,10 @@ copy는 ignored `.cache/`에 두며 커밋하지 않는다. 변경 이력·검�
 기본 Role route는 local이다. DEV는 고정 합성 fixture 검증용이며 운영 활성화나 실제 업무
 자료 전송 허가가 아니다. 로컬 계약 검증과 실서버 기능·품질 검증은 별도 게이트다.
 
+**PROD 운영자는 [빠른 설정 가이드](../../docs/agent-maxis-operations.md)부터 시작한다.**
+`tools/maxis_setup.py`의 `prepare → bundle → connect → status`를 사용하며,
+이 문서는 배포 소스·계약을 개발하거나 검토할 때 참고한다.
+
 공개 Knowledge 정본은 `knowledge/01`~`10`과 `config/maxis-knowledge.yml`이다.
 canonical DSL은 실제 DEV UUID나 model을 포함하지 않는 source marker를 사용한다.
 PROD 준비는 깨끗한 checkout만으로 가능하며 DEV 환경 파일·개발자 cache corpus를 요구하지 않는다.
@@ -113,12 +117,14 @@ pack은 최대 6,144 UTF-8 bytes이며 나머지 Start scalar의 최소 수용�
 published Workflow pin은 LTM 설정에서 관리한다. API key는 승인된 로컬 secret 경로에만 둔다.
 source DSL을 환경별로 복제·수정하거나 코드에 DEV credential을 넣지 않는다.
 
-저장소 루트에서 오프라인 검증·변환:
+저장소 루트에서 오프라인 정본 검증:
 
 ```powershell
 python -B deploy/maxis-dify/validate_bundle.py
-python -B deploy/maxis-dify/materialize_environment.py deploy/maxis-dify/environments/dev.yml --output-dir .cache/maxis-dify-materialized/dev
 ```
+
+PROD 자산 준비·연결은 위 빠른 설정 가이드의 네 명령을 따른다. 직접 materializer를 사용할 때도
+현재 정본과 실제 환경의 식별자가 일치하는 입력을 사용한다. 과거 DEV binding을 PROD 입력으로 쓰지 않는다.
 
 materializer는 원본 DSL을 먼저 검증한 뒤 환경값을 주입한다. 불완전한 UUID, 비 HTTPS 원격
 주소, credential 형태의 필드와 source drift는 거부한다. 생성물을 커밋하지 않는다.
