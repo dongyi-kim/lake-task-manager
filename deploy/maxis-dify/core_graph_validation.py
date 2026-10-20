@@ -26,6 +26,8 @@ WORK_MAX_SYSTEM_BYTES = 16384  # Reviewed Work-only CREATE policy budget; other 
 CLASSIFIER_ID = "1909000000001024"
 STAGE_ID = "1909000000001025"
 MERGE_ID = "1909000000001027"
+BINDING_ID = "1909000000001043"
+BINDING_SHA256 = "3db74bb5e0b3b74f9024230754319aefdc2bb66c2b9e30afb2d75f58501db4f4"
 KNOWLEDGE_ID = "1909000000001006"
 POLICY_ID = "1909000000001007"
 GUARD_ID = "1909000000001005"
@@ -58,6 +60,7 @@ RESULT_ASSEMBLER_SHA256 = "65865d8caffa0b736711e59ab2a07e85893193b7268c3165727b0
 RESULT_INPUT_SHA256 = "fd7d00ba08cf9255a5a72e4a40721c8f54e3adade727d3f86ca6399887407f09"
 RESULT_USER_SHA256 = "e81bd8c696c86150a78d7de904971ad17d706408fa614695f6984288efbada3d"
 NODE_IDENTITIES = {
+    BINDING_ID: ("Core Candidate Binding", "code"),
     "start": ("시작", "start"), "answer": ("Allowed Answer", "answer"),
     "denied_answer": ("Denied Answer", "answer"),
     "1909000000001001": ("Sentinel Query", "template-transform"),
@@ -99,7 +102,8 @@ EDGES = {
     (STAGE_ID, "result", RESULT_INPUT_ID), (RESULT_INPUT_ID, "source", RESULT_ID),
     (RESULT_ID, "source", RESULT_ASSEMBLER_ID), (RESULT_ASSEMBLER_ID, "source", MERGE_ID),
     (SEMANTIC_ID, "source", MERGE_ID), (CONTROL_ID, "source", MERGE_ID),
-    (MERGE_ID, "source", GUARD_ID), (GUARD_ID, "source", "answer"),
+    (MERGE_ID, "source", BINDING_ID), (BINDING_ID, "source", GUARD_ID),
+    (GUARD_ID, "source", "answer"),
 }
 
 
@@ -187,6 +191,10 @@ def validate_core_graph(root, nodes, *, checks, schema, semantic_prompts,
     } or stage.get("selected") is not False:
         fail("Dify Core stage route or selector drifted")
     merge = nodes[MERGE_ID]["data"]
+    binding_code = (root / "deploy/maxis-dify/code/core_candidate_binding.py").read_text(encoding="utf-8").rstrip()
+    if (hashlib.sha256(binding_code.encode()).hexdigest() != BINDING_SHA256
+            or nodes[BINDING_ID]["data"] != builder.binding_data(binding_code)):
+        fail("Dify Core transport binding source or selectors drifted")
     if merge != {
         "title": "Core Candidate", "type": "variable-aggregator", "selected": False,
         "desc": "단일 모델 경로의 후보를 기존 Contract Guard에 전달", "output_type": "string",

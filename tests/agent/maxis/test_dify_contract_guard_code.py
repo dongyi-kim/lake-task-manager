@@ -105,6 +105,29 @@ def test_guard_accepts_bundle_smoke_responses(case):
     assert guarded == case["expected_response"]
 
 
+@pytest.mark.parametrize("defect", ["none", "execution", "payload", "citation"])
+def test_transport_binding_keeps_downstream_execution_and_semantic_checks(defect):
+    spec = importlib.util.spec_from_file_location(
+        "guard_candidate_binding", ROOT / "deploy/maxis-dify/code/core_candidate_binding.py")
+    binding = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(binding)
+    case = copy.deepcopy(_cases()[0])
+    candidate = case["expected_response"]
+    candidate["workflow_version"] = "model-copy-typo"
+    if defect == "payload":
+        candidate["payload"] = {"unrecognized": "invented"}
+    elif defect == "citation":
+        candidate["citations"][0]["source_id"] = "unknown"
+    incoming = {"contract": "ltm-model-input.v1", **case["inputs"],
+                "knowledge_proof": "LTM_RELEASE_SENTINEL_V1=smoke-bundle-v1"}
+    bound = binding.main(json.dumps(incoming), json.dumps(candidate))["candidate"]
+    result = _invoke(
+        case, bound, executed_workflow_id=(
+            "22222222-2222-4222-8222-222222222222" if defect == "execution" else None),
+    )
+    assert result["status"] == ("ok" if defect == "none" else "blocked")
+
+
 @pytest.mark.parametrize("fixed", ({"const": "ready"}, {"enum": ["ready"]}))
 def test_guard_accepts_source_free_control_only_payload(fixed):
     case = _source_free_case({

@@ -65,7 +65,7 @@ Editor의 `editor-draft-spec.v2`, `editor-writing.v1`, `editor-plan.v2`는 각�
 공통 흐름은 Start → release sentinel / Role ACL 검색 → Knowledge Guard → policy 분기 →
 검증된 입력의 LLM 처리 → Contract Guard → Answer다. policy deny는 LLM 없이 종료한다.
 
-- **Core:** 31노드·37엣지. 검증된 연결 검사, canonical Query·Request·CREATE Work·KnowledgeBrief·Result text 계약, 일반 업무를 분류해
+- **Core:** 32노드·38엣지. 검증된 연결 검사, canonical Query·Request·CREATE Work·KnowledgeBrief·Result text 계약, 일반 업무를 분류해
   control/query/request/work/knowledge/result/semantic 중 한 LLM 경로만 사용한다. Query는 기존 `query_specialist`의 typed
   입력에서 업무 내용·근거를 보존하고 최종 계약 metadata를 분리한다. LLM은 의미 값·kind·근거를
   작성하고 Code 조립기가 원본 입력으로 ID·인용 연결·metadata만 구성한다. 새 Role이나
@@ -74,6 +74,9 @@ Editor의 `editor-draft-spec.v2`, `editor-writing.v1`, `editor-plan.v2`는 각�
   최종 계약 metadata를 분리하고 기존 claim 제한을 표시한다. 조립기는 원본 입력을 사용해
   사용자 요청 의미와 명시 label을 기존 정본 payload로 조립한다. 분류·조립은 인증이나
   근거 검증을 대신하지 않는다. [분류 계약](core-control-route.md).
+  최종 Candidate Binding은 모델이 잘못 복사할 수 있는 게시 UUID·Knowledge hash 등
+  transport metadata만 검증된 요청에서 결속한다. status·payload·claim·citation·질문·경고는
+  그대로 두며, 기존 Contract Guard의 실행 UUID·근거·schema 검사를 거친다.
   Work는 exact CREATE에만 전용 입력·native draft·조립 경로를 사용하며 다른 Work schema는
   기존 일반 경로를 유지한다. 필수 CREATE 정책을 보존하기 위해 Work system만 16,384 UTF-8
   bytes 한도이며 다른 역할·원본 context·출력 token 한도는 그대로다. 실측 품질·효율 보장은 아니다.

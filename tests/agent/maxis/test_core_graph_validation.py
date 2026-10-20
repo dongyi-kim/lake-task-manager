@@ -271,7 +271,7 @@ def test_materialization_binds_all_models_independently_of_node_order(modules, r
                     "Result LLM": "{{#1909000000001042.result_input#}}"}.get(title, "{{#1909000000001006.model_input#}}")
         assert nodes[title]["prompt_template"][1]["text"].endswith(selector)
     assert next(row["value_selector"] for row in nodes["Contract Guard"]["variables"]
-                if row["variable"] == "candidate") == ["1909000000001027", "output"]
+                if row["variable"] == "candidate") == ["1909000000001043", "candidate"]
 
 
 @pytest.mark.parametrize("mutation", [

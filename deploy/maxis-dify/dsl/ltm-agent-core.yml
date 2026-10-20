@@ -299,10 +299,10 @@ workflow:
         isInLoop: false
         sourceType: variable-aggregator
         targetType: code
-      id: 1909000000001027-source-1909000000001005-target
+      id: 1909000000001027-source-1909000000001043-target
       source: '1909000000001027'
       sourceHandle: source
-      target: '1909000000001005'
+      target: '1909000000001043'
       targetHandle: target
       type: custom
       zIndex: 0
@@ -483,6 +483,18 @@ workflow:
       source: '1909000000001042'
       sourceHandle: source
       target: '1909000000001040'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: code
+      id: 1909000000001043-source-1909000000001005-target
+      source: '1909000000001043'
+      sourceHandle: source
+      target: '1909000000001005'
       targetHandle: target
       type: custom
       zIndex: 0
@@ -1457,8 +1469,8 @@ workflow:
         type: code
         variables:
         - value_selector:
-          - '1909000000001027'
-          - output
+          - '1909000000001043'
+          - candidate
           variable: candidate
         - value_selector:
           - start
@@ -1495,10 +1507,10 @@ workflow:
       height: 54
       id: '1909000000001005'
       position:
-        x: 3390
+        x: 3690
         y: 420
       positionAbsolute:
-        x: 3390
+        x: 3690
         y: 420
       selected: false
       sourcePosition: right
@@ -1515,10 +1527,10 @@ workflow:
       height: 101
       id: answer
       position:
-        x: 3690
+        x: 3990
         y: 420
       positionAbsolute:
-        x: 3690
+        x: 3990
         y: 420
       selected: false
       sourcePosition: right
@@ -7937,6 +7949,74 @@ workflow:
       positionAbsolute:
         x: 2190
         y: 2460
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        title: Core Candidate Binding
+        type: code
+        selected: false
+        desc: 요청 소유 transport metadata 결속; 의미 값과 두 Guard 보존
+        code_language: python3
+        code: "\"\"\"Bind transport metadata from the verified request, never from\
+          \ model spelling.\n\nNo status, payload, claim, citation, warning or question\
+          \ is changed. The existing\nContract Guard still checks every semantic value,\
+          \ citation, schema and execution\nUUID after this step. This is not JSON\
+          \ repair or a success fallback.\n\"\"\"\nimport json\nimport re\n\n_FIELDS\
+          \ = {\n    \"contract\", \"role_id\", \"workflow_version\", \"knowledge_version\"\
+          ,\n    \"knowledge_manifest_sha256\", \"knowledge_proof\",\n}\n_SEMANTIC\
+          \ = {\n    \"status\", \"payload\", \"claims\", \"citations\", \"payload_claims\"\
+          ,\n    \"missing_inputs\", \"warnings\",\n}\n\n\ndef _fail():\n    raise\
+          \ ValueError(\"invalid_core_candidate_binding\")\n\n\ndef _pairs(rows):\n\
+          \    result = {}\n    for key, value in rows:\n        if key in result:\n\
+          \            _fail()\n        result[key] = value\n    return result\n\n\
+          \ndef _decode(value):\n    if not isinstance(value, str) or len(value.encode(\"\
+          utf-8\")) > 48000:\n        _fail()\n    parsed = json.loads(value, object_pairs_hook=_pairs,\
+          \ parse_constant=lambda _: _fail())\n    if not isinstance(parsed, dict):\n\
+          \        _fail()\n    return parsed\n\n\ndef main(model_input, candidate):\n\
+          \    try:\n        request, result = _decode(model_input), _decode(candidate)\n\
+          \        pack = request.get(\"context_pack\")\n        if (request.get(\"\
+          contract\") != \"ltm-model-input.v1\" or not isinstance(pack, dict)\n  \
+          \              or request.get(\"role_id\") != pack.get(\"use_case\")\n \
+          \               or request.get(\"correlation_id\") != pack.get(\"request_id\"\
+          )\n                or request.get(\"output_contract\") != \"remote-role-result.v1\"\
+          \n                or set(result) != _FIELDS | _SEMANTIC):\n            _fail()\n\
+          \        bound = {\n            \"contract\": request[\"output_contract\"\
+          ], \"role_id\": request[\"role_id\"],\n            \"workflow_version\"\
+          : request[\"workflow_version\"],\n            \"knowledge_version\": request[\"\
+          knowledge_version\"],\n            \"knowledge_manifest_sha256\": pack[\"\
+          knowledge_manifest_sha256\"],\n            \"knowledge_proof\": request[\"\
+          knowledge_proof\"],\n        }\n        if (any(not isinstance(value, str)\
+          \ or not value for value in bound.values())\n                or not re.fullmatch(r\"\
+          [0-9a-f-]{36}\", bound[\"workflow_version\"])\n                or not re.fullmatch(r\"\
+          [0-9a-f]{64}\", bound[\"knowledge_manifest_sha256\"])):\n            _fail()\n\
+          \        return {\"candidate\": json.dumps({**result, **bound}, ensure_ascii=False,\n\
+          \                                        sort_keys=True, separators=(\"\
+          ,\", \":\"), allow_nan=False)}\n    except (ValueError, TypeError, KeyError,\
+          \ RecursionError):\n        _fail()"
+        variables:
+        - variable: model_input
+          value_selector:
+          - '1909000000001006'
+          - model_input
+        - variable: candidate
+          value_selector:
+          - '1909000000001027'
+          - output
+        outputs:
+          candidate:
+            children: null
+            type: string
+      height: 87
+      id: '1909000000001043'
+      position:
+        x: 3390
+        y: 420
+      positionAbsolute:
+        x: 3390
+        y: 420
       selected: false
       sourcePosition: right
       targetPosition: left

@@ -679,7 +679,7 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
     node_ids = [
         str(_mapping(node, "Dify node").get("id") or "") for node in nodes
     ]
-    expected_node_count = 23 if editor_assembly else 31 if core_control else 12
+    expected_node_count = 23 if editor_assembly else 32 if core_control else 12
     if (
         len(nodes) != expected_node_count
         or any(not node_id for node_id in node_ids)
@@ -1004,7 +1004,7 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
             if "completion_params" in environment["model"]:
                 model["completion_params"] = validate_completion_params(environment["model"]["completion_params"])
         elif data.get("type") == "code":
-            if core_control and node["id"] in {core_graph.CLASSIFIER_ID, core_graph.QUERY_ASSEMBLER_ID,
+            if core_control and node["id"] in {core_graph.BINDING_ID, core_graph.CLASSIFIER_ID, core_graph.QUERY_ASSEMBLER_ID,
                                               core_graph.QUERY_INPUT_ID, core_graph.REQUEST_ASSEMBLER_ID,
                                               core_graph.REQUEST_INPUT_ID, core_graph.WORK_ASSEMBLER_ID,
                                               core_graph.WORK_INPUT_ID, core_graph.KNOWLEDGE_ASSEMBLER_ID,
@@ -1287,7 +1287,7 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
         {"variable": name, "value_selector": selector}
         for name, selector in [
             ("candidate", [editor_assembler_node_id, "candidate"] if editor_assembly
-             else [core_graph.MERGE_ID, "output"] if core_control else [llm_node_id, "text"]),
+             else [core_graph.BINDING_ID, "candidate"] if core_control else [llm_node_id, "text"]),
             ("context_pack", [start_node_id, "context_pack"]),
             ("role_id", [start_node_id, "role_id"]),
             ("correlation_id", [start_node_id, "correlation_id"]),

@@ -220,7 +220,7 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
         nodes = dsl["workflow"]["graph"]["nodes"]
         is_editor = path.name == "ltm-editor-author.yml"
         is_core = path.name == "ltm-agent-core.yml"
-        assert len(nodes) == (23 if is_editor else 31 if is_core else 12)
+        assert len(nodes) == (23 if is_editor else 32 if is_core else 12)
         llm_nodes = [node for node in nodes if node["data"]["type"] == "llm"]
         assert len(llm_nodes) == (7 if is_core else 4 if is_editor else 1)
         assembler_nodes = [node for node in nodes if node["data"].get("title") == "Editor Assembler"]
@@ -340,7 +340,7 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
             (edge["source"], edge["sourceHandle"], edge["target"])
             for edge in dsl["workflow"]["graph"]["edges"]
         }
-        assert len(edge_routes) == (26 if is_editor else 37 if is_core else 12)
+        assert len(edge_routes) == (26 if is_editor else 38 if is_core else 12)
         assert ("start", "source", role_acl_key["id"]) in edge_routes
         if is_editor:
             assert (role_acl_key["id"], "source", role_knowledge["id"]) in edge_routes
@@ -458,7 +458,7 @@ def test_dev_environment_materializes_all_three_import_dsls(tmp_path):
         candidate_selector = next(row["value_selector"] for row in guard["variables"]
                                   if row["variable"] == "candidate")
         assert candidate_selector == ([assembler_nodes[0]["id"], "candidate"]
-                                      if is_editor else ["1909000000001027", "output"] if is_core else [llm_id, "text"])
+                                      if is_editor else ["1909000000001043", "candidate"] if is_core else [llm_id, "text"])
         if is_editor:
             editor_input = input_nodes[0]["data"]
             assert input_nodes[0]["id"] == materializer._VALIDATOR.EDITOR_INPUT_NODE_ID

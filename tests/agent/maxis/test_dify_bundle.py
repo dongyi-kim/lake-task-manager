@@ -234,8 +234,8 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
         is_editor = workflow["roles"] == ["editor_author"]
         is_core = "knowledge_curator" in workflow["roles"]
         nodes = dsl["workflow"]["graph"]["nodes"]
-        assert len(nodes) == (23 if is_editor else 31 if is_core else 12)
-        assert len(dsl["workflow"]["graph"]["edges"]) == (26 if is_editor else 37 if is_core else 12)
+        assert len(nodes) == (23 if is_editor else 32 if is_core else 12)
+        assert len(dsl["workflow"]["graph"]["edges"]) == (26 if is_editor else 38 if is_core else 12)
         assert sum(node["data"].get("title") == "Editor Assembler" for node in nodes) == int(is_editor)
         inputs = [node for node in nodes if node["data"].get("title") == "Editor Input"]
         assert len(inputs) == int(is_editor)

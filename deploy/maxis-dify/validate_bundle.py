@@ -1068,7 +1068,7 @@ def _validate_dify_dsls(
         if editor_assembly:
             expected_node_counts["variable-aggregator"] = 2
         elif core_control:
-            expected_node_counts.update({"llm": 7, "code": 14, "if-else": 2, "variable-aggregator": 1})
+            expected_node_counts.update({"llm": 7, "code": 15, "if-else": 2, "variable-aggregator": 1})
         actual_node_counts = {
             key: len(value) for key, value in nodes_by_type.items()
         }
@@ -1261,7 +1261,7 @@ def _validate_dify_dsls(
         if not editor_assembly:
             expected_code_titles.add("Policy Query")
         if core_control:
-            expected_code_titles.update({"Core Control Route", "Query Assembler", "Query Input", "Request Assembler", "Request Input",
+            expected_code_titles.update({"Core Candidate Binding", "Core Control Route", "Query Assembler", "Query Input", "Request Assembler", "Request Input",
                                          "Work Assembler", "Work Input", "Knowledge Assembler", "Knowledge Input", "Result Assembler", "Result Input"})
         if editor_assembly:
             expected_code_titles.update({"Editor Assembler", "Editor Input", "DraftSpec Guard", "Stop Plan", "DraftSpec Enforcer"})
@@ -1434,7 +1434,7 @@ def _validate_dify_dsls(
         ]
         expected_guard_variables = [
             ("candidate", [editor_assembler_id, "candidate"] if editor_assembly
-             else [core_graph.MERGE_ID, "output"] if core_control else [llm_id, "text"]),
+             else [core_graph.BINDING_ID, "candidate"] if core_control else [llm_id, "text"]),
             ("context_pack", [start_id, "context_pack"]),
             ("role_id", [start_id, "role_id"]),
             ("correlation_id", [start_id, "correlation_id"]),

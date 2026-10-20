@@ -114,7 +114,7 @@ def _baseline():
              "1909000000001031", "1909000000001032", "1909000000001033",
              "1909000000001034", "1909000000001035", "1909000000001036",
              "1909000000001037", "1909000000001038", "1909000000001039",
-             "1909000000001040", "1909000000001041", "1909000000001042"}
+             "1909000000001040", "1909000000001041", "1909000000001042", "1909000000001043"}
     graph["nodes"] = [node for node in graph["nodes"] if node["id"] not in added]
     graph["edges"] = [edge for edge in graph["edges"] if not {edge["source"], edge["target"]} & added]
     nodes = _nodes(dsl)
@@ -134,8 +134,8 @@ def test_builder_adds_only_the_literal_control_subgraph():
     before = copy.deepcopy(dsl)
     result = _build(dsl)
     graph = result["workflow"]["graph"]
-    assert len(graph["nodes"]) == 31
-    assert len(graph["edges"]) == 37
+    assert len(graph["nodes"]) == 32
+    assert len(graph["edges"]) == 38
     assert dsl == before
     assert result == _dsl()
     old = {(e["source"], e["sourceHandle"], e["target"]) for e in dsl["workflow"]["graph"]["edges"]}
@@ -171,12 +171,13 @@ def test_builder_adds_only_the_literal_control_subgraph():
         ("1909000000001041", "source", "1909000000001027"),
         ("1909000000001026", "source", "1909000000001027"),
         ("1909000000001004", "source", "1909000000001027"),
-        ("1909000000001027", "source", "1909000000001005"),
+        ("1909000000001027", "source", "1909000000001043"),
+        ("1909000000001043", "source", "1909000000001005"),
     }
     types = [node["data"]["type"] for node in graph["nodes"]]
     assert {name: types.count(name) for name in set(types)} == {
         "start": 1, "answer": 2, "template-transform": 2, "knowledge-retrieval": 2,
-        "llm": 7, "code": 14, "if-else": 2, "variable-aggregator": 1}
+        "llm": 7, "code": 15, "if-else": 2, "variable-aggregator": 1}
     old_edges = {row["id"]: row for row in before["workflow"]["graph"]["edges"]}
     assert all(row == old_edges[row["id"]] for row in graph["edges"] if row["id"] in old_edges)
 
@@ -187,7 +188,7 @@ def test_original_models_guards_and_input_bindings_are_preserved():
         expected = copy.deepcopy(node["data"])
         if key == "1909000000001005":
             next(row for row in expected["variables"] if row["variable"] == "candidate")["value_selector"] = [
-                "1909000000001027", "output"]
+                "1909000000001043", "candidate"]
         assert after[key]["data"] == expected
     control = copy.deepcopy(after["1909000000001026"]["data"])
     control["title"], control["desc"] = before["1909000000001004"]["data"]["title"], before["1909000000001004"]["data"]["desc"]

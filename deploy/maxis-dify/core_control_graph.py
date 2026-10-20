@@ -22,6 +22,8 @@ CLASSIFIER_NODE_ID = "1909000000001024"
 STAGE_NODE_ID = "1909000000001025"
 CONTROL_NODE_ID = "1909000000001026"
 MERGE_NODE_ID = "1909000000001027"
+BINDING_NODE_ID = "1909000000001043"
+BINDING_SHA256 = "3db74bb5e0b3b74f9024230754319aefdc2bb66c2b9e30afb2d75f58501db4f4"
 SEMANTIC_NODE_ID = "1909000000001004"
 QUERY_NODE_ID = "1909000000001028"
 QUERY_ASSEMBLER_ID = "1909000000001029"
@@ -81,6 +83,7 @@ _BASE_NODES = {
     "1909000000001023": ("Policy Query", "code"),
 }
 _NEW_NODES = {CLASSIFIER_NODE_ID: ("Core Control Route", "code"),
+              BINDING_NODE_ID: ("Core Candidate Binding", "code"),
               STAGE_NODE_ID: ("Core Stage", "if-else"), CONTROL_NODE_ID: ("Control LLM", "llm"),
               MERGE_NODE_ID: ("Core Candidate", "variable-aggregator"), QUERY_NODE_ID: ("Query LLM", "llm"),
               QUERY_ASSEMBLER_ID: ("Query Assembler", "code"), QUERY_INPUT_ID: ("Query Input", "code"),
@@ -327,6 +330,22 @@ def merge_data() -> dict:
             "advanced_settings": {"group_enabled": False, "groups": []}}
 
 
+def binding_source(root: Path) -> str:
+    source = (root / "deploy/maxis-dify/code/core_candidate_binding.py").read_text(encoding="utf-8").rstrip()
+    if hashlib.sha256(source.encode()).hexdigest() != BINDING_SHA256:
+        raise ValueError("Core candidate binding reviewed source drifted")
+    return source
+
+
+def binding_data(source: str) -> dict:
+    return {"title": "Core Candidate Binding", "type": "code", "selected": False,
+            "desc": "요청 소유 transport metadata 결속; 의미 값과 두 Guard 보존",
+            "code_language": "python3", "code": source, "variables": [
+                {"variable": "model_input", "value_selector": [KNOWLEDGE_GUARD_ID, "model_input"]},
+                {"variable": "candidate", "value_selector": [MERGE_NODE_ID, "output"]}],
+            "outputs": {"candidate": {"children": None, "type": "string"}}}
+
+
 def assembler_data(source: str) -> dict:
     return {"title": "Query Assembler", "type": "code", "selected": False,
             "desc": "Query 의미 원문을 유지하며 ID·인용 연결·metadata만 조립", "code_language": "python3",
@@ -432,7 +451,8 @@ def branch_edges() -> set[tuple[str, str, str]]:
             (STAGE_NODE_ID, "result", RESULT_INPUT_ID), (RESULT_INPUT_ID, "source", RESULT_NODE_ID),
             (RESULT_NODE_ID, "source", RESULT_ASSEMBLER_ID), (RESULT_ASSEMBLER_ID, "source", MERGE_NODE_ID),
             (CONTROL_NODE_ID, "source", MERGE_NODE_ID), (SEMANTIC_NODE_ID, "source", MERGE_NODE_ID),
-            (MERGE_NODE_ID, "source", CONTRACT_GUARD_ID)}
+            (MERGE_NODE_ID, "source", BINDING_NODE_ID),
+            (BINDING_NODE_ID, "source", CONTRACT_GUARD_ID)}
 
 
 def _edge(source, handle, target, nodes):
@@ -464,7 +484,7 @@ def _check_graph(dsl):
             edge != _edge(edge["source"], edge["sourceHandle"], edge["target"], nodes) for edge in graph["edges"]):
         raise ValueError("Core control topology drifted")
     candidates = [row for row in nodes[CONTRACT_GUARD_ID]["data"]["variables"] if row["variable"] == "candidate"]
-    selector = [MERGE_NODE_ID, "output"] if built else [SEMANTIC_NODE_ID, "text"]
+    selector = [BINDING_NODE_ID, "candidate"] if built else [SEMANTIC_NODE_ID, "text"]
     if candidates != [{"variable": "candidate", "value_selector": selector}]:
         raise ValueError("Core control candidate binding drifted")
     return nodes
@@ -529,14 +549,15 @@ def rebuild(dsl: dict, *, route_source: str, control_system_prompt: str,
                 KNOWLEDGE_NODE_ID: knowledge, KNOWLEDGE_ASSEMBLER_ID: knowledge_code_data(knowledge_assembler_source, "Assembler"),
                 KNOWLEDGE_INPUT_ID: knowledge_code_data(knowledge_input_source, "Input"), RESULT_NODE_ID: result_llm,
                 RESULT_ASSEMBLER_ID: result_code_data(result_assembler_source, "Assembler"),
-                RESULT_INPUT_ID: result_code_data(result_input_source, "Input")}
+                RESULT_INPUT_ID: result_code_data(result_input_source, "Input"),
+                BINDING_NODE_ID: binding_data(binding_source(Path(__file__).resolve().parents[2]))}
         for key, value in data.items():
             node = copy.deepcopy(base)
             node.update(id=key, data=value)
             nodes[key] = node
         for row in nodes[CONTRACT_GUARD_ID]["data"]["variables"]:
             if row["variable"] == "candidate":
-                row["value_selector"] = [MERGE_NODE_ID, "output"]
+                row["value_selector"] = [BINDING_NODE_ID, "candidate"]
         layout = {CLASSIFIER_NODE_ID: (1590, 420), STAGE_NODE_ID: (1890, 420),
                   QUERY_INPUT_ID: (2190, 1100), QUERY_NODE_ID: (2490, 1100), QUERY_ASSEMBLER_ID: (2790, 1100),
                   REQUEST_INPUT_ID: (2190, 1440), REQUEST_NODE_ID: (2490, 1440), REQUEST_ASSEMBLER_ID: (2790, 1440),
@@ -544,7 +565,8 @@ def rebuild(dsl: dict, *, route_source: str, control_system_prompt: str,
                   KNOWLEDGE_INPUT_ID: (2190, 2120), KNOWLEDGE_NODE_ID: (2490, 2120), KNOWLEDGE_ASSEMBLER_ID: (2790, 2120),
                   RESULT_INPUT_ID: (2190, 2460), RESULT_NODE_ID: (2490, 2460), RESULT_ASSEMBLER_ID: (2790, 2460),
                   CONTROL_NODE_ID: (2190, 760), SEMANTIC_NODE_ID: (2190, 240),
-                  MERGE_NODE_ID: (3090, 420), CONTRACT_GUARD_ID: (3390, 420), "answer": (3690, 420)}
+                  MERGE_NODE_ID: (3090, 420), BINDING_NODE_ID: (3390, 420),
+                  CONTRACT_GUARD_ID: (3690, 420), "answer": (3990, 420)}
         for key, (x, y) in layout.items():
             nodes[key]["position"] = {"x": x, "y": y}
             nodes[key]["positionAbsolute"] = {"x": x, "y": y}
