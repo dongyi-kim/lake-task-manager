@@ -204,10 +204,63 @@ def test_clean_prod_prepares_real_dsls_and_saves_only_an_inactive_candidate(isol
 def test_apply_route_uses_one_atomic_profile_operation(isolated, monkeypatch):
     from app.agent.maxis import profiles
     calls = []
-    monkeypatch.setattr(profiles, "apply_production", lambda workflows: (calls.append(workflows), {"ok": True})[1])
+    monkeypatch.setattr(profiles, "apply_profile", lambda profile, workflows: (calls.append((profile, workflows)), {"ok": True})[1])
     response = isolated.post("/api/agent/maxis/setup/apply", json={"workflows": ["agent_core", "editor_author"]})
     assert response.status_code == 200 and response.json()["ok"]
-    assert calls == [["agent_core", "editor_author"]]
+    assert calls == [("prod", ["agent_core", "editor_author"])]
     monkeypatch.setattr(setup_routes, "_can_manage", lambda: False)
     assert isolated.post("/api/agent/maxis/setup/apply", json={"workflows": ["agent_core", "editor_author"]}).status_code == 403
     assert len(calls) == 1
+
+
+def test_preparation_and_download_are_isolated_by_profile(isolated):
+    names = ["dev", "maxis-" + uuid.uuid4().hex]
+    prepared = [isolated.post("/api/agent/maxis/setup/knowledge", params={"profile": name}).json()
+                for name in names]
+    assert prepared[0]["runId"] != prepared[1]["runId"]
+    for name, result in zip(names, prepared):
+        assert result["profile"] == name
+        assert isolated.get(result["downloadUrl"]).status_code == 200
+        current = isolated.get("/api/agent/maxis/setup", params={"profile": name}).json()["currentRun"]
+        assert current["runId"] == result["runId"]
+        wrong = isolated.get(f"/api/agent/maxis/setup/download/{result['runId']}/knowledge",
+                             params={"profile": "prod"})
+        assert wrong.status_code == 400
+    assert isolated.get("/api/agent/maxis/setup").json()["currentRun"] is None
+    assert isolated.post("/api/agent/maxis/setup/knowledge", params={"profile": "../escape"}).status_code == 400
+
+
+def test_bundle_candidate_and_apply_target_the_selected_profile(isolated, monkeypatch):
+    from app.agent.maxis import profiles
+    name = "maxis-" + uuid.uuid4().hex
+    monkeypatch.setattr(profiles, "get", lambda selected: {"name": selected, "stage": "prod"})
+    saved, applied = [], []
+    monkeypatch.setattr(profiles, "save", lambda selected, body: saved.append((selected, body)))
+    monkeypatch.setattr(profiles, "apply_profile", lambda selected, workflows:
+                        (applied.append((selected, workflows)), {"ok": True})[1])
+    query = {"profile": name}
+    host = isolated.put("/api/agent/maxis/setup/host", params=query,
+                        json={"baseUrl": "https://other.example/v1", "confirmed": True})
+    assert host.status_code == 200, host.text
+    assert setup.registered_prod_hosts() == frozenset({"other.example"})
+    prepared = isolated.post("/api/agent/maxis/setup/knowledge", params=query).json()
+    body = {"runId": prepared["runId"], "baseUrl": "https://other.example/v1",
+            "datasetId": str(uuid.uuid4()), "sentinelDatasetId": str(uuid.uuid4()),
+            "sentinelDocumentId": str(uuid.uuid4()), "roleMetadataFieldId": str(uuid.uuid4()),
+            "documentIds": {row["id"]: str(uuid.uuid4()) for row in prepared["documents"]},
+            "model": {"plugin_unique_identifier": "example/model:1.0@aaaaaaaa",
+                      "provider": "example/model/model", "name": "approved-chat"}}
+    bundled = isolated.post("/api/agent/maxis/setup/bundle", params=query, json=body)
+    assert bundled.status_code == 200, bundled.text
+    assert isolated.post("/api/agent/maxis/setup/bundle", json=body).status_code == 400
+    candidate = isolated.post("/api/agent/maxis/setup/candidate", params=query, json={
+        "runId": prepared["runId"], "workflowVersions": {
+            key: str(uuid.uuid4()) for key in ("agent_core", "editor_author")},
+        "remoteLogPolicyId": "approved-policy", "remoteLogMode": "redacted", "remoteLogRetentionDays": 0,
+    })
+    assert candidate.status_code == 200, candidate.text
+    assert saved[0][0] == name
+    assert f"/profiles/{name}/" in saved[0][1]["knowledge_environment_binding"]
+    assert isolated.post("/api/agent/maxis/setup/apply", params=query,
+                         json={"workflows": ["agent_core", "editor_author"]}).status_code == 200
+    assert applied == [(name, ["agent_core", "editor_author"])]

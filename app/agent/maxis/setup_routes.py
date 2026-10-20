@@ -19,7 +19,7 @@ class _SafeRoute(APIRoute):
             except RequestValidationError:
                 # Pydantic's default errors include the supplied value, including a
                 # portal password accidentally entered into an unsupported field.
-                return JSONResponse({"ok": False, "error": "PROD 준비 입력 형식을 확인하세요. 로그인 ID/PW와 token은 이 준비 요청에 넣지 않습니다."}, status_code=422)
+                return JSONResponse({"ok": False, "error": "MAXIS 준비 입력 형식을 확인하세요. 로그인 ID/PW와 token은 이 준비 요청에 넣지 않습니다."}, status_code=422)
         return handler
 
 
@@ -77,7 +77,7 @@ def _can_manage() -> bool:
 
 
 def _denied():
-    return JSONResponse({"ok": False, "error": "PROD 준비와 설정 변경은 현재 Jira 매니저만 할 수 있습니다."}, status_code=403)
+    return JSONResponse({"ok": False, "error": "MAXIS 준비와 설정 변경은 현재 Jira 매니저만 할 수 있습니다."}, status_code=403)
 
 
 def _call(function, *args, **kwargs):
@@ -86,12 +86,12 @@ def _call(function, *args, **kwargs):
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     except OSError:
-        return JSONResponse({"ok": False, "error": "PROD 준비 파일을 저장하지 못했습니다."}, status_code=503)
+        return JSONResponse({"ok": False, "error": "MAXIS 준비 파일을 저장하지 못했습니다."}, status_code=503)
 
 
 @router.get("")
-def get_setup():
-    return _call(setup.status)
+def get_setup(profile: str = "prod"):
+    return _call(setup.status, profile_name=profile)
 
 
 @router.get("/guide")
@@ -100,7 +100,7 @@ def get_guide():
     try:
         content = (setup._root() / "docs" / "agent-maxis-operations.md").read_text(encoding="utf-8")
     except OSError:
-        return JSONResponse({"ok": False, "error": "저장소의 PROD 운영 가이드를 확인하세요."}, status_code=404)
+        return JSONResponse({"ok": False, "error": "저장소의 MAXIS 운영 가이드를 확인하세요."}, status_code=404)
     return PlainTextResponse(content, headers={
         "Cache-Control": "no-store",
         "X-Content-Type-Options": "nosniff",
@@ -109,24 +109,24 @@ def get_guide():
 
 
 @router.put("/host")
-def register_host(body: HostBody):
+def register_host(body: HostBody, profile: str = "prod"):
     if not _can_manage():
         return _denied()
-    return _call(setup.register_prod_host, body.baseUrl, confirmed=body.confirmed)
+    return _call(setup.register_prod_host, body.baseUrl, confirmed=body.confirmed, profile_name=profile)
 
 
 @router.post("/knowledge")
-def prepare_knowledge():
+def prepare_knowledge(profile: str = "prod"):
     if not _can_manage():
         return _denied()
-    return _call(setup.prepare_knowledge)
+    return _call(setup.prepare_knowledge, profile_name=profile)
 
 
 @router.post("/bundle")
-def prepare_bundle(body: BundleBody):
+def prepare_bundle(body: BundleBody, profile: str = "prod"):
     if not _can_manage():
         return _denied()
-    return _call(setup.prepare_bundle, body.model_dump())
+    return _call(setup.prepare_bundle, body.model_dump(), profile_name=profile)
 
 
 @router.post("/model")
@@ -137,31 +137,31 @@ def model_from_export(body: ModelExportBody):
 
 
 @router.post("/candidate")
-def save_candidate(body: CandidateBody):
+def save_candidate(body: CandidateBody, profile: str = "prod"):
     if not _can_manage():
         return _denied()
-    return _call(setup.save_candidate, body.model_dump())
+    return _call(setup.save_candidate, body.model_dump(), profile_name=profile)
 
 
 @router.post("/apply")
-def apply_production(body: ApplyBody):
+def apply_production(body: ApplyBody, profile: str = "prod"):
     if not _can_manage():
         return _denied()
     from app.agent.maxis import profiles
     from app.infra.prefs import PrefsPersistenceError
     try:
-        return _call(profiles.apply_production, body.workflows)
+        return _call(profiles.apply_profile, profile, body.workflows)
     except PrefsPersistenceError:
         return JSONResponse({"ok": False, "error": "운영 설정을 저장하지 못했습니다. 이전 적용 상태를 유지합니다."}, status_code=503)
 
 
 @router.get("/download/{run_id}/{kind}")
-def download(run_id: str, kind: str):
+def download(run_id: str, kind: str, profile: str = "prod"):
     if not _can_manage():
         return _denied()
     try:
-        path = setup.download(run_id, kind)
-        return FileResponse(path, media_type="application/zip", filename="ltm-prod-" + kind + ".zip",
+        path = setup.download(run_id, kind, profile_name=profile)
+        return FileResponse(path, media_type="application/zip", filename="ltm-maxis-" + kind + ".zip",
                             headers={"Cache-Control": "no-store"})
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)

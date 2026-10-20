@@ -186,7 +186,7 @@ def test_public_key_requires_explicit_confirmation(isolated):
 def test_runner_is_subprocess_mock_only_not_application_fixture_patch(isolated, monkeypatch):
     seen = {}
     monkeypatch.setattr(runs, "clean_commit", lambda: "c" * 40)
-    monkeypatch.setattr(runs, "preflight", lambda workflows: ({}, {"workflows": workflows}))
+    monkeypatch.setattr(runs, "preflight", lambda workflows, **_: ({}, {"workflows": workflows}))
 
     def launch(command, **kwargs):
         seen.update(command=command, **kwargs)
@@ -199,6 +199,7 @@ def test_runner_is_subprocess_mock_only_not_application_fixture_patch(isolated, 
     assert seen["env"]["LAKE_CACHE_DIR"]
     assert "maxis_qualification.py" in seen["command"][4]
     assert "--id" in seen["command"] and result["runId"] in seen["command"]
+    assert seen["command"][-2:] == ["--profile", "prod"]
     with pytest.raises(ValueError, match="already_running"):
         runs.start(WORKFLOWS)
 
@@ -234,7 +235,9 @@ def test_atomic_apply_failure_does_not_switch_active_profile(isolated, monkeypat
     monkeypatch.setattr(profiles, "kill_switch_enabled", lambda: False)
     monkeypatch.setattr(profiles, "get", lambda _: {})
     monkeypatch.setattr(profiles, "_effective", lambda value: value)
-    monkeypatch.setattr(profiles, "_validate", lambda value, **_: {"stage": "prod"})
+    monkeypatch.setattr(profiles, "_validate", lambda value, **_: {
+        "stage": "prod", "data_policy": "internal_read_only", "execution_policy": "qualified",
+    })
     monkeypatch.setattr(profiles, "_require_cross_environment_asset_separation", lambda _: None)
     monkeypatch.setattr(profiles, "probe_ok", lambda _: True)
     monkeypatch.setattr(q, "status", lambda _: {"valid": False, "workflows": []})
@@ -265,3 +268,44 @@ def test_source_binding_includes_runtime_dependencies_outside_agent(tmp_path, mo
         previous = q.source_digest()
         path.write_text("after", encoding="utf-8")
         assert q.source_digest() != previous, relative
+
+
+def test_signed_result_and_supersession_are_scoped_to_profile(isolated, monkeypatch):
+    monkeypatch.setattr(q, "binding", lambda profile, workflows: {
+        "profile": profile["name"], "workflows": q.clean_workflows(workflows)})
+    monkeypatch.setattr(api.profiles, "resolve", lambda name: {"name": name, "stage": "prod"})
+    selected = {"name": "maxis-connection"}
+    raw = report()
+    raw["binding"] = q.binding(selected, WORKFLOWS)
+    signed = envelope(raw)
+    response = isolated.post("/api/agent/maxis/qualification/artifacts?profile=maxis-connection",
+                             json={"artifact": signed})
+    assert response.status_code == 200, response.text
+    assert q.status(selected)["valid"]
+    assert not q.status({"name": "prod"})["valid"]
+    cross_profile = isolated.post("/api/agent/maxis/qualification/artifacts?profile=prod",
+                                  json={"artifact": signed})
+    assert cross_profile.status_code == 400
+    q.write_json(q.directory("prod") / "current.json", {"runId": "b" * 32})
+    assert q.status(selected)["valid"]
+    q.write_json(q.directory(selected["name"]) / "current.json", {"runId": "c" * 32})
+    assert q.status(selected)["reasonCode"] == "qualification_superseded_run"
+
+
+def test_runner_and_raw_access_are_scoped_to_profile(isolated, monkeypatch):
+    seen = []
+    monkeypatch.setattr(runs, "clean_commit", lambda: "c" * 40)
+    monkeypatch.setattr(runs, "preflight", lambda workflows, *, profile_name:
+                        ({}, {"profile": profile_name, "workflows": workflows}))
+    monkeypatch.setattr(runs.subprocess, "Popen", lambda command, **kwargs:
+                        (seen.append(command), SimpleNamespace(poll=lambda: None))[1])
+    first = isolated.post("/api/agent/maxis/qualification/runs?profile=dev", json={"workflows": WORKFLOWS})
+    second = isolated.post("/api/agent/maxis/qualification/runs?profile=maxis-connection",
+                           json={"workflows": WORKFLOWS})
+    assert first.status_code == second.status_code == 200
+    assert seen[0][-2:] == ["--profile", "dev"]
+    assert seen[1][-2:] == ["--profile", "maxis-connection"]
+    run_id = first.json()["runId"]
+    assert isolated.get(f"/api/agent/maxis/qualification/runs/{run_id}?profile=dev").status_code == 200
+    assert isolated.get(f"/api/agent/maxis/qualification/runs/{run_id}?profile=prod").status_code == 400
+    assert runs.current() is None

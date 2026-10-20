@@ -41,7 +41,7 @@ def create_key(output: str) -> dict:
     return result
 
 
-def sign(report_path: str, review_path: str, key_path: str, output: str) -> dict:
+def sign(report_path: str, review_path: str, key_path: str, output: str, *, profile_name: str = "prod") -> dict:
     from app.agent.maxis import profiles
     from app.agent.maxis.credentials import WindowsDpapiBackend
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -59,7 +59,7 @@ def sign(report_path: str, review_path: str, key_path: str, output: str) -> dict
     envelope = {"contract": q.CONTRACT, "keyId": fingerprint, "payload": payload,
                 "signature": base64.b64encode(key.sign(q.canonical(payload))).decode("ascii")}
     # Requires prior independent public-key enrollment. No registration side effect.
-    result = q.verify(envelope, profiles.resolve("prod"))
+    result = q.verify(envelope, profiles.resolve(profile_name))
     with path.open("x", encoding="utf-8") as stream:
         json.dump(envelope, stream, ensure_ascii=False, allow_nan=False)
     return result
@@ -71,19 +71,21 @@ def main(argv=None) -> int:
     key = commands.add_parser("reviewer-key")
     key.add_argument("--output", required=True)
     signer = commands.add_parser("sign")
+    signer.add_argument("--profile", default="prod")
     for field in ("report", "review", "key", "output"):
         signer.add_argument("--" + field, required=True)
     runner = commands.add_parser("run")
     runner.add_argument("--id", required=True)
+    runner.add_argument("--profile", default="prod")
     args = parser.parse_args(argv)
     try:
         if args.command == "reviewer-key":
             result = create_key(args.output)
         elif args.command == "sign":
-            result = sign(args.report, args.review, args.key, args.output)
+            result = sign(args.report, args.review, args.key, args.output, profile_name=args.profile)
         else:
             from app.agent.maxis.qualification_runs import execute
-            execute(args.id)
+            execute(args.id, profile_name=args.profile)
             return 0
         print(json.dumps(result, ensure_ascii=False))
         return 0

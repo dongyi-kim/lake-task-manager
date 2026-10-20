@@ -29,20 +29,20 @@ def _call(function, *args, **kwargs):
     try:
         return JSONResponse(function(*args, **kwargs), headers={"Cache-Control": "no-store"})
     except (ValueError, KeyError, TypeError, OSError):
-        return JSONResponse({"ok": False, "error": "PROD 평가·검수 입력과 현재 배포 일치를 확인하세요."},
+        return JSONResponse({"ok": False, "error": "MAXIS 평가·검수 입력과 현재 프로필의 배포 일치를 확인하세요."},
                             status_code=400, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/status")
-def status():
+def status(profile: str = "prod"):
     if not _can_manage():
         return _denied()
 
     def read():
-        profile = profiles.resolve("prod")
-        return {**q.status(profile), "keys": [
+        selected = profiles.resolve(profile)
+        return {**q.status(selected), "keys": [
             {**value, "keyId": fingerprint} for fingerprint, value in q.trusted_keys().items()
-        ], "currentRun": runs.current(),
+        ], "currentRun": runs.current(profile_name=profile),
             "requirements": {"knowledgeCases": len(q.knowledge_cases(["agent_core", "editor_author"])),
                              "roleRepetitions": q.REPETITIONS,
                              "minimumScore": 4, "independentReview": True}}
@@ -50,26 +50,26 @@ def status():
 
 
 @router.post("/runs")
-def start(body: RunBody):
+def start(body: RunBody, profile: str = "prod"):
     if not _can_manage():
         return _denied()
-    return _call(runs.start, body.workflows)
+    return _call(runs.start, body.workflows, profile_name=profile)
 
 
 @router.get("/runs/{run_id}")
-def progress(run_id: str):
+def progress(run_id: str, profile: str = "prod"):
     if not _can_manage():
         return _denied()
-    return _call(runs.progress, run_id)
+    return _call(runs.progress, run_id, profile_name=profile)
 
 
 @router.get("/runs/{run_id}/review")
-def review(run_id: str):
+def review(run_id: str, profile: str = "prod"):
     if not _can_manage():
         return _denied()
-    response = _call(runs.review_bundle, run_id)
+    response = _call(runs.review_bundle, run_id, profile_name=profile)
     if response.status_code == 200:
-        response.headers["Content-Disposition"] = 'attachment; filename="ltm-prod-qualification-review.json"'
+        response.headers["Content-Disposition"] = 'attachment; filename="ltm-maxis-qualification-review.json"'
     return response
 
 
@@ -88,9 +88,9 @@ def revoke(fingerprint: str):
 
 
 @router.post("/artifacts")
-def install(body: ArtifactBody):
+def install(body: ArtifactBody, profile: str = "prod"):
     if not _can_manage():
         return _denied()
     if len(q.canonical(body.artifact)) > q.MAX_BYTES:
         return JSONResponse({"ok": False, "error": "평가 파일이 너무 큽니다."}, status_code=413)
-    return _call(lambda: q.install(body.artifact, profiles.resolve("prod")))
+    return _call(lambda: q.install(body.artifact, profiles.resolve(profile)))

@@ -39,9 +39,12 @@ def source_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-def directory() -> Path:
+def directory(profile_name: str = "prod") -> Path:
     from app.infra.settings import CACHE_DIR
-    return Path(CACHE_DIR) / "maxis" / "qualification"
+    from app.agent.maxis.setup import profile_id
+    name = profile_id(profile_name)
+    root = Path(CACHE_DIR) / "maxis" / "qualification"
+    return root if name == "prod" else root / "profiles" / name
 
 
 def read_json(path: Path) -> dict:
@@ -172,8 +175,8 @@ def source_digest() -> str:
 def binding(profile: dict, workflows) -> dict:
     from app.agent.maxis import profiles
     from tools.agent_eval_protocol import load_protocol
-    if profile.get("stage") != "prod" or profile.get("name") != "prod":
-        raise ValueError("qualification_requires_prod")
+    from app.agent.maxis.setup import profile_id
+    profile_id(profile.get("name"))
     enabled = clean_workflows(workflows)
     protocol = load_protocol()
     return {
@@ -283,7 +286,7 @@ def verify(envelope: dict, profile: dict) -> dict:
     if set(payload) != {"report", "review", "expiresAt"}:
         raise ValueError("qualification_payload_invalid")
     report, review = payload["report"], payload["review"]
-    current = directory() / "current.json"
+    current = directory(profile.get("name", "prod")) / "current.json"
     if current.exists() and read_json(current).get("runId") != report.get("runId"):
         raise ValueError("qualification_superseded_run")
     rows = validate_report(report, profile)
@@ -312,7 +315,7 @@ def verify(envelope: dict, profile: dict) -> dict:
                 or not str(assessment.get("rationale", "")).strip()
                 or not str(assessment.get("excerpt", "")).strip()):
             raise ValueError("qualification_review_failed")
-    return {"valid": True, "reasonCode": "", "reason": "PROD 독립 검수 확인",
+    return {"valid": True, "reasonCode": "", "reason": "MAXIS 프로필 독립 검수 확인",
             "runId": report["runId"], "expiresAt": payload["expiresAt"],
             "workflows": report["binding"]["workflows"], "capability": CAPABILITY}
 
@@ -320,13 +323,13 @@ def verify(envelope: dict, profile: dict) -> dict:
 def install(envelope: dict, profile: dict) -> dict:
     with _LOCK:
         result = verify(envelope, profile)
-        write_json(directory() / "approved.json", envelope)
+        write_json(directory(profile.get("name", "prod")) / "approved.json", envelope)
         return result
 
 
 def status(profile: dict) -> dict:
     try:
-        path = directory() / "approved.json"
+        path = directory(profile.get("name", "prod")) / "approved.json"
         if not path.exists():
             raise ValueError("qualification_missing")
         return verify(read_json(path), profile)
@@ -335,5 +338,5 @@ def status(profile: dict) -> dict:
         if not re.fullmatch(r"qualification_[a-z_]+", code):
             code = "qualification_invalid"
         return {"valid": False, "reasonCode": code,
-                "reason": "PROD 배포의 평가 실행·독립 검수·서명 확인이 필요합니다.",
+                "reason": "이 MAXIS 프로필의 평가 실행·독립 검수·서명 확인이 필요합니다.",
                 "workflows": [], "capability": CAPABILITY}

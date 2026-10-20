@@ -85,7 +85,7 @@ def test_production_authority_remains_fail_closed_without_signed_prod_qualificat
 
     with pytest.raises(
         backend.MaxisRuntimeError,
-        match=(r"Signed external PROD MAXIS qualification is required for the "
+        match=(r"Signed external MAXIS qualification is required for the "
                r"current deployment and features\.$"),
     ) as caught:
         backend._require_authoritative_routes(

@@ -20,14 +20,14 @@ def instant() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def run_path(run_id: str) -> Path:
+def run_path(run_id: str, *, profile_name: str = "prod") -> Path:
     if not q._UUID.fullmatch(str(run_id)):
         raise ValueError("qualification_run_invalid")
-    return q.directory() / "runs" / run_id
+    return q.directory(profile_name) / "runs" / run_id
 
 
-def progress(run_id: str) -> dict:
-    path = run_path(run_id)
+def progress(run_id: str, *, profile_name: str = "prod") -> dict:
+    path = run_path(run_id, profile_name=profile_name)
     result = q.read_json(path / "progress.json")
     process = _PROCESSES.get(run_id)
     if result["state"] in {"queued", "running"} and (
@@ -39,18 +39,18 @@ def progress(run_id: str) -> dict:
     return result
 
 
-def current() -> dict | None:
-    path = q.directory() / "current.json"
+def current(*, profile_name: str = "prod") -> dict | None:
+    path = q.directory(profile_name) / "current.json"
     if not path.exists():
         return None
-    return progress(q.read_json(path)["runId"])
+    return progress(q.read_json(path)["runId"], profile_name=profile_name)
 
 
-def preflight(workflows: list[str]) -> tuple[dict, dict]:
+def preflight(workflows: list[str], *, profile_name: str = "prod") -> tuple[dict, dict]:
     from app.agent.maxis import profiles
     from app.agent.maxis.destination_policy import canonical_maxis_api_base
-    profile = profiles.resolve("prod")
-    canonical_maxis_api_base(profile["base_url"], stage="prod", require_https=True)
+    profile = profiles.resolve(profile_name)
+    canonical_maxis_api_base(profile["base_url"], stage=profile["stage"], require_https=True)
     if not profile["verified"]:
         raise ValueError("qualification_probe_required")
     # Evaluation is synthetic and candidate-scoped; activation is not a prerequisite.
@@ -75,20 +75,20 @@ def clean_commit() -> str:
         raise ValueError("qualification_clean_commit_required") from exc
 
 
-def start(workflows: list[str]) -> dict:
+def start(workflows: list[str], *, profile_name: str = "prod") -> dict:
     from app.infra.settings import CACHE_DIR
     workflows = q.clean_workflows(workflows)
     with _LOCK:
-        running = current()
+        running = current(profile_name=profile_name)
         if running and running["state"] in {"queued", "running"}:
             raise ValueError("qualification_already_running")
         commit = clean_commit()
-        _, binding = preflight(workflows)
+        _, binding = preflight(workflows, profile_name=profile_name)
         run_id = uuid.uuid4().hex
-        path = run_path(run_id)
+        path = run_path(run_id, profile_name=profile_name)
         path.mkdir(parents=True, exist_ok=False)
-        q.write_json(path / "request.json", {"workflows": workflows, "binding": binding, "commit": commit})
-        state = {"runId": run_id, "state": "queued", "completed": 0,
+        q.write_json(path / "request.json", {"profile": profile_name, "workflows": workflows, "binding": binding, "commit": commit})
+        state = {"runId": run_id, "profile": profile_name, "state": "queued", "completed": 0,
                  "total": len(q.knowledge_cases(workflows)) + q.REPETITIONS * len(q.role_cases(workflows)),
                  "errorCode": "", "ownerPid": os.getpid()}
         q.write_json(path / "progress.json", state)
@@ -99,7 +99,8 @@ def start(workflows: list[str]) -> dict:
             # application worker, even in a thread; they cannot touch live Jira here.
             process = subprocess.Popen(
                 [sys.executable, "-B", "-X", "utf8",
-                 str(q.source_root() / "tools/maxis_qualification.py"), "run", "--id", run_id],
+                 str(q.source_root() / "tools/maxis_qualification.py"), "run", "--id", run_id,
+                 "--profile", profile_name],
                 cwd=str(q.source_root()), env=env, stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
@@ -109,12 +110,12 @@ def start(workflows: list[str]) -> dict:
             q.write_json(path / "progress.json", state)
             raise ValueError("qualification_launch_failed") from exc
         _PROCESSES[run_id] = process
-        q.write_json(q.directory() / "current.json", {"runId": run_id})
+        q.write_json(q.directory(profile_name) / "current.json", {"runId": run_id})
         return state
 
 
-def review_bundle(run_id: str) -> dict:
-    path = run_path(run_id)
+def review_bundle(run_id: str, *, profile_name: str = "prod") -> dict:
+    path = run_path(run_id, profile_name=profile_name)
     report = q.read_json(path / "report.json")
     from tools.agent_eval_protocol import load_protocol
     rubric = load_protocol()["humanRubric"]
@@ -149,7 +150,7 @@ def knowledge_attempt(case, profile: dict, identity, suite) -> dict:
     response, observation, error = {}, None, ""
     try:
         body, status, latency, _, breaker = client._request_validated_chat_bytes(
-            binding, api_key=credentials.get_for("prod", binding.key),
+            binding, api_key=credentials.get_for(profile["name"], binding.key),
             query=pack.query, user=pack.pseudonymous_user,
             inputs={"context_pack": pack, "role_id": case.role_id,
                     "correlation_id": pack.request_id, "output_contract": binding.output_contract,
@@ -173,25 +174,27 @@ def knowledge_attempt(case, profile: dict, identity, suite) -> dict:
             "response": response if isinstance(response, dict) else {}}
 
 
-def execute(run_id: str) -> None:
+def execute(run_id: str, *, profile_name: str = "prod") -> None:
     """Subprocess entry point. All raw output stays in the local ignored cache."""
     from app.agent.maxis import knowledge_eval as ke
     from app.agent.maxis.knowledge_config import resolve_path
-    path = run_path(run_id)
+    path = run_path(run_id, profile_name=profile_name)
     state = q.read_json(path / "progress.json")
     request = q.read_json(path / "request.json")
     report = {"contract": q.CONTRACT, "runId": run_id, "binding": request["binding"],
               "startedAt": instant(), "completedAt": "", "complete": False,
               "errorCode": "", "knowledge": [], "roles": []}
     try:
-        profile, binding = preflight(request["workflows"])
+        if request.get("profile", "prod") != profile_name:
+            raise ValueError("qualification_binding_changed")
+        profile, binding = preflight(request["workflows"], profile_name=profile_name)
         if clean_commit() != request["commit"]:
             raise ValueError("qualification_binding_changed")
         if binding != request["binding"]:
             raise ValueError("qualification_binding_changed")
         identity = ke.load_identity_map(
             environment_path=resolve_path(profile["knowledge_environment_binding"]),
-            knowledge_manifest_path=resolve_path(profile["knowledge_source_manifest"]), stage="prod",
+            knowledge_manifest_path=resolve_path(profile["knowledge_source_manifest"]), stage=profile["stage"],
         )
         if identity.manifest_sha256 != profile["knowledge_manifest_sha256"]:
             raise ValueError("qualification_binding_changed")
@@ -209,7 +212,7 @@ def execute(run_id: str) -> None:
         q.write_json(path / "progress.json", state)
 
         def check_current():
-            _, current_binding = preflight(request["workflows"])
+            _, current_binding = preflight(request["workflows"], profile_name=profile_name)
             if current_binding != binding:
                 raise ValueError("qualification_binding_changed")
 
