@@ -45,12 +45,18 @@ def build_draft_schema(canonical_schema, project):
     def derive(row):
         value = copy.deepcopy(row)
         if row["type"] == "string":
-            return {"type": "object", "additionalProperties": False, "required": ["value", "kind", "source_ids"],
+            narrative = {"type": "object", "additionalProperties": False, "required": ["value", "kind", "source_ids"],
                 "properties": {"value": value,
-                    "kind": {"type": "string", "enum": ["fact", "inference", "recommendation"]},
+                    "kind": {"type": "string", "enum": ["inference", "recommendation"]},
                     "source_ids": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": True,
                         "items": {"type": "string", "minLength": 1, "maxLength": 128,
                                   "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"}}}}
+            fact = {"type": "object", "additionalProperties": False,
+                "required": ["kind", "source_id", "source_path"], "properties": {
+                    "kind": {"type": "string", "enum": ["fact"]},
+                    "source_id": copy.deepcopy(narrative["properties"]["source_ids"]["items"]),
+                    "source_path": {"type": "string", "maxLength": 500}}}
+            return {"anyOf": [narrative, fact]}
         if row["type"] == "array":
             value["items"] = derive(row["items"])
         elif row["type"] == "object":
@@ -69,7 +75,7 @@ def build_draft_schema(canonical_schema, project):
         payload = derive(projected)
         return {"type": "object", "additionalProperties": False,
             "required": ["contract", "status", "payload", "missing_inputs"], "properties": {
-                "contract": {"type": "string", "enum": ["knowledge-draft.v1"]},
+                "contract": {"type": "string", "enum": ["knowledge-draft.v2"]},
                 "status": {"type": "string", "enum": ["ok", "needs_input", "blocked"]},
                 "payload": {"anyOf": [{"type": "object", "additionalProperties": False, "maxProperties": 0}, payload]},
                 "missing_inputs": {"type": "array", "maxItems": 8,

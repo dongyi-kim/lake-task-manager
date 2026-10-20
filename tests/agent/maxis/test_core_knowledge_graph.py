@@ -46,8 +46,8 @@ def knowledge_case(context_guard, now, nodes):
     guarded = guard["main"]([policy], [sentinel], encoded(pack.model_dump(mode="json")), pack.query,
         "knowledge_curator", pack.request_id, "remote-role-result.v1", VERSION, VERSION, "kb-test")
     assert guarded["policy_decision"] == "allow"
-    leaf = {"value": "DL-9044 배치 주기: 30분.", "kind": "fact", "source_ids": ["record-a"]}
-    draft = {"contract": "knowledge-draft.v1", "status": "ok", "missing_inputs": [],
+    leaf = {"value": "DL-9044 배치 주기 근거 검토 제안.", "kind": "recommendation", "source_ids": ["record-a"]}
+    draft = {"contract": "knowledge-draft.v2", "status": "ok", "missing_inputs": [],
         "payload": {"concepts": [{"explanation": copy.deepcopy(leaf)}], "our_context": leaf, "gaps": []}}
     return pack, guarded["model_input"], draft
 
@@ -95,16 +95,14 @@ def test_input_and_prompt_have_one_semantic_owner(nodes, knowledge_case):
     local = (ROOT / "app/agent/prompts/roles/knowledge_curator.md").read_text(encoding="utf-8").strip()
     prompt = nodes[LLM]["prompt_template"][0]["text"]
     assert prompt.count(local) == 1 and "## Required response" not in prompt
-    assert "knowledge-draft.v1" in prompt and len(prompt.encode()) <= 8192
-    assert nodes[LLM]["structured_output"]["schema"]["properties"]["contract"]["enum"] == ["knowledge-draft.v1"]
+    assert "knowledge-draft.v2" in prompt and len(prompt.encode()) <= 8192
+    assert nodes[LLM]["structured_output"]["schema"]["properties"]["contract"]["enum"] == ["knowledge-draft.v2"]
 
 
 def test_output_shapes_reach_the_actual_knowledge_system_boundary_once(nodes):
     transport = (ROOT / "deploy/maxis-dify/prompts/core_knowledge.md").read_text(encoding="utf-8").strip()
-    shape_rule = ("Author each present known string leaf once as a {value, kind, source_ids} wrapper: "
-        "our_context is one wrapper object, not an array; concepts is an array of objects with optional "
-        "wrapped term and explanation fields; references, when present, is an array of objects with "
-        "optional wrapped ref and why fields; gaps is an array of wrapper objects.")
+    shape_rule = ("our_context is one leaf object, not an array; concepts is an array of objects with "
+        "optional term/explanation leaves; references is an optional array of ref/why leaves; gaps is an array of leaves.")
     prompt = nodes[LLM]["prompt_template"][0]["text"]
     local = (ROOT / "app/agent/prompts/roles/knowledge_curator.md").read_text(encoding="utf-8").strip()
     assert prompt == local + "\n\n" + transport
@@ -112,13 +110,15 @@ def test_output_shapes_reach_the_actual_knowledge_system_boundary_once(nodes):
     assert "Optional fields may remain absent; do not add defaults or extensions." in transport
     schema = nodes[LLM]["structured_output"]["schema"]["properties"]["payload"]["anyOf"][1]
     fields = schema["properties"]
-    assert fields["our_context"]["type"] == "object"
-    assert set(fields["our_context"]["properties"]) == {"value", "kind", "source_ids"}
+    narrative, fact = fields["our_context"]["anyOf"]
+    assert set(narrative["properties"]) == {"value", "kind", "source_ids"}
+    assert narrative["properties"]["kind"]["enum"] == ["inference", "recommendation"]
+    assert set(fact["properties"]) == {"kind", "source_id", "source_path"}
     for name, children in (("concepts", {"term", "explanation"}), ("references", {"ref", "why"})):
         assert fields[name]["type"] == "array" and fields[name]["items"]["type"] == "object"
         assert set(fields[name]["items"]["properties"]) == children
     assert fields["gaps"]["type"] == "array"
-    assert set(fields["gaps"]["items"]["properties"]) == {"value", "kind", "source_ids"}
+    assert fields["gaps"]["items"] == fields["our_context"]
 
 
 def test_role_context_integrity_id_is_not_exposed_as_a_citable_source(nodes, knowledge_case):
@@ -154,7 +154,7 @@ def test_native_output_collection_shape_mismatches_are_not_repaired(nodes, knowl
     schema = nodes[LLM]["structured_output"]["schema"]
     assert not Draft202012Validator(schema).is_valid(draft)
     expected_field = schema["properties"]["payload"]["anyOf"][1]["properties"][field]
-    assert any(error.validator == "type" for error in Draft202012Validator(expected_field).iter_errors(wrong_shape[field]))
+    assert list(Draft202012Validator(expected_field).iter_errors(wrong_shape[field]))
     with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"):
         code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))
     assert (incoming, draft) == before
@@ -223,7 +223,8 @@ def test_reserved_activation_is_exact_control_never_knowledge(nodes, knowledge_c
     ("changed_payload", "payload_claim_text_mismatch"), ("changed_proof", "response_echo_mismatch")])
 def test_generated_path_preserves_both_final_guards(nodes, knowledge_case, fault, reason):
     pack, incoming, draft = knowledge_case
-    if fault == "intent_fact": draft["payload"]["our_context"]["source_ids"] = ["intent-b"]
+    if fault == "intent_fact":
+        draft["payload"]["our_context"] = {"kind": "fact", "source_id": "intent-b", "source_path": ""}
     result = json.loads(code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))["candidate"])
     if fault == "changed_payload": result["payload"]["our_context"] = "다른 문구"
     elif fault == "changed_proof": result["knowledge_proof"] += "changed"
@@ -262,22 +263,19 @@ def test_generated_path_keeps_utf8_rejection(nodes, knowledge_case, escape, loca
         code(nodes[ASSEMBLER])["main"](incoming, encoded(draft).replace("PLACEHOLDER", escape))
 
 
-def test_pinned_shape_conservative_output_bound(nodes, knowledge_case):
+def test_repeated_fact_selection_cannot_bypass_expanded_envelope_limit(nodes, knowledge_case):
+    import hashlib
     _, incoming, draft = knowledge_case
+    value = json.loads(incoming)
+    text = "x" * 1200
+    value["context_pack"]["sources"][0].update(content=text, content_sha256=hashlib.sha256(text.encode()).hexdigest())
+    selector = {"kind": "fact", "source_id": "record-a", "source_path": ""}
+    draft["payload"] = {"our_context": selector, "concepts": [], "gaps": [selector] * 80}
+    assert len(encoded(draft).encode()) < 10000
     engine = code(nodes[ASSEMBLER])
-    header = json.loads(engine["main"](incoming, encoded(draft))["candidate"])
-    for key in ("claims", "payload_claims", "citations", "missing_inputs", "warnings"): header[key] = []
-    header.update(payload={}, status="needs_input", knowledge_version="\x01" * 120,
-        knowledge_proof="LTM_RELEASE_SENTINEL_V1=" + "\x01" * 216)
-    claim = {"claim_id": "claim-40", "kind": "recommendation", "text": "", "citation_ids": ["cite-10"] * 8}
-    binding = {"path": "/concepts/4095/explanation", "claim_ids": ["claim-40"]}
-    citation = {"citation_id": "cite-10", "source_id": "x" * 128, "locator": ""}
-    overheads = (len(encoded(claim)) - 2 + 1, len(encoded(binding)) + 1, len(encoded(citation)) + 1,
-                 len(encoded(header).encode()))
-    assert overheads == (153, 63, 182, 2420)
-    limits = engine["_PRODUCER_LIMITS"]
-    assert 2 * limits["draft_utf8_bytes"] + limits["claims"] * 153 + limits["bindings"] * 63 + 10 * 182 + 2420 == 92024
-    assert 92024 < limits["envelope_utf8_bytes"] == 98304
+    assert engine["_PRODUCER_LIMITS"]["envelope_utf8_bytes"] == 98304
+    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"):
+        engine["main"](encoded(value), encoded(draft))
 
 
 @pytest.mark.parametrize("location", ["payload", "missing_inputs"])
@@ -371,3 +369,111 @@ def test_input_and_projection_byte_caps_fail_without_fallback(nodes, knowledge_c
     engine["_canonical"] = lambda row: canonical(row) + (" " * 40001 if isinstance(row, dict)
         and row.get("contract") == "knowledge-input.v1" else "")
     with pytest.raises(ValueError, match="^invalid_core_knowledge_input$"): engine["main"](raw)
+
+
+@pytest.mark.parametrize("path,text", [
+    ("", "DL-9044 배치 주기: 30분."),
+    ("/items/1", '{"key":"DL-9045","status":"Completed"}'),
+    ("/a~1b/0", '{"key":"DL-9044","text":"원문 30분."}'),
+])
+def test_fact_selection_copies_record_identity_through_both_guards(nodes, knowledge_case, path, text):
+    import hashlib
+    pack, incoming, draft = knowledge_case
+    if path:
+        content = encoded({"items": [{"key": "DL-9044", "status": "In Progress"},
+                                    {"key": "DL-9045", "status": "Completed"}],
+                           "a/b": [{"key": "DL-9044", "text": "원문 30분."}]})
+        original = json.loads(incoming)
+        original["context_pack"]["sources"][0].update(
+            content=content, content_sha256=hashlib.sha256(content.encode()).hexdigest())
+        pack = type(pack).model_validate_json(encoded(original["context_pack"]))
+        incoming = encoded(original)
+    draft["payload"] = {"concepts": [], "gaps": [], "our_context": {
+        "kind": "fact", "source_id": "record-a", "source_path": path}}
+    original_draft = copy.deepcopy(draft)
+    Draft202012Validator(nodes[LLM]["structured_output"]["schema"]).validate(draft)
+    result = json.loads(code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))["candidate"])
+    assert result["payload"]["our_context"] == result["claims"][0]["text"] == text
+    assert result["claims"][0]["kind"] == "fact"
+    assert result["citations"][0]["source_id"] == "record-a"
+    assert draft == original_draft
+    remote, local = both(nodes, pack, result)
+    assert remote == result and local()[1].our_context == text
+
+
+@pytest.mark.parametrize("path", ["/items", "/items/0/key", "/items/01/key", "/items/-1/key",
+    "/items/1/key", "/missing", "/items/0/number", "/items/0/flag", "/items/0/blank", "/bad~2escape"])
+def test_invalid_fact_paths_never_search_another_source_or_stringify(nodes, knowledge_case, path):
+    import hashlib
+    _, incoming, draft = knowledge_case
+    value = json.loads(incoming)
+    content = encoded({"items": [{"key": "DL-9044", "number": 30, "flag": True, "blank": " "}]})
+    value["context_pack"]["sources"][0].update(
+        content=content, content_sha256=hashlib.sha256(content.encode()).hexdigest())
+    draft["payload"]["our_context"] = {"kind": "fact", "source_id": "record-a", "source_path": path}
+    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"):
+        code(nodes[ASSEMBLER])["main"](encoded(value), encoded(draft))
+
+
+@pytest.mark.parametrize("text", ["[DL-9044] batch interval: 30 minutes.", "{DL-9044} batch interval: 30 minutes."])
+def test_bracket_prefixed_plain_source_is_not_mistaken_for_json(nodes, knowledge_case, text):
+    import hashlib
+    _, incoming, draft = knowledge_case
+    value = json.loads(incoming)
+    value["context_pack"]["sources"][0].update(content=text, content_sha256=hashlib.sha256(text.encode()).hexdigest())
+    draft["payload"]["our_context"] = {"kind": "fact", "source_id": "record-a", "source_path": ""}
+    result = json.loads(code(nodes[ASSEMBLER])["main"](encoded(value), encoded(draft))["candidate"])
+    assert result["payload"]["our_context"] == text
+
+
+@pytest.mark.parametrize("field", ["references", "concepts"])
+def test_identifier_and_term_can_remain_exact_strings(nodes, knowledge_case, field):
+    import hashlib
+    pack, incoming, draft = knowledge_case
+    value = json.loads(incoming)
+    content = encoded({"items": [{"key": "DL-9044"}]})
+    value["context_pack"]["sources"][0].update(content=content, content_sha256=hashlib.sha256(content.encode()).hexdigest())
+    pack = type(pack).model_validate_json(encoded(value["context_pack"]))
+    draft["payload"][field] = [{("ref" if field == "references" else "term"): {
+        "kind": "fact", "source_id": "record-a", "source_path": "/items/0/key"}}]
+    result = json.loads(code(nodes[ASSEMBLER])["main"](encoded(value), encoded(draft))["candidate"])
+    assert next(iter(result["payload"][field][0].values())) == "DL-9044"
+    remote, local = both(nodes, pack, result)
+    assert remote == result and local()[0].status == "ok"
+
+
+@pytest.mark.parametrize("content,path,allowed", [
+    ('{"key":"DL-9045","status":"Completed"}', "", True),
+    ('{"key":"DL-9045","metric":1.2300,"count":9007199254740993}', "", True),
+    ('[{"key":"DL-9045","status":"Completed"}]', "/0", True),
+    ('{"items":[{"key":"DL-9045","status":{"name":"Completed"}}]}', "/items/0", True),
+    ('{"items":[{"key":"DL-9045","status":{"name":"Completed"}}]}', "/items/0/status", False),
+    ('{"key":"DL-9045","status":{"name":"Completed"}}', "/status", False),
+])
+def test_root_record_supported_and_nested_identity_fragments_rejected(nodes, knowledge_case, content, path, allowed):
+    import hashlib
+    _, incoming, draft = knowledge_case
+    value = json.loads(incoming)
+    value["context_pack"]["sources"][0].update(content=content, content_sha256=hashlib.sha256(content.encode()).hexdigest())
+    draft["payload"]["our_context"] = {"kind": "fact", "source_id": "record-a", "source_path": path}
+    if allowed:
+        result = json.loads(code(nodes[ASSEMBLER])["main"](encoded(value), encoded(draft))["candidate"])
+        assert json.loads(result["payload"]["our_context"])["key"] == "DL-9045"
+        if "1.2300" in content:
+            assert "1.2300" in result["payload"]["our_context"]
+            assert "9007199254740993" in result["payload"]["our_context"]
+    else:
+        with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"):
+            code(nodes[ASSEMBLER])["main"](encoded(value), encoded(draft))
+
+
+def test_authored_fact_and_legacy_contract_are_not_silently_migrated(nodes, knowledge_case):
+    _, incoming, draft = knowledge_case
+    draft["payload"]["our_context"]["kind"] = "fact"
+    assert not Draft202012Validator(nodes[LLM]["structured_output"]["schema"]).is_valid(draft)
+    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"):
+        code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))
+    draft["payload"]["our_context"]["kind"] = "inference"
+    draft["contract"] = "knowledge-draft.v1"
+    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"):
+        code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))

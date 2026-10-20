@@ -6301,11 +6301,16 @@ workflow:
           \ list):\n            _fail()\n        context = {key: value for key, value\
           \ in pack.items() if key not in _HIDDEN_PACK_FIELDS}\n        context[\"\
           sources\"] = [_source_view(row) for row in pack[\"sources\"]]\n        _check_context(pack[\"\
-          role_context\"], pack[\"sources\"])\n        view = _canonical({\"contract\"\
-          : \"work-input.v2\", \"context\": context,\n                           \"\
-          knowledge_context\": incoming[\"knowledge_context\"]})\n        if len(view.encode(\"\
-          utf-8\")) > _MAX_WORK_INPUT_UTF8_BYTES:\n            _fail()\n        return\
-          \ {\"work_input\": view}\n    except Exception:\n        raise ValueError(\"\
+          role_context\"], pack[\"sources\"])\n        # Integrity identifiers are\
+          \ not citation choices. Keep the original pack\n        # for assembly/guards,\
+          \ and preserve all non-authority context values.\n        context[\"role_context\"\
+          ] = [\n            {key: value for key, value in row.items() if key not\
+          \ in {\"context_id\", \"content_sha256\"}}\n            for row in pack[\"\
+          role_context\"]\n        ]\n        view = _canonical({\"contract\": \"\
+          work-input.v2\", \"context\": context,\n                           \"knowledge_context\"\
+          : incoming[\"knowledge_context\"]})\n        if len(view.encode(\"utf-8\"\
+          )) > _MAX_WORK_INPUT_UTF8_BYTES:\n            _fail()\n        return {\"\
+          work_input\": view}\n    except Exception:\n        raise ValueError(\"\
           invalid_core_work_input\") from None\n\n# Generated canonical bindings;\
           \ not model-authored metadata.\n_WORK_SCHEMA_JSON = '{\"additionalProperties\"\
           :false,\"properties\":{\"interpretation\":{\"maxLength\":600,\"type\":\"\
@@ -6638,27 +6643,38 @@ workflow:
             cannot be grounded in the returned records.
 
 
-            ### Native output: knowledge-draft.v1 only
+            ### Native output: knowledge-draft.v2 only
 
             Return one JSON object with exactly contract, status, payload, missing_inputs
             at root. Do not author metadata echoes, claims, citations, payload_claims,
-            JSON Pointers, or a remote-role-result envelope. Do not repeat JSON keys
-            or append revisions. missing_inputs is only at root, never inside payload.
+            payload-claim pointers, or a remote-role-result envelope. Do not repeat
+            JSON keys or append revisions. missing_inputs is only at root, never inside
+            payload.
 
-            The native schema is a closed internal subset of KnowledgeBrief. Author
-            each present known string leaf once as a {value, kind, source_ids} wrapper:
-            our_context is one wrapper object, not an array; concepts is an array
-            of objects with optional wrapped term and explanation fields; references,
-            when present, is an array of objects with optional wrapped ref and why
-            fields; gaps is an array of wrapper objects. kind is fact|inference|recommendation
-            with 1–8 distinct actual source IDs. Code copies the same unmodified value
-            into payload and claim text, preserving kind and ordered source IDs; it
-            does not repair unsupported meaning. Use short source-faithful excerpts
-            for facts. Preserve uncertainty for inference and make recommendations
-            visibly proposed, not accomplished facts. An unresolved gap is a cited
-            inference or proposed verification, not an invented fact. Optional fields
-            may remain absent; do not add defaults or extensions. Empty strings/lists
-            remain empty, not fabricated content.
+            The native schema is a closed internal subset of KnowledgeBrief. our_context
+            is one leaf object, not an array; concepts is an array of objects with
+            optional term/explanation leaves; references is an optional array of ref/why
+            leaves; gaps is an array of leaves.
+
+            For a fact, select one original record using {"kind":"fact","source_id":"COPY_ID","source_path":"/items/0"}.
+            RFC 6901 escapes: ~ as ~0, / as ~1. Narrative facts select only a complete
+            root object (""), a root-array record ("/0"), or a record in a top-level
+            array ("/items/0"). Do not descend into nested status/date fragments and
+            lose the subject. Each selected record is at most 1,200 characters. Only
+            references[].ref and concepts[].term may select an exact string field
+            using a deeper path. A plain-text source uses "" and is copied whole.
+            Never author a fact''s value or combine records. Code copies the record
+            without changing numbers/meaning, searching another source or repairing
+            paths.
+
+            For interpretation/proposals use {value, kind, source_ids}, kind=inference|recommendation,
+            with 1–8 actual source IDs. Preserve uncertainty; never label an unsupported
+            factual assertion as inference merely to pass. Gaps are unresolved questions/proposed
+            verification, not facts. Keep the brief compact and focused on relevant
+            observations instead of repeating all records. Optional fields may remain
+            absent; do not add defaults or extensions. Empty strings/lists remain
+            empty, not fabricated content. Final guards still check every factual
+            selection and all payload bindings.
 
             ok requires a complete valid brief and missing_inputs: []. If required
             evidence prevents a valid brief, needs_input requires payload: {} with
@@ -6694,7 +6710,7 @@ workflow:
               contract:
                 type: string
                 enum:
-                - knowledge-draft.v1
+                - knowledge-draft.v2
               status:
                 type: string
                 enum:
@@ -6713,62 +6729,147 @@ workflow:
                         additionalProperties: false
                         properties:
                           explanation:
-                            type: object
-                            additionalProperties: false
-                            required:
-                            - value
-                            - kind
-                            - source_ids
-                            properties:
-                              value:
-                                type: string
-                              kind:
-                                type: string
-                                enum:
-                                - fact
-                                - inference
-                                - recommendation
-                              source_ids:
-                                type: array
-                                minItems: 1
-                                maxItems: 8
-                                uniqueItems: true
-                                items:
+                            anyOf:
+                            - type: object
+                              additionalProperties: false
+                              required:
+                              - value
+                              - kind
+                              - source_ids
+                              properties:
+                                value:
+                                  type: string
+                                kind:
+                                  type: string
+                                  enum:
+                                  - inference
+                                  - recommendation
+                                source_ids:
+                                  type: array
+                                  minItems: 1
+                                  maxItems: 8
+                                  uniqueItems: true
+                                  items:
+                                    type: string
+                                    minLength: 1
+                                    maxLength: 128
+                                    pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+                            - type: object
+                              additionalProperties: false
+                              required:
+                              - kind
+                              - source_id
+                              - source_path
+                              properties:
+                                kind:
+                                  type: string
+                                  enum:
+                                  - fact
+                                source_id:
                                   type: string
                                   minLength: 1
                                   maxLength: 128
                                   pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+                                source_path:
+                                  type: string
+                                  maxLength: 500
                           term:
-                            type: object
-                            additionalProperties: false
-                            required:
-                            - value
-                            - kind
-                            - source_ids
-                            properties:
-                              value:
-                                type: string
-                              kind:
-                                type: string
-                                enum:
-                                - fact
-                                - inference
-                                - recommendation
-                              source_ids:
-                                type: array
-                                minItems: 1
-                                maxItems: 8
-                                uniqueItems: true
-                                items:
+                            anyOf:
+                            - type: object
+                              additionalProperties: false
+                              required:
+                              - value
+                              - kind
+                              - source_ids
+                              properties:
+                                value:
+                                  type: string
+                                kind:
+                                  type: string
+                                  enum:
+                                  - inference
+                                  - recommendation
+                                source_ids:
+                                  type: array
+                                  minItems: 1
+                                  maxItems: 8
+                                  uniqueItems: true
+                                  items:
+                                    type: string
+                                    minLength: 1
+                                    maxLength: 128
+                                    pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+                            - type: object
+                              additionalProperties: false
+                              required:
+                              - kind
+                              - source_id
+                              - source_path
+                              properties:
+                                kind:
+                                  type: string
+                                  enum:
+                                  - fact
+                                source_id:
                                   type: string
                                   minLength: 1
                                   maxLength: 128
                                   pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+                                source_path:
+                                  type: string
+                                  maxLength: 500
                         type: object
                       type: array
                     gaps:
                       items:
-                        type: object
+                        anyOf:
+                        - type: object
+                          additionalProperties: false
+                          required:
+                          - value
+                          - kind
+                          - source_ids
+                          properties:
+                            value:
+                              type: string
+                            kind:
+                              type: string
+                              enum:
+                              - inference
+                              - recommendation
+                            source_ids:
+                              type: array
+                              minItems: 1
+                              maxItems: 8
+                              uniqueItems: true
+                              items:
+                                type: string
+                                minLength: 1
+                                maxLength: 128
+                                pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+                        - type: object
+                          additionalProperties: false
+                          required:
+                          - kind
+                          - source_id
+                          - source_path
+                          properties:
+                            kind:
+                              type: string
+                              enum:
+                              - fact
+                            source_id:
+                              type: string
+                              minLength: 1
+                              maxLength: 128
+                              pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+                            source_path:
+                              type: string
+                              maxLength: 500
+                      type: array
+                    our_context:
+                      anyOf:
+                      - type: object
                         additionalProperties: false
                         required:
                         - value
@@ -6780,7 +6881,6 @@ workflow:
                           kind:
                             type: string
                             enum:
-                            - fact
                             - inference
                             - recommendation
                           source_ids:
@@ -6793,89 +6893,119 @@ workflow:
                               minLength: 1
                               maxLength: 128
                               pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
-                      type: array
-                    our_context:
-                      type: object
-                      additionalProperties: false
-                      required:
-                      - value
-                      - kind
-                      - source_ids
-                      properties:
-                        value:
-                          type: string
-                        kind:
-                          type: string
-                          enum:
-                          - fact
-                          - inference
-                          - recommendation
-                        source_ids:
-                          type: array
-                          minItems: 1
-                          maxItems: 8
-                          uniqueItems: true
-                          items:
+                      - type: object
+                        additionalProperties: false
+                        required:
+                        - kind
+                        - source_id
+                        - source_path
+                        properties:
+                          kind:
+                            type: string
+                            enum:
+                            - fact
+                          source_id:
                             type: string
                             minLength: 1
                             maxLength: 128
                             pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+                          source_path:
+                            type: string
+                            maxLength: 500
                     references:
                       items:
                         additionalProperties: false
                         properties:
                           ref:
-                            type: object
-                            additionalProperties: false
-                            required:
-                            - value
-                            - kind
-                            - source_ids
-                            properties:
-                              value:
-                                type: string
-                              kind:
-                                type: string
-                                enum:
-                                - fact
-                                - inference
-                                - recommendation
-                              source_ids:
-                                type: array
-                                minItems: 1
-                                maxItems: 8
-                                uniqueItems: true
-                                items:
+                            anyOf:
+                            - type: object
+                              additionalProperties: false
+                              required:
+                              - value
+                              - kind
+                              - source_ids
+                              properties:
+                                value:
+                                  type: string
+                                kind:
+                                  type: string
+                                  enum:
+                                  - inference
+                                  - recommendation
+                                source_ids:
+                                  type: array
+                                  minItems: 1
+                                  maxItems: 8
+                                  uniqueItems: true
+                                  items:
+                                    type: string
+                                    minLength: 1
+                                    maxLength: 128
+                                    pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+                            - type: object
+                              additionalProperties: false
+                              required:
+                              - kind
+                              - source_id
+                              - source_path
+                              properties:
+                                kind:
+                                  type: string
+                                  enum:
+                                  - fact
+                                source_id:
                                   type: string
                                   minLength: 1
                                   maxLength: 128
                                   pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+                                source_path:
+                                  type: string
+                                  maxLength: 500
                           why:
-                            type: object
-                            additionalProperties: false
-                            required:
-                            - value
-                            - kind
-                            - source_ids
-                            properties:
-                              value:
-                                type: string
-                              kind:
-                                type: string
-                                enum:
-                                - fact
-                                - inference
-                                - recommendation
-                              source_ids:
-                                type: array
-                                minItems: 1
-                                maxItems: 8
-                                uniqueItems: true
-                                items:
+                            anyOf:
+                            - type: object
+                              additionalProperties: false
+                              required:
+                              - value
+                              - kind
+                              - source_ids
+                              properties:
+                                value:
+                                  type: string
+                                kind:
+                                  type: string
+                                  enum:
+                                  - inference
+                                  - recommendation
+                                source_ids:
+                                  type: array
+                                  minItems: 1
+                                  maxItems: 8
+                                  uniqueItems: true
+                                  items:
+                                    type: string
+                                    minLength: 1
+                                    maxLength: 128
+                                    pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+                            - type: object
+                              additionalProperties: false
+                              required:
+                              - kind
+                              - source_id
+                              - source_path
+                              properties:
+                                kind:
+                                  type: string
+                                  enum:
+                                  - fact
+                                source_id:
                                   type: string
                                   minLength: 1
                                   maxLength: 128
                                   pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+                                source_path:
+                                  type: string
+                                  maxLength: 500
                         type: object
                       type: array
                   required:
@@ -7026,32 +7156,71 @@ workflow:
           \ the existing remote and local final guards remain required.\n\"\"\"\n\
           _KNOWLEDGE_SCHEMA_JSON = None\n_KNOWLEDGE_SCHEMA_SHA256 = None\n_DRAFT_SCHEMA\
           \ = None\n_PRODUCER_LIMITS = None\n\n\ndef _fail():\n    raise ValueError(\"\
-          invalid_core_knowledge_draft\")\n\n\ndef main(model_input, candidate):\n\
-          \    try:\n        incoming, pack, schema, sources = _draft_context(model_input,\
-          \ \"knowledge_curator\",\n            _KNOWLEDGE_SCHEMA_JSON, _KNOWLEDGE_SCHEMA_SHA256,\
-          \ _DRAFT_SCHEMA, _fail)\n        draft = _decode(candidate, _PRODUCER_LIMITS[\"\
-          draft_utf8_bytes\"], _fail)\n        _validate(draft, _DRAFT_SCHEMA, _DRAFT_SCHEMA,\
-          \ _fail)\n        status, payload, missing = draft[\"status\"], draft[\"\
-          payload\"], draft[\"missing_inputs\"]\n        if (draft[\"contract\"] !=\
-          \ \"knowledge-draft.v1\" or any(not value.strip() for value in missing)\n\
-          \                or status == \"ok\" and missing or status != \"ok\" and\
-          \ payload\n                or status == \"needs_input\" and not missing\
-          \ or status == \"blocked\" and missing):\n            _fail()\n        claims,\
-          \ bindings, citations, citation_ids, claim_ids = [], [], [], {}, {}\n\n\
+          invalid_core_knowledge_draft\")\n\n\nclass _SourceNumber(str):\n    \"\"\
+          \"Keep JSON numeric lexemes exact inside selected records.\"\"\"\n\n\ndef\
+          \ _source_json(value):\n    if isinstance(value, _SourceNumber):\n     \
+          \   return str(value)\n    if isinstance(value, dict):\n        return \"\
+          {\" + \",\".join(_canonical(key) + \":\" + _source_json(item) for key, item\
+          \ in value.items()) + \"}\"\n    if isinstance(value, list):\n        return\
+          \ \"[\" + \",\".join(_source_json(item) for item in value) + \"]\"\n   \
+          \ return _canonical(value)\n\n\ndef _fact_text(content, pointer, payload_path):\n\
+          \    \"\"\"Select an original record, never infer its subject from a scalar\
+          \ status.\"\"\"\n    try:\n        parsed = json.loads(content, object_pairs_hook=lambda\
+          \ rows: _pairs(rows, _fail),\n                            parse_int=_SourceNumber,\
+          \ parse_float=_SourceNumber,\n                            parse_constant=lambda\
+          \ _: _fail())\n    except json.JSONDecodeError:\n        # Bracket-prefixed\
+          \ ticket prose is still plain text, not a broken JSON path.\n        if\
+          \ pointer:\n            _fail()\n        return content\n    scalar_field\
+          \ = re.fullmatch(r\"/(?:references/[0-9]+/ref|concepts/[0-9]+/term)\", payload_path)\n\
+          \    if not pointer:\n        if not scalar_field and isinstance(parsed,\
+          \ dict) and parsed:\n            return _source_json(parsed)\n        _fail()\n\
+          \    if not pointer.startswith(\"/\") or re.search(r\"~(?![01])\", pointer):\n\
+          \        _fail()\n    value = parsed\n    tokens = pointer[1:].split(\"\
+          /\")\n    # Narrative facts select complete records, never nested status/date\
+          \ objects:\n    # a root object, a root-array member, or a member of a top-level\
+          \ record array.\n    if not scalar_field and not (\n        isinstance(parsed,\
+          \ list) and len(tokens) == 1\n        or isinstance(parsed, dict) and len(tokens)\
+          \ == 2\n        and isinstance(parsed.get(tokens[0].replace(\"~1\", \"/\"\
+          ).replace(\"~0\", \"~\")), list)\n    ):\n        _fail()\n    for token\
+          \ in tokens:\n        key = token.replace(\"~1\", \"/\").replace(\"~0\"\
+          , \"~\")\n        if isinstance(value, dict) and key in value:\n       \
+          \     value = value[key]\n        elif isinstance(value, list) and re.fullmatch(r\"\
+          0|[1-9][0-9]*\", key) and int(key) < len(value):\n            value = value[int(key)]\n\
+          \        else:\n            _fail()\n    # Only a reference identifier or\
+          \ concept term is intentionally a bare scalar.\n    if scalar_field and\
+          \ type(value) is str:\n        return value\n    if not scalar_field and\
+          \ isinstance(value, dict) and value:\n        return _source_json(value)\n\
+          \    _fail()\n\n\ndef main(model_input, candidate):\n    try:\n        incoming,\
+          \ pack, schema, sources = _draft_context(model_input, \"knowledge_curator\"\
+          ,\n            _KNOWLEDGE_SCHEMA_JSON, _KNOWLEDGE_SCHEMA_SHA256, _DRAFT_SCHEMA,\
+          \ _fail)\n        draft = _decode(candidate, _PRODUCER_LIMITS[\"draft_utf8_bytes\"\
+          ], _fail)\n        _validate(draft, _DRAFT_SCHEMA, _DRAFT_SCHEMA, _fail)\n\
+          \        status, payload, missing = draft[\"status\"], draft[\"payload\"\
+          ], draft[\"missing_inputs\"]\n        if (draft[\"contract\"] != \"knowledge-draft.v2\"\
+          \ or any(not value.strip() for value in missing)\n                or status\
+          \ == \"ok\" and missing or status != \"ok\" and payload\n              \
+          \  or status == \"needs_input\" and not missing or status == \"blocked\"\
+          \ and missing):\n            _fail()\n        claims, bindings, citations,\
+          \ citation_ids, claim_ids = [], [], [], {}, {}\n        source_content =\
+          \ {row[\"source_id\"]: row[\"content\"] for row in pack[\"sources\"]}\n\n\
           \        def unwrap(value, path=\"\"):\n            if isinstance(value,\
           \ list):\n                return [unwrap(row, path + \"/\" + str(index))\
-          \ for index, row in enumerate(value)]\n            if set(value) != {\"\
-          value\", \"kind\", \"source_ids\"}:\n                return {key: unwrap(value[key],\
-          \ path + \"/\" + key.replace(\"~\", \"~0\").replace(\"/\", \"~1\"))\n  \
-          \                      for key in sorted(value)}\n            text, kind,\
-          \ refs = (value[key] for key in (\"value\", \"kind\", \"source_ids\"))\n\
-          \            if any(ref not in sources for ref in refs):\n             \
-          \   _fail()\n            if text.strip():\n                if len(text)\
-          \ > 1200: _fail()\n                key = (text, kind, tuple(refs))\n   \
-          \             if key not in claim_ids:\n                    for ref in refs:\n\
-          \                        if ref not in citation_ids:\n                 \
-          \           citation_ids[ref] = \"cite-\" + str(len(citations) + 1)\n  \
-          \                          citations.append({\"citation_id\": citation_ids[ref],\
+          \ for index, row in enumerate(value)]\n            if set(value) == {\"\
+          kind\", \"source_id\", \"source_path\"}:\n                kind, refs = value[\"\
+          kind\"], [value[\"source_id\"]]\n                text = _fact_text(source_content[refs[0]],\
+          \ value[\"source_path\"], path)\n                if not text.strip():\n\
+          \                    _fail()\n            elif set(value) == {\"value\"\
+          , \"kind\", \"source_ids\"}:\n                text, kind, refs = (value[key]\
+          \ for key in (\"value\", \"kind\", \"source_ids\"))\n            else:\n\
+          \                return {key: unwrap(value[key], path + \"/\" + key.replace(\"\
+          ~\", \"~0\").replace(\"/\", \"~1\"))\n                        for key in\
+          \ sorted(value)}\n            if any(ref not in sources for ref in refs):\n\
+          \                _fail()\n            if text.strip():\n               \
+          \ if len(text) > 1200: _fail()\n                key = (text, kind, tuple(refs))\n\
+          \                if key not in claim_ids:\n                    for ref in\
+          \ refs:\n                        if ref not in citation_ids:\n         \
+          \                   citation_ids[ref] = \"cite-\" + str(len(citations) +\
+          \ 1)\n                            citations.append({\"citation_id\": citation_ids[ref],\
           \ \"source_id\": ref, \"locator\": \"\"})\n                    claim_ids[key]\
           \ = \"claim-\" + str(len(claims) + 1)\n                    claims.append({\"\
           claim_id\": claim_ids[key], \"kind\": kind, \"text\": text,\n          \
@@ -7085,49 +7254,75 @@ workflow:
           \ = '458a377bf712fbc263f86ba5c6654e02bc890a3a85704c88f63373549f52a745'\n\
           _DRAFT_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required':\
           \ ['contract', 'status', 'payload', 'missing_inputs'], 'properties': {'contract':\
-          \ {'type': 'string', 'enum': ['knowledge-draft.v1']}, 'status': {'type':\
+          \ {'type': 'string', 'enum': ['knowledge-draft.v2']}, 'status': {'type':\
           \ 'string', 'enum': ['ok', 'needs_input', 'blocked']}, 'payload': {'anyOf':\
           \ [{'type': 'object', 'additionalProperties': False, 'maxProperties': 0},\
           \ {'additionalProperties': False, 'properties': {'concepts': {'items': {'additionalProperties':\
-          \ False, 'properties': {'explanation': {'type': 'object', 'additionalProperties':\
+          \ False, 'properties': {'explanation': {'anyOf': [{'type': 'object', 'additionalProperties':\
           \ False, 'required': ['value', 'kind', 'source_ids'], 'properties': {'value':\
-          \ {'type': 'string'}, 'kind': {'type': 'string', 'enum': ['fact', 'inference',\
-          \ 'recommendation']}, 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems':\
-          \ 8, 'uniqueItems': True, 'items': {'type': 'string', 'minLength': 1, 'maxLength':\
-          \ 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}}, 'term': {'type':\
-          \ 'object', 'additionalProperties': False, 'required': ['value', 'kind',\
-          \ 'source_ids'], 'properties': {'value': {'type': 'string'}, 'kind': {'type':\
-          \ 'string', 'enum': ['fact', 'inference', 'recommendation']}, 'source_ids':\
-          \ {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items':\
-          \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}}},\
-          \ 'type': 'object'}, 'type': 'array'}, 'gaps': {'items': {'type': 'object',\
-          \ 'additionalProperties': False, 'required': ['value', 'kind', 'source_ids'],\
-          \ 'properties': {'value': {'type': 'string'}, 'kind': {'type': 'string',\
-          \ 'enum': ['fact', 'inference', 'recommendation']}, 'source_ids': {'type':\
-          \ 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items': {'type':\
-          \ 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}},\
-          \ 'type': 'array'}, 'our_context': {'type': 'object', 'additionalProperties':\
-          \ False, 'required': ['value', 'kind', 'source_ids'], 'properties': {'value':\
-          \ {'type': 'string'}, 'kind': {'type': 'string', 'enum': ['fact', 'inference',\
-          \ 'recommendation']}, 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems':\
-          \ 8, 'uniqueItems': True, 'items': {'type': 'string', 'minLength': 1, 'maxLength':\
-          \ 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}}, 'references': {'items':\
-          \ {'additionalProperties': False, 'properties': {'ref': {'type': 'object',\
-          \ 'additionalProperties': False, 'required': ['value', 'kind', 'source_ids'],\
-          \ 'properties': {'value': {'type': 'string'}, 'kind': {'type': 'string',\
-          \ 'enum': ['fact', 'inference', 'recommendation']}, 'source_ids': {'type':\
-          \ 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items': {'type':\
-          \ 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}},\
-          \ 'why': {'type': 'object', 'additionalProperties': False, 'required': ['value',\
+          \ {'type': 'string'}, 'kind': {'type': 'string', 'enum': ['inference', 'recommendation']},\
+          \ 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems':\
+          \ True, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern':\
+          \ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}}, {'type': 'object', 'additionalProperties':\
+          \ False, 'required': ['kind', 'source_id', 'source_path'], 'properties':\
+          \ {'kind': {'type': 'string', 'enum': ['fact']}, 'source_id': {'type': 'string',\
+          \ 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'},\
+          \ 'source_path': {'type': 'string', 'maxLength': 500}}}]}, 'term': {'anyOf':\
+          \ [{'type': 'object', 'additionalProperties': False, 'required': ['value',\
           \ 'kind', 'source_ids'], 'properties': {'value': {'type': 'string'}, 'kind':\
-          \ {'type': 'string', 'enum': ['fact', 'inference', 'recommendation']}, 'source_ids':\
+          \ {'type': 'string', 'enum': ['inference', 'recommendation']}, 'source_ids':\
           \ {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items':\
-          \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}}},\
-          \ 'type': 'object'}, 'type': 'array'}}, 'required': ['concepts', 'our_context',\
-          \ 'gaps'], 'type': 'object'}]}, 'missing_inputs': {'type': 'array', 'maxItems':\
-          \ 8, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 500}}}}\n\
-          _PRODUCER_LIMITS = {'draft_utf8_bytes': 32768, 'envelope_utf8_bytes': 98304,\
-          \ 'claims': 40, 'bindings': 256}"
+          \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}},\
+          \ {'type': 'object', 'additionalProperties': False, 'required': ['kind',\
+          \ 'source_id', 'source_path'], 'properties': {'kind': {'type': 'string',\
+          \ 'enum': ['fact']}, 'source_id': {'type': 'string', 'minLength': 1, 'maxLength':\
+          \ 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}, 'source_path': {'type':\
+          \ 'string', 'maxLength': 500}}}]}}, 'type': 'object'}, 'type': 'array'},\
+          \ 'gaps': {'items': {'anyOf': [{'type': 'object', 'additionalProperties':\
+          \ False, 'required': ['value', 'kind', 'source_ids'], 'properties': {'value':\
+          \ {'type': 'string'}, 'kind': {'type': 'string', 'enum': ['inference', 'recommendation']},\
+          \ 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems':\
+          \ True, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern':\
+          \ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}}, {'type': 'object', 'additionalProperties':\
+          \ False, 'required': ['kind', 'source_id', 'source_path'], 'properties':\
+          \ {'kind': {'type': 'string', 'enum': ['fact']}, 'source_id': {'type': 'string',\
+          \ 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'},\
+          \ 'source_path': {'type': 'string', 'maxLength': 500}}}]}, 'type': 'array'},\
+          \ 'our_context': {'anyOf': [{'type': 'object', 'additionalProperties': False,\
+          \ 'required': ['value', 'kind', 'source_ids'], 'properties': {'value': {'type':\
+          \ 'string'}, 'kind': {'type': 'string', 'enum': ['inference', 'recommendation']},\
+          \ 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems':\
+          \ True, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern':\
+          \ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}}, {'type': 'object', 'additionalProperties':\
+          \ False, 'required': ['kind', 'source_id', 'source_path'], 'properties':\
+          \ {'kind': {'type': 'string', 'enum': ['fact']}, 'source_id': {'type': 'string',\
+          \ 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'},\
+          \ 'source_path': {'type': 'string', 'maxLength': 500}}}]}, 'references':\
+          \ {'items': {'additionalProperties': False, 'properties': {'ref': {'anyOf':\
+          \ [{'type': 'object', 'additionalProperties': False, 'required': ['value',\
+          \ 'kind', 'source_ids'], 'properties': {'value': {'type': 'string'}, 'kind':\
+          \ {'type': 'string', 'enum': ['inference', 'recommendation']}, 'source_ids':\
+          \ {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items':\
+          \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}},\
+          \ {'type': 'object', 'additionalProperties': False, 'required': ['kind',\
+          \ 'source_id', 'source_path'], 'properties': {'kind': {'type': 'string',\
+          \ 'enum': ['fact']}, 'source_id': {'type': 'string', 'minLength': 1, 'maxLength':\
+          \ 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}, 'source_path': {'type':\
+          \ 'string', 'maxLength': 500}}}]}, 'why': {'anyOf': [{'type': 'object',\
+          \ 'additionalProperties': False, 'required': ['value', 'kind', 'source_ids'],\
+          \ 'properties': {'value': {'type': 'string'}, 'kind': {'type': 'string',\
+          \ 'enum': ['inference', 'recommendation']}, 'source_ids': {'type': 'array',\
+          \ 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items': {'type': 'string',\
+          \ 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}},\
+          \ {'type': 'object', 'additionalProperties': False, 'required': ['kind',\
+          \ 'source_id', 'source_path'], 'properties': {'kind': {'type': 'string',\
+          \ 'enum': ['fact']}, 'source_id': {'type': 'string', 'minLength': 1, 'maxLength':\
+          \ 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}, 'source_path': {'type':\
+          \ 'string', 'maxLength': 500}}}]}}, 'type': 'object'}, 'type': 'array'}},\
+          \ 'required': ['concepts', 'our_context', 'gaps'], 'type': 'object'}]},\
+          \ 'missing_inputs': {'type': 'array', 'maxItems': 8, 'items': {'type': 'string',\
+          \ 'minLength': 1, 'maxLength': 500}}}}\n_PRODUCER_LIMITS = {'draft_utf8_bytes':\
+          \ 32768, 'envelope_utf8_bytes': 98304, 'claims': 40, 'bindings': 256}"
         variables:
         - variable: model_input
           value_selector:
@@ -7325,49 +7520,75 @@ workflow:
           \ = '458a377bf712fbc263f86ba5c6654e02bc890a3a85704c88f63373549f52a745'\n\
           _DRAFT_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required':\
           \ ['contract', 'status', 'payload', 'missing_inputs'], 'properties': {'contract':\
-          \ {'type': 'string', 'enum': ['knowledge-draft.v1']}, 'status': {'type':\
+          \ {'type': 'string', 'enum': ['knowledge-draft.v2']}, 'status': {'type':\
           \ 'string', 'enum': ['ok', 'needs_input', 'blocked']}, 'payload': {'anyOf':\
           \ [{'type': 'object', 'additionalProperties': False, 'maxProperties': 0},\
           \ {'additionalProperties': False, 'properties': {'concepts': {'items': {'additionalProperties':\
-          \ False, 'properties': {'explanation': {'type': 'object', 'additionalProperties':\
+          \ False, 'properties': {'explanation': {'anyOf': [{'type': 'object', 'additionalProperties':\
           \ False, 'required': ['value', 'kind', 'source_ids'], 'properties': {'value':\
-          \ {'type': 'string'}, 'kind': {'type': 'string', 'enum': ['fact', 'inference',\
-          \ 'recommendation']}, 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems':\
-          \ 8, 'uniqueItems': True, 'items': {'type': 'string', 'minLength': 1, 'maxLength':\
-          \ 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}}, 'term': {'type':\
-          \ 'object', 'additionalProperties': False, 'required': ['value', 'kind',\
-          \ 'source_ids'], 'properties': {'value': {'type': 'string'}, 'kind': {'type':\
-          \ 'string', 'enum': ['fact', 'inference', 'recommendation']}, 'source_ids':\
-          \ {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items':\
-          \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}}},\
-          \ 'type': 'object'}, 'type': 'array'}, 'gaps': {'items': {'type': 'object',\
-          \ 'additionalProperties': False, 'required': ['value', 'kind', 'source_ids'],\
-          \ 'properties': {'value': {'type': 'string'}, 'kind': {'type': 'string',\
-          \ 'enum': ['fact', 'inference', 'recommendation']}, 'source_ids': {'type':\
-          \ 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items': {'type':\
-          \ 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}},\
-          \ 'type': 'array'}, 'our_context': {'type': 'object', 'additionalProperties':\
-          \ False, 'required': ['value', 'kind', 'source_ids'], 'properties': {'value':\
-          \ {'type': 'string'}, 'kind': {'type': 'string', 'enum': ['fact', 'inference',\
-          \ 'recommendation']}, 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems':\
-          \ 8, 'uniqueItems': True, 'items': {'type': 'string', 'minLength': 1, 'maxLength':\
-          \ 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}}, 'references': {'items':\
-          \ {'additionalProperties': False, 'properties': {'ref': {'type': 'object',\
-          \ 'additionalProperties': False, 'required': ['value', 'kind', 'source_ids'],\
-          \ 'properties': {'value': {'type': 'string'}, 'kind': {'type': 'string',\
-          \ 'enum': ['fact', 'inference', 'recommendation']}, 'source_ids': {'type':\
-          \ 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items': {'type':\
-          \ 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}},\
-          \ 'why': {'type': 'object', 'additionalProperties': False, 'required': ['value',\
+          \ {'type': 'string'}, 'kind': {'type': 'string', 'enum': ['inference', 'recommendation']},\
+          \ 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems':\
+          \ True, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern':\
+          \ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}}, {'type': 'object', 'additionalProperties':\
+          \ False, 'required': ['kind', 'source_id', 'source_path'], 'properties':\
+          \ {'kind': {'type': 'string', 'enum': ['fact']}, 'source_id': {'type': 'string',\
+          \ 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'},\
+          \ 'source_path': {'type': 'string', 'maxLength': 500}}}]}, 'term': {'anyOf':\
+          \ [{'type': 'object', 'additionalProperties': False, 'required': ['value',\
           \ 'kind', 'source_ids'], 'properties': {'value': {'type': 'string'}, 'kind':\
-          \ {'type': 'string', 'enum': ['fact', 'inference', 'recommendation']}, 'source_ids':\
+          \ {'type': 'string', 'enum': ['inference', 'recommendation']}, 'source_ids':\
           \ {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items':\
-          \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}}},\
-          \ 'type': 'object'}, 'type': 'array'}}, 'required': ['concepts', 'our_context',\
-          \ 'gaps'], 'type': 'object'}]}, 'missing_inputs': {'type': 'array', 'maxItems':\
-          \ 8, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 500}}}}\n\
-          _PRODUCER_LIMITS = {'draft_utf8_bytes': 32768, 'envelope_utf8_bytes': 98304,\
-          \ 'claims': 40, 'bindings': 256}"
+          \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}},\
+          \ {'type': 'object', 'additionalProperties': False, 'required': ['kind',\
+          \ 'source_id', 'source_path'], 'properties': {'kind': {'type': 'string',\
+          \ 'enum': ['fact']}, 'source_id': {'type': 'string', 'minLength': 1, 'maxLength':\
+          \ 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}, 'source_path': {'type':\
+          \ 'string', 'maxLength': 500}}}]}}, 'type': 'object'}, 'type': 'array'},\
+          \ 'gaps': {'items': {'anyOf': [{'type': 'object', 'additionalProperties':\
+          \ False, 'required': ['value', 'kind', 'source_ids'], 'properties': {'value':\
+          \ {'type': 'string'}, 'kind': {'type': 'string', 'enum': ['inference', 'recommendation']},\
+          \ 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems':\
+          \ True, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern':\
+          \ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}}, {'type': 'object', 'additionalProperties':\
+          \ False, 'required': ['kind', 'source_id', 'source_path'], 'properties':\
+          \ {'kind': {'type': 'string', 'enum': ['fact']}, 'source_id': {'type': 'string',\
+          \ 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'},\
+          \ 'source_path': {'type': 'string', 'maxLength': 500}}}]}, 'type': 'array'},\
+          \ 'our_context': {'anyOf': [{'type': 'object', 'additionalProperties': False,\
+          \ 'required': ['value', 'kind', 'source_ids'], 'properties': {'value': {'type':\
+          \ 'string'}, 'kind': {'type': 'string', 'enum': ['inference', 'recommendation']},\
+          \ 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems':\
+          \ True, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern':\
+          \ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}}, {'type': 'object', 'additionalProperties':\
+          \ False, 'required': ['kind', 'source_id', 'source_path'], 'properties':\
+          \ {'kind': {'type': 'string', 'enum': ['fact']}, 'source_id': {'type': 'string',\
+          \ 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'},\
+          \ 'source_path': {'type': 'string', 'maxLength': 500}}}]}, 'references':\
+          \ {'items': {'additionalProperties': False, 'properties': {'ref': {'anyOf':\
+          \ [{'type': 'object', 'additionalProperties': False, 'required': ['value',\
+          \ 'kind', 'source_ids'], 'properties': {'value': {'type': 'string'}, 'kind':\
+          \ {'type': 'string', 'enum': ['inference', 'recommendation']}, 'source_ids':\
+          \ {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items':\
+          \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}},\
+          \ {'type': 'object', 'additionalProperties': False, 'required': ['kind',\
+          \ 'source_id', 'source_path'], 'properties': {'kind': {'type': 'string',\
+          \ 'enum': ['fact']}, 'source_id': {'type': 'string', 'minLength': 1, 'maxLength':\
+          \ 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}, 'source_path': {'type':\
+          \ 'string', 'maxLength': 500}}}]}, 'why': {'anyOf': [{'type': 'object',\
+          \ 'additionalProperties': False, 'required': ['value', 'kind', 'source_ids'],\
+          \ 'properties': {'value': {'type': 'string'}, 'kind': {'type': 'string',\
+          \ 'enum': ['inference', 'recommendation']}, 'source_ids': {'type': 'array',\
+          \ 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items': {'type': 'string',\
+          \ 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}},\
+          \ {'type': 'object', 'additionalProperties': False, 'required': ['kind',\
+          \ 'source_id', 'source_path'], 'properties': {'kind': {'type': 'string',\
+          \ 'enum': ['fact']}, 'source_id': {'type': 'string', 'minLength': 1, 'maxLength':\
+          \ 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}, 'source_path': {'type':\
+          \ 'string', 'maxLength': 500}}}]}}, 'type': 'object'}, 'type': 'array'}},\
+          \ 'required': ['concepts', 'our_context', 'gaps'], 'type': 'object'}]},\
+          \ 'missing_inputs': {'type': 'array', 'maxItems': 8, 'items': {'type': 'string',\
+          \ 'minLength': 1, 'maxLength': 500}}}}\n_PRODUCER_LIMITS = {'draft_utf8_bytes':\
+          \ 32768, 'envelope_utf8_bytes': 98304, 'claims': 40, 'bindings': 256}"
         variables:
         - variable: model_input
           value_selector:

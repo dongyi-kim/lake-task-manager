@@ -96,6 +96,12 @@ def main(model_input):
         context = {key: value for key, value in pack.items() if key not in _HIDDEN_PACK_FIELDS}
         context["sources"] = [_source_view(row) for row in pack["sources"]]
         _check_context(pack["role_context"], pack["sources"])
+        # Integrity identifiers are not citation choices. Keep the original pack
+        # for assembly/guards, and preserve all non-authority context values.
+        context["role_context"] = [
+            {key: value for key, value in row.items() if key not in {"context_id", "content_sha256"}}
+            for row in pack["role_context"]
+        ]
         view = _canonical({"contract": "work-input.v2", "context": context,
                            "knowledge_context": incoming["knowledge_context"]})
         if len(view.encode("utf-8")) > _MAX_WORK_INPUT_UTF8_BYTES:

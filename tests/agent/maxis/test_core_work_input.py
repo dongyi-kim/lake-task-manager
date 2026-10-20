@@ -58,6 +58,9 @@ def test_exact_view_keeps_order_identity_hashes_refs_and_business_text(compiled,
         if index != 0: row["entity_reference"] = canonical
         row["source_authority"] = "user_intent" if index == 0 else "evidence_source"
         row["allowed_claim_kinds"] = ["inference", "recommendation"] if index == 0 else ["fact", "inference", "recommendation"]
+    for row in expected["role_context"]:
+        del row["context_id"]
+        del row["content_sha256"]
     assert view(compiled, incoming) == {"contract": "work-input.v2", "context": expected,
         "knowledge_context": incoming["knowledge_context"]}
     assert incoming == before
@@ -144,7 +147,9 @@ def test_last_index_and_both_intent_predicates_are_required(compiled, case):
     row = incoming["context_pack"]["sources"][1]
     row.update(canonical_id="ltm:user-intent:last")
     context(incoming, {"goal": {"source_content_index": 1}})
-    assert view(compiled, incoming)["context"]["role_context"] == incoming["context_pack"]["role_context"]
+    expected = [{key: value for key, value in row.items() if key not in {"context_id", "content_sha256"}}
+                for row in incoming["context_pack"]["role_context"]]
+    assert view(compiled, incoming)["context"]["role_context"] == expected
     row.update(kind="jira", scope="DL")
     reject(compiled, incoming)
 
@@ -162,7 +167,8 @@ def test_reference_like_business_values_are_neither_decoded_nor_rewritten(compil
             "tasks": [{"instruction": "원문 source_content_index", "business": {"source_content_index": True}}]}),
             ("evidence", {"source_content_index": 99}), ("situation", ["source_content_index", None, True])]:
         row = context(incoming, value, name)
-        assert view(compiled, incoming)["context"]["role_context"] == [row]
+        projected = {key: item for key, item in row.items() if key not in {"context_id", "content_sha256"}}
+        assert view(compiled, incoming)["context"]["role_context"] == [projected]
 
 
 @pytest.mark.parametrize("field,value", [("content_sha256", "0" * 64), ("partial", "false"),

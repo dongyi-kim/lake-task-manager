@@ -157,14 +157,17 @@ Knowledge는 Stage → Knowledge Input → Knowledge LLM → Knowledge Assembler
 최종 envelope/schema metadata와 source hash는 숨기고, opaque intent canonical ID 외의 업무 ID는
 `entity_reference`로 표시한다. 인용에는 원본 `source_id`만 사용하며 `allowed_claim_kinds`는
 기존 양쪽 guard의 intent 판정 설명이지 새 사실 권한이 아니다. 조립기는 원입력에 계속 결속한다.
-canonical KnowledgeBrief에서 닫힌 내부 `knowledge-draft.v1`을 파생하고 모든 서술 문자열을
-value/kind/source_ids로 한 번만 작성하게 한다. 로컬 Knowledge 역할 전체가 의미 규칙의 정본이며
+canonical KnowledgeBrief에서 닫힌 내부 `knowledge-draft.v2`를 파생한다. 사실은 source_id/source_path로
+완전한 원문 레코드를 선택하고, 해석·제안은 value/kind/source_ids로 한 번만 작성한다.
+사실 선택은 root object 또는 root/top-level 배열의 완전한 레코드만 허용한다. 티켓 식별자를 잃는
+중첩 상태 조각은 거부한다. ref/term만 원문의 문자열 필드를 선택할 수 있다.
+로컬 Knowledge 역할 전체가 의미 규칙의 정본이며
 전용 prompt는 trust boundary와 wire 형식만 추가한다. 생략/빈 값·kind·출처 순서를 보존하고
 같은 value/kind/refs 조합만 claim을 공유하며 public 확장을 조용히 삭제하지 않고 거부한다.
 `core_knowledge_contract.PRODUCER_LIMITS` 한 곳에서 32,768-byte draft·98,304-byte envelope·
 40 claims·256 bindings를 입력 안내와 조립기에 결속한다. 출력은 한 번 직렬화해 strict UTF-8와
-크기를 확인하며 초과·잘못된 surrogate는 repair/truncation 없이 실패한다. 고정 schema의
-문자열 복사·binding/citation/metadata 최악값 합계는 92,024 bytes 이하로 보수 계산한다.
+크기를 확인하며 초과·잘못된 surrogate는 repair/truncation 없이 실패한다. 짧은 선택자도
+원문 복사로 커질 수 있으므로 draft 길이로 출력 크기를 추정하지 않고 최종 envelope를 직접 제한한다.
 96 KiB는 내부 방어 한도이지 실제 Dify 설정의 증거가 아니다. 4,096-token 모델 예산은 그대로이며
 native Code/Answer/API 전송과 실제 의미 품질은 별도 실측해야 한다. 양쪽 최종 guard는 그대로다.
 

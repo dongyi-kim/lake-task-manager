@@ -30,8 +30,26 @@ def test_source_view_has_one_citation_identity_and_preserves_original_evidence(n
                          "knowledge_context": original["knowledge_context"]}
     system = nodes[WORK]["prompt_template"][0]["text"]
     assert "entity_reference and role context are not citations" in system
-    assert "missing_inputs is root-only" in system
+    assert "Root missing_inputs never goes in payload" in system
     assert json.loads(incoming) == original
+
+
+def test_role_context_id_is_hidden_but_never_accepted_as_a_citation(nodes, work_case):
+    import hashlib
+    _, incoming, draft, _ = work_case
+    value = json.loads(incoming)
+    content = encoded({"goal": "합성 버그 초안 작성"})
+    value["context_pack"]["role_context"] = [{
+        "context_id": "rctx-synthetic", "name": "request_plan", "content_json": content,
+        "content_sha256": hashlib.sha256(content.encode()).hexdigest(),
+        "observed_at": value["context_pack"]["requested_at"], "partial": False}]
+    raw = encoded(value)
+    projected = json.loads(code(nodes[INPUT])["main"](raw)["work_input"])
+    assert "rctx-synthetic" not in encoded(projected)
+    assert projected["context"]["role_context"][0]["content_json"] == content
+    draft["payload"]["items"][0]["summary"]["source_ids"] = ["rctx-synthetic"]
+    with pytest.raises(ValueError, match="^invalid_core_work_draft$"):
+        code(nodes[ASSEMBLER])["main"](raw, encoded(draft))
 
 
 @pytest.mark.parametrize("choice", ["intent_recommendation", "evidence_fact", "entity_reference", "intent_fact"])
