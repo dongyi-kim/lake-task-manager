@@ -114,6 +114,22 @@ def assemble(nodes, model_input, selected):
     return json.loads(code(nodes[ASSEMBLER_ID])["main"](model_input, encoded(selected))["candidate"])
 
 
+@pytest.mark.parametrize("source", ["web", "github"])
+def test_runtime_capability_violation_is_rejected_in_native_branch(nodes, query_case, source):
+    _, model_input, candidate = query_case
+    incoming = json.loads(model_input)
+    business = next(row for row in incoming["context_pack"]["role_context"]
+                    if row["name"] == "query_business_input")
+    task = json.loads(business["content_json"])
+    task["allowed_sources"] = ["comments", "confluence", "jira", "people"]
+    business["content_json"] = encoded(task)
+    business["content_sha256"] = hashlib.sha256(encoded(task).encode()).hexdigest()
+    selected = draft(candidate)
+    selected["payload"]["reads"][0]["source"]["value"] = source
+    with pytest.raises(ValueError, match="invalid_core_query_draft"):
+        assemble(nodes, encoded(incoming), selected)
+
+
 def test_query_native_contract_is_resolved_and_both_guards_accept_complete_candidate(nodes, query_case):
     pack, model_input, candidate = query_case
     assert code(nodes["1909000000001024"])["main"](model_input) == {"route": "query"}

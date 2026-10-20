@@ -32,6 +32,13 @@ def main(model_input, candidate):
                 or status == "needs_input" and not missing or status == "blocked" and missing):
             _fail()
         claims, bindings, citations, citation_ids = [], [], [], {}
+        business = [row for row in pack.get("role_context", [])
+                    if row.get("name") == "query_business_input"]
+        capabilities = (_decode(business[0]["content_json"], _MAX_DRAFT_UTF8_BYTES, _fail)
+                        if len(business) == 1 else {})
+        allowed = capabilities.get("allowed_sources")
+        if allowed is not None and allowed != ["comments", "confluence", "jira", "people"]:
+            _fail()
 
         def narrative(wrapped, pointer):
             value, kind, refs = (wrapped[key] for key in ("value", "kind", "source_ids"))
@@ -52,6 +59,8 @@ def main(model_input, candidate):
         if "reads" in payload:
             output["reads"] = []
             for index, read in enumerate(payload["reads"]):
+                if allowed is not None and read["source"]["value"] not in allowed:
+                    _fail()  # Reject, never silently drop a requested read.
                 row = {key: narrative(read[key], f"/reads/{index}/{key}")
                        for key in ("source", "subject", "where") if key in read}
                 if "coverage" in read:

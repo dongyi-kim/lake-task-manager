@@ -24,7 +24,8 @@ def build_result_system_prompt(local_role_markdown, transport_markdown):
         raise ValueError("Result system prompt requires review")
     titles = ("Purpose", "Response Construction", "Output Contract", "Ticket Token Selection", "Stop and Escalate")
     selected = "\n\n".join("## " + title + "\n" + "\n".join(sections[title]).strip() for title in titles)
-    prompt = transport_markdown.strip() + "\n\n## Canonical Result semantics (apply only to supplied context)\n\n" + selected
+    prompt = ("## Canonical Result semantics (apply only to supplied context)\n\n"
+              + selected + "\n\n" + transport_markdown.strip())
     if len(prompt.encode("utf-8")) > 8192:
         raise ValueError("Result system prompt requires review")
     return prompt
