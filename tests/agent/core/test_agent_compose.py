@@ -538,6 +538,19 @@ def test_route_returns_html_for_the_editor():
     assert r.status_code == 200 and r.json()["ok"] and r.json()["html"]
 
 
+def test_route_returns_normal_needs_input_without_http_failure(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    expected = {"ok": False, "needsInfo": True, "error": "검토 요청 대상을 알려주세요.",
+                "questions": [{"field": "target", "text": "누구에게 요청할까요?"}]}
+    monkeypatch.setattr(C.EditorAuthor, "compose", lambda *_a, **_kw: expected)
+    response = TestClient(app).post("/api/agent/compose", json={
+        "ticketKey": PROG, "kind": "comment", "prompt": "검토 요청",
+    })
+    assert response.status_code == 200
+    assert response.json() == expected
+
+
 def test_route_fails_closed_when_editor_pipeline_raises(monkeypatch):
     """Prod-only context/render failures must not escape as an opaque HTTP 500."""
     from fastapi.testclient import TestClient

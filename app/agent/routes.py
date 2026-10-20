@@ -1021,7 +1021,9 @@ def api_compose(body: _ComposeBody):
                 "detail": type(exc).__name__,
             }],
         }, status_code=502)
-    return JSONResponse(r, status_code=200 if r.get("ok") else 400)
+    # A concrete clarification is a normal draft-only conversation response, not
+    # a bad HTTP request. Keep ok=false so the editor never inserts/publishes it.
+    return JSONResponse(r, status_code=200 if r.get("ok") or r.get("needsInfo") else 400)
 
 
 @router.post("/references/resolve")
