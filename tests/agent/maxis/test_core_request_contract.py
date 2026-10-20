@@ -65,7 +65,7 @@ def test_wrappers_cover_exact_guard_narratives_plus_model_owned_intent(contract,
                 assert derived["required"] == ["value", "kind", "source_ids"]
                 assert derived["additionalProperties"] is False
                 kinds = ["inference", "recommendation"] if path in {
-                    "/intent", "/keywords/*", "/tasks/*/completion_criteria/*",
+                    "/intent", "/keywords/*", "/assumptions/*", "/tasks/*/completion_criteria/*",
                     "/blocking_questions/*", "/request_questions/*/question"
                 } else ["fact", "inference", "recommendation"]
                 assert derived["properties"]["kind"]["enum"] == kinds

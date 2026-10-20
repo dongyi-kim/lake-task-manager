@@ -32,9 +32,10 @@ def test_context_body_is_previous_query_input_with_only_parameter_substitution()
     assert digest(functions("core_draft_context.py")["_digest"].body) == "99024b88cdb1146503efea3e25d27fde88274ba0badf9023e58e41eb45fbab79"
 
 
-def test_query_assembly_and_error_body_are_unchanged_and_binding_is_explicit():
+def test_query_context_binding_is_explicit():
     query = functions("core_query_assembler.py")
-    assert digest(query["main"].body) == "d3a1a5c0bea733b6b448330926021fd1bf89f38714f8b247a0a1b7ea744f3af1"
     assert digest(query["_fail"].body) == "ed8e61c444d1a28ff820e58d9a55df0379337fb298c9bf808d11e9ce695c225c"
+    # Assembly now enforces task.allowed_sources as well. Its behavior is covered
+    # by test_core_query_assembler; only the extracted context binding is frozen here.
     expected = ast.parse('return _draft_context(raw, "query_specialist", _QUERY_SCHEMA_JSON, _QUERY_SCHEMA_SHA256, _DRAFT_SCHEMA, _fail)').body
     assert ast.dump(ast.Module(body=query["_input"].body, type_ignores=[])) == ast.dump(ast.Module(body=expected, type_ignores=[]))

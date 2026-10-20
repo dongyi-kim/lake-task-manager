@@ -27,8 +27,8 @@ def test_bounded_native_prompt_preserves_exact_local_policy_and_question_help(co
     assert len(prompt.encode()) <= contract.WORK_MAX_SYSTEM_UTF8_BYTES
     assert hashlib.sha256(texts[0].encode()).hexdigest() == contract.WORK_ROLE_SHA256
     assert prompt.startswith(texts[1].strip()) and "work-draft.v1" in prompt
-    for token in ("input_need=required", "input_need=optional", "required_input=true", "required_input=false",
-                  "source_content_index", "zero-based", "allowed_claim_kinds", "draft-only",
+    for token in ("input_need=required/optional", "required_input=true/false",
+                  "source_content_index", "zero-based", "allowed_claim_kinds", "drafts only, no tools/execution",
                   "reproduction", "expected", "actual", "40 claims", "256 bindings"):
         assert token in prompt
     for description in CREATE_SCHEMA["properties"]["questions"]["items"]["properties"].values():
@@ -73,9 +73,8 @@ def test_ok_payload_required_fields_stay_explicit_even_when_arrays_are_empty(con
     assert json.loads(example, object_pairs_hook=unique_object) == {
         "contract": "work-draft.v1", "status": "ok", "missing_inputs": [],
         "payload": {"mode": "task", "questions": [], "items": []}}
-    assert "ok requires mode=task|subtask|epic, questions and items" in prompt
-    assert "Write each key once, close every object/array" in prompt
-    assert "mode occurs once in payload" in prompt
+    assert "ok requires mode=task|subtask|epic, questions, items" in prompt
+    assert "Write keys once; close items `]`, payload `}`, root `}`" in prompt
     assert "needs_input: payload={}, concrete missing_inputs" in prompt
     assert "blocked: payload={}, missing_inputs=[]" in prompt
 
@@ -140,9 +139,9 @@ def test_askd2_deferred_scope_and_meeting_policy_are_not_replaced_by_guard_assum
         rows = policy_bullets(sections[title])
         assert all(rows[index] in prompt for index in indices)
     assert sections["Epic Creation"] in prompt
-    assert "only native-schema fields" in prompt
-    assert "assignee and parent_ref are unsupported" in prompt
-    assert "use children" in prompt
+    assert "Controls use native schema values" in prompt
+    assert "assignee/parent_ref are unsupported" in prompt
+    assert "requested children" in prompt
 
 
 def test_work_only_system_cap_is_inclusive_and_never_truncates_policy(contract, texts):
@@ -162,4 +161,4 @@ def test_contextual_owner_and_lineage_references_never_expand_native_fields(cont
     for row in (native, item, item["properties"]["children"]["items"]):
         assert row["additionalProperties"] is False and field not in row["properties"]
     prompt = build(contract, texts)
-    assert "assignee and parent_ref are unsupported" in prompt and "use children" in prompt
+    assert "assignee/parent_ref are unsupported" in prompt and "requested children" in prompt

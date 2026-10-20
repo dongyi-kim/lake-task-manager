@@ -175,7 +175,7 @@ def test_transport_explains_only_wire_evidence_and_status_boundaries(contract, r
     prompt = contract.build_request_system_prompt(SCHEMA, role, transport)
     assert len(prompt.encode("utf-8")) <= 8192
     for marker in ("request-input.v1", "request-draft.v2", "context.sources[].source_id",
-                   "context.query", "context.role_context", "source_authority", "allowed_claim_kinds",
+                   "context.query", "role_context", "source_authority", "allowed_claim_kinds",
                    "user_intent", "evidence_source", "do not verify facts or grant approval",
                    "canonical_id", "{value, kind, source_ids}", "tasks[].kind",
                    "research_readiness", "needs_clarification", "no_write_requested",
@@ -194,8 +194,8 @@ def test_transport_requires_unique_keys_before_final_native_output(contract, rol
     transport = (DIRECTORY / "prompts/core_request.md").read_text(encoding="utf-8").strip()
     prompt = contract.build_request_system_prompt(SCHEMA, role, transport)
     for rule in (
-        "Every JSON object must have unique keys, including nested objects.",
-        "Resolve revisions before output; never append a revised object or repeat a field.",
+        "JSON keys must be unique at every level.",
+        "No appended revisions.",
     ):
         assert transport.count(rule) == 1
         assert prompt.count(rule) == 1
@@ -225,7 +225,7 @@ def test_transport_lists_exact_wrapped_and_plain_payload_paths(contract):
         lines = [line for line in transport.splitlines() if line.startswith(label + ": ")]
         assert len(lines) == 1
         assert set(re.findall(r"`([^`]+)`", lines[0])) == paths
-    planning = ("intent, keywords[], tasks[].completion_criteria[], blocking_questions[] "
+    planning = ("intent, keywords[], assumptions[], tasks[].completion_criteria[], blocking_questions[] "
         "and request_questions[].question are planning judgments or questions: their kind is only "
         "inference|recommendation, even when supported by evidence.")
     assert transport.count(planning) == 1

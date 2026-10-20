@@ -24,11 +24,12 @@ def child():
 
 def test_compiled_prompt_names_planning_owner_without_changing_policy(contract, texts):
     prompt = build(contract, texts)
-    scope = next(line for line in prompt.splitlines() if line.startswith("interpretation, "))
-    assert "interpretation, structure, structure_why, rationale are payload fields" in scope
-    assert "Ticket fields go in payload.items[]" in scope
-    assert "new children in items[].children[]" in scope
-    assert "ok requires mode=task|subtask|epic, questions and items" in prompt
+    scope = next(line for line in prompt.splitlines() if line.startswith("Payload keys: "))
+    assert "interpretation, structure, structure_why, rationale" in scope
+    assert "Item metadata never belongs at payload root." in scope
+    assert "/items/*/children/*/summary" in prompt
+    assert "/items/*/summary" in prompt
+    assert "ok requires mode=task|subtask|epic, questions, items" in prompt
     assert len(prompt.encode("utf-8")) <= contract.WORK_MAX_SYSTEM_UTF8_BYTES
 
 
