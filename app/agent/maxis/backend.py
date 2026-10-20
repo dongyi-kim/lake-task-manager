@@ -2165,8 +2165,21 @@ def invoke(
         raise MaxisRuntimeError(
             "MAXIS Workflow/Knowledge published revision이 프로필에 고정되지 않았습니다."
         )
+    # A pack can age while a remote attempt is running. Its signed/hashed content
+    # and original freshness label stay immutable; reevaluate time at each invocation.
+    from app.agent.maxis.context_guard import ContextPolicy
+    now = datetime.now(timezone.utc)
+    observation_times = (
+        [row.retrieved_at for row in evidence.sources]
+        + [row.observed_at for row in evidence.role_context]
+    )
+    freshness_seconds = ContextPolicy(allowed_scopes={}).freshness_seconds
+    expired = any(
+        (now - instant).total_seconds() > freshness_seconds
+        for instant in observation_times
+    )
     if role_id in {"work_architect", "auditor", "editor_author"} and (
-            evidence.freshness in {"mixed", "stale"} or evidence.partial):
+            evidence.freshness in {"mixed", "stale"} or evidence.partial or expired):
         _record_remote_audit(
             status="blocked", error_code="freshness_policy", **audit_common,
         )
@@ -2472,16 +2485,47 @@ def invoke_role(
     if resolution.route == "local":
         raise MaxisRuntimeError("local Role에는 remote invoke를 사용할 수 없습니다.")
     payload = role_payload(role_id, state, messages, schema, output_kind=output_kind)
-    result = invoke(
-        role_id,
-        payload,
-        str(state.get("thread_id") or ""),
-        str(state.get("correlation_id") or ""),
-        person_references=(
-            editor_person_reference_map(state.get("_maxis_identity_values") or ())
-            if role_id == "editor_author" else None
-        ),
-    )
+    attempts = []
+    for attempt in range(2):
+        try:
+            result = invoke(
+                role_id, payload, str(state.get("thread_id") or ""),
+                str(state.get("correlation_id") or ""),
+                person_references=(
+                    editor_person_reference_map(state.get("_maxis_identity_values") or ())
+                    if role_id == "editor_author" else None
+                ),
+            )
+            break
+        except MaxisRuntimeError as exc:
+            from app.agent.maxis.errors import MaxisGatewayError, MaxisErrorCode
+            metadata = dict(getattr(exc, "metadata", None) or {})
+            observation = metadata.get("requestTelemetry")
+            if observation is not None:
+                attempts.append(observation)
+            cause = exc.__cause__
+            regenerate = (
+                attempt == 0 and resolution.route == "maxis" and output_kind == "structured"
+                and role_id in {"query_specialist", "request_architect", "work_architect",
+                                "knowledge_curator", "result_integrator"}
+                and isinstance(cause, MaxisGatewayError)
+                and cause.code == MaxisErrorCode.WORKFLOW_CONTRACT and cause.draft_regeneration_allowed
+                and cause.status_code in {400, 422} and observation is not None
+            )
+            if not regenerate:
+                if attempts:
+                    metadata["requestAttempts"] = attempts
+                    exc.metadata = metadata
+                raise
+            # A new invocation rechecks the same immutable profile, source freshness,
+            # kill switch and credentials. It grants no authority and never accepts
+            # the rejected candidate or calls a local model. Audit rows already persist.
+    if attempts:
+        metadata = dict(result.get("metadata") or {})
+        if metadata.get("requestTelemetry") is not None:
+            attempts.append(metadata["requestTelemetry"])
+        metadata["requestAttempts"] = attempts
+        result = {**result, "metadata": metadata}
     output = result.get("output") if isinstance(result, dict) else None
     if not isinstance(output, dict):
         raise MaxisRuntimeError(f"MAXIS Role output이 객체가 아닙니다: {role_id}")

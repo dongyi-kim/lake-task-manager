@@ -1235,6 +1235,69 @@ def test_stale_or_partial_work_evidence_is_blocked_before_network(monkeypatch, r
         backend.invoke(role_id, payload, "thread-1", "corr-1")
 
 
+@pytest.mark.parametrize("expires", ["source", "context"])
+def test_regeneration_rechecks_wall_clock_with_real_invoke(monkeypatch, audit_events, expires):
+    from app.agent.maxis import client, credentials
+    from app.agent.maxis.errors import classify_dify_error
+    from app.agent.maxis.telemetry import RemoteRequestTelemetryV1, role_usage_observation
+
+    state = _runtime_state("work_architect")
+    state["draft"] = {"items": []}
+    result = {"scopeProjects": ["DL"], "tickets": [{"key": "DL-1"}]}
+    state["query_results"] = [{
+        "id": "jira-1", "source": "jira", "result": result,
+        "_remoteEvidence": backend.attest_query_result("jira-1", "jira", result),
+    }]
+    payload = backend.role_payload("work_architect", state, [], {"type": "object"},
+                                   output_kind="structured")
+    instant = datetime.now(timezone.utc)
+    pack = payload["evidencePack"]
+    rows, field = ((pack["sources"], "retrieved_at") if expires == "source"
+                   else (pack["role_context"], "observed_at"))
+    assert rows and pack["freshness"] == "fresh"
+    rows[0][field] = (instant - timedelta(seconds=899)).isoformat()
+    before = deepcopy(payload)
+    clock = [instant]
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0]
+
+    monkeypatch.setattr(backend, "datetime", Clock)
+    monkeypatch.setattr(backend, "role_payload", lambda *_a, **_k: payload)
+    monkeypatch.setattr(backend, "resolve_role", lambda *_a, **_k: backend.RoleResolution(
+        route="maxis", binding=SimpleNamespace(), profile="prod"))
+    monkeypatch.setattr(backend, "_profile_snapshot", lambda *_a, **_k: _profile("prod"))
+    monkeypatch.setattr(backend, "_client_config", lambda *_a: None)
+    monkeypatch.setattr(credentials, "get_for", lambda *_a: "synthetic-secret")
+    calls = []
+
+    class FailingClient:
+        def __init__(self, _config):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            pass
+        def invoke(self, *_a, **_k):
+            calls.append(clock[0])
+            clock[0] += timedelta(seconds=2)
+            error = classify_dify_error(400, {"message": "invalid_core_work_draft"})
+            error.telemetry = RemoteRequestTelemetryV1(
+                transport_status="failed", http_status=400, result_status="failed", latency_ms=2000)
+            raise error
+
+    monkeypatch.setattr(client, "DifyClient", FailingClient)
+    with pytest.raises(backend.MaxisRuntimeError, match="freshness") as error:
+        backend.invoke_role("work_architect", state, [], {}, output_kind="structured")
+    assert len(calls) == 1
+    assert payload == before  # No timestamp/label refresh to grant new authority.
+    assert [event.status for event in audit_events] == ["started", "failed", "started", "blocked"]
+    assert audit_events[-1].error_code == "freshness_policy"
+    assert role_usage_observation(error.value.metadata)["calls"] == 1
+
+
 def test_empty_research_search_keeps_real_acquisition_without_materialization(monkeypatch):
     from app.agent import tools as tool_registry
     from app.agent.tools import _ctx

@@ -42,11 +42,13 @@ class MaxisGatewayError(RuntimeError):
         *,
         status_code: int | None = None,
         retryable: bool = False,
+        draft_regeneration_allowed: bool = False,
         telemetry: RemoteRequestTelemetryV1 | None = None,
     ):
         self.code = code
         self.status_code = status_code
         self.retryable = retryable
+        self.draft_regeneration_allowed = draft_regeneration_allowed
         self.telemetry = telemetry
         suffix = f" (HTTP {status_code})" if status_code is not None else ""
         super().__init__(f"MAXIS gateway error: {code.value}{suffix}")
@@ -109,6 +111,10 @@ _DIFY_ERROR_MARKERS = (
         "invalid_editor_input", "invalid_editor_plan",
     )),
 )
+_REGENERATABLE_DRAFT_MARKERS = frozenset({
+    "invalid_core_query_draft", "invalid_core_request_draft",
+    "invalid_core_work_draft", "invalid_core_result_draft", "invalid_core_knowledge_draft",
+})
 
 
 def classify_dify_error(status_code: int, payload: object) -> MaxisGatewayError:
@@ -131,14 +137,17 @@ def classify_dify_error(status_code: int, payload: object) -> MaxisGatewayError:
                 code = _DIFY_ERROR_CODES.get(value.lower())
                 if code is not None:
                     return MaxisGatewayError(code, status_code=status_code)
-    for row in rows:
-        message = row.get("message")
-        if not isinstance(message, str):
-            continue
-        for code, markers in _DIFY_ERROR_MARKERS:
-            if any(re.search(r"(?<!\w)" + re.escape(marker) + r"(?!\w)", message)
-                   for marker in markers):
-                return MaxisGatewayError(code, status_code=status_code)
+    messages = [row["message"] for row in rows if isinstance(row.get("message"), str)]
+    # Classify all recognized locations before granting regeneration. A nested
+    # model/input failure must veto an outer draft marker, irrespective of order.
+    for code, markers in _DIFY_ERROR_MARKERS:
+        matched = [marker for marker in markers for message in messages
+                   if re.search(r"(?<!\w)" + re.escape(marker) + r"(?!\w)", message)]
+        if matched:
+            return MaxisGatewayError(
+                code, status_code=status_code,
+                draft_regeneration_allowed=bool(set(matched) <= _REGENERATABLE_DRAFT_MARKERS),
+            )
     return fallback
 
 

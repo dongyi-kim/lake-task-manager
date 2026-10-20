@@ -111,6 +111,25 @@ def with_result_status(observation, result_status: str) -> RemoteRequestTelemetr
 
 def role_usage_observation(metadata: dict) -> dict | None:
     """Project request attempts and known token subtotals, never missing usage as zero."""
+    attempts = metadata.get("requestAttempts")
+    if attempts is not None:
+        if not isinstance(attempts, list) or not 1 <= len(attempts) <= 2:
+            raise ValueError("Invalid bounded MAXIS request attempts")
+        observations = [RemoteRequestTelemetryV1.model_validate(row, strict=True) for row in attempts]
+        latest = metadata.get("requestTelemetry")
+        if latest is not None and observations[-1] != RemoteRequestTelemetryV1.model_validate(latest, strict=True):
+            raise ValueError("MAXIS final request observation does not match attempts")
+        rows = [role_usage_observation({
+            "requestTelemetry": row.model_dump(mode="json"),
+            "workflowBundleVersion": metadata.get("workflowBundleVersion", ""),
+        }) for row in observations]
+        rows = [row for row in rows if row is not None]
+        if not rows:
+            return None
+        return {**rows[-1], **{key: sum(row[key] for row in rows) for key in (
+            "calls", "failedCalls", "unknownUsageCalls", "promptTokens",
+            "completionTokens", "totalTokens", "latencyMs",
+        )}}
     raw = metadata.get("requestTelemetry")
     if raw is not None:
         observation = RemoteRequestTelemetryV1.model_validate(raw, strict=True)

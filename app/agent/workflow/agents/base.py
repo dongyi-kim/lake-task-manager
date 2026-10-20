@@ -497,7 +497,7 @@ class Agent(ABC):
             # These are local observations from this output, never exception prose.
             failure.metadata = {
                 key: metadata[key] for key in (
-                    "requestTelemetry", "usage", "latencyMs", "workflowBundleVersion",
+                    "requestTelemetry", "requestAttempts", "usage", "latencyMs", "workflowBundleVersion",
                 ) if key in metadata
             }
             failure.metadata["resultStatus"] = "blocked"
@@ -508,6 +508,10 @@ class Agent(ABC):
                 failure.metadata["requestTelemetry"] = with_result_status(
                     observation, "blocked",
                 ).model_dump(mode="json")
+                if metadata.get("requestAttempts"):
+                    failure.metadata["requestAttempts"] = [
+                        *metadata["requestAttempts"][:-1], failure.metadata["requestTelemetry"],
+                    ]
         return failure
 
     def _with_runtime_projection(
