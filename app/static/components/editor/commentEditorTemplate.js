@@ -121,9 +121,9 @@ const COMMENT_EDITOR_TEMPLATE = `
             <span v-if="aiAsk" class="ai-ask">{{ aiAsk }}</span>
             <span v-if="aiErr" class="ai-err">{{ aiErr }}</span>
             <span class="ai-row">
-              <span class="ai-hint">Enter 로 생성 · Ctrl+Z 로 되돌리기</span>
+              <span class="ai-hint">{{ aiReady === null ? '연결 확인 중…' : 'Enter 로 생성 · Ctrl+Z 로 되돌리기' }}</span>
               <button type="button" class="cmt-ed-btn ghost" @click="aiOpen=false">취소</button>
-              <button type="button" class="cmt-ed-btn primary" :disabled="aiBusy" @click="runAi">
+              <button type="button" class="cmt-ed-btn primary" :disabled="aiBusy || aiReady !== true" @click="runAi">
                 {{ aiBusy ? '작성 중…' : '생성' }}
               </button>
             </span>
