@@ -12,7 +12,7 @@
 - **성능**: local(basic-auth) 백엔드 fan-out(epic/vit/workload) **ThreadPool 병렬**(SSO 는 순차 폴백). VIT 조립 결과 캐시.
 - dev 환경 = **Fake Jira/Confluence 서버**(무설치·무라이선스·무가상화). Docker/WSL2 불가 + DC 라이선스 중단 대응.
 - 남은 것: 기능2·3 인터뷰 반영 잔여 + 사내 **prod(SSO)** 소수 대조.
-- **MAXIS/Dify 지원**: [Draft PR #80](https://github.com/dongyi-kim/lake-task-manager/pull/80)에서 단위 커밋·TODO·Changelog 관리. [현행 설계](docs/MAXIS_DIFY_MIGRATION.md)의 신뢰·승인 경계를 유지하며 서버 통제 검증기, 사용자 UI·승인 연결과 품질 승격 조건을 보강 중이다. 기본 route는 local이며 PROD는 활성화하지 않는다. 실행별 평가 결과는 ignored cache에 보존한다.
+- **MAXIS/Dify 지원**: [Draft PR #80](https://github.com/dongyi-kim/lake-task-manager/pull/80)에서 단위 커밋·TODO·Changelog 관리. 프로필은 이름을 붙인 연결이며 `이 설정 사용`으로 검증한 Agent·에디터 경로를 함께 적용한다. 기본 route는 local, 사용자의 명시적 적용 이후 MAXIS를 사용한다. 일반 연결과 독립 검수 필수 정책은 분리하며 조회 권한·근거·쓰기 승인 경계를 유지한다. 실행별 평가 결과는 ignored cache에 보존한다.
 
 빠른 실행:
 ```bash
@@ -109,6 +109,8 @@ python -m pytest src/tests -q                      # 21 passed
 ---
 
 ## History (append-only)
+
+- **2026-10-21** — MAXIS 연결 프로필을 환경 구분에서 분리: 기존 키·자산 보존, 이름·새 연결 관리, 실제 Agent·에디터 경로 적용 후 설정창 닫힘, 프로필별 자산 준비·평가·서명 격리. 사용 안내는 단일 운영 가이드, 검증 결과와 잔여 품질 문제는 PR #80에서 관리.
 
 - **2026-07-09** — **정리/성능**: 죽은 코드 제거(`_ptotal`, `subsPreview`, ProgressBar marker/`.pbar-mark`, `.mini .tb`, fmt 미사용 export), 스테일 문서 현행화(plan.yaml→wbs_config.yaml, docker/seed/native 폐기 반영). **성능**: local 백엔드 fan-out(epic/vit/workload) **ThreadPool 병렬**(`_pmap`, `supports_parallel`; SSO 순차 폴백), VIT 조립 캐시(`vit_build:`)+코멘트 lazy(리스트에서 미조회), 프론트 **keep-alive**+GET memo(탭 재fetch 제거)+간트 렌더 coalesce.
 - **2026-07-09** — **Vue 3 무빌드 SPA 전환 완료**: 3개 self-contained HTML → 단일 SPA(`static/{index.html,app.js,components/,lib/,styles/,vendor(vue.esm)}`), 해시 라우팅. 색/헬퍼/컴포넌트(`tokens.css`,`colors.js`,`fmt.js`,`ProgressBar`,`StatusPill`,`TypeBadge`) 단일 소스화. `auth.js`→`LoginOverlay`, `callout.js`→`FormulaCallout`. `/` = SPA(옛 페이지 은퇴). 폰트 Pretendard(CDN).

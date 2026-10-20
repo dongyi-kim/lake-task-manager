@@ -50,22 +50,26 @@ const getJson = (p) => fetch(p).then((r) => {
   return r.json();
 });
 
+const maxisTarget = (path, profile) => path + (profile ? "?profile=" + encodeURIComponent(profile) : "");
+
 export const agentApi = {
   status: () => getJson("/api/agent/status"),
   runtimeStatus: () => getJson("/api/agent/runtime/status"),
-  maxisSetup: () => getJson("/api/agent/maxis/setup"),
-  maxisRegisterHost: (baseUrl, confirmed) => put("/api/agent/maxis/setup/host", { baseUrl, confirmed }),
-  maxisPrepareKnowledge: () => post("/api/agent/maxis/setup/knowledge", {}),
-  maxisPrepareBundle: (body) => post("/api/agent/maxis/setup/bundle", body),
-  maxisModelFromExport: (yamlText) => post("/api/agent/maxis/setup/model", { yamlText }),
-  maxisSetupCandidate: (body) => post("/api/agent/maxis/setup/candidate", body),
-  maxisApplyProduction: (workflows) => post("/api/agent/maxis/setup/apply", { workflows }),
-  maxisQualification: () => getJson("/api/agent/maxis/qualification/status"),
-  maxisStartQualification: (workflows) => post("/api/agent/maxis/qualification/runs", { workflows }),
-  maxisRegisterReviewer: (body) => post("/api/agent/maxis/qualification/keys", body),
-  maxisRemoveReviewer: (fingerprint) => del("/api/agent/maxis/qualification/keys/" + encodeURIComponent(fingerprint)),
-  maxisImportQualification: (artifact) => post("/api/agent/maxis/qualification/artifacts", { artifact }),
+  maxisSetup: (profile) => getJson(maxisTarget("/api/agent/maxis/setup", profile)),
+  maxisRegisterHost: (baseUrl, confirmed, profile) => put(maxisTarget("/api/agent/maxis/setup/host", profile), { baseUrl, confirmed }),
+  maxisPrepareKnowledge: (profile) => post(maxisTarget("/api/agent/maxis/setup/knowledge", profile), {}),
+  maxisPrepareBundle: (body, profile) => post(maxisTarget("/api/agent/maxis/setup/bundle", profile), body),
+  maxisModelFromExport: (yamlText, profile) => post(maxisTarget("/api/agent/maxis/setup/model", profile), { yamlText }),
+  maxisSetupCandidate: (body, profile) => post(maxisTarget("/api/agent/maxis/setup/candidate", profile), body),
+  maxisQualification: (profile) => getJson(maxisTarget("/api/agent/maxis/qualification/status", profile)),
+  maxisStartQualification: (workflows, profile) => post(maxisTarget("/api/agent/maxis/qualification/runs", profile), { workflows }),
+  maxisRegisterReviewer: (body, profile) => post(maxisTarget("/api/agent/maxis/qualification/keys", profile), body),
+  maxisRemoveReviewer: (fingerprint, profile) => del(maxisTarget("/api/agent/maxis/qualification/keys/" + encodeURIComponent(fingerprint), profile)),
+  maxisImportQualification: (artifact, profile) => post(maxisTarget("/api/agent/maxis/qualification/artifacts", profile), { artifact }),
   maxisStatus: () => getJson("/api/agent/maxis/status"),
+  maxisCreateProfile: (displayName) => post("/api/agent/maxis/profiles", { displayName }),
+  maxisApplyProfile: (name, workflows) => post(
+    "/api/agent/maxis/profiles/" + encodeURIComponent(name) + "/apply", { workflows }),
   maxisSaveProfile: (name, body) => put(
     "/api/agent/maxis/profiles/" + encodeURIComponent(name), body),
   maxisSaveCredentials: (name, body) => put(

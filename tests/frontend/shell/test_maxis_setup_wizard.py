@@ -10,7 +10,7 @@ import pytest
 from support.paths import STATIC_ROOT
 
 
-def test_prod_setup_renders_and_saves_tokens_without_portal_password(tmp_path):
+def test_selected_profile_setup_renders_and_saves_tokens_without_portal_password(tmp_path):
     sync_playwright = pytest.importorskip("playwright.sync_api").sync_playwright
     documents = [{"id": "ticket-rules", "remoteName": "01-ticket-rules.txt", "allowedRoles": ["auditor"]}]
     run = {"runId": "a" * 32, "sourceCurrent": True, "documents": documents,
@@ -19,7 +19,7 @@ def test_prod_setup_renders_and_saves_tokens_without_portal_password(tmp_path):
            "bundleReady": True, "candidateSaved": True}
     received = []
     errors = []
-    markup = """<!doctype html><html><head><title>LTM PROD setup fixture</title>
+    markup = """<!doctype html><html><head><title>LTM MAXIS setup fixture</title>
 <link rel="stylesheet" href="/static/styles/tokens.css"><link rel="stylesheet" href="/static/styles/base.css">
 <link rel="stylesheet" href="/static/styles/components.css"><link rel="stylesheet" href="/static/styles/agent.css"></head>
 <body><div id="app"></div><script type="module">
@@ -58,34 +58,41 @@ createApp(Dialog,{initialMode:'maxis'}).mount('#app');</script></body></html>"""
             else:
                 if route.request.method != "GET":
                     received.append((path, route.request.post_data_json))
+                endpoint = path.split("?", 1)[0]
                 body = ({"source": {"documents": documents, "knowledgeVersion": "ltm-knowledge-2026.10"}, "currentRun": run}
-                        if path.endswith("/setup") else
-                        {"canManage": True, "environmentOverrides": {}, "profiles": [{"name": "prod", "stage": "prod", "verified": True, "workflows": {}, "credentials": {}}]}
+                        if endpoint.endswith("/setup") else
+                        {"canManage": True, "environmentOverrides": {}, "profiles": [
+                            {"name": "profile-team", "displayName": "검토용 MAXIS", "isLegacy": False,
+                             "executionPolicy": "qualified", "verified": True, "workflows": {}, "credentials": {}}]}
                         if path.endswith("/maxis/status") else
-                        {"valid": False, "reason": "서명된 PROD 평가 검증 대기"}
-                        if path.endswith("/qualification/status") else {"ok": True})
+                        {"valid": False, "reason": "서명된 평가 검증 대기"}
+                        if endpoint.endswith("/qualification/status") else
+                        {"ok": True, "baseUrl": "https://team.example/v1"})
                 route.fulfill(content_type="application/json", body=json.dumps(body))
 
         page.route("http://127.0.0.1:4457/**", respond)
         page.goto("http://127.0.0.1:4457/")
         page.get_by_role("button", name="MAXIS 설정 추가", exact=True).click()
         assert page.locator(".mx-setup").count() == 0
-        page.get_by_role("button", name="저장소 파일로 PROD 설정", exact=True).click()
+        page.get_by_role("button", name="선택한 설정의 서버 자산 준비", exact=True).click()
         try:
             page.get_by_role("heading", name="저장소 파일로 MAXIS 설정").wait_for(timeout=5000)
         except Exception:
-            pytest.fail("PROD setup did not render: " + repr(errors) + " / " + page.locator("#app").inner_html()[:1800])
-        assert page.get_by_text("저장 위치: prod 프로필", exact=True).is_visible()
-        assert page.title() == "LTM PROD setup fixture"
-        guide = page.get_by_role("link", name="PROD 설정·검수·데모 가이드 열기")
-        assert guide.get_attribute("href") == "/api/agent/maxis/setup/guide"
+            pytest.fail("MAXIS setup did not render: " + repr(errors) + " / " + page.locator("#app").inner_html()[:1800])
+        assert page.get_by_text("저장 위치: 검토용 MAXIS", exact=True).is_visible()
+        assert page.title() == "LTM MAXIS setup fixture"
+        assert not any(word in page.locator(".mx-setup").inner_text() for word in ("PROD", "DEV"))
+        guide = page.get_by_role("link", name="MAXIS 설정·검수 가이드 열기")
+        assert guide.get_attribute("href") == "/api/agent/maxis/setup/guide?profile=profile-team"
         assert guide.get_attribute("target") == "_blank"
         assert "noopener" in guide.get_attribute("rel")
         page.get_by_role("button", name="2 · 자산 연결").click()
-        page.get_by_placeholder("https://service.example/v1").fill("https://prod.example/v1")
-        page.get_by_text("이 주소가 token을 전송할 실제 PROD 호스트임을 확인했습니다.").click()
-        page.get_by_role("button", name="이 PC에 정확한 PROD 호스트 등록").click()
-        page.get_by_text("이 PC의 PROD Service API 호스트를 등록했습니다.", exact=False).wait_for()
+        page.get_by_placeholder("https://service.example/v1").fill("https://team.example/v1")
+        page.get_by_text("이 주소가 token을 전송할 실제 MAXIS 호스트임을 확인했습니다.").click()
+        page.get_by_role("button", name="이 PC에 정확한 MAXIS 호스트 등록").click()
+        page.get_by_text("이 PC의 MAXIS Service API 호스트를 등록했습니다.", exact=False).wait_for()
+        assert received[-1] == ("/api/agent/maxis/setup/host?profile=profile-team",
+                               {"baseUrl": "https://team.example/v1", "confirmed": True})
         page.get_by_role("button", name="3 · 게시와 token").click()
         token_fields = page.locator('.mx-setup input[type="password"]')
         assert token_fields.count() == 2
@@ -93,15 +100,16 @@ createApp(Dialog,{initialMode:'maxis'}).mount('#app');</script></body></html>"""
         page.get_by_role("button", name="token을 Windows DPAPI에 저장").click()
         page.get_by_text("현재 Windows 사용자의 DPAPI에 token을 저장했습니다.", exact=False).wait_for()
         assert token_fields.nth(0).input_value() == ""
-        assert received[-1] == ("/api/agent/maxis/credentials/prod", {"agentCoreApiKey": "synthetic-app-token"})
+        assert received[-1] == ("/api/agent/maxis/credentials/profile-team", {"agentCoreApiKey": "synthetic-app-token"})
         assert not page.locator('input[autocomplete="current-password"]').count()
         page.get_by_role("button", name="4 · 검증과 적용").click()
-        assert page.get_by_role("button", name="Agent·에디터에 PROD MAXIS 적용").is_disabled()
+        assert page.get_by_role("button", name="이 설정을 Agent·에디터에 사용").is_disabled()
+        assert "sign --profile profile-team" in page.locator(".mx-setup pre").text_content()
         screenshot_dir = Path(os.getenv("LTM_UI_SCREENSHOTS") or tmp_path)
         screenshot_dir.mkdir(parents=True, exist_ok=True)
-        page.screenshot(path=str(screenshot_dir / "prod-setup-desktop.png"))
+        page.screenshot(path=str(screenshot_dir / "maxis-setup-desktop.png"))
         page.set_viewport_size({"width": 420, "height": 860})
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
-        page.screenshot(path=str(screenshot_dir / "prod-setup-mobile.png"))
+        page.screenshot(path=str(screenshot_dir / "maxis-setup-mobile.png"))
         assert not errors, errors
         browser.close()
