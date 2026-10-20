@@ -72,18 +72,27 @@ def _attested_pilot():
     return policy
 
 
-def test_pilot_is_separate_and_dev_policy_stays_synthetic():
+def test_pilot_controls_are_separate_from_connection_data_policy():
     pilot = profiles.get("internal-pilot")
     assert pilot["stage"] == "internal-pilot"
     assert pilot["data_policy"] == "internal_read_only"
     assert pilot["internal_pilot_policy"]["content_retention_hours"] == 24
     assert pilot["internal_pilot_policy"]["metadata_retention_days"] == 7
     assert profiles.get("dev")["data_policy"] == "synthetic_only"
-    for name, patch in (("dev", {"data_policy": "internal_read_only"}),
-                        ("internal-pilot", {"data_policy": "synthetic_only"}),
-                        ("prod", {"internal_pilot_policy": pilot_policy.default_policy()})):
-        with pytest.raises(ValueError):
-            profiles.save(name, patch)
+    # Legacy IDs supply defaults, not an immutable DEV/PROD data-policy split.
+    # Saving the selection is not activation or a bypass of publication/ACL gates.
+    assert profiles.save("dev", {"data_policy": "internal_read_only"})["data_policy"] == "internal_read_only"
+    with pytest.raises(ValueError, match="redacted/0-day"):
+        profiles.save("internal-pilot", {"data_policy": "synthetic_only"})
+    reduced = profiles.save("internal-pilot", {
+        "data_policy": "synthetic_only",
+        "remote_log_policy_id": profiles.DEV_REMOTE_LOG_POLICY_ID,
+        "remote_log_mode": "redacted", "remote_log_retention_days": 0,
+    })
+    assert reduced["data_policy"] == "synthetic_only"
+    assert reduced["internal_pilot_policy"] == pilot["internal_pilot_policy"]
+    with pytest.raises(ValueError):
+        profiles.save("prod", {"internal_pilot_policy": pilot_policy.default_policy()})
 
 
 def test_pilot_credentials_survive_other_profile_mutations():
