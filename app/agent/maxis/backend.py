@@ -1399,6 +1399,44 @@ def _query_business_pack(
     return candidate
 
 
+def _retrieval_count_metrics(sources: list[dict]) -> list[dict]:
+    """Count only complete, attested search rows after scope partitioning.
+
+    The caller supplies _verified_evidence_sources output, never model/state
+    metrics. These are returned-row counts for this exact source/scope, not
+    project totals or proof that an entity does not exist.
+    """
+    metrics = []
+    for source in sources:
+        if source.get("partial") is not False or source.get("truncated"):
+            continue
+        kind = source.get("kind")
+        field, query = {"jira": ("tickets", "canonicalJql"),
+                        "confluence": ("documents", "canonicalCql")}.get(kind, ("", ""))
+        if not field:
+            continue
+        try:
+            result = json.loads(source["content"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if (not isinstance(result, dict) or result.get("hasMore") is not False
+                or not isinstance(result.get(query), str) or not result[query].strip()
+                or not isinstance(result.get(field), list)
+                or any(not isinstance(row, dict) for row in result[field])
+                or any(result.get(key) for key in ("error", "errors", "truncated", "partial"))
+                or result.get("ok") is False or result.get("status") in ("failed", "error")):
+            continue
+        source_id = source["source_id"]
+        metrics.append({
+            "metric_id": "returned_" + hashlib.sha256(source_id.encode()).hexdigest()[:20],
+            "label": f"{source['scope']} 범위의 해당 {kind} 검색 반환 항목 수",
+            "value": len(result[field]), "unit": "건",
+            "formula_version": "verified-scoped-returned-count.v1",
+            "source_ids": [source_id],
+        })
+    return metrics
+
+
 def _synthetic_query_context_allowed(role_id: str, evidence) -> bool:
     """Only canonical Query may carry its exact request-bound synthetic task."""
     if role_id != "query_specialist":
@@ -1621,6 +1659,7 @@ def _context_pack(
         payload_schema=payload_schema,
         user_identity=identity,
         sources=sources,
+        metrics=() if synthetic_only else _retrieval_count_metrics(sources),
         role_context=role_context,
         identity_values=identity_values,
         additional_flags=(("synthetic_only",) if synthetic_only else ()),

@@ -1135,6 +1135,28 @@ def test_unattested_tampered_or_unsupported_evidence_fails_closed():
             "research_analyst", state, [], {}, output_kind="structured")
 
 
+def test_attested_zero_hit_metrics_reach_pack_but_tampered_counts_do_not():
+    state = _runtime_state("research_analyst")
+    result = {"scopeProjects": ["DL"], "tickets": [], "canonicalJql": 'project="DL"',
+              "hasMore": False, "total": 0}
+    row = {"id": "zero", "source": "jira", "result": result,
+           "_remoteEvidence": backend.attest_query_result("zero", "jira", result)}
+    state["query_results"] = [row]
+    payload = backend.role_payload("research_analyst", state, [], {"type": "object"},
+                                   output_kind="structured")
+    pack = payload["evidencePack"]
+    assert len(pack["metrics"]) == 1 and pack["metrics"][0]["value"] == 0
+    assert pack["metrics"][0]["source_ids"] == [pack["sources"][0]["source_id"]]
+    # User/model-provided metrics are not consumed, and changing returned rows
+    # without a new actual-read attestation fails before any metric can be built.
+    state["metrics"] = [{"value": 999, "unit": "건"}]
+    assert backend.role_payload("research_analyst", state, [], {"type": "object"},
+        output_kind="structured")["evidencePack"]["metrics"] == pack["metrics"]
+    result["tickets"].append({"key": "DL-1"})
+    with pytest.raises(backend.MaxisRuntimeError, match="조회 이후 변경"):
+        backend.role_payload("research_analyst", state, [], {}, output_kind="structured")
+
+
 def test_downstream_remote_role_omits_local_only_web_and_github_rows():
     state = _runtime_state("knowledge_curator")
     jira = {"scopeProjects": ["DL"], "tickets": [{"key": "DL-1"}]}
