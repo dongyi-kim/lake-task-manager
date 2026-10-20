@@ -103,7 +103,7 @@ def test_missing_inputs_inside_payload_is_rejected_without_repair(compiled, case
         del draft["missing_inputs"]
     before = copy.deepcopy(draft)
     assert not Draft202012Validator(compiled[1]).is_valid(draft)
-    with pytest.raises(ValueError, match="^invalid_core_request_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_request_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         compiled[0](encoded(incoming), encoded(draft))
     assert draft == before
 

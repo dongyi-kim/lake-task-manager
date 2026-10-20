@@ -158,7 +158,7 @@ def test_completion_criteria_planning_kinds_preserve_values_order_and_sources(no
     schema = nodes[REQUEST_ID]["structured_output"]["schema"]
     assert Draft202012Validator(schema).is_valid(draft) is (kind != "fact")
     if kind == "fact":
-        with pytest.raises(ValueError, match="^invalid_core_request_draft$"):
+        with pytest.raises(ValueError, match="^invalid_core_request_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
             assembled(nodes, incoming, draft)
     else:
         result = assembled(nodes, incoming, draft)
@@ -207,5 +207,5 @@ def test_request_assembly_rejects_unbound_inputs_without_a_partial_candidate(nod
         draft["payload"]["intent"]["source_ids"] = ["not-supplied"]
     else:
         draft["payload"]["research_readiness"] = "true"
-    with pytest.raises(ValueError, match="^invalid_core_request_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_request_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         assembled(nodes, encoded(value), draft)

@@ -2979,22 +2979,33 @@ workflow:
           \ schema[\"items\"], root, fail, depth + 1)\n    elif isinstance(value,\
           \ str):\n        if (not schema.get(\"minLength\", 0) <= len(value) <= schema.get(\"\
           maxLength\", len(value))\n                or \"pattern\" in schema and re.fullmatch(schema[\"\
-          pattern\"], value) is None):\n            fail()\n\n\"\"\"Original-input\
-          \ binding only; no role payload traversal or meaning decisions.\n\nPrepend\
-          \ core_draft_validation.py. The role supplies its exact schema constants\
-          \ and\na nonreturning fail callback raising ValueError. Final guards remain\
-          \ mandatory.\n\"\"\"\nimport hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES\
-          \ = 32768  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
-          \ = 40000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
-          , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
-          ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
-          , \"knowledge_context\"}\n_PACK_FIELDS = {\"contract\", \"request_id\",\
-          \ \"use_case\", \"query\", \"pseudonymous_user\", \"requested_at\", \"scope\"\
-          ,\n                \"sources\", \"facts\", \"metrics\", \"role_context\"\
-          , \"freshness\", \"partial\", \"flags\",\n                \"knowledge_manifest_sha256\"\
-          , \"payload_schema_json\", \"payload_schema_sha256\"}\n_ID = re.compile(r\"\
-          [A-Za-z0-9][A-Za-z0-9._:-]{0,127}\")\n_DIGEST = re.compile(r\"[0-9a-f]{64}\"\
-          )\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
+          pattern\"], value) is None):\n            fail()\n\n\nclass _NativeDraftIssue(ValueError):\n\
+          \    \"\"\"Fixed diagnostics only; never serialize candidate text or parser\
+          \ messages.\"\"\"\n\n    def __init__(self, reason):\n        if reason\
+          \ not in {\"json_syntax\", \"json_structure\", \"schema\", \"source_id\"\
+          , \"fact_selection\"}:\n            raise ValueError(\"invalid_native_diagnostic\"\
+          )\n        self.marker = \"native_draft_\" + reason\n        super().__init__(self.marker)\n\
+          \n\ndef _native_candidate(raw, schema, maximum):\n    \"\"\"The same strict\
+          \ validation, with a bounded reason for a fresh generation.\"\"\"\n    def\
+          \ structure():\n        raise _NativeDraftIssue(\"json_structure\")\n\n\
+          \    def shape():\n        raise _NativeDraftIssue(\"schema\")\n\n    try:\n\
+          \        value = _decode(raw, maximum, structure)\n    except json.JSONDecodeError:\n\
+          \        raise _NativeDraftIssue(\"json_syntax\") from None\n    _validate(value,\
+          \ schema, schema, shape)\n    return value\n\n\"\"\"Original-input binding\
+          \ only; no role payload traversal or meaning decisions.\n\nPrepend core_draft_validation.py.\
+          \ The role supplies its exact schema constants and\na nonreturning fail\
+          \ callback raising ValueError. Final guards remain mandatory.\n\"\"\"\n\
+          import hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES = 32768  # app.agent.maxis.context_guard\
+          \ / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES = 40000  # Knowledge Guard\
+          \ output bound\n_INPUT_FIELDS = {\"contract\", \"context_pack\", \"role_id\"\
+          , \"correlation_id\", \"output_contract\",\n                 \"workflow_version\"\
+          , \"knowledge_version\", \"knowledge_proof\", \"knowledge_context\"}\n_PACK_FIELDS\
+          \ = {\"contract\", \"request_id\", \"use_case\", \"query\", \"pseudonymous_user\"\
+          , \"requested_at\", \"scope\",\n                \"sources\", \"facts\",\
+          \ \"metrics\", \"role_context\", \"freshness\", \"partial\", \"flags\",\n\
+          \                \"knowledge_manifest_sha256\", \"payload_schema_json\"\
+          , \"payload_schema_sha256\"}\n_ID = re.compile(r\"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\"\
+          )\n_DIGEST = re.compile(r\"[0-9a-f]{64}\")\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
           )\n\n\ndef _digest(value):\n    return hashlib.sha256(value.encode(\"utf-8\"\
           )).hexdigest()\n\n\ndef _draft_context(raw, role_id, schema_json, schema_sha256,\
           \ draft_schema, fail):\n    incoming = _decode(raw, _MAX_MODEL_INPUT_UTF8_BYTES,\
@@ -3041,44 +3052,43 @@ workflow:
           \ _fail)\n\n\ndef main(model_input, candidate):\n    \"\"\"Return an unaccepted\
           \ remote candidate; no I/O, repair, or meaning reclassification.\"\"\"\n\
           \    try:\n        incoming, pack, schema, sources = _input(model_input)\n\
-          \        plan = _decode(candidate, _MAX_DRAFT_UTF8_BYTES, _fail)\n     \
-          \   _validate(plan, _DRAFT_SCHEMA, _DRAFT_SCHEMA, _fail)\n        status,\
-          \ payload, missing = plan[\"status\"], plan[\"payload\"], plan[\"missing_inputs\"\
-          ]\n        if (plan[\"contract\"] != \"query-draft.v2\" or any(not value.strip()\
-          \ for value in missing)\n                or status == \"ok\" and missing\
-          \ or status != \"ok\" and payload\n                or status == \"needs_input\"\
-          \ and not missing or status == \"blocked\" and missing):\n            _fail()\n\
-          \        claims, bindings, citations, citation_ids = [], [], [], {}\n  \
-          \      business = [row for row in pack.get(\"role_context\", [])\n     \
-          \               if row.get(\"name\") == \"query_business_input\"]\n    \
-          \    capabilities = (_decode(business[0][\"content_json\"], _MAX_DRAFT_UTF8_BYTES,\
+          \        plan = _native_candidate(candidate, _DRAFT_SCHEMA, _MAX_DRAFT_UTF8_BYTES)\n\
+          \        status, payload, missing = plan[\"status\"], plan[\"payload\"],\
+          \ plan[\"missing_inputs\"]\n        if (plan[\"contract\"] != \"query-draft.v2\"\
+          \ or any(not value.strip() for value in missing)\n                or status\
+          \ == \"ok\" and missing or status != \"ok\" and payload\n              \
+          \  or status == \"needs_input\" and not missing or status == \"blocked\"\
+          \ and missing):\n            _fail()\n        claims, bindings, citations,\
+          \ citation_ids = [], [], [], {}\n        business = [row for row in pack.get(\"\
+          role_context\", [])\n                    if row.get(\"name\") == \"query_business_input\"\
+          ]\n        capabilities = (_decode(business[0][\"content_json\"], _MAX_DRAFT_UTF8_BYTES,\
           \ _fail)\n                        if len(business) == 1 else {})\n     \
           \   allowed = capabilities.get(\"allowed_sources\")\n        if allowed\
           \ is not None and allowed != [\"comments\", \"confluence\", \"jira\", \"\
           people\"]:\n            _fail()\n\n        def narrative(wrapped, pointer):\n\
           \            value, kind, refs = (wrapped[key] for key in (\"value\", \"\
           kind\", \"source_ids\"))\n            if any(ref not in sources for ref\
-          \ in refs):\n                _fail()\n            if value.strip():\n  \
-          \              for ref in refs:\n                    if ref not in citation_ids:\n\
-          \                        citation_ids[ref] = \"cite-\" + str(len(citations)\
-          \ + 1)\n                        citations.append({\"citation_id\": citation_ids[ref],\
-          \ \"source_id\": ref, \"locator\": \"\"})\n                claim_id = \"\
-          claim-\" + str(len(claims) + 1)\n                claims.append({\"claim_id\"\
-          : claim_id, \"kind\": kind, \"text\": value,\n                         \
-          \      \"citation_ids\": [citation_ids[ref] for ref in refs]})\n       \
-          \         bindings.append({\"path\": pointer, \"claim_ids\": [claim_id]})\n\
-          \            return value\n\n        output = {}\n        if \"reads\" in\
-          \ payload:\n            output[\"reads\"] = []\n            for index, read\
-          \ in enumerate(payload[\"reads\"]):\n                if allowed is not None\
-          \ and read[\"source\"][\"value\"] not in allowed:\n                    raise\
-          \ ValueError(\"invalid_core_query_source\")  # Reject; never drop a read.\n\
-          \                row = {key: narrative(read[key], f\"/reads/{index}/{key}\"\
-          )\n                       for key in (\"source\", \"subject\", \"where\"\
-          ) if key in read}\n                if \"coverage\" in read:\n          \
-          \          row[\"exhaustive\"] = _COVERAGE_TO_EXHAUSTIVE[read[\"coverage\"\
-          ]]\n                output[\"reads\"].append(row)\n        if \"uncertainty\"\
-          \ in payload:\n            output[\"uncertainty\"] = [narrative(row, f\"\
-          /uncertainty/{index}\") for index, row in enumerate(payload[\"uncertainty\"\
+          \ in refs):\n                raise _NativeDraftIssue(\"source_id\")\n  \
+          \          if value.strip():\n                for ref in refs:\n       \
+          \             if ref not in citation_ids:\n                        citation_ids[ref]\
+          \ = \"cite-\" + str(len(citations) + 1)\n                        citations.append({\"\
+          citation_id\": citation_ids[ref], \"source_id\": ref, \"locator\": \"\"\
+          })\n                claim_id = \"claim-\" + str(len(claims) + 1)\n     \
+          \           claims.append({\"claim_id\": claim_id, \"kind\": kind, \"text\"\
+          : value,\n                               \"citation_ids\": [citation_ids[ref]\
+          \ for ref in refs]})\n                bindings.append({\"path\": pointer,\
+          \ \"claim_ids\": [claim_id]})\n            return value\n\n        output\
+          \ = {}\n        if \"reads\" in payload:\n            output[\"reads\"]\
+          \ = []\n            for index, read in enumerate(payload[\"reads\"]):\n\
+          \                if allowed is not None and read[\"source\"][\"value\"]\
+          \ not in allowed:\n                    raise ValueError(\"invalid_core_query_source\"\
+          )  # Reject; never drop a read.\n                row = {key: narrative(read[key],\
+          \ f\"/reads/{index}/{key}\")\n                       for key in (\"source\"\
+          , \"subject\", \"where\") if key in read}\n                if \"coverage\"\
+          \ in read:\n                    row[\"exhaustive\"] = _COVERAGE_TO_EXHAUSTIVE[read[\"\
+          coverage\"]]\n                output[\"reads\"].append(row)\n        if\
+          \ \"uncertainty\" in payload:\n            output[\"uncertainty\"] = [narrative(row,\
+          \ f\"/uncertainty/{index}\") for index, row in enumerate(payload[\"uncertainty\"\
           ])]\n        if status == \"ok\":\n            _validate(output, schema,\
           \ schema, _fail)\n        if len(claims) > 40:\n            _fail()\n  \
           \      result = {\"contract\": \"remote-role-result.v1\", \"role_id\": \"\
@@ -3087,20 +3097,22 @@ workflow:
           \            \"missing_inputs\": missing, \"warnings\": [], \"knowledge_manifest_sha256\"\
           : pack[\"knowledge_manifest_sha256\"],\n            **{key: incoming[key]\
           \ for key in (\"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
-          )}}\n        return {\"candidate\": _canonical(result)}\n    except Exception\
-          \ as error:\n        if type(error) is ValueError and str(error) == \"invalid_core_query_source\"\
-          :\n            raise ValueError(\"invalid_core_query_source\") from None\n\
-          \        raise ValueError(\"invalid_core_query_draft\") from None\n\n# Generated\
-          \ canonical bindings; not model-authored metadata.\n_QUERY_SCHEMA_JSON =\
-          \ '{\"$defs\":{\"QueryIntent\":{\"additionalProperties\":false,\"properties\"\
-          :{\"exhaustive\":{\"type\":\"boolean\"},\"source\":{\"enum\":[\"jira\",\"\
-          confluence\",\"comments\",\"people\",\"web\",\"github\"],\"type\":\"string\"\
-          },\"subject\":{\"maxLength\":240,\"type\":\"string\"},\"where\":{\"maxLength\"\
-          :240,\"type\":\"string\"}},\"required\":[\"source\"],\"type\":\"object\"\
-          }},\"additionalProperties\":false,\"properties\":{\"reads\":{\"items\":{\"\
-          $ref\":\"#/$defs/QueryIntent\"},\"maxItems\":8,\"type\":\"array\"},\"uncertainty\"\
-          :{\"items\":{\"maxLength\":240,\"type\":\"string\"},\"maxItems\":8,\"type\"\
-          :\"array\"}},\"type\":\"object\"}'\n_QUERY_SCHEMA_SHA256 = '5fbc738b950353f357cd00208bc45513db9e9b690fe5adaf07882a9d0f45bdce'\n\
+          )}}\n        return {\"candidate\": _canonical(result)}\n    except _NativeDraftIssue\
+          \ as error:\n        raise ValueError(\"invalid_core_query_draft \" + error.marker)\
+          \ from None\n    except Exception as error:\n        if type(error) is ValueError\
+          \ and str(error) == \"invalid_core_query_source\":\n            raise ValueError(\"\
+          invalid_core_query_source\") from None\n        raise ValueError(\"invalid_core_query_draft\"\
+          ) from None\n\n# Generated canonical bindings; not model-authored metadata.\n\
+          _QUERY_SCHEMA_JSON = '{\"$defs\":{\"QueryIntent\":{\"additionalProperties\"\
+          :false,\"properties\":{\"exhaustive\":{\"type\":\"boolean\"},\"source\"\
+          :{\"enum\":[\"jira\",\"confluence\",\"comments\",\"people\",\"web\",\"github\"\
+          ],\"type\":\"string\"},\"subject\":{\"maxLength\":240,\"type\":\"string\"\
+          },\"where\":{\"maxLength\":240,\"type\":\"string\"}},\"required\":[\"source\"\
+          ],\"type\":\"object\"}},\"additionalProperties\":false,\"properties\":{\"\
+          reads\":{\"items\":{\"$ref\":\"#/$defs/QueryIntent\"},\"maxItems\":8,\"\
+          type\":\"array\"},\"uncertainty\":{\"items\":{\"maxLength\":240,\"type\"\
+          :\"string\"},\"maxItems\":8,\"type\":\"array\"}},\"type\":\"object\"}'\n\
+          _QUERY_SCHEMA_SHA256 = '5fbc738b950353f357cd00208bc45513db9e9b690fe5adaf07882a9d0f45bdce'\n\
           _DRAFT_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required':\
           \ ['contract', 'status', 'payload', 'missing_inputs'], 'properties': {'contract':\
           \ {'type': 'string', 'enum': ['query-draft.v2']}, 'status': {'type': 'string',\
@@ -4149,22 +4161,33 @@ workflow:
           \ schema[\"items\"], root, fail, depth + 1)\n    elif isinstance(value,\
           \ str):\n        if (not schema.get(\"minLength\", 0) <= len(value) <= schema.get(\"\
           maxLength\", len(value))\n                or \"pattern\" in schema and re.fullmatch(schema[\"\
-          pattern\"], value) is None):\n            fail()\n\n\"\"\"Original-input\
-          \ binding only; no role payload traversal or meaning decisions.\n\nPrepend\
-          \ core_draft_validation.py. The role supplies its exact schema constants\
-          \ and\na nonreturning fail callback raising ValueError. Final guards remain\
-          \ mandatory.\n\"\"\"\nimport hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES\
-          \ = 32768  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
-          \ = 40000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
-          , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
-          ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
-          , \"knowledge_context\"}\n_PACK_FIELDS = {\"contract\", \"request_id\",\
-          \ \"use_case\", \"query\", \"pseudonymous_user\", \"requested_at\", \"scope\"\
-          ,\n                \"sources\", \"facts\", \"metrics\", \"role_context\"\
-          , \"freshness\", \"partial\", \"flags\",\n                \"knowledge_manifest_sha256\"\
-          , \"payload_schema_json\", \"payload_schema_sha256\"}\n_ID = re.compile(r\"\
-          [A-Za-z0-9][A-Za-z0-9._:-]{0,127}\")\n_DIGEST = re.compile(r\"[0-9a-f]{64}\"\
-          )\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
+          pattern\"], value) is None):\n            fail()\n\n\nclass _NativeDraftIssue(ValueError):\n\
+          \    \"\"\"Fixed diagnostics only; never serialize candidate text or parser\
+          \ messages.\"\"\"\n\n    def __init__(self, reason):\n        if reason\
+          \ not in {\"json_syntax\", \"json_structure\", \"schema\", \"source_id\"\
+          , \"fact_selection\"}:\n            raise ValueError(\"invalid_native_diagnostic\"\
+          )\n        self.marker = \"native_draft_\" + reason\n        super().__init__(self.marker)\n\
+          \n\ndef _native_candidate(raw, schema, maximum):\n    \"\"\"The same strict\
+          \ validation, with a bounded reason for a fresh generation.\"\"\"\n    def\
+          \ structure():\n        raise _NativeDraftIssue(\"json_structure\")\n\n\
+          \    def shape():\n        raise _NativeDraftIssue(\"schema\")\n\n    try:\n\
+          \        value = _decode(raw, maximum, structure)\n    except json.JSONDecodeError:\n\
+          \        raise _NativeDraftIssue(\"json_syntax\") from None\n    _validate(value,\
+          \ schema, schema, shape)\n    return value\n\n\"\"\"Original-input binding\
+          \ only; no role payload traversal or meaning decisions.\n\nPrepend core_draft_validation.py.\
+          \ The role supplies its exact schema constants and\na nonreturning fail\
+          \ callback raising ValueError. Final guards remain mandatory.\n\"\"\"\n\
+          import hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES = 32768  # app.agent.maxis.context_guard\
+          \ / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES = 40000  # Knowledge Guard\
+          \ output bound\n_INPUT_FIELDS = {\"contract\", \"context_pack\", \"role_id\"\
+          , \"correlation_id\", \"output_contract\",\n                 \"workflow_version\"\
+          , \"knowledge_version\", \"knowledge_proof\", \"knowledge_context\"}\n_PACK_FIELDS\
+          \ = {\"contract\", \"request_id\", \"use_case\", \"query\", \"pseudonymous_user\"\
+          , \"requested_at\", \"scope\",\n                \"sources\", \"facts\",\
+          \ \"metrics\", \"role_context\", \"freshness\", \"partial\", \"flags\",\n\
+          \                \"knowledge_manifest_sha256\", \"payload_schema_json\"\
+          , \"payload_schema_sha256\"}\n_ID = re.compile(r\"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\"\
+          )\n_DIGEST = re.compile(r\"[0-9a-f]{64}\")\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
           )\n\n\ndef _digest(value):\n    return hashlib.sha256(value.encode(\"utf-8\"\
           )).hexdigest()\n\n\ndef _draft_context(raw, role_id, schema_json, schema_sha256,\
           \ draft_schema, fail):\n    incoming = _decode(raw, _MAX_MODEL_INPUT_UTF8_BYTES,\
@@ -4211,10 +4234,9 @@ workflow:
           \ final guards accept or reject them.\"\"\"\n    try:\n        incoming,\
           \ pack, schema, sources = _draft_context(model_input, \"request_architect\"\
           ,\n            _REQUEST_SCHEMA_JSON, _REQUEST_SCHEMA_SHA256, _DRAFT_SCHEMA,\
-          \ _fail)\n        draft = _decode(candidate, _MAX_DRAFT_UTF8_BYTES, _fail)\n\
-          \        _validate(draft, _DRAFT_SCHEMA, _DRAFT_SCHEMA, _fail)\n       \
-          \ status, payload, missing = draft[\"status\"], draft[\"payload\"], draft[\"\
-          missing_inputs\"]\n        if (draft[\"contract\"] != \"request-draft.v2\"\
+          \ _fail)\n        draft = _native_candidate(candidate, _DRAFT_SCHEMA, _MAX_DRAFT_UTF8_BYTES)\n\
+          \        status, payload, missing = draft[\"status\"], draft[\"payload\"\
+          ], draft[\"missing_inputs\"]\n        if (draft[\"contract\"] != \"request-draft.v2\"\
           \ or any(not value.strip() for value in missing)\n                or status\
           \ == \"ok\" and missing or status != \"ok\" and payload\n              \
           \  or status == \"needs_input\" and not missing or status == \"blocked\"\
@@ -4227,13 +4249,13 @@ workflow:
           \               return {key: unwrap(row, pointer + \"/\" + key) for key,\
           \ row in value.items()}\n            text, kind, refs = (value[key] for\
           \ key in (\"value\", \"kind\", \"source_ids\"))\n            if any(ref\
-          \ not in sources for ref in refs):\n                _fail()\n          \
-          \  if text.strip():\n                if len(text) > 1200:\n            \
-          \        _fail()\n                key = (text, kind, tuple(refs))\n    \
-          \            if key not in claim_ids:\n                    for ref in refs:\n\
-          \                        if ref not in citation_ids:\n                 \
-          \           citation_ids[ref] = \"cite-\" + str(len(citations) + 1)\n  \
-          \                          citations.append({\"citation_id\": citation_ids[ref],\
+          \ not in sources for ref in refs):\n                raise _NativeDraftIssue(\"\
+          source_id\")\n            if text.strip():\n                if len(text)\
+          \ > 1200:\n                    _fail()\n                key = (text, kind,\
+          \ tuple(refs))\n                if key not in claim_ids:\n             \
+          \       for ref in refs:\n                        if ref not in citation_ids:\n\
+          \                            citation_ids[ref] = \"cite-\" + str(len(citations)\
+          \ + 1)\n                            citations.append({\"citation_id\": citation_ids[ref],\
           \ \"source_id\": ref, \"locator\": \"\"})\n                    claim_ids[key]\
           \ = \"claim-\" + str(len(claims) + 1)\n                    claims.append({\"\
           claim_id\": claim_ids[key], \"kind\": kind, \"text\": text,\n          \
@@ -4257,24 +4279,26 @@ workflow:
           \ \"warnings\": [], \"knowledge_manifest_sha256\": pack[\"knowledge_manifest_sha256\"\
           ],\n            **{key: incoming[key] for key in (\"workflow_version\",\
           \ \"knowledge_version\", \"knowledge_proof\")}}\n        return {\"candidate\"\
-          : _canonical(result)}\n    except Exception:\n        raise ValueError(\"\
-          invalid_core_request_draft\") from None\n\n# Generated canonical bindings;\
-          \ not model-authored metadata.\n_REQUEST_SCHEMA_JSON = '{\"properties\"\
-          :{\"answer_depth\":{\"enum\":[\"brief\",\"explain\"],\"type\":\"string\"\
-          },\"assumptions\":{\"items\":{\"maxLength\":200,\"type\":\"string\"},\"\
-          maxItems\":5,\"type\":\"array\"},\"blocking_questions\":{\"items\":{\"maxLength\"\
-          :240,\"type\":\"string\"},\"maxItems\":3,\"type\":\"array\"},\"goal\":{\"\
-          maxLength\":240,\"type\":\"string\"},\"intent\":{\"enum\":[\"ask\",\"plan_work\"\
-          ,\"my_day\",\"progress\",\"activity\",\"modify\",\"chitchat\"],\"type\"\
-          :\"string\"},\"keywords\":{\"items\":{\"maxLength\":120,\"type\":\"string\"\
-          },\"maxItems\":5,\"type\":\"array\"},\"mentioned_keys\":{\"items\":{\"type\"\
-          :\"string\"},\"type\":\"array\"},\"module\":{\"enum\":[\"\",\"ETL\",\"Catalog\"\
-          ,\"Runtime\",\"Workbench\",\"Observability\",\"DataOps\",\"DevOps\"],\"\
-          type\":\"string\"},\"plan\":{\"maxLength\":200,\"type\":\"string\"},\"playbook\"\
-          :{\"enum\":[\"\",\"epic_create\",\"task_create\",\"bug_report\",\"subtask_bulk\"\
-          ,\"find_people\",\"find_tickets\",\"knowledge\",\"history\",\"workload\"\
-          ,\"assign_fit\",\"asset_lookup\",\"topic_research\"],\"type\":\"string\"\
-          },\"request_questions\":{\"items\":{\"additionalProperties\":false,\"properties\"\
+          : _canonical(result)}\n    except _NativeDraftIssue as error:\n        raise\
+          \ ValueError(\"invalid_core_request_draft \" + error.marker) from None\n\
+          \    except Exception:\n        raise ValueError(\"invalid_core_request_draft\"\
+          ) from None\n\n# Generated canonical bindings; not model-authored metadata.\n\
+          _REQUEST_SCHEMA_JSON = '{\"properties\":{\"answer_depth\":{\"enum\":[\"\
+          brief\",\"explain\"],\"type\":\"string\"},\"assumptions\":{\"items\":{\"\
+          maxLength\":200,\"type\":\"string\"},\"maxItems\":5,\"type\":\"array\"},\"\
+          blocking_questions\":{\"items\":{\"maxLength\":240,\"type\":\"string\"},\"\
+          maxItems\":3,\"type\":\"array\"},\"goal\":{\"maxLength\":240,\"type\":\"\
+          string\"},\"intent\":{\"enum\":[\"ask\",\"plan_work\",\"my_day\",\"progress\"\
+          ,\"activity\",\"modify\",\"chitchat\"],\"type\":\"string\"},\"keywords\"\
+          :{\"items\":{\"maxLength\":120,\"type\":\"string\"},\"maxItems\":5,\"type\"\
+          :\"array\"},\"mentioned_keys\":{\"items\":{\"type\":\"string\"},\"type\"\
+          :\"array\"},\"module\":{\"enum\":[\"\",\"ETL\",\"Catalog\",\"Runtime\",\"\
+          Workbench\",\"Observability\",\"DataOps\",\"DevOps\"],\"type\":\"string\"\
+          },\"plan\":{\"maxLength\":200,\"type\":\"string\"},\"playbook\":{\"enum\"\
+          :[\"\",\"epic_create\",\"task_create\",\"bug_report\",\"subtask_bulk\",\"\
+          find_people\",\"find_tickets\",\"knowledge\",\"history\",\"workload\",\"\
+          assign_fit\",\"asset_lookup\",\"topic_research\"],\"type\":\"string\"},\"\
+          request_questions\":{\"items\":{\"additionalProperties\":false,\"properties\"\
           :{\"field\":{\"enum\":[\"target\",\"action\",\"scope\",\"acceptance\",\"\
           other\"],\"type\":\"string\"},\"question\":{\"maxLength\":240,\"minLength\"\
           :1,\"type\":\"string\"}},\"required\":[\"question\",\"field\"],\"type\"\
@@ -4515,22 +4539,33 @@ workflow:
           \ schema[\"items\"], root, fail, depth + 1)\n    elif isinstance(value,\
           \ str):\n        if (not schema.get(\"minLength\", 0) <= len(value) <= schema.get(\"\
           maxLength\", len(value))\n                or \"pattern\" in schema and re.fullmatch(schema[\"\
-          pattern\"], value) is None):\n            fail()\n\n\"\"\"Original-input\
-          \ binding only; no role payload traversal or meaning decisions.\n\nPrepend\
-          \ core_draft_validation.py. The role supplies its exact schema constants\
-          \ and\na nonreturning fail callback raising ValueError. Final guards remain\
-          \ mandatory.\n\"\"\"\nimport hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES\
-          \ = 32768  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
-          \ = 40000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
-          , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
-          ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
-          , \"knowledge_context\"}\n_PACK_FIELDS = {\"contract\", \"request_id\",\
-          \ \"use_case\", \"query\", \"pseudonymous_user\", \"requested_at\", \"scope\"\
-          ,\n                \"sources\", \"facts\", \"metrics\", \"role_context\"\
-          , \"freshness\", \"partial\", \"flags\",\n                \"knowledge_manifest_sha256\"\
-          , \"payload_schema_json\", \"payload_schema_sha256\"}\n_ID = re.compile(r\"\
-          [A-Za-z0-9][A-Za-z0-9._:-]{0,127}\")\n_DIGEST = re.compile(r\"[0-9a-f]{64}\"\
-          )\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
+          pattern\"], value) is None):\n            fail()\n\n\nclass _NativeDraftIssue(ValueError):\n\
+          \    \"\"\"Fixed diagnostics only; never serialize candidate text or parser\
+          \ messages.\"\"\"\n\n    def __init__(self, reason):\n        if reason\
+          \ not in {\"json_syntax\", \"json_structure\", \"schema\", \"source_id\"\
+          , \"fact_selection\"}:\n            raise ValueError(\"invalid_native_diagnostic\"\
+          )\n        self.marker = \"native_draft_\" + reason\n        super().__init__(self.marker)\n\
+          \n\ndef _native_candidate(raw, schema, maximum):\n    \"\"\"The same strict\
+          \ validation, with a bounded reason for a fresh generation.\"\"\"\n    def\
+          \ structure():\n        raise _NativeDraftIssue(\"json_structure\")\n\n\
+          \    def shape():\n        raise _NativeDraftIssue(\"schema\")\n\n    try:\n\
+          \        value = _decode(raw, maximum, structure)\n    except json.JSONDecodeError:\n\
+          \        raise _NativeDraftIssue(\"json_syntax\") from None\n    _validate(value,\
+          \ schema, schema, shape)\n    return value\n\n\"\"\"Original-input binding\
+          \ only; no role payload traversal or meaning decisions.\n\nPrepend core_draft_validation.py.\
+          \ The role supplies its exact schema constants and\na nonreturning fail\
+          \ callback raising ValueError. Final guards remain mandatory.\n\"\"\"\n\
+          import hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES = 32768  # app.agent.maxis.context_guard\
+          \ / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES = 40000  # Knowledge Guard\
+          \ output bound\n_INPUT_FIELDS = {\"contract\", \"context_pack\", \"role_id\"\
+          , \"correlation_id\", \"output_contract\",\n                 \"workflow_version\"\
+          , \"knowledge_version\", \"knowledge_proof\", \"knowledge_context\"}\n_PACK_FIELDS\
+          \ = {\"contract\", \"request_id\", \"use_case\", \"query\", \"pseudonymous_user\"\
+          , \"requested_at\", \"scope\",\n                \"sources\", \"facts\",\
+          \ \"metrics\", \"role_context\", \"freshness\", \"partial\", \"flags\",\n\
+          \                \"knowledge_manifest_sha256\", \"payload_schema_json\"\
+          , \"payload_schema_sha256\"}\n_ID = re.compile(r\"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\"\
+          )\n_DIGEST = re.compile(r\"[0-9a-f]{64}\")\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
           )\n\n\ndef _digest(value):\n    return hashlib.sha256(value.encode(\"utf-8\"\
           )).hexdigest()\n\n\ndef _draft_context(raw, role_id, schema_json, schema_sha256,\
           \ draft_schema, fail):\n    incoming = _decode(raw, _MAX_MODEL_INPUT_UTF8_BYTES,\
@@ -5813,22 +5848,33 @@ workflow:
           \ schema[\"items\"], root, fail, depth + 1)\n    elif isinstance(value,\
           \ str):\n        if (not schema.get(\"minLength\", 0) <= len(value) <= schema.get(\"\
           maxLength\", len(value))\n                or \"pattern\" in schema and re.fullmatch(schema[\"\
-          pattern\"], value) is None):\n            fail()\n\n\"\"\"Original-input\
-          \ binding only; no role payload traversal or meaning decisions.\n\nPrepend\
-          \ core_draft_validation.py. The role supplies its exact schema constants\
-          \ and\na nonreturning fail callback raising ValueError. Final guards remain\
-          \ mandatory.\n\"\"\"\nimport hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES\
-          \ = 32768  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
-          \ = 40000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
-          , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
-          ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
-          , \"knowledge_context\"}\n_PACK_FIELDS = {\"contract\", \"request_id\",\
-          \ \"use_case\", \"query\", \"pseudonymous_user\", \"requested_at\", \"scope\"\
-          ,\n                \"sources\", \"facts\", \"metrics\", \"role_context\"\
-          , \"freshness\", \"partial\", \"flags\",\n                \"knowledge_manifest_sha256\"\
-          , \"payload_schema_json\", \"payload_schema_sha256\"}\n_ID = re.compile(r\"\
-          [A-Za-z0-9][A-Za-z0-9._:-]{0,127}\")\n_DIGEST = re.compile(r\"[0-9a-f]{64}\"\
-          )\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
+          pattern\"], value) is None):\n            fail()\n\n\nclass _NativeDraftIssue(ValueError):\n\
+          \    \"\"\"Fixed diagnostics only; never serialize candidate text or parser\
+          \ messages.\"\"\"\n\n    def __init__(self, reason):\n        if reason\
+          \ not in {\"json_syntax\", \"json_structure\", \"schema\", \"source_id\"\
+          , \"fact_selection\"}:\n            raise ValueError(\"invalid_native_diagnostic\"\
+          )\n        self.marker = \"native_draft_\" + reason\n        super().__init__(self.marker)\n\
+          \n\ndef _native_candidate(raw, schema, maximum):\n    \"\"\"The same strict\
+          \ validation, with a bounded reason for a fresh generation.\"\"\"\n    def\
+          \ structure():\n        raise _NativeDraftIssue(\"json_structure\")\n\n\
+          \    def shape():\n        raise _NativeDraftIssue(\"schema\")\n\n    try:\n\
+          \        value = _decode(raw, maximum, structure)\n    except json.JSONDecodeError:\n\
+          \        raise _NativeDraftIssue(\"json_syntax\") from None\n    _validate(value,\
+          \ schema, schema, shape)\n    return value\n\n\"\"\"Original-input binding\
+          \ only; no role payload traversal or meaning decisions.\n\nPrepend core_draft_validation.py.\
+          \ The role supplies its exact schema constants and\na nonreturning fail\
+          \ callback raising ValueError. Final guards remain mandatory.\n\"\"\"\n\
+          import hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES = 32768  # app.agent.maxis.context_guard\
+          \ / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES = 40000  # Knowledge Guard\
+          \ output bound\n_INPUT_FIELDS = {\"contract\", \"context_pack\", \"role_id\"\
+          , \"correlation_id\", \"output_contract\",\n                 \"workflow_version\"\
+          , \"knowledge_version\", \"knowledge_proof\", \"knowledge_context\"}\n_PACK_FIELDS\
+          \ = {\"contract\", \"request_id\", \"use_case\", \"query\", \"pseudonymous_user\"\
+          , \"requested_at\", \"scope\",\n                \"sources\", \"facts\",\
+          \ \"metrics\", \"role_context\", \"freshness\", \"partial\", \"flags\",\n\
+          \                \"knowledge_manifest_sha256\", \"payload_schema_json\"\
+          , \"payload_schema_sha256\"}\n_ID = re.compile(r\"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\"\
+          )\n_DIGEST = re.compile(r\"[0-9a-f]{64}\")\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
           )\n\n\ndef _digest(value):\n    return hashlib.sha256(value.encode(\"utf-8\"\
           )).hexdigest()\n\n\ndef _draft_context(raw, role_id, schema_json, schema_sha256,\
           \ draft_schema, fail):\n    incoming = _decode(raw, _MAX_MODEL_INPUT_UTF8_BYTES,\
@@ -5873,25 +5919,25 @@ workflow:
           \"\"Keep model text/kinds/refs; generate only deterministic transport bindings.\"\
           \"\"\n    try:\n        incoming, pack, schema, sources = _draft_context(model_input,\
           \ \"work_architect\",\n            _WORK_SCHEMA_JSON, _WORK_SCHEMA_SHA256,\
-          \ _DRAFT_SCHEMA, _fail)\n        draft = _decode(candidate, _MAX_DRAFT_UTF8_BYTES,\
-          \ _fail)\n        _validate(draft, _DRAFT_SCHEMA, _DRAFT_SCHEMA, _fail)\n\
-          \        status, payload, missing = draft[\"status\"], draft[\"payload\"\
-          ], draft[\"missing_inputs\"]\n        if (draft[\"contract\"] != \"work-draft.v1\"\
-          \ or any(not value.strip() for value in missing)\n                or status\
-          \ == \"ok\" and missing or status != \"ok\" and payload\n              \
-          \  or status == \"needs_input\" and not missing or status == \"blocked\"\
-          \ and missing):\n            _fail()\n        claims, bindings, citations,\
-          \ citation_ids, claim_ids = [], [], [], {}, {}\n\n        def pointer(key):\n\
-          \            return str(key).replace(\"~\", \"~0\").replace(\"/\", \"~1\"\
-          )\n\n        def unwrap(value, path):\n            if isinstance(value,\
-          \ list):\n                return [unwrap(row, path + \"/\" + str(index))\
-          \ for index, row in enumerate(value)]\n            if not isinstance(value,\
-          \ dict):\n                return value\n            if set(value) != {\"\
-          value\", \"kind\", \"source_ids\"}:\n                return {key: unwrap(value[key],\
-          \ path + \"/\" + pointer(key)) for key in sorted(value)}\n            text,\
-          \ kind, refs = (value[key] for key in (\"value\", \"kind\", \"source_ids\"\
-          ))\n            if any(ref not in sources for ref in refs):\n          \
-          \      _fail()\n            if text.strip():\n                if len(text)\
+          \ _DRAFT_SCHEMA, _fail)\n        draft = _native_candidate(candidate, _DRAFT_SCHEMA,\
+          \ _MAX_DRAFT_UTF8_BYTES)\n        status, payload, missing = draft[\"status\"\
+          ], draft[\"payload\"], draft[\"missing_inputs\"]\n        if (draft[\"contract\"\
+          ] != \"work-draft.v1\" or any(not value.strip() for value in missing)\n\
+          \                or status == \"ok\" and missing or status != \"ok\" and\
+          \ payload\n                or status == \"needs_input\" and not missing\
+          \ or status == \"blocked\" and missing):\n            _fail()\n        claims,\
+          \ bindings, citations, citation_ids, claim_ids = [], [], [], {}, {}\n\n\
+          \        def pointer(key):\n            return str(key).replace(\"~\", \"\
+          ~0\").replace(\"/\", \"~1\")\n\n        def unwrap(value, path):\n     \
+          \       if isinstance(value, list):\n                return [unwrap(row,\
+          \ path + \"/\" + str(index)) for index, row in enumerate(value)]\n     \
+          \       if not isinstance(value, dict):\n                return value\n\
+          \            if set(value) != {\"value\", \"kind\", \"source_ids\"}:\n \
+          \               return {key: unwrap(value[key], path + \"/\" + pointer(key))\
+          \ for key in sorted(value)}\n            text, kind, refs = (value[key]\
+          \ for key in (\"value\", \"kind\", \"source_ids\"))\n            if any(ref\
+          \ not in sources for ref in refs):\n                raise _NativeDraftIssue(\"\
+          source_id\")\n            if text.strip():\n                if len(text)\
           \ > 1200:\n                    _fail()\n                key = (text, kind,\
           \ tuple(refs))\n                if key not in claim_ids:\n             \
           \       for ref in refs:\n                        if ref not in citation_ids:\n\
@@ -5918,52 +5964,54 @@ workflow:
           \ \"knowledge_manifest_sha256\": pack[\"knowledge_manifest_sha256\"],\n\
           \            **{key: incoming[key] for key in (\"workflow_version\", \"\
           knowledge_version\", \"knowledge_proof\")}}\n        return {\"candidate\"\
-          : _canonical(result)}\n    except Exception:\n        raise ValueError(\"\
-          invalid_core_work_draft\") from None\n\n# Generated canonical bindings;\
-          \ not model-authored metadata.\n_WORK_SCHEMA_JSON = '{\"additionalProperties\"\
-          :false,\"properties\":{\"interpretation\":{\"maxLength\":600,\"type\":\"\
-          string\"},\"items\":{\"items\":{\"additionalProperties\":false,\"properties\"\
-          :{\"actual\":{\"maxLength\":700,\"type\":\"string\"},\"background\":{\"\
-          maxLength\":1000,\"type\":\"string\"},\"children\":{\"items\":{\"additionalProperties\"\
-          :false,\"properties\":{\"dod\":{\"items\":{\"maxLength\":320,\"type\":\"\
-          string\"},\"maxItems\":5,\"minItems\":1,\"type\":\"array\"},\"duedate\"\
-          :{\"maxLength\":20,\"type\":\"string\"},\"scope_in\":{\"items\":{\"maxLength\"\
-          :320,\"type\":\"string\"},\"maxItems\":6,\"minItems\":1,\"type\":\"array\"\
-          },\"summary\":{\"maxLength\":180,\"type\":\"string\"}},\"required\":[\"\
-          summary\",\"scope_in\",\"dod\"],\"type\":\"object\"},\"maxItems\":30,\"\
-          type\":\"array\"},\"components\":{\"items\":{\"maxLength\":80,\"type\":\"\
-          string\"},\"maxItems\":3,\"type\":\"array\"},\"dod\":{\"items\":{\"maxLength\"\
-          :360,\"type\":\"string\"},\"maxItems\":6,\"minItems\":1,\"type\":\"array\"\
-          },\"duedate\":{\"maxLength\":20,\"type\":\"string\"},\"epic\":{\"maxLength\"\
-          :40,\"type\":\"string\"},\"epic_name\":{\"maxLength\":80,\"type\":\"string\"\
-          },\"expected\":{\"maxLength\":700,\"type\":\"string\"},\"issue_type\":{\"\
-          maxLength\":80,\"type\":\"string\"},\"labels\":{\"items\":{\"maxLength\"\
-          :80,\"type\":\"string\"},\"maxItems\":8,\"type\":\"array\"},\"parent\":{\"\
-          maxLength\":40,\"type\":\"string\"},\"priority\":{\"maxLength\":80,\"type\"\
-          :\"string\"},\"references\":{\"items\":{\"maxLength\":500,\"type\":\"string\"\
-          },\"maxItems\":6,\"type\":\"array\"},\"reproduction\":{\"items\":{\"maxLength\"\
-          :360,\"type\":\"string\"},\"maxItems\":6,\"type\":\"array\"},\"scope_in\"\
-          :{\"items\":{\"maxLength\":360,\"type\":\"string\"},\"maxItems\":8,\"minItems\"\
-          :1,\"type\":\"array\"},\"scope_out\":{\"items\":{\"maxLength\":320,\"type\"\
-          :\"string\"},\"maxItems\":6,\"type\":\"array\"},\"summary\":{\"maxLength\"\
-          :180,\"type\":\"string\"},\"tier\":{\"enum\":[\"epic\",\"task\",\"subtask\"\
-          ],\"type\":\"string\"},\"type\":{\"maxLength\":80,\"type\":\"string\"}},\"\
-          required\":[\"summary\",\"type\",\"background\",\"scope_in\",\"dod\"],\"\
-          type\":\"object\"},\"maxItems\":12,\"type\":\"array\"},\"mode\":{\"enum\"\
-          :[\"task\",\"subtask\",\"epic\"],\"type\":\"string\"},\"questions\":{\"\
-          items\":{\"properties\":{\"field\":{\"enum\":[\"\",\"assignee\",\"epic\"\
-          ,\"priority\",\"duedate\",\"component\",\"target\",\"parent\",\"scope\"\
-          ,\"background\",\"acceptance\",\"reproduction\",\"structure\",\"status\"\
-          ],\"type\":\"string\"},\"kind\":{\"enum\":[\"text\",\"choice\",\"multi\"\
-          ,\"date\"],\"type\":\"string\"},\"options\":{\"items\":{\"type\":\"string\"\
-          },\"type\":\"array\"},\"question\":{\"type\":\"string\"},\"required_input\"\
-          :{\"type\":\"boolean\"},\"why_required\":{\"type\":\"string\"}},\"required\"\
-          :[\"question\",\"kind\",\"required_input\",\"why_required\"],\"type\":\"\
-          object\"},\"maxItems\":3,\"type\":\"array\"},\"rationale\":{\"maxLength\"\
-          :800,\"type\":\"string\"},\"structure\":{\"enum\":[\"single_task\",\"task_with_subtasks\"\
-          ,\"multiple_tasks\",\"new_epic\"],\"type\":\"string\"},\"structure_why\"\
-          :{\"maxLength\":500,\"type\":\"string\"}},\"required\":[\"questions\",\"\
-          mode\",\"items\"],\"type\":\"object\"}'\n_WORK_SCHEMA_SHA256 = '8f46d8cc3bbe4712838a066844b90eeef2272a9f0e8a8a6c054b63a338226f1a'\n\
+          : _canonical(result)}\n    except _NativeDraftIssue as error:\n        raise\
+          \ ValueError(\"invalid_core_work_draft \" + error.marker) from None\n  \
+          \  except Exception:\n        raise ValueError(\"invalid_core_work_draft\"\
+          ) from None\n\n# Generated canonical bindings; not model-authored metadata.\n\
+          _WORK_SCHEMA_JSON = '{\"additionalProperties\":false,\"properties\":{\"\
+          interpretation\":{\"maxLength\":600,\"type\":\"string\"},\"items\":{\"items\"\
+          :{\"additionalProperties\":false,\"properties\":{\"actual\":{\"maxLength\"\
+          :700,\"type\":\"string\"},\"background\":{\"maxLength\":1000,\"type\":\"\
+          string\"},\"children\":{\"items\":{\"additionalProperties\":false,\"properties\"\
+          :{\"dod\":{\"items\":{\"maxLength\":320,\"type\":\"string\"},\"maxItems\"\
+          :5,\"minItems\":1,\"type\":\"array\"},\"duedate\":{\"maxLength\":20,\"type\"\
+          :\"string\"},\"scope_in\":{\"items\":{\"maxLength\":320,\"type\":\"string\"\
+          },\"maxItems\":6,\"minItems\":1,\"type\":\"array\"},\"summary\":{\"maxLength\"\
+          :180,\"type\":\"string\"}},\"required\":[\"summary\",\"scope_in\",\"dod\"\
+          ],\"type\":\"object\"},\"maxItems\":30,\"type\":\"array\"},\"components\"\
+          :{\"items\":{\"maxLength\":80,\"type\":\"string\"},\"maxItems\":3,\"type\"\
+          :\"array\"},\"dod\":{\"items\":{\"maxLength\":360,\"type\":\"string\"},\"\
+          maxItems\":6,\"minItems\":1,\"type\":\"array\"},\"duedate\":{\"maxLength\"\
+          :20,\"type\":\"string\"},\"epic\":{\"maxLength\":40,\"type\":\"string\"\
+          },\"epic_name\":{\"maxLength\":80,\"type\":\"string\"},\"expected\":{\"\
+          maxLength\":700,\"type\":\"string\"},\"issue_type\":{\"maxLength\":80,\"\
+          type\":\"string\"},\"labels\":{\"items\":{\"maxLength\":80,\"type\":\"string\"\
+          },\"maxItems\":8,\"type\":\"array\"},\"parent\":{\"maxLength\":40,\"type\"\
+          :\"string\"},\"priority\":{\"maxLength\":80,\"type\":\"string\"},\"references\"\
+          :{\"items\":{\"maxLength\":500,\"type\":\"string\"},\"maxItems\":6,\"type\"\
+          :\"array\"},\"reproduction\":{\"items\":{\"maxLength\":360,\"type\":\"string\"\
+          },\"maxItems\":6,\"type\":\"array\"},\"scope_in\":{\"items\":{\"maxLength\"\
+          :360,\"type\":\"string\"},\"maxItems\":8,\"minItems\":1,\"type\":\"array\"\
+          },\"scope_out\":{\"items\":{\"maxLength\":320,\"type\":\"string\"},\"maxItems\"\
+          :6,\"type\":\"array\"},\"summary\":{\"maxLength\":180,\"type\":\"string\"\
+          },\"tier\":{\"enum\":[\"epic\",\"task\",\"subtask\"],\"type\":\"string\"\
+          },\"type\":{\"maxLength\":80,\"type\":\"string\"}},\"required\":[\"summary\"\
+          ,\"type\",\"background\",\"scope_in\",\"dod\"],\"type\":\"object\"},\"maxItems\"\
+          :12,\"type\":\"array\"},\"mode\":{\"enum\":[\"task\",\"subtask\",\"epic\"\
+          ],\"type\":\"string\"},\"questions\":{\"items\":{\"properties\":{\"field\"\
+          :{\"enum\":[\"\",\"assignee\",\"epic\",\"priority\",\"duedate\",\"component\"\
+          ,\"target\",\"parent\",\"scope\",\"background\",\"acceptance\",\"reproduction\"\
+          ,\"structure\",\"status\"],\"type\":\"string\"},\"kind\":{\"enum\":[\"text\"\
+          ,\"choice\",\"multi\",\"date\"],\"type\":\"string\"},\"options\":{\"items\"\
+          :{\"type\":\"string\"},\"type\":\"array\"},\"question\":{\"type\":\"string\"\
+          },\"required_input\":{\"type\":\"boolean\"},\"why_required\":{\"type\":\"\
+          string\"}},\"required\":[\"question\",\"kind\",\"required_input\",\"why_required\"\
+          ],\"type\":\"object\"},\"maxItems\":3,\"type\":\"array\"},\"rationale\"\
+          :{\"maxLength\":800,\"type\":\"string\"},\"structure\":{\"enum\":[\"single_task\"\
+          ,\"task_with_subtasks\",\"multiple_tasks\",\"new_epic\"],\"type\":\"string\"\
+          },\"structure_why\":{\"maxLength\":500,\"type\":\"string\"}},\"required\"\
+          :[\"questions\",\"mode\",\"items\"],\"type\":\"object\"}'\n_WORK_SCHEMA_SHA256\
+          \ = '8f46d8cc3bbe4712838a066844b90eeef2272a9f0e8a8a6c054b63a338226f1a'\n\
           _DRAFT_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required':\
           \ ['contract', 'status', 'payload', 'missing_inputs'], 'properties': {'contract':\
           \ {'type': 'string', 'enum': ['work-draft.v1']}, 'status': {'type': 'string',\
@@ -6191,22 +6239,33 @@ workflow:
           \ schema[\"items\"], root, fail, depth + 1)\n    elif isinstance(value,\
           \ str):\n        if (not schema.get(\"minLength\", 0) <= len(value) <= schema.get(\"\
           maxLength\", len(value))\n                or \"pattern\" in schema and re.fullmatch(schema[\"\
-          pattern\"], value) is None):\n            fail()\n\n\"\"\"Original-input\
-          \ binding only; no role payload traversal or meaning decisions.\n\nPrepend\
-          \ core_draft_validation.py. The role supplies its exact schema constants\
-          \ and\na nonreturning fail callback raising ValueError. Final guards remain\
-          \ mandatory.\n\"\"\"\nimport hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES\
-          \ = 32768  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
-          \ = 40000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
-          , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
-          ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
-          , \"knowledge_context\"}\n_PACK_FIELDS = {\"contract\", \"request_id\",\
-          \ \"use_case\", \"query\", \"pseudonymous_user\", \"requested_at\", \"scope\"\
-          ,\n                \"sources\", \"facts\", \"metrics\", \"role_context\"\
-          , \"freshness\", \"partial\", \"flags\",\n                \"knowledge_manifest_sha256\"\
-          , \"payload_schema_json\", \"payload_schema_sha256\"}\n_ID = re.compile(r\"\
-          [A-Za-z0-9][A-Za-z0-9._:-]{0,127}\")\n_DIGEST = re.compile(r\"[0-9a-f]{64}\"\
-          )\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
+          pattern\"], value) is None):\n            fail()\n\n\nclass _NativeDraftIssue(ValueError):\n\
+          \    \"\"\"Fixed diagnostics only; never serialize candidate text or parser\
+          \ messages.\"\"\"\n\n    def __init__(self, reason):\n        if reason\
+          \ not in {\"json_syntax\", \"json_structure\", \"schema\", \"source_id\"\
+          , \"fact_selection\"}:\n            raise ValueError(\"invalid_native_diagnostic\"\
+          )\n        self.marker = \"native_draft_\" + reason\n        super().__init__(self.marker)\n\
+          \n\ndef _native_candidate(raw, schema, maximum):\n    \"\"\"The same strict\
+          \ validation, with a bounded reason for a fresh generation.\"\"\"\n    def\
+          \ structure():\n        raise _NativeDraftIssue(\"json_structure\")\n\n\
+          \    def shape():\n        raise _NativeDraftIssue(\"schema\")\n\n    try:\n\
+          \        value = _decode(raw, maximum, structure)\n    except json.JSONDecodeError:\n\
+          \        raise _NativeDraftIssue(\"json_syntax\") from None\n    _validate(value,\
+          \ schema, schema, shape)\n    return value\n\n\"\"\"Original-input binding\
+          \ only; no role payload traversal or meaning decisions.\n\nPrepend core_draft_validation.py.\
+          \ The role supplies its exact schema constants and\na nonreturning fail\
+          \ callback raising ValueError. Final guards remain mandatory.\n\"\"\"\n\
+          import hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES = 32768  # app.agent.maxis.context_guard\
+          \ / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES = 40000  # Knowledge Guard\
+          \ output bound\n_INPUT_FIELDS = {\"contract\", \"context_pack\", \"role_id\"\
+          , \"correlation_id\", \"output_contract\",\n                 \"workflow_version\"\
+          , \"knowledge_version\", \"knowledge_proof\", \"knowledge_context\"}\n_PACK_FIELDS\
+          \ = {\"contract\", \"request_id\", \"use_case\", \"query\", \"pseudonymous_user\"\
+          , \"requested_at\", \"scope\",\n                \"sources\", \"facts\",\
+          \ \"metrics\", \"role_context\", \"freshness\", \"partial\", \"flags\",\n\
+          \                \"knowledge_manifest_sha256\", \"payload_schema_json\"\
+          , \"payload_schema_sha256\"}\n_ID = re.compile(r\"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\"\
+          )\n_DIGEST = re.compile(r\"[0-9a-f]{64}\")\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
           )\n\n\ndef _digest(value):\n    return hashlib.sha256(value.encode(\"utf-8\"\
           )).hexdigest()\n\n\ndef _draft_context(raw, role_id, schema_json, schema_sha256,\
           \ draft_schema, fail):\n    incoming = _decode(raw, _MAX_MODEL_INPUT_UTF8_BYTES,\
@@ -7115,22 +7174,33 @@ workflow:
           \ schema[\"items\"], root, fail, depth + 1)\n    elif isinstance(value,\
           \ str):\n        if (not schema.get(\"minLength\", 0) <= len(value) <= schema.get(\"\
           maxLength\", len(value))\n                or \"pattern\" in schema and re.fullmatch(schema[\"\
-          pattern\"], value) is None):\n            fail()\n\n\"\"\"Original-input\
-          \ binding only; no role payload traversal or meaning decisions.\n\nPrepend\
-          \ core_draft_validation.py. The role supplies its exact schema constants\
-          \ and\na nonreturning fail callback raising ValueError. Final guards remain\
-          \ mandatory.\n\"\"\"\nimport hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES\
-          \ = 32768  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
-          \ = 40000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
-          , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
-          ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
-          , \"knowledge_context\"}\n_PACK_FIELDS = {\"contract\", \"request_id\",\
-          \ \"use_case\", \"query\", \"pseudonymous_user\", \"requested_at\", \"scope\"\
-          ,\n                \"sources\", \"facts\", \"metrics\", \"role_context\"\
-          , \"freshness\", \"partial\", \"flags\",\n                \"knowledge_manifest_sha256\"\
-          , \"payload_schema_json\", \"payload_schema_sha256\"}\n_ID = re.compile(r\"\
-          [A-Za-z0-9][A-Za-z0-9._:-]{0,127}\")\n_DIGEST = re.compile(r\"[0-9a-f]{64}\"\
-          )\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
+          pattern\"], value) is None):\n            fail()\n\n\nclass _NativeDraftIssue(ValueError):\n\
+          \    \"\"\"Fixed diagnostics only; never serialize candidate text or parser\
+          \ messages.\"\"\"\n\n    def __init__(self, reason):\n        if reason\
+          \ not in {\"json_syntax\", \"json_structure\", \"schema\", \"source_id\"\
+          , \"fact_selection\"}:\n            raise ValueError(\"invalid_native_diagnostic\"\
+          )\n        self.marker = \"native_draft_\" + reason\n        super().__init__(self.marker)\n\
+          \n\ndef _native_candidate(raw, schema, maximum):\n    \"\"\"The same strict\
+          \ validation, with a bounded reason for a fresh generation.\"\"\"\n    def\
+          \ structure():\n        raise _NativeDraftIssue(\"json_structure\")\n\n\
+          \    def shape():\n        raise _NativeDraftIssue(\"schema\")\n\n    try:\n\
+          \        value = _decode(raw, maximum, structure)\n    except json.JSONDecodeError:\n\
+          \        raise _NativeDraftIssue(\"json_syntax\") from None\n    _validate(value,\
+          \ schema, schema, shape)\n    return value\n\n\"\"\"Original-input binding\
+          \ only; no role payload traversal or meaning decisions.\n\nPrepend core_draft_validation.py.\
+          \ The role supplies its exact schema constants and\na nonreturning fail\
+          \ callback raising ValueError. Final guards remain mandatory.\n\"\"\"\n\
+          import hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES = 32768  # app.agent.maxis.context_guard\
+          \ / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES = 40000  # Knowledge Guard\
+          \ output bound\n_INPUT_FIELDS = {\"contract\", \"context_pack\", \"role_id\"\
+          , \"correlation_id\", \"output_contract\",\n                 \"workflow_version\"\
+          , \"knowledge_version\", \"knowledge_proof\", \"knowledge_context\"}\n_PACK_FIELDS\
+          \ = {\"contract\", \"request_id\", \"use_case\", \"query\", \"pseudonymous_user\"\
+          , \"requested_at\", \"scope\",\n                \"sources\", \"facts\",\
+          \ \"metrics\", \"role_context\", \"freshness\", \"partial\", \"flags\",\n\
+          \                \"knowledge_manifest_sha256\", \"payload_schema_json\"\
+          , \"payload_schema_sha256\"}\n_ID = re.compile(r\"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\"\
+          )\n_DIGEST = re.compile(r\"[0-9a-f]{64}\")\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
           )\n\n\ndef _digest(value):\n    return hashlib.sha256(value.encode(\"utf-8\"\
           )).hexdigest()\n\n\ndef _draft_context(raw, role_id, schema_json, schema_sha256,\
           \ draft_schema, fail):\n    incoming = _decode(raw, _MAX_MODEL_INPUT_UTF8_BYTES,\
@@ -7206,34 +7276,37 @@ workflow:
           \    _fail()\n\n\ndef main(model_input, candidate):\n    try:\n        incoming,\
           \ pack, schema, sources = _draft_context(model_input, \"knowledge_curator\"\
           ,\n            _KNOWLEDGE_SCHEMA_JSON, _KNOWLEDGE_SCHEMA_SHA256, _DRAFT_SCHEMA,\
-          \ _fail)\n        draft = _decode(candidate, _PRODUCER_LIMITS[\"draft_utf8_bytes\"\
-          ], _fail)\n        _validate(draft, _DRAFT_SCHEMA, _DRAFT_SCHEMA, _fail)\n\
-          \        status, payload, missing = draft[\"status\"], draft[\"payload\"\
-          ], draft[\"missing_inputs\"]\n        if (draft[\"contract\"] != \"knowledge-draft.v2\"\
-          \ or any(not value.strip() for value in missing)\n                or status\
-          \ == \"ok\" and missing or status != \"ok\" and payload\n              \
-          \  or status == \"needs_input\" and not missing or status == \"blocked\"\
-          \ and missing):\n            _fail()\n        claims, bindings, citations,\
-          \ citation_ids, claim_ids = [], [], [], {}, {}\n        source_content =\
-          \ {row[\"source_id\"]: row[\"content\"] for row in pack[\"sources\"]}\n\n\
-          \        def unwrap(value, path=\"\"):\n            if isinstance(value,\
-          \ list):\n                return [unwrap(row, path + \"/\" + str(index))\
-          \ for index, row in enumerate(value)]\n            if set(value) == {\"\
-          kind\", \"source_id\", \"source_path\"}:\n                kind, refs = value[\"\
-          kind\"], [value[\"source_id\"]]\n                text = _fact_text(source_content[refs[0]],\
-          \ value[\"source_path\"], path)\n                if not text.strip():\n\
-          \                    _fail()\n            elif set(value) == {\"value\"\
-          , \"kind\", \"source_ids\"}:\n                text, kind, refs = (value[key]\
-          \ for key in (\"value\", \"kind\", \"source_ids\"))\n            else:\n\
-          \                return {key: unwrap(value[key], path + \"/\" + key.replace(\"\
-          ~\", \"~0\").replace(\"/\", \"~1\"))\n                        for key in\
-          \ sorted(value)}\n            if any(ref not in sources for ref in refs):\n\
-          \                _fail()\n            if text.strip():\n               \
-          \ if len(text) > 1200: _fail()\n                key = (text, kind, tuple(refs))\n\
-          \                if key not in claim_ids:\n                    for ref in\
-          \ refs:\n                        if ref not in citation_ids:\n         \
-          \                   citation_ids[ref] = \"cite-\" + str(len(citations) +\
-          \ 1)\n                            citations.append({\"citation_id\": citation_ids[ref],\
+          \ _fail)\n        draft = _native_candidate(candidate, _DRAFT_SCHEMA, _PRODUCER_LIMITS[\"\
+          draft_utf8_bytes\"])\n        status, payload, missing = draft[\"status\"\
+          ], draft[\"payload\"], draft[\"missing_inputs\"]\n        if (draft[\"contract\"\
+          ] != \"knowledge-draft.v2\" or any(not value.strip() for value in missing)\n\
+          \                or status == \"ok\" and missing or status != \"ok\" and\
+          \ payload\n                or status == \"needs_input\" and not missing\
+          \ or status == \"blocked\" and missing):\n            _fail()\n        claims,\
+          \ bindings, citations, citation_ids, claim_ids = [], [], [], {}, {}\n  \
+          \      source_content = {row[\"source_id\"]: row[\"content\"] for row in\
+          \ pack[\"sources\"]}\n\n        def unwrap(value, path=\"\"):\n        \
+          \    if isinstance(value, list):\n                return [unwrap(row, path\
+          \ + \"/\" + str(index)) for index, row in enumerate(value)]\n          \
+          \  if set(value) == {\"kind\", \"source_id\", \"source_path\"}:\n      \
+          \          kind, refs = value[\"kind\"], [value[\"source_id\"]]\n      \
+          \          if refs[0] not in sources:\n                    raise _NativeDraftIssue(\"\
+          source_id\")\n                try:\n                    text = _fact_text(source_content[refs[0]],\
+          \ value[\"source_path\"], path)\n                except ValueError:\n  \
+          \                  raise _NativeDraftIssue(\"fact_selection\") from None\n\
+          \                if not text.strip():\n                    _fail()\n   \
+          \         elif set(value) == {\"value\", \"kind\", \"source_ids\"}:\n  \
+          \              text, kind, refs = (value[key] for key in (\"value\", \"\
+          kind\", \"source_ids\"))\n            else:\n                return {key:\
+          \ unwrap(value[key], path + \"/\" + key.replace(\"~\", \"~0\").replace(\"\
+          /\", \"~1\"))\n                        for key in sorted(value)}\n     \
+          \       if any(ref not in sources for ref in refs):\n                raise\
+          \ _NativeDraftIssue(\"source_id\")\n            if text.strip():\n     \
+          \           if len(text) > 1200: _fail()\n                key = (text, kind,\
+          \ tuple(refs))\n                if key not in claim_ids:\n             \
+          \       for ref in refs:\n                        if ref not in citation_ids:\n\
+          \                            citation_ids[ref] = \"cite-\" + str(len(citations)\
+          \ + 1)\n                            citations.append({\"citation_id\": citation_ids[ref],\
           \ \"source_id\": ref, \"locator\": \"\"})\n                    claim_ids[key]\
           \ = \"claim-\" + str(len(claims) + 1)\n                    claims.append({\"\
           claim_id\": claim_ids[key], \"kind\": kind, \"text\": text,\n          \
@@ -7252,11 +7325,13 @@ workflow:
           knowledge_version\", \"knowledge_proof\")}}\n        serialized = _canonical(result)\n\
           \        if len(serialized.encode(\"utf-8\", errors=\"strict\")) > _PRODUCER_LIMITS[\"\
           envelope_utf8_bytes\"]:\n            _fail()\n        return {\"candidate\"\
-          : serialized}\n    except Exception:\n        raise ValueError(\"invalid_core_knowledge_draft\"\
-          ) from None\n\n# Generated canonical bindings and producer-only budgets.\n\
-          _KNOWLEDGE_SCHEMA_JSON = '{\"$defs\":{\"KnowledgeConcept\":{\"additionalProperties\"\
-          :true,\"properties\":{\"explanation\":{\"type\":\"string\"},\"term\":{\"\
-          type\":\"string\"}},\"type\":\"object\"},\"KnowledgeReference\":{\"additionalProperties\"\
+          : serialized}\n    except _NativeDraftIssue as error:\n        raise ValueError(\"\
+          invalid_core_knowledge_draft \" + error.marker) from None\n    except Exception:\n\
+          \        raise ValueError(\"invalid_core_knowledge_draft\") from None\n\n\
+          # Generated canonical bindings and producer-only budgets.\n_KNOWLEDGE_SCHEMA_JSON\
+          \ = '{\"$defs\":{\"KnowledgeConcept\":{\"additionalProperties\":true,\"\
+          properties\":{\"explanation\":{\"type\":\"string\"},\"term\":{\"type\":\"\
+          string\"}},\"type\":\"object\"},\"KnowledgeReference\":{\"additionalProperties\"\
           :true,\"properties\":{\"ref\":{\"type\":\"string\"},\"why\":{\"type\":\"\
           string\"}},\"type\":\"object\"}},\"additionalProperties\":true,\"properties\"\
           :{\"concepts\":{\"items\":{\"$ref\":\"#/$defs/KnowledgeConcept\"},\"type\"\
@@ -7424,22 +7499,33 @@ workflow:
           \ schema[\"items\"], root, fail, depth + 1)\n    elif isinstance(value,\
           \ str):\n        if (not schema.get(\"minLength\", 0) <= len(value) <= schema.get(\"\
           maxLength\", len(value))\n                or \"pattern\" in schema and re.fullmatch(schema[\"\
-          pattern\"], value) is None):\n            fail()\n\n\"\"\"Original-input\
-          \ binding only; no role payload traversal or meaning decisions.\n\nPrepend\
-          \ core_draft_validation.py. The role supplies its exact schema constants\
-          \ and\na nonreturning fail callback raising ValueError. Final guards remain\
-          \ mandatory.\n\"\"\"\nimport hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES\
-          \ = 32768  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
-          \ = 40000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
-          , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
-          ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
-          , \"knowledge_context\"}\n_PACK_FIELDS = {\"contract\", \"request_id\",\
-          \ \"use_case\", \"query\", \"pseudonymous_user\", \"requested_at\", \"scope\"\
-          ,\n                \"sources\", \"facts\", \"metrics\", \"role_context\"\
-          , \"freshness\", \"partial\", \"flags\",\n                \"knowledge_manifest_sha256\"\
-          , \"payload_schema_json\", \"payload_schema_sha256\"}\n_ID = re.compile(r\"\
-          [A-Za-z0-9][A-Za-z0-9._:-]{0,127}\")\n_DIGEST = re.compile(r\"[0-9a-f]{64}\"\
-          )\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
+          pattern\"], value) is None):\n            fail()\n\n\nclass _NativeDraftIssue(ValueError):\n\
+          \    \"\"\"Fixed diagnostics only; never serialize candidate text or parser\
+          \ messages.\"\"\"\n\n    def __init__(self, reason):\n        if reason\
+          \ not in {\"json_syntax\", \"json_structure\", \"schema\", \"source_id\"\
+          , \"fact_selection\"}:\n            raise ValueError(\"invalid_native_diagnostic\"\
+          )\n        self.marker = \"native_draft_\" + reason\n        super().__init__(self.marker)\n\
+          \n\ndef _native_candidate(raw, schema, maximum):\n    \"\"\"The same strict\
+          \ validation, with a bounded reason for a fresh generation.\"\"\"\n    def\
+          \ structure():\n        raise _NativeDraftIssue(\"json_structure\")\n\n\
+          \    def shape():\n        raise _NativeDraftIssue(\"schema\")\n\n    try:\n\
+          \        value = _decode(raw, maximum, structure)\n    except json.JSONDecodeError:\n\
+          \        raise _NativeDraftIssue(\"json_syntax\") from None\n    _validate(value,\
+          \ schema, schema, shape)\n    return value\n\n\"\"\"Original-input binding\
+          \ only; no role payload traversal or meaning decisions.\n\nPrepend core_draft_validation.py.\
+          \ The role supplies its exact schema constants and\na nonreturning fail\
+          \ callback raising ValueError. Final guards remain mandatory.\n\"\"\"\n\
+          import hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES = 32768  # app.agent.maxis.context_guard\
+          \ / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES = 40000  # Knowledge Guard\
+          \ output bound\n_INPUT_FIELDS = {\"contract\", \"context_pack\", \"role_id\"\
+          , \"correlation_id\", \"output_contract\",\n                 \"workflow_version\"\
+          , \"knowledge_version\", \"knowledge_proof\", \"knowledge_context\"}\n_PACK_FIELDS\
+          \ = {\"contract\", \"request_id\", \"use_case\", \"query\", \"pseudonymous_user\"\
+          , \"requested_at\", \"scope\",\n                \"sources\", \"facts\",\
+          \ \"metrics\", \"role_context\", \"freshness\", \"partial\", \"flags\",\n\
+          \                \"knowledge_manifest_sha256\", \"payload_schema_json\"\
+          , \"payload_schema_sha256\"}\n_ID = re.compile(r\"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\"\
+          )\n_DIGEST = re.compile(r\"[0-9a-f]{64}\")\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
           )\n\n\ndef _digest(value):\n    return hashlib.sha256(value.encode(\"utf-8\"\
           )).hexdigest()\n\n\ndef _draft_context(raw, role_id, schema_json, schema_sha256,\
           \ draft_schema, fail):\n    incoming = _decode(raw, _MAX_MODEL_INPUT_UTF8_BYTES,\
@@ -8003,22 +8089,33 @@ workflow:
           \ schema[\"items\"], root, fail, depth + 1)\n    elif isinstance(value,\
           \ str):\n        if (not schema.get(\"minLength\", 0) <= len(value) <= schema.get(\"\
           maxLength\", len(value))\n                or \"pattern\" in schema and re.fullmatch(schema[\"\
-          pattern\"], value) is None):\n            fail()\n\n\"\"\"Original-input\
-          \ binding only; no role payload traversal or meaning decisions.\n\nPrepend\
-          \ core_draft_validation.py. The role supplies its exact schema constants\
-          \ and\na nonreturning fail callback raising ValueError. Final guards remain\
-          \ mandatory.\n\"\"\"\nimport hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES\
-          \ = 32768  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
-          \ = 40000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
-          , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
-          ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
-          , \"knowledge_context\"}\n_PACK_FIELDS = {\"contract\", \"request_id\",\
-          \ \"use_case\", \"query\", \"pseudonymous_user\", \"requested_at\", \"scope\"\
-          ,\n                \"sources\", \"facts\", \"metrics\", \"role_context\"\
-          , \"freshness\", \"partial\", \"flags\",\n                \"knowledge_manifest_sha256\"\
-          , \"payload_schema_json\", \"payload_schema_sha256\"}\n_ID = re.compile(r\"\
-          [A-Za-z0-9][A-Za-z0-9._:-]{0,127}\")\n_DIGEST = re.compile(r\"[0-9a-f]{64}\"\
-          )\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
+          pattern\"], value) is None):\n            fail()\n\n\nclass _NativeDraftIssue(ValueError):\n\
+          \    \"\"\"Fixed diagnostics only; never serialize candidate text or parser\
+          \ messages.\"\"\"\n\n    def __init__(self, reason):\n        if reason\
+          \ not in {\"json_syntax\", \"json_structure\", \"schema\", \"source_id\"\
+          , \"fact_selection\"}:\n            raise ValueError(\"invalid_native_diagnostic\"\
+          )\n        self.marker = \"native_draft_\" + reason\n        super().__init__(self.marker)\n\
+          \n\ndef _native_candidate(raw, schema, maximum):\n    \"\"\"The same strict\
+          \ validation, with a bounded reason for a fresh generation.\"\"\"\n    def\
+          \ structure():\n        raise _NativeDraftIssue(\"json_structure\")\n\n\
+          \    def shape():\n        raise _NativeDraftIssue(\"schema\")\n\n    try:\n\
+          \        value = _decode(raw, maximum, structure)\n    except json.JSONDecodeError:\n\
+          \        raise _NativeDraftIssue(\"json_syntax\") from None\n    _validate(value,\
+          \ schema, schema, shape)\n    return value\n\n\"\"\"Original-input binding\
+          \ only; no role payload traversal or meaning decisions.\n\nPrepend core_draft_validation.py.\
+          \ The role supplies its exact schema constants and\na nonreturning fail\
+          \ callback raising ValueError. Final guards remain mandatory.\n\"\"\"\n\
+          import hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES = 32768  # app.agent.maxis.context_guard\
+          \ / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES = 40000  # Knowledge Guard\
+          \ output bound\n_INPUT_FIELDS = {\"contract\", \"context_pack\", \"role_id\"\
+          , \"correlation_id\", \"output_contract\",\n                 \"workflow_version\"\
+          , \"knowledge_version\", \"knowledge_proof\", \"knowledge_context\"}\n_PACK_FIELDS\
+          \ = {\"contract\", \"request_id\", \"use_case\", \"query\", \"pseudonymous_user\"\
+          , \"requested_at\", \"scope\",\n                \"sources\", \"facts\",\
+          \ \"metrics\", \"role_context\", \"freshness\", \"partial\", \"flags\",\n\
+          \                \"knowledge_manifest_sha256\", \"payload_schema_json\"\
+          , \"payload_schema_sha256\"}\n_ID = re.compile(r\"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\"\
+          )\n_DIGEST = re.compile(r\"[0-9a-f]{64}\")\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
           )\n\n\ndef _digest(value):\n    return hashlib.sha256(value.encode(\"utf-8\"\
           )).hexdigest()\n\n\ndef _draft_context(raw, role_id, schema_json, schema_sha256,\
           \ draft_schema, fail):\n    incoming = _decode(raw, _MAX_MODEL_INPUT_UTF8_BYTES,\
@@ -8086,43 +8183,47 @@ workflow:
           \ _source_json(value)\n\n\ndef main(model_input, candidate):\n    try:\n\
           \        incoming, pack, schema, sources = _draft_context(model_input, \"\
           result_integrator\",\n            _TEXT_SCHEMA_JSON, _TEXT_SCHEMA_SHA256,\
-          \ _DRAFT_SCHEMA, _fail)\n        draft = _decode(candidate, _MAX_DRAFT_UTF8_BYTES,\
-          \ _fail)\n        _validate(draft, _DRAFT_SCHEMA, _DRAFT_SCHEMA, _fail)\n\
-          \        if any(not value.strip() for value in draft[\"missing_inputs\"\
-          ]):\n            _fail()\n        source_content = {row[\"source_id\"]:\
-          \ row[\"content\"] for row in pack[\"sources\"]}\n        claims, citations,\
-          \ citation_ids = [], [], {}\n        for segment in draft[\"segments\"]:\n\
-          \            if segment[\"kind\"] == \"fact\":\n                refs = [segment[\"\
-          source_id\"]]\n                value = _extract_fact(source_content[refs[0]],\
-          \ segment[\"source_path\"])\n            else:\n                refs, value\
-          \ = segment[\"source_ids\"], segment[\"value\"]\n            if not value.strip()\
-          \ or len(value) > 1200 or any(ref not in sources for ref in refs):\n   \
-          \             _fail()\n            for ref in refs:\n                if\
-          \ ref not in citation_ids:\n                    citation_ids[ref] = \"cite-\"\
-          \ + str(len(citations) + 1)\n                    citations.append({\"citation_id\"\
-          : citation_ids[ref], \"source_id\": ref, \"locator\": \"\"})\n         \
-          \   # Unique per occurrence: repeated values must remain in the /text sequence.\n\
-          \            claims.append({\"claim_id\": \"claim-\" + str(len(claims) +\
-          \ 1), \"kind\": segment[\"kind\"],\n                \"text\": value, \"\
-          citation_ids\": [citation_ids[ref] for ref in refs]})\n        payload =\
-          \ {\"text\": _SEPARATOR.join(row[\"text\"] for row in claims)} if draft[\"\
-          status\"] == \"ok\" else {}\n        if draft[\"status\"] == \"ok\":\n \
-          \           _validate(payload, schema, schema, _fail)\n        result =\
-          \ {\"contract\": \"remote-role-result.v1\", \"role_id\": \"result_integrator\"\
-          ,\n            \"status\": draft[\"status\"], \"payload\": payload, \"claims\"\
-          : claims, \"citations\": citations,\n            \"payload_claims\": [{\"\
-          path\": \"/text\", \"claim_ids\": [row[\"claim_id\"] for row in claims]}]\
-          \ if claims else [],\n            \"missing_inputs\": draft[\"missing_inputs\"\
-          ], \"warnings\": [],\n            \"knowledge_manifest_sha256\": pack[\"\
-          knowledge_manifest_sha256\"],\n            **{key: incoming[key] for key\
-          \ in (\"workflow_version\", \"knowledge_version\", \"knowledge_proof\")}}\n\
-          \        encoded = _canonical(result)\n        encoded.encode(\"utf-8\"\
-          )\n        return {\"candidate\": encoded}\n    except Exception:\n    \
-          \    raise ValueError(\"invalid_core_result_draft\") from None\n\n# Generated\
-          \ canonical bindings; original input remains authoritative.\n_TEXT_SCHEMA_JSON\
-          \ = '{\"additionalProperties\":false,\"properties\":{\"text\":{\"minLength\"\
-          :1,\"type\":\"string\"}},\"required\":[\"text\"],\"type\":\"object\"}'\n\
-          _TEXT_SCHEMA_SHA256 = '079584f599d0a6605b652506b954dd6df9052ecec8fa7bdf73fc3c35ca6f0a29'\n\
+          \ _DRAFT_SCHEMA, _fail)\n        draft = _native_candidate(candidate, _DRAFT_SCHEMA,\
+          \ _MAX_DRAFT_UTF8_BYTES)\n        if any(not value.strip() for value in\
+          \ draft[\"missing_inputs\"]):\n            _fail()\n        source_content\
+          \ = {row[\"source_id\"]: row[\"content\"] for row in pack[\"sources\"]}\n\
+          \        claims, citations, citation_ids = [], [], {}\n        for segment\
+          \ in draft[\"segments\"]:\n            if segment[\"kind\"] == \"fact\"\
+          :\n                refs = [segment[\"source_id\"]]\n                if refs[0]\
+          \ not in sources:\n                    raise _NativeDraftIssue(\"source_id\"\
+          )\n                try:\n                    value = _extract_fact(source_content[refs[0]],\
+          \ segment[\"source_path\"])\n                except ValueError:\n      \
+          \              raise _NativeDraftIssue(\"fact_selection\") from None\n \
+          \           else:\n                refs, value = segment[\"source_ids\"\
+          ], segment[\"value\"]\n            if any(ref not in sources for ref in\
+          \ refs):\n                raise _NativeDraftIssue(\"source_id\")\n     \
+          \       if not value.strip() or len(value) > 1200:\n                _fail()\n\
+          \            for ref in refs:\n                if ref not in citation_ids:\n\
+          \                    citation_ids[ref] = \"cite-\" + str(len(citations)\
+          \ + 1)\n                    citations.append({\"citation_id\": citation_ids[ref],\
+          \ \"source_id\": ref, \"locator\": \"\"})\n            # Unique per occurrence:\
+          \ repeated values must remain in the /text sequence.\n            claims.append({\"\
+          claim_id\": \"claim-\" + str(len(claims) + 1), \"kind\": segment[\"kind\"\
+          ],\n                \"text\": value, \"citation_ids\": [citation_ids[ref]\
+          \ for ref in refs]})\n        payload = {\"text\": _SEPARATOR.join(row[\"\
+          text\"] for row in claims)} if draft[\"status\"] == \"ok\" else {}\n   \
+          \     if draft[\"status\"] == \"ok\":\n            _validate(payload, schema,\
+          \ schema, _fail)\n        result = {\"contract\": \"remote-role-result.v1\"\
+          , \"role_id\": \"result_integrator\",\n            \"status\": draft[\"\
+          status\"], \"payload\": payload, \"claims\": claims, \"citations\": citations,\n\
+          \            \"payload_claims\": [{\"path\": \"/text\", \"claim_ids\": [row[\"\
+          claim_id\"] for row in claims]}] if claims else [],\n            \"missing_inputs\"\
+          : draft[\"missing_inputs\"], \"warnings\": [],\n            \"knowledge_manifest_sha256\"\
+          : pack[\"knowledge_manifest_sha256\"],\n            **{key: incoming[key]\
+          \ for key in (\"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
+          )}}\n        encoded = _canonical(result)\n        encoded.encode(\"utf-8\"\
+          )\n        return {\"candidate\": encoded}\n    except _NativeDraftIssue\
+          \ as error:\n        raise ValueError(\"invalid_core_result_draft \" + error.marker)\
+          \ from None\n    except Exception:\n        raise ValueError(\"invalid_core_result_draft\"\
+          ) from None\n\n# Generated canonical bindings; original input remains authoritative.\n\
+          _TEXT_SCHEMA_JSON = '{\"additionalProperties\":false,\"properties\":{\"\
+          text\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"text\"],\"\
+          type\":\"object\"}'\n_TEXT_SCHEMA_SHA256 = '079584f599d0a6605b652506b954dd6df9052ecec8fa7bdf73fc3c35ca6f0a29'\n\
           _DRAFT_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required':\
           \ ['contract', 'status', 'segments', 'missing_inputs'], 'properties': {'contract':\
           \ {'type': 'string', 'enum': ['result-draft.v2']}, 'status': {'type': 'string',\
@@ -8233,22 +8334,33 @@ workflow:
           \ schema[\"items\"], root, fail, depth + 1)\n    elif isinstance(value,\
           \ str):\n        if (not schema.get(\"minLength\", 0) <= len(value) <= schema.get(\"\
           maxLength\", len(value))\n                or \"pattern\" in schema and re.fullmatch(schema[\"\
-          pattern\"], value) is None):\n            fail()\n\n\"\"\"Original-input\
-          \ binding only; no role payload traversal or meaning decisions.\n\nPrepend\
-          \ core_draft_validation.py. The role supplies its exact schema constants\
-          \ and\na nonreturning fail callback raising ValueError. Final guards remain\
-          \ mandatory.\n\"\"\"\nimport hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES\
-          \ = 32768  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
-          \ = 40000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
-          , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
-          ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
-          , \"knowledge_context\"}\n_PACK_FIELDS = {\"contract\", \"request_id\",\
-          \ \"use_case\", \"query\", \"pseudonymous_user\", \"requested_at\", \"scope\"\
-          ,\n                \"sources\", \"facts\", \"metrics\", \"role_context\"\
-          , \"freshness\", \"partial\", \"flags\",\n                \"knowledge_manifest_sha256\"\
-          , \"payload_schema_json\", \"payload_schema_sha256\"}\n_ID = re.compile(r\"\
-          [A-Za-z0-9][A-Za-z0-9._:-]{0,127}\")\n_DIGEST = re.compile(r\"[0-9a-f]{64}\"\
-          )\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
+          pattern\"], value) is None):\n            fail()\n\n\nclass _NativeDraftIssue(ValueError):\n\
+          \    \"\"\"Fixed diagnostics only; never serialize candidate text or parser\
+          \ messages.\"\"\"\n\n    def __init__(self, reason):\n        if reason\
+          \ not in {\"json_syntax\", \"json_structure\", \"schema\", \"source_id\"\
+          , \"fact_selection\"}:\n            raise ValueError(\"invalid_native_diagnostic\"\
+          )\n        self.marker = \"native_draft_\" + reason\n        super().__init__(self.marker)\n\
+          \n\ndef _native_candidate(raw, schema, maximum):\n    \"\"\"The same strict\
+          \ validation, with a bounded reason for a fresh generation.\"\"\"\n    def\
+          \ structure():\n        raise _NativeDraftIssue(\"json_structure\")\n\n\
+          \    def shape():\n        raise _NativeDraftIssue(\"schema\")\n\n    try:\n\
+          \        value = _decode(raw, maximum, structure)\n    except json.JSONDecodeError:\n\
+          \        raise _NativeDraftIssue(\"json_syntax\") from None\n    _validate(value,\
+          \ schema, schema, shape)\n    return value\n\n\"\"\"Original-input binding\
+          \ only; no role payload traversal or meaning decisions.\n\nPrepend core_draft_validation.py.\
+          \ The role supplies its exact schema constants and\na nonreturning fail\
+          \ callback raising ValueError. Final guards remain mandatory.\n\"\"\"\n\
+          import hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES = 32768  # app.agent.maxis.context_guard\
+          \ / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES = 40000  # Knowledge Guard\
+          \ output bound\n_INPUT_FIELDS = {\"contract\", \"context_pack\", \"role_id\"\
+          , \"correlation_id\", \"output_contract\",\n                 \"workflow_version\"\
+          , \"knowledge_version\", \"knowledge_proof\", \"knowledge_context\"}\n_PACK_FIELDS\
+          \ = {\"contract\", \"request_id\", \"use_case\", \"query\", \"pseudonymous_user\"\
+          , \"requested_at\", \"scope\",\n                \"sources\", \"facts\",\
+          \ \"metrics\", \"role_context\", \"freshness\", \"partial\", \"flags\",\n\
+          \                \"knowledge_manifest_sha256\", \"payload_schema_json\"\
+          , \"payload_schema_sha256\"}\n_ID = re.compile(r\"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\"\
+          )\n_DIGEST = re.compile(r\"[0-9a-f]{64}\")\n_UUID = re.compile(r\"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\"\
           )\n\n\ndef _digest(value):\n    return hashlib.sha256(value.encode(\"utf-8\"\
           )).hexdigest()\n\n\ndef _draft_context(raw, role_id, schema_json, schema_sha256,\
           \ draft_schema, fail):\n    incoming = _decode(raw, _MAX_MODEL_INPUT_UTF8_BYTES,\

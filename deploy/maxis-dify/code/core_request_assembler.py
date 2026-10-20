@@ -22,8 +22,7 @@ def main(model_input, candidate):
     try:
         incoming, pack, schema, sources = _draft_context(model_input, "request_architect",
             _REQUEST_SCHEMA_JSON, _REQUEST_SCHEMA_SHA256, _DRAFT_SCHEMA, _fail)
-        draft = _decode(candidate, _MAX_DRAFT_UTF8_BYTES, _fail)
-        _validate(draft, _DRAFT_SCHEMA, _DRAFT_SCHEMA, _fail)
+        draft = _native_candidate(candidate, _DRAFT_SCHEMA, _MAX_DRAFT_UTF8_BYTES)
         status, payload, missing = draft["status"], draft["payload"], draft["missing_inputs"]
         if (draft["contract"] != "request-draft.v2" or any(not value.strip() for value in missing)
                 or status == "ok" and missing or status != "ok" and payload
@@ -40,7 +39,7 @@ def main(model_input, candidate):
                 return {key: unwrap(row, pointer + "/" + key) for key, row in value.items()}
             text, kind, refs = (value[key] for key in ("value", "kind", "source_ids"))
             if any(ref not in sources for ref in refs):
-                _fail()
+                raise _NativeDraftIssue("source_id")
             if text.strip():
                 if len(text) > 1200:
                     _fail()
@@ -74,5 +73,7 @@ def main(model_input, candidate):
             "missing_inputs": missing, "warnings": [], "knowledge_manifest_sha256": pack["knowledge_manifest_sha256"],
             **{key: incoming[key] for key in ("workflow_version", "knowledge_version", "knowledge_proof")}}
         return {"candidate": _canonical(result)}
+    except _NativeDraftIssue as error:
+        raise ValueError("invalid_core_request_draft " + error.marker) from None
     except Exception:
         raise ValueError("invalid_core_request_draft") from None

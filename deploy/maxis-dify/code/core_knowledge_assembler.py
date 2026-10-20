@@ -76,8 +76,7 @@ def main(model_input, candidate):
     try:
         incoming, pack, schema, sources = _draft_context(model_input, "knowledge_curator",
             _KNOWLEDGE_SCHEMA_JSON, _KNOWLEDGE_SCHEMA_SHA256, _DRAFT_SCHEMA, _fail)
-        draft = _decode(candidate, _PRODUCER_LIMITS["draft_utf8_bytes"], _fail)
-        _validate(draft, _DRAFT_SCHEMA, _DRAFT_SCHEMA, _fail)
+        draft = _native_candidate(candidate, _DRAFT_SCHEMA, _PRODUCER_LIMITS["draft_utf8_bytes"])
         status, payload, missing = draft["status"], draft["payload"], draft["missing_inputs"]
         if (draft["contract"] != "knowledge-draft.v2" or any(not value.strip() for value in missing)
                 or status == "ok" and missing or status != "ok" and payload
@@ -91,7 +90,12 @@ def main(model_input, candidate):
                 return [unwrap(row, path + "/" + str(index)) for index, row in enumerate(value)]
             if set(value) == {"kind", "source_id", "source_path"}:
                 kind, refs = value["kind"], [value["source_id"]]
-                text = _fact_text(source_content[refs[0]], value["source_path"], path)
+                if refs[0] not in sources:
+                    raise _NativeDraftIssue("source_id")
+                try:
+                    text = _fact_text(source_content[refs[0]], value["source_path"], path)
+                except ValueError:
+                    raise _NativeDraftIssue("fact_selection") from None
                 if not text.strip():
                     _fail()
             elif set(value) == {"value", "kind", "source_ids"}:
@@ -100,7 +104,7 @@ def main(model_input, candidate):
                 return {key: unwrap(value[key], path + "/" + key.replace("~", "~0").replace("/", "~1"))
                         for key in sorted(value)}
             if any(ref not in sources for ref in refs):
-                _fail()
+                raise _NativeDraftIssue("source_id")
             if text.strip():
                 if len(text) > 1200: _fail()
                 key = (text, kind, tuple(refs))
@@ -128,5 +132,7 @@ def main(model_input, candidate):
         if len(serialized.encode("utf-8", errors="strict")) > _PRODUCER_LIMITS["envelope_utf8_bytes"]:
             _fail()
         return {"candidate": serialized}
+    except _NativeDraftIssue as error:
+        raise ValueError("invalid_core_knowledge_draft " + error.marker) from None
     except Exception:
         raise ValueError("invalid_core_knowledge_draft") from None

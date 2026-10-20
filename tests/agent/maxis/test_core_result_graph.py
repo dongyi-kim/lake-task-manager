@@ -86,6 +86,16 @@ def test_result_is_enrolled_with_exact_original_input_selectors(nodes, result_ca
     assert nodes[LLM]["memory"] is None
 
 
+@pytest.mark.parametrize("kind", ["inference", "recommendation"])
+def test_result_narrative_unknown_source_has_fixed_diagnostic(nodes, result_case, kind):
+    _, incoming, draft = result_case
+    draft["segments"] = [{
+        "kind": kind, "value": "검토 범위 확인", "source_ids": ["private-unknown-id"],
+    }]
+    with pytest.raises(ValueError, match="^invalid_core_result_draft native_draft_source_id$"):
+        code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))
+
+
 def test_projection_preserves_all_admitted_business_context_without_metadata(nodes, result_case):
     _, incoming, _ = result_case
     original = json.loads(incoming)

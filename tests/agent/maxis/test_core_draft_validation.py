@@ -49,7 +49,20 @@ def test_shared_validator_has_only_primitive_scope_and_reviewed_keywords(functio
         'additionalProperties', 'items', 'maxItems', 'minItems', 'maxLength', 'minLength',
         'pattern', 'uniqueItems', 'maxProperties', 'anyOf'}
     assert {key for key, value in vars(functions).items() if callable(value)} == {
-        '_canonical', '_pairs', '_decode', '_validate'}
+        '_canonical', '_pairs', '_decode', '_validate', '_NativeDraftIssue', '_native_candidate'}
+
+
+@pytest.mark.parametrize("raw,reason", [
+    ('{"value":', "json_syntax"), ('{"value":"a","value":"b"}', "json_structure"),
+    ('{"value":42}', "schema"), ('{"extra":"private rejected text"}', "schema"),
+])
+def test_native_diagnostics_are_fixed_and_never_repair_or_echo_values(functions, raw, reason):
+    schema = {"type": "object", "additionalProperties": False, "required": ["value"],
+              "properties": {"value": {"type": "string"}}}
+    with pytest.raises(functions._NativeDraftIssue) as error:
+        functions._native_candidate(raw, schema, 1024)
+    assert str(error.value) == "native_draft_" + reason
+    assert functions._native_candidate('{"value":"original"}', schema, 1024) == {"value": "original"}
 
 
 @pytest.mark.parametrize('value', [None, False, 0, 1.0, '가\r\n가', '\ud800',

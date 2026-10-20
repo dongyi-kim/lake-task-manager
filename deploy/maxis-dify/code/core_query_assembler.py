@@ -24,8 +24,7 @@ def main(model_input, candidate):
     """Return an unaccepted remote candidate; no I/O, repair, or meaning reclassification."""
     try:
         incoming, pack, schema, sources = _input(model_input)
-        plan = _decode(candidate, _MAX_DRAFT_UTF8_BYTES, _fail)
-        _validate(plan, _DRAFT_SCHEMA, _DRAFT_SCHEMA, _fail)
+        plan = _native_candidate(candidate, _DRAFT_SCHEMA, _MAX_DRAFT_UTF8_BYTES)
         status, payload, missing = plan["status"], plan["payload"], plan["missing_inputs"]
         if (plan["contract"] != "query-draft.v2" or any(not value.strip() for value in missing)
                 or status == "ok" and missing or status != "ok" and payload
@@ -43,7 +42,7 @@ def main(model_input, candidate):
         def narrative(wrapped, pointer):
             value, kind, refs = (wrapped[key] for key in ("value", "kind", "source_ids"))
             if any(ref not in sources for ref in refs):
-                _fail()
+                raise _NativeDraftIssue("source_id")
             if value.strip():
                 for ref in refs:
                     if ref not in citation_ids:
@@ -77,6 +76,8 @@ def main(model_input, candidate):
             "missing_inputs": missing, "warnings": [], "knowledge_manifest_sha256": pack["knowledge_manifest_sha256"],
             **{key: incoming[key] for key in ("workflow_version", "knowledge_version", "knowledge_proof")}}
         return {"candidate": _canonical(result)}
+    except _NativeDraftIssue as error:
+        raise ValueError("invalid_core_query_draft " + error.marker) from None
     except Exception as error:
         if type(error) is ValueError and str(error) == "invalid_core_query_source":
             raise ValueError("invalid_core_query_source") from None

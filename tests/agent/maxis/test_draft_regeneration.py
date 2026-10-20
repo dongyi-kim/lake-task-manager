@@ -165,7 +165,7 @@ def test_second_preflight_failure_keeps_first_attempt(runtime):
 
 def test_feedback_generation_failure_preserves_original_paid_attempt(runtime, monkeypatch):
     from app.agent.maxis import draft_feedback
-    def reject(*_):
+    def reject(*_, **__):
         raise ValueError("invalid feedback input")
     monkeypatch.setattr(draft_feedback, "with_native_feedback", reject)
     calls = runtime([failure()])
@@ -244,6 +244,32 @@ def test_native_draft_regeneration_is_not_a_transport_retry():
     error = classify_dify_error(400, {"message": "invalid_core_work_draft"})
     assert error.draft_regeneration_allowed and not error.retryable
     assert not MaxisGatewayError(MaxisErrorCode.AUTHENTICATION).draft_regeneration_allowed
+
+
+@pytest.mark.parametrize("reason", ["json_syntax", "json_structure", "schema", "source_id", "fact_selection"])
+def test_fixed_reason_reaches_one_regeneration_without_remote_text(runtime, reason):
+    calls = runtime([failure("invalid_core_work_draft native_draft_" + reason + " PRIVATE_SENTINEL"), success()])
+    ask()
+    import json
+    first, second = (call[0][1] for call in calls)
+    hint = json.loads(second["evidencePack"]["role_context"][-1]["content_json"])
+    assert hint["reason"] == reason and "PRIVATE_SENTINEL" not in str(hint)
+    assert first["evidencePack"]["sources"] == second["evidencePack"]["sources"]
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("marker", ["native_draft_schema", "native_draft_schema_extra",
+    "invalid_core_work_input native_draft_schema", "Unsupported parameter: x native_draft_schema"])
+def test_diagnostic_never_grants_regeneration_without_an_allowed_draft_error(marker):
+    error = classify_dify_error(400, {"message": marker})
+    assert not error.draft_regeneration_allowed
+    assert not error.draft_regeneration_reason
+
+
+def test_unknown_and_ambiguous_diagnostics_are_not_echoed():
+    for suffix in ("native_draft_arbitrary", "native_draft_schema native_draft_json_syntax"):
+        error = classify_dify_error(400, {"message": "invalid_core_work_draft " + suffix})
+        assert error.draft_regeneration_allowed and error.draft_regeneration_reason == ""
 
 
 @pytest.mark.parametrize("veto", [

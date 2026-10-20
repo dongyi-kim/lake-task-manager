@@ -62,8 +62,7 @@ def main(model_input, candidate):
     try:
         incoming, pack, schema, sources = _draft_context(model_input, "result_integrator",
             _TEXT_SCHEMA_JSON, _TEXT_SCHEMA_SHA256, _DRAFT_SCHEMA, _fail)
-        draft = _decode(candidate, _MAX_DRAFT_UTF8_BYTES, _fail)
-        _validate(draft, _DRAFT_SCHEMA, _DRAFT_SCHEMA, _fail)
+        draft = _native_candidate(candidate, _DRAFT_SCHEMA, _MAX_DRAFT_UTF8_BYTES)
         if any(not value.strip() for value in draft["missing_inputs"]):
             _fail()
         source_content = {row["source_id"]: row["content"] for row in pack["sources"]}
@@ -71,10 +70,17 @@ def main(model_input, candidate):
         for segment in draft["segments"]:
             if segment["kind"] == "fact":
                 refs = [segment["source_id"]]
-                value = _extract_fact(source_content[refs[0]], segment["source_path"])
+                if refs[0] not in sources:
+                    raise _NativeDraftIssue("source_id")
+                try:
+                    value = _extract_fact(source_content[refs[0]], segment["source_path"])
+                except ValueError:
+                    raise _NativeDraftIssue("fact_selection") from None
             else:
                 refs, value = segment["source_ids"], segment["value"]
-            if not value.strip() or len(value) > 1200 or any(ref not in sources for ref in refs):
+            if any(ref not in sources for ref in refs):
+                raise _NativeDraftIssue("source_id")
+            if not value.strip() or len(value) > 1200:
                 _fail()
             for ref in refs:
                 if ref not in citation_ids:
@@ -95,5 +101,7 @@ def main(model_input, candidate):
         encoded = _canonical(result)
         encoded.encode("utf-8")
         return {"candidate": encoded}
+    except _NativeDraftIssue as error:
+        raise ValueError("invalid_core_result_draft " + error.marker) from None
     except Exception:
         raise ValueError("invalid_core_result_draft") from None

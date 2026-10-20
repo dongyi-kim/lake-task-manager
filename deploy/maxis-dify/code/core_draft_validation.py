@@ -93,3 +93,29 @@ def _validate(value, schema, root, fail, depth=0):
         if (not schema.get("minLength", 0) <= len(value) <= schema.get("maxLength", len(value))
                 or "pattern" in schema and re.fullmatch(schema["pattern"], value) is None):
             fail()
+
+
+class _NativeDraftIssue(ValueError):
+    """Fixed diagnostics only; never serialize candidate text or parser messages."""
+
+    def __init__(self, reason):
+        if reason not in {"json_syntax", "json_structure", "schema", "source_id", "fact_selection"}:
+            raise ValueError("invalid_native_diagnostic")
+        self.marker = "native_draft_" + reason
+        super().__init__(self.marker)
+
+
+def _native_candidate(raw, schema, maximum):
+    """The same strict validation, with a bounded reason for a fresh generation."""
+    def structure():
+        raise _NativeDraftIssue("json_structure")
+
+    def shape():
+        raise _NativeDraftIssue("schema")
+
+    try:
+        value = _decode(raw, maximum, structure)
+    except json.JSONDecodeError:
+        raise _NativeDraftIssue("json_syntax") from None
+    _validate(value, schema, schema, shape)
+    return value

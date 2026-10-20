@@ -70,7 +70,7 @@ def test_exact_guarded_knowledge_route_is_connected(nodes, knowledge_case):
     assert [ASSEMBLER, "candidate"] in nodes["1909000000001027"]["variables"]
     for key in ("model", "context", "vision", "memory"): assert nodes[LLM][key] == nodes["1909000000001004"][key]
     projected = code(nodes[INPUT])["main"](incoming)["knowledge_input"]
-    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         code(nodes[ASSEMBLER])["main"](projected, encoded(draft))
     result = json.loads(code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))["candidate"])
     remote, local = both(nodes, pack, result)
@@ -184,7 +184,7 @@ def test_role_context_integrity_id_is_not_exposed_as_a_citable_source(nodes, kno
     assert [s["source_id"] for s in view["context"]["sources"]] == ["record-a", "intent-b"]
     # Even a producer that invents the hidden ID is still rejected, not repaired.
     draft["payload"]["our_context"]["source_ids"] = ["rctx-synthetic"]
-    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         code(nodes[ASSEMBLER])["main"](raw, encoded(draft))
 
 
@@ -201,7 +201,7 @@ def test_native_output_collection_shape_mismatches_are_not_repaired(nodes, knowl
     assert not Draft202012Validator(schema).is_valid(draft)
     expected_field = schema["properties"]["payload"]["anyOf"][1]["properties"][field]
     assert list(Draft202012Validator(expected_field).iter_errors(wrong_shape[field]))
-    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))
     assert (incoming, draft) == before
 
@@ -296,7 +296,7 @@ def test_large_valid_output_and_defensive_cap_are_distinct(nodes, knowledge_case
     engine["_PRODUCER_LIMITS"]["envelope_utf8_bytes"] = len(output.encode())
     assert engine["main"](incoming, raw)["candidate"] == output
     engine["_PRODUCER_LIMITS"]["envelope_utf8_bytes"] -= 1
-    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"): engine["main"](incoming, raw)
+    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"): engine["main"](incoming, raw)
 
 
 @pytest.mark.parametrize("escape", ["\\ud800", "\\udfff"])
@@ -305,7 +305,7 @@ def test_generated_path_keeps_utf8_rejection(nodes, knowledge_case, escape, loca
     _, incoming, draft = knowledge_case
     if location == "payload": draft["payload"]["our_context"]["value"] = "PLACEHOLDER"
     else: draft.update(status="needs_input", payload={}, missing_inputs=["PLACEHOLDER"])
-    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         code(nodes[ASSEMBLER])["main"](incoming, encoded(draft).replace("PLACEHOLDER", escape))
 
 
@@ -320,7 +320,7 @@ def test_repeated_fact_selection_cannot_bypass_expanded_envelope_limit(nodes, kn
     assert len(encoded(draft).encode()) < 10000
     engine = code(nodes[ASSEMBLER])
     assert engine["_PRODUCER_LIMITS"]["envelope_utf8_bytes"] == 98304
-    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         engine["main"](encoded(value), encoded(draft))
 
 
@@ -351,7 +351,7 @@ def test_original_binding_and_input_projection_fail_closed(nodes, knowledge_case
     else: value["context_pack"]["sources"][0]["kind"] = "user"
     with pytest.raises(ValueError, match="^invalid_core_knowledge_input$"): code(nodes[INPUT])["main"](encoded(value))
     if fault != "source_kind":
-        with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"):
+        with pytest.raises(ValueError, match="^invalid_core_knowledge_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
             code(nodes[ASSEMBLER])["main"](encoded(value), encoded(draft))
 
 
@@ -383,7 +383,7 @@ def test_native_draft_failures_are_not_repaired(nodes, knowledge_case, fault):
     raw = encoded(draft)
     if fault == "brace": raw = raw[:-1]
     elif fault == "duplicate_key": raw = raw.replace('"status":"ok"', '"status":"ok","status":"ok"')
-    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"): code(nodes[ASSEMBLER])["main"](incoming, raw)
+    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"): code(nodes[ASSEMBLER])["main"](incoming, raw)
 
 
 @pytest.mark.parametrize("count,dedup,allowed", [(40, False, True), (41, False, False), (256, True, True), (257, True, False)])
@@ -396,7 +396,7 @@ def test_claim_and_binding_bounds_never_truncate(nodes, knowledge_case, count, d
         result = json.loads(engine["main"](incoming, encoded(draft))["candidate"])
         assert len(result["payload_claims"]) == count and len(result["claims"]) == (2 if dedup else count)
     else:
-        with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"): engine["main"](incoming, encoded(draft))
+        with pytest.raises(ValueError, match="^invalid_core_knowledge_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"): engine["main"](incoming, encoded(draft))
 
 
 def test_input_and_projection_byte_caps_fail_without_fallback(nodes, knowledge_case):
@@ -457,7 +457,7 @@ def test_invalid_fact_paths_never_search_another_source_or_stringify(nodes, know
     value["context_pack"]["sources"][0].update(
         content=content, content_sha256=hashlib.sha256(content.encode()).hexdigest())
     draft["payload"]["our_context"] = {"kind": "fact", "source_id": "record-a", "source_path": path}
-    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         code(nodes[ASSEMBLER])["main"](encoded(value), encoded(draft))
 
 
@@ -509,7 +509,7 @@ def test_root_record_supported_and_nested_identity_fragments_rejected(nodes, kno
             assert "1.2300" in result["payload"]["our_context"]
             assert "9007199254740993" in result["payload"]["our_context"]
     else:
-        with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"):
+        with pytest.raises(ValueError, match="^invalid_core_knowledge_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
             code(nodes[ASSEMBLER])["main"](encoded(value), encoded(draft))
 
 
@@ -517,9 +517,9 @@ def test_authored_fact_and_legacy_contract_are_not_silently_migrated(nodes, know
     _, incoming, draft = knowledge_case
     draft["payload"]["our_context"]["kind"] = "fact"
     assert not Draft202012Validator(nodes[LLM]["structured_output"]["schema"]).is_valid(draft)
-    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))
     draft["payload"]["our_context"]["kind"] = "inference"
     draft["contract"] = "knowledge-draft.v1"
-    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_knowledge_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))

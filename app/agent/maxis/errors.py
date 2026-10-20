@@ -44,6 +44,7 @@ class MaxisGatewayError(RuntimeError):
         retryable: bool = False,
         draft_regeneration_allowed: bool = False,
         draft_regeneration_role: str = "",
+        draft_regeneration_reason: str = "",
         telemetry: RemoteRequestTelemetryV1 | None = None,
     ):
         self.code = code
@@ -51,6 +52,7 @@ class MaxisGatewayError(RuntimeError):
         self.retryable = retryable
         self.draft_regeneration_allowed = draft_regeneration_allowed
         self.draft_regeneration_role = draft_regeneration_role
+        self.draft_regeneration_reason = draft_regeneration_reason
         self.telemetry = telemetry
         suffix = f" (HTTP {status_code})" if status_code is not None else ""
         super().__init__(f"MAXIS gateway error: {code.value}{suffix}")
@@ -121,6 +123,9 @@ _REGENERATABLE_DRAFT_MARKERS = frozenset({
 _EDITOR_SELECTION_MARKERS = frozenset({
     "invalid_editor_selection_id", "invalid_editor_selection_limit",
 })
+_NATIVE_DIAGNOSTICS = frozenset({
+    "json_syntax", "json_structure", "schema", "source_id", "fact_selection",
+})
 
 
 def classify_dify_error(status_code: int, payload: object) -> MaxisGatewayError:
@@ -150,6 +155,8 @@ def classify_dify_error(status_code: int, payload: object) -> MaxisGatewayError:
         matched = [marker for marker in markers for message in messages
                    if re.search(r"(?<!\w)" + re.escape(marker) + r"(?!\w)", message)]
         if matched:
+            reasons = {reason for reason in _NATIVE_DIAGNOSTICS for message in messages
+                       if re.search(r"(?<!\w)native_draft_" + reason + r"(?!\w)", message)}
             return MaxisGatewayError(
                 code, status_code=status_code,
                 draft_regeneration_allowed=(
@@ -159,6 +166,10 @@ def classify_dify_error(status_code: int, payload: object) -> MaxisGatewayError:
                 draft_regeneration_role=(
                     "editor_author" if set(matched) <= _EDITOR_SELECTION_MARKERS else ""
                 ),
+                # A diagnostic alone cannot authorize retry. Mixed/unknown markers
+                # grant no more information than the legacy generic classification.
+                draft_regeneration_reason=(next(iter(reasons)) if len(reasons) == 1
+                    and set(matched) <= _REGENERATABLE_DRAFT_MARKERS else ""),
             )
     return fallback
 

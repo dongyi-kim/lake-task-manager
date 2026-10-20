@@ -119,7 +119,7 @@ def test_generated_work_path_has_no_repair_or_partial_candidate(nodes, work_case
             "kind": "text", "required_input": "true", "why_required": draft["payload"]["items"][0]["summary"]}]
     elif mutation == "unknown_source": draft["payload"]["items"][0]["summary"]["source_ids"] = ["unknown"]
     else: draft["payload"]["change_plan"] = {}
-    with pytest.raises(ValueError, match="^invalid_core_work_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_work_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))
 
 

@@ -14,7 +14,7 @@ from app.agent.workflow.work_architect.contracts import CREATE_SCHEMA
 DIRECTORY = Path(__file__).resolve().parents[3] / "deploy/maxis-dify"
 VERSION = "11111111-1111-4111-8111-111111111111"
 PROOF = "LTM_RELEASE_SENTINEL_V1=" + "a" * 64
-ERROR = "^invalid_core_work_draft$"
+ERROR = "^invalid_core_work_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"
 
 
 def encoded(value):

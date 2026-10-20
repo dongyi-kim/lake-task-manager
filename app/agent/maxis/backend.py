@@ -2576,7 +2576,7 @@ def invoke_role(
             # the rejected candidate or calls a local model. Audit rows already persist.
             from app.agent.maxis.draft_feedback import with_native_feedback
             try:
-                payload = with_native_feedback(payload, role_id)
+                payload = with_native_feedback(payload, role_id, reason=cause.draft_regeneration_reason)
             except (KeyError, TypeError, ValueError):
                 metadata["requestAttempts"] = attempts
                 exc.metadata = metadata

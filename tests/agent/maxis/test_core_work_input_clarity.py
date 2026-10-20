@@ -48,7 +48,7 @@ def test_role_context_id_is_hidden_but_never_accepted_as_a_citation(nodes, work_
     assert "rctx-synthetic" not in encoded(projected)
     assert projected["context"]["role_context"][0]["content_json"] == content
     draft["payload"]["items"][0]["summary"]["source_ids"] = ["rctx-synthetic"]
-    with pytest.raises(ValueError, match="^invalid_core_work_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_work_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         code(nodes[ASSEMBLER])["main"](raw, encoded(draft))
 
 
@@ -63,7 +63,7 @@ def test_generated_view_citation_choices_reach_unchanged_assembler_and_both_guar
                    kind="recommendation" if choice == "intent_recommendation" else "fact")
     if choice == "entity_reference":
         summary["source_ids"] = [row["entity_reference"]]
-        with pytest.raises(ValueError, match="^invalid_core_work_draft$"):
+        with pytest.raises(ValueError, match="^invalid_core_work_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
             code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))
         return
     result = json.loads(code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))["candidate"])
@@ -90,5 +90,5 @@ def test_generated_assembler_never_repairs_malformed_or_wrong_scope_output(nodes
     candidate = encoded(draft)
     if fault == "truncated_text":
         candidate = candidate[:-1]
-    with pytest.raises(ValueError, match="^invalid_core_work_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_work_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         code(nodes[ASSEMBLER])["main"](incoming, candidate)

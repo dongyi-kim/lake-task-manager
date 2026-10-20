@@ -163,7 +163,7 @@ def test_invalid_coverage_is_rejected_without_repair_or_default(compiled, case, 
     draft["payload"]["reads"][0]["coverage"] = value
     original = copy.deepcopy(draft)
     assert not Draft202012Validator(compiled[1]).is_valid(draft)
-    with pytest.raises(ValueError, match="^invalid_core_query_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_query_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         assemble(compiled, incoming, draft)
     assert draft == original
 
@@ -173,7 +173,7 @@ def test_canonical_exhaustive_field_is_forbidden_in_internal_v2_draft(compiled, 
     _, incoming, draft = case
     draft["payload"]["reads"][0]["exhaustive"] = value
     assert not Draft202012Validator(compiled[1]).is_valid(draft)
-    with pytest.raises(ValueError, match="^invalid_core_query_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_query_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         assemble(compiled, incoming, draft)
 
 
@@ -184,7 +184,7 @@ def test_previous_draft_version_is_rejected_without_alias(compiled, case, covera
     if coverage is not None:
         draft["payload"]["reads"][0]["coverage"] = coverage
     assert not Draft202012Validator(compiled[1]).is_valid(draft)
-    with pytest.raises(ValueError, match="^invalid_core_query_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_query_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         assemble(compiled, incoming, draft)
 
 
@@ -254,7 +254,7 @@ def test_invalid_drafts_never_return_a_partial_candidate(compiled, case, mutatio
     elif mutation == "nonempty_control": draft["status"] = "blocked"
     elif mutation == "ok_question": draft["missing_inputs"] = ["질문"]
     else: draft.update(status="blocked", payload={}, missing_inputs=["질문"])
-    with pytest.raises(ValueError, match="^invalid_core_query_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_query_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         assemble(compiled, incoming, draft)
 
 
@@ -276,12 +276,12 @@ def test_input_authority_is_rechecked_before_assembly(compiled, case, mutation):
     elif mutation == "workflow": incoming["workflow_version"] = "invalid"
     elif mutation == "proof": incoming["knowledge_proof"] = "invalid"
     else: compiled[0]["_DRAFT_SCHEMA"] = None
-    with pytest.raises(ValueError, match="^invalid_core_query_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_query_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         assemble(compiled, incoming, draft)
 
 
 @pytest.mark.parametrize("raw", ['{"status":"ok","status":"blocked"}', '{"x":NaN}', '[]', '```json\n{}\n```', 'x' * 32769],
                          ids=["duplicate", "nonfinite", "array", "fence", "over_budget"])
 def test_strict_json_and_candidate_budget(compiled, case, raw):
-    with pytest.raises(ValueError, match="^invalid_core_query_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_query_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         compiled[0]["main"](encoded(case[1]), raw)

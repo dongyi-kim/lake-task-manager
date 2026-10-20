@@ -166,7 +166,7 @@ def test_canonical_unique_items_revalidated_after_unwrap(compiled, case, annotat
     duplicate["value"][annotation] = "inference" if annotation == "kind" else ["src-record-29"]
     draft["payload"]["requested_effects"] = [effect, duplicate]
     Draft202012Validator(compiled[1]).validate(draft)
-    with pytest.raises(ValueError, match="^invalid_core_request_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_request_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         assemble(compiled, incoming, draft)
 
 
@@ -207,7 +207,7 @@ def test_planning_kinds_preserve_values_and_refs_or_fail_without_candidate(compi
         target["value"] = "변경 초안에 대상과 검토 방법을 명시한다"
     before = copy.deepcopy((incoming, draft))
     if kind == "fact":
-        with pytest.raises(ValueError, match="^invalid_core_request_draft$"):
+        with pytest.raises(ValueError, match="^invalid_core_request_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
             assemble(compiled, incoming, draft)
     else:
         result = assemble(compiled, incoming, draft)
@@ -245,7 +245,7 @@ def test_answer_depth_is_plain_and_wrapped_value_is_never_repaired(compiled, cas
     assert remote == result and local()[0].status == "ok"
     draft["payload"]["answer_depth"] = leaf(depth)
     before = copy.deepcopy((incoming, draft))
-    with pytest.raises(ValueError, match="^invalid_core_request_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_request_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         assemble(compiled, incoming, draft)
     assert (incoming, draft) == before
 
@@ -253,7 +253,7 @@ def test_answer_depth_is_plain_and_wrapped_value_is_never_repaired(compiled, cas
 def test_previous_native_version_has_no_assembler_fallback(compiled, case):
     _, incoming, draft, _ = case
     draft["contract"] = "request-draft.v1"
-    with pytest.raises(ValueError, match="^invalid_core_request_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_request_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         assemble(compiled, incoming, draft)
 
 
@@ -274,7 +274,7 @@ def test_malformed_wire_boolean_never_repaired(compiled, case, field, value):
     node = draft["payload"] if field == "research_readiness" else draft["payload"]["tasks"][0]
     node[field] = value
     before = copy.deepcopy((incoming, draft))
-    with pytest.raises(ValueError, match="^invalid_core_request_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_request_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         assemble(compiled, incoming, draft)
     assert (incoming, draft) == before
 
@@ -308,7 +308,7 @@ def test_invalid_drafts_fail_without_partial_or_synthesized_result(compiled, cas
     elif mutation == "needs_input_without_question": draft.update(status="needs_input", payload={})
     elif mutation == "whitespace_question": draft.update(status="needs_input", payload={}, missing_inputs=[" \t"])
     else: draft["contract"] = "request-draft.v0"
-    with pytest.raises(ValueError, match="^invalid_core_request_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_request_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         assemble(compiled, incoming, draft)
 
 
@@ -332,7 +332,7 @@ def test_request_original_input_authority_is_rechecked(compiled, case, mutation)
     elif mutation == "workflow": incoming["workflow_version"] = "invalid"
     elif mutation == "proof": incoming["knowledge_proof"] = "invalid"
     else: compiled[0]["_DRAFT_SCHEMA"] = None
-    with pytest.raises(ValueError, match="^invalid_core_request_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_request_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         assemble(compiled, incoming, draft)
 
 
@@ -349,7 +349,7 @@ def test_envelope_bounds_fail_closed_without_truncation(compiled, case, limit, e
     before = copy.deepcopy(draft)
     Draft202012Validator(compiled[1]).validate(draft)
     if exceeds:
-        with pytest.raises(ValueError, match="^invalid_core_request_draft$"):
+        with pytest.raises(ValueError, match="^invalid_core_request_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
             assemble(compiled, incoming, draft)
     else:
         result = assemble(compiled, incoming, draft)
@@ -363,7 +363,7 @@ def test_envelope_bounds_fail_closed_without_truncation(compiled, case, limit, e
 @pytest.mark.parametrize("raw", ['{"status":"ok","status":"blocked"}', '{"x":NaN}', '{"x":Infinity}',
     '[]', '```json\n{}\n```', 'x' * 32769], ids=["duplicate", "nan", "infinity", "array", "fence", "over_budget"])
 def test_candidate_json_is_strict_and_bounded(compiled, case, raw):
-    with pytest.raises(ValueError, match="^invalid_core_request_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_request_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         compiled[0]["main"](encoded(case[1]), raw)
 
 
@@ -371,7 +371,7 @@ def test_candidate_whitespace_allowed_but_original_input_must_be_canonical(compi
     _, incoming, draft, _ = case
     expected = assemble(compiled, incoming, draft)
     assert json.loads(compiled[0]["main"](encoded(incoming), json.dumps(draft, indent=2, sort_keys=True))["candidate"]) == expected
-    with pytest.raises(ValueError, match="^invalid_core_request_draft$"):
+    with pytest.raises(ValueError, match="^invalid_core_request_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         compiled[0]["main"](json.dumps(incoming, indent=2), encoded(draft))
 
 
