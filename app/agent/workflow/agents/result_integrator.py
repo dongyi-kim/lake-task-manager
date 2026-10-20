@@ -279,6 +279,18 @@ def _result_atomic_ledger(state):
 class ResultIntegrator(TextAgent):
     name = Node.RESULT_INTEGRATOR
 
+    def fallback(self, state, err):
+        from app.agent.maxis.backend import MaxisRuntimeError
+
+        patch = super().fallback(state, err)
+        if isinstance(err, MaxisRuntimeError):
+            # No downstream Role remains to render this failure. Keep it a failed
+            # turn, but do not leave a blank/stale answer or usable approval behind.
+            patch["reply"] = patch.get("reply") or patch.get("error") or str(err)[:300]
+            patch["approval_token"] = ""
+            patch["comment_token"] = ""
+        return patch
+
     def system(self, state):
         return persona(state, SYSTEM_RESULT_INTEGRATOR, role_id=self.name)
 

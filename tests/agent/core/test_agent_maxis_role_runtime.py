@@ -83,6 +83,20 @@ def test_parallel_failure_gates_survive_old_success_sidecar_and_reset_next_turn(
     assert (failed, passed) == before
 
 
+def test_result_role_failure_renders_reason_without_old_answer_or_approval():
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+    result = ResultIntegrator().fallback(
+        {"reply": "unverified old answer", "approval_token": "old-approval",
+         "comment_token": "old-comment", "quality_gate": {"ok": True}},
+        backend.MaxisRuntimeError("서버 Workflow 응답 계약 오류. 게시 Workflow를 확인하세요."),
+    )
+    assert result["reply"] == result["error"]
+    assert "서버 Workflow 응답 계약 오류" in result["reply"]
+    assert "unverified old answer" not in result["reply"]
+    assert result["quality_gate"]["ok"] is False
+    assert result["approval_token"] == result["comment_token"] == ""
+
+
 @pytest.fixture(autouse=True)
 def audit_events(monkeypatch):
     """Keep runtime tests metadata-only and inside their in-memory boundary."""
