@@ -159,6 +159,9 @@ createApp(AgentView).mount('#app');</script></body></html>"""
                         "currentRun": None}
             elif path == "/api/agent/maxis/qualification/status":
                 body = {"valid": False, "reason": "fixture qualification required"}
+            elif path.startswith("/api/agent/maxis/probe/"):
+                selected = next(row for row in profiles if row["name"] == path.rsplit("/", 1)[-1])
+                body = {key: value for key, value in selected["lastProbe"].items() if key != "at"}
             route.fulfill(content_type="application/json", body=json.dumps(body))
 
         page.route("**/*", respond)
@@ -356,7 +359,84 @@ def test_route_save_reloads_management_permission(profile_ui):
     assert state["routes"]["agent_core"] == "shadow"
     assert page.get_by_role("button", name="실행 경로 저장", exact=True).is_enabled()
     assert page.get_by_role("switch").is_enabled()
-    assert page.get_by_role("button", name="연결 확인", exact=True).is_enabled()
+    assert page.get_by_role("button", name="연결·모델 검사", exact=True).is_enabled()
+
+
+def test_model_health_is_scoped_to_selected_profile_and_missing_is_not_success(profile_ui):
+    page, state, _, calls = profile_ui
+    state["profiles"][0]["lastProbe"]["workflows"] = {
+        "agent_core": {"ok": True, "modelHealth": {
+            "status": "passed", "scope": "synthetic_control_path", "identityStatus": "not_exposed"}},
+        "editor_author": {"ok": True},
+    }
+    state["profiles"][1]["lastProbe"] = {
+        "at": "2026-02-02T03:04:05Z", "ok": False, "workflows": {
+            "agent_core": {"ok": False, "modelHealth": {
+                "status": "failed", "scope": "synthetic_control_path", "identityStatus": "not_exposed",
+                "nextAction": "포털의 모델 설정을 확인하고 다시 게시한 뒤 재검사하세요."}},
+        }}
+    open_profiles(page)
+    health = page.get_by_role("region", name="선택한 프로필의 모델 응답 검사")
+    assert health.get_by_text("합성 모델 응답 통과", exact=True).count() == 1
+    assert health.get_by_text("모델 응답 미검사", exact=True).count() == 2
+    assert "2026-01-01T00:00:00Z" in health.inner_text()
+    assert "전체 LLM 노드" in health.inner_text()
+    assert "Service API가 실제 모델 이름을 제공하지 않습니다" in health.inner_text()
+    page.locator('[data-profile="prod"]').click()
+    assert health.get_by_text("합성 모델 응답 통과", exact=True).count() == 0
+    assert health.get_by_text("합성 모델 응답 실패", exact=True).count() == 1
+    assert "2026-02-02T03:04:05Z" in health.inner_text()
+    assert "다시 게시한 뒤 재검사하세요" in health.inner_text()
+    assert not any(method != "GET" for method, _ in calls)
+
+
+def test_model_health_unknown_scope_cannot_claim_control_path_success(profile_ui):
+    page, state, _, _ = profile_ui
+    state["profiles"][0]["lastProbe"]["workflows"] = {
+        "agent_core": {"ok": True, "modelHealth": {
+            "status": "passed", "scope": "unknown", "identityStatus": "not_exposed"}},
+    }
+    open_profiles(page)
+    health = page.get_by_role("region", name="선택한 프로필의 모델 응답 검사")
+    assert health.get_by_text("합성 모델 응답 통과", exact=True).count() == 0
+    assert health.get_by_text("모델 응답 미검사", exact=True).count() == 3
+
+
+def test_model_recheck_targets_selected_profile_and_uses_persisted_timestamp(profile_ui):
+    page, state, _, calls = profile_ui
+    open_profiles(page)
+    page.locator('[data-profile="prod"]').click()
+    state["profiles"][1]["lastProbe"] = {
+        "at": "2026-04-04T05:06:07Z", "ok": True, "workflows": {
+            "editor_author": {"ok": True, "modelHealth": {
+                "status": "passed", "scope": "synthetic_control_path", "identityStatus": "not_exposed"}},
+        }}
+    page.get_by_role("button", name="연결·모델 검사", exact=True).click()
+    page.get_by_text("연결·모델 검사를 마쳤습니다.", exact=False).wait_for()
+    health = page.get_by_role("region", name="선택한 프로필의 모델 응답 검사")
+    assert "2026-04-04T05:06:07Z" in health.inner_text()
+    assert health.get_by_text("합성 모델 응답 통과", exact=True).count() == 1
+    assert [(method, path) for method, path in calls if method != "GET"] == [
+        ("POST", "/api/agent/maxis/probe/prod")]
+
+
+def test_invalidated_persisted_probe_never_falls_back_to_success_response(profile_ui):
+    page, state, _, _ = profile_ui
+    open_profiles(page)
+
+    def stale_response(route):
+        state["profiles"][0].update(lastProbe=None, verified=False)
+        route.fulfill(content_type="application/json", body=json.dumps({
+            "ok": True, "workflows": {"agent_core": {"modelHealth": {
+                "status": "passed", "scope": "synthetic_control_path"}}}}))
+
+    page.route("**/api/agent/maxis/probe/dev", stale_response)
+    page.get_by_role("button", name="연결·모델 검사", exact=True).click()
+    page.get_by_text("연결·모델 검사를 마쳤습니다.", exact=False).wait_for()
+    health = page.get_by_role("region", name="선택한 프로필의 모델 응답 검사")
+    assert health.get_by_text("합성 모델 응답 통과", exact=True).count() == 0
+    assert health.get_by_text("모델 응답 미검사", exact=True).count() == 3
+    assert "검사 기록 없음" in health.inner_text()
 
 
 def test_kill_toggle_keeps_permission_and_unsaved_inputs(profile_ui):

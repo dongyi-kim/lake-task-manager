@@ -438,6 +438,8 @@ def _maxis_contract_probe_result(
         "versionBindingVerified": version_verified,
         "citationContractVerified": citation_verified,
         "knowledgeRetrievalVerified": knowledge_retrieval_verified,
+        "generationAttempted": True,
+        "generationVerified": read("generation_verified", "generationVerified") is True,
         "knowledgeManifestSha256": knowledge_manifest_sha256,
         "roleId": str(read("role_id", "roleId") or "")[:80],
     }
@@ -521,7 +523,7 @@ def _run_maxis_probe(profile: dict, keys: dict[str, str]) -> dict:
                 results[workflow_key] = {"ok": False, "statusCode": None, "ms": None,
                                          "errorCode": type(exc).__name__[:80]}
     ok = bool(results) and all(row["ok"] for row in results.values())
-    return {"ok": ok, "workflows": results,
+    return {"ok": ok, "workflows": maxis_profiles._safe_public_probe_workflows(results),
             "error": "" if ok else ("No configured workflow to probe." if not results
                                        else "One or more workflow probes failed.")}
 
@@ -557,6 +559,16 @@ def _probe_maxis_profile(profile_name: str):
                 "ok": False,
                 "error": "One or more workflow contract proofs are incomplete.",
             }
+        persisted = maxis_profiles._safe_public_last_probe(
+            (_prefs.load().get("maxisLastProbeByProfile") or {}).get(profile_name)
+        )
+        if persisted is not None:
+            # The HTTP response and reloaded UI use the same binding-checked
+            # observations, including discarded stale completions and timestamp.
+            result = {**result, **persisted}
+        else:
+            result = {"ok": False, "at": "", "workflows": {},
+                      "error": "Probe result binding is stale or missing."}
     except _prefs.PrefsPersistenceError as exc:
         return JSONResponse(
             {"ok": False, "workflows": {}, "error": str(exc)}, status_code=503,

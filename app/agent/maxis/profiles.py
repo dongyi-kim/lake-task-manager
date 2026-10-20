@@ -87,18 +87,27 @@ _PUBLIC_PROBE_CODES = frozenset({
     "knowledge_retrieval_failed",
     "knowledge_version_mismatch",
     "missing_start_variables",
+    "model_credentials",
+    "model_parameters",
+    "model_unavailable",
     "network",
     "not_found",
     "policy",
     "probe_failed",
     "rate_limited",
     "remote_status_not_ok",
+    "remote_contract_validation_failed",
+    "remote_payload_contract_validation_failed",
+    "remote_invalid_json",
+    "remote_knowledge_manifest_mismatch",
+    "remote_role_mismatch",
     "response_too_large",
     "timeout",
     "unexpected_app_mode",
     "unexpected_start_variables",
     "upstream",
     "workflow_version_mismatch",
+    "workflow_contract",
 })
 _PUBLIC_PROBE_ERRORS = frozenset({
     "",
@@ -1225,15 +1234,23 @@ def mark_probe(
         # Re-read credential/environment material immediately before persistence.
         # Profile mutations share this RLock; credential mutation invalidates the
         # persisted proof after its own secure-store write.
-        if verified_ok:
+        try:
             final_binding = _probe_signature(name)
-            verified_ok = hmac.compare_digest(supplied_binding, final_binding)
-            current_binding = final_binding
+        except Exception:
+            final_binding = ""
+        binding_current = bool(
+            binding_shape_ok and final_binding
+            and hmac.compare_digest(supplied_binding, final_binding)
+        )
+        verified_ok = bool(verified_ok and binding_current)
+        current_binding = final_binding
         if verified_ok:
             verified[name] = current_binding
         else:
             verified.pop(name, None)
-        stale_completion = bool(ok and not binding_current)
+        # Partial failures can still contain successful generation observations.
+        # They must not be attached to a profile edited during the network call.
+        stale_completion = bool((ok or supplied_binding) and not binding_current)
         last_probe[name] = {
             "ok": verified_ok,
             "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -1751,12 +1768,58 @@ def _safe_public_probe_workflows(value: object) -> dict[str, dict]:
             "knowledgeRetrievalVerified": (
                 raw.get("knowledgeRetrievalVerified") is True
             ),
+            "generationAttempted": raw.get("generationAttempted") is True,
+            "generationVerified": (
+                raw.get("generationVerified") is True
+                and raw.get("generationAttempted") is True
+                and raw.get("appModeVerified") is True
+                and raw.get("executionContractVerified") is True
+                and raw.get("versionBindingVerified") is True
+                and type(status) is int and status == 200
+            ),
             "knowledgeManifestSha256": _safe_public_digest(
                 raw.get("knowledgeManifestSha256")
             ),
             "roleId": role_id if role_id in _ROLE_WORKFLOW else "",
         }
+        result[key]["modelHealth"] = _model_health(result[key])
     return result
+
+
+def _model_health(row: dict) -> dict:
+    """Describe only the exercised synthetic path, never infer a model identity.
+
+    App Service API credentials do not grant model catalogue/console access.
+    A passed canary is neither a test of every LLM branch nor a quality score.
+    Rebuild this projection from trusted scalar observations, including on reload;
+    never echo stored or upstream model names, messages, or next-action text.
+    """
+    code = row["errorCode"]
+    actions = {
+        "model_credentials": "MAXIS 프로젝트의 모델 연결 인증정보와 사용 권한을 확인하세요.",
+        "model_unavailable": "MAXIS 프로젝트에 등록된 모델과 게시 Workflow의 모델 선택을 확인하세요.",
+        "model_parameters": "선택한 모델이 지원하는 생성 파라미터로 변경하고 다시 게시하세요.",
+        "workflow_contract": "Dify 실행 로그에서 실패한 코드 노드와 모델 출력 계약을 확인하세요.",
+        "bad_request": "Dify 실행 로그에서 실패 노드를 확인하세요. 400만으로 모델 오류를 단정할 수 없습니다.",
+        "authentication": "선택한 프로필의 App API Token을 확인하세요.",
+        "forbidden": "선택한 프로필의 App API Token 접근 권한을 확인하세요.",
+        "rate_limited": "MAXIS 모델 사용량 또는 호출 제한을 확인한 뒤 다시 검사하세요.",
+        "workflow_version_mismatch": "게시 Workflow ID를 현재 게시본으로 등록하고 다시 검사하세요.",
+        "network": "선택한 MAXIS 서버의 네트워크 연결을 확인하세요.",
+        "timeout": "MAXIS 서버 및 모델 응답 시간을 확인한 뒤 다시 검사하세요.",
+    }
+    passed = row["generationVerified"]
+    attempted = row["generationAttempted"]
+    return {
+        "status": "passed" if passed else ("failed" if attempted else "not_checked"),
+        "scope": "synthetic_control_path",
+        "identityStatus": "not_exposed",
+        "reasonCode": "" if passed else (code or "probe_required"),
+        "nextAction": (
+            "검사한 합성 호출 경로만 통과했습니다. 실제 본문·댓글 작성 품질은 별도 확인하세요."
+            if passed else actions.get(code, "연결·입력 계약을 확인한 뒤 연결·모델 검사를 실행하세요.")
+        ),
+    }
 
 
 def _safe_public_probe_error(value: object) -> str:

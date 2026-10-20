@@ -28,6 +28,7 @@ from app.agent.maxis.context_guard import (
 from app.agent.maxis.errors import (
     MaxisErrorCode,
     MaxisGatewayError,
+    classify_dify_error,
     classify_http_status,
 )
 from app.agent.maxis.destination_policy import (
@@ -59,6 +60,7 @@ _DATASET_ID_RE = re.compile(
 MAX_RETRIEVER_RESOURCES = 20
 MAX_GOVERNED_RETRIEVER_RESOURCES = 2
 MAX_NON_GOVERNED_RETRIEVER_RESOURCES = 1
+MAX_ERROR_RESPONSE_BYTES = 8 * 1024
 
 # This is the complete, content-bounded Start contract shared by every LTM
 # Chatflow. ``query`` and ``user`` are Dify Chat API fields, not Start variables.
@@ -157,6 +159,7 @@ class DifyContractProbeResult(_StrictResult):
     latency_ms: int = Field(ge=0)
     role_id: str = ""
     contract_verified: bool = False
+    generation_verified: bool = False
     version_verified: bool = False
     citation_verified: bool = False
     knowledge_retrieval_verified: bool = False
@@ -779,7 +782,9 @@ class DifyClient:
             ) as response:
                 status = response.status_code
                 if not 200 <= response.status_code < 300:
-                    raise classify_http_status(response.status_code)
+                    raise self._response_error(
+                        response, deadline=started + total_timeout,
+                    )
                 content_length = response.headers.get("content-length", "")
                 if content_length.isdecimal() and int(content_length) > response_limit:
                     raise MaxisGatewayError(
@@ -823,6 +828,42 @@ class DifyClient:
             ) from exc
         latency_ms = max(0, int((self._clock() - started) * 1000))
         return body, status, latency_ms
+
+    def _response_error(
+        self, response: httpx.Response, *, deadline: float,
+    ) -> MaxisGatewayError:
+        """Inspect at most 8 KiB transiently; malformed/late bodies keep HTTP status.
+
+        Socket reads retain the configured phase timeout, just like successful
+        responses. The cumulative deadline is checked before/after each read; it
+        cannot interrupt an in-flight HTTPX read. This diagnostic never retries a
+        request or exposes error content, and does not replace a received 400 with
+        a transport failure if optional body inspection fails.
+        """
+        fallback = classify_http_status(response.status_code)
+        if response.status_code not in (400, 422):
+            return fallback
+        content_length = response.headers.get("content-length", "")
+        if (len(content_length) > 10 or
+                content_length.isdecimal() and int(content_length) > MAX_ERROR_RESPONSE_BYTES):
+            return fallback
+        chunks: list[bytes] = []
+        size = 0
+        try:
+            if self._clock() >= deadline:
+                return fallback
+            for chunk in response.iter_bytes(chunk_size=1024):
+                size += len(chunk)
+                if size > MAX_ERROR_RESPONSE_BYTES or self._clock() >= deadline:
+                    return fallback
+                chunks.append(chunk)
+            if self._clock() >= deadline:
+                return fallback
+            return classify_dify_error(
+                response.status_code, _strict_json_loads(b"".join(chunks)),
+            )
+        except (ValueError, TypeError, RecursionError, httpx.RequestError, TimeoutError):
+            return fallback
 
     def request_taskflow_bytes(self, request, *, api_key: str,
                                timeout_seconds: float | None = None):
@@ -1149,6 +1190,7 @@ class DifyClient:
                 role_id=role_id,
                 contract_verified=contract_verified,
                 version_verified=True,
+                generation_verified=True,
                 error_code="citation_contract_failed",
             )
         proof_digest = hashlib.sha256(
@@ -1171,6 +1213,7 @@ class DifyClient:
                 role_id=role_id,
                 contract_verified=contract_verified,
                 version_verified=True,
+                generation_verified=True,
                 citation_verified=True,
                 retrieval_resource_count=(
                     response.retrieval.governed_resource_count
@@ -1186,6 +1229,7 @@ class DifyClient:
             role_id=role_id,
             contract_verified=contract_verified,
             version_verified=True,
+            generation_verified=True,
             citation_verified=True,
             knowledge_retrieval_verified=True,
             retrieval_resource_count=(

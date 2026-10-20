@@ -1,4 +1,5 @@
 import { agentApi } from "../../lib/agentApi.js";
+import MaxisModelHealth from "./MaxisModelHealth.js";
 
 const APPS = [
   { key: "agent_core", label: "Agent Core", field: "agentCoreApiKey" },
@@ -16,6 +17,7 @@ function sameFields(left, right) {
 
 export default {
   name: "MaxisSetupWizard",
+  components: { MaxisModelHealth },
   props: { canManage: { type: Boolean, default: false },
     profileName: { type: String, required: true }, displayName: { type: String, required: true } },
   emits: ["configured", "applied", "dirty-change", "busy-change"],
@@ -24,7 +26,8 @@ export default {
       step: 1, apps: APPS, setup: null, profile: null, qualification: null, loaded: false,
       busy: "", error: "", notice: "", portalUrl: "", baseUrl: "", hostConfirmed: false,
       assets: { datasetId: "", sentinelDatasetId: "", roleMetadataFieldId: "", sentinelDocumentId: "",
-        documentIds: {}, model: { plugin_unique_identifier: "", provider: "", name: "" } },
+        documentIds: {}, model: { plugin_unique_identifier: "", provider: "", name: "", completion_params: {} } },
+      modelParamsText: "{}",
       versions: { agent_core: "", editor_author: "", pmo_brief: "" },
       keys: { agentCoreApiKey: "", editorAuthorApiKey: "", pmoBriefApiKey: "" },
       logPolicy: "", logMode: "redacted", logDays: 0, includePmo: false,
@@ -41,7 +44,7 @@ export default {
     draftGroups() {
       return {
         host: { baseUrl: this.baseUrl },
-        assets: { assets: this.assets },
+        assets: { assets: this.assets, modelParamsText: this.modelParamsText },
         publication: { versions: this.versions, logPolicy: this.logPolicy,
           logMode: this.logMode, logDays: this.logDays, includePmo: this.includePmo },
         reviewer: { reviewerPublicKey: this.reviewerPublicKey,
@@ -57,6 +60,9 @@ export default {
     },
     bundleCurrent() {
       if (!this.run || !this.run.assetInputs) return false;
+      try {
+        if (!sameFields(this.parseModelParameters(), this.assets.model.completion_params || {})) return false;
+      } catch (_) { return false; }
       return this.run.baseUrl === this.baseUrl &&
         Object.keys(this.assets).every((key) =>
           sameFields(this.assets[key], this.run.assetInputs[key]));
@@ -102,6 +108,7 @@ export default {
             this.assets = { datasetId: input.datasetId, sentinelDatasetId: input.sentinelDatasetId,
               roleMetadataFieldId: input.roleMetadataFieldId, sentinelDocumentId: input.sentinelDocumentId,
               documentIds: { ...input.documentIds }, model: { ...input.model } };
+            this.modelParamsText = JSON.stringify(this.assets.model.completion_params || {}, null, 2);
           }
         }
         this.source.documents.forEach((row) => {
@@ -174,6 +181,7 @@ export default {
     },
     prepareBundle() {
       this.action("bundle", async () => {
+        this.assets.model = { ...this.assets.model, completion_params: this.parseModelParameters() };
         const result = this.ensureOk(await agentApi.maxisPrepareBundle(
           { ...this.assets, runId: this.run.runId, baseUrl: this.baseUrl }, this.profileName));
         if (result.baseUrl) this.baseUrl = result.baseUrl;
@@ -188,9 +196,24 @@ export default {
         if (file.size > 2 * 1024 * 1024) throw new Error("모델 설정 YAML은 2 MiB 이하여야 합니다.");
         const result = this.ensureOk(await agentApi.maxisModelFromExport(await file.text(), this.profileName));
         this.assets.model = { ...result.model };
-        this.notice = "모델 식별자만 가져왔습니다. 원본 파일·환경변수·credential은 저장하지 않습니다.";
+        this.modelParamsText = JSON.stringify(this.assets.model.completion_params || {}, null, 2);
+        this.notice = "모델 식별자와 허용된 생성 설정을 가져왔습니다. 원본 파일·환경변수·credential은 저장하지 않습니다.";
       });
       event.target.value = "";
+    },
+    parseModelParameters() {
+      let params;
+      try { params = JSON.parse(this.modelParamsText); }
+      catch (_) { throw new Error("모델 생성 설정은 JSON 객체로 입력하세요. 서버 기본값은 {}입니다."); }
+      if (!params || typeof params !== "object" || Array.isArray(params)) {
+        throw new Error("모델 생성 설정은 JSON 객체로 입력하세요. 서버 기본값은 {}입니다.");
+      }
+      return params;
+    },
+    useModelDefaults() {
+      if (!this.canManage || this.busy) return;
+      this.assets.model = { ...this.assets.model, completion_params: {} };
+      this.modelParamsText = "{}";
     },
     saveCandidate() {
       this.action("candidate", async () => {
@@ -222,9 +245,10 @@ export default {
     },
     probe() {
       this.action("probe", async () => {
-        this.ensureOk(await agentApi.maxisProbe(this.profileName));
+        const result = await agentApi.maxisProbe(this.profileName);
         await this.load(); this.$emit("configured");
-        this.notice = "앱 계약과 Knowledge 연결을 확인했습니다. 선택한 사용 정책에 따라 평가하거나 바로 적용하세요.";
+        this.ensureOk(result);
+        this.notice = "연결·모델 검사를 마쳤습니다. 기능별 검사 결과를 확인한 뒤 선택한 사용 정책에 따라 평가하거나 적용하세요.";
       });
     },
     startQualification() {
@@ -312,6 +336,11 @@ export default {
         <label class="ag-f"><span>모델 plugin unique identifier</span><input v-model="assets.model.plugin_unique_identifier" :readonly="!canManage" placeholder="포털의 설치된 plugin 식별자"></label>
         <label class="ag-f"><span>모델 provider</span><input v-model="assets.model.provider" :readonly="!canManage" placeholder="포털의 provider 식별자"></label>
         <label class="ag-f"><span>승인된 모델 이름</span><input v-model="assets.model.name" :readonly="!canManage"></label>
+        <details><summary>모델 생성 설정</summary>
+          <p class="mx-help">가져온 모델의 생성 설정을 유지합니다. 모델·provider마다 지원 항목이 다르므로 변경 후 확인하세요. {}는 서버 기본값을 사용하며 LTM 기본 생성값을 덧붙이지 않습니다. API Key나 URL은 입력하지 마세요.</p>
+          <label class="ag-f"><span>모델 생성 설정 JSON</span><textarea v-model="modelParamsText" rows="4" :readonly="!canManage" spellcheck="false"></textarea></label>
+          <button class="ag-mini" :disabled="!!busy || !canManage" @click="useModelDefaults">모델 서버 기본값 사용</button>
+        </details>
         <button class="ag-ok inline" :disabled="!!busy || !canManage || !sourceCurrent" @click="prepareBundle">Chatflow 3개 생성·다운로드</button>
         <button v-if="run.bundleReady" class="ag-mini" :disabled="!canManage" @click="download('workflows')">현재 Chatflow ZIP 다시 받기</button>
       </template>
@@ -330,7 +359,10 @@ export default {
       <p class="mx-help">다른 PC의 암호화 파일을 복사하지 마세요. 빈 token 입력은 기존 저장값을 유지합니다. 토큰은 다운로드 파일·Git·로그에 포함하지 않습니다.</p>
     </template>
     <template v-if="step===4">
-      <button class="ag-mini" :disabled="!!busy || !canManage || !run || !run.candidateSaved || !sourceCurrent" @click="probe">저장된 연결과 Knowledge 확인</button>
+      <button class="ag-mini" :disabled="!!busy || !canManage || !run || !run.candidateSaved || !sourceCurrent" @click="probe">연결·모델 검사</button>
+      <p class="mx-help">모델은 MAXIS 게시 Workflow에서 결정하며 LTM의 로컬 모델 설정과 별개입니다. 포털에서 모델 변경 → 게시 → 3단계의 게시 Workflow UUID 저장 → 재검사를 진행하세요.</p>
+      <MaxisModelHealth :workflows="apps.filter(app => app.key !== 'pmo_brief' || includePmo)"
+        :probe="profile && profile.lastProbe" />
       <p class="mx-help">연결 성공과 답변 품질은 다릅니다. 일반 사용은 연결 확인 후 적용할 수 있고, 사전 품질 검증 필수 정책은 합성 평가·독립 검토·서명까지 완료해야 합니다.<span v-if="qualification && qualification.requirements"> Core·Editor 기본 Knowledge {{ qualification.requirements.knowledgeCases }}건과 선택한 기능의 역할을 검증합니다. PMO를 포함한 실제 실행 건수는 진행 상태를 따릅니다.</span></p>
       <p class="mx-help">평가 대상: Agent Core · Editor Author<span v-if="includePmo"> · PMO Brief</span>. PMO 선택은 3단계에서 변경합니다.</p>
       <button class="ag-mini" :disabled="!!busy || !canManage || evaluationRunning || !profile || !profile.verified" @click="startQualification">합성 평가 시작</button>

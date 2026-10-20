@@ -290,7 +290,7 @@ def test_maxis_settings_are_a_separate_workflow_surface_with_safe_credentials():
     assert '@applied="maxisApplied"' in dialog
     assert "row.profile === this.selectedName" in panel and 'row.engine === "maxis"' in panel
     assert "row.ready === true" in panel and "현재 사용 중 · MAXIS" in panel
-    assert "마지막 연결 확인 결과" in panel
+    assert "마지막 연결·모델 검사 결과" in panel
     assert '["observed", "none_recorded", "unavailable"]' in panel
     assert "value.observations.slice(0, 9)" in panel
     assert "row.profile === this.selectedName" in panel

@@ -19,6 +19,11 @@ def test_selected_profile_setup_renders_and_saves_tokens_without_portal_password
            "bundleReady": True, "candidateSaved": True}
     received = []
     errors = []
+    imported_model = {
+        "plugin_unique_identifier": "team/provider:fixture",
+        "provider": "team/provider", "name": "project-selected-model",
+        "completion_params": {"temperature": 0.3, "max_tokens": 2048},
+    }
     markup = """<!doctype html><html><head><title>LTM MAXIS setup fixture</title>
 <link rel="stylesheet" href="/static/styles/tokens.css"><link rel="stylesheet" href="/static/styles/base.css">
 <link rel="stylesheet" href="/static/styles/components.css"><link rel="stylesheet" href="/static/styles/agent.css"></head>
@@ -61,6 +66,8 @@ createApp(Dialog,{initialMode:'maxis'}).mount('#app');</script></body></html>"""
                 endpoint = path.split("?", 1)[0]
                 body = ({"source": {"documents": documents, "knowledgeVersion": "ltm-knowledge-2026.10"}, "currentRun": run}
                         if endpoint.endswith("/setup") else
+                        {"ok": True, "model": imported_model}
+                        if endpoint.endswith("/setup/model") else
                         {"canManage": True, "environmentOverrides": {}, "profiles": [
                             {"name": "profile-team", "displayName": "검토용 MAXIS", "isLegacy": False,
                              "executionPolicy": "qualified", "verified": True, "workflows": {}, "credentials": {}}]}
@@ -93,6 +100,29 @@ createApp(Dialog,{initialMode:'maxis'}).mount('#app');</script></body></html>"""
         page.get_by_text("이 PC의 MAXIS Service API 호스트를 등록했습니다.", exact=False).wait_for()
         assert received[-1] == ("/api/agent/maxis/setup/host?profile=profile-team",
                                {"baseUrl": "https://team.example/v1", "confirmed": True})
+        page.get_by_label("승인된 모델 설정 YAML 가져오기", exact=True).set_input_files({
+            "name": "approved-model.yaml", "mimeType": "application/yaml",
+            "buffer": b"synthetic export is parsed by the fixture",
+        })
+        page.get_by_text("모델 식별자와 허용된 생성 설정을 가져왔습니다.", exact=False).wait_for()
+        assert page.get_by_label("승인된 모델 이름", exact=True).input_value() == "project-selected-model"
+        page.get_by_text("모델 생성 설정", exact=True).click()
+        params = page.get_by_label("모델 생성 설정 JSON", exact=True)
+        assert json.loads(params.input_value()) == imported_model["completion_params"]
+        page.get_by_role("button", name="Chatflow 3개 생성·다운로드", exact=True).click()
+        page.get_by_text("선택한 서버 자산에 연결한 세 Chatflow 파일", exact=False).wait_for()
+        bundle = [body for path, body in received if path.startswith("/api/agent/maxis/setup/bundle")]
+        assert bundle[-1]["model"] == imported_model
+        params.fill("[]")
+        page.get_by_role("button", name="Chatflow 3개 생성·다운로드", exact=True).click()
+        page.get_by_text("모델 생성 설정은 JSON 객체로 입력하세요.", exact=False).wait_for()
+        assert len([body for path, body in received if path.startswith("/api/agent/maxis/setup/bundle")]) == 1
+        page.get_by_role("button", name="모델 서버 기본값 사용", exact=True).click()
+        assert params.input_value() == "{}"
+        page.get_by_role("button", name="Chatflow 3개 생성·다운로드", exact=True).click()
+        page.get_by_text("선택한 서버 자산에 연결한 세 Chatflow 파일", exact=False).wait_for()
+        bundle = [body for path, body in received if path.startswith("/api/agent/maxis/setup/bundle")]
+        assert bundle[-1]["model"]["completion_params"] == {}
         page.get_by_role("button", name="3 · 게시와 token").click()
         token_fields = page.locator('.mx-setup input[type="password"]')
         assert token_fields.count() == 2

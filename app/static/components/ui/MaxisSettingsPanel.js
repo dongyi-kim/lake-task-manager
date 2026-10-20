@@ -3,6 +3,7 @@
 // while model selection remains a MAXIS governance concern.
 import { agentApi } from "../../lib/agentApi.js";
 import MaxisSetupWizard from "./MaxisSetupWizard.js";
+import MaxisModelHealth from "./MaxisModelHealth.js";
 
 const WORKFLOWS = [
   { key: "agent_core", label: "Agent Core", keyField: "agentCoreApiKey",
@@ -28,7 +29,7 @@ function blankForm() {
 
 export default {
   name: "MaxisSettingsPanel",
-  components: { MaxisSetupWizard },
+  components: { MaxisSetupWizard, MaxisModelHealth },
   emits: ["saved", "applied"],
   data() {
     return {
@@ -109,9 +110,13 @@ export default {
       return incomplete ? `${WORKFLOWS.find((w) => w.key === incomplete).label}의 게시 정보와 API Key를 저장하세요.` : "";
     },
     canActivate() { return !this.activationDisabledReason; },
+    latestProbe() {
+      // Prefer the server-persisted, binding-checked projection after reloading.
+      // Null is authoritative too: a concurrent edit/rotation invalidated proof.
+      return (this.selected && this.selected.lastProbe) || null;
+    },
     probeRows() {
-      return (this.probe && this.probe.workflows) ||
-        (this.selected && this.selected.lastProbe && this.selected.lastProbe.workflows) || {};
+      return (this.latestProbe && this.latestProbe.workflows) || {};
     },
     remoteObservationState() {
       const value = this.st && this.st.lastRemoteObservations;
@@ -344,9 +349,9 @@ export default {
         if (!await this.load(this.selectedName)) return;
         this.probe = result;
         this.$emit("saved");
-        this.note = result.ok ? "저장된 연결을 확인했습니다. 이 설정 사용 버튼과 기능별 실행 상태를 확인하세요."
-          : (result.error || "연결 확인에 실패했습니다.");
-      } catch (e) { this.err = (e && e.message) || "연결 확인에 실패했습니다"; }
+        this.note = result.ok ? "연결·모델 검사를 마쳤습니다. 기능별 검사 결과와 이 설정 사용 버튼을 확인하세요."
+          : (result.error || "연결·모델 검사에 실패했습니다.");
+      } catch (e) { this.err = (e && e.message) || "연결·모델 검사에 실패했습니다"; }
       finally { this.busy = ""; }
     },
     async activate() {
@@ -480,10 +485,12 @@ export default {
             <button class="ag-ok inline" :disabled="!!busy || !canActivate"
                     :title="activationDisabledReason" @click="activate">{{ busy === 'activate' ? '적용 중…' : '이 설정 사용' }}</button>
             <button class="ag-mini" :disabled="!!busy || !canManage || hasUnsavedChanges"
-                    @click="runProbe">{{ busy === 'probe' ? '확인 중…' : '연결 확인' }}</button>
+                    @click="runProbe">{{ busy === 'probe' ? '검사 중…' : '연결·모델 검사' }}</button>
           </div>
           <p v-if="activationDisabledReason" class="mx-help mx-disabled-reason">{{ activationDisabledReason }}</p>
           <p class="mx-help">이 설정 사용을 누르면 연결을 확인하고 Agent·본문·댓글 AI에 함께 적용한 뒤 설정창을 닫습니다. 로컬 LLM 설정은 필요하지 않습니다.</p>
+          <p class="mx-help">모델은 이 프로필의 MAXIS 게시 Workflow에서 결정하며 LTM의 로컬 모델 설정과 별개입니다. 프로젝트마다 다른 모델을 사용할 수 있습니다. 모델 변경 시 포털에서 게시 → 아래 게시 Workflow UUID 저장 → 연결·모델 재검사를 진행하세요.</p>
+          <MaxisModelHealth :workflows="workflowRows" :probe="latestProbe" />
           <div class="mx-runtime-status" aria-label="현재 기능별 실행 상태">
             <div v-for="row in runtimeRows" :key="row.key" class="mx-runtime-row">
               <b>{{ row.label }}</b><span :class="row.usingSelected ? 'mx-selected' : ''">{{ row.labelText }}</span>
@@ -491,7 +498,7 @@ export default {
             </div>
           </div>
           <details v-if="Object.keys(probeRows).length" class="mx-probe-details">
-            <summary>마지막 연결 확인 결과</summary>
+            <summary>마지막 연결·모델 검사 결과</summary>
             <p class="mx-help">{{ selected.lastProbe && selected.lastProbe.at ? selected.lastProbe.at : '확인 시각 없음' }}</p>
             <div class="ag-probe">
               <div v-for="(row,key) in probeRows" :key="key" class="ag-row" :class="row.ok ? 'ok' : 'no'">

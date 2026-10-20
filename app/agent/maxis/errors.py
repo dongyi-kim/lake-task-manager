@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from enum import Enum
 from typing import TYPE_CHECKING
 
@@ -14,6 +15,10 @@ class MaxisErrorCode(str, Enum):
     CONFIGURATION = "configuration"
     POLICY = "policy"
     BAD_REQUEST = "bad_request"
+    MODEL_UNAVAILABLE = "model_unavailable"
+    MODEL_CREDENTIALS = "model_credentials"
+    MODEL_PARAMETERS = "model_parameters"
+    WORKFLOW_CONTRACT = "workflow_contract"
     AUTHENTICATION = "authentication"
     FORBIDDEN = "forbidden"
     NOT_FOUND = "not_found"
@@ -72,6 +77,69 @@ def classify_http_status(status_code: int) -> MaxisGatewayError:
             MaxisErrorCode.UPSTREAM, status_code=status, retryable=True
         )
     return MaxisGatewayError(MaxisErrorCode.HTTP, status_code=status)
+
+
+_DIFY_ERROR_CODES = {
+    "model_not_found": MaxisErrorCode.MODEL_UNAVAILABLE,
+    "model_not_supported": MaxisErrorCode.MODEL_UNAVAILABLE,
+    "model_not_available": MaxisErrorCode.MODEL_UNAVAILABLE,
+    "provider_not_initialize": MaxisErrorCode.MODEL_CREDENTIALS,
+    "provider_not_initialized": MaxisErrorCode.MODEL_CREDENTIALS,
+    "invalid_api_key": MaxisErrorCode.MODEL_CREDENTIALS,
+    "unsupported_parameter": MaxisErrorCode.MODEL_PARAMETERS,
+    "unsupported_value": MaxisErrorCode.MODEL_PARAMETERS,
+}
+_DIFY_ERROR_MARKERS = (
+    (MaxisErrorCode.MODEL_UNAVAILABLE, (
+        "ModelNotFoundError", "ModelNotSupportedError",
+    )),
+    (MaxisErrorCode.MODEL_CREDENTIALS, (
+        "ProviderTokenNotInitError", "Incorrect API key provided:",
+    )),
+    (MaxisErrorCode.MODEL_PARAMETERS, (
+        "Unsupported parameter:", "Unsupported value:",
+    )),
+    (MaxisErrorCode.WORKFLOW_CONTRACT, (
+        "invalid_core_query_draft", "invalid_core_request_draft",
+        "invalid_core_work_draft", "invalid_core_result_draft",
+        "invalid_core_knowledge_draft", "invalid_core_control_input",
+        "invalid_core_query_input", "invalid_core_request_input",
+        "invalid_core_work_input", "invalid_core_result_input",
+        "invalid_core_knowledge_input", "invalid_editor_draft_spec",
+        "invalid_editor_input", "invalid_editor_plan",
+    )),
+)
+
+
+def classify_dify_error(status_code: int, payload: object) -> MaxisGatewayError:
+    """Refine a bounded JSON 400/422 into a fixed, content-free diagnostic.
+
+    This is advisory failure classification, never authorization or model identity.
+    Only known wire codes and fixed provider/our-code markers are recognized. HTTP
+    authentication, rate limits and server failures retain their existing semantics.
+    No remote string is attached to the exception or retained outside this call.
+    """
+    fallback = classify_http_status(status_code)
+    if status_code not in (400, 422) or not isinstance(payload, dict):
+        return fallback
+    nested = payload.get("error")
+    rows = [payload, nested] if isinstance(nested, dict) else [payload]
+    for row in rows:
+        for key in ("code", "type"):
+            value = row.get(key)
+            if isinstance(value, str) and len(value) <= 128:
+                code = _DIFY_ERROR_CODES.get(value.lower())
+                if code is not None:
+                    return MaxisGatewayError(code, status_code=status_code)
+    for row in rows:
+        message = row.get("message")
+        if not isinstance(message, str):
+            continue
+        for code, markers in _DIFY_ERROR_MARKERS:
+            if any(re.search(r"(?<!\w)" + re.escape(marker) + r"(?!\w)", message)
+                   for marker in markers):
+                return MaxisGatewayError(code, status_code=status_code)
+    return fallback
 
 
 _EVALUATION_STAGES = frozenset({
@@ -141,4 +209,5 @@ def evaluation_failure_diagnostics(
     }
 
 
-__all__ = ["MaxisErrorCode", "MaxisGatewayError", "classify_http_status", "evaluation_failure_diagnostics"]
+__all__ = ["MaxisErrorCode", "MaxisGatewayError", "classify_http_status",
+           "classify_dify_error", "evaluation_failure_diagnostics"]

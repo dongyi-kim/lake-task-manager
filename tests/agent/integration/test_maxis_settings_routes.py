@@ -579,6 +579,13 @@ def test_status_projects_malicious_legacy_profile_and_probe_to_closed_shapes(
         "knowledgeRetrievalVerified": False,
         "knowledgeManifestSha256": "",
         "roleId": "",
+        "generationAttempted": False,
+        "generationVerified": False,
+        "modelHealth": {
+            "status": "not_checked", "scope": "synthetic_control_path",
+            "identityStatus": "not_exposed", "reasonCode": "probe_failed",
+            "nextAction": "연결·입력 계약을 확인한 뒤 연결·모델 검사를 실행하세요.",
+        },
     }
     assert row["credentials"]["agent_core"] == {
         "configured": True,
@@ -678,6 +685,7 @@ def test_probe_adapter_uses_foundation_client_contract_without_network(client, m
                 version_verified=True,
                 citation_verified=True,
                 knowledge_retrieval_verified=True,
+                generation_verified=True,
                 retrieval_resource_count=1,
             )
         ),
@@ -688,7 +696,7 @@ def test_probe_adapter_uses_foundation_client_contract_without_network(client, m
         "agent_core": "fake-key", "editor_author": "", "pmo_brief": "",
     })
     assert result["ok"] is True
-    assert result["workflows"]["agent_core"] == {
+    expected = {
         "ok": True, "statusCode": 200, "ms": 16, "errorCode": "",
         "missingParameters": [],
         "appModeVerified": True,
@@ -699,6 +707,11 @@ def test_probe_adapter_uses_foundation_client_contract_without_network(client, m
         "knowledgeManifestSha256": manifest_sha,
         "roleId": "knowledge_curator",
     }
+    core = result["workflows"]["agent_core"]
+    assert {key: core[key] for key in expected} == expected
+    assert core["generationVerified"] is True
+    assert core["modelHealth"]["status"] == "passed"
+    assert core["modelHealth"]["identityStatus"] == "not_exposed"
     assert seen == {"profile": "dev", "base": "https://dev.maxis.example/v1",
                     "info_key": "fake-key", "key": "fake-key",
                     "dataset": DATASET_A}
@@ -771,7 +784,7 @@ def test_probe_rejects_nonexact_dify_app_mode_before_other_endpoints(
     body = response.json()
     assert body["ok"] is False
     core = body["workflows"]["agent_core"]
-    assert core == {
+    expected = {
         "ok": False,
         "statusCode": 200,
         "ms": 1,
@@ -779,6 +792,8 @@ def test_probe_rejects_nonexact_dify_app_mode_before_other_endpoints(
         "missingParameters": [],
         "appModeVerified": False,
     }
+    assert {key: core[key] for key in expected} == expected
+    assert core["modelHealth"]["status"] == "not_checked"
     assert "private-test-app-name" not in response.text
     assert "private-test-app-description" not in response.text
     assert client.get("/api/agent/maxis/status").json()["profiles"][0][
@@ -906,6 +921,8 @@ def test_three_apps_pass_synthetic_chat_contract_and_can_activate(client, monkey
         assert row["versionBindingVerified"] is True
         assert row["citationContractVerified"] is True
         assert row["knowledgeRetrievalVerified"] is True
+        assert row["modelHealth"]["status"] == "passed"
+        assert row["modelHealth"]["scope"] == "synthetic_control_path"
     chat_calls = [call for call in calls if call["path"] == "/chat-messages"]
     info_calls = [call for call in calls if call["path"] == "/info"]
     assert len(info_calls) == 3
@@ -957,7 +974,11 @@ def test_candidate_must_be_saved_probed_and_explicitly_activated(client, monkeyp
     assert killed["routes"]["agent_core"] == "shadow"
 
 
-def test_api_discards_probe_success_when_profile_changes_in_flight(client, monkeypatch):
+@pytest.mark.parametrize("overall_ok", [True, False])
+@pytest.mark.parametrize("mutation", ["profile", "credential"])
+def test_api_discards_probe_success_when_profile_changes_in_flight(
+    client, monkeypatch, overall_ok, mutation,
+):
     assert _save_candidate(client).status_code == 200
     assert client.put(
         "/api/agent/maxis/credentials/dev",
@@ -968,19 +989,70 @@ def test_api_discards_probe_success_when_profile_changes_in_flight(client, monke
     def stale_success(profile, keys):
         assert profile["workflow_bundle_version"] == "ltm-agent-1"
         assert keys["agent_core"] == "probe-start-secret"
-        profiles.save("dev", {"workflow_bundle_version": "ltm-agent-2"})
-        return _verified_probe_result("agent_core")
+        if mutation == "profile":
+            profiles.save("dev", {"workflow_bundle_version": "ltm-agent-2"})
+        else:
+            credentials.save_for("dev", {"agent_core": "rotated-key"})
+            profiles.credential_changed("dev")
+        result = _verified_probe_result("agent_core")
+        result["ok"] = overall_ok
+        row = result["workflows"]["agent_core"]
+        row.update(generationAttempted=True, generationVerified=True, statusCode=200)
+        if not overall_ok:
+            row.update(ok=False, knowledgeRetrievalVerified=False,
+                       errorCode="knowledge_retrieval_failed")
+        return result
 
     monkeypatch.setattr(routes, "_run_maxis_probe", stale_success)
     response = client.post("/api/agent/maxis/probe/dev", json={})
 
     assert response.status_code == 200
     assert response.json()["ok"] is False
+    assert response.json()["workflows"] == {}
+    assert response.json()["at"].endswith("Z")
     public = client.get("/api/agent/maxis/status").json()["profiles"][0]
     assert public["verified"] is False
     assert public["lastProbe"]["ok"] is False
     assert public["lastProbe"]["workflows"] == {}
     assert "stale" in public["lastProbe"]["error"]
+    assert response.json() == public["lastProbe"]
+
+
+def test_probe_invalidated_after_persistence_does_not_return_raw_success(client, monkeypatch):
+    import app.agent.routes as routes
+
+    _save_candidate(client)
+    client.put("/api/agent/maxis/credentials/dev", json={"agentCoreApiKey": "fake-key"})
+    monkeypatch.setattr(routes, "_run_maxis_probe",
+                        lambda *_: _verified_probe_result("agent_core"))
+    original = profiles.mark_probe
+
+    def mark_then_edit(*args, **kwargs):
+        accepted = original(*args, **kwargs)
+        profiles.save("dev", {"workflow_bundle_version": "edited-after-proof"})
+        return accepted
+
+    monkeypatch.setattr(profiles, "mark_probe", mark_then_edit)
+    response = client.post("/api/agent/maxis/probe/dev", json={}).json()
+    assert response == {"ok": False, "at": "", "workflows": {},
+                        "error": "Probe result binding is stale or missing."}
+
+
+@pytest.mark.parametrize("overall_ok", [True, False])
+def test_final_signature_change_discards_partial_generation_proof(client, monkeypatch, overall_ok):
+    _save_candidate(client)
+    client.put("/api/agent/maxis/credentials/dev", json={"agentCoreApiKey": "fake-key"})
+    _, keys, binding = profiles.start_probe("dev")
+    keys.clear()
+    signatures = iter([binding, "a" * 64 if binding != "a" * 64 else "b" * 64])
+    monkeypatch.setattr(profiles, "_probe_signature", lambda _: next(signatures))
+    result = _verified_probe_result("agent_core")
+    row = result["workflows"]["agent_core"]
+    row.update(generationAttempted=True, generationVerified=True, statusCode=200)
+    accepted = profiles.mark_probe("dev", overall_ok, result, start_binding=binding)
+    assert not accepted
+    from app.infra import prefs
+    assert prefs.load()["maxisLastProbeByProfile"]["dev"]["workflows"] == {}
 
 
 def test_profile_edit_and_credential_rotation_invalidate_probe(client, monkeypatch):
