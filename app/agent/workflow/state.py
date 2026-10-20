@@ -139,6 +139,10 @@ def merge_role_telemetry(old: dict | None, new: dict | None) -> dict:
         merged[role] = {
             **value,
             "calls": int(prior.get("calls") or 0) + int(value.get("calls") or 0),
+            "failedCalls": int(prior.get("failedCalls") or 0)
+            + int(value.get("failedCalls") or 0),
+            "unknownUsageCalls": int(prior.get("unknownUsageCalls") or 0)
+            + int(value.get("unknownUsageCalls") or 0),
             "promptTokens": int(prior.get("promptTokens") or 0)
             + int(value.get("promptTokens") or 0),
             "completionTokens": int(prior.get("completionTokens") or 0)

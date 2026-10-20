@@ -18,8 +18,10 @@ import math
 import re
 import secrets
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import wraps
 from typing import Any, Literal, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
@@ -28,6 +30,9 @@ from app.agent.maxis.recovery import BlockedRecovery, blocked_recovery
 
 
 log = logging.getLogger("agent.maxis.runtime")
+_request_observation: ContextVar[dict | None] = ContextVar(
+    "maxis_runtime_request_observation", default=None,
+)
 
 RuntimeRoute = Literal["local", "shadow", "maxis"]
 _ROUTES = frozenset({"local", "shadow", "maxis"})
@@ -65,6 +70,23 @@ _QUERY_SOURCE_KINDS = {
 _LOCAL_ONLY_QUERY_SOURCES = frozenset({"web", "github"})
 class MaxisRuntimeError(RuntimeError):
     """A fail-closed runtime/profile/remote-contract error."""
+
+
+def _capture_failed_request(function):
+    """Carry only validated, content-free observations across exception boundaries."""
+    @wraps(function)
+    def invoke_with_observation(*args, **kwargs):
+        captured: dict = {}
+        token = _request_observation.set(captured)
+        try:
+            return function(*args, **kwargs)
+        except MaxisRuntimeError as exc:
+            if captured and not isinstance(exc, MaxisNeedsInput):
+                exc.metadata = dict(captured)
+            raise
+        finally:
+            _request_observation.reset(token)
+    return invoke_with_observation
 
 
 class MaxisBlockedResult(MaxisRuntimeError):
@@ -1777,6 +1799,15 @@ def _record_remote_audit(
             "blocked": "blocked", "failed": "failed",
         }[status]
         observed = with_result_status(remote_request, outcome)
+        captured = _request_observation.get()
+        if captured is not None and observed is not None:
+            # No prompt, raw response or exception message can enter this sidecar.
+            captured.update({
+                "requestTelemetry": observed.model_dump(mode="json"),
+                "workflowBundleVersion": resolution.workflow_bundle_version,
+                "profile": resolution.profile,
+                "errorCode": error_code,
+            })
 
         event = make_audit_event(
             correlation_id=_audit_correlation(correlation_id),
@@ -1967,6 +1998,7 @@ def record_change_audit(
     return True
 
 
+@_capture_failed_request
 def invoke(
     role_id: str,
     payload: dict,
@@ -2189,7 +2221,16 @@ def invoke(
             latency_ms=getattr(getattr(exc, "telemetry", None), "latency_ms", 0),
             **audit_common,
         )
-        raise MaxisRuntimeError(f"MAXIS Role 호출에 실패했습니다: {role_id}") from exc
+        guidance = {
+            "workflow_contract": "서버 Workflow 응답 계약 오류. 게시 Workflow의 역할별 검증 결과를 확인하세요.",
+            "model_unavailable": "서버 Workflow에 설정된 모델을 사용할 수 없습니다. 모델 선택과 게시 상태를 확인하세요.",
+            "model_credentials": "서버 모델 인증 오류. MAXIS 프로젝트의 모델 연결을 확인하세요.",
+            "model_parameters": "서버 모델 옵션 오류. Workflow 모델의 지원 옵션을 확인하세요.",
+        }.get(code, "")
+        raise MaxisRuntimeError(
+            f"MAXIS Role 호출에 실패했습니다: {role_id}"
+            + (f" — {guidance}" if guidance else "")
+        ) from exc
 
     # Carry the native request observation through every post-HTTP rejection branch.
     # HTTP success alone is neither contract acceptance nor measured human usefulness.

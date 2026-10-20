@@ -107,3 +107,35 @@ def with_result_status(observation, result_status: str) -> RemoteRequestTelemetr
     data = observation.model_dump(mode="python")
     data["result_status"] = result_status
     return RemoteRequestTelemetryV1.model_validate(data, strict=True)
+
+
+def role_usage_observation(metadata: dict) -> dict | None:
+    """Project request attempts and known token subtotals, never missing usage as zero."""
+    raw = metadata.get("requestTelemetry")
+    if raw is not None:
+        observation = RemoteRequestTelemetryV1.model_validate(raw, strict=True)
+        if observation.transport_status == "not_attempted":
+            return None
+        prompt, completion, total = (
+            observation.prompt_tokens, observation.completion_tokens, observation.total_tokens,
+        )
+        failed = observation.result_status in {"failed", "blocked"}
+        latency = observation.latency_ms
+    else:
+        # Compatibility with recorded/direct Role outputs predating native telemetry.
+        usage = metadata.get("usage")
+        if not isinstance(usage, dict):
+            return None
+        prompt, completion, total = (
+            _tokens(usage.get("promptTokens")), _tokens(usage.get("completionTokens")),
+            _tokens(usage.get("totalTokens")),
+        )
+        failed = metadata.get("resultStatus") in {"blocked", "failed"}
+        latency = min(3_600_000, max(0, int(metadata.get("latencyMs") or 0)))
+    return {
+        "engine": "maxis", "calls": 1, "failedCalls": int(failed),
+        "unknownUsageCalls": int(any(value is None for value in (prompt, completion, total))),
+        "promptTokens": prompt or 0, "completionTokens": completion or 0,
+        "totalTokens": total or 0, "latencyMs": latency,
+        "workflowBundleVersion": str(metadata.get("workflowBundleVersion") or "")[:120],
+    }

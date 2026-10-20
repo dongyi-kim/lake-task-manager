@@ -30,6 +30,7 @@ import {
   richEditorToText, draftDescriptionText, sanitizeDraftDescription,
 } from "../agent/contentTransforms.js";
 import AGENT_VIEW_TEMPLATE from "../agent/agentViewTemplate.js";
+import { usageSummary, usageTitle, runtimeDebugLines } from "../agent/usageDisplay.js";
 
 // 빈 화면에 예시를 둔다 — 무엇을 할 수 있는 도구인지 설명하는 가장 빠른 방법이고,
 // 사용자가 첫 문장을 어떻게 쓸지 몰라 멈추는 것을 막는다.
@@ -254,6 +255,8 @@ export default {
       return updated ? `갱신 ${updated}` : (retrieved ? `조회 ${retrieved}` : "시점 미확인");
     },
     runtimeMeta(t) { return (t && t.runtime) || {}; },
+    usageSummary,
+    usageTitle,
     /** [n] 마커 호버 — **하단 참조 목록과 같은 모양의** 커스텀 상자를 띄운다.
      *
      *  브라우저 기본 툴팁(title)을 쓰지 않는 이유가 셋이다: ①노란 기본 상자가 하단 참조
@@ -502,6 +505,8 @@ export default {
               draftItems: ev.draft_items || [],
               runtime: ev.runtime || {
                 engine: ev.engine || "", profile: ev.profile || "",
+                roleEngines: ev.roleEngines || {},
+                lastRole: ev.lastRole || "", lastRoleEngine: ev.lastRoleEngine || "",
                 workflowBundleVersion: ev.workflowBundleVersion || ev.workflow_bundle_version || "",
                 knowledgeVersion: ev.knowledgeVersion || ev.knowledge_version || "",
                 correlationId: ev.correlationId || ev.correlation_id || "",
@@ -774,23 +779,21 @@ export default {
           L.push(`  [생성됨] ` + t.result.created.map((c) => c.key).join(", "));
         if (t.result && (t.result.failed || []).length)
           L.push(`  [실패] ` + t.result.failed.map((f) => `${f.summary}: ${f.error}`).join(" / "));
-        if (t.usage) L.push(`  [사용량] ${t.usage.calls || "?"}회 · ${t.usage.totalTokens || 0}tok · $${t.usage.costUsd || 0}`);
+        if (t.usage) L.push(`  [사용량] ${usageSummary(t.usage)}`);
         L.push("");
       });
       // 운영 대화 복사는 사용자 입출력만. local/mock에서는 재현에 필요한 진행·연결 정보를
       // 함께 싣는다. SSE token 원문과 API 키는 애초에 debug에 저장하지 않는다.
       if (this.appMeta && this.appMeta.env !== "prod") {
-        const active = this.status && this.status.activeConfig;
         L.push("## Local debug", "",
           `- env: ${this.appMeta.env || "unknown"}`,
           `- rev: ${this.appMeta.rev || "unknown"}`,
-          `- threadId: ${this.threadId || "(not assigned)"}`,
-          `- config: ${active ? active.name + " / " + active.provider : "(none)"}`,
-          `- model: ${(this.status && this.status.chatModel) || "(none)"}`, "");
+          `- threadId: ${this.threadId || "(not assigned)"}`, "");
         this.turns.filter((t) => t.who === "agent" && t.debug).forEach((t, i) => {
           const d = t.debug;
           L.push(`### Turn ${i + 1}`, "", `- startedAt: ${d.startedAt || ""}`,
             `- finishedAt: ${d.finishedAt || ""}`, `- tokenChars: ${d.tokenChars || 0}`);
+          L.push(...runtimeDebugLines(t));
           (d.plan || []).forEach((p) => {
             L.push(`- [${p.status || "?"}] ${p.label || p.id}` + (p.note ? ` — ${p.note}` : ""));
             (p.details || []).forEach((x) => L.push(`  - ${x.done ? "완료" : "진행"}: ${x.text}`));

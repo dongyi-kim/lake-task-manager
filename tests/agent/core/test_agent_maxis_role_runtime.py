@@ -1520,16 +1520,185 @@ def test_invoke_sends_only_guarded_pack_and_pinned_metadata(monkeypatch, audit_e
     assert audit_events[-1].error_code == "response_knowledge_manifest_mismatch"
 
     observed["http_error"] = True
-    with pytest.raises(backend.MaxisRuntimeError, match="호출에 실패"):
+    with pytest.raises(backend.MaxisRuntimeError, match="호출에 실패") as failed:
         backend.invoke("request_architect", payload, "thread-1", "corr-1")
     assert audit_events[-1].remote_request.transport_status == "failed"
     assert audit_events[-1].remote_request.http_status == 503
     assert audit_events[-1].remote_request.result_status == "failed"
     assert audit_events[-1].remote_request.total_tokens is None
+    assert failed.value.metadata["requestTelemetry"]["transport_status"] == "failed"
+    assert failed.value.metadata["requestTelemetry"]["total_tokens"] is None
+    assert failed.value.metadata["errorCode"] == "gateway_upstream"
     serialized = json.dumps([event.model_dump(mode="json") for event in audit_events])
     assert "private upstream" not in serialized
     assert "secret-read-locally" not in serialized
     assert "private-conversation" not in serialized
+
+
+def test_failed_remote_attempt_is_counted_with_unknown_tokens(monkeypatch):
+    from app.agent.maxis.telemetry import request_observation
+    from app.agent.workflow.session import _usage_with_remote
+    from app.agent.workflow.state import merge_role_telemetry
+
+    agent = _DemoStructured()
+    monkeypatch.setattr(
+        backend, "resolve_role",
+        lambda *_a, **_k: backend.RoleResolution(route="maxis"),
+    )
+    observation = request_observation(
+        transport_status="failed", http_status=400, latency_ms=3200,
+    ).model_copy(update={"result_status": "failed"})
+    failure = backend.MaxisRuntimeError("MAXIS Role 호출에 실패했습니다: knowledge_curator")
+    failure.metadata = {"requestTelemetry": observation.model_dump(),
+                        "errorCode": "gateway_workflow_contract"}
+    patch = agent.fallback({"runtime_role_routes": {"knowledge_curator": "maxis"}}, failure)
+    telemetry = patch["runtime_role_telemetry"]["knowledge_curator"]
+    assert telemetry["calls"] == 1
+    assert telemetry["failedCalls"] == 1
+    assert telemetry["unknownUsageCalls"] == 1
+    state = {"runtime_role_telemetry": merge_role_telemetry(
+        {"knowledge_curator": {
+            "calls": 1, "promptTokens": 4000, "completionTokens": 1654,
+            "totalTokens": 5654, "latencyMs": 50, "unknownUsageCalls": 0,
+        }}, patch["runtime_role_telemetry"],
+    )}
+    usage = _usage_with_remote({"calls": 0, "totalTokens": 0}, state)
+    assert usage["calls"] == 2
+    assert usage["remoteCalls"] == 2 and usage["failedCalls"] == 1
+    assert usage["totalTokens"] == 5654
+    assert usage["usageComplete"] is False and usage["unknownUsageCalls"] == 1
+    assert usage["costStatus"] == "unknown" and "costUsd" not in usage
+    assert usage["callsDetail"][0]["failedCalls"] == 1
+    assert usage["callsDetail"][0]["usageComplete"] is False
+
+
+def test_remote_guard_rejection_preserves_observed_usage(monkeypatch):
+    from app.agent.maxis.telemetry import request_observation
+    from app.agent.workflow.session import _usage_with_remote
+
+    agent = _DemoStructured()
+    monkeypatch.setattr(
+        backend, "resolve_role",
+        lambda *_a, **_k: backend.RoleResolution(route="maxis"),
+    )
+    observation = request_observation(
+        transport_status="succeeded", http_status=200, latency_ms=20,
+        raw={"metadata": {"usage": {"prompt_tokens": 5, "completion_tokens": 3,
+                                   "total_tokens": 8}}},
+    ).model_copy(update={"result_status": "blocked"})
+    failure = backend.MaxisRuntimeError("MAXIS Role 응답 계약 검증에 실패했습니다")
+    failure.metadata = {"requestTelemetry": observation.model_dump()}
+    patch = agent.fallback({"runtime_role_routes": {"knowledge_curator": "maxis"}}, failure)
+    usage = _usage_with_remote({}, patch)
+    assert usage["calls"] == 1 and usage["failedCalls"] == 1
+    assert usage["totalTokens"] == 8 and usage["usageComplete"] is True
+    assert usage["modelIdentityStatus"] == "not_exposed"
+
+
+def test_remote_preflight_failure_does_not_claim_an_http_attempt(monkeypatch):
+    agent = _DemoStructured()
+    monkeypatch.setattr(
+        backend, "resolve_role",
+        lambda *_a, **_k: backend.RoleResolution(route="maxis"),
+    )
+    patch = agent.fallback(
+        {"runtime_role_routes": {"knowledge_curator": "maxis"}},
+        backend.MaxisRuntimeError("MAXIS 설정 없음"),
+    )
+    assert "runtime_role_telemetry" not in patch
+
+
+def test_failed_attempt_telemetry_does_not_reresolve_changed_profile(monkeypatch):
+    from app.agent.maxis.telemetry import request_observation
+
+    def changed_profile(*_args, **_kwargs):
+        raise backend.RuntimeProfileChanged("profile changed in flight")
+
+    monkeypatch.setattr(backend, "resolve_role", changed_profile)
+    error = backend.RuntimeProfileChanged("profile changed in flight")
+    error.metadata = {"requestTelemetry": request_observation(
+        transport_status="succeeded", http_status=200, latency_ms=10,
+    ).model_copy(update={"result_status": "blocked"}).model_dump()}
+    patch = _DemoStructured().fallback(
+        {"runtime_role_routes": {"knowledge_curator": "maxis"}}, error,
+    )
+    assert patch["runtime_role_telemetry"]["knowledge_curator"]["calls"] == 1
+    assert "profile changed" in patch["error"]
+
+
+@pytest.mark.parametrize("failure_stage", ["schema", "projection", "apply", "profile"])
+def test_late_local_rejection_preserves_remote_attempt_once(monkeypatch, failure_stage):
+    from app.agent.maxis.telemetry import request_observation
+    from app.agent.workflow.session import _usage_with_remote
+
+    agent = _DemoStructured()
+    resolves = []
+
+    def resolve(*_args, **_kwargs):
+        resolves.append(True)
+        if failure_stage == "profile" and len(resolves) > 1:
+            raise backend.RuntimeProfileChanged("실행 프로필이 변경되었습니다.")
+        return backend.RoleResolution(route="maxis")
+
+    monkeypatch.setattr(backend, "resolve_role", resolve)
+    observation = request_observation(
+        transport_status="succeeded", http_status=200, latency_ms=15,
+        raw={"metadata": {"usage": {"prompt_tokens": 5, "completion_tokens": 3,
+                                   "total_tokens": 8}}},
+    ).model_copy(update={"result_status": "completed"})
+    monkeypatch.setattr(backend, "invoke_role", lambda *_a, **_k: backend.RemoteRoleOutput(
+        {"value": 7 if failure_stage == "schema" else "remote"},
+        metadata={"requestTelemetry": observation.model_dump()},
+    ))
+    monkeypatch.setattr(agent, "_invoke_local_structured",
+                        lambda *_a, **_k: pytest.fail("No local repair is allowed"))
+    if failure_stage == "projection":
+        monkeypatch.setattr(agent, "post_projection_correction",
+                            lambda *_a: "private validation detail")
+    if failure_stage == "apply":
+        def reject(*_args):
+            raise ValueError("private response content")
+        monkeypatch.setattr(agent, "apply", reject)
+    patch = agent.node()({
+        "messages": [HumanMessage(content="request")],
+        "runtime_role_routes": {"knowledge_curator": "maxis"},
+    })
+    usage = _usage_with_remote({}, patch)
+    assert patch["error"] and "private" not in patch["error"]
+    assert usage["calls"] == 1 and usage["failedCalls"] == 1
+    assert usage["totalTokens"] == 8 and usage["usageComplete"] is True
+    assert len(resolves) == (2 if failure_stage == "profile" else 1)
+
+
+def test_remote_request_observation_scope_is_parallel_and_reset(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from app.agent.maxis.telemetry import request_observation
+
+    barrier = Barrier(2)
+
+    @backend._capture_failed_request
+    def call(tokens):
+        if tokens is not None:
+            captured = backend._request_observation.get()
+            captured["requestTelemetry"] = request_observation(
+                transport_status="failed", http_status=400, latency_ms=15,
+                raw={"metadata": {"usage": {"total_tokens": tokens}}},
+            ).model_dump()
+            barrier.wait(timeout=5)
+        raise backend.MaxisRuntimeError("fixed safe failure")
+
+    def observe(tokens):
+        try:
+            call(tokens)
+        except backend.MaxisRuntimeError as exc:
+            return getattr(exc, "metadata", None)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        rows = list(pool.map(observe, [13, 29]))
+    assert [row["requestTelemetry"]["total_tokens"] for row in rows] == [13, 29]
+    assert observe(None) is None
+    assert backend._request_observation.get() is None
 
 
 def test_role_payload_binds_exact_structured_and_text_schemas_inside_evidence_pack():

@@ -1473,24 +1473,31 @@ def _usage_with_remote(local_usage: dict, state: dict) -> dict:
     completion = sum(
         max(0, int(row.get("completionTokens") or 0)) for row in selected.values()
     )
+    total = sum(max(0, int(row.get("totalTokens") or 0)) for row in selected.values())
+    failed = sum(max(0, int(row.get("failedCalls") or 0)) for row in selected.values())
+    unknown = sum(max(0, int(row.get("unknownUsageCalls") or 0)) for row in selected.values())
     out["calls"] = int(out.get("calls") or 0) + remote_calls
     out["promptTokens"] = int(out.get("promptTokens") or 0) + prompt
     out["completionTokens"] = int(out.get("completionTokens") or 0) + completion
-    out["totalTokens"] = int(out.get("totalTokens") or 0) + prompt + completion
+    out["totalTokens"] = int(out.get("totalTokens") or 0) + total
     out["remoteCalls"] = remote_calls
+    out["failedCalls"] = int(out.get("failedCalls") or 0) + failed
+    out["unknownUsageCalls"] = int(out.get("unknownUsageCalls") or 0) + unknown
+    out["usageComplete"] = out.get("usageComplete") is not False and unknown == 0
+    out["usageScope"] = "reported_response_metadata"
+    out["modelIdentityStatus"] = "not_exposed"
     if remote_calls and not out.get("model"):
         out["model"] = "maxis/dify"
     # Local provider pricing cannot price an internal MAXIS deployment.
     if remote_calls:
         out.pop("costUsd", None)
+        out["costStatus"] = "unknown"
     by_node = {key: dict(value) for key, value in (out.get("byNode") or {}).items()
                if isinstance(value, dict)}
     details = [dict(row) for row in (out.get("callsDetail") or []) if isinstance(row, dict)]
     for role, row in sorted(selected.items()):
         calls = max(0, int(row.get("calls") or 0))
-        tokens = max(0, int(row.get("promptTokens") or 0)) + max(
-            0, int(row.get("completionTokens") or 0)
-        )
+        tokens = max(0, int(row.get("totalTokens") or 0))
         by_node[role] = {
             "calls": int((by_node.get(role) or {}).get("calls") or 0) + calls,
             "tokens": int((by_node.get(role) or {}).get("tokens") or 0) + tokens,
@@ -1504,10 +1511,14 @@ def _usage_with_remote(local_usage: dict, state: dict) -> dict:
             "node": role, "model": "maxis/dify", "engine": "maxis",
             "outputContract": "remote-role-result.v1",
             "executionLayer": "remote_semantic", "executionStage": "synthesis",
-            "finishReason": "stop", "promptTokens": max(
+            "finishReason": "failed" if row.get("failedCalls") else "stop",
+            "failedCalls": max(0, int(row.get("failedCalls") or 0)),
+            "usageComplete": not bool(row.get("unknownUsageCalls")),
+            "modelIdentityStatus": "not_exposed", "promptTokens": max(
                 0, int(row.get("promptTokens") or 0)
             ),
             "completionTokens": max(0, int(row.get("completionTokens") or 0)),
+            "totalTokens": tokens,
             "seconds": round(max(0, int(row.get("latencyMs") or 0)) / 1000, 3),
             "calls": calls,
             "workflowBundleVersion": str(row.get("workflowBundleVersion") or "")[:120],

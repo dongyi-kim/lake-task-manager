@@ -467,12 +467,48 @@ class Agent(ABC):
 
     def apply_routed(self, state: AgentState, out: dict) -> dict:
         """Apply a Role result and its explicit per-call MAXIS metadata projection."""
-        return self._with_runtime_projection(
-            state,
-            self.apply(state, out),
-            runtime_patch=getattr(out, "state_patch", None),
-            metadata=getattr(out, "metadata", None),
+        try:
+            return self._with_runtime_projection(
+                state,
+                self.apply(state, out),
+                runtime_patch=getattr(out, "state_patch", None),
+                metadata=getattr(out, "metadata", None),
+            )
+        except Exception as exc:
+            from app.agent.maxis.backend import RemoteRoleOutput
+            if not isinstance(out, RemoteRoleOutput):
+                raise
+            raise self._remote_local_rejection(out, exc) from exc
+
+    def _remote_local_rejection(self, out, error: Exception) -> Exception:
+        """Retain the completed request when a later local guard rejects its result."""
+        from app.agent.maxis.backend import MaxisRuntimeError, RuntimeProfileChanged
+        from app.agent.maxis.telemetry import RemoteRequestTelemetryV1, with_result_status
+
+        failure = (
+            RuntimeProfileChanged("MAXIS 호출 후 실행 프로필이 변경되어 결과를 폐기했습니다.")
+            if isinstance(error, RuntimeProfileChanged)
+            else MaxisRuntimeError(
+                f"MAXIS Role 결과가 로컬 결정적 계약을 충족하지 못했습니다: {self.name}"
+            )
         )
+        metadata = getattr(out, "metadata", None)
+        if isinstance(metadata, dict):
+            # These are local observations from this output, never exception prose.
+            failure.metadata = {
+                key: metadata[key] for key in (
+                    "requestTelemetry", "usage", "latencyMs", "workflowBundleVersion",
+                ) if key in metadata
+            }
+            failure.metadata["resultStatus"] = "blocked"
+            if metadata.get("requestTelemetry") is not None:
+                observation = RemoteRequestTelemetryV1.model_validate(
+                    metadata["requestTelemetry"], strict=True,
+                )
+                failure.metadata["requestTelemetry"] = with_result_status(
+                    observation, "blocked",
+                ).model_dump(mode="json")
+        return failure
 
     def _with_runtime_projection(
         self,
@@ -514,17 +550,10 @@ class Agent(ABC):
                 "runtime_last_role_engine": authoritative_engine,
             }
             if authoritative_engine == "maxis" and isinstance(metadata, dict):
-                usage = metadata.get("usage") if isinstance(metadata.get("usage"), dict) else {}
-                patch["runtime_role_telemetry"] = {self.name: {
-                    "engine": "maxis", "calls": 1,
-                    "promptTokens": max(0, int(usage.get("promptTokens") or 0)),
-                    "completionTokens": max(0, int(usage.get("completionTokens") or 0)),
-                    "totalTokens": max(0, int(usage.get("totalTokens") or 0)),
-                    "latencyMs": max(0, int(metadata.get("latencyMs") or 0)),
-                    "workflowBundleVersion": str(
-                        metadata.get("workflowBundleVersion") or ""
-                    )[:120],
-                }}
+                from app.agent.maxis.telemetry import role_usage_observation
+                observed = role_usage_observation(metadata)
+                if observed is not None:
+                    patch["runtime_role_telemetry"] = {self.name: observed}
         return patch
 
     def _maxis_needs_input_patch(self, state: AgentState, err: Exception) -> dict | None:
@@ -971,19 +1000,17 @@ class Agent(ABC):
         remote = maxis_backend.invoke_role(
             self.name, state, messages, schema, output_kind="structured",
         )
-        candidate = self.pre_validate_structured_output(
-            state, _as_dict(remote), output_contract="maxis_remote",
-            execution_stage="synthesis",
-        )
-        out = _validate_output(candidate, schema)
-        # A remote semantic result may not escape a Role-specific deterministic
-        # projection invariant.  Do not repair it with the local LLM because that would
-        # silently turn one authoritative MAXIS request into a chained dual orchestrator.
-        violation = str(self.post_projection_correction(state, out) or "").strip()
-        if violation:
-            raise RuntimeError(
-                f"MAXIS Role 결과가 로컬 결정적 계약을 충족하지 못했습니다: {self.name}"
+        try:
+            candidate = self.pre_validate_structured_output(
+                state, _as_dict(remote), output_contract="maxis_remote",
+                execution_stage="synthesis",
             )
+            out = _validate_output(candidate, schema)
+            # Never repair a remote semantic result with a second, local model.
+            if str(self.post_projection_correction(state, out) or "").strip():
+                raise RuntimeError("remote local projection rejected")
+        except Exception as exc:
+            raise self._remote_local_rejection(remote, exc) from exc
         return maxis_backend.RemoteRoleOutput(
             out, getattr(remote, "state_patch", None), getattr(remote, "metadata", None),
         )
@@ -1014,10 +1041,26 @@ class Agent(ABC):
         from app.agent.workflow.maxis_blocked import blocked_failure_patch
 
         blocked = blocked_failure_patch(state, self.name, err)
-        if blocked is not None:
-            return blocked
-        return {"error": f"[{self.name}] {str(err)[:300]}",
-                "trace": note(state, self.name, f"실패: {str(err)[:120]}")}
+        patch = blocked if blocked is not None else {
+            "error": f"[{self.name}] {str(err)[:300]}",
+            "trace": note(state, self.name, f"실패: {str(err)[:120]}"),
+        }
+        from app.agent.maxis.backend import MaxisRuntimeError
+        if (isinstance(err, MaxisRuntimeError)
+                and isinstance(getattr(err, "metadata", None), dict)
+                and (state.get("runtime_role_routes") or {}).get(self.name) == "maxis"):
+            from app.agent.maxis.telemetry import role_usage_observation
+            observed = role_usage_observation(err.metadata)
+            if observed is not None:
+                # A profile can change in flight. Do not re-resolve that now-invalid
+                # route while preserving the attempt that already happened.
+                patch.update({
+                    "runtime_role_telemetry": {self.name: observed},
+                    "runtime_role_engines": {self.name: "maxis"},
+                    "runtime_last_role": self.name,
+                    "runtime_last_role_engine": "maxis",
+                })
+        return patch
 
 
 class StructuredAgent(Agent):
