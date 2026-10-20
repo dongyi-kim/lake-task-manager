@@ -73,10 +73,10 @@ def _remote_routes() -> dict[str, str]:
     return routes
 
 
-def test_production_authority_remains_fail_closed_without_signed_eval_verifier(
+def test_production_authority_remains_fail_closed_without_signed_prod_qualification(
     monkeypatch,
 ):
-    """Implemented Role ACL alone must not unlock production authority."""
+    """Implemented Role ACL alone must not bypass signed PROD qualification."""
 
     assert profiles.SIGNED_EXTERNAL_EVAL_VERIFICATION_IMPLEMENTED is False
     assert profiles.DETERMINISTIC_PRE_LLM_ROLE_ACL_IMPLEMENTED is True
@@ -84,7 +84,9 @@ def test_production_authority_remains_fail_closed_without_signed_eval_verifier(
     monkeypatch.setattr(profiles, "kill_switch_enabled", lambda: False)
 
     with pytest.raises(
-        backend.MaxisRuntimeError, match="Signed external Knowledge eval",
+        backend.MaxisRuntimeError,
+        match=(r"Signed external PROD MAXIS qualification is required for the "
+               r"current deployment and features\.$"),
     ) as caught:
         backend._require_authoritative_routes(
             _profile(), {"request_architect": "maxis"},

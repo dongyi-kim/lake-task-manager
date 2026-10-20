@@ -105,7 +105,7 @@ def test_knowledge_eval_attestation_round_trips_and_omitted_ui_field_is_preserve
     configured = client.put("/api/agent/maxis/profiles/prod", json={
         "baseUrl": "https://prod.maxis.example/v1",
         "workflowBundleVersion": "bundle-1",
-        "knowledgeVersion": "ltm-knowledge-2026.09",
+        "knowledgeVersion": "ltm-public-knowledge.v1",
         "knowledgeDatasetId": "11111111-1111-4111-8111-111111111111",
         "knowledgeSentinelSha256": "a" * 64,
         "remoteLogPolicyId": "SEC-2026-091",

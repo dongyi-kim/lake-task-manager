@@ -58,7 +58,7 @@ def _save_candidate(client, *, all_apps=False):
         "baseUrl": "https://dev.maxis.example/v1",
         "dataPolicy": "synthetic_only",
         "workflowBundleVersion": "ltm-agent-1",
-        "knowledgeVersion": "ltm-knowledge-2026.09",
+        "knowledgeVersion": "ltm-public-knowledge.v1",
         "knowledgeDatasetId": DATASET_A,
         "knowledgeSentinelSha256": SENTINEL_SHA,
         "workflows": {
@@ -567,7 +567,7 @@ def test_profile_route_validates_and_exposes_knowledge_manifest_binding(client):
     assert row["knowledgeSentinelSha256"] == SENTINEL_SHA
     assert row["effectiveKnowledgeSentinelSha256"] == SENTINEL_SHA
     assert len(row["knowledgeManifestSha256"]) == 64
-    assert row["knowledgeDocumentCount"] == 8
+    assert row["knowledgeDocumentCount"] == 10
 
 
 def test_probe_adapter_uses_foundation_client_contract_without_network(client, monkeypatch):

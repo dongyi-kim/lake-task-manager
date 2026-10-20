@@ -134,7 +134,9 @@ def test_offline_projections_pin_work_and_query_intent_revisions():
     # Work's runtime projection intentionally adds citeable intent and lossless text
     # references. Its old digest was c0da8ce977201243e1365aa607c19720191c7a65621c1078d8e76e2419f38c2f;
     # this pins the new projection, not a rewrite of historical raw evaluation data.
-    # Query adds only its backend-owned task row; all other fixture pins are unchanged.
+    # Query adds only its backend-owned task row. Editor's policy suffix now uses
+    # the public corpus term "본문" instead of "Description"; that query suffix
+    # is the only change from its old 58cd9be5... input identity.
     # This is an input identity assertion, not benchmark fixture/checker metadata.
     # Freeze the pre-policy-retrieval runtime for this fixture-input regression;
     # actual candidate projections are exercised by the tests above and runtime tests.
@@ -150,7 +152,7 @@ def test_offline_projections_pin_work_and_query_intent_revisions():
         "role-auditor": "8dcb5612eb5d8b03125cf7941b79ef302d9471714e5dcfda4bd1372add4ceb4f",
         "role-result": "c10afa5157a3f34402141c84af0e623a30b17be5a3fa5bb85f74cf92abba80e6",
         "role-portfolio": "f585f21c92ba86f8021ad5145e98875fbae9f1c92352b1fed8ef57f71554b2c2",
-        "role-editor": "58cd9be5cfa20159e85e79367a559b9b5fce7b5d88cd4673ef5613cd4d9175f0",
+        "role-editor": "65f711fd6330e4c55ed2317f49b99f09aba0f56510dafa16e8fd28940dd972d0",
         "role-overflow": "aadfdcafc9dbcd61916b594528ee751b7a7c5cbe6e846ea8bf71ec3ffeaa4940",
         "role-stale": "71adf31275c9adb478c0535b976c961e663708762e560787f966ee77e1869b5f",
         "role-missing": "26ecbd6472a5d7ec5d55b4abee7ae04b474e6a79f6ce96900da73b4d55940d8f",

@@ -34,6 +34,7 @@ RUNTIME_PINS = {
     "certifi": "2026.7.22",
     "tzdata": "2026.3",
     "jsonschema": "4.26.0",
+    "cryptography": "50.0.0",
     "nh3": "0.3.6",
     "mcp": "2.0.0",
 }
