@@ -144,7 +144,8 @@ def test_editor_author_requests_its_manifest_profile_without_numeric_sampling_ov
     }
 
 
-def test_editor_author_maxis_route_skips_local_provider_and_keeps_local_guards(monkeypatch):
+@pytest.mark.parametrize("unsupported", [False, True])
+def test_editor_author_maxis_route_skips_local_provider_and_keeps_local_guards(monkeypatch, unsupported):
     """MAXIS owns only generation; canonical editor normalization still runs locally."""
     from app.agent import config as CFG
     from app.agent.maxis import backend
@@ -191,7 +192,7 @@ def test_editor_author_maxis_route_skips_local_provider_and_keeps_local_guards(m
             {
                 "contract": "editor-draft.v1", "mode": "comment",
                 "content_html": "<p>MAXIS 검토 요청 초안</p>",
-                "source_ids": [], "unsupported_claims": [], "warnings": [],
+                "source_ids": [], "unsupported_claims": ["unsupported"] if unsupported else [], "warnings": [],
             },
             {
                 "evidence_workspace": {"sources": [], "claims": []},
@@ -208,6 +209,12 @@ def test_editor_author_maxis_route_skips_local_provider_and_keeps_local_guards(m
     monkeypatch.setattr(backend, "invoke_role", remote)
     result = C.compose("__new__", "comment", "검토 요청 초안을 작성해 줘")
 
+    if unsupported:
+        assert result["ok"] is False and "html" not in result
+        assert result["usage"]["calls"] == 1 and result["usage"]["failedCalls"] == 1
+        assert result["usage"]["totalTokens"] == 10
+        assert result["usage"]["callsDetail"][0]["finishReason"] == "failed"
+        return
     assert result["ok"] is True
     assert "MAXIS 검토 요청 초안" in result["html"]
     assert result["engine"] == "maxis" and result["profile"] == "dev"
@@ -218,6 +225,30 @@ def test_editor_author_maxis_route_skips_local_provider_and_keeps_local_guards(m
     assert observed["messages"] == [] and observed["output_kind"] == "structured"
     assert observed["schema"]["properties"]["mode"]["const"] == "comment"
     assert observed["state"]["request_text"] == "검토 요청 초안을 작성해 줘"
+
+
+@pytest.mark.parametrize("status, tokens", [("completed", 10), ("failed", None), ("needs_input", 4)])
+def test_editor_maxis_usage_distinguishes_failed_and_unknown_requests(status, tokens):
+    from app.agent import editor_author
+    from app.agent.maxis.telemetry import RemoteRequestTelemetryV1
+    observation = RemoteRequestTelemetryV1(
+        transport_status="failed" if status == "failed" else "succeeded",
+        result_status=status, prompt_tokens=tokens, completion_tokens=0 if tokens is not None else None,
+        total_tokens=tokens)
+    result = editor_author._maxis_usage({"requestTelemetry": observation.model_dump(mode="json")})
+    assert result["calls"] == 1
+    assert result["failedCalls"] == int(status == "failed")
+    assert result["usageComplete"] == (tokens is not None)
+    assert result["unknownUsageCalls"] == int(tokens is None)
+    assert result["costStatus"] == "unknown" and "costUsd" not in result
+    assert result["modelIdentityStatus"] == "not_exposed"
+
+
+def test_editor_maxis_legacy_counters_are_not_proof_of_complete_usage():
+    from app.agent import editor_author
+    result = editor_author._maxis_usage({"usage": {"promptTokens": 0, "completionTokens": 0, "totalTokens": 0}})
+    assert result["calls"] == 1 and result["usageComplete"] is False
+    assert result["unknownUsageCalls"] == 1
 
 
 def test_editor_maxis_identity_candidates_include_general_jira_username():

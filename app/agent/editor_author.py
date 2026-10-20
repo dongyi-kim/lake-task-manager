@@ -22,6 +22,20 @@ MAX_SEED = 6000        # 사용자가 쓰던 글. 이보다 길면 앞부분만 
 MAX_CONTEXT = 5000     # 티켓 맥락. 프롬프트가 커지면 응답이 느려지고 커서는 계속 멈춰 있다
 
 
+def _maxis_usage(metadata: dict) -> dict:
+    """Use the Agent's request accounting for Editor success and failed calls."""
+    from app.agent.maxis.telemetry import role_usage_observation
+    from app.agent.workflow.session import _usage_with_remote
+
+    observation = role_usage_observation(metadata)
+    if observation is None:
+        return {}
+    if metadata.get("requestTelemetry") is None:
+        # Legacy counters can be reported subtotals, never proof of completeness.
+        observation["unknownUsageCalls"] = 1
+    return _usage_with_remote({}, {"runtime_role_telemetry": {"editor_author": observation}})
+
+
 def _plain_text(value: str) -> str:
     """HTML/엔티티를 걷은 비교용 평문. 모델 출력과 자료의 상태를 대조할 때 쓴다."""
     return _html.unescape(re.sub(r"<[^>]+>", " ", value or ""))
@@ -443,23 +457,22 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
                 editor_remote_schema,
                 output_kind="structured",
             )
+            remote_metadata = getattr(remote, "metadata", {}) or {}
+            llm_usage = _maxis_usage(remote_metadata)
             if remote.get("unsupported_claims"):
+                if llm_usage:
+                    llm_usage["failedCalls"] = 1
+                    for detail in llm_usage.get("callsDetail", []):
+                        detail.update(failedCalls=1, finishReason="failed")
                 raise maxis_backend.MaxisRuntimeError(
                     "MAXIS Editor 초안에 근거 없는 claim이 포함되어 삽입하지 않았습니다."
                 )
             html = str(remote.get("content_html") or "").strip()
-            remote_metadata = getattr(remote, "metadata", {}) or {}
-            remote_usage = remote_metadata.get("usage") or {}
-            llm_usage = {
-                "calls": 1,
-                "promptTokens": int(remote_usage.get("promptTokens") or 0),
-                "completionTokens": int(remote_usage.get("completionTokens") or 0),
-                "totalTokens": int(remote_usage.get("totalTokens") or 0),
-            }
             runtime_public = {
                 "engine": "maxis",
                 "profile": str(remote_metadata.get("profile")
                                or runtime_resolution.profile or ""),
+                "profileLabel": str(runtime_state.get("runtime_profile_label") or ""),
                 "workflowBundleVersion": str(
                     remote_metadata.get("workflowBundleVersion")
                     or runtime_state.get("workflow_bundle_version") or ""
@@ -528,6 +541,7 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
                 )
     except maxis_backend.MaxisNeedsInput as e:
         questions = list(e.missing_inputs[:3])
+        llm_usage = _maxis_usage(e.metadata) or llm_usage
         return {
             "ok": False,
             "needsInfo": True,
@@ -544,6 +558,8 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
         # explains an editor failure.  A factory/configuration error before invocation is
         # still represented by the same zero-call snapshot shape as other compose paths.
         llm_usage = meter.snapshot() if meter is not None else llm_usage
+        if isinstance(e, maxis_backend.MaxisRuntimeError):
+            llm_usage = _maxis_usage(getattr(e, "metadata", {}) or {}) or llm_usage
         error = _friendly_error(str(e))
         if not error and isinstance(e, maxis_backend.MaxisRuntimeError):
             error = str(e)
