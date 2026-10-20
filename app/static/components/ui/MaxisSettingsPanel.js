@@ -38,7 +38,7 @@ export default {
       view: "profiles", setupMode: "", setupProfileName: "", newDisplayName: "",
       setupDirty: false, setupBusy: false,
       profileEditorOpen: false, keysEditorOpen: false, formSnapshot: "",
-      runtime: null, statusUnavailable: false,
+      runtime: null, statusUnavailable: false, includePmo: false,
       keys: { agentCoreApiKey: "", editorAuthorApiKey: "", pmoBriefApiKey: "" },
       clearKeys: { agentCoreApiKey: false, editorAuthorApiKey: false, pmoBriefApiKey: false },
       busy: "", err: "", note: "", probe: null, impact: null, impactDenied: false,
@@ -91,6 +91,9 @@ export default {
       if (!this.selected || this.selected.executionPolicy !== "qualified") return true;
       return !!(this.selected.qualification && this.selected.qualification.valid);
     },
+    applicationWorkflows() {
+      return ["agent_core", "editor_author", ...(this.includePmo ? ["pmo_brief"] : [])];
+    },
     activationDisabledReason() {
       if (!this.canManage) return "연결 설정 변경은 매니저만 할 수 있습니다.";
       if (!this.selected) return "프로필을 선택하세요.";
@@ -102,7 +105,7 @@ export default {
         return "배포 환경변수로 연결 프로필이 고정되어 있습니다.";
       }
       const versionEnv = ((this.st.environmentOverrides || {}).workflowVersions) || {};
-      const incomplete = ["agent_core", "editor_author"].find((key) => {
+      const incomplete = this.applicationWorkflows.find((key) => {
         const workflow = (this.selected.workflows && this.selected.workflows[key]) || {};
         return !workflow.binding || !(workflow.version || versionEnv[key]) ||
           !this.credential(key).configured;
@@ -159,7 +162,7 @@ export default {
   methods: {
     async load(prefer, preserve = {}) {
       const previous = { name: this.selectedName, form: this.form, keys: this.keys,
-        clearKeys: this.clearKeys, routes: this.routes };
+        clearKeys: this.clearKeys, routes: this.routes, includePmo: this.includePmo };
       try {
         this.st = await agentApi.maxisStatus();
         this.statusUnavailable = false;
@@ -172,6 +175,7 @@ export default {
         this.selectProfile(selected, true);
         this.routes = { ...(this.st.routes || {}) };
         if (previous.name === this.selectedName) {
+          this.includePmo = previous.includePmo;
           if (preserve.form) this.form = previous.form;
           if (preserve.keys) { this.keys = previous.keys; this.clearKeys = previous.clearKeys; }
           if (preserve.routes) this.routes = previous.routes;
@@ -206,6 +210,7 @@ export default {
         this.profileEditorOpen = false; this.keysEditorOpen = false;
       }
       this.selectedName = name;
+      this.includePmo = !!row.active && ((this.st && this.st.routes) || {}).pmo_brief === "maxis";
       this.form = { displayName: this.profileLabel(row.name), executionPolicy: row.executionPolicy || "connected",
         baseUrl: row.baseUrl || "",
         workflowBundleVersion: row.workflowBundleVersion || "",
@@ -359,7 +364,7 @@ export default {
       this.busy = "activate"; this.err = ""; this.note = "";
       try {
         const result = this.ensureOk(await agentApi.maxisApplyProfile(
-          this.selectedName, ["agent_core", "editor_author"]));
+          this.selectedName, this.applicationWorkflows));
         this.applied(result);
       } catch (e) { this.err = (e && e.message) || "프로필을 적용하지 못했습니다"; }
       finally { this.busy = ""; }
@@ -481,6 +486,10 @@ export default {
             <span><b>연결</b>{{ selected.verified ? '확인 완료' : '확인 필요' }}</span>
             <span><b>API Key</b>{{ workflowRows.filter(w => credential(w.key).configured).length }}/{{ workflowRows.length }}개 설정</span>
           </div>
+          <label class="mx-help">
+            <input type="checkbox" v-model="includePmo" :disabled="!!busy || !canManage">
+            PMO 분석도 사용 (담당 업무·오늘 할 일·진척 조회)
+          </label>
           <div class="mx-actions">
             <button class="ag-ok inline" :disabled="!!busy || !canActivate"
                     :title="activationDisabledReason" @click="activate">{{ busy === 'activate' ? '적용 중…' : '이 설정 사용' }}</button>

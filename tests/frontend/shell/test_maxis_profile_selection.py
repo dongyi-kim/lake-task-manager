@@ -147,6 +147,7 @@ createApp(AgentView).mount('#app');</script></body></html>"""
                     for row in profiles:
                         row.update(active=row["name"] == name, enabled=row["name"] == name)
                     requested = route.request.post_data_json["workflows"]
+                    state["appliedWorkflows"] = requested
                     for key in requested:
                         state["routes"][key] = "maxis"
                     label = next(row["displayName"] for row in profiles if row["name"] == name)
@@ -217,6 +218,35 @@ def test_using_profile_applies_both_features_and_closes_parent_dialog(profile_ui
     assert all(row["ready"] and row["profile"] == "dev" for row in runtime.values())
     assert page.evaluate("window.closedCount") == 1
     assert page.locator(".ag-config-dlg").count() == 0
+
+
+@pytest.mark.parametrize("already_active", [False, True])
+def test_pmo_selection_is_explicit_and_existing_enabled_route_is_preserved(profile_ui, already_active):
+    page, state, _, _ = profile_ui
+    if already_active:
+        state["activeProfile"] = "dev"
+        state["profiles"][0].update(active=True, enabled=True)
+        state["routes"]["pmo_brief"] = "maxis"
+    open_profiles(page)
+    option = page.get_by_role("checkbox", name="PMO 분석도 사용", exact=False)
+    assert option.is_checked() is already_active
+    if not already_active:
+        option.check()
+    page.get_by_role("button", name="이 설정 사용", exact=True).click()
+    page.wait_for_function("window.closedCount === 1")
+    assert state["appliedWorkflows"] == ["agent_core", "editor_author", "pmo_brief"]
+
+
+def test_missing_pmo_key_blocks_explicit_pmo_selection_only(profile_ui):
+    page, state, _, calls = profile_ui
+    state["profiles"][0]["credentials"]["pmo_brief"]["configured"] = False
+    open_profiles(page)
+    button = page.get_by_role("button", name="이 설정 사용", exact=True)
+    assert button.is_enabled()
+    page.get_by_role("checkbox", name="PMO 분석도 사용", exact=False).check()
+    assert button.is_disabled()
+    assert "PMO Brief" in page.locator(".mx-disabled-reason").inner_text()
+    assert not any(method != "GET" for method, _ in calls)
 
 
 def test_agent_parent_unblocks_without_local_llm_after_apply(profile_ui, tmp_path):
