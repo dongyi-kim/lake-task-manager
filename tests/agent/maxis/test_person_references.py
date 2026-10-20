@@ -7,7 +7,13 @@ from app.agent.maxis.backend import (
     _person_reference_marker as marker,
     _rehydrate_editor_person_references as restore,
 )
-from app.agent.maxis.person_references import result_person_references
+from app.agent.maxis.person_references import result_person_references as resolve, identity_types
+
+
+def result_person_references(value, evidence, identities, pseudonymize):
+    """Tests default to display inputs; explicit ID/email tests use resolve."""
+    return resolve(value, evidence, identities, pseudonymize,
+                   {identity.casefold(): "display" for identity in identities})
 
 
 def install_directory(monkeypatch, users, canonical=None):
@@ -100,3 +106,32 @@ def test_casefold_aliases_are_one_identity_but_digest_collision_is_not(monkeypat
             lambda _: marker("alice.fixture"),
         )
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("kind", ["id", "email"])
+def test_typed_identity_cannot_resolve_through_someone_elses_display_name(monkeypatch, kind):
+    install_directory(monkeypatch, [
+        {"name": "bob.fixture", "displayName": "alice.fixture Partner",
+         "emailAddress": "bob@example.test"}])
+    payload = {"text": marker("alice.fixture")}
+    with pytest.raises(ValueError, match="directory_unknown"):
+        resolve(payload, payload, ["alice.fixture"], marker, {"alice.fixture": kind})
+
+
+def test_identity_type_inventory_preserves_strongest_local_constraint(monkeypatch):
+    from app.infra import settings
+    monkeypatch.setattr(settings, "load_people", lambda: {"team": ["roster.fixture"]})
+    kinds = identity_types({
+        "user_id": "caller.fixture",
+        "query_results": [{"result": {
+            "assignee": "ALICE.FIXTURE", "assigneeId": "alice.fixture",
+            "author": {"name": "bob.fixture", "displayName": "김샘"},
+            "who": "정한울", "emailAddress": "a@example.test",
+        }}],
+        "ticket_progress": "담당 [~mentioned.fixture]",
+    }, SimpleNamespace(jira_user="caller.fixture", managers=[]))
+    assert kinds == {
+        "roster.fixture": "id", "caller.fixture": "id", "alice.fixture": "id",
+        "bob.fixture": "id", "김샘": "display", "정한울": "display",
+        "a@example.test": "email", "mentioned.fixture": "id",
+    }

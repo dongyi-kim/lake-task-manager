@@ -2033,6 +2033,7 @@ def invoke(
     *,
     person_references: dict[str, str] | None = None,
     person_reference_values: tuple[str, ...] = (),
+    person_reference_types: dict[str, str] | None = None,
     allow_guarded_person_references: bool = False,
 ) -> dict:
     """Invoke one configured Dify Role and normalize only its typed envelope."""
@@ -2426,7 +2427,7 @@ def invoke(
             try:
                 person_references = result_person_references(
                     _json_value(typed), raw_pack, person_reference_values,
-                    _person_reference_marker,
+                    _person_reference_marker, person_reference_types or {},
                 )
             except Exception as exc:
                 raise MaxisRuntimeError(
@@ -2525,9 +2526,12 @@ def invoke_role(
         raise MaxisRuntimeError("local Role에는 remote invoke를 사용할 수 없습니다.")
     payload = role_payload(role_id, state, messages, schema, output_kind=output_kind)
     person_reference_values = ()
+    person_reference_types = {}
     if role_id == "result_integrator":
         from app.agent.tools._ctx import settings
+        from app.agent.maxis.person_references import identity_types
         person_reference_values = _known_identity_values(state, settings())
+        person_reference_types = identity_types(state, settings())
     attempts = []
     for attempt in range(2):
         try:
@@ -2539,6 +2543,7 @@ def invoke_role(
                     if role_id == "editor_author" else None
                 ),
                 person_reference_values=person_reference_values,
+                person_reference_types=person_reference_types,
             )
             break
         except MaxisRuntimeError as exc:

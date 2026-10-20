@@ -4,9 +4,59 @@ import json
 import re
 
 _MARKER = re.compile(r"\[\[person:[0-9a-f]{12}\]\]")
+_ID_FIELDS = {"assigneeId", "authorId", "reporterId", "userId", "user_id",
+              "user_identity", "username", "userName", "accountId", "account_id"}
+_NAME_FIELDS = {"assignee", "assigneeName", "author", "display", "displayName",
+                "owner", "reporter", "who"}
 
 
-def result_person_references(value, evidence, identities, pseudonymize):
+def identity_types(state, cfg):
+    """Keep stronger typed IDs distinct from the broad one-way DLP inventory."""
+    from app.infra.settings import load_people
+
+    kinds, visited = {}, 0
+    priority = {"display": 1, "email": 2, "id": 3}
+
+    def add(value, kind):
+        if not isinstance(value, str) or not value.strip():
+            return
+        key = value.strip().casefold()
+        if priority[kind] > priority.get(kinds.get(key), 0):
+            kinds[key] = kind
+
+    add(getattr(cfg, "jira_user", ""), "id")
+    for uid in getattr(cfg, "managers", None) or ():
+        add(uid, "id")
+    for people in (load_people() or {}).values():
+        for uid in people or ():
+            add(uid, "id")
+
+    def collect(value, depth=0):
+        nonlocal visited
+        if depth > 7 or visited >= 5000:
+            return
+        visited += 1
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in _ID_FIELDS or (key == "name" and "displayName" in value):
+                    add(item, "id")
+                elif key == "emailAddress":
+                    add(item, "email")
+                elif key in _NAME_FIELDS:
+                    add(item, "display")
+                collect(item, depth + 1)
+        elif isinstance(value, (list, tuple)):
+            for item in value[:200]:
+                collect(item, depth + 1)
+        elif isinstance(value, str):
+            for uid in re.findall(r"\[~([^\]\s]{1,128})\]", value):
+                add(uid, "id")
+
+    collect(state)
+    return kinds
+
+
+def result_person_references(value, evidence, identities, pseudonymize, kinds):
     """Resolve only returned markers that occurred in this call's guarded input.
 
     DLP identifiers are not necessarily usernames: progress history also carries
@@ -35,6 +85,9 @@ def result_person_references(value, evidence, identities, pseudonymize):
     resolved = {}
     for marker, originals_for_marker in originals.items():
         original = next(iter(originals_for_marker.values()))
+        kind = kinds.get(original.casefold())
+        if kind not in {"id", "email", "display"}:
+            raise ValueError("person_identity_type_unknown")
         # A directory lookup may match a username or display name. Require a
         # complete bounded response and exact equality, never a fuzzy/first hit.
         users = client().provider.get_json(
@@ -43,12 +96,23 @@ def result_person_references(value, evidence, identities, pseudonymize):
         )
         if not isinstance(users, list) or len(users) >= 100:
             raise ValueError("person_directory_incomplete")
+        def matches(row):
+            # A missing username must never resolve through another user's
+            # identical display name. The same rule applies to email addresses.
+            fields = {"id": ("name", "key"), "email": ("emailAddress",),
+                      "display": ("displayName",)}[kind]
+            aliases = {str(row.get(field) or "").strip().casefold() for field in fields}
+            if kind == "display":
+                aliases.add(real_name(str(row.get("displayName") or "").strip()).casefold())
+                # Legacy producer `who` can hold an ID; only its exact canonical
+                # match is accepted, never a prefix/fuzzy username.
+                aliases.update(str(row.get(field) or "").strip().casefold()
+                               for field in ("name", "key"))
+            return original.casefold() in aliases
+
         ids = {
             str(row.get("name") or row.get("key") or "").strip()
-            for row in users if isinstance(row, dict) and original.casefold() in {
-                str(row.get(field) or "").strip().casefold()
-                for field in ("name", "key", "displayName", "emailAddress")
-            } | {real_name(row.get("displayName") or "").casefold()}
+            for row in users if isinstance(row, dict) and matches(row)
         } - {""}
         if len(ids) != 1:
             raise ValueError("person_directory_unknown_or_ambiguous")
