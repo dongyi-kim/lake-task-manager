@@ -49,7 +49,8 @@ def test_actual_progress_projection_separates_scopes_and_preserves_digest():
                for row in sources)
 
 
-@pytest.mark.parametrize("categories", [[], ["done", "done", "indeterminate"]])
+@pytest.mark.parametrize("categories", [[], ["done", "done", "indeterminate"],
+                                      ["done", "inprogress", "todo"]])
 def test_child_counts_are_computed_from_verified_returned_rows(categories):
     report, acquisition, receipt = sample()
     rows = [{"key": f"DL-{index + 50}", "statusCat": status}
@@ -63,8 +64,9 @@ def test_child_counts_are_computed_from_verified_returned_rows(categories):
     patch = progress_evidence("DL-42", report, acquisition, receipt)
     result = next(row["result"] for row in patch["query_results"] if row["source"] == "jira")
     assert result["children_counts"] == {
-        "returned": f"{len(rows)}개", "done": f"{categories.count('done')}개",
-        "not_done": f"{len(rows) - categories.count('done')}개",
+        "returned": f"{len(rows)}건 (티켓 {len(rows)}개)",
+        "done": f"{categories.count('done')}건 (티켓 {categories.count('done')}개)",
+        "not_done": f"{len(rows) - categories.count('done')}건 (티켓 {len(rows) - categories.count('done')}개)",
         "basis": "조회 반환 하위 티켓 개수; SP 기반 진척률이나 전체 프로젝트 규모가 아님"}
     assert report == original
 

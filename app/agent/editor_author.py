@@ -209,6 +209,9 @@ def _editor_evidence_rows(key, kind, ticket, acquired, provenance):
         result = deepcopy(row["result"])
         proof = patch["query_evidence_attestations"][row["source"] + ":" + row["id"]]
         if row["source"] == "jira":
+            # Derived progress counts belong to Agent status interpretation, not
+            # to a ticket's authoring requirements or acceptance criteria.
+            result.pop("children_counts", None)
             # The description and direct-parent view were read after the progress
             # collector, within the same bounded acquisition window.
             for field in ("description", "parentKey", "parent"):

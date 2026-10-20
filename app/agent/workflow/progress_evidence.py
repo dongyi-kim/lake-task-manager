@@ -20,14 +20,18 @@ def _child_counts(children, branch):
         key = original.get("key")
         category = original.get("statusCat") or original.get("statusCategory")
         if (not isinstance(key, str) or not key or key in seen or child.get("key") != key
-                or category not in {"new", "indeterminate", "done"}
+                or category not in {"new", "indeterminate", "todo", "inprogress", "done"}
                 or type(child.get("done")) is not bool
                 or child["done"] != (category == "done")):
             return None
         seen.add(key)
         done += int(child["done"])
-    return {"returned": f"{len(children)}개", "done": f"{done}개",
-            "not_done": f"{len(children) - done}개",
+    def count(value):
+        # Both Korean counters describe the same observed issue count; the
+        # response guard still rejects unprovided numbers or measurement units.
+        return f"{value}건 (티켓 {value}개)"
+    return {"returned": count(len(children)), "done": count(done),
+            "not_done": count(len(children) - done),
             "basis": "조회 반환 하위 티켓 개수; SP 기반 진척률이나 전체 프로젝트 규모가 아님"}
 
 

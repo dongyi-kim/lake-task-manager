@@ -86,6 +86,10 @@ def test_maxis_editor_attests_wiki_separately_without_borrowing_jira_scope(kind)
         C._ticket_context(PROG, kind, material, acquired)
     finally:
         provenance = backend.finish_local_acquisition(marker)
+    from app.agent.workflow.progress_evidence import progress_evidence
+    progress = progress_evidence(PROG, acquired["report"], acquired["acquisition"], provenance)
+    assert next(row["result"] for row in progress["query_results"]
+                if row["source"] == "jira")["children_counts"]["returned"] == "3건 (티켓 3개)"
     rows = C._editor_evidence_rows(PROG, kind, material, acquired, provenance)
     sources = backend._verified_evidence_sources({"_maxis_evidence_rows": rows})
     by_kind = {source["kind"]: source for source in sources}
@@ -94,6 +98,7 @@ def test_maxis_editor_attests_wiki_separately_without_borrowing_jira_scope(kind)
     jira = json.loads(by_kind["jira"]["content"])
     wiki = json.loads(by_kind["confluence"]["content"])
     assert "documents" not in jira
+    assert "children_counts" not in jira
     assert wiki["documents"][0]["id"] and wiki["documents"][0]["space"] == "DL"
     assert "3홉 이상" not in by_kind["jira"]["content"]
     assert "3홉 이상" in by_kind["confluence"]["content"]
