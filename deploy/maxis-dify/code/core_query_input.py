@@ -1,9 +1,11 @@
-"""Lossless Query-only LLM view of an already authorized KnowledgeGuard output.
+"""Query-only semantic view of an already authorized KnowledgeGuard output.
 
 Standalone stdlib Dify Code node. Wire only from KnowledgeGuard's allow output;
 the assembler and final guards must still receive the ORIGINAL model_input.
 This view adds existing claim-kind limits, not fact verification or authority.
-Original source fields and the assembler/guard input remain unchanged.
+Hide producer hashes and opaque user-intent identities from the LLM, retaining
+the exact citation source_id and all business content/identifiers. The original
+input and assembler/guard authority remain unchanged.
 """
 from datetime import datetime
 import hashlib
@@ -93,7 +95,9 @@ def _source_view(row):
             or type(row["partial"]) is not bool or type(row["truncated"]) is not bool):
         _fail()
     intent = row["kind"] == "ltm" and row["canonical_id"].startswith("ltm:user-intent:")
-    return dict(row, source_authority="user_intent" if intent else "evidence_source",
+    hidden = {"content_sha256", "canonical_id"} if intent else {"content_sha256"}
+    return dict({key: value for key, value in row.items() if key not in hidden},
+                source_authority="user_intent" if intent else "evidence_source",
                 allowed_claim_kinds=["inference", "recommendation"] if intent
                 else ["fact", "inference", "recommendation"])
 

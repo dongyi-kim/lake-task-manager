@@ -59,8 +59,8 @@ nonpartial·닫힌 text 형식·1,024 UTF-8 bytes로 검증해 task로 옮긴다
 나머지 scope·출처 ID/본문·facts·metrics·role_context·시각·freshness·partial·flags와
 `knowledge_context`는 값·순서 그대로다. 출처에는 양쪽 guard와 같은 `kind=ltm` 및
 `canonical_id`의 `ltm:user-intent:` 접두사 판정으로 `source_authority`와
-`allowed_claim_kinds`를 덧붙인다. 기존 출처 필드는 숨기거나 수정하지 않으며, 이 표시는
-사실 검증이나 실행 권한이 아니다. 표시를 포함한 출력이 9,000 UTF-8 bytes를 넘으면
+`allowed_claim_kinds`를 덧붙인다. 출처의 producer metadata만 아래 규칙으로 숨기며,
+이 표시는 사실 검증이나 실행 권한이 아니다. 표시를 포함한 출력이 9,000 UTF-8 bytes를 넘으면
 잘라내지 않고 거부하므로 이전에 허용되던 한도 근처 입력도 실패할 수 있다.
 원본 API query·pack·proof·metadata는 변경 없이
 Knowledge Guard, 조립기 및 양쪽 최종 guard에 전달한다. v2 게시에는 backend producer가
@@ -69,6 +69,10 @@ canonical JSON·정확한 field·9000/6144 UTF-8 bytes·깊이32/노드4096 한�
 권한·source hash·schema 진실성의 별도 판단 주체가 되지는 않는다.
 
 Query LLM은 내부 `query-draft.v2`의 contract/status/payload/missing_inputs만 작성한다.
+Query Input은 인용용 `source_id`와 업무 본문·업무 식별자는 보존하되, 출처의
+`content_sha256` 및 사용자 의도의 opaque `canonical_id`는 모델에 전달하지 않는다.
+유사한 길이의 producer 식별자를 인용 ID와 혼동하지 않도록 하는 입력 투영이며,
+원본 EvidencePack과 조립기·최종 guard의 출처 검증은 바꾸지 않는다.
 `core_query_contract.py`가 canonical CompactQueryPlan에서 값의 enum·길이·개수와 optional
 제약을 가져오고 narrative leaf만 `{value, kind, source_ids}`로 감싼다. 별도의 payload 정본을
 유지하지 않는다. Query 전용 prompt는 이 내부 계약만 요구하며 full remote envelope를 요구하는

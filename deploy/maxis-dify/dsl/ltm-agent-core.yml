@@ -3131,14 +3131,16 @@ workflow:
         selected: false
         desc: 업무 내용·근거 보존; 모델에 불필요한 최종 계약 metadata만 제외
         code_language: python3
-        code: "\"\"\"Lossless Query-only LLM view of an already authorized KnowledgeGuard\
+        code: "\"\"\"Query-only semantic view of an already authorized KnowledgeGuard\
           \ output.\n\nStandalone stdlib Dify Code node. Wire only from KnowledgeGuard's\
           \ allow output;\nthe assembler and final guards must still receive the ORIGINAL\
           \ model_input.\nThis view adds existing claim-kind limits, not fact verification\
-          \ or authority.\nOriginal source fields and the assembler/guard input remain\
-          \ unchanged.\n\"\"\"\nfrom datetime import datetime\nimport hashlib\nimport\
-          \ json\nimport math\nimport re\n\n\n_MAX_MODEL_INPUT_UTF8_BYTES = 9000 \
-          \ # KnowledgeGuard output bound\n_MAX_CONTEXT_PACK_UTF8_BYTES = 6144  #\
+          \ or authority.\nHide producer hashes and opaque user-intent identities\
+          \ from the LLM, retaining\nthe exact citation source_id and all business\
+          \ content/identifiers. The original\ninput and assembler/guard authority\
+          \ remain unchanged.\n\"\"\"\nfrom datetime import datetime\nimport hashlib\n\
+          import json\nimport math\nimport re\n\n\n_MAX_MODEL_INPUT_UTF8_BYTES = 9000\
+          \  # KnowledgeGuard output bound\n_MAX_CONTEXT_PACK_UTF8_BYTES = 6144  #\
           \ ContextGuard / KnowledgeGuard pack bound\n_INPUT_FIELDS = {\"contract\"\
           , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
           ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
@@ -3193,22 +3195,25 @@ workflow:
           updated_at\"] is not None and type(row[\"updated_at\"]) is not str\n   \
           \         or type(row[\"partial\"]) is not bool or type(row[\"truncated\"\
           ]) is not bool):\n        _fail()\n    intent = row[\"kind\"] == \"ltm\"\
-          \ and row[\"canonical_id\"].startswith(\"ltm:user-intent:\")\n    return\
-          \ dict(row, source_authority=\"user_intent\" if intent else \"evidence_source\"\
-          ,\n                allowed_claim_kinds=[\"inference\", \"recommendation\"\
-          ] if intent\n                else [\"fact\", \"inference\", \"recommendation\"\
-          ])\n\n\ndef main(model_input):\n    \"\"\"Return only a canonical semantic\
-          \ view; no repairs, I/O or acceptance decision.\"\"\"\n    try:\n      \
-          \  incoming = _decode(model_input)\n        if (set(incoming) != _INPUT_FIELDS\n\
-          \                or any(not isinstance(incoming[key], str) for key in _INPUT_FIELDS\
-          \ - {\"context_pack\", \"knowledge_context\"})\n                or incoming[\"\
-          contract\"] != \"ltm-model-input.v1\"\n                or incoming[\"role_id\"\
-          ] != \"query_specialist\"\n                or incoming[\"output_contract\"\
-          ] != \"remote-role-result.v1\"\n                or not _REQUEST_ID.fullmatch(incoming[\"\
-          correlation_id\"])\n                or not isinstance(incoming[\"knowledge_context\"\
-          ], list)):\n            _fail()\n        pack = incoming[\"context_pack\"\
-          ]\n        if (not isinstance(pack, dict) or set(pack) != _PACK_FIELDS\n\
-          \                or any(not isinstance(pack[key], str) for key in _PACK_STRINGS)\n\
+          \ and row[\"canonical_id\"].startswith(\"ltm:user-intent:\")\n    hidden\
+          \ = {\"content_sha256\", \"canonical_id\"} if intent else {\"content_sha256\"\
+          }\n    return dict({key: value for key, value in row.items() if key not\
+          \ in hidden},\n                source_authority=\"user_intent\" if intent\
+          \ else \"evidence_source\",\n                allowed_claim_kinds=[\"inference\"\
+          , \"recommendation\"] if intent\n                else [\"fact\", \"inference\"\
+          , \"recommendation\"])\n\n\ndef main(model_input):\n    \"\"\"Return only\
+          \ a canonical semantic view; no repairs, I/O or acceptance decision.\"\"\
+          \"\n    try:\n        incoming = _decode(model_input)\n        if (set(incoming)\
+          \ != _INPUT_FIELDS\n                or any(not isinstance(incoming[key],\
+          \ str) for key in _INPUT_FIELDS - {\"context_pack\", \"knowledge_context\"\
+          })\n                or incoming[\"contract\"] != \"ltm-model-input.v1\"\n\
+          \                or incoming[\"role_id\"] != \"query_specialist\"\n    \
+          \            or incoming[\"output_contract\"] != \"remote-role-result.v1\"\
+          \n                or not _REQUEST_ID.fullmatch(incoming[\"correlation_id\"\
+          ])\n                or not isinstance(incoming[\"knowledge_context\"], list)):\n\
+          \            _fail()\n        pack = incoming[\"context_pack\"]\n      \
+          \  if (not isinstance(pack, dict) or set(pack) != _PACK_FIELDS\n       \
+          \         or any(not isinstance(pack[key], str) for key in _PACK_STRINGS)\n\
           \                or any(not isinstance(pack[key], list) for key in _PACK_ARRAYS)\n\
           \                or not isinstance(pack[\"scope\"], dict) or type(pack[\"\
           partial\"]) is not bool\n                or pack[\"contract\"] != \"evidence-pack.v1\"\

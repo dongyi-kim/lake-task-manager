@@ -1,4 +1,4 @@
-"""Query input is a lossless view, not a replacement source/authority guard."""
+"""Query input preserves business evidence, not competing producer metadata."""
 import copy
 import hashlib
 import json
@@ -30,7 +30,9 @@ def context_view(pack):
     result = {key: value for key, value in pack.items() if key not in HIDDEN}
     result["role_context"] = [row for row in pack["role_context"]
                               if not isinstance(row, dict) or row.get("name") != "query_business_input"]
-    result["sources"] = [dict(row,
+    result["sources"] = [dict({key: value for key, value in row.items()
+        if key != "content_sha256" and not (key == "canonical_id"
+            and row["kind"] == "ltm" and row["canonical_id"].startswith("ltm:user-intent:"))},
         source_authority="user_intent" if row["kind"] == "ltm" and row["canonical_id"].startswith("ltm:user-intent:") else "evidence_source",
         allowed_claim_kinds=["inference", "recommendation"] if row["kind"] == "ltm" and row["canonical_id"].startswith("ltm:user-intent:") else ["fact", "inference", "recommendation"])
         for row in pack["sources"]]
@@ -335,9 +337,28 @@ def test_query_authority_uses_exact_guard_predicate_preserving_original(projecto
                partial=True, truncated=True)
     original = copy.deepcopy(incoming)
     result = project(projector, incoming)["context"]["sources"][0]
-    assert result == dict(row, source_authority="user_intent" if intent else "evidence_source",
-        allowed_claim_kinds=["inference", "recommendation"] if intent else ["fact", "inference", "recommendation"])
+    assert result == context_view(incoming["context_pack"])["sources"][0]
     assert incoming == original
+
+
+def test_query_hides_competing_intent_identity_without_scrubbing_business_text(projector, incoming):
+    identity = "1234567890abcdef1234567890abcdef"
+    row = incoming["context_pack"]["sources"][0]
+    row.update(source_id="src_intent_" + identity[:20],
+               canonical_id="ltm:user-intent:" + identity,
+               content="sample_trace_flat 데이터 히스토리; canonical_id는 업무 필드 이름",
+               content_sha256="c" * 64)
+    evidence = dict(row, kind="jira", source_id="src_ticket", canonical_id="DL-123")
+    incoming["context_pack"]["sources"].append(evidence)
+    original = copy.deepcopy(incoming)
+    intent_view, evidence_view = project(projector, incoming)["context"]["sources"]
+    assert intent_view["source_id"] == row["source_id"]
+    assert "canonical_id" not in intent_view
+    assert "content_sha256" not in intent_view
+    assert evidence_view["canonical_id"] == "DL-123"
+    assert "content_sha256" not in evidence_view
+    assert intent_view["content"] == evidence_view["content"] == row["content"]
+    assert incoming == original  # assembler and final guards retain exact original identities
 
 
 @pytest.mark.parametrize("field,value", [
@@ -366,7 +387,8 @@ def test_query_authority_output_bound_is_utf8_inclusive(projector, incoming, uni
     for field in HIDDEN - {"contract", "query"}:
         pack[field] = ""
     row = pack["sources"][0]
-    pack["sources"] = [dict(row, source_id=f"src_{i}") for i in range(9)]
+    row.update(kind="jira", canonical_id="DL-123", content_sha256="")
+    pack["sources"] = [dict(row, source_id=f"src_{i}") for i in range(10)]
     incoming["knowledge_context"] = [{"content": ""}]
     expected = {"contract": "query-input.v2", "task": {"text": "데이터 자산 이력을 찾아줘"},
                 "context": context_view(pack), "knowledge_context": incoming["knowledge_context"]}

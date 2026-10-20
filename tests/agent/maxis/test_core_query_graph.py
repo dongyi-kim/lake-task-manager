@@ -306,7 +306,9 @@ def test_query_projection_preserves_task_and_evidence_but_excludes_final_schema(
     hidden = {"contract", "payload_schema_json", "payload_schema_sha256", "knowledge_manifest_sha256", "query"}
     expected = {key: value for key, value in original["context_pack"].items() if key not in hidden}
     expected["role_context"] = [row for row in expected["role_context"] if row["name"] != "query_business_input"]
-    expected["sources"] = [dict(row,
+    expected["sources"] = [dict({key: value for key, value in row.items()
+        if key != "content_sha256" and not (key == "canonical_id"
+            and row["kind"] == "ltm" and row["canonical_id"].startswith("ltm:user-intent:"))},
         source_authority="user_intent" if row["kind"] == "ltm" and row["canonical_id"].startswith("ltm:user-intent:") else "evidence_source",
         allowed_claim_kinds=["inference", "recommendation"] if row["kind"] == "ltm" and row["canonical_id"].startswith("ltm:user-intent:") else ["fact", "inference", "recommendation"])
         for row in expected["sources"]]
