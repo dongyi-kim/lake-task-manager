@@ -119,6 +119,26 @@ def last_value(old, new):
     return new
 
 
+def merge_quality_gate(old: dict | None, new: dict | None) -> dict:
+    """A terminal failure wins within a turn, including parallel/older sidecars.
+
+    The session explicitly writes {} at the next turn boundary. A clarification
+    (no errors) is not a terminal failure and may subsequently become successful.
+    """
+    if new == {}:
+        return {}
+    previous, incoming = dict(old or {}), dict(new or {})
+    failures = [row for row in (previous, incoming)
+                if row.get("ok") is False and row.get("errors")]
+    if not failures:
+        return incoming or previous
+    return {
+        "ok": False,
+        "errors": sorted({str(item) for row in failures for item in row["errors"]}),
+        "warnings": sorted({str(item) for row in failures for item in row.get("warnings", [])}),
+    }
+
+
 def merge_role_engines(old: dict | None, new: dict | None) -> dict:
     """Merge per-Role execution engines across sequential and parallel graph branches."""
     if isinstance(new, dict) and new.get("__reset__") is True:
@@ -325,7 +345,7 @@ class AgentState(TypedDict, total=False):
     role_context_carryover: dict     # 후속 턴에 값 그대로 복사된 필드의 digest·원 관측시각
     evidence_workspace: dict        # content 없는 bounded 출처/claim projection만 허용
     freshness: dict
-    quality_gate: dict
+    quality_gate: Annotated[dict, merge_quality_gate]
 
     # ── Query Specialist / deterministic Query Runner ──
     query_plan: dict

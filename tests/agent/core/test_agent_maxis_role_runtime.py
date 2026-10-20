@@ -29,6 +29,59 @@ SENTINEL_SHA = hashlib.sha256(
     SENTINEL_VALUE.encode("utf-8")
 ).hexdigest()
 
+@pytest.mark.parametrize("failure", ["pmo_not_enabled", "runtime_unavailable"])
+def test_graph_unavailable_path_clears_prior_success_without_calling_local_model(monkeypatch, failure):
+    from app.agent import runtime_status
+    from app.agent.workflow import graph
+    from app.agent.workflow.state import Node
+
+    calls = []
+    prior = {"ok": True, "errors": []}
+    state = {"quality_gate": prior, "runtime_role_routes": {}}
+
+    def run(_state):
+        calls.append(True)
+        raise runtime_status.RuntimeUnavailable("connection unavailable")
+
+    agent = SimpleNamespace(name=Node.PORTFOLIO_ANALYST, node=lambda: run)
+    monkeypatch.setattr(runtime_status, "bounded_internal_assist",
+                        lambda _state: failure == "pmo_not_enabled")
+    result = graph._node(agent)(state)
+    assert result["quality_gate"]["ok"] is False
+    assert result["quality_gate"]["errors"] == [
+        "pmo_route_unavailable" if failure == "pmo_not_enabled" else "runtime_unavailable"]
+    assert result["error"]
+    assert len(calls) == int(failure == "runtime_unavailable")
+    assert prior == {"ok": True, "errors": []}
+
+
+def test_parallel_failure_gates_survive_old_success_sidecar_and_reset_next_turn():
+    from langgraph.graph import END, START, StateGraph
+    from app.agent.workflow import graph
+    from app.agent.workflow.state import AgentState, Node, merge_quality_gate
+
+    failed = {"ok": False, "errors": ["maxis_role_failed"], "warnings": []}
+    passed = {"ok": True, "schemaValid": True, "citationValid": True, "errors": []}
+    before = deepcopy((failed, passed))
+    assert merge_quality_gate(failed, passed) == merge_quality_gate(passed, failed) == failed
+    assert merge_quality_gate(failed, {}) == {}
+    assert merge_quality_gate({"ok": False, "errors": []}, passed) == passed
+    workflow = StateGraph(AgentState)
+    for role in ("auditor_failed", "people_failed"):
+        workflow.add_node(role, lambda _state: {"quality_gate": deepcopy(failed)})
+        workflow.add_edge(START, role)
+    workflow.add_node("join", graph._fanout_runtime_projection)
+    workflow.add_edge(["auditor_failed", "people_failed"], "join")
+    workflow.add_edge("join", END)
+    result = workflow.compile().invoke({
+        "quality_gate": passed,
+        "runtime_role_sidecars": {Node.AUDITOR: {"quality_gate": passed}},
+        "runtime_role_engines": {Node.AUDITOR: "maxis"},
+    })
+    assert result["quality_gate"] == failed
+    assert result["runtime_role_sidecars"][Node.AUDITOR]["quality_gate"] == passed
+    assert (failed, passed) == before
+
 
 @pytest.fixture(autouse=True)
 def audit_events(monkeypatch):
@@ -1720,7 +1773,14 @@ def test_failed_remote_attempt_is_counted_with_unknown_tokens(monkeypatch):
     failure = backend.MaxisRuntimeError("MAXIS Role 호출에 실패했습니다: knowledge_curator")
     failure.metadata = {"requestTelemetry": observation.model_dump(),
                         "errorCode": "gateway_workflow_contract"}
-    patch = agent.fallback({"runtime_role_routes": {"knowledge_curator": "maxis"}}, failure)
+    prior_gate = {"ok": True, "schemaValid": True, "citationValid": True}
+    patch = agent.fallback({"runtime_role_routes": {"knowledge_curator": "maxis"},
+                            "quality_gate": prior_gate}, failure)
+    assert patch["quality_gate"] == {
+        "ok": False, "errors": ["maxis_role_failed"], "warnings": [],
+        "failedRole": "knowledge_curator",
+    }
+    assert prior_gate["ok"] is True
     telemetry = patch["runtime_role_telemetry"]["knowledge_curator"]
     assert telemetry["calls"] == 1
     assert telemetry["failedCalls"] == 1

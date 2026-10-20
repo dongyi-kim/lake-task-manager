@@ -1050,6 +1050,14 @@ class Agent(ABC):
             "trace": note(state, self.name, f"실패: {str(err)[:120]}"),
         }
         from app.agent.maxis.backend import MaxisRuntimeError
+        if isinstance(err, MaxisRuntimeError):
+            # A later Role failure invalidates the turn-level success badge, not
+            # the prior Role's immutable diagnostic sidecar. Do not claim which
+            # individual guard failed when the request never reached that guard.
+            patch["quality_gate"] = {
+                "ok": False, "errors": ["maxis_role_failed"],
+                "warnings": [], "failedRole": str(self.name),
+            }
         if (isinstance(err, MaxisRuntimeError)
                 and isinstance(getattr(err, "metadata", None), dict)
                 and (state.get("runtime_role_routes") or {}).get(self.name) == "maxis"):

@@ -95,7 +95,9 @@ def _node(agent):
         if (agent.name == Node.PORTFOLIO_ANALYST and bounded_internal_assist(state)
                 and (state.get("runtime_role_routes") or {}).get(agent.name) != "maxis"):
             return {"error": "현재 MAXIS 배포에는 PMO 분석 기능이 활성화되지 않았습니다. "
-                             "검증된 PMO Brief 실행 경로를 적용하세요."}
+                             "검증된 PMO Brief 실행 경로를 적용하세요.",
+                    "quality_gate": {"ok": False, "errors": ["pmo_route_unavailable"],
+                                     "warnings": [], "failedRole": str(agent.name)}}
         # A serial edge may already be scheduled when the preceding Role blocks.
         # Do not start it; parallel peers already in flight keep their own outcome.
         if has_blocked_terminal(state):
@@ -103,7 +105,9 @@ def _node(agent):
         try:
             return run(state)
         except RuntimeUnavailable as exc:
-            return {"error": str(exc)}
+            return {"error": str(exc),
+                    "quality_gate": {"ok": False, "errors": ["runtime_unavailable"],
+                                     "warnings": [], "failedRole": str(agent.name)}}
 
     return guarded
 

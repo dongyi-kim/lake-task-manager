@@ -113,7 +113,7 @@ def test_maxis_evidence_workspace_separates_fact_inference_and_open_facts():
 
     assert "evidenceWorkspace: ev.evidenceWorkspace || ev.evidence_workspace || null" in view
     assert "workspaceFacts(t)" in view and 'row.kind === "fact"' in view and '"open_fact"' in view
-    assert "workspaceFreshness(t)" in view and "qualityGate.ok" in template
+    assert "workspaceFreshness(t)" in view and "runtimeQualityStatus(t)" in template
     assert "source 본문" in view and "제거" in view
     assert "Evidence Workspace" in template
     assert "확인된 사실" in template and "추론·제안" in template and "미확인·추가 확인" in template

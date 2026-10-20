@@ -515,8 +515,12 @@ def test_session_discards_unverified_or_midflight_stale_maxis_results(
     assert request_roles[0] == "request_architect"
     assert len(request_roles) == len(set(request_roles))
     assert result["ok"] is False
-    assert not result.get("lastRole")
-    assert not result.get("lastRoleEngine")
+    # Failed remote attempts remain attributable for usage/debugging, but must not
+    # retain a successful gate or expose their unverified payload as an answer.
+    assert result["lastRole"] == request_roles[-1]
+    assert result["lastRoleEngine"] == "maxis"
+    assert result["qualityGate"]["ok"] is False
+    assert result["usage"]["failedCalls"] == len(request_roles)
     assert "반갑습니다" not in result.get("reply", "")
     statuses = [event.status for event in audit_events]
     assert statuses[::2] == ["started"] * len(statuses[::2])
