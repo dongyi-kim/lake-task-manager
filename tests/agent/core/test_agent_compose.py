@@ -54,6 +54,59 @@ def test_description_context_carries_the_current_body_instead_of_chatter():
     assert "최근 코멘트" not in ctx
 
 
+def test_maxis_ticket_material_preserves_record_ownership():
+    import importlib.util
+    import json
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[3] / "deploy/maxis-dify/code/editor_assembler.py"
+    spec = importlib.util.spec_from_file_location("compose_ownership", path)
+    assembler = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(assembler)
+    material = {}
+    C._ticket_context(PROG, "comment", material)
+    assert material["key"] == PROG and material["complete"] is True
+    assert material["comments"] and material["children"] and material["documents"]
+    rows = list(assembler._unit_rows({
+        "kind": "jira", "content": json.dumps(material, ensure_ascii=False), "title": "Synthetic ticket"}))
+    comments = [row for row in rows if "/comments/" in row[0] and "/text" in row[0]]
+    assert comments and all(row[3] == PROG for row in comments)
+    child_status = [row for row in rows if "/children/" in row[0] and row[0].endswith("/status")]
+    assert child_status and all(row[3] in {"DL-9093", "DL-9094", "DL-9095"} for row in child_status)
+    document_rows = [row for row in rows if "/documents/" in row[0]]
+    assert document_rows and all(row[3] == "" for row in document_rows)
+
+
+def test_maxis_ticket_material_retains_failed_branch_as_incomplete(monkeypatch):
+    from app.agent.tools import _ctx
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("synthetic failed read")
+    monkeypatch.setattr(_ctx.client(), "issue_comments", unavailable)
+    material = {}
+    C._ticket_context(PROG, "comment", material)
+    assert material["key"] == PROG and material["complete"] is False
+
+
+def test_maxis_ticket_material_does_not_relabel_a_mismatched_read(monkeypatch):
+    from app.agent.tools import _ctx
+    original = _ctx.client().get_issue
+    def mismatched(key):
+        return original("DL-9095" if key == PROG else key)
+    monkeypatch.setattr(_ctx.client(), "get_issue", mismatched)
+    material = {}
+    assert C._ticket_context(PROG, "comment", material) == ""
+    assert "key" not in material
+
+
+@pytest.mark.parametrize("view", [None, {"key": "DL-9095", "descriptionHtml": "<p>Other ticket body</p>"}])
+def test_maxis_description_read_must_match_verified_ticket_identity(monkeypatch, view):
+    from app.agent.tools import _ctx
+    monkeypatch.setattr(_ctx.client(), "ticket_view", lambda *_a: view)
+    material = {}
+    C._ticket_context(PROG, "description", material)
+    assert material["key"] == PROG and material["complete"] is False
+    assert "description" not in material
+
+
 def test_a_brand_new_ticket_has_no_context_instead_of_an_error():
     """새 티켓 작성 중에는 키가 없다(__new__) — 조용히 빈 맥락으로 간다."""
     assert C._ticket_context("__new__", "description") == ""

@@ -173,11 +173,16 @@ def progress_report(key: str, comment_limit: int = 10, *,
             target.reason = "missing_key"
             acquisition.stop("target_missing")
         return {"error": f"{seed} 티켓을 찾을 수 없습니다."}
+    if str(raw["key"]).strip().upper() != seed:
+        if acquisition is not None:
+            target.reason = "target_identity_mismatch"
+            acquisition.stop("target_identity_mismatch")
+        return {"error": "요청 티켓과 조회 결과의 식별자가 다릅니다. 현재 티켓 키를 확인해 주세요."}
     f = raw.get("fields") or {}
     st = (f.get("status") or {})
     assignee = f.get("assignee") or {}
     out = {
-        "key": seed, "title": f.get("summary") or "",
+        "key": str(raw["key"]).strip().upper(), "title": f.get("summary") or "",
         "status": st.get("name") or "",
         "done": ((st.get("statusCategory") or {}).get("key") == "done"),
         "assignee": (assignee.get("displayName") or assignee.get("name")

@@ -48,9 +48,9 @@ def capture():
     _ctx.bind(client, settings)
     try:
         marker = backend.begin_local_acquisition()
-        context = _ticket_context("DL-9044", "comment")
+        result = {}
+        context = _ticket_context("DL-9044", "comment", result)
         provenance = backend.finish_local_acquisition(marker)
-        result = {"ticketContext": context}
         proof = backend.attest_query_result("editor-ticket", "jira", result,
             scopes=("DL",), retrieved_at=provenance["retrieved_at"],
             partial=True if provenance["partial"] else None, provenance=provenance)
@@ -128,10 +128,12 @@ def test_actual_current_editor_source_path_before_after():
     pack, record = capture()
     source = next(row for row in pack.sources if row.kind == "jira")
     assert record["tracked"] and record["actualTrackedReads"] > 0
-    assert not pack.partial and not source.truncated and "\\n\\n최근 코멘트" in source.content
+    decoded = json.loads(source.content)
+    assert not pack.partial and not source.truncated
+    assert decoded["key"] == "DL-9044" and decoded["comments"]
     assert hashlib.sha256(source.content.encode()).hexdigest() == source.content_sha256
     before = pack.model_dump(mode="json")
-    result = candidate(pack, "최근 코멘트", source.source_id)
+    result = candidate(pack, decoded["comments"][0]["text"], source.source_id)
     assert remote_result(REMOTE, pack, result) == result
     local_result(LOCAL, pack, result)
     assert pack.model_dump(mode="json") == before

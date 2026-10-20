@@ -29,8 +29,10 @@ All fields are required; unused arrays are []. Classify only useful original IDs
   this request: target summary/responsibility, read-only scope, explicit exclusions,
   supplied review criteria or addressee. Select a unit once even if it serves both purposes.
   Do not select bare field dumps, parent work, old completion or unresolved conflicts.
-- context_unit_ids: parent/document purpose needed for background only. Never
-  choose parent work as this target's responsibility. Omit redundant background.
+- context_unit_ids: only IDs actually present in a context or shared group,
+  and only for description background. For mode=comment this array is always [].
+  A document title or excerpt in a neither group is NOT eligible context merely
+  because it is a document. Never promote it or parent work to a writing bucket.
 - history_unit_ids: relevant past completion that must NOT become current work.
 - conflicts: {unit_ids:[...],blocking:boolean} for incompatible source facts.
   Current Jira fields and older document completion are different observations;
@@ -53,5 +55,8 @@ For needs_input, do NOT keep preliminary writable selections. Return this shape
 with the exact request mode/target and your concrete questions:
 `{"contract":"editor-draft-spec.v2","status":"needs_input","mode":"COPY_REQUEST_KIND","target":"COPY_REQUEST_TARGET","current_unit_ids":[],"context_unit_ids":[],"history_unit_ids":[],"conflicts":[],"required_link_source_ids":[],"missing_inputs":["구체적으로 필요한 값은 무엇인가요?"]}`.
 
+Before returning, check each selected ID against its original structural group.
+An ID found only in neither may appear only in history_unit_ids or conflicts;
+never in current_unit_ids or context_unit_ids. Do not fill unused arrays.
 Inspect the selection once: correct target, only relevant constraints, historical
 facts isolated, required document link selected, no fabricated IDs or measurements.

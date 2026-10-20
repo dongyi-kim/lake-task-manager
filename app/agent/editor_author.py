@@ -66,7 +66,7 @@ def _remaining_items(value: str) -> list[str]:
     return out
 
 
-def _ticket_context(key: str, kind: str) -> str:
+def _ticket_context(key: str, kind: str, evidence: dict | None = None) -> str:
     """이 에디터가 붙어 있는 티켓의 맥락. 코멘트인지 본문인지에 따라 필요한 게 다르다."""
     key = (key or "").strip().upper()
     if not key or key.startswith("__"):        # 새 티켓 작성 중 — 아직 맥락이 없다
@@ -74,9 +74,38 @@ def _ticket_context(key: str, kind: str) -> str:
     parts = []
     try:
         from app.agent.tools.survey_tools import progress_report
-        r = progress_report(key, comment_limit=6)
+        from app.agent.tools.progress_snapshot import ProgressAcquisition
+        acquisition = ProgressAcquisition() if evidence is not None else None
+        r = progress_report(key, comment_limit=6, acquisition=acquisition)
         if r.get("error"):
             return ""
+        if evidence is not None:
+            # Identity comes from the verified read, never the requested key or
+            # a regex over the flattened presentation text. Keep related record
+            # keys nested so the remote selector cannot promote their ownership.
+            evidence.update({name: r[name] for name in
+                             ("key", "title", "status", "assigneeId", "due") if name in r})
+            evidence["complete"] = bool(acquisition.finished and all(
+                branch.state == "returned" and all(
+                    read.operation != "get_issue" or (
+                        isinstance(read.metadata, dict) and read.arguments
+                        and str(read.metadata.get("key", "")).strip().upper()
+                        == str(read.arguments[0]).strip().upper())
+                    for read in branch.reads)
+                for branch in acquisition.branches.values()))
+            evidence["comments"] = [
+                {name: row[name] for name in ("date", "who", "text") if name in row}
+                for row in r.get("comments", [])] if kind != "description" else []
+            for name in ("children", "links"):
+                evidence[name] = [
+                    {field: row[field] for field in ("key", "title", "status", "rel") if field in row}
+                    for row in r.get(name, [])]
+            # A document is not a Jira issue owned by the current ticket.
+            # An issue-shaped object without a key deliberately resets ownership.
+            evidence["documents"] = [
+                {"summary": row.get("title", ""), **{
+                    field: row[field] for field in ("url", "updated", "excerpt") if field in row}}
+                for row in r.get("documents", [])]
         owner = f'[~{r["assigneeId"]}]' if r.get("assigneeId") else "없음"
         parts.append(f'[{r["key"]}] "{r.get("title", "")}" — {r.get("status")}'
                      f' · 담당 {owner}'
@@ -118,14 +147,20 @@ def _ticket_context(key: str, kind: str) -> str:
             parts.append(f'관련 문서 「{d.get("title")}」 {d.get("url")}'
                          + (f'\n  발췌: {d.get("excerpt", "")[:400]}' if d.get("excerpt") else ""))
     except Exception:
-        pass
+        if evidence is not None:
+            evidence["complete"] = False
     try:      # 본문을 쓰는 중이면 원문(있다면)이 곧 고쳐 쓸 대상이다
         if kind == "description":
             from app.agent.tools._ctx import client
             from app.agent.tools.search_tools import _strip
             # ticket_view 는 본문을 **HTML 로만** 준다(descriptionHtml) — 태그를 벗겨 싣는다.
             v = client().ticket_view(key) or {}
+            if evidence is not None and str(v.get("key", "")).strip().upper() != key:
+                evidence["complete"] = False
+                return "\n\n".join(parts)[:MAX_CONTEXT]
             body = _strip(v.get("descriptionHtml") or "").strip()
+            if evidence is not None and evidence.get("key"):
+                evidence["description"] = body
             if body:
                 parts.append("현재 본문(고쳐 쓸 대상):\n" + body[:1200])
             # ── 계보 — 본문은 제목·상위 Epic·자식 유무만으로도 무엇을/어떻게 쓸지 정해진다
@@ -144,13 +179,18 @@ def _ticket_context(key: str, kind: str) -> str:
             direct = next((a for a in reversed(ancestors)
                            if str(a.get("type") or "") != "Epic"), None)
             if direct:
+                if evidence is not None and evidence.get("key"):
+                    evidence["parentKey"] = direct.get("key", "")
+                    evidence["parent"] = {
+                        "key": direct.get("key", ""), "summary": direct.get("summary", "")}
                 parts.append(
                     f'직접 상위 {direct.get("type") or "Task"}: {direct.get("key")} '
                     f'"{direct.get("summary") or ""}" — 현재 티켓의 가장 가까운 업무 배경과 '
                     "참고 출처로 우선 사용"
                 )
     except Exception:
-        pass
+        if evidence is not None:
+            evidence["complete"] = False
     return "\n\n".join(parts)[:MAX_CONTEXT]
 
 
@@ -339,7 +379,9 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
         maxis_backend.begin_local_acquisition()
         if runtime_resolution.route in {"shadow", "maxis"} else None
     )
-    ctx = _ticket_context(ticket_key, kind)
+    ticket_evidence: dict = {}
+    ctx = (_ticket_context(ticket_key, kind, ticket_evidence)
+           if runtime_resolution.route == "maxis" else _ticket_context(ticket_key, kind))
     context_provenance = (
         maxis_backend.finish_local_acquisition(context_marker)
         if runtime_resolution.route in {"shadow", "maxis"} else None
@@ -374,7 +416,10 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
         r"([A-Z][A-Z0-9]*)-\d+", str(ticket_key or "").strip().upper(), re.I,
     )
     if ctx:
-        result = {"ticketContext": ctx}
+        result = ticket_evidence if runtime_resolution.route == "maxis" else {"ticketContext": ctx}
+        if runtime_resolution.route == "maxis" and not result.get("key"):
+            return {"ok": False, "error": "티켓 조회 결과의 식별 정보를 확인하지 못했습니다. 다시 조회해 주세요.",
+                    "usage": {}}
         proof = maxis_backend.attest_query_result(
             "editor-ticket", "jira", result,
             scopes=((project_match.group(1).upper(),) if project_match else ()),

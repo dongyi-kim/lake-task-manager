@@ -44,7 +44,7 @@ BRANCH_PROMPT_SHA256 = {
                 "user": "0b882243f2e854a7fcf11e1844d9159187d9944a6b2ac53092ec829f43f07436"},
     "control": {"system": "8d678b29f7677d1dc7790d5620c8e3dd7d6726c529d16ad55d58d2cfddd42817",
                 "user": "41e3faa78a5f4d63a4302d6defc5e119c1c7b834d92c272bc6de18c629fb2b99"},
-    "selector": {"system": "be2cd684efbd0ca016b59ca7dd3dbe0e610cdaa2250710eaf46f9b16080053e9",
+    "selector": {"system": "29e4c1ba85d6a687b2bb564a5e68b703abd45bb52107963a293a7f1370077796",
                  "user": "7241996b070a0e06f95443c4b41503246a5ce6bac9a066c48879d778a20c0419"},
 }
 
