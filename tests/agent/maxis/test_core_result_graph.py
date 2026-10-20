@@ -185,13 +185,15 @@ def test_bounds_and_malformed_drafts_are_rejected_without_repair(nodes, result_c
 
 
 @pytest.mark.parametrize("pointer,value", [
-    ("/status", "In Progress"),
+    ("/status", '{"status":"In Progress"}'),
     ("/children/0", '{"key":"DL-9044","status":"Closed"}'),
-    ("/a~1b/~0name", "원문 사실"),
+    ("/a~1b/~0name", '{"~name":"원문 사실"}'),
+    ("/children_done", '{"children_done":"2/3"}'),
 ])
 def test_fact_pointer_copies_original_value_and_preserves_record_ownership(nodes, result_case, pointer, value):
     pack, incoming, draft = result_case
-    content = encoded({"status": "In Progress", "children": [{"key": "DL-9044", "status": "Closed"}],
+    content = encoded({"status": "In Progress", "children_done": "2/3",
+                       "children": [{"key": "DL-9044", "status": "Closed"}],
                        "a/b": {"~name": "원문 사실"}})
     # Rebind both original pack and digest, just as the actual ContextGuard does.
     import hashlib

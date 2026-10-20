@@ -39,14 +39,21 @@ def _extract_fact(content, pointer):
     value = json.loads(content, object_pairs_hook=lambda rows: _pairs(rows, _fail),
                        parse_int=_SourceNumber, parse_float=_SourceNumber,
                        parse_constant=lambda _: _fail())
+    parent_key = None
     for token in pointer[1:].split("/"):
         key = token.replace("~1", "/").replace("~0", "~")
         if isinstance(value, dict) and key in value:
+            parent_key = key
             value = value[key]
         elif isinstance(value, list) and re.fullmatch(r"0|[1-9][0-9]*", key) and int(key) < len(value):
+            parent_key = None
             value = value[int(key)]
         else:
             _fail()
+    # Retain an original field's name with a scalar. A naked "2/3", date or
+    # boolean loses what was measured. This is a projection, not an invented label.
+    if parent_key is not None and not isinstance(value, (dict, list)):
+        return _source_json({parent_key: value})
     # Containers keep their explicit keys/owners; no flattening or inferred labels.
     return str(value) if isinstance(value, str) else _source_json(value)
 

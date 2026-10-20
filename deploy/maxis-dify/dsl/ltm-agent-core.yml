@@ -7505,9 +7505,9 @@ workflow:
             \nSelect a short exact quotation: {\"kind\":\"fact\",\"source_id\":\"\
             COPY_ID\",\"source_path\":\"/comments/0/text\"}. source_path is an RFC\
             \ 6901 pointer inside source.content JSON; \"\" selects its full plain\
-            \ text. Choose an existing string or small record retaining owner/field\
-            \ names, nonempty and at most 1,200 characters. Escape ~ as ~0 and / as\
-            \ ~1. Code copies the original, never model-authored wording. No pointers\
+            \ text. Choose a small record retaining owner/field names, nonempty and\
+            \ at most 1,200 characters. Scalar fields retain their original key, e.g.\
+            \ {\"children_done\":\"2/3\"}. Escape ~ as ~0 and / as ~1. No pointers\
             \ into role_context or policy.\nSeparate interpretation into appropriately\
             \ typed segments. Do not relabel unsupported factual assertions to pass\
             \ validation. Zero hits prove only no matches for this query, not that\
@@ -7783,16 +7783,21 @@ workflow:
           \ requires strict JSON.\n    value = json.loads(content, object_pairs_hook=lambda\
           \ rows: _pairs(rows, _fail),\n                       parse_int=_SourceNumber,\
           \ parse_float=_SourceNumber,\n                       parse_constant=lambda\
-          \ _: _fail())\n    for token in pointer[1:].split(\"/\"):\n        key =\
-          \ token.replace(\"~1\", \"/\").replace(\"~0\", \"~\")\n        if isinstance(value,\
-          \ dict) and key in value:\n            value = value[key]\n        elif\
-          \ isinstance(value, list) and re.fullmatch(r\"0|[1-9][0-9]*\", key) and\
-          \ int(key) < len(value):\n            value = value[int(key)]\n        else:\n\
-          \            _fail()\n    # Containers keep their explicit keys/owners;\
-          \ no flattening or inferred labels.\n    return str(value) if isinstance(value,\
-          \ str) else _source_json(value)\n\n\ndef main(model_input, candidate):\n\
-          \    try:\n        incoming, pack, schema, sources = _draft_context(model_input,\
-          \ \"result_integrator\",\n            _TEXT_SCHEMA_JSON, _TEXT_SCHEMA_SHA256,\
+          \ _: _fail())\n    parent_key = None\n    for token in pointer[1:].split(\"\
+          /\"):\n        key = token.replace(\"~1\", \"/\").replace(\"~0\", \"~\"\
+          )\n        if isinstance(value, dict) and key in value:\n            parent_key\
+          \ = key\n            value = value[key]\n        elif isinstance(value,\
+          \ list) and re.fullmatch(r\"0|[1-9][0-9]*\", key) and int(key) < len(value):\n\
+          \            parent_key = None\n            value = value[int(key)]\n  \
+          \      else:\n            _fail()\n    # Retain an original field's name\
+          \ with a scalar. A naked \"2/3\", date or\n    # boolean loses what was\
+          \ measured. This is a projection, not an invented label.\n    if parent_key\
+          \ is not None and not isinstance(value, (dict, list)):\n        return _source_json({parent_key:\
+          \ value})\n    # Containers keep their explicit keys/owners; no flattening\
+          \ or inferred labels.\n    return str(value) if isinstance(value, str) else\
+          \ _source_json(value)\n\n\ndef main(model_input, candidate):\n    try:\n\
+          \        incoming, pack, schema, sources = _draft_context(model_input, \"\
+          result_integrator\",\n            _TEXT_SCHEMA_JSON, _TEXT_SCHEMA_SHA256,\
           \ _DRAFT_SCHEMA, _fail)\n        draft = _decode(candidate, _MAX_DRAFT_UTF8_BYTES,\
           \ _fail)\n        _validate(draft, _DRAFT_SCHEMA, _DRAFT_SCHEMA, _fail)\n\
           \        if any(not value.strip() for value in draft[\"missing_inputs\"\
