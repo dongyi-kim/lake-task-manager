@@ -153,14 +153,21 @@ def test_offline_projections_pin_work_and_query_intent_revisions():
         "role-result": "c10afa5157a3f34402141c84af0e623a30b17be5a3fa5bb85f74cf92abba80e6",
         "role-portfolio": "f585f21c92ba86f8021ad5145e98875fbae9f1c92352b1fed8ef57f71554b2c2",
         "role-editor": "65f711fd6330e4c55ed2317f49b99f09aba0f56510dafa16e8fd28940dd972d0",
-        "role-overflow": "aadfdcafc9dbcd61916b594528ee751b7a7c5cbe6e846ea8bf71ec3ffeaa4940",
+        # The same oversized fixture is projected under the current 32 KiB
+        # budget. It must remain partial, not become a normal full-evidence case.
+        "role-overflow": "23447fe672b347fb2d67f788fee3d01576dc6427c5f793f11c175f0432cc6b07",
         "role-stale": "71adf31275c9adb478c0535b976c961e663708762e560787f966ee77e1869b5f",
         "role-missing": "26ecbd6472a5d7ec5d55b4abee7ae04b474e6a79f6ce96900da73b4d55940d8f",
     }
     for case_id, digest in expected.items():
         with patch("app.agent.maxis.retrieval_query.enrich_role_query", baseline_query):
-            encoded = json.dumps(offline.build_fixture_payload(case_id), ensure_ascii=False,
+            fixture = offline.build_fixture_payload(case_id)
+            encoded = json.dumps(fixture, ensure_ascii=False,
                                  sort_keys=True, separators=(",", ":"))
+        if case_id == "role-overflow":
+            pack = fixture["payload"]["evidencePack"]
+            assert pack["partial"] is True
+            assert {"total_truncated", "source_truncated"} <= set(pack["flags"])
         assert hashlib.sha256(encoded.encode()).hexdigest() == digest
 
 

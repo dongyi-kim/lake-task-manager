@@ -83,6 +83,7 @@ def _fake_dify_transport(
 ):
     """Run the real Dify client against deterministic in-process response bytes."""
     from app.agent.maxis.client import DifyClient, REQUIRED_START_VARIABLES
+    from app.agent.maxis.context_guard import MAX_CONTEXT_PACK_UTF8_BYTES
 
     calls = []
 
@@ -103,7 +104,7 @@ def _fake_dify_transport(
                 ("paragraph" if key == "context_pack" else "text-input"): {
                     "variable": key,
                     "required": True,
-                    "max_length": 20_000 if key == "context_pack" else 128,
+                    "max_length": MAX_CONTEXT_PACK_UTF8_BYTES if key == "context_pack" else 128,
                 }
             } for key in sorted(REQUIRED_START_VARIABLES)]}
             return json.dumps(body).encode("utf-8"), 200, 2

@@ -359,15 +359,15 @@ def test_input_and_projection_byte_caps_fail_without_fallback(nodes, knowledge_c
     _, incoming, _ = knowledge_case
     value = json.loads(incoming)
     value["knowledge_context"] = ["x"]
-    value["knowledge_context"][0] += "x" * (9000 - len(encoded(value).encode()))
+    value["knowledge_context"][0] += "x" * (40000 - len(encoded(value).encode()))
     raw, engine = encoded(value), code(nodes[INPUT])
-    assert len(raw.encode()) == 9000
+    assert len(raw.encode()) == 40000
     projected = engine["main"](raw)["knowledge_input"]
-    assert len(projected.encode()) <= 9000 and json.loads(projected)["knowledge_context"] == value["knowledge_context"]
+    assert len(projected.encode()) <= 40000 and json.loads(projected)["knowledge_context"] == value["knowledge_context"]
     value["knowledge_context"][0] += "x"
     with pytest.raises(ValueError, match="^invalid_core_knowledge_input$"): engine["main"](encoded(value))
     # Serializer-seam fault injection, not a claimed naturally attainable oversized view.
     canonical = engine["_canonical"]
-    engine["_canonical"] = lambda row: canonical(row) + (" " * 9001 if isinstance(row, dict)
+    engine["_canonical"] = lambda row: canonical(row) + (" " * 40001 if isinstance(row, dict)
         and row.get("contract") == "knowledge-input.v1" else "")
     with pytest.raises(ValueError, match="^invalid_core_knowledge_input$"): engine["main"](raw)

@@ -223,7 +223,7 @@ def test_input_projection_refuses_invalid_original_input_without_repair(nodes, r
     value = json.loads(incoming)
     if fault == "hash": value["context_pack"]["sources"][0]["content"] += " unbound"
     elif fault == "correlation": value["correlation_id"] = "another-request"
-    elif fault == "bytes": value["knowledge_context"][0]["content"] = "검" * 9001
+    elif fault == "bytes": value["knowledge_context"][0]["content"] = "검" * 40001
     elif fault == "extra": value["raw_messages"] = []
     raw = encoded(value) + (" " if fault == "noncanonical" else "")
     with pytest.raises(ValueError, match="invalid_core_result_input"): code(nodes[INPUT])["main"](raw)

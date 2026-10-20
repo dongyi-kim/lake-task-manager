@@ -389,6 +389,12 @@ def test_system_index_survives_short_identity_without_exempting_user_text(identi
 def test_work_reference_freshness_is_enforced_before_credential_lookup(monkeypatch, condition):
     from app.agent.maxis import credentials
     from tools.maxis_role_remote_cases import build_remote_fixture
+    if condition == "truncated-intent":
+        from dataclasses import replace
+        from app.agent.maxis import context_guard
+        original = context_guard.ContextPolicy
+        monkeypatch.setattr(context_guard, "ContextPolicy", lambda **kw: replace(
+            original(**kw), max_total_utf8_bytes=6000))
 
     if condition == "fresh":
         payload = build_remote_fixture(
