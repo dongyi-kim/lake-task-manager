@@ -68,10 +68,14 @@ createApp(Dialog,{initialMode:'maxis'}).mount('#app');</script></body></html>"""
 
         page.route("http://127.0.0.1:4457/**", respond)
         page.goto("http://127.0.0.1:4457/")
+        page.get_by_role("button", name="MAXIS 설정 추가", exact=True).click()
+        assert page.locator(".mx-setup").count() == 0
+        page.get_by_role("button", name="저장소 파일로 PROD 설정", exact=True).click()
         try:
-            page.get_by_role("heading", name="PROD MAXIS 시작하기").wait_for(timeout=5000)
+            page.get_by_role("heading", name="저장소 파일로 MAXIS 설정").wait_for(timeout=5000)
         except Exception:
             pytest.fail("PROD setup did not render: " + repr(errors) + " / " + page.locator("#app").inner_html()[:1800])
+        assert page.get_by_text("저장 위치: prod 프로필", exact=True).is_visible()
         assert page.title() == "LTM PROD setup fixture"
         guide = page.get_by_role("link", name="PROD 설정·검수·데모 가이드 열기")
         assert guide.get_attribute("href") == "/api/agent/maxis/setup/guide"

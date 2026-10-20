@@ -202,8 +202,9 @@ export default {
   },
   template: `
   <section class="ag-sec mx-setup" style="overflow-wrap:anywhere;min-width:0;padding:16px 18px">
-    <h3 style="margin:0 0 8px">PROD MAXIS 시작하기</h3>
-    <p class="mx-help">새 PC에서 저장소 소스만으로 준비합니다. 포털 로그인은 해당 포털에서 진행하고, LTM에는 세 앱의 Service API token을 저장합니다.</p>
+    <h3 style="margin:0 0 8px">저장소 파일로 MAXIS 설정</h3>
+    <p class="mx-help"><b>저장 위치: prod 프로필</b> · 현재 앱의 실행 환경과 별도로 선택한 저장 대상입니다.</p>
+    <p class="mx-help">새 PROD 포털을 저장소 소스로 준비합니다. 포털 로그인은 해당 포털에서 진행하고, LTM에는 세 앱의 Service API token을 저장합니다.</p>
     <p class="mx-help"><a href="/api/agent/maxis/setup/guide" target="_blank" rel="noopener noreferrer">PROD 설정·검수·데모 가이드 열기</a> · 이 체크아웃의 저장소 정본입니다.</p>
     <div class="mx-stage-pick" role="tablist" aria-label="PROD 설정 단계" style="flex-wrap:wrap;gap:4px">
       <button v-for="n in 4" :key="n" class="ag-mini" :class="{on:step===n}" @click="step=n">{{ ['1 · 준비 파일','2 · 자산 연결','3 · 게시와 token','4 · 검증과 적용'][n-1] }}</button>

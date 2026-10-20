@@ -238,7 +238,7 @@ export default {
         <button :class="{ on: mode === 'llm' }" @click="mode = 'llm'">LLM 연결</button>
         <button :class="{ on: mode === 'maxis' }" @click="mode = 'maxis'">MAXIS / Dify Workflow</button>
       </div>
-      <MaxisSettingsPanel v-if="mode === 'maxis'" />
+      <MaxisSettingsPanel v-if="mode === 'maxis'" @saved="$emit('saved', $event)" />
       <div v-else-if="!st" class="ag-body">불러오는 중…</div>
       <div v-else class="ag-config-layout">
         <aside class="ag-config-list">

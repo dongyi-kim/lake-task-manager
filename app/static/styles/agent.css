@@ -649,6 +649,28 @@
   background:transparent; cursor:pointer; font:inherit; font-size:12px; }
 .mx-mode-nav button.on { color:var(--text); background:var(--panel); border-color:var(--border-hi); font-weight:700; }
 .mx-panel { flex:1; min-height:0; display:flex; flex-direction:column; }
+.mx-panel.mx-profile-first { display:block; overflow-y:auto; overflow-wrap:anywhere; }
+.mx-profile-first .mx-scroll { overflow:visible; }
+.mx-profile-first .mx-stage-pick { flex-wrap:wrap; }
+.mx-feedback { margin:10px 18px; }
+.mx-draft-note { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:10px 18px; color:var(--warn); font-size:12px; }
+.mx-profile-summary { padding:14px; border:1px solid var(--border-hi); border-radius:10px; background:var(--panel-2); }
+.mx-summary-title { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.mx-summary-title > b { font-size:16px; }.mx-summary-title > span { color:var(--muted-2); font-size:11px; }
+.mx-profile-host { margin:8px 0 12px; font-size:12px; color:var(--muted); overflow-wrap:anywhere; }
+.mx-selected { color:var(--good) !important; }
+.mx-profile-first .mx-actions { flex-wrap:wrap; }
+.mx-runtime-status { display:grid; gap:8px; margin-top:14px; padding-top:12px; border-top:1px solid var(--border); }
+.mx-runtime-row { display:grid; grid-template-columns:100px minmax(0,1fr); gap:3px 10px; font-size:12px; }
+.mx-runtime-row > span,.mx-runtime-row > small { color:var(--muted); }
+.mx-runtime-row > small { grid-column:1/-1; font-size:11px; line-height:1.6; }
+.mx-details { border-bottom:1px solid var(--border); padding-bottom:12px; }
+.mx-details > summary,.mx-probe-details > summary { cursor:pointer; font-size:12px; font-weight:650; color:var(--text); }
+.mx-details[open] > summary { margin-bottom:12px; }
+.mx-probe-details { margin-top:12px; }
+.mx-add-content { padding:16px 18px; }
+.mx-setup-choice { padding-top:14px; border-top:1px solid var(--border); }
+.mx-profile-first .ag-f > input,.mx-profile-first .ag-f > select,.mx-profile-first .ag-f > textarea { min-width:0; }
 .mx-profile-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:13px 18px;
   border-bottom:1px solid var(--border); }
 .mx-profile-bar > div:first-child { display:flex; flex-direction:column; gap:2px; }

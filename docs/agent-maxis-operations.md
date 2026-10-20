@@ -75,7 +75,10 @@ Token을 명령 인자·JSON·메신저에 넣지 않는다. 포털 앞단에 �
 
 ## 4. 평가·검수·적용 (UI)
 
-**설정 → AI 에이전트 → MAXIS / Dify Workflow → PROD MAXIS 시작하기 → 4 · 검증과 적용**
+**설정 → AI 에이전트 → MAXIS / Dify Workflow → MAXIS 설정 추가 → 저장소 파일로 PROD 설정 → 4 · 검증과 적용**
+
+기존 연결은 기본 화면의 **저장된 MAXIS 설정**에서 선택·편집한다. `이 설정 사용`은 연결 프로필 선택이며,
+Agent·에디터가 실제 사용하는지는 바로 아래 기능별 실행 상태로 확인한다. 앱의 개발/운영 환경과 MAXIS 프로필은 별개다.
 
 1. 이 PROD 환경에서 합성 평가를 시작한다. Knowledge 30건(PMO 포함 31건), 선택 Role case 묶음을 5회 반복한다.
 2. 검토 원본을 `.cache/maxis/downloaded-report.json`으로 저장한다. 별도 검토자가 raw 출력과

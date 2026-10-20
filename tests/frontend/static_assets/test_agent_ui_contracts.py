@@ -277,7 +277,8 @@ def test_maxis_settings_are_a_separate_workflow_surface_with_safe_credentials():
     assert "promotionDetail" in panel and "minimumSamples" in panel
     assert "impactSegments" in panel and "LTM Local과 MAXIS/Dify" in panel
     assert "기존 Jira Dashboard/수작업 기준선" in panel
-    assert "API Key" not in panel[panel.index("mx-impact"):]
+    impact = panel.split('<details v-if="impact"', 1)[1].split("</details>", 1)[0]
+    assert "API Key" not in impact
     for path in ("/api/agent/maxis/status", "/api/agent/maxis/profiles/",
                  "/api/agent/maxis/credentials/", "/api/agent/maxis/probe/",
                  "/api/agent/maxis/activate/", "/api/agent/maxis/routes",
@@ -285,16 +286,18 @@ def test_maxis_settings_are_a_separate_workflow_surface_with_safe_credentials():
         assert path in api_src
     assert ".mx-panel" in css and ".mx-impact" in css and ".mx-promotion-gate" in css
     assert ".mx-impact-segments" in css and ".mx-impact-row" in css
-    assert "p.enabled ? '활성 설정' : '재확인'" in panel
-    assert "마지막 검사 시도:" in panel
+    assert "이 설정 사용" in panel and "연결 설정 선택됨" in panel
+    assert "row.profile === this.selectedName" in panel and 'row.engine === "maxis"' in panel
+    assert "row.ready === true" in panel and "현재 사용 중 · MAXIS" in panel
+    assert "마지막 연결 확인 결과" in panel
     assert '["observed", "none_recorded", "unavailable"]' in panel
     assert "value.observations.slice(0, 9)" in panel
     assert "row.profile === this.selectedName" in panel
     assert "item.workflowKey === workflow.key" in panel
     assert "Object.prototype.hasOwnProperty.call(labels, value)" in panel
-    history = panel.split('<section class="ag-sec mx-observations"', 1)[1].split("</section>", 1)[0]
+    history = panel.split('<details class="ag-sec mx-details mx-observations"', 1)[1].split("</details>", 1)[0]
     for text in ("과거 원격 요청 관측", "현재 설정과 일치: 미확인", "관측 기록 조회 불가",
                  "실제 처리 경로 미확인", "row.transport", "row.result", "row.workflowRunId"):
         assert text in history
-    assert "overflow-wrap:anywhere" in history and "min-width:0" in history
+    assert "overflow-wrap:anywhere" in css and ".mx-details" in css
     assert all(token not in history for token in ("v-html", "@click", "<input", "<button", "row.error"))
