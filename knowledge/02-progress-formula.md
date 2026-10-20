@@ -1,63 +1,23 @@
-# 진척률 산식
+# 진척률과 집계의 해석
 
-에이전트가 "지금 몇 % 됐나"를 설명할 때 **근거로 대는 규칙**. 계산 자체는
-`app/domain/progress.py` · `app/domain/rollup.py` 가 하며, 여기 적힌 것과 같아야 한다.
+계산은 LTM의 결정적 코드가 담당한다. 모델은 전달된 계산값을 해석한다.
+이 정책은 실제 프로젝트의 현재 진척률 출처가 아니다.
 
-## 완료 판정
+## 완료와 SP
 
-**`statusCategory == "done"` 이면 완료다.** 상태 **이름**으로 판정하지 않는다 —
-프로젝트마다 "완료 / Done / 종료 / Closed" 가 제각각이라 이름을 하드코딩하면 반드시 틀린다.
+완료는 statusCategory.key == done으로 판정한다. 상태 이름을 하드코딩하지 않는다.
+new → todo, indeterminate → inprogress, done → done이며 undefined·누락은 todo다.
+Epic 진척률은 완료 SP 합 / 전체 SP 합이다. SP 누락(None)은 Bug=0, 그 외=1이다.
+명시적 SP=0은 0을 유지한다. Bug/Ops/운영 유형과 사용자 VoC Component는 현재 코드의 제외 정책을 따른다.
+mock 라벨 SP는 분모에 포함하고 별도로 표시한다. 임의 부분 완료 크레딧을 주지 않는다.
 
-Jira 의 `statusCategory.key` → 앱 내부 3분류:
+## WBS와 다른 지표
 
-| statusCategory.key | 앱 분류 |
-|---|---|
-| `new` | `todo` |
-| `indeterminate` | `inprogress` |
-| `done` | `done` |
-| `undefined` / 누락 | `todo` (모르면 안 끝난 것으로 본다) |
+config/wbs_config.yaml의 N:M 매핑·weight로 WBS Task의 Epic 진척을 가중평균하고 상위로 롤업한다.
+weight는 상대 비중이며 합이 1일 필요는 없다. Epic 미연결 티켓은 해당 Epic/WBS 집계에 나타나지 않는다.
+PMO_VIT는 자손 Done 개수/전체 개수라는 별도 지표다. 일반 Task의 하위 완료 개수를
+Epic SP 진척률이나 일정 완료율로 바꾸지 않는다. 전체 건수는 scope·pagination·중복 제거 후 결과와 대조한다.
+댓글의 완료 보고와 Jira 상태, WBS 계획과 Jira 기한을 구분한다.
+조회 시점·stale·partial·충돌을 표시하고 근거 없는 원인·담당·남은 기간을 붙이지 않는다.
 
-## Epic 진척률 = SP 가중
-
-```
-진척률 = (완료 티켓의 SP 합) / (전체 티켓의 SP 합)
-```
-
-**SP 누락 시 기본값**: `Bug → 0`, **그 외 → 1**.
-명시적으로 `0` 이 입력된 티켓은 그대로 `0` 이다 — **"누락"과 "명시적 0"은 다르다.**
-(SP 를 안 매긴 Task 를 0 으로 치면 아무리 해도 진척률이 안 오른다. 그래서 1 로 센다.)
-
-## 분모에서 빠지는 것
-
-- **이슈타입 `Bug` · `Ops` · `운영`** — 계획된 일이 아니다. 버그가 많이 나면 진척률이 떨어져야
-  하는 게 아니라, 계획 대비 완료가 그대로여야 한다.
-- **Component 가 `사용자 VoC`** — 계획 외 유입. 항상 제외.
-- **Epic Link 가 없는 티켓** — 애초에 어느 Epic 소속인지 모르므로 집계에 등장하지 않는다.
-  ★ 이게 "만들었는데 화면에 안 보여요"의 **가장 흔한 원인**이다.
-
-`mock` 라벨이 붙은 SP 는 분모에 포함하되 별도 항목으로 가시화한다(가상 데이터 표식).
-
-## WBS / 모듈 롤업
-
-`config/wbs_config.yaml` 이 매핑을 갖는다.
-
-```
-wbs → module → tasks[] → 각 task 가 여러 epic 을 weight 로 참조
-```
-
-- 한 Epic 을 **여러 WBS Task 가 다른 weight 로 공유**할 수 있다(N:M).
-  예: `DL-103` 을 "실시간 수집 체계" 가 weight 4, 다른 Task 가 weight 6 으로 나눠 갖는다.
-- **weight 합이 1 이 아니어도 된다** — 자동 정규화된다. `6/4 == 60%/40%`, `3/1 == 75%/25%`.
-- WBS Task 의 진척률 = 소속 Epic 들의 진척률을 weight 로 가중 평균.
-- 모듈 진척률 = 그 모듈 Task 들의 롤업. PMO 전체 = 모듈들의 롤업.
-
-일정(`start`/`end`)은 Jira 가 아니라 **`wbs_config.yaml` 에 있다** — PMO 의 계획 산출물이기
-때문이다. 티켓 마감일과 WBS 일정이 어긋나면 그건 데이터 오류가 아니라 **보고할 사실**이다.
-
-## 에이전트가 이 산식을 쓸 때
-
-- "진척률이 낮다"고만 말하지 말고 **왜 낮은지**를 위 규칙으로 짚는다.
-  예: *"완료 SP 12 / 전체 40 = 30%. 다만 이 Epic 자식 9건 중 6건이 Task 라 SP 가 기본값 1로
-  잡혔습니다 — Story 로 만들어 SP 를 매기면 수치가 실제에 가까워집니다."*
-- 진척률이 이상하면 **Epic Link 누락**을 먼저 의심한다.
-- Bug 가 쌓여 있는데 진척률이 멀쩡한 것은 **버그가 아니라 설계**다(Bug 는 분모에서 빠진다).
+출처: app/domain/progress.py, app/domain/rollup.py, app/domain/vit.py.

@@ -45,6 +45,7 @@ _DOCUMENT_FIELDS = frozenset({
     "reviewed_at", "reviewer_digest", "owner",
     "classification", "audience", "allowed_roles",
 })
+_DOCUMENT_OPTIONAL_FIELDS = frozenset({"description", "sha256"})
 _GOVERNANCE_FIELDS = frozenset({
     "review_cycle_days", "immutable_release", "deployment_strategy",
     "eval_suite_sha256",
@@ -292,7 +293,9 @@ def build_manifest(
     config_path: Path | str | None = None,
     source_root: Path | str | None = None,
 ) -> KnowledgeManifest:
-    default_config, default_root = _defaults()
+    default_config, default_root = (
+        _defaults() if config_path is None or source_root is None else (None, None)
+    )
     config_file = Path(config_path) if config_path is not None else default_config
     root = (Path(source_root) if source_root is not None else default_root).resolve()
     version = str(knowledge_version or "").strip()
@@ -322,7 +325,8 @@ def build_manifest(
     ids: set[str] = set()
     paths: set[str] = set()
     for index, value in enumerate(documents):
-        if not isinstance(value, dict) or set(value) != _DOCUMENT_FIELDS:
+        if (not isinstance(value, dict) or not _DOCUMENT_FIELDS.issubset(value)
+                or set(value) - _DOCUMENT_FIELDS - _DOCUMENT_OPTIONAL_FIELDS):
             raise KnowledgeManifestError(
                 f"Knowledge document {index + 1} governance fields are incomplete."
             )
@@ -397,6 +401,15 @@ def build_manifest(
         normalized_text, segments = _segment_ledger(
             document_id, content_text, _CHUNKING,
         )
+        content_sha256 = hashlib.sha256(content_bytes).hexdigest()
+        if "sha256" in value and value["sha256"] != content_sha256:
+            raise KnowledgeManifestError("Knowledge document content SHA-256 does not match its source.")
+        description = value.get("description")
+        if description is not None and (
+            not isinstance(description, str) or not description.strip()
+            or len(description) > 500 or "\n" in description
+        ):
+            raise KnowledgeManifestError("Knowledge document description must be a concise single line.")
         rows.append({
             "id": document_id,
             "path": normalized_path,
@@ -410,7 +423,8 @@ def build_manifest(
             "audience": audience,
             "allowed_roles": list(allowed_roles),
             "bytes": len(content_bytes),
-            "sha256": hashlib.sha256(content_bytes).hexdigest(),
+            "sha256": content_sha256,
+            **({"description": description} if description is not None else {}),
             "normalized_chars": len(normalized_text),
             "segment_count": len(segments),
             "segments": segments,

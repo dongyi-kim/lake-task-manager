@@ -10,7 +10,9 @@ service_base_url: null
 
 # Fill these with independently created prod assets. Do not copy dev UUIDs or keys.
 knowledge:
-  version: null
+  # Omit to use the repository-only public corpus. DEV/cache metadata is optional.
+  source_manifest: config/maxis-knowledge.yml
+  version: ltm-public-knowledge.v1
   name: null
   dataset_id: null
   role_metadata_field_id: null
@@ -51,6 +53,14 @@ knowledge:
     editor-and-rendering:
       source_name: 08-editor-and-rendering.md
       remote_name: 08-editor-and-rendering.txt
+      document_id: null
+    public-project-stack:
+      source_name: 09-public-project-stack.md
+      remote_name: 09-public-project-stack.txt
+      document_id: null
+    glossary:
+      source_name: 10-glossary.md
+      remote_name: 10-glossary.txt
       document_id: null
 
 model:

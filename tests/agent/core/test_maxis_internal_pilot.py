@@ -36,7 +36,7 @@ def _configured_pilot():
     profiles.save("internal-pilot", {
         "base_url": "https://pilot.maxis.example/v1",
         "workflow_bundle_version": "pilot-v1",
-        "knowledge_version": "ltm-knowledge-2026.09",
+        "knowledge_version": "ltm-public-knowledge.v1",
         "knowledge_dataset_id": "11111111-1111-4111-8111-111111111111",
         "knowledge_sentinel_sha256": "b" * 64,
         "remote_log_policy_id": "SEC-PILOT",

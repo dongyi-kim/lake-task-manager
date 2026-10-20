@@ -17,7 +17,7 @@ from app.agent.maxis.contracts import EditorDraftV1, canonical_payload_schema
 
 # Generic vocabulary present in knowledge/07-ticket-body-guide.md and
 # knowledge/08-editor-and-rendering.md. No corpus or benchmark file is read at runtime.
-_EDITOR_POLICY_SUFFIX = "\n\nPolicy search terms: HTML TipTap Description"
+_EDITOR_POLICY_SUFFIX = "\n\nPolicy search terms: HTML TipTap 본문"
 
 # Only generic vocabulary in Role-authorized policy documents, never a ticket,
 # benchmark answer, corpus body, or permission. Unknown/specialized schemas stay

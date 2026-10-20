@@ -210,7 +210,7 @@ def attempt(case: dict, profile: dict, deployment: dict, identity) -> dict:
         row['context'] = describe_context(case['role_id'], fixture['state'], pack)
         binding = load_registry().resolve_role(case['role_id'])
         version = profile['workflows'][binding.key]['version']
-        api_key = credentials.get_for('dev', binding.key)
+        api_key = credentials.get_for(str(profile.get('name') or 'dev'), binding.key)
         client = make_client(profile, binding)
         row['requestAttempted'] = True
         request_started = time.perf_counter()

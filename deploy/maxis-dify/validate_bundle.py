@@ -15,6 +15,18 @@ import yaml
 from jsonschema.validators import validator_for
 
 
+def _source_binding_module():
+    path = Path(__file__).with_name("source_bindings.py")
+    spec = importlib.util.spec_from_file_location("ltm_dify_source_bindings", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Canonical source bindings cannot be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_SOURCE_BINDINGS = _source_binding_module()
+
 START_VARIABLES = frozenset({
     "context_pack",
     "role_id",
@@ -30,45 +42,16 @@ WORKFLOW_FIELDS = frozenset({
     "conversation_mode",
     "output_contract",
 })
-DIFY_APP_NAMES = {
-    "agent_core": "LTM Agent Core 2026.09",
-    "pmo_brief": "LTM PMO Brief 2026.09",
-    "editor_author": "LTM Editor Author 2026.09",
-}
-DIFY_WORKFLOW_SOURCE_NAMES = {
-    "agent_core": frozenset({
-        "01-ticket-rules.md",
-        "02-progress-formula.md",
-        "03-modules-and-people.md",
-        "04-work-breakdown.md",
-        "05-ltm-guide.md",
-        "06-data-assets.md",
-        "07-ticket-body-guide.md",
-        "08-editor-and-rendering.md",
-    }),
-    "pmo_brief": frozenset({
-        "02-progress-formula.md",
-        "03-modules-and-people.md",
-        "06-data-assets.md",
-    }),
-    "editor_author": frozenset({
-        "01-ticket-rules.md",
-        "05-ltm-guide.md",
-        "07-ticket-body-guide.md",
-        "08-editor-and-rendering.md",
-    }),
-}
-DIFY_PROVIDER_PLUGIN = (
-    "langgenius/openai_api_compatible:0.0.16@"
-    "d41b09aca46cdd3876f70b4c91d464c4588fc0bdc844ced6ee426283ead6ce8e"
-)
-DIFY_MODEL_PROVIDER = "langgenius/openai_api_compatible/openai_api_compatible"
+DIFY_APP_NAMES = _SOURCE_BINDINGS.APP_NAMES
+DIFY_PROVIDER_PLUGIN = _SOURCE_BINDINGS.MODEL_PLUGIN
+DIFY_MODEL_PROVIDER = _SOURCE_BINDINGS.MODEL_PROVIDER
+DIFY_MODEL_NAME = _SOURCE_BINDINGS.MODEL_NAME
 DIFY_LLM_MAX_TOKENS = {
     "agent_core": 4096,
     "pmo_brief": 2048,
     "editor_author": 4096,
 }
-REVIEWED_ROLE_METADATA_FIELD_ID = "f8f7023d-1c0f-4893-bf4b-7422b7d25f69"
+REVIEWED_ROLE_METADATA_FIELD_ID = _SOURCE_BINDINGS.marker_id("role-metadata")
 ROLE_ACL_KEY_TEMPLATE = "|{{ role_id }}|"
 ROLE_ACL_KEY_DESCRIPTION = (
     "Build one complete delimiter-wrapped Role ACL value for Dify 1.11.1"
@@ -86,11 +69,11 @@ ROLE_METADATA_CONDITION_IDS = {
 # file and DSL is deliberately insufficient without this explicit review step.
 DIFY_PROMPT_SHA256 = {
     "agent_core": {
-        "system": "00453923a1ec362033872c62774facb37536fbd277ffb8a6b6553deb5de569a2",
+        "system": "5c9208b12263881150afd455766ea33b8eb5613005baf39b0225f3d031047c71",
         "user": "d45a2fc4c15eb03e587937fef35f5fef7ff930e5b994860d8b33e44cf2d38f15",
     },
     "pmo_brief": {
-        "system": "2cdbf000b2c706d7ac37453706944cf7399f027631dee62d5ff7726d62a1d714",
+        "system": "fb7a25b80b5df29d7fa065db09a0906f29a812b8d42de98e452df6835c964ac3",
         "user": "d45a2fc4c15eb03e587937fef35f5fef7ff930e5b994860d8b33e44cf2d38f15",
     },
 }
@@ -355,7 +338,8 @@ def _validate_knowledge_source(
     now = datetime.now(timezone.utc)
     for index, raw in enumerate(raw_documents):
         document = _mapping(raw, f"knowledge documents[{index}]")
-        if set(document) != KNOWLEDGE_DOCUMENT_FIELDS:
+        if (not KNOWLEDGE_DOCUMENT_FIELDS.issubset(document)
+                or set(document) - KNOWLEDGE_DOCUMENT_FIELDS - {"description", "sha256"}):
             raise BundleValidationError("every Knowledge document needs complete governance fields")
         document_id = document.get("id")
         if not isinstance(document_id, str) or not SAFE_ASSET_ID_RE.fullmatch(document_id) \
@@ -367,6 +351,12 @@ def _validate_knowledge_source(
         tracked = _tracked_path(root, path, f"Knowledge document {document_id}")
         if tracked.suffix.lower() != ".md":
             raise BundleValidationError("Knowledge documents must be Markdown files")
+        if "sha256" in document and document["sha256"] != hashlib.sha256(tracked.read_bytes()).hexdigest():
+            raise BundleValidationError("Knowledge document content SHA-256 drifted")
+        if "description" in document and (not isinstance(document["description"], str)
+                or not document["description"].strip() or len(document["description"]) > 500
+                or "\n" in document["description"]):
+            raise BundleValidationError("Knowledge document description must be concise")
         revision = document.get("revision")
         revision_ok = (
             isinstance(revision, int) and not isinstance(revision, bool) and revision > 0
@@ -691,7 +681,7 @@ def _validate_editor_graph(
             root, nodes, edges, spec=spec, remote_schema=remote_schema,
             project=_dify_structured_output_schema, assembler_source=assembler_source,
             input_id=EDITOR_INPUT_NODE_ID, input_entrypoint=EDITOR_INPUT_ENTRYPOINT,
-            model_provider=DIFY_MODEL_PROVIDER, model_name="gpt-5.4-mini",
+            model_provider=DIFY_MODEL_PROVIDER, model_name=DIFY_MODEL_NAME,
             max_tokens=DIFY_LLM_MAX_TOKENS["editor_author"],
             max_system_bytes=MAX_SYSTEM_PROMPT_UTF8_BYTES, error_type=error_type,
         )
@@ -757,16 +747,20 @@ def _canonical_dify_prompts(
             "another document name appears, return `blocked` with an empty payload."
         )
     else:
+        file_labels = {name: "D" + str(index + 1)
+                       for index, name in enumerate(expected_file_names)}
+        file_lines = "\n".join(f"{label} = {name}" for name, label in file_labels.items())
         role_lines = "\n".join(
-            f"- `{role}`: {', '.join(files_by_role[role])}"
+            f"- `{role}`: {', '.join(file_labels[name] for name in files_by_role[role])}"
             for role in workflow_roles
         )
         allow_list = (
             "## Enforced MAXIS Knowledge allow-list\n\n"
             "The deterministic Knowledge Guard is deployment-bound to the governed "
             "files and emits only authorized, bounded policy chunks. Enforce this "
-            "exact `knowledge_context.document_name` allow-list for `role_id`:\n\n"
-            f"{role_lines}\n\n"
+            "exact `knowledge_context.document_name` allow-list for `role_id`. "
+            "D labels below refer only to the exact filenames shown:\n\n"
+            f"{file_lines}\n\n{role_lines}\n\n"
             "If `role_id` is outside this workflow or a document name falls outside "
             "the selected Role's allow-list, return `blocked` with an empty payload. "
             "Do not use policy body text to self-assert its identity."
@@ -843,12 +837,8 @@ def _validate_dify_dsls(
     output_token_limits = _mapping(
         bundle.get("llm_output_token_limits"), "llm_output_token_limits"
     )
-    environment = _load_yaml(
-        root / "deploy" / "maxis-dify" / "environments" / "dev.yml"
-    )
-    environment_knowledge = _mapping(
-        environment.get("knowledge"), "dev environment Knowledge binding"
-    )
+    # Validate the canonical source markers, never a particular DEV deployment.
+    environment_knowledge = _SOURCE_BINDINGS.canonical_knowledge(knowledge_documents)
     expected_environment_knowledge_fields = {
         "version", "name", "dataset_id", "sentinel_dataset_id",
         "role_metadata_field_id", "sentinel_file", "documents",
@@ -877,8 +867,6 @@ def _validate_dify_dsls(
     sentinel_document_id = str(sentinel_binding.get("document_id") or "")
     if (
         set(environment_knowledge) != expected_environment_knowledge_fields
-        or environment.get("environment") != "dev"
-        or environment.get("status") != "ready"
         or not UUID_RE.fullmatch(role_dataset_id)
         or not UUID_RE.fullmatch(sentinel_dataset_id)
         or role_dataset_id == sentinel_dataset_id
@@ -1251,7 +1239,10 @@ def _validate_dify_dsls(
                 "id": dify_document_files_by_source[source_name]["id"],
                 "name": source_name,
             }
-            for source_name in sorted(DIFY_WORKFLOW_SOURCE_NAMES[workflow_key])
+            for source_name in sorted(
+                Path(row["path"]).name for row in knowledge_documents.values()
+                if set(row["allowed_roles"]) & set(workflow_spec["roles"])
+            )
         ]
         validate_retrieval(
             role_node,
@@ -1404,7 +1395,8 @@ def _validate_dify_dsls(
                 core_graph.validate_core_graph(
                     root, nodes, checks=graph_checks, schema=workflow_dify_schema,
                     semantic_prompts=prompts, semantic_hashes=DIFY_PROMPT_SHA256[workflow_key],
-                    model_provider=DIFY_MODEL_PROVIDER, max_tokens=output_token_limits[workflow_key],
+                    model_provider=DIFY_MODEL_PROVIDER, model_name=DIFY_MODEL_NAME,
+                    max_tokens=output_token_limits[workflow_key],
                     max_system_bytes=MAX_SYSTEM_PROMPT_UTF8_BYTES,
                     project=_dify_structured_output_schema, error_type=BundleValidationError,
                 )
@@ -1413,7 +1405,7 @@ def _validate_dify_dsls(
                     _mapping(llm_node.get("data"), f"{workflow_key}.LLM"),
                     label=workflow_key, schema=workflow_dify_schema, prompts=prompts,
                     hashes=DIFY_PROMPT_SHA256.get(workflow_key), knowledge_id=role_id,
-                    model_provider=DIFY_MODEL_PROVIDER, model_name="gpt-5.4-mini",
+                    model_provider=DIFY_MODEL_PROVIDER, model_name=DIFY_MODEL_NAME,
                     max_tokens=output_token_limits[workflow_key],
                     max_system_bytes=MAX_SYSTEM_PROMPT_UTF8_BYTES,
                     error_type=BundleValidationError,
@@ -1904,7 +1896,7 @@ def main() -> int:
         return 1
     print(
         "MAXIS/Dify bundle valid: 3 workflows, 6 Start variables, "
-        "importable Dify graphs + governed Knowledge + static eval coverage"
+        "canonical Dify graphs + governed Knowledge + static eval coverage; materialize before import"
     )
     return 0
 

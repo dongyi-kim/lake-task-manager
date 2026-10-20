@@ -199,7 +199,7 @@ def test_checked_in_manifest_loads_and_excludes_local_only_remote_roles():
         ).read_text(encoding="utf-8")
     )
     manifest = build_manifest(
-        knowledge_version=environment["knowledge"]["version"],
+        knowledge_version=yaml.safe_load((ROOT / "config/maxis-knowledge.yml").read_text(encoding="utf-8"))["documents"][0]["reviewed_for_version"],
         dataset_id=environment["knowledge"]["dataset_id"],
     )
 

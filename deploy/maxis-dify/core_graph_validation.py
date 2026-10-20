@@ -105,7 +105,8 @@ EDGES = {
 
 def validate_core_graph(root, nodes, *, checks, schema, semantic_prompts,
                         semantic_hashes, model_provider, max_tokens,
-                        max_system_bytes, project, error_type):
+                        max_system_bytes, project, error_type,
+                        model_name="__LTM_MODEL_NAME__"):
     """The caller validates shared guards, edge metadata and exact EDGES separately."""
     def fail(message):
         raise error_type(f"agent_core {message}")
@@ -301,7 +302,7 @@ def validate_core_graph(root, nodes, *, checks, schema, semantic_prompts,
         checks.validate_llm(
             nodes[node_id]["data"], label=f"agent_core.{node_id}", schema=native_schema,
             prompts=prompts, hashes=hashes, knowledge_id="1909000000001003",
-            model_provider=model_provider, model_name="gpt-5.4-mini", max_tokens=max_tokens,
+            model_provider=model_provider, model_name=model_name, max_tokens=max_tokens,
             max_system_bytes=WORK_MAX_SYSTEM_BYTES if node_id == WORK_ID else max_system_bytes,
             error_type=error_type, expected_memory=None,
         )

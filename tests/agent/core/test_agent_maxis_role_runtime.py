@@ -520,7 +520,7 @@ def test_editor_policy_search_terms_keep_dev_fixture_boundary(profile):
         assert pack["query"].startswith(
             "Canonical LTM role editor_author. Process this guarded user intent:\n본문 써줘"
         )
-        assert pack["query"].endswith("Policy search terms: HTML TipTap Description")
+        assert pack["query"].endswith("Policy search terms: HTML TipTap 본문")
         assert json.loads(pack["sources"][0]["content"])["prompt"] == "본문 써줘"
 
 

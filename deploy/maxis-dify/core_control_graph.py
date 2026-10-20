@@ -13,6 +13,11 @@ import json
 from pathlib import Path
 import sys
 
+_BINDINGS_SPEC = importlib.util.spec_from_file_location(
+    "ltm_core_source_bindings", Path(__file__).with_name("source_bindings.py"))
+_SOURCE_BINDINGS = importlib.util.module_from_spec(_BINDINGS_SPEC)
+_BINDINGS_SPEC.loader.exec_module(_SOURCE_BINDINGS)
+
 CLASSIFIER_NODE_ID = "1909000000001024"
 STAGE_NODE_ID = "1909000000001025"
 CONTROL_NODE_ID = "1909000000001026"
@@ -438,7 +443,8 @@ def _edge(source, handle, target, nodes):
 
 
 def _check_graph(dsl):
-    if dsl["app"]["name"] != "LTM Agent Core 2026.09" or dsl["app"]["mode"] != "advanced-chat":
+    if (dsl["app"]["name"] != _SOURCE_BINDINGS.APP_NAMES["agent_core"]
+            or dsl["app"]["mode"] != "advanced-chat"):
         raise ValueError("Core control builder requires the canonical Core app")
     graph = dsl["workflow"]["graph"]
     nodes = {node["id"]: node for node in graph["nodes"]}

@@ -99,7 +99,7 @@ def test_unrecognized_or_unbounded_queries_are_byte_for_byte_unchanged(role, mut
 
 def test_editor_and_existing_knowledge_controls_are_unchanged():
     from app.agent.maxis.knowledge_eval import build_synthetic_pack, load_suite
-    query = "사용자 요청\n\nPolicy search terms: HTML TipTap Description"
+    query = "사용자 요청\n\nPolicy search terms: HTML TipTap 본문"
     assert select_policy_query(query, "editor_author") == query
     suite = load_suite()
     for case in suite.cases:

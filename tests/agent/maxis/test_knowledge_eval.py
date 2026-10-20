@@ -11,6 +11,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import NAMESPACE_URL, uuid5
 
 import httpx
 import pytest
@@ -44,6 +45,28 @@ SAFE_CHUNK = (
     "검색 결과의 문서 결속과 원문 노출 방지만 검증하기 위해 충분히 길게 반복한다. "
 ) * 3
 SYNTHETIC_HEALTH_CONTENT = "synthetic_retrieval_health_status=retrieved"
+
+
+def _current_environment():
+    """Current public inventory bound to explicit synthetic assets, never old DEV."""
+    root = Path(__file__).resolve().parents[3]
+    source = yaml.safe_load((root / "config/maxis-knowledge.yml").read_text(encoding="utf-8"))
+    environment = yaml.safe_load((root / "deploy/maxis-dify/environments/prod.template.yml").read_text(encoding="utf-8"))
+    environment.update(environment="dev", status="ready")
+    knowledge = environment["knowledge"]
+    knowledge.update(version=source["documents"][0]["reviewed_for_version"],
+                     dataset_id=DATASET_ID, sentinel_dataset_id=SENTINEL_DATASET_ID)
+    knowledge["sentinel_file"]["document_id"] = SENTINEL_UUID
+    for logical_id, row in knowledge["documents"].items():
+        row["document_id"] = str(uuid5(NAMESPACE_URL, "ltm-knowledge-eval-test/" + logical_id))
+    return environment
+
+
+@pytest.fixture
+def current_identity(tmp_path):
+    path = tmp_path / "current-synthetic-environment.yml"
+    path.write_text(yaml.safe_dump(_current_environment()), encoding="utf-8")
+    return knowledge_eval.load_identity_map(environment_path=path)
 
 
 def _profile():
@@ -268,9 +291,9 @@ def _load_launcher_module():
     return module
 
 
-def test_checked_in_suite_and_identity_ledger_are_complete():
+def test_checked_in_suite_and_identity_ledger_are_complete(current_identity):
     suite = knowledge_eval.load_suite()
-    identity = knowledge_eval.load_identity_map()
+    identity = current_identity
     canonical_harness = json.dumps(
         knowledge_eval._EXPECTED_EVALUATION_HARNESS,
         ensure_ascii=False,
@@ -278,9 +301,9 @@ def test_checked_in_suite_and_identity_ledger_are_complete():
         separators=(",", ":"),
     ).encode("utf-8")
 
-    assert len(suite.cases) == 25
-    assert len(identity.document_ids_by_uuid) == 8
-    assert len(identity.document_ids_by_name) == 8
+    assert len(suite.cases) == 31
+    assert len(identity.document_ids_by_uuid) == 10
+    assert len(identity.document_ids_by_name) == 10
     assert all(identity.segment_sha256_by_document.values())
     assert suite.sha256
     assert suite.sha256 == hashlib.sha256(suite.path.read_bytes()).hexdigest()
@@ -291,9 +314,9 @@ def test_checked_in_suite_and_identity_ledger_are_complete():
         case.case_type: sum(row.case_type == case.case_type for row in suite.cases)
         for case in suite.cases
     } == {
-        "positive": 8,
-        "prompt_injection": 8,
-        "acl_negative": 8,
+        "positive": 10,
+        "prompt_injection": 10,
+        "acl_negative": 10,
         "no_hit_abstention": 1,
     }
     assert all(
@@ -445,14 +468,14 @@ def test_suite_rejects_missing_agent_core_role_coverage(tmp_path):
         knowledge_eval.load_suite(path)
 
 
-def test_binding_rejects_agent_core_role_without_an_acl_probe(tmp_path):
+def test_binding_rejects_agent_core_role_without_an_acl_probe(tmp_path, current_identity):
     source = (
         Path(__file__).resolve().parents[3]
         / "deploy" / "maxis-dify" / "knowledge-evals.yml"
     )
     document = yaml.safe_load(source.read_text(encoding="utf-8"))
     for case in document["cases"]:
-        if case["id"] == "progress-formula-acl-negative":
+        if case["type"] == "acl_negative" and case["role_id"] == "request_architect":
             case["role_id"] = "query_specialist"
         elif case["id"] == "ticket-rules-injection":
             case["role_id"] = "request_architect"
@@ -462,7 +485,7 @@ def test_binding_rejects_agent_core_role_without_an_acl_probe(tmp_path):
         encoding="utf-8",
     )
     suite = knowledge_eval.load_suite(path)
-    identity = knowledge_eval.load_identity_map()
+    identity = current_identity
     profile = _profile()
     profile["knowledge_dataset_id"] = identity.dataset_id
     profile["knowledge_version"] = identity.knowledge_version
@@ -485,11 +508,7 @@ def test_binding_rejects_agent_core_role_without_an_acl_probe(tmp_path):
 
 def test_identity_map_rejects_environment_documents_not_in_current_manifest(tmp_path):
     root = Path(__file__).resolve().parents[3]
-    source = yaml.safe_load(
-        (root / "deploy/maxis-dify/environments/dev.yml").read_text(
-            encoding="utf-8"
-        )
-    )
+    source = _current_environment()
     source["knowledge"]["documents"]["stale-document"] = {
         "source_name": "stale-document.md",
         "remote_name": "stale-document.txt",
@@ -1690,9 +1709,9 @@ def test_evaluate_case_preserves_transport_failure_in_breaker():
     assert breaker.snapshot().recent_failures == 1
 
 
-def test_checked_in_pilot_passes_local_validation_and_reaches_mock_transport():
+def test_checked_in_pilot_passes_local_validation_and_reaches_mock_transport(current_identity):
     suite = knowledge_eval.load_suite()
-    identity = knowledge_eval.load_identity_map()
+    identity = current_identity
     case = suite.case(knowledge_eval.DEFAULT_PILOT_CASE)
     pack = knowledge_eval.build_synthetic_pack(
         case,
@@ -2040,22 +2059,22 @@ def test_full_artifact_reports_final_pass_fail_for_every_quality_category():
     knowledge_eval.validate_artifact(artifact)
     categories = artifact["summary"]["categoryResults"]
     assert categories["positive"]["passed"] is True
-    assert categories["positive"]["passedCases"] == 8
+    assert categories["positive"]["passedCases"] == 10
     assert categories["noHit"]["passed"] is True
     assert categories["noHit"]["passedCases"] == 1
     assert categories["acl"]["passed"] is True
-    assert categories["acl"]["passedCases"] == 8
+    assert categories["acl"]["passedCases"] == 10
     assert categories["injection"]["passed"] is False
-    assert categories["injection"]["automatedPassedCases"] == 8
-    assert categories["injection"]["failedCases"] == 8
+    assert categories["injection"]["automatedPassedCases"] == 10
+    assert categories["injection"]["failedCases"] == 10
     retrieval = artifact["summary"]["retrievalQuality"]
     assert retrieval == {
         "metricScope": "positive_declared_target_document",
         "k": 2,
-        "plannedCases": 8,
-        "evaluatedCases": 8,
+        "plannedCases": 10,
+        "evaluatedCases": 10,
         "notRunCases": 0,
-        "hitCases": 8,
+        "hitCases": 10,
         "hitRateAtK": 1.0,
         "meanReciprocalRankAtK": 1.0,
         "complete": True,
@@ -2063,10 +2082,44 @@ def test_full_artifact_reports_final_pass_fail_for_every_quality_category():
     assert artifact["summary"]["latencyMsMean"] == 1
     assert artifact["summary"]["latencyMsP50"] == 1
     assert artifact["summary"]["latencyMsP95"] == 1
-    assert artifact["summary"]["usageObservedCases"] == 25
+    assert artifact["summary"]["usageObservedCases"] == 31
     assert artifact["summary"]["usageUnobservedCases"] == 0
     assert artifact["summary"]["usageComplete"] is True
     assert artifact["outcome"] == "failed"
+
+
+def test_artifact_schema_keeps_historical_and_current_cardinality_pairs():
+    suite = knowledge_eval.load_suite()
+    case = suite.case("ticket-rules-positive")
+    row = knowledge_eval.case_result(case, workflow_key="agent_core", observation=_evaluate(case))
+    artifact = knowledge_eval.build_artifact(
+        evidence_id="dev-keval-cardinality", profile=_profile(), binding=_binding(suite),
+        suite=suite, schema_sha256=hashlib.sha256(knowledge_eval.result_schema_path().read_bytes()).hexdigest(),
+        cases=[row], started_at=datetime(2026, 9, 5, tzinfo=timezone.utc),
+        completed_at=datetime(2026, 9, 5, 0, 0, 1, tzinfo=timezone.utc),
+        pilot_case_id=case.case_id, aborted=False, execution_scope="pilot_only",
+    )
+    knowledge_eval.validate_artifact(artifact)
+    historical = json.loads(json.dumps(artifact))
+    historical["plannedCaseCount"] = 25
+    historical["summary"]["retrievalQuality"].update(plannedCases=8, notRunCases=7)
+    for category, value in historical["summary"]["categoryResults"].items():
+        planned = 1 if category == "noHit" else 8
+        value.update(plannedCases=planned, notRunCases=planned - value["executedCases"])
+    knowledge_eval.validate_artifact(historical)
+    for base, field, value in (
+        (artifact, "plannedCaseCount", 32),
+        (historical, "executedCaseCount", 26),
+    ):
+        forged = json.loads(json.dumps(base))
+        forged[field] = value
+        with pytest.raises(KnowledgeEvalError, match="artifact_schema_validation_failed"):
+            knowledge_eval.validate_artifact(forged)
+    for base, wrong in ((artifact, 8), (historical, 10)):
+        forged = json.loads(json.dumps(base))
+        forged["summary"]["retrievalQuality"]["plannedCases"] = wrong
+        with pytest.raises(KnowledgeEvalError, match="artifact_schema_validation_failed"):
+            knowledge_eval.validate_artifact(forged)
 
 
 def test_cli_requires_approved_handoff_before_any_sensitive_access(monkeypatch):
@@ -2552,13 +2605,13 @@ def test_cli_pilot_timeout_is_an_explicit_failed_case_and_aborts(monkeypatch):
     ("profile_material_mismatch", "evaluation_binding_mismatch"),
 ])
 def test_real_preflight_blocks_unsafe_boundaries_before_sensitive_side_effects(
-    monkeypatch, unsafe_boundary, expected_code,
+    monkeypatch, unsafe_boundary, expected_code, current_identity,
 ):
     """Exercise ``run -> _preflight``; never replace the boundary under test."""
 
     cli = _load_cli_module()
     suite = knowledge_eval.load_suite()
-    identity = knowledge_eval.load_identity_map()
+    identity = current_identity
     profile = {
         "name": "dev",
         "stage": "dev",
@@ -2637,10 +2690,10 @@ def test_real_preflight_blocks_unsafe_boundaries_before_sensitive_side_effects(
     assert sensitive_calls == []
 
 
-def test_end_of_run_binding_recheck_detects_profile_or_source_file_drift(monkeypatch):
+def test_end_of_run_binding_recheck_detects_profile_or_source_file_drift(monkeypatch, current_identity):
     cli = _load_cli_module()
     suite = knowledge_eval.load_suite()
-    identity = knowledge_eval.load_identity_map()
+    identity = current_identity
     source_hashes = {
         "workflowRegistry": "2" * 64,
         "knowledgeSource": "3" * 64,

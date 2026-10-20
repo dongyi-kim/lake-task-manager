@@ -1628,7 +1628,7 @@ def test_validator_rejects_role_acl_key_dependency_bypass(tmp_path):
     "not-a-uuid",
     "11111111-1111-4111-8111-111111111111",
 ])
-def test_validator_rejects_dev_role_metadata_field_binding_drift(tmp_path, value):
+def test_canonical_source_validation_does_not_read_optional_dev_metadata(tmp_path, value):
     validator = _validator_module()
     target = _copy_bundle_repository(tmp_path)
     environment_path = (
@@ -1641,11 +1641,9 @@ def test_validator_rejects_dev_role_metadata_field_binding_drift(tmp_path, value
         encoding="utf-8",
     )
 
-    with pytest.raises(
-        validator.BundleValidationError,
-        match="native Knowledge bindings are incomplete",
-    ):
-        validator.validate_bundle(target)
+    validator.validate_bundle(target)
+    environment_path.unlink()
+    validator.validate_bundle(target)
 
 
 def test_validator_rejects_policy_decision_condition_drift(tmp_path):

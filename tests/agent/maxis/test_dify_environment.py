@@ -21,8 +21,6 @@ def test_private_manifest_can_add_documents_without_changing_reviewed_graph(tmp_
     from datetime import datetime, timezone
     root = tmp_path / "repo"
     _copy_materializer_sources(root)
-    shutil.copytree(ROOT / "config", root / "config")
-    shutil.copytree(ROOT / "knowledge", root / "knowledge")
     private = root / ".cache/maxis/project"
     private.mkdir(parents=True)
     (private / "project-rules.md").write_text("# Project\n\nSynthetic project definition.", encoding="utf-8")
@@ -30,14 +28,22 @@ def test_private_manifest_can_add_documents_without_changing_reviewed_graph(tmp_
     row = {**manifest["documents"][0], "id": "project-rules",
            "path": ".cache/maxis/project/project-rules.md", "allowed_roles": ["knowledge_curator"],
            "reviewed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    row.pop("sha256", None)  # Legacy/private manifests may omit an explicit content pin.
     manifest["documents"].append(row)
     (private / "source.yml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
     environment = yaml.safe_load((ROOT / "deploy/maxis-dify/environments/dev.yml").read_text(encoding="utf-8"))
     environment["knowledge"]["source_manifest"] = ".cache/maxis/project/source.yml"
+    environment["knowledge"]["version"] = manifest["documents"][0]["reviewed_for_version"]
     environment["knowledge"]["documents"]["project-rules"] = {
         "source_name": "project-rules.md", "remote_name": "project-rules.txt",
         "document_id": "11111111-5555-4555-8555-111111111111"}
     from uuid import uuid4
+    for document in manifest["documents"]:
+        environment["knowledge"]["documents"].setdefault(document["id"], {
+            "source_name": Path(document["path"]).name,
+            "remote_name": Path(document["path"]).stem + ".txt",
+            "document_id": str(uuid4()),
+        })
     for field in ("dataset_id", "sentinel_dataset_id", "role_metadata_field_id"):
         environment["knowledge"][field] = str(uuid4())
     environment["knowledge"]["sentinel_file"]["document_id"] = str(uuid4())
@@ -47,7 +53,7 @@ def test_private_manifest_can_add_documents_without_changing_reviewed_graph(tmp_
     target.write_text(yaml.safe_dump(environment), encoding="utf-8")
     monkeypatch.setattr(materializer, "ROOT", root)
     loaded = materializer.load_environment(target)
-    assert len(materializer._environment_owned_asset_ids(loaded, label="private")) == 13
+    assert len(materializer._environment_owned_asset_ids(loaded, label="private")) == len(manifest["documents"]) + 4
     outputs = materializer.materialize(target, tmp_path / "out")
     for output in outputs:
         dsl = yaml.safe_load(output.read_text(encoding="utf-8"))
@@ -65,8 +71,7 @@ def test_private_manifest_can_add_documents_without_changing_reviewed_graph(tmp_
         workflow["app_name"] += " PROD"
     prod_path = private / "prod.yml"
     prod_path.write_text(yaml.safe_dump(prod), encoding="utf-8")
-    with pytest.raises(materializer.EnvironmentBindingError, match="private dev comparison"):
-        materializer.load_environment(prod_path)
+    materializer.load_environment(prod_path)  # A private PROD source does not require DEV.
     prod["knowledge"]["dev_environment_binding"] = ".cache/maxis/project/environment.yml"
     prod_path.write_text(yaml.safe_dump(prod), encoding="utf-8")
     with pytest.raises(materializer.EnvironmentBindingError, match="dev-owned"):
@@ -90,6 +95,8 @@ def test_private_manifest_can_add_documents_without_changing_reviewed_graph(tmp_
 
 def _copy_materializer_sources(target):
     shutil.copytree(ROOT / "deploy/maxis-dify", target / "deploy/maxis-dify")
+    shutil.copytree(ROOT / "config", target / "config")
+    shutil.copytree(ROOT / "knowledge", target / "knowledge")
     helper = Path("app/agent/maxis/source_grounding.py")
     (target / helper).parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / helper, target / helper)
@@ -102,10 +109,13 @@ def _copy_materializer_sources(target):
 def _ready_prod_environment() -> dict:
     source = yaml.safe_load(
         (
-            ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
+            ROOT / "deploy" / "maxis-dify" / "environments" / "prod.template.yml"
         ).read_text(encoding="utf-8")
     )
-    source.update(environment="prod", status="ready")
+    dev = yaml.safe_load(materializer.DEV_ENVIRONMENT_BINDING_PATH.read_text(encoding="utf-8"))
+    source.update(environment="prod", status="ready", service_base_url=dev["service_base_url"])
+    source["knowledge"].update(version=materializer.public_knowledge_source()["knowledgeVersion"], name=dev["knowledge"]["name"])
+    source["model"] = dev["model"]
     source["knowledge"]["dataset_id"] = "88888888-8888-4888-8888-888888888888"
     source["knowledge"]["sentinel_dataset_id"] = (
         "77777777-7777-4777-8777-777777777777"
@@ -122,8 +132,8 @@ def _ready_prod_environment() -> dict:
         "remote_name": "ltm-release-sentinel-prod.txt",
         "document_id": "99999999-9999-4999-8999-999999999999",
     }
-    for workflow in source["workflows"].values():
-        workflow["app_name"] += " PROD"
+    for key, workflow in source["workflows"].items():
+        workflow["app_name"] = dev["workflows"][key]["app_name"] + " PROD"
     return source
 
 
@@ -868,7 +878,7 @@ def test_prod_materialization_rejects_cross_type_dev_asset_id_reuse(
     "failure_mode",
     ["missing", "invalid_yaml", "invalid_schema", "wrong_stage"],
 )
-def test_prod_materialization_fails_closed_when_checked_in_dev_binding_is_invalid(
+def test_prod_compares_available_dev_metadata_but_does_not_require_it(
     tmp_path, monkeypatch, failure_mode,
 ):
     monkeypatch.delenv("LAKE_MAXIS_PROD_ALLOWED_HOSTS", raising=False)
@@ -898,12 +908,13 @@ def test_prod_materialization_fails_closed_when_checked_in_dev_binding_is_invali
     )
     output = tmp_path / "materialized"
 
-    with pytest.raises(
-        materializer.EnvironmentBindingError,
-        match="dev environment binding is unavailable or malformed",
-    ):
-        materializer.materialize(candidate, output)
-    assert not output.exists()
+    if failure_mode == "missing":
+        assert len(materializer.materialize(candidate, output)) == 3
+    else:
+        with pytest.raises(materializer.EnvironmentBindingError,
+                           match="comparison metadata is malformed"):
+            materializer.materialize(candidate, output)
+        assert not output.exists()
 
 
 def test_prod_materialization_allows_shared_host_and_human_readable_names(
@@ -939,7 +950,7 @@ def test_prod_materialization_allows_shared_host_and_human_readable_names(
     assert {
         binding["source_name"]
         for binding in prod["knowledge"]["documents"].values()
-    } == {
+    } >= {
         binding["source_name"]
         for binding in dev["knowledge"]["documents"].values()
     }

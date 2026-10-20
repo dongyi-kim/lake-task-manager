@@ -1,6 +1,6 @@
 """Materialize environment-bound Dify DSL copies without storing credentials.
 
-The source DSLs are the reviewed dev exports. This tool replaces only deployment-
+The source DSLs are environment-neutral reviewed graphs. This tool replaces only deployment-
 owned Knowledge, model, and app-name bindings and writes new copies for import. It
 never edits the tracked source DSLs and deliberately has no API-key field.
 """
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+from copy import deepcopy
 import hashlib
 import importlib.util
 import json
@@ -41,7 +42,6 @@ WORKFLOW_LLM_MAX_TOKENS = {
     "pmo_brief": 2048,
     "editor_author": 4096,
 }
-REVIEWED_ROLE_METADATA_FIELD_ID = "f8f7023d-1c0f-4893-bf4b-7422b7d25f69"
 ROLE_ACL_KEY_TEMPLATE = "|{{ role_id }}|"
 ROLE_ACL_KEY_DESCRIPTION = (
     "Build one complete delimiter-wrapped Role ACL value for Dify 1.11.1"
@@ -86,6 +86,7 @@ if _VALIDATOR_SPEC is None or _VALIDATOR_SPEC.loader is None:
     raise RuntimeError("Dify schema validator cannot be loaded.")
 _VALIDATOR = importlib.util.module_from_spec(_VALIDATOR_SPEC)
 _VALIDATOR_SPEC.loader.exec_module(_VALIDATOR)
+REVIEWED_ROLE_METADATA_FIELD_ID = _VALIDATOR.REVIEWED_ROLE_METADATA_FIELD_ID
 CONTRACT_GUARD_SOURCE = _VALIDATOR._contract_guard_source(ROOT, (
     ROOT / "deploy" / "maxis-dify" / "code" / "contract_guard.py"
 ).read_text(encoding="utf-8"))
@@ -233,9 +234,17 @@ def _mapping(value: Any, label: str) -> dict[str, Any]:
 def _selected_knowledge_documents(environment: dict[str, Any]) -> list[dict[str, Any]]:
     knowledge = environment["knowledge"]
     if "source_manifest" not in knowledge:
-        return _KNOWLEDGE_SOURCE_SPEC["documents"]
+        documents = _KNOWLEDGE_SOURCE_SPEC["documents"]
+        # Existing DEV metadata describes its historical posted corpus. It is not
+        # authority to add new document UUIDs or a dependency of a fresh PROD build.
+        if environment.get("environment") == "dev":
+            configured = knowledge.get("documents") or {}
+            return [row for row in documents if row["id"] in configured]
+        selected = ROOT / "config/maxis-knowledge.yml"
+    else:
+        selected = None
     try:
-        path = knowledge_path(knowledge["source_manifest"], root=ROOT)
+        path = selected or knowledge_path(knowledge["source_manifest"], root=ROOT)
         if path is None:
             raise ValueError("missing manifest")
         manifest = build_manifest(knowledge_version=knowledge["version"],
@@ -243,7 +252,7 @@ def _selected_knowledge_documents(environment: dict[str, Any]) -> list[dict[str,
                                   config_path=path, source_root=ROOT)
         return list(manifest.documents)
     except (ValueError, OSError) as exc:
-        raise EnvironmentBindingError("Private Knowledge source manifest is invalid.") from exc
+        raise EnvironmentBindingError("Knowledge source manifest is invalid.") from exc
 
 
 def _required_text(value: Any, label: str) -> str:
@@ -305,36 +314,37 @@ def _environment_owned_asset_ids(
 
 
 def _require_prod_asset_separation(environment: dict[str, Any]) -> None:
-    """Fail closed unless every prod-owned UUID is independent from checked-in DEV."""
-
-    try:
-        dev_environment = load_environment(DEV_ENVIRONMENT_BINDING_PATH)
-        dev_assets = _environment_owned_asset_ids(
-            dev_environment, label="checked-in dev"
-        )
-    except EnvironmentBindingError as exc:
-        raise EnvironmentBindingError(
-            "Checked-in dev environment binding is unavailable or malformed; "
-            "prod materialization is blocked."
-        ) from exc
+    """Compare available sibling metadata without requiring a DEV deployment."""
+    paths = [DEV_ENVIRONMENT_BINDING_PATH]
     knowledge = environment["knowledge"]
-    if "source_manifest" in knowledge:
+    if knowledge.get("dev_environment_binding"):
+        raw = str(knowledge["dev_environment_binding"]).replace("\\", "/")
+        candidate = (ROOT / raw).resolve()
         try:
-            sibling = knowledge_path(knowledge.get("dev_environment_binding"), root=ROOT)
-            if sibling is None:
-                raise ValueError("missing private dev binding")
-            sibling_raw = yaml.safe_load(sibling.read_text(encoding="utf-8"))
-            if not isinstance(sibling_raw, dict) or sibling_raw.get("environment") != "dev":
-                raise ValueError("not a dev binding")
-            private_dev = load_environment(sibling)
-            dev_assets.update({"private." + key: value for key, value in
-                               _environment_owned_asset_ids(private_dev, label="private dev").items()})
+            candidate.relative_to(ROOT)
+        except ValueError as exc:
+            raise EnvironmentBindingError("Sibling environment must stay inside the repository.") from exc
+        paths.append(candidate)
+    dev_values: set[str] = set()
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            sibling = _mapping(yaml.safe_load(path.read_text(encoding="utf-8")), "sibling environment")
+            if sibling.get("environment") != "dev":
+                raise ValueError("not DEV metadata")
+            _reject_secret_fields(sibling)
+            kb = _mapping(sibling.get("knowledge"), "sibling Knowledge")
+            values = [kb.get(field) for field in ("dataset_id", "sentinel_dataset_id", "role_metadata_field_id")]
+            values.append(_mapping(kb.get("sentinel_file"), "sibling sentinel").get("document_id"))
+            values.extend(_mapping(row, "sibling document").get("document_id")
+                          for row in _mapping(kb.get("documents"), "sibling documents").values())
+            if not values or any(not isinstance(value, str) or not UUID_RE.fullmatch(value) for value in values):
+                raise ValueError("invalid sibling UUIDs")
+            dev_values.update(values)
         except (ValueError, OSError, yaml.YAMLError) as exc:
-            raise EnvironmentBindingError(
-                "Private prod requires a valid private dev comparison binding."
-            ) from exc
+            raise EnvironmentBindingError("Available dev environment comparison metadata is malformed.") from exc
     prod_assets = _environment_owned_asset_ids(environment, label="prod")
-    dev_values = set(dev_assets.values())
     reused_fields = sorted(
         field for field, value in prod_assets.items() if value in dev_values
     )
@@ -376,7 +386,7 @@ def _reject_secret_fields(value: Any, path: str = "environment") -> None:
         )
 
 
-def load_environment(path: Path | str) -> dict[str, Any]:
+def load_environment(path: Path | str | dict[str, Any]) -> dict[str, Any]:
     if (
         set(ROLE_METADATA_CONDITION_IDS) != set(WORKFLOW_KEYS)
         or len(set(ROLE_METADATA_CONDITION_IDS.values())) != len(WORKFLOW_KEYS)
@@ -388,11 +398,14 @@ def load_environment(path: Path | str) -> dict[str, Any]:
         raise EnvironmentBindingError(
             "Role metadata condition IDs must be unique workflow UUIDs."
         )
-    environment_path = Path(path).resolve()
-    try:
-        raw = yaml.safe_load(environment_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, yaml.YAMLError) as exc:
-        raise EnvironmentBindingError("Environment binding cannot be read.") from exc
+    environment_path = None if isinstance(path, dict) else Path(path).resolve()
+    if isinstance(path, dict):
+        raw = deepcopy(path)
+    else:
+        try:
+            raw = yaml.safe_load(environment_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError) as exc:
+            raise EnvironmentBindingError("Environment binding cannot be read.") from exc
     environment = _mapping(raw, "environment")
     _reject_secret_fields(environment)
     if set(environment) != ENVIRONMENT_FIELDS:
@@ -433,10 +446,8 @@ def load_environment(path: Path | str) -> dict[str, Any]:
         "role_metadata_field_id", "sentinel_file", "documents",
     }:
         raise EnvironmentBindingError("Knowledge binding fields are incomplete.")
-    if "dev_environment_binding" in knowledge and (
-        stage != "prod" or "source_manifest" not in knowledge
-    ):
-        raise EnvironmentBindingError("Private dev comparison is only valid for private prod.")
+    if "dev_environment_binding" in knowledge and stage != "prod":
+        raise EnvironmentBindingError("Sibling dev comparison is only valid for prod.")
     for field in ("version", "name"):
         _required_text(knowledge.get(field), f"knowledge.{field}")
     dataset_id = _required_text(knowledge.get("dataset_id"), "knowledge.dataset_id")
@@ -537,7 +548,9 @@ def load_environment(path: Path | str) -> dict[str, Any]:
     if set(model) != {"plugin_unique_identifier", "provider", "name"}:
         raise EnvironmentBindingError("Model binding fields are incomplete.")
     for field in ("plugin_unique_identifier", "provider", "name"):
-        _required_text(model.get(field), f"model.{field}")
+        value = _required_text(model.get(field), f"model.{field}")
+        if "__LTM_" in value:
+            raise EnvironmentBindingError("Model binding must replace canonical source markers.")
     workflows = _mapping(environment.get("workflows"), "workflows")
     if set(workflows) != set(WORKFLOW_KEYS):
         raise EnvironmentBindingError("workflows must contain the three LTM workflows.")
@@ -556,6 +569,12 @@ def load_environment(path: Path | str) -> dict[str, Any]:
             )
     if stage == "prod":
         _require_prod_asset_separation(environment)
+    source_assets = _VALIDATOR._SOURCE_BINDINGS.canonical_knowledge(_KNOWLEDGE_SOURCE_SPEC["documents"])
+    reserved = {source_assets[field] for field in ("dataset_id", "sentinel_dataset_id", "role_metadata_field_id")}
+    reserved.add(source_assets["sentinel_file"]["document_id"])
+    reserved.update(row["document_id"] for row in source_assets["documents"].values())
+    if set(_environment_owned_asset_ids(environment, label=stage).values()) & reserved:
+        raise EnvironmentBindingError("Environment must replace canonical source asset markers.")
     return environment
 
 
@@ -1234,7 +1253,24 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
     return source, dsl
 
 
-def materialize(environment_path: Path | str, output_dir: Path | str) -> list[Path]:
+def validate_environment(environment: dict[str, Any]) -> dict[str, Any]:
+    """Validate a caller-owned mapping without mutating it or reading credentials."""
+    return load_environment(environment)
+
+
+def public_knowledge_source() -> dict[str, Any]:
+    """Return the reviewed public inventory; no runtime config, cache or DEV I/O."""
+    source = yaml.safe_load((ROOT / "config/maxis-knowledge.yml").read_text(encoding="utf-8"))
+    documents = source["documents"]
+    version = documents[0]["reviewed_for_version"]
+    manifest = build_manifest(knowledge_version=version,
+        dataset_id="11111111-1111-4111-8111-111111111111",
+        config_path=ROOT / "config/maxis-knowledge.yml", source_root=ROOT)
+    return {"knowledgeVersion": version, "sourceManifest": "config/maxis-knowledge.yml",
+            "documents": deepcopy(list(manifest.documents)), "sourceDigest": manifest.sha256}
+
+
+def materialize(environment_path: Path | str | dict[str, Any], output_dir: Path | str) -> list[Path]:
     environment = load_environment(environment_path)
     destination = Path(output_dir).resolve()
     candidates: list[tuple[Path, Path, dict]] = []

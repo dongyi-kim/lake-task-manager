@@ -37,7 +37,7 @@ def test_editor_enrichment_keeps_the_exact_query_prefix_and_opaque_references(
     assert len(enriched.encode("utf-8")) <= MAX_QUERY_UTF8_BYTES
     assert "HTML" in enriched[len(query):]
     assert "TipTap" in enriched[len(query):]
-    assert "Description" in enriched[len(query):]
+    assert "본문" in enriched[len(query):]
     assert enrich_role_query(enriched, "editor_author", schema) == enriched
 
 
@@ -48,7 +48,7 @@ def test_search_terms_are_present_in_the_governed_editor_corpus():
         for name in ("07-ticket-body-guide.md", "08-editor-and-rendering.md")
     )
 
-    for term in ("HTML", "TipTap", "Description"):
+    for term in ("HTML", "TipTap", "본문"):
         assert term in corpus
 
 

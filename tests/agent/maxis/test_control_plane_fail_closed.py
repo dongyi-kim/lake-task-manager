@@ -11,7 +11,7 @@ from app.infra import prefs
 
 DATASET_ID = "11111111-1111-4111-8111-111111111111"
 SENTINEL_SHA = hashlib.sha256(b"release-sentinel").hexdigest()
-KNOWLEDGE_VERSION = "ltm-knowledge-2026.09"
+KNOWLEDGE_VERSION = "ltm-public-knowledge.v1"
 WORKFLOW_ID = "22222222-2222-4222-8222-222222222222"
 
 

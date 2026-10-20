@@ -11,7 +11,7 @@ governance:
   deployment_strategy: blue_green
   # Raw-file SHA-256 of deploy/maxis-dify/knowledge-evals.yml. The bundle validator
   # rejects drift; runtime attestation still does not inspect the external result file.
-  eval_suite_sha256: 7b820caaaa8f4a8f6a9973d08898d5bdaa9eee6fd68994b8dc75fd9f2642b9d9
+  eval_suite_sha256: 3372861852b8901b0a8deb2306009d982240e8ce8fdddb3328a48f5ef167a805
 
 chunking:
   strategy: markdown-headings-then-length.v1
@@ -21,13 +21,14 @@ chunking:
 documents:
   - id: ticket-rules
     path: knowledge/01-ticket-rules.md
-    revision: 1
+    description: 티켓 유형·계층·SP metadata·exact payload 승인과 Done 변경 경계
+    sha256: a44f71d40c25ad3d2ee660ff4a66ed08205464ef065aa29e9132757c2e4b83fa
+    revision: 2
     reviewed_for_release: true
-    reviewed_for_version: ltm-knowledge-2026.09
-    reviewed_at: "2026-09-04T15:00:00Z"
-    # SHA-256("ltm-repository-review-checkpoint:2026-09-05"): a non-personal
-    # repository checkpoint for correlation, not a claim about a named human approver.
-    reviewer_digest: 7d558f837e1439283f08f8cab987fddb3442115d1a3fa83338094d6585518862
+    reviewed_for_version: ltm-public-knowledge.v1
+    reviewed_at: "2026-10-20T13:43:02Z"
+    # Content-bound repository review checkpoint, not a named human approval.
+    reviewer_digest: a44f71d40c25ad3d2ee660ff4a66ed08205464ef065aa29e9132757c2e4b83fa
     owner: pmo-governance
     classification: internal
     audience: all_ltm_users
@@ -41,11 +42,13 @@ documents:
 
   - id: progress-formula
     path: knowledge/02-progress-formula.md
-    revision: 1
+    description: statusCategory와 SP·WBS·개수 지표의 결정적 계산 및 해석
+    sha256: 6b88d98d344e9d0ff807df872db218284fc47a3c37e71f0297974d97d1a5fc15
+    revision: 2
     reviewed_for_release: true
-    reviewed_for_version: ltm-knowledge-2026.09
-    reviewed_at: "2026-09-04T15:00:00Z"
-    reviewer_digest: 7d558f837e1439283f08f8cab987fddb3442115d1a3fa83338094d6585518862
+    reviewed_for_version: ltm-public-knowledge.v1
+    reviewed_at: "2026-10-20T13:43:02Z"
+    reviewer_digest: 6b88d98d344e9d0ff807df872db218284fc47a3c37e71f0297974d97d1a5fc15
     owner: pmo-governance
     classification: internal
     audience: all_ltm_users
@@ -58,11 +61,13 @@ documents:
 
   - id: modules-and-people
     path: knowledge/03-modules-and-people.md
-    revision: 1
+    description: 현재 설정의 모듈·사람 식별과 네 가지 담당 추천 근거
+    sha256: ef25cb578ce69a77d824314aa397013fe7e32090c4dcec679669b212aa6d5e62
+    revision: 2
     reviewed_for_release: true
-    reviewed_for_version: ltm-knowledge-2026.09
-    reviewed_at: "2026-09-04T15:00:00Z"
-    reviewer_digest: 7d558f837e1439283f08f8cab987fddb3442115d1a3fa83338094d6585518862
+    reviewed_for_version: ltm-public-knowledge.v1
+    reviewed_at: "2026-10-20T13:43:02Z"
+    reviewer_digest: ef25cb578ce69a77d824314aa397013fe7e32090c4dcec679669b212aa6d5e62
     owner: pmo-governance
     classification: internal
     audience: all_ltm_users
@@ -76,11 +81,13 @@ documents:
 
   - id: work-breakdown
     path: knowledge/04-work-breakdown.md
-    revision: 1
+    description: 기존 업무 조사·필수 질문·산출물에 따른 티켓 분해
+    sha256: 8e36525d6a81bb4a2a1763272d1038b884b2af51e9f8fbf73e36a0b5f999e749
+    revision: 2
     reviewed_for_release: true
-    reviewed_for_version: ltm-knowledge-2026.09
-    reviewed_at: "2026-09-04T15:00:00Z"
-    reviewer_digest: 7d558f837e1439283f08f8cab987fddb3442115d1a3fa83338094d6585518862
+    reviewed_for_version: ltm-public-knowledge.v1
+    reviewed_at: "2026-10-20T13:43:02Z"
+    reviewer_digest: 8e36525d6a81bb4a2a1763272d1038b884b2af51e9f8fbf73e36a0b5f999e749
     owner: pmo-governance
     classification: internal
     audience: all_ltm_users
@@ -93,11 +100,13 @@ documents:
 
   - id: ltm-guide
     path: knowledge/05-ltm-guide.md
-    revision: 1
+    description: LTM 화면·Editor draft와 저장·Agent 및 MAXIS 연결의 사용 경계
+    sha256: 5351da97d6c1dcd07b02ed839bfcc097b67a909ce8bac00c500aa9105e759aa1
+    revision: 3
     reviewed_for_release: true
-    reviewed_for_version: ltm-knowledge-2026.09
-    reviewed_at: "2026-09-04T15:00:00Z"
-    reviewer_digest: 7d558f837e1439283f08f8cab987fddb3442115d1a3fa83338094d6585518862
+    reviewed_for_version: ltm-public-knowledge.v1
+    reviewed_at: "2026-10-20T14:27:00Z"
+    reviewer_digest: 5351da97d6c1dcd07b02ed839bfcc097b67a909ce8bac00c500aa9105e759aa1
     owner: ltm-product
     classification: internal
     audience: all_ltm_users
@@ -109,11 +118,13 @@ documents:
 
   - id: data-assets
     path: knowledge/06-data-assets.md
-    revision: 1
+    description: 데이터 자산 이력의 출처·시점·충돌과 내부·외부 조사
+    sha256: 7e9202794c366d837213dbe4d0bc865422557f9cd2cc53c7277faaa3ccdb01d1
+    revision: 2
     reviewed_for_release: true
-    reviewed_for_version: ltm-knowledge-2026.09
-    reviewed_at: "2026-09-04T15:00:00Z"
-    reviewer_digest: 7d558f837e1439283f08f8cab987fddb3442115d1a3fa83338094d6585518862
+    reviewed_for_version: ltm-public-knowledge.v1
+    reviewed_at: "2026-10-20T13:43:02Z"
+    reviewer_digest: 7e9202794c366d837213dbe4d0bc865422557f9cd2cc53c7277faaa3ccdb01d1
     owner: data-platform
     classification: internal
     audience: all_ltm_users
@@ -126,11 +137,13 @@ documents:
 
   - id: ticket-body-guide
     path: knowledge/07-ticket-body-guide.md
-    revision: 1
+    description: 배경·범위·DoD·참고 본문과 댓글·미완성 seed의 의미 보존
+    sha256: cfb169ec74aaab658996b1de539c7c1ff03d81f4df52c02e7ee14132f6489308
+    revision: 2
     reviewed_for_release: true
-    reviewed_for_version: ltm-knowledge-2026.09
-    reviewed_at: "2026-09-04T15:00:00Z"
-    reviewer_digest: 7d558f837e1439283f08f8cab987fddb3442115d1a3fa83338094d6585518862
+    reviewed_for_version: ltm-public-knowledge.v1
+    reviewed_at: "2026-10-20T13:43:02Z"
+    reviewer_digest: cfb169ec74aaab658996b1de539c7c1ff03d81f4df52c02e7ee14132f6489308
     owner: ltm-product
     classification: internal
     audience: all_ltm_users
@@ -144,16 +157,60 @@ documents:
 
   - id: editor-and-rendering
     path: knowledge/08-editor-and-rendering.md
-    revision: 1
+    description: HTML 정화·mention/badge·표·이미지의 편집 및 저장 왕복
+    sha256: 0a435cbb137203110bdecb2c1151d9c0e3ef7cd1ea22a8df8f70e460540f5587
+    revision: 2
     reviewed_for_release: true
-    reviewed_for_version: ltm-knowledge-2026.09
-    reviewed_at: "2026-09-04T15:00:00Z"
-    reviewer_digest: 7d558f837e1439283f08f8cab987fddb3442115d1a3fa83338094d6585518862
+    reviewed_for_version: ltm-public-knowledge.v1
+    reviewed_at: "2026-10-20T13:43:02Z"
+    reviewer_digest: 0a435cbb137203110bdecb2c1151d9c0e3ef7cd1ea22a8df8f70e460540f5587
     owner: ltm-editor
     classification: internal
     audience: all_ltm_users
     allowed_roles:
       - knowledge_curator
+      - auditor
+      - result_integrator
+      - editor_author
+
+  - id: public-project-stack
+    path: knowledge/09-public-project-stack.md
+    description: 공개 LTM의 FastAPI·Vue·TipTap·LangGraph·MAXIS 기술 구성
+    sha256: 2bc0ebbe4d7e30da037813f352b9cab666bf91330519d7ff8a7e732dc80c6e22
+    revision: 1
+    reviewed_for_release: true
+    reviewed_for_version: ltm-public-knowledge.v1
+    reviewed_at: "2026-10-20T13:43:02Z"
+    reviewer_digest: 2bc0ebbe4d7e30da037813f352b9cab666bf91330519d7ff8a7e732dc80c6e22
+    owner: ltm-product
+    classification: internal
+    audience: all_ltm_users
+    allowed_roles:
+      - query_specialist
+      - knowledge_curator
+      - work_architect
+      - portfolio_analyst
+      - auditor
+      - result_integrator
+      - editor_author
+
+  - id: glossary
+    path: knowledge/10-glossary.md
+    description: 공개 LTM 용어의 정의·범위와 혼동하면 안 되는 개념
+    sha256: 245e4fbf64bb2ac2fd306813f21221fa42ed29221abe8aba0199cf4c3eb4babb
+    revision: 1
+    reviewed_for_release: true
+    reviewed_for_version: ltm-public-knowledge.v1
+    reviewed_at: "2026-10-20T13:43:02Z"
+    reviewer_digest: 245e4fbf64bb2ac2fd306813f21221fa42ed29221abe8aba0199cf4c3eb4babb
+    owner: ltm-product
+    classification: internal
+    audience: all_ltm_users
+    allowed_roles:
+      - request_architect
+      - query_specialist
+      - knowledge_curator
+      - work_architect
       - auditor
       - result_integrator
       - editor_author

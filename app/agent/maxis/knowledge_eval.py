@@ -418,14 +418,21 @@ def load_suite(path: Path | None = None) -> KnowledgeEvalSuite:
             signed_human_review_required=signed_review,
         ))
         seen.add(values["case_id"])
-    if len(cases) != 25:
+    targets = {case.target_document_id for case in cases if case.target_document_id}
+    if len(targets) < 8 or len(cases) != len(targets) * 3 + 1:
         raise KnowledgeEvalError("evaluation_suite_case_count_invalid")
     category_counts = {
         category: sum(_CASE_CATEGORY[row.case_type] == category for row in cases)
         for category in _CATEGORY_ORDER
     }
-    if category_counts != {"positive": 8, "noHit": 1, "acl": 8, "injection": 8}:
+    if category_counts != {"positive": len(targets), "noHit": 1,
+                           "acl": len(targets), "injection": len(targets)}:
         raise KnowledgeEvalError("evaluation_suite_category_count_invalid")
+    for target in targets:
+        if sorted(case.case_type for case in cases if case.target_document_id == target) != [
+            "acl_negative", "positive", "prompt_injection"
+        ]:
+            raise KnowledgeEvalError("evaluation_suite_category_count_invalid")
     try:
         registered_roles = frozenset(load_registry().role_bindings)
     except Exception as exc:
@@ -445,7 +452,10 @@ def load_identity_map(
     *,
     environment_path: Path | None = None,
     knowledge_manifest_path: Path | None = None,
+    stage: str = "dev",
 ) -> RetrievalIdentityMap:
+    if stage not in {"dev", "prod"} or (stage == "prod" and environment_path is None):
+        raise KnowledgeEvalError("evaluation_environment_invalid")
     root = _root()
     environment = _load_yaml((environment_path or (
         root / "deploy" / "maxis-dify" / "environments" / "dev.yml"
@@ -467,8 +477,8 @@ def load_identity_map(
         root / "config" / "maxis-knowledge.yml"
     )).resolve()
     manifest = _load_yaml(manifest_path)
-    if environment.get("environment") != "dev":
-        raise KnowledgeEvalError("evaluation_environment_not_dev")
+    if environment.get("environment") != stage:
+        raise KnowledgeEvalError("evaluation_environment_not_" + stage)
     knowledge = environment.get("knowledge")
     documents = manifest.get("documents")
     if not isinstance(knowledge, dict) or not isinstance(documents, list):
@@ -1658,12 +1668,15 @@ def write_artifact_atomic(
 
 
 def make_client(profile: Mapping[str, Any], binding: WorkflowBinding) -> DifyClient:
+    stage = str(profile.get("stage") or "dev")
+    if stage not in {"dev", "prod"}:
+        raise KnowledgeEvalError("evaluation_environment_invalid")
     return DifyClient(DifyClientConfig(
-        profile="dev",
-        stage="dev",
+        profile=stage,
+        stage=stage,
         base_url=str(profile.get("base_url") or ""),
         profile_fingerprint=str(profile.get("fingerprint") or ""),
-        require_https=False,
+        require_https=stage == "prod",
         verify_tls=True,
         max_response_bytes=binding.max_response_bytes,
     ))

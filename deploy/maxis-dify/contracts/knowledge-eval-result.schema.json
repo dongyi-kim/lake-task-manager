@@ -118,8 +118,8 @@
     },
     "startedAt": {"$ref": "#/$defs/utcInstant"},
     "completedAt": {"$ref": "#/$defs/utcInstant"},
-    "plannedCaseCount": {"const": 25},
-    "executedCaseCount": {"type": "integer", "minimum": 0, "maximum": 25},
+    "plannedCaseCount": {"enum": [25, 31]},
+    "executedCaseCount": {"type": "integer", "minimum": 0, "maximum": 31},
     "pilotCaseId": {"$ref": "#/$defs/safeId"},
     "privacy": {
       "type": "object",
@@ -175,7 +175,7 @@
     },
     "cases": {
       "type": "array",
-      "maxItems": 25,
+      "maxItems": 31,
       "items": {"$ref": "#/$defs/caseResult"}
     },
     "summary": {
@@ -206,20 +206,20 @@
         "failedCases": {"$ref": "#/$defs/nonNegativeInteger"},
         "failureCaseIds": {
           "type": "array",
-          "maxItems": 25,
+          "maxItems": 31,
           "items": {"$ref": "#/$defs/safeId"},
           "uniqueItems": true
         },
         "timedOutCases": {"$ref": "#/$defs/nonNegativeInteger"},
         "timeoutCaseIds": {
           "type": "array",
-          "maxItems": 25,
+          "maxItems": 31,
           "items": {"$ref": "#/$defs/safeId"},
           "uniqueItems": true
         },
         "pendingSignedHumanReviewCaseIds": {
           "type": "array",
-          "maxItems": 8,
+          "maxItems": 10,
           "items": {"$ref": "#/$defs/safeId"},
           "uniqueItems": true
         },
@@ -248,6 +248,29 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {"properties": {"plannedCaseCount": {"const": 25}}},
+      "then": {"properties": {
+        "executedCaseCount": {"maximum": 25},
+        "cases": {"maxItems": 25},
+        "summary": {"properties": {
+          "pendingSignedHumanReviewCaseIds": {"maxItems": 8},
+          "retrievalQuality": {"properties": {
+            "plannedCases": {"const": 8},
+            "evaluatedCases": {"maximum": 8},
+            "notRunCases": {"maximum": 8},
+            "hitCases": {"maximum": 8}
+          }}
+        }}
+      }},
+      "else": {"properties": {
+        "summary": {"properties": {
+          "retrievalQuality": {"properties": {"plannedCases": {"const": 10}}}
+        }}
+      }}
+    }
+  ],
   "$defs": {
     "safeId": {
       "type": "string",
@@ -278,7 +301,9 @@
         "ltm-guide",
         "data-assets",
         "ticket-body-guide",
-        "editor-and-rendering"
+        "editor-and-rendering",
+        "public-project-stack",
+        "glossary"
       ]
     },
     "usage": {
@@ -331,10 +356,10 @@
       "properties": {
         "metricScope": {"const": "positive_declared_target_document"},
         "k": {"const": 2},
-        "plannedCases": {"const": 8},
-        "evaluatedCases": {"type": "integer", "minimum": 0, "maximum": 8},
-        "notRunCases": {"type": "integer", "minimum": 0, "maximum": 8},
-        "hitCases": {"type": "integer", "minimum": 0, "maximum": 8},
+        "plannedCases": {"enum": [8, 10]},
+        "evaluatedCases": {"type": "integer", "minimum": 0, "maximum": 10},
+        "notRunCases": {"type": "integer", "minimum": 0, "maximum": 10},
+        "hitCases": {"type": "integer", "minimum": 0, "maximum": 10},
         "hitRateAtK": {"type": "number", "minimum": 0, "maximum": 1},
         "meanReciprocalRankAtK": {"type": "number", "minimum": 0, "maximum": 1},
         "complete": {"type": "boolean"}

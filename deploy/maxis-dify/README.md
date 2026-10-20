@@ -7,6 +7,16 @@ copy는 ignored `.cache/`에 두며 커밋하지 않는다. 변경 이력·검�
 기본 Role route는 local이다. DEV는 고정 합성 fixture 검증용이며 운영 활성화나 실제 업무
 자료 전송 허가가 아니다. 로컬 계약 검증과 실서버 기능·품질 검증은 별도 게이트다.
 
+공개 Knowledge 정본은 `knowledge/01`~`10`과 `config/maxis-knowledge.yml`이다.
+canonical DSL은 실제 DEV UUID나 model을 포함하지 않는 source marker를 사용한다.
+PROD 준비는 깨끗한 checkout만으로 가능하며 DEV 환경 파일·개발자 cache corpus를 요구하지 않는다.
+`materialize_environment.materialize(environment_mapping, output_dir)`에 해당 환경의 실제
+dataset/document/sentinel/metadata UUID와 model plugin/provider/name을 명시해 import copy를 만든다.
+`validate_environment(mapping)`은 입력을 변경하지 않고 동일한 계약을 검사한다.
+`public_knowledge_source()`는 문서 설명·hash·Role과 version을 제공하며 runtime 설정·비밀을 읽지 않는다.
+다른 환경 metadata가 실제로 있으면 UUID 재사용을 비교한다. 없는 DEV를 새로 만들 필요는 없다.
+canonical source를 포털에 직접 import하거나 source marker를 실제 자산 ID로 사용하지 않는다.
+
 ## 현행 구성
 
 | 경로 | 목적 |
