@@ -221,6 +221,21 @@ def test_model_export_is_only_sent_to_local_extractor_and_not_saved(fake):
     assert cli.main(["connect", "--confirm-remote"]) == 0
 
 
+@pytest.mark.parametrize("params", [{}, {"max_completion_tokens": 2048, "reasoning_effort": "low"}])
+def test_explicit_model_options_survive_cli_without_becoming_required_identity(fake, params):
+    path, config = configured(fake)
+    config["model"] = {**MODEL, "completion_params": params}
+    path.write_text(json.dumps(config), encoding="utf-8")
+    assert cli.main(["bundle", "--confirm-host"]) == 0
+    assert fake.run["assetInputs"]["model"]["completion_params"] == params
+    assert cli.main(["connect", "--confirm-remote"]) == 0
+
+
+def test_prepare_starts_with_server_model_defaults(fake):
+    assert cli.main(["prepare"]) == 0
+    config = json.loads((cli.ROOT / ".cache/maxis/prod-setup.json").read_text(encoding="utf-8"))
+    assert config["model"] == {**dict.fromkeys(cli.MODEL_KEYS, ""), "completion_params": {}}
+
 def test_empty_getpass_preserves_existing_keys(fake, monkeypatch):
     configured(fake)
     assert cli.main(["bundle", "--confirm-host"]) == 0

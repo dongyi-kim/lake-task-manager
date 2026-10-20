@@ -344,7 +344,8 @@ def _run_setup(runner, monkeypatch, tmp_path):
     config.write_text("model:\n  name: synthetic-test-model\n", encoding="utf-8")
     monkeypatch.setattr(runner, "source_binding", lambda: {key: "c" * 64 for key in runner.HARNESS_FILES})
     monkeypatch.setattr(runner, "build_run_metadata", lambda **kw: {
-        "benchmarkKey": "benchmark", "candidateKey": "candidate", "qualificationIneligibilityReasons": []})
+        "benchmarkKey": "benchmark", "candidateKey": "candidate", "model": kw["model"],
+        "qualificationIneligibilityReasons": []})
 
 
 def test_run_stops_after_transport_failure_retains_attempt_and_pending(runner, monkeypatch, tmp_path):
@@ -400,6 +401,15 @@ def test_binding_change_before_attempt_opens_no_credentials(runner, monkeypatch,
     result = json.loads(path.read_text(encoding="utf-8"))
     assert result["stopReason"] == "binding_changed" and not result["complete"]
     assert result["cases"] == [] and result["notAttemptedCaseIds"] == ["role-request"]
+
+
+def test_role_runner_does_not_confuse_a_deployment_template_with_model_observation(runner, monkeypatch, tmp_path):
+    _run_setup(runner, monkeypatch, tmp_path)
+    monkeypatch.setattr(runner, "_binding_unchanged", lambda *args: False)
+    path = runner.run("candidate", ["role-request"])
+    metadata = json.loads(path.read_text(encoding="utf-8"))["metadata"]
+    assert metadata["model"] == "unknown"
+    assert metadata["modelObservation"] == 'not observed by Service API; selected by published Workflow LLM nodes'
 
 
 def test_retrieval_query_source_change_stops_before_next_attempt(runner, monkeypatch, tmp_path):

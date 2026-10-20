@@ -118,10 +118,16 @@ def read_config(path):
         raise SetupError("PROD 입력 JSON 형식을 확인하세요.") from None
     require(isinstance(value, dict) and set(value) == CONFIG_KEYS,
             "PROD 입력 JSON 필드를 확인하세요. token·비밀번호·추가 필드는 허용하지 않습니다.")
-    for key, keys in (("model", MODEL_KEYS), ("workflowVersions", WORKFLOWS)):
-        require(isinstance(value[key], dict) and set(value[key]) == set(keys)
-                and all(isinstance(item, str) for item in value[key].values()),
-                "모델 또는 Workflow 입력 필드를 확인하세요.")
+    model = value["model"]
+    require(isinstance(model, dict) and set(MODEL_KEYS) <= set(model)
+            and not set(model) - set(MODEL_KEYS) - {"completion_params"}
+            and all(isinstance(model[key], str) for key in MODEL_KEYS)
+            and ("completion_params" not in model or isinstance(model["completion_params"], dict)),
+            "모델 입력 필드를 확인하세요. completion_params는 공개 모델 옵션의 JSON 객체입니다.")
+    versions = value["workflowVersions"]
+    require(isinstance(versions, dict) and set(versions) == set(WORKFLOWS)
+            and all(isinstance(item, str) for item in versions.values()),
+            "Workflow 입력 필드를 확인하세요.")
     require(isinstance(value["documentIds"], dict)
             and all(isinstance(k, str) and isinstance(v, str) for k, v in value["documentIds"].items()),
             "문서 ID 입력 필드를 확인하세요.")
@@ -212,6 +218,7 @@ def prepare(api, args, path, config):
         config = {key: "" for key in (*ASSET_KEYS[:6], *LOG_KEYS[:2])}
         config.update(model=dict.fromkeys(MODEL_KEYS, ""), workflowVersions=dict.fromkeys(WORKFLOWS, ""),
                       remoteLogRetentionDays=0, documentIds={})
+        config["model"]["completion_params"] = {}
     if not path.exists() or args.refresh_source:
         config = {**config, "runId": result["runId"],
                   "documentIds": {key: config["documentIds"].get(key, "") for key in ids}}
@@ -225,7 +232,9 @@ def assets(config, model=None):
     body["baseUrl"] = base_url(config["baseUrl"])
     body["model"] = model or config["model"]
     require(all(body[key] for key in ASSET_KEYS[2:6]) and all(body["documentIds"].values())
-            and set(body["model"]) == set(MODEL_KEYS) and all(body["model"].values()),
+            and set(MODEL_KEYS) <= set(body["model"])
+            and not set(body["model"]) - set(MODEL_KEYS) - {"completion_params"}
+            and all(body["model"].get(key) for key in MODEL_KEYS),
             "실제 PROD 자산 ID와 승인된 모델 식별자를 입력하세요.")
     return body
 
@@ -238,7 +247,7 @@ def bundle(api, args, config):
     if args.model_file:
         yaml_text = read_file(cache_path(args.model_file)).decode("utf-8-sig")
         model = api.request("POST", SETUP + "/model", {"yamlText": yaml_text})["model"]
-        require(not any(config["model"].values()) or config["model"] == model,
+        require(not any(config["model"].get(key) for key in MODEL_KEYS) or config["model"] == model,
                 "입력 JSON 모델과 내보내기 모델이 다릅니다. 모델 입력을 확인하세요.")
     body = assets(config, model)
     api.request("PUT", SETUP + "/host", {"baseUrl": body["baseUrl"], "confirmed": True})
@@ -254,7 +263,7 @@ def bundle(api, args, config):
 def check_bundle(api, config):
     state, run = current_run(api, config)
     prior = run.get("assetInputs") or {}
-    expected = assets(config, prior.get("model") if not any(config["model"].values()) else None)
+    expected = assets(config, prior.get("model") if not any(config["model"].get(key) for key in MODEL_KEYS) else None)
     require(run.get("bundleReady") is True and run.get("baseUrl") == expected["baseUrl"]
             and urlsplit(expected["baseUrl"]).hostname in state.get("registeredHosts", [])
             and prior == expected, "등록 호스트·입력값·Workflow 준비 파일이 다릅니다. bundle을 다시 확인하세요.")

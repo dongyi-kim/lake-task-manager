@@ -130,7 +130,8 @@ def _failed_run(runner, monkeypatch, tmp_path, error):
     monkeypatch.setattr(runner.profiles, 'resolve', lambda stage: profile)
     monkeypatch.setattr(runner.credentials, 'get_for', lambda *args: 'synthetic-key')
     monkeypatch.setattr(runner, 'build_run_metadata', lambda **kw: {
-        'benchmarkKey': 'benchmark', 'candidateKey': 'candidate', 'qualificationIneligibilityReasons': []})
+        'benchmarkKey': 'benchmark', 'candidateKey': 'candidate', 'model': kw['model'],
+        'qualificationIneligibilityReasons': []})
     case = maxis_editor_eval_cases.load_case('CMP2')
     monkeypatch.setattr(maxis_editor_eval_cases, 'load_cases', lambda: [case])
 
@@ -178,3 +179,9 @@ def test_editor_bad_envelope_retains_http_observation_without_body(runner, monke
     assert failure['stage'] == 'response_envelope' and failure['httpStatus'] == 200
     assert failure['transportStatus'] == 'succeeded' and failure['nativeModelCallCount'] is None
     assert 'synthetic-private-body' not in json.dumps(result)
+
+
+def test_editor_runner_does_not_guess_the_published_model(runner, monkeypatch, tmp_path):
+    result = _failed_run(runner, monkeypatch, tmp_path, None)
+    assert result['metadata']['model'] == 'unknown'
+    assert result['metadata']['modelObservation'] == 'not observed by Service API; selected by published Workflow LLM nodes'

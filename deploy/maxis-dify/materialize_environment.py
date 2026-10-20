@@ -12,6 +12,7 @@ from copy import deepcopy
 import hashlib
 import importlib.util
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -134,6 +135,50 @@ ENVIRONMENT_FIELDS = {
 
 class EnvironmentBindingError(ValueError):
     """Raised when an environment file is incomplete or unsafe."""
+
+
+def validate_completion_params(value: Any) -> dict[str, Any]:
+    """Validate public model options without accepting arbitrary strings/secrets.
+
+    These are syntax/safety limits, not a claim that a project's provider supports
+    every option. An empty mapping deliberately requests the provider defaults.
+    """
+    numeric = {
+        "temperature": (0, 2), "top_p": (0, 1), "min_p": (0, 1),
+        "presence_penalty": (-2, 2), "frequency_penalty": (-2, 2),
+        "repetition_penalty": (0, 2), "repeat_penalty": (0, 2),
+    }
+    integers = {
+        "max_tokens": (1, 131072), "max_completion_tokens": (1, 131072),
+        "max_output_tokens": (1, 131072), "top_k": (-1, 100000),
+        "seed": (-(2**63), 2**63 - 1),
+    }
+    enums = {
+        "reasoning_effort": {"none", "minimal", "low", "medium", "high", "xhigh"},
+        "verbosity": {"low", "medium", "high"},
+        "response_format": {"text", "json_object"},
+    }
+    booleans = {"enable_thinking", "do_sample"}
+    message = "Model completion_params must contain only supported public scalar options."
+    if not isinstance(value, dict):
+        raise EnvironmentBindingError(message)
+    for key, item in value.items():
+        if key in numeric or key in integers:
+            lower, upper = (integers if key in integers else numeric)[key]
+            valid_type = type(item) is int if key in integers else type(item) in (int, float)
+            if not valid_type or not lower <= item <= upper or not math.isfinite(item):
+                raise EnvironmentBindingError(message)
+        elif key in enums:
+            if not isinstance(item, str) or item not in enums[key]:
+                raise EnvironmentBindingError(message)
+        elif key in booleans:
+            if type(item) is not bool:
+                raise EnvironmentBindingError(message)
+        else:
+            raise EnvironmentBindingError(message)
+    if len({"max_tokens", "max_completion_tokens", "max_output_tokens"} & value.keys()) > 1:
+        raise EnvironmentBindingError(message)
+    return deepcopy(value)
 
 
 def _render_environment_knowledge_guard(
@@ -545,12 +590,15 @@ def load_environment(path: Path | str | dict[str, Any]) -> dict[str, Any]:
         )
 
     model = _mapping(environment.get("model"), "model")
-    if set(model) != {"plugin_unique_identifier", "provider", "name"}:
+    required_model_fields = {"plugin_unique_identifier", "provider", "name"}
+    if not required_model_fields <= set(model) or set(model) - required_model_fields - {"completion_params"}:
         raise EnvironmentBindingError("Model binding fields are incomplete.")
     for field in ("plugin_unique_identifier", "provider", "name"):
         value = _required_text(model.get(field), f"model.{field}")
         if "__LTM_" in value:
             raise EnvironmentBindingError("Model binding must replace canonical source markers.")
+    if "completion_params" in model:
+        validate_completion_params(model["completion_params"])
     workflows = _mapping(environment.get("workflows"), "workflows")
     if set(workflows) != set(WORKFLOW_KEYS):
         raise EnvironmentBindingError("workflows must contain the three LTM workflows.")
@@ -953,6 +1001,8 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
                 )
             model["provider"] = environment["model"]["provider"]
             model["name"] = environment["model"]["name"]
+            if "completion_params" in environment["model"]:
+                model["completion_params"] = validate_completion_params(environment["model"]["completion_params"])
         elif data.get("type") == "code":
             if core_control and node["id"] in {core_graph.CLASSIFIER_ID, core_graph.QUERY_ASSEMBLER_ID,
                                               core_graph.QUERY_INPUT_ID, core_graph.REQUEST_ASSEMBLER_ID,

@@ -343,11 +343,9 @@ def run(label: str, selected=None) -> Path:
         'LTM_EVAL_CANDIDATE_ORDER_INDEX': '1' if label == 'baseline' else '2',
         'LTM_AGENT_STRUCTURED_OUTPUT_BACKEND': 'dify', 'LTM_AGENT_STRUCTURED_OUTPUT_FALLBACK': 'forbid',
     })
-    import yaml
-    configured_model = yaml.safe_load((ROOT / 'deploy/maxis-dify/environments/dev.yml').read_text(encoding='utf-8'))['model']['name']
     common, reviews = review_specs('maxis-role-component')
     metadata = build_run_metadata(suite='maxis-role-component', battery_version=BATTERY_VERSION,
-        cases=load_remote_cases(), selected_case_ids=[c['id'] for c in cases], model=configured_model,
+        cases=load_remote_cases(), selected_case_ids=[c['id'] for c in cases], model='unknown',
         simple_model='not-used', prompt_version=profile['workflow_bundle_version'],
         suite_review_elements=common, case_review_specs=reviews,
         checker_dependencies=[{'file': name, 'sha256': sources[name]} for name in HARNESS_FILES])
@@ -355,7 +353,7 @@ def run(label: str, selected=None) -> Path:
                     comparableToSourceSuite=False, qualificationEligible=False,
                     maxisBinding={'deployment': deployment, 'sourceFiles': sources,
                                   'profileFingerprint': profile['fingerprint'], 'workflows': profile['workflows']},
-                    maxRequests=len(cases), modelObservation='configured in pinned deployment, not per-node measured')
+                    maxRequests=len(cases), modelObservation='not observed by Service API; selected by published Workflow LLM nodes')
     metadata['latencyBoundary'] = 'gateway call wall time including client input validation; excludes fixture/key/client setup, response validation and close; not native model time or TTFT'
     metadata['outcomeMeaning'] = 'declared output presence or expected safety boundary; not semantic quality or usable completion'
     metadata['benchmarkKey'] = digest({'base': metadata['benchmarkKey'], 'harness': {k: sources[k] for k in HARNESS_FILES}})

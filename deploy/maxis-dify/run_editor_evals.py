@@ -248,12 +248,13 @@ def run(label: str) -> Path:
         suite='maxis-editor-component', battery_version=COMPONENT_VERSION,
         cases=[{'id': c['case_id'], **c} for c in cases],
         selected_case_ids=[c['case_id'] for c in cases],
-        model='gpt-5.4-mini', simple_model='not-used',
+        model='unknown', simple_model='not-used',
         prompt_version=profile['workflow_bundle_version'],
         suite_review_elements=suite_review,
         case_review_specs={c['case_id']: case_review[c['case_id']] for c in cases},
     )
     metadata['componentScope'] = 'EditorDraft plus pure markup; not full compose or UI'
+    metadata['modelObservation'] = 'not observed by Service API; selected by published Workflow LLM nodes'
     metadata['comparableToSourceSuite'] = False
     metadata['maxisBinding'] = {
         'deployment': deployment, 'sourceFiles': sources,

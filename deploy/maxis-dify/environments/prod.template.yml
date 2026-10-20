@@ -67,6 +67,9 @@ model:
   plugin_unique_identifier: null
   provider: null
   name: null
+  # Explicit {} uses this project's provider defaults, not the DEV tuning.
+  # Exported approved scalar options may replace it; never add keys or passwords.
+  completion_params: {}
 
 workflows:
   agent_core:

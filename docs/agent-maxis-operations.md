@@ -10,6 +10,14 @@
 - 새 연결은 **MAXIS 설정 추가**에서 이름을 입력한다. 기존 연결의 이름·주소·키는 해당 설정 카드에서 편집한다.
 - `일반 사용`은 연결·계약·Knowledge 검사를 요구한다. `사전 품질 검증 필수`는 여기에 독립 검수·서명까지 요구한다. 연결 이름으로 정책을 결정하지 않으며, 연결 성공이 정성 품질 평가 통과를 뜻하지 않는다.
 
+## 모델은 어디에서 선택하나?
+
+- **MAXIS 사용 시 실제 모델은 연결한 Dify 프로젝트의 게시 Workflow LLM 노드가 선택한다.** LTM의 로컬 LLM 모델 선택과는 별개이며, MAXIS 연결마다 다른 모델·플러그인을 사용할 수 있다.
+- 새 서버 준비 시 그 프로젝트에서 동작하는 모델을 YAML로 내보내 가져온다. 모델명뿐 아니라 provider·plugin과 지원 파라미터도 함께 옮긴다. DEV 설정을 PROD 모델로 간주하지 않는다.
+- `model.completion_params: {}`는 해당 서버 모델의 기본값 사용이다. 명시한 객체는 기본 파라미터를 **병합하지 않고 교체**한다. 예: `{"max_completion_tokens": 2048, "reasoning_effort": "low"}`. 지원하지 않는 `temperature`나 `max_tokens`를 강제로 보내지 않는다. 기존 파일에서 필드를 생략한 경우만 기존 워크플로의 기본 튜닝을 유지한다.
+- 모델이나 파라미터 변경은 Dify에서 **관련 LLM 노드 모두 확인 → Publish → LTM의 게시 Workflow UUID 갱신 → 연결 검사 → 적용** 순서다. 초안만 수정하면 게시본은 바뀌지 않는다. 기존 모델로 자동 되돌리거나 새 모델을 자동 재게시하지 않는다.
+- 연결 검사의 실제 생성 성공은 검사한 경로의 건강 상태다. 전체 분기·본문·댓글의 출력 품질이나 모델명 확인까지 뜻하지 않는다. Dify Service API가 모델명을 제공하지 않으면 **미확인**으로 표시하며 템플릿의 모델명을 실측 결과로 쓰지 않는다. 변경 후 실제 Agent·본문·댓글도 각각 확인한다.
+
 ## 새 서버 준비 (PROD 예시)
 
 **스크립트 하나의 네 명령 + 포털에서 업로드·게시.** DEV 서버·DEV PC 파일은 필요 없다.
@@ -53,7 +61,7 @@ ZIP을 풀고 PROD MAXIS에서 연결되는 **Dify의 Knowledge**에 다음과 �
 | `datasetId`, `sentinelDatasetId` | 각각 업무 규칙·검증 표식 Knowledge UUID |
 | `roleMetadataFieldId` | `ltm_allowed_roles_v1` 메타데이터 필드 UUID |
 | `sentinelDocumentId`, `documentIds` | 표식 문서 UUID, 정본 문서별 UUID |
-| `model` | 아래 YAML 가져오기로 추출 가능. 직접 입력하면 plugin/provider/name 세 값 필요 |
+| `model` | 아래 YAML 가져오기로 추출 가능. 직접 입력하면 plugin/provider/name 세 값 필요. `completion_params: {}`는 서버 기본값 |
 
 PROD에서 승인된 모델 하나를 사용하는 임시 Chatflow를 YAML로 내보내
 `.cache/maxis/prod-model.yml`에 저장한 뒤 실행한다.
@@ -63,7 +71,9 @@ python -B -X utf8 tools/maxis_setup.py bundle --confirm-host --model-file .cache
 ```
 
 `--confirm-host`는 위 주소를 실제 PROD API 호스트로 확인했다는 뜻이다. 정확한 HTTPS FQDN/443을 사용한다.
-기존 호스트 제한 환경변수는 우회하지 않는다. YAML에서는 모델 식별자만 추출하며 코드를 실행하지 않는다.
+기존 호스트 제한 환경변수는 우회하지 않는다. YAML에서는 모델 식별자와 검증된 공개 파라미터만 추출하며 코드를 실행하지 않는다.
+파라미터는 유한한 숫자·boolean·허용된 enum만 받는다. 임의 문자열·중첩 객체·API key는 거부한다.
+내보낸 노드들의 모델 또는 파라미터가 다르면 하나의 동일한 설정으로 다시 내보낸다.
 결과는 `.cache/maxis/workflows.zip`. hash는 자동 계산한다. `model`을 직접 채웠다면 `--model-file`은 생략한다.
 
 ## 3. 포털 import·Publish → 연결

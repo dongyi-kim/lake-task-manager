@@ -314,7 +314,7 @@ def _materializer():
 
 
 def model_from_export(yaml_text: str) -> dict:
-    """Extract only approved model identifiers from a PROD portal DSL export.
+    """Extract approved model identifiers and public options from a portal export.
 
     Input is never persisted, executed, or included in errors. Unrelated exported
     environment variables, names, prompts, credentials and graphs are discarded.
@@ -329,16 +329,22 @@ def model_from_export(yaml_text: str) -> dict:
         if len(models) != 1:
             raise ValueError("models")
         provider, name = next(iter(models))
+        validate_params = _materializer().validate_completion_params
+        parameters = [validate_params(node["data"]["model"].get("completion_params", {}))
+                      for node in nodes if node.get("data", {}).get("type") == "llm"]
+        if any(item != parameters[0] for item in parameters[1:]):
+            raise ValueError("mixed_parameters")
         prefix = provider.rsplit("/", 1)[0] + ":"
         packages = {row["value"]["plugin_unique_identifier"] for row in exported["dependencies"]
                     if str(row.get("value", {}).get("plugin_unique_identifier", "")).startswith(prefix)}
         if len(packages) != 1:
             raise ValueError("dependency")
         model = {"provider": _text(provider, "모델 provider"), "name": _text(name, "모델 이름"),
-                 "plugin_unique_identifier": _text(next(iter(packages)), "모델 plugin")}
+                 "plugin_unique_identifier": _text(next(iter(packages)), "모델 plugin"),
+                 "completion_params": parameters[0]}
         return {"ok": True, "model": model}
     except (ValueError, TypeError, KeyError, AttributeError, yaml.YAMLError):
-        raise ValueError("승인된 모델 하나를 사용하는 MAXIS Chatflow의 YAML 내보내기 파일을 선택하세요.") from None
+        raise ValueError("동일한 모델·파라미터 설정 하나를 사용하는 MAXIS Chatflow를 내보내세요. 지원되지 않는 옵션은 제거하고 다시 확인하세요.") from None
 
 
 def prepare_bundle(body: dict, *, profile_name: str = "prod") -> dict:
@@ -373,6 +379,9 @@ def prepare_bundle(body: dict, *, profile_name: str = "prod") -> dict:
         # The reviewed core source uses its stable historical filename.
         environment["workflows"]["agent_core"]["source_dsl"] = "deploy/maxis-dify/dsl/ltm-agent-core.yml"
         materializer = _materializer()
+        if "completion_params" in body["model"]:
+            environment["model"]["completion_params"] = materializer.validate_completion_params(
+                body["model"]["completion_params"])
         generated = materializer.materialize(environment, directory / "workflows")
         environment_text = yaml.safe_dump(environment, allow_unicode=True, sort_keys=False)
         (directory / "environment.yml").write_text(environment_text, encoding="utf-8")

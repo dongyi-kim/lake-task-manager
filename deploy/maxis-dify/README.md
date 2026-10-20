@@ -16,6 +16,9 @@ canonical DSL은 실제 DEV UUID나 model을 포함하지 않는 source marker�
 PROD 준비는 깨끗한 checkout만으로 가능하며 DEV 환경 파일·개발자 cache corpus를 요구하지 않는다.
 `materialize_environment.materialize(environment_mapping, output_dir)`에 해당 환경의 실제
 dataset/document/sentinel/metadata UUID와 model plugin/provider/name을 명시해 import copy를 만든다.
+선택적인 `model.completion_params`는 모든 LLM 노드의 canonical 튜닝을 교체한다. 명시한 `{}`는
+서버 모델 기본값, 미지정만 기존 튜닝 유지다. 공개 scalar 옵션만 검증·허용하며, 모델별 지원 여부는
+해당 프로젝트에서 확인한다. canonical 원본의 고정 파라미터 검사는 변경 없이 먼저 수행한다.
 `validate_environment(mapping)`은 입력을 변경하지 않고 동일한 계약을 검사한다.
 `public_knowledge_source()`는 문서 설명·hash·Role과 version을 제공하며 runtime 설정·비밀을 읽지 않는다.
 다른 환경 metadata가 실제로 있으면 UUID 재사용을 비교한다. 없는 DEV를 새로 만들 필요는 없다.

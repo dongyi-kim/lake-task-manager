@@ -36,7 +36,8 @@ def _prod(root):
     for row in knowledge["documents"].values():
         row["document_id"] = str(uuid4())
     environment["model"] = {"plugin_unique_identifier": "test/provider:1.0@" + "a" * 64,
-                            "provider": "test/provider/chat", "name": "explicit-prod-model"}
+                            "provider": "test/provider/chat", "name": "explicit-prod-model",
+                            "completion_params": {}}
     for key, row in environment["workflows"].items():
         row["app_name"] = "LTM " + key
     return environment
@@ -109,11 +110,43 @@ print(json.dumps({'files': [p.name for p in files], 'documents': len(source['doc
             data = node["data"]
             if data["type"] == "llm":
                 assert data["model"]["name"] == "explicit-prod-model"
+                assert data["model"]["provider"] == environment["model"]["provider"]
+                assert data["model"]["completion_params"] == {}
             if data["title"] == "Knowledge Guard":
                 scope = {}
                 exec(data["code"], scope)
                 assert len(scope["_DOCUMENT_IDS_BY_NAME"]) == 10
                 assert scope["_DATASET_ID"] == environment["knowledge"]["dataset_id"]
+
+
+@pytest.mark.parametrize("params", [{}, {"max_completion_tokens": 2048, "reasoning_effort": "low"},
+                                   {"temperature": 0.4, "top_p": 0.8, "enable_thinking": False}])
+def test_selected_model_parameters_replace_defaults_in_every_llm_node(tmp_path, params):
+    module = _module()
+    environment = _prod(ROOT)
+    environment["model"]["completion_params"] = params
+    original = json.loads(json.dumps(environment))
+    outputs = module.materialize(environment, tmp_path / "imports")
+    assert environment == original
+    for output in outputs:
+        dsl = yaml.safe_load(output.read_text(encoding="utf-8"))
+        assert dsl["dependencies"][0]["value"]["plugin_unique_identifier"] == environment["model"]["plugin_unique_identifier"]
+        for node in dsl["workflow"]["graph"]["nodes"]:
+            if node["data"]["type"] == "llm":
+                assert node["data"]["model"]["completion_params"] == params
+                assert node["data"]["model"]["name"] == "explicit-prod-model"
+
+
+@pytest.mark.parametrize("params", [
+    None, [], {"temperature": float("nan")}, {"max_tokens": True}, {"max_tokens": -1},
+    {"reasoning_effort": "private-secret"}, {"api_key": "private-secret"},
+    {"reasoning_effort": {"nested": "private-secret"}}, {"unknown": "private-secret"},
+])
+def test_model_parameters_reject_unbounded_or_private_values_without_echo(params):
+    module = _module()
+    with pytest.raises(module.EnvironmentBindingError) as error:
+        module.validate_completion_params(params)
+    assert "private-secret" not in str(error.value)
 
 
 def test_mapping_input_is_not_mutated_and_optional_manifest_has_same_output(tmp_path):

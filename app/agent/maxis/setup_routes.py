@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.agent.maxis import setup
 
@@ -39,6 +39,12 @@ class ModelBody(_Body):
     plugin_unique_identifier: str = Field(max_length=256)
     provider: str = Field(max_length=256)
     name: str = Field(max_length=128)
+    completion_params: dict | None = None
+
+    @field_validator("completion_params", mode="before")
+    @classmethod
+    def public_model_parameters(cls, value):
+        return setup._materializer().validate_completion_params(value)
 
 
 class ModelExportBody(_Body):
@@ -126,7 +132,7 @@ def prepare_knowledge(profile: str = "prod"):
 def prepare_bundle(body: BundleBody, profile: str = "prod"):
     if not _can_manage():
         return _denied()
-    return _call(setup.prepare_bundle, body.model_dump(), profile_name=profile)
+    return _call(setup.prepare_bundle, body.model_dump(exclude_unset=True), profile_name=profile)
 
 
 @router.post("/model")
