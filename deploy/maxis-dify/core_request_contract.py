@@ -28,7 +28,8 @@ _NARRATIVE_PATHS = {
 # Routes, retrieval terms, future acceptance conditions and clarification questions
 # are planning judgments, not assertions of fact, even when evidence-backed.
 _PLANNING_PATHS = {("intent",), ("keywords", "*"), ("tasks", "*", "completion_criteria", "*"),
-                   ("blocking_questions", "*"), ("request_questions", "*", "question")}
+                   ("blocking_questions", "*"), ("request_questions", "*", "question"),
+                   ("assumptions", "*")}
 
 
 def build_request_system_prompt(schema: dict, local_role_markdown: str, transport_markdown: str) -> str:

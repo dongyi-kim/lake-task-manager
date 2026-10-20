@@ -144,13 +144,16 @@ def test_request_user_intent_cannot_be_relabelled_as_external_fact(nodes, reques
 
 
 @pytest.mark.parametrize("kind", ["fact", "inference", "recommendation"])
+@pytest.mark.parametrize("field", ["completion_criteria", "assumptions"])
 @pytest.mark.parametrize("refs", [["src_intent_request"], ["record-exact"],
     ["record-exact", "src_intent_request"]])
-def test_completion_criteria_planning_kinds_preserve_values_order_and_sources(nodes, request_case, kind, refs):
+def test_completion_criteria_planning_kinds_preserve_values_order_and_sources(nodes, request_case, kind, refs, field):
     pack, incoming, draft = request_case
     criteria = [{"value": value, "kind": kind, "source_ids": refs[:]}
         for value in ("오류 재현 조건을 초안에 명시한다", "검토자가 기대 동작을 확인할 수 있게 작성한다")]
-    draft["payload"]["tasks"][0]["completion_criteria"] = criteria
+    target = draft["payload"]["tasks"][0] if field == "completion_criteria" else draft["payload"]
+    target[field] = criteria
+    prefix = "/tasks/0/completion_criteria" if field == "completion_criteria" else "/assumptions"
     before = copy.deepcopy((incoming, draft))
     schema = nodes[REQUEST_ID]["structured_output"]["schema"]
     assert Draft202012Validator(schema).is_valid(draft) is (kind != "fact")
@@ -159,12 +162,13 @@ def test_completion_criteria_planning_kinds_preserve_values_order_and_sources(no
             assembled(nodes, incoming, draft)
     else:
         result = assembled(nodes, incoming, draft)
-        assert result["payload"]["tasks"][0]["completion_criteria"] == [row["value"] for row in criteria]
+        actual = result["payload"]["tasks"][0] if field == "completion_criteria" else result["payload"]
+        assert actual[field] == [row["value"] for row in criteria]
         claims = {row["claim_id"]: row for row in result["claims"]}
         citations = {row["citation_id"]: row["source_id"] for row in result["citations"]}
         bindings = {row["path"]: row["claim_ids"] for row in result["payload_claims"]}
         for index, criterion in enumerate(criteria):
-            claim = claims[bindings[f"/tasks/0/completion_criteria/{index}"][0]]
+            claim = claims[bindings[f"{prefix}/{index}"][0]]
             assert (claim["text"], claim["kind"]) == (criterion["value"], kind)
             assert [citations[key] for key in claim["citation_ids"]] == refs
         assert remote(nodes, pack, result) == result and local(pack, result)[1] == result["payload"]

@@ -184,13 +184,15 @@ def test_fact_kind_is_not_repaired_to_bypass_final_guards(compiled, case, refs):
 
 @pytest.mark.parametrize("path", [
     ("intent",), ("keywords", 0), ("tasks", 0, "completion_criteria", 0),
-    ("blocking_questions", 0), ("request_questions", 0, "question"),
+    ("blocking_questions", 0), ("request_questions", 0, "question"), ("assumptions", 0),
 ])
 @pytest.mark.parametrize("refs", [["src-intent-73"], ["src-record-29"], ["src-intent-73", "src-record-29"]])
 @pytest.mark.parametrize("kind", ["fact", "inference", "recommendation"])
 def test_planning_kinds_preserve_values_and_refs_or_fail_without_candidate(compiled, case, path, refs, kind):
     pack, incoming, draft, _ = case
-    if path[0] == "blocking_questions":
+    if path[0] == "assumptions":
+        draft["payload"]["assumptions"] = [leaf("요청의 목표를 PoC로 해석한다")]
+    elif path[0] == "blocking_questions":
         draft["payload"]["blocking_questions"] = [leaf("어떤 범위를 원하시나요?")]
     elif path[0] == "request_questions":
         draft["payload"]["request_questions"] = [
