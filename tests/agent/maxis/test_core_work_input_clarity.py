@@ -29,8 +29,8 @@ def test_source_view_has_one_citation_identity_and_preserves_original_evidence(n
     assert projected == {"contract": "work-input.v2", "context": expected,
                          "knowledge_context": original["knowledge_context"]}
     system = nodes[WORK]["prompt_template"][0]["text"]
-    assert "entity_reference identifies an entity, never a citation" in system
-    assert "missing_inputs belongs only at root, never in payload" in system
+    assert "entity_reference and role context are not citations" in system
+    assert "missing_inputs is root-only" in system
     assert json.loads(incoming) == original
 
 
