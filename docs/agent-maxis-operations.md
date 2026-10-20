@@ -90,11 +90,14 @@ python -B -X utf8 tools/maxis_setup.py bundle --confirm-host --model-file .cache
    변경 전 게시본·모델·Knowledge 연결과 현재 LTM 설정을 현지 `.cache/`에 보관한다.
    생성본은 Core의 Candidate Binding·역할별 입력 투영, Editor의 DraftSpec 선택·검증,
    공통 근거 검증 코드를 함께 포함한다. 개별 프롬프트만 복사해서 배포하지 않는다.
-   Core의 Query Assembler·Result Input/LLM/Assembler와 Editor의 DraftSpec Guard·Plan Enforcer도
+   Core의 Query Assembler·Request Input/LLM/Assembler·Work Input/LLM·Knowledge Input/LLM/Assembler·
+   Result Input/LLM/Assembler와 Editor의 DraftSpec Guard·Plan Enforcer도
    같은 저장소 정본으로 갱신한다. 앱 코드만 pull하고 서버 노드를 그대로 두면 수정이 적용되지 않는다.
    게시 후 다시 내보내 노드·연결·프롬프트·코드와 현지 모델/Knowledge 설정이 의도한 값인지 확인한다.
    Result 내부 계약은 `result-draft.v2`: 사실은 원문 위치를 선택하고 해석·제안은 별도 타입으로 작성한다.
    외부 API는 유지되지만 Result LLM의 구조화 출력 schema와 두 코드 노드를 함께 갱신해야 한다.
+   Knowledge 내부 계약도 `knowledge-draft.v2`이므로 해당 LLM schema·코드 노드를 함께 갱신한다.
+   사실은 완전한 원문 레코드, 해석·제안은 별도 타입으로 작성하며 최종 근거 검사는 생략하지 않는다.
 2. `prod-setup.json`의 `workflowVersions`에 각 앱의 **게시 Workflow UUID**를 입력한다.
    앱 ID·실행 run ID와 혼동하지 않는다. PMO를 사용하지 않으면 빈 값으로 둔다.
 3. `remoteLogPolicyId`, `remoteLogMode`, `remoteLogRetentionDays`를 실제 승인된 로그 정책대로 입력한다.
@@ -148,9 +151,13 @@ UI에 서명 파일을 가져와 **이 설정을 Agent·에디터에 사용**을
   집계는 원래 조회 시각을 가진 하위 캐시에서 재구성한다. 최근 이력·댓글 발췌를 전체 이력이라고 해석하지 않는다.
 - 추가 입력이 필요한 정상 응답은 HTTP 200과 질문으로 반환한다. `추가 입력 필요`는 실패나 생성 완료가 아니다.
   실제 계약 오류는 Dify 실행 이력의 실패 노드와 LTM 디버그의 실패 역할을 함께 확인한다.
+  검증된 계약·출처 연결 거부가 있으면 이를 우선 안내한다. `partial_role_context` 같은 맥락 제한만으로
+  실제 거부 원인을 “조회 실패”로 단정하지 않는다. 사람 표시는 현지 Jira의 정확한 사용자 식별자로만 복원한다.
 - 실패한 원격 요청도 요청 횟수에 포함한다. 토큰·모델·비용이 서버 응답에 없으면 미확인이다.
   Workflow/Knowledge 라벨은 프로필 메타데이터이며 실제 게시 UUID나 품질 통과 증명이 아니다.
-- Core의 네이티브 초안 JSON/형식·허용 조회 소스 오류는 같은 검증 입력으로 **한 번 재생성**한다.
+- Core의 네이티브 초안 JSON/형식·허용 조회 소스 오류는 원래 근거로 **한 번 재생성**한다.
+  공간이 있을 때 로컬의 고정된 검증 오류 안내만 비인용 맥락으로 추가한다. 원격 오류 원문·거부된 초안을
+  다시 입력하지 않으며 원래 근거·hash·조회 시각·프로필은 바꾸지 않는다.
   Editor는 원본 입력·근거를 먼저 검증한 뒤, 존재하지 않는 선택 ID 또는 검증된 선택의 64개 상한 초과만
   한 번 재생성한다. 다른 소유자의 근거·형식·충돌 오류가 섞이면 재생성하지 않으며 선택을 임의로 잘라내지 않는다.
   ID를 유사한 값으로 고치거나 출처·권한 검사를 생략하지 않는다. 첫 실패의 감사·사용량도 남는다.
