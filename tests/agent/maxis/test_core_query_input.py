@@ -89,6 +89,22 @@ def test_projection_removes_only_competing_contract_and_metadata(projector, inco
     assert projector["_MAX_MODEL_INPUT_UTF8_BYTES"] == 40000
 
 
+@pytest.mark.parametrize("sources", [
+    ["comments", "confluence", "jira", "people"],
+    ["web"], ["jira", "jira"], [], "jira", None,
+])
+def test_internal_capability_projection_is_lossless_or_rejected(projector, incoming, sources):
+    row = incoming["context_pack"]["role_context"][0]
+    value = json.loads(row["content_json"])
+    value["allowed_sources"] = sources
+    row["content_json"] = canonical(value)
+    row["content_sha256"] = hashlib.sha256(row["content_json"].encode()).hexdigest()
+    if sources == ["comments", "confluence", "jira", "people"]:
+        assert project(projector, incoming)["task"] == value
+    else:
+        rejected(projector, canonical(incoming))
+
+
 def test_nested_values_and_order_are_preserved_without_normalization(projector, incoming):
     pack = incoming["context_pack"]
     pack["facts"] = [{"text": "가\r\n가", "value": [False, 0, True, 1, 1.5, None], "extra": {"schema": "data"}}]

@@ -1305,8 +1305,8 @@ def _query_business_pack(
 ):
     """Admit a backend-owned task only when the entire prior pack is unchanged."""
     from dataclasses import replace
-    from app.agent.maxis.context_guard import ContextGuard, ContextGuardError
-    from app.agent.maxis.contracts import canonical_payload_schema
+    from app.agent.maxis.context_guard import ContextGuard, ContextGuardError, validate_pack_safety
+    from app.agent.maxis.contracts import EvidencePackV1, canonical_payload_schema
     from app.agent.workflow.contracts import role_output_schema
 
     # Snapshot iterables once, before either independent guard consumes them.
@@ -1338,6 +1338,9 @@ def _query_business_pack(
         if value.strip()
     ))
     # This is the captured pre-enrichment intent, never recovered from query/source text.
+    from app.agent.runtime_status import INTERNAL_SOURCES, bounded_internal_assist
+    capabilities = ({"allowed_sources": sorted(INTERNAL_SOURCES)}
+                    if not synthetic_only and bounded_internal_assist(state) else {})
     expected_json = _canonical_json({"text": guard.guard_query(user_intent, identities)})
     context_id = "rctx_" + hashlib.sha256(
         f"{inputs['request_id']}:query_specialist:{name}".encode("utf-8")
@@ -1372,6 +1375,21 @@ def _query_business_pack(
     ]
     if without_task != baseline.model_dump(mode="json"):
         raise MaxisRuntimeError(error)
+    if capabilities:
+        # Only these backend-owned protocol enums bypass identity pseudonymization.
+        # The complete user text has already passed normal redaction and no-loss
+        # admission above; an identity named "jira" must not corrupt the wire enum.
+        augmented = _canonical_json({**json.loads(expected_json), **capabilities})
+        data = candidate.model_dump()
+        for item in data["role_context"]:
+            if item["name"] == name:
+                item["content_json"] = augmented
+                item["content_sha256"] = hashlib.sha256(augmented.encode("utf-8")).hexdigest()
+        try:
+            candidate = EvidencePackV1.model_validate(data)
+            validate_pack_safety(candidate, max_total_utf8_bytes=guard.policy.max_total_utf8_bytes)
+        except (ValueError, ContextGuardError) as exc:
+            raise MaxisRuntimeError(error) from exc
     return candidate
 
 

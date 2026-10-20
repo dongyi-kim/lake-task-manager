@@ -78,9 +78,13 @@ def _business_task(pack):
             or datetime.fromisoformat(pack["requested_at"].replace("Z", "+00:00")).utcoffset() is None):
         _fail()
     task = _decode(row["content_json"])
-    if (set(task) != {"text"} or type(task["text"]) is not str or not task["text"].strip()
+    if (set(task) not in ({"text"}, {"text", "allowed_sources"})
+            or type(task["text"]) is not str or not task["text"].strip()
             or len(task["text"].encode("utf-8")) > 1024
             or row["content_sha256"] != hashlib.sha256(row["content_json"].encode("utf-8")).hexdigest()):
+        _fail()
+    if ("allowed_sources" in task
+            and task["allowed_sources"] != ["comments", "confluence", "jira", "people"]):
         _fail()
     return task, row
 

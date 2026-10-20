@@ -184,9 +184,58 @@ def test_original_secret_rejection_stays_enforced():
         _pack(_state(request="password=synthetic123456"))
 
 
-def test_real_guard_budget_pressure_cannot_sacrifice_existing_sources():
+def test_real_guard_budget_pressure_cannot_sacrifice_existing_sources(monkeypatch):
+    from dataclasses import replace
+    from app.agent.maxis import context_guard
+    original = context_guard.ContextPolicy
+    # Exercise the no-loss invariant with a deliberately constrained deployment.
+    monkeypatch.setattr(context_guard, "ContextPolicy", lambda **kw: replace(
+        original(**kw), max_total_utf8_bytes=6000))
     with pytest.raises(backend.MaxisRuntimeError, match="query_business_input_no_loss"):
         _pack(_state(count=3, description="x" * 1400))
+
+
+def test_query_receives_pinned_internal_capabilities_not_user_requested_sources():
+    from app.agent.runtime_status import CORE_ROLES
+    state = _state(request="Iceberg 공식 문서와 내부 근거를 찾아줘")
+    state["runtime_role_routes"] = dict.fromkeys(CORE_ROLES, "maxis")
+    pack = _pack(state)
+    row = next(row for row in pack.role_context if row.name == NAME)
+    assert json.loads(row.content_json) == {
+        "text": state["request_text"],
+        "allowed_sources": ["comments", "confluence", "jira", "people"],
+    }
+    assert not row.partial and not pack.partial
+
+
+@pytest.mark.parametrize("identity", ["jira", "confluence", "comments", "people", "fixture-user"])
+def test_protocol_capabilities_preserve_enums_but_never_unredacted_identity(monkeypatch, identity):
+    from app.agent.runtime_status import CORE_ROLES
+    monkeypatch.setattr(backend, "_known_identity_values", lambda *_a: (identity,))
+    state = _state(request=f"{identity} 검토 https://private.invalid/path")
+    state["runtime_role_routes"] = dict.fromkeys(CORE_ROLES, "maxis")
+    pack = _pack(state)
+    row = next(row for row in pack.role_context if row.name == NAME)
+    value = json.loads(row.content_json)
+    assert value["allowed_sources"] == ["comments", "confluence", "jira", "people"]
+    assert identity not in value["text"] and "[[person:" in value["text"]
+    assert "https://" not in value["text"] and "[url omitted]" in value["text"]
+    assert row.content_sha256 == hashlib.sha256(row.content_json.encode()).hexdigest()
+
+
+def test_capability_metadata_cannot_exceed_total_guard_budget(monkeypatch):
+    from dataclasses import replace
+    from app.agent.maxis import context_guard
+    from app.agent.runtime_status import CORE_ROLES
+    state = _state()
+    state["runtime_role_routes"] = dict.fromkeys(CORE_ROLES, "maxis")
+    admitted = _pack(state)
+    limit = len(context_guard.canonical_evidence_pack_json(admitted).encode()) - 1
+    original = context_guard.ContextPolicy
+    monkeypatch.setattr(context_guard, "ContextPolicy", lambda **kw: replace(
+        original(**kw), max_total_utf8_bytes=limit))
+    with pytest.raises(backend.MaxisRuntimeError, match="query_business_input_no_loss"):
+        _pack(state)
 
 
 def test_fresh_task_cannot_change_stale_baseline_to_mixed():
