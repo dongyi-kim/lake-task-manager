@@ -258,11 +258,15 @@ def _provider_store_sha256(client: Any) -> tuple[str, int]:
     return hashlib.sha256(body.encode("utf-8")).hexdigest(), len(store.issues)
 
 
-def begin_case(case_id: str) -> dict[str, Any]:
+def begin_case(case_id: str, *, maxis_profile: str = "") -> dict[str, Any]:
     """Reset cache, mock world, approvals, identity, and graph state for one case."""
     # This call is intentionally before all graph imports/resets. A connection, authentication,
     # or timeout failure aborts the whole manual run instead of being misreported as N bad cases.
-    provider_preflight = preflight_evaluation_provider()
+    if maxis_profile:
+        from tools.agent_maxis_eval import verify_handoff
+        provider_preflight = verify_handoff(maxis_profile)
+    else:
+        provider_preflight = preflight_evaluation_provider()
     from app.agent import approval
     from app.agent.tools import _ctx
     from app.agent.workflow import graph, session
