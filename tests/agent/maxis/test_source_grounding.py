@@ -15,7 +15,7 @@ from app.agent.tools import _ctx
 from app.infra.cache import Cache
 from app.infra.settings import get_settings
 from app.jira.jira_client import JiraClient
-from app.agent.editor_author import _ticket_context
+from app.agent.editor_author import _ticket_context, _editor_evidence_rows
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -48,17 +48,16 @@ def capture():
     _ctx.bind(client, settings)
     try:
         marker = backend.begin_local_acquisition()
-        result = {}
-        context = _ticket_context("DL-9044", "comment", result)
-        provenance = backend.finish_local_acquisition(marker)
-        proof = backend.attest_query_result("editor-ticket", "jira", result,
-            scopes=("DL",), retrieved_at=provenance["retrieved_at"],
-            partial=True if provenance["partial"] else None, provenance=provenance)
+        result, acquired = {}, {}
+        try:
+            context = _ticket_context("DL-9044", "comment", result, acquired)
+        finally:
+            provenance = backend.finish_local_acquisition(marker)
         state = {"request_text": "현재 맥락을 확인", "correlation_id": "editor-grounding-capture",
                  "correlation_started_at": datetime.now(timezone.utc).isoformat(),
                  "knowledge_manifest_sha256": "a" * 64,
-                 "_maxis_evidence_rows": [{"id": "editor-ticket", "source": "jira",
-                     "result": result, "_remoteEvidence": proof}]}
+                 "_maxis_evidence_rows": _editor_evidence_rows(
+                     "DL-9044", "comment", result, acquired, provenance)}
         pack = backend._context_pack("editor_author", state, [], backend._TEXT_PAYLOAD_SCHEMA)
         source = next(row for row in pack.sources if row.kind == "jira")
         record = {"path": "actual _ticket_context; same compose attestation assembly; actual _context_pack",

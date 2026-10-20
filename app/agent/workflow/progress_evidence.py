@@ -4,6 +4,33 @@ from copy import deepcopy
 from app.agent.maxis.backend import attest_query_result
 
 
+def _child_counts(children, branch):
+    """Count only the returned, identity/status-checked rows, never SP progress."""
+    reads = [read for read in branch.reads if read.operation == "ticket_children"]
+    if len(reads) != 1 or not isinstance(children, list):
+        return None
+    read = reads[0]
+    if (not isinstance(read.metadata, list) or len(children) != len(read.metadata)
+            or read.returned_count != len(children)):
+        return None
+    seen, done = set(), 0
+    for child, original in zip(children, read.metadata):
+        if not isinstance(child, dict) or not isinstance(original, dict):
+            return None
+        key = original.get("key")
+        category = original.get("statusCat") or original.get("statusCategory")
+        if (not isinstance(key, str) or not key or key in seen or child.get("key") != key
+                or category not in {"new", "indeterminate", "done"}
+                or type(child.get("done")) is not bool
+                or child["done"] != (category == "done")):
+            return None
+        seen.add(key)
+        done += int(child["done"])
+    return {"returned": f"{len(children)}개", "done": f"{done}개",
+            "not_done": f"{len(children) - done}개",
+            "basis": "조회 반환 하위 티켓 개수; SP 기반 진척률이나 전체 프로젝트 규모가 아님"}
+
+
 def progress_evidence(key, report, acquisition, provenance):
     """Keep Jira and Confluence authority separate; missing proof stays partial."""
     branches = acquisition.branches
@@ -53,9 +80,17 @@ def progress_evidence(key, report, acquisition, provenance):
                 jira.pop(name, None)
                 if name == "children":
                     jira.pop("children_done", None)
+        if (complete(("children",)) and provenance.get("tracked") is True
+                and not provenance.get("partial", True)
+                and not provenance.get("served_stale", True)
+                and isinstance(provenance.get("read_count"), int)
+                and provenance["read_count"] > 0):
+            counts = _child_counts(jira.get("children", []), branches["children"])
+            if counts is not None:
+                jira["children_counts"] = counts
     jira["complete"] = complete(("target", "changes", "comments", "children", "links"))
-    # The source is an explicit bounded excerpt, not a claim that all history was read.
-    jira["projection"] = "progress-report: latest 8 changes, requested comments, first 8 links"
+    # Projection limits live in acquisition metadata, never in business evidence:
+    # a writer must not turn "first 8 links" into a ticket's requirement or DoD.
 
     from app.agent.retrieval.harvest import _conf_id
     page_reads = {}

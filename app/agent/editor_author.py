@@ -66,7 +66,8 @@ def _remaining_items(value: str) -> list[str]:
     return out
 
 
-def _ticket_context(key: str, kind: str, evidence: dict | None = None) -> str:
+def _ticket_context(key: str, kind: str, evidence: dict | None = None,
+                    acquired: dict | None = None) -> str:
     """이 에디터가 붙어 있는 티켓의 맥락. 코멘트인지 본문인지에 따라 필요한 게 다르다."""
     key = (key or "").strip().upper()
     if not key or key.startswith("__"):        # 새 티켓 작성 중 — 아직 맥락이 없다
@@ -79,6 +80,8 @@ def _ticket_context(key: str, kind: str, evidence: dict | None = None) -> str:
         r = progress_report(key, comment_limit=6, acquisition=acquisition)
         if r.get("error"):
             return ""
+        if acquired is not None:
+            acquired.update(report=r, acquisition=acquisition)
         if evidence is not None:
             # Identity comes from the verified read, never the requested key or
             # a regex over the flattened presentation text. Keep related record
@@ -192,6 +195,33 @@ def _ticket_context(key: str, kind: str, evidence: dict | None = None) -> str:
         if evidence is not None:
             evidence["complete"] = False
     return "\n\n".join(parts)[:MAX_CONTEXT]
+
+
+def _editor_evidence_rows(key, kind, ticket, acquired, provenance):
+    """Reuse verified progress reads; a wiki document is never Jira-owned content."""
+    from copy import deepcopy
+    from app.agent.maxis.backend import attest_query_result
+    from app.agent.workflow.progress_evidence import progress_evidence
+
+    patch = progress_evidence(key, acquired["report"], acquired["acquisition"], provenance)
+    rows = []
+    for row in patch["query_results"]:
+        result = deepcopy(row["result"])
+        proof = patch["query_evidence_attestations"][row["source"] + ":" + row["id"]]
+        if row["source"] == "jira":
+            # The description and direct-parent view were read after the progress
+            # collector, within the same bounded acquisition window.
+            for field in ("description", "parentKey", "parent"):
+                if field in ticket and ticket.get("complete") is True:
+                    result[field] = deepcopy(ticket[field])
+            if kind == "description":
+                result["comments"] = []
+            result["complete"] = result["complete"] and ticket.get("complete") is True
+            proof = attest_query_result(row["id"], "jira", result,
+                retrieved_at=provenance.get("retrieved_at"), provenance=provenance,
+                partial=not result["complete"] or provenance.get("partial", True))
+        rows.append({**row, "result": result, "_remoteEvidence": proof})
+    return rows
 
 
 def _generic_status_share(prompt: str) -> bool:
@@ -380,12 +410,15 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
         if runtime_resolution.route in {"shadow", "maxis"} else None
     )
     ticket_evidence: dict = {}
-    ctx = (_ticket_context(ticket_key, kind, ticket_evidence)
-           if runtime_resolution.route == "maxis" else _ticket_context(ticket_key, kind))
-    context_provenance = (
-        maxis_backend.finish_local_acquisition(context_marker)
-        if runtime_resolution.route in {"shadow", "maxis"} else None
-    )
+    acquired: dict = {}
+    try:
+        ctx = (_ticket_context(ticket_key, kind, ticket_evidence, acquired)
+               if runtime_resolution.route == "maxis" else _ticket_context(ticket_key, kind))
+    finally:
+        context_provenance = (
+            maxis_backend.finish_local_acquisition(context_marker)
+            if runtime_resolution.route in {"shadow", "maxis"} else None
+        )
     # A generic status-sharing comment is a projection of progress_report, not a writing
     # task.  Free-form generation repeatedly converted explicit remaining work to completed
     # work and then had to be rejected.  Deterministic rendering is faster and preserves
@@ -420,17 +453,22 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
         if runtime_resolution.route == "maxis" and not result.get("key"):
             return {"ok": False, "error": "티켓 조회 결과의 식별 정보를 확인하지 못했습니다. 다시 조회해 주세요.",
                     "usage": {}}
-        proof = maxis_backend.attest_query_result(
-            "editor-ticket", "jira", result,
-            scopes=((project_match.group(1).upper(),) if project_match else ()),
-            retrieved_at=(context_provenance or {}).get("retrieved_at"),
-            partial=True if (context_provenance or {}).get("partial") else None,
-            provenance=context_provenance,
-        )
-        remote_rows.append({
-            "id": "editor-ticket", "source": "jira", "result": result,
-            "_remoteEvidence": proof,
-        })
+        if runtime_resolution.route == "maxis":
+            remote_rows.extend(_editor_evidence_rows(
+                str(ticket_key).strip().upper(), kind, ticket_evidence,
+                acquired, context_provenance or {}))
+        else:
+            proof = maxis_backend.attest_query_result(
+                "editor-ticket", "jira", result,
+                scopes=((project_match.group(1).upper(),) if project_match else ()),
+                retrieved_at=(context_provenance or {}).get("retrieved_at"),
+                partial=True if (context_provenance or {}).get("partial") else None,
+                provenance=context_provenance,
+            )
+            remote_rows.append({
+                "id": "editor-ticket", "source": "jira", "result": result,
+                "_remoteEvidence": proof,
+            })
     if rules:
         result = {"authoringRules": rules}
         remote_rows.append({

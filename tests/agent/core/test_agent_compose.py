@@ -76,6 +76,55 @@ def test_maxis_ticket_material_preserves_record_ownership():
     assert document_rows and all(row[3] == "" for row in document_rows)
 
 
+@pytest.mark.parametrize("kind", ["comment", "description"])
+def test_maxis_editor_attests_wiki_separately_without_borrowing_jira_scope(kind):
+    import json
+    from app.agent.maxis import backend
+    material, acquired = {}, {}
+    marker = backend.begin_local_acquisition()
+    try:
+        C._ticket_context(PROG, kind, material, acquired)
+    finally:
+        provenance = backend.finish_local_acquisition(marker)
+    rows = C._editor_evidence_rows(PROG, kind, material, acquired, provenance)
+    sources = backend._verified_evidence_sources({"_maxis_evidence_rows": rows})
+    by_kind = {source["kind"]: source for source in sources}
+    assert set(by_kind) == {"jira", "confluence"}
+    assert by_kind["jira"]["scope"] == by_kind["confluence"]["scope"] == "DL"
+    jira = json.loads(by_kind["jira"]["content"])
+    wiki = json.loads(by_kind["confluence"]["content"])
+    assert "documents" not in jira
+    assert wiki["documents"][0]["id"] and wiki["documents"][0]["space"] == "DL"
+    assert "3홉 이상" not in by_kind["jira"]["content"]
+    assert "3홉 이상" in by_kind["confluence"]["content"]
+    assert all(not source["partial"] for source in sources)
+    assert bool(jira["comments"]) is (kind == "comment")
+    if kind == "description":
+        assert next(row for row in rows if row["source"] == "jira")["result"]["description"] == material["description"]
+        assert jira["description"] == backend._outbound_content_projection(material["description"])
+
+
+@pytest.mark.parametrize("fault", ["identity", "space"])
+def test_maxis_editor_rejects_unverified_document_material(fault, monkeypatch):
+    from app.agent.maxis import backend
+    from app.agent.tools import _ctx
+    original = _ctx.client().confluence_page
+    def bad_page(*args, **kwargs):
+        page = original(*args, **kwargs)
+        return {**page, **({"id": "unrelated"} if fault == "identity" else {"space": {}})}
+    monkeypatch.setattr(_ctx.client(), "confluence_page", bad_page)
+    material, acquired = {}, {}
+    marker = backend.begin_local_acquisition()
+    try:
+        C._ticket_context(PROG, "comment", material, acquired)
+    finally:
+        provenance = backend.finish_local_acquisition(marker)
+    rows = C._editor_evidence_rows(PROG, "comment", material, acquired, provenance)
+    sources = backend._verified_evidence_sources({"_maxis_evidence_rows": rows})
+    assert all(source["kind"] == "jira" and source["partial"] for source in sources)
+    assert all("3홉 이상" not in source["content"] for source in sources)
+
+
 def test_maxis_ticket_material_retains_failed_branch_as_incomplete(monkeypatch):
     from app.agent.tools import _ctx
     def unavailable(*_args, **_kwargs):

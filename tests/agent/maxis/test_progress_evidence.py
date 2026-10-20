@@ -44,8 +44,59 @@ def test_actual_progress_projection_separates_scopes_and_preserves_digest():
     assert "문서 전용 내용" not in by_kind["jira"]["content"]
     assert "문서 전용 내용" in by_kind["confluence"]["content"]
     assert all(not row["partial"] for row in sources)
+    assert "progress-report" not in by_kind["jira"]["content"]
     assert all(row["retrieved_at"] == receipt["retrieved_at"].isoformat().replace("+00:00", "Z")
                for row in sources)
+
+
+@pytest.mark.parametrize("categories", [[], ["done", "done", "indeterminate"]])
+def test_child_counts_are_computed_from_verified_returned_rows(categories):
+    report, acquisition, receipt = sample()
+    rows = [{"key": f"DL-{index + 50}", "statusCat": status}
+            for index, status in enumerate(categories)]
+    report["children"] = [{"key": row["key"], "done": row["statusCat"] == "done"}
+                          for row in rows]
+    acquisition.branches["children"].reads = [
+        ReadObservation("ticket_children", ("DL-42",), "returned", rows,
+                        returned_count=len(rows))]
+    original = deepcopy(report)
+    patch = progress_evidence("DL-42", report, acquisition, receipt)
+    result = next(row["result"] for row in patch["query_results"] if row["source"] == "jira")
+    assert result["children_counts"] == {
+        "returned": f"{len(rows)}개", "done": f"{categories.count('done')}개",
+        "not_done": f"{len(rows) - categories.count('done')}개",
+        "basis": "조회 반환 하위 티켓 개수; SP 기반 진척률이나 전체 프로젝트 규모가 아님"}
+    assert report == original
+
+
+@pytest.mark.parametrize("fault", ["failed", "key", "done", "count", "status", "duplicate",
+                                  "stale", "partial", "untracked", "zero_reads"])
+def test_unverified_children_do_not_create_derived_counts(fault):
+    report, acquisition, receipt = sample()
+    report["children"] = [{"key": "DL-50", "done": True}]
+    branch = acquisition.branches["children"]
+    branch.reads = [ReadObservation("ticket_children", ("DL-42",), "returned",
+                                   [{"key": "DL-50", "statusCat": "done"}], returned_count=1)]
+    if fault == "failed":
+        branch.state = "failed"
+    elif fault == "key":
+        report["children"][0]["key"] = "DL-51"
+    elif fault == "done":
+        report["children"][0]["done"] = 1
+    elif fault == "count":
+        branch.reads[0].returned_count = 2
+    elif fault == "status":
+        branch.reads[0].metadata[0].pop("statusCat")
+    elif fault == "duplicate":
+        report["children"] *= 2
+        branch.reads[0].metadata *= 2
+        branch.reads[0].returned_count = 2
+    else:
+        receipt.update({"stale": {"served_stale": True}, "partial": {"partial": True},
+                        "untracked": {"tracked": False}, "zero_reads": {"read_count": 0}}[fault])
+    patch = progress_evidence("DL-42", report, acquisition, receipt)
+    result = next(row["result"] for row in patch["query_results"] if row["source"] == "jira")
+    assert "children_counts" not in result
 
 
 @pytest.mark.parametrize("fault", ["target", "failure", "skipped", "stale", "untracked",
