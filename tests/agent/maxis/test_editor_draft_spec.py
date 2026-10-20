@@ -183,7 +183,8 @@ def test_invalid_selection_is_content_free_and_never_reaches_writer(sample, muta
     elif mutation == "selected_conflict": spec["conflicts"] = [{"unit_ids": ["u_target", "u_current"], "blocking": False}]
     elif mutation == "nonbool": spec["conflicts"] = [{"unit_ids": ["u_history", "u_current"], "blocking": 0}]
     else: spec["missing_inputs"] = ["이미 알고 있는 값을 다시 입력해 주세요."]
-    with pytest.raises(ValueError, match="^invalid_editor_draft_spec$"):
+    reason = "invalid_editor_selection_id" if mutation in {"unknown", "intent_link"} else "invalid_editor_draft_spec"
+    with pytest.raises(ValueError, match="^" + reason + "$"):
         ASSET["prepare_spec"](encoded(view), encoded(spec), "{}")
     assert enforce(sample) == {"contract": "editor-plan.v2", "status": "blocked", "sections": [], "missing_inputs": []}
 
@@ -195,6 +196,24 @@ def test_conflict_boolean_strings_are_not_coerced(sample, blocking):
     with pytest.raises(ValueError, match="^invalid_editor_draft_spec$"):
         ASSET["prepare_spec"](encoded(view), encoded(spec), "{}")
     assert enforce(sample)["status"] == "blocked"
+
+
+@pytest.mark.parametrize("fault", ["ownership", "conflict", "mode", "duplicate", "unavailable_link"])
+def test_unknown_selection_does_not_mask_a_nonregeneratable_fault(sample, fault):
+    view, spec, _ = sample
+    spec["history_unit_ids"].append("unknown-unit")
+    if fault == "ownership":
+        spec["current_unit_ids"].append("u_sibling")
+    elif fault == "conflict":
+        spec["conflicts"] = [{"unit_ids": ["u_target", "u_history"], "blocking": False}]
+    elif fault == "mode":
+        spec["mode"] = "comment"
+    elif fault == "duplicate":
+        spec["history_unit_ids"].append("unknown-unit")
+    else:
+        spec["required_link_source_ids"] = ["other"]
+    with pytest.raises(ValueError, match="^invalid_editor_draft_spec$"):
+        ASSET["prepare_spec"](encoded(view), encoded(spec), "{}")
 
 
 @pytest.mark.parametrize("unit_id", ["u_parent", "u_history", "u_sibling", "u_other", "u_current"])
@@ -350,7 +369,7 @@ def test_selected_plan_and_seed_remain_bound_to_original_pack_through_both_guard
     pack["sources"][0]["content"] = "새로운 근거다."
     pack["sources"][0]["content_sha256"] = hashlib.sha256("새로운 근거다.".encode()).hexdigest()
     changed_view = ASSET["prepare"](encoded(helper.incoming(pack)))["model_input"]
-    with pytest.raises(ValueError, match="^invalid_editor_draft_spec$"):
+    with pytest.raises(ValueError, match="^invalid_editor_selection_id$"):
         ASSET["prepare_spec"](changed_view, encoded(selection), encoded(pack))
     with pytest.raises(ValueError, match="^invalid_editor_draft_spec$"):
         ASSET["prepare_spec"](view, encoded(selection), encoded(pack))

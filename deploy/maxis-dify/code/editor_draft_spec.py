@@ -9,12 +9,17 @@ _SPEC_BUCKETS = ("current_unit_ids", "context_unit_ids", "history_unit_ids")
 _SPEC_FIELDS = {"contract", "status", "mode", "target", *_SPEC_BUCKETS,
                 "conflicts", "required_link_source_ids", "missing_inputs"}
 
+class _UnknownSelectionId(ValueError):
+    """Rejected model selection, never a guessed/fuzzy-matched identifier."""
 
-def _spec_ids(value, allowed, maximum=32, minimum=0):
+
+def _spec_ids(value, allowed, maximum=32, minimum=0, *, defer_unknown=False):
     if (not isinstance(value, list) or not minimum <= len(value) <= maximum
-            or any(not isinstance(item, str) or item not in allowed for item in value)
+            or any(not isinstance(item, str) for item in value)
             or len(set(value)) != len(value)):
         _fail()
+    if not defer_unknown and any(item not in allowed for item in value):
+        raise _UnknownSelectionId()
     return set(value)
 
 
@@ -33,7 +38,7 @@ def _validated_spec(model_input, draft_spec):
         _fail()
     sources = {source["source_id"]: source for source in view["sources"]}
     units = {unit["unit_id"]: (unit, source) for source in sources.values() for unit in source["units"]}
-    buckets = {name: _spec_ids(spec[name], units) for name in _SPEC_BUCKETS}
+    buckets = {name: _spec_ids(spec[name], units, defer_unknown=True) for name in _SPEC_BUCKETS}
     selected = set()
     for bucket in buckets.values():
         if selected & bucket:
@@ -42,10 +47,14 @@ def _validated_spec(model_input, draft_spec):
     parents = {entity["key"] for entity in view["entities"] if entity["relation"] == "parent"
                and entity["parent_conflict"] is False}
     for unit_id in buckets["context_unit_ids"]:
+        if unit_id not in units:
+            continue
         unit, source = units[unit_id]
         if source["kind"] == "jira" and unit["entity_key"] not in parents:
             _fail()
     for unit_id in buckets["current_unit_ids"]:
+        if unit_id not in units:
+            continue
         unit, source = units[unit_id]
         if source["kind"] == "jira" and unit["entity_key"] != spec["target"]:
             _fail()  # Current facts/constraints cannot promote parent/sibling ownership.
@@ -57,12 +66,12 @@ def _validated_spec(model_input, draft_spec):
         if (not isinstance(conflict, dict) or set(conflict) != {"unit_ids", "blocking"}
                 or type(conflict["blocking"]) is not bool):
             _fail()
-        conflicted |= _spec_ids(conflict["unit_ids"], units, 8, 2)
+        conflicted |= _spec_ids(conflict["unit_ids"], units, 8, 2, defer_unknown=True)
     writable = buckets["current_unit_ids"] | buckets["context_unit_ids"]
     if writable & conflicted or len(selected | conflicted) > 32:
         _fail()
-    links = _spec_ids(spec["required_link_source_ids"], sources, 8)
-    if any(sources[key]["available_link"] is not True for key in links):
+    links = _spec_ids(spec["required_link_source_ids"], sources, 8, defer_unknown=True)
+    if any(sources[key]["available_link"] is not True for key in links if key in sources):
         _fail()
     missing = spec["missing_inputs"]
     if not isinstance(missing, list) or len(missing) > 8:
@@ -74,6 +83,10 @@ def _validated_spec(model_input, draft_spec):
             or spec["status"] == "needs_input" and not missing
             or spec["status"] == "blocked" and missing):
         _fail()
+    # Known ownership/shape/conflict failures veto regeneration even when an
+    # unrelated unknown ID is also present. No filtered selection is returned.
+    if (selected | conflicted) - units.keys() or links - sources.keys():
+        raise _UnknownSelectionId()
     return view, spec, sources, units, buckets
 
 
@@ -122,8 +135,10 @@ def _spec_link_dependencies(view, context_pack):
 def prepare_spec(model_input, draft_spec, context_pack):
     """Validate selection and narrow writer input; a non-ok selection skips it."""
     try:
+        # Verify the original projection/freshness before classifying a model's
+        # unknown selection as regeneratable. Input faults must never retry.
+        _spec_link_dependencies(_object(model_input), context_pack)
         view, spec, sources, units, buckets = _validated_spec(model_input, draft_spec)
-        _spec_link_dependencies(view, context_pack)
         if spec["status"] != "ok":
             return {"model_input": "{}", "route": "stop", "candidate": _canonical(_spec_terminal(spec))}
         permissions = {section: _spec_section_units(buckets, section)
@@ -146,6 +161,8 @@ def prepare_spec(model_input, draft_spec, context_pack):
         if len(encoded.encode("utf-8")) > 40000:
             _fail()
         return {"model_input": encoded, "route": spec["mode"], "candidate": ""}
+    except _UnknownSelectionId:
+        raise ValueError("invalid_editor_selection_id") from None
     except Exception:
         raise ValueError("invalid_editor_draft_spec") from None
 

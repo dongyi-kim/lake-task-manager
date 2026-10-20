@@ -43,12 +43,14 @@ class MaxisGatewayError(RuntimeError):
         status_code: int | None = None,
         retryable: bool = False,
         draft_regeneration_allowed: bool = False,
+        draft_regeneration_role: str = "",
         telemetry: RemoteRequestTelemetryV1 | None = None,
     ):
         self.code = code
         self.status_code = status_code
         self.retryable = retryable
         self.draft_regeneration_allowed = draft_regeneration_allowed
+        self.draft_regeneration_role = draft_regeneration_role
         self.telemetry = telemetry
         suffix = f" (HTTP {status_code})" if status_code is not None else ""
         super().__init__(f"MAXIS gateway error: {code.value}{suffix}")
@@ -108,7 +110,7 @@ _DIFY_ERROR_MARKERS = (
         "invalid_core_query_input", "invalid_core_request_input",
         "invalid_core_work_input", "invalid_core_result_input",
         "invalid_core_knowledge_input", "invalid_editor_draft_spec",
-        "invalid_editor_input", "invalid_editor_plan",
+        "invalid_editor_input", "invalid_editor_plan", "invalid_editor_selection_id",
     )),
 )
 _REGENERATABLE_DRAFT_MARKERS = frozenset({
@@ -146,7 +148,13 @@ def classify_dify_error(status_code: int, payload: object) -> MaxisGatewayError:
         if matched:
             return MaxisGatewayError(
                 code, status_code=status_code,
-                draft_regeneration_allowed=bool(set(matched) <= _REGENERATABLE_DRAFT_MARKERS),
+                draft_regeneration_allowed=(
+                    bool(set(matched) <= _REGENERATABLE_DRAFT_MARKERS)
+                    or set(matched) == {"invalid_editor_selection_id"}
+                ),
+                draft_regeneration_role=(
+                    "editor_author" if set(matched) == {"invalid_editor_selection_id"} else ""
+                ),
             )
     return fallback
 

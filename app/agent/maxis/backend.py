@@ -2526,9 +2526,11 @@ def invoke_role(
             cause = exc.__cause__
             regenerate = (
                 attempt == 0 and resolution.route == "maxis" and output_kind == "structured"
-                and role_id in {"query_specialist", "request_architect", "work_architect",
-                                "knowledge_curator", "result_integrator"}
                 and isinstance(cause, MaxisGatewayError)
+                and ((cause.draft_regeneration_role == "editor_author" and role_id == "editor_author")
+                     or (not cause.draft_regeneration_role and role_id in {
+                         "query_specialist", "request_architect", "work_architect",
+                         "knowledge_curator", "result_integrator"}))
                 and cause.code == MaxisErrorCode.WORKFLOW_CONTRACT and cause.draft_regeneration_allowed
                 and cause.status_code in {400, 422} and observation is not None
             )

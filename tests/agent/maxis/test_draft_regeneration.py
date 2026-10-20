@@ -67,6 +67,23 @@ def test_second_rejection_is_not_hidden_or_retried(runtime):
     assert role_usage_observation(error.value.metadata)["failedCalls"] == 2
 
 
+def test_editor_unknown_selection_regenerates_once_without_repair(runtime):
+    calls = runtime([failure("invalid_editor_selection_id"), success()])
+    output = ask("editor_author")
+    assert len(calls) == 2 and calls[0] == calls[1]
+    assert role_usage_observation(output.metadata)["failedCalls"] == 1
+
+
+def test_editor_selection_marker_cannot_retry_other_roles_or_bad_inputs(runtime):
+    calls = runtime([failure("invalid_editor_selection_id")])
+    with pytest.raises(backend.MaxisRuntimeError):
+        ask()
+    assert len(calls) == 1
+    error = classify_dify_error(400, {"message": "invalid_editor_selection_id",
+                                    "error": {"message": "invalid_editor_input"}})
+    assert not error.draft_regeneration_allowed
+
+
 @pytest.mark.parametrize("marker", [
     "invalid_core_work_input", "invalid_editor_draft_spec", "invalid_editor_plan",
     "invalid_core_work_draft invalid_core_work_input", "not_invalid_core_work_draft_suffix",
