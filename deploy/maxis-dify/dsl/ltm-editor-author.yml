@@ -4073,38 +4073,41 @@ workflow:
           _SPEC_FIELDS = {\"contract\", \"status\", \"mode\", \"target\", *_SPEC_BUCKETS,\n\
           \                \"conflicts\", \"required_link_source_ids\", \"missing_inputs\"\
           }\n\nclass _UnknownSelectionId(ValueError):\n    \"\"\"Rejected model selection,\
-          \ never a guessed/fuzzy-matched identifier.\"\"\"\n\n\ndef _spec_ids(value,\
-          \ allowed, maximum=32, minimum=0, *, defer_unknown=False):\n    if (not\
-          \ isinstance(value, list) or not minimum <= len(value) <= maximum\n    \
-          \        or any(not isinstance(item, str) for item in value)\n         \
-          \   or len(set(value)) != len(value)):\n        _fail()\n    if not defer_unknown\
-          \ and any(item not in allowed for item in value):\n        raise _UnknownSelectionId()\n\
-          \    return set(value)\n\n\ndef _validated_spec(model_input, draft_spec):\n\
-          \    if not isinstance(model_input, str) or len(model_input.encode(\"utf-8\"\
-          )) > 40000:\n        _fail()\n    view, spec = _object(model_input), _object(draft_spec)\n\
-          \    if (set(view) != {\"contract\", \"role_id\", \"request\", \"entities\"\
-          , \"knowledge_context\", \"sources\"}\n            or view[\"contract\"\
-          ] != \"editor-input.v2\" or view[\"role_id\"] != \"editor_author\"\n   \
-          \         or set(spec) != _SPEC_FIELDS or spec[\"contract\"] != \"editor-draft-spec.v2\"\
-          ):\n        _fail()\n    request = view[\"request\"]\n    if (spec[\"mode\"\
-          ] not in {\"description\", \"comment\"} or spec[\"mode\"] != request[\"\
-          kind\"]\n            or not isinstance(spec[\"target\"], str) or len(spec[\"\
-          target\"]) > 128\n            or spec[\"target\"] != request[\"target\"\
-          ] or spec[\"status\"] not in {\"ok\", \"needs_input\", \"blocked\"}):\n\
-          \        _fail()\n    sources = {source[\"source_id\"]: source for source\
-          \ in view[\"sources\"]}\n    units = {unit[\"unit_id\"]: (unit, source)\
-          \ for source in sources.values() for unit in source[\"units\"]}\n    buckets\
-          \ = {name: _spec_ids(spec[name], units, defer_unknown=True) for name in\
-          \ _SPEC_BUCKETS}\n    selected = set()\n    for bucket in buckets.values():\n\
-          \        if selected & bucket:\n            _fail()\n        selected |=\
-          \ bucket\n    parents = {entity[\"key\"] for entity in view[\"entities\"\
-          ] if entity[\"relation\"] == \"parent\"\n               and entity[\"parent_conflict\"\
-          ] is False}\n    for unit_id in buckets[\"context_unit_ids\"]:\n       \
-          \ if unit_id not in units:\n            continue\n        unit, source =\
-          \ units[unit_id]\n        if source[\"kind\"] == \"jira\" and unit[\"entity_key\"\
-          ] not in parents:\n            _fail()\n    for unit_id in buckets[\"current_unit_ids\"\
-          ]:\n        if unit_id not in units:\n            continue\n        unit,\
-          \ source = units[unit_id]\n        if source[\"kind\"] == \"jira\" and unit[\"\
+          \ never a guessed/fuzzy-matched identifier.\"\"\"\n\nclass _SelectionLimit(ValueError):\n\
+          \    \"\"\"Valid ownership/shape but too many selections; request a fresh\
+          \ draft.\"\"\"\n\n\ndef _spec_ids(value, allowed, maximum=32, minimum=0,\
+          \ *, defer_unknown=False, defer_limit=False):\n    if (not isinstance(value,\
+          \ list) or not minimum <= len(value) <= (128 if defer_limit else maximum)\n\
+          \            or any(not isinstance(item, str) for item in value)\n     \
+          \       or len(set(value)) != len(value)):\n        _fail()\n    if not\
+          \ defer_unknown and any(item not in allowed for item in value):\n      \
+          \  raise _UnknownSelectionId()\n    return set(value)\n\n\ndef _validated_spec(model_input,\
+          \ draft_spec):\n    if not isinstance(model_input, str) or len(model_input.encode(\"\
+          utf-8\")) > 40000:\n        _fail()\n    view, spec = _object(model_input),\
+          \ _object(draft_spec)\n    if (set(view) != {\"contract\", \"role_id\",\
+          \ \"request\", \"entities\", \"knowledge_context\", \"sources\"}\n     \
+          \       or view[\"contract\"] != \"editor-input.v2\" or view[\"role_id\"\
+          ] != \"editor_author\"\n            or set(spec) != _SPEC_FIELDS or spec[\"\
+          contract\"] != \"editor-draft-spec.v2\"):\n        _fail()\n    request\
+          \ = view[\"request\"]\n    if (spec[\"mode\"] not in {\"description\", \"\
+          comment\"} or spec[\"mode\"] != request[\"kind\"]\n            or not isinstance(spec[\"\
+          target\"], str) or len(spec[\"target\"]) > 128\n            or spec[\"target\"\
+          ] != request[\"target\"] or spec[\"status\"] not in {\"ok\", \"needs_input\"\
+          , \"blocked\"}):\n        _fail()\n    sources = {source[\"source_id\"]:\
+          \ source for source in view[\"sources\"]}\n    units = {unit[\"unit_id\"\
+          ]: (unit, source) for source in sources.values() for unit in source[\"units\"\
+          ]}\n    buckets = {name: _spec_ids(spec[name], units, defer_unknown=True,\
+          \ defer_limit=True)\n               for name in _SPEC_BUCKETS}\n    selected\
+          \ = set()\n    for bucket in buckets.values():\n        if selected & bucket:\n\
+          \            _fail()\n        selected |= bucket\n    parents = {entity[\"\
+          key\"] for entity in view[\"entities\"] if entity[\"relation\"] == \"parent\"\
+          \n               and entity[\"parent_conflict\"] is False}\n    for unit_id\
+          \ in buckets[\"context_unit_ids\"]:\n        if unit_id not in units:\n\
+          \            continue\n        unit, source = units[unit_id]\n        if\
+          \ source[\"kind\"] == \"jira\" and unit[\"entity_key\"] not in parents:\n\
+          \            _fail()\n    for unit_id in buckets[\"current_unit_ids\"]:\n\
+          \        if unit_id not in units:\n            continue\n        unit, source\
+          \ = units[unit_id]\n        if source[\"kind\"] == \"jira\" and unit[\"\
           entity_key\"] != spec[\"target\"]:\n            _fail()  # Current facts/constraints\
           \ cannot promote parent/sibling ownership.\n    conflicts = spec[\"conflicts\"\
           ]\n    if not isinstance(conflicts, list) or len(conflicts) > 8:\n     \
@@ -4113,12 +4116,12 @@ workflow:
           , \"blocking\"}\n                or type(conflict[\"blocking\"]) is not\
           \ bool):\n            _fail()\n        conflicted |= _spec_ids(conflict[\"\
           unit_ids\"], units, 8, 2, defer_unknown=True)\n    writable = buckets[\"\
-          current_unit_ids\"] | buckets[\"context_unit_ids\"]\n    if writable & conflicted\
-          \ or len(selected | conflicted) > 32:\n        _fail()\n    links = _spec_ids(spec[\"\
-          required_link_source_ids\"], sources, 8, defer_unknown=True)\n    if any(sources[key][\"\
-          available_link\"] is not True for key in links if key in sources):\n   \
-          \     _fail()\n    missing = spec[\"missing_inputs\"]\n    if not isinstance(missing,\
-          \ list) or len(missing) > 8:\n        _fail()\n    for question in missing:\n\
+          current_unit_ids\"] | buckets[\"context_unit_ids\"]\n    if writable & conflicted:\n\
+          \        _fail()\n    links = _spec_ids(spec[\"required_link_source_ids\"\
+          ], sources, 8, defer_unknown=True)\n    if any(sources[key][\"available_link\"\
+          ] is not True for key in links if key in sources):\n        _fail()\n  \
+          \  missing = spec[\"missing_inputs\"]\n    if not isinstance(missing, list)\
+          \ or len(missing) > 8:\n        _fail()\n    for question in missing:\n\
           \        _text(question, 500)\n    if (spec[\"status\"] == \"ok\" and (missing\
           \ or any(row[\"blocking\"] for row in conflicts))\n            or spec[\"\
           status\"] != \"ok\" and (writable or links)\n            or spec[\"status\"\
@@ -4127,6 +4130,7 @@ workflow:
           \ failures veto regeneration even when an\n    # unrelated unknown ID is\
           \ also present. No filtered selection is returned.\n    if (selected | conflicted)\
           \ - units.keys() or links - sources.keys():\n        raise _UnknownSelectionId()\n\
+          \    if len(selected | conflicted) > 32:\n        raise _SelectionLimit()\n\
           \    return view, spec, sources, units, buckets\n\n\ndef _spec_terminal(spec):\n\
           \    return {\"contract\": \"editor-plan.v2\", \"status\": spec[\"status\"\
           ],\n            \"sections\": [], \"missing_inputs\": spec[\"missing_inputs\"\
@@ -4180,18 +4184,19 @@ workflow:
           \        if len(encoded.encode(\"utf-8\")) > 40000:\n            _fail()\n\
           \        return {\"model_input\": encoded, \"route\": spec[\"mode\"], \"\
           candidate\": \"\"}\n    except _UnknownSelectionId:\n        raise ValueError(\"\
-          invalid_editor_selection_id\") from None\n    except Exception:\n      \
-          \  raise ValueError(\"invalid_editor_draft_spec\") from None\n\n\ndef enforce_spec(candidate,\
-          \ model_input, draft_spec, context_pack):\n    \"\"\"Compile a small writer\
-          \ contract into the unchanged assembler contract.\n\n    Proposal citations\
-          \ attest only to user intent, never to source facts. Facts\n    stay extractive\
-          \ and selected links are supplied by code, not model output.\n    \"\"\"\
-          \n    blocked = {\"contract\": \"editor-plan.v2\", \"status\": \"blocked\"\
-          , \"sections\": [], \"missing_inputs\": []}\n    try:\n        view, spec,\
-          \ sources, units, buckets = _validated_spec(model_input, draft_spec)\n \
-          \       dependencies = _spec_link_dependencies(view, context_pack)\n   \
-          \     plan = _object(candidate)\n        if spec[\"status\"] != \"ok\":\n\
-          \            if _canonical(plan) != _canonical(_spec_terminal(spec)):\n\
+          invalid_editor_selection_id\") from None\n    except _SelectionLimit:\n\
+          \        raise ValueError(\"invalid_editor_selection_limit\") from None\n\
+          \    except Exception:\n        raise ValueError(\"invalid_editor_draft_spec\"\
+          ) from None\n\n\ndef enforce_spec(candidate, model_input, draft_spec, context_pack):\n\
+          \    \"\"\"Compile a small writer contract into the unchanged assembler\
+          \ contract.\n\n    Proposal citations attest only to user intent, never\
+          \ to source facts. Facts\n    stay extractive and selected links are supplied\
+          \ by code, not model output.\n    \"\"\"\n    blocked = {\"contract\": \"\
+          editor-plan.v2\", \"status\": \"blocked\", \"sections\": [], \"missing_inputs\"\
+          : []}\n    try:\n        view, spec, sources, units, buckets = _validated_spec(model_input,\
+          \ draft_spec)\n        dependencies = _spec_link_dependencies(view, context_pack)\n\
+          \        plan = _object(candidate)\n        if spec[\"status\"] != \"ok\"\
+          :\n            if _canonical(plan) != _canonical(_spec_terminal(spec)):\n\
           \                _fail()\n            return {\"candidate\": _canonical(plan)}\n\
           \        if (set(plan) != {\"contract\", \"sections\"}\n               \
           \ or plan[\"contract\"] != \"editor-writing.v1\" or not isinstance(plan[\"\
@@ -4834,38 +4839,41 @@ workflow:
           _SPEC_FIELDS = {\"contract\", \"status\", \"mode\", \"target\", *_SPEC_BUCKETS,\n\
           \                \"conflicts\", \"required_link_source_ids\", \"missing_inputs\"\
           }\n\nclass _UnknownSelectionId(ValueError):\n    \"\"\"Rejected model selection,\
-          \ never a guessed/fuzzy-matched identifier.\"\"\"\n\n\ndef _spec_ids(value,\
-          \ allowed, maximum=32, minimum=0, *, defer_unknown=False):\n    if (not\
-          \ isinstance(value, list) or not minimum <= len(value) <= maximum\n    \
-          \        or any(not isinstance(item, str) for item in value)\n         \
-          \   or len(set(value)) != len(value)):\n        _fail()\n    if not defer_unknown\
-          \ and any(item not in allowed for item in value):\n        raise _UnknownSelectionId()\n\
-          \    return set(value)\n\n\ndef _validated_spec(model_input, draft_spec):\n\
-          \    if not isinstance(model_input, str) or len(model_input.encode(\"utf-8\"\
-          )) > 40000:\n        _fail()\n    view, spec = _object(model_input), _object(draft_spec)\n\
-          \    if (set(view) != {\"contract\", \"role_id\", \"request\", \"entities\"\
-          , \"knowledge_context\", \"sources\"}\n            or view[\"contract\"\
-          ] != \"editor-input.v2\" or view[\"role_id\"] != \"editor_author\"\n   \
-          \         or set(spec) != _SPEC_FIELDS or spec[\"contract\"] != \"editor-draft-spec.v2\"\
-          ):\n        _fail()\n    request = view[\"request\"]\n    if (spec[\"mode\"\
-          ] not in {\"description\", \"comment\"} or spec[\"mode\"] != request[\"\
-          kind\"]\n            or not isinstance(spec[\"target\"], str) or len(spec[\"\
-          target\"]) > 128\n            or spec[\"target\"] != request[\"target\"\
-          ] or spec[\"status\"] not in {\"ok\", \"needs_input\", \"blocked\"}):\n\
-          \        _fail()\n    sources = {source[\"source_id\"]: source for source\
-          \ in view[\"sources\"]}\n    units = {unit[\"unit_id\"]: (unit, source)\
-          \ for source in sources.values() for unit in source[\"units\"]}\n    buckets\
-          \ = {name: _spec_ids(spec[name], units, defer_unknown=True) for name in\
-          \ _SPEC_BUCKETS}\n    selected = set()\n    for bucket in buckets.values():\n\
-          \        if selected & bucket:\n            _fail()\n        selected |=\
-          \ bucket\n    parents = {entity[\"key\"] for entity in view[\"entities\"\
-          ] if entity[\"relation\"] == \"parent\"\n               and entity[\"parent_conflict\"\
-          ] is False}\n    for unit_id in buckets[\"context_unit_ids\"]:\n       \
-          \ if unit_id not in units:\n            continue\n        unit, source =\
-          \ units[unit_id]\n        if source[\"kind\"] == \"jira\" and unit[\"entity_key\"\
-          ] not in parents:\n            _fail()\n    for unit_id in buckets[\"current_unit_ids\"\
-          ]:\n        if unit_id not in units:\n            continue\n        unit,\
-          \ source = units[unit_id]\n        if source[\"kind\"] == \"jira\" and unit[\"\
+          \ never a guessed/fuzzy-matched identifier.\"\"\"\n\nclass _SelectionLimit(ValueError):\n\
+          \    \"\"\"Valid ownership/shape but too many selections; request a fresh\
+          \ draft.\"\"\"\n\n\ndef _spec_ids(value, allowed, maximum=32, minimum=0,\
+          \ *, defer_unknown=False, defer_limit=False):\n    if (not isinstance(value,\
+          \ list) or not minimum <= len(value) <= (128 if defer_limit else maximum)\n\
+          \            or any(not isinstance(item, str) for item in value)\n     \
+          \       or len(set(value)) != len(value)):\n        _fail()\n    if not\
+          \ defer_unknown and any(item not in allowed for item in value):\n      \
+          \  raise _UnknownSelectionId()\n    return set(value)\n\n\ndef _validated_spec(model_input,\
+          \ draft_spec):\n    if not isinstance(model_input, str) or len(model_input.encode(\"\
+          utf-8\")) > 40000:\n        _fail()\n    view, spec = _object(model_input),\
+          \ _object(draft_spec)\n    if (set(view) != {\"contract\", \"role_id\",\
+          \ \"request\", \"entities\", \"knowledge_context\", \"sources\"}\n     \
+          \       or view[\"contract\"] != \"editor-input.v2\" or view[\"role_id\"\
+          ] != \"editor_author\"\n            or set(spec) != _SPEC_FIELDS or spec[\"\
+          contract\"] != \"editor-draft-spec.v2\"):\n        _fail()\n    request\
+          \ = view[\"request\"]\n    if (spec[\"mode\"] not in {\"description\", \"\
+          comment\"} or spec[\"mode\"] != request[\"kind\"]\n            or not isinstance(spec[\"\
+          target\"], str) or len(spec[\"target\"]) > 128\n            or spec[\"target\"\
+          ] != request[\"target\"] or spec[\"status\"] not in {\"ok\", \"needs_input\"\
+          , \"blocked\"}):\n        _fail()\n    sources = {source[\"source_id\"]:\
+          \ source for source in view[\"sources\"]}\n    units = {unit[\"unit_id\"\
+          ]: (unit, source) for source in sources.values() for unit in source[\"units\"\
+          ]}\n    buckets = {name: _spec_ids(spec[name], units, defer_unknown=True,\
+          \ defer_limit=True)\n               for name in _SPEC_BUCKETS}\n    selected\
+          \ = set()\n    for bucket in buckets.values():\n        if selected & bucket:\n\
+          \            _fail()\n        selected |= bucket\n    parents = {entity[\"\
+          key\"] for entity in view[\"entities\"] if entity[\"relation\"] == \"parent\"\
+          \n               and entity[\"parent_conflict\"] is False}\n    for unit_id\
+          \ in buckets[\"context_unit_ids\"]:\n        if unit_id not in units:\n\
+          \            continue\n        unit, source = units[unit_id]\n        if\
+          \ source[\"kind\"] == \"jira\" and unit[\"entity_key\"] not in parents:\n\
+          \            _fail()\n    for unit_id in buckets[\"current_unit_ids\"]:\n\
+          \        if unit_id not in units:\n            continue\n        unit, source\
+          \ = units[unit_id]\n        if source[\"kind\"] == \"jira\" and unit[\"\
           entity_key\"] != spec[\"target\"]:\n            _fail()  # Current facts/constraints\
           \ cannot promote parent/sibling ownership.\n    conflicts = spec[\"conflicts\"\
           ]\n    if not isinstance(conflicts, list) or len(conflicts) > 8:\n     \
@@ -4874,12 +4882,12 @@ workflow:
           , \"blocking\"}\n                or type(conflict[\"blocking\"]) is not\
           \ bool):\n            _fail()\n        conflicted |= _spec_ids(conflict[\"\
           unit_ids\"], units, 8, 2, defer_unknown=True)\n    writable = buckets[\"\
-          current_unit_ids\"] | buckets[\"context_unit_ids\"]\n    if writable & conflicted\
-          \ or len(selected | conflicted) > 32:\n        _fail()\n    links = _spec_ids(spec[\"\
-          required_link_source_ids\"], sources, 8, defer_unknown=True)\n    if any(sources[key][\"\
-          available_link\"] is not True for key in links if key in sources):\n   \
-          \     _fail()\n    missing = spec[\"missing_inputs\"]\n    if not isinstance(missing,\
-          \ list) or len(missing) > 8:\n        _fail()\n    for question in missing:\n\
+          current_unit_ids\"] | buckets[\"context_unit_ids\"]\n    if writable & conflicted:\n\
+          \        _fail()\n    links = _spec_ids(spec[\"required_link_source_ids\"\
+          ], sources, 8, defer_unknown=True)\n    if any(sources[key][\"available_link\"\
+          ] is not True for key in links if key in sources):\n        _fail()\n  \
+          \  missing = spec[\"missing_inputs\"]\n    if not isinstance(missing, list)\
+          \ or len(missing) > 8:\n        _fail()\n    for question in missing:\n\
           \        _text(question, 500)\n    if (spec[\"status\"] == \"ok\" and (missing\
           \ or any(row[\"blocking\"] for row in conflicts))\n            or spec[\"\
           status\"] != \"ok\" and (writable or links)\n            or spec[\"status\"\
@@ -4888,6 +4896,7 @@ workflow:
           \ failures veto regeneration even when an\n    # unrelated unknown ID is\
           \ also present. No filtered selection is returned.\n    if (selected | conflicted)\
           \ - units.keys() or links - sources.keys():\n        raise _UnknownSelectionId()\n\
+          \    if len(selected | conflicted) > 32:\n        raise _SelectionLimit()\n\
           \    return view, spec, sources, units, buckets\n\n\ndef _spec_terminal(spec):\n\
           \    return {\"contract\": \"editor-plan.v2\", \"status\": spec[\"status\"\
           ],\n            \"sections\": [], \"missing_inputs\": spec[\"missing_inputs\"\
@@ -4941,18 +4950,19 @@ workflow:
           \        if len(encoded.encode(\"utf-8\")) > 40000:\n            _fail()\n\
           \        return {\"model_input\": encoded, \"route\": spec[\"mode\"], \"\
           candidate\": \"\"}\n    except _UnknownSelectionId:\n        raise ValueError(\"\
-          invalid_editor_selection_id\") from None\n    except Exception:\n      \
-          \  raise ValueError(\"invalid_editor_draft_spec\") from None\n\n\ndef enforce_spec(candidate,\
-          \ model_input, draft_spec, context_pack):\n    \"\"\"Compile a small writer\
-          \ contract into the unchanged assembler contract.\n\n    Proposal citations\
-          \ attest only to user intent, never to source facts. Facts\n    stay extractive\
-          \ and selected links are supplied by code, not model output.\n    \"\"\"\
-          \n    blocked = {\"contract\": \"editor-plan.v2\", \"status\": \"blocked\"\
-          , \"sections\": [], \"missing_inputs\": []}\n    try:\n        view, spec,\
-          \ sources, units, buckets = _validated_spec(model_input, draft_spec)\n \
-          \       dependencies = _spec_link_dependencies(view, context_pack)\n   \
-          \     plan = _object(candidate)\n        if spec[\"status\"] != \"ok\":\n\
-          \            if _canonical(plan) != _canonical(_spec_terminal(spec)):\n\
+          invalid_editor_selection_id\") from None\n    except _SelectionLimit:\n\
+          \        raise ValueError(\"invalid_editor_selection_limit\") from None\n\
+          \    except Exception:\n        raise ValueError(\"invalid_editor_draft_spec\"\
+          ) from None\n\n\ndef enforce_spec(candidate, model_input, draft_spec, context_pack):\n\
+          \    \"\"\"Compile a small writer contract into the unchanged assembler\
+          \ contract.\n\n    Proposal citations attest only to user intent, never\
+          \ to source facts. Facts\n    stay extractive and selected links are supplied\
+          \ by code, not model output.\n    \"\"\"\n    blocked = {\"contract\": \"\
+          editor-plan.v2\", \"status\": \"blocked\", \"sections\": [], \"missing_inputs\"\
+          : []}\n    try:\n        view, spec, sources, units, buckets = _validated_spec(model_input,\
+          \ draft_spec)\n        dependencies = _spec_link_dependencies(view, context_pack)\n\
+          \        plan = _object(candidate)\n        if spec[\"status\"] != \"ok\"\
+          :\n            if _canonical(plan) != _canonical(_spec_terminal(spec)):\n\
           \                _fail()\n            return {\"candidate\": _canonical(plan)}\n\
           \        if (set(plan) != {\"contract\", \"sections\"}\n               \
           \ or plan[\"contract\"] != \"editor-writing.v1\" or not isinstance(plan[\"\

@@ -189,6 +189,26 @@ def test_invalid_selection_is_content_free_and_never_reaches_writer(sample, muta
     assert enforce(sample) == {"contract": "editor-plan.v2", "status": "blocked", "sections": [], "missing_inputs": []}
 
 
+@pytest.mark.parametrize("fault", ["limit", "ownership", "conflict", "shape"])
+def test_selection_limit_may_regenerate_only_after_known_fault_checks(sample, fault):
+    view, spec, _ = sample
+    units = [{"unit_id": f"u_{index}", "entity_key": "DL-42", "path": f"/{index}",
+              "text": "확인한 내용"} for index in range(33)]
+    view["sources"][0]["units"].extend(units)
+    spec["current_unit_ids"] = [unit["unit_id"] for unit in units]
+    spec["context_unit_ids"], spec["history_unit_ids"] = [], []
+    if fault == "ownership":
+        units[0]["entity_key"] = "DL-99"
+    elif fault == "conflict":
+        spec["conflicts"] = [{"unit_ids": ["u_0", "u_1"], "blocking": False}]
+    elif fault == "shape":
+        spec["current_unit_ids"].append("u_0")
+    reason = "invalid_editor_selection_limit" if fault == "limit" else "invalid_editor_draft_spec"
+    with pytest.raises(ValueError, match=f"^{reason}$"):
+        ASSET["prepare_spec"](encoded(view), encoded(spec), "{}")
+    assert enforce(sample)["status"] == "blocked"
+
+
 @pytest.mark.parametrize("blocking", ["false", "true", "False", "True"])
 def test_conflict_boolean_strings_are_not_coerced(sample, blocking):
     view, spec, _ = sample

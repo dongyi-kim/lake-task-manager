@@ -12,9 +12,12 @@ _SPEC_FIELDS = {"contract", "status", "mode", "target", *_SPEC_BUCKETS,
 class _UnknownSelectionId(ValueError):
     """Rejected model selection, never a guessed/fuzzy-matched identifier."""
 
+class _SelectionLimit(ValueError):
+    """Valid ownership/shape but too many selections; request a fresh draft."""
 
-def _spec_ids(value, allowed, maximum=32, minimum=0, *, defer_unknown=False):
-    if (not isinstance(value, list) or not minimum <= len(value) <= maximum
+
+def _spec_ids(value, allowed, maximum=32, minimum=0, *, defer_unknown=False, defer_limit=False):
+    if (not isinstance(value, list) or not minimum <= len(value) <= (128 if defer_limit else maximum)
             or any(not isinstance(item, str) for item in value)
             or len(set(value)) != len(value)):
         _fail()
@@ -38,7 +41,8 @@ def _validated_spec(model_input, draft_spec):
         _fail()
     sources = {source["source_id"]: source for source in view["sources"]}
     units = {unit["unit_id"]: (unit, source) for source in sources.values() for unit in source["units"]}
-    buckets = {name: _spec_ids(spec[name], units, defer_unknown=True) for name in _SPEC_BUCKETS}
+    buckets = {name: _spec_ids(spec[name], units, defer_unknown=True, defer_limit=True)
+               for name in _SPEC_BUCKETS}
     selected = set()
     for bucket in buckets.values():
         if selected & bucket:
@@ -68,7 +72,7 @@ def _validated_spec(model_input, draft_spec):
             _fail()
         conflicted |= _spec_ids(conflict["unit_ids"], units, 8, 2, defer_unknown=True)
     writable = buckets["current_unit_ids"] | buckets["context_unit_ids"]
-    if writable & conflicted or len(selected | conflicted) > 32:
+    if writable & conflicted:
         _fail()
     links = _spec_ids(spec["required_link_source_ids"], sources, 8, defer_unknown=True)
     if any(sources[key]["available_link"] is not True for key in links if key in sources):
@@ -87,6 +91,8 @@ def _validated_spec(model_input, draft_spec):
     # unrelated unknown ID is also present. No filtered selection is returned.
     if (selected | conflicted) - units.keys() or links - sources.keys():
         raise _UnknownSelectionId()
+    if len(selected | conflicted) > 32:
+        raise _SelectionLimit()
     return view, spec, sources, units, buckets
 
 
@@ -163,6 +169,8 @@ def prepare_spec(model_input, draft_spec, context_pack):
         return {"model_input": encoded, "route": spec["mode"], "candidate": ""}
     except _UnknownSelectionId:
         raise ValueError("invalid_editor_selection_id") from None
+    except _SelectionLimit:
+        raise ValueError("invalid_editor_selection_limit") from None
     except Exception:
         raise ValueError("invalid_editor_draft_spec") from None
 
