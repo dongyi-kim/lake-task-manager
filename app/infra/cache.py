@@ -22,8 +22,9 @@ from functools import wraps
 class _ProvenanceWindow:
     """One request-owned, thread-safe ledger shared with its child workers."""
 
-    def __init__(self, cache):
+    def __init__(self, cache, max_age_seconds=None):
         self.cache = cache
+        self.max_age_seconds = max_age_seconds
         self._lock = threading.Lock()
         self._events = []
         self._closed = False
@@ -159,17 +160,31 @@ class Cache:
             if window.cache is self:
                 window.append(event)
 
-    def provenance_marker(self):
+    def provenance_marker(self, *, max_age_seconds=None):
         """Open an opaque request-owned ledger for subsequent cache reads.
 
         The ledger is a mutable object referenced by copied worker contexts, not a
         process-global event stream. Concurrent requests therefore cannot make each
         other's old/fresh evidence appear in their own attestation.
         """
-        window = _ProvenanceWindow(self)
+        if max_age_seconds is not None and (
+                type(max_age_seconds) is not int or max_age_seconds <= 0):
+            raise ValueError("max_age_seconds must be a positive integer")
+        window = _ProvenanceWindow(self, max_age_seconds)
         active = _ACTIVE_PROVENANCE_WINDOWS.get()
         _ACTIVE_PROVENANCE_WINDOWS.set((*active, window))
         return window
+
+    def effective_ttl(self, ttl):
+        """Bound cache hits only within the current evidence acquisition.
+
+        Ordinary UI reads keep their configured TTL/SWR behavior. Child readers
+        inherit the bound through propagate_provenance_context, never globally.
+        """
+        limits = [window.max_age_seconds for window in _ACTIVE_PROVENANCE_WINDOWS.get()
+                  if window.cache is self and not window._closed
+                  and window.max_age_seconds is not None]
+        return min(ttl, *limits) if limits else ttl
 
     def provenance_since(self, marker):
         """Close and summarize one acquisition ledger without retaining payloads."""
@@ -225,7 +240,7 @@ class Cache:
         if not row:
             return None
         payload, fetched_at, ttl = row
-        if time.time() - fetched_at > ttl:
+        if time.time() - fetched_at > self.effective_ttl(ttl):
             return None                      # 만료
         value = json.loads(payload)
         self._record_read_provenance(fetched_at, stale=False, upstream=False)
@@ -304,7 +319,7 @@ class Cache:
                     batch,
                 ).fetchall()
                 for key, payload, fetched_at, ttl in rows:
-                    if now - fetched_at <= ttl:
+                    if now - fetched_at <= self.effective_ttl(ttl):
                         try:
                             found[key] = json.loads(payload)
                             self._record_read_provenance(
@@ -330,7 +345,7 @@ class Cache:
                 "WHERE key>=? AND key<?", (prefix, prefix + "\uffff")
             ).fetchall()
         for key, payload, fetched_at, ttl in rows:
-            if now - fetched_at <= ttl:
+            if now - fetched_at <= self.effective_ttl(ttl):
                 try:
                     found[key] = json.loads(payload)
                     self._record_read_provenance(
@@ -505,6 +520,17 @@ class Cache:
         체감 대기시간을 없애는 게 목적이다 — 재방문 시 화면은 즉시 뜨고,
         새 데이터는 다음 조회부터 반영된다.
         """
+        if any(window.cache is self and not window._closed
+               and window.max_age_seconds is not None
+               for window in _ACTIVE_PROVENANCE_WINDOWS.get()):
+            # Evidence must observe the refresh, not the next UI read. A genuine
+            # upstream failure still carries the old time and servedStale signal.
+            marker = self.provenance_marker()
+            try:
+                value, hit = self.get_or_set(key, ttl, producer)
+            finally:
+                observed = self.provenance_since(marker)
+            return value, "stale" if observed["servedStale"] else "fresh" if hit else "miss"
         hit = self.get(key)
         if hit is not None:
             if self._needs_revalidate(key):

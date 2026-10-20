@@ -844,9 +844,11 @@ def begin_local_acquisition() -> AcquisitionMarker | None:
     """Snapshot cache provenance immediately before one deterministic read."""
     try:
         from app.agent.tools._ctx import client
+        from app.agent.maxis.context_guard import ContextPolicy
 
         cache = client().cache
-        marker = cache.provenance_marker()
+        marker = cache.provenance_marker(
+            max_age_seconds=ContextPolicy(allowed_scopes={}).freshness_seconds)
         return AcquisitionMarker(cache=cache, cursor=marker)
     except Exception:
         return None

@@ -860,7 +860,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         전체(issue:)는 경량의 상위집합이라 내용은 늘 충분하므로, 전체·경량 중 **TTL 이내이면서 더
         최근에 받아온 쪽**을 쓴다(전체가 더 최신이면 전체, 경량이 더 최신이면 경량). 둘 다 만료/없으면
         경량으로 받아 issueL 에 담는다(전체 캐시와 분리 — 관련/첨부가 이걸 읽고 깨지지 않게)."""
-        ttl = self.s.cache_ttl_seconds
+        ttl = self.cache.effective_ttl(self.s.cache_ttl_seconds)
         now = time.time()
         fk, ck = f"issue:{self.env}:{key}", f"issueL:{self.env}:{key}"
         full = self.cache.get_stale_at(fk)        # (값, 받아온 시각) | None
