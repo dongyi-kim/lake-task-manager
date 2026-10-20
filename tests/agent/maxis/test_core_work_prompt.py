@@ -70,9 +70,14 @@ def test_ok_payload_required_fields_stay_explicit_even_when_arrays_are_empty(con
         assert len({key for key, _ in pairs}) == len(pairs), "duplicate JSON key"
         return dict(pairs)
     example = next(line for line in prompt.splitlines() if line.startswith('{"contract":'))
-    assert json.loads(example, object_pairs_hook=unique_object) == {
-        "contract": "work-draft.v1", "status": "ok", "missing_inputs": [],
-        "payload": {"mode": "task", "questions": [], "items": []}}
+    draft = json.loads(example, object_pairs_hook=unique_object)
+    assert set(draft) == {"contract", "status", "missing_inputs", "payload"}
+    assert draft["contract"] == "work-draft.v1" and draft["status"] == "ok"
+    assert draft["missing_inputs"] == [] and draft["payload"]["questions"] == []
+    assert draft["payload"]["mode"] == "task"
+    item = draft["payload"]["items"][0]
+    assert set(item) == {"summary", "type", "background", "scope_in", "dod"}
+    assert set(item["summary"]) == {"value", "kind", "source_ids"}
     assert "ok requires mode=task|subtask|epic, questions, items" in prompt
     assert "Write keys once; close items `]`, payload `}`, root `}`" in prompt
     assert "needs_input: payload={}, concrete missing_inputs" in prompt

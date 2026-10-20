@@ -72,12 +72,11 @@ def case():
 def test_transport_places_missing_inputs_at_top_level_without_changing_status_contract(contract):
     transport = TRANSPORT.read_text(encoding="utf-8").strip()
     role = (ROOT / "app/agent/prompts/roles/request_architect.md").read_text(encoding="utf-8")
-    rule = ("Return only one request-draft.v2 JSON object with top-level contract, status, payload and "
-        "missing_inputs; missing_inputs is never inside payload.")
+    rule = "Return one request-draft.v2 JSON object; missing_inputs is never inside payload."
     prompt = contract.build_request_system_prompt(SCHEMA, role, transport)
     assert transport.count(rule) == prompt.count(rule) == 1
-    for unchanged in ("It requires missing_inputs: [].", "needs_input requires payload: {} and concrete missing_inputs.",
-                      "blocked with payload: {} and missing_inputs: [].", "payload contains request_questions"):
+    for unchanged in ("missing_inputs: [].", "needs_input requires payload: {} and concrete missing_inputs.",
+                      "blocked, payload: {}, missing_inputs: [].", "including research_readiness=needs_clarification and request_questions"):
         assert unchanged in transport
     assert prompt.startswith(transport + "\n\n") and len(prompt.encode("utf-8")) <= 8192
 

@@ -3,8 +3,10 @@ import copy
 import importlib.util
 import json
 from pathlib import Path
+import re
 
 import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -17,6 +19,25 @@ def functions():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("role,node_id", [
+    ("request", "1909000000001031"),
+    ("work", "1909000000001034"),
+    ("knowledge", "1909000000001037"),
+])
+def test_native_prompt_examples_match_the_live_native_schema(functions, role, node_id):
+    prompt = (ROOT / f"deploy/maxis-dify/prompts/core_{role}.md").read_text(encoding="utf-8")
+    examples = re.findall(r"```json\n(.*?)\n```", prompt, re.S)
+    assert len(examples) == 1
+    doc = yaml.safe_load((ROOT / "deploy/maxis-dify/dsl/ltm-agent-core.yml").read_text(encoding="utf-8"))
+    schema = next(n["data"]["structured_output"]["schema"] for n in doc["workflow"]["graph"]["nodes"]
+                  if n["id"] == node_id)
+    value = functions._native_candidate(examples[0], schema, 32768)
+    assert set(value) == {"contract", "status", "missing_inputs", "payload"}
+    assert value["status"] == "ok" and value["missing_inputs"] == []
+    # Examples are authoring shapes, never accepted defaults or actual source IDs.
+    assert "SOURCE_ID" in examples[0]
 
 
 

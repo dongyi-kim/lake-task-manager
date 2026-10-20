@@ -36,6 +36,14 @@ def test_exact_sections_once_in_order_without_other_local_contracts(compiler):
     assert "query-input.v1" not in prompt and "`context.query`" not in prompt
 
 
+def test_external_research_never_overrides_runtime_source_capabilities(compiler):
+    prompt = compiler(LOCAL.read_text(encoding="utf-8"), WIRE.read_text(encoding="utf-8"))
+    assert "include a `web` query only if available" in prompt
+    assert "Runtime source restrictions take precedence" in prompt
+    assert "retain external verification as unresolved, never as a read" in prompt
+    assert "When external official research is explicitly required, include at least one" not in prompt
+
+
 @pytest.mark.parametrize("title", SELECTED)
 @pytest.mark.parametrize("mutation", ["missing", "duplicate", "empty", "rename", "heading_space"])
 def test_ambiguous_or_missing_selected_sections_fail_closed(compiler, title, mutation):

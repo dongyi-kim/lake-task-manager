@@ -176,10 +176,10 @@ def test_transport_explains_only_wire_evidence_and_status_boundaries(contract, r
     assert len(prompt.encode("utf-8")) <= 8192
     for marker in ("request-input.v1", "request-draft.v2", "context.sources[].source_id",
                    "context.query", "role_context", "source_authority", "allowed_claim_kinds",
-                   "user_intent", "evidence_source", "do not verify facts or grant approval",
-                   "canonical_id", "{value, kind, source_ids}", "tasks[].kind",
+                   "user_intent", "evidence_source", "No invented sources/facts or authority",
+                   "not another identifier", "{value, kind, source_ids}", "tasks[].kind",
                    "research_readiness", "needs_clarification", "no_write_requested",
-                   "canonical flat schema", "even when research_readiness is needs_clarification"):
+                   "canonical flat schema", "including research_readiness=needs_clarification"):
         assert marker in transport
     assert "ltm-model-input.v1" not in transport
     assert "context_pack." not in transport
@@ -226,8 +226,7 @@ def test_transport_lists_exact_wrapped_and_plain_payload_paths(contract):
         assert len(lines) == 1
         assert set(re.findall(r"`([^`]+)`", lines[0])) == paths
     planning = ("intent, keywords[], assumptions[], tasks[].completion_criteria[], blocking_questions[] "
-        "and request_questions[].question are planning judgments or questions: their kind is only "
-        "inference|recommendation, even when supported by evidence.")
+        "and request_questions[].question allow only inference|recommendation.")
     assert transport.count(planning) == 1
     assert "Other wrapped paths allow fact|inference|recommendation" in transport
-    assert "Never annotate a plain value" in transport
+    assert "Never annotate plain values" in transport
