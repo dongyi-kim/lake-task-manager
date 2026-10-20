@@ -32,5 +32,21 @@ export function runtimeDebugLines(turn) {
   const localModel = usage.model && usage.model !== "maxis/dify" ? usage.model : "";
   const model = remote ? `${localModel ? `로컬 ${localModel} / ` : ""}MAXIS 서버 Workflow 모델 (Service API 미공개)`
     : localModel || "미기록";
-  return [`- engine: ${engine}`, `- profile: ${runtime.profile || "해당 없음 / 미기록"}`, `- model: ${model}`];
+  return [`- engine: ${engine}`, `- profile: ${runtime.profile || "해당 없음 / 미기록"}`,
+    ...(runtime.profileLabel ? [`- profileLabel: ${runtime.profileLabel}`] : []),
+    ...(runtime.workflowBundleVersion ? [`- workflowBundleLabel: ${runtime.workflowBundleVersion} (profile metadata)`] : []),
+    ...(runtime.knowledgeVersion ? [`- knowledgeReleaseLabel: ${runtime.knowledgeVersion} (profile metadata)`] : []),
+    `- model: ${model}`];
+}
+
+export function runtimeProfileLabel(turn) {
+  return turn?.runtime?.profileLabel || "MAXIS 연결";
+}
+
+export function runtimeQualityStatus(turn) {
+  if (turn?.ok === false || turn?.error || turn?.debug?.error || turn?.stopped)
+    return {label: "실행 중단", bad: true};
+  const gate = turn?.runtime?.qualityGate;
+  if (gate?.ok === false) return {label: "응답 계약 차단", bad: true};
+  return {label: gate?.ok === true ? "응답 계약 확인" : "응답 계약 미확인", bad: false};
 }

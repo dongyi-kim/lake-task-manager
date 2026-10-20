@@ -30,7 +30,7 @@ import {
   richEditorToText, draftDescriptionText, sanitizeDraftDescription,
 } from "../agent/contentTransforms.js";
 import AGENT_VIEW_TEMPLATE from "../agent/agentViewTemplate.js";
-import { usageSummary, usageTitle, runtimeDebugLines } from "../agent/usageDisplay.js";
+import { usageSummary, usageTitle, runtimeDebugLines, runtimeProfileLabel, runtimeQualityStatus } from "../agent/usageDisplay.js";
 
 // 빈 화면에 예시를 둔다 — 무엇을 할 수 있는 도구인지 설명하는 가장 빠른 방법이고,
 // 사용자가 첫 문장을 어떻게 쓸지 몰라 멈추는 것을 막는다.
@@ -255,6 +255,7 @@ export default {
       return updated ? `갱신 ${updated}` : (retrieved ? `조회 ${retrieved}` : "시점 미확인");
     },
     runtimeMeta(t) { return (t && t.runtime) || {}; },
+    runtimeProfileLabel, runtimeQualityStatus,
     usageSummary,
     usageTitle,
     /** [n] 마커 호버 — **하단 참조 목록과 같은 모양의** 커스텀 상자를 띄운다.
@@ -490,11 +491,14 @@ export default {
             settle();
             this.saveConvo(myTid, myTurns);
           } else if (ev.type === "error") {
+            turn.ok = false;
+            turn.error = ev.message || "알 수 없는 오류";
             turn.text = "문제가 생겼습니다 — " + (ev.message || "알 수 없는 오류");
             settle();
             this.saveConvo(myTid, myTurns);
           } else if (ev.type === "final") {
             Object.assign(turn, {
+              ok: ev.ok, error: ev.error || "",
               text: ev.reply || "(답변이 비어 있습니다)",
               trace: ev.trace || [], evidence: ev.evidence || [],
               docs: ev.related_docs || [], questions: ev.questions || [],
@@ -504,7 +508,7 @@ export default {
               usage: ev.usage || null, people: ev.people || {},
               draftItems: ev.draft_items || [],
               runtime: ev.runtime || {
-                engine: ev.engine || "", profile: ev.profile || "",
+                engine: ev.engine || "", profile: ev.profile || "", profileLabel: ev.profileLabel || "",
                 roleEngines: ev.roleEngines || {},
                 lastRole: ev.lastRole || "", lastRoleEngine: ev.lastRoleEngine || "",
                 workflowBundleVersion: ev.workflowBundleVersion || ev.workflow_bundle_version || "",

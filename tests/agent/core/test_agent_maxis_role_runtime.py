@@ -44,6 +44,7 @@ def audit_events(monkeypatch):
 def _profile(name="dev", fingerprint="profile-a"):
     return {
         "name": name,
+        "display_name": "MAXIS 연결 1",
         "stage": name,
         "fingerprint": fingerprint,
         "base_url": "http://127.0.0.1:9001/v1" if name == "dev"
@@ -123,6 +124,9 @@ def test_thread_pin_rejects_profile_or_route_change(monkeypatch):
     backend.verify_thread_runtime(pin)
     assert pin["knowledge_dataset_id"] == DATASET_A
     assert pin["knowledge_manifest_sha256"] == MANIFEST_SHA
+    assert pin["runtime_profile_label"] == "MAXIS 연결 1"
+    current["profile"]["display_name"] = "renamed after turn"
+    assert backend.prepare_thread_runtime(pin)["runtime_profile_label"] == "MAXIS 연결 1"
 
     tampered = {**pin, "knowledge_manifest_sha256": "b" * 64}
     with pytest.raises(backend.RuntimeProfileChanged, match="dataset/manifest"):
@@ -368,6 +372,7 @@ def test_change_audit_sequence_reuses_correlation_without_content(monkeypatch, a
         "thread_id": "audit-thread",
         "correlation_id": "corr-change-1",
         "runtime_profile": "dev",
+        "runtime_profile_label": "MAXIS 연결 1",
         "runtime_role_routes": _routes("local"),
         "runtime_role_engines": {"work_architect": "maxis"},
         "workflow_bundle_version": "bundle-1",
@@ -1230,6 +1235,107 @@ def test_stale_or_partial_work_evidence_is_blocked_before_network(monkeypatch, r
         backend.invoke(role_id, payload, "thread-1", "corr-1")
 
 
+def test_empty_research_search_keeps_real_acquisition_without_materialization(monkeypatch):
+    from app.agent import tools as tool_registry
+    from app.agent.tools import _ctx
+    from app.agent.workflow.agents.query_runner import QueryRunner
+    from app.infra.cache import Cache
+
+    cache = Cache(":memory:")
+    result = {"scopeProjects": ["DL"], "tickets": [], "returned": 0,
+              "total": 0, "hasMore": False}
+
+    class FreshJql:
+        @staticmethod
+        def invoke(_args):
+            return cache.get_or_set("empty-research", 60, lambda: result)[0]
+
+    _ctx.bind(SimpleNamespace(cache=cache), SimpleNamespace(
+        search_jira_projects=["DL"], search_confluence_spaces=[]))
+    monkeypatch.setitem(tool_registry.BY_NAME, "run_jql_v2", FreshJql())
+    try:
+        queried = QueryRunner()._run({
+            "intent": "ask", "messages": [HumanMessage(content="없는 데이터 이력")],
+            "request_plan": {"tasks": [{"kind": "research"}]},
+            "query_plan": {"queries": [{"id": "empty", "source": "jira",
+                                       "query": "nonexistent", "completeness": "page"}]},
+        })
+        proof = queried["query_evidence_attestations"]["jira:empty"]
+        assert proof["partial"] is False
+        assert proof["provenance"]["tracked"] is True
+        assert proof["provenance"]["readCount"] == 1
+        assert queried["query_results"][0]["result"]["total"] == 0
+    finally:
+        _ctx.bind()
+        cache.close()
+
+
+@pytest.mark.parametrize("second_read", ["error", "untracked", "fresh"])
+def test_materialization_requires_each_detail_receipt(monkeypatch, second_read):
+    from app.agent import tools as tool_registry
+    from app.agent.tools import _ctx
+    from app.agent.workflow.agents.query_runner import QueryRunner
+    from app.infra.cache import Cache
+
+    cache = Cache(":memory:")
+
+    class Search:
+        @staticmethod
+        def invoke(_args):
+            return cache.get_or_set("docs", 60, lambda: {
+                "scopeSpaces": ["DL"], "documents": [
+                    {"id": "100", "space": "DL"}, {"id": "200", "space": "DL"}],
+                "total": 2, "hasMore": False,
+            })[0]
+
+    class Read:
+        @staticmethod
+        def invoke(args):
+            ref = str(args["url_or_id"])
+            value = {"id": ref, "space": "DL", "title": ref, "body": "synthetic"}
+            if ref == "200":
+                if second_read == "error":
+                    raise RuntimeError("synthetic detail failure")
+                if second_read == "untracked":
+                    return value
+            return cache.get_or_set(ref, 60, lambda: value)[0]
+
+    _ctx.bind(SimpleNamespace(cache=cache), SimpleNamespace(
+        search_jira_projects=["DL"], search_confluence_spaces=["DL"],
+        search_bitbucket_projects=[], jira_env="mock", jira_user="", managers=[],
+        jira_base="http://jira.example", confluence_base="", bitbucket_base=""))
+    monkeypatch.setitem(tool_registry.BY_NAME, "search_documents", Search())
+    monkeypatch.setitem(tool_registry.BY_NAME, "read_document", Read())
+    try:
+        state = _runtime_state("work_architect")
+        state.update(
+            intent="ask", correlation_started_at=datetime.now(timezone.utc).isoformat(),
+            request_plan={"tasks": [{"kind": "research"}]},
+            query_plan={"queries": [{"id": "docs", "source": "confluence",
+                                     "query": "synthetic", "completeness": "page"}]},
+        )
+        state.update(QueryRunner()._run(state))
+        proof = state["query_evidence_attestations"]["confluence:docs"]
+        assert proof["partial"] is (second_read != "fresh")
+        assert proof["provenance"]["tracked"] is (second_read == "fresh")
+        assert proof["provenance"]["readCount"] == (3 if second_read == "fresh" else 2)
+        pack = backend.role_payload(
+            "work_architect", state, [], {"type": "object"}, output_kind="structured",
+        )["evidencePack"]
+        assert pack["partial"] is (second_read != "fresh")
+    finally:
+        _ctx.bind()
+        cache.close()
+
+
+def test_attestation_partial_false_cannot_override_required_read_error():
+    proof = backend.attest_query_result(
+        "docs", "confluence", {"scopeSpaces": ["DL"], "materializationErrors": ["offline"]},
+        partial=False,
+    )
+    assert proof["partial"] is True
+
+
 def test_query_runner_preserves_23h_swr_cache_age_and_blocks_remote_draft(monkeypatch):
     from app.agent import tools as tool_registry
     from app.agent.tools import _ctx
@@ -2089,6 +2195,7 @@ def test_session_shape_projects_no_source_content_or_unknown_remote_fields():
     shaped = _shape("thread-1", {
         "runtime_engine": "local",
         "runtime_profile": "dev",
+        "runtime_profile_label": "MAXIS 연결 1",
         "workflow_bundle_version": "bundle-1",
         "knowledge_version": "knowledge-1",
         "knowledge_dataset_id": DATASET_A,
@@ -2112,6 +2219,7 @@ def test_session_shape_projects_no_source_content_or_unknown_remote_fields():
     })
     encoded = json.dumps(shaped, ensure_ascii=False)
     assert shaped["engine"] == "local"
+    assert shaped["profileLabel"] == "MAXIS 연결 1"
     assert shaped["knowledgeDatasetId"] == DATASET_A
     assert shaped["knowledgeManifestSha256"] == MANIFEST_SHA
     assert shaped["roleEngines"]["portfolio_analyst"] == "maxis"

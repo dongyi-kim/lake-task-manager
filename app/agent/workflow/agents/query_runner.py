@@ -728,7 +728,9 @@ def _materialize_evidence(results: list[dict], *, focus: str = "",
     Analyst can fall back to ReAct instead of silently synthesizing thin evidence.
     """
     from concurrent.futures import ThreadPoolExecutor
+    from threading import Lock
     from app.agent import tools as T
+    from app.agent.maxis.backend import begin_local_acquisition, finish_local_acquisition
     from app.infra.cache import propagate_provenance_context
 
     # Reserve two exact-read slots only when research entity expansion is active and a
@@ -771,20 +773,28 @@ def _materialize_evidence(results: list[dict], *, focus: str = "",
                 document_refs.append(ref)
 
     document_refs = document_refs[:4]
+    read_provenance: dict[str, list[dict]] = {"jira": [], "confluence": []}
+    receipt_lock = Lock()
+
+    def acquire(source: str, tool: str, arguments: dict, identity: dict) -> dict:
+        # Nested request-local windows prevent a sibling's successful read from
+        # proving freshness for a failed or uninstrumented detail acquisition.
+        marker = begin_local_acquisition()
+        try:
+            value = T.BY_NAME[tool].invoke(arguments) or {}
+            return value if not value.get("error") else {**identity, "error": value["error"]}
+        except Exception as exc:
+            return {**identity, "error": str(exc)[:240]}
+        finally:
+            receipt = finish_local_acquisition(marker)
+            with receipt_lock:
+                read_provenance[source].append(receipt)
 
     def open_ticket(key: str) -> dict:
-        try:
-            value = T.BY_NAME["get_ticket"].invoke({"key": key, "comment_limit": 8}) or {}
-            return value if not value.get("error") else {"key": key, "error": value["error"]}
-        except Exception as exc:
-            return {"key": key, "error": str(exc)[:240]}
+        return acquire("jira", "get_ticket", {"key": key, "comment_limit": 8}, {"key": key})
 
     def open_document(ref: str) -> dict:
-        try:
-            value = T.BY_NAME["read_document"].invoke({"url_or_id": ref}) or {}
-            return value if not value.get("error") else {"url": ref, "error": value["error"]}
-        except Exception as exc:
-            return {"url": ref, "error": str(exc)[:240]}
+        return acquire("confluence", "read_document", {"url_or_id": ref}, {"url": ref})
 
     with ThreadPoolExecutor(max_workers=max(1, min(6, len(ticket_keys) + len(document_refs)))) as pool:
         ticket_details = list(pool.map(
@@ -863,6 +873,7 @@ def _materialize_evidence(results: list[dict], *, focus: str = "",
             row["result"] = dict(row.get("result") or {},
                                  materializedCandidateKeys=materialized_parents)
     return {
+        "readProvenance": read_provenance,
         "tickets": len(ticket_details), "documents": len(document_bodies),
         "ticketDetails": ticket_details, "documentBodies": document_bodies,
         "projectedTicketDetails": ticket_projection,
@@ -1540,14 +1551,29 @@ class QueryRunner:
                 for task in ((state.get("request_plan") or {}).get("tasks") or [])
             )
             materialization_marker = begin_local_acquisition()
+            before_materialization = [dict(row.get("result") or {}) for row in results]
             materialized = _materialize_evidence(results, focus="\n".join(value for value in (
                 request_text(state).strip(), last_user_text(state).strip(),
             ) if value), expand_entities=research_expansion,
                 entity_root_keys=state.get("mentioned_keys") or ())
             materialization_provenance = _acquisition(materialization_marker)
-            for row in results:
-                if row.get("source") in {"jira", "comments", "confluence"}:
-                    _merge_acquisition(row, materialization_provenance)
+            for row, before in zip(results, before_materialization):
+                # An empty search requires no detail reads. A no-op acquisition
+                # has no receipt and must not taint the earlier real search.
+                # Changed detail content still requires its own tracked reads.
+                if (row.get("source") in {"jira", "comments", "confluence"}
+                        and row.get("result") != before
+                        and (materialized["tickets"] or materialized["documents"]
+                             or materialized["errors"])):
+                    detail_source = "confluence" if row["source"] == "confluence" else "jira"
+                    receipts = materialized.get("readProvenance", {}).get(detail_source, [])
+                    _merge_acquisition(row, {
+                        **materialization_provenance,
+                        "partial": bool(materialization_provenance.get("partial")
+                                        or any(r.get("partial") for r in receipts)),
+                        "tracked": bool(materialization_provenance.get("tracked")
+                                        and all(r.get("tracked") for r in receipts)),
+                    })
             if materialized["tickets"] or materialized["documents"] or materialized["errors"]:
                 artifacts["evidence-materialization"] = materialized
             successful_details = [dict(row) for row in

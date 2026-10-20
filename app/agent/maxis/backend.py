@@ -306,6 +306,7 @@ def _profile_snapshot(profile_name: str = "", *, required: bool = False) -> dict
         # follows the verified profile's explicit policy, never its display name.
     return {
         "name": str(profile.get("name") or ""),
+        "display_name": str(profile.get("display_name") or "MAXIS 연결"),
         "stage": str(profile.get("stage") or ""),
         "fingerprint": str(profile.get("fingerprint") or ""),
         "base_url": str(profile.get("base_url") or ""),
@@ -414,6 +415,7 @@ def thread_runtime_pin(*, engine: str = "", profile: str = "") -> dict:
     return {
         "runtime_engine": core_route,
         "runtime_profile": str(metadata.get("name") or ""),
+        "runtime_profile_label": str(metadata.get("display_name") or "MAXIS 연결") if remote else "",
         "runtime_profile_fingerprint": fingerprint,
         "runtime_role_routes": dict(routes),
         "runtime_engine_source": "explicit" if engine else "profile",
@@ -432,7 +434,7 @@ def _pin_from_state(state: dict) -> dict:
     return {
         key: state.get(key)
         for key in (
-            "runtime_engine", "runtime_profile", "runtime_profile_fingerprint",
+            "runtime_engine", "runtime_profile", "runtime_profile_label", "runtime_profile_fingerprint",
             "runtime_role_routes", "runtime_engine_source", "workflow_bundle_version",
             "knowledge_version", "knowledge_dataset_id", "knowledge_manifest_sha256",
             "runtime_registry_digest", "runtime_contract_build",
@@ -932,11 +934,11 @@ def attest_query_result(
         "readCount": min(10000, max(0, int(raw_provenance.get("read_count") or 0))),
         "tracked": bool(raw_provenance.get("tracked", provenance is None)),
     }
+    # A caller may add incompleteness, but cannot override a failed required read.
     is_partial = bool(
-        partial if partial is not None else (
-            result.get("error") or result.get("incomplete")
-            or result.get("contextTruncated") or result.get("complete") is False
-        )
+        partial or result.get("error") or result.get("incomplete")
+        or result.get("materializationErrors") or result.get("contextTruncated")
+        or result.get("complete") is False
     )
     is_partial = bool(is_partial or proof_provenance["servedStale"]
                       or not proof_provenance["tracked"])

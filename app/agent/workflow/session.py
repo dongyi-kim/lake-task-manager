@@ -1556,6 +1556,7 @@ def _shape(thread_id: str, state: dict, snap=None) -> dict:
     for public, internal in (
         ("engine", "runtime_engine"),
         ("profile", "runtime_profile"),
+        ("profileLabel", "runtime_profile_label"),
         ("workflowBundleVersion", "workflow_bundle_version"),
         ("knowledgeVersion", "knowledge_version"),
         ("knowledgeDatasetId", "knowledge_dataset_id"),

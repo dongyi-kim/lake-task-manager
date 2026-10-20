@@ -304,6 +304,7 @@ class AgentState(TypedDict, total=False):
     runtime_engine: str
     runtime_capability: str        # bounded semantic capability; never a write permission
     runtime_profile: str
+    runtime_profile_label: str
     runtime_profile_fingerprint: str
     runtime_role_routes: dict[str, str]
     runtime_engine_source: str

@@ -119,12 +119,10 @@ const AGENT_VIEW_TEMPLATE = `
                  설정 문제가 아니라 결과 재현성 문제이므로 대화마다 고정된 값을 보여 준다. -->
             <div v-if="runtimeMeta(t).engine" class="agent-runtime" aria-label="AI 실행 정보">
               <span>{{ runtimeMeta(t).engine === 'maxis' ? 'MAXIS/Dify' : 'LTM Local' }}</span>
-              <span v-if="runtimeMeta(t).profile">{{ runtimeMeta(t).profile }}</span>
-              <span v-if="runtimeMeta(t).workflowBundleVersion">Workflow {{ runtimeMeta(t).workflowBundleVersion }}</span>
-              <span v-if="runtimeMeta(t).knowledgeVersion">Knowledge {{ runtimeMeta(t).knowledgeVersion }}</span>
-              <span v-if="runtimeMeta(t).qualityGate"
-                    :class="{ bad: runtimeMeta(t).qualityGate.ok === false }">
-                Quality Gate {{ runtimeMeta(t).qualityGate.ok === false ? '차단' : '통과' }}
+              <span v-if="runtimeMeta(t).profile">{{ runtimeProfileLabel(t) }}</span>
+              <span v-if="runtimeMeta(t).qualityGate || t.error || t.ok === false"
+                    :class="{ bad: runtimeQualityStatus(t).bad }">
+                {{ runtimeQualityStatus(t).label }}
               </span>
             </div>
 

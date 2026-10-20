@@ -52,3 +52,31 @@ def test_debug_reports_mixed_engine_turn_and_local_observed_model():
         usage:{model:"local-model",remoteCalls:1}})""")
     assert "- engine: mixed (local, maxis)" in lines
     assert any("local-model" in line and "미공개" in line for line in lines)
+
+
+def test_runtime_profile_chip_uses_snapshot_label_not_opaque_environment_id():
+    assert _render('runtimeProfileLabel({runtime:{profile:"dev",profileLabel:"MAXIS 연결 1"}})') == "MAXIS 연결 1"
+    assert _render('runtimeProfileLabel({runtime:{profile:"dev"}})') == "MAXIS 연결"
+
+
+@pytest.mark.parametrize("failure", ['ok:false', 'error:"blocked"', 'debug:{error:"blocked"}'])
+def test_failed_turn_cannot_claim_previous_role_quality_gate_passed(failure):
+    state = _render('runtimeQualityStatus({' + failure + ',runtime:{qualityGate:{ok:true}}})')
+    assert state == {"label": "실행 중단", "bad": True}
+
+
+def test_runtime_quality_is_explicit_contract_observation_not_overall_answer_quality():
+    assert _render('runtimeQualityStatus({ok:true,runtime:{qualityGate:{ok:true}}})') == {
+        "label": "응답 계약 확인", "bad": False,
+    }
+    assert _render('runtimeQualityStatus({runtime:{qualityGate:{}}})') == {
+        "label": "응답 계약 미확인", "bad": False,
+    }
+
+
+def test_runtime_tags_are_identified_as_profile_labels_in_debug_only():
+    lines = _render("""runtimeDebugLines({runtime:{engine:"maxis",profile:"profile-one",
+        profileLabel:"MAXIS 연결 1",workflowBundleVersion:"bundle-old",knowledgeVersion:"kb-old"}})""")
+    assert "- profileLabel: MAXIS 연결 1" in lines
+    assert "- workflowBundleLabel: bundle-old (profile metadata)" in lines
+    assert "- knowledgeReleaseLabel: kb-old (profile metadata)" in lines

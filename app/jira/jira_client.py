@@ -650,11 +650,16 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         """Confluence REST 조회 — 401(SessionExpired)이면 **Confluence 세션만** 무음 갱신 후 한 번
         재시도(자가치유). 갱신도 실패하면 원래 예외를 그대로 올린다(라우트가 needLogin 처리)."""
         try:
-            return self.provider.get_json(url, params=params)
+            result = self.provider.get_json(url, params=params)
         except SessionExpired:
             if self._renew_service("Confluence"):
-                return self.provider.get_json(url, params=params)
-            raise
+                result = self.provider.get_json(url, params=params)
+            else:
+                raise
+        # Direct Confluence reads do not pass through get_or_set. Record the real
+        # successful observation (including zero hits), never a failed request.
+        self.cache._record_read_provenance(time.time(), upstream=True)
+        return result
 
     def _make_provider(self):
         if self.env == "local":
