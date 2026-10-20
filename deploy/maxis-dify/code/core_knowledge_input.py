@@ -26,6 +26,7 @@ def _source_view(row):
     result = {key: value for key, value in row.items() if key not in {"content_sha256", "canonical_id"}}
     if not intent: result["entity_reference"] = row["canonical_id"]
     result["allowed_claim_kinds"] = ["inference", "recommendation"] if intent else ["fact", "inference", "recommendation"]
+    result["fact_paths"] = {"paths": [], "complete": True} if intent else _fact_paths(row["content"], records_only=True)
     return result
 
 
@@ -47,8 +48,9 @@ def main(model_input):
             for row in pack["role_context"]
         ]
         # Original order, facts, metrics and context values survive unchanged.
-        view = _canonical({"contract": "knowledge-input.v1", "context": context,
-            "knowledge_context": incoming["knowledge_context"], "producer_limits": _PRODUCER_LIMITS})
+        view = _encode_fact_view({"contract": "knowledge-input.v1", "context": context,
+            "knowledge_context": incoming["knowledge_context"], "producer_limits": _PRODUCER_LIMITS},
+            _MAX_MODEL_INPUT_UTF8_BYTES)
         if len(view.encode("utf-8", errors="strict")) > _MAX_MODEL_INPUT_UTF8_BYTES: _fail()
         return {"knowledge_input": view}
     except Exception:

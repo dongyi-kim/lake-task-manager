@@ -60,7 +60,7 @@ def main(model_input, candidate):
             output["reads"] = []
             for index, read in enumerate(payload["reads"]):
                 if allowed is not None and read["source"]["value"] not in allowed:
-                    _fail()  # Reject, never silently drop a requested read.
+                    raise ValueError("invalid_core_query_source")  # Reject; never drop a read.
                 row = {key: narrative(read[key], f"/reads/{index}/{key}")
                        for key in ("source", "subject", "where") if key in read}
                 if "coverage" in read:
@@ -77,5 +77,7 @@ def main(model_input, candidate):
             "missing_inputs": missing, "warnings": [], "knowledge_manifest_sha256": pack["knowledge_manifest_sha256"],
             **{key: incoming[key] for key in ("workflow_version", "knowledge_version", "knowledge_proof")}}
         return {"candidate": _canonical(result)}
-    except Exception:
+    except Exception as error:
+        if type(error) is ValueError and str(error) == "invalid_core_query_source":
+            raise ValueError("invalid_core_query_source") from None
         raise ValueError("invalid_core_query_draft") from None

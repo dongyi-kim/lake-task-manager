@@ -20,8 +20,11 @@ def main(model_input):
         for key in ("sources", "role_context"):
             context[key] = [{name: value for name, value in row.items() if name != "content_sha256"}
                 for row in pack[key]]
-        view = _canonical({"contract": "result-input.v1", "context": context,
-            "knowledge_context": incoming["knowledge_context"]})
+        for row in context["sources"]:
+            intent = row["kind"] == "ltm" and row["canonical_id"].startswith("ltm:user-intent:")
+            row["fact_paths"] = {"paths": [], "complete": True} if intent else _fact_paths(row["content"], records_only=False)
+        view = _encode_fact_view({"contract": "result-input.v1", "context": context,
+            "knowledge_context": incoming["knowledge_context"]}, _MAX_MODEL_INPUT_UTF8_BYTES)
         if len(view.encode("utf-8")) > _MAX_MODEL_INPUT_UTF8_BYTES: _fail()
         return {"result_input": view}
     except Exception:

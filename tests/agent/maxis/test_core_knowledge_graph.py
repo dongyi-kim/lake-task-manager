@@ -90,6 +90,7 @@ def test_input_and_prompt_have_one_semantic_owner(nodes, knowledge_case):
         row.pop("content_sha256")
         if not intent: row["entity_reference"] = canonical
         row["allowed_claim_kinds"] = ["inference", "recommendation"] if intent else ["fact", "inference", "recommendation"]
+        row["fact_paths"] = {"paths": [] if intent else [""], "complete": True}
     assert projected["context"] == expected and projected["knowledge_context"] == value["knowledge_context"]
     assert projected["producer_limits"] == {"draft_utf8_bytes": 32768, "envelope_utf8_bytes": 98304, "claims": 40, "bindings": 256}
     local = (ROOT / "app/agent/prompts/roles/knowledge_curator.md").read_text(encoding="utf-8").strip()
@@ -97,6 +98,51 @@ def test_input_and_prompt_have_one_semantic_owner(nodes, knowledge_case):
     assert prompt.count(local) == 1 and "## Required response" not in prompt
     assert "knowledge-draft.v2" in prompt and len(prompt.encode()) <= 8192
     assert nodes[LLM]["structured_output"]["schema"]["properties"]["contract"]["enum"] == ["knowledge-draft.v2"]
+
+
+def test_advisory_paths_resolve_original_records_with_exact_numbers(nodes):
+    view, assembler = code(nodes[INPUT]), code(nodes[ASSEMBLER])
+    raw = '{"tickets":[{"key":"DL-1","n":1.234567890123456789,"state":{"status":"Done"}}],"huge":"' + "x" * 1201 + '"}'
+    hints = view["_fact_paths"](raw, records_only=True)
+    assert hints == {"paths": ["/tickets/0"], "complete": True}
+    assert assembler["_fact_text"](raw, hints["paths"][0], "/our_context") == (
+        '{"key":"DL-1","n":1.234567890123456789,"state":{"status":"Done"}}')
+    assert "/tickets/0/state" not in hints["paths"]
+    assert "/content/tickets/0" not in hints["paths"]
+    assert view["_fact_paths"]('[DL-1] 확인된 원문', records_only=True)["paths"] == [""]
+    assert view["_fact_paths"]('{"a":1,"a":2}', records_only=True)["paths"] == []
+    escaped = '{"a/b~c":[{"key":"DL-1"}]}'
+    assert "/a~1b~0c/0" in view["_fact_paths"](escaped, records_only=True)["paths"]
+    hints = view["_fact_paths"](encoded({"tickets": [{"key": f"DL-{i}"} for i in range(50)]}), records_only=True)
+    assert len(hints["paths"]) == 24 and hints["complete"] is False
+
+
+def test_path_hints_never_displace_source_content_to_fit_budget(nodes):
+    view = {"context": {"sources": [{"content": "keep 원문", "partial": False,
+                                   "fact_paths": {"paths": ["/items/0"], "complete": True}}]}}
+    original = copy.deepcopy(view)
+    expected = copy.deepcopy(view)
+    expected["context"]["sources"][0].pop("fact_paths")
+    result = code(nodes[INPUT])["_encode_fact_view"](view, len(encoded(expected).encode()))
+    assert json.loads(result) == expected
+    assert original["context"]["sources"][0]["content"] == view["context"]["sources"][0]["content"]
+
+
+@pytest.mark.parametrize("content", [
+    '{"a":' * 400 + "1" + "}" * 400,
+    r'{"\ud800":[{"a":1}]}',
+])
+def test_complex_source_omits_invalid_hints_without_rejecting_input(nodes, knowledge_case, content):
+    import hashlib
+    _, incoming, _ = knowledge_case
+    original = json.loads(incoming)
+    original["context_pack"]["sources"][0].update(
+        content=content, content_sha256=hashlib.sha256(content.encode()).hexdigest())
+    result = json.loads(code(nodes[INPUT])["main"](encoded(original))["knowledge_input"])
+    assert result["context"]["sources"][0]["content"] == content
+    hints = result["context"]["sources"][0]["fact_paths"]
+    assert hints["complete"] is False
+    assert all(path.encode("utf-8", errors="strict") == path.encode() for path in hints["paths"])
 
 
 def test_output_shapes_reach_the_actual_knowledge_system_boundary_once(nodes):

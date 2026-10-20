@@ -76,6 +76,16 @@ def test_second_rejection_is_not_hidden_or_retried(runtime):
     assert role_usage_observation(error.value.metadata)["failedCalls"] == 2
 
 
+def test_unsupported_query_source_regenerates_without_dropping_reads(runtime):
+    calls = runtime([failure("invalid_core_query_source"), success()])
+    ask("query_specialist")
+    assert len(calls) == 2
+    hint = calls[1][0][1]["evidencePack"]["role_context"][-1]["content_json"]
+    assert "task.allowed_sources" in hint and "uncertainty" in hint
+    assert calls[0][0][1]["evidencePack"]["sources"] == calls[1][0][1]["evidencePack"]["sources"]
+    mixed = classify_dify_error(400, {"message": "invalid_core_query_source invalid_core_query_input"})
+    assert not mixed.draft_regeneration_allowed
+
 @pytest.mark.parametrize("second_fails", [False, True])
 def test_result_text_api_regenerates_native_structured_draft_once(runtime, second_fails):
     calls = runtime([failure("invalid_core_result_draft"),

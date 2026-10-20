@@ -21,6 +21,9 @@ _CONTENT = json.dumps({
     "validation": "Strict JSON, unique keys, native schema and exact source ID validation did not pass.",
     "request": "Generate a fresh complete native draft. Do not repeat root keys, add schema fields, "
                "cite role-context IDs, or label user-intent/proposed work as external facts. "
+               "For Query, read source values must belong to task.allowed_sources when present; "
+               "record unsupported requested sources in uncertainty, never as executed reads. "
+               "For fact selections, use that source's fact_paths and resolve inside content, not /content. "
                "No rejected candidate has been accepted.",
 }, sort_keys=True, separators=(",", ":"))
 

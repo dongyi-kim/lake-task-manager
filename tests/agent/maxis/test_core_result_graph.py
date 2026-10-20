@@ -94,9 +94,40 @@ def test_projection_preserves_all_admitted_business_context_without_metadata(nod
     for key in ("contract", "payload_schema_json", "payload_schema_sha256", "knowledge_manifest_sha256"): del expected[key]
     for key in ("sources", "role_context"):
         for row in expected[key]: row.pop("content_sha256")
+    for row in expected["sources"]:
+        row["fact_paths"] = {"paths": [""], "complete": True}
     assert view == {"contract": "result-input.v1", "context": expected, "knowledge_context": original["knowledge_context"]}
     assert len(view["context"]["sources"]) == 2 and view["context"]["sources"][1]["partial"] is True
     assert PROOF not in encoded(view) and VERSION not in encoded(view)
+
+
+def test_result_path_hints_are_source_relative_and_replayable(nodes):
+    projection, assembler = code(nodes[INPUT]), code(nodes[ASSEMBLER])
+    raw = '{"ticketDetails":[{"key":"DL-1","status":"Done"}],"count":2,"ratio":0.1234567890123456789}'
+    hints = projection["_fact_paths"](raw, records_only=False)
+    assert set(hints["paths"]) == {"/ticketDetails/0", "/count", "/ratio"}
+    assert hints["complete"] is True
+    for pointer in hints["paths"]:
+        text = assembler["_extract_fact"](raw, pointer)
+        assert text.strip() and len(text) <= 1200
+    assert assembler["_extract_fact"](raw, "/ratio") == '{"ratio":0.1234567890123456789}'
+    assert "/content/ticketDetails/0" not in hints["paths"]
+    assert projection["_fact_paths"]("[]", records_only=False)["paths"] == []
+
+
+@pytest.mark.parametrize("content", [
+    '{"a":' * 400 + "1" + "}" * 400,
+    r'{"\ud800":[{"a":1}]}', r'{"\ud800":1}',
+])
+def test_complex_json_keeps_result_input_available_without_invalid_hints(nodes, result_case, content):
+    import hashlib
+    _, incoming, _ = result_case
+    original = json.loads(incoming)
+    original["context_pack"]["sources"][0].update(
+        content=content, content_sha256=hashlib.sha256(content.encode()).hexdigest())
+    result = json.loads(code(nodes[INPUT])["main"](encoded(original))["result_input"])
+    assert result["context"]["sources"][0]["content"] == content
+    assert result["context"]["sources"][0]["fact_paths"] == {"paths": [], "complete": False}
 
 
 @pytest.mark.parametrize("fault", ["role", "use_case", "schema", "digest", "unbound"])

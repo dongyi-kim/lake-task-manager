@@ -104,7 +104,7 @@ _DIFY_ERROR_MARKERS = (
         "Unsupported parameter:", "Unsupported value:",
     )),
     (MaxisErrorCode.WORKFLOW_CONTRACT, (
-        "invalid_core_query_draft", "invalid_core_request_draft",
+        "invalid_core_query_draft", "invalid_core_query_source", "invalid_core_request_draft",
         "invalid_core_work_draft", "invalid_core_result_draft",
         "invalid_core_knowledge_draft", "invalid_core_control_input",
         "invalid_core_query_input", "invalid_core_request_input",
@@ -115,7 +115,7 @@ _DIFY_ERROR_MARKERS = (
     )),
 )
 _REGENERATABLE_DRAFT_MARKERS = frozenset({
-    "invalid_core_query_draft", "invalid_core_request_draft",
+    "invalid_core_query_draft", "invalid_core_query_source", "invalid_core_request_draft",
     "invalid_core_work_draft", "invalid_core_result_draft", "invalid_core_knowledge_draft",
 })
 _EDITOR_SELECTION_MARKERS = frozenset({

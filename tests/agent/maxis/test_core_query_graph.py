@@ -126,7 +126,7 @@ def test_runtime_capability_violation_is_rejected_in_native_branch(nodes, query_
     business["content_sha256"] = hashlib.sha256(encoded(task).encode()).hexdigest()
     selected = draft(candidate)
     selected["payload"]["reads"][0]["source"]["value"] = source
-    with pytest.raises(ValueError, match="invalid_core_query_draft"):
+    with pytest.raises(ValueError, match="^invalid_core_query_source$"):
         assemble(nodes, encoded(incoming), selected)
 
 
