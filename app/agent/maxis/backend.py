@@ -1035,7 +1035,7 @@ def _role_context(role_id: str, state: dict) -> tuple[list[dict], frozenset[str]
             except ValueError:
                 has_observed_at = False
         partial = not has_observed_at
-        if len(encoded) > 3900 or len(encoded_utf8) > MAX_ROLE_CONTEXT_UTF8_BYTES:
+        if len(encoded) > 8192 or len(encoded_utf8) > MAX_ROLE_CONTEXT_UTF8_BYTES:
             # Do not slice JSON into an invalid or misleading value. A typed omission is
             # visible through ``partial`` and blocks freshness-sensitive draft Roles.
             value = {"omitted": True, "originalChars": len(encoded)}

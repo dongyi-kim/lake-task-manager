@@ -171,7 +171,8 @@ def test_exact_token_equivalence_to_keys_and_scalar_values(data):
     '{"x":"first\\nsecond",}', '{"x":"first\\nsecond","x":"other"}',
     '{"x":NaN}', '{"x":Infinity}', '{"x":1e999}', '{"x":"\\ud800"}',
     "[" * 9 + '"aa\\nbb"' + "]" * 9, json.dumps(["aa"] * 101),
-    json.dumps({"x": "a" * 1500}), '"first\\nsecond"', "null", "true", "123"])
+    json.dumps({"x": "a" * 12000}), '"first\\nsecond"', "null", "true", "123"],
+    ids=lambda value: "oversize-json" if len(value) > 12000 else None)
 def test_unsupported_decode_is_exact_existing_literal_interpretation(raw):
     for guard in GUARDS:
         assert guard.source_lexical_parts(raw) == (raw,)
@@ -191,16 +192,16 @@ def test_no_double_decode_or_cross_value_collision_or_numeric_reformat():
 
 def test_exact_resource_boundaries_and_utf8_bytes():
     for guard in GUARDS:
-        at_limit = '{"x":"' + "a" * 1492 + '"}'
-        assert len(at_limit.encode()) == 1500
+        at_limit = '{"x":"' + "a" * 11992 + '"}'
+        assert len(at_limit.encode()) == 12000
         assert guard.source_lexical_parts(at_limit) != (at_limit,)
         over_limit = at_limit[:-2] + 'a"}'
         assert guard.source_lexical_parts(over_limit) == (over_limit,)
         multibyte = '{"x":"' + "가" * 498 + '"}'
         assert len(multibyte) < 1500 < len(multibyte.encode())
         assert guard.source_lexical_parts(multibyte) == ("x", "가" * 498)
-        at_byte_limit = '["' + "😀" * 1001 + "가" * 164 + '"]'
-        assert len(at_byte_limit.encode()) == 4500 and len(at_byte_limit) <= 1500
+        at_byte_limit = '["' + "😀" * 8999 + '"]'
+        assert len(at_byte_limit.encode()) == 36000 and len(at_byte_limit) <= 12000
         assert guard.source_lexical_parts(at_byte_limit) != (at_byte_limit,)
         over_byte_limit = at_byte_limit[:-2] + '가"]'
         assert guard.source_lexical_parts(over_byte_limit) == (over_byte_limit,)

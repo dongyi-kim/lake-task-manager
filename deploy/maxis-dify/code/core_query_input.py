@@ -14,8 +14,8 @@ import math
 import re
 
 
-_MAX_MODEL_INPUT_UTF8_BYTES = 9000  # KnowledgeGuard output bound
-_MAX_CONTEXT_PACK_UTF8_BYTES = 6144  # ContextGuard / KnowledgeGuard pack bound
+_MAX_MODEL_INPUT_UTF8_BYTES = 40000  # KnowledgeGuard output bound
+_MAX_CONTEXT_PACK_UTF8_BYTES = 32768  # ContextGuard / KnowledgeGuard pack bound
 _INPUT_FIELDS = {"contract", "context_pack", "role_id", "correlation_id", "output_contract",
                  "workflow_version", "knowledge_version", "knowledge_proof", "knowledge_context"}
 _PACK_STRINGS = {"contract", "request_id", "use_case", "query", "pseudonymous_user", "requested_at",

@@ -6,8 +6,8 @@ a nonreturning fail callback raising ValueError. Final guards remain mandatory.
 import hashlib
 import re
 
-_MAX_CONTEXT_PACK_UTF8_BYTES = 6144  # app.agent.maxis.context_guard / Knowledge Guard
-_MAX_MODEL_INPUT_UTF8_BYTES = 9000  # Knowledge Guard output bound
+_MAX_CONTEXT_PACK_UTF8_BYTES = 32768  # app.agent.maxis.context_guard / Knowledge Guard
+_MAX_MODEL_INPUT_UTF8_BYTES = 40000  # Knowledge Guard output bound
 _INPUT_FIELDS = {"contract", "context_pack", "role_id", "correlation_id", "output_contract",
                  "workflow_version", "knowledge_version", "knowledge_proof", "knowledge_context"}
 _PACK_FIELDS = {"contract", "request_id", "use_case", "query", "pseudonymous_user", "requested_at", "scope",

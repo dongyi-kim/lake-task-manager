@@ -190,8 +190,9 @@ def test_ten_sources_are_not_duplicated_and_links_stay_unique(editor_pack):
     assert [s["source_id"] for s in view["sources"]] == view["link_choices"] == [f"s{i}" for i in range(10)]
 
 
-def test_projection_overflow_is_content_free_no_fallback(editor_pack):
-    # Old v2 is valid near the cap; grouping must not truncate or return old input.
+def test_large_input_stops_at_upstream_or_projection_bound_without_fallback(editor_pack):
+    # The 32-KiB pack can hit its own bound before the 40-KiB projected view.
+    # Either boundary must reject, not truncate or silently return a legacy view.
     content(editor_pack["sources"][0], ["x"] * 80, title="t", url="")
     intent(editor_pack, seed="<p>" + "한" * 130 + "</p>")
     namespace = {}
@@ -199,18 +200,21 @@ def test_projection_overflow_is_content_free_no_fallback(editor_pack):
     incoming = HELPER.incoming(editor_pack)
     incoming["knowledge_context"] = []
     # Locate a UTF-8 boundary without assuming platform line endings.
-    for length in range(500):
-        incoming["context_pack"]["sources"][0]["title"] = "t" + "한" * length
+    for length in range(1, 400):
+        content(incoming["context_pack"]["sources"][0], ["x" * length] * 80, title="t", url="")
         raw = encoded(incoming)
-        try: full = HELPER.ASSET.prepare(raw)["model_input"]
-        except ValueError: break
-        if len(full.encode()) > 8960:
+        try:
+            full = HELPER.ASSET.prepare(raw)["model_input"]
+        except ValueError:
             with pytest.raises(ValueError, match="^invalid_editor_input$"): namespace["main"](raw)
             return
-    pytest.fail("fixture did not reach a valid v2 near 9000 UTF-8 bytes")
+        result = namespace["main"](raw)
+        assert result["model_input"] == full
+        assert len(result["selector_input"].encode()) <= 40000
+    pytest.fail("oversized fixture was not rejected by either input boundary")
 
 
-@pytest.mark.parametrize("size", [8999, 9000, 9001])
+@pytest.mark.parametrize("size", [39999, 40000, 40001])
 def test_selector_port_exact_byte_limit_with_injected_prepare_output(size):
     """Pure wrapper boundary: injected prepare output, NOT EvidencePack integration."""
     namespace = {}
@@ -225,7 +229,7 @@ def test_selector_port_exact_byte_limit_with_injected_prepare_output(size):
     prepared = {"model_input": encoded(view), "route": "comment"}
     before = copy.deepcopy(prepared)
     namespace["prepare"] = lambda _: prepared
-    if size > 9000:
+    if size > 40000:
         with pytest.raises(ValueError, match="^invalid_editor_input$"):
             namespace["main"]("injected-prepare-output-only")
     else:

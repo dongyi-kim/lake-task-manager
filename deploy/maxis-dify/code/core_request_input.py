@@ -10,7 +10,7 @@ Source labels describe existing claim-kind restrictions, never approval or facts
 _REQUEST_SCHEMA_JSON = None
 _REQUEST_SCHEMA_SHA256 = None
 _DRAFT_SCHEMA = None
-_MAX_REQUEST_INPUT_UTF8_BYTES = 9000
+_MAX_REQUEST_INPUT_UTF8_BYTES = 40000
 _HIDDEN_PACK_FIELDS = {
     "contract", "payload_schema_json", "payload_schema_sha256", "knowledge_manifest_sha256",
 }

@@ -37,7 +37,7 @@ def prepare_selector_input(model_input):
         return {**prepared, "selector_input": "{}"}  # Unused; never decode/group control input.
     try:
         selector = _canonical(_editor_selector_projection(_object(prepared["model_input"])))
-        if len(selector.encode("utf-8")) > 9000:
+        if len(selector.encode("utf-8")) > 40000:
             _fail()
         return {**prepared, "selector_input": selector}  # Preserve old v2 bytes, not a reserialization.
     except Exception:

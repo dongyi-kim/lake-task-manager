@@ -28,13 +28,14 @@ from app.agent.maxis.contracts import (
 
 
 _SOURCE_KINDS = frozenset({"jira", "confluence", "bitbucket", "knowledge", "ltm"})
-MAX_CONTEXT_PACK_UTF8_BYTES = 6_144
+MAX_CONTEXT_PACK_UTF8_BYTES = 32_768
 MAX_QUERY_UTF8_BYTES = 1_024
-# The wire schema bounds characters separately. Korean text needs three UTF-8
-# bytes per character; keep the unchanged 6 KiB aggregate pack budget.
-MAX_SOURCE_CHARACTERS = 1_500
-MAX_SOURCE_UTF8_BYTES = 4_500
-MAX_ROLE_CONTEXT_UTF8_BYTES = 4_000
+# A source is a verified query result, not an individual paragraph. Five normal
+# ticket details already exceed the former 1,500-character/6-KiB limits. Keep
+# explicit per-value and aggregate bounds; truncation still fails draft safety.
+MAX_SOURCE_CHARACTERS = 12_000
+MAX_SOURCE_UTF8_BYTES = 36_000
+MAX_ROLE_CONTEXT_UTF8_BYTES = 16_384
 _EMAIL = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
 _USER_ID = re.compile(
     r"(?i)(?<![A-Za-z0-9_])(?:sk[a-z]{1,8}|user|emp)\.[a-z0-9_-]{3,}"
@@ -160,6 +161,9 @@ def validate_pack_safety(
         if (len(source.content) > MAX_SOURCE_CHARACTERS
                 or _utf8_bytes(source.content) > MAX_SOURCE_UTF8_BYTES):
             raise ContextGuardError("source_too_large", f"sources[{index}].content")
+    for index, row in enumerate(pack.role_context):
+        if len(row.content_json) > 8192 or _utf8_bytes(row.content_json) > MAX_ROLE_CONTEXT_UTF8_BYTES:
+            raise ContextGuardError("role_context_too_large", f"role_context[{index}].content_json")
     try:
         canonical_schema, schema_digest = canonical_payload_schema(
             pack.payload_schema_json
@@ -285,9 +289,9 @@ class ContextPolicy:
         if not 1 <= self.max_sources <= 10:
             raise ValueError("max_sources must be between 1 and 10")
         if not 1 <= self.max_utf8_bytes_per_source <= MAX_SOURCE_UTF8_BYTES:
-            raise ValueError("max_utf8_bytes_per_source must be between 1 and 4500")
+            raise ValueError(f"max_utf8_bytes_per_source must be between 1 and {MAX_SOURCE_UTF8_BYTES}")
         if not 1000 <= self.max_total_utf8_bytes <= MAX_CONTEXT_PACK_UTF8_BYTES:
-            raise ValueError("max_total_utf8_bytes must be between 1000 and 6144")
+            raise ValueError(f"max_total_utf8_bytes must be between 1000 and {MAX_CONTEXT_PACK_UTF8_BYTES}")
         if not 1 <= self.freshness_seconds <= 86_400:
             raise ValueError("freshness_seconds must be between 1 and 86400")
         object.__setattr__(self, "allowed_scopes", MappingProxyType(scopes))
@@ -698,7 +702,7 @@ class ContextGuard:
                 separators=(",", ":"),
                 allow_nan=False,
             )
-            if _utf8_bytes(content_json) > MAX_ROLE_CONTEXT_UTF8_BYTES:
+            if len(content_json) > 8192 or _utf8_bytes(content_json) > MAX_ROLE_CONTEXT_UTF8_BYTES:
                 raise ContextGuardError("role_context_too_large", f"{path}.value")
             observed_at = _datetime(raw.get("observed_at"), f"{path}.observed_at")
             if observed_at > now and (observed_at - now).total_seconds() > 60:

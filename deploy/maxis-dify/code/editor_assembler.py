@@ -225,7 +225,7 @@ def _control(pack, sources):
 def route(context_pack, role_id, correlation_id, output_contract):
     """Select one contract: description, comment, or a closed synthetic control."""
     pack = _object(context_pack)
-    if (len(_canonical(pack).encode("utf-8")) > 6144 or role_id != "editor_author"
+    if (len(_canonical(pack).encode("utf-8")) > 32768 or role_id != "editor_author"
             or pack.get("contract") != "evidence-pack.v1" or pack.get("use_case") != role_id
             or not isinstance(correlation_id, str) or not _ID.fullmatch(correlation_id)
             or pack.get("request_id") != correlation_id or output_contract != "remote-role-result.v1"
@@ -633,7 +633,7 @@ def _section_order(mode):
 def prepare(model_input):
     """Project trusted KnowledgeGuard output for the model, never mint evidence."""
     try:
-        if not isinstance(model_input, str) or len(model_input.encode("utf-8")) > 9000:
+        if not isinstance(model_input, str) or len(model_input.encode("utf-8")) > 40000:
             _fail()
         incoming = _object(model_input)
         if (set(incoming) != {"contract", "context_pack", "role_id", "correlation_id", "output_contract",
@@ -669,7 +669,7 @@ def prepare(model_input):
             "request": request,
             "entities": _entity_scope(sources, request["target"]),
             "knowledge_context": knowledge, "sources": catalog})
-        if len(projected.encode("utf-8")) > 9000:
+        if len(projected.encode("utf-8")) > 40000:
             _fail()
         return {"model_input": projected, "route": mode}
     except Exception:

@@ -384,7 +384,7 @@ workflow:
         type: start
         variables:
         - label: context_pack
-          max_length: 6144
+          max_length: 32768
           options: []
           required: true
           type: paragraph
@@ -565,34 +565,35 @@ workflow:
           \ ValueError(\"nonfinite number\")\n\n    def number(raw):\n        if not\
           \ math.isfinite(float(raw)):\n            raise ValueError(\"nonfinite number\"\
           )\n        return Number(raw)\n\n    try:\n        if (not isinstance(value,\
-          \ str) or len(value) > 1500\n                or len(value.encode(\"utf-8\"\
-          )) > 4500\n                or not value.lstrip().startswith((\"{\", \"[\"\
-          ))):\n            return (value,)\n        parsed = json.loads(value, object_pairs_hook=pairs,\
-          \ parse_constant=invalid,\n                            parse_int=Number,\
-          \ parse_float=number)\n        if not isinstance(parsed, (dict, list)):\n\
-          \            return (value,)\n        parts, remaining = [], [1024]\n\n\
-          \        def collect(item, depth=0):\n            remaining[0] -= 1\n  \
-          \          if depth > 8 or remaining[0] < 0:\n                raise ValueError(\"\
-          shape limit\")\n            if isinstance(item, str):\n                item.encode(\"\
-          utf-8\")\n                parts.append(item)\n            elif isinstance(item,\
-          \ (dict, list)):\n                if len(item) > 100:\n                \
-          \    raise ValueError(\"collection limit\")\n                for key, child\
-          \ in item.items() if isinstance(item, dict) else enumerate(item):\n    \
-          \                if isinstance(item, dict):\n                        key.encode(\"\
-          utf-8\")\n                        parts.append(key)\n                  \
-          \  collect(child, depth + 1)\n            else:\n                parts.append(\"\
-          null\" if item is None else \"true\" if item else \"false\")\n\n       \
-          \ collect(parsed)\n        return tuple(parts)\n    except (ValueError,\
-          \ TypeError, OverflowError, RecursionError):\n        return (value,)  #\
-          \ No prefix extraction, duplicate winner or partial decode.\n\n\n_CONTRACT\
-          \ = \"remote-role-result.v1\"\n_VALID_ROLES = {\n    \"request_architect\"\
-          ,\n    \"query_specialist\",\n    \"knowledge_curator\",\n    \"portfolio_analyst\"\
-          ,\n    \"work_architect\",\n    \"auditor\",\n    \"result_integrator\"\
-          ,\n    \"editor_author\",\n}\n_TOP_FIELDS = {\n    \"contract\",\n    \"\
-          role_id\",\n    \"status\",\n    \"payload\",\n    \"claims\",\n    \"payload_claims\"\
-          ,\n    \"citations\",\n    \"missing_inputs\",\n    \"warnings\",\n    \"\
-          workflow_version\",\n    \"knowledge_version\",\n    \"knowledge_manifest_sha256\"\
-          ,\n    \"knowledge_proof\",\n}\n_IDENTIFIER = re.compile(r\"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\"\
+          \ str) or len(value) > 12000\n                or len(value.encode(\"utf-8\"\
+          )) > 36000\n                or not value.lstrip().startswith((\"{\", \"\
+          [\"))):\n            return (value,)\n        parsed = json.loads(value,\
+          \ object_pairs_hook=pairs, parse_constant=invalid,\n                   \
+          \         parse_int=Number, parse_float=number)\n        if not isinstance(parsed,\
+          \ (dict, list)):\n            return (value,)\n        parts, remaining\
+          \ = [], [1024]\n\n        def collect(item, depth=0):\n            remaining[0]\
+          \ -= 1\n            if depth > 8 or remaining[0] < 0:\n                raise\
+          \ ValueError(\"shape limit\")\n            if isinstance(item, str):\n \
+          \               item.encode(\"utf-8\")\n                parts.append(item)\n\
+          \            elif isinstance(item, (dict, list)):\n                if len(item)\
+          \ > 100:\n                    raise ValueError(\"collection limit\")\n \
+          \               for key, child in item.items() if isinstance(item, dict)\
+          \ else enumerate(item):\n                    if isinstance(item, dict):\n\
+          \                        key.encode(\"utf-8\")\n                       \
+          \ parts.append(key)\n                    collect(child, depth + 1)\n   \
+          \         else:\n                parts.append(\"null\" if item is None else\
+          \ \"true\" if item else \"false\")\n\n        collect(parsed)\n        return\
+          \ tuple(parts)\n    except (ValueError, TypeError, OverflowError, RecursionError):\n\
+          \        return (value,)  # No prefix extraction, duplicate winner or partial\
+          \ decode.\n\n\n_CONTRACT = \"remote-role-result.v1\"\n_VALID_ROLES = {\n\
+          \    \"request_architect\",\n    \"query_specialist\",\n    \"knowledge_curator\"\
+          ,\n    \"portfolio_analyst\",\n    \"work_architect\",\n    \"auditor\"\
+          ,\n    \"result_integrator\",\n    \"editor_author\",\n}\n_TOP_FIELDS =\
+          \ {\n    \"contract\",\n    \"role_id\",\n    \"status\",\n    \"payload\"\
+          ,\n    \"claims\",\n    \"payload_claims\",\n    \"citations\",\n    \"\
+          missing_inputs\",\n    \"warnings\",\n    \"workflow_version\",\n    \"\
+          knowledge_version\",\n    \"knowledge_manifest_sha256\",\n    \"knowledge_proof\"\
+          ,\n}\n_IDENTIFIER = re.compile(r\"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\"\
           )\n_DIGEST = re.compile(r\"^[0-9a-f]{64}$\")\n_PUBLISHED_WORKFLOW_UUID =\
           \ re.compile(\n    r\"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$\"\
           \n)\n_POINTER = re.compile(r\"^/(?:[^~/]|~[01])+(?:/(?:[^~/]|~[01])+)*$\"\
@@ -1118,9 +1119,9 @@ workflow:
           \n_SENTINEL_DOCUMENT_ID = \"7d70f46c-c30b-5740-99d0-690945e9ead8\"\n\n_CONTEXT_CONTRACT\
           \ = \"evidence-pack.v1\"\n_MODEL_INPUT_CONTRACT = \"ltm-model-input.v1\"\
           \n_OUTPUT_CONTRACT = \"remote-role-result.v1\"\n_MAX_CONTEXT_PACK_UTF8_BYTES\
-          \ = 6144\n_MAX_QUERY_UTF8_BYTES = 1024\n_MAX_KNOWLEDGE_ITEMS = 2\n_MAX_KNOWLEDGE_ITEM_UTF8_BYTES\
+          \ = 32768\n_MAX_QUERY_UTF8_BYTES = 1024\n_MAX_KNOWLEDGE_ITEMS = 2\n_MAX_KNOWLEDGE_ITEM_UTF8_BYTES\
           \ = 768\n_MAX_KNOWLEDGE_TOTAL_UTF8_BYTES = 1024\n_MAX_SENTINEL_UTF8_BYTES\
-          \ = 512\n_MAX_SCALAR_UTF8_BYTES = 128\n_MAX_MODEL_INPUT_UTF8_BYTES = 9000\n\
+          \ = 512\n_MAX_SCALAR_UTF8_BYTES = 128\n_MAX_MODEL_INPUT_UTF8_BYTES = 40000\n\
           _SAFE_CONTROL_CHARACTERS = {\"\\n\", \"\\t\"}\n_CONTEXT_FIELDS = {\n   \
           \ \"contract\", \"request_id\", \"use_case\", \"query\", \"pseudonymous_user\"\
           ,\n    \"requested_at\", \"scope\", \"sources\", \"facts\", \"metrics\"\
@@ -1531,7 +1532,7 @@ workflow:
           \ role_id, correlation_id, output_contract):\n    \"\"\"Select one contract:\
           \ description, comment, or a closed synthetic control.\"\"\"\n    pack =\
           \ _object(context_pack)\n    if (len(_canonical(pack).encode(\"utf-8\"))\
-          \ > 6144 or role_id != \"editor_author\"\n            or pack.get(\"contract\"\
+          \ > 32768 or role_id != \"editor_author\"\n            or pack.get(\"contract\"\
           ) != \"evidence-pack.v1\" or pack.get(\"use_case\") != role_id\n       \
           \     or not isinstance(correlation_id, str) or not _ID.fullmatch(correlation_id)\n\
           \            or pack.get(\"request_id\") != correlation_id or output_contract\
@@ -1774,7 +1775,7 @@ workflow:
           ]\n\n\ndef prepare(model_input):\n    \"\"\"Project trusted KnowledgeGuard\
           \ output for the model, never mint evidence.\"\"\"\n    try:\n        if\
           \ not isinstance(model_input, str) or len(model_input.encode(\"utf-8\"))\
-          \ > 9000:\n            _fail()\n        incoming = _object(model_input)\n\
+          \ > 40000:\n            _fail()\n        incoming = _object(model_input)\n\
           \        if (set(incoming) != {\"contract\", \"context_pack\", \"role_id\"\
           , \"correlation_id\", \"output_contract\",\n                \"workflow_version\"\
           , \"knowledge_version\", \"knowledge_proof\", \"knowledge_context\"}\n \
@@ -1801,7 +1802,7 @@ workflow:
           role_id\": \"editor_author\",\n            \"request\": request,\n     \
           \       \"entities\": _entity_scope(sources, request[\"target\"]),\n   \
           \         \"knowledge_context\": knowledge, \"sources\": catalog})\n   \
-          \     if len(projected.encode(\"utf-8\")) > 9000:\n            _fail()\n\
+          \     if len(projected.encode(\"utf-8\")) > 40000:\n            _fail()\n\
           \        return {\"model_input\": projected, \"route\": mode}\n    except\
           \ Exception:\n        raise ValueError(\"invalid_editor_input\") from None\n\
           \n\ndef _blocks(plan, sources, lookup, mode, seed):\n    claims, citations,\
@@ -2109,7 +2110,7 @@ workflow:
           \ role_id, correlation_id, output_contract):\n    \"\"\"Select one contract:\
           \ description, comment, or a closed synthetic control.\"\"\"\n    pack =\
           \ _object(context_pack)\n    if (len(_canonical(pack).encode(\"utf-8\"))\
-          \ > 6144 or role_id != \"editor_author\"\n            or pack.get(\"contract\"\
+          \ > 32768 or role_id != \"editor_author\"\n            or pack.get(\"contract\"\
           ) != \"evidence-pack.v1\" or pack.get(\"use_case\") != role_id\n       \
           \     or not isinstance(correlation_id, str) or not _ID.fullmatch(correlation_id)\n\
           \            or pack.get(\"request_id\") != correlation_id or output_contract\
@@ -2352,7 +2353,7 @@ workflow:
           ]\n\n\ndef prepare(model_input):\n    \"\"\"Project trusted KnowledgeGuard\
           \ output for the model, never mint evidence.\"\"\"\n    try:\n        if\
           \ not isinstance(model_input, str) or len(model_input.encode(\"utf-8\"))\
-          \ > 9000:\n            _fail()\n        incoming = _object(model_input)\n\
+          \ > 40000:\n            _fail()\n        incoming = _object(model_input)\n\
           \        if (set(incoming) != {\"contract\", \"context_pack\", \"role_id\"\
           , \"correlation_id\", \"output_contract\",\n                \"workflow_version\"\
           , \"knowledge_version\", \"knowledge_proof\", \"knowledge_context\"}\n \
@@ -2379,7 +2380,7 @@ workflow:
           role_id\": \"editor_author\",\n            \"request\": request,\n     \
           \       \"entities\": _entity_scope(sources, request[\"target\"]),\n   \
           \         \"knowledge_context\": knowledge, \"sources\": catalog})\n   \
-          \     if len(projected.encode(\"utf-8\")) > 9000:\n            _fail()\n\
+          \     if len(projected.encode(\"utf-8\")) > 40000:\n            _fail()\n\
           \        return {\"model_input\": projected, \"route\": mode}\n    except\
           \ Exception:\n        raise ValueError(\"invalid_editor_input\") from None\n\
           \n\ndef _blocks(plan, sources, lookup, mode, seed):\n    claims, citations,\
@@ -2519,7 +2520,7 @@ workflow:
           \ = prepare(model_input)\n    if prepared[\"route\"] == \"control\":\n \
           \       return {**prepared, \"selector_input\": \"{}\"}  # Unused; never\
           \ decode/group control input.\n    try:\n        selector = _canonical(_editor_selector_projection(_object(prepared[\"\
-          model_input\"])))\n        if len(selector.encode(\"utf-8\")) > 9000:\n\
+          model_input\"])))\n        if len(selector.encode(\"utf-8\")) > 40000:\n\
           \            _fail()\n        return {**prepared, \"selector_input\": selector}\
           \  # Preserve old v2 bytes, not a reserialization.\n    except Exception:\n\
           \        raise ValueError(\"invalid_editor_input\") from None\n\n# Reviewed\
@@ -3680,7 +3681,7 @@ workflow:
           \ role_id, correlation_id, output_contract):\n    \"\"\"Select one contract:\
           \ description, comment, or a closed synthetic control.\"\"\"\n    pack =\
           \ _object(context_pack)\n    if (len(_canonical(pack).encode(\"utf-8\"))\
-          \ > 6144 or role_id != \"editor_author\"\n            or pack.get(\"contract\"\
+          \ > 32768 or role_id != \"editor_author\"\n            or pack.get(\"contract\"\
           ) != \"evidence-pack.v1\" or pack.get(\"use_case\") != role_id\n       \
           \     or not isinstance(correlation_id, str) or not _ID.fullmatch(correlation_id)\n\
           \            or pack.get(\"request_id\") != correlation_id or output_contract\
@@ -3923,7 +3924,7 @@ workflow:
           ]\n\n\ndef prepare(model_input):\n    \"\"\"Project trusted KnowledgeGuard\
           \ output for the model, never mint evidence.\"\"\"\n    try:\n        if\
           \ not isinstance(model_input, str) or len(model_input.encode(\"utf-8\"))\
-          \ > 9000:\n            _fail()\n        incoming = _object(model_input)\n\
+          \ > 40000:\n            _fail()\n        incoming = _object(model_input)\n\
           \        if (set(incoming) != {\"contract\", \"context_pack\", \"role_id\"\
           , \"correlation_id\", \"output_contract\",\n                \"workflow_version\"\
           , \"knowledge_version\", \"knowledge_proof\", \"knowledge_context\"}\n \
@@ -3950,7 +3951,7 @@ workflow:
           role_id\": \"editor_author\",\n            \"request\": request,\n     \
           \       \"entities\": _entity_scope(sources, request[\"target\"]),\n   \
           \         \"knowledge_context\": knowledge, \"sources\": catalog})\n   \
-          \     if len(projected.encode(\"utf-8\")) > 9000:\n            _fail()\n\
+          \     if len(projected.encode(\"utf-8\")) > 40000:\n            _fail()\n\
           \        return {\"model_input\": projected, \"route\": mode}\n    except\
           \ Exception:\n        raise ValueError(\"invalid_editor_input\") from None\n\
           \n\ndef _blocks(plan, sources, lookup, mode, seed):\n    claims, citations,\
@@ -4077,7 +4078,7 @@ workflow:
           \ in value)\n            or len(set(value)) != len(value)):\n        _fail()\n\
           \    return set(value)\n\n\ndef _validated_spec(model_input, draft_spec):\n\
           \    if not isinstance(model_input, str) or len(model_input.encode(\"utf-8\"\
-          )) > 9000:\n        _fail()\n    view, spec = _object(model_input), _object(draft_spec)\n\
+          )) > 40000:\n        _fail()\n    view, spec = _object(model_input), _object(draft_spec)\n\
           \    if (set(view) != {\"contract\", \"role_id\", \"request\", \"entities\"\
           , \"knowledge_context\", \"sources\"}\n            or view[\"contract\"\
           ] != \"editor-input.v2\" or view[\"role_id\"] != \"editor_author\"\n   \
@@ -4165,7 +4166,7 @@ workflow:
           ,\n                     \"request\": {key: value for key, value in view[\"\
           request\"].items() if key != \"source_ids\"},\n                     \"draft_contract\"\
           : writer_contract, \"units\": writer_units}\n        encoded = _canonical(projected)\n\
-          \        if len(encoded.encode(\"utf-8\")) > 9000:\n            _fail()\n\
+          \        if len(encoded.encode(\"utf-8\")) > 40000:\n            _fail()\n\
           \        return {\"model_input\": encoded, \"route\": spec[\"mode\"], \"\
           candidate\": \"\"}\n    except Exception:\n        raise ValueError(\"invalid_editor_draft_spec\"\
           ) from None\n\n\ndef enforce_spec(candidate, model_input, draft_spec, context_pack):\n\
@@ -4428,7 +4429,7 @@ workflow:
           \ role_id, correlation_id, output_contract):\n    \"\"\"Select one contract:\
           \ description, comment, or a closed synthetic control.\"\"\"\n    pack =\
           \ _object(context_pack)\n    if (len(_canonical(pack).encode(\"utf-8\"))\
-          \ > 6144 or role_id != \"editor_author\"\n            or pack.get(\"contract\"\
+          \ > 32768 or role_id != \"editor_author\"\n            or pack.get(\"contract\"\
           ) != \"evidence-pack.v1\" or pack.get(\"use_case\") != role_id\n       \
           \     or not isinstance(correlation_id, str) or not _ID.fullmatch(correlation_id)\n\
           \            or pack.get(\"request_id\") != correlation_id or output_contract\
@@ -4671,7 +4672,7 @@ workflow:
           ]\n\n\ndef prepare(model_input):\n    \"\"\"Project trusted KnowledgeGuard\
           \ output for the model, never mint evidence.\"\"\"\n    try:\n        if\
           \ not isinstance(model_input, str) or len(model_input.encode(\"utf-8\"))\
-          \ > 9000:\n            _fail()\n        incoming = _object(model_input)\n\
+          \ > 40000:\n            _fail()\n        incoming = _object(model_input)\n\
           \        if (set(incoming) != {\"contract\", \"context_pack\", \"role_id\"\
           , \"correlation_id\", \"output_contract\",\n                \"workflow_version\"\
           , \"knowledge_version\", \"knowledge_proof\", \"knowledge_context\"}\n \
@@ -4698,7 +4699,7 @@ workflow:
           role_id\": \"editor_author\",\n            \"request\": request,\n     \
           \       \"entities\": _entity_scope(sources, request[\"target\"]),\n   \
           \         \"knowledge_context\": knowledge, \"sources\": catalog})\n   \
-          \     if len(projected.encode(\"utf-8\")) > 9000:\n            _fail()\n\
+          \     if len(projected.encode(\"utf-8\")) > 40000:\n            _fail()\n\
           \        return {\"model_input\": projected, \"route\": mode}\n    except\
           \ Exception:\n        raise ValueError(\"invalid_editor_input\") from None\n\
           \n\ndef _blocks(plan, sources, lookup, mode, seed):\n    claims, citations,\
@@ -4825,7 +4826,7 @@ workflow:
           \ in value)\n            or len(set(value)) != len(value)):\n        _fail()\n\
           \    return set(value)\n\n\ndef _validated_spec(model_input, draft_spec):\n\
           \    if not isinstance(model_input, str) or len(model_input.encode(\"utf-8\"\
-          )) > 9000:\n        _fail()\n    view, spec = _object(model_input), _object(draft_spec)\n\
+          )) > 40000:\n        _fail()\n    view, spec = _object(model_input), _object(draft_spec)\n\
           \    if (set(view) != {\"contract\", \"role_id\", \"request\", \"entities\"\
           , \"knowledge_context\", \"sources\"}\n            or view[\"contract\"\
           ] != \"editor-input.v2\" or view[\"role_id\"] != \"editor_author\"\n   \
@@ -4913,7 +4914,7 @@ workflow:
           ,\n                     \"request\": {key: value for key, value in view[\"\
           request\"].items() if key != \"source_ids\"},\n                     \"draft_contract\"\
           : writer_contract, \"units\": writer_units}\n        encoded = _canonical(projected)\n\
-          \        if len(encoded.encode(\"utf-8\")) > 9000:\n            _fail()\n\
+          \        if len(encoded.encode(\"utf-8\")) > 40000:\n            _fail()\n\
           \        return {\"model_input\": encoded, \"route\": spec[\"mode\"], \"\
           candidate\": \"\"}\n    except Exception:\n        raise ValueError(\"invalid_editor_draft_spec\"\
           ) from None\n\n\ndef enforce_spec(candidate, model_input, draft_spec, context_pack):\n\

@@ -530,7 +530,7 @@ workflow:
         type: start
         variables:
         - label: context_pack
-          max_length: 6144
+          max_length: 32768
           options: []
           required: true
           type: paragraph
@@ -1017,34 +1017,35 @@ workflow:
           \ ValueError(\"nonfinite number\")\n\n    def number(raw):\n        if not\
           \ math.isfinite(float(raw)):\n            raise ValueError(\"nonfinite number\"\
           )\n        return Number(raw)\n\n    try:\n        if (not isinstance(value,\
-          \ str) or len(value) > 1500\n                or len(value.encode(\"utf-8\"\
-          )) > 4500\n                or not value.lstrip().startswith((\"{\", \"[\"\
-          ))):\n            return (value,)\n        parsed = json.loads(value, object_pairs_hook=pairs,\
-          \ parse_constant=invalid,\n                            parse_int=Number,\
-          \ parse_float=number)\n        if not isinstance(parsed, (dict, list)):\n\
-          \            return (value,)\n        parts, remaining = [], [1024]\n\n\
-          \        def collect(item, depth=0):\n            remaining[0] -= 1\n  \
-          \          if depth > 8 or remaining[0] < 0:\n                raise ValueError(\"\
-          shape limit\")\n            if isinstance(item, str):\n                item.encode(\"\
-          utf-8\")\n                parts.append(item)\n            elif isinstance(item,\
-          \ (dict, list)):\n                if len(item) > 100:\n                \
-          \    raise ValueError(\"collection limit\")\n                for key, child\
-          \ in item.items() if isinstance(item, dict) else enumerate(item):\n    \
-          \                if isinstance(item, dict):\n                        key.encode(\"\
-          utf-8\")\n                        parts.append(key)\n                  \
-          \  collect(child, depth + 1)\n            else:\n                parts.append(\"\
-          null\" if item is None else \"true\" if item else \"false\")\n\n       \
-          \ collect(parsed)\n        return tuple(parts)\n    except (ValueError,\
-          \ TypeError, OverflowError, RecursionError):\n        return (value,)  #\
-          \ No prefix extraction, duplicate winner or partial decode.\n\n\n_CONTRACT\
-          \ = \"remote-role-result.v1\"\n_VALID_ROLES = {\n    \"request_architect\"\
-          ,\n    \"query_specialist\",\n    \"knowledge_curator\",\n    \"portfolio_analyst\"\
-          ,\n    \"work_architect\",\n    \"auditor\",\n    \"result_integrator\"\
-          ,\n    \"editor_author\",\n}\n_TOP_FIELDS = {\n    \"contract\",\n    \"\
-          role_id\",\n    \"status\",\n    \"payload\",\n    \"claims\",\n    \"payload_claims\"\
-          ,\n    \"citations\",\n    \"missing_inputs\",\n    \"warnings\",\n    \"\
-          workflow_version\",\n    \"knowledge_version\",\n    \"knowledge_manifest_sha256\"\
-          ,\n    \"knowledge_proof\",\n}\n_IDENTIFIER = re.compile(r\"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\"\
+          \ str) or len(value) > 12000\n                or len(value.encode(\"utf-8\"\
+          )) > 36000\n                or not value.lstrip().startswith((\"{\", \"\
+          [\"))):\n            return (value,)\n        parsed = json.loads(value,\
+          \ object_pairs_hook=pairs, parse_constant=invalid,\n                   \
+          \         parse_int=Number, parse_float=number)\n        if not isinstance(parsed,\
+          \ (dict, list)):\n            return (value,)\n        parts, remaining\
+          \ = [], [1024]\n\n        def collect(item, depth=0):\n            remaining[0]\
+          \ -= 1\n            if depth > 8 or remaining[0] < 0:\n                raise\
+          \ ValueError(\"shape limit\")\n            if isinstance(item, str):\n \
+          \               item.encode(\"utf-8\")\n                parts.append(item)\n\
+          \            elif isinstance(item, (dict, list)):\n                if len(item)\
+          \ > 100:\n                    raise ValueError(\"collection limit\")\n \
+          \               for key, child in item.items() if isinstance(item, dict)\
+          \ else enumerate(item):\n                    if isinstance(item, dict):\n\
+          \                        key.encode(\"utf-8\")\n                       \
+          \ parts.append(key)\n                    collect(child, depth + 1)\n   \
+          \         else:\n                parts.append(\"null\" if item is None else\
+          \ \"true\" if item else \"false\")\n\n        collect(parsed)\n        return\
+          \ tuple(parts)\n    except (ValueError, TypeError, OverflowError, RecursionError):\n\
+          \        return (value,)  # No prefix extraction, duplicate winner or partial\
+          \ decode.\n\n\n_CONTRACT = \"remote-role-result.v1\"\n_VALID_ROLES = {\n\
+          \    \"request_architect\",\n    \"query_specialist\",\n    \"knowledge_curator\"\
+          ,\n    \"portfolio_analyst\",\n    \"work_architect\",\n    \"auditor\"\
+          ,\n    \"result_integrator\",\n    \"editor_author\",\n}\n_TOP_FIELDS =\
+          \ {\n    \"contract\",\n    \"role_id\",\n    \"status\",\n    \"payload\"\
+          ,\n    \"claims\",\n    \"payload_claims\",\n    \"citations\",\n    \"\
+          missing_inputs\",\n    \"warnings\",\n    \"workflow_version\",\n    \"\
+          knowledge_version\",\n    \"knowledge_manifest_sha256\",\n    \"knowledge_proof\"\
+          ,\n}\n_IDENTIFIER = re.compile(r\"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\"\
           )\n_DIGEST = re.compile(r\"^[0-9a-f]{64}$\")\n_PUBLISHED_WORKFLOW_UUID =\
           \ re.compile(\n    r\"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$\"\
           \n)\n_POINTER = re.compile(r\"^/(?:[^~/]|~[01])+(?:/(?:[^~/]|~[01])+)*$\"\
@@ -1584,10 +1585,10 @@ workflow:
           ]}\n_SENTINEL_DOCUMENT_NAME = \"ltm-release-sentinel.txt\"\n_SENTINEL_DOCUMENT_ID\
           \ = \"7d70f46c-c30b-5740-99d0-690945e9ead8\"\n\n_CONTEXT_CONTRACT = \"evidence-pack.v1\"\
           \n_MODEL_INPUT_CONTRACT = \"ltm-model-input.v1\"\n_OUTPUT_CONTRACT = \"\
-          remote-role-result.v1\"\n_MAX_CONTEXT_PACK_UTF8_BYTES = 6144\n_MAX_QUERY_UTF8_BYTES\
+          remote-role-result.v1\"\n_MAX_CONTEXT_PACK_UTF8_BYTES = 32768\n_MAX_QUERY_UTF8_BYTES\
           \ = 1024\n_MAX_KNOWLEDGE_ITEMS = 2\n_MAX_KNOWLEDGE_ITEM_UTF8_BYTES = 768\n\
           _MAX_KNOWLEDGE_TOTAL_UTF8_BYTES = 1024\n_MAX_SENTINEL_UTF8_BYTES = 512\n\
-          _MAX_SCALAR_UTF8_BYTES = 128\n_MAX_MODEL_INPUT_UTF8_BYTES = 9000\n_SAFE_CONTROL_CHARACTERS\
+          _MAX_SCALAR_UTF8_BYTES = 128\n_MAX_MODEL_INPUT_UTF8_BYTES = 40000\n_SAFE_CONTROL_CHARACTERS\
           \ = {\"\\n\", \"\\t\"}\n_CONTEXT_FIELDS = {\n    \"contract\", \"request_id\"\
           , \"use_case\", \"query\", \"pseudonymous_user\",\n    \"requested_at\"\
           , \"scope\", \"sources\", \"facts\", \"metrics\", \"role_context\",\n  \
@@ -1999,13 +2000,13 @@ workflow:
           \ rewriting, or fallback repair. A semantic\n    result says only 'not this\
           \ activation'; all existing validation remains required.\n    \"\"\"\n \
           \   try:\n        if not isinstance(model_input, str) or len(model_input.encode(\"\
-          utf-8\")) > 9000:\n            _fail()\n        incoming = json.loads(model_input,\
+          utf-8\")) > 40000:\n            _fail()\n        incoming = json.loads(model_input,\
           \ object_pairs_hook=_pairs, parse_constant=lambda _: _fail())\n        if\
           \ (not isinstance(incoming, dict) or set(incoming) != _INPUT_FIELDS\n  \
           \              or incoming[\"contract\"] != \"ltm-model-input.v1\" or _canonical(incoming)\
           \ != model_input):\n            _fail()\n        pack = incoming[\"context_pack\"\
           ]\n        if not isinstance(pack, dict) or len(_canonical(pack).encode(\"\
-          utf-8\")) > 6144:\n            _fail()\n        if not _reserved(pack):\n\
+          utf-8\")) > 32768:\n            _fail()\n        if not _reserved(pack):\n\
           \            if incoming[\"role_id\"] == \"result_integrator\" or pack.get(\"\
           use_case\") == \"result_integrator\":\n                if (incoming[\"role_id\"\
           ] != \"result_integrator\" or pack.get(\"use_case\") != \"result_integrator\"\
@@ -2971,8 +2972,8 @@ workflow:
           \ core_draft_validation.py. The role supplies its exact schema constants\
           \ and\na nonreturning fail callback raising ValueError. Final guards remain\
           \ mandatory.\n\"\"\"\nimport hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES\
-          \ = 6144  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
-          \ = 9000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
+          \ = 32768  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
+          \ = 40000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
           , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
           ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
           , \"knowledge_context\"}\n_PACK_FIELDS = {\"contract\", \"request_id\",\
@@ -3151,9 +3152,9 @@ workflow:
           \ from the LLM, retaining\nthe exact citation source_id and all business\
           \ content/identifiers. The original\ninput and assembler/guard authority\
           \ remain unchanged.\n\"\"\"\nfrom datetime import datetime\nimport hashlib\n\
-          import json\nimport math\nimport re\n\n\n_MAX_MODEL_INPUT_UTF8_BYTES = 9000\
-          \  # KnowledgeGuard output bound\n_MAX_CONTEXT_PACK_UTF8_BYTES = 6144  #\
-          \ ContextGuard / KnowledgeGuard pack bound\n_INPUT_FIELDS = {\"contract\"\
+          import json\nimport math\nimport re\n\n\n_MAX_MODEL_INPUT_UTF8_BYTES = 40000\
+          \  # KnowledgeGuard output bound\n_MAX_CONTEXT_PACK_UTF8_BYTES = 32768 \
+          \ # ContextGuard / KnowledgeGuard pack bound\n_INPUT_FIELDS = {\"contract\"\
           , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
           ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
           , \"knowledge_context\"}\n_PACK_STRINGS = {\"contract\", \"request_id\"\
@@ -4121,8 +4122,8 @@ workflow:
           \ core_draft_validation.py. The role supplies its exact schema constants\
           \ and\na nonreturning fail callback raising ValueError. Final guards remain\
           \ mandatory.\n\"\"\"\nimport hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES\
-          \ = 6144  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
-          \ = 9000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
+          \ = 32768  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
+          \ = 40000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
           , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
           ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
           , \"knowledge_context\"}\n_PACK_FIELDS = {\"contract\", \"request_id\",\
@@ -4488,8 +4489,8 @@ workflow:
           \ core_draft_validation.py. The role supplies its exact schema constants\
           \ and\na nonreturning fail callback raising ValueError. Final guards remain\
           \ mandatory.\n\"\"\"\nimport hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES\
-          \ = 6144  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
-          \ = 9000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
+          \ = 32768  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
+          \ = 40000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
           , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
           ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
           , \"knowledge_context\"}\n_PACK_FIELDS = {\"contract\", \"request_id\",\
@@ -4539,8 +4540,8 @@ workflow:
           Original input, final guards, model-authored values/kinds/refs remain unchanged.\n\
           Source labels describe existing claim-kind restrictions, never approval\
           \ or facts.\n\"\"\"\n_REQUEST_SCHEMA_JSON = None\n_REQUEST_SCHEMA_SHA256\
-          \ = None\n_DRAFT_SCHEMA = None\n_MAX_REQUEST_INPUT_UTF8_BYTES = 9000\n_HIDDEN_PACK_FIELDS\
-          \ = {\n    \"contract\", \"payload_schema_json\", \"payload_schema_sha256\"\
+          \ = None\n_DRAFT_SCHEMA = None\n_MAX_REQUEST_INPUT_UTF8_BYTES = 40000\n\
+          _HIDDEN_PACK_FIELDS = {\n    \"contract\", \"payload_schema_json\", \"payload_schema_sha256\"\
           , \"knowledge_manifest_sha256\",\n}\n_PACK_STRING_FIELDS = {\n    \"contract\"\
           , \"request_id\", \"use_case\", \"query\", \"pseudonymous_user\", \"requested_at\"\
           ,\n    \"freshness\", \"knowledge_manifest_sha256\", \"payload_schema_json\"\
@@ -5788,8 +5789,8 @@ workflow:
           \ core_draft_validation.py. The role supplies its exact schema constants\
           \ and\na nonreturning fail callback raising ValueError. Final guards remain\
           \ mandatory.\n\"\"\"\nimport hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES\
-          \ = 6144  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
-          \ = 9000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
+          \ = 32768  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
+          \ = 40000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
           , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
           ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
           , \"knowledge_context\"}\n_PACK_FIELDS = {\"contract\", \"request_id\",\
@@ -6166,8 +6167,8 @@ workflow:
           \ core_draft_validation.py. The role supplies its exact schema constants\
           \ and\na nonreturning fail callback raising ValueError. Final guards remain\
           \ mandatory.\n\"\"\"\nimport hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES\
-          \ = 6144  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
-          \ = 9000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
+          \ = 32768  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
+          \ = 40000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
           , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
           ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
           , \"knowledge_context\"}\n_PACK_FIELDS = {\"contract\", \"request_id\",\
@@ -6213,8 +6214,8 @@ workflow:
           \ and bind the existing schema constants.\nEntity references are display\
           \ metadata, never replacement citation identities.\n\"\"\"\n_WORK_SCHEMA_JSON\
           \ = None\n_WORK_SCHEMA_SHA256 = None\n_DRAFT_SCHEMA = None\n_MAX_WORK_INPUT_UTF8_BYTES\
-          \ = 9000\n_HIDDEN_PACK_FIELDS = {\"contract\", \"payload_schema_json\",\
-          \ \"payload_schema_sha256\", \"knowledge_manifest_sha256\"}\n_PACK_STRINGS\
+          \ = 40000\n_HIDDEN_PACK_FIELDS = {\"contract\", \"payload_schema_json\"\
+          , \"payload_schema_sha256\", \"knowledge_manifest_sha256\"}\n_PACK_STRINGS\
           \ = {\"contract\", \"request_id\", \"use_case\", \"query\", \"pseudonymous_user\"\
           , \"requested_at\",\n                 \"freshness\", \"knowledge_manifest_sha256\"\
           , \"payload_schema_json\", \"payload_schema_sha256\"}\n_SOURCE_STRINGS =\
@@ -6256,15 +6257,16 @@ workflow:
           content_sha256\"]):\n            _fail()\n        ids.add(row[\"context_id\"\
           ])\n        names.add(row[\"name\"])\n        raw = row[\"content_json\"\
           ]\n        # Shared decoder accepts objects; a wrapper preserves any JSON\
-          \ root type.\n        value = _decode('{\"value\":' + raw + '}', 4010, _fail)[\"\
-          value\"]\n        if not raw or len(raw.encode(\"utf-8\")) > 4000 or _canonical(value)\
-          \ != raw:\n            _fail()\n        if row[\"name\"] != \"request_plan\"\
-          :\n            continue\n        if type(value) is not dict:\n         \
-          \   _fail()\n        if \"goal\" in value:\n            _request_text(value[\"\
-          goal\"], sources)\n        if \"tasks\" in value:\n            if type(value[\"\
-          tasks\"]) is not list or any(type(task) is not dict for task in value[\"\
-          tasks\"]):\n                _fail()\n            for task in value[\"tasks\"\
-          ]:\n                if \"instruction\" in task:\n                    _request_text(task[\"\
+          \ root type.\n        value = _decode('{\"value\":' + raw + '}', 16400,\
+          \ _fail)[\"value\"]\n        if not raw or len(raw) > 8192 or len(raw.encode(\"\
+          utf-8\")) > 16384 or _canonical(value) != raw:\n            _fail()\n  \
+          \      if row[\"name\"] != \"request_plan\":\n            continue\n   \
+          \     if type(value) is not dict:\n            _fail()\n        if \"goal\"\
+          \ in value:\n            _request_text(value[\"goal\"], sources)\n     \
+          \   if \"tasks\" in value:\n            if type(value[\"tasks\"]) is not\
+          \ list or any(type(task) is not dict for task in value[\"tasks\"]):\n  \
+          \              _fail()\n            for task in value[\"tasks\"]:\n    \
+          \            if \"instruction\" in task:\n                    _request_text(task[\"\
           instruction\"], sources)\n\n\ndef main(model_input):\n    try:\n       \
           \ incoming, pack, _schema, _sources = _draft_context(model_input, \"work_architect\"\
           ,\n            _WORK_SCHEMA_JSON, _WORK_SCHEMA_SHA256, _DRAFT_SCHEMA, _fail)\n\
@@ -6949,8 +6951,8 @@ workflow:
           \ core_draft_validation.py. The role supplies its exact schema constants\
           \ and\na nonreturning fail callback raising ValueError. Final guards remain\
           \ mandatory.\n\"\"\"\nimport hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES\
-          \ = 6144  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
-          \ = 9000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
+          \ = 32768  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
+          \ = 40000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
           , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
           ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
           , \"knowledge_context\"}\n_PACK_FIELDS = {\"contract\", \"request_id\",\
@@ -7193,8 +7195,8 @@ workflow:
           \ core_draft_validation.py. The role supplies its exact schema constants\
           \ and\na nonreturning fail callback raising ValueError. Final guards remain\
           \ mandatory.\n\"\"\"\nimport hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES\
-          \ = 6144  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
-          \ = 9000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
+          \ = 32768  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
+          \ = 40000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
           , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
           ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
           , \"knowledge_context\"}\n_PACK_FIELDS = {\"contract\", \"request_id\",\
@@ -7667,8 +7669,8 @@ workflow:
           \ core_draft_validation.py. The role supplies its exact schema constants\
           \ and\na nonreturning fail callback raising ValueError. Final guards remain\
           \ mandatory.\n\"\"\"\nimport hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES\
-          \ = 6144  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
-          \ = 9000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
+          \ = 32768  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
+          \ = 40000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
           , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
           ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
           , \"knowledge_context\"}\n_PACK_FIELDS = {\"contract\", \"request_id\",\
@@ -7861,8 +7863,8 @@ workflow:
           \ core_draft_validation.py. The role supplies its exact schema constants\
           \ and\na nonreturning fail callback raising ValueError. Final guards remain\
           \ mandatory.\n\"\"\"\nimport hashlib\nimport re\n\n_MAX_CONTEXT_PACK_UTF8_BYTES\
-          \ = 6144  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
-          \ = 9000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
+          \ = 32768  # app.agent.maxis.context_guard / Knowledge Guard\n_MAX_MODEL_INPUT_UTF8_BYTES\
+          \ = 40000  # Knowledge Guard output bound\n_INPUT_FIELDS = {\"contract\"\
           , \"context_pack\", \"role_id\", \"correlation_id\", \"output_contract\"\
           ,\n                 \"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
           , \"knowledge_context\"}\n_PACK_FIELDS = {\"contract\", \"request_id\",\

@@ -91,7 +91,7 @@ def build_pack(spec: dict, manifest: str, request_id: str, observed: datetime,
         knowledge_manifest_sha256=manifest, payload_schema_json=schema,
         payload_schema_sha256=schema_hash,
     )
-    if len(pack.query.encode('utf-8')) > 1024 or len(canonical_evidence_pack_json(pack).encode('utf-8')) > 6144:
+    if len(pack.query.encode('utf-8')) > 1024 or len(canonical_evidence_pack_json(pack).encode('utf-8')) > 32768:
         raise ValueError('synthetic editor pack exceeds reviewed wire budget')
     validate_pack_safety(pack)
     return pack

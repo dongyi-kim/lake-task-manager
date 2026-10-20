@@ -100,7 +100,9 @@ TaskFlow/Native Agent의 목표 연결과 아직 필요한 trusted adapter는 [T
 
 Start 변수는 `context_pack`, `role_id`, `correlation_id`, `output_contract`,
 `workflow_version`, `knowledge_version`의 6개다. `query`/`user`는 Chat API 필드다.
-pack은 최대 6,144 UTF-8 bytes이며 나머지 Start scalar의 최소 수용량은 128이다.
+pack은 최대 32,768 UTF-8 bytes이며 나머지 Start scalar의 최소 수용량은 128이다.
+여러 티켓을 포함하는 조회 결과도 이 한도 안에서 원문을 보존한다. 초과·잘림·오래된
+조회는 여전히 초안 생성을 차단한다. 기존 게시본도 Start 및 Code 노드를 함께 갱신해야 한다.
 대화 ID는 비우고 이름 자동 생성을 끈 stateless 요청을 사용한다.
 
 - **Policy RAG:** 조직 규칙·형식·검증 절차. 환경별 metadata Role filter와 exact allow-list를

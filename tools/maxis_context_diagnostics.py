@@ -61,7 +61,7 @@ def describe_context(role_id: str, state: dict, pack: EvidencePackV1) -> dict:
     encoded = {key: _encoded_value(role_id, key, state) for key in projected}
     per_field = {
         key for key, value in encoded.items()
-        if len(value) > 3900 or len(value.encode("utf-8")) > MAX_ROLE_CONTEXT_UTF8_BYTES
+        if len(value) > 8192 or len(value.encode("utf-8")) > MAX_ROLE_CONTEXT_UTF8_BYTES
     }
     flags = sorted(set(pack.flags) & _SAFE_FLAGS)
     removed = set(projected) - set(final)
@@ -92,7 +92,7 @@ def describe_context(role_id: str, state: dict, pack: EvidencePackV1) -> dict:
         "roleId": role_id,
         **{label: [key for key in declared if key in keys] for label, keys in groups.items()},
         "counts": {label: len(groups[f"{label}Keys"]) for label in ("declared", "allowed", "eligible", "projected", "final")},
-        "limits": {"projectionCount": 8, "projectionChars": 3900,
+        "limits": {"projectionCount": 8, "projectionChars": 8192,
                    "fieldUtf8Bytes": MAX_ROLE_CONTEXT_UTF8_BYTES,
                    "packUtf8Bytes": MAX_CONTEXT_PACK_UTF8_BYTES,
                    "queryUtf8Bytes": MAX_QUERY_UTF8_BYTES},

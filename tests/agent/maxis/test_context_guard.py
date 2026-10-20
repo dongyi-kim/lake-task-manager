@@ -10,6 +10,8 @@ from app.agent.maxis.context_guard import (
     MAX_CONTEXT_PACK_UTF8_BYTES,
     MAX_QUERY_UTF8_BYTES,
     MAX_ROLE_CONTEXT_UTF8_BYTES,
+    MAX_SOURCE_CHARACTERS,
+    MAX_SOURCE_UTF8_BYTES,
     canonical_evidence_pack_json,
 )
 
@@ -41,7 +43,7 @@ def test_context_guard_pseudonymizes_and_bounds_sources(context_guard, now):
         _source(
             index,
             now,
-            content=("담당 skcc.x1042, owner@example.com " + "가" * 1700),
+            content=("담당 skcc.x1042, owner@example.com " + "가" * 12001),
         )
         for index in range(11)
     ]
@@ -55,7 +57,7 @@ def test_context_guard_pseudonymizes_and_bounds_sources(context_guard, now):
         requested_at=now,
     )
     assert len(pack.sources) == 10
-    assert all(len(source.content) <= 1500 for source in pack.sources)
+    assert all(len(source.content) <= MAX_SOURCE_CHARACTERS for source in pack.sources)
     assert "skcc.x1042" not in pack.query
     assert "owner@example.com" not in pack.query
     assert pack.pseudonymous_user.startswith("ltm_")
@@ -92,7 +94,31 @@ def test_complete_korean_json_is_not_truncated_at_ascii_byte_limit(context_guard
     assert len(canonical_evidence_pack_json(pack).encode()) <= 6144
 
 
-@pytest.mark.parametrize("text", ["a" * 1501, "😀" * 1126])
+def test_complete_multi_ticket_query_and_context_fit_without_truncation(now):
+    guard = ContextGuard(
+        ContextPolicy(allowed_scopes={"jira": ("DL",)}, allowed_context_keys={"evidence"}),
+        b"test-pseudonym-key-32-bytes-long",
+    )
+    tickets = [{"key": f"DL-{index}", "description": "검증 전 운영 반영은 금지한다. " * 18,
+                "comments": [{"body": "결과표와 소비 여부를 별도로 검증한다. " * 8}]}
+               for index in range(5)]
+    content = json.dumps({"tickets": tickets, "complete": True}, ensure_ascii=False)
+    source = {**_source(1, now, content=content), "url": ""}
+    pack = guard.build(
+        request_id="multi-ticket-result", use_case="work_architect", query="PoC 계획",
+        payload_schema=_PAYLOAD_SCHEMA, user_identity="synthetic",
+        sources=[source], requested_at=now,
+        role_context=[{"context_id": "ctx-evidence", "name": "evidence",
+                       "value": tickets, "observed_at": now}],
+    )
+    assert len(content) > 1500 and len(content.encode()) > 6144
+    assert json.loads(pack.sources[0].content) == json.loads(content)
+    assert json.loads(pack.role_context[0].content_json) == tickets
+    assert pack.freshness == "fresh" and not pack.partial
+    assert len(canonical_evidence_pack_json(pack).encode()) <= MAX_CONTEXT_PACK_UTF8_BYTES
+
+
+@pytest.mark.parametrize("text", ["a" * 12001, "😀" * 9001], ids=["character-overflow", "byte-overflow"])
 def test_source_character_and_byte_bounds_remain_fail_closed(context_guard, now, text):
     pack = context_guard.build(
         request_id="bounded-source", use_case="editor_author", query="검토 요청",
@@ -100,9 +126,9 @@ def test_source_character_and_byte_bounds_remain_fail_closed(context_guard, now,
         sources=[_source(1, now, content=text)], requested_at=now,
     )
     assert pack.partial and pack.sources[0].truncated
-    assert len(pack.sources[0].content) <= 1500
-    assert len(pack.sources[0].content.encode()) <= 4500
-    assert len(canonical_evidence_pack_json(pack).encode()) <= 6144
+    assert len(pack.sources[0].content) <= MAX_SOURCE_CHARACTERS
+    assert len(pack.sources[0].content.encode()) <= MAX_SOURCE_UTF8_BYTES
+    assert len(canonical_evidence_pack_json(pack).encode()) <= MAX_CONTEXT_PACK_UTF8_BYTES
 
 
 def test_direct_pack_cannot_bypass_per_source_utf8_bound(context_guard, now):
@@ -113,11 +139,27 @@ def test_direct_pack_cannot_bypass_per_source_utf8_bound(context_guard, now):
         payload_schema=_PAYLOAD_SCHEMA, user_identity="synthetic",
         sources=[_source(1, now)], requested_at=now,
     )
-    content = "😀" * 1126
+    content = "😀" * 9001
     source = pack.sources[0].model_copy(update={
         "content": content, "content_sha256": hashlib.sha256(content.encode()).hexdigest()})
     with pytest.raises(ContextGuardError, match="source_too_large"):
         validate_pack_safety(pack.model_copy(update={"sources": (source,)}))
+
+
+def test_direct_pack_cannot_bypass_role_context_utf8_bound(context_guard, now):
+    import hashlib
+    from app.agent.maxis.context_guard import validate_pack_safety
+    from app.agent.maxis.contracts import RoleContextV1
+    pack = context_guard.build(
+        request_id="direct-role-context", use_case="work_architect", query="계획",
+        payload_schema=_PAYLOAD_SCHEMA, user_identity="synthetic",
+        sources=[], requested_at=now,
+    )
+    raw = json.dumps("가" * 6000, ensure_ascii=False)
+    row = RoleContextV1(context_id="ctx-large", name="situation", content_json=raw,
+        content_sha256=hashlib.sha256(raw.encode()).hexdigest(), observed_at=now)
+    with pytest.raises(ContextGuardError, match="role_context_too_large"):
+        validate_pack_safety(pack.model_copy(update={"role_context": (row,)}))
 
 
 @pytest.mark.parametrize(
@@ -297,7 +339,7 @@ def test_role_context_rejects_unlisted_keys_and_nested_authority(now):
 
 
 @pytest.mark.parametrize(
-    "value", ["a" * 3998, "가" * 1332 + "ab", "🙂" * 999 + "ab"],
+    "value", ["a" * 8190, "가" * 5460 + "ab", "🙂" * 4095 + "ab"],
     ids=["ascii", "korean", "emoji"],
 )
 def test_role_context_guard_keeps_exact_utf8_boundary_and_rejects_overflow(now, value):
@@ -311,7 +353,8 @@ def test_role_context_guard_keeps_exact_utf8_boundary_and_rejects_overflow(now, 
         sources=[], requested_at=now,
     )
     row = {"context_id": "ctx-1", "name": "situation", "value": value, "observed_at": now}
-    assert len(json.dumps(value, ensure_ascii=False).encode("utf-8")) == MAX_ROLE_CONTEXT_UTF8_BYTES
+    encoded = json.dumps(value, ensure_ascii=False)
+    assert len(encoded) == 8192 or len(encoded.encode("utf-8")) == MAX_ROLE_CONTEXT_UTF8_BYTES
 
     pack = guard.build(**base, role_context=[row])
 
@@ -481,7 +524,7 @@ def test_context_guard_reduces_low_priority_role_context_to_total_budget(now):
     rows = [{
         "context_id": f"rctx-{index}",
         "name": key,
-        "value": "a" * 3900,
+        "value": "a" * 8000,
         "observed_at": now,
         "partial": False,
     } for index, key in enumerate(keys)]
@@ -509,7 +552,7 @@ def test_context_guard_budgets_exact_serialized_json_including_escaping(
     # Bound the exact wire representation: escaping and multibyte text must consume
     # the same conservative budget as the serialized Dify paragraph.
     rows = [
-        _source(index, now, content=("\\\"" * 750))
+        _source(index, now, content=("\\\"" * 6000))
         for index in range(10)
     ]
     pack = context_guard.build(

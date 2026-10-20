@@ -60,7 +60,7 @@ REVIEWED_SOURCE_DSLS = {
 DEV_ENVIRONMENT_BINDING_PATH = (
     ROOT / "deploy" / "maxis-dify" / "environments" / "dev.yml"
 )
-EDITOR_ASSEMBLER_SHA256 = "7071595b59c418bccb11b39dbd9db9f8d0924cc32272cb9378fbd99367afb500"
+EDITOR_ASSEMBLER_SHA256 = "0572fc81eabcca358a52f49b51ed83677251924dac411d03caa14f1660ce4000"
 KNOWLEDGE_GUARD_TEMPLATE_SOURCE = (
     ROOT / "deploy" / "maxis-dify" / "code" / "knowledge_guard.py"
 ).read_text(encoding="utf-8").rstrip()

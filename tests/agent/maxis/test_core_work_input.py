@@ -63,6 +63,41 @@ def test_exact_view_keeps_order_identity_hashes_refs_and_business_text(compiled,
     assert incoming == before
 
 
+def test_large_complete_query_crosses_native_input_assembler_and_final_guards(
+    compiled, assembler, case, context_guard, now,
+):
+    from app.agent.workflow.work_architect.contracts import CREATE_SCHEMA
+    from test_dify_knowledge_guard_code import _arguments, _item
+    from test_core_work_assembler import VERSION
+    original, _, draft, expected = case
+    sources = [row.model_dump() for row in original.sources]
+    sources[1]["content"] = encoded({
+        "complete": True,
+        "tickets": [{"key": f"DL-{index}", "description": "검증 전 운영 반영은 금지한다. " * 55}
+                    for index in range(5)],
+    })
+    pack = context_guard.build(
+        request_id=original.request_id, use_case="work_architect", query=original.query,
+        payload_schema=CREATE_SCHEMA, knowledge_manifest_sha256="a" * 64,
+        user_identity="synthetic", requested_at=now, sources=sources,
+    )
+    assert 6144 < len(encoded(pack.model_dump(mode="json")).encode()) <= 32768
+    assert not pack.partial and pack.freshness == "fresh"
+    native, args = _arguments("agent_core", "work_architect")
+    name = native["_ALLOWED_DOCUMENT_NAMES_BY_ROLE"]["work_architect"][0]
+    args[0] = [_item(dataset_id=native["_DATASET_ID"],
+                    document_id=native["_DOCUMENT_IDS_BY_NAME"][name], document_name=name)]
+    args[2:6] = [encoded(pack.model_dump(mode="json")), pack.query, "work_architect", pack.request_id]
+    args[7:10] = [VERSION, VERSION, "kb-test"]
+    accepted = native["main"](*args)
+    assert accepted["policy_decision"] == "allow"
+    incoming = json.loads(accepted["model_input"])
+    assert view(compiled, incoming)["context"]["sources"][1]["content"] == sources[1]["content"]
+    candidate = json.loads(assembler[0]["main"](accepted["model_input"], encoded(draft))["candidate"])
+    remote, local = guards(pack, candidate)
+    assert remote == candidate and local()[1] == expected
+
+
 @pytest.mark.parametrize("kind,canonical,intent", [
     ("ltm", "ltm:user-intent:x", True), ("ltm", "ltm:user-intent:", True),
     ("jira", "ltm:user-intent:x", False), ("ltm", "DL-123", False),
@@ -156,14 +191,14 @@ def test_original_and_output_utf8_budgets_fail_without_truncation(compiled, case
     assert encoded(view(compiled, incoming)) == current
     monkeypatch.setitem(compiled, "_MAX_WORK_INPUT_UTF8_BYTES", len(current.encode()) - 1)
     reject(compiled, incoming)
-    monkeypatch.setitem(compiled, "_MAX_WORK_INPUT_UTF8_BYTES", 9000)
-    for location, maximum in ((incoming["context_pack"], 6144), (incoming, 9000)):
+    monkeypatch.setitem(compiled, "_MAX_WORK_INPUT_UTF8_BYTES", 40000)
+    for location, maximum in ((incoming["context_pack"], 32768), (incoming, 40000)):
         target, field = (location, "query") if location is incoming["context_pack"] else (incoming, "knowledge_context")
         if field == "query":
-            target[field] = "한" * 2100
+            target[field] = "한" * 11000
         else:
             incoming["context_pack"]["query"] = "원문"
-            target[field] = ["한" * 3100]
+            target[field] = ["한" * 14000]
         assert len(encoded(location).encode()) > maximum
         reject(compiled, incoming)
 

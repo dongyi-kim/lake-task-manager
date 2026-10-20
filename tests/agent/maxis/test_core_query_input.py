@@ -85,8 +85,8 @@ def test_projection_removes_only_competing_contract_and_metadata(projector, inco
     assert incoming == original
     assert not HIDDEN.intersection(output["context"])
     assert not set(incoming).intersection(output) - {"contract", "knowledge_context"}
-    assert projector["_MAX_CONTEXT_PACK_UTF8_BYTES"] == MAX_CONTEXT_PACK_UTF8_BYTES == 6144
-    assert projector["_MAX_MODEL_INPUT_UTF8_BYTES"] == 9000
+    assert projector["_MAX_CONTEXT_PACK_UTF8_BYTES"] == MAX_CONTEXT_PACK_UTF8_BYTES == 32768
+    assert projector["_MAX_MODEL_INPUT_UTF8_BYTES"] == 40000
 
 
 def test_nested_values_and_order_are_preserved_without_normalization(projector, incoming):
@@ -214,7 +214,7 @@ def padded(incoming, location, field, maximum, unit):
 
 @pytest.mark.parametrize("unit", ["x", "한", "😀"], ids=["ascii", "korean", "emoji"])
 def test_utf8_input_limit_is_inclusive(projector, incoming, unit):
-    value = padded(incoming, "input", "knowledge_proof", 9000, unit)
+    value = padded(incoming, "input", "knowledge_proof", 40000, unit)
     project(projector, value)
     value["knowledge_proof"] += "x"
     rejected(projector, canonical(value))
@@ -222,7 +222,7 @@ def test_utf8_input_limit_is_inclusive(projector, incoming, unit):
 
 @pytest.mark.parametrize("unit", ["x", "한", "😀"], ids=["ascii", "korean", "emoji"])
 def test_utf8_pack_limit_is_inclusive(projector, incoming, unit):
-    value = padded(incoming, "pack", "payload_schema_json", 6144, unit)
+    value = padded(incoming, "pack", "payload_schema_json", 32768, unit)
     project(projector, value)
     value["context_pack"]["payload_schema_json"] += "x"
     rejected(projector, canonical(value))
@@ -392,12 +392,12 @@ def test_query_authority_output_bound_is_utf8_inclusive(projector, incoming, uni
     incoming["knowledge_context"] = [{"content": ""}]
     expected = {"contract": "query-input.v2", "task": {"text": "데이터 자산 이력을 찾아줘"},
                 "context": context_view(pack), "knowledge_context": incoming["knowledge_context"]}
-    remaining = 9000 - len(canonical(expected).encode("utf-8"))
+    remaining = 40000 - len(canonical(expected).encode("utf-8"))
     assert remaining > 0
     width = len(unit.encode("utf-8"))
     incoming["knowledge_context"][0]["content"] = unit * (remaining // width) + "x" * (remaining % width)
-    assert len(canonical(incoming).encode("utf-8")) <= 9000
-    assert len(canonical(project(projector, incoming)).encode("utf-8")) == 9000
+    assert len(canonical(incoming).encode("utf-8")) <= 40000
+    assert len(canonical(project(projector, incoming)).encode("utf-8")) == 40000
     incoming["knowledge_context"][0]["content"] += "x"
-    assert len(canonical(incoming).encode("utf-8")) <= 9000
+    assert len(canonical(incoming).encode("utf-8")) <= 40000
     rejected(projector, canonical(incoming))

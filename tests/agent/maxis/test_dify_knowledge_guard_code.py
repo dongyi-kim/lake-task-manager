@@ -403,8 +403,8 @@ def test_guard_binds_canonical_pack_query_and_controls_before_model_execution():
 def test_guard_enforces_context_and_final_model_input_utf8_budgets():
     guard, args = _arguments("agent_core", "auditor")
     oversized = list(args)
-    oversized[2] = "가" * 2049
-    assert len(oversized[2].encode("utf-8")) > 6144
+    oversized[2] = "가" * 10923
+    assert len(oversized[2].encode("utf-8")) > 32768
     with pytest.raises(guard["KnowledgeGuardError"], match="context_pack_size_invalid"):
         guard["main"](*oversized)
 

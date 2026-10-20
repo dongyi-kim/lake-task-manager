@@ -81,7 +81,7 @@ _REQUIRED_START_CONTROLS = {
     "knowledge_version": "text-input",
 }
 # ContextGuard and the final client boundary cap the exact serialized EvidencePack at
-# 6 KiB of UTF-8. A deployed Dify paragraph must accommodate the all-ASCII worst case;
+# 32 KiB of UTF-8. A deployed Dify paragraph must accommodate the all-ASCII worst case;
 # ``null``/missing max_length is treated as unbounded. Short controls must accommodate
 # our 128-character wire IDs.
 _MIN_START_CAPACITY = {"context_pack": MAX_CONTEXT_PACK_UTF8_BYTES, **{

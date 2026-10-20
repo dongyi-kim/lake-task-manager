@@ -1124,14 +1124,14 @@ def test_portfolio_remote_context_projects_prefetched_pmo_material():
 
 
 @pytest.mark.parametrize(("situation", "omitted"), [
-    pytest.param("a" * 3898, False, id="ascii-exact-char-limit"),
-    pytest.param("a" * 3899, True, id="ascii-over-char-limit"),
-    pytest.param("가" * 1332, False, id="korean-below-byte-limit"),
-    pytest.param("가" * 1332 + "ab", False, id="korean-exact-byte-limit"),
-    pytest.param("가" * 1332 + "abc", True, id="korean-over-byte-limit"),
-    pytest.param("가" * 1500, True, id="korean-original-reproduction"),
-    pytest.param("🙂" * 999 + "ab", False, id="emoji-exact-byte-limit"),
-    pytest.param("🙂" * 1000, True, id="emoji-over-byte-limit"),
+    pytest.param("a" * 8190, False, id="ascii-exact-char-limit"),
+    pytest.param("a" * 8191, True, id="ascii-over-char-limit"),
+    pytest.param("가" * 5460, False, id="korean-below-byte-limit"),
+    pytest.param("가" * 5460 + "ab", False, id="korean-exact-byte-limit"),
+    pytest.param("가" * 5460 + "abc", True, id="korean-over-byte-limit"),
+    pytest.param("가" * 1500, False, id="korean-original-reproduction"),
+    pytest.param("🙂" * 4095 + "ab", False, id="emoji-exact-byte-limit"),
+    pytest.param("🙂" * 4096, True, id="emoji-over-byte-limit"),
 ])
 def test_role_context_size_boundaries_preserve_state_and_mark_omission(situation, omitted):
     state = _runtime_state("knowledge_curator")
@@ -1157,7 +1157,7 @@ def test_role_context_size_boundaries_preserve_state_and_mark_omission(situation
     assert row.observed_at == datetime.fromisoformat(state["correlation_started_at"])
 
 
-@pytest.mark.parametrize("situation", ["직전 질문까지 정리한 상황", "가" * 1500], ids=["small", "omitted"])
+@pytest.mark.parametrize("situation", ["직전 질문까지 정리한 상황", "가" * 5500], ids=["small", "omitted"])
 def test_interview_continuation_preserves_carried_role_context_observation_time(situation):
     from app.agent.workflow.session import _turn_start_patch
 
@@ -1190,9 +1190,9 @@ def test_interview_continuation_preserves_carried_role_context_observation_time(
     assert pack.freshness == "mixed"
     assert pack.sources[0].canonical_id.startswith("ltm:user-intent:")
     assert "stale_role_context" in pack.flags
-    if situation == "가" * 1500:
+    if situation == "가" * 5500:
         assert json.loads(pack.role_context[0].content_json) == {
-            "omitted": True, "originalChars": 1502,
+            "omitted": True, "originalChars": 5502,
         }
         assert pack.role_context[0].partial is True
 

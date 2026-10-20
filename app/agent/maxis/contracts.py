@@ -229,7 +229,7 @@ class EvidenceSourceV1(StrictFrozenModel):
     title: Annotated[str, Field(min_length=1, max_length=240)]
     scope: Annotated[str, Field(default="", max_length=160)] = ""
     url: Annotated[str, Field(default="", max_length=2048)] = ""
-    content: Annotated[str, Field(max_length=1500)]
+    content: Annotated[str, Field(max_length=12000)]
     retrieved_at: datetime
     updated_at: datetime | None = None
     content_sha256: Digest
@@ -285,7 +285,7 @@ class RoleContextV1(StrictFrozenModel):
 
     context_id: Identifier
     name: Identifier
-    content_json: Annotated[str, Field(min_length=1, max_length=4000)]
+    content_json: Annotated[str, Field(min_length=1, max_length=8192)]
     observed_at: datetime
     content_sha256: Digest
     partial: bool = False

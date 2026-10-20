@@ -32,7 +32,7 @@ def _pack(role, state, *, synthetic=False, budget=6144):
 def test_count_and_field_size_omissions_are_distinct_and_observational(role):
     keys = ROLE_SPECS[role].remote_context_keys
     state = {key: "private-value" for key in keys}
-    state.update(correlation_started_at=NOW.isoformat(), **{keys[0]: "z" * 4000})
+    state.update(correlation_started_at=NOW.isoformat(), **{keys[0]: "z" * 8192})
     pack = _pack(role, state)
     before_state, before_pack = deepcopy(state), pack.model_dump()
     result = describe_context(role, state, pack)
@@ -59,7 +59,7 @@ def test_aggregate_budget_omission_and_removal_are_separate():
     assert result["packUtf8Bytes"] <= result["limits"]["packUtf8Bytes"]
 
 
-@pytest.mark.parametrize("value", ["가" * 1500, "🙂" * 1000], ids=["korean", "emoji"])
+@pytest.mark.parametrize("value", ["가" * 5500, "🙂" * 4100], ids=["korean", "emoji"])
 def test_utf8_field_omission_is_reported_without_leaking_or_changing_state(value):
     state = {"situation": value, "correlation_started_at": NOW.isoformat()}
     before_state = deepcopy(state)
@@ -110,7 +110,7 @@ def test_role_mismatch_and_unknown_role_are_rejected_without_echo():
 
 
 def test_carried_observation_still_counts_when_field_is_omitted():
-    value = "a" * 4000
+    value = "a" * 8192
     state = {"situation": value, "role_context_carryover": {"situation": {
         "sha256": hashlib.sha256(json.dumps(value).encode()).hexdigest(),
         "observed_at": NOW.isoformat(),

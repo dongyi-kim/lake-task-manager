@@ -25,7 +25,7 @@ start_variable_control:
   knowledge_version: text-input
 
 start_variable_min_capacity:
-  context_pack: 6144
+  context_pack: 32768
   role_id: 128
   correlation_id: 128
   output_contract: 128
@@ -77,14 +77,14 @@ knowledge_guard_contract:
     - document_id
     - document_name
   role_policy: exact_workflow_role_document_allowlist
-  context_pack_max_utf8_bytes: 6144
+  context_pack_max_utf8_bytes: 32768
   query_max_utf8_bytes: 1024
   max_items: 2
   max_utf8_bytes_per_item: 768
   max_total_utf8_bytes: 1024
   sentinel_max_utf8_bytes: 512
   scalar_max_utf8_bytes: 128
-  model_input_max_utf8_bytes: 9000
+  model_input_max_utf8_bytes: 40000
   output_type: canonical_json_string_verified_proof_and_policy_decision
   policy_decision_output: policy_decision
   allow_value: allow

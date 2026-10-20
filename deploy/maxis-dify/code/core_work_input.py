@@ -6,7 +6,7 @@ Entity references are display metadata, never replacement citation identities.
 _WORK_SCHEMA_JSON = None
 _WORK_SCHEMA_SHA256 = None
 _DRAFT_SCHEMA = None
-_MAX_WORK_INPUT_UTF8_BYTES = 9000
+_MAX_WORK_INPUT_UTF8_BYTES = 40000
 _HIDDEN_PACK_FIELDS = {"contract", "payload_schema_json", "payload_schema_sha256", "knowledge_manifest_sha256"}
 _PACK_STRINGS = {"contract", "request_id", "use_case", "query", "pseudonymous_user", "requested_at",
                  "freshness", "knowledge_manifest_sha256", "payload_schema_json", "payload_schema_sha256"}
@@ -67,8 +67,8 @@ def _check_context(rows, sources):
         names.add(row["name"])
         raw = row["content_json"]
         # Shared decoder accepts objects; a wrapper preserves any JSON root type.
-        value = _decode('{"value":' + raw + '}', 4010, _fail)["value"]
-        if not raw or len(raw.encode("utf-8")) > 4000 or _canonical(value) != raw:
+        value = _decode('{"value":' + raw + '}', 16400, _fail)["value"]
+        if not raw or len(raw) > 8192 or len(raw.encode("utf-8")) > 16384 or _canonical(value) != raw:
             _fail()
         if row["name"] != "request_plan":
             continue

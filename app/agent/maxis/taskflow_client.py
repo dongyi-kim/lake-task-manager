@@ -18,6 +18,8 @@ from app.agent.maxis.identifiers import canonical_published_workflow_id
 from app.agent.maxis.taskflow_contracts import TaskFlowRequestV1, TaskFlowResultV1
 from app.agent.maxis.telemetry import RemoteRequestTelemetryV1, request_observation
 
+# TaskFlow is a separate synthetic-only protocol with a smaller whole-request
+# budget. The chat EvidencePack's 32-KiB upper bound does not widen this route.
 MAX_TASKFLOW_REQUEST_BYTES = 16 * 1024
 MAX_TASKFLOW_RESPONSE_BYTES = 64 * 1024
 

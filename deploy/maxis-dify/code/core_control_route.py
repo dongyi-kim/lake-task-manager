@@ -130,14 +130,14 @@ def main(model_input):
     result says only 'not this activation'; all existing validation remains required.
     """
     try:
-        if not isinstance(model_input, str) or len(model_input.encode("utf-8")) > 9000:
+        if not isinstance(model_input, str) or len(model_input.encode("utf-8")) > 40000:
             _fail()
         incoming = json.loads(model_input, object_pairs_hook=_pairs, parse_constant=lambda _: _fail())
         if (not isinstance(incoming, dict) or set(incoming) != _INPUT_FIELDS
                 or incoming["contract"] != "ltm-model-input.v1" or _canonical(incoming) != model_input):
             _fail()
         pack = incoming["context_pack"]
-        if not isinstance(pack, dict) or len(_canonical(pack).encode("utf-8")) > 6144:
+        if not isinstance(pack, dict) or len(_canonical(pack).encode("utf-8")) > 32768:
             _fail()
         if not _reserved(pack):
             if incoming["role_id"] == "result_integrator" or pack.get("use_case") == "result_integrator":

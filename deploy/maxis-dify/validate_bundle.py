@@ -81,11 +81,11 @@ DIFY_PROMPT_SHA256 = {
 # This prevents an attacker from changing both the asset and all embedded copies while
 # retaining a self-consistent but weaker bundle.
 DIFY_CONTRACT_GUARD_SHA256 = (
-    "6a724bc91462d70eb96a2c138916793ac7f809330cb31a1954cf481e8c0adf9d"
+    "d6cb26a02559b7fb58a5f3d32facdbfc5b1a329564eaa8df19507ecb9c5f81b9"
 )
 # An Editor-only assembly step is not authority to repair or bypass either Guard.
 # Pin the reviewed asset independently of its embedded DSL copy.
-DIFY_EDITOR_ASSEMBLER_SHA256 = "7071595b59c418bccb11b39dbd9db9f8d0924cc32272cb9378fbd99367afb500"
+DIFY_EDITOR_ASSEMBLER_SHA256 = "0572fc81eabcca358a52f49b51ed83677251924dac411d03caa14f1660ce4000"
 EDITOR_ASSEMBLER_PATH = "deploy/maxis-dify/code/editor_assembler.py"
 EDITOR_INPUT_NODE_ID = "1909000000001012"
 EDITOR_INPUT_ENTRYPOINT = (
@@ -100,9 +100,9 @@ UUID_RE = re.compile(
 )
 MAX_PAYLOAD_SCHEMA_CHARS = 4_096
 MAX_PAYLOAD_SCHEMA_UTF8_BYTES = 4_096
-MAX_CONTEXT_PACK_UTF8_BYTES = 6_144
+MAX_CONTEXT_PACK_UTF8_BYTES = 32_768
 MAX_SYSTEM_PROMPT_UTF8_BYTES = 8_192
-MAX_MODEL_INPUT_UTF8_BYTES = 9_000
+MAX_MODEL_INPUT_UTF8_BYTES = 40_000
 RESPONSE_FIELDS = frozenset({
     "contract",
     "role_id",

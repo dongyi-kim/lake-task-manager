@@ -86,8 +86,8 @@ def test_exact_view_removes_only_reviewed_metadata_and_keeps_source_order(compil
         "knowledge_context": incoming["knowledge_context"]}
     assert encoded(incoming) == before
     assert expected["sources"][1]["canonical_id"] == "DL-123"  # absent from this source's body
-    assert compiled["input"]["_MAX_REQUEST_INPUT_UTF8_BYTES"] == 9000
-    assert compiled["input"]["_MAX_CONTEXT_PACK_UTF8_BYTES"] == 6144
+    assert compiled["input"]["_MAX_REQUEST_INPUT_UTF8_BYTES"] == 40000
+    assert compiled["input"]["_MAX_CONTEXT_PACK_UTF8_BYTES"] == 32768
 
 
 @pytest.mark.parametrize("count", [0, 1])
@@ -184,7 +184,7 @@ def test_shared_strict_decode_boundaries_are_used_without_recovery(compiled, cas
     rejected(compiled, raw)
 
 
-@pytest.mark.parametrize("location,maximum", [("input", 9000), ("pack", 6144)])
+@pytest.mark.parametrize("location,maximum", [("input", 40000), ("pack", 32768)])
 @pytest.mark.parametrize("unit", ["x", "한", "😀"])
 def test_original_utf8_limits_are_inclusive_without_truncation(compiled, case, location, maximum, unit):
     _, incoming = case

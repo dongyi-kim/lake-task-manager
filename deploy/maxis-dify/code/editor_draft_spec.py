@@ -19,7 +19,7 @@ def _spec_ids(value, allowed, maximum=32, minimum=0):
 
 
 def _validated_spec(model_input, draft_spec):
-    if not isinstance(model_input, str) or len(model_input.encode("utf-8")) > 9000:
+    if not isinstance(model_input, str) or len(model_input.encode("utf-8")) > 40000:
         _fail()
     view, spec = _object(model_input), _object(draft_spec)
     if (set(view) != {"contract", "role_id", "request", "entities", "knowledge_context", "sources"}
@@ -143,7 +143,7 @@ def prepare_spec(model_input, draft_spec, context_pack):
                      "request": {key: value for key, value in view["request"].items() if key != "source_ids"},
                      "draft_contract": writer_contract, "units": writer_units}
         encoded = _canonical(projected)
-        if len(encoded.encode("utf-8")) > 9000:
+        if len(encoded.encode("utf-8")) > 40000:
             _fail()
         return {"model_input": encoded, "route": spec["mode"], "candidate": ""}
     except Exception:
