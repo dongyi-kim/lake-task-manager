@@ -163,6 +163,13 @@ class RemoteRoleOutput(dict):
         self.metadata = dict(metadata or {})
 
 
+def _person_reference_marker(identity: str) -> str:
+    digest = hmac.new(
+        _PSEUDONYM_KEY, identity.casefold().encode("utf-8"), "sha256"
+    ).hexdigest()[:12]
+    return f"[[person:{digest}]]"
+
+
 def editor_person_reference_map(values) -> dict[str, str]:
     """Build an in-process opaque-ref -> Jira mention map for Editor Author.
 
@@ -182,10 +189,7 @@ def editor_person_reference_map(values) -> dict[str, str]:
             or any(character in identity for character in "[]<>'\"")
         ):
             continue
-        digest = hmac.new(
-            _PSEUDONYM_KEY, identity.casefold().encode("utf-8"), "sha256"
-        ).hexdigest()[:12]
-        result[f"[[person:{digest}]]"] = f"[~{identity}]"
+        result[_person_reference_marker(identity)] = f"[~{identity}]"
     return result
 
 
@@ -2028,6 +2032,7 @@ def invoke(
     correlation_id: str,
     *,
     person_references: dict[str, str] | None = None,
+    person_reference_values: tuple[str, ...] = (),
     allow_guarded_person_references: bool = False,
 ) -> dict:
     """Invoke one configured Dify Role and normalize only its typed envelope."""
@@ -2416,6 +2421,20 @@ def invoke(
         )
         raise MaxisRuntimeError(f"MAXIS Role typed payload가 없습니다: {role_id}")
     try:
+        if role_id == "result_integrator":
+            from app.agent.maxis.person_references import result_person_references
+            try:
+                person_references = result_person_references(
+                    _json_value(typed), raw_pack, person_reference_values,
+                    _person_reference_marker,
+                )
+            except Exception as exc:
+                raise MaxisRuntimeError(
+                    "MAXIS 답변의 사용자 참조를 확인하지 못했습니다. "
+                    "Jira 사용자 연결과 동명이인 여부를 확인하세요."
+                ) from exc
+        if role_id == "result_integrator" and person_references:
+            typed = _rehydrate_editor_person_references(typed, person_references)
         if role_id == "editor_author" and person_references:
             typed = _rehydrate_editor_person_references(typed, person_references)
         encoded_typed = _canonical_json(_json_value(typed))
@@ -2505,6 +2524,10 @@ def invoke_role(
     if resolution.route == "local":
         raise MaxisRuntimeError("local Role에는 remote invoke를 사용할 수 없습니다.")
     payload = role_payload(role_id, state, messages, schema, output_kind=output_kind)
+    person_reference_values = ()
+    if role_id == "result_integrator":
+        from app.agent.tools._ctx import settings
+        person_reference_values = _known_identity_values(state, settings())
     attempts = []
     for attempt in range(2):
         try:
@@ -2515,6 +2538,7 @@ def invoke_role(
                     editor_person_reference_map(state.get("_maxis_identity_values") or ())
                     if role_id == "editor_author" else None
                 ),
+                person_reference_values=person_reference_values,
             )
             break
         except MaxisRuntimeError as exc:
