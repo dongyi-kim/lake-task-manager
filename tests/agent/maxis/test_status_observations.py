@@ -83,6 +83,12 @@ def test_history_preserves_unknowns_versions_and_output_ownership(ledger, route,
     assert ledger.read_bytes() == before
 
 
+def test_named_profile_history_does_not_require_private_profile_access(ledger):
+    name = "maxis-12345678-1234-4234-8234-123456789abc"
+    write_rows(ledger, [row(profile=name, stage="prod")])
+    assert read()["observations"][0]["profile"] == name
+
+
 def test_http_success_does_not_hide_blocked_result(ledger):
     telemetry = audit.RemoteRequestTelemetryV1(
         transport_status="succeeded", http_status=200, result_status="blocked",
@@ -269,6 +275,7 @@ def test_status_read_limit_is_enforced(ledger, monkeypatch, grows_after_stat):
 def test_status_addition_is_read_only(ledger, monkeypatch):
     for name, replacement in {
         "_public_profile": lambda name: {"name": name},
+        "profile_names": lambda: profiles.PROFILE_NAMES,
         "active_profile_name": lambda: "", "active_fingerprint": lambda: "",
         "routes": lambda: {}, "kill_switch_enabled": lambda: False,
     }.items():

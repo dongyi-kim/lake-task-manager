@@ -523,7 +523,7 @@ def read_audit_summary(
 def read_last_remote_observations(*, path=None) -> dict:
     """Bounded historical metadata; absence never proves local execution."""
     import re
-    from app.agent.maxis import profiles
+    from app.agent.maxis import credentials, profiles
     from app.agent.maxis.registry import _KNOWN_ROLES
 
     unavailable = {"state": "unavailable", "observations": []}
@@ -536,8 +536,8 @@ def read_last_remote_observations(*, path=None) -> dict:
         for row in rows:
             if row.event != "remote_role.invoke":
                 continue
-            if (row.profile not in profiles.PROFILE_NAMES
-                    or row.stage != row.profile
+            if (credentials.normal_profile_name(row.profile) != row.profile
+                    or row.stage not in {"dev", "prod", "internal-pilot"}
                     or row.role_id not in _KNOWN_ROLES
                     or row.workflow_key not in profiles.WORKFLOW_KEYS
                     or profiles._workflow_key(row.role_id) != row.workflow_key

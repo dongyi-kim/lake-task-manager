@@ -37,9 +37,18 @@ def test_qualified_remote_features_do_not_consult_local_readiness(monkeypatch, n
     monkeypatch.setattr(backend, "resolve_role", lambda *_: backend.RoleResolution(route="maxis"))
     status = runtime_status.status()
     assert status["conversation"] == {
-        "engine": "maxis", "profile": "prod", "ready": True,
+        "engine": "maxis", "profile": "prod",
+        "profileLabel": profiles.get("prod").get("display_name") or "MAXIS 연결", "ready": True,
         "reasonCode": "", "reason": "", "nextAction": ""}
     assert status["editor"]["ready"] is True
+
+
+@pytest.mark.parametrize("profile", ["dev", "maxis-11111111-1111-4111-8111-111111111111"])
+def test_bounded_no_local_capability_uses_routes_not_profile_name(profile):
+    pin = {**_pin(), "runtime_profile": profile}
+    assert runtime_status.capability_for_pin(pin) == runtime_status.INTERNAL_ASSIST_CAPABILITY
+    pin["runtime_role_routes"]["request_architect"] = "local"
+    assert runtime_status.capability_for_pin(pin) == ""
 
 
 def test_active_remote_candidate_does_not_make_a_local_editor_ready(monkeypatch):

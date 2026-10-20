@@ -96,6 +96,8 @@ class _MaxisBody(BaseModel):
 
 
 class _MaxisProfileBody(_MaxisBody):
+    displayName: str | None = None
+    executionPolicy: str | None = None
     baseUrl: str | None = None
     dataPolicy: str | None = None
     workflowBundleVersion: str | None = None
@@ -108,6 +110,14 @@ class _MaxisProfileBody(_MaxisBody):
     knowledgeEvalAttestation: dict | None = None
     internalPilotPolicy: dict | None = None
     workflows: dict | None = None
+
+
+class _MaxisCreateProfileBody(_MaxisBody):
+    displayName: str
+
+
+class _MaxisApplyProfileBody(_MaxisBody):
+    workflows: list[str] = Field(default_factory=lambda: ["agent_core", "editor_author"])
 
 
 class _MaxisCredentialBody(_MaxisBody):
@@ -196,7 +206,8 @@ def api_maxis_profile_save(profile_name: str, body: _MaxisProfileBody):
         return denied
     from app.agent.maxis import profiles as maxis_profiles
     patch = {}
-    for field, key in (("baseUrl", "base_url"), ("dataPolicy", "data_policy"),
+    for field, key in (("displayName", "display_name"), ("executionPolicy", "execution_policy"),
+                       ("baseUrl", "base_url"), ("dataPolicy", "data_policy"),
                        ("workflowBundleVersion", "workflow_bundle_version"),
                        ("knowledgeVersion", "knowledge_version"),
                        ("knowledgeDatasetId", "knowledge_dataset_id"),
@@ -217,6 +228,60 @@ def api_maxis_profile_save(profile_name: str, body: _MaxisProfileBody):
     except (KeyError, ValueError) as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     return JSONResponse({"ok": True, **maxis_profiles.status()})
+
+
+@router.post("/maxis/profiles")
+def api_maxis_profile_create(body: _MaxisCreateProfileBody):
+    denied = _maxis_mutation_denied()
+    if denied is not None:
+        return denied
+    from app.agent.maxis import profiles as maxis_profiles
+    try:
+        created = maxis_profiles.create(body.displayName)
+        return JSONResponse({"ok": True, "name": created["name"],
+                             **maxis_profiles.status()})
+    except _prefs.PrefsPersistenceError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+    except (KeyError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@router.post("/maxis/profiles/{profile_name}/apply")
+def api_maxis_profile_apply(profile_name: str, body: _MaxisApplyProfileBody):
+    """One user action verifies the candidate and atomically selects actual AI routes."""
+    denied = _maxis_mutation_denied()
+    if denied is not None:
+        return denied
+    from app.agent import runtime_status
+    from app.agent.maxis import profiles as maxis_profiles
+    from app.agent.maxis.qualification import clean_workflows
+    try:
+        selected = clean_workflows(body.workflows)
+        maxis_profiles.prepare_use(profile_name)
+        if not maxis_profiles.probe_ok(profile_name):
+            probe_response = _probe_maxis_profile(profile_name)
+            probe_result = json.loads(probe_response.body)
+            if probe_response.status_code != 200 or not probe_result.get("ok"):
+                return JSONResponse({
+                    "ok": False, "error": "MAXIS 연결 검사를 통과하지 못했습니다. 기존 실행 경로는 유지됩니다.",
+                    "probe": probe_result,
+                }, status_code=409)
+        result = maxis_profiles.apply_profile(profile_name, selected)
+        runtime = runtime_status.status()
+        required = [feature for workflow, feature in
+                    (("agent_core", "conversation"), ("editor_author", "editor"))
+                    if workflow in selected]
+        if any(not runtime[feature]["ready"]
+               or runtime[feature]["engine"] != "maxis"
+               or runtime[feature]["profile"] != profile_name for feature in required):
+            return JSONResponse({"ok": False, "runtime": runtime,
+                                 "error": "설정 적용 후 실행 상태가 변경되었습니다. 다시 확인하세요."},
+                                status_code=409)
+        return JSONResponse({**result, "workflows": selected, "runtime": runtime})
+    except _prefs.PrefsPersistenceError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+    except (KeyError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
 
 
 @router.get("/maxis/credentials/{profile_name}")
@@ -466,6 +531,10 @@ def api_maxis_probe(profile_name: str):
     denied = _maxis_mutation_denied()
     if denied is not None:
         return denied
+    return _probe_maxis_profile(profile_name)
+
+
+def _probe_maxis_profile(profile_name: str):
     from app.agent.maxis import credentials as maxis_credentials
     from app.agent.maxis import profiles as maxis_profiles
     try:

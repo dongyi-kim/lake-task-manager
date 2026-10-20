@@ -22,7 +22,7 @@ class RuntimeUnavailable(backend.MaxisRuntimeError):
 def capability_for_pin(pin: dict) -> str:
     routes = pin.get("runtime_role_routes") or {}
     return (INTERNAL_ASSIST_CAPABILITY
-            if pin.get("runtime_profile") == "prod"
+            if pin.get("runtime_profile")
             and all(routes.get(role) == "maxis" for role in CORE_ROLES)
             else "")
 
@@ -33,7 +33,14 @@ def bounded_internal_assist(state: dict) -> bool:
 
 def _row(engine: str, profile: str, ready: bool, code: str = "", reason: str = "",
          action: str = "") -> dict:
-    return {"engine": engine, "profile": profile, "ready": ready,
+    label = ""
+    if profile:
+        from app.agent.maxis import profiles
+        try:
+            label = profiles.get(profile).get("display_name") or "MAXIS 연결"
+        except (KeyError, ValueError):
+            label = "MAXIS 연결"
+    return {"engine": engine, "profile": profile, "profileLabel": label, "ready": ready,
             "reasonCode": code, "reason": reason, "nextAction": action}
 
 
@@ -43,9 +50,9 @@ def _remote_failure(engine: str, profile: str, exc: Exception) -> dict:
     if "kill switch" in text:
         return _row(engine, profile, False, "maxis_stopped",
                     "MAXIS 긴급 중단이 켜져 있습니다.", "maxis_settings")
-    if "synthetic" in text or "dev" == profile:
+    if "synthetic" in text:
         return _row(engine, profile, False, "maxis_validation_only",
-                    "DEV는 합성 연결 검증용입니다. 실제 업무에는 검증된 PROD 프로필을 적용하세요.",
+                    "이 연결은 합성 검증 모드입니다. MAXIS 설정에서 실제 사용할 프로필을 적용하세요.",
                     "maxis_settings")
     if "signed" in text or "qualification" in text or "promotion" in text:
         return _row(engine, profile, False, "maxis_qualification_required",

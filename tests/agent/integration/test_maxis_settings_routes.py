@@ -252,6 +252,8 @@ def test_maxis_runtime_mutations_are_manager_only(client, monkeypatch):
     monkeypatch.setattr(pmo_tools, "_is_manager", lambda **_kwargs: False)
     assert client.get("/api/agent/maxis/status").json()["canManage"] is False
     attempts = (
+        client.post("/api/agent/maxis/profiles", json={"displayName": "연결"}),
+        client.post("/api/agent/maxis/profiles/dev/apply", json={}),
         client.put("/api/agent/maxis/profiles/dev", json={"baseUrl": "https://x.test/v1"}),
         client.put("/api/agent/maxis/credentials/dev", json={"agentCoreApiKey": "not-saved"}),
         client.post("/api/agent/maxis/probe/dev", json={}),
@@ -263,6 +265,70 @@ def test_maxis_runtime_mutations_are_manager_only(client, monkeypatch):
     status = client.get("/api/agent/maxis/status").json()
     assert status["killSwitch"] is False
     assert status["profiles"][0]["baseUrl"] == ""
+
+
+def test_use_existing_connection_applies_both_features_without_local_llm(client, monkeypatch):
+    from app.agent import config, runtime_status
+    from app.agent.maxis import backend
+
+    assert _save_candidate(client, all_apps=True).status_code == 200
+    tokens = {"agentCoreApiKey": "existing-core", "editorAuthorApiKey": "existing-editor",
+              "pmoBriefApiKey": "existing-pmo"}
+    assert client.put("/api/agent/maxis/credentials/dev", json=tokens).status_code == 200
+    before = credentials.load_for("dev")
+    transport = _fake_dify_transport(monkeypatch, _valid_probe_answer)
+    monkeypatch.setattr(config, "llm_ready", lambda: pytest.fail("Local LLM readiness consulted"))
+    response = client.post("/api/agent/maxis/profiles/dev/apply", json={
+        "workflows": ["agent_core", "editor_author"]})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["ok"] and result["activeProfile"] == "dev"
+    assert result["routes"] == {
+        "agent_core": "maxis", "editor_author": "maxis", "pmo_brief": "local"}
+    assert all(row["ready"] and row["engine"] == "maxis" and row["profile"] == "dev"
+               for row in result["runtime"].values())
+    assert credentials.load_for("dev") == before
+    assert profiles.get("dev")["data_policy"] == "internal_read_only"
+    assert transport  # A real contract client ran against an in-process Dify fixture.
+    pin = backend.thread_runtime_pin()
+    assert runtime_status.capability_for_pin(pin)
+    pack = backend.role_payload("request_architect", {
+        **pin, "thread_id": "ordinary-profile", "request_text": "배포 점검 작업을 정리해 줘",
+    }, [], {"type": "object"}, output_kind="structured")["evidencePack"]
+    assert "배포 점검" in pack["query"]
+    assert "synthetic_only" not in pack["flags"]
+    assert all("Synthetic MAXIS integration exercise" not in str(row) for row in pack["sources"])
+
+
+def test_apply_failed_probe_keeps_existing_routes_and_profile(client, monkeypatch):
+    from app.agent import routes
+    from app.infra import prefs
+    assert _save_candidate(client, all_apps=True).status_code == 200
+    client.put("/api/agent/maxis/credentials/dev", json={
+        "agentCoreApiKey": "existing-core", "editorAuthorApiKey": "existing-editor"})
+    prefs.save_strict({"maxisActiveProfile": "", "maxisRoutes": {
+        "agent_core": "local", "editor_author": "local", "pmo_brief": "local"}})
+    before = (profiles.active_profile_name(), profiles.routes())
+    monkeypatch.setattr(routes, "_run_maxis_probe", lambda *_: {
+        "ok": False, "workflows": {}, "error": "fixture connection failed"})
+    response = client.post("/api/agent/maxis/profiles/dev/apply", json={})
+    assert response.status_code == 409 and not response.json()["ok"]
+    assert (profiles.active_profile_name(), profiles.routes()) == before
+
+
+def test_named_profile_creation_and_label_are_not_execution_identity(client):
+    response = client.post("/api/agent/maxis/profiles", json={"displayName": "팀 업무 연결"})
+    assert response.status_code == 200, response.text
+    profile_id = response.json()["name"]
+    assert profile_id not in profiles.PROFILE_NAMES
+    row = next(p for p in response.json()["profiles"] if p["name"] == profile_id)
+    assert row["displayName"] == "팀 업무 연결"
+    assert client.put(f"/api/agent/maxis/credentials/{profile_id}", json={
+        "agentCoreApiKey": "profile-owned-key"}).status_code == 200
+    before = credentials.load_for(profile_id)
+    assert client.put(f"/api/agent/maxis/profiles/{profile_id}", json={
+        "displayName": "우리 MAXIS"}).status_code == 200
+    assert credentials.load_for(profile_id) == before
 
 
 def test_maxis_manager_gate_always_requests_fresh_jira_identity(client, monkeypatch):
@@ -477,7 +543,7 @@ def test_status_projects_malicious_legacy_profile_and_probe_to_closed_shapes(
     assert oversized_metadata not in response.text
     assert unregistered_error_code not in response.text
     row = next(item for item in response.json()["profiles"] if item["name"] == "dev")
-    assert row["dataPolicy"] == "synthetic_only"
+    assert row["dataPolicy"] == ""  # Invalid saved policy is unknown, not inferred from ID.
     assert row["baseUrl"] == row["effectiveBaseUrl"] == ""
     assert row["effectiveHost"] == ""
     assert row["workflowBundleVersion"] == ""

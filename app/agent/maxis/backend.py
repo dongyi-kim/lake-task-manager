@@ -280,13 +280,8 @@ def _profile_snapshot(profile_name: str = "", *, required: bool = False) -> dict
             raise MaxisRuntimeError("MAXIS kill switch가 활성화되어 있습니다.")
         if not bool(profile.get("enabled")):
             raise MaxisRuntimeError("검증·활성화된 MAXIS 프로필이 아닙니다.")
-        # A dev profile is safe to exercise from a normal local LTM process as well as
-        # from a mock-Jira process.  The trust boundary is the outbound payload, not the
-        # unrelated local Jira connection: ``_context_pack`` replaces every
-        # content-bearing value with a fixed fixture and ``invoke`` independently checks
-        # that exact fixture before opening the network connection.  Requiring
-        # ``jira_env=mock`` here made the local desktop app unable to run even that safe
-        # canary/shadow path while providing no additional data-leak protection.
+        # Connection identity is independent of the Jira environment. Outbound data
+        # follows the verified profile's explicit policy, never its display name.
     return {
         "name": str(profile.get("name") or ""),
         "stage": str(profile.get("stage") or ""),
@@ -1406,7 +1401,18 @@ def _context_pack(
     # ``request_text`` is the one Session-owned, bounded user-intent field.  Never fall
     # back to role task messages, model scratch, or a generic ``prompt`` field: those may
     # contain raw query results/state and would bypass source scope/freshness attestation.
-    synthetic_only = str(state.get("runtime_profile") or "").strip().lower() == "dev"
+    from app.agent.maxis import profiles
+    # Resolve the server-owned policy, not a name convention or a caller-supplied flag.
+    # The runtime fingerprint binds policy changes; invoke revalidates that binding
+    # and independently rejects non-fixture data for synthetic-only profiles.
+    try:
+        profile_policy = profiles.get(str(state.get("runtime_profile") or ""))["data_policy"]
+    except (KeyError, ValueError):
+        # Pure offline/qualification projection has no saved connection. This does
+        # not authorize dispatch: invoke independently requires a verified profile,
+        # matching fingerprint and, for synthetic profiles, an exact fixture pack.
+        profile_policy = ""
+    synthetic_only = profile_policy == "synthetic_only"
     task_text = str(state.get("request_text") or "").strip()
     continuation_answer = (
         str(state.get("continuation_answer") or "").strip()
@@ -1435,7 +1441,7 @@ def _context_pack(
     )
     query = f"Canonical LTM role {role_id}. Process this guarded user intent:\n{user_intent}"
     if not synthetic_only:
-        # Keep DEV's exact fixed-fixture gate unchanged. Supported Role payloads add
+        # Keep explicit synthetic mode's exact fixed-fixture gate. Role payloads add
         # policy vocabulary, never facts, before the ordinary ContextGuard checks.
         from app.agent.maxis.retrieval_query import enrich_role_query
         query = enrich_role_query(query, role_id, payload_schema)
@@ -1444,7 +1450,7 @@ def _context_pack(
     role_context, allowed_context_keys = _role_context(role_id, state)
     requested_at = datetime.now(timezone.utc)
     if synthetic_only:
-        # Dev is a protocol/load-test surface. Even when Jira itself runs in mock mode,
+        # Synthetic mode is a protocol/load-test surface. Even when Jira runs in mock mode,
         # a person can paste real internal text into the prompt or a mock ticket. Replace
         # every content-bearing field with one fixed fixture before crossing the boundary.
         synthetic_content = f"Synthetic LTM fixture for {role_id}; state is ready."
@@ -2098,7 +2104,7 @@ def invoke(
                 status="blocked", error_code="synthetic_policy", **audit_common,
             )
             raise MaxisRuntimeError(
-                "dev MAXIS 프로필은 고정된 합성 fixture만 전송할 수 있습니다."
+                "합성 검증 모드의 MAXIS 프로필은 고정된 합성 fixture만 전송할 수 있습니다."
             )
     if (
         not knowledge_dataset_id
