@@ -16,6 +16,11 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 
+@pytest.fixture(autouse=True)
+def production_destination(monkeypatch):
+    # A new deployment registers its own host; never rely on developer settings.
+    monkeypatch.setenv("LAKE_MAXIS_PROD_ALLOWED_HOSTS", "maxis.production.example")
+
 
 def _module(root=ROOT):
     path = root / "deploy/maxis-dify/materialize_environment.py"
@@ -27,7 +32,7 @@ def _module(root=ROOT):
 
 def _prod(root):
     environment = yaml.safe_load((root / "deploy/maxis-dify/environments/prod.template.yml").read_text(encoding="utf-8"))
-    environment.update(status="ready", service_base_url="https://dify.maxis.skax.co.kr/v1")
+    environment.update(status="ready", service_base_url="https://maxis.production.example/v1")
     knowledge = environment["knowledge"]
     knowledge.update(version="ltm-public-knowledge.v1", name="LTM Governed Knowledge")
     for field in ("dataset_id", "sentinel_dataset_id", "role_metadata_field_id"):
@@ -85,8 +90,12 @@ def test_fresh_process_generates_all_prod_dsls_without_dev_or_existing_cache(tmp
     path = root / "prod.yml"
     path.write_text(yaml.safe_dump(environment), encoding="utf-8")
     program = """
-import importlib.util, json, sys
+import importlib.util, json, sys, socket
 from pathlib import Path
+def forbidden_network(*args, **kwargs):
+    raise AssertionError("cold checkout must prepare assets without any network")
+socket.create_connection = socket.getaddrinfo = forbidden_network
+socket.socket.connect = socket.socket.connect_ex = forbidden_network
 root = Path.cwd()
 spec = importlib.util.spec_from_file_location('materializer', root / 'deploy/maxis-dify/materialize_environment.py')
 m = importlib.util.module_from_spec(spec)
