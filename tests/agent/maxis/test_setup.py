@@ -25,6 +25,26 @@ def isolated(monkeypatch, tmp_path):
     return TestClient(app)
 
 
+def test_public_guide_is_repository_source_without_setup_or_credentials(isolated, monkeypatch):
+    from app.agent.maxis import credentials, profiles
+    monkeypatch.setattr(credentials, "get_for", lambda *_: pytest.fail("secret read"))
+    monkeypatch.setattr(profiles, "get", lambda *_: pytest.fail("profile dependency"))
+    monkeypatch.setattr(setup_routes, "_can_manage", lambda: False)
+    response = isolated.get("/api/agent/maxis/setup/guide")
+    assert response.status_code == 200
+    assert response.text == (setup._root() / "docs" / "agent-maxis-operations.md").read_text(encoding="utf-8")
+    assert response.headers["content-type"].startswith("text/plain")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "content-disposition" not in response.headers
+
+
+def test_missing_public_guide_returns_safe_not_found(isolated, monkeypatch, tmp_path):
+    monkeypatch.setattr(setup, "_root", lambda: tmp_path)
+    response = isolated.get("/api/agent/maxis/setup/guide")
+    assert response.status_code == 404
+    assert str(tmp_path) not in response.text
+
+
 def test_repo_source_download_is_complete_without_dev_or_credentials(isolated, monkeypatch):
     from app.agent.maxis import credentials, profiles
     monkeypatch.setattr(credentials, "get_for", lambda *_: pytest.fail("secret read"))

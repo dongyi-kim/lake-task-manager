@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent.maxis import setup
@@ -92,6 +92,20 @@ def _call(function, *args, **kwargs):
 @router.get("")
 def get_setup():
     return _call(setup.status)
+
+
+@router.get("/guide")
+def get_guide():
+    """Serve only the public repository guide, including before any setup exists."""
+    try:
+        content = (setup._root() / "docs" / "agent-maxis-operations.md").read_text(encoding="utf-8")
+    except OSError:
+        return JSONResponse({"ok": False, "error": "저장소의 PROD 운영 가이드를 확인하세요."}, status_code=404)
+    return PlainTextResponse(content, headers={
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+    })
 
 
 @router.put("/host")

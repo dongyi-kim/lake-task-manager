@@ -73,6 +73,10 @@ createApp(Dialog,{initialMode:'maxis'}).mount('#app');</script></body></html>"""
         except Exception:
             pytest.fail("PROD setup did not render: " + repr(errors) + " / " + page.locator("#app").inner_html()[:1800])
         assert page.title() == "LTM PROD setup fixture"
+        guide = page.get_by_role("link", name="PROD 설정·검수·데모 가이드 열기")
+        assert guide.get_attribute("href") == "/api/agent/maxis/setup/guide"
+        assert guide.get_attribute("target") == "_blank"
+        assert "noopener" in guide.get_attribute("rel")
         page.get_by_role("button", name="2 · 자산 연결").click()
         page.get_by_placeholder("https://service.example/v1").fill("https://prod.example/v1")
         page.get_by_text("이 주소가 token을 전송할 실제 PROD 호스트임을 확인했습니다.").click()
