@@ -35,18 +35,23 @@ def build_draft_schema(text_schema):
     encoded = json.dumps(text_schema, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     if hashlib.sha256(encoded.encode()).hexdigest() != TEXT_SCHEMA_SHA256:
         raise ValueError("unsupported_result_payload_schema")
-    segment = {"type": "object", "additionalProperties": False,
+    narrative = {"type": "object", "additionalProperties": False,
         "required": ["value", "kind", "source_ids"], "properties": {
             "value": {**copy.deepcopy(text_schema["properties"]["text"]), "maxLength": 1200},
-            "kind": {"type": "string", "enum": ["fact", "inference", "recommendation", "open_fact"]},
+            "kind": {"type": "string", "enum": ["inference", "recommendation", "open_fact"]},
             "source_ids": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": True,
                 "items": {"type": "string", "minLength": 1, "maxLength": 128,
                           "pattern": r"^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])"}}}}
+    fact = {"type": "object", "additionalProperties": False,
+        "required": ["kind", "source_id", "source_path"], "properties": {
+            "kind": {"type": "string", "enum": ["fact"]},
+            "source_id": copy.deepcopy(narrative["properties"]["source_ids"]["items"]),
+            "source_path": {"type": "string", "maxLength": 500}}}
     return {"type": "object", "additionalProperties": False,
         "required": ["contract", "status", "segments", "missing_inputs"], "properties": {
-            "contract": {"type": "string", "enum": ["result-draft.v1"]},
+            "contract": {"type": "string", "enum": ["result-draft.v2"]},
             "status": {"type": "string", "enum": ["ok", "needs_input", "blocked"]},
-            "segments": {"type": "array", "maxItems": 40, "items": segment},
+            "segments": {"type": "array", "maxItems": 40, "items": {"anyOf": [fact, narrative]}},
             "missing_inputs": {"type": "array", "maxItems": 8,
                 "items": {"type": "string", "minLength": 1, "maxLength": 500}}},
         "anyOf": [

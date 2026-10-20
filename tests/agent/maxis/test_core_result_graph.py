@@ -62,8 +62,8 @@ def result_case(context_guard, now, nodes):
         "document_id": guard["_SENTINEL_DOCUMENT_ID"], "document_name": guard["_SENTINEL_DOCUMENT_NAME"]}}
     incoming = guard["main"]([policy], [sentinel], encoded(pack.model_dump(mode="json")), pack.query,
         "result_integrator", pack.request_id, "remote-role-result.v1", VERSION, VERSION, "kb-test")["model_input"]
-    draft = {"contract": "result-draft.v1", "status": "ok", "segments": [{"value": "배치 주기를 2시간에서 30분으로 변경",
-        "kind": "fact", "source_ids": ["record-a"]}], "missing_inputs": []}
+    draft = {"contract": "result-draft.v2", "status": "ok", "segments": [
+        {"kind": "fact", "source_id": "record-a", "source_path": ""}], "missing_inputs": []}
     return pack, incoming, draft
 
 
@@ -118,10 +118,12 @@ def test_reserved_control_still_precedes_result(nodes):
 @pytest.mark.parametrize("kind", ["fact", "inference", "recommendation", "open_fact"])
 def test_one_value_authors_payload_claim_and_order_without_relabel(nodes, result_case, kind):
     pack, incoming, draft = result_case
-    draft["segments"][0]["kind"] = kind
+    expected = "배치 주기를 2시간에서 30분으로 변경"
+    if kind != "fact":
+        draft["segments"] = [{"kind": kind, "value": expected, "source_ids": ["record-a"]}]
     draft["segments"] *= 2
     result = json.loads(code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))["candidate"])
-    assert result["payload"]["text"] == "\n\n".join(row["value"] for row in draft["segments"])
+    assert result["payload"]["text"] == expected + "\n\n" + expected
     assert [r["kind"] for r in result["claims"]] == [kind, kind]
     assert result["payload_claims"] == [{"path": "/text", "claim_ids": ["claim-1", "claim-2"]}]
     remote, local = both(nodes, pack, result)
@@ -130,8 +132,17 @@ def test_one_value_authors_payload_claim_and_order_without_relabel(nodes, result
 
 def test_lexical_paraphrase_stays_blocked_after_mechanical_equality(nodes, result_case):
     pack, incoming, draft = result_case
-    draft["segments"][0]["value"] = "DL-9044에서 배치 주기를 2시간에서 30분으로 변경한 기록이 확인되었습니다."
+    # Model-authored fact prose is no longer accepted by the native assembler.
+    authored = copy.deepcopy(draft)
+    authored["segments"] = [{"kind": "fact", "source_ids": ["record-a"],
+        "value": "DL-9044에서 배치 주기를 2시간에서 30분으로 변경한 기록이 확인되었습니다."}]
+    with pytest.raises(ValueError, match="invalid_core_result_draft"):
+        code(nodes[ASSEMBLER])["main"](incoming, encoded(authored))
     result = json.loads(code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))["candidate"])
+    # Independently keep the existing remote/local guard regression; extracting
+    # facts does not authorize later mutation or bypass either guard.
+    result["claims"][0]["text"] = authored["segments"][0]["value"]
+    result["payload"]["text"] = result["claims"][0]["text"]
     assert result["payload"]["text"] == result["claims"][0]["text"]
     remote, local = both(nodes, pack, result)
     assert remote["warnings"] == ["contract_guard:claim_not_grounded"]
@@ -163,13 +174,98 @@ def test_independent_payload_is_red_while_same_value_assembly_is_green(nodes, re
 def test_bounds_and_malformed_drafts_are_rejected_without_repair(nodes, result_case, fault):
     _, incoming, draft = result_case
     if fault == "count": draft["segments"] *= 41
-    elif fault == "length": draft["segments"][0]["value"] = "x" * 1201
-    elif fault == "surrogate": draft["segments"][0]["value"] = "PLACEHOLDER"
-    elif fault == "unknown_source": draft["segments"][0]["source_ids"] = ["DL-9044"]
+    elif fault in {"length", "surrogate"}:
+        draft["segments"] = [{"kind": "recommendation", "source_ids": ["record-a"],
+                              "value": "x" * 1201 if fault == "length" else "PLACEHOLDER"}]
+    elif fault == "unknown_source": draft["segments"][0]["source_id"] = "DL-9044"
     raw = encoded(draft)
     if fault == "surrogate": raw = raw.replace("PLACEHOLDER", "\\ud800")
     elif fault == "duplicate_key": raw = raw.replace('"status":"ok"', '"status":"ok","status":"ok"')
     with pytest.raises(ValueError, match="invalid_core_result_draft"): code(nodes[ASSEMBLER])["main"](incoming, raw)
+
+
+@pytest.mark.parametrize("pointer,value", [
+    ("/status", "In Progress"),
+    ("/children/0", '{"key":"DL-9044","status":"Closed"}'),
+    ("/a~1b/~0name", "원문 사실"),
+])
+def test_fact_pointer_copies_original_value_and_preserves_record_ownership(nodes, result_case, pointer, value):
+    pack, incoming, draft = result_case
+    content = encoded({"status": "In Progress", "children": [{"key": "DL-9044", "status": "Closed"}],
+                       "a/b": {"~name": "원문 사실"}})
+    # Rebind both original pack and digest, just as the actual ContextGuard does.
+    import hashlib
+    original = json.loads(incoming)
+    original["context_pack"]["sources"][0].update(content=content,
+        content_sha256=hashlib.sha256(content.encode()).hexdigest())
+    pack = type(pack).model_validate_json(encoded(original["context_pack"]))
+    draft["segments"][0]["source_path"] = pointer
+    result = json.loads(code(nodes[ASSEMBLER])["main"](encoded(original), encoded(draft))["candidate"])
+    assert result["payload"]["text"] == value
+    assert result["claims"][0]["text"] == value
+    assert result["citations"][0]["source_id"] == "record-a"
+    remote, local = both(nodes, pack, result)
+    assert remote == result and local()[0].status == "ok"
+
+
+@pytest.mark.parametrize("pointer", ["status", "/missing", "/children/01", "/children/-",
+                                    "/children/1", "/children/-1", "/bad~2escape",
+                                    "/../role_context", "/status/child"])
+def test_fact_pointer_never_guesses_paths_or_crosses_original_source(nodes, result_case, pointer):
+    _, incoming, draft = result_case
+    import hashlib
+    original = json.loads(incoming)
+    content = encoded({"status": "In Progress", "children": [{"key": "DL-9044"}]})
+    original["context_pack"]["sources"][0].update(content=content,
+        content_sha256=hashlib.sha256(content.encode()).hexdigest())
+    draft["segments"][0]["source_path"] = pointer
+    with pytest.raises(ValueError, match="invalid_core_result_draft"):
+        code(nodes[ASSEMBLER])["main"](encoded(original), encoded(draft))
+
+
+@pytest.mark.parametrize("content", ['{"status":"Closed","status":"Open"}',
+                                    '{"status":NaN}', '{"status":Infinity}', "plain text"])
+def test_pointer_does_not_repair_or_partially_decode_source_json(nodes, result_case, content):
+    _, incoming, draft = result_case
+    import hashlib
+    original = json.loads(incoming)
+    original["context_pack"]["sources"][0].update(content=content,
+        content_sha256=hashlib.sha256(content.encode()).hexdigest())
+    draft["segments"][0]["source_path"] = "/status"
+    with pytest.raises(ValueError, match="invalid_core_result_draft"):
+        code(nodes[ASSEMBLER])["main"](encoded(original), encoded(draft))
+
+
+def test_oversize_extracted_value_is_rejected_not_cut_to_a_quote(nodes, result_case):
+    _, incoming, draft = result_case
+    import hashlib
+    original = json.loads(incoming)
+    content = "원" * 1201
+    original["context_pack"]["sources"][0].update(content=content,
+        content_sha256=hashlib.sha256(content.encode()).hexdigest())
+    with pytest.raises(ValueError, match="invalid_core_result_draft"):
+        code(nodes[ASSEMBLER])["main"](encoded(original), encoded(draft))
+
+
+@pytest.mark.parametrize("number,other", [
+    ("9007199254740993.0", "9007199254740992.0"),
+    ("1e-400", "0.0"), ("1e3", "1000.0"),
+    ("-0.0", "0.0"), ("123456789012345678901234567890", "123456789012345678901234567891"),
+])
+def test_exact_numeric_spelling_cannot_borrow_another_records_value(nodes, result_case, number, other):
+    pack, incoming, draft = result_case
+    import hashlib
+    original = json.loads(incoming)
+    record = '{"key":"DL-9044","status":"Open","value":' + number + '}'
+    content = '{"record":' + record + ',"other":' + other + '}'
+    original["context_pack"]["sources"][0].update(content=content,
+        content_sha256=hashlib.sha256(content.encode()).hexdigest())
+    pack = type(pack).model_validate_json(encoded(original["context_pack"]))
+    draft["segments"][0]["source_path"] = "/record"
+    result = json.loads(code(nodes[ASSEMBLER])["main"](encoded(original), encoded(draft))["candidate"])
+    assert result["payload"]["text"] == record
+    remote, local = both(nodes, pack, result)
+    assert remote == result and local()[0].status == "ok"
 
 
 def test_actual_guarded_ordinary_apply_preserves_sidecar_and_uses_no_bypass(nodes, result_case, monkeypatch):

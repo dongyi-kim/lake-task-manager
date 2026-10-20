@@ -1,7 +1,7 @@
 """Result wire assembly. Prepend unchanged strict validation/context fragments.
 
-Both original guards remain required. Text/kinds/source references are model-owned;
-no truth inference, repair, normalization, truncation or terminal bypass occurs here.
+Both original guards remain required. The model selects exact source paths for
+facts and authors non-factual prose. No paraphrase repair or truth inference.
 """
 _TEXT_SCHEMA_JSON = None
 _TEXT_SCHEMA_SHA256 = None
@@ -14,6 +14,43 @@ def _fail():
     raise ValueError("invalid_core_result_draft")
 
 
+class _SourceNumber(str):
+    """Preserve the JSON numeric lexeme; binary floats may silently change it."""
+
+
+def _source_json(value):
+    if isinstance(value, _SourceNumber):
+        return str(value)
+    if isinstance(value, dict):
+        return "{" + ",".join(_canonical(key) + ":" + _source_json(item)
+                              for key, item in value.items()) + "}"
+    if isinstance(value, list):
+        return "[" + ",".join(_source_json(item) for item in value) + "]"
+    return _canonical(value)
+
+
+def _extract_fact(content, pointer):
+    """Resolve one exact original JSON value, never a model-authored quotation."""
+    if not pointer:
+        return content
+    if not pointer.startswith("/") or re.search(r"~(?![01])", pointer):
+        _fail()
+    # A source can be plain text; only an explicit pointer requires strict JSON.
+    value = json.loads(content, object_pairs_hook=lambda rows: _pairs(rows, _fail),
+                       parse_int=_SourceNumber, parse_float=_SourceNumber,
+                       parse_constant=lambda _: _fail())
+    for token in pointer[1:].split("/"):
+        key = token.replace("~1", "/").replace("~0", "~")
+        if isinstance(value, dict) and key in value:
+            value = value[key]
+        elif isinstance(value, list) and re.fullmatch(r"0|[1-9][0-9]*", key) and int(key) < len(value):
+            value = value[int(key)]
+        else:
+            _fail()
+    # Containers keep their explicit keys/owners; no flattening or inferred labels.
+    return str(value) if isinstance(value, str) else _source_json(value)
+
+
 def main(model_input, candidate):
     try:
         incoming, pack, schema, sources = _draft_context(model_input, "result_integrator",
@@ -22,17 +59,23 @@ def main(model_input, candidate):
         _validate(draft, _DRAFT_SCHEMA, _DRAFT_SCHEMA, _fail)
         if any(not value.strip() for value in draft["missing_inputs"]):
             _fail()
+        source_content = {row["source_id"]: row["content"] for row in pack["sources"]}
         claims, citations, citation_ids = [], [], {}
         for segment in draft["segments"]:
-            if not segment["value"].strip() or any(ref not in sources for ref in segment["source_ids"]):
+            if segment["kind"] == "fact":
+                refs = [segment["source_id"]]
+                value = _extract_fact(source_content[refs[0]], segment["source_path"])
+            else:
+                refs, value = segment["source_ids"], segment["value"]
+            if not value.strip() or len(value) > 1200 or any(ref not in sources for ref in refs):
                 _fail()
-            for ref in segment["source_ids"]:
+            for ref in refs:
                 if ref not in citation_ids:
                     citation_ids[ref] = "cite-" + str(len(citations) + 1)
                     citations.append({"citation_id": citation_ids[ref], "source_id": ref, "locator": ""})
             # Unique per occurrence: repeated values must remain in the /text sequence.
             claims.append({"claim_id": "claim-" + str(len(claims) + 1), "kind": segment["kind"],
-                "text": segment["value"], "citation_ids": [citation_ids[ref] for ref in segment["source_ids"]]})
+                "text": value, "citation_ids": [citation_ids[ref] for ref in refs]})
         payload = {"text": _SEPARATOR.join(row["text"] for row in claims)} if draft["status"] == "ok" else {}
         if draft["status"] == "ok":
             _validate(payload, schema, schema, _fail)

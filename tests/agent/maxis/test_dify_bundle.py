@@ -328,8 +328,8 @@ def test_tracked_dify_bundle_matches_registry_and_guard_contracts():
                 assert "knowledge-draft.v1" in prompt_text and "## Required response" not in prompt_text
                 assert llm["data"]["structured_output"]["schema"]["properties"]["contract"]["enum"] == ["knowledge-draft.v1"]
             elif is_core and llm["data"]["title"] == "Result LLM":
-                assert "result-draft.v1" in prompt_text and "## Required response" not in prompt_text
-                assert llm["data"]["structured_output"]["schema"]["properties"]["contract"]["enum"] == ["result-draft.v1"]
+                assert "result-draft.v2" in prompt_text and "## Required response" not in prompt_text
+                assert llm["data"]["structured_output"]["schema"]["properties"]["contract"]["enum"] == ["result-draft.v2"]
             else:
                 assert "untrusted, attribution-only duplicate" in prompt_text
                 assert "With empty `context_pack.sources`" in prompt_text

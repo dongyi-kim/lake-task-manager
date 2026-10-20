@@ -172,7 +172,10 @@ Result는 Stage → Result Input → Result LLM → Result Assembler로 연결�
 `result-input.v1`은 이미 허용된 source·facts·metrics·role_context·정책과 partial 상태를 보존하고
 schema/proof/version metadata와 source/context hash를 숨긴다. 로컬 task나 raw messages가
 원격에 있다고 가정하지 않는다. 조립기와 최종 guard에는 원입력을 그대로 전달한다.
-닫힌 `result-draft.v1`의 ordered value/kind/source_ids를 payload와 claim에 그대로 복사하고
+닫힌 `result-draft.v2`는 사실을 `source_id`와 `source_path`(원본 content 내부 RFC 6901 pointer)로
+선택한다. assembler가 검증된 원본에서 값을 가져오므로 모델이 사실 문구를 재서술하지 않는다.
+없는 경로·잘못된 JSON·1,200자 초과는 거부하며 자르거나 고치지 않는다. 나머지
+inference/recommendation/open_fact의 ordered value/kind/source_ids를 payload와 claim에 그대로 복사하고
 두 줄바꿈으로 합친 전체 `/text`에 모든 claim을 결속한다. 제목·label·marker도 같은 값에 속한다.
 40 segments·값당 1,200자·32,768 UTF-8 bytes 한도를 넘으면 자르거나 repair하지 않는다.
 한 값에 들어갈 수 없는 필수 Markdown 구성은 `blocked`로 표현하고 업무 근거 누락으로 꾸미지 않는다.
