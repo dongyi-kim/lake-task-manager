@@ -8,6 +8,8 @@ _ID_FIELDS = {"assigneeId", "authorId", "reporterId", "userId", "user_id",
               "user_identity", "username", "userName", "accountId", "account_id"}
 _NAME_FIELDS = {"assignee", "assigneeName", "author", "display", "displayName",
                 "owner", "reporter", "who"}
+_MAX_IDENTITY_DEPTH = 32
+_MAX_IDENTITY_VALUES = 50000
 
 
 def identity_types(state, cfg):
@@ -15,14 +17,11 @@ def identity_types(state, cfg):
     from app.infra.settings import load_people
 
     kinds, visited = {}, 0
-    priority = {"display": 1, "email": 2, "id": 3}
-
     def add(value, kind):
         if not isinstance(value, str) or not value.strip():
             return
         key = value.strip().casefold()
-        if priority[kind] > priority.get(kinds.get(key), 0):
-            kinds[key] = kind
+        kinds.setdefault(key, set()).add(kind)
 
     add(getattr(cfg, "jira_user", ""), "id")
     for uid in getattr(cfg, "managers", None) or ():
@@ -33,8 +32,8 @@ def identity_types(state, cfg):
 
     def collect(value, depth=0):
         nonlocal visited
-        if depth > 7 or visited >= 5000:
-            return
+        if depth > _MAX_IDENTITY_DEPTH or visited >= _MAX_IDENTITY_VALUES:
+            raise ValueError("person_identity_inventory_incomplete")
         visited += 1
         if isinstance(value, dict):
             for key, item in value.items():
@@ -46,7 +45,7 @@ def identity_types(state, cfg):
                     add(item, "display")
                 collect(item, depth + 1)
         elif isinstance(value, (list, tuple)):
-            for item in value[:200]:
+            for item in value:
                 collect(item, depth + 1)
         elif isinstance(value, str):
             for uid in re.findall(r"\[~([^\]\s]{1,128})\]", value):
@@ -85,8 +84,8 @@ def result_person_references(value, evidence, identities, pseudonymize, kinds):
     resolved = {}
     for marker, originals_for_marker in originals.items():
         original = next(iter(originals_for_marker.values()))
-        kind = kinds.get(original.casefold())
-        if kind not in {"id", "email", "display"}:
+        observed_kinds = kinds.get(original.casefold()) or set()
+        if not observed_kinds or not observed_kinds <= {"id", "email", "display"}:
             raise ValueError("person_identity_type_unknown")
         # A directory lookup may match a username or display name. Require a
         # complete bounded response and exact equality, never a fuzzy/first hit.
@@ -96,7 +95,7 @@ def result_person_references(value, evidence, identities, pseudonymize, kinds):
         )
         if not isinstance(users, list) or len(users) >= 100:
             raise ValueError("person_directory_incomplete")
-        def matches(row):
+        def matches(row, kind):
             # A missing username must never resolve through another user's
             # identical display name. The same rule applies to email addresses.
             fields = {"id": ("name", "key"), "email": ("emailAddress",),
@@ -110,11 +109,12 @@ def result_person_references(value, evidence, identities, pseudonymize, kinds):
                                for field in ("name", "key"))
             return original.casefold() in aliases
 
-        ids = {
+        channels = [{
             str(row.get("name") or row.get("key") or "").strip()
-            for row in users if isinstance(row, dict) and matches(row)
-        } - {""}
-        if len(ids) != 1:
+            for row in users if isinstance(row, dict) and matches(row, kind)
+        } - {""} for kind in observed_kinds]
+        ids = set().union(*channels)
+        if any(not channel for channel in channels) or len(ids) != 1:
             raise ValueError("person_directory_unknown_or_ambiguous")
         uid = next(iter(ids))
         result = resolve_references([{"id": marker, "kind": "person", "user_id": uid}])

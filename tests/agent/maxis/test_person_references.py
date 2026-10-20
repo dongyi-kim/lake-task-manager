@@ -13,7 +13,7 @@ from app.agent.maxis.person_references import result_person_references as resolv
 def result_person_references(value, evidence, identities, pseudonymize):
     """Tests default to display inputs; explicit ID/email tests use resolve."""
     return resolve(value, evidence, identities, pseudonymize,
-                   {identity.casefold(): "display" for identity in identities})
+                   {identity.casefold(): {"display"} for identity in identities})
 
 
 def install_directory(monkeypatch, users, canonical=None):
@@ -115,10 +115,10 @@ def test_typed_identity_cannot_resolve_through_someone_elses_display_name(monkey
          "emailAddress": "bob@example.test"}])
     payload = {"text": marker("alice.fixture")}
     with pytest.raises(ValueError, match="directory_unknown"):
-        resolve(payload, payload, ["alice.fixture"], marker, {"alice.fixture": kind})
+        resolve(payload, payload, ["alice.fixture"], marker, {"alice.fixture": {kind}})
 
 
-def test_identity_type_inventory_preserves_strongest_local_constraint(monkeypatch):
+def test_identity_type_inventory_preserves_every_local_constraint(monkeypatch):
     from app.infra import settings
     monkeypatch.setattr(settings, "load_people", lambda: {"team": ["roster.fixture"]})
     kinds = identity_types({
@@ -131,7 +131,52 @@ def test_identity_type_inventory_preserves_strongest_local_constraint(monkeypatc
         "ticket_progress": "담당 [~mentioned.fixture]",
     }, SimpleNamespace(jira_user="caller.fixture", managers=[]))
     assert kinds == {
-        "roster.fixture": "id", "caller.fixture": "id", "alice.fixture": "id",
-        "bob.fixture": "id", "김샘": "display", "정한울": "display",
-        "a@example.test": "email", "mentioned.fixture": "id",
+        "roster.fixture": {"id"}, "caller.fixture": {"id"},
+        "alice.fixture": {"id", "display"}, "bob.fixture": {"id"},
+        "김샘": {"display"}, "정한울": {"display"},
+        "a@example.test": {"email"}, "mentioned.fixture": {"id"},
     }
+
+
+def test_same_plaintext_id_and_other_users_name_cannot_share_a_marker(monkeypatch):
+    from app.infra import settings
+    monkeypatch.setattr(settings, "load_people", lambda: {})
+    users = [{"name": "alice.fixture", "displayName": "Alice Fixture"},
+             {"name": "bob.fixture", "displayName": "alice.fixture"}]
+    install_directory(monkeypatch, users)
+    kinds = identity_types({"people": users}, SimpleNamespace())
+    payload = {"text": marker("alice.fixture")}
+    with pytest.raises(ValueError, match="directory_unknown_or_ambiguous"):
+        resolve(payload, payload, ["alice.fixture"], marker, kinds)
+
+
+def test_same_plaintext_id_and_display_are_safe_only_for_one_user(monkeypatch):
+    install_directory(monkeypatch, [{"name": "alice.fixture", "displayName": "alice.fixture"}])
+    payload = {"text": marker("alice.fixture")}
+    assert resolve(payload, payload, ["alice.fixture"], marker,
+                   {"alice.fixture": {"id", "display"}}) == {
+                       marker("alice.fixture"): "[~alice.fixture]"}
+
+
+def test_deep_and_late_identity_constraints_are_not_silently_omitted(monkeypatch):
+    from app.infra import settings
+    monkeypatch.setattr(settings, "load_people", lambda: {})
+    state = {"query_results": [{"result": {"tickets": [
+        {"who": "alice.fixture", "details": {"level2": {"level3": {
+            "assigneeId": "alice.fixture"}}}},
+        *[{} for _ in range(201)],
+        {"emailAddress": "alice.fixture"},
+    ]}}]}
+    assert identity_types(state, SimpleNamespace())["alice.fixture"] == {
+        "id", "display", "email"}
+
+
+@pytest.mark.parametrize("limit", ["_MAX_IDENTITY_DEPTH", "_MAX_IDENTITY_VALUES"])
+def test_inventory_limit_fails_closed_instead_of_using_partial_types(monkeypatch, limit):
+    from app.agent.maxis import person_references
+    from app.infra import settings
+    monkeypatch.setattr(settings, "load_people", lambda: {})
+    monkeypatch.setattr(person_references, limit, 1)
+    with pytest.raises(ValueError, match="inventory_incomplete"):
+        identity_types({"who": "alice.fixture", "nested": {"assigneeId": "alice.fixture"}},
+                       SimpleNamespace())

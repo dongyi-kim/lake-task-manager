@@ -2033,7 +2033,7 @@ def invoke(
     *,
     person_references: dict[str, str] | None = None,
     person_reference_values: tuple[str, ...] = (),
-    person_reference_types: dict[str, str] | None = None,
+    person_reference_types: dict[str, set[str]] | None = None,
     allow_guarded_person_references: bool = False,
 ) -> dict:
     """Invoke one configured Dify Role and normalize only its typed envelope."""
