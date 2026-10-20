@@ -569,15 +569,23 @@ def _ticket_progress_material(state) -> dict:
 
     from app.agent import tools as T
     from app.agent.tools.survey_tools import progress_report
+    remote_result = (state.get("runtime_role_routes") or {}).get("result_integrator") == "maxis"
 
     def fetch(key: str) -> dict:
+        from app.agent.maxis.backend import begin_local_acquisition, finish_local_acquisition
+        from app.agent.tools.progress_snapshot import ProgressAcquisition
+        acquisition = ProgressAcquisition() if remote_result else None
+        marker = begin_local_acquisition() if remote_result else None
         try:
-            data = progress_report(key)
-            return ({"availability": "available", "data": data}
-                    if isinstance(data, dict)
-                    else {"availability": "unavailable", "data": {}})
+            data = (progress_report(key, acquisition=acquisition) if remote_result
+                    else progress_report(key))
         except Exception:
             return {"availability": "unavailable", "data": {}}
+        finally:
+            provenance = finish_local_acquisition(marker) if remote_result else None
+        return ({"availability": "available", "data": data, "acquisition": acquisition,
+                 "provenance": provenance} if isinstance(data, dict)
+                else {"availability": "unavailable", "data": {}})
 
     def epic_tree(key: str) -> dict:
         try:
@@ -617,7 +625,7 @@ def _ticket_progress_material(state) -> dict:
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         acquired = list(pool.map(fetch, keys))
-    tickets, blocks = [], []
+    tickets, blocks, evidence_rows, evidence_proofs = [], [], [], {}
     for key, acquired_row in zip(keys, acquired):
         availability = acquired_row["availability"]
         report = acquired_row.get("data") or {}
@@ -646,6 +654,10 @@ def _ticket_progress_material(state) -> dict:
             blocks.append(f"[{key}] 존재하지 않는 티켓이다(권한 문제가 아니라 미존재).{hint}")
             continue
         lists = ("children", "changes", "comments", "links", "documents")
+        if remote_result:
+            # progress_report's compact projection omits empty arrays. Coverage
+            # is carried by the acquisition collector, never by field presence.
+            report = {**report, **{field: report.get(field, []) for field in lists}}
         ready = (_jira_key(key) and str(report.get("key") or "").upper() == key
                  and all(isinstance(report.get(field), str) and report.get(field)
                          for field in ("title", "status"))
@@ -656,6 +668,21 @@ def _ticket_progress_material(state) -> dict:
         if not ready:
             tickets.append({"key": key, "availability": "unavailable"})
             continue
+        if remote_result:
+            from app.agent.workflow.progress_evidence import progress_evidence
+            evidence = progress_evidence(key, report, acquired_row["acquisition"],
+                                         acquired_row["provenance"])
+            evidence_rows.extend(evidence["query_results"])
+            evidence_proofs.update(evidence["query_evidence_attestations"])
+            # Only the validated projection may feed the semantic snapshot too.
+            jira = next(row["result"] for row in evidence["query_results"]
+                        if row["source"] == "jira")
+            report = {**report, **{field: jira.get(field, []) for field in lists
+                                   if field != "documents"}}
+            report["documents"] = [doc for row in evidence["query_results"]
+                                   if row["source"] == "confluence"
+                                   for doc in row["result"]["documents"]]
+            report["evidence_complete"] = jira["complete"]
         ticket = without_display_assignees(report)
         ticket.update({"key": str(report.get("key") or key),
                        "availability": "available", "epic_tree": epic_tree(key)})
@@ -664,6 +691,7 @@ def _ticket_progress_material(state) -> dict:
 
     complete = (len(requested_keys) == len(keys) == len(tickets)
                 and all(row.get("availability") == "available"
+                        and (not remote_result or row.get("evidence_complete") is True)
                         and (row.get("epic_tree") or {}).get("availability") != "unavailable"
                         for row in tickets))
     snapshot = {
@@ -674,7 +702,8 @@ def _ticket_progress_material(state) -> dict:
         "complete": complete,
     }
     return {"text": "\n\n".join(blocks)[:4000], "snapshot": snapshot,
-            "complete": complete}
+            "complete": complete, "query_results": evidence_rows,
+            "query_evidence_attestations": evidence_proofs}
 
 def _ticket_progress(state) -> str:
     """Compatibility text projection for callers outside the graph node."""
@@ -792,7 +821,19 @@ class PortfolioAnalyst(ToolAgent):
             try:
                 progress_material = _ticket_progress_material(state)
             except Exception:
+                if self._maxis_is_authoritative(state):
+                    raise
                 progress_material = {}
+            progress_evidence_patch = {}
+            if progress_material.get("query_results"):
+                progress_evidence_patch = {
+                    "query_results": [*(state.get("query_results") or []),
+                                      *progress_material["query_results"]],
+                    "query_evidence_attestations": {
+                        **(state.get("query_evidence_attestations") or {}),
+                        **progress_material["query_evidence_attestations"]},
+                }
+                state = {**state, **progress_evidence_patch}
             prog = str(progress_material.get("text") or "")
             progress_snapshot = progress_material.get("snapshot") or {}
             progress_missing = bool(progress_snapshot.get("missingKeys"))
@@ -842,6 +883,7 @@ class PortfolioAnalyst(ToolAgent):
                         out["group_activity"] = pre
                     if prog:
                         out["ticket_progress"] = prog
+                    out.update(progress_evidence_patch)
                     return out
                 try:
                     out = self.apply_routed(state, self._conclude(state, []))
@@ -851,12 +893,14 @@ class PortfolioAnalyst(ToolAgent):
                         out["ticket_progress"] = prog
                     out["trace"] = (out.get("trace") or []) + typed_fast_path_note(
                         state, self.name, "typed 불완전 · 기존 중간 합성 사용", fast_path_decision)
+                    out.update(progress_evidence_patch)
                     return out
                 except Exception:
                     if self._maxis_is_authoritative(state):
                         raise
                     pass
             out = react(state)
+            out.update(progress_evidence_patch)
             if pre:
                 out["group_activity"] = pre
             if prog:

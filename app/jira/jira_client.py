@@ -3973,6 +3973,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         try:
             return self._ticket_badge_strict(key)
         except Exception:
+            if self.cache.bounded_evidence_read():
+                raise
             return None
 
     def _ticket_badge_strict(self, key, *, strict_cache=False):
@@ -3983,6 +3985,10 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         """
         raw = self.get_issue_light(
             key, strict=strict_cache)        # 전체 캐시 있으면 재사용, 없으면 경량
+        if self.cache.bounded_evidence_read() and (
+                not isinstance(raw, dict) or not isinstance(raw.get("fields"), dict)
+                or str(raw.get("key") or "").upper() != str(key).upper()):
+            raise ValueError("unverified_ticket_badge_identity")
         return self._ticket_badge_from_raw(key, raw)
 
     def _ticket_badge_from_raw(self, key, raw):
@@ -4496,11 +4502,26 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     f"/rest/api/2/issue/{key}",
                     params={"expand": "changelog", "fields": "created,reporter"})
             except Exception:
+                if self.cache.bounded_evidence_read():
+                    raise
                 return {}
+            if self.cache.bounded_evidence_read() and (
+                    not isinstance(raw, dict) or not isinstance(raw.get("changelog"), dict)
+                    or not isinstance(raw["changelog"].get("histories"), list)):
+                raise ValueError("unverified_changelog")
             f = raw.get("fields") or {}
             return {"created": f.get("created"), "reporter": f.get("reporter") or {},
                     "histories": (raw.get("changelog") or {}).get("histories") or []}
-        return self.cache.get_or_set(f"changelog:{self.env}:{key}", self.s.cache_ttl_seconds, do)[0]
+        return self.cache.get_or_set(self._evidence_cache_key(f"changelog:{self.env}:{key}"),
+                                     self.s.cache_ttl_seconds, do)[0]
+
+    def _evidence_cache_key(self, key):
+        """Best-effort UI projections are not proofs, even inside their TTL.
+
+        Keep the ordinary prefix so existing write invalidations clear both.
+        Bounded acquisitions may reuse only rows produced by the stricter path.
+        """
+        return key + ":evidence" if self.cache.bounded_evidence_read() else key
 
     def confluence_page(self, cid, expand="body.storage"):
         """Confluence 페이지 원본 조회 — **base 를 붙이는 한 곳**.
@@ -4513,10 +4534,14 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             return {}
         base = (self.s.confluence_base or "").rstrip("/")
         path = f"/rest/api/content/{cid}"
+        if self.cache.bounded_evidence_read():
+            expand = ",".join(dict.fromkeys([*expand.split(","), "space", "version"]))
         try:
             return self._conf_get_json((base + path) if base else path,
                                        params={"expand": expand}) or {}
         except Exception:
+            if self.cache.bounded_evidence_read():
+                raise
             return {}
 
     def ticket_field_history(self, key, limit=20):
@@ -4825,7 +4850,14 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             # 표시용은 넉넉한 상한(CHILD_DISPLAY_LIMIT) — 스캔용 20 을 쓰면 하위가 많은 Epic 이 20 개로 잘렸다.
             kids = self._child_keys(key, limit=self.CHILD_DISPLAY_LIMIT)
             self.prefetch_issues(kids, light=True)   # 뱃지만 필요 → 경량 배치(이후 badge 는 캐시 히트)
-            return [b for b in (self.ticket_badge(k) for k in kids) if b]
+            rows = [self.ticket_badge(k) for k in kids]
+            if self.cache.bounded_evidence_read() and any(not row for row in rows):
+                raise ValueError("incomplete_child_details")
+            return [row for row in rows if row]
+        # Reassemble evidence from leaf caches so their original timestamps and
+        # stale flags survive. A newly stamped aggregate would launder their age.
+        if self.cache.bounded_evidence_read():
+            return build()
         return self._swr(f"children:{self.env}:{key}", build)
 
     def ticket_related(self, key, limit=20, include_mentions=True):
@@ -4845,6 +4877,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             try:
                 f = self.get_issue(key).get("fields") or {}
             except Exception:
+                if self.cache.bounded_evidence_read():
+                    raise
                 f = {}
             for ln in (f.get("issuelinks") or []):
                 t = ln.get("type") or {}
@@ -4864,11 +4898,15 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     if v:
                         htmls.append(v.get("descriptionHtml") or "")
                 except Exception:
+                    if self.cache.bounded_evidence_read():
+                        raise
                     pass
                 try:
                     for c in self._issue_comments(key, limit=10):
                         htmls.append(c.get("html") or "")
                 except Exception:
+                    if self.cache.bounded_evidence_read():
+                        raise
                     pass
                 for h in htmls:
                     for k in _BROWSE_KEY_RE.findall(h or ""):
@@ -4886,6 +4924,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     out.append(dict(b, rel=rel, via=via))
             return out
         scope = "all" if include_mentions else "links"
+        if self.cache.bounded_evidence_read():
+            return build()
         return self._swr(f"related:{self.env}:{key}:v2:{scope}", build)
 
     def ticket_attachments(self, key):
@@ -4925,6 +4965,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             except SessionExpired:
                 raise
             except Exception:
+                if self.cache.bounded_evidence_read():
+                    raise
                 return []
             out = []
             for r in (data or []):
@@ -4940,7 +4982,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                                 "rel": (r.get("relationship") or "").strip(),
                                 "app": (app.get("name") or app.get("type") or "").strip()})
             return out
-        return self.cache.get_or_set(f"remotelinks:{self.env}:{key}", self.s.cache_ttl_seconds, do)[0]
+        return self.cache.get_or_set(self._evidence_cache_key(f"remotelinks:{self.env}:{key}"),
+                                     self.s.cache_ttl_seconds, do)[0]
 
     def ticket_documents(self, key, limit=20):
         """관련 문서 — 두 소스를 합친다(URL 기준 중복 제거):
@@ -4956,11 +4999,15 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 if v:
                     htmls.append(v.get("descriptionHtml") or "")
             except Exception:
+                if self.cache.bounded_evidence_read():
+                    raise
                 pass
             try:
                 for c in self._issue_comments(key, limit=10):
                     htmls.append(c.get("html") or "")
             except Exception:
+                if self.cache.bounded_evidence_read():
+                    raise
                 pass
             out, seen = [], set()
 
@@ -5004,6 +5051,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 add(u, title, is_conf, r.get("id"),
                     mention=_is_mention_link(r), rel=r.get("rel") or "")
             return out[:limit]
+        if self.cache.bounded_evidence_read():
+            return build()
         return self._swr(f"documents:{self.env}:{key}", build)
 
     def _get_issue_view(self, key, fresh=False):

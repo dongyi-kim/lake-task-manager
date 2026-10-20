@@ -186,6 +186,12 @@ class Cache:
                   and window.max_age_seconds is not None]
         return min(ttl, *limits) if limits else ttl
 
+    def bounded_evidence_read(self):
+        """True only in this cache's active, freshness-bounded acquisition."""
+        return any(window.cache is self and not window._closed
+                   and window.max_age_seconds is not None
+                   for window in _ACTIVE_PROVENANCE_WINDOWS.get())
+
     def provenance_since(self, marker):
         """Close and summarize one acquisition ledger without retaining payloads."""
         if not isinstance(marker, _ProvenanceWindow) or marker.cache is not self:

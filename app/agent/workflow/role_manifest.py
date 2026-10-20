@@ -127,7 +127,8 @@ ROLE_SPECS: dict[str, RoleSpec] = {
          "pre_survey", "query_results", "group_activity", "ticket_progress",
          "portfolio_snapshot", "person_work_snapshot", "daily_priority_snapshot"),
         ("pmo_findings", "pmo_caution", "person_work_snapshot", "daily_priority_snapshot",
-         "portfolio_snapshot", "group_activity", "ticket_progress"),
+         "portfolio_snapshot", "group_activity", "ticket_progress",
+         "query_results", "query_evidence_attestations"),
         ("portfolio",), decision_layer="lightweight_semantic",
         remote_context_keys=(
             "intent", "mentioned_keys", "module", "portfolio_snapshot",
