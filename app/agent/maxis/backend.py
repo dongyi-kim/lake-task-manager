@@ -2573,6 +2573,13 @@ def invoke_role(
             # A new invocation rechecks the same immutable profile, source freshness,
             # kill switch and credentials. It grants no authority and never accepts
             # the rejected candidate or calls a local model. Audit rows already persist.
+            from app.agent.maxis.draft_feedback import with_native_feedback
+            try:
+                payload = with_native_feedback(payload, role_id)
+            except (KeyError, TypeError, ValueError):
+                metadata["requestAttempts"] = attempts
+                exc.metadata = metadata
+                raise exc
     if attempts:
         metadata = dict(result.get("metadata") or {})
         if metadata.get("requestTelemetry") is not None:

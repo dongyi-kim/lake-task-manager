@@ -24,9 +24,12 @@ def failure(marker="invalid_core_work_draft", telemetry=True):
 
 
 @pytest.fixture
-def runtime(monkeypatch):
+def runtime(monkeypatch, evidence):
     monkeypatch.setattr(backend, "resolve_role", lambda *_: SimpleNamespace(route="maxis"))
-    monkeypatch.setattr(backend, "role_payload", lambda *_a, **_k: {"fixed": "guarded"})
+    monkeypatch.setattr(backend, "role_payload", lambda role, *_a, **_k: {
+        "roleId": role, "runtime": {"fixed": "guarded"},
+        "evidencePack": evidence.model_copy(update={"use_case": role}).model_dump(mode="json"),
+    })
     calls = []
     def install(outcomes):
         def invoke(*args, **kwargs):
@@ -52,7 +55,13 @@ def success():
 def test_fresh_generation_is_bounded_and_preserves_failed_attempt(runtime):
     calls = runtime([failure(), success()])
     result = ask()
-    assert len(calls) == 2 and calls[0] == calls[1]
+    assert len(calls) == 2
+    first, second = (call[0][1] for call in calls)
+    assert first["runtime"] == second["runtime"]
+    assert {k: v for k, v in first["evidencePack"].items() if k != "role_context"} == {
+        k: v for k, v in second["evidencePack"].items() if k != "role_context"}
+    assert not first["evidencePack"]["role_context"]
+    assert second["evidencePack"]["role_context"][-1]["name"] == "native_draft_feedback"
     assert result == {"value": "typed"}
     assert len(result.metadata["requestAttempts"]) == 2
     usage = role_usage_observation(result.metadata)
@@ -79,7 +88,8 @@ def test_result_text_api_regenerates_native_structured_draft_once(runtime, secon
         assert role_usage_observation(error.value.metadata)["failedCalls"] == 2
     else:
         assert role_usage_observation(invoke().metadata)["failedCalls"] == 1
-    assert len(calls) == 2 and calls[0] == calls[1]
+    assert len(calls) == 2
+    assert calls[1][0][1]["evidencePack"]["role_context"][-1]["name"] == "native_draft_feedback"
 
 
 def test_other_text_outputs_do_not_gain_native_result_regeneration(runtime):
@@ -141,6 +151,62 @@ def test_second_preflight_failure_keeps_first_attempt(runtime):
         ask()
     assert len(calls) == 2
     assert role_usage_observation(error.value.metadata)["calls"] == 1
+
+
+def test_feedback_generation_failure_preserves_original_paid_attempt(runtime, monkeypatch):
+    from app.agent.maxis import draft_feedback
+    def reject(*_):
+        raise ValueError("invalid feedback input")
+    monkeypatch.setattr(draft_feedback, "with_native_feedback", reject)
+    calls = runtime([failure()])
+    with pytest.raises(backend.MaxisRuntimeError) as error:
+        ask()
+    assert len(calls) == 1
+    assert role_usage_observation(error.value.metadata)["failedCalls"] == 1
+
+
+def test_feedback_is_fixed_non_citable_and_does_not_restamp_evidence(evidence):
+    import copy
+    import json
+    from app.agent.maxis.draft_feedback import with_native_feedback
+    pack = evidence.model_copy(update={"use_case": "work_architect"})
+    payload = {"roleId": "work_architect", "evidencePack": pack.model_dump(mode="json"),
+               "runtime": {"profile": "synthetic-profile"}}
+    original = copy.deepcopy(payload)
+    result = with_native_feedback(payload, "work_architect")
+    assert payload == original
+    row = result["evidencePack"]["role_context"][-1]
+    assert row["observed_at"] == payload["evidencePack"]["requested_at"]
+    assert json.loads(row["content_json"])["previous_result"] == "rejected_native_draft"
+    assert row["context_id"] not in {source["source_id"] for source in result["evidencePack"]["sources"]}
+    assert {k: v for k, v in result["evidencePack"].items() if k != "role_context"} == {
+        k: v for k, v in payload["evidencePack"].items() if k != "role_context"}
+    assert with_native_feedback(result, "work_architect") is result
+
+
+@pytest.mark.parametrize("blocked_by", ["synthetic_only", "full_context", "budget"])
+def test_feedback_never_displaces_context_or_changes_fixed_fixture(evidence, blocked_by, monkeypatch):
+    import hashlib
+    from app.agent.maxis import draft_feedback
+    from app.agent.maxis.contracts import RoleContextV1
+    from app.agent.maxis.context_guard import ContextGuardError
+    pack = evidence.model_copy(update={"use_case": "work_architect"})
+    if blocked_by == "synthetic_only":
+        pack = pack.model_copy(update={"flags": ("synthetic_only",)})
+    elif blocked_by == "full_context":
+        pack = pack.model_copy(update={"role_context": tuple(RoleContextV1(
+            context_id=f"ctx-{index}", name=f"context_{index}", content_json="{}",
+            content_sha256=hashlib.sha256(b"{}").hexdigest(), observed_at=pack.requested_at,
+        ) for index in range(8))})
+    else:
+        real = draft_feedback.validate_pack_safety
+        def bounded(candidate):
+            real(candidate)
+            if candidate.role_context:
+                raise ContextGuardError("context_too_large", "evidence_pack")
+        monkeypatch.setattr(draft_feedback, "validate_pack_safety", bounded)
+    payload = {"roleId": "work_architect", "evidencePack": pack.model_dump(mode="json")}
+    assert draft_feedback.with_native_feedback(payload, "work_architect") is payload
 
 
 def test_local_post_guard_rejection_marks_only_the_last_attempt(runtime):
