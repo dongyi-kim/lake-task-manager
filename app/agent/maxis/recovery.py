@@ -64,14 +64,16 @@ They describe a known input limitation, not a claimed root cause inside the mode
 """
     flags = {value for value in evidence_flags if type(value) is str}
     codes = {value for value in warnings if type(value) is str}
-    if flags & _STALE:
-        code = "stale_evidence"
-    elif flags & _INCOMPLETE:
-        code = "incomplete_evidence"
-    elif codes & _SCHEMA:
+    # A validated guard code identifies the rejection. Context flags describe
+    # limitations, not proof that they caused a different schema/grounding failure.
+    if codes & _SCHEMA:
         code = "invalid_result_contract"
     elif codes & _GROUNDING:
         code = "ungrounded_result"
+    elif flags & _STALE:
+        code = "stale_evidence"
+    elif flags & _INCOMPLETE:
+        code = "incomplete_evidence"
     else:
         code = "unusable_result"
     return recovery_for_code(code)

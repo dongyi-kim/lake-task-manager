@@ -51,12 +51,16 @@ def test_unknown_and_adversarial_warning_text_is_not_displayed(known_code):
     assert set(recovery.__dict__) == {"code", "message", "next_action"}
 
 
-def test_trusted_freshness_precedes_remote_claims():
+@pytest.mark.parametrize("warning,expected", [
+    ("contract_guard:payload_type_mismatch", "invalid_result_contract"),
+    ("contract_guard:claim_not_grounded", "ungrounded_result"),
+])
+def test_validated_rejection_is_not_misreported_as_a_context_limitation(warning, expected):
     recovery = blocked_recovery(
-        warnings=("contract_guard:payload_type_mismatch",),
-        evidence_flags=("stale_source", "source_truncated"),
+        warnings=(warning,),
+        evidence_flags=("stale_source", "source_truncated", "partial_role_context"),
     )
-    assert recovery.code == "stale_evidence"
+    assert recovery.code == expected
 
 
 def test_empty_block_is_not_mislabeled_as_user_missing_input():
