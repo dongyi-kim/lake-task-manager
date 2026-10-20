@@ -24,10 +24,11 @@ const PROVIDERS = [
 export default {
   name: "AgentSettingsDialog",
   components: { MaxisSettingsPanel },
+  props: { initialMode: { type: String, default: "maxis" } },
   emits: ["close", "saved"],
   data() {
     return {
-      providers: PROVIDERS, mode: "llm",
+      providers: PROVIDERS, mode: this.initialMode === "llm" ? "llm" : "maxis",
       st: null, env: "", selectedId: "", err: "", busy: false, saving: false,
       form: { name: "", provider: "", chatModel: "", chatModelSimple: "", embedModel: "", apiVersion: "",
         chatModelProfile: "", chatModelSimpleProfile: "",

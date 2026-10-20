@@ -3181,6 +3181,10 @@ def _split_into_children(state, item: dict) -> list:
     compiled = _children_from_dod(item)
     if compiled:
         return compiled
+    from app.agent.runtime_status import bounded_internal_assist
+
+    if bounded_internal_assist(state):
+        return []  # A missing semantic split must be corrected by the remote Work Role.
     try:
         schema = {"title": "split_children", "type": "object", "properties": {
             "children": {"type": "array", "items": {
@@ -3458,7 +3462,9 @@ def _bug_body_for(state, it) -> str:
     # simple LLM에 다시 보내던 보정 호출을 생략한다(PASTE1: WorkArchitect 2 calls→1 call).
     direct_report = bool(steps and expected and actual)
     try:
-        if direct_report:
+        from app.agent.runtime_status import bounded_internal_assist
+
+        if direct_report or bounded_internal_assist(state):
             raise StopIteration
         schema = {"title": "bug_body", "type": "object", "properties": {
             "steps": {"type": "array", "items": {"type": "string"},
@@ -3557,6 +3563,10 @@ def _task_for_module(state, mod: str, ref: dict, want: str = "") -> dict:
     걸리고, 무엇보다 사람이 승인 화면에서 판단할 재료가 없다. 실패하면 빈 dict 를 돌려
     경고 경로로 간다(보정이 본 흐름을 죽이면 안 된다).
     """
+    from app.agent.runtime_status import bounded_internal_assist
+
+    if bounded_internal_assist(state):
+        return {}  # Preserve the missing-deliverable defect for the ordinary Auditor.
     try:
         # ★ **HTML 을 모델에게 받지 않는다 — 조각만 받고 코드가 조립한다.** 처음엔 본문
         #   전체를 HTML 로 받았는데, 모델이 <h1>/<h2> 로 쓰고 '배경'·'완료 조건' 절을 빼서
@@ -5043,6 +5053,10 @@ def _rules_material(state) -> str:
 
     Auditor 의 `_rules_for` 와 같은 재료다 — 검열이 볼 규칙을 작성자도 봐야 왕복이 준다.
     """
+    from app.agent.runtime_status import bounded_internal_assist
+
+    if bounded_internal_assist(state):
+        return ""  # The qualified remote release retrieves its governed Knowledge.
     try:
         from app.agent.retrieval import static_index
         shape = " ".join(str(i.get("type") or "") for i in

@@ -206,6 +206,18 @@ class PeopleAdvisor(StructuredAgent):
                     "assignments": rows,
                     "trace": note(state, self.name, f"{len(rows)}건 사용자 지정 담당 유지"),
                 }
+            from app.agent.runtime_status import bounded_internal_assist
+
+            if bounded_internal_assist(state):
+                return {
+                    "assignments": [],
+                    "questions": [{
+                        "question": "담당자를 지정하거나 미할당으로 진행할지 알려 주세요. "
+                                    "MAXIS 내부 업무 모드는 자동 담당자 추천을 지원하지 않습니다.",
+                        "kind": "text", "field": "assignee", "options": [],
+                    }],
+                    "trace": note(state, self.name, "사용자 담당자 선택 필요 · 자동 추천 없음"),
+                }
             # 두 조회는 독립 — 병렬로. prod 는 호출당 수백 ms~수 초다.
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=2) as ex:

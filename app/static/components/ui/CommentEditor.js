@@ -89,7 +89,7 @@ export default {
                     aiOpen: false, aiPrompt: "", aiSeed: true, aiReplace: false, aiAsk: "",
                     aiPopStyle: {},   // fixed 배치 — 에디터 기준 중앙(absolute 는 overflow 에 잘리고 좌로 쏠렸다)
                     // LLM 연결값이 없으면 생성 대신 안내+[설정] — null=아직 확인 전
-                    aiReady: null, aiWhy: "", aiSettings: false,
+                    aiReady: null, aiWhy: "", aiSettings: false, aiRuntime: null,
                     aiBusy: false, aiErr: "", aiNote: "",
                     mdTable: false, styleOpen: false, fontOpen: false,
                     colorOpen: false, bgOpen: false,   // 글자색·배경색 팔레트 열림
@@ -400,11 +400,16 @@ export default {
       }
       // 열 때마다 확인한다 — 설정 창에서 키를 막 넣고 돌아온 직후에도 맞아야 한다.
       agentApi.status()
-        .then((s) => { this.aiReady = !!(s && s.llmReady); this.aiWhy = (s && s.llmReason) || ""; })
+        .then((s) => {
+          this.aiRuntime = (s && s.runtime && s.runtime.editor) || null;
+          this.aiReady = this.aiRuntime ? !!this.aiRuntime.ready : !!(s && s.llmReady);
+          this.aiWhy = this.aiRuntime ? (this.aiRuntime.reason || "") : ((s && s.llmReason) || "");
+        })
         .catch(() => { this.aiReady = false; this.aiWhy = "에이전트 상태를 확인하지 못했습니다."; });
       this.$nextTick(() => this.$refs.aiInput && this.$refs.aiInput.focus());
     },
     async runAi() {
+      if (this.aiReady !== true) { this.aiErr = this.aiWhy || "AI 실행 설정을 확인하고 다시 시도하세요."; return; }
       const prompt = (this.aiPrompt || "").trim();
       const seed = this.aiSeed ? this.htmlNow() : "";
       if (!prompt && !seed) { this.aiErr = "무엇을 써 드릴지 적어 주세요."; return; }

@@ -1183,6 +1183,9 @@ class QueryRunner:
         # contracts here too; silently running them independently would return plausible but
         # semantically wrong evidence.
         query_plan = state.get("query_plan") or {}
+        from app.agent.runtime_status import require_internal_sources
+
+        require_internal_sources(state, query_plan)
         _reject_unsupported_relational_plan(query_plan)
         # Only PLAN_WORK's creation compiler owns this typed marker. The helper also requires
         # an empty executable-read set; model-authored uncertainty text is never provenance.

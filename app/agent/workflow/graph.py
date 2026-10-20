@@ -90,9 +90,20 @@ def _node(agent):
         return run
 
     def guarded(state):
+        from app.agent.runtime_status import RuntimeUnavailable, bounded_internal_assist
+
+        if (agent.name == Node.PORTFOLIO_ANALYST and bounded_internal_assist(state)
+                and (state.get("runtime_role_routes") or {}).get(agent.name) != "maxis"):
+            return {"error": "현재 MAXIS 배포에는 PMO 분석 기능이 활성화되지 않았습니다. "
+                             "검증된 PMO Brief 실행 경로를 적용하세요."}
         # A serial edge may already be scheduled when the preceding Role blocks.
         # Do not start it; parallel peers already in flight keep their own outcome.
-        return {} if has_blocked_terminal(state) else run(state)
+        if has_blocked_terminal(state):
+            return {}
+        try:
+            return run(state)
+        except RuntimeUnavailable as exc:
+            return {"error": str(exc)}
 
     return guarded
 
@@ -230,7 +241,7 @@ def route_after_query_specialist(state: AgentState) -> str:
 
 def route_after_query_runner(state: AgentState) -> str:
     """결정적 집계만으로 답이 완성된 요청은 일반 Research ReAct를 건너뛴다."""
-    if has_blocked_terminal(state):
+    if has_blocked_terminal(state) or state.get("error"):
         return "respond"
     completion = state.get("assignment_completion") or {}
     guard = (state.get("query_artifacts") or {}).get("creation-subject-guard") or {}
@@ -248,7 +259,7 @@ def route_after_research_analyst(state: AgentState) -> str:
     지식형 질문("X가 뭐야", "정리해줘")은 KnowledgeCurator 를 거친다 — 조사 결과를 개념/우리 상황/
     참고/공백 스키마로 정리해야 답이 재사용 가능한 브리프가 된다(사용자 요청으로 신설).
     """
-    if has_blocked_terminal(state):
+    if has_blocked_terminal(state) or state.get("error"):
         return "respond"
     intent = state.get("intent") or ""
     # 조사 단계가 확인 질문을 냈다(표기 후보 등) — 정리(curate)로 갈 것이 없다. 바로 묻는다.

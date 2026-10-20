@@ -99,9 +99,9 @@ const COMMENT_EDITOR_TEMPLATE = `
                   title="AI 자동완성 — 지금 쓰는 글을 이어 쓰거나 새로 초안을 만든다">AI<span class="tb-ai-spark" aria-hidden="true">✨</span></button>
           <span v-if="aiOpen" class="ai-pop" :style="aiPopStyle" @click.stop @keydown.esc="aiOpen=false">
             <template v-if="aiReady === false">
-              <span class="ai-err">AI 를 쓸 수 없습니다 — {{ aiWhy || 'LLM 연결이 설정되지 않았습니다.' }}</span>
+              <span class="ai-err">AI 를 쓸 수 없습니다 — {{ aiWhy || 'AI 실행 설정을 확인하세요.' }}</span>
               <span class="ai-row">
-                <span class="ai-hint">키를 등록하면 바로 쓸 수 있습니다</span>
+                <span class="ai-hint">연결과 에디터 실행 경로를 확인하세요</span>
                 <button type="button" class="cmt-ed-btn ghost" @click="aiOpen=false">닫기</button>
                 <button type="button" class="cmt-ed-btn primary" @click="aiSettings = true">설정</button>
               </span>
@@ -135,7 +135,8 @@ const COMMENT_EDITOR_TEMPLATE = `
                 :title="maximized ? '최대화 해제' : '에디터 최대화'">{{ maximized ? '🗗' : '🗖' }}</button>
         <input ref="file" type="file" multiple style="display:none" @change="onFile">
         <span v-if="aiBusy" class="ai-run" aria-live="polite"><i class="ai-spin"></i>AI가 작성 중… 잠시만요</span>
-        <AgentSettingsDialog v-if="aiSettings" @close="aiSettings = false; openAi()" />
+        <AgentSettingsDialog v-if="aiSettings" :initialMode="aiRuntime && aiRuntime.nextAction === 'llm_settings' ? 'llm' : 'maxis'"
+          @close="aiSettings = false; openAi()" />
         <LinkPicker v-if="pick" :mode="pick" insert @close="pick = ''" @pick="onPick" />
         <MarkdownTableDialog v-if="mdTable" @close="mdTable = false" @insert="insertMdTable" />
       </div>

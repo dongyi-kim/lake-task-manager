@@ -31,7 +31,11 @@ const AGENT_VIEW_TEMPLATE = `
              @mousedown.prevent="startNavDrag" @dblclick="resetNavW"></div>
         <!-- 모델·설정은 좌상단 — 지금 무엇으로 도는지가 먼저 보인다(사용자 요청) -->
         <div class="an-top">
-          <span v-if="status && status.runtimeConfigSource === 'named'" class="agent-prov"
+          <span v-if="conversationRuntime.engine === 'maxis'" class="agent-prov">
+            MAXIS / Dify · {{ conversationRuntime.profile || '프로필 확인 필요' }}
+            <template v-if="!conversationRuntime.ready"> · 설정 확인</template>
+          </span>
+          <span v-else-if="status && status.runtimeConfigSource === 'named'" class="agent-prov"
                 :title="'chat=' + status.chatModel + ' / embed=' + status.embedModel">
             {{ status.activeConfig.name }} · {{ status.provider }}<template v-if="status.chatModel"> · {{ status.chatModel }}</template>
           </span>
@@ -42,7 +46,7 @@ const AGENT_VIEW_TEMPLATE = `
           <span v-else class="agent-prov is-empty">
             연결 설정 없음
           </span>
-          <button class="agent-reset" @click="settingsOpen = true" title="AI 에이전트 설정">⚙ 설정</button>
+          <button class="agent-reset" @click="openRuntimeSettings" title="AI 에이전트 설정">⚙ 설정</button>
         </div>
         <button class="an-new" @click="reset">＋ 새 대화</button>
         <div class="an-h" v-if="convos.length">최근 대화</div>
@@ -483,10 +487,9 @@ const AGENT_VIEW_TEMPLATE = `
            과하다(사용자 지적). 하단 아이콘 줄이 세 기능의 입구다. -->
       <!-- LLM 연결값이 없으면 입력창 대신 안내+[설정] — 눌러 보고 나서야 에러로 아는 것보다
            먼저 말해 주는 것이 낫다. 설정을 닫으면 상태를 다시 확인해 입력창이 살아난다. -->
-      <div v-if="status && status.llmReady === false" class="agent-input agent-llmoff">
-        <span class="agent-llmoff-msg">⚠ AI 를 쓸 수 없습니다 — {{ status.llmReason || 'LLM 연결이 설정되지 않았습니다.' }}
-          <b>연결 확인된 LLM API 가 하나 이상 필요합니다.</b></span>
-        <button class="agent-llmoff-btn" @click="settingsOpen = true">설정</button>
+      <div v-if="conversationRuntime.ready === false" class="agent-input agent-llmoff">
+        <span class="agent-llmoff-msg">⚠ AI 를 쓸 수 없습니다 — {{ conversationRuntime.reason || 'AI 실행 설정을 확인하세요.' }}</span>
+        <button class="agent-llmoff-btn" @click="openRuntimeSettings">{{ conversationRuntime.nextAction === 'llm_settings' ? 'LLM 연결 설정' : 'MAXIS 설정' }}</button>
       </div>
       <div v-else class="agent-input agent-input-rich" @keydown.capture="onRichKey">
         <div class="agent-chatbox">
@@ -520,6 +523,7 @@ const AGENT_VIEW_TEMPLATE = `
       <div v-if="refTip" class="ref-tip" :style="refTip.style">{{ refTip.text }}</div>
 
       <AgentSettingsDialog v-if="settingsOpen"
+        :initialMode="settingsMode"
         @saved="refreshStatus"
         @close="settingsOpen = false; refreshStatus()" />
 

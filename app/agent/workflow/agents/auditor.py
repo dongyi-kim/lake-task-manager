@@ -1981,6 +1981,10 @@ def _machine_check(state: AgentState) -> dict:
 
 def _rules_for(state: AgentState) -> str:
     """초안에 관련된 규칙만 끌어온다. 규칙 전문을 프롬프트에 붓지 않는다(정적 RAG)."""
+    from app.agent.runtime_status import bounded_internal_assist
+
+    if bounded_internal_assist(state):
+        return ""  # Governed Knowledge belongs to the qualified remote release.
     try:
         from app.agent.retrieval import static_index
         q = "티켓 작성 규칙 " + " ".join(

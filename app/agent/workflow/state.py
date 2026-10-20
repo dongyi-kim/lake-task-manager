@@ -298,6 +298,7 @@ class AgentState(TypedDict, total=False):
     # 있다. 첫 턴에 고정하고 ask/resume에서 현재 프로필과 재검증한다. Role 출력 schema에는
     # 이 필드가 없으므로 모델이 변경할 수 없다.
     runtime_engine: str
+    runtime_capability: str        # bounded semantic capability; never a write permission
     runtime_profile: str
     runtime_profile_fingerprint: str
     runtime_role_routes: dict[str, str]

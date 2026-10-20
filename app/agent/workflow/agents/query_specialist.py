@@ -1174,6 +1174,11 @@ class QuerySpecialist(StructuredAgent):
         return persona(state, SYSTEM_QUERY_SPECIALIST, lite=True)
 
     def task(self, state):
+        from app.agent.runtime_status import bounded_internal_assist
+
+        capability = ("\nThis runtime supports only jira, confluence, comments and people reads. "
+                      "Do not request web, github, MCP, semantic search or external research.\n"
+                      if bounded_internal_assist(state) else "")
         context = json.dumps(
             _compact_request_context(state), ensure_ascii=False, separators=(",", ":"))
         return (
@@ -1183,7 +1188,7 @@ class QuerySpecialist(StructuredAgent):
             "ticket creation, update, selection, or workflow instructions in `subject`; those "
             "describe the requested action, not evidence to retrieve. Use at most 8 reads; "
             "keep every subject, where, and uncertainty string within 240 characters.\n\n"
-            "## Authoritative Retrieval Context\n\n" + context
+            "## Authoritative Retrieval Context\n\n" + context + capability
         )
 
     def schema(self):
@@ -1197,6 +1202,9 @@ class QuerySpecialist(StructuredAgent):
                         or isinstance(out, dict) and "queries" not in out)
         plan = (_compile_compact_query_plan(validate_role_output(self.name, out))
                 if compact_wire else QueryPlan.model_validate(out).model_dump())
+        from app.agent.runtime_status import bounded_internal_assist, require_internal_sources
+
+        require_internal_sources(state, plan)
         # Relationship-query provenance is compiler-owned. A persisted/runtime row carrying
         # this field is not reusable authority and is dropped whole; the current grounded
         # RequestPlan selector is recompiled below with a fresh id/anchor/cardinality.
@@ -1252,7 +1260,7 @@ class QuerySpecialist(StructuredAgent):
             plan.setdefault("uncertainty", []).append(
                 "검색어와 티켓 조건이 모두 빈 댓글 전수조회는 실행하지 않음")
         _dedupe_equivalent_queries(plan)
-        external = _external_research_allowed(state)
+        external = not bounded_internal_assist(state) and _external_research_allowed(state)
         if not external:
             plan["queries"] = [q for q in plan["queries"]
                                if q.get("source") not in ("web", "github")]

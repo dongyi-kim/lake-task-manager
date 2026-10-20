@@ -2,6 +2,7 @@
 // OpenAI/AOAI model-provider editor: a Dify app owns a workflow contract/version,
 // while model selection remains a MAXIS governance concern.
 import { agentApi } from "../../lib/agentApi.js";
+import MaxisSetupWizard from "./MaxisSetupWizard.js";
 
 const WORKFLOWS = [
   { key: "agent_core", label: "Agent Core", keyField: "agentCoreApiKey",
@@ -27,6 +28,7 @@ function blankForm() {
 
 export default {
   name: "MaxisSettingsPanel",
+  components: { MaxisSetupWizard },
   data() {
     return {
       workflowRows: WORKFLOWS, routeModes: ROUTE_MODES,
@@ -62,7 +64,7 @@ export default {
     },
     knowledgeEvalReady() {
       if (!this.selected || this.selected.stage !== "prod") return true;
-      return !!(this.knowledgeEval && this.knowledgeEval.valid);
+      return !!(this.selected.qualification && this.selected.qualification.valid);
     },
     canActivate() {
       if (!this.canManage) return false;
@@ -120,7 +122,7 @@ export default {
             needs_input: "입력 필요", blocked: "차단", failed: "실패" }),
           http: Number.isInteger(row.httpStatus) && row.httpStatus >= 100 && row.httpStatus <= 599 ? row.httpStatus : "미확인",
           workflowVersion: text(row.workflowVersion, uuid), workflowRunId: text(row.workflowRunId, uuid),
-          knowledgeVersion: text(row.knowledgeVersion, /^ltm-knowledge-\d{4}\.\d{2}(?:\.\d+)?$/),
+          knowledgeVersion: text(row.knowledgeVersion, /^(?:ltm-knowledge-\d{4}\.\d{2}(?:\.\d+)?|ltm-public-knowledge\.v[1-9]\d*)$/),
         };
       }).filter(Boolean);
     },
@@ -286,7 +288,9 @@ export default {
     },
   },
   template: `
-  <div class="mx-panel">
+  <div class="mx-panel" style="overflow-y:auto;display:block">
+    <MaxisSetupWizard :can-manage="canManage" @configured="load('prod')" />
+    <details class="ag-sec"><summary>환경별 고급 설정 · 기존 연결 확인</summary>
     <div v-if="!st" class="ag-body">MAXIS 설정을 불러오는 중…</div>
     <template v-else>
       <div class="mx-profile-bar">
@@ -330,10 +334,10 @@ export default {
                :class="knowledgeEvalReady ? 'on' : 'off'">
             <b>Knowledge 원격 평가 {{ knowledgeEvalReady ? '권한 검증 완료' : '운영 권한 차단' }}</b>
             <span v-if="knowledgeEvalReady">
-              25 / 25 passed · {{ knowledgeEval.attestation.evidenceId }} · {{ knowledgeEval.attestation.passedAt }}
+              현재 PROD 배포의 독립 검수와 서명 검증 완료
             </span>
             <span v-else>
-              서명된 외부 25-case 결과물 검증과 pre-LLM Role ACL 구현이 필요합니다.
+              현재 PROD 배포에 결속된 서명 평가 결과물 검증이 필요합니다.
               <template v-if="knowledgeEval.bindingValid"> metadata binding 확인됨 · 권한 증명 아님</template>
               <template v-if="knowledgeEval.expectedBinding && knowledgeEval.expectedBinding.profileMaterialSha256">
                 예상 binding {{ knowledgeEval.expectedBinding.profileMaterialSha256.slice(0, 16) }}…
@@ -397,7 +401,7 @@ export default {
             운영 프로필은 원격 로그 승인 정책 ID·내용 범위·0~90일 보존 기간을 저장해야 연결 확인과 적용이 가능합니다.
           </div>
           <div class="ag-gate" :class="selected.enabled ? 'on' : 'off'">
-            <b>{{ selected.enabled ? 'MAXIS 사용 가능' : (selected.verified ? '확인됨 · 적용 전' : '연결 미확인') }}</b>
+            <b>{{ selected.enabled ? '연결 프로필 적용됨 · 기능별 운영 권한 별도 확인' : (selected.verified ? '확인됨 · 적용 전' : '연결 미확인') }}</b>
             <span>{{ selected.active ? '활성 프로필' : '후보 프로필' }} · 마지막 검사 시도: {{ selected.lastProbe && selected.lastProbe.at ? selected.lastProbe.at : '확인 기록 없음' }}</span>
           </div>
           <div v-if="Object.keys(probeRows).length" class="ag-probe">
@@ -439,7 +443,7 @@ export default {
             DEV는 합성 데이터 canary·Shadow 검증 전용이며 MAXIS를 최종 응답 주체로 지정할 수 없습니다.
           </div>
           <div v-if="selected.stage === 'prod' && !knowledgeEvalReady" class="ag-warn">
-            서명된 원격 평가 검증과 결정적 pre-LLM Role ACL 전에는 Shadow만 사용할 수 있으며 MAXIS 운영 경로는 저장할 수 없습니다.
+            서명된 PROD 평가 검증 전에는 Shadow만 사용할 수 있으며 MAXIS 운영 경로는 저장할 수 없습니다.
           </div>
           <div v-for="w in workflowRows" :key="'promotion-'+w.key">
             <div v-if="selected.stage === 'prod' && promotion(w.key)" class="mx-promotion-gate"
@@ -489,5 +493,6 @@ export default {
         <div v-if="err" class="ag-err">{{ err }}</div>
       </div>
     </template>
+    </details>
   </div>`,
 };

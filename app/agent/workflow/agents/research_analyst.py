@@ -1899,6 +1899,50 @@ class ResearchAnalyst(ToolAgent):
         react = super().node()
 
         def run(state):
+            from app.agent.runtime_status import bounded_internal_assist, require_internal_sources
+
+            if bounded_internal_assist(state):
+                from re import fullmatch as ticket_key_matches
+
+                # QueryRunner alone owns acquisition in this capability. Project its
+                # exact complete ledger; downstream remote Roles own interpretation.
+                # Never enter local ReAct, semantic RAG or external supplements.
+                require_internal_sources(state, state.get("query_plan") or {})
+                if not _query_plan_is_complete(state):
+                    return {"error": "MAXIS 내부 조회가 완전하게 확인되지 않아 작성을 중단했습니다.",
+                            "trace": note(state, self.name, "불완전한 조회 근거 · 추가 모델 호출 없음")}
+                for row in state.get("query_results") or []:
+                    if row.get("source") not in {"jira", "comments"}:
+                        continue
+                    result = row.get("result") or {}
+                    for field in ("tickets", "ticketDetails"):
+                        if any(not isinstance(ticket, dict) or not ticket_key_matches(
+                                r"[A-Z][A-Z0-9]*-[1-9][0-9]*", str(ticket.get("key") or ""))
+                               for ticket in result.get(field) or []):
+                            return {"error": "MAXIS 내부 조회의 티켓 식별자가 유효하지 않아 근거를 폐기했습니다."}
+                from app.agent.maxis.backend import _verified_evidence_sources
+
+                try:
+                    sources = _verified_evidence_sources(state)
+                except Exception:
+                    return {"error": "MAXIS 내부 조회의 출처·권한 증명을 확인하지 못했습니다."}
+                if any(source.get("partial") for source in sources):
+                    return {"error": "MAXIS 내부 조회가 불완전하거나 오래되어 작성을 중단했습니다."}
+                action = _typed_write_action(state)
+                # The generic single-query lane intentionally excludes lightweight
+                # Jira rows. The bounded projection has already verified complete,
+                # attested acquisition and may preserve those factual rows directly.
+                if action:
+                    ledger = _completed_write_ledger(state, action=action, research_focus=True)
+                else:
+                    ledger = build_completed_write_ledger(
+                        state.get("query_results") or [], action="query", research_focus=True,
+                        research_terms=_research_ledger_terms(state),
+                        materialized_ticket_details=(state.get("materialized_ticket_sources") or {})
+                        .get("ticketDetails") or [], target_keys=set(), duplicate_key="")
+                out = self.apply(state, ledger)
+                out["trace"] = note(state, self.name, "확인된 내부 조회 근거 전달 · 의미 판단은 MAXIS")
+                return out
             # This gate must precede neighborhood/dossier/external supplements: those are acquisition
             # tools too. A completed typed write already has its bounded source ledger.
             typed_write_action = _typed_write_action(state)

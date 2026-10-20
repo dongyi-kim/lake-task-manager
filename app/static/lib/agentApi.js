@@ -52,6 +52,19 @@ const getJson = (p) => fetch(p).then((r) => {
 
 export const agentApi = {
   status: () => getJson("/api/agent/status"),
+  runtimeStatus: () => getJson("/api/agent/runtime/status"),
+  maxisSetup: () => getJson("/api/agent/maxis/setup"),
+  maxisRegisterHost: (baseUrl, confirmed) => put("/api/agent/maxis/setup/host", { baseUrl, confirmed }),
+  maxisPrepareKnowledge: () => post("/api/agent/maxis/setup/knowledge", {}),
+  maxisPrepareBundle: (body) => post("/api/agent/maxis/setup/bundle", body),
+  maxisModelFromExport: (yamlText) => post("/api/agent/maxis/setup/model", { yamlText }),
+  maxisSetupCandidate: (body) => post("/api/agent/maxis/setup/candidate", body),
+  maxisApplyProduction: (workflows) => post("/api/agent/maxis/setup/apply", { workflows }),
+  maxisQualification: () => getJson("/api/agent/maxis/qualification/status"),
+  maxisStartQualification: (workflows) => post("/api/agent/maxis/qualification/runs", { workflows }),
+  maxisRegisterReviewer: (body) => post("/api/agent/maxis/qualification/keys", body),
+  maxisRemoveReviewer: (fingerprint) => del("/api/agent/maxis/qualification/keys/" + encodeURIComponent(fingerprint)),
+  maxisImportQualification: (artifact) => post("/api/agent/maxis/qualification/artifacts", { artifact }),
   maxisStatus: () => getJson("/api/agent/maxis/status"),
   maxisSaveProfile: (name, body) => put(
     "/api/agent/maxis/profiles/" + encodeURIComponent(name), body),

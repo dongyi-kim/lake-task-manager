@@ -288,6 +288,14 @@ class ResultIntegrator(TextAgent):
         사람·티켓 목록을 이미 코드가 확정했는데 마지막 모델이 일부를 생략하거나 무관 티켓을
         덧붙이는 것이 이번 실패의 직접 원인이었다. 이 갈래는 아래 renderer가 곧 최종 답이다.
         """
+        from app.agent.runtime_status import bounded_internal_assist
+
+        if bounded_internal_assist(state) and state.get("error"):
+            # A failed acquisition/transport already has an actionable failure. It
+            # cannot be repaired by asking the same disconnected remote runtime to
+            # narrate it, and must never create another draft or approval.
+            return {"reply": str(state["error"]), "approval_token": "", "comment_token": "",
+                    "trace": note(state, self.name, "MAXIS 처리 중단 사유 표시 · 추가 호출 없음")}
         misses = []
         from app.agent.workflow.effect_contract import (
             continuation_action, current_work_failed, final_effect,

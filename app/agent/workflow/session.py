@@ -884,6 +884,12 @@ def _prepare_turn(
         from app.agent.maxis.backend import prepare_thread_runtime
 
         runtime_pin = prepare_thread_runtime(prior, engine=engine, profile=profile)
+        from app.agent import runtime_status
+
+        capability = runtime_status.capability_for_pin(runtime_pin)
+        if capability:
+            runtime_status.require("conversation", runtime_pin)
+        runtime_pin["runtime_capability"] = capability
         initial = _initial(thread_id, message_text, user_role, user_id)
         initial.update(runtime_pin)
         if claim and claim.owns_lease:

@@ -75,6 +75,7 @@ export default {
       aborts: {},             // tid → 스트림 중단 함수
       approving: false,
       settingsOpen: false,
+      settingsMode: "maxis",
       answers: {},            // 되묻기 폼의 답(qi → 값)
       customOn: {},           // 객관식 질문에서 '직접 입력'을 고른 상태(qi → bool). 우선순위엔 없다
       qDone: {},              // 답을 확정한 질문(qi → bool) — 접혀서 선택만 보인다
@@ -92,6 +93,12 @@ export default {
     };
   },
   computed: {
+    conversationRuntime() {
+      if (this.status && this.status.runtime && this.status.runtime.conversation)
+        return this.status.runtime.conversation;
+      return { engine: "local", profile: "", ready: this.status ? this.status.llmReady : null,
+        reason: (this.status && this.status.llmReason) || "", nextAction: "maxis_settings" };
+    },
     examples() { return EXAMPLES; },
     empty() { return this.turns.length === 0; },
     // 아직 thread_id 를 못 받은 새 대화는 "_new" 자리에 기록해 두고 start 에서 옮긴다.
@@ -735,6 +742,10 @@ export default {
      *  조용히 실행되지 않는다 — 모델을 바꿔도 좌상단이 그대로였던 실측 원인). */
     async refreshStatus() {
       try { this.status = await agentApi.status(); } catch (e) { /* 표시만 못 할 뿐 */ }
+    },
+    openRuntimeSettings() {
+      this.settingsMode = this.conversationRuntime.nextAction === "llm_settings" ? "llm" : "maxis";
+      this.settingsOpen = true;
     },
 
     isTicketKey(k) { return /^[A-Z][A-Z0-9]*-[0-9]+$/.test(String(k || "")); },

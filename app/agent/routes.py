@@ -139,7 +139,14 @@ _MAXIS_REQUIRED_START_VARIABLES = frozenset({
 @router.get("/status")
 def api_status():
     """설정 패널이 처음 여는 것. 비밀값 원문은 절대 싣지 않는다."""
-    return JSONResponse(_cfg.status())
+    from app.agent import runtime_status
+    return JSONResponse({**_cfg.status(), "runtime": runtime_status.status()})
+
+
+@router.get("/runtime/status")
+def api_runtime_status():
+    from app.agent import runtime_status
+    return JSONResponse(runtime_status.status())
 
 
 # ── MAXIS/Dify Workflow 설정 ──────────────────────────────────────
@@ -386,22 +393,13 @@ def _run_maxis_probe(profile: dict, keys: dict[str, str]) -> dict:
         verify_tls=True,
     )
     results = {}
-    required_workflows = {"agent_core"}
-    required_workflows.update(
-        key for key, mode in maxis_profiles.routes().items()
-        if mode in ("shadow", "maxis")
-    )
+    required_workflows = maxis_profiles.probe_workflow_keys(profile)
     manifest = maxis_profiles.resolve_knowledge_manifest(profile, required=True)
     assert manifest is not None
     registry = load_registry()
     with DifyClient(cfg) as client:
         for workflow_key, workflow in profile["workflows"].items():
-            configured = bool(
-                workflow_key in required_workflows
-                or workflow.get("version")
-                or keys.get(workflow_key)
-            )
-            if not configured:
+            if workflow_key not in required_workflows:
                 continue
             if not workflow.get("binding") or not workflow.get("version"):
                 results[workflow_key] = {"ok": False, "statusCode": None, "ms": None,
@@ -976,5 +974,8 @@ def install(app) -> tuple[bool, str]:
         log.info("에이전트 라우트 미등록 — %s", why)
         return False, why
     app.include_router(router)
+    from app.agent.maxis import setup_routes, qualification_routes
+    app.include_router(setup_routes.router)
+    app.include_router(qualification_routes.router)
     log.info("에이전트 라우트 등록 (provider=%s)", _cfg.provider())
     return True, ""

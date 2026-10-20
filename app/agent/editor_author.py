@@ -299,11 +299,12 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
             error = str(exc)
         return {"ok": False, "error": error, "usage": {}}
 
-    if runtime_resolution.route != "maxis":
-        ready, why = C.llm_ready()
-        if not ready:
-            return {"ok": False, "needsSetup": True,
-                    "error": why + " 설정에서 LLM 연결을 먼저 등록하세요."}
+    from app.agent import runtime_status
+
+    readiness = runtime_status.resolve("editor", runtime_state)
+    if not readiness["ready"]:
+        return {"ok": False, "needsSetup": True, "runtime": readiness,
+                "error": readiness["reason"]}
     prompt = (prompt or "").strip()
     seed = (seed_html or "").strip()[:MAX_SEED]
     kind = (kind or "comment").strip()
@@ -333,13 +334,15 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
     # task.  Free-form generation repeatedly converted explicit remaining work to completed
     # work and then had to be rejected.  Deterministic rendering is faster and preserves
     # status conflicts instead of choosing one source.
-    if kind == "comment" and _generic_status_share(prompt):
+    if runtime_resolution.route != "maxis" and kind == "comment" and _generic_status_share(prompt):
         deterministic = _deterministic_status_comment(ticket_key)
         if deterministic:
             return {"ok": True, "html": deterministic, "deterministic": True,
                     "usage": {"calls": 0, "promptTokens": 0,
                               "completionTokens": 0, "totalTokens": 0}}
-    rules = _house_rules(kind, prompt)
+    # The qualified remote release owns its Knowledge retrieval. A local RAG
+    # lookup here would require an unrelated local embedding provider.
+    rules = "" if runtime_resolution.route == "maxis" else _house_rules(kind, prompt)
     # MAXIS receives only freshly attested acquisition rows plus a very small guarded
     # editor intent context.  The local prompt below remains the local provider contract;
     # it is never copied to Dify.

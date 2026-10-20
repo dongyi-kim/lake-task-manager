@@ -254,7 +254,7 @@ def test_maxis_settings_are_a_separate_workflow_surface_with_safe_credentials():
     assert "MAXIS / Dify Workflow" in dialog and "LLM 연결" in dialog
     for label in ("Workflow bundle", "Knowledge version", "Dify Knowledge dataset UUID",
                   "Knowledge release sentinel SHA-256", "Knowledge manifest",
-                  "Knowledge 원격 평가", "25-case 결과물",
+                  "Knowledge 원격 평가", "서명 평가 결과물",
                   "Dify 원격 실행 로그 정책", "승인 정책 ID", "보존 기간(일)",
                   "Data policy", "Fingerprint",
                   "기능별 실행 경로", "MAXIS 긴급 중단", "AI 효과", "운영 승격"):
