@@ -47,6 +47,9 @@ export function runtimeQualityStatus(turn) {
   if (turn?.ok === false || turn?.error || turn?.debug?.error || turn?.stopped)
     return {label: "실행 중단", bad: true};
   const gate = turn?.runtime?.qualityGate;
+  if (turn?.questions?.length && gate?.schemaValid === true
+      && gate?.citationValid === true && Array.isArray(gate?.errors) && !gate.errors.length)
+    return {label: "추가 입력 필요", bad: false};
   if (gate?.ok === false) return {label: "응답 계약 차단", bad: true};
   return {label: gate?.ok === true ? "응답 계약 확인" : "응답 계약 미확인", bad: false};
 }

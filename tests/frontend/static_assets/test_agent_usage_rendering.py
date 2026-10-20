@@ -74,6 +74,13 @@ def test_runtime_quality_is_explicit_contract_observation_not_overall_answer_qua
     }
 
 
+def test_valid_clarification_is_not_a_contract_failure():
+    turn = '{ok:true,questions:[{question:"대상은?"}],runtime:{qualityGate:{ok:false,schemaValid:true,citationValid:true,errors:[]}}}'
+    assert _render('runtimeQualityStatus(' + turn + ')') == {"label": "추가 입력 필요", "bad": False}
+    assert _render('runtimeQualityStatus({... ' + turn + ',error:"failed"})') == {
+        "label": "실행 중단", "bad": True}
+
+
 def test_runtime_tags_are_identified_as_profile_labels_in_debug_only():
     lines = _render("""runtimeDebugLines({runtime:{engine:"maxis",profile:"profile-one",
         profileLabel:"MAXIS 연결 1",workflowBundleVersion:"bundle-old",knowledgeVersion:"kb-old"}})""")
