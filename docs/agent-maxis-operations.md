@@ -91,7 +91,7 @@ python -B -X utf8 tools/maxis_setup.py bundle --confirm-host --model-file .cache
    생성본은 Core의 Candidate Binding·역할별 입력 투영, Editor의 DraftSpec 선택·검증,
    공통 근거 검증 코드를 함께 포함한다. 개별 프롬프트만 복사해서 배포하지 않는다.
    Core의 Query Assembler·Request Input/LLM/Assembler·Work Input/LLM/Assembler·Knowledge Input/LLM/Assembler·
-   Result Input/LLM/Assembler와 Editor의 DraftSpec Guard·Plan Enforcer도
+   Result Input/LLM/Assembler·감사 역할의 공통 의미 LLM과 Editor의 DraftSpec Guard·Plan Enforcer도
    같은 저장소 정본으로 갱신한다. 앱 코드만 pull하고 서버 노드를 그대로 두면 수정이 적용되지 않는다.
    게시 후 다시 내보내 노드·연결·프롬프트·코드와 현지 모델/Knowledge 설정이 의도한 값인지 확인한다.
    Result 내부 계약은 `result-draft.v2`: 사실은 원문 위치를 선택하고 해석·제안은 별도 타입으로 작성한다.
@@ -153,6 +153,10 @@ UI에 서명 파일을 가져와 **이 설정을 Agent·에디터에 사용**을
   집계는 원래 조회 시각을 가진 하위 캐시에서 재구성한다. 최근 이력·댓글 발췌를 전체 이력이라고 해석하지 않는다.
 - 추가 입력이 필요한 정상 응답은 HTTP 200과 질문으로 반환한다. `추가 입력 필요`는 실패나 생성 완료가 아니다.
   질문에 답하면 원 요청과 현재 답을 함께 전달한다. 새 주제·취소에는 이전 답을 재사용하지 않는다.
+  감사도 이 요청을 별도 의도 근거로 비교하며, 조회 사실이나 실행 승인으로 취급하지 않는다.
+  `검토 보류`는 감사를 끝내고 초안의 수정 사항을 찾은 결과다. `MAXIS 응답 차단`과 구분한다.
+  사용할 수 없는 조회 소스는 사용자 답변으로 활성화되지 않는다. 현지 설정을 확인해야 하며,
+  지원되는 내부 조회까지 누락된 답변을 시연 성공으로 판정하지 않는다.
   실제 계약 오류는 Dify 실행 이력의 실패 노드와 LTM 디버그의 실패 역할을 함께 확인한다.
   검증된 계약·출처 연결 거부가 있으면 이를 우선 안내한다. `partial_role_context` 같은 맥락 제한만으로
   실제 거부 원인을 “조회 실패”로 단정하지 않는다. 사람 표시는 현지 Jira의 정확한 사용자 식별자로만 복원한다.
