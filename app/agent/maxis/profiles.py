@@ -51,9 +51,10 @@ KNOWLEDGE_EVAL_MATERIAL_CONTRACT = "ltm-maxis-knowledge-eval-material.v1"
 # Release capabilities are explicit so configuration cannot claim a control that the
 # implementation does not provide.  The validated 11-node Dify 1.11.1 bundle builds
 # one delimiter-wrapped Role key, applies its metadata filter before retrieval reaches
-# the LLM, and gates that same retrieval result through Knowledge Guard.  Immutable,
-# signed external evaluation-artifact verification is still not implemented, so prod
-# authority remains fail-closed even when operator-supplied metadata bindings match.
+# the LLM, and gates that same retrieval result through Knowledge Guard.
+# This flag is for the legacy metadata-only attestation API, which never grants
+# authority. PROD now uses qualification.py's independently enrolled Ed25519 verifier
+# and complete, source-bound MAXIS-only evaluation instead.
 SIGNED_EXTERNAL_EVAL_VERIFICATION_IMPLEMENTED = False
 DETERMINISTIC_PRE_LLM_ROLE_ACL_IMPLEMENTED = True
 _UTC_INSTANT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$")
@@ -627,7 +628,8 @@ def _require_internal_pilot_controls(profile: dict) -> None:
         raise ValueError("Internal-pilot server controls are not verified: " + "; ".join(state["reasons"]))
 
 
-def _validate(profile: dict, *, activation: bool = False) -> dict:
+def _validate(profile: dict, *, activation: bool = False,
+              activation_workflows: list[str] | None = None) -> dict:
     name = str(profile.get("name") or "").strip().lower()
     if name not in PROFILE_NAMES or profile.get("stage") != name:
         raise ValueError("MAXIS profile stage is immutable and must be dev, internal-pilot, or prod.")
@@ -706,8 +708,11 @@ def _validate(profile: dict, *, activation: bool = False) -> dict:
             missing.append("Knowledge release sentinel SHA-256")
         required_workflows = {"agent_core"}
         required_workflows.update(
-            key for key, mode in routes().items() if mode in ("shadow", "maxis")
+            activation_workflows if activation_workflows is not None else
+            [key for key, mode in routes().items() if mode in ("shadow", "maxis")]
         )
+        if required_workflows - set(WORKFLOW_KEYS):
+            raise ValueError("Unsupported MAXIS activation workflow.")
         for workflow_key in sorted(required_workflows):
             workflow = result["workflows"][workflow_key]
             if not workflow["binding"] or not workflow["version"]:
@@ -1087,6 +1092,18 @@ def start_probe(profile_name: str) -> tuple[dict, dict[str, str], str]:
     return profile, keys, binding
 
 
+def probe_workflow_keys(profile: dict) -> set[str]:
+    """Candidate versions select probe scope, not another active profile's routes.
+
+    An omitted optional version is intentionally disabled. Its stored key may remain
+    for later reuse, but cannot make that feature executable or promotion-eligible.
+    Profile/version and credential fingerprints still invalidate prior verification.
+    """
+    return {"agent_core"} | {
+        key for key, workflow in profile["workflows"].items() if workflow.get("version")
+    }
+
+
 def _probe_contract_verified(profile_name: str, details: dict | None) -> bool:
     """Require proof for every configured/remote app before persisting verification."""
     if not isinstance(details, dict):
@@ -1107,19 +1124,9 @@ def _probe_contract_verified(profile_name: str, details: dict | None) -> bool:
     except ValueError:
         return False
     assert manifest is not None
-    required = {"agent_core"}
-    required.update(
-        key for key, mode in routes().items() if mode in ("shadow", "maxis")
-    )
+    required = probe_workflow_keys(profile)
     for workflow_key, workflow in profile["workflows"].items():
-        try:
-            has_key = bool(credentials.get_for(profile_name, workflow_key))
-        except Exception:
-            return False
-        configured = bool(
-            workflow_key in required or workflow.get("version") or has_key
-        )
-        if not configured:
+        if workflow_key not in required:
             continue
         row = workflow_results.get(workflow_key)
         if not isinstance(row, dict) or any(
@@ -1240,6 +1247,31 @@ def activate(profile_name: str) -> dict:
     prefs.save_strict({"maxisActiveProfile": name,
                        "maxisActiveProfileFingerprint": fingerprint})
     return resolve(name)
+
+
+def apply_production(workflows: list[str]) -> dict:
+    """Validate first and persist profile + exact feature routes in one transaction."""
+    from app.agent.maxis.qualification import clean_workflows
+    selected = clean_workflows(workflows)
+    with _LOCK:
+        env_name = str(os.getenv("LAKE_MAXIS_PROFILE") or "").strip().lower()
+        if env_name and env_name != "prod":
+            raise ValueError("LAKE_MAXIS_PROFILE must select prod or be unset.")
+        if kill_switch_enabled():
+            raise ValueError("Release the MAXIS kill switch before applying PROD.")
+        profile = _validate(_effective(get("prod")), activation=True, activation_workflows=selected)
+        _require_cross_environment_asset_separation(profile)
+        if not probe_ok("prod"):
+            raise ValueError("Successfully probe the PROD candidate before applying.")
+        _require_prod_promotion(profile, selected)
+        for key in selected:
+            if not profile["workflows"][key]["version"] or not credentials.get_for("prod", key):
+                raise ValueError("Configure each selected workflow and API key.")
+        selected_routes = {key: "maxis" if key in selected else "local" for key in WORKFLOW_KEYS}
+        prefs.save_strict({"maxisActiveProfile": "prod",
+                          "maxisActiveProfileFingerprint": profile_fingerprint(profile),
+                          "maxisRoutes": selected_routes})
+    return {"ok": True, "activeProfile": "prod", "routes": selected_routes}
 
 
 def active_fingerprint() -> str:
@@ -1403,6 +1435,14 @@ def _require_prod_promotion(profile: dict, workflow_keys) -> None:
     required_workflows = sorted(set(workflow_keys))
     if not required_workflows:
         return
+    if profile.get("stage") == "prod":
+        from app.agent.maxis.qualification import status as qualification_status
+        qualified = qualification_status(profile)
+        if qualified["valid"] and set(required_workflows).issubset(qualified["workflows"]):
+            return
+        # Metadata-only legacy attestations never grant authority. The signed,
+        # independently reviewed MAXIS-only run replaces Shadow's local baseline.
+        raise ValueError("Signed external PROD MAXIS qualification is required for the current deployment and features.")
     _require_current_knowledge_eval_attestation(profile)
     for workflow_key in required_workflows:
         status = _workflow_promotion(profile, workflow_key)
@@ -1965,6 +2005,8 @@ def _public_profile(name: str) -> dict:
             "remote_log_retention_days"
         ],
         "knowledgeEvalAttestation": eval_attestation,
+        **({"qualification": _qualification_status(effective)}
+           if name == "prod" and config_valid else {}),
         **({"internalPilotControls": internal_pilot_controls_status(effective)}
            if name == "internal-pilot" else {}),
         "workflows": public_stored["workflows"],
@@ -1979,6 +2021,11 @@ def _public_profile(name: str) -> dict:
         ),
         "promotion": promotion,
     }
+
+
+def _qualification_status(profile: dict) -> dict:
+    from app.agent.maxis.qualification import status as qualification_status
+    return qualification_status(profile)
 
 
 def status() -> dict:

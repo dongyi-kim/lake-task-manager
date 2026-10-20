@@ -83,6 +83,11 @@ def allowed_hosts(stage: RuntimeStage | str) -> frozenset[str]:
     if not raw:
         if name == "internal-pilot":
             raise DestinationPolicyError("Internal-pilot requires an explicit destination allowlist.")
+        if name == "prod":
+            from app.agent.maxis.setup import registered_prod_hosts
+            return DEFAULT_ALLOWED_HOSTS | frozenset(
+                _ascii_fqdn(host) for host in registered_prod_hosts()
+            )
         return DEFAULT_ALLOWED_HOSTS
     if len(raw) > 4096:
         raise DestinationPolicyError("MAXIS allowed-host environment value is too large.")

@@ -13,7 +13,7 @@ WORKFLOW_ID = "22222222-2222-4222-8222-222222222222"
 EDITOR_WORKFLOW_ID = "33333333-3333-4333-8333-333333333333"
 PMO_WORKFLOW_ID = "44444444-4444-4444-8444-444444444444"
 SENTINEL_SHA = "a" * 64
-KNOWLEDGE_VERSION = "ltm-knowledge-2026.09"
+KNOWLEDGE_VERSION = "ltm-public-knowledge.v1"
 
 
 class _TestCipher:
@@ -97,6 +97,33 @@ def _configure_verified_prod(*, with_eval_attestation: bool = True) -> dict:
         for key in profiles.WORKFLOW_KEYS
     }}, start_binding=start_binding)
     return profiles.get("prod")
+
+
+def test_disabled_pmo_does_not_inherit_previous_route_or_stored_key(monkeypatch):
+    _configure_verified_prod(with_eval_attestation=False)
+    profiles.prefs.save_strict({"maxisRoutes": {
+        "agent_core": "local", "editor_author": "local", "pmo_brief": "maxis"}})
+    profiles.save("prod", {"workflows": {
+        "pmo_brief": {"binding": "pmo_brief", "version": ""}}})
+    assert credentials.get_for("prod", "pmo_brief") == "pmo-secret"
+    candidate, keys, signature = profiles.start_probe("prod")
+    assert profiles.probe_workflow_keys(candidate) == {"agent_core", "editor_author"}
+    manifest = profiles.resolve_knowledge_manifest("prod")
+    assert profiles.mark_probe("prod", True, {"workflows": {
+        key: {"ok": True, "appModeVerified": True, "executionContractVerified": True,
+              "versionBindingVerified": True, "citationContractVerified": True,
+              "knowledgeRetrievalVerified": True, "knowledgeManifestSha256": manifest.sha256}
+        for key in ("agent_core", "editor_author")
+    }}, start_binding=signature)
+    keys.clear()
+    # A verified optional candidate still cannot execute the old PMO route.
+    assert not profiles.resolve("prod")["enabled"]
+    from app.agent.maxis import qualification
+    monkeypatch.setattr(qualification, "status", lambda _: {
+        "valid": True, "workflows": ["agent_core", "editor_author"]})
+    result = profiles.apply_production(["agent_core", "editor_author"])
+    assert result["routes"] == {"agent_core": "maxis", "editor_author": "maxis", "pmo_brief": "local"}
+    assert profiles.resolve("prod")["enabled"]
 
 
 def _passing_sample(profile: dict, role_id: str) -> None:
@@ -206,7 +233,7 @@ def test_prod_shadow_activation_allowed_but_authority_requires_eval_attestation(
     assert profiles.activate("prod")["enabled"] is True
     assert profiles.set_routes({"agent_core": "shadow"})["agent_core"] == "shadow"
 
-    with pytest.raises(ValueError, match="not configured"):
+    with pytest.raises(ValueError, match="qualification"):
         profiles.set_routes({"agent_core": "maxis"})
 
 

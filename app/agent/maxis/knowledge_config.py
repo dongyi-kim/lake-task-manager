@@ -10,6 +10,14 @@ def clean_path(value: object) -> str:
         return ""
     if not isinstance(value, str) or len(value) > 256:
         raise ValueError("Invalid local Knowledge configuration path.")
+    if value.startswith("cache:"):
+        suffix = value[len("cache:"):]
+        path = PurePosixPath(suffix)
+        if (suffix != path.as_posix() or "\\" in suffix or ":" in suffix
+                or path.is_absolute() or ".." in path.parts
+                or not suffix.startswith("maxis/") or path.suffix not in {".yml", ".yaml"}):
+            raise ValueError("Invalid local Knowledge configuration path.")
+        return value
     path = PurePosixPath(value)
     if (value != path.as_posix() or "\\" in value or ":" in value
             or path.is_absolute() or ".." in path.parts
@@ -23,6 +31,15 @@ def resolve_path(value: object, *, root: Path | None = None) -> Path | None:
     relative = clean_path(value)
     if not relative:
         return None
+    if relative.startswith("cache:"):
+        from app.infra.settings import CACHE_DIR
+        cache = Path(CACHE_DIR).resolve()
+        boundary = (cache / "maxis").resolve()
+        target = (cache / relative[len("cache:"):]).resolve()
+        if (not boundary.is_relative_to(cache) or not target.is_relative_to(boundary)
+                or not target.is_file()):
+            raise ValueError("Local Knowledge configuration is unavailable.")
+        return target
     if root is None:
         from app.infra.settings import SRC_DIR
         root = Path(SRC_DIR)

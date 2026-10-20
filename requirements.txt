@@ -77,6 +77,8 @@ tzdata==2026.3
 # Agent structured-output 검증 코드가 직접 import한다. MCP의 전이 의존성에 기대지 않고
 # 검증 구현과 버전을 명시적으로 고정한다.
 jsonschema==4.26.0
+# PROD-local independent evaluation signatures; runtime stores public keys only.
+cryptography==50.0.0
 
 # Rust/html5ever(Ammonia) 기반 editor HTML allowlist sanitizer. MIT, Windows abi3 wheel.
 nh3==0.3.6
