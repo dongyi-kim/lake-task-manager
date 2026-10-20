@@ -127,8 +127,8 @@ def test_built_graph_matches_source_and_only_changes_retrieval_unit(key):
             before["workflow"]["graph"][field].sort(key=lambda row: row["id"])
     assert rebuilt == before
     nodes = {node["data"]["title"]: node for node in dsl["workflow"]["graph"]["nodes"]}
-    assert len(nodes) == (31 if key == "agent_core" else 12)
-    assert len(dsl["workflow"]["graph"]["edges"]) == (37 if key == "agent_core" else 12)
+    assert len(nodes) == (32 if key == "agent_core" else 12)
+    assert len(dsl["workflow"]["graph"]["edges"]) == (38 if key == "agent_core" else 12)
     graph.validate_node(list(nodes.values()), key, "start")
     assert nodes["Policy Query"]["data"]["code"] == graph.source()
     assert nodes["Role Knowledge"]["data"]["query_variable_selector"] == [graph.NODE_ID, "query"]

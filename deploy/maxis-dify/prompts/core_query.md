@@ -32,6 +32,11 @@ sections below, `source`, `subject` and `where` mean each wrapper's `value`.
 Express full-set coverage using this draft's `coverage` field, as specified below.
 Omit optional empty fields. Use `uncertainty` only for a specific unresolved planning
 choice, not generic warnings or questions about already supplied information.
+Unanswered product scope or acceptance questions do not prevent a read plan when
+the user already supplied a searchable technology, work subject or ticket.
+Use the latest answers and current task; do not repeat prior request_questions
+as missing_inputs. Ask only when the evidence subject or required source itself
+cannot be identified. Never invent a subject to avoid a genuinely required question.
 
 ## Output: `query-draft.v2` only
 

@@ -2637,30 +2637,36 @@ workflow:
             \ coverage using this draft's `coverage` field, as specified below.\n\
             Omit optional empty fields. Use `uncertainty` only for a specific unresolved\
             \ planning\nchoice, not generic warnings or questions about already supplied\
-            \ information.\n\n## Query Design\n\n1. Preserve every user filter and\
-            \ distinguish required conditions from ranking hints.\n2. Put only the\
-            \ evidence subject in `subject`. Ticket creation, update, selection, approval,\
-            \ and workflow instructions are actions, not search terms; never copy\
-            \ them into `subject`.\n3. For each required evidence facet of the atomic\
-            \ task, choose the narrowest adequate source, honoring explicit source\
-            \ requests and known evidence locations.\n   Typically, `jira` provides\
-            \ work and change records; `confluence` provides design, decisions, and\
-            \ documented context.\n   Use complementary sources only when one source\
-            \ cannot cover the required facets. Avoid redundant reads with paraphrased\
-            \ subjects.\n4. Require full-set coverage for \"all\", \"every\", audit\
-            \ coverage, or any bulk-write target.\n5. For informal meeting material,\
-            \ search the discussed technology, decision, asset, and explicit ticket\
-            \ keys;\n   never search formatting words such as `회의 메모`, `from`, an\
-            \ attachment filename, or a speaker label as the topic.\n\n## Scope and\
-            \ Tool Contract\n\n- Do not add a Jira project clause. `run_jql_v2` applies\
-            \ every project in `search.jira.projects` as an outer `AND` filter. Empty\
-            \ config must fail; there is no `project_key` fallback.\n- Do not add\
-            \ a Confluence space clause. `search_documents` applies only `search.confluence.spaces`.\
-            \ Empty config does not mean every space.\n- Use `where` only for a justified,\
-            \ source-specific filter: an additional JQL condition for `jira` or `comments`,\
-            \ an additional CQL condition for `confluence`, or an exact module filter\
-            \ for `people`. Omit it when no such filter is justified; `web` and `github`\
-            \ do not consume this field. Never put task instructions, configured project/space\
+            \ information.\nUnanswered product scope or acceptance questions do not\
+            \ prevent a read plan when\nthe user already supplied a searchable technology,\
+            \ work subject or ticket.\nUse the latest answers and current task; do\
+            \ not repeat prior request_questions\nas missing_inputs. Ask only when\
+            \ the evidence subject or required source itself\ncannot be identified.\
+            \ Never invent a subject to avoid a genuinely required question.\n\n##\
+            \ Query Design\n\n1. Preserve every user filter and distinguish required\
+            \ conditions from ranking hints.\n2. Put only the evidence subject in\
+            \ `subject`. Ticket creation, update, selection, approval, and workflow\
+            \ instructions are actions, not search terms; never copy them into `subject`.\n\
+            3. For each required evidence facet of the atomic task, choose the narrowest\
+            \ adequate source, honoring explicit source requests and known evidence\
+            \ locations.\n   Typically, `jira` provides work and change records; `confluence`\
+            \ provides design, decisions, and documented context.\n   Use complementary\
+            \ sources only when one source cannot cover the required facets. Avoid\
+            \ redundant reads with paraphrased subjects.\n4. Require full-set coverage\
+            \ for \"all\", \"every\", audit coverage, or any bulk-write target.\n\
+            5. For informal meeting material, search the discussed technology, decision,\
+            \ asset, and explicit ticket keys;\n   never search formatting words such\
+            \ as `회의 메모`, `from`, an attachment filename, or a speaker label as the\
+            \ topic.\n\n## Scope and Tool Contract\n\n- Do not add a Jira project\
+            \ clause. `run_jql_v2` applies every project in `search.jira.projects`\
+            \ as an outer `AND` filter. Empty config must fail; there is no `project_key`\
+            \ fallback.\n- Do not add a Confluence space clause. `search_documents`\
+            \ applies only `search.confluence.spaces`. Empty config does not mean\
+            \ every space.\n- Use `where` only for a justified, source-specific filter:\
+            \ an additional JQL condition for `jira` or `comments`, an additional\
+            \ CQL condition for `confluence`, or an exact module filter for `people`.\
+            \ Omit it when no such filter is justified; `web` and `github` do not\
+            \ consume this field. Never put task instructions, configured project/space\
             \ scope, or `ORDER BY` in `where`; runtime owns query assembly and ordering.\n\
             - Use `people` queries for candidates and evidence, not recommendations.\n\
             - Use `comments` when the requested evidence lives in comment bodies;\
@@ -3334,9 +3340,9 @@ workflow:
 
             Never annotate a plain value: answer_depth is the string brief|explain,
             and tasks[].kind is the task-kind enum. Envelope contract/status and missing_inputs[]
-            are also plain strings. intent, keywords[], and tasks[].completion_criteria[]
-            are planning judgments about routes, retrieval terms, or future acceptance
-            conditions: their kind is only inference|recommendation, even when supported
+            are also plain strings. intent, keywords[], tasks[].completion_criteria[],
+            blocking_questions[] and request_questions[].question are planning judgments
+            or questions: their kind is only inference|recommendation, even when supported
             by evidence. Other wrapped paths allow fact|inference|recommendation subject
             to source authority and support. Proposed work and draft wording are inferences/recommendations,
             not completed work. Code preserves values/kinds/refs unchanged and constructs
@@ -3363,20 +3369,17 @@ workflow:
             execution authority.
 
 
-            The canonical field meanings and selected local role semantics below describe
-            the final LTM payload. Read sufficient/write_intent and their true/false
-            terms only through the explicit adapters above. They are semantic references,
-            not instructions to emit canonical field names or the canonical flat schema.
+            The semantic references below use sufficient/write_intent and true/false:
+            apply only the wire adapters above, not the canonical flat schema.
 
 
             ## Required successful payload
 
             For status ok, payload must include ALL of: intent, keywords, research_readiness,
             request_questions, requested_effects, target_selectors. Do not omit required
-            arrays when empty. In particular, requested_effects and target_selectors
-            must be [] unless the user''s explicit mutation meets their canonical
-            criteria; planning/clarification alone does not request a scalar Jira
-            mutation. This is not permission to infer an effect.
+            arrays when empty. requested_effects and target_selectors must be [] unless
+            their canonical mutation criteria hold. This is not permission to infer
+            an effect. Include goal and tasks for user deliverables.
 
 
             ## Canonical field meanings (reference only)
@@ -3448,6 +3451,9 @@ workflow:
             A draft request remains false.
 
             - A Bug report uses `intent="plan_work"` and `playbook="bug_report"`.
+
+            - Do not ask again for information already supplied, inferable with high
+            confidence, or safely represented as an assumption.
 
 
             ## Ticket Semantics
@@ -3537,7 +3543,6 @@ workflow:
                           kind:
                             type: string
                             enum:
-                            - fact
                             - inference
                             - recommendation
                           source_ids:
@@ -3750,7 +3755,6 @@ workflow:
                               kind:
                                 type: string
                                 enum:
-                                - fact
                                 - inference
                                 - recommendation
                               source_ids:
@@ -4299,7 +4303,7 @@ workflow:
           \ 5, 'type': 'array'}, 'blocking_questions': {'items': {'type': 'object',\
           \ 'additionalProperties': False, 'required': ['value', 'kind', 'source_ids'],\
           \ 'properties': {'value': {'maxLength': 240, 'type': 'string'}, 'kind':\
-          \ {'type': 'string', 'enum': ['fact', 'inference', 'recommendation']}, 'source_ids':\
+          \ {'type': 'string', 'enum': ['inference', 'recommendation']}, 'source_ids':\
           \ {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items':\
           \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\
           \\s\\\\S])'}}}}, 'maxItems': 3, 'type': 'array'}, 'goal': {'type': 'object',\
@@ -4342,42 +4346,41 @@ workflow:
           \ 'acceptance', 'other'], 'type': 'string'}, 'question': {'type': 'object',\
           \ 'additionalProperties': False, 'required': ['value', 'kind', 'source_ids'],\
           \ 'properties': {'value': {'maxLength': 240, 'minLength': 1, 'type': 'string'},\
-          \ 'kind': {'type': 'string', 'enum': ['fact', 'inference', 'recommendation']},\
-          \ 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems':\
-          \ True, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern':\
-          \ '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\s\\\\S])'}}}}}, 'required': ['question',\
-          \ 'field'], 'type': 'object'}, 'maxItems': 3, 'type': 'array'}, 'requested_effects':\
-          \ {'items': {'additionalProperties': False, 'properties': {'field': {'enum':\
-          \ ['priority', 'duedate', 'summary'], 'type': 'string'}, 'literal': {'type':\
-          \ 'object', 'additionalProperties': False, 'required': ['value', 'kind',\
-          \ 'source_ids'], 'properties': {'value': {'maxLength': 240, 'minLength':\
-          \ 1, 'type': 'string'}, 'kind': {'type': 'string', 'enum': ['fact', 'inference',\
-          \ 'recommendation']}, 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems':\
-          \ 8, 'uniqueItems': True, 'items': {'type': 'string', 'minLength': 1, 'maxLength':\
-          \ 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\s\\\\S])'}}}}, 'target':\
+          \ 'kind': {'type': 'string', 'enum': ['inference', 'recommendation']}, 'source_ids':\
+          \ {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items':\
+          \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\
+          \\s\\\\S])'}}}}}, 'required': ['question', 'field'], 'type': 'object'},\
+          \ 'maxItems': 3, 'type': 'array'}, 'requested_effects': {'items': {'additionalProperties':\
+          \ False, 'properties': {'field': {'enum': ['priority', 'duedate', 'summary'],\
+          \ 'type': 'string'}, 'literal': {'type': 'object', 'additionalProperties':\
+          \ False, 'required': ['value', 'kind', 'source_ids'], 'properties': {'value':\
+          \ {'maxLength': 240, 'minLength': 1, 'type': 'string'}, 'kind': {'type':\
+          \ 'string', 'enum': ['fact', 'inference', 'recommendation']}, 'source_ids':\
+          \ {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items':\
+          \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\
+          \\s\\\\S])'}}}}, 'target': {'type': 'object', 'additionalProperties': False,\
+          \ 'required': ['value', 'kind', 'source_ids'], 'properties': {'value': {'pattern':\
+          \ '^[A-Z][A-Z0-9]{1,9}-\\\\d+$', 'type': 'string'}, 'kind': {'type': 'string',\
+          \ 'enum': ['fact', 'inference', 'recommendation']}, 'source_ids': {'type':\
+          \ 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items': {'type':\
+          \ 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\
+          \\s\\\\S])'}}}}, 'value': {'type': 'object', 'additionalProperties': False,\
+          \ 'required': ['value', 'kind', 'source_ids'], 'properties': {'value': {'maxLength':\
+          \ 240, 'minLength': 1, 'type': 'string'}, 'kind': {'type': 'string', 'enum':\
+          \ ['fact', 'inference', 'recommendation']}, 'source_ids': {'type': 'array',\
+          \ 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items': {'type': 'string',\
+          \ 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\
+          \\s\\\\S])'}}}}}, 'required': ['target', 'field', 'value', 'literal'], 'type':\
+          \ 'object'}, 'maxItems': 3, 'type': 'array', 'uniqueItems': True}, 'target_selectors':\
+          \ {'items': {'additionalProperties': False, 'properties': {'anchor_key':\
+          \ {'pattern': '^[A-Z][A-Z0-9]{1,9}-\\\\d+$', 'type': 'string'}, 'cardinality':\
           \ {'type': 'object', 'additionalProperties': False, 'required': ['value',\
-          \ 'kind', 'source_ids'], 'properties': {'value': {'pattern': '^[A-Z][A-Z0-9]{1,9}-\\\
-          \\d+$', 'type': 'string'}, 'kind': {'type': 'string', 'enum': ['fact', 'inference',\
+          \ 'kind', 'source_ids'], 'properties': {'value': {'enum': ['exactly_one'],\
+          \ 'type': 'string'}, 'kind': {'type': 'string', 'enum': ['fact', 'inference',\
           \ 'recommendation']}, 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems':\
           \ 8, 'uniqueItems': True, 'items': {'type': 'string', 'minLength': 1, 'maxLength':\
-          \ 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\s\\\\S])'}}}}, 'value':\
-          \ {'type': 'object', 'additionalProperties': False, 'required': ['value',\
-          \ 'kind', 'source_ids'], 'properties': {'value': {'maxLength': 240, 'minLength':\
-          \ 1, 'type': 'string'}, 'kind': {'type': 'string', 'enum': ['fact', 'inference',\
-          \ 'recommendation']}, 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems':\
-          \ 8, 'uniqueItems': True, 'items': {'type': 'string', 'minLength': 1, 'maxLength':\
-          \ 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\s\\\\S])'}}}}}, 'required':\
-          \ ['target', 'field', 'value', 'literal'], 'type': 'object'}, 'maxItems':\
-          \ 3, 'type': 'array', 'uniqueItems': True}, 'target_selectors': {'items':\
-          \ {'additionalProperties': False, 'properties': {'anchor_key': {'pattern':\
-          \ '^[A-Z][A-Z0-9]{1,9}-\\\\d+$', 'type': 'string'}, 'cardinality': {'type':\
-          \ 'object', 'additionalProperties': False, 'required': ['value', 'kind',\
-          \ 'source_ids'], 'properties': {'value': {'enum': ['exactly_one'], 'type':\
-          \ 'string'}, 'kind': {'type': 'string', 'enum': ['fact', 'inference', 'recommendation']},\
-          \ 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems':\
-          \ True, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern':\
-          \ '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\s\\\\S])'}}}}, 'relation': {'enum':\
-          \ ['direct_child'], 'type': 'string'}, 'state': {'enum': ['incomplete'],\
+          \ 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\s\\\\S])'}}}}, 'relation':\
+          \ {'enum': ['direct_child'], 'type': 'string'}, 'state': {'enum': ['incomplete'],\
           \ 'type': 'string'}, 'task_id': {'maxLength': 60, 'minLength': 1, 'type':\
           \ 'string'}}, 'required': ['task_id', 'anchor_key', 'relation', 'state',\
           \ 'cardinality'], 'type': 'object'}, 'maxItems': 1, 'type': 'array'}, 'tasks':\
@@ -4665,7 +4668,7 @@ workflow:
           \ 5, 'type': 'array'}, 'blocking_questions': {'items': {'type': 'object',\
           \ 'additionalProperties': False, 'required': ['value', 'kind', 'source_ids'],\
           \ 'properties': {'value': {'maxLength': 240, 'type': 'string'}, 'kind':\
-          \ {'type': 'string', 'enum': ['fact', 'inference', 'recommendation']}, 'source_ids':\
+          \ {'type': 'string', 'enum': ['inference', 'recommendation']}, 'source_ids':\
           \ {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items':\
           \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\
           \\s\\\\S])'}}}}, 'maxItems': 3, 'type': 'array'}, 'goal': {'type': 'object',\
@@ -4708,42 +4711,41 @@ workflow:
           \ 'acceptance', 'other'], 'type': 'string'}, 'question': {'type': 'object',\
           \ 'additionalProperties': False, 'required': ['value', 'kind', 'source_ids'],\
           \ 'properties': {'value': {'maxLength': 240, 'minLength': 1, 'type': 'string'},\
-          \ 'kind': {'type': 'string', 'enum': ['fact', 'inference', 'recommendation']},\
-          \ 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems':\
-          \ True, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern':\
-          \ '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\s\\\\S])'}}}}}, 'required': ['question',\
-          \ 'field'], 'type': 'object'}, 'maxItems': 3, 'type': 'array'}, 'requested_effects':\
-          \ {'items': {'additionalProperties': False, 'properties': {'field': {'enum':\
-          \ ['priority', 'duedate', 'summary'], 'type': 'string'}, 'literal': {'type':\
-          \ 'object', 'additionalProperties': False, 'required': ['value', 'kind',\
-          \ 'source_ids'], 'properties': {'value': {'maxLength': 240, 'minLength':\
-          \ 1, 'type': 'string'}, 'kind': {'type': 'string', 'enum': ['fact', 'inference',\
-          \ 'recommendation']}, 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems':\
-          \ 8, 'uniqueItems': True, 'items': {'type': 'string', 'minLength': 1, 'maxLength':\
-          \ 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\s\\\\S])'}}}}, 'target':\
+          \ 'kind': {'type': 'string', 'enum': ['inference', 'recommendation']}, 'source_ids':\
+          \ {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items':\
+          \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\
+          \\s\\\\S])'}}}}}, 'required': ['question', 'field'], 'type': 'object'},\
+          \ 'maxItems': 3, 'type': 'array'}, 'requested_effects': {'items': {'additionalProperties':\
+          \ False, 'properties': {'field': {'enum': ['priority', 'duedate', 'summary'],\
+          \ 'type': 'string'}, 'literal': {'type': 'object', 'additionalProperties':\
+          \ False, 'required': ['value', 'kind', 'source_ids'], 'properties': {'value':\
+          \ {'maxLength': 240, 'minLength': 1, 'type': 'string'}, 'kind': {'type':\
+          \ 'string', 'enum': ['fact', 'inference', 'recommendation']}, 'source_ids':\
+          \ {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items':\
+          \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\
+          \\s\\\\S])'}}}}, 'target': {'type': 'object', 'additionalProperties': False,\
+          \ 'required': ['value', 'kind', 'source_ids'], 'properties': {'value': {'pattern':\
+          \ '^[A-Z][A-Z0-9]{1,9}-\\\\d+$', 'type': 'string'}, 'kind': {'type': 'string',\
+          \ 'enum': ['fact', 'inference', 'recommendation']}, 'source_ids': {'type':\
+          \ 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items': {'type':\
+          \ 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\
+          \\s\\\\S])'}}}}, 'value': {'type': 'object', 'additionalProperties': False,\
+          \ 'required': ['value', 'kind', 'source_ids'], 'properties': {'value': {'maxLength':\
+          \ 240, 'minLength': 1, 'type': 'string'}, 'kind': {'type': 'string', 'enum':\
+          \ ['fact', 'inference', 'recommendation']}, 'source_ids': {'type': 'array',\
+          \ 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items': {'type': 'string',\
+          \ 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\
+          \\s\\\\S])'}}}}}, 'required': ['target', 'field', 'value', 'literal'], 'type':\
+          \ 'object'}, 'maxItems': 3, 'type': 'array', 'uniqueItems': True}, 'target_selectors':\
+          \ {'items': {'additionalProperties': False, 'properties': {'anchor_key':\
+          \ {'pattern': '^[A-Z][A-Z0-9]{1,9}-\\\\d+$', 'type': 'string'}, 'cardinality':\
           \ {'type': 'object', 'additionalProperties': False, 'required': ['value',\
-          \ 'kind', 'source_ids'], 'properties': {'value': {'pattern': '^[A-Z][A-Z0-9]{1,9}-\\\
-          \\d+$', 'type': 'string'}, 'kind': {'type': 'string', 'enum': ['fact', 'inference',\
+          \ 'kind', 'source_ids'], 'properties': {'value': {'enum': ['exactly_one'],\
+          \ 'type': 'string'}, 'kind': {'type': 'string', 'enum': ['fact', 'inference',\
           \ 'recommendation']}, 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems':\
           \ 8, 'uniqueItems': True, 'items': {'type': 'string', 'minLength': 1, 'maxLength':\
-          \ 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\s\\\\S])'}}}}, 'value':\
-          \ {'type': 'object', 'additionalProperties': False, 'required': ['value',\
-          \ 'kind', 'source_ids'], 'properties': {'value': {'maxLength': 240, 'minLength':\
-          \ 1, 'type': 'string'}, 'kind': {'type': 'string', 'enum': ['fact', 'inference',\
-          \ 'recommendation']}, 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems':\
-          \ 8, 'uniqueItems': True, 'items': {'type': 'string', 'minLength': 1, 'maxLength':\
-          \ 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\s\\\\S])'}}}}}, 'required':\
-          \ ['target', 'field', 'value', 'literal'], 'type': 'object'}, 'maxItems':\
-          \ 3, 'type': 'array', 'uniqueItems': True}, 'target_selectors': {'items':\
-          \ {'additionalProperties': False, 'properties': {'anchor_key': {'pattern':\
-          \ '^[A-Z][A-Z0-9]{1,9}-\\\\d+$', 'type': 'string'}, 'cardinality': {'type':\
-          \ 'object', 'additionalProperties': False, 'required': ['value', 'kind',\
-          \ 'source_ids'], 'properties': {'value': {'enum': ['exactly_one'], 'type':\
-          \ 'string'}, 'kind': {'type': 'string', 'enum': ['fact', 'inference', 'recommendation']},\
-          \ 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems':\
-          \ True, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern':\
-          \ '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\s\\\\S])'}}}}, 'relation': {'enum':\
-          \ ['direct_child'], 'type': 'string'}, 'state': {'enum': ['incomplete'],\
+          \ 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\s\\\\S])'}}}}, 'relation':\
+          \ {'enum': ['direct_child'], 'type': 'string'}, 'state': {'enum': ['incomplete'],\
           \ 'type': 'string'}, 'task_id': {'maxLength': 60, 'minLength': 1, 'type':\
           \ 'string'}}, 'required': ['task_id', 'anchor_key', 'relation', 'state',\
           \ 'cardinality'], 'type': 'object'}, 'maxItems': 1, 'type': 'array'}, 'tasks':\

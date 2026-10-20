@@ -65,7 +65,8 @@ def test_wrappers_cover_exact_guard_narratives_plus_model_owned_intent(contract,
                 assert derived["required"] == ["value", "kind", "source_ids"]
                 assert derived["additionalProperties"] is False
                 kinds = ["inference", "recommendation"] if path in {
-                    "/intent", "/keywords/*", "/tasks/*/completion_criteria/*"
+                    "/intent", "/keywords/*", "/tasks/*/completion_criteria/*",
+                    "/blocking_questions/*", "/request_questions/*/question"
                 } else ["fact", "inference", "recommendation"]
                 assert derived["properties"]["kind"]["enum"] == kinds
             else:
@@ -177,7 +178,10 @@ def example_draft(example):
     return {"contract": "request-draft.v2", "status": "ok", "payload": draftify(example), "missing_inputs": []}
 
 
-@pytest.mark.parametrize("path", [("intent",), ("keywords", 0), ("tasks", 0, "completion_criteria", 0)])
+@pytest.mark.parametrize("path", [
+    ("intent",), ("keywords", 0), ("tasks", 0, "completion_criteria", 0),
+    ("blocking_questions", 0), ("request_questions", 0, "question"),
+])
 @pytest.mark.parametrize("refs", [["intent-only"], ["evidence-only"], ["intent-only", "evidence-only"]])
 @pytest.mark.parametrize("kind", ["fact", "inference", "recommendation"])
 def test_planning_kind_is_independent_of_source_authority(contract, canonical, examples, path, refs, kind):

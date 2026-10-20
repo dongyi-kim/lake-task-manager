@@ -25,9 +25,10 @@ _NARRATIVE_PATHS = {
     ("requested_effects", "*", "literal"), ("target_selectors", "*", "cardinality"),
     ("assumptions", "*"), ("plan",),
 }
-# Routes, retrieval terms, and future acceptance conditions are planning judgments,
-# even when evidence-backed. Other narrative fields retain fact support.
-_PLANNING_PATHS = {("intent",), ("keywords", "*"), ("tasks", "*", "completion_criteria", "*")}
+# Routes, retrieval terms, future acceptance conditions and clarification questions
+# are planning judgments, not assertions of fact, even when evidence-backed.
+_PLANNING_PATHS = {("intent",), ("keywords", "*"), ("tasks", "*", "completion_criteria", "*"),
+                   ("blocking_questions", "*"), ("request_questions", "*", "question")}
 
 
 def build_request_system_prompt(schema: dict, local_role_markdown: str, transport_markdown: str) -> str:
@@ -96,16 +97,17 @@ def build_request_system_prompt(schema: dict, local_role_markdown: str, transpor
             elif current is not None:
                 sections[current].append(line)
         selected = {}
-        for title in ("Decision Process", "Output Contract", "Ticket Semantics"):
+        for title in ("Decision Process", "Output Contract", "Ticket Semantics", "Clarification Policy"):
             body = "\n".join(sections[title]).strip()
             if not body:
                 fail()
             selected[title] = body
         decisions = items(selected["Decision Process"], 8, numbered=True)
         output = items(selected["Output Contract"], 6)
+        clarification = items(selected["Clarification Policy"], 6)
         items(selected["Ticket Semantics"], 2)
         local = ("## Selected local role semantics (canonical reference only)\n"
-                 + "\n".join("- " + row for row in (decisions[1], decisions[7], output[5]))
+                 + "\n".join("- " + row for row in (decisions[1], decisions[7], output[5], clarification[4]))
                  + "\n\n## Ticket Semantics\n" + selected["Ticket Semantics"])
         required_wire = [
             "research_readiness" if key == "sufficient" else key
@@ -115,10 +117,9 @@ def build_request_system_prompt(schema: dict, local_role_markdown: str, transpor
             "## Required successful payload\n"
             "For status ok, payload must include ALL of: "
             + ", ".join(required_wire)
-            + ". Do not omit required arrays when empty. In particular, requested_effects "
-              "and target_selectors must be [] unless the user's explicit mutation meets "
-              "their canonical criteria; planning/clarification alone does not request "
-              "a scalar Jira mutation. This is not permission to infer an effect."
+            + ". Do not omit required arrays when empty. requested_effects and target_selectors "
+              "must be [] unless their canonical mutation criteria hold. "
+              "This is not permission to infer an effect. Include goal and tasks for user deliverables."
         )
         prompt = "\n\n".join((transport_markdown.strip(), required_help,
             "## Canonical field meanings (reference only)\n" + "\n".join(meanings), local))

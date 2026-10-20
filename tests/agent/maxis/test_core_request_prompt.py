@@ -52,6 +52,8 @@ def test_description_help_is_exact_and_does_not_mutate_the_local_contract(contra
     assert "## Stop and Escalate" not in prompt
     assert "## Preflight Check" not in prompt
     assert section(role, "Ticket Semantics").strip() in prompt
+    assert "Do not ask again for information already supplied" in prompt
+    assert "Include goal and tasks for user deliverables." in prompt
     assert 'A Bug report uses `intent="plan_work"` and `playbook="bug_report"`.' in prompt
 
 
@@ -223,8 +225,8 @@ def test_transport_lists_exact_wrapped_and_plain_payload_paths(contract):
         lines = [line for line in transport.splitlines() if line.startswith(label + ": ")]
         assert len(lines) == 1
         assert set(re.findall(r"`([^`]+)`", lines[0])) == paths
-    planning = ("intent, keywords[], and tasks[].completion_criteria[] are planning judgments "
-        "about routes, retrieval terms, or future acceptance conditions: their kind is only "
+    planning = ("intent, keywords[], tasks[].completion_criteria[], blocking_questions[] "
+        "and request_questions[].question are planning judgments or questions: their kind is only "
         "inference|recommendation, even when supported by evidence.")
     assert transport.count(planning) == 1
     assert "Other wrapped paths allow fact|inference|recommendation" in transport
