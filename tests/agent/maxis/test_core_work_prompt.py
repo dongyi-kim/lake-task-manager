@@ -79,7 +79,8 @@ def test_ok_payload_required_fields_stay_explicit_even_when_arrays_are_empty(con
     assert set(item) == {"summary", "type", "background", "scope_in", "dod"}
     assert set(item["summary"]) == {"value", "kind", "source_ids"}
     assert "ok requires mode=task|subtask|epic, questions, items" in prompt
-    assert "Write keys once; close items `]`, payload `}`, root `}`" in prompt
+    assert "Schema order: contract, status, payload, missing_inputs, each once." in prompt
+    assert "Close payload before root missing_inputs." in prompt
     assert "needs_input: payload={}, concrete missing_inputs" in prompt
     assert "blocked: payload={}, missing_inputs=[]" in prompt
 

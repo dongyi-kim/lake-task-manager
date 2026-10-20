@@ -30,7 +30,7 @@ def test_source_view_has_one_citation_identity_and_preserves_original_evidence(n
                          "knowledge_context": original["knowledge_context"]}
     system = nodes[WORK]["prompt_template"][0]["text"]
     assert "entity_reference and role context are not citations" in system
-    assert "Root missing_inputs never goes in payload" in system
+    assert "Close payload before root missing_inputs." in system
     assert json.loads(incoming) == original
 
 

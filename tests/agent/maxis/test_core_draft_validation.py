@@ -35,6 +35,9 @@ def test_native_prompt_examples_match_the_live_native_schema(functions, role, no
                   if n["id"] == node_id)
     value = functions._native_candidate(examples[0], schema, 32768)
     assert set(value) == {"contract", "status", "missing_inputs", "payload"}
+    # The non-native provider sees both examples and Dify's ordered schema.
+    # Conflicting root order encouraged a second missing_inputs after payload.
+    assert list(value) == list(schema["properties"]) == schema["required"]
     assert value["status"] == "ok" and value["missing_inputs"] == []
     # Examples are authoring shapes, never accepted defaults or actual source IDs.
     assert "SOURCE_ID" in examples[0]

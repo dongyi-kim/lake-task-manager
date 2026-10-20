@@ -3345,15 +3345,14 @@ workflow:
             payload. No outer envelope, metadata, claims, citations, payload_claims
             or JSON Pointers.
 
-            JSON keys must be unique at every level. No appended revisions. Use this
-            minimal shape, replacing example values/IDs from the current input; it
-            is not a default decision. Put missing_inputs before payload and close
-            the payload and root separately.
+            JSON keys must be unique at every level. No appended revisions. Follow
+            the schema order: contract, status, payload, missing_inputs. Replace example
+            values/IDs from current input; this is not a default decision.
 
             ```json
 
-            {"contract":"request-draft.v2","status":"ok","missing_inputs":[],"payload":{"intent":{"value":"ask","kind":"inference","source_ids":["SOURCE_ID"]},"keywords":[{"value":"조회
-            대상","kind":"inference","source_ids":["SOURCE_ID"]}],"research_readiness":"ready","request_questions":[],"requested_effects":[],"target_selectors":[]}}
+            {"contract":"request-draft.v2","status":"ok","payload":{"intent":{"value":"ask","kind":"inference","source_ids":["SOURCE_ID"]},"keywords":[{"value":"조회
+            대상","kind":"inference","source_ids":["SOURCE_ID"]}],"research_readiness":"ready","request_questions":[],"requested_effects":[],"target_selectors":[]},"missing_inputs":[]}
 
             ```
 
@@ -4875,19 +4874,19 @@ workflow:
             \ entity_reference and role context are not citations.\n{\"source_content_index\"\
             :N} selects zero-based context.sources[N].content for request_plan intent\
             \ only; never resolve business strings as references.\n\n## Native JSON\n\
-            ```json\n{\"contract\":\"work-draft.v1\",\"status\":\"ok\",\"missing_inputs\"\
-            :[],\"payload\":{\"mode\":\"task\",\"questions\":[],\"items\":[{\"summary\"\
-            :{\"value\":\"제안 제목\",\"kind\":\"recommendation\",\"source_ids\":[\"SOURCE_ID\"\
-            ]},\"type\":\"Task\",\"background\":{\"value\":\"사용자가 제공한 배경\",\"kind\"\
-            :\"inference\",\"source_ids\":[\"SOURCE_ID\"]},\"scope_in\":[{\"value\"\
-            :\"제안 범위\",\"kind\":\"recommendation\",\"source_ids\":[\"SOURCE_ID\"]}],\"\
+            ```json\n{\"contract\":\"work-draft.v1\",\"status\":\"ok\",\"payload\"\
+            :{\"mode\":\"task\",\"questions\":[],\"items\":[{\"summary\":{\"value\"\
+            :\"제안 제목\",\"kind\":\"recommendation\",\"source_ids\":[\"SOURCE_ID\"]},\"\
+            type\":\"Task\",\"background\":{\"value\":\"사용자가 제공한 배경\",\"kind\":\"\
+            inference\",\"source_ids\":[\"SOURCE_ID\"]},\"scope_in\":[{\"value\":\"\
+            제안 범위\",\"kind\":\"recommendation\",\"source_ids\":[\"SOURCE_ID\"]}],\"\
             dod\":[{\"value\":\"검증 가능한 완료 조건\",\"kind\":\"recommendation\",\"source_ids\"\
-            :[\"SOURCE_ID\"]}]}]}}\n```\nReplace example values/IDs; no default decision.\
-            \ Write keys once; close items `]`, payload `}`, root `}`. Root missing_inputs\
-            \ never goes in payload. ok requires mode=task|subtask|epic, questions,\
-            \ items; no blocking questions beside a draft. needs_input: payload={},\
-            \ concrete missing_inputs. blocked: payload={}, missing_inputs=[].\nPayload\
-            \ keys: mode, questions, items, interpretation, structure, structure_why,\
+            :[\"SOURCE_ID\"]}]}]},\"missing_inputs\":[]}\n```\nReplace example values/IDs;\
+            \ no default decision. Schema order: contract, status, payload, missing_inputs,\
+            \ each once. Close payload before root missing_inputs. ok requires mode=task|subtask|epic,\
+            \ questions, items; no blocking questions beside a draft. needs_input:\
+            \ payload={}, concrete missing_inputs. blocked: payload={}, missing_inputs=[].\n\
+            Payload keys: mode, questions, items, interpretation, structure, structure_why,\
             \ rationale. Never put rationale inside items. summary/background/scope_in/dod\
             \ use wrapped leaves; type/issue_type are plain. Add requested children;\
             \ omit unknown optional values. assignee/parent_ref are unsupported.\n\
@@ -6729,8 +6728,8 @@ workflow:
 
             ```json
 
-            {"contract":"knowledge-draft.v2","status":"ok","missing_inputs":[],"payload":{"concepts":[{"explanation":{"kind":"fact","source_id":"SOURCE_ID","source_path":"/records/0"}}],"our_context":{"kind":"inference","value":"선택한
-            기록의 의미와 확인 범위","source_ids":["SOURCE_ID"]},"gaps":[]}}
+            {"contract":"knowledge-draft.v2","status":"ok","payload":{"concepts":[{"explanation":{"kind":"fact","source_id":"SOURCE_ID","source_path":"/records/0"}}],"our_context":{"kind":"inference","value":"선택한
+            기록의 의미와 확인 범위","source_ids":["SOURCE_ID"]},"gaps":[]},"missing_inputs":[]}
 
             ```
 
