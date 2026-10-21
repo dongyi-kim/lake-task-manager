@@ -4155,25 +4155,33 @@ workflow:
           \ _SelectionLimit()\n    return view, spec, sources, units, buckets\n\n\n\
           def _spec_terminal(spec):\n    return {\"contract\": \"editor-plan.v2\"\
           , \"status\": spec[\"status\"],\n            \"sections\": [], \"missing_inputs\"\
-          : spec[\"missing_inputs\"]}\n\n\ndef _spec_section_units(buckets, section):\n\
-          \    facts = set(buckets[\"current_unit_ids\"])\n    if section == \"background\"\
-          :\n        facts |= buckets[\"context_unit_ids\"]\n    return facts\n\n\n\
-          def _spec_link_dependencies(view, context_pack):\n    \"\"\"Rebind the projection\
-          \ and count links in the assembler's exact markup.\"\"\"\n    pack = _object(context_pack)\n\
-          \    mode = route(pack, \"editor_author\", pack.get(\"request_id\"), \"\
-          remote-role-result.v1\")\n    sources = _sources(pack)\n    _fresh_editor_evidence(pack,\
-          \ sources)\n    request = _request(pack, sources, mode)\n    catalog, lookup\
-          \ = _catalog(sources, request[\"target\"])\n    expected = {\"request\"\
-          : request, \"sources\": catalog,\n                \"entities\": _entity_scope(sources,\
-          \ request[\"target\"])}\n    if any(_canonical(view[key]) != _canonical(value)\
-          \ for key, value in expected.items()):\n        _fail()\n    urls = {}\n\
-          \    for key, source in sources.items():\n        if not _intent(source)\
-          \ and source.get(\"url\"):\n            urls.setdefault(_link(source)[0],\
-          \ []).append(key)\n    dependencies = {}\n    for key, unit in lookup.items():\n\
-          \        refs = []\n        # Only _reference_text creates markup; all source\
-          \ text is HTML-escaped.\n        # Keep repeated/self links: deduplicated\
-          \ citation IDs lose multiplicity.\n        for href in re.findall(r'<a href=\"\
-          ([^\"]*)\">', unit[\"html\"]):\n            targets = urls.get(html.unescape(href),\
+          : spec[\"missing_inputs\"]}\n\n\ndef _spec_section_units(buckets, section,\
+          \ view):\n    facts = set(buckets[\"current_unit_ids\"])\n    if section\
+          \ == \"background\":\n        facts |= buckets[\"context_unit_ids\"]\n \
+          \   # The assembler inserts the complete seed once. Do not offer the writer\
+          \ a\n    # fact that would necessarily repeat it and fail that unchanged\
+          \ boundary.\n    # Keep the original evidence/selection and seed context;\
+          \ never deduplicate\n    # or repair model output after generation. Partial\
+          \ overlaps remain usable.\n    seed = _visible(view[\"request\"][\"seed_visible\"\
+          ])\n    if seed:\n        facts -= {unit[\"unit_id\"] for source in view[\"\
+          sources\"] for unit in source[\"units\"]\n                  if seed in _visible(unit[\"\
+          text\"])}\n    return facts\n\n\ndef _spec_link_dependencies(view, context_pack):\n\
+          \    \"\"\"Rebind the projection and count links in the assembler's exact\
+          \ markup.\"\"\"\n    pack = _object(context_pack)\n    mode = route(pack,\
+          \ \"editor_author\", pack.get(\"request_id\"), \"remote-role-result.v1\"\
+          )\n    sources = _sources(pack)\n    _fresh_editor_evidence(pack, sources)\n\
+          \    request = _request(pack, sources, mode)\n    catalog, lookup = _catalog(sources,\
+          \ request[\"target\"])\n    expected = {\"request\": request, \"sources\"\
+          : catalog,\n                \"entities\": _entity_scope(sources, request[\"\
+          target\"])}\n    if any(_canonical(view[key]) != _canonical(value) for key,\
+          \ value in expected.items()):\n        _fail()\n    urls = {}\n    for key,\
+          \ source in sources.items():\n        if not _intent(source) and source.get(\"\
+          url\"):\n            urls.setdefault(_link(source)[0], []).append(key)\n\
+          \    dependencies = {}\n    for key, unit in lookup.items():\n        refs\
+          \ = []\n        # Only _reference_text creates markup; all source text is\
+          \ HTML-escaped.\n        # Keep repeated/self links: deduplicated citation\
+          \ IDs lose multiplicity.\n        for href in re.findall(r'<a href=\"([^\"\
+          ]*)\">', unit[\"html\"]):\n            targets = urls.get(html.unescape(href),\
           \ [])\n            if len(targets) != 1:\n                _fail()\n    \
           \        refs.append(targets[0])\n        dependencies[key] = refs\n   \
           \ return dependencies\n\n\ndef prepare_spec(model_input, draft_spec, context_pack):\n\
@@ -4184,7 +4192,7 @@ workflow:
           \ context_pack)\n        view, spec, sources, units, buckets = _validated_spec(model_input,\
           \ draft_spec)\n        if spec[\"status\"] != \"ok\":\n            return\
           \ {\"model_input\": \"{}\", \"route\": \"stop\", \"candidate\": _canonical(_spec_terminal(spec))}\n\
-          \        permissions = {section: _spec_section_units(buckets, section)\n\
+          \        permissions = {section: _spec_section_units(buckets, section, view)\n\
           \                       for section in _section_order(spec[\"mode\"])}\n\
           \        # Writers choose semantic content, not source IDs or link bookkeeping.\n\
           \        # Omit units unusable in this mode, including background-only comments.\n\
@@ -4231,7 +4239,7 @@ workflow:
           \ != {\"section\", \"blocks\"} or not isinstance(section[\"blocks\"], list)\n\
           \                    or not section[\"blocks\"]):\n                _fail()\n\
           \            allowed_units = _spec_section_units(buckets, section[\"section\"\
-          ])\n            compiled_blocks = []\n            for block in section[\"\
+          ], view)\n            compiled_blocks = []\n            for block in section[\"\
           blocks\"]:\n                count += 1\n                if count > 32 or\
           \ not isinstance(block, dict):\n                    _fail()\n          \
           \      kind = block.get(\"type\")\n                rendered_links = []\n\
@@ -4929,25 +4937,33 @@ workflow:
           \ _SelectionLimit()\n    return view, spec, sources, units, buckets\n\n\n\
           def _spec_terminal(spec):\n    return {\"contract\": \"editor-plan.v2\"\
           , \"status\": spec[\"status\"],\n            \"sections\": [], \"missing_inputs\"\
-          : spec[\"missing_inputs\"]}\n\n\ndef _spec_section_units(buckets, section):\n\
-          \    facts = set(buckets[\"current_unit_ids\"])\n    if section == \"background\"\
-          :\n        facts |= buckets[\"context_unit_ids\"]\n    return facts\n\n\n\
-          def _spec_link_dependencies(view, context_pack):\n    \"\"\"Rebind the projection\
-          \ and count links in the assembler's exact markup.\"\"\"\n    pack = _object(context_pack)\n\
-          \    mode = route(pack, \"editor_author\", pack.get(\"request_id\"), \"\
-          remote-role-result.v1\")\n    sources = _sources(pack)\n    _fresh_editor_evidence(pack,\
-          \ sources)\n    request = _request(pack, sources, mode)\n    catalog, lookup\
-          \ = _catalog(sources, request[\"target\"])\n    expected = {\"request\"\
-          : request, \"sources\": catalog,\n                \"entities\": _entity_scope(sources,\
-          \ request[\"target\"])}\n    if any(_canonical(view[key]) != _canonical(value)\
-          \ for key, value in expected.items()):\n        _fail()\n    urls = {}\n\
-          \    for key, source in sources.items():\n        if not _intent(source)\
-          \ and source.get(\"url\"):\n            urls.setdefault(_link(source)[0],\
-          \ []).append(key)\n    dependencies = {}\n    for key, unit in lookup.items():\n\
-          \        refs = []\n        # Only _reference_text creates markup; all source\
-          \ text is HTML-escaped.\n        # Keep repeated/self links: deduplicated\
-          \ citation IDs lose multiplicity.\n        for href in re.findall(r'<a href=\"\
-          ([^\"]*)\">', unit[\"html\"]):\n            targets = urls.get(html.unescape(href),\
+          : spec[\"missing_inputs\"]}\n\n\ndef _spec_section_units(buckets, section,\
+          \ view):\n    facts = set(buckets[\"current_unit_ids\"])\n    if section\
+          \ == \"background\":\n        facts |= buckets[\"context_unit_ids\"]\n \
+          \   # The assembler inserts the complete seed once. Do not offer the writer\
+          \ a\n    # fact that would necessarily repeat it and fail that unchanged\
+          \ boundary.\n    # Keep the original evidence/selection and seed context;\
+          \ never deduplicate\n    # or repair model output after generation. Partial\
+          \ overlaps remain usable.\n    seed = _visible(view[\"request\"][\"seed_visible\"\
+          ])\n    if seed:\n        facts -= {unit[\"unit_id\"] for source in view[\"\
+          sources\"] for unit in source[\"units\"]\n                  if seed in _visible(unit[\"\
+          text\"])}\n    return facts\n\n\ndef _spec_link_dependencies(view, context_pack):\n\
+          \    \"\"\"Rebind the projection and count links in the assembler's exact\
+          \ markup.\"\"\"\n    pack = _object(context_pack)\n    mode = route(pack,\
+          \ \"editor_author\", pack.get(\"request_id\"), \"remote-role-result.v1\"\
+          )\n    sources = _sources(pack)\n    _fresh_editor_evidence(pack, sources)\n\
+          \    request = _request(pack, sources, mode)\n    catalog, lookup = _catalog(sources,\
+          \ request[\"target\"])\n    expected = {\"request\": request, \"sources\"\
+          : catalog,\n                \"entities\": _entity_scope(sources, request[\"\
+          target\"])}\n    if any(_canonical(view[key]) != _canonical(value) for key,\
+          \ value in expected.items()):\n        _fail()\n    urls = {}\n    for key,\
+          \ source in sources.items():\n        if not _intent(source) and source.get(\"\
+          url\"):\n            urls.setdefault(_link(source)[0], []).append(key)\n\
+          \    dependencies = {}\n    for key, unit in lookup.items():\n        refs\
+          \ = []\n        # Only _reference_text creates markup; all source text is\
+          \ HTML-escaped.\n        # Keep repeated/self links: deduplicated citation\
+          \ IDs lose multiplicity.\n        for href in re.findall(r'<a href=\"([^\"\
+          ]*)\">', unit[\"html\"]):\n            targets = urls.get(html.unescape(href),\
           \ [])\n            if len(targets) != 1:\n                _fail()\n    \
           \        refs.append(targets[0])\n        dependencies[key] = refs\n   \
           \ return dependencies\n\n\ndef prepare_spec(model_input, draft_spec, context_pack):\n\
@@ -4958,7 +4974,7 @@ workflow:
           \ context_pack)\n        view, spec, sources, units, buckets = _validated_spec(model_input,\
           \ draft_spec)\n        if spec[\"status\"] != \"ok\":\n            return\
           \ {\"model_input\": \"{}\", \"route\": \"stop\", \"candidate\": _canonical(_spec_terminal(spec))}\n\
-          \        permissions = {section: _spec_section_units(buckets, section)\n\
+          \        permissions = {section: _spec_section_units(buckets, section, view)\n\
           \                       for section in _section_order(spec[\"mode\"])}\n\
           \        # Writers choose semantic content, not source IDs or link bookkeeping.\n\
           \        # Omit units unusable in this mode, including background-only comments.\n\
@@ -5005,7 +5021,7 @@ workflow:
           \ != {\"section\", \"blocks\"} or not isinstance(section[\"blocks\"], list)\n\
           \                    or not section[\"blocks\"]):\n                _fail()\n\
           \            allowed_units = _spec_section_units(buckets, section[\"section\"\
-          ])\n            compiled_blocks = []\n            for block in section[\"\
+          ], view)\n            compiled_blocks = []\n            for block in section[\"\
           blocks\"]:\n                count += 1\n                if count > 32 or\
           \ not isinstance(block, dict):\n                    _fail()\n          \
           \      kind = block.get(\"type\")\n                rendered_links = []\n\

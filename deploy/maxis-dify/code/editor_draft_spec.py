@@ -103,10 +103,18 @@ def _spec_terminal(spec):
             "sections": [], "missing_inputs": spec["missing_inputs"]}
 
 
-def _spec_section_units(buckets, section):
+def _spec_section_units(buckets, section, view):
     facts = set(buckets["current_unit_ids"])
     if section == "background":
         facts |= buckets["context_unit_ids"]
+    # The assembler inserts the complete seed once. Do not offer the writer a
+    # fact that would necessarily repeat it and fail that unchanged boundary.
+    # Keep the original evidence/selection and seed context; never deduplicate
+    # or repair model output after generation. Partial overlaps remain usable.
+    seed = _visible(view["request"]["seed_visible"])
+    if seed:
+        facts -= {unit["unit_id"] for source in view["sources"] for unit in source["units"]
+                  if seed in _visible(unit["text"])}
     return facts
 
 
@@ -149,7 +157,7 @@ def prepare_spec(model_input, draft_spec, context_pack):
         view, spec, sources, units, buckets = _validated_spec(model_input, draft_spec)
         if spec["status"] != "ok":
             return {"model_input": "{}", "route": "stop", "candidate": _canonical(_spec_terminal(spec))}
-        permissions = {section: _spec_section_units(buckets, section)
+        permissions = {section: _spec_section_units(buckets, section, view)
                        for section in _section_order(spec["mode"])}
         # Writers choose semantic content, not source IDs or link bookkeeping.
         # Omit units unusable in this mode, including background-only comments.
@@ -204,7 +212,7 @@ def enforce_spec(candidate, model_input, draft_spec, context_pack):
             if (set(section) != {"section", "blocks"} or not isinstance(section["blocks"], list)
                     or not section["blocks"]):
                 _fail()
-            allowed_units = _spec_section_units(buckets, section["section"])
+            allowed_units = _spec_section_units(buckets, section["section"], view)
             compiled_blocks = []
             for block in section["blocks"]:
                 count += 1

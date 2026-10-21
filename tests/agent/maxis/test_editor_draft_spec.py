@@ -58,6 +58,30 @@ def enforce(sample):
     return json.loads(ASSET["enforce_spec"](encoded(plan), encoded(view), encoded(spec), "{}")["candidate"])
 
 
+@pytest.mark.parametrize("unit_text", ["다운스트림 연동", "범위: 다운스트림   연동. 조회 전용"])
+def test_writer_cannot_select_a_second_complete_copy_of_automatic_seed(sample, unit_text):
+    view, spec, plan = sample
+    view["request"]["seed_visible"] = "다운스트림 연동"
+    view["sources"][0]["units"][0]["text"] = unit_text
+    before = copy.deepcopy(view)
+    prepared = ASSET["prepare_spec"](encoded(view), encoded(spec), "{}")
+    writer = json.loads(prepared["model_input"])
+    assert writer["request"]["seed_visible"] == "다운스트림 연동"
+    assert "u_target" not in {unit["unit_id"] for unit in writer["units"]}
+    assert "u_constraint" in {unit["unit_id"] for unit in writer["units"]}
+    assert view == before  # Original evidence and selector decisions remain intact.
+    assert enforce(sample)["status"] == "blocked"  # No post-output deduplication/repair.
+    plan["sections"][1]["blocks"] = [{"type": "proposal", "text": "연동 경로를 검증한다.", "tag": "p"}]
+    assert enforce(sample)["status"] == "ok"
+
+
+def test_partial_seed_units_remain_available_without_claiming_duplicate_seed(sample):
+    view, spec, _ = sample
+    view["request"]["seed_visible"] = "다운스트림 연동. 조회 전용을 유지한다."
+    writer = json.loads(ASSET["prepare_spec"](encoded(view), encoded(spec), "{}")["model_input"])
+    assert "u_target" in {unit["unit_id"] for unit in writer["units"]}
+
+
 @pytest.mark.parametrize("mode", ["description", "comment"])
 def test_v1_successful_writer_input_and_compiled_plan_are_preserved(sample, mode):
     """Keep pre-DraftSpec-v2 golden writer/plan outputs with editor-input.v2."""
