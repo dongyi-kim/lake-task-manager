@@ -683,13 +683,19 @@ def _exact_compound_prompt_is_complete(state) -> bool:
                 return False
             key = str(detail.get("key") or "").strip().upper()
             visible.setdefault(key, []).append(detail)
-    if set(visible) != set(verified) or any(len(group) != 1 for group in visible.values()):
+    if set(visible) != set(verified):
         return False
     for key, expected in verified.items():
-        current = validate_and_digest_exact_ticket_detail(visible[key][0], key)
         canonical = validate_and_digest_exact_ticket_detail(expected, key)
-        if current is None or canonical is None or current[1] != canonical[1]:
+        if canonical is None:
             return False
+        # The same detail can legitimately belong to both Jira and comment
+        # queries. Every occurrence must match the current-attempt receipt;
+        # multiplicity alone is not missing evidence, but disagreement still is.
+        for detail in visible[key]:
+            current = validate_and_digest_exact_ticket_detail(detail, key)
+            if current is None or current[1] != canonical[1]:
+                return False
     return True
 
 

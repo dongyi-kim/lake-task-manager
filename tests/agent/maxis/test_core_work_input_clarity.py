@@ -26,6 +26,7 @@ def test_source_view_has_one_citation_identity_and_preserves_original_evidence(n
             row["entity_reference"] = canonical
         row["source_authority"] = "user_intent" if intent else "evidence_source"
         row["allowed_claim_kinds"] = ["inference", "recommendation"] if intent else ["fact", "inference", "recommendation"]
+        row["fact_paths"] = {"paths": [] if intent else [""], "complete": True}
     assert projected == {"contract": "work-input.v2", "context": expected,
                          "knowledge_context": original["knowledge_context"]}
     system = nodes[WORK]["prompt_template"][0]["text"]
@@ -58,11 +59,12 @@ def test_generated_view_citation_choices_reach_unchanged_assembler_and_both_guar
     rows = json.loads(code(nodes[INPUT])["main"](incoming)["work_input"])["context"]["sources"]
     row = next(row for row in rows if row["source_authority"] == (
         "evidence_source" if choice in {"evidence_fact", "entity_reference"} else "user_intent"))
-    summary = draft["payload"]["items"][0]["summary"]
-    summary.update(value=row["content"], source_ids=[row["source_id"]],
-                   kind="recommendation" if choice == "intent_recommendation" else "fact")
+    summary = ({"value": row["content"], "source_ids": [row["source_id"]], "kind": "recommendation"}
+               if choice == "intent_recommendation" else
+               {"kind": "fact", "source_id": row["source_id"], "source_path": ""})
+    draft["payload"]["items"][0]["summary"] = summary
     if choice == "entity_reference":
-        summary["source_ids"] = [row["entity_reference"]]
+        summary["source_id"] = row["entity_reference"]
         with pytest.raises(ValueError, match="^invalid_core_work_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
             code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))
         return

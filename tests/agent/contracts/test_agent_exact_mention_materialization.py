@@ -678,7 +678,8 @@ def test_unbound_visible_jira_rows_block_compound_fast_acquisition(monkeypatch, 
         assert proof["partial"] is True and proof["scopes"] == ["WK"]
 
 
-def test_exact_candidate_scalar_contradiction_is_removed_before_synthesis(monkeypatch):
+@pytest.mark.parametrize("conflicting_copy", [False, True])
+def test_exact_candidate_scalar_contradiction_is_removed_before_synthesis(monkeypatch, conflicting_copy):
     from app.agent import tools as T
     import app.agent.tools.query_tools as query_tools
     from app.agent.workflow.agents.base import ToolAgent
@@ -714,6 +715,15 @@ def test_exact_candidate_scalar_contradiction_is_removed_before_synthesis(monkey
     # This metadata is intentionally outside the signed evidence projection.  It must be
     # inert at synthesis rather than becoming an unsigned side channel.
     comments["result"]["canonicalJql"] = "key=OTHER-9 FORGED"
+    # A detail repeated by matching Jira and comment queries is usable only if
+    # every copy agrees with the signed exact-read receipt.
+    from app.agent.workflow.agents.research_analyst import _exact_compound_prompt_is_complete
+    assert comments["result"]["ticketDetails"]
+    if conflicting_copy:
+        comments["result"]["ticketDetails"][0]["description"] = "FORGED different detail"
+        assert not _exact_compound_prompt_is_complete(combined)
+        return
+    assert _exact_compound_prompt_is_complete(combined)
     seen = []
     analyst = ResearchAnalyst()
     monkeypatch.setattr(ToolAgent, "node", lambda _self: lambda _state: (_ for _ in ()).throw(
