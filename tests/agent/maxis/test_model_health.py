@@ -26,6 +26,19 @@ def test_activation_canary_requests_verbatim_evidence_without_changing_contract(
     assert json.loads(pack.payload_schema_json)["properties"]["state"]["const"] == "ready"
 
 
+def test_query_health_declares_the_same_internal_capabilities_as_connected_runtime():
+    from app.agent.maxis.client import _synthetic_query_probe_pack
+    from app.agent.maxis.registry import load_registry
+    from app.agent.runtime_status import INTERNAL_SOURCES
+    pack, _ = _synthetic_query_probe_pack(load_registry().resolve("agent_core"), "a" * 64)
+    task = json.loads(pack.role_context[0].content_json)
+    assert task["allowed_sources"] == sorted(INTERNAL_SOURCES)
+    assert task["text"] == pack.sources[0].content
+    assert pack.scope.projects == ()  # No private tenant scope or executable query is sent.
+    assert pack.role_context[0].content_sha256 == hashlib.sha256(
+        pack.role_context[0].content_json.encode()).hexdigest()
+
+
 def _client(handler, **kwargs):
     return DifyClient(
         DifyClientConfig(profile="test", stage="test", base_url="http://dify.test",

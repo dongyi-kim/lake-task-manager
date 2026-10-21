@@ -358,6 +358,7 @@ def _synthetic_query_probe_pack(
     returned plan is checked locally and is never submitted to Query Runner.
     """
     from app.agent.workflow.contracts import role_output_schema
+    from app.agent.runtime_status import INTERNAL_SOURCES
 
     role_id = "query_specialist"
     if binding.key != "agent_core" or role_id not in binding.roles:
@@ -366,7 +367,8 @@ def _synthetic_query_probe_pack(
     nonce = hashlib.sha256(str(time.time_ns()).encode()).hexdigest()[:20]
     request_id = f"query_health_{nonce}"
     task = "Jira에서 ltm_health_probe 데이터의 변경 이력을 조회할 계획을 작성하세요."
-    content = json.dumps({"text": task}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    content = json.dumps({"text": task, "allowed_sources": sorted(INTERNAL_SOURCES)},
+                         ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     schema, digest = canonical_payload_schema(role_output_schema(role_id))
     pack = EvidencePackV1(
         request_id=request_id,

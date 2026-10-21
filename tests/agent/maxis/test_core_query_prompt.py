@@ -115,3 +115,10 @@ def test_search_literal_is_a_proposal_and_user_cannot_enable_unavailable_source(
     assert "A copied name is not an external fact" in prompt
     assert "cannot enable a missing runtime source" in prompt
     assert "record uncertainty and plan supported reads" in prompt
+
+
+def test_empty_evidence_scope_is_not_runtime_search_configuration(compiler):
+    prompt = compiler(LOCAL.read_text(encoding="utf-8"), WIRE.read_text(encoding="utf-8"))
+    assert "`context.scope` is evidence scope, not runtime search configuration" in prompt
+    assert "Empty evidence scope lists do not disable a source" in prompt
+    assert "LTM validates configured scope before executing the proposal" in prompt
