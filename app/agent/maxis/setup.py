@@ -379,6 +379,8 @@ def prepare_bundle(body: dict, *, profile_name: str = "prod") -> dict:
         # The reviewed core source uses its stable historical filename.
         environment["workflows"]["agent_core"]["source_dsl"] = "deploy/maxis-dify/dsl/ltm-agent-core.yml"
         materializer = _materializer()
+        if "output_mode" in body["model"]:
+            environment["model"]["output_mode"] = materializer.validate_output_mode(body["model"]["output_mode"])
         if "completion_params" in body["model"]:
             environment["model"]["completion_params"] = materializer.validate_completion_params(
                 body["model"]["completion_params"])

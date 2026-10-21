@@ -19,6 +19,10 @@ dataset/document/sentinel/metadata UUID와 model plugin/provider/name을 명시�
 선택적인 `model.completion_params`는 모든 LLM 노드의 canonical 튜닝을 교체한다. 명시한 `{}`는
 서버 모델 기본값, 미지정만 기존 튜닝 유지다. 공개 scalar 옵션만 검증·허용하며, 모델별 지원 여부는
 해당 프로젝트에서 확인한다. canonical 원본의 고정 파라미터 검사는 변경 없이 먼저 수행한다.
+`model.output_mode`는 기본 `native_schema`, 명시적 호환 모드는 `guarded_json`이다. 후자는 OpenAI
+strict 생성에서 표현할 수 없는 동적 payload·선택 필드를 원형 그대로 prompt에 전달하고, 원문 JSON의
+기존 Code/Response Guard 검증을 유지한다. native 생성만 끄며 schema·근거·승인 검사를 생략하거나
+nullable/default 값을 합성하지 않는다. 정본 graph 검증 후 생성용 복사본에만 적용한다.
 `validate_environment(mapping)`은 입력을 변경하지 않고 동일한 계약을 검사한다.
 `public_knowledge_source()`는 문서 설명·hash·Role과 version을 제공하며 runtime 설정·비밀을 읽지 않는다.
 다른 환경 metadata가 실제로 있으면 UUID 재사용을 비교한다. 없는 DEV를 새로 만들 필요는 없다.

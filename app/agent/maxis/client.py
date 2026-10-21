@@ -316,7 +316,10 @@ def _synthetic_contract_probe_pack(
     query = (
         f"Use the phrase '{knowledge_query}' only to exercise governed "
         "Knowledge retrieval. Read only the supplied synthetic evidence and "
-        "return its ready state as one cited fact."
+        "return its ready state as one cited fact. Quote the supplied fact text "
+        "verbatim in the claim, in its original language. Treat it as a direct "
+        "source quotation, not Korean narrative. Do not paraphrase or translate "
+        "the quotation; this checks evidence transport, not translation."
     )
     payload_schema_json, payload_schema_sha256 = canonical_payload_schema(
         _PROBE_PAYLOAD_SCHEMA
@@ -425,8 +428,8 @@ class DifyClientConfig:
     require_https: bool = True
     verify_tls: bool | str | ssl.SSLContext = True
     connect_timeout_seconds: float = 3.0
-    read_timeout_seconds: float = 30.0
-    total_timeout_seconds: float = 35.0
+    read_timeout_seconds: float = 90.0
+    total_timeout_seconds: float = 95.0
     max_response_bytes: int = 1024 * 1024
 
     def __post_init__(self):
@@ -443,12 +446,11 @@ class DifyClientConfig:
             raise MaxisGatewayError(MaxisErrorCode.POLICY)
         if self.stage in {"internal-pilot", "prod"} and self.verify_tls is False:
             raise MaxisGatewayError(MaxisErrorCode.POLICY)
-        if not 0 < self.connect_timeout_seconds <= 3.0:
-            raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION)
-        if not 0 < self.read_timeout_seconds <= 30.0:
-            raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION)
-        if not 0 < self.total_timeout_seconds <= 35.0:
-            raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION)
+        for value, maximum in ((self.connect_timeout_seconds, 3.0),
+                               (self.read_timeout_seconds, 90.0),
+                               (self.total_timeout_seconds, 95.0)):
+            if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= maximum:
+                raise MaxisGatewayError(MaxisErrorCode.CONFIGURATION)
         if self.total_timeout_seconds < max(
             self.connect_timeout_seconds, self.read_timeout_seconds
         ):
@@ -788,7 +790,10 @@ class DifyClient:
         timeout_seconds: float | None = None,
         requested_workflow_id: str = "",
     ) -> tuple[bytes, int, int]:
-        total_timeout = self.config.total_timeout_seconds
+        # Blocking model generation needs more time than metadata discovery.
+        # Both remain bounded; caller deadlines can only shorten this budget.
+        total_timeout = min(self.config.total_timeout_seconds, 35.0) if method == "GET" else self.config.total_timeout_seconds
+        read_timeout = min(self.config.read_timeout_seconds, 30.0) if method == "GET" else self.config.read_timeout_seconds
         if timeout_seconds is not None:
             if (type(timeout_seconds) not in (int, float)
                     or timeout_seconds <= 0
@@ -797,7 +802,7 @@ class DifyClient:
             total_timeout = min(total_timeout, timeout_seconds)
         timeout = httpx.Timeout(
             total_timeout, connect=min(self.config.connect_timeout_seconds, total_timeout),
-            read=min(self.config.read_timeout_seconds, total_timeout),
+            read=min(read_timeout, total_timeout),
             write=total_timeout, pool=min(self.config.connect_timeout_seconds, total_timeout),
         )
         active_breaker = breaker or self.breaker

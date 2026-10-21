@@ -15,6 +15,17 @@ WORKFLOW_ID = "abcdef12-3456-4abc-8def-abcdef123456"
 SENTINEL = "LTM_RELEASE_SENTINEL_V1=synthetic-model-health"
 
 
+def test_activation_canary_requests_verbatim_evidence_without_changing_contract():
+    from app.agent.maxis.client import _synthetic_contract_probe_pack
+    from app.agent.maxis.registry import load_registry
+    pack, _ = _synthetic_contract_probe_pack(load_registry().resolve("agent_core"), "a" * 64)
+    assert pack.sources[0].content == pack.facts[0].text
+    assert pack.facts[0].text == "The supplied synthetic activation canary has state ready."
+    assert "verbatim" in pack.query
+    assert pack.sources[0].content_sha256 == hashlib.sha256(pack.facts[0].text.encode()).hexdigest()
+    assert json.loads(pack.payload_schema_json)["properties"]["state"]["const"] == "ready"
+
+
 def _client(handler, **kwargs):
     return DifyClient(
         DifyClientConfig(profile="test", stage="test", base_url="http://dify.test",

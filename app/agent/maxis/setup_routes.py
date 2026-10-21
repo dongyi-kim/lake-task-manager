@@ -1,6 +1,8 @@
 """Manager-only local PROD setup routes; deliberately no remote portal mutation."""
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
@@ -40,6 +42,7 @@ class ModelBody(_Body):
     provider: str = Field(max_length=256)
     name: str = Field(max_length=128)
     completion_params: dict | None = None
+    output_mode: Literal["native_schema", "guarded_json"] = "native_schema"
 
     @field_validator("completion_params", mode="before")
     @classmethod

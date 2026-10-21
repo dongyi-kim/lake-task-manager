@@ -196,8 +196,9 @@ def test_model_parameters_are_rejected_before_preparation_without_value_echo(iso
     assert "private-do-not-echo" not in response.text
     assert not setup._directory().exists()
 
+@pytest.mark.parametrize("output_mode", [None, "guarded_json"])
 @pytest.mark.parametrize("params", [None, {}, {"reasoning_effort": "low", "max_completion_tokens": 2048}])
-def test_clean_prod_prepares_real_dsls_and_saves_only_an_inactive_candidate(isolated, monkeypatch, params):
+def test_clean_prod_prepares_real_dsls_and_saves_only_an_inactive_candidate(isolated, monkeypatch, params, output_mode):
     from app.agent.maxis import credentials, profiles
     from app.infra import prefs
     monkeypatch.setenv("LAKE_MAXIS_PROD_ALLOWED_HOSTS", "prod.example")
@@ -211,6 +212,8 @@ def test_clean_prod_prepares_real_dsls_and_saves_only_an_inactive_candidate(isol
             "model": {"plugin_unique_identifier": "example/model:1.0@aaaaaaaa", "provider": "example/model/model", "name": "approved-chat"}}
     if params is not None:
         body["model"]["completion_params"] = params
+    if output_mode is not None:
+        body["model"]["output_mode"] = output_mode
     bundled = isolated.post("/api/agent/maxis/setup/bundle", json=body)
     assert bundled.status_code == 200, bundled.text
     assert bundled.json()["knowledgeSentinelSha256"] == prepared["knowledgeSentinelSha256"]
@@ -222,6 +225,7 @@ def test_clean_prod_prepares_real_dsls_and_saves_only_an_inactive_candidate(isol
         assert environment["environment"] == "prod"
         assert "dev_environment_binding" not in environment["knowledge"]
         assert ("completion_params" in environment["model"]) == (params is not None)
+        assert environment["model"].get("output_mode") == output_mode
         for filename in workflows:
             dsl = archive.read(filename).decode("utf-8")
             assert body["datasetId"] in dsl and "approved-chat" in dsl
@@ -229,7 +233,9 @@ def test_clean_prod_prepares_real_dsls_and_saves_only_an_inactive_candidate(isol
             if params is not None:
                 for node in yaml.safe_load(dsl)["workflow"]["graph"]["nodes"]:
                     if node["data"]["type"] == "llm":
-                        assert node["data"]["model"]["completion_params"] == params
+                        assert node["data"]["model"]["completion_params"] == (
+                            {**params, "response_format": "text"} if output_mode == "guarded_json" else params)
+                        assert node["data"]["structured_output_enabled"] is (output_mode != "guarded_json")
     published = {key: str(uuid.uuid4()) for key in ("agent_core", "editor_author")}
     candidate = isolated.post("/api/agent/maxis/setup/candidate", json={
         "runId": prepared["runId"], "workflowVersions": published,

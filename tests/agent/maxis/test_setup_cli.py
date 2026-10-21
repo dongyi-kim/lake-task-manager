@@ -113,7 +113,7 @@ def configured(fake):
     config = json.loads(path.read_text(encoding="utf-8"))
     config.update(baseUrl="https://prod.example/v1", datasetId=UUID, sentinelDatasetId=UUID,
                   roleMetadataFieldId=UUID, sentinelDocumentId=UUID, documentIds={"guide": UUID},
-                  model=MODEL, workflowVersions={"agent_core": UUID, "editor_author": UUID, "pmo_brief": ""},
+                  model=copy.deepcopy(MODEL), workflowVersions={"agent_core": UUID, "editor_author": UUID, "pmo_brief": ""},
                   remoteLogPolicyId="approved-policy", remoteLogMode="redacted", remoteLogRetentionDays=0)
     path.write_text(json.dumps(config, indent=3), encoding="utf-8")
     return path, config
@@ -236,17 +236,49 @@ def test_config_extra_fields_and_paths_are_rejected(fake):
     assert not fake.calls
 
 
-def test_model_export_is_only_sent_to_local_extractor_and_not_saved(fake):
+@pytest.mark.parametrize("output_mode", [None, "guarded_json"])
+def test_model_export_is_only_sent_to_local_extractor_and_not_saved(fake, output_mode):
     path, config = configured(fake)
     config["model"] = dict.fromkeys(MODEL, "")
+    if output_mode is not None:
+        config["model"]["output_mode"] = output_mode
     path.write_text(json.dumps(config), encoding="utf-8")
     export = cli.ROOT / ".cache/maxis/prod-model.yml"
     export.write_text("unrelated-secret: SECRET\n", encoding="utf-8")
     original = path.read_bytes()
     assert cli.main(["bundle", "--confirm-host", "--model-file", ".cache/maxis/prod-model.yml"]) == 0
-    assert fake.run["assetInputs"]["model"] == MODEL
+    assert fake.run["assetInputs"]["model"] == ({**MODEL, "output_mode": output_mode} if output_mode else MODEL)
     assert path.read_bytes() == original
     assert cli.main(["connect", "--confirm-remote"]) == 0
+
+
+@pytest.mark.parametrize("mode", ["skip_validation", None, True, [], {}])
+def test_invalid_model_output_mode_is_rejected_before_any_api_call(fake, mode):
+    path, config = configured(fake)
+    config["model"]["output_mode"] = mode
+    path.write_text(json.dumps(config), encoding="utf-8")
+    fake.calls.clear()
+    assert cli.main(["bundle", "--confirm-host"]) == 1
+    assert not fake.calls
+
+
+@pytest.mark.parametrize("before,after", [(None, "guarded_json"), ("guarded_json", None)])
+def test_exported_model_output_mode_change_requires_rebuild_before_connect(fake, before, after):
+    path, config = configured(fake)
+    config["model"] = dict.fromkeys(MODEL, "")
+    if before is not None:
+        config["model"]["output_mode"] = before
+    path.write_text(json.dumps(config), encoding="utf-8")
+    export = cli.ROOT / ".cache/maxis/prod-model.yml"
+    export.write_text("synthetic: model\n", encoding="utf-8")
+    assert cli.main(["bundle", "--confirm-host", "--model-file", str(export)]) == 0
+    config["model"].pop("output_mode", None)
+    if after is not None:
+        config["model"]["output_mode"] = after
+    path.write_text(json.dumps(config), encoding="utf-8")
+    fake.calls.clear()
+    assert cli.main(["connect", "--confirm-remote"]) == 1
+    assert all(method == "GET" for method, _, _ in fake.calls)
 
 
 @pytest.mark.parametrize("params", [{}, {"max_completion_tokens": 2048, "reasoning_effort": "low"}])

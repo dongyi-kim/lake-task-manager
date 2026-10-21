@@ -82,6 +82,44 @@ def _success(answer="{}", *, retriever_resources=None):
     }
 
 
+@pytest.mark.parametrize("method,elapsed,accepted", [
+    ("POST", 45, True), ("POST", 96, False), ("GET", 36, False),
+])
+def test_generation_budget_is_longer_but_bounded_and_metadata_stays_short(method, elapsed, accepted):
+    clock = [0.0]
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        clock[0] += elapsed
+        return httpx.Response(200, json={"synthetic": True})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        client = DifyClient(_config(), client=http, clock=lambda: clock[0])
+        def invoke():
+            return client._request_bytes(method, "/parameters", api_key="test-key",
+                                         payload=None, response_limit=1024)
+        if accepted:
+            assert invoke()[1] == 200
+        else:
+            with pytest.raises(MaxisGatewayError) as caught:
+                invoke()
+            assert caught.value.code is MaxisErrorCode.TIMEOUT
+    assert len(requests) == 1  # No hidden retry or second generation.
+    budget = requests[0].extensions["timeout"]
+    assert budget["connect"] == 3
+    assert budget["read"] == (30 if method == "GET" else 90)
+
+
+@pytest.mark.parametrize("field,maximum", [("connect_timeout_seconds", 3), ("read_timeout_seconds", 90),
+                                         ("total_timeout_seconds", 95)])
+@pytest.mark.parametrize("invalid", [True, 0, -1, float("inf"), float("nan"), "30", "above"])
+def test_client_timeout_budgets_reject_unbounded_or_invalid_values(field, maximum, invalid):
+    with pytest.raises(MaxisGatewayError) as caught:
+        _config(**{field: maximum + 1 if invalid == "above" else invalid})
+    assert caught.value.code is MaxisErrorCode.CONFIGURATION
+
+
 def _context_pack():
     schema_json, schema_sha256 = canonical_payload_schema(_PAYLOAD_SCHEMA)
     return {

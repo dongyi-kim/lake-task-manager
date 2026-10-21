@@ -17,6 +17,61 @@ materializer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(materializer)
 
 
+def test_guarded_json_preserves_schema_and_all_non_generation_controls(tmp_path):
+    import copy
+    import json
+    environment = _ready_prod_environment()
+    baseline = [yaml.safe_load(p.read_text(encoding="utf-8"))
+                for p in materializer.materialize(environment, tmp_path / "native")]
+    environment["model"]["output_mode"] = "guarded_json"
+    original = copy.deepcopy(environment)
+    generated = materializer.materialize(environment, tmp_path / "guarded")
+    assert environment == original
+    for expected, path in zip(baseline, generated):
+        actual = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for before, after in zip(expected["workflow"]["graph"]["nodes"], actual["workflow"]["graph"]["nodes"]):
+            if before["data"]["type"] != "llm":
+                assert after == before  # Code guards, policy, retrieval and selectors unchanged.
+                continue
+            data = after["data"]
+            assert data["structured_output_enabled"] is False
+            assert data["structured_output"] == before["data"]["structured_output"]
+            system = next(p for p in data["prompt_template"] if p["role"] == "system")
+            prefix, schema_text = system["text"].split(materializer.GUARDED_JSON_SCHEMA_MARKER)
+            assert prefix == next(p["text"] for p in before["data"]["prompt_template"] if p["role"] == "system")
+            assert json.loads(schema_text) == data["structured_output"]["schema"]
+            assert data["model"]["completion_params"]["response_format"] == "text"
+            # Inverse transport projection restores the exact entire source node.
+            system["text"] = prefix
+            data["structured_output_enabled"] = True
+            data["model"]["completion_params"] = before["data"]["model"]["completion_params"]
+            assert after == before
+        assert actual == expected
+
+
+@pytest.mark.parametrize("mode", ["", "auto", "skip_validation", True, None])
+def test_output_mode_rejects_unknown_values(mode):
+    environment = _ready_prod_environment()
+    environment["model"]["output_mode"] = mode
+    with pytest.raises(materializer.EnvironmentBindingError, match="output_mode"):
+        materializer.validate_environment(environment)
+
+
+def test_guarded_json_rejects_conflicting_wire_format(tmp_path):
+    environment = _ready_prod_environment()
+    environment["model"].update(output_mode="guarded_json", completion_params={"response_format": "json_object"})
+    with pytest.raises(materializer.EnvironmentBindingError, match="response_format"):
+        materializer.materialize(environment, tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
+def test_native_output_mode_preserves_default(tmp_path):
+    environment = _ready_prod_environment()
+    original = [p.read_text(encoding="utf-8") for p in materializer.materialize(environment, tmp_path / "default")]
+    environment["model"]["output_mode"] = "native_schema"
+    assert [p.read_text(encoding="utf-8") for p in materializer.materialize(environment, tmp_path / "explicit")] == original
+
+
 def test_private_manifest_can_add_documents_without_changing_reviewed_graph(tmp_path, monkeypatch):
     from datetime import datetime, timezone
     root = tmp_path / "repo"

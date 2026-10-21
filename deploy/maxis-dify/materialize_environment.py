@@ -137,6 +137,46 @@ class EnvironmentBindingError(ValueError):
     """Raised when an environment file is incomplete or unsafe."""
 
 
+GUARDED_JSON_SCHEMA_MARKER = (
+    "\n\nOutput transport: return exactly one JSON object, without Markdown fences or "
+    "surrounding prose, matching the following generation schema. The existing code "
+    "validators remain authoritative for the complete per-call contract, evidence "
+    "and approval rules. Do not change optional fields into required/null fields. "
+    "Copy opaque identifiers (especially source_ids) verbatim from the input: "
+    "never abbreviate, truncate, re-hash or reconstruct them.\n"
+)
+
+
+def validate_output_mode(value: Any) -> str:
+    if not isinstance(value, str) or value not in {"native_schema", "guarded_json"}:
+        raise EnvironmentBindingError("Model output_mode must be native_schema or guarded_json.")
+    return value
+
+
+def apply_model_output_mode(data: dict, mode: str) -> None:
+    """Project only LLM generation transport after the canonical graph is validated.
+
+    OpenAI strict generation cannot represent dynamic payload objects or optional
+    fields. Do not close those objects or invent null/default values. The existing
+    JSON/schema/grounding code guards consume the same raw text in both modes.
+    """
+    if validate_output_mode(mode) == "native_schema":
+        return
+    schema = data.get("structured_output", {}).get("schema")
+    systems = [row for row in data.get("prompt_template", []) if row.get("role") == "system"]
+    params = data.get("model", {}).get("completion_params", {})
+    if (data.get("type") != "llm" or data.get("structured_output_enabled") is not True
+            or not isinstance(schema, dict) or schema.get("type") != "object"
+            or len(systems) != 1 or not isinstance(systems[0].get("text"), str)
+            or GUARDED_JSON_SCHEMA_MARKER in systems[0]["text"]):
+        raise EnvironmentBindingError("Guarded JSON requires a reviewed, unmodified LLM schema and system prompt.")
+    if params.get("response_format", "text") != "text":
+        raise EnvironmentBindingError("guarded_json requires response_format=text or an omitted response_format.")
+    systems[0]["text"] += GUARDED_JSON_SCHEMA_MARKER + json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+    data["structured_output_enabled"] = False
+    data["model"]["completion_params"] = {**params, "response_format": "text"}
+
+
 def validate_completion_params(value: Any) -> dict[str, Any]:
     """Validate public model options without accepting arbitrary strings/secrets.
 
@@ -591,8 +631,9 @@ def load_environment(path: Path | str | dict[str, Any]) -> dict[str, Any]:
 
     model = _mapping(environment.get("model"), "model")
     required_model_fields = {"plugin_unique_identifier", "provider", "name"}
-    if not required_model_fields <= set(model) or set(model) - required_model_fields - {"completion_params"}:
+    if not required_model_fields <= set(model) or set(model) - required_model_fields - {"completion_params", "output_mode"}:
         raise EnvironmentBindingError("Model binding fields are incomplete.")
+    validate_output_mode(model.get("output_mode", "native_schema"))
     for field in ("plugin_unique_identifier", "provider", "name"):
         value = _required_text(model.get(field), f"model.{field}")
         if "__LTM_" in value:
@@ -1300,6 +1341,10 @@ def _materialize_dsl(environment: dict[str, Any], workflow_key: str) -> tuple[Pa
     ]
     if contract_guard_variables != expected_guard_variables:
         raise EnvironmentBindingError(f"{workflow_key} Contract Guard input selectors drifted.")
+    # All original source, topology and guard checks above must pass first.
+    for node in nodes:
+        if node["data"].get("type") == "llm":
+            apply_model_output_mode(node["data"], environment["model"].get("output_mode", "native_schema"))
     return source, dsl
 
 

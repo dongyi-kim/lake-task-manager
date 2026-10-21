@@ -202,6 +202,22 @@ New-Item -ItemType Directory -Path .cache/maxis -Force | Out-Null
   미지원 모델에 옵션을 강제로 넣거나 JSON 괄호·중복 키를 임의 보정하지 않는다.
   [Dify 호환 플러그인 구현](https://github.com/langgenius/dify-official-plugins/blob/main/models/openai_api_compatible/models/llm/llm.py)도 등록된 지원 여부에 따라 옵션을 제공한다.
 - `model.completion_params: {}`는 해당 서버 모델의 기본값 사용이다. 명시한 객체는 기본 파라미터를 **병합하지 않고 교체**한다. 예: `{"max_completion_tokens": 2048, "reasoning_effort": "low"}`. 지원하지 않는 `temperature`나 `max_tokens`를 강제로 보내지 않는다. 기존 파일에서 필드를 생략한 경우만 기존 워크플로의 기본 튜닝을 유지한다.
+- **OpenAI 직접 연결:** Dify의 `OpenAI` 제공자를 선택한다. 기존 MAXIS의 `OpenAI-API-compatible`/LiteLLM 연결과 다르다. 현지 OpenAI 제공자에서 실제 생성되는 모델과 파라미터를 내보내고, 아래 출력 호환 설정을 적용한다. 코드에 특정 모델·주소·컨텍스트 크기를 고정하지 않는다.
+- `invalid_json_schema`와 `additionalProperties`/`required` 오류가 나면 모델 인증 실패로 보지 않는다. LTM의 동적 `payload`와 선택 필드는 OpenAI strict 생성 스키마와 다를 수 있다. 이때 설정 JSON의 `model`에 **`"output_mode": "guarded_json"`**을 추가하고 bundle을 다시 만든다. `--model-file`로 모델을 읽어도 이 옵션은 유지된다.
+  이 모드는 동일 스키마를 생성 지시로 전달하고 원문 JSON을 기존 Code/Response Guard에서 검사한다. 근거·선택 ID·승인·중복 키 검증은 그대로이며 실패를 보정하거나 성공으로 바꾸지 않는다. Dify의 생성용 `Structured Output`만 꺼지는 것이고, 최종 응답 검증이 꺼지는 것은 아니다. 미지정/`native_schema`는 기존 생성 방식을 유지하며 런타임 자동 전환은 없다.
+
+  ```json
+  "model": {
+    "plugin_unique_identifier": "현지 DSL에서 읽은 값",
+    "provider": "langgenius/openai/openai",
+    "name": "현지에서 확인한 모델명",
+    "completion_params": {"max_tokens": 32768, "reasoning_effort": "medium"},
+    "output_mode": "guarded_json"
+  }
+  ```
+
+  위 파라미터는 지원 확인 후 사용하는 예시다. `guarded_json`에서는 `response_format`을 생략하거나 `text`로 두며 `json_object`를 함께 강제하지 않는다. 기존 준비 파일을 바꾸면 `bundle --confirm-host --replace-files`로 재생성 → **기존 앱 갱신** → Publish → UUID 갱신 → 연결 검사 순으로 진행한다. 앱을 날짜별로 복제하지 않는다.
+  추론 모델의 출력 예산은 추론 토큰에도 쓰인다. Dify 실행 기록에 `finish_reason: length`와 잘린 JSON이 보이면 현지 모델이 지원하는 출력 한도를 늘리고 추론 강도를 조정한다. 컨텍스트 창 크기와 출력 한도는 별개이며, JSON 조각을 임의로 완성하지 않는다. LTM의 생성 호출은 읽기 90초·총 95초, 연결은 3초로 제한하며 메타데이터 검사는 기존 30초·35초 한도를 유지한다. 호출자가 가진 더 짧은 작업 제한은 늘리지 않는다.
 - 모델이나 파라미터 변경은 Dify에서 **관련 LLM 노드 모두 확인 → Publish → LTM의 게시 Workflow UUID 갱신 → 연결 검사 → 적용** 순서다. 초안만 수정하면 게시본은 바뀌지 않는다. 기존 모델로 자동 되돌리거나 새 모델을 자동 재게시하지 않는다.
 - 연결 검사의 실제 생성 성공은 검사한 경로의 건강 상태다. 전체 분기·본문·댓글의 출력 품질이나 모델명 확인까지 뜻하지 않는다. Dify Service API가 모델명을 제공하지 않으면 **미확인**으로 표시하며 템플릿의 모델명을 실측 결과로 쓰지 않는다. 변경 후 실제 Agent·본문·댓글도 각각 확인한다.
 - Core 검사는 **제어 응답 + 실제 Query 입력·LLM·조립·근거 검증 경로**를 호출한다.
