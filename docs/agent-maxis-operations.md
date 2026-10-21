@@ -211,15 +211,46 @@ New-Item -ItemType Directory -Path .cache/maxis -Force | Out-Null
 
 ## 2. Knowledge — 파일 생성·업로드·메타데이터
 
+**`knowledge.zip`은 저장소에 들어 있는 파일이 아니다. 아래 `prepare`가 성공해야 이 PC에 생성된다.**
+MAXIS/Dify에 아직 앱·모델·Token이 없어도 이 파일 생성은 가능하다. 단, **같은 브랜치의 로컬 LTM이
+4457에서 실행 중이고 Jira 매니저로 로그인되어 있어야 한다.** 새 코드를 pull해도 이미 실행 중인 구버전 앱이 자동 교체되지는 않는다.
+
+아래 블록 전체를 **앱 저장소 루트의 두 번째 터미널**에 붙여 넣는다. 실패하면 압축 해제로 넘어가지 않는다.
+
 ```powershell
-python -B -X utf8 tools/maxis_setup.py prepare
-Expand-Archive -LiteralPath .cache/maxis/knowledge.zip -DestinationPath .cache/maxis/knowledge-upload
-Import-Csv .cache/maxis/knowledge-upload/document-metadata.csv | Format-List
+& {
+    $ErrorActionPreference = "Stop"
+    if (-not (Test-Path -LiteralPath tools/maxis_setup.py -PathType Leaf)) {
+        throw "lake-task-manager 앱 저장소 루트로 이동하세요. deploy 저장소 루트가 아닙니다."
+    }
+    # 로컬 앱에 최신 준비 API가 있는지 먼저 확인. MAXIS 서버 호출이 아니다.
+    Invoke-RestMethod http://127.0.0.1:4457/api/agent/maxis/setup -ErrorAction Stop | Out-Null
+    python -B -X utf8 tools/maxis_setup.py prepare
+    if ($LASTEXITCODE -ne 0) { throw "prepare 실패. 위 첫 오류를 해결하세요. 압축 해제는 실행하지 않았습니다." }
+    $knowledgeZip = Join-Path (Get-Location).Path ".cache/maxis/knowledge.zip"
+    if (-not (Test-Path -LiteralPath $knowledgeZip -PathType Leaf)) { throw "생성 파일이 없습니다. 스크립트가 출력한 ZIP 절대경로를 확인하세요." }
+    Expand-Archive -LiteralPath $knowledgeZip -DestinationPath .cache/maxis/knowledge-upload
+    Import-Csv .cache/maxis/knowledge-upload/document-metadata.csv | Format-List
+}
 ```
 
 생성되는 파일: `.cache/maxis/knowledge.zip`, `.cache/maxis/prod-setup.json`.
+성공 메시지의 **ZIP 절대경로**에서 파일을 찾는다. 상위 deploy 저장소나 `LAKE_CACHE_DIR`의 동명 폴더가 아니다.
 JSON은 이후 단계에서 계속 쓰는 **Token·비밀번호 없는 현지 설정 파일 하나**다.
 기존 압축 해제 폴더가 있으면 새 ZIP과 내용을 비교한 뒤 필요한 파일만 갱신한다.
+
+### `로컬 LTM API 요청 실패 (HTTP 404)`가 나오면
+
+**파일 누락의 원인은 앞선 로컬 API 실패다. ZIP 다운로드 사이트나 Dify API Key를 찾는 단계가 아니다.**
+
+1. 기존 LTM을 실행한 터미널에서 `Ctrl+C`로 정상 종료한다. 데스크톱 실행본이면 트레이에서 종료한다.
+   창만 닫아 백그라운드 앱을 남기거나, 다른 포트로 우회하지 않는다.
+2. 이 가이드의 **시작 전** 절차대로 앱 저장소의 `codex/maxis-support`를 pull하고,
+   같은 가상환경·`CONFIG_DIR`·`LAKE_CACHE_DIR`로 **그 앱 루트에서 `python run.py`**를 실행한다.
+   다른 checkout이나 기존 설치본을 실행하는 바로가기/런처를 다시 누르지 않는다.
+3. 브라우저에서 Jira 로그인·매니저 권한 확인 후 위 블록을 다시 실행한다.
+4. 계속 404면 최신 스크립트가 출력한 **실패 API의 메서드·경로**, `git rev-parse --short HEAD`,
+   `Invoke-RestMethod http://127.0.0.1:4457/api/health` 결과를 대조한다. 키·비밀번호는 공유하지 않는다.
 
 ZIP을 풀고 PROD MAXIS에서 연결되는 **Dify의 Knowledge**에 다음과 같이 등록한다.
 이 가이드의 dataset·문서 UUID는 Dify 기준이다. 별도 MAXIS 포털 Knowledge의 ID와 혼동하지 않는다.

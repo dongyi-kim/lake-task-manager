@@ -197,6 +197,34 @@ def test_redirect_is_not_followed_or_printed(fake, capsys):
     assert "SECRET" not in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("endpoint", [cli.STATUS, cli.SETUP + "/knowledge",
+                                      cli.SETUP + f"/download/{RUN}/knowledge"])
+def test_prepare_404_identifies_missing_local_route_and_stops_before_files(fake, capsys, endpoint):
+    fake.overrides[endpoint] = lambda _: httpx.Response(
+        404, json={"detail": "SECRET remote response must not be echoed"})
+    assert cli.main(["prepare"]) == 1
+    assert fake.calls[-1][1] == endpoint
+    assert not (cli.ROOT / ".cache/maxis/knowledge.zip").exists()
+    assert not (cli.ROOT / ".cache/maxis/prod-setup.json").exists()
+    error = capsys.readouterr().err
+    assert "HTTP 404" in error and endpoint in error
+    assert "4457" in error and "재시작" in error
+    assert "압축 해제" in error and "SECRET" not in error
+
+
+def test_prepare_prints_actual_absolute_output_paths_not_working_directory(fake, monkeypatch, capsys):
+    elsewhere = cli.ROOT / "another-working-directory"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert cli.main(["prepare"]) == 0
+    output = capsys.readouterr().out
+    for name in ("knowledge.zip", "prod-setup.json"):
+        target = cli.ROOT / ".cache/maxis" / name
+        assert target.is_file()
+        assert str(target) in output
+    assert not (elsewhere / ".cache").exists()
+
+
 def test_config_extra_fields_and_paths_are_rejected(fake):
     path, config = configured(fake)
     config["token"] = "SECRET"

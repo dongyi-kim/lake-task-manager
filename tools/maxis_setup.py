@@ -61,8 +61,17 @@ class LocalAPI:
         chunks, size, deadline = [], 0, time.monotonic() + 180
         try:
             with self.client.stream(method, self.base + path, json=body) as response:
-                require(200 <= response.status_code < 300,
-                        f"로컬 LTM API 요청 실패 (HTTP {response.status_code}). LTM 설정을 확인하세요.")
+                if not 200 <= response.status_code < 300:
+                    hint = {
+                        404: "이 포트의 앱에서 요청 경로를 찾지 못했습니다. 구버전 또는 다른 체크아웃의 "
+                             "LTM인지 확인하고, 기존 앱을 정상 종료한 뒤 이 스크립트와 같은 앱 저장소에서 "
+                             "LTM을 재시작하세요. MAXIS/Dify 키 오류가 아닙니다.",
+                        403: "로컬 LTM에서 Jira 로그인과 매니저 권한을 확인하세요.",
+                    }.get(response.status_code, "로컬 LTM 설정과 실행 로그를 확인하세요.")
+                    # Only the already-allowlisted local route is diagnostic output.
+                    # Response bodies and redirect destinations may contain secrets.
+                    raise SetupError(f"로컬 LTM API 요청 실패 (HTTP {response.status_code}): "
+                                     f"{method} {self.base}{path}\n{hint}")
                 for chunk in response.iter_bytes(chunk_size=65536):
                     size += len(chunk)
                     require(size <= maximum and time.monotonic() <= deadline,
@@ -201,6 +210,7 @@ def download(api, result, kind, replace):
     require(result.get("downloadUrl") == expected, "준비 파일 다운로드 경로가 일치하지 않습니다.")
     output = cache_path(f".cache/maxis/{kind}.zip")
     store(output, api.request("GET", expected, binary=True), replace=replace)
+    return output
 
 
 def prepare(api, args, path, config):
@@ -213,7 +223,7 @@ def prepare(api, args, path, config):
             "정본 문서 목록 형식을 확인하세요.")
     if config and not args.refresh_source:
         require(result.get("runId") == config["runId"], "준비 실행이 변경되었습니다. 다시 확인하세요.")
-    download(api, result, "knowledge", args.replace_files)
+    output = download(api, result, "knowledge", args.replace_files)
     if not config:
         config = {key: "" for key in (*ASSET_KEYS[:6], *LOG_KEYS[:2])}
         config.update(model=dict.fromkeys(MODEL_KEYS, ""), workflowVersions=dict.fromkeys(WORKFLOWS, ""),
@@ -224,7 +234,8 @@ def prepare(api, args, path, config):
                   "documentIds": {key: config["documentIds"].get(key, "") for key in ids}}
         store(path, (json.dumps(config, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
               replace=args.refresh_source)
-    print("Knowledge 준비 완료: .cache/maxis/knowledge.zip. PROD 포털 등록 후 입력 JSON에 실제 ID를 기록하세요.")
+    print(f"Knowledge 준비 완료\nZIP: {output}\n설정 JSON: {path}")
+    print("위 ZIP을 압축 해제해 현지 Dify에 등록하고, 설정 JSON에 실제 ID를 기록하세요.")
 
 
 def assets(config, model=None):
@@ -256,8 +267,8 @@ def bundle(api, args, config):
     else:
         result = api.request("POST", SETUP + "/bundle", body)
     require(result.get("runId") == config["runId"], "준비 실행이 변경되었습니다. 다시 확인하세요.")
-    download(api, result, "workflows", args.replace_files)
-    print("Workflow 준비 완료: .cache/maxis/workflows.zip. PROD에서 import·게시 후 Workflow UUID를 기록하세요.")
+    output = download(api, result, "workflows", args.replace_files)
+    print(f"Workflow 준비 완료\nZIP: {output}\n현지 Dify에서 import·게시 후 Workflow UUID를 기록하세요.")
 
 
 def check_bundle(api, config):
@@ -379,6 +390,9 @@ def main(argv=None):
     finally:
         if api:
             api.client.close()
+    if args.command == "prepare":
+        print("Knowledge 준비 실패: 압축 해제를 진행하지 마세요. 위의 첫 오류를 해결한 뒤 prepare를 다시 실행하세요. "
+              "기존 ZIP이 있어도 이번 준비가 성공한 것은 아닙니다.", file=sys.stderr)
     return 1
 
 
