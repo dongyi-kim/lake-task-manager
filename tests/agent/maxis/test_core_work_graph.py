@@ -13,6 +13,7 @@ from app.agent.maxis.contracts import canonical_payload_schema
 from app.agent.workflow.work_architect.contracts import CREATE_SCHEMA, UPDATE_SCHEMA, COMMENT_SCHEMA
 from test_core_work_assembler import case as base_case, encoded, VERSION, PROOF
 from test_core_request_graph import code
+from test_core_work_units import encode_units
 
 ROOT = Path(__file__).resolve().parents[3]
 WORK, ASSEMBLER, INPUT = "1909000000001034", "1909000000001035", "1909000000001036"
@@ -97,7 +98,8 @@ def test_generated_work_path_preserves_meaning_and_both_guard_decisions(nodes, w
     assemble = code(nodes[ASSEMBLER])["main"]
     with pytest.raises(ValueError, match="invalid_core_work_draft"):
         assemble(projected, encoded(draft))
-    candidate = json.loads(assemble(incoming, encoded(draft))["candidate"])
+    wire = encode_units(draft, code(nodes[ASSEMBLER])['_DRAFT_SCHEMA'])
+    candidate = json.loads(assemble(incoming, encoded(wire))["candidate"])
     assert candidate["payload"] == expected and (incoming, draft) == before
     assert any(row["text"] == expected["items"][0]["summary"] and row["kind"] == kind for row in candidate["claims"])
     remote = json.loads(code(nodes["1909000000001005"])["main"](encoded(candidate),
@@ -142,7 +144,7 @@ def test_work_compiled_assets_match_independent_review_pins(nodes):
         assert hashlib.sha256(value.encode()).hexdigest() == getattr(GRAPH, pin) == getattr(independent, pin)
     assert len(assets["work_system_prompt"].encode()) <= 18432
     assert independent.WORK_MAX_SYSTEM_BYTES == 18432
-    assert assets["work_schema"]["properties"]["contract"]["enum"] == ["work-draft.v3"]
+    assert assets["work_schema"]["properties"]["contract"]["enum"] == ["work-units.v1"]
 
 
 def test_work_prompt_preserves_implementation_and_explains_claim_kinds(nodes):

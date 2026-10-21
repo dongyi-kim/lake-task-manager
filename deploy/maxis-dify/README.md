@@ -24,6 +24,9 @@ strict 생성에서 표현할 수 없는 동적 payload·선택 필드를 원형
 기존 Code/Response Guard 검증을 유지한다. native 생성만 끄며 schema·근거·승인 검사를 생략하거나
 nullable/default 값을 합성하지 않는다. 정본 graph 검증 후 생성용 복사본에만 적용한다.
 `validate_environment(mapping)`은 입력을 변경하지 않고 동일한 계약을 검사한다.
+`structured_work`는 현지 provider의 `response_format=json_schema`/`json_schema` 지원 확인 후 선택한다.
+Work의 닫힌 `work-units.v1`만 strict 생성하고 나머지는 `guarded_json`으로 유지한다.
+스키마는 저장소 정본에서 생성하며 사용자가 completion parameter로 직접 주입하지 않는다.
 `public_knowledge_source()`는 문서 설명·hash·Role과 version을 제공하며 runtime 설정·비밀을 읽지 않는다.
 다른 환경 metadata가 실제로 있으면 UUID 재사용을 비교한다. 없는 DEV를 새로 만들 필요는 없다.
 canonical source를 포털에 직접 import하거나 source marker를 실제 자산 ID로 사용하지 않는다.
@@ -84,7 +87,9 @@ Editor의 `editor-draft-spec.v2`, `editor-writing.v1`, `editor-plan.v2`는 각�
   transport metadata만 검증된 요청에서 결속한다. status·payload·claim·citation·질문·경고는
   그대로 두며, 기존 Contract Guard의 실행 UUID·근거·schema 검사를 거친다.
   Work는 exact CREATE에만 전용 입력·native draft·조립 경로를 사용하며 다른 Work schema는
-  기존 일반 경로를 유지한다. 내부 `work-draft.v3`는 작성 문안과 사실 선택을 분리한다.
+  기존 일반 경로를 유지한다. 모델은 `work-units.v1`의 짧은 문안/사실 선택과 구조를 분리한다.
+  구조의 unit ID와 선택 필드의 빈/단일 slot을 코드가 내부 `work-draft.v3`로 정확히 확장한다.
+  중복·미사용·누락 unit과 각 목적지 길이 위반은 거부한다. 공개 선택 필드 의미는 바꾸지 않는다.
   확인 질문은 기존 공개 CREATE의 `payload.questions` 한 곳으로 전달하고, 이유·선택지·필수 여부를
   보존한다. 질문과 경쟁하는 초안은 허용하지 않으며 공개 Role/API 계약은 변경하지 않는다.
   사실은 source-relative pointer로 원본의 주체 포함 record를 선택하고, Code가 필드·값을

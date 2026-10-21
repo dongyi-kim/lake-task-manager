@@ -333,9 +333,9 @@ def test_work_feedback_matches_single_question_channel_for_every_rejection(evide
     result = with_native_feedback(payload, "work_architect", reason=reason)
     content = result["evidencePack"]["role_context"][-1]["content_json"]
     hint = json.loads(content)
-    assert "Root keys are contract,status,payload." in hint["role_contract"]
+    assert "Root keys are contract,status,units,payload." in hint["role_contract"]
     assert "payload.questions with status=ok and items=[]" in hint["role_contract"]
-    assert "work-draft.v3" in hint["role_contract"]
+    assert "work-units.v1" in hint["role_contract"]
     assert "missing_inputs" not in content and "needs_input" not in content
 
 
@@ -356,7 +356,7 @@ def test_work_feedback_never_routes_other_schemas_into_native_create(evidence, s
     result = with_native_feedback(payload, "work_architect", reason=reason)
     hint = json.loads(result["evidencePack"]["role_context"][-1]["content_json"])
     assert "bound payload schema and published output contract" in hint["role_contract"]
-    assert "work-draft.v3" not in str(hint) and "payload.questions" not in str(hint)
+    assert "work-units.v1" not in str(hint) and "payload.questions" not in str(hint)
     assert result["evidencePack"]["payload_schema_json"] == schema
     assert result["evidencePack"]["payload_schema_sha256"] == digest
 

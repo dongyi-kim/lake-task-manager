@@ -38,6 +38,9 @@ def compiled():
     namespace = {"__name__": "work_assembler_test"}
     exec(compile(source + f"\n_WORK_SCHEMA_JSON = {schema!r}\n_WORK_SCHEMA_SHA256 = {digest!r}\n_DRAFT_SCHEMA = {draft!r}\n",
                  "<work-assembler>", "exec"), namespace)
+    # These tests cover the internal semantic assembly independently of the
+    # generation transport. test_core_work_units covers the public Code entry.
+    namespace['main'] = namespace['_assemble_work_draft']
     return namespace, draft
 
 

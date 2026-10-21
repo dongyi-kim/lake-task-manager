@@ -57,7 +57,8 @@ Query Runner와 Action Executor는 로컬 서비스 경계에 남긴다.
 LLM에는 의미 판단을, Code에는 입력 투영·출처 선택·형식 조립을 맡긴다. 한 단계의 복잡성을
 줄이기 위해 새 semantic Role이나 연쇄 LLM 호출을 늘리는 것은 기본 해법이 아니다.
 
-- Work CREATE의 `work-draft.v3`는 제안 문안(`value/kind/source_ids`)과 원문 사실 선택
+- Work CREATE 모델 출력 `work-units.v1`은 짧은 문안/출처 단위와 티켓 구조를 분리하고
+  Code가 unit ID·선택 필드 slot을 내부 `work-draft.v3`로 정확히 확장한다. 제안 문안(`value/kind/source_ids`)과 원문 사실 선택
   (`kind=fact/source_id/source_path`)을 분리한다. 조립기는 원본 record의 필드·값을 보존한
   인용을 만들며 사실을 재서술하거나 recommendation으로 바꿔 통과시키지 않는다.
 - Knowledge의 `fact_paths`는 주체가 포함된 기록, `string_fact_paths`는 티켓 키·용어 등

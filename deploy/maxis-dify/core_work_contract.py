@@ -160,3 +160,42 @@ def build_draft_schema(canonical_schema: dict, project) -> dict:
                 "payload": {"anyOf": [{"type": "object", "additionalProperties": False, "maxProperties": 0}, payload]}}}
     except (KeyError, TypeError, RecursionError) as exc:
         raise ValueError("Work draft canonical schema requires review") from exc
+
+
+def build_generation_schema(draft: dict) -> dict:
+    """Split prose from structure; encode optional presence without null/defaults.
+
+    This is an internal transport, not a relaxation of CREATE. The assembler
+    expands unit references and slots, then validates the unchanged draft and
+    canonical payload. Empty slot = omitted; singleton slot = exact value.
+    """
+    def derive(row):
+        if 'anyOf' in row:
+            return {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}
+        result = copy.deepcopy(row)
+        if row.get('type') == 'object':
+            result['additionalProperties'] = False
+            result['required'] = list(row['properties'])
+            result['properties'] = {
+                key: derive(value) if key in row.get('required', []) else {
+                    'type': 'array', 'maxItems': 1, 'items': derive(value)}
+                for key, value in row['properties'].items()}
+        elif row.get('type') == 'array':
+            result['items'] = derive(row['items'])
+        return result
+
+    payload = draft['properties']['payload']['anyOf'][1]
+    content = copy.deepcopy(payload['properties']['items']['items']['properties']['summary'])
+    narrative = content['anyOf'][0]['properties']
+    narrative['value']['maxLength'] = 1200  # Each destination keeps its original bound after expansion.
+    narrative['source_ids'].pop('uniqueItems')  # Rechecked by the unchanged internal draft validator.
+    return {'type': 'object', 'additionalProperties': False,
+        'required': ['contract', 'status', 'units', 'payload'], 'properties': {
+            'contract': {'type': 'string', 'enum': ['work-units.v1']},
+            'status': copy.deepcopy(draft['properties']['status']),
+            'units': {'type': 'array', 'maxItems': 40, 'items': {
+                'type': 'object', 'additionalProperties': False, 'required': ['id', 'content'],
+                'properties': {'id': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}, 'content': content}}},
+            'payload': {'anyOf': [
+                {'type': 'object', 'properties': {}, 'required': [], 'additionalProperties': False},
+                derive(payload)]}}}

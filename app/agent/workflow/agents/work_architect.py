@@ -5262,6 +5262,12 @@ def _delegated_question_is_blocking(state, question) -> bool:
     """위임 요청에서 모델이 `required_input`으로 표시한 질문을 실제 blocker로 검증."""
     if not _question_requires_input(question):
         return False
+    from app.agent.runtime_status import bounded_internal_assist
+    if bounded_internal_assist(state):
+        # The same typed interview decision must survive both correction and
+        # apply. Korean phrase matching is not a second semantic authority.
+        # This permits a question only, never a write or an approval.
+        return True
     said = _current_request_boundary_text(state)
     qtext = (str(question.get("question") or "") + " "
              + str(question.get("why_required") or "") + " "

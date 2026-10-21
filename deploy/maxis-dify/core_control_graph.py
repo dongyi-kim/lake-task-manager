@@ -64,10 +64,10 @@ REQUEST_SCHEMA_SHA256 = "663ba61b47ddf68831eda89743189fa5d0f0e05fd30eff8f9b279bc
 REQUEST_ASSEMBLER_SHA256 = "39cd82e63555a03b01255e9b35d20060813fae5bcad96c2ee7b3b79cc83e7e1c"
 REQUEST_INPUT_SHA256 = "1b72f0ee1aac706a461807e4e934043f7adca65b4c894a4aecf7c8fa0df7ef36"
 REQUEST_USER_SHA256 = "482679951b55f987662e0e4c3539b91fe1a5facd56866106a8e853881756215e"
-WORK_SYSTEM_SHA256 = "b5cce88e4230e0d92fa1fc857bcf778043d6e0e9dffe7a3ca8caa3ae0ebb963b"
-WORK_SCHEMA_SHA256 = "e506708ca32dc66b2af8b72005c76fdcfe4ca4c8d60f638c8b35a46eba01ffba"
-WORK_ASSEMBLER_SHA256 = "c33ab970926724a8c455522bf107b9da0a443b403a268cce99bc77a5e2fda4ba"
-WORK_INPUT_SHA256 = "6fc655aebdc9942b020f7900a348e5faca616847cf58c1eb4b909f78daaca50a"
+WORK_SYSTEM_SHA256 = "0e290dc60db21865579494b7744671ff158fdbaaf6a816c5354eadcaf6a72558"
+WORK_SCHEMA_SHA256 = "b6c95c44a39129fa5941cdce87155f240154bef1d548bd55dabae7c3e320bc35"
+WORK_ASSEMBLER_SHA256 = "2a2d619462d162f49b672d86e1468a075757d9c14d4bf6a7273b4d1d393c4b04"
+WORK_INPUT_SHA256 = "5a73f89ed8eafca2211fc06656b809d64651a548b40cc48c53aec9b3b6609fc8"
 WORK_USER_SHA256 = "ff1865f0201de92c175d8bb40d8907d6147c706a3bc53c0e7d89615187a31755"
 KNOWLEDGE_SYSTEM_SHA256 = "18f299ba39a3df008e7fa248f8316c3eb8c5b81bb4fe85d5d89a63b3bce154e0"
 KNOWLEDGE_SCHEMA_SHA256 = "ace776f0c2b685653db348397f30baad554d40229d34602fb66af39cc8733726"
@@ -193,20 +193,22 @@ def work_assets(root: Path, project) -> dict:
     contract = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(contract)
     native = contract.build_draft_schema(json.loads(schema_json), project)
+    generation = contract.build_generation_schema(native)
     values["route_source"] += (f"\n\n# Generated from exact WorkArchitect CREATE; other Work contracts stay generic.\n"
                                f"_WORK_SCHEMA_JSON = {schema_json!r}\n_WORK_SCHEMA_SHA256 = {digest!r}")
     bindings = (f"\n\n# Generated canonical bindings; not model-authored metadata.\n"
                 f"_WORK_SCHEMA_JSON = {schema_json!r}\n_WORK_SCHEMA_SHA256 = {digest!r}\n"
-                f"_DRAFT_SCHEMA = {native!r}")
+                f"_DRAFT_SCHEMA = {native!r}\n_GENERATION_SCHEMA = {generation!r}")
     for kind in ("assembler", "input"):
         source = "\n\n".join((root / "deploy/maxis-dify/code" / name).read_text(encoding="utf-8").rstrip()
             for name in ("core_draft_validation.py", "core_draft_context.py",
-                         "core_fact_text.py" if kind == "assembler" else "core_fact_paths.py", f"core_work_{kind}.py"))
+                         "core_fact_text.py" if kind == "assembler" else "core_fact_paths.py",
+                         *(('core_work_units.py',) if kind == 'assembler' else ()), f"core_work_{kind}.py"))
         values[f"work_{kind}_source"] = source + bindings
     values["work_system_prompt"] = contract.build_work_system_prompt(CREATE_SCHEMA,
         (root / "app/agent/prompts/roles/work_architect.md").read_text(encoding="utf-8"),
         (root / "deploy/maxis-dify/prompts/core_work.md").read_text(encoding="utf-8"))
-    values["work_schema"] = native
+    values["work_schema"] = generation
     return values
 
 

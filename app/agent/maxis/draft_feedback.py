@@ -49,13 +49,14 @@ _REASONS = {
 _SCHEMA_HELP = {
     "request_architect": "Root keys are contract,status,payload,missing_inputs. "
         "payload has research_readiness and every required array, even when empty.",
-    "work_architect": "Root keys are contract,status,payload. Use work-draft.v3. "
+    "work_architect": "Root keys are contract,status,units,payload. Use work-units.v1. "
         "Questions belong only in payload.questions with status=ok and items=[]; "
         "draft items require questions=[]. blocked requires payload={}. "
-        "Question kind=text|choice|multi|date is plain; question/why_required/options use narrative wrappers. "
+        "Question kind=text|choice|multi|date is plain; narrative fields reference unique units. "
+        "Every optional field uses [] for omission or [value] for inclusion; required fields are not slots. "
         "input_need=required|optional preserves required_input semantics. "
         "interpretation,structure,structure_why,rationale belong to payload, not items. "
-        "Keep item metadata separate from wrapped narrative leaves.",
+        "Keep item metadata separate from unit content. Every unit must be referenced.",
     "knowledge_curator": "A fact leaf is exactly {kind,source_id,source_path}: NO value/source_ids. "
         "An inference/recommendation leaf is exactly {value,kind,source_ids}. "
         "Do not mix these shapes. Optional concept term and reference ref may be omitted.",

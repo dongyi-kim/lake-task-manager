@@ -16,7 +16,7 @@ def _fail():
     raise ValueError("invalid_core_work_draft")
 
 
-def main(model_input, candidate):
+def _assemble_work_draft(model_input, candidate):
     """Keep model text/kinds/refs; generate only deterministic transport bindings."""
     try:
         incoming, pack, schema, sources = _draft_context(model_input, "work_architect",
@@ -89,3 +89,14 @@ def main(model_input, candidate):
         raise ValueError("invalid_core_work_draft " + error.marker) from None
     except Exception:
         raise ValueError("invalid_core_work_draft") from None
+
+
+def main(model_input, candidate):
+    """Only the current units transport is accepted from the model."""
+    try:
+        draft = _expand_work_units(candidate)
+    except _NativeDraftIssue as error:
+        raise ValueError("invalid_core_work_draft " + error.marker) from None
+    except Exception:
+        raise ValueError("invalid_core_work_draft") from None
+    return _assemble_work_draft(model_input, draft)

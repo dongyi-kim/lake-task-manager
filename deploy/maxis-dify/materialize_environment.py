@@ -148,8 +148,8 @@ GUARDED_JSON_SCHEMA_MARKER = (
 
 
 def validate_output_mode(value: Any) -> str:
-    if not isinstance(value, str) or value not in {"native_schema", "guarded_json"}:
-        raise EnvironmentBindingError("Model output_mode must be native_schema or guarded_json.")
+    if not isinstance(value, str) or value not in {"native_schema", "guarded_json", "structured_work"}:
+        raise EnvironmentBindingError("Model output_mode must be native_schema, guarded_json or structured_work.")
     return value
 
 
@@ -172,6 +172,14 @@ def apply_model_output_mode(data: dict, mode: str) -> None:
         raise EnvironmentBindingError("Guarded JSON requires a reviewed, unmodified LLM schema and system prompt.")
     if params.get("response_format", "text") != "text":
         raise EnvironmentBindingError("guarded_json requires response_format=text or an omitted response_format.")
+    if mode == "structured_work" and schema.get("properties", {}).get("contract", {}).get("enum") == ["work-units.v1"]:
+        # The validated source graph supplies this closed transport, never a user
+        # schema or an automatic conversion of optional public fields.
+        data["structured_output_enabled"] = False
+        data["model"]["completion_params"] = {**params, "response_format": "json_schema",
+            "json_schema": json.dumps({"name": "ltm_work_units", "strict": True, "schema": schema},
+                                      ensure_ascii=False, separators=(",", ":"))}
+        return
     systems[0]["text"] += GUARDED_JSON_SCHEMA_MARKER + json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
     data["structured_output_enabled"] = False
     data["model"]["completion_params"] = {**params, "response_format": "text"}

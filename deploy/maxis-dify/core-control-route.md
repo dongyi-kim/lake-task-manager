@@ -136,7 +136,11 @@ transport는 정확한 wrapper 경로와 plain 경로를 한곳에서 구분한�
 
 Work는 exact CREATE에만 Stage → Work Input → Work LLM → Work Assembler를 사용한다.
 `core_work_contract.py`는 변경 없는 CREATE에서 닫힌 `work-draft.v3`를 파생한다.
-모델의 root는 contract/status/payload뿐이다. 확인 질문은 status=ok와 payload.questions,
+모델은 `work-units.v1`의 contract/status/units/payload를 출력한다. units는 문안·출처 또는
+원문 fact 선택을 담고 payload의 문안 자리는 unit ID만 참조한다. 선택 필드의 []는 생략,
+[값]은 포함이며 빈 배열 포함은 [[]]로 구별한다. Code가 이 transport를 내부 draft로
+확장하며 중복·미사용·없는 ID는 거부한다. 공개 스키마를 nullable/required로 바꾸지 않는다.
+확인 질문은 status=ok와 payload.questions,
 빈 items로 전달하고, 실행 초안은 빈 questions와 items로 전달한다. 둘을 함께 내면 거부한다.
 blocked는 빈 payload를 유지한다. 공개 envelope의 missing_inputs는 빈 배열로 조립하며
 질문 내용·선택지·필수 여부는 기존 CREATE payload에 그대로 보존한다.

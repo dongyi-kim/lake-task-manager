@@ -614,9 +614,19 @@ Conversation·Create·Compose·Meeting·Context 배터리의 기존 입력을 �
 함께 갱신한다. 현지 모델·dataset binding을 유지한 채 Publish → 게시 UUID 등록 → 연결 검사 →
 **이 설정 사용** 순서로 적용한다. 새 앱이나 날짜별 Knowledge를 만들 필요는 없다.
 
-Work의 현행 내부 출력은 `work-draft.v3`다. 질문은 `payload.questions` 한 곳에만 작성하며
+Work의 모델 출력은 `work-units.v1`이다. 짧은 문안·출처를 `units`로 작성하고 티켓 구조에서는
+unit ID만 참조한다. 선택 필드는 `[]`가 생략, `[값]`이 명시적 값이다. 코드가 이를 내부
+`work-draft.v3`와 기존 공개 CREATE 계약으로 조립·재검증한다. 질문은 `payload.questions` 한 곳에만 작성하며
 질문 턴에는 `items=[]`, 초안 턴에는 `questions=[]`다. LTM의 재시도 안내도 함께 갱신되므로
 서버만 게시하거나 LTM만 pull하지 않는다. 공개 API와 사용자 승인 절차는 유지된다.
+
+현지 Dify 모델 설정에 `response_format=json_schema`와 `json_schema` 파라미터가 모두 있으면
+준비 JSON의 `model.output_mode`를 **`structured_work`**로 지정한다. `bundle`이 Work에만
+`strict=true` 스키마를 자동으로 넣으며 다른 역할은 기존 `guarded_json`을 사용한다.
+`completion_params`에 스키마를 손으로 넣지 않는다. 같은 저장소 소스로 재생성 → 기존 Core 갱신 →
+Publish → 게시 UUID 등록 → 연결 검사 → **이 설정 사용** 후 아래 실제 생성·후속 대화를 실행한다.
+연결 검사만으로 Work strict 수용이 검증되지는 않는다. `invalid_json_schema`가 나면 현지 플러그인과
+모델의 지원 형식을 확인한다. 미지원 환경의 `guarded_json`은 명시적 호환 옵션이며 JSON 생성 보장이 없다.
 Result는 빈 배열도 원래 필드명과 함께 인용하며, 긴 목록은 개별 기록/필드를 선택한다.
 Knowledge의 출처 식별자(`ref`)와 관련성 설명(`why`)은 서로 다른 선택 규칙을 쓴다.
 LTM도 함께 pull·재시작해야 후속 답변 시 근거 재조회와 최종 확인 질문의 본문 표시가 적용된다.

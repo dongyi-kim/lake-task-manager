@@ -42,7 +42,7 @@ class ModelBody(_Body):
     provider: str = Field(max_length=256)
     name: str = Field(max_length=128)
     completion_params: dict | None = None
-    output_mode: Literal["native_schema", "guarded_json"] = "native_schema"
+    output_mode: Literal["native_schema", "guarded_json", "structured_work"] = "native_schema"
 
     @field_validator("completion_params", mode="before")
     @classmethod

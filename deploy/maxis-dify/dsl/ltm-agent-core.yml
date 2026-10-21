@@ -4907,62 +4907,62 @@ workflow:
             \ including mixed citations. Proposed work is not fact or Jira capability.\
             \ entity_reference and role context are not citations.\n{\"source_content_index\"\
             :N} selects zero-based context.sources[N].content for request_plan intent\
-            \ only; never resolve business strings as references.\n\n## Native JSON\n\
-            ```json\n{\"contract\":\"work-draft.v3\",\"status\":\"ok\",\"payload\"\
-            :{\"mode\":\"task\",\"questions\":[],\"items\":[{\"summary\":{\"value\"\
-            :\"제안 제목\",\"kind\":\"recommendation\",\"source_ids\":[\"SOURCE_ID\"]},\"\
-            type\":\"Task\",\"background\":{\"value\":\"사용자가 제공한 배경\",\"kind\":\"\
-            inference\",\"source_ids\":[\"SOURCE_ID\"]},\"scope_in\":[{\"value\":\"\
-            제안 범위\",\"kind\":\"recommendation\",\"source_ids\":[\"SOURCE_ID\"]}],\"\
-            dod\":[{\"value\":\"검증 가능한 완료 조건\",\"kind\":\"recommendation\",\"source_ids\"\
-            :[\"SOURCE_ID\"]}]}]}}\n```\nReplace example values/IDs; no default decision.\
-            \ Schema order: contract, status, payload, each once. ok requires mode=task|subtask|epic,\
-            \ questions, items. Questions belong ONLY in payload.questions: for clarification\
-            \ use status=\"ok\", items=[] and concrete question objects; for a draft\
-            \ use questions=[] and items. Never combine questions with draft items.\
-            \ blocked: payload={}. No other root fields.\nEach question object has\
-            \ plain kind=text|choice|multi|date, optional field, plain input_need=required|optional,\
-            \ wrapped question and why_required, and optional wrapped options. The\
-            \ question's kind is not the nested narrative kind=inference|recommendation.\
-            \ Preserve the reason and available choices; do not emit an additional\
-            \ copy of the question outside payload.\nPayload keys: mode, questions,\
-            \ items, interpretation, structure, structure_why, rationale. Item metadata\
-            \ never belongs at payload root. Never put rationale inside items. summary/background/scope_in/dod\
-            \ are wrapped; type/issue_type plain. Include requested children. assignee/parent_ref\
-            \ are unsupported.\nAuthored text: {value,kind,source_ids}, kind=inference|recommendation\
+            \ only; never resolve business strings as references.\n\n## Structured\
+            \ units\nOutput contract=work-units.v1 with status, units, payload. First\
+            \ write short independent units, each {id:\"unit-1\",content:{value,kind,source_ids}}.\
+            \ Payload narrative fields contain only the unit ID, never a nested prose\
+            \ object. The Wrapped paths below identify those narrative destinations\
+            \ after transport expansion. Each unit ID is unique and used; reuse a\
+            \ unit only for exactly the same meaning and sources.\nAll generation\
+            \ keys are required. An OPTIONAL canonical field is a zero-or-one slot:\
+            \ [] means OMIT, [value] means INCLUDE that exact value. Examples: priority=[]\
+            \ omits priority; labels=[[]] explicitly includes an empty labels list;\
+            \ children=[[child]] includes one child. Required fields have no slot:\
+            \ scope_in=[\"unit-3\"], summary=\"unit-1\", type=\"Task\". Never substitute\
+            \ null, empty text or invented metadata for omission. Slots are transport\
+            \ only, not business defaults. Follow the supplied generation schema at\
+            \ every level.\nok requires mode=task|subtask|epic, questions, items.\
+            \ Questions belong ONLY in payload.questions: for clarification use status=\"\
+            ok\", items=[] and concrete question objects; for a draft use questions=[]\
+            \ and items. Never combine questions with draft items. blocked: payload={}\
+            \ and units=[].\nEach question object has plain kind=text|choice|multi|date,\
+            \ field slot, plain input_need=required|optional, question and why_required\
+            \ unit IDs, and options slot containing unit IDs. The question's kind\
+            \ is not the narrative kind=inference|recommendation. Preserve the reason\
+            \ and choices. Item metadata never belongs at payload root. Never put\
+            \ rationale inside items. Include requested children. assignee/parent_ref\
+            \ are unsupported.\nUnit content: {value,kind,source_ids}, kind=inference|recommendation\
             \ only. Proposed work is recommendation; user-reported context and synthesized\
-            \ relevance are inference, not verified facts. Facts use a DIFFERENT shape:\
-            \ {kind:\"fact\",source_id:\"ACTUAL_ID\",source_path:\"/tickets/0\"}.\
-            \ Select a complete record from that source's fact_paths.paths, relative\
-            \ to decoded content, not /content. Code displays original field names\
-            \ and exact values as readable key/value text; never author a fact value,\
-            \ paraphrase it, or cite user intent as fact. Prefer authored background\
-            \ prose and concise factual references; do not substitute a data dump\
-            \ for the requested task. Fact selections must fit the destination field\
-            \ (background 1000, references 500 characters); use short authored proposals\
-            \ for titles/DoD. Do not relabel unsupported facts. Numbers/units, including\
-            \ proposed counts and thresholds, must occur in cited evidence; do not\
-            \ invent a target count. Symptoms are reports, not verified facts. Use\
-            \ current continuation answers. Controls use native schema values. Max40\
-            \ claims/40 citations/256 bindings; never truncate. Below, required_input=true/false\
-            \ means native input_need=required/optional.\n\nWrapped: /interpretation,\
-            \ /items/*/actual, /items/*/background, /items/*/children/*/dod/*, /items/*/children/*/scope_in/*,\
-            \ /items/*/children/*/summary, /items/*/dod/*, /items/*/expected, /items/*/references/*,\
-            \ /items/*/reproduction/*, /items/*/scope_in/*, /items/*/scope_out/*,\
-            \ /items/*/summary, /questions/*/options/*, /questions/*/question, /questions/*/why_required,\
-            \ /rationale, /structure_why\nControls: /items/*/children/*/duedate, /items/*/components/*,\
-            \ /items/*/duedate, /items/*/epic, /items/*/epic_name, /items/*/issue_type,\
-            \ /items/*/labels/*, /items/*/parent, /items/*/priority, /items/*/tier,\
-            \ /items/*/type, /mode, /questions/*/field, /questions/*/input_need, /questions/*/kind,\
-            \ /structure\n\n## Canonical question meanings (reference only)\n- question:\
-            \ One concise Korean question.\n- kind: choice=one option, multi=multiple\
-            \ options, date=calendar value, text=free prose. Prefer choice whenever\
-            \ a recommendation is possible; reserve text for facts such as reproduction\
-            \ steps or background. The UI adds a custom-input option.\n- options:\
-            \ Two to five Korean options for choice, with the recommended option first\
-            \ and an optional short reason.\n- field: Ticket field being asked; the\
-            \ UI supplies field-specific autocomplete.\n- required_input: True only\
-            \ when no valid and truthful draft can be produced without user-owned\
+            \ relevance are inference, not verified facts. Fact content uses {kind:\"\
+            fact\",source_id:\"ACTUAL_ID\",source_path:\"/tickets/0\"}. Select a complete\
+            \ record from that source's fact_paths.paths, relative to decoded content,\
+            \ not /content. Code displays original field names and exact values; never\
+            \ author a fact value, paraphrase it, or cite user intent as fact. Prefer\
+            \ authored background prose and concise factual references; do not substitute\
+            \ a data dump for the requested task. Every unit must fit ALL its destinations\
+            \ (summary 180, background 1000, references 500 characters). Do not relabel\
+            \ unsupported facts. Numbers/units, including proposed counts and thresholds,\
+            \ must occur in cited evidence; do not invent a target count. Symptoms\
+            \ are reports, not verified facts. Use current continuation answers. Controls\
+            \ use native schema values. Max40 claims/40 citations/256 bindings; never\
+            \ truncate. Below, required_input=true/false means native input_need=required/optional.\n\
+            \nWrapped: /interpretation, /items/*/actual, /items/*/background, /items/*/children/*/dod/*,\
+            \ /items/*/children/*/scope_in/*, /items/*/children/*/summary, /items/*/dod/*,\
+            \ /items/*/expected, /items/*/references/*, /items/*/reproduction/*, /items/*/scope_in/*,\
+            \ /items/*/scope_out/*, /items/*/summary, /questions/*/options/*, /questions/*/question,\
+            \ /questions/*/why_required, /rationale, /structure_why\nControls: /items/*/children/*/duedate,\
+            \ /items/*/components/*, /items/*/duedate, /items/*/epic, /items/*/epic_name,\
+            \ /items/*/issue_type, /items/*/labels/*, /items/*/parent, /items/*/priority,\
+            \ /items/*/tier, /items/*/type, /mode, /questions/*/field, /questions/*/input_need,\
+            \ /questions/*/kind, /structure\n\n## Canonical question meanings (reference\
+            \ only)\n- question: One concise Korean question.\n- kind: choice=one\
+            \ option, multi=multiple options, date=calendar value, text=free prose.\
+            \ Prefer choice whenever a recommendation is possible; reserve text for\
+            \ facts such as reproduction steps or background. The UI adds a custom-input\
+            \ option.\n- options: Two to five Korean options for choice, with the\
+            \ recommended option first and an optional short reason.\n- field: Ticket\
+            \ field being asked; the UI supplies field-specific autocomplete.\n- required_input:\
+            \ True only when no valid and truthful draft can be produced without user-owned\
             \ information. False for a preference with a safe default or omission.\n\
             - why_required: One concise Korean reason naming the unresolved decision\
             \ or payload field when required_input is true; otherwise an empty string.\n\
@@ -5158,25 +5158,32 @@ workflow:
             required:
             - contract
             - status
+            - units
             - payload
             properties:
               contract:
                 type: string
                 enum:
-                - work-draft.v3
+                - work-units.v1
               status:
                 type: string
                 enum:
                 - ok
                 - blocked
-              payload:
-                anyOf:
-                - type: object
+              units:
+                type: array
+                maxItems: 40
+                items:
+                  type: object
                   additionalProperties: false
-                  maxProperties: 0
-                - additionalProperties: false
+                  required:
+                  - id
+                  - content
                   properties:
-                    interpretation:
+                    id:
+                      type: string
+                      pattern: ^unit-[1-9][0-9]*$
+                    content:
                       anyOf:
                       - type: object
                         additionalProperties: false
@@ -5186,7 +5193,7 @@ workflow:
                         - source_ids
                         properties:
                           value:
-                            maxLength: 600
+                            maxLength: 1200
                             type: string
                           kind:
                             type: string
@@ -5197,7 +5204,6 @@ workflow:
                             type: array
                             minItems: 1
                             maxItems: 8
-                            uniqueItems: true
                             items:
                               type: string
                               minLength: 1
@@ -5222,646 +5228,208 @@ workflow:
                           source_path:
                             type: string
                             maxLength: 500
+              payload:
+                anyOf:
+                - type: object
+                  properties: {}
+                  required: []
+                  additionalProperties: false
+                - additionalProperties: false
+                  properties:
+                    interpretation:
+                      type: array
+                      maxItems: 1
+                      items:
+                        type: string
+                        pattern: ^unit-[1-9][0-9]*$
                     items:
                       items:
                         additionalProperties: false
                         properties:
                           actual:
-                            anyOf:
-                            - type: object
-                              additionalProperties: false
-                              required:
-                              - value
-                              - kind
-                              - source_ids
-                              properties:
-                                value:
-                                  maxLength: 700
-                                  type: string
-                                kind:
-                                  type: string
-                                  enum:
-                                  - inference
-                                  - recommendation
-                                source_ids:
-                                  type: array
-                                  minItems: 1
-                                  maxItems: 8
-                                  uniqueItems: true
-                                  items:
-                                    type: string
-                                    minLength: 1
-                                    maxLength: 128
-                                    pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                            - type: object
-                              additionalProperties: false
-                              required:
-                              - kind
-                              - source_id
-                              - source_path
-                              properties:
-                                kind:
-                                  type: string
-                                  enum:
-                                  - fact
-                                source_id:
-                                  type: string
-                                  minLength: 1
-                                  maxLength: 128
-                                  pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                                source_path:
-                                  type: string
-                                  maxLength: 500
-                          background:
-                            anyOf:
-                            - type: object
-                              additionalProperties: false
-                              required:
-                              - value
-                              - kind
-                              - source_ids
-                              properties:
-                                value:
-                                  maxLength: 1000
-                                  type: string
-                                kind:
-                                  type: string
-                                  enum:
-                                  - inference
-                                  - recommendation
-                                source_ids:
-                                  type: array
-                                  minItems: 1
-                                  maxItems: 8
-                                  uniqueItems: true
-                                  items:
-                                    type: string
-                                    minLength: 1
-                                    maxLength: 128
-                                    pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                            - type: object
-                              additionalProperties: false
-                              required:
-                              - kind
-                              - source_id
-                              - source_path
-                              properties:
-                                kind:
-                                  type: string
-                                  enum:
-                                  - fact
-                                source_id:
-                                  type: string
-                                  minLength: 1
-                                  maxLength: 128
-                                  pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                                source_path:
-                                  type: string
-                                  maxLength: 500
-                          children:
-                            items:
-                              additionalProperties: false
-                              properties:
-                                dod:
-                                  items:
-                                    anyOf:
-                                    - type: object
-                                      additionalProperties: false
-                                      required:
-                                      - value
-                                      - kind
-                                      - source_ids
-                                      properties:
-                                        value:
-                                          maxLength: 320
-                                          type: string
-                                        kind:
-                                          type: string
-                                          enum:
-                                          - inference
-                                          - recommendation
-                                        source_ids:
-                                          type: array
-                                          minItems: 1
-                                          maxItems: 8
-                                          uniqueItems: true
-                                          items:
-                                            type: string
-                                            minLength: 1
-                                            maxLength: 128
-                                            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                                    - type: object
-                                      additionalProperties: false
-                                      required:
-                                      - kind
-                                      - source_id
-                                      - source_path
-                                      properties:
-                                        kind:
-                                          type: string
-                                          enum:
-                                          - fact
-                                        source_id:
-                                          type: string
-                                          minLength: 1
-                                          maxLength: 128
-                                          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                                        source_path:
-                                          type: string
-                                          maxLength: 500
-                                  maxItems: 5
-                                  minItems: 1
-                                  type: array
-                                duedate:
-                                  maxLength: 20
-                                  type: string
-                                scope_in:
-                                  items:
-                                    anyOf:
-                                    - type: object
-                                      additionalProperties: false
-                                      required:
-                                      - value
-                                      - kind
-                                      - source_ids
-                                      properties:
-                                        value:
-                                          maxLength: 320
-                                          type: string
-                                        kind:
-                                          type: string
-                                          enum:
-                                          - inference
-                                          - recommendation
-                                        source_ids:
-                                          type: array
-                                          minItems: 1
-                                          maxItems: 8
-                                          uniqueItems: true
-                                          items:
-                                            type: string
-                                            minLength: 1
-                                            maxLength: 128
-                                            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                                    - type: object
-                                      additionalProperties: false
-                                      required:
-                                      - kind
-                                      - source_id
-                                      - source_path
-                                      properties:
-                                        kind:
-                                          type: string
-                                          enum:
-                                          - fact
-                                        source_id:
-                                          type: string
-                                          minLength: 1
-                                          maxLength: 128
-                                          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                                        source_path:
-                                          type: string
-                                          maxLength: 500
-                                  maxItems: 6
-                                  minItems: 1
-                                  type: array
-                                summary:
-                                  anyOf:
-                                  - type: object
-                                    additionalProperties: false
-                                    required:
-                                    - value
-                                    - kind
-                                    - source_ids
-                                    properties:
-                                      value:
-                                        maxLength: 180
-                                        type: string
-                                      kind:
-                                        type: string
-                                        enum:
-                                        - inference
-                                        - recommendation
-                                      source_ids:
-                                        type: array
-                                        minItems: 1
-                                        maxItems: 8
-                                        uniqueItems: true
-                                        items:
-                                          type: string
-                                          minLength: 1
-                                          maxLength: 128
-                                          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                                  - type: object
-                                    additionalProperties: false
-                                    required:
-                                    - kind
-                                    - source_id
-                                    - source_path
-                                    properties:
-                                      kind:
-                                        type: string
-                                        enum:
-                                        - fact
-                                      source_id:
-                                        type: string
-                                        minLength: 1
-                                        maxLength: 128
-                                        pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                                      source_path:
-                                        type: string
-                                        maxLength: 500
-                              required:
-                              - summary
-                              - scope_in
-                              - dod
-                              type: object
-                            maxItems: 30
                             type: array
-                          components:
+                            maxItems: 1
                             items:
-                              maxLength: 80
                               type: string
-                            maxItems: 3
+                              pattern: ^unit-[1-9][0-9]*$
+                          background:
+                            type: string
+                            pattern: ^unit-[1-9][0-9]*$
+                          children:
                             type: array
-                          dod:
+                            maxItems: 1
                             items:
-                              anyOf:
-                              - type: object
+                              items:
                                 additionalProperties: false
-                                required:
-                                - value
-                                - kind
-                                - source_ids
                                 properties:
-                                  value:
-                                    maxLength: 360
-                                    type: string
-                                  kind:
-                                    type: string
-                                    enum:
-                                    - inference
-                                    - recommendation
-                                  source_ids:
-                                    type: array
-                                    minItems: 1
-                                    maxItems: 8
-                                    uniqueItems: true
+                                  dod:
                                     items:
                                       type: string
-                                      minLength: 1
-                                      maxLength: 128
-                                      pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                              - type: object
-                                additionalProperties: false
+                                      pattern: ^unit-[1-9][0-9]*$
+                                    maxItems: 5
+                                    minItems: 1
+                                    type: array
+                                  duedate:
+                                    type: array
+                                    maxItems: 1
+                                    items:
+                                      maxLength: 20
+                                      type: string
+                                  scope_in:
+                                    items:
+                                      type: string
+                                      pattern: ^unit-[1-9][0-9]*$
+                                    maxItems: 6
+                                    minItems: 1
+                                    type: array
+                                  summary:
+                                    type: string
+                                    pattern: ^unit-[1-9][0-9]*$
                                 required:
-                                - kind
-                                - source_id
-                                - source_path
-                                properties:
-                                  kind:
-                                    type: string
-                                    enum:
-                                    - fact
-                                  source_id:
-                                    type: string
-                                    minLength: 1
-                                    maxLength: 128
-                                    pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                                  source_path:
-                                    type: string
-                                    maxLength: 500
+                                - dod
+                                - duedate
+                                - scope_in
+                                - summary
+                                type: object
+                              maxItems: 30
+                              type: array
+                          components:
+                            type: array
+                            maxItems: 1
+                            items:
+                              items:
+                                maxLength: 80
+                                type: string
+                              maxItems: 3
+                              type: array
+                          dod:
+                            items:
+                              type: string
+                              pattern: ^unit-[1-9][0-9]*$
                             maxItems: 6
                             minItems: 1
                             type: array
                           duedate:
-                            maxLength: 20
-                            type: string
+                            type: array
+                            maxItems: 1
+                            items:
+                              maxLength: 20
+                              type: string
                           epic:
-                            maxLength: 40
-                            type: string
+                            type: array
+                            maxItems: 1
+                            items:
+                              maxLength: 40
+                              type: string
                           epic_name:
-                            maxLength: 80
-                            type: string
-                          expected:
-                            anyOf:
-                            - type: object
-                              additionalProperties: false
-                              required:
-                              - value
-                              - kind
-                              - source_ids
-                              properties:
-                                value:
-                                  maxLength: 700
-                                  type: string
-                                kind:
-                                  type: string
-                                  enum:
-                                  - inference
-                                  - recommendation
-                                source_ids:
-                                  type: array
-                                  minItems: 1
-                                  maxItems: 8
-                                  uniqueItems: true
-                                  items:
-                                    type: string
-                                    minLength: 1
-                                    maxLength: 128
-                                    pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                            - type: object
-                              additionalProperties: false
-                              required:
-                              - kind
-                              - source_id
-                              - source_path
-                              properties:
-                                kind:
-                                  type: string
-                                  enum:
-                                  - fact
-                                source_id:
-                                  type: string
-                                  minLength: 1
-                                  maxLength: 128
-                                  pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                                source_path:
-                                  type: string
-                                  maxLength: 500
-                          issue_type:
-                            maxLength: 80
-                            type: string
-                          labels:
+                            type: array
+                            maxItems: 1
                             items:
                               maxLength: 80
                               type: string
-                            maxItems: 8
+                          expected:
                             type: array
+                            maxItems: 1
+                            items:
+                              type: string
+                              pattern: ^unit-[1-9][0-9]*$
+                          issue_type:
+                            type: array
+                            maxItems: 1
+                            items:
+                              maxLength: 80
+                              type: string
+                          labels:
+                            type: array
+                            maxItems: 1
+                            items:
+                              items:
+                                maxLength: 80
+                                type: string
+                              maxItems: 8
+                              type: array
                           parent:
-                            maxLength: 40
-                            type: string
+                            type: array
+                            maxItems: 1
+                            items:
+                              maxLength: 40
+                              type: string
                           priority:
-                            maxLength: 80
-                            type: string
+                            type: array
+                            maxItems: 1
+                            items:
+                              maxLength: 80
+                              type: string
                           references:
-                            items:
-                              anyOf:
-                              - type: object
-                                additionalProperties: false
-                                required:
-                                - value
-                                - kind
-                                - source_ids
-                                properties:
-                                  value:
-                                    maxLength: 500
-                                    type: string
-                                  kind:
-                                    type: string
-                                    enum:
-                                    - inference
-                                    - recommendation
-                                  source_ids:
-                                    type: array
-                                    minItems: 1
-                                    maxItems: 8
-                                    uniqueItems: true
-                                    items:
-                                      type: string
-                                      minLength: 1
-                                      maxLength: 128
-                                      pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                              - type: object
-                                additionalProperties: false
-                                required:
-                                - kind
-                                - source_id
-                                - source_path
-                                properties:
-                                  kind:
-                                    type: string
-                                    enum:
-                                    - fact
-                                  source_id:
-                                    type: string
-                                    minLength: 1
-                                    maxLength: 128
-                                    pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                                  source_path:
-                                    type: string
-                                    maxLength: 500
-                            maxItems: 6
                             type: array
+                            maxItems: 1
+                            items:
+                              items:
+                                type: string
+                                pattern: ^unit-[1-9][0-9]*$
+                              maxItems: 6
+                              type: array
                           reproduction:
-                            items:
-                              anyOf:
-                              - type: object
-                                additionalProperties: false
-                                required:
-                                - value
-                                - kind
-                                - source_ids
-                                properties:
-                                  value:
-                                    maxLength: 360
-                                    type: string
-                                  kind:
-                                    type: string
-                                    enum:
-                                    - inference
-                                    - recommendation
-                                  source_ids:
-                                    type: array
-                                    minItems: 1
-                                    maxItems: 8
-                                    uniqueItems: true
-                                    items:
-                                      type: string
-                                      minLength: 1
-                                      maxLength: 128
-                                      pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                              - type: object
-                                additionalProperties: false
-                                required:
-                                - kind
-                                - source_id
-                                - source_path
-                                properties:
-                                  kind:
-                                    type: string
-                                    enum:
-                                    - fact
-                                  source_id:
-                                    type: string
-                                    minLength: 1
-                                    maxLength: 128
-                                    pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                                  source_path:
-                                    type: string
-                                    maxLength: 500
-                            maxItems: 6
                             type: array
+                            maxItems: 1
+                            items:
+                              items:
+                                type: string
+                                pattern: ^unit-[1-9][0-9]*$
+                              maxItems: 6
+                              type: array
                           scope_in:
                             items:
-                              anyOf:
-                              - type: object
-                                additionalProperties: false
-                                required:
-                                - value
-                                - kind
-                                - source_ids
-                                properties:
-                                  value:
-                                    maxLength: 360
-                                    type: string
-                                  kind:
-                                    type: string
-                                    enum:
-                                    - inference
-                                    - recommendation
-                                  source_ids:
-                                    type: array
-                                    minItems: 1
-                                    maxItems: 8
-                                    uniqueItems: true
-                                    items:
-                                      type: string
-                                      minLength: 1
-                                      maxLength: 128
-                                      pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                              - type: object
-                                additionalProperties: false
-                                required:
-                                - kind
-                                - source_id
-                                - source_path
-                                properties:
-                                  kind:
-                                    type: string
-                                    enum:
-                                    - fact
-                                  source_id:
-                                    type: string
-                                    minLength: 1
-                                    maxLength: 128
-                                    pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                                  source_path:
-                                    type: string
-                                    maxLength: 500
+                              type: string
+                              pattern: ^unit-[1-9][0-9]*$
                             maxItems: 8
                             minItems: 1
                             type: array
                           scope_out:
-                            items:
-                              anyOf:
-                              - type: object
-                                additionalProperties: false
-                                required:
-                                - value
-                                - kind
-                                - source_ids
-                                properties:
-                                  value:
-                                    maxLength: 320
-                                    type: string
-                                  kind:
-                                    type: string
-                                    enum:
-                                    - inference
-                                    - recommendation
-                                  source_ids:
-                                    type: array
-                                    minItems: 1
-                                    maxItems: 8
-                                    uniqueItems: true
-                                    items:
-                                      type: string
-                                      minLength: 1
-                                      maxLength: 128
-                                      pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                              - type: object
-                                additionalProperties: false
-                                required:
-                                - kind
-                                - source_id
-                                - source_path
-                                properties:
-                                  kind:
-                                    type: string
-                                    enum:
-                                    - fact
-                                  source_id:
-                                    type: string
-                                    minLength: 1
-                                    maxLength: 128
-                                    pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                                  source_path:
-                                    type: string
-                                    maxLength: 500
-                            maxItems: 6
                             type: array
+                            maxItems: 1
+                            items:
+                              items:
+                                type: string
+                                pattern: ^unit-[1-9][0-9]*$
+                              maxItems: 6
+                              type: array
                           summary:
-                            anyOf:
-                            - type: object
-                              additionalProperties: false
-                              required:
-                              - value
-                              - kind
-                              - source_ids
-                              properties:
-                                value:
-                                  maxLength: 180
-                                  type: string
-                                kind:
-                                  type: string
-                                  enum:
-                                  - inference
-                                  - recommendation
-                                source_ids:
-                                  type: array
-                                  minItems: 1
-                                  maxItems: 8
-                                  uniqueItems: true
-                                  items:
-                                    type: string
-                                    minLength: 1
-                                    maxLength: 128
-                                    pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                            - type: object
-                              additionalProperties: false
-                              required:
-                              - kind
-                              - source_id
-                              - source_path
-                              properties:
-                                kind:
-                                  type: string
-                                  enum:
-                                  - fact
-                                source_id:
-                                  type: string
-                                  minLength: 1
-                                  maxLength: 128
-                                  pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                                source_path:
-                                  type: string
-                                  maxLength: 500
-                          tier:
-                            enum:
-                            - epic
-                            - task
-                            - subtask
                             type: string
+                            pattern: ^unit-[1-9][0-9]*$
+                          tier:
+                            type: array
+                            maxItems: 1
+                            items:
+                              enum:
+                              - epic
+                              - task
+                              - subtask
+                              type: string
                           type:
                             maxLength: 80
                             type: string
                         required:
-                        - summary
-                        - type
+                        - actual
                         - background
-                        - scope_in
+                        - children
+                        - components
                         - dod
+                        - duedate
+                        - epic
+                        - epic_name
+                        - expected
+                        - issue_type
+                        - labels
+                        - parent
+                        - priority
+                        - references
+                        - reproduction
+                        - scope_in
+                        - scope_out
+                        - summary
+                        - tier
+                        - type
                         type: object
                       maxItems: 12
                       type: array
@@ -5875,22 +5443,25 @@ workflow:
                       items:
                         properties:
                           field:
-                            enum:
-                            - ''
-                            - assignee
-                            - epic
-                            - priority
-                            - duedate
-                            - component
-                            - target
-                            - parent
-                            - scope
-                            - background
-                            - acceptance
-                            - reproduction
-                            - structure
-                            - status
-                            type: string
+                            type: array
+                            maxItems: 1
+                            items:
+                              enum:
+                              - ''
+                              - assignee
+                              - epic
+                              - priority
+                              - duedate
+                              - component
+                              - target
+                              - parent
+                              - scope
+                              - background
+                              - acceptance
+                              - reproduction
+                              - structure
+                              - status
+                              type: string
                           kind:
                             enum:
                             - text
@@ -5899,259 +5470,65 @@ workflow:
                             - date
                             type: string
                           options:
-                            items:
-                              anyOf:
-                              - type: object
-                                additionalProperties: false
-                                required:
-                                - value
-                                - kind
-                                - source_ids
-                                properties:
-                                  value:
-                                    type: string
-                                  kind:
-                                    type: string
-                                    enum:
-                                    - inference
-                                    - recommendation
-                                  source_ids:
-                                    type: array
-                                    minItems: 1
-                                    maxItems: 8
-                                    uniqueItems: true
-                                    items:
-                                      type: string
-                                      minLength: 1
-                                      maxLength: 128
-                                      pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                              - type: object
-                                additionalProperties: false
-                                required:
-                                - kind
-                                - source_id
-                                - source_path
-                                properties:
-                                  kind:
-                                    type: string
-                                    enum:
-                                    - fact
-                                  source_id:
-                                    type: string
-                                    minLength: 1
-                                    maxLength: 128
-                                    pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                                  source_path:
-                                    type: string
-                                    maxLength: 500
                             type: array
+                            maxItems: 1
+                            items:
+                              items:
+                                type: string
+                                pattern: ^unit-[1-9][0-9]*$
+                              type: array
                           question:
-                            anyOf:
-                            - type: object
-                              additionalProperties: false
-                              required:
-                              - value
-                              - kind
-                              - source_ids
-                              properties:
-                                value:
-                                  type: string
-                                kind:
-                                  type: string
-                                  enum:
-                                  - inference
-                                  - recommendation
-                                source_ids:
-                                  type: array
-                                  minItems: 1
-                                  maxItems: 8
-                                  uniqueItems: true
-                                  items:
-                                    type: string
-                                    minLength: 1
-                                    maxLength: 128
-                                    pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                            - type: object
-                              additionalProperties: false
-                              required:
-                              - kind
-                              - source_id
-                              - source_path
-                              properties:
-                                kind:
-                                  type: string
-                                  enum:
-                                  - fact
-                                source_id:
-                                  type: string
-                                  minLength: 1
-                                  maxLength: 128
-                                  pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                                source_path:
-                                  type: string
-                                  maxLength: 500
+                            type: string
+                            pattern: ^unit-[1-9][0-9]*$
                           why_required:
-                            anyOf:
-                            - type: object
-                              additionalProperties: false
-                              required:
-                              - value
-                              - kind
-                              - source_ids
-                              properties:
-                                value:
-                                  type: string
-                                kind:
-                                  type: string
-                                  enum:
-                                  - inference
-                                  - recommendation
-                                source_ids:
-                                  type: array
-                                  minItems: 1
-                                  maxItems: 8
-                                  uniqueItems: true
-                                  items:
-                                    type: string
-                                    minLength: 1
-                                    maxLength: 128
-                                    pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                            - type: object
-                              additionalProperties: false
-                              required:
-                              - kind
-                              - source_id
-                              - source_path
-                              properties:
-                                kind:
-                                  type: string
-                                  enum:
-                                  - fact
-                                source_id:
-                                  type: string
-                                  minLength: 1
-                                  maxLength: 128
-                                  pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                                source_path:
-                                  type: string
-                                  maxLength: 500
+                            type: string
+                            pattern: ^unit-[1-9][0-9]*$
                           input_need:
                             type: string
                             enum:
                             - required
                             - optional
                         required:
-                        - question
+                        - field
                         - kind
-                        - input_need
+                        - options
+                        - question
                         - why_required
+                        - input_need
                         type: object
                         additionalProperties: false
                       maxItems: 3
                       type: array
                     rationale:
-                      anyOf:
-                      - type: object
-                        additionalProperties: false
-                        required:
-                        - value
-                        - kind
-                        - source_ids
-                        properties:
-                          value:
-                            maxLength: 800
-                            type: string
-                          kind:
-                            type: string
-                            enum:
-                            - inference
-                            - recommendation
-                          source_ids:
-                            type: array
-                            minItems: 1
-                            maxItems: 8
-                            uniqueItems: true
-                            items:
-                              type: string
-                              minLength: 1
-                              maxLength: 128
-                              pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                      - type: object
-                        additionalProperties: false
-                        required:
-                        - kind
-                        - source_id
-                        - source_path
-                        properties:
-                          kind:
-                            type: string
-                            enum:
-                            - fact
-                          source_id:
-                            type: string
-                            minLength: 1
-                            maxLength: 128
-                            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                          source_path:
-                            type: string
-                            maxLength: 500
+                      type: array
+                      maxItems: 1
+                      items:
+                        type: string
+                        pattern: ^unit-[1-9][0-9]*$
                     structure:
-                      enum:
-                      - single_task
-                      - task_with_subtasks
-                      - multiple_tasks
-                      - new_epic
-                      type: string
+                      type: array
+                      maxItems: 1
+                      items:
+                        enum:
+                        - single_task
+                        - task_with_subtasks
+                        - multiple_tasks
+                        - new_epic
+                        type: string
                     structure_why:
-                      anyOf:
-                      - type: object
-                        additionalProperties: false
-                        required:
-                        - value
-                        - kind
-                        - source_ids
-                        properties:
-                          value:
-                            maxLength: 500
-                            type: string
-                          kind:
-                            type: string
-                            enum:
-                            - inference
-                            - recommendation
-                          source_ids:
-                            type: array
-                            minItems: 1
-                            maxItems: 8
-                            uniqueItems: true
-                            items:
-                              type: string
-                              minLength: 1
-                              maxLength: 128
-                              pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                      - type: object
-                        additionalProperties: false
-                        required:
-                        - kind
-                        - source_id
-                        - source_path
-                        properties:
-                          kind:
-                            type: string
-                            enum:
-                            - fact
-                          source_id:
-                            type: string
-                            minLength: 1
-                            maxLength: 128
-                            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
-                          source_path:
-                            type: string
-                            maxLength: 500
+                      type: array
+                      maxItems: 1
+                      items:
+                        type: string
+                        pattern: ^unit-[1-9][0-9]*$
                   required:
-                  - questions
-                  - mode
+                  - interpretation
                   - items
+                  - mode
+                  - questions
+                  - rationale
+                  - structure
+                  - structure_why
                   type: object
         structured_output_enabled: true
         selected: false
@@ -6339,35 +5716,57 @@ workflow:
           \        else:\n            _fail()\n    if scalar_field and type(value)\
           \ is str:\n        return value\n    if not scalar_field and isinstance(value,\
           \ dict) and value:\n        return _record_text(value) if readable_record\
-          \ else _source_json(value)\n    _fail()\n\n\"\"\"Work CREATE wire assembly\
-          \ only; no meaning repair, approval, execution or I/O.\n\nPrepend the unchanged\
-          \ core_draft_validation.py and core_draft_context.py fragments,\nthen bind\
-          \ the reviewed canonical CREATE and native draft schemas. This returns\n\
-          an unaccepted candidate. Dify Contract Guard and local ResponseGuard remain\n\
-          mandatory, including rejection of model-authored facts citing user intent.\n\
-          \"\"\"\n_WORK_SCHEMA_JSON = None\n_WORK_SCHEMA_SHA256 = None\n_DRAFT_SCHEMA\
-          \ = None\n_MAX_DRAFT_UTF8_BYTES = 32768\n_NEED_TO_REQUIRED = {\"required\"\
-          : True, \"optional\": False}\n\n\ndef _fail():\n    raise ValueError(\"\
-          invalid_core_work_draft\")\n\n\ndef main(model_input, candidate):\n    \"\
-          \"\"Keep model text/kinds/refs; generate only deterministic transport bindings.\"\
-          \"\"\n    try:\n        incoming, pack, schema, sources = _draft_context(model_input,\
-          \ \"work_architect\",\n            _WORK_SCHEMA_JSON, _WORK_SCHEMA_SHA256,\
-          \ _DRAFT_SCHEMA, _fail)\n        draft = _native_candidate(candidate, _DRAFT_SCHEMA,\
-          \ _MAX_DRAFT_UTF8_BYTES)\n        status, payload = draft[\"status\"], draft[\"\
-          payload\"]\n        if (draft[\"contract\"] != \"work-draft.v3\" or status\
-          \ == \"blocked\" and payload\n                or payload.get(\"questions\"\
-          ) and payload.get(\"items\")):\n            _fail()\n        claims, bindings,\
-          \ citations, citation_ids, claim_ids = [], [], [], {}, {}\n        source_content\
-          \ = {row[\"source_id\"]: row[\"content\"] for row in pack[\"sources\"]}\n\
-          \n        def pointer(key):\n            return str(key).replace(\"~\",\
-          \ \"~0\").replace(\"/\", \"~1\")\n\n        def unwrap(value, path):\n \
-          \           if isinstance(value, list):\n                return [unwrap(row,\
-          \ path + \"/\" + str(index)) for index, row in enumerate(value)]\n     \
-          \       if not isinstance(value, dict):\n                return value\n\
-          \            if set(value) == {\"kind\", \"source_id\", \"source_path\"\
-          }:\n                kind, refs = value[\"kind\"], [value[\"source_id\"]]\n\
-          \                if refs[0] not in sources:\n                    raise _NativeDraftIssue(\"\
-          source_id\")\n                try:\n                    text = _fact_text(source_content[refs[0]],\
+          \ else _source_json(value)\n    _fail()\n\n\"\"\"Lossless Work generation\
+          \ transport; no defaults, meaning repair or authority.\"\"\"\n_GENERATION_SCHEMA\
+          \ = None\n\n\ndef _expand_work_units(candidate):\n    def invalid():\n \
+          \       raise _NativeDraftIssue('schema')\n\n    wire = _native_candidate(candidate,\
+          \ _GENERATION_SCHEMA, _MAX_DRAFT_UTF8_BYTES)\n    units, used = {}, set()\n\
+          \    for unit in wire['units']:\n        if unit['id'] in units:\n     \
+          \       invalid()\n        units[unit['id']] = unit['content']\n\n    def\
+          \ expand(value, schema):\n        if 'anyOf' in schema:\n            if\
+          \ value not in units:\n                invalid()\n            used.add(value)\n\
+          \            return units[value]\n        if schema.get('type') == 'array':\n\
+          \            return [expand(item, schema['items']) for item in value]\n\
+          \        if schema.get('type') != 'object':\n            return value\n\
+          \        result = {}\n        for key, child in schema['properties'].items():\n\
+          \            field = value[key]\n            if key not in schema.get('required',\
+          \ []):\n                if not field:\n                    continue\n  \
+          \              field = field[0]\n            result[key] = expand(field,\
+          \ child)\n        return result\n\n    payload = wire['payload']\n    if\
+          \ payload:\n        payload = expand(payload, _DRAFT_SCHEMA['properties']['payload']['anyOf'][1])\n\
+          \    if used != set(units):\n        invalid()  # Never silently discard\
+          \ unbound model statements.\n    draft = {'contract': 'work-draft.v3', 'status':\
+          \ wire['status'], 'payload': payload}\n    _validate(draft, _DRAFT_SCHEMA,\
+          \ _DRAFT_SCHEMA, invalid)\n    return _canonical(draft)\n\n\"\"\"Work CREATE\
+          \ wire assembly only; no meaning repair, approval, execution or I/O.\n\n\
+          Prepend the unchanged core_draft_validation.py and core_draft_context.py\
+          \ fragments,\nthen bind the reviewed canonical CREATE and native draft schemas.\
+          \ This returns\nan unaccepted candidate. Dify Contract Guard and local ResponseGuard\
+          \ remain\nmandatory, including rejection of model-authored facts citing\
+          \ user intent.\n\"\"\"\n_WORK_SCHEMA_JSON = None\n_WORK_SCHEMA_SHA256 =\
+          \ None\n_DRAFT_SCHEMA = None\n_MAX_DRAFT_UTF8_BYTES = 32768\n_NEED_TO_REQUIRED\
+          \ = {\"required\": True, \"optional\": False}\n\n\ndef _fail():\n    raise\
+          \ ValueError(\"invalid_core_work_draft\")\n\n\ndef _assemble_work_draft(model_input,\
+          \ candidate):\n    \"\"\"Keep model text/kinds/refs; generate only deterministic\
+          \ transport bindings.\"\"\"\n    try:\n        incoming, pack, schema, sources\
+          \ = _draft_context(model_input, \"work_architect\",\n            _WORK_SCHEMA_JSON,\
+          \ _WORK_SCHEMA_SHA256, _DRAFT_SCHEMA, _fail)\n        draft = _native_candidate(candidate,\
+          \ _DRAFT_SCHEMA, _MAX_DRAFT_UTF8_BYTES)\n        status, payload = draft[\"\
+          status\"], draft[\"payload\"]\n        if (draft[\"contract\"] != \"work-draft.v3\"\
+          \ or status == \"blocked\" and payload\n                or payload.get(\"\
+          questions\") and payload.get(\"items\")):\n            _fail()\n       \
+          \ claims, bindings, citations, citation_ids, claim_ids = [], [], [], {},\
+          \ {}\n        source_content = {row[\"source_id\"]: row[\"content\"] for\
+          \ row in pack[\"sources\"]}\n\n        def pointer(key):\n            return\
+          \ str(key).replace(\"~\", \"~0\").replace(\"/\", \"~1\")\n\n        def\
+          \ unwrap(value, path):\n            if isinstance(value, list):\n      \
+          \          return [unwrap(row, path + \"/\" + str(index)) for index, row\
+          \ in enumerate(value)]\n            if not isinstance(value, dict):\n  \
+          \              return value\n            if set(value) == {\"kind\", \"\
+          source_id\", \"source_path\"}:\n                kind, refs = value[\"kind\"\
+          ], [value[\"source_id\"]]\n                if refs[0] not in sources:\n\
+          \                    raise _NativeDraftIssue(\"source_id\")\n          \
+          \      try:\n                    text = _fact_text(source_content[refs[0]],\
           \ value[\"source_path\"], path, readable_record=True)\n                except\
           \ ValueError:\n                    raise _NativeDraftIssue(\"fact_selection\"\
           ) from None\n                if not text.strip():\n                    _fail()\n\
@@ -6407,51 +5806,57 @@ workflow:
           , errors=\"strict\")\n        return {\"candidate\": encoded}\n    except\
           \ _NativeDraftIssue as error:\n        raise ValueError(\"invalid_core_work_draft\
           \ \" + error.marker) from None\n    except Exception:\n        raise ValueError(\"\
-          invalid_core_work_draft\") from None\n\n# Generated canonical bindings;\
-          \ not model-authored metadata.\n_WORK_SCHEMA_JSON = '{\"additionalProperties\"\
-          :false,\"properties\":{\"interpretation\":{\"maxLength\":600,\"type\":\"\
-          string\"},\"items\":{\"items\":{\"additionalProperties\":false,\"properties\"\
-          :{\"actual\":{\"maxLength\":700,\"type\":\"string\"},\"background\":{\"\
-          maxLength\":1000,\"type\":\"string\"},\"children\":{\"items\":{\"additionalProperties\"\
-          :false,\"properties\":{\"dod\":{\"items\":{\"maxLength\":320,\"type\":\"\
-          string\"},\"maxItems\":5,\"minItems\":1,\"type\":\"array\"},\"duedate\"\
-          :{\"maxLength\":20,\"type\":\"string\"},\"scope_in\":{\"items\":{\"maxLength\"\
-          :320,\"type\":\"string\"},\"maxItems\":6,\"minItems\":1,\"type\":\"array\"\
-          },\"summary\":{\"maxLength\":180,\"type\":\"string\"}},\"required\":[\"\
-          summary\",\"scope_in\",\"dod\"],\"type\":\"object\"},\"maxItems\":30,\"\
-          type\":\"array\"},\"components\":{\"items\":{\"maxLength\":80,\"type\":\"\
-          string\"},\"maxItems\":3,\"type\":\"array\"},\"dod\":{\"items\":{\"maxLength\"\
-          :360,\"type\":\"string\"},\"maxItems\":6,\"minItems\":1,\"type\":\"array\"\
-          },\"duedate\":{\"maxLength\":20,\"type\":\"string\"},\"epic\":{\"maxLength\"\
-          :40,\"type\":\"string\"},\"epic_name\":{\"maxLength\":80,\"type\":\"string\"\
-          },\"expected\":{\"maxLength\":700,\"type\":\"string\"},\"issue_type\":{\"\
-          maxLength\":80,\"type\":\"string\"},\"labels\":{\"items\":{\"maxLength\"\
-          :80,\"type\":\"string\"},\"maxItems\":8,\"type\":\"array\"},\"parent\":{\"\
-          maxLength\":40,\"type\":\"string\"},\"priority\":{\"maxLength\":80,\"type\"\
-          :\"string\"},\"references\":{\"items\":{\"maxLength\":500,\"type\":\"string\"\
-          },\"maxItems\":6,\"type\":\"array\"},\"reproduction\":{\"items\":{\"maxLength\"\
-          :360,\"type\":\"string\"},\"maxItems\":6,\"type\":\"array\"},\"scope_in\"\
-          :{\"items\":{\"maxLength\":360,\"type\":\"string\"},\"maxItems\":8,\"minItems\"\
-          :1,\"type\":\"array\"},\"scope_out\":{\"items\":{\"maxLength\":320,\"type\"\
-          :\"string\"},\"maxItems\":6,\"type\":\"array\"},\"summary\":{\"maxLength\"\
-          :180,\"type\":\"string\"},\"tier\":{\"enum\":[\"epic\",\"task\",\"subtask\"\
-          ],\"type\":\"string\"},\"type\":{\"maxLength\":80,\"type\":\"string\"}},\"\
-          required\":[\"summary\",\"type\",\"background\",\"scope_in\",\"dod\"],\"\
-          type\":\"object\"},\"maxItems\":12,\"type\":\"array\"},\"mode\":{\"enum\"\
-          :[\"task\",\"subtask\",\"epic\"],\"type\":\"string\"},\"questions\":{\"\
-          items\":{\"properties\":{\"field\":{\"enum\":[\"\",\"assignee\",\"epic\"\
-          ,\"priority\",\"duedate\",\"component\",\"target\",\"parent\",\"scope\"\
-          ,\"background\",\"acceptance\",\"reproduction\",\"structure\",\"status\"\
-          ],\"type\":\"string\"},\"kind\":{\"enum\":[\"text\",\"choice\",\"multi\"\
-          ,\"date\"],\"type\":\"string\"},\"options\":{\"items\":{\"type\":\"string\"\
-          },\"type\":\"array\"},\"question\":{\"type\":\"string\"},\"required_input\"\
-          :{\"type\":\"boolean\"},\"why_required\":{\"type\":\"string\"}},\"required\"\
-          :[\"question\",\"kind\",\"required_input\",\"why_required\"],\"type\":\"\
-          object\"},\"maxItems\":3,\"type\":\"array\"},\"rationale\":{\"maxLength\"\
-          :800,\"type\":\"string\"},\"structure\":{\"enum\":[\"single_task\",\"task_with_subtasks\"\
-          ,\"multiple_tasks\",\"new_epic\"],\"type\":\"string\"},\"structure_why\"\
-          :{\"maxLength\":500,\"type\":\"string\"}},\"required\":[\"questions\",\"\
-          mode\",\"items\"],\"type\":\"object\"}'\n_WORK_SCHEMA_SHA256 = '8f46d8cc3bbe4712838a066844b90eeef2272a9f0e8a8a6c054b63a338226f1a'\n\
+          invalid_core_work_draft\") from None\n\n\ndef main(model_input, candidate):\n\
+          \    \"\"\"Only the current units transport is accepted from the model.\"\
+          \"\"\n    try:\n        draft = _expand_work_units(candidate)\n    except\
+          \ _NativeDraftIssue as error:\n        raise ValueError(\"invalid_core_work_draft\
+          \ \" + error.marker) from None\n    except Exception:\n        raise ValueError(\"\
+          invalid_core_work_draft\") from None\n    return _assemble_work_draft(model_input,\
+          \ draft)\n\n# Generated canonical bindings; not model-authored metadata.\n\
+          _WORK_SCHEMA_JSON = '{\"additionalProperties\":false,\"properties\":{\"\
+          interpretation\":{\"maxLength\":600,\"type\":\"string\"},\"items\":{\"items\"\
+          :{\"additionalProperties\":false,\"properties\":{\"actual\":{\"maxLength\"\
+          :700,\"type\":\"string\"},\"background\":{\"maxLength\":1000,\"type\":\"\
+          string\"},\"children\":{\"items\":{\"additionalProperties\":false,\"properties\"\
+          :{\"dod\":{\"items\":{\"maxLength\":320,\"type\":\"string\"},\"maxItems\"\
+          :5,\"minItems\":1,\"type\":\"array\"},\"duedate\":{\"maxLength\":20,\"type\"\
+          :\"string\"},\"scope_in\":{\"items\":{\"maxLength\":320,\"type\":\"string\"\
+          },\"maxItems\":6,\"minItems\":1,\"type\":\"array\"},\"summary\":{\"maxLength\"\
+          :180,\"type\":\"string\"}},\"required\":[\"summary\",\"scope_in\",\"dod\"\
+          ],\"type\":\"object\"},\"maxItems\":30,\"type\":\"array\"},\"components\"\
+          :{\"items\":{\"maxLength\":80,\"type\":\"string\"},\"maxItems\":3,\"type\"\
+          :\"array\"},\"dod\":{\"items\":{\"maxLength\":360,\"type\":\"string\"},\"\
+          maxItems\":6,\"minItems\":1,\"type\":\"array\"},\"duedate\":{\"maxLength\"\
+          :20,\"type\":\"string\"},\"epic\":{\"maxLength\":40,\"type\":\"string\"\
+          },\"epic_name\":{\"maxLength\":80,\"type\":\"string\"},\"expected\":{\"\
+          maxLength\":700,\"type\":\"string\"},\"issue_type\":{\"maxLength\":80,\"\
+          type\":\"string\"},\"labels\":{\"items\":{\"maxLength\":80,\"type\":\"string\"\
+          },\"maxItems\":8,\"type\":\"array\"},\"parent\":{\"maxLength\":40,\"type\"\
+          :\"string\"},\"priority\":{\"maxLength\":80,\"type\":\"string\"},\"references\"\
+          :{\"items\":{\"maxLength\":500,\"type\":\"string\"},\"maxItems\":6,\"type\"\
+          :\"array\"},\"reproduction\":{\"items\":{\"maxLength\":360,\"type\":\"string\"\
+          },\"maxItems\":6,\"type\":\"array\"},\"scope_in\":{\"items\":{\"maxLength\"\
+          :360,\"type\":\"string\"},\"maxItems\":8,\"minItems\":1,\"type\":\"array\"\
+          },\"scope_out\":{\"items\":{\"maxLength\":320,\"type\":\"string\"},\"maxItems\"\
+          :6,\"type\":\"array\"},\"summary\":{\"maxLength\":180,\"type\":\"string\"\
+          },\"tier\":{\"enum\":[\"epic\",\"task\",\"subtask\"],\"type\":\"string\"\
+          },\"type\":{\"maxLength\":80,\"type\":\"string\"}},\"required\":[\"summary\"\
+          ,\"type\",\"background\",\"scope_in\",\"dod\"],\"type\":\"object\"},\"maxItems\"\
+          :12,\"type\":\"array\"},\"mode\":{\"enum\":[\"task\",\"subtask\",\"epic\"\
+          ],\"type\":\"string\"},\"questions\":{\"items\":{\"properties\":{\"field\"\
+          :{\"enum\":[\"\",\"assignee\",\"epic\",\"priority\",\"duedate\",\"component\"\
+          ,\"target\",\"parent\",\"scope\",\"background\",\"acceptance\",\"reproduction\"\
+          ,\"structure\",\"status\"],\"type\":\"string\"},\"kind\":{\"enum\":[\"text\"\
+          ,\"choice\",\"multi\",\"date\"],\"type\":\"string\"},\"options\":{\"items\"\
+          :{\"type\":\"string\"},\"type\":\"array\"},\"question\":{\"type\":\"string\"\
+          },\"required_input\":{\"type\":\"boolean\"},\"why_required\":{\"type\":\"\
+          string\"}},\"required\":[\"question\",\"kind\",\"required_input\",\"why_required\"\
+          ],\"type\":\"object\"},\"maxItems\":3,\"type\":\"array\"},\"rationale\"\
+          :{\"maxLength\":800,\"type\":\"string\"},\"structure\":{\"enum\":[\"single_task\"\
+          ,\"task_with_subtasks\",\"multiple_tasks\",\"new_epic\"],\"type\":\"string\"\
+          },\"structure_why\":{\"maxLength\":500,\"type\":\"string\"}},\"required\"\
+          :[\"questions\",\"mode\",\"items\"],\"type\":\"object\"}'\n_WORK_SCHEMA_SHA256\
+          \ = '8f46d8cc3bbe4712838a066844b90eeef2272a9f0e8a8a6c054b63a338226f1a'\n\
           _DRAFT_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required':\
           \ ['contract', 'status', 'payload'], 'properties': {'contract': {'type':\
           \ 'string', 'enum': ['work-draft.v3']}, 'status': {'type': 'string', 'enum':\
@@ -6671,7 +6076,85 @@ workflow:
           \ 'string', 'enum': ['fact']}, 'source_id': {'type': 'string', 'minLength':\
           \ 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\\
           s\\\\S])'}, 'source_path': {'type': 'string', 'maxLength': 500}}}]}}, 'required':\
-          \ ['questions', 'mode', 'items'], 'type': 'object'}]}}}"
+          \ ['questions', 'mode', 'items'], 'type': 'object'}]}}}\n_GENERATION_SCHEMA\
+          \ = {'type': 'object', 'additionalProperties': False, 'required': ['contract',\
+          \ 'status', 'units', 'payload'], 'properties': {'contract': {'type': 'string',\
+          \ 'enum': ['work-units.v1']}, 'status': {'type': 'string', 'enum': ['ok',\
+          \ 'blocked']}, 'units': {'type': 'array', 'maxItems': 40, 'items': {'type':\
+          \ 'object', 'additionalProperties': False, 'required': ['id', 'content'],\
+          \ 'properties': {'id': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
+          \ 'content': {'anyOf': [{'type': 'object', 'additionalProperties': False,\
+          \ 'required': ['value', 'kind', 'source_ids'], 'properties': {'value': {'maxLength':\
+          \ 1200, 'type': 'string'}, 'kind': {'type': 'string', 'enum': ['inference',\
+          \ 'recommendation']}, 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems':\
+          \ 8, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern':\
+          \ '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\s\\\\S])'}}}}, {'type': 'object',\
+          \ 'additionalProperties': False, 'required': ['kind', 'source_id', 'source_path'],\
+          \ 'properties': {'kind': {'type': 'string', 'enum': ['fact']}, 'source_id':\
+          \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\
+          \\s\\\\S])'}, 'source_path': {'type': 'string', 'maxLength': 500}}}]}}}},\
+          \ 'payload': {'anyOf': [{'type': 'object', 'properties': {}, 'required':\
+          \ [], 'additionalProperties': False}, {'additionalProperties': False, 'properties':\
+          \ {'interpretation': {'type': 'array', 'maxItems': 1, 'items': {'type':\
+          \ 'string', 'pattern': '^unit-[1-9][0-9]*$'}}, 'items': {'items': {'additionalProperties':\
+          \ False, 'properties': {'actual': {'type': 'array', 'maxItems': 1, 'items':\
+          \ {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}}, 'background': {'type':\
+          \ 'string', 'pattern': '^unit-[1-9][0-9]*$'}, 'children': {'type': 'array',\
+          \ 'maxItems': 1, 'items': {'items': {'additionalProperties': False, 'properties':\
+          \ {'dod': {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
+          \ 'maxItems': 5, 'minItems': 1, 'type': 'array'}, 'duedate': {'type': 'array',\
+          \ 'maxItems': 1, 'items': {'maxLength': 20, 'type': 'string'}}, 'scope_in':\
+          \ {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}, 'maxItems':\
+          \ 6, 'minItems': 1, 'type': 'array'}, 'summary': {'type': 'string', 'pattern':\
+          \ '^unit-[1-9][0-9]*$'}}, 'required': ['dod', 'duedate', 'scope_in', 'summary'],\
+          \ 'type': 'object'}, 'maxItems': 30, 'type': 'array'}}, 'components': {'type':\
+          \ 'array', 'maxItems': 1, 'items': {'items': {'maxLength': 80, 'type': 'string'},\
+          \ 'maxItems': 3, 'type': 'array'}}, 'dod': {'items': {'type': 'string',\
+          \ 'pattern': '^unit-[1-9][0-9]*$'}, 'maxItems': 6, 'minItems': 1, 'type':\
+          \ 'array'}, 'duedate': {'type': 'array', 'maxItems': 1, 'items': {'maxLength':\
+          \ 20, 'type': 'string'}}, 'epic': {'type': 'array', 'maxItems': 1, 'items':\
+          \ {'maxLength': 40, 'type': 'string'}}, 'epic_name': {'type': 'array', 'maxItems':\
+          \ 1, 'items': {'maxLength': 80, 'type': 'string'}}, 'expected': {'type':\
+          \ 'array', 'maxItems': 1, 'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}},\
+          \ 'issue_type': {'type': 'array', 'maxItems': 1, 'items': {'maxLength':\
+          \ 80, 'type': 'string'}}, 'labels': {'type': 'array', 'maxItems': 1, 'items':\
+          \ {'items': {'maxLength': 80, 'type': 'string'}, 'maxItems': 8, 'type':\
+          \ 'array'}}, 'parent': {'type': 'array', 'maxItems': 1, 'items': {'maxLength':\
+          \ 40, 'type': 'string'}}, 'priority': {'type': 'array', 'maxItems': 1, 'items':\
+          \ {'maxLength': 80, 'type': 'string'}}, 'references': {'type': 'array',\
+          \ 'maxItems': 1, 'items': {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
+          \ 'maxItems': 6, 'type': 'array'}}, 'reproduction': {'type': 'array', 'maxItems':\
+          \ 1, 'items': {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
+          \ 'maxItems': 6, 'type': 'array'}}, 'scope_in': {'items': {'type': 'string',\
+          \ 'pattern': '^unit-[1-9][0-9]*$'}, 'maxItems': 8, 'minItems': 1, 'type':\
+          \ 'array'}, 'scope_out': {'type': 'array', 'maxItems': 1, 'items': {'items':\
+          \ {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}, 'maxItems': 6, 'type':\
+          \ 'array'}}, 'summary': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
+          \ 'tier': {'type': 'array', 'maxItems': 1, 'items': {'enum': ['epic', 'task',\
+          \ 'subtask'], 'type': 'string'}}, 'type': {'maxLength': 80, 'type': 'string'}},\
+          \ 'required': ['actual', 'background', 'children', 'components', 'dod',\
+          \ 'duedate', 'epic', 'epic_name', 'expected', 'issue_type', 'labels', 'parent',\
+          \ 'priority', 'references', 'reproduction', 'scope_in', 'scope_out', 'summary',\
+          \ 'tier', 'type'], 'type': 'object'}, 'maxItems': 12, 'type': 'array'},\
+          \ 'mode': {'enum': ['task', 'subtask', 'epic'], 'type': 'string'}, 'questions':\
+          \ {'items': {'properties': {'field': {'type': 'array', 'maxItems': 1, 'items':\
+          \ {'enum': ['', 'assignee', 'epic', 'priority', 'duedate', 'component',\
+          \ 'target', 'parent', 'scope', 'background', 'acceptance', 'reproduction',\
+          \ 'structure', 'status'], 'type': 'string'}}, 'kind': {'enum': ['text',\
+          \ 'choice', 'multi', 'date'], 'type': 'string'}, 'options': {'type': 'array',\
+          \ 'maxItems': 1, 'items': {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
+          \ 'type': 'array'}}, 'question': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
+          \ 'why_required': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}, 'input_need':\
+          \ {'type': 'string', 'enum': ['required', 'optional']}}, 'required': ['field',\
+          \ 'kind', 'options', 'question', 'why_required', 'input_need'], 'type':\
+          \ 'object', 'additionalProperties': False}, 'maxItems': 3, 'type': 'array'},\
+          \ 'rationale': {'type': 'array', 'maxItems': 1, 'items': {'type': 'string',\
+          \ 'pattern': '^unit-[1-9][0-9]*$'}}, 'structure': {'type': 'array', 'maxItems':\
+          \ 1, 'items': {'enum': ['single_task', 'task_with_subtasks', 'multiple_tasks',\
+          \ 'new_epic'], 'type': 'string'}}, 'structure_why': {'type': 'array', 'maxItems':\
+          \ 1, 'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}}}, 'required':\
+          \ ['interpretation', 'items', 'mode', 'questions', 'rationale', 'structure',\
+          \ 'structure_why'], 'type': 'object'}]}}}"
         variables:
         - variable: model_input
           value_selector:
@@ -7238,7 +6721,85 @@ workflow:
           \ 'string', 'enum': ['fact']}, 'source_id': {'type': 'string', 'minLength':\
           \ 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\\
           s\\\\S])'}, 'source_path': {'type': 'string', 'maxLength': 500}}}]}}, 'required':\
-          \ ['questions', 'mode', 'items'], 'type': 'object'}]}}}"
+          \ ['questions', 'mode', 'items'], 'type': 'object'}]}}}\n_GENERATION_SCHEMA\
+          \ = {'type': 'object', 'additionalProperties': False, 'required': ['contract',\
+          \ 'status', 'units', 'payload'], 'properties': {'contract': {'type': 'string',\
+          \ 'enum': ['work-units.v1']}, 'status': {'type': 'string', 'enum': ['ok',\
+          \ 'blocked']}, 'units': {'type': 'array', 'maxItems': 40, 'items': {'type':\
+          \ 'object', 'additionalProperties': False, 'required': ['id', 'content'],\
+          \ 'properties': {'id': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
+          \ 'content': {'anyOf': [{'type': 'object', 'additionalProperties': False,\
+          \ 'required': ['value', 'kind', 'source_ids'], 'properties': {'value': {'maxLength':\
+          \ 1200, 'type': 'string'}, 'kind': {'type': 'string', 'enum': ['inference',\
+          \ 'recommendation']}, 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems':\
+          \ 8, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern':\
+          \ '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\s\\\\S])'}}}}, {'type': 'object',\
+          \ 'additionalProperties': False, 'required': ['kind', 'source_id', 'source_path'],\
+          \ 'properties': {'kind': {'type': 'string', 'enum': ['fact']}, 'source_id':\
+          \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\
+          \\s\\\\S])'}, 'source_path': {'type': 'string', 'maxLength': 500}}}]}}}},\
+          \ 'payload': {'anyOf': [{'type': 'object', 'properties': {}, 'required':\
+          \ [], 'additionalProperties': False}, {'additionalProperties': False, 'properties':\
+          \ {'interpretation': {'type': 'array', 'maxItems': 1, 'items': {'type':\
+          \ 'string', 'pattern': '^unit-[1-9][0-9]*$'}}, 'items': {'items': {'additionalProperties':\
+          \ False, 'properties': {'actual': {'type': 'array', 'maxItems': 1, 'items':\
+          \ {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}}, 'background': {'type':\
+          \ 'string', 'pattern': '^unit-[1-9][0-9]*$'}, 'children': {'type': 'array',\
+          \ 'maxItems': 1, 'items': {'items': {'additionalProperties': False, 'properties':\
+          \ {'dod': {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
+          \ 'maxItems': 5, 'minItems': 1, 'type': 'array'}, 'duedate': {'type': 'array',\
+          \ 'maxItems': 1, 'items': {'maxLength': 20, 'type': 'string'}}, 'scope_in':\
+          \ {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}, 'maxItems':\
+          \ 6, 'minItems': 1, 'type': 'array'}, 'summary': {'type': 'string', 'pattern':\
+          \ '^unit-[1-9][0-9]*$'}}, 'required': ['dod', 'duedate', 'scope_in', 'summary'],\
+          \ 'type': 'object'}, 'maxItems': 30, 'type': 'array'}}, 'components': {'type':\
+          \ 'array', 'maxItems': 1, 'items': {'items': {'maxLength': 80, 'type': 'string'},\
+          \ 'maxItems': 3, 'type': 'array'}}, 'dod': {'items': {'type': 'string',\
+          \ 'pattern': '^unit-[1-9][0-9]*$'}, 'maxItems': 6, 'minItems': 1, 'type':\
+          \ 'array'}, 'duedate': {'type': 'array', 'maxItems': 1, 'items': {'maxLength':\
+          \ 20, 'type': 'string'}}, 'epic': {'type': 'array', 'maxItems': 1, 'items':\
+          \ {'maxLength': 40, 'type': 'string'}}, 'epic_name': {'type': 'array', 'maxItems':\
+          \ 1, 'items': {'maxLength': 80, 'type': 'string'}}, 'expected': {'type':\
+          \ 'array', 'maxItems': 1, 'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}},\
+          \ 'issue_type': {'type': 'array', 'maxItems': 1, 'items': {'maxLength':\
+          \ 80, 'type': 'string'}}, 'labels': {'type': 'array', 'maxItems': 1, 'items':\
+          \ {'items': {'maxLength': 80, 'type': 'string'}, 'maxItems': 8, 'type':\
+          \ 'array'}}, 'parent': {'type': 'array', 'maxItems': 1, 'items': {'maxLength':\
+          \ 40, 'type': 'string'}}, 'priority': {'type': 'array', 'maxItems': 1, 'items':\
+          \ {'maxLength': 80, 'type': 'string'}}, 'references': {'type': 'array',\
+          \ 'maxItems': 1, 'items': {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
+          \ 'maxItems': 6, 'type': 'array'}}, 'reproduction': {'type': 'array', 'maxItems':\
+          \ 1, 'items': {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
+          \ 'maxItems': 6, 'type': 'array'}}, 'scope_in': {'items': {'type': 'string',\
+          \ 'pattern': '^unit-[1-9][0-9]*$'}, 'maxItems': 8, 'minItems': 1, 'type':\
+          \ 'array'}, 'scope_out': {'type': 'array', 'maxItems': 1, 'items': {'items':\
+          \ {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}, 'maxItems': 6, 'type':\
+          \ 'array'}}, 'summary': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
+          \ 'tier': {'type': 'array', 'maxItems': 1, 'items': {'enum': ['epic', 'task',\
+          \ 'subtask'], 'type': 'string'}}, 'type': {'maxLength': 80, 'type': 'string'}},\
+          \ 'required': ['actual', 'background', 'children', 'components', 'dod',\
+          \ 'duedate', 'epic', 'epic_name', 'expected', 'issue_type', 'labels', 'parent',\
+          \ 'priority', 'references', 'reproduction', 'scope_in', 'scope_out', 'summary',\
+          \ 'tier', 'type'], 'type': 'object'}, 'maxItems': 12, 'type': 'array'},\
+          \ 'mode': {'enum': ['task', 'subtask', 'epic'], 'type': 'string'}, 'questions':\
+          \ {'items': {'properties': {'field': {'type': 'array', 'maxItems': 1, 'items':\
+          \ {'enum': ['', 'assignee', 'epic', 'priority', 'duedate', 'component',\
+          \ 'target', 'parent', 'scope', 'background', 'acceptance', 'reproduction',\
+          \ 'structure', 'status'], 'type': 'string'}}, 'kind': {'enum': ['text',\
+          \ 'choice', 'multi', 'date'], 'type': 'string'}, 'options': {'type': 'array',\
+          \ 'maxItems': 1, 'items': {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
+          \ 'type': 'array'}}, 'question': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
+          \ 'why_required': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}, 'input_need':\
+          \ {'type': 'string', 'enum': ['required', 'optional']}}, 'required': ['field',\
+          \ 'kind', 'options', 'question', 'why_required', 'input_need'], 'type':\
+          \ 'object', 'additionalProperties': False}, 'maxItems': 3, 'type': 'array'},\
+          \ 'rationale': {'type': 'array', 'maxItems': 1, 'items': {'type': 'string',\
+          \ 'pattern': '^unit-[1-9][0-9]*$'}}, 'structure': {'type': 'array', 'maxItems':\
+          \ 1, 'items': {'enum': ['single_task', 'task_with_subtasks', 'multiple_tasks',\
+          \ 'new_epic'], 'type': 'string'}}, 'structure_why': {'type': 'array', 'maxItems':\
+          \ 1, 'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}}}, 'required':\
+          \ ['interpretation', 'items', 'mode', 'questions', 'rationale', 'structure',\
+          \ 'structure_why'], 'type': 'object'}]}}}"
         variables:
         - variable: model_input
           value_selector:

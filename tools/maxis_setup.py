@@ -131,7 +131,7 @@ def read_config(path):
     require(isinstance(model, dict) and set(MODEL_KEYS) <= set(model)
             and not set(model) - set(MODEL_KEYS) - {"completion_params", "output_mode"}
             and all(isinstance(model[key], str) for key in MODEL_KEYS)
-            and ("output_mode" not in model or model["output_mode"] in ("native_schema", "guarded_json"))
+            and ("output_mode" not in model or model["output_mode"] in ("native_schema", "guarded_json", "structured_work"))
             and ("completion_params" not in model or isinstance(model["completion_params"], dict)),
             "모델 입력 필드를 확인하세요. completion_params는 공개 모델 옵션의 JSON 객체입니다.")
     versions = value["workflowVersions"]
