@@ -203,6 +203,7 @@ New-Item -ItemType Directory -Path .cache/maxis -Force | Out-Null
   [Dify 호환 플러그인 구현](https://github.com/langgenius/dify-official-plugins/blob/main/models/openai_api_compatible/models/llm/llm.py)도 등록된 지원 여부에 따라 옵션을 제공한다.
 - `model.completion_params: {}`는 해당 서버 모델의 기본값 사용이다. 명시한 객체는 기본 파라미터를 **병합하지 않고 교체**한다. 예: `{"max_completion_tokens": 2048, "reasoning_effort": "low"}`. 지원하지 않는 `temperature`나 `max_tokens`를 강제로 보내지 않는다. 기존 파일에서 필드를 생략한 경우만 기존 워크플로의 기본 튜닝을 유지한다.
 - **OpenAI 직접 연결:** Dify의 `OpenAI` 제공자를 선택한다. 기존 MAXIS의 `OpenAI-API-compatible`/LiteLLM 연결과 다르다. 현지 OpenAI 제공자에서 실제 생성되는 모델과 파라미터를 내보내고, 아래 출력 호환 설정을 적용한다. 코드에 특정 모델·주소·컨텍스트 크기를 고정하지 않는다.
+  5.6을 사용할 때도 **OpenAI 제공자 아래의 `gpt-5.6-sol`**을 선택하고 그 현지 DSL을 사용한다. 현지 목록·권한에 없는 모델을 이름만 입력하거나 이전 호환 제공자로 바꿔 연결 성공으로 처리하지 않는다.
 - `invalid_json_schema`와 `additionalProperties`/`required` 오류가 나면 모델 인증 실패로 보지 않는다. LTM의 동적 `payload`와 선택 필드는 OpenAI strict 생성 스키마와 다를 수 있다. 이때 설정 JSON의 `model`에 **`"output_mode": "guarded_json"`**을 추가하고 bundle을 다시 만든다. `--model-file`로 모델을 읽어도 이 옵션은 유지된다.
   이 모드는 동일 스키마를 생성 지시로 전달하고 원문 JSON을 기존 Code/Response Guard에서 검사한다. 근거·선택 ID·승인·중복 키 검증은 그대로이며 실패를 보정하거나 성공으로 바꾸지 않는다. Dify의 생성용 `Structured Output`만 꺼지는 것이고, 최종 응답 검증이 꺼지는 것은 아니다. 미지정/`native_schema`는 기존 생성 방식을 유지하며 런타임 자동 전환은 없다.
 
@@ -222,6 +223,10 @@ New-Item -ItemType Directory -Path .cache/maxis -Force | Out-Null
 - 연결 검사의 실제 생성 성공은 검사한 경로의 건강 상태다. 전체 분기·본문·댓글의 출력 품질이나 모델명 확인까지 뜻하지 않는다. Dify Service API가 모델명을 제공하지 않으면 **미확인**으로 표시하며 템플릿의 모델명을 실측 결과로 쓰지 않는다. 변경 후 실제 Agent·본문·댓글도 각각 확인한다.
 - Core 검사는 **제어 응답 + 실제 Query 입력·LLM·조립·근거 검증 경로**를 호출한다.
   Editor·PMO의 연결 검사는 제어 경로이므로 댓글·본문 작성 검증을 대신하지 않는다.
+  최신 DSL은 Editor 검사 응답의 게시 UUID 등을 모델 복사 대신 요청에서 결속하고,
+  Query에 조회 가능 범위와 댓글 검색의 한계를 명시한다. 오래된 앱에서 노드의 모델만
+  바꾸지 말고 저장소에서 DSL을 다시 생성해 기존 앱에 반영한다. 본문·댓글은 생성 후
+  내용과 참조를 확인하며, 추가 입력 요청은 답한 뒤 재실행한다.
 
 </details>
 

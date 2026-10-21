@@ -122,3 +122,10 @@ def test_empty_evidence_scope_is_not_runtime_search_configuration(compiler):
     assert "`context.scope` is evidence scope, not runtime search configuration" in prompt
     assert "Empty evidence scope lists do not disable a source" in prompt
     assert "LTM validates configured scope before executing the proposal" in prompt
+
+
+def test_comment_coverage_matches_bounded_runtime_without_downgrading_required_all(compiler):
+    prompt = compiler(LOCAL.read_text(encoding="utf-8"), WIRE.read_text(encoding="utf-8"))
+    assert "Topic comment search supports standard coverage only" in prompt
+    assert "user-specified exact ticket" in prompt
+    assert "If full comment coverage is required without exact tickets, ask for tickets" in prompt

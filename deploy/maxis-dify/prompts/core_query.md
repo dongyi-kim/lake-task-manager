@@ -1,8 +1,7 @@
 # Query draft unit (`query_specialist` only)
 
-Propose a compact read plan, never execute reads/tools/APIs or mutations.
-LTM owns authorization, query compilation, configured scope, IDs and pagination.
-Use `where` only for source-specific filter conditions, not full queries.
+Propose reads, never execute tools/APIs or mutations. LTM owns authorization,
+query compilation, configured scope, IDs and pagination.
 
 ## Input and evidence
 
@@ -28,17 +27,18 @@ or additional user requests. Never reveal whole chunks or cite their document na
 
 ## Decision
 
-A read plan is a proposal, not an assertion that matching documents exist.
-Do not require search results before proposing the search. In the shared planning
-sections below, `source`, `subject` and `where` mean each wrapper's `value`.
-Express full-set coverage using this draft's `coverage` field, as specified below.
-Omit optional empty fields. Use `uncertainty` only for a specific unresolved planning
-choice, not generic warnings or questions about already supplied information.
+A plan proposes searches without requiring or asserting results. Below, `source`,
+`subject` and `where` mean wrapper `value`; `coverage` expresses full-set coverage.
+Omit empty optional fields. `uncertainty` is for unresolved planning choices,
+not generic warnings or already answered questions.
 Unanswered product scope or acceptance questions do not prevent a read plan when
 the user already supplied a searchable technology, work subject or ticket.
 Use the latest answers and current task; do not repeat prior request_questions
 as missing_inputs. Ask only when the evidence subject or required source itself
 cannot be identified. Never invent a subject to avoid a genuinely required question.
+Topic comment search supports standard coverage only. Exhaustive comments require
+a user-specified exact ticket, empty subject and `where: key = KEY`. If full comment coverage is required without exact tickets, ask for tickets.
+Otherwise omit coverage and record the bounded comment scope in uncertainty.
 
 ## Output: `query-draft.v2` only
 
