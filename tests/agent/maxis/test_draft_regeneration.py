@@ -76,6 +76,84 @@ def test_second_rejection_is_not_hidden_or_retried(runtime):
     assert role_usage_observation(error.value.metadata)["failedCalls"] == 2
 
 
+def local_numeric_failure(code="unverified_numeric_claim", telemetry=True, binding_valid=True):
+    from app.agent.maxis.response_guard import ResponseGuardError
+    error = backend.MaxisRuntimeError("synthetic local rejection")
+    error.__cause__ = ResponseGuardError(code, "PRIVATE_SENTINEL")
+    error.metadata = {"requestTelemetry": observed("blocked")} if telemetry else {}
+    error._numeric_regeneration_allowed = binding_valid
+    return error
+
+
+@pytest.mark.parametrize("role", ["query_specialist", "request_architect", "work_architect",
+                                 "knowledge_curator", "result_integrator"])
+@pytest.mark.parametrize("second_fails", [False, True])
+def test_local_numeric_guard_gets_one_fresh_draft_without_weakening_guard(runtime, role, second_fails):
+    import json
+    calls = runtime([local_numeric_failure(), local_numeric_failure() if second_fails else success()])
+    if second_fails:
+        with pytest.raises(backend.MaxisRuntimeError) as caught:
+            ask(role)
+        metadata = caught.value.metadata
+    else:
+        metadata = ask(role).metadata
+    assert len(calls) == 2
+    first, second = (call[0][1] for call in calls)
+    assert {k: v for k, v in first["evidencePack"].items() if k != "role_context"} == {
+        k: v for k, v in second["evidencePack"].items() if k != "role_context"}
+    hint = json.loads(second["evidencePack"]["role_context"][-1]["content_json"])
+    assert hint["reason"] == "numeric_grounding" and "PRIVATE_SENTINEL" not in str(hint)
+    usage = role_usage_observation(metadata)
+    assert (usage["calls"], usage["failedCalls"], usage["totalTokens"]) == (2, 2 if second_fails else 1, 20)
+
+
+@pytest.mark.parametrize("code,role,telemetry", [
+    ("unverified_numeric_claim", "auditor", True),
+    ("unverified_numeric_claim", "editor_author", True),
+    ("unverified_numeric_claim", "query_specialist", False),
+    ("unverified_url", "query_specialist", True),
+    ("citation_assertion_mismatch", "query_specialist", True),
+    ("intent_source_fact_forbidden", "query_specialist", True),
+    ("knowledge_manifest_mismatch", "query_specialist", True),
+])
+def test_local_retry_does_not_expand_to_other_guards_or_roles(runtime, code, role, telemetry):
+    calls = runtime([local_numeric_failure(code, telemetry)])
+    with pytest.raises(backend.MaxisRuntimeError):
+        ask(role)
+    assert len(calls) == 1
+
+
+def test_local_numeric_result_text_regenerates_once(runtime):
+    calls = runtime([local_numeric_failure(), success()])
+    result = backend.invoke_role("result_integrator", {}, [], {}, output_kind="text")
+    assert len(calls) == 2
+    assert role_usage_observation(result.metadata)["failedCalls"] == 1
+
+
+def test_local_numeric_shadow_does_not_regenerate(runtime, monkeypatch):
+    monkeypatch.setattr(backend, "resolve_role", lambda *_: SimpleNamespace(route="shadow"))
+    calls = runtime([local_numeric_failure()])
+    with pytest.raises(backend.MaxisRuntimeError):
+        ask("query_specialist")
+    assert len(calls) == 1
+
+
+def test_local_numeric_and_binding_mismatch_cannot_regenerate(runtime):
+    calls = runtime([local_numeric_failure(binding_valid=False)])
+    with pytest.raises(backend.MaxisRuntimeError):
+        ask("query_specialist")
+    assert len(calls) == 1
+
+
+def test_local_numeric_retry_rechecks_profile_and_preserves_paid_failure(runtime):
+    calls = runtime([local_numeric_failure(), backend.RuntimeProfileChanged("profile changed")])
+    with pytest.raises(backend.RuntimeProfileChanged) as caught:
+        ask("query_specialist")
+    assert len(calls) == 2
+    usage = role_usage_observation(caught.value.metadata)
+    assert (usage["calls"], usage["failedCalls"], usage["totalTokens"]) == (1, 1, 10)
+
+
 def test_unsupported_query_source_regenerates_without_dropping_reads(runtime):
     calls = runtime([failure("invalid_core_query_source"), success()])
     ask("query_specialist")

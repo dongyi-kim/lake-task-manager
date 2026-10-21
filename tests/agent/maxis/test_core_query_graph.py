@@ -145,6 +145,31 @@ def test_query_native_contract_is_resolved_and_both_guards_accept_complete_candi
     assert result.status == "ok" and payload.reads[0].exhaustive is True
 
 
+def test_query_planning_count_is_not_exempt_from_local_numeric_grounding(nodes, query_case):
+    pack, model_input, candidate = query_case
+    selected = draft(candidate)
+    selected["payload"]["uncertainty"] = [{
+        "value": "생성·변경 히스토리를 3개 소스에서 조회한다.", "kind": "inference",
+        "source_ids": [pack.sources[0].source_id],
+    }]
+    assembled = assemble(nodes, model_input, selected)
+    with pytest.raises(ResponseGuardError) as caught:
+        local(pack, assembled)
+    assert caught.value.code == "unverified_numeric_claim"
+    expected = dict(role_id="query_specialist", workflow_version=VERSION,
+                    knowledge_version="kb-test", knowledge_manifest_sha256="a" * 64,
+                    knowledge_sentinel_sha256=hashlib.sha256(PROOF.encode()).hexdigest())
+    assert backend._numeric_regeneration_binding_matches(encoded(assembled), **expected)
+    for field, wrong in {"role_id": "knowledge_curator", "workflow_version": "other-workflow",
+                         "knowledge_version": "other-knowledge", "knowledge_manifest_sha256": "b" * 64,
+                         "knowledge_proof": "other-proof", "status": "blocked"}.items():
+        mixed = {**assembled, field: wrong}
+        assert not backend._numeric_regeneration_binding_matches(encoded(mixed), **expected)
+    assert not backend._numeric_regeneration_binding_matches("invalid JSON", **expected)
+    prompt = nodes[QUERY_ID]["prompt_template"][0]["text"]
+    assert "even for inference/recommendation" in prompt
+
+
 @pytest.mark.parametrize("bad", ["true", "false", "TRUE", 0, 1, None])
 def test_query_native_schema_and_both_guards_reject_non_boolean_without_coercion(nodes, query_case, bad):
     pack, model_input, candidate = query_case

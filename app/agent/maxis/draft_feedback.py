@@ -27,6 +27,12 @@ _CONTENT = json.dumps({
                "No rejected candidate has been accepted.",
 }, sort_keys=True, separators=(",", ":"))
 _REASONS = {
+    "numeric_grounding": "A narrative number was absent from the evidence. All claim kinds, "
+        "including inference and recommendation, must preserve cited numeric values. "
+        "Do not invent counts, dates or measurements. For a plan, name its sources/actions "
+        "without adding an unsupported count. Keep requested factual numbers only when "
+        "supported; otherwise state that they could not be verified. Do not relabel a fact "
+        "or substitute a different number to evade validation.",
     "json_syntax": "The previous output was not parseable JSON. Start a fresh object. "
         "Close every nested array/object and then root. missing_inputs belongs only at root. "
         "Do not append corrections or a second JSON object.",

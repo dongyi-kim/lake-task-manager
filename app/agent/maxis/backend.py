@@ -71,6 +71,31 @@ _LOCAL_ONLY_QUERY_SOURCES = frozenset({"web", "github"})
 class MaxisRuntimeError(RuntimeError):
     """A fail-closed runtime/profile/remote-contract error."""
 
+    _numeric_regeneration_allowed = False
+
+
+def _numeric_regeneration_binding_matches(answer, *, role_id, workflow_version,
+                                         knowledge_version, knowledge_manifest_sha256,
+                                         knowledge_sentinel_sha256):
+    """A rejected draft can get feedback only with all immutable bindings intact.
+
+    Called after ResponseGuard has parsed the envelope but rejected its numbers.
+    This check never accepts content; every fresh draft still passes both guards.
+    """
+    from app.agent.maxis.contracts import RemoteRoleResultV1
+    try:
+        envelope = RemoteRoleResultV1.model_validate_json(answer, strict=True)
+        return bool(all((role_id, workflow_version, knowledge_version,
+                         knowledge_manifest_sha256, knowledge_sentinel_sha256))
+            and envelope.status == "ok" and envelope.role_id == role_id
+            and envelope.workflow_version == workflow_version
+            and envelope.knowledge_version == knowledge_version
+            and envelope.knowledge_manifest_sha256 == knowledge_manifest_sha256
+            and hmac.compare_digest(hashlib.sha256(envelope.knowledge_proof.encode()).hexdigest(),
+                                    knowledge_sentinel_sha256))
+    except (TypeError, ValueError):
+        return False
+
 
 def _capture_failed_request(function):
     """Carry only validated, content-free observations across exception boundaries."""
@@ -2434,9 +2459,16 @@ def invoke(
             latency_ms=int(getattr(response, "latency_ms", 0) or 0),
             output_bytes=len(answer.encode("utf-8")), **audit_common,
         )
-        raise MaxisRuntimeError(
+        error = MaxisRuntimeError(
             f"MAXIS Role 응답 계약 검증에 실패했습니다: {role_id}"
-        ) from exc
+        )
+        if exc.code == "unverified_numeric_claim":
+            error._numeric_regeneration_allowed = _numeric_regeneration_binding_matches(
+                answer, role_id=role_id, workflow_version=workflow_version,
+                knowledge_version=knowledge_version, knowledge_manifest_sha256=knowledge_manifest_sha256,
+                knowledge_sentinel_sha256=knowledge_sentinel_sha256,
+            )
+        raise error from exc
     except Exception as exc:
         _record_remote_audit(
             status="blocked", error_code="response_contract",
@@ -2608,22 +2640,34 @@ def invoke_role(
             break
         except MaxisRuntimeError as exc:
             from app.agent.maxis.errors import MaxisGatewayError, MaxisErrorCode
+            from app.agent.maxis.response_guard import ResponseGuardError
             metadata = dict(getattr(exc, "metadata", None) or {})
             observation = metadata.get("requestTelemetry")
             if observation is not None:
                 attempts.append(observation)
             cause = exc.__cause__
+            native_role = role_id in {
+                "query_specialist", "request_architect", "work_architect",
+                "knowledge_curator", "result_integrator",
+            }
+            local_numeric_rejection = (
+                native_role and isinstance(cause, ResponseGuardError)
+                and cause.code == "unverified_numeric_claim"
+                and exc._numeric_regeneration_allowed is True
+            )
+            remote_draft_rejection = (
+                isinstance(cause, MaxisGatewayError)
+                and ((cause.draft_regeneration_role == "editor_author" and role_id == "editor_author")
+                     or (not cause.draft_regeneration_role and native_role))
+                and cause.code == MaxisErrorCode.WORKFLOW_CONTRACT and cause.draft_regeneration_allowed
+                and cause.status_code in {400, 422}
+            )
             regenerate = (
                 attempt == 0 and resolution.route == "maxis"
                 and (output_kind == "structured"
                      or (role_id == "result_integrator" and output_kind == "text"))
-                and isinstance(cause, MaxisGatewayError)
-                and ((cause.draft_regeneration_role == "editor_author" and role_id == "editor_author")
-                     or (not cause.draft_regeneration_role and role_id in {
-                         "query_specialist", "request_architect", "work_architect",
-                         "knowledge_curator", "result_integrator"}))
-                and cause.code == MaxisErrorCode.WORKFLOW_CONTRACT and cause.draft_regeneration_allowed
-                and cause.status_code in {400, 422} and observation is not None
+                and (remote_draft_rejection or local_numeric_rejection)
+                and observation is not None
             )
             if not regenerate:
                 if attempts:
@@ -2635,7 +2679,8 @@ def invoke_role(
             # the rejected candidate or calls a local model. Audit rows already persist.
             from app.agent.maxis.draft_feedback import with_native_feedback
             try:
-                payload = with_native_feedback(payload, role_id, reason=cause.draft_regeneration_reason)
+                reason = "numeric_grounding" if local_numeric_rejection else cause.draft_regeneration_reason
+                payload = with_native_feedback(payload, role_id, reason=reason)
             except (KeyError, TypeError, ValueError):
                 metadata["requestAttempts"] = attempts
                 exc.metadata = metadata
