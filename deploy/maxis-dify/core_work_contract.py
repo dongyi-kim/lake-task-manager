@@ -189,6 +189,10 @@ def build_generation_schema(draft: dict) -> dict:
     narrative = content['anyOf'][0]['properties']
     narrative['value']['maxLength'] = 1200  # Each destination keeps its original bound after expansion.
     narrative['source_ids'].pop('uniqueItems')  # Rechecked by the unchanged internal draft validator.
+    # Native constrained generation does not support the internal negative
+    # lookahead. Keep exact end-of-string validation in the original draft.
+    for identifier in (narrative['source_ids']['items'], content['anyOf'][1]['properties']['source_id']):
+        identifier['pattern'] = r'^[A-Za-z0-9][A-Za-z0-9._:-]*$'
     return {'type': 'object', 'additionalProperties': False,
         'required': ['contract', 'status', 'units', 'payload'], 'properties': {
             'contract': {'type': 'string', 'enum': ['work-units.v1']},

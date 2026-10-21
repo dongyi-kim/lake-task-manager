@@ -5208,7 +5208,7 @@ workflow:
                               type: string
                               minLength: 1
                               maxLength: 128
-                              pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
+                              pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
                       - type: object
                         additionalProperties: false
                         required:
@@ -5224,7 +5224,7 @@ workflow:
                             type: string
                             minLength: 1
                             maxLength: 128
-                            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])
+                            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
                           source_path:
                             type: string
                             maxLength: 500
@@ -6088,43 +6088,43 @@ workflow:
           \ 1200, 'type': 'string'}, 'kind': {'type': 'string', 'enum': ['inference',\
           \ 'recommendation']}, 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems':\
           \ 8, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern':\
-          \ '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\s\\\\S])'}}}}, {'type': 'object',\
-          \ 'additionalProperties': False, 'required': ['kind', 'source_id', 'source_path'],\
-          \ 'properties': {'kind': {'type': 'string', 'enum': ['fact']}, 'source_id':\
-          \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\
-          \\s\\\\S])'}, 'source_path': {'type': 'string', 'maxLength': 500}}}]}}}},\
-          \ 'payload': {'anyOf': [{'type': 'object', 'properties': {}, 'required':\
-          \ [], 'additionalProperties': False}, {'additionalProperties': False, 'properties':\
-          \ {'interpretation': {'type': 'array', 'maxItems': 1, 'items': {'type':\
-          \ 'string', 'pattern': '^unit-[1-9][0-9]*$'}}, 'items': {'items': {'additionalProperties':\
-          \ False, 'properties': {'actual': {'type': 'array', 'maxItems': 1, 'items':\
-          \ {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}}, 'background': {'type':\
-          \ 'string', 'pattern': '^unit-[1-9][0-9]*$'}, 'children': {'type': 'array',\
-          \ 'maxItems': 1, 'items': {'items': {'additionalProperties': False, 'properties':\
-          \ {'dod': {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
-          \ 'maxItems': 5, 'minItems': 1, 'type': 'array'}, 'duedate': {'type': 'array',\
-          \ 'maxItems': 1, 'items': {'maxLength': 20, 'type': 'string'}}, 'scope_in':\
+          \ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}}, {'type': 'object', 'additionalProperties':\
+          \ False, 'required': ['kind', 'source_id', 'source_path'], 'properties':\
+          \ {'kind': {'type': 'string', 'enum': ['fact']}, 'source_id': {'type': 'string',\
+          \ 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'},\
+          \ 'source_path': {'type': 'string', 'maxLength': 500}}}]}}}}, 'payload':\
+          \ {'anyOf': [{'type': 'object', 'properties': {}, 'required': [], 'additionalProperties':\
+          \ False}, {'additionalProperties': False, 'properties': {'interpretation':\
+          \ {'type': 'array', 'maxItems': 1, 'items': {'type': 'string', 'pattern':\
+          \ '^unit-[1-9][0-9]*$'}}, 'items': {'items': {'additionalProperties': False,\
+          \ 'properties': {'actual': {'type': 'array', 'maxItems': 1, 'items': {'type':\
+          \ 'string', 'pattern': '^unit-[1-9][0-9]*$'}}, 'background': {'type': 'string',\
+          \ 'pattern': '^unit-[1-9][0-9]*$'}, 'children': {'type': 'array', 'maxItems':\
+          \ 1, 'items': {'items': {'additionalProperties': False, 'properties': {'dod':\
           \ {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}, 'maxItems':\
-          \ 6, 'minItems': 1, 'type': 'array'}, 'summary': {'type': 'string', 'pattern':\
-          \ '^unit-[1-9][0-9]*$'}}, 'required': ['dod', 'duedate', 'scope_in', 'summary'],\
-          \ 'type': 'object'}, 'maxItems': 30, 'type': 'array'}}, 'components': {'type':\
-          \ 'array', 'maxItems': 1, 'items': {'items': {'maxLength': 80, 'type': 'string'},\
-          \ 'maxItems': 3, 'type': 'array'}}, 'dod': {'items': {'type': 'string',\
-          \ 'pattern': '^unit-[1-9][0-9]*$'}, 'maxItems': 6, 'minItems': 1, 'type':\
-          \ 'array'}, 'duedate': {'type': 'array', 'maxItems': 1, 'items': {'maxLength':\
-          \ 20, 'type': 'string'}}, 'epic': {'type': 'array', 'maxItems': 1, 'items':\
-          \ {'maxLength': 40, 'type': 'string'}}, 'epic_name': {'type': 'array', 'maxItems':\
-          \ 1, 'items': {'maxLength': 80, 'type': 'string'}}, 'expected': {'type':\
-          \ 'array', 'maxItems': 1, 'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}},\
-          \ 'issue_type': {'type': 'array', 'maxItems': 1, 'items': {'maxLength':\
-          \ 80, 'type': 'string'}}, 'labels': {'type': 'array', 'maxItems': 1, 'items':\
-          \ {'items': {'maxLength': 80, 'type': 'string'}, 'maxItems': 8, 'type':\
-          \ 'array'}}, 'parent': {'type': 'array', 'maxItems': 1, 'items': {'maxLength':\
-          \ 40, 'type': 'string'}}, 'priority': {'type': 'array', 'maxItems': 1, 'items':\
-          \ {'maxLength': 80, 'type': 'string'}}, 'references': {'type': 'array',\
-          \ 'maxItems': 1, 'items': {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
-          \ 'maxItems': 6, 'type': 'array'}}, 'reproduction': {'type': 'array', 'maxItems':\
-          \ 1, 'items': {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
+          \ 5, 'minItems': 1, 'type': 'array'}, 'duedate': {'type': 'array', 'maxItems':\
+          \ 1, 'items': {'maxLength': 20, 'type': 'string'}}, 'scope_in': {'items':\
+          \ {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}, 'maxItems': 6, 'minItems':\
+          \ 1, 'type': 'array'}, 'summary': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}},\
+          \ 'required': ['dod', 'duedate', 'scope_in', 'summary'], 'type': 'object'},\
+          \ 'maxItems': 30, 'type': 'array'}}, 'components': {'type': 'array', 'maxItems':\
+          \ 1, 'items': {'items': {'maxLength': 80, 'type': 'string'}, 'maxItems':\
+          \ 3, 'type': 'array'}}, 'dod': {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
+          \ 'maxItems': 6, 'minItems': 1, 'type': 'array'}, 'duedate': {'type': 'array',\
+          \ 'maxItems': 1, 'items': {'maxLength': 20, 'type': 'string'}}, 'epic':\
+          \ {'type': 'array', 'maxItems': 1, 'items': {'maxLength': 40, 'type': 'string'}},\
+          \ 'epic_name': {'type': 'array', 'maxItems': 1, 'items': {'maxLength': 80,\
+          \ 'type': 'string'}}, 'expected': {'type': 'array', 'maxItems': 1, 'items':\
+          \ {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}}, 'issue_type': {'type':\
+          \ 'array', 'maxItems': 1, 'items': {'maxLength': 80, 'type': 'string'}},\
+          \ 'labels': {'type': 'array', 'maxItems': 1, 'items': {'items': {'maxLength':\
+          \ 80, 'type': 'string'}, 'maxItems': 8, 'type': 'array'}}, 'parent': {'type':\
+          \ 'array', 'maxItems': 1, 'items': {'maxLength': 40, 'type': 'string'}},\
+          \ 'priority': {'type': 'array', 'maxItems': 1, 'items': {'maxLength': 80,\
+          \ 'type': 'string'}}, 'references': {'type': 'array', 'maxItems': 1, 'items':\
+          \ {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}, 'maxItems':\
+          \ 6, 'type': 'array'}}, 'reproduction': {'type': 'array', 'maxItems': 1,\
+          \ 'items': {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
           \ 'maxItems': 6, 'type': 'array'}}, 'scope_in': {'items': {'type': 'string',\
           \ 'pattern': '^unit-[1-9][0-9]*$'}, 'maxItems': 8, 'minItems': 1, 'type':\
           \ 'array'}, 'scope_out': {'type': 'array', 'maxItems': 1, 'items': {'items':\
@@ -6733,43 +6733,43 @@ workflow:
           \ 1200, 'type': 'string'}, 'kind': {'type': 'string', 'enum': ['inference',\
           \ 'recommendation']}, 'source_ids': {'type': 'array', 'minItems': 1, 'maxItems':\
           \ 8, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern':\
-          \ '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\s\\\\S])'}}}}, {'type': 'object',\
-          \ 'additionalProperties': False, 'required': ['kind', 'source_id', 'source_path'],\
-          \ 'properties': {'kind': {'type': 'string', 'enum': ['fact']}, 'source_id':\
-          \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\
-          \\s\\\\S])'}, 'source_path': {'type': 'string', 'maxLength': 500}}}]}}}},\
-          \ 'payload': {'anyOf': [{'type': 'object', 'properties': {}, 'required':\
-          \ [], 'additionalProperties': False}, {'additionalProperties': False, 'properties':\
-          \ {'interpretation': {'type': 'array', 'maxItems': 1, 'items': {'type':\
-          \ 'string', 'pattern': '^unit-[1-9][0-9]*$'}}, 'items': {'items': {'additionalProperties':\
-          \ False, 'properties': {'actual': {'type': 'array', 'maxItems': 1, 'items':\
-          \ {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}}, 'background': {'type':\
-          \ 'string', 'pattern': '^unit-[1-9][0-9]*$'}, 'children': {'type': 'array',\
-          \ 'maxItems': 1, 'items': {'items': {'additionalProperties': False, 'properties':\
-          \ {'dod': {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
-          \ 'maxItems': 5, 'minItems': 1, 'type': 'array'}, 'duedate': {'type': 'array',\
-          \ 'maxItems': 1, 'items': {'maxLength': 20, 'type': 'string'}}, 'scope_in':\
+          \ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}}}}, {'type': 'object', 'additionalProperties':\
+          \ False, 'required': ['kind', 'source_id', 'source_path'], 'properties':\
+          \ {'kind': {'type': 'string', 'enum': ['fact']}, 'source_id': {'type': 'string',\
+          \ 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$'},\
+          \ 'source_path': {'type': 'string', 'maxLength': 500}}}]}}}}, 'payload':\
+          \ {'anyOf': [{'type': 'object', 'properties': {}, 'required': [], 'additionalProperties':\
+          \ False}, {'additionalProperties': False, 'properties': {'interpretation':\
+          \ {'type': 'array', 'maxItems': 1, 'items': {'type': 'string', 'pattern':\
+          \ '^unit-[1-9][0-9]*$'}}, 'items': {'items': {'additionalProperties': False,\
+          \ 'properties': {'actual': {'type': 'array', 'maxItems': 1, 'items': {'type':\
+          \ 'string', 'pattern': '^unit-[1-9][0-9]*$'}}, 'background': {'type': 'string',\
+          \ 'pattern': '^unit-[1-9][0-9]*$'}, 'children': {'type': 'array', 'maxItems':\
+          \ 1, 'items': {'items': {'additionalProperties': False, 'properties': {'dod':\
           \ {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}, 'maxItems':\
-          \ 6, 'minItems': 1, 'type': 'array'}, 'summary': {'type': 'string', 'pattern':\
-          \ '^unit-[1-9][0-9]*$'}}, 'required': ['dod', 'duedate', 'scope_in', 'summary'],\
-          \ 'type': 'object'}, 'maxItems': 30, 'type': 'array'}}, 'components': {'type':\
-          \ 'array', 'maxItems': 1, 'items': {'items': {'maxLength': 80, 'type': 'string'},\
-          \ 'maxItems': 3, 'type': 'array'}}, 'dod': {'items': {'type': 'string',\
-          \ 'pattern': '^unit-[1-9][0-9]*$'}, 'maxItems': 6, 'minItems': 1, 'type':\
-          \ 'array'}, 'duedate': {'type': 'array', 'maxItems': 1, 'items': {'maxLength':\
-          \ 20, 'type': 'string'}}, 'epic': {'type': 'array', 'maxItems': 1, 'items':\
-          \ {'maxLength': 40, 'type': 'string'}}, 'epic_name': {'type': 'array', 'maxItems':\
-          \ 1, 'items': {'maxLength': 80, 'type': 'string'}}, 'expected': {'type':\
-          \ 'array', 'maxItems': 1, 'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}},\
-          \ 'issue_type': {'type': 'array', 'maxItems': 1, 'items': {'maxLength':\
-          \ 80, 'type': 'string'}}, 'labels': {'type': 'array', 'maxItems': 1, 'items':\
-          \ {'items': {'maxLength': 80, 'type': 'string'}, 'maxItems': 8, 'type':\
-          \ 'array'}}, 'parent': {'type': 'array', 'maxItems': 1, 'items': {'maxLength':\
-          \ 40, 'type': 'string'}}, 'priority': {'type': 'array', 'maxItems': 1, 'items':\
-          \ {'maxLength': 80, 'type': 'string'}}, 'references': {'type': 'array',\
-          \ 'maxItems': 1, 'items': {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
-          \ 'maxItems': 6, 'type': 'array'}}, 'reproduction': {'type': 'array', 'maxItems':\
-          \ 1, 'items': {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
+          \ 5, 'minItems': 1, 'type': 'array'}, 'duedate': {'type': 'array', 'maxItems':\
+          \ 1, 'items': {'maxLength': 20, 'type': 'string'}}, 'scope_in': {'items':\
+          \ {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}, 'maxItems': 6, 'minItems':\
+          \ 1, 'type': 'array'}, 'summary': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}},\
+          \ 'required': ['dod', 'duedate', 'scope_in', 'summary'], 'type': 'object'},\
+          \ 'maxItems': 30, 'type': 'array'}}, 'components': {'type': 'array', 'maxItems':\
+          \ 1, 'items': {'items': {'maxLength': 80, 'type': 'string'}, 'maxItems':\
+          \ 3, 'type': 'array'}}, 'dod': {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
+          \ 'maxItems': 6, 'minItems': 1, 'type': 'array'}, 'duedate': {'type': 'array',\
+          \ 'maxItems': 1, 'items': {'maxLength': 20, 'type': 'string'}}, 'epic':\
+          \ {'type': 'array', 'maxItems': 1, 'items': {'maxLength': 40, 'type': 'string'}},\
+          \ 'epic_name': {'type': 'array', 'maxItems': 1, 'items': {'maxLength': 80,\
+          \ 'type': 'string'}}, 'expected': {'type': 'array', 'maxItems': 1, 'items':\
+          \ {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}}, 'issue_type': {'type':\
+          \ 'array', 'maxItems': 1, 'items': {'maxLength': 80, 'type': 'string'}},\
+          \ 'labels': {'type': 'array', 'maxItems': 1, 'items': {'items': {'maxLength':\
+          \ 80, 'type': 'string'}, 'maxItems': 8, 'type': 'array'}}, 'parent': {'type':\
+          \ 'array', 'maxItems': 1, 'items': {'maxLength': 40, 'type': 'string'}},\
+          \ 'priority': {'type': 'array', 'maxItems': 1, 'items': {'maxLength': 80,\
+          \ 'type': 'string'}}, 'references': {'type': 'array', 'maxItems': 1, 'items':\
+          \ {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}, 'maxItems':\
+          \ 6, 'type': 'array'}}, 'reproduction': {'type': 'array', 'maxItems': 1,\
+          \ 'items': {'items': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'},\
           \ 'maxItems': 6, 'type': 'array'}}, 'scope_in': {'items': {'type': 'string',\
           \ 'pattern': '^unit-[1-9][0-9]*$'}, 'maxItems': 8, 'minItems': 1, 'type':\
           \ 'array'}, 'scope_out': {'type': 'array', 'maxItems': 1, 'items': {'items':\

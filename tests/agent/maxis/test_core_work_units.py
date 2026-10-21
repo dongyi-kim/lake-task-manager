@@ -99,6 +99,20 @@ def test_generation_is_closed_required_and_shallow(contract, canonical):
     assert draft == contract.build_draft_schema(canonical, project)
 
 
+def test_generation_uses_portable_identifier_patterns_but_keeps_exact_internal_bounds(compiler, case):
+    ns, draft, generation = compiler
+    content = generation['properties']['units']['items']['properties']['content']['anyOf']
+    for identifier in (content[0]['properties']['source_ids']['items'], content[1]['properties']['source_id']):
+        assert identifier['pattern'] == r'^[A-Za-z0-9][A-Za-z0-9._:-]*$'
+    original = draft['properties']['payload']['anyOf'][1]['properties']['items']['items']['properties']['summary']
+    assert '(?!' in original['anyOf'][0]['properties']['source_ids']['items']['pattern']
+    _, incoming, candidate, _ = case
+    wire = encode_units(candidate, draft)
+    wire['units'][0]['content']['source_ids'][0] += '\n'
+    with pytest.raises(ValueError, match='invalid_core_work_draft'):
+        ns['main'](encoded(incoming), encoded(wire))
+
+
 def test_optional_slots_distinguish_omission_from_explicit_empty(contract, canonical):
     schema = contract.build_generation_schema(contract.build_draft_schema(canonical, project))
     item = schema['properties']['payload']['anyOf'][1]['properties']['items']['items']
