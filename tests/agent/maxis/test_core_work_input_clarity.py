@@ -31,7 +31,8 @@ def test_source_view_has_one_citation_identity_and_preserves_original_evidence(n
                          "knowledge_context": original["knowledge_context"]}
     system = nodes[WORK]["prompt_template"][0]["text"]
     assert "entity_reference and role context are not citations" in system
-    assert "Close payload before root missing_inputs." in system
+    assert "Questions belong ONLY in payload.questions" in system
+    assert "missing_inputs" not in system
     assert json.loads(incoming) == original
 
 
@@ -88,7 +89,7 @@ def test_generated_view_citation_choices_reach_unchanged_assembler_and_both_guar
 def test_generated_assembler_never_repairs_malformed_or_wrong_scope_output(nodes, work_case, fault):
     _, incoming, draft, _ = work_case
     if fault == "misplaced_missing_inputs":
-        draft["payload"]["missing_inputs"] = draft.pop("missing_inputs")
+        draft["payload"]["missing_inputs"] = []
     candidate = encoded(draft)
     if fault == "truncated_text":
         candidate = candidate[:-1]

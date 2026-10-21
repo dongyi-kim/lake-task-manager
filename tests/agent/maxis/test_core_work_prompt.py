@@ -26,7 +26,7 @@ def test_bounded_native_prompt_preserves_exact_local_policy_and_question_help(co
     assert contract.WORK_MAX_SYSTEM_UTF8_BYTES == 18432
     assert len(prompt.encode()) <= contract.WORK_MAX_SYSTEM_UTF8_BYTES
     assert hashlib.sha256(texts[0].encode()).hexdigest() == contract.WORK_ROLE_SHA256
-    assert prompt.startswith(texts[1].strip()) and "work-draft.v2" in prompt
+    assert prompt.startswith(texts[1].strip()) and "work-draft.v3" in prompt
     for token in ("input_need=required/optional", "required_input=true/false",
                   "source_content_index", "zero-based", "allowed_claim_kinds", "drafts only, no tools/execution",
                   "reproduction", "expected", "actual", "40 claims", "256 bindings"):
@@ -74,18 +74,20 @@ def test_ok_payload_required_fields_stay_explicit_even_when_arrays_are_empty(con
         return dict(pairs)
     example = next(line for line in prompt.splitlines() if line.startswith('{"contract":'))
     draft = json.loads(example, object_pairs_hook=unique_object)
-    assert set(draft) == {"contract", "status", "missing_inputs", "payload"}
-    assert draft["contract"] == "work-draft.v2" and draft["status"] == "ok"
-    assert draft["missing_inputs"] == [] and draft["payload"]["questions"] == []
+    assert set(draft) == {"contract", "status", "payload"}
+    assert draft["contract"] == "work-draft.v3" and draft["status"] == "ok"
+    assert draft["payload"]["questions"] == []
     assert draft["payload"]["mode"] == "task"
     item = draft["payload"]["items"][0]
     assert set(item) == {"summary", "type", "background", "scope_in", "dod"}
     assert set(item["summary"]) == {"value", "kind", "source_ids"}
     assert "ok requires mode=task|subtask|epic, questions, items" in prompt
-    assert "Schema order: contract, status, payload, missing_inputs, each once." in prompt
-    assert "Close payload before root missing_inputs." in prompt
-    assert "needs_input: payload={}, concrete missing_inputs" in prompt
-    assert "blocked: payload={}, missing_inputs=[]" in prompt
+    assert "Schema order: contract, status, payload, each once." in prompt
+    assert "Questions belong ONLY in payload.questions" in prompt
+    assert "kind=text|choice|multi|date" in prompt
+    assert 'status="ok", items=[]' in prompt
+    assert "blocked: payload={}" in prompt
+    assert "needs_input" not in prompt and "missing_inputs" not in prompt
 
 
 @pytest.mark.parametrize("replacement", [lambda s: s.replace("## Clarification Policy", "## Missing"),

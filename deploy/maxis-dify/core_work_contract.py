@@ -1,7 +1,8 @@
 """Derive a bounded Work draft from the actual, unchanged CREATE contract only.
 
 The native draft annotates reviewed text leaves and uses one explicit boolean
-label adapter. It closes otherwise extensible question objects. No payload
+label adapter. Clarifications use canonical question objects only; the model
+does not author a second top-level missing-input channel. No payload
 meaning, source choice, approval, or model output is supplied by this builder.
 The assembler must revalidate the complete canonical payload after unwrapping.
 """
@@ -153,11 +154,9 @@ def build_draft_schema(canonical_schema: dict, project) -> dict:
         question["properties"]["input_need"] = {"type": "string", "enum": ["required", "optional"]}
         question["required"] = ["input_need" if key == "required_input" else key for key in question["required"]]
         return {"type": "object", "additionalProperties": False,
-            "required": ["contract", "status", "payload", "missing_inputs"], "properties": {
-                "contract": {"type": "string", "enum": ["work-draft.v2"]},
-                "status": {"type": "string", "enum": ["ok", "needs_input", "blocked"]},
-                "payload": {"anyOf": [{"type": "object", "additionalProperties": False, "maxProperties": 0}, payload]},
-                "missing_inputs": {"type": "array", "maxItems": 8,
-                    "items": {"type": "string", "minLength": 1, "maxLength": 500}}}}
+            "required": ["contract", "status", "payload"], "properties": {
+                "contract": {"type": "string", "enum": ["work-draft.v3"]},
+                "status": {"type": "string", "enum": ["ok", "blocked"]},
+                "payload": {"anyOf": [{"type": "object", "additionalProperties": False, "maxProperties": 0}, payload]}}}
     except (KeyError, TypeError, RecursionError) as exc:
         raise ValueError("Work draft canonical schema requires review") from exc

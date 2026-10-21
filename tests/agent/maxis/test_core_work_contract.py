@@ -40,8 +40,10 @@ def test_pin_and_complete_derived_shape_preserve_canonical_constraints(contract,
     assert canonical == before
     assert canonical_payload_schema(CREATE_SCHEMA)[1] == contract.WORK_SCHEMA_SHA256 == (
         "8f46d8cc3bbe4712838a066844b90eeef2272a9f0e8a8a6c054b63a338226f1a")
-    assert draft["properties"]["contract"]["enum"] == ["work-draft.v2"]
-    assert draft["required"] == ["contract", "status", "payload", "missing_inputs"]
+    assert draft["properties"]["contract"]["enum"] == ["work-draft.v3"]
+    assert draft["required"] == ["contract", "status", "payload"]
+    assert set(draft["properties"]) == {"contract", "status", "payload"}
+    assert draft["properties"]["status"]["enum"] == ["ok", "blocked"]
     assert draft["additionalProperties"] is False
     Draft202012Validator.check_schema(draft)
     guard = load(DIRECTORY / "code/contract_guard.py")

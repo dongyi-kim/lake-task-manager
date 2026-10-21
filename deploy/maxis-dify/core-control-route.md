@@ -135,7 +135,11 @@ transport는 정확한 wrapper 경로와 plain 경로를 한곳에서 구분한�
 조립기와 Query는 원본 Role/schema/source hash 결속 검사만 공유하며 의미 순회는 별개다.
 
 Work는 exact CREATE에만 Stage → Work Input → Work LLM → Work Assembler를 사용한다.
-`core_work_contract.py`는 변경 없는 CREATE에서 닫힌 `work-draft.v2`를 파생한다.
+`core_work_contract.py`는 변경 없는 CREATE에서 닫힌 `work-draft.v3`를 파생한다.
+모델의 root는 contract/status/payload뿐이다. 확인 질문은 status=ok와 payload.questions,
+빈 items로 전달하고, 실행 초안은 빈 questions와 items로 전달한다. 둘을 함께 내면 거부한다.
+blocked는 빈 payload를 유지한다. 공개 envelope의 missing_inputs는 빈 배열로 조립하며
+질문 내용·선택지·필수 여부는 기존 CREATE payload에 그대로 보존한다.
 작성 문안은 value/kind/source_ids(inference/recommendation), 사실은 kind=fact와
 source_id/source_path로 구분한다. 사실은 원본에서 주체가 포함된 전체 record를 선택한다.
 Code는 필드와 값을 생략하지 않는 인용으로 표시하고 key/string 구분자를 escape하며 숫자

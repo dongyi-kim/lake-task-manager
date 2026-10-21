@@ -22,10 +22,9 @@ def main(model_input, candidate):
         incoming, pack, schema, sources = _draft_context(model_input, "work_architect",
             _WORK_SCHEMA_JSON, _WORK_SCHEMA_SHA256, _DRAFT_SCHEMA, _fail)
         draft = _native_candidate(candidate, _DRAFT_SCHEMA, _MAX_DRAFT_UTF8_BYTES)
-        status, payload, missing = draft["status"], draft["payload"], draft["missing_inputs"]
-        if (draft["contract"] != "work-draft.v2" or any(not value.strip() for value in missing)
-                or status == "ok" and missing or status != "ok" and payload
-                or status == "needs_input" and not missing or status == "blocked" and missing):
+        status, payload = draft["status"], draft["payload"]
+        if (draft["contract"] != "work-draft.v3" or status == "blocked" and payload
+                or payload.get("questions") and payload.get("items")):
             _fail()
         claims, bindings, citations, citation_ids, claim_ids = [], [], [], {}, {}
         source_content = {row["source_id"]: row["content"] for row in pack["sources"]}
@@ -81,7 +80,7 @@ def main(model_input, candidate):
             _fail()
         result = {"contract": "remote-role-result.v1", "role_id": "work_architect", "status": status,
             "payload": output, "claims": claims, "payload_claims": bindings, "citations": citations,
-            "missing_inputs": missing, "warnings": [], "knowledge_manifest_sha256": pack["knowledge_manifest_sha256"],
+            "missing_inputs": [], "warnings": [], "knowledge_manifest_sha256": pack["knowledge_manifest_sha256"],
             **{key: incoming[key] for key in ("workflow_version", "knowledge_version", "knowledge_proof")}}
         encoded = _canonical(result)
         encoded.encode("utf-8", errors="strict")

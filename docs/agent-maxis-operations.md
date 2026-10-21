@@ -614,6 +614,9 @@ Conversation·Create·Compose·Meeting·Context 배터리의 기존 입력을 �
 함께 갱신한다. 현지 모델·dataset binding을 유지한 채 Publish → 게시 UUID 등록 → 연결 검사 →
 **이 설정 사용** 순서로 적용한다. 새 앱이나 날짜별 Knowledge를 만들 필요는 없다.
 
+Work의 현행 내부 출력은 `work-draft.v3`다. 질문은 `payload.questions` 한 곳에만 작성하며
+질문 턴에는 `items=[]`, 초안 턴에는 `questions=[]`다. LTM의 재시도 안내도 함께 갱신되므로
+서버만 게시하거나 LTM만 pull하지 않는다. 공개 API와 사용자 승인 절차는 유지된다.
 Result는 빈 배열도 원래 필드명과 함께 인용하며, 긴 목록은 개별 기록/필드를 선택한다.
 Knowledge의 출처 식별자(`ref`)와 관련성 설명(`why`)은 서로 다른 선택 규칙을 쓴다.
 LTM도 함께 pull·재시작해야 후속 답변 시 근거 재조회와 최종 확인 질문의 본문 표시가 적용된다.

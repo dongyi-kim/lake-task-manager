@@ -7,7 +7,7 @@ unchanged. Feedback is non-citable role context, not permission or factual evide
 import hashlib
 import json
 
-from app.agent.maxis.contracts import EvidencePackV1, RoleContextV1
+from app.agent.maxis.contracts import EvidencePackV1, RoleContextV1, canonical_payload_schema
 from app.agent.maxis.context_guard import canonical_evidence_pack_json, validate_pack_safety
 
 _ROLES = frozenset({
@@ -34,7 +34,7 @@ _REASONS = {
         "supported; otherwise state that they could not be verified. Do not relabel a fact "
         "or substitute a different number to evade validation.",
     "json_syntax": "The previous output was not parseable JSON. Start a fresh object. "
-        "Close every nested array/object and then root. missing_inputs belongs only at root. "
+        "Close every nested array/object and then root, using only this role's native fields. "
         "Do not append corrections or a second JSON object.",
     "json_structure": "The previous JSON violated unique-key, object, size or depth limits. "
         "Emit one bounded object with unique keys at every level; no NaN, Infinity or code fence.",
@@ -49,7 +49,11 @@ _REASONS = {
 _SCHEMA_HELP = {
     "request_architect": "Root keys are contract,status,payload,missing_inputs. "
         "payload has research_readiness and every required array, even when empty.",
-    "work_architect": "Root keys are contract,status,payload,missing_inputs. "
+    "work_architect": "Root keys are contract,status,payload. Use work-draft.v3. "
+        "Questions belong only in payload.questions with status=ok and items=[]; "
+        "draft items require questions=[]. blocked requires payload={}. "
+        "Question kind=text|choice|multi|date is plain; question/why_required/options use narrative wrappers. "
+        "input_need=required|optional preserves required_input semantics. "
         "interpretation,structure,structure_why,rationale belong to payload, not items. "
         "Keep item metadata separate from wrapped narrative leaves.",
     "knowledge_curator": "A fact leaf is exactly {kind,source_id,source_path}: NO value/source_ids. "
@@ -62,6 +66,19 @@ _SCHEMA_HELP = {
         "check.value is grounded|rule|request. index is a strict integer. Preserve adverse findings; "
         "do not turn fail into pass or cite user intent as an external fact.",
 }
+
+
+def _schema_help(role_id: str, pack: EvidencePackV1) -> str:
+    if role_id == "work_architect":
+        from app.agent.workflow.work_architect.contracts import CREATE_SCHEMA
+        canonical, digest = canonical_payload_schema(CREATE_SCHEMA)
+        if (pack.payload_schema_json, pack.payload_schema_sha256) != (canonical, digest):
+            # Only exact CREATE uses the native Work branch. Comment/update and
+            # extended schemas stay on the published generic semantic contract.
+            return ("Follow this request's bound payload schema and published output contract. "
+                    "Do not substitute a CREATE draft for a comment or update. "
+                    "Preserve the requested action and all field constraints.")
+    return _SCHEMA_HELP.get(role_id, "Use only native Query schema fields.")
 
 
 def with_native_feedback(payload: dict, role_id: str, *, reason: str = "") -> dict:
@@ -77,12 +94,10 @@ def with_native_feedback(payload: dict, role_id: str, *, reason: str = "") -> di
     if ("synthetic_only" in pack.flags or len(pack.role_context) >= 8
             or any(row.name == _NAME for row in pack.role_context)):
         return payload
-    content = _CONTENT
+    feedback = {**json.loads(_CONTENT), "role_contract": _schema_help(role_id, pack)}
     if reason in _REASONS:
-        content = json.dumps({**json.loads(_CONTENT), "reason": reason,
-            "validation": _REASONS[reason],
-            "role_contract": _SCHEMA_HELP.get(role_id, "Use only native Query schema fields.")},
-            sort_keys=True, separators=(",", ":"))
+        feedback.update(reason=reason, validation=_REASONS[reason])
+    content = json.dumps(feedback, sort_keys=True, separators=(",", ":"))
     row = RoleContextV1(
         context_id="rctx_" + hashlib.sha256(f"{pack.request_id}:{role_id}:{_NAME}".encode()).hexdigest()[:20],
         name=_NAME, content_json=content,

@@ -84,7 +84,9 @@ Editor의 `editor-draft-spec.v2`, `editor-writing.v1`, `editor-plan.v2`는 각�
   transport metadata만 검증된 요청에서 결속한다. status·payload·claim·citation·질문·경고는
   그대로 두며, 기존 Contract Guard의 실행 UUID·근거·schema 검사를 거친다.
   Work는 exact CREATE에만 전용 입력·native draft·조립 경로를 사용하며 다른 Work schema는
-  기존 일반 경로를 유지한다. 내부 `work-draft.v2`는 작성 문안과 사실 선택을 분리한다.
+  기존 일반 경로를 유지한다. 내부 `work-draft.v3`는 작성 문안과 사실 선택을 분리한다.
+  확인 질문은 기존 공개 CREATE의 `payload.questions` 한 곳으로 전달하고, 이유·선택지·필수 여부를
+  보존한다. 질문과 경쟁하는 초안은 허용하지 않으며 공개 Role/API 계약은 변경하지 않는다.
   사실은 source-relative pointer로 원본의 주체 포함 record를 선택하고, Code가 필드·값을
   생략하지 않은 인용으로 표시한다. 구분자는 escape하며 JSON 숫자 표기를 보존한다.
   원문은 바꾸지 않고 기존 필드 길이·UTF-8·근거 검사를 계속 적용한다.

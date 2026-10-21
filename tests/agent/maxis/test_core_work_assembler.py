@@ -59,7 +59,7 @@ def case(context_guard, now):
         "workflow_version": VERSION, "knowledge_version": "kb-test", "knowledge_proof": PROOF, "knowledge_context": []}
     payload = {"questions": [], "mode": "task", "items": [{"summary": leaf("수집 작업 확인"), "type": "Task",
         "background": leaf("수집 작업 점검 요청"), "scope_in": [leaf("수집 경로 확인")], "dod": [leaf("확인 결과 기록")]}]}
-    draft = {"contract": "work-draft.v2", "status": "ok", "payload": payload, "missing_inputs": []}
+    draft = {"contract": "work-draft.v3", "status": "ok", "payload": payload}
     expected = {"questions": [], "mode": "task", "items": [{"summary": "수집 작업 확인", "type": "Task",
         "background": "수집 작업 점검 요청", "scope_in": ["수집 경로 확인"], "dod": ["확인 결과 기록"]}]}
     return pack, incoming, draft, expected
@@ -95,13 +95,17 @@ def test_exact_payload_metadata_and_bindings_cross_both_guards(compiled, case):
 
 
 @pytest.mark.parametrize("label,required", [("required", True), ("optional", False)])
-def test_question_only_result_maps_explicit_label_without_status_inference(compiled, case, label, required):
+@pytest.mark.parametrize("kind", ["text", "choice", "multi", "date"])
+def test_question_only_result_maps_explicit_label_without_status_inference(compiled, case, label, required, kind):
     pack, incoming, draft, _ = case
-    draft["payload"].update(items=[], questions=[{"question": leaf("적용 범위는?"), "kind": "choice", "field": "scope",
+    draft["payload"].update(items=[], questions=[{"question": leaf("적용 범위는?"), "kind": kind, "field": "scope",
         "input_need": label, "why_required": leaf("범위 결정 필요" if required else ""),
         "options": [leaf("수집 경로"), leaf("검증 경로")]}])
     result = assemble(compiled, incoming, draft)
     question = result["payload"]["questions"][0]
+    assert question == {"question": "적용 범위는?", "kind": kind, "field": "scope",
+                        "required_input": required, "why_required": "범위 결정 필요" if required else "",
+                        "options": ["수집 경로", "검증 경로"]}
     assert question["required_input"] is required and "input_need" not in question
     assert result["status"] == "ok" and result["missing_inputs"] == [] and result["payload"]["items"] == []
     remote, local = guards(pack, result)
@@ -242,14 +246,63 @@ def test_work_fact_does_not_guess_or_repair_a_source_path(compiled, case, path):
         assemble(compiled, incoming, draft)
 
 
-@pytest.mark.parametrize("status", ["blocked", "needs_input"])
-def test_control_outcomes_are_empty_without_synthesized_provenance(compiled, case, status):
+def test_blocked_outcome_is_empty_without_synthesized_provenance(compiled, case):
     pack, incoming, draft, _ = case
-    draft.update(status=status, payload={}, missing_inputs=["대상을 알려주세요"] if status == "needs_input" else [])
+    draft.update(status="blocked", payload={})
     result = assemble(compiled, incoming, draft)
     assert not any(result[key] for key in ("payload", "claims", "payload_claims", "citations"))
     remote, local = guards(pack, result)
-    assert remote == result and local()[0].status == status
+    assert remote == result and local()[0].status == "blocked"
+    assert result["missing_inputs"] == []
+
+
+@pytest.mark.parametrize("extra", ["root_questions", "legacy_missing_inputs", "legacy_needs_input", "competing_draft"])
+def test_one_question_channel_rejects_legacy_or_competing_payloads(compiled, case, extra):
+    _, incoming, draft, _ = case
+    question = {"question": leaf("기존 티켓 확장 또는 별도 작업 중 어느 쪽인가요?"),
+                "kind": "choice", "input_need": "required", "why_required": leaf("중복 작업 결정 필요"),
+                "options": [leaf("기존 작업 확장"), leaf("별도 작업 생성")]}
+    if extra == "root_questions": draft["questions"] = [question]
+    elif extra == "legacy_missing_inputs": draft["missing_inputs"] = []
+    elif extra == "legacy_needs_input": draft.update(status="needs_input", payload={})
+    else: draft["payload"]["questions"] = [question]
+    before = copy.deepcopy(draft)
+    with pytest.raises(ValueError, match=ERROR): assemble(compiled, incoming, draft)
+    assert draft == before
+
+
+def test_native_question_reaches_work_state_and_resumes_the_original_request(compiled, case):
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.work_architect import WorkArchitect
+    from app.agent.workflow.continuation import build_continuation_contract
+    from app.agent.workflow.session import _turn_start_patch
+    from app.agent.workflow.graph import route_after_work_architect
+    pack, incoming, draft, _ = case
+    draft["payload"].update(items=[], questions=[{
+        "question": leaf("어떤 대상의 점검 작업인가요?"), "kind": "text", "field": "target",
+        "input_need": "required", "why_required": leaf("점검 대상을 결정해야 함")}])
+    result = assemble(compiled, incoming, draft)
+    remote, local = guards(pack, result)
+    assert remote == result
+    canonical = local()[1]
+    prior = {"intent": "plan_work", "request_text": pack.query,
+             "messages": [HumanMessage(content=pack.query)],
+             "request_plan": {"goal": pack.query, "tasks": [], "blocking_questions": [], "assumptions": []}}
+    patch = WorkArchitect().apply(prior, canonical)
+    assert patch["questions"][0]["question"] == "어떤 대상의 점검 작업인가요?"
+    assert patch["questions"][0]["required_input"] is True
+    assert not (patch.get("draft") or {}).get("items")
+    assert route_after_work_architect({**prior, **patch}) == "respond"
+    assert not patch.get("approval_token") and not patch.get("comment_token")
+    state = {**prior, **patch}
+    state["continuation_contract"] = build_continuation_contract(state)
+    answer = "대상은 DL-9003 수집 경로 점검으로 해줘"
+    resumed = _turn_start_patch(answer, state)
+    assert resumed["turn_continuation"] is True
+    assert resumed["request_text"] == pack.query
+    assert resumed["continuation_answer"] == answer
+    assert resumed["request_plan"] == prior["request_plan"]
+    assert resumed["continuation_contract"]["root_request"] == pack.query
 
 
 @pytest.mark.parametrize("missing", ["questions", "mode", "items"])
@@ -353,6 +406,7 @@ def test_exact_envelope_bounds_fail_without_truncation(compiled, case, limit, ex
         item["children"] = [{"summary": leaf("x"), "scope_in": [leaf("x")] * 6, "dod": [leaf("x")] * 5}] * 21
         if exceeds: draft["payload"]["rationale"] = leaf("x")
     else:
+        draft["payload"]["items"] = []
         draft["payload"]["questions"] = [{"question": leaf("x" * (1200 + exceeds)), "kind": "text", "input_need": "optional", "why_required": leaf("")}]
     Draft202012Validator(compiled[1]).validate(draft)
     before = copy.deepcopy(draft)

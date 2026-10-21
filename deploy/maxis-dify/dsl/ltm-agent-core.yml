@@ -4908,23 +4908,28 @@ workflow:
             \ entity_reference and role context are not citations.\n{\"source_content_index\"\
             :N} selects zero-based context.sources[N].content for request_plan intent\
             \ only; never resolve business strings as references.\n\n## Native JSON\n\
-            ```json\n{\"contract\":\"work-draft.v2\",\"status\":\"ok\",\"payload\"\
+            ```json\n{\"contract\":\"work-draft.v3\",\"status\":\"ok\",\"payload\"\
             :{\"mode\":\"task\",\"questions\":[],\"items\":[{\"summary\":{\"value\"\
             :\"제안 제목\",\"kind\":\"recommendation\",\"source_ids\":[\"SOURCE_ID\"]},\"\
             type\":\"Task\",\"background\":{\"value\":\"사용자가 제공한 배경\",\"kind\":\"\
             inference\",\"source_ids\":[\"SOURCE_ID\"]},\"scope_in\":[{\"value\":\"\
             제안 범위\",\"kind\":\"recommendation\",\"source_ids\":[\"SOURCE_ID\"]}],\"\
             dod\":[{\"value\":\"검증 가능한 완료 조건\",\"kind\":\"recommendation\",\"source_ids\"\
-            :[\"SOURCE_ID\"]}]}]},\"missing_inputs\":[]}\n```\nReplace example values/IDs;\
-            \ no default decision. Schema order: contract, status, payload, missing_inputs,\
-            \ each once. Close payload before root missing_inputs. ok requires mode=task|subtask|epic,\
-            \ questions, items; no blocking questions beside a draft. needs_input:\
-            \ payload={}, concrete missing_inputs. blocked: payload={}, missing_inputs=[].\n\
-            Payload keys: mode, questions, items, interpretation, structure, structure_why,\
-            \ rationale. Item metadata never belongs at payload root. Never put rationale\
-            \ inside items. summary/background/scope_in/dod are wrapped; type/issue_type\
-            \ plain. Include requested children. assignee/parent_ref are unsupported.\n\
-            Authored text: {value,kind,source_ids}, kind=inference|recommendation\
+            :[\"SOURCE_ID\"]}]}]}}\n```\nReplace example values/IDs; no default decision.\
+            \ Schema order: contract, status, payload, each once. ok requires mode=task|subtask|epic,\
+            \ questions, items. Questions belong ONLY in payload.questions: for clarification\
+            \ use status=\"ok\", items=[] and concrete question objects; for a draft\
+            \ use questions=[] and items. Never combine questions with draft items.\
+            \ blocked: payload={}. No other root fields.\nEach question object has\
+            \ plain kind=text|choice|multi|date, optional field, plain input_need=required|optional,\
+            \ wrapped question and why_required, and optional wrapped options. The\
+            \ question's kind is not the nested narrative kind=inference|recommendation.\
+            \ Preserve the reason and available choices; do not emit an additional\
+            \ copy of the question outside payload.\nPayload keys: mode, questions,\
+            \ items, interpretation, structure, structure_why, rationale. Item metadata\
+            \ never belongs at payload root. Never put rationale inside items. summary/background/scope_in/dod\
+            \ are wrapped; type/issue_type plain. Include requested children. assignee/parent_ref\
+            \ are unsupported.\nAuthored text: {value,kind,source_ids}, kind=inference|recommendation\
             \ only. Proposed work is recommendation; user-reported context and synthesized\
             \ relevance are inference, not verified facts. Facts use a DIFFERENT shape:\
             \ {kind:\"fact\",source_id:\"ACTUAL_ID\",source_path:\"/tickets/0\"}.\
@@ -5154,17 +5159,15 @@ workflow:
             - contract
             - status
             - payload
-            - missing_inputs
             properties:
               contract:
                 type: string
                 enum:
-                - work-draft.v2
+                - work-draft.v3
               status:
                 type: string
                 enum:
                 - ok
-                - needs_input
                 - blocked
               payload:
                 anyOf:
@@ -6150,13 +6153,6 @@ workflow:
                   - mode
                   - items
                   type: object
-              missing_inputs:
-                type: array
-                maxItems: 8
-                items:
-                  type: string
-                  minLength: 1
-                  maxLength: 500
         structured_output_enabled: true
         selected: false
         title: Work LLM
@@ -6357,17 +6353,15 @@ workflow:
           \"\"\n    try:\n        incoming, pack, schema, sources = _draft_context(model_input,\
           \ \"work_architect\",\n            _WORK_SCHEMA_JSON, _WORK_SCHEMA_SHA256,\
           \ _DRAFT_SCHEMA, _fail)\n        draft = _native_candidate(candidate, _DRAFT_SCHEMA,\
-          \ _MAX_DRAFT_UTF8_BYTES)\n        status, payload, missing = draft[\"status\"\
-          ], draft[\"payload\"], draft[\"missing_inputs\"]\n        if (draft[\"contract\"\
-          ] != \"work-draft.v2\" or any(not value.strip() for value in missing)\n\
-          \                or status == \"ok\" and missing or status != \"ok\" and\
-          \ payload\n                or status == \"needs_input\" and not missing\
-          \ or status == \"blocked\" and missing):\n            _fail()\n        claims,\
-          \ bindings, citations, citation_ids, claim_ids = [], [], [], {}, {}\n  \
-          \      source_content = {row[\"source_id\"]: row[\"content\"] for row in\
-          \ pack[\"sources\"]}\n\n        def pointer(key):\n            return str(key).replace(\"\
-          ~\", \"~0\").replace(\"/\", \"~1\")\n\n        def unwrap(value, path):\n\
-          \            if isinstance(value, list):\n                return [unwrap(row,\
+          \ _MAX_DRAFT_UTF8_BYTES)\n        status, payload = draft[\"status\"], draft[\"\
+          payload\"]\n        if (draft[\"contract\"] != \"work-draft.v3\" or status\
+          \ == \"blocked\" and payload\n                or payload.get(\"questions\"\
+          ) and payload.get(\"items\")):\n            _fail()\n        claims, bindings,\
+          \ citations, citation_ids, claim_ids = [], [], [], {}, {}\n        source_content\
+          \ = {row[\"source_id\"]: row[\"content\"] for row in pack[\"sources\"]}\n\
+          \n        def pointer(key):\n            return str(key).replace(\"~\",\
+          \ \"~0\").replace(\"/\", \"~1\")\n\n        def unwrap(value, path):\n \
+          \           if isinstance(value, list):\n                return [unwrap(row,\
           \ path + \"/\" + str(index)) for index, row in enumerate(value)]\n     \
           \       if not isinstance(value, dict):\n                return value\n\
           \            if set(value) == {\"kind\", \"source_id\", \"source_path\"\
@@ -6406,10 +6400,10 @@ workflow:
           contract\": \"remote-role-result.v1\", \"role_id\": \"work_architect\",\
           \ \"status\": status,\n            \"payload\": output, \"claims\": claims,\
           \ \"payload_claims\": bindings, \"citations\": citations,\n            \"\
-          missing_inputs\": missing, \"warnings\": [], \"knowledge_manifest_sha256\"\
-          : pack[\"knowledge_manifest_sha256\"],\n            **{key: incoming[key]\
-          \ for key in (\"workflow_version\", \"knowledge_version\", \"knowledge_proof\"\
-          )}}\n        encoded = _canonical(result)\n        encoded.encode(\"utf-8\"\
+          missing_inputs\": [], \"warnings\": [], \"knowledge_manifest_sha256\": pack[\"\
+          knowledge_manifest_sha256\"],\n            **{key: incoming[key] for key\
+          \ in (\"workflow_version\", \"knowledge_version\", \"knowledge_proof\")}}\n\
+          \        encoded = _canonical(result)\n        encoded.encode(\"utf-8\"\
           , errors=\"strict\")\n        return {\"candidate\": encoded}\n    except\
           \ _NativeDraftIssue as error:\n        raise ValueError(\"invalid_core_work_draft\
           \ \" + error.marker) from None\n    except Exception:\n        raise ValueError(\"\
@@ -6459,17 +6453,17 @@ workflow:
           :{\"maxLength\":500,\"type\":\"string\"}},\"required\":[\"questions\",\"\
           mode\",\"items\"],\"type\":\"object\"}'\n_WORK_SCHEMA_SHA256 = '8f46d8cc3bbe4712838a066844b90eeef2272a9f0e8a8a6c054b63a338226f1a'\n\
           _DRAFT_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required':\
-          \ ['contract', 'status', 'payload', 'missing_inputs'], 'properties': {'contract':\
-          \ {'type': 'string', 'enum': ['work-draft.v2']}, 'status': {'type': 'string',\
-          \ 'enum': ['ok', 'needs_input', 'blocked']}, 'payload': {'anyOf': [{'type':\
-          \ 'object', 'additionalProperties': False, 'maxProperties': 0}, {'additionalProperties':\
-          \ False, 'properties': {'interpretation': {'anyOf': [{'type': 'object',\
-          \ 'additionalProperties': False, 'required': ['value', 'kind', 'source_ids'],\
-          \ 'properties': {'value': {'maxLength': 600, 'type': 'string'}, 'kind':\
-          \ {'type': 'string', 'enum': ['inference', 'recommendation']}, 'source_ids':\
-          \ {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items':\
-          \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\
-          \\s\\\\S])'}}}}, {'type': 'object', 'additionalProperties': False, 'required':\
+          \ ['contract', 'status', 'payload'], 'properties': {'contract': {'type':\
+          \ 'string', 'enum': ['work-draft.v3']}, 'status': {'type': 'string', 'enum':\
+          \ ['ok', 'blocked']}, 'payload': {'anyOf': [{'type': 'object', 'additionalProperties':\
+          \ False, 'maxProperties': 0}, {'additionalProperties': False, 'properties':\
+          \ {'interpretation': {'anyOf': [{'type': 'object', 'additionalProperties':\
+          \ False, 'required': ['value', 'kind', 'source_ids'], 'properties': {'value':\
+          \ {'maxLength': 600, 'type': 'string'}, 'kind': {'type': 'string', 'enum':\
+          \ ['inference', 'recommendation']}, 'source_ids': {'type': 'array', 'minItems':\
+          \ 1, 'maxItems': 8, 'uniqueItems': True, 'items': {'type': 'string', 'minLength':\
+          \ 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\\
+          s\\\\S])'}}}}, {'type': 'object', 'additionalProperties': False, 'required':\
           \ ['kind', 'source_id', 'source_path'], 'properties': {'kind': {'type':\
           \ 'string', 'enum': ['fact']}, 'source_id': {'type': 'string', 'minLength':\
           \ 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\\
@@ -6677,9 +6671,7 @@ workflow:
           \ 'string', 'enum': ['fact']}, 'source_id': {'type': 'string', 'minLength':\
           \ 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\\
           s\\\\S])'}, 'source_path': {'type': 'string', 'maxLength': 500}}}]}}, 'required':\
-          \ ['questions', 'mode', 'items'], 'type': 'object'}]}, 'missing_inputs':\
-          \ {'type': 'array', 'maxItems': 8, 'items': {'type': 'string', 'minLength':\
-          \ 1, 'maxLength': 500}}}}"
+          \ ['questions', 'mode', 'items'], 'type': 'object'}]}}}"
         variables:
         - variable: model_input
           value_selector:
@@ -7028,17 +7020,17 @@ workflow:
           :[\"questions\",\"mode\",\"items\"],\"type\":\"object\"}'\n_WORK_SCHEMA_SHA256\
           \ = '8f46d8cc3bbe4712838a066844b90eeef2272a9f0e8a8a6c054b63a338226f1a'\n\
           _DRAFT_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required':\
-          \ ['contract', 'status', 'payload', 'missing_inputs'], 'properties': {'contract':\
-          \ {'type': 'string', 'enum': ['work-draft.v2']}, 'status': {'type': 'string',\
-          \ 'enum': ['ok', 'needs_input', 'blocked']}, 'payload': {'anyOf': [{'type':\
-          \ 'object', 'additionalProperties': False, 'maxProperties': 0}, {'additionalProperties':\
-          \ False, 'properties': {'interpretation': {'anyOf': [{'type': 'object',\
-          \ 'additionalProperties': False, 'required': ['value', 'kind', 'source_ids'],\
-          \ 'properties': {'value': {'maxLength': 600, 'type': 'string'}, 'kind':\
-          \ {'type': 'string', 'enum': ['inference', 'recommendation']}, 'source_ids':\
-          \ {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items':\
-          \ {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\
-          \\s\\\\S])'}}}}, {'type': 'object', 'additionalProperties': False, 'required':\
+          \ ['contract', 'status', 'payload'], 'properties': {'contract': {'type':\
+          \ 'string', 'enum': ['work-draft.v3']}, 'status': {'type': 'string', 'enum':\
+          \ ['ok', 'blocked']}, 'payload': {'anyOf': [{'type': 'object', 'additionalProperties':\
+          \ False, 'maxProperties': 0}, {'additionalProperties': False, 'properties':\
+          \ {'interpretation': {'anyOf': [{'type': 'object', 'additionalProperties':\
+          \ False, 'required': ['value', 'kind', 'source_ids'], 'properties': {'value':\
+          \ {'maxLength': 600, 'type': 'string'}, 'kind': {'type': 'string', 'enum':\
+          \ ['inference', 'recommendation']}, 'source_ids': {'type': 'array', 'minItems':\
+          \ 1, 'maxItems': 8, 'uniqueItems': True, 'items': {'type': 'string', 'minLength':\
+          \ 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\\
+          s\\\\S])'}}}}, {'type': 'object', 'additionalProperties': False, 'required':\
           \ ['kind', 'source_id', 'source_path'], 'properties': {'kind': {'type':\
           \ 'string', 'enum': ['fact']}, 'source_id': {'type': 'string', 'minLength':\
           \ 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\\
@@ -7246,9 +7238,7 @@ workflow:
           \ 'string', 'enum': ['fact']}, 'source_id': {'type': 'string', 'minLength':\
           \ 1, 'maxLength': 128, 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\\\\\
           s\\\\S])'}, 'source_path': {'type': 'string', 'maxLength': 500}}}]}}, 'required':\
-          \ ['questions', 'mode', 'items'], 'type': 'object'}]}, 'missing_inputs':\
-          \ {'type': 'array', 'maxItems': 8, 'items': {'type': 'string', 'minLength':\
-          \ 1, 'maxLength': 500}}}}"
+          \ ['questions', 'mode', 'items'], 'type': 'object'}]}}}"
         variables:
         - variable: model_input
           value_selector:

@@ -320,6 +320,47 @@ def test_feedback_is_fixed_non_citable_and_does_not_restamp_evidence(evidence):
     assert with_native_feedback(result, "work_architect") is result
 
 
+@pytest.mark.parametrize("reason", ["", "json_syntax", "json_structure", "schema", "source_id", "fact_selection", "numeric_grounding"])
+def test_work_feedback_matches_single_question_channel_for_every_rejection(evidence, reason):
+    import json
+    from app.agent.maxis.draft_feedback import with_native_feedback
+    from app.agent.maxis.contracts import canonical_payload_schema
+    from app.agent.workflow.work_architect.contracts import CREATE_SCHEMA
+    schema, digest = canonical_payload_schema(CREATE_SCHEMA)
+    pack = evidence.model_copy(update={"use_case": "work_architect", "payload_schema_json": schema,
+                                       "payload_schema_sha256": digest})
+    payload = {"roleId": "work_architect", "evidencePack": pack.model_dump(mode="json")}
+    result = with_native_feedback(payload, "work_architect", reason=reason)
+    content = result["evidencePack"]["role_context"][-1]["content_json"]
+    hint = json.loads(content)
+    assert "Root keys are contract,status,payload." in hint["role_contract"]
+    assert "payload.questions with status=ok and items=[]" in hint["role_contract"]
+    assert "work-draft.v3" in hint["role_contract"]
+    assert "missing_inputs" not in content and "needs_input" not in content
+
+
+@pytest.mark.parametrize("schema_name", ["update", "comment", "extended_create"])
+@pytest.mark.parametrize("reason", ["", "numeric_grounding", "schema", "json_syntax"])
+def test_work_feedback_never_routes_other_schemas_into_native_create(evidence, schema_name, reason):
+    import json
+    from app.agent.maxis.draft_feedback import with_native_feedback
+    from app.agent.maxis.contracts import canonical_payload_schema
+    from app.agent.workflow.work_architect.contracts import CREATE_SCHEMA, UPDATE_SCHEMA, COMMENT_SCHEMA
+    schemas = {"update": UPDATE_SCHEMA, "comment": COMMENT_SCHEMA,
+               "extended_create": {**CREATE_SCHEMA, "properties": {
+                   **CREATE_SCHEMA["properties"], "outcome": {"type": "string"}}}}
+    schema, digest = canonical_payload_schema(schemas[schema_name])
+    pack = evidence.model_copy(update={"use_case": "work_architect", "payload_schema_json": schema,
+                                       "payload_schema_sha256": digest})
+    payload = {"roleId": "work_architect", "evidencePack": pack.model_dump(mode="json")}
+    result = with_native_feedback(payload, "work_architect", reason=reason)
+    hint = json.loads(result["evidencePack"]["role_context"][-1]["content_json"])
+    assert "bound payload schema and published output contract" in hint["role_contract"]
+    assert "work-draft.v3" not in str(hint) and "payload.questions" not in str(hint)
+    assert result["evidencePack"]["payload_schema_json"] == schema
+    assert result["evidencePack"]["payload_schema_sha256"] == digest
+
+
 @pytest.mark.parametrize("blocked_by", ["synthetic_only", "full_context", "budget"])
 def test_feedback_never_displaces_context_or_changes_fixed_fixture(evidence, blocked_by, monkeypatch):
     import hashlib
