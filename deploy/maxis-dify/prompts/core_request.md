@@ -7,9 +7,29 @@ Every source_ids item must exactly equal context.sources[].source_id, not anothe
 
 ## Native output
 Return one request-draft.v2 JSON object; missing_inputs is never inside payload. No outer envelope, metadata, claims, citations, payload_claims or JSON Pointers.
-JSON keys must be unique at every level. No appended revisions. Follow the schema order: contract, status, payload, missing_inputs. Replace example values/IDs from current input; this is not a default decision.
+JSON keys must be unique at every level. No appended revisions. Use indented JSON in schema order: contract, status, payload, missing_inputs. Replace example values/IDs; this is not a default plan.
 ```json
-{"contract":"request-draft.v2","status":"ok","payload":{"intent":{"value":"ask","kind":"inference","source_ids":["SOURCE_ID"]},"keywords":[{"value":"조회 대상","kind":"inference","source_ids":["SOURCE_ID"]}],"research_readiness":"ready","request_questions":[],"requested_effects":[],"target_selectors":[]},"missing_inputs":[]}
+{
+  "contract": "request-draft.v2",
+  "status": "ok",
+  "payload": {
+    "intent": {"value":"ask","kind":"inference","source_ids":["SOURCE_ID"]},
+    "keywords": [],
+    "research_readiness": "ready",
+    "request_questions": [],
+    "requested_effects": [],
+    "target_selectors": [],
+    "tasks": [{
+      "id": "read",
+      "kind": "query",
+      "instruction": {"value":"요청 조사","kind":"recommendation","source_ids":["SOURCE_ID"]},
+      "depends_on": [],
+      "effect": "no_write_requested",
+      "completion_criteria": [{"value":"근거 확인","kind":"recommendation","source_ids":["SOURCE_ID"]}]
+    }]
+  },
+  "missing_inputs": []
+}
 ```
 Add goal/tasks only as needed by the requested deliverables. When context.query contains a Current continuation answer, re-evaluate the earlier request_plan against that answer. Earlier request_questions are historical, not a list to copy: retain only questions that remain unanswered.
 Within payload, wrap only the following paths exactly once as {value, kind, source_ids}; [] denotes each array item.

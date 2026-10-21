@@ -43,6 +43,23 @@ def test_native_prompt_examples_match_the_live_native_schema(functions, role, no
     assert "SOURCE_ID" in examples[0]
 
 
+def test_result_answer_and_clarification_examples_are_exclusive(functions):
+    prompt = (ROOT / "deploy/maxis-dify/prompts/core_result.md").read_text(encoding="utf-8")
+    examples = re.findall(r"```json\n(.*?)\n```", prompt, re.S)
+    assert len(examples) == 2
+    doc = yaml.safe_load((ROOT / "deploy/maxis-dify/dsl/ltm-agent-core.yml").read_text(encoding="utf-8"))
+    schema = next(n["data"]["structured_output"]["schema"] for n in doc["workflow"]["graph"]["nodes"]
+                  if n["id"] == "1909000000001040")
+    answer, question = [functions._native_candidate(raw, schema, 32768) for raw in examples]
+    assert answer["status"] == "ok" and answer["segments"] and answer["missing_inputs"] == []
+    assert question["status"] == "needs_input" and question["segments"] == [] and question["missing_inputs"]
+    with pytest.raises(ValueError, match="native_draft_schema"):
+        functions._native_candidate(json.dumps({**answer, "missing_inputs": question["missing_inputs"]}),
+                                    schema, 32768)
+    assert "Never combine segments and missing_inputs." in prompt
+    assert "Overflow is blocked, not missing evidence." in prompt
+
+
 
 def captured(function, *args):
     try:

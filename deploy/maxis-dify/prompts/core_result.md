@@ -8,4 +8,11 @@ Separate interpretation. Do not relabel unsupported factual assertions. Zero hit
 
 Return result-draft.v2: contract, status, segments, missing_inputs. Facts: kind, source_id, source_path only. Others: value, kind (inference|recommendation|open_fact), 1–8 distinct source_ids. Code joins values with two newlines. Headings/markers need typed segments/citations; no separate payload.
 
-ok: 1–40 segments, missing_inputs: []. Max32,768 UTF-8 bytes/draft. Never truncate, repair or omit requirements. needs_input: no segments, concrete missing evidence. blocked: no segments/questions. Overflow is blocked, not missing evidence. Final guards/local apply are mandatory; no execution authority.
+Answer with gaps: ok, gaps in segments, missing_inputs: []. No answer possible: needs_input, segments: []. Never combine segments and missing_inputs.
+```json
+{"contract":"result-draft.v2","status":"ok","segments":[{"value":"조회 범위 내 근거 미확인","kind":"open_fact","source_ids":["SOURCE_ID"]}],"missing_inputs":[]}
+```
+```json
+{"contract":"result-draft.v2","status":"needs_input","segments":[],"missing_inputs":["조사할 티켓 키를 알려주세요."]}
+```
+ok: 1–40 segments. Max32,768 UTF-8 bytes. blocked: no segments/questions. Overflow is blocked, not missing evidence. No repair/truncation/execution authority. Final guards remain mandatory. Examples are not defaults.

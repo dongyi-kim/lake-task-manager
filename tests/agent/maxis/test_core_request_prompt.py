@@ -203,6 +203,19 @@ def test_transport_requires_unique_keys_before_final_native_output(contract, rol
     assert len(prompt.encode("utf-8")) < 8192
 
 
+def test_request_example_demonstrates_nested_task_and_root_closure(contract, role):
+    transport = (DIRECTORY / "prompts/core_request.md").read_text(encoding="utf-8")
+    raw = re.findall(r"```json\n(.*?)\n```", transport, re.S)
+    assert len(raw) == 1
+    example = json.loads(raw[0])
+    assert example["payload"]["tasks"][0]["effect"] == "no_write_requested"
+    assert example["payload"]["tasks"][0]["completion_criteria"]
+    assert example["missing_inputs"] == [] and "missing_inputs" not in example["payload"]
+    assert '\n  },\n  "missing_inputs": []\n}' in raw[0]
+    assert "Use indented JSON" in transport
+    assert len(contract.build_request_system_prompt(SCHEMA, role, transport).encode()) <= 8192
+
+
 def test_transport_lists_exact_wrapped_and_plain_payload_paths(contract):
     transport = (DIRECTORY / "prompts/core_request.md").read_text(encoding="utf-8")
     canonical = json.loads(canonical_payload_schema(SCHEMA)[0])
