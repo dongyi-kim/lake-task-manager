@@ -23,7 +23,7 @@ def build(contract, texts, schema=CREATE_SCHEMA):
 
 def test_bounded_native_prompt_preserves_exact_local_policy_and_question_help(contract, texts):
     prompt = build(contract, texts)
-    assert contract.WORK_MAX_SYSTEM_UTF8_BYTES == 16384
+    assert contract.WORK_MAX_SYSTEM_UTF8_BYTES == 18432
     assert len(prompt.encode()) <= contract.WORK_MAX_SYSTEM_UTF8_BYTES
     assert hashlib.sha256(texts[0].encode()).hexdigest() == contract.WORK_ROLE_SHA256
     assert prompt.startswith(texts[1].strip()) and "work-draft.v1" in prompt
@@ -155,7 +155,7 @@ def test_work_only_system_cap_is_inclusive_and_never_truncates_policy(contract, 
     padding = "x" * (contract.WORK_MAX_SYSTEM_UTF8_BYTES - len(prompt.encode()))
     transport = texts[1].strip() + padding
     exact = build(contract, (texts[0], transport))
-    assert len(exact.encode()) == 16384 and policy_sections(texts[0])["Epic Creation"] in exact
+    assert len(exact.encode()) == 18432 and policy_sections(texts[0])["Epic Creation"] in exact
     with pytest.raises(ValueError, match="Work system prompt requires review"):
         build(contract, (texts[0], transport + "x"))
 

@@ -78,7 +78,7 @@ def test_transport_places_missing_inputs_at_top_level_without_changing_status_co
     for unchanged in ("missing_inputs: [].", "needs_input requires payload: {} and concrete missing_inputs.",
                       "blocked, payload: {}, missing_inputs: [].", "including research_readiness=needs_clarification and request_questions"):
         assert unchanged in transport
-    assert prompt.startswith(transport + "\n\n") and len(prompt.encode("utf-8")) <= 8192
+    assert prompt.startswith(transport + "\n\n") and len(prompt.encode("utf-8")) <= 10240
 
 
 def test_native_envelope_stays_exactly_four_required_fields(compiled):

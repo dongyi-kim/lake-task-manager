@@ -495,7 +495,7 @@ def test_work_create_schema_drift_requires_review(modules, raw_source, monkeypat
     _reject_both(modules, raw_source)
 
 
-def test_work_only_system_cap_does_not_raise_other_role_caps(modules, monkeypatch):
+def test_request_work_system_caps_do_not_raise_other_role_caps(modules, monkeypatch):
     _, validator = modules
     spec, checks = validator._editor_graph_modules(ROOT)
     observed = {}
@@ -506,8 +506,10 @@ def test_work_only_system_cap_does_not_raise_other_role_caps(modules, monkeypatc
     monkeypatch.setattr(checks, "validate_llm", record)
     monkeypatch.setattr(validator, "_editor_graph_modules", lambda root: (spec, checks))
     validator.validate_bundle(ROOT)
-    assert observed["agent_core.1909000000001034"] == 16384
-    assert all(value == 8192 for key, value in observed.items() if key != "agent_core.1909000000001034")
+    assert observed["agent_core.1909000000001034"] == 18432
+    assert observed["agent_core.1909000000001031"] == 10240
+    assert all(value == 8192 for key, value in observed.items()
+               if key not in {"agent_core.1909000000001034", "agent_core.1909000000001031"})
 
 
 @pytest.mark.parametrize("mutation", ["source", "original", "structured_channel", "output", "budget", "merge", "stage"])

@@ -61,7 +61,7 @@ Set `structure` and `structure_why` before drafting. Default to `single_task`.
 - A new pipeline or system with separate owners and completion dates must not be flattened into one Task.
 - Repeating the same work for N targets normally becomes one Task with one Sub-Task per target, not N unrelated Tasks. Name the target in each summary and scope, and preserve per-target assignment.
 - Independent module deliverables become sibling Tasks. Do not join them with repeated conjunctions in one summary.
-- If the approach is unresolved, create one investigation Task; do not pre-create speculative implementation Tasks.
+- Use an investigation Task when feasibility or approach selection is itself the requested outcome. Missing implementation details alone do not turn an implementation request into investigation-only work; preserve its build and verification outcome, leaving unsupported choices open.
 - A Sub-Task must appear as an actual child through `children` or `parent_ref`, never as a prose-only candidate list.
 - Promote a child whose module or deliverable does not belong to its parent into a sibling Task.
 - Represent each requested deliverable exactly once. Never keep the same index, guide, test, or other work unit as both a child and a sibling Task.

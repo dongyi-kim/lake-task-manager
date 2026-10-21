@@ -175,6 +175,13 @@ def test_completion_criteria_planning_kinds_preserve_values_order_and_sources(no
     assert (incoming, draft) == before
 
 
+def test_request_prompt_keeps_outcome_and_internal_lookup_responsibility(nodes):
+    prompt = nodes[REQUEST_ID]["prompt_template"][0]["text"]
+    assert "For an implementation request, preserve implementation and verification" in prompt
+    assert "never repeat those internal stages as tasks" in prompt
+    assert "Ask only about user-owned intent that cannot be recovered from Jira" in prompt
+
+
 def test_completion_rule_does_not_ban_unrelated_evidence_backed_facts(nodes, request_case):
     pack, incoming, draft = request_case
     draft["payload"]["goal"] = {"value": "원문 자료", "kind": "fact", "source_ids": ["record-exact"]}

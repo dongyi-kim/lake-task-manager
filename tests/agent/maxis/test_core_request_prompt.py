@@ -47,7 +47,7 @@ def test_description_help_is_exact_and_does_not_mutate_the_local_contract(contra
     assert "Use false for materially ambiguous new development" in prompt
     assert "`write_intent=true`" in prompt
     assert "A draft request remains false." in prompt
-    assert "never repeat those internal stages as tasks" not in prompt
+    assert "never repeat those internal stages as tasks" in prompt
     assert "## Clarification Policy" not in prompt
     assert "## Stop and Escalate" not in prompt
     assert "## Preflight Check" not in prompt
@@ -161,11 +161,11 @@ def test_invalid_markdown_fails_closed(contract, role, field, invalid):
 
 def test_system_budget_is_utf8_bytes_and_accepts_the_exact_boundary(contract, role):
     initial = contract.build_request_system_prompt(SCHEMA, role, "Native transport")
-    room = 8192 - len(initial.encode("utf-8"))
+    room = 10240 - len(initial.encode("utf-8"))
     padding = "가" * (room // 3) + "x" * (room % 3)
     boundary = contract.build_request_system_prompt(SCHEMA, role, "Native transport" + padding)
-    assert len(boundary.encode("utf-8")) == 8192
-    assert len(boundary) < 8192
+    assert len(boundary.encode("utf-8")) == 10240
+    assert len(boundary) < 10240
     with pytest.raises(ValueError, match=ERROR):
         contract.build_request_system_prompt(SCHEMA, role, "Native transport" + padding + "가")
 
@@ -173,7 +173,7 @@ def test_system_budget_is_utf8_bytes_and_accepts_the_exact_boundary(contract, ro
 def test_transport_explains_only_wire_evidence_and_status_boundaries(contract, role):
     transport = (DIRECTORY / "prompts/core_request.md").read_text(encoding="utf-8").strip()
     prompt = contract.build_request_system_prompt(SCHEMA, role, transport)
-    assert len(prompt.encode("utf-8")) <= 8192
+    assert len(prompt.encode("utf-8")) <= 10240
     for marker in ("request-input.v1", "request-draft.v2", "context.sources[].source_id",
                    "context.query", "role_context", "source_authority", "allowed_claim_kinds",
                    "user_intent", "evidence_source", "No invented sources/facts or authority",
@@ -200,7 +200,7 @@ def test_transport_requires_unique_keys_before_final_native_output(contract, rol
         assert transport.count(rule) == 1
         assert prompt.count(rule) == 1
     assert prompt.startswith(transport + "\n\n")
-    assert len(prompt.encode("utf-8")) < 8192
+    assert len(prompt.encode("utf-8")) < 10240
 
 
 def test_request_example_demonstrates_nested_task_and_root_closure(contract, role):
@@ -213,7 +213,7 @@ def test_request_example_demonstrates_nested_task_and_root_closure(contract, rol
     assert example["missing_inputs"] == [] and "missing_inputs" not in example["payload"]
     assert '\n  },\n  "missing_inputs": []\n}' in raw[0]
     assert "Use indented JSON" in transport
-    assert len(contract.build_request_system_prompt(SCHEMA, role, transport).encode()) <= 8192
+    assert len(contract.build_request_system_prompt(SCHEMA, role, transport).encode()) <= 10240
 
 
 def test_transport_lists_exact_wrapped_and_plain_payload_paths(contract):

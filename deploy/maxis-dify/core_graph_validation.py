@@ -22,7 +22,8 @@ KNOWLEDGE_INPUT_ID = "1909000000001039"
 RESULT_ID = "1909000000001040"
 RESULT_ASSEMBLER_ID = "1909000000001041"
 RESULT_INPUT_ID = "1909000000001042"
-WORK_MAX_SYSTEM_BYTES = 16384  # Reviewed Work-only CREATE policy budget; other roles remain unchanged.
+REQUEST_MAX_SYSTEM_BYTES = 10240  # Preserve outcome/lookup semantics alongside the transport contract.
+WORK_MAX_SYSTEM_BYTES = 18432  # Reviewed Work-only CREATE policy budget; other roles remain unchanged.
 CLASSIFIER_ID = "1909000000001024"
 STAGE_ID = "1909000000001025"
 MERGE_ID = "1909000000001027"
@@ -39,12 +40,12 @@ QUERY_SCHEMA_SHA256 = "87365a165718e4ef5597083f1be9f88a09170796927154d8e2e82fdaa
 QUERY_ASSEMBLER_SHA256 = "12672fa9b806c7f7ad393d689aa13af9f23bf2985bd73f00930169f0b5a0d6b5"
 QUERY_INPUT_SHA256 = "14cc8be45f25f625b2fec0982624afd617e645b1cb2fba55b8dc7d0207886cc0"
 QUERY_USER_SHA256 = "28e26f7e1fa1605b12d6b1c4835417cd444005403f724908d92e04575071c1d0"
-REQUEST_SYSTEM_SHA256 = "1433e18e9ed6e88ec1cd294ab356757083c58fa90cb46f76df0c6c0ab7ab7b43"
+REQUEST_SYSTEM_SHA256 = "55cc8b94bb13f12b3145aab4161ae9e156561e9a3c0ac91b219e165bf22a392d"
 REQUEST_SCHEMA_SHA256 = "663ba61b47ddf68831eda89743189fa5d0f0e05fd30eff8f9b279bcc3cefe2c6"
 REQUEST_ASSEMBLER_SHA256 = "2532d429f907a4ff174fcd5ad22a461a58146fc180c5d7c31a1fce333f867bac"
 REQUEST_INPUT_SHA256 = "1cc6ae1c13e83875ab970eb065f82d3a3c2851dde4c90fbe12c9994fafd14467"
 REQUEST_USER_SHA256 = "482679951b55f987662e0e4c3539b91fe1a5facd56866106a8e853881756215e"
-WORK_SYSTEM_SHA256 = "bca42465928b57de6dde1c9635ea0f6326e432584311c891f29e12e11342835f"
+WORK_SYSTEM_SHA256 = "988463c9dc163912978b35ccd233a892cc479a33f1782d56762b6edc2120d54b"
 WORK_SCHEMA_SHA256 = "7f0232ac269ccf983254720d75b3e79b11e4e38cc5adc90ca92e7851cf71d005"
 WORK_ASSEMBLER_SHA256 = "d99f912bea062b141d9a1c0319a740d59e62a2c95b7b61517decf9734721b769"
 WORK_INPUT_SHA256 = "272d7d5ef8919e24567b193ea97023a7d9f73723fe9477e4685c131ba9fa22a7"
@@ -311,6 +312,7 @@ def validate_core_graph(root, nodes, *, checks, schema, semantic_prompts,
             nodes[node_id]["data"], label=f"agent_core.{node_id}", schema=native_schema,
             prompts=prompts, hashes=hashes, knowledge_id="1909000000001003",
             model_provider=model_provider, model_name=model_name, max_tokens=max_tokens,
-            max_system_bytes=WORK_MAX_SYSTEM_BYTES if node_id == WORK_ID else max_system_bytes,
+            max_system_bytes=(WORK_MAX_SYSTEM_BYTES if node_id == WORK_ID else
+                              REQUEST_MAX_SYSTEM_BYTES if node_id == REQUEST_ID else max_system_bytes),
             error_type=error_type, expected_memory=None,
         )

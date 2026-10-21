@@ -108,7 +108,9 @@ def build_request_system_prompt(schema: dict, local_role_markdown: str, transpor
         clarification = items(selected["Clarification Policy"], 6)
         items(selected["Ticket Semantics"], 2)
         local = ("## Selected local role semantics (canonical reference only)\n"
-                 + "\n".join("- " + row for row in (decisions[1], decisions[7], output[5], clarification[4]))
+                 + "\n".join("- " + row for row in (
+                     decisions[0], decisions[1], decisions[2], decisions[4], decisions[7],
+                     output[5], clarification[0], clarification[4]))
                  + "\n\n## Ticket Semantics\n" + selected["Ticket Semantics"])
         required_wire = [
             "research_readiness" if key == "sufficient" else key
@@ -124,7 +126,7 @@ def build_request_system_prompt(schema: dict, local_role_markdown: str, transpor
         )
         prompt = "\n\n".join((transport_markdown.strip(), required_help,
             "## Canonical field meanings (reference only)\n" + "\n".join(meanings), local))
-        if len(prompt.encode("utf-8")) > 8192:
+        if len(prompt.encode("utf-8")) > 10240:
             fail()
         return prompt
     except (KeyError, TypeError, UnicodeError) as exc:

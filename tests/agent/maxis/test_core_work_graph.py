@@ -138,6 +138,13 @@ def test_work_compiled_assets_match_independent_review_pins(nodes):
         (nodes[WORK]["prompt_template"][1]["text"], "WORK_USER_SHA256"),
     ):
         assert hashlib.sha256(value.encode()).hexdigest() == getattr(GRAPH, pin) == getattr(independent, pin)
-    assert len(assets["work_system_prompt"].encode()) <= 16384
-    assert independent.WORK_MAX_SYSTEM_BYTES == 16384
+    assert len(assets["work_system_prompt"].encode()) <= 18432
+    assert independent.WORK_MAX_SYSTEM_BYTES == 18432
     assert assets["work_schema"]["properties"]["contract"]["enum"] == ["work-draft.v1"]
+
+
+def test_work_prompt_preserves_implementation_and_explains_claim_kinds(nodes):
+    prompt = nodes[WORK]["prompt_template"][0]["text"]
+    assert "Missing implementation details alone do not turn an implementation request" in prompt
+    assert "synthesized relevance or reference selection is inference" in prompt
+    assert "including proposed counts and thresholds" in prompt
