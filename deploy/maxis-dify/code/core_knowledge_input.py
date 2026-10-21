@@ -27,6 +27,8 @@ def _source_view(row):
     if not intent: result["entity_reference"] = row["canonical_id"]
     result["allowed_claim_kinds"] = ["inference", "recommendation"] if intent else ["fact", "inference", "recommendation"]
     result["fact_paths"] = {"paths": [], "complete": True} if intent else _fact_paths(row["content"], records_only=True)
+    result["string_fact_paths"] = {"paths": [], "complete": True} if intent else _fact_paths(
+        row["content"], records_only=True, strings_only=True)
     return result
 
 

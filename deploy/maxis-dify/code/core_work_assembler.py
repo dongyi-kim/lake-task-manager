@@ -23,11 +23,12 @@ def main(model_input, candidate):
             _WORK_SCHEMA_JSON, _WORK_SCHEMA_SHA256, _DRAFT_SCHEMA, _fail)
         draft = _native_candidate(candidate, _DRAFT_SCHEMA, _MAX_DRAFT_UTF8_BYTES)
         status, payload, missing = draft["status"], draft["payload"], draft["missing_inputs"]
-        if (draft["contract"] != "work-draft.v1" or any(not value.strip() for value in missing)
+        if (draft["contract"] != "work-draft.v2" or any(not value.strip() for value in missing)
                 or status == "ok" and missing or status != "ok" and payload
                 or status == "needs_input" and not missing or status == "blocked" and missing):
             _fail()
         claims, bindings, citations, citation_ids, claim_ids = [], [], [], {}, {}
+        source_content = {row["source_id"]: row["content"] for row in pack["sources"]}
 
         def pointer(key):
             return str(key).replace("~", "~0").replace("/", "~1")
@@ -37,9 +38,20 @@ def main(model_input, candidate):
                 return [unwrap(row, path + "/" + str(index)) for index, row in enumerate(value)]
             if not isinstance(value, dict):
                 return value
-            if set(value) != {"value", "kind", "source_ids"}:
+            if set(value) == {"kind", "source_id", "source_path"}:
+                kind, refs = value["kind"], [value["source_id"]]
+                if refs[0] not in sources:
+                    raise _NativeDraftIssue("source_id")
+                try:
+                    text = _fact_text(source_content[refs[0]], value["source_path"], path, readable_record=True)
+                except ValueError:
+                    raise _NativeDraftIssue("fact_selection") from None
+                if not text.strip():
+                    _fail()
+            elif set(value) == {"value", "kind", "source_ids"}:
+                text, kind, refs = (value[key] for key in ("value", "kind", "source_ids"))
+            else:
                 return {key: unwrap(value[key], path + "/" + pointer(key)) for key in sorted(value)}
-            text, kind, refs = (value[key] for key in ("value", "kind", "source_ids"))
             if any(ref not in sources for ref in refs):
                 raise _NativeDraftIssue("source_id")
             if text.strip():
@@ -71,7 +83,9 @@ def main(model_input, candidate):
             "payload": output, "claims": claims, "payload_claims": bindings, "citations": citations,
             "missing_inputs": missing, "warnings": [], "knowledge_manifest_sha256": pack["knowledge_manifest_sha256"],
             **{key: incoming[key] for key in ("workflow_version", "knowledge_version", "knowledge_proof")}}
-        return {"candidate": _canonical(result)}
+        encoded = _canonical(result)
+        encoded.encode("utf-8", errors="strict")
+        return {"candidate": encoded}
     except _NativeDraftIssue as error:
         raise ValueError("invalid_core_work_draft " + error.marker) from None
     except Exception:

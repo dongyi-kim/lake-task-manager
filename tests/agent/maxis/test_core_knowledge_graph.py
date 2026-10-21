@@ -60,6 +60,30 @@ def both(nodes, pack, candidate):
     return remote, local
 
 
+def test_reference_hints_select_strings_not_history_records(nodes):
+    view, assembler = code(nodes[INPUT]), code(nodes[ASSEMBLER])
+    raw = encoded({"tickets": [{"key": "DL-9300", "summary": "검토 기록", "count": 2}]})
+    records = view["_fact_paths"](raw, records_only=True)
+    strings = view["_fact_paths"](raw, records_only=True, strings_only=True)
+    assert "/tickets/0" in records["paths"] and "/tickets/0" not in strings["paths"]
+    assert strings["paths"] == ["/tickets/0/key", "/tickets/0/summary"]
+    assert assembler["_fact_text"](raw, strings["paths"][0], "/references/0/ref") == "DL-9300"
+    with pytest.raises(ValueError):
+        assembler["_fact_text"](raw, "/tickets/0", "/references/0/ref")
+
+
+@pytest.mark.parametrize("raw", ['"DL-9300"', '""', 'null', '4',
+    '{"a/b~c":["DL-9300","검토 기록",1,false," "]}', '원문 DL-9300'])
+def test_every_scalar_hint_resolves_without_coercion(nodes, raw):
+    view, assembler = code(nodes[INPUT]), code(nodes[ASSEMBLER])
+    hints = view["_fact_paths"](raw, records_only=True, strings_only=True)
+    for path in hints["paths"]:
+        result = assembler["_fact_text"](raw, path, "/references/0/ref")
+        assert type(result) is str and result.strip()
+    if raw == '"DL-9300"':
+        assert hints == {"paths": [], "complete": True}
+
+
 def test_exact_guarded_knowledge_route_is_connected(nodes, knowledge_case):
     pack, incoming, draft = knowledge_case
     assert code(nodes["1909000000001024"])["main"](incoming) == {"route": "knowledge"}
@@ -91,6 +115,7 @@ def test_input_and_prompt_have_one_semantic_owner(nodes, knowledge_case):
         if not intent: row["entity_reference"] = canonical
         row["allowed_claim_kinds"] = ["inference", "recommendation"] if intent else ["fact", "inference", "recommendation"]
         row["fact_paths"] = {"paths": [] if intent else [""], "complete": True}
+        row["string_fact_paths"] = {"paths": [] if intent else [""], "complete": True}
     assert projected["context"] == expected and projected["knowledge_context"] == value["knowledge_context"]
     assert projected["producer_limits"] == {"draft_utf8_bytes": 32768, "envelope_utf8_bytes": 98304, "claims": 40, "bindings": 256}
     local = (ROOT / "app/agent/prompts/roles/knowledge_curator.md").read_text(encoding="utf-8").strip()

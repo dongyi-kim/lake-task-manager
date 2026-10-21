@@ -36,6 +36,7 @@ def _source_view(row):
     visible = {key: value for key, value in row.items() if key not in {"content_sha256", "canonical_id"}}
     if not intent:
         visible["entity_reference"] = row["canonical_id"]
+    visible["fact_paths"] = {"paths": [], "complete": True} if intent else _fact_paths(row["content"], records_only=True)
     return dict(visible, source_authority="user_intent" if intent else "evidence_source",
                 allowed_claim_kinds=["inference", "recommendation"] if intent
                 else ["fact", "inference", "recommendation"])
@@ -102,8 +103,8 @@ def main(model_input):
             {key: value for key, value in row.items() if key not in {"context_id", "content_sha256"}}
             for row in pack["role_context"]
         ]
-        view = _canonical({"contract": "work-input.v2", "context": context,
-                           "knowledge_context": incoming["knowledge_context"]})
+        view = _encode_fact_view({"contract": "work-input.v2", "context": context,
+                           "knowledge_context": incoming["knowledge_context"]}, _MAX_WORK_INPUT_UTF8_BYTES)
         if len(view.encode("utf-8")) > _MAX_WORK_INPUT_UTF8_BYTES:
             _fail()
         return {"work_input": view}

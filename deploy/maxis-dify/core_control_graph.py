@@ -56,20 +56,20 @@ REQUEST_SCHEMA_SHA256 = "663ba61b47ddf68831eda89743189fa5d0f0e05fd30eff8f9b279bc
 REQUEST_ASSEMBLER_SHA256 = "2532d429f907a4ff174fcd5ad22a461a58146fc180c5d7c31a1fce333f867bac"
 REQUEST_INPUT_SHA256 = "1cc6ae1c13e83875ab970eb065f82d3a3c2851dde4c90fbe12c9994fafd14467"
 REQUEST_USER_SHA256 = "482679951b55f987662e0e4c3539b91fe1a5facd56866106a8e853881756215e"
-WORK_SYSTEM_SHA256 = "988463c9dc163912978b35ccd233a892cc479a33f1782d56762b6edc2120d54b"
-WORK_SCHEMA_SHA256 = "7f0232ac269ccf983254720d75b3e79b11e4e38cc5adc90ca92e7851cf71d005"
-WORK_ASSEMBLER_SHA256 = "d99f912bea062b141d9a1c0319a740d59e62a2c95b7b61517decf9734721b769"
-WORK_INPUT_SHA256 = "272d7d5ef8919e24567b193ea97023a7d9f73723fe9477e4685c131ba9fa22a7"
+WORK_SYSTEM_SHA256 = "679a859acee1227564349989c40b611beb0add95a45c8fb196f6f752cdd392c1"
+WORK_SCHEMA_SHA256 = "00033dee78b8c4b499b90b320e6585942b5acb11bbf97a3fa7e765301b511c8a"
+WORK_ASSEMBLER_SHA256 = "2d88ab59023ee423f1c23840a6004bc2ceb5654cb03536518d62b1fe9ab12a6c"
+WORK_INPUT_SHA256 = "e03b37029704352b211037b0221b914b8450d2a96b7a1e2f55bfd671e15c2ea8"
 WORK_USER_SHA256 = "ff1865f0201de92c175d8bb40d8907d6147c706a3bc53c0e7d89615187a31755"
-KNOWLEDGE_SYSTEM_SHA256 = "5851a6e428a1d14640c3aa14f7f348fc0a09d0e5937b3fb6a255510705e7d7ea"
+KNOWLEDGE_SYSTEM_SHA256 = "df1875117fea4e448f57798af4c16a7c86afec864a038d44686a09b8049342ea"
 KNOWLEDGE_SCHEMA_SHA256 = "b54785cbafb604f10e8317b96d66b577e17fa5e070aaa0444fd00a64b414fbd8"
-KNOWLEDGE_ASSEMBLER_SHA256 = "c39658473c7337a6d02712e4cf92c91c1604a52817e731d241a4c5c0c25eacba"
-KNOWLEDGE_INPUT_SHA256 = "3e14f97a49af2a294b50167d06bb5692fdfda09af1ced5ea0b0df4d3731aefc2"
+KNOWLEDGE_ASSEMBLER_SHA256 = "b6e99b70e98fd30062402f57d877a112ab7f854c6799a23c194350645cd6f1b4"
+KNOWLEDGE_INPUT_SHA256 = "a3a1bb16edf018ab12979f1286fbf7bd7471be36b0bae48f2e1cbaf0eaf2af20"
 KNOWLEDGE_USER_SHA256 = "b7193c52e488688b6de8663100223e7c26ecd93bc404a0bd8cfdefd189e4c840"
 RESULT_SYSTEM_SHA256 = "772f54d72f84ca294fe90cfde01215606cab75cf559741e67b4f5f1768e50ffe"
 RESULT_SCHEMA_SHA256 = "07f854666a833b7f1dfecbb63e9f264262ba665807dce66440ecf7f72636e2ad"
 RESULT_ASSEMBLER_SHA256 = "12d547c593c1ee93a61844eaf9c53572c6abf592298614c28eecc40ae914a6d6"
-RESULT_INPUT_SHA256 = "bed4c1371d151c879aede599d9355e22de8199bcec30d3f2f302e66284b9b16c"
+RESULT_INPUT_SHA256 = "3c17b16596447390ecdf48b8f276b88215961ae1ee117e75adbd13350e0e8fa7"
 RESULT_USER_SHA256 = "e81bd8c696c86150a78d7de904971ad17d706408fa614695f6984288efbada3d"
 _BASE_NODES = {
     "start": ("시작", "start"), "answer": ("Allowed Answer", "answer"),
@@ -190,7 +190,8 @@ def work_assets(root: Path, project) -> dict:
                 f"_DRAFT_SCHEMA = {native!r}")
     for kind in ("assembler", "input"):
         source = "\n\n".join((root / "deploy/maxis-dify/code" / name).read_text(encoding="utf-8").rstrip()
-            for name in ("core_draft_validation.py", "core_draft_context.py", f"core_work_{kind}.py"))
+            for name in ("core_draft_validation.py", "core_draft_context.py",
+                         "core_fact_text.py" if kind == "assembler" else "core_fact_paths.py", f"core_work_{kind}.py"))
         values[f"work_{kind}_source"] = source + bindings
     values["work_system_prompt"] = contract.build_work_system_prompt(CREATE_SCHEMA,
         (root / "app/agent/prompts/roles/work_architect.md").read_text(encoding="utf-8"),
@@ -219,6 +220,8 @@ def knowledge_assets(root: Path, project) -> dict:
         files = ("core_draft_validation.py", "core_draft_context.py")
         if kind == "input":
             files += ("core_fact_paths.py",)
+        else:
+            files += ("core_fact_text.py",)
         files += (f"core_knowledge_{kind}.py",)
         source = "\n\n".join((root / "deploy/maxis-dify/code" / name).read_text(encoding="utf-8").rstrip()
                             for name in files)

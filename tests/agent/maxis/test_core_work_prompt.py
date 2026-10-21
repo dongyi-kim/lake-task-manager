@@ -26,7 +26,7 @@ def test_bounded_native_prompt_preserves_exact_local_policy_and_question_help(co
     assert contract.WORK_MAX_SYSTEM_UTF8_BYTES == 18432
     assert len(prompt.encode()) <= contract.WORK_MAX_SYSTEM_UTF8_BYTES
     assert hashlib.sha256(texts[0].encode()).hexdigest() == contract.WORK_ROLE_SHA256
-    assert prompt.startswith(texts[1].strip()) and "work-draft.v1" in prompt
+    assert prompt.startswith(texts[1].strip()) and "work-draft.v2" in prompt
     for token in ("input_need=required/optional", "required_input=true/false",
                   "source_content_index", "zero-based", "allowed_claim_kinds", "drafts only, no tools/execution",
                   "reproduction", "expected", "actual", "40 claims", "256 bindings"):
@@ -47,6 +47,9 @@ def test_wrapped_and_control_paths_exhaust_exact_native_schema(contract, canonic
     native = contract.build_draft_schema(canonical, project)["properties"]["payload"]["anyOf"][1]
     groups = {"Wrapped": [], "Controls": []}
     def walk(row, path=""):
+        if "anyOf" in row:
+            groups["Wrapped"].append(path)
+            return
         if row.get("type") == "object":
             if set(row["properties"]) == {"value", "kind", "source_ids"}:
                 groups["Wrapped"].append(path)
@@ -72,7 +75,7 @@ def test_ok_payload_required_fields_stay_explicit_even_when_arrays_are_empty(con
     example = next(line for line in prompt.splitlines() if line.startswith('{"contract":'))
     draft = json.loads(example, object_pairs_hook=unique_object)
     assert set(draft) == {"contract", "status", "missing_inputs", "payload"}
-    assert draft["contract"] == "work-draft.v1" and draft["status"] == "ok"
+    assert draft["contract"] == "work-draft.v2" and draft["status"] == "ok"
     assert draft["missing_inputs"] == [] and draft["payload"]["questions"] == []
     assert draft["payload"]["mode"] == "task"
     item = draft["payload"]["items"][0]

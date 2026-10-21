@@ -63,6 +63,9 @@ def build_work_system_prompt(schema: dict, local_role_markdown: str, transport_m
         groups = {"Wrapped": [], "Controls": []}
 
         def walk(row, path=""):
+            if "anyOf" in row:
+                groups["Wrapped"].append(path)
+                return
             if row["type"] == "object":
                 if set(row["properties"]) == {"value", "kind", "source_ids"}:
                     groups["Wrapped"].append(path)
@@ -116,12 +119,18 @@ def build_draft_schema(canonical_schema: dict, project) -> dict:
 
     def derive(row, path=()):
         if path in _NARRATIVE_PATHS:
-            return {"type": "object", "additionalProperties": False, "required": ["value", "kind", "source_ids"],
+            narrative = {"type": "object", "additionalProperties": False, "required": ["value", "kind", "source_ids"],
                 "properties": {"value": copy.deepcopy(row),
-                    "kind": {"type": "string", "enum": ["fact", "inference", "recommendation"]},
+                    "kind": {"type": "string", "enum": ["inference", "recommendation"]},
                     "source_ids": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": True,
                         "items": {"type": "string", "minLength": 1, "maxLength": 128,
                                   "pattern": r"^[A-Za-z0-9][A-Za-z0-9._:-]*(?![\s\S])"}}}}
+            fact = {"type": "object", "additionalProperties": False,
+                "required": ["kind", "source_id", "source_path"], "properties": {
+                    "kind": {"type": "string", "enum": ["fact"]},
+                    "source_id": copy.deepcopy(narrative["properties"]["source_ids"]["items"]),
+                    "source_path": {"type": "string", "maxLength": 500}}}
+            return {"anyOf": [narrative, fact]}
         result = copy.deepcopy(row)
         if row.get("type") == "object":
             result["properties"] = {key: derive(value, path + (key,)) for key, value in row["properties"].items()}
@@ -145,7 +154,7 @@ def build_draft_schema(canonical_schema: dict, project) -> dict:
         question["required"] = ["input_need" if key == "required_input" else key for key in question["required"]]
         return {"type": "object", "additionalProperties": False,
             "required": ["contract", "status", "payload", "missing_inputs"], "properties": {
-                "contract": {"type": "string", "enum": ["work-draft.v1"]},
+                "contract": {"type": "string", "enum": ["work-draft.v2"]},
                 "status": {"type": "string", "enum": ["ok", "needs_input", "blocked"]},
                 "payload": {"anyOf": [{"type": "object", "additionalProperties": False, "maxProperties": 0}, payload]},
                 "missing_inputs": {"type": "array", "maxItems": 8,

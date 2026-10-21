@@ -34,7 +34,7 @@ def compiled():
     project = load(DIRECTORY / "validate_bundle.py")._dify_structured_output_schema
     draft = load(DIRECTORY / "core_work_contract.py").build_draft_schema(json.loads(schema), project)
     source = "\n\n".join((DIRECTORY / "code" / name).read_text(encoding="utf-8").rstrip()
-        for name in ("core_draft_validation.py", "core_draft_context.py", "core_work_assembler.py"))
+        for name in ("core_draft_validation.py", "core_draft_context.py", "core_fact_text.py", "core_work_assembler.py"))
     namespace = {"__name__": "work_assembler_test"}
     exec(compile(source + f"\n_WORK_SCHEMA_JSON = {schema!r}\n_WORK_SCHEMA_SHA256 = {digest!r}\n_DRAFT_SCHEMA = {draft!r}\n",
                  "<work-assembler>", "exec"), namespace)
@@ -59,7 +59,7 @@ def case(context_guard, now):
         "workflow_version": VERSION, "knowledge_version": "kb-test", "knowledge_proof": PROOF, "knowledge_context": []}
     payload = {"questions": [], "mode": "task", "items": [{"summary": leaf("수집 작업 확인"), "type": "Task",
         "background": leaf("수집 작업 점검 요청"), "scope_in": [leaf("수집 경로 확인")], "dod": [leaf("확인 결과 기록")]}]}
-    draft = {"contract": "work-draft.v1", "status": "ok", "payload": payload, "missing_inputs": []}
+    draft = {"contract": "work-draft.v2", "status": "ok", "payload": payload, "missing_inputs": []}
     expected = {"questions": [], "mode": "task", "items": [{"summary": "수집 작업 확인", "type": "Task",
         "background": "수집 작업 점검 요청", "scope_in": ["수집 경로 확인"], "dod": ["확인 결과 기록"]}]}
     return pack, incoming, draft, expected
@@ -114,7 +114,8 @@ def test_all_optional_narratives_controls_children_and_blank_text_are_preserved(
     payload.update(interpretation=leaf("  해석  "), structure="task_with_subtasks", structure_why=leaf("분리 제안"), rationale=leaf("  "))
     item.update(tier="task", issue_type="Task", epic="", epic_name="", parent="", priority="", duedate="",
         components=[], labels=["draft"], expected=leaf("기대 결과"), actual=leaf("실제 결과"),
-        reproduction=[leaf("재현 경로")], scope_out=[leaf("제외 범위")], references=[leaf("합성 기록 원문", "fact", ["record-b"])],
+        reproduction=[leaf("재현 경로")], scope_out=[leaf("제외 범위")],
+        references=[{"kind": "fact", "source_id": "record-b", "source_path": ""}],
         children=[{"summary": leaf("검증 경로"), "scope_in": [leaf("검증 대상")], "dod": [leaf("검증 근거")], "duedate": ""}])
     result = assemble(compiled, incoming, draft)
     assert result["payload"]["interpretation"] == "  해석  " and result["payload"]["rationale"] == "  "
@@ -152,13 +153,93 @@ def test_only_identical_text_kind_ordered_refs_share_claim_ids(compiled, case, v
 
 def test_intent_fact_is_preserved_and_rejected_by_both_final_guards(compiled, case):
     pack, incoming, draft, _ = case
-    draft["payload"]["items"][0]["background"] = leaf(pack.sources[0].content, "fact")
+    draft["payload"]["items"][0]["background"] = {
+        "kind": "fact", "source_id": "intent-a", "source_path": ""}
     result = assemble(compiled, incoming, draft)
     assert any(row["text"] == pack.sources[0].content and row["kind"] == "fact" for row in result["claims"])
     remote, local = guards(pack, result)
     assert remote["warnings"] == ["contract_guard:intent_source_fact_forbidden"]
     with pytest.raises(ResponseGuardError, match="intent_source_fact_forbidden"):
         local()
+
+
+def test_authored_fact_cannot_enter_native_work_contract(compiled, case):
+    _, incoming, draft, _ = case
+    draft["payload"]["items"][0]["background"] = leaf("사용자 요청을 확인된 사실로 표기", "fact")
+    with pytest.raises(ValueError, match=ERROR):
+        assemble(compiled, incoming, draft)
+
+
+def test_work_fact_is_exact_source_selection_not_model_rephrasing(compiled, case):
+    pack, incoming, draft, _ = case
+    draft["payload"]["items"][0]["references"] = [
+        {"kind": "fact", "source_id": "record-b", "source_path": ""}]
+    result = assemble(compiled, incoming, draft)
+    assert result["payload"]["items"][0]["references"] == [pack.sources[1].content]
+    remote, local = guards(pack, result)
+    assert remote == result and local()[1] == result["payload"]
+
+
+def test_json_fact_keeps_subject_values_and_readable_ticket_body(compiled, case):
+    import hashlib
+    from app.agent.workflow.agents.work_architect import _materialize_creation_parts
+    pack, incoming, draft, _ = case
+    raw = '{"tickets":[{"key":"DL-9044","summary":"배치 <검증>","status":"진행 중","ratio":1.20e-3,"url":"https://example.test/DL-9044","checks":{"한/글~":false}}]}'
+    row = incoming["context_pack"]["sources"][1]
+    row.update(content=raw, content_sha256=hashlib.sha256(raw.encode()).hexdigest(), url="https://example.test/DL-9044")
+    pack = type(pack).model_validate_json(encoded(incoming["context_pack"]))
+    item = draft["payload"]["items"][0]
+    item["references"] = [{"kind": "fact", "source_id": "record-b", "source_path": "/tickets/0"}]
+    result = assemble(compiled, incoming, draft)
+    text = result["payload"]["items"][0]["references"][0]
+    assert text == '"key": "DL-9044"; "summary": "배치 <검증>"; "status": "진행 중"; "ratio": 1.20e-3; "url": "https://example.test/DL-9044"; "checks" / "한/글~": false'
+    remote, local = guards(pack, result)
+    assert remote == result and local()[1] == result["payload"]
+    output = copy.deepcopy(result["payload"])
+    _materialize_creation_parts(output)
+    body = output["items"][0]["description"]
+    assert "수집 작업 점검 요청" in body and "&quot;status&quot;: &quot;진행 중&quot;" in body
+    assert "1.20e-3" in body and "배치 &lt;검증&gt;" in body
+    assert "{&quot;" not in body and 'data-ticket-key="DL-9044"' in body
+
+
+def test_readable_fact_cannot_confuse_fields_with_delimiters_in_data(compiled):
+    render = compiled[0]["_record_text"]
+    value = {"key": "DL-9044", "a / b": "x", "a": {"b": "y"},
+             "description": 'blocked; status: Done\n"quoted"', "status": "Open"}
+    text = render(value)
+    assert '"a / b": "x"' in text and '"a" / "b": "y"' in text
+    assert '"description": "blocked; status: Done\\n\\"quoted\\""' in text
+    assert text.endswith('"status": "Open"') and "\n" not in text
+
+
+def test_selected_source_cannot_return_an_unencodable_candidate(compiled, case):
+    import hashlib
+    _, incoming, draft, _ = case
+    raw = '{"tickets":[{"key":"DL-9044","summary":"\\ud800"}]}'
+    incoming["context_pack"]["sources"][1].update(content=raw, content_sha256=hashlib.sha256(raw.encode()).hexdigest())
+    draft["payload"]["items"][0]["references"] = [{"kind": "fact", "source_id": "record-b", "source_path": "/tickets/0"}]
+    with pytest.raises(ValueError, match=ERROR):
+        assemble(compiled, incoming, draft)
+
+
+def test_selected_record_still_obeys_canonical_field_length(compiled, case):
+    import hashlib
+    _, incoming, draft, _ = case
+    raw = encoded({"tickets": [{"key": "DL-9044", "description": "x" * 510}]})
+    incoming["context_pack"]["sources"][1].update(content=raw, content_sha256=hashlib.sha256(raw.encode()).hexdigest())
+    draft["payload"]["items"][0]["references"] = [{"kind": "fact", "source_id": "record-b", "source_path": "/tickets/0"}]
+    with pytest.raises(ValueError, match=ERROR):
+        assemble(compiled, incoming, draft)
+
+
+@pytest.mark.parametrize("path", ["/content", "/missing", "/0/status", "/~invalid"])
+def test_work_fact_does_not_guess_or_repair_a_source_path(compiled, case, path):
+    _, incoming, draft, _ = case
+    draft["payload"]["items"][0]["references"] = [
+        {"kind": "fact", "source_id": "record-b", "source_path": path}]
+    with pytest.raises(ValueError, match=ERROR):
+        assemble(compiled, incoming, draft)
 
 
 @pytest.mark.parametrize("status", ["blocked", "needs_input"])
@@ -288,7 +369,7 @@ def test_exact_envelope_bounds_fail_without_truncation(compiled, case, limit, ex
 def test_canonical_schema_is_revalidated_even_if_native_contract_is_wrong(compiled, case):
     _, incoming, draft, _ = case
     native = compiled[0]["_DRAFT_SCHEMA"]["properties"]["payload"]["anyOf"][1]
-    native["properties"]["items"]["items"]["properties"]["summary"]["properties"]["value"]["maxLength"] = 181
+    native["properties"]["items"]["items"]["properties"]["summary"]["anyOf"][0]["properties"]["value"]["maxLength"] = 181
     draft["payload"]["items"][0]["summary"]["value"] = "x" * 181
     Draft202012Validator(compiled[0]["_DRAFT_SCHEMA"]).validate(draft)
     with pytest.raises(ValueError, match=ERROR): assemble(compiled, incoming, draft)

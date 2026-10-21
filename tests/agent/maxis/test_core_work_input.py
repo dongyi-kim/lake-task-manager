@@ -15,7 +15,7 @@ DIRECTORY = Path(__file__).resolve().parents[3] / "deploy/maxis-dify"
 def compiled(assembler):
     namespace = {"__name__": "work_input_test"}
     source = "\n\n".join((DIRECTORY / "code" / name).read_text(encoding="utf-8") for name in
-        ("core_draft_validation.py", "core_draft_context.py", "core_work_input.py"))
+        ("core_draft_validation.py", "core_draft_context.py", "core_fact_paths.py", "core_work_input.py"))
     exec(compile(source, "<work-input>", "exec"), namespace)
     for key in ("_WORK_SCHEMA_JSON", "_WORK_SCHEMA_SHA256", "_DRAFT_SCHEMA"):
         namespace[key] = assembler[0][key]
@@ -58,6 +58,7 @@ def test_exact_view_keeps_order_identity_hashes_refs_and_business_text(compiled,
         if index != 0: row["entity_reference"] = canonical
         row["source_authority"] = "user_intent" if index == 0 else "evidence_source"
         row["allowed_claim_kinds"] = ["inference", "recommendation"] if index == 0 else ["fact", "inference", "recommendation"]
+        row["fact_paths"] = {"paths": [] if index == 0 else [""], "complete": True}
     for row in expected["role_context"]:
         del row["context_id"]
         del row["content_sha256"]
@@ -115,7 +116,7 @@ def test_authority_matches_final_guards_not_source_id_or_content(compiled, assem
     assert ("entity_reference" not in result) if intent else result["entity_reference"] == canonical
     assert result["allowed_claim_kinds"] == (["inference", "recommendation"] if intent else ["fact", "inference", "recommendation"])
     pack = type(pack).model_validate_json(encoded(incoming["context_pack"]))
-    draft["payload"]["items"][0]["summary"] = leaf(row["content"], "fact")
+    draft["payload"]["items"][0]["summary"] = {"kind": "fact", "source_id": row["source_id"], "source_path": ""}
     candidate = json.loads(assembler[0]["main"](encoded(incoming), encoded(draft))["candidate"])
     remote, local = guards(pack, candidate)
     if intent:
@@ -196,6 +197,11 @@ def test_original_and_output_utf8_budgets_fail_without_truncation(compiled, case
     monkeypatch.setitem(compiled, "_MAX_WORK_INPUT_UTF8_BYTES", len(current.encode()))
     assert encoded(view(compiled, incoming)) == current
     monkeypatch.setitem(compiled, "_MAX_WORK_INPUT_UTF8_BYTES", len(current.encode()) - 1)
+    stripped = view(compiled, incoming)
+    assert all("fact_paths" not in row for row in stripped["context"]["sources"])
+    for original, visible in zip(incoming["context_pack"]["sources"], stripped["context"]["sources"]):
+        assert original["content"] == visible["content"]
+    monkeypatch.setitem(compiled, "_MAX_WORK_INPUT_UTF8_BYTES", len(encoded(stripped).encode()) - 1)
     reject(compiled, incoming)
     monkeypatch.setitem(compiled, "_MAX_WORK_INPUT_UTF8_BYTES", 40000)
     for location, maximum in ((incoming["context_pack"], 32768), (incoming, 40000)):
@@ -214,10 +220,12 @@ def test_projection_never_replaces_original_assembler_or_guards(compiled, assemb
     from app.agent.maxis import ResponseGuardError
     pack, incoming, draft, _ = case
     projected = view(compiled, incoming)
-    draft["payload"]["items"][0]["summary"] = leaf("원문 초안", kind)
+    text = pack.sources[0].content if kind == "fact" else "원문 초안"
+    draft["payload"]["items"][0]["summary"] = ({"kind": "fact", "source_id": "intent-a", "source_path": ""}
+        if kind == "fact" else leaf(text, kind))
     candidate = json.loads(assembler[0]["main"](encoded(incoming), encoded(draft))["candidate"])
     assert candidate["claims"][-1]["kind"] in {"recommendation", "fact"}
-    assert any(row["text"] == "원문 초안" and row["kind"] == kind for row in candidate["claims"])
+    assert any(row["text"] == text and row["kind"] == kind for row in candidate["claims"])
     remote, local = guards(pack, candidate)
     if kind == "fact":
         assert remote["warnings"] == ["contract_guard:intent_source_fact_forbidden"]

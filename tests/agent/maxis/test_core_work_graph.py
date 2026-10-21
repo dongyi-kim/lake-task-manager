@@ -88,7 +88,9 @@ def test_other_bound_work_schemas_stay_on_existing_semantic_path(nodes, work_cas
 @pytest.mark.parametrize("kind", ["recommendation", "fact"])
 def test_generated_work_path_preserves_meaning_and_both_guard_decisions(nodes, work_case, kind):
     pack, incoming, draft, expected = work_case
-    draft["payload"]["items"][0]["summary"]["kind"] = kind
+    if kind == "fact":
+        draft["payload"]["items"][0]["summary"] = {"kind": "fact", "source_id": "intent-a", "source_path": ""}
+        expected["items"][0]["summary"] = pack.sources[0].content
     before = copy.deepcopy((incoming, draft))
     projected = code(nodes[INPUT])["main"](incoming)["work_input"]
     assert json.loads(projected)["contract"] == "work-input.v2"
@@ -140,11 +142,11 @@ def test_work_compiled_assets_match_independent_review_pins(nodes):
         assert hashlib.sha256(value.encode()).hexdigest() == getattr(GRAPH, pin) == getattr(independent, pin)
     assert len(assets["work_system_prompt"].encode()) <= 18432
     assert independent.WORK_MAX_SYSTEM_BYTES == 18432
-    assert assets["work_schema"]["properties"]["contract"]["enum"] == ["work-draft.v1"]
+    assert assets["work_schema"]["properties"]["contract"]["enum"] == ["work-draft.v2"]
 
 
 def test_work_prompt_preserves_implementation_and_explains_claim_kinds(nodes):
     prompt = nodes[WORK]["prompt_template"][0]["text"]
     assert "Missing implementation details alone do not turn an implementation request" in prompt
-    assert "synthesized relevance or reference selection is inference" in prompt
+    assert "user-reported context and synthesized relevance are inference" in prompt
     assert "including proposed counts and thresholds" in prompt

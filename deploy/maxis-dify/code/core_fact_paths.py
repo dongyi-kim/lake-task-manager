@@ -4,7 +4,7 @@ Keep original content untouched. A bounded list helps a model avoid inventing
 paths through the enclosing source object (for example /content/tickets/0).
 The original assembler independently resolves every selected path.
 """
-def _fact_paths(content, *, records_only):
+def _fact_paths(content, *, records_only, strings_only=False):
     def reject():
         raise ValueError("invalid source JSON")
 
@@ -57,7 +57,17 @@ def _fact_paths(content, *, records_only):
             found.append(path)
         return True
 
-    if records_only:
+    if strings_only:
+        pending = [(root, "")]
+        while pending:
+            value, path = pending.pop()
+            if path and type(value) is str and value.strip():
+                offer(path, value)
+            elif isinstance(value, (dict, list)):
+                children = value.items() if isinstance(value, dict) else enumerate(value)
+                for key, child in reversed(list(children)):
+                    pending.append((child, path + "/" + str(key).replace("~", "~0").replace("/", "~1")))
+    elif records_only:
         if isinstance(root, dict):
             offer("", root)
             rows = ((f"/{key.replace('~', '~0').replace('/', '~1')}/{i}", value)
@@ -100,5 +110,6 @@ def _encode_fact_view(view, limit):
         pass  # Only remove optional hints; original invalid text still fails below.
     for row in view["context"]["sources"]:
         row.pop("fact_paths", None)
+        row.pop("string_fact_paths", None)
     # Missing advisory metadata is not a statement about source completeness.
     return _canonical(view)

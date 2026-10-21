@@ -40,7 +40,7 @@ def test_pin_and_complete_derived_shape_preserve_canonical_constraints(contract,
     assert canonical == before
     assert canonical_payload_schema(CREATE_SCHEMA)[1] == contract.WORK_SCHEMA_SHA256 == (
         "8f46d8cc3bbe4712838a066844b90eeef2272a9f0e8a8a6c054b63a338226f1a")
-    assert draft["properties"]["contract"]["enum"] == ["work-draft.v1"]
+    assert draft["properties"]["contract"]["enum"] == ["work-draft.v2"]
     assert draft["required"] == ["contract", "status", "payload", "missing_inputs"]
     assert draft["additionalProperties"] is False
     Draft202012Validator.check_schema(draft)
@@ -51,11 +51,15 @@ def test_pin_and_complete_derived_shape_preserve_canonical_constraints(contract,
         if original["type"] == "string":
             if not guard._control_field(field):
                 expected.add(path)
+                narrative, fact = derived["anyOf"]
+                assert set(fact["properties"]) == {"kind", "source_id", "source_path"}
+                assert fact["properties"]["kind"]["enum"] == ["fact"]
+                derived = narrative
                 assert derived["required"] == ["value", "kind", "source_ids"]
                 assert set(derived["properties"]) == {"value", "kind", "source_ids"}
                 assert derived["additionalProperties"] is False
                 assert derived["properties"]["value"] == original
-                assert derived["properties"]["kind"]["enum"] == ["fact", "inference", "recommendation"]
+                assert derived["properties"]["kind"]["enum"] == ["inference", "recommendation"]
                 wrapped.add(path)
             else:
                 assert derived == original
