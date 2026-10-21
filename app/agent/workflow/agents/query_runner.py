@@ -846,23 +846,40 @@ def _materialize_evidence(results: list[dict], *, focus: str = "",
 
     errors = [str(row.get("error")) for row in ticket_details + document_bodies
               if isinstance(row, dict) and row.get("error")]
-    ticket_target = next((row for row in results if row.get("source") == "jira"), None) \
-        or next((row for row in results if row.get("source") == "comments"), None)
-    document_target = next((row for row in results if row.get("source") == "confluence"), None)
-    if ticket_target is not None and ticket_details:
-        ticket_target["result"] = dict(ticket_target.get("result") or {},
-                                       ticketDetails=ticket_projection,
-                                       detailProjection="ticket-detail.v1")
-        if entity_coverage is not None:
-            ticket_target["result"]["entityCoverage"] = entity_coverage
-        if errors:
-            ticket_target["result"]["materializationErrors"] = errors
-    if document_target is not None and document_bodies:
-        document_target["result"] = dict(document_target.get("result") or {},
-                                          documentBodies=document_projection,
-                                          bodyProjection="document-body.v1")
-        if errors:
-            document_target["result"]["materializationErrors"] = errors
+    # Details belong to the search which discovered their identity, not the first
+    # row of that source class. In particular an exact zero-hit search must stay
+    # empty when a separate candidate search found related tickets/documents.
+    # Keep search counts unchanged; one-hop expansion is explicitly labelled.
+    expanded_attached = False
+    for row in results:
+        result = row.get("result") or {}
+        selected, field, projection = [], "", ""
+        if row.get("source") in {"jira", "comments"}:
+            keys = {
+                str(hit.get(key) or "").strip().upper()
+                for bucket, key in (("tickets", "key"), ("comments", "ticketKey"))
+                for hit in result.get(bucket) or [] if isinstance(hit, dict)
+            }
+            owns_expansion = bool(entity_coverage and not expanded_attached
+                                  and keys.intersection(entity_coverage.get("rootKeys") or []))
+            if owns_expansion:
+                keys.update(entity_coverage.get("selectedKeys") or [])
+                expanded_attached = True
+            selected = [detail for key, detail in zip(ticket_keys, ticket_projection) if key in keys]
+            field, projection = "ticketDetails", "ticket-detail.v1"
+            if owns_expansion:
+                result = dict(result, entityCoverage=entity_coverage)
+        elif row.get("source") == "confluence":
+            refs = {str(hit.get("url") or hit.get("id") or "").strip()
+                    for hit in result.get("documents") or [] if isinstance(hit, dict)}
+            selected = [body for ref, body in zip(document_refs, document_projection) if ref in refs]
+            field, projection = "documentBodies", "document-body.v1"
+        if selected:
+            row["result"] = dict(result, **{field: selected,
+                "detailProjection" if field == "ticketDetails" else "bodyProjection": projection})
+            row_errors = [str(detail["error"]) for detail in selected if detail.get("error")]
+            if row_errors:
+                row["result"]["materializationErrors"] = row_errors
     # Keep the structural candidate row self-describing so Work can intersect its choices
     # with successfully opened details instead of trusting a lightweight search hit.
     successful = {str(row.get("key") or "").strip().upper()
