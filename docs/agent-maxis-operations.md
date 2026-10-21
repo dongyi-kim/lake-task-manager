@@ -1,19 +1,61 @@
 # MAXIS / Dify 설정 가이드 — 새 서버(PROD) 적용
 
-**저장소를 pull한 PC에서 준비 → Dify 모델·Knowledge·Chatflow 등록 → LTM 연결·적용.**
-DEV 서버나 DEV PC의 `.cache`를 가져올 필요가 없다. 이미 구성한 연결은 바로 아래의 **이 설정 사용**으로 이동한다.
+**Dify에 LTM 앱이 하나도 없는 상태에서 시작하는 가이드다.**
+여기서 **Dify 앱**은 PC에 설치하는 프로그램이 아니라, 브라우저의 **스튜디오에서 만드는 Chatflow**다.
+Core·Editor 앱을 먼저 갖고 있을 필요가 없다. 아래 4단계의 **DSL 파일 가져오기 자체가 앱을 만든다.**
+DEV 서버나 DEV PC의 `.cache`를 가져오지 않고, 저장소와 현지 서버 정보로 준비한다.
 
 > 사진은 현재 접근 가능한 Dify와 LTM에서 촬영한 **조작 위치 안내**다. PROD 적용 성공 증거가 아니다.
-> 계정·키·실제 주소·자산 ID는 제외했다. PROD의 메뉴 이름은 설치 버전에 따라 조금 다를 수 있다.
+> 왼쪽 메뉴·페이지 제목·조작 버튼이 함께 보이도록 촬영하고 하단 계정 영역만 제외했다.
+> Studio/Knowledge 목록 사진은 기존 자산을 노출하지 않도록 **검색 필터를 적용한 화면**이다. 실제 빈 PROD 계정의 캡처는 아니다.
+> 키·실제 주소·자산 ID는 제외했다. 사진 속 기존 앱·Knowledge 이름은 예시이며 날짜 이름을 따라 만들지 않는다.
+> PROD의 메뉴 이름은 설치 버전에 따라 조금 다를 수 있다.
 > 사진은 저장소의 Markdown 미리보기 또는 GitHub에서 볼 수 있다. LTM의 기존 가이드 링크는 텍스트 원문을 연다.
 
 | 순서 | Dify에서 할 일 | 로컬 명령 / 완료 확인 |
 |---|---|---|
+| 0 | **현지 Dify 접속 → 워크스페이스 → 스튜디오** | 앱 목록이 비어 있어도 정상 |
 | 1 | 모델 제공자·인증 연결, 실제 생성 확인 | 모델 YAML 내보내기 |
 | 2 | 업무 Knowledge + 별도 검증 표식 등록 | `maxis_setup.py prepare` |
-| 3 | 현지 모델·Knowledge로 Chatflow 가져오기 | `maxis_setup.py bundle` |
-| 4 | Publish, 앱별 API Token 준비 | `maxis_setup.py connect` |
-| 5 | LTM 검사·정책에 따른 검수·적용 | `maxis_setup.py status` + **이 설정 사용** |
+| 3 | 현지 모델·Knowledge ID 확인 | `maxis_setup.py bundle`로 가져오기 파일 생성 |
+| 4 | DSL 가져오기로 LTM 앱 생성 → Publish → 앱별 API Token | Core·Editor 앱과 게시 UUID 확보 |
+| 5 | LTM 연결 검사·정책에 따른 검수·적용 | `maxis_setup.py connect` → `status` → **이 설정 사용** |
+
+## 0. 지금 어디서 시작하나? — 앱이 없어도 여기부터
+
+1. 브라우저에서 관리자가 제공한 **PROD Dify 웹 주소**에 접속하고 로그인한다.
+   MAXIS 포털 주소와 Dify 주소는 다를 수 있다. **DEV 주소를 PROD에 입력하지 않는다.**
+   현지 Dify 주소·계정·워크스페이스 권한 자체가 없다면 먼저 관리자에게 받아야 한다. 저장소가 서버 계정이나 접근 권한을 만들지는 않는다.
+2. Dify 로고와 왼쪽 **홈 / 스튜디오 / 지식 / 연동** 메뉴가 보이는지 확인한다.
+   **Project / Node / Knowledge / Chatflow Creator**가 보이면 MAXIS 포털 화면이다.
+   그 화면의 버튼을 아래 Dify 버튼과 대응시키지 말고, 현지 Dify 웹 주소를 연다.
+3. 왼쪽 위 워크스페이스 선택에서 **작업할 현지 프로젝트/워크스페이스**를 선택한다.
+   사진의 `Lake Task Manager`라는 워크스페이스가 PROD에 존재한다고 가정하지 않는다.
+4. **왼쪽 스튜디오 → 오른쪽 위 생성**을 누른다. 아래처럼 두 경로가 있다.
+
+![Dify 전체 Studio 화면: 왼쪽 스튜디오, 오른쪽 위 생성, 빈 상태로 시작과 DSL 파일 가져오기](assets/maxis-setup/dify-import-menu.png)
+
+| 이 메뉴 | 언제 사용하나? |
+|---|---|
+| **빈 상태로 시작 → 채팅 플로우** | 1단계에서 모델 연결만 확인할 작은 앱을 처음 만들 때 |
+| **DSL 파일 가져오기** | 4단계에서 저장소가 생성한 **LTM Core·Editor 앱을 처음 등록**할 때 |
+
+**지금은 LTM 앱을 손으로 만들지 않는다.** 먼저 아래 로컬 준비와 1~3단계를 완료한다.
+그때 생성되는 YAML을 가져오면 노드·프롬프트·연결이 있는 LTM 앱이 만들어진다.
+생성 버튼이 없으면 검색 결과 문제가 아니라 워크스페이스/편집 권한부터 관리자와 확인한다.
+
+```text
+현지 Dify 웹 주소                       ← 브라우저 로그인용, 관리자가 제공
+  /apps                                ← 스튜디오: 앱 만들기 / DSL 가져오기
+  /integrations/model-provider         ← 연동 → 모델 제공자
+  /datasets                            ← 지식: Knowledge 만들기
+  /app/<현지 앱 ID>/workflow            ← 생성된 앱 → 오케스트레이트
+  /app/<현지 앱 ID>/develop             ← 생성된 앱 → API 액세스
+
+현지 Dify Service API 주소 …/v1         ← 나중에 LTM에 입력, 웹 관리 화면이 아님
+```
+
+경로는 촬영한 설치본 기준이다. `<현지 앱 ID>`를 직접 만들거나 위 경로를 추측해 조합하지 말고 **화면 메뉴로 이동**한다.
 
 ### 먼저 구분할 주소와 인증정보
 
@@ -30,6 +72,9 @@ MAXIS 프로필마다 다른 서버·모델·플러그인을 쓸 수 있다.
 
 ## 이미 구성된 연결 사용
 
+<details>
+<summary>LTM에 저장된 MAXIS 프로필이 이미 있을 때만 펼치기 — 처음 설정이면 건너뛴다</summary>
+
 **설정 → AI 에이전트 → MAXIS / Dify Workflow → 저장된 MAXIS 설정 → 이 설정 사용**
 
 ![LTM의 이 설정 사용 및 연결·모델 검사 버튼](assets/maxis-setup/ltm-apply-profile.png)
@@ -42,6 +87,8 @@ MAXIS 프로필마다 다른 서버·모델·플러그인을 쓸 수 있다.
 - AI 화면의 `MAXIS · 연결 이름`과 기능별 사용 가능 상태를 확인한다. 로컬 LLM 설정은 필요 없다.
 - 새 연결은 **MAXIS 설정 추가**에서 이름을 입력한다. 기존 연결의 이름·주소·키는 해당 설정 카드에서 편집한다.
 - `일반 사용`은 연결·계약·Knowledge 검사를 요구한다. `사전 품질 검증 필수`는 여기에 독립 검수·서명까지 요구한다. 연결 이름으로 정책을 결정하지 않으며, 연결 성공이 정성 품질 평가 통과를 뜻하지 않는다.
+
+</details>
 
 ## 시작 전 — 저장소와 로컬 LTM
 
@@ -93,10 +140,11 @@ New-Item -ItemType Directory -Path .cache/maxis -Force | Out-Null
 
 ## 1. Dify 모델 연결 — 등록 후 실제 생성까지
 
-**MAXIS에서 현지 Dify 프로젝트 열기 → 연동 → 모델 제공자 → 승인된 제공자/플러그인 선택.**
+**현재 위치: Dify 왼쪽 `연동` → 안쪽 메뉴 `모델 제공자`. 이 설정에는 기존 Dify 앱이 필요 없다.**
+승인된 제공자/플러그인을 선택한다. 목록에 없다면 같은 화면의 모델 공급자 설치 또는 관리자에게 설치를 요청한다.
 아래는 OpenAI-API-compatible 플러그인의 예시다. PROD에 승인된 다른 플러그인을 사용해도 된다.
 
-![Dify 모델 제공자 화면의 자격 증명 관리와 모델 추가](assets/maxis-setup/dify-model-provider.png)
+![Dify 전체 화면: 왼쪽 연동, 안쪽 모델 제공자, 우측 모델 추가와 자격 증명 관리](assets/maxis-setup/dify-model-provider.png)
 
 **모델 추가 → 새 모델 추가하기 → 모델 타입 `LLM`**에서 아래 항목을 확인한다.
 기존 모델이면 새로 복제하지 말고 **자격 증명 관리**에서 해당 모델의 연결 상태를 확인한다.
@@ -116,13 +164,33 @@ New-Item -ItemType Directory -Path .cache/maxis -Force | Out-Null
 숫자를 키운다고 상류 서버 한도가 늘어나지 않는다. 인증 오류는 컨텍스트 크기를 늘려 해결할 수 없다.
 모델 설정 권한과 제공자 등록 방식은 [Dify 공식 모델 제공자 안내](https://docs.dify.ai/en/self-host/use-dify/workspace/model-providers)를 참고한다.
 
-1. 저장 후 **해당 모델의 활성 자격 증명이 선택되어 있는지** 확인한다. 목록에 모델명이 보이는 것만으로 충분하지 않다.
-2. Dify Studio에서 기존 현지 점검용 Chatflow를 열거나, 없으면 업무 데이터 없는 간단한 Chatflow를 만든다.
-   `사용자 입력 → LLM → 답변`을 연결하고 **선택한 모델**로 미리보기를 실행한다.
-3. 입력 `연결 확인이라는 문장만 답해 줘.`에 비어 있지 않은 답변이 오고, 실행 상세의 모델·상태가 맞는지 확인한다.
-   모델 인증 오류가 있으면 **다음 단계로 넘어가지 않는다.** 점검용 앱은 LTM 실행 앱으로 연결하지 않는다.
-4. 성공한 Chatflow를 **DSL 내보내기**로 내려받아 `.cache/maxis/prod-model.yml`에 저장한다.
-   여러 LLM 노드가 있다면 모델·파라미터가 모두 같아야 한다. 내보내기에 비밀값을 포함하지 않는다.
+저장 후 **해당 모델의 활성 자격 증명이 선택되어 있는지** 확인한다. 목록에 모델명이 보이는 것만으로 충분하지 않다.
+
+### 1-1. 앱이 없을 때: 모델 확인용 Chatflow 하나 만들기
+
+**현재 위치: 왼쪽 `스튜디오` → 오른쪽 위 `생성` → `빈 상태로 시작`.**
+
+![빈 상태로 시작 화면: 채팅 플로우 선택과 앱 이름 입력](assets/maxis-setup/dify-create-app.png)
+
+1. **채팅 플로우**를 선택한다. **워크플로우**나 초보자용 챗봇을 선택하는 단계가 아니다.
+2. 앱 이름에 `LTM 모델 연결 확인`을 넣고 **만들기**를 누른다. 같은 점검용 앱이 있으면 재사용한다.
+3. 만들어진 앱의 **오케스트레이트** 편집기에서 `시작(사용자 입력) → LLM → 답변`을 연결한다.
+   기본 노드가 있으면 재사용하고, 없는 노드만 `+`로 추가한다. Knowledge나 외부 도구는 붙이지 않는다.
+4. **LLM 노드 클릭 → 모델 선택**에서 방금 등록한 현지 모델을 선택한다. 아래 System 문구를 넣는다.
+   **답변 노드**에는 변수 선택기로 해당 `LLM / text`를 넣는다. 그 이름을 일반 텍스트로 타이핑하지 않는다.
+
+```text
+외부 도구나 지식 조회 없이, "연결 확인"이라는 문장만 답하세요.
+```
+
+5. 오른쪽 위 **미리보기**에서 `연결 확인`을 전송한다. 비어 있지 않은 답변과 LLM 실행 성공을 확인한다.
+   모델 인증 오류가 있으면 **다음 단계로 넘어가지 않는다.** 이 점검은 모델 연결 검사이지 LTM 전체 기능 검증이 아니다.
+6. **편집기 왼쪽 위 앱 이름 클릭 → App info → DSL 내보내기**로 YAML을 받는다.
+   앱 루트의 `.cache/maxis/prod-model.yml`로 저장한다. 비밀값 포함 옵션은 선택하지 않는다.
+
+이 점검용 앱은 **게시하거나 API 키를 발급할 필요가 없다.** LTM 프로필에도 연결하지 않는다.
+내보낸 YAML에서는 모델·플러그인·파라미터만 사용한다. Core·Editor 앱의 실제 노드 구성은 저장소에서 따로 생성한다.
+여러 LLM 노드가 있는 기존 앱으로 대신 내보냈다면 모델·파라미터가 모두 같아야 한다.
 
 <details>
 <summary>모델 변경·출력 파라미터·연결 검사 범위</summary>
@@ -164,6 +232,10 @@ ZIP을 풀고 PROD MAXIS에서 연결되는 **Dify의 Knowledge**에 다음과 �
 
 **Dify → 지식 → 생성 → 바로 사용할 수 있는 지식 베이스 만들기 → 텍스트 파일에서 가져오기.**
 
+![Dify 전체 지식 화면: 왼쪽 지식, 오른쪽 생성, 바로 사용할 수 있는 지식 베이스 만들기](assets/maxis-setup/dify-knowledge-menu.png)
+
+이 메뉴를 누르면 아래 **데이터 소스 선택** 페이지로 이동한다. 여전히 LTM 앱이 없어도 진행할 수 있다.
+
 ![Dify Knowledge의 텍스트 파일 업로드 화면](assets/maxis-setup/dify-knowledge-upload.png)
 
 1. 업무 문서 10개는 **`LTM Governed Knowledge` 하나**에 넣는다. 사진처럼 한 번에 5개 제한이면
@@ -189,6 +261,9 @@ notepad .cache/maxis/prod-setup.json
 ```
 
 `prod-setup.json`에 다음 값을 포털에서 복사한다. UUID는 추측하거나 DEV 값을 재사용하지 않는다.
+`baseUrl`은 **관리자가 제공한 검증된 HTTPS Service API 주소**를 사용한다.
+위치를 모르면 1단계 점검용 앱의 **왼쪽 API 액세스**에서 주소를 확인하고 관리자와 대조한다.
+주소를 확인하기 위해 점검용 앱을 게시하거나 API 키를 발급할 필요는 없다.
 
 | JSON 항목 | 입력값 |
 |---|---|
@@ -246,6 +321,11 @@ Expand-Archive -LiteralPath .cache/maxis/workflows.zip -DestinationPath .cache/m
 처음 만드는 경우 **Dify → 스튜디오 → 생성 → DSL 파일 가져오기**에서
 `.cache/maxis/workflow-import/workflows/*.yml`을 **하나씩** 가져온다. ZIP 자체를 업로드하지 않는다.
 
+**빈 LTM 앱을 미리 만들 필요가 없다. 가져오기가 새 앱 생성이다.**
+파일 선택 후 표시되는 가져오기 확인을 완료하면 Studio 목록에 앱 카드가 생긴다.
+플러그인 누락 안내가 있으면 현지에서 승인된 의존성을 설치한 뒤 재확인한다.
+`deploy/maxis-dify/dsl/`의 소스 원본에는 자리표시자가 있으므로 직접 올리지 않는다.
+
 ![Dify Studio의 DSL 파일 가져오기 메뉴](assets/maxis-setup/dify-import-menu.png)
 
 | Chatflow | LTM 기능 | 필수 여부 |
@@ -259,7 +339,9 @@ Expand-Archive -LiteralPath .cache/maxis/workflows.zip -DestinationPath .cache/m
 **갱신 전** 현재 게시본·모델·Knowledge 매핑과 LTM 연결값을 현지 `.cache/`에 백업한다.
 동시 편집 중이면 덮어쓰지 않는다. 게시 후 검사가 실패하면 동일 앱에 백업을 복원·재게시하고 새 게시 UUID로 재검사한다.
 
-**각 앱에서 현지 모델·Knowledge·Role 필터 확인 → 게시하기 → 업데이트 게시(Publish).**
+**현재 위치: `스튜디오` → 방금 가져온 앱 카드 → 왼쪽 `오케스트레이트`.**
+아래처럼 노드 캔버스가 보이면 맞는 페이지다. **각 앱에서 현지 모델·Knowledge·Role 필터 확인 → 오른쪽 위 게시하기 → 게시(Publish)**를 수행한다.
+기존 게시본이 있는 사진에서는 버튼이 **업데이트 게시**로 표시된다.
 
 ![Dify의 게시하기와 업데이트 게시 메뉴](assets/maxis-setup/dify-publish.png)
 
@@ -291,6 +373,8 @@ Expand-Archive -LiteralPath .cache/maxis/workflows.zip -DestinationPath .cache/m
    모드는 `redacted` 또는 `approved_bounded_content`, 보존 기간은 0~90일이다.
    숫자를 입력하는 것만으로 Dify 서버의 로그 정책이 바뀌지 않는다. 서버 설정도 관리자와 확인한다.
 3. 각 앱의 왼쪽 **API 액세스 → 오른쪽 위 API 키**에서 해당 앱 Token을 발급/확인한다.
+   위 사진의 **오케스트레이트 바로 아래**에 있는 메뉴다. Core와 Editor 앱을 각각 열어 별도 키를 준비한다.
+   Workspace의 **지식 → 서비스 API**에서 발급하는 Knowledge 키와는 다르다.
    같은 화면의 Service API 주소를 확인하되, HTTP로 안내된다면 관리자가 제공한 **검증된 HTTPS 주소**를 사용한다.
    단순히 주소의 글자만 바꾸거나 TLS 검증을 끄지 않는다.
 
