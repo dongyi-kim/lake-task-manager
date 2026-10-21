@@ -194,12 +194,12 @@ def build_generation_schema(draft: dict) -> dict:
     for identifier in (narrative['source_ids']['items'], content['anyOf'][1]['properties']['source_id']):
         identifier['pattern'] = r'^[A-Za-z0-9][A-Za-z0-9._:-]*$'
     return {'type': 'object', 'additionalProperties': False,
-        'required': ['contract', 'status', 'units', 'payload'], 'properties': {
+        'required': ['contract', 'status', 'payload', 'units'], 'properties': {
             'contract': {'type': 'string', 'enum': ['work-units.v1']},
             'status': copy.deepcopy(draft['properties']['status']),
-            'units': {'type': 'array', 'maxItems': 40, 'items': {
-                'type': 'object', 'additionalProperties': False, 'required': ['id', 'content'],
-                'properties': {'id': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}, 'content': content}}},
             'payload': {'anyOf': [
                 {'type': 'object', 'properties': {}, 'required': [], 'additionalProperties': False},
-                derive(payload)]}}}
+                derive(payload)]},
+            'units': {'type': 'array', 'maxItems': 40, 'items': {
+                'type': 'object', 'additionalProperties': False, 'required': ['id', 'content'],
+                'properties': {'id': {'type': 'string', 'pattern': '^unit-[1-9][0-9]*$'}, 'content': content}}}}}

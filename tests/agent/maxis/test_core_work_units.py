@@ -85,6 +85,7 @@ def test_generation_is_closed_required_and_shallow(contract, canonical):
     draft = contract.build_draft_schema(canonical, project)
     schema = contract.build_generation_schema(draft)
     assert schema['properties']['contract']['enum'] == ['work-units.v1']
+    assert list(schema['properties']) == ['contract', 'status', 'payload', 'units']
     def walk(row, depth=0):
         assert depth <= 10
         assert 'uniqueItems' not in row and 'maxProperties' not in row
