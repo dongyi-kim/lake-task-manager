@@ -1068,7 +1068,7 @@ def _validate_dify_dsls(
         if editor_assembly:
             expected_node_counts["variable-aggregator"] = 2
         elif core_control:
-            expected_node_counts.update({"llm": 7, "code": 15, "if-else": 2, "variable-aggregator": 1})
+            expected_node_counts.update({"llm": 8, "code": 17, "if-else": 2, "variable-aggregator": 1})
         actual_node_counts = {
             key: len(value) for key, value in nodes_by_type.items()
         }
@@ -1262,7 +1262,8 @@ def _validate_dify_dsls(
             expected_code_titles.add("Policy Query")
         if core_control:
             expected_code_titles.update({"Core Candidate Binding", "Core Control Route", "Query Assembler", "Query Input", "Request Assembler", "Request Input",
-                                         "Work Assembler", "Work Input", "Knowledge Assembler", "Knowledge Input", "Result Assembler", "Result Input"})
+                                         "Work Assembler", "Work Input", "Knowledge Assembler", "Knowledge Input", "Result Assembler", "Result Input",
+                                         "Audit Assembler", "Audit Input"})
         if editor_assembly:
             expected_code_titles.update({"Editor Assembler", "Editor Input", "DraftSpec Guard", "Stop Plan", "DraftSpec Enforcer"})
         if set(titled_code_nodes) != expected_code_titles:

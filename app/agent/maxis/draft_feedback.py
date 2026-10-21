@@ -12,7 +12,7 @@ from app.agent.maxis.context_guard import canonical_evidence_pack_json, validate
 
 _ROLES = frozenset({
     "query_specialist", "request_architect", "work_architect",
-    "knowledge_curator", "result_integrator",
+    "knowledge_curator", "result_integrator", "auditor",
 })
 _NAME = "native_draft_feedback"
 _CONTENT = json.dumps({
@@ -57,6 +57,10 @@ _SCHEMA_HELP = {
         "Do not mix these shapes. Optional concept term and reference ref may be omitted.",
     "result_integrator": "Facts have kind,source_id,source_path only; other segments have "
         "value,kind,source_ids. Root uses segments, not payload.",
+    "auditor": "Root keys are contract,status,payload,missing_inputs. Completed negative audits use "
+        "status=ok and pass|fail axes. Every narrative field and problem.check uses value,kind,source_ids; "
+        "check.value is grounded|rule|request. index is a strict integer. Preserve adverse findings; "
+        "do not turn fail into pass or cite user intent as an external fact.",
 }
 
 

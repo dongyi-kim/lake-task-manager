@@ -29,6 +29,8 @@ _KNOWLEDGE_SCHEMA_JSON = None
 _KNOWLEDGE_SCHEMA_SHA256 = None
 _TEXT_SCHEMA_JSON = None
 _TEXT_SCHEMA_SHA256 = None
+_AUDIT_SCHEMA_JSON = None
+_AUDIT_SCHEMA_SHA256 = None
 
 
 def _fail():
@@ -140,6 +142,14 @@ def main(model_input):
         if not isinstance(pack, dict) or len(_canonical(pack).encode("utf-8")) > 32768:
             _fail()
         if not _reserved(pack):
+            if incoming["role_id"] == "auditor" or pack.get("use_case") == "auditor":
+                if (incoming["role_id"] != "auditor" or pack.get("use_case") != "auditor"
+                        or not isinstance(_AUDIT_SCHEMA_JSON, str)
+                        or _digest(_AUDIT_SCHEMA_JSON) != _AUDIT_SCHEMA_SHA256
+                        or pack.get("payload_schema_json") != _AUDIT_SCHEMA_JSON
+                        or pack.get("payload_schema_sha256") != _AUDIT_SCHEMA_SHA256):
+                    _fail()
+                return {"route": "audit"}
             if incoming["role_id"] == "result_integrator" or pack.get("use_case") == "result_integrator":
                 if (incoming["role_id"] != "result_integrator" or pack.get("use_case") != "result_integrator"
                         or not isinstance(_TEXT_SCHEMA_JSON, str)

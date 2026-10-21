@@ -80,7 +80,7 @@ def test_build_parses_template_once_but_revalidates_and_rebuilds(monkeypatch):
 
 
 @pytest.mark.parametrize("node_id", [GRAPH.SEMANTIC_NODE_ID, GRAPH.CONTROL_NODE_ID,
-                                    GRAPH.QUERY_NODE_ID, GRAPH.REQUEST_NODE_ID, "1909000000001034", "1909000000001037", "1909000000001040"])
+                                    GRAPH.QUERY_NODE_ID, GRAPH.REQUEST_NODE_ID, "1909000000001034", "1909000000001037", "1909000000001040", "1909000000001044"])
 @pytest.mark.parametrize("memory", [{}, {"window": {"enabled": True, "size": 1}},
     {"query_prompt_template": "", "role_prefix": {"assistant": "", "user": ""},
      "window": {"enabled": False, "size": 1}},
@@ -114,7 +114,8 @@ def _baseline():
              "1909000000001031", "1909000000001032", "1909000000001033",
              "1909000000001034", "1909000000001035", "1909000000001036",
              "1909000000001037", "1909000000001038", "1909000000001039",
-             "1909000000001040", "1909000000001041", "1909000000001042", "1909000000001043"}
+             "1909000000001040", "1909000000001041", "1909000000001042", "1909000000001043",
+             "1909000000001044", "1909000000001045", "1909000000001046"}
     graph["nodes"] = [node for node in graph["nodes"] if node["id"] not in added]
     graph["edges"] = [edge for edge in graph["edges"] if not {edge["source"], edge["target"]} & added]
     nodes = _nodes(dsl)
@@ -134,8 +135,8 @@ def test_builder_adds_only_the_literal_control_subgraph():
     before = copy.deepcopy(dsl)
     result = _build(dsl)
     graph = result["workflow"]["graph"]
-    assert len(graph["nodes"]) == 32
-    assert len(graph["edges"]) == 38
+    assert len(graph["nodes"]) == 35
+    assert len(graph["edges"]) == 42
     assert dsl == before
     assert result == _dsl()
     old = {(e["source"], e["sourceHandle"], e["target"]) for e in dsl["workflow"]["graph"]["edges"]}
@@ -169,6 +170,10 @@ def test_builder_adds_only_the_literal_control_subgraph():
         ("1909000000001042", "source", "1909000000001040"),
         ("1909000000001040", "source", "1909000000001041"),
         ("1909000000001041", "source", "1909000000001027"),
+        ("1909000000001025", "audit", "1909000000001046"),
+        ("1909000000001046", "source", "1909000000001044"),
+        ("1909000000001044", "source", "1909000000001045"),
+        ("1909000000001045", "source", "1909000000001027"),
         ("1909000000001026", "source", "1909000000001027"),
         ("1909000000001004", "source", "1909000000001027"),
         ("1909000000001027", "source", "1909000000001043"),
@@ -177,7 +182,7 @@ def test_builder_adds_only_the_literal_control_subgraph():
     types = [node["data"]["type"] for node in graph["nodes"]]
     assert {name: types.count(name) for name in set(types)} == {
         "start": 1, "answer": 2, "template-transform": 2, "knowledge-retrieval": 2,
-        "llm": 7, "code": 15, "if-else": 2, "variable-aggregator": 1}
+        "llm": 8, "code": 17, "if-else": 2, "variable-aggregator": 1}
     old_edges = {row["id"]: row for row in before["workflow"]["graph"]["edges"]}
     assert all(row == old_edges[row["id"]] for row in graph["edges"] if row["id"] in old_edges)
 
@@ -198,13 +203,14 @@ def test_original_models_guards_and_input_bindings_are_preserved():
     assert route["variables"] == [{"variable": "model_input", "value_selector": ["1909000000001006", "model_input"]}]
     assert route["outputs"] == {"route": {"children": None, "type": "string"}}
     stage = after["1909000000001025"]["data"]["cases"]
-    assert len(stage) == 6 and [row["case_id"] for row in stage] == ["true", "query", "request", "work", "knowledge", "result"]
+    assert len(stage) == 7 and [row["case_id"] for row in stage] == ["true", "query", "request", "work", "knowledge", "result", "audit"]
     assert stage[0]["conditions"] == [{"comparison_operator": "is", "id": "3918d5de-3625-41ba-a218-5630ca1724e7",
         "value": "control", "varType": "string", "variable_selector": ["1909000000001024", "route"]}]
     merge = after["1909000000001027"]["data"]
     assert merge["variables"] == [["1909000000001026", "text"], ["1909000000001004", "text"],
                                  ["1909000000001029", "candidate"], ["1909000000001032", "candidate"],
-                                 ["1909000000001035", "candidate"], ["1909000000001038", "candidate"], ["1909000000001041", "candidate"]]
+                                 ["1909000000001035", "candidate"], ["1909000000001038", "candidate"], ["1909000000001041", "candidate"],
+                                 ["1909000000001045", "candidate"]]
     assembler = after["1909000000001029"]["data"]
     assert assembler["variables"] == [
         {"variable": "model_input", "value_selector": ["1909000000001006", "model_input"]},
@@ -237,13 +243,14 @@ def test_original_models_guards_and_input_bindings_are_preserved():
 
 @pytest.mark.parametrize("branch,expected", [("deny", set()), ("semantic", {"1909000000001004"}),
     ("control", {"1909000000001026"}), ("query", {"1909000000001028"}), ("request", {"1909000000001031"}),
-    ("work", {"1909000000001034"}), ("knowledge", {"1909000000001037"}), ("result", {"1909000000001040"})])
+    ("work", {"1909000000001034"}), ("knowledge", {"1909000000001037"}), ("result", {"1909000000001040"}),
+    ("audit", {"1909000000001044"})])
 def test_literal_paths_reach_zero_or_one_model_and_the_original_guard(branch, expected):
     dsl = _build()
     nodes = _nodes(dsl)
     reached, pending = set(), ["start"]
     handles = {"1909000000001007": "false" if branch == "deny" else "true",
-               "1909000000001025": "true" if branch == "control" else branch if branch in {"query", "request", "work", "knowledge", "result"} else "false"}
+               "1909000000001025": "true" if branch == "control" else branch if branch in {"query", "request", "work", "knowledge", "result", "audit"} else "false"}
     while pending:
         key = pending.pop()
         if key in reached:

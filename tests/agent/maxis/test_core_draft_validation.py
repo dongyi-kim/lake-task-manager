@@ -167,7 +167,11 @@ def test_decode_node_budget_counts_root_and_array(functions, count, allowed):
     ({'type': 'array'}, {}, False), ({'type': 'array'}, (), False),
     ({'type': 'string'}, 1, False), ({'type': 'boolean'}, 0, False),
     ({'type': 'boolean'}, 1, False), ({'type': 'boolean'}, 'false', False),
-    ({'type': 'boolean'}, None, False), ({'type': 'integer'}, 1, False),
+    ({'type': 'boolean'}, None, False), ({'type': 'integer'}, 1, True),
+    ({'type': 'integer'}, -1, True), ({'type': 'integer'}, 0, True),
+    ({'type': 'integer'}, True, False), ({'type': 'integer'}, False, False),
+    ({'type': 'integer'}, 1.0, False), ({'type': 'integer'}, '1', False),
+    ({'type': 'integer'}, None, False),
     ({'type': 'number'}, 1.0, False), ({'type': 'null'}, None, False),
     ({'type': 'unknown'}, {}, False), ({'type': ['string', 'null']}, 'x', False),
 ])

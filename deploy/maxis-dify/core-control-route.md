@@ -1,6 +1,6 @@
 # Core 단일 실행 분기 계약
 
-Core는 연결 검사, typed Query·Request·CREATE Work·Knowledge·Result와 일반 업무 판단을 각각 한 LLM에 맡기며 모든 경로가 기존 Knowledge Guard와
+Core는 연결 검사, typed Query·Request·CREATE Work·Knowledge·Result·Audit와 일반 업무 판단을 각각 한 LLM에 맡기며 모든 경로가 기존 Knowledge Guard와
 Contract Guard 사이에서 실행한다. 이 문서는 현행 소스 계약이다. 배포·평가 실행 결과는
 ignored `.cache/`에 보관하며 커밋하지 않는다.
 
@@ -45,8 +45,8 @@ ContextGuard → Knowledge Guard → 실제 LLM → Contract Guard/ResponseGuard
 
 `core_control_graph.py::rebuild`는 Core source와 검토된 분류기/prompt를 받아 메모리 복사본을
 반환한다. CLI·파일 쓰기·runtime 등록은 없으며 reviewed asset의 독립 SHA pin을 확인한다.
-32노드·38엣지에서 policy allow 뒤 배타 분기를 둔다. Control/Contract LLM은 text를,
-Query/Request/Work/Knowledge/Result LLM은 각 조립기의 후보를 합류시킨다.
+35노드·42엣지에서 policy allow 뒤 배타 분기를 둔다. Control/Contract LLM은 text를,
+Query/Request/Work/Knowledge/Result/Audit LLM은 각 조립기의 후보를 합류시킨다.
 Candidate Binding은 검증된 원래 요청의 transport metadata만 결속한 뒤 기존 Contract Guard로 전달한다.
 본문·claim·citation·status는 바꾸지 않으며 실제 실행 UUID와 의미 검증은 최종 guard가 독립 수행한다.
 Control/Contract LLM은 원본 model input, 나머지 LLM은 각각 전용 입력 투영을 받는다.
@@ -195,12 +195,19 @@ inference/recommendation/open_fact의 ordered value/kind/source_ids를 payload�
 로컬 Result 의미 규칙을 사용하며 양쪽 최종 guard·일반 apply·승인/receipt 권한은 그대로다.
 기계적 일치는 사실의 진실성·완전성·native 생성 품질의 증명이 아니다.
 
+Auditor는 기존 canonical schema에만 전용 Input → LLM → Assembler 경로를 사용한다.
+`audit-draft.v1`의 pass/fail은 boolean으로 정확히 변환하며, 완료된 부정 감사는 `status=ok`인
+부정 판단으로 전달한다. 문제의 `check`도 원문·kind·source_ids를 갖는 인용 대상이며,
+정수 index는 bool·float·문자열로부터 변환하지 않는다. 원입력의 schema·source hash·게시 binding과
+양쪽 최종 guard를 유지한다. 잘못된 native draft에만 고정 피드백으로 한 번 재생성을 허용하고,
+input 오류·부정 감사·권한 위반을 재시도로 승인하지 않는다. 로컬 감사 apply와 수정 한도는 그대로다.
+
 빌더는 배포 검증기가 아니다. 원본을 생성기로 먼저 수리하지 않는다.
-`core_graph_validation.py`는 일곱 LLM의 prompt/schema/model/input, 분류기·입력 투영·조립기 source/I/O,
+`core_graph_validation.py`는 여덟 LLM의 prompt/schema/model/input, 분류기·입력 투영·조립기 source/I/O,
 분기·합류·전체 배선을 검증한다. source와 DSL을 함께 바꿔도 독립 pin과 다르면 거부한다.
 `validate_bundle.py`와 `materialize_environment.py`가 같은 검증기를 사용한다.
 materializer는 원본 검증 뒤에만 앱 이름·모델·Knowledge binding을 교체하며 DEV/PROD의
-일곱 Core LLM에 같은 환경 모델을 적용한다.
+여덟 Core LLM에 같은 환경 모델을 적용한다.
 
 공유 schema 비교는 JSON 타입을 보존한다. boolean과 number는 다르고 숫자 1/1.0은 동등하다.
 객체 키 순서는 무시하고 배열 순서는 유지한다. 비문자 키·비유한 수·비 JSON 객체·순환·

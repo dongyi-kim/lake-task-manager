@@ -107,10 +107,10 @@ _DIFY_ERROR_MARKERS = (
     )),
     (MaxisErrorCode.WORKFLOW_CONTRACT, (
         "invalid_core_query_draft", "invalid_core_query_source", "invalid_core_request_draft",
-        "invalid_core_work_draft", "invalid_core_result_draft",
+        "invalid_core_work_draft", "invalid_core_result_draft", "invalid_core_audit_draft",
         "invalid_core_knowledge_draft", "invalid_core_control_input",
         "invalid_core_query_input", "invalid_core_request_input",
-        "invalid_core_work_input", "invalid_core_result_input",
+        "invalid_core_work_input", "invalid_core_result_input", "invalid_core_audit_input",
         "invalid_core_knowledge_input", "invalid_editor_draft_spec",
         "invalid_editor_input", "invalid_editor_plan", "invalid_editor_selection_id",
         "invalid_editor_selection_limit",
@@ -118,7 +118,7 @@ _DIFY_ERROR_MARKERS = (
 )
 _REGENERATABLE_DRAFT_MARKERS = frozenset({
     "invalid_core_query_draft", "invalid_core_query_source", "invalid_core_request_draft",
-    "invalid_core_work_draft", "invalid_core_result_draft", "invalid_core_knowledge_draft",
+    "invalid_core_work_draft", "invalid_core_result_draft", "invalid_core_knowledge_draft", "invalid_core_audit_draft",
 })
 _EDITOR_SELECTION_MARKERS = frozenset({
     "invalid_editor_selection_id", "invalid_editor_selection_limit",
@@ -160,11 +160,14 @@ def classify_dify_error(status_code: int, payload: object) -> MaxisGatewayError:
             return MaxisGatewayError(
                 code, status_code=status_code,
                 draft_regeneration_allowed=(
-                    bool(set(matched) <= _REGENERATABLE_DRAFT_MARKERS)
+                    bool(set(matched) <= _REGENERATABLE_DRAFT_MARKERS
+                         and ("invalid_core_audit_draft" not in matched
+                              or set(matched) == {"invalid_core_audit_draft"}))
                     or bool(set(matched) <= _EDITOR_SELECTION_MARKERS)
                 ),
                 draft_regeneration_role=(
-                    "editor_author" if set(matched) <= _EDITOR_SELECTION_MARKERS else ""
+                    "editor_author" if set(matched) <= _EDITOR_SELECTION_MARKERS else
+                    "auditor" if set(matched) == {"invalid_core_audit_draft"} else ""
                 ),
                 # A diagnostic alone cannot authorize retry. Mixed/unknown markers
                 # grant no more information than the legacy generic classification.

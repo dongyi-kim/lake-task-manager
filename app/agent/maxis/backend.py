@@ -2665,7 +2665,8 @@ def invoke_role(
             )
             remote_draft_rejection = (
                 isinstance(cause, MaxisGatewayError)
-                and ((cause.draft_regeneration_role == "editor_author" and role_id == "editor_author")
+                and ((cause.draft_regeneration_role in {"editor_author", "auditor"}
+                      and role_id == cause.draft_regeneration_role)
                      or (not cause.draft_regeneration_role and native_role))
                 and cause.code == MaxisErrorCode.WORKFLOW_CONTRACT and cause.draft_regeneration_allowed
                 and cause.status_code in {400, 422}

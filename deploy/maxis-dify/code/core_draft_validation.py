@@ -69,7 +69,8 @@ def _validate(value, schema, root, fail, depth=0):
         else:
             fail()
     expected = schema.get("type")
-    if expected is not None and type(value) is not {"object": dict, "array": list, "string": str, "boolean": bool}.get(expected):
+    if expected is not None and type(value) is not {"object": dict, "array": list, "string": str,
+                                                  "boolean": bool, "integer": int}.get(expected):
         fail()
     if "enum" in schema and not any(type(value) is type(row) and value == row for row in schema["enum"]):
         fail()

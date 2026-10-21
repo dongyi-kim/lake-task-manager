@@ -76,6 +76,54 @@ def test_second_rejection_is_not_hidden_or_retried(runtime):
     assert role_usage_observation(error.value.metadata)["failedCalls"] == 2
 
 
+@pytest.mark.parametrize("second_fails", [False, True])
+def test_audit_draft_uses_one_fixed_feedback_attempt_only(runtime, second_fails):
+    import json
+    rejected = "invalid_core_audit_draft native_draft_schema"
+    calls = runtime([failure(rejected), failure(rejected) if second_fails else success()])
+    if second_fails:
+        with pytest.raises(backend.MaxisRuntimeError) as caught:
+            ask("auditor")
+        metadata = caught.value.metadata
+    else:
+        metadata = ask("auditor").metadata
+    assert len(calls) == 2
+    first, second = (call[0][1] for call in calls)
+    assert {k: v for k, v in first["evidencePack"].items() if k != "role_context"} == {
+        k: v for k, v in second["evidencePack"].items() if k != "role_context"}
+    hint = json.loads(second["evidencePack"]["role_context"][-1]["content_json"])
+    assert hint["reason"] == "schema" and "Preserve adverse findings" in hint["role_contract"]
+    assert role_usage_observation(metadata)["failedCalls"] == (2 if second_fails else 1)
+
+
+@pytest.mark.parametrize("marker,role", [
+    ("invalid_core_audit_input", "auditor"),
+    ("invalid_core_audit_draft invalid_core_audit_input", "auditor"),
+    ("invalid_core_audit_draft", "work_architect"),
+])
+def test_audit_input_failures_and_wrong_role_never_regenerate(runtime, marker, role):
+    calls = runtime([failure(marker)])
+    with pytest.raises(backend.MaxisRuntimeError):
+        ask(role)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("role", ["auditor", "work_architect"])
+def test_mixed_audit_and_other_role_markers_never_authorize_retry(runtime, nested, role):
+    payload = ({"message": "invalid_core_audit_draft", "error": {"message": "invalid_core_work_draft"}}
+               if nested else {"message": "invalid_core_audit_draft invalid_core_work_draft"})
+    cause = classify_dify_error(400, payload)
+    assert cause.code == MaxisErrorCode.WORKFLOW_CONTRACT and not cause.draft_regeneration_allowed
+    error = backend.MaxisRuntimeError("synthetic rejection")
+    error.__cause__ = cause
+    error.metadata = {"requestTelemetry": observed()}
+    calls = runtime([error])
+    with pytest.raises(backend.MaxisRuntimeError):
+        ask(role)
+    assert len(calls) == 1
+
+
 def local_numeric_failure(code="unverified_numeric_claim", telemetry=True, binding_valid=True):
     from app.agent.maxis.response_guard import ResponseGuardError
     error = backend.MaxisRuntimeError("synthetic local rejection")

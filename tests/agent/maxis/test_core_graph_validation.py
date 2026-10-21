@@ -268,7 +268,8 @@ def test_materialization_binds_all_models_independently_of_node_order(modules, r
                     "Request LLM": "{{#1909000000001033.request_input#}}",
                     "Work LLM": "{{#1909000000001036.work_input#}}",
                     "Knowledge LLM": "{{#1909000000001039.knowledge_input#}}",
-                    "Result LLM": "{{#1909000000001042.result_input#}}"}.get(title, "{{#1909000000001006.model_input#}}")
+                    "Result LLM": "{{#1909000000001042.result_input#}}",
+                    "Audit LLM": "{{#1909000000001046.audit_input#}}"}.get(title, "{{#1909000000001006.model_input#}}")
         assert nodes[title]["prompt_template"][1]["text"].endswith(selector)
     assert next(row["value_selector"] for row in nodes["Contract Guard"]["variables"]
                 if row["variable"] == "candidate") == ["1909000000001043", "candidate"]
@@ -282,7 +283,8 @@ def test_materialization_binds_all_models_independently_of_node_order(modules, r
                                                  ("Request", "1909000000001033", "1909000000001031"),
                                                  ("Work", "1909000000001036", "1909000000001034"),
                                                  ("Knowledge", "1909000000001039", "1909000000001037"),
-                                                 ("Result", "1909000000001042", "1909000000001040")])
+                                                 ("Result", "1909000000001042", "1909000000001040"),
+                                                 ("Audit", "1909000000001046", "1909000000001044")])
 def test_projection_is_pinned_and_never_replaces_authority_input(modules, raw_source, mutation, role, input_id, llm_id):
     nodes = _nodes(raw_source)
     projection = nodes[role + " Input"]
@@ -383,7 +385,7 @@ def test_core_model_inputs_have_no_implicit_query_or_history(modules):
     materializer, validator = modules
     source = yaml.safe_load(DSL_PATH.read_text(encoding="utf-8"))
     llms = [node["data"] for node in source["workflow"]["graph"]["nodes"] if node["data"]["type"] == "llm"]
-    assert len(llms) == 7
+    assert len(llms) == 8
     assert all("memory" in data and data["memory"] is None for data in llms)
     validator.validate_bundle(ROOT)
     environment = materializer.load_environment(ENV_PATH)
