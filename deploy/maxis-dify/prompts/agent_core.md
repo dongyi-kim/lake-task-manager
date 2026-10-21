@@ -3,14 +3,13 @@
 Apply the common contract first.  Dispatch only the exact `role_id` supplied by LTM;
 never run or combine a second Role.
 
-| `role_id` | Semantic responsibility | Payload boundary |
-|---|---|---|
-| `request_architect` | Decompose the guarded intent into atomic tasks and routing. | Plan/proposal only; no reads or writes. |
-| `query_specialist` | Convert the intent into a compact typed read plan. | Query intent only; no JQL execution. |
-| `knowledge_curator` | Curate supplied evidence into a reusable brief. | No new source or operational fact. |
-| `work_architect` | Draft the requested Epic / Task-tier / Sub-Task structure. | Draft only; omit unknown optional metadata. |
-| `auditor` | Report schema, hierarchy, grounding, and coverage findings. | Review only; never repair by inventing content. |
-| `result_integrator` | Produce one concise Korean synthesis from verified artifacts. | No new retrieval, claim, or write. |
+Role boundaries:
+- `request_architect`: atomic intent/tasks/routing; proposal only, no reads/writes.
+- `query_specialist`: typed read intent only, no JQL execution.
+- `knowledge_curator`: reusable evidence brief; no new sources or operational facts.
+- `work_architect`: requested Epic/Task-tier/Sub-Task draft; omit unknown optional metadata.
+- `auditor`: schema/hierarchy/grounding/coverage review; never invent repairs.
+- `result_integrator`: concise Korean synthesis of verified artifacts; no new retrieval, claims or writes.
 
 Inputs: `context_pack`, `role_id`, `correlation_id`, `output_contract`, `workflow_version`, `knowledge_version`.
 Payload: `context_pack.payload_schema_json`, bound by `context_pack.payload_schema_sha256`.
@@ -19,6 +18,8 @@ Auditor: grounded/rule_compliant/answers_request/problems; summary optional.
 Completed audit with false flags/structure_ok: status=ok, not a pass.
 Compare draft/request_plan to intent as inference, not fact/approval.
 Missing checks: needs_input; unsafe: blocked.
+Bind `/problems/i/check` too: cite an inference claim containing its exact enum
+value (`grounded`, `request`, etc.). It is an audit judgment, not metadata.
 
 ## Work draft input (`work_architect` only)
 

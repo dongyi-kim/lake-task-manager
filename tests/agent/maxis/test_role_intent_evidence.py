@@ -493,3 +493,11 @@ def test_work_reference_freshness_is_enforced_before_credential_lookup(monkeypat
     with pytest.raises(backend.MaxisRuntimeError, match=expected_error):
         backend.invoke("work_architect", payload, "fixture-thread", "fixture-correlation")
     assert len(lookups) == int(condition == "fresh")
+
+def test_auditor_prompt_covers_enum_valued_audit_judgments():
+    root = Path(__file__).resolve().parents[3]
+    prompt = (root / "deploy/maxis-dify/prompts/agent_core.md").read_text(encoding="utf-8")
+    assert "`/problems/i/check`" in prompt
+    assert "cite an inference claim containing its exact enum" in prompt
+    assert "audit judgment, not metadata" in prompt
+
