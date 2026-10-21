@@ -592,12 +592,16 @@ Conversation·Create·Compose·Meeting·Context 배터리의 기존 입력을 �
 실제 PROD에 접근하지 않고 수행한 테스트를 PROD 적용·리허설 완료로 표시하지 않는다.
 세부 계약은 [아키텍처](MAXIS_DIFY_MIGRATION.md)와 [배포 소스](../deploy/maxis-dify/README.md)를 따른다.
 
-### Work·Knowledge 형식을 갱신한 뒤
+### Work·Knowledge·Result 형식을 갱신한 뒤
 
 소스만 pull하거나 LLM prompt 하나만 고치면 끝나지 않는다. 같은 소스에서 `bundle`을 다시 만들고
-기존 Core 앱의 **Work LLM/Input/Assembler, Knowledge LLM/Input/Assembler, Result Input**을
+기존 Core 앱의 **Work LLM/Input/Assembler, Knowledge LLM/Input/Assembler, Result LLM/Input/Assembler**를
 함께 갱신한다. 현지 모델·dataset binding을 유지한 채 Publish → 게시 UUID 등록 → 연결 검사 →
 **이 설정 사용** 순서로 적용한다. 새 앱이나 날짜별 Knowledge를 만들 필요는 없다.
+
+Result는 빈 배열도 원래 필드명과 함께 인용하며, 긴 목록은 개별 기록/필드를 선택한다.
+Knowledge의 출처 식별자(`ref`)와 관련성 설명(`why`)은 서로 다른 선택 규칙을 쓴다.
+LTM도 함께 pull·재시작해야 후속 답변 시 근거 재조회와 최종 확인 질문의 본문 표시가 적용된다.
 
 ```powershell
 # 연결 검사 통과 뒤, 전체 배터리 전에 현재 실패 경로를 먼저 확인
