@@ -712,7 +712,7 @@ def test_historical_base_report_keeps_its_declared_v1_contract():
 
 def test_all_primary_batteries_emit_versioned_metadata():
     expected = {
-        "tools/agent_lang_ab.py": ('suite="conversation"', "5.0.0"),
+        "tools/agent_lang_ab.py": ('suite="conversation"', "5.1.0"),
         "tools/agent_compose_eval.py": ('suite="editor"', "4.0.0"),
         "tools/agent_create_suite.py": ('suite="create"', "6.0.0"),
         "tools/agent_meeting_eval.py": ('suite="meeting"', "4.0.0"),
