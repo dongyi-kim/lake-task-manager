@@ -91,8 +91,13 @@ def test_guard_receives_actual_sources_and_attestations():
     assert any(row["truncated"] for row in overflow["sources"])
     assert "interpretation" not in {row["name"] for row in overflow["role_context"]}
     stale = fixtures.build_fixture_payload("role-stale")["payload"]["evidencePack"]
-    assert stale["freshness"] == "stale"
-    assert "partial_source" in stale["flags"]
+    assert stale["freshness"] == "mixed"
+    assert {"stale_source", "stale_role_context", "partial_source"} <= set(stale["flags"])
+    # A fresh user request does not refresh the old Jira result or permit a draft.
+    assert stale["partial"] is True
+    assert any(source["canonical_id"].startswith("ltm:user-intent:") for source in stale["sources"])
+    assert all(source["retrieved_at"] < stale["requested_at"]
+               for source in stale["sources"] if source["kind"] == "jira")
     missing = fixtures.build_fixture_payload("role-missing")["payload"]["evidencePack"]
     assert missing["sources"] == [] and missing["freshness"] == "empty"
 

@@ -43,7 +43,7 @@ def test_time_requires_explicit_aware_utc_before_builder(observed):
 def test_remote_closed_cases_reject_content_and_detach_metadata():
     original = remote.load_remote_cases()
     assert len(original) == 11
-    assert remote.BATTERY_VERSION == "2.0.0"
+    assert remote.BATTERY_VERSION == "3.0.0"
     changed = remote.load_remote_cases()
     changed[0]["role_id"] = "action_executor"
     changed[0]["specialized_review"][0]["expected"]["private"] = "caller input"
@@ -137,7 +137,9 @@ def test_offline_projections_pin_work_and_query_intent_revisions():
     # Query adds only its backend-owned task row. Editor's policy suffix now uses
     # the public corpus term "본문" instead of "Description"; that query suffix
     # is the only change from its old 58cd9be5... input identity.
-    # This is an input identity assertion, not benchmark fixture/checker metadata.
+    # Battery 3.0.0 records Auditor's fresh intent alongside stale Jira evidence.
+    # The full fixture digest includes that changed case metadata; old raw results
+    # remain untouched. This is an input identity assertion, not a quality score.
     # Freeze the pre-policy-retrieval runtime for this fixture-input regression;
     # actual candidate projections are exercised by the tests above and runtime tests.
     from app.agent.maxis.retrieval_query import enrich_role_query
@@ -145,19 +147,19 @@ def test_offline_projections_pin_work_and_query_intent_revisions():
     def baseline_query(query, role_id, schema):
         return enrich_role_query(query, role_id, schema) if role_id == "editor_author" else query
     expected = {
-        "role-request": "6bdb057ce99fcee97e1f7368dbad5b899850261f536729a1e8c9a5097b7dd809",
-        "role-query": "0f54c4a9f66425f0b96ab8bb32ad974ae76c3b2b551df528dbf9f849765aee06",
-        "role-knowledge": "a183fa5abd1960b4531040ced6941209d9c2cefe7bec21efc40d22c2196fd9e3",
-        "role-work": "f6159f40b07330ffb436b21e9963823f9b7337d7a171a69ff179b10c4868921e",
-        "role-auditor": "8dcb5612eb5d8b03125cf7941b79ef302d9471714e5dcfda4bd1372add4ceb4f",
-        "role-result": "c10afa5157a3f34402141c84af0e623a30b17be5a3fa5bb85f74cf92abba80e6",
-        "role-portfolio": "f585f21c92ba86f8021ad5145e98875fbae9f1c92352b1fed8ef57f71554b2c2",
-        "role-editor": "65f711fd6330e4c55ed2317f49b99f09aba0f56510dafa16e8fd28940dd972d0",
+        "role-request": "16fc3fb96f983c42b07e506db0c938a07fcc1532881f9aad802d8fa305c1aa3d",
+        "role-query": "146c98179d35fae44a88e74f72a7c8c2a51bb1e8765f873679ae076a35dd27cc",
+        "role-knowledge": "45dead47937f4a4aaf2f40c7790f67136b8da02aa4ea025b54e1b65ba75f6f7d",
+        "role-work": "6f48b987f363d5b4ecf61580d7b3b04230f75a1814cb0c9297267c944d1277a6",
+        "role-auditor": "b5ee2d46e5b389e98c1899e9a21b2d7b5cebcc8b27bcf9d0c995bb759fd67444",
+        "role-result": "5acb2dc413402495bd91a364ab97a45600ebf8872de975f3fa7c779f83d2df6d",
+        "role-portfolio": "98d9bfbcf22760b1bbc39d8424678b7ab1a7e4093b5d9f787b6e4df1ccf93c61",
+        "role-editor": "54dad6e763bd7296dee698a93da049917e68a63e118ea92a1e661ac2d6fa478a",
         # The same oversized fixture is projected under the current 32 KiB
         # budget. It must remain partial, not become a normal full-evidence case.
-        "role-overflow": "23447fe672b347fb2d67f788fee3d01576dc6427c5f793f11c175f0432cc6b07",
-        "role-stale": "71adf31275c9adb478c0535b976c961e663708762e560787f966ee77e1869b5f",
-        "role-missing": "26ecbd6472a5d7ec5d55b4abee7ae04b474e6a79f6ce96900da73b4d55940d8f",
+        "role-overflow": "a34d1590557ee40774997d5dd18ae9bacf8cb866d7085c74c0223ed3b047d0b1",
+        "role-stale": "866c2480194272d96af922ee46c37df2462769f012dedbf40abcb692447e9599",
+        "role-missing": "35782f82f63f7d7d5ae620c698abe533cd4afcf1a46e0efa268cbfbb4c1c92a7",
     }
     for case_id, digest in expected.items():
         with patch("app.agent.maxis.retrieval_query.enrich_role_query", baseline_query):

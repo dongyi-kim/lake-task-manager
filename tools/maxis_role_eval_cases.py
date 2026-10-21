@@ -19,7 +19,7 @@ from unittest.mock import patch
 from app.agent.maxis import backend
 
 
-BATTERY_VERSION = "2.0.0"  # missing-evidence case now declares its absent required inputs
+BATTERY_VERSION = "3.0.0"  # Auditor intent is fresh; stale Jira/context remains unsafe in a mixed pack.
 FIXTURE_VERSION = "ltm-maxis-role-offline.v1"
 _NOW = datetime(2026, 9, 17, 0, 0, tzinfo=timezone.utc)
 # Public deterministic keys belong ONLY to closed synthetic fixtures, never runtime.
@@ -63,7 +63,7 @@ def _case_specs() -> dict[str, str]:
                                 "case_id": source_id, "source": _SOURCE_FILES[suite]}],
             "expected": {
                 "required_context_keys": list(required), "max_pack_utf8_bytes": 6144,
-                "freshness": {"role-stale": "stale", "role-missing": "empty"}.get(case_id, "fresh"),
+                "freshness": {"role-stale": "mixed", "role-missing": "empty"}.get(case_id, "fresh"),
                 "partial": case_id in {"role-overflow", "role-stale"},
                 "flags": flags.get(case_id, []), "semantic_quality_assessed": False,
                 "no_remote_calls": True,

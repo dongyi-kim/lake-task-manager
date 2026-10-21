@@ -158,7 +158,9 @@ python -B deploy/maxis-dify/launch_role_evals.py --label candidate
 측정한다. focused attempt는 새 run group이며 기존 full-run의 실패를 덮어쓰지 않는다.
 정답/checker/rubric과 raw fixture UID는 원격에 보내지 않는다.
 
-Role battery 2.0.0은 envelope/binding/retrieval 통과와 `outcomeContractPass`를 분리한다.
+Role battery 3.0.0은 envelope/binding/retrieval 통과와 `outcomeContractPass`를 분리한다.
+Auditor의 새 요청 근거와 오래된 Jira 근거가 함께 있으면 `mixed`이며 여전히 안전 차단 대상이다.
+이 기대 계약 변경 전의 결과와 새 버전의 점수를 직접 비교하지 않는다.
 양성 payload·필요 질문·예상 안전 차단·예상 밖 빈 응답·미시도는 별도로 집계하며 안전 차단을
 업무 완료율에 합산하지 않는다. 의미 품질은 Codex/Claude가 raw를 직접 읽어 평가하고 LTM LLM을
 judge로 쓰지 않는다. 비용/native 호출 등 미관측값은 unknown이다. component 진단 성공은

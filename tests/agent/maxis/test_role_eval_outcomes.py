@@ -237,7 +237,7 @@ def test_complete_attempts_do_not_mean_outcome_acceptance(runner, monkeypatch, t
     client, requests, _ = _transport(runner, monkeypatch, raw=_raw(status='blocked', missing_inputs=[]))
     path = runner.run('candidate', ['role-request'])
     result = json.loads(path.read_text(encoding='utf-8'))
-    assert captured['battery_version'] == '2.0.0'
+    assert captured['battery_version'] == '3.0.0'
     dependencies = {item['file']: item['sha256'] for item in captured['checker_dependencies']}
     assert dependencies['deploy/maxis-dify/run_role_evals.py'] == 'c' * 64
     assert dependencies['tools/maxis_role_remote_cases.py'] == 'c' * 64
