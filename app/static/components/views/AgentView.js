@@ -30,6 +30,7 @@ import {
   richEditorToText, draftDescriptionText, sanitizeDraftDescription,
 } from "../agent/contentTransforms.js";
 import AGENT_VIEW_TEMPLATE from "../agent/agentViewTemplate.js";
+import { usageSummary, usageTitle, runtimeDebugLines, runtimeProfileLabel, runtimeQualityStatus } from "../agent/usageDisplay.js";
 
 // 빈 화면에 예시를 둔다 — 무엇을 할 수 있는 도구인지 설명하는 가장 빠른 방법이고,
 // 사용자가 첫 문장을 어떻게 쓸지 몰라 멈추는 것을 막는다.
@@ -75,6 +76,7 @@ export default {
       aborts: {},             // tid → 스트림 중단 함수
       approving: false,
       settingsOpen: false,
+      settingsMode: "maxis",
       answers: {},            // 되묻기 폼의 답(qi → 값)
       customOn: {},           // 객관식 질문에서 '직접 입력'을 고른 상태(qi → bool). 우선순위엔 없다
       qDone: {},              // 답을 확정한 질문(qi → bool) — 접혀서 선택만 보인다
@@ -92,6 +94,12 @@ export default {
     };
   },
   computed: {
+    conversationRuntime() {
+      if (this.status && this.status.runtime && this.status.runtime.conversation)
+        return this.status.runtime.conversation;
+      return { engine: "local", profile: "", ready: this.status ? this.status.llmReady : null,
+        reason: (this.status && this.status.llmReason) || "", nextAction: "maxis_settings" };
+    },
     examples() { return EXAMPLES; },
     empty() { return this.turns.length === 0; },
     // 아직 thread_id 를 못 받은 새 대화는 "_new" 자리에 기록해 두고 start 에서 옮긴다.
@@ -189,6 +197,67 @@ export default {
     resetSideW() { this.sideW = 0; saveLS(SIDE_W_KEY, 0); },
     md(t) { return renderMarkdown(t.text, t.people, t.evidence, t.docs); },
     evidenceText(t) { return mergeEvidenceMarkdown(t.text, t.evidence, t.docs); },
+    /** MAXIS/Dify가 사용한 근거의 검토용 projection. 서버가 source 본문과 raw 응답을
+     *  제거한 `evidenceWorkspace`만 내린다. 기존 답변 하단의 근거 인덱스와 달리 여기서는
+     *  사실/추론/미확인 및 신선도·충돌 경고를 분리해 판단 과정을 검토한다. */
+    evidenceWorkspace(t) { return (t && t.evidenceWorkspace) || {}; },
+    workspaceSources(t) {
+      const rows = this.evidenceWorkspace(t).sources;
+      return Array.isArray(rows) ? rows : [];
+    },
+    workspaceFacts(t) {
+      const ws = this.evidenceWorkspace(t);
+      const rows = Array.isArray(ws.facts) ? ws.facts : [];
+      const claims = Array.isArray(ws.claims) ? ws.claims.filter((row) => row && row.kind === "fact") : [];
+      return rows.concat(claims);
+    },
+    workspaceClaims(t, kinds) {
+      const allowed = new Set(kinds || []);
+      const rows = this.evidenceWorkspace(t).claims;
+      return (Array.isArray(rows) ? rows : []).filter((row) => row && allowed.has(row.kind));
+    },
+    workspaceMissing(t) {
+      const ws = this.evidenceWorkspace(t);
+      const direct = Array.isArray(ws.missingInputs) ? ws.missingInputs : [];
+      const claims = this.workspaceClaims(t, ["open_fact"]);
+      return direct.concat(claims.map((row) => row.text).filter(Boolean));
+    },
+    workspaceWarnings(t) {
+      const rows = this.evidenceWorkspace(t).warnings;
+      return Array.isArray(rows) ? rows : [];
+    },
+    hasEvidenceWorkspace(t) {
+      return this.workspaceSources(t).length || this.workspaceFacts(t).length ||
+        this.workspaceClaims(t, ["inference", "recommendation"]).length ||
+        this.workspaceMissing(t).length || this.workspaceWarnings(t).length;
+    },
+    freshnessLabel(value) {
+      return ({ fresh: "최신", mixed: "시점 혼재", stale: "오래됨", empty: "근거 없음" })[value] || "미확인";
+    },
+    workspaceFreshness(t) {
+      const value = this.evidenceWorkspace(t).freshness;
+      return value && typeof value === "object" ? (value.status || "empty") : (value || "empty");
+    },
+    sourceKindLabel(value) {
+      return ({ jira: "Jira", confluence: "Confluence", bitbucket: "Bitbucket",
+                web: "외부", knowledge: "MAXIS 지식", ltm: "LTM 집계" })[value] || value || "출처";
+    },
+    sourceUrl(row) {
+      // Evidence Workspace links are constructed by LTM. Never turn a remote/external
+      // string into a navigable link on this review surface.
+      const value = String((row && row.url) || "").trim();
+      return /^\/browse\/[A-Z][A-Z0-9]*-\d+$/.test(value) ? value : "";
+    },
+    sourceTime(row) {
+      if (!row) return "시점 미확인";
+      const updated = row.updatedAt || row.updated_at;
+      const retrieved = row.retrievedAt || row.retrieved_at;
+      return updated ? `갱신 ${updated}` : (retrieved ? `조회 ${retrieved}` : "시점 미확인");
+    },
+    runtimeMeta(t) { return (t && t.runtime) || {}; },
+    runtimeProfileLabel, runtimeQualityStatus,
+    usageSummary,
+    usageTitle,
     /** [n] 마커 호버 — **하단 참조 목록과 같은 모양의** 커스텀 상자를 띄운다.
      *
      *  브라우저 기본 툴팁(title)을 쓰지 않는 이유가 셋이다: ①노란 기본 상자가 하단 참조
@@ -422,11 +491,14 @@ export default {
             settle();
             this.saveConvo(myTid, myTurns);
           } else if (ev.type === "error") {
+            turn.ok = false;
+            turn.error = ev.message || "알 수 없는 오류";
             turn.text = "문제가 생겼습니다 — " + (ev.message || "알 수 없는 오류");
             settle();
             this.saveConvo(myTid, myTurns);
           } else if (ev.type === "final") {
             Object.assign(turn, {
+              ok: ev.ok, error: ev.error || "",
               text: ev.reply || "(답변이 비어 있습니다)",
               trace: ev.trace || [], evidence: ev.evidence || [],
               docs: ev.related_docs || [], questions: ev.questions || [],
@@ -435,6 +507,16 @@ export default {
               pending: ev.pending || null, result: ev.result || null,
               usage: ev.usage || null, people: ev.people || {},
               draftItems: ev.draft_items || [],
+              runtime: ev.runtime || {
+                engine: ev.engine || "", profile: ev.profile || "", profileLabel: ev.profileLabel || "",
+                roleEngines: ev.roleEngines || {},
+                lastRole: ev.lastRole || "", lastRoleEngine: ev.lastRoleEngine || "",
+                workflowBundleVersion: ev.workflowBundleVersion || ev.workflow_bundle_version || "",
+                knowledgeVersion: ev.knowledgeVersion || ev.knowledge_version || "",
+                correlationId: ev.correlationId || ev.correlation_id || "",
+                qualityGate: ev.qualityGate || ev.quality_gate || null,
+              },
+              evidenceWorkspace: ev.evidenceWorkspace || ev.evidence_workspace || null,
             });
             settle();
             this.saveConvo(myTid, myTurns);
@@ -667,8 +749,15 @@ export default {
     /** 지금 무엇으로 도는지(provider·모델)를 다시 읽는다 — 설정에서 바꾸면 즉시.
      *  ★ 템플릿에서 직접 agentApi 를 부르면 안 된다(템플릿 스코프에 모듈이 없어
      *  조용히 실행되지 않는다 — 모델을 바꿔도 좌상단이 그대로였던 실측 원인). */
-    async refreshStatus() {
+    async refreshStatus(applied) {
+      if (applied && applied.ok === true && applied.runtime) {
+        this.status = { ...(this.status || {}), runtime: applied.runtime };
+      }
       try { this.status = await agentApi.status(); } catch (e) { /* 표시만 못 할 뿐 */ }
+    },
+    openRuntimeSettings() {
+      this.settingsMode = this.conversationRuntime.nextAction === "llm_settings" ? "llm" : "maxis";
+      this.settingsOpen = true;
     },
 
     isTicketKey(k) { return /^[A-Z][A-Z0-9]*-[0-9]+$/.test(String(k || "")); },
@@ -694,23 +783,21 @@ export default {
           L.push(`  [생성됨] ` + t.result.created.map((c) => c.key).join(", "));
         if (t.result && (t.result.failed || []).length)
           L.push(`  [실패] ` + t.result.failed.map((f) => `${f.summary}: ${f.error}`).join(" / "));
-        if (t.usage) L.push(`  [사용량] ${t.usage.calls || "?"}회 · ${t.usage.totalTokens || 0}tok · $${t.usage.costUsd || 0}`);
+        if (t.usage) L.push(`  [사용량] ${usageSummary(t.usage)}`);
         L.push("");
       });
       // 운영 대화 복사는 사용자 입출력만. local/mock에서는 재현에 필요한 진행·연결 정보를
       // 함께 싣는다. SSE token 원문과 API 키는 애초에 debug에 저장하지 않는다.
       if (this.appMeta && this.appMeta.env !== "prod") {
-        const active = this.status && this.status.activeConfig;
         L.push("## Local debug", "",
           `- env: ${this.appMeta.env || "unknown"}`,
           `- rev: ${this.appMeta.rev || "unknown"}`,
-          `- threadId: ${this.threadId || "(not assigned)"}`,
-          `- config: ${active ? active.name + " / " + active.provider : "(none)"}`,
-          `- model: ${(this.status && this.status.chatModel) || "(none)"}`, "");
+          `- threadId: ${this.threadId || "(not assigned)"}`, "");
         this.turns.filter((t) => t.who === "agent" && t.debug).forEach((t, i) => {
           const d = t.debug;
           L.push(`### Turn ${i + 1}`, "", `- startedAt: ${d.startedAt || ""}`,
             `- finishedAt: ${d.finishedAt || ""}`, `- tokenChars: ${d.tokenChars || 0}`);
+          L.push(...runtimeDebugLines(t));
           (d.plan || []).forEach((p) => {
             L.push(`- [${p.status || "?"}] ${p.label || p.id}` + (p.note ? ` — ${p.note}` : ""));
             (p.details || []).forEach((x) => L.push(`  - ${x.done ? "완료" : "진행"}: ${x.text}`));
@@ -889,8 +976,19 @@ export default {
     },
     skipAnswers(turn) {
       this.answers = {};
-      if (turn) turn.questionReceipt = null;
-      this.text = "나머지는 합리적 기본값으로 알아서 진행해줘";
+      const text = "나머지는 합리적 기본값으로 알아서 진행해줘";
+      const challenge = turn?.questionReceipt;
+      if (challenge?.challenge_id) {
+        turn.questionReceipt = null;
+        this.dispatch(text, null, {
+          contract: "question_answer.receipt.v1",
+          challenge_id: challenge.challenge_id,
+          answers: [],
+          defer_remaining: true,
+        });
+        return;
+      }
+      this.text = text;
       this.send();
     },
   },

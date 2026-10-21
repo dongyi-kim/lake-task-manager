@@ -1,7 +1,7 @@
 # LTM Agent 평가 표준
 
 > Source of truth: [`evaluation_protocol.json`](evaluation_protocol.json)  
-> 현재 protocol: `3.0.0` / human rubric: `2.0.0`
+> 현재 protocol: `4.0.0` / human rubric: `2.0.0`
 
 이 문서는 prompt, Role, Tool, workflow 후보의 품질·시간·token을 같은 자로 비교하기 위한 실행 규약. 과거 보고서의 점수는 해당 보고서가 선언한 규약으로만 해석한다. 후보 간 비교는 동일한 `benchmarkKey`에서만 수행하며, `candidateKey`는 model/provider/backend/prompt/tree가 다른 후보를 구분한다. `comparabilityKey`는 동일 benchmark와 동일 candidate의 반복 실행을 식별한다.
 
@@ -23,6 +23,24 @@
 - `candidateKey`: model/simple model, provider+endpoint identity, structured-output backend+version/fallback policy,
   prompt version, commit/dirty/tree digest, resolved Python package-set digest
 - `comparabilityKey`: 위 두 키의 결합. 동일 후보 반복 실행 진단용이며 교차 모델 pairing 기준이 아님
+
+### Protocol 4.0.0 source identity 전환
+
+`candidateTreeSha256`의 cache 제외 기준을 **저장소 상대 경로**로 한정한다.
+기존 구현은 절대 경로에 `.cache` 또는 `__pycache__`가 있으면 `app/`·`config/`의 모든
+파일을 제외했다. `.cache/worktrees/` 아래 후보는 source 변경이 digest에 반영되지 않았으므로
+기존 digest만으로 같은 runtime source라고 주장할 수 없다.
+
+- 경로명과 파일 bytes의 길이를 결속하는 기존 SHA-256 산식과 source 범위는 유지한다.
+  untracked source도 포함하며, 저장소 **내부** cache·bytecode만 제외한다.
+- MAXIS Role component의 per-case source ledger에 `retrieval_query.py`를 추가한다.
+  검색어 selector가 실행 중 달라지면 다음 요청 전에 중단하고 `bindingUnchanged=false`로 남긴다.
+- 이는 비교 가능성 계약 변경이므로 protocol을 major 증가한다. rubric, battery case·checker와
+  업무 정답은 변경하지 않는다. 새 실행에서 metadata/key를 다시 계산하며 `benchmarkKey`와
+  `comparabilityKey`는 기존 3.0.0 실행과 다르다. tree가 바로잡힌 후보의 `candidateKey`도 달라진다.
+- 기존 raw·보고서·점수는 수정하거나 새 version으로 소급 표기하지 않는다. 과거 결과는 제한사항을
+  명시한 진단 참고자료다. 우열 비교에는 모든 후보를 4.0.0의 같은 full battery로 다시 실행한
+  fresh baseline이 필요하다. 이번 identity 수정만으로 실제 모델 품질 개선을 주장하지 않는다.
 
 ## 2. 실행 종류와 결과 선택
 
@@ -370,8 +388,9 @@ Primary battery harness는 매 실행의 raw response, 질문 form, card/payload
 `.cache/agent-evaluation/<runGroupId>/` 아래 JSON으로 항상 저장. 사용자가 `--out`을 지정해도 이 경로
 밖은 거부. `.cache/`는 gitignore 대상이며 raw 파일을 commit하지 않음
 
-Codex/Claude 직접 평가가 끝나면 `research/agent-improvement/evaluations/`에 경량 Markdown 보고서를
-항상 저장. 하나의 보고서는 한 candidate commit과 한 비교 가능한 run group을 기본 단위로 하며 다음을 포함
+Codex/Claude 직접 평가가 끝나면 `.cache/agent-evaluation/<runGroupId>/review.md`에 경량 Markdown 보고서를
+항상 저장하고 커밋하지 않음. 평가 결과는 raw·채점·최신 보고서 모두 ignored `.cache/`에만 유지하며,
+검증 요약은 PR 본문에 기록. 하나의 보고서는 한 candidate commit과 한 비교 가능한 run group을 기본 단위로 하며 다음을 포함
 
 - candidate commit, `promptVersion`, `protocolVersion`, `rubricVersion`
 - suite별 `batteryVersion`, `batteryManifestSha256`, `specializedReviewSpecSha256`,

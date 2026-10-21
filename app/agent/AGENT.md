@@ -1,6 +1,6 @@
 # LakeTaskManager Agent 개발 지침
 
-이 문서는 `app/agent/**`, Agent가 사용하는 `app/domain/**`, Agent UI, prompt, role, tool, workflow 및 배터리를 수정하는 Codex·Claude의 실행 지침이다. 기능 소개와 실험 결론은 여기 두지 않는다. 연구 산출물은 [`research/agent-improvement/`](../../research/agent-improvement/README.md)에 보관한다.
+이 문서는 `app/agent/**`, Agent가 사용하는 `app/domain/**`, Agent UI, prompt, role, tool, workflow 및 배터리를 수정하는 Codex·Claude의 실행 지침이다. 기능 소개와 실험 결론은 여기 두지 않는다. 평가·연구 산출물은 ignored `.cache/`에만 보관하고 커밋하지 않는다.
 
 ## 1. 작업 전 확인
 
@@ -13,7 +13,7 @@
    - tool registry와 실제 구현: [`tools/`](tools/)
    - 티켓 계층·행동: [`../domain/ticket_actions.py`](../domain/ticket_actions.py)
    - 승인 경계: [`approval.py`](approval.py), [`tools/write_tools.py`](tools/write_tools.py)
-3. 과거 수치나 보고서가 필요할 때만 [`research/agent-improvement/reports/`](../../research/agent-improvement/reports/)를 읽는다. 보고서의 관측을 현재 코드 계약으로 간주하지 않는다.
+3. 과거 수치나 보고서가 필요할 때만 `.cache/agent-evaluation/`의 보존 자료 또는 기존 Git 이력을 읽는다. 보고서의 관측을 현재 코드 계약으로 간주하지 않는다.
 
 ## 2. 핵심 불변조건
 
@@ -191,7 +191,7 @@ LLM 호출은 반드시 `Role → Task Profile → Model Profile → Capability 
   tests/agent/core/test_agent_graph.py `
   tests/agent/core/test_agent_grounding.py `
   tests/agent/core/test_agent_compose.py `
-  tests/agent/core/test_agent_query_v2.py `
+  tests/agent/core/test_agent_query.py `
   tests/agent/core/test_agent_tools.py `
   tests/jira/tickets/test_ticket_actions.py
 ```
@@ -293,8 +293,8 @@ root, `tools/`, `research/`에 raw JSON이나 실행 로그를 남기지 않는�
 `runGroupId + suite + repeatIndex`를 다시 쓰거나 `.claim`을 지워 기존 attempt를 덮어쓰지 않는다.
 재실행에는 새 run group 또는 repeat index를 부여한다.
 
-Codex/Claude가 raw output을 직접 채점한 뒤에는 git에 보존할 경량 Markdown 보고서를
-`research/agent-improvement/evaluations/`에 반드시 작성한다. 보고서에는 candidate commit,
+Codex/Claude가 raw output을 직접 채점한 뒤에는 경량 Markdown 보고서를
+`.cache/agent-evaluation/<runGroupId>/review.md`에 반드시 작성하고 커밋하지 않는다. 보고서에는 candidate commit,
 `promptVersion`, `protocolVersion`, `rubricVersion`, suite별 `batteryVersion`,
 `batteryManifestSha256`, `specializedReviewSpecSha256`, `dataManifestSha256`, model routing, 실행
 case·repeat, 공통 checklist와 특수 검토 항목별 점수와 짧은
@@ -315,6 +315,6 @@ raw 결과의 정량 집계는 suite별 표시 이름이 아니라 공통 `metri
 - Done, hierarchy, search scope, pagination, approval 불변조건을 우회하지 않는다.
 - 관련 test와 전체 test 결과를 보고한다.
 - 실험을 수행했다면 실제 output과 사람 관점 의견을 함께 보존한다.
-- 실 LLM 평가를 수행했다면 raw 결과는 `.cache/agent-evaluation/`, 경량 채점 보고서는
-  `research/agent-improvement/evaluations/`에 있고 commit·평가 version·manifest가 서로 일치한다.
+- 실 LLM 평가를 수행했다면 raw 결과와 경량 채점 보고서는 `.cache/agent-evaluation/<runGroupId>/`에만
+  있고 commit·평가 version·manifest가 서로 일치한다. 결과 파일은 stage하지 않는다.
 - 평가 결과의 protocol/rubric/battery version과 manifest가 기록되고, 보고서가 측정 기준을 명시한다.

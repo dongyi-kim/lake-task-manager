@@ -2,6 +2,7 @@
 // 후보를 편집·검증하는 동안 현재 활성 config는 바뀌지 않고, 마지막 '이 설정 사용'에서만 바뀐다.
 import { agentApi } from "../../lib/agentApi.js";
 import { api } from "../../lib/api.js";
+import MaxisSettingsPanel from "./MaxisSettingsPanel.js";
 
 const PROVIDERS = [
   { k: "aoai", label: "Azure OpenAI", hint: "Azure 배포명과 api-version을 사용합니다.",
@@ -22,10 +23,12 @@ const PROVIDERS = [
 
 export default {
   name: "AgentSettingsDialog",
+  components: { MaxisSettingsPanel },
+  props: { initialMode: { type: String, default: "maxis" } },
   emits: ["close", "saved"],
   data() {
     return {
-      providers: PROVIDERS,
+      providers: PROVIDERS, mode: this.initialMode === "llm" ? "llm" : "maxis",
       st: null, env: "", selectedId: "", err: "", busy: false, saving: false,
       form: { name: "", provider: "", chatModel: "", chatModelSimple: "", embedModel: "", apiVersion: "",
         chatModelProfile: "", chatModelSimpleProfile: "",
@@ -73,6 +76,10 @@ export default {
     document.removeEventListener("keydown", this._esc);
   },
   methods: {
+    maxisApplied(result) {
+      this.$emit("saved", result);
+      this.$emit("close");
+    },
     providerLabel(k) { return (PROVIDERS.find((x) => x.k === k) || {}).label || k; },
     async load(preferId) {
       try {
@@ -230,8 +237,13 @@ export default {
   template: `
   <div class="ag-back" @click.self="$emit('close')">
     <div class="ag-dlg ag-config-dlg">
-      <div class="ag-h"><h3>AI 에이전트 연결 설정</h3><button class="ag-x" @click="$emit('close')">✕</button></div>
-      <div v-if="!st" class="ag-body">불러오는 중…</div>
+      <div class="ag-h"><h3>AI 에이전트 설정</h3><button class="ag-x" @click="$emit('close')">✕</button></div>
+      <div class="mx-mode-nav">
+        <button :class="{ on: mode === 'llm' }" @click="mode = 'llm'">LLM 연결</button>
+        <button :class="{ on: mode === 'maxis' }" @click="mode = 'maxis'">MAXIS / Dify Workflow</button>
+      </div>
+      <MaxisSettingsPanel v-if="mode === 'maxis'" @saved="$emit('saved', $event)" @applied="maxisApplied" />
+      <div v-else-if="!st" class="ag-body">불러오는 중…</div>
       <div v-else class="ag-config-layout">
         <aside class="ag-config-list">
           <div class="ag-config-list-head"><b>내 설정</b><button class="ag-mini" @click="addOpen = true">+ 추가</button></div>

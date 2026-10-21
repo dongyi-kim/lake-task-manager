@@ -86,10 +86,10 @@ export default {
                     // '' | 'jira' | 'confluence' — '/' 로 연 검색창
                     pick: "",
                     // AI 자동완성 — 팝업 상태. seed 는 "쓰던 글을 재료로 쓸까"다
-                    aiOpen: false, aiPrompt: "", aiSeed: true, aiReplace: false, aiAsk: "",
+                    aiOpen: false, aiPrompt: "", aiSeed: true, aiReplace: false, aiAsk: "", aiCheckSequence: 0,
                     aiPopStyle: {},   // fixed 배치 — 에디터 기준 중앙(absolute 는 overflow 에 잘리고 좌로 쏠렸다)
                     // LLM 연결값이 없으면 생성 대신 안내+[설정] — null=아직 확인 전
-                    aiReady: null, aiWhy: "", aiSettings: false,
+                    aiReady: null, aiWhy: "", aiSettings: false, aiRuntime: null,
                     aiBusy: false, aiErr: "", aiNote: "",
                     mdTable: false, styleOpen: false, fontOpen: false,
                     colorOpen: false, bgOpen: false,   // 글자색·배경색 팔레트 열림
@@ -381,6 +381,8 @@ export default {
     // 쓰기가 아니다 — 결과를 에디터에 꽂아 줄 뿐이고 저장은 사용자가 누른다.
     openAi() {
       this.aiOpen = true; this.aiErr = ""; this.aiNote = ""; this.aiAsk = "";
+      this.aiReady = null; this.aiWhy = "";
+      const checkSequence = ++this.aiCheckSequence;
       // ── 배치: fixed + 에디터 기준 X축 중앙 (실측 지적 3: absolute(right:0)는
       //    ① 버튼이 왼쪽이라 팝업이 좌로 쏠리고 ② overflow/스택 컨텍스트에 가려지고
       //    ③ 320px 로 좁았다). fixed 는 어느 조상에도 잘리지 않는다.
@@ -400,11 +402,21 @@ export default {
       }
       // 열 때마다 확인한다 — 설정 창에서 키를 막 넣고 돌아온 직후에도 맞아야 한다.
       agentApi.status()
-        .then((s) => { this.aiReady = !!(s && s.llmReady); this.aiWhy = (s && s.llmReason) || ""; })
-        .catch(() => { this.aiReady = false; this.aiWhy = "에이전트 상태를 확인하지 못했습니다."; });
+        .then((s) => {
+          if (checkSequence !== this.aiCheckSequence) return;
+          this.aiRuntime = (s && s.runtime && s.runtime.editor) || null;
+          this.aiReady = this.aiRuntime ? !!this.aiRuntime.ready : !!(s && s.llmReady);
+          this.aiWhy = this.aiRuntime ? (this.aiRuntime.reason || "") : ((s && s.llmReason) || "");
+        })
+        .catch(() => {
+          if (checkSequence !== this.aiCheckSequence) return;
+          this.aiReady = false; this.aiWhy = "에이전트 상태를 확인하지 못했습니다.";
+        });
       this.$nextTick(() => this.$refs.aiInput && this.$refs.aiInput.focus());
     },
     async runAi() {
+      if (this.aiBusy || this.aiReady === null) return;
+      if (this.aiReady !== true) { this.aiErr = this.aiWhy || "AI 실행 설정을 확인하고 다시 시도하세요."; return; }
       const prompt = (this.aiPrompt || "").trim();
       const seed = this.aiSeed ? this.htmlNow() : "";
       if (!prompt && !seed) { this.aiErr = "무엇을 써 드릴지 적어 주세요."; return; }

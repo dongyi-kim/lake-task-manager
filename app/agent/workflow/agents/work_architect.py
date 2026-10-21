@@ -1775,24 +1775,14 @@ class WorkArchitect(StructuredAgent):
                       "evidence; do not emit an `assignee`. Record only "
                       "material defaults or open facts in Korean `rationale`."
                       if defaults else "")
-        # 버그는 새 기능과 초안 규칙이 다르다 — 갈래를 지시문으로 가른다(Prompt Chaining 의 분기).
-        # ★ **버그 초안은 의도가 아니라 요청의 낱말로 고른다**(사용자 지적 — "결국 버그
-        #   신고도 Task 생성 아니야? type 이 Bug 일 뿐이지"). 예전에는 `report_bug` 라는
-        #   갈래가 있었지만 `plan_work` 와 지나는 노드도 도구도 같았고, 코드에서 다르게
-        #   쓰이는 곳이 이 goal 하나뿐이었다 — **갈래가 아니라 산출물 유형**이다.
-        #   낱말로 고르면 분류가 흔들려도 본문 규율이 안 바뀐다: "적재 배치가 계속
-        #   실패한다"가 어느 갈래로 가든 재현·기대·실제가 유지된다.
+        # 생성 권한이 있는 create/mixed 안에서만 요청 내용으로 Bug 본문 정책을 고른다.
+        # Bug는 별도 실행 갈래가 아니라 생성할 티켓의 유형이다. 증상 문구만으로
+        # update/comment를 생성으로 바꾸지 않으며, schema·정규화·apply와 같은
+        # _is_create_action 권한 판정을 따른다.
         _said = _current_request_boundary_text(state)
         _is_bug = reads_as_bug(_said)      # 판정은 state.reads_as_bug 한 곳에만 있다
-        if (_is_bug and (_is_create_action(state)
-                         or not _typed_continuation_contract(state))):
-            goal = """Draft one Task-tier `Bug`.
-
-- Use `type="Bug"` and a Korean summary that names the observed symptom.
-- Separate the Korean body sections `재현 경로`, `기대 동작`, and `실제 동작`. Ask only for a missing material reproduction fact; never fabricate it.
-- Add a verified suspected-cause ticket key only when research directly supports that relationship.
-- If an open Bug already has the same symptom, do not draft a duplicate; ask the user to choose how to proceed.
-- Default to one Bug without Sub-Tasks unless the user explicitly requests a valid split."""
+        if _is_bug and _is_create_action(state):
+            goal = "Draft the reported symptom using the shared Bug creation policy."
         elif (action == "create" and (state.get("intent") or "") == Intent.MODIFY
                 and not state.get("mentioned_keys")
                 and (state.get("draft") or {}).get("items")):
@@ -3191,6 +3181,10 @@ def _split_into_children(state, item: dict) -> list:
     compiled = _children_from_dod(item)
     if compiled:
         return compiled
+    from app.agent.runtime_status import bounded_internal_assist
+
+    if bounded_internal_assist(state):
+        return []  # A missing semantic split must be corrected by the remote Work Role.
     try:
         schema = {"title": "split_children", "type": "object", "properties": {
             "children": {"type": "array", "items": {
@@ -3468,7 +3462,9 @@ def _bug_body_for(state, it) -> str:
     # simple LLM에 다시 보내던 보정 호출을 생략한다(PASTE1: WorkArchitect 2 calls→1 call).
     direct_report = bool(steps and expected and actual)
     try:
-        if direct_report:
+        from app.agent.runtime_status import bounded_internal_assist
+
+        if direct_report or bounded_internal_assist(state):
             raise StopIteration
         schema = {"title": "bug_body", "type": "object", "properties": {
             "steps": {"type": "array", "items": {"type": "string"},
@@ -3567,6 +3563,10 @@ def _task_for_module(state, mod: str, ref: dict, want: str = "") -> dict:
     걸리고, 무엇보다 사람이 승인 화면에서 판단할 재료가 없다. 실패하면 빈 dict 를 돌려
     경고 경로로 간다(보정이 본 흐름을 죽이면 안 된다).
     """
+    from app.agent.runtime_status import bounded_internal_assist
+
+    if bounded_internal_assist(state):
+        return {}  # Preserve the missing-deliverable defect for the ordinary Auditor.
     try:
         # ★ **HTML 을 모델에게 받지 않는다 — 조각만 받고 코드가 조립한다.** 처음엔 본문
         #   전체를 HTML 로 받았는데, 모델이 <h1>/<h2> 로 쓰고 '배경'·'완료 조건' 절을 빼서
@@ -5053,6 +5053,10 @@ def _rules_material(state) -> str:
 
     Auditor 의 `_rules_for` 와 같은 재료다 — 검열이 볼 규칙을 작성자도 봐야 왕복이 준다.
     """
+    from app.agent.runtime_status import bounded_internal_assist
+
+    if bounded_internal_assist(state):
+        return ""  # The qualified remote release retrieves its governed Knowledge.
     try:
         from app.agent.retrieval import static_index
         shape = " ".join(str(i.get("type") or "") for i in
@@ -5258,6 +5262,12 @@ def _delegated_question_is_blocking(state, question) -> bool:
     """위임 요청에서 모델이 `required_input`으로 표시한 질문을 실제 blocker로 검증."""
     if not _question_requires_input(question):
         return False
+    from app.agent.runtime_status import bounded_internal_assist
+    if bounded_internal_assist(state):
+        # The same typed interview decision must survive both correction and
+        # apply. Korean phrase matching is not a second semantic authority.
+        # This permits a question only, never a write or an approval.
+        return True
     said = _current_request_boundary_text(state)
     qtext = (str(question.get("question") or "") + " "
              + str(question.get("why_required") or "") + " "

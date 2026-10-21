@@ -216,6 +216,7 @@ def find_mentions(term: str, limit: int = 8) -> dict:
 
     from app.agent.tools._ident import variants
     from app.domain.search import search_all
+    from app.infra.cache import propagate_provenance_context
     c, s = client(), settings()
     term = (term or "").strip()
     if not term:
@@ -226,7 +227,10 @@ def find_mentions(term: str, limit: int = 8) -> dict:
     # 표기 변형별로 검색(접미형이 상위집합) — 키는 합집합, 문서는 먼저 나온 것.
     seen, docs = {}, []
     with ThreadPoolExecutor(max_workers=2) as ex:
-        for r in ex.map(lambda v: search_all(c, s, v, scope="all", limit=lim + 4), vs):
+        worker = propagate_provenance_context(
+            lambda v: search_all(c, s, v, scope="all", limit=lim + 4)
+        )
+        for r in ex.map(worker, vs):
             for it in (r.get("jira") or {}).get("items") or []:
                 seen.setdefault(it.get("key"), it)
             for d in (r.get("confluence") or {}).get("items") or []:
@@ -271,7 +275,7 @@ def find_mentions(term: str, limit: int = 8) -> dict:
     hits = []
     if keys:
         with ThreadPoolExecutor(max_workers=4) as ex:
-            for rows in ex.map(_dig, keys):
+            for rows in ex.map(propagate_provenance_context(_dig), keys):
                 hits.extend(rows)
     # 변형 표기로 찾아 term 자체는 안 보이는 티켓도 있다 — 제목만이라도 남긴다.
     for k in keys:

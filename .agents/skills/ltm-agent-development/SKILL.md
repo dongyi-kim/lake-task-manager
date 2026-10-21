@@ -21,6 +21,8 @@ description: LakeTaskManager의 app/agent, Agent용 domain rule, prompt, role, t
 4. stage 전에 각 changed file을 PR 목적에 매핑한다. 다른 목적의 변경은 별도 commit만 만드는 데서
    끝내지 말고 별도 branch/PR로 옮긴다.
 5. 사용자의 일회성 혼합 승인은 해당 PR에만 적용한다.
+6. 같은 목적의 소스는 현행 정본 하나만 유지한다. 구버전 복사본·독립 PoC·배포 영수증·평가 결과 보고서는 커밋하지 않고 필요한 자료만 ignored `.cache/`에 보존한다. 재사용하는 평가 코드·spec·합성 fixture·test는 유지한다.
+7. 정본 파일명에도 날짜·버전·개발 회차 접미사를 붙이지 않는다. 목적 중심의 안정된 경로를 사용하고 wire 계약의 version 값은 별도로 유지한다.
 
 ## 원인 분류
 
@@ -65,7 +67,7 @@ description: LakeTaskManager의 app/agent, Agent용 domain rule, prompt, role, t
 7. 자동 통과와 별개로 Codex 또는 Claude 작업 에이전트가 raw output을 직접 읽고 인간 관점에서
    사실성·완결성·안전성·가독성을 평가한다. LTM runtime LLM·내부 Role·동일 production endpoint를
    evaluator나 LLM-as-judge로 사용하지 않는다.
-8. 결과는 `research/agent-improvement/` 아래에만 저장한다.
+8. raw·채점·보고서 등 평가 결과는 `.cache/agent-evaluation/<runGroupId>/`에만 저장하고 커밋하지 않는다. 검증 요약과 TODO는 PR 본문에 기록한다.
 9. 모든 비교는 `app/agent/EVALUATION.md`와 `evaluation_protocol.json`의 versioned 계약을 사용한다.
 10. raw 결과의 `protocolVersion`, `rubricVersion`, `batteryVersion`, manifest, run group, commit,
     model routing, 반복·선택 정책을 확인한다. 누락된 실행은 qualification 결과로 보고하지 않는다.
@@ -81,5 +83,5 @@ description: LakeTaskManager의 app/agent, Agent용 domain rule, prompt, role, t
 ## 완료 보고
 
 변경한 계약, PR의 단일 컨텍스트, 검증 결과, 실 LLM 사용 여부, 평가 protocol/rubric/battery version,
-남은 모호성·위험, 연구 산출물 경로를 짧게 보고한다. 통계적으로 반복하지 않은 단일 run은 탐색적
+남은 모호성·위험, ignored `.cache/` 산출물 경로를 짧게 보고한다. 통계적으로 반복하지 않은 단일 run은 탐색적
 결과라고 명시한다.

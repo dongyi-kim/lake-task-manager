@@ -21,6 +21,49 @@ Epic/Story/Sub-Task 트리를 만든다. 모든 쓰기는 **사용자 승인 후
 - **retrieval/** — RAG 2계층(정적 규칙 + 동적 증분) → [retrieval/README.md](retrieval/README.md)
 - **workflow/** — `role_manifest.py` 기반 LangGraph 멀티 에이전트 + HITL 중단/재개
   → [workflow/README.md](workflow/README.md). 바깥에서 부르는 것은 `workflow/session.py` 하나다.
+- **maxis/** — 환경별 MAXIS/Dify 호출·근거·응답·감사 경계. 기존 Role 호출은
+  `backend.invoke()`에서 `DifyClient`를 거쳐 원격으로 전달된다.
+  Knowledge·Portfolio·Result의 읽기 전용 응답에 있는 가명 사용자 참조는 해당 호출의
+  근거·로컬 디렉터리·정본 참조 해석기가 일치한 경우에만 로컬 멘션으로 복원한다.
+  복원 표는 원격으로 보내지 않으며 담당자 지정·승인 권한으로 사용하지 않는다.
+- **maxis/taskflow.py** — Research → Task draft의 버전 계약·로컬 continuation 기반.
+  **maxis/taskflow_session.py**는 session 소유 preview 수명과 기존 QueryRunner 조회를 연결한다.
+  실제 서버 통제 verifier가 없어 기본 composition은 비활성이고 HTTP/UI 실행 진입점은 없다.
+  preview 결과는 graph draft/승인으로 채택하지 않으며 기존 route·쓰기 권한을 변경하지 않는다.
+  [TaskFlow 계약과 활성화 전 조건](../../deploy/maxis-dify/taskflow.md)을 참고한다.
+
+## MAXIS Work 입력 근거
+
+Work Architect는 조회 근거가 있을 때도 사용자 요청을 별도의 `ltm:user-intent:` 출처로
+보존한다. 중복 없는 전송을 위해 query는 이 출처를 안내하고, remote `request_plan`의
+`goal`·`tasks[].instruction` 중 요청과 정확히 같은 문자열만
+`{"source_content_index": N}`으로 표현한다. 이는 해당 EvidencePack의 `sources[N].content`
+전체를 뜻하는 읽기 전용 텍스트 참조이며 외부 사실의 근거가 아니다. 숫자 index에는 사용자
+문자열 redaction 예외가 필요 없다. 원래 query의 DLP·크기 검사, 원래 plan의 관측 시각,
+출처·전체 입력 한도와 partial/stale 초안 차단은 그대로 적용한다.
+
+## MAXIS 요청 계측
+
+- `telemetry.py`의 `maxis-request-telemetry.v1`은 원격 요청의 실제 전송 결과와
+  요청한 published workflow ID, 서버가 반환한 native workflow run UUID를 연결한다.
+  UUID가 없거나 유효하지 않으면 누락 상태를 유지하며, message/task ID는 해시만 감사 로그에 기록한다.
+- 기존 `remote_role.invoke` 감사 행의 `remote_request`와 반환 metadata의
+  `requestTelemetry`에 동일 관측을 연결한다. HTTP 전송 성공과 로컬 응답 검증 결과
+  (`completed`, `needs_input`, `blocked`, `failed`)를 구별한다. `completed`는 계약 수용이지
+  사람이 실제 사용할 수 있는 품질의 증명이 아니며, `quality_status`는 `not_evaluated`다.
+- `latency_ms`는 HTTP 요청 구간, 감사 행의 `runtime_latency_ms`는 해당 Role 호출의
+  로컬 검증을 포함한 구간이다. 사용자 요청 전체나 중첩 Workflow별 소요시간이 아니다.
+- 토큰·비용은 Dify 응답의 `metadata.usage`에서 제공된 값만 기록한다. 비용은 유효한 통화가
+  함께 제공되어야 하며, 이는 중첩 모델 전체의 합계라는 보장이 없다. 누락 값과 native 모델 호출
+  수는 `null`로 유지한다. 기존 `usage` 호환 필드 대신 `requestTelemetry`를 미측정 구분에 사용한다.
+  서로 맞지 않는 prompt/completion/total 값도 임의로 보정하지 않으며, 회계 정합성을 검증한 합계가 아니다.
+- 원문 질문·응답·조회 내용·추론·키는 이 계측에 저장하지 않는다. HTTP 실패·시간 초과·JSON/근거
+  거부도 내용 없는 관측을 감사 로그에 남기며, 감사 요약은 전송·결과별 건수만 추가로 제공한다.
+- 대화 사용량의 MAXIS 횟수는 실패를 포함한 **원격 요청 시도**이며 서버 내부 모델 호출 수가 아니다.
+  `failedCalls`와 `unknownUsageCalls`를 별도로 합산하고, 미제공 사용량이 있으면 `usageComplete=false`와
+  함께 확인된 토큰 소계만 표시한다. 사전 검사에서 차단된 요청은 시도 횟수에 넣지 않는다.
+  서버 비용 미제공은 `$0`이 아닌 미확인으로 표시하며, 복사 진단은 현재 로컬 LLM 설정 대신
+  해당 턴의 실행 엔진·MAXIS 프로필을 사용한다. Service API가 노출하지 않는 모델명은 추정하지 않는다.
 
 ## 규칙
 

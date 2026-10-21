@@ -67,9 +67,9 @@ try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-# v5.0.0 treats an internal write draft blocked by review as unfulfilled when no
-# required-input question or user-facing approval payload exists.
-BATTERY_VERSION = "5.0.0"
+# v5.1.0 adds identifier-candidate discovery and default-delegation history follow-up.
+# Existing blocked-write fulfillment checks remain unchanged.
+BATTERY_VERSION = "5.1.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("conversation")
 session = None
 
@@ -98,6 +98,8 @@ SCENARIOS = [
     ("S2-버그", ["리니지 뷰어에서 2홉 이상 펼치면 화면이 빈다. 크롬에서 재현되고 "
                  "기대는 그래프가 그려지는 것. 버그로 올려줘. 알아서"]),
     ("S3-이력", ["fdc.fdc_trace_summary_ic 데이터에 대해 히스토리 정리"]),
+    ("S9-이력후속", ["fdc_summary_trace_ic 데이터의 히스토리를 알고싶어",
+                     "나머지는 합리적 기본값으로 알아서 진행해줘"]),
     ("S4-사람", ["이다은 책임이 지금 맡고 있는 일 알려줘"]),
     ("S5-내일", ["지금 무슨 업무를 시작해야 할까"]),
     ("S6-진척", ["DL-9090 지금 어디까지 진행됐어?"]),

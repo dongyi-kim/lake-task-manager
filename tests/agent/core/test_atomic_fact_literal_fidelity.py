@@ -1,0 +1,80 @@
+"""Atomic semantic gates run in literals; their no-op result must not reformat bytes."""
+from app.agent.workflow.evidence_index import canonicalize_evidence_index
+import pytest
+
+from app.agent.workflow.evidence_index import (
+    build_atomic_fact_ledger, enforce_atomic_fact_boundaries,
+)
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+@pytest.mark.parametrize("value", [
+    "  unchanged  .\n\n\n", "   ~~~text\n  keep(  1  )\n\n\n   ~~~\n",
+    "    literal\n    literal\n", "`  inline  `\n",
+])
+def test_atomic_fact_noop_preserves_reply_bytes(newline, value):
+    raw = value.replace("\n", newline)
+    facts = build_atomic_fact_ledger({"materialized_ticket_sources": {"ticketDetails": [
+        {"key": "ACME-10", "status": "Closed", "duedate": "2026-09-30", "updated": "2026-08-17"},
+    ]}})
+    assert enforce_atomic_fact_boundaries(raw, []) == raw
+    assert enforce_atomic_fact_boundaries(raw, facts) == raw
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+@pytest.mark.parametrize("wrapper", ["{claim}", "~~~text\n{claim}\n~~~", "`{claim}`", "    {claim}"])
+@pytest.mark.parametrize("kind", ["date", "due", "status"])
+def test_atomic_fact_semantic_repairs_still_run_inside_literals(newline, wrapper, kind):
+    details = []
+    if kind == "date":
+        claim = "2026-08-11부터 2026-08-25(금요일)까지 한 주이므로 즉시 배포를 권고합니다."
+        expected, forbidden = "정확히 14일", "배포를 권고"
+    elif kind == "due":
+        details = [{"key": "ACME-10", "duedate": "2026-09-30", "updated": "2026-08-17"},
+                   {"key": "ACME-11", "parentKey": "ACME-10", "updated": "2026-08-18"}]
+        claim = "ACME-11의 마감은 2026-09-30"
+        expected, forbidden = "마감 확인되지 않음", "2026-09-30"
+    else:
+        details = [{"key": "ACME-81", "status": "Closed", "updated": "2026-08-10"},
+                   {"key": "ACME-82", "status": "In Progress", "updated": "2026-08-10"}]
+        claim = "ACME-81 및 ACME-82는 Jira 상태 In Progress입니다."
+        expected, forbidden = "ACME-81=Closed; ACME-82=In Progress", "ACME-81 및 ACME-82는"
+    facts = build_atomic_fact_ledger({"materialized_ticket_sources": {"ticketDetails": details}})
+    raw = wrapper.format(claim=claim).replace("\n", newline)
+    got = enforce_atomic_fact_boundaries(raw, facts)
+    assert expected in got and forbidden not in got
+    if kind == "date":
+        assert "2026-08-25(화요일)" in got
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_supported_shared_status_is_an_exact_noop(newline):
+    facts = build_atomic_fact_ledger({"materialized_ticket_sources": {"ticketDetails": [
+        {"key": "ACME-83", "status": "Closed", "updated": "2026-08-10"},
+        {"key": "ACME-84", "status": "Closed", "updated": "2026-08-10"},
+    ]}})
+    raw = "   ~~~text" + newline + "ACME-83 및 ACME-84는 Jira 상태 Closed입니다." + newline + "   ~~~" + newline
+    assert enforce_atomic_fact_boundaries(raw, facts) == raw
+
+
+@pytest.mark.parametrize('owner', [canonicalize_evidence_index])
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+@pytest.mark.parametrize('raw', [
+    '', '\t ', '  prose  \n\n', '\tkeep  α  \n\tkeep  β  ',
+    '   ~~~~text\nkeep  bytes  \n   ~~~~~  ', '~~~text\nkeep  bytes  ',
+])
+def test_noop_preserves_edge_whitespace(owner, newline, raw):
+    value = raw.replace('\n', newline)
+    assert owner(value) == value
+
+
+def test_empty_index_removed_and_orphan_citation_still_downgraded():
+    assert canonicalize_evidence_index('답변 [1]\n\n### 근거\n') == '답변 (근거 확인 필요)'
+
+
+def test_known_index_still_canonicalized():
+    raw = '답변 [8]\n\n### 참조\n[8] DL-9095 — 검증된 기록'
+    output = canonicalize_evidence_index(raw)
+    assert '답변 [1]' in output and '### 근거' in output
+    assert '{{ticket-detail:DL-9095}}' in output and '검증된 기록' in output
+    assert '[8]' not in output and '### 참조' not in output

@@ -269,6 +269,28 @@ CASE_REVIEW_SPECS = {
                 },
             ),
         ),
+        "S9-이력후속": _case(
+            "표기 순서가 다른 데이터명도 관련 후보를 조사하고 기본값 위임 후 원 요청을 유지",
+            _element(
+                "s9_history_discovery_and_continuation", "request_fulfillment",
+                "두 턴 모두 데이터 이력 조회를 유지하고 티켓 탐색을 사용자에게 떠넘기지 않는가",
+                "원래 데이터명/의도를 잃거나 티켓 링크 요청만 반복하거나 빈 답변/기술 오류 발생",
+                _REPLY + _RETRIEVAL,
+                {"intent": "ask", "turns": 2, "requiredCandidate": "fdc.fdc_trace_summary_ic",
+                 "forbidTicketLinkOnlyInterview": True, "forbidWrites": True},
+            ),
+            _element(
+                "s9_candidate_identity_and_history", "factual_grounding",
+                "입력명과 발견한 후보의 차이를 밝히고 후보의 실제 이력·현재 상태·근거를 제공하는가",
+                "검증되지 않은 별칭을 확정하거나 관련 없는 이력을 요청 데이터의 사실로 단정",
+                _REPLY + _RETRIEVAL,
+                {"requestedIdentifier": "fdc_summary_trace_ic",
+                 "candidateIdentifier": "fdc.fdc_trace_summary_ic",
+                 "equivalenceUnverified": True,
+                 "expectedTicketKeys": ["DL-9041", "DL-9042", "DL-9043", "DL-9044",
+                                        "DL-9045", "DL-9046", "DL-9047", "DL-9062"]},
+            ),
+        ),
         "S4-사람": _case(
             "이다은의 현재 업무를 전체 범위와 상태를 보존해 설명",
             _element(
@@ -807,4 +829,7 @@ CASE_REVIEW_SPECS["perf"] = {
 
 def review_specs(suite: str) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     """Return the immutable suite elements and per-case review contracts."""
+    if suite == "maxis-role-component":
+        from tools.maxis_role_remote_cases import review_specs as role_review_specs
+        return role_review_specs()
     return SUITE_REVIEW_ELEMENTS[suite], CASE_REVIEW_SPECS[suite]

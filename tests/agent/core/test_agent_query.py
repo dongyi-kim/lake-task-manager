@@ -140,9 +140,13 @@ def test_runner_preserves_full_page_as_artifact_but_caps_llm_context():
         "order_by": "updated DESC", "page_size": 50, "completeness": "page"}]}})
     raw = got["query_artifacts"]["all-open"]
     compact = got["query_results"][0]["result"]
+    proof = got["query_evidence_attestations"]["jira:all-open"]
     assert len(raw["tickets"]) == 50
     assert len(compact["tickets"]) == 12
     assert compact["contextTruncated"] and compact["artifactId"] == "all-open"
+    assert proof["contract"] == "ltm-evidence-attestation.v1"
+    assert proof["retrievedAt"].endswith("Z")
+    assert "_remoteRetrievedAt" not in got["query_results"][0]
 
 
 def test_runner_filters_generic_web_navigation_before_evidence_but_keeps_raw_artifact(
@@ -754,6 +758,58 @@ def test_research_query_runner_materializes_ticket_and_document_bodies(monkeypat
     assert docs["documentBodies"][0]["text"] == "full design body"
     assert got["query_artifacts"]["evidence-materialization"]["tickets"] == 3
     assert got["query_artifacts"]["evidence-materialization"]["documents"] == 1
+
+
+def test_materialization_keeps_empty_and_disjoint_search_provenance(monkeypatch):
+    from app.agent import tools as T
+    from app.agent.workflow.agents.query_runner import _materialize_evidence
+
+    _ctx.bind(_Client(0), _settings(["AAA", "BBB"], ["SPACE1", "SPACE2"]))
+    monkeypatch.setitem(T.BY_NAME, "get_ticket", SimpleNamespace(invoke=lambda args: {
+        "key": args["key"], "description": "verified detail", "comments": []}))
+    monkeypatch.setitem(T.BY_NAME, "read_document", SimpleNamespace(invoke=lambda args: {
+        "id": args["url_or_id"], "text": "verified document"}))
+    results = [
+        {"id": "exact", "source": "jira", "result": {"tickets": [], "returned": 0}},
+        {"id": "candidate", "source": "jira", "result": {
+            "tickets": [{"key": "AAA-1"}], "returned": 1}},
+        {"id": "other", "source": "jira", "result": {
+            "tickets": [{"key": "BBB-2"}], "returned": 1}},
+        {"id": "empty-docs", "source": "confluence", "result": {"documents": [], "returned": 0}},
+        {"id": "docs", "source": "confluence", "result": {"documents": [{"id": "101"}]}},
+        {"id": "other-docs", "source": "confluence", "result": {"documents": [{"id": "202"}]}},
+    ]
+    got = _materialize_evidence(results)
+    assert "ticketDetails" not in results[0]["result"]
+    assert results[0]["result"]["returned"] == 0
+    assert [r["key"] for r in results[1]["result"]["ticketDetails"]] == ["AAA-1"]
+    assert [r["key"] for r in results[2]["result"]["ticketDetails"]] == ["BBB-2"]
+    assert "documentBodies" not in results[3]["result"]
+    assert [r["id"] for r in results[4]["result"]["documentBodies"]] == ["101"]
+    assert [r["id"] for r in results[5]["result"]["documentBodies"]] == ["202"]
+    assert got["tickets"] == 2 and got["documents"] == 2
+
+
+def test_materialization_error_belongs_only_to_its_search(monkeypatch):
+    from app.agent import tools as T
+    from app.agent.workflow.agents.query_runner import _materialize_evidence
+
+    _ctx.bind(_Client(0), _settings(["AAA"], ["SPACE1"]))
+    monkeypatch.setitem(T.BY_NAME, "get_ticket", SimpleNamespace(invoke=lambda args: (
+        {"key": args["key"], "error": "detail unavailable"} if args["key"] == "AAA-2"
+        else {"key": args["key"], "description": "verified", "comments": []})))
+    monkeypatch.setitem(T.BY_NAME, "read_document", SimpleNamespace(invoke=lambda args: {
+        "id": "101", "text": "verified document"}))
+    results = [
+        {"source": "jira", "result": {"tickets": [{"key": "AAA-1"}]}},
+        {"source": "comments", "result": {"comments": [{"ticketKey": "AAA-2"}]}},
+        {"source": "confluence", "result": {"documents": [{"id": "101"}]}},
+    ]
+    got = _materialize_evidence(results)
+    assert "materializationErrors" not in results[0]["result"]
+    assert results[1]["result"]["materializationErrors"] == ["detail unavailable"]
+    assert "materializationErrors" not in results[2]["result"]
+    assert got["errors"] == ["detail unavailable"]
 
 
 def test_runner_keeps_full_materialized_raw_but_bounds_llm_and_continuation_projection(

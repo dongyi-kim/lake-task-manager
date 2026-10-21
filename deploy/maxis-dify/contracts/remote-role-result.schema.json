@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ltm:maxis:remote-role-result.v1",
+  "title": "RemoteRoleResultV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "role_id",
+    "status",
+    "payload",
+    "claims",
+    "payload_claims",
+    "citations",
+    "missing_inputs",
+    "warnings",
+    "workflow_version",
+    "knowledge_version",
+    "knowledge_manifest_sha256",
+    "knowledge_proof"
+  ],
+  "properties": {
+    "contract": {"const": "remote-role-result.v1"},
+    "role_id": {
+      "enum": [
+        "request_architect",
+        "query_specialist",
+        "knowledge_curator",
+        "portfolio_analyst",
+        "work_architect",
+        "auditor",
+        "result_integrator",
+        "editor_author"
+      ]
+    },
+    "status": {"enum": ["ok", "needs_input", "blocked"]},
+    "payload": {"type": "object"},
+    "claims": {
+      "type": "array",
+      "maxItems": 40,
+      "items": {"$ref": "#/$defs/claim"}
+    },
+    "payload_claims": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {"$ref": "#/$defs/payload_claim"}
+    },
+    "citations": {
+      "type": "array",
+      "maxItems": 40,
+      "items": {"$ref": "#/$defs/citation"}
+    },
+    "missing_inputs": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {"type": "string", "minLength": 1, "maxLength": 500}
+    },
+    "warnings": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {"type": "string", "minLength": 1, "maxLength": 500}
+    },
+    "workflow_version": {"type": "string", "minLength": 1, "maxLength": 120},
+    "knowledge_version": {"type": "string", "minLength": 1, "maxLength": 120},
+    "knowledge_manifest_sha256": {"$ref": "#/$defs/digest"},
+    "knowledge_proof": {"type": "string", "maxLength": 240}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "needs_input"}}, "required": ["status"]},
+      "then": {"properties": {"missing_inputs": {"minItems": 1}}}
+    },
+    {
+      "if": {"properties": {"status": {"const": "ok"}}, "required": ["status"]},
+      "then": {"properties": {"missing_inputs": {"maxItems": 0}}}
+    },
+    {
+      "if": {
+        "properties": {"status": {"enum": ["needs_input", "blocked"]}},
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "payload": {"maxProperties": 0},
+          "claims": {"maxItems": 0},
+          "payload_claims": {"maxItems": 0},
+          "citations": {"maxItems": 0}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "citation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["citation_id", "source_id", "locator"],
+      "properties": {
+        "citation_id": {"$ref": "#/$defs/identifier"},
+        "source_id": {"$ref": "#/$defs/identifier"},
+        "locator": {"type": "string", "maxLength": 240}
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claim_id", "kind", "text", "citation_ids"],
+      "properties": {
+        "claim_id": {"$ref": "#/$defs/identifier"},
+        "kind": {"enum": ["fact", "inference", "recommendation", "open_fact"]},
+        "text": {"type": "string", "minLength": 1, "maxLength": 1200},
+        "citation_ids": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"enum": ["fact", "inference", "recommendation"]}}, "required": ["kind"]},
+          "then": {"properties": {"citation_ids": {"minItems": 1}}}
+        }
+      ]
+    },
+    "payload_claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "claim_ids"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": "^/(?:[^~/]|~[01])+(?:/(?:[^~/]|~[01])+)*$"
+        },
+        "claim_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 40,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        }
+      }
+    }
+  }
+}

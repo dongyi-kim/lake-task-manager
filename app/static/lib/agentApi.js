@@ -50,8 +50,35 @@ const getJson = (p) => fetch(p).then((r) => {
   return r.json();
 });
 
+const maxisTarget = (path, profile) => path + (profile ? "?profile=" + encodeURIComponent(profile) : "");
+
 export const agentApi = {
   status: () => getJson("/api/agent/status"),
+  runtimeStatus: () => getJson("/api/agent/runtime/status"),
+  maxisSetup: (profile) => getJson(maxisTarget("/api/agent/maxis/setup", profile)),
+  maxisRegisterHost: (baseUrl, confirmed, profile) => put(maxisTarget("/api/agent/maxis/setup/host", profile), { baseUrl, confirmed }),
+  maxisPrepareKnowledge: (profile) => post(maxisTarget("/api/agent/maxis/setup/knowledge", profile), {}),
+  maxisPrepareBundle: (body, profile) => post(maxisTarget("/api/agent/maxis/setup/bundle", profile), body),
+  maxisModelFromExport: (yamlText, profile) => post(maxisTarget("/api/agent/maxis/setup/model", profile), { yamlText }),
+  maxisSetupCandidate: (body, profile) => post(maxisTarget("/api/agent/maxis/setup/candidate", profile), body),
+  maxisQualification: (profile) => getJson(maxisTarget("/api/agent/maxis/qualification/status", profile)),
+  maxisStartQualification: (workflows, profile) => post(maxisTarget("/api/agent/maxis/qualification/runs", profile), { workflows }),
+  maxisRegisterReviewer: (body, profile) => post(maxisTarget("/api/agent/maxis/qualification/keys", profile), body),
+  maxisRemoveReviewer: (fingerprint, profile) => del(maxisTarget("/api/agent/maxis/qualification/keys/" + encodeURIComponent(fingerprint), profile)),
+  maxisImportQualification: (artifact, profile) => post(maxisTarget("/api/agent/maxis/qualification/artifacts", profile), { artifact }),
+  maxisStatus: () => getJson("/api/agent/maxis/status"),
+  maxisCreateProfile: (displayName) => post("/api/agent/maxis/profiles", { displayName }),
+  maxisApplyProfile: (name, workflows) => post(
+    "/api/agent/maxis/profiles/" + encodeURIComponent(name) + "/apply", { workflows }),
+  maxisSaveProfile: (name, body) => put(
+    "/api/agent/maxis/profiles/" + encodeURIComponent(name), body),
+  maxisSaveCredentials: (name, body) => put(
+    "/api/agent/maxis/credentials/" + encodeURIComponent(name), body),
+  maxisProbe: (name) => post("/api/agent/maxis/probe/" + encodeURIComponent(name), {}),
+  maxisActivate: (name) => post("/api/agent/maxis/activate/" + encodeURIComponent(name), {}),
+  maxisSaveRoutes: (routes) => put("/api/agent/maxis/routes", { routes }),
+  maxisSetKillSwitch: (enabled) => put("/api/agent/maxis/kill-switch", { enabled }),
+  maxisImpact: (days = 30) => getJson("/api/agent/maxis/impact?days=" + encodeURIComponent(days)),
   saveSettings: (body) => put("/api/agent/settings", body),
   createConfig: (name, provider) => post("/api/agent/configs", { name, provider }),
   updateConfig: (id, body) => put("/api/agent/configs/" + encodeURIComponent(id), body),

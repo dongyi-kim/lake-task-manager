@@ -16,6 +16,7 @@ from __future__ import annotations
 from langchain_core.tools import tool
 
 from app.agent.tools._ctx import client, compact, jira_key_allowed, jira_scope
+from app.agent.tools.progress_snapshot import ProgressAcquisition, ObservedFailure, observe, run_branch
 
 MAX_PER_SIGNAL = 12
 MAX_OUT = 25
@@ -146,20 +147,42 @@ def map_ticket_neighborhood(key: str) -> dict:
 #   ① 티켓 자체 변동(상태·담당·마감·우선순위)  ② 코멘트의 진행 보고
 #   ③ 결과를 적는 유관 문서의 최근 수정        ④ 하위 Sub-Task 완료 / 막던 티켓의 해소
 # 모델의 도구 순회에 맡기면 한두 갈래만 보고 답한다(실측) — 코드가 전부 모아 준다.
-def progress_report(key: str, comment_limit: int = 10) -> dict:
+def progress_report(key: str, comment_limit: int = 10, *,
+                    acquisition: ProgressAcquisition | None = None) -> dict:
     """한 티켓의 진척 재료를 전부 모은다(순수 코드 — LLM 없음)."""
     c = client()
     seed = (key or "").strip().upper()
+    if acquisition is not None:
+        acquisition.begin(seed)
+    target = acquisition.branches["target"] if acquisition is not None else None
     if not jira_key_allowed(seed):
+        if acquisition is not None:
+            acquisition.stop("scope_rejected")
         return {"error": "티켓이 search.jira.projects 범위 밖이거나 검색 범위가 비어 있습니다."}
-    raw = c.get_issue(seed) or {}
+    try:
+        raw = observe(target, "get_issue", c.get_issue, seed) or {}
+    except Exception as exc:
+        if acquisition is not None:
+            target.state, target.error_type = "failed", type(exc).__name__
+            acquisition.stop("target_failed")
+        raise
+    if target is not None:
+        target.state = "returned"
     if not raw.get("key"):
+        if acquisition is not None:
+            target.reason = "missing_key"
+            acquisition.stop("target_missing")
         return {"error": f"{seed} 티켓을 찾을 수 없습니다."}
+    if str(raw["key"]).strip().upper() != seed:
+        if acquisition is not None:
+            target.reason = "target_identity_mismatch"
+            acquisition.stop("target_identity_mismatch")
+        return {"error": "요청 티켓과 조회 결과의 식별자가 다릅니다. 현재 티켓 키를 확인해 주세요."}
     f = raw.get("fields") or {}
     st = (f.get("status") or {})
     assignee = f.get("assignee") or {}
     out = {
-        "key": seed, "title": f.get("summary") or "",
+        "key": str(raw["key"]).strip().upper(), "title": f.get("summary") or "",
         "status": st.get("name") or "",
         "done": ((st.get("statusCategory") or {}).get("key") == "done"),
         "assignee": (assignee.get("displayName") or assignee.get("name")
@@ -172,15 +195,16 @@ def progress_report(key: str, comment_limit: int = 10) -> dict:
     # mock 은 밀리초라 티가 안 나지만 prod Jira/Confluence 는 호출당 수백 ms~수 초라
     # 직렬 5갈래(+링크 내부 N회)가 통째로 대기 시간이 된다(사용자 지적: prod 는 느리다).
     from concurrent.futures import ThreadPoolExecutor
+    from app.infra.cache import propagate_provenance_context
 
-    def _changes():
+    def _changes(branch):
         # ① 필드 변동 — 상태 전이·마감 연기·우선순위 상향은 그 자체가 진척 사건이다
         return [compact({"date": r.get("date"), "who": r.get("author"),
                          "field": r.get("field"),
                          "from": r.get("from"), "to": r.get("to")})
-                for r in (c.ticket_field_history(seed) or [])][-8:]
+                for r in (observe(branch, "ticket_field_history", c.ticket_field_history, seed) or [])][-8:]
 
-    def _comments():
+    def _comments(branch):
         # ② 코멘트 — 진행 보고의 1차 출처. 최근 것이 뒤에 오게 둔다(시간순 서술을 위해)
         from app.agent.tools.search_tools import _strip
         # 코멘트는 html 로 온다(본문 키가 body 가 아니다 — 실측). 사번을 함께 남긴다:
@@ -188,14 +212,14 @@ def progress_report(key: str, comment_limit: int = 10) -> dict:
         rows = [compact({"date": str(m.get("date") or "")[:10],
                          "who": m.get("authorId") or m.get("author") or "",
                          "text": _strip(m.get("html") or "")[:400]})
-                for m in (c.issue_comments(seed, comment_limit) or [])]
+                for m in (observe(branch, "issue_comments", c.issue_comments, seed, comment_limit) or [])]
         rows.reverse()                     # 오래된 것부터 — 진척은 시간순 이야기다
         return rows
 
-    def _children():
+    def _children(branch):
         # ④ 하위 Sub-Task — 몇 개 중 몇 개가 끝났는지가 진척의 뼈대다
         kids, kdone = [], 0
-        for ch in (c.ticket_children(seed) or []):
+        for ch in (observe(branch, "ticket_children", c.ticket_children, seed) or []):
             d = (ch.get("statusCat") or ch.get("statusCategory")) == "done"
             kdone += 1 if d else 0
             # ``ticket_children`` is a long-lived SWR cache.  Rows cached by older LTM
@@ -203,7 +227,7 @@ def progress_report(key: str, comment_limit: int = 10) -> dict:
             # issue cache instead of leaking a display name into an agent reply.
             assignee_id = ch.get("assigneeId")
             if not assignee_id and ch.get("key"):
-                refreshed = c.ticket_badge(ch["key"]) or {}
+                refreshed = observe(branch, "ticket_badge", c.ticket_badge, ch["key"]) or {}
                 assignee_id = refreshed.get("assigneeId")
             kids.append(compact({"key": ch.get("key"), "title": ch.get("summary"),
                                  "status": ch.get("status"), "done": d,
@@ -212,12 +236,12 @@ def progress_report(key: str, comment_limit: int = 10) -> dict:
                                  "updated": str(ch.get("updated") or "")[:10]}))
         return kids, kdone
 
-    def _links():
+    def _links(branch):
         # ④-b 링크 티켓 — 특히 **막고 있던 것이 풀렸는지**가 진척을 좌우한다
-        rels = [r for r in (c.ticket_related(seed) or [])[:8] if r.get("key")]
+        rels = [r for r in (observe(branch, "ticket_related", c.ticket_related, seed) or [])[:8] if r.get("key")]
 
-        def _one(r):
-            ri = ((c.get_issue(r["key"]) or {}).get("fields") or {})
+        def _one(r, observation=None):
+            ri = ((observe(observation, "get_issue", c.get_issue, r["key"]) or {}).get("fields") or {})
             rst = ri.get("status") or {}
             return compact({
                 "key": r["key"], "rel": r.get("rel") or "관련", "title": r.get("summary"),
@@ -227,19 +251,33 @@ def progress_report(key: str, comment_limit: int = 10) -> dict:
         if not rels:
             return []
         with ThreadPoolExecutor(max_workers=4) as ex2:
-            return list(ex2.map(_one, rels))
+            if branch is None:
+                return list(ex2.map(propagate_provenance_context(_one), rels))
+            def _observed(r):
+                return run_branch("links", lambda observation: [_one(r, observation)], True, reraise=True)
+            rows = []
+            try:
+                for value, observation in ex2.map(propagate_provenance_context(_observed), rels):
+                    branch.reads.extend(observation.reads)
+                    rows.extend(value)
+            except ObservedFailure as exc:
+                branch.reads.extend(exc.observation.reads)
+                branch.state, branch.error_type = "failed", exc.observation.error_type
+                branch.reason = "remaining_link_outcomes_uncollected"
+                return []
+            return rows
 
-    def _docs():
+    def _docs(branch):
         # ③ 유관 문서 — **결과를 적는 문서의 최근 수정**이 곧 진척 근거다. 본문도 조금 싣는다
         from app.agent.retrieval.harvest import _conf_id
         from app.agent.tools._ctx import trim
         from app.agent.tools.search_tools import _strip
         docs = []
-        for d in (c.ticket_documents(seed) or [])[:3]:
+        for d in (observe(branch, "ticket_documents", c.ticket_documents, seed) or [])[:3]:
             row = {"title": d.get("title"), "url": d.get("url")}
             cid = _conf_id(d.get("url") or "")
             if cid:
-                page = c.confluence_page(cid) or {}
+                page = observe(branch, "confluence_page", c.confluence_page, cid) or {}
                 body = ((page.get("body") or {}).get("storage") or {}).get("value") or ""
                 row["updated"] = ((page.get("version") or {}).get("when") or "")[:10]
                 row["excerpt"] = trim(_strip(body), 900)
@@ -247,13 +285,16 @@ def progress_report(key: str, comment_limit: int = 10) -> dict:
         return docs
 
     with ThreadPoolExecutor(max_workers=5) as ex:
-        futs = {k: ex.submit(f) for k, f in (
+        futs = {k: ex.submit(propagate_provenance_context(run_branch), k, f, acquisition is not None) for k, f in (
             ("changes", _changes), ("comments", _comments), ("children", _children),
             ("links", _links), ("documents", _docs))}
 
     def _get(k, default):
         try:
-            return futs[k].result()
+            value, branch = futs[k].result()
+            if acquisition is not None:
+                acquisition.branches[k] = branch
+            return default if branch is not None and branch.state == "failed" else value
         except Exception:
             return default
     out["changes"] = _get("changes", [])
@@ -263,6 +304,8 @@ def progress_report(key: str, comment_limit: int = 10) -> dict:
     out["children_done"] = f"{kdone}/{len(kids)}" if kids else ""
     out["links"] = _get("links", [])
     out["documents"] = _get("documents", [])
+    if acquisition is not None:
+        acquisition.finished = True
     out["note"] = ("진척은 상태 한 단어가 아니라 이 네 갈래(필드 변동·코멘트·하위 티켓·"
                    "유관 문서)를 이어 붙인 이야기다. 문서의 '최종 수정'은 결과 기록 시점이다.")
     return compact(out)

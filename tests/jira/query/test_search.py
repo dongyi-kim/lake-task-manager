@@ -12,6 +12,31 @@ def _client():
     return JiraClient(get_settings(), Cache(":memory:"))
 
 
+def test_confluence_direct_empty_search_has_upstream_acquisition_receipt(monkeypatch):
+    client = _client()
+    monkeypatch.setattr(client.provider, "get_json", lambda *_a, **_k: {
+        "results": [], "size": 0, "totalSize": 0,
+    })
+    marker = client.cache.provenance_marker()
+    assert client._conf_get_json("/rest/api/search")["totalSize"] == 0
+    receipt = client.cache.provenance_since(marker)
+    assert receipt["count"] == 1
+    assert receipt["upstream"] is True
+    assert receipt["servedStale"] is False
+
+
+def test_confluence_failed_read_never_creates_fresh_acquisition(monkeypatch):
+    import pytest
+    client = _client()
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("offline")
+    monkeypatch.setattr(client.provider, "get_json", unavailable)
+    marker = client.cache.provenance_marker()
+    with pytest.raises(RuntimeError, match="offline"):
+        client._conf_get_json("/rest/api/search")
+    assert client.cache.provenance_since(marker)["count"] == 0
+
+
 def test_search_fans_out_three_sources():
     r = search.search_all(_client(), get_settings(), "런북", scope="all", limit=6)
     assert set(("jira", "confluence", "bitbucket")) <= set(r)

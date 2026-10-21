@@ -13,12 +13,39 @@ LTM 이 화면에서 `_require_manager()` 로 막는 것과 같은 자리다 —
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date, datetime, timedelta
 
 from langchain_core.tools import tool
 
 from app.agent.tools._ctx import (client, compact, jira_key_allowed, jira_scope,
                                   search_projects, search_spaces, settings, trim)
+
+
+_REQUEST_USER: ContextVar[dict | None] = ContextVar(
+    "ltm_mcp_request_user", default=None,
+)
+
+
+@contextmanager
+def bind_request_user(user: dict):
+    """Pin one freshly authenticated Jira identity for the current tool request."""
+    if not isinstance(user, dict) or not str(user.get("id") or "").strip():
+        raise PermissionError("LTM user identity could not be bound")
+    marker = _REQUEST_USER.set(dict(user))
+    try:
+        yield
+    finally:
+        _REQUEST_USER.reset(marker)
+
+
+def _current_user(*, fresh: bool = False) -> dict:
+    bound = _REQUEST_USER.get()
+    if isinstance(bound, dict):
+        return dict(bound)
+    jira = client()
+    return (jira.current_user_fresh() if fresh else jira.current_user()) or {}
 
 
 def _today() -> date:
@@ -35,15 +62,15 @@ def _d(v) -> date | None:
 
 def _me() -> str:
     try:
-        return ((client().current_user() or {}).get("id") or "").strip()
+        return str(_current_user().get("id") or "").strip()
     except Exception:
         return ""
 
 
-def _is_manager() -> bool:
+def _is_manager(*, fresh: bool = False) -> bool:
     from app.infra.settings import is_manager
     try:
-        return bool(is_manager(settings(), client().current_user() or {}))
+        return bool(is_manager(settings(), _current_user(fresh=fresh)))
     except Exception:
         return False
 

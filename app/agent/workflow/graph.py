@@ -72,6 +72,7 @@ from app.agent.workflow.effect_contract import (
     project_final_authority_state,
 )
 from app.agent.workflow.resolved_slots import parent_selection_authority
+from app.agent.workflow.maxis_blocked import has_blocked_terminal
 from app.agent.workflow.state import (MAX_MACHINE_REVISIONS, MAX_REVISIONS,
                                       MAX_TOTAL_REPAIR_ATTEMPTS, AgentState, Intent, Node,
                                       is_memory_only_request, reads_as_bug, request_text,
@@ -84,7 +85,31 @@ _compiled = {"graph": None}
 def _node(agent):
     """붙는 것은 언제나 **함수**다 — 컴파일된 서브그래프를 그대로 노드로 쓰면 전체 State 가
     반환값이 되어 부모의 `add_messages` 리듀서에 통째로 다시 먹힌다."""
-    return agent.node()
+    run = agent.node()
+    if agent.name == Node.RESULT_INTEGRATOR:
+        return run
+
+    def guarded(state):
+        from app.agent.runtime_status import RuntimeUnavailable, bounded_internal_assist
+
+        if (agent.name == Node.PORTFOLIO_ANALYST and bounded_internal_assist(state)
+                and (state.get("runtime_role_routes") or {}).get(agent.name) != "maxis"):
+            return {"error": "현재 MAXIS 배포에는 PMO 분석 기능이 활성화되지 않았습니다. "
+                             "검증된 PMO Brief 실행 경로를 적용하세요.",
+                    "quality_gate": {"ok": False, "errors": ["pmo_route_unavailable"],
+                                     "warnings": [], "failedRole": str(agent.name)}}
+        # A serial edge may already be scheduled when the preceding Role blocks.
+        # Do not start it; parallel peers already in flight keep their own outcome.
+        if has_blocked_terminal(state):
+            return {}
+        try:
+            return run(state)
+        except RuntimeUnavailable as exc:
+            return {"error": str(exc),
+                    "quality_gate": {"ok": False, "errors": ["runtime_unavailable"],
+                                     "warnings": [], "failedRole": str(agent.name)}}
+
+    return guarded
 
 
 # ── 라우터: State 만 보고 결정한다(부작용 없음) ──────────────────────
@@ -129,6 +154,14 @@ def route_after_request_architect(state: AgentState) -> str:
     my_day·progress·activity 를 ResearchAnalyst 에 태우지 않는 이유: 그 요청들은 과거 발굴이 아니라
     **지금 상태의 집계**다. 검색-열람-링크추적은 낭비이고, 느린 데다 답도 더 나빠진다.
 """
+    # RequestArchitect owns the first semantic decision.  If that boundary fails (for
+    # example, a MAXIS dataset/sentinel/runtime attestation is rejected), no later Role
+    # may reinterpret the still-empty intent and start a fresh acquisition path.  Route
+    # only to ResultIntegrator's error projection; otherwise the default ``investigate``
+    # branch can accidentally run QuerySpecialist under whichever local provider happens
+    # to be configured in this process.
+    if has_blocked_terminal(state) or state.get("error"):
+        return "respond"
     intent = state.get("intent") or ""
     if intent == Intent.CHITCHAT:
         return "respond"
@@ -147,10 +180,14 @@ def route_after_request_architect(state: AgentState) -> str:
     from app.agent.workflow.meeting_context import needs_research_interview
     if needs_research_interview(state):
         return "investigate"
-    # 직전 조사 후의 인터뷰 답변은 같은 자료를 다시 검색하지 않는다. 조회/웹 결과를 보존한
-    # 채 지식 정리 또는 초안 작성으로 이어서 호출 수와 stale 검색 위험을 함께 줄인다.
+    # Local continuations can reuse research. MAXIS consumes attested query results,
+    # which session turn-start clears when the user may refine the scope. A retained
+    # prose situation is not that evidence: reacquire before remote curation.
     if state.get("turn_continuation") and (state.get("situation") or "").strip():
         if intent == Intent.ASK:
+            routes = state.get("runtime_role_routes") or {}
+            if any(routes.get(role) == "maxis" for role in (Node.KNOWLEDGE_CURATOR, Node.RESULT_INTEGRATOR)):
+                return "investigate"
             return "curate"
         if intent in Intent.DRAFTS_TICKETS:
             # Earlier research may have opened related tickets without running a structural
@@ -197,8 +234,23 @@ def route_after_request_architect(state: AgentState) -> str:
     return "investigate"
 
 
+def route_after_query_specialist(state: AgentState) -> str:
+    """조회 계획이 확정된 경우에만 실제 acquisition을 시작한다.
+
+    QuerySpecialist도 RequestArchitect와 같은 원격 의미 경계다. MAXIS 계약 검증 실패나
+    ``needs_input``은 각각 ``error``/``questions``로 투영되므로, 이를 QueryRunner로 넘기면
+    실패한 계획을 빈 계획처럼 해석해 Jira·외부 조회 또는 후속 작성 흐름을 시작할 수 있다.
+    이 턴은 ResultIntegrator의 결정적 오류/질문 렌더링에서 끝낸다.
+    """
+    if has_blocked_terminal(state) or state.get("error") or state.get("questions"):
+        return "respond"
+    return "acquire"
+
+
 def route_after_query_runner(state: AgentState) -> str:
     """결정적 집계만으로 답이 완성된 요청은 일반 Research ReAct를 건너뛴다."""
+    if has_blocked_terminal(state) or state.get("error"):
+        return "respond"
     completion = state.get("assignment_completion") or {}
     guard = (state.get("query_artifacts") or {}).get("creation-subject-guard") or {}
     if (guard.get("kind") == "creation_target_required"
@@ -215,6 +267,8 @@ def route_after_research_analyst(state: AgentState) -> str:
     지식형 질문("X가 뭐야", "정리해줘")은 KnowledgeCurator 를 거친다 — 조사 결과를 개념/우리 상황/
     참고/공백 스키마로 정리해야 답이 재사용 가능한 브리프가 된다(사용자 요청으로 신설).
     """
+    if has_blocked_terminal(state) or state.get("error"):
+        return "respond"
     intent = state.get("intent") or ""
     # 조사 단계가 확인 질문을 냈다(표기 후보 등) — 정리(curate)로 갈 것이 없다. 바로 묻는다.
     if state.get("questions"):
@@ -224,6 +278,10 @@ def route_after_research_analyst(state: AgentState) -> str:
     if intent == Intent.ASK:
         from app.agent.workflow.state import last_user_text
         asked = last_user_text(state)
+        if state.get("turn_continuation"):
+            # A short scope/interview answer refines, not replaces, the retained
+            # request. Keep its knowledge route after refreshing query evidence.
+            asked = "\n".join((str(state.get("request_text") or ""), asked))
         # 사람 판단·추천이 낀 질문("누가 하면 좋을지", "맡겨도 될까")은 curate 로 보내지
         # 않는다 — KnowledgeCurator 스키마엔 사람이 없어서 개념 강의로 새 버린다(실측).
         people_ish = any(w in asked for w in ("누가", "누구에게", "맡", "적절", "추천",
@@ -251,7 +309,7 @@ def route_after_work_architect(state: AgentState):
     **변경 계획(modify)은 승인으로 직행**한다 — 담당자 추천(새 티켓용)도, validate_bulk
     (생성 검증)도 여기엔 해당이 없다. 안전장치는 승인 카드와 editmeta(편집 불가 필드 거부)다.
     """
-    if current_work_failed(state):
+    if has_blocked_terminal(state) or current_work_failed(state):
         return "respond"
     if state.get("questions"):
         return "respond"
@@ -293,6 +351,11 @@ def route_after_auditor(state: AgentState) -> str:
         먼저 제거하므로, 여기 남은 blocking problem과 실행 가능한 승인 카드를 동시에
         노출하지 않는다.
     """
+    # A validated MAXIS ``needs_input`` outcome uses the shared questions channel.
+    # The fan-out join may still produce a deterministic review, but it must not mint
+    # an approval token until the requested user input has been answered.
+    if has_blocked_terminal(state) or state.get("questions"):
+        return "respond"
     review = state.get("review") or {}
     if review.get("ok"):
         return "propose"
@@ -321,7 +384,7 @@ def route_after_result_integrator(state: AgentState) -> str:
 
     이미 실행한 뒤(result 가 있음)라면 끝이다 — 안 그러면 result_integrator↔action_executor 를 맴돈다.
     """
-    if state.get("result"):
+    if has_blocked_terminal(state) or state.get("result"):
         return "end"
     return "execute" if state.get("approval_token") else "end"
 
@@ -335,6 +398,8 @@ def _merge_assignments(state: AgentState) -> dict:
     Auditor 가 배정 **전** 초안을 검증하므로(병렬), 배정된 사용자가 실재하는지는
     여기 코드가 보장한다 — validate_bulk 와 같은 lookup 을 쓴다.
     """
+    if has_blocked_terminal(state):
+        return {}
     from app.agent.workflow.anchors import seal_work_item_identities
 
     source_draft = dict(state.get("draft") or {})
@@ -487,7 +552,65 @@ def _merge_assignments(state: AgentState) -> dict:
     result["review"] = final_authority_review(
         merged_state, locks=field_locks, require_effect=True,
     )
+    result.update(_fanout_runtime_projection(state))
     return result
+
+
+def _fanout_runtime_projection(state: AgentState) -> dict:
+    """Project one remote fan-out sidecar only after all branches have joined.
+
+    Auditor is selected first to match the existing serial schedule (People Advisor,
+    then Auditor).  If only People Advisor ran remotely, its projection remains visible.
+    The complete per-Role map stays in State for audit/debug use.
+    """
+    projected = {}
+    sidecars = state.get("runtime_role_sidecars") or {}
+    if isinstance(sidecars, dict):
+        for role in (Node.AUDITOR, Node.PEOPLE_ADVISOR):
+            value = sidecars.get(role)
+            if not isinstance(value, dict):
+                continue
+            allowed = {key: dict(item) for key, item in value.items()
+                       if key in {"evidence_workspace", "freshness", "quality_gate"}
+                       and isinstance(item, dict)}
+            if not allowed:
+                continue
+            engines = state.get("runtime_role_engines") or {}
+            engine = str(engines.get(role) or "") if isinstance(engines, dict) else ""
+            projected.update({
+                **allowed,
+                "runtime_last_role": role,
+                **({"runtime_last_role_engine": engine}
+                   if engine in {"local", "maxis"} else {}),
+            })
+            break
+
+    # Both remote fan-out Roles may independently need user input.  Their branch
+    # deltas cannot write the plain questions channel in the same superstep, so the
+    # explicit join gives Auditor questions first and caps the shared contract at 3.
+    role_questions = state.get("runtime_role_questions") or {}
+    selected_questions = []
+    if isinstance(role_questions, dict):
+        seen = set()
+        for role in (Node.AUDITOR, Node.PEOPLE_ADVISOR):
+            rows = role_questions.get(role)
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                identity = (str(row.get("field") or ""), str(row.get("question") or ""))
+                if not identity[1] or identity in seen:
+                    continue
+                seen.add(identity)
+                selected_questions.append(dict(row))
+                if len(selected_questions) == 3:
+                    break
+            if len(selected_questions) == 3:
+                break
+    if selected_questions:
+        projected["questions"] = selected_questions
+    return projected
 
 
 def _align_assignments_to_draft(assignments: list, draft: dict) -> list:
@@ -556,6 +679,8 @@ def _propose(state: AgentState) -> dict:
     이 노드가 따로 있는 이유: 토큰 발급은 라우터가 할 수 없고(라우터는 부작용이 없어야 한다),
     Auditor 가 할 일도 아니다(검열자가 실행 허가를 내주면 검열이 아니다).
     """
+    if has_blocked_terminal(state):
+        return {"approval_token": "", "comment_token": ""}
     from app.agent import approval
     from app.agent.workflow.agents.work_architect import as_bulk_items
 
@@ -588,7 +713,33 @@ def _propose(state: AgentState) -> dict:
     } if typed_action else {})
 
     def emit(values: dict) -> dict:
-        return {**delta, **values}
+        result = {**delta, **values}
+        token = str(result.get("approval_token") or "")
+        if token:
+            try:
+                from app.agent.maxis.backend import record_change_audit
+
+                correlation_id = str(projected.get("correlation_id") or "")
+                binding = (
+                    approval.change_audit_binding(
+                        token, correlation_id=correlation_id,
+                    )
+                    if correlation_id else None
+                )
+                if binding is not None:
+                    result["change_audit_binding"] = binding
+                record_change_audit(
+                    projected, event="change.proposal", status="started",
+                    change_binding=binding,
+                )
+            except Exception:
+                # An unaudited proposal must not leave a live capability behind.
+                approval.reject(token)
+                secondary = str(result.get("comment_token") or "")
+                if secondary:
+                    approval.reject(secondary)
+                raise
+        return result
 
     # Empty strings clear any token retained from an earlier state. Change plans keep their
     # established deterministic approval path; only CREATE requires Auditor review.ok=true.
@@ -601,6 +752,23 @@ def _propose(state: AgentState) -> dict:
     state = projected
 
     tid = state.get("thread_id") or ""
+    actor_binding = None
+
+    def staged(action: str, payload: dict) -> str:
+        nonlocal actor_binding
+        if actor_binding is None:
+            actor_binding = approval.current_actor_fresh()
+        return approval.stage(tid, action, payload, actor=actor_binding)
+
+    def staged_pair(primary_action: str, primary_payload: dict,
+                    secondary_action: str, secondary_payload: dict) -> tuple[str, str]:
+        nonlocal actor_binding
+        if actor_binding is None:
+            actor_binding = approval.current_actor_fresh()
+        return approval.stage_pair(
+            tid, primary_action, primary_payload, secondary_action, secondary_payload,
+            actor=actor_binding,
+        )
 
     # modify 갈래 — 변경 승인. 토큰은 update_ticket 도구가 만들 payload 와 **같은 모양**이어야
     # 지문이 맞는다(도구는 kwargs 를 compact 해서 {"key","changes"} 로 만든다).
@@ -649,18 +817,18 @@ def _propose(state: AgentState) -> dict:
         """Stage one primary mutation and bind its optional comment fingerprint."""
         secondary_action, secondary_payload = comment_effect()
         if secondary_action and secondary_payload:
-            primary, secondary = approval.stage_pair(
-                tid, action, payload, secondary_action, secondary_payload,
+            primary, secondary = staged_pair(
+                action, payload, secondary_action, secondary_payload,
             )
             return {"approval_token": primary, "comment_token": secondary}
-        return {"approval_token": approval.stage(tid, action, payload)}
+        return {"approval_token": staged(action, payload)}
     # 상태 전이 — 지문은 transition_ticket 도구의 payload 와 같은 모양(comment 없을 때).
     if plan.get("key") and (plan.get("transition") or {}).get("id"):
         p = {"key": plan["key"], "transition": str(plan["transition"]["id"])}
         cmt = (plan.get("comment") or "").strip()
         if cmt:
             p["comment"] = cmt
-        return emit({"approval_token": approval.stage(tid, "transition_ticket", p)})
+        return emit({"approval_token": staged("transition_ticket", p)})
     # 티켓 링크 — link_tickets 도구의 payload 와 같은 모양.
     if plan.get("key") and (plan.get("link") or {}).get("other"):
         lk = plan["link"]
@@ -687,8 +855,7 @@ def _propose(state: AgentState) -> dict:
                 or [{"key": str(k).strip(), "body": (plan.get("comment") or "").strip()}
                     for k in plan["keys"] if str(k).strip()])
         if rows:
-            return emit({"approval_token": approval.stage(tid, "add_ticket_comments",
-                                                     {"items": rows}),
+            return emit({"approval_token": staged("add_ticket_comments", {"items": rows}),
                     "change_plan": plan})
     if plan.get("key") and (plan.get("changes") or (plan.get("comment") or "").strip()):
         cmt = (plan.get("comment") or "").strip()
@@ -696,8 +863,8 @@ def _propose(state: AgentState) -> dict:
             payload = {"key": plan["key"], "changes": plan["changes"]}
             return emit(stage_primary_effect("update_ticket", payload))
         # 댓글만 — 그 토큰이 곧 승인 토큰이다(변경 필드가 없으니 update 토큰은 없다).
-        return emit({"approval_token": approval.stage(tid, "add_ticket_comment",
-                                                 {"key": plan["key"], "body": cmt}),
+        return emit({"approval_token": staged(
+                    "add_ticket_comment", {"key": plan["key"], "body": cmt}),
                 "change_plan": plan})
 
     draft = state.get("draft") or {}
@@ -712,7 +879,7 @@ def _propose(state: AgentState) -> dict:
         # intentionally handled above under their separate deterministic contract.
         if review.get("ok") is not True:
             return emit({"approval_token": "", "comment_token": ""})
-        return emit({"approval_token": approval.stage(tid, "create_epic", p)})
+        return emit({"approval_token": staged("create_epic", p)})
     items = as_bulk_items(draft)
     if not items:
         return emit({})
@@ -725,7 +892,7 @@ def _propose(state: AgentState) -> dict:
     kids = child_items(draft)
     if kids:
         payload["children"] = kids
-    return emit({"approval_token": approval.stage(tid, "create_tickets", payload)})
+    return emit({"approval_token": staged("create_tickets", payload)})
 
 
 def build(checkpointer=None):
@@ -757,7 +924,9 @@ def build(checkpointer=None):
                              Node.PORTFOLIO_ANALYST: Node.PORTFOLIO_ANALYST,
                              "curate": Node.KNOWLEDGE_CURATOR,
                              "refine": Node.WORK_ARCHITECT, "respond": Node.RESULT_INTEGRATOR})
-    g.add_edge(Node.QUERY_SPECIALIST, Node.QUERY_RUNNER)
+    g.add_conditional_edges(Node.QUERY_SPECIALIST, route_after_query_specialist,
+                            {"acquire": Node.QUERY_RUNNER,
+                             "respond": Node.RESULT_INTEGRATOR})
     g.add_conditional_edges(Node.QUERY_RUNNER, route_after_query_runner,
                             {"investigate": Node.RESEARCH_ANALYST,
                              "refine": Node.WORK_ARCHITECT,

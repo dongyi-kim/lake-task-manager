@@ -5,6 +5,7 @@ MCP SDK 의 in-memory 클라이언트로 **프로토콜을 실제로 왕복**한
 호출이 실패한다.
 """
 import os
+import subprocess
 import sys
 
 import pytest
@@ -23,6 +24,42 @@ from app.agent.mcp_server import _EXPORTED, build_server  # noqa: E402
 
 def _run(coro_fn):
     return anyio.run(coro_fn)
+
+
+def test_importing_mcp_server_does_not_default_jira_environment():
+    env = dict(os.environ)
+    env.pop("JIRA_ENV", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import os; import app.agent.mcp_server; "
+            "print(os.environ.get('JIRA_ENV', '<unset>'))",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "<unset>"
+
+
+def test_stdio_main_defaults_only_its_local_process_to_mock(monkeypatch):
+    from app.agent import mcp_server
+
+    ran = []
+
+    class Server:
+        def run(self):
+            ran.append(os.environ.get("JIRA_ENV"))
+
+    monkeypatch.delenv("JIRA_ENV", raising=False)
+    monkeypatch.setattr(mcp_server, "build_server", lambda: Server())
+
+    mcp_server.main()
+
+    assert ran == ["mock"]
 
 
 @pytest.fixture(scope="module")

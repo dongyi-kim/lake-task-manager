@@ -101,6 +101,10 @@ MAX_MACHINE_REVISIONS = 2  # deterministic repair lane 상한 — semantic 예�
 MAX_TOTAL_REPAIR_ATTEMPTS = MAX_REVISIONS + MAX_MACHINE_REVISIONS
 
 TRACE_RESET = {"reset": True}    # 턴 시작에 trace 를 비우는 신호 — 리듀서엔 "대입"이 없다
+ROLE_ENGINES_RESET = {"__reset__": True}
+ROLE_TELEMETRY_RESET = {"__reset__": True}
+ROLE_SIDECARS_RESET = {"__reset__": True}
+ROLE_QUESTIONS_RESET = {"__reset__": True}
 
 
 def merge_trace(old: list | None, new: list | None) -> list:
@@ -113,6 +117,109 @@ def merge_trace(old: list | None, new: list | None) -> list:
 def last_value(old, new):
     """마지막 쓰기가 이긴다 — 단일 값 필드를 병렬 스텝에서도 쓸 수 있게 하는 리듀서."""
     return new
+
+
+def merge_quality_gate(old: dict | None, new: dict | None) -> dict:
+    """A terminal failure wins within a turn, including parallel/older sidecars.
+
+    The session explicitly writes {} at the next turn boundary. A clarification
+    (no errors) is not a terminal failure and may subsequently become successful.
+    """
+    if new == {}:
+        return {}
+    previous, incoming = dict(old or {}), dict(new or {})
+    failures = [row for row in (previous, incoming)
+                if row.get("ok") is False and row.get("errors")]
+    if not failures:
+        return incoming or previous
+    return {
+        "ok": False,
+        "errors": sorted({str(item) for row in failures for item in row["errors"]}),
+        "warnings": sorted({str(item) for row in failures for item in row.get("warnings", [])}),
+    }
+
+
+def merge_role_engines(old: dict | None, new: dict | None) -> dict:
+    """Merge per-Role execution engines across sequential and parallel graph branches."""
+    if isinstance(new, dict) and new.get("__reset__") is True:
+        return {key: value for key, value in new.items() if key != "__reset__"}
+    return {**(old or {}), **(new or {})}
+
+
+def merge_role_telemetry(old: dict | None, new: dict | None) -> dict:
+    """Accumulate bounded remote counters without retaining prompts or responses."""
+    if isinstance(new, dict) and new.get("__reset__") is True:
+        return {key: value for key, value in new.items() if key != "__reset__"}
+    merged = {key: dict(value) for key, value in (old or {}).items()
+              if isinstance(value, dict)}
+    for role, value in (new or {}).items():
+        if not isinstance(value, dict):
+            continue
+        prior = merged.get(role, {})
+        merged[role] = {
+            **value,
+            "calls": int(prior.get("calls") or 0) + int(value.get("calls") or 0),
+            "failedCalls": int(prior.get("failedCalls") or 0)
+            + int(value.get("failedCalls") or 0),
+            "unknownUsageCalls": int(prior.get("unknownUsageCalls") or 0)
+            + int(value.get("unknownUsageCalls") or 0),
+            "promptTokens": int(prior.get("promptTokens") or 0)
+            + int(value.get("promptTokens") or 0),
+            "completionTokens": int(prior.get("completionTokens") or 0)
+            + int(value.get("completionTokens") or 0),
+            "totalTokens": int(prior.get("totalTokens") or 0)
+            + int(value.get("totalTokens") or 0),
+            "latencyMs": int(prior.get("latencyMs") or 0)
+            + int(value.get("latencyMs") or 0),
+        }
+    return merged
+
+
+def merge_role_sidecars(old: dict | None, new: dict | None) -> dict:
+    """Merge per-Role remote projections without concurrent shared-field writes.
+
+    People Advisor and Auditor may finish in the same LangGraph superstep.  Their
+    evidence/freshness/quality projections therefore remain namespaced until the
+    explicit fan-out join chooses the user-visible projection.
+    """
+    if isinstance(new, dict) and new.get("__reset__") is True:
+        return {
+            str(role): dict(value)
+            for role, value in new.items()
+            if role != "__reset__" and isinstance(value, dict)
+        }
+    merged = {
+        str(role): dict(value)
+        for role, value in (old or {}).items()
+        if isinstance(value, dict)
+    }
+    for role, value in (new or {}).items():
+        if role == "__reset__" or not isinstance(value, dict):
+            continue
+        merged[str(role)] = dict(value)
+    return merged
+
+
+def merge_role_questions(old: dict | None, new: dict | None) -> dict:
+    """Merge bounded per-Role interview questions across graph fan-out branches."""
+    if isinstance(new, dict) and new.get("__reset__") is True:
+        return {
+            str(role): [dict(row) for row in value[:3] if isinstance(row, dict)]
+            for role, value in new.items()
+            if role != "__reset__" and isinstance(value, list)
+        }
+    merged = {
+        str(role): [dict(row) for row in value[:3] if isinstance(row, dict)]
+        for role, value in (old or {}).items()
+        if isinstance(value, list)
+    }
+    for role, value in (new or {}).items():
+        if role == "__reset__" or not isinstance(value, list):
+            continue
+        merged[str(role)] = [
+            dict(row) for row in value[:3] if isinstance(row, dict)
+        ]
+    return merged
 
 
 class MaterializedTicketSources(TypedDict, total=False):
@@ -195,6 +302,8 @@ class AgentState(TypedDict, total=False):
     request_text: str               # ★ 생성 갈래의 **원 요청**(첫 요청 턴의 사용자 문장).
                                     #   last_user_text 는 후속 턴(질문 답변)에서 원 요청을 잃는다 —
                                     #   실측: 제목·본문의 주제가 Epic 본문 쪽으로 끌려갔다.
+    continuation_answer: str        # 현재 후속 턴의 bounded 답변. 원격 요청·조회·업무·지식 역할에 전달
+                                    # 하며 전체 messages/transcript를 경계 밖으로 보내지 않는다.
     keywords: list                  # 검색에 쓸 말들(원문 그대로가 아니라 뽑아낸 것)
     module: str                     # 짐작한 모듈. 확신 없으면 빈 문자열
     mentioned_keys: list            # 사용자가 직접 댄 티켓 키
@@ -208,9 +317,40 @@ class AgentState(TypedDict, total=False):
     turn_reset_reason: str          # local debug/evaluation용 턴 경계 판정 근거
     turn_attempt_id: str            # Session-owned per-turn nonce; typed receipt에는 digest만 저장
 
+    # ── Session-owned MAXIS runtime pin ──
+    # 한 thread 안에서 provider/workflow가 바뀌면 동일한 승인 payload의 의미가 달라질 수
+    # 있다. 첫 턴에 고정하고 ask/resume에서 현재 프로필과 재검증한다. Role 출력 schema에는
+    # 이 필드가 없으므로 모델이 변경할 수 없다.
+    runtime_engine: str
+    runtime_capability: str        # bounded semantic capability; never a write permission
+    runtime_profile: str
+    runtime_profile_label: str
+    runtime_profile_fingerprint: str
+    runtime_role_routes: dict[str, str]
+    runtime_engine_source: str
+    runtime_registry_digest: str
+    runtime_contract_build: str
+    runtime_role_engines: Annotated[dict[str, str], merge_role_engines]
+    runtime_last_role: Annotated[str, last_value]
+    runtime_last_role_engine: Annotated[str, last_value]
+    runtime_role_telemetry: Annotated[dict[str, dict], merge_role_telemetry]
+    runtime_role_sidecars: Annotated[dict[str, dict], merge_role_sidecars]
+    runtime_role_questions: Annotated[dict[str, list[dict]], merge_role_questions]
+    workflow_bundle_version: str
+    knowledge_version: str
+    knowledge_dataset_id: str
+    knowledge_manifest_sha256: str
+    correlation_id: str             # 한 요청의 조사→초안→승인→실행을 연결, 원문은 포함하지 않음
+    correlation_started_at: str     # source freshness 판정용 UTC 시각
+    role_context_carryover: dict     # 후속 턴에 값 그대로 복사된 필드의 digest·원 관측시각
+    evidence_workspace: dict        # content 없는 bounded 출처/claim projection만 허용
+    freshness: dict
+    quality_gate: Annotated[dict, merge_quality_gate]
+
     # ── Query Specialist / deterministic Query Runner ──
     query_plan: dict
     query_results: list             # LLM에 전달할 compact 결과
+    query_evidence_attestations: dict  # 모델 입력 밖 source:id→freshness/scope/digest 증명
     query_artifacts: dict           # 전체 target key snapshot 등 모델 밖 실행 자료
     materialized_ticket_sources: MaterializedTicketSources  # 인터뷰 턴을 건너는 검증된 티켓 ledger(최대 8)
     assignment_completion: dict     # 분담형 Task의 미완료 Sub-Task·담당자 deterministic 집계
@@ -273,6 +413,7 @@ class AgentState(TypedDict, total=False):
     comment_token: str              # 변경과 함께 남길 코멘트의 승인 토큰(카드에 코멘트가 보였을 때만)
     result: dict                    # {"created":[...], "failed":[...]}
     execution_receipt: dict         # signed execution-receipt.v1; never exposed as UI result data
+    change_audit_binding: dict      # sealed digest-only proposal→approval→execution audit link
 
     # ── 공통 ──
     reply: str                      # 사용자에게 보일 최종 문장

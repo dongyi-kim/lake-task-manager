@@ -5195,27 +5195,136 @@ def test_a_draft_that_vanishes_leaves_a_trace_and_a_question():
 
 
 
-def test_a_bug_report_keeps_its_body_rules_even_if_intent_slips():
-    """버그 초안은 **의도가 아니라 요청의 내용**으로 고른다(사용자 지적).
+def _run_work_with_fake_transport(monkeypatch, state, output, lane):
+    """Keep transport, pre-validation, schema validation and apply real; fake only the model."""
+    from types import SimpleNamespace
+    from langchain_core.messages import AIMessage
+    from app.agent import capabilities
+    from app.agent.maxis import backend
+    from app.agent.workflow.agents import work_architect as work
 
-    `report_bug` 는 `plan_work` 와 지나는 노드도 도구도 같다 — 다른 것은 WorkArchitect 의 goal
-    하나뿐이라, 결국 "Task 를 만드는데 type 이 Bug"다. 갈래로 두면 분류가 틀릴 때
-    본문 템플릿이 통째로 바뀐다(재현·기대·실제 → 배경·범위·DoD). 바뀌면 안 되는 것이다.
-    """
-    from app.agent.workflow.agents.work_architect import WorkArchitect
-    from app.agent.workflow.state import Intent
+    agent = WorkArchitect()
+    seen = {"calls": [], "schemas": [], "normalized": [], "applied": []}
+    monkeypatch.setattr(work, "_placement_material", lambda state: "")
+    monkeypatch.setattr(work, "_rules_material", lambda state: "")
+    monkeypatch.setattr(capabilities, "get", lambda *a, **k: {
+        "checked": {"json_schema": True, "json_object": True}})
+    monkeypatch.setattr(capabilities, "record", lambda *a, **k: None)
+    monkeypatch.setattr(backend, "resolve_role", lambda *a, **k: SimpleNamespace(route="local"))
+    monkeypatch.setattr(agent, "_semantic_projection_tier",
+                        lambda: "simple" if lane == "semantic_projection" else "")
 
-    r = WorkArchitect()
-    # 의도가 plan_work 로 **미끄러져도** 버그 본문 규율이 적용된다
-    task = r.task({"messages": _msg("적재 배치가 어젯밤부터 계속 실패한다. 버그로 올려줘"
-                                    )["messages"],
-                   "intent": Intent.PLAN_WORK, "situation": "조사 결과"})
-    assert "재현 경로" in task and "기대 동작" in task, "버그 본문 규율이 빠졌다"
+    class Native:
+        def __init__(self, contract):
+            self.contract = contract
 
-    # 버그 이야기가 아니면 평소 규율이다 — 아무 요청에나 버그 템플릿을 씌우면 안 된다
-    plain = r.task({"messages": _msg("메타데이터 등록 작업 만들어줘")["messages"],
-                    "intent": Intent.PLAN_WORK, "situation": "조사 결과"})
-    assert "재현 경로" not in plain
+        def with_structured_output(self, schema, **kwargs):
+            seen["schemas"].append(copy.deepcopy(schema))
+            return self
+
+        def invoke(self, messages, **kwargs):
+            seen["calls"].append((self.contract, messages))
+            if self.contract == "semantic_memo":
+                return AIMessage(content=json.dumps(output, ensure_ascii=False))
+            return copy.deepcopy(output)
+
+    monkeypatch.setattr(agent, "llm", lambda **kwargs: Native(kwargs.get("output_contract")))
+    original_prevalidate, original_apply = agent.pre_validate_structured_output, agent.apply
+
+    def prevalidate(current, out, **kwargs):
+        normalized = original_prevalidate(current, out, **kwargs)
+        seen["normalized"].append(copy.deepcopy(normalized))
+        return normalized
+
+    def apply(current, out):
+        seen["applied"].append(copy.deepcopy(out))
+        return original_apply(current, out)
+
+    monkeypatch.setattr(agent, "pre_validate_structured_output", prevalidate)
+    monkeypatch.setattr(agent, "apply", apply)
+    result = agent._run(state)
+    assert "error" not in result, result
+    assert len(seen["calls"]) == (2 if lane == "semantic_projection" else 1)
+    assert len(seen["schemas"]) == len(seen["normalized"]) == len(seen["applied"]) == 1
+    assert seen["schemas"][0]["properties"] == agent.schema_for(state)["properties"]
+    assert seen["normalized"] == seen["applied"]
+    if lane == "semantic_projection":
+        assert seen["calls"][0][0] == "semantic_memo"
+        assert seen["calls"][1][0] == "typed_projection"
+        fields = ", ".join(agent.schema_for(state)["properties"])
+        assert f"Cover these top-level output fields: {fields}." in seen["calls"][0][1][-1].content
+    return result, seen
+
+
+@pytest.mark.parametrize("lane", ["direct", "semantic_projection"])
+@pytest.mark.parametrize("case", ["plan_work", "typed_create", "related_key", "explicit_key", "pending", "mixed", "ordinary"])
+def test_a_bug_report_keeps_its_body_rules_even_if_intent_slips(monkeypatch, lane, case):
+    """Creation authority owns schema and policy, even when its legacy intent says MODIFY."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    text = "운영 적재 배치를 실행하면 connection timeout으로 실패한다. 기대는 배치 성공이다. 새 Bug로 올려줘"
+    if case == "mixed":
+        text += ". 그리고 DL-9090에 '배치가 실패한다'를 댓글로 남겨줘"
+    elif case == "ordinary":
+        text = "메타데이터 등록 작업을 만들어줘"
+    state = _msg(text, intent=Intent.PLAN_WORK, situation="조사 완료")
+    if case in {"typed_create", "explicit_key", "pending", "mixed"}:
+        state["intent"] = Intent.MODIFY
+    if case in {"related_key", "explicit_key"}:
+        state["mentioned_keys"] = ["DL-9090"]
+        state["messages"] = [HumanMessage(content=text + ". DL-9090은 관련 참고 티켓이다.")]
+    if case in {"typed_create", "explicit_key", "mixed"}:
+        state["continuation_contract"] = {
+            "version": "continuation.v1", "action": "mixed" if case == "mixed" else "create",
+            "intent": state["intent"], "root_request": text,
+            "target_keys": ["DL-9090"] if case == "mixed" else [], "outcome_ids": [], "decisions": [],
+        }
+    output = {"questions": [], "mode": "task", "structure": "single_task", "items": [{
+        "summary": "적재 배치 connection timeout 실패 조사", "type": "Bug",
+        "background": "운영 적재 배치 실행 시 connection timeout 발생",
+        "scope_in": ["적재 배치 connection timeout 조사"], "dod": ["실패 원인 확인"],
+        "reproduction": ["운영 적재 배치 실행"], "expected": "배치 성공",
+        "actual": "connection timeout으로 실패",
+    }], "rationale": "사용자가 보고한 배치 실패 조사"}
+    if case == "mixed":
+        output["change"] = {"key": "DL-9090", "comment": "배치가 실패한다"}
+    elif case == "ordinary":
+        output["items"] = [{"summary": "메타데이터 등록", "type": "Task",
+                            "background": "메타데이터 등록 요청됨", "scope_in": ["메타데이터 등록"],
+                            "scope_out": ["등록 화면 개발"], "dod": ["등록된 메타데이터 조회 확인"]}]
+        output["rationale"] = "메타데이터 등록 요청"
+    if case == "pending":
+        state["draft"] = copy.deepcopy(output)
+    result, seen = _run_work_with_fake_transport(monkeypatch, state, output, lane)
+    system, task = seen["calls"][0][1][:2]
+    assert isinstance(system, SystemMessage) and isinstance(task, HumanMessage)
+    assert ("shared Bug creation policy" in task.content) is (case != "ordinary")
+    assert "items" in seen["schemas"][0]["properties"]
+    assert seen["applied"][0]["items"] == output["items"]
+    assert len(result["draft"]["items"]) == 1
+    item = result["draft"]["items"][0]
+    assert item["type"] == ("Task" if case == "ordinary" else "Bug")
+    sections = ("배경", "작업 범위", "완료 조건") if case == "ordinary" else (
+        "재현 경로", "기대 동작", "실제 동작", "connection timeout")
+    assert all(value in item["description"] for value in sections)
+    assert not result.get("questions"), result
+    if case == "mixed":
+        assert "## Existing Ticket Changes" in system.content
+        assert seen["applied"][0]["change"] == output["change"]
+        assert result["change_plan"]["key"] == "DL-9090"
+        assert "배치가 실패한다" in result["change_plan"]["comment"]
+        assert not result["change_plan"]["changes"]
+    # The complete policy belongs to the actual system message, exactly once.
+    for rule in (
+        "For Bug reports, default to one Task-tier `Bug` without Sub-Tasks.",
+        "A Bug body separates `재현 경로`, `기대 동작`, and `실제 동작`.",
+        "Ask for material missing reproduction conditions, frequency, or environment rather than fabricating them.",
+        "A suspected-cause ticket key requires direct research support.",
+        "Group related missing Bug facts into one answerable diagnostic question.",
+        "Preserve an already stated actual symptom instead of asking for it again; for batch failures ask for the DAG/Job, environment, occurrence time, and representative log.",
+    ):
+        assert system.content.count(rule) == 1, rule
+        assert rule not in task.content
 
 def test_a_bug_body_is_never_overwritten_with_the_task_template(monkeypatch):
     """Bug 본문에 **재현 경로·기대·실제**가 남는가 — 코드가 보장한다.

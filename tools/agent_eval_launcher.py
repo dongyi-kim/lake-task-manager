@@ -97,6 +97,9 @@ def _run_runner(script: str, argv: Sequence[str]) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
+    if raw and raw[0] == "maxis":
+        from tools.agent_maxis_eval import launch
+        return launch(raw[1:])
     if not raw or any(arg in {"-h", "--help"} for arg in raw):
         print(USAGE)
         return 0 if raw else 2

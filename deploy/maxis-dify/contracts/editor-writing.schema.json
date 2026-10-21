@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ltm:maxis:editor-writing.v1",
+  "title": "EditorWritingV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "sections"],
+  "properties": {
+    "contract": {"type": "string", "const": "editor-writing.v1"},
+    "sections": {
+      "type": "array", "minItems": 1, "maxItems": 4,
+      "items": {"$ref": "#/$defs/section"}
+    }
+  },
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "section": {
+      "type": "object", "additionalProperties": false,
+      "required": ["section", "blocks"],
+      "properties": {
+        "section": {"type": "string", "enum": ["background", "scope", "work", "dod", "comment"]},
+        "blocks": {"type": "array", "minItems": 1, "maxItems": 32,
+          "items": {"oneOf": [{"$ref": "#/$defs/fact"}, {"$ref": "#/$defs/proposal"}]}}
+      }
+    },
+    "fact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "unit_id", "tag"],
+      "properties": {
+        "type": {"type": "string", "const": "fact"},
+        "unit_id": {"$ref": "#/$defs/identifier"},
+        "tag": {"type": "string", "enum": ["p", "li"]}
+      }
+    },
+    "proposal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "text", "tag"],
+      "properties": {
+        "type": {"type": "string", "const": "proposal"},
+        "text": {"type": "string", "minLength": 1, "maxLength": 1200},
+        "tag": {"type": "string", "enum": ["p", "li"]}
+      }
+    }
+  }
+}

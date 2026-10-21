@@ -1,0 +1,43 @@
+version: 1
+
+# Logical bindings only. Endpoint URLs, credentials, and deployed workflow/knowledge
+# revisions belong to the active runtime profile so dev/prod can be switched without
+# changing application code or this registry.
+workflows:
+  agent_core:
+    app_type: chatflow
+    endpoint: /chat-messages
+    response_mode: blocking
+    conversation_mode: stateless
+    api_key_env: LAKE_MAXIS_AGENT_CORE_API_KEY
+    output_contract: remote-role-result.v1
+    max_response_bytes: 1048576
+    roles:
+      - request_architect
+      - query_specialist
+      - knowledge_curator
+      - work_architect
+      - auditor
+      - result_integrator
+
+  pmo_brief:
+    app_type: chatflow
+    endpoint: /chat-messages
+    response_mode: blocking
+    conversation_mode: stateless
+    api_key_env: LAKE_MAXIS_PMO_BRIEF_API_KEY
+    output_contract: remote-role-result.v1
+    max_response_bytes: 1048576
+    roles:
+      - portfolio_analyst
+
+  editor_author:
+    app_type: chatflow
+    endpoint: /chat-messages
+    response_mode: blocking
+    conversation_mode: stateless
+    api_key_env: LAKE_MAXIS_EDITOR_AUTHOR_API_KEY
+    output_contract: remote-role-result.v1
+    max_response_bytes: 1048576
+    roles:
+      - editor_author

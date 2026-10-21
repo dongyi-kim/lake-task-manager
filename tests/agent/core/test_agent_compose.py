@@ -54,6 +54,113 @@ def test_description_context_carries_the_current_body_instead_of_chatter():
     assert "최근 코멘트" not in ctx
 
 
+def test_maxis_ticket_material_preserves_record_ownership():
+    import importlib.util
+    import json
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[3] / "deploy/maxis-dify/code/editor_assembler.py"
+    spec = importlib.util.spec_from_file_location("compose_ownership", path)
+    assembler = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(assembler)
+    material = {}
+    C._ticket_context(PROG, "comment", material)
+    assert material["key"] == PROG and material["complete"] is True
+    assert material["comments"] and material["children"] and material["documents"]
+    rows = list(assembler._unit_rows({
+        "kind": "jira", "content": json.dumps(material, ensure_ascii=False), "title": "Synthetic ticket"}))
+    comments = [row for row in rows if "/comments/" in row[0] and "/text" in row[0]]
+    assert comments and all(row[3] == PROG for row in comments)
+    child_status = [row for row in rows if "/children/" in row[0] and row[0].endswith("/status")]
+    assert child_status and all(row[3] in {"DL-9093", "DL-9094", "DL-9095"} for row in child_status)
+    document_rows = [row for row in rows if "/documents/" in row[0]]
+    assert document_rows and all(row[3] == "" for row in document_rows)
+
+
+@pytest.mark.parametrize("kind", ["comment", "description"])
+def test_maxis_editor_attests_wiki_separately_without_borrowing_jira_scope(kind):
+    import json
+    from app.agent.maxis import backend
+    material, acquired = {}, {}
+    marker = backend.begin_local_acquisition()
+    try:
+        C._ticket_context(PROG, kind, material, acquired)
+    finally:
+        provenance = backend.finish_local_acquisition(marker)
+    from app.agent.workflow.progress_evidence import progress_evidence
+    progress = progress_evidence(PROG, acquired["report"], acquired["acquisition"], provenance)
+    assert next(row["result"] for row in progress["query_results"]
+                if row["source"] == "jira")["children_counts"]["returned"] == "3건 (티켓 3개)"
+    rows = C._editor_evidence_rows(PROG, kind, material, acquired, provenance)
+    sources = backend._verified_evidence_sources({"_maxis_evidence_rows": rows})
+    by_kind = {source["kind"]: source for source in sources}
+    assert set(by_kind) == {"jira", "confluence"}
+    assert by_kind["jira"]["scope"] == by_kind["confluence"]["scope"] == "DL"
+    jira = json.loads(by_kind["jira"]["content"])
+    wiki = json.loads(by_kind["confluence"]["content"])
+    assert "documents" not in jira
+    assert "children_counts" not in jira
+    assert wiki["documents"][0]["id"] and wiki["documents"][0]["space"] == "DL"
+    assert "3홉 이상" not in by_kind["jira"]["content"]
+    assert "3홉 이상" in by_kind["confluence"]["content"]
+    assert all(not source["partial"] for source in sources)
+    assert bool(jira["comments"]) is (kind == "comment")
+    if kind == "description":
+        assert next(row for row in rows if row["source"] == "jira")["result"]["description"] == material["description"]
+        assert jira["description"] == backend._outbound_content_projection(material["description"])
+
+
+@pytest.mark.parametrize("fault", ["identity", "space"])
+def test_maxis_editor_rejects_unverified_document_material(fault, monkeypatch):
+    from app.agent.maxis import backend
+    from app.agent.tools import _ctx
+    original = _ctx.client().confluence_page
+    def bad_page(*args, **kwargs):
+        page = original(*args, **kwargs)
+        return {**page, **({"id": "unrelated"} if fault == "identity" else {"space": {}})}
+    monkeypatch.setattr(_ctx.client(), "confluence_page", bad_page)
+    material, acquired = {}, {}
+    marker = backend.begin_local_acquisition()
+    try:
+        C._ticket_context(PROG, "comment", material, acquired)
+    finally:
+        provenance = backend.finish_local_acquisition(marker)
+    rows = C._editor_evidence_rows(PROG, "comment", material, acquired, provenance)
+    sources = backend._verified_evidence_sources({"_maxis_evidence_rows": rows})
+    assert all(source["kind"] == "jira" and source["partial"] for source in sources)
+    assert all("3홉 이상" not in source["content"] for source in sources)
+
+
+def test_maxis_ticket_material_retains_failed_branch_as_incomplete(monkeypatch):
+    from app.agent.tools import _ctx
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("synthetic failed read")
+    monkeypatch.setattr(_ctx.client(), "issue_comments", unavailable)
+    material = {}
+    C._ticket_context(PROG, "comment", material)
+    assert material["key"] == PROG and material["complete"] is False
+
+
+def test_maxis_ticket_material_does_not_relabel_a_mismatched_read(monkeypatch):
+    from app.agent.tools import _ctx
+    original = _ctx.client().get_issue
+    def mismatched(key):
+        return original("DL-9095" if key == PROG else key)
+    monkeypatch.setattr(_ctx.client(), "get_issue", mismatched)
+    material = {}
+    assert C._ticket_context(PROG, "comment", material) == ""
+    assert "key" not in material
+
+
+@pytest.mark.parametrize("view", [None, {"key": "DL-9095", "descriptionHtml": "<p>Other ticket body</p>"}])
+def test_maxis_description_read_must_match_verified_ticket_identity(monkeypatch, view):
+    from app.agent.tools import _ctx
+    monkeypatch.setattr(_ctx.client(), "ticket_view", lambda *_a: view)
+    material = {}
+    C._ticket_context(PROG, "description", material)
+    assert material["key"] == PROG and material["complete"] is False
+    assert "description" not in material
+
+
 def test_a_brand_new_ticket_has_no_context_instead_of_an_error():
     """새 티켓 작성 중에는 키가 없다(__new__) — 조용히 빈 맥락으로 간다."""
     assert C._ticket_context("__new__", "description") == ""
@@ -142,6 +249,230 @@ def test_editor_author_requests_its_manifest_profile_without_numeric_sampling_ov
         "ltm_execution_layer": "deep_semantic",
         "ltm_execution_stage": "synthesis",
     }
+
+
+@pytest.mark.parametrize("unsupported", [False, True])
+def test_editor_author_maxis_route_skips_local_provider_and_keeps_local_guards(monkeypatch, unsupported):
+    """MAXIS owns only generation; canonical editor normalization still runs locally."""
+    from app.agent import config as CFG
+    from app.agent.maxis import backend
+
+    routes = {role_id: "local" for role_id in __import__(
+        "app.agent.workflow.role_manifest", fromlist=["ROLE_SPECS"]
+    ).ROLE_SPECS}
+    routes["editor_author"] = "maxis"
+    pin = {
+        "runtime_engine": "local",
+        "runtime_profile": "dev",
+        "runtime_profile_fingerprint": "runtime-pin",
+        "runtime_role_routes": routes,
+        "runtime_engine_source": "profile",
+        "workflow_bundle_version": "bundle-1",
+        "knowledge_version": "knowledge-1",
+    }
+    monkeypatch.setattr(backend, "thread_runtime_pin", lambda: dict(pin))
+    monkeypatch.setattr(
+        backend, "resolve_role",
+        lambda *_a, **_k: backend.RoleResolution(
+            route="maxis", profile="dev", workflow_bundle_version="bundle-1",
+            knowledge_version="knowledge-1",
+        ),
+    )
+    monkeypatch.setattr(
+        CFG, "get_llm",
+        lambda **_k: pytest.fail("maxis route must not call the local provider"),
+    )
+    monkeypatch.setattr(
+        CFG, "llm_ready",
+        lambda: pytest.fail("maxis route must not require local LLM setup"),
+    )
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: "")
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+    observed = {}
+
+    def remote(role_id, state, messages, schema, *, output_kind):
+        observed.update({
+            "role": role_id, "state": state, "messages": messages,
+            "schema": schema, "output_kind": output_kind,
+        })
+        return backend.RemoteRoleOutput(
+            {
+                "contract": "editor-draft.v1", "mode": "comment",
+                "content_html": "<p>MAXIS 검토 요청 초안</p>",
+                "source_ids": [], "unsupported_claims": ["unsupported"] if unsupported else [], "warnings": [],
+            },
+            {
+                "evidence_workspace": {"sources": [], "claims": []},
+                "freshness": {"status": "empty"},
+                "quality_gate": {"ok": True},
+            },
+            {
+                "profile": "dev", "workflowBundleVersion": "bundle-1",
+                "knowledgeVersion": "knowledge-1", "correlationId": "corr-remote",
+                "usage": {"promptTokens": 7, "completionTokens": 3, "totalTokens": 10},
+            },
+        )
+
+    monkeypatch.setattr(backend, "invoke_role", remote)
+    result = C.compose("__new__", "comment", "검토 요청 초안을 작성해 줘")
+
+    if unsupported:
+        assert result["ok"] is False and "html" not in result
+        assert result["usage"]["calls"] == 1 and result["usage"]["failedCalls"] == 1
+        assert result["usage"]["totalTokens"] == 10
+        assert result["usage"]["callsDetail"][0]["finishReason"] == "failed"
+        return
+    assert result["ok"] is True
+    assert "MAXIS 검토 요청 초안" in result["html"]
+    assert result["engine"] == "maxis" and result["profile"] == "dev"
+    assert result["correlationId"] == "corr-remote"
+    assert result["evidenceWorkspace"] == {"sources": [], "claims": []}
+    assert result["usage"]["totalTokens"] == 10
+    assert observed["role"] == "editor_author"
+    assert observed["messages"] == [] and observed["output_kind"] == "structured"
+    assert observed["schema"]["properties"]["mode"]["const"] == "comment"
+    assert observed["state"]["request_text"] == "검토 요청 초안을 작성해 줘"
+
+
+@pytest.mark.parametrize("status, tokens", [("completed", 10), ("failed", None), ("needs_input", 4)])
+def test_editor_maxis_usage_distinguishes_failed_and_unknown_requests(status, tokens):
+    from app.agent import editor_author
+    from app.agent.maxis.telemetry import RemoteRequestTelemetryV1
+    observation = RemoteRequestTelemetryV1(
+        transport_status="failed" if status == "failed" else "succeeded",
+        result_status=status, prompt_tokens=tokens, completion_tokens=0 if tokens is not None else None,
+        total_tokens=tokens)
+    result = editor_author._maxis_usage({"requestTelemetry": observation.model_dump(mode="json")})
+    assert result["calls"] == 1
+    assert result["failedCalls"] == int(status == "failed")
+    assert result["usageComplete"] == (tokens is not None)
+    assert result["unknownUsageCalls"] == int(tokens is None)
+    assert result["costStatus"] == "unknown" and "costUsd" not in result
+    assert result["modelIdentityStatus"] == "not_exposed"
+
+
+def test_editor_maxis_legacy_counters_are_not_proof_of_complete_usage():
+    from app.agent import editor_author
+    result = editor_author._maxis_usage({"usage": {"promptTokens": 0, "completionTokens": 0, "totalTokens": 0}})
+    assert result["calls"] == 1 and result["usageComplete"] is False
+    assert result["unknownUsageCalls"] == 1
+
+
+def test_editor_maxis_identity_candidates_include_general_jira_username():
+    context = (
+        '[DL-9090] "검토" — Open · 담당 [~alice.smith] · 마감 없음\n\n'
+        "최근 코멘트(오래된 것부터):\n"
+        "- 2026-09-04 Alice Kim: 확인 부탁드립니다"
+    )
+    assert C._maxis_ticket_identity_values(context) == ["alice.smith", "Alice Kim"]
+
+
+def test_editor_author_shadow_discards_remote_candidate(monkeypatch):
+    """Shadow may execute, but only the local HTML can reach the editor response."""
+    from app.agent import config as CFG
+    from app.agent.maxis import backend
+
+    monkeypatch.setattr(backend, "thread_runtime_pin", lambda: {
+        "runtime_engine": "local", "runtime_profile": "dev",
+        "runtime_profile_fingerprint": "runtime-pin",
+        "runtime_role_routes": {"editor_author": "shadow"},
+        "runtime_engine_source": "profile",
+        "workflow_bundle_version": "bundle-1", "knowledge_version": "knowledge-1",
+    })
+    monkeypatch.setattr(
+        backend, "resolve_role",
+        lambda *_a, **_k: backend.RoleResolution(route="shadow", profile="dev"),
+    )
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: "")
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+
+    class _Reply:
+        content = "<p>로컬 권위 초안</p>"
+
+    class _Llm:
+        def invoke(self, *_a, **_k):
+            return _Reply()
+
+    monkeypatch.setattr(CFG, "get_llm", lambda **_k: _Llm())
+    shadow_calls = []
+    monkeypatch.setattr(
+        backend, "run_shadow",
+        lambda *args, **kwargs: shadow_calls.append((args, kwargs)),
+    )
+
+    result = C.compose("__new__", "comment", "검토 요청 초안을 작성해 줘")
+
+    assert result["ok"] is True and "로컬 권위 초안" in result["html"]
+    assert "engine" not in result and "evidenceWorkspace" not in result
+    assert len(shadow_calls) == 1
+
+
+def test_editor_author_maxis_failure_never_falls_back_to_local_provider(monkeypatch):
+    from app.agent import config as CFG
+    from app.agent.maxis import backend
+
+    monkeypatch.setattr(backend, "thread_runtime_pin", lambda: {
+        "runtime_engine": "maxis", "runtime_profile": "dev",
+        "runtime_profile_fingerprint": "runtime-pin",
+        "runtime_role_routes": {"editor_author": "maxis"},
+        "runtime_engine_source": "explicit",
+        "workflow_bundle_version": "bundle-1", "knowledge_version": "knowledge-1",
+    })
+    monkeypatch.setattr(
+        backend, "resolve_role",
+        lambda *_a, **_k: backend.RoleResolution(route="maxis", profile="dev"),
+    )
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: "")
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+    monkeypatch.setattr(
+        CFG, "get_llm", lambda **_k: pytest.fail("no local fallback is allowed"),
+    )
+    monkeypatch.setattr(
+        backend, "invoke_role",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            backend.MaxisRuntimeError("MAXIS 호출 실패")
+        ),
+    )
+
+    result = C.compose("__new__", "comment", "검토 요청 초안을 작성해 줘")
+
+    assert result["ok"] is False
+    assert "MAXIS" in result["error"]
+
+
+def test_editor_author_maxis_needs_input_is_a_visible_interview(monkeypatch):
+    from app.agent import config as CFG
+    from app.agent.maxis import backend
+
+    monkeypatch.setattr(backend, "thread_runtime_pin", lambda: {
+        "runtime_engine": "maxis", "runtime_profile": "prod",
+        "runtime_profile_fingerprint": "runtime-pin",
+        "runtime_role_routes": {"editor_author": "maxis"},
+        "runtime_engine_source": "profile",
+        "workflow_bundle_version": "bundle-1", "knowledge_version": "knowledge-1",
+    })
+    monkeypatch.setattr(
+        backend, "resolve_role",
+        lambda *_a, **_k: backend.RoleResolution(route="maxis", profile="prod"),
+    )
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: "")
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+    monkeypatch.setattr(
+        CFG, "get_llm", lambda **_k: pytest.fail("no local fallback is allowed"),
+    )
+    monkeypatch.setattr(
+        backend, "invoke_role",
+        lambda *_a, **_k: (_ for _ in ()).throw(backend.MaxisNeedsInput(
+            "editor_author", ["검토 대상 문서를 알려 주세요"],
+            state_patch={"quality_gate": {"ok": False}},
+        )),
+    )
+
+    result = C.compose("__new__", "comment", "검토 요청 초안을 작성해 줘")
+
+    assert result["ok"] is False and result["needsInfo"] is True
+    assert "검토 대상 문서" in result["error"]
+    assert "html" not in result
 
 
 def test_editor_author_preserves_error_call_usage(monkeypatch):
@@ -343,6 +674,19 @@ def test_route_returns_html_for_the_editor():
     r = cli.post("/api/agent/compose",
                  json={"ticketKey": PROG, "kind": "comment", "prompt": "진행 공유 코멘트"})
     assert r.status_code == 200 and r.json()["ok"] and r.json()["html"]
+
+
+def test_route_returns_normal_needs_input_without_http_failure(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    expected = {"ok": False, "needsInfo": True, "error": "검토 요청 대상을 알려주세요.",
+                "questions": [{"field": "target", "text": "누구에게 요청할까요?"}]}
+    monkeypatch.setattr(C.EditorAuthor, "compose", lambda *_a, **_kw: expected)
+    response = TestClient(app).post("/api/agent/compose", json={
+        "ticketKey": PROG, "kind": "comment", "prompt": "검토 요청",
+    })
+    assert response.status_code == 200
+    assert response.json() == expected
 
 
 def test_route_fails_closed_when_editor_pipeline_raises(monkeypatch):

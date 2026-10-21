@@ -1,42 +1,23 @@
-# knowledge — 에이전트의 정적 지식 (RAG 1계층)
+# 공개 LTM Knowledge 정본
 
-여기 있는 문서는 **FAISS 로 색인되어 에이전트가 검색해 읽는다**. 사람이 읽는 문서이기도 하지만
-1차 독자는 LLM 이다.
+01~10 Markdown은 공개 저장소의 규칙·코드·제품 계약만 설명한다.
+사내 문서 원문·직원 명단·비공개 프로젝트 기술 구성·실제 운영 현황을 공개 Git에 넣지 않는다.
+정책 Knowledge는 현재 Jira/Confluence 사실의 citation 근거를 대신하지 않는다.
 
-## 왜 프롬프트가 아니라 RAG 인가
+config/maxis-knowledge.yml이 각 문서의 설명·content SHA-256·revision·review·Role ACL 정본이다.
+01 티켓, 02 진척, 03 모듈/사람, 04 분해, 05 사용, 06 조사, 07 본문,
+08 Editor, 09 공개 LTM 기술, 10 용어를 서로 다른 목적으로 유지한다.
+파일명은 안정적으로 유지하며 날짜별·버전별 복사본을 추가하지 않는다.
 
-이 규칙들을 시스템 프롬프트에 통째로 넣으면 매 호출마다 수천 토큰을 낸다. 그런데 실제로
-필요한 건 매번 한두 절이다 — 담당자를 고를 때 진척률 산식은 필요 없다. 검색해서 **그때
-필요한 절만** 가져오는 게 싸고, 규칙이 늘어나도 프롬프트가 부풀지 않는다.
+## 배포
 
-## 무엇을 여기 두고 무엇을 두지 않나
+깨끗한 checkout의 이 문서와 canonical DSL만으로 PROD import source를 생성할 수 있다.
+DEV 배포 metadata나 .cache corpus는 필수가 아니다.
+환경별 dataset/document/sentinel UUID·model·app name은 해당 환경에서 명시한다.
+다른 환경 metadata가 있으면 UUID 재사용을 비교하며 metadata가 없다는 이유로 PROD 생성을 막지 않는다.
+사내 전용 manifest를 별도로 선택할 수 있으나 공개 정본으로 조용히 폴백하지 않는다.
 
-| 둔다 | 두지 않는다 |
-|---|---|
-| 코드에 없는 **운영 제약** (SP 는 Story 에만) | 코드가 이미 강제하는 것 → `domain/bulk.py` 가 막는다 |
-| **판단 기준** (언제 쪼개나, 무엇을 되묻나) | 티켓 데이터 자체 → 동적 RAG 가 실시간으로 가져온다 |
-| **왜 그런가** (Bug 가 분모에서 빠지는 이유) | 자주 바뀌는 값(사람 목록·Epic 키) → `config/*.yaml` 이 원본 |
-
-산식·상수를 여기 적을 때는 **코드가 원본이고 여기가 사본**이다. 갈라지면 코드가 맞다.
-
-## 문서
-
-| 파일 | 내용 |
-|---|---|
-| `01-ticket-rules.md` | 티켓 유형·SP 제약·Epic Link·Component·Label·제목/본문 규칙 |
-| `02-progress-formula.md` | 완료 판정(`statusCategory`)·SP 가중 산식·분모 제외·WBS 롤업 |
-| `03-modules-and-people.md` | 6개 모듈·사번 규칙(x=개발/i=운영)·**담당자 추천 4신호와 근거 형식** |
-| `04-work-breakdown.md` | 한 문장 요구 → 티켓 트리까지의 절차, 좋은/나쁜 분해 예 |
-
-## 색인
-
-첫 사용 시 자동으로 만들어지고, **파일이 바뀌면(mtime+해시) 자동으로 다시 만든다** —
-따로 빌드 명령을 기억할 필요가 없다. 색인은 `.cache/agent_index/static/` 에 저장된다.
-
-미리 만들어 두려면(첫 질의를 빠르게):
-
-```bash
-python -m app.agent.retrieval.static_index
-```
-
-문서를 고치면 **다음 질의에서 자동 반영**된다.
+파일 저장은 원격 게시가 아니다. 원문·청크·ACL·manifest·sentinel·게시 Workflow pin을 검증한다.
+연결·정적 계약·원격 검색·의미 품질·사용자 UI 왕복·운영 승인은 별도 게이트다.
+실행 산출물·원문·평가·배포 영수증은 ignored .cache/에만 보관한다.
+개인 LLM을 쓰는 로컬 FAISS 색인과 MAXIS Knowledge 배포는 별개다.

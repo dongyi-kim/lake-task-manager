@@ -36,10 +36,8 @@ from __future__ import annotations
 
 import os
 
-os.environ.setdefault("JIRA_ENV", "mock")
 
-
-def _mcp():
+def _mcp(**server_kwargs):
     from mcp.server import MCPServer
     return MCPServer(
         "lake-task-manager",
@@ -47,7 +45,9 @@ def _mcp():
             "Read-only PMO tools for the internal Lake data platform. Search Jira tickets and "
             "Confluence documents, calculate WBS progress, inspect team workload, and retrieve "
             "ticket-authoring policy. Ticket creation and mutation are unavailable because they "
-            "require the approval flow in the LTM UI."))
+            "require the approval flow in the LTM UI."),
+        **server_kwargs,
+    )
 
 
 # 낼 도구 — 읽기 전용만. 이름은 에이전트 도구와 같다(문서·대화에서 같은 이름으로 통하게).
@@ -58,8 +58,70 @@ _EXPORTED = (
 )
 
 
-def build_server():
-    server = _mcp()
+def assert_http_subject_bound() -> dict:
+    """Bind an authenticated HTTP principal to the Jira session used by tools.
+
+    OAuth authentication alone is insufficient when this process holds one Jira
+    session: without this check any valid reader could exercise that session user's
+    (possibly manager) permissions.  Deployments whose IdP ``sub`` differs from the
+    Jira id must map an approved identity claim in the HTTP verifier.
+    """
+    from mcp.server.auth.middleware.auth_context import get_access_token
+    from app.agent.tools._ctx import client
+
+    token = get_access_token()
+    claims = getattr(token, "claims", None) or {}
+    delegated = claims.get("ltm_user_id") if isinstance(claims, dict) else None
+    if not isinstance(delegated, str) or not delegated.strip():
+        raise PermissionError("authenticated MCP identity is not bound to an LTM user")
+    try:
+        # This is an authorization check, not a display lookup. Prove the currently
+        # attached Jira cookie/session on every tool call; never accept a stale cache.
+        user = client().current_user_fresh() or {}
+    except Exception as exc:
+        raise PermissionError("LTM user identity could not be verified") from exc
+    # Only identifiers issued by Jira itself are authorization material.  Human-facing
+    # profile fields (display name and email) are neither unique nor immutable and must
+    # never make two principals equivalent.
+    candidates = {
+        str(user.get(key) or "").strip().casefold()
+        for key in ("id", "key", "accountId")
+        if str(user.get(key) or "").strip()
+    } if isinstance(user, dict) else set()
+    if isinstance(user, dict):
+        candidates.update(
+            str(value or "").strip().casefold()
+            for value in (user.get("actorAliases") or [])
+            if str(value or "").strip()
+        )
+    if delegated.strip().casefold() not in candidates:
+        raise PermissionError("authenticated MCP identity does not match the LTM session")
+    return dict(user)
+
+
+def _invoke_tool(fn_tool, kwargs: dict, *, require_authenticated_subject: bool):
+    """Invoke one exported tool under the identity proved for this HTTP request."""
+    if not require_authenticated_subject:
+        return fn_tool.invoke(kwargs)
+    user = assert_http_subject_bound()
+    from app.agent.tools.pmo_tools import bind_request_user
+
+    with bind_request_user(user):
+        return fn_tool.invoke(kwargs)
+
+
+def build_server(
+    *,
+    server_kwargs: dict[str, object] | None = None,
+    require_authenticated_subject: bool = False,
+):
+    """Build the canonical read-only server for stdio or authenticated HTTP.
+
+    ``server_kwargs`` exists so the HTTP entrypoint can add the MCP SDK's OAuth
+    resource-server settings without copying the tool/resource registrations.
+    The default remains the backwards-compatible local stdio server.
+    """
+    server = _mcp(**(server_kwargs or {}))
     from mcp.types import ToolAnnotations
     from app.agent import tools as T
 
@@ -73,7 +135,10 @@ def build_server():
 
         def make(fn_tool):
             def call(**kwargs) -> dict[str, object]:
-                out = fn_tool.invoke(kwargs)
+                out = _invoke_tool(
+                    fn_tool, kwargs,
+                    require_authenticated_subject=require_authenticated_subject,
+                )
                 return out if isinstance(out, dict) else {"result": out}
             return call
 
@@ -156,6 +221,11 @@ def build_server():
 
 
 def main():
+    # The stdio command is a local developer entrypoint and historically starts the
+    # deterministic Jira world when no environment is supplied.  Keep that convenience
+    # here, after import, so importing the shared server from the HTTP deployment cannot
+    # silently turn an ambiguous/production process into mock mode.
+    os.environ.setdefault("JIRA_ENV", "mock")
     build_server().run()        # stdio — MCP 클라이언트가 이 프로세스를 띄우고 파이프로 말한다
 
 

@@ -8,14 +8,16 @@
   · **승인 대기를 노출한다** — 그래프가 ActionExecutor 앞에서 멈췄다는 사실과, 무엇을 승인해야 하는지를
     화면이 알 수 있는 형태로 돌려준다.
 
-**질의·응답은 파일로도 남긴다.** Langfuse 가 없는 환경(폐쇄망·미설정)에서도 무엇을 물었고 무엇을
-답했는지는 남아야 한다. 관측 도구가 없다고 기록이 없어지면 사고가 났을 때 아무것도 못 본다.
+질의·응답 원문과 생성 payload는 애플리케이션 로그에 남기지 않는다. 폐쇄망에서도 correlation id,
+길이, 성공 여부, 호출량 같은 비내용 metadata만 기록해 감사 ledger와 연결한다.
 """
 
 from __future__ import annotations
 
 import re as _re
 import copy as _copy
+import hashlib as _hashlib
+import json as _json
 
 from dataclasses import dataclass
 import logging
@@ -36,8 +38,13 @@ from app.agent.workflow.continuation import (
     has_typed_continuation_contract,
     merge_continuation_decisions,
 )
-from app.agent.workflow.state import TRACE_RESET, Node, Role, as_dict
+from app.agent.workflow.state import (
+    ROLE_ENGINES_RESET, ROLE_QUESTIONS_RESET, ROLE_SIDECARS_RESET,
+    ROLE_TELEMETRY_RESET, TRACE_RESET,
+    Node, Role, as_dict,
+)
 from app.agent.workflow.typed_fast_path import zero_typed_repair_budget
+from app.agent.maxis.taskflow_session import TaskFlowPreviewHost
 from app.agent.workflow.question_receipt import (
     ReceiptClaim,
     claim_question_receipt,
@@ -50,6 +57,9 @@ from app.agent.workflow.question_receipt import (
 log = logging.getLogger("agent.chat")
 
 RECURSION_LIMIT = 40        # 왕복 상한을 코드로 걸어 두었지만, 그래프 차원의 안전망도 둔다
+# No production composition is installed until immutable release, ACL/retention and
+# nested budget enforcement have real verifiers. This is not a user preference.
+_taskflow_previews = TaskFlowPreviewHost()
 
 
 def new_thread() -> str:
@@ -149,8 +159,13 @@ def _initial(thread_id, text, user_role, user_id) -> dict:
             # 새 턴이 시작되면 지난 턴의 승인·실행 결과는 지운다 — 안 지우면 옛 토큰으로
             # result_integrator 가 다시 '승인 대기'로 흘러간다.
             "approval_token": "", "comment_token": "", "result": {},
-            "execution_receipt": {}, "revisions": 0,
+            "execution_receipt": {}, "change_audit_binding": {}, "revisions": 0,
             "repair_budget": zero_typed_repair_budget(),
+            "runtime_role_engines": ROLE_ENGINES_RESET,
+            "runtime_role_telemetry": ROLE_TELEMETRY_RESET,
+            "runtime_role_sidecars": ROLE_SIDECARS_RESET,
+            "runtime_role_questions": ROLE_QUESTIONS_RESET,
+            "runtime_last_role": "", "runtime_last_role_engine": "",
             # trace 는 리듀서 필드라 [] 대입으로는 안 비워진다 — 리셋 신호를 앞에 싣는다.
             "trace": [TRACE_RESET], "change_plan": {}, "questions": []}
 
@@ -331,6 +346,11 @@ def _looks_like_answer_to_questions(utterance: str, asked: list[dict]) -> bool:
         return False
     if _SIMPLE_INTERVIEW_ANSWER.fullmatch(text):
         return True
+    # The UI's explicit deferral also remains a bounded continuation when typed
+    # into chat or sent by an older client. This grants no field/default authority.
+    if _re.fullmatch(r"(?:나머지는\s*)?(?:합리적\s*)?기본값으로\s*(?:알아서\s*)?"
+                     r"진행해\s*줘[.!]?", text):
+        return True
     if any(str(option or "").strip() and str(option).strip().casefold() in text.casefold()
            for question in asked for option in (question.get("options") or [])):
         return True
@@ -441,7 +461,8 @@ def _draft_refinement_repeats_subject(text: str, prior: dict) -> bool:
 _TURN_DERIVED_EMPTY = {
     "intent": "", "playbook": "", "keywords": [], "module": "", "mentioned_keys": [],
     "sufficient": False, "answer_depth": "", "request_plan": {}, "request_refinement": {},
-    "continuation_contract": {}, "question_receipt_projection": {},
+    "continuation_contract": {}, "continuation_answer": "",
+    "question_receipt_projection": {},
     "query_plan": {}, "query_results": [], "query_artifacts": {},
     "materialized_ticket_sources": {},
     "assignment_completion": {}, "bulk_targets": [],
@@ -453,6 +474,10 @@ _TURN_DERIVED_EMPTY = {
     "interpretation": "", "structure_plan": [], "structure_ok": False,
     "structure_notes": [], "draft": {}, "assignments": [], "review": {},
     "reply": "", "error": "", "turns": 0, "execution_receipt": {},
+    "change_audit_binding": {},
+    "query_evidence_attestations": {},
+    "role_context_carryover": {},
+    "evidence_workspace": {}, "freshness": {}, "quality_gate": {},
     "repair_budget": zero_typed_repair_budget(),
 }
 
@@ -626,6 +651,15 @@ def _is_interview_continuation(text: str, prior: dict) -> bool:
     if same_write_outcome_replacement:
         return True
 
+    # A bounded "continue with defaults" after a read answer still refers to that
+    # read. Retain only a proven no-write plan, never revive a completed write DAG.
+    tasks = (prior.get("request_plan") or {}).get("tasks") or []
+    if (prior.get("intent") == "ask" and prior.get("request_text") and tasks
+            and all(isinstance(task, dict) and task.get("write_intent") is False for task in tasks)
+            and _re.fullmatch(r"(?:나머지는\s*)?(?:합리적\s*)?기본값으로\s*(?:알아서\s*)?"
+                              r"진행해\s*줘[.!]?", utterance.strip())):
+        return True
+
     # When the previous turn already produced a draft/structure, preserve it only for a compact,
     # multi-field refinement.  Explicitly asking for separate/new work always wins.
     if adds_typed_outcome:
@@ -698,16 +732,32 @@ def _turn_start_patch(
     """
     typed_receipt = bool(question_receipt_projection)
     continuation = typed_receipt or receipt_bound or _is_interview_continuation(text, prior)
+    from datetime import datetime as _datetime, timezone as _timezone
+
+    current_correlation = str(prior.get("correlation_id") or "") if continuation else ""
+    # A continuation keeps the same correlation id, but it is still a new observation
+    # turn.  Reusing the first turn's timestamp makes freshly recomputed Role context
+    # look stale once a user answers an interview more than the freshness window later.
+    # Source rows retain their own attested retrieval timestamps, so refreshing this
+    # Session-owned context timestamp cannot make cached connector evidence look fresh.
+    turn_started_at = _datetime.now(_timezone.utc).isoformat()
     patch = _copy.deepcopy(_TURN_DERIVED_EMPTY)
     patch.update(turn_continuation=continuation,
                  turn_reset_reason="interview-answer" if continuation else "new-or-revised-request",
-                 turn_attempt_id=uuid.uuid4().hex)
+                 turn_attempt_id=uuid.uuid4().hex,
+                 correlation_id=current_correlation or uuid.uuid4().hex,
+                 correlation_started_at=turn_started_at,
+                 # Keep only this turn's bounded answer.  The durable ``messages``
+                 # transcript remains local and never crosses the MAXIS boundary.
+                 continuation_answer=(str(text or "").strip()[:1000]
+                                      if continuation else ""))
     if continuation:
         # RequestArchitect owns these bounded planning fields.  A true continuation keeps
         # them so a deterministic field-only fast path can reuse the already classified
         # request without reconstructing its subject from the short answer.  Query plans and
         # query results deliberately stay in ``_TURN_DERIVED_EMPTY``: a changed parent/scope/
         # due field may require a fresh bounded query, and graph routing decides that below.
+        carried_keys = []
         for key in ("intent", "request_text", "request_plan", "playbook", "keywords",
                     "module", "mentioned_keys", "sufficient", "answer_depth",
                     "pre_survey", "seed_map", "web_context", "topic_dossier",
@@ -718,6 +768,37 @@ def _turn_start_patch(
                 patch[key] = (_bounded_materialized_ticket_sources(prior[key])
                               if key == "materialized_ticket_sources"
                               else _copy.deepcopy(prior[key]))
+                carried_keys.append(key)
+        # Preserve the original observation time only while the carried value is byte-for-
+        # byte equivalent in canonical JSON.  A later Role that genuinely recomputes the
+        # field changes its digest and therefore receives this turn's timestamp in the
+        # outbound ContextGuard.  This prevents stale state from becoming fresh merely
+        # because the user answered an unrelated interview question.
+        previous_carryover = (
+            prior.get("role_context_carryover")
+            if isinstance(prior.get("role_context_carryover"), dict)
+            else {}
+        )
+        previous_default = str(prior.get("correlation_started_at") or "").strip()
+        carryover = {}
+        for key in carried_keys:
+            try:
+                encoded = _json.dumps(
+                    patch[key], ensure_ascii=False, sort_keys=True,
+                    separators=(",", ":"), allow_nan=False,
+                )
+            except (TypeError, ValueError):
+                continue
+            digest = _hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+            old = previous_carryover.get(key)
+            observed_at = (
+                str(old.get("observed_at") or "").strip()
+                if isinstance(old, dict) and old.get("sha256") == digest
+                else previous_default
+            )
+            if observed_at:
+                carryover[key] = {"sha256": digest, "observed_at": observed_at}
+        patch["role_context_carryover"] = carryover
         contract = build_continuation_contract(
             {**prior, "turn_continuation": True},
             existing=prior.get("continuation_contract"),
@@ -787,6 +868,9 @@ def _prepare_turn(
     user_role: str,
     user_id: str,
     question_receipt=None,
+    engine: str = "",
+    profile: str = "",
+    taskflow_admission: str | None = None,
 ) -> _PreparedTurn:
     """Build one ask/stream input from the same checkpoint and turn-reset boundary."""
     try:
@@ -811,7 +895,17 @@ def _prepare_turn(
             )
         message_text = claim.message_text
     try:
+        from app.agent.maxis.backend import prepare_thread_runtime
+
+        runtime_pin = prepare_thread_runtime(prior, engine=engine, profile=profile)
+        from app.agent import runtime_status
+
+        capability = runtime_status.capability_for_pin(runtime_pin)
+        if capability:
+            runtime_status.require("conversation", runtime_pin)
+        runtime_pin["runtime_capability"] = capability
         initial = _initial(thread_id, message_text, user_role, user_id)
+        initial.update(runtime_pin)
         if claim and claim.owns_lease:
             initial.update(_turn_start_patch(
                 message_text, prior,
@@ -822,9 +916,16 @@ def _prepare_turn(
             ))
         else:
             initial.update(_turn_start_patch(message_text, prior))
-    except Exception:
+        _taskflow_previews.begin_turn(thread_id, message_text, taskflow_admission)
+    except Exception as exc:
         if claim and claim.owns_lease:
             release_question_receipt(claim)
+        from app.agent.maxis.backend import MaxisRuntimeError
+        if isinstance(exc, MaxisRuntimeError):
+            return _PreparedTurn(
+                initial={}, claim=claim, checkpoint_revision=revision,
+                error=str(exc)[:300],
+            )
         raise
     return _PreparedTurn(
         initial=initial, claim=claim, checkpoint_revision=revision,
@@ -846,7 +947,7 @@ def _finish_receipt(graph, thread_id: str, prepared: _PreparedTurn, *, success: 
 
 
 def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "",
-        question_receipt=None) -> dict:
+        question_receipt=None, engine: str = "", profile: str = "") -> dict:
     """한 턴 굴린다. 승인이 필요한 지점에서 멈추면 `pending` 이 채워져 돌아온다."""
     tid = thread_id or new_thread()
     if question_receipt is not None and str(text or "").strip():
@@ -855,13 +956,18 @@ def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "",
     too_long = _guard(text)
     if too_long:
         return {"thread_id": tid, "ok": False, "reply": too_long, "error": too_long, "trace": []}
-    log.info("[%s] Q: %s", tid, (text or "")[:500])
+    # Invalidate at admission, before waiting for a preview's turn lock. The old
+    # remote call may finish, but it must not start another read/dispatch meanwhile.
+    taskflow_admission = _taskflow_previews.admit(tid)
+    log.info("[%s] 요청 수신 chars=%d receipt=%s", tid, len(text or ""),
+             bool(question_receipt))
     meter = _usage.Meter()
     graph = get_graph()
     with question_turn_lock(tid):
         prepared = _prepare_turn(
             graph, thread_id=tid, text=text, user_role=user_role, user_id=user_id,
-            question_receipt=question_receipt,
+            question_receipt=question_receipt, engine=engine, profile=profile,
+            taskflow_admission=taskflow_admission,
         )
         if prepared.error:
             return {"thread_id": tid, "ok": False, "reply": "",
@@ -877,10 +983,37 @@ def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "",
         except Exception:
             snap = None
         out = _shape(tid, state, snap)
-    out["usage"] = meter.snapshot()
-    log.info("[%s] A: %s", tid, (out.get("reply") or "")[:1000])
+    out["usage"] = _usage_with_remote(meter.snapshot(), state)
+    log.info("[%s] 응답 완료 ok=%s reply_chars=%d pending=%s", tid,
+             bool(out.get("ok")), len(out.get("reply") or ""), bool(out.get("pending")))
     log.info("[%s] 사용량: %s", tid, out["usage"])
     return out
+
+
+def _prepare_resume_runtime(
+    graph, thread_id: str, *, checkpoint_state: dict | None = None,
+) -> dict:
+    """Verify a resume pin, migrating only a clearly all-local legacy checkpoint."""
+
+    from app.agent.maxis.backend import prepare_thread_runtime, verify_thread_runtime
+
+    pinned = dict(
+        checkpoint_state
+        if checkpoint_state is not None
+        else (graph.get_state(_config(thread_id)).values or {})
+    )
+    if not pinned.get("runtime_profile_fingerprint"):
+        # An absent checkpoint is not a legacy conversation and must retain the old
+        # fail-closed behavior. ``prepare_thread_runtime({})`` would otherwise create a
+        # fresh pin for an approval resume that has no paused graph state.
+        if not pinned:
+            verify_thread_runtime(pinned)
+            return pinned
+        runtime_pin = prepare_thread_runtime(pinned)
+        graph.update_state(_config(thread_id), runtime_pin)
+        pinned.update(runtime_pin)
+    verify_thread_runtime(pinned)
+    return pinned
 
 
 def resume(thread_id: str, token: str, overrides: dict = None) -> dict:
@@ -895,6 +1028,30 @@ def resume(thread_id: str, token: str, overrides: dict = None) -> dict:
     # capability transaction with ask/stream so an old paused branch cannot race a fresh
     # turn and restore its prior turn nonce/artifacts after the new request has started.
     with question_turn_lock(thread_id):
+        pinned = {}
+        try:
+            graph = get_graph()
+            pinned = dict(graph.get_state(_config(thread_id)).values or {})
+            pinned = _prepare_resume_runtime(
+                graph, thread_id, checkpoint_state=pinned,
+            )
+        except Exception as exc:
+            from app.agent.maxis.backend import MaxisRuntimeError
+            if isinstance(exc, MaxisRuntimeError):
+                # A runtime/profile mismatch permanently invalidates the approval card.
+                # Reverting settings later must not revive a proposal reviewed under an
+                # older route, dataset or contract.  Revoke only capabilities owned by
+                # this thread so a caller cannot cancel another thread's token.
+                candidates = [token, str(pinned.get("comment_token") or "")]
+                for candidate in candidates:
+                    record = approval.peek(candidate) if candidate else None
+                    if record and record.get("thread") == str(thread_id):
+                        approval.reject(candidate)
+                return {"thread_id": thread_id, "ok": False, "error": str(exc)[:300]}
+            raise
+        actor_ok, actor_error = approval.verify_actor(token, thread_id)
+        if not actor_ok:
+            return {"thread_id": thread_id, "ok": False, "error": actor_error}
         err = _apply_overrides(thread_id, token, overrides)
         if err:
             return {"thread_id": thread_id, "ok": False, "error": err}
@@ -902,21 +1059,99 @@ def resume(thread_id: str, token: str, overrides: dict = None) -> dict:
             return {"thread_id": thread_id, "ok": False,
                     "error": "승인 토큰이 이 대화의 것이 아니거나 만료되었습니다. 다시 요청하세요."}
         # 변경 카드에 코멘트가 함께 보였다면 그 토큰도 같은 승인에 묶인다(내용은 카드에 있었다).
+        vals = {}
         try:
             vals = get_graph().get_state(_config(thread_id)).values or {}
             if vals.get("comment_token"):
                 approval.approve(vals["comment_token"], thread_id)
         except Exception:
             pass
+        change_binding = None
+        try:
+            from app.agent.maxis.backend import record_change_audit
+
+            correlation_id = str(pinned.get("correlation_id") or "")
+            if correlation_id:
+                approved_record = approval.peek(token)
+                change_binding = approval.change_audit_binding(
+                    token, correlation_id=correlation_id, record=approved_record,
+                )
+            record_change_audit(
+                dict(pinned), event="change.approved", status="succeeded",
+                change_binding=change_binding,
+            )
+            if change_binding is not None:
+                get_graph().update_state(
+                    _config(thread_id), {"change_audit_binding": change_binding},
+                )
+                pinned = {**dict(pinned), "change_audit_binding": change_binding}
+        except Exception as exc:
+            # No external write has started yet. Revoke the capabilities rather than
+            # allowing an unaudited mutation to proceed.
+            approval.reject(token)
+            try:
+                if vals.get("comment_token"):
+                    approval.reject(vals["comment_token"])
+            except Exception:
+                pass
+            return {"thread_id": thread_id, "ok": False, "error": str(exc)[:300]}
         from app.agent.tools import set_thread
         set_thread(thread_id)
         log.info("[%s] 승인됨 — 실행 시작", thread_id)
         meter = _usage.Meter()
         # None = 멈춘 자리(ActionExecutor 앞)에서 이어서
-        state = get_graph().invoke(None, _config(thread_id, meter))
-        out = _shape(thread_id, state)
-        out["usage"] = meter.snapshot()
-        log.info("[%s] 실행 결과: %s", thread_id, out.get("result"))
+        try:
+            state = get_graph().invoke(None, _config(thread_id, meter))
+            out = _shape(thread_id, state)
+        except Exception:
+            try:
+                from app.agent.maxis.backend import record_change_audit
+                failed_binding = (
+                    approval.finalize_change_audit_binding(
+                        change_binding, token=token, thread_id=thread_id,
+                    )
+                    if change_binding is not None else None
+                )
+                record_change_audit(
+                    dict(pinned), event="change.execution", status="failed",
+                    error_code="execution_exception",
+                    change_binding=failed_binding,
+                )
+            except Exception:
+                log.warning("[%s] execution 감사 기록 실패", thread_id)
+            try:
+                from app.agent.impact import note_review
+                note_review(thread_id=thread_id, approval_token=token,
+                            outcome="failed", overrides=overrides,
+                            execution_succeeded=False)
+            except Exception:
+                log.warning("[%s] impact 기록 실패 outcome=failed", thread_id)
+            raise
+        out["usage"] = _usage_with_remote(meter.snapshot(), state)
+        result = out.get("result") if isinstance(out.get("result"), dict) else {}
+        succeeded = bool(not out.get("error") and not (result.get("failed") or []))
+        try:
+            from app.agent.maxis.backend import record_change_audit
+            record_change_audit(
+                dict(state or pinned), event="change.execution",
+                status="succeeded" if succeeded else "failed",
+                error_code="" if succeeded else "execution_failed",
+                change_binding=(state or pinned).get("change_audit_binding"),
+            )
+        except Exception:
+            # The write may already have happened; never invite a duplicate retry merely
+            # because the append-only audit sink became unavailable afterward.
+            log.warning("[%s] execution 감사 기록 실패", thread_id)
+        try:
+            from app.agent.impact import note_review
+            note_review(thread_id=thread_id, approval_token=token,
+                        outcome="approved", overrides=overrides,
+                        execution_succeeded=succeeded)
+        except Exception:
+            log.warning("[%s] impact 기록 실패 outcome=approved", thread_id)
+        log.info("[%s] 실행 완료 ok=%s created=%d failed=%d", thread_id,
+                 bool(out.get("ok")), len(result.get("created") or []),
+                 len(result.get("failed") or []))
         return out
 
 
@@ -1038,7 +1273,40 @@ def _apply_overrides(thread_id: str, token: str, overrides: dict) -> str:
 
 def cancel(thread_id: str, token: str) -> dict:
     """사용자가 거절했다. 토큰을 버린다 — 그래프는 멈춘 채로 두고 다음 발화로 이어 간다."""
-    approval.reject(token)
+    audit_state = {}
+    try:
+        audit_state = dict(get_graph().get_state(_config(thread_id)).values or {})
+    except Exception:
+        pass
+    record = approval.peek(token)
+    change_binding = None
+    if record and str(record.get("thread") or "") == str(thread_id or ""):
+        correlation_id = str(audit_state.get("correlation_id") or "")
+        if correlation_id:
+            try:
+                # Capture the server-owned fingerprint and capability digest before reject()
+                # destroys the one-use record.
+                change_binding = approval.change_audit_binding(
+                    token, correlation_id=correlation_id, record=record,
+                )
+            except Exception:
+                change_binding = None
+    rejected = approval.reject(token)
+    if rejected and record and str(record.get("thread") or "") == str(thread_id or ""):
+        try:
+            from app.agent.maxis.backend import record_change_audit
+            record_change_audit(
+                audit_state, event="change.cancelled", status="blocked",
+                error_code="user_cancelled",
+                change_binding=change_binding,
+            )
+        except Exception:
+            log.warning("[%s] cancellation 감사 기록 실패", thread_id)
+    try:
+        from app.agent.impact import note_review
+        note_review(thread_id=thread_id, approval_token=token, outcome="cancelled")
+    except Exception:
+        log.warning("[%s] impact 기록 실패 outcome=cancelled", thread_id)
     log.info("[%s] 승인 거절", thread_id)
     return {"thread_id": thread_id, "ok": True, "cancelled": True}
 
@@ -1049,7 +1317,27 @@ def snapshot(thread_id: str) -> dict:
         st = get_graph().get_state(_config(thread_id))
     except Exception:
         return {}
-    return _shape(thread_id, dict(st.values or {}), st)
+    out = _shape(thread_id, dict(st.values or {}), st)
+    preview = _taskflow_previews.status(thread_id)
+    if preview:
+        out["taskflowPreview"] = preview
+    return out
+
+
+def taskflow_preview(thread_id: str):
+    """Internal read-only preview; no HTTP entry point or user-selectable adapter.
+
+    A successful result is not adopted as the graph draft or issued an approval.
+    Future admission still needs the ordinary Auditor/propose/ActionExecutor path.
+    """
+    graph = get_graph()
+    with question_turn_lock(thread_id):
+        snap = graph.get_state(_config(thread_id))
+        revision = _checkpoint_revision(snap)
+        return _taskflow_previews.run(
+            thread_id, dict(snap.values or {}), revision,
+            lambda: _checkpoint_revision(graph.get_state(_config(thread_id))),
+        )
 
 
 def evaluation_snapshot(thread_id: str) -> dict:
@@ -1094,6 +1382,168 @@ def evaluation_snapshot(thread_id: str) -> dict:
             if data.get(internal) not in (None, "", [], {})}
 
 
+def _bounded_text(value, maximum: int = 500) -> str:
+    return str(value or "").strip()[:maximum]
+
+
+def _string_list(value, *, limit: int = 20, maximum: int = 500) -> list[str]:
+    return [_bounded_text(item, maximum) for item in (value or [])[:limit]
+            if _bounded_text(item, maximum)] if isinstance(value, list) else []
+
+
+def _public_evidence_workspace(value) -> dict:
+    """Project guarded evidence metadata without leaking source ``content`` or raw traces."""
+    raw = value if isinstance(value, dict) else {}
+    sources = []
+    for source in (raw.get("sources") or [])[:20]:
+        if not isinstance(source, dict):
+            continue
+        row = {
+            "sourceId": _bounded_text(source.get("sourceId") or source.get("source_id"), 160),
+            "kind": _bounded_text(source.get("kind"), 40),
+            "canonicalId": _bounded_text(
+                source.get("canonicalId") or source.get("canonical_id"), 240),
+            "title": _bounded_text(source.get("title"), 300),
+            "url": _bounded_text(source.get("url"), 1000),
+            "retrievedAt": _bounded_text(
+                source.get("retrievedAt") or source.get("retrieved_at"), 80),
+            "updatedAt": _bounded_text(
+                source.get("updatedAt") or source.get("updated_at"), 80),
+            "partial": source.get("partial") is True,
+            "truncated": source.get("truncated") is True,
+        }
+        # ``content``, snippets, remote ids and any unknown fields are intentionally absent.
+        sources.append(row)
+
+    facts = []
+    for fact in (raw.get("facts") or [])[:50]:
+        if not isinstance(fact, dict):
+            continue
+        facts.append({
+            "text": _bounded_text(fact.get("text"), 800),
+            "sourceIds": _string_list(
+                fact.get("sourceIds") or fact.get("source_ids"), limit=8, maximum=160),
+            "observedAt": _bounded_text(
+                fact.get("observedAt") or fact.get("observed_at"), 80),
+        })
+
+    claims = []
+    for claim in (raw.get("claims") or [])[:30]:
+        if not isinstance(claim, dict):
+            continue
+        claims.append({
+            "kind": _bounded_text(claim.get("kind"), 40),
+            "text": _bounded_text(claim.get("text"), 800),
+            "sourceIds": _string_list(
+                claim.get("sourceIds") or claim.get("source_ids"), limit=8, maximum=160),
+        })
+    freshness = raw.get("freshness") if isinstance(raw.get("freshness"), dict) else {}
+    return {
+        "sources": sources,
+        "facts": facts,
+        "claims": claims,
+        "missingInputs": _string_list(
+            raw.get("missingInputs") or raw.get("missing_inputs"), limit=20, maximum=500),
+        "warnings": _string_list(raw.get("warnings"), limit=20, maximum=500),
+        "freshness": {
+            "status": _bounded_text(freshness.get("status"), 40),
+            "checkedAt": _bounded_text(
+                freshness.get("checkedAt") or freshness.get("checked_at"), 80),
+            "oldestSourceAt": _bounded_text(
+                freshness.get("oldestSourceAt") or freshness.get("oldest_source_at"), 80),
+            "maxAgeSeconds": freshness.get("maxAgeSeconds")
+            if isinstance(freshness.get("maxAgeSeconds"), (int, float)) else None,
+            "partial": freshness.get("partial") is True,
+        },
+        "partial": raw.get("partial") is True,
+    }
+
+
+def _public_quality_gate(value) -> dict:
+    raw = value if isinstance(value, dict) else {}
+    if not raw:
+        return {}
+    return {
+        key: raw.get(key)
+        for key in ("ok", "schemaValid", "citationValid", "freshnessValid", "numericParity")
+        if isinstance(raw.get(key), (bool, int, float))
+    } | {
+        "errors": _string_list(raw.get("errors"), limit=20, maximum=300),
+        "warnings": _string_list(raw.get("warnings"), limit=20, maximum=300),
+    }
+
+
+def _usage_with_remote(local_usage: dict, state: dict) -> dict:
+    """Add validated MAXIS token/latency counters to the existing usage contract."""
+    out = dict(local_usage or {})
+    rows = state.get("runtime_role_telemetry") if isinstance(state, dict) else None
+    if not isinstance(rows, dict):
+        return out
+    selected = {str(role): row for role, row in rows.items() if isinstance(row, dict)}
+    if not selected:
+        return out
+    remote_calls = sum(max(0, int(row.get("calls") or 0)) for row in selected.values())
+    prompt = sum(max(0, int(row.get("promptTokens") or 0)) for row in selected.values())
+    completion = sum(
+        max(0, int(row.get("completionTokens") or 0)) for row in selected.values()
+    )
+    total = sum(max(0, int(row.get("totalTokens") or 0)) for row in selected.values())
+    failed = sum(max(0, int(row.get("failedCalls") or 0)) for row in selected.values())
+    unknown = sum(max(0, int(row.get("unknownUsageCalls") or 0)) for row in selected.values())
+    out["calls"] = int(out.get("calls") or 0) + remote_calls
+    out["promptTokens"] = int(out.get("promptTokens") or 0) + prompt
+    out["completionTokens"] = int(out.get("completionTokens") or 0) + completion
+    out["totalTokens"] = int(out.get("totalTokens") or 0) + total
+    out["remoteCalls"] = remote_calls
+    out["failedCalls"] = int(out.get("failedCalls") or 0) + failed
+    out["unknownUsageCalls"] = int(out.get("unknownUsageCalls") or 0) + unknown
+    out["usageComplete"] = out.get("usageComplete") is not False and unknown == 0
+    out["usageScope"] = "reported_response_metadata"
+    out["modelIdentityStatus"] = "not_exposed"
+    if remote_calls and not out.get("model"):
+        out["model"] = "maxis/dify"
+    # Local provider pricing cannot price an internal MAXIS deployment.
+    if remote_calls:
+        out.pop("costUsd", None)
+        out["costStatus"] = "unknown"
+    by_node = {key: dict(value) for key, value in (out.get("byNode") or {}).items()
+               if isinstance(value, dict)}
+    details = [dict(row) for row in (out.get("callsDetail") or []) if isinstance(row, dict)]
+    for role, row in sorted(selected.items()):
+        calls = max(0, int(row.get("calls") or 0))
+        tokens = max(0, int(row.get("totalTokens") or 0))
+        by_node[role] = {
+            "calls": int((by_node.get(role) or {}).get("calls") or 0) + calls,
+            "tokens": int((by_node.get(role) or {}).get("tokens") or 0) + tokens,
+            "seconds": round(
+                float((by_node.get(role) or {}).get("seconds") or 0)
+                + max(0, int(row.get("latencyMs") or 0)) / 1000,
+                3,
+            ),
+        }
+        details.append({
+            "node": role, "model": "maxis/dify", "engine": "maxis",
+            "outputContract": "remote-role-result.v1",
+            "executionLayer": "remote_semantic", "executionStage": "synthesis",
+            "finishReason": "failed" if row.get("failedCalls") else "stop",
+            "failedCalls": max(0, int(row.get("failedCalls") or 0)),
+            "usageComplete": not bool(row.get("unknownUsageCalls")),
+            "modelIdentityStatus": "not_exposed", "promptTokens": max(
+                0, int(row.get("promptTokens") or 0)
+            ),
+            "completionTokens": max(0, int(row.get("completionTokens") or 0)),
+            "totalTokens": tokens,
+            "seconds": round(max(0, int(row.get("latencyMs") or 0)) / 1000, 3),
+            "calls": calls,
+            "workflowBundleVersion": str(row.get("workflowBundleVersion") or "")[:120],
+        })
+    if by_node:
+        out["byNode"] = by_node
+    if details:
+        out["callsDetail"] = details
+    return out
+
+
 def _shape(thread_id: str, state: dict, snap=None) -> dict:
     """State → 화면이 쓰는 모양. **비밀도 원본 메시지도 싣지 않는다.**"""
     if snap is None:
@@ -1116,6 +1566,41 @@ def _shape(thread_id: str, state: dict, snap=None) -> dict:
            "questions": data.get("questions") or [], "assignments": data.get("assignments") or [],
            "review": data.get("review") or {}, "result": public_result,
            "error": data.get("error") or ""}
+
+    for public, internal in (
+        ("engine", "runtime_engine"),
+        ("profile", "runtime_profile"),
+        ("profileLabel", "runtime_profile_label"),
+        ("workflowBundleVersion", "workflow_bundle_version"),
+        ("knowledgeVersion", "knowledge_version"),
+        ("knowledgeDatasetId", "knowledge_dataset_id"),
+        ("knowledgeManifestSha256", "knowledge_manifest_sha256"),
+        ("correlationId", "correlation_id"),
+        ("lastRole", "runtime_last_role"),
+        ("lastRoleEngine", "runtime_last_role_engine"),
+    ):
+        if data.get(internal) not in (None, ""):
+            out[public] = data[internal]
+    role_engines = data.get("runtime_role_engines")
+    if isinstance(role_engines, dict):
+        safe_role_engines = {
+            str(role): str(engine)
+            for role, engine in role_engines.items()
+            if str(role) and str(engine) in {"local", "maxis"}
+        }
+        if safe_role_engines:
+            out["roleEngines"] = safe_role_engines
+    workspace = _public_evidence_workspace(data.get("evidence_workspace"))
+    if workspace.get("sources") or workspace.get("facts") or workspace.get("claims") \
+            or workspace.get("missingInputs") or workspace.get("warnings") \
+            or workspace.get("partial"):
+        out["evidenceWorkspace"] = workspace
+    if isinstance(data.get("freshness"), dict) and data.get("freshness"):
+        freshness = _public_evidence_workspace({"freshness": data["freshness"]})["freshness"]
+        out["freshness"] = freshness
+    quality_gate = _public_quality_gate(data.get("quality_gate"))
+    if quality_gate:
+        out["qualityGate"] = quality_gate
 
     challenge = issue_question_challenge(
         thread_id=thread_id,
@@ -1186,6 +1671,34 @@ def _shape(thread_id: str, state: dict, snap=None) -> dict:
             for k in ("structure", "structure_why", "new_labels"):
                 if draft.get(k):
                     out["pending"][k] = draft[k]
+
+        pending = out.get("pending") or {}
+        item_count = (len(pending.get("items") or []) + len(pending.get("children") or [])
+                      if pending.get("action") == "create_tickets"
+                      else len(pending.get("keys") or []) or 1)
+        try:
+            from app.agent.impact import note_draft
+            role_engines = data.get("runtime_role_engines") or {}
+            draft_engine = (
+                str(role_engines.get("work_architect") or "")
+                if isinstance(role_engines, dict) else ""
+            )
+            note_draft(
+                thread_id=thread_id,
+                approval_token=str(pending.get("token") or ""),
+                item_count=item_count,
+                engine=draft_engine or str(data.get("runtime_engine") or "local"),
+                profile=str(data.get("runtime_profile") or ""),
+                feature=str(pending.get("action") or "task_draft"),
+                role="work_architect",
+                workflow_bundle_version=str(data.get("workflow_bundle_version") or ""),
+                knowledge_version=str(data.get("knowledge_version") or ""),
+                knowledge_manifest_sha256=str(
+                    data.get("knowledge_manifest_sha256") or ""
+                ),
+            )
+        except Exception:
+            log.warning("[%s] impact 초안 기록 실패", thread_id)
 
     # 생성 컨텍스트에서는 **작성 중인 초안**도 내려보낸다(승인 전 단계 포함) — 우측
     # 미리보기가 되묻기 라운드마다 갱신되며 자라는 것을 보여 준다(사용자 요청).
@@ -1286,12 +1799,13 @@ def request_stop(thread_id: str) -> bool:
     if not tid:
         return False
     _STOP.add(tid)
+    _taskflow_previews.cancel(tid)
     log.info("[%s] 중단 요청", tid)
     return True
 
 
 def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = "",
-           question_receipt=None):
+           question_receipt=None, engine: str = "", profile: str = ""):
     """진행 상황을 흘려보낸다. 조사에 십수 초가 걸리는데 빈 화면을 보여 줄 수는 없다.
 
     `subgraphs=True` 를 쓰는 이유 — 역할 안에서 도구를 부르는 중이라는 것까지 보여야
@@ -1310,7 +1824,10 @@ def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = "
         yield {"type": "final", "thread_id": tid, "ok": False, "reply": too_long,
                "error": too_long, "trace": []}
         return
-    log.info("[%s] Q(stream): %s", tid, (text or "")[:500])
+    # Same admission boundary as ask(); do not wait for remote preview completion.
+    taskflow_admission = _taskflow_previews.admit(tid)
+    log.info("[%s] 스트림 요청 수신 chars=%d receipt=%s", tid, len(text or ""),
+             bool(question_receipt))
     meter = _usage.Meter()
     yield {"type": "start", "thread_id": tid}
     with question_turn_lock(tid):
@@ -1318,7 +1835,8 @@ def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = "
         graph = get_graph()
         prepared = _prepare_turn(
             graph, thread_id=tid, text=text, user_role=user_role, user_id=user_id,
-            question_receipt=question_receipt,
+            question_receipt=question_receipt, engine=engine, profile=profile,
+            taskflow_admission=taskflow_admission,
         )
         if prepared.error:
             yield {"type": "final", "thread_id": tid, "ok": False, "reply": "",
@@ -1359,8 +1877,10 @@ def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = "
             _finish_receipt(graph, tid, prepared, success=completed)
         snap = graph.get_state(_config(tid))
         final = _shape(tid, dict((snap.values or {})), snap)
-        final["usage"] = meter.snapshot()
-        log.info("[%s] A(stream): %s", tid, (final.get("reply") or "")[:1000])
+        final["usage"] = _usage_with_remote(meter.snapshot(), dict(snap.values or {}))
+        log.info("[%s] 스트림 응답 완료 ok=%s reply_chars=%d pending=%s", tid,
+                 bool(final.get("ok")), len(final.get("reply") or ""),
+                 bool(final.get("pending")))
         log.info("[%s] 사용량: %s", tid, final["usage"])
         yield {"type": "final", **final}
 

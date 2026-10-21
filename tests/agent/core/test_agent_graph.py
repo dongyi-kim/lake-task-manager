@@ -35,6 +35,58 @@ def test_chitchat_skips_investigation():
     assert G.route_after_request_architect({"intent": Intent.CHITCHAT}) == "respond"
 
 
+@pytest.mark.parametrize("curator,result,expected", [
+    ("maxis", "maxis", "investigate"), ("maxis", "local", "investigate"),
+    ("local", "maxis", "investigate"), ("shadow", "maxis", "investigate"),
+    ("local", "local", "curate"), ("shadow", "shadow", "curate"),
+])
+def test_read_continuation_does_not_confuse_summary_with_remote_evidence(curator, result, expected):
+    from langchain_core.messages import HumanMessage
+    state = {"intent": Intent.ASK, "turn_continuation": True,
+        "situation": "이전 턴 조사 완료", "request_text": "fdc_summary_trace_ic 히스토리",
+        "messages": [HumanMessage(content="나머지는 합리적 기본값으로 알아서 진행해줘")],
+        "query_results": [], "query_evidence_attestations": {},
+        "runtime_role_routes": {Node.KNOWLEDGE_CURATOR: curator, Node.RESULT_INTEGRATOR: result}}
+    assert G.route_after_request_architect(state) == expected
+    assert G.route_after_research_analyst(state) == "curate"
+    # The current answer can still change the kind of interpretation requested.
+    state["messages"] = [HumanMessage(content="그럼 누가 맡으면 좋을까?")]
+    assert G.route_after_research_analyst(state) == "respond"
+    # A real user-owned blocker still ends the turn before acquisition.
+    state["questions"] = [{"question": "어느 대상을 말씀하시나요?"}]
+    assert G.route_after_request_architect(state) == "respond"
+
+
+def test_new_read_request_does_not_reuse_old_subject_for_curation():
+    from langchain_core.messages import HumanMessage
+    assert G.route_after_research_analyst({
+        "intent": Intent.ASK, "turn_continuation": False,
+        "request_text": "fdc_summary_trace_ic 히스토리",
+        "messages": [HumanMessage(content="고마워")],
+    }) == "respond"
+
+
+def test_request_architect_failure_never_starts_an_acquisition_role():
+    assert G.route_after_request_architect({
+        "intent": "",
+        "error": "MAXIS knowledge attestation rejected",
+    }) == "respond"
+
+
+@pytest.mark.parametrize("terminal", [
+    {"error": "MAXIS query plan rejected"},
+    {"questions": [{"question": "조회 대상을 알려 주세요."}]},
+])
+def test_query_specialist_control_outcome_never_starts_acquisition(terminal):
+    assert G.route_after_query_specialist(terminal) == "respond"
+
+
+def test_query_specialist_valid_plan_starts_acquisition():
+    assert G.route_after_query_specialist({
+        "query_plan": {"queries": [], "joins": []},
+    }) == "acquire"
+
+
 def test_memory_only_context_is_acknowledged_without_research():
     from langchain_core.messages import HumanMessage
 
@@ -1851,6 +1903,47 @@ def test_resume_after_approval_actually_creates_the_ticket(real_draft):
     assert created, done
     key = created[0]["key"]
     assert _ctx.client().get_issue(key), "생성됐다는데 실물이 없다"
+
+
+def test_resume_revokes_approval_when_the_runtime_route_changed(real_draft):
+    from app.agent.tools import _ctx
+    from app.agent.workflow import session
+    from app.infra import prefs
+
+    out = session.ask("실시간 수집에 CDC 를 도입해야 한다")
+    token = out["pending"]["token"]
+    before = len(_ctx.client().search_issues("ORDER BY created DESC", max_results=200))
+    prefs.save({"maxisRoutes": {
+        "agent_core": "shadow", "editor_author": "local", "pmo_brief": "local",
+    }})
+
+    rejected = session.resume(out["thread_id"], token)
+
+    after = len(_ctx.client().search_issues("ORDER BY created DESC", max_results=200))
+    assert rejected["ok"] is False and "route" in rejected["error"]
+    assert after == before
+    assert approval.peek(token) is None
+
+
+def test_resume_revokes_approval_when_pre_write_audit_fails(real_draft, monkeypatch):
+    from app.agent.maxis import backend
+    from app.agent.tools import _ctx
+    from app.agent.workflow import session
+
+    out = session.ask("실시간 수집에 CDC 를 도입해야 한다")
+    token = out["pending"]["token"]
+    before = len(_ctx.client().search_issues("ORDER BY created DESC", max_results=200))
+
+    def fail_audit(*_args, **_kwargs):
+        raise RuntimeError("audit sink unavailable")
+
+    monkeypatch.setattr(backend, "record_change_audit", fail_audit)
+    rejected = session.resume(out["thread_id"], token)
+
+    after = len(_ctx.client().search_issues("ORDER BY created DESC", max_results=200))
+    assert rejected["ok"] is False and "audit sink unavailable" in rejected["error"]
+    assert after == before
+    assert approval.peek(token) is None
 
 
 def test_cancelling_leaves_nothing_behind(real_draft):

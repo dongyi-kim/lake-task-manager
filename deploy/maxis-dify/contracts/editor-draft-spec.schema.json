@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ltm:maxis:editor-draft-spec.v2",
+  "title": "EditorDraftSpecV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "status", "mode", "target", "current_unit_ids", "context_unit_ids", "history_unit_ids", "conflicts", "required_link_source_ids", "missing_inputs"],
+  "properties": {
+    "contract": {"type": "string", "const": "editor-draft-spec.v2"},
+    "status": {"type": "string", "enum": ["ok", "needs_input", "blocked"]},
+    "mode": {"type": "string", "enum": ["description", "comment"]},
+    "target": {"type": "string", "maxLength": 128},
+    "current_unit_ids": {"$ref": "#/$defs/units"},
+    "context_unit_ids": {"$ref": "#/$defs/units"},
+    "history_unit_ids": {"$ref": "#/$defs/units"},
+    "conflicts": {"type": "array", "maxItems": 8, "items": {
+      "type": "object", "additionalProperties": false, "required": ["unit_ids", "blocking"],
+      "properties": {
+        "unit_ids": {"type": "array", "minItems": 2, "maxItems": 8, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "blocking": {"type": "boolean"}
+      }
+    }},
+    "required_link_source_ids": {"type": "array", "maxItems": 8, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+    "missing_inputs": {"type": "array", "maxItems": 8, "items": {"type": "string", "minLength": 1, "maxLength": 500}}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "units": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}
+  }
+}

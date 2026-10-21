@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
 import pytest
@@ -114,7 +115,7 @@ def test_protocol_versions_and_weights_are_explicit():
     assert protocol["qualification"]["minimumRepetitions"] == 5
     assert sum(item["weight"] for item in protocol["humanRubric"]["dimensions"]) == pytest.approx(1)
     assert len(protocol["humanRubric"]["dimensions"]) == 5
-    assert protocol["protocolVersion"] == "3.0.0"
+    assert protocol["protocolVersion"] == "4.0.0"
     assert protocol["rubricVersion"] == "2.0.0"
     assert protocol["qualification"]["requiresSameBenchmarkKey"] is True
     assert "requiresSameComparabilityKey" not in protocol["qualification"]
@@ -426,7 +427,7 @@ def test_run_metadata_marks_partial_single_run_as_exploratory(monkeypatch):
         suite_review_elements=suite_elements,
         case_review_specs=case_specs,
     )
-    assert metadata["protocolVersion"] == "3.0.0"
+    assert metadata["protocolVersion"] == "4.0.0"
     assert metadata["battery"]["batteryVersion"] == "1.0.0"
     assert len(metadata["battery"]["batteryManifestSha256"]) == 64
     assert len(metadata["battery"]["specializedReviewSpecSha256"]) == 64
@@ -548,6 +549,44 @@ def test_git_status_failure_cannot_be_recorded_as_a_clean_candidate(monkeypatch)
         metadata["qualificationIneligibilityReasons"]
 
 
+@pytest.mark.parametrize("parent", ["plain", ".cache/worktrees/candidate", "__pycache__/candidate"])
+def test_candidate_tree_exclusions_are_relative_to_repository(monkeypatch, tmp_path, parent):
+    root = tmp_path / parent
+    files = {
+        "app/source.py": b"VALUE = 1\n",
+        "app/untracked.py": b"UNTRACKED = True\n",
+        "config/contract.json": b'{"mode":"synthetic"}\n',
+        "requirements.txt": b"synthetic==1\n",
+    }
+    excluded = {
+        "app/.cache/nested.py": b"CACHE = 1\n",
+        "config/__pycache__/nested.py": b"CACHE = 2\n",
+        "app/compiled.pyc": b"bytecode",
+    }
+    for name, body in {**files, **excluded}.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+    monkeypatch.setattr(E, "ROOT", root)
+    monkeypatch.setattr(E, "CANDIDATE_INPUTS", tuple(root / name for name in (
+        "app", "config", "requirements.txt")))
+    expected = hashlib.sha256()
+    for name, body in sorted(files.items()):
+        relative = name.encode("utf-8")
+        expected.update(len(relative).to_bytes(4, "big"))
+        expected.update(relative)
+        expected.update(len(body).to_bytes(8, "big"))
+        expected.update(body)
+    fingerprint = E.candidate_tree_sha256.__wrapped__
+    baseline = fingerprint()
+    assert baseline == expected.hexdigest()
+    for name in excluded:
+        (root / name).write_bytes(b"ignored change")
+    assert fingerprint() == baseline
+    (root / "app/source.py").write_bytes(b"VALUE = 2\n")
+    assert fingerprint() != baseline
+
+
 def test_harness_tree_changes_the_benchmark_not_the_candidate(monkeypatch):
     monkeypatch.setattr(E, "git_snapshot", lambda: {
         "commit": "abc123", "gitStatusAvailable": True,
@@ -567,6 +606,28 @@ def test_harness_tree_changes_the_benchmark_not_the_candidate(monkeypatch):
     second = E.build_run_metadata(**common)
     assert first["benchmarkKey"] != second["benchmarkKey"]
     assert first["candidateKey"] == second["candidateKey"]
+
+
+def test_source_identity_protocol_migration_requires_a_new_benchmark(monkeypatch):
+    protocol = E.load_protocol()
+    monkeypatch.setattr(E, "evaluation_harness_tree_sha256", lambda: "1" * 64)
+    suite_elements, case_specs = specialized_contract(("A",))
+    common = dict(
+        suite="example", battery_version="1.0.0", cases=[("A", "first")],
+        selected_case_ids=["A"], model="model-a", simple_model="model-a-small",
+        prompt_version="candidate-v1", suite_review_elements=suite_elements,
+        case_review_specs=case_specs,
+    )
+    # Isolate the protocol boundary even if a candidate's bytes did not change.
+    monkeypatch.setattr(E, "load_protocol", lambda: {**protocol, "protocolVersion": "3.0.0"})
+    previous = E.build_run_metadata(**common)
+    monkeypatch.setattr(E, "load_protocol", lambda: protocol)
+    current = E.build_run_metadata(**common)
+    assert current["protocolVersion"] == "4.0.0"
+    assert current["benchmarkKey"] != previous["benchmarkKey"]
+    assert current["comparabilityKey"] != previous["comparabilityKey"]
+    assert current["battery"] == previous["battery"]
+    assert current["rubricVersion"] == previous["rubricVersion"]
 
 
 def test_harness_fingerprint_covers_the_user_view_capture_runner():
@@ -651,7 +712,7 @@ def test_historical_base_report_keeps_its_declared_v1_contract():
 
 def test_all_primary_batteries_emit_versioned_metadata():
     expected = {
-        "tools/agent_lang_ab.py": ('suite="conversation"', "5.0.0"),
+        "tools/agent_lang_ab.py": ('suite="conversation"', "5.1.0"),
         "tools/agent_compose_eval.py": ('suite="editor"', "4.0.0"),
         "tools/agent_create_suite.py": ('suite="create"', "6.0.0"),
         "tools/agent_meeting_eval.py": ('suite="meeting"', "4.0.0"),
@@ -1208,13 +1269,29 @@ def test_primary_batteries_always_write_raw_results_through_the_cache_helper():
         assert "write_raw_result(" in text, relative
 
 
-def test_evaluation_rules_require_a_tracked_compact_markdown_report():
-    guide = (ROOT / "app/agent/EVALUATION.md").read_text(encoding="utf-8")
-    agent_guide = (ROOT / "app/agent/AGENT.md").read_text(encoding="utf-8")
-    archive = (ROOT / "research/agent-improvement/README.md").read_text(encoding="utf-8")
-    for text in (guide, agent_guide, archive):
-        assert ".cache/agent-evaluation/" in text
-        assert "research/agent-improvement/evaluations/" in text
+def test_evaluation_rules_keep_raw_and_markdown_results_in_ignored_cache():
+    policy_paths = (
+        "AGENTS.md", "app/agent/AGENT.md", "app/agent/EVALUATION.md",
+        "docs/TESTING.md", ".agents/skills/ltm-agent-development/SKILL.md",
+    )
+    policies = {
+        relative: (ROOT / relative).read_text(encoding="utf-8")
+        for relative in policy_paths
+    }
+    for relative, text in policies.items():
+        assert ".cache/agent-evaluation/<runGroupId>/" in text, relative
+        assert "커밋하지" in text, relative
+        assert "research/agent-improvement/evaluations/" not in text, relative
+    for relative in ("app/agent/EVALUATION.md", "app/agent/AGENT.md"):
+        # Moving results out of Git must not remove the direct-review report obligation.
+        assert ".cache/agent-evaluation/<runGroupId>/review.md" in policies[relative]
+        assert "Markdown" in policies[relative]
+    for relative in ("AGENTS.md", "docs/TESTING.md",
+                     ".agents/skills/ltm-agent-development/SKILL.md"):
+        # Reusable evaluation sources are not disposable run results.
+        for token in ("재사용", "평가 코드", "spec", "fixture", "test", "유지"):
+            assert token in policies[relative], (relative, token)
+    guide = policies["app/agent/EVALUATION.md"]
     for token in ("candidate commit", "protocolVersion", "rubricVersion",
                   "batteryVersion", "batteryManifestSha256", "specializedReviewSpecSha256"):
         assert token in guide

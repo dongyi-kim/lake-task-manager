@@ -12,6 +12,7 @@ config/jira.yml 은 **배포 시 손으로 채우는 템플릿**이라, 앱을 �
 from __future__ import annotations
 
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -48,6 +49,16 @@ _DEFAULTS = {"bitbucketEnabled": False,
              "agentAuthOkByConfig": {},
              "agentModelOkByConfig": {},
              "agentImportedLegacyProviders": [],
+             # ── MAXIS/Dify Workflow ──
+             # Dify app은 LLM provider가 아니므로 agentConfigs와 분리한다. API key는 여기 두지 않고
+             # Windows current-user DPAPI 저장소(app/agent/maxis/credentials.py)에 보관한다.
+             "maxisProfiles": [],
+             "maxisActiveProfile": "",
+             "maxisActiveProfileFingerprint": "",
+             "maxisProbeOkByProfile": {},
+             "maxisLastProbeByProfile": {},
+             "maxisRoutes": {"agent_core": "local", "editor_author": "local", "pmo_brief": "local"},
+             "maxisKillSwitch": False,
              # 사용자별 시스템 프롬프트 추가분 — 모든 역할의 페르소나 뒤에 붙는다.
              # 프로젝트 공용 추가분은 여기가 아니라 config/agent-prompt.md (repo 커밋 대상).
              "agentUserPrompt": ""}
@@ -89,3 +100,70 @@ def save(patch: dict) -> dict:
         except Exception:
             pass
         return cur
+
+
+class PrefsPersistenceError(RuntimeError):
+    """A security-sensitive runtime preference could not be durably persisted."""
+
+
+def _load_strict(path: Path) -> dict:
+    """Load the preference document without treating corruption as an empty store."""
+    out = dict(_DEFAULTS)
+    if not path.exists():
+        return out
+    try:
+        with path.open(encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception as exc:
+        raise PrefsPersistenceError("Runtime preferences could not be read safely.") from exc
+    if not isinstance(data, dict):
+        raise PrefsPersistenceError("Runtime preferences are not a JSON object.")
+    for key in _DEFAULTS:
+        if key in data:
+            out[key] = data[key]
+    return out
+
+
+def save_strict(patch: dict) -> dict:
+    """Atomically save and read back security-sensitive preferences or raise.
+
+    ``save`` remains deliberately fail-soft for non-critical UI preferences.  MAXIS
+    activation, routing, probes and the kill switch use this path: reporting success
+    when the file was not replaced would leave an operator with a false rollback signal.
+    """
+    changes = dict(patch or {})
+    unknown = set(changes) - set(_DEFAULTS)
+    if unknown:
+        raise ValueError("Unsupported runtime preference field.")
+    with _LOCK:
+        path = _path()
+        current = _load_strict(path)
+        current.update(changes)
+        # Compare JSON-normalized values on readback (tuples, if supplied by a caller,
+        # are serialized as arrays).  This proves the exact document now on disk.
+        expected = json.loads(json.dumps(current, ensure_ascii=False))
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.strict.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with temporary.open("w", encoding="utf-8") as handle:
+                json.dump(expected, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            observed = _load_strict(path)
+            if observed != expected:
+                raise PrefsPersistenceError(
+                    "Runtime preference readback did not match the requested update."
+                )
+        except PrefsPersistenceError:
+            raise
+        except Exception as exc:
+            raise PrefsPersistenceError(
+                "Runtime preferences could not be persisted safely."
+            ) from exc
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return observed

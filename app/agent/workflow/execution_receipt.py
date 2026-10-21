@@ -710,6 +710,28 @@ def parse_execution_receipt(value, *, thread_id: str, token: str) -> ExecutionRe
     return receipt
 
 
+def execution_receipt_audit_proof(
+        value, *, thread_id: str, token: str) -> dict | None:
+    """Project a verified HMAC receipt into content-free audit evidence.
+
+    The digest covers the complete signed receipt.  Jira keys, summaries and effects stay in
+    the receipt/checkpoint and never enter the metadata audit row.
+    """
+    receipt = parse_execution_receipt(value, thread_id=thread_id, token=token)
+    if receipt is None:
+        return None
+    wire = receipt.model_dump(mode="json")
+    receipt_digest = _canonical_digest(wire)
+    if not receipt_digest:
+        return None
+    return {
+        "receipt_digest": receipt_digest,
+        "receipt_signature": receipt.signature,
+        "payload_digest": receipt.payload_digest,
+        "capability_digest": receipt.capability_digest,
+    }
+
+
 def safe_inline_literal(value, *, limit: int = 500) -> str:
     """Render untrusted provider text as one inert, prefixed Markdown code literal."""
     compact = sanitize_external_scalar(value, limit=limit) or "(empty)"

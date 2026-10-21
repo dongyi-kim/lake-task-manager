@@ -1,0 +1,156 @@
+"""Result prose deduplication must leave literal Markdown regions intact."""
+import pytest
+
+from app.agent.workflow.agents import result_integrator as result
+
+
+REPEAT = "검토 범위를 먼저 확인해야 합니다."
+CODE = "print(message)"
+
+
+@pytest.mark.parametrize("marker", ["```", "````", "~~~", "~~~~"])
+@pytest.mark.parametrize("indent", ["", " ", "   "])
+def test_fenced_lines_and_blank_lines_remain_verbatim(marker, indent):
+    value = f"{indent}{marker}python\r\n{CODE}\r\n\r\n\r\n\r\n{CODE}\r\n{indent}{marker}\r\n"
+    assert result._dedupe_sentences(value) == value
+
+
+@pytest.mark.parametrize("value", [
+    f"````\n{CODE}\n```\n{CODE}\n````",
+    f"~~~\n{CODE}\n```\n{CODE}\n~~~",
+    f"```\n{CODE}\n```not-a-close\n{CODE}\n```",
+    f"```\n{CODE}\n{CODE}",
+    f"~~~\n{CODE}\n{CODE}",
+    f"    {CODE}\n    {CODE}",
+    f"\t{CODE}\n\t{CODE}",
+    f"- {REPEAT}\n- {REPEAT}",
+    f"+ {REPEAT}\n+ {REPEAT}",
+    f"| {REPEAT} |\n| {REPEAT} |",
+    f"> {REPEAT}\n> {REPEAT}",
+    f"`{CODE}`\n`{CODE}`",
+    f"``a ` {CODE}``\n``a ` {CODE}``",
+    "한국어 `inline_code` 구간 보존.\n한국어 `inline_code` 구간 보존.",
+])
+def test_literal_and_structured_regions_are_not_deduplicated(value):
+    assert result._dedupe_sentences(value) == value
+
+
+@pytest.mark.parametrize("marker", ["```", "~~~", "````"])
+def test_plain_prose_still_dedupes_across_code(marker):
+    block = f"{marker}\n{REPEAT}\n{REPEAT}\n{marker}"
+    output = result._dedupe_sentences(f"{REPEAT}\n\n{block}\n\n{REPEAT}")
+    assert block in output and output.count(REPEAT) == 3
+    assert output.startswith(REPEAT)
+
+
+def test_original_plain_sentence_contract_remains():
+    output = result._dedupe_sentences(
+        "DL-101 의 마감을 옮길 계획입니다. 아래 카드에서 확인 후 승인해 주세요.\n\n"
+        "아래 카드에서 확인 후 승인해 주세요.")
+    assert output.count("아래 카드에서 확인 후 승인해 주세요") == 1
+    assert "마감을 옮길 계획입니다" in output
+    assert result._dedupe_sentences("짧음.\n짧음.") == "짧음.\n짧음."
+
+
+def test_invalid_backtick_info_does_not_open_multiline_fence():
+    value = f"```language`invalid\n{REPEAT}\n{REPEAT}"
+    assert result._dedupe_sentences(value).count(REPEAT) == 1
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("", ""), ("  ", ""), ("\n\n\n", ""), ("a\n\n\n\nb", "a\n\nb"),
+])
+def test_plain_empty_and_blank_normalization(value, expected):
+    assert result._dedupe_sentences(value) == expected
+
+
+@pytest.mark.parametrize("marker", ["```", "~~~", "````", "~~~~"])
+@pytest.mark.parametrize("closed", [True, False])
+def test_style_protects_whole_fence_and_never_inserts_heading_inside(marker, closed):
+    body = "검토합니다.\n\n\n검토합니다."
+    value = marker + "text\n" + body + ("\n" + marker if closed else "")
+    assert result._enforce_reply_style(value) == value
+
+
+@pytest.mark.parametrize("marker", ["```", "~~~", "````", "~~~~"])
+@pytest.mark.parametrize("indent", ["", " ", "   "])
+def test_style_and_dedupe_preserve_indented_fence_with_crlf(marker, indent):
+    value = f"{indent}{marker}text\r\n검토합니다.\r\n\r\n\r\n검토합니다.\r\n{indent}{marker}\r\n"
+    assert result._enforce_reply_style(result._dedupe_sentences(value)) == value
+
+
+@pytest.mark.parametrize("value", [
+    "`검토합니다.`와 `검토합니다.` 코드 유지",
+    "    검토합니다.\n\n\n\n    검토합니다.\n",
+    "\t검토합니다.\n\n\t검토합니다.\n",
+    "````text\n검토합니다.\n```\n검토합니다.\n````",
+    "~~~text\n검토합니다.\n```\n검토합니다.\n~~~",
+    "~~~text\n검토합니다.\n~~~not-a-close\n검토합니다.\n~~~",
+])
+def test_shared_literal_exclusion(value):
+    assert result._enforce_reply_style(result._dedupe_sentences(value)) == value
+
+
+def test_mixed_code_keeps_prose_style_but_avoids_automatic_block_splitting():
+    value = "검토합니다.\n\n~~~text\n원문입니다.\n\n원문입니다.\n~~~\n\n다음 단계입니다."
+    expected = "검토\n\n~~~text\n원문입니다.\n\n원문입니다.\n~~~\n\n다음 단계"
+    assert result._enforce_reply_style(value) == expected
+
+
+def test_plain_style_headings_and_structured_rows_unchanged():
+    assert result._enforce_reply_style("검토합니다.\n\n다음 단계입니다.") == (
+        "### 요약\n\n검토\n\n### 상세\n\n다음 단계")
+    assert result._enforce_reply_style("### 상태\n\n검토합니다.\n\n다음 단계입니다.") == (
+        "### 상태\n\n검토\n\n다음 단계")
+    assert result._enforce_reply_style("- 검토합니다.\n- 검토합니다.") == "- 검토\n- 검토"
+
+
+@pytest.mark.parametrize("marker", ["```", "~~~", "````", "~~~~"])
+@pytest.mark.parametrize("closed", [True, False])
+def test_ordinary_full_apply_preserves_literal_code(marker, closed):
+    from langchain_core.messages import HumanMessage
+    value = marker + "text\n검토합니다.\n검토합니다." + ("\n" + marker if closed else "")
+    state = {"request_text": "원문을 보존해 정리", "messages": [HumanMessage(content="원문을 보존해 정리")]}
+    patch = result.ResultIntegrator().apply_routed(state, {"text": value})
+    assert patch["reply"] == value
+    assert patch["messages"][0].content == value
+
+
+@pytest.mark.parametrize('owner', [result._strip_instruction_echo])
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+@pytest.mark.parametrize('raw', [
+    '', '\t ', '  prose  \n\n', '\tkeep  α  \n\tkeep  β  ',
+    '   ~~~~text\nkeep  bytes  \n   ~~~~~  ', '~~~text\nkeep  bytes  ',
+])
+def test_noop_preserves_edge_whitespace(owner, newline, raw):
+    value = raw.replace('\n', newline)
+    assert owner(value) == value
+
+
+@pytest.mark.parametrize('heading', ['# 명령서', '## 명령서', '### 명령서'])
+def test_actual_instruction_heading_still_removed(heading):
+    assert result._strip_instruction_echo('  ' + heading + '\n\n  답변') == '답변'
+
+
+@pytest.mark.parametrize('owner', [result._dedupe_sentences, result._enforce_reply_style])
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+@pytest.mark.parametrize('raw', [
+    '   ~~~~text\n keep  α  \n\n\n   ~~~~~  \n\n',
+    '\n   ````text\n keep  α  \n~~~\n keep  β  ',
+])
+def test_later_literal_noop_keeps_exact_outer_separators(owner, newline, raw):
+    raw = raw.replace('\n', newline)
+    assert owner(raw) == raw
+
+
+def test_actual_sentence_deduplication_still_executes_next_to_literal():
+    sentence = '이것은 중복 제거가 필요한 충분히 긴 문장입니다.'
+    literal = '~~~text\n keep  bytes  \n~~~\n'
+    got = result._dedupe_sentences(sentence + '\n' + sentence + '\n\n' + literal)
+    assert got.count(sentence) == 1 and literal in got
+
+
+def test_actual_korean_style_change_still_executes_next_to_literal():
+    literal = '~~~text\n keep  bytes  \n~~~'
+    got = result._enforce_reply_style('현재 검토가 필요합니다.\n\n' + literal)
+    assert got == '현재 검토 필요\n\n' + literal

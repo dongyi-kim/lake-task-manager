@@ -63,9 +63,13 @@ Jira를 대체하거나 별도의 업무 원장을 만들지 않는다. Jira를 
 - 근거와 실제 실행 효과를 승인 카드로 분리
 - 승인된 payload만 생성·수정·댓글 도구에 전달
 - OpenAI, Azure OpenAI, OpenAI 호환 로컬/사내 모델과 결정적 fake provider 지원
+- MAXIS/Dify 의미 Workflow를 기능별 `local → shadow → maxis`로 전환하고, dev/prod 프로필과
+  Workflow·Knowledge 버전을 대화 단위로 고정
+- MAXIS 결과의 사실·추론·미확인 항목, 출처와 freshness를 Evidence Workspace에서 검토
 
 Agent의 상세 계약과 개발 규칙은 [`app/agent/README.md`](app/agent/README.md)와
-[`app/agent/AGENT.md`](app/agent/AGENT.md)를 따른다.
+[`app/agent/AGENT.md`](app/agent/AGENT.md)를 따른다. MAXIS/Dify의 신뢰 경계와 운영 승격
+절차는 [`docs/MAXIS_DIFY_MIGRATION.md`](docs/MAXIS_DIFY_MIGRATION.md)에 정리되어 있다.
 
 ## 동작 구조
 
@@ -169,6 +173,9 @@ $env:FAKE_LATENCY_MS="800"
 - [`config/wbs_config.yaml`](config/wbs_config.yaml) — Module·WBS·Epic N:M 매핑과 가중치
 - [`config/people.yaml`](config/people.yaml) — 모듈별 인력과 표시 설정
 - [`config/module-aliases.yaml`](config/module-aliases.yaml) — 모듈 명칭 정규화
+- [`config/maxis-workflows.yml`](config/maxis-workflows.yml) — canonical Agent Role과 Dify 앱의 논리 binding
+- [`config/maxis-knowledge.yml`](config/maxis-knowledge.yml) — Knowledge 문서 소유자·등급·Role·revision과 불변 릴리스 정책
+- [`deploy/maxis-dify/`](deploy/maxis-dify/) — Dify Chatflow build spec, 응답 계약, smoke/Knowledge 평가와 validator
 - `CONFIG_DIR` — 별도 설정 디렉터리를 지정하는 override
 
 환경변수는 YAML보다 우선한다. 대표적으로 `JIRA_ENV`, `JIRA_BASE`, `APP_PORT`, `CONFIG_DIR`,

@@ -683,13 +683,19 @@ def _exact_compound_prompt_is_complete(state) -> bool:
                 return False
             key = str(detail.get("key") or "").strip().upper()
             visible.setdefault(key, []).append(detail)
-    if set(visible) != set(verified) or any(len(group) != 1 for group in visible.values()):
+    if set(visible) != set(verified):
         return False
     for key, expected in verified.items():
-        current = validate_and_digest_exact_ticket_detail(visible[key][0], key)
         canonical = validate_and_digest_exact_ticket_detail(expected, key)
-        if current is None or canonical is None or current[1] != canonical[1]:
+        if canonical is None:
             return False
+        # The same detail can legitimately belong to both Jira and comment
+        # queries. Every occurrence must match the current-attempt receipt;
+        # multiplicity alone is not missing evidence, but disagreement still is.
+        for detail in visible[key]:
+            current = validate_and_digest_exact_ticket_detail(detail, key)
+            if current is None or current[1] != canonical[1]:
+                return False
     return True
 
 
@@ -1846,7 +1852,7 @@ class ResearchAnalyst(ToolAgent):
         if _compound_plan_requires_research_synthesis(direct_state):
             synthesis_state = {**direct_state, "_research_analyst_prefetched": True}
             try:
-                out = self.apply(
+                out = self.apply_routed(
                     synthesis_state,
                     self._synthesize_prefetched_query_plan(synthesis_state),
                 )
@@ -1856,6 +1862,8 @@ class ResearchAnalyst(ToolAgent):
                 }]
                 return out
             except Exception:
+                if self._maxis_is_authoritative(synthesis_state):
+                    raise
                 # A provider/format failure cannot be repaired by repeating acquisition.  Preserve the
                 # real cross-source ledger, ranked only by typed outcome terms.
                 try:
@@ -1897,6 +1905,50 @@ class ResearchAnalyst(ToolAgent):
         react = super().node()
 
         def run(state):
+            from app.agent.runtime_status import bounded_internal_assist, require_internal_sources
+
+            if bounded_internal_assist(state):
+                from re import fullmatch as ticket_key_matches
+
+                # QueryRunner alone owns acquisition in this capability. Project its
+                # exact complete ledger; downstream remote Roles own interpretation.
+                # Never enter local ReAct, semantic RAG or external supplements.
+                require_internal_sources(state, state.get("query_plan") or {})
+                if not _query_plan_is_complete(state):
+                    return {"error": "MAXIS 내부 조회가 완전하게 확인되지 않아 작성을 중단했습니다.",
+                            "trace": note(state, self.name, "불완전한 조회 근거 · 추가 모델 호출 없음")}
+                for row in state.get("query_results") or []:
+                    if row.get("source") not in {"jira", "comments"}:
+                        continue
+                    result = row.get("result") or {}
+                    for field in ("tickets", "ticketDetails"):
+                        if any(not isinstance(ticket, dict) or not ticket_key_matches(
+                                r"[A-Z][A-Z0-9]*-[1-9][0-9]*", str(ticket.get("key") or ""))
+                               for ticket in result.get(field) or []):
+                            return {"error": "MAXIS 내부 조회의 티켓 식별자가 유효하지 않아 근거를 폐기했습니다."}
+                from app.agent.maxis.backend import _verified_evidence_sources
+
+                try:
+                    sources = _verified_evidence_sources(state)
+                except Exception:
+                    return {"error": "MAXIS 내부 조회의 출처·권한 증명을 확인하지 못했습니다."}
+                if any(source.get("partial") for source in sources):
+                    return {"error": "MAXIS 내부 조회가 불완전하거나 오래되어 작성을 중단했습니다."}
+                action = _typed_write_action(state)
+                # The generic single-query lane intentionally excludes lightweight
+                # Jira rows. The bounded projection has already verified complete,
+                # attested acquisition and may preserve those factual rows directly.
+                if action:
+                    ledger = _completed_write_ledger(state, action=action, research_focus=True)
+                else:
+                    ledger = build_completed_write_ledger(
+                        state.get("query_results") or [], action="query", research_focus=True,
+                        research_terms=_research_ledger_terms(state),
+                        materialized_ticket_details=(state.get("materialized_ticket_sources") or {})
+                        .get("ticketDetails") or [], target_keys=set(), duplicate_key="")
+                out = self.apply(state, ledger)
+                out["trace"] = note(state, self.name, "확인된 내부 조회 근거 전달 · 의미 판단은 MAXIS")
+                return out
             # This gate must precede neighborhood/dossier/external supplements: those are acquisition
             # tools too. A completed typed write already has its bounded source ledger.
             typed_write_action = _typed_write_action(state)
@@ -2319,7 +2371,7 @@ class ResearchAnalyst(ToolAgent):
                 if _compound_plan_requires_research_synthesis(state):
                     direct_state = {**state, "_research_analyst_prefetched": True}
                     try:
-                        out = self.apply(
+                        out = self.apply_routed(
                             direct_state,
                             self._synthesize_prefetched_query_plan(direct_state),
                         )
@@ -2329,6 +2381,8 @@ class ResearchAnalyst(ToolAgent):
                         }]
                         return out
                     except Exception:
+                        if self._maxis_is_authoritative(direct_state):
+                            raise
                         # Acquisition succeeded; a formatting/provider failure must neither repeat the
                         # searches nor fall back to first-hit truncation. Keep a deterministic, bounded,
                         # cross-source ledger ranked only by the typed research outcome's subject terms.
@@ -2384,7 +2438,7 @@ class ResearchAnalyst(ToolAgent):
             if (state.get("intent") or "") == Intent.ASK and completed_query_plan:
                 try:
                     direct_state = {**state, "_research_analyst_prefetched": True}
-                    out = self.apply(
+                    out = self.apply_routed(
                         direct_state,
                         self._synthesize_prefetched_query_plan(direct_state),
                     )
@@ -2394,6 +2448,8 @@ class ResearchAnalyst(ToolAgent):
                     }]
                     return out
                 except Exception:
+                    if self._maxis_is_authoritative(direct_state):
+                        raise
                     pass          # 최적화 실패는 기존 ReAct로 복구한다
 
             # ── L3a 직결: 주제 자료(dossier)를 **코드가 이미 다 모았으면** 걷지 않는다.
@@ -2412,12 +2468,15 @@ class ResearchAnalyst(ToolAgent):
                 # 걸어야 나온다(실측: 직결이 잡아 목록만 답하고 내용은 '없음').
                 try:
                     direct_state = {**state, "_research_analyst_prefetched": True}
-                    out = self.apply(direct_state, self._conclude(direct_state, []))
+                    out = self.apply_routed(
+                        direct_state, self._conclude(direct_state, []))
                     out["trace"] = (out.get("trace") or []) + [
                         {"node": self.name, "label": "과거 이력 조사",
                          "note": "사전 취합 자료로 바로 정리(조사 생략)"}]
                     return out
                 except Exception:
+                    if self._maxis_is_authoritative(direct_state):
+                        raise
                     pass          # 직결이 죽으면 정상 경로로 — 최적화가 답을 막으면 안 된다
 
             # ── legacy 생성/계획 직결 ─────────────────────────────────────
@@ -2430,12 +2489,15 @@ class ResearchAnalyst(ToolAgent):
                     and prefetched and not typed_write_action:
                 try:
                     direct_state = {**state, "_research_analyst_prefetched": True}
-                    out = self.apply(direct_state, self._conclude(direct_state, []))
+                    out = self.apply_routed(
+                        direct_state, self._conclude(direct_state, []))
                     out["trace"] = (out.get("trace") or []) + [
                         {"node": self.name, "label": "과거 이력 조사",
                          "note": "사전 조회 결과로 바로 정리(도구 재호출 생략)"}]
                     return out
                 except Exception as exc:
+                    if self._maxis_is_authoritative(direct_state):
+                        raise
                     # Acquisition is already complete. A second search loop repeats the
                     # same tools and cannot fix malformed synthesis JSON. Preserve the
                     # compatibility response instead of asserting facts from malformed output.

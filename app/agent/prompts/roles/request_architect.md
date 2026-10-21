@@ -22,7 +22,7 @@ Convert a single or compound user request into an executable directed acyclic gr
 
 ## Decision Process
 
-1. Restate the actual outcome requested, including pronouns and references resolved from conversation context.
+1. Restate the actual outcome requested, including pronouns and references resolved from conversation context. For an implementation request, preserve implementation and verification as the intended outcome; do not replace it with planning, documentation, or scope analysis merely because this agent produces a draft.
 2. Treat the latest explicit subject, person, ticket, and action as authoritative. Use older turns only to resolve a reference that the latest message actually depends on; never carry an old ticket into a new person or topic request.
 3. Decompose only distinct outcomes or mutations the user requested. The graph already owns research,
    analysis, validation, approval, and response stages; never repeat those internal stages as tasks.

@@ -34,6 +34,7 @@ from app.jira.mutation_recovery import (MutationReceiptStore,
                                         reconcile_created_issue,
                                         reconcile_transition)
 from app.jira.workload_service import JiraWorkloadMixin, workload_category
+from app.infra.cache import propagate_provenance_context
 
 
 # 실 Jira DC statusCategory.key → 내부 vocab (new=todo, indeterminate=inprogress, done=done)
@@ -649,11 +650,16 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         """Confluence REST 조회 — 401(SessionExpired)이면 **Confluence 세션만** 무음 갱신 후 한 번
         재시도(자가치유). 갱신도 실패하면 원래 예외를 그대로 올린다(라우트가 needLogin 처리)."""
         try:
-            return self.provider.get_json(url, params=params)
+            result = self.provider.get_json(url, params=params)
         except SessionExpired:
             if self._renew_service("Confluence"):
-                return self.provider.get_json(url, params=params)
-            raise
+                result = self.provider.get_json(url, params=params)
+            else:
+                raise
+        # Direct Confluence reads do not pass through get_or_set. Record the real
+        # successful observation (including zero hits), never a failed request.
+        self.cache._record_read_provenance(time.time(), upstream=True)
+        return result
 
     def _make_provider(self):
         if self.env == "local":
@@ -854,7 +860,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         전체(issue:)는 경량의 상위집합이라 내용은 늘 충분하므로, 전체·경량 중 **TTL 이내이면서 더
         최근에 받아온 쪽**을 쓴다(전체가 더 최신이면 전체, 경량이 더 최신이면 경량). 둘 다 만료/없으면
         경량으로 받아 issueL 에 담는다(전체 캐시와 분리 — 관련/첨부가 이걸 읽고 깨지지 않게)."""
-        ttl = self.s.cache_ttl_seconds
+        ttl = self.cache.effective_ttl(self.s.cache_ttl_seconds)
         now = time.time()
         fk, ck = f"issue:{self.env}:{key}", f"issueL:{self.env}:{key}"
         full = self.cache.get_stale_at(fk)        # (값, 받아온 시각) | None
@@ -863,6 +869,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         light_ok = light is not None and (now - light[1]) <= ttl
         # 전체가 살아 있고(TTL내) 경량보다 더(또는 같이) 최신이면 전체를 쓴다 — 굳이 다시 안 받는다.
         if full_ok and (not light_ok or full[1] >= light[1]):
+            self.cache.record_cached_value(full[1], stale=False)
             return full[0]
         # 그 외(경량이 더 최신이거나 전체가 만료) → issueL 경유(SWR). 만료면 여기서 경량 조회.
 
@@ -1048,7 +1055,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         provider = self.provider
         if getattr(provider, "supports_parallel", False) and len(items) > 1:
             with ThreadPoolExecutor(max_workers=min(8, len(items))) as executor:
-                futures = {executor.submit(fetch, item): item for item in items}
+                worker = propagate_provenance_context(fetch)
+                futures = {executor.submit(worker, item): item for item in items}
                 for future in as_completed(futures):
                     fallback_index, (fallback_leaf, _predicate_fields) = futures[future]
                     try:
@@ -1901,7 +1909,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         prov = self.provider
         if prov is not None and getattr(prov, "supports_parallel", False) and len(items) > 1:
             with ThreadPoolExecutor(max_workers=min(8, len(items))) as ex:
-                return list(ex.map(fn, items))
+                return list(ex.map(propagate_provenance_context(fn), items))
         return [fn(x) for x in items]
 
     def epic_progress_map(self, plan):
@@ -2565,12 +2573,14 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             }
         return out
 
-    def update_fields(self, key, fields):
+    def update_fields(self, key, fields, before_write=None):
         """필드 수정(PUT /issue). fields 는 Jira 형식 그대로 — 변환은 라우트가 한다."""
         fields = fields or {}
         relationship_change = any(
             field in fields for field in ("parent", self.s.epic_link_field_id))
         old_parent, old_epic = self._lineage_of(key) if relationship_change else (None, None)
+        if before_write:
+            before_write()
         self.provider.put_json(f"/rest/api/2/issue/{key}", {"fields": fields})
         self._invalidate_ticket(key)
         new_parent, new_epic = old_parent, old_epic
@@ -2953,7 +2963,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 if not t.get("subtask") and (t.get("name") or "") != "Epic"]
 
     def create_epic(self, summary, priority=None, duedate=None, assignee=None,
-                    components=None, description=None, epic_name=None, mutation_id=None):
+                    components=None, description=None, epic_name=None, mutation_id=None,
+                    before_write=None):
         """최상위 Epic 생성(부모 없음). Epic Name(단축어) 커스텀 필드가 있으면 채운다.
         생성 후 목록/검색 캐시가 낡으므로 관련 캐시를 넓게 버린다."""
         etype = next((t["name"] for t in self.issue_types()
@@ -2988,6 +2999,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
         def write():
             with write_upstream():
+                if before_write:
+                    before_write()
                 result = self.provider.post_json("/rest/api/2/issue", {"fields": fields})
                 return validate_result(result)
 
@@ -3094,7 +3107,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             lk.may_edit = may_edit          # 권한 판정은 라우트(세션)가 안다 — 주입받는다
         return lk
 
-    def bulk_create(self, mode, items, desc_to_field=None):
+    def bulk_create(self, mode, items, desc_to_field=None, before_write=None):
         """검증을 통과한 항목들을 **차례로** 만든다. 하나 실패해도 나머지는 진행(Jira 는 롤백이 없다).
         반환: {ok, created:[{index,key,summary}], failed:[{index,summary,error}]} — set_epic_link 와 같은 형태.
 
@@ -3110,13 +3123,13 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     desc = it.get("description")
                     if desc and desc_to_field:
                         kw["description"] = desc_to_field(desc)
-                    r = self.create_child(**kw)
+                    r = self.create_child(**kw, before_write=before_write)
                     created.append({"index": i, "key": (r or {}).get("key"), "summary": summary})
                 except Exception as e:
                     failed.append({"index": i, "summary": summary, "error": str(e)[:300]})
         return {"ok": not failed, "created": created, "failed": failed}
 
-    def bulk_update(self, items, to_fields):
+    def bulk_update(self, items, to_fields, before_write=None):
         """여러 티켓의 필드를 **차례로** 고친다. 하나 실패해도 나머지는 진행(롤백은 없다).
 
         `to_fields(key, changes) -> dict|None` 은 라우트가 준다 — editmeta 대조·Epic Link
@@ -3134,13 +3147,13 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                         failed.append({"index": i, "summary": key,
                                        "error": "편집 권한이 없거나 바꿀 필드가 없습니다."})
                         continue
-                    self.update_fields(key, fields)
+                    self.update_fields(key, fields, before_write=before_write)
                     updated.append({"index": i, "key": key, "fields": sorted(changes)})
                 except Exception as e:
                     failed.append({"index": i, "summary": key, "error": str(e)[:300]})
         return {"ok": not failed, "updated": updated, "failed": failed}
 
-    def bulk_comment(self, items, to_body=None):
+    def bulk_comment(self, items, to_body=None, before_write=None):
         """여러 티켓에 코멘트를 **차례로** 남긴다. `to_body(html)` 로 저장 형식을 맞춘다."""
         created, failed = [], []
         with self._mutation_batch_scope():
@@ -3148,7 +3161,10 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 key = (it.get("key") or "").strip()
                 body = it.get("body") or ""
                 try:
-                    self.add_comment(key, to_body(body) if to_body else body)
+                    self.add_comment(
+                        key, to_body(body) if to_body else body,
+                        before_write=before_write,
+                    )
                     created.append({"index": i, "key": key})
                 except Exception as e:
                     failed.append({"index": i, "summary": key, "error": str(e)[:300]})
@@ -3534,7 +3550,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     def do_transition(self, key, transition_id, *, time_spent=None, assignee=None,
                       resolution=None, comment=None, target_status_id=None,
                       target_status_name=None, target_status_category=None,
-                      mutation_id=None):
+                      mutation_id=None, before_write=None):
         """전이 실행. 화면 필드는 Jira 규약대로 fields/update 에 나눠 싣는다
         (worklog·comment 는 '추가' 라 update, resolution·assignee 는 '설정' 이라 fields).
 
@@ -3607,6 +3623,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 body["fields"] = fields
             if update:
                 body["update"] = update
+            if before_write:
+                before_write()
             result = self.provider.post_json(
                 f"/rest/api/2/issue/{key}/transitions", body)
             # Jira's transition API commonly answers 204 No Content. Normalize that confirmed
@@ -3712,7 +3730,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             },
         }
 
-    def add_comment(self, key, body, mutation_id=None):
+    def add_comment(self, key, body, mutation_id=None, before_write=None):
         """코멘트 작성 (body = Jira wiki markup). 반환: 생성된 코멘트 객체."""
         mutation_actor, _existing_receipt = self._mutation_actor_for(
             "comment-create", mutation_id)
@@ -3727,6 +3745,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             return result
 
         def write():
+            if before_write:
+                before_write()
             result = self.provider.post_json(
                 f"/rest/api/2/issue/{key}/comment", {"body": body})
             return validate_result(result)
@@ -3831,12 +3851,15 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             {"name": "Cloners", "inward": "is cloned by", "outward": "clones"},
         ]
 
-    def add_issue_link(self, key, other_key, type_name, direction="outward"):
+    def add_issue_link(self, key, other_key, type_name, direction="outward",
+                       before_write=None):
         """이슈 링크 생성. direction=outward 면 `key --(type.outward)--> other_key`.
         (예: Blocks/outward = 이 티켓이 상대를 막는다. inward 면 반대.)"""
         if not other_key or other_key.upper() == (key or "").upper():
             raise ValueError("자기 자신에는 링크할 수 없습니다.")
         inward, outward = (key, other_key) if direction == "outward" else (other_key, key)
+        if before_write:
+            before_write()
         self.provider.post_json("/rest/api/2/issueLink", {
             "type": {"name": type_name or "Relates"},
             "inwardIssue": {"key": inward}, "outwardIssue": {"key": outward}})
@@ -3857,7 +3880,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             related_keys=tuple(k for k in (key, other_key) if k)))
         return {"ok": True}
 
-    def add_remote_link(self, key, url, title="", relationship=""):
+    def add_remote_link(self, key, url, title="", relationship="", before_write=None):
         """원격 링크(Confluence 문서·웹 링크) 추가 — '관련문서'에 붙는다.
         globalId 를 URL 로 두면 같은 문서를 다시 걸어도 한 줄로 갱신된다(실 Jira 동작)."""
         url = (url or "").strip()
@@ -3867,6 +3890,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 "object": {"url": url, "title": (title or "").strip() or url}}
         if relationship:
             body["relationship"] = relationship
+        if before_write:
+            before_write()
         res = self.provider.post_json(f"/rest/api/2/issue/{key}/remotelink", body)
         self._invalidate_ticket(key, documents=True)
         self._record_mutation(MutationEvent(
@@ -3948,6 +3973,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         try:
             return self._ticket_badge_strict(key)
         except Exception:
+            if self.cache.bounded_evidence_read():
+                raise
             return None
 
     def _ticket_badge_strict(self, key, *, strict_cache=False):
@@ -3958,6 +3985,10 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         """
         raw = self.get_issue_light(
             key, strict=strict_cache)        # 전체 캐시 있으면 재사용, 없으면 경량
+        if self.cache.bounded_evidence_read() and (
+                not isinstance(raw, dict) or not isinstance(raw.get("fields"), dict)
+                or str(raw.get("key") or "").upper() != str(key).upper()):
+            raise ValueError("unverified_ticket_badge_identity")
         return self._ticket_badge_from_raw(key, raw)
 
     def _ticket_badge_from_raw(self, key, raw):
@@ -4032,7 +4063,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         # Older builds could store ``{"title": "DL-123"}`` after a failed badge lookup.  A fresh
         # key-only row would otherwise keep winning for the full 12-hour TTL.  Keep a valid stale
         # name for offline fallback, but evict malformed/key-only rows before get_or_set sees them.
-        stale = self.cache.get_stale(cache_key)
+        stale_row = self.cache.get_stale_at(cache_key)
+        stale = stale_row[0] if stale_row else None
         if stale is not None and not self._usable_epic_metadata(stale, key):
             self.cache.invalidate_keys([cache_key])
 
@@ -4470,11 +4502,26 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     f"/rest/api/2/issue/{key}",
                     params={"expand": "changelog", "fields": "created,reporter"})
             except Exception:
+                if self.cache.bounded_evidence_read():
+                    raise
                 return {}
+            if self.cache.bounded_evidence_read() and (
+                    not isinstance(raw, dict) or not isinstance(raw.get("changelog"), dict)
+                    or not isinstance(raw["changelog"].get("histories"), list)):
+                raise ValueError("unverified_changelog")
             f = raw.get("fields") or {}
             return {"created": f.get("created"), "reporter": f.get("reporter") or {},
                     "histories": (raw.get("changelog") or {}).get("histories") or []}
-        return self.cache.get_or_set(f"changelog:{self.env}:{key}", self.s.cache_ttl_seconds, do)[0]
+        return self.cache.get_or_set(self._evidence_cache_key(f"changelog:{self.env}:{key}"),
+                                     self.s.cache_ttl_seconds, do)[0]
+
+    def _evidence_cache_key(self, key):
+        """Best-effort UI projections are not proofs, even inside their TTL.
+
+        Keep the ordinary prefix so existing write invalidations clear both.
+        Bounded acquisitions may reuse only rows produced by the stricter path.
+        """
+        return key + ":evidence" if self.cache.bounded_evidence_read() else key
 
     def confluence_page(self, cid, expand="body.storage"):
         """Confluence 페이지 원본 조회 — **base 를 붙이는 한 곳**.
@@ -4487,10 +4534,14 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             return {}
         base = (self.s.confluence_base or "").rstrip("/")
         path = f"/rest/api/content/{cid}"
+        if self.cache.bounded_evidence_read():
+            expand = ",".join(dict.fromkeys([*expand.split(","), "space", "version"]))
         try:
             return self._conf_get_json((base + path) if base else path,
                                        params={"expand": expand}) or {}
         except Exception:
+            if self.cache.bounded_evidence_read():
+                raise
             return {}
 
     def ticket_field_history(self, key, limit=20):
@@ -4799,7 +4850,14 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             # 표시용은 넉넉한 상한(CHILD_DISPLAY_LIMIT) — 스캔용 20 을 쓰면 하위가 많은 Epic 이 20 개로 잘렸다.
             kids = self._child_keys(key, limit=self.CHILD_DISPLAY_LIMIT)
             self.prefetch_issues(kids, light=True)   # 뱃지만 필요 → 경량 배치(이후 badge 는 캐시 히트)
-            return [b for b in (self.ticket_badge(k) for k in kids) if b]
+            rows = [self.ticket_badge(k) for k in kids]
+            if self.cache.bounded_evidence_read() and any(not row for row in rows):
+                raise ValueError("incomplete_child_details")
+            return [row for row in rows if row]
+        # Reassemble evidence from leaf caches so their original timestamps and
+        # stale flags survive. A newly stamped aggregate would launder their age.
+        if self.cache.bounded_evidence_read():
+            return build()
         return self._swr(f"children:{self.env}:{key}", build)
 
     def ticket_related(self, key, limit=20, include_mentions=True):
@@ -4819,6 +4877,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             try:
                 f = self.get_issue(key).get("fields") or {}
             except Exception:
+                if self.cache.bounded_evidence_read():
+                    raise
                 f = {}
             for ln in (f.get("issuelinks") or []):
                 t = ln.get("type") or {}
@@ -4838,11 +4898,15 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     if v:
                         htmls.append(v.get("descriptionHtml") or "")
                 except Exception:
+                    if self.cache.bounded_evidence_read():
+                        raise
                     pass
                 try:
                     for c in self._issue_comments(key, limit=10):
                         htmls.append(c.get("html") or "")
                 except Exception:
+                    if self.cache.bounded_evidence_read():
+                        raise
                     pass
                 for h in htmls:
                     for k in _BROWSE_KEY_RE.findall(h or ""):
@@ -4860,6 +4924,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     out.append(dict(b, rel=rel, via=via))
             return out
         scope = "all" if include_mentions else "links"
+        if self.cache.bounded_evidence_read():
+            return build()
         return self._swr(f"related:{self.env}:{key}:v2:{scope}", build)
 
     def ticket_attachments(self, key):
@@ -4899,6 +4965,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             except SessionExpired:
                 raise
             except Exception:
+                if self.cache.bounded_evidence_read():
+                    raise
                 return []
             out = []
             for r in (data or []):
@@ -4914,7 +4982,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                                 "rel": (r.get("relationship") or "").strip(),
                                 "app": (app.get("name") or app.get("type") or "").strip()})
             return out
-        return self.cache.get_or_set(f"remotelinks:{self.env}:{key}", self.s.cache_ttl_seconds, do)[0]
+        return self.cache.get_or_set(self._evidence_cache_key(f"remotelinks:{self.env}:{key}"),
+                                     self.s.cache_ttl_seconds, do)[0]
 
     def ticket_documents(self, key, limit=20):
         """관련 문서 — 두 소스를 합친다(URL 기준 중복 제거):
@@ -4930,11 +4999,15 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 if v:
                     htmls.append(v.get("descriptionHtml") or "")
             except Exception:
+                if self.cache.bounded_evidence_read():
+                    raise
                 pass
             try:
                 for c in self._issue_comments(key, limit=10):
                     htmls.append(c.get("html") or "")
             except Exception:
+                if self.cache.bounded_evidence_read():
+                    raise
                 pass
             out, seen = [], set()
 
@@ -4978,6 +5051,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 add(u, title, is_conf, r.get("id"),
                     mention=_is_mention_link(r), rel=r.get("rel") or "")
             return out[:limit]
+        if self.cache.bounded_evidence_read():
+            return build()
         return self._swr(f"documents:{self.env}:{key}", build)
 
     def _get_issue_view(self, key, fresh=False):

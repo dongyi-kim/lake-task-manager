@@ -1,6 +1,6 @@
 {
   "protocolName": "LTM Agent Evaluation Protocol",
-  "protocolVersion": "3.0.0",
+  "protocolVersion": "4.0.0",
   "rubricVersion": "2.0.0",
   "primaryEvidencePolicy": "complete-run-no-substitution",
   "attemptPolicy": "retain-every-attempt",

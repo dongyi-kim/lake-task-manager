@@ -1,14 +1,23 @@
 # Agent improvement research archive
 
-LakeTaskManager Agent의 prompt 언어 구성, role contract, 구조적 품질, 성능 및 토큰 사용량을 비교한 실험 자료를 보관한다. 프로덕션 동작 규칙과 작성 표준은 [`app/agent/AGENT.md`](../../app/agent/AGENT.md)를 기준으로 하며, 이 디렉터리의 자료는 재현과 의사결정을 위한 연구 기록이다.
+이 디렉터리에는 기존 Agent 연구 기록이 남아 있다. 기존 기록은 당시 구현·평가 조건에 관한
+자료이며 현재 동작이나 품질 승인으로 간주하지 않는다. 프로덕션 규칙은
+[`app/agent/AGENT.md`](../../app/agent/AGENT.md)를 따른다.
 
-## 디렉터리
+## 새 작업의 저장 원칙
 
-- `reports/`: 비교 보고서, 사람 관점 정성평가, 설계·성능 기록
-- `evaluations/`: versioned battery의 경량 채점 보고서. commit·평가 version·manifest와 case별 점수 보존
-- `scripts/`: 당시 실험군을 순차 실행한 보조 스크립트
+- 최신 코드·계약·재사용 가능한 평가 harness와 test만 PR에 포함한다.
+- 실행별 raw, 평가 결과, 직접 채점 보고서, 실험용 대체 구현과 캡처는 ignored
+  `.cache/`에 보존한다. 최신 평가 결과도 tracked 문서로 만들지 않는다.
+- 평가 원본은 `.cache/agent-evaluation/<runGroupId>/`에 두고 같은 실행을 덮어쓰지 않는다.
+  결과 요약·제약·남은 작업은 PR 본문과 Changelog에서 관리한다.
+- commit·평가 version·manifest·case·실패·재시도·직접 검토 근거를 함께 보존하며,
+  비교 불가능한 실행이나 focused 재실행으로 과거 full-run 결과를 대체하지 않는다.
 
-## 주요 보고서
+평가 방법은 [EVALUATION.md](../../app/agent/EVALUATION.md)를 따른다.
+MAXIS의 현재 설계는 [적용 가이드](../../docs/MAXIS_DIFY_MIGRATION.md)에 있다.
+
+## 기존 보고서
 
 - [`AGENT-STRUCTURAL-QUALITY-TOKEN-V3-REPORT.md`](reports/AGENT-STRUCTURAL-QUALITY-TOKEN-V3-REPORT.md): V2와 V3의 최종 구조·품질·토큰 비교
 - [`AGENT-ROLE-CONTRACT-V2-COMPARISON.md`](reports/AGENT-ROLE-CONTRACT-V2-COMPARISON.md): BASE, KO-R, V2 role contract 비교
@@ -16,24 +25,5 @@ LakeTaskManager Agent의 prompt 언어 구성, role contract, 구조적 품질, 
 - [`PROMPT-LANGUAGE-COMPARISON.md`](reports/PROMPT-LANGUAGE-COMPARISON.md): BASE, EN, KO, GUIDE 언어 구성 비교
 - [`PROMPT-LANGUAGE-OUTPUTS.md`](reports/PROMPT-LANGUAGE-OUTPUTS.md): 언어 비교 실제 출력 전문
 
-실제 답변의 차이, 정량 측정값, 사람 관점 평가는 위 보고서에 통합해 보존한다. 실행 로그와 raw JSON은
-중복·로그성 산출물이므로 저장소에는 두지 않으며 `logs/`, `results/`는 `.gitignore` 대상이다. 필요하면
-`scripts/`와 현재 배터리 도구로 다시 생성한다.
-
-새 비교 실험은 [`app/agent/EVALUATION.md`](../../app/agent/EVALUATION.md)의 versioned 표준을 사용한다.
-보고서와 PR Description에 protocol/rubric/battery version 및 측정 기준을 포함하고, version이 없는
-과거 점수나 closure 결과를 섞은 점수는 현재 qualification 결과와 직접 증감 비교하지 않는다.
-
-실행별 raw response·trace·usage·debug JSON은 `.cache/agent-evaluation/<runGroupId>/`에만 저장하고 git에
-담지 않는다. 같은 run group·suite·repeat의 raw/`.claim`은 덮어쓰지 않고 재실행에 새 식별자를 쓴다.
-Codex/Claude 직접 채점이 끝나면 `research/agent-improvement/evaluations/`에 경량 Markdown을
-반드시 남긴다. 그래야 이후 같은 battery/case만 focused로 재실행해 candidate commit과 version이 일치하는
-과거 결과를 찾을 수 있다.
-
-경량 보고서는 공통 5축 점수만 남기지 않는다. suite·case별 특수 검토요소의 `pass/minor/major/na`,
-실제 근거, `specializedReviewSpecSha256`도 포함한다. 히스토리 case라면 기대 ticket과 사건 순서, 조사
-case라면 내부 source·외부 검색어·URL·검색 실패 한계까지 기록한다. 이 계약이 바뀐 결과를 과거 점수와
-동일 기준으로 직접 비교하지 않는다.
-
-배터리 raw의 `격리` 기록에서 case별 private cache, `worldSha256`, `providerStoreSha256` 보존 여부도
-확인한다. 이전 case의 cache·대화 state·mock write가 다음 case에 남은 실행은 점수화하지 않는다.
+기존 `reports/`, `evaluations/`, `scripts/`는 이번 MAXIS 정리에서 변경하지 않는다.
+이번 PR의 MAXIS 실행별 기록은 정리 전 Git 이력과 ignored cache에서 복구할 수 있다.

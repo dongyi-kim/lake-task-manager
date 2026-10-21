@@ -135,8 +135,15 @@ def _rewrite_sentences(value: str, rewrite) -> str:
     )
 
     def replace(match):
-        replacement = rewrite(match.group(2).strip())
-        return match.group(1) + replacement
+        raw = match.group(2)
+        sentence = raw.strip()
+        replacement = rewrite(sentence)
+        if replacement == sentence:
+            return match.group(0)
+        # Semantic edits own only the sentence, not its indentation/line ending.
+        leading = raw[:len(raw) - len(raw.lstrip())]
+        trailing = raw[len(raw.rstrip()):]
+        return match.group(1) + leading + replacement + trailing
 
     return sentence.sub(replace, str(value or ""))
 
@@ -213,22 +220,20 @@ def drop_unsupported_guarantees(text: str, state) -> str:
     value = str(text or "")
     if "보장" not in source:
         value = _re.sub(
-            r"\s*[,，]\s*[^,.\n]{2,120}?(?:을|를|이|가)?\s*보장(?:함|됨|한다|합니다)?(?=[.\n]|$)",
-            "", value,
+            r"(?:([가-힣]+?)(이며|되며|하며))?[^\S\r\n]*[,，][^\S\r\n]*"
+            r"[^,.\r\n]{2,120}?(?:을|를|이|가)?[^\S\r\n]*보장(?:함|됨|한다|합니다)?(?=[.\r\n]|$)",
+            lambda match: ((match.group(1) + {"이며": "임", "되며": "됨", "하며": "함"}[match.group(2)])
+                           if match.group(1) else ""), value,
         )
         value = _re.sub(
-            r"(?m)^(\s*[-*]?\s*)?([^\n.]{2,160}?보장(?:함|됨|한다|합니다)?)[.]?\s*$",
-            lambda match: ((match.group(1) or "") + "해당 보장 효과는 검증 필요"),
+            r"(?m)^([^\S\r\n]*[-*]?[^\S\r\n]*)?"
+            r"([^\r\n.]{2,160}?보장(?:함|됨|한다|합니다)?)[.]?([^\S\r\n]*)(\r?)$",
+            lambda match: ((match.group(1) or "") + "해당 보장 효과는 검증 필요"
+                           + match.group(3) + match.group(4)),
             value,
         )
     # Candidate snippets and model prose cannot upgrade an unresolved typed relation or
     # attach a benefit dimension absent from the selected source material.
     value = _drop_unproven_benefits(value, _benefit_source_texts(state))
     value = _drop_unconfirmed_capability_claims(value, state, source_texts)
-    value = _re.sub(r"(?m)^\s+$", "", value)
-    value = _re.sub(r" {2,}", " ", value)
-    value = _re.sub(r"([가-힣]+)이며\.", r"\1임.", value)
-    value = _re.sub(r"([가-힣]+)되며\.", r"\1됨.", value)
-    value = _re.sub(r"([가-힣]+)하며\.", r"\1함.", value)
-    value = _re.sub(r"\s+([.,!?])", r"\1", value)
-    return value.strip()
+    return value

@@ -31,7 +31,11 @@ const AGENT_VIEW_TEMPLATE = `
              @mousedown.prevent="startNavDrag" @dblclick="resetNavW"></div>
         <!-- 모델·설정은 좌상단 — 지금 무엇으로 도는지가 먼저 보인다(사용자 요청) -->
         <div class="an-top">
-          <span v-if="status && status.runtimeConfigSource === 'named'" class="agent-prov"
+          <span v-if="conversationRuntime.engine === 'maxis'" class="agent-prov">
+            MAXIS / Dify · {{ conversationRuntime.profileLabel || '선택한 연결' }}
+            <template v-if="!conversationRuntime.ready"> · 설정 확인</template>
+          </span>
+          <span v-else-if="status && status.runtimeConfigSource === 'named'" class="agent-prov"
                 :title="'chat=' + status.chatModel + ' / embed=' + status.embedModel">
             {{ status.activeConfig.name }} · {{ status.provider }}<template v-if="status.chatModel"> · {{ status.chatModel }}</template>
           </span>
@@ -42,7 +46,7 @@ const AGENT_VIEW_TEMPLATE = `
           <span v-else class="agent-prov is-empty">
             연결 설정 없음
           </span>
-          <button class="agent-reset" @click="settingsOpen = true" title="AI 에이전트 설정">⚙ 설정</button>
+          <button class="agent-reset" @click="openRuntimeSettings" title="AI 에이전트 설정">⚙ 설정</button>
         </div>
         <button class="an-new" @click="reset">＋ 새 대화</button>
         <div class="an-h" v-if="convos.length">최근 대화</div>
@@ -106,14 +110,68 @@ const AGENT_VIEW_TEMPLATE = `
 
             <!-- 비용 — 질문 하나로 보이지만 안에서 LLM 을 예닐곱 번 부른다.
                  숫자를 봐야 "이건 비싼 질문이었다"를 알고 다음에 다르게 묻는다. -->
-            <div v-if="t.usage && t.usage.totalTokens" class="agent-usage"
-                 :title="t.usage.model + ' · 입력 ' + t.usage.promptTokens + ' / 출력 ' + t.usage.completionTokens">
-              <!-- ★ 이 컴포넌트의 template 은 JS 백틱 문자열이다 — "$" + "{{" 를 붙여 쓰면
-                   \`\${\` 로 읽혀 JS 보간이 시작돼 버린다(실제로 파일 전체가 SyntaxError 로 죽었다).
-                   달러 기호는 머스태시 안에서 문자열로 만든다. -->
-              LLM {{ t.usage.calls }}회 · {{ t.usage.totalTokens.toLocaleString() }} 토큰<template
-                v-if="t.usage.costUsd"> · {{ '$' + t.usage.costUsd.toFixed(4) }}</template>
+            <div v-if="t.usage && (t.usage.calls || t.usage.totalTokens)" class="agent-usage"
+                 :title="usageTitle(t.usage)">
+              {{ usageSummary(t.usage) }}
             </div>
+
+            <!-- 어떤 실행 경로와 검증본이 답을 만들었는지 한 줄로 남긴다. profile 전환은
+                 설정 문제가 아니라 결과 재현성 문제이므로 대화마다 고정된 값을 보여 준다. -->
+            <div v-if="runtimeMeta(t).engine" class="agent-runtime" aria-label="AI 실행 정보">
+              <span>{{ runtimeMeta(t).engine === 'maxis' ? 'MAXIS/Dify' : 'LTM Local' }}</span>
+              <span v-if="runtimeMeta(t).profile">{{ runtimeProfileLabel(t) }}</span>
+              <span v-if="runtimeMeta(t).qualityGate || t.error || t.ok === false"
+                    :class="{ bad: runtimeQualityStatus(t).bad }">
+                {{ runtimeQualityStatus(t).label }}
+              </span>
+            </div>
+
+            <!-- Evidence Workspace — 원문/secret/raw Dify 응답을 보이지 않고 검토에 필요한
+                 source metadata와 정리된 사실·추론·미확인만 표시한다. -->
+            <details v-if="hasEvidenceWorkspace(t)" class="evidence-workspace">
+              <summary>
+                <b>Evidence Workspace</b>
+                <span class="ew-fresh" :class="workspaceFreshness(t)">
+                  {{ freshnessLabel(workspaceFreshness(t)) }}</span>
+                <span>{{ workspaceSources(t).length }}개 출처</span>
+                <span v-if="evidenceWorkspace(t).partial">일부 결과</span>
+              </summary>
+              <div class="ew-grid">
+                <section v-if="workspaceFacts(t).length">
+                  <h4>확인된 사실</h4>
+                  <ul><li v-for="(row, i) in workspaceFacts(t)" :key="row.factId || row.fact_id || i">
+                    <span>{{ row.text || row }}</span>
+                    <small v-if="row.sourceIds || row.source_ids">{{ (row.sourceIds || row.source_ids).join(', ') }}</small>
+                  </li></ul>
+                </section>
+                <section v-if="workspaceClaims(t, ['inference', 'recommendation']).length">
+                  <h4>추론·제안</h4>
+                  <ul><li v-for="(row, i) in workspaceClaims(t, ['inference', 'recommendation'])"
+                          :key="row.claimId || row.claim_id || i">
+                    <span>{{ row.text }}</span><em>{{ row.kind === 'recommendation' ? '제안' : '추론' }}</em>
+                  </li></ul>
+                </section>
+                <section v-if="workspaceMissing(t).length" class="ew-missing">
+                  <h4>미확인·추가 확인</h4>
+                  <ul><li v-for="(row, i) in workspaceMissing(t)" :key="i">{{ row.text || row }}</li></ul>
+                </section>
+              </div>
+              <div v-if="workspaceSources(t).length" class="ew-sources">
+                <h4>출처와 데이터 시점</h4>
+                <div v-for="(row, i) in workspaceSources(t)" :key="row.sourceId || row.source_id || i"
+                     class="ew-source">
+                  <a v-if="sourceUrl(row)" :href="sourceUrl(row)">
+                    {{ row.title || row.canonicalId || row.canonical_id || row.sourceId || row.source_id }}
+                  </a>
+                  <b v-else>{{ row.title || row.canonicalId || row.canonical_id || row.sourceId || row.source_id }}</b>
+                  <span>{{ sourceKindLabel(row.kind) }}</span><span>{{ sourceTime(row) }}</span>
+                  <em v-if="row.partial">부분 조회</em><em v-if="row.truncated">내용 축약</em>
+                </div>
+              </div>
+              <div v-if="workspaceWarnings(t).length" class="ew-warnings">
+                <b>검증 경고</b><span v-for="(warning, i) in workspaceWarnings(t)" :key="i">{{ warning.text || warning }}</span>
+              </div>
+            </details>
 
             <!-- 실행 결과: 실패를 눈에 띄게. 조용히 넘어가면 다 만들어진 줄 안다 -->
             <div v-if="t.result && (t.result.created || []).length" class="agent-made">
@@ -423,10 +481,9 @@ const AGENT_VIEW_TEMPLATE = `
            과하다(사용자 지적). 하단 아이콘 줄이 세 기능의 입구다. -->
       <!-- LLM 연결값이 없으면 입력창 대신 안내+[설정] — 눌러 보고 나서야 에러로 아는 것보다
            먼저 말해 주는 것이 낫다. 설정을 닫으면 상태를 다시 확인해 입력창이 살아난다. -->
-      <div v-if="status && status.llmReady === false" class="agent-input agent-llmoff">
-        <span class="agent-llmoff-msg">⚠ AI 를 쓸 수 없습니다 — {{ status.llmReason || 'LLM 연결이 설정되지 않았습니다.' }}
-          <b>연결 확인된 LLM API 가 하나 이상 필요합니다.</b></span>
-        <button class="agent-llmoff-btn" @click="settingsOpen = true">설정</button>
+      <div v-if="conversationRuntime.ready === false" class="agent-input agent-llmoff">
+        <span class="agent-llmoff-msg">⚠ AI 를 쓸 수 없습니다 — {{ conversationRuntime.reason || 'AI 실행 설정을 확인하세요.' }}</span>
+        <button class="agent-llmoff-btn" @click="openRuntimeSettings">{{ conversationRuntime.nextAction === 'llm_settings' ? 'LLM 연결 설정' : 'MAXIS 설정' }}</button>
       </div>
       <div v-else class="agent-input agent-input-rich" @keydown.capture="onRichKey">
         <div class="agent-chatbox">
@@ -460,6 +517,7 @@ const AGENT_VIEW_TEMPLATE = `
       <div v-if="refTip" class="ref-tip" :style="refTip.style">{{ refTip.text }}</div>
 
       <AgentSettingsDialog v-if="settingsOpen"
+        :initialMode="settingsMode"
         @saved="refreshStatus"
         @close="settingsOpen = false; refreshStatus()" />
 

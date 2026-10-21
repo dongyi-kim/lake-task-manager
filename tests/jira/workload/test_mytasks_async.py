@@ -811,6 +811,51 @@ def test_epic_metadata_preserves_expired_known_name_during_auth_failure(monkeypa
     assert client.cache.get(cache_key) is None
 
 
+def test_expired_epic_metadata_inspection_does_not_taint_fresh_provenance(monkeypatch):
+    client = _client()
+    key = "DL-KNOWN"
+    cache_key = f"epicmeta:{client.env}:{key}"
+    client.cache.set(
+        cache_key,
+        {"key": key, "title": "이전 Epic", "statusCategory": "inprogress"},
+        -1,
+    )
+    monkeypatch.setattr(client, "_ticket_badge_strict", lambda *_args, **_kwargs: {
+        "summary": "새 Epic", "epicName": "새 Epic", "statusCategory": "inprogress",
+    })
+
+    marker = client.cache.provenance_marker()
+    result = client.epic_metadata(key)
+    provenance = client.cache.provenance_since(marker)
+
+    assert result["title"] == "새 Epic"
+    assert provenance["count"] == 1
+    assert provenance["upstream"] is True
+    assert provenance["servedStale"] is False
+
+
+def test_expired_epic_metadata_records_provenance_when_fallback_is_returned(monkeypatch):
+    client = _client()
+    key = "DL-KNOWN"
+    cache_key = f"epicmeta:{client.env}:{key}"
+    known = {"key": key, "title": "알고 있던 Epic", "statusCategory": "inprogress"}
+    client.cache.set(cache_key, known, -1)
+
+    def expired(*_args, **_kwargs):
+        raise SessionExpired("HTTP 401 session expired")
+
+    monkeypatch.setattr(client, "_ticket_badge_strict", expired)
+
+    marker = client.cache.provenance_marker()
+    result = client.epic_metadata(key)
+    provenance = client.cache.provenance_since(marker)
+
+    assert result == known
+    assert provenance["count"] == 1
+    assert provenance["upstream"] is False
+    assert provenance["servedStale"] is True
+
+
 def test_expired_issue_light_is_not_promoted_to_fresh_epic_metadata(monkeypatch):
     client = _client()
     key = "DL-9019"
