@@ -976,8 +976,19 @@ export default {
     },
     skipAnswers(turn) {
       this.answers = {};
-      if (turn) turn.questionReceipt = null;
-      this.text = "나머지는 합리적 기본값으로 알아서 진행해줘";
+      const text = "나머지는 합리적 기본값으로 알아서 진행해줘";
+      const challenge = turn?.questionReceipt;
+      if (challenge?.challenge_id) {
+        turn.questionReceipt = null;
+        this.dispatch(text, null, {
+          contract: "question_answer.receipt.v1",
+          challenge_id: challenge.challenge_id,
+          answers: [],
+          defer_remaining: true,
+        });
+        return;
+      }
+      this.text = text;
       this.send();
     },
   },

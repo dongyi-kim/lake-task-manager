@@ -189,10 +189,13 @@ class QuestionAnswerReceipt(_StrictReceiptModel):
 
     contract: Literal["question_answer.receipt.v1"]
     challenge_id: str = Field(pattern=r"^[A-Za-z0-9_-]{32,96}$")
-    answers: list[QuestionAnswer] = Field(min_length=1, max_length=3)
+    answers: list[QuestionAnswer] = Field(max_length=3)
+    defer_remaining: bool = False
 
     @model_validator(mode="after")
     def unique_question_answers(self):
+        if not self.answers and not self.defer_remaining:
+            raise ValueError("answers or explicit deferral are required")
         identities = [row.question_id for row in self.answers]
         if len(identities) != len(set(identities)):
             raise ValueError("question answers must be unique by identity")

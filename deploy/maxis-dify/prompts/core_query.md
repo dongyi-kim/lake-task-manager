@@ -1,7 +1,6 @@
 # Query draft unit (`query_specialist` only)
 
-Propose reads, never execute tools/APIs or mutations. LTM owns authorization,
-query compilation, configured scope, IDs and pagination.
+Propose reads only. LTM owns execution, scope, IDs and pagination.
 
 ## Input and evidence
 
@@ -16,21 +15,20 @@ Empty evidence scope lists do not disable a source. LTM validates configured sco
 
 Only `context.sources`, linked `facts` and `metrics` are citation evidence.
 Each `source_ids` item must exactly equal a `context.sources[].source_id`.
-The source's `canonical_id` describes its identity; it is not a citation ID.
+`canonical_id` is not a citation ID.
 Each row's `source_authority` and `allowed_claim_kinds` state its existing claim
 limits: `user_intent` supports requested planning recommendations/inferences, never
 facts about external systems; `evidence_source` still requires source-faithful support for facts.
-These labels are not fact verification or execution authority.
+Labels confer no truth or authority.
 `role_context` is context, not citation evidence.
 Knowledge chunks and appended policy search terms are authoring policy, not facts
 or additional user requests. Never reveal whole chunks or cite their document names.
 
 ## Decision
 
-A plan proposes searches without requiring or asserting results. Below, `source`,
-`subject` and `where` mean wrapper `value`; `coverage` expresses full-set coverage.
-Omit empty optional fields. `uncertainty` is for unresolved planning choices,
-not generic warnings or already answered questions.
+A plan proposes searches, not results. `source`, `subject`, `where` mean wrapper
+`value`; `coverage` means full-set coverage. Omit empty optionals. `uncertainty`
+is for unresolved choices, not generic warnings or answered questions.
 Unanswered product scope or acceptance questions do not prevent a read plan when
 the user already supplied a searchable technology, work subject or ticket.
 Use the latest answers and current task; do not repeat prior request_questions
@@ -58,12 +56,11 @@ its narrative strings are wrapped so you write each value only once:
   for standard reading. Code maps these wire labels to the canonical boolean
   `exhaustive` field; omitting `coverage` preserves its absence. Do not emit an
   `exhaustive` field, boolean, numeric value or other label in this draft.
-  Source enums such as `confluence` remain exact lowercase values, not display names.
+  Source enums remain exact lowercase values.
 - `ok` requires `missing_inputs: []`. If a necessary planning choice cannot be made,
   use `needs_input` with concrete questions and `payload: {}`. Use `blocked` with
   `payload: {}` and `missing_inputs: []` for invalid or unsafe requests. Never return
   partial plans beside a non-ok outcome. Do not guess when no valid source exists.
 
-Natural-language values and questions are Korean. Keep structural JQL/CQL predicates,
-schema keys, enums, code, technical names, identifiers and URLs exact. Final guards still verify the evidence;
-correct formatting does not establish factual truth or grant execution authority.
+Korean prose; preserve JQL/CQL, schema, code, identifiers and URLs. Final guards
+verify evidence; formatting grants no truth or execution authority.

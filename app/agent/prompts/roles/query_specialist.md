@@ -21,6 +21,7 @@ Return the exact compact retrieval AST schema. Each `reads` item contains only `
 3. For each required evidence facet of the atomic task, choose the narrowest adequate source, honoring explicit source requests and known evidence locations.
    Typically, `jira` provides work and change records; `confluence` provides design, decisions, and documented context.
    Use complementary sources only when one source cannot cover the required facets. Avoid redundant reads with paraphrased subjects.
+   For compound identifier history, plan exact Jira lookup AND a separate Jira read with ONLY delimiter-separated literal components joined by spaces (not the full name, `|` or `OR`). This finds spelling/order candidates, not verified aliases. Use components for Confluence too. Internal sources only.
 4. Require full-set coverage for "all", "every", audit coverage, or any bulk-write target.
 5. For informal meeting material, search the discussed technology, decision, asset, and explicit ticket keys;
    never search formatting words such as `회의 메모`, `from`, an attachment filename, or a speaker label as the topic.

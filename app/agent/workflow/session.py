@@ -346,6 +346,11 @@ def _looks_like_answer_to_questions(utterance: str, asked: list[dict]) -> bool:
         return False
     if _SIMPLE_INTERVIEW_ANSWER.fullmatch(text):
         return True
+    # The UI's explicit deferral also remains a bounded continuation when typed
+    # into chat or sent by an older client. This grants no field/default authority.
+    if _re.fullmatch(r"(?:나머지는\s*)?(?:합리적\s*)?기본값으로\s*(?:알아서\s*)?"
+                     r"진행해\s*줘[.!]?", text):
+        return True
     if any(str(option or "").strip() and str(option).strip().casefold() in text.casefold()
            for question in asked for option in (question.get("options") or [])):
         return True
@@ -644,6 +649,15 @@ def _is_interview_continuation(text: str, prior: dict) -> bool:
         return False
 
     if same_write_outcome_replacement:
+        return True
+
+    # A bounded "continue with defaults" after a read answer still refers to that
+    # read. Retain only a proven no-write plan, never revive a completed write DAG.
+    tasks = (prior.get("request_plan") or {}).get("tasks") or []
+    if (prior.get("intent") == "ask" and prior.get("request_text") and tasks
+            and all(isinstance(task, dict) and task.get("write_intent") is False for task in tasks)
+            and _re.fullmatch(r"(?:나머지는\s*)?(?:합리적\s*)?기본값으로\s*(?:알아서\s*)?"
+                              r"진행해\s*줘[.!]?", utterance.strip())):
         return True
 
     # When the previous turn already produced a draft/structure, preserve it only for a compact,

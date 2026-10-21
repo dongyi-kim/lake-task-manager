@@ -683,6 +683,38 @@ def test_frontend_submits_only_question_identity_and_answer():
     assert "field: q.field" not in source
 
 
+def test_defer_questions_preserves_binding_without_answer_or_execution_authority():
+    binding = _binding()
+    challenge = issue_question_challenge(questions=[_question()], **binding)
+    raw = {"contract": "question_answer.receipt.v1",
+           "challenge_id": challenge["challenge_id"], "answers": [],
+           "defer_remaining": True}
+    assert claim_question_receipt(raw, **{**binding, "thread_id": "other"}).status == "rejected"
+    claim = claim_question_receipt(raw, **binding)
+    assert claim.status == "semantic"
+    assert claim.projection == {} and claim.saved_calls == 0
+    assert claim.continuation_contract == binding["continuation_contract"]
+    assert claim.remaining == tuple(row["question_id"] for row in challenge["questions"])
+    assert "기본값" in claim.message_text
+    assert commit_question_receipt(claim)
+    assert claim_question_receipt(raw, **binding).status == "rejected"
+
+
+def test_empty_answers_without_explicit_deferral_remain_invalid():
+    binding = _binding()
+    challenge = issue_question_challenge(questions=[_question()], **binding)
+    assert claim_question_receipt(_receipt(challenge, []), **binding).status == "rejected"
+
+
+def test_skip_button_uses_question_challenge_instead_of_discarding_it():
+    from pathlib import Path
+    source = Path("app/static/components/views/AgentView.js").read_text(encoding="utf-8")
+    skip = source.split("    skipAnswers(turn) {", 1)[1]
+    assert "challenge_id: challenge.challenge_id" in skip
+    assert "defer_remaining: true" in skip
+    assert "this.dispatch(" in skip
+
+
 def test_question_receipt_reuses_common_canonical_digest_exactly():
     from app.agent.workflow.canonical_digest import digest_value as common_digest
     from app.agent.workflow.question_receipt import digest_value as receipt_digest

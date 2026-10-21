@@ -97,6 +97,9 @@ def test_input_and_prompt_have_one_semantic_owner(nodes, knowledge_case):
     prompt = nodes[LLM]["prompt_template"][0]["text"]
     assert prompt.count(local) == 1 and "## Required response" not in prompt
     assert "knowledge-draft.v2" in prompt and len(prompt.encode()) <= 8192
+    assert "Different spellings are candidates, not confirmed aliases" in prompt
+    assert "Never ask users to locate tickets the Agent should search" in prompt
+    assert "Use needs_input when the requested history cannot be grounded" not in prompt
     assert nodes[LLM]["structured_output"]["schema"]["properties"]["contract"]["enum"] == ["knowledge-draft.v2"]
 
 

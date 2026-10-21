@@ -350,6 +350,19 @@ def claim_question_receipt(
         }
         remaining = tuple(identity for identity in challenge.question_ids
                           if identity in required and identity not in supplied_set)
+        if receipt.defer_remaining:
+            # Deferral is a request to continue, not an answer to required fields or
+            # permission to invent defaults/execute writes. Keep semantic review and
+            # the exact pending checkpoint; no fast projection or authority upgrade.
+            message = _message(semantic_rows) + "\n" if semantic_rows else ""
+            return ReceiptClaim(
+                status="semantic",
+                message_text=message + "나머지는 합리적 기본값으로 알아서 진행해줘",
+                continuation_contract=dict(continuation_contract or {}),
+                remaining=remaining, reason="deferred-questions",
+                _challenge_id=challenge.challenge_id, _lease_id=lease,
+                _checkpoint_revision=challenge.checkpoint_revision,
+            )
         answers_valid = all(
             _answer_valid(by_id[identity], answer_by_id[identity])
             for identity in supplied

@@ -118,6 +118,32 @@ def test_typed_target_answer_may_replace_the_prior_jira_key():
 
 
 # ── 라우팅 ─────────────────────────────────────────────────────────
+@pytest.mark.parametrize("answer", [
+    "나머지는 합리적 기본값으로 알아서 진행해줘", "알아서 진행해줘",
+])
+def test_default_delegation_keeps_pending_read_request_without_inventing_answers(answer):
+    from app.agent.workflow.session import _turn_start_patch
+    original = "fdc_summary_trace_ic 데이터의 히스토리를 알고싶어"
+    plan = {"goal": original, "tasks": [{"id": "history", "kind": "research",
+            "instruction": original, "write_intent": False}]}
+    prior = {"intent": "ask", "request_text": original, "request_plan": plan,
+             "questions": [{"field": "maxis:knowledge_curator:1", "kind": "text",
+                            "question": "관련 티켓은?", "required_input": True}]}
+    patch = _turn_start_patch(answer, prior)
+    assert patch["turn_continuation"] is True
+    assert patch["request_text"] == original and patch["request_plan"] == plan
+    assert patch["continuation_answer"] == answer
+    assert patch["continuation_contract"]["action"] == "read"
+    assert patch["continuation_contract"]["decisions"] == []
+    if answer.startswith("나머지는"):
+        answered = {**prior, "questions": []}
+        assert _turn_start_patch(answer, answered)["request_text"] == original
+        write = {**answered, "intent": "plan_work"}
+        assert _turn_start_patch(answer, write)["turn_continuation"] is False
+    assert _turn_start_patch(answer, {})["turn_continuation"] is False
+    assert _turn_start_patch(answer + ". 다른 보안교육 Task 만들어줘", prior)["turn_continuation"] is False
+
+
 def test_direct_answer_intents_skip_the_historian():
     """my_day·progress·activity 는 과거 발굴이 아니라 지금 상태의 집계다."""
     for i in (Intent.MY_DAY, Intent.PROGRESS, Intent.ACTIVITY):
