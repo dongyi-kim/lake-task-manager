@@ -125,6 +125,45 @@ def test_result_path_hints_are_source_relative_and_replayable(nodes):
     assert projection["_fact_paths"]("[]", records_only=False)["paths"] == []
 
 
+@pytest.mark.parametrize("field", ["tickets", "comments", "documents"])
+def test_zero_hit_field_keeps_its_owner_and_passes_both_guards(nodes, result_case, field):
+    import hashlib
+    pack, incoming, draft = result_case
+    raw = encoded({field: [], "returned": 0})
+    original = json.loads(incoming)
+    row = original["context_pack"]["sources"][0]
+    row.update(content=raw, content_sha256=hashlib.sha256(raw.encode()).hexdigest())
+    original["context_pack"].update(facts=[], metrics=[])
+    pack = type(pack).model_validate_json(encoded(original["context_pack"]))
+    draft["segments"][0]["source_path"] = "/" + field
+    hints = code(nodes[INPUT])["_fact_paths"](raw, records_only=False)
+    assert "/" + field in hints["paths"]
+    result = json.loads(code(nodes[ASSEMBLER])["main"](encoded(original), encoded(draft))["candidate"])
+    assert result["payload"]["text"] == encoded({field: []})
+    remote, local = both(nodes, pack, result)
+    assert remote == result and local()[0].status == "ok"
+
+
+def test_nonempty_array_keeps_exact_owner_without_truncating_overflow(nodes, result_case):
+    import hashlib
+    assembler = code(nodes[ASSEMBLER])
+    raw = '{"tickets":[{"key":"DL-1","ratio":0.1234567890123456789}]}'
+    assert assembler["_extract_fact"](raw, "/tickets") == raw
+    assert assembler["_extract_fact"](raw, "/tickets/0") == raw[len('{"tickets":['):-2]
+    prompt = nodes[LLM]["prompt_template"][0]["text"]
+    assert "Do not select an entire nonempty array" in prompt
+    _, incoming, draft = result_case
+    original = json.loads(incoming)
+    content = encoded({"tickets": [{"key": "DL-1", "text": "x" * 700},
+                                   {"key": "DL-2", "text": "y" * 700}]})
+    original["context_pack"]["sources"][0].update(
+        content=content, content_sha256=hashlib.sha256(content.encode()).hexdigest())
+    draft["segments"][0]["source_path"] = "/tickets"
+    with pytest.raises(ValueError, match="invalid_core_result_draft"):
+        assembler["main"](encoded(original), encoded(draft))
+    assert original["context_pack"]["sources"][0]["content"] == content
+
+
 @pytest.mark.parametrize("content", [
     '{"a":' * 400 + "1" + "}" * 400,
     r'{"\ud800":[{"a":1}]}', r'{"\ud800":1}',

@@ -50,9 +50,10 @@ def _extract_fact(content, pointer):
             value = value[int(key)]
         else:
             _fail()
-    # Retain an original field's name with a scalar. A naked "2/3", date or
-    # boolean loses what was measured. This is a projection, not an invented label.
-    if parent_key is not None and not isinstance(value, (dict, list)):
+    # Retain an original field's name with scalars and arrays. In particular,
+    # [] alone loses which bounded search had no hits and has no groundable
+    # tokens. Copy its original owner; never invent a label or a conclusion.
+    if parent_key is not None and not isinstance(value, dict):
         return _source_json({parent_key: value})
     # Containers keep their explicit keys/owners; no flattening or inferred labels.
     return str(value) if isinstance(value, str) else _source_json(value)

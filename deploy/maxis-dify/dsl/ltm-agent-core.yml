@@ -6799,7 +6799,9 @@ workflow:
           \ if isinstance(value, dict) else enumerate(value) if isinstance(value,\
           \ list) else ()\n            for key, child in reversed(list(children)):\n\
           \                pointer = path + \"/\" + str(key).replace(\"~\", \"~0\"\
-          ).replace(\"/\", \"~1\")\n                if isinstance(child, (dict, list)):\n\
+          ).replace(\"/\", \"~1\")\n                if isinstance(value, dict) and\
+          \ isinstance(child, list) and not child:\n                    offer(pointer,\
+          \ {key: child})\n                elif isinstance(child, (dict, list)):\n\
           \                    pending.append((child, pointer, depth + 1))\n     \
           \           elif isinstance(value, dict):\n                    offer(pointer,\
           \ {key: child})\n    return {\"paths\": found, \"complete\": complete}\n\
@@ -7346,14 +7348,17 @@ workflow:
             a fact''s value or combine records. Code copies the record without changing
             numbers/meaning, searching another source or repairing paths.
 
-            Use fact_paths ONLY for narrative records (concepts[].explanation, our_context).
-            For references[].ref or concepts[].term, use string_fact_paths instead:
-            choose the exact identifier/term string, e.g. /tickets/0/key, NEVER /tickets/0
-            or a JSON document root. Prefer explanation-only concepts; references
-            is not a container for history records. Each source''s separate lists
-            describe different output types. When hints are absent/incomplete, derive
-            a source-relative pointer from original content under the same type/length
-            rules. Missing or empty hints do not mean missing evidence.
+            Use fact_paths for narrative records (concepts[].explanation, our_context,
+            references[].why). For references[].ref or concepts[].term, use string_fact_paths
+            instead: choose the exact identifier/term string, e.g. /tickets/0/key,
+            NEVER /tickets/0 or a JSON document root. A reference''s why explains
+            relevance: normally author it as inference with source_ids; if quoting
+            a fact, select a complete record, never a title/summary fragment from
+            string_fact_paths. Prefer explanation-only concepts; references is not
+            a container for history records. Each source''s separate lists describe
+            different output types. When hints are absent/incomplete, derive a source-relative
+            pointer from original content under the same type/length rules. Missing
+            or empty hints do not mean missing evidence.
 
             For interpretation/proposals use {value, kind, source_ids}, kind=inference|recommendation,
             with 1–8 actual source IDs. Each leaf has ONE wrapper; value is a string,
@@ -8244,7 +8249,9 @@ workflow:
           \ if isinstance(value, dict) else enumerate(value) if isinstance(value,\
           \ list) else ()\n            for key, child in reversed(list(children)):\n\
           \                pointer = path + \"/\" + str(key).replace(\"~\", \"~0\"\
-          ).replace(\"/\", \"~1\")\n                if isinstance(child, (dict, list)):\n\
+          ).replace(\"/\", \"~1\")\n                if isinstance(value, dict) and\
+          \ isinstance(child, list) and not child:\n                    offer(pointer,\
+          \ {key: child})\n                elif isinstance(child, (dict, list)):\n\
           \                    pending.append((child, pointer, depth + 1))\n     \
           \           elif isinstance(value, dict):\n                    offer(pointer,\
           \ {key: child})\n    return {\"paths\": found, \"complete\": complete}\n\
@@ -8519,29 +8526,28 @@ workflow:
             \ User intent supports preferences, not external facts. Preserve partial/truncated\
             \ flags; JSON/HTML proves no execution.\n\nSelect a short exact quotation:\
             \ {\"kind\":\"fact\",\"source_id\":\"COPY_ID\",\"source_path\":\"/comments/0/text\"\
-            }. Prefer source.fact_paths.paths. Missing/incomplete hints are not missing\
-            \ evidence: derive a path INSIDE decoded content under the same rules,\
-            \ never \"/content\". JSON paths use RFC 6901 (~ as ~0, / as ~1); never\
-            \ \"\" for a whole JSON document. Plain text uses \"\". Values: nonempty,\
-            \ <=1,200 characters; scalars retain their keys. No role_context/policy\
-            \ pointers.\nSeparate interpretation. Do not relabel unsupported factual\
-            \ assertions. Zero hits mean no matches for this query, not that the requested\
-            \ object does not exist. Preserve contradictions. Without facts, ask for\
-            \ concrete evidence. Exact copying overrides presentation. Every segment,\
-            \ including proposals, must cite sources containing its ticket IDs and\
-            \ numbers.\n\nReturn result-draft.v2: contract, status, segments, missing_inputs.\
-            \ Facts: kind, source_id, source_path only. Others: value, kind (inference|recommendation|open_fact),\
+            }. Prefer source.fact_paths.paths. Do not select an entire nonempty array:\
+            \ choose one record/field by index, <=1,200 characters. Counts cannot\
+            \ replace history. Empty arrays/scalars retain their original field names.\
+            \ Missing hints are not missing evidence; derive paths INSIDE decoded\
+            \ content, never \"/content\" or role_context. RFC 6901: ~ as ~0, / as\
+            \ ~1. Plain text uses \"\"; never use \"\" for whole JSON.\nSeparate interpretation.\
+            \ Do not relabel unsupported factual assertions. Zero hits mean no matches\
+            \ for this query, not that the requested object does not exist. Preserve\
+            \ contradictions. Without facts, ask for concrete evidence. Exact copying\
+            \ overrides presentation. Every segment, including proposals, must cite\
+            \ sources containing its ticket IDs and numbers.\n\nReturn result-draft.v2:\
+            \ contract, status, segments, missing_inputs. Facts: kind, source_id,\
+            \ source_path only. Others: value, kind (inference|recommendation|open_fact),\
             \ 1–8 distinct source_ids. Code joins values with two newlines. Headings/markers\
             \ need typed segments/citations; no separate payload.\n\nAnswer with gaps:\
             \ ok, gaps in segments, missing_inputs: []. No answer possible: needs_input,\
             \ segments: []. Never combine segments and missing_inputs.\n```json\n\
             {\"contract\":\"result-draft.v2\",\"status\":\"ok\",\"segments\":[{\"\
             value\":\"조회 범위 내 근거 미확인\",\"kind\":\"open_fact\",\"source_ids\":[\"SOURCE_ID\"\
-            ]}],\"missing_inputs\":[]}\n```\n```json\n{\"contract\":\"result-draft.v2\"\
-            ,\"status\":\"needs_input\",\"segments\":[],\"missing_inputs\":[\"조사할\
-            \ 티켓 키를 알려주세요.\"]}\n```\nok: 1–40 segments. Max32,768 UTF-8 bytes. blocked:\
-            \ no segments/questions. Overflow is blocked, not missing evidence. No\
-            \ repair/truncation/execution authority. Final guards remain mandatory.\
+            ]}],\"missing_inputs\":[]}\n```\nok: 1–40 segments. Max32,768 UTF-8 bytes.\
+            \ blocked: no segments/questions. Overflow is blocked, not missing evidence.\
+            \ No repair/truncation/execution authority. Final guards remain mandatory.\
             \ Examples are not defaults."
         - id: 16d2c405-4277-4339-8f8b-b42c4b8f1661
           role: user
@@ -8819,9 +8825,10 @@ workflow:
           \ list) and re.fullmatch(r\"0|[1-9][0-9]*\", key) and int(key) < len(value):\n\
           \            parent_key = None\n            value = value[int(key)]\n  \
           \      else:\n            _fail()\n    # Retain an original field's name\
-          \ with a scalar. A naked \"2/3\", date or\n    # boolean loses what was\
-          \ measured. This is a projection, not an invented label.\n    if parent_key\
-          \ is not None and not isinstance(value, (dict, list)):\n        return _source_json({parent_key:\
+          \ with scalars and arrays. In particular,\n    # [] alone loses which bounded\
+          \ search had no hits and has no groundable\n    # tokens. Copy its original\
+          \ owner; never invent a label or a conclusion.\n    if parent_key is not\
+          \ None and not isinstance(value, dict):\n        return _source_json({parent_key:\
           \ value})\n    # Containers keep their explicit keys/owners; no flattening\
           \ or inferred labels.\n    return str(value) if isinstance(value, str) else\
           \ _source_json(value)\n\n\ndef main(model_input, candidate):\n    try:\n\
@@ -9096,7 +9103,9 @@ workflow:
           \ if isinstance(value, dict) else enumerate(value) if isinstance(value,\
           \ list) else ()\n            for key, child in reversed(list(children)):\n\
           \                pointer = path + \"/\" + str(key).replace(\"~\", \"~0\"\
-          ).replace(\"/\", \"~1\")\n                if isinstance(child, (dict, list)):\n\
+          ).replace(\"/\", \"~1\")\n                if isinstance(value, dict) and\
+          \ isinstance(child, list) and not child:\n                    offer(pointer,\
+          \ {key: child})\n                elif isinstance(child, (dict, list)):\n\
           \                    pending.append((child, pointer, depth + 1))\n     \
           \           elif isinstance(value, dict):\n                    offer(pointer,\
           \ {key: child})\n    return {\"paths\": found, \"complete\": complete}\n\

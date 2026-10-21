@@ -93,7 +93,9 @@ def _fact_paths(content, *, records_only, strings_only=False):
             children = value.items() if isinstance(value, dict) else enumerate(value) if isinstance(value, list) else ()
             for key, child in reversed(list(children)):
                 pointer = path + "/" + str(key).replace("~", "~0").replace("/", "~1")
-                if isinstance(child, (dict, list)):
+                if isinstance(value, dict) and isinstance(child, list) and not child:
+                    offer(pointer, {key: child})
+                elif isinstance(child, (dict, list)):
                     pending.append((child, pointer, depth + 1))
                 elif isinstance(value, dict):
                     offer(pointer, {key: child})
