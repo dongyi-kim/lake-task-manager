@@ -64,6 +64,63 @@ def test_two_scopes_do_not_reuse_metric_identity_or_global_counts():
     assert rows[1]["source_ids"] == ["src_other"]
 
 
+@pytest.mark.parametrize("kind", ["jira", "confluence"])
+@pytest.mark.parametrize("count", [0, 1])
+def test_attested_exhaustive_results_use_complete_without_has_more(kind, count, now):
+    field, query, scopes = (("tickets", "canonicalJql", "scopeProjects") if kind == "jira"
+                            else ("documents", "canonicalCql", "scopeSpaces"))
+    result = {field: ([{"key": "DL-1"}] if kind == "jira" else [{"id": "page-a", "space": "DL"}])[:count],
+              query: "scoped exhaustive query", scopes: ["DL", "PMO"], "complete": True}
+    proof = backend.attest_query_result("read-all", kind, result, retrieved_at=now)
+    state = {"query_results": [{"id": "read-all", "source": kind, "result": result, "_remoteEvidence": proof}]}
+    rows = backend._verified_evidence_sources(state)
+    metrics = backend._retrieval_count_metrics(rows)
+    assert len(metrics) == len(rows)
+    assert sum(m["value"] for m in metrics) == count
+    for row, metric in zip(rows, metrics):
+        assert metric["source_ids"] == [row["source_id"]]
+        assert metric["value"] == len(json.loads(row["content"])[field])
+    # The marker never substitutes for the original acquisition proof.
+    state["query_results"][0]["result"]["complete"] = False
+    with pytest.raises(backend.MaxisRuntimeError):
+        backend._verified_evidence_sources(state)
+
+
+@pytest.mark.parametrize("changes", [
+    {"complete": False}, {"complete": None}, {"complete": 1},
+    {"complete": True, "hasMore": True}, {"complete": True, "hasMore": None},
+    {"complete": True, "hasMore": 0}, {"complete": False, "hasMore": False},
+    {"complete": True, "incomplete": True}, {"complete": True, "contextTruncated": True},
+    {"complete": True, "materializationErrors": ["failed"]},
+])
+def test_exhaustive_completion_cannot_override_incomplete_or_conflicting_result(changes):
+    row = source()
+    result = json.loads(row["content"])
+    result.pop("hasMore")
+    row["content"] = json.dumps({**result, **changes})
+    assert backend._retrieval_count_metrics([row]) == []
+
+
+@pytest.mark.parametrize("kind", ["jira", "confluence", "comments"])
+def test_populated_exhaustive_scope_partitions_count_only_their_own_rows(kind, now):
+    field = {"jira": "tickets", "confluence": "documents", "comments": "comments"}[kind]
+    row_key = "ticketKey" if kind == "comments" else "key"
+    rows = ([{"id": "page-a", "space": "DL"}, {"id": "page-b", "space": "PMO"},
+             {"id": "page-c", "space": "PMO"}] if kind == "confluence" else
+            [{row_key: "DL-1"}, {row_key: "PMO-2"}, {row_key: "PMO-3"}])
+    query, scopes = (("canonicalCql", "scopeSpaces") if kind == "confluence"
+                     else ("canonicalJql", "scopeProjects"))
+    result = {field: rows, query: "scoped exhaustive query", scopes: ["DL", "PMO"],
+              "complete": True, "total": 999}
+    proof = backend.attest_query_result("all-scopes", kind, result, retrieved_at=now)
+    sources = backend._verified_evidence_sources({"query_results": [
+        {"id": "all-scopes", "source": kind, "result": result, "_remoteEvidence": proof}]})
+    metrics = backend._retrieval_count_metrics(sources)
+    by_source = {m["source_ids"][0]: m["value"] for m in metrics}
+    assert {s["scope"]: by_source[s["source_id"]] for s in sources} == {"DL": 1, "PMO": 2}
+    assert len({m["metric_id"] for m in metrics}) == 2
+
+
 @pytest.mark.parametrize("count", [0, 1, 3])
 def test_comment_count_uses_returned_comments_not_candidate_ticket_count(count):
     row = source("jira")
@@ -125,16 +182,24 @@ def test_verified_single_ticket_comments_keep_read_kind_after_display_identity_p
         backend._verified_evidence_sources(state)
 
 
-@pytest.mark.parametrize("comments", [False, True])
-def test_zero_count_passes_both_numeric_guards_only_with_linked_metric(context_guard, now, comments):
+@pytest.mark.parametrize("kind", ["jira", "confluence", "comments"])
+@pytest.mark.parametrize("exhaustive", [False, True])
+def test_zero_count_passes_both_numeric_guards_only_with_linked_metric(context_guard, now, kind, exhaustive):
     from app.agent.maxis import ResponseGuard, ResponseGuardError
-    row = source("jira")
-    if comments:
+    row = source("confluence" if kind == "confluence" else "jira")
+    if kind == "confluence":
+        row["scope"] = "DATALAKE"
+    if kind == "comments":
         row["canonical_id"] = "ltm-query:comments:read-comments"
         row["_query_source"] = "comments"
         row["content"] = json.dumps({"canonicalJql": "scoped", "hasMore": False,
                                      "comments": [], "candidateTickets": 0})
     row.update(title="검색 결과", url="", retrieved_at=now)
+    if exhaustive:
+        result = json.loads(row["content"])
+        result.pop("hasMore")
+        result["complete"] = True
+        row["content"] = json.dumps(result)
     schema = {"type": "object", "properties": {"summary": {"type": "string"}},
               "required": ["summary"], "additionalProperties": False}
     pack = context_guard.build(request_id="zero-count", use_case="work_architect",

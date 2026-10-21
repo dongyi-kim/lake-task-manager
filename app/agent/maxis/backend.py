@@ -1471,11 +1471,19 @@ def _retrieval_count_metrics(sources: list[dict]) -> list[dict]:
             result = json.loads(source["content"])
         except (KeyError, TypeError, ValueError):
             continue
-        if (not isinstance(result, dict) or result.get("hasMore") is not False
+        if not isinstance(result, dict):
+            continue
+        # Bounded reads use hasMore; exhaustive QueryRunner reads use complete.
+        # Accept the latter only when no conflicting/unknown pagination flag is
+        # present. Both still originate from verified acquisition receipts.
+        complete = (result.get("hasMore") is False and result.get("complete") is not False
+                    or "hasMore" not in result and result.get("complete") is True)
+        if (not complete
                 or not isinstance(result.get(query), str) or not result[query].strip()
                 or not isinstance(result.get(field), list)
                 or any(not isinstance(row, dict) for row in result[field])
-                or any(result.get(key) for key in ("error", "errors", "truncated", "partial"))
+                or any(result.get(key) for key in ("error", "errors", "truncated", "partial",
+                    "incomplete", "contextTruncated", "materializationErrors"))
                 or result.get("ok") is False or result.get("status") in ("failed", "error")):
             continue
         source_id = source["source_id"]
