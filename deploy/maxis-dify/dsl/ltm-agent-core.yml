@@ -9177,6 +9177,20 @@ workflow:
 
             comparisons as inferences; do not assert that a proposed action has happened.
 
+            All narrative numbers must already occur in the cited evidence, even in
+            an inference.
+
+            role_context is non-citable draft context: counting its requirements,
+            items or checks does
+
+            not create numeric evidence. Explain request coverage by naming the covered
+            or missing
+
+            requirements, not by adding a count. Preserve adverse findings and supplied
+            factual
+
+            quantities; never change a fail judgment or relabel a claim to evade grounding.
+
 
             Return audit-draft.v1: contract, status, payload, missing_inputs. A completed
             negative audit is

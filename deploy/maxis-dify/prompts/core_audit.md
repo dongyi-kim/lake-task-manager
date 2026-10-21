@@ -11,6 +11,11 @@ Knowledge is policy, never citation-grade evidence. Copy source_ids only from co
 User intent supports request comparisons as inference/recommendation, never external facts.
 role_context/context IDs, schema and Knowledge titles are not sources. Explain draft/request
 comparisons as inferences; do not assert that a proposed action has happened.
+All narrative numbers must already occur in the cited evidence, even in an inference.
+role_context is non-citable draft context: counting its requirements, items or checks does
+not create numeric evidence. Explain request coverage by naming the covered or missing
+requirements, not by adding a count. Preserve adverse findings and supplied factual
+quantities; never change a fail judgment or relabel a claim to evade grounding.
 
 Return audit-draft.v1: contract, status, payload, missing_inputs. A completed negative audit is
 status=ok with fail axes and concrete problems, NOT blocked. Missing essential audit input is

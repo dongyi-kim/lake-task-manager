@@ -84,6 +84,28 @@ def test_completed_negative_audit_is_not_transport_failure_or_approval(nodes, au
         evidence=pack, expected_knowledge_manifest_sha256="a" * 64)[1] == result["payload"]
 
 
+def test_audit_prompt_separates_non_citable_draft_counts_from_evidence(nodes):
+    prompt = nodes[LLM]["prompt_template"][0]["text"]
+    assert "All narrative numbers must already occur in the cited evidence" in prompt
+    assert "role_context is non-citable draft context" in prompt
+    assert "Preserve adverse findings" in prompt
+
+
+@pytest.mark.parametrize("kind", ["inference", "recommendation"])
+def test_audit_inferred_requirement_count_does_not_gain_numeric_authority(nodes, audit_case, kind):
+    pack, incoming, draft = audit_case
+    draft["payload"]["summary"] = {"value": "3개 완료 기준을 반영했습니다",
+                                   "kind": kind, "source_ids": ["intent-a"]}
+    result = assemble(nodes, incoming, draft)
+    # Assembly must not silently remove the number, rewrite the finding or grant
+    # draft context citation authority. The original final guard remains binding.
+    assert result["payload"]["summary"] == draft["payload"]["summary"]["value"]
+    assert result["payload"]["answers_request"] is False
+    with pytest.raises(ResponseGuardError, match="unverified_numeric_claim"):
+        ResponseGuard().validate_remote_role(encoded(result), expected_role_id="auditor",
+                                            payload_model=SCHEMA, evidence=pack)
+
+
 @pytest.mark.parametrize("index", [-1, 0, 2])
 def test_concrete_negative_finding_survives_assembly_and_both_guards(nodes, audit_case, index, monkeypatch):
     pack, incoming, draft = audit_case
