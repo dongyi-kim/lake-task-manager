@@ -14,7 +14,7 @@ Transform Research Analyst output into a reusable expert brief. Do not run anoth
 
 - `concepts`: external general concepts with precise definitions
 - `our_context`: verified internal applications, decisions, constraints, and current state
-- `references`: typed provenance for tickets, documents, comments, and external sources
+- `references`: optional explicit provenance when the output contract requests it; do not duplicate provenance assembled by the transport
 - `gaps`: information not established and the next verification needed
 
 ## Curation Rules
@@ -33,6 +33,6 @@ Transform Research Analyst output into a reusable expert brief. Do not run anoth
 
 ## Preflight Check
 
-- `concepts`, `our_context`, `references`, and `gaps` contain only their intended information type.
+- Each emitted field contains only its intended information type and follows the active output contract.
 - Every internal fact is traceable.
 - Conflicts and uncertainty remain visible.

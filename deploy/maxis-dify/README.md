@@ -90,7 +90,9 @@ Editor의 `editor-draft-spec.v2`, `editor-writing.v1`, `editor-plan.v2`는 각�
   필수 정책을 보존하는 system 한도는 Work 18,432, Request 10,240 UTF-8 bytes다.
   실측 품질·효율 보장은 아니며 실제 모델과 출력 한도는 현지 환경 설정으로 공급한다.
   Knowledge는 exact KnowledgeBrief에 전용 입력 투영 → native draft → 원입력 결속 조립 경로를
-  사용한다. `fact_paths`는 기록용, `string_fact_paths`는 ref/term 문자열용 힌트다.
+  사용한다. `knowledge-draft.v3`는 concepts.explanation·our_context·gaps만 작성하고
+  중복 references/term을 생성하지 않는다. `fact_paths`는 완전한 원문 레코드의 위치 힌트다.
+  출처 인용은 원입력으로 코드가 조립하며 공개 KnowledgeBrief 계약은 유지한다.
   힌트가 예산을 초과하면 힌트만 생략하고 원문을 유지한다. 로컬 Knowledge 역할의 의미 규칙과
   양쪽 최종 guard를 유지한다.
   Result는 exact backend text schema에 입력 투영 → 단일 의미 LLM → 조립 경로를 사용한다.

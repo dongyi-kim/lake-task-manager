@@ -138,3 +138,23 @@ def test_agent_apply_uses_the_adapter_projection_without_model_calls(monkeypatch
     monkeypatch.setattr(agent, "llm", lambda **_kwargs: pytest.fail("LLM called"))
 
     assert agent.apply({}, payload)["knowledge_brief"] == payload
+
+
+@pytest.mark.parametrize("concept,expected", [
+    ({"explanation": "변경 데이터 캡처"}, "- 변경 데이터 캡처"),
+    ({"term": "", "explanation": "변경 데이터 캡처"}, "- 변경 데이터 캡처"),
+    ({"term": "  ", "explanation": "변경 데이터 캡처"}, "- 변경 데이터 캡처"),
+    ({"term": "CDC", "explanation": "변경 데이터 캡처"}, "- CDC: 변경 데이터 캡처"),
+    ({"term": "CDC"}, "- CDC"),
+    ({}, "[개념]\n[우리 상황]"),
+])
+def test_optional_concept_fields_survive_apply_to_result_task(concept, expected):
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+
+    state = _knowledge_module().KnowledgeCurator().apply({}, {
+        "concepts": [concept], "our_context": "검토 기록", "gaps": [],
+    })
+    task = ResultIntegrator().task(state)
+    assert expected in task
+    assert "None" not in task
+    assert "- : " not in task

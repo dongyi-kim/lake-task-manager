@@ -20,7 +20,7 @@ def main(model_input, candidate):
             _KNOWLEDGE_SCHEMA_JSON, _KNOWLEDGE_SCHEMA_SHA256, _DRAFT_SCHEMA, _fail)
         draft = _native_candidate(candidate, _DRAFT_SCHEMA, _PRODUCER_LIMITS["draft_utf8_bytes"])
         status, payload, missing = draft["status"], draft["payload"], draft["missing_inputs"]
-        if (draft["contract"] != "knowledge-draft.v2" or any(not value.strip() for value in missing)
+        if (draft["contract"] != "knowledge-draft.v3" or any(not value.strip() for value in missing)
                 or status == "ok" and missing or status != "ok" and payload
                 or status == "needs_input" and not missing or status == "blocked" and missing):
             _fail()

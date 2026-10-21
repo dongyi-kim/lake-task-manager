@@ -22,6 +22,14 @@ def encoded(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def test_knowledge_native_producer_has_one_narrative_leaf_shape_per_field(nodes):
+    schema = nodes[LLM]["structured_output"]["schema"]
+    payload = schema["properties"]["payload"]["anyOf"][1]
+    assert set(payload["properties"]) == {"concepts", "our_context", "gaps"}
+    assert set(payload["properties"]["concepts"]["items"]["properties"]) == {"explanation"}
+    assert schema["properties"]["contract"]["enum"] == ["knowledge-draft.v3"]
+
+
 @pytest.fixture(scope="module")
 def nodes():
     dsl = yaml.safe_load((ROOT / "deploy/maxis-dify/dsl/ltm-agent-core.yml").read_text(encoding="utf-8"))
@@ -47,7 +55,7 @@ def knowledge_case(context_guard, now, nodes):
         "knowledge_curator", pack.request_id, "remote-role-result.v1", VERSION, VERSION, "kb-test")
     assert guarded["policy_decision"] == "allow"
     leaf = {"value": "DL-9044 배치 주기 근거 검토 제안.", "kind": "recommendation", "source_ids": ["record-a"]}
-    draft = {"contract": "knowledge-draft.v2", "status": "ok", "missing_inputs": [],
+    draft = {"contract": "knowledge-draft.v3", "status": "ok", "missing_inputs": [],
         "payload": {"concepts": [{"explanation": copy.deepcopy(leaf)}], "our_context": leaf, "gaps": []}}
     return pack, guarded["model_input"], draft
 
@@ -115,17 +123,16 @@ def test_input_and_prompt_have_one_semantic_owner(nodes, knowledge_case):
         if not intent: row["entity_reference"] = canonical
         row["allowed_claim_kinds"] = ["inference", "recommendation"] if intent else ["fact", "inference", "recommendation"]
         row["fact_paths"] = {"paths": [] if intent else [""], "complete": True}
-        row["string_fact_paths"] = {"paths": [] if intent else [""], "complete": True}
     assert projected["context"] == expected and projected["knowledge_context"] == value["knowledge_context"]
     assert projected["producer_limits"] == {"draft_utf8_bytes": 32768, "envelope_utf8_bytes": 98304, "claims": 40, "bindings": 256}
     local = (ROOT / "app/agent/prompts/roles/knowledge_curator.md").read_text(encoding="utf-8").strip()
     prompt = nodes[LLM]["prompt_template"][0]["text"]
     assert prompt.count(local) == 1 and "## Required response" not in prompt
-    assert "knowledge-draft.v2" in prompt and len(prompt.encode()) <= 8192
+    assert "knowledge-draft.v3" in prompt and len(prompt.encode()) <= 8192
     assert "Different spellings are candidates, not confirmed aliases" in prompt
     assert "Never ask users to locate tickets the Agent should search" in prompt
     assert "Use needs_input when the requested history cannot be grounded" not in prompt
-    assert nodes[LLM]["structured_output"]["schema"]["properties"]["contract"]["enum"] == ["knowledge-draft.v2"]
+    assert nodes[LLM]["structured_output"]["schema"]["properties"]["contract"]["enum"] == ["knowledge-draft.v3"]
 
 
 def test_advisory_paths_resolve_original_records_with_exact_numbers(nodes):
@@ -176,7 +183,7 @@ def test_complex_source_omits_invalid_hints_without_rejecting_input(nodes, knowl
 def test_output_shapes_reach_the_actual_knowledge_system_boundary_once(nodes):
     transport = (ROOT / "deploy/maxis-dify/prompts/core_knowledge.md").read_text(encoding="utf-8").strip()
     shape_rule = ("our_context is one leaf object, not an array; concepts is an array of objects with "
-        "optional term/explanation leaves; references is an optional array of ref/why leaves; gaps is an array of leaves.")
+        "only an optional explanation leaf; gaps is an array of leaves.")
     prompt = nodes[LLM]["prompt_template"][0]["text"]
     local = (ROOT / "app/agent/prompts/roles/knowledge_curator.md").read_text(encoding="utf-8").strip()
     assert prompt == local + "\n\n" + transport
@@ -188,7 +195,7 @@ def test_output_shapes_reach_the_actual_knowledge_system_boundary_once(nodes):
     assert set(narrative["properties"]) == {"value", "kind", "source_ids"}
     assert narrative["properties"]["kind"]["enum"] == ["inference", "recommendation"]
     assert set(fact["properties"]) == {"kind", "source_id", "source_path"}
-    for name, children in (("concepts", {"term", "explanation"}), ("references", {"ref", "why"})):
+    for name, children in (("concepts", {"explanation"}),):
         assert fields[name]["type"] == "array" and fields[name]["items"]["type"] == "object"
         assert set(fields[name]["items"]["properties"]) == children
     assert fields["gaps"]["type"] == "array"
@@ -216,13 +223,13 @@ def test_role_context_integrity_id_is_not_exposed_as_a_citable_source(nodes, kno
         code(nodes[ASSEMBLER])["main"](raw, encoded(draft))
 
 
-@pytest.mark.parametrize("field", ["our_context", "concepts", "references", "gaps"])
+@pytest.mark.parametrize("field", ["our_context", "concepts", "gaps"])
 def test_native_output_collection_shape_mismatches_are_not_repaired(nodes, knowledge_case, field):
     _, incoming, draft = knowledge_case
     leaf = copy.deepcopy(draft["payload"]["our_context"])
     # Synthetic shape regression, not a reconstruction of any historical native text.
     wrong_shape = {"our_context": [leaf, {**leaf, "value": "별도의 합성 설명"}],
-        "concepts": {"term": leaf}, "references": {"ref": leaf}, "gaps": leaf}
+        "concepts": {"explanation": leaf}, "gaps": leaf}
     draft["payload"][field] = wrong_shape[field]
     before = copy.deepcopy((incoming, draft))
     schema = nodes[LLM]["structured_output"]["schema"]
@@ -383,16 +390,16 @@ def test_original_binding_and_input_projection_fail_closed(nodes, knowledge_case
             code(nodes[ASSEMBLER])["main"](encoded(value), encoded(draft))
 
 
-def test_all_six_leaves_and_optional_absence_have_exact_single_authoring(nodes, knowledge_case):
+def test_brief_leaves_and_optional_absence_have_exact_single_authoring(nodes, knowledge_case):
     pack, incoming, draft = knowledge_case
     leaf = copy.deepcopy(draft["payload"]["our_context"])
-    draft["payload"].update(concepts=[{"term": leaf, "explanation": leaf}, {}, {"term": {**leaf, "value": "  "}}],
-        references=[{"ref": leaf, "why": leaf}, {}], gaps=[leaf])
+    draft["payload"].update(concepts=[{"explanation": leaf}, {}, {"explanation": {**leaf, "value": "  "}}], gaps=[leaf])
     result = json.loads(code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))["candidate"])
     assert len(result["claims"]) == 1
     assert {row["path"] for row in result["payload_claims"]} == {
-        "/concepts/0/term", "/concepts/0/explanation", "/our_context", "/references/0/ref", "/references/0/why", "/gaps/0"}
-    assert result["payload"]["concepts"][1:] == [{}, {"term": "  "}] and result["payload"]["references"][1] == {}
+        "/concepts/0/explanation", "/our_context", "/gaps/0"}
+    assert result["payload"]["concepts"][1:] == [{}, {"explanation": "  "}]
+    assert "references" not in result["payload"]
     remote, local = both(nodes, pack, result)
     assert remote == result and local()[1].model_dump(exclude_unset=True) == result["payload"]
 
@@ -501,7 +508,7 @@ def test_bracket_prefixed_plain_source_is_not_mistaken_for_json(nodes, knowledge
 
 
 @pytest.mark.parametrize("field", ["references", "concepts"])
-def test_identifier_and_term_can_remain_exact_strings(nodes, knowledge_case, field):
+def test_duplicate_native_provenance_is_rejected_not_silently_dropped(nodes, knowledge_case, field):
     import hashlib
     pack, incoming, draft = knowledge_case
     value = json.loads(incoming)
@@ -510,10 +517,16 @@ def test_identifier_and_term_can_remain_exact_strings(nodes, knowledge_case, fie
     pack = type(pack).model_validate_json(encoded(value["context_pack"]))
     draft["payload"][field] = [{("ref" if field == "references" else "term"): {
         "kind": "fact", "source_id": "record-a", "source_path": "/items/0/key"}}]
-    result = json.loads(code(nodes[ASSEMBLER])["main"](encoded(value), encoded(draft))["candidate"])
-    assert next(iter(result["payload"][field][0].values())) == "DL-9044"
-    remote, local = both(nodes, pack, result)
-    assert remote == result and local()[0].status == "ok"
+    original = copy.deepcopy(draft)
+    assert not Draft202012Validator(nodes[LLM]["structured_output"]["schema"]).is_valid(draft)
+    with pytest.raises(ValueError, match="invalid_core_knowledge_draft native_draft_schema"):
+        code(nodes[ASSEMBLER])["main"](encoded(value), encoded(draft))
+    assert draft == original
+    # These remain valid public fields; the narrowing belongs only to this producer.
+    public = {"our_context": "원문", "concepts": [], "gaps": [], field: [
+        {("ref" if field == "references" else "term"): "DL-9044"}]}
+    Draft202012Validator(role_output_schema("knowledge_curator")).validate(public)
+    assert KnowledgeBrief.model_validate(public).model_dump(exclude_unset=True) == public
 
 
 @pytest.mark.parametrize("content,path,allowed", [
@@ -541,13 +554,14 @@ def test_root_record_supported_and_nested_identity_fragments_rejected(nodes, kno
             code(nodes[ASSEMBLER])["main"](encoded(value), encoded(draft))
 
 
-def test_authored_fact_and_legacy_contract_are_not_silently_migrated(nodes, knowledge_case):
+@pytest.mark.parametrize("legacy", ["knowledge-draft.v1", "knowledge-draft.v2"])
+def test_authored_fact_and_legacy_contract_are_not_silently_migrated(nodes, knowledge_case, legacy):
     _, incoming, draft = knowledge_case
     draft["payload"]["our_context"]["kind"] = "fact"
     assert not Draft202012Validator(nodes[LLM]["structured_output"]["schema"]).is_valid(draft)
     with pytest.raises(ValueError, match="^invalid_core_knowledge_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))
     draft["payload"]["our_context"]["kind"] = "inference"
-    draft["contract"] = "knowledge-draft.v1"
+    draft["contract"] = legacy
     with pytest.raises(ValueError, match="^invalid_core_knowledge_draft(?: native_draft_(?:json_syntax|json_structure|schema|source_id|fact_selection))?$"):
         code(nodes[ASSEMBLER])["main"](incoming, encoded(draft))

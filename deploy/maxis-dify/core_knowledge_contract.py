@@ -72,10 +72,20 @@ def build_draft_schema(canonical_schema, project):
         projected = project(copy.deepcopy(canonical_schema))
         if canonical(projected) != canonical(resolve(canonical_schema)):
             fail()
+        # The native curator authors the brief, not a second provenance index.
+        # Canonical optional fields stay supported publicly; native extras fail
+        # validation, never disappear in the assembler. Review any schema drift.
+        if "references" in projected.get("required", []):
+            fail()
+        concepts = projected["properties"]["concepts"]["items"]
+        if "term" in concepts.get("required", []):
+            fail()
+        del projected["properties"]["references"]
+        del concepts["properties"]["term"]
         payload = derive(projected)
         return {"type": "object", "additionalProperties": False,
             "required": ["contract", "status", "payload", "missing_inputs"], "properties": {
-                "contract": {"type": "string", "enum": ["knowledge-draft.v2"]},
+                "contract": {"type": "string", "enum": ["knowledge-draft.v3"]},
                 "status": {"type": "string", "enum": ["ok", "needs_input", "blocked"]},
                 "payload": {"anyOf": [{"type": "object", "additionalProperties": False, "maxProperties": 0}, payload]},
                 "missing_inputs": {"type": "array", "maxItems": 8,

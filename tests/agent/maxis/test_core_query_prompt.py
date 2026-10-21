@@ -103,9 +103,10 @@ def test_query_prompt_explains_projected_authority_without_granting_facts(compil
     prompt = compiler(LOCAL.read_text(encoding="utf-8"), WIRE.read_text(encoding="utf-8"))
     for marker in ("source_authority", "allowed_claim_kinds", "user_intent", "evidence_source"):
         assert prompt.count(marker) == 1
-    assert "Labels confer no truth or authority." in prompt
+    assert "never external facts" in prompt
+    assert "evidence_source` facts need faithful support" in prompt
     assert "formatting grants no truth or execution authority." in prompt
-    assert "preserving your `kind` and selected sources" in prompt
+    assert "Code copies `value`, `kind` and sources unchanged" in prompt
     assert "do not repeat prior request_questions" in prompt
     assert "Never invent a subject to avoid a genuinely required question." in prompt
 

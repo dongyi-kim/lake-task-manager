@@ -429,7 +429,9 @@ Expand-Archive -LiteralPath .cache/maxis/workflows.zip -DestinationPath .cache/m
    게시 후 다시 내보내 노드·연결·프롬프트·코드와 현지 모델/Knowledge 설정이 의도한 값인지 확인한다.
    Result 내부 계약은 `result-draft.v2`: 사실은 원문 위치를 선택하고 해석·제안은 별도 타입으로 작성한다.
    외부 API는 유지되지만 Result LLM의 구조화 출력 schema와 두 코드 노드를 함께 갱신해야 한다.
-   Knowledge 내부 계약도 `knowledge-draft.v2`이므로 해당 LLM schema·코드 노드를 함께 갱신한다.
+   Knowledge 내부 계약은 `knowledge-draft.v3`이므로 해당 LLM schema·코드 노드를 함께 갱신한다.
+   이 단계는 `concepts.explanation`·`our_context`·`gaps`만 작성하며 참조 목록을 중복 생성하지 않는다.
+   출처·인용은 원본 근거에 결속된 코드가 조립한다. 공개 KnowledgeBrief 계약은 유지된다.
    사실은 완전한 원문 레코드, 해석·제안은 별도 타입으로 작성하며 최종 근거 검사는 생략하지 않는다.
 
 </details>

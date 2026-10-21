@@ -164,11 +164,12 @@ Knowledge는 Stage → Knowledge Input → Knowledge LLM → Knowledge Assembler
 최종 envelope/schema metadata와 source hash는 숨기고, opaque intent canonical ID 외의 업무 ID는
 `entity_reference`로 표시한다. 인용에는 원본 `source_id`만 사용하며 `allowed_claim_kinds`는
 기존 양쪽 guard의 intent 판정 설명이지 새 사실 권한이 아니다. 조립기는 원입력에 계속 결속한다.
-canonical KnowledgeBrief에서 닫힌 내부 `knowledge-draft.v2`를 파생한다. 사실은 source_id/source_path로
+canonical KnowledgeBrief에서 닫힌 내부 `knowledge-draft.v3`를 파생한다. 사실은 source_id/source_path로
 완전한 원문 레코드를 선택하고, 해석·제안은 value/kind/source_ids로 한 번만 작성한다.
 사실 선택은 root object 또는 root/top-level 배열의 완전한 레코드만 허용한다. 티켓 식별자를 잃는
-중첩 상태 조각은 거부한다. ref/term만 원문의 문자열 필드를 선택할 수 있다.
-fact_paths는 record, string_fact_paths는 문자열 위치를 안내한다. JSON root 문자열처럼
+중첩 상태 조각은 거부한다. native 출력은 concepts.explanation·our_context·gaps만 작성한다.
+중복 references/term은 거부하며 공개 계약의 선택 필드는 변경하지 않는다. 출처 인용은 코드가 조립한다.
+fact_paths는 완전한 record 위치만 안내한다. JSON root 문자열처럼
 조립기가 허용하지 않는 위치는 추천하지 않으며, 권한·근거 판정은 힌트가 아닌 원본으로 수행한다.
 로컬 Knowledge 역할 전체가 의미 규칙의 정본이며
 전용 prompt는 trust boundary와 wire 형식만 추가한다. 생략/빈 값·kind·출처 순서를 보존하고

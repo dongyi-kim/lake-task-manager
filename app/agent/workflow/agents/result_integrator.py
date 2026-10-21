@@ -573,8 +573,14 @@ class ResultIntegrator(TextAgent):
         kb = state.get("knowledge_brief") or {}
         brief = ""
         if kb:
+            concepts = []
+            for concept in kb.get("concepts") or []:
+                parts = [concept.get(key) or "" for key in ("term", "explanation")]
+                text = ": ".join(part for part in parts if part.strip())
+                if text:
+                    concepts.append("- " + text)
             brief = "\n".join(
-                ["[개념]"] + [f"- {c.get('term')}: {c.get('explanation')}" for c in kb.get("concepts") or []]
+                ["[개념]"] + concepts
                 + ["[우리 상황]", kb.get("our_context") or ""]
                 + ["[참고]"] + [f"- {r.get('ref')} — {r.get('why')}" for r in kb.get("references") or []]
                 + ["[남은 공백]"] + [f"- {g}" for g in kb.get("gaps") or []])
