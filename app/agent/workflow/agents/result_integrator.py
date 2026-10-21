@@ -279,6 +279,19 @@ def _result_atomic_ledger(state):
 class ResultIntegrator(TextAgent):
     name = Node.RESULT_INTEGRATOR
 
+    def _maxis_needs_input_patch(self, state, err):
+        patch = super()._maxis_needs_input_patch(state, err)
+        if patch is not None:
+            from langchain_core.messages import AIMessage
+
+            # This is the terminal Role: no later node will render its question
+            # channel. Keep validated questions/telemetry, without stale prose or
+            # another model call, and leave no usable approval behind.
+            reply = _question_only_reply({}, patch["questions"])
+            patch.update(reply=reply, messages=[AIMessage(content=reply)],
+                         approval_token="", comment_token="")
+        return patch
+
     def fallback(self, state, err):
         from app.agent.maxis.backend import MaxisRuntimeError
 

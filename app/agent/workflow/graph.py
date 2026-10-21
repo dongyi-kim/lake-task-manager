@@ -180,10 +180,14 @@ def route_after_request_architect(state: AgentState) -> str:
     from app.agent.workflow.meeting_context import needs_research_interview
     if needs_research_interview(state):
         return "investigate"
-    # 직전 조사 후의 인터뷰 답변은 같은 자료를 다시 검색하지 않는다. 조회/웹 결과를 보존한
-    # 채 지식 정리 또는 초안 작성으로 이어서 호출 수와 stale 검색 위험을 함께 줄인다.
+    # Local continuations can reuse research. MAXIS consumes attested query results,
+    # which session turn-start clears when the user may refine the scope. A retained
+    # prose situation is not that evidence: reacquire before remote curation.
     if state.get("turn_continuation") and (state.get("situation") or "").strip():
         if intent == Intent.ASK:
+            routes = state.get("runtime_role_routes") or {}
+            if any(routes.get(role) == "maxis" for role in (Node.KNOWLEDGE_CURATOR, Node.RESULT_INTEGRATOR)):
+                return "investigate"
             return "curate"
         if intent in Intent.DRAFTS_TICKETS:
             # Earlier research may have opened related tickets without running a structural
@@ -274,6 +278,10 @@ def route_after_research_analyst(state: AgentState) -> str:
     if intent == Intent.ASK:
         from app.agent.workflow.state import last_user_text
         asked = last_user_text(state)
+        if state.get("turn_continuation"):
+            # A short scope/interview answer refines, not replaces, the retained
+            # request. Keep its knowledge route after refreshing query evidence.
+            asked = "\n".join((str(state.get("request_text") or ""), asked))
         # 사람 판단·추천이 낀 질문("누가 하면 좋을지", "맡겨도 될까")은 curate 로 보내지
         # 않는다 — KnowledgeCurator 스키마엔 사람이 없어서 개념 강의로 새 버린다(실측).
         people_ish = any(w in asked for w in ("누가", "누구에게", "맡", "적절", "추천",

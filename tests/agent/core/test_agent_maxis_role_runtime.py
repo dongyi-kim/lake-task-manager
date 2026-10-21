@@ -2184,6 +2184,9 @@ def test_remote_needs_input_uses_typed_questions_for_every_agent_runtime(monkeyp
             "request_text": "업무를 정리해 줘",
             "runtime_role_routes": {agent.name: "maxis"},
         }
+        if isinstance(agent, ResultIntegrator):
+            state.update(reply="STALE REPLY", interpretation="STALE INTERPRETATION",
+                         approval_token="stale-approval", comment_token="stale-comment")
         result = agent.node()(state)
 
         assert "error" not in result
@@ -2198,6 +2201,11 @@ def test_remote_needs_input_uses_typed_questions_for_every_agent_runtime(monkeyp
             "ok": True,
         }
         assert result["runtime_role_telemetry"][agent.name]["totalTokens"] == 6
+        if isinstance(agent, ResultIntegrator):
+            assert "확인 필요" in result["reply"]
+            assert "STALE" not in result["reply"]
+            assert result["messages"][-1].content == result["reply"]
+            assert result["approval_token"] == result["comment_token"] == ""
 
 
 def test_auditor_needs_input_cannot_route_to_approval():
