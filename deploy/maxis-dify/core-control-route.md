@@ -8,7 +8,7 @@ ignored `.cache/`에 보관하며 커밋하지 않는다.
 
 `code/core_control_route.py::main(model_input)`은 표준 라이브러리만 사용하는 순수 함수다.
 Knowledge Guard의 policy allow 이후 canonical `ltm-model-input.v1` JSON을 입력받는다.
-입력은 최대 9,000 UTF-8 bytes, context pack은 최대 6,144 bytes다. 정확한 envelope field와
+입력은 최대 40,000 UTF-8 bytes, context pack은 최대 32,768 bytes다. 정확한 envelope field와
 object 형식을 요구하며 중복 key·비유한 수·비정규 JSON을 거부한다.
 예약 식별자를 검사하는 `sources`/`role_context`는 object list여야 한다.
 
@@ -62,12 +62,12 @@ nonpartial·닫힌 text 형식·1,024 UTF-8 bytes로 검증해 task로 옮긴다
 `knowledge_context`는 값·순서 그대로다. 출처에는 양쪽 guard와 같은 `kind=ltm` 및
 `canonical_id`의 `ltm:user-intent:` 접두사 판정으로 `source_authority`와
 `allowed_claim_kinds`를 덧붙인다. 출처의 producer metadata만 아래 규칙으로 숨기며,
-이 표시는 사실 검증이나 실행 권한이 아니다. 표시를 포함한 출력이 9,000 UTF-8 bytes를 넘으면
+이 표시는 사실 검증이나 실행 권한이 아니다. 표시를 포함한 출력이 40,000 UTF-8 bytes를 넘으면
 잘라내지 않고 거부하므로 이전에 허용되던 한도 근처 입력도 실패할 수 있다.
 원본 API query·pack·proof·metadata는 변경 없이
 Knowledge Guard, 조립기 및 양쪽 최종 guard에 전달한다. v2 게시에는 backend producer가
 필수이며 이미 만들어진 구 pack은 거부한다. 원격 consumer를 먼저 되돌린 뒤 producer를 롤백한다.
-canonical JSON·정확한 field·9000/6144 UTF-8 bytes·깊이32/노드4096 한도를 검사하지만
+canonical JSON·정확한 field·40000/32768 UTF-8 bytes·깊이32/노드4096 한도를 검사하지만
 권한·source hash·schema 진실성의 별도 판단 주체가 되지는 않는다.
 
 Query LLM은 내부 `query-draft.v2`의 contract/status/payload/missing_inputs만 작성한다.
@@ -102,7 +102,8 @@ boolean type을 string으로 변환하고 구조화 응답은 Mapping으로 파�
 구현을 가정하지 않으며 `structured_output` 포트 존재만으로 타입 검증을 신뢰하지 않는다.
 정본 제약이 변하면 이 표현을 임의로 넓히지 않고 재검토한다. 실제 provider 수용과 의미 품질은
 별도 실측 게이트다.
-모델 output은 4,096 tokens, Work 외 system prompt는 최대 8,192 UTF-8 bytes로 유지한다.
+canonical 모델 output 기본값은 4,096 tokens이며 실제 환경의 completion_params로 명시적으로
+교체할 수 있다. system prompt 기본 한도는 8,192 UTF-8 bytes, Request/Work의 검토 예산은 아래와 같다.
 
 Request는 실제 RequestArchitect schema의 의미 설명과 로컬 역할의 선택된 규칙을 정본에서
 읽어 전달한다. 의미를 별도로 복사하거나 boolean 용어를 문자열 치환하지 않는다. 누락·중복된
@@ -115,7 +116,7 @@ Request 분기는 Stage → Request Input → Request LLM → Request Assembler 
 (`kind=ltm` 및 `canonical_id`의 `ltm:user-intent:` 접두사)에만 opaque canonical ID를 숨긴다.
 다른 source의 업무 canonical ID는 보존하므로 전체 pack의 무손실 복사로 표현하지 않는다.
 `source_authority`와 `allowed_claim_kinds`는 기존 claim 제한의 설명이며 사실 검증이나 승인이 아니다.
-projection은 9,000 UTF-8 bytes를 넘으면 자르거나 원본으로 fallback하지 않고 실패한다.
+projection은 40,000 UTF-8 bytes를 넘으면 자르거나 원본으로 fallback하지 않고 실패한다.
 조립기와 양쪽 guard는 계속 원본 input을 사용한다. 조립기는 잘못된 참조를 거부하고,
 양쪽 최종 guard는 intent fact를 거부한다.
 `core_request.md`는 이 전용 view와 출처, 내부 `request-draft.v2`의 wire 형식만 안내한다.
@@ -134,10 +135,15 @@ transport는 정확한 wrapper 경로와 plain 경로를 한곳에서 구분한�
 조립기와 Query는 원본 Role/schema/source hash 결속 검사만 공유하며 의미 순회는 별개다.
 
 Work는 exact CREATE에만 Stage → Work Input → Work LLM → Work Assembler를 사용한다.
-`core_work_contract.py`는 변경 없는 CREATE에서 닫힌 `work-draft.v1`을 파생한다.
-서술 leaf만 value/kind/source_ids로 감싸며 required_input 대신 명시적 input_need
+`core_work_contract.py`는 변경 없는 CREATE에서 닫힌 `work-draft.v2`를 파생한다.
+작성 문안은 value/kind/source_ids(inference/recommendation), 사실은 kind=fact와
+source_id/source_path로 구분한다. 사실은 원본에서 주체가 포함된 전체 record를 선택한다.
+Code는 필드와 값을 생략하지 않는 인용으로 표시하고 key/string 구분자를 escape하며 숫자
+표기를 보존한다. 잘못된 경로를 고치거나 모델 문안을 사실로 변환하지 않는다.
+required_input 대신 명시적 input_need
 required/optional을 사용한다. 조립기는 그 선택을 boolean에 대응하고 원문·kind·참조와
-optional 생략/빈 값을 보존하며 정본 전체를 unwrap 후 재검사한다. source 선택·repair는 없다.
+optional 생략/빈 값을 보존하며 정본 전체를 unwrap 후 재검사한다. 근거 선택은 모델이 하고
+조립기는 그 정확한 경로만 해석한다. 추측·repair·잘라내기와 유효하지 않은 UTF-8 출력은 허용하지 않는다.
 `work-input.v2`는 출처 원문·순서·source_id, role_context hash와 compact source_content_index를
 유지한다. opaque intent canonical ID는 숨기고, 나머지 canonical ID는 업무 표기용
 entity_reference로 전달한다. 인용은 source_id만 사용하며 entity_reference로 치환하지 않는다.
@@ -145,12 +151,13 @@ compact ref는 request_plan.goal/tasks[].instruction의
 정확한 정수 인덱스에만 허용한다. 업무 문자열을 ref로 해석하지 않는다.
 intent 판정은 양쪽 guard와 같은 kind=ltm+canonical 접두사이며 fact 권한을 주지 않는다.
 조립기·최종 guard는 원본 입력을 계속 사용한다. 40 claims/40 citations/256 bindings와
-9000-byte 입력/6144-byte 원본 pack 예산을 넘으면 잘라내거나 fallback하지 않는다.
+40,000-byte 입력/32,768-byte 원본 pack 예산을 넘으면 잘라내거나 fallback하지 않는다.
+fact_paths는 원문을 바꾸지 않는 선택 안내다. 힌트 때문에 입력 예산을 넘으면 힌트만 생략한다.
 전용 prompt는 pinned 로컬 CREATE 정책을 원문 span으로 선택하고 canonical 질문 의미를
 전달한다. 보류·제외·미결 접근법·회의 metadata·분해·제목·DoD 규칙을 보존하며
 assignee/parent_ref는 native 필드가 아니므로 추가하지 않는다. 새 중첩 업무는 children만 쓴다.
-필수 정책 보존을 위해 검토된 Work system 예산만 16,384 UTF-8 bytes로 구분한다.
-다른 역할·model·output 예산은 바뀌지 않는다. 실제 품질·token·latency 효과는 별도 측정 대상이다.
+필수 정책 보존을 위한 system 예산은 Work 18,432, Request 10,240 UTF-8 bytes로 구분한다.
+모델과 출력 예산은 현지 binding으로 별도 지정한다. 실제 품질·token·latency 효과는 별도 측정 대상이다.
 
 Knowledge는 Stage → Knowledge Input → Knowledge LLM → Knowledge Assembler로 연결한다.
 `knowledge-input.v1`은 기존 source 원문·순서·ID, facts/metrics/role_context와 정책을 보존한다.
@@ -161,6 +168,8 @@ canonical KnowledgeBrief에서 닫힌 내부 `knowledge-draft.v2`를 파생한�
 완전한 원문 레코드를 선택하고, 해석·제안은 value/kind/source_ids로 한 번만 작성한다.
 사실 선택은 root object 또는 root/top-level 배열의 완전한 레코드만 허용한다. 티켓 식별자를 잃는
 중첩 상태 조각은 거부한다. ref/term만 원문의 문자열 필드를 선택할 수 있다.
+fact_paths는 record, string_fact_paths는 문자열 위치를 안내한다. JSON root 문자열처럼
+조립기가 허용하지 않는 위치는 추천하지 않으며, 권한·근거 판정은 힌트가 아닌 원본으로 수행한다.
 로컬 Knowledge 역할 전체가 의미 규칙의 정본이며
 전용 prompt는 trust boundary와 wire 형식만 추가한다. 생략/빈 값·kind·출처 순서를 보존하고
 같은 value/kind/refs 조합만 claim을 공유하며 public 확장을 조용히 삭제하지 않고 거부한다.
@@ -168,7 +177,7 @@ canonical KnowledgeBrief에서 닫힌 내부 `knowledge-draft.v2`를 파생한�
 40 claims·256 bindings를 입력 안내와 조립기에 결속한다. 출력은 한 번 직렬화해 strict UTF-8와
 크기를 확인하며 초과·잘못된 surrogate는 repair/truncation 없이 실패한다. 짧은 선택자도
 원문 복사로 커질 수 있으므로 draft 길이로 출력 크기를 추정하지 않고 최종 envelope를 직접 제한한다.
-96 KiB는 내부 방어 한도이지 실제 Dify 설정의 증거가 아니다. 4,096-token 모델 예산은 그대로이며
+96 KiB는 내부 방어 한도이지 실제 Dify 설정의 증거가 아니다. 모델 출력 예산은 환경 binding과 별개이며
 native Code/Answer/API 전송과 실제 의미 품질은 별도 실측해야 한다. 양쪽 최종 guard는 그대로다.
 
 Result는 Stage → Result Input → Result LLM → Result Assembler로 연결한다.

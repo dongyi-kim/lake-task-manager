@@ -16,6 +16,24 @@ MAXIS/Dify는 정책을 검색하고 의미 판단·초안을 제안한다. LTM�
 호출은 별개 기능이며, Dify 연결만으로 MAXIS Agent/MCP를 사용한다고 표현하지 않는다.
 로컬 앱은 서버로 outbound 요청하므로 이 경로에 public 수신 주소가 필요하지 않다.
 
+### MAXIS Node와 Dify 노드는 다른 구성요소
+
+MAXIS의 Node는 Project에 속한 코드·배포 endpoint를 재사용하는 기능이다. Dify 캔버스의
+LLM·Code·Knowledge Retrieval 노드와 같은 뜻이 아니다. MAXIS의 Creator는 Node와 Knowledge를
+선택해 Dify 흐름을 준비하는 입구이며, 게시된 앱의 실제 실행·모델·로그는 Dify에서 확인한다.
+모델이 포털이나 제공자 목록에 등록됐다는 사실만으로 해당 게시 앱이 그 모델을 사용하는 것은 아니다.
+
+- 현재 제품 경로는 **LTM → Dify Service API → 게시 Chatflow → 모델/정책 검색 → LTM 검증**이다.
+  MAXIS 포털의 Knowledge가 Dify dataset과 자동 동기화된다고 가정하지 않는다. 실제 dataset·문서 ID,
+  내용 hash와 검색 결과로 결속을 확인한다.
+- Chatflow를 사용하지만 호출은 stateless다. 대화의 정본은 LTM checkpoint 하나이며 원래 요청·대상·
+  확정 답변·초안·근거를 요청마다 명시한다. Dify memory와 별도로 대화 상태를 쌓지 않는다.
+- 정해진 단계는 Workflow/Code로 표현한다. Dify Agent는 실행 중 도구 선택이 필요한 조사에 한해
+  검토한다. 플러그인 설치나 PoC 앱 등록을 제품 사용 증거로 간주하지 않는다.
+- MAXIS Node/MCP 적용 후보는 제한된 읽기 전용 조회다. 서버의 업무망 접근과 사용자별 권한 전달,
+  timeout·호출 예산·감사로그를 입증하기 전에는 로컬 Query Runner를 대체하지 않는다.
+  기능 사용 개수를 늘리려고 로컬 앱을 공개하거나 Jira 쓰기 권한을 서버에 넘기지 않는다.
+
 ## 실행 흐름
 
 1. LTM이 현재 사용자 권한과 검색 범위에 따라 업무 자료를 조회한다.
@@ -33,6 +51,20 @@ Agent Core는 요청·조회 계획·지식·작업 초안·감사·최종 종�
 Editor Author와 PMO Brief는 별도 앱으로 묶는다. 실제 role roster는
 [role manifest](../app/agent/workflow/role_manifest.py)를 따른다.
 Query Runner와 Action Executor는 로컬 서비스 경계에 남긴다.
+
+### 작은 단위 계약
+
+LLM에는 의미 판단을, Code에는 입력 투영·출처 선택·형식 조립을 맡긴다. 한 단계의 복잡성을
+줄이기 위해 새 semantic Role이나 연쇄 LLM 호출을 늘리는 것은 기본 해법이 아니다.
+
+- Work CREATE의 `work-draft.v2`는 제안 문안(`value/kind/source_ids`)과 원문 사실 선택
+  (`kind=fact/source_id/source_path`)을 분리한다. 조립기는 원본 record의 필드·값을 보존한
+  인용을 만들며 사실을 재서술하거나 recommendation으로 바꿔 통과시키지 않는다.
+- Knowledge의 `fact_paths`는 주체가 포함된 기록, `string_fact_paths`는 티켓 키·용어 등
+  문자열 선택 안내다. 두 목록은 힌트일 뿐 권한이나 사실 증명이 아니며 최종 검사는 원본으로 수행한다.
+- 조회 0건·부분 조회·오래된 자료·인증 장애·형식 오류를 구분한다. 실패를 0건이나 완료로 감추지 않는다.
+- 의미 품질과 기계적 안정성은 별도 측정한다. 같은 모델·합성 자료·배터리를 고정하고 실패 attempt를
+  보존한다. 이 구조만으로 품질 개선이나 전체 배터리 통과를 주장하지 않는다.
 
 ## Knowledge와 근거
 

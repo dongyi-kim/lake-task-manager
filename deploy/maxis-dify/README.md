@@ -48,6 +48,7 @@ canonical source를 포털에 직접 import하거나 source marker를 실제 자
 | `core_result_contract.py`, `code/core_result_input.py`, `code/core_result_assembler.py` | exact Result text 계약·입력 투영과 단일 의미 값의 payload/claim 조립 |
 | `code/core_draft_validation.py` | 역할 의미를 다루지 않는 엄격한 JSON·schema 검사; builder가 조립 코드 앞에 결합 |
 | `code/core_draft_context.py` | 원본 입력의 Role·schema·출처 hash 결속 검사; 의미·승인 판단 없음 |
+| `code/core_fact_paths.py`, `code/core_fact_text.py` | 타입별 선택 힌트와 원본 record/문자열의 엄격한 선택; 모델 재서술·사실 수리 없음 |
 | `graph_receipt.py` | 로컬 graph와 서버 export의 설정 비교 코드(실행 결과가 아님) |
 | `environments/dev.yml` | 현재 DEV 환경의 비밀 없는 binding |
 | `environments/prod.template.yml` | 독립 PROD 환경을 준비하는 template |
@@ -82,10 +83,16 @@ Editor의 `editor-draft-spec.v2`, `editor-writing.v1`, `editor-plan.v2`는 각�
   transport metadata만 검증된 요청에서 결속한다. status·payload·claim·citation·질문·경고는
   그대로 두며, 기존 Contract Guard의 실행 UUID·근거·schema 검사를 거친다.
   Work는 exact CREATE에만 전용 입력·native draft·조립 경로를 사용하며 다른 Work schema는
-  기존 일반 경로를 유지한다. 필수 CREATE 정책을 보존하기 위해 Work system만 16,384 UTF-8
-  bytes 한도이며 다른 역할·원본 context·출력 token 한도는 그대로다. 실측 품질·효율 보장은 아니다.
+  기존 일반 경로를 유지한다. 내부 `work-draft.v2`는 작성 문안과 사실 선택을 분리한다.
+  사실은 source-relative pointer로 원본의 주체 포함 record를 선택하고, Code가 필드·값을
+  생략하지 않은 인용으로 표시한다. 구분자는 escape하며 JSON 숫자 표기를 보존한다.
+  원문은 바꾸지 않고 기존 필드 길이·UTF-8·근거 검사를 계속 적용한다.
+  필수 정책을 보존하는 system 한도는 Work 18,432, Request 10,240 UTF-8 bytes다.
+  실측 품질·효율 보장은 아니며 실제 모델과 출력 한도는 현지 환경 설정으로 공급한다.
   Knowledge는 exact KnowledgeBrief에 전용 입력 투영 → native draft → 원입력 결속 조립 경로를
-  사용한다. 로컬 Knowledge 역할의 의미 규칙과 양쪽 최종 guard를 유지한다.
+  사용한다. `fact_paths`는 기록용, `string_fact_paths`는 ref/term 문자열용 힌트다.
+  힌트가 예산을 초과하면 힌트만 생략하고 원문을 유지한다. 로컬 Knowledge 역할의 의미 규칙과
+  양쪽 최종 guard를 유지한다.
   Result는 exact backend text schema에 입력 투영 → 단일 의미 LLM → 조립 경로를 사용한다.
   허용된 업무 근거·context·정책을 보존하고 원격에 없는 로컬 입력은 가정하지 않는다. 모델이
   한 번 작성한 value/kind/source_ids에서 전체 text와 claim을 함께 만들며 양쪽 최종 guard와

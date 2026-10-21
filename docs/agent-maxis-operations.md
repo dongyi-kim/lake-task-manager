@@ -591,3 +591,20 @@ Conversation·Create·Compose·Meeting·Context 배터리의 기존 입력을 �
 정성 점수는 기록하되 4/5를 필수 합격선으로 삼지 않는다. 사실 발명·미승인 변경·핵심 결과 누락은 허용하지 않는다.
 실제 PROD에 접근하지 않고 수행한 테스트를 PROD 적용·리허설 완료로 표시하지 않는다.
 세부 계약은 [아키텍처](MAXIS_DIFY_MIGRATION.md)와 [배포 소스](../deploy/maxis-dify/README.md)를 따른다.
+
+### Work·Knowledge 형식을 갱신한 뒤
+
+소스만 pull하거나 LLM prompt 하나만 고치면 끝나지 않는다. 같은 소스에서 `bundle`을 다시 만들고
+기존 Core 앱의 **Work LLM/Input/Assembler, Knowledge LLM/Input/Assembler, Result Input**을
+함께 갱신한다. 현지 모델·dataset binding을 유지한 채 Publish → 게시 UUID 등록 → 연결 검사 →
+**이 설정 사용** 순서로 적용한다. 새 앱이나 날짜별 Knowledge를 만들 필요는 없다.
+
+```powershell
+# 연결 검사 통과 뒤, 전체 배터리 전에 현재 실패 경로를 먼저 확인
+python -B -X utf8 tools/agent_eval_launcher.py maxis conversation --profile "선택한 연결 ID" --repeat 1 --case S1-생성 --case S9-이력후속 --confirm-remote
+```
+
+웹 UI에서는 새 대화에서 `fdc_summary_trace_ic 데이터의 히스토리를 알고싶어`를 입력하고,
+`나머지는 합리적 기본값으로 알아서 진행해줘`를 이어 보낸다. 원래 대상·조회 목적을 유지하는지,
+이미 조회 가능한 티켓을 사용자에게 다시 요구하지 않는지, 근거가 없을 때 발명 없이 한계를
+설명하는지 확인한다. focused 검사 성공은 전체 배터리나 운영 자격 통과를 대신하지 않는다.
