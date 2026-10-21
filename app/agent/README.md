@@ -23,6 +23,9 @@ Epic/Story/Sub-Task 트리를 만든다. 모든 쓰기는 **사용자 승인 후
   → [workflow/README.md](workflow/README.md). 바깥에서 부르는 것은 `workflow/session.py` 하나다.
 - **maxis/** — 환경별 MAXIS/Dify 호출·근거·응답·감사 경계. 기존 Role 호출은
   `backend.invoke()`에서 `DifyClient`를 거쳐 원격으로 전달된다.
+  Knowledge·Portfolio·Result의 읽기 전용 응답에 있는 가명 사용자 참조는 해당 호출의
+  근거·로컬 디렉터리·정본 참조 해석기가 일치한 경우에만 로컬 멘션으로 복원한다.
+  복원 표는 원격으로 보내지 않으며 담당자 지정·승인 권한으로 사용하지 않는다.
 - **maxis/taskflow.py** — Research → Task draft의 버전 계약·로컬 continuation 기반.
   **maxis/taskflow_session.py**는 session 소유 preview 수명과 기존 QueryRunner 조회를 연결한다.
   실제 서버 통제 verifier가 없어 기본 composition은 비활성이고 HTTP/UI 실행 진입점은 없다.

@@ -218,6 +218,26 @@ def _rehydrate_editor_person_references(value: Any, references: dict[str, str]) 
     return value
 
 
+_READONLY_PERSON_ROLES = frozenset({"knowledge_curator", "portfolio_analyst", "result_integrator"})
+
+
+def _rehydrate_readonly_role_people(role_id, value, evidence, identities, kinds):
+    """Resolve people after response validation; never grant draft/assignee authority."""
+    if role_id not in _READONLY_PERSON_ROLES:
+        return value
+    from app.agent.maxis.person_references import result_person_references
+    try:
+        references = result_person_references(
+            _json_value(value), evidence, identities, _person_reference_marker, kinds,
+        )
+    except Exception as exc:
+        raise MaxisRuntimeError(
+            "MAXIS 답변의 사용자 참조를 확인하지 못했습니다. "
+            "Jira 사용자 연결과 동명이인 여부를 확인하세요."
+        ) from exc
+    return _rehydrate_editor_person_references(value, references) if references else value
+
+
 @runtime_checkable
 class RoleRuntime(Protocol):
     """Minimum contract used by the workflow runtime.
@@ -2473,20 +2493,9 @@ def invoke(
         )
         raise MaxisRuntimeError(f"MAXIS Role typed payload가 없습니다: {role_id}")
     try:
-        if role_id == "result_integrator":
-            from app.agent.maxis.person_references import result_person_references
-            try:
-                person_references = result_person_references(
-                    _json_value(typed), raw_pack, person_reference_values,
-                    _person_reference_marker, person_reference_types or {},
-                )
-            except Exception as exc:
-                raise MaxisRuntimeError(
-                    "MAXIS 답변의 사용자 참조를 확인하지 못했습니다. "
-                    "Jira 사용자 연결과 동명이인 여부를 확인하세요."
-                ) from exc
-        if role_id == "result_integrator" and person_references:
-            typed = _rehydrate_editor_person_references(typed, person_references)
+        typed = _rehydrate_readonly_role_people(
+            role_id, typed, raw_pack, person_reference_values, person_reference_types or {},
+        )
         if role_id == "editor_author" and person_references:
             typed = _rehydrate_editor_person_references(typed, person_references)
         encoded_typed = _canonical_json(_json_value(typed))
@@ -2578,7 +2587,7 @@ def invoke_role(
     payload = role_payload(role_id, state, messages, schema, output_kind=output_kind)
     person_reference_values = ()
     person_reference_types = {}
-    if role_id == "result_integrator":
+    if role_id in _READONLY_PERSON_ROLES:
         from app.agent.tools._ctx import settings
         from app.agent.maxis.person_references import identity_types
         person_reference_values = _known_identity_values(state, settings())

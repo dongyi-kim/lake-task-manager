@@ -93,6 +93,56 @@ def test_no_markers_does_not_lookup_directory(monkeypatch):
     assert not calls
 
 
+@pytest.mark.parametrize("role", ["knowledge_curator", "portfolio_analyst", "result_integrator"])
+def test_readonly_role_restores_only_this_calls_verified_person(monkeypatch, role):
+    from app.agent.maxis import backend
+    calls = install_directory(monkeypatch, [{"name": "alice.fixture", "displayName": "Alice"}])
+    payload = {"summary": f"담당 {marker('alice.fixture')} 확인 필요"}
+    evidence = {"sources": [{"content": marker("alice.fixture")}]}
+    restored = backend._rehydrate_readonly_role_people(role, payload, evidence,
+        ("alice.fixture",), {"alice.fixture": {"id"}})
+    assert restored == {"summary": "담당 [~alice.fixture] 확인 필요"}
+    assert len(calls) == 1 and marker("alice.fixture") in payload["summary"]
+    with pytest.raises(backend.MaxisRuntimeError, match="사용자 참조"):
+        backend._rehydrate_readonly_role_people(role, payload, {},
+            ("alice.fixture",), {"alice.fixture": {"id"}})
+    assert len(calls) == 1  # Invented/out-of-input markers never reach directory lookup.
+
+
+@pytest.mark.parametrize("role", ["work_architect", "auditor", "request_architect", "query_specialist", "editor_author"])
+def test_readonly_restore_does_not_expand_other_role_authority(monkeypatch, role):
+    from app.agent.maxis import backend
+    calls = install_directory(monkeypatch, [])
+    payload = {"assignee": marker("alice.fixture")}
+    assert backend._rehydrate_readonly_role_people(role, payload, payload,
+        ("alice.fixture",), {"alice.fixture": {"id"}}) is payload
+    assert not calls
+
+
+@pytest.mark.parametrize("role", ["knowledge_curator", "portfolio_analyst", "result_integrator"])
+def test_readonly_role_gathers_local_identity_types_without_serializing_map(monkeypatch, role):
+    from app.agent.maxis import backend, person_references
+    from app.agent.tools import _ctx
+    state = {"thread_id": "fixture-thread", "correlation_id": "fixture-correlation"}
+    payload = {"evidencePack": {"guarded": True}}
+    seen = {}
+    cfg = object()
+    monkeypatch.setattr(_ctx, "settings", lambda: cfg)
+    monkeypatch.setattr(backend, "resolve_role", lambda *_: SimpleNamespace(route="maxis"))
+    monkeypatch.setattr(backend, "role_payload", lambda *_a, **_k: payload)
+    monkeypatch.setattr(backend, "_known_identity_values", lambda current, settings:
+                        ("alice.fixture",) if current is state and settings is cfg else ())
+    monkeypatch.setattr(person_references, "identity_types", lambda *_: {"alice.fixture": {"id"}})
+    def invoke(_role, request, *_args, **kwargs):
+        seen.update(kwargs)
+        assert request is payload and 'alice.fixture' not in str(request)
+        return {"output": {"summary": "typed result"}, "metadata": {}}
+    monkeypatch.setattr(backend, "invoke", invoke)
+    assert backend.invoke_role(role, state, [], {}, output_kind="structured") == {"summary": "typed result"}
+    assert seen["person_reference_values"] == ("alice.fixture",)
+    assert seen["person_reference_types"] == {"alice.fixture": {"id"}}
+
+
 def test_casefold_aliases_are_one_identity_but_digest_collision_is_not(monkeypatch):
     calls = install_directory(monkeypatch, [{"name": "alice.fixture"}])
     payload = {"text": marker("ALICE.FIXTURE")}
