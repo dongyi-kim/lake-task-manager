@@ -95,6 +95,8 @@ Editor의 `editor-draft-spec.v2`, `editor-writing.v1`, `editor-plan.v2`는 각�
 - **Editor:** 23노드·26엣지. 입력 투영 → 본문/댓글 선택 → DraftSpec 검증 → 문안 작성 →
   plan 컴파일·결정적 HTML 조립 → Contract Guard로 책임을 나눈다.
   제어/중단 경로와 실제 작성 경로는 별개이며 선택 단계에 전체 HTML 생성을 맡기지 않는다.
+  제어 응답도 게시 UUID·Knowledge hash 등 요청 소유 metadata는 Assembler가 결속한다.
+  모델의 status·문안·출처를 고치거나 승인하지 않으며 실제 실행 UUID와 근거 검사는 유지한다.
 
 위 수는 로컬 source topology이며 현재 서버 실행·품질·활성화 상태의 증명이 아니다.
 TaskFlow/Native Agent의 목표 연결과 아직 필요한 trusted adapter는 [TaskFlow 계약](taskflow.md)에

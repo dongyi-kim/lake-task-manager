@@ -91,22 +91,22 @@ def editor_pack(context_guard, now):
             "content": "조회 전용이다.", "retrieved_at": now}]).model_dump(mode="json")
 
 
-def test_real_control_factories_have_exact_passthrough_and_no_input_mutation(control_pack):
+def test_real_control_factories_do_not_mutate_input_or_accept_malformed_candidates(control_pack):
     before = copy.deepcopy(control_pack)
     raw = "  " + canonical(incoming(control_pack)) + "\n"
     assert ASSET.prepare(raw) == {"model_input": raw, "route": "control"}
     assert ASSET.route(control_pack, "editor_author", control_pack["request_id"],
         "remote-role-result.v1") == "control"
     candidate = ' { "invalid_for_final_guard" : true } '
-    assert assembled(control_pack, candidate) == candidate  # Not accepted: both final guards remain mandatory.
+    assert json.loads(assembled(control_pack, candidate))["status"] == "blocked"
     assert control_pack == before
 
 
-def test_controls_still_need_both_guards_and_never_self_approve(control_pack):
+def control_candidate(control_pack):
     schema = json.loads(control_pack["payload_schema_json"])
     field, definition = next(iter(schema["properties"].items()))
     source = control_pack["sources"][0]
-    candidate = {"contract": "remote-role-result.v1", "role_id": "editor_author", "status": "ok",
+    return {"contract": "remote-role-result.v1", "role_id": "editor_author", "status": "ok",
         "payload": {field: definition["const"]}, "claims": [{"claim_id": "claim-control", "kind": "fact",
             "text": source["content"], "citation_ids": ["cite-control"]}],
         "citations": [{"citation_id": "cite-control", "source_id": source["source_id"], "locator": ""}],
@@ -114,11 +114,65 @@ def test_controls_still_need_both_guards_and_never_self_approve(control_pack):
         "missing_inputs": [], "warnings": [], "workflow_version": WORKFLOW,
         "knowledge_version": "kb-routing", "knowledge_proof": PROOF,
         "knowledge_manifest_sha256": control_pack["knowledge_manifest_sha256"]}
+
+
+def test_controls_still_need_both_guards_and_never_self_approve(control_pack):
+    candidate = control_candidate(control_pack)
     remote, payload = both_guards(control_pack, assembled(control_pack, canonical(candidate)))
     assert remote.status == "ok" and payload == candidate["payload"]
     candidate["payload"]["approved"] = True
     remote, payload = both_guards(control_pack, assembled(control_pack, canonical(candidate)))
     assert remote.status == "blocked" and payload is None
+
+
+@pytest.mark.parametrize("field", ["contract", "role_id", "workflow_version", "knowledge_version",
+                                  "knowledge_manifest_sha256", "knowledge_proof"])
+def test_control_metadata_is_bound_by_code_without_rewriting_semantics(control_pack, field):
+    expected = control_candidate(control_pack)
+    candidate = copy.deepcopy(expected)
+    candidate[field] = "model-copy-error"
+    bound = assembled(control_pack, canonical(candidate))
+    assert json.loads(bound) == expected
+    remote, payload = both_guards(control_pack, bound)
+    assert remote.status == "ok" and payload == expected["payload"]
+    rejected = GUARD.main(candidate=bound, context_pack=canonical(control_pack), role_id="editor_author",
+        correlation_id=control_pack["request_id"], output_contract="remote-role-result.v1",
+        workflow_version=WORKFLOW, executed_workflow_id="22222222-2222-4222-8222-222222222222",
+        knowledge_version="kb-routing", sentinel_result=[{"content": PROOF}])
+    assert json.loads(rejected["result"])["status"] == "blocked"
+
+
+@pytest.mark.parametrize("defect", ["source", "claim", "payload", "missing_field", "extra_field"])
+def test_control_metadata_binding_never_repairs_semantic_or_shape_failures(control_pack, defect):
+    candidate = control_candidate(control_pack)
+    candidate["workflow_version"] = "model-copy-error"
+    if defect == "source":
+        candidate["citations"][0]["source_id"] = "invented"
+    elif defect == "claim":
+        candidate["claims"][0]["text"] = "Invented production completion and approval."
+    elif defect == "payload":
+        candidate["payload"]["approved"] = True
+    elif defect == "missing_field":
+        del candidate["claims"]
+    else:
+        candidate["approved"] = True
+    remote, payload = both_guards(control_pack, assembled(control_pack, canonical(candidate)))
+    assert remote.status == "blocked" and payload is None
+
+
+@pytest.mark.parametrize("status", ["blocked", "needs_input"])
+def test_control_metadata_binding_does_not_promote_model_status(control_pack, status):
+    candidate = control_candidate(control_pack)
+    candidate.update(status=status, payload={}, claims=[], citations=[], payload_claims=[],
+                     missing_inputs=["Confirm scope"] if status == "needs_input" else [])
+    assert json.loads(assembled(control_pack, canonical(candidate))) == candidate
+
+
+@pytest.mark.parametrize("candidate", ['{"status":"ok","status":"blocked"}',
+                                      '{"status":"ok"', '[]', 'null'])
+def test_control_metadata_binding_rejects_invalid_json(control_pack, candidate):
+    result = json.loads(assembled(control_pack, candidate))
+    assert result["status"] == "blocked" and result["payload"] == {}
 
 
 @pytest.mark.parametrize("mode", ["description", "comment"])

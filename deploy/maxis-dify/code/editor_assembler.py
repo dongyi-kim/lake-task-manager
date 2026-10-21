@@ -2,7 +2,7 @@
 
 Wire ``candidate`` to the existing Contract Guard, then retain LTM's ResponseGuard.
 Only exact EditorDraftV1 schemas select writing paths. Two closed synthetic
-control contracts pass through for normal final validation. No evidence is created or
+control contracts bind request-owned metadata before final validation. No evidence is created or
 changed: quote support comes from original source text, not model-authored facts.
 """
 
@@ -799,8 +799,16 @@ def main(candidate, context_pack, role_id, correlation_id, output_contract,
             _fail()
         mode = route(pack, role_id, correlation_id, output_contract)
         if mode == "control":
-            # No acceptance is implied: the unchanged final Contract Guard is mandatory.
-            return {"candidate": candidate if isinstance(candidate, str) else _canonical(candidate)}
+            control = _object(candidate)
+            if set(control) != set(result):
+                _fail()
+            # These identifiers belong to the validated request, not the model.
+            # Preserve every semantic field; both final guards still decide acceptance,
+            # including whether the actual executed publication matches this request.
+            for key in ("contract", "role_id", "workflow_version", "knowledge_version",
+                        "knowledge_manifest_sha256", "knowledge_proof"):
+                control[key] = result[key]
+            return {"candidate": _canonical(control)}
         sources = _sources(pack)
         plan = _object(candidate)
         if set(plan) != {"contract", "status", "sections", "missing_inputs"} or plan["contract"] != "editor-plan.v2":

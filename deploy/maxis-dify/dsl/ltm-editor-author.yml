@@ -1397,10 +1397,10 @@ workflow:
         code: "\"\"\"Dify stdlib Editor Input and Assembler: project/select facts,\
           \ never approve.\n\nWire ``candidate`` to the existing Contract Guard, then\
           \ retain LTM's ResponseGuard.\nOnly exact EditorDraftV1 schemas select writing\
-          \ paths. Two closed synthetic\ncontrol contracts pass through for normal\
-          \ final validation. No evidence is created or\nchanged: quote support comes\
-          \ from original source text, not model-authored facts.\n\"\"\"\n\nimport\
-          \ hashlib\nimport html\nimport json\nimport re\nfrom urllib.parse import\
+          \ paths. Two closed synthetic\ncontrol contracts bind request-owned metadata\
+          \ before final validation. No evidence is created or\nchanged: quote support\
+          \ comes from original source text, not model-authored facts.\n\"\"\"\n\n\
+          import hashlib\nimport html\nimport json\nimport re\nfrom urllib.parse import\
           \ urlsplit\n\n\n_ID = re.compile(r\"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\"\
           )\n_DIGEST = re.compile(r\"^[0-9a-f]{64}$\")\n_INTENT = \"ltm:user-intent:\"\
           \n_SECTIONS = (\"background\", \"scope\", \"work\", \"dod\")\n_HEADINGS\
@@ -1886,35 +1886,41 @@ workflow:
           \ str) and _DIGEST.fullmatch(digest):\n            result[\"knowledge_manifest_sha256\"\
           ] = digest\n        else:\n            _fail()\n        mode = route(pack,\
           \ role_id, correlation_id, output_contract)\n        if mode == \"control\"\
-          :\n            # No acceptance is implied: the unchanged final Contract\
-          \ Guard is mandatory.\n            return {\"candidate\": candidate if isinstance(candidate,\
-          \ str) else _canonical(candidate)}\n        sources = _sources(pack)\n \
-          \       plan = _object(candidate)\n        if set(plan) != {\"contract\"\
-          , \"status\", \"sections\", \"missing_inputs\"} or plan[\"contract\"] !=\
-          \ \"editor-plan.v2\":\n            _fail()\n        status, sections, missing\
-          \ = plan[\"status\"], plan[\"sections\"], plan[\"missing_inputs\"]\n   \
-          \     if (status not in {\"ok\", \"needs_input\", \"blocked\"} or not isinstance(sections,\
-          \ list)\n                or len(sections) > 4 or not isinstance(missing,\
-          \ list) or len(missing) > 8):\n            _fail()\n        for question\
-          \ in missing:\n            _text(question, 500)\n        if (status == \"\
-          ok\" and (not sections or missing)) or (\n            status != \"ok\" and\
-          \ sections\n        ) or (status == \"needs_input\" and not missing) or\
-          \ (status == \"blocked\" and missing):\n            _fail()\n        if\
-          \ status == \"ok\":\n            _fresh_editor_evidence(pack, sources)\n\
-          \            seed = _trusted_seed(pack, sources)\n            request =\
-          \ _request(pack, sources, mode)  # Reject conflicting trusted author fields.\n\
-          \            _, lookup = _catalog(sources, request[\"target\"])\n      \
-          \      content, claims, citations, source_ids = _blocks(plan, sources, lookup,\
-          \ mode, seed)\n            result.update(payload={\"contract\": \"editor-draft.v1\"\
-          , \"mode\": mode,\n                \"content_html\": content, \"source_ids\"\
-          : source_ids,\n                \"unsupported_claims\": [], \"warnings\"\
-          : []}, claims=claims, citations=citations,\n                payload_claims=[{\"\
-          path\": \"/content_html\", \"claim_ids\": [row[\"claim_id\"] for row in\
-          \ claims]}])\n        result.update(status=status, missing_inputs=missing,\
-          \ warnings=[])\n    except Exception:\n        # Do not serialize exception\
-          \ messages or partially assembled model content.\n        result.update(status=\"\
-          blocked\", payload={}, claims=[], payload_claims=[],\n                 \
-          \     citations=[], missing_inputs=[], warnings=[\"editor_assembler:invalid_plan\"\
+          :\n            control = _object(candidate)\n            if set(control)\
+          \ != set(result):\n                _fail()\n            # These identifiers\
+          \ belong to the validated request, not the model.\n            # Preserve\
+          \ every semantic field; both final guards still decide acceptance,\n   \
+          \         # including whether the actual executed publication matches this\
+          \ request.\n            for key in (\"contract\", \"role_id\", \"workflow_version\"\
+          , \"knowledge_version\",\n                        \"knowledge_manifest_sha256\"\
+          , \"knowledge_proof\"):\n                control[key] = result[key]\n  \
+          \          return {\"candidate\": _canonical(control)}\n        sources\
+          \ = _sources(pack)\n        plan = _object(candidate)\n        if set(plan)\
+          \ != {\"contract\", \"status\", \"sections\", \"missing_inputs\"} or plan[\"\
+          contract\"] != \"editor-plan.v2\":\n            _fail()\n        status,\
+          \ sections, missing = plan[\"status\"], plan[\"sections\"], plan[\"missing_inputs\"\
+          ]\n        if (status not in {\"ok\", \"needs_input\", \"blocked\"} or not\
+          \ isinstance(sections, list)\n                or len(sections) > 4 or not\
+          \ isinstance(missing, list) or len(missing) > 8):\n            _fail()\n\
+          \        for question in missing:\n            _text(question, 500)\n  \
+          \      if (status == \"ok\" and (not sections or missing)) or (\n      \
+          \      status != \"ok\" and sections\n        ) or (status == \"needs_input\"\
+          \ and not missing) or (status == \"blocked\" and missing):\n           \
+          \ _fail()\n        if status == \"ok\":\n            _fresh_editor_evidence(pack,\
+          \ sources)\n            seed = _trusted_seed(pack, sources)\n          \
+          \  request = _request(pack, sources, mode)  # Reject conflicting trusted\
+          \ author fields.\n            _, lookup = _catalog(sources, request[\"target\"\
+          ])\n            content, claims, citations, source_ids = _blocks(plan, sources,\
+          \ lookup, mode, seed)\n            result.update(payload={\"contract\":\
+          \ \"editor-draft.v1\", \"mode\": mode,\n                \"content_html\"\
+          : content, \"source_ids\": source_ids,\n                \"unsupported_claims\"\
+          : [], \"warnings\": []}, claims=claims, citations=citations,\n         \
+          \       payload_claims=[{\"path\": \"/content_html\", \"claim_ids\": [row[\"\
+          claim_id\"] for row in claims]}])\n        result.update(status=status,\
+          \ missing_inputs=missing, warnings=[])\n    except Exception:\n        #\
+          \ Do not serialize exception messages or partially assembled model content.\n\
+          \        result.update(status=\"blocked\", payload={}, claims=[], payload_claims=[],\n\
+          \                      citations=[], missing_inputs=[], warnings=[\"editor_assembler:invalid_plan\"\
           ])\n    return {\"candidate\": _canonical(result)}"
         code_language: python3
         desc: 근거 원문·제안 block을 조립하고 기존 Contract Guard로 전달
@@ -1975,10 +1981,10 @@ workflow:
         code: "\"\"\"Dify stdlib Editor Input and Assembler: project/select facts,\
           \ never approve.\n\nWire ``candidate`` to the existing Contract Guard, then\
           \ retain LTM's ResponseGuard.\nOnly exact EditorDraftV1 schemas select writing\
-          \ paths. Two closed synthetic\ncontrol contracts pass through for normal\
-          \ final validation. No evidence is created or\nchanged: quote support comes\
-          \ from original source text, not model-authored facts.\n\"\"\"\n\nimport\
-          \ hashlib\nimport html\nimport json\nimport re\nfrom urllib.parse import\
+          \ paths. Two closed synthetic\ncontrol contracts bind request-owned metadata\
+          \ before final validation. No evidence is created or\nchanged: quote support\
+          \ comes from original source text, not model-authored facts.\n\"\"\"\n\n\
+          import hashlib\nimport html\nimport json\nimport re\nfrom urllib.parse import\
           \ urlsplit\n\n\n_ID = re.compile(r\"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\"\
           )\n_DIGEST = re.compile(r\"^[0-9a-f]{64}$\")\n_INTENT = \"ltm:user-intent:\"\
           \n_SECTIONS = (\"background\", \"scope\", \"work\", \"dod\")\n_HEADINGS\
@@ -2464,35 +2470,41 @@ workflow:
           \ str) and _DIGEST.fullmatch(digest):\n            result[\"knowledge_manifest_sha256\"\
           ] = digest\n        else:\n            _fail()\n        mode = route(pack,\
           \ role_id, correlation_id, output_contract)\n        if mode == \"control\"\
-          :\n            # No acceptance is implied: the unchanged final Contract\
-          \ Guard is mandatory.\n            return {\"candidate\": candidate if isinstance(candidate,\
-          \ str) else _canonical(candidate)}\n        sources = _sources(pack)\n \
-          \       plan = _object(candidate)\n        if set(plan) != {\"contract\"\
-          , \"status\", \"sections\", \"missing_inputs\"} or plan[\"contract\"] !=\
-          \ \"editor-plan.v2\":\n            _fail()\n        status, sections, missing\
-          \ = plan[\"status\"], plan[\"sections\"], plan[\"missing_inputs\"]\n   \
-          \     if (status not in {\"ok\", \"needs_input\", \"blocked\"} or not isinstance(sections,\
-          \ list)\n                or len(sections) > 4 or not isinstance(missing,\
-          \ list) or len(missing) > 8):\n            _fail()\n        for question\
-          \ in missing:\n            _text(question, 500)\n        if (status == \"\
-          ok\" and (not sections or missing)) or (\n            status != \"ok\" and\
-          \ sections\n        ) or (status == \"needs_input\" and not missing) or\
-          \ (status == \"blocked\" and missing):\n            _fail()\n        if\
-          \ status == \"ok\":\n            _fresh_editor_evidence(pack, sources)\n\
-          \            seed = _trusted_seed(pack, sources)\n            request =\
-          \ _request(pack, sources, mode)  # Reject conflicting trusted author fields.\n\
-          \            _, lookup = _catalog(sources, request[\"target\"])\n      \
-          \      content, claims, citations, source_ids = _blocks(plan, sources, lookup,\
-          \ mode, seed)\n            result.update(payload={\"contract\": \"editor-draft.v1\"\
-          , \"mode\": mode,\n                \"content_html\": content, \"source_ids\"\
-          : source_ids,\n                \"unsupported_claims\": [], \"warnings\"\
-          : []}, claims=claims, citations=citations,\n                payload_claims=[{\"\
-          path\": \"/content_html\", \"claim_ids\": [row[\"claim_id\"] for row in\
-          \ claims]}])\n        result.update(status=status, missing_inputs=missing,\
-          \ warnings=[])\n    except Exception:\n        # Do not serialize exception\
-          \ messages or partially assembled model content.\n        result.update(status=\"\
-          blocked\", payload={}, claims=[], payload_claims=[],\n                 \
-          \     citations=[], missing_inputs=[], warnings=[\"editor_assembler:invalid_plan\"\
+          :\n            control = _object(candidate)\n            if set(control)\
+          \ != set(result):\n                _fail()\n            # These identifiers\
+          \ belong to the validated request, not the model.\n            # Preserve\
+          \ every semantic field; both final guards still decide acceptance,\n   \
+          \         # including whether the actual executed publication matches this\
+          \ request.\n            for key in (\"contract\", \"role_id\", \"workflow_version\"\
+          , \"knowledge_version\",\n                        \"knowledge_manifest_sha256\"\
+          , \"knowledge_proof\"):\n                control[key] = result[key]\n  \
+          \          return {\"candidate\": _canonical(control)}\n        sources\
+          \ = _sources(pack)\n        plan = _object(candidate)\n        if set(plan)\
+          \ != {\"contract\", \"status\", \"sections\", \"missing_inputs\"} or plan[\"\
+          contract\"] != \"editor-plan.v2\":\n            _fail()\n        status,\
+          \ sections, missing = plan[\"status\"], plan[\"sections\"], plan[\"missing_inputs\"\
+          ]\n        if (status not in {\"ok\", \"needs_input\", \"blocked\"} or not\
+          \ isinstance(sections, list)\n                or len(sections) > 4 or not\
+          \ isinstance(missing, list) or len(missing) > 8):\n            _fail()\n\
+          \        for question in missing:\n            _text(question, 500)\n  \
+          \      if (status == \"ok\" and (not sections or missing)) or (\n      \
+          \      status != \"ok\" and sections\n        ) or (status == \"needs_input\"\
+          \ and not missing) or (status == \"blocked\" and missing):\n           \
+          \ _fail()\n        if status == \"ok\":\n            _fresh_editor_evidence(pack,\
+          \ sources)\n            seed = _trusted_seed(pack, sources)\n          \
+          \  request = _request(pack, sources, mode)  # Reject conflicting trusted\
+          \ author fields.\n            _, lookup = _catalog(sources, request[\"target\"\
+          ])\n            content, claims, citations, source_ids = _blocks(plan, sources,\
+          \ lookup, mode, seed)\n            result.update(payload={\"contract\":\
+          \ \"editor-draft.v1\", \"mode\": mode,\n                \"content_html\"\
+          : content, \"source_ids\": source_ids,\n                \"unsupported_claims\"\
+          : [], \"warnings\": []}, claims=claims, citations=citations,\n         \
+          \       payload_claims=[{\"path\": \"/content_html\", \"claim_ids\": [row[\"\
+          claim_id\"] for row in claims]}])\n        result.update(status=status,\
+          \ missing_inputs=missing, warnings=[])\n    except Exception:\n        #\
+          \ Do not serialize exception messages or partially assembled model content.\n\
+          \        result.update(status=\"blocked\", payload={}, claims=[], payload_claims=[],\n\
+          \                      citations=[], missing_inputs=[], warnings=[\"editor_assembler:invalid_plan\"\
           ])\n    return {\"candidate\": _canonical(result)}\n\n\"\"\"Input-only structural\
           \ hints; embed after the unchanged Editor assembler.\n\nGroups constrain\
           \ writing buckets, not relevance, current truth or mandatory\nselection.\
@@ -3547,10 +3559,10 @@ workflow:
         code: "\"\"\"Dify stdlib Editor Input and Assembler: project/select facts,\
           \ never approve.\n\nWire ``candidate`` to the existing Contract Guard, then\
           \ retain LTM's ResponseGuard.\nOnly exact EditorDraftV1 schemas select writing\
-          \ paths. Two closed synthetic\ncontrol contracts pass through for normal\
-          \ final validation. No evidence is created or\nchanged: quote support comes\
-          \ from original source text, not model-authored facts.\n\"\"\"\n\nimport\
-          \ hashlib\nimport html\nimport json\nimport re\nfrom urllib.parse import\
+          \ paths. Two closed synthetic\ncontrol contracts bind request-owned metadata\
+          \ before final validation. No evidence is created or\nchanged: quote support\
+          \ comes from original source text, not model-authored facts.\n\"\"\"\n\n\
+          import hashlib\nimport html\nimport json\nimport re\nfrom urllib.parse import\
           \ urlsplit\n\n\n_ID = re.compile(r\"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\"\
           )\n_DIGEST = re.compile(r\"^[0-9a-f]{64}$\")\n_INTENT = \"ltm:user-intent:\"\
           \n_SECTIONS = (\"background\", \"scope\", \"work\", \"dod\")\n_HEADINGS\
@@ -4036,35 +4048,41 @@ workflow:
           \ str) and _DIGEST.fullmatch(digest):\n            result[\"knowledge_manifest_sha256\"\
           ] = digest\n        else:\n            _fail()\n        mode = route(pack,\
           \ role_id, correlation_id, output_contract)\n        if mode == \"control\"\
-          :\n            # No acceptance is implied: the unchanged final Contract\
-          \ Guard is mandatory.\n            return {\"candidate\": candidate if isinstance(candidate,\
-          \ str) else _canonical(candidate)}\n        sources = _sources(pack)\n \
-          \       plan = _object(candidate)\n        if set(plan) != {\"contract\"\
-          , \"status\", \"sections\", \"missing_inputs\"} or plan[\"contract\"] !=\
-          \ \"editor-plan.v2\":\n            _fail()\n        status, sections, missing\
-          \ = plan[\"status\"], plan[\"sections\"], plan[\"missing_inputs\"]\n   \
-          \     if (status not in {\"ok\", \"needs_input\", \"blocked\"} or not isinstance(sections,\
-          \ list)\n                or len(sections) > 4 or not isinstance(missing,\
-          \ list) or len(missing) > 8):\n            _fail()\n        for question\
-          \ in missing:\n            _text(question, 500)\n        if (status == \"\
-          ok\" and (not sections or missing)) or (\n            status != \"ok\" and\
-          \ sections\n        ) or (status == \"needs_input\" and not missing) or\
-          \ (status == \"blocked\" and missing):\n            _fail()\n        if\
-          \ status == \"ok\":\n            _fresh_editor_evidence(pack, sources)\n\
-          \            seed = _trusted_seed(pack, sources)\n            request =\
-          \ _request(pack, sources, mode)  # Reject conflicting trusted author fields.\n\
-          \            _, lookup = _catalog(sources, request[\"target\"])\n      \
-          \      content, claims, citations, source_ids = _blocks(plan, sources, lookup,\
-          \ mode, seed)\n            result.update(payload={\"contract\": \"editor-draft.v1\"\
-          , \"mode\": mode,\n                \"content_html\": content, \"source_ids\"\
-          : source_ids,\n                \"unsupported_claims\": [], \"warnings\"\
-          : []}, claims=claims, citations=citations,\n                payload_claims=[{\"\
-          path\": \"/content_html\", \"claim_ids\": [row[\"claim_id\"] for row in\
-          \ claims]}])\n        result.update(status=status, missing_inputs=missing,\
-          \ warnings=[])\n    except Exception:\n        # Do not serialize exception\
-          \ messages or partially assembled model content.\n        result.update(status=\"\
-          blocked\", payload={}, claims=[], payload_claims=[],\n                 \
-          \     citations=[], missing_inputs=[], warnings=[\"editor_assembler:invalid_plan\"\
+          :\n            control = _object(candidate)\n            if set(control)\
+          \ != set(result):\n                _fail()\n            # These identifiers\
+          \ belong to the validated request, not the model.\n            # Preserve\
+          \ every semantic field; both final guards still decide acceptance,\n   \
+          \         # including whether the actual executed publication matches this\
+          \ request.\n            for key in (\"contract\", \"role_id\", \"workflow_version\"\
+          , \"knowledge_version\",\n                        \"knowledge_manifest_sha256\"\
+          , \"knowledge_proof\"):\n                control[key] = result[key]\n  \
+          \          return {\"candidate\": _canonical(control)}\n        sources\
+          \ = _sources(pack)\n        plan = _object(candidate)\n        if set(plan)\
+          \ != {\"contract\", \"status\", \"sections\", \"missing_inputs\"} or plan[\"\
+          contract\"] != \"editor-plan.v2\":\n            _fail()\n        status,\
+          \ sections, missing = plan[\"status\"], plan[\"sections\"], plan[\"missing_inputs\"\
+          ]\n        if (status not in {\"ok\", \"needs_input\", \"blocked\"} or not\
+          \ isinstance(sections, list)\n                or len(sections) > 4 or not\
+          \ isinstance(missing, list) or len(missing) > 8):\n            _fail()\n\
+          \        for question in missing:\n            _text(question, 500)\n  \
+          \      if (status == \"ok\" and (not sections or missing)) or (\n      \
+          \      status != \"ok\" and sections\n        ) or (status == \"needs_input\"\
+          \ and not missing) or (status == \"blocked\" and missing):\n           \
+          \ _fail()\n        if status == \"ok\":\n            _fresh_editor_evidence(pack,\
+          \ sources)\n            seed = _trusted_seed(pack, sources)\n          \
+          \  request = _request(pack, sources, mode)  # Reject conflicting trusted\
+          \ author fields.\n            _, lookup = _catalog(sources, request[\"target\"\
+          ])\n            content, claims, citations, source_ids = _blocks(plan, sources,\
+          \ lookup, mode, seed)\n            result.update(payload={\"contract\":\
+          \ \"editor-draft.v1\", \"mode\": mode,\n                \"content_html\"\
+          : content, \"source_ids\": source_ids,\n                \"unsupported_claims\"\
+          : [], \"warnings\": []}, claims=claims, citations=citations,\n         \
+          \       payload_claims=[{\"path\": \"/content_html\", \"claim_ids\": [row[\"\
+          claim_id\"] for row in claims]}])\n        result.update(status=status,\
+          \ missing_inputs=missing, warnings=[])\n    except Exception:\n        #\
+          \ Do not serialize exception messages or partially assembled model content.\n\
+          \        result.update(status=\"blocked\", payload={}, claims=[], payload_claims=[],\n\
+          \                      citations=[], missing_inputs=[], warnings=[\"editor_assembler:invalid_plan\"\
           ])\n    return {\"candidate\": _canonical(result)}\n\n\"\"\"Internal selection\
           \ boundary; embed after editor_assembler.py (stdlib only).\n\nSelections\
           \ are model judgments, not new evidence. The exact graph supplies the\n\
@@ -4315,10 +4333,10 @@ workflow:
         code: "\"\"\"Dify stdlib Editor Input and Assembler: project/select facts,\
           \ never approve.\n\nWire ``candidate`` to the existing Contract Guard, then\
           \ retain LTM's ResponseGuard.\nOnly exact EditorDraftV1 schemas select writing\
-          \ paths. Two closed synthetic\ncontrol contracts pass through for normal\
-          \ final validation. No evidence is created or\nchanged: quote support comes\
-          \ from original source text, not model-authored facts.\n\"\"\"\n\nimport\
-          \ hashlib\nimport html\nimport json\nimport re\nfrom urllib.parse import\
+          \ paths. Two closed synthetic\ncontrol contracts bind request-owned metadata\
+          \ before final validation. No evidence is created or\nchanged: quote support\
+          \ comes from original source text, not model-authored facts.\n\"\"\"\n\n\
+          import hashlib\nimport html\nimport json\nimport re\nfrom urllib.parse import\
           \ urlsplit\n\n\n_ID = re.compile(r\"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\"\
           )\n_DIGEST = re.compile(r\"^[0-9a-f]{64}$\")\n_INTENT = \"ltm:user-intent:\"\
           \n_SECTIONS = (\"background\", \"scope\", \"work\", \"dod\")\n_HEADINGS\
@@ -4804,35 +4822,41 @@ workflow:
           \ str) and _DIGEST.fullmatch(digest):\n            result[\"knowledge_manifest_sha256\"\
           ] = digest\n        else:\n            _fail()\n        mode = route(pack,\
           \ role_id, correlation_id, output_contract)\n        if mode == \"control\"\
-          :\n            # No acceptance is implied: the unchanged final Contract\
-          \ Guard is mandatory.\n            return {\"candidate\": candidate if isinstance(candidate,\
-          \ str) else _canonical(candidate)}\n        sources = _sources(pack)\n \
-          \       plan = _object(candidate)\n        if set(plan) != {\"contract\"\
-          , \"status\", \"sections\", \"missing_inputs\"} or plan[\"contract\"] !=\
-          \ \"editor-plan.v2\":\n            _fail()\n        status, sections, missing\
-          \ = plan[\"status\"], plan[\"sections\"], plan[\"missing_inputs\"]\n   \
-          \     if (status not in {\"ok\", \"needs_input\", \"blocked\"} or not isinstance(sections,\
-          \ list)\n                or len(sections) > 4 or not isinstance(missing,\
-          \ list) or len(missing) > 8):\n            _fail()\n        for question\
-          \ in missing:\n            _text(question, 500)\n        if (status == \"\
-          ok\" and (not sections or missing)) or (\n            status != \"ok\" and\
-          \ sections\n        ) or (status == \"needs_input\" and not missing) or\
-          \ (status == \"blocked\" and missing):\n            _fail()\n        if\
-          \ status == \"ok\":\n            _fresh_editor_evidence(pack, sources)\n\
-          \            seed = _trusted_seed(pack, sources)\n            request =\
-          \ _request(pack, sources, mode)  # Reject conflicting trusted author fields.\n\
-          \            _, lookup = _catalog(sources, request[\"target\"])\n      \
-          \      content, claims, citations, source_ids = _blocks(plan, sources, lookup,\
-          \ mode, seed)\n            result.update(payload={\"contract\": \"editor-draft.v1\"\
-          , \"mode\": mode,\n                \"content_html\": content, \"source_ids\"\
-          : source_ids,\n                \"unsupported_claims\": [], \"warnings\"\
-          : []}, claims=claims, citations=citations,\n                payload_claims=[{\"\
-          path\": \"/content_html\", \"claim_ids\": [row[\"claim_id\"] for row in\
-          \ claims]}])\n        result.update(status=status, missing_inputs=missing,\
-          \ warnings=[])\n    except Exception:\n        # Do not serialize exception\
-          \ messages or partially assembled model content.\n        result.update(status=\"\
-          blocked\", payload={}, claims=[], payload_claims=[],\n                 \
-          \     citations=[], missing_inputs=[], warnings=[\"editor_assembler:invalid_plan\"\
+          :\n            control = _object(candidate)\n            if set(control)\
+          \ != set(result):\n                _fail()\n            # These identifiers\
+          \ belong to the validated request, not the model.\n            # Preserve\
+          \ every semantic field; both final guards still decide acceptance,\n   \
+          \         # including whether the actual executed publication matches this\
+          \ request.\n            for key in (\"contract\", \"role_id\", \"workflow_version\"\
+          , \"knowledge_version\",\n                        \"knowledge_manifest_sha256\"\
+          , \"knowledge_proof\"):\n                control[key] = result[key]\n  \
+          \          return {\"candidate\": _canonical(control)}\n        sources\
+          \ = _sources(pack)\n        plan = _object(candidate)\n        if set(plan)\
+          \ != {\"contract\", \"status\", \"sections\", \"missing_inputs\"} or plan[\"\
+          contract\"] != \"editor-plan.v2\":\n            _fail()\n        status,\
+          \ sections, missing = plan[\"status\"], plan[\"sections\"], plan[\"missing_inputs\"\
+          ]\n        if (status not in {\"ok\", \"needs_input\", \"blocked\"} or not\
+          \ isinstance(sections, list)\n                or len(sections) > 4 or not\
+          \ isinstance(missing, list) or len(missing) > 8):\n            _fail()\n\
+          \        for question in missing:\n            _text(question, 500)\n  \
+          \      if (status == \"ok\" and (not sections or missing)) or (\n      \
+          \      status != \"ok\" and sections\n        ) or (status == \"needs_input\"\
+          \ and not missing) or (status == \"blocked\" and missing):\n           \
+          \ _fail()\n        if status == \"ok\":\n            _fresh_editor_evidence(pack,\
+          \ sources)\n            seed = _trusted_seed(pack, sources)\n          \
+          \  request = _request(pack, sources, mode)  # Reject conflicting trusted\
+          \ author fields.\n            _, lookup = _catalog(sources, request[\"target\"\
+          ])\n            content, claims, citations, source_ids = _blocks(plan, sources,\
+          \ lookup, mode, seed)\n            result.update(payload={\"contract\":\
+          \ \"editor-draft.v1\", \"mode\": mode,\n                \"content_html\"\
+          : content, \"source_ids\": source_ids,\n                \"unsupported_claims\"\
+          : [], \"warnings\": []}, claims=claims, citations=citations,\n         \
+          \       payload_claims=[{\"path\": \"/content_html\", \"claim_ids\": [row[\"\
+          claim_id\"] for row in claims]}])\n        result.update(status=status,\
+          \ missing_inputs=missing, warnings=[])\n    except Exception:\n        #\
+          \ Do not serialize exception messages or partially assembled model content.\n\
+          \        result.update(status=\"blocked\", payload={}, claims=[], payload_claims=[],\n\
+          \                      citations=[], missing_inputs=[], warnings=[\"editor_assembler:invalid_plan\"\
           ])\n    return {\"candidate\": _canonical(result)}\n\n\"\"\"Internal selection\
           \ boundary; embed after editor_assembler.py (stdlib only).\n\nSelections\
           \ are model judgments, not new evidence. The exact graph supplies the\n\
