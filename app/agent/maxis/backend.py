@@ -1289,6 +1289,10 @@ def _verified_evidence_sources(state: dict) -> list[dict]:
             ).hexdigest()[:20]
             sources.append({
                 "source_id": source_id,
+                # Local-only provenance for derived metrics. canonical_id may be
+                # a ticket key for rendering, so it cannot identify the read kind.
+                # ContextGuard projects explicit wire fields and drops this marker.
+                "_query_source": source,
                 "kind": kind,
                 "canonical_id": exact_jira_key or f"ltm-query:{source}:{query_id}",
                 "title": (
@@ -1413,6 +1417,9 @@ def _retrieval_count_metrics(sources: list[dict]) -> list[dict]:
         kind = source.get("kind")
         field, query = {"jira": ("tickets", "canonicalJql"),
                         "confluence": ("documents", "canonicalCql")}.get(kind, ("", ""))
+        label_kind = kind
+        if kind == "jira" and source.get("_query_source") == "comments":
+            field, label_kind = "comments", "comments"
         if not field:
             continue
         try:
@@ -1429,7 +1436,7 @@ def _retrieval_count_metrics(sources: list[dict]) -> list[dict]:
         source_id = source["source_id"]
         metrics.append({
             "metric_id": "returned_" + hashlib.sha256(source_id.encode()).hexdigest()[:20],
-            "label": f"{source['scope']} 범위의 해당 {kind} 검색 반환 항목 수",
+            "label": f"{source['scope']} 범위의 해당 {label_kind} 검색 반환 항목 수",
             "value": len(result[field]), "unit": "건",
             "formula_version": "verified-scoped-returned-count.v1",
             "source_ids": [source_id],
