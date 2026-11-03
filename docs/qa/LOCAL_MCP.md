@@ -27,6 +27,9 @@ LTM의 동일 JiraClient를 사용했다. 기존 creation permission 변경 위�
 | PMO_VIT | 등록 시 기존 라벨 보존, 등록된 ancestor 아래 root 숨김, 해제 시 PMO_VIT 라벨만 제거 |
 | WBS·인력 설정 | 실제 SDK 저장→HTTP WBS/워크로드 조회에 반영, 설정의 미지 필드 보존, 충돌409·권한403·유실 응답 재시도·원자 저장 실패 검증 |
 | 열린 화면의 설정 변경 | status revision polling 및 동일 창 이벤트로 MyTasks·워크로드·WBS·VIT 데이터 갱신; UI 관련 15 cases 통과 |
+| 최상위 쓰기 결과 | 검증 실패·전체 실패는 isError/ok:false, 부분 성공도 isError/partial:true로 표시; 성공 항목·원래 index·unknown 결과 보존, 기존 HTTP 응답은 유지 |
+| 쓰기 전 상태 검증 | 만료된 Open display cache와 최신 Done 상태가 다르면 MCP/일반 UI 수정 모두 차단; 연결 불가 시 stale 상태로 수정 허용하지 않으며 유효한 캐시는 재사용 |
+| 오류 분류 | 실제 SDK에서 401 인증·403 권한·409 충돌·입력 오류를 구분; 서버에 연결할 수 없어 권한을 확인하지 못한 경우 logout으로 단정하지 않음 |
 
 초기 관련 API·Jira ticket·Agent MCP consumer·dependency/static contract 회귀 **273 passed**.
 초기 MCP 전용 **18 passed**. 설정 UI 별도 **8 passed**이며 실제 `app.main`
@@ -44,7 +47,11 @@ skip은 독립 MCP branch에 아직 없는 캐시 정책 모듈의 통합 전용
 대량 생성 전용 시나리오는 입력 오류 시 POST 0회, 일부 확정 실패 재시도, 응답 유실 후 중복 방지,
 Epic·parent 연결, 같은 batch ID의 내용 변경 거부를 포함한다.
 
-캐시 정책 PR의 실제 `read_scope`와 결합한 검증은 통합 branch에서 수행한다. 독립 MCP branch에서는
-모듈이 없을 경우 metadata를 unknown으로 반환하며, source 집계 계약은 별도 fixture로 검증했다.
+캐시 정책 PR의 실제 `read_scope`와 결합한 통합 branch 검증도 완료했다. MCP/cache/process/관리/설정 UI
+관련 **107 passed** 이후 최종 권한·쓰기 수정에 대한 통합 **28 passed**를 추가 확인했다.
+후자는 실제 정책 **7 cases**(UI→MCP 캐시 출처·stale·명시적 새로고침·수정 후 UI 반영,
+stale 상태로 수정 금지와 fresh 재사용), 관리자 **19 cases**, 열린 화면 브라우저 **2 cases**다.
+마지막 오류 분류 보강은 실제 SDK 오류 계약·관리·일괄 생성 **37 passed**이며 앞선 실행과 일부 겹친다.
+독립 MCP branch에서 캐시 정책 모듈이 없으면 metadata를 unknown으로 반환한다.
 Jira가 이미 반영했지만 응답이 유실된 일반 수정은 안전한 재실행을 추측하지 않는다. 생성·댓글 추가·전이·첨부 외의
 미확정 결과는 티켓을 다시 읽어 확인해야 한다. 실제 prod SSO 연결과 네이티브 exe 빌드는 이 검증에 포함하지 않았다.
