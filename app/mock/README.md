@@ -10,6 +10,7 @@
 - **worldcontent.py** — description/comment/activity/confluence 다양성 **콘텐츠 풀**(world 가 소비).
 - **fakebridge.py** — world 를 jira820 서버에 주입(`build_store`/`build_injected_app`).
   mock=in-process(ASGI), local=:8080 실 HTTP — 둘 다 이 브리지를 탄다.
+- **permissions.py** — 생성/보고자 권한 fixture와 세션 사용자 Reporter 기본값. `store.permissions`로 권한을 각각 재현한다.
 
 ## 규칙
 - **prod 배포 config 에 TEST 모듈/픽스처를 넣지 마라**(테스트가 가드). dev 전용.

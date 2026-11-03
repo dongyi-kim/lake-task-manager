@@ -18,6 +18,10 @@ REST 를 호출하고, **모든 호출은 캐시(app/infra)를 경유**한다. m
 - 커스텀 필드 ID·상태명 하드코딩 금지 → config/`statusCategory`.
 - **쓰기 후 무효화**: 편집이 바꾸는 화면은 반드시 재조회되게 무효화한다. 무거운 티켓 무효화(`_invalidate_ticket`)와
   경량(`_invalidate_ticket_content`, 뷰모드 체크박스용) · 인력뷰(`_invalidate_people_views`, 담당변경/전이/생성)를 구분.
+- **생성 권한**: Reporter는 생성 요청에서 완전히 생략하고 Jira의 현재 사용자 기본값에 맡긴다.
+  부모 편집 권한은 자식 생성 권한이 아니다. Reporter 변경은 LTM 매니저 여부와 별개로 해당 티켓의
+  Jira `MODIFY_REPORTER`와 `editmeta`를 모두 확인한다. 생성 실패 로그의 revision·fields·reporter_present·error_fields로
+  실제 전송 필드와 Jira 오류 필드를 비교하며, 요청 값·쿠키·원문 오류 메시지는 진단 로그에 남기지 않는다.
 - 지원되는 검색은 모든 OR leaf를 개별 캐싱한 뒤 앱에서 합집합·중복 제거·ORDER·pagination한다.
   leaf payload는 issue key 목록만 가지며, `issue→leaf` 역인덱스와 `predicate field→leaf` 의존
   인덱스로 성공한 `MutationEvent`가 영향을 주는 leaf만 만료한다. snapshot/row generation은 별도로

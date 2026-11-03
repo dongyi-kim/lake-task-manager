@@ -4,6 +4,7 @@ import requests
 
 from .base import (AuthProvider, MULTIPART_HEADERS, SessionExpired, UpstreamError,
                    WRITE_HEADERS, XSRF_HEADER)
+from .issue_create import check_create_body, log_create_response
 
 
 class BasicAuthProvider(AuthProvider):
@@ -29,9 +30,11 @@ class BasicAuthProvider(AuthProvider):
         return self._get(path, params).json()
 
     def _write(self, method, path, json_body, params, want_json=True):
+        check_create_body(method, path, json_body)
         url = path if path.startswith(("http://", "https://")) else self.base + path
         fn = getattr(self.session, method)
         r = fn(url, json=json_body, params=params, timeout=30, headers=WRITE_HEADERS)
+        log_create_response(method, path, json_body, r.status_code, r.text if r.status_code >= 400 else "")
         if r.status_code == 401:
             raise SessionExpired(f"HTTP 401 on {path}")
         if r.status_code >= 400:

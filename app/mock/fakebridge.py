@@ -13,9 +13,9 @@ import os
 
 from jira820 import make_app
 from jira820.config import Config
-from jira820.store import Store
 
 from app.infra.settings import get_settings
+from app.mock.permissions import PermissionStore, install_permission_route
 from app.mock.world import World as _World, get_world
 
 W_ME = _World.ME          # dev 세션 사용자(= world 픽스처의 "나")
@@ -69,7 +69,7 @@ def build_store():
         # (실 Jira 에선 SSO 로그인 사용자다.)
         current_user=W_ME,
     )
-    store = Store(cfg, seed=True)       # jira820 자체 샘플(JIRA820 프로젝트 + confluence) 시드
+    store = PermissionStore(cfg, seed=True)  # jira820 자체 샘플 + Jira 권한 fixture
     # 이 프로젝트 world(DL) 를 additive 주입 (키/사용자 disjoint → 교체 아님, 공존).
     store.users.update(w.users)
     store.issues.update(w.issues)
@@ -82,4 +82,6 @@ def build_store():
 
 
 def build_injected_app():
-    return make_app(store=build_store())
+    app = make_app(store=build_store())
+    install_permission_route(app)
+    return app
