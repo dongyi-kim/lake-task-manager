@@ -1,10 +1,18 @@
 """Typed ticket commands. JiraClient remains the owner of transport, receipts and caches."""
 
+from contextlib import nullcontext
 from urllib.parse import urlsplit
 
 from app.auth.base import write_upstream
 from app.domain.ticket_actions import field_update_error, is_done
 from app.jira.mutation_recovery import Reconciliation, UNKNOWN
+
+try:
+    from app.infra.cache_policy import read_scope
+except ModuleNotFoundError as exc:
+    if exc.name != "app.infra.cache_policy":
+        raise
+    read_scope = None
 
 
 class CommandError(ValueError):
@@ -27,13 +35,18 @@ class TicketCommands:
         Creates/comment-add/transition/uploads retain their stronger Jira reconcilers. For other
         writes, an unknown outcome stays unknown until the user reads Jira and resolves it.
         """
+        def strict_action():
+            # Display stale data is useful for reading, never for authorizing writes.
+            # Keep fresh cache hits; require upstream confirmation once they expire.
+            with read_scope(strict=True) if read_scope else nullcontext():
+                return action()
         if not mutation_id:
-            return action()
+            return strict_action()
         client = self.client
         actor, _receipt = client._mutation_actor_for("command-" + kind, mutation_id)
         def write():
             with write_upstream():
-                return action()
+                return strict_action()
         return client._mutation_receipts.execute(
             kind="command-" + kind, mutation_id=mutation_id,
             payload={**payload, "actor": actor}, write=write,
@@ -124,7 +137,11 @@ class TicketCommands:
             requested = {name: getattr(body, name) for name in (
                 "priority", "assignee", "reporter", "duedate", "labels", "components",
                 "summary", "descriptionHtml", "epic") if getattr(body, name) is not None}
-            current = client.ticket_badge(key)
+            # The display badge intentionally suppresses read errors. Authorizing a
+            # write must propagate them and must not treat missing status as Open.
+            current = client.get_issue_light(key, strict=True)
+            if not (current or {}).get("fields", {}).get("status"):
+                raise CommandError("티켓 상태를 확인하지 못해 수정할 수 없습니다.", 503)
             error = field_update_error(current, ["description" if name == "descriptionHtml" else name
                                                  for name in requested if name not in ("reporter", "epic")])
             if is_done(current):

@@ -14,7 +14,7 @@ def test_bulk_uses_ui_validation_keeps_order_relationships_and_retries_only_fail
         if path == "/rest/api/2/issue":
             summary = json_body["fields"]["summary"]
             attempts.append(summary)
-            if summary == "temporarily rejected" and attempts.count(summary) == 1:
+            if summary == "permanently rejected" or (summary == "temporarily rejected" and attempts.count(summary) == 1):
                 raise UpstreamError(400, path, "fixture validation rejection before write")
         return original(path, json_body, **kwargs)
     monkeypatch.setattr(env.provider, "post_json", once_rejected)
@@ -32,15 +32,36 @@ def test_bulk_uses_ui_validation_keeps_order_relationships_and_retries_only_fail
                     mcp_validation = await call("bulk_validate", {"mode": "task", "items": invalid})
                     ui_validation = (await http.post("/api/bulk/validate", json={"mode": "task", "items": invalid})).json()
                     assert mcp_validation == ui_validation and not mcp_validation["ok"]
-                    assert (await call("bulk_create", {"mode": "task", "items": invalid,
-                                                       "client_mutation_id": "bulk:invalid:0001"}))["created"] == []
+                    invalid_result = await mcp.call_tool("bulk_create", {"mode": "task", "items": invalid,
+                                                                         "client_mutation_id": "bulk:invalid:0001"})
+                    assert invalid_result.is_error
+                    invalid_payload = invalid_result.structured_content
+                    assert invalid_payload["ok"] is False and invalid_payload["partial"] is False
+                    assert invalid_payload["error"]["code"] == "validation_failed"
+                    assert invalid_payload["error"]["retryable"] is False
+                    assert invalid_payload["data"]["created"] == []
+                    ui_invalid = await http.post("/api/bulk/create", json={"mode": "task", "items": invalid})
+                    assert ui_invalid.status_code == 400 and ui_invalid.json() == invalid_payload["data"]
                     assert attempts == []
+                    all_failed = await mcp.call_tool("bulk_create", {"mode": "task", "items": [
+                        {"summary": "permanently rejected", "type": "Task", "epic": None}],
+                        "client_mutation_id": "bulk:rejected:0001"})
+                    assert all_failed.is_error and all_failed.structured_content["ok"] is False
+                    assert all_failed.structured_content["partial"] is False
+                    assert all_failed.structured_content["error"]["code"] == "write_failed"
+                    assert all_failed.structured_content["data"]["created"] == []
+                    assert all_failed.structured_content["data"]["failed"][0]["index"] == 0
                     epic = await call("create_epic", {"body": {"summary": "bulk Epic", "clientMutationId": "bulk:epic:0001"}})
                     items = [{"summary": "first", "type": "Task", "epic": epic["key"], "description": "**bulk body**"},
                              {"summary": "temporarily rejected", "type": "Task", "epic": None},
                              {"summary": "third", "type": "Task", "epic": epic["key"]}]
                     args = {"mode": "task", "items": items, "client_mutation_id": "bulk:tasks:0001"}
-                    first = await call("bulk_create", args)
+                    partial_result = await mcp.call_tool("bulk_create", args)
+                    assert partial_result.is_error and partial_result.structured_content["ok"] is False
+                    assert partial_result.structured_content["partial"] is True
+                    assert partial_result.structured_content["error"]["code"] == "partial_failure"
+                    assert partial_result.structured_content["error"]["retryWithSameMutationId"] is True
+                    first = partial_result.structured_content["data"]
                     assert not first["ok"] and [row["index"] for row in first["created"]] == [0, 2]
                     assert [row["index"] for row in first["failed"]] == [1]
                     confirmed = {row["index"]: row["key"] for row in first["created"]}
@@ -91,13 +112,16 @@ def test_bulk_response_lost_keeps_per_item_receipt_and_never_duplicates(build_en
                                                 {"summary": "confirmed", "type": "Task", "epic": None}],
                     "client_mutation_id": "bulk:uncertain:0001"}
             initial = await mcp.call_tool("bulk_create", args)
-            assert not initial.is_error, initial.structured_content
+            assert initial.is_error and initial.structured_content["ok"] is False
+            assert initial.structured_content["partial"] is True
+            assert initial.structured_content["error"]["outcomeUnknown"] is True
+            assert initial.structured_content["error"]["repeatWrite"] is False
             data = initial.structured_content["data"]
             assert data["failed"][0]["code"] == "outcome_unknown"
             assert data["failed"][0]["repeatWrite"] is False
             monkeypatch.setattr(env.provider, "post_json", original)
             repeated = await mcp.call_tool("bulk_create", args)
-            assert not repeated.is_error, repeated.structured_content
+            assert repeated.is_error and repeated.structured_content["partial"] is True
             # The mock search does not prove this response-lost create yet. Retain its
             # uncertainty and confirmed sibling; do not authorize a second POST.
             repeated_data = repeated.structured_content["data"]

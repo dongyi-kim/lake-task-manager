@@ -128,12 +128,33 @@ class LocalMcpRuntime:
             return {"code": "invalid_request", "message": str(exc), "status": getattr(exc, "status", 400)}
         return {"code": "internal_error", "message": "LTM 요청을 완료하지 못했습니다.", "retryable": False}
 
+    @staticmethod
+    def _write_result(fn, kwargs):
+        data = fn(**kwargs)
+        if not isinstance(data, dict) or data.get("ok") is not False:
+            return {"ok": True, "data": data}
+        # A successfully invoked batch can still fail business validation or only
+        # write some rows. Keep every original index/result while making failure
+        # visible to SDK clients that inspect only is_error or the outer envelope.
+        failed = data.get("failed") or []
+        partial = bool(data.get("created") or data.get("updated") or data.get("partial"))
+        validation = bool(data.get("errors")) and not failed and not partial
+        unknown = any(isinstance(row, dict) and row.get("code") == "outcome_unknown" for row in failed)
+        code = "validation_failed" if validation else "partial_failure" if partial else "write_failed"
+        error = {"code": code, "message": "일괄 요청 검증에 실패했습니다." if validation else
+                 "일부 항목만 완료되었습니다. data의 성공/실패 항목을 확인하세요." if partial else
+                 "요청을 완료하지 못했습니다. data의 실패 항목을 확인하세요.",
+                 "retryable": bool(failed), "retryWithSameMutationId": bool(failed)}
+        if unknown:
+            error.update(outcomeUnknown=True, repeatWrite=False)
+        return {"ok": False, "partial": partial, "data": data, "error": error}
+
     def register(self, fn, *, read_only):
         async def invoke(**kwargs):
             try:
                 payload = await anyio.to_thread.run_sync(
                     lambda: read_result(fn, kwargs, self.client) if read_only
-                    else {"ok": True, "data": fn(**kwargs)})
+                    else self._write_result(fn, kwargs))
             except Exception as exc:
                 payload = {"ok": False, "error": await anyio.to_thread.run_sync(lambda: self._error(exc))}
             return CallToolResult(
