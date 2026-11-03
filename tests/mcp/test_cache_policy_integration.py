@@ -24,9 +24,10 @@ def test_actual_policy_ui_mcp_share_age_stale_refresh_and_mutation(build_env, mo
                         "clientMutationId": "source:create:0001"}})
                     assert not created.is_error, created.structured_content
                     key = created.structured_content["data"]["key"]
+                    cache_key = f"issueview:{env.client.env}:{key}"
                     ui = await http.get(f"/api/ticket/{key}")
                     assert ui.status_code == 200 and ui.headers["x-ltm-cache-state"] == "fresh"
-                    source = env.cache.metadata(f"issueview:mock:{key}")
+                    source = env.cache.metadata(cache_key)
                     before = len(env.calls)
                     warm = await mcp.call_tool("get_ticket", {"key": key})
                     observed = warm.structured_content["cache"]
@@ -37,7 +38,7 @@ def test_actual_policy_ui_mcp_share_age_stale_refresh_and_mutation(build_env, mo
 
                     fetched = time.time() - 700
                     with env.cache._lock:
-                        env.cache._conn.execute("UPDATE cache SET fetched_at=? WHERE key=?", (fetched, f"issueview:mock:{key}"))
+                        env.cache._conn.execute("UPDATE cache SET fetched_at=? WHERE key=?", (fetched, cache_key))
                         env.cache._conn.commit()
                     monkeypatch.setattr(env.cache, "skip_producer", lambda: True)
                     stale = await mcp.call_tool("get_ticket", {"key": key})
