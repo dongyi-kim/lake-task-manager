@@ -6,12 +6,15 @@ import anyio
 import httpx2
 import pytest
 import yaml
+import threading
+import time
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
 from app.infra import settings as config
+from app.auth.base import SessionExpired, UpstreamUnavailable
 from app.local_mcp.admin_tools import register_admin
 from app.routes.dashboards import build_dashboard_router
 from app.routes.workspace_config import build_workspace_config_router
@@ -170,7 +173,7 @@ def test_config_conflict_permissions_and_atomic_failure_keep_files_and_caches(wo
         assert http.put("/api/workspace/config/people", json={"revision": response.json()["revision"], "people": {}},
                         headers={"X-LTM-Local": "1"}).status_code == 403
         env.runtime.require_manager = lambda: None
-        monkeypatch.setattr(env.client, "current_user", lambda: {})
+        monkeypatch.setattr(env.client, "current_user_for_authorization", lambda: {})
         assert http.get("/api/workspace/config").status_code == 401
 
 
@@ -182,7 +185,7 @@ def test_people_validation_and_revision_poll_are_local(workspace_env, users, mon
     with pytest.raises((ValueError, TypeError)):
         commands.module_people("Workbench", users, before["revision"])
     assert commands.read() == before
-    monkeypatch.setattr(env.client, "current_user", lambda: pytest.fail("status revision must not probe Jira"))
+    monkeypatch.setattr(env.client, "current_user_for_authorization", lambda: pytest.fail("status revision must not probe Jira"))
     assert commands.revision() == before["revision"]
 
 
@@ -199,7 +202,7 @@ def test_sdk_denies_unauthenticated_or_non_manager_config_access(workspace_env, 
                 result = await mcp.call_tool(name, args)
                 assert result.is_error and result.structured_content["error"]["code"] == "permission_denied"
             env.runtime.require_manager = lambda: None
-            monkeypatch.setattr(env.client, "current_user", lambda: {})
+            monkeypatch.setattr(env.client, "current_user_for_authorization", lambda: {})
             result = await mcp.call_tool("get_workspace_config", {})
             assert result.is_error and result.structured_content["error"]["code"] == "authentication_required"
     anyio.run(scenario)
@@ -219,3 +222,46 @@ def test_concurrent_ui_and_mcp_revision_cannot_overwrite_each_other(workspace_en
     assert len([result for result in results if isinstance(result, dict)]) == 1
     assert [getattr(result, "status", None) for result in results if isinstance(result, ValueError)] == [409]
     assert commands.read()["people"] in ({"Workbench": ["u02"]}, {"Workbench": ["u03"]})
+
+
+def test_cached_manager_cannot_authorize_known_logout_or_failed_identity_refresh(workspace_env, monkeypatch):
+    env, commands = workspace_env, workspace_env.runtime.workspace_config
+    state = commands.read()
+    env.client._session_dead = True
+    with pytest.raises(SessionExpired):
+        commands.save("people", state["revision"], {})
+    assert commands.revision() == state["revision"]
+    env.client._session_dead = False
+    key = f"myself:{env.client.env}"
+    with env.cache._lock:
+        env.cache._conn.execute("UPDATE cache SET fetched_at=? WHERE key=?",
+                               (time.time() - env.client.USER_TTL - 1, key))
+        env.cache._conn.commit()
+    assert env.cache.get(key) is None and env.cache.get_alive(key) is not None
+    def failed(*_args, **_kwargs):
+        raise UpstreamUnavailable("identity lookup offline")
+    monkeypatch.setattr(env.provider, "get_json", failed)
+    with pytest.raises(ValueError) as denied:
+        commands.save("people", state["revision"], {})
+    assert denied.value.status == 401
+    assert commands.revision() == state["revision"]
+    assert not env.client._session_dead  # Transport failure is not proof of expired login.
+
+
+def test_slow_authorization_does_not_hold_config_status_lock(workspace_env, monkeypatch):
+    commands = workspace_env.runtime.workspace_config
+    state = commands.read()
+    started, release = threading.Event(), threading.Event()
+    def slow_identity():
+        started.set()
+        assert release.wait(3)
+        return {"id": "u01"}
+    monkeypatch.setattr(workspace_env.client, "current_user_for_authorization", slow_identity)
+    with ThreadPoolExecutor(2) as pool:
+        pending = pool.submit(commands.create_task, _task(), state["revision"])
+        assert started.wait(1)
+        try:
+            assert pool.submit(commands.revision).result(timeout=1) == state["revision"]
+        finally:
+            release.set()
+        assert len(pending.result()["tasks"]) == 2

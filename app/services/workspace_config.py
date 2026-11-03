@@ -15,7 +15,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.auth.base import SessionExpired
+from app.auth.base import SessionExpired, UpstreamUnavailable
 from app.infra import settings as config
 from app.services.ticket_commands import CommandError
 
@@ -119,7 +119,11 @@ class WorkspaceConfigCommands:
 
     def _authorize(self):
         client = self.get_client()
-        user = client.current_user() or {}
+        try:
+            user = client.current_user_for_authorization() or {}
+        except UpstreamUnavailable as exc:
+            # An unreachable server is not proof of logout, but stale identity cannot authorize.
+            raise CommandError("현재 사용자 권한을 확인할 수 없습니다. 연결 복구 후 다시 시도해 주세요.", 401) from exc
         if not (user.get("id") or user.get("name")):
             raise SessionExpired("설정을 변경하려면 Jira 사용자 인증을 확인해 주세요.")
         self.require_manager()
@@ -185,59 +189,66 @@ class WorkspaceConfigCommands:
         if kind not in {"wbs", "people"}:
             raise ValueError("지원하지 않는 설정 종류입니다.")
         with _LOCK:
-            state, raw, blobs = self._read()
-            desired = self._wbs_raw(raw, value) if kind == "wbs" else validate_people(value)
-            existing = raw if kind == "wbs" else state["people"]
-            # A lost response can be retried with the old revision without rewriting anything.
-            if desired == existing:
-                return state
-            if revision != state["revision"]:
-                raise CommandError("다른 화면에서 설정이 변경되었습니다. 최신 설정을 불러온 후 다시 저장하세요.", 409)
-            target = self._paths()[0 if kind == "wbs" else 1]
-            data = yaml.safe_dump(desired, allow_unicode=True, sort_keys=False).encode("utf-8")
-            try:
-                # Keep one previous version, never grow a history or write caller-selected paths.
-                backup = target.parent / ".cache" / "workspace-config" / (target.name + ".bak")
-                backup.parent.mkdir(parents=True, exist_ok=True)
-                _atomic_write(backup, blobs[0 if kind == "wbs" else 1], staging=backup.parent)
-                _atomic_write(target, data)
-            except OSError as exc:
-                raise CommandError("설정 파일을 저장하지 못했습니다. 파일 권한과 사용 가능한 공간을 확인해 주세요.", 500) from exc
-            config.reload_people()
-            kinds = ("wbs_build:", "vit_build:", "vit_list:")
-            if kind == "people":
-                kinds += ("workload:", "workload_bucket:", "mytasks:", "mt:", "mentionctx:", "mentiondef:")
-            for prefix in kinds:
-                client.cache.invalidate(prefix)
-            return self._read()[0]
+            return self._save_locked(client, kind, revision, value)
+
+    def _save_locked(self, client, kind, revision, value):
+        state, raw, blobs = self._read()
+        desired = self._wbs_raw(raw, value) if kind == "wbs" else validate_people(value)
+        existing = raw if kind == "wbs" else state["people"]
+        # A lost response can be retried with the old revision without rewriting anything.
+        if desired == existing:
+            return state
+        if revision != state["revision"]:
+            raise CommandError("다른 화면에서 설정이 변경되었습니다. 최신 설정을 불러온 후 다시 저장하세요.", 409)
+        target = self._paths()[0 if kind == "wbs" else 1]
+        data = yaml.safe_dump(desired, allow_unicode=True, sort_keys=False).encode("utf-8")
+        try:
+            # Keep one previous version, never grow a history or write caller-selected paths.
+            backup = target.parent / ".cache" / "workspace-config" / (target.name + ".bak")
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write(backup, blobs[0 if kind == "wbs" else 1], staging=backup.parent)
+            _atomic_write(target, data)
+        except OSError as exc:
+            raise CommandError("설정 파일을 저장하지 못했습니다. 파일 권한과 사용 가능한 공간을 확인해 주세요.", 500) from exc
+        config.reload_people()
+        kinds = ("wbs_build:", "vit_build:", "vit_list:")
+        if kind == "people":
+            kinds += ("workload:", "workload_bucket:", "mytasks:", "mt:", "mentionctx:", "mentiondef:")
+        for prefix in kinds:
+            client.cache.invalidate(prefix)
+        return self._read()[0]
 
     def create_task(self, task, revision):
+        client = self._authorize()
         with _LOCK:
-            state = self.read()
+            state = self._read()[0]
             rows = state["tasks"]
             existing = next((row for row in rows if row["id"] == task["id"]), None)
             if existing is not None:
                 if existing == task:
                     return state
                 raise CommandError("이미 사용 중인 WBS Task ID입니다.", 409)
-            return self.save("wbs", revision, [*rows, task])
+            return self._save_locked(client, "wbs", revision, [*rows, task])
 
     def update_task(self, task_id, changes, revision):
+        client = self._authorize()
         with _LOCK:
-            state = self.read()
+            state = self._read()[0]
             if not any(row["id"] == task_id for row in state["tasks"]):
                 raise CommandError("WBS Task를 찾을 수 없습니다.", 404)
             rows = [{**row, **changes} if row["id"] == task_id else row for row in state["tasks"]]
-            return self.save("wbs", revision, rows)
+            return self._save_locked(client, "wbs", revision, rows)
 
     def delete_task(self, task_id, revision):
+        client = self._authorize()
         with _LOCK:
-            state = self.read()
-            return self.save("wbs", revision, [row for row in state["tasks"] if row["id"] != task_id])
+            state = self._read()[0]
+            return self._save_locked(client, "wbs", revision, [row for row in state["tasks"] if row["id"] != task_id])
 
     def module_people(self, module, users, revision, *, rename=None, remove=False):
+        client = self._authorize()
         with _LOCK:
-            state = self.read()
+            state = self._read()[0]
             people = dict(state["people"])
             module = _text(module, "모듈")
             if rename is not None:
@@ -249,4 +260,4 @@ class WorkspaceConfigCommands:
                 people.pop(module, None)
             else:
                 people[module] = users
-            return self.save("people", revision, people)
+            return self._save_locked(client, "people", revision, people)

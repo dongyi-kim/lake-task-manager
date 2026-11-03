@@ -232,6 +232,7 @@ export const api = {
   evict: (key) => evict(encodeURIComponent(key)),                      // 이 티켓 관련 memo 비우기(강제 새로고침)
   workspaceConfigUpdated: (revision, kind = 'all') => {
     ['/api/wbs', '/api/vit', '/api/workload'].forEach(evict);
+    if (kind === 'people' || kind === 'all') ['/api/me', '/api/mention/users'].forEach(evict);
     window.dispatchEvent(new CustomEvent('workspace-config-updated', { detail: { revision, kind } }));
   },
   ticketRefresh: (key) =>                                              // 서버측 파생 캐시까지 비우기
