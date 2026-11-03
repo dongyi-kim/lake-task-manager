@@ -14,6 +14,7 @@ class JiraIdentityMixin:
     UPSTREAM_DOWN_FOR = 20
     SESSION_RECHECK_EVERY = 8
     PROACTIVE_PROBE_CACHE_SEC = 20
+    AUTH_PROBE_WAIT_SECONDS = 30
     SESSION_STATE_PERSIST_EVERY = 4 * 60
 
     def _display_name(self, user_id):
@@ -68,6 +69,7 @@ class JiraIdentityMixin:
         # A recent proactive "alive" result must not mask a later confirmed Jira 401.
         self._auth_probe_result = None
         self._auth_probe_at = 0.0
+        self._auth_probe_completed_result = None
         self.mark_upstream_down(reason)
 
     def mark_transport_ok(self):
@@ -226,7 +228,10 @@ class JiraIdentityMixin:
         collapsed both cases to ``False``; callers could consequently open a login window after
         an ordinary network hiccup.  Keep the tri-state result until the UI-facing boundary.
         """
-        provider, generation = None, None
+        # Provider construction itself can raise LoginRequired before there is an instance.
+        # Capture its fence first so an unchanged missing session is expired, while a login
+        # that replaces the provider during construction still makes this result obsolete.
+        provider, generation = self._provider, self._provider_generation
         try:
             provider = self.provider
             generation = self._provider_generation
@@ -306,33 +311,41 @@ class JiraIdentityMixin:
         finally:
             lock.release()
 
-    def proactive_auth_probe(self):
+    def proactive_auth_probe(self, *, force=False, wait=False):
         """Check Jira on user return and silently renew SSO when possible.
 
-        This method is called by a background browser request, never by the critical render path.
-        It is prod-only, single-flight and briefly memoized so focus/visibility/pointer events (or
-        two open LTM tabs) cannot flood the serial Playwright provider or open repeated logins.
+        Default UI/timer calls reuse recent results and return pending without waiting for an
+        active check. MCP recovery may force a new check after an authentication error and wait
+        up to AUTH_PROBE_WAIT_SECONDS for an already-running check. Overlapping forced callers
+        share that completed result; a wait timeout stays pending, never login-required. No
+        path opens a login window. A later independent forced call bypasses the recent memo.
         """
         if self.env != "prod":
             return {"ok": True, "needLogin": False, "skipped": True, "mode": "local"}
 
+        completed_before = getattr(self, "_auth_probe_completed_result", None)
         now = time.monotonic()
         recent = getattr(self, "_auth_probe_result", None)
-        if recent is not None and now - getattr(self, "_auth_probe_at", 0.0) < self.PROACTIVE_PROBE_CACHE_SEC:
+        if not force and recent is not None and now - getattr(self, "_auth_probe_at", 0.0) < self.PROACTIVE_PROBE_CACHE_SEC:
             return {**recent, "cached": True}
 
         lock = self._auth_probe_lock
-        # Focus, status polling and the server timer share this gate. A pending check is not a
-        # failed check; return immediately instead of occupying another FastAPI worker.
-        if not lock.acquire(timeout=0):
+        # Foreground recovery may join this gate, while UI/timer work remains nonblocking.
+        if not lock.acquire(timeout=self.AUTH_PROBE_WAIT_SECONDS if wait else 0):
             # The earlier confirmed failure already started the existing auth watcher.  A probe
             # that merely timed out must not re-emit need-login or open another visible flow.
             return {"ok": False, "needLogin": False, "pending": True,
-                    "mode": "checking"}
+                    "mode": "checking", **({"timedOut": True} if wait else {})}
         try:
+            completed = getattr(self, "_auth_probe_completed_result", None)
+            if completed is not None and completed is not completed_before:
+                # Do not run N serial forced probes after N callers waited for one renewal.
+                # Keep this completion separate from the short-lived memo cleared by successful
+                # identity reads. A later confirmed auth failure clears both forms of reuse.
+                return {**completed, "shared": True}
             now = time.monotonic()
             recent = getattr(self, "_auth_probe_result", None)
-            if recent is not None and now - getattr(self, "_auth_probe_at", 0.0) < self.PROACTIVE_PROBE_CACHE_SEC:
+            if not force and recent is not None and now - getattr(self, "_auth_probe_at", 0.0) < self.PROACTIVE_PROBE_CACHE_SEC:
                 return {**recent, "cached": True}
 
             from app.auth.base import background_upstream
@@ -378,6 +391,7 @@ class JiraIdentityMixin:
             )
             self._auth_probe_result = result
             self._auth_probe_at = time.monotonic()
+            self._auth_probe_completed_result = dict(result)
             return dict(result)
         finally:
             lock.release()
