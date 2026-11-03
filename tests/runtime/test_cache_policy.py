@@ -29,18 +29,20 @@ def cache():
     value.close()
 
 
-def test_active_done_and_comments_have_independent_boundaries(cache, clock):
+@pytest.mark.parametrize("suffix", ["", ":evidence:v1:100:100"])
+def test_active_done_and_comments_have_independent_boundaries(cache, clock, suffix):
     cache.set("issue:mock:DL-1", issue(), 900)
     cache.set("issue:mock:DL-2", issue(True), 900)
-    cache.set("comments:mock:DL-2", ["comment"], 900)
+    comment_key = "comments:mock:DL-2" + suffix
+    cache.set(comment_key, ["comment"], 900)
     clock[0] += 599
     assert cache.get("issue:mock:DL-1")
     clock[0] += 2
     assert cache.get("issue:mock:DL-1") is None
     assert cache.get("issue:mock:DL-2")
-    assert cache.get("comments:mock:DL-2")
+    assert cache.get(comment_key)
     clock[0] = 103601
-    assert cache.get("comments:mock:DL-2") is None
+    assert cache.get(comment_key) is None
     assert cache.get("issue:mock:DL-2")
     clock[0] = 186399
     assert cache.get_alive("issue:mock:DL-1")
