@@ -533,11 +533,17 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         self._session_state_persist_lock = threading.Lock()
         self._session_state_persist_at = 0.0
         self._renew_at = {}          # 서비스별 마지막 무음갱신 시도 시각(스로틀)
+        self._renew_locks = {}
+        self._renew_guard = threading.Lock()
+        self._renew_results = {}
         # 포커스 복귀가 여러 번 겹치거나 브라우저 탭이 둘 이상이어도 /myself 확인과
-        # silent SSO 갱신은 하나만 수행한다. 기다리는 HTTP 요청은 같은 결과를 재사용한다.
+        # silent SSO 갱신은 하나만 수행한다. 겹친 요청에는 pending 또는 직전 결과를 반환한다.
         self._auth_probe_lock = threading.Lock()
         self._auth_probe_at = 0.0
         self._auth_probe_result = None
+        self._auth_maintenance = {"state": "unchecked", "lastAttemptAt": None,
+                                  "lastCheckedAt": None, "lastRenewedAt": None,
+                                  "nextCheckAt": None, "failure": None}
         self._jql_lock_guard = threading.Lock()
         self._jql_locks = {}
         self._jql_policy = JqlCachePolicy(self)
@@ -589,7 +595,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             pass
 
     RENEW_THROTTLE_SEC = 30          # 같은 서비스를 이 간격 안엔 다시 무음갱신하지 않는다
-    #: 비-Jira 서비스(Confluence·Bitbucket) 세션을 **미리** 살려 두는 주기(초)
+    #: UI가 캐시만 읽거나 창을 닫아 놓아도 Jira 포함 세션을 확인한다.
     KEEPALIVE_EVERY = 240
 
     def _renew_service(self, name):
@@ -607,17 +613,37 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     if (nm or "").lower() == name.lower()), None)
         if not tgt:
             return False
-        now = time.time()
-        if now - self._renew_at.get(name, 0) < self.RENEW_THROTTLE_SEC:
-            return False
-        self._renew_at[name] = now
-        try:
-            return bool(fn([tgt], save_cb=self.sso_store().save_all_from))
-        except Exception:
-            return False
+        key = name.lower()
+        with self._renew_guard:
+            lock = self._renew_locks.setdefault(key, threading.Lock())
+        with lock:
+            now = time.monotonic()
+            if key in self._renew_at and now - self._renew_at[key] < self.RENEW_THROTTLE_SEC:
+                return self._renew_results.get(key, False)
+            provider = self.provider
+            generation = self._provider_generation
+            store = self.sso_store()
+            revision = store.revision(key)
+
+            def save(state):
+                with self._provider_lock:
+                    if (provider is self._provider and generation == self._provider_generation
+                            and not getattr(provider, "broken", False)):
+                        return store.save_if_unchanged(key, state, revision)
+                return False
+
+            try:
+                result = bool(provider.renew_silent([tgt], save_cb=save))
+            except Exception:
+                result = False
+            if provider is not self._provider or generation != self._provider_generation:
+                return False
+            self._renew_at[key] = time.monotonic()
+            self._renew_results[key] = result
+            return result
 
     def keepalive_auth(self):
-        """비-Jira 서비스(Confluence·Bitbucket) 세션을 **미리** 확인·갱신한다. prod 전용.
+        """Jira와 활성화된 부가 서비스의 세션을 확인·무음 갱신한다. prod 전용.
 
         SSO 쿠키는 **도메인별로 따로 만료**된다 — Jira 는 멀쩡한데 Confluence 만 죽는 일이 흔하다.
         지금까지는 그걸 **검색이 401 을 맞고 나서야** 알았다: 그 순간 무음갱신을 돌리는데
@@ -628,10 +654,11 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
           우선순위**로 넣는다(검색·화면 조회가 이것 때문에 늦어지면 본말전도다)."""
         if self.env != "prod":
             return
+        self.proactive_auth_probe()
         from app.auth.base import PRIO_BACKGROUND, _prio_scope
         for name, base, paths in getattr(self.s, "auth_targets", []):
             if (name or "").lower() == "jira":
-                continue                       # Jira 는 본 경로가 늘 쓰므로 따로 안 데운다
+                continue                       # Jira는 위의 공통 single-flight coordinator가 담당
             if (name or "").lower() == "bitbucket" and not getattr(self.s, "bitbucket_enabled", False):
                 continue                       # 안 켠 서비스는 건드리지 않는다(인증 소음)
             probe = (paths or [None])[0]
@@ -641,7 +668,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 with _prio_scope(PRIO_BACKGROUND):
                     self.provider.get_json(base.rstrip("/") + probe, quiet=True)
             except SessionExpired:
-                self._renew_service(name)      # 스로틀은 그 안에서 건다
+                with _prio_scope(PRIO_BACKGROUND):
+                    self._renew_service(name)
             except Exception:
                 pass                           # 망 문제 등 — 다음 주기에 다시 본다
 
@@ -720,6 +748,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         # 로그인 완료 전에 캐시한 proactive probe의 needLogin 결과를 다시 내보내지 않는다.
         self._auth_probe_result = None
         self._auth_probe_at = 0.0
+        self._renew_at.clear()
+        self._renew_results.clear()
         # 새 세션으로 갈아끼우는 참이다 — '죽었다' 표시도 함께 지운다(다시 실패하면 다시 선다).
         self.mark_session_alive()
         # 세션 사용자 캐시도 함께 버린다. 안 그러면 로그인 직후에도 옛 판정(빈 사용자)이

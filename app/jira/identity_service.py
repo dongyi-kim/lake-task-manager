@@ -14,7 +14,7 @@ class JiraIdentityMixin:
     UPSTREAM_DOWN_FOR = 20
     SESSION_RECHECK_EVERY = 8
     PROACTIVE_PROBE_CACHE_SEC = 20
-    SESSION_STATE_PERSIST_EVERY = 15 * 60
+    SESSION_STATE_PERSIST_EVERY = 4 * 60
 
     def _display_name(self, user_id):
         """Return Jira's full display name, caching successful directory lookups only."""
@@ -118,8 +118,7 @@ class JiraIdentityMixin:
 
         def run():
             try:
-                if self.session_alive():
-                    self.mark_session_alive()
+                self.proactive_auth_probe()
             except Exception:
                 pass
             finally:
@@ -134,6 +133,7 @@ class JiraIdentityMixin:
             "lastSyncAt": self.cache.last_upstream_ok or None,
             "servedStaleAt": self.cache.served_stale_at or None,
             "hasCache": self.cache.has_any(),
+            "authMaintenance": dict(getattr(self, "_auth_maintenance", {})),
         }
 
     def current_user(self):
@@ -229,29 +229,36 @@ class JiraIdentityMixin:
         collapsed both cases to ``False``; callers could consequently open a login window after
         an ordinary network hiccup.  Keep the tri-state result until the UI-facing boundary.
         """
+        provider, generation = None, None
         try:
+            provider = self.provider
+            generation = self._provider_generation
             if background:
                 from app.auth.base import PRIO_BACKGROUND, _prio_scope
                 with _prio_scope(PRIO_BACKGROUND):
-                    raw = self.provider.get_json("/rest/api/2/myself")
+                    raw = provider.get_json("/rest/api/2/myself")
             else:
-                raw = self.provider.get_json("/rest/api/2/myself")
-            if not isinstance(raw, dict):
-                return "unknown"
-            name = raw.get("name") or raw.get("key") or ""
-            if name and "anonymous" not in str(name).lower():
+                raw = provider.get_json("/rest/api/2/myself")
+            with self._provider_lock:
+                if provider is not self._provider or generation != self._provider_generation:
+                    return "unknown"
+                if not isinstance(raw, dict):
+                    return "unknown"
+                name = raw.get("name") or raw.get("key") or ""
+                if not name or "anonymous" in str(name).lower():
+                    return "expired"
                 self.mark_session_alive()
-                if background:
-                    # The activity probe is already off the render path. Persist rolling/sliding
-                    # cookies here so a later browser relaunch or app restart does not fall back
-                    # to the older login-time state. Persistence failure never changes auth truth.
-                    try:
-                        self._persist_jira_session_state()
-                    except Exception:
-                        pass
-                return "alive"
-            return "expired"
+            if background:
+                # Persist rolling cookies off the render path. A failed disk write never changes
+                # authentication truth; the store separately fences replacement login snapshots.
+                try:
+                    self._persist_jira_session_state()
+                except Exception:
+                    pass
+            return "alive"
         except SessionExpired:
+            if provider is not self._provider or generation != self._provider_generation:
+                return "unknown"
             return "expired"
         except Exception:
             return "unknown"
@@ -318,9 +325,9 @@ class JiraIdentityMixin:
             return {**recent, "cached": True}
 
         lock = self._auth_probe_lock
-        # A second browser request waits for, and then reuses, the first probe.  It never starts a
-        # second Jira call.  The HTTP fetch is background work, so this does not block the UI.
-        if not lock.acquire(timeout=35):
+        # Focus, status polling and the server timer share this gate. A pending check is not a
+        # failed check; return immediately instead of occupying another FastAPI worker.
+        if not lock.acquire(timeout=0):
             # The earlier confirmed failure already started the existing auth watcher.  A probe
             # that merely timed out must not re-emit need-login or open another visible flow.
             return {"ok": False, "needLogin": False, "pending": True,
@@ -331,7 +338,10 @@ class JiraIdentityMixin:
             if recent is not None and now - getattr(self, "_auth_probe_at", 0.0) < self.PROACTIVE_PROBE_CACHE_SEC:
                 return {**recent, "cached": True}
 
-            state = self.direct_session_state(background=True)
+            from app.auth.base import background_upstream
+            self._auth_maintenance.update(state="checking", lastAttemptAt=time.time())
+            with background_upstream():
+                state = self.direct_session_state(background=True)
             if state == "alive":
                 self.mark_session_alive()
                 result = {"ok": True, "needLogin": False, "mode": "ok"}
@@ -339,12 +349,16 @@ class JiraIdentityMixin:
                 # Network/provider trouble must not become an authentication popup.
                 result = {"ok": False, "needLogin": False, "mode": "degraded"}
             else:
-                self.mark_session_dead("유휴 후 Jira 세션 만료")
+                self._auth_maintenance["state"] = "renewing"
                 try:
-                    renewed = self._renew_service("Jira")
+                    with background_upstream():
+                        self._renew_service("Jira")
                 except Exception:
-                    renewed = False
-                recovered = renewed and self.direct_session_state(background=True) == "alive"
+                    pass
+                # A failed navigation may be a network loss, or another login may have completed.
+                # Confirm again before announcing that user interaction is required.
+                after = self.direct_session_state(background=True)
+                recovered = after == "alive"
                 if recovered:
                     self.mark_session_alive()
                     try:
@@ -353,9 +367,18 @@ class JiraIdentityMixin:
                         pass
                     result = {"ok": True, "needLogin": False, "recovered": True,
                               "mode": "ok"}
+                    self._auth_maintenance["lastRenewedAt"] = time.time()
+                elif after == "unknown":
+                    result = {"ok": False, "needLogin": False, "mode": "degraded"}
                 else:
+                    self.mark_session_dead("Jira 세션 만료 — 무음 인증 복구 필요")
                     result = {"ok": False, "needLogin": True, "mode": "authenticating"}
 
+            self._auth_maintenance.update(
+                state=("alive" if result["ok"] else "login_required" if result["needLogin"] else "degraded"),
+                lastCheckedAt=time.time(), nextCheckAt=time.time() + self.KEEPALIVE_EVERY,
+                failure=None if result["ok"] else "authentication" if result["needLogin"] else "transport",
+            )
             self._auth_probe_result = result
             self._auth_probe_at = time.monotonic()
             return dict(result)
