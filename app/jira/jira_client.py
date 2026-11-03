@@ -4864,7 +4864,14 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             # 표시용은 넉넉한 상한(CHILD_DISPLAY_LIMIT) — 스캔용 20 을 쓰면 하위가 많은 Epic 이 20 개로 잘렸다.
             kids = self._child_keys(key, limit=self.CHILD_DISPLAY_LIMIT)
             self.prefetch_issues(kids, light=True)   # 뱃지만 필요 → 경량 배치(이후 badge 는 캐시 히트)
-            return [b for b in (self.ticket_badge(k) for k in kids) if b]
+            children = []
+            for child_key in kids:
+                badge = self.ticket_badge(child_key)
+                if badge:
+                    children.append(badge)
+                else:
+                    self.miss_add()
+            return children
         return self._swr(f"children:{self.env}:{key}", build)
 
     def ticket_related(self, key, limit=20, include_mentions=True):
