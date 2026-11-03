@@ -13,8 +13,16 @@ except ModuleNotFoundError as exc:
 def read_result(fn, kwargs, client):
     # Both the scope and read run inside the same worker: ContextVars from sibling
     # workers do not report reads back to a scope opened around await to_thread.
-    with read_scope(strict=bool(kwargs.get("fresh"))) if read_scope else nullcontext([]) as sources:
-        data = fn(**kwargs)
+    begin, count = getattr(client, "miss_begin", None), getattr(client, "miss_count", None)
+    if begin:
+        begin()
+    try:
+        with read_scope(strict=bool(kwargs.get("fresh"))) if read_scope else nullcontext([]) as sources:
+            data = fn(**kwargs)
+        missing = count() if count else 0
+    finally:
+        if begin:
+            begin()  # Thread-pool reuse must not leak a previous request's omissions.
     cache = {"available": bool(sources), "state": "unknown"}
     if sources:
         states = {row.get("state", "unknown") for row in sources}
@@ -28,7 +36,7 @@ def read_result(fn, kwargs, client):
     if revision is not None:
         cache["policyRevision"] = revision
     return {"ok": True, "data": data, "cache": cache,
-            "partial": has_partial(data)}
+            "partial": bool(missing) or has_partial(data), "missing": missing}
 
 
 def has_partial(data):

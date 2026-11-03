@@ -64,6 +64,14 @@ class _EpicMetadataUnavailable(LookupError):
     """An Epic response had no real label and therefore must not be cached as its key."""
 
 
+class _UncacheablePartial(RuntimeError):
+    """Best-effort tree/aggregate value that must not replace a complete cached value."""
+
+    def __init__(self, value):
+        super().__init__("Some Jira descendants could not be read")
+        self.value = value
+
+
 def _repair_leaked_color_macros(html):
     """일부 renderedFields 응답에 글자로 남은 안전한 hex color 매크로만 HTML로 복구한다."""
     return _LEAKED_COLOR_RE.sub(
@@ -922,6 +930,13 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     def miss_count(self):
         return getattr(self._miss, "n", 0)
 
+    def _complete_result(self, producer):
+        before = self.miss_count()
+        value = producer()
+        if self.miss_count() > before:
+            raise _UncacheablePartial(value)
+        return value
+
     def _swr(self, key, producer):
         """stale-while-revalidate — 만료돼도 남은 값이 있으면 **즉시** 주고 뒤에서 갱신.
 
@@ -930,8 +945,11 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         단일 큐라 이걸 안 하면 갱신이 사용자 조회를 밀어낸다.
         같은 키의 갱신이 이미 돌고 있으면 새로 띄우지 않는다.
         """
-        value, _how = self.cache.get_or_set_swr(
-            key, self.s.cache_ttl_seconds, producer, self._refresh_bg)
+        try:
+            value, _how = self.cache.get_or_set_swr(
+                key, self.s.cache_ttl_seconds, lambda: self._complete_result(producer), self._refresh_bg)
+        except _UncacheablePartial as exc:
+            return exc.value
         return value
 
     def _refresh_bg(self, key, ttl, producer):
@@ -1834,9 +1852,12 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     def epic_issues(self, epic_key):
         real = self._resolve(epic_key)
         cache_key = f"epic_issues:{self.env}:{real}"
-        data, _hit = self.cache.get_or_set(
-            cache_key, self.s.cache_ttl_seconds, lambda: self._fetch_epic_children(real)
-        )
+        try:
+            data, _hit = self.cache.get_or_set(
+                cache_key, self.s.cache_ttl_seconds,
+                lambda: self._complete_result(lambda: self._fetch_epic_children(real)))
+        except _UncacheablePartial as exc:
+            return exc.value
         return data
 
     def _fetch_epic_children(self, epic_key):
@@ -1850,9 +1871,12 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         """Epic 자식(Story/Task/Bug) + 각 자식의 Sub-Task — WBS Gantt 다계층 트리(표시용).
         같은 티켓 단위 캐시(epic_children/issue)를 재사용하므로 추가 상위호출 거의 없음."""
         real = self._resolve(epic_key)
-        return self.cache.get_or_set(
-            f"epic_tree:{self.env}:{real}", self.s.cache_ttl_seconds,
-            lambda: self._build_epic_tree(real))[0]
+        try:
+            return self.cache.get_or_set(
+                f"epic_tree:{self.env}:{real}", self.s.cache_ttl_seconds,
+                lambda: self._complete_result(lambda: self._build_epic_tree(real)))[0]
+        except _UncacheablePartial as exc:
+            return exc.value
 
     def _build_epic_tree(self, epic_key):
         sp = self.s.sp_field_id
@@ -1900,8 +1924,16 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         items = list(items)
         prov = self.provider
         if prov is not None and getattr(prov, "supports_parallel", False) and len(items) > 1:
+            def observed(item):
+                self.miss_begin()
+                try:
+                    return fn(item), self.miss_count()
+                finally:
+                    self.miss_begin()
             with ThreadPoolExecutor(max_workers=min(8, len(items))) as ex:
-                return list(ex.map(fn, items))
+                results = list(ex.map(observed, items))
+            self.miss_add(sum(missing for _value, missing in results))
+            return [value for value, _missing in results]
         return [fn(x) for x in items]
 
     def epic_progress_map(self, plan):
