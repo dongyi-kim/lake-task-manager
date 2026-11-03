@@ -64,12 +64,14 @@ export default {
       Object.keys(this.detailErr).filter((key) => this.detailOpen[key])
         .forEach((key) => this.loadDetail({ key }, false));
     });
+    window.addEventListener('workspace-config-updated', this._workspaceUpdate = () => this.load());
   },
   unmounted() {
     this._loadSeq = (this._loadSeq || 0) + 1;
     this._detailEpoch = (this._detailEpoch || 0) + 1;
     window.removeEventListener("force-refresh", this._fr);
     window.removeEventListener("auth-ok", this._authok);
+    window.removeEventListener('workspace-config-updated', this._workspaceUpdate);
   },
   methods: {
     /** 골격(모듈 목록)을 먼저 받고, 모듈별 본문을 병렬로 채운다.

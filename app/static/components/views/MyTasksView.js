@@ -148,6 +148,12 @@ export default {
       // 이미 보이는 카드도 유지해, 재로그인이 전체 목록 재로딩처럼 보이지 않게 한다.
       this.load({ quiet: true });
     });
+    window.addEventListener('workspace-config-updated', this._workspaceUpdate = async () => {
+      this._dropModelCache();
+      const seq = this._loadSeq;
+      await this.refreshMe();
+      if (seq === this._loadSeq) this.load({ quiet: true });
+    });
     this._mq = window.matchMedia(NARROW);
     this._onMq = (e) => { this.axis = e.matches ? "v" : "h"; };
     this._mq.addEventListener ? this._mq.addEventListener("change", this._onMq)
@@ -161,6 +167,7 @@ export default {
     window.removeEventListener("ticket-changed", this._onChanged);
     window.removeEventListener("force-refresh", this._fr);
     window.removeEventListener("auth-ok", this._authok);
+    window.removeEventListener('workspace-config-updated', this._workspaceUpdate);
     this._unbindDrag && this._unbindDrag();
     if (!this._mq) return;
     this._mq.removeEventListener ? this._mq.removeEventListener("change", this._onMq)

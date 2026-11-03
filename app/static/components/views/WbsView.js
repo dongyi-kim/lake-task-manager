@@ -25,6 +25,10 @@ export default {
         this.D = d; this.err = ""; this.$nextTick(() => this.renderGantt()); retryFailedTrees();
       }).catch(() => {});
     });
+    window.addEventListener('workspace-config-updated', this._workspaceUpdate = () => {
+      api.wbs().then(d => { this.D = d; this.err = ''; this.scheduleRender(); })
+        .catch(e => { this.err = e.message; });
+    });
   },
   async mounted() {
     try { this.D = await api.wbs(); this.$nextTick(() => this.renderGantt()); }
@@ -38,6 +42,7 @@ export default {
     if (this._raf) cancelAnimationFrame(this._raf);
     window.removeEventListener("force-refresh", this._fr);
     window.removeEventListener("auth-ok", this._authok);
+    window.removeEventListener('workspace-config-updated', this._workspaceUpdate);
   },
   activated() { this.$nextTick(() => this.renderGantt()); },   // keep-alive 재활성 시 재렌더
   computed: {
