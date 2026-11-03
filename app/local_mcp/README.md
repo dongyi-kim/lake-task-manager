@@ -26,6 +26,7 @@ JQL leaf/issue/user/Epic/Confluence 캐시, mutation invalidation을 사용한�
 |---|---|
 | 인증 상태·복구·로그인 시작 | `get_auth_status`, `authenticate` |
 | JQL·페이지 | `search_issues` |
+| 원본 댓글·변경이력 페이지 | `get_evidence_page` |
 | 티켓 본문·댓글·이력·자식·Epic | `get_ticket`, `get_comments`, `get_history`, `get_field_history`, `get_children`, `get_epic`, `get_ticket_context` |
 | 통합검색·Confluence 검색/본문 | `search_workspace`, `search_confluence_documents`, `read_confluence_document` |
 | 사람·선택지·워크로드 | `search_users`, `get_user`, `list_options`, `get_workload` |
@@ -49,7 +50,7 @@ JQL leaf/issue/user/Epic/Confluence 캐시, mutation invalidation을 사용한�
 `fetchedAt`·`freshUntil`·`displayUntil`, stale 여부와 policy revision을 반환한다.
 관측 정보가 없으면 `available: false, state: unknown`으로 표시하며 최신 데이터라고 단정하지 않는다.
 
-업무 도구 49개와 인증 도구 2개, 총 **51개**를 제공한다. `get_ticket`의 `descriptionHtml`은 열람용, `descriptionEditHtml`은
+업무 도구 50개와 인증 도구 2개, 총 **52개**를 제공한다. `get_ticket`의 `descriptionHtml`은 열람용, `descriptionEditHtml`은
 수정용 본문이다. 생성 시 `body.descriptionHtml`, 이후 본문 수정은 `update_description(html, ...)`,
 댓글 작성·수정은 `add_comment`·`edit_comment(html, ...)`를 사용한다. 기존 UI와 동일한 Jira serializer를 거친다.
 `update_fields`의 `labels`와 `components`에는 문자열 배열을 전달하며 `[]`는 해당 필드를 모두 비운다.

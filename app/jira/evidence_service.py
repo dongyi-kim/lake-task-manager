@@ -6,8 +6,72 @@ expansion remains visibly incomplete instead of guessing a Cloud-only pagination
 """
 
 from copy import deepcopy
+import hashlib
+import json
 
 from app.auth.base import SessionExpired
+
+
+EVIDENCE_PAGE_MAX_BYTES = 8192
+
+
+def _json_size(value):
+    return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+
+
+def _bounded_evidence_page(page, record_offset):
+    """Keep records lossless while bounding each model-visible response by UTF-8 bytes."""
+    rows = page["items"]
+    if record_offset and not rows:
+        raise ValueError("record_offset에 해당하는 원본 기록이 없습니다.")
+    if not record_offset and _json_size(page) <= EVIDENCE_PAGE_MAX_BYTES:
+        return page
+
+    def prefix(count):
+        more = count < len(rows) or page["hasMore"]
+        return {**page, "items": rows[:count], "returned": count,
+                "hasMore": more, "nextStartAt": page["startAt"] + count if more else None}
+
+    if not record_offset:
+        # Stop only between complete records. The next page starts at the first omitted row.
+        count = 0
+        for candidate in range(1, len(rows) + 1):
+            if _json_size(prefix(candidate)) > EVIDENCE_PAGE_MAX_BYTES:
+                break
+            count = candidate
+        if count:
+            return prefix(count)
+    if not rows:
+        raise ValueError("Jira evidence 페이지 메타데이터가 응답 크기 제한을 초과했습니다.")
+
+    # A single comment or history (including long from/to description values) can itself
+    # exceed the budget. Preserve its exact normalized JSON, readable in character ranges.
+    record = json.dumps(rows[0], ensure_ascii=False, default=str)
+    if record_offset >= len(record):
+        raise ValueError("record_offset이 원본 기록의 문자 범위를 벗어났습니다.")
+    digest = hashlib.sha256(record.encode("utf-8")).hexdigest()
+
+    def chunk(end):
+        next_offset = end if end < len(record) else None
+        more = next_offset is not None or len(rows) > 1 or page["hasMore"]
+        item = {"id": rows[0]["id"], "sourceIndex": page["startAt"],
+                "recordJson": record[record_offset:end], "recordOffset": record_offset,
+                "nextRecordOffset": next_offset, "totalCharacters": len(record),
+                "recordSha256": digest}
+        return {**page, "items": [item], "returned": 1, "hasMore": more,
+                "nextStartAt": (page["startAt"] if next_offset is not None else
+                                page["startAt"] + 1) if more else None}
+
+    lower, upper = record_offset, min(len(record), record_offset + EVIDENCE_PAGE_MAX_BYTES)
+    while lower < upper:
+        middle = (lower + upper + 1) // 2
+        if _json_size(chunk(middle)) <= EVIDENCE_PAGE_MAX_BYTES:
+            lower = middle
+        else:
+            upper = middle - 1
+    if lower == record_offset:
+        raise ValueError("Jira evidence 기록 메타데이터가 응답 크기 제한을 초과했습니다.")
+    return chunk(lower)
 
 
 def validate_page(start_at, max_results):
@@ -110,8 +174,10 @@ def _history_page(client, key, start_at, max_results):
             "consistency": "cached_expansion; pagination covers available histories only"}
 
 
-def get_evidence_page(client, key, kind="comments", start_at=0, max_results=100):
+def get_evidence_page(client, key, kind="comments", start_at=0, max_results=100, record_offset=0):
     validate_page(start_at, max_results)
+    if type(record_offset) is not int or record_offset < 0 or (record_offset and max_results != 1):
+        raise ValueError("record_offset은 0 이상 정수이며, 이어 읽을 때 max_results=1을 사용하세요.")
     key = key.strip().upper()
     if kind == "comments":
         page = _comments_page(client, key, start_at, max_results)
@@ -119,4 +185,4 @@ def get_evidence_page(client, key, kind="comments", start_at=0, max_results=100)
         page = _history_page(client, key, start_at, max_results)
     else:
         raise ValueError("kind는 comments 또는 history여야 합니다.")
-    return page
+    return _bounded_evidence_page(page, record_offset)

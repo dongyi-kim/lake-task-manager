@@ -41,13 +41,20 @@ def register_reads(register, runtime):
         return result
 
     def get_comments(key: str, limit: int = 100) -> dict:
-        """Read cached comments, newest first; returnedCount/limit make truncation explicit."""
+        """Read a recent comment preview for one ticket, newest first; limit=1..1000.
+        The UI cache holds at most sourceLimit=20 comments even when a larger limit is requested.
+        Returns comments, returnedCount, limit, sourceLimit and conservative mayHaveMore.
+        Use get_evidence_page(kind=comments) to read the full discussion with real pagination.
+        Use comment IDs/dates/authors and text as evidence for exclusions, cancellations and revised scope.
+        Comment claims do not themselves change Jira status or prove completed deliverable counts.
+        """
         runtime.check_key(key)
         if not 1 <= limit <= 1000:
             raise ValueError("limit은 1~1000이어야 합니다.")
         rows = runtime.client.issue_comments(key, limit=limit)
         return {"comments": rows, "returnedCount": len(rows), "limit": limit,
-                "mayHaveMore": len(rows) >= limit}
+                "sourceLimit": runtime.client.CACHE_COMMENTS,
+                "mayHaveMore": len(rows) >= min(limit, runtime.client.CACHE_COMMENTS)}
 
     def get_history(key: str, include_children: bool = False, limit: int = 100) -> dict:
         """Read timeline; the default includes only this ticket. Child history is opt-in."""
