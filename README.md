@@ -70,13 +70,15 @@ Agent의 상세 계약과 개발 규칙은 [`app/agent/README.md`](app/agent/REA
 ### Local MCP — 외부 Agent 연결
 
 - **설정 → MCP 연결**에서 실제 주소, Jira 상태와 인증 포함 HTTP/stdio 설정을 복사
-- 실행 중인 LTM의 인증, JQL·티켓·사람·Confluence 캐시를 재사용하며 별도 LLM 키 없이 38개 업무 도구 제공
+- 실행 중인 LTM의 인증, JQL·티켓·사람·Confluence 캐시를 재사용하며 별도 LLM 키 없이 49개 업무 도구 제공
 - 티켓 검색·본문 읽기/작성/수정, 댓글 CRUD, 생성·전이·첨부·링크·삭제
 - Confluence 문서 검색·전체 본문 읽기, WBS·VIT·인력 워크로드 조회
+- Task·SubTask 일괄 검증/생성 및 부분 실패 재시도, 라벨·컴포넌트 수정, PMO_VIT 등록·해제
+- 관리자는 **설정 → WBS·인력 관리**와 MCP 양쪽에서 WBS 계획·모듈 인력을 동일하게 관리
 - loopback 연결과 전용 토큰 인증, 즉시 토큰 재발급·연결 끄기
 - 쓰기 요청 ID로 중복 실행을 방지하고, 응답 유실 시 반영 여부를 구분
 
-외부 MCP 클라이언트는 사용자가 허용한 작업을 Jira에 직접 반영한다. 내장 Agent 승인 흐름은 유지된다.
+외부 MCP 클라이언트는 사용자가 허용한 작업을 Jira와 로컬 WBS·인력 설정에 직접 반영한다. 내장 Agent 승인 흐름은 유지된다.
 연결 방법·도구·pagination·재시도 계약은 [`Local MCP 안내`](app/local_mcp/README.md)를 참고한다.
 현재 예정 기능인 Bitbucket 검색과 LLM/인증 비밀값 관리는 MCP 업무 도구에 포함하지 않는다.
 

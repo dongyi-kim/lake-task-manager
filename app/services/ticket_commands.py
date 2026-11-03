@@ -83,6 +83,41 @@ class TicketCommands:
         linked = client.set_epic_link(key, body.taskKeys) if key and body.taskKeys else None
         return {"ok": True, "key": key, "link": linked}
 
+    def bulk_validate(self, mode, items):
+        from app.domain.bulk import validate_bulk
+        return validate_bulk(mode, items, self.client.bulk_lookup())
+
+    def bulk_create(self, body):
+        from app.content.mdhtml import markdown_to_html
+        check = self.bulk_validate(body.mode, body.items)
+        if not check.get("ok"):
+            return {"ok": False, "created": [], "failed": [], "errors": check.get("errors", []),
+                    "warnings": check.get("warnings", [])}
+        mutation_id = body.clientMutationId
+        if mutation_id:
+            # Bind the entire ordered batch before any writes. Per-item receipts below
+            # can then resume failures without allowing the same ID to mean a new batch.
+            self._once("bulk-create-manifest", mutation_id, {"mode": body.mode, "items": body.items},
+                       lambda: {"ok": True})
+        options = {"mutation_id": mutation_id} if mutation_id else {}
+        result = self.client.bulk_create(body.mode, check.get("items") or body.items,
+            desc_to_field=lambda markdown: self.client.desc_field_value(markdown_to_html(markdown)), **options)
+        return {**result, "warnings": check.get("warnings", [])}
+
+    def set_vit_tracking(self, key, tracked, mutation_id):
+        from app.services.ticket_models import FieldsBody
+        def write():
+            # Fetch current labels before changing membership, so an old display
+            # copy cannot remove labels another Jira user has just added.
+            current = self.client.ticket_view(key, fresh=True)
+            if not current:
+                raise CommandError("티켓을 찾을 수 없습니다.", 404)
+            labels = list(current.get("labels") or [])
+            labels = list(dict.fromkeys(labels + ["PMO_VIT"])) if tracked else [label for label in labels if label != "PMO_VIT"]
+            result = self.update_fields(key, FieldsBody(labels=labels))
+            return {**result, "key": key, "tracked": tracked, "labels": labels}
+        return self._once("vit-tracking", mutation_id, {"key": key, "tracked": tracked}, write)
+
     def update_fields(self, key, body):
         client = self.client
         def write():

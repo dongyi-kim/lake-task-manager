@@ -18,9 +18,8 @@ from app.auth.base import PermissionDenied, SessionExpired, UpstreamUnavailable
 
 
 def _bulk_check(client, mode: str, items: list[dict]):
-    from app.domain import bulk
     # Creating a child does not edit its parent. Jira enforces CREATE_ISSUES on POST.
-    return bulk.validate_bulk(mode, items, client.bulk_lookup())
+    return TicketCommands(lambda: client, None).bulk_validate(mode, items)
 
 
 def fields_for_update(client, key: str, changes: dict):
@@ -132,21 +131,12 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
 
     @router.post("/api/bulk/validate")
     def api_bulk_validate(body: BulkBody):
-        return JSONResponse(_bulk_check(get_client(), body.mode, body.items))
+        return JSONResponse(commands.bulk_validate(body.mode, body.items))
 
     @router.post("/api/bulk/create")
     def api_bulk_create(body: BulkBody):
-        from app.content.mdhtml import markdown_to_html
-        client = get_client()
-        check = _bulk_check(client, body.mode, body.items)
-        if not check.get("ok"):
-            return JSONResponse({"ok": False, "errors": check.get("errors", []), "warnings": check.get("warnings", [])}, status_code=400)
-        result = client.bulk_create(
-            body.mode, check.get("items") or body.items,
-            desc_to_field=lambda markdown: client.desc_field_value(markdown_to_html(markdown)),
-        )
-        result["warnings"] = check.get("warnings", [])
-        return JSONResponse(result)
+        result = commands.bulk_create(body)
+        return JSONResponse(result, status_code=400 if result.get("errors") else 200)
 
     @router.post("/api/bulk/update/validate")
     def api_bulk_update_validate(body: BulkUpdateBody):

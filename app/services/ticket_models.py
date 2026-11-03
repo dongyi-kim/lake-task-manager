@@ -53,6 +53,7 @@ class TaskBody(ChildBody):
 class BulkBody(BaseModel):
     mode: str
     items: list[dict]
+    clientMutationId: str | None = None
 
 
 class BulkUpdateBody(BaseModel):

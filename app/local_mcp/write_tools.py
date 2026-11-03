@@ -2,10 +2,11 @@
 
 import base64
 import binascii
+from typing import Literal
 
 from pydantic import Field
 
-from app.services.ticket_models import ChildBody, EpicBody, FieldsBody, TransitionBody
+from app.services.ticket_models import BulkBody, ChildBody, EpicBody, FieldsBody, TransitionBody
 
 
 class CreateInput(ChildBody):
@@ -26,6 +27,12 @@ class TransitionInput(TransitionBody):
 
 def register_writes(register, runtime):
     commands = runtime.commands
+
+    def check_bulk_scope(mode, items):
+        for item in items:
+            parent = item.get("parent") if mode == "subtask" else item.get("epic")
+            if isinstance(parent, str) and parent:
+                runtime.check_key(parent)
 
     def create_task(body: CreateInput, epic_key: str = "") -> dict:
         """Create a Task-tier ticket (discover type via list_options), optionally under an Epic.
@@ -49,9 +56,32 @@ def register_writes(register, runtime):
     def update_fields(key: str, body: FieldsInput) -> dict:
         """Edit allowed fields using current editmeta. Done tickets must be reopened first.
         Reporter requires actual Jira MODIFY_REPORTER permission. Null means unchanged; empty clears.
+        labels and components accept string arrays; [] clears all labels/components respectively.
         """
         runtime.check_key(key)
         return commands.update_fields(key, body)
+
+    def bulk_validate(mode: Literal["task", "subtask"], items: list[dict]) -> dict:
+        """Validate up to 100 ordered items with the exact UI bulk rules and live Jira options.
+        Each item needs summary/type. task needs epic (key or explicit null); subtask needs an
+        existing parent Task key. Optional: priority, duedate, assignee, components, labels,
+        description (Markdown). Returns normalized items, indexed errors and warnings; performs no writes.
+        """
+        check_bulk_scope(mode, items)
+        return commands.bulk_validate(mode, items)
+
+    def bulk_create(mode: Literal["task", "subtask"], items: list[dict], client_mutation_id: str) -> dict:
+        """Create up to 100 tasks/subtasks through LTM's existing bulk validation/execution path.
+        Inspect bulk_validate first. task items must include epic:null or an existing Epic key;
+        subtask items must reference existing parent keys, so create parents in a prior batch.
+        Items execute in order. created/failed retain original indices; Jira has no rollback.
+        Retry the SAME complete ordered items and SAME mutation ID: confirmed items replay,
+        failed items resume, unknown outcomes reconcile without blind duplicate POSTs.
+        Never retry only failed rows under the same batch ID or replace an unknown batch ID.
+        """
+        runtime.check_mutation_id(client_mutation_id)
+        check_bulk_scope(mode, items)
+        return commands.bulk_create(BulkBody(mode=mode, items=items, clientMutationId=client_mutation_id))
 
     def update_description(key: str, html: str, client_mutation_id: str) -> dict:
         """Replace a ticket's description/body HTML using the same editor serializer as the UI.
@@ -148,7 +178,8 @@ def register_writes(register, runtime):
         runtime.check_mutation_id(client_mutation_id)
         return commands.delete_ticket(key, client_mutation_id)
 
-    for fn in (create_task, create_subtask, create_epic, update_fields, update_description, add_comment, edit_comment,
+    register(bulk_validate, read_only=True)
+    for fn in (create_task, create_subtask, create_epic, bulk_create, update_fields, update_description, add_comment, edit_comment,
                delete_comment, transition_ticket, add_issue_link, delete_issue_link, add_document,
                delete_document, add_attachment, delete_attachment, delete_ticket):
         register(fn, read_only=False)

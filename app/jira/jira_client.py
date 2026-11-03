@@ -3115,13 +3115,14 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             lk.may_edit = may_edit          # 권한 판정은 라우트(세션)가 안다 — 주입받는다
         return lk
 
-    def bulk_create(self, mode, items, desc_to_field=None):
+    def bulk_create(self, mode, items, desc_to_field=None, mutation_id=None):
         """검증을 통과한 항목들을 **차례로** 만든다. 하나 실패해도 나머지는 진행(Jira 는 롤백이 없다).
         반환: {ok, created:[{index,key,summary}], failed:[{index,summary,error}]} — set_epic_link 와 같은 형태.
 
         성능: 항목마다 도는 cascade_suggestion(부모 상태 연쇄 제안)은 **생략**한다 — Bulk 는 대개
         새 부모 밑에 새로 만드는 것이고, 건마다 상류를 두 번 더 치면 100건이 200왕복이 된다."""
         from app.domain.bulk import to_create_kwargs
+        from app.auth.base import MutationOutcomeUnknown
         created, failed = [], []
         with self._mutation_batch_scope():
             for i, it in enumerate(items or []):
@@ -3131,10 +3132,16 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     desc = it.get("description")
                     if desc and desc_to_field:
                         kw["description"] = desc_to_field(desc)
+                    if mutation_id:
+                        kw["mutation_id"] = "bulk:" + hashlib.sha256(f"{mutation_id}:{mode}:{i}".encode()).hexdigest()
                     r = self.create_child(**kw)
                     created.append({"index": i, "key": (r or {}).get("key"), "summary": summary})
                 except Exception as e:
-                    failed.append({"index": i, "summary": summary, "error": str(e)[:300]})
+                    failure = {"index": i, "summary": summary, "error": str(e)[:300]}
+                    if isinstance(e, MutationOutcomeUnknown):
+                        failure.update(code="outcome_unknown", clientMutationId=e.mutation_id,
+                                       retryable=True, repeatWrite=False)
+                    failed.append(failure)
         return {"ok": not failed, "created": created, "failed": failed}
 
     def bulk_update(self, items, to_fields):

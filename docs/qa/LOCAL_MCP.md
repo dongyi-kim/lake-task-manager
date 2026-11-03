@@ -21,6 +21,12 @@ LTM의 동일 JiraClient를 사용했다. 기존 creation permission 변경 위�
 | Confluence 경합 | 이전 generation의 늦은 403이 새로 저장된 정상 캐시를 삭제하지 않음 |
 | 본문·첨부 읽기 | description 생성→수정→UI 열람, 실제 첨부 bytes 업로드→조각 읽기→원본 일치 |
 | 대시보드 권한 | WBS/활동 manager, module workload 접근 거부 시 upstream 조회 없음 |
+| 대량 생성 | UI와 같은 사전 검증, Task/Epic 및 SubTask/parent 관계, 원본 index·순서 유지, 부분 실패 재시도 시 성공 항목 POST 추가 없음 |
+| 대량 생성 응답 유실 | 서버 반영 후 응답 유실 시 동일 batch 재시도에서 중복 POST 없음; 확인 못 한 항목은 unknown으로 유지하고 성공한 형제 결과 보존 |
+| 라벨·컴포넌트 | 실제 SDK로 각각 설정·수정·빈 배열로 해제하고 UI가 읽는 issue 필드에 반영 확인 |
+| PMO_VIT | 등록 시 기존 라벨 보존, 등록된 ancestor 아래 root 숨김, 해제 시 PMO_VIT 라벨만 제거 |
+| WBS·인력 설정 | 실제 SDK 저장→HTTP WBS/워크로드 조회에 반영, 설정의 미지 필드 보존, 충돌409·권한403·유실 응답 재시도·원자 저장 실패 검증 |
+| 열린 화면의 설정 변경 | status revision polling 및 동일 창 이벤트로 MyTasks·워크로드·WBS·VIT 데이터 갱신; UI 관련 15 cases 통과 |
 
 초기 관련 API·Jira ticket·Agent MCP consumer·dependency/static contract 회귀 **273 passed**.
 초기 MCP 전용 **18 passed**. 설정 UI 별도 **8 passed**이며 실제 `app.main`
@@ -28,11 +34,15 @@ endpoint로 복사한 토큰·rotate·disable·재활성화까지 확인했다. 
 
 Confluence는 [공식 DC Search API](https://developer.atlassian.com/server/confluence/rest/v924/api-group-search/)의
 `expand=content.space` 계약에 따라 space/version을 명시적으로 확장한다. 같은 공통 검색 메서드를 UI/Agent/MCP가 사용한다.
-Bitbucket은 실제 LTM 검색이 mock placeholder여서 도구로 제공하지 않는다. 문서검색·읽기와 대시보드 등을 포함해 최종 catalog는 38개다.
+Bitbucket은 실제 LTM 검색이 mock placeholder여서 도구로 제공하지 않는다. 문서검색·읽기와 대량 생성·WBS/인력 관리 등을 포함해 최종 catalog는 49개다.
 
 확장 기능 및 관련 검색·Agent query/reference·런처 회귀는 **192 passed, 1 skipped**.
 skip은 독립 MCP branch에 아직 없는 캐시 정책 모듈의 통합 전용 테스트이며, 통합 branch에서 실행한다.
 마지막 source 검증 보강 후 관련 query/workspace **111 passed**, 서비스별 오류 분리 후 workspace **11 passed**.
+대량 생성·VIT·WBS/인력 추가 후 MCP 전체와 creation permission·mutation recovery·process identity 관련
+검증은 **115 passed, 1 skipped**. 별도 관리자 설정 SDK/HTTP 검증 **17 passed**는 이 실행과 겹친다.
+대량 생성 전용 시나리오는 입력 오류 시 POST 0회, 일부 확정 실패 재시도, 응답 유실 후 중복 방지,
+Epic·parent 연결, 같은 batch ID의 내용 변경 거부를 포함한다.
 
 캐시 정책 PR의 실제 `read_scope`와 결합한 검증은 통합 branch에서 수행한다. 독립 MCP branch에서는
 모듈이 없을 경우 metadata를 unknown으로 반환하며, source 집계 계약은 별도 fixture로 검증했다.

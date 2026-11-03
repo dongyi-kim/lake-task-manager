@@ -917,6 +917,7 @@ def api_status():
         else:
             st["mode"] = "degraded"       # 망은 닿지만 Jira/Playwright 응답이 멎음
     st["needLogin"] = need_login
+    st["workspaceRevision"] = _local_mcp.workspace_config.revision()
     return JSONResponse(st)
 
 
