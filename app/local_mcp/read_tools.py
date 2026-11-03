@@ -90,7 +90,8 @@ def register_reads(register, runtime):
                       "transitions": client.transitions}[kind]
             return {"options": method(key)}
         methods = {"task_types": client.task_types, "priorities": client.priorities,
-                   "components": client.components, "link_types": client.link_types,
+                   "components": lambda: client.components(strict=True),
+                   "link_types": lambda: client.link_types(strict=True),
                    "epics": lambda: client.epic_options(query)}
         return {"options": methods[kind]()}
 

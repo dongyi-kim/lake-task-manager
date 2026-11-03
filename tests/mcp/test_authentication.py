@@ -1,5 +1,7 @@
 """SDK authentication lifecycle against isolated clients; no real SSO or injected latency."""
 
+import base64
+
 import anyio
 import pytest
 from mcp import Client
@@ -404,3 +406,97 @@ def test_people_lookup_transport_failure_is_not_empty_data_or_logout(build_env, 
     assert error["retryable"] and "nextAction" not in error
     assert attempts == [path]
     assert env.cache.get("userbadge:prod:u01") is None
+
+
+def _uploaded_auth_attachment(env):
+    task = invoke(env, "create_task", {"body": {"type": "Task", "summary": "download recovery fixture",
+                                             "clientMutationId": "auth:attachment:create:0001"}})
+    assert not task.is_error, task.structured_content
+    key = task.structured_content["data"]["key"]
+    uploaded = invoke(env, "add_attachment", {"key": key, "filename": "recovery.txt",
+        "base64_data": base64.b64encode(b"verified attachment content").decode(),
+        "client_mutation_id": "auth:attachment:upload:0001"})
+    assert not uploaded.is_error, uploaded.structured_content
+    # Complete the upload's queued cache warming before changing env and injecting read failure.
+    env.client._bg_pool.submit(lambda: None).result(timeout=5)
+    return key, uploaded.structured_content["data"]["id"]
+
+
+@pytest.mark.parametrize("failure", ["recoverable", "login_required", "network"])
+def test_attachment_download_preserves_provider_auth_and_network_failures(build_env, monkeypatch, failure):
+    env = build_env()
+    key, attachment_id = _uploaded_auth_attachment(env)
+    probes = prod(env, monkeypatch, [{"needLogin": True}] if failure == "login_required" else [{"ok": True}])
+    monkeypatch.setattr(env.client, "needs_login", lambda: False)
+    # Membership comes from the real Jira issue response, not a stubbed attachment list.
+    member = next(row for row in env.client.get_issue(key)["fields"]["attachment"]
+                  if str(row["id"]) == attachment_id)
+    assert member["filename"] == "recovery.txt"
+    original = env.provider.get_bytes
+    attempts = []
+    def download(path, *args, **kwargs):
+        attempts.append(path)
+        if failure == "network":
+            raise UpstreamUnavailable("fixture attachment connection unavailable")
+        if len(attempts) == 1:
+            raise SessionExpired("fixture attachment rejected with 401")
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(env.provider, "get_bytes", download)
+    result = invoke(env, "read_attachment", {"key": key, "attachment_id": attachment_id})
+    assert attempts[0].startswith(f"/secure/attachment/{attachment_id}/")
+    if failure == "recoverable":
+        assert not result.is_error, result.structured_content
+        assert base64.b64decode(result.structured_content["data"]["base64"]) == b"verified attachment content"
+        assert attempts == [attempts[0]] * 2
+    else:
+        assert result.is_error and "data" not in result.structured_content
+        assert len(attempts) == 1
+        error = result.structured_content["error"]
+        if failure == "login_required":
+            assert error["code"] == "authentication_required" and error["needLogin"]
+            assert error["nextAction"] == {"tool": "authenticate", "arguments": {
+                "service": "jira", "interactive": True}}
+        else:
+            assert error["code"] == "upstream_unavailable" and not error["needLogin"]
+            assert error["retryable"] and "nextAction" not in error
+    assert probes == ([] if failure == "network" else [{"force": True, "wait": True}])
+
+
+@pytest.mark.parametrize("exception", [SessionExpired("fixture expired session"), UpstreamUnavailable("fixture offline")])
+def test_ui_media_lookup_keeps_best_effort_failure_behavior(build_env, monkeypatch, exception):
+    env = build_env()
+    def failed(*_args, **_kwargs):
+        raise exception
+    monkeypatch.setattr(env.provider, "get_bytes", failed)
+    assert env.client.fetch_media("/secure/attachment/123/fixture.txt") == (None, None)
+
+
+@pytest.mark.parametrize("recovered", [True, False])
+def test_attachment_list_provider_expiry_never_caches_empty_membership(build_env, monkeypatch, recovered):
+    env = build_env()
+    key, attachment_id = _uploaded_auth_attachment(env)
+    probes = prod(env, monkeypatch, [{"ok": True}] if recovered else [{"needLogin": True}])
+    monkeypatch.setattr(env.client, "needs_login", lambda: False)
+    original = env.provider.get_json
+    attempts = []
+    def expire_once(path, *args, **kwargs):
+        if path == f"/rest/api/2/issue/{key}":
+            attempts.append(path)
+            if len(attempts) == 1:
+                raise SessionExpired("fixture attachment membership rejected with 401")
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(env.provider, "get_json", expire_once)
+    result = invoke(env, "get_attachments", {"key": key})
+    assert probes == [{"force": True, "wait": True}]
+    if not recovered:
+        assert result.is_error and "data" not in result.structured_content
+        assert result.structured_content["error"]["nextAction"]["tool"] == "authenticate"
+        assert env.cache.get(f"attachments:prod:{key}") is None
+        assert len(attempts) == 1
+        result = invoke(env, "get_attachments", {"key": key})
+    assert not result.is_error, result.structured_content
+    rows = result.structured_content["data"]["attachments"]
+    assert [row["id"] for row in rows] == [attachment_id]
+    assert rows[0]["filename"] == "recovery.txt"
+    assert len(attempts) == 2
+    assert env.cache.get(f"attachments:prod:{key}") == rows
