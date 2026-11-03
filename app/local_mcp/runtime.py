@@ -109,8 +109,20 @@ class LocalMcpRuntime:
                 self.classify_error(exc)
             return {"code": "outcome_unknown", "message": str(exc), "clientMutationId": exc.mutation_id,
                     "retryable": True, "repeatWrite": False}
-        if isinstance(exc, (PermissionDenied, HTTPException)):
-            return {"code": "permission_denied", "message": str(getattr(exc, "detail", exc)), "retryable": False}
+        if isinstance(exc, (CommandError, HTTPException)):
+            status = exc.status if isinstance(exc, CommandError) else exc.status_code
+            code = {401: "authentication_required", 403: "permission_denied", 404: "not_found",
+                    409: "conflict", 429: "rate_limited"}.get(status,
+                    "internal_error" if status >= 500 else "invalid_request")
+            error = {"code": code, "message": str(getattr(exc, "detail", exc)),
+                     "status": status, "retryable": status == 429}
+            if status == 401:
+                unavailable = isinstance(exc.__cause__, UpstreamUnavailable)
+                error.update(code="authorization_unavailable" if unavailable else code,
+                             needLogin=not unavailable, retryable=unavailable)
+            return error
+        if isinstance(exc, PermissionDenied):
+            return {"code": "permission_denied", "message": str(exc), "status": 403, "retryable": False}
         if isinstance(exc, UpstreamError) and 400 <= exc.status < 500 and exc.status != 401:
             return {"code": "jira_rejected", "message": str(exc), "status": exc.status, "retryable": False}
         if getattr(exc, "service", None) == "confluence" and isinstance(exc, (SessionExpired, UpstreamUnavailable)):
