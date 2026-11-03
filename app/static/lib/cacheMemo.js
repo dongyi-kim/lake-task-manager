@@ -3,7 +3,8 @@ export class CacheMemo {
   constructor(fetcher, publish = () => {}, now = () => Date.now() / 1000) {
     this.fetcher = fetcher; this.publish = publish; this.now = now; this.rows = new Map();
     this.policy = { displaySeconds: 86400, freshnessSeconds: 600,
-      resolvedFreshnessSeconds: 86400, resolvedCommentsFreshnessSeconds: 3600 };
+      resolvedFreshnessSeconds: 86400, resolvedCommentsFreshnessSeconds: 3600,
+      metadataDisplaySeconds: 2592000, metadataFreshnessSeconds: 86400 };
   }
   get(path, opts) {
     let row = this.rows.get(path);
@@ -31,6 +32,7 @@ export class CacheMemo {
         row.invalidated = metadata?.freshUntil === 0;
         row.freshUntil = metadata?.freshUntil ?? (now + this.policy.freshnessSeconds);
         row.displayUntil = metadata?.displayUntil ?? (now + this.policy.displaySeconds);
+        row.displayKind = metadata?.displayKind;
         if (revalidate) this.publish({ path, value });
         if (this.rows.size > 300) this.rows.delete(this.rows.keys().next().value);
         // A first request can itself be a server SWR hit; update this open view as well.
@@ -51,14 +53,15 @@ export class CacheMemo {
   }
   configure(policy) {
     this.policy = policy;
-    for (const [path, row] of this.rows) {
+    for (const row of this.rows.values()) {
       if (!row.fetchedAt) continue;
-      const done = row.value?.statusCategory === 'done';
-      // Comments need the ticket status held by the server. Recheck rather than guessing done.
-      const ttl = done && /\/ticket\/[^/]+(?:\/badge)?$/.test(path)
-        ? policy.resolvedFreshnessSeconds : policy.freshnessSeconds;
-      row.freshUntil = row.invalidated ? 0 : row.fetchedAt + ttl;
-      row.displayUntil = row.fetchedAt + policy.displaySeconds;
+      // A response can combine fresh tickets and old-but-retained Epic metadata. Never derive
+      // a new lifetime for that composition from a single age or extend the server's deadline.
+      row.freshUntil = 0;
+      if (row.displayKind) {
+        const ttl = row.displayKind === 'metadata' ? policy.metadataDisplaySeconds : policy.displaySeconds;
+        row.displayUntil = Math.min(row.displayUntil, row.fetchedAt + ttl);
+      }
     }
   }
   peek(path) {

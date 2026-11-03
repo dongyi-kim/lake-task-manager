@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from app.auth.base import (PermissionDenied, SessionExpired, UpstreamUnavailable,
                            background_upstream, write_upstream)
+from app.infra.cache_policy import note_read, revalidating
 from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
                        flatten_task_lists, lift_mentions_html, mark_explicit_jira_links, sanitize_html,
                        shorten_mention_names, text_to_html, tidy_html, unproxy_media)
@@ -4121,7 +4122,12 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             str(key).strip().upper() for key in (keys or ()) if str(key or "").strip()))
         if not ordered:
             return []
-        cached_rows = self.epic_metadata_cached_many(ordered)
+        if revalidating():
+            fresh = self.cache.get_many(f"epicmeta:{self.env}:{key}" for key in ordered)
+            cached_rows = [value for key in ordered
+                           if self._usable_epic_metadata(value := fresh.get(f"epicmeta:{self.env}:{key}"), key)]
+        else:
+            cached_rows = self.epic_metadata_cached_many(ordered)
         cached = {row["key"]: row for row in cached_rows}
         missing = [key for key in ordered if key not in cached]
         if missing:
@@ -5011,8 +5017,11 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             # 한 박자 늦다. 그 한 박자가 본문 편집에서는 '남의 수정을 덮어쓰기' 가 된다.
             fence = self.cache.fence()
             data = fetch()
-            self.cache.set_if_fence(ck, data, self.s.cache_ttl_seconds, fence)
-            return data if isinstance(data, dict) and "fields" in data else None
+            if not isinstance(data, dict) or not isinstance(data.get("fields"), dict):
+                return None
+            if self.cache.set_if_fence(ck, data, self.s.cache_ttl_seconds, fence):
+                note_read(self.cache.metadata(ck))
+            return data
         # SessionExpired(401/403/5xx) 는 전파돼 라우트가 needLogin(401) 처리. 404 는 에러 바디(dict) → None.
         data, _ = self.cache.get_or_set(ck, self.s.cache_ttl_seconds, fetch)
         if not isinstance(data, dict) or "fields" not in data:

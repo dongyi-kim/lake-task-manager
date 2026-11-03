@@ -46,6 +46,37 @@ def test_browser_memo_age_swr_and_mutation_fence():
                    check=True, capture_output=True, text=True)
 
 
+def test_policy_change_preserves_metadata_display_until_server_rechecks():
+    module = (REPO_ROOT / "app/static/lib/cacheMemo.js").as_uri()
+    script = """
+      import assert from 'node:assert/strict';
+      import { CacheMemo } from MODULE;
+      const now=2000000, old=now-10*86400;
+      const memo=new CacheMemo(async (path,opts) => {
+        if(path.includes('revalidate')) return new Promise(()=>{});
+        const metadata=path==='/epics';
+        opts.onCacheMetadata({fetchedAt:metadata?old:now, freshUntil:now+100,
+          displayUntil:metadata?old+30*86400:now+7200,
+          displayKind:metadata?'metadata':'general'});
+        return {title:'retained'};
+      },()=>{},()=>now);
+      await memo.get('/epics'); await memo.get('/workload');
+      const previous=memo.rows.get('/epics').displayUntil;
+      memo.configure({...memo.policy,displaySeconds:86400});
+      assert.equal(memo.peek('/epics').title,'retained');
+      assert.equal(memo.rows.get('/epics').displayUntil,previous);
+      assert.equal(memo.rows.get('/epics').fetchedAt,old);
+      assert.equal(memo.rows.get('/epics').freshUntil,0);
+      assert.equal(memo.rows.get('/workload').displayUntil,now+7200);
+      assert.equal((await memo.get('/epics')).title,'retained');
+      memo.configure({...memo.policy,displaySeconds:3600});
+      assert.equal(memo.rows.get('/workload').displayUntil,now+3600);
+      assert.equal(memo.rows.get('/epics').displayUntil,previous);
+    """.replace("MODULE", json.dumps(module))
+    subprocess.run([shutil.which("node"), "--input-type=module", "-e", script],
+                   check=True, capture_output=True, text=True)
+
+
 def test_cache_settings_save_reload_and_restore(editor_browser):
     page, base, errors, _ = editor_browser
     page.add_init_script("localStorage.setItem('ltm.guide-seen.v3', '{}')")

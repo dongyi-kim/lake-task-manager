@@ -42,11 +42,11 @@ class CachePolicy(BaseModel):
 LONG_DISPLAY_KINDS = frozenset({"epicmeta", "avatar_url", "avatar_bytes"})
 DISPLAY_KINDS = LONG_DISPLAY_KINDS | frozenset({"issue", "issueL", "issueview", "comments", "epicmeta",
     "user", "userbadge", "ancestors", "siblings", "children", "related", "attachments",
-    "documents", "remotelinks", "timeline", "changelog", "mentionctx", "epic_tree"})
+    "documents", "remotelinks", "timeline", "changelog", "mentionctx", "epic_tree", "confpage"})
 # jqlrow/jqlsnap retain their snapshot lifetime, independent of fresh-query reuse.
 LIST_KINDS = frozenset({"jqlleaf", "jqlcurrent", "mt", "mytasks", "workload", "workload_bucket",
     "activity", "wbs_build", "vit_build", "vit_bases", "vit_list", "search", "epic_cand",
-    "epic_options", "epic_children", "direct_children"})
+    "epic_options", "epic_children", "direct_children", "confsearch"})
 SWR_AGGREGATE_KINDS = frozenset({"workload", "workload_bucket", "activity", "wbs_build",
     "vit_build", "vit_bases", "vit_list", "mt", "mytasks"})
 
@@ -86,6 +86,12 @@ def revalidating():
     return _strict.get()
 
 
+def primary_sources(rows):
+    """Long-lived labels/photos do not date the core ticket or list they decorate."""
+    core = [row for row in rows if row.get("kind") not in LONG_DISPLAY_KINDS]
+    return core or rows
+
+
 class CacheHeadersMiddleware:
     """Carry source age across sync FastAPI handlers without changing JSON contracts."""
     def __init__(self, app, cache):
@@ -102,10 +108,13 @@ class CacheHeadersMiddleware:
                     headers = list(message.get("headers", []))
                     headers.append((b"x-ltm-policy-revision", str(self.cache.policy_revision).encode()))
                     if reads:
-                        state = "stale" if any(r["state"] == "stale" for r in reads) else "fresh"
-                        values = {"State": state, "Fetched-At": min(r["fetchedAt"] for r in reads),
+                        state = max((r["state"] for r in reads), key={"fresh": 0, "stale": 1, "dead": 2}.get)
+                        primary = primary_sources(reads)
+                        display_kind = "metadata" if all(r.get("kind") in LONG_DISPLAY_KINDS for r in primary) else "general"
+                        values = {"State": state, "Fetched-At": min(r["fetchedAt"] for r in primary),
                                   "Fresh-Until": min(r["freshUntil"] for r in reads),
-                                  "Display-Until": min(r["displayUntil"] for r in reads)}
+                                  "Display-Until": min(r["displayUntil"] for r in reads),
+                                  "Display-Kind": display_kind}
                         headers.extend((("x-ltm-cache-state" if k == "State" else f"x-ltm-{k}".lower()).encode(), str(v).encode()) for k, v in values.items())
                     message = dict(message, headers=headers)
                 await send(message)

@@ -17,7 +17,7 @@ import threading
 import time
 from concurrent.futures import Future
 from app.infra.cache_policy import (LONG_DISPLAY_KINDS, DISPLAY_KINDS, SWR_AGGREGATE_KINDS,
-                                   is_done, note_read, read_scope, revalidating)
+                                   is_done, note_read, primary_sources, read_scope, revalidating)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS cache (
@@ -165,7 +165,7 @@ class Cache:
             value, fetched, ttl = json.loads(row[0]), row[1], row[2]
             fresh = 0 if invalidated else fetched + min(self._ttl(key, value, ttl), self.display_ttl(key))
             display = fetched + self.display_ttl(key)
-            return {"fetchedAt": fetched, "freshUntil": fresh, "displayUntil": display,
+            return {"kind": key.split(":", 1)[0], "fetchedAt": fetched, "freshUntil": fresh, "displayUntil": display,
                     "invalidated": invalidated,
                     "state": "dead" if time.time() > display else "fresh" if not invalidated and time.time() <= fresh else "stale"}
 
@@ -200,8 +200,10 @@ class Cache:
         try:
             with read_scope(strict=True) as sources:
                 value = producer()
-            # Assemblies inherit their oldest dependency; reading stale data cannot rejuvenate it.
-            fetched = min((r["fetchedAt"] for r in sources), default=time.time())
+            # Core assemblies retain their source age. A separately retained Epic label or photo
+            # must not turn today's complete ticket/list into ten-day-old, already-dead data.
+            primary = sources if key.split(":", 1)[0] in LONG_DISPLAY_KINDS else primary_sources(sources)
+            fetched = min((r["fetchedAt"] for r in primary), default=time.time())
             complete = value is not None and not (isinstance(value, dict) and
                        (value.get("error") or value.get("errors") or value.get("partial")))
             if key.split(":", 1)[0] in {"issue", "issueL", "issueview"} and self.policy:

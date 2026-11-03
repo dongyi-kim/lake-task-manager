@@ -57,6 +57,19 @@ def test_general_list_policy_does_not_inherit_done(cache, clock):
     assert cache.get("jqlleaf:mock:all-done") is None
 
 
+@pytest.mark.parametrize("kind", ["confpage", "confsearch"])
+def test_confluence_uses_general_freshness_and_display_retention(cache, clock, kind):
+    key = f"{kind}:mock:context"
+    cache.set(key, {"title": "Shared document"}, 60)
+    clock[0] += 599
+    assert cache.get(key)
+    clock[0] += 2
+    assert cache.get(key) is None
+    assert cache.get_alive(key)
+    clock[0] = 186401
+    assert cache.get_alive(key) is None
+
+
 def test_configure_reuses_source_age_and_get_many(cache, clock):
     cache.set("userbadge:mock:DL-1", {"title": "Epic title"}, 43200)
     original = cache.get_stale_at("userbadge:mock:DL-1")
@@ -367,3 +380,78 @@ def test_legacy_id_only_cursor_keeps_its_thirty_minute_rows(cache, clock, monkey
     clock[0] += 601
     _sid, restored = client._jql_snapshot(compiled, fields, True, snapshot_id=legacy_id)
     assert restored["issues"] == [issue()]
+
+
+def test_retained_metadata_does_not_make_a_fresh_core_payload_dead(cache, clock):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.infra.cache_policy import CacheHeadersMiddleware, note_read
+    epic_key, issue_key = "epicmeta:mock:DL-2", "issue:mock:DL-1"
+    cache.set(epic_key, {"key": "DL-2", "title": "Retained Epic"}, 600)
+    epic_source_at = clock[0]
+    clock[0] += 10 * 86400
+    cache.set(issue_key, issue(), 600)
+    def composite():
+        return {"ticket": cache.get(issue_key), "epic": cache.get_alive(epic_key)[0]}
+    cache.refresh("workload:mock:fixture", 600, composite)
+    assert cache.metadata("workload:mock:fixture")["fetchedAt"] == clock[0]
+    assert cache.get("workload:mock:fixture") and cache.get_alive("workload:mock:fixture")
+    assert cache.metadata(epic_key)["fetchedAt"] == epic_source_at
+    app = FastAPI()
+    app.add_middleware(CacheHeadersMiddleware, cache=cache)
+    app.get("/api/composite")(composite)
+    @app.get("/api/metadata")
+    def metadata():
+        return cache.get_alive(epic_key)[0]
+    @app.get("/api/dead-source")
+    def dead():
+        note_read({"state": "dead", "fetchedAt": 1, "freshUntil": 2, "displayUntil": 3})
+        return {"unavailable": True}
+    with TestClient(app) as client:
+        result = client.get("/api/composite")
+        assert result.headers["x-ltm-cache-state"] == "stale"
+        assert result.headers["x-ltm-display-kind"] == "general"
+        assert float(result.headers["x-ltm-fetched-at"]) == clock[0]
+        assert float(result.headers["x-ltm-display-until"]) == clock[0] + 86400
+        meta = client.get("/api/metadata")
+        assert meta.headers["x-ltm-display-kind"] == "metadata"
+        assert float(meta.headers["x-ltm-fetched-at"]) == epic_source_at
+        assert client.get("/api/dead-source").headers["x-ltm-cache-state"] == "dead"
+
+
+def test_strict_epic_metadata_refreshes_while_streaming_cache_stays_immediate(cache, clock, monkeypatch):
+    from app.infra.settings import get_settings
+    from app.jira.jira_client import JiraClient
+    client = JiraClient(get_settings(), cache)
+    key = f"epicmeta:{client.env}:DL-2"
+    cache.set(key, {"key": "DL-2", "title": "Old name"}, 600)
+    clock[0] += 10 * 86400
+    queued, fetched = [], []
+    cache.revalidator = lambda *_: None
+    monkeypatch.setattr(client, "_refresh_bg", lambda *args: queued.append(args))
+    monkeypatch.setattr(client, "prefetch_issues", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(client, "_fetch_epic_metadata", lambda _key:
+                        fetched.append(1) or {"key": "DL-2", "title": "New name"})
+    assert client.epic_metadata_cached_many(["DL-2"])[0]["title"] == "Old name"
+    assert len(queued) == 1 and not fetched
+    with read_scope(strict=True):
+        assert client.epic_metadata_many(["DL-2"])[0]["title"] == "New name"
+    assert fetched == [1] and cache.metadata(key)["fetchedAt"] == clock[0]
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_fresh_issue_view_records_only_successful_source_metadata(cache, clock, complete):
+    from types import SimpleNamespace
+    from app.infra.settings import get_settings
+    from app.jira.jira_client import JiraClient
+    client = JiraClient(get_settings(), cache)
+    client._provider = SimpleNamespace(get_json=lambda *_args, **_kwargs: issue() if complete else {"error": "incomplete"})
+    client._provider_built = True
+    with read_scope() as sources:
+        result = client._get_issue_view("DL-1", fresh=True)
+    if complete:
+        assert result == issue() and sources[-1]["kind"] == "issueview"
+        assert sources[-1]["fetchedAt"] == clock[0]
+    else:
+        assert result is None and not sources
+        assert cache.get(f"issueview:{client.env}:DL-1") is None

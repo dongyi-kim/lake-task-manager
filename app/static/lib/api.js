@@ -70,7 +70,8 @@ async function req(path, opts) {
   if (onCacheMetadata && r.headers?.get) {
     const number = (key) => { const v = r.headers.get('X-LTM-' + key); return v ? Number(v) : undefined; };
     onCacheMetadata({ fetchedAt: number('Fetched-At'), freshUntil: number('Fresh-Until'),
-                      displayUntil: number('Display-Until') });
+                      displayUntil: number('Display-Until'),
+                      displayKind: r.headers.get('X-LTM-Display-Kind') || undefined });
   }
   return r.json();
 }
