@@ -133,5 +133,21 @@ checks passed independently. Final lifecycle/contracts: **43 passed** (98.26 sec
 scenarios and 32 contracts). Final control-driven HTML/JEditor suite: **2 passed** (47.66 seconds).
 Both final commands completed without browser page/API errors.
 
+## Combined five-PR verification
+
+The combined validation worktree exercised 11 draft lifecycle scenarios, two control-driven editor
+roundtrips, three cache settings/memo scenarios and four MCP settings scenarios (20 total).
+The first run passed 19 and exposed a browser harness issue in the second comment edit: after a
+toolbar click, native Home ran before editor focus was restored and replacement typing removed
+`UI-PLAIN`. The persisted comment matched the submitted HTML; publication/cache invalidation was
+not the cause. The test now explicitly focuses the editor and asserts the sentinel before publishing.
+
+After that fix, both integrated description/comment roundtrips passed in **50.27 seconds** on
+`5f8d62b82174c2222e13818f22a953a130001b4d`; the prior 19 other passes remain valid (the description
+roundtrip overlaps the rerun). Every one of the 20 scenarios therefore passed across those runs.
+The editor fixture also isolates `LAKE_CACHE_DIR` per run so preferences, authentication state and
+MCP credentials cannot leak between test servers. The shared test Chromium installation was retained;
+only this task's temporary run directories/logs and the preferences file it created were removed.
+
 Run-specific temporary uploads, logs and databases are removed after recording this report. The
 committed tests and this report remain as reproducible evidence.
