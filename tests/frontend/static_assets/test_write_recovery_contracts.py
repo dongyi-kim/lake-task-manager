@@ -24,7 +24,7 @@ def test_comment_retry_reuses_id_and_does_not_rollback_images_when_outcome_unkno
     assert "pendingHtml: this.pendingSubmitHtml" in editor
     assert "let html = this.pendingSubmitHtml || this._ed.getHTML()" in editor
     assert "await ed.flushDraft() === false" in dialog
-    assert "if (this.submitMutationId)" in editor
+    assert "this.submitMutationId || this.mutationPending" in editor
     assert "submitNew(md, mutationId)" in dialog
     assert "commentCreate(this.tk, md, mutationId)" in dialog
     assert "{ html, clientMutationId }, { mutation: true }" in api

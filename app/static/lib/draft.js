@@ -16,8 +16,8 @@ function idb() {
       db.onclose = () => { connection = null; };
       resolve(db);
     };
-    request.onerror = () => { connection = null; reject(request.error); };
-  });
+    request.onerror = () => reject(request.error);
+  }).catch(error => { connection = null; throw error; });
   return connection;
 }
 

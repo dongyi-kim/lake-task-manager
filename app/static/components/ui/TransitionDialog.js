@@ -302,7 +302,7 @@ export default {
           <!-- 댓글과 **같은 에디터** — 표·코드·이미지 붙여넣기·멘션이 그대로 된다.
                버튼 줄은 감추고(제출은 아래 한 곳) ref 로 submit() 을 부른다. -->
           <CommentEditor v-if="formDraftReady" ref="ed" :ticket-key="ticket" hide-footer kind="transition"
-                         :draft-scope="pendingScope()"
+                         :draft-scope="pendingScope()" :mutation-pending="!!transitionMutationId"
                          :initial="pendingCommentHtml" :submit-fn="sendTransition"
                          @cancel="closeGuarded" />
         </div>

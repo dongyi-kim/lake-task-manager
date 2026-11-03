@@ -95,7 +95,7 @@ export const editorDraftMethods = {
       if (await this.flushDraft() !== false) this.$emit("cancel");
     },
     async discardDraft() {
-      if (this.submitMutationId) {
+      if (this.submitMutationId || this.mutationPending) {
         this.err = "Jira 반영 여부를 확인하기 전에는 이 초안을 버릴 수 없습니다. 로그인 또는 네트워크 복구 후 다시 등록해 주세요.";
         pushToast({ kind: "warn", icon: "⚠", title: "확인 중인 댓글",
                     message: "중복 작성을 막기 위해 반영 여부 확인이 끝날 때까지 초안을 유지합니다." });
@@ -123,6 +123,14 @@ export const editorDraftMethods = {
       clearTimeout(this._dt); this._dt = null;
       const prior = this._draftWrite;
       if (prior) { try { await prior; } catch (_) { /* 마지막 삭제가 최종 상태를 정한다 */ } }
+      const write = k ? clearDraft(k) : null;
+      this._draftWrite = write;
+      if (write) {
+        try { await write; }
+        catch (error) { this.reportDraftError(error); return false; }
+        finally { if (this._draftWrite === write) this._draftWrite = null; }
+      }
+      // Do not destroy the only visible copy until durable deletion is confirmed.
       try { for (const u of this._pending.keys()) URL.revokeObjectURL(u); } catch (e) { /* noop */ }
       this._pending.clear();
       this.submitMutationId = "";
@@ -130,10 +138,6 @@ export const editorDraftMethods = {
       if (this._ed) this._ed.commands.setContent(this._baseHtml || "", { emitUpdate: false });
       this.restored = false; this.draftConflict = false; this._conflictingDraft = null;
       this._draftFinished = true;
-      const write = k ? clearDraft(k) : null;
-      this._draftWrite = write;
-      if (write) { try { await write; } catch (error) { this.reportDraftError(error); return false; } }
-      if (this._draftWrite === write) this._draftWrite = null;
       return true;
     },
 };

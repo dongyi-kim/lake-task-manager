@@ -68,6 +68,7 @@ export default {
     // 일반 새 댓글 외의 일회성 작성 화면도 같은 IndexedDB 초안/이미지 복원 경로를 쓸 수 있다.
     // 호출자가 목적까지 포함한 scope를 명시해야 하며, "new:TICKET" 댓글 초안과는 별도 키다.
     draftScope: { type: String, default: "" },
+    mutationPending: { type: Boolean, default: false },
     // 설명 편집에서 크게 늘린 값이 새 댓글 작성창까지 화면을 채우지 않도록 자리별 저장 키와
     // 기본 높이를 받을 수 있다. 사용자가 조절한 높이는 각 자리에서 계속 기억한다.
     heightKey: { type: String, default: EDITOR_HEIGHT_KEY },
@@ -564,9 +565,7 @@ export default {
           const ext = (f.type.split("/")[1] || "png").replace("jpeg", "jpg");
           const name = "paste-" + Date.now() + "-" + (++this._seq) + "." + ext;
           this._pending.set(url, { blob: f, name });
-          this._ed.chain().focus().insertContent([
-            { type: "image", attrs: { src: url, alt: name } }, { type: "paragraph" },
-          ]).run();
+          this._ed.chain().focus().setImage({ src: url, alt: name }).run();
           this.applyFitWidth(url);              // 세로가 너무 길면 기본 상한으로 축소
         } else {
           // 그 외 파일 — "무엇이 붙어 있다" 는 사실이 내용이므로 칩으로 박는다.

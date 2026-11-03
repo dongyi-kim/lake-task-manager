@@ -44,6 +44,7 @@ def test_create_form_cancel_and_reload_restore_fields_and_editor(editor_browser,
     assert not errors
 
 
+@pytest.mark.parametrize("editor_browser", [0, 800], indirect=True)
 def test_comment_cancel_navigation_and_duplicate_image_names_restore(editor_browser):
     page, base, errors, _ = editor_browser
     _open_ticket(page, base, "DL-9007")
@@ -56,14 +57,20 @@ def test_comment_cancel_navigation_and_duplicate_image_names_restore(editor_brow
         {"name": "same.png", "mimeType": "image/png", "buffer": PNG_1X1},
         {"name": "same.png", "mimeType": "image/png", "buffer": PNG_1X1 + b"second"},
     ])
-    page.wait_for_function("() => document.querySelectorAll('.tkt-compose-editor .ProseMirror img').length === 2")
+    try:
+        page.wait_for_function("() => document.querySelectorAll('.tkt-compose-editor .ProseMirror .img-wrap img').length === 2")
+    except Exception:
+        raise AssertionError(page.locator(".tkt-compose-editor .ProseMirror").inner_html())
     page.locator(".tkt-compose-editor").get_by_role("button", name="취소", exact=True).click()
     page.locator(".tkt-compose-editor").wait_for(state="detached")
     page.reload()
     page.get_by_role("button", name="＋ 댓글 달기").click()
-    page.wait_for_function("() => document.querySelectorAll('.tkt-compose-editor .ProseMirror img').length === 2")
+    try:
+        page.wait_for_function("() => document.querySelectorAll('.tkt-compose-editor .ProseMirror .img-wrap img').length === 2")
+    except Exception:
+        raise AssertionError(page.locator(".tkt-compose-editor .ProseMirror").inner_html())
     assert "초안 이미지 두 개" in page.locator(".tkt-compose-editor .ProseMirror").inner_text()
-    info = page.locator(".tkt-compose-editor .ProseMirror img").evaluate_all("nodes => nodes.map(n => ({src:n.src, good:n.complete && n.naturalWidth > 0}))")
+    info = page.locator(".tkt-compose-editor .ProseMirror .img-wrap img").evaluate_all("nodes => nodes.map(n => ({src:n.src, good:n.complete && n.naturalWidth > 0}))")
     assert len({item["src"] for item in info}) == 2
     assert all(item["good"] for item in info)
     assert not errors
@@ -128,6 +135,14 @@ def test_draft_storage_commit_order_expiry_and_scope(editor_browser):
       let failed = false;
       try { await d.saveDraft(key, {html:'must not succeed'}); } catch (_) { failed = true; }
       finally { IDBDatabase.prototype.transaction = original; }
+      const fresh = await import('/lib/draft.js?open-retry-test');
+      const open = indexedDB.open;
+      indexedDB.open = () => { throw new DOMException('temporarily blocked', 'SecurityError'); };
+      let openFailed = false;
+      try { await fresh.saveDraft(key, {html:'blocked'}); } catch (_) { openFailed = true; }
+      finally { indexedDB.open = open; }
+      await fresh.saveDraft(key, {html:'open recovered'});
+      const openRecovery = openFailed && (await fresh.loadDraft(key)).html === 'open recovered';
       const {api} = await import('/lib/api.js');
       const oldMe = api.me, oldHealth = api.health;
       const keys = [key];
@@ -137,9 +152,9 @@ def test_draft_storage_commit_order_expiry_and_scope(editor_browser):
         keys.push(await identity.resolveDraftKey('test:ordering'));
       }
       api.me = oldMe; api.health = oldHealth;
-      return {ordered, expired, failed, scoped: new Set(keys).size === 4 && keys.every(k => k.startsWith('v2:'))};
+      return {ordered, expired, failed, openRecovery, scoped: new Set(keys).size === 4 && keys.every(k => k.startsWith('v2:'))};
     }""")
-    assert result == {"ordered": "new", "expired": None, "failed": True, "scoped": True}
+    assert result == {"ordered": "new", "expired": None, "failed": True, "openRecovery": True, "scoped": True}
     assert not errors
 
 
@@ -162,7 +177,9 @@ def test_storage_failure_keeps_visible_editor_and_cancel_can_retry(editor_browse
     page.locator(".tkt-compose-editor").get_by_role("button", name="취소", exact=True).click()
     assert editor.is_visible()
     assert "저장 실패해도 작성 내용 유지" in editor.inner_text()
-    page.evaluate("IDBDatabase.prototype.transaction = window.originalDraftTransaction")
+    page.locator(".tkt-compose-editor").get_by_role("button", name="초안 삭제", exact=True).click()
+    assert "저장 실패해도 작성 내용 유지" in editor.inner_text()
+    page.evaluate("() => { IDBDatabase.prototype.transaction = window.originalDraftTransaction; }")
     page.locator(".tkt-compose-editor").get_by_role("button", name="취소", exact=True).click()
     page.locator(".tkt-compose-editor").wait_for(state="detached")
     page.reload()
@@ -228,4 +245,7 @@ def test_uncertain_transition_can_close_and_restores_exact_receipt(editor_browse
     _mount(page, "TransitionDialog", props)
     assert page.evaluate("window.draftVm.pendingTransitionPayload") == sent
     assert page.evaluate("window.draftVm.transitionMutationId") == sent["clientMutationId"]
+    page.wait_for_function("() => window.draftVm.$refs.ed?.ready")
+    assert page.evaluate("window.draftVm.$refs.ed.discardDraft()") is False
+    assert page.evaluate("window.draftVm.$refs.ed.draftConflict") is False
     assert not errors

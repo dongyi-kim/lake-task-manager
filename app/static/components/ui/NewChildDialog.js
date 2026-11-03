@@ -414,7 +414,7 @@ export default {
       </button>
       <div v-show="descOpen" class="nk-desc-body">
         <CommentEditor v-if="formDraftReady" ref="ded" :draft-scope="formDraftScope + ':description'" :ticket-key="createdKey || d.parent || '__new__'" kind="description"
-                       :submit-fn="saveDesc" hide-footer />
+                       :mutation-pending="!!createMutationId" :submit-fn="saveDesc" hide-footer />
         <div class="nk-desc-hint">이미지·파일은 여기에 붙여넣거나 끌어다 놓으면 티켓 생성 후 함께 첨부됩니다.</div>
       </div>
     </div>
