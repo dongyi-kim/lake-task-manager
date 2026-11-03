@@ -107,13 +107,15 @@ def launch(argv=None, *, cli_run=None, fixture_factory=None, identity_fn=None):
     out = reserve_raw_result_path(raw_result_path(SUITE, metadata))
     # No secret, expected answer, source fixture or repository file is put in the model's cwd.
     try:
-        preflight = cli_run(binary, "Reply exactly LTM_PREFLIGHT_OK.", run_root / "preflight-workspace",
+        preflight = cli_run(binary, "Respond briefly with the token `LTM_PREFLIGHT_OK`", run_root / "preflight-workspace",
                             model=options.model, effort=options.effort, timeout=90)
     except Exception as exc:
         preflight = {"ok": False, "error": "codex_preflight_exception", "errorType": type(exc).__name__}
     write_raw_result(run_root / "preflight.json", {"identity": identity, "output": preflight})
     records = []
-    if not preflight.get("ok") or preflight.get("reply", "").strip() != "LTM_PREFLIGHT_OK":
+    # This verifies authenticated model transport, not instruction-following quality.
+    # Punctuation around a successful reply must not abort the actual battery.
+    if not preflight.get("ok") or not preflight.get("reply", "").strip():
         write_raw_result(out, _payload(metadata, records, selected, preflight, failure="codex_network_preflight_failed"))
         print("Codex network preflight failed; no cases started", flush=True)
         return 3

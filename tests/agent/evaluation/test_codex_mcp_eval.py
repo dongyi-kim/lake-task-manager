@@ -141,7 +141,7 @@ def test_runner_retains_real_sdk_page_trace_and_isolation_without_calling_llm(tm
         return EvaluationFixture(path, **{**kwargs, "port": 0})
     def fake_cli(binary, prompt, workspace, **kwargs):
         if not kwargs.get("mcp_url"):
-            return {**_output(), "reply": "LTM_PREFLIGHT_OK"}
+            return {**_output(), "reply": "LTM_PREFLIGHT_OK."}
         async def scenario():
             async with httpx2.AsyncClient(headers={"Authorization": "Bearer " + kwargs["token"]}) as http:
                 async with Client(streamable_http_client(kwargs["mcp_url"], http_client=http)) as mcp:
