@@ -144,8 +144,8 @@ def candidate_tree_sha256() -> str:
             files.extend(
                 path for path in item.rglob("*")
                 if path.is_file()
-                and "__pycache__" not in path.parts
-                and ".cache" not in path.parts
+                and "__pycache__" not in path.relative_to(ROOT).parts
+                and ".cache" not in path.relative_to(ROOT).parts
                 and path.suffix != ".pyc"
             )
         elif item.is_file():

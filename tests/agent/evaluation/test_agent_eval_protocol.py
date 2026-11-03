@@ -176,6 +176,38 @@ def test_battery_manifest_covers_inputs_and_checker_source():
     )
 
 
+def test_candidate_tree_in_cache_worktree_hashes_sources_but_not_generated_files(tmp_path, monkeypatch):
+    root = tmp_path / ".cache" / "worktrees" / "candidate"
+    app, config = root / "app", root / "config"
+    app.mkdir(parents=True)
+    config.mkdir()
+    source, setting = app / "main.py", config / "jira.yml"
+    source.write_text("behavior = 1\n", encoding="utf-8")
+    setting.write_text("setting: first\n", encoding="utf-8")
+    monkeypatch.setattr(E, "ROOT", root)
+    monkeypatch.setattr(E, "CANDIDATE_INPUTS", (app, config))
+
+    def digest():
+        E.candidate_tree_sha256.cache_clear()
+        return E.candidate_tree_sha256()
+
+    try:
+        initial = digest()
+        source.write_text("behavior = 2\n", encoding="utf-8")
+        changed_source = digest()
+        assert changed_source != initial
+        setting.write_text("setting: second\n", encoding="utf-8")
+        changed_config = digest()
+        assert changed_config != changed_source
+        for relative in (".cache/cached.json", "__pycache__/main.py", "main.pyc"):
+            generated = app / relative
+            generated.parent.mkdir(parents=True, exist_ok=True)
+            generated.write_text("generated output\n", encoding="utf-8")
+            assert digest() == changed_config, relative
+    finally:
+        E.candidate_tree_sha256.cache_clear()
+
+
 def test_create_battery_manifest_fingerprints_shared_checker_dependencies():
     import tools.agent_create_suite as create
     import tools.agent_eval_fact_relations as facts

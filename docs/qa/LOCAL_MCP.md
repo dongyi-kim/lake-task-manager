@@ -1,7 +1,9 @@
 # Local MCP 검증 — 2026-11-03
 
-실제 Jira와 LLM을 호출하지 않았다. 지연 주입은 0ms이며, 격리한 Jira820 fixture와 실행 중인
-LTM의 동일 JiraClient를 사용했다. 기존 creation permission 변경 위에 MCP를 구현했다.
+아래 SDK·UI 기능 검증은 실제 Jira와 LLM을 호출하지 않았다. 지연 주입은 0ms이며, 격리한
+Jira820 fixture와 실행 중인 LTM의 동일 JiraClient를 사용했다. 기존 creation permission 변경 위에 MCP를 구현했다.
+이후 수행한 실제 Codex + HTTP MCP 품질 평가는 아래 별도 결과와
+[전체 보고서](../../research/agent-improvement/evaluations/2026-11-04-codex-mcp-external-quality.md)에 기록했다.
 
 | 경로 | 결과 |
 |---|---|
@@ -63,3 +65,21 @@ CI 전체 실행의 **3675 passed, 52 skipped** 중 남은 한 실패는 이전 
 독립 MCP branch에서 캐시 정책 모듈이 없으면 metadata를 unknown으로 반환한다.
 Jira가 이미 반영했지만 응답이 유실된 일반 수정은 안전한 재실행을 추측하지 않는다. 생성·댓글 추가·전이·첨부 외의
 미확정 결과는 티켓을 다시 읽어 확인해야 한다. 실제 prod SSO 연결과 네이티브 exe 빌드는 이 검증에 포함하지 않았다.
+
+## 실제 Codex 조회 평가 — 2026-11-04
+
+고정한 `77924ce`에서 Codex CLI 0.153.4 / gpt-6-astra / ultra / 기존 ChatGPT 로그인을 사용했다.
+기존 이력·사람·우선 업무·진척 질문과 통합검색·exact JQL pagination·OR·부분 실패를 합친
+8개 사례가 자동 **8/8**, 독립 직접 검수 **4.86/5**를 기록했다. 총 540.50초,
+사례 p50 51.08초 / p95 110.06초, MCP 116회, input 1,072,390 / output 19,994 /
+cached 823,808 token이다. 모델 요청 수·USD 비용·TTFT는 관측할 수 없어 추정하지 않았다.
+
+실제 LLM 실행은 PR85 단독 브랜치이며 새 cache-policy 모듈은 결합하지 않았다. 다섯 PR의 실제
+캐시 정책·MCP·일괄 생성·mock parent 통합 검증 **39 passed**는 별도 증거다. 실행한 코드의
+전체 CI는 **3725 passed, 53 skipped**이며 위 targeted 수치와 합산하지 않는다.
+
+원본 r01의 preflight 오판, r02의 S5 검사 과제약 및 mock parent/권한 차이는 삭제하지 않고
+보고서에 남겼다. r03에도 문서 날짜 하루 오기와 과거 마감일 충돌 조회 누락은 경미한 결함으로
+기록했다. 절대 `.cache` 경로를 제외하던 기존 runtime fingerprint 결함은 상대 경로 기준으로
+수정하고 별도 사후 attestation을 남겼으며, 원본 실행 metadata를 고치지 않았다.
+이 결과는 단일 exploratory 평가이며 운영 SSO 또는 정식 qualification을 대신하지 않는다.
