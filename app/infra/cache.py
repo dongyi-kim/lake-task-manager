@@ -218,7 +218,12 @@ class Cache:
             return value
         except BaseException as exc:
             from app.auth.base import PermissionDenied
-            if isinstance(exc, (PermissionDenied, PermissionError)) or getattr(exc, "status", None) in (403, 404):
+            direct_resource = key.split(":", 1)[0] in {
+                "issue", "issueL", "issueview", "epicmeta", "user", "userbadge", "avatar_url", "avatar_bytes"}
+            # An Agile/list endpoint denial is not proof that each previously visible ticket
+            # became inaccessible. Only a denial of the resource itself removes its display copy.
+            if direct_resource and (isinstance(exc, (PermissionDenied, PermissionError))
+                                    or getattr(exc, "status", None) in (403, 404)):
                 self.forget(key)
             future.set_exception(exc)
             raise
