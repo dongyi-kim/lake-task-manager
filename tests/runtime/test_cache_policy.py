@@ -249,3 +249,121 @@ def test_full_done_issue_satisfies_light_request_beyond_general_ttl(cache, clock
     client._provider = SimpleNamespace(get_json=lambda *a, **k: pytest.fail("fresh full hit must satisfy light"))
     client._provider_built = True
     assert client.get_issue_light("DL-1", strict=True) == issue(True)
+
+
+def test_post_mutation_read_uses_new_flight_and_old_result_cannot_overwrite(cache):
+    key = "issue:mock:DL-1"
+    started, release = threading.Event(), threading.Event()
+    old, new = {**issue(), "version": "old"}, {**issue(), "version": "new"}
+    def old_producer():
+        started.set()
+        assert release.wait(3)
+        return old
+    with ThreadPoolExecutor(2) as pool:
+        earlier = pool.submit(cache.refresh, key, 600, old_producer)
+        assert started.wait(2)
+        cache.invalidate(key)
+        after_write = pool.submit(cache.get_or_set, key, 600, lambda: new)
+        try:
+            assert after_write.result(timeout=2) == (new, False)
+        finally:
+            release.set()
+        assert earlier.result(timeout=2) == old
+    assert cache.get(key) == new
+    assert not cache._flights
+
+
+def test_retired_generation_permission_failure_cannot_forget_new_success(cache):
+    from app.auth.base import PermissionDenied
+    key = "issue:mock:DL-1"
+    started, release = threading.Event(), threading.Event()
+    def old_producer():
+        started.set()
+        assert release.wait(3)
+        raise PermissionDenied("old provider denied")
+    with ThreadPoolExecutor(1) as pool:
+        earlier = pool.submit(cache.refresh, key, 600, old_producer)
+        assert started.wait(2)
+        cache.invalidate(key)
+        cache.set(key, issue(), 600)
+        release.set()
+        with pytest.raises(PermissionDenied):
+            earlier.result(timeout=2)
+    assert cache.get(key) == issue()
+
+
+def test_invalidated_relation_swr_fetches_latest_but_can_display_offline(cache):
+    key = "children:mock:DL-1"
+    cache.set(key, ["old-child"], 600)
+    cache.invalidate(key)
+    def unexpected_background(*_args):
+        pytest.fail("The first post-write read must await its latest result")
+    assert cache.get_or_set_swr(key, 600, lambda: ["new-child"], unexpected_background) == (["new-child"], "miss")
+    cache.invalidate(key)
+    def offline():
+        raise ConnectionError("offline")
+    assert cache.get_or_set_swr(key, 600, offline, unexpected_background) == (["new-child"], "stale")
+    assert cache.metadata(key)["invalidated"]
+
+
+def test_readonly_aggregates_display_immediately_but_leaf_membership_waits(cache, clock):
+    queued = []
+    cache.revalidator = lambda *args: queued.append(args)
+    keys = [f"{kind}:mock:fixture" for kind in ("workload", "workload_bucket", "activity")]
+    for key in [*keys, "jqlleaf:mock:fixture"]:
+        cache.set(key, ["old"], 600)
+    clock[0] += 601
+    for key in keys:
+        assert cache.get_or_set(key, 600, lambda: pytest.fail("aggregate must not block")) == (["old"], True)
+    assert len(queued) == len(keys)
+    assert cache.get_or_set("jqlleaf:mock:fixture", 600, lambda: ["new"]) == (["new"], False)
+
+
+def test_new_queries_refresh_after_ten_minutes_and_old_cursors_stay_frozen(cache, clock, monkeypatch):
+    from app.infra.settings import get_settings
+    from app.jira.jira_client import JiraClient
+    client = JiraClient(get_settings(), cache)
+    client.current_user = lambda: {"id": "fixture-user"}
+    calls = []
+    def leaf(*_args):
+        calls.append(1)
+        return [{"key": f"DL-{n}", "fields": {"summary": f"version-{len(calls)}",
+                 "status": {"statusCategory": {"key": "new"}}}} for n in (1, 2)]
+    monkeypatch.setattr(client, "_fetch_jql_leaf", leaf)
+    query = "key in (DL-1, DL-2) ORDER BY key"
+    first = client.search_issues_page(query, max_results=1, fields="summary,status")
+    clock[0] += 599
+    assert client.search_issues_page(query, max_results=1, fields="summary,status")["snapshotId"] == first["snapshotId"]
+    clock[0] += 2
+    latest = client.search_issues_page(query, max_results=1, fields="summary,status")
+    assert latest["snapshotId"] != first["snapshotId"] and len(calls) == 2
+    assert latest["issues"][0]["fields"]["summary"] == "version-2"
+    old_page = client.search_issues_page(query, start_at=1, max_results=1, fields="summary,status",
+                                        snapshot_id=first["snapshotId"])
+    assert old_page["issues"][0]["key"] == "DL-2"
+    assert old_page["issues"][0]["fields"]["summary"] == "version-1"
+    clock[0] += 1200
+    cache.purge()
+    with pytest.raises(ValueError, match="snapshot"):
+        client.search_issues_page(query, fields="summary,status", snapshot_id=first["snapshotId"])
+    assert cache.get_stale(f"jqlsnap:v{client.JQL_CACHE_VERSION}:{client.env}:{first['snapshotId']}") is None
+    assert client.search_issues_page(query, fields="summary,status", snapshot_id=latest["snapshotId"])["issues"]
+
+
+def test_legacy_id_only_cursor_keeps_its_thirty_minute_rows(cache, clock, monkeypatch):
+    from app.infra.settings import get_settings
+    from app.jira.jira_client import JiraClient
+    client = JiraClient(get_settings(), cache)
+    client.current_user = lambda: {"id": "fixture-user"}
+    compiled = client._compile_jql("key = DL-1")
+    fields = "summary,status"
+    projection = client._projection_signature(fields, True)
+    client._store_jql_rows([issue()], 0, projection)
+    legacy_id = "0.legacy-fixture"
+    cache.set(f"jqlsnap:v{client.JQL_CACHE_VERSION}:{client.env}:{legacy_id}", {
+        "canonical": compiled.canonical, "context": client._jql_user_context(),
+        "projection": projection, "light": True, "generation": 0, "issueKeys": ["DL-1"],
+    }, client.JQL_SNAPSHOT_TTL)
+    clock[0] += 601
+    _sid, restored = client._jql_snapshot(compiled, fields, True, snapshot_id=legacy_id)
+    assert restored["issues"] == [issue()]

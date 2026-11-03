@@ -32,6 +32,8 @@ class CachePolicy(BaseModel):
             return self.resolvedFreshnessSeconds if is_done(value) else self.freshnessSeconds
         if kind == "comments":
             return self.resolvedCommentsFreshnessSeconds if done else self.freshnessSeconds
+        if kind == "jqlcurrent":
+            return min(self.freshnessSeconds, original)
         if kind in DISPLAY_KINDS or kind in LIST_KINDS or kind.startswith("jqlidx"):
             return self.freshnessSeconds
         return original
@@ -41,9 +43,12 @@ LONG_DISPLAY_KINDS = frozenset({"epicmeta", "avatar_url", "avatar_bytes"})
 DISPLAY_KINDS = LONG_DISPLAY_KINDS | frozenset({"issue", "issueL", "issueview", "comments", "epicmeta",
     "user", "userbadge", "ancestors", "siblings", "children", "related", "attachments",
     "documents", "remotelinks", "timeline", "changelog", "mentionctx", "epic_tree"})
-LIST_KINDS = frozenset({"jqlleaf", "jqlrow", "mt", "mytasks", "workload", "workload_bucket",
+# jqlrow/jqlsnap retain their snapshot lifetime, independent of fresh-query reuse.
+LIST_KINDS = frozenset({"jqlleaf", "jqlcurrent", "mt", "mytasks", "workload", "workload_bucket",
     "activity", "wbs_build", "vit_build", "vit_bases", "vit_list", "search", "epic_cand",
     "epic_options", "epic_children", "direct_children"})
+SWR_AGGREGATE_KINDS = frozenset({"workload", "workload_bucket", "activity", "wbs_build",
+    "vit_build", "vit_bases", "vit_list", "mt", "mytasks"})
 
 
 def is_done(value):

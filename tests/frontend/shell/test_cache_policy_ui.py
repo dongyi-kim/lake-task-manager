@@ -68,3 +68,35 @@ def test_cache_settings_save_reload_and_restore(editor_browser):
     dialog.get_by_role("button", name="저장", exact=True).click()
     page.get_by_role("status").filter(has_text="저장했습니다").wait_for()
     assert not errors, errors
+
+
+def test_open_readonly_views_accept_swr_updates_only_for_current_scope(editor_browser):
+    page, base, errors, _ = editor_browser
+    page.goto(base)
+    result = page.evaluate("""async () => {
+      const load = async name => (await import('/components/views/' + name + '.js')).default;
+      const workload = await load('WorkloadView'), wbs = await load('WbsView'), vit = await load('VitView');
+      const context = { doneDays: 7, assignedWindow: 'all', curMod: {people:[{id:'me'}]},
+        pstat:{me:{name:'old'}}, tkd:{me:{open:[]}}, scheduleMeasure(){}, _detailSorter(){return ()=>0;} };
+      workload.methods.applyCacheUpdate.call(context, {
+        path:'/api/workload/person/me?days=7&assignedWindow=all', value:{name:'new'}});
+      workload.methods.applyCacheUpdate.call(context, {
+        path:'/api/workload/me/open?days=7&assignedWindow=all', value:[{key:'DL-1'}]});
+      workload.methods.applyCacheUpdate.call(context, {
+        path:'/api/workload/person/me?days=28&assignedWindow=all', value:{name:'wrong filter'}});
+      workload.methods.applyCacheUpdate.call(context, {
+        path:'/api/workload/person/other?days=7&assignedWindow=all', value:{name:'wrong module'}});
+      const tree = {D:{name:'old'}, epicTree:{'DL-1':[]}, partial:{'DL-1':-1}, scheduleRender(){}};
+      wbs.methods.applyCacheUpdate.call(tree,{path:'/api/wbs',value:{name:'new'}});
+      wbs.methods.applyCacheUpdate.call(tree,{path:'/api/epic/DL-1/tree',value:{tree:[{key:'DL-2'}]}});
+      const view = {d:{},mods:{Workbench:[]},detail:{'DL-1':{}}};
+      vit.methods.applyCacheUpdate.call(view,{path:'/api/vit/module/Workbench',value:{issues:[{key:'DL-3'}]}});
+      vit.methods.applyCacheUpdate.call(view,{path:'/api/vit/DL-1',value:{comments:[{id:'new'}]}});
+      return {person:context.pstat.me.name, people:Object.keys(context.pstat), bucket:context.tkd.me.open,
+        wbs:tree.D.name,tree:tree.epicTree['DL-1'],partial:tree.partial,
+        module:view.mods.Workbench,detail:view.detail['DL-1']};
+    }""")
+    assert result == {"person": "new", "people": ["me"], "bucket": [{"key": "DL-1"}],
+                      "wbs": "new", "tree": [{"key": "DL-2"}], "partial": {},
+                      "module": [{"key": "DL-3"}], "detail": {"comments": [{"id": "new"}]}}
+    assert not errors, errors

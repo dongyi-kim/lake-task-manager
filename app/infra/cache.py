@@ -16,7 +16,8 @@ import sqlite3
 import threading
 import time
 from concurrent.futures import Future
-from app.infra.cache_policy import LONG_DISPLAY_KINDS, DISPLAY_KINDS, is_done, note_read, read_scope, revalidating
+from app.infra.cache_policy import (LONG_DISPLAY_KINDS, DISPLAY_KINDS, SWR_AGGREGATE_KINDS,
+                                   is_done, note_read, read_scope, revalidating)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS cache (
@@ -182,19 +183,20 @@ class Cache:
     def refresh(self, key, ttl, producer):
         """Share foreground/background producers. Only complete successes advance source age."""
         with self._lock:
-            future = self._flights.get(key)
+            fence = self._write_fence
+            flight_key = (key, fence)
+            future = self._flights.get(flight_key)
             owner = future is None
             if owner:
                 # A producer may have finished between the caller's miss and this lock.
                 fresh = self.get(key)
                 if fresh is not None:
                     return fresh
-                future = self._flights[key] = Future()
+                future = self._flights[flight_key] = Future()
         if not owner:
             value = future.result()
             note_read(self.metadata(key))
             return value
-        fence = self.fence()
         try:
             with read_scope(strict=True) as sources:
                 value = producer()
@@ -224,13 +226,15 @@ class Cache:
             # became inaccessible. Only a denial of the resource itself removes its display copy.
             if direct_resource and (isinstance(exc, (PermissionDenied, PermissionError))
                                     or getattr(exc, "status", None) in (403, 404)):
-                self.forget(key)
+                with self._lock:
+                    if self._write_fence == fence:
+                        self.forget(key)
             future.set_exception(exc)
             raise
         finally:
             with self._lock:
-                if self._flights.get(key) is future:
-                    self._flights.pop(key, None)
+                if self._flights.get(flight_key) is future:
+                    self._flights.pop(flight_key, None)
 
     def set(self, key, value, ttl):
         with self._lock:
@@ -371,6 +375,9 @@ class Cache:
         (SQLite 는 DELETE 로 파일이 줄진 않지만 빈 페이지를 재사용하므로 크기가 안정된다.)"""
         now = time.time()
         try:
+            # Immutable JQL snapshots carry complete rows. Keep only their cursor lifetime,
+            # rather than retaining every historical query's payload for the display horizon.
+            self._conn.execute("DELETE FROM cache WHERE key LIKE 'jqlsnap:%' AND ? - fetched_at > ttl", (now,))
             if self.policy:
                 for table in ("cache", "cache_display"):
                     self._conn.execute(f"DELETE FROM {table} WHERE ? - fetched_at > CASE WHEN "
@@ -402,14 +409,14 @@ class Cache:
                 self.revalidator(key, ttl, producer)
             return hit, True
         alive = self.get_alive(key, record=False)
-        display = key.split(":", 1)[0] in DISPLAY_KINDS
+        display = key.split(":", 1)[0] in DISPLAY_KINDS | SWR_AGGREGATE_KINDS
         if not revalidating() and alive is not None:
             if self.skip_producer and self.skip_producer():
                 self.served_stale_at = time.time()
                 note_read(self.metadata(key))
                 return alive[0], True
             if (self.policy is not None and display and self.revalidator
-                    and not self.metadata(key)["invalidated"]):
+                    and not (self.metadata(key) or {}).get("invalidated", True)):
                 self.revalidator(key, ttl, producer)
                 self.served_stale_at = time.time()
                 note_read(self.metadata(key))
@@ -491,11 +498,20 @@ class Cache:
             return hit, "fresh"
         alive = self.get_alive(key, record=False)
         if alive is not None and not revalidating():
-            if not self.skip_producer or not self.skip_producer():
+            if self.skip_producer and self.skip_producer():
+                note_read(self.metadata(key))
+                return alive[0], "stale"
+            if not (self.metadata(key) or {}).get("invalidated", True):
                 background(key, ttl, producer)
+                note_read(self.metadata(key))
+                return alive[0], "stale"
+        try:
+            return self.refresh(key, ttl, producer), "miss"
+        except Exception:
+            if revalidating() or alive is None or self.get_alive(key, record=False) is None:
+                raise
             note_read(self.metadata(key))
             return alive[0], "stale"
-        return self.refresh(key, ttl, producer), "miss"
 
     def _archive_display(self, where, args):
         if self.policy is None:

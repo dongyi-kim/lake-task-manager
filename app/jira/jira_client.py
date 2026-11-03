@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from html import escape, unescape
 from urllib.parse import unquote, urlparse
+from uuid import uuid4
 
 from app.auth.base import (PermissionDenied, SessionExpired, UpstreamUnavailable,
                            background_upstream, write_upstream)
@@ -1456,8 +1457,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     def _jql_snapshot(self, compiled, fields, light, snapshot_id=None):
         context = self._jql_user_context()
         projection = self._projection_signature(fields, light)
-        if snapshot_id:
-            key = f"jqlsnap:v{self.JQL_CACHE_VERSION}:{self.env}:{snapshot_id}"
+
+        def read_snapshot(sid):
+            key = f"jqlsnap:v{self.JQL_CACHE_VERSION}:{self.env}:{sid}"
             snapshot = self.cache.get(key)
             if not isinstance(snapshot, dict):
                 raise ValueError("검색 snapshot이 만료되었습니다. 첫 페이지부터 다시 조회하세요.")
@@ -1468,26 +1470,35 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 raise ValueError("검색 snapshot이 현재 JQL 또는 필드 projection과 일치하지 않습니다.")
             issue_keys = list(snapshot.get("issueKeys") or [])
             hydrated = dict(snapshot)
-            hydrated["issues"] = self._load_jql_rows(
-                issue_keys, int(snapshot.get("generation", 0)), projection)
-            return snapshot_id, hydrated
+            # Legacy cursors stored IDs only. New snapshots freeze their rows because shared
+            # projection rows can legitimately be refreshed by a later query in the same generation.
+            if "issues" not in hydrated:
+                hydrated["issues"] = self._load_jql_rows(
+                    issue_keys, int(snapshot.get("generation", 0)), projection)
+            return sid, hydrated
+
+        if snapshot_id:
+            return read_snapshot(snapshot_id)
         generation = self._jql_generation()
         identity = hashlib.sha256(
             f"{context}\n{generation}\n{projection}\n{compiled.canonical}".encode("utf-8")
         ).hexdigest()[:32]
-        snapshot_id = f"{generation}.{identity}"
-        key = f"jqlsnap:v{self.JQL_CACHE_VERSION}:{self.env}:{snapshot_id}"
+        key = f"jqlcurrent:v{self.JQL_CACHE_VERSION}:{self.env}:{generation}.{identity}"
         lock = self._jql_lock(key)
         with lock:
-            snapshot = self.cache.get_or_set(
-                key, self.JQL_SNAPSHOT_TTL,
-                lambda: self._build_jql_snapshot(
-                    compiled, fields, light, generation, projection, context))[0]
-        issue_keys = list(snapshot.get("issueKeys") or [])
-        hydrated = dict(snapshot)
-        hydrated["issues"] = self._load_jql_rows(
-            issue_keys, int(snapshot.get("generation", generation)), projection)
-        return snapshot_id, hydrated
+            def build():
+                fence = self.cache.fence()
+                snapshot = self._build_jql_snapshot(compiled, fields, light, generation, projection, context)
+                snapshot["issues"] = self._load_jql_rows(snapshot.get("issueKeys") or [], generation, projection)
+                sid = f"{generation}.{identity}.{uuid4().hex}"
+                snapshot_key = f"jqlsnap:v{self.JQL_CACHE_VERSION}:{self.env}:{sid}"
+                if not self.cache.set_if_fence(snapshot_key, snapshot, self.JQL_SNAPSHOT_TTL, fence):
+                    raise UpstreamUnavailable("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
+                return {"snapshotId": sid}
+
+            current = self.cache.get_or_set_strict(
+                key, min(self.s.cache_ttl_seconds, self.JQL_SNAPSHOT_TTL), build)[0]
+        return read_snapshot(current["snapshotId"])
 
     def search_issues_page(self, jql, start_at=0, max_results=100, fields=None, light=True,
                            snapshot_id=None):
