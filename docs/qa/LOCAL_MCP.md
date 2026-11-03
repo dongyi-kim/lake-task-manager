@@ -56,6 +56,8 @@ stale 상태로 수정 금지와 fresh 재사용), 관리자 **19 cases**, 열�
 마지막 오류 분류 보강은 실제 SDK 오류 계약·관리·일괄 생성 **37 passed**이며 앞선 실행과 일부 겹친다.
 마지막 WBS 삭제 보강은 관리자/진척률 **27 passed**, 실제 Chromium 관리자 UI **5 passed**로 확인했다.
 하위 조회 partial·캐시 보강 후 MCP/Epic pagination/rollup **81 passed, 1 skipped**를 확인했다.
+최종 통합에서는 신규 partial **4 cases** + 실제 cache policy **7 cases** + 실제 관리자 브라우저 **5 cases**,
+총 **16 passed**로 다시 확인했다.
 CI 전체 실행의 **3675 passed, 52 skipped** 중 남은 한 실패는 이전 뱃지 API만 제공하던 테스트 fake였다.
 실제 경로처럼 `get_issue_light(strict=True)`를 제공하고 strict 요청을 단언하도록 갱신한 뒤 해당 파일 **5 passed**를 확인했다.
 독립 MCP branch에서 캐시 정책 모듈이 없으면 metadata를 unknown으로 반환한다.
