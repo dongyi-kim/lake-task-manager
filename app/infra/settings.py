@@ -6,6 +6,7 @@
 
 import os
 import sys
+import threading
 from functools import lru_cache
 from pathlib import Path
 
@@ -218,15 +219,45 @@ class Settings:
         # SSO 로그인 순회·판정에는 **설정된 것만** (base 없는 서비스는 창을 못 연다).
         self.auth_targets = [(s["name"], s["base"], s["paths"]) for s in self.services if s["configured"]]
         self.cache_db_path = _cache_path(pick("CACHE_DB_PATH", cache.get("db_path"), "cache.sqlite3"))   # 상대경로 → .cache/
-        # outdated — 이 시각이 지나면 '낡음'(온라인이면 다시 받는다)
-        self.cache_ttl_seconds = int(pick("CACHE_TTL_SECONDS", cache.get("ttl_seconds"), 900))
-        # dead — 이 시각이 지나야 '없는 값'. 그 전까지는 오프라인·미인증에서도 낡은 값을 준다.
-        # 기본 24시간: 하루 안에 본 것은 망이 끊겨도 다시 볼 수 있어야 한다는 기준.
-        self.cache_dead_ttl_seconds = int(pick("CACHE_DEAD_TTL_SECONDS",
-                                               cache.get("dead_ttl_seconds"), 24 * 3600))
+        from app.infra.cache_policy import CachePolicy
+        from app.infra import prefs
+        policy_values = dict(cache.get("policy") or {})
+        legacy = cache.get("ttl_seconds", 600)
+        if legacy == 900:
+            legacy = 600
+        defaults = {"freshnessSeconds": legacy,
+                    "displaySeconds": cache.get("dead_ttl_seconds", 86400),
+                    "resolvedFreshnessSeconds": 86400,
+                    "resolvedCommentsFreshnessSeconds": 3600,
+                    "metadataDisplaySeconds": 2592000, "metadataFreshnessSeconds": 86400}
+        env_keys = {"freshnessSeconds": "CACHE_TTL_SECONDS", "displaySeconds": "CACHE_DEAD_TTL_SECONDS",
+                    "resolvedFreshnessSeconds": "CACHE_RESOLVED_TTL_SECONDS",
+                    "resolvedCommentsFreshnessSeconds": "CACHE_RESOLVED_COMMENTS_TTL_SECONDS",
+                    "metadataDisplaySeconds": "CACHE_METADATA_DISPLAY_SECONDS",
+                    "metadataFreshnessSeconds": "CACHE_METADATA_TTL_SECONDS"}
+        defaults.update(policy_values)
+        defaults.update({key: int(os.environ[env]) for key, env in env_keys.items() if env in os.environ})
+        saved = prefs.load()
+        if saved.get("cachePolicy") is not None:
+            defaults = saved["cachePolicy"]
+        self._cache_policy_lock = threading.Lock()
+        self.cache_policy = CachePolicy(**defaults)
+        self.policy_revision = int(saved.get("policyRevision") or 0)
+        self.cache_ttl_seconds = self.cache_policy.freshnessSeconds
+        self.cache_dead_ttl_seconds = self.cache_policy.displaySeconds
         self.app_host = str(pick("APP_HOST", server.get("host"), "0.0.0.0"))
         # config에서 확정한 한 포트만 사용한다. 충돌 시 다른 포트로 자동 fallback하지 않는다.
         self.app_port = int(pick("APP_PORT", server.get("port"), default_app_port(self.jira_env)))
+
+    def set_cache_policy(self, policy):
+        from app.infra import prefs
+        with self._cache_policy_lock:
+            saved = prefs.save({"cachePolicy": policy.model_dump(),
+                                "policyRevision": self.policy_revision + 1}, strict=True)
+            self.cache_policy = policy
+            self.policy_revision = saved["policyRevision"]
+            self.cache_ttl_seconds = policy.freshnessSeconds
+            self.cache_dead_ttl_seconds = policy.displaySeconds
 
     def _recompute_targets(self):
         """Bitbucket 토글이 바뀌면 인증 순회 대상을 다시 계산한다(재시작 불필요)."""

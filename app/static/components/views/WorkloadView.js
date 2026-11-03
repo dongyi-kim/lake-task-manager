@@ -61,6 +61,15 @@ export default {
              pstat: {}, busy: false, peopleLoadEpoch: 0 };   // pstat[pid] = 그 인력의 통계 행(사람 by 사람 로딩)
   },
   created() {
+    window.addEventListener('api-cache-updated', this._cacheUpdate = e => this.applyCacheUpdate(e.detail));
+    window.addEventListener('cache-policy-changed', this._policyUpdate = () => {
+      (this.curMod?.people || []).forEach(p => {
+        api.workloadPerson(p.id, this.doneDays, this.assignedWindow).catch(() => {});
+        for (const bucket of ['open', 'inProgress', 'done7d']) {
+          if (this.tkd[p.id]?.[bucket]) api.workloadBucket(p.id, bucket, this.doneDays, this.assignedWindow).catch(() => {});
+        }
+      });
+    });
     this.bodyRefs = {};                // 비반응 DOM 참조(모듈 body)
     this.peopleRetryTimers = new Set();
     this.workScheduler = new WorkloadRequestScheduler();
@@ -90,6 +99,8 @@ export default {
     window.addEventListener("resize", this._onResize);
   },
   unmounted() {
+    window.removeEventListener('api-cache-updated', this._cacheUpdate);
+    window.removeEventListener('cache-policy-changed', this._policyUpdate);
     this._cancelPeopleRetryTimers();
     this.peopleLoadEpoch++;
     this.detailLoadEpoch++;
@@ -243,6 +254,33 @@ export default {
     },
   },
   methods: {
+    applyCacheUpdate({ path, value }) {
+      if (!value || value.partial || value.error || !path.startsWith('/api/workload/')) return;
+      if (path === '/api/workload/shell' && this.d) { this.d = value; return; }
+      const url = new URL(path, window.location.origin);
+      // A background response belongs to its original filters, even after the user moves on.
+      if (Number(url.searchParams.get('days')) !== this.doneDays
+          || url.searchParams.get('assignedWindow') !== this.assignedWindow) return;
+      const match = url.pathname.match(/^\/api\/workload\/(?:person\/([^/]+)|([^/]+)\/(open|inProgress|done7d))$/);
+      if (!match) return;
+      const id = decodeURIComponent(match[1] || match[2]);
+      if (!(this.curMod?.people || []).some(p => p.id === id)) return;
+      if (match[1]) {
+        if (this.pstat[id]) this.pstat[id] = value;
+        this.scheduleMeasure();
+        return;
+      }
+      const bucket = match[3], box = this.tkd[id];
+      if (box && Array.isArray(box[bucket])) box[bucket] = value.slice().sort(this._detailSorter(bucket));
+      const partKey = id + '|' + bucket;
+      if (this.dueRisk?.parts?.[partKey]) {
+        const parts = this.dueRisk.parts;
+        parts[partKey] = { id, bucket, status: 'success', rows: value };
+        this.dueRisk = summarizeDueRiskParts({ people: this.curMod.people, parts,
+          excludeVoc: this.excludeVoc, dueRank: t => this.dueRank(t),
+          nameOf: pid => this.pstat[pid]?.name || pid });
+      }
+    },
     _notifyWorkloadError(kind, final = false) {
       if (kind === "permission") return;       // Jira 권한 제외는 best-effort로 조용히 건너뛴다
       if (kind === "auth") window.dispatchEvent(new CustomEvent("need-login"));

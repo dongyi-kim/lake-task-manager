@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from app.auth.base import (MutationOutcomeUnknown, PermissionDenied, SessionExpired,
                            UpstreamUnavailable)
 from app.infra.cache import Cache
+from app.infra.cache_policy import CachePolicy, CacheHeadersMiddleware
 from app.jira.jira_client import JiraClient
 from app.infra.settings import STATIC_DIR, get_settings, load_people
 from app.routes.dashboards import build_dashboard_router
@@ -41,6 +42,8 @@ app = FastAPI(title="Lake Task Manager")
 
 _settings = get_settings()
 _cache = Cache(_settings.cache_db_path, dead_ttl=_settings.cache_dead_ttl_seconds)
+_cache.configure(_settings.cache_policy, _settings.policy_revision)
+app.add_middleware(CacheHeadersMiddleware, cache=_cache)
 _cache.purge()      # 시작 시 1회 — 지난 실행에서 쌓인 죽은 캐시 행·오래된 스냅샷 정리(디스크 안정화)
 _client = JiraClient(_settings, _cache)
 _client._wire_cache()      # 캐시에 재검증 규칙·회로차단기 연결(호출부는 그대로)
@@ -932,12 +935,15 @@ def api_auth_probe():
 
 
 class _PrefsBody(BaseModel):
+    cachePolicy: CachePolicy | None = None
     bitbucketEnabled: bool | None = None
     quickOpenHotkey: str | None = None
 
 
 def _prefs_payload():
-    return {"bitbucketEnabled": bool(_settings.bitbucket_enabled),
+    return {"cachePolicy": _settings.cache_policy.model_dump(),
+            "policyRevision": _settings.policy_revision,
+            "bitbucketEnabled": bool(_settings.bitbucket_enabled),
             "bitbucketConfigured": bool(_settings.bitbucket_base),
             "quickOpenHotkey": _settings.quick_open_hotkey,
             # 에이전트가 안 붙었으면 화면이 그 사실과 **이유**를 보여야 한다.
@@ -954,6 +960,12 @@ def api_prefs_get():
 
 @app.put("/api/prefs")
 def api_prefs_put(body: _PrefsBody):
+    if body.cachePolicy is not None:
+        try:
+            _settings.set_cache_policy(body.cachePolicy)
+        except OSError:
+            raise HTTPException(500, "캐시 설정을 저장하지 못했습니다. 기존 설정을 유지합니다.")
+        _cache.configure(_settings.cache_policy, _settings.policy_revision)
     if body.bitbucketEnabled is not None:
         _settings.set_bitbucket_enabled(body.bitbucketEnabled)
     if body.quickOpenHotkey is not None:
