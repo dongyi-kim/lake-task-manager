@@ -112,7 +112,13 @@ class EvaluationFixture:
             self._listener.bind(("127.0.0.1", self.port))
             self.port = self._listener.getsockname()[1]
 
-            settings = SimpleNamespace(**copy.deepcopy(vars(get_settings())))
+            source_settings = get_settings()
+            # Snapshot public configuration atomically; this read-only fixture has no settings
+            # mutators and must neither pickle nor share the live singleton's synchronization.
+            with source_settings._cache_policy_lock:
+                settings = SimpleNamespace(**copy.deepcopy({
+                    name: value for name, value in vars(source_settings).items()
+                    if not name.startswith("_")}))
             settings.jira_env, settings.app_port = "mock", self.port
             settings.description_format = settings.comment_format = "wiki"
             # Even generated links describe only the disposable fixture, never production.

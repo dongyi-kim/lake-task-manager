@@ -9,7 +9,34 @@ import pytest
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
+from app.infra.settings import get_settings
 from tools.codex_mcp_eval.fixture import EvaluationFixture
+
+
+def test_fixture_snapshots_live_settings_without_sharing_mutable_state(tmp_path, monkeypatch):
+    source = get_settings()
+    policy = source.cache_policy.model_copy(update={"freshnessSeconds": 1200})
+    monkeypatch.setattr(source, "cache_policy", policy)
+    monkeypatch.setattr(source, "policy_revision", 17)
+    monkeypatch.setattr(source, "cache_ttl_seconds", policy.freshnessSeconds)
+    monkeypatch.setattr(source, "evaluation_canary", {"nested": ["source"]}, raising=False)
+    original_paths = list(source.services[0]["paths"])
+
+    with EvaluationFixture(tmp_path / "settings", port=0) as fixture:
+        settings = fixture.settings
+        assert {name for name in vars(source) if not name.startswith("_")} <= vars(settings).keys()
+        assert settings.cache_policy == policy and settings.cache_policy is not policy
+        assert settings.policy_revision == 17 and settings.cache_ttl_seconds == 1200
+        assert not hasattr(settings, "_cache_policy_lock")
+        assert not source._cache_policy_lock.locked()
+        settings.evaluation_canary["nested"].append("fixture")
+        settings.services[0]["paths"].append("/fixture-only")
+        settings.cache_policy = policy.model_copy(update={"freshnessSeconds": 1800})
+        settings.policy_revision += 1
+
+    assert source.evaluation_canary == {"nested": ["source"]}
+    assert source.services[0]["paths"] == original_paths
+    assert source.cache_policy is policy and source.policy_revision == 17
 
 
 def test_full_world_sdk_reads_share_ui_cache_and_reject_every_write(tmp_path):
