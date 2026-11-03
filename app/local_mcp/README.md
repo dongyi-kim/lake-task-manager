@@ -118,3 +118,7 @@ LLM 설정, 인증 쿠키, 비밀값 관리, 임의 REST 호출도 업무 도구
 
 `python -m app.agent.mcp_server`는 이전 명령 호환용 stdio proxy다. `LTM_MCP_URL`과 `LTM_MCP_TOKEN`을
 설정 화면에서 받은 값으로 지정해야 하며, 예전처럼 별도 mock 서버를 시작하지 않는다.
+
+실제 Codex와 HTTP MCP를 연결한 조회 품질·시간·토큰 검증은
+[`Codex MCP 평가 안내`](../../tools/codex_mcp_eval/README.md)의 별도 수동 배터리를 사용한다.
+기존 조회 질문과 exact JQL·통합검색·부분 실패 계약을 8개 사례로 검증하며, 자동 판정과 직접 정성평가를 구분한다.
