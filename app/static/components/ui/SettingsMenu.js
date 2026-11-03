@@ -7,6 +7,7 @@ import { TYPEAHEAD_PRESETS, typeaheadDelay, setTypeaheadDelay } from "../../lib/
 import { resetSeen } from "../../lib/guides.js";
 import AgentSettingsDialog from "./AgentSettingsDialog.js";
 import LocalMcpDialog from "./LocalMcpDialog.js";
+import WorkspaceAdminDialog from "./WorkspaceAdminDialog.js";
 
 const SERVICES = ["Jira", "Confluence", "Bitbucket"];
 // 빠른 열기 전역 단축키 선택지 — run.py 가 이 spec 을 등록한다(데스크톱 앱). 기본 ctrl+alt+space.
@@ -18,7 +19,7 @@ const HOTKEYS = [
 
 export default {
   name: "SettingsMenu",
-  components: { AgentSettingsDialog, LocalMcpDialog },
+  components: { AgentSettingsDialog, LocalMcpDialog, WorkspaceAdminDialog },
   props: { theme: { type: String, default: "light" } },
   emits: ["toggle-theme"],
   data() {
@@ -35,6 +36,7 @@ export default {
       // 에이전트는 선택 설치라 아예 없을 수 있다 — 그때는 이유를 보여 준다.
       agentOn: false, agentWhy: "", agentDlg: false,
       mcpDlg: false,
+      workspaceDlg: false,
     };
   },
   computed: {
@@ -100,6 +102,10 @@ export default {
     close() { this.open = false; this._stopPoll(); },
     closeMcp() {
       this.mcpDlg = false;
+      this.$nextTick(() => this.$el.querySelector(".setmenu-trig")?.focus());
+    },
+    closeWorkspace() {
+      this.workspaceDlg = false;
       this.$nextTick(() => this.$el.querySelector(".setmenu-trig")?.focus());
     },
     // 서비스별 **병렬** 프로브 — 각 응답이 오는 대로 그 행만 갱신(하나 느려도 나머지는 즉시).
@@ -229,6 +235,12 @@ export default {
         <button class="sm-btn" @click="mcpDlg = true; close()">에이전트 연결 설정 →</button>
       </div>
 
+      <!-- 워크스페이스 관리 — 매니저 전용 -->
+      <div v-if="manager" class="sm-sec">
+        <div class="sm-h">워크스페이스 관리</div>
+        <button class="sm-btn" @click="workspaceDlg = true; close()">인력 · WBS 관리 →</button>
+      </div>
+
       <!-- Dev Tools — 매니저 전용 -->
       <div v-if="manager" class="sm-sec">
         <div class="sm-h">Dev Tools</div>
@@ -245,5 +257,6 @@ export default {
 
     <AgentSettingsDialog v-if="agentDlg" @close="agentDlg = false" />
     <LocalMcpDialog v-if="mcpDlg" @close="closeMcp" />
+    <WorkspaceAdminDialog v-if="workspaceDlg && manager" @close="closeWorkspace" />
   </div>`,
 };
