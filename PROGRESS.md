@@ -124,3 +124,4 @@ python -m pytest src/tests -q                      # 21 passed
 - **2026-07-07** — SP 누락(None) 기본값 규칙 추가: Bug=0, 나머지=1 (`progress.sp_of`). 문서·테스트·mock 반영.
 - **2026-07-07** — Phase A 완료. FastAPI 앱(mock/local/prod) + config(YAML) + SQLite 캐시 + docker/exe 패키징 + seed + 테스트(10 passed). mock 모드 end-to-end 검증(/api/wbs PMO 40.3%).
 - **2026-07-07** — 데모 확정: `demo/` 단일 HTML 간트차트(시간축 일/주/월, 모듈별 색, WBS 일정 바 + 진척 채움, ㄴ자 트리 연결선). 모듈 7 = ETL/DevOps/Observability/Workbench/Runtime/Catalog/DataOps.
+- **2026-11-03** — Local MCP: 실행 중인 LTM의 인증·Jira 캐시와 UI command를 공유하는 HTTP/stdio 27개 조회·쓰기 도구, loopback/token 경계, 설정 연결 복사·재발급·비활성화, mutation receipt와 캐시 출처 표시. mock에서 실제 SDK HTTP/stdio 및 Chromium 설정 UI 검증.

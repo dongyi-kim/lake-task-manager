@@ -1081,6 +1081,31 @@ app.include_router(build_dashboard_router(
 ))
 
 
+def _classify_mcp_error(exc):
+    """Share authentication recovery/circuit state with the UI without an HTTP round trip."""
+    import json
+    if isinstance(exc, MutationOutcomeUnknown):
+        response = _on_mutation_outcome_unknown(None, exc)
+    elif isinstance(exc, UpstreamUnavailable):
+        response = _on_upstream_unavailable(None, exc)
+    else:
+        response = _on_session_expired(None, exc)
+    payload = json.loads(response.body)
+    return {"code": "authentication_required" if payload.get("needLogin") else "upstream_unavailable",
+            "status": response.status_code, **payload}
+
+
+from app.infra.settings import CACHE_DIR
+from app.local_mcp.runtime import LocalMcpRuntime
+
+_local_mcp = LocalMcpRuntime(
+    get_client=lambda: _client, settings=_settings,
+    secret_path=CACHE_DIR / "local_mcp_secret.json", require_edit=_require_edit,
+    require_person_access=_require_person_access, classify_error=_classify_mcp_error,
+)
+_local_mcp.install(app)
+
+
 # 티켓 단독 페이지 — Jira 와 같은 /browse/{key} URL. SPA 진입점을 그대로 돌려주고
 # 어떤 티켓인지는 프론트가 경로에서 읽는다(서버 렌더링 없음).
 # 정적 마운트("/") 보다 **먼저** 선언해야 마운트에 먹히지 않는다.

@@ -83,6 +83,8 @@ nh3==0.3.6
 
 # MCP 서버(선택요소 B) — LTM 도구를 외부 AI 클라이언트(Claude Desktop 등)에 개방
 mcp==2.0.0
+# MCP 2's standard HTTP client is used by the local stdio proxy.
+httpx2==2.11.0
 
 # Prod (corporate SSO) path additionally needs Playwright:
 #   pip install -r requirements-sso.txt   (then `playwright install chromium`)

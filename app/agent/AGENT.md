@@ -29,6 +29,8 @@
 
 - 모든 Jira write는 사용자에게 보인 exact payload의 1회용 approval token과 일치해야 한다.
 - `Action Executor`만 write를 실행한다. 다른 역할은 read 또는 draft만 수행한다.
+- 위 승인 규칙은 내장 Agent 역할에 적용한다. 사용자가 명시적으로 연결한 local MCP는 별도 직접쓰기
+  인터페이스이며, 내장 Agent 승인 토큰을 발급·소비하지 않고 UI와 같은 application command를 호출한다.
 - 완료 ticket(`statusCategory=done`)의 field는 직접 변경하지 않는다. 실제 Jira가 제공하는 `Reopened` 전이를 별도로 승인·실행한 뒤 새 승인으로 수정한다.
 - 완료 ticket에도 comment는 작성할 수 있다.
 
