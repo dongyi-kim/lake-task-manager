@@ -4497,7 +4497,12 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     "histories": (raw.get("changelog") or {}).get("histories") or []}
         return self.cache.get_or_set(f"changelog:{self.env}:{key}", self.s.cache_ttl_seconds, do)[0]
 
-    def confluence_page(self, cid, expand="body.storage"):
+    def confluence_search(self, cql, start=0, limit=50):
+        """UI/Agent/MCP share Confluence query authentication and complete-result caching."""
+        from app.jira.confluence_service import search
+        return search(self, cql, start, limit)
+
+    def confluence_page(self, cid, expand="body.storage", strict=False):
         """Confluence 페이지 원본 조회 — **base 를 붙이는 한 곳**.
 
         prod 는 Confluence 가 Jira 와 다른 호스트라 상대 경로를 쓰면 Jira 로 날아가 죽는다
@@ -4506,12 +4511,12 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         """
         if not cid:
             return {}
-        base = (self.s.confluence_base or "").rstrip("/")
-        path = f"/rest/api/content/{cid}"
+        from app.jira.confluence_service import page
         try:
-            return self._conf_get_json((base + path) if base else path,
-                                       params={"expand": expand}) or {}
+            return page(self, cid, expand)
         except Exception:
+            if strict:
+                raise
             return {}
 
     def ticket_field_history(self, key, limit=20):

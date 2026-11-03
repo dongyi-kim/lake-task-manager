@@ -2,7 +2,7 @@
 
 실행 중인 LTM이 `http://127.0.0.1:<설정 포트>/mcp`에서 표준 Streamable HTTP MCP를 제공한다.
 별도 Jira 로그인, LLM 키, 별도 서버 실행이 필요 없다. UI와 같은 `JiraClient`, 인증 provider,
-JQL leaf/issue/user/Epic 캐시, mutation invalidation을 사용한다.
+JQL leaf/issue/user/Epic/Confluence 캐시, mutation invalidation을 사용한다.
 
 ## 연결
 
@@ -25,11 +25,13 @@ JQL leaf/issue/user/Epic 캐시, mutation invalidation을 사용한다.
 | 목적 | 도구 |
 |---|---|
 | JQL·페이지 | `search_issues` |
-| 티켓·댓글·이력·자식·Epic | `get_ticket`, `get_comments`, `get_history`, `get_children`, `get_epic` |
+| 티켓 본문·댓글·이력·자식·Epic | `get_ticket`, `get_comments`, `get_history`, `get_field_history`, `get_children`, `get_epic`, `get_ticket_context` |
+| 통합검색·Confluence 검색/본문 | `search_workspace`, `search_confluence_documents`, `read_confluence_document` |
 | 사람·선택지·워크로드 | `search_users`, `get_user`, `list_options`, `get_workload` |
-| 부속 정보 | `get_attachments`, `get_documents` |
+| WBS·VIT·팀 워크로드·활동 | `get_dashboard`, `get_vit_detail`, `get_epic_progress`, `get_activity` |
+| 부속 정보·첨부파일 내용 | `get_attachments`, `read_attachment`, `get_documents` |
 | 생성 | `create_task`, `create_subtask`, `create_epic` |
-| 수정·전이 | `update_fields`, `transition_ticket` |
+| 본문·필드 수정·전이 | `update_description`, `update_fields`, `transition_ticket` |
 | 댓글 | `add_comment`, `edit_comment`, `delete_comment` |
 | 티켓·문서 링크 | `add_issue_link`, `delete_issue_link`, `add_document`, `delete_document` |
 | 첨부·삭제 | `add_attachment`, `delete_attachment`, `delete_ticket` |
@@ -43,6 +45,21 @@ JQL leaf/issue/user/Epic 캐시, mutation invalidation을 사용한다.
 `fetchedAt`·`freshUntil`·`displayUntil`, stale 여부와 policy revision을 반환한다.
 관측 정보가 없으면 `available: false, state: unknown`으로 표시하며 최신 데이터라고 단정하지 않는다.
 
+총 **38개** 도구를 제공한다. `get_ticket`의 `descriptionHtml`은 열람용, `descriptionEditHtml`은
+수정용 본문이다. 생성 시 `body.descriptionHtml`, 이후 본문 수정은 `update_description(html, ...)`,
+댓글 작성·수정은 `add_comment`·`edit_comment(html, ...)`를 사용한다. 기존 UI와 동일한 Jira serializer를 거친다.
+
+Confluence 검색은 `search.confluence.spaces` 범위에서 페이지를 반환하고, 본문 읽기는 숫자 ID 또는
+설정된 Confluence 호스트의 `/pages/{id}` 또는 `?pageId=` URL을 받는다. `/display/SPACE/title` 형식은
+먼저 검색으로 숫자 ID를 확인한다. 검색은 `nextStartAt`, 긴 본문은 `nextOffset`을 따라 끝까지 읽을 수 있다.
+문서 제목·space·version과 전체 길이를 함께 반환하며, excerpt만으로 문서를 읽었다고 표현하지 않는다.
+UI 통합검색·내장 Agent·MCP는 환경/Confluence 서버/사용자/요청 projection으로 구분된 같은 캐시를 사용한다.
+인증 실패나 불완전 응답을 빈 문서로 캐싱하지 않는다. Confluence 문서 생성·수정은 현재 LTM에 없는 기능이므로 제공하지 않는다.
+
+WBS와 사용자 활동에는 UI와 같은 manager 검사, 팀 워크로드에는 같은 module/people 범위가 적용된다.
+Bitbucket 검색은 현재 LTM에서도 예정 기능의 mock placeholder이므로 MCP 도구에 포함하지 않는다.
+LLM 설정, 인증 쿠키, 비밀값 관리, 임의 REST 호출도 업무 도구로 노출하지 않는다.
+
 쓰기 도구는 **Jira에 직접 반영**한다. 외부 클라이언트에서 사용자가 허용한 작업만 실행해야 한다.
 내장 LTM Agent의 승인 카드는 그대로 유지되며, MCP가 그 승인 토큰을 발급하거나 우회하지 않는다.
 실제 Jira metadata·권한과 UI의 application command를 공유한다. 완료된 티켓의 속성은 먼저 Jira가
@@ -54,13 +71,14 @@ JQL leaf/issue/user/Epic 캐시, mutation invalidation을 사용한다.
 기존 Jira 대조 로직으로 복구한다. 나머지 쓰기는 결과를 증명할 수 없으면 재실행하지 않고 unknown을 유지하므로,
 최신 티켓을 조회해 반영 여부를 확인한다. 실패는 MCP `isError`와 구조화된 error code로 반환한다.
 
-첨부는 최대 10MiB의 base64 바이트를 받는다. 로컬 파일 경로를 읽는 도구나 임의 REST·관리자 API 도구는 없다.
+첨부 업로드는 최대 10MiB의 base64 바이트를 받는다. `read_attachment`는 티켓에 속한 ID를 검증한 후
+실제 파일 바이트를 base64로 반환하며, `nextOffset`을 따라 최대 10MiB 파일을 읽는다. 로컬 파일 경로는 받지 않는다.
 
 ## 코드와 검증
 
 - `runtime.py`: SDK 등록·응답·lifespan과 앱 연결
 - `security.py`, `settings.py`: loopback/bearer 경계와 명시적 설정 복사
-- `read_tools.py`, `write_tools.py`: 타입이 있는 도구 catalog
+- `read_tools.py`, `workspace_tools.py`, `write_tools.py`: 타입이 있는 업무 도구 catalog
 - `stdio.py`: 표준 SDK stdio/HTTP 메시지 중계
 - `app/services/ticket_commands.py`: HTTP UI와 MCP가 공유하는 쓰기 command
 - `tests/mcp/`: 실제 SDK HTTP/stdio, 캐시 재사용, CRUD, 응답 유실과 보안 경계

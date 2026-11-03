@@ -16,6 +16,7 @@ from app.local_mcp.runtime import LocalMcpRuntime
 from app.mock.permissions import PermissionStore, install_permission_route
 from app.routes.ticket_commands import build_ticket_command_router
 from app.routes.tickets import build_ticket_router
+from app.routes.resources import build_resource_router
 from app.services.ticket_commands import CommandError
 
 
@@ -57,6 +58,7 @@ def build_env(tmp_path):
         runtime = LocalMcpRuntime(get_client=lambda: client, settings=settings,
                                   secret_path=tmp_path / f"credentials-{port}.json", require_edit=require_edit)
         app.include_router(build_ticket_router(get_client=lambda: client))
+        app.include_router(build_resource_router(get_client=lambda: client, cache=cache, settings=settings))
         app.include_router(build_ticket_command_router(
             get_client=lambda: client, settings=settings, may_edit=lambda key: True,
             require_edit=require_edit, session_user=lambda: {"id": "u01"},

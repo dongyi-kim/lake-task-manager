@@ -25,7 +25,7 @@ def test_sdk_http_catalog_cache_reuse_and_pagination(build_env):
                     catalog = (await mcp.list_tools()).tools
                     names = {tool.name for tool in catalog}
                     assert {"search_issues", "create_task", "delete_ticket", "add_attachment"} <= names
-                    assert len(names) == 27
+                    assert len(names) == 38
                     assert next(t for t in catalog if t.name == "get_ticket").annotations.read_only_hint
                     assert not next(t for t in catalog if t.name == "create_task").annotations.read_only_hint
                     result = await mcp.call_tool("search_issues", {"jql": "project = DL ORDER BY key ASC", "max_results": 2})

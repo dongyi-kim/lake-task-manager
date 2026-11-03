@@ -53,6 +53,15 @@ def register_writes(register, runtime):
         runtime.check_key(key)
         return commands.update_fields(key, body)
 
+    def update_description(key: str, html: str, client_mutation_id: str) -> dict:
+        """Replace a ticket's description/body HTML using the same editor serializer as the UI.
+        get_ticket returns descriptionEditHtml for editing. Create bodies use body.descriptionHtml;
+        comment bodies use add_comment/edit_comment. Done tickets must be reopened before body editing.
+        """
+        runtime.check_key(key)
+        runtime.check_mutation_id(client_mutation_id)
+        return commands.update_fields(key, FieldsInput(descriptionHtml=html, clientMutationId=client_mutation_id))
+
     def add_comment(key: str, html: str, client_mutation_id: str) -> dict:
         """Publish comment HTML through LTM's Jira serializer. Keep mutation ID when retrying."""
         runtime.check_key(key)
@@ -139,7 +148,7 @@ def register_writes(register, runtime):
         runtime.check_mutation_id(client_mutation_id)
         return commands.delete_ticket(key, client_mutation_id)
 
-    for fn in (create_task, create_subtask, create_epic, update_fields, add_comment, edit_comment,
+    for fn in (create_task, create_subtask, create_epic, update_fields, update_description, add_comment, edit_comment,
                delete_comment, transition_ticket, add_issue_link, delete_issue_link, add_document,
                delete_document, add_attachment, delete_attachment, delete_ticket):
         register(fn, read_only=False)

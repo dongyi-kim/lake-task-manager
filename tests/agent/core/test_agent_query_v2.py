@@ -50,8 +50,8 @@ class _Client:
                 "issues": rows, "returned": len(rows), "hasMore": more,
                 "nextStartAt": nxt if more else None}
 
-    def _conf_get_json(self, _url, params=None):
-        assert 'space in ("SPACE1", "SPACE2")' in params["cql"]
+    def confluence_search(self, cql, start=0, limit=50):
+        assert 'space in ("SPACE1", "SPACE2")' in cql
         return {
             "size": 2,
             "totalSize": 2,

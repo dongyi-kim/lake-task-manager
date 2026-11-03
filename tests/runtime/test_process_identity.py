@@ -228,5 +228,5 @@ def test_hot_reload_worker_runs_uvicorn_without_nested_reloader(monkeypatch):
     launcher._serve_hot_reload_worker("127.0.0.1", 4457)
 
     assert calls == [("app.main:app", {
-        "host": "127.0.0.1", "port": 4457, "log_level": "info",
+        "host": "127.0.0.1", "port": 4457, "log_level": "info", "proxy_headers": False,
     })]

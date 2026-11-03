@@ -15,10 +15,24 @@ LTM의 동일 JiraClient를 사용했다. 기존 creation permission 변경 위�
 | 연결 경계 | bearer 필수, 실제 peer·Host·Origin 검증, X-Forwarded-For 위조 거부, rotate 즉시 이전 토큰 거부, disable 즉시 503 |
 | 캐시 출처 | worker 내부 read scope, 가장 오래된 출처 시간, dead/stale/fresh/unknown 구분; 미관측 unknown |
 | 브라우저 설정 UI | 1280×900 light / 390×844 dark, 복사·마스킹·재발급·비활성화·클립보드 거부·늦은 응답 무시 |
+| Confluence 검색·본문 | UI 통합검색 → MCP 조회 upstream 0회 추가; 전체 검색페이지/본문 offset 누락 없이 연결 |
+| Confluence 실패·권한 | 인증 실패·불완전 body·space 확장 누락·partial/error 응답은 정상 빈 결과로 캐싱하지 않음; 사용자별 캐시 분리 |
+| 서비스별 인증 | Confluence 인증/연결 실패를 해당 서비스 오류로 반환; 정상 Jira 세션의 전역 실패 처리를 호출하지 않음 |
+| Confluence 경합 | 이전 generation의 늦은 403이 새로 저장된 정상 캐시를 삭제하지 않음 |
+| 본문·첨부 읽기 | description 생성→수정→UI 열람, 실제 첨부 bytes 업로드→조각 읽기→원본 일치 |
+| 대시보드 권한 | WBS/활동 manager, module workload 접근 거부 시 upstream 조회 없음 |
 
-관련 API·Jira ticket·Agent MCP consumer·dependency/static contract 회귀 **273 passed**.
-마지막 변경 후 MCP 전용 **18 passed**. 설정 UI 별도 **8 passed**이며 실제 `app.main`
+초기 관련 API·Jira ticket·Agent MCP consumer·dependency/static contract 회귀 **273 passed**.
+초기 MCP 전용 **18 passed**. 설정 UI 별도 **8 passed**이며 실제 `app.main`
 endpoint로 복사한 토큰·rotate·disable·재활성화까지 확인했다. 이 숫자는 일부 테스트가 겹친다.
+
+Confluence는 [공식 DC Search API](https://developer.atlassian.com/server/confluence/rest/v924/api-group-search/)의
+`expand=content.space` 계약에 따라 space/version을 명시적으로 확장한다. 같은 공통 검색 메서드를 UI/Agent/MCP가 사용한다.
+Bitbucket은 실제 LTM 검색이 mock placeholder여서 도구로 제공하지 않는다. 문서검색·읽기와 대시보드 등을 포함해 최종 catalog는 38개다.
+
+확장 기능 및 관련 검색·Agent query/reference·런처 회귀는 **192 passed, 1 skipped**.
+skip은 독립 MCP branch에 아직 없는 캐시 정책 모듈의 통합 전용 테스트이며, 통합 branch에서 실행한다.
+마지막 source 검증 보강 후 관련 query/workspace **111 passed**, 서비스별 오류 분리 후 workspace **11 passed**.
 
 캐시 정책 PR의 실제 `read_scope`와 결합한 검증은 통합 branch에서 수행한다. 독립 MCP branch에서는
 모듈이 없을 경우 metadata를 unknown으로 반환하며, source 집계 계약은 별도 fixture로 검증했다.
