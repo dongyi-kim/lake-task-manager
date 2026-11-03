@@ -1,0 +1,231 @@
+"""Durable drafts use the real browser IndexedDB and editor/form components against mock Jira."""
+import pytest
+
+from frontend.editor.test_editor_roundtrip_ui import editor_browser, _open_ticket, PNG_1X1
+
+
+def _mount(page, name, props):
+    page.evaluate("""async ({name, props}) => {
+      if (window.draftApp) window.draftApp.unmount();
+      document.querySelector('#draft-harness')?.remove();
+      const host = document.createElement('div'); host.id = 'draft-harness'; document.body.append(host);
+      const {createApp} = await import('/vendor/vue.esm-browser.prod.js');
+      const {default: component} = await import('/components/ui/' + name + '.js');
+      const app = createApp(component, {...props,
+        onClose: () => { app.unmount(); window.draftClosed = true; },
+        onCreated: key => { window.draftCreated = key; app.unmount(); }});
+      window.draftClosed = false; window.draftCreated = '';
+      window.draftApp = app; window.draftVm = app.mount(host);
+    }""", {"name": name, "props": props})
+    page.wait_for_function("() => window.draftVm.formDraftReady")
+
+
+@pytest.mark.parametrize("name,props", [
+    ("NewChildDialog", {"standalone": True}),
+    ("NewChildDialog", {"parent": "DL-9007", "isEpic": False}),
+    ("EpicCreateDialog", {}),
+])
+def test_create_form_cancel_and_reload_restore_fields_and_editor(editor_browser, name, props):
+    page, base, errors, _ = editor_browser
+    page.goto(base)
+    _mount(page, name, props)
+    page.locator(".nk-sum").fill("보존할 생성 초안")
+    page.locator(".nk-desc-t").filter(has_text="설명").click()
+    editor = page.locator(".nk-desc .ProseMirror")
+    editor.fill("설명도 보존합니다")
+    page.locator(".nk-f").get_by_role("button", name="취소", exact=True).click()
+    page.wait_for_function("() => window.draftClosed")
+    page.reload()
+    _mount(page, name, props)
+    assert page.locator(".nk-sum").input_value() == "보존할 생성 초안"
+    editor = page.locator(".nk-desc .ProseMirror")
+    page.wait_for_function("() => document.querySelector('.nk-desc .ProseMirror')?.textContent.includes('설명도 보존합니다')")
+    assert editor.inner_text() == "설명도 보존합니다"
+    assert not errors
+
+
+def test_comment_cancel_navigation_and_duplicate_image_names_restore(editor_browser):
+    page, base, errors, _ = editor_browser
+    _open_ticket(page, base, "DL-9007")
+    page.get_by_role("button", name="＋ 댓글 달기").click()
+    editor = page.locator(".tkt-compose-editor .ProseMirror")
+    page.locator(".tkt-compose-editor .ProseMirror[contenteditable=true]").fill("초안 이미지 두 개")
+    # Exercise the real file chooser handler with equal filenames but different file payloads.
+    picker = page.locator(".tkt-compose-editor input[type=file]")
+    picker.set_input_files([
+        {"name": "same.png", "mimeType": "image/png", "buffer": PNG_1X1},
+        {"name": "same.png", "mimeType": "image/png", "buffer": PNG_1X1 + b"second"},
+    ])
+    page.wait_for_function("() => document.querySelectorAll('.tkt-compose-editor .ProseMirror img').length === 2")
+    page.locator(".tkt-compose-editor").get_by_role("button", name="취소", exact=True).click()
+    page.locator(".tkt-compose-editor").wait_for(state="detached")
+    page.reload()
+    page.get_by_role("button", name="＋ 댓글 달기").click()
+    page.wait_for_function("() => document.querySelectorAll('.tkt-compose-editor .ProseMirror img').length === 2")
+    assert "초안 이미지 두 개" in page.locator(".tkt-compose-editor .ProseMirror").inner_text()
+    info = page.locator(".tkt-compose-editor .ProseMirror img").evaluate_all("nodes => nodes.map(n => ({src:n.src, good:n.complete && n.naturalWidth > 0}))")
+    assert len({item["src"] for item in info}) == 2
+    assert all(item["good"] for item in info)
+    assert not errors
+
+
+def test_description_cancel_restores_and_remote_change_requires_choice(editor_browser):
+    page, base, errors, _ = editor_browser
+    _open_ticket(page, base, "DL-9001")
+    page.locator("button.sec-edit").first.click()
+    page.locator(".tkt-desc-edit .ProseMirror[contenteditable=true]").fill("보존할 본문 수정")
+    page.locator(".tkt-desc-edit-f").get_by_role("button", name="취소", exact=True).click()
+    page.locator("button.sec-edit").first.click()
+    page.wait_for_function("() => document.querySelector('.tkt-desc-edit .ProseMirror')?.textContent === '보존할 본문 수정'")
+    page.locator(".tkt-desc-edit-f").get_by_role("button", name="취소", exact=True).click()
+    response = page.request.put(base + "/api/ticket/DL-9001/fields", data={"descriptionHtml": "<p>다른 사용자가 변경한 본문</p>"})
+    assert response.ok
+    page.reload()
+    page.locator("button.sec-edit").first.click()
+    page.get_by_text("서버 내용이 변경되었습니다. 저장된 초안을 복원할까요?").wait_for()
+    assert "다른 사용자가 변경한 본문" in page.locator(".tkt-desc-edit .ProseMirror").inner_text()
+    page.get_by_role("button", name="초안 복원", exact=True).click()
+    assert page.locator(".tkt-desc-edit .ProseMirror").inner_text().strip() == "보존할 본문 수정"
+    assert not errors
+
+
+def test_transition_cancel_restores_fields_and_comment(editor_browser):
+    page, base, errors, _ = editor_browser
+    page.goto(base)
+    props = {"ticket": "DL-9007", "transition": {"id": "31", "name": "완료", "toCategory": "done",
+        "fields": [{"id": "worklog"}, {"id": "resolution", "allowedValues": [{"id": "1", "name": "Done"}]}]}}
+    _mount(page, "TransitionDialog", props)
+    page.locator(".trx-time input").first.fill("2")
+    page.locator(".trx .ProseMirror").fill("전환 코멘트 보존")
+    page.locator(".trx-f2").get_by_role("button", name="취소", exact=True).click()
+    page.wait_for_function("() => window.draftClosed")
+    page.reload()
+    _mount(page, "TransitionDialog", props)
+    assert page.locator(".trx-time input").first.input_value() == "2"
+    page.wait_for_function("() => document.querySelector('.trx .ProseMirror')?.textContent === '전환 코멘트 보존'")
+    assert not errors
+
+
+def test_draft_storage_commit_order_expiry_and_scope(editor_browser):
+    page, base, errors, _ = editor_browser
+    page.goto(base)
+    result = page.evaluate("""async () => {
+      const d = await import('/lib/draft.js');
+      const identity = await import('/lib/draftIdentity.js');
+      const key = await identity.resolveDraftKey('test:ordering');
+      await Promise.all([d.saveDraft(key, {html:'old'}), d.clearDraft(key), d.saveDraft(key, {html:'new'})]);
+      const ordered = (await d.loadDraft(key)).html;
+      const realNow = Date.now;
+      Date.now = () => realNow() + d.DRAFT_TTL_MS + 1;
+      const expired = await d.loadDraft(key);
+      Date.now = realNow;
+      const original = IDBDatabase.prototype.transaction;
+      IDBDatabase.prototype.transaction = function(...args) {
+        const transaction = original.apply(this, args);
+        if (args[1] === 'readwrite') queueMicrotask(() => transaction.abort());
+        return transaction;
+      };
+      let failed = false;
+      try { await d.saveDraft(key, {html:'must not succeed'}); } catch (_) { failed = true; }
+      finally { IDBDatabase.prototype.transaction = original; }
+      const {api} = await import('/lib/api.js');
+      const oldMe = api.me, oldHealth = api.health;
+      const keys = [key];
+      for (const [env, jiraBase, id] of [['mock','http://jira-a','user-a'], ['mock','http://jira-a','user-b'], ['prod','http://jira-b','user-a']]) {
+        api.me = async () => ({id}); api.health = async () => ({env, jiraBase});
+        window.dispatchEvent(new Event('auth-ok'));
+        keys.push(await identity.resolveDraftKey('test:ordering'));
+      }
+      api.me = oldMe; api.health = oldHealth;
+      return {ordered, expired, failed, scoped: new Set(keys).size === 4 && keys.every(k => k.startsWith('v2:'))};
+    }""")
+    assert result == {"ordered": "new", "expired": None, "failed": True, "scoped": True}
+    assert not errors
+
+
+def test_storage_failure_keeps_visible_editor_and_cancel_can_retry(editor_browser):
+    page, base, errors, _ = editor_browser
+    _open_ticket(page, base, "DL-9007")
+    page.get_by_role("button", name="＋ 댓글 달기").click()
+    editor = page.locator(".tkt-compose-editor .ProseMirror[contenteditable=true]")
+    editor.wait_for(state="visible")
+    page.evaluate("""() => {
+      window.originalDraftTransaction = IDBDatabase.prototype.transaction;
+      IDBDatabase.prototype.transaction = function(...args) {
+        const tx = window.originalDraftTransaction.apply(this, args);
+        if (args[1] === 'readwrite') queueMicrotask(() => tx.abort());
+        return tx;
+      };
+    }""")
+    editor.fill("저장 실패해도 작성 내용 유지")
+    page.locator(".tkt-compose-editor [role=alert]").wait_for()
+    page.locator(".tkt-compose-editor").get_by_role("button", name="취소", exact=True).click()
+    assert editor.is_visible()
+    assert "저장 실패해도 작성 내용 유지" in editor.inner_text()
+    page.evaluate("IDBDatabase.prototype.transaction = window.originalDraftTransaction")
+    page.locator(".tkt-compose-editor").get_by_role("button", name="취소", exact=True).click()
+    page.locator(".tkt-compose-editor").wait_for(state="detached")
+    page.reload()
+    page.get_by_role("button", name="＋ 댓글 달기").click()
+    page.wait_for_function("() => document.querySelector('.tkt-compose-editor .ProseMirror')?.textContent.includes('저장 실패해도 작성 내용 유지')")
+    assert not errors
+
+
+def test_confirmed_create_key_survives_followup_failure_without_duplicate(editor_browser):
+    page, base, errors, upload = editor_browser
+    page.goto(base)
+    props = {"standalone": True, "types": ["Task"]}
+    _mount(page, "NewChildDialog", props)
+    created = []
+    page.on("request", lambda request: created.append(request.url)
+            if request.method == "POST" and request.url == base + "/api/task" else None)
+    page.locator(".nk-sum").fill("생성 후 설명 실패 복구")
+    page.evaluate("""async () => {
+      const {api} = await import('/lib/api.js');
+      window.draftVm.nc.priority = (await api.options('priorities'))[0].name;
+      api.updateFields = async () => { throw new Error('follow-up failed'); };
+    }""")
+    page.locator(".nk-desc-t").filter(has_text="설명").click()
+    page.locator(".nk-desc .ProseMirror[contenteditable=true]").fill("첨부와 본문 복구")
+    page.locator(".nk-desc input[type=file]").set_input_files(upload)
+    page.locator(".nk-f button.primary").click()
+    page.wait_for_function("() => window.draftVm.createdKey && !window.draftVm.busy && window.draftVm.err")
+    key = page.evaluate("window.draftVm.createdKey")
+    page.locator(".nk-f").get_by_role("button", name="취소", exact=True).click()
+    page.wait_for_function("() => window.draftClosed")
+    page.reload()
+    _mount(page, "NewChildDialog", props)
+    assert page.evaluate("window.draftVm.createdKey") == key
+    page.wait_for_function("() => window.draftVm.$refs.ded?.ready")
+    page.locator(".nk-f button.primary").click()
+    page.wait_for_function("() => !!window.draftCreated")
+    assert page.evaluate("window.draftCreated") == key
+    assert len(created) == 1
+    ticket = page.request.get(base + "/api/ticket/" + key).json()
+    assert "첨부와 본문 복구" in ticket["descriptionHtml"]
+    assert not errors
+
+
+def test_uncertain_transition_can_close_and_restores_exact_receipt(editor_browser):
+    page, base, errors, _ = editor_browser
+    page.goto(base)
+    props = {"ticket": "DL-9007", "transition": {"id": "31", "name": "완료", "toCategory": "done", "fields": []}}
+    _mount(page, "TransitionDialog", props)
+    page.evaluate("""async () => {
+      const {api} = await import('/lib/api.js');
+      api.doTransition = async (_key, payload) => {
+        window.sentTransition = JSON.parse(JSON.stringify(payload));
+        throw Object.assign(new Error('response lost'), {uncertain:true});
+      };
+    }""")
+    page.locator(".trx .ProseMirror[contenteditable=true]").fill("응답 유실 시도")
+    page.locator(".trx-ok").click()
+    page.wait_for_function("() => window.sentTransition && !window.draftVm.busy")
+    sent = page.evaluate("window.sentTransition")
+    page.locator(".trx-f2").get_by_role("button", name="취소", exact=True).click()
+    page.wait_for_function("() => window.draftClosed")
+    page.reload()
+    _mount(page, "TransitionDialog", props)
+    assert page.evaluate("window.draftVm.pendingTransitionPayload") == sent
+    assert page.evaluate("window.draftVm.transitionMutationId") == sent["clientMutationId"]
+    assert not errors

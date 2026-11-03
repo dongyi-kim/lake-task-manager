@@ -7,7 +7,8 @@
 // 부모는 submitFn(finalHTML) 만 넘긴다(작성/수정은 부모가 선택). 출력은 HTML(서버가 wiki 로 변환).
 import { loadTiptap } from "../../lib/tiptap.js";
 import { ensureHljsTheme } from "../../lib/hljs.js";
-import { saveDraft, loadDraft, clearDraft, purgeExpired } from "../../lib/draft.js";
+import { clearDraft } from "../../lib/draft.js";
+import { editorDraftMethods } from "../editor/editorDraft.js";
 import { api } from "../../lib/api.js";
 import LinkPicker from "./LinkPicker.js";
 import MarkdownTableDialog from "./MarkdownTableDialog.js";
@@ -74,7 +75,7 @@ export default {
   },
   emits: ["submitted", "cancel"],
   data() { return { ready: false, loadErr: "", busy: false, err: "", tick: 0, languages: [],
-                    maximized: false, restored: false,
+                    maximized: false, restored: false, draftError: "", draftConflict: false,
                     submitMutationId: "", pendingSubmitHtml: "",
                     // 인라인 모드에서 사용자가 끌어 정한 본문 높이(px). null = 기본값.
                     // 최대화 모드에는 안 쓴다 — 거기선 창이 높이를 정한다.
@@ -119,6 +120,7 @@ export default {
       }),
       content: liftCheckboxes(this.sections ? liftSections(this.initial) : this.initial) || "",
       autofocus: true,
+      editable: false,
       editorProps: {
         // 본문에 tkt-desc 를 부여 → 렌더된 댓글과 **같은 CSS**를 그대로 사용(인용·콜아웃 등 일치).
         // 에디터 전용 규칙(.cmt-ed-host .ProseMirror …)이 더 구체적이라 필요한 곳만 덮어쓴다.
@@ -184,10 +186,13 @@ export default {
       },
       onSelectionUpdate: () => { self.tick++; },
       onTransaction: () => { self.tick++; },
-      onUpdate: () => { self.tick++; self.saveDraftSoon(); },   // 작성 중 임시저장(디바운스)
+      onUpdate: () => { self.tick++; self._draftFinished = false; self.saveDraftSoon(); },   // 작성 중 임시저장(디바운스)
     });
     if (this._dead) { try { this._ed.destroy(); } catch (e) { /* noop */ } return; }
-    await this.restoreDraft();                                   // 이전에 쓰다 만 내용 복원
+    this._baseHtml = this._ed.getHTML();
+    await this.restoreDraft();
+    if (this._dead) return;
+    this._ed.setEditable(true);                                   // 이전에 쓰다 만 내용 복원
     // renderer reload/page hide는 Vue unmount보다 먼저 일어날 수 있다. 입력 debounce(700ms)가
     // 끝나기 전이어도 지금 보이는 HTML과 Blob을 즉시 IndexedDB에 넘겨 둔다.
     this._flushDraftOnExit = () => { if (!this._dead && this.draftKey()) this.flushDraft(); };
@@ -559,7 +564,9 @@ export default {
           const ext = (f.type.split("/")[1] || "png").replace("jpeg", "jpg");
           const name = "paste-" + Date.now() + "-" + (++this._seq) + "." + ext;
           this._pending.set(url, { blob: f, name });
-          this._ed.chain().focus().setImage({ src: url, alt: name }).run();
+          this._ed.chain().focus().insertContent([
+            { type: "image", attrs: { src: url, alt: name } }, { type: "paragraph" },
+          ]).run();
           this.applyFitWidth(url);              // 세로가 너무 길면 기본 상한으로 축소
         } else {
           // 그 외 파일 — "무엇이 붙어 있다" 는 사실이 내용이므로 칩으로 박는다.
@@ -604,119 +611,8 @@ export default {
       this._ed.chain().focus().updateAttributes("image", { width: w }).run();
     },
     // ── 작성 중 임시저장(IndexedDB, TTL 7일) — 가리기/이동해도 내용·이미지가 남는다 ──
-    // 수정 모드는 원본이 있으므로 저장하지 않는다(새 댓글 작성만).
-    //
-    // **본문 편집은 초안을 쓰지 않는다.** 본문은 서버에 이미 있는 글이고, 다른 사람이 고쳤을 수도
-    // 있다 — 열 때마다 최신 본문을 그대로 보여 줘야 한다. 지난 초안을 덮어 놓으면 사용자는
-    // 자기가 안 쓴 글을 자기 글로 알고 저장한다. 단, 상태 전이처럼 서버 원본이 없는 일회성
-    // 작성 화면은 호출자가 draftScope를 주어 명시적으로 복구를 켤 수 있다.
-    draftKey() {
-      if (this.draftScope) return "scoped:" + String(this.draftScope);
-      // **본문 편집은 초안을 남기지 않는다.** 기준이 되는 글이 서버에 있고 남이 고칠 수도 있어,
-      // '수정' 을 누를 때마다 최신 본문을 받아 거기서 시작한다. 그 옆에 지난 초안까지 두면
-      // 어느 것이 진짜인지가 매번 문제가 된다 — 하나만 둔다.
-      // (칸을 나누기 전엔 "내용이 비었으면 새 댓글" 로 갈라서, 설명이 빈 티켓의 본문
-      //  편집기가 **새 댓글 초안을 불러왔다.**)
-      if (this.kind !== "comment" || this.initial) return null;
-      return "new:" + this.ticketKey;
-    },
-    saveDraftSoon() {
-      const k = this.draftKey();
-      if (!k || !this._ed) return;
-      clearTimeout(this._dt);
-      this._dt = setTimeout(() => {
-        this._dt = null;
-        this.flushDraft();
-      }, 700);
-    },
-    /** 접는 순간에는 디바운스를 기다리지 않고 지금 보이는 초안을 저장한다. */
-    async flushDraft() {
-      const k = this.draftKey();
-      if (!k || !this._ed || this._dead) return;
-      clearTimeout(this._dt); this._dt = null;
-      let html = this._ed.getHTML();
-      const text = (this._ed.getText() || "").trim();
-      const imgs = [];
-      for (const [url, info] of this._pending) {
-        if (!html.includes(url)) continue;
-        const token = "draft:" + info.name;          // objectURL 은 새로고침 후 무효 → 토큰으로
-        html = html.split(url).join(token);
-        imgs.push({ token, name: info.name, blob: info.blob, uploaded: info.uploaded || null,
-                    uploadMutationId: info.uploadMutationId || "" });
-      }
-      // 빈 표/체크박스/링크처럼 getText()에는 잡히지 않아도 사용자가 만든 노드는 초안이다.
-      const hasNode = /<img\b|<a\b|<input\b|<table\b|<pre\b|<blockquote\b|<h[1-6]\b|<hr\b/i.test(html);
-      const write = (!text && !imgs.length && !hasNode)
-        ? clearDraft(k)                               // 빈 초안은 남기지 않는다
-        : saveDraft(k, { html, images: imgs, mutationId: this.submitMutationId || "",
-                         pendingHtml: this.pendingSubmitHtml || "" });
-      this._draftWrite = write;
-      try { await write; } catch (_) { /* 임시저장 실패가 작성 자체를 막지는 않는다 */ }
-      finally { if (this._draftWrite === write) this._draftWrite = null; }
-    },
-    async restoreDraft() {
-      const k = this.draftKey();
-      if (!k) return;
-      purgeExpired();                       // 다른 티켓의 만료 초안도 이참에 정리(세션 1회)
-      const rec = await loadDraft(k);
-      if (!rec || !rec.html || this._dead || !this._ed) return;
-      // A response-lost comment is reconciled by this stable id.  Keeping it with the existing
-      // IndexedDB draft also survives editor close, refresh and app restart.
-      this.submitMutationId = String(rec.mutationId || "");
-      this.pendingSubmitHtml = String(rec.pendingHtml || "");
-      let html = rec.html;
-      for (const im of (rec.images || [])) {
-        try {
-          const url = URL.createObjectURL(im.blob);     // 저장된 blob → 새 objectURL
-          this._pending.set(url, { blob: im.blob, name: im.name, uploaded: im.uploaded || null,
-                                   uploadMutationId: im.uploadMutationId || "" });
-          html = html.split(im.token).join(url);
-        } catch (e) { /* noop */ }
-      }
-      this._ed.commands.setContent(html, { emitUpdate: false });
-      this.restored = true;
-    },
-    async discardDraft() {
-      if (this.submitMutationId) {
-        this.err = "Jira 반영 여부를 확인하기 전에는 이 초안을 버릴 수 없습니다. 로그인 또는 네트워크 복구 후 다시 등록해 주세요.";
-        pushToast({ kind: "warn", icon: "⚠", title: "확인 중인 댓글",
-                    message: "중복 작성을 막기 위해 반영 여부 확인이 끝날 때까지 초안을 유지합니다." });
-        return false;
-      }
-      // A transition can be cancelled after one image upload succeeded but before the transition
-      // request started (for example, auth failed on the next image). Do not silently orphan that
-      // attachment. If cleanup itself cannot be confirmed, keep the scoped draft so it is retryable.
-      if (this.draftScope) {
-        for (const info of this._pending.values()) {
-          const id = info.uploaded && info.uploaded.id;
-          if (!id) continue;
-          try { await api.attachmentDelete(this.ticketKey, id); }
-          catch (e) {
-            this.err = "첨부 정리를 확인하지 못해 초안을 유지합니다. 로그인 또는 네트워크 복구 후 다시 취소해 주세요.";
-            pushToast({ kind: "warn", icon: "⚠", title: "전환 초안 유지",
-                        message: this.err });
-            return false;
-          }
-          info.uploaded = null;
-          info.uploadMutationId = "";       // 삭제된 attachment receipt를 다음 upload에 재사용 금지
-        }
-      }
-      const k = this.draftKey();
-      clearTimeout(this._dt); this._dt = null;
-      const prior = this._draftWrite;
-      if (prior) { try { await prior; } catch (_) { /* 마지막 삭제가 최종 상태를 정한다 */ } }
-      try { for (const u of this._pending.keys()) URL.revokeObjectURL(u); } catch (e) { /* noop */ }
-      this._pending.clear();
-      this.submitMutationId = "";
-      this.pendingSubmitHtml = "";
-      if (this._ed) this._ed.commands.clearContent(false);
-      this.restored = false;
-      const write = k ? clearDraft(k) : null;
-      this._draftWrite = write;
-      if (write) { try { await write; } catch (_) { /* IndexedDB 실패는 화면 취소를 막지 않는다 */ } }
-      if (this._draftWrite === write) this._draftWrite = null;
-      return true;
-    },
+    // Description/comment edits store their base HTML so changed server content requires a choice.
+    ...editorDraftMethods,
     // 바깥(생성 다이얼로그 등)에서 '설명을 쓸지' 판단용 — 글자·이미지·링크·체크박스 하나라도 있으면 false.
     isBlank() {
       if (!this._ed) return true;
@@ -741,7 +637,7 @@ export default {
     htmlValue() { return this._ed ? this._ed.getHTML() : ""; },
     hasPendingUploads() { return !!(this._pending && this._pending.size); },
     async submit() {
-      if (this.busy || !this._ed) return;
+      if (this.busy || !this.ready || this.draftConflict || !this._ed) return;
       // An uncertain retry must send byte-for-byte the same logical body used by the first POST.
       // The visible editor can be reconstructed from a draft, but async badge/title enrichment
       // must not silently change the receipt fingerprint between attempts.
@@ -829,14 +725,15 @@ export default {
         // comment request. If its response is lost, a refresh can safely reconcile the same write
         // without uploading the same image or posting the same comment again.
         this.pendingSubmitHtml = html;
-        if (this.draftKey()) await this.flushDraft();
+        if (this.draftScopeName() && await this.flushDraft() === false) throw new Error(this.draftError);
         await this.submitFn(html, this.submitMutationId || null);
+        this._draftFinished = true;
         const dk = this.draftKey();
         // 제출 직전 onUpdate가 예약한 saveDraft가 clearDraft **뒤에** 끝나면 완료된 글이 다시
         // 살아난다. 예약을 취소하고 이미 시작한 write까지 기다린 다음 마지막으로 삭제한다.
         clearTimeout(this._dt); this._dt = null;
         if (this._draftWrite) { try { await this._draftWrite; } catch (_) { /* IndexedDB 실패는 무해 */ } }
-        if (dk) await clearDraft(dk);                 // 제출 성공 → 임시저장 삭제(마지막 write)
+        if (dk) { try { await clearDraft(dk); } catch (error) { this.reportDraftError(error); } }                 // 제출 성공 → 임시저장 삭제(마지막 write)
         this._draftWrite = null;
         for (const u of this._pending.keys()) URL.revokeObjectURL(u);
         this._pending.clear();

@@ -20,8 +20,8 @@ import { pushToast } from "../../lib/toast.js";
 import { categoryColor } from "../../lib/colors.js";
 import { recentItems } from "../../lib/recent.js";
 import { cachedOptions, recentEpicOptions, rememberOptions } from "../../lib/optionRepository.js";
-import { clearPendingMutation, loadPendingMutation, newMutationId,
-         savePendingMutation } from "../../lib/mutationId.js";
+import { newMutationId } from "../../lib/mutationId.js";
+import { formDraft } from "../../lib/formDraft.js";
 
 // Task 상위 고르기에서 Epic 대신 고를 수 있는 특수 옵션(맨 위 고정). ('사용자 VoC' 는 상위가 아니라
 // 아래 토글로 받는다 — Epic 에 속한 VoC 도 있어 상위 선택과 배타적이면 안 된다.)
@@ -31,6 +31,7 @@ const DEFAULT_SUBTASK_TYPES = ["Sub-Task"];
 
 export default {
   name: "NewChildDialog",
+  mixins: [formDraft(function () { return "create:child:" + (this.parent ? "parent:" + this.parent : this.pickKind || "task"); }, ["nc", "d", "resolved", "fixed", "voc", "descOpen", "createdKey", "createMutationId", "pendingCreatePayload"])],
   components: { Avatar, TypeBadge, FieldEdit, PriIcon, CommentEditor },
   props: {
     // ── 티켓 내부('＋')에서 열 때: 상위 상수 고정 ──
@@ -78,7 +79,8 @@ export default {
       if (values.length) this.priOpts = rememberOptions("priorities", values);
     }).catch(() => {});
     // 상위 컨텍스트: FAB(pickKind, 상위 미지정) 이면 이 창에서 고르고, 그 외엔 props 로 즉시 해소.
-    if (this.pickKind && !this.parent && !this.standalone) {
+    if (this.formDraftRestored) { /* The saved parent and fields are authoritative. */ }
+    else if (this.pickKind && !this.parent && !this.standalone) {
       this.searchParents("");
       this.$nextTick(() => { const el = this.$refs.psearch; if (el) el.focus(); });
     } else {
@@ -86,47 +88,28 @@ export default {
       this._resolve({ parent: this.parent, isEpic: this.isEpic, standalone: this.standalone,
                       types: this.types, due: this.parentDue, comps: this.parentComponents, plabel: "" });
     }
-    this.restorePendingCreate();
     document.addEventListener("keydown", this._onEsc = (e) => {
       if (e.key === "Escape") { e.stopPropagation(); this.closeGuarded(); }
     }, true);
+    this.captureFormBaseline();
   },
   unmounted() { document.removeEventListener("keydown", this._onEsc, true); clearTimeout(this._t); },
   methods: {
     fromBackdrop,
     // 생성 중에는 닫지 않는다 — 받아 놓은 글이 사라진다(실패하면 바로 풀린다).
-    closeGuarded() {
-      if (this.busy || this.createMutationId) {
+    async closeGuarded() {
+      if (this.busy) {
         pushToast("Jira 반영 여부를 확인 중입니다 — 입력을 보존한 채 다시 시도해 주세요.", "warn");
         return;
       }
       if (isBusy()) { pushToast(busyLabel() + " — 끝나면 닫을 수 있습니다.", "warn"); return; }
-      this.$emit("close");
+      await this.preserveAndClose();
     },
     rankOf: priRankOf,
     epicColor(key) { return categoryColor(key); },
     setWho(id, u) {
       this.nc.assigneeId = id || "";
       this.nc.assigneeName = u ? (u.display || u.name || "") : "";
-    },
-    restorePendingCreate() {
-      const saved = loadPendingMutation("issue-create");
-      if (!saved) return;
-      const p = saved.payload || {}, ctx = saved.context || {};
-      this.createMutationId = saved.id;
-      this.pendingCreatePayload = p;
-      this.nc = {
-        type: p.type || "", summary: p.summary || "", priority: p.priority || "",
-        components: (p.components || []).slice(), duedate: p.duedate || "",
-        assigneeId: p.assignee || "", assigneeName: p.assignee || "",
-      };
-      this._resolve({
-        parent: ctx.parent || "", isEpic: !!ctx.isEpic, standalone: !!ctx.standalone,
-        types: (ctx.isEpic || ctx.standalone) ? DEFAULT_TASK_TYPES : DEFAULT_SUBTASK_TYPES,
-        due: p.duedate || "", comps: (p.components || []).slice(),
-        plabel: ctx.parent || (ctx.standalone ? "Epic 없음" : ""),
-      });
-      this.err = "이전 생성 요청의 Jira 반영 여부를 확인할 수 있습니다. 같은 내용으로 다시 시도해 주세요.";
     },
     // ── 상위 선택(FAB) ──
     searchParents(q) {
@@ -262,10 +245,13 @@ export default {
       if (r && r.ok === false) throw new Error(r.error || "설명 저장 실패");
     },
     async submit() {
-      if (!this.canCreate || this.busy) return;
+      if (!this.formDraftReady || !this.canCreate || this.busy) return;
+      if (this.$refs.ded && !this.$refs.ded.ready) { this.err = "에디터 준비 후 다시 시도해 주세요."; return; }
       this.busy = true; this.err = "";
       try {
-        const wantDesc = this.descOpen && this.$refs.ded && !this.$refs.ded.isBlank();
+        const wantDesc = this.$refs.ded && !this.$refs.ded.isBlank();
+        if (this.$refs.ded && await this.$refs.ded.flushDraft() === false) throw new Error(this.$refs.ded.draftError);
+        await this.flushFormDraft();
         const createDesc = wantDesc && !this.$refs.ded.hasPendingUploads()
           ? this.$refs.ded.htmlValue() : null;
         const comps = this.nc.components.filter((c) => c !== "사용자 VoC");
@@ -286,28 +272,26 @@ export default {
           if (!this.createMutationId) this.createMutationId = newMutationId("issue");
           payload.clientMutationId = this.createMutationId;
           this.pendingCreatePayload = { ...payload };
-          savePendingMutation("issue-create", this.createMutationId, payload, {
-            parent: this.d.parent, isEpic: this.d.isEpic, standalone: this.d.standalone,
-          });
+          await this.flushFormDraft();
           const r = this.d.standalone ? await api.createTask(payload)
                                       : await api.createChild(this.d.parent, payload);
           if (!r || r.ok === false) {
             this.createMutationId = "";
             this.pendingCreatePayload = null;
-            clearPendingMutation("issue-create");
             this.err = (r && r.error) || "만들지 못했습니다."; return;
           }
           key = r.key;
           this.createdKey = key;
+          await this.flushFormDraft(); // Persist confirmed issue key before any follow-up upload/write.
           this.createMutationId = "";       // later description retries use the confirmed key
           this.pendingCreatePayload = null;
-          clearPendingMutation("issue-create");
         }
         if (wantDesc && key) {
           await this.$nextTick();
           await this.$refs.ded.submit();
           if (this.$refs.ded.err) throw new Error(this.$refs.ded.err);
         }
+        await this.finishFormDraft(true);
         this.$emit("created", key);
       } catch (e) {
         // 인증이 끊긴 경우에도 Jira가 쓰기를 받았는지 확정할 수 없는 transport 경로가 섞일 수
@@ -315,10 +299,9 @@ export default {
         if (!(e && (e.uncertain || e.needLogin))) {
           this.createMutationId = "";
           this.pendingCreatePayload = null;
-          clearPendingMutation("issue-create");
         }
         this.err = (e && e.message) || "만들지 못했습니다.";
-      } finally { this.busy = false; }
+      } finally { this.busy = false; if (!this._formFinished) this.flushFormDraft().catch(() => {}); }
     },
   },
   template: `
@@ -430,19 +413,23 @@ export default {
         <span class="nk-desc-cav">{{ descOpen ? '▾' : '▸' }}</span>설명 {{ descOpen ? '접기' : '추가 (선택)' }}
       </button>
       <div v-show="descOpen" class="nk-desc-body">
-        <CommentEditor ref="ded" :ticket-key="createdKey || d.parent || '__new__'" kind="description"
+        <CommentEditor v-if="formDraftReady" ref="ded" :draft-scope="formDraftScope + ':description'" :ticket-key="createdKey || d.parent || '__new__'" kind="description"
                        :submit-fn="saveDesc" hide-footer />
         <div class="nk-desc-hint">이미지·파일은 여기에 붙여넣거나 끌어다 놓으면 티켓 생성 후 함께 첨부됩니다.</div>
       </div>
     </div>
 
+    <div v-if="formDraftError" class="tkt-cmt-err" role="alert">{{ formDraftError }}<button @click="restoreFormDraft">다시 시도</button></div>
+    <div v-if="createdKey" class="nk-hint">{{ createdKey }} 생성됨 · 남은 설명과 첨부를 저장합니다.</div>
+    <div v-if="formDraftRestored" class="nk-hint">작성 중이던 초안을 복원했습니다.</div>
     <div v-if="err" class="tkt-cmt-err">{{ err }}</div>
     <div class="nk-f">
       <span class="nk-hint">{{ canCreate ? '상태는 워크플로의 첫 상태로 시작합니다.'
                                           : '제목 · 우선순위 · 타입을 정해야 만들 수 있습니다.' }}</span>
+      <button class="cmt-ed-btn ghost" :disabled="busy || !!createMutationId" @click="discardFormDraft">초안 삭제</button>
       <button class="cmt-ed-btn ghost" @click="closeGuarded()">취소</button>
-      <button class="cmt-ed-btn primary" :disabled="!canCreate || busy" @click="submit">
-        {{ busy ? '만드는 중…' : '만들기' }}</button>
+      <button class="cmt-ed-btn primary" :disabled="!formDraftReady || !canCreate || busy" @click="submit">
+        {{ busy ? '저장 중…' : createdKey ? '남은 내용 저장' : '만들기' }}</button>
     </div>
     </template>
   </div>

@@ -434,7 +434,7 @@ def test_description_and_comment_all_formats_survive_two_ui_publish_cycles(edito
     # 본문이 에디터로 교체되면 `has=comment_body` 조건은 더 이상 성립하지 않는다.
     comment_editor = page.locator(".tkt-comments .tkt-cmt .ProseMirror")
     page.wait_for_function(
-        "() => !!document.querySelector('.tkt-cmt .ProseMirror') || "
+        "() => !!document.querySelector('.tkt-cmt .ProseMirror[contenteditable=true]') || "
         "!!document.querySelector('.tkt-cmt-err')?.textContent.trim()",
         timeout=45_000,
     )

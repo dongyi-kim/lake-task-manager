@@ -1,69 +1,80 @@
-// draft.js — 작성 중이던 댓글(본문 HTML + 붙여넣은 이미지 blob)의 브라우저 임시저장.
-// 제출 전에 취소하거나 페이지를 옮겨도 날아가지 않게 한다. 제출 성공 시 삭제.
-//
-// 왜 IndexedDB 인가: 이미지 blob 은 localStorage(문자열·약 5MB)에 담기 어렵다. IndexedDB 는
-// Blob 을 그대로, 넉넉한 용량으로 저장한다. 오리진(localhost)별로 격리된다.
-// 이미지 참조: 본문의 objectURL(blob:…)은 새로고침하면 무효 → 저장 시 draft:TOKEN 으로 바꾸고
-// 복원 시 새 objectURL 을 만들어 되돌린다.
-const DB_NAME = "ltm-drafts";
-const STORE = "drafts";
-const TTL_MS = 7 * 24 * 60 * 60 * 1000;         // 7일 지난 초안은 자동 폐기
+// Durable rich drafts. Resolve only after the transaction commits, not request success.
+const DB_NAME = "ltm-drafts", STORE = "drafts";
+export const DRAFT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+let connection;
+const queues = new Map();
 
 function idb() {
-  return new Promise((res, rej) => {
-    let r;
-    try { r = indexedDB.open(DB_NAME, 1); } catch (e) { rej(e); return; }
-    r.onupgradeneeded = () => {
-      const db = r.result;
-      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+  if (!connection) connection = new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(STORE)) request.result.createObjectStore(STORE);
     };
-    r.onsuccess = () => res(r.result);
-    r.onerror = () => rej(r.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => { db.close(); connection = null; };
+      db.onclose = () => { connection = null; };
+      resolve(db);
+    };
+    request.onerror = () => { connection = null; reject(request.error); };
+  });
+  return connection;
+}
+
+async function op(mode, fn) {
+  const db = await idb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(STORE, mode);
+    let result;
+    transaction.oncomplete = () => resolve(result);
+    transaction.onabort = transaction.onerror = () => reject(transaction.error || new Error("초안 저장 실패"));
+    const request = fn(transaction.objectStore(STORE));
+    request.onsuccess = () => { result = request.result; };
   });
 }
 
-function op(mode, fn) {
-  return idb().then((db) => new Promise((res, rej) => {
-    const t = db.transaction(STORE, mode);
-    const r = fn(t.objectStore(STORE));
-    r.onsuccess = () => res(r.result);
-    r.onerror = () => rej(r.error);
-  }));
+function ordered(key, fn) {
+  const prior = queues.get(key) || Promise.resolve();
+  const current = prior.catch(() => {}).then(fn);
+  queues.set(key, current);
+  current.finally(() => { if (queues.get(key) === current) queues.delete(key); }).catch(() => {});
+  return current;
 }
 
-/** rec: { html, images: [{token, name, type, blob}] } */
-export function saveDraft(key, rec) {
-  const payload = Object.assign({}, rec, { savedAt: Date.now() });
-  return op("readwrite", (s) => s.put(payload, key)).catch(() => null);
+export function saveDraft(key, record) {
+  const payload = structuredClone({ ...record, savedAt: Date.now() });
+  return ordered(key, () => op("readwrite", store => store.put(payload, key)));
 }
-
-/** 없거나 TTL 초과면 null(초과분은 삭제). */
-export function loadDraft(key) {
-  return op("readonly", (s) => s.get(key)).then((rec) => {
-    if (!rec) return null;
-    if (Date.now() - (rec.savedAt || 0) > TTL_MS) { clearDraft(key); return null; }
-    return rec;
-  }).catch(() => null);
-}
-
 export function clearDraft(key) {
-  return op("readwrite", (s) => s.delete(key)).catch(() => null);
+  return ordered(key, () => op("readwrite", store => store.delete(key)));
+}
+export function loadDraft(key) {
+  return ordered(key, async () => {
+    const record = await op("readonly", store => store.get(key));
+    if (!record) return null;
+    if (Date.now() - (record.savedAt || 0) <= DRAFT_TTL_MS) return record;
+    await op("readwrite", store => store.delete(key));
+    return null;
+  });
 }
 
-// TTL 은 '그 키를 읽을 때'만 걸린다 → 다시 안 여는 티켓의 초안은 blob 째 영원히 남는다.
-// 세션당 1회 전체를 훑어 만료분을 지운다(용량 누수 방지).
-let _swept = false;
-export function purgeExpired() {
-  if (_swept) return Promise.resolve();
-  _swept = true;
-  return idb().then((db) => new Promise((res) => {
-    const req = db.transaction(STORE, "readwrite").objectStore(STORE).openCursor();
-    req.onsuccess = () => {
-      const c = req.result;
-      if (!c) { res(); return; }
-      if (Date.now() - ((c.value || {}).savedAt || 0) > TTL_MS) c.delete();
-      c.continue();
-    };
-    req.onerror = () => res();
-  })).catch(() => null);
+let swept = false;
+export async function purgeExpired() {
+  if (swept) return;
+  swept = true;
+  try {
+    const db = await idb();
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE, "readwrite");
+      transaction.oncomplete = resolve;
+      transaction.onerror = transaction.onabort = () => reject(transaction.error);
+      const request = transaction.objectStore(STORE).openCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        if (Date.now() - (cursor.value.savedAt || 0) > DRAFT_TTL_MS) cursor.delete();
+        cursor.continue();
+      };
+    });
+  } catch (error) { swept = false; throw error; }
 }
