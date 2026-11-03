@@ -70,6 +70,7 @@ export default {
       Object.keys(this.detailErr).filter((key) => this.detailOpen[key])
         .forEach((key) => this.loadDetail({ key }, false));
     });
+    window.addEventListener('workspace-config-updated', this._workspaceUpdate = () => this.load());
   },
   unmounted() {
     window.removeEventListener('api-cache-updated', this._cacheUpdate);
@@ -78,6 +79,7 @@ export default {
     this._detailEpoch = (this._detailEpoch || 0) + 1;
     window.removeEventListener("force-refresh", this._fr);
     window.removeEventListener("auth-ok", this._authok);
+    window.removeEventListener('workspace-config-updated', this._workspaceUpdate);
   },
   methods: {
     applyCacheUpdate({ path, value }) {

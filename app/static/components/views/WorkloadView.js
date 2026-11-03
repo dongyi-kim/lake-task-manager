@@ -92,6 +92,11 @@ export default {
         this.retryDueRisk("auth");
       }
     });
+    window.addEventListener('workspace-config-updated', this._workspaceUpdate = () => {
+      this._invalidateDueRisk();
+      // Keep existing per-person statistics/expanded rows; reload the roster and new people.
+      this.load().then(() => { this.scheduleMeasure(); this.loadDueRisk(); });
+    });
   },
   async mounted() {
     await this.load();
@@ -108,6 +113,7 @@ export default {
     if (this._onResize) window.removeEventListener("resize", this._onResize);
     window.removeEventListener("force-refresh", this._fr);
     window.removeEventListener("auth-ok", this._authok);
+    window.removeEventListener('workspace-config-updated', this._workspaceUpdate);
   },
   activated() { this.scheduleMeasure(); },   // keep-alive 재활성 시 평균선 재측정
   computed: {

@@ -256,6 +256,19 @@ class Cache:
         with self._lock:
             return self._write_fence
 
+    def forget_if_fence(self, key, fence):
+        """Forget a denied resource only if no newer invalidation superseded its request."""
+        with self._lock:
+            if self._write_fence != fence:
+                return False
+            self._write_fence += 1
+            self._conn.execute("DELETE FROM cache WHERE key=?", (key,))
+            # Display-cache schema is optional on independently deployable older clients.
+            if self._conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cache_display'").fetchone():
+                self._conn.execute("DELETE FROM cache_display WHERE key=?", (key,))
+            self._conn.commit()
+            return True
+
     def set_if_fence(self, key, value, ttl, fence, *, fetched_at=None):
         """Store only when no invalidation happened after the producer started."""
         with self._lock:

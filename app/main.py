@@ -920,6 +920,7 @@ def api_status():
         else:
             st["mode"] = "degraded"       # 망은 닿지만 Jira/Playwright 응답이 멎음
     st["needLogin"] = need_login
+    st["workspaceRevision"] = _local_mcp.workspace_config.revision()
     return JSONResponse(st)
 
 
@@ -1091,6 +1092,33 @@ app.include_router(build_dashboard_router(
     require_module_access=_require_module_access,
     require_person_access=_require_person_access,
 ))
+
+
+def _classify_mcp_error(exc):
+    """Share authentication recovery/circuit state with the UI without an HTTP round trip."""
+    import json
+    if isinstance(exc, MutationOutcomeUnknown):
+        response = _on_mutation_outcome_unknown(None, exc)
+    elif isinstance(exc, UpstreamUnavailable):
+        response = _on_upstream_unavailable(None, exc)
+    else:
+        response = _on_session_expired(None, exc)
+    payload = json.loads(response.body)
+    return {"code": "authentication_required" if payload.get("needLogin") else "upstream_unavailable",
+            "status": response.status_code, **payload}
+
+
+from app.infra.settings import CACHE_DIR
+from app.local_mcp.runtime import LocalMcpRuntime
+
+_local_mcp = LocalMcpRuntime(
+    get_client=lambda: _client, settings=_settings,
+    secret_path=CACHE_DIR / "local_mcp_secret.json", require_edit=_require_edit,
+    require_person_access=_require_person_access, classify_error=_classify_mcp_error,
+    require_manager=_require_manager, require_module_access=_require_module_access,
+    scoped_people=_scoped_people,
+)
+_local_mcp.install(app)
 
 
 # 티켓 단독 페이지 — Jira 와 같은 /browse/{key} URL. SPA 진입점을 그대로 돌려주고

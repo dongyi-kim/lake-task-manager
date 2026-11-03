@@ -1,109 +1,9 @@
-"""MCP 서버 — Primitives 3종이 실제로 서빙되는가.
-
-MCP SDK 의 in-memory 클라이언트로 **프로토콜을 실제로 왕복**한다. build_server() 가 안 죽는 것과
-클라이언트가 도구를 부를 수 있는 것은 다른 문제다 — 스키마 변환이 깨져 있으면 목록은 나오는데
-호출이 실패한다.
-"""
-import os
-import sys
+"""External MCP consumer contracts; local LTM transport tests live in tests/mcp/."""
 
 import pytest
+import anyio
 from support.paths import REPO_ROOT
 
-os.environ.setdefault("JIRA_ENV", "mock")
-
-pytest.importorskip("mcp", reason="mcp SDK 미설치")
-pytest.importorskip("langchain_core", reason="requirements-agent.txt 미설치")
-
-import anyio                                             # noqa: E402
-from mcp import Client                                    # noqa: E402
-
-from app.agent.mcp_server import _EXPORTED, build_server  # noqa: E402
-
-
-def _run(coro_fn):
-    return anyio.run(coro_fn)
-
-
-@pytest.fixture(scope="module")
-def server():
-    return build_server()
-
-
-def test_all_read_tools_are_listed(server):
-    async def go():
-        async with Client(server) as c:
-            r = await c.list_tools()
-            return {t.name for t in r.tools}
-    names = _run(go)
-    assert set(_EXPORTED) <= names
-
-
-def test_exported_tools_advertise_read_only_closed_world_contract(server):
-    async def go():
-        async with Client(server) as c:
-            return (await c.list_tools()).tools
-
-    for exposed in _run(go):
-        assert exposed.annotations.read_only_hint is True
-        assert exposed.annotations.destructive_hint is False
-        assert exposed.annotations.open_world_hint is False
-
-
-def test_no_write_tool_leaks_through(server):
-    """MCP 클라이언트에는 승인 카드가 없다 — 쓰기가 새어 나가면 HITL 이 뚫린다."""
-    async def go():
-        async with Client(server) as c:
-            r = await c.list_tools()
-            return {t.name for t in r.tools}
-    names = _run(go)
-    from app.agent import tools as T
-    for w in T.WRITE_TOOLS:
-        assert w.name not in names, f"쓰기 도구 {w.name} 가 MCP 로 새어 나갔다"
-
-
-def test_a_tool_call_round_trips(server):
-    async def go():
-        async with Client(server) as c:
-            r = await c.call_tool("search_work_history", {"query": "데이터", "limit": 3})
-            return r.content[0].text
-    body = _run(go)
-    assert '"jira"' in body
-
-
-def test_progress_tool_round_trips_with_numbers(server):
-    async def go():
-        async with Client(server) as c:
-            r = await c.call_tool("get_progress", {"target": ""})
-            return r.content[0].text, r.structured_content
-    body, structured = _run(go)
-    assert "overallPct" in body
-    assert structured["overallPct"] >= 0
-
-
-def test_knowledge_resources_are_readable(server):
-    async def go():
-        async with Client(server) as c:
-            r = await c.read_resource("lake://knowledge/01-ticket-rules.md")
-            return r.contents[0].text
-    text = _run(go)
-    assert "Story Point" in text
-
-
-def test_scenario_prompts_are_listed_and_render(server):
-    async def go():
-        async with Client(server) as c:
-            lst = await c.list_prompts()
-            names = {p.name for p in lst.prompts}
-            got = await c.get_prompt("report_bug", {"symptom": "적재 배치 실패"})
-            return names, got.messages[0].content.text
-    names, text = _run(go)
-    assert {"plan_work", "report_bug", "my_day", "check_progress"} <= names
-    assert "적재 배치 실패" in text and "duplicate" in text.lower()
-    assert "Respond in Korean" in text
-
-
-# ── MCP 클라이언트(외부 서버 소비) — 자체 서버를 외부인 척 띄워 실왕복한다 ──────────
 def test_mcp_client_wraps_external_server_tools(monkeypatch, tmp_path):
     """config 에 적힌 stdio MCP 서버의 도구가 LangChain 도구로 감싸져 실제 호출까지 된다.
 
@@ -115,10 +15,15 @@ def test_mcp_client_wraps_external_server_tools(monkeypatch, tmp_path):
     import sys as _sys
     from app.agent import mcp_client
     root = str(REPO_ROOT)
+    stub = tmp_path / "external_mcp.py"
+    stub.write_text('from mcp.server import MCPServer\nserver = MCPServer("fixture")\n'
+                    '@server.tool()\ndef search_work_history(query: str = "") -> dict:\n'
+                    '    return {"jira": [{"key": "DL-1", "summary": query}]}\n'
+                    'server.run()\n', encoding="utf-8")
     cfg = tmp_path / "agent-mcp.json"
     cfg.write_text(_json.dumps({"servers": [{
         "name": "self", "command": _sys.executable,
-        "args": ["-m", "app.agent.mcp_server"],
+        "args": [str(stub)],
         "read_tools": ["search_work_history"],
         "env": {**_os.environ, "PYTHONPATH": root, "JIRA_ENV": "mock",
                 "LAKE_AGENT_PROVIDER": "fake"},

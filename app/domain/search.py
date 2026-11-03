@@ -11,6 +11,7 @@
 import hashlib
 import re
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 
 from app.auth.base import SessionExpired
 from app.domain.names import real_name
@@ -109,7 +110,8 @@ def search_all(client, settings, q, scope="scoped", limit=8, only=None):
     if not funcs:
         return out
     with ThreadPoolExecutor(max_workers=3) as ex:
-        futs = {k: ex.submit(f) for k, f in funcs.items()}
+        # Carry read provenance/freshness scope into parallel source lookups.
+        futs = {k: ex.submit(copy_context().run, f) for k, f in funcs.items()}
         for k, fut in futs.items():
             try:
                 out[k] = fut.result()
@@ -180,10 +182,9 @@ def _search_confluence(client, s, q, scope, limit):
     # 같은 감각으로 읽힌다. CQL 은 lastModified(=최종 수정) 로 정렬한다.
     cql += " ORDER BY lastModified DESC"
     # prod: 별도 호스트 절대 URL / mock·local: jira820 이 같은 호스트로 서빙 → 상대 경로
-    url = (base + "/rest/api/search") if (s.jira_env == "prod" and base) else "/rest/api/search"
     try:
         # 401 이면 Confluence 세션만 무음 갱신 후 한 번 재시도(자가치유). 그래도 안 되면 needLogin.
-        data = client._conf_get_json(url, params={"cql": cql, "limit": limit})
+        data = client.confluence_search(cql, limit=limit)
     except SessionExpired:
         # SSO 쿠키는 **도메인별** — Jira 세션이 살아 있어도 Confluence 는 따로 인증이 필요하다.
         # 원문 메시지("세션 만료")는 Jira 가 끊긴 것처럼 읽혀 오해를 부르므로 바꿔 준다.

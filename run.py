@@ -66,7 +66,7 @@ def _serve_bg(s, wait=True):
      connection-refused → 흰 화면 고착. 실 연결 확인으로 이 레이스를 제거한다.)
     wait=False 면 즉시 반환(창을 먼저 띄우고 창의 goto 재시도가 준비를 커버 — 트레이/윈도 공용)."""
     import urllib.request
-    config = uvicorn.Config("app.main:app", host=s.app_host, port=s.app_port, log_level="warning")
+    config = uvicorn.Config("app.main:app", host=s.app_host, port=s.app_port, log_level="warning", proxy_headers=False)
     server = uvicorn.Server(config)
     threading.Thread(target=server.run, daemon=True).start()
     if not wait:
@@ -1321,7 +1321,7 @@ def _run_plain(s):
     url = f"http://localhost:{s.app_port}/"
     print(f"Lake Task Manager - {url}  (env={s.jira_env})  [종료: Ctrl+C]")
     threading.Thread(target=lambda: (time.sleep(1.5), webbrowser.open(url)), daemon=True).start()
-    uvicorn.run("app.main:app", host=s.app_host, port=s.app_port, log_level="info")
+    uvicorn.run("app.main:app", host=s.app_host, port=s.app_port, log_level="info", proxy_headers=False)
 
 
 def _run_hot_reload(s):
@@ -1348,7 +1348,7 @@ def _run_hot_reload(s):
 
 def _serve_hot_reload_worker(host, port):
     """watchfiles가 변경 때마다 새로 띄우는 Uvicorn worker."""
-    uvicorn.run("app.main:app", host=host, port=port, log_level="info")
+    uvicorn.run("app.main:app", host=host, port=port, log_level="info", proxy_headers=False)
 
 
 def _ensure_deps() -> None:
@@ -1407,6 +1407,12 @@ def _ensure_deps() -> None:
 
 
 def main():
+    if "--mcp-stdio" in sys.argv[1:]:
+        # Packaged clients must proxy only, before dependency installation, login,
+        # singleton signalling or opening the application window.
+        from app.local_mcp.stdio import main as mcp_stdio
+        mcp_stdio()
+        return
     # Windows 콘솔(cp949)에서도 유니코드 출력이 크래시하지 않도록 utf-8 로 강제.
     for _stream in (sys.stdout, sys.stderr):
         try:

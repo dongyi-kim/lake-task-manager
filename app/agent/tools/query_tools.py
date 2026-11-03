@@ -285,9 +285,7 @@ def search_documents(query: str = "", where: str = "", content_type: str = "page
         base = (s.confluence_base or "").rstrip("/")
         if s.jira_env == "prod" and not base:
             raise ValueError("confluence_base 미설정")
-        url = (base + "/rest/api/search") if (s.jira_env == "prod" and base) \
-            else "/rest/api/search"
-        data = client()._conf_get_json(url, params={"cql": canonical, "start": start, "limit": size})
+        data = client().confluence_search(canonical, start=start, limit=size)
         allowed = {x.upper() for x in spaces}
         docs = []
         for raw in data.get("results") or []:

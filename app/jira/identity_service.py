@@ -125,35 +125,43 @@ class JiraIdentityMixin:
             "authMaintenance": dict(getattr(self, "_auth_maintenance", {})),
         }
 
+    def _fetch_current_user(self):
+        raw = self.provider.get_json("/rest/api/2/myself")
+        user_id = raw.get("name") or raw.get("key") or raw.get("accountId") or ""
+        # Anonymous 200 responses cannot prove login or become a six-hour identity cache entry.
+        if not user_id or "anonymous" in str(user_id).lower():
+            raise SessionExpired("익명 응답 — Jira 세션이 만료되었습니다.")
+        aliases = sorted({str(raw.get(field) or "").strip().casefold()
+                          for field in ("name", "key", "accountId") if str(raw.get(field) or "").strip()})
+        return {"id": user_id, "name": real_name(raw.get("displayName") or raw.get("name")) or "",
+                "display": raw.get("displayName") or raw.get("name") or "",
+                "timezone": raw.get("timeZone") or "Asia/Seoul", "actorAliases": aliases}
+
+    def current_user_for_authorization(self):
+        """Authoritative identity only: display-cache fallback must never grant permissions."""
+        if getattr(self, "_session_dead", False) or self.needs_login():
+            raise SessionExpired("Jira 인증을 확인한 후 설정에 접근해 주세요.")
+        try:
+            result, hit = self.cache.get_or_set_strict(
+                f"myself:{self.env}", self.USER_TTL, self._fetch_current_user)
+        except SessionExpired as exc:
+            self.mark_session_dead(str(exc))
+            raise
+        except UpstreamUnavailable as exc:
+            self.mark_upstream_down(str(exc))
+            raise
+        if not result or not result.get("id"):
+            raise SessionExpired("Jira 사용자를 확인할 수 없습니다.")
+        if not hit:
+            self.mark_session_alive()
+        return result
+
     def current_user(self):
         """Return the authenticated Jira user, caching successful responses only."""
 
-        def produce():
-            raw = self.provider.get_json("/rest/api/2/myself")
-            user_id = raw.get("name") or raw.get("key") or raw.get("accountId") or ""
-            # Some Jira/SSO front doors answer 200 with an anonymous identity.  Treating that as
-            # a successful producer would cache a false login for six hours and clear auth-dead.
-            if not user_id or "anonymous" in str(user_id).lower():
-                raise SessionExpired("익명 응답 — Jira 세션이 만료되었습니다.")
-            aliases = sorted({
-                str(raw.get(field) or "").strip().casefold()
-                for field in ("name", "key", "accountId")
-                if str(raw.get(field) or "").strip()
-            })
-            return {
-                "id": user_id,
-                "name": real_name(raw.get("displayName") or raw.get("name")) or "",
-                "display": raw.get("displayName") or raw.get("name") or "",
-                "timezone": raw.get("timeZone") or "Asia/Seoul",
-                # Recovery compares Jira's author/uploader/creator object. Different Jira DC
-                # endpoints expose different identifiers (name, key, or accountId), so retain all
-                # authenticated aliases rather than guessing that one field is universal.
-                "actorAliases": aliases,
-            }
-
         try:
             result, hit = self.cache.get_or_set(
-                f"myself:{self.env}", self.USER_TTL, produce,
+                f"myself:{self.env}", self.USER_TTL, self._fetch_current_user,
             )
             # Only a freshly completed /myself call proves that Jira authentication recovered;
             # a cached identity does not.

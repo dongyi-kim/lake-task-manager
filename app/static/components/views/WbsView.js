@@ -30,6 +30,10 @@ export default {
         this.D = d; this.err = ""; this.$nextTick(() => this.renderGantt()); retryFailedTrees();
       }).catch(() => {});
     });
+    window.addEventListener('workspace-config-updated', this._workspaceUpdate = () => {
+      api.wbs().then(d => { this.D = d; this.err = ''; this.scheduleRender(); })
+        .catch(e => { this.err = e.message; });
+    });
   },
   async mounted() {
     try { this.D = await api.wbs(); this.$nextTick(() => this.renderGantt()); }
@@ -45,6 +49,7 @@ export default {
     if (this._raf) cancelAnimationFrame(this._raf);
     window.removeEventListener("force-refresh", this._fr);
     window.removeEventListener("auth-ok", this._authok);
+    window.removeEventListener('workspace-config-updated', this._workspaceUpdate);
   },
   activated() { this.$nextTick(() => this.renderGantt()); },   // keep-alive 재활성 시 재렌더
   computed: {
@@ -134,7 +139,7 @@ export default {
     },
 
     renderGantt() {
-      const D = this.D; if (!D) return;
+      const D = this.D; if (!D || !D.wbs.length) return;
       const self = this;
       const R = this.$refs;
       const glabels = R.glabels, gscroll = R.gscroll, taxis = R.taxis, tgrid = R.tgrid, trows = R.trows, gtime = R.gtime;
@@ -418,6 +423,9 @@ export default {
   template: `
   <div class="wbs-view">
     <div v-if="err" class="err">데이터를 불러오지 못했습니다: {{ err }}</div>
+    <div v-else-if="D && !D.wbs.length" class="note wbs-empty" role="status">
+      등록된 WBS Task가 없습니다. 설정 → 인력 · WBS 관리에서 첫 Task를 추가하세요.
+    </div>
     <template v-else-if="D">
       <p class="note">{{ scopeText }}</p>
       <div class="pmo">

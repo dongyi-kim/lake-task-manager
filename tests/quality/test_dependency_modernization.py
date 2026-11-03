@@ -31,6 +31,7 @@ RUNTIME_PINS = {
     "tiktoken": "0.14.0",
     "langfuse": "4.14.4",
     "httpx": "0.28.1",
+    "httpx2": "2.11.0",
     "certifi": "2026.7.22",
     "tzdata": "2026.3",
     "jsonschema": "4.26.0",

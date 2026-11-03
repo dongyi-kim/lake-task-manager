@@ -51,6 +51,7 @@ EVALUATION_HARNESS_INPUTS = tuple(
         "agent_context_change_eval.py",
         "agent_user_review.py",
         "agent_perf.py",
+        "agent_codex_mcp_eval.py",
     )
 )
 RAW_RESULT_ROOT = ROOT / ".cache" / "agent-evaluation"
@@ -143,8 +144,8 @@ def candidate_tree_sha256() -> str:
             files.extend(
                 path for path in item.rglob("*")
                 if path.is_file()
-                and "__pycache__" not in path.parts
-                and ".cache" not in path.parts
+                and "__pycache__" not in path.relative_to(ROOT).parts
+                and ".cache" not in path.relative_to(ROOT).parts
                 and path.suffix != ".pyc"
             )
         elif item.is_file():
@@ -163,7 +164,8 @@ def candidate_tree_sha256() -> str:
 def evaluation_harness_tree_sha256() -> str:
     """Fingerprint the runner and isolation code omitted from the candidate tree."""
     digest = hashlib.sha256()
-    for path in sorted(EVALUATION_HARNESS_INPUTS, key=lambda item: item.as_posix()):
+    inputs = (*EVALUATION_HARNESS_INPUTS, *(ROOT / "tools" / "codex_mcp_eval").glob("*.py"))
+    for path in sorted(inputs, key=lambda item: item.as_posix()):
         relative = path.relative_to(ROOT).as_posix().encode("utf-8")
         digest.update(len(relative).to_bytes(4, "big"))
         digest.update(relative)
@@ -333,6 +335,8 @@ def build_run_metadata(
     suite_review_elements: Sequence[Mapping[str, Any]] = (),
     case_review_specs: Mapping[str, Mapping[str, Any]] | None = None,
     checker_dependencies: Sequence[Any] = (),
+    external_runtime: Mapping[str, Any] | None = None,
+    benchmark_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create the immutable identity and comparability record for one harness invocation."""
     protocol = load_protocol()
@@ -387,6 +391,8 @@ def build_run_metadata(
         "runtimeProfile": runtime_profile,
         "evaluationHarnessTreeSha256": harness_hash,
     }
+    if benchmark_context is not None:
+        benchmark["externalContext"] = dict(benchmark_context)
     structured_backend = str(
         os.getenv("LTM_AGENT_STRUCTURED_OUTPUT_BACKEND") or "instructor"
     ).strip().lower()
@@ -397,6 +403,12 @@ def build_run_metadata(
         _installed_version("instructor")
         if structured_backend == "instructor" else "legacy-internal"
     )
+    if external_runtime is not None:
+        provider = str(external_runtime["provider"])
+        provider_endpoint_identity = _json_hash(external_runtime)
+        structured_backend = str(external_runtime["runtime"])
+        structured_backend_version = str(external_runtime["version"])
+        structured_fallback_policy = "forbid"
     package_set_hash = runtime_package_set_sha256()
     candidate = {
         "model": model,
@@ -416,6 +428,8 @@ def build_run_metadata(
         "candidateTreeSha256": git["candidateTreeSha256"],
         "runtimePackageSetSha256": package_set_hash,
     }
+    if external_runtime is not None:
+        candidate["externalRuntime"] = dict(external_runtime)
     benchmark_key = _json_hash(benchmark)
     candidate_key = _json_hash(candidate)
     comparability_key = _json_hash({
@@ -504,6 +518,8 @@ def build_run_metadata(
             "processIsolation": process_isolation,
             "runtimeProfile": runtime_profile,
             "pricingSnapshot": pricing_snapshot,
+            **({"externalRuntime": dict(external_runtime)} if external_runtime is not None else {}),
+            **({"externalContext": dict(benchmark_context)} if benchmark_context is not None else {}),
         },
         "benchmarkKey": benchmark_key,
         "candidateKey": candidate_key,
@@ -585,19 +601,19 @@ def write_raw_result(path: str | os.PathLike[str], payload: Mapping[str, Any]) -
 
 
 def quantitative_metrics(
-    *, attempts: int, duration_seconds: float, calls: int, prompt_tokens: int,
-    completion_tokens: int, total_tokens: int, cached_tokens: int,
+    *, attempts: int, duration_seconds: float, calls: int | None, prompt_tokens: int | None,
+    completion_tokens: int | None, total_tokens: int | None, cached_tokens: int | None,
     cost_usd: float | None,
 ) -> dict[str, Any]:
     """Canonical quantitative block shared by every primary battery raw result."""
     return {
         "attempts": int(attempts),
         "durationSeconds": round(float(duration_seconds), 1),
-        "calls": int(calls),
-        "promptTokens": int(prompt_tokens),
-        "completionTokens": int(completion_tokens),
-        "totalTokens": int(total_tokens),
-        "cachedTokens": int(cached_tokens),
+        "calls": None if calls is None else int(calls),
+        "promptTokens": None if prompt_tokens is None else int(prompt_tokens),
+        "completionTokens": None if completion_tokens is None else int(completion_tokens),
+        "totalTokens": None if total_tokens is None else int(total_tokens),
+        "cachedTokens": None if cached_tokens is None else int(cached_tokens),
         "costUsd": None if cost_usd is None else round(float(cost_usd), 6),
     }
 

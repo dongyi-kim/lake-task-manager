@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from app.auth.base import (PermissionDenied, SessionExpired, UpstreamUnavailable,
                            background_upstream)
+from app.services.ticket_commands import CommandError, TicketCommands
 
 
 class CommentBody(BaseModel):
@@ -25,6 +26,7 @@ class CheckboxBody(BaseModel):
 
 def build_ticket_router(*, get_client) -> APIRouter:
     router = APIRouter()
+    commands = TicketCommands(get_client, None)
 
     @router.get("/api/ticket/{key}")
     def api_ticket(key: str, fresh: int = 0):
@@ -87,24 +89,21 @@ def build_ticket_router(*, get_client) -> APIRouter:
 
     @router.post("/api/ticket/{key}/comment")
     def api_comment_create(key: str, body: CommentBody):
-        value = get_client().comment_field_value(body.html or "")
-        if not (value or "").strip():
-            return JSONResponse({"error": "빈 코멘트"}, status_code=400)
-        return JSONResponse(
-            get_client().add_comment(key, value, mutation_id=body.clientMutationId),
-            status_code=201,
-        )
+        try:
+            return JSONResponse(commands.comment(key, body.html, mutation_id=body.clientMutationId), status_code=201)
+        except CommandError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=exc.status)
 
     @router.put("/api/ticket/{key}/comment/{cid}")
     def api_comment_update(key: str, cid: str, body: CommentBody):
-        value = get_client().comment_field_value(body.html or "")
-        if not (value or "").strip():
-            return JSONResponse({"error": "빈 코멘트"}, status_code=400)
-        return JSONResponse(get_client().update_comment(key, cid, value))
+        try:
+            return JSONResponse(commands.comment(key, body.html, comment_id=cid, mutation_id=body.clientMutationId))
+        except CommandError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=exc.status)
 
     @router.delete("/api/ticket/{key}/comment/{cid}")
-    def api_comment_delete(key: str, cid: str):
-        return JSONResponse(get_client().delete_comment(key, cid))
+    def api_comment_delete(key: str, cid: str, clientMutationId: str = ""):
+        return JSONResponse(commands.comment(key, comment_id=cid, delete=True, mutation_id=clientMutationId or None))
 
     @router.post("/api/ticket/{key}/refresh")
     def api_ticket_refresh(key: str):

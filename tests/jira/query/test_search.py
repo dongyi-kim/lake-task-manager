@@ -248,9 +248,9 @@ def test_confluence_401_gives_actionable_message():
     class _C:
         provider = _P()
 
-        def _conf_get_json(self, url, params=None):
+        def confluence_search(self, cql, start=0, limit=50):
             # 무음 갱신 불가(dev provider) → 실제 클라이언트와 같이 SessionExpired 를 그대로 올린다.
-            return self.provider.get_json(url, params=params)
+            return self.provider.get_json("/rest/api/search", params={"cql": cql, "start": start, "limit": limit})
 
     s = get_settings()
     out = _search_confluence(_C(), s, "테스트", "scoped", 5)

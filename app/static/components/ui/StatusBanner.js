@@ -36,15 +36,27 @@ export default {
     },
   },
   mounted() {
+    this._workspaceChanged = e => { this._workspaceRevision = e.detail?.revision || this._workspaceRevision; };
+    window.addEventListener('workspace-config-updated', this._workspaceChanged);
     this.tick();
     this._t = setInterval(this.tick, POLL_MS);
     // 다운로드 알림은 우하단 ToastStack 이 맡는다(여기선 상단 오프라인/인증중 배너만).
   },
-  unmounted() { clearInterval(this._t); },
+  unmounted() {
+    clearInterval(this._t);
+    window.removeEventListener('workspace-config-updated', this._workspaceChanged);
+  },
   methods: {
     tick() {
       api.raw("/api/status").then((s) => {
         if (!s) return;
+        if (s.workspaceRevision) {
+          const changed = this._workspaceRevision && this._workspaceRevision !== s.workspaceRevision;
+          this._workspaceRevision = s.workspaceRevision;
+          if (changed) {
+            api.workspaceConfigUpdated(s.workspaceRevision);
+          }
+        }
         // 정상으로 돌아오면 닫아 둔 것도 다시 살린다 — 다음에 또 끊기면 알려야 하므로.
         if (s.mode === "ok") this.hidden = false;
         this.mode = s.mode || "ok";

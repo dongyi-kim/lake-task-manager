@@ -66,6 +66,14 @@ class _EpicMetadataUnavailable(LookupError):
     """An Epic response had no real label and therefore must not be cached as its key."""
 
 
+class _UncacheablePartial(RuntimeError):
+    """Best-effort tree/aggregate value that must not replace a complete cached value."""
+
+    def __init__(self, value):
+        super().__init__("Some Jira descendants could not be read")
+        self.value = value
+
+
 def _repair_leaked_color_macros(html):
     """일부 renderedFields 응답에 글자로 남은 안전한 hex color 매크로만 HTML로 복구한다."""
     return _LEAKED_COLOR_RE.sub(
@@ -944,6 +952,13 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     def miss_count(self):
         return getattr(self._miss, "n", 0)
 
+    def _complete_result(self, producer):
+        before = self.miss_count()
+        value = producer()
+        if self.miss_count() > before:
+            raise _UncacheablePartial(value)
+        return value
+
     def _swr(self, key, producer):
         """stale-while-revalidate — 만료돼도 남은 값이 있으면 **즉시** 주고 뒤에서 갱신.
 
@@ -952,8 +967,11 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         단일 큐라 이걸 안 하면 갱신이 사용자 조회를 밀어낸다.
         같은 키의 갱신이 이미 돌고 있으면 새로 띄우지 않는다.
         """
-        value, _how = self.cache.get_or_set_swr(
-            key, self.s.cache_ttl_seconds, producer, self._refresh_bg)
+        try:
+            value, _how = self.cache.get_or_set_swr(
+                key, self.s.cache_ttl_seconds, lambda: self._complete_result(producer), self._refresh_bg)
+        except _UncacheablePartial as exc:
+            return exc.value
         return value
 
     def _refresh_bg(self, key, ttl, producer):
@@ -1867,9 +1885,12 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     def epic_issues(self, epic_key):
         real = self._resolve(epic_key)
         cache_key = f"epic_issues:{self.env}:{real}"
-        data, _hit = self.cache.get_or_set(
-            cache_key, self.s.cache_ttl_seconds, lambda: self._fetch_epic_children(real)
-        )
+        try:
+            data, _hit = self.cache.get_or_set(
+                cache_key, self.s.cache_ttl_seconds,
+                lambda: self._complete_result(lambda: self._fetch_epic_children(real)))
+        except _UncacheablePartial as exc:
+            return exc.value
         return data
 
     def _fetch_epic_children(self, epic_key):
@@ -1883,9 +1904,12 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         """Epic 자식(Story/Task/Bug) + 각 자식의 Sub-Task — WBS Gantt 다계층 트리(표시용).
         같은 티켓 단위 캐시(epic_children/issue)를 재사용하므로 추가 상위호출 거의 없음."""
         real = self._resolve(epic_key)
-        return self.cache.get_or_set(
-            f"epic_tree:{self.env}:{real}", self.s.cache_ttl_seconds,
-            lambda: self._build_epic_tree(real))[0]
+        try:
+            return self.cache.get_or_set(
+                f"epic_tree:{self.env}:{real}", self.s.cache_ttl_seconds,
+                lambda: self._complete_result(lambda: self._build_epic_tree(real)))[0]
+        except _UncacheablePartial as exc:
+            return exc.value
 
     def _build_epic_tree(self, epic_key):
         sp = self.s.sp_field_id
@@ -1933,8 +1957,16 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         items = list(items)
         prov = self.provider
         if prov is not None and getattr(prov, "supports_parallel", False) and len(items) > 1:
+            def observed(item):
+                self.miss_begin()
+                try:
+                    return fn(item), self.miss_count()
+                finally:
+                    self.miss_begin()
             with ThreadPoolExecutor(max_workers=min(8, len(items))) as ex:
-                return list(ex.map(fn, items))
+                results = list(ex.map(observed, items))
+            self.miss_add(sum(missing for _value, missing in results))
+            return [value for value, _missing in results]
         return [fn(x) for x in items]
 
     def epic_progress_map(self, plan):
@@ -3148,13 +3180,14 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             lk.may_edit = may_edit          # 권한 판정은 라우트(세션)가 안다 — 주입받는다
         return lk
 
-    def bulk_create(self, mode, items, desc_to_field=None):
+    def bulk_create(self, mode, items, desc_to_field=None, mutation_id=None):
         """검증을 통과한 항목들을 **차례로** 만든다. 하나 실패해도 나머지는 진행(Jira 는 롤백이 없다).
         반환: {ok, created:[{index,key,summary}], failed:[{index,summary,error}]} — set_epic_link 와 같은 형태.
 
         성능: 항목마다 도는 cascade_suggestion(부모 상태 연쇄 제안)은 **생략**한다 — Bulk 는 대개
         새 부모 밑에 새로 만드는 것이고, 건마다 상류를 두 번 더 치면 100건이 200왕복이 된다."""
         from app.domain.bulk import to_create_kwargs
+        from app.auth.base import MutationOutcomeUnknown
         created, failed = [], []
         with self._mutation_batch_scope():
             for i, it in enumerate(items or []):
@@ -3164,10 +3197,16 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     desc = it.get("description")
                     if desc and desc_to_field:
                         kw["description"] = desc_to_field(desc)
+                    if mutation_id:
+                        kw["mutation_id"] = "bulk:" + hashlib.sha256(f"{mutation_id}:{mode}:{i}".encode()).hexdigest()
                     r = self.create_child(**kw)
                     created.append({"index": i, "key": (r or {}).get("key"), "summary": summary})
                 except Exception as e:
-                    failed.append({"index": i, "summary": summary, "error": str(e)[:300]})
+                    failure = {"index": i, "summary": summary, "error": str(e)[:300]}
+                    if isinstance(e, MutationOutcomeUnknown):
+                        failure.update(code="outcome_unknown", clientMutationId=e.mutation_id,
+                                       retryable=True, repeatWrite=False)
+                    failed.append(failure)
         return {"ok": not failed, "created": created, "failed": failed}
 
     def bulk_update(self, items, to_fields):
@@ -4542,7 +4581,12 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     "histories": (raw.get("changelog") or {}).get("histories") or []}
         return self.cache.get_or_set(f"changelog:{self.env}:{key}", self.s.cache_ttl_seconds, do)[0]
 
-    def confluence_page(self, cid, expand="body.storage"):
+    def confluence_search(self, cql, start=0, limit=50):
+        """UI/Agent/MCP share Confluence query authentication and complete-result caching."""
+        from app.jira.confluence_service import search
+        return search(self, cql, start, limit)
+
+    def confluence_page(self, cid, expand="body.storage", strict=False):
         """Confluence 페이지 원본 조회 — **base 를 붙이는 한 곳**.
 
         prod 는 Confluence 가 Jira 와 다른 호스트라 상대 경로를 쓰면 Jira 로 날아가 죽는다
@@ -4551,12 +4595,12 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         """
         if not cid:
             return {}
-        base = (self.s.confluence_base or "").rstrip("/")
-        path = f"/rest/api/content/{cid}"
+        from app.jira.confluence_service import page
         try:
-            return self._conf_get_json((base + path) if base else path,
-                                       params={"expand": expand}) or {}
+            return page(self, cid, expand)
         except Exception:
+            if strict:
+                raise
             return {}
 
     def ticket_field_history(self, key, limit=20):
@@ -4865,7 +4909,14 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             # 표시용은 넉넉한 상한(CHILD_DISPLAY_LIMIT) — 스캔용 20 을 쓰면 하위가 많은 Epic 이 20 개로 잘렸다.
             kids = self._child_keys(key, limit=self.CHILD_DISPLAY_LIMIT)
             self.prefetch_issues(kids, light=True)   # 뱃지만 필요 → 경량 배치(이후 badge 는 캐시 히트)
-            return [b for b in (self.ticket_badge(k) for k in kids) if b]
+            children = []
+            for child_key in kids:
+                badge = self.ticket_badge(child_key)
+                if badge:
+                    children.append(badge)
+                else:
+                    self.miss_add()
+            return children
         return self._swr(f"children:{self.env}:{key}", build)
 
     def ticket_related(self, key, limit=20, include_mentions=True):

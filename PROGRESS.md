@@ -124,3 +124,6 @@ python -m pytest src/tests -q                      # 21 passed
 - **2026-07-07** — SP 누락(None) 기본값 규칙 추가: Bug=0, 나머지=1 (`progress.sp_of`). 문서·테스트·mock 반영.
 - **2026-07-07** — Phase A 완료. FastAPI 앱(mock/local/prod) + config(YAML) + SQLite 캐시 + docker/exe 패키징 + seed + 테스트(10 passed). mock 모드 end-to-end 검증(/api/wbs PMO 40.3%).
 - **2026-07-07** — 데모 확정: `demo/` 단일 HTML 간트차트(시간축 일/주/월, 모듈별 색, WBS 일정 바 + 진척 채움, ㄴ자 트리 연결선). 모듈 7 = ETL/DevOps/Observability/Workbench/Runtime/Catalog/DataOps.
+- **2026-11-03** — Local MCP: 실행 중인 LTM의 인증·Jira 캐시와 UI command를 공유하는 HTTP/stdio 27개 조회·쓰기 도구, loopback/token 경계, 설정 연결 복사·재발급·비활성화, mutation receipt와 캐시 출처 표시. mock에서 실제 SDK HTTP/stdio 및 Chromium 설정 UI 검증.
+- **2026-11-03** — MCP 업무 범위를 38개로 확장: Confluence 문서 검색·전체본문, 첨부파일 읽기, 명시적 티켓본문 수정, 관계·필드이력·WBS/VIT/워크로드·활동. UI/Agent/외부 MCP의 Confluence 인증·검색/문서 캐시를 공유하고 실패·권한·generation 경합 검증.
+- **2026-11-03** — MCP 49개 업무 도구: 기존 UI 경로를 공유하는 대량 Task/SubTask 생성·부분 실패 재시도, 라벨/컴포넌트 편집, PMO_VIT 등록·해제, 관리자 WBS 계획·모듈 인력 관리. 같은 WBS·인력 설정을 UI에서도 관리하고 열린 대시보드에 변경 반영.

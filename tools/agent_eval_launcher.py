@@ -45,7 +45,7 @@ RUNNERS = {
 STRUCTURED_FALLBACK_POLICY_ENV = "LTM_AGENT_STRUCTURED_OUTPUT_FALLBACK"
 USAGE = (
     "usage: python -X utf8 tools/agent_eval_launcher.py "
-    "{conversation|create|compose|meeting|context|user-review|perf} "
+    "{conversation|create|compose|meeting|context|user-review|perf|codex-mcp} "
     "[model] [case ...] [--out PATH]"
 )
 
@@ -102,6 +102,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0 if raw else 2
 
     runner_name, runner_args = raw[0].strip().lower(), raw[1:]
+    if runner_name == "codex-mcp":
+        from tools.agent_codex_mcp_eval import main as codex_mcp_main
+        return codex_mcp_main(runner_args)
     definition = RUNNERS.get(runner_name)
     if definition is None:
         print(f"unknown evaluation runner: {runner_name}\n{USAGE}", file=sys.stderr)

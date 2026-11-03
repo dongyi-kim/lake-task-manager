@@ -8,102 +8,18 @@ from __future__ import annotations
 
 from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from app.services.ticket_models import (
+    AssigneeBody, TransitionBody, FieldsBody, ChildBody, TaskBody, BulkBody, BulkUpdateBody,
+    BulkCommentBody, EpicBody, EpicLinkBody, LinkBody, DocumentBody,
+)
+from app.services.ticket_commands import CommandError, TicketCommands
 
 from app.auth.base import PermissionDenied, SessionExpired, UpstreamUnavailable
 
 
-class AssigneeBody(BaseModel):
-    assignee: str = ""
-
-
-class TransitionBody(BaseModel):
-    id: str = ""
-    targetStatusId: str = ""
-    targetStatusName: str = ""
-    targetStatusCategory: str = ""
-    days: int = 0
-    hours: int = 0
-    minutes: int = 0
-    assignee: str = ""
-    resolution: str = ""
-    commentHtml: str = ""
-    clientMutationId: str | None = None
-
-
-class FieldsBody(BaseModel):
-    priority: str | None = None
-    assignee: str | None = None
-    reporter: str | None = None
-    duedate: str | None = None
-    labels: list[str] | None = None
-    components: list[str] | None = None
-    summary: str | None = None
-    descriptionHtml: str | None = None
-    epic: str | None = None
-
-
-class ChildBody(BaseModel):
-    type: str
-    summary: str
-    priority: str | None = None
-    duedate: str | None = None
-    assignee: str | None = None
-    components: list[str] | None = None
-    labels: list[str] | None = None
-    descriptionHtml: str | None = None
-    clientMutationId: str | None = None
-    parentIsEpic: bool | None = None
-
-
-class TaskBody(ChildBody):
-    pass
-
-
-class BulkBody(BaseModel):
-    mode: str
-    items: list[dict]
-
-
-class BulkUpdateBody(BaseModel):
-    items: list[dict]
-
-
-class BulkCommentBody(BaseModel):
-    items: list[dict]
-
-
-class EpicBody(BaseModel):
-    summary: str
-    epicName: str | None = None
-    priority: str | None = None
-    duedate: str | None = None
-    assignee: str | None = None
-    components: list[str] | None = None
-    descriptionHtml: str | None = None
-    taskKeys: list[str] | None = None
-    clientMutationId: str | None = None
-
-
-class EpicLinkBody(BaseModel):
-    taskKeys: list[str]
-
-
-class LinkBody(BaseModel):
-    key: str
-    type: str = "Relates"
-    direction: str = "outward"
-
-
-class DocumentBody(BaseModel):
-    url: str
-    title: str = ""
-
-
 def _bulk_check(client, mode: str, items: list[dict]):
-    from app.domain import bulk
     # Creating a child does not edit its parent. Jira enforces CREATE_ISSUES on POST.
-    return bulk.validate_bulk(mode, items, client.bulk_lookup())
+    return TicketCommands(lambda: client, None).bulk_validate(mode, items)
 
 
 def fields_for_update(client, key: str, changes: dict):
@@ -138,56 +54,11 @@ def fields_for_update(client, key: str, changes: dict):
 
 
 def update_fields_response(client, settings, key: str, body: FieldsBody):
-    """Shared implementation kept callable by legacy direct unit tests."""
-    from app.domain.ticket_actions import field_update_error, is_done
-
-    requested = [name for name, value in {
-        "priority": body.priority, "assignee": body.assignee, "reporter": body.reporter,
-        "duedate": body.duedate, "labels": body.labels, "components": body.components,
-        "summary": body.summary, "description": body.descriptionHtml, "epic": body.epic,
-    }.items() if value is not None]
-    current = client.ticket_badge(key)
-    state_error = field_update_error(current, [field for field in requested if field not in ("reporter", "epic")])
-    if is_done(current):
-        return JSONResponse({"ok": False, "error": state_error}, status_code=409)
-
-    meta = client.editmeta(key)
-    fields, denied = {}, []
-
-    def put(field_id, value):
-        if field_id not in meta:
-            denied.append(field_id)
-        else:
-            fields[field_id] = value
-
-    if body.priority is not None:
-        put("priority", {"name": body.priority})
-    if body.assignee is not None:
-        put("assignee", {"name": body.assignee} if body.assignee else None)
-    if body.reporter is not None:
-        put("reporter", {"name": body.reporter} if body.reporter else None)
-    if body.duedate is not None:
-        put("duedate", body.duedate or None)
-    if body.labels is not None:
-        put("labels", list(body.labels))
-    if body.components is not None:
-        put("components", [{"name": item} for item in body.components])
-    if body.summary is not None:
-        put("summary", body.summary)
-    if body.descriptionHtml is not None:
-        put("description", client.desc_field_value(body.descriptionHtml))
-    if body.epic is not None:
-        put(settings.epic_link_field_id, body.epic or None)
-
-    if denied:
-        return JSONResponse(
-            {"ok": False, "error": "편집 권한이 없는 항목입니다: " + ", ".join(denied)},
-            status_code=403,
-        )
-    if not fields:
-        return JSONResponse({"ok": True, "note": "변경 없음"})
+    """HTTP response adapter around the shared application command."""
     try:
-        return JSONResponse(client.update_fields(key, fields))
+        return JSONResponse(TicketCommands(lambda: client, settings).update_fields(key, body))
+    except CommandError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=exc.status)
     except (PermissionDenied, SessionExpired, UpstreamUnavailable):
         raise
     except Exception as exc:
@@ -197,6 +68,7 @@ def update_fields_response(client, settings, key: str, body: FieldsBody):
 def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
                                 session_user) -> APIRouter:
     router = APIRouter()
+    commands = TicketCommands(get_client, settings, require_edit)
 
     @router.put("/api/ticket/{key}/assignee")
     def api_set_assignee(key: str, body: AssigneeBody):
@@ -204,10 +76,9 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
         return JSONResponse(get_client().set_assignee(key, body.assignee.strip()))
 
     @router.delete("/api/ticket/{key}")
-    def api_delete_ticket(key: str):
-        require_edit(key)
+    def api_delete_ticket(key: str, clientMutationId: str = ""):
         try:
-            return JSONResponse(get_client().delete_issue(key))
+            return JSONResponse(commands.delete_ticket(key, clientMutationId or None))
         except (PermissionDenied, SessionExpired, UpstreamUnavailable):
             raise
         except Exception as exc:
@@ -242,77 +113,30 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
 
     @router.post("/api/ticket/{key}/child")
     def api_create_child(key: str, body: ChildBody):
-        client = get_client()
-        issue_type, summary = (body.type or "").strip(), (body.summary or "").strip()
-        if not summary:
-            return JSONResponse({"ok": False, "error": "제목을 입력하세요."}, status_code=400)
-        def validate_create():
-            if issue_type not in client.child_types(key):
-                raise ValueError(f"이 티켓 밑에는 {issue_type} 을(를) 만들 수 없습니다.")
         try:
-            result = client.create_child(
-                key, issue_type, summary, priority=body.priority or None,
-                duedate=body.duedate or None, assignee=body.assignee or None,
-                components=body.components or None,
-                description=client.desc_field_value(body.descriptionHtml) or None,
-                labels=body.labels or None,
-                mutation_id=body.clientMutationId,
-                parent_is_epic=body.parentIsEpic,
-                before_write=validate_create,
-            )
+            return JSONResponse(commands.create(body, parent=key))
         except (PermissionDenied, SessionExpired, UpstreamUnavailable):
             raise
         except Exception as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-        new_key = (result or {}).get("key")
-        try:
-            cascade = client.cascade_suggestion(new_key, created=True) if new_key else None
-        except Exception:
-            cascade = None
-        return JSONResponse({"ok": True, "key": new_key, "cascade": cascade})
 
     @router.post("/api/task")
     def api_create_task(body: TaskBody):
-        client = get_client()
-        issue_type, summary = (body.type or "").strip(), (body.summary or "").strip()
-        if not summary:
-            return JSONResponse({"ok": False, "error": "제목을 입력하세요."}, status_code=400)
-        def validate_create():
-            if issue_type not in client.task_types():
-                raise ValueError(f"{issue_type} 타입은 만들 수 없습니다.")
         try:
-            result = client.create_child(
-                None, issue_type, summary, priority=body.priority or None,
-                duedate=body.duedate or None, assignee=body.assignee or None,
-                components=body.components or None,
-                description=client.desc_field_value(body.descriptionHtml) or None,
-                labels=body.labels or None,
-                mutation_id=body.clientMutationId,
-                before_write=validate_create,
-            )
+            return JSONResponse(commands.create(body))
         except (PermissionDenied, SessionExpired, UpstreamUnavailable):
             raise
         except Exception as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-        return JSONResponse({"ok": True, "key": (result or {}).get("key")})
 
     @router.post("/api/bulk/validate")
     def api_bulk_validate(body: BulkBody):
-        return JSONResponse(_bulk_check(get_client(), body.mode, body.items))
+        return JSONResponse(commands.bulk_validate(body.mode, body.items))
 
     @router.post("/api/bulk/create")
     def api_bulk_create(body: BulkBody):
-        from app.content.mdhtml import markdown_to_html
-        client = get_client()
-        check = _bulk_check(client, body.mode, body.items)
-        if not check.get("ok"):
-            return JSONResponse({"ok": False, "errors": check.get("errors", []), "warnings": check.get("warnings", [])}, status_code=400)
-        result = client.bulk_create(
-            body.mode, check.get("items") or body.items,
-            desc_to_field=lambda markdown: client.desc_field_value(markdown_to_html(markdown)),
-        )
-        result["warnings"] = check.get("warnings", [])
-        return JSONResponse(result)
+        result = commands.bulk_create(body)
+        return JSONResponse(result, status_code=400 if result.get("errors") else 200)
 
     @router.post("/api/bulk/update/validate")
     def api_bulk_update_validate(body: BulkUpdateBody):
@@ -343,21 +167,8 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
 
     @router.post("/api/epic")
     def api_create_epic(body: EpicBody):
-        client = get_client()
-        summary = (body.summary or "").strip()
-        if not summary:
-            return JSONResponse({"ok": False, "error": "제목을 입력하세요."}, status_code=400)
         try:
-            result = client.create_epic(
-                summary, priority=body.priority or None, duedate=body.duedate or None,
-                assignee=body.assignee or None, components=body.components or None,
-                description=client.desc_field_value(body.descriptionHtml) or None,
-                epic_name=(body.epicName or "").strip() or None,
-                mutation_id=body.clientMutationId,
-            )
-            key = (result or {}).get("key")
-            linked = client.set_epic_link(key, body.taskKeys) if key and body.taskKeys else None
-            return JSONResponse({"ok": True, "key": key, "link": linked})
+            return JSONResponse(commands.create_epic(body))
         except (PermissionDenied, SessionExpired, UpstreamUnavailable):
             raise
         except Exception as exc:
@@ -406,33 +217,12 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
 
     @router.post("/api/ticket/{key}/transition")
     def api_do_transition(key: str, body: TransitionBody):
-        client = get_client()
-        duration = " ".join(
-            value for value in (
-                f"{int(body.days)}d" if body.days else "",
-                f"{int(body.hours)}h" if body.hours else "",
-                f"{int(body.minutes)}m" if body.minutes else "",
-            ) if value
-        )
-        comment = client.comment_field_value(body.commentHtml) if body.commentHtml else ""
         try:
-            client.do_transition(
-                key, body.id, time_spent=duration or None, assignee=body.assignee or None,
-                resolution=body.resolution or None, comment=comment or None,
-                target_status_id=body.targetStatusId or None,
-                target_status_name=body.targetStatusName or None,
-                target_status_category=body.targetStatusCategory or None,
-                mutation_id=body.clientMutationId or None,
-            )
+            return JSONResponse(commands.transition(key, body))
         except (PermissionDenied, SessionExpired, UpstreamUnavailable):
             raise
         except Exception as exc:
             return JSONResponse({"ok": False, "error": str(exc)[:400]}, status_code=400)
-        try:
-            cascade = client.cascade_suggestion(key)
-        except Exception:
-            cascade = None
-        return JSONResponse({"ok": True, "cascade": cascade})
 
     @router.get("/api/linktypes")
     def api_link_types():
@@ -441,18 +231,21 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
     @router.post("/api/ticket/{key}/link")
     def api_link_add(key: str, body: LinkBody):
         try:
-            return JSONResponse(get_client().add_issue_link(key, body.key, body.type, body.direction))
+            return JSONResponse(commands.link(key, body.key, body.type, body.direction, body.clientMutationId))
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
 
     @router.delete("/api/ticket/{key}/link/{link_id}")
-    def api_link_delete(key: str, link_id: str, other: str = ""):
-        return JSONResponse(get_client().delete_issue_link(link_id, key, other or None))
+    def api_link_delete(key: str, link_id: str, other: str = "", clientMutationId: str = ""):
+        try:
+            return JSONResponse(commands.delete_link(key, link_id, other or None, clientMutationId or None))
+        except CommandError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=exc.status)
 
     @router.post("/api/ticket/{key}/document")
     def api_document_add(key: str, body: DocumentBody):
         try:
-            get_client().add_remote_link(key, body.url, body.title)
+            commands.document(key, body.url, body.title, body.clientMutationId)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse({"ok": True})
@@ -460,32 +253,19 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
     @router.post("/api/ticket/{key}/attachment")
     async def api_attachment_upload(key: str, file: UploadFile = File(...),
                                     clientMutationId: str = Form("")):
-        client = get_client()
         data = await file.read()
-        try:
-            result = client.upload_attachment(
-                key, file.filename or "paste.png", data, file.content_type,
-                mutation_id=clientMutationId or None,
-            )
-        except SessionExpired:
-            # Do not consult current_user(): it is cached for hours and can claim a dead idle
-            # session is alive. The global handler performs a direct session_alive probe and
-            # emits the need-login contract when appropriate.
-            raise
-        attachment = result[0] if isinstance(result, list) and result else (result or {})
-        attachment_id = str(attachment.get("id") or "")
-        filename = attachment.get("filename") or (file.filename or "")
-        path = f"/secure/attachment/{attachment_id}/{filename}" if attachment_id else filename
-        return JSONResponse({"id": attachment_id, "filename": filename, "path": path})
+        return JSONResponse(commands.attachment(
+            key, file.filename or "paste.png", data, file.content_type, clientMutationId or None))
 
     @router.delete("/api/ticket/{key}/attachment/{aid}")
-    def api_attachment_delete(key: str, aid: str):
-        require_edit(key)
-        return JSONResponse(get_client().delete_attachment(aid, key=key))
+    def api_attachment_delete(key: str, aid: str, clientMutationId: str = ""):
+        try:
+            return JSONResponse(commands.delete_attachment(key, aid, clientMutationId or None))
+        except CommandError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=exc.status)
 
     @router.delete("/api/ticket/{key}/document/{lid}")
-    def api_document_delete(key: str, lid: str):
-        require_edit(key)
-        return JSONResponse(get_client().delete_remote_link(key, lid))
+    def api_document_delete(key: str, lid: str, clientMutationId: str = ""):
+        return JSONResponse(commands.delete_document(key, lid, clientMutationId or None))
 
     return router

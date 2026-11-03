@@ -130,7 +130,8 @@ def build(plan, epic_prog, generated_at=None):
     return {
         "generatedAt": generated_at or datetime.now().strftime("%Y-%m-%d %H:%M"),
         "projectKey": plan.get("project_key", "LAKE"),
-        "timeline": {"start": _iso(min(all_starts)), "end": _iso(max(all_ends))},
+        "timeline": {"start": _iso(min(all_starts)) if all_starts else None,
+                     "end": _iso(max(all_ends)) if all_ends else None},
         "modules": [{"id": m["id"], "name": m["name"]} for m in modules_out],
         "epics": epics_out,
         "wbs": wbs_out,
