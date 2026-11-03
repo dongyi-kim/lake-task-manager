@@ -12,6 +12,7 @@ import time
 
 from .base import (AuthProvider, MULTIPART_HEADERS, PRIO_WRITE, SessionExpired,
                    UpstreamError, WRITE_HEADERS, upstream_priority)
+from .issue_create import check_create_body, log_create_response
 
 # dev 전용 — mock 에 **의도적 지연**을 넣어 prod(SSO 직렬·원격) 체감을 흉내 낸다(통합 시나리오 테스트용).
 #   LAKE_MOCK_LATENCY_MS       모든 상류 요청 기본 지연(ms)
@@ -74,6 +75,7 @@ class InProcessProvider(AuthProvider):
         return self._get(path, params, priority).json()
 
     def _write(self, method, path, json_body, params, want_json=True):
+        check_create_body(method, path, json_body)
         def do():
             _sleep_for(path, params)
             fn = getattr(self._client, method)
@@ -82,6 +84,7 @@ class InProcessProvider(AuthProvider):
                 kw["json"] = json_body
             return fn(path, **kw)
         r = self._serial(do, PRIO_WRITE)
+        log_create_response(method, path, json_body, r.status_code, r.text if r.status_code >= 400 else "")
         if r.status_code == 401:
             raise SessionExpired(f"HTTP 401 on {path}")
         if r.status_code >= 400:

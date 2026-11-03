@@ -6,8 +6,6 @@ checks access, and translates UI-shaped payloads into that client contract.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -102,9 +100,10 @@ class DocumentBody(BaseModel):
     title: str = ""
 
 
-def _bulk_check(client, may_edit: Callable[[str], bool], mode: str, items: list[dict]):
+def _bulk_check(client, mode: str, items: list[dict]):
     from app.domain import bulk
-    return bulk.validate_bulk(mode, items, client.bulk_lookup(may_edit=may_edit))
+    # Creating a child does not edit its parent. Jira enforces CREATE_ISSUES on POST.
+    return bulk.validate_bulk(mode, items, client.bulk_lookup())
 
 
 def fields_for_update(client, key: str, changes: dict):
@@ -248,7 +247,6 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
         if not summary:
             return JSONResponse({"ok": False, "error": "제목을 입력하세요."}, status_code=400)
         def validate_create():
-            require_edit(key)
             if issue_type not in client.child_types(key):
                 raise ValueError(f"이 티켓 밑에는 {issue_type} 을(를) 만들 수 없습니다.")
         try:
@@ -300,13 +298,13 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
 
     @router.post("/api/bulk/validate")
     def api_bulk_validate(body: BulkBody):
-        return JSONResponse(_bulk_check(get_client(), may_edit, body.mode, body.items))
+        return JSONResponse(_bulk_check(get_client(), body.mode, body.items))
 
     @router.post("/api/bulk/create")
     def api_bulk_create(body: BulkBody):
         from app.content.mdhtml import markdown_to_html
         client = get_client()
-        check = _bulk_check(client, may_edit, body.mode, body.items)
+        check = _bulk_check(client, body.mode, body.items)
         if not check.get("ok"):
             return JSONResponse({"ok": False, "errors": check.get("errors", []), "warnings": check.get("warnings", [])}, status_code=400)
         result = client.bulk_create(
@@ -399,7 +397,7 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
             "me": {"id": me.get("id") or "", "name": me.get("name") or ""},
             "mayEdit": editable, "jiraBase": (settings.jira_base or "").rstrip("/"),
             "transitions": client.transitions(key) if editable else [],
-            "childTypes": (client.child_types(key) or []) if editable else [],
+            "childTypes": client.child_types(key) or [],
         })
 
     @router.get("/api/ticket/{key}/transitions")

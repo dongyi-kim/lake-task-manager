@@ -2551,6 +2551,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             return {}
         out = {}
         for fid, f in (data.get("fields") or {}).items():
+            if fid == "reporter" and not self.can_modify_reporter(key):
+                continue
             sch = f.get("schema") or {}
             typ = (sch.get("type") or "").lower()
             if typ == "array":
@@ -2565,9 +2567,28 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             }
         return out
 
+    def can_modify_reporter(self, key):
+        """Jira's issue-scoped permission, independent of LTM's manager/owner role.
+
+        Do not cache permission grants: session or workflow changes must take effect on save.
+        Jira 8.20 returns both modern and deprecated permission keys.
+        """
+        try:
+            data = self.provider.get_json("/rest/api/2/mypermissions", params={"issueKey": key}) or {}
+            permissions = data.get("permissions") or {}
+            permission = permissions.get("MODIFY_REPORTER") or next(
+                (value for value in permissions.values() if value.get("key") == "MODIFY_REPORTER"), {})
+            return permission.get("havePermission") is True
+        except (SessionExpired, UpstreamUnavailable):
+            raise
+        except Exception:
+            return False
+
     def update_fields(self, key, fields):
         """필드 수정(PUT /issue). fields 는 Jira 형식 그대로 — 변환은 라우트가 한다."""
         fields = fields or {}
+        if "reporter" in fields and "reporter" not in self.editmeta(key):
+            raise PermissionDenied(f"/rest/api/2/issue/{key}", "이 Jira 티켓의 보고자를 변경할 권한이 없습니다.")
         relationship_change = any(
             field in fields for field in ("parent", self.s.epic_link_field_id))
         old_parent, old_epic = self._lineage_of(key) if relationship_change else (None, None)

@@ -7,6 +7,7 @@
 - **base.py** — `AuthProvider` 인터페이스 + 예외(`SessionExpired`/`LoginRequired`/`PermissionDenied`/`UpstreamError`) +
   스레드로컬 우선순위 스코프(`write_upstream`/`background_upstream`) + XSRF 헤더 상수.
 - **basic.py** — Basic/PAT provider (local/docker).
+- **issue_create.py** — 생성 요청의 Reporter 생략 계약과 값이 없는 실패 진단(버전·필드명·HTTP 상태).
 - **inprocess.py** — jira820 **in-process** ASGI provider (mock 기본, 소켓 불필요).
 - **sso_session.py** — Playwright **SSO** provider (prod). 브라우저 기동·로그인 흐름·서비스 probe·세션 생존 확인.
 - **sso_store.py** — 서비스별 세션 파일 저장 + legacy `jira_state.json` 마이그레이션.

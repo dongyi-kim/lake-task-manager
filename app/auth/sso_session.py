@@ -401,6 +401,8 @@ class SsoSessionProvider(AuthProvider):
         """쓰기(POST/PUT/DELETE) 공통 — XSRF 헤더 + JSON 명시 직렬화 + 진단 예외.
         편집 기능이 전부 이 경로를 탄다. 제품(Jira/Confluence/Bitbucket) 구분 없이 동일."""
         import json as _json
+        from app.auth.issue_create import check_create_body, is_issue_create, log_create_response
+        check_create_body(method, path, json_body)
         url = path if path.startswith(("http://", "https://")) else self.base + path
         fn = getattr(self._context.request, method)     # post/put/delete
         kw = {"params": params or {}, "headers": self._xsrf_headers(url)}
@@ -423,8 +425,11 @@ class SsoSessionProvider(AuthProvider):
                     hdrs = f" [{xa}]"
             except Exception:
                 pass
-            print(f"[upload] HTTP {resp.status} {path}{hdrs} :: {(body or '')[:300]}",
-                  file=sys.stderr, flush=True)
+            if is_issue_create(method, path):
+                log_create_response(method, path, json_body, resp.status, body)
+            else:
+                print(f"[upload] HTTP {resp.status} {path}{hdrs} :: {(body or '')[:300]}",
+                      file=sys.stderr, flush=True)
             if resp.status == 401:
                 raise SessionExpired(
                     f"HTTP 401 on {path}{hdrs} — {(body or '세션 만료 가능. login 재실행.')[:200]}")

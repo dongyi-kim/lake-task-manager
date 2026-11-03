@@ -148,7 +148,7 @@ export default {
         </button>
 
         <!-- 1.5 하위 만들기 — 만들 수 있는 타입이 있을 때만(Epic→Task / Task→Sub-Task) -->
-        <template v-if="mayEdit && childTypes.length">
+        <template v-if="childTypes.length">
           <div class="tkm-g">만들기</div>
           <button class="tkm-i" :disabled="!!busy" @click="addChild = true; open = false">
             <span class="tkm-ic">＋</span>{{ isEpic ? '하위 Task 만들기…' : 'Sub Task 만들기…' }}
