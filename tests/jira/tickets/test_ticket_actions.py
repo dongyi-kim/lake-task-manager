@@ -47,8 +47,9 @@ def test_field_update_route_imports_done_guard_and_updates_description(monkeypat
     import app.main as main
 
     class Client:
-        def ticket_badge(self, key):
-            return {"key": key, "statusCategory": "inprogress"}
+        def get_issue_light(self, key, *, strict=False):
+            assert strict, "field authorization must not accept stale display status"
+            return {"key": key, "fields": {"status": {"statusCategory": {"key": "inprogress"}}}}
 
         def editmeta(self, key):
             return {"description": {}}
