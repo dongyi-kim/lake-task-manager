@@ -9,6 +9,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 def test_sdk_http_catalog_cache_reuse_and_pagination(build_env):
     env = build_env()
+    env.runtime.settings.jira_base = "https://jira.example.test/context/"
     # Prime the same issue/snapshot through the ordinary client used by the UI.
     query = 'project in ("DL") AND (project = DL) ORDER BY key ASC'
     direct = env.client.search_issues_page(query, max_results=2)
@@ -33,6 +34,9 @@ def test_sdk_http_catalog_cache_reuse_and_pagination(build_env):
                     assert not result.is_error, result
                     first = result.structured_content["data"]
                     assert [i["key"] for i in first["issues"]] == [i["key"] for i in direct["issues"]]
+                    assert all(i["url"] == "https://jira.example.test/context/browse/" + i["key"]
+                               for i in first["issues"])
+                    assert all("url" not in issue for issue in direct["issues"])
                     assert len(env.calls) == before
                     second = await mcp.call_tool("search_issues", {"jql": "project = DL ORDER BY key ASC",
                         "max_results": 2, "start_at": first["nextStartAt"], "snapshot_id": first["snapshotId"]})

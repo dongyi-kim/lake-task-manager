@@ -12,6 +12,7 @@ def register_reads(register, runtime):
         """Search exact JQL within configured Jira projects. Follow hasMore/nextStartAt with the
         returned snapshotId to retain ordering without duplicates. At most 100 issues per page.
         No implicit total cap; OR leaf and issue caches are shared with the LTM UI.
+        Each issue's url opens the Jira ticket; self is the upstream REST resource.
         """
         if not 1 <= max_results <= 100 or start_at < 0:
             raise ValueError("max_results는 1~100, start_at은 0 이상이어야 합니다.")
@@ -22,8 +23,14 @@ def register_reads(register, runtime):
             query += " AND (" + " ".join(t.value for t in where) + ")"
         if order:
             query += " ORDER BY " + " ".join(t.value for t in order)
-        return runtime.client.search_issues_page(query, start_at=start_at, max_results=max_results,
-                                                  snapshot_id=snapshot_id)
+        page = runtime.client.search_issues_page(query, start_at=start_at, max_results=max_results,
+                                                 snapshot_id=snapshot_id)
+        base = runtime.settings.jira_base.rstrip("/")
+        # Add navigation metadata without changing the shared snapshot/issue cache.
+        return {**page, "issues": [
+            {**issue, "url": base + "/browse/" + issue["key"]}
+            for issue in page.get("issues") or []
+        ]}
 
     def get_ticket(key: str, fresh: bool = False) -> dict:
         """Read description and issue metadata from LTM's cached ticket view. fresh forces refresh."""
