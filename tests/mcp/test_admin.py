@@ -104,6 +104,40 @@ def test_sdk_config_writes_are_visible_in_ui_and_preserve_unknown_yaml(workspace
     assert not [call for call in env.calls if call[0] not in {"get"}], env.calls
 
 
+@pytest.mark.parametrize("surface", ["mcp", "ui"])
+def test_last_wbs_task_can_be_deleted_and_registered_again(workspace_env, surface):
+    env = workspace_env
+    async def scenario():
+        async with env.app.router.lifespan_context(env.app):
+            async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=env.app),
+                    base_url="http://127.0.0.1:4457",
+                    headers={"Authorization": "Bearer " + env.runtime.credentials.token()}) as http:
+                async with Client(streamable_http_client(env.runtime.url, http_client=http)) as mcp:
+                    state = env.runtime.workspace_config.read()
+                    if surface == "mcp":
+                        result = await mcp.call_tool("delete_wbs_task", {"task_id": state["tasks"][0]["id"],
+                            "expected_revision": state["revision"]})
+                        assert not result.is_error, result.structured_content
+                        state = result.structured_content["data"]
+                    else:
+                        response = await http.put("/api/workspace/config/wbs", json={
+                            "revision": state["revision"], "tasks": []}, headers={"X-LTM-Local": "1"})
+                        assert response.status_code == 200
+                        state = response.json()
+                    assert state["tasks"] == []
+                    dashboard = (await http.get("/api/wbs")).json()
+                    assert dashboard["wbs"] == [] and dashboard["modules"] == [] and dashboard["epics"] == {}
+                    assert dashboard["timeline"] == {"start": None, "end": None}
+                    assert all(value == 0 for value in dashboard["rollup"]["pmo"].values())
+                    via_mcp = await mcp.call_tool("get_dashboard", {"kind": "wbs"})
+                    assert not via_mcp.is_error, via_mcp.structured_content
+                    assert via_mcp.structured_content["data"]["wbs"] == []
+                    added = await mcp.call_tool("create_wbs_task", {"task": _task(), "expected_revision": state["revision"]})
+                    assert not added.is_error, added.structured_content
+                    assert (await http.get("/api/wbs")).json()["wbs"][0]["id"] == "wbs-new"
+    anyio.run(scenario)
+
+
 @pytest.mark.parametrize("patch", [
     {"name": ""}, {"start": "2026-02-30"}, {"end": "2026-01-01"},
     {"epics": []}, {"epics": [{"key": "DL-1", "weight": -1}]},

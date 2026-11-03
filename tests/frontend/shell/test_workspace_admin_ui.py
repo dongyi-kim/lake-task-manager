@@ -177,6 +177,33 @@ def test_new_task_and_module_forms_validate_and_preserve_failed_writes(admin_ui)
     assert state["config"]["people"]["New Module"] == ["new.user", "other.user"]
 
 
+def test_deleting_final_task_updates_open_wbs_to_empty_state(admin_ui):
+    from app.domain.rollup import build
+    page, state, requests, _held, expect = admin_ui
+    def dashboard(route):
+        tasks = state["config"]["tasks"]
+        plan = {"project_key": "DL", "modules": list(state["config"]["people"]), "wbs": tasks}
+        route.fulfill(json=build(plan, {}))
+    page.route("**/api/wbs", dashboard)
+    page.evaluate("""async () => {
+      const {createApp} = await import('/vendor/vue.esm-browser.prod.js');
+      const Wbs = (await import('/components/views/WbsView.js')).default;
+      const host=document.createElement('div'); host.id='wbs-test'; document.body.append(host);
+      window.wbsTest=createApp(Wbs); window.wbsTest.mount(host);
+    }""")
+    expect(page.locator("#wbs-test .gantt")).to_be_visible()
+    _open(page)
+    page.get_by_role("button", name="Task 1 삭제", exact=True).click()
+    page.get_by_role("button", name="WBS 저장", exact=True).click()
+    expect(page.get_by_role("dialog").get_by_role("status")).to_have_text("WBS Task를 저장했습니다.")
+    page.keyboard.press("Escape")
+    expect(page.locator("#wbs-test .wbs-empty")).to_contain_text("등록된 WBS Task가 없습니다.")
+    expect(page.locator("#wbs-test .gantt")).to_have_count(0)
+    expect(page.locator("#wbs-test .err")).to_have_count(0)
+    assert state["config"]["tasks"] == []
+    assert next(row for row in requests if row[0] == "PUT")[2]["tasks"] == []
+
+
 def test_regular_user_menu_hidden_and_server_denial_cannot_show_config(admin_ui):
     page, state, requests, _held, expect = admin_ui
     state["manager"] = False

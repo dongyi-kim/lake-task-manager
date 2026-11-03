@@ -73,6 +73,8 @@ MCP가 같은 검증·원자 저장 경로를 사용한다. ID·모듈·이름·
 인력 관리는 모듈별 Jira username 목록을 관리하며 Jira 사용자/컴포넌트나 관리자 권한을 변경하지 않는다.
 모든 설정 쓰기는 `get_workspace_config`에서 받은 `expected_revision`을 전달한다. 다른 변경과 충돌하면
 409를 반환하므로 다시 읽고 변경사항을 적용한다. 성공 후 WBS·인력 관련 캐시를 무효화하고 열린 화면에도 설정 변경을 알린다.
+마지막 WBS Task를 삭제해도 빈 계획으로 유지할 수 있다. 이때 dashboard의 일정은 `null`, 집계는 0이며
+UI는 첫 Task 등록 안내를 표시한다. Jira Epic이나 티켓은 함께 삭제되지 않는다.
 
 Confluence 검색은 `search.confluence.spaces` 범위에서 페이지를 반환하고, 본문 읽기는 숫자 ID 또는
 설정된 Confluence 호스트의 `/pages/{id}` 또는 `?pageId=` URL을 받는다. `/display/SPACE/title` 형식은
