@@ -136,7 +136,7 @@ def test_new_comment_composer_hides_without_unmounting_and_shows_text_only_previ
     assert "loadEditorHeight(this.heightKey, this.initialHeight)" in editor
     assert 'ref="newCommentEditor"' in dialog and "await ed.flushDraft()" in dialog
     assert 'class="tkt-cmt-draft-v"' in dialog and "{{ composePreview || '텍스트 미리보기 없음' }}" in dialog
-    assert "async cancelCompose()" in dialog and "await ed.discardDraft()" in dialog
+    assert "async cancelCompose()" in dialog and "await ed.flushDraft()" in dialog
     assert 'clone.querySelectorAll("img, table, pre, hr, .img-wrap, .tableWrapper")' in editor
     assert "async flushDraft()" in editor and "async discardDraft()" in editor
     assert ".tkt-compose-hide { position: absolute; top: 0; left: 50%" in css
@@ -329,7 +329,7 @@ def test_ticket_epic_and_person_pickers_render_local_defaults_before_network():
     assert "if (this._userTouched) return" in init_assignee
     assert "pickWho(u) { this._userTouched = true" in transition
     assert "clearWho() {\n      this._userTouched = true" in transition
-    assert "this._userTouched = true;\n      this.user = payload.assignee" in transition
+    assert "!this.formDraftRestored && !this.pendingTransitionPayload" in transition
     resolution_default = transition[transition.index("mounted() {"):transition.index("api.timetracking()")]
     assert 'this.transition.toCategory === "done"' in resolution_default
     assert '.trim().toLowerCase() === "done"' in resolution_default

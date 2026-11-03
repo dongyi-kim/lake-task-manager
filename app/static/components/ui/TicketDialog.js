@@ -727,6 +727,11 @@ export default {
       this.sumErr = ""; this.sumEdit = true;
       this.$nextTick(() => { const el = this.$refs.sumInput; if (el) { el.focus(); el.select(); } });
     },
+    async cancelDescEdit() {
+      const editor = this.$refs.ded;
+      if (editor && await editor.flushDraft() === false) return;
+      this.descEdit = false; this.stopWatchDesc();
+    },
     cancelSumEdit() { this.sumEdit = false; this.sumErr = ""; },
     async saveSum() {
       const s = (this.sumDraft || "").trim();
@@ -868,7 +873,7 @@ export default {
     },
     async cancelCompose() {
       const ed = this.$refs.newCommentEditor;
-      if (ed && ed.discardDraft && await ed.discardDraft() === false) return;
+      if (ed && ed.flushDraft && await ed.flushDraft() === false) return;
       this.composing = false; this.composeCollapsed = false; this.composePreview = ""; this.composeHasDraft = false;
     },
     submitNew(md, mutationId) { return api.commentCreate(this.tk, md, mutationId); },
@@ -1421,7 +1426,8 @@ export default {
                            :submit-fn="saveDesc" @cancel="descEdit = false" />
             <div class="tkt-desc-edit-f">
               <span v-if="descErr" class="tkt-cmt-err">{{ descErr }}</span>
-              <button class="cmt-ed-btn ghost" @click="descEdit = false; stopWatchDesc()">취소</button>
+              <button class="cmt-ed-btn ghost" @click="$refs.ded && $refs.ded.discardDraft()">초안 삭제</button>
+              <button class="cmt-ed-btn ghost" @click="cancelDescEdit">취소</button>
               <button class="cmt-ed-btn primary" :disabled="descBusy"
                       @click="$refs.ded && $refs.ded.submit()">{{ descBusy ? '저장 중…' : '저장' }}</button>
             </div>
@@ -1635,7 +1641,7 @@ export default {
                       <button class="tkt-cmt-act" @click="delComment(c)">삭제</button>
                     </span>
                   </div>
-                  <CommentEditor v-if="editingId === c.id" :ticket-key="tk" :mention-users="mentionUsers" :initial="editInitial"
+                  <CommentEditor v-if="editingId === c.id" :ticket-key="tk" :mention-users="mentionUsers" :initial="editInitial" :draft-scope="'comment:' + tk + ':' + c.id"
                     submit-label="저장" :submit-fn="(md) => submitEdit(c, md)"
                     @submitted="onEdited" @cancel="cancelEdit" />
                   <div v-else class="tkt-cmt-b tkt-desc" @click="(e) => onContentClick(e, c)" v-html="c.html"></div>

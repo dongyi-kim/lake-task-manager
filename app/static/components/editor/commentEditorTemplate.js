@@ -177,11 +177,18 @@ const COMMENT_EDITOR_TEMPLATE = `
         <button type="button" class="tb-b tb-ic tb-del" @click="tTableDel" title="표 삭제">
           <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="1"/><path d="M2.5 6.5h11M6.5 2.5v11"/><path d="M10 10l3.5 3.5M13.5 10L10 13.5"/></svg></button>
       </div>
+      <div v-if="draftError" class="cmt-ed-msg" role="alert">{{ draftError }}</div>
+      <div v-if="draftConflict" class="cmt-restored">
+        <span>서버 내용이 변경되었습니다. 저장된 초안을 복원할까요?</span>
+        <button type="button" class="cmt-ed-btn" @click="restoreConflictingDraft">초안 복원</button>
+        <button type="button" class="cmt-ed-btn ghost" @click="discardDraft">서버 내용 사용 · 초안 삭제</button>
+      </div>
       <div v-if="restored" class="cmt-restored">
         <span>작성 중이던 내용을 복원했습니다.</span>
-        <button type="button" class="cmt-ed-btn ghost" @click="discardDraft">새로 쓰기</button>
+        <button type="button" class="cmt-ed-btn ghost" @click="discardDraft">초안 삭제</button>
       </div>
-      <div ref="ed" class="cmt-ed-host"
+      <div v-if="!ready" class="muted" role="status">초안 확인 중…</div>
+      <div ref="ed" v-show="ready" class="cmt-ed-host"
            :style="!maximized && hostH ? { height: hostH + 'px', maxHeight: 'none' } : null"></div>
       <!-- 세로 크기 조절 손잡이 — 최대화 모드에는 없다(거기선 창이 높이를 정한다).
            얇은 선이 아니라 잡을 수 있는 띠로 둔다: 1~2px 짜리는 조준하다 지친다. -->
@@ -191,8 +198,9 @@ const COMMENT_EDITOR_TEMPLATE = `
       <div v-if="hideFooter && err" class="cmt-ed-msg solo">{{ err }}</div>
       <div v-if="!hideFooter" class="cmt-ed-bar">
         <span v-if="err" class="cmt-ed-msg">{{ err }}</span>
-        <button class="cmt-ed-btn ghost" :disabled="busy" @click="$emit('cancel')">취소</button>
-        <button class="cmt-ed-btn primary" :disabled="busy || !ready" @click="submit">
+        <button class="cmt-ed-btn ghost" :disabled="busy" @click="discardDraft">초안 삭제</button>
+        <button class="cmt-ed-btn ghost" :disabled="busy" @click="cancelEditing">취소</button>
+        <button class="cmt-ed-btn primary" :disabled="busy || !ready || draftConflict" @click="submit">
           {{ busy ? busyLabel : submitLabel }}</button>
       </div>
     </template>

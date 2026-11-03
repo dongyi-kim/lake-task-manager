@@ -19,13 +19,14 @@ import { api } from "../../lib/api.js";
 import Avatar from "./Avatar.js";
 import CommentEditor from "./CommentEditor.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
-import { confirmBox } from "../../lib/confirm.js";
 import { createUserTypeahead, defaultUserSuggestions, rememberUser } from "../../lib/userSuggestions.js";
-import { clearPendingMutation, loadPendingMutation, newMutationId,
-         savePendingMutation } from "../../lib/mutationId.js";
+import { newMutationId } from "../../lib/mutationId.js";
+import { formDraft } from "../../lib/formDraft.js";
 
 export default {
   name: "TransitionDialog",
+  mixins: [formDraft(function () { return this.pendingScope(); },
+    ["days", "hours", "minutes", "resolution", "user", "transitionMutationId", "pendingTransitionPayload"], "ed")],
   components: { Avatar, CommentEditor },
   props: { ticket: { type: String, required: true }, transition: { type: Object, required: true } },
   emits: ["close", "done"],
@@ -99,30 +100,10 @@ export default {
       return out;
     },
   },
-  created() {
-    // Restore before child components mount. CommentEditor reads `initial` only while creating its
-    // TipTap instance, so restoring in mounted() would leave a response-lost comment visually blank.
-    const saved = loadPendingMutation(this.pendingScope());
-    if (saved && saved.payload) {
-      const payload = saved.payload;
-      this.transitionMutationId = String(saved.id || payload.clientMutationId || "");
-      this.pendingTransitionPayload = payload;
-      this.days = Number(payload.days) || 0;
-      this.hours = Number(payload.hours) || 0;
-      this.minutes = Number(payload.minutes) || 0;
-      this.resolution = payload.resolution || "";
-      // Empty is also a deliberate value in the exact request; do not let async defaults change
-      // a response-lost transition after a renderer/app restart.
-      this._userTouched = true;
-      this.user = payload.assignee ? {
-        id: payload.assignee, name: payload.assignee, display: payload.assignee,
-        avatar: "/api/avatar/" + encodeURIComponent(payload.assignee),
-      } : null;
-      this.err = "이전 전환의 Jira 반영 여부를 확인해야 합니다. 같은 내용으로 다시 시도해 주세요.";
-    }
-  },
-  mounted() {
-    if (!this.pendingTransitionPayload && this.resolutions.length) {
+  async mounted() {
+    try { await this._formReady; } catch (_) { return; }
+    if (this._formDead) return;
+    if (!this.formDraftRestored && !this.pendingTransitionPayload && this.resolutions.length) {
       // 완료 전환에서는 Jira 선택지 순서와 무관하게 Done을 기본 처리 방법으로 둔다.
       // 워크플로에 Done이 없거나 완료 전환이 아니면 Jira가 준 첫 값을 그대로 존중한다.
       const done = this.transition.toCategory === "done"
@@ -137,10 +118,8 @@ export default {
     this._ta = createUserTypeahead(this.ticket, []);
     this.who = defaultUserSuggestions([], []);
     this.searchWho("");
-    if (!this.pendingTransitionPayload) this.initAssignee();
-    // Parent menus also listen for Escape and can otherwise unmount this dialog without calling
-    // closeGuarded(). Capture it first so unsaved text gets the same explicit discard choice and
-    // an in-flight/uncertain payload remains visible instead of disappearing behind the parent.
+    if (!this.formDraftRestored && !this.pendingTransitionPayload) this.initAssignee();
+    // Capture Escape before parent menus so the same durable close path saves form and editor state.
     this._guardEscape = (event) => {
       // confirmBox owns Escape while its own overlay is open.
       if (event.key !== "Escape" || this._confirmingClose) return;
@@ -160,33 +139,8 @@ export default {
         + ":" + String(this.transition.id || "");
     },
     async closeGuarded() {
-      if (this._confirmingClose) return;
-      if (this.busy || this.transitionMutationId) {
-        this.err = this.busy
-          ? "전환 처리 중에는 창을 닫을 수 없습니다."
-          : "Jira 반영 여부 확인이 끝날 때까지 창을 유지하고 같은 요청으로 다시 시도해 주세요.";
-        return;
-      }
-      const editor = this.$refs.ed;
-      if (editor && editor.isBlank && !editor.isBlank()) {
-        // X/배경/Escape/취소가 작성 중인 코멘트와 붙여넣은 이미지를 조용히 버리지 않게 한다.
-        // "계속 작성"은 창과 초안을 그대로 두고, 명시적으로 버린 경우에만 scope를 지운다.
-        this._confirmingClose = true;
-        let discard = false;
-        try {
-          discard = await confirmBox("작성 중인 전환 코멘트를 버리고 닫을까요?", {
-            okLabel: "버리고 닫기", cancelLabel: "계속 작성", danger: true,
-          });
-        } finally { this._confirmingClose = false; }
-        if (!discard) {
-          if (editor.flushDraft) await editor.flushDraft();
-          return;
-        }
-      }
-      // 비어 보이는 scope에도 이전 debounce/write가 남을 수 있다. 닫기 전에 명시적으로 지워
-      // 다음에 같은 전이를 열었을 때 지운 코멘트가 되살아나지 않게 한다.
-      if (editor && editor.discardDraft && await editor.discardDraft() === false) return;
-      this.$emit("close");
+      if (this.busy) { this.err = "전환 처리 중에는 창을 닫을 수 없습니다."; return; }
+      await this.preserveAndClose();
     },
     /** 담당자 입력이 있는 전이는 현재 티켓 담당자를 기본값으로 쓴다. ticketBadge는 카드·메뉴가
      *  이미 데운 가벼운 캐시를 재사용한다. 미할당/조회 실패일 때만 기존 동작대로 나를 넣는다. */
@@ -230,11 +184,11 @@ export default {
     /** 제출 버튼 → 에디터에게 넘긴다. 에디터가 이미지 업로드·본문 검사를 마친 뒤
      *  sendTransition(html) 을 호출한다. 코멘트 필드가 없는 전이면 바로 보낸다. */
     async submit() {
-      if (this.problems.length || this.busy) return;
+      if (!this.formDraftReady || this.problems.length || this.busy) return;
       this.err = "";
       if (this.needsComment && this.$refs.ed) { this.$refs.ed.submit(); return; }
       this.busy = true;
-      await this.sendTransition("");
+      try { await this.sendTransition(""); } catch (_) { /* sendTransition exposes the error. */ }
     },
     /** 실제 전송. 에디터가 부르는 경로라 실패는 **던져야** 한다 — 에디터가 그걸 받아
      *  올린 이미지를 되돌리고 사용자에게 알린다(조용히 삼키면 첨부만 남는다). */
@@ -258,17 +212,14 @@ export default {
           clientMutationId: this.transitionMutationId,
         };
         this.pendingTransitionPayload = payload;
-        savePendingMutation(this.pendingScope(), this.transitionMutationId, payload, {
-          ticket: this.ticket, transitionId: String(this.transition.id || ""),
-        });
       }
       try {
+        await this.flushFormDraft();
         r = await api.doTransition(this.ticket, payload);
         if (r && r.ok === false) throw new Error(r.error || "전이에 실패했습니다.");
       } catch (e) {
         this.busy = false;
         if (!(e && (e.uncertain || e.needLogin))) {
-          clearPendingMutation(this.pendingScope());
           this.transitionMutationId = "";
           this.pendingTransitionPayload = null;
         }
@@ -276,9 +227,10 @@ export default {
         this.err = (e && e.uncertain ? "반영 여부 확인 필요: "
           : (e && e.needLogin ? "로그인 후 같은 내용으로 다시 시도하세요: " : ""))
           + ((e && e.message) || "전이에 실패했습니다.");
+        await this.flushFormDraft();
         throw e;
       }
-      clearPendingMutation(this.pendingScope());
+      await this.finishFormDraft(true);
       this.transitionMutationId = "";
       this.pendingTransitionPayload = null;
       this.$emit("done");
@@ -349,18 +301,20 @@ export default {
           <span class="trx-l">코멘트 <i v-if="transition.toCategory === 'done' || (has.comment && has.comment.required)">필수</i></span>
           <!-- 댓글과 **같은 에디터** — 표·코드·이미지 붙여넣기·멘션이 그대로 된다.
                버튼 줄은 감추고(제출은 아래 한 곳) ref 로 submit() 을 부른다. -->
-          <CommentEditor ref="ed" :ticket-key="ticket" hide-footer kind="transition"
-                         :draft-scope="pendingScope()"
+          <CommentEditor v-if="formDraftReady" ref="ed" :ticket-key="ticket" hide-footer kind="transition"
+                         :draft-scope="pendingScope()" :mutation-pending="!!transitionMutationId"
                          :initial="pendingCommentHtml" :submit-fn="sendTransition"
                          @cancel="closeGuarded" />
         </div>
       </div>
 
       <div class="trx-f2">
+        <span v-if="formDraftError" class="trx-err" role="alert">{{ formDraftError }}</span>
         <span v-if="err" class="trx-err">{{ err }}</span>
         <span v-else-if="problems.length" class="trx-need">입력 필요: {{ problems.join(' · ') }}</span>
+        <button class="trx-cancel" :disabled="busy || !!transitionMutationId" @click="discardFormDraft">초안 삭제</button>
         <button class="trx-cancel" @click="closeGuarded">취소</button>
-        <button class="trx-ok" :disabled="busy || problems.length || unsupported.length" @click="submit">
+        <button class="trx-ok" :disabled="!formDraftReady || busy || problems.length || unsupported.length" @click="submit">
           {{ busy ? '처리 중…' : (transition.to || '전이') + ' 로 이동' }}
         </button>
       </div>

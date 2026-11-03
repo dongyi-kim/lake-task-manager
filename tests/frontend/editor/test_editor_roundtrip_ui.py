@@ -85,7 +85,9 @@ def editor_browser(request, tmp_path):
         "playwright.sync_api", reason="playwright 미설치 — 브라우저 UI 개발 테스트")
     # 대부분의 에디터 회귀는 지연과 무관하므로 기본 0ms. 응답 역전·검색 중 피드백처럼
     # 시간창 자체가 검증 대상인 테스트만 indirect parametrization으로 지연을 명시한다.
-    latency_ms = int(getattr(request, "param", 0))
+    options = getattr(request, "param", 0)
+    jeditor = isinstance(options, dict) and options.get("format") == "html"
+    latency_ms = int(options.get("latency_ms", 0) if isinstance(options, dict) else options)
     port = _free_port()
     run_dir = tmp_path / "editor-roundtrip-ui"
     run_dir.mkdir()
@@ -96,13 +98,27 @@ def editor_browser(request, tmp_path):
         "JIRA_ENV": "mock",
         "LAKE_NO_WINDOW": "1",
         "LAKE_MOCK_LATENCY_MS": str(latency_ms),
+        # Preferences, MCP credentials and auth state must be as isolated as the Jira cache.
+        "LAKE_CACHE_DIR": str(run_dir),
         "CACHE_DB_PATH": str(run_dir / "cache.sqlite3"),
     })
+    command = [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1",
+               "--port", str(port), "--log-level", "warning"]
+    if jeditor:
+        env.update({"DESCRIPTION_FORMAT": "html", "COMMENT_FORMAT": "html"})
+        # jira820 emulates native wiki Jira. This test-only upstream renderer models JEditor's
+        # HTML field while retaining its real mock endpoints, attachments, auth and storage.
+        command = [sys.executable, "-c", "\n".join([
+            "import jira820.serialize as serializer",
+            "original = serializer.render_wiki",
+            "serializer.render_wiki = lambda body, *args: body if (body or '').lstrip().startswith('<') else original(body, *args)",
+            "import uvicorn",
+            f"uvicorn.run('app.main:app', host='127.0.0.1', port={port}, log_level='warning')",
+        ])]
     log_path = run_dir / "server.log"
     log = log_path.open("w", encoding="utf-8")
     proc = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1",
-         "--port", str(port), "--log-level", "warning"],
+        command,
         cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
     )
     browser = None
@@ -434,7 +450,7 @@ def test_description_and_comment_all_formats_survive_two_ui_publish_cycles(edito
     # 본문이 에디터로 교체되면 `has=comment_body` 조건은 더 이상 성립하지 않는다.
     comment_editor = page.locator(".tkt-comments .tkt-cmt .ProseMirror")
     page.wait_for_function(
-        "() => !!document.querySelector('.tkt-cmt .ProseMirror') || "
+        "() => !!document.querySelector('.tkt-cmt .ProseMirror[contenteditable=true]') || "
         "!!document.querySelector('.tkt-cmt-err')?.textContent.trim()",
         timeout=45_000,
     )
