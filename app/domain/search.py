@@ -13,7 +13,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
-from app.auth.base import SessionExpired
+from app.auth.base import SessionExpired, UpstreamError, UpstreamUnavailable
 from app.domain.names import real_name
 from app.domain.progress import norm_cat
 
@@ -117,6 +117,8 @@ def search_all(client, settings, q, scope="scoped", limit=8, only=None):
                 out[k] = fut.result()
             except Exception as e:
                 out[k] = {"items": [], "error": str(e)}
+                if isinstance(e, SessionExpired) and (not isinstance(e, UpstreamError) or e.status == 401):
+                    out[k]["needLogin"] = True
     return out
 
 
@@ -185,7 +187,9 @@ def _search_confluence(client, s, q, scope, limit):
     try:
         # 401 이면 Confluence 세션만 무음 갱신 후 한 번 재시도(자가치유). 그래도 안 되면 needLogin.
         data = client.confluence_search(cql, limit=limit)
-    except SessionExpired:
+    except SessionExpired as exc:
+        if isinstance(exc, UpstreamError) and exc.status != 401:
+            raise
         # SSO 쿠키는 **도메인별** — Jira 세션이 살아 있어도 Confluence 는 따로 인증이 필요하다.
         # 원문 메시지("세션 만료")는 Jira 가 끊긴 것처럼 읽혀 오해를 부르므로 바꿔 준다.
         return {"items": [], "needLogin": True,
@@ -243,7 +247,7 @@ def _hydrate_user_suggestions(client, rows):
     return out
 
 
-def search_users(client, s, q, limit=8):
+def search_users(client, s, q, limit=8, *, strict_auth=False):
     """@사람 멘션 자동완성 — Jira 유저 검색. [{id, name, display, avatar}].
     id 는 사번(username) → 본문에 [~id] 로 직렬화(실 Jira 가 사용자 링크로 렌더).
     name=본명(멘션에 박히는 짧은 이름) / display='{본명} {회사}'(팝업 표시 — 동명이인 구분).
@@ -252,7 +256,13 @@ def search_users(client, s, q, limit=8):
     try:
         data = client.provider.get_json(
             "/rest/api/2/user/search", params={"username": q or ".", "maxResults": limit})
-    except Exception:
+    except Exception as exc:
+        # UI suggestions stay best-effort; MCP must distinguish logout from no matching people.
+        if strict_auth and isinstance(exc, UpstreamUnavailable):
+            raise
+        if strict_auth and isinstance(exc, SessionExpired) and (
+                not isinstance(exc, UpstreamError) or exc.status == 401):
+            raise
         return []
     out = []
     for u in (data or [])[:limit]:

@@ -70,11 +70,12 @@ def register_reads(register, runtime):
     def search_users(query: str = "") -> dict:
         """Find Jira user IDs/display names through LTM's shared user lookup cache."""
         from app.domain.search import search_users as search
-        return {"users": search(runtime.client, runtime.settings, query)}
+        return {"users": search(runtime.client, runtime.settings, query, strict_auth=True)}
 
     def get_user(user_id: str = "") -> dict:
         """Read a cached user badge; empty user_id returns the current Jira identity."""
-        return runtime.client.user_badge(user_id) if user_id else runtime.client.current_user()
+        return (runtime.client.user_badge(user_id, strict_auth=True) if user_id
+                else runtime.client.current_user_for_authorization())
 
     def list_options(kind: Literal["task_types", "child_types", "edit_fields", "transitions",
                                     "priorities", "components", "epics", "link_types"],
