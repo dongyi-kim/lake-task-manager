@@ -174,7 +174,7 @@ function evictLists() { evict("/children"); evict("/siblings"); evict("/ancestor
 // → 미인증을 알게 되면 /api/status(**Jira 를 타지 않는** 경량 상태)를 지켜보다가, 인증이 서면
 //   memo 를 비우고 auth-ok 를 쏜다. 각 화면은 이미 auth-ok 에서 다시 받도록 돼 있다.
 const AUTH_POLL_MS = 2500, AUTH_WATCH_MAX = 15 * 60 * 1000;
-let _authTimer = null, _authUntil = 0;
+let _authTimer = null, _authUntil = 0, _authGeneration = 0;
 
 function stopAuthWatch() { if (_authTimer) { clearInterval(_authTimer); _authTimer = null; } }
 
@@ -184,8 +184,11 @@ export function watchAuth() {
   if (_authTimer) return;
   _authTimer = setInterval(() => {
     if (Date.now() > _authUntil) return stopAuthWatch();
+    const generation = _authGeneration;
     req("/api/status").then((s) => {
-      if (!s || s.needLogin) return;
+      if (generation !== _authGeneration) return; // an old poll cannot finish a newer login
+      if (s?.loginAttempt) window.dispatchEvent(new CustomEvent("auth-login-state", { detail: s.loginAttempt }));
+      if (!s || s.needLogin || s.down || (s.mode && s.mode !== "ok")) return;
       _memo.clear();                             // ★ 죽은 요청을 버린다 — 안 비우면 재시도가 거기 매달린다
       stopAuthWatch();
       window.dispatchEvent(new CustomEvent("auth-ok"));
@@ -261,7 +264,13 @@ export const api = {
     warmGet("/api/ticket/" + k + "/menu");
   }),
   authProbe: () => req("/api/auth/probe", { method: "POST", timeoutMs: 45 * 1000 }),
-  login: () => req("/api/login", { method: "POST", timeoutMs: 310 * 1000 }),
+  login: () => {
+    const generation = ++_authGeneration;
+    return req("/api/login", { method: "POST", timeoutMs: 30 * 1000 }).then(result => {
+      if (generation === _authGeneration) watchAuth(); // explicit login may be the first auth event
+      return result;
+    });
+  },
   updateInfo: () => req("/api/update"),                                // 업데이트 가능 여부(배포 repo) — memo 제외
   updateRestart: () => req("/api/app/update-restart", { method: "POST" }),   // git pull + 재시작(트레이 경로)
   prefs: () => req("/api/prefs").then(p => applyPrefs(p)),

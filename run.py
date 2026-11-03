@@ -228,7 +228,8 @@ def _login_one_service(page, context, name, base, paths, per_timeout, appmain):
     return False, last
 
 
-def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary=False, p=None):
+def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary=False, p=None,
+                        service=None):
     """[prod] **별도 임시 창**을 열어 Jira → Confluence → Bitbucket(설정된 것만) SSO 로그인.
 
     앱 창(page)은 건드리지 않는다 — 로그인 전용 페이지(창)를 새로 열어 거기서 IdP 로그인하고,
@@ -242,9 +243,10 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary
     """
     from app.auth.sso_session import service_probe
     from app.auth.sso_navigation import login_state
-    appmain._login_requested.clear()
     targets = getattr(s, "auth_targets", None) or [("Jira", s.jira_base.rstrip("/"), ["/rest/api/2/myself"])]
-    if only_primary:
+    if service:
+        targets = [target for target in targets if target[0].lower() == service.lower()]
+    elif only_primary:
         # ★ **앱을 켤 때는 Jira 만 인증한다.** 예전엔 Jira·Confluence·Bitbucket 을 차례로 돌았는데,
         #   서비스마다 창을 띄우고 최대 5분씩 기다리는 동안 로그인 창이 화면에 남고, 세션 저장은
         #   전부 끝난 뒤라 그 사이 앱의 인증 표시가 됐다 안 됐다 했다. 앱이 뜨자마자 필요한 것은
@@ -252,6 +254,7 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary
         targets = targets[:1]
     login_page = None
     results = []
+    all_ok = False
     try:
         for name, base, paths in targets:
             # 이미 세션이 살아 있으면(직전 로그인·리다이렉트) 창을 열지 않고 통과
@@ -288,6 +291,7 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary
                         appmain._client.reset_provider()
                     except Exception as e:
                         print(f"[login]   세션 저장 실패: {e}")
+                        results[-1] = (name, False)
                 # 인증이 방금 섰다 → 설정창·상단 알림이 **바로** 다시 확인하게 앱 페이지를 깨운다.
                 _poke_auth_changed(page)
                 # 이 서비스 로그인 창은 여기서 닫는다 — 다음 서비스를 기다리는 동안 떠 있을 이유가 없다.
@@ -302,7 +306,7 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary
         #   보던 티켓 창·쓰던 글·스크롤이 전부 날아간다(사용자가 겪은 '홈으로 돌아가고 새로 뜨는'
         #   그것이다). 세션은 이미 provider 에 반영됐고, 화면의 인증 표시는 상단 알림이
         #   주기적으로 확인해 스스로 바뀐다.
-        all_ok = all(ok for _, ok in results)
+        all_ok = bool(results) and all(ok for _, ok in results)
         print("[login] " + ("전체 완료 — " if all_ok else "일부 미완료 — ")
               + ", ".join(f"{n}={'O' if ok else 'X'}" for n, ok in results))
     except Exception as e:
@@ -316,6 +320,20 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary
                     pg.close()
         except Exception:
             pass
+    return all_ok
+
+
+def _run_pending_login(s, page, context, appmain, p=None):
+    """Consume a service request on the existing browser thread and always release its slot."""
+    service = appmain.consume_login_request()
+    if not service:
+        return
+    attempt_id = appmain.login_request_status(service)["attemptId"]
+    succeeded = False
+    try:
+        succeeded = _do_login_in_window(s, page, context, appmain, p=p, service=service)
+    finally:
+        appmain.complete_login_request(service, succeeded, attempt_id)
 
 
 # 앱 페이지(localhost)에서 클릭한 외부 링크(Jira 등)를 캡처해 시스템 기본 브라우저로 넘긴다.
@@ -910,14 +928,13 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None):
     서버는 이미 떠 있다고 가정(창의 goto 재시도가 준비를 커버) — 여기선 서버를 시작/종료하지 않는다.
     → 트레이가 이 함수를 스레드로 여러 번 재사용(창을 닫아도 백엔드는 유지). 임시 프로필은 정리.
 
-    auto_login: 최초 오픈에서만 True — prod SSO 3서비스 자동 취득 신호. (재오픈 땐 조용히 연다)
+    auto_login: 최초 오픈에서만 True — prod Jira 자동 취득 신호. (재오픈 땐 조용히 연다)
     on_ready:   창이 실제로 화면에 뜬 시점에 한 번 호출(트레이의 중복 클릭 가드 해제용).
     """
     import shutil
     import tempfile
     url = f"http://127.0.0.1:{s.app_port}/"            # localhost 는 Windows 에서 ::1 폴백 지연
     import app.main as appmain
-    appmain._window_login = True                       # /api/login 이 이 창에서 로그인하도록
     from playwright.sync_api import TimeoutError as PWTimeoutError
     from playwright.sync_api import sync_playwright
     p = sync_playwright().start()
@@ -970,19 +987,17 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None):
             on_ready()                                 # 창이 떴다 — 트레이가 다시 눌림을 받아도 된다
         except Exception:
             pass
-    # [prod] 최초 오픈에서만 3서비스 SSO 자동 취득 — 아래 while 루프가 신호를 받아 임시 창에서 구동.
+    appmain.note_window_opened()               # 로그인 요청이 이 창의 큐로 가도록 먼저 등록
+    # [prod] 최초 오픈은 Jira만 자동 취득; 명시적인 서비스 요청은 같은 큐에서 처리한다.
     # 이미 인증돼 있으면 service_probe 로 스킵(무음). (재오픈 땐 auto_login=False 라 신호 안 보냄)
     if auto_login and s.jira_env == "prod":
-        appmain._login_requested.set()
-    appmain.note_window_opened()               # 단일 인스턴스: '살아있는 창 있음' 으로 집계
+        appmain.request_service_login("jira")
     try:
         i = 0
         pump = True          # Playwright 이벤트를 넘겨받을 수 있는 상태인가
         while not page.is_closed():
             if appmain._login_requested.is_set():
-                # 시작 직후의 자동 취득은 **Jira 만**(only_primary). 트레이에서 고른 서비스 로그인은
-                # 그쪽 경로(_run_tray)가 따로 돈다.
-                _do_login_in_window(s, page, context, appmain, only_primary=True, p=p)
+                _run_pending_login(s, page, context, appmain, p=p)
             if appmain.consume_focus_request():         # 재실행/트레이 '앱 열기' 가 이 창을 앞으로
                 try:
                     page.bring_to_front()               # ★ 반드시 이 창의 스레드에서(Playwright 스레드 고정)
@@ -1099,7 +1114,6 @@ def _run_tray(s):
     # 트레이는 그 결과를 비추기만 한다 — 메뉴가 열릴 때 조회하면 그동안 트레이가 멎으므로
     # 백그라운드에서 주기적으로 채워 두고, 메뉴는 캐시된 값을 즉시 그린다.
     _sso = {}            # {서비스명: True(인증) | False(로그인 필요) | None(미설정)}
-    _busy = set()        # 로그인 진행 중인 서비스
     _probe = {"running": False}
 
     def probe_sso():
@@ -1155,22 +1169,8 @@ def _run_tray(s):
             time.sleep(60)
 
     def login_service(name, base):
-        """그 서비스만 로그인 — 저장도 그 서비스 파일에만 되므로 나머지 세션은 그대로 산다."""
-        if name in _busy:
-            return
-        _busy.add(name)
-        try:
-            from app.auth.sso_session import login_wait
-            import app.main as appmain
-            ok = login_wait(base, appmain._client.sso_store(), service=name.lower(), timeout=300)
-            if ok:
-                appmain._client.reset_provider()
-            print(f"[tray] {name} 로그인 {'성공' if ok else '실패/취소'}")
-        except Exception as e:
-            print(f"[tray] {name} 로그인 오류: {e}")
-        finally:
-            _busy.discard(name)
-            probe_sso()
+        """Use the UI/MCP login queue so the tray cannot open a duplicate login window."""
+        _appmain.request_service_login(name.lower())
 
     def sso_items():
         """서비스별 메뉴 항목 — 상태 표시 + 클릭하면 그 서비스만 로그인."""
@@ -1181,7 +1181,7 @@ def _run_tray(s):
         def item_for(name, base):
             def label(item):
                 st = _sso.get(name)
-                if name in _busy:
+                if _appmain._login_requests.status(name.lower())["pending"]:
                     return f"  … {name} 로그인 중"
                 if st is None:
                     return f"  – {name} (미설정)"

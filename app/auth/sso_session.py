@@ -755,7 +755,7 @@ def login(base, store, service="jira"):
         print(f"세션 저장 완료: {store.path(service)}")
 
 
-def _login_attempt(p, base, store, service, headless, timeout, poll):
+def _login_attempt(p, base, store, service, headless, timeout, poll, paths=None):
     """브라우저 하나 띄워 로그인 완료(폴링)를 기다린다 → 성공하면 세션 저장하고 True.
     headless=True 면 **창이 안 뜬다** — 사내 인증이 클라이언트 인증서로 자동 처리되는 환경에선
     이걸로 충분해 사용자는 창을 아예 못 본다."""
@@ -768,7 +768,7 @@ def _login_attempt(p, base, store, service, headless, timeout, poll):
         page.goto(base, wait_until="domcontentloaded")
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if _authed(context, base):
+            if service_probe(context, base, paths or ["/rest/api/2/myself"])[0]:
                 store.save(service, login_state(context))
                 return True
             time.sleep(poll)
@@ -785,7 +785,7 @@ def _login_attempt(p, base, store, service, headless, timeout, poll):
 HEADLESS_LOGIN_SECS = 35
 
 
-def login_wait(base, store, service="jira", timeout=300, poll=2.0):
+def login_wait(base, store, service="jira", timeout=300, poll=2.0, paths=None):
     """[웹/자동] SSO 로그인 완료를 폴링으로 감지해 세션 저장.
 
     ★ **먼저 창 없이(headless)** 시도한다 — 사내 SSO 가 로컬 인증서로 자동 인증되면 창이
@@ -797,11 +797,11 @@ def login_wait(base, store, service="jira", timeout=300, poll=2.0):
     with sync_playwright() as p:
         # ① 창 없이 — 인증서 자동이면 여기서 끝(사용자는 아무 창도 못 본다).
         if _login_attempt(p, base, store, service, headless=True,
-                          timeout=min(HEADLESS_LOGIN_SECS, timeout), poll=poll):
+                          timeout=min(HEADLESS_LOGIN_SECS, timeout), poll=poll, paths=paths):
             return True
         # ② 자동으로 안 됐다 → 사람 입력이 필요하니 보이는 창을 연다.
         # 세션 저장은 _login_attempt 안에서 그 서비스 것만 한다(파일 통째 덮어쓰기 방지).
-        return _login_attempt(p, base, store, service, headless=False, timeout=timeout, poll=poll)
+        return _login_attempt(p, base, store, service, headless=False, timeout=timeout, poll=poll, paths=paths)
 
 
 if __name__ == "__main__":

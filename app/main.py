@@ -48,10 +48,10 @@ _cache.purge()      # 시작 시 1회 — 지난 실행에서 쌓인 죽은 캐�
 _client = JiraClient(_settings, _cache)
 _client._wire_cache()      # 캐시에 재검증 규칙·회로차단기 연결(호출부는 그대로)
 
-# 앱 창 모드(run.py)에서 SSO 로그인을 '같은 창'으로 처리하기 위한 in-process 신호.
-#   run.py 가 _window_login=True 로 설정하고 _login_requested 를 폴링해 앱 창에서 로그인 구동.
-_login_requested = threading.Event()
-_window_login = False
+# UI·MCP·트레이의 명시적 로그인을 합친다. run.py가 요청을 자기 브라우저 스레드에서 소비한다.
+from app.auth.login_requests import LoginRequests
+_login_requests = LoginRequests()
+_login_requested = _login_requests.requested
 
 # ── 앱 창 제어 브리지 (단일 인스턴스 실행) ──────────────────────────────────
 # 창은 run.py 가 소유(Playwright)하지만, "이미 떠 있으면 포커스 / 없으면 새 창" 판정과
@@ -920,6 +920,7 @@ def api_status():
         else:
             st["mode"] = "degraded"       # 망은 닿지만 Jira/Playwright 응답이 멎음
     st["needLogin"] = need_login
+    st["loginAttempt"] = _login_requests.status("jira")
     st["workspaceRevision"] = _local_mcp.workspace_config.revision()
     return JSONResponse(st)
 
@@ -980,19 +981,71 @@ def api_prefs_put(body: _PrefsBody):
     return JSONResponse(_prefs_payload())
 
 
+def _login_target(service):
+    service = str(service or "jira").lower()
+    target = next((item for item in _settings.auth_targets if item[0].lower() == service), None)
+    if service not in ("jira", "confluence", "bitbucket") or target is None:
+        raise ValueError("설정된 인증 서비스를 선택해 주세요.")
+    return service, target
+
+
+def _login_in_background(service):
+    """Fallback for browser-only/headless servers; a single worker owns the login browser."""
+    if not _login_requests.claim(service):
+        return
+    attempt_id = _login_requests.status(service)["attemptId"]
+    succeeded = False
+    try:
+        from app.auth.sso_session import login_wait
+        service, (_name, base, paths) = _login_target(service)
+        succeeded = login_wait(base, _client.sso_store(), service=service, timeout=300, paths=paths)
+        if succeeded:
+            _client.reset_provider()
+    except Exception:
+        # The caller reads auth state separately. Never expose cookies, URLs or browser errors.
+        pass
+    finally:
+        _login_requests.complete(service, succeeded, attempt_id)
+
+
+def _dispatch_login(service):
+    if live_window_count() > 0 or _app_ctrl["open_hook"] is not None:
+        action = request_focus_or_open().get("action")
+        if action in ("focus", "open"):
+            # A tray window can fail while opening. Only an unclaimed request may fall back;
+            # a live browser thread that already owns it can never get a duplicate window.
+            fallback = threading.Timer(20, _login_in_background, args=(service,))
+            fallback.daemon = True
+            fallback.start()
+            return
+    threading.Thread(target=_login_in_background, args=(service,),
+                     name="sso-login-" + service, daemon=True).start()
+
+
+def request_service_login(service="jira"):
+    """UI, tray and MCP share one explicit login attempt per service; return immediately."""
+    if _settings.jira_env != "prod":
+        return {"ok": True, "pending": False, "started": False, "required": False}
+    service, _target = _login_target(service)
+    return {"ok": True, **_login_requests.request(service, _dispatch_login)}
+
+
+def consume_login_request():
+    return _login_requests.claim()
+
+
+def login_request_status(service):
+    return _login_requests.status(service)
+
+
+def complete_login_request(service, succeeded, attempt_id=None):
+    _login_requests.complete(service, succeeded, attempt_id)
+
+
 @app.post("/api/login")
 def api_login():
-    """[prod] SSO 로그인.
-    - 앱 창 모드(run.py): 같은 창에서 로그인하도록 신호만 보내고 즉시 반환(pending).
-    - 그 외(폴백): 별도 Chromium 창을 띄워 로그인 폴링(login_wait).
-    mock/local 은 로그인 불필요 → 즉시 ok."""
-    if _settings.jira_env != "prod":
-        return {"ok": True, "note": f"env={_settings.jira_env}: 로그인 불필요"}
-    if _window_login:
-        _login_requested.set()                       # run.py 가 앱 창에서 구동
-        return {"ok": True, "pending": True}
-    ok = _client.login()
-    return JSONResponse({"ok": ok}, status_code=200 if ok else 504)
+    """Start or join the existing Jira login flow without waiting for human input."""
+    return request_service_login("jira")
 
 
 def _may_edit(key: str) -> bool:
