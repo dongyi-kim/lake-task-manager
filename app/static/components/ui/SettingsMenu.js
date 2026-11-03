@@ -5,6 +5,7 @@
 import { api } from "../../lib/api.js";
 import { TYPEAHEAD_PRESETS, typeaheadDelay, setTypeaheadDelay } from "../../lib/typeahead.js";
 import { resetSeen } from "../../lib/guides.js";
+import CacheSettingsDialog from "./CacheSettingsDialog.js";
 import AgentSettingsDialog from "./AgentSettingsDialog.js";
 
 const SERVICES = ["Jira", "Confluence", "Bitbucket"];
@@ -17,7 +18,7 @@ const HOTKEYS = [
 
 export default {
   name: "SettingsMenu",
-  components: { AgentSettingsDialog },
+  components: { AgentSettingsDialog, CacheSettingsDialog },
   props: { theme: { type: String, default: "light" } },
   emits: ["toggle-theme"],
   data() {
@@ -32,7 +33,7 @@ export default {
       bbEnabled: false, bbConfigured: false, bbBusy: false,   // Bitbucket 연동(저장됨, 기본 꺼짐)
       hotkey: "ctrl+alt+space", hkBusy: false,   // 빠른 열기 단축키(저장됨)
       // 에이전트는 선택 설치라 아예 없을 수 있다 — 그때는 이유를 보여 준다.
-      agentOn: false, agentWhy: "", agentDlg: false,
+      agentOn: false, agentWhy: "", agentDlg: false, cacheDlg: false,
     };
   },
   computed: {
@@ -202,6 +203,9 @@ export default {
         </div>
       </div>
 
+      <div class="sm-sec"><div class="sm-h">캐시</div>
+        <button class="sm-btn" @click="cacheDlg = true; close()">표시 보존 · 갱신 간격 설정 →</button>
+      </div>
       <!-- 기능 안내 — 한 번 보고 닫으면 다시 안 뜨므로, 다시 볼 길을 여기 둔다.
            (목록 자체는 lib/guides.js 가 갖는다. 지워진 안내는 여기서 되살아나지 않는다.) -->
       <div class="sm-sec">
@@ -231,6 +235,7 @@ export default {
       </div>
     </div>
 
+    <CacheSettingsDialog v-if="cacheDlg" @close="cacheDlg = false" />
     <AgentSettingsDialog v-if="agentDlg" @close="agentDlg = false" />
   </div>`,
 };
