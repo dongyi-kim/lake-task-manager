@@ -63,6 +63,15 @@ export const GUIDES = [
         + "로 접속하면 LTM을 사용할 수 있습니다.",
   },
   {
+    id: "local-mcp-connect-1",
+    anchor: ".setmenu-trig",
+    place: "bottom",
+    order: 8,
+    title: "로컬 에이전트에서 LTM 연결하기",
+    body: "설정 → 로컬 MCP에서 연결 설정을 복사해 에이전트에 추가하세요. "
+        + "LTM이 실행 중일 때 Jira 기능과 캐시를 함께 사용할 수 있습니다.",
+  },
+  {
     id: "refresh-fab-1",
     anchor: ".fab-refresh",
     routes: DATA_ROUTES,
