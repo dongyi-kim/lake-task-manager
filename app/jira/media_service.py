@@ -22,7 +22,7 @@ def _is_default_avatar_url(url):
 class JiraMediaMixin:
     """Media-facing JiraClient methods; the owner supplies settings, cache, and provider."""
 
-    AVATAR_TTL = 30 * 24 * 3600
+    AVATAR_TTL = 24 * 3600
     AVATAR_BYTES_MAX = 128 * 1024
     LINK_TITLE_TTL = 7 * 24 * 3600
     CONF_TITLE_TTL = 24 * 3600
@@ -30,44 +30,34 @@ class JiraMediaMixin:
 
     def _avatar_url(self, user):
         cache_key = f"avatar_url:{self.env}:{user}"
-        hit = self.cache.get(cache_key)
-        if hit is not None:
-            return hit or None
-        try:
+        def fetch():
             raw = self.provider.get_json("/rest/api/2/user", params={"username": user})
-        except Exception:
-            return None
-        urls = ((raw or {}).get("avatarUrls") or {})
-        url = next((urls[size] for size in ("48x48", "32x32", "24x24", "16x16") if urls.get(size)), None)
-        if _is_default_avatar_url(url):
-            url = None
-        self.cache.set(cache_key, url or "", self.AVATAR_TTL)
-        return url
+            if not isinstance(raw, dict) or not (raw.get("name") or raw.get("key")):
+                raise ValueError("Incomplete Jira user response")
+            urls = raw.get("avatarUrls") or {}
+            url = next((urls[size] for size in ("48x48", "32x32", "24x24", "16x16") if urls.get(size)), None)
+            return "" if _is_default_avatar_url(url) else url
+        return self.cache.get_or_set(cache_key, self.AVATAR_TTL, fetch)[0] or None
 
     def user_avatar(self, user):
-        url = self._avatar_url(user)
-        if not url:
-            return None, None
+        # Read image bytes before resolving the URL: a stale photo must remain visible offline.
         cache_key = f"avatar_bytes:{self.env}:{user}"
-        cached = self.cache.get(cache_key)
-        if isinstance(cached, dict) and cached.get("b64"):
-            try:
-                return base64.b64decode(cached["b64"]), cached.get("ct") or None
-            except Exception:
-                pass
-        try:
+        def fetch():
+            url = self._avatar_url(user)
+            if not url:
+                return {"b64": "", "ct": ""}
             if url.startswith(("http://", "https://")):
                 data, content_type = self.fetch_media(url)
             else:
                 data, content_type = self.provider.get_bytes(url)
+            if not data or len(data) > self.AVATAR_BYTES_MAX:
+                raise ValueError("Invalid or oversized Jira avatar")
+            return {"b64": base64.b64encode(data).decode("ascii"), "ct": content_type or ""}
+        try:
+            value = self.cache.get_or_set(cache_key, self.AVATAR_TTL, fetch)[0]
+            return (base64.b64decode(value["b64"]) or None), value.get("ct") or None
         except Exception:
             return None, None
-        if data and len(data) <= self.AVATAR_BYTES_MAX:
-            self.cache.set(cache_key, {
-                "b64": base64.b64encode(data).decode("ascii"),
-                "ct": content_type or "",
-            }, self.AVATAR_TTL)
-        return data, content_type
 
     def _media_allowed_host(self, host):
         host = (host or "").split("@")[-1].split(":")[0].lower()

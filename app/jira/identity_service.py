@@ -17,54 +17,43 @@ class JiraIdentityMixin:
     SESSION_STATE_PERSIST_EVERY = 15 * 60
 
     def _display_name(self, user_id):
-        """Return Jira's full display name, caching successful directory lookups only."""
+        """Keep useful names visible until display expiry; refresh once when stale."""
         cache_key = f"user:{self.env}:{user_id}"
-        hit = self.cache.get(cache_key)
-        if hit is not None:
-            return hit
-        try:
+        def fetch():
             raw = self.provider.get_json("/rest/api/2/user", params={"username": user_id})
-            display_name = raw.get("displayName")
+            name = raw.get("displayName")
+            if not name:
+                raise ValueError("Incomplete Jira user response")
+            return name
+        try:
+            return self.cache.get_or_set(cache_key, self.USER_TTL, fetch)[0]
         except Exception:
-            display_name = None
-        if display_name:
-            self.cache.set(cache_key, display_name, self.USER_TTL)
-            return display_name
-        return user_id
+            return user_id
 
     def display_name_cached(self, user_id):
-        """Return a cached display name without initiating an upstream request."""
-        return self.cache.get(f"user:{self.env}:{user_id}")
+        got = self.cache.get_alive(f"user:{self.env}:{user_id}")
+        return got[0] if got else None
 
     def _mention_name(self, user_id):
         return real_name(self._display_name(user_id)) or user_id
 
     def user_badge(self, user_id):
-        """Resolve one exact Jira user for mention hover content."""
         user_id = str(user_id or "").strip()
         if not user_id:
             return None
         cache_key = f"userbadge:{self.env}:{user_id.lower()}"
-        hit = self.cache.get(cache_key)
-        if hit is not None:
-            return hit
-        try:
+        def fetch():
             raw = self.provider.get_json("/rest/api/2/user", params={"username": user_id}) or {}
+            actual = raw.get("name") or raw.get("key")
+            if not actual or str(actual).lower() != user_id.lower():
+                raise ValueError("Incomplete Jira user response")
+            display_name = raw.get("displayName") or actual
+            return {"id": actual, "username": actual, "name": real_name(display_name) or actual,
+                    "displayName": display_name, "avatar": "/api/avatar/" + actual}
+        try:
+            return self.cache.get_or_set(cache_key, self.USER_TTL, fetch)[0]
         except Exception:
             return None
-        actual = raw.get("name") or raw.get("key")
-        if not actual or str(actual).lower() != user_id.lower():
-            return None
-        display_name = raw.get("displayName") or actual
-        result = {
-            "id": actual,
-            "username": actual,
-            "name": real_name(display_name) or actual,
-            "displayName": display_name,
-            "avatar": "/api/avatar/" + actual,
-        }
-        self.cache.set(cache_key, result, self.USER_TTL)
-        return result
 
     def upstream_down(self):
         return time.time() < getattr(self, "_upstream_down_until", 0)

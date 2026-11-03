@@ -18,7 +18,7 @@ from pathlib import Path
 _LOCK = threading.Lock()
 # ★ 이 표에 없는 키는 **저장도 조회도 조용히 버려진다**(load/save 가 _DEFAULTS 로 거른다).
 #   새 설정을 추가할 때 여기 먼저 넣어야 한다 — 안 넣으면 화면은 저장됐다고 하고 값은 사라진다.
-_DEFAULTS = {"bitbucketEnabled": False,
+_DEFAULTS = {"bitbucketEnabled": False, "cachePolicy": None, "policyRevision": 0,
              # 빠른 열기 전역 단축키(데스크톱 앱). 설정/트레이에서 바꾼다. run.py 가 이 값으로 등록.
              "quickOpenHotkey": "ctrl+alt+space",
 
@@ -73,7 +73,7 @@ def load() -> dict:
     return out
 
 
-def save(patch: dict) -> dict:
+def save(patch: dict, *, strict=False) -> dict:
     """일부 키만 바꿔 저장하고 병합 결과를 돌려준다. 원자적 교체(중간에 깨진 파일이 안 남게)."""
     with _LOCK:
         cur = load()
@@ -87,5 +87,6 @@ def save(patch: dict) -> dict:
                 json.dump(cur, f, ensure_ascii=False, indent=2)
             tmp.replace(p)
         except Exception:
-            pass
+            if strict:
+                raise
         return cur

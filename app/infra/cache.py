@@ -15,6 +15,8 @@ import json
 import sqlite3
 import threading
 import time
+from concurrent.futures import Future
+from app.infra.cache_policy import LONG_DISPLAY_KINDS, DISPLAY_KINDS, is_done, note_read, read_scope, revalidating
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS cache (
@@ -22,6 +24,9 @@ CREATE TABLE IF NOT EXISTS cache (
     payload    TEXT NOT NULL,
     fetched_at REAL NOT NULL,
     ttl        INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cache_display (
+    key TEXT PRIMARY KEY, payload TEXT NOT NULL, fetched_at REAL NOT NULL, ttl INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS snapshot (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,7 +79,10 @@ class Cache:
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.executescript(_SCHEMA)
         self._migrate()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self.policy = None
+        self.policy_revision = 0
+        self._flights = {}
         self.dead_ttl = int(dead_ttl)
         self._set_count = 0
         # In-flight producers capture this fence. Any invalidation makes their pre-write result
@@ -122,17 +130,102 @@ class Cache:
             pass
 
     # ── TTL 캐시 ──
+    def configure(self, policy, revision=0):
+        with self._lock:
+            self.policy, self.policy_revision = policy, revision
+            self.dead_ttl = policy.displaySeconds
+
+    def _ttl(self, key, value, original):
+        if self.policy is None:
+            return original
+        done = False
+        if key.startswith("comments:"):
+            suffix = key.split(":", 1)[1]
+            row = self._conn.execute(
+                "SELECT payload,fetched_at FROM cache WHERE key IN (?,?,?) ORDER BY fetched_at DESC LIMIT 1",
+                tuple(kind + ":" + suffix for kind in ("issue", "issueL", "issueview")),
+            ).fetchone()
+            done = bool(row and time.time() - row[1] <= self.dead_ttl and is_done(json.loads(row[0])))
+        return self.policy.ttl(key, value, original, done)
+
+    def display_ttl(self, key):
+        if self.policy and key.split(":", 1)[0] in LONG_DISPLAY_KINDS:
+            return self.policy.metadataDisplaySeconds
+        return self.dead_ttl
+
+    def metadata(self, key):
+        with self._lock:
+            row = self._conn.execute("SELECT payload,fetched_at,ttl FROM cache WHERE key=?", (key,)).fetchone()
+            invalidated = not row
+            if not row:
+                row = self._conn.execute("SELECT payload,fetched_at,ttl FROM cache_display WHERE key=?", (key,)).fetchone()
+            if not row:
+                return None
+            value, fetched, ttl = json.loads(row[0]), row[1], row[2]
+            fresh = 0 if invalidated else fetched + min(self._ttl(key, value, ttl), self.display_ttl(key))
+            display = fetched + self.display_ttl(key)
+            return {"fetchedAt": fetched, "freshUntil": fresh, "displayUntil": display,
+                    "invalidated": invalidated,
+                    "state": "dead" if time.time() > display else "fresh" if not invalidated and time.time() <= fresh else "stale"}
+
     def get(self, key):
         with self._lock:
-            row = self._conn.execute(
-                "SELECT payload, fetched_at, ttl FROM cache WHERE key=?", (key,)
-            ).fetchone()
-        if not row:
-            return None
-        payload, fetched_at, ttl = row
-        if time.time() - fetched_at > ttl:
-            return None                      # 만료
-        return json.loads(payload)
+            row = self._conn.execute("SELECT payload,fetched_at,ttl FROM cache WHERE key=?", (key,)).fetchone()
+            if not row:
+                return None
+            value = json.loads(row[0])
+            if time.time() - row[1] > min(self._ttl(key, value, row[2]), self.display_ttl(key)):
+                return None
+            note_read(self.metadata(key))
+            return value
+
+    def refresh(self, key, ttl, producer):
+        """Share foreground/background producers. Only complete successes advance source age."""
+        with self._lock:
+            future = self._flights.get(key)
+            owner = future is None
+            if owner:
+                # A producer may have finished between the caller's miss and this lock.
+                fresh = self.get(key)
+                if fresh is not None:
+                    return fresh
+                future = self._flights[key] = Future()
+        if not owner:
+            value = future.result()
+            note_read(self.metadata(key))
+            return value
+        fence = self.fence()
+        try:
+            with read_scope(strict=True) as sources:
+                value = producer()
+            # Assemblies inherit their oldest dependency; reading stale data cannot rejuvenate it.
+            fetched = min((r["fetchedAt"] for r in sources), default=time.time())
+            complete = value is not None and not (isinstance(value, dict) and
+                       (value.get("error") or value.get("errors") or value.get("partial")))
+            if key.split(":", 1)[0] in {"issue", "issueL", "issueview"} and self.policy:
+                complete = complete and isinstance(value, dict) and isinstance(value.get("fields"), dict)
+            if complete:
+                self.set_if_fence(key, value, ttl, fence, fetched_at=fetched)
+            if complete:
+                self.last_upstream_ok = time.time()
+                if self.on_upstream_ok:
+                    try:
+                        self.on_upstream_ok()
+                    except Exception:
+                        pass
+            future.set_result(value)
+            note_read(self.metadata(key))
+            return value
+        except BaseException as exc:
+            from app.auth.base import PermissionDenied
+            if isinstance(exc, (PermissionDenied, PermissionError)) or getattr(exc, "status", None) in (403, 404):
+                self.forget(key)
+            future.set_exception(exc)
+            raise
+        finally:
+            with self._lock:
+                if self._flights.get(key) is future:
+                    self._flights.pop(key, None)
 
     def set(self, key, value, ttl):
         with self._lock:
@@ -140,6 +233,7 @@ class Cache:
                 "INSERT OR REPLACE INTO cache(key, payload, fetched_at, ttl) VALUES (?,?,?,?)",
                 (key, json.dumps(value, ensure_ascii=False), time.time(), int(ttl)),
             )
+            self._conn.execute("DELETE FROM cache_display WHERE key=?", (key,))
             # 주기적 자동 정리 — 오래 켜 두는 세션에서도 디스크가 계속 늘지 않게(비용은 amortize).
             self._set_count += 1
             if self._set_count >= self.PURGE_EVERY:
@@ -151,15 +245,16 @@ class Cache:
         with self._lock:
             return self._write_fence
 
-    def set_if_fence(self, key, value, ttl, fence):
+    def set_if_fence(self, key, value, ttl, fence, *, fetched_at=None):
         """Store only when no invalidation happened after the producer started."""
         with self._lock:
             if self._write_fence != fence:
                 return False
             self._conn.execute(
                 "INSERT OR REPLACE INTO cache(key, payload, fetched_at, ttl) VALUES (?,?,?,?)",
-                (key, json.dumps(value, ensure_ascii=False), time.time(), int(ttl)),
+                (key, json.dumps(value, ensure_ascii=False), (time.time() if fetched_at is None else fetched_at), int(ttl)),
             )
+            self._conn.execute("DELETE FROM cache_display WHERE key=?", (key,))
             self._set_count += 1
             if self._set_count >= self.PURGE_EVERY:
                 self._set_count = 0
@@ -185,6 +280,7 @@ class Cache:
                 "INSERT OR REPLACE INTO cache(key, payload, fetched_at, ttl) VALUES (?,?,?,?)",
                 rows,
             )
+            self._conn.executemany("DELETE FROM cache_display WHERE key=?", [(r[0],) for r in rows])
             self._set_count += len(rows)
             if self._set_count >= self.PURGE_EVERY:
                 self._set_count = 0
@@ -192,7 +288,7 @@ class Cache:
             self._conn.commit()
             return True
 
-    def get_many(self, keys):
+    def get_many(self, keys, *, alive=False):
         """Return fresh cache values for keys with a bounded number of SQLite round trips."""
         ordered = list(dict.fromkeys(str(key) for key in keys if key))
         if not ordered:
@@ -207,11 +303,18 @@ class Cache:
                     batch,
                 ).fetchall()
                 for key, payload, fetched_at, ttl in rows:
-                    if now - fetched_at <= ttl:
+                    if now - fetched_at <= (self.display_ttl(key) if alive else min(self._ttl(key, json.loads(payload), ttl), self.display_ttl(key))):
                         try:
                             found[key] = json.loads(payload)
+                            note_read(self.metadata(key))
                         except Exception:
                             pass
+        if alive:
+            for key in ordered:
+                if key not in found:
+                    value = self.get_alive(key)
+                    if value:
+                        found[key] = value[0]
         return found
 
     def entries_by_prefix(self, prefix):
@@ -230,7 +333,7 @@ class Cache:
                 "WHERE key>=? AND key<?", (prefix, prefix + "\uffff")
             ).fetchall()
         for key, payload, fetched_at, ttl in rows:
-            if now - fetched_at <= ttl:
+            if now - fetched_at <= min(self._ttl(key, json.loads(payload), ttl), self.display_ttl(key)):
                 try:
                     found[key] = json.loads(payload)
                 except Exception:
@@ -263,7 +366,13 @@ class Cache:
         (SQLite 는 DELETE 로 파일이 줄진 않지만 빈 페이지를 재사용하므로 크기가 안정된다.)"""
         now = time.time()
         try:
-            self._conn.execute("DELETE FROM cache WHERE ? - fetched_at > ?", (now, self.dead_ttl))
+            if self.policy:
+                for table in ("cache", "cache_display"):
+                    self._conn.execute(f"DELETE FROM {table} WHERE ? - fetched_at > CASE WHEN "
+                                   "substr(key,1,instr(key,':')-1) IN ('epicmeta','avatar_url','avatar_bytes') "
+                                   "THEN ? ELSE ? END", (now, self.policy.metadataDisplaySeconds, self.dead_ttl))
+            else:
+                self._conn.execute("DELETE FROM cache WHERE ? - fetched_at > ?", (now, self.dead_ttl))
             self._conn.execute("DELETE FROM snapshot WHERE taken_at < ?",
                                (now - self.SNAPSHOT_KEEP_DAYS * 86400,))
             self._conn.execute("DELETE FROM mutation_receipt WHERE expires_at < ?", (now,))
@@ -282,66 +391,38 @@ class Cache:
             self._conn.close()
 
     def get_or_set(self, key, ttl, producer):
-        """신선하면 그대로, 아니면 producer() 로 갱신. **갱신에 실패하면 낡은 값으로 버틴다.**
-
-        오프라인·SSO 만료에서 화면을 지키는 지점이 여기다. 예전엔 producer 가 실패하면 그대로
-        예외가 올라가 화면이 통째로 비었는데, 정작 어제 받아 둔 같은 데이터가 캐시에 있었다.
-        dead_ttl 안이면 그걸 준다 — 낡았다는 사실은 화면 상단 알림이 따로 말한다.
-
-        반환: (값, hit) — hit=True 는 상류를 안 탔다는 뜻(신선하든 낡았든).
-        """
         hit = self.get(key)
         if hit is not None:
-            # 편집에 예민한 키는 신선해도 뒤에서 다시 받는다(화면은 즉시 뜨고 값은 곧 최신이 된다).
             if self._needs_revalidate(key):
                 self.revalidator(key, ttl, producer)
             return hit, True
-        # 상류가 죽은 걸 이미 아는 상태면 붙어 보지 않는다(실패 판정에만 수십 초가 걸린다).
-        if self.skip_producer and self.skip_producer():
-            alive = self.get_alive(key)
-            if alive is not None:
+        alive = self.get_alive(key, record=False)
+        display = key.split(":", 1)[0] in DISPLAY_KINDS
+        if not revalidating() and alive is not None:
+            if self.skip_producer and self.skip_producer():
                 self.served_stale_at = time.time()
+                note_read(self.metadata(key))
                 return alive[0], True
-        fence = self.fence()
+            if (self.policy is not None and display and self.revalidator
+                    and not self.metadata(key)["invalidated"]):
+                self.revalidator(key, ttl, producer)
+                self.served_stale_at = time.time()
+                note_read(self.metadata(key))
+                return alive[0], True
         try:
-            value = producer()
+            return self.refresh(key, ttl, producer), False
         except Exception:
-            alive = self.get_alive(key)
-            if alive is None:
-                raise                       # 낡은 값조차 없으면 숨길 게 없다 — 그대로 알린다
+            if revalidating() or alive is None or self.get_alive(key, record=False) is None:
+                raise
             self.served_stale_at = time.time()
+            note_read(self.metadata(key))
             return alive[0], True
-        self.set_if_fence(key, value, ttl, fence)
-        self.last_upstream_ok = time.time()
-        if self.on_upstream_ok:
-            try:
-                self.on_upstream_ok()
-            except Exception:
-                pass                    # 알림 실패가 조회를 깨면 안 된다
-        return value, False
 
     def get_or_set_strict(self, key, ttl, producer):
-        """Return a fresh hit or a freshly produced value; never promote stale data after failure.
-
-        JQL leaf membership is later assembled into new snapshots and aggregate caches. Letting a
-        failed refresh fall back to an expired leaf makes that old membership look freshly proven
-        and hides the failure from progressive UI error handling. Detail/SWR caches still use
-        :meth:`get_or_set`; this stricter contract is intentionally opt-in for authoritative
-        membership sets.
-        """
         hit = self.get(key)
         if hit is not None:
             return hit, True
-        fence = self.fence()
-        value = producer()                    # exceptions intentionally escape; nothing is cached
-        self.set_if_fence(key, value, ttl, fence)
-        self.last_upstream_ok = time.time()
-        if self.on_upstream_ok:
-            try:
-                self.on_upstream_ok()
-            except Exception:
-                pass
-        return value, False
+        return self.refresh(key, ttl, producer), False
 
     def _needs_revalidate(self, key):
         if not self.revalidator or not self.always_revalidate:
@@ -367,57 +448,79 @@ class Cache:
         except Exception:
             return None
 
-    def get_alive(self, key, dead_ttl=None):
+    def get_alive(self, key, dead_ttl=None, *, record=True):
         """죽지 않은(dead_ttl 이내) 값. 낡았어도 준다. (값, 받아온 시각) 또는 None."""
         got = self.get_stale_at(key)
+        if not got and self.policy is not None:
+            with self._lock:
+                row = self._conn.execute("SELECT payload,fetched_at FROM cache_display WHERE key=?", (key,)).fetchone()
+            if row:
+                got = json.loads(row[0]), float(row[1])
         if not got:
             return None
-        dead = self.dead_ttl if dead_ttl is None else int(dead_ttl)
-        return got if (time.time() - got[1]) <= dead else None
+        dead = self.display_ttl(key) if dead_ttl is None else int(dead_ttl)
+        if time.time() - got[1] > dead:
+            return None
+        if record:
+            note_read(self.metadata(key))
+        return got
 
     def has_any(self):
-        """캐시에 쓸 만한 게 하나라도 있는가 — 오프라인으로 띄울지, 로그인부터 시킬지 가른다."""
         with self._lock:
-            row = self._conn.execute(
-                "SELECT 1 FROM cache WHERE fetched_at > ? LIMIT 1",
-                (time.time() - self.dead_ttl,)).fetchone()
-        return bool(row)
+            for table in ("cache", "cache_display"):
+                row = self._conn.execute(
+                    f"SELECT 1 FROM {table} WHERE ? - fetched_at <= CASE WHEN "
+                    "substr(key,1,instr(key,':')-1) IN ('epicmeta','avatar_url','avatar_bytes') "
+                    "THEN ? ELSE ? END LIMIT 1",
+                    (time.time(), self.policy.metadataDisplaySeconds if self.policy else self.dead_ttl,
+                     self.dead_ttl)).fetchone()
+                if row:
+                    return True
+        return False
 
     def get_or_set_swr(self, key, ttl, producer, background):
-        """stale-while-revalidate.
-
-        · 신선하면 그대로
-        · 만료됐지만 값이 남아 있으면 **즉시 그 값을 주고** 갱신은 background(fn) 에 맡긴다
-        · 아예 없으면 producer() 를 동기로 실행(첫 조회는 기다릴 수밖에 없다)
-
-        체감 대기시간을 없애는 게 목적이다 — 재방문 시 화면은 즉시 뜨고,
-        새 데이터는 다음 조회부터 반영된다.
-        """
         hit = self.get(key)
         if hit is not None:
             if self._needs_revalidate(key):
-                background(key, ttl, producer)   # 신선해도 다시 받는다(편집에 예민한 키)
+                background(key, ttl, producer)
             return hit, "fresh"
-        stale = self.get_stale(key)
-        if stale is not None:
-            background(key, ttl, producer)
-            return stale, "stale"
-        fence = self.fence()
-        value = producer()
-        self.set_if_fence(key, value, ttl, fence)
-        return value, "miss"
+        alive = self.get_alive(key, record=False)
+        if alive is not None and not revalidating():
+            if not self.skip_producer or not self.skip_producer():
+                background(key, ttl, producer)
+            note_read(self.metadata(key))
+            return alive[0], "stale"
+        return self.refresh(key, ttl, producer), "miss"
+
+    def _archive_display(self, where, args):
+        if self.policy is None:
+            return
+        kinds = tuple(DISPLAY_KINDS)
+        marks = ",".join("?" for _ in kinds)
+        self._conn.execute(
+            f"INSERT OR REPLACE INTO cache_display SELECT * FROM cache WHERE ({where}) "
+            f"AND substr(key,1,instr(key,':')-1) IN ({marks})", tuple(args) + kinds)
+
+    def forget(self, key):
+        """Definitive deletion/permission loss removes both authoritative and display values."""
+        with self._lock:
+            self._write_fence += 1
+            for table in ("cache", "cache_display"):
+                self._conn.execute(f"DELETE FROM {table} WHERE key=?", (key,))
+            self._conn.commit()
 
     def invalidate(self, prefix=None):
         with self._lock:
             self._write_fence += 1
             if prefix:
+                self._archive_display("key LIKE ?", (prefix + "%",))
                 self._conn.execute("DELETE FROM cache WHERE key LIKE ?", (prefix + "%",))
             else:
                 self._conn.execute("DELETE FROM cache")
+                self._conn.execute("DELETE FROM cache_display")
             self._conn.commit()
 
     def invalidate_keys(self, keys):
-        """Delete exact cache keys in one fenced transaction."""
         unique = list(dict.fromkeys(str(key) for key in keys if key))
         if not unique:
             return 0
@@ -426,6 +529,7 @@ class Cache:
             for offset in range(0, len(unique), 400):
                 batch = unique[offset:offset + 400]
                 marks = ",".join("?" for _ in batch)
+                self._archive_display(f"key IN ({marks})", batch)
                 self._conn.execute(f"DELETE FROM cache WHERE key IN ({marks})", batch)
             self._conn.commit()
         return len(unique)

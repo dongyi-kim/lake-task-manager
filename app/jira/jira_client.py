@@ -859,8 +859,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         fk, ck = f"issue:{self.env}:{key}", f"issueL:{self.env}:{key}"
         full = self.cache.get_stale_at(fk)        # (값, 받아온 시각) | None
         light = self.cache.get_stale_at(ck)
-        full_ok = full is not None and (now - full[1]) <= ttl
-        light_ok = light is not None and (now - light[1]) <= ttl
+        full_ok = full is not None and self.cache.get(fk) is not None
+        light_ok = light is not None and self.cache.get(ck) is not None
         # 전체가 살아 있고(TTL내) 경량보다 더(또는 같이) 최신이면 전체를 쓴다 — 굳이 다시 안 받는다.
         if full_ok and (not light_ok or full[1] >= light[1]):
             return full[0]
@@ -882,18 +882,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
     ISSUE_BATCH = 50                  # JQL "key in (...)" 한 번에 담을 최대 개수
 
-    # 매번 재검증하는 캐시 키 = **사람이 방금 바꿨을 수 있고, 틀리면 바로 곤란한 것**뿐이다.
-    #   issue/issueview  티켓 본문 + 상태·담당·마감(같은 응답에 들어 있다)
-    #   comments         댓글
-    # 여기까지가 "지금 이 티켓이 어떤 상태이고 무슨 얘기가 오갔나" 다. TTL 이 15분이면 내가
-    # 방금 쓴 댓글이 15분 동안 안 보이는데, 그건 캐시가 아니라 버그로 보인다.
-    #
-    # ★ 나머지는 일부러 뺐다. 첨부·링크·이력(changelog/timeline)·계보(ancestors/siblings/
-    #   children/related)는 자주 바뀌지 않고, 조금 낡아도 판단이 틀어지지 않는다. 반면 갱신
-    #   비용은 크다 — 계보 하나가 상류를 여러 번 타고(실측 3건), prod 는 상류가 단일 큐라
-    #   그게 쌓이면 정작 본문·댓글이 밀린다. 강제 갱신은 값싼 것에만 건다.
-    #   (내가 첨부·링크를 직접 바꾼 경우는 쓰기 직후 해당 키를 invalidate 하므로 이미 최신이다.)
-    REVALIDATE_PREFIXES = ("issue:", "issueL:", "issueview:", "comments:")
+    # TTL expiry or successful writes trigger revalidation; fresh display data is reusable.
+    REVALIDATE_PREFIXES = ()  # successful writes invalidate; fresh reads need no upstream request
 
     #: 요청 한 건이 도는 동안의 '못 가져온 개수'(스레드별)
     _miss = threading.local()
@@ -945,7 +935,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         def job():
             try:
                 with background_upstream():
-                    self.cache.set_if_fence(key, producer(), ttl, fence)
+                    if self.cache.fence() == fence and self.cache.get(key) is None:
+                        self.cache.refresh(key, ttl, producer)
             except Exception:
                 pass                     # 갱신 실패는 조용히 — stale 값이 계속 쓰인다
             finally:
@@ -4037,29 +4028,33 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             self.cache.invalidate_keys([cache_key])
 
         def produce():
-            badge = self._ticket_badge_strict(key, strict_cache=True)
-            if not badge:
-                raise _EpicMetadataUnavailable(key)
-            title = str(badge.get("epicName") or badge.get("summary") or "").strip()
-            if not title or title.casefold() == key.casefold():
-                raise _EpicMetadataUnavailable(key)
-            # Store enough of the same authoritative record for ancestry/WBS/search to share the
-            # one 12-hour policy.  The original three fields remain backward-compatible.
-            return {
-                "key": key,
-                "title": title,
-                "summary": badge.get("summary") or None,
-                "epicName": badge.get("epicName") or None,
-                "status": badge.get("status") or None,
-                "statusCategory": badge.get("statusCategory") or "todo",
-                "assignee": badge.get("assignee") or None,
-            }
+            return self._fetch_epic_metadata(key)
 
         try:
             result, _hit = self.cache.get_or_set(cache_key, self.EPIC_META_TTL, produce)
         except _EpicMetadataUnavailable:
             return None
         return result if self._usable_epic_metadata(result, key) else None
+
+    def _fetch_epic_metadata(self, key):
+        badge = self._ticket_badge_strict(key, strict_cache=True)
+        if not badge:
+            raise _EpicMetadataUnavailable(key)
+        title = str(badge.get("epicName") or badge.get("summary") or "").strip()
+        if not title or title.casefold() == key.casefold():
+            raise _EpicMetadataUnavailable(key)
+        # Store enough of the same authoritative record for ancestry/WBS/search to share the
+        # one 12-hour policy.  The original three fields remain backward-compatible.
+        return {
+            "key": key,
+            "title": title,
+            "summary": badge.get("summary") or None,
+            "epicName": badge.get("epicName") or None,
+            "status": badge.get("status") or None,
+            "statusCategory": badge.get("statusCategory") or "todo",
+            "assignee": badge.get("assignee") or None,
+        }
+
 
     @staticmethod
     def _usable_epic_metadata(value, key=None):
@@ -4098,12 +4093,15 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             str(key).strip().upper() for key in (keys or ()) if str(key or "").strip()))
         if not ordered:
             return []
-        cached = self.cache.get_many(f"epicmeta:{self.env}:{key}" for key in ordered)
+        cached = self.cache.get_many((f"epicmeta:{self.env}:{key}" for key in ordered), alive=True)
         result = []
         for key in ordered:
             value = cached.get(f"epicmeta:{self.env}:{key}")
             if self._usable_epic_metadata(value, key):
                 result.append(value)
+                cache_key = f"epicmeta:{self.env}:{key}"
+                if self.cache.get(cache_key) is None and self.cache.revalidator:
+                    self._refresh_bg(cache_key, self.s.cache_ttl_seconds, lambda k=key: self._fetch_epic_metadata(k))
         return result
 
     def epic_metadata_many(self, keys):
@@ -4181,8 +4179,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         for pre in ("issue", "issueL", "issueview", "comments", "attachments", "documents",
                     "remotelinks", "timeline", "changelog", "children", "related",
                     "siblings", "ancestors"):
-            self.cache.invalidate(f"{pre}:{self.env}:{key}")
-        self._invalidate_epic_metadata(key)
+            self.cache.forget(f"{pre}:{self.env}:{key}")
+        self.cache.forget(f"epicmeta:{self.env}:{key}")
         self._invalidate_direct_child_views(key, membership=True)
         self._invalidate_direct_child_views(parent_key, membership=True)
         # SubTask 삭제는 Task의 membership만 바꾼다. 그 Task가 속한 Epic의 Task 목록까지
@@ -4986,6 +4984,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         ck = f"issueview:{self.env}:{key}"
 
         def fetch():
+            fence = self.cache.fence()
             d = self.provider.get_json(
                 f"/rest/api/2/issue/{key}",
                 params={"fields": self._issue_fields(), "expand": "renderedFields"})
@@ -4993,21 +4992,15 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             # 함께 데운다 → 다이얼로그의 관련(issuelinks)·첨부(attachment)·자식 조회가 재요청 없이
             # 이걸 재사용한다(경량 검색으로 issue:{key} 가 안 데워지는 걸 상쇄 + 기존 중복 제거).
             if isinstance(d, dict) and "fields" in d:
-                self.cache.set(f"issue:{self.env}:{key}", d, self.s.cache_ttl_seconds)
+                self.cache.set_if_fence(f"issue:{self.env}:{key}", d, self.s.cache_ttl_seconds, fence)
             return d
         if fresh:
             # **낡은 값을 받으면 안 되는 자리**(본문 편집 시작·편집 중 충돌 감시)에서만 쓴다.
             # 평소 경로는 캐시를 먼저 주고 뒤에서 갱신한다 — 화면은 빨리 뜨지만 첫 응답이
             # 한 박자 늦다. 그 한 박자가 본문 편집에서는 '남의 수정을 덮어쓰기' 가 된다.
-            try:
-                data = fetch()
-            except SessionExpired:
-                raise
-            except Exception:
-                got = self.cache.get_alive(ck)                # 못 받으면 있던 값으로 — 편집 자체를 막진 않는다
-                data = got[0] if got else None
-            else:
-                self.cache.set(ck, data, self.s.cache_ttl_seconds)
+            fence = self.cache.fence()
+            data = fetch()
+            self.cache.set_if_fence(ck, data, self.s.cache_ttl_seconds, fence)
             return data if isinstance(data, dict) and "fields" in data else None
         # SessionExpired(401/403/5xx) 는 전파돼 라우트가 needLogin(401) 처리. 404 는 에러 바디(dict) → None.
         data, _ = self.cache.get_or_set(ck, self.s.cache_ttl_seconds, fetch)
