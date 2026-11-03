@@ -1,8 +1,14 @@
 // mentionBadge.js — 에디터·티켓 본문·댓글이 공유하는 사람 멘션 UI.
 // 사진은 성공했을 때만 @ 원 위를 덮는다. 로딩 중이거나 404면 구조·색·폭이 바뀌지 않는다.
 import { sigColor } from "./colors.js";
+import { avatarFailed, markAvatarFailed } from "./avatarFailures.js";
 
-const MISSING_AVATARS = new Set();
+if (typeof window !== "undefined") {
+  const retryFailed = () => document.querySelectorAll(".mention-av[data-avatar-missing]").forEach((avatar) => {
+    avatar.replaceWith(createMentionAvatar(avatar.dataset.avatarMissing, ""));
+  });
+  for (const event of ["auth-ok", "online"]) window.addEventListener(event, retryFailed);
+}
 
 function cleanLabel(value, fallback) {
   return String(value || fallback || "").trim().replace(/^@+\s*/, "") || String(fallback || "");
@@ -24,7 +30,11 @@ export function createMentionAvatar(userId, label) {
   avatar.setAttribute("aria-hidden", "true");
   avatar.style.background = sigColor(uid || label);
   avatar.textContent = "@";
-  if (!uid || MISSING_AVATARS.has(uid)) return avatar;
+  if (!uid) return avatar;
+  if (avatarFailed(uid)) {
+    avatar.dataset.avatarMissing = uid;
+    return avatar;
+  }
 
   const img = new Image();
   img.className = "mention-av-img";
@@ -36,7 +46,8 @@ export function createMentionAvatar(userId, label) {
     img.classList.add("on");
   };
   img.onerror = () => {
-    MISSING_AVATARS.add(uid);
+    markAvatarFailed(uid);
+    avatar.dataset.avatarMissing = uid;
     img.remove();
   };
   avatar.appendChild(img);       // opacity:0 — 요청 중에도 아래 @가 그대로 보인다.
