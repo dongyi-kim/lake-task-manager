@@ -1,7 +1,7 @@
 // Image errors do not distinguish a missing photo from a temporary authentication/network failure.
 // Suppress repeated failures briefly; successful photos keep their normal HTTP/server caching.
 const failures = new Map();
-const RETRY_AFTER_MS = 60_000;
+const RETRY_AFTER_MS = 60000;
 
 export function avatarFailed(user) {
   if ((failures.get(user) || 0) > Date.now()) return true;
