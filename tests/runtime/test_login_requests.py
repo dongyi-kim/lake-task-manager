@@ -2,9 +2,10 @@
 
 import threading
 import json
+import sys
 from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -206,7 +207,14 @@ def test_status_exposes_only_latest_jira_login_attempt(bridge, monkeypatch):
 ])
 def test_login_wait_probes_configured_service_before_saving(monkeypatch, service, paths, endpoint, user):
     import app.auth.sso_session as sso
-    import playwright.sync_api as playwright
+    # Exercise the real login loop and service probe without the optional browser package.
+    playwright = ModuleType("playwright")
+    playwright.__path__ = []
+    sync_api = ModuleType("playwright.sync_api")
+    sync_api.sync_playwright = lambda: nullcontext(object())
+    playwright.sync_api = sync_api
+    monkeypatch.setitem(sys.modules, "playwright", playwright)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_api)
     calls, saves, closed = [], [], []
     def get(url, **_kwargs):
         calls.append(url)
@@ -215,7 +223,6 @@ def test_login_wait_probes_configured_service_before_saving(monkeypatch, service
     page = SimpleNamespace(goto=lambda *_args, **_kwargs: None)
     context = SimpleNamespace(request=SimpleNamespace(get=get), new_page=lambda: page)
     browser = SimpleNamespace(new_context=lambda: context, close=lambda: closed.append(True))
-    monkeypatch.setattr(playwright, "sync_playwright", lambda: nullcontext(object()))
     monkeypatch.setattr(sso, "_launch", lambda *_args, **_kwargs: browser)
     monkeypatch.setattr(sso, "observe_login_page", lambda _: None)
     monkeypatch.setattr(sso, "login_state", lambda _: {"cookies": [], "origins": []})
