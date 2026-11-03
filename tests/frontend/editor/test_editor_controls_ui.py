@@ -217,10 +217,14 @@ def _modify_controls(page, editor, upload):
     shell.locator(".tb-style-i").filter(has=page.get_by_text("제목 2", exact=True)).click()
     _select(editor, "UI-PLAIN")
     _button(shell, "오른쪽 정렬").click()
-    page.keyboard.press("Home")
+    # Toolbar focus restoration uses a frame callback. Focus the editing surface explicitly
+    # before navigation so native Home collapses the text selection on every Chromium build.
+    editor.focus()
+    editor.press("Home")
     page.keyboard.insert_text("시작 ")
-    page.keyboard.press("End")
+    editor.press("End")
     page.keyboard.insert_text(" 끝 SECOND")
+    assert "UI-PLAIN" in editor.inner_text()
     for label in ["UI-BULLET", "UI-QUOTE", "UI-CODE", "UI-TABLE-CELL"]:
         _select(editor, label)
         page.keyboard.press("End")
