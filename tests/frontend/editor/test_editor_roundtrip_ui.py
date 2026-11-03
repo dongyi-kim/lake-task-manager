@@ -98,6 +98,8 @@ def editor_browser(request, tmp_path):
         "JIRA_ENV": "mock",
         "LAKE_NO_WINDOW": "1",
         "LAKE_MOCK_LATENCY_MS": str(latency_ms),
+        # Preferences, MCP credentials and auth state must be as isolated as the Jira cache.
+        "LAKE_CACHE_DIR": str(run_dir),
         "CACHE_DB_PATH": str(run_dir / "cache.sqlite3"),
     })
     command = [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1",
