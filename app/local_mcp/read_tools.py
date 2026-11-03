@@ -9,10 +9,14 @@ from app.jira.jql import _split_order, tokenize
 def register_reads(register, runtime):
     def search_issues(jql: str, start_at: int = 0, max_results: int = 50,
                       snapshot_id: str | None = None) -> dict:
-        """Search exact JQL within configured Jira projects. Follow hasMore/nextStartAt with the
-        returned snapshotId to retain ordering without duplicates. At most 100 issues per page.
-        No implicit total cap; OR leaf and issue caches are shared with the LTM UI.
-        Each issue's url opens the Jira ticket; self is the upstream REST resource.
+        """Search current Jira issues with exact JQL inside configured search projects.
+        Returns issues, total, hasMore, nextStartAt and snapshotId; max_results is 1..100,
+        start_at is zero-based. Follow every page with the same JQL and returned snapshotId
+        (when present) before reporting a complete count. There is no implicit total cap.
+        For calendar reports use explicit date boundaries and distinguish resolved from updated;
+        a recent update does not prove completion, and current assignee is not historical ownership.
+        Read get_ticket for the full description and get_evidence_page for paginated comments/history.
+        Issue url is a user-facing Jira link; self is a REST URL. Caches are shared with the UI.
         """
         if not 1 <= max_results <= 100 or start_at < 0:
             raise ValueError("max_results는 1~100, start_at은 0 이상이어야 합니다.")
@@ -33,7 +37,13 @@ def register_reads(register, runtime):
         ]}
 
     def get_ticket(key: str, fresh: bool = False) -> dict:
-        """Read description and issue metadata from LTM's cached ticket view. fresh forces refresh."""
+        """Read one current ticket's metadata and complete description by Jira key.
+        Returns the ticket view, including descriptionHtml for reading and descriptionEditHtml
+        for safe editing. fresh=true waits for an upstream refresh; default reuses UI caches.
+        Use get_evidence_page for full discussion/changes; get_comments is only a recent preview.
+        This is the current ticket, not a past snapshot.
+        A Done status alone does not establish when work completed or which claimed deliverables remain valid.
+        """
         runtime.check_key(key)
         result = runtime.client.ticket_view(key, fresh=fresh)
         if result is None:
@@ -57,7 +67,12 @@ def register_reads(register, runtime):
                 "mayHaveMore": len(rows) >= min(limit, runtime.client.CACHE_COMMENTS)}
 
     def get_history(key: str, include_children: bool = False, limit: int = 100) -> dict:
-        """Read timeline; the default includes only this ticket. Child history is opt-in."""
+        """Read a recent display timeline for one ticket, newest first, limited to 1..1000 events.
+        Returns timeline and limit. Includes creation, selected field changes and only the latest
+        10 comment events; include_children=true adds direct children's status changes, not all
+        descendant discussion. This is a bounded view without pagination or a completeness guarantee.
+        Use get_evidence_page for original comments or field histories with full timestamp and coverage.
+        """
         runtime.check_key(key)
         if not 1 <= limit <= 1000:
             raise ValueError("limit은 1~1000이어야 합니다.")
@@ -65,30 +80,48 @@ def register_reads(register, runtime):
                 "limit": limit}
 
     def get_children(key: str) -> dict:
-        """Read direct child tasks using the same parent leaf cache as dialogs, Task and WBS."""
+        """Read current direct children of an Epic or Task-tier ticket; returns children.
+        Reuses the parent membership and issue caches shared with dialogs, Task and WBS.
+        Direct children are not all descendants: inspect each Task's children for its SubTasks.
+        Check response partial/missing before treating an empty list or derived count as complete.
+        """
         runtime.check_key(key)
         return {"children": runtime.client.ticket_children(key)}
 
     def get_epic(key: str) -> dict:
-        """Read cached Epic metadata and Epic/Task/SubTask tree."""
+        """Read current Epic metadata plus its Task-tier/SubTask tree; returns epic and tree.
+        Child status, assignee and dates are current values, not period-end snapshots.
+        Use get_epic_progress for WBS Story Point progress; avoid summing parent and SubTask
+        work as independent deliverables. Check partial/missing before asserting full coverage.
+        """
         runtime.check_key(key)
         return {"epic": runtime.client.epic_metadata(key), "tree": runtime.client.epic_tree(key)}
 
     def search_users(query: str = "") -> dict:
-        """Find Jira user IDs/display names through LTM's shared user lookup cache."""
+        """Resolve a person by name/username; returns users with verified id/display/avatar.
+        This suggestion lookup returns at most 8 matches and has no pagination. Refine query
+        for ambiguous names; an empty query is not a complete roster. Use returned IDs in JQL
+        and get_workload, and get_workspace_config for configured module membership when authorized.
+        """
         from app.domain.search import search_users as search
         return {"users": search(runtime.client, runtime.settings, query, strict_auth=True)}
 
     def get_user(user_id: str = "") -> dict:
-        """Read a cached user badge; empty user_id returns the current Jira identity."""
+        """Read a verified Jira identity/badge by user_id; empty user_id means the logged-in user.
+        Returns identity/display fields, or null for an unknown explicit user. Resolve display-name
+        ambiguity with search_users first. This lookup does not enumerate module membership or activity.
+        """
         return (runtime.client.user_badge(user_id, strict_auth=True) if user_id
                 else runtime.client.current_user_for_authorization())
 
     def list_options(kind: Literal["task_types", "child_types", "edit_fields", "transitions",
                                     "priorities", "components", "epics", "link_types"],
                      key: str = "", query: str = "") -> dict:
-        """Discover actual Jira types, edit fields, transition IDs and allowed values before writing.
-        child_types/edit_fields/transitions require a ticket key; no guessed field or status IDs.
+        """Discover actual Jira types, editable fields, transition IDs and allowed values before writing.
+        Returns options; child_types/edit_fields/transitions require key. query filters only epics.
+        Epic suggestions are capped at 20, not an exhaustive Epic inventory; use search_issues for that.
+        components are Jira Components, distinct from local people roster modules. Never infer a
+        transition ID or supported link type from a display name or a prior ticket's metadata.
         """
         client = runtime.client
         if kind in ("child_types", "edit_fields", "transitions"):
@@ -103,7 +136,15 @@ def register_reads(register, runtime):
         return {"options": methods[kind]()}
 
     def get_workload(user_id: str, done_days: int = 7, assigned_window: str = "all") -> dict:
-        """Read a person's assigned/recently completed tickets and statistics from shared workload caches."""
+        """Read one person's current workload: returns statistics and tickets in open/inProgress/done7d buckets.
+        Resolve user_id first; the caller must have access to this person. done_days accepts 7/14/28
+        rolling days, not calendar weeks/months; done7d retains that name for all three choices.
+        Done uses current Done status and recent resolved date (updated fallback when resolved is absent).
+        assigned_window=1w/1m/all filters only open/in-progress by updated within 7/30 days or all.
+        Counts group Task/SubTask/VoC; hr is cumulative Jira timespent in hours, not hours logged in the window.
+        SubTasks inherit their parent Epic. Inspect partial/missingParents/errors before totals;
+        this is not a historical assignee report or an exact calendar-period completion ledger.
+        """
         runtime.require_person_access(user_id)
         if done_days not in runtime.client.WL_DONE_DAYS or assigned_window not in runtime.client.WL_ASSIGNED_WINDOWS:
             raise ValueError("done_days는 7/14/28, assigned_window는 1w/1m/all이어야 합니다.")
@@ -111,12 +152,18 @@ def register_reads(register, runtime):
                 "tickets": runtime.client.workload_tickets(user_id, done_days, assigned_window)}
 
     def get_attachments(key: str) -> dict:
-        """List attachment IDs and names; no arbitrary local filesystem access."""
+        """List one ticket's current attachments, including id, filename, size, MIME and download URL.
+        Returns attachments; use read_attachment with its verified ID for actual bytes.
+        This metadata list is not attachment content and cannot establish facts inside a document.
+        """
         runtime.check_key(key)
         return {"attachments": runtime.client.ticket_attachments(key)}
 
     def get_documents(key: str) -> dict:
-        """List linked remote documents, including link IDs needed for deletion."""
+        """List one ticket's linked remote documents/URLs; returns documents with link IDs.
+        A stored link is not fetched content. For configured Confluence documents, follow with
+        read_confluence_document; retain IDs for delete_document. Use get_ticket_context for issue links.
+        """
         runtime.check_key(key)
         return {"documents": runtime.client.ticket_documents(key)}
 

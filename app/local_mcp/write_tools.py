@@ -37,18 +37,26 @@ def register_writes(register, runtime):
     def create_task(body: CreateInput, epic_key: str = "") -> dict:
         """Create a Task-tier ticket (discover type via list_options), optionally under an Epic.
         Reporter is always Jira's current user. Reuse clientMutationId only for retrying this exact request.
+        epic_key selects an existing Epic; empty creates independent work. body.descriptionHtml is HTML.
+        Returns the created key and possible cascade suggestion; a suggestion is not an executed transition.
         """
         if epic_key:
             runtime.check_key(epic_key)
         return commands.create(body.model_copy(update={"parentIsEpic": bool(epic_key)}), epic_key or None)
 
     def create_subtask(parent_key: str, body: CreateInput) -> dict:
-        """Create a SubTask under a Task-tier parent; use an actual child_types option."""
+        """Create a SubTask under an existing Task-tier parent_key, not directly under an Epic.
+        Discover type via list_options(kind=child_types,key=parent_key); pass HTML in body.descriptionHtml.
+        Returns created key/cascade suggestion. Keep body.clientMutationId and content identical on retry.
+        """
         runtime.check_key(parent_key)
         return commands.create(body.model_copy(update={"parentIsEpic": False}), parent_key)
 
     def create_epic(body: EpicInput) -> dict:
-        """Create an Epic using Jira's validated Epic Name field and default current-user Reporter."""
+        """Create an Epic with validated Epic Name and Jira's current user as Reporter.
+        body.taskKeys optionally links existing Task-tier tickets after creation. Returns key and link result;
+        creation and subsequent linking are distinct outcomes. Keep body.clientMutationId on retry.
+        """
         for key in body.taskKeys or []:
             runtime.check_key(key)
         return commands.create_epic(body)
@@ -57,6 +65,7 @@ def register_writes(register, runtime):
         """Edit allowed fields using current editmeta. Done tickets must be reopened first.
         Reporter requires actual Jira MODIFY_REPORTER permission. Null means unchanged; empty clears.
         labels and components accept string arrays; [] clears all labels/components respectively.
+        Those arrays replace the whole field, not append: read current data before preserving other values.
         """
         runtime.check_key(key)
         return commands.update_fields(key, body)
@@ -87,26 +96,35 @@ def register_writes(register, runtime):
         """Replace a ticket's description/body HTML using the same editor serializer as the UI.
         get_ticket returns descriptionEditHtml for editing. Create bodies use body.descriptionHtml;
         comment bodies use add_comment/edit_comment. Done tickets must be reopened before body editing.
+        This replaces the complete body; preserve unrelated existing content and reuse the mutation ID on retry.
         """
         runtime.check_key(key)
         runtime.check_mutation_id(client_mutation_id)
         return commands.update_fields(key, FieldsInput(descriptionHtml=html, clientMutationId=client_mutation_id))
 
     def add_comment(key: str, html: str, client_mutation_id: str) -> dict:
-        """Publish comment HTML through LTM's Jira serializer. Keep mutation ID when retrying."""
+        """Publish a new HTML comment on key through the UI's Jira serializer, including Done tickets.
+        This does not change status or description. Keep client_mutation_id/content identical on retry;
+        verify the published discussion with get_comments rather than treating a timeout as failure proof.
+        """
         runtime.check_key(key)
         runtime.check_mutation_id(client_mutation_id)
         return commands.comment(key, html, mutation_id=client_mutation_id)
 
     def edit_comment(key: str, comment_id: str, html: str, client_mutation_id: str) -> dict:
-        """Edit an existing comment subject to Jira permissions; HTML uses the UI serializer."""
+        """Replace one existing comment's full HTML, subject to Jira permissions.
+        Obtain comment_id from get_comments and preserve unrelated text; no new comment is created.
+        Reuse the same client_mutation_id and content if authentication recovery requires retrying.
+        """
         runtime.check_key(key)
         runtime.check_object_id(comment_id)
         runtime.check_mutation_id(client_mutation_id)
         return commands.comment(key, html, comment_id=comment_id, mutation_id=client_mutation_id)
 
     def delete_comment(key: str, comment_id: str, client_mutation_id: str) -> dict:
-        """Delete one comment, retaining a receipt to prevent unsafe repeated writes."""
+        """Delete one comment identified by key/comment_id from get_comments, subject to Jira permission.
+        Reuse client_mutation_id for the same deletion; unknown outcomes do not justify a replacement ID.
+        """
         runtime.check_key(key)
         runtime.check_object_id(comment_id)
         runtime.check_mutation_id(client_mutation_id)
@@ -115,20 +133,26 @@ def register_writes(register, runtime):
     def transition_ticket(key: str, body: TransitionInput) -> dict:
         """Run an actual Jira transition ID and its required fields. Consult list_options first.
         Unknown outcomes must be retried with the same clientMutationId, never a replacement ID.
+        Returns ok and a possible cascade suggestion. It does not automatically transition related tickets.
         """
         runtime.check_key(key)
         return commands.transition(key, body)
 
     def add_issue_link(key: str, other_key: str, client_mutation_id: str,
                        type_name: str = "Relates", direction: str = "outward") -> dict:
-        """Link two tickets using an actual Jira link type (list_options/link_types)."""
+        """Create a formal Jira issue link between key and other_key within configured projects.
+        Obtain type_name from list_options(kind=link_types); direction=outward means key points to other_key,
+        inward reverses it. Use get_ticket_context to inspect links; this does not set parent/Epic membership.
+        """
         runtime.check_key(key)
         runtime.check_key(other_key)
         runtime.check_mutation_id(client_mutation_id)
         return commands.link(key, other_key, type_name, direction, client_mutation_id)
 
     def delete_issue_link(key: str, other_key: str, link_id: str, client_mutation_id: str) -> dict:
-        """Remove an issue link by ID and invalidate both endpoint ticket caches."""
+        """Remove a formal issue link by its numeric link_id and both endpoint keys.
+        Both ticket caches are invalidated; the tickets themselves and parent/Epic membership remain intact.
+        """
         runtime.check_key(key)
         runtime.check_object_id(link_id)
         runtime.check_key(other_key)
@@ -136,13 +160,18 @@ def register_writes(register, runtime):
         return commands.delete_link(key, link_id, other_key, client_mutation_id)
 
     def add_document(key: str, url: str, client_mutation_id: str, title: str = "") -> dict:
-        """Add/update a remote HTTP(S) document link. No URL fetch or local file read is performed."""
+        """Register/update an HTTP(S) document or external URL on key, with optional display title.
+        This stores a Jira remote link, not a document body or Confluence edit. No URL content is fetched.
+        Inspect stored links/IDs with get_documents; use add_issue_link for formal ticket relationships.
+        """
         runtime.check_key(key)
         runtime.check_mutation_id(client_mutation_id)
         return commands.document(key, url, title, client_mutation_id)
 
     def delete_document(key: str, link_id: str, client_mutation_id: str) -> dict:
-        """Delete a remote document link subject to the same LTM edit permission as the UI."""
+        """Delete one Jira remote link using link_id from get_documents and the UI's edit permission.
+        The linked document/website itself is not deleted. Reuse the same mutation ID on retry.
+        """
         runtime.check_key(key)
         runtime.check_object_id(link_id)
         runtime.check_mutation_id(client_mutation_id)
@@ -151,7 +180,9 @@ def register_writes(register, runtime):
     def add_attachment(key: str, filename: str, base64_data: str, client_mutation_id: str,
                        content_type: str = "application/octet-stream") -> dict:
         """Upload encoded bytes (maximum 10MiB), never a filesystem path. Reuse mutation ID on retry.
-        The returned attachment path can be used in editor HTML before publishing.
+        Supply filename, base64_data and optional content_type. Returns attachment id/filename/path;
+        its path can be embedded in editor HTML. Upload alone does not publish a comment or alter the body.
+        Verify metadata with get_attachments and bytes with read_attachment after upload.
         """
         runtime.check_key(key)
         runtime.check_mutation_id(client_mutation_id)
@@ -166,14 +197,19 @@ def register_writes(register, runtime):
         return commands.attachment(key, filename, data, content_type, client_mutation_id)
 
     def delete_attachment(key: str, attachment_id: str, client_mutation_id: str) -> dict:
-        """Delete an attachment by ID subject to the UI's LTM edit permission."""
+        """Delete attachment_id from key, subject to the UI's edit permission; obtain ID from get_attachments.
+        Existing body/comment references may then point to a missing file. Reuse the mutation ID on retry.
+        """
         runtime.check_key(key)
         runtime.check_object_id(attachment_id)
         runtime.check_mutation_id(client_mutation_id)
         return commands.delete_attachment(key, attachment_id, client_mutation_id)
 
     def delete_ticket(key: str, client_mutation_id: str) -> dict:
-        """Permanently delete a ticket under the same Jira/LTM permissions as the UI."""
+        """Permanently delete key under the same Jira/LTM permissions as the UI.
+        This is not a status transition or archive action. Preserve client_mutation_id for retries;
+        an outcome_unknown response does not authorize repeating deletion with a new ID.
+        """
         runtime.check_key(key)
         runtime.check_mutation_id(client_mutation_id)
         return commands.delete_ticket(key, client_mutation_id)
