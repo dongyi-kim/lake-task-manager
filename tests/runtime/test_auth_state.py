@@ -158,8 +158,8 @@ def test_status_endpoint_tells_the_truth_after_a_failed_call():
         client.mark_session_alive()
 
 
-def test_keepalive_renews_only_dead_non_jira_services():
-    """세션 데우기 — Jira 는 건너뛰고, 죽은 서비스만 무음갱신을 부른다.
+def test_keepalive_checks_jira_even_when_ui_uses_only_cache():
+    """캐시를 읽거나 트레이에 숨겨도 Jira를 확인하고 죽은 서비스만 갱신한다.
 
     SSO 쿠키는 도메인별로 따로 만료돼 Jira 만 살아 있는 상태가 흔하다. 그때 검색이 401 을
     맞고 나서야 갱신하면 이미 늦다(그 사이 결과가 비어 보인다) — 미리 데워 둔다."""
@@ -174,13 +174,15 @@ def test_keepalive_renews_only_dead_non_jira_services():
     class _P:
         def get_json(self, url, params=None, priority=0, quiet=False):
             hit.append(url)
+            if url == "/rest/api/2/myself":
+                return {"name": "test.ui01"}
             raise SessionExpired("만료")
 
     c._provider, c._provider_built = _P(), True
     c._renew_service = lambda name: renewed.append(name) or True
 
     c.keepalive_auth()
-    assert hit == ["https://c/rest/api/user/current"], hit    # Jira 는 안 건드린다
+    assert hit == ["/rest/api/2/myself", "https://c/rest/api/user/current"], hit
     assert renewed == ["Confluence"]
 
 
@@ -299,7 +301,7 @@ def test_probe_lock_timeout_never_opens_a_second_login_flow():
     class _BusyLock:
         @staticmethod
         def acquire(timeout=None):
-            assert timeout == 35
+            assert timeout == 0
             return False
 
     c._auth_probe_lock = _BusyLock()
@@ -354,7 +356,7 @@ def test_activity_myself_persists_rolling_jira_cookie_with_throttle(tmp_path):
     assert [(row["name"], row["value"]) for row in saved["cookies"]] == [
         ("JSESSIONID", "rolled")]
     assert store.path("confluence").read_bytes() == conf_before
-    assert snapshots == [1]                       # 두 번째 probe는 15분 throttle
+    assert snapshots == [1]                       # 두 번째 probe는 4분 throttle
 
 
 def test_new_login_disk_revision_fences_old_provider_cookie_snapshot(tmp_path):
@@ -431,7 +433,7 @@ def test_provider_storage_snapshot_is_marshaled_to_owner_thread():
     from app.auth.sso_session import SsoSessionProvider
 
     source = inspect.getsource(SsoSessionProvider.storage_state_snapshot)
-    assert "self._context.storage_state()" in source
+    assert "login_state(self._context)" in source
     assert "self._submit(capture, PRIO_BACKGROUND)" in source
 
 

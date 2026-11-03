@@ -1,6 +1,6 @@
-// 유휴 후 사용 재개 시 Jira 인증을 먼저 확인한다. 이벤트 핸들러는 네트워크를 기다리지 않으며,
+// 앱을 계속 사용하는 중에도 Jira 인증을 확인한다. 이벤트 핸들러는 네트워크를 기다리지 않으며,
 // 실제 확인/무음 재인증은 백엔드가 single-flight로 수행한다.
-export const AUTH_IDLE_MS = 5 * 60 * 1000;
+export const AUTH_INTERVAL_MS = 4 * 60 * 1000;
 export const AUTH_COOLDOWN_MS = 60 * 1000;
 
 /** 앱 전역에 한 번 설치한다. 반환 함수는 모든 listener와 예약 작업을 해제한다. */
@@ -9,16 +9,17 @@ export function installAuthActivityProbe(api, options) {
   const win = opt.window || window;
   const doc = opt.document || document;
   const now = opt.now || (() => Date.now());
-  const idleMs = Number(opt.idleMs) || AUTH_IDLE_MS;
+  const intervalMs = Number(opt.intervalMs) || AUTH_INTERVAL_MS;
   const cooldownMs = Number(opt.cooldownMs) || AUTH_COOLDOWN_MS;
-  let lastActivityAt = now(), lastProbeAt = 0, inFlight = null, disposed = false;
+  let lastProbeAt = -Infinity, inFlight = null, disposed = false;
 
   const probe = () => {
     const at = now();
-    if (inFlight || at - lastProbeAt < cooldownMs) return inFlight;
+    if (disposed || doc.visibilityState === "hidden" || win.navigator?.onLine === false
+        || inFlight || at - lastProbeAt < cooldownMs) return inFlight;
     lastProbeAt = at;
     inFlight = Promise.resolve().then(() => api.authProbe()).then((result) => {
-      if (!result) return;
+      if (disposed || !result) return;
       if (result.recovered) win.dispatchEvent(new CustomEvent("auth-ok"));
       else if (result.needLogin) win.dispatchEvent(new CustomEvent("need-login"));
     }).catch(() => {
@@ -28,21 +29,22 @@ export function installAuthActivityProbe(api, options) {
   };
 
   const activity = () => {
-    const at = now(), wasIdle = at - lastActivityAt >= idleMs;
-    lastActivityAt = at;
-    if (wasIdle && doc.visibilityState !== "hidden") probe();
+    if (now() - lastProbeAt >= intervalMs) probe();
   };
-  const visible = () => { if (doc.visibilityState !== "hidden") activity(); };
+  const visible = () => { if (doc.visibilityState !== "hidden") probe(); };
 
-  win.addEventListener("focus", activity, { passive: true });
+  win.addEventListener("focus", visible, { passive: true });
+  win.addEventListener("online", visible, { passive: true });
   doc.addEventListener("visibilitychange", visible, { passive: true });
   doc.addEventListener("pointerdown", activity, { passive: true, capture: true });
   doc.addEventListener("keydown", activity, { passive: true, capture: true });
+  probe();
 
   return () => {
     if (disposed) return;
     disposed = true;
-    win.removeEventListener("focus", activity);
+    win.removeEventListener("focus", visible);
+    win.removeEventListener("online", visible);
     doc.removeEventListener("visibilitychange", visible);
     doc.removeEventListener("pointerdown", activity, true);
     doc.removeEventListener("keydown", activity, true);

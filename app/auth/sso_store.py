@@ -11,9 +11,10 @@
       "캐시 지웠더니 로그아웃" 이 된다. 수명이 다른 것을 같은 저장소에 두지 않는다.
     - '트랜잭션' 이 필요한 실제 이유는 **찢어진 쓰기**(쓰다 죽으면 JSON 이 잘려 로그인이 날아감)인데,
       그건 임시파일 + os.replace(원자적 교체)로 끝난다. DB 는 이 한 줄짜리 문제에 과한 답이다.
-    - 동시 writer 가 없다(각자 PC 에서 도는 1인 앱). 조회·조인도 필요 없다.
+    - 여러 인증 작업의 동시 저장은 process-local lock과 revision fence로 조정한다.
 
-파일 형태는 Playwright storage_state 그대로 — 그래야 직렬화 계층이 없다.
+서비스 파일은 Playwright storage_state 형태다. 공유 identity 파일만 authOrigins를 추가하며,
+provider로 전달할 merged state에서는 이 저장용 metadata를 제외한다.
     {"cookies": [...], "origins": [...]}
 """
 
@@ -25,6 +26,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 SERVICES = ("jira", "confluence", "bitbucket")
+IDENTITY = "identity"
 
 
 def _host(url):
@@ -77,7 +79,7 @@ class SsoStore:
         하나도 없으면 None — 호출부가 '로그인 필요' 로 처리한다."""
         self.migrate_legacy()
         cookies, origins, seen = [], [], set()
-        for svc in SERVICES:
+        for svc in (IDENTITY, *SERVICES):
             d = self._read(self.path(svc))
             if not d:
                 continue
@@ -122,11 +124,42 @@ class SsoStore:
         cookies = state.get("cookies") or []
         if host:
             picked = [c for c in cookies if _cookie_matches(c, host)]
-            # 필터가 0개면 도메인 규칙이 예상과 다른 것 — 버리지 말고 전부 둔다.
-            cookies = picked or cookies
+            cookies = picked
         origins = [o for o in (state.get("origins") or [])
                    if not host or _host(o.get("origin", "")) == host] if host else (state.get("origins") or [])
-        self._atomic_write(self.path(service), {"cookies": cookies, "origins": origins})
+        # A context that only logged into another service must not erase a working session.
+        if cookies or origins or not host:
+            self._atomic_write(self.path(service), {"cookies": cookies, "origins": origins})
+        self._save_identity_unlocked(state)
+
+    def _save_identity_unlocked(self, state):
+        """Keep shared IdP state outside service files; only observed top-level login origins.
+
+        Regular API snapshots can refresh already-known IdP state. Unrelated subframes/tracking
+        origins and the localhost app page are not admitted merely because they set a cookie.
+        """
+        previous = self._read(self.path(IDENTITY)) or {}
+        service_hosts = {_host(base) for base in self.bases.values()}
+        allowed = set(previous.get("authOrigins") or [])
+        for origin in state.get("authOrigins") or []:
+            host = _host(origin)
+            if host and host not in service_hosts:
+                allowed.add(origin)
+        hosts = {_host(origin) for origin in allowed}
+        cookies = [c for c in state.get("cookies") or []
+                   if any(_cookie_matches(c, host) for host in hosts)]
+        origins = [o for o in state.get("origins") or [] if o.get("origin") in allowed]
+        if not cookies and not origins:
+            return  # A service-only context cannot erase the separately stored IdP login.
+        by_cookie = {(c["name"], c["domain"], c.get("path", "/")): c
+                     for c in previous.get("cookies") or []}
+        by_cookie.update({(c["name"], c["domain"], c.get("path", "/")): c for c in cookies})
+        by_origin = {o["origin"]: o for o in previous.get("origins") or []}
+        by_origin.update({o["origin"]: o for o in origins})
+        self._atomic_write(self.path(IDENTITY), {
+            "cookies": list(by_cookie.values()), "origins": list(by_origin.values()),
+            "authOrigins": sorted(allowed),
+        })
 
     def _revision_unlocked(self, service):
         try:
@@ -138,12 +171,13 @@ class SsoStore:
     def revision(self, service):
         """Opaque disk revision used to fence a delayed rolling-cookie snapshot."""
         with self._lock:
-            return self._revision_unlocked(service)
+            return self._revision_unlocked(service), self._revision_unlocked(IDENTITY)
 
     def save_if_unchanged(self, service, state, expected_revision):
         """Save only if no login/renewal replaced this service state in the meantime."""
         with self._lock:
-            if self._revision_unlocked(service) != expected_revision:
+            current = self._revision_unlocked(service), self._revision_unlocked(IDENTITY)
+            if current != expected_revision:
                 return False
             self._save_unlocked(service, state)
             return True

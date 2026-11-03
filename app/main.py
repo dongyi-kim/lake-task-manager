@@ -168,7 +168,7 @@ _updater.start()
 
 
 def _start_auth_keepalive():
-    """Confluence·Bitbucket 세션을 **미리** 살려 둔다 (prod 전용, 백그라운드).
+    """Jira 포함 활성 서비스의 인증을 유지한다 (prod 전용, 백그라운드).
 
     SSO 쿠키는 도메인별로 따로 만료된다 — Jira 는 멀쩡한데 Confluence 만 죽는 일이 흔하다.
     지금까지는 검색이 401 을 맞고 나서야 갱신을 시도했고, 그 갱신이 실패하면 스로틀 때문에
