@@ -9,7 +9,7 @@ from tools.agent_lang_ab import SCENARIOS, BATTERY_VERSION as SOURCE_BATTERY_VER
 from tools.agent_eval_review_specs import review_specs
 
 SUITE = "codex-mcp"
-BATTERY_VERSION = "1.0.0"
+BATTERY_VERSION = "1.0.1"
 PROMPT_VERSION = "codex-mcp-readonly-v1"
 OUTPUT_SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -143,8 +143,12 @@ def check(case, output, calls, ground_truth=None):
             failures.append("person_not_resolved")
     elif key.startswith("S5-"):
         expected = (ground_truth or {}).get("currentUserOpenKeys")
-        if not expected or len(result_keys) != 1 or result_keys[0] not in expected or result_keys[0] not in reply:
+        # The unchanged user prompt permits a ranked recommendation with alternatives.
+        # Validate their ownership/state and visible evidence, not an invented one-key cap.
+        if (not expected or not result_keys or len(result_keys) != len(set(result_keys))
+                or not set(result_keys) <= set(expected)):
             failures.append("no_grounded_current_user_recommendation")
+        require_keys(result_keys)
     elif key.startswith("S6-") or key == "MCP-P1":
         if not names & {"get_children", "get_epic", "get_vit_detail", "get_ticket_context", "get_epic_progress"}:
             failures.append("no_hierarchy_read")

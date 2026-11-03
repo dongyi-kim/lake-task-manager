@@ -16,14 +16,14 @@ launcher가 argument와 기존 로그인을 확인하고 고유 attempt를 예�
 직접 runner 실행은 거부한다. 재실행은 새 `--run-group`이나 `--repeat-index`를 사용하며 기존 claim/raw를 지우지 않는다.
 
 `--cases MCP-J1 MCP-O1`처럼 고유 ID로 focused 실행할 수 있다. focused 성공으로 이전 full run 실패를 대체하지 않는다.
-버전은 external suite `1.0.0`, protocol `3.0.0`, human rubric `2.0.0`이며 기존 내장 Agent 배터리와
+버전은 external suite `1.0.1`, protocol `3.0.0`, human rubric `2.0.0`이며 기존 내장 Agent 배터리와
 동일 benchmark라고 주장하지 않는다. S3~S6 원문 질문과 기대 사실을 재사용하고 별도의 MCP 전송·출력 계약을 기록한다.
 
 | 사례 | 검증 |
 |---|---|
 | S3-이력 | 8개 관련 티켓, 날짜순 변화, 30분/4시간 정합성 합의, 진행 상태 |
 | S4-사람 | 실제 이다은 식별자, 전체 미완료 할당 key 집합·건수; 완료/다른 사람 제외 |
-| S5-내일 | 현재 사용자의 실제 업무 중 한 항목, priority·기한·상태 판단 근거 |
+| S5-내일 | 현재 사용자의 미완료 업무 중 우선 추천과 선택적 대안, priority·기한·상태 판단 근거 |
 | S6-진척 | 실제 Jira 2/3 완료, 남은 DL-9095, 댓글/문서의 완료 주장과 충돌 |
 | MCP-U1 | Jira/Confluence 통합검색, 관련 티켓 본문·댓글과 문서 전체 offset 읽기 |
 | MCP-J1 | exact JQL, 페이지당 3건, 같은 snapshot으로 끝까지, 8개 정렬 결과 |
@@ -48,3 +48,14 @@ raw·manifest·출처 snapshot·MCP 요청/응답·SDK 오류·캐시 출처·up
 
 직접 검수 결과는 `research/agent-improvement/evaluations/`에 Markdown으로 남긴다. 모델·commit·manifest·
 fixture 날짜·평가자·비교 한계·모든 checklist 결과·대표 출력·실패를 포함해야 평가 완료다.
+
+`1.0.1`은 S5 자동 검사의 한 항목 제한을 수정한다. 원래 질문은 우선 업무와 대안을 함께 제시하는
+답변을 금지하지 않는다. 비어 있지 않은 고유한 본인 미완료 티켓 목록과 답변 내 언급은 계속
+검사하고 우선순위 판단은 사람이 평가한다. 원문 질문·출력 schema·기대 사실은 바꾸지 않았다.
+`1.0.0` 실행과 실패 판정은 그대로 보존하며 새로운 전체 실행으로 검증한다.
+
+첫 전체 실행에서 발견한 jira820 0.12의 미지원 `parent` 조건은 mock 전용 adapter가 기존 AST와
+실제 parent 관계로 평가한다. 설정된 읽기 거부는 개별 조회와 검색에 공통 적용하고 pagination
+전에 제외해 total/offset을 유지한다. 모델 실행 전 별도 fixture에서 parent 검색·부분 권한·전체
+pagination을 검증한다. 이 preflight는 사례 캐시를 데우지 않는다. mock 코드 변경은 data manifest,
+fixture 변경은 harness hash에 포함되므로 이전 실행과 성능 향상률을 직접 비교하지 않는다.

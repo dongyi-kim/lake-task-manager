@@ -1,5 +1,7 @@
 import anyio
 import httpx2
+import pytest
+from datetime import datetime, timedelta, timezone
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
@@ -94,7 +96,8 @@ def test_bulk_uses_ui_validation_keeps_order_relationships_and_retries_only_fail
     anyio.run(scenario)
 
 
-def test_bulk_response_lost_keeps_per_item_receipt_and_never_duplicates(build_env, monkeypatch):
+@pytest.mark.parametrize("reconciled", [False, True], ids=["unproven-time", "proven-created-after-attempt"])
+def test_bulk_response_lost_keeps_per_item_receipt_and_never_duplicates(build_env, monkeypatch, reconciled):
     env = build_env()
     original = env.provider.post_json
     writes = []
@@ -103,6 +106,12 @@ def test_bulk_response_lost_keeps_per_item_receipt_and_never_duplicates(build_en
         if path == "/rest/api/2/issue":
             writes.append(json_body["fields"]["summary"])
             if writes[-1] == "lost response":
+                # jira820 defaults to 09:00 UTC on its local fixture date. That may
+                # fall before or after the real receipt depending on wall clock/TZ.
+                # Model explicit evidence on both sides of attemptedAt instead.
+                created = datetime.now(timezone.utc) + timedelta(seconds=2 if reconciled else -60)
+                env.store.issues[result["key"]].update(
+                    created=created.date(), tcreated=created.strftime("%H:%M:%S"))
                 raise UpstreamUnavailable("response lost after successful fixture POST")
         return result
     monkeypatch.setattr(env.provider, "post_json", response_lost)
@@ -121,14 +130,21 @@ def test_bulk_response_lost_keeps_per_item_receipt_and_never_duplicates(build_en
             assert data["failed"][0]["repeatWrite"] is False
             monkeypatch.setattr(env.provider, "post_json", original)
             repeated = await mcp.call_tool("bulk_create", args)
-            assert repeated.is_error and repeated.structured_content["partial"] is True
-            # The mock search does not prove this response-lost create yet. Retain its
-            # uncertainty and confirmed sibling; do not authorize a second POST.
             repeated_data = repeated.structured_content["data"]
-            assert repeated_data["created"] == data["created"]
-            assert repeated_data["failed"][0]["code"] == "outcome_unknown"
-            assert repeated_data["failed"][0]["clientMutationId"] == data["failed"][0]["clientMutationId"]
+            if reconciled:
+                assert not repeated.is_error and repeated_data["ok"]
+                assert [row["index"] for row in repeated_data["created"]] == [0, 1]
+                assert repeated_data["failed"] == []
+                assert repeated_data["created"][1] == data["created"][0]
+            else:
+                assert repeated.is_error and repeated.structured_content["partial"] is True
+                # A matching candidate older than attemptedAt is not proof of this
+                # write. Keep uncertainty and the confirmed sibling without a POST.
+                assert repeated_data["created"] == data["created"]
+                assert repeated_data["failed"][0]["code"] == "outcome_unknown"
+                assert repeated_data["failed"][0]["clientMutationId"] == data["failed"][0]["clientMutationId"]
             assert writes == ["lost response", "confirmed"]
+            assert len([row for row in env.calls if row[:2] == ("post", "/rest/api/2/issue")]) == 2
             assert sum(row["summary"] == "lost response" for row in env.store.issues.values()) == 1
     anyio.run(scenario)
 

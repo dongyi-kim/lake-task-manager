@@ -84,6 +84,7 @@ def launch(argv=None, *, cli_run=None, fixture_factory=None, identity_fn=None):
     run_root = RAW_RESULT_ROOT / options.run_group / f"attempt-{options.repeat_index:02d}"
     # Catalog/setup are part of preflight, not measured case time, and cannot warm case caches.
     with fixture_factory(run_root / "preflight-fixture", port=4457, today=options.date) as fixture:
+        conformance = fixture.assert_conformance()
         catalog_hash = fixture.catalog_sha256
         scope = {"projects": list(fixture.settings.search_jira_projects),
                  "spaces": list(fixture.settings.search_confluence_spaces)}
@@ -103,6 +104,7 @@ def launch(argv=None, *, cli_run=None, fixture_factory=None, identity_fn=None):
             prompt_version=PROMPT_VERSION, suite_review_elements=suite_review, case_review_specs=case_specs,
             checker_dependencies=(*CHECKER_DEPENDENCIES, GATE), external_runtime=identity,
             benchmark_context={"fixtureDate": options.date, "timezone": "Asia/Seoul", "readScope": scope,
+                               "fixtureConformance": conformance,
                                "outputContract": "external-json-answer-v1", "gate": GATE})
     out = reserve_raw_result_path(raw_result_path(SUITE, metadata))
     # No secret, expected answer, source fixture or repository file is put in the model's cwd.

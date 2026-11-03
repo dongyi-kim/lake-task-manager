@@ -24,7 +24,7 @@ import uvicorn
 from fastapi import FastAPI
 from starlette.routing import Route
 
-from app.auth.base import PermissionDenied
+from app.auth.base import PermissionDenied, SessionExpired
 from app.auth.inprocess import InProcessProvider
 from app.infra.cache import Cache
 from app.infra.settings import get_settings, is_manager, load_people, load_plan
@@ -136,19 +136,13 @@ class EvaluationFixture:
             self.provider = InProcessProvider()
             self.client._provider, self.client._provider_built = self.provider, True
             self.store = self.provider._client.app.state.store
+            if self.fault == "partial":
+                self.store.denied_issue_keys = {"DL-9095"}
             self.cache.always_revalidate = ()
             self.cache.revalidator = None
             self.client._refresh_bg = lambda *_args, **_kwargs: None
             self.client._warm_jql_leaves_bg = lambda *_args, **_kwargs: None
             self._observe_provider()
-            if self.fault == "partial":
-                for method in ("get_issue", "get_issue_light"):
-                    original = getattr(self.client, method)
-                    def incomplete(key, *args, _original=original, **kwargs):
-                        if key == "DL-9095":
-                            raise PermissionDenied("DL-9095 unavailable in the evaluation fixture")
-                        return _original(key, *args, **kwargs)
-                    setattr(self.client, method, incomplete)
 
             def require_manager():
                 if not is_manager(settings, self.client.current_user()):
@@ -202,13 +196,19 @@ class EvaluationFixture:
             started = time.perf_counter()
             record = {"method": "GET", "path": str(path), "params": self._safe(params or {})}
             try:
-                if self.fault == "partial" and (str(path) == "/rest/api/2/issue/DL-9095" or
-                                                str(path).startswith("/rest/api/2/issue/DL-9095/")):
-                    raise PermissionDenied("DL-9095 unavailable in the evaluation fixture")
                 result = original(path, params, priority)
                 record["status"] = result.status_code
                 return result
             except Exception as exc:
+                # The shared mock provider conflates 403 with session expiry. Keep
+                # the actual HTTP request, but classify this explicit fixture denial
+                # like the production permission error, never as lost authentication.
+                prefix = "/rest/api/2/issue/"
+                denied = (str(path).startswith(prefix) and
+                          str(path)[len(prefix):].split("/", 1)[0] in self.store.denied_issue_keys)
+                if isinstance(exc, SessionExpired) and denied:
+                    record.update(status=403, errorType="PermissionDenied")
+                    raise PermissionDenied("The evaluation fixture denies access to this issue") from exc
                 record["errorType"] = type(exc).__name__
                 raise
             finally:
@@ -238,6 +238,40 @@ class EvaluationFixture:
                 with self._lock:
                     self.tool_calls.append(record)
         self.runtime.server.call_tool = observed
+
+    def assert_conformance(self) -> dict[str, Any]:
+        """Preflight the real mock REST boundary without touching JiraClient caches.
+
+        Host-only oracle checks are never model tools. Both visibility modes are
+        checked before evaluation, then the configured fault is restored. Direct
+        TestClient requests intentionally leave measured provider/tool traces empty.
+        """
+        parent = "DL-9090"
+        expected = sorted(key for key, row in self.store.issues.items()
+                          if row.get("parentKey") == parent)
+        assert len(expected) == 3, "Pinned parent fixture must have exactly three children"
+        original_denied = self.store.denied_issue_keys
+        checks = {}
+        try:
+            for label, denied in (("normal", set()), ("denied", {expected[-1]})):
+                self.store.denied_issue_keys = denied
+                wanted = [key for key in expected if key not in denied]
+                pages = [self.provider._client.get("/rest/api/2/search", params={
+                    "jql": f'parent = "{parent}" ORDER BY key ASC',
+                    "startAt": offset, "maxResults": 1}).json() for offset in range(len(wanted) + 1)]
+                actual = [row["key"] for page in pages for row in page["issues"]]
+                assert actual == wanted, f"Mock parent search mismatch: {label}"
+                assert all(page["total"] == len(wanted) for page in pages)
+                parent_result = self.provider._client.get(f"/rest/api/2/issue/{parent}").json()
+                assert sorted(row["key"] for row in parent_result["fields"]["subtasks"]) == expected
+                if denied:
+                    response = self.provider._client.get(f"/rest/api/2/issue/{expected[-1]}")
+                    assert response.status_code == 403
+                checks[label] = {"total": len(wanted), "keys": actual}
+        finally:
+            self.store.denied_issue_keys = original_denied
+        return {"parentJql": checks, "pagination": "complete", "directDenial": 403,
+                "cacheWarmed": False}
 
     def fingerprint(self) -> dict[str, Any]:
         return {"worldSha256": _hash({"today": self.world.today, "counter": self.world._counter,

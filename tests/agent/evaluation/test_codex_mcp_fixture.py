@@ -21,6 +21,12 @@ def test_full_world_sdk_reads_share_ui_cache_and_reject_every_write(tmp_path):
         assert truth["today"] == "2026-11-04" and truth["personId"] == "skcc.i2011"
         assert len(truth["personOpenKeys"]) == 21
         assert truth["currentUserId"] == "test.ui01" and truth["currentUserOpenKeys"]
+        conformance = fixture.assert_conformance()
+        assert conformance["parentJql"]["normal"]["keys"] == ["DL-9093", "DL-9094", "DL-9095"]
+        assert conformance["parentJql"]["denied"]["keys"] == ["DL-9093", "DL-9094"]
+        assert not conformance["cacheWarmed"]
+        assert not fixture.store.denied_issue_keys
+        assert fixture.cache.get(f"issueL:{fixture.client.env}:DL-9090") is None
         assert fixture.upstream_calls == [], "ground truth must not warm the measured cache"
         with httpx.Client() as http:
             assert http.post(url, json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).status_code == 401
@@ -78,6 +84,9 @@ def test_cases_use_fresh_world_store_and_cache_and_busy_port_is_not_changed(tmp_
 
 def test_partial_child_and_missing_ticket_are_visible_through_actual_builders(tmp_path):
     with EvaluationFixture(tmp_path / "partial", port=0, fault="partial") as fixture:
+        fixture.assert_conformance()
+        assert fixture.store.denied_issue_keys == {"DL-9095"}
+        assert fixture.upstream_calls == fixture.tool_calls == []
         async def scenario():
             async with httpx2.AsyncClient(headers={"Authorization": "Bearer " + fixture.token}) as http:
                 async with Client(streamable_http_client(fixture.url, http_client=http)) as mcp:
@@ -89,5 +98,10 @@ def test_partial_child_and_missing_ticket_are_visible_through_actual_builders(tm
                     assert missing.is_error and not missing.structured_content["ok"]
                     denied = await mcp.call_tool("get_ticket", {"key": "DL-9095", "fresh": True})
                     assert denied.is_error, "full description reads must not bypass the child permission fault"
+                    search = await mcp.call_tool("search_issues", {"jql": 'parent = "DL-9090" ORDER BY key ASC',
+                                                                  "max_results": 20})
+                    assert not search.is_error, search.structured_content
+                    assert search.structured_content["data"]["total"] == 2
+                    assert {row["key"] for row in search.structured_content["data"]["issues"]} == {"DL-9093", "DL-9094"}
         anyio.run(scenario)
         assert fixture.summary()["worldUnchanged"] and fixture.summary()["providerStoreUnchanged"]

@@ -97,6 +97,27 @@ def test_wrong_identity_extra_assignments_and_false_progress_fail():
     assert "progress_state_count_mismatch" in cases.check(_case("S6-진척"), progress, [_call("get_children")])["failures"]
 
 
+@pytest.mark.parametrize("keys", [["DL-9028"], ["DL-9028", "DL-9002", "DL-9018"]])
+def test_current_user_recommendation_accepts_grounded_ranked_subsets(keys):
+    truth = {"currentUserOpenKeys": ["DL-9002", "DL-9018", "DL-9028", "DL-9050"]}
+    result = cases.check(_case("S5-내일"), _output(keys, len(keys)), [_call("get_user")], truth)
+    assert result["pass"]
+    assert result["humanReviewRequired"], "priority and the primary recommendation still need direct review"
+
+
+@pytest.mark.parametrize("keys,reply", [
+    ([], "추천 없음"),
+    (["DL-9028", "DL-9990"], "DL-9028 DL-9990"),  # another person's assignment
+    (["DL-9028", "DL-9201"], "DL-9028 DL-9201"),  # completed, absent from open oracle
+    (["DL-9028", "DL-9002"], "먼저 DL-9028"),
+    (["DL-9028", "DL-9028"], "DL-9028"),
+    (["DL-9028"], "DL-90280"),  # substring is not a citation of the recommended key
+])
+def test_current_user_recommendation_rejects_empty_foreign_done_missing_and_duplicate_results(keys, reply):
+    truth = {"currentUserOpenKeys": ["DL-9002", "DL-9018", "DL-9028"]}
+    assert not cases.check(_case("S5-내일"), _output(keys, len(keys), reply), [_call("get_user")], truth)["pass"]
+
+
 def test_failed_or_tail_only_document_reads_are_not_complete_evidence():
     output = _output(["DL-7001"], 1, "DL-7001 모두 확인 완료")
     names = ("search_workspace", "get_ticket", "get_comments", "read_confluence_document")
@@ -159,6 +180,10 @@ def test_runner_retains_real_sdk_page_trace_and_isolation_without_calling_llm(tm
     assert runner.launch(args, cli_run=fake_cli, fixture_factory=fixture, identity_fn=identity) == 0
     result = json.loads(next((raw / "sdk-fixture").glob("codex-mcp-*.json")).read_text(encoding="utf-8"))
     assert result["executionComplete"] and result["summary"]["automaticPass"] == 1
+    conformance = result["evaluation"]["run"]["externalContext"]["fixtureConformance"]
+    assert conformance["parentJql"]["normal"]["total"] == 3
+    assert conformance["parentJql"]["denied"]["total"] == 2
+    assert conformance["directDenial"] == 403 and not conformance["cacheWarmed"]
     record = result["cases"][0]
     assert record["isolation"]["worldUnchanged"] and len(record["output"]["mcpToolCalls"]) == 3
     assert result["metrics"]["calls"] is None and result["humanReview"]["status"] == "pending"

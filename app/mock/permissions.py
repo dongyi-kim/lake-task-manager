@@ -8,6 +8,12 @@ class PermissionStore(Store):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.permissions = {"CREATE_ISSUES": True, "MODIFY_REPORTER": True}
+        self.denied_issue_keys = set()
+
+    def get_issue(self, key):
+        if key in self.denied_issue_keys:
+            raise JiraError(403, "You do not have permission to view this issue.")
+        return super().get_issue(key)
 
     def _check_reporter(self, fields):
         if "reporter" in fields and not self.permissions["MODIFY_REPORTER"]:
