@@ -79,24 +79,33 @@ export default {
       }
       return people;
     },
+    tasksPayload() {
+      for (const task of this.tasks) {
+        if (task.start >= task.end) throw new Error("시작일은 종료일보다 앞서야 합니다: " + task.name);
+        if (!task.epics.length) throw new Error("각 WBS Task에 Epic을 하나 이상 연결하세요.");
+        if (new Set(task.epics.map((epic) => epic.key.toUpperCase())).size !== task.epics.length) {
+          throw new Error("같은 Task에 Epic을 중복 연결할 수 없습니다: " + task.name);
+        }
+        if (task.epics.reduce((sum, epic) => sum + Number(epic.weight), 0) <= 0) {
+          throw new Error("Epic 가중치 합은 0보다 커야 합니다: " + task.name);
+        }
+      }
+      return clone(this.tasks);
+    },
     async save(kind) {
       if (this.busy || !this.loaded) return;
       const request = ++this._request;
       this.error = ""; this.notice = "";
       try {
-        if (kind === "wbs" && this.tasks.some((task) => !task.epics.length)) {
-          throw new Error("각 WBS Task에 Epic을 하나 이상 연결하세요.");
-        }
         const body = { revision: this.revision,
-          ...(kind === "wbs" ? { tasks: clone(this.tasks) } : { people: this.peoplePayload() }) };
+          ...(kind === "wbs" ? { tasks: this.tasksPayload() } : { people: this.peoplePayload() }) };
         this.busy = kind;
         const state = await api.raw("/api/workspace/config/" + kind, {
           method: "PUT", headers: { "Content-Type": "application/json", "X-LTM-Local": "1" },
           body: JSON.stringify(body),
         });
         // Config was saved even if the dialog closed while waiting; notify the visible views.
-        api.evict("");
-        window.dispatchEvent(new CustomEvent("workspace-config-updated", { detail: { kind, revision: state.revision } }));
+        api.workspaceConfigUpdated(state.revision, kind);
         if (this._alive && request === this._request) {
           this.accept(state, kind);
           this.notice = kind === "wbs" ? "WBS Task를 저장했습니다." : "인력 구성을 저장했습니다.";
@@ -142,9 +151,9 @@ export default {
                 <article v-for="(task, i) in tasks" :key="i" class="wa-task" :aria-label="'WBS Task ' + (i + 1)">
                   <div class="wa-row-head"><b>{{ task.name || '새 WBS Task' }}</b><button type="button" class="wa-danger" :aria-label="'Task ' + (i + 1) + ' 삭제'" @click="tasks.splice(i, 1)">Task 삭제</button></div>
                   <div class="wa-grid">
-                    <label class="wa-wide">이름<input name="task-name" :aria-label="'Task ' + (i + 1) + ' 이름'" v-model="task.name" required maxlength="200"></label>
-                    <label>모듈<input :aria-label="'Task ' + (i + 1) + ' 모듈'" v-model="task.module" list="workspace-modules" required maxlength="100"></label>
-                    <label>Task ID<input :aria-label="'Task ' + (i + 1) + ' ID'" v-model="task.id" required maxlength="128" spellcheck="false"></label>
+                    <label class="wa-wide">이름<input name="task-name" :aria-label="'Task ' + (i + 1) + ' 이름'" v-model="task.name" required maxlength="500"></label>
+                    <label>모듈<input :aria-label="'Task ' + (i + 1) + ' 모듈'" v-model="task.module" list="workspace-modules" required maxlength="200"></label>
+                    <label>Task ID<input :aria-label="'Task ' + (i + 1) + ' ID'" v-model="task.id" required maxlength="200" spellcheck="false"></label>
                     <label>시작일<input :aria-label="'Task ' + (i + 1) + ' 시작일'" type="date" v-model="task.start" required></label>
                     <label>종료일<input :aria-label="'Task ' + (i + 1) + ' 종료일'" type="date" v-model="task.end" :min="task.start || undefined" required></label>
                   </div>
@@ -152,7 +161,7 @@ export default {
                     <div class="wa-row-head"><b>연결 Epic</b><button type="button" :aria-label="'Task ' + (i + 1) + ' Epic 추가'" @click="task.epics.push({key:'', weight:1})">+ Epic 추가</button></div>
                     <div v-for="(epic, n) in task.epics" :key="n" class="wa-epic-row">
                       <label>티켓 키<input :aria-label="'Task ' + (i + 1) + ' Epic ' + (n + 1) + ' 키'" v-model="epic.key" placeholder="DL-123" required pattern="[A-Za-z][A-Za-z0-9_]*-[0-9]+" spellcheck="false"></label>
-                      <label>가중치<input :aria-label="'Task ' + (i + 1) + ' Epic ' + (n + 1) + ' 가중치'" type="number" v-model.number="epic.weight" required min="0.000001" step="any"></label>
+                      <label>가중치<input :aria-label="'Task ' + (i + 1) + ' Epic ' + (n + 1) + ' 가중치'" type="number" v-model.number="epic.weight" required min="0" step="any"></label>
                       <button type="button" class="wa-danger" :aria-label="'Task ' + (i + 1) + ' Epic ' + (n + 1) + ' 삭제'" @click="task.epics.splice(n, 1)">삭제</button>
                     </div>
                   </div>
@@ -165,7 +174,7 @@ export default {
                 <p v-if="!people.length" class="wa-empty">등록된 모듈이 없습니다.</p>
                 <article v-for="(row, i) in people" :key="i" class="wa-people-row" :aria-label="'인력 모듈 ' + (i + 1)">
                   <div class="wa-row-head"><b>{{ row.module || '새 모듈' }}</b><button type="button" class="wa-danger" :aria-label="'모듈 ' + (i + 1) + ' 삭제'" @click="people.splice(i, 1)">모듈 삭제</button></div>
-                  <label>모듈 이름<input :aria-label="'모듈 ' + (i + 1) + ' 이름'" v-model="row.module" required maxlength="100"></label>
+                  <label>모듈 이름<input :aria-label="'모듈 ' + (i + 1) + ' 이름'" v-model="row.module" required maxlength="200"></label>
                   <label>Jira 사용자 ID<textarea :aria-label="'모듈 ' + (i + 1) + ' 사용자 ID'" v-model="row.ids" rows="4" spellcheck="false" placeholder="skcc.x1234&#10;skcc.x5678"></textarea></label>
                 </article>
               </template>
