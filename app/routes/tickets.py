@@ -52,7 +52,7 @@ def build_ticket_router(*, get_client) -> APIRouter:
         return Response(
             content=data,
             media_type=(content_type or "image/png").split(";")[0].strip(),
-            headers={"Cache-Control": "private, max-age=2592000, immutable"},
+            headers={"Cache-Control": "private, max-age=0, must-revalidate"},
         )
 
     @router.get("/api/ticket/{key}/ancestors")

@@ -12,11 +12,12 @@ import CommentEditor from "./CommentEditor.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
 import { isBusy, busyLabel } from "../../lib/uibusy.js";
 import { pushToast } from "../../lib/toast.js";
-import { clearPendingMutation, loadPendingMutation, newMutationId,
-         savePendingMutation } from "../../lib/mutationId.js";
+import { newMutationId } from "../../lib/mutationId.js";
+import { formDraft } from "../../lib/formDraft.js";
 
 export default {
   name: "EpicCreateDialog",
+  mixins: [formDraft(function () { return "create:epic"; }, ["ep", "selected", "pickOpen", "descOpen", "createdKey", "createMutationId", "pendingCreatePayload"])],
   components: { Avatar, TypeBadge, FieldEdit, PriIcon, CommentEditor },
   emits: ["close", "created"],
   data() {
@@ -45,38 +46,24 @@ export default {
       if (e.key === "Escape") { e.stopPropagation(); this.closeGuarded(); }
     }, true);
     this.searchCands("");
-    this.restorePendingCreate();
+    this.captureFormBaseline();
   },
   unmounted() { document.removeEventListener("keydown", this._onEsc, true); clearTimeout(this._t); },
   methods: {
     fromBackdrop,
     // 생성 중에는 닫지 않는다 — 받아 놓은 글이 사라진다(실패하면 바로 풀린다).
-    closeGuarded() {
-      if (this.busy || this.createMutationId) {
+    async closeGuarded() {
+      if (this.busy) {
         pushToast("Jira 반영 여부를 확인 중입니다 — 입력을 보존한 채 다시 시도해 주세요.", "warn");
         return;
       }
       if (isBusy()) { pushToast(busyLabel() + " — 끝나면 닫을 수 있습니다.", "warn"); return; }
-      this.$emit("close");
+      await this.preserveAndClose();
     },
     rankOf: priRankOf,
     setWho(id, u) {
       this.ep.assigneeId = id || "";
       this.ep.assigneeName = u ? (u.display || u.name || "") : "";
-    },
-    restorePendingCreate() {
-      const saved = loadPendingMutation("epic-create");
-      if (!saved) return;
-      const p = saved.payload || {};
-      this.createMutationId = saved.id;
-      this.pendingCreatePayload = p;
-      this.ep = {
-        summary: p.summary || "", epicName: p.epicName || "", priority: p.priority || "",
-        components: (p.components || []).slice(), duedate: p.duedate || "",
-        assigneeId: p.assignee || "", assigneeName: p.assignee || "",
-      };
-      this.selected = (p.taskKeys || []).map((key) => ({ key, summary: "", type: "" }));
-      this.err = "이전 Epic 생성 요청의 Jira 반영 여부를 확인할 수 있습니다. 같은 내용으로 다시 시도해 주세요.";
     },
     searchCands(q) {
       this.candQ = q;
@@ -106,10 +93,13 @@ export default {
       if (r && r.ok === false) throw new Error(r.error || "설명 저장 실패");
     },
     async submit() {
-      if (!this.canCreate || this.busy) return;
+      if (!this.formDraftReady || !this.canCreate || this.busy) return;
+      if (this.$refs.ded && !this.$refs.ded.ready) { this.err = "에디터 준비 후 다시 시도해 주세요."; return; }
       this.busy = true; this.err = "";
       try {
-        const wantDesc = this.descOpen && this.$refs.ded && !this.$refs.ded.isBlank();
+        const wantDesc = this.$refs.ded && !this.$refs.ded.isBlank();
+        if (this.$refs.ded && await this.$refs.ded.flushDraft() === false) throw new Error(this.$refs.ded.draftError);
+        await this.flushFormDraft();
         const createDesc = wantDesc && !this.$refs.ded.hasPendingUploads()
           ? this.$refs.ded.htmlValue() : null;
         let key = this.createdKey;
@@ -126,19 +116,18 @@ export default {
           };
           payload.clientMutationId = this.createMutationId;
           this.pendingCreatePayload = { ...payload };
-          savePendingMutation("epic-create", this.createMutationId, payload);
+          await this.flushFormDraft();
           r = await api.createEpic(payload);
           if (!r || r.ok === false) {
             this.createMutationId = "";
             this.pendingCreatePayload = null;
-            clearPendingMutation("epic-create");
             this.err = (r && r.error) || "만들지 못했습니다."; return;
           }
           key = r.key;
           this.createdKey = key;
+          await this.flushFormDraft(); // Persist confirmed issue key before any follow-up upload/write.
           this.createMutationId = "";
           this.pendingCreatePayload = null;
-          clearPendingMutation("epic-create");
         }
         if (wantDesc && key) {
           await this.$nextTick();
@@ -149,15 +138,15 @@ export default {
         if (r && r.link && r.link.failed && r.link.failed.length) {
           this.err = "일부 Task 연결 실패: " + r.link.failed.map((f) => f.key).join(", ");
         }
+        await this.finishFormDraft(true);
         this.$emit("created", key);
       } catch (e) {
         if (!(e && (e.uncertain || e.needLogin))) {
           this.createMutationId = "";
           this.pendingCreatePayload = null;
-          clearPendingMutation("epic-create");
         }
         this.err = (e && e.message) || "만들지 못했습니다.";
-      } finally { this.busy = false; }
+      } finally { this.busy = false; if (!this._formFinished) this.flushFormDraft().catch(() => {}); }
     },
   },
   template: `
@@ -245,18 +234,22 @@ export default {
         <span class="nk-desc-cav">{{ descOpen ? '▾' : '▸' }}</span>설명 {{ descOpen ? '접기' : '추가 (선택)' }}
       </button>
       <div v-show="descOpen" class="nk-desc-body">
-        <CommentEditor ref="ded" :ticket-key="createdKey || '__new__'" kind="description"
-                       :submit-fn="saveDesc" hide-footer />
+        <CommentEditor v-if="formDraftReady" ref="ded" :draft-scope="formDraftScope + ':description'" :ticket-key="createdKey || '__new__'" kind="description"
+                       :mutation-pending="!!createMutationId" :submit-fn="saveDesc" hide-footer />
         <div class="nk-desc-hint">이미지·파일은 붙여넣거나 끌어다 놓으면 Epic 생성 후 함께 첨부됩니다.</div>
       </div>
     </div>
 
+    <div v-if="formDraftError" class="tkt-cmt-err" role="alert">{{ formDraftError }}<button @click="restoreFormDraft">다시 시도</button></div>
+    <div v-if="createdKey" class="nk-hint">{{ createdKey }} 생성됨 · 남은 설명과 첨부를 저장합니다.</div>
+    <div v-if="formDraftRestored" class="nk-hint">작성 중이던 초안을 복원했습니다.</div>
     <div v-if="err" class="tkt-cmt-err">{{ err }}</div>
     <div class="nk-f">
       <span class="nk-hint">{{ canCreate ? (selected.length ? selected.length + '개 Task 를 함께 담습니다.' : 'Task 는 나중에 담아도 됩니다.') : '제목을 입력하세요.' }}</span>
+      <button class="cmt-ed-btn ghost" :disabled="busy || !!createMutationId" @click="discardFormDraft">초안 삭제</button>
       <button class="cmt-ed-btn ghost" @click="closeGuarded()">취소</button>
-      <button class="cmt-ed-btn primary" :disabled="!canCreate || busy" @click="submit">
-        {{ busy ? '만드는 중…' : 'Epic 만들기' }}</button>
+      <button class="cmt-ed-btn primary" :disabled="!formDraftReady || !canCreate || busy" @click="submit">
+        {{ busy ? '저장 중…' : createdKey ? '남은 내용 저장' : 'Epic 만들기' }}</button>
     </div>
   </div>
   </div>

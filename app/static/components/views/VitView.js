@@ -50,6 +50,12 @@ export default {
   // (전부 모일 때까지 기다리지 않음 — 느린 모듈이 나머지를 막지 않는다)
   async mounted() { await this.load(); },
   created() {
+    window.addEventListener('api-cache-updated', this._cacheUpdate = e => this.applyCacheUpdate(e.detail));
+    window.addEventListener('cache-policy-changed', this._policyUpdate = () => {
+      api.vitShell().catch(() => {});
+      Object.keys(this.mods).forEach(module => api.vitModule(module).catch(() => {}));
+      Object.keys(this.detail).forEach(key => api.vitDetail(key).catch(() => {}));
+    });
     // 좌하단 플로팅 새로고침이 부른다 — 뷰마다 캐시를 비우고 다시 받는 함수가 이름이 달라
     // (hardRefresh/refresh) 여기서 한 번에 잇는다. 끝나면 버튼에 '됐다' 고 알린다.
     window.addEventListener("force-refresh", this._fr = async () => {
@@ -67,6 +73,8 @@ export default {
     window.addEventListener('workspace-config-updated', this._workspaceUpdate = () => this.load());
   },
   unmounted() {
+    window.removeEventListener('api-cache-updated', this._cacheUpdate);
+    window.removeEventListener('cache-policy-changed', this._policyUpdate);
     this._loadSeq = (this._loadSeq || 0) + 1;
     this._detailEpoch = (this._detailEpoch || 0) + 1;
     window.removeEventListener("force-refresh", this._fr);
@@ -74,6 +82,19 @@ export default {
     window.removeEventListener('workspace-config-updated', this._workspaceUpdate);
   },
   methods: {
+    applyCacheUpdate({ path, value }) {
+      if (!value || value.partial || value.error) return;
+      if (path === '/api/vit/shell' && this.d) { this.d = value; return; }
+      const module = path.match(/^\/api\/vit\/module\/([^/]+)$/);
+      if (module) {
+        const name = decodeURIComponent(module[1]);
+        if (Object.hasOwn(this.mods, name)) this.mods[name] = value.issues || [];
+        return;
+      }
+      const detail = path.match(/^\/api\/vit\/([^/]+)$/);
+      const key = detail && decodeURIComponent(detail[1]);
+      if (key && Object.hasOwn(this.detail, key)) this.detail[key] = value;
+    },
     /** 골격(모듈 목록)을 먼저 받고, 모듈별 본문을 병렬로 채운다.
      *  ★ 이 로직이 예전엔 mounted() 안에 인라인이라, hardRefresh 가 this.load() 를 부르면
      *    'this.load is not a function' 이었다(새로고침 버튼이 그래서 죽었다). 메서드로 뺀다. */

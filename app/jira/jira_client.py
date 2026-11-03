@@ -14,9 +14,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from html import escape, unescape
 from urllib.parse import unquote, urlparse
+from uuid import uuid4
 
 from app.auth.base import (PermissionDenied, SessionExpired, UpstreamUnavailable,
                            background_upstream, write_upstream)
+from app.infra.cache_policy import note_read, revalidating
 from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
                        flatten_task_lists, lift_mentions_html, mark_explicit_jira_links, sanitize_html,
                        shorten_mention_names, text_to_html, tidy_html, unproxy_media)
@@ -541,11 +543,17 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         self._session_state_persist_lock = threading.Lock()
         self._session_state_persist_at = 0.0
         self._renew_at = {}          # 서비스별 마지막 무음갱신 시도 시각(스로틀)
+        self._renew_locks = {}
+        self._renew_guard = threading.Lock()
+        self._renew_results = {}
         # 포커스 복귀가 여러 번 겹치거나 브라우저 탭이 둘 이상이어도 /myself 확인과
-        # silent SSO 갱신은 하나만 수행한다. 기다리는 HTTP 요청은 같은 결과를 재사용한다.
+        # silent SSO 갱신은 하나만 수행한다. 겹친 요청에는 pending 또는 직전 결과를 반환한다.
         self._auth_probe_lock = threading.Lock()
         self._auth_probe_at = 0.0
         self._auth_probe_result = None
+        self._auth_maintenance = {"state": "unchecked", "lastAttemptAt": None,
+                                  "lastCheckedAt": None, "lastRenewedAt": None,
+                                  "nextCheckAt": None, "failure": None}
         self._jql_lock_guard = threading.Lock()
         self._jql_locks = {}
         self._jql_policy = JqlCachePolicy(self)
@@ -597,7 +605,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             pass
 
     RENEW_THROTTLE_SEC = 30          # 같은 서비스를 이 간격 안엔 다시 무음갱신하지 않는다
-    #: 비-Jira 서비스(Confluence·Bitbucket) 세션을 **미리** 살려 두는 주기(초)
+    #: UI가 캐시만 읽거나 창을 닫아 놓아도 Jira 포함 세션을 확인한다.
     KEEPALIVE_EVERY = 240
 
     def _renew_service(self, name):
@@ -615,17 +623,37 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     if (nm or "").lower() == name.lower()), None)
         if not tgt:
             return False
-        now = time.time()
-        if now - self._renew_at.get(name, 0) < self.RENEW_THROTTLE_SEC:
-            return False
-        self._renew_at[name] = now
-        try:
-            return bool(fn([tgt], save_cb=self.sso_store().save_all_from))
-        except Exception:
-            return False
+        key = name.lower()
+        with self._renew_guard:
+            lock = self._renew_locks.setdefault(key, threading.Lock())
+        with lock:
+            now = time.monotonic()
+            if key in self._renew_at and now - self._renew_at[key] < self.RENEW_THROTTLE_SEC:
+                return self._renew_results.get(key, False)
+            provider = self.provider
+            generation = self._provider_generation
+            store = self.sso_store()
+            revision = store.revision(key)
+
+            def save(state):
+                with self._provider_lock:
+                    if (provider is self._provider and generation == self._provider_generation
+                            and not getattr(provider, "broken", False)):
+                        return store.save_if_unchanged(key, state, revision)
+                return False
+
+            try:
+                result = bool(provider.renew_silent([tgt], save_cb=save))
+            except Exception:
+                result = False
+            if provider is not self._provider or generation != self._provider_generation:
+                return False
+            self._renew_at[key] = time.monotonic()
+            self._renew_results[key] = result
+            return result
 
     def keepalive_auth(self):
-        """비-Jira 서비스(Confluence·Bitbucket) 세션을 **미리** 확인·갱신한다. prod 전용.
+        """Jira와 활성화된 부가 서비스의 세션을 확인·무음 갱신한다. prod 전용.
 
         SSO 쿠키는 **도메인별로 따로 만료**된다 — Jira 는 멀쩡한데 Confluence 만 죽는 일이 흔하다.
         지금까지는 그걸 **검색이 401 을 맞고 나서야** 알았다: 그 순간 무음갱신을 돌리는데
@@ -636,10 +664,11 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
           우선순위**로 넣는다(검색·화면 조회가 이것 때문에 늦어지면 본말전도다)."""
         if self.env != "prod":
             return
+        self.proactive_auth_probe()
         from app.auth.base import PRIO_BACKGROUND, _prio_scope
         for name, base, paths in getattr(self.s, "auth_targets", []):
             if (name or "").lower() == "jira":
-                continue                       # Jira 는 본 경로가 늘 쓰므로 따로 안 데운다
+                continue                       # Jira는 위의 공통 single-flight coordinator가 담당
             if (name or "").lower() == "bitbucket" and not getattr(self.s, "bitbucket_enabled", False):
                 continue                       # 안 켠 서비스는 건드리지 않는다(인증 소음)
             probe = (paths or [None])[0]
@@ -649,7 +678,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 with _prio_scope(PRIO_BACKGROUND):
                     self.provider.get_json(base.rstrip("/") + probe, quiet=True)
             except SessionExpired:
-                self._renew_service(name)      # 스로틀은 그 안에서 건다
+                with _prio_scope(PRIO_BACKGROUND):
+                    self._renew_service(name)
             except Exception:
                 pass                           # 망 문제 등 — 다음 주기에 다시 본다
 
@@ -728,6 +758,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         # 로그인 완료 전에 캐시한 proactive probe의 needLogin 결과를 다시 내보내지 않는다.
         self._auth_probe_result = None
         self._auth_probe_at = 0.0
+        self._renew_at.clear()
+        self._renew_results.clear()
         # 새 세션으로 갈아끼우는 참이다 — '죽었다' 표시도 함께 지운다(다시 실패하면 다시 선다).
         self.mark_session_alive()
         # 세션 사용자 캐시도 함께 버린다. 안 그러면 로그인 직후에도 옛 판정(빈 사용자)이
@@ -867,8 +899,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         fk, ck = f"issue:{self.env}:{key}", f"issueL:{self.env}:{key}"
         full = self.cache.get_stale_at(fk)        # (값, 받아온 시각) | None
         light = self.cache.get_stale_at(ck)
-        full_ok = full is not None and (now - full[1]) <= ttl
-        light_ok = light is not None and (now - light[1]) <= ttl
+        full_ok = full is not None and self.cache.get(fk) is not None
+        light_ok = light is not None and self.cache.get(ck) is not None
         # 전체가 살아 있고(TTL내) 경량보다 더(또는 같이) 최신이면 전체를 쓴다 — 굳이 다시 안 받는다.
         if full_ok and (not light_ok or full[1] >= light[1]):
             return full[0]
@@ -890,18 +922,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
     ISSUE_BATCH = 50                  # JQL "key in (...)" 한 번에 담을 최대 개수
 
-    # 매번 재검증하는 캐시 키 = **사람이 방금 바꿨을 수 있고, 틀리면 바로 곤란한 것**뿐이다.
-    #   issue/issueview  티켓 본문 + 상태·담당·마감(같은 응답에 들어 있다)
-    #   comments         댓글
-    # 여기까지가 "지금 이 티켓이 어떤 상태이고 무슨 얘기가 오갔나" 다. TTL 이 15분이면 내가
-    # 방금 쓴 댓글이 15분 동안 안 보이는데, 그건 캐시가 아니라 버그로 보인다.
-    #
-    # ★ 나머지는 일부러 뺐다. 첨부·링크·이력(changelog/timeline)·계보(ancestors/siblings/
-    #   children/related)는 자주 바뀌지 않고, 조금 낡아도 판단이 틀어지지 않는다. 반면 갱신
-    #   비용은 크다 — 계보 하나가 상류를 여러 번 타고(실측 3건), prod 는 상류가 단일 큐라
-    #   그게 쌓이면 정작 본문·댓글이 밀린다. 강제 갱신은 값싼 것에만 건다.
-    #   (내가 첨부·링크를 직접 바꾼 경우는 쓰기 직후 해당 키를 invalidate 하므로 이미 최신이다.)
-    REVALIDATE_PREFIXES = ("issue:", "issueL:", "issueview:", "comments:")
+    # TTL expiry or successful writes trigger revalidation; fresh display data is reusable.
+    REVALIDATE_PREFIXES = ()  # successful writes invalidate; fresh reads need no upstream request
 
     #: 요청 한 건이 도는 동안의 '못 가져온 개수'(스레드별)
     _miss = threading.local()
@@ -963,7 +985,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         def job():
             try:
                 with background_upstream():
-                    self.cache.set_if_fence(key, producer(), ttl, fence)
+                    if self.cache.fence() == fence and self.cache.get(key) is None:
+                        self.cache.refresh(key, ttl, producer)
             except Exception:
                 pass                     # 갱신 실패는 조용히 — stale 값이 계속 쓰인다
             finally:
@@ -1483,8 +1506,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     def _jql_snapshot(self, compiled, fields, light, snapshot_id=None):
         context = self._jql_user_context()
         projection = self._projection_signature(fields, light)
-        if snapshot_id:
-            key = f"jqlsnap:v{self.JQL_CACHE_VERSION}:{self.env}:{snapshot_id}"
+
+        def read_snapshot(sid):
+            key = f"jqlsnap:v{self.JQL_CACHE_VERSION}:{self.env}:{sid}"
             snapshot = self.cache.get(key)
             if not isinstance(snapshot, dict):
                 raise ValueError("검색 snapshot이 만료되었습니다. 첫 페이지부터 다시 조회하세요.")
@@ -1495,26 +1519,35 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 raise ValueError("검색 snapshot이 현재 JQL 또는 필드 projection과 일치하지 않습니다.")
             issue_keys = list(snapshot.get("issueKeys") or [])
             hydrated = dict(snapshot)
-            hydrated["issues"] = self._load_jql_rows(
-                issue_keys, int(snapshot.get("generation", 0)), projection)
-            return snapshot_id, hydrated
+            # Legacy cursors stored IDs only. New snapshots freeze their rows because shared
+            # projection rows can legitimately be refreshed by a later query in the same generation.
+            if "issues" not in hydrated:
+                hydrated["issues"] = self._load_jql_rows(
+                    issue_keys, int(snapshot.get("generation", 0)), projection)
+            return sid, hydrated
+
+        if snapshot_id:
+            return read_snapshot(snapshot_id)
         generation = self._jql_generation()
         identity = hashlib.sha256(
             f"{context}\n{generation}\n{projection}\n{compiled.canonical}".encode("utf-8")
         ).hexdigest()[:32]
-        snapshot_id = f"{generation}.{identity}"
-        key = f"jqlsnap:v{self.JQL_CACHE_VERSION}:{self.env}:{snapshot_id}"
+        key = f"jqlcurrent:v{self.JQL_CACHE_VERSION}:{self.env}:{generation}.{identity}"
         lock = self._jql_lock(key)
         with lock:
-            snapshot = self.cache.get_or_set(
-                key, self.JQL_SNAPSHOT_TTL,
-                lambda: self._build_jql_snapshot(
-                    compiled, fields, light, generation, projection, context))[0]
-        issue_keys = list(snapshot.get("issueKeys") or [])
-        hydrated = dict(snapshot)
-        hydrated["issues"] = self._load_jql_rows(
-            issue_keys, int(snapshot.get("generation", generation)), projection)
-        return snapshot_id, hydrated
+            def build():
+                fence = self.cache.fence()
+                snapshot = self._build_jql_snapshot(compiled, fields, light, generation, projection, context)
+                snapshot["issues"] = self._load_jql_rows(snapshot.get("issueKeys") or [], generation, projection)
+                sid = f"{generation}.{identity}.{uuid4().hex}"
+                snapshot_key = f"jqlsnap:v{self.JQL_CACHE_VERSION}:{self.env}:{sid}"
+                if not self.cache.set_if_fence(snapshot_key, snapshot, self.JQL_SNAPSHOT_TTL, fence):
+                    raise UpstreamUnavailable("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
+                return {"snapshotId": sid}
+
+            current = self.cache.get_or_set_strict(
+                key, min(self.s.cache_ttl_seconds, self.JQL_SNAPSHOT_TTL), build)[0]
+        return read_snapshot(current["snapshotId"])
 
     def search_issues_page(self, jql, start_at=0, max_results=100, fields=None, light=True,
                            snapshot_id=None):
@@ -4097,29 +4130,33 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             self.cache.invalidate_keys([cache_key])
 
         def produce():
-            badge = self._ticket_badge_strict(key, strict_cache=True)
-            if not badge:
-                raise _EpicMetadataUnavailable(key)
-            title = str(badge.get("epicName") or badge.get("summary") or "").strip()
-            if not title or title.casefold() == key.casefold():
-                raise _EpicMetadataUnavailable(key)
-            # Store enough of the same authoritative record for ancestry/WBS/search to share the
-            # one 12-hour policy.  The original three fields remain backward-compatible.
-            return {
-                "key": key,
-                "title": title,
-                "summary": badge.get("summary") or None,
-                "epicName": badge.get("epicName") or None,
-                "status": badge.get("status") or None,
-                "statusCategory": badge.get("statusCategory") or "todo",
-                "assignee": badge.get("assignee") or None,
-            }
+            return self._fetch_epic_metadata(key)
 
         try:
             result, _hit = self.cache.get_or_set(cache_key, self.EPIC_META_TTL, produce)
         except _EpicMetadataUnavailable:
             return None
         return result if self._usable_epic_metadata(result, key) else None
+
+    def _fetch_epic_metadata(self, key):
+        badge = self._ticket_badge_strict(key, strict_cache=True)
+        if not badge:
+            raise _EpicMetadataUnavailable(key)
+        title = str(badge.get("epicName") or badge.get("summary") or "").strip()
+        if not title or title.casefold() == key.casefold():
+            raise _EpicMetadataUnavailable(key)
+        # Store enough of the same authoritative record for ancestry/WBS/search to share the
+        # one 12-hour policy.  The original three fields remain backward-compatible.
+        return {
+            "key": key,
+            "title": title,
+            "summary": badge.get("summary") or None,
+            "epicName": badge.get("epicName") or None,
+            "status": badge.get("status") or None,
+            "statusCategory": badge.get("statusCategory") or "todo",
+            "assignee": badge.get("assignee") or None,
+        }
+
 
     @staticmethod
     def _usable_epic_metadata(value, key=None):
@@ -4158,12 +4195,15 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             str(key).strip().upper() for key in (keys or ()) if str(key or "").strip()))
         if not ordered:
             return []
-        cached = self.cache.get_many(f"epicmeta:{self.env}:{key}" for key in ordered)
+        cached = self.cache.get_many((f"epicmeta:{self.env}:{key}" for key in ordered), alive=True)
         result = []
         for key in ordered:
             value = cached.get(f"epicmeta:{self.env}:{key}")
             if self._usable_epic_metadata(value, key):
                 result.append(value)
+                cache_key = f"epicmeta:{self.env}:{key}"
+                if self.cache.get(cache_key) is None and self.cache.revalidator:
+                    self._refresh_bg(cache_key, self.s.cache_ttl_seconds, lambda k=key: self._fetch_epic_metadata(k))
         return result
 
     def epic_metadata_many(self, keys):
@@ -4172,7 +4212,12 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             str(key).strip().upper() for key in (keys or ()) if str(key or "").strip()))
         if not ordered:
             return []
-        cached_rows = self.epic_metadata_cached_many(ordered)
+        if revalidating():
+            fresh = self.cache.get_many(f"epicmeta:{self.env}:{key}" for key in ordered)
+            cached_rows = [value for key in ordered
+                           if self._usable_epic_metadata(value := fresh.get(f"epicmeta:{self.env}:{key}"), key)]
+        else:
+            cached_rows = self.epic_metadata_cached_many(ordered)
         cached = {row["key"]: row for row in cached_rows}
         missing = [key for key in ordered if key not in cached]
         if missing:
@@ -4241,8 +4286,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         for pre in ("issue", "issueL", "issueview", "comments", "attachments", "documents",
                     "remotelinks", "timeline", "changelog", "children", "related",
                     "siblings", "ancestors"):
-            self.cache.invalidate(f"{pre}:{self.env}:{key}")
-        self._invalidate_epic_metadata(key)
+            self.cache.forget(f"{pre}:{self.env}:{key}")
+        self.cache.forget(f"epicmeta:{self.env}:{key}")
         self._invalidate_direct_child_views(key, membership=True)
         self._invalidate_direct_child_views(parent_key, membership=True)
         # SubTask 삭제는 Task의 membership만 바꾼다. 그 Task가 속한 Epic의 Task 목록까지
@@ -5058,6 +5103,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         ck = f"issueview:{self.env}:{key}"
 
         def fetch():
+            fence = self.cache.fence()
             d = self.provider.get_json(
                 f"/rest/api/2/issue/{key}",
                 params={"fields": self._issue_fields(), "expand": "renderedFields"})
@@ -5065,22 +5111,19 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             # 함께 데운다 → 다이얼로그의 관련(issuelinks)·첨부(attachment)·자식 조회가 재요청 없이
             # 이걸 재사용한다(경량 검색으로 issue:{key} 가 안 데워지는 걸 상쇄 + 기존 중복 제거).
             if isinstance(d, dict) and "fields" in d:
-                self.cache.set(f"issue:{self.env}:{key}", d, self.s.cache_ttl_seconds)
+                self.cache.set_if_fence(f"issue:{self.env}:{key}", d, self.s.cache_ttl_seconds, fence)
             return d
         if fresh:
             # **낡은 값을 받으면 안 되는 자리**(본문 편집 시작·편집 중 충돌 감시)에서만 쓴다.
             # 평소 경로는 캐시를 먼저 주고 뒤에서 갱신한다 — 화면은 빨리 뜨지만 첫 응답이
             # 한 박자 늦다. 그 한 박자가 본문 편집에서는 '남의 수정을 덮어쓰기' 가 된다.
-            try:
-                data = fetch()
-            except SessionExpired:
-                raise
-            except Exception:
-                got = self.cache.get_alive(ck)                # 못 받으면 있던 값으로 — 편집 자체를 막진 않는다
-                data = got[0] if got else None
-            else:
-                self.cache.set(ck, data, self.s.cache_ttl_seconds)
-            return data if isinstance(data, dict) and "fields" in data else None
+            fence = self.cache.fence()
+            data = fetch()
+            if not isinstance(data, dict) or not isinstance(data.get("fields"), dict):
+                return None
+            if self.cache.set_if_fence(ck, data, self.s.cache_ttl_seconds, fence):
+                note_read(self.cache.metadata(ck))
+            return data
         # SessionExpired(401/403/5xx) 는 전파돼 라우트가 needLogin(401) 처리. 404 는 에러 바디(dict) → None.
         data, _ = self.cache.get_or_set(ck, self.s.cache_ttl_seconds, fetch)
         if not isinstance(data, dict) or "fields" not in data:

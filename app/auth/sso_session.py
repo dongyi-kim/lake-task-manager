@@ -38,6 +38,7 @@ import threading
 from .base import (AuthProvider, LoginRequired, PendingUpstreamOperation,
                    PermissionDenied, SessionExpired, UpstreamError, UpstreamUnavailable,
                    WRITE_HEADERS, PRIO_BACKGROUND, PRIO_WRITE, upstream_priority)
+from .sso_navigation import login_state, observe_login_page
 
 
 def _launch(p, headless):
@@ -198,10 +199,26 @@ class SsoSessionProvider(AuthProvider):
             raise UpstreamUnavailable(self._broken_reason)
         done = threading.Event()
         box = [None, None]   # [result, error]
+        job_lock = threading.Lock()
+        job_state = {"started": False, "cancelled": False}
+
+        def execute():
+            with job_lock:
+                if job_state["cancelled"]:
+                    return None
+                job_state["started"] = True
+            return fn()
+
         operation = PendingUpstreamOperation(done, box)
-        self._jobs.put((priority, next(self._seq), (fn, done, box)))
+        self._jobs.put((priority, next(self._seq), (execute, done, box)))
         limit = wait if wait else self.JOB_TIMEOUT      # 업로드는 크기에 맞춘 한도를 받는다
         if not done.wait(limit):
+            with job_lock:
+                if priority == PRIO_BACKGROUND and not job_state["started"]:
+                    job_state["cancelled"] = True
+                    # Foreground work can legitimately occupy the serial queue. A maintenance
+                    # job that has not started cannot prove the browser/network has failed.
+                    raise UpstreamUnavailable("백그라운드 인증/갱신 작업이 대기 중입니다.")
             self._mark_broken("Jira/SSO 응답 시간 초과(%ds)" % int(limit))
             error = UpstreamUnavailable(
                 "Jira 응답이 없습니다(%ds 초과). 앱은 계속 실행되며 잠시 후 자동 재시도합니다."
@@ -586,7 +603,7 @@ class SsoSessionProvider(AuthProvider):
         def capture():
             if self._closed.is_set() or self._broken.is_set():
                 raise UpstreamUnavailable("SSO provider가 교체되어 세션 상태 저장을 건너뜁니다.")
-            return self._context.storage_state()
+            return login_state(self._context)
 
         return self._submit(capture, PRIO_BACKGROUND)
 
@@ -606,6 +623,7 @@ class SsoSessionProvider(AuthProvider):
         """
         def do():
             page = self._context.new_page()          # headless → 화면에 안 뜬다
+            observe_login_page(page)
             renewed = False
             try:
                 for base, paths in (targets or []):
@@ -613,11 +631,12 @@ class SsoSessionProvider(AuthProvider):
                     if not b:
                         continue
                     if service_probe(self._context, b, paths)[0]:
+                        renewed = True               # 앱 창만 오래된 쿠키를 가진 경우에도 성공
                         continue                     # 이미 살아 있으면 건드리지 않는다
                     try:
-                        page.goto(b, wait_until="domcontentloaded")
+                        page.goto(b, wait_until="domcontentloaded", timeout=10000)
                         try:
-                            page.wait_for_load_state("networkidle", timeout=6000)
+                            page.wait_for_load_state("networkidle", timeout=2000)
                         except Exception:
                             pass                     # 아이들 안 돼도 아래 프로브로 판정
                     except Exception:
@@ -631,13 +650,14 @@ class SsoSessionProvider(AuthProvider):
                     pass
             if renewed and save_cb:
                 try:
-                    save_cb(self._context.storage_state())
+                    save_cb(login_state(self._context))
                 except Exception:
                     pass
             return renewed
 
-        # 사용자 대기를 막지 않게 쓰기(-1) 우선순위로 — 이건 사람이 기다리는 로그인 경로다.
-        return self._submit(do, PRIO_WRITE)
+        # 주기 유지 작업은 사용자 읽기/쓰기를 앞지르지 않는다. 명시적 로그인만 호출자가
+        # write_upstream을 사용하고, 백그라운드 coordinator는 background_upstream을 쓴다.
+        return self._submit(do, upstream_priority())
 
     def close(self):
         """퇴역은 즉시 반환한다. 멎은 Playwright 호출 때문에 로그인/종료까지 멎으면 안 된다."""
@@ -663,7 +683,7 @@ def service_probe(context, base, paths):
     last = "응답 없음"
     for path in paths:
         try:
-            resp = context.request.get(b + path)
+            resp = context.request.get(b + path, timeout=5000)
         except Exception as e:
             last = f"{path}: 요청 실패({e})"
             continue
@@ -727,9 +747,10 @@ def login(base, store, service="jira"):
         browser = _launch(p, headless=False)
         context = browser.new_context()
         page = context.new_page()
+        observe_login_page(page)
         page.goto(base, wait_until="domcontentloaded")
         input(">>> 사내 SSO/인증서 로그인을 끝까지 완료한 뒤, 이 창에서 Enter: ")
-        store.save(service, context.storage_state())
+        store.save(service, login_state(context))
         browser.close()
         print(f"세션 저장 완료: {store.path(service)}")
 
@@ -743,11 +764,12 @@ def _login_attempt(p, base, store, service, headless, timeout, poll):
     try:
         context = browser.new_context()
         page = context.new_page()
+        observe_login_page(page)
         page.goto(base, wait_until="domcontentloaded")
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if _authed(context, base):
-                store.save(service, context.storage_state())
+                store.save(service, login_state(context))
                 return True
             time.sleep(poll)
         return False

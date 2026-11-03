@@ -10,6 +10,11 @@ export default {
                     // Epic 별로 '못 가져온 하위 수'(-1 = 통째로 실패). 없는 것과 못 받은 것은 다르다.
                     partial: {}, hideBugVoc: true, _rt: null, _onResize: null }; },
   created() {
+    window.addEventListener('api-cache-updated', this._cacheUpdate = e => this.applyCacheUpdate(e.detail));
+    window.addEventListener('cache-policy-changed', this._policyUpdate = () => {
+      api.wbs().catch(() => {});
+      Object.keys(this.epicTree).forEach(key => api.epicTree(key).catch(() => {}));
+    });
     window.addEventListener("force-refresh", this._fr = async () => {
       try { await this.refresh(); }
       finally { window.dispatchEvent(new CustomEvent("force-refresh-done")); }
@@ -37,6 +42,8 @@ export default {
     window.addEventListener("resize", this._onResize);
   },
   unmounted() {
+    window.removeEventListener('api-cache-updated', this._cacheUpdate);
+    window.removeEventListener('cache-policy-changed', this._policyUpdate);
     this._treeEpoch = (this._treeEpoch || 0) + 1;
     if (this._onResize) window.removeEventListener("resize", this._onResize);
     if (this._raf) cancelAnimationFrame(this._raf);
@@ -67,6 +74,18 @@ export default {
     },
   },
   methods: {
+    applyCacheUpdate({ path, value }) {
+      if (!value || value.partial || value.error) return;
+      if (path === '/api/wbs' && this.D) this.D = value;
+      else {
+        const match = path.match(/^\/api\/epic\/([^/]+)\/tree$/);
+        const key = match && decodeURIComponent(match[1]);
+        if (!key || !Array.isArray(this.epicTree[key])) return;
+        this.epicTree[key] = Array.isArray(value) ? value : (value.tree || []);
+        delete this.partial[key];
+      }
+      this.scheduleRender();
+    },
     pctStr(n) { return Number(n).toFixed(1) + "%"; },   // 진척률 소수점 1자리 고정
     mcolor(i) { return moduleColor(i); },
     unitLabel(u) { return { day: "일", week: "주", month: "월" }[u]; },

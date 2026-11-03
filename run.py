@@ -135,15 +135,12 @@ def _silent_renew_via_provider(appmain, base, paths):
     끝까지 태우면서도 화면엔 아무것도 안 뜬다. 성공하면 provider 가 갱신된 세션을 저장·보유하므로
     이후 REST 는 바로 정상 응답이 온다. 사람이 입력해야 하는 경우엔 False → 호출부가 창을 연다."""
     try:
-        prov = appmain._client.provider          # 살아 있는 headless provider (없으면 LoginRequired)
-    except Exception:
-        return False
-    fn = getattr(prov, "renew_silent", None)
-    if not fn:
-        return False
-    try:
-        store = appmain._client.sso_store()
-        return bool(fn([(base, paths)], save_cb=store.save_all_from))
+        from app.auth.base import write_upstream
+        client = appmain._client
+        name = next((name for name, target, _paths in client.s.auth_targets
+                     if target.rstrip("/") == base.rstrip("/")), None)
+        with write_upstream():
+            return bool(name and client._renew_service(name))
     except Exception:
         return False
 
@@ -156,6 +153,7 @@ def _headless_cert_login(p, appmain, name, base, paths, timeout=10):
     (service_probe 200) storage_state 를 저장한다. 시간 안에 안 되면(사람 입력 필요) False →
     호출부가 그제서야 보이는 창을 연다. 기존 세션이 있으면 쿠키를 실어 리다이렉트만으로도 끝난다."""
     from app.auth.sso_session import service_probe
+    from app.auth.sso_navigation import login_state, observe_login_page
     browser = None
     try:
         browser = p.chromium.launch(headless=True)
@@ -163,11 +161,12 @@ def _headless_cert_login(p, appmain, name, base, paths, timeout=10):
         state = store.merged() if store.any_exists() else None
         ctx = browser.new_context(storage_state=state) if state else browser.new_context()
         pg = ctx.new_page()
+        observe_login_page(pg)
         pg.goto(base, wait_until="domcontentloaded")
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if service_probe(ctx, base, paths)[0]:
-                store.save_all_from(ctx.storage_state())
+                store.save(name.lower(), login_state(ctx))
                 appmain._client.reset_provider()
                 print(f"[login]   {name} 창 없이 인증됨(cert 자동)")
                 return True
@@ -200,6 +199,8 @@ def _login_one_service(page, context, name, base, paths, per_timeout, appmain):
     직접 로그인한다. per_timeout 안에 안 되면 실패로 본다.
     """
     from app.auth.sso_session import service_probe
+    from app.auth.sso_navigation import observe_login_page
+    observe_login_page(page)
     try:
         # networkidle — SSO 리다이렉트 체인(앱→IdP→앱)이 끝날 때까지 기다린다.
         # domcontentloaded 는 중간 리다이렉트 페이지에서 일찍 끝나 판정이 헛돈다.
@@ -240,6 +241,7 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary
     이미 인증된 서비스는 창을 열지 않고 통과 → 자동 취득 시 불필요한 창이 안 뜬다.
     """
     from app.auth.sso_session import service_probe
+    from app.auth.sso_navigation import login_state
     appmain._login_requested.clear()
     targets = getattr(s, "auth_targets", None) or [("Jira", s.jira_base.rstrip("/"), ["/rest/api/2/myself"])]
     if only_primary:
@@ -282,7 +284,7 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary
                     # 창 로그인으로 붙은 경우만 앱 창(headed) 세션을 저장·반영한다.
                     # (창 없이 갱신됐으면 provider 가 이미 자기 세션을 저장·보유하고 있다.)
                     try:
-                        appmain._client.sso_store().save_all_from(context.storage_state())
+                        appmain._client.sso_store().save(name.lower(), login_state(context))
                         appmain._client.reset_provider()
                     except Exception as e:
                         print(f"[login]   세션 저장 실패: {e}")

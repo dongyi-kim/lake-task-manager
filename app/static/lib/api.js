@@ -1,3 +1,4 @@
+import { CacheMemo } from "./cacheMemo.js";
 // api.js — 백엔드 리소스 호출 래퍼. 401 needLogin 을 전역 이벤트로 알린다(LoginOverlay 가 수신).
 // GET 응답을 URL 키로 memo(프로미스 캐시) → 탭 전환/중복요청 재fetch 방지. refresh() 에서 clear.
 // updated: 2026-07-09
@@ -13,6 +14,7 @@ async function req(path, opts) {
   // 새로고침은 다시 눌릴 수 있어야 하므로 모든 요청에 상한을 둔다. 로그인·업로드처럼 사람이
   // 오래 기다리는 동작만 호출부에서 timeoutMs 를 넓힌다.
   const o = Object.assign({}, opts || {});
+  const onCacheMetadata = o.onCacheMetadata; delete o.onCacheMetadata;
   const mutation = !!o.mutation;
   delete o.mutation;                 // fetch 옵션이 아니라 실패 의미를 보존하기 위한 LTM 힌트
   const timeoutMs = Number(o.timeoutMs) || REQUEST_TIMEOUT_MS;
@@ -60,6 +62,16 @@ async function req(path, opts) {
     error.retryable = !!(body && body.retryable);
     error.uncertain = !!(body && body.uncertain);
     throw error;
+  }
+  const revisionHeader = r.headers?.get?.('X-LTM-Policy-Revision');
+  if (path !== '/api/prefs' && revisionHeader != null && Number(revisionHeader) !== policyRevision && !policyRefresh) {
+    policyRefresh = req('/api/prefs').then(p => applyPrefs(p)).catch(() => {}).finally(() => { policyRefresh = null; });
+  }
+  if (onCacheMetadata && r.headers?.get) {
+    const number = (key) => { const v = r.headers.get('X-LTM-' + key); return v ? Number(v) : undefined; };
+    onCacheMetadata({ fetchedAt: number('Fetched-At'), freshUntil: number('Fresh-Until'),
+                      displayUntil: number('Display-Until'),
+                      displayKind: r.headers.get('X-LTM-Display-Kind') || undefined });
   }
   return r.json();
 }
@@ -128,19 +140,20 @@ async function streamNdjson(path, onEvent, signal) {
 // memo 는 **LRU 상한**을 둔다 — 앱 창은 트레이 상주로 며칠씩 살아 있는데, 무한 memo 면
 // 열람한 모든 티켓의 본문·코멘트·타임라인 JSON 이 힙에 계속 쌓인다(장기 사용 메모리 증가의 주범).
 // 최근 300개면 "다시 열면 즉시" 체감은 유지되면서 힙은 일정 수준에서 멈춘다.
-const _memo = new Map();
-const MEMO_MAX = 300;
-function get(path, opts) {
-  if (_memo.has(path)) {
-    const p = _memo.get(path);
-    _memo.delete(path); _memo.set(path, p);   // 재삽입 = 최근 사용 표시(Map 은 삽입순 유지)
-    return p;
-  }
-  const p = req(path, opts).catch((e) => { _memo.delete(path); throw e; });  // 실패는 캐시 안 함
-  _memo.set(path, p);
-  if (_memo.size > MEMO_MAX) _memo.delete(_memo.keys().next().value);  // 가장 오래된 것부터
+const _memo = new CacheMemo(req, detail => window.dispatchEvent(new CustomEvent('api-cache-updated', { detail })));
+function get(path, opts) { return _memo.get(path, opts); }
+let policyRevision = -1, policyRefresh = null;
+function applyPrefs(p, broadcast = false) {
+  if (!p?.cachePolicy || p.policyRevision === policyRevision) return p;
+  policyRevision = p.policyRevision;
+  _memo.configure(p.cachePolicy);
+  window.dispatchEvent(new CustomEvent('cache-policy-changed', { detail: p }));
+  if (broadcast) { try { localStorage.setItem('ltm-cache-policy', JSON.stringify(p)); } catch (_) {} }
   return p;
 }
+window.addEventListener('storage', e => {
+  if (e.key === 'ltm-cache-policy' && e.newValue) { try { applyPrefs(JSON.parse(e.newValue)); } catch (_) {} }
+});
 // 쓰기 후 그 티켓 관련 GET memo 를 비워 다음 조회가 최신을 읽게 한다(코멘트·첨부·타임라인 등).
 function evict(sub) { for (const k of Array.from(_memo.keys())) if (k.includes(sub)) _memo.delete(k); }
 // 하위/형제/조상 **목록**은 **다른 티켓의** 것도 이 티켓 변화에 낡는다(부모 키를 프론트가 모름).
@@ -251,8 +264,9 @@ export const api = {
   login: () => req("/api/login", { method: "POST", timeoutMs: 310 * 1000 }),
   updateInfo: () => req("/api/update"),                                // 업데이트 가능 여부(배포 repo) — memo 제외
   updateRestart: () => req("/api/app/update-restart", { method: "POST" }),   // git pull + 재시작(트레이 경로)
-  prefs: () => req("/api/prefs"),
-  setPrefs: (body) => jsonReq("/api/prefs", "PUT", body),
+  prefs: () => req("/api/prefs").then(p => applyPrefs(p)),
+  setPrefs: (body) => jsonReq("/api/prefs", "PUT", body).then(p => applyPrefs(p, true)),
+  cached: (path) => _memo.peek(path),
   refresh: () => req("/api/refresh", { method: "POST" }).then((r) => { _memo.clear(); return r; }),
   wbs: () => get("/api/wbs"),
   epicTree: (key) => get("/api/epic/" + encodeURIComponent(key) + "/tree"),
@@ -399,7 +413,7 @@ export const api = {
     .then((r) => { evict(encodeURIComponent(key)); evictLists(); return r; }),
   // 상태 전이 메뉴 — **memo**(같은 상태에선 안정적, 유휴 워밍이 재사용). 전이하면 evict(key) 로 비워진다
   // (doTransition·ticket-changed 가 key memo 를 털어 낡은 전이목록으로 400 나는 걸 막는다).
-  ticketMenu: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/menu"),
+  ticketMenu: (key) => req("/api/ticket/" + encodeURIComponent(key) + "/menu"),
   setAssignee: (key, assignee) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/assignee",
                                           "PUT", { assignee }).then((r) => { evict(key); evictLists(); return r; }),
   deleteTicket: (key) => req("/api/ticket/" + encodeURIComponent(key), { method: "DELETE" })

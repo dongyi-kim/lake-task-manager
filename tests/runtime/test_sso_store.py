@@ -57,11 +57,18 @@ def test_parent_domain_cookie_belongs_to_the_service(tmp_path):
     assert [c["name"] for c in json.load(open(st.path("jira"), encoding="utf-8"))["cookies"]] == ["SSO"]
 
 
-def test_unmatched_cookies_are_kept_rather_than_lost(tmp_path):
-    """도메인 규칙이 예상과 다르면(사내 프록시 등) 버리지 말고 통째로 둔다 — 잃는 것보다 낫다."""
+def test_observed_identity_provider_is_preserved_separately(tmp_path):
+    """로그인 경로의 IdP 쿠키만 별도로 남기며 서비스 파일을 오염시키지 않는다."""
     st = _store(tmp_path)
-    st.save("jira", _state(_ck("WEIRD", "auth.other.example")))
-    assert [c["name"] for c in json.load(open(st.path("jira"), encoding="utf-8"))["cookies"]] == ["WEIRD"]
+    state = _state(_ck("JIRA", "jira.corp.example"), _ck("IDP", "auth.other.example"),
+                   _ck("TRACKER", "tracking.other.example"))
+    state["authOrigins"] = [BASES["jira"], "https://auth.other.example"]
+    st.save("jira", state)
+    assert [c["name"] for c in json.loads(st.path("jira").read_text())["cookies"]] == ["JIRA"]
+    assert [c["name"] for c in json.loads(st.path("identity").read_text())["cookies"]] == ["IDP"]
+    assert {c["name"] for c in st.merged()["cookies"]} == {"JIRA", "IDP"}
+    st.save("confluence", _state(_ck("C", "conf.corp.example")))
+    assert {c["name"] for c in st.merged()["cookies"]} == {"JIRA", "IDP", "C"}
 
 
 def test_save_all_from_splits_one_login_window(tmp_path):

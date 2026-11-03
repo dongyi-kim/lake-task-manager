@@ -92,6 +92,25 @@ export default {
                     // 하위 티켓 만들기 — 만들 수 있는 타입은 부모가 정한다(서버가 다시 검사한다)
                     kidTypes: [], adding: false }; },
   mounted() {
+    this._cacheUpdated = (event) => {
+      const { path, value } = event.detail || {};
+      const base = '/api/ticket/' + encodeURIComponent(this.keyId);
+      if (path === base && !this.descEdit) {
+        this.v = value;
+        if (event.detail.removed) this.err = '티켓이 삭제되었거나 접근 권한이 없습니다.';
+      }
+      if (path === '/api/issue/' + encodeURIComponent(this.keyId) + '/comments' && !this.editingId) this.comments = value;
+      const panels = { ancestors: 'ancestors', siblings: 'siblings', children: 'children',
+                       related: 'related', attachments: 'atts', documents: 'docs' };
+      for (const [suffix, field] of Object.entries(panels)) {
+        if (path === base + '/' + suffix) this[field] = value;
+      }
+    };
+    this._cachePolicy = () => {
+      if (!this.descEdit && !this.composing && !this.editingId) this.load(false, true);
+    };
+    window.addEventListener('api-cache-updated', this._cacheUpdated);
+    window.addEventListener('cache-policy-changed', this._cachePolicy);
     // Esc: 위에 뜬 것부터 하나씩 닫는다(확대 → 상태 팝업 → 다이얼로그).
     // 안쪽 것을 두고 다이얼로그가 먼저 닫히면, 열려 있던 팝업의 투명 배경(fe-back)이 남아
     // 화면 전체가 안 눌리는 상태가 된다 — 실제로 그렇게 막혔다.
@@ -146,6 +165,8 @@ export default {
     loadTiptap().catch(() => { /* CDN 차단 등 — 실제 사용 시 에러 표시 */ });
   },
   unmounted() {
+    window.removeEventListener('api-cache-updated', this._cacheUpdated);
+    window.removeEventListener('cache-policy-changed', this._cachePolicy);
     this._req = (this._req || 0) + 1;        // pending timeline poll 등 늦은 응답 무효화
     window.removeEventListener("keydown", this._onKey);
     window.removeEventListener("resize", this._onResize);
@@ -592,7 +613,8 @@ export default {
       if (!quiet) {
         this.spineLoading = true; this.timelineLoading = true; this.timelineErr = "";
         this.panelState = {};
-        this.v = null; this.comments = null;
+        this.v = api.cached('/api/ticket/' + encodeURIComponent(key)) || null;
+        this.comments = api.cached('/api/issue/' + encodeURIComponent(key) + '/comments') || null;
         this.ancestors = []; this.siblings = []; this.timeline = [];
         this.childTimeline = []; this.childTimelineLoading = false; this.childTimelineLoaded = false;
         this.childTimelineErr = ""; this.showChildTimeline = false;
@@ -726,6 +748,11 @@ export default {
       this.sumDraft = this.v.summary || "";
       this.sumErr = ""; this.sumEdit = true;
       this.$nextTick(() => { const el = this.$refs.sumInput; if (el) { el.focus(); el.select(); } });
+    },
+    async cancelDescEdit() {
+      const editor = this.$refs.ded;
+      if (editor && await editor.flushDraft() === false) return;
+      this.descEdit = false; this.stopWatchDesc();
     },
     cancelSumEdit() { this.sumEdit = false; this.sumErr = ""; },
     async saveSum() {
@@ -868,7 +895,7 @@ export default {
     },
     async cancelCompose() {
       const ed = this.$refs.newCommentEditor;
-      if (ed && ed.discardDraft && await ed.discardDraft() === false) return;
+      if (ed && ed.flushDraft && await ed.flushDraft() === false) return;
       this.composing = false; this.composeCollapsed = false; this.composePreview = ""; this.composeHasDraft = false;
     },
     submitNew(md, mutationId) { return api.commentCreate(this.tk, md, mutationId); },
@@ -1421,7 +1448,8 @@ export default {
                            :submit-fn="saveDesc" @cancel="descEdit = false" />
             <div class="tkt-desc-edit-f">
               <span v-if="descErr" class="tkt-cmt-err">{{ descErr }}</span>
-              <button class="cmt-ed-btn ghost" @click="descEdit = false; stopWatchDesc()">취소</button>
+              <button class="cmt-ed-btn ghost" @click="$refs.ded && $refs.ded.discardDraft()">초안 삭제</button>
+              <button class="cmt-ed-btn ghost" @click="cancelDescEdit">취소</button>
               <button class="cmt-ed-btn primary" :disabled="descBusy"
                       @click="$refs.ded && $refs.ded.submit()">{{ descBusy ? '저장 중…' : '저장' }}</button>
             </div>
@@ -1635,7 +1663,7 @@ export default {
                       <button class="tkt-cmt-act" @click="delComment(c)">삭제</button>
                     </span>
                   </div>
-                  <CommentEditor v-if="editingId === c.id" :ticket-key="tk" :mention-users="mentionUsers" :initial="editInitial"
+                  <CommentEditor v-if="editingId === c.id" :ticket-key="tk" :mention-users="mentionUsers" :initial="editInitial" :draft-scope="'comment:' + tk + ':' + c.id"
                     submit-label="저장" :submit-fn="(md) => submitEdit(c, md)"
                     @submitted="onEdited" @cancel="cancelEdit" />
                   <div v-else class="tkt-cmt-b tkt-desc" @click="(e) => onContentClick(e, c)" v-html="c.html"></div>
