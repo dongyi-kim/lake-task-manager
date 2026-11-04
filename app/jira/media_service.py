@@ -189,7 +189,8 @@ class JiraMediaMixin:
             result = proxy_images(html, self.s.jira_base, self._media_allowed_host)
         return proxy_attachment_links(result, self.s.jira_base)
 
-    def fetch_media(self, url):
+    def fetch_media(self, url, *, strict=False):
+        """Fetch allowed media; MCP keeps provider failures for authentication recovery."""
         if not url:
             return None, None
         if url.startswith("/"):
@@ -203,4 +204,6 @@ class JiraMediaMixin:
         try:
             return self.provider.get_bytes(target)
         except Exception:
+            if strict:
+                raise
             return None, None

@@ -3365,7 +3365,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             i["epicName"] = names.get(i["epicKey"]) if i["epicKey"] else None
         return {"items": out}
 
-    def components(self):
+    def components(self, *, strict=False):
         def do():
             path = f"/rest/api/2/project/{self.s.project_key}/components"
             return [{"id": str(x.get("id")), "name": x.get("name") or ""}
@@ -3373,6 +3373,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         try:
             return self.cache.get_or_set(f"components:{self.env}", self.OPTIONS_TTL, do)[0]
         except Exception:
+            if strict:
+                raise
             return []
 
     def epic_options(self, q=""):
@@ -3391,13 +3393,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         """
         q = (q or "").strip().lower()
         jql = f'project = {self.s.project_key} AND issuetype = Epic ORDER BY key'
-        try:
-            # q 와 무관한 고정 JQL → 한 번 받아 **긴 TTL**로 캐시(create_epic·Epic 편집이
-            # 'epic_options:' 프리픽스로 무효화). 첫 로딩 체감을 줄이려 OPTIONS_TTL(30분)로.
-            raws = self._search(jql, cache_key=f"epic_options:all:{self.env}",
-                                max_results=200, ttl=self.EPIC_LIST_TTL) or []
-        except Exception:
-            return []
+        # Failed searches must propagate; otherwise the outer cache stores an empty success.
+        raws = self._search(jql, cache_key=f"epic_options:all:{self.env}",
+                            max_results=200, ttl=self.EPIC_LIST_TTL) or []
         nf = self.s.epic_name_field_id
         out = []
         for r in raws:
@@ -3904,7 +3902,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
     LINK_TYPES_TTL = 24 * 3600            # 링크 타입은 인스턴스 설정 — 거의 안 바뀐다
 
-    def link_types(self):
+    def link_types(self, *, strict=False):
         """이슈 링크 타입 — [{name, inward, outward}]. 링크 걸 때 관계 선택지로 쓴다.
         하드코딩 금지(인스턴스마다 다르다). 조회 실패 시 Jira 기본 4종으로 폴백."""
         def do():
@@ -3918,7 +3916,11 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         try:
             got = self.cache.get_or_set(f"linktypes:{self.env}", self.LINK_TYPES_TTL, do)[0]
         except Exception:
+            if strict:
+                raise
             got = []
+        if strict:
+            return got
         return got or [
             {"name": "Relates", "inward": "relates to", "outward": "relates to"},
             {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
@@ -4985,10 +4987,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         """첨부파일 — [{id,filename,size,mime,created,author,url,thumb,isImage}].
         url/thumb 는 prod 에서 크로스오리진·인증이 걸리므로 이미지 프록시(/api/img)를 태운다."""
         def build():
-            try:
-                f = self.get_issue(key).get("fields") or {}
-            except Exception:
-                return []
+            # A rejected issue read is not an empty attachment list. Preserve the failure so
+            # callers can recover authentication and SWR can retain an existing display value.
+            f = self.get_issue(key).get("fields") or {}
             out = []
             for a in (f.get("attachment") or []):
                 mime = a.get("mimeType") or ""

@@ -134,7 +134,7 @@ def register_workspace(register, runtime):
         path = urlsplit(attachment.get("content") or "").path
         if not path.startswith(f"/secure/attachment/{attachment_id}/"):
             raise ValueError("Jira 첨부 경로를 확인할 수 없습니다.")
-        data, content_type = runtime.client.fetch_media(path)
+        data, content_type = runtime.client.fetch_media(path, strict=True)
         if data is None:
             raise UpstreamUnavailable("첨부를 내려받지 못했습니다.")
         if len(data) > 10 * 1024 * 1024:
