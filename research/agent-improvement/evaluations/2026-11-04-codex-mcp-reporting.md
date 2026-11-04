@@ -10,7 +10,7 @@
 - `get_evidence_page`: 티켓별 댓글 또는 변경이력 원문을 이어 읽는다. 댓글 ID·작성자·시각·원문 및 변경 전후 값을 보존한다. UI용 최근 20개 댓글과 요약 타임라인의 제한을 피한다.
 - 두 도구는 응답 data를 8KiB 이하로 나눈다. 큰 단일 기록은 offset·SHA-256으로 손실 없이 이어 읽고, 조회할 수 없는 하위 티켓 목록도 별도로 페이지화한다.
 - 댓글의 Jira 수집 단위는 100개이며 MCP 응답 크기와 분리했다. DL-92004 댓글 211개를 MCP 43페이지로 읽는 동안 Jira 댓글 요청은 3회였다.
-- 100개 하위 티켓을 조회하는 결정적 fixture에서 단건 직렬 호출을 기존 batch/cache 경로로 바꾸어 cold upstream 요청을 102→4회로 줄였다. 이 수치는 아래 실 Codex 배터리와 별도 단위 검증이다.
+- 100개 하위 티켓을 조회하는 결정적 fixture에서 기존 batch/cache 경로를 사용해 cold upstream 요청 4회 이하, warm 요청 0회를 확인했다. 이 수치는 아래 실 Codex 배터리와 별도 단위 검증이다.
 - 완료 부모 원본의 24시간 freshness가 하위 membership의 일반 갱신 간격을 늘리지 않도록 분리했다. 실패를 정상 빈 결과로 캐싱하지 않고 mutation generation fence를 유지한다.
 - 도구 설명에 scope, pagination, partial, 인증 복구, 쓰기 receipt와 현재 상태/기간 실적의 차이를 명시했다. 총 53개 도구(업무 51 + 인증 2)다.
 
@@ -48,7 +48,7 @@
 | 응답 p50 / p95, 초 | 66.67 / 193.12 | 60.30 / 162.48 |
 | 전체 응답 시간, 초 | 1,100.20 | 1,128.90 |
 | MCP 호출 | 206 | 250 |
-| Jira upstream 요청 | 248 | 209 |
+| 전체 upstream 요청 | 248 | 209 |
 | 입력 토큰 | 2,921,542 | 3,274,637 |
 | 출력 토큰 | 43,765 | 44,318 |
 | 전체 토큰 | 2,965,307 | 3,318,955 |
@@ -57,13 +57,13 @@
 
 시간과 token 합계는 raw `metrics`, latency p50/p95는 전체 15 case의 nearest-rank다. 15건에서는 p95가 최댓값이다. CLI 기동·추론·MCP 시간이 포함되고 fixture 초기화와 답변 후 warm replay는 제외된다. 직접 평가 평균은 5개 축 각 20%를 적용한 case 점수의 산술평균이며, checklist 상한을 적용했다.
 
-Jira 요청은 15.7% 줄었지만 MCP 호출은 21.4%, 전체 토큰은 11.9%, 전체 시간은 2.6% 늘었다. 넓어진 도구 설명과 완전한 댓글·이력 조회 비용이 포함돼 있다. p50·최악 사례 개선만으로 모든 질문이 빨라졌다고 해석하지 않는다.
+전체 upstream 요청은 15.7% 줄었지만 MCP 호출은 21.4%, 전체 토큰은 11.9%, 전체 시간은 2.6% 늘었다. Baseline 248회에는 Confluence 검색 1회가 포함되어 Jira만 세면 247→209회다. 넓어진 도구 설명과 완전한 댓글·이력 조회 비용이 포함돼 있다. p50·최악 사례 개선만으로 모든 질문이 빨라졌다고 해석하지 않는다.
 
 ## 시나리오별 결과
 
 기간은 일간 [11-03, 11-04), 주간 [10-26, 11-02), 월간 [10-01, 11-01) KST다. 개인은 현재 담당자 test.ui01, 모듈은 TEST Component다. 완료는 현재 Done이면서 resolutiondate가 구간에 있는 Task/SubTask이며 Epic 자체는 제외한다. Task·Epic 범위에는 하위 SubTask를 포함한다.
 
-| 시나리오 | 자동 B→C | 응답 초 B→C | MCP 호출 B→C | Jira 요청 B→C |
+| 시나리오 | 자동 B→C | 응답 초 B→C | MCP 호출 B→C | 전체 upstream 요청 B→C |
 | --- | --- | ---: | ---: | ---: |
 | 일간 개인 | 통과→통과 | 44.06→55.66 | 5→5 | 6→6 |
 | 일간 모듈 | 통과→통과 | 42.01→42.43 | 4→4 | 5→5 |
@@ -113,7 +113,7 @@ Baseline의 일반 upstream 9회는 미지원 함수가 있는 JQL fallback 3회
 3. **P2, 오래된 완료 부모로 membership 재생성** — `app/jira/hierarchy_service.py:158`, #93. 별도 일반 TTL의 membership producer에서 원본을 갱신하며 source age와 generation fence를 보존했다.
 4. **P2, Epic 범위 제한이 upstream 뒤에 적용됨** — `app/jira/hierarchy_service.py:165`, #93. 설정 project를 JQL에 선반영하고 범위 없는 fallback을 사용하지 않는다.
 5. **P2, 하위 100개를 직렬로 조회함** — `app/jira/hierarchy_service.py:29`, #93. 기존 batch·issue cache를 재사용하며 실패 분기만 개별 확인한다.
-6. **P2, 날짜 이동 시 checker의 취소·기간 근거가 고정됨** — `tools/codex_mcp_eval/reporting_fixture.py:166`, #95. 기여 티켓과 실제 이력 날짜로 oracle을 계산한다. battery를 1.1.0으로 올리고 기존 raw 점수는 유지했다.
+6. **P2, 날짜 이동 시 checker의 취소·기간 근거가 고정됨** — `tools/codex_mcp_eval/reporting_fixture.py:175`, #95. 기여 티켓과 실제 이력 날짜로 oracle을 계산한다. battery를 1.1.0으로 올리고 기존 raw 점수는 유지했다.
 7. **P2, 일부 테이블의 실제 관찰 근거가 없어도 checker 통과 가능** — `tools/codex_mcp_eval/reporting_cases.py:111`, #95. 성공 응답을 해당 티켓에 연결하고 테이블 식별자 근거를 검사한다. 전체 읽기·의미 해석은 직접 평가로 남긴다.
 8. **P2, 단일 diff가 과대함** — `app/local_mcp/runtime.py:1` 및 아래 PR 목록. 평가→source→응답 제한→계층→설명으로 분리했다. #93은 제품 약 260줄과 필수 회귀 256줄로 516줄이며 scope·캐시 수명·batch를 같은 하위 조회 계약으로 유지했다. 보고서도 설명 PR과 분리했다.
 9. **P2, 한글 조사가 식별자 접미사로 오인됨** — `tools/codex_mcp_eval/reporting_cases.py:159`, #95. ASCII identifier 경계를 사용하고 정상 조사 2개·잘못된 key 1개를 회귀 검증했다.
