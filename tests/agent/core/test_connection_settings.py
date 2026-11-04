@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -102,3 +103,28 @@ def test_diagnostic_sanitizer_precedes_shortening_and_resets_on_error(cid):
         assert secret[:15] not in capabilities.get("complex", cid)["errors"]["plain_chat"]
         raise RuntimeError("force finally")
     assert config._brief(ValueError(secret)) == secret
+
+
+@pytest.mark.parametrize("provider,embedding,field,new_value", [
+    ("openai_compat", "aoai", "aoaiApiKey", "new-azure-fixture-key"),
+    ("openai_compat", "aoai", "aoaiEndpoint", "https://new-azure.example.test"),
+    ("aoai", "openai", "openaiApiKey", "new-openai-fixture-key"),
+])
+def test_mixed_provider_fallback_credentials_require_model_recheck(cid, monkeypatch, provider, embedding, field, new_value):
+    from app.agent import capabilities
+    target = connections.create_config("독립 임베딩", provider)["id"]
+    connections.update_config(target, {"embeddingProvider": embedding, "secrets": {
+        "aoaiEndpoint": "https://azure.example.test", "aoaiApiKey": "old-azure-fixture-key",
+        "openaiApiKey": "old-openai-fixture-key"}})
+    monkeypatch.setattr(config, "list_models", lambda **_kw: {"chat": ["chat"], "embed": ["embed"]})
+    monkeypatch.setattr(config, "get_llm", lambda **_kw: SimpleNamespace(invoke=lambda _text: "pong"))
+    monkeypatch.setattr(config, "get_embeddings", lambda **_kw: SimpleNamespace(embed_query=lambda _text: [1., 0.]))
+    monkeypatch.setattr(capabilities, "probe_all", lambda _cid: {})
+    assert connections.check_connection(target, "models")["ok"]
+    assert connections.activate_config(target)["ok"] and config.verified()
+    connections.update_config(target, {"secrets": {field: new_value}})
+    assert not config.auth_ok(target) and not config.models_ok(target) and not config.verified()
+    assert connections.check_connection(target, "auth")["ok"] and config.auth_ok(target)
+    assert not config.models_ok(target) and not connections.activate_config(target)["ok"]
+    assert connections.check_connection(target, "models")["ok"]
+    assert connections.activate_config(target)["ok"] and config.verified()

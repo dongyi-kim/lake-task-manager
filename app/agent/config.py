@@ -124,6 +124,9 @@ def _auth_signature(config_id: str = "") -> str:
              _secret("embeddingApiKey", config_id) or "",
              _secret("embeddingHeaders", config_id) or ""]
     embedding_version = str((_profile(config_id) or {}).get("embeddingApiVersion") or "")
+    if embedding_provider(config_id) != p:
+        embedding = embedding_definition(config_id)
+        parts.extend([embedding.base_url or "", embedding.api_key or ""])
     if embedding_provider(config_id) == "aoai":
         effective = os.getenv("LAKE_AGENT_EMBED_API_VERSION") or embedding_version or api_version(config_id)
         # Preserve legacy AOAI-chat fingerprints when its already-hashed version is reused.
