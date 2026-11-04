@@ -14,6 +14,8 @@ def register_admin(register, runtime):
 
     def create_wbs_task(task: WbsTask, expected_revision: str) -> dict:
         """Register a local WBS Task with a unique ID, module, dates and weighted Epic keys.
+        task requires id/module/name/start/end/epics. Dates are YYYY-MM-DD with start < end;
+        epics has 1..200 distinct key/weight entries, nonnegative weights and a positive total.
         Supply revision from get_workspace_config. This does not create or edit a Jira ticket.
         Requires manager permission; returns the full updated configuration with its new revision.
         """
@@ -21,6 +23,8 @@ def register_admin(register, runtime):
 
     def update_wbs_task(task_id: str, changes: WbsTaskChanges, expected_revision: str) -> dict:
         """Edit selected fields of a local WBS Task; preserve its ID and other tasks.
+        Omit unchanged fields (do not send null). Dates use YYYY-MM-DD and start < end;
+        epics replaces the complete weighted list and its total weight must remain positive.
         Re-read configuration after a 409 conflict; never overwrite another user's new plan.
         Requires manager permission and expected_revision; returns the updated configuration.
         """
@@ -35,6 +39,8 @@ def register_admin(register, runtime):
 
     def set_module_people(module: str, user_ids: list[str], expected_revision: str) -> dict:
         """Create or replace one module's ordered Jira username roster; other modules stay intact.
+        Resolve IDs with search_users/get_user; usernames must be nonblank, whitespace-free and unique
+        within the module. Supply expected_revision from get_workspace_config, not a guessed value.
         Empty list keeps an empty module. A person may belong to several modules. This does not
         create Jira users or change manager permissions, issue assignees or Jira Components.
         Requires manager permission and expected_revision; returns the updated configuration.

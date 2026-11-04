@@ -2894,7 +2894,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         except Exception:
             return self.issue_types()
 
-    def create_fields(self, issue_type):
+    def create_fields(self, issue_type, *, strict=False):
         """이 project·issue type에서 **생성 시 실제로 설정 가능한** field metadata.
 
         custom field id는 Jira instance마다 다르다. `/field`의 전역 목록에 존재한다는 이유만으로
@@ -2903,6 +2903,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         """
         itype = (issue_type or "").strip()
         if not itype:
+            if strict:
+                raise ValueError("생성할 실제 issue_type 이름이 필요합니다.")
             return {}
 
         def do():
@@ -2910,22 +2912,38 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 "/rest/api/2/issue/createmeta",
                 params={"projectKeys": self.s.project_key, "issuetypeNames": itype,
                         "expand": "projects.issuetypes.fields"}) or {}
-            projects = data.get("projects") or []
+            if not isinstance(data, dict):
+                raise UpstreamUnavailable("Jira 생성 항목 응답이 불완전합니다.")
+            projects = data.get("projects")
+            if strict and not isinstance(projects, list):
+                raise UpstreamUnavailable("Jira 생성 항목 응답이 불완전합니다.")
+            projects = projects or []
             project = next((p for p in projects if (p.get("key") or "") == self.s.project_key),
-                           projects[0] if len(projects) == 1 else None)
+                           projects[0] if not strict and len(projects) == 1 else None)
             if not project:
+                if strict:
+                    raise UpstreamUnavailable("현재 프로젝트의 Jira 생성 항목을 확인할 수 없습니다.")
                 return {}
             types = project.get("issuetypes") or []
             meta = next((t for t in types if (t.get("name") or "").casefold() == itype.casefold()),
-                        types[0] if len(types) == 1 else None)
-            return (meta or {}).get("fields") or {}
+                        types[0] if not strict and len(types) == 1 else None)
+            fields = (meta or {}).get("fields")
+            if strict and (not isinstance(fields, dict) or not fields
+                           or any(not isinstance(value, dict) for value in fields.values())):
+                raise UpstreamUnavailable("해당 issue_type의 Jira 생성 항목을 확인할 수 없습니다.")
+            return fields or {}
 
         ck = f"createmeta:{self.env}:{self.s.project_key}:{itype.casefold()}"
         try:
+            if strict:
+                # Older display entries may be empty or use another sole type as fallback.
+                return self.cache.get_or_set_strict(ck + ":strict", self.OPTIONS_TTL, do)[0]
             return self.cache.get_or_set(ck, self.OPTIONS_TTL, do)[0]
         except SessionExpired:
             raise
         except Exception:
+            if strict:
+                raise
             return {}
 
     @staticmethod

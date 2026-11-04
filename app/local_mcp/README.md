@@ -210,6 +210,9 @@ LLM 설정, 인증 쿠키, 비밀값 관리, 임의 REST 호출도 업무 도구
 응답이 유실되어 `outcome_unknown`이 반환된 경우 새 ID로 반복하지 않는다. 생성·댓글 추가·전이·첨부는
 기존 Jira 대조 로직으로 복구한다. 나머지 쓰기는 결과를 증명할 수 없으면 재실행하지 않고 unknown을 유지하므로,
 최신 티켓을 조회해 반영 여부를 확인한다. 단일 작업 실패는 MCP `isError`와 구조화된 error code로 반환한다.
+이름 변경은 `update_fields`의 `body.summary`로 수행한다. 편집·전이 준비 조회가 실패한 경우에는
+권한 없음이나 빈 선택 목록으로 숨기지 않는다. 쓰기 전 실패가 확인되면 `writeExecuted:false`와
+`retryWithSameMutationId:true`를 반환하며, 복구 후 같은 입력·mutation ID로 재시도할 수 있다.
 일괄 생성의 검증/부분 실패도 최상위 `isError`·`ok:false`로 반환한다. 일부 성공이면 `partial:true`이며
 `data`의 `created`·`failed`·`errors`와 원래 항목 index를 보존하므로 성공 결과까지 실패로 간주하지 않는다.
 쓰기 전 상태와 권한은 만료된 display cache로 판단하지 않는다. 아직 유효한 캐시는 재사용하지만

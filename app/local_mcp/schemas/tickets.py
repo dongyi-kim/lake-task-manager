@@ -200,6 +200,9 @@ class ScreenField(Option):
     system: str
     required: bool
     allowedValues: list[Option]
+    inputFields: list[str] = Field(default_factory=list, description=(
+        "Exact transition_ticket body argument paths. Required worklog maps to days/hours/minutes: "
+        "at least one must be positive. Empty means no supported LTM input for this Jira field."))
 
 
 class TransitionScreen(OpenModel):
@@ -213,6 +216,9 @@ class TransitionOption(Option):
     toCategory: Category
     hasScreen: bool
     fields: TransitionScreen
+    commentRequired: bool = Field(default=False, description=(
+        "Send non-empty body.commentHtml. True for every Done transition under LTM policy, "
+        "even when Jira omits comment from fields, or when Jira requires it on another transition."))
 
 
 class EpicOption(OpenModel):
@@ -227,8 +233,34 @@ class LinkTypeOption(OpenModel):
     outward: str
 
 
+class CreateField(OpenModel):
+    required: bool
+    inputFields: list[str]
+    inputTools: list[Literal["create_task", "create_subtask", "create_epic"]]
+    schema_: dict[str, JsonValue] = Field(alias="schema")
+    managed: bool
+    supported: bool
+    allowedValuesTotal: int
+    allowedValuesIncluded: bool
+    defaultValueIncluded: bool
+    name: str | None = None
+    hasDefaultValue: bool | None = None
+    defaultValue: JsonValue = None
+    allowedValues: list[JsonValue] | None = None
+
+
 class Options(OpenModel):
-    options: list[str | TransitionOption | EpicOption | LinkTypeOption | Option] | dict[str, EditField]
+    options: list[str | TransitionOption | EpicOption | LinkTypeOption | Option] | dict[str, EditField | CreateField]
+    issueType: str | None = None
+    projectKey: str | None = None
+    unsupportedRequired: list[str] | None = None
+    fieldId: str | None = None
+    paginationKind: Literal["fields", "allowedValues"] | None = None
+    startAt: int | None = None
+    returned: int | None = None
+    total: int | None = None
+    hasMore: bool | None = None
+    nextStartAt: int | None = None
 
 
 class CategoryCounts(OpenModel):
