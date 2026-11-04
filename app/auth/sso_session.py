@@ -36,7 +36,7 @@ def _auth_log(msg):
 import threading
 
 from .base import (AuthProvider, LoginRequired, PendingUpstreamOperation,
-                   PermissionDenied, SessionExpired, UpstreamError, UpstreamUnavailable,
+                   PermissionDenied, SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable,
                    WRITE_HEADERS, PRIO_BACKGROUND, PRIO_WRITE, upstream_priority)
 from .sso_navigation import login_state, observe_login_page
 
@@ -68,6 +68,7 @@ class SsoSessionProvider(AuthProvider):
     REQUEST_TIMEOUT_MS = 20_000
     START_TIMEOUT = 20
     JOB_TIMEOUT = 30
+    MAX_QUEUED_JOBS = 32
 
     def __init__(self, base, store, user_agent=None):
         self.base = base.rstrip("/")
@@ -81,7 +82,7 @@ class SsoSessionProvider(AuthProvider):
         self._ua = user_agent
         # PriorityQueue — 사용자 요청(0)이 백그라운드 갱신(1)을 앞지른다.
         # 단일 큐라 백그라운드 작업이 앞에 쌓이면 사용자의 다음 조회가 그만큼 늦어진다.
-        self._jobs = queue.PriorityQueue()
+        self._jobs = queue.PriorityQueue(maxsize=self.MAX_QUEUED_JOBS)
         self._seq = itertools.count()          # 같은 우선순위는 들어온 순서대로
         self._ready = threading.Event()
         self._broken = threading.Event()
@@ -110,6 +111,7 @@ class SsoSessionProvider(AuthProvider):
         except BaseException as e:   # noqa: BLE001 - 기동 실패를 __init__ 로 전달
             self._start_error = e
             self._ready.set()
+            self._dispose()
             return
         self._ready.set()
         while True:
@@ -122,19 +124,21 @@ class SsoSessionProvider(AuthProvider):
                 done.set()
                 continue
             try:
-                # PC 절전/크래시로 브라우저가 죽어 있을 수 있다(밤새 켜 둔 뒤 흔하다).
-                # 그때는 **저장된 쿠키 파일로 브라우저만 다시 띄운다** — 재로그인 불필요.
-                if not self._browser.is_connected():
-                    self._relaunch()
                 box[0] = fn()
             except BaseException as e:   # noqa: BLE001 - 호출자 스레드로 재전달
                 box[1] = e
             done.set()
-        try:
-            self._browser.close()
-            self._p.stop()
-        except Exception:
-            pass
+        self._dispose()
+
+    def _dispose(self):
+        """Release partial startup and retired workers on their Playwright owner thread."""
+        for obj, method in ((getattr(self, "_browser", None), "close"),
+                            (getattr(self, "_p", None), "stop")):
+            if obj is not None:
+                try:
+                    getattr(obj, method)()
+                except Exception:
+                    pass
 
     def _relaunch(self):
         """브라우저/컨텍스트만 다시 만든다. storage_state(SSO 쿠키)는 파일에서 그대로 재사용하므로
@@ -175,6 +179,12 @@ class SsoSessionProvider(AuthProvider):
             _fn, done, box = job
             box[1] = UpstreamUnavailable(self._broken_reason)
             done.set()
+        # Also wake an idle owner (or one that finishes a timed-out startup later). Otherwise an
+        # abandoned constructor/retired provider can retain its browser while waiting forever.
+        try:
+            self._jobs.put_nowait((-999, next(self._seq), None))
+        except queue.Full:
+            pass
 
     @staticmethod
     def _is_transport_error(exc):
@@ -200,38 +210,60 @@ class SsoSessionProvider(AuthProvider):
         done = threading.Event()
         box = [None, None]   # [result, error]
         job_lock = threading.Lock()
-        job_state = {"started": False, "cancelled": False}
+        limit = wait if wait else self.JOB_TIMEOUT      # 업로드는 크기에 맞춘 한도를 받는다
+        queue_deadline = _time.monotonic() + limit
+        job_state = {"started": False, "started_at": None, "cancelled": False, "dispatched": False}
 
         def execute():
             with job_lock:
                 if job_state["cancelled"]:
                     return None
+                if _time.monotonic() >= queue_deadline:
+                    job_state["cancelled"] = True
+                    raise UpstreamBusy("Jira 요청이 밀려 대기 시간이 지났습니다. 잠시 후 다시 시도해 주세요.")
                 job_state["started"] = True
+                job_state["started_at"] = _time.monotonic()
+            # Recovery belongs to the running budget too. A stuck relaunch must retire its
+            # owner, not look like every later request is merely waiting in a healthy queue.
+            if not self._browser.is_connected():
+                self._relaunch()
+            with job_lock:
+                if job_state["cancelled"] or self.broken:
+                    raise UpstreamUnavailable("SSO 연결 복구가 중단되었습니다.")
+                job_state["dispatched"] = True
             return fn()
 
         operation = PendingUpstreamOperation(done, box)
-        self._jobs.put((priority, next(self._seq), (execute, done, box)))
-        limit = wait if wait else self.JOB_TIMEOUT      # 업로드는 크기에 맞춘 한도를 받는다
+        try:
+            self._jobs.put_nowait((priority, next(self._seq), (execute, done, box)))
+        except queue.Full:
+            raise UpstreamBusy("Jira 요청이 많아 대기열이 가득 찼습니다. 잠시 후 다시 시도해 주세요.") from None
+        if self.broken:
+            # Retirement may have raced the initial health check before this enqueue.
+            self._mark_broken(self._broken_reason)
         if not done.wait(limit):
             with job_lock:
-                if priority == PRIO_BACKGROUND and not job_state["started"]:
+                if not job_state["started"]:
                     job_state["cancelled"] = True
-                    # Foreground work can legitimately occupy the serial queue. A maintenance
-                    # job that has not started cannot prove the browser/network has failed.
-                    raise UpstreamUnavailable("백그라운드 인증/갱신 작업이 대기 중입니다.")
-            self._mark_broken("Jira/SSO 응답 시간 초과(%ds)" % int(limit))
-            error = UpstreamUnavailable(
-                "Jira 응답이 없습니다(%ds 초과). 앱은 계속 실행되며 잠시 후 자동 재시도합니다."
-                % int(limit))
-            # Retiring the provider cannot interrupt the current Playwright call. Preserve its
-            # real completion so mutation recovery never treats an empty read as permission to
-            # POST while this old call can still commit.
-            if may_commit:
-                # Only a POST/PUT/DELETE owner job may become proof of a committed mutation. A
-                # timed-out preflight GET can also finish late, but interpreting that read result
-                # as the enclosing transition/create result would be incorrect.
-                error.pending_operation = operation
-            raise error
+                    # A healthy upload or other foreground work may legitimately own the serial
+                    # worker. Queue delay proves neither transport failure nor a possible commit.
+                    # The owner checks this flag under the same lock before sending anything.
+                    raise UpstreamBusy("Jira 요청이 밀려 대기 시간이 지났습니다. 잠시 후 다시 시도해 주세요.")
+                remaining = max(0, limit - (_time.monotonic() - job_state["started_at"]))
+            # Queue time must not consume the running operation's budget. Otherwise a request
+            # starting just before its queue deadline would immediately retire a healthy worker.
+            if not done.wait(remaining):
+                with job_lock:
+                    job_state["cancelled"] = True
+                    dispatched = job_state["dispatched"]
+                self._mark_broken("Jira/SSO 응답 시간 초과(%ds)" % int(limit))
+                error = UpstreamUnavailable(
+                    "Jira 응답이 없습니다(%ds 초과). 앱은 계속 실행되며 잠시 후 자동 재시도합니다."
+                    % int(limit))
+                # Only an actually started mutation can still commit on the retired owner thread.
+                if may_commit and dispatched:
+                    error.pending_operation = operation
+                raise error
         if box[1] is not None:
             if self._is_transport_error(box[1]):
                 self._mark_broken(box[1])
@@ -664,8 +696,6 @@ class SsoSessionProvider(AuthProvider):
         try:
             self._closed.set()
             self._mark_broken("SSO provider 가 교체되었습니다.")
-            # 현재 실행 중인 호출이 돌아오는 즉시, 남은 작업보다 먼저 루프를 끝낸다.
-            self._jobs.put((-999, next(self._seq), None))
             self._thread.join(timeout=0.2)
         except Exception:
             pass

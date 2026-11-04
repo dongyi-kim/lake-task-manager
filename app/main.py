@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.auth.base import (MutationOutcomeUnknown, PermissionDenied, SessionExpired,
+from app.auth.base import (MutationOutcomeUnknown, PermissionDenied, SessionExpired, UpstreamBusy,
                            UpstreamUnavailable)
 from app.infra.cache import Cache
 from app.infra.cache_policy import CachePolicy, CacheHeadersMiddleware
@@ -290,7 +290,10 @@ def _on_session_expired(request: Request, exc: SessionExpired):
       살아 있으면 이 요청만 실패시킨다 — 화면은 그대로다.
     """
     if _settings.jira_env == "prod":
-        session_state = _client.direct_session_state()
+        try:
+            session_state = _client.direct_session_state()
+        except UpstreamBusy as busy:
+            return _on_upstream_busy(request, busy)
         if session_state == "alive":
             return JSONResponse(
                 status_code=502,
@@ -349,11 +352,23 @@ def _on_upstream_unavailable(request: Request, exc: UpstreamUnavailable):
     여기서 ``session_alive()`` 를 다시 부르면 이미 굳은 큐를 한 번 더 기다리게 된다. 회로만
     잠깐 열어 캐시로 버티게 하고 503으로 즉시 돌려, localhost UI와 트레이는 계속 살린다.
     """
+    if isinstance(exc, UpstreamBusy):
+        return _on_upstream_busy(request, exc)
     _client.mark_upstream_down(str(exc)[:160])
     return JSONResponse(
         status_code=503,
         content={"error": "Jira 연결이 응답하지 않습니다. 앱은 계속 실행 중이며 잠시 후 자동 재시도합니다.",
                  "retryable": True, "detail": str(exc)[:200]})
+
+
+@app.exception_handler(UpstreamBusy)
+def _on_upstream_busy(request: Request, exc: UpstreamBusy):
+    # Queue pressure is neither a lost session nor proof of an ambiguous write.
+    # Do not claim an entire multi-step command was unexecuted here.
+    return JSONResponse(
+        status_code=503, headers={"Retry-After": "1"},
+        content={"error": "Jira 요청이 많아 잠시 대기 중입니다. 잠시 후 다시 시도해 주세요.",
+                 "code": "upstream_busy", "retryable": True, "needLogin": False})
 
 
 def _build_rev():

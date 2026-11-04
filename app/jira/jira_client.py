@@ -16,7 +16,7 @@ from html import escape, unescape
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
-from app.auth.base import (PermissionDenied, SessionExpired, UpstreamError, UpstreamUnavailable,
+from app.auth.base import (PermissionDenied, SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable,
                            background_upstream, write_upstream)
 from app.infra.cache_policy import note_read, revalidating
 from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
@@ -644,6 +644,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
             try:
                 result = bool(provider.renew_silent([tgt], save_cb=save))
+            except UpstreamBusy:
+                raise
             except Exception:
                 result = False
             if provider is not self._provider or generation != self._provider_generation:

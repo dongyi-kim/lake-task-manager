@@ -22,6 +22,7 @@ import sys
 import itertools
 import queue
 import threading
+from types import SimpleNamespace
 import time
 
 import pytest
@@ -500,7 +501,7 @@ def test_auth_exception_does_not_turn_an_unknown_probe_into_login(monkeypatch):
     assert marked
 
 
-def test_sso_queue_timeout_breaks_provider_and_future_calls_fail_fast():
+def test_sso_running_timeout_breaks_provider_and_future_calls_fail_fast():
     """Playwright worker 한 번이 굳어도 큐의 모든 후속 요청이 180초씩 기다리면 안 된다."""
     from app.auth.base import UpstreamUnavailable
     from app.auth.sso_session import SsoSessionProvider
@@ -512,19 +513,30 @@ def test_sso_queue_timeout_breaks_provider_and_future_calls_fail_fast():
     p._closed = threading.Event()
     p._broken_reason = ""
 
-    class _AliveThread:
-        @staticmethod
-        def is_alive():
-            return True
+    p._browser = SimpleNamespace(is_connected=lambda: True)
 
-    p._thread = _AliveThread()
+    release = threading.Event()
+
+    def owner():
+        _priority, _sequence, (fn, done, box) = p._jobs.get(timeout=1)
+        try:
+            box[0] = fn()
+        finally:
+            done.set()
+
+    p._thread = threading.Thread(target=owner, daemon=True)
+    p._thread.start()
     started = time.monotonic()
-    with pytest.raises(UpstreamUnavailable, match="계속 실행"):
-        p._submit(lambda: None, wait=0.01)
-    assert p.broken is True
-    with pytest.raises(UpstreamUnavailable):
-        p._submit(lambda: None, wait=10)
-    assert time.monotonic() - started < 0.5
+    try:
+        with pytest.raises(UpstreamUnavailable, match="계속 실행"):
+            p._submit(lambda: release.wait(1), wait=0.04)
+        assert p.broken is True
+        with pytest.raises(UpstreamUnavailable):
+            p._submit(lambda: None, wait=10)
+        assert time.monotonic() - started < 0.5
+    finally:
+        release.set()
+        p._thread.join(timeout=1)
 
 
 def test_broken_provider_rebuild_waits_for_circuit_breaker():

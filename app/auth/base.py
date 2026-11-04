@@ -152,6 +152,15 @@ class UpstreamUnavailable(RuntimeError):
     """
 
 
+class UpstreamBusy(UpstreamUnavailable):
+    """Local admission/deadline refusal before an upstream operation started.
+
+    The browser and network may be healthy, so this must not open the transport circuit breaker.
+    Only the refused operation is known not to have started: an enclosing multi-step mutation
+    must still preserve proof of any earlier writes before authorizing a retry.
+    """
+
+
 class MutationOutcomeUnknown(UpstreamUnavailable):
     """A Jira write may have committed, but its result cannot yet be proven safely.
 
