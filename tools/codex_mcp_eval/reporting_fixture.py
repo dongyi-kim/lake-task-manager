@@ -168,6 +168,28 @@ def build_reporting_data(today: date | str) -> dict:
     }
     semantic_sources = completed["month"]["module"]
     semantic_tables = sorted({table for key in semantic_sources for table in contributions.get(key, [])})
+    table_sources = {table: [key for key in semantic_sources if table in contributions.get(key, [])]
+                     for table in semantic_tables}
+    cancellations = [{"key": "DL-92004", "table": "CRM.PUBLIC.RETURNS", "commentId": "50210",
+                      "evidenceText": issues["DL-92004"]["comments"][-1]["body"]}]
+    # Requirements follow the requested cohort. An out-of-period ticket need
+    # not be fetched merely to prove it had no contribution inside this period.
+    cancellations = [row for row in cancellations if row["key"] in semantic_sources]
+    tail = issues[DENIED_CHILD]["changelog"][-1]
+    required_tail = ({"key": DENIED_CHILD, "id": "1106", "field": "summary",
+                      "date": tail["date"].isoformat(), "evidenceText": tail["items"][0]["fromString"]}
+                     if month_start <= tail["date"] < month_end else None)
+    required_activity = [{"key": key, "commentId": comment["id"], "date": comment["created"].isoformat(),
+                          "evidenceText": comment["body"]}
+                         for key in [TASK, *issues[TASK]["subtasks"]]
+                         for comment in issues[key]["comments"]
+                         if month_start <= comment["created"] < month_end]
+    required_history = [{"key": key, "date": event["date"].isoformat(), "field": item["field"],
+                         "from": item.get("fromString"), "to": item.get("toString")}
+                        for key in [TASK, *issues[TASK]["subtasks"]]
+                        for event in issues[key]["changelog"]
+                        if month_start <= event["date"] < month_end
+                        for item in event["items"] if item["field"] in {"status", "summary"}]
     truth = {"today": today.isoformat(), "timezone": "Asia/Seoul", "personId": PERSON,
         "module": MODULE, "epicKey": EPIC, "taskKey": TASK,
         "periods": {name: {"start": start.isoformat(), "end": end.isoformat()}
@@ -175,12 +197,15 @@ def build_reporting_data(today: date | str) -> dict:
         "children": sorted(issues[TASK]["subtasks"]), "parentStatus": "In Progress",
         "descendantProgress": {"done": len(child_specs), "total": len(child_specs), "percent": 100},
         "semanticTables": semantic_tables, "semanticSources": semantic_sources,
+        "semanticTableSources": table_sources, "semanticCancellations": cancellations,
         "excludedTables": {"CRM.PUBLIC.RETURNS": "취소·제외", "CRM.PUBLIC.LEGACY": "기존 변경·재적재",
                            "CRM.PUBLIC.PAYMENTS": "재오픈·미완료", "CRM.PUBLIC.OTHER_MODULE": "다른 모듈",
                            "CRM.PUBLIC.PREVIOUS_MONTH": "기간 이전", "CRM.PUBLIC.NEXT_MONTH": "기간 이후"},
         "lateExclusion": {"key": "DL-92004", "commentId": "50210", "commentTotal": 211},
         "historyTail": {"key": DENIED_CHILD, "total": 107, "id": "1106", "field": "summary"},
         "descendantActivity": {"key": DENIED_CHILD, "inPeriodCommentId": "50000", "outsidePeriodCommentId": "50001"},
+        "requiredHistoryTail": required_tail, "requiredDescendantActivity": required_activity,
+        "requiredPeriodHistory": required_history,
         "reopened": "DL-92009", "deniedChild": DENIED_CHILD}
     return {"issues": issues, "oracle": truth}
 

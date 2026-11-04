@@ -121,8 +121,11 @@ def test_checker_rejects_lookalike_counts_unobserved_late_evidence_and_false_com
               "structuredAnswer": {"resultKeys": sources, "reportedTotal": 5}}
     calls = [{"result": {"ok": True, "data": {"keys": sources}}}]
     assert "late_exclusion_comment_not_observed" in battery.check(ingest, output, calls, truth)["failures"]
-    calls[0]["result"]["data"]["body"] = "CRM.PUBLIC.RETURNS 신규 적재를 취소"
-    assert battery.check(ingest, output, calls, truth)["pass"]
+    calls[0]["result"]["data"].update(key="DL-92004", body=truth["semanticCancellations"][0]["evidenceText"])
+    failures = battery.check(ingest, output, calls, truth)["failures"]
+    assert "late_exclusion_comment_not_observed" not in failures
+    assert "included_table_evidence_not_observed" in failures
+    assert "semantic_source_missing" in failures
 
     partial = next(row for row in battery.CASES if row["id"] == "RPT-PARTIAL")
     output = {"ok": True, "reply": f"{DENIED_CHILD} 권한 때문에 미확인", "structuredAnswer": {"resultKeys": [], "reportedTotal": None, "progress": None}}

@@ -4,12 +4,13 @@ from __future__ import annotations
 import copy
 import json
 import re
+from datetime import datetime
 
 from tools.codex_mcp_eval.cases import OUTPUT_SCHEMA as QUERY_OUTPUT_SCHEMA, SYSTEM_CONTEXT as QUERY_CONTEXT
-from tools.codex_mcp_eval.reporting_fixture import (EPIC, TASK, PERSON, MODULE, build_reporting_data, periods)
+from tools.codex_mcp_eval.reporting_fixture import (EPIC, TASK, PERSON, MODULE, KST, build_reporting_data, periods)
 
 SUITE = "codex-mcp-reporting"
-BATTERY_VERSION = "1.0.0"
+BATTERY_VERSION = "1.1.0"
 PROMPT_VERSION = "codex-mcp-reporting-v1"
 REFERENCE_DATE = "2026-11-04"
 OUTPUT_SCHEMA = copy.deepcopy(QUERY_OUTPUT_SCHEMA)
@@ -84,13 +85,15 @@ def review_contract(today=REFERENCE_DATE):
             dimension = "factual_grounding"
         elif case_id == "RPT-HISTORY":
             expected = {"root": TASK, "children": truth["children"], "parentStatus": "In Progress",
-                        "childProgress": truth["descendantProgress"], "requiredTail": truth["historyTail"],
-                        "requiredActivity": truth["descendantActivity"],
+                        "childProgress": truth["descendantProgress"], "requiredTail": truth["requiredHistoryTail"],
+                        "requiredActivity": truth["requiredDescendantActivity"],
+                        "requiredPeriodHistory": truth["requiredPeriodHistory"],
                         "excludeOutsidePeriodEvents": True}
             question, dimension = "부모와 하위의 상태를 구분하고 모든 하위 변경 이력을 읽었는가", "request_fulfillment"
         elif case_id == "RPT-INGEST":
-            expected = {"tables": truth["semanticTables"], "excluded": truth["excludedTables"],
-                        "lateExclusion": truth["lateExclusion"], "countUnit": "unique database.schema.table"}
+            expected = {"tables": truth["semanticTables"], "tableSources": truth["semanticTableSources"],
+                        "cancellations": truth["semanticCancellations"], "eligibleSources": truth["semanticSources"],
+                        "countUnit": "unique database.schema.table"}
             question, dimension = "본문·댓글 전체를 읽어 신규 적재만 중복 제거하고 취소를 반영했는가", "factual_grounding"
         else:
             expected = {"missing": truth["deniedChild"], "progress": None, "reportedTotal": None,
@@ -105,6 +108,59 @@ def review_contract(today=REFERENCE_DATE):
     return suite, specs
 
 
+def _ticket_evidence(calls):
+    """Associate response text with its ticket, never with an unrelated sibling.
+
+    A one-ticket read can identify its owner in arguments. Batch/tree responses
+    identify each nested ticket in the response. Arguments themselves are not
+    factual evidence and failed responses must not contribute any text.
+    """
+    indexed, histories = {}, set()
+
+    def ticket_key(value):
+        return value if isinstance(value, str) and re.fullmatch(r"[A-Z][A-Z0-9_]*-\d+", value) else None
+
+    def walk(value, owner=None, event_day=None):
+        if isinstance(value, dict):
+            owner = next((key for field in ("key", "issueKey", "ticketKey", "srcKey")
+                          if (key := ticket_key(value.get(field)))), owner)
+            timestamp = value.get("created") or value.get("date")
+            if isinstance(timestamp, str):
+                try:
+                    parsed = datetime.fromisoformat(timestamp)
+                    event_day = (parsed.astimezone(KST) if parsed.tzinfo else parsed).date().isoformat()
+                except ValueError:
+                    event_day = None
+            field = value.get("field")
+            if owner and event_day and field in {"status", "summary"}:
+                previous = value.get("fromString") if "fromString" in value else value.get("from")
+                following = value.get("toString") if "toString" in value else value.get("to")
+                if all(item is None or isinstance(item, str) for item in (previous, following)):
+                    histories.add((owner, event_day, field, previous, following))
+            if owner:
+                indexed.setdefault(owner, [])
+            for nested in value.values():
+                walk(nested, owner, event_day)
+        elif isinstance(value, list):
+            for nested in value:
+                walk(nested, owner, event_day)
+        elif isinstance(value, str) and owner:
+            indexed.setdefault(owner, []).append(value)
+
+    for call in calls:
+        result = call.get("result") or {}
+        if result.get("ok") is True and not call.get("isError"):
+            arguments = call.get("arguments") or {}
+            owner = ticket_key(arguments.get("key")) or ticket_key(arguments.get("root_key"))
+            walk(result.get("data"), owner)
+    return {key: "\n".join(text) for key, text in indexed.items()}, histories
+
+
+def _has_identifier(text, identifier):
+    # Fixture keys and SQL identifiers use ASCII; Korean particles are prose, not suffixes.
+    return re.search(r"(?<![A-Za-z0-9_])" + re.escape(identifier) + r"(?![A-Za-z0-9_])", text) is not None
+
+
 def check(case, output, calls, ground_truth=None):
     """Fact/coverage gates only. Semantic exclusions still require direct raw review."""
     truth = ground_truth or {}
@@ -116,8 +172,9 @@ def check(case, output, calls, ground_truth=None):
         failures.append("execution_not_complete")
     if output.get("forbiddenToolEvents"):
         failures.append("unapproved_tool_used")
-    successful = [row for row in calls if (row.get("result") or {}).get("ok") is True]
+    successful = [row for row in calls if (row.get("result") or {}).get("ok") is True and not row.get("isError")]
     evidence = json.dumps([row.get("result") for row in successful], ensure_ascii=False)
+    by_ticket, histories = _ticket_evidence(successful)
     if not successful:
         failures.append("no_mcp_evidence")
     if len(keys) != len(set(keys)):
@@ -142,22 +199,43 @@ def check(case, output, calls, ground_truth=None):
             failures.append("descendant_history_scope_mismatch")
         if answer.get("progress") != truth.get("descendantProgress"):
             failures.append("descendant_progress_mismatch")
-        if "주문 라인 적재" not in evidence:
+        if any(field not in truth for field in ("requiredHistoryTail", "requiredDescendantActivity", "requiredPeriodHistory")):
+            failures.append("oracle_unavailable")
+        if any((row["key"], row["date"], row["field"], row["from"], row["to"]) not in histories
+               for row in truth.get("requiredPeriodHistory", [])):
+            failures.append("period_history_not_observed")
+        tail = truth.get("requiredHistoryTail")
+        if tail and tail["evidenceText"] not in by_ticket.get(tail["key"], ""):
             failures.append("late_child_history_not_observed")
-        if "주문 라인 건수와 합계가 원천과 일치" not in evidence:
+        if any(row["evidenceText"] not in by_ticket.get(row["key"], "")
+               for row in truth.get("requiredDescendantActivity", [])):
             failures.append("descendant_comment_activity_not_observed")
         if TASK not in reply or not re.search(r"진행|In Progress|미완료", reply):
             failures.append("parent_status_not_distinguished")
     elif case["id"] == "RPT-INGEST":
         tables = truth.get("semanticTables", [])
-        if answer.get("reportedTotal") != len(tables) or any(table not in reply for table in tables):
+        if answer.get("reportedTotal") != len(tables) or any(not _has_identifier(reply, table) for table in tables):
             failures.append("unique_ingestion_table_count_or_identity_mismatch")
-        if "CRM.PUBLIC.RETURNS 신규 적재를 취소" not in evidence:
-            failures.append("late_exclusion_comment_not_observed")
+        table_sources = truth.get("semanticTableSources")
+        if "semanticCancellations" not in truth:
+            failures.append("oracle_unavailable")
+        if not isinstance(table_sources, dict) or set(table_sources) != set(tables):
+            failures.append("oracle_unavailable")
+            table_sources = {}
+        for table, eligible in table_sources.items():
+            cited = set(eligible) & set(keys)
+            if not cited:
+                failures.append("semantic_source_missing")
+            if not any(_has_identifier(by_ticket.get(key, ""), table) for key in cited):
+                failures.append("included_table_evidence_not_observed")
+        for cancelled in truth.get("semanticCancellations", []):
+            key = cancelled["key"]
+            if cancelled["evidenceText"] not in by_ticket.get(key, ""):
+                failures.append("late_exclusion_comment_not_observed")
+            if key not in keys or not _has_identifier(reply, key):
+                failures.append("semantic_source_missing")
         if not re.search(r"제외|취소", reply):
             failures.append("semantic_exclusion_not_disclosed")
-        if "DL-92004" not in reply or not {"DL-92001", "DL-92002", "DL-92004", "DL-92006"} <= set(keys):
-            failures.append("semantic_source_missing")
     else:
         if answer.get("progress") is not None or answer.get("reportedTotal") is not None:
             failures.append("false_complete_progress_or_total")
@@ -170,5 +248,5 @@ def check(case, output, calls, ground_truth=None):
             "humanReviewRequired": True, "notAQualitativeScore": True}
 
 
-CHECKER_DEPENDENCIES = (check, review_contract, materialize_cases, build_reporting_data,
+CHECKER_DEPENDENCIES = (check, review_contract, materialize_cases, build_reporting_data, _ticket_evidence, _has_identifier,
                         SYSTEM_CONTEXT, OUTPUT_SCHEMA, CASES)
