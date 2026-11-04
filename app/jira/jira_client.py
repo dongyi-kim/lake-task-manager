@@ -605,6 +605,13 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
     @property
     def provider(self):
+        # Healthy reads need no startup coordination. Keep one captured reference and recheck
+        # its identity so a concurrent login/reset cannot turn this return value into None or a
+        # different provider than the one whose health was checked.
+        ready = self._provider
+        if (self._provider_built and ready is not None and not getattr(ready, "broken", False)
+                and ready is self._provider):
+            return ready
         # Never hold the state lock during Chromium startup. Otherwise every waiting HTTP/MCP
         # worker can repeat a failed 20-second launch in series, including after a new login.
         old = None
