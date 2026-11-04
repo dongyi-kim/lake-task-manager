@@ -423,7 +423,9 @@ export const api = {
   // Bulk 생성 — validate 는 dry-run(쓰기 없음), create 는 서버가 다시 검증한 뒤 차례로 만든다.
   // 생성은 여러 티켓을 한꺼번에 바꾸므로 목록 memo 를 통째로 비운다(어디에 떨어질지 모른다).
   bulkValidate: (body) => jsonReq("/api/bulk/validate", "POST", body),
-  bulkCreate: (body) => jsonReq("/api/bulk/create", "POST", body).then((r) => { _memo.clear(); return r; }),
+  bulkCreateContext: () => req("/api/bulk/create-context", { cache: "no-store" }),
+  bulkCreate: (body) => jsonReq("/api/bulk/create", "POST", body, { mutation: true })
+    .then((r) => { _memo.clear(); return r; }),
   createTask: (body) => jsonReq("/api/task", "POST", body, { mutation: true }).then((r) => { _memo.clear(); return r; }),
   createEpic: (body) => jsonReq("/api/epic", "POST", body, { mutation: true }).then((r) => { _memo.clear(); return r; }),
   // Epic 에 넣을 수 있는 **Task** 후보(Sub-Task 의 상위 피커). 진짜 Epic 목록은 options("epics").
