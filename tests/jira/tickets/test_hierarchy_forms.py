@@ -182,3 +182,11 @@ def test_input_discovery_size_limit_does_not_truncate_choice_ids():
     with pytest.raises(HierarchyFormError) as error:
         HierarchyForms(provider, "https://jira.example").prepare("convert_to_subtask", "100")
     assert error.value.status == 413 and len(provider.calls) == 1
+@pytest.mark.parametrize("values,required,kind", [(["a", "b"], False, "text"), ("", True, "text"), ("bad", False, "select")])
+def test_oversized_field_names_cannot_escape_error_context_budget(values, required, kind):
+    name = "customfield_" + "x" * 60000
+    group = {"id": name, "label": "field", "type": kind, "required": required, "options": []}
+    with pytest.raises(HierarchyFormError) as caught:
+        HierarchyForms._fill({name: group}, {name: values})
+    assert len(str(caught.value).encode("utf-8")) < 512
+

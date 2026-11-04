@@ -190,13 +190,13 @@ class HierarchyForms:
                 raise HierarchyFormError("변환 필드 값은 문자열 또는 문자열 배열이어야 합니다.", status=400)
             multiple = group.get("multiple") or group["type"] == "checkbox"
             if not multiple and len(values) != 1:
-                raise HierarchyFormError("단일 값이 필요한 변환 필드입니다: " + name, status=400)
+                raise HierarchyFormError("단일 값이 필요한 변환 필드입니다: " + name[:100], status=400)
             if group["required"] and not any(values):
-                raise HierarchyFormError("필수 변환 필드입니다: " + name, status=400)
+                raise HierarchyFormError("필수 변환 필드입니다: " + name[:100], status=400)
             if group["type"] in ("select", "radio", "checkbox"):
                 allowed = {option["id"] for option in group["options"]}
                 if any(value not in allowed for value in values):
-                    raise HierarchyFormError("Jira에서 제공하지 않은 변환 선택지입니다: " + name, status=400)
+                    raise HierarchyFormError("Jira에서 제공하지 않은 변환 선택지입니다: " + name[:100], status=400)
             pairs.extend((name, value) for value in values)
         if missing:
             return missing, []
