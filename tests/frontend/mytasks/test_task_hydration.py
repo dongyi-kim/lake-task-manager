@@ -43,6 +43,7 @@ for (const [name,load,expected,count] of [
   ['auth',()=>{throw new Error('401 login required');},'waiting-auth',2],
   ['permission',()=>{throw new Error('403 forbidden');},'unavailable',2],
   ['invalid',()=>({}),'failed',6],
+  ['wrong-model',()=>({...response(1,[ready('A'),ready('B')]),model:{syncId:'other',groups:[ready('A'),ready('B')]}}),'failed',6],
   ['expired',()=>{throw new Error('410 expired');},'failed',6],
 ]) {
   const r=await run(load);
@@ -129,5 +130,30 @@ for (const obsolete of [false,true]) {
   settle(); await run.promise; await Promise.resolve();
   assert.deepEqual(requested,obsolete?undefined:['A','B']);
 }
+'''.replace("METHOD", json.dumps(method))
+    subprocess.run([node, "--input-type=module", "-e", script], check=True, capture_output=True, text=True)
+
+
+def test_many_failed_groups_share_one_notice_per_failure_kind():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is not installed")
+    source = (REPO_ROOT / "app/static/components/views/MyTasksView.js").read_text(encoding="utf-8")
+    method = "_hydrateModel(" + source.split("    _hydrateModel(", 1)[1].split("    childSyncState(", 1)[0]
+    script = r'''
+import assert from 'node:assert/strict';
+const notices=[], events=[];
+globalThis.window={dispatchEvent:e=>events.push(e)};
+globalThis.CustomEvent=class {constructor(type){this.type=type;}};
+const hydrate=({onFailure})=>{
+  for(const key of ['A','B','C']) for(const kind of ['auth','other']) onFailure(key,kind);
+  return Promise.resolve();
+};
+const methods=new Function('hydrateTaskGroups','api','pushToast','return ({'+METHOD+'})')(
+  hydrate,{},notice=>notices.push(notice));
+await methods._hydrateModel.call({}, {syncId:'s'}, 1, 'cache', {}, 1, 'token');
+assert.equal(notices.length,2);
+assert.equal(events.filter(e=>e.type==='need-login').length,1);
+assert.equal(new Set(notices.map(n=>n.key)).size,2);
 '''.replace("METHOD", json.dumps(method))
     subprocess.run([node, "--input-type=module", "-e", script], check=True, capture_output=True, text=True)

@@ -743,6 +743,7 @@ export default {
         && this._activeRequestToken === requestToken && this.model?.syncId === syncId;
       const run = { seq, cacheKey, cache, cacheGeneration, requestToken };
       this._childRun = run;
+      const notified = new Set();
       run.promise = hydrateTaskGroups({ model, keys,
         loadGroup: (id, key) => api.myTasksGroup(id, key),
         isCurrent: current, canStart: active,
@@ -753,9 +754,11 @@ export default {
           if (active()) this.model = working;
         },
         onStates: (states) => { if (active()) this.childSync = { ...this.childSync, ...states }; },
-        onFailure: (key, kind) => {
+        onFailure: (_key, kind) => {
+          if (notified.has(kind)) return;
+          notified.add(kind);
           if (kind === "auth") window.dispatchEvent(new CustomEvent("need-login"));
-          pushToast({ kind: "error", key: "task-child-" + syncId + ":" + key + ":" + kind,
+          pushToast({ kind: "error", key: "task-child-" + syncId + ":" + kind,
             title: kind === "auth" ? "일부 SubTask를 인증 문제로 불러오지 못했습니다"
                                   : "일부 SubTask를 계속 불러오지 못했습니다",
             message: "불러온 Parent와 SubTask는 그대로 사용할 수 있습니다.", timeout: 7000 });
