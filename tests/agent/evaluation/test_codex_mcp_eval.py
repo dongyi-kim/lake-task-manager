@@ -154,7 +154,77 @@ def test_launcher_codex_lane_does_not_route_through_internal_llm_profiles(monkey
     assert received == [["--run-group", "test"]]
 
 
-def test_runner_retains_real_sdk_page_trace_and_isolation_without_calling_llm(tmp_path, monkeypatch):
+def test_reporting_runner_date_applies_to_prompts_and_review_oracle():
+    options = runner.parse_args(["--battery", "reporting", "--date", "2026-12-08",
+                                 "--cases", "RPT-DAY-PERSON", "RPT-MONTH-MODULE"])
+    selected = runner._battery(options.battery, options.date)
+    suite, specs = selected.review_contract()
+    assert suite and selected.SUITE == "codex-mcp-reporting"
+    day = next(case for case in selected.CASES if case["id"] == "RPT-DAY-PERSON")
+    month = next(case for case in selected.CASES if case["id"] == "RPT-MONTH-MODULE")
+    assert "2026-12-07 00:00" in day["prompts"][0] and "2026-12-08 00:00" in day["prompts"][0]
+    assert "2026-11-01 00:00" in month["prompts"][0] and "2026-12-01 00:00" in month["prompts"][0]
+    assert specs[day["id"]]["elements"][0]["expected"]["period"] == {"start": "2026-12-07", "end": "2026-12-08"}
+    assert specs[month["id"]]["elements"][0]["expected"]["period"] == {"start": "2026-11-01", "end": "2026-12-01"}
+
+
+def test_warm_replay_failure_retains_paid_answer_measured_trace_and_raw_attempt(tmp_path, monkeypatch):
+    from tools.codex_mcp_eval import warm_replay
+
+    raw = tmp_path / "raw"
+    monkeypatch.setattr(protocol, "RAW_RESULT_ROOT", raw)
+    monkeypatch.setattr(runner, "RAW_RESULT_ROOT", raw)
+    class Fixture:
+        catalog_sha256 = "a" * 64
+        settings = SimpleNamespace(search_jira_projects=["DL"], search_confluence_spaces=["DL"])
+        url, token = "http://127.0.0.1:4457/mcp", "never-transmitted-test-token"
+
+        def __init__(self, *args, **kwargs):
+            self.tool_calls = _jql_calls()
+            self.upstream_calls = [{"path": "/rest/api/2/search", "durationSeconds": 0.01}]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def assert_conformance(self):
+            return {"cacheWarmed": False}
+
+        def ground_truth(self):
+            return {}
+
+        def summary(self):
+            return {"worldUnchanged": True, "providerStoreUnchanged": True}
+
+    paid = _output(cases.HISTORY_KEYS, 8)
+    def fake_cli(binary, prompt, workspace, **kwargs):
+        return paid if kwargs.get("mcp_url") else {**_output(), "reply": "LTM_PREFLIGHT_OK"}
+
+    def fail_after_diagnostic_read(fixture, calls):
+        fixture.tool_calls.append(_call("get_ticket", {"key": "DL-999999"}, ok=False))
+        fixture.upstream_calls.append({"path": "/diagnostic-only", "durationSeconds": 0.5})
+        raise TimeoutError("diagnostic transport timed out")
+
+    monkeypatch.setattr(warm_replay, "replay", fail_after_diagnostic_read)
+    assert runner.launch(["--run-group", "warm-failure", "--date", "2026-11-04", "--cases", "MCP-J1",
+                          "--codex", "stub", "--warm-replay"], cli_run=fake_cli, fixture_factory=Fixture,
+                         identity_fn=lambda *a, **k: {"runtime": "codex-cli-jsonl", "version": "test"}) == 0
+    result = json.loads(next((raw / "warm-failure").glob("codex-mcp-*.json")).read_text(encoding="utf-8"))
+    record = result["cases"][0]
+    assert result["executionComplete"] and record["automaticPass"]
+    assert record["output"]["reply"] == paid["reply"]
+    assert record["output"]["usage"] == paid["usage"] and record["durationSeconds"] == 1
+    assert len(record["output"]["mcpToolCalls"]) == 3
+    assert record["upstreamCalls"] == [{"path": "/rest/api/2/search", "durationSeconds": 0.01}]
+    assert record["warmReplay"] == {"measuredAfterAnswer": True, "error": "warm_replay_failed", "errorType": "TimeoutError"}
+    assert (raw / record["sourceSnapshot"]).is_file()
+    assert (raw / "warm-failure" / "attempt-01" / "MCP-J1" / "events.json").is_file()
+
+
+@pytest.mark.parametrize("warm", [False, True])
+def test_runner_retains_real_sdk_page_trace_and_isolation_without_calling_llm(tmp_path, monkeypatch, warm):
     raw = tmp_path / "raw"
     monkeypatch.setattr(protocol, "RAW_RESULT_ROOT", raw)
     monkeypatch.setattr(runner, "RAW_RESULT_ROOT", raw)
@@ -177,6 +247,8 @@ def test_runner_retains_real_sdk_page_trace_and_isolation_without_calling_llm(tm
     def identity(*args, **kwargs):
         return {"runtime": "codex-cli-jsonl", "version": "test", "model": cli.MODEL, "authKind": "existing-chatgpt-login"}
     args = ["--run-group", "sdk-fixture", "--date", "2026-11-04", "--cases", "MCP-J1", "--codex", "stub"]
+    if warm:
+        args.append("--warm-replay")
     assert runner.launch(args, cli_run=fake_cli, fixture_factory=fixture, identity_fn=identity) == 0
     result = json.loads(next((raw / "sdk-fixture").glob("codex-mcp-*.json")).read_text(encoding="utf-8"))
     assert result["executionComplete"] and result["summary"]["automaticPass"] == 1
@@ -186,6 +258,13 @@ def test_runner_retains_real_sdk_page_trace_and_isolation_without_calling_llm(tm
     assert conformance["directDenial"] == 403 and not conformance["cacheWarmed"]
     record = result["cases"][0]
     assert record["isolation"]["worldUnchanged"] and len(record["output"]["mcpToolCalls"]) == 3
+    if warm:
+        replay = record["warmReplay"]
+        assert replay["uniqueCalls"] == 3 and len(replay["reads"]) == 9
+        assert all(row["ok"] and row["dataByteIdentical"] for row in replay["reads"])
+        assert sum(row["upstreamRequests"] for row in replay["reads"]) == 0
+    else:
+        assert record["warmReplay"] is None
     assert result["metrics"]["calls"] is None and result["humanReview"]["status"] == "pending"
     with pytest.raises(FileExistsError):
         runner.launch(args, cli_run=lambda *a, **k: pytest.fail("duplicate paid attempt"), fixture_factory=fixture, identity_fn=identity)
