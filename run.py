@@ -1080,6 +1080,11 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None, server=N
         p = sync_playwright().start()
         # Never fall back to an empty profile: drafts and pending mutation identifiers live here.
         context = _launch(str(_appwin_profile()))
+        try:
+            # Only the local app origin may read clipboard text; SSO/Jira pages get no grant.
+            context.grant_permissions(["clipboard-read"], origin=url.rstrip("/"))
+        except Exception:
+            pass  # Unsupported browsers retain their normal permission flow.
         _window_phase("starting", 60)
         page = context.pages[0] if context.pages else context.wait_for_event("page", timeout=5000)
         _wire_external_links(context, page)
