@@ -589,6 +589,52 @@ class SsoSessionProvider(AuthProvider):
     def get_text(self, path, params=None):
         return self._submit(lambda: self._fetch(path, params, True))
 
+    def web_form(self, path, fields=None, *, may_commit=False):
+        from .web_forms import check_html_size, form_request, form_response, identity_response
+        url, headers, body = form_request(self.base, path, fields, may_commit)
+
+        def do():
+            def identity_probe():
+                response = None
+                try:
+                    response = self._context.request.get(
+                        self.base + "/rest/api/2/myself", timeout=self.REQUEST_TIMEOUT_MS,
+                        max_redirects=0, max_retries=0)
+                    return identity_response(response.status,
+                                             response.json() if response.status == 200 else None)
+                except Exception:
+                    return None
+                finally:
+                    if response is not None:
+                        response.dispose()
+
+            response = None
+            try:
+                response = self._context.request.fetch(
+                    url, method="GET" if body is None else "POST", data=body, headers=headers,
+                    timeout=self.REQUEST_TIMEOUT_MS, max_redirects=0, max_retries=0)
+                length = response.headers.get("content-length", "")
+                if length.isdigit():
+                    check_html_size(int(length))
+                return form_response(self.base, response.status, response.headers,
+                                     response.body(), identity_probe)
+            except (SessionExpired, PermissionDenied, UpstreamUnavailable):
+                raise
+            except Exception as exc:
+                # _submit logs/retire decisions must never contain a form URL/token/body.
+                message = ("Jira native form transport timeout."
+                           if self._is_transport_error(exc) else "Jira 폼 요청을 완료하지 못했습니다.")
+                raise UpstreamUnavailable(message) from None
+            finally:
+                if response is not None:
+                    try:
+                        response.dispose()
+                    except Exception:
+                        pass
+
+        return self._submit(do, PRIO_WRITE if body is not None else upstream_priority(),
+                            may_commit=may_commit)
+
     def _fetch_bytes(self, path, params):
         # 이미지/첨부 프록시 — 인증된 브라우저 컨텍스트로 받아 바이트 반환. 절대 URL 도 허용.
         url = path if path.startswith(("http://", "https://")) else self.base + path

@@ -123,6 +123,29 @@ class InProcessProvider(AuthProvider):
     def get_text(self, path, params=None):
         return self._get(path, params).text
 
+    def web_form(self, path, fields=None, *, may_commit=False):
+        from .web_forms import form_request, form_response, identity_response
+        base = str(self._client.base_url).rstrip("/")
+        url, headers, body = form_request(base, path, fields, may_commit)
+
+        def do():
+            _sleep_for(path, None)
+
+            def identity_probe():
+                response = self._client.get(base + "/rest/api/2/myself", follow_redirects=False)
+                try:
+                    data = response.json() if response.status_code == 200 else None
+                except ValueError:
+                    return None
+                return identity_response(response.status_code, data)
+
+            response = self._client.request("GET" if body is None else "POST", url,
+                                            content=body, headers=headers, follow_redirects=False)
+            return form_response(base, response.status_code, response.headers,
+                                 response.content, identity_probe)
+
+        return self._serial(do, PRIO_WRITE if body is not None else None)
+
     def get_bytes(self, path, params=None):
         # in-process(jira820) 상대 경로만 유효(절대 외부 URL 은 mock 대상 아님)
         r = self._get(path, params)
