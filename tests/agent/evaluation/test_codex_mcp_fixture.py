@@ -63,9 +63,11 @@ def test_full_world_sdk_reads_share_ui_cache_and_reject_every_write(tmp_path):
         async def scenario():
             async with httpx2.AsyncClient(headers={"Authorization": "Bearer " + token}) as http:
                 async with Client(streamable_http_client(url, http_client=http)) as mcp:
-                    names = {tool.name for tool in (await mcp.list_tools()).tools}
+                    catalog = {tool.name: tool for tool in (await mcp.list_tools()).tools}
+                    names = set(catalog)
                     assert {"get_ticket", "search_workspace", "search_issues"} <= names
-                    assert not {"create_task", "update_fields", "get_workspace_config"} & names
+                    assert not {"create_task", "update_fields", "change_ticket_hierarchy", "get_workspace_config"} & names
+                    assert catalog["get_hierarchy_options"].output_schema
                     result = await mcp.call_tool("get_ticket", {"key": "DL-9090"})
                     assert not result.is_error and result.structured_content["data"]["key"] == "DL-9090"
                     assert len(fixture.upstream_calls) == before

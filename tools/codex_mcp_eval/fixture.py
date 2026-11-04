@@ -46,10 +46,10 @@ def _hash(value: Any) -> str:
 
 
 class _ReadOnlyRuntime(LocalMcpRuntime):
-    def register(self, fn, *, read_only):
+    def register(self, fn, *, read_only, output_type=None):
         # Not merely a prompt convention: absent handlers reject explicit writes too.
         if read_only and fn.__name__ != "get_workspace_config":
-            super().register(fn, read_only=True)
+            super().register(fn, read_only=True, output_type=output_type)
 
 
 class EvaluationFixture:
