@@ -360,7 +360,7 @@ function mentionSuggestion(ticketKey, localUsers) {
       itemSelector: ".mn-item",
       selectedSelector: ".mn-item.sel",
       select(user, command) {
-        rememberUser(user);
+        rememberUser(user, "mention");
         command({ id: user.id, label: user.name });
       },
       renderItems: (items, selected) => items.map((user, index) =>

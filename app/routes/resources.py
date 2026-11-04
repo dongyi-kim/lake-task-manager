@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import urllib.parse
+from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from app.domain import search
+from app.domain.person_context import record_person_event
+from app.local_mcp.security import local_request_error
 
 
 class RecentBody(BaseModel):
@@ -20,9 +23,24 @@ class RecentBody(BaseModel):
     data: dict = Field(default_factory=dict)
 
 
+class PersonRecentBody(BaseModel):
+    userId: str = Field(min_length=1, max_length=512)
+    event: Literal["selection", "mention"]
+    actorHint: str = Field(min_length=1, max_length=512)
+
+
 def build_resource_router(*, get_client, cache, settings) -> APIRouter:
     """Build endpoints shared by search, badges, and editor content."""
     router = APIRouter()
+
+    @router.post("/api/people/recent")
+    def api_person_recent(request: Request, body: PersonRecentBody):
+        error = local_request_error(request.scope, settings.app_port)
+        if error or request.headers.get("x-ltm-local") != "1" or (
+                request.headers.get("content-type", "").split(";", 1)[0] != "application/json"):
+            return JSONResponse({"error": error or "LTM 화면에서 요청해 주세요."}, status_code=403)
+        recorded = record_person_event(get_client(), settings, body.userId, body.event, body.actorHint)
+        return JSONResponse({"recorded": recorded}, headers={"Cache-Control": "no-store"})
 
     @router.get("/api/issue/{key}")
     def api_issue(key: str):
