@@ -36,6 +36,9 @@ class ToolError(OpenModel):
     })
 
     code: str
+    reason: Literal["ticket_completed", "field_not_editable"] | None = Field(default=None, description=(
+        "Specific edit restriction; code/status retain their existing conflict/permission category. "
+        "nextAction is read-only discovery, never permission to reopen a ticket automatically."))
     message: str | None = None
     error: str | None = None
     detail: str | None = None

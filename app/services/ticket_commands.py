@@ -4,7 +4,7 @@ from contextlib import nullcontext
 from urllib.parse import urlsplit
 
 from app.auth.base import MutationPreflightBusy, MutationPreflightUnavailable, UpstreamBusy, UpstreamError, UpstreamUnavailable, write_upstream
-from app.domain.ticket_actions import field_update_error, is_done
+from app.domain.ticket_actions import is_done
 from app.jira.mutation_recovery import Reconciliation, UNKNOWN
 
 try:
@@ -16,9 +16,10 @@ except ModuleNotFoundError as exc:
 
 
 class CommandError(ValueError):
-    def __init__(self, message, status=400):
+    def __init__(self, message, status=400, *, reason=None, next_action=None):
         super().__init__(message)
         self.status = status
+        self.reason, self.next_action = reason, next_action
 
 
 def _preflight_read(read):
@@ -153,10 +154,13 @@ class TicketCommands:
             current = _preflight_read(lambda: client.get_issue_light(key, strict=True))
             if not (current or {}).get("fields", {}).get("status"):
                 raise CommandError("티켓 상태를 확인하지 못해 수정할 수 없습니다.", 503)
-            error = field_update_error(current, ["description" if name == "descriptionHtml" else name
-                                                 for name in requested if name not in ("reporter", "epic")])
             if is_done(current):
-                raise CommandError(error or "완료된 티켓의 속성은 바꿀 수 없습니다.", 409)
+                raise CommandError(
+                    "완료된 티켓(statusCategory=done)의 속성은 변경할 수 없습니다. "
+                    "사용자가 재열기를 요청한 경우에만 현재 가능한 재열기 전이를 조회·실행한 뒤 "
+                    "수정을 별도 요청하세요. 완료 티켓에도 댓글은 남길 수 있습니다.",
+                    409, reason="ticket_completed", next_action={
+                        "tool": "list_options", "arguments": {"kind": "transitions", "key": key}})
             meta, fields, denied = _preflight_read(lambda: client.editmeta(key, strict=True)), {}, []
             for name, value in requested.items():
                 field = self.settings.epic_link_field_id if name == "epic" else name
@@ -175,7 +179,11 @@ class TicketCommands:
                 else:
                     fields[field] = value
             if denied:
-                raise CommandError("편집 권한이 없는 항목입니다: " + ", ".join(denied), 403)
+                raise CommandError(
+                    "현재 Jira 편집 metadata에 없는 항목입니다: " + ", ".join(denied) +
+                    ". Jira 권한·workflow·편집 화면 설정을 확인하세요. LTM 매니저 권한으로 우회할 수 없습니다.",
+                    403, reason="field_not_editable", next_action={
+                        "tool": "list_options", "arguments": {"kind": "edit_fields", "key": key}})
             return client.update_fields(key, fields) if fields else {"ok": True, "note": "변경 없음"}
         return self._once("fields", getattr(body, "clientMutationId", None),
                           {"key": key, "body": body.model_dump()}, write)
