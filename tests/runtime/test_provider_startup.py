@@ -37,6 +37,44 @@ def client():
     cache.close()
 
 
+def test_ready_injected_provider_does_not_require_startup_state():
+    client = object.__new__(JiraClient)
+    healthy = SimpleNamespace(get_json=lambda *_args, **_kwargs: {"name": "tester"})
+    client._provider, client._provider_built = healthy, True
+    assert client.provider is healthy
+
+
+def test_ready_provider_does_not_wait_for_startup_state_lock(client):
+    healthy = SimpleNamespace(close=lambda: None)
+    client._provider, client._provider_built = healthy, True
+    client._provider_lock.acquire()
+    try:
+        done, result = _call(lambda: client.provider)
+        assert done.wait(0.5)
+        assert result == {"value": healthy}
+    finally:
+        client._provider_lock.release()
+
+
+def test_ready_provider_changed_during_health_check_uses_new_login(client):
+    old_closed = []
+    healthy = SimpleNamespace(close=lambda: None)
+
+    class ReplacedProvider:
+        @property
+        def broken(self):
+            client.reset_provider()
+            return False
+
+        def close(self):
+            old_closed.append(1)
+
+    client._provider, client._provider_built = ReplacedProvider(), True
+    client._make_provider = lambda: healthy
+    assert client.provider is healthy
+    assert old_closed == [1]
+
+
 @pytest.mark.parametrize("failure, expected", [
     (LoginRequired("saved session missing"), LoginRequired),
     (SessionExpired("authentication failed"), SessionExpired),
