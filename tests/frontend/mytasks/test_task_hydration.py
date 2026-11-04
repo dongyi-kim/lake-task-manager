@@ -105,3 +105,29 @@ def test_stream_without_final_snapshot_is_not_success():
     source = (REPO_ROOT / "app/static/components/views/MyTasksView.js").read_text(encoding="utf-8")
     assert "if (!receivedFinal) throw new Error" in source
     assert 'if (event.done && event.model) receivedFinal = true;' in source
+
+
+def test_auth_recovery_waits_for_all_inflight_outcomes():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is not installed")
+    source = (REPO_ROOT / "app/static/components/views/MyTasksView.js").read_text(encoding="utf-8")
+    method = source.split("    _resumeChildHydration() {", 1)[1].split("    _hydrateModel(", 1)[0]
+    script = r'''
+import assert from 'node:assert/strict';
+const methods = new Function('return ({_resumeChildHydration() {' + METHOD + '})')();
+for (const obsolete of [false,true]) {
+  let settle, requested;
+  const run={requestToken:'current',promise:new Promise(resolve=>settle=resolve)};
+  const vm={_childRun:run,_activeRequestToken:'current',childSync:{A:'waiting-auth',B:'loading',C:'complete'},
+    model:{streamComplete:true},states:[{k:'todo'}],axisState:()=> 'done',
+    _hydrateModel:(...args)=>requested=args.at(-1)};
+  assert.equal(methods._resumeChildHydration.call(vm),true);
+  assert.equal(methods._resumeChildHydration.call(vm),true,'duplicate auth event joins recovery');
+  vm.childSync.B='waiting-auth';
+  if(obsolete) vm._activeRequestToken='next-filter';
+  settle(); await run.promise; await Promise.resolve();
+  assert.deepEqual(requested,obsolete?undefined:['A','B']);
+}
+'''.replace("METHOD", json.dumps(method))
+    subprocess.run([node, "--input-type=module", "-e", script], check=True, capture_output=True, text=True)

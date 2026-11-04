@@ -213,7 +213,7 @@ const TASK_SECTION_TEMPLATE = `
             </div>
               </div>
               <SubtaskFoldBar :panel="p" :closed="isGroupClosed(p)" @toggle="toggleGroup(p)" />
-              <div v-if="!isGroupClosed(p)" class="mt-gbody one"
+              <div v-if="!p.emptyFiltered && !isGroupClosed(p)" class="mt-gbody one"
                    :class="{ foldwrap: foldable(p), folded: peeking(p), 'fold-peek': peeking(p) }">
                 <div v-for="c in cellCards(p, st.k)" :key="c.key" class="mt-card tkt"
                      :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done',
