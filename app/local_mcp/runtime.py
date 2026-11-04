@@ -25,6 +25,8 @@ from app.local_mcp.write_tools import register_writes
 from app.local_mcp.workspace_tools import register_workspace
 from app.local_mcp.vit_tools import register_vit
 from app.local_mcp.admin_tools import register_admin
+from app.local_mcp.skill_catalog import SkillCatalog
+from app.local_mcp.skill_protocol import SkillsExtension
 from app.local_mcp.authentication import (AUTH_TOOLS, CONFIG_WRITES, Authentication, AuthenticationUnavailable,
     authentication_error, error_payload, register_authentication, services_for)
 from app.services.workspace_config import WorkspaceConfigCommands
@@ -48,8 +50,9 @@ class LocalMcpRuntime:
         self.classify_error = classify_error
         self.authentication = Authentication(self, request_login)
         self.started = False
+        self.skill_catalog = SkillCatalog()
         self.server = MCPServer(
-            "lake-task-manager", instructions=(
+            "lake-task-manager", extensions=[SkillsExtension(self.skill_catalog)], instructions=(
                 "The running local LTM instance shares its Jira authentication and caches. "
                 "Tools read and directly write Jira and manager-only local WBS/people configuration; "
                 "use only actions authorized by your user. "
