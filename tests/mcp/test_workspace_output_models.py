@@ -102,6 +102,18 @@ def test_document_builder_preserves_numeric_string_total(workspace, monkeypatch)
     assert result["total"] == "2" and result["hasMore"] and result["nextStartAt"] == 1
 
 
+def test_ticket_context_reuses_legacy_document_cache_without_upstream(workspace):
+    env = workspace
+    key = env.client.create_child(None, "Task", "Legacy document context")["key"]
+    env.tools["get_ticket_context"](key)
+    rows = [{"title": "Old reference", "url": "https://example.com/old"},
+            {"title": "Existing link", "url": "https://example.com/link", "linkId": "1"}]
+    env.cache.set(f"documents:{env.client.env}:{key}", rows, 600)
+    before = len(env.calls)
+    context = validate("get_ticket_context", env.tools["get_ticket_context"](key))
+    assert context["documents"] == rows and len(env.calls) == before
+
+
 @pytest.mark.parametrize("name", ["Legacy plan", 2026, 2.5, True])
 def test_legacy_wbs_scalars_survive_read_roster_write_and_dashboard(workspace, name):
     path = workspace.runtime.workspace_config.config_dir / "wbs_config.yaml"

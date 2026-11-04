@@ -30,6 +30,7 @@ def test_unobserved_reads_are_unknown_and_keep_partial_details(monkeypatch):
 
 def test_sdk_read_scope_tracks_oldest_source_inside_worker(build_env, monkeypatch):
     env = build_env()
+    original_view = env.client.ticket_view("DL-1")
     active = []
     seen = []
     @contextmanager
@@ -44,7 +45,7 @@ def test_sdk_read_scope_tracks_oldest_source_inside_worker(build_env, monkeypatc
             active.pop()
     def view(key, fresh=False):
         assert active and fresh
-        return {"key": key, "summary": "observed"}
+        return {**original_view, "key": key, "summary": "observed"}
     monkeypatch.setattr(read_metadata, "read_scope", scope)
     monkeypatch.setattr(env.client, "ticket_view", view)
     env.cache.policy_revision = 9

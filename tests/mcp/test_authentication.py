@@ -66,7 +66,7 @@ def test_read_expiration_recovers_and_replays_once(build_env, monkeypatch):
         if len(calls) == 1:
             raise SessionExpired("expired between probe and read")
         return {"latest": True}
-    env.runtime.register(read_fixture, read_only=True)
+    env.runtime.register(read_fixture, read_only=True, output_type=dict)
     result = invoke(env, "read_fixture")
     assert not result.is_error and result.structured_content["data"] == {"latest": True}
     assert len(calls) == 2 and probes == [{"force": False, "wait": True}, {"force": True, "wait": True}]
@@ -124,7 +124,7 @@ def test_non_auth_failures_do_not_renew_or_repeat(build_env, monkeypatch, except
     def rejected_read() -> dict:
         called.append(1)
         raise exception
-    env.runtime.register(rejected_read, read_only=True)
+    env.runtime.register(rejected_read, read_only=True, output_type=dict)
     assert invoke(env, "rejected_read").is_error
     assert len(called) == len(probes) == 1
 
@@ -197,12 +197,12 @@ def test_wrapped_identity_401_recovers_but_transport_caused_401_does_not(build_e
         if len(calls) == 1:
             raise CommandError("identity expired before write", 401)
         return {"saved": True}
-    env.runtime.register(guarded_write, read_only=False)
+    env.runtime.register(guarded_write, read_only=False, output_type=dict)
     result = invoke(env, "guarded_write", {"client_mutation_id": "auth:guarded:0001"})
     assert not result.is_error and len(probes) == 2 and calls == ["auth:guarded:0001"] * 2
     def unavailable_read() -> dict:
         raise CommandError("identity unreachable", 401) from UpstreamUnavailable("offline")
-    env.runtime.register(unavailable_read, read_only=True)
+    env.runtime.register(unavailable_read, read_only=True, output_type=dict)
     result = invoke(env, "unavailable_read")
     assert result.is_error and result.structured_content["error"]["code"] == "authorization_unavailable"
     assert len(probes) == 2
@@ -231,15 +231,16 @@ def test_search_auth_expiring_after_preflight_only_repeats_failed_source(build_e
         counts["jira"] += 1
         if counts["jira"] == 1:
             raise SessionExpired("Jira expired after preflight")
-        return {"items": [{"key": "DL-1"}]}
+        return {"items": [{"key": "DL-1", "type": "jira", "title": "Ticket", "url": "/browse/DL-1"}]}
     def confluence(*_args):
         counts["confluence"] += 1
-        return {"items": [{"id": "1"}]}
+        return {"items": [{"id": "1", "type": "confluence", "title": "Page", "url": "/pages/1"}]}
     monkeypatch.setattr(search, "_search_jira", jira)
     monkeypatch.setattr(search, "_search_confluence", confluence)
     result = invoke(env, "search_workspace", {"query": "auth race"})
     assert not result.is_error and not result.structured_content["partial"]
-    assert result.structured_content["data"]["confluence"]["items"] == [{"id": "1"}]
+    assert result.structured_content["data"]["confluence"]["items"] == [
+        {"id": "1", "type": "confluence", "title": "Page", "url": "/pages/1"}]
     assert counts == {"jira": 2, "confluence": 1}
 
 

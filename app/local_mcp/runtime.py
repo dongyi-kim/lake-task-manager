@@ -4,11 +4,13 @@ import inspect
 import json
 import re
 from contextlib import asynccontextmanager
+from typing import Annotated
 
 import anyio
 from fastapi import HTTPException
 from mcp.server import MCPServer
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
+from pydantic import ValidationError
 from starlette.routing import Route
 
 from app.auth.base import MutationOutcomeUnknown, PermissionDenied, SessionExpired, UpstreamError, UpstreamUnavailable
@@ -16,6 +18,7 @@ from app.local_mcp.read_tools import register_reads
 from app.local_mcp.evidence_tools import register_evidence
 from app.local_mcp.hierarchy_tools import register_hierarchy
 from app.local_mcp.read_metadata import read_result, has_partial
+from app.local_mcp.output_schema import schema_for
 from app.local_mcp.security import Credentials, LocalGuard
 from app.local_mcp.settings import build_settings_router
 from app.local_mcp.write_tools import register_writes
@@ -254,7 +257,9 @@ class LocalMcpRuntime:
                 result["data"][service] = {"items": [], "error": error["message"], "authentication": error}
         return result
 
-    def register(self, fn, *, read_only):
+    def register(self, fn, *, read_only, output_type=None):
+        contract = schema_for(fn.__name__, output_type, read_only)
+
         async def invoke(**kwargs):
             try:
                 payload = await anyio.to_thread.run_sync(
@@ -264,15 +269,25 @@ class LocalMcpRuntime:
                 if payload["error"].get("needLogin"):
                     payload["error"].setdefault("nextAction", {"tool": "authenticate", "arguments": {
                         "service": payload["error"].get("service", "jira"), "interactive": True}})
+            try:
+                contract.model_validate(payload)
+            except ValidationError:
+                # A command may have completed before its output failed validation. Preserve
+                # its result/receipt and forbid blind retries; do not turn this into a new write.
+                payload = {"ok": False, "error": {"code": "output_schema_mismatch",
+                    "message": "LTM 응답 형식이 도구의 출력 스키마와 다릅니다. operationResult를 확인하세요.",
+                    "retryable": False, "repeatWrite": False,
+                    "operationResult": json.loads(json.dumps(payload, ensure_ascii=False, default=str))}}
             return CallToolResult(
                 content=[TextContent(type="text", text=json.dumps(payload, ensure_ascii=False, default=str))],
                 structured_content=payload, is_error=not payload["ok"],
             )
         invoke.__name__, invoke.__doc__ = fn.__name__, fn.__doc__
-        invoke.__signature__ = inspect.signature(fn).replace(return_annotation=CallToolResult)
-        invoke.__annotations__ = {**fn.__annotations__, "return": CallToolResult}
+        result_annotation = Annotated[CallToolResult, contract]
+        invoke.__signature__ = inspect.signature(fn).replace(return_annotation=result_annotation)
+        invoke.__annotations__ = {**fn.__annotations__, "return": result_annotation}
         self.server.add_tool(invoke, name=fn.__name__, description=fn.__doc__,
-                             structured_output=False,
+                             structured_output=True,
                              annotations=ToolAnnotations(read_only_hint=read_only,
                                                          destructive_hint=not read_only,
                                                          open_world_hint=False))

@@ -19,7 +19,7 @@ def test_sdk_error_contract_preserves_application_status(build_env, exception_ty
         if exception_type is CommandError:
             raise CommandError("fixture rejection", status)
         raise HTTPException(status, "fixture rejection")
-    env.runtime.register(rejected_command, read_only=False)
+    env.runtime.register(rejected_command, read_only=False, output_type=dict)
     async def scenario():
         async with Client(env.runtime.server) as mcp:
             result = await mcp.call_tool("rejected_command", {})
@@ -36,7 +36,7 @@ def test_unreachable_identity_is_not_reported_as_confirmed_logout(build_env):
     env = build_env()
     def unavailable_identity() -> dict:
         raise CommandError("Cannot verify current authority", 401) from UpstreamUnavailable("fixture offline")
-    env.runtime.register(unavailable_identity, read_only=False)
+    env.runtime.register(unavailable_identity, read_only=False, output_type=dict)
     async def scenario():
         async with Client(env.runtime.server) as mcp:
             result = await mcp.call_tool("unavailable_identity", {})
