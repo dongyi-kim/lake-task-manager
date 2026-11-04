@@ -16,19 +16,25 @@ def test_sdk_overload_keeps_ui_and_auth_available_and_recovers(build_env):
     entered = []
     results = []
 
-    def held_read(index: int) -> dict:
-        entered.append(index)
-        assert release.wait(10), "test did not release its held workers"
-        return {"index": index}
-
-    env.runtime.register(held_read, read_only=True, output_type=dict)
-
     @env.app.get("/capacity-health")
     def health():
         # Like ordinary UI routes, this intentionally needs the default AnyIO pool.
         return {"status": "ok"}
 
     async def scenario():
+        saturated = anyio.Event()
+
+        def record_start(index):
+            entered.append(index)
+            if len(entered) == 8:
+                saturated.set()
+
+        def held_read(index: int) -> dict:
+            anyio.from_thread.run_sync(record_start, index)
+            assert release.wait(15), "test did not release its held workers"
+            return {"index": index}
+
+        env.runtime.register(held_read, read_only=True, output_type=dict)
         async with env.app.router.lifespan_context(env.app):
             async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=env.app),
                     base_url=env.runtime.url.removesuffix("/mcp"),
@@ -43,11 +49,15 @@ def test_sdk_overload_keeps_ui_and_auth_available_and_recovers(build_env):
 
                     async with anyio.create_task_group() as group:
                         try:
-                            for index in range(40):
+                            for index in range(8):
                                 group.start_soon(call, index)
-                            with anyio.fail_after(3):
-                                while len(entered) + len(results) < 40:
-                                    await anyio.sleep(0.001)
+                            # Establish saturation before probing overload. This deadline only
+                            # catches deadlocks; the UI/control-lane latency assertion stays below.
+                            with anyio.fail_after(10):
+                                await saturated.wait()
+                                async with anyio.create_task_group() as rejected_calls:
+                                    for index in range(8, 40):
+                                        rejected_calls.start_soon(call, index)
                             assert len(entered) == 8
                             assert len(results) == 32
                             for result in results:
