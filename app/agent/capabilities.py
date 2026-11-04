@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 
+from app.agent.diagnostics import diagnostic_text
+
 
 _CACHE: dict[tuple[str, str], dict] = {}
 
@@ -34,7 +36,7 @@ def record(tier: str, capability: str, supported: bool, error: str = "", config_
     row = _CACHE.setdefault(key, {"tier": tier, "checked": {}, "errors": {}})
     row["checked"][capability] = bool(supported)
     if error:
-        row["errors"][capability] = str(error)[:240]
+        row["errors"][capability] = diagnostic_text(error, 240)
     elif capability in row["errors"]:
         row["errors"].pop(capability, None)
 
@@ -44,7 +46,7 @@ def reset() -> None:
 
 
 def _brief(exc: Exception) -> str:
-    return " ".join(str(exc or "").split())[:240]
+    return diagnostic_text(" ".join(str(exc or "").split()), 240)
 
 
 def native_tools_allowed(config_id: str = "", *, tier: str = "complex") -> bool:
