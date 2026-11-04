@@ -6,7 +6,9 @@ from threading import Event
 from types import SimpleNamespace
 import time
 
+import anyio
 import pytest
+from mcp import Client
 
 from app.auth.base import PermissionDenied, SessionExpired
 from app.infra.cache import Cache
@@ -36,6 +38,14 @@ def test_comments_real_rest_pages_have_no_ui_or_snapshot_cap(build_env):
         env.provider.post_json(f"/rest/api/2/issue/{key}/comment", json_body={"body": f"Evidence {number}"})
     # Existing UI deliberately shows only 20. Generic evidence must keep paging past 200.
     assert len(env.client.issue_comments(key, limit=1000)) == 20
+    async def preview():
+        async with Client(env.runtime.server) as mcp:
+            result = await mcp.call_tool("get_comments", {"key": key, "limit": 1000})
+            assert not result.is_error, result.structured_content
+            data = result.structured_content["data"]
+            assert data["returnedCount"] == data["sourceLimit"] == 20
+            assert data["mayHaveMore"] is True
+    anyio.run(preview)
     rows, start = [], 0
     while True:
         page = get_evidence_page(env.client, key, "comments", start, 73)
@@ -173,3 +183,17 @@ def test_incomplete_refresh_preserves_previous_source_age_and_recovers(evidence_
     assert fetched_at == old_time and len(previous["items"]) == 1
     rows.append(history("2"))
     assert get_evidence_page(client, "DL-12", "history")["items"][0]["id"] == "2"
+
+
+def test_generic_tools_use_real_sdk_and_validate_project_scope(build_env):
+    env = build_env()
+    key = env.client.create_child(None, "Task", "SDK evidence")["key"]
+    env.client.add_comment(key, "Exact source comment")
+    async def scenario():
+        async with Client(env.runtime.server) as mcp:
+            response = await mcp.call_tool("get_evidence_page", {"key": key})
+            assert not response.is_error, response.structured_content
+            assert response.structured_content["data"]["items"][0]["body"] == "Exact source comment"
+            denied = await mcp.call_tool("get_evidence_page", {"key": "OTHER-1"})
+            assert denied.is_error
+    anyio.run(scenario)
