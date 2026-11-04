@@ -10,13 +10,14 @@ import re
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 from datetime import date, timedelta
 from html import escape, unescape
+from typing import NamedTuple
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
-from app.auth.base import (PermissionDenied, SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable,
+from app.auth.base import (LoginRequired, PermissionDenied, SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable,
                            background_upstream, write_upstream)
 from app.infra.cache_policy import note_read, revalidating
 from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
@@ -502,6 +503,39 @@ def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None, epic_name_f
     }
 
 
+class _ProviderStartupFailure(NamedTuple):
+    """Only immutable diagnostic values survive a launch attempt, never exception tracebacks."""
+
+    exception_type: type
+    message: str
+    status: int | None = None
+    body: str = ""
+
+    @classmethod
+    def capture(cls, exc):
+        if isinstance(exc, UpstreamError):
+            return cls(UpstreamError, f"SSO 연결을 시작하지 못했습니다(HTTP {int(exc.status)}).",
+                       int(exc.status))
+        # Driver errors may include authenticated URLs or headers. Share only the classification;
+        # neither the cooldown cache nor the HTTP/MCP response needs the original diagnostic text.
+        for kind, message in (
+                (LoginRequired, "저장된 SSO 세션이 없습니다. 로그인이 필요합니다."),
+                (SessionExpired, "SSO 인증 세션을 확인할 수 없습니다. 로그인을 확인해 주세요."),
+                (UpstreamBusy, "Jira 연결을 준비 중입니다. 잠시 후 다시 시도해 주세요."),
+                (KeyboardInterrupt, "SSO 브라우저 기동이 중단되었습니다."),
+                (SystemExit, "SSO 브라우저 기동이 중단되었습니다.")):
+            if isinstance(exc, kind):
+                return cls(kind, message)
+        return cls(UpstreamUnavailable, "SSO 브라우저를 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.")
+
+    def new_exception(self):
+        if self.exception_type is UpstreamError:
+            error = UpstreamError(self.status, "", self.body)
+            error.args = (self.message,)
+            return error
+        return self.exception_type(self.message)
+
+
 class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     JQL_CACHE_VERSION = 2
     JQL_SNAPSHOT_TTL = 30 * 60
@@ -517,6 +551,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     # Small DNF queries stay synchronous so their leaf cache is immediately reusable.
     JQL_FOREGROUND_LEAF_LIMIT = 4
     JQL_BOOTSTRAP_RESULT_LIMIT = 50_000
+    PROVIDER_WAIT_SECONDS = 1
+    PROVIDER_RETRY_SECONDS = 20
 
     def __init__(self, settings, cache):
         self.s = settings
@@ -540,6 +576,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         self._provider_built = False
         self._provider_lock = threading.Lock()   # provider lazy 생성 경쟁 방지(부팅 warm + 첫 요청 동시 접근)
         self._provider_generation = 0            # old storage snapshot이 새 로그인 state를 덮지 못하게
+        self._provider_startup = None            # (generation, Future), shared by overlapping callers
+        self._provider_startup_failure = None    # (monotonic retry time, immutable failure details)
         self._session_state_persist_lock = threading.Lock()
         self._session_state_persist_at = 0.0
         self._renew_at = {}          # 서비스별 마지막 무음갱신 시도 시각(스로틀)
@@ -567,30 +605,72 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
     @property
     def provider(self):
-        # timeout 난 Playwright worker 는 Python 에서 안전하게 강제 종료할 수 없다. 그 provider 에
-        # 계속 요청을 넣으면 모든 FastAPI worker 가 같은 죽은 큐에 매달린다. 회로차단기 동안은
-        # 즉시 실패하고, 시간이 지난 첫 요청이 새 provider 로 갈아끼운다.
-        if self._provider_built and getattr(self._provider, "broken", False):
-            if self.upstream_down():
-                raise UpstreamUnavailable(
-                    getattr(self, "_upstream_reason", "") or "Jira 연결 복구 대기 중")
+        # Never hold the state lock during Chromium startup. Otherwise every waiting HTTP/MCP
+        # worker can repeat a failed 20-second launch in series, including after a new login.
+        old = None
+        with self._provider_lock:
+            if self._provider_built:
+                if not getattr(self._provider, "broken", False):
+                    return self._provider
+                if self.upstream_down():
+                    raise UpstreamUnavailable(
+                        getattr(self, "_upstream_reason", "") or "Jira 연결 복구 대기 중")
+                old = self._provider
+                self._provider = None
+                self._provider_built = False
+                self._provider_generation += 1
+            failure = self._provider_startup_failure
+            if failure and time.monotonic() < failure[0]:
+                raise failure[1].new_exception() from None
+            attempt = self._provider_startup
+            owner = attempt is None
+            if owner:
+                attempt = (self._provider_generation, Future())
+                self._provider_startup = attempt
+        if old is not None:
+            try:
+                old.close()
+            except Exception:
+                pass
+
+        generation, future = attempt
+        if owner:
+            candidate, failure = None, None
+            try:
+                candidate = self._make_provider()
+            except BaseException as exc:  # Wake followers even if the creator exits unexpectedly.
+                failure = _ProviderStartupFailure.capture(exc)
             with self._provider_lock:
-                if self._provider_built and getattr(self._provider, "broken", False):
-                    old = self._provider
-                    self._provider = None
-                    self._provider_built = False
-                    self._provider_generation += 1
-                    try:
-                        old.close()
-                    except Exception:
-                        pass
-        if not self._provider_built:
-            with self._provider_lock:
-                if not self._provider_built:          # 락 안에서 재확인(더블체크)
-                    self._provider = self._make_provider()
-                    self._provider_built = True
-                    self._provider_generation += 1
-        return self._provider
+                current = (self._provider_startup is attempt
+                           and self._provider_generation == generation)
+                if current:
+                    self._provider_startup = None
+                    if failure is not None:
+                        self._provider_startup_failure = (
+                            time.monotonic() + self.PROVIDER_RETRY_SECONDS, failure)
+                        future.set_result(failure)
+                    else:
+                        self._provider = candidate
+                        self._provider_built = True
+                        self._provider_generation += 1
+                        self._provider_startup_failure = None
+                        future.set_result(candidate)
+                elif not future.done():
+                    future.set_result(_ProviderStartupFailure(
+                        UpstreamBusy, "인증 상태가 갱신되었습니다. 다시 시도해 주세요."))
+                discard_candidate = not current and candidate is not None and candidate is not self._provider
+            if discard_candidate:
+                try:
+                    candidate.close()
+                except Exception:
+                    pass
+        try:
+            result = future.result(timeout=self.PROVIDER_WAIT_SECONDS)
+        except FutureTimeoutError:
+            raise UpstreamBusy("Jira 연결을 준비 중입니다. 잠시 후 다시 시도해 주세요.") from None
+        if isinstance(result, _ProviderStartupFailure):
+            raise result.new_exception() from None
+        return result
 
     def warm_session(self):
         """부팅 시 **백그라운드로** 인증 세션을 미리 데운다(prod 전용).
@@ -751,6 +831,12 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             self._provider = None
             self._provider_built = False
             self._provider_generation += 1
+            attempt = self._provider_startup
+            self._provider_startup = None
+            self._provider_startup_failure = None
+            if attempt is not None and not attempt[1].done():
+                attempt[1].set_result(_ProviderStartupFailure(
+                    UpstreamBusy, "인증 상태가 갱신되었습니다. 다시 시도해 주세요."))
             self._session_state_persist_at = 0.0
         if old is not None:
             try:
