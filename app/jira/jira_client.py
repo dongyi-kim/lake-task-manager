@@ -2076,7 +2076,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             for e in w["epics"]:
                 if e["key"] not in seen:
                     seen.add(e["key"]); keys.append(e["key"])
-        self.prefetch_issues([self._resolve(k) for k in keys])   # epic 원본을 한 번에
+        self.prefetch_issues([self._resolve(k) for k in keys], light=True)
+        self._prime_epic_memberships(keys)
         results = self._pmap(keys, self.epic_progress_one)
         return {k: r for k, r in zip(keys, results)}
 
