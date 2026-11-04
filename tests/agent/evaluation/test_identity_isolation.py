@@ -18,6 +18,11 @@ def test_identity_overrides_host_scope_roster_and_plan_before_loading(tmp_path, 
     for module in (settings, base):
         monkeypatch.setattr(module, "load_plan", lambda: copy.deepcopy(host_plan))
         monkeypatch.setattr(module, "load_people", lambda: copy.deepcopy(host_people))
+    host_cache = {"data": host_people, "dir": None}
+    monkeypatch.setattr(settings, "_PEOPLE_CACHE", host_cache)
+    module_dir_alias = settings.module_dir  # Same import pattern as person_context.
+    host_directory = module_dir_alias()
+    assert host_directory["byUser"] == {"host.secret.employee": ["HOST_PRIVATE"]}
     source = settings.get_settings()
     monkeypatch.setattr(source, "search_jira_projects", [])
     monkeypatch.setattr(source, "search_confluence_spaces", [])
@@ -26,6 +31,11 @@ def test_identity_overrides_host_scope_roster_and_plan_before_loading(tmp_path, 
         assert env.settings.search_jira_projects == ["DL"] and env.settings.search_confluence_spaces == []
         assert env.world.plan == IDENTITY_PLAN and env.world.people == IDENTITY_ROSTER
         assert settings.load_people() == IDENTITY_ROSTER and settings.load_plan() == IDENTITY_PLAN
+        directory = module_dir_alias()
+        assert directory["people"] == IDENTITY_ROSTER and directory["modules"] == ["TEST"]
+        assert set(directory["byUser"]) == {user.lower() for user in IDENTITY_ROSTER["TEST"]}
+        assert settings.modules_of(ACTOR_ID) == ["TEST"]
+        assert settings.modules_of("host.secret.employee") == []
         assert env.runtime.scoped_people() == IDENTITY_ROSTER
         assert set(env.store.users) == set(IDENTITY_ROSTER["TEST"]) and len(env.store.users) == 8
         assert env.store.config.current_user == ACTOR_ID
@@ -48,6 +58,7 @@ def test_identity_overrides_host_scope_roster_and_plan_before_loading(tmp_path, 
         anyio.run(scenario)
         assert env.summary()["worldUnchanged"] and env.summary()["providerStoreUnchanged"]
     assert settings.load_people() == host_people and base.load_people() == host_people
+    assert settings._PEOPLE_CACHE is host_cache and module_dir_alias() is host_directory
     assert settings.load_plan() == host_plan and base.load_plan() == host_plan
     assert source.search_jira_projects == [] and source.managers == ["host.secret.manager"]
 
