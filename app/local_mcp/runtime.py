@@ -16,6 +16,8 @@ from app.auth.base import MutationOutcomeUnknown, MutationPreflightUnavailable, 
 from app.local_mcp.read_tools import register_reads
 from app.local_mcp.evidence_tools import register_evidence
 from app.local_mcp.hierarchy_tools import register_hierarchy
+from app.local_mcp.hierarchy_write_tools import register_hierarchy_writes
+from app.jira.hierarchy_forms import HierarchyFormError
 from app.local_mcp.read_metadata import read_result, has_partial
 from app.local_mcp.output_schema import schema_for
 from app.local_mcp.security import Credentials, LocalGuard
@@ -75,6 +77,7 @@ class LocalMcpRuntime:
         register_reads(self.register, self)
         register_evidence(self.register, self)
         register_hierarchy(self.register, self)
+        register_hierarchy_writes(self.register, self)
         register_workspace(self.register, self)
         register_vit(self.register, self)
         register_admin(self.register, self)
@@ -141,6 +144,8 @@ class LocalMcpRuntime:
                 "jiraState": jira_state, "tokenMasked": "•••••••• (설정됨)"}
 
     def _error(self, exc):
+        if isinstance(exc, HierarchyFormError):
+            return {"code": exc.code, "status": exc.status, "message": str(exc), "retryable": False}
         if isinstance(exc, MutationPreflightUnavailable):
             busy = isinstance(exc, UpstreamBusy)
             if not busy and self.classify_error:
