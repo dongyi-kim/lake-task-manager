@@ -245,6 +245,12 @@ URL에 인증정보·query·fragment를 넣지 않는다. 키·헤더는 쓰기 
 쓰기 전 상태와 권한은 만료된 display cache로 판단하지 않는다. 아직 유효한 캐시는 재사용하지만
 확인 중 연결·인증 오류가 나면 쓰기를 차단한다. 인증 필요·권한 없음·설정 충돌은 서로 다른 error code로 제공한다.
 
+완료 필드 수정 거절은 기존 `code=conflict`·409와 함께 `reason=ticket_completed`를,
+편집 metadata에 없는 필드는 `code=permission_denied`·403과 `reason=field_not_editable`을 반환한다.
+`nextAction`은 해당 티켓의 전이/편집 필드를 조회하는 안내다. 자동 재열기 허용이나 권한 부여가 아니다.
+작업별 상태·권한과 Jira 화면의 계층 변경 기능은
+`get_content_guide(skill="ltm-task-authoring", path="references/ticket-actions.md")`에서 확인한다.
+
 MCP는 UI와 별도 작업 용량을 사용한다. 업무 도구는 동시 8개, 인증·가이드는 별도 2개이며,
 초과 호출은 대기열에 쌓지 않고 `rate_limited`와 `retryAfterSeconds`를 반환한다.
 `executed:false`는 도구 실행 전 거절된 경우에만 제공한다. Jira 내부 혼잡은 일부 단계가 이미
