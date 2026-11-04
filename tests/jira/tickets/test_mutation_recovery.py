@@ -147,6 +147,7 @@ class _DelayedCommitSsoProvider(SsoSessionProvider):
         self._broken = threading.Event()
         self._closed = threading.Event()
         self._broken_reason = ""
+        self._browser = SimpleNamespace(is_connected=lambda: True)
         self.started = threading.Event()
         self.release = threading.Event()
         self.owner_done = threading.Event()

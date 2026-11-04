@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from app.auth.base import (MutationOutcomeUnknown, SessionExpired,
+from app.auth.base import (MutationOutcomeUnknown, SessionExpired, UpstreamBusy,
                            UpstreamUnavailable, write_upstream)
 
 
@@ -211,7 +211,7 @@ class MutationReceiptStore:
                     raise MutationOutcomeUnknown(
                         mutation_id,
                         "Jira 반영 여부 확인도 지연되고 있습니다. 입력은 보존되며 재시도 시 중복 여부를 다시 확인합니다.",
-                        upstream_failed=True,
+                        upstream_failed=not isinstance(exc, UpstreamBusy),
                     ) from exc
                 except Exception as exc:
                     # Reconciliation is deliberately fail-closed: parsing/provider surprises must
@@ -259,7 +259,7 @@ class MutationReceiptStore:
                         raise MutationOutcomeUnknown(
                             mutation_id,
                             "Jira 사용자 확인이 지연되고 있습니다. 입력은 보존되며 같은 요청으로 다시 확인합니다.",
-                            upstream_failed=True,
+                            upstream_failed=not isinstance(exc, UpstreamBusy),
                         ) from exc
                     except ValueError:
                         raise  # authenticated actor mismatch is an actionable, definitive refusal
@@ -290,13 +290,15 @@ class MutationReceiptStore:
                 raise
             except UpstreamUnavailable as exc:
                 # 5xx/timeout은 응답만 잃었을 수 있다. receipt를 남겨 다음 시도에서 먼저 확인한다.
+                # Busy proves only that the latest operation never started. A write callback may
+                # already have committed an earlier step, so retain its receipt for reconciliation.
                 self._remember_inflight(
                     key, getattr(exc, "pending_operation", None), fingerprint,
                     attempted_at, context)
                 raise MutationOutcomeUnknown(
                     mutation_id,
                     "Jira가 요청을 받았는지 확인할 수 없습니다. 입력은 보존되며 재시도 시 중복 여부를 먼저 확인합니다.",
-                    upstream_failed=True,
+                    upstream_failed=not isinstance(exc, UpstreamBusy),
                 ) from exc
             except (TimeoutError, ConnectionError) as exc:
                 # Provider boundaries should normalize these, but a browser/socket can still

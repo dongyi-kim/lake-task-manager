@@ -31,5 +31,9 @@
 `tests/frontend/shell/test_auth_activity.py`에서 fake clock과 로컬 Jira·IdP를 사용한다.
 
 ## 규칙
+- SSO 대기열은 32개로 제한한다. 포화·실행 전 대기 만료는 `UpstreamBusy`로 반환하고 정상
+  브라우저·인증을 폐기하지 않는다. 실행 시간 한도는 실제 시작부터 계산한다.
+- 이미 시작한 쓰기의 응답이 유실되면 pending operation과 durable receipt를 유지한다.
+  혼잡이 다단계 쓰기 중간에 발생해도 전체 미실행으로 간주하거나 자동으로 다시 쓰지 않는다.
 - SSO 세션 파일(`jira_state.json`)·크리덴셜 **커밋 금지**. 사내 prod 에 자동 테스트 금지(AGENTS.md §10).
 - provider 는 큐 단일화(prod)라 실패 판정에 수십 초 걸릴 수 있다 — 회로차단기/warm 은 client·run.py 가 관리.

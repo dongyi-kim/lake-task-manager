@@ -3,7 +3,7 @@
 import threading
 import time
 
-from app.auth.base import SessionExpired, UpstreamError, UpstreamUnavailable
+from app.auth.base import SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable
 from app.domain.names import real_name
 
 
@@ -155,6 +155,8 @@ class JiraIdentityMixin:
         except SessionExpired as exc:
             self.mark_session_dead(str(exc))
             raise
+        except UpstreamBusy:
+            raise
         except UpstreamUnavailable as exc:
             self.mark_upstream_down(str(exc))
             raise
@@ -176,6 +178,10 @@ class JiraIdentityMixin:
             if not hit:
                 self.mark_session_alive()
             return result
+        except UpstreamBusy:
+            # Capacity says nothing about the authenticated identity. Propagate it rather than
+            # feeding an empty identity to a parent cache producer or opening the transport gate.
+            raise
         except UpstreamUnavailable as exc:
             self.mark_upstream_down(str(exc))
             return {}
@@ -230,6 +236,7 @@ class JiraIdentityMixin:
     def direct_session_state(self, *, background=False):
         """Return ``alive``, ``expired`` or ``unknown`` from a direct Jira probe.
 
+        Local admission pressure raises ``UpstreamBusy``: no upstream observation was made.
         A transport stall is not proof that the SSO session expired.  The old boolean helper
         collapsed both cases to ``False``; callers could consequently open a login window after
         an ordinary network hiccup.  Keep the tri-state result until the UI-facing boundary.
@@ -268,6 +275,8 @@ class JiraIdentityMixin:
             if provider is not self._provider or generation != self._provider_generation:
                 return "unknown"
             return "expired"
+        except UpstreamBusy:
+            raise
         except Exception:
             return "unknown"
 
@@ -369,6 +378,8 @@ class JiraIdentityMixin:
                 try:
                     with background_upstream():
                         self._renew_service("Jira")
+                except UpstreamBusy:
+                    raise
                 except Exception:
                     pass
                 # A failed navigation may be a network loss, or another login may have completed.
@@ -399,5 +410,14 @@ class JiraIdentityMixin:
             self._auth_probe_at = time.monotonic()
             self._auth_probe_completed_result = dict(result)
             return dict(result)
+        except UpstreamBusy:
+            # Admission refusal is not a completed auth/transport observation. In particular,
+            # do not memoize it (or replay an older degraded memo) once capacity becomes available.
+            self._auth_probe_result = None
+            self._auth_probe_at = 0.0
+            self._auth_probe_completed_result = None
+            self._auth_maintenance.update(state="checking", failure=None)
+            return {"ok": False, "needLogin": False, "pending": True,
+                    "retryable": True, "mode": "checking"}
         finally:
             lock.release()
