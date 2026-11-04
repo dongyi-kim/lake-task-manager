@@ -145,7 +145,9 @@ class Authentication:
 def register_authentication(register, runtime):
     def get_auth_status(service: Literal["jira", "confluence"] = "jira") -> dict:
         """Check authentication and silently renew when possible. No login window is opened.
-        Poll after interactive authentication; authenticated=true means the original tool can resume.
+        service selects jira/confluence independently. Returns authenticated, state, needLogin,
+        pending and message. Poll after interactive authentication; only authenticated=true confirms
+        the original tool can resume. An unavailable/pending result is not proof of logout or zero data.
         """
         return runtime.authentication.check(service)
 
@@ -153,6 +155,8 @@ def register_authentication(register, runtime):
         """Refresh LTM's authentication. interactive=true starts one shared LTM login flow only if
         silent recovery fails. Ask the user to complete that window, then poll get_auth_status and
         resume the original call with the SAME mutation ID and arguments. Never request cookies.
+        Returns authentication state, pending/loginStarted and nextAction when applicable;
+        a started login is not a completed login. Network failures do not automatically open a window.
         """
         return runtime.authentication.authenticate(service, interactive)
 

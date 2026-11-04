@@ -3,10 +3,13 @@
 
 def register_vit(register, runtime):
     def get_vit_overview() -> dict:
-        """List registered PMO_VIT roots, visible roots and nested roots hidden by a registered ancestor.
-        Membership is the exact Jira PMO_VIT label; grouping uses Component/module. Progress counts
-        done descendants / all descendants (WBS instead uses Story Points). get_vit_detail reads tree/news.
-        Create a new VIT ticket with create_task labels=["PMO_VIT"] and its module components.
+        """Read current PMO_VIT registration: returns registered, visibleRoots, skipped, partial and rules.
+        Membership uses the exact PMO_VIT Jira label; skipped lists roots hidden by a registered ancestor,
+        not deleted work. Grouping uses Component/module. VIT progress counts done descendants / all
+        descendants (WBS uses Story Points); neither is a date-range completion count.
+        rules.newsDays=21 describes the dashboard news window, not complete history coverage.
+        Use get_vit_detail for a root's tree and recent comments; avoid counting registered ancestors
+        and hidden descendants as separate portfolios. New roots use create_task labels=["PMO_VIT"].
         """
         client = runtime.client
         client.miss_begin()
@@ -29,6 +32,7 @@ def register_vit(register, runtime):
         Preserves other labels using a fresh read and shared field permissions/serializer/invalidation.
         A registered descendant is hidden while its ancestor is registered; see get_vit_overview.
         Done tickets follow the same field-edit restriction as the UI and require reopening first.
+        Returns the ticket key, tracked state and resulting labels; keep the same mutation ID on retry.
         """
         runtime.check_key(key)
         runtime.check_mutation_id(client_mutation_id)

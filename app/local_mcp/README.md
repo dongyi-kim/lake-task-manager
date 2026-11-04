@@ -26,8 +26,8 @@ JQL leaf/issue/user/Epic/Confluence 캐시, mutation invalidation을 사용한�
 |---|---|
 | 인증 상태·복구·로그인 시작 | `get_auth_status`, `authenticate` |
 | JQL·페이지 | `search_issues` |
-| 원본 댓글·변경이력 페이지, 전체 하위 계층 | `get_evidence_page`, `get_descendants` |
 | 티켓 본문·댓글·이력·자식·Epic | `get_ticket`, `get_comments`, `get_history`, `get_field_history`, `get_children`, `get_epic`, `get_ticket_context` |
+| 원본 댓글·변경이력 페이지, 전체 하위 계층 | `get_evidence_page`, `get_descendants` |
 | 통합검색·Confluence 검색/본문 | `search_workspace`, `search_confluence_documents`, `read_confluence_document` |
 | 사람·선택지·워크로드 | `search_users`, `get_user`, `list_options`, `get_workload` |
 | WBS·VIT·팀 워크로드·활동 | `get_dashboard`, `get_vit_detail`, `get_epic_progress`, `get_activity` |
@@ -54,6 +54,35 @@ JQL leaf/issue/user/Epic/Confluence 캐시, mutation invalidation을 사용한�
 수정용 본문이다. 생성 시 `body.descriptionHtml`, 이후 본문 수정은 `update_description(html, ...)`,
 댓글 작성·수정은 `add_comment`·`edit_comment(html, ...)`를 사용한다. 기존 UI와 동일한 Jira serializer를 거친다.
 `update_fields`의 `labels`와 `components`에는 문자열 배열을 전달하며 `[]`는 해당 필드를 모두 비운다.
+
+### 범용 조회로 기간·대상별 업무 분석
+
+기간별 보고서나 특정 업무의 집계 전용 도구는 제공하지 않는다. Codex 등 연결된 Agent가 범용 조회를
+조합해 일간·주간·월간, 개인·모듈·Epic·Task별 질문에 답하고 근거·중복·제외·미확인을 판단한다.
+
+- `search_issues`: 날짜·담당자·Component 등 JQL 조건으로 전체 후보를 조회한다. `updated`는 완료일이
+  아니며, 현재 완료 목록과 과거 완료 이벤트도 다른 개념이다. 기간·timezone·완료 기준을 먼저 정한다.
+- `get_descendants`: Epic→Task→SubTask 또는 Task→SubTask를 펼친다. 부모의 `updated`가 오래돼도
+  하위 티켓을 빠뜨리지 않는다. 원본 필드와 parent/depth/Epic 상속 관계를 반환하며 사업 진척률은 계산하지 않는다.
+- `get_evidence_page`: `comments` 또는 `history`의 원본 ID·작성자·시각·본문·변경값을 페이지로 읽는다.
+  모든 `nextStartAt`을 따라가고 ID로 중복을 제거한다. 부모와 각 자손의 기록을 읽어 티켓별 출처를 유지한다.
+- `get_ticket`: 제목만으로 확정하기 어려운 업무의 본문을 확인한다. 댓글의 후속 변경·취소도 함께 검토한다.
+
+기존 `get_comments`는 최대 20개를 보유하는 UI 캐시, `get_history`는 표시용 요약 타임라인이다.
+전체 댓글·이력 분석에는 `get_evidence_page`를 사용한다. Jira 8.20의 expanded changelog가
+잘려 있으면 `sourceComplete=false`를 반환한다. 이때 `hasMore=false`도 전체 이력 확인을 뜻하지 않는다.
+실시간 offset/계층 조회는 변경 중 불변 snapshot을 보장하지 않으므로 total·ID 변화를 확인한다.
+권한상 숨겨진 자손은 알 수 없으며 확인된 실패·누락은 별도로 반환한다. 미확인을 0건으로 집계하지 않는다.
+
+새 두 도구의 데이터 페이지는 최대 8KiB다. 댓글·이력 한 건이 너무 크면 `recordJson` 조각과
+`nextRecordOffset`을 반환한다. 같은 `sourceIndex`에서 `max_results=1`, `record_offset`으로 이어 읽고,
+같은 `recordSha256`인지 확인한 뒤 조각을 합쳐 JSON으로 해석한다. 원본 변경으로 hash가 달라지면
+해당 기록을 처음부터 다시 읽는다. 하위 계층의 누락 목록은 `nextMissingStartAt`을 별도로 따라간다.
+하위 목록은 일반 갱신 간격을 사용하며 완료 티켓 원본의 긴 TTL 때문에 갱신이 지연되지 않는다.
+Epic 탐색은 설정 프로젝트로 제한한 JQL을 사용하며 범위 밖 티켓을 가져오는 Agile fallback은 하지 않는다.
+
+모듈의 Component 기준, 인력 소속 기준, WBS 계획 매핑은 서로 다르다. WBS의 SP 비율과 VIT·하위
+티켓 개수 비율도 같은 지표가 아니다. 함수 설명은 이 범위와 한계, pagination, 응답 필드를 명시한다.
 
 ### 인증 처리
 
@@ -133,6 +162,8 @@ LLM 설정, 인증 쿠키, 비밀값 관리, 임의 REST 호출도 업무 도구
 
 - `runtime.py`: SDK 등록·응답·lifespan과 앱 연결
 - `authentication.py`: 공통 인증 확인·복구와 인증 도구
+- `evidence_tools.py`, `app/jira/evidence_service.py`: 크기를 제한한 원본 댓글·이력 페이지
+- `hierarchy_tools.py`, `app/jira/hierarchy_service.py`: 범용 하위 계층 탐색과 실패 목록
 - `security.py`, `settings.py`: loopback/bearer 경계와 명시적 설정 복사
 - `read_tools.py`, `workspace_tools.py`, `write_tools.py`, `vit_tools.py`, `admin_tools.py`: 타입이 있는 업무 도구 catalog
 - `stdio.py`: 표준 SDK stdio/HTTP 메시지 중계

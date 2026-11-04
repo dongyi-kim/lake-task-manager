@@ -22,9 +22,12 @@ def _spaces(runtime):
 def register_workspace(register, runtime):
     def search_workspace(query: str, sources: list[Literal["jira", "confluence"]] | None = None,
                          limit: int = 20) -> dict:
-        """Use LTM's unified keyword search across Jira and Confluence. Results are excerpts,
-        not full bodies: follow with get_ticket or read_confluence_document. Configured scopes apply.
-        Bitbucket is not exposed: LTM's current Bitbucket search is placeholder data, not live results.
+        """Discover related Jira tickets and Confluence documents with LTM's unified keyword search.
+        sources defaults to both services; limit=1..100 caps each source, with no pagination here.
+        Returns per-source items/excerpts or errors within configured projects/spaces. Use search_issues
+        or search_confluence_documents for exhaustive results, then get_ticket/get_comments or
+        read_confluence_document for evidence. A source error or capped result is not a zero/total count.
+        Bitbucket is not exposed. Partial source authentication failures include recovery guidance.
         """
         from app.domain.search import search_all
         if not 1 <= limit <= 100:
@@ -34,9 +37,12 @@ def register_workspace(register, runtime):
     def search_confluence_documents(query: str = "", start_at: int = 0, max_results: int = 20,
                                      content_type: Literal["page", "blogpost", ""] = "page",
                                      modified_after: str = "") -> dict:
-        """Search Confluence documents using shared authentication/cache. Follow nextStartAt for
-        complete coverage; returned IDs can be passed to read_confluence_document for full content.
-        Empty query lists recently changed documents within configured spaces. modified_after: YYYY-MM-DD.
+        """Search document metadata/excerpts in configured Confluence spaces, ordered by lastModified DESC.
+        Returns documents, canonicalCql, scopeSpaces, total, hasMore and nextStartAt. start_at is zero-based;
+        max_results=1..100. Follow nextStartAt until hasMore=false; a source total alone may be incomplete.
+        Empty query lists recent documents; content_type is page/blogpost/empty for either.
+        modified_after=YYYY-MM-DD is an inclusive modification bound, not a completion date.
+        Read each relevant document's full body with read_confluence_document before drawing conclusions.
         """
         if not 1 <= max_results <= 100 or start_at < 0:
             raise ValueError("max_results는 1~100, start_at은 0 이상이어야 합니다.")
@@ -79,10 +85,12 @@ def register_workspace(register, runtime):
 
     def read_confluence_document(page: str, offset: int = 0, max_chars: int = 12000,
                                   format: Literal["text", "storage"] = "text") -> dict:
-        """Read Confluence content by numeric page ID, or configured-host /pages/{id} / ?pageId= URL.
-        Legacy /display/SPACE/title links must first be resolved with search_confluence_documents.
-        text removes markup; storage returns source XHTML. Follow nextOffset to read all content.
-        Also returns title, space, URL, version and update time. Never fetches arbitrary URLs.
+        """Read document evidence by numeric page ID or configured-host /pages/{id} / ?pageId= URL.
+        Resolve legacy /display/SPACE/title URLs with search_confluence_documents first. Configured spaces apply.
+        Returns id/title/space/url/version and content, offset, totalCharacters, hasMore, nextOffset.
+        offset counts characters; max_chars=1..50000. Follow nextOffset until hasMore=false for the full body.
+        text strips markup; storage preserves source XHTML, useful for table structure. This is the current
+        document version, not a historical version. Arbitrary URLs are not fetched.
         """
         if offset < 0 or not 1 <= max_chars <= 50000:
             raise ValueError("offset은 0 이상, max_chars는 1~50000이어야 합니다.")
@@ -117,9 +125,11 @@ def register_workspace(register, runtime):
                 "totalCharacters": len(body), "hasMore": end < len(body), "nextOffset": end if end < len(body) else None}
 
     def read_attachment(key: str, attachment_id: str, offset: int = 0, max_bytes: int = 262144) -> dict:
-        """Read actual attachment bytes as base64, selected by verified ticket and attachment ID.
-        Follow nextOffset to read the full file (maximum file size 10MiB; maximum chunk 1MiB).
-        Supports images and documents without local filesystem access or guessing file content.
+        """Download bytes of an attachment verified to belong to key; obtain attachment_id from get_attachments.
+        Returns filename, mimeType, totalBytes, base64, offset, hasMore and nextOffset.
+        offset/max_bytes count decoded bytes; max_bytes=1..1048576, file size at most 10MiB.
+        Follow nextOffset and decode/concatenate chunks to save or inspect the complete file.
+        A missing/foreign ID is an error. No arbitrary local path or URL is accepted.
         """
         runtime.check_key(key)
         runtime.check_object_id(attachment_id)
@@ -146,14 +156,24 @@ def register_workspace(register, runtime):
                 "hasMore": end < len(data), "nextOffset": end if end < len(data) else None}
 
     def get_ticket_context(key: str) -> dict:
-        """Read parent/Epic ancestors, siblings, related tickets and linked documents using UI caches."""
+        """Read current ticket relationships; returns ancestors, siblings, related and documents.
+        Related combines explicit Jira links and mentions from the body/recent comments, capped at 20;
+        inspect rel/via rather than treating every mention as a formal dependency or duplicate.
+        This is discovery context, not an exhaustive dependency graph or historical membership snapshot.
+        Follow relevant keys/documents for their actual content and check partial/missing before aggregation.
+        """
         runtime.check_key(key)
         client = runtime.client
         return {"ancestors": client.ticket_ancestors(key), "siblings": client.ticket_siblings(key),
                 "related": client.ticket_related(key), "documents": client.ticket_documents(key)}
 
     def get_field_history(key: str, limit: int = 100) -> dict:
-        """Read changes to every field, including description/summary changes excluded from the UI timeline."""
+        """Read recent field changes including description/summary omitted by get_history's display timeline.
+        Returns history rows (date, author, field, from, to), limit and mayHaveMore. limit=1..1000;
+        the latest selected rows are returned in ascending date order. date is YYYY-MM-DD, without time/zone.
+        There is no offset pagination; mayHaveMore=true means the returned history may be incomplete.
+        Use get_evidence_page(kind=history) for original timestamps, authors, pagination and coverage.
+        """
         runtime.check_key(key)
         if not 1 <= limit <= 1000:
             raise ValueError("limit은 1~1000이어야 합니다.")
@@ -161,14 +181,22 @@ def register_workspace(register, runtime):
         return {"history": rows, "limit": limit, "mayHaveMore": len(rows) >= limit}
 
     def get_epic_progress(key: str) -> dict:
-        """Read the same Epic progress and story-point aggregation used by the WBS dashboard."""
+        """Read an Epic's current WBS Story Point progress, not its completion count in a date range.
+        Returns name, doneSp, totalSp, mockSp, progressPct (0..100), countedIssues and excludedIssues.
+        Done follows statusCategory; Bug/Ops/운영 and 사용자 VoC are excluded. Missing SP defaults to 1
+        for eligible issues, explicit zero stays zero, and mock SP remains in the denominator.
+        This differs from PMO_VIT's descendant-count progress. Check partial/missing before claiming a total.
+        """
         runtime.check_key(key)
         return runtime.client.epic_progress_one(key)
 
     def get_dashboard(kind: Literal["wbs", "vit", "workload"], module: str = "") -> dict:
-        """Read LTM WBS, VIT or workload dashboard using the same builders and access checks.
-        WBS requires manager permission. A workload module requires module access; empty module
-        uses the current user's visible people. No snapshot/config is written by this read.
+        """Read the current WBS, VIT or workload dashboard, using the same UI builders and permissions.
+        kind=wbs returns the configured weighted Epic/SP rollup and requires manager permission;
+        module does not filter WBS. For vit/workload, module selects a module; workload requires its access.
+        Empty workload module uses the caller's visible people. VIT uses descendant counts, not Story Points.
+        Return shape follows the selected dashboard; partial/missing denotes incomplete data.
+        These default current dashboards are not daily/weekly/monthly historical snapshots or completion ledgers.
         """
         from app.domain import rollup, vit, workload
         from app.infra.settings import load_people, load_plan
@@ -191,14 +219,23 @@ def register_workspace(register, runtime):
         return result
 
     def get_vit_detail(key: str) -> dict:
-        """Read the VIT dashboard's issue detail, descendants and progress using its shared builder."""
+        """Read one visible PMO_VIT root's detail; returns key, descendant tree and recent root comments.
+        Tree statuses are current. This does not return all descendant comments or a full history.
+        Use get_vit_overview to establish registration/visibility, get_comments for discussion,
+        and get_history/get_field_history for changes. Empty detail alone does not prove no work exists.
+        """
         from app.domain import vit
         from app.infra.settings import load_people, load_plan
         runtime.check_key(key)
         return vit.vit_detail(runtime.client, load_plan(), load_people(), key)
 
     def get_activity(user_id: str) -> dict:
-        """Read recent Jira/Confluence activity under the same manager permission as the UI API."""
+        """Read a manager-only recent activity preview for a verified user_id.
+        Returns user, jira, confluence, partial and sourceErrors. Jira feed is capped at 20 events;
+        Confluence is capped at 25 modified documents from the last 14 days. No pagination/date bounds.
+        This is activity discovery, not a complete worklog, assigned-work list or calendar-period report.
+        Follow ticket/document sources and report sourceErrors rather than interpreting missing rows as zero.
+        """
         runtime.require_manager()
         return runtime.client.activity(user_id)
 
