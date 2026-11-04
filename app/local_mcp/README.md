@@ -241,6 +241,21 @@ MCP는 UI와 별도 작업 용량을 사용한다. 업무 도구는 동시 8개,
 
 ## 코드와 검증
 
+Dev Tools(`#/devtools`)의 **계층 변경 원클릭 테스트**는 현재 연결된 Jira에 테스트용 Task 3개를
+생성한 뒤 Task → SubTask → 다른 부모로 이동 → Task 복원을 실제 MCP 도구로 실행한다.
+실행 환경·프로젝트와 타입을 확인한 뒤 버튼을 누른다. 테스트 티켓은 결과 확인을 위해 남으며
+자동 삭제하지 않는다. 운영 Jira에서도 현재 로그인 계정의 생성·편집·이동 권한이 그대로 적용된다.
+
+- `GET /api/dev/hierarchy-test/options`: 현재 환경·프로젝트와 실제 타입 이름
+- `POST /api/dev/hierarchy-test`: `{ "runId": "고유 UUID", "expectedScope": "options의 scope", "taskType": "Task", "subtaskType": "Sub-task" }`
+- `GET /api/dev/hierarchy-test/{runId}`: 단계별 진행·오류와 생성된 Jira 티켓 링크
+
+POST는 실행을 시작하고 상태를 반환한다. 화면을 닫아도 서버에서 진행하며, 같은 runId와 입력으로
+재개하면 저장된 단계·mutation receipt를 사용한다. 필수 입력·권한·완료 상태·결과 불명확 문제가
+생기면 후속 단계를 중단한다. 타입·상태 ID나 제거될 필드를 임의로 선택하지 않는다.
+일반 mock에는 Jira의 네이티브 변환 화면이 없으므로 해당 단계의 미지원 결과를 그대로 표시한다.
+자동 회귀 테스트의 폼 fixture 통과와 운영 Jira 검증은 별개다.
+
 - `runtime.py`: SDK 등록·응답·lifespan과 앱 연결
 - `authentication.py`: 공통 인증 확인·복구와 인증 도구
 - `evidence_tools.py`, `app/jira/evidence_service.py`: 크기를 제한한 원본 댓글·이력 페이지
