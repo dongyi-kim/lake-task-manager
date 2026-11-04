@@ -28,7 +28,7 @@ export async function hydrateTaskGroups({ model, loadGroup, isCurrent, canStart,
         const nextSequence = Number(result?.sequence);
         if (result?.contract !== "task-snapshot.v1" || result.type !== "snapshot"
             || result.syncId !== syncId || !Number.isInteger(nextSequence) || nextSequence < 1
-            || !Array.isArray(result.model?.groups)
+            || result.model?.syncId !== syncId || !Array.isArray(result.model?.groups)
             || !result.model.groups.some((g) => g.key === job.key)) {
           throw new Error("SubTask 동기화 응답을 확인할 수 없습니다.");
         }
