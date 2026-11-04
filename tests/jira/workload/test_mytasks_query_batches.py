@@ -9,12 +9,26 @@ from app.domain import mytasks
 from app.auth.base import SessionExpired
 from app.infra import settings
 from app.infra.cache import Cache
+from app.jira import jql as jql_compiler
 from app.jira.jira_client import JiraClient
 
 
 @pytest.fixture
-def client():
-    return JiraClient(settings.get_settings(), Cache(":memory:"))
+def client(monkeypatch):
+    client = JiraClient(settings.get_settings(), Cache(":memory:"))
+    # jira820 evaluates relative dates against store.today but advertises a UTC user.
+    # After midnight in Seoul, real UTC may still be yesterday. Compare batching with
+    # the independent legacy oracle at one fixed date, not two different calendar cutoffs.
+    reference = datetime.combine(client.s_today(), datetime.min.time(), timezone.utc).replace(hour=12)
+
+    class QueryClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return reference.astimezone(tz) if tz else reference.replace(tzinfo=None)
+
+    monkeypatch.setattr(mytasks, "datetime", QueryClock)
+    monkeypatch.setattr(jql_compiler, "datetime", QueryClock)
+    return client
 
 
 def _plan(client, **kwargs):
