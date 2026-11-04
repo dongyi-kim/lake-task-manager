@@ -81,6 +81,7 @@ def register_hierarchy_writes(register, runtime):
         Done tickets require a separately requested reopen; a Task with children cannot become a SubTask.
         Conversion requires Jira edit permission; reparenting requires Move Issues and a valid editable parent.
         Jira-specific custom widgets may require the Jira UI. An unknown required value must not be invented.
+        Read get_content_guide(skill=ltm-task-authoring,path=references/ticket-actions.md) for the full flow.
         """
         check(key, body)
         result = commands.options(key, body.model_dump())
