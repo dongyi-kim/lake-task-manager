@@ -29,6 +29,7 @@ from app.auth.inprocess import InProcessProvider
 from app.infra.cache import Cache
 from app.infra.settings import get_settings, is_manager, load_people, load_plan
 from app.jira.jira_client import JiraClient
+from app.local_mcp.llm_tools import LLM_TOOLS
 from app.local_mcp.runtime import LocalMcpRuntime
 from app.local_mcp.security import LocalGuard
 from app.mock.world import World, get_world
@@ -47,8 +48,9 @@ def _hash(value: Any) -> str:
 
 class _ReadOnlyRuntime(LocalMcpRuntime):
     def register(self, fn, *, read_only, output_type=None):
-        # Not merely a prompt convention: absent handlers reject explicit writes too.
-        if read_only and fn.__name__ != "get_workspace_config":
+        # Live connection settings and model-listing requests are outside this private mock,
+        # even when read-only. Absent handlers reject both catalog and direct-call access.
+        if read_only and fn.__name__ not in LLM_TOOLS | {"get_workspace_config"}:
             super().register(fn, read_only=True, output_type=output_type)
 
 
