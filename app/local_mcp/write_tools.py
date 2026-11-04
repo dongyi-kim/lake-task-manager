@@ -2,27 +2,38 @@
 
 import base64
 import binascii
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field
 
 from app.services.ticket_models import BulkBody, ChildBody, EpicBody, FieldsBody, TransitionBody
 
+HTML_DESCRIPTION = (
+    "Editor HTML, not Markdown, Jira wiki or TipTap JSON. Read get_content_guide for supported "
+    "elements and mention/link markup. Use verified user IDs and canonical URLs; upload images "
+    "before embedding the returned attachment path."
+)
+
 
 class CreateInput(ChildBody):
     clientMutationId: str = Field(min_length=8, max_length=128)
+    descriptionHtml: str | None = Field(default=None, description=HTML_DESCRIPTION)
 
 
 class EpicInput(EpicBody):
     clientMutationId: str = Field(min_length=8, max_length=128)
+    descriptionHtml: str | None = Field(default=None, description=HTML_DESCRIPTION)
 
 
 class FieldsInput(FieldsBody):
     clientMutationId: str = Field(min_length=8, max_length=128)
+    descriptionHtml: str | None = Field(default=None, description=(
+        HTML_DESCRIPTION + " Replaces the entire body; null leaves unchanged and empty clears it."))
 
 
 class TransitionInput(TransitionBody):
     clientMutationId: str = Field(min_length=8, max_length=128)
+    commentHtml: str = Field(default="", description=HTML_DESCRIPTION + " Empty adds no comment.")
 
 
 def register_writes(register, runtime):
@@ -38,6 +49,8 @@ def register_writes(register, runtime):
         """Create a Task-tier ticket (discover type via list_options), optionally under an Epic.
         Reporter is always Jira's current user. Reuse clientMutationId only for retrying this exact request.
         epic_key selects an existing Epic; empty creates independent work. body.descriptionHtml is HTML.
+        Read get_content_guide(skill=ltm-task-authoring) for rich content, people and links.
+        New-ticket images require create -> add_attachment -> update_description using the new key.
         Returns the created key and possible cascade suggestion; a suggestion is not an executed transition.
         """
         if epic_key:
@@ -47,6 +60,7 @@ def register_writes(register, runtime):
     def create_subtask(parent_key: str, body: CreateInput) -> dict:
         """Create a SubTask under an existing Task-tier parent_key, not directly under an Epic.
         Discover type via list_options(kind=child_types,key=parent_key); pass HTML in body.descriptionHtml.
+        Use get_content_guide(skill=ltm-task-authoring) for mentions, links and rich-element examples.
         Returns created key/cascade suggestion. Keep body.clientMutationId and content identical on retry.
         """
         runtime.check_key(parent_key)
@@ -56,6 +70,7 @@ def register_writes(register, runtime):
         """Create an Epic with validated Epic Name and Jira's current user as Reporter.
         body.taskKeys optionally links existing Task-tier tickets after creation. Returns key and link result;
         creation and subsequent linking are distinct outcomes. Keep body.clientMutationId on retry.
+        body.descriptionHtml is editor HTML; get_content_guide(skill=ltm-task-authoring) explains authoring.
         """
         for key in body.taskKeys or []:
             runtime.check_key(key)
@@ -66,6 +81,7 @@ def register_writes(register, runtime):
         Reporter requires actual Jira MODIFY_REPORTER permission. Null means unchanged; empty clears.
         labels and components accept string arrays; [] clears all labels/components respectively.
         Those arrays replace the whole field, not append: read current data before preserving other values.
+        descriptionHtml replaces the full editor HTML; read descriptionEditHtml and the Task authoring guide.
         """
         runtime.check_key(key)
         return commands.update_fields(key, body)
@@ -75,6 +91,8 @@ def register_writes(register, runtime):
         Each item needs summary/type. task needs epic (key or explicit null); subtask needs an
         existing parent Task key. Optional: priority, duedate, assignee, components, labels,
         description (Markdown). Returns normalized items, indexed errors and warnings; performs no writes.
+        Read get_content_guide(skill=ltm-bulk-task-create): description is not editor HTML,
+        and plain @name is not a verified mention. Advanced HTML/images need follow-up per-ticket writes.
         """
         check_bulk_scope(mode, items)
         return commands.bulk_validate(mode, items)
@@ -87,35 +105,42 @@ def register_writes(register, runtime):
         Retry the SAME complete ordered items and SAME mutation ID: confirmed items replay,
         failed items resume, unknown outcomes reconcile without blind duplicate POSTs.
         Never retry only failed rows under the same batch ID or replace an unknown batch ID.
+        description is Markdown; the bulk authoring guide covers supported elements and follow-up edits.
         """
         runtime.check_mutation_id(client_mutation_id)
         check_bulk_scope(mode, items)
         return commands.bulk_create(BulkBody(mode=mode, items=items, clientMutationId=client_mutation_id))
 
-    def update_description(key: str, html: str, client_mutation_id: str) -> dict:
+    def update_description(key: str, html: Annotated[str, Field(description=HTML_DESCRIPTION)],
+                           client_mutation_id: str) -> dict:
         """Replace a ticket's description/body HTML using the same editor serializer as the UI.
         get_ticket returns descriptionEditHtml for editing. Create bodies use body.descriptionHtml;
         comment bodies use add_comment/edit_comment. Done tickets must be reopened before body editing.
         This replaces the complete body; preserve unrelated existing content and reuse the mutation ID on retry.
+        Rich markup examples: get_content_guide(skill=ltm-task-authoring).
         """
         runtime.check_key(key)
         runtime.check_mutation_id(client_mutation_id)
         return commands.update_fields(key, FieldsInput(descriptionHtml=html, clientMutationId=client_mutation_id))
 
-    def add_comment(key: str, html: str, client_mutation_id: str) -> dict:
+    def add_comment(key: str, html: Annotated[str, Field(description=HTML_DESCRIPTION)],
+                    client_mutation_id: str) -> dict:
         """Publish a new HTML comment on key through the UI's Jira serializer, including Done tickets.
         This does not change status or description. Keep client_mutation_id/content identical on retry;
         verify the published discussion with get_comments rather than treating a timeout as failure proof.
+        Read get_content_guide(skill=ltm-comment-authoring) for mentions, links, tables and uploaded images.
         """
         runtime.check_key(key)
         runtime.check_mutation_id(client_mutation_id)
         return commands.comment(key, html, mutation_id=client_mutation_id)
 
-    def edit_comment(key: str, comment_id: str, html: str, client_mutation_id: str) -> dict:
+    def edit_comment(key: str, comment_id: str, html: Annotated[str, Field(description=HTML_DESCRIPTION)],
+                     client_mutation_id: str) -> dict:
         """Replace one existing comment's full HTML, subject to Jira permissions.
         Obtain comment_id from get_comments/get_evidence_page, then load get_comment_source.html.
         Preserve unrelated content from this editor source, not the rendered preview; no new comment is created.
         Reuse the same client_mutation_id and content if authentication recovery requires retrying.
+        Read get_content_guide(skill=ltm-comment-authoring) before changing rich elements or images.
         """
         runtime.check_key(key)
         runtime.check_object_id(comment_id)
@@ -135,6 +160,7 @@ def register_writes(register, runtime):
         """Run an actual Jira transition ID and its required fields. Consult list_options first.
         Unknown outcomes must be retried with the same clientMutationId, never a replacement ID.
         Returns ok and a possible cascade suggestion. It does not automatically transition related tickets.
+        body.commentHtml is HTML, with the same element rules as the comment authoring guide.
         """
         runtime.check_key(key)
         return commands.transition(key, body)
@@ -184,6 +210,7 @@ def register_writes(register, runtime):
         Supply filename, base64_data and optional content_type. Returns attachment id/filename/path;
         its path can be embedded in editor HTML. Upload alone does not publish a comment or alter the body.
         Verify metadata with get_attachments and bytes with read_attachment after upload.
+        Use the returned path as img src for an inline image; see the matching authoring guide.
         """
         runtime.check_key(key)
         runtime.check_mutation_id(client_mutation_id)

@@ -47,6 +47,16 @@ def test_stdio_proxy_uses_the_running_http_instance_and_shared_cache(build_env):
                 async with ClientSession(reads, writes, read_timeout_seconds=10) as session:
                     await session.initialize()
                     assert "get_ticket" in {tool.name for tool in (await session.list_tools()).tools}
+                    before_guides = len(env.calls)
+                    guides = await session.call_tool("get_content_guide", {})
+                    assert not guides.is_error, guides
+                    entry = guides.structured_content["data"]["skills"][0]
+                    guide = await session.call_tool("get_content_guide", {
+                        "skill": entry["frontmatter"]["name"]})
+                    assert not guide.is_error, guide
+                    assert guide.structured_content["data"]["uri"] == entry["uri"]
+                    assert entry["frontmatter"]["name"] in guide.structured_content["data"]["text"]
+                    assert len(env.calls) == before_guides
                     result = await session.call_tool("create_task", {"body": {
                         "type": "Task", "summary": "stdio shared instance", "clientMutationId": "stdio:create:0001"}})
                     assert not result.is_error, result

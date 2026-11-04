@@ -28,6 +28,8 @@ def register_workspace(register, runtime):
         or search_confluence_documents for exhaustive results, then get_ticket/get_comments or
         read_confluence_document for evidence. A source error or capped result is not a zero/total count.
         Bitbucket is not exposed. Partial source authentication failures include recovery guidance.
+        Use returned canonical URLs for Jira/Confluence rich links; never invent a host from a title.
+        Authoring examples are in get_content_guide's references/people-and-links.md.
         """
         from app.domain.search import search_all
         if not 1 <= limit <= 100:
