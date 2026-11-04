@@ -18,6 +18,14 @@ def test_code_test_workflow_runs_full_offline_suite_on_pr_and_main():
     assert "requirements-test.txt" in text
     assert "actions/checkout@v5" in text
     assert "actions/setup-python@v6" in text
+    command = "python -m pytest -q --basetemp=.cache/test-tmp/ci --durations=30 -ra --junitxml=.cache/test-results/pytest.xml"
+    assert command in text
+    assert command in (ROOT / "docs" / "TESTING.md").read_text(encoding="utf-8")
+    assert "if: always()" in text
+    assert "actions/upload-artifact@v7" in text
+    assert "name: code-tests-results" in text
+    assert "path: .cache/test-results/pytest.xml" in text
+    assert "include-hidden-files: true" in text
 
 
 def test_code_test_workflow_never_runs_real_api_batteries_or_secrets():

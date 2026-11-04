@@ -651,8 +651,15 @@ def test_simple_chat_connection_can_be_split_from_complex_chat(monkeypatch):
     assert simple_chat.headers == {"X-Role": "simple"}
 
 
-def test_qwen_complex_structured_contract_never_changes_semantic_endpoint(monkeypatch):
-    """Wire-format capability cannot silently move semantic work to the projection model."""
+@pytest.mark.parametrize("profile,contract,model,endpoint,key,max_tokens", [
+    pytest.param("reasoning", "structured", "ltm-qwen3.6-35b-a3b",
+                 "http://complex:18080/v1", "complex-key", 4096, id="semantic-endpoint"),
+    pytest.param("fast_structured", "typed_projection", "Qwen3.5-4B-4bit",
+                 "http://simple:18083/v1", "simple-key", 3072, id="projection-endpoint"),
+])
+def test_qwen_complex_contract_selects_the_intended_endpoint(
+        monkeypatch, profile, contract, model, endpoint, key, max_tokens):
+    """Semantic work stays on complex; only typed projection uses the simple endpoint."""
     import app.agent.config as C
 
     monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai_compat")
@@ -671,42 +678,13 @@ def test_qwen_complex_structured_contract_never_changes_semantic_endpoint(monkey
             return object()
 
     monkeypatch.setattr(C, "_provider_adapter", lambda _provider: Adapter())
-    C.get_llm(tier="complex", profile="reasoning", output_contract="structured")
+    C.get_llm(tier="complex", profile=profile, output_contract=contract)
 
     definition = captured["definition"]
-    assert definition.model == "ltm-qwen3.6-35b-a3b"
-    assert definition.base_url == "http://complex:18080/v1"
-    assert definition.api_key == "complex-key"
-    assert captured["parameters"]["max_tokens"] == 4096
-
-
-def test_qwen_complex_typed_projection_delegates_to_split_simple_endpoint(monkeypatch):
-    import app.agent.config as C
-
-    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai_compat")
-    monkeypatch.setenv("LAKE_AGENT_SKIP_VERIFY", "1")
-    monkeypatch.setenv("LAKE_AGENT_COMPAT_BASE", "http://complex:18080/v1")
-    monkeypatch.setenv("LAKE_AGENT_COMPAT_KEY", "complex-key")
-    monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT", "ltm-qwen3.6-35b-a3b")
-    monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT_SIMPLE", "Qwen3.5-4B-4bit")
-    monkeypatch.setenv("LAKE_AGENT_SIMPLE_BASE", "http://simple:18083/v1")
-    monkeypatch.setenv("LAKE_AGENT_SIMPLE_KEY", "simple-key")
-    captured = {}
-
-    class Adapter:
-        def chat(self, definition, parameters):
-            captured.update(definition=definition, parameters=parameters)
-            return object()
-
-    monkeypatch.setattr(C, "_provider_adapter", lambda _provider: Adapter())
-    C.get_llm(tier="complex", profile="fast_structured",
-              output_contract="typed_projection")
-
-    definition = captured["definition"]
-    assert definition.model == "Qwen3.5-4B-4bit"
-    assert definition.base_url == "http://simple:18083/v1"
-    assert definition.api_key == "simple-key"
-    assert captured["parameters"]["max_tokens"] == 3072
+    assert definition.model == model
+    assert definition.base_url == endpoint
+    assert definition.api_key == key
+    assert captured["parameters"]["max_tokens"] == max_tokens
 
 
 def test_local_qwen_4b_is_projection_only_and_lightweight_falls_back_to_complex(monkeypatch):
