@@ -8,6 +8,7 @@ from app.auth.base import SessionExpired, UpstreamUnavailable
 from app.domain import progress
 from app.domain.mytasks import pri_rank
 from app.domain.progress import VOC_COMPONENT, norm_cat
+from app.jira.jql_execution import GROUP_SIZE
 
 
 class _UncacheableWorkload(RuntimeError):
@@ -54,6 +55,24 @@ class JiraWorkloadMixin:
         result = progress.epic_progress(self.epic_issues(key))
         result["name"] = self.epic_name(key)
         return result
+
+    def _prime_epic_memberships(self, keys):
+        """Group cold WBS reads while retaining the shared per-Epic membership cache.
+
+        Person-filtered Task rows cannot prove complete Epic membership. Ask Jira for the
+        unrestricted Epic union and let the query layer publish its proven individual leaves.
+        Downstream direct_child_keys still owns the Agile fallback for an empty Epic.
+        """
+        cold = [key for key in dict.fromkeys(self._resolve(key) for key in keys)
+                if self.cache.get_alive(f"epic_issues:{self.env}:{key}", record=False) is None
+                and self.cache.get_alive(self._direct_child_cache_key(key), record=False) is None]
+        for start in range(0, len(cold), GROUP_SIZE):
+            batch = cold[start:start + GROUP_SIZE]
+            if len(batch) > 1:
+                # A failed group escapes once; do not turn an authentication/transport failure
+                # into one speculative retry per Epic. Existing UI retry owns recovery.
+                self._search(" OR ".join(f'"Epic Link" = {key}' for key in batch),
+                             max_results=None, light=True)
 
     def workload(self, plan, people):
         return self._fetch_workload(plan, people)
@@ -210,16 +229,24 @@ class JiraWorkloadMixin:
         cache_key = (f"workload:{self.env}:{user_id}:done:{done_days}:"
                      f"assigned:{assigned_window}")
         def produce():
+            bucket_queries = {
+                **{bucket: query.format(u=user_id) for bucket, query in self.WL_BUCKETS.items()},
+                "done7d": f'assignee = "{user_id}" AND ' + self.wl_done_jql(done_days),
+            }
+            # One execution plan can combine cold status buckets without discarding their
+            # reusable memberships. Different Done-date guards remain separate safe groups.
+            self._search(" OR ".join(f"({query})" for query in bucket_queries.values()),
+                         max_results=None)
             bundle = {
                 "id": user_id,
                 "open": self._wl_counts(
-                    self.WL_BUCKETS["open"].format(u=user_id), assigned_window
+                    bucket_queries["open"], assigned_window
                 ),
                 "inProgress": self._wl_counts(
-                    self.WL_BUCKETS["inProgress"].format(u=user_id), assigned_window
+                    bucket_queries["inProgress"], assigned_window
                 ),
                 "done7d": self._wl_counts(
-                    f'assignee = "{user_id}" AND ' + self.wl_done_jql(done_days)
+                    bucket_queries["done7d"]
                 ),
                 "assignedWindow": assigned_window,
                 "doneDays": done_days,
