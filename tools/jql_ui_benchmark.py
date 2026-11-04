@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -56,6 +58,44 @@ def prepare(repo, run):
     return config, bootstrap
 
 
+def server_executable(repo):
+    if os.name != "nt":
+        return sys.executable
+    # run.py's Python launcher exits after spawning the named image; own that image directly.
+    spec = importlib.util.spec_from_file_location("benchmark_process_identity", repo / "app/infra/process_identity.py")
+    identity = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(identity)
+    executable = identity.named_launcher_path(sys.executable, "mock")
+    identity._sync_launcher(Path(getattr(sys, "_base_executable", sys.executable)), executable, "mock")
+    return str(executable)
+
+
+def stop_owned_server(process):
+    if process is None or process.poll() is not None:
+        return
+    # Never target a port, image name, or an externally attached instance.
+    if os.name == "nt":
+        result = subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if result.returncode and process.poll() is None:
+            raise RuntimeError(f"Could not stop owned benchmark process {process.pid}: {result.stderr!r}")
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        if os.name != "nt":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        process.wait(timeout=10)
+
+
 def launch(repo, run, latency):
     try:
         health = request("/api/health")
@@ -69,17 +109,28 @@ def launch(repo, run, latency):
                LAKE_MOCK_LATENCY_MS=str(latency), LAKE_NO_WINDOW="1", PYTHONUTF8="1",
                PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=os.pathsep.join([str(bootstrap), str(Path(__file__).parent), str(repo)]))
     log = (run / "server.log").open("w", encoding="utf-8")
-    process = subprocess.Popen([sys.executable, str(repo / "run.py"), "--reload"], cwd=repo,
-        env=env, stdout=log, stderr=subprocess.STDOUT,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    for _ in range(240):
+    process = None
+    try:
+        process = subprocess.Popen([server_executable(repo), str(repo / "run.py"), "--reload"], cwd=repo,
+            env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=os.name != "nt",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise RuntimeError(f"Server exited during startup: {run / 'server.log'}")
+            try:
+                health = request("/api/health")
+                metrics = request("/__jql_benchmark")
+                return process, log, health, metrics
+            except (OSError, ValueError):
+                time.sleep(.25)
+        raise RuntimeError(f"Server did not start: {run / 'server.log'}")
+    except BaseException:
         try:
-            health = request("/api/health")
-            metrics = request("/__jql_benchmark")
-            return process, log, health, metrics
-        except (OSError, ValueError):
-            time.sleep(.25)
-    raise RuntimeError(f"Server did not start: {run / 'server.log'}")
+            stop_owned_server(process)
+        finally:
+            log.close()
+        raise
 
 
 STATE_JS = """() => {
@@ -266,46 +317,54 @@ def main():
     args.repo, args.run = args.repo.resolve(), args.run.resolve()
     args.run.mkdir(parents=True,exist_ok=False)
     process, log = None, None
-    if args.attach:
-        health, metrics = request('/api/health'), request('/__jql_benchmark')
-    else:
-        process, log, health, metrics = launch(args.repo,args.run,args.latency)
-    from playwright.sync_api import sync_playwright
-    rows, errors = [], []
-    result = {"baseline":"2fdb8feb8d18f3d8852ae3d1bcda54f058a332e8","repo":str(args.repo),
-        "sourceCommit":subprocess.check_output(['git','-c',f'safe.directory={args.repo.as_posix()}','-C',str(args.repo),'rev-parse','HEAD'],text=True).strip(),
-        "sourceDiffSha256":hashlib.sha256(subprocess.check_output(['git','-c',f'safe.directory={args.repo.as_posix()}','-C',str(args.repo),'diff','HEAD'])).hexdigest(),
-        "harnessSha256":{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in Path(__file__).parent.glob('jql_ui*.py')},
-        "clockControl":"server Cache/JiraClient.time.time and compile_jql now fixed; browser CacheMemo injected now fixed; real Date.now, scheduling and perf_counter",
-        "health":health,"fixture":{k:metrics[k] for k in ("worldHash","issueCount","etlPeople","logicalClock")},
-        "latencyMs":args.latency,"browser":"Chromium via Playwright; Browser plugin not available",
-        "requestedSamples":{"cold":args.cold,"warm":args.warm,"journeys":args.journeys,"reverse":args.reverse},
-        "viewport":{"width":1600,"height":1000},"rows":rows,"consoleErrors":errors}
     try:
-        with sync_playwright() as pw:
-            # Reuse the installed browser, even when Python Playwright was upgraded separately.
-            installed = list((Path(os.environ["LOCALAPPDATA"]) / "ms-playwright").glob("chromium-*/chrome-win64/chrome.exe"))
-            executable = max(installed, key=lambda path: int(path.parents[1].name.rsplit('-',1)[1]))
-            browser = pw.chromium.launch(headless=True, executable_path=str(executable))
-            page = entry_samples(browser,args.repo,rows,errors,args.cold,args.warm) if (args.cold or args.warm) else new_page(browser,args.repo,errors)
-            journey(page,rows,args.journeys)
-            if args.reverse:
-                page=reverse_flow(browser,args.repo,rows,errors)
-            result["title"], result["url"] = page.title(),page.url
-            result["bodyText"] = page.locator('body').inner_text()[:1500]
-            assert result['url'].startswith(BASE) and result['title'] and result['bodyText'].strip()
-            assert not errors,errors
-            browser.close()
-    except BaseException as exc:
-        result["error"] = repr(exc)
-        raise
+        if args.attach:
+            health, metrics = request('/api/health'), request('/__jql_benchmark')
+        else:
+            process, log, health, metrics = launch(args.repo,args.run,args.latency)
+        from playwright.sync_api import sync_playwright
+        rows, errors = [], []
+        result = {"baseline":"2fdb8feb8d18f3d8852ae3d1bcda54f058a332e8","repo":str(args.repo),
+            "sourceCommit":subprocess.check_output(['git','-c',f'safe.directory={args.repo.as_posix()}','-C',str(args.repo),'rev-parse','HEAD'],text=True).strip(),
+            "sourceDiffSha256":hashlib.sha256(subprocess.check_output(['git','-c',f'safe.directory={args.repo.as_posix()}','-C',str(args.repo),'diff','HEAD'])).hexdigest(),
+            "harnessSha256":{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in Path(__file__).parent.glob('jql_ui*.py')},
+            "clockControl":"server Cache/JiraClient.time.time and compile_jql now fixed; browser CacheMemo injected now fixed; real Date.now, scheduling and perf_counter",
+            "health":health,"fixture":{k:metrics[k] for k in ("worldHash","issueCount","etlPeople","logicalClock")},
+            "latencyMs":args.latency,"browser":"Chromium via Playwright; Browser plugin not available",
+            "requestedSamples":{"cold":args.cold,"warm":args.warm,"journeys":args.journeys,"reverse":args.reverse},
+            "viewport":{"width":1600,"height":1000},"rows":rows,"consoleErrors":errors}
+        try:
+            with sync_playwright() as pw:
+                # Reuse the installed browser, even when Python Playwright was upgraded separately.
+                installed = list((Path(os.environ["LOCALAPPDATA"]) / "ms-playwright").glob("chromium-*/chrome-win64/chrome.exe"))
+                executable = max(installed, key=lambda path: int(path.parents[1].name.rsplit('-',1)[1]))
+                browser = pw.chromium.launch(headless=True, executable_path=str(executable))
+                page = entry_samples(browser,args.repo,rows,errors,args.cold,args.warm) if (args.cold or args.warm) else new_page(browser,args.repo,errors)
+                journey(page,rows,args.journeys)
+                if args.reverse:
+                    page=reverse_flow(browser,args.repo,rows,errors)
+                result["title"], result["url"] = page.title(),page.url
+                result["bodyText"] = page.locator('body').inner_text()[:1500]
+                assert result['url'].startswith(BASE) and result['title'] and result['bodyText'].strip()
+                assert not errors,errors
+                browser.close()
+        except BaseException as exc:
+            result["error"] = repr(exc)
+            raise
+        finally:
+            try:
+                result["finalMetrics"] = request('/__jql_benchmark')
+            except Exception as exc:
+                result["finalMetricsError"] = repr(exc)
+            (args.run/'result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
     finally:
-        result["finalMetrics"] = request('/__jql_benchmark')
-        (args.run/'result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
-        if not args.keep_server:
-            request('/api/app/quit',method='POST')
-        if log:
-            log.close()
+        try:
+            if not args.keep_server:
+                stop_owned_server(process)
+        finally:
+            if log:
+                log.close()
+
 
 
 if __name__ == '__main__':

@@ -135,19 +135,22 @@ def install():
             entry = {"method": "GET", "path": path, "params": copy.deepcopy(params), "priority": priority,
                      "start": start, "done": False}
             requests.append(entry)
+        details = {}
         try:
             result = original_get(self, path, params, priority)
             if path == "/rest/api/2/search":
                 payload = result.json()
-                entry["rows"] = len(payload.get("issues", []))
-                entry["total"] = payload.get("total")
-            entry["status"] = result.status_code
+                details["rows"] = len(payload.get("issues", []))
+                details["total"] = payload.get("total")
+            details["status"] = result.status_code
             return result
         except BaseException as exc:
-            entry["error"] = type(exc).__name__
+            details["error"] = type(exc).__name__
             raise
         finally:
-            entry.update(done=True, end=time.perf_counter(), elapsedMs=(time.perf_counter()-start)*1000)
+            end = time.perf_counter()
+            with lock:
+                entry.update(details, done=True, end=end, elapsedMs=(end-start)*1000)
 
     def counted_write(self, method, path, json_body, params, want_json=True):
         start=time.perf_counter()
@@ -155,13 +158,16 @@ def install():
                "fieldNames":sorted((json_body or {}).get('fields',{})),"start":start,"done":False}
         with lock:
             requests.append(entry)
+        details = {}
         try:
             return original_write(self,method,path,json_body,params,want_json=want_json)
         except BaseException as exc:
-            entry['error']=type(exc).__name__
+            details['error']=type(exc).__name__
             raise
         finally:
-            entry.update(done=True,end=time.perf_counter(),elapsedMs=(time.perf_counter()-start)*1000)
+            end = time.perf_counter()
+            with lock:
+                entry.update(details,done=True,end=end,elapsedMs=(end-start)*1000)
 
     def cache_get(self, key):
         result = original_cache_get(self, key)
