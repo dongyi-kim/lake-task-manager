@@ -68,6 +68,15 @@ def test_completion_requirements_are_discoverable_and_retry_does_not_repeat_writ
             denied = await mcp.call_tool("update_fields", {"key": key, "body": {
                 "summary": "Rename while done", "clientMutationId": "transition:denied-rename:001"}})
             assert denied.is_error
+            error = denied.structured_content["error"]
+            assert (error["code"], error["reason"], error["status"]) == ("conflict", "ticket_completed", 409)
+            assert error["nextAction"] == {"tool": "list_options", "arguments": {
+                "kind": "transitions", "key": key}}
+            Draft202012Validator(catalog["update_fields"].output_schema).validate(denied.structured_content)
+            assert not any(method == "put" for method, _target, _body in env.calls)
+            await call("add_comment", {"key": key, "html": "<p>완료 후 추가 확인</p>",
+                                      "client_mutation_id": "transition:done-comment:001"})
+            assert (await call("get_ticket", {"key": key, "fresh": True}))["statusCategory"] == "done"
             available = (await call("list_options", {"kind": "transitions", "key": key}))["options"]
             reopen = next(option for option in available if option["to"].lower() == "reopened")
             await call("transition_ticket", {"key": key, "body": {

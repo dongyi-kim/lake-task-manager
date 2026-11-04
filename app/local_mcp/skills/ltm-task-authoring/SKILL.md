@@ -12,6 +12,7 @@ description: LTM MCP로 Task·Epic·SubTask 한 건을 생성하거나 기존 �
 - 리치 본문을 만들 때 [작성 형식](references/content-format.md)을 읽는다.
 - 사람·Jira·Confluence·외부 링크를 넣을 때 [사람과 링크](references/people-and-links.md)를 읽는다.
 - 게시 전과 오류 복구 시 [쓰기·검증 절차](references/write-workflow.md)를 따른다.
+- 완료 상태·권한·타입/부모 변경을 다룰 때 [티켓 작업 가이드](references/ticket-actions.md)를 읽는다.
 - [예제 데이터](references/examples.json)는 치환용 샘플이다. 실제 조회 결과나 실행할 요청이 아니다.
 
 ## 생성

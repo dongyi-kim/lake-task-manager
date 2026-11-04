@@ -6,6 +6,8 @@
 
 이 MCP는 UI와 같은 Jira 인증·캐시·쓰기 경로를 공유한다. 별도 Jira 비밀번호·쿠키를 요구하거나 직접 REST 호출로 권한 검사를 우회하지 않는다. 사용자 ID, ticket key, comment ID, 허용 type·transition ID·컴포넌트는 실제 조회 결과를 사용한다.
 
+완료 상태·작업별 권한·Task/SubTask 계층 변경의 지원 범위는 [티켓 작업 가이드](ticket-actions.md)를 확인한다. `ticket_completed`·`field_not_editable`의 `nextAction`은 조회 안내이며 추가 쓰기 권한이 아니다.
+
 상태 전이는 `list_options(kind="transitions", key=...)`의 현재 전이 ID와 화면 필드를 확인한다.
 `commentRequired=true`이면 `body.commentHtml`을 반드시 작성한다. 완료 전이는 Jira 화면 metadata에
 댓글이 없어도 LTM에서 완료 기록을 요구한다. 담당자는 확인된 사용자 ID, resolution은 허용 선택지의
