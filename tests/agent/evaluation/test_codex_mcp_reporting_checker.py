@@ -62,6 +62,24 @@ def test_ingestion_rejects_table_without_a_contributing_ticket_even_with_correct
     assert "included_table_evidence_not_observed" in failures
 
 
+@pytest.mark.parametrize("date", ["2026-11-04", "2026-11-25"])
+def test_korean_particles_after_verified_table_and_ticket_identifiers_are_prose(date):
+    case, output, calls, truth = _ingestion(date)
+    output["reply"] = "와 ".join(truth["semanticTables"]) + "의 적재를 확인했습니다. "
+    output["reply"] += " ".join(key + "를 검토했습니다." for key in output["structuredAnswer"]["resultKeys"]
+                               if key != "DL-92004")
+    if date == "2026-11-04":
+        output["reply"] += " DL-92004는 취소했으므로 제외했습니다."
+    output["reply"] += " 기존 변경은 제외했습니다."
+    assert battery.check(case, output, calls, truth)["pass"]
+
+
+def test_cancellation_citation_cannot_substitute_a_different_ticket_number():
+    case, output, calls, truth = _ingestion("2026-11-04")
+    output["reply"] = output["reply"].replace("DL-92004", "DL-920040")
+    assert "semantic_source_missing" in battery.check(case, output, calls, truth)["failures"]
+
+
 @pytest.mark.parametrize("mode", ["failed", "missing_text", "foreign_ticket", "argument_only", "prefix_only"])
 def test_ingestion_requires_successful_response_text_at_the_eligible_source(mode):
     case, output, calls, truth = _ingestion("2026-11-25")

@@ -157,7 +157,8 @@ def _ticket_evidence(calls):
 
 
 def _has_identifier(text, identifier):
-    return re.search(r"(?<!\w)" + re.escape(identifier) + r"(?!\w)", text) is not None
+    # Fixture keys and SQL identifiers use ASCII; Korean particles are prose, not suffixes.
+    return re.search(r"(?<![A-Za-z0-9_])" + re.escape(identifier) + r"(?![A-Za-z0-9_])", text) is not None
 
 
 def check(case, output, calls, ground_truth=None):
