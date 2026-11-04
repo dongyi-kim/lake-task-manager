@@ -71,6 +71,9 @@ class IdentityFixture(EvaluationFixture):
         try:
             from app.infra import settings
             from tools.codex_mcp_eval import fixture
+            # module_dir may already be warm. Imported function aliases still read this global;
+            # replace its cache for the fixture and restore the exact host object on exit.
+            self._patches.enter_context(patch.object(settings, "_PEOPLE_CACHE", {"data": None, "dir": None}))
             # Patch both imported aliases and dynamic product imports before World/runtime setup.
             for module in (settings, fixture):
                 self._patches.enter_context(patch.object(module, "load_plan", lambda: copy.deepcopy(IDENTITY_PLAN)))
