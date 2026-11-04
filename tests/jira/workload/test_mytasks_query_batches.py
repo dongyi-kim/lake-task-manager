@@ -49,14 +49,15 @@ def _atom_keys(model):
     {}, {"open_filter": "2w", "prog_filter": "1m", "done_filter": "1m"},
     {"include_done": True},
 ])
-def test_fifteen_people_keep_all_logical_memberships_in_four_bounded_queries(
+def test_fifteen_people_start_with_one_person_then_keep_bounded_queries(
         client, monkeypatch, filters):
     members = [f"etl.person{n:02d}" for n in range(15)]
     monkeypatch.setattr(settings, "load_people", lambda: {"TEST": members})
     grouped = _plan(client, **filters)
-    assert len(grouped) == 4  # Three people batches and the module component.
+    assert len(grouped) == 5  # First person, three later batches, and the module component.
     grouped_leaves = [client._compile_jql(jql).leaves for _key, jql, _limit in grouped]
-    assert max(map(len, grouped_leaves)) <= 30
+    assert list(map(len, grouped_leaves)) == (
+        [2, 10, 10, 8, 1] if filters.get("include_done") else [6, 30, 30, 24, 3])
 
     monkeypatch.setattr(mytasks, "MYTASK_PEOPLE_BATCH_SIZE", 1)
     single = _plan(client, **filters)
@@ -77,9 +78,12 @@ def test_explicit_per_person_limit_keeps_its_existing_union_semantics(client, mo
 def test_module_person_literals_keep_unicode_and_escape_jql_quotes(client, monkeypatch):
     monkeypatch.setattr(settings, "load_people", lambda: {
         "TEST": ["강수아 회사", 'quoted"person', "back\\slash"]})
-    _key, query, _limit = _plan(client)[0]
-    assert "강수아 회사" in query and "\\uac15" not in query
-    leaves = client._compile_jql(query).leaves
+    calls = _plan(client)
+    assert len(calls) == 3
+    queries = [query for _key, query, _limit in calls[:2]]
+    assert any("강수아 회사" in query for query in queries)
+    assert all("\\uac15" not in query for query in queries)
+    leaves = [leaf for query in queries for leaf in client._compile_jql(query).leaves]
     assert len(leaves) == 18
     assert any('quoted\\"person' in leaf for leaf in leaves)
     assert any("back\\\\slash" in leaf for leaf in leaves)
@@ -135,7 +139,7 @@ def test_slow_people_batches_keep_the_initial_relative_date_cutoffs(client, monk
 
 
 def test_grouped_module_stream_matches_individual_queries_and_stats(client, monkeypatch):
-    people = ["test.ui01", "test.ui02"]
+    people = ["skcc.i2011", "test.ui01", "test.ui02"]
     monkeypatch.setattr(settings, "load_people", lambda: {
         "TEST": people})
     searches = _record_searches(client, monkeypatch)
@@ -143,7 +147,7 @@ def test_grouped_module_stream_matches_individual_queries_and_stats(client, monk
     actual = grouped[-1]["model"]
     assert actual["counts"]["total"] > 0
     complete = [leaf for event in grouped for leaf in event["completedLeaves"]]
-    assert grouped[-1]["progress"]["completed"] == len(complete) == 15
+    assert grouped[-1]["progress"]["completed"] == len(complete) == 21
     assert {leaf["axis"] for leaf in complete} == {"todo", "inprogress", "done"}
     assert searches  # The cold run really reached Jira.
 
@@ -196,18 +200,18 @@ def test_group_failure_finishes_each_logical_axis_and_does_not_cache_partial_lis
     events = list(mytasks.iter_my_task_models(client, scope="module:TEST"))
     done = events[-1]
     assert done["done"] and done["partial"]
-    assert done["progress"] == {"completed": 39, "total": 39, "succeeded": 9, "failed": 30}
+    assert done["progress"] == {"completed": 39, "total": 39, "succeeded": 33, "failed": 6}
     assert done["model"]["groups"]  # Later successful people/component rows still render.
     assert client.cache.get(first_key + ":light") is None
     failed = [leaf for event in events for leaf in event["completedLeaves"]
               if leaf["status"] == "error"]
     assert {leaf["axis"] for leaf in failed} == {"todo", "inprogress", "done"}
-    assert len({leaf["leafIndex"] for leaf in failed}) == 30
+    assert len({leaf["leafIndex"] for leaf in failed}) == 6
 
 
 def test_switching_filter_stops_before_the_next_people_batch(client, monkeypatch):
-    # These five users have actual security-training fixtures DL-9101..DL-9105. The sixth user
-    # sorts into the next batch; cancelling must retain nonempty results from the first batch.
+    # The first sorted user has the actual security-training fixture DL-9103. Cancelling before
+    # the remaining five-person batch must retain this nonempty first person's memberships.
     people = ["skcc.x1042", "skcc.x1103", "skcc.i2011", "skcc.x1210", "skcc.i2044", "test.ui01"]
     target_person = "skcc.i2011"
     monkeypatch.setattr(settings, "load_people", lambda: {
@@ -228,7 +232,7 @@ def test_switching_filter_stops_before_the_next_people_batch(client, monkeypatch
     assert next(stream)["replace"] is False
     completed = next(stream)
     stream.close()
-    assert completed["completedLeaves"]
+    assert len(completed["completedLeaves"]) == 6
     assert _atom_keys(completed["model"])
     assert "DL-9103" in _atom_keys(completed["model"])
     assert started == [client._compile_jql(calls[0][1]).canonical]

@@ -718,8 +718,11 @@ def build_my_tasks(client, user=None, include_done=False, limit=None, scope="ass
         members = sorted(mod_ids)
         # Explicit legacy limits apply per person; batching must not silently change their union.
         batch_size = MYTASK_PEOPLE_BATCH_SIZE if limit is None else 1
-        for start in range(0, len(members), batch_size):
-            batch = members[start:start + batch_size]
+        # Show one person's complete status union before paying the larger batch's hydration cost.
+        # Later batches still populate the same reusable person/role/status memberships.
+        batches = ([members[:1]] if members else []) + [
+            members[start:start + batch_size] for start in range(1, len(members), batch_size)]
+        for batch in batches:
             base = " OR ".join('(assignee = %s OR reporter = %s)' %
                                (json.dumps(person, ensure_ascii=False),
                                 json.dumps(person, ensure_ascii=False)) for person in batch)
