@@ -85,10 +85,21 @@ class LocalMcpRuntime:
         register_writes(self.register, self)
         register_authentication(self.register, self)
         register_guides(self.register, self)
+        self._finalize_input_contracts()
         self.http_app = self.server.streamable_http_app(
             streamable_http_path="/mcp", stateless_http=True, json_response=True,
             max_request_body_size=16 * 1024 * 1024,
         )
+
+    def _finalize_input_contracts(self):
+        # SDK outer models otherwise discard misplaced arguments before our tool can see them.
+        # Preserve existing model settings (including secret validation protection), then publish
+        # the same stricter schema that the SDK actually validates at invocation time.
+        for tool in self.server._tool_manager.list_tools():
+            model = tool.fn_metadata.arg_model
+            model.model_config.update(extra="forbid", hide_input_in_errors=True)
+            model.model_rebuild(force=True)
+            tool.parameters = model.model_json_schema(by_alias=True)
 
     @property
     def client(self):

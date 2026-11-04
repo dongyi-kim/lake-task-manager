@@ -17,7 +17,7 @@ description: LTM MCP로 Task·Epic·SubTask 한 건을 생성하거나 기존 �
 ## 생성
 
 1. 사용자 요청에서 제목, 업무 범위, 티켓 계층과 알려진 필드를 정리한다. 주어진 문서·티켓을 근거로 삼을 때는 해당 내용을 읽는다.
-2. 독립 Task는 `list_options(kind="task_types")`, 기존 Epic/Task의 자식은 `list_options(kind="child_types", key=...)`로 실제 허용 type을 확인한다. 우선순위·컴포넌트도 지정할 때 실제 선택지를 사용한다.
+2. 독립 Task는 `list_options(kind="task_types")`, 기존 Epic/Task의 자식은 `list_options(kind="child_types", key=...)`로 실제 허용 type을 확인한다. 이어 `list_options(kind="create_fields", issue_type=실제이름)`의 **모든 필드 페이지**를 `nextStartAt`으로 읽어 필수값과 `inputFields` 경로를 확인한다. `field_id`를 추가하면 해당 필드의 정확한 기본값·허용 선택지를 별도로 페이지 조회한다. `managed=true`인 project/issuetype/reporter는 LTM/Jira가 처리한다. 각 페이지의 `unsupportedRequired`를 모아, 지원 입력이나 Jira 기본값이 없는 필수 custom field가 있으면 해당 생성은 Jira에서 처리해야 함을 알린다.
 3. `create_task(body, epic_key)`는 Task-tier를 만든다. 기존 Epic 연결은 `epic_key`, 독립 티켓은 빈 문자열이다. SubTask는 기존 Task-tier의 `parent_key`로 `create_subtask`를 호출한다. Epic은 `create_epic`을 사용한다.
 4. `body.summary`, `body.type`과 필요한 선택 필드만 채운다. Epic 생성은 `type` 대신 `summary`와 선택적인 `epicName`을 받는다. 본문은 `body.descriptionHtml`에 HTML로 넣는다. 생성 요청에 `reporter`를 넣지 않는다.
 5. `body.assignee`는 확인한 Jira 사용자 ID, `components`·`labels`는 문자열 배열, `duedate`는 `YYYY-MM-DD`다. 각 쓰기에는 새 `clientMutationId`를 정하고 정확한 요청을 보존한다.
