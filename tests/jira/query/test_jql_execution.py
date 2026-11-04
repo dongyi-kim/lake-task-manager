@@ -1,0 +1,118 @@
+"""Physical request batching preserves exact logical membership and cache isolation."""
+
+from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
+import threading
+
+import pytest
+
+from app.infra.cache import Cache
+from app.infra.settings import get_settings
+from app.jira.jira_client import JiraClient, MutationEvent
+from app.jira.jql_execution import group_query, plan_groups
+
+
+def client():
+    return JiraClient(get_settings(), Cache(":memory:"))
+
+
+def spy(c, monkeypatch):
+    requests, fetch = [], c._fetch_exhaustive_jql
+    def call(query, fields, light, result_limit):
+        requests.append(query)
+        return fetch(query, fields, light, result_limit)
+    monkeypatch.setattr(c, "_fetch_exhaustive_jql", call)
+    return requests
+
+
+def test_opaque_or_is_cached_once_and_does_not_speculatively_execute_leaves(monkeypatch):
+    c = client()
+    calls = spy(c, monkeypatch)
+    query = "key = DL-9012 OR key = DL-9013"
+    rows = c.search_issues(query)
+    assert {row["key"] for row in rows} == {"DL-9012", "DL-9013"}
+    assert len(calls) == 1 and " OR " in calls[0]
+    assert c.search_issues("key = DL-9013 OR key = DL-9012") == rows
+    assert len(calls) == 1 and not getattr(c, "_bg_inflight", None)
+    for leaf in c._compile_jql(query).leaves:
+        assert c.cache.get(c._jql_leaf_key(leaf)[2]) is None
+
+
+def test_opaque_or_reuses_already_warm_memberships(monkeypatch):
+    c = client()
+    calls = spy(c, monkeypatch)
+    for key in ("DL-9012", "DL-9013"):
+        c.search_issues(f"key = {key}")
+    assert len(calls) == 2
+    assert len(c.search_issues("key = DL-9012 OR key = DL-9013")) == 2
+    assert len(calls) == 2
+
+
+
+
+
+
+
+
+
+
+
+
+@pytest.mark.parametrize("fault", ["failure", "duplicate", "total-change"])
+def test_incomplete_physical_batch_never_primes_membership_or_issue_cache(monkeypatch, fault):
+    c = client()
+    query = "assignee = a OR assignee = b"
+    calls = []
+    def page(_query, start_at=0, **_kwargs):
+        calls.append(start_at)
+        if start_at and fault == "failure":
+            raise RuntimeError("injected later-page failure")
+        key = "DL-1" if not start_at or fault == "duplicate" else "DL-2"
+        row = {"key": key, "fields": {"assignee": {"name": "a" if not start_at else "b"}}}
+        return {"issues": [row], "total": 3 if start_at and fault == "total-change" else 2,
+                "hasMore": not start_at, "nextStartAt": 1 if not start_at else None}
+    monkeypatch.setattr(c, "_legacy_search_issues_page", page)
+    with pytest.raises((ValueError, RuntimeError)):
+        c.search_issues(query)
+    assert calls == [0, 1]
+    for leaf in c._compile_jql(query).leaves:
+        assert c.cache.get(c._jql_leaf_key(leaf)[2]) is None
+    assert c.cache.get("issueL:mock:DL-1") is None
+
+
+def test_cached_group_derivation_keeps_original_collection_age(monkeypatch):
+    c = client()
+    query = "assignee = test.ui01 OR reporter = test.ui01"
+    c.search_issues(query)
+    compiled = c._compile_jql(query)
+    group = plan_groups(compiled, c.s.epic_link_field_id)[0]
+    group_key = c._jql_leaf_key(group_query(group))[2]
+    source = c.cache.metadata(group_key)["fetchedAt"] - 100
+    c.cache.set_if_fence(group_key, c.cache.get(group_key), c.s.cache_ttl_seconds,
+                         c.cache.fence(), fetched_at=source)
+    c.cache.invalidate_keys([c._jql_leaf_key(leaf)[2] for leaf in compiled.leaves])
+    c.cache.bump_epoch(c._jql_epoch_namespace())
+    calls = spy(c, monkeypatch)
+    c.search_issues(query)
+    assert calls == []
+    for leaf in compiled.leaves:
+        assert c.cache.metadata(c._jql_leaf_key(leaf)[2])["fetchedAt"] == source
+
+
+def test_partition_projection_never_promotes_narrow_rows_to_full_issue_cache():
+    c = client()
+    page = c.search_issues_page("assignee = test.ui01 OR reporter = test.ui01", fields="summary")
+    assert page["issues"]
+    for row in page["issues"]:
+        assert {"assignee", "reporter"} <= row["fields"].keys()
+        assert c.cache.get(f"issueL:{c.env}:{row['key']}") is None
+
+
+def test_batch_budget_does_not_reduce_old_leaf_union_capacity(monkeypatch):
+    c = client()
+    query = " OR ".join(f'assignee = user{i} AND statusCategory = "{category}"'
+                        for i in range(5) for category in ("To Do", "In Progress", "Done"))
+    limits = []
+    monkeypatch.setattr(c, "_fetch_exhaustive_jql", lambda _q, _f, _l, limit: limits.append(limit) or [])
+    c.search_issues(query)
+    assert limits == [15 * c.JQL_LEAF_RESULT_LIMIT]
