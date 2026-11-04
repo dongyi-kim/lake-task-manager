@@ -1371,10 +1371,13 @@ def _ensure_deps() -> None:
     붙들고 있으면 그게 더 나쁘다. `run.bat setup` 이나 새 버전이 그 표식을 지운다.
     """
     import importlib.util
-    required = ["langgraph", "langchain_core", "faiss"]
+    # Older launchers only probe a few top-level packages; a missing transitive
+    # dependency can otherwise survive every update despite requirements.txt.
+    required = ["langgraph", "langchain_core", "faiss", "dotenv"]
     if sys.platform.startswith("win"):
         required.append("win32api")
-    if all(importlib.util.find_spec(m) for m in required):
+    missing = [m for m in required if importlib.util.find_spec(m) is None]
+    if not missing:
         return                                  # 이미 있다 — 평소 기동에 비용 0
     try:
         from app.infra.settings import APP_ROOT, CACHE_DIR
@@ -1387,23 +1390,41 @@ def _ensure_deps() -> None:
         sig = f"{req.stat().st_mtime_ns}:{sys.version_info[:2]}"
         if stamp.is_file() and stamp.read_text(encoding="utf-8").strip() == sig:
             return                              # 이 목록으로는 이미 해 봤다
-        print("  - AI 기능에 필요한 패키지를 설치합니다 (처음 한 번, 몇 분 걸립니다) ...",
+        print("  - 앱 실행에 필요한 누락 패키지를 설치합니다 (처음 한 번, 몇 분 걸립니다) ...",
               flush=True)
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.write_text(sig, encoding="utf-8")   # **먼저** 남긴다 — 중간에 죽어도 무한 재시도 방지
         import subprocess
-        r = subprocess.run([sys.executable, "-m", "pip", "install",
-                            "--disable-pip-version-check", "-r", str(req)],
-                           timeout=1800)
+        from importlib import metadata
+        pip = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
+        r = None
+        if "dotenv" in missing:
+            try:
+                metadata.distribution("python-dotenv")
+            except metadata.PackageNotFoundError:
+                pass
+            else:
+                # pip considers surviving dist-info "already satisfied" even if
+                # module files disappeared. Repair only this package at our pin.
+                dotenv_pin = next(line.split("#", 1)[0].strip()
+                                  for line in req.read_text(encoding="utf-8").splitlines()
+                                  if line.strip().startswith("python-dotenv=="))
+                r = subprocess.run([*pip, "--force-reinstall", "--no-deps", dotenv_pin],
+                                   timeout=1800)
+        if r is None or r.returncode == 0:
+            r = subprocess.run([*pip, "-r", str(req)], timeout=1800)
         if r.returncode == 0:
+            importlib.invalidate_caches()
+            for module in required:
+                importlib.import_module(module)  # pip success alone does not prove repair
             stamp.unlink(missing_ok=True)         # 성공 — 표식을 지워 다음 변경 때 다시 본다
-            print("  - 설치 완료. AI 탭을 쓸 수 있습니다.", flush=True)
+            print("  - 누락 패키지 설치 완료.", flush=True)
         else:
             print(f"  - 설치를 마치지 못했습니다(코드 {r.returncode}). "
-                  f"AI 탭만 비활성이고 나머지 기능은 그대로 씁니다.\n"
+                  f"일부 기능이 동작하지 않을 수 있습니다.\n"
                   f"    직접 설치: \"{sys.executable}\" -m pip install -r \"{req}\"", flush=True)
     except Exception as e:                        # noqa: BLE001 — 설치 실패가 앱을 막으면 안 된다
-        print(f"  - 패키지 설치를 건너뜁니다({str(e)[:120]}).", flush=True)
+        print(f"  - 누락 패키지 복구를 마치지 못했습니다({str(e)[:120]}).", flush=True)
 
 
 def main():

@@ -12,6 +12,7 @@ ROOT = REPO_ROOT
 RUNTIME_PINS = {
     "fastapi": "0.141.1",
     "uvicorn": "0.52.3",
+    "python-dotenv": "1.2.2",
     "requests": "2.34.2",
     "pyyaml": "6.0.3",
     "python-multipart": "0.0.32",

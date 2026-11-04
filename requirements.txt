@@ -3,6 +3,8 @@
 # upgraded deterministically instead of remaining on any older version that satisfies a floor.
 fastapi==0.141.1
 uvicorn[standard]==0.52.3
+# Keep dotenv explicit: partial/older venvs can miss this Uvicorn/settings dependency.
+python-dotenv==1.2.2
 requests==2.34.2
 PyYAML==6.0.3
 # 댓글 이미지 첨부(멀티파트 form) — FastAPI UploadFile/File 이 요구. 없으면 앱이 시작조차 안 됨.
