@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 
 from app.agent import secrets as _secrets
@@ -42,6 +43,7 @@ DEFAULT_API_VERSION = "2024-10-21"
 DEFAULT_OPENAI_CHAT = "gpt-4o-mini"
 DEFAULT_OPENAI_EMBED = "text-embedding-3-small"
 _LANGFUSE_CACHE: dict[str, object] = {"signature": None, "client": None}
+CONNECTION_LOCK = threading.RLock()  # Local settings/verification commits only; never network calls.
 
 
 # ── 설치 게이팅 ────────────────────────────────────────────────────
@@ -120,6 +122,9 @@ def _auth_signature(config_id: str = "") -> str:
              embedding_provider(config_id), _secret("embeddingBaseUrl", config_id) or "",
              _secret("embeddingApiKey", config_id) or "",
              _secret("embeddingHeaders", config_id) or ""]
+    embedding_version = str((_profile(config_id) or {}).get("embeddingApiVersion") or "")
+    if embedding_version:
+        parts.append(embedding_version)
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:32]
 
 
@@ -178,6 +183,7 @@ def settings_signature(config_id: str = "") -> str:
             compat_base(config_id) if p == "openai_compat" else "")
     parts = [config_id or _active_config_id(), p, base, key or "",
              api_version(config_id) if p == "aoai" else "",
+             _auth_signature(config_id),
              chat_model("complex", config_id), chat_model("simple", config_id), embed_model(config_id),
              _secret("simpleBaseUrl", config_id) or "",
              embedding_provider(config_id), _secret("embeddingBaseUrl", config_id) or "",
@@ -211,23 +217,37 @@ def _env_supplied() -> bool:
     return any(k in ov for k in need)
 
 
-def mark_verified(config_id: str = "") -> str:
+def _record_verification(config_id, auth_sig, model_sig=None):
+    from app.infra import prefs
+    with CONNECTION_LOCK:
+        if (_auth_signature(config_id) != auth_sig or
+                model_sig is not None and settings_signature(config_id) != model_sig):
+            return ""  # A late probe must neither validate changed inputs nor replace newer evidence.
+        patch = {}
+        for name, value, legacy in (("agentAuthOkByConfig", auth_sig, _AUTH_KEY),
+                                    ("agentModelOkByConfig", model_sig, _MODEL_KEY)):
+            if value is None:
+                continue
+            if config_id:
+                rows = dict(prefs.load().get(name) or {})
+                rows[config_id] = value
+                patch[name] = rows
+            else:
+                patch[legacy] = value
+        prefs.save(patch)
+        return model_sig or auth_sig
+
+
+def mark_verified(config_id: str = "", *, expected_auth=None, expected_models=None) -> str:
     """② 모델 확인 통과를 기록한다. probe() 가 **완전히** 성공했을 때만 불린다.
 
     인증 지문도 함께 찍는다 — 모델 호출이 됐다면 인증은 당연히 통과한 것이다.
     ★ 여기서 **활성화하지는 않는다.** 그건 사용자가 [이 설정 사용]으로 결정한다.
     """
     cid = config_id or _active_config_id()
-    if cid:
-        from app.infra import prefs
-        auth = dict(prefs.load().get("agentAuthOkByConfig") or {})
-        models = dict(prefs.load().get("agentModelOkByConfig") or {})
-        auth[cid] = _auth_signature(cid)
-        models[cid] = settings_signature(cid)
-        prefs.save({"agentAuthOkByConfig": auth, "agentModelOkByConfig": models})
-        return models[cid]
-    _mark(_AUTH_KEY, _auth_signature())
-    return _mark(_MODEL_KEY, settings_signature())
+    with CONNECTION_LOCK:
+        return _record_verification(cid, expected_auth or _auth_signature(cid),
+                                    expected_models or settings_signature(cid))
 
 
 def verified() -> bool:
@@ -809,6 +829,9 @@ def probe_auth(timeout: float = 20.0, config_id: str = "") -> dict:
       · AOAI          : `GET {endpoint}/openai/deployments` (api-key 로 열린다)
     이 호출이 되면 "주소·키는 옳다"가 증명된다. 모델이 되는지는 **그다음 질문**이다.
     """
+    with CONNECTION_LOCK:
+        config_id = config_id or _active_config_id()
+        expected_auth = _auth_signature(config_id)
     out = {"provider": provider(config_id), "configId": config_id, "ok": False}
     ok, why = available()
     if not ok:
@@ -821,13 +844,8 @@ def probe_auth(timeout: float = 20.0, config_id: str = "") -> dict:
     out["ok"] = True
     out["models"] = {"chat": len(r.get("chat") or []), "embed": len(r.get("embed") or []),
                      "total": r.get("total")}
-    if config_id:
-        from app.infra import prefs
-        auth = dict(prefs.load().get("agentAuthOkByConfig") or {})
-        auth[config_id] = _auth_signature(config_id)
-        prefs.save({"agentAuthOkByConfig": auth})
-    else:
-        _mark(_AUTH_KEY, _auth_signature())
+    if not _record_verification(config_id, expected_auth):
+        out.update(ok=False, configChanged=True, error="확인 중 연결 설정이 변경됐습니다. 현재 설정을 다시 확인하세요.")
     return out
 
 
@@ -837,6 +855,9 @@ def probe(timeout: float = 30.0, config_id: str = "") -> dict:
     실패를 삼키지 않는다 — 어디서 막혔는지(설정 누락 / 네트워크 / 인증)가 화면에 보여야
     사용자가 고칠 수 있다. 사내 AOAI 는 개발 PC 에서 403 이 정상이므로 그 문구를 그대로 보인다.
     """
+    with CONNECTION_LOCK:
+        config_id = config_id or _active_config_id()
+        expected_auth, expected_models = _auth_signature(config_id), settings_signature(config_id)
     out = {"provider": provider(config_id), "configId": config_id,
            "chat": None, "simple": None, "embeddings": None, "ok": False}
     ok, why = available()
@@ -904,7 +925,9 @@ def probe(timeout: float = 30.0, config_id: str = "") -> dict:
     # ★ **둘 다 통과했을 때만** 이 조합을 확인된 것으로 남긴다(사용자 지시: 이중 확인).
     #   채팅만 되고 임베딩이 막힌 상태를 '됐다'로 치면, 색인이 필요한 순간에 다시 터진다.
     if out["ok"]:
-        out["verifiedSig"] = mark_verified(config_id)
+        out["verifiedSig"] = mark_verified(config_id, expected_auth=expected_auth, expected_models=expected_models)
+        if not out["verifiedSig"]:
+            out.update(ok=False, configChanged=True, error="확인 중 연결 설정이 변경됐습니다. 현재 설정을 다시 확인하세요.")
     return out
 
 
