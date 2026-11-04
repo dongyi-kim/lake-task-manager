@@ -17,7 +17,9 @@ def _age_issue(cache, key, seconds):
         cache._conn.commit()
 
 
-def _old_done_parent(env):
+def _old_done_parent(env, monkeypatch):
+    # Keep background jobs from rewriting the cache snapshot arranged below.
+    monkeypatch.setattr(env.client, "_reprime", lambda *_args, **_kwargs: None)
     root = env.client.create_child(None, "Task", "Done parent")['key']
     done = next(row for row in env.client.transitions(root) if row["toCategory"] == "done")
     env.client.do_transition(root, done["id"], assignee="u01", resolution="Done",
@@ -54,9 +56,24 @@ def test_cold_task_batches_one_hundred_children_and_warm_read_has_no_requests(bu
     assert len(env.calls) == before
 
 
-def test_done_parent_refreshes_membership_after_ten_minutes_not_twenty_four_hours(build_env):
+@pytest.mark.parametrize("late_full_refresh", [False, True], ids=["aged", "concurrent-full-refresh"])
+def test_done_parent_refreshes_membership_after_ten_minutes_not_twenty_four_hours(
+        build_env, monkeypatch, late_full_refresh):
     env = build_env()
-    root, child = _old_done_parent(env)
+    root, child = _old_done_parent(env, monkeypatch)
+    if late_full_refresh:
+        fresh_parent = env.provider.get_json(f"/rest/api/2/issue/{root}")
+        assert [row["key"] for row in fresh_parent["fields"]["subtasks"]] == [child]
+        original = env.client.get_issue_light
+
+        def read(key, *, strict=False):
+            raw = original(key, strict=strict)
+            if key == root and strict and not raw["fields"]["subtasks"]:
+                # A background full read publishes after this request selected the old light row.
+                env.cache.set(f"issue:{env.client.env}:{root}", fresh_parent, 600)
+            return raw
+
+        monkeypatch.setattr(env.client, "get_issue_light", read)
     env.calls.clear()
     result = get_descendants(env.client, root, projects=["DL"])
     assert result["complete"] and {row["key"] for row in result["issues"]} == {root, child}
@@ -82,7 +99,7 @@ def test_membership_keeps_original_parent_source_age(build_env):
 @pytest.mark.parametrize("error", [UpstreamUnavailable("offline"), SessionExpired("expired")])
 def test_done_membership_refresh_never_caches_failed_empty_and_preserves_auth(build_env, monkeypatch, error):
     env = build_env()
-    root, _ = _old_done_parent(env)
+    root, _ = _old_done_parent(env, monkeypatch)
     original = env.provider.get_json
     def get(path, *args, **kwargs):
         if path == f"/rest/api/2/issue/{root}":
@@ -101,7 +118,7 @@ def test_done_membership_refresh_never_caches_failed_empty_and_preserves_auth(bu
 
 def test_write_during_parent_refresh_fences_both_issue_and_membership(build_env, monkeypatch):
     env = build_env()
-    root, _ = _old_done_parent(env)
+    root, _ = _old_done_parent(env, monkeypatch)
     original = env.provider.get_json
     def get(path, *args, **kwargs):
         response = original(path, *args, **kwargs)

@@ -176,10 +176,13 @@ def _descendant_children(client, key, raw, projects):
 
     def build():
         source = current[0]
-        metadata = [client.cache.metadata(f"{kind}:{client.env}:{key}")
-                    for kind in ("issue", "issueL")]
-        fresh = [row for row in metadata if row and row["state"] == "fresh"]
-        fetched = max((row["fetchedAt"] for row in fresh), default=0)
+        # Read each cached payload with its own timestamp. A concurrent full or light refresh
+        # must not make the previously selected parent appear newer than it is.
+        fetched = 0
+        for kind in ("issue", "issueL"):
+            snapshot = client.cache.get_stale_at(f"{kind}:{client.env}:{key}")
+            if snapshot and snapshot[0] == source:
+                fetched = max(fetched, snapshot[1])
         # Done issue data may be fresh for 24h; its child membership still expires after 10m.
         # Fetch inside the shared membership producer so an intervening write fences both
         # issue write-through and membership publication, and failures never cache an empty list.
