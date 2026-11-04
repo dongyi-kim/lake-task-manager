@@ -1,7 +1,9 @@
 """Read catalog uses the running JiraClient and its existing projections/snapshots."""
 
 import json
-from typing import Literal
+from typing import Annotated, Literal
+
+from pydantic import Field
 
 from app.jira.jql import _split_order, tokenize
 
@@ -97,22 +99,38 @@ def register_reads(register, runtime):
         runtime.check_key(key)
         return {"epic": runtime.client.epic_metadata(key), "tree": runtime.client.epic_tree(key)}
 
-    def search_users(query: str = "") -> dict:
-        """Resolve a person by name/username; returns users with verified id/display/avatar.
-        This suggestion lookup returns at most 8 matches and has no pagination. Refine query
-        for ambiguous names; an empty query is not a complete roster. Use returned IDs in JQL
-        and get_workload, and get_workspace_config for configured module membership when authorized.
+    def search_users(query: str = "", limit: Annotated[int, Field(ge=1, le=50, strict=True)] = 8) -> dict:
+        """Resolve a person by name/username; returns verified identities with matchContext hints.
+        limit is 1..50 (default 8); coverage is bounded, without a global total or pagination.
+        mayHaveMore=true signals saturation; null means Jira supplied no coverage evidence.
+        Refine by full name/company/username before selecting.
+        Even an unsaturated page is not a complete roster or proof of global name uniqueness.
+        matchContext separately reports configured membership, sameModule with the caller, and
+        recentLookupAt/recentSelectionAt/recentMentionAt (Unix seconds, last 7 days).
+        Mention recency means an explicit UI mention selection, not proof a comment was posted.
+        Null flags/times and contextAvailable distinguish unknown context from available evidence.
+        These are relevance hints, not identity proof or permission grants. Do not select a homonym
+        solely because they are recent/configured/in the same module; use request context or ask.
+        If contextChanged=true, the session changed during this lookup; repeat the search before choosing.
+        Use actual returned IDs in JQL and get_workload. Search results do not update user history.
         """
-        from app.domain.search import search_users as search
-        return {"users": search(runtime.client, runtime.settings, query, strict_auth=True)}
+        from app.domain.person_context import search_people
+        return search_people(runtime.client, runtime.settings, query, limit)
 
     def get_user(user_id: str = "") -> dict:
         """Read a verified Jira identity/badge by user_id; empty user_id means the logged-in user.
         Returns identity/display fields, or null for an unknown explicit user. Resolve display-name
         ambiguity with search_users first. This lookup does not enumerate module membership or activity.
+        A successful explicit user_id lookup records local recency for the current caller;
+        self lookups and passive UI badge rendering do not record it.
         """
-        return (runtime.client.user_badge(user_id, strict_auth=True) if user_id
-                else runtime.client.current_user_for_authorization())
+        from app.domain.person_context import capture_person_context, record_person_event
+        context = capture_person_context(runtime.client, runtime.settings) if user_id else None
+        result = (runtime.client.user_badge(user_id, strict_auth=True) if user_id
+                  else runtime.client.current_user_for_authorization())
+        if context is not None and result and result.get("id"):
+            record_person_event(runtime.client, runtime.settings, result["id"], "lookup", expected_stamp=context)
+        return result
 
     def list_options(kind: Literal["task_types", "child_types", "edit_fields", "transitions",
                                     "priorities", "components", "epics", "link_types"],

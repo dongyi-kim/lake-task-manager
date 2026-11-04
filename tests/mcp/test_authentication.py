@@ -347,7 +347,12 @@ def test_people_lookup_unknown_user_keeps_legitimate_empty_result(build_env, mon
         monkeypatch.setattr(env.provider._client, "get", lambda *_a, **_k:
                             Response(404, json={"errorMessages": ["The user does not exist."]}))
     result = invoke(env, tool, arguments)
-    assert not result.is_error and result.structured_content["data"] == expected
+    assert not result.is_error
+    data = result.structured_content["data"]
+    if tool == "search_users":
+        assert data["users"] == [] and data["returned"] == 0 and data["coverage"] == "bounded"
+    else:
+        assert data == expected
 
 
 def test_bulk_repeated_auth_rejection_preserves_successes_and_login_action(build_env, monkeypatch):

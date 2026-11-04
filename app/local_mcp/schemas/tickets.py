@@ -150,8 +150,32 @@ class Identity(OpenModel):
     actorAliases: list[str] | None = None
 
 
+class PersonMatchContext(OpenModel):
+    configured: bool | None
+    sameModule: bool | None
+    recentLookupAt: float | None
+    recentSelectionAt: float | None
+    recentMentionAt: float | None
+
+
+class PersonCandidate(Identity):
+    matchContext: PersonMatchContext
+
+
+class PersonContextAvailability(OpenModel):
+    configuration: bool
+    history: bool
+    actor: bool
+
+
 class Users(OpenModel):
-    users: list[Identity]
+    users: list[PersonCandidate]
+    returned: int
+    limit: int
+    mayHaveMore: bool | None
+    coverage: Literal["bounded"]
+    contextAvailable: PersonContextAvailability
+    contextChanged: bool
 
 
 class Option(OpenModel):
