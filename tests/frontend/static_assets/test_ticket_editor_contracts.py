@@ -202,7 +202,7 @@ def test_field_edit_and_mentions_share_user_defaults_and_managed_popup():
 
     assert 'const RECENT_KEY = "userSuggestions.recent"' in shared
     assert "createUserTypeahead" in field and "defaultUserSuggestions" in field
-    assert "createManagedMentionItems" in editor and "rememberUser(user)" in editor
+    assert "createManagedMentionItems" in editor and 'rememberUser(user, "mention")' in editor
     assert "initialItems: mentionInitialUsers(localUsers)" in editor
     assert "debounce: typeaheadDelay()" in editor
     assert "suggestion: mentionSuggestion(ticketKey, localUsers)" in editor

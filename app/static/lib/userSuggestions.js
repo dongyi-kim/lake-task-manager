@@ -57,11 +57,13 @@ export function recentUsers() {
   return mergeUserSuggestions(stored(RECENT_KEY), ...LEGACY_KEYS.map(stored)).slice(0, RECENT_MAX);
 }
 
-export function rememberUser(user) {
+export function rememberUser(user, event = "selection") {
   const item = clean(user);
   if (!item) return;
   const next = mergeUserSuggestions([item], recentUsers()).slice(0, RECENT_MAX);
   try { localStorage.setItem(RECENT_KEY, JSON.stringify(next)); } catch (e) { /* 사파리 프라이빗 등 */ }
+  // Only an explicit choice is recorded; search results and passive badge hydration are not.
+  api.personRecent(item.id, event).catch(() => { /* Optional hints never block editing. */ });
 }
 
 /** 빈 검색의 공통 목록: 티켓 기반 서버 추천 → 로컬 티켓 관련자 → 최근 선택. */

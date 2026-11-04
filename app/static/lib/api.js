@@ -142,6 +142,16 @@ async function streamNdjson(path, onEvent, signal) {
 // 최근 300개면 "다시 열면 즉시" 체감은 유지되면서 힙은 일정 수준에서 멈춘다.
 const _memo = new CacheMemo(req, detail => window.dispatchEvent(new CustomEvent('api-cache-updated', { detail })));
 function get(path, opts) { return _memo.get(path, opts); }
+let personActor = null, personActorGeneration = 0;
+function resetPersonActor() { personActor = null; personActorGeneration += 1; _memo.delete("/api/me"); }
+function loadMe() {
+  const generation = personActorGeneration;
+  return get("/api/me").then(me => {
+    if (generation === personActorGeneration) personActor = me?.id || null;
+    return me;
+  });
+}
+window.addEventListener("need-login", resetPersonActor);
 let policyRevision = -1, policyRefresh = null;
 function applyPrefs(p, broadcast = false) {
   if (!p?.cachePolicy || p.policyRevision === policyRevision) return p;
@@ -199,7 +209,10 @@ export function watchAuth() {
 // LoginOverlay 가 직접 로그인해 성공한 경로도 같은 청소가 필요하다. 이 리스너는 **모듈 평가
 // 시점**에 걸리므로 어떤 컴포넌트의 auth-ok 처리보다 **먼저** 돈다 — 화면들이 다시 받을 때는
 // memo 가 이미 비어 있어 진짜 새 요청이 나간다(등록 순서가 곧 실행 순서다).
-window.addEventListener("auth-ok", () => { _memo.clear(); stopAuthWatch(); });
+window.addEventListener("auth-ok", () => {
+  _memo.clear(); stopAuthWatch(); resetPersonActor();
+  loadMe().catch(() => {}); // Refill once after authentication, never for every selection.
+});
 
 function jsonReq(path, method, body, opts) {
   return req(path, { method, headers: { "Content-Type": "application/json" },
@@ -394,7 +407,7 @@ export const api = {
                             { method: "DELETE" }),
 
   // ── 쓰기(편집) — 코멘트 작성/수정/삭제 + 이미지 첨부. 성공 후 그 티켓 memo 무효화 ──
-  me: () => get("/api/me"),
+  me: loadMe,
   // 전이 목록은 **캐시하지 않는다** — 현재 상태에 따라 매번 달라지고, 낡은 목록은 곧 400 이다.
   timetracking: () => get("/api/timetracking"),
   openExternal: (url) => jsonReq("/api/open", "POST", { url }),
@@ -433,6 +446,13 @@ export const api = {
   // (티켓 유관자 기본 목록은 issue+comment 조회라 prod 에서 특히 느렸다.) 질의 입력 시엔 fresh.
   mentionUsers: (q, key, opts) => { const u = "/api/mention/users?q=" + encodeURIComponent(q || "")
     + (key ? "&key=" + encodeURIComponent(key) : ""); return q ? req(u, opts) : get(u); },
+  personRecent: (userId, event) => {
+    // Never fetch identity or prompt login just to record an optional selection hint.
+    const actorHint = personActor;
+    if (!actorHint) return Promise.resolve({ recorded: false });
+    return jsonReq("/api/people/recent", "POST", { userId, event, actorHint },
+      { headers: { "Content-Type": "application/json", "x-ltm-local": "1" } });
+  },
   linkTitle: (u) => req("/api/linktitle?u=" + encodeURIComponent(u || "")),             // 링크 뱃지 제목(og:title)
   commentCreate: (key, html, clientMutationId) =>
     jsonReq("/api/ticket/" + encodeURIComponent(key) + "/comment", "POST",
