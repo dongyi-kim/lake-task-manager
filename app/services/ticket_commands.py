@@ -112,12 +112,14 @@ class TicketCommands:
         from app.domain.bulk import validate_bulk
         return validate_bulk(mode, items, self.client.bulk_lookup())
 
-    def bulk_create(self, body):
+    def bulk_create(self, body, *, write_fence=None):
         from app.content.mdhtml import markdown_to_html
         check = self.bulk_validate(body.mode, body.items)
         if not check.get("ok"):
             return {"ok": False, "created": [], "failed": [], "errors": check.get("errors", []),
                     "warnings": check.get("warnings", [])}
+        if write_fence:
+            write_fence.assert_current()
         mutation_id = body.clientMutationId
         if mutation_id:
             # Bind the entire ordered batch before any writes. Per-item receipts below
@@ -125,6 +127,8 @@ class TicketCommands:
             self._once("bulk-create-manifest", mutation_id, {"mode": body.mode, "items": body.items},
                        lambda: {"ok": True})
         options = {"mutation_id": mutation_id} if mutation_id else {}
+        if write_fence:
+            options["write_fence"] = write_fence
         result = self.client.bulk_create(body.mode, check.get("items") or body.items,
             desc_to_field=lambda markdown: self.client.desc_field_value(markdown_to_html(markdown)), **options)
         return {**result, "warnings": check.get("warnings", [])}

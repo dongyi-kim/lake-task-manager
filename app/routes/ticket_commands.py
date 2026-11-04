@@ -13,6 +13,8 @@ from app.services.ticket_models import (
     BulkCommentBody, EpicBody, EpicLinkBody, LinkBody, DocumentBody,
 )
 from app.services.ticket_commands import CommandError, TicketCommands
+from app.services.bulk_ui_context import (BulkCreateBody, BulkCreateFence,
+                                         BulkCreateScopeChanged, bulk_create_context)
 
 from app.auth.base import PermissionDenied, SessionExpired, UpstreamUnavailable
 
@@ -133,9 +135,19 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
     def api_bulk_validate(body: BulkBody):
         return JSONResponse(commands.bulk_validate(body.mode, body.items))
 
+    @router.get("/api/bulk/create-context")
+    def api_bulk_create_context():
+        return JSONResponse(bulk_create_context(get_client()), headers={"Cache-Control": "no-store"})
+
     @router.post("/api/bulk/create")
-    def api_bulk_create(body: BulkBody):
-        result = commands.bulk_create(body)
+    def api_bulk_create(body: BulkCreateBody):
+        client = get_client()
+        expected_scope = getattr(body, "expectedScope", None)
+        try:
+            fence = BulkCreateFence(client, expected_scope) if expected_scope is not None else None
+            result = TicketCommands(lambda: client, settings, require_edit).bulk_create(body, write_fence=fence)
+        except BulkCreateScopeChanged as exc:
+            return JSONResponse({"ok": False, "code": "bulk_scope_changed", "error": str(exc)}, status_code=409)
         return JSONResponse(result, status_code=400 if result.get("errors") else 200)
 
     @router.post("/api/bulk/update/validate")

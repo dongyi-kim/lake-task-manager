@@ -3074,7 +3074,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
     def create_child(self, parent_key, itype, summary, priority=None,
                      duedate=None, assignee=None, components=None, description=None,
-                     labels=None, mutation_id=None, parent_is_epic=None, before_write=None):
+                     labels=None, mutation_id=None, parent_is_epic=None, before_write=None, write_fence=None):
         """하위/독립 티켓 생성. 부모가 Epic 이면 Epic Link 로, 일반 이슈면 parent(Sub-Task)로 잇는다.
         **parent_key 가 없으면(=None) Epic 없이 최상위 Task** 로 만든다('Epic 없음'/'사용자 VoC').
 
@@ -3130,7 +3130,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             with write_upstream():
                 if before_write:
                     before_write()
-                result = self.provider.post_json("/rest/api/2/issue", {"fields": fields})
+                provider = write_fence.provider_for_write() if write_fence else self.provider
+                result = provider.post_json("/rest/api/2/issue", {"fields": fields})
                 return validate_result(result)
 
         def after_success(res):
@@ -3311,7 +3312,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             lk.may_edit = may_edit          # 권한 판정은 라우트(세션)가 안다 — 주입받는다
         return lk
 
-    def bulk_create(self, mode, items, desc_to_field=None, mutation_id=None):
+    def bulk_create(self, mode, items, desc_to_field=None, mutation_id=None, write_fence=None):
         """검증을 통과한 항목들을 **차례로** 만든다. 하나 실패해도 나머지는 진행(Jira 는 롤백이 없다).
         반환: {ok, created:[{index,key,summary}], failed:[{index,summary,error}]} — set_epic_link 와 같은 형태.
 
@@ -3324,7 +3325,11 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             for i, it in enumerate(items or []):
                 summary = (it.get("summary") or "").strip()
                 try:
+                    if write_fence:
+                        write_fence.assert_current()
                     kw = to_create_kwargs(mode, it)
+                    if write_fence:
+                        kw["write_fence"] = write_fence
                     desc = it.get("description")
                     if desc and desc_to_field:
                         kw["description"] = desc_to_field(desc)

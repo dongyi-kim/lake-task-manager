@@ -52,7 +52,9 @@ export function loadDraft(key) {
   return ordered(key, async () => {
     const record = await op("readonly", store => store.get(key));
     if (!record) return null;
-    if (Date.now() - (record.savedAt || 0) <= DRAFT_TTL_MS) return record;
+    // Mutation evidence is not an ordinary editor draft. Keep it for manual diagnosis even
+    // after replay has expired; the caller independently forbids old writes by firstAttemptAt.
+    if (record.preserveExpiredForMutation || Date.now() - (record.savedAt || 0) <= DRAFT_TTL_MS) return record;
     await op("readwrite", store => store.delete(key));
     return null;
   });
@@ -72,7 +74,8 @@ export async function purgeExpired() {
       request.onsuccess = () => {
         const cursor = request.result;
         if (!cursor) return;
-        if (Date.now() - (cursor.value.savedAt || 0) > DRAFT_TTL_MS) cursor.delete();
+        if (!cursor.value.preserveExpiredForMutation
+            && Date.now() - (cursor.value.savedAt || 0) > DRAFT_TTL_MS) cursor.delete();
         cursor.continue();
       };
     });

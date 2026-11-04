@@ -10,8 +10,7 @@
 //   넘어갔는데, 방금 본 카드와 그 목록을 눈으로 다시 짝지어야 했다. 지금은 **그 카드가 그대로
 //   초록/붉게 바뀐다** — 어느 것이 됐고 어느 것이 안 됐는지 자리로 안다.
 //   만드는 동안에는 진척 오버레이가 덮되 아래가 비쳐, 카드가 하나씩 초록이 되는 게 보인다.
-//   실패는 계속 진행하고 **실패분만 JSON 으로 회수**할 수 있다(Jira 는 롤백이 없다 — 고쳐서
-//   다시 돌리는 게 유일한 복구다).
+//   명확한 실패는 JSON으로 고칠 수 있다. 응답 유실은 실패와 구분하고 기존 receipt로 확인한다.
 //
 // 규칙·예제·프롬프트는 lib/bulkSchema.js 단일 소스. 서버 검증기는 app/domain/bulk.py.
 import { api } from "../../lib/api.js";
@@ -21,6 +20,10 @@ import { fromBackdrop } from "../../lib/backdrop.js";
 import { validateBulk, exampleJson, fieldDocs, buildLlmPrompt } from "../../lib/bulkSchema.js";
 import { categoryColor } from "../../lib/colors.js";
 import { errorLines } from "../../lib/jsonlines.js";
+import { formDraft } from "../../lib/formDraft.js";
+import { confirmBox } from "../../lib/confirm.js";
+import { newMutationId } from "../../lib/mutationId.js";
+import { newBulkRun, executeBulkRun, bulkRunResult, bulkScopeKey } from "../../lib/bulkCreateRun.js";
 import TypeBadge from "./TypeBadge.js";
 import JsonEditor from "./JsonEditor.js";
 import PriIcon from "./PriIcon.js";
@@ -51,6 +54,13 @@ function dayDiff(ymd) {
 
 export default {
   name: "BulkCreateDialog",
+  mixins: [formDraft(function () { return "bulk-create:" + this.mode; },
+    ["src", "step", "items", "createMutationId", "creationRun", "result", "status", "done"], "ded", async function(scope) {
+      this.executionScope = await api.bulkCreateContext();
+      return "v3:bulk:" + bulkScopeKey(this.executionScope) + ":" + scope;
+    }, function() {
+      return !!this.creationRun?.chunks.some(chunk => chunk.attempted) && !bulkRunResult(this.creationRun).ok;
+    })],
   components: { JsonEditor, TypeBadge, PriIcon, Avatar, DueText },
   props: { mode: { type: String, required: true } },     // 'task' | 'subtask'
   emits: ["close", "done"],
@@ -59,10 +69,10 @@ export default {
       step: "input",          // input | preview (결과도 preview 에서 보인다)
       src: "",
       errors: [], warnings: [], errOpen: true,
-      checking: false, busy: false,
+      checking: false, busy: false, draftRetrying: false, unboundCloseRequested: false, discardingRun: false,
       items: [],              // 검증 통과한 항목
       opts: { types: [], priorities: [], components: [] },   // 프롬프트에 박을 실제 선택지
-      result: null,           // { created:[], failed:[] } — 다 돌고 난 요약
+      result: null, createMutationId: "", creationRun: null, executionScope: null,
       // 진행 상황 — 카드 색과 진척 오버레이가 이걸 본다.
       //   status: 항목 index → { ok:true, key } | { ok:false, error }
       //   done  : 지금까지 처리한 건수(총 items.length 분의)
@@ -78,6 +88,7 @@ export default {
   computed: {
     isSub() { return this.mode === "subtask"; },
     title() { return this.isSub ? "Bulk Sub Task 추가하기" : "Bulk Task 추가하기"; },
+    canDiscardRun() { return !!this.creationRun && !!(this.result?.pending.length || this.result?.blocked); },
     docs() { return fieldDocs(this.mode); },
     /** 오류가 가리키는 **원문의 줄** — 편집기가 그 줄을 붉게 칠한다.
      *  "3번 항목의 duedate" 는 정확하지만 어디를 고칠지는 안 알려 준다. 줄로 바꿔 준다. */
@@ -95,9 +106,10 @@ export default {
     },
     /** 지금까지의 성공/실패 수 — 오버레이와 요약 줄이 같은 값을 쓴다. */
     tally() {
-      let ok = 0, ng = 0;
-      for (const k in this.status) (this.status[k].ok ? ok++ : ng++);
-      return { ok, ng };
+      let ok = 0, ng = 0, pending = 0;
+      for (const state of Object.values(this.status))
+        state.ok === true ? ok++ : state.ok === false ? ng++ : pending++;
+      return { ok, ng, pending };
     },
     pct() { return this.items.length ? Math.round(this.done / this.items.length * 100) : 0; },
     /** 이 JSON 이 참조하는 상위 티켓 키들(Epic 또는 부모 Task) — 중복 제거. */
@@ -182,7 +194,7 @@ export default {
     },
   },
   mounted() {
-    this.src = exampleJson(this.mode);
+    this._formReady.then(() => this.restoreBulkView()).catch(() => {});
     // 프롬프트에 박을 실제 선택지 — 실패해도 프롬프트는 만들 수 있다(그 자리에 안내가 들어간다).
     const tp = this.isSub ? Promise.resolve(["Sub-Task"]) : api.taskTypes().catch(() => []);
     Promise.all([tp, api.options("priorities").catch(() => []), api.options("components").catch(() => [])])
@@ -197,11 +209,60 @@ export default {
     document.addEventListener("keydown", this._onKey = (e) => {
       if (e.key !== "Escape") return;
       e.stopPropagation();
-      this.$emit("close");
+      if (!this.busy) this.preserveAndClose();
     }, true);
   },
   unmounted() { document.removeEventListener("keydown", this._onKey, true); },
   methods: {
+    restoreBulkView() {
+      if (this._formDead) return;
+      this.unboundCloseRequested = false;
+      if (!this.src) this.src = exampleJson(this.mode);
+      if (this.creationRun) {
+        this.items = this.creationRun.items;
+        this.showRunResult(bulkRunResult(this.creationRun));
+        this.step = "preview"; this.loadRefs();
+      }
+    },
+    async retryDraftInitialization() {
+      if (this.draftRetrying || this.formDraftReady || !this.formDraftError) return;
+      this.draftRetrying = true;
+      this._formReady = this.restoreFormDraft();
+      try { await this._formReady; this.restoreBulkView(); }
+      catch (_) { /* Show the retryable initialization error; keep the typed JSON visible. */ }
+      finally { this.draftRetrying = false; }
+    },
+    async preserveAndClose() {
+      if (this.busy || this.discardingRun) return;
+      if (!this.formDraftReady && !this.creationRun && !this.createMutationId) {
+        // No write exists, and an unknown actor must not acquire a durable user-scoped draft.
+        if (this.src.trim()) { this.unboundCloseRequested = true; return; }
+        this._formFinished = true; this._formDead = true; this.$emit("close"); return;
+      }
+      try { await this.flushFormDraft(); this.$emit("close"); }
+      catch (_) { /* A receipt-bearing draft must be saved before closing. */ }
+    },
+    discardUnboundAndClose() {
+      if (this.busy || this.formDraftReady || this.creationRun || this.createMutationId) return;
+      this._formFinished = true; this._formDead = true; this.$emit("close");
+    },
+    async copySource() {
+      const ok = await copyText(this.src);
+      pushToast({ kind: ok ? "success" : "error", title: ok ? "입력 JSON을 복사했습니다" : "복사 실패" });
+    },
+    async discardExecutionRecord() {
+      if (this.busy || this.discardingRun || !this.creationRun) return;
+      const result = bulkRunResult(this.creationRun);
+      if (!result.pending.length && !result.blocked) return;
+      this.discardingRun = true;
+      try {
+        if (!await confirmBox("이 실행 기록을 삭제할까요? 실제 생성된 Jira 티켓은 삭제되지 않습니다. 결과 미확정 항목은 Jira에서 생성 여부를 확인한 뒤 새로 작성해야 중복 생성을 피할 수 있습니다.",
+          { okLabel: "실행 기록 삭제", danger: true, note: "필요한 입력은 먼저 JSON으로 복사하세요. 기록 삭제 후에는 이 요청의 결과를 LTM에서 다시 확인할 수 없습니다." })) return;
+        await this.finishFormDraft();
+        this.$emit("close");
+      } catch (_) { this._formFinished = false; /* Failed local deletion keeps the record visible. */ }
+      finally { this.discardingRun = false; }
+    },
     setGuideHidden(v) {
       this.guideHidden = v;
       try { localStorage.setItem(GUIDE_HIDE_KEY, v ? "1" : "0"); } catch (e) { /* noop */ }
@@ -300,52 +361,47 @@ export default {
      * 건마다 다시 묻게 된다. 묶음 안에서는 한 번만 묻는다.
      */
     async create() {
-      if (this.busy) return;
+      if (this.busy || this.discardingRun) return;
       this.busy = true;
-      this.status = {}; this.done = 0; this.result = null;
-      const CHUNK = 5;
-      const created = [], failed = [];
-      const mark = (i, st) => { this.status = { ...this.status, [i]: st }; };
       try {
-        for (let at = 0; at < this.items.length; at += CHUNK) {
-          const slice = this.items.slice(at, at + CHUNK);
-          let r = null, boom = "";
-          try {
-            r = await api.bulkCreate({ mode: this.mode, items: slice });
-          } catch (e) { boom = (e && e.message) || "생성 요청이 실패했습니다."; }
-
-          if (r && r.ok === false && r.errors) {
-            // 서버가 다시 검증해 막았다 — 그 사이 상위가 지워졌거나 권한이 바뀐 경우다.
-            boom = (r.errors[0] && r.errors[0].message) || "서버 검증에 막혔습니다.";
-            r = null;
-          }
-          if (!r) {                                   // 이 묶음은 통째로 못 만들었다
-            slice.forEach((it, k) => {
-              const i = at + k, msg = boom;
-              mark(i, { ok: false, error: msg });
-              failed.push({ index: i, summary: (it.summary || "").trim(), error: msg });
-            });
-          } else {
-            // 서버가 주는 index 는 **이 묶음 안**의 번호다 — 전체 번호로 환산한다.
-            (r.created || []).forEach((c) => {
-              const i = at + c.index;
-              mark(i, { ok: true, key: c.key });
-              created.push({ ...c, index: i });
-            });
-            (r.failed || []).forEach((f) => {
-              const i = at + f.index;
-              mark(i, { ok: false, error: f.error });
-              failed.push({ ...f, index: i });
-            });
-          }
-          this.done = Math.min(at + CHUNK, this.items.length);
+        await this._formReady;
+        if (this.creationRun && bulkRunResult(this.creationRun).blocked) {
+          this.showRunResult(bulkRunResult(this.creationRun)); return;
         }
-        this.result = { ok: !failed.length, created, failed };
+        await this.checkExecutionScope(this.creationRun?.scope || this.executionScope);
+        if (!this.creationRun) {
+          this.createMutationId = newMutationId("bulk-create");
+          this.creationRun = newBulkRun(this.mode, this.items, this.createMutationId, this.executionScope);
+        }
+        this.items = this.creationRun.items;
+        this.result = null;
+        const result = await executeBulkRun(this.creationRun, async body => {
+          await this.checkExecutionScope(this.creationRun.scope);
+          const blocked = bulkRunResult(this.creationRun).blocked;
+          if (blocked) throw new Error(blocked);
+          return api.bulkCreate(body);
+        },
+          () => this.flushFormDraft(), partial => { this.status = partial.status;
+            this.done = partial.created.length + partial.failed.length; });
+        this.showRunResult(result);
         // ★ 건마다 ticket-changed 를 쏘면 안 된다 — 목록 뷰가 항목마다 '필터에서 제외' 토스트를
         //   띄워 10건이면 토스트가 10개 쌓인다(실제로 3건에 3개가 떴다). 갱신은 부모가 **한 번**
         //   force-refresh 로 한다(onBulkDone).
         this.$emit("done", this.result);
+        if (result.ok) await this.finishFormDraft(true);
+      } catch (error) {
+        if (this.creationRun) this.showRunResult(bulkRunResult(this.creationRun));
+        this.errors = [{ index: null, field: null, message: error.message || String(error) }];
       } finally { this.busy = false; }
+    },
+    showRunResult(result) {
+      this.result = result; this.status = result.status;
+      this.done = result.created.length + result.failed.length;
+    },
+    async checkExecutionScope(expected) {
+      const current = await api.bulkCreateContext();
+      if (bulkScopeKey(current) !== bulkScopeKey(expected))
+        throw new Error("작성 중 Jira 연결·프로젝트·사용자가 변경됐습니다. 원래 연결로 돌아온 뒤 같은 요청을 확인하세요.");
     },
 
     /** 실패분만 다시 JSON 으로 — 고쳐서 다시 돌리라고. */
@@ -358,20 +414,23 @@ export default {
         : { kind: "error", icon: "⚠", title: "복사 실패", timeout: 5000 });
     },
     retryFailed() {
+      this.showRunResult(bulkRunResult(this.creationRun));
+      if (this.result.blocked || this.result.pending.length || this.result.notStarted.length) return;
       const idx = new Set((this.result.failed || []).map((f) => f.index));
       this.src = JSON.stringify({ mode: this.mode, items: this.items.filter((_, i) => idx.has(i)) }, null, 2);
       this.result = null; this.items = []; this.errors = []; this.step = "input";
       this.status = {}; this.done = 0;
+      this.createMutationId = ""; this.creationRun = null;
     },
   },
   template: `
-  <div class="blk-ov" @click.self="fromBackdrop($event) && $emit('close')">
+  <div class="blk-ov" @click.self="!busy && fromBackdrop($event) && preserveAndClose()">
     <div class="blk">
       <div class="blk-h">
         <b>{{ step === 'input' ? title : (result ? 'Bulk 생성 결과' : 'Bulk 생성 미리보기') }}</b>
         <span class="blk-h-s" v-if="step === 'input'">JSON 기반</span>
         <span class="blk-h-s" v-else>{{ items.length }}건</span>
-        <button class="lp-x" @click="$emit('close')" aria-label="닫기">✕</button>
+        <button class="lp-x" :disabled="busy" @click="preserveAndClose" aria-label="닫기">✕</button>
       </div>
 
       <!-- ── 1) 입력 ─────────────────────────────────────────────── -->
@@ -445,6 +504,7 @@ export default {
             <div class="bp-sub">
               <span class="ok">성공 {{ tally.ok }}</span>
               <span v-if="tally.ng" class="ng">실패 {{ tally.ng }}</span>
+              <span v-if="tally.pending" class="warn">결과 확인 중 {{ tally.pending }}</span>
               <span class="bp-note">Jira 는 되돌릴 수 없어 한 건씩 차례로 만듭니다.</span>
             </div>
           </div>
@@ -452,7 +512,11 @@ export default {
         <!-- 다 만든 뒤 요약 — 별도 화면으로 넘기지 않는다. 방금 본 카드가 그대로 색으로 답한다. -->
         <div v-if="result" class="blk-done" :class="{ ng: result.failed.length }">
           <b>{{ result.created.length }}건</b> 만들었습니다<template v-if="result.failed.length">,
-            <b class="ng">{{ result.failed.length }}건</b> 실패</template>.
+            <b class="ng">{{ result.failed.length }}건</b> 실패</template><template v-if="result.pending.length">,
+            <b class="warn">{{ result.pending.length }}건</b> 결과 확인 필요</template><template v-if="result.notStarted.length">,
+            {{ result.notStarted.length }}건 아직 요청하지 않음</template>.
+          <span v-if="result.blocked" class="bd-hint" role="alert">{{ result.blocked }}</span>
+          <span v-else-if="result.pending.length" class="bd-hint">응답이 없어도 생성됐을 수 있습니다. 같은 요청으로 확인합니다.</span>
           <span v-if="result.failed.length" class="bd-hint">붉은 카드가 실패한 항목입니다.</span>
         </div>
         <div v-if="refLoading" class="blk-refload">상위 티켓을 확인하는 중…</div>
@@ -486,7 +550,8 @@ export default {
                (우선순위 · 번호 · 제목 · 담당자 · 기한). 소속은 머리에 이미 적혀 있어 다시 안 단다. -->
           <div class="mt-gbody one">
             <div v-for="c in g.cards" :key="c._i" class="mt-card"
-                 :class="{ 'blk-ok': c._st && c._st.ok, 'blk-ng': c._st && !c._st.ok }"
+                 :class="{ 'blk-ok': c._st && c._st.ok === true, 'blk-ng': c._st && c._st.ok === false,
+                           'blk-pending': c._st && c._st.ok === null }"
                  :style="c._sig" :title="c._st && !c._st.ok ? c._st.error : ''">
               <PriIcon :rank="c.priRank" :name="c.pri" />
               <!-- ★ Task 화면의 그룹 안 카드에는 타입 뱃지가 없다(거기선 전부 Sub-Task 라 자명하다).
@@ -499,14 +564,23 @@ export default {
                 <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
               <DueText :card="c" />
               <!-- 결과 표식 — 색만으로는 색각 차이를 못 넘는다. 글자로도 말한다. -->
-              <span v-if="c._st" class="blk-mark" :class="c._st.ok ? 'ok' : 'ng'">
-                {{ c._st.ok ? '생성됨' : '실패' }}</span>
+              <span v-if="c._st" class="blk-mark" :class="c._st.ok === true ? 'ok' : c._st.ok === false ? 'ng' : 'warn'">
+                {{ c._st.ok === true ? '생성됨' : c._st.ok === false ? '실패' : '확인 필요' }}</span>
             </div>
           </div>
         </div>
       </div>
 
       <!-- 오류/경고 — 접히는 목록 -->
+      <div v-if="formDraftError || unboundCloseRequested" class="blk-err" role="alert">
+        {{ formDraftError }}
+        <template v-if="!formDraftReady">
+          <span>연결 확인 전 입력은 이 창에만 보관됩니다. 닫기 전에 JSON을 복사할 수 있습니다.</span>
+          <button class="cmt-ed-btn" :disabled="draftRetrying || !formDraftError" @click="retryDraftInitialization">{{ draftRetrying ? '확인 중…' : '연결 확인 다시 시도' }}</button>
+          <button v-if="src.trim()" class="cmt-ed-btn" @click="copySource">입력 JSON 복사</button>
+          <button v-if="unboundCloseRequested" class="cmt-ed-btn" @click="discardUnboundAndClose">입력 버리고 닫기</button>
+        </template>
+      </div>
       <div v-if="errors.length || warnings.length" class="blk-errs" :class="{ folded: !errOpen }">
         <button class="blk-errs-h" @click="errOpen = !errOpen">
           <span class="chev" :class="{ open: errOpen }">▸</span>
@@ -533,7 +607,7 @@ export default {
           <button class="cmt-ed-btn blk-prompt" @click="copyPrompt">
             <span class="bp-ic">📋</span>JSON 생성 LLM 프롬프트 복사</button>
           <span class="blk-hint">JSON 을 만들 때 쓰세요</span>
-          <button class="cmt-ed-btn primary" :disabled="checking" @click="check">
+          <button class="cmt-ed-btn primary" :disabled="checking || !formDraftReady" @click="check">
             {{ checking ? '확인 중…' : '다음 (미리보기)' }}</button>
         </template>
         <template v-else-if="!result">
@@ -545,10 +619,13 @@ export default {
         </template>
         <template v-else>
           <!-- 실패분 회수 — Jira 는 롤백이 없으니, 고쳐서 다시 돌리는 게 유일한 복구다. -->
-          <button v-if="result.failed.length" class="cmt-ed-btn ghost" @click="copyFailed">실패분 JSON 복사</button>
-          <button v-if="result.failed.length" class="cmt-ed-btn ghost" @click="retryFailed">실패분만 다시</button>
+          <button v-if="result.pending.length || result.notStarted.length" class="cmt-ed-btn primary" :disabled="busy || discardingRun || !!result.blocked" @click="create">같은 요청으로 결과 확인·계속</button>
+          <button v-if="canDiscardRun" class="cmt-ed-btn ghost" :disabled="busy || discardingRun" @click="copySource">입력 JSON 복사</button>
+          <button v-if="canDiscardRun" class="cmt-ed-btn ghost" :disabled="busy || discardingRun" @click="discardExecutionRecord">실행 기록 삭제</button>
+          <button v-if="result.failed.length" class="cmt-ed-btn ghost" :disabled="busy || !!result.blocked || result.pending.length || result.notStarted.length" @click="copyFailed">실패분 JSON 복사</button>
+          <button v-if="result.failed.length" class="cmt-ed-btn ghost" :disabled="busy || !!result.blocked || result.pending.length || result.notStarted.length" @click="retryFailed">실패분만 다시</button>
           <span class="blk-hint">{{ result.failed.length ? '실패한 것만 골라 고칠 수 있습니다' : '' }}</span>
-          <button class="cmt-ed-btn primary" @click="$emit('close')">닫기</button>
+          <button class="cmt-ed-btn primary" :disabled="busy" @click="preserveAndClose">닫기</button>
         </template>
       </div>
     </div>

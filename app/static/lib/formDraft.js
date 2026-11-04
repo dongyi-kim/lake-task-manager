@@ -4,7 +4,8 @@ import { pushToast } from "./toast.js";
 import { confirmBox } from "./confirm.js";
 
 // Forms own field/receipt state; CommentEditor owns HTML/Blobs in the same immutable scope.
-export function formDraft(scope, fields, editorRef = "ded") {
+export function formDraft(scope, fields, editorRef = "ded", resolveKey = resolveDraftKey,
+                          preserveMutationEvidence = () => false) {
   return {
     data: () => ({ formDraftReady: false, formDraftError: "", formDraftRestored: false }),
     computed: { formDraftScope() { return scope.call(this); } },
@@ -41,13 +42,14 @@ export function formDraft(scope, fields, editorRef = "ded") {
       },
       async restoreFormDraft() {
         try {
-          this._formKey = await resolveDraftKey("form:" + this.formDraftScope);
+          this._formKey = await resolveKey.call(this, "form:" + this.formDraftScope);
           const record = await loadDraft(this._formKey);
           if (this._formDead) return;
           if (record && record.fields) {
             // Local pickers stay usable while identity/storage loads. Do not overwrite an input
             // already changed by the user; an uncertain/confirmed write always restores its exact form.
-            const receipt = record.fields.createdKey || record.fields.createMutationId || record.fields.transitionMutationId;
+            const receipt = record.fields.createdKey || record.fields.createMutationId
+              || record.fields.transitionMutationId || record.fields.creationRun?.id;
             for (const field of fields) {
               if (Object.hasOwn(record.fields, field)
                   && (receipt || JSON.stringify(this[field]) === this._formBaseline[field])) this[field] = record.fields[field];
@@ -66,7 +68,8 @@ export function formDraft(scope, fields, editorRef = "ded") {
         const values = {};
         for (const field of fields) values[field] = this[field];
         try {
-          await saveDraft(this._formKey, { fields: JSON.parse(JSON.stringify(values)) });
+          await saveDraft(this._formKey, { fields: JSON.parse(JSON.stringify(values)),
+            preserveExpiredForMutation: !!preserveMutationEvidence.call(this) });
           this.formDraftError = "";
         } catch (error) { this.draftError(error); throw error; }
       },
