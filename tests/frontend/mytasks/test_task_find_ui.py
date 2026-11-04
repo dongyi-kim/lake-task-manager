@@ -2,13 +2,13 @@
 import json
 from urllib.parse import parse_qs, urlparse
 
-from playwright.sync_api import expect
-
 from frontend.editor.test_editor_roundtrip_ui import editor_browser  # noqa: F401
 from frontend.editor.test_draft_lifecycle_ui import _mount
 
 
 def test_find_reveals_hidden_cards_and_restores_layout(editor_browser):
+    from playwright.sync_api import expect
+
     page, base, errors, _ = editor_browser
 
     def task(number, **extra):
@@ -107,6 +107,8 @@ def test_find_reveals_hidden_cards_and_restores_layout(editor_browser):
 
 
 def test_find_does_not_intercept_dialog_editor_or_other_route(editor_browser):
+    from playwright.sync_api import expect
+
     page, base, errors, _ = editor_browser
     page.goto(base + "/#/mytasks")
     page.locator('.mytasks').wait_for()
