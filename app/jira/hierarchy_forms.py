@@ -294,4 +294,10 @@ class HierarchyForms:
         if set(prepared.removed_fields) != set(allow_removed_fields):
             raise HierarchyFormError("변환으로 제거될 필드를 먼저 확인해야 합니다.", code="hierarchy_field_removal")
         prepared._committed = True
-        return self.provider.web_form(prepared._action, prepared._pairs, may_commit=True)
+        response = self.provider.web_form(prepared._action, prepared._pairs, may_commit=True)
+        if 400 <= response["status"] < 500:
+            raise HierarchyFormError("Jira가 계층 변경 요청을 거부했습니다.",
+                                     code="jira_rejected", status=response["status"])
+        if response["status"] == 200:
+            self._page(response, prepared._action, "")
+        return response

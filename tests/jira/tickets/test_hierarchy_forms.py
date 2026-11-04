@@ -182,6 +182,8 @@ def test_input_discovery_size_limit_does_not_truncate_choice_ids():
     with pytest.raises(HierarchyFormError) as error:
         HierarchyForms(provider, "https://jira.example").prepare("convert_to_subtask", "100")
     assert error.value.status == 413 and len(provider.calls) == 1
+
+
 @pytest.mark.parametrize("values,required,kind", [(["a", "b"], False, "text"), ("", True, "text"), ("bad", False, "select")])
 def test_oversized_field_names_cannot_escape_error_context_budget(values, required, kind):
     name = "customfield_" + "x" * 60000
@@ -190,3 +192,33 @@ def test_oversized_field_names_cannot_escape_error_context_budget(values, requir
         HierarchyForms._fill({name: group}, {name: values})
     assert len(str(caught.value).encode("utf-8")) < 512
 
+
+@pytest.mark.parametrize("status,html,expected_status", [
+    (200, '<div class="aui-message-error">Parent is no longer editable</div>', 409),
+    (200, '<span class="errorMessage">Required field missing</span>', 409),
+    (200, '<div class="error">Workflow validation failed</div>', 409),
+    (400, '<div class="unexpected-layout">Rejected</div>', 400),
+    (409, "", 409),
+    (422, "", 422),
+])
+def test_final_validation_rejection_is_explicit_and_never_reposts(status, html, expected_status):
+    provider = Provider(type_form(), fields_form(), confirm_form(),
+                        {"status": status, "html": html, "location": ""})
+    engine = HierarchyForms(provider, "https://jira.example")
+    prepared = engine.prepare("convert_to_subtask", "100", parent_key="DL-2", issue_type_id="5")
+    with pytest.raises(HierarchyFormError) as caught:
+        engine.commit(prepared)
+    assert caught.value.code == "jira_rejected" and caught.value.status == expected_status
+    with pytest.raises(HierarchyFormError) as repeated:
+        engine.commit(prepared)
+    assert repeated.value.code == "unsupported_hierarchy_form"
+    assert len(provider.calls) == 4 and sum(row[2] for row in provider.calls) == 1
+
+
+def test_final_unknown_html_stays_unclassified_for_rest_verification():
+    response = {"status": 200, "html": '<main class="new-layout">Unknown result</main>', "location": ""}
+    provider = Provider(type_form(), fields_form(), confirm_form(), response)
+    engine = HierarchyForms(provider, "https://jira.example")
+    prepared = engine.prepare("convert_to_subtask", "100", parent_key="DL-2", issue_type_id="5")
+    assert engine.commit(prepared) == response
+    assert len(provider.calls) == 4 and sum(row[2] for row in provider.calls) == 1
