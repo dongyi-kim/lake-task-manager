@@ -3,6 +3,7 @@
 import inspect
 import json
 import re
+from contextvars import ContextVar
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -34,6 +35,11 @@ from app.local_mcp.authentication import (AUTH_TOOLS, CONFIG_WRITES, Authenticat
 from app.local_mcp.capacity import ToolCapacityExceeded, ToolLane
 from app.services.workspace_config import WorkspaceConfigCommands
 from app.services.ticket_commands import CommandError, TicketCommands
+
+
+# An in-process diagnostic may bind the original actor across authentication retries.
+# Context propagation keeps this fence isolated from unrelated UI/MCP requests.
+write_context_guard = ContextVar("ltm_mcp_write_context_guard", default=None)
 
 
 class LocalMcpRuntime:
@@ -225,6 +231,9 @@ class LocalMcpRuntime:
             return read_result(fn, kwargs, None)
 
         def call(arguments):
+            guard = write_context_guard.get()
+            if not read_only and guard is not None:
+                guard()
             return read_result(fn, arguments, self.client) if read_only else self._write_result(fn, arguments)
 
         if fn.__name__ in AUTH_TOOLS:
