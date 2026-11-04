@@ -210,11 +210,13 @@ class LocalMcpRuntime:
         partial = bool(data.get("created") or data.get("updated") or data.get("partial"))
         validation = bool(data.get("errors")) and not failed and not partial
         unknown = any(isinstance(row, dict) and row.get("code") == "outcome_unknown" for row in failed)
+        retryable = (any(row.get("retryable") or row.get("needLogin") for row in failed)
+                     if fn.__name__ == "bulk_update" else bool(failed))
         code = "validation_failed" if validation else "partial_failure" if partial else "write_failed"
         error = {"code": code, "message": "일괄 요청 검증에 실패했습니다." if validation else
                  "일부 항목만 완료되었습니다. data의 성공/실패 항목을 확인하세요." if partial else
                  "요청을 완료하지 못했습니다. data의 실패 항목을 확인하세요.",
-                 "retryable": bool(failed), "retryWithSameMutationId": bool(failed)}
+                 "retryable": retryable, "retryWithSameMutationId": retryable}
         if unknown:
             error.update(outcomeUnknown=True, repeatWrite=False)
         return {"ok": False, "partial": partial, "data": data, "error": error}
@@ -285,17 +287,23 @@ class LocalMcpRuntime:
                 else:
                     failures[service] = state
             result["partial"] = has_partial(result.get("data"))
-        elif fn.__name__ == "bulk_create" and not result.get("ok"):
+        elif fn.__name__ in {"bulk_create", "bulk_update"} and not result.get("ok"):
             failed = (result.get("data") or {}).get("failed") or []
             if any(row.get("needLogin") for row in failed):
-                state = self.authentication.check("jira", force=True)
-                if state["authenticated"] and not any(row.get("code") == "outcome_unknown" for row in failed):
-                    # Keep the entire original batch and ID: per-row receipts reuse successes.
-                    result = call(arguments)
-                    if any(row.get("needLogin") for row in (result.get("data") or {}).get("failed") or []):
-                        state = self.authentication.state("jira", {"needLogin": True})
-                if not state["authenticated"]:
-                    result["authentication"] = {"jira": error_payload(state)}
+                try:
+                    state = self.authentication.check("jira", force=True)
+                    if state["authenticated"] and not any(row.get("code") == "outcome_unknown" for row in failed):
+                        # Keep the entire original batch and ID: per-row receipts reuse successes.
+                        result = call(arguments)
+                        if any(row.get("needLogin") for row in (result.get("data") or {}).get("failed") or []):
+                            state = self.authentication.state("jira", {"needLogin": True})
+                    if not state["authenticated"]:
+                        result["authentication"] = {"jira": error_payload(state)}
+                except Exception as exc:
+                    # A recovery lookup/manifest failure must not erase already-confirmed rows.
+                    recovery = self._error(exc)
+                    result["authentication"] = {"jira": recovery}
+                    result["error"]["retryable"] = bool(recovery.get("retryable"))
         if failures:
             result["partial"] = True
             result["authentication"] = {service: error_payload(state) for service, state in failures.items()}
