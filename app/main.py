@@ -1170,6 +1170,7 @@ _local_mcp = LocalMcpRuntime(
     require_person_access=_require_person_access, classify_error=_classify_mcp_error,
     require_manager=_require_manager, require_module_access=_require_module_access,
     scoped_people=_scoped_people,
+    request_login=request_service_login,
 )
 _local_mcp.install(app)
 

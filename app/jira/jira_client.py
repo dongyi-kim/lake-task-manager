@@ -16,7 +16,7 @@ from html import escape, unescape
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
-from app.auth.base import (PermissionDenied, SessionExpired, UpstreamUnavailable,
+from app.auth.base import (PermissionDenied, SessionExpired, UpstreamError, UpstreamUnavailable,
                            background_upstream, write_upstream)
 from app.infra.cache_policy import note_read, revalidating
 from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
@@ -3206,6 +3206,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     if isinstance(e, MutationOutcomeUnknown):
                         failure.update(code="outcome_unknown", clientMutationId=e.mutation_id,
                                        retryable=True, repeatWrite=False)
+                    elif isinstance(e, SessionExpired) and (not isinstance(e, UpstreamError) or e.status == 401):
+                        failure.update(code="authentication_required", needLogin=True, service="jira")
                     failed.append(failure)
         return {"ok": not failed, "created": created, "failed": failed}
 

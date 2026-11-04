@@ -3,7 +3,7 @@
 import threading
 import time
 
-from app.auth.base import SessionExpired, UpstreamUnavailable
+from app.auth.base import SessionExpired, UpstreamError, UpstreamUnavailable
 from app.domain.names import real_name
 
 
@@ -38,7 +38,8 @@ class JiraIdentityMixin:
     def _mention_name(self, user_id):
         return real_name(self._display_name(user_id)) or user_id
 
-    def user_badge(self, user_id):
+    def user_badge(self, user_id, *, strict_auth=False):
+        """Keep UI lookups best-effort; expose authentication/transport failures to MCP."""
         user_id = str(user_id or "").strip()
         if not user_id:
             return None
@@ -53,7 +54,12 @@ class JiraIdentityMixin:
                     "displayName": display_name, "avatar": "/api/avatar/" + actual}
         try:
             return self.cache.get_or_set(cache_key, self.USER_TTL, fetch)[0]
-        except Exception:
+        except Exception as exc:
+            if strict_auth and isinstance(exc, UpstreamUnavailable):
+                raise
+            if strict_auth and isinstance(exc, SessionExpired) and (
+                    not isinstance(exc, UpstreamError) or exc.status == 401):
+                raise
             return None
 
     def upstream_down(self):

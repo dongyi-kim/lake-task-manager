@@ -24,6 +24,7 @@ JQL leaf/issue/user/Epic/Confluence 캐시, mutation invalidation을 사용한�
 
 | 목적 | 도구 |
 |---|---|
+| 인증 상태·복구·로그인 시작 | `get_auth_status`, `authenticate` |
 | JQL·페이지 | `search_issues` |
 | 티켓 본문·댓글·이력·자식·Epic | `get_ticket`, `get_comments`, `get_history`, `get_field_history`, `get_children`, `get_epic`, `get_ticket_context` |
 | 통합검색·Confluence 검색/본문 | `search_workspace`, `search_confluence_documents`, `read_confluence_document` |
@@ -48,10 +49,31 @@ JQL leaf/issue/user/Epic/Confluence 캐시, mutation invalidation을 사용한�
 `fetchedAt`·`freshUntil`·`displayUntil`, stale 여부와 policy revision을 반환한다.
 관측 정보가 없으면 `available: false, state: unknown`으로 표시하며 최신 데이터라고 단정하지 않는다.
 
-총 **49개** 도구를 제공한다. `get_ticket`의 `descriptionHtml`은 열람용, `descriptionEditHtml`은
+업무 도구 49개와 인증 도구 2개, 총 **51개**를 제공한다. `get_ticket`의 `descriptionHtml`은 열람용, `descriptionEditHtml`은
 수정용 본문이다. 생성 시 `body.descriptionHtml`, 이후 본문 수정은 `update_description(html, ...)`,
 댓글 작성·수정은 `add_comment`·`edit_comment(html, ...)`를 사용한다. 기존 UI와 동일한 Jira serializer를 거친다.
 `update_fields`의 `labels`와 `components`에는 문자열 배열을 전달하며 `[]`는 해당 필드를 모두 비운다.
+
+### 인증 처리
+
+모든 업무 도구는 서비스 인증 확인·무음 갱신을 공통 경로로 처리한다. 캐시만으로 가능한 조회에는
+추가 인증 요청을 붙이지 않으며, 실제 인증 거절은 공통 복구 경로로 전달한다. 최근 확인은 20초 재사용하고
+동시 Jira 확인은 서버 keepalive·UI와 같은 실행 결과를 공유한다. 인증이 요청 도중 만료되면 조회는
+1회 재시도하고, 명확히 인증 거절된 Jira 쓰기는 **같은 내용과 mutation ID**로 1회 재시도한다.
+응답 유실·timeout·`outcome_unknown`은 자동 쓰기 반복 대상이 아니다. 일괄 생성은 동일 원본 batch의
+성공한 항목을 receipt로 재사용한다. 통합검색은 인증 가능한 서비스의 결과를 보존한다.
+
+- `get_auth_status(service="jira"|"confluence")`: 상태 확인과 무음 복구. 로그인 창은 열지 않는다.
+- `authenticate(service="jira"|"confluence", interactive=false)`: 무음 복구를 명시적으로 다시 시도한다.
+- 최초 로그인 또는 사용자 입력이 필요하면 업무 응답의 `error.nextAction`에
+  `authenticate(service=..., interactive=true)`를 제공한다. 호출하면 LTM 로그인 화면을 시작하거나
+  진행 중인 화면을 공유하고 즉시 반환한다. UI·트레이·MCP가 동시에 요청해도 서비스별 창은 중복되지 않는다.
+- 사용자가 해당 화면에서 인증을 마친 뒤 `get_auth_status`의 `authenticated:true`를 확인하고
+  원래 도구를 같은 인자로 재호출한다. MCP 토큰·Jira 쿠키를 다시 가져오거나 세션 파일을 다룰 필요가 없다.
+- `pending`은 확인/로그인 진행 중, `upstream_unavailable`은 연결 문제다. 이 상태만으로 로그인을 열지 않는다.
+
+MCP 연결 자체의 Bearer 토큰은 Jira/Confluence 인증과 별개다. MCP 토큰을 재발급한 경우에만
+LTM 설정에서 인증 포함 연결 설정을 다시 복사한다. 사용자 입력이 필요한 SSO를 자동 우회하지 않는다.
 
 일괄 생성은 먼저 `bulk_validate(mode, items)`로 UI와 같은 실제 타입·담당자·컴포넌트·관계 검증을 한다.
 `mode="task"` 항목에는 `epic` 키가 필수이며 독립 Task는 `epic:null`을 명시한다.
@@ -109,6 +131,7 @@ LLM 설정, 인증 쿠키, 비밀값 관리, 임의 REST 호출도 업무 도구
 ## 코드와 검증
 
 - `runtime.py`: SDK 등록·응답·lifespan과 앱 연결
+- `authentication.py`: 공통 인증 확인·복구와 인증 도구
 - `security.py`, `settings.py`: loopback/bearer 경계와 명시적 설정 복사
 - `read_tools.py`, `workspace_tools.py`, `write_tools.py`, `vit_tools.py`, `admin_tools.py`: 타입이 있는 업무 도구 catalog
 - `stdio.py`: 표준 SDK stdio/HTTP 메시지 중계

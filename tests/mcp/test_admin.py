@@ -21,6 +21,28 @@ from app.routes.workspace_config import build_workspace_config_router
 from app.services.workspace_config import WorkspaceConfigCommands
 
 
+def test_local_people_write_resumes_after_auth_expiry_with_original_revision(workspace_env, monkeypatch):
+    env = workspace_env
+    original = env.runtime.workspace_config.read()
+    monkeypatch.setattr(env.client, "env", "prod")
+    probes, authority = [], []
+    monkeypatch.setattr(env.client, "proactive_auth_probe", lambda **options: probes.append(options) or {"ok": True})
+    def authorize():
+        authority.append(True)
+        if len(authority) == 1:
+            raise SessionExpired("identity expired before local write")
+        return {"id": "u01"}
+    monkeypatch.setattr(env.client, "current_user_for_authorization", authorize)
+    async def scenario():
+        async with Client(env.runtime.server) as mcp:
+            result = await mcp.call_tool("set_module_people", {"module": "Workbench", "user_ids": ["u01", "u02"],
+                                        "expected_revision": original["revision"]})
+            assert not result.is_error, result.structured_content
+            assert result.structured_content["data"]["people"]["Workbench"] == ["u01", "u02"]
+    anyio.run(scenario)
+    assert len(authority) == 2 and probes == [{"force": False, "wait": True}, {"force": True, "wait": True}]
+
+
 @pytest.fixture
 def workspace_env(build_env, monkeypatch, tmp_path):
     env = build_env()
