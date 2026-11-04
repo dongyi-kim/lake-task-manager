@@ -70,6 +70,14 @@ class AuthProvider:
     # 여러 스레드에서 동시 GET 가능한가 (basic/PAT=True, SSO=Playwright 단일 context=False)
     supports_parallel = False
 
+    def web_form(self, path, fields=None, *, may_commit=False):
+        """Native Jira hierarchy form GET/POST; fields preserves duplicate string pairs.
+
+        Returns {status, html, location} without following redirects. Only final
+        conversion/reparent POSTs set may_commit=True for uncertain-write recovery.
+        """
+        raise NotImplementedError("이 provider는 Jira native form을 지원하지 않습니다")
+
     def post_json(self, path, json_body=None, params=None):
         """POST + JSON 응답. 쓰기(생성)·검색(Bitbucket code) 공용.
         기본 미지원 — 필요한 provider 만 구현한다. XSRF 헤더는 구현체가 WRITE_HEADERS 로 붙인다."""
@@ -152,6 +160,14 @@ class UpstreamUnavailable(RuntimeError):
     """
 
 
+class MutationPreflightUnavailable(UpstreamUnavailable):
+    """A required read failed while the caller can prove no write has been attempted.
+
+    Raise only around pre-write reads, never a multi-step mutation or a provider write.
+    Unlike an uncertain commit, this proof permits clearing a newly pending receipt.
+    """
+
+
 class UpstreamBusy(UpstreamUnavailable):
     """Local admission/deadline refusal before an upstream operation started.
 
@@ -159,6 +175,10 @@ class UpstreamBusy(UpstreamUnavailable):
     Only the refused operation is known not to have started: an enclosing multi-step mutation
     must still preserve proof of any earlier writes before authorizing a retry.
     """
+
+
+class MutationPreflightBusy(UpstreamBusy, MutationPreflightUnavailable):
+    """Pre-write admission refusal: safely retryable without opening the outage breaker."""
 
 
 class MutationOutcomeUnknown(UpstreamUnavailable):

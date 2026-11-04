@@ -1,9 +1,11 @@
 // DevToolsView.js — 개발용 API 모음 페이지(#/devtools). 설정 메뉴의 'Dev Tools' 가 여기로 온다.
 // 제공 중인 /api/dev/* 를 카드로 나열: 새 탭 열기 + 인라인 실행(결과 미리보기).
 import { api } from "../../lib/api.js";
+import HierarchyProbe from "./devtools/HierarchyProbe.js";
 
 export default {
   name: "DevToolsView",
+  components: { HierarchyProbe },
   data() { return { rev: "", tools: null, results: {}, running: {}, params: {} }; },
   async mounted() {
     const [h, t] = await Promise.all([
@@ -55,6 +57,8 @@ export default {
       <br>노출 제어는 나중에 유저 역할이 생기면 걸립니다(지금은 전부 열림).</p>
 
     <div v-if="!tools || !tools.endpoints" class="dt-empty">개발용 API 목록을 불러오지 못했습니다.</div>
+
+    <HierarchyProbe v-if="tools && tools.enabled && tools.enabled.includes('hierarchy_test')" />
 
     <div v-for="ep in (tools && tools.endpoints) || []" :key="idOf(ep)" class="dt-card"
          :class="{ danger: ep.danger }">

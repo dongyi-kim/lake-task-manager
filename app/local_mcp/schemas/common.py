@@ -36,6 +36,9 @@ class ToolError(OpenModel):
     })
 
     code: str
+    reason: Literal["ticket_completed", "field_not_editable"] | None = Field(default=None, description=(
+        "Specific edit restriction; code/status retain their existing conflict/permission category. "
+        "nextAction is read-only discovery, never permission to reopen a ticket automatically."))
     message: str | None = None
     error: str | None = None
     detail: str | None = None
@@ -46,6 +49,9 @@ class ToolError(OpenModel):
     nextAction: RecoveryAction | None = None
     clientMutationId: str | None = None
     repeatWrite: bool | None = None
+    writeExecuted: bool | None = Field(default=None, description=(
+        "False only when required validation reads failed before any Jira write. "
+        "Retry after recovery using the same mutation ID and exact input."))
     retryWithSameMutationId: bool | None = None
     outcomeUnknown: bool | None = None
     operationResult: JsonValue | None = Field(default=None, description=(

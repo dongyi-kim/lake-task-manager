@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from app.auth.base import (MutationOutcomeUnknown, SessionExpired, UpstreamBusy,
+from app.auth.base import (MutationOutcomeUnknown, MutationPreflightUnavailable, SessionExpired, UpstreamBusy,
                            UpstreamUnavailable, write_upstream)
 
 
@@ -275,6 +275,10 @@ class MutationReceiptStore:
                 context=context)
             try:
                 result = write()
+            except MutationPreflightUnavailable:
+                # The callback has positively established that no Jira write was attempted.
+                self.cache.delete_mutation_receipt(key)
+                raise
             except SessionExpired as exc:
                 if int(getattr(exc, "status", 0) or 0) >= 500:
                     # Basic/local providers historically wrap server 5xx in UpstreamError, whose

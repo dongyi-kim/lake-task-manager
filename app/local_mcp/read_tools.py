@@ -151,21 +151,47 @@ def register_reads(register, runtime):
             record_person_event(runtime.client, runtime.settings, result["id"], "lookup", expected_stamp=context)
         return result
 
-    def list_options(kind: Literal["task_types", "child_types", "edit_fields", "transitions",
+    def list_options(kind: Literal["task_types", "child_types", "create_fields", "edit_fields", "transitions",
                                     "priorities", "components", "epics", "link_types"],
-                     key: str = "", query: str = "") -> dict:
+                     key: str = "", query: str = "", issue_type: str = "", field_id: str = "",
+                     start_at: Annotated[int, Field(ge=0)] = 0,
+                     max_results: Annotated[int, Field(ge=1, le=50)] = 20) -> dict:
         """Discover actual Jira types, editable fields, transition IDs and allowed values before writing.
         Returns options; child_types/edit_fields/transitions require key. query filters only epics.
         Epic suggestions are capped at 20, not an exhaustive Epic inventory; use search_issues for that.
         components are Jira Components, distinct from local people roster modules. Never infer a
         transition ID or supported link type from a display name or a prior ticket's metadata.
+        create_fields requires issue_type (actual type name). Exhaust field pages via nextStartAt/hasMore;
+        each field includes required/default flags and exact inputFields mappings, valid only for inputTools:
+        parent_key belongs to create_subtask and epic_key to create_task. To inspect full defaultValue and
+        allowedValues, set field_id and paginate again (paginationKind=allowedValues).
+        Selection pages do not replace reading all field pages. Responses fit 8KiB; IDs are never shortened.
+        Managed project/issuetype/reporter are supplied by LTM/Jira. unsupportedRequired is page-local:
+        fields without an MCP input or Jira default require the Jira UI, not invented custom arguments.
+        field_id/start_at/max_results apply only to create_fields; other option lists retain their contracts.
+        For transitions, fields lists Jira's screen and commentRequired includes LTM completion policy:
+        send non-empty body.commentHtml when true, even if the Jira screen omits comment.
+        Each screen field's inputFields maps to transition_ticket arguments. Required worklog means
+        at least one of body.days/hours/minutes must be positive, using the user's actual work duration.
+        An empty inputFields means LTM cannot submit that field; required unsupported fields need Jira.
         """
         client = runtime.client
+        if kind == "create_fields":
+            from app.local_mcp.create_options import create_options
+            return create_options(client, runtime.settings, issue_type, field_id, start_at, max_results)
         if kind in ("child_types", "edit_fields", "transitions"):
             runtime.check_key(key)
-            method = {"child_types": client.child_types, "edit_fields": client.editmeta,
-                      "transitions": client.transitions}[kind]
-            return {"options": method(key)}
+            method = {"child_types": client.child_types, "edit_fields": lambda key: client.editmeta(key, strict=True),
+                      "transitions": lambda key: client.transitions(key, strict=True)}[kind]
+            options = method(key)
+            if kind == "transitions":
+                mapping = {"worklog": ["body.days", "body.hours", "body.minutes"],
+                           "assignee": ["body.assignee"], "resolution": ["body.resolution"],
+                           "comment": ["body.commentHtml"]}
+                for option in options:
+                    for field in option["fields"]["fields"]:
+                        field["inputFields"] = mapping.get(field.get("system") or field["id"], [])
+            return {"options": options}
         methods = {"task_types": client.task_types, "priorities": client.priorities,
                    "components": lambda: client.components(strict=True),
                    "link_types": lambda: client.link_types(strict=True),

@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from .common import JsonValue, OpenModel
+from .common import JsonValue, OpenModel, ToolError
 
 
 class OkResult(OpenModel):
@@ -93,6 +93,27 @@ class BulkCreated(OpenModel):
     errors: list[ValidationMessage] | None = None
 
 
+class BulkUpdatedItem(OpenModel):
+    index: int
+    key: str
+    fields: list[str]
+
+
+class BulkUpdateFailure(ToolError):
+    index: int
+    key: str
+    reason: str | None = None
+    messageTruncated: bool
+    action: Literal["verify_outcome", "authenticate", "reopen_or_check_conflict",
+                    "check_permissions", "retry_same_batch", "check_inputs", "restore_original_user"]
+
+
+class BulkUpdated(OpenModel):
+    ok: bool
+    updated: list[BulkUpdatedItem]
+    failed: list[BulkUpdateFailure]
+
+
 class CommentAuthor(OpenModel):
     name: str | None = None
     key: str | None = None
@@ -163,6 +184,7 @@ DATA_MODELS = {
     "create_subtask": CreatedTicket,
     "create_epic": CreatedEpic,
     "bulk_create": BulkCreated,
+    "bulk_update": BulkUpdated,
     "update_fields": OkResult,
     "update_description": OkResult,
     "add_comment": AddedComment,

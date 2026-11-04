@@ -148,6 +148,7 @@ class JqlCachePolicy:
             "create", "delete", "transition", "assignee", "epic_link",
         }) or bool(fields & {
             "assignee", "components", "status", "resolution", "resolutiondate", "timespent",
+            "parent", "issuetype", str(self.owner.s.epic_link_field_id or "").lower(),
         })
 
         if structural:

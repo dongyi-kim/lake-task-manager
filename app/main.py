@@ -1209,6 +1209,13 @@ _local_mcp = LocalMcpRuntime(
 )
 _local_mcp.install(app)
 
+if _devtools.enabled(_settings, "hierarchy_test"):
+    from app.routes.dev_hierarchy_probe import build_hierarchy_probe_router
+    app.include_router(build_hierarchy_probe_router(
+        runtime=_local_mcp, require_manager=_require_manager,
+        state_dir=CACHE_DIR / "dev-hierarchy-runs",
+    ))
+
 
 # 티켓 단독 페이지 — Jira 와 같은 /browse/{key} URL. SPA 진입점을 그대로 돌려주고
 # 어떤 티켓인지는 프론트가 경로에서 읽는다(서버 렌더링 없음).

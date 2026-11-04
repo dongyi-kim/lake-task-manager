@@ -6,12 +6,23 @@
 
 이 MCP는 UI와 같은 Jira 인증·캐시·쓰기 경로를 공유한다. 별도 Jira 비밀번호·쿠키를 요구하거나 직접 REST 호출로 권한 검사를 우회하지 않는다. 사용자 ID, ticket key, comment ID, 허용 type·transition ID·컴포넌트는 실제 조회 결과를 사용한다.
 
+완료 상태·작업별 권한·Task/SubTask 계층 변경의 지원 범위는 [티켓 작업 가이드](ticket-actions.md)를 확인한다. `ticket_completed`·`field_not_editable`의 `nextAction`은 조회 안내이며 추가 쓰기 권한이 아니다.
+
+상태 전이는 `list_options(kind="transitions", key=...)`의 현재 전이 ID와 화면 필드를 확인한다.
+`commentRequired=true`이면 `body.commentHtml`을 반드시 작성한다. 완료 전이는 Jira 화면 metadata에
+댓글이 없어도 LTM에서 완료 기록을 요구한다. 담당자는 확인된 사용자 ID, resolution은 허용 선택지의
+name을 쓰며 화면에 없는 담당자·resolution·소요시간을 임의로 보내지 않는다.
+필수 `worklog`는 `body.days`·`body.hours`·`body.minutes` 중 하나 이상에 양수로 입력한다.
+`timeSpent`나 `worklog`라는 body 인자는 없으며 `fields[].inputFields`가 정확한 인자 경로다.
+사용자가 제공한 실제 소요시간을 사용하고, 모르면 확인한다. 임의의 시간으로 필수값을 채우지 않는다.
+
 ## Mutation ID
 
 - 한 번의 논리적 쓰기마다 8~128자의 고유 ID를 만들고 요청 내용을 함께 보존한다. 영문자·숫자로 시작하고 나머지는 영문자·숫자·`.`·`_`·`:`·`-`를 사용한다.
 - `create_task`·`create_subtask`·`create_epic`·`update_fields`·`transition_ticket`은 `body.clientMutationId`를 받는다. 본문·댓글·첨부 등 다른 쓰기는 `client_mutation_id` 인자를 받는다.
 - 같은 요청의 재시도는 **동일 ID + 동일 인자**다. 새로운 요청이나 확정된 요청 내용 변경에는 새로운 ID를 쓴다. 아직 결과가 불명확한 쓰기를 새 ID로 반복하지 않는다.
-- `bulk_create`는 전체 배열과 순서가 하나의 요청이다. 같은 ID 아래 성공 항목을 제외하거나 실패 행만 보내면 안 된다.
+- `bulk_create`·`bulk_update`는 전체 배열과 순서가 하나의 요청이다. 같은 ID 아래 성공 항목을 제외하거나 실패 행만 보내면 안 된다.
+- `bulk_update`는 최대 10개의 `{key, fields}`를 수정하며 labels·components 배열은 추가가 아니라 전체 교체다. 완료 티켓은 별도 Reopened 전이 후 수정한다. 권한 부족은 재로그인으로 우회할 수 없으며 `list_options(kind="edit_fields", key=...)`로 편집 가능 필드를 확인한다.
 
 ## 오류와 부분 성공
 

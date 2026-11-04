@@ -22,7 +22,7 @@ JQL leaf/issue/user/Epic/Confluence 캐시, mutation invalidation을 사용한�
 
 ## 도구
 
-55개 도구 모두 `inputSchema`와 `outputSchema`를 제공한다. 출력은 공통 성공/오류 envelope와
+65개 도구 모두 `inputSchema`와 `outputSchema`를 제공한다. 출력은 공통 성공/오류 envelope와
 도구별 `data` 타입으로 정의하며, 조회 성공에는 `cache`, `partial`, `missing`도 포함된다.
 실제 반환 JSON은 기존과 동일하게 `content`의 JSON 텍스트 및 `structuredContent`에 함께 제공한다.
 SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제거하지 않는다.
@@ -45,9 +45,12 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 | 부속 정보·첨부파일 내용 | `get_attachments`, `read_attachment`, `get_documents` |
 | 생성 | `create_task`, `create_subtask`, `create_epic` |
 | 일괄 생성 | `bulk_validate`, `bulk_create` |
+| 일괄 필드 수정 | `bulk_update` |
 | PMO_VIT 등록·해제 | `get_vit_overview`, `set_vit_tracking` |
 | WBS 계획·인력 관리 | `get_workspace_config`, `create_wbs_task`, `update_wbs_task`, `delete_wbs_task`, `set_module_people`, `rename_people_module`, `delete_people_module` |
+| LLM 연결 설정 | `get_llm_settings`, `create_llm_config`, `update_llm_config`, `delete_llm_config`, `list_llm_models`, `check_llm_connection`, `activate_llm_config` |
 | 본문·필드 수정·전이 | `update_description`, `update_fields`, `transition_ticket` |
+| Task/SubTask 변환·부모 변경 | `get_hierarchy_options`, `change_ticket_hierarchy` |
 | 댓글 | `add_comment`, `edit_comment`, `delete_comment` |
 | 티켓·문서 링크 | `add_issue_link`, `delete_issue_link`, `add_document`, `delete_document` |
 | 첨부·삭제 | `add_attachment`, `delete_attachment`, `delete_ticket` |
@@ -61,13 +64,30 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 `fetchedAt`·`freshUntil`·`displayUntil`, stale 여부와 policy revision을 반환한다.
 관측 정보가 없으면 `available: false, state: unknown`으로 표시하며 최신 데이터라고 단정하지 않는다.
 
-업무 도구 52개와 인증 도구 2개, 가이드 도구 1개로 총 **55개**를 제공한다. `get_ticket`의 `descriptionHtml`은 열람용, `descriptionEditHtml`은
+업무 도구 55개와 인증 도구 2개, 가이드 도구 1개, LLM 설정 도구 7개로 총 **65개**를 제공한다. `get_ticket`의 `descriptionHtml`은 열람용, `descriptionEditHtml`은
 수정용 본문이다. 생성 시 `body.descriptionHtml`, 이후 본문 수정은 `update_description(html, ...)`,
 댓글 작성·수정은 `add_comment`·`edit_comment(html, ...)`를 사용한다. 기존 UI와 동일한 Jira serializer를 거친다.
 댓글 수정 전에는 `get_comment_source(key, comment_id)`의 `html`을 읽는다. `get_comments`의 표시 HTML은
 수정 원본이 아니다. 원본 조회는 UI와 같은 최신 최대 1,000개 검색 범위이며 Jira가 더 작게 제한할 수 있다.
 원본을 찾지 못하면 오류를 반환하므로 미리보기로 대신 덮어쓰지 않는다.
 `update_fields`의 `labels`와 `components`에는 문자열 배열을 전달하며 `[]`는 해당 필드를 모두 비운다.
+
+계층 변경은 공개 REST PUT이 아닌 기본 Jira 8.20.8의 네이티브 폼을 사용한다. `get_hierarchy_options`에서
+필수 입력과 보안 수준·제거될 필드를 확인하고, 반환된 `previewHash`와 동일 입력으로 실행한다.
+완료 상태·동일 프로젝트·타입·권한 제한을 지키며, 최종 타입/부모를 재조회하고 이전·새 관계 캐시를 갱신한다.
+사내 전용 widget 등 알 수 없는 폼은 중단한다. 운영 Jira UI·SSO 검증은 아직 수행하지 않았다.
+
+`bulk_update(items, client_mutation_id)`는 최대 10개의 `{key, fields}`를 순서대로 수정한다.
+예: `{"key":"DL-123","fields":{"summary":"새 제목","labels":["etl"]}}`.
+성공·실패는 원래 `index`와 `key`로 반환하며 실패해도 다른 티켓은 계속 처리한다. 롤백은 없다.
+완료 티켓은 먼저 명시적으로 Reopened 전이를 수행해야 하며, Reporter 변경은 실제 Jira 권한이 필요하다.
+필드별 권한·선택지는 `list_options(kind="edit_fields", key=...)`로 확인한다. `epic`은 Epic 소속만
+바꾸며 Task/SubTask 변환이나 SubTask 부모 변경을 의미하지 않는다. 일괄 수정 UI는 추가하지 않는다.
+재시도는 성공 행을 포함한 **전체 배열·순서·ID를 그대로** 보낸다. 성공 행은 다시 쓰지 않으며,
+응답 유실은 `outcome_unknown`으로 보존해 새 ID로 중복 실행하지 않는다. 실패 행의 `action`이
+권한 확인·별도 재오픈·로그인·동일 요청 재시도·결과 확인을 안내한다. 긴 오류는 preview로 표시한다.
+도중에 Jira 계정이 바뀌면 미완료 행을 쓰지 않고 `restore_original_user`를 안내한다. 인증 복구가
+실패해도 이미 확인된 성공 행과 실패 행은 유지하며 `authentication.jira`에 복구 오류를 별도로 표시한다.
 
 ### 작성 가이드라인 스킬
 
@@ -197,7 +217,33 @@ UI 통합검색·내장 Agent·MCP는 환경/Confluence 서버/사용자/요청 
 
 WBS와 사용자 활동에는 UI와 같은 manager 검사, 팀 워크로드에는 같은 module/people 범위가 적용된다.
 Bitbucket 검색은 현재 LTM에서도 예정 기능의 mock placeholder이므로 MCP 도구에 포함하지 않는다.
-LLM 설정, 인증 쿠키, 비밀값 관리, 임의 REST 호출도 업무 도구로 노출하지 않는다.
+인증 쿠키, 비밀값 원문 조회, 임의 REST 호출이나 파일 접근은 노출하지 않는다.
+
+### LLM 연결 설정
+
+LLM 설정 도구는 **설정 → AI 연결 설정**과 같은 named config·키 저장소·검증 지문을 사용한다.
+Jira 로그인 없이 동작하며, MCP로 Jira를 사용하는 데 LLM 연결 설정이 필요한 것은 아니다.
+
+1. `get_llm_settings`로 후보와 활성 ID, 환경변수 우선 적용 여부를 확인한다.
+2. `create_llm_config(name, provider)`로 후보를 만들고 `update_llm_config(config_id, changes)`로
+   모델·Azure 배포명·URL·키를 저장한다. provider는 생성 후 고정이며 새 후보는 자동 활성화하지 않는다.
+3. `check_llm_connection(config_id, stage="auth")`로 인증을 확인한다. `list_llm_models`는
+   모델 목록만 조회하며 검증 완료로 표시하거나 활성화하지 않는다.
+4. 모델을 지정한 뒤 `check_llm_connection(..., stage="models")`를 명시적으로 호출한다.
+   실제 chat·embedding·capability 요청이 발생할 수 있고 과금될 수 있다. `passed`와 진단 결과를 확인한다.
+5. 두 검증을 모두 통과한 현재 지문만 `activate_llm_config`로 적용한다. 키·헤더·URL·모델을
+   바꾸면 필요한 검증을 다시 수행한다. 사용 중인 설정은 삭제할 수 없으며 다른 검증된 설정을 먼저 적용한다.
+
+설정 목록은 기본 3개(최대 10개), 모델 목록은 `kind="chat"|"simple"|"embed"`별 기본 25개(최대 50개)씩
+반환한다. `hasMore`, `nextStartAt`으로 이어 읽고 `total`은 해당 목록의 전체 개수다. 데이터 응답은
+8KiB 이내이며 모델·설정 ID는 자르지 않는다. 단일 항목이 너무 크면 명시적인 오류와 UI 확인 안내를 준다.
+긴 연결 진단은 `truncated:true`, `originalBytes`, `preview`로 제한된 미리보기임을 표시한다.
+
+`changes.secrets`는 UI와 같은 `aoaiEndpoint`, `aoaiApiKey`, `openaiApiKey`, `compatBaseUrl`,
+`compatApiKey`, `compatHeaders`, `simpleBaseUrl/ApiKey/Headers`, `embeddingBaseUrl/ApiKey/Headers`를 받는다.
+헤더는 문자열 값의 JSON 객체다. 생략한 값은 유지하고 빈 문자열은 저장된 값을 지운다.
+URL에 인증정보·query·fragment를 넣지 않는다. 키·헤더는 쓰기 전용이며 조회에는 `configured` 또는
+빈 문자열만 제공한다. 환경변수 자체는 수정하지 않으며 환경변수 우선순위는 유지한다.
 
 티켓 쓰기 도구는 **Jira에 직접 반영**하고 WBS·인력 관리 도구는 로컬 설정을 저장한다.
 외부 클라이언트에서 사용자가 허용한 작업만 실행해야 한다.
@@ -210,10 +256,19 @@ LLM 설정, 인증 쿠키, 비밀값 관리, 임의 REST 호출도 업무 도구
 응답이 유실되어 `outcome_unknown`이 반환된 경우 새 ID로 반복하지 않는다. 생성·댓글 추가·전이·첨부는
 기존 Jira 대조 로직으로 복구한다. 나머지 쓰기는 결과를 증명할 수 없으면 재실행하지 않고 unknown을 유지하므로,
 최신 티켓을 조회해 반영 여부를 확인한다. 단일 작업 실패는 MCP `isError`와 구조화된 error code로 반환한다.
+이름 변경은 `update_fields`의 `body.summary`로 수행한다. 편집·전이 준비 조회가 실패한 경우에는
+권한 없음이나 빈 선택 목록으로 숨기지 않는다. 쓰기 전 실패가 확인되면 `writeExecuted:false`와
+`retryWithSameMutationId:true`를 반환하며, 복구 후 같은 입력·mutation ID로 재시도할 수 있다.
 일괄 생성의 검증/부분 실패도 최상위 `isError`·`ok:false`로 반환한다. 일부 성공이면 `partial:true`이며
 `data`의 `created`·`failed`·`errors`와 원래 항목 index를 보존하므로 성공 결과까지 실패로 간주하지 않는다.
 쓰기 전 상태와 권한은 만료된 display cache로 판단하지 않는다. 아직 유효한 캐시는 재사용하지만
 확인 중 연결·인증 오류가 나면 쓰기를 차단한다. 인증 필요·권한 없음·설정 충돌은 서로 다른 error code로 제공한다.
+
+완료 필드 수정 거절은 기존 `code=conflict`·409와 함께 `reason=ticket_completed`를,
+편집 metadata에 없는 필드는 `code=permission_denied`·403과 `reason=field_not_editable`을 반환한다.
+`nextAction`은 해당 티켓의 전이/편집 필드를 조회하는 안내다. 자동 재열기 허용이나 권한 부여가 아니다.
+작업별 상태·권한과 Jira 화면의 계층 변경 기능은
+`get_content_guide(skill="ltm-task-authoring", path="references/ticket-actions.md")`에서 확인한다.
 
 MCP는 UI와 별도 작업 용량을 사용한다. 업무 도구는 동시 8개, 인증·가이드는 별도 2개이며,
 초과 호출은 대기열에 쌓지 않고 `rate_limited`와 `retryAfterSeconds`를 반환한다.
@@ -226,12 +281,28 @@ MCP는 UI와 별도 작업 용량을 사용한다. 업무 도구는 동시 8개,
 
 ## 코드와 검증
 
+Dev Tools(`#/devtools`)의 **계층 변경 원클릭 테스트**는 현재 연결된 Jira에 테스트용 Task 3개를
+생성한 뒤 Task → SubTask → 다른 부모로 이동 → Task 복원을 실제 MCP 도구로 실행한다.
+실행 환경·프로젝트와 타입을 확인한 뒤 버튼을 누른다. 테스트 티켓은 결과 확인을 위해 남으며
+자동 삭제하지 않는다. 운영 Jira에서도 현재 로그인 계정의 생성·편집·이동 권한이 그대로 적용된다.
+
+- `GET /api/dev/hierarchy-test/options`: 현재 환경·프로젝트와 실제 타입 이름
+- `POST /api/dev/hierarchy-test`: `{ "runId": "고유 UUID", "expectedScope": "options의 scope", "taskType": "Task", "subtaskType": "Sub-task" }`
+- `GET /api/dev/hierarchy-test/{runId}`: 단계별 진행·오류와 생성된 Jira 티켓 링크
+
+POST는 실행을 시작하고 상태를 반환한다. 화면을 닫아도 서버에서 진행하며, 같은 runId와 입력으로
+재개하면 저장된 단계·mutation receipt를 사용한다. 필수 입력·권한·완료 상태·결과 불명확 문제가
+생기면 후속 단계를 중단한다. 타입·상태 ID나 제거될 필드를 임의로 선택하지 않는다.
+일반 mock에는 Jira의 네이티브 변환 화면이 없으므로 해당 단계의 미지원 결과를 그대로 표시한다.
+자동 회귀 테스트의 폼 fixture 통과와 운영 Jira 검증은 별개다.
+
 - `runtime.py`: SDK 등록·응답·lifespan과 앱 연결
 - `authentication.py`: 공통 인증 확인·복구와 인증 도구
 - `evidence_tools.py`, `app/jira/evidence_service.py`: 크기를 제한한 원본 댓글·이력 페이지
 - `hierarchy_tools.py`, `app/jira/hierarchy_service.py`: 범용 하위 계층 탐색과 실패 목록
 - `security.py`, `settings.py`: loopback/bearer 경계와 명시적 설정 복사
 - `read_tools.py`, `workspace_tools.py`, `write_tools.py`, `vit_tools.py`, `admin_tools.py`: 타입이 있는 업무 도구 catalog
+- `llm_tools.py`, `app/agent/connection_settings.py`: UI와 공유하는 named LLM 설정·검증·활성화
 - `stdio.py`: 표준 SDK stdio/HTTP 메시지 중계
 - `app/services/ticket_commands.py`: HTTP UI와 MCP가 공유하는 쓰기 command
 - `app/services/workspace_config.py`: WBS·인력 UI와 MCP가 공유하는 설정 command
