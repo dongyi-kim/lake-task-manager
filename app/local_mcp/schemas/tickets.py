@@ -89,6 +89,11 @@ class Comments(OpenModel):
     mayHaveMore: bool
 
 
+class CommentSource(OpenModel):
+    id: str
+    html: str
+
+
 class TimelineEvent(OpenModel):
     kind: str
     date: str | None
@@ -434,6 +439,7 @@ class Descendants(OpenModel):
 
 DATA_MODELS = {
     "search_issues": SearchPage, "get_ticket": TicketView, "get_comments": Comments,
+    "get_comment_source": CommentSource,
     "get_history": History, "get_children": Children, "get_epic": Epic,
     "search_users": Users, "get_user": Identity | None, "list_options": Options,
     "get_workload": Workload, "get_attachments": Attachments, "get_documents": Documents,

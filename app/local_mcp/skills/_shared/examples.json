@@ -1,0 +1,13 @@
+{
+  "usage": "구조 검증용 예제다. __...__ 값은 실제 조회·업로드 결과로 치환하고 escape한다. 요청으로 그대로 실행하지 않는다.",
+  "descriptionHtml": "<div class=\"sec-title-node\">작업 범위</div><p><span data-type=\"mention\" data-id=\"__USER_ID__\">@__DISPLAY_NAME__</span>와 범위를 확인합니다.</p><p><a href=\"__JIRA_URL__\">__ISSUE_TITLE__</a> · <a href=\"__CONFLUENCE_URL__\">__DOCUMENT_TITLE__</a></p><ul data-type=\"taskList\"><li data-checked=\"false\"><p>원천 건수 대조</p></li></ul><table><tbody><tr><th>항목</th><th>결과</th></tr><tr><td>원천 건수</td><td>확인 필요</td></tr></tbody></table><pre class=\"jecodeblock\"><code class=\"language-sql\">SELECT id\nFROM source_table\nWHERE amount &lt; 100;</code></pre><div class=\"callout callout-info\"><p>합의된 검증 기준을 적용합니다.</p></div><p><img src=\"__ATTACHMENT_PATH__\" alt=\"검증 결과 화면\" width=\"640\"></p>",
+  "commentHtml": "<h3>진행 보고</h3><p><span data-type=\"mention\" data-id=\"__USER_ID__\">@__DISPLAY_NAME__</span> <strong>검토</strong> 부탁드립니다.</p><ul><li>확인된 변경 사항</li><li>남은 검증 항목</li></ul><ul data-type=\"taskList\"><li data-checked=\"false\"><p>결과 재검증</p></li></ul><p><a href=\"__JIRA_URL__\">__ISSUE_TITLE__</a> · <a href=\"__CONFLUENCE_URL__\">__DOCUMENT_TITLE__</a></p><table><tbody><tr><th>항목</th><th>결과</th></tr><tr><td>변경 범위</td><td>요청된 범위</td></tr></tbody></table><pre class=\"jecodeblock\"><code class=\"language-sql\">SELECT id FROM source_table;</code></pre><div class=\"callout callout-note\"><p>확인된 참고 사항</p></div><blockquote><p>원문 인용 예시</p></blockquote><p><img src=\"__ATTACHMENT_PATH__\" alt=\"검증 결과 화면\"></p>",
+  "bulkItems": [
+    {
+      "summary": "예시 작업 — 실제 요청으로 치환",
+      "type": "__TASK_TYPE__",
+      "epic": null,
+      "description": "## 작업 범위\n\n요청된 업무를 적습니다.\n\n- [ ] 원천 건수 대조\n- [ ] 결과 공유\n\n| 항목 | 기준 |\n| --- | --- |\n| 건수 | 합의된 검증 기준 |\n\n```\nSELECT id FROM source_table;\n```\n\n[참고 링크 예시](https://example.com/reference)"
+    }
+  ]
+}

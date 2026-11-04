@@ -113,7 +113,8 @@ def register_writes(register, runtime):
 
     def edit_comment(key: str, comment_id: str, html: str, client_mutation_id: str) -> dict:
         """Replace one existing comment's full HTML, subject to Jira permissions.
-        Obtain comment_id from get_comments and preserve unrelated text; no new comment is created.
+        Obtain comment_id from get_comments/get_evidence_page, then load get_comment_source.html.
+        Preserve unrelated content from this editor source, not the rendered preview; no new comment is created.
         Reuse the same client_mutation_id and content if authentication recovery requires retrying.
         """
         runtime.check_key(key)

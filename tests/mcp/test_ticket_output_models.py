@@ -32,12 +32,13 @@ def test_all_ticket_reads_accept_real_service_outputs_and_preserve_fields(build_
     epic = env.client.create_epic("Contract Epic")["key"]
     task = env.client.create_child(epic, "Task", "Contract Task", assignee="u01")["key"]
     child = env.client.create_child(task, "Sub-task", "Contract SubTask")["key"]
-    env.client.add_comment(task, "Original comment")
+    comment = env.client.add_comment(task, "Original comment")
     env.client.upload_attachment(task, "contract.txt", b"attachment bytes", "text/plain")
     env.client.add_remote_link(task, "https://example.com/document", "Contract document")
     arguments = {
         "search_issues": {"jql": f"key = {task}"}, "get_ticket": {"key": task},
         "get_comments": {"key": task}, "get_history": {"key": task},
+        "get_comment_source": {"key": task, "comment_id": str(comment["id"])},
         "get_children": {"key": task}, "get_epic": {"key": epic},
         "search_users": {"query": "u01"}, "get_user": {"user_id": "u01"},
         "list_options": {"kind": "task_types"}, "get_workload": {"user_id": "u01"},
