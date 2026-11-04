@@ -63,11 +63,29 @@ export function cloneTaskModel(model) {
 export function uniformStatusCategory(cards) {
   let only = null;
   for (const card of cards || []) {
-    const status = STATE_KEYS.has(card.statusCategory) ? card.statusCategory : "todo";
+    const status = card.statusCategory;
+    if (!STATE_KEYS.has(status)) return null;
     if (only !== null && only !== status) return null;
     only = status;
   }
   return only;
+}
+
+/** Membership for rendering/compact detection, before folding and pagination. */
+export function filteredTaskChildren(mine, others, mode, accept = () => true) {
+  const own = mine.filter(accept);
+  const all = own.concat(others.filter(accept));
+  // A parent-only scope has always shown its related children. Do not broaden a nonempty
+  // matching set merely because the user subsequently filtered every matched child out.
+  return { all, own, shown: mode === "mine" && mine.length ? own : all };
+}
+
+export function compactTaskCategory(panel) {
+  const parent = panel?.parentCard?.statusCategory;
+  if (!STATE_KEYS.has(parent) || panel?.group?.childrenLoaded !== true
+      || panel.group.childrenPending || panel.group.childrenUnavailable) return null;
+  const children = panel.cards || [];
+  return !children.length || uniformStatusCategory(children) === parent ? parent : null;
 }
 
 export function epicSig(card) {

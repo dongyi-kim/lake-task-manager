@@ -33,7 +33,7 @@ import {
   AXIS_PAGE_SIZE, BAND_FILTERS, NARROW, NO_DUE, OPTIONS, PREF_KEY, STATES, STATE_KEYS, SUB_CAP,
   TASK_RETRY_DELAYS, cloneTaskModel, epicSig, patchTaskData, reconcileTaskModel,
   resolveDefaultModule,
-  taskLoadErrorKind, uniformStatusCategory,
+  taskLoadErrorKind, uniformStatusCategory, filteredTaskChildren, compactTaskCategory,
 } from "../mytasks/taskModel.js";
 import { hydrateTaskGroups } from "../mytasks/taskHydration.js";
 import { pushToast } from "../../lib/toast.js";
@@ -1065,16 +1065,11 @@ export default {
       return this.sort === "pri" ? [pri, due] : [due, pri];
     },
     taskPanel(g) {
-      const ex = (a) => !this.excluded[a.key];      // 수정으로 필터 이탈한 하위는 뺀다
-      const mineCards = g.atoms.filter(ex).map((a) => this.card(a, g, true));
-      const all = mineCards.concat(g.others.filter(ex).map((ot) => this.card(ot, g, false)));
       const mode = this.subView;
-      // '내 티켓만' 이라도 **내 하위가 하나도 없으면** 그 그룹의 실제 하위(others)를 대신 보여 준다.
-      // (내가 부모만 담당하고 하위는 전부 남의 것이거나, epic 스코프처럼 하위가 스코프에 안 잡힐 때 —
-      //  안 그러면 그룹 본문이 비어 '하위가 없는 것처럼' 보인다.)
-      // '모두 접기'는 초기 표시 상태일 뿐이다. 하단바를 눌러 개별 Task를 펼칠 수 있도록
-      // 실제 하위 카드는 보존하고, 렌더 여부만 isGroupClosed()가 정한다.
-      const shown = mode === "all" || mode === "collapsed" || !mineCards.length ? all : mineCards;
+      const { all, own: mineCards, shown } = filteredTaskChildren(
+        g.atoms.map((a) => this.card(a, g, true)),
+        g.others.map((a) => this.card(a, g, false)), mode,
+        (c) => !this.excluded[c.key] && this.epicPass(c) && this.projPass(c));
       // 하단바는 현재 펼쳐 둔 범위와 무관하게 실제 Sub-Task 담당자를 모두 보여 준다.
       // 부모 담당자는 부모 카드에 이미 있으므로 중복하지 않는다.
       const assignees = [];
@@ -1096,8 +1091,8 @@ export default {
         parentCard: this.card(g, g, !!g.mine),
         cards: this.sorted(shown),
         emptyFiltered: g.childrenLoaded === true && shown.length === 0,
-        // 화면에 일부만 펼쳐도 판정은 동료 몫까지 포함한 **모든 실제 Sub-Task** 기준이다.
-        singleStatus: uniformStatusCategory(all),
+        // 접기/페이지 제한 전의 필터 결과만 판정한다. 부모 상태와도 일치해야 축소한다.
+        singleStatus: uniformStatusCategory(shown),
         rank: this.rankOf(all),
       };
     },
@@ -1146,11 +1141,8 @@ export default {
     },
     /** 가로축의 1컬럼 버전. 부모 상태 열이 접혔으면 부모 정보가 찌그러지지 않게 기존 전폭으로 둔다. */
     compactStatus(p) {
-      if (p?.group?.childrenPending) return null;
-      const uniform = p && p.kind === "task" ? p.singleStatus : null;
-      const rawParent = p?.parentCard?.statusCategory;
-      const parentStatus = STATE_KEYS.has(rawParent) ? rawParent : "todo";
-      return (uniform || p.emptyFiltered) && this.bandOpen(parentStatus) ? parentStatus : null;
+      const category = compactTaskCategory(p);
+      return category && this.bandOpen(category) ? category : null;
     },
     parentState(p) {
       const value = p?.group?.statusCategory;
