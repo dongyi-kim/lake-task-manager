@@ -13,6 +13,7 @@ Lake Task Manager — FastAPI 진입점.
 JIRA_ENV=mock 이면 Jira 없이 결정적 데이터로 전체가 구동된다.
 """
 
+import os
 import sys
 import threading
 
@@ -60,6 +61,13 @@ _login_requested = _login_requests.requested
 # 다른 스레드에서 창을 못 만진다 — 그래서 이벤트만 넘기고 실제 조작은 창 루프가 한다).
 _app_ctrl = {"open_hook": None, "restart_hook": None, "quit_hook": None, "hotkey_hook": None, "live": 0,
              "focus": threading.Event(), "lock": threading.Lock()}
+_runtime_health_hook = None
+
+
+def set_runtime_health_hook(fn):
+    """Launcher supplies an in-memory snapshot; this must never perform I/O or wait."""
+    global _runtime_health_hook
+    _runtime_health_hook = fn
 
 
 def set_open_window_hook(fn):
@@ -156,7 +164,7 @@ def consume_focus_request():
 
 
 @app.post("/api/app/open")
-def api_app_open():
+async def api_app_open():
     """다른 실행 인스턴스(런처)가 '창을 띄우거나 포커스' 요청 — 단일 인스턴스 동작의 진입점."""
     return request_focus_or_open()
 
@@ -271,7 +279,7 @@ def api_app_assets():
 
 
 @app.post("/api/app/quit")
-def api_app_quit():
+async def api_app_quit():
     """이 인스턴스를 **재시작 없이** 깨끗하게 종료 — 새 인스턴스(run.bat)가 이어받을 때.
     응답(200)을 먼저 보내고 잠시 뒤 종료하므로, 호출자는 200 을 받고 포트 해제를 기다리면 된다."""
     return request_quit()
@@ -859,6 +867,18 @@ def _require_person_access(user):
         if any((pid or "").strip().lower() == u for pid in people.get(m, [])):
             return
     raise HTTPException(status_code=403, detail="이 인력은 조회 권한이 없습니다.")
+
+
+@app.get("/api/health/live", include_in_schema=False)
+async def live_health():
+    """Process watchdog: no worker pool, cache lock, disk, Jira, or login probe."""
+    try:
+        healthy = _runtime_health_hook is None or _runtime_health_hook()
+    except Exception:
+        healthy = False
+    return JSONResponse(status_code=200 if healthy else 503,
+                        content={"status": "ok" if healthy else "unresponsive", "pid": os.getpid(),
+                                 "instance": os.environ.get("LAKE_SUPERVISED_WORKER", "")})
 
 
 @app.get("/api/health")

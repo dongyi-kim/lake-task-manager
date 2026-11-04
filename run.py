@@ -26,6 +26,11 @@ import uvicorn
 from app.infra.process_identity import reexec_with_process_name
 from app.infra.settings import APP_ROOT, get_settings
 from app.launcher.hotkey import parse_hotkey as _parse_hotkey
+from app.launcher.runtime_health import (
+    probe_tray_pump as _probe_tray_pump,
+    window_healthy as _window_healthy,
+    window_phase as _window_phase,
+)
 from app.launcher.instance import (
     port_is_listening as _port_is_listening,
     signal_existing_instance as _signal_existing_instance,
@@ -53,6 +58,8 @@ animation:r .8s linear infinite}@keyframes r{to{transform:rotate(360deg)}}
 .s{border-color:#333;border-top-color:#8f6fe0}.u{color:#9aa4b2}}</style></head>
 <body><div class=s></div><div class=t>Lake Task Manager</div><div class=u>불러오는 중…</div></body></html>"""
 _BOOT_DATA_URL = "data:text/html;charset=utf-8," + urllib.parse.quote(_BOOT_HTML)
+_APP_WINDOW_LOCK = threading.Lock()
+_WINDOW_ICONS = {}
 
 
 def _sso_login(s):
@@ -65,22 +72,46 @@ def _serve_bg(s, wait=True):
     (server.started 는 소켓 accept 보다 살짝 이를 수 있어, 그대로 창을 열면 --app 초기 로드가
      connection-refused → 흰 화면 고착. 실 연결 확인으로 이 레이스를 제거한다.)
     wait=False 면 즉시 반환(창을 먼저 띄우고 창의 goto 재시도가 준비를 커버 — 트레이/윈도 공용)."""
-    import urllib.request
     config = uvicorn.Config("app.main:app", host=s.app_host, port=s.app_port, log_level="warning", proxy_headers=False)
     server = uvicorn.Server(config)
-    threading.Thread(target=server.run, daemon=True).start()
-    if not wait:
-        return server
-    probe = f"http://127.0.0.1:{s.app_port}/api/health"
-    for _ in range(300):                              # 최대 ~30s
+    server._ltm_stopped = threading.Event()
+    server._ltm_error = None
+
+    def run():
+        try:
+            server.run()
+        except BaseException as error:  # Uvicorn bind failure raises SystemExit on this thread.
+            server._ltm_error = error
+        finally:
+            server._ltm_stopped.set()
+
+    server._ltm_thread = threading.Thread(target=run, name="app-server", daemon=True)
+    server._ltm_thread.start()
+    if wait:
+        _wait_server_ready(server, s)
+    return server
+
+
+def _check_server(server):
+    if server is not None and server._ltm_stopped.is_set():
+        raise RuntimeError("앱 서버가 종료되었습니다.") from server._ltm_error
+
+
+def _wait_server_ready(server, s, timeout=30):
+    deadline = time.monotonic() + timeout
+    probe = f"http://127.0.0.1:{s.app_port}/api/health/live"
+    while time.monotonic() < deadline:
+        _check_server(server)
         if getattr(server, "started", False):
             try:
-                urllib.request.urlopen(probe, timeout=1).read()
-                break                                 # 실제로 응답함 → 창 열어도 안전
+                with urllib.request.urlopen(probe, timeout=min(1, max(.01, deadline - time.monotonic()))) as response:
+                    if response.status == 200:
+                        return
             except Exception:
                 pass
-        time.sleep(0.1)
-    return server
+        server._ltm_stopped.wait(min(.1, max(0, deadline - time.monotonic())))
+    _check_server(server)
+    raise RuntimeError("앱 서버가 제한 시간 안에 시작되지 않았습니다.")
 
 
 def _warm_session_bg(s):
@@ -200,6 +231,7 @@ def _login_one_service(page, context, name, base, paths, per_timeout, appmain):
     """
     from app.auth.sso_session import service_probe
     from app.auth.sso_navigation import observe_login_page
+    _window_phase("login-navigation", 60)
     observe_login_page(page)
     try:
         # networkidle — SSO 리다이렉트 체인(앱→IdP→앱)이 끝날 때까지 기다린다.
@@ -220,6 +252,8 @@ def _login_one_service(page, context, name, base, paths, per_timeout, appmain):
     deadline = time.monotonic() + per_timeout
     last = "대기 시간 초과(사용자 로그인 대기)"
     while time.monotonic() < deadline and not page.is_closed():
+        # Healthy interactive waiting keeps pumping; each probe still has a finite deadline.
+        _window_phase("login-input", max(30, 10 * len(paths)))
         ok, why = service_probe(context, base, paths)
         if ok:
             return True, why
@@ -257,17 +291,20 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary
     all_ok = False
     try:
         for name, base, paths in targets:
+            _window_phase("login-probe", max(30, 10 * len(paths)))
             # 이미 세션이 살아 있으면(직전 로그인·리다이렉트) 창을 열지 않고 통과
             ok, why = service_probe(context, base, paths)
             silent_ok = False
             if not ok:
                 # ① 먼저 **창 없이** — headless provider 로 리다이렉트 체인을 완주시킨다.
                 #    IdP 세션이 살아 있으면 사용자는 창을 아예 못 본다(대부분의 '계속 뜨는' 창이 이 경우).
+                _window_phase("login-renewal", 120)
                 if _silent_renew_via_provider(appmain, base, paths):
                     ok = True
                     silent_ok = True                      # provider 가 이미 저장·보유 → 아래서 또 저장 안 함
                     print(f"[login]   {name} 창 없이 인증됨(리다이렉트)")
             if not ok and p is not None:
+                _window_phase("login-headless", 120)
                 # ② 그래도 안 되면(첫 로그인 등) **창 없이 cert 자동 인증**을 시도한다.
                 #    사내 인증이 로컬 인증서로 자동 처리되면 여기서 끝 — id/pw 창이 안 뜬다.
                 if _headless_cert_login(p, appmain, name, base, paths):
@@ -275,6 +312,7 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary
                     silent_ok = True
             if not ok:
                 # ③ 사람이 직접 입력해야 하는 경우에만 보이는 창을 연다.
+                _window_phase("login-page", 45)
                 if login_page is None or login_page.is_closed():
                     login_page = context.new_page()      # 로그인 전용 임시 창 (앱 창과 별개)
                 ok, why = _login_one_service(login_page, context, name, base, paths, per_timeout, appmain)
@@ -283,6 +321,7 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary
             # 되는 대로 **바로** 저장·반영한다. 전부 끝난 뒤에 저장하면 그 사이 앱은 여전히
             # 미인증으로 보이고, 사용자는 '됐다는데 안 됐다' 를 겪는다.
             if ok:
+                _window_phase("login-save", 60)
                 if not silent_ok:
                     # 창 로그인으로 붙은 경우만 앱 창(headed) 세션을 저장·반영한다.
                     # (창 없이 갱신됐으면 provider 가 이미 자기 세션을 저장·보유하고 있다.)
@@ -313,6 +352,7 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary
         print(f"[login] 오류: {e}")
     finally:
         # 임시 로그인 창 + SSO 과정에서 뜬 팝업까지 전부 닫는다(앱 창 page 만 남긴다).
+        _window_phase("login-cleanup", 60)
         # (IdP 가 새 창을 띄우면 login_page.close() 만으론 안 닫혀 'Jira 창이 계속 떠 있음' 이 된다.)
         try:
             for pg in list(context.pages):
@@ -422,8 +462,12 @@ def _drain_downloads(context, q):
             while dest.exists():                       # 조용히 덮어쓰면 아까 받은 파일이 사라진다
                 dest = dest.with_name(f"{stem} ({i}).{ext}" if dot else f"{name} ({i})")
                 i += 1
-            dl.save_as(str(dest))
-            _notify_page(context, {"ok": True, "name": dest.name, "path": str(dest)})
+            _window_phase("download", 15 * 60)
+            try:
+                dl.save_as(str(dest))
+                _notify_page(context, {"ok": True, "name": dest.name, "path": str(dest)})
+            finally:
+                _window_phase("running", 15)
         except Exception as e:                         # 실패도 알린다 — 조용한 실패가 제일 나쁘다
             _notify_page(context, {"ok": False, "error": str(e)[:200]})
 
@@ -443,7 +487,7 @@ def _wire_external_links(context, page):
     try:
         context.expose_function("_openExternal", _sys_open)   # 현재 페이지에도 바인딩 적용됨
         context.add_init_script(_EXT_LINK_JS)                 # 이후 네비게이션(SSO 로그인 등)용
-        page.evaluate(_EXT_LINK_JS)                           # 현재 페이지에 즉시 주입 — 리로드 없음(흰 화면 방지)
+        # Called before initial navigation; the boot data page has no external links.
     except Exception:
         pass
 
@@ -459,6 +503,11 @@ def _hide_console_win():
         return
     try:
         import ctypes
+        from ctypes import wintypes
+        ctypes.windll.kernel32.GetConsoleWindow.restype = wintypes.HWND
+        ctypes.windll.kernel32.GetConsoleWindow.argtypes = []
+        ctypes.windll.user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        ctypes.windll.user32.ShowWindow.restype = wintypes.BOOL
         hwnd = ctypes.windll.kernel32.GetConsoleWindow()
         if hwnd:
             ctypes.windll.user32.ShowWindow(hwnd, 0)   # SW_HIDE
@@ -880,6 +929,15 @@ def _set_window_icon_win(ico_path):
         IMAGE_ICON, LR_LOADFROMFILE = 1, 0x0010
         found = []
 
+        for fn, result_type, arguments in (
+            (user32.GetWindowTextLengthW, ctypes.c_int, [wintypes.HWND]),
+            (user32.GetWindowTextW, ctypes.c_int, [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]),
+            (user32.IsWindowVisible, wintypes.BOOL, [wintypes.HWND]),
+            (user32.LoadImageW, wintypes.HANDLE,
+             [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT, ctypes.c_int, ctypes.c_int, wintypes.UINT]),
+        ):
+            fn.restype, fn.argtypes = result_type, arguments
+
         @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
         def _enum(hwnd, _lp):
             n = user32.GetWindowTextLengthW(hwnd)
@@ -890,16 +948,31 @@ def _set_window_icon_win(ico_path):
                     found.append(hwnd)
             return True
 
+        user32.EnumWindows.argtypes = [type(_enum), wintypes.LPARAM]
+        user32.EnumWindows.restype = wintypes.BOOL
         user32.EnumWindows(_enum, 0)
         if not found:
             return False
-        big = user32.LoadImageW(None, ico_path, IMAGE_ICON, 48, 48, LR_LOADFROMFILE)   # 고DPI 작업표시줄
-        small = user32.LoadImageW(None, ico_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+        def load_icon(size):
+            key = (str(ico_path), size)
+            if key not in _WINDOW_ICONS:
+                handle = user32.LoadImageW(None, ico_path, IMAGE_ICON, size, size, LR_LOADFROMFILE)
+                if handle:
+                    _WINDOW_ICONS[key] = handle  # Windows retains these handles; keep two until process exit.
+                return handle
+            return _WINDOW_ICONS[key]
+
+        big, small = load_icon(48), load_icon(16)
+        send = user32.SendMessageTimeoutW
+        send.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+                         wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_size_t)]
+        send.restype = ctypes.c_ssize_t
+        result = ctypes.c_size_t()
         for hwnd in found:
             if big:
-                user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, big)
+                send(hwnd, WM_SETICON, ICON_BIG, big, 0x0002, 200, ctypes.byref(result))
             if small:
-                user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, small)
+                send(hwnd, WM_SETICON, ICON_SMALL, small, 0x0002, 200, ctypes.byref(result))
         return True
     except Exception:
         return False
@@ -923,25 +996,50 @@ def _appwin_profile():
     return d
 
 
-def _window_session(s, auto_login=False, headless=False, on_ready=None):
+def _navigate_app(page, url, server=None, timeout=30):
+    """Keep the entire initial navigation within one deadline, including DOM readiness."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        _check_server(server)
+        if page.is_closed():
+            return False
+        try:
+            remaining = max(1, min(2000, int((deadline - time.monotonic()) * 1000)))
+            page.goto(url, wait_until="domcontentloaded", timeout=remaining)
+            remaining = max(1, min(2000, int((deadline - time.monotonic()) * 1000)))
+            page.wait_for_selector(".app-boot, .wrap", state="attached", timeout=remaining)
+            return True
+        except Exception:
+            _check_server(server)
+            if page.is_closed():
+                return False
+        time.sleep(min(.1, max(0, deadline - time.monotonic())))
+    raise RuntimeError("앱 화면을 제한 시간 안에 불러오지 못했습니다.")
+
+
+def _window_session(s, auto_login=False, headless=False, on_ready=None, server=None):
     """앱 창(Playwright Chromium, --app 모드) 하나를 열고 **닫힐 때까지** 대기.
     서버는 이미 떠 있다고 가정(창의 goto 재시도가 준비를 커버) — 여기선 서버를 시작/종료하지 않는다.
-    → 트레이가 이 함수를 스레드로 여러 번 재사용(창을 닫아도 백엔드는 유지). 임시 프로필은 정리.
+    → 트레이가 이 함수를 스레드로 재사용한다. 프로필 소유자는 정리가 끝날 때까지 하나뿐이다.
 
     auto_login: 최초 오픈에서만 True — prod Jira 자동 취득 신호. (재오픈 땐 조용히 연다)
     on_ready:   창이 실제로 화면에 뜬 시점에 한 번 호출(트레이의 중복 클릭 가드 해제용).
     """
-    import shutil
-    import tempfile
     url = f"http://127.0.0.1:{s.app_port}/"            # localhost 는 Windows 에서 ::1 폴백 지연
     import app.main as appmain
     from playwright.sync_api import TimeoutError as PWTimeoutError
     from playwright.sync_api import sync_playwright
-    p = sync_playwright().start()
+    if not _APP_WINDOW_LOCK.acquire(blocking=False):
+        return False
+    p = context = page = None
+    registered = False
+    failed = False
+    _window_phase("starting", 60)
 
     def _launch(udd):
         return p.chromium.launch_persistent_context(
             user_data_dir=udd,
+            timeout=30000,
             headless=headless,
             accept_downloads=True,                     # ★ 아래 _wire_downloads 참고
             no_viewport=True,                          # 뷰포트를 실제 창 크기에 추종(리사이즈 시 흰 여백 방지)
@@ -957,47 +1055,39 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None):
                   "--window-size=1400,900", f"--app={_BOOT_DATA_URL}"],  # 앱 모드 + 즉시 부팅로더
         )
 
-    # 앱 창 프로필은 **고정 경로**를 쓴다 — 매번 임시 디렉터리를 새로 만들면 쿠키가 늘 초기화된다.
-    # 창을 여러 개 열면 같은 프로필을 동시에 못 쓰므로(Chromium 이 잠근다) 그때만 임시로 떨어진다.
-    shared = _appwin_profile()
-    udd, tmp = str(shared), False
     try:
-        context = _launch(udd)
-    except Exception:
-        udd, tmp = tempfile.mkdtemp(prefix="ltm-appwin-"), True
-        context = _launch(udd)
-    page = context.pages[0] if context.pages else context.wait_for_event("page")
-    _wire_external_links(context, page)                # 외부 링크 훅(goto 전 설치 → 실제 페이지에도 적용)
-    dlq = _wire_downloads(context)                     # 첨부 다운로드 큐(저장은 아래 루프에서)
-    for _ in range(300):                               # goto 재시도(서버 준비 대기 포함, ~30s). 부팅로더 유지.
-        try:
-            page.goto(url, wait_until="domcontentloaded")
-            if page.evaluate("!!(document.querySelector('.app-boot')||document.querySelector('.wrap'))"):
-                break
-        except Exception:
-            pass
-        if page.is_closed():
-            break
-        page.wait_for_timeout(100)
-    from app.infra.settings import STATIC_DIR
-    ico_path = str(STATIC_DIR / "favicon.ico")
-    print(f"Lake Task Manager - {url}  (env={s.jira_env})")
-    if on_ready:
-        try:
-            on_ready()                                 # 창이 떴다 — 트레이가 다시 눌림을 받아도 된다
-        except Exception:
-            pass
-    appmain.note_window_opened()               # 로그인 요청이 이 창의 큐로 가도록 먼저 등록
-    # [prod] 최초 오픈은 Jira만 자동 취득; 명시적인 서비스 요청은 같은 큐에서 처리한다.
-    # 이미 인증돼 있으면 service_probe 로 스킵(무음). (재오픈 땐 auto_login=False 라 신호 안 보냄)
-    if auto_login and s.jira_env == "prod":
-        appmain.request_service_login("jira")
-    try:
+        _check_server(server)
+        appmain.note_window_opened()  # Include startup so another click requests focus, not another owner.
+        registered = True
+        p = sync_playwright().start()
+        # Never fall back to an empty profile: drafts and pending mutation identifiers live here.
+        context = _launch(str(_appwin_profile()))
+        _window_phase("starting", 60)
+        page = context.pages[0] if context.pages else context.wait_for_event("page", timeout=5000)
+        _wire_external_links(context, page)
+        dlq = _wire_downloads(context)
+        if not _navigate_app(page, url, server):
+            return False
+        from app.infra.settings import STATIC_DIR
+        ico_path = str(STATIC_DIR / "favicon.ico")
+        print(f"Lake Task Manager - {url}  (env={s.jira_env})")
+        if on_ready:
+            try:
+                on_ready()
+            except Exception:
+                pass
+        if auto_login and s.jira_env == "prod":
+            appmain.request_service_login("jira")
         i = 0
-        pump = True          # Playwright 이벤트를 넘겨받을 수 있는 상태인가
         while not page.is_closed():
+            _window_phase("running", 15)
+            _check_server(server)
             if appmain._login_requested.is_set():
-                _run_pending_login(s, page, context, appmain, p=p)
+                _window_phase("login", 360)
+                try:
+                    _run_pending_login(s, page, context, appmain, p=p)
+                finally:
+                    _window_phase("running", 15)
             if appmain.consume_focus_request():         # 재실행/트레이 '앱 열기' 가 이 창을 앞으로
                 try:
                     page.bring_to_front()               # ★ 반드시 이 창의 스레드에서(Playwright 스레드 고정)
@@ -1015,38 +1105,41 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None):
             #
             #     그렇다고 page.wait_for_timeout 을 쓰면 절전 등으로 파이프가 먹통일 때 영원히
             #     멈춘다(트레이가 창을 죽은 걸로 못 알아챘던 문제). 그래서 **타임아웃이 있는**
-            #     대기로 이벤트를 펌프하고, 드라이버가 죽으면 로컬 sleep 으로 내려앉는다.
-            #     is_closed() 는 로컬 상태라 왕복이 없어 그 뒤에도 종료 감지는 계속된다.
-            if pump:
-                try:
-                    context.wait_for_event("close", timeout=400)
-                    break                               # 컨텍스트가 실제로 닫혔다
-                except PWTimeoutError:
-                    continue                            # 정상 — 400ms 동안 이벤트만 넘기고 돌아온다
-                except Exception:
-                    pump = False                        # 드라이버가 죽었다 → 아래 sleep 으로
-            time.sleep(0.5)
-    except Exception:
-        pass
-    appmain.note_window_closed()               # 창이 닫혔다 — '살아있는 창' 집계에서 뺀다
-    # 정리는 별도 스레드에 맡기고 기다리지 않는다 — 죽은 드라이버에서 close()/stop() 이 멎을 수 있고,
-    # 여기서 막히면 호출한 쪽(트레이)이 창이 닫힌 걸 영영 모른다.
-    def _cleanup():
-        for closer in (context.close, p.stop):
+            #     대기로 이벤트를 펌프한다. 드라이버 오류는 이 소유자를 종료해야 한다.
+            #     오류 뒤 cached is_closed()만 폴링하면 창 수가 영원히 살아 있게 남는다.
             try:
-                closer()
-            except Exception:
-                pass
-        if tmp:
-            shutil.rmtree(udd, ignore_errors=True)     # 임시 프로필만 정리(고정 프로필은 보존)
-    threading.Thread(target=_cleanup, name="appwin-cleanup", daemon=True).start()
+                context.wait_for_event("close", timeout=400)
+                break
+            except PWTimeoutError:
+                continue
+        return True
+    except Exception:
+        if page is not None and page.is_closed():
+            return False  # User closed the window during a pending Playwright operation.
+        failed = True
+        raise
+    finally:
+        _window_phase("closing", 60)
+        try:
+            if registered:
+                appmain.note_window_closed()
+            # Sync Playwright cleanup must stay on its owner thread. A genuinely stuck owner
+            # retains the profile lease until process recovery; it must not create a second owner.
+            for closer in ((context.close,) if context is not None else ()) + ((p.stop,) if p is not None else ()):
+                try:
+                    closer()
+                except Exception:
+                    failed = True  # Cleanup could not confirm release of the persistent profile.
+        finally:
+            _window_phase("failed" if failed else "closed")
+            _APP_WINDOW_LOCK.release()
 
 
 def _run_app_window(s):
     """[비-트레이 폴백] 서버 + 앱 창 1개. 창 닫으면 서버도 종료(기존 동작)."""
     server = _serve_bg(s, wait=False)                  # 창 먼저 뜨게 non-blocking
     _warm_session_bg(s)                                # SSO 세션 미리 데우기(창 기동과 병렬)
-    _window_session(s, auto_login=True, on_ready=_hide_console_win)   # 창 뜨면 run.bat 콘솔 숨김
+    _window_session(s, auto_login=True, on_ready=_hide_console_win, server=server)
     try:
         server.should_exit = True
     except Exception:
@@ -1062,12 +1155,9 @@ def _run_tray(s):
 
     server = _serve_bg(s, wait=False)                  # 백엔드 상시(창과 독립)
     _warm_session_bg(s)                                # SSO 세션 미리 데우기(창 기동과 병렬)
-    _ensure_start_menu_shortcut()                      # '시작'에서 검색 가능하게
+    threading.Thread(target=_ensure_start_menu_shortcut, name="start-menu-shortcut", daemon=True).start()
 
-    # [앱 열기] 중복 클릭 가드 — **시각으로만** 판단한다.
-    # 예전엔 'open' 불리언으로 한 번에 하나만 열었는데, 절전 등으로 창 스레드가 멎으면 그 값이
-    # True 로 굳어 이후 [앱 열기]가 아무 반응 없이 무시됐다(밤새 켜 둔 뒤 겪던 증상).
-    # 시각 기반은 무슨 일이 있어도 스스로 풀린다 — 최악이라도 몇 초 뒤엔 다시 열 수 있다.
+    # Debounce clicks as well as keeping the actual browser owner lease until cleanup completes.
     _open = {"t": 0.0, "ready": True}
     _OPEN_WAIT = 15.0      # 창이 뜨기 전: Chromium 기동에 몇 초 걸린다. 그 사이 클릭은 다 같은 뜻이다.
     _OPEN_MIN = 1.5        # 창이 뜬 뒤: 트레이 더블클릭 한 번이 두 개로 세어지는 것만 막는다.
@@ -1094,7 +1184,7 @@ def _run_tray(s):
 
         def run():
             try:
-                _window_session(s, auto_login=initial, on_ready=ready)
+                _window_session(s, auto_login=initial, on_ready=ready, server=server)
             except Exception as e:                     # 조용히 죽지 않게 로그는 남긴다
                 print("app window error:", e)
             finally:
@@ -1215,10 +1305,13 @@ def _run_tray(s):
         appmain.request_focus_or_open()
 
     def on_autostart(icon, item):
-        _set_autostart(not _autostart_enabled())
-        icon.update_menu()
+        def update():
+            _set_autostart(not _autostart_enabled())
+            autostart_state["enabled"] = _autostart_enabled()
+            icon.update_menu()
+        run_tray_job("autostart", update)
 
-    def on_restart(icon, item):
+    def restart(icon):
         # 업데이트 후 재기동 — run.bat 을 새 콘솔로 (2초 뒤 시작해 현재 인스턴스가 포트를 놓게 함).
         # run.bat 이 **최신 릴리즈 태그 확인 → 소스 교체** + venv/deps + 앱 재기동을 한다.
         # (예전엔 git pull 이었다. 지금은 git 없는 유저도 같은 경로로 업데이트된다.)
@@ -1254,6 +1347,9 @@ def _run_tray(s):
             pass
         icon.stop()
 
+    def on_restart(icon, item):
+        run_tray_job("restart", lambda: restart(icon))
+
     def on_quit(icon, item):
         try:
             server.should_exit = True
@@ -1263,6 +1359,26 @@ def _run_tray(s):
 
     # 빠른 열기 단축키 — 설정 페이지와 같은 pref. 고르면 저장 + 즉시 재등록(재시작 불필요).
     HK_OPTS = [("Alt + Space", "alt+space"), ("Ctrl + Alt + Space", "ctrl+alt+space"), ("Ctrl + Alt + J", "ctrl+alt+j")]
+
+    _tray_jobs = set()
+    _tray_jobs_lock = threading.Lock()
+    autostart_state = {"enabled": False}
+
+    def run_tray_job(name, operation):
+        # A slow filesystem, COM shortcut creation or process launch must not block Quit/Open.
+        with _tray_jobs_lock:
+            if name in _tray_jobs:
+                return
+            _tray_jobs.add(name)
+        def run():
+            try:
+                operation()
+            except Exception as error:
+                print(f"[tray] {name}: {error}", file=sys.stderr, flush=True)
+            finally:
+                with _tray_jobs_lock:
+                    _tray_jobs.discard(name)
+        threading.Thread(target=run, name="tray-" + name, daemon=True).start()
 
     def _cur_hotkey():
         try:
@@ -1274,12 +1390,14 @@ def _run_tray(s):
         # pystray 는 콜백 인자 개수를 검사 → 기본인자 트릭 대신 클로저 팩토리로 조합을 가둔다.
         def item_for(label, spec):
             def on_click(icon, item):
-                try:
-                    get_settings().set_quick_open_hotkey(spec)
-                except Exception:
-                    pass
-                set_hotkey_live(spec)
-                icon.update_menu()
+                def update():
+                    try:
+                        get_settings().set_quick_open_hotkey(spec)
+                    except Exception:
+                        pass
+                    set_hotkey_live(spec)
+                    icon.update_menu()
+                run_tray_job("hotkey", update)
 
             def checked(item):
                 return _cur_hotkey() == spec
@@ -1295,11 +1413,15 @@ def _run_tray(s):
         pystray.MenuItem("빠른 열기 단축키", pystray.Menu(lambda: hotkey_items())),
         pystray.MenuItem("업데이트 후 재시작", on_restart),
         pystray.MenuItem("컴퓨터 시작 시 자동 실행", on_autostart,
-                         checked=lambda item: _autostart_enabled()),
+                         checked=lambda item: autostart_state["enabled"]),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("종료", on_quit),
     )
     icon = pystray.Icon("lake-task-manager", img, "Lake Task Manager", menu)
+    def refresh_autostart():
+        autostart_state["enabled"] = _autostart_enabled()
+        icon.update_menu()
+    run_tray_job("autostart", refresh_autostart)
     _appmain.set_restart_hook(lambda: on_restart(icon, None))   # UI '업데이트' 버튼 → 트레이 재시작과 동일 경로
     _appmain.set_quit_hook(lambda: on_quit(icon, None))         # 새 run.bat 이 '옛 버전이니 빠져라' 로 호출 → 조용히 종료
     def _on_hotkey_pref(spec):                                  # 설정 페이지에서 단축키 바꾸면:
@@ -1312,7 +1434,39 @@ def _run_tray(s):
     threading.Thread(target=sso_poller, args=(icon,), name="sso-poller", daemon=True).start()
     print(f"Lake Task Manager - 트레이 상주 (env={s.jira_env}). 창을 닫아도 백엔드는 유지됩니다.")
     open_window(initial=True)                          # 시작 시 창 1개 오픈
-    icon.run()                                         # 메인 스레드 블로킹(트레이 루프)
+    runtime_failure = []
+    tray_probe = {"healthy": True, "at": time.monotonic()}
+    _appmain.set_runtime_health_hook(lambda: _window_healthy() and tray_probe["healthy"]
+                                     and time.monotonic() - tray_probe["at"] < 15)
+
+    def monitor_tray():
+        failures = 0
+        while not server.should_exit:
+            answer = _probe_tray_pump(icon)
+            failures = failures + 1 if answer is False else 0
+            tray_probe.update(healthy=failures < 3, at=time.monotonic())
+            if server._ltm_stopped.wait(2):
+                return
+
+    def monitor_server():
+        try:
+            _wait_server_ready(server, s)
+            server._ltm_stopped.wait()
+            if not server.should_exit:
+                _check_server(server)
+        except Exception as error:
+            runtime_failure.append(error)
+            server.should_exit = True
+            icon.stop()
+
+    def setup(icon):
+        icon.visible = True
+        threading.Thread(target=monitor_server, name="server-monitor", daemon=True).start()
+        threading.Thread(target=monitor_tray, name="tray-monitor", daemon=True).start()
+
+    icon.run(setup=setup)  # Start monitoring only after the tray message loop is ready.
+    if runtime_failure:
+        raise runtime_failure[0]
 
 
 def _run_plain(s):
