@@ -2,7 +2,7 @@
 
 import requests
 
-from .base import (AuthProvider, MULTIPART_HEADERS, SessionExpired, UpstreamError,
+from .base import (AuthProvider, MULTIPART_HEADERS, SessionExpired, UpstreamError, UpstreamUnavailable,
                    WRITE_HEADERS, XSRF_HEADER)
 from .issue_create import check_create_body, log_create_response
 
@@ -70,6 +70,32 @@ class BasicAuthProvider(AuthProvider):
 
     def get_text(self, path, params=None):
         return self._get(path, params).text
+
+    def web_form(self, path, fields=None, *, may_commit=False):
+        from .web_forms import check_html_size, form_request, form_response, identity_response
+        url, headers, body = form_request(self.base, path, fields, may_commit)
+
+        def identity_probe():
+            try:
+                with self.session.get(self.base + "/rest/api/2/myself", timeout=30,
+                                      allow_redirects=False) as response:
+                    data = response.json() if response.status_code == 200 else None
+                    return identity_response(response.status_code, data)
+            except (requests.RequestException, ValueError):
+                return None
+
+        try:
+            with self.session.request("GET" if body is None else "POST", url, data=body,
+                                      headers=headers, timeout=30, allow_redirects=False,
+                                      stream=True) as response:
+                data = bytearray()
+                for chunk in response.iter_content(chunk_size=65536):
+                    check_html_size(len(data) + len(chunk))
+                    data.extend(chunk)
+                return form_response(self.base, response.status_code, response.headers,
+                                     bytes(data), identity_probe)
+        except requests.RequestException:
+            raise UpstreamUnavailable("Jira 폼 서버에 연결할 수 없습니다.") from None
 
     def get_bytes(self, path, params=None):
         url = path if path.startswith(("http://", "https://")) else self.base + path

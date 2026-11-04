@@ -9,6 +9,10 @@
 - **basic.py** — Basic/PAT provider (local/docker).
 - **issue_create.py** — 생성 요청의 Reporter 생략 계약과 값이 없는 실패 진단(버전·필드명·HTTP 상태).
 - **inprocess.py** — jira820 **in-process** ASGI provider (mock 기본, 소켓 불필요).
+- **web_forms.py** — Jira 8.20 native 계층 변경 wizard의 URL·form encoding·응답 계약.
+  같은 Jira의 명시적 action만 허용하며 POST/redirect를 자동 재실행하지 않는다. 실제 hidden
+  XSRF/GUID 필드는 호출자가 전달하고 최종 쓰기만 `may_commit=True`로 receipt 복구에 연결한다.
+  JSON REST와 별도이며 응답 HTML은 1MiB 상한을 넘으면 잘라 쓰지 않고 실패한다.
 - **sso_session.py** — Playwright **SSO** provider (prod). 브라우저 기동·로그인 흐름·서비스 probe·세션 생존 확인.
 - **sso_store.py** — 서비스별 세션과 공유 IdP 세션 분리 저장 + legacy `jira_state.json` 마이그레이션.
 - **sso_navigation.py** — LTM 로그인 창의 최상위 이동·리다이렉트 origin 수집. 사용자 브라우저 프로필은 읽지 않는다.
