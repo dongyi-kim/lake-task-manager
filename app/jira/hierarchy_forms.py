@@ -190,13 +190,13 @@ class HierarchyForms:
                 raise HierarchyFormError("변환 필드 값은 문자열 또는 문자열 배열이어야 합니다.", status=400)
             multiple = group.get("multiple") or group["type"] == "checkbox"
             if not multiple and len(values) != 1:
-                raise HierarchyFormError("단일 값이 필요한 변환 필드입니다: " + name, status=400)
+                raise HierarchyFormError("단일 값이 필요한 변환 필드입니다: " + name[:100], status=400)
             if group["required"] and not any(values):
-                raise HierarchyFormError("필수 변환 필드입니다: " + name, status=400)
+                raise HierarchyFormError("필수 변환 필드입니다: " + name[:100], status=400)
             if group["type"] in ("select", "radio", "checkbox"):
                 allowed = {option["id"] for option in group["options"]}
                 if any(value not in allowed for value in values):
-                    raise HierarchyFormError("Jira에서 제공하지 않은 변환 선택지입니다: " + name, status=400)
+                    raise HierarchyFormError("Jira에서 제공하지 않은 변환 선택지입니다: " + name[:100], status=400)
             pairs.extend((name, value) for value in values)
         if missing:
             return missing, []
@@ -294,4 +294,10 @@ class HierarchyForms:
         if set(prepared.removed_fields) != set(allow_removed_fields):
             raise HierarchyFormError("변환으로 제거될 필드를 먼저 확인해야 합니다.", code="hierarchy_field_removal")
         prepared._committed = True
-        return self.provider.web_form(prepared._action, prepared._pairs, may_commit=True)
+        response = self.provider.web_form(prepared._action, prepared._pairs, may_commit=True)
+        if 400 <= response["status"] < 500:
+            raise HierarchyFormError("Jira가 계층 변경 요청을 거부했습니다.",
+                                     code="jira_rejected", status=response["status"])
+        if response["status"] == 200:
+            self._page(response, prepared._action, "")
+        return response

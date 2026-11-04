@@ -170,6 +170,11 @@ class LocalMcpRuntime:
                     "internal_error" if status >= 500 else "invalid_request")
             error = {"code": code, "message": str(getattr(exc, "detail", exc)),
                      "status": status, "retryable": status == 429}
+            if isinstance(exc, CommandError):
+                if exc.reason:
+                    error["reason"] = exc.reason
+                if exc.next_action:
+                    error["nextAction"] = exc.next_action
             if status == 401:
                 unavailable = isinstance(exc.__cause__, UpstreamUnavailable)
                 error.update(code="authorization_unavailable" if unavailable else code,

@@ -131,10 +131,15 @@ def register_writes(register, runtime):
 
     def update_fields(key: str, body: FieldsInput) -> dict:
         """Edit allowed fields using current editmeta. Done tickets must be reopened first.
+        Reopening is a separate user-authorized action, never an automatic editing workaround.
+        Error reason ticket_completed/field_not_editable provides a read-only nextAction for discovery.
+        An absent edit field may mean workflow/screen restrictions, not merely a missing role.
         Reporter requires actual Jira MODIFY_REPORTER permission. Null means unchanged; empty clears.
         labels and components accept string arrays; [] clears all labels/components respectively.
         Those arrays replace the whole field, not append: read current data before preserving other values.
         descriptionHtml replaces the full editor HTML; read descriptionEditHtml and the Task authoring guide.
+        This does not convert Task/SubTask types or change a SubTask's parent. Epic membership uses epic.
+        Read get_content_guide(skill=ltm-task-authoring,path=references/ticket-actions.md) for restrictions.
         """
         runtime.check_key(key)
         return commands.update_fields(key, body)
@@ -217,6 +222,8 @@ def register_writes(register, runtime):
         A Done transition always requires non-empty body.commentHtml (commentRequired=true), even when
         Jira omits the comment screen field. Do not send assignee/resolution/worklog absent from the screen.
         Unknown outcomes must be retried with the same clientMutationId, never a replacement ID.
+        Available transitions and required fields depend on this ticket, workflow and Jira permissions.
+        An empty list is not permission to invent an ID; fields missing from the MCP mapping require Jira UI.
         Returns ok and a possible cascade suggestion. It does not automatically transition related tickets.
         body.commentHtml is HTML, with the same element rules as the comment authoring guide.
         """
