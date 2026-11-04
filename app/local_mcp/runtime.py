@@ -6,14 +6,13 @@ import re
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-import anyio
 from fastapi import HTTPException
 from mcp.server import MCPServer
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import ValidationError
 from starlette.routing import Route
 
-from app.auth.base import MutationOutcomeUnknown, PermissionDenied, SessionExpired, UpstreamError, UpstreamUnavailable
+from app.auth.base import MutationOutcomeUnknown, PermissionDenied, SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable
 from app.local_mcp.read_tools import register_reads
 from app.local_mcp.evidence_tools import register_evidence
 from app.local_mcp.hierarchy_tools import register_hierarchy
@@ -30,6 +29,7 @@ from app.local_mcp.skill_catalog import SkillCatalog
 from app.local_mcp.skill_protocol import SkillsExtension
 from app.local_mcp.authentication import (AUTH_TOOLS, CONFIG_WRITES, Authentication, AuthenticationUnavailable,
     authentication_error, error_payload, register_authentication, services_for)
+from app.local_mcp.capacity import ToolCapacityExceeded, ToolLane
 from app.services.workspace_config import WorkspaceConfigCommands
 from app.services.ticket_commands import CommandError, TicketCommands
 
@@ -50,6 +50,8 @@ class LocalMcpRuntime:
         self.workspace_config = WorkspaceConfigCommands(get_client, self.require_manager)
         self.classify_error = classify_error
         self.authentication = Authentication(self, request_login)
+        self._work_lane = ToolLane(8)
+        self._control_lane = ToolLane(2)
         self.started = False
         self.skill_catalog = SkillCatalog()
         self.server = MCPServer(
@@ -130,6 +132,9 @@ class LocalMcpRuntime:
     def _error(self, exc):
         if isinstance(exc, AuthenticationUnavailable):
             return error_payload(exc.state)
+        if isinstance(exc, UpstreamBusy):
+            return {"code": "rate_limited", "status": 429, "message": str(exc),
+                    "retryable": True, "retryAfterSeconds": 1, "needLogin": False}
         if isinstance(exc, MutationOutcomeUnknown):
             if self.classify_error:
                 self.classify_error(exc)
@@ -271,16 +276,30 @@ class LocalMcpRuntime:
 
     def register(self, fn, *, read_only, output_type=None):
         contract = schema_for(fn.__name__, output_type, read_only)
+        lane = self._control_lane if fn.__name__ in AUTH_TOOLS or fn.__name__ == "get_content_guide" else self._work_lane
 
-        async def invoke(**kwargs):
+        def call(kwargs):
             try:
-                payload = await anyio.to_thread.run_sync(
-                    lambda: self._invoke_authenticated(fn, kwargs, read_only))
+                return self._invoke_authenticated(fn, kwargs, read_only)
             except Exception as exc:
-                payload = {"ok": False, "error": await anyio.to_thread.run_sync(lambda: self._error(exc))}
+                # Error classification can touch authentication state too; keep it
+                # in this bounded worker instead of borrowing the UI worker pool.
+                payload = {"ok": False, "error": self._error(exc)}
                 if payload["error"].get("needLogin"):
                     payload["error"].setdefault("nextAction", {"tool": "authenticate", "arguments": {
                         "service": payload["error"].get("service", "jira"), "interactive": True}})
+                return payload
+
+        async def invoke(**kwargs):
+            try:
+                payload = await lane.run(lambda: call(kwargs))
+            except ToolCapacityExceeded:
+                payload = {"ok": False, "error": {
+                    "code": "rate_limited", "status": 429,
+                    "message": "LTM이 다른 요청을 처리 중입니다. 잠시 후 같은 요청으로 다시 시도해 주세요.",
+                    "retryable": True, "retryAfterSeconds": 1, "executed": False,
+                    "retryWithSameMutationId": not read_only and fn.__name__ not in AUTH_TOOLS | CONFIG_WRITES,
+                }}
             try:
                 contract.model_validate(payload)
             except ValidationError:
