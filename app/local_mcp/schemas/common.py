@@ -46,6 +46,9 @@ class ToolError(OpenModel):
     nextAction: RecoveryAction | None = None
     clientMutationId: str | None = None
     repeatWrite: bool | None = None
+    writeExecuted: bool | None = Field(default=None, description=(
+        "False only when required validation reads failed before any Jira write. "
+        "Retry after recovery using the same mutation ID and exact input."))
     retryWithSameMutationId: bool | None = None
     outcomeUnknown: bool | None = None
     operationResult: JsonValue | None = Field(default=None, description=(

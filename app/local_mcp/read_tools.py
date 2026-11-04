@@ -163,8 +163,8 @@ def register_reads(register, runtime):
         client = runtime.client
         if kind in ("child_types", "edit_fields", "transitions"):
             runtime.check_key(key)
-            method = {"child_types": client.child_types, "edit_fields": client.editmeta,
-                      "transitions": client.transitions}[kind]
+            method = {"child_types": client.child_types, "edit_fields": lambda key: client.editmeta(key, strict=True),
+                      "transitions": lambda key: client.transitions(key, strict=True)}[kind]
             return {"options": method(key)}
         methods = {"task_types": client.task_types, "priorities": client.priorities,
                    "components": lambda: client.components(strict=True),

@@ -12,7 +12,7 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import ValidationError
 from starlette.routing import Route
 
-from app.auth.base import MutationOutcomeUnknown, PermissionDenied, SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable
+from app.auth.base import MutationOutcomeUnknown, MutationPreflightUnavailable, PermissionDenied, SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable
 from app.local_mcp.read_tools import register_reads
 from app.local_mcp.evidence_tools import register_evidence
 from app.local_mcp.hierarchy_tools import register_hierarchy
@@ -134,6 +134,13 @@ class LocalMcpRuntime:
                 "jiraState": jira_state, "tokenMasked": "•••••••• (설정됨)"}
 
     def _error(self, exc):
+        if isinstance(exc, MutationPreflightUnavailable):
+            busy = isinstance(exc, UpstreamBusy)
+            if not busy and self.classify_error:
+                self.classify_error(exc)  # Preserve outage/circuit state; admission refusal is not an outage.
+            return {"code": "rate_limited" if busy else "upstream_unavailable", "status": 429 if busy else 503,
+                    "message": str(exc), "retryable": True, "needLogin": False, "writeExecuted": False,
+                    "retryWithSameMutationId": True, **({"retryAfterSeconds": 1} if busy else {})}
         if isinstance(exc, AuthenticationUnavailable):
             return error_payload(exc.state)
         if isinstance(exc, UpstreamBusy):
