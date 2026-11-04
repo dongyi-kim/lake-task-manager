@@ -7,6 +7,7 @@ import subprocess
 import pytest
 
 from support.paths import REPO_ROOT
+from frontend.static_assets.support import task_view_source
 
 
 VIEW = REPO_ROOT / "app" / "static" / "components" / "views" / "MyTasksView.js"
@@ -14,7 +15,7 @@ MODEL = REPO_ROOT / "app" / "static" / "components" / "mytasks" / "taskModel.js"
 
 
 def test_failed_leaf_axis_is_not_marked_done_or_rendered_as_empty():
-    src = VIEW.read_text(encoding="utf-8")
+    src = task_view_source()
 
     assert "const failedAxes = new Map();" in src
     assert "failedAxes.set(completed.axis, kind);" in src
@@ -31,7 +32,7 @@ def test_failed_leaf_axis_is_not_marked_done_or_rendered_as_empty():
 
 
 def test_auth_and_transport_failures_keep_axis_recoverable_but_permission_is_silent():
-    src = VIEW.read_text(encoding="utf-8")
+    src = task_view_source()
 
     assert 'if (kind === "permission" || kind === "unavailable")' in src
     assert 'state: "done", chunks: axes[completed.axis].chunks, unavailable: true' in src
@@ -45,7 +46,7 @@ def test_auth_and_transport_failures_keep_axis_recoverable_but_permission_is_sil
 
 
 def test_group_hydration_has_independent_model_and_same_filter_generation_fence():
-    src = VIEW.read_text(encoding="utf-8")
+    src = task_view_source()
 
     assert "this._taskCacheGenerations?.[cacheKey] === cacheGeneration" in src
     assert "this._activeRequestToken === requestToken && this.model?.syncId === syncId" in src
@@ -55,7 +56,7 @@ def test_group_hydration_has_independent_model_and_same_filter_generation_fence(
 
 
 def test_buffered_old_stream_event_cannot_mutate_new_same_filter_cache_alias():
-    src = VIEW.read_text(encoding="utf-8")
+    src = task_view_source()
 
     assert "let streamModel = cloneTaskModel(cache[key] || this.model);" in src
     assert "const streamGenerationCurrent = () => this._taskCacheGenerations" in src

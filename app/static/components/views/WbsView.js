@@ -2,7 +2,7 @@
 // 간트 본문(라벨트리·타임라인 바·트리커넥터)은 검증된 명령형 renderGantt()를 refs 로 구동.
 // 4계층 lazy(Epic→Task→Sub-Task), 파일탐색기식 가이드선/[+], 상태색 바. updated: 2026-07-08
 import { api } from "../../lib/api.js";
-import { moduleColor, categoryColor, statusLabel } from "../../lib/colors.js";
+import { moduleColor, categoryColor, wbsColor, statusLabel } from "../../lib/colors.js";
 
 export default {
   name: "WbsView",
@@ -324,11 +324,11 @@ export default {
           const wbsX = xpx(pd(w.start));
           emit("wbs", {
             isRoot: true, anc: [], isLast: lastW, hasChildren: w.epics.length > 0, isOpen: wOpen,
-            html: "<span class='tag'>" + w.id + "</span><span class='nm'>" + w.name + "</span>",
+            html: "<span class='tag' style='color:" + wbsColor(w.id) + ";border-left:3px solid currentColor'>" + w.id + "</span><span class='nm'>" + w.name + "</span>",
             pct: pct(w.progressPct), dates: { s: w.start, e: w.end },
             onToggle: () => { expanded[wid] = !expanded[wid]; self.renderGantt(); },
           }, {
-            name: w.name, start: w.start, end: w.end, progressPct: w.progressPct, color: cvar,
+            name: w.name, start: w.start, end: w.end, progressPct: w.progressPct, color: wbsColor(w.id),
             title: w.name + "  " + w.start + " ~ " + w.end + "  (" + pct(w.progressPct) + ")",
             conn: (wOpen && w.epics.length) ? { rootDown: wbsX } : null,
           });
