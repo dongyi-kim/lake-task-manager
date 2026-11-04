@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from app.jira.jql import _split_order, tokenize
+from app.services.ticket_commands import CommandError
 
 
 def register_reads(register, runtime):
@@ -57,6 +58,7 @@ def register_reads(register, runtime):
         The UI cache holds at most sourceLimit=20 comments even when a larger limit is requested.
         Returns comments, returnedCount, limit, sourceLimit and conservative mayHaveMore.
         Use get_evidence_page(kind=comments) to read the full discussion with real pagination.
+        For editing, use get_comment_source with the verified comment ID.
         Use comment IDs/dates/authors and text as evidence for exclusions, cancellations and revised scope.
         Comment claims do not themselves change Jira status or prove completed deliverable counts.
         """
@@ -67,6 +69,21 @@ def register_reads(register, runtime):
         return {"comments": rows, "returnedCount": len(rows), "limit": limit,
                 "sourceLimit": runtime.client.CACHE_COMMENTS,
                 "mayHaveMore": len(rows) >= min(limit, runtime.client.CACHE_COMMENTS)}
+
+    def get_comment_source(key: str, comment_id: str) -> dict:
+        """Read one comment's current editor HTML and ID before editing it.
+        Obtain the comment ID from get_comments or get_evidence_page(kind=comments).
+        Uses the UI's Jira comment-source lookup, which requests the newest 1000 comments;
+        Jira may return fewer. A missing source is an error and may mean the ID was outside
+        the returned window. If unavailable, do not replace the comment using its preview.
+        Preserve unrelated content and mention IDs when sending the full HTML to edit_comment.
+        """
+        runtime.check_key(key)
+        runtime.check_object_id(comment_id)
+        source = runtime.client.comment_source(key, comment_id)
+        if source is None:
+            raise CommandError("이 티켓의 조회 범위에서 댓글 편집 원본을 찾지 못했습니다.", 404)
+        return source
 
     def get_history(key: str, include_children: bool = False, limit: int = 100) -> dict:
         """Read a recent display timeline for one ticket, newest first, limited to 1..1000 events.
@@ -185,6 +202,6 @@ def register_reads(register, runtime):
         runtime.check_key(key)
         return {"documents": runtime.client.ticket_documents(key)}
 
-    for fn in (search_issues, get_ticket, get_comments, get_history, get_children, get_epic,
+    for fn in (search_issues, get_ticket, get_comments, get_comment_source, get_history, get_children, get_epic,
                search_users, get_user, list_options, get_workload, get_attachments, get_documents):
         register(fn, read_only=True)
