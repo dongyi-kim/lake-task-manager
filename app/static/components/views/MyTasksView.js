@@ -321,7 +321,7 @@ export default {
           continue;
         }
         for (const state of this.states) {
-          const pendingParent = panel.group && panel.group.childrenPending
+          const pendingParent = panel.group && (panel.group.childrenPending || panel.emptyFiltered)
             && this.parentState(panel) === state.k;
           if (split[state.k].length || pendingParent) add(state.k, "panel:" + panel.key);
         }
@@ -731,13 +731,15 @@ export default {
     },
     _resumeChildHydration() {
       const run = this._childRun;
-      const keys = Object.keys(this.childSync).filter((key) => this.childSync[key] === "waiting-auth");
-      if (!run || !keys.length || !this.model?.streamComplete
+      if (!run || !Object.values(this.childSync).includes("waiting-auth") || !this.model?.streamComplete
           || !this.states.every((st) => this.axisState(st.k) === "done")) return false;
       if (run.resuming) return true;
       run.resuming = true;
       run.promise.finally(() => {
         if (this._childRun !== run || this._activeRequestToken !== run.requestToken) return;
+        // Another in-flight request can report the expired session while this run settles.
+        const keys = Object.keys(this.childSync).filter((key) => this.childSync[key] === "waiting-auth");
+        if (!keys.length) return;
         this._hydrateModel(this.model, run.seq, run.cacheKey, run.cache,
           run.cacheGeneration, run.requestToken, keys);
       });
@@ -1661,7 +1663,7 @@ export default {
             </div>
               </div>
               <SubtaskFoldBar :panel="p" :closed="isGroupClosed(p)" @toggle="toggleGroup(p)" />
-              <div v-if="!isGroupClosed(p)" class="mt-gbody one"
+              <div v-if="!p.emptyFiltered && !isGroupClosed(p)" class="mt-gbody one"
                    :class="{ foldwrap: foldable(p), folded: peeking(p), 'fold-peek': peeking(p) }">
                 <div v-for="c in cellCards(p, st.k)" :key="c.key" class="mt-card tkt"
                      :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done',

@@ -9,8 +9,10 @@ from frontend.editor.test_editor_roundtrip_ui import editor_browser  # noqa: F40
 
 
 @pytest.mark.parametrize("partial", [False, True], ids=["filtered-empty-DL-5518", "retry-exhausted"])
-def test_finished_child_jobs_do_not_leave_empty_wide_spinners(editor_browser, partial):
+@pytest.mark.parametrize("width", [1720, 720], ids=["wide", "narrow"])
+def test_finished_child_jobs_do_not_leave_empty_wide_spinners(editor_browser, partial, width):
     page, base, errors, _ = editor_browser
+    page.set_viewport_size({"width": width, "height": 1080})
     group = {
         "key": "DL-5518", "title": "필터 결과 확인", "type": "Task", "mine": True,
         "statusCategory": "todo", "assignee": "담당자", "assigneeId": "admin",
@@ -42,17 +44,19 @@ def test_finished_child_jobs_do_not_leave_empty_wide_spinners(editor_browser, pa
     page.route("**/api/mytasks/stream?*", stream)
     page.route("**/api/mytasks/sync/ui-sync/group/*", children)
     page.goto(base + "/#/mytasks")
-    page.locator('.mt-card[data-key="DL-5518"]').wait_for()
+    page.locator('.mt-card[data-key="DL-5518"]:visible').wait_for()
     if partial:
-        page.get_by_text("일부 SubTask 미수신", exact=True).wait_for()
+        page.get_by_text("일부 SubTask 미수신", exact=True).filter(visible=True).wait_for()
         assert len(calls) == 3
     else:
-        page.get_by_text("현재 필터에 해당하는 SubTask 없음", exact=True).wait_for()
+        page.get_by_text("현재 필터에 해당하는 SubTask 없음", exact=True).filter(visible=True).wait_for()
         assert not calls
-        assert page.locator(".mt-compact-flow").count() == 1
+        assert page.locator(".mt-compact-flow" if width > 900 else ".mt-gcard2:visible").count() == 1
         assert page.locator(".mt-compact-children").count() == 0
+        assert page.locator(".mt-gbody.one:visible").count() == 0
         widths = page.evaluate("""() => ({
-          card:document.querySelector('.mt-compact-flow').getBoundingClientRect().width,
+          card:[...document.querySelectorAll('.mt-compact-flow, .mt-gcard2')]
+            .find(el=>el.getClientRects().length).getBoundingClientRect().width,
           column:document.querySelector('.mt-card[data-key="DL-5519"]').getBoundingClientRect().width})""")
         assert abs(widths["card"] - widths["column"]) <= 1
     assert page.locator(".mt-subfoot-sync i").count() == 0
