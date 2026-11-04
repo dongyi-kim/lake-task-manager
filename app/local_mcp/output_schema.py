@@ -11,9 +11,10 @@ def data_types():
     from app.local_mcp.schemas.workspace import DATA_MODELS as workspace
     from app.local_mcp.schemas.mutations import DATA_MODELS as mutations
     from app.local_mcp.schemas.guides import DATA_MODELS as guides
+    from app.local_mcp.schemas.llm import DATA_MODELS as llm
 
     result = {}
-    for group in (tickets, workspace, mutations, guides):
+    for group in (tickets, workspace, mutations, guides, llm):
         if result.keys() & group.keys():
             raise ValueError("Duplicate MCP output contract")
         result.update(group)
