@@ -6,13 +6,11 @@
 //  1) 상태 축   **폭이 정한다(옵션 아님)**. 3칼럼이 들어가면 가로축, 안 들어가면 세로축.
 //               가로 = 할당됨/진행중/최근완료가 세로로 긴 칼럼(칸반). 티켓은 1차원 리스트.
 //               세로 = 상태가 가로로 꽉 찬 패널로 쌓임. 티켓은 그리드.
-//               ★ 그룹은 늘 상태의 **반대 축**에 놓인다 — 가로 모드면 그룹이 위아래로 쌓이고,
-//                 세로 모드면 상태 패널 안에서 그룹이 좌우로 늘어선다.
+//               WBS/Epic 섹션이 바깥에 있고, 각 섹션 안의 상태 축만 화면 폭에 따라 바뀐다.
 //               ★ 두 모드 모두 상태를 **접을 수 있고**, 접힘 상태(bandClosed)를 공유한다 —
 //                 창을 줄였다고 접어 둔 게 펴지면 그건 같은 화면이 아니다.
-//  2) 그룹화    없음     = 모든 Task/Sub-Task가 개별 카드
-//               Sub Task = 같은 부모 Task로 묶고 그 안에 Sub-Task. 하위가 없는 Task는
-//                          묶을 게 없으므로 그룹이 아니라 그냥 카드다.
+//  2) 그룹화    WBS Task / Epic = 해당 소속 안에 기존 Task+Sub-Task 묶음을 그대로 배치.
+//               Task = 같은 부모로 묶기, 묶지 않음 = 모든 Task/Sub-Task를 개별 카드로.
 //  3) 유관 보기 그룹 안에서 담당이 '나'인 티켓을 강조해 먼저 보여주고,
 //               확장 버튼을 누르면 내가 담당이 아닌 티켓(동료 몫)도 함께 보여준다.
 //
@@ -35,6 +33,8 @@ import {
   resolveDefaultModule,
   taskLoadErrorKind, uniformStatusCategory, filteredTaskChildren, compactTaskCategory,
 } from "../mytasks/taskModel.js";
+import TASK_SECTION_TEMPLATE from "../mytasks/taskSectionTemplate.js";
+import { groupTaskSections } from "../mytasks/taskGrouping.js";
 import { hydrateTaskGroups } from "../mytasks/taskHydration.js";
 import { pushToast } from "../../lib/toast.js";
 import { vocBadgeSegs, vocStripTitle } from "../../lib/voc.js";
@@ -60,7 +60,7 @@ export default {
       dragTrx: null,        // 드랍한 전이에 필수 입력이 있으면 TransitionDialog 로 채운다 {ticket, transition}
       // 폭이 정한다(사용자 선택 아님). 좁으면 v(세로) — 화면이 답을 알고 있다.
       axis: window.matchMedia(NARROW).matches ? "v" : "h",
-      groupBy: "sub",       // none | sub (부모 Task 로 묶기)
+      groupBy: "sub",       // wbs | epic | sub (Task) | none; 기존 저장값 sub 유지
       // 하위(Sub-Task) 보기 — **화면 전체에 하나**. collapsed | mine | all.
       // 전에는 그룹마다 버튼을 달아 개별로 바꿨는데, 그룹이 열 개면 열 번 눌러야 원하는 상태가 되고
       // 지금 무엇이 펼쳐져 있는지도 카드마다 달라 한눈에 안 잡혔다. 보기 방식은 화면의 성격이지
@@ -277,32 +277,16 @@ export default {
     /** 화면에 그릴 목록.
      *  ★ 그룹은 **하위가 실제로 있을 때만** 만든다. Sub-Task 가 없는 Task 는 묶을 게 없으므로
      *    자기 자신만 담은 그룹 패널이 아니라 **그냥 티켓 카드**다(그게 사실에 맞는 표현이다). */
-    panels() {
-      if (this.groupBy === "none") {
-        return [{ key: "__all__", kind: "none", cards: this.visible(this.allCards) }];
-      }
-      // 하위가 있는 Task 를 **위로**, 하위 없는 단독 Task 묶음을 아래로.
-      // 단독 묶음은 서로 아무 관계 없는 티켓을 담는 자루라 그 '순위'(가장 급한 카드)는 사실상
-      // 전체 최솟값이 된다 → 다른 그룹과 같이 정렬하면 언제나 맨 위를 차지한다. 순위 경쟁은
-      // 실제 묶음(그룹)끼리만 시키고, 자루는 자리를 고정한다.
-      // Epic 필터: 그룹은 부모·자식이 같은 Epic 을 공유하므로 그룹의 버킷으로 통째로 거른다.
-      const grouped = this.groups
-        .filter((g) => g.hasSubs && this.epicPass(g) && this.projPass(g) && !this.excluded[g.key])
-        .map((g) => this.taskPanel(g));
-      // 가로축에서 모든 Sub-Task 가 한 상태인 Task 는 그룹 패널이 아니다. 하위 없는 Task 와
-      // 같은 마지막 카드 목록으로 보내 폭·위치·정렬을 완전히 공유하고, 하위 목록만 카드 아래에 붙인다.
-      // 단, 어느 열에 놓일지는 Sub-Task 상태가 아니라 **부모 Task 자신의 상태**가 정한다.
-      // 세로축이거나 부모 상태 열을 접었으면 기존 그룹 표현을 유지한다.
-      const compact = this.axis === "h" ? grouped.filter((p) => this.compactStatus(p)) : [];
-      const out = grouped.filter((p) => !compact.includes(p))
-        .sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1]);
-      const solo = this.soloPanel(
-        this.groups.filter((g) => !g.hasSubs && this.epicPass(g) && this.projPass(g) && !this.excluded[g.key]),
-        compact,
-      );
-      if (solo) out.push(solo);
-      return out;
+    sections() {
+      if (this.groupBy === "none") return [{ key: "__all__", title: "", panels: [
+        { key: "__all__", kind: "none", cards: this.visible(this.allCards) },
+      ] }];
+      const groups = this.groups.filter((g) => this.epicPass(g) && this.projPass(g) && !this.excluded[g.key]);
+      const sections = groupTaskSections(groups, this.groupBy, this.model?.groupingMeta || {}, this.epicMap);
+      return (sections.length ? sections : [{ key: "__all__", title: "", groups: [] }])
+        .map((section) => ({ ...section, panels: this.taskPanelsFor(section.groups) }));
     },
+    panels() { return this.sections.flatMap((section) => section.panels); },
     /** 상태축별 페이지 단위. 독립 Task/1축 Task는 카드 하나, 혼합 SubTask 그룹은 부모 그룹
      *  하나를 한 항목으로 센다. 그룹 안의 자식은 기존 폴더블 UI가 담당하므로 페이지가
      *  Task 경계를 잘라 부모만 보이거나 일부 자식만 사라지는 일이 없다. */
@@ -1064,6 +1048,38 @@ export default {
       const pri = Math.min(...pool.map((c) => c.priRank));
       return this.sort === "pri" ? [pri, due] : [due, pri];
     },
+    taskPanelsFor(groups) {
+      // 하위가 있는 Task 를 **위로**, 하위 없는 단독 Task 묶음을 아래로.
+      // 단독 묶음은 서로 아무 관계 없는 티켓을 담는 자루라 그 '순위'(가장 급한 카드)는 사실상
+      // 전체 최솟값이 된다 → 다른 그룹과 같이 정렬하면 언제나 맨 위를 차지한다. 순위 경쟁은
+      // 실제 묶음(그룹)끼리만 시키고, 자루는 자리를 고정한다.
+      // Epic 필터: 그룹은 부모·자식이 같은 Epic 을 공유하므로 그룹의 버킷으로 통째로 거른다.
+      const grouped = groups
+        .filter((g) => g.hasSubs && this.epicPass(g) && this.projPass(g) && !this.excluded[g.key])
+        .map((g) => this.taskPanel(g));
+      // 가로축에서 모든 Sub-Task 가 한 상태인 Task 는 그룹 패널이 아니다. 하위 없는 Task 와
+      // 같은 마지막 카드 목록으로 보내 폭·위치·정렬을 완전히 공유하고, 하위 목록만 카드 아래에 붙인다.
+      // 단, 어느 열에 놓일지는 Sub-Task 상태가 아니라 **부모 Task 자신의 상태**가 정한다.
+      // 세로축이거나 부모 상태 열을 접었으면 기존 그룹 표현을 유지한다.
+      const compact = this.axis === "h" ? grouped.filter((p) => this.compactStatus(p)) : [];
+      const out = grouped.filter((p) => !compact.includes(p))
+        .sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1]);
+      const solo = this.soloPanel(
+        groups.filter((g) => !g.hasSubs && this.epicPass(g) && this.projPass(g) && !this.excluded[g.key]),
+        compact,
+      );
+      if (solo) out.push(solo);
+      return out;
+    },
+    sectionCount(section, state) {
+      const groups = new Set((section.groups || this.groups).map((group) => group.key));
+      return this.allCards.filter((card) => groups.has(card.parent?.key || card.key)
+        && card.statusCategory === state && (this.subView === "all" || card.mine)).length;
+    },
+    sectionPageVisible(section) {
+      return !section.title || section.panels.some((panel) => panel.kind === "task"
+        ? this.panelPageVisibleAny(panel) : this.states.some((state) => this.pagedCards(panel, state.k).length));
+    },
     taskPanel(g) {
       const mode = this.subView;
       const { all, own: mineCards, shown } = filteredTaskChildren(
@@ -1430,263 +1446,27 @@ export default {
 
     <div v-if="err" class="mt-err">{{ err }}</div>
 
-    <!-- ══ 상태 = 가로축 : 칼럼 헤더는 맨 위 한 줄, 그룹은 **각자 하나의 카드** 안에 3칼럼 ══
-         (그룹마다 헤더를 반복하면 빈 헤더가 그룹 수만큼 늘어나고, 반대로 헤더만 위에 두고 카드를
-          안 씌우면 어디부터 어디까지가 한 그룹인지 안 읽힌다 — 둘 다 피한 구조다.) -->
-    <template v-if="axis === 'h'">
-      <div class="mt-headrow">
-        <div v-for="st in states" :key="'h-' + st.k" class="mt-colh"
-             :class="['c-' + st.k, { closed: !bandOpen(st.k) }]">
-          <button class="mt-colh-b" @click="toggleBand(st.k)"
-                  :title="(bandOpen(st.k) ? '접기' : '펼치기') + ' — ' + st.label">
-            <span class="chev" :class="{ open: bandOpen(st.k) }">▸</span>
-            <template v-if="bandOpen(st.k)">{{ st.label }}</template>
-            <b>{{ allCards.filter(c => c.statusCategory === st.k && (subView === 'all' || c.mine)).length }}</b>
-          </button>
-          <span v-if="bandOpen(st.k) && axisPending(st.k)" class="mt-axis-load"
-                :class="{ degraded: axisDegraded(st.k) }"
-                :title="'완료된 JQL leaf ' + axisChunks(st.k) + '개 반영'">
-            <i v-if="axisLoading(st.k)" aria-hidden="true"></i>{{ axisLoadText(st.k) }}
-          </span>
-          <!-- 표시 범위는 **그 칸에만** 걸리는 조건이라 그 칸의 제목에 둔다 -->
-          <span v-if="bandOpen(st.k) && bandFilter(st.k)" class="mt-colf">
-            <button v-for="o in bandFilter(st.k).opts" :key="o.k" type="button"
-                    class="mt-colf-b" :class="{ on: opt(st.k) === o.k }"
-                    :title="o.hint" @click.stop="setBandFilter(st.k, o.k)">{{ o.label }}</button>
-          </span>
-        </div>
+    <section v-for="section in sections" :key="section.key" v-show="sectionPageVisible(section)"
+             class="mt-task-section" :class="{ titled: section.title }" :data-task-section="section.key"
+             :style="{ '--section-color': section.color || 'var(--muted)' }">
+      <header v-if="section.title" class="mt-section-header">
+        <span class="mt-section-label">{{ section.label }}</span><h2>{{ section.title }}</h2>
+        <small v-for="extra in section.extra" :key="extra.epic" class="mt-section-extra">
+          {{ extra.epic }} 다른 소속: {{ extra.names.join(' / ') }}
+        </small>
+      </header>
+      ${TASK_SECTION_TEMPLATE}
+    </section>
+    <div class="mt-axis-more-row" :class="{ vertical: axis === 'v' }">
+      <div v-for="st in states" :key="'more-' + st.k" class="mt-axis-more-cell"
+           :class="['c-' + st.k, { closed: !bandOpen(st.k) }]">
+        <button v-if="bandOpen(st.k) && axisHidden(st.k)" type="button" class="mt-axis-more-btn"
+                @click="moreBand(st.k)">
+          <span>{{ st.label }} · {{ axisHidden(st.k) }}개 더 보기</span>
+          <small>{{ axisShown(st.k) }} / {{ axisEntryCount(st.k) }}</small>
+        </button>
       </div>
-
-      <!-- 칼럼 배경 — 카드 뒤에 **한 겹으로** 깐다. 셀마다 칠하면 그룹 카드가 놓인 구간에서
-           띠가 끊겨 '영역' 이 아니라 '카드 뒤 색칠' 로 보인다(실제로 그랬다). -->
-      <div class="mt-hwrap">
-        <div class="mt-colbg" aria-hidden="true">
-          <div v-for="st in states" :key="'bg-' + st.k" :class="'c-' + st.k"></div>
-        </div>
-
-      <div v-if="!panels.length" class="mt-axis-shell">
-        <div v-for="st in states" :key="'shell-' + st.k" :class="'c-' + st.k">
-          <span><i v-if="axisLoading(st.k)" aria-hidden="true"></i>{{ axisEmptyText(st.k) }}</span>
-        </div>
-      </div>
-
-      <template v-for="p in panels" :key="p.key">
-        <!-- 그룹화 없음 / 하위 없는 Task 묶음 — 묶을 게 없으니 카드 테두리도 없다 -->
-        <div v-if="p.kind === 'none' || p.kind === 'solo'" class="mt-gbody plain">
-          <div v-for="st in states" :key="'n-' + st.k" class="mt-cell"
-               :class="['c-' + st.k, { empty: !pagedCards(p, st.k).length,
-                                                closed: !bandOpen(st.k) }]">
-            <template v-for="c in pagedCards(p, st.k)" :key="c.key">
-              <TaskCard v-if="!c.compactPanel" :card="c"
-                     :style="sigStyle(c)" :epic-title="epicDisplayTitle(c.epicKey)"
-                     :epic-pending="epicPending(c.epicKey)" />
-              <!-- 1축 Task 는 단독 Task 와 같은 셀·배열·TaskCard 를 그대로 쓴다.
-                   공용 하단바와 폴더블 Sub-Task 목록만 부모 카드 바로 아래에 잇는다. -->
-              <div v-else class="mt-compact-flow" :style="sigStyle(c)"
-                   :class="{ folded: isGroupClosed(c.compactPanel), open: !isGroupClosed(c.compactPanel) }">
-                <div class="mt-compact-head">
-                  <TaskCard :card="c" :style="sigStyle(c)" :epic-title="epicDisplayTitle(c.epicKey)"
-                            :epic-pending="epicPending(c.epicKey)" />
-                </div>
-                <SubtaskFoldBar :panel="c.compactPanel" :closed="isGroupClosed(c.compactPanel)"
-                                @toggle="toggleGroup(c.compactPanel)" />
-                <div v-if="!c.compactPanel.emptyFiltered && !isGroupClosed(c.compactPanel)"
-                     class="mt-gbody one mt-compact-children"
-                     :class="{ foldwrap: foldable(c.compactPanel), folded: peeking(c.compactPanel),
-                               'fold-peek': peeking(c.compactPanel) }">
-                  <div v-for="sub in cellCards(c.compactPanel, c.compactPanel.singleStatus)" :key="sub.key" class="mt-card tkt"
-                       :class="{ mine: sub.mine, rel: !sub.mine, done: sub.statusCategory === 'done',
-                               urgent: isUrgentC(sub) }" :style="sigStyle(sub)" :data-key="sub.key">
-                    <span v-if="isHotC(sub)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
-                    <PriIcon :rank="sub.priRank" :name="sub.pri" />
-                    <span class="mt-key">{{ sub.key }}</span>
-                    <span class="mt-title">{{ sub.title }}</span>
-                    <span class="mt-subdue-sep" aria-hidden="true"></span>
-                    <span class="mt-owner mt-sub-owner" :class="{ me: sub.mine }"
-                          :title="(sub.assignee || '미할당') + ' 담당' + (sub.mine ? ' (나)' : '')">
-                      <Avatar :user="sub.assigneeId" :name="sub.assignee" :size="15" />
-                      <span class="mt-owner-name">{{ sub.assignee || '미할당' }}</span>
-                    </span>
-                    <DueText :card="sub" />
-                  </div>
-                  <button v-if="overflowed(c.compactPanel, c.compactPanel.singleStatus)" class="fold-b"
-                          @click.stop="toggleSub(c.compactPanel.key)">{{
-                          subOpen[c.compactPanel.key] ? '접기' : '+' + cellHidden(c.compactPanel, c.compactPanel.singleStatus) + '개 더' }}</button>
-                </div>
-              </div>
-            </template>
-          </div>
-        </div>
-
-        <!-- Task 그룹 = 카드 하나 -->
-        <div v-else-if="p.kind === 'task' && panelPageVisibleAny(p)" class="mt-gslot">
-        <div class="mt-gcard2 k-task" :class="{ folded: isGroupClosed(p) }" :style="sigStyle(p.group)">
-          <div class="mt-gh">
-            <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
-                 :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done',
-                        urgent: isUrgentC(p.group) }">
-              <span v-if="isHotC(p.group)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
-              <PriIcon :rank="p.group.priRank" :name="p.group.pri" />
-              <TypeBadge :type="p.group.type" />
-              <span class="mt-key">{{ p.key }}</span>
-              <span class="mt-title">{{ p.group.voc ? vocStrip(p.title) : p.title }}</span>
-              <span v-if="p.epicKey" class="mt-epic" :class="{ pending: epicPending(p.epicKey) }"
-                    :title="'Epic: ' + epicDisplayTitle(p.epicKey)">{{ epicDisplayTitle(p.epicKey) }}</span>
-              <span v-else-if="p.group.voc" class="mt-voc" :title="'사용자 VoC' + (vocSegs(p.title).length > 1 ? ' — ' + vocSegs(p.title).slice(1).join(' · ') : '')">
-                <span v-for="(s, i) in vocSegs(p.title)" :key="i" class="mt-voc-seg" :class="{ head: i === 0 }">{{ s }}</span>
-              </span>
-              <span v-else class="mt-epic none">Epic 없음</span>
-              <span class="mt-sep" aria-hidden="true"></span>
-              <span class="mt-owner" :class="{ me: p.group.mine }"
-                    :title="(p.group.assignee || '미할당') + ' 담당' + (p.group.mine ? ' (나)' : '')">
-                <Avatar :user="p.group.assigneeId" :name="p.group.assignee" :size="16" />{{ p.group.assignee || '미할당' }}</span>
-              <DueText :card="p.group" />
-
-            </div>
-          </div>
-          <SubtaskFoldBar :panel="p" :closed="isGroupClosed(p)" @toggle="toggleGroup(p)" />
-          <div v-if="!isGroupClosed(p)" class="mt-gbody">
-            <div v-for="st in states" :key="p.key + st.k" class="mt-cell"
-                 :class="['c-' + st.k, { empty: !panelPageVisible(p, st.k) || !byState(p.cards)[st.k].length,
-                                                closed: !bandOpen(st.k),
-                                                foldwrap: foldable(p),
-                                                folded: peeking(p), 'fold-peek': peeking(p) }]">
-                <div v-for="c in (panelPageVisible(p, st.k) ? cellCards(p, st.k) : [])" :key="c.key" class="mt-card tkt"
-                     :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done',
-                             urgent: isUrgentC(c) }" :style="sigStyle(c)" :data-key="c.key">
-                  <span v-if="isHotC(c)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
-                  <PriIcon :rank="c.priRank" :name="c.pri" />
-                  <span class="mt-key">{{ c.key }}</span>
-                  <span class="mt-title">{{ c.title }}</span>
-                  <span class="mt-subdue-sep" aria-hidden="true"></span>
-                  <span class="mt-owner mt-sub-owner" :class="{ me: c.mine }"
-                        :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
-                    <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />
-                    <span class="mt-owner-name">{{ c.assignee || '미할당' }}</span>
-                  </span>
-                  <DueText :card="c" />
-                </div>
-                <!-- 넘친 칸에만 더보기가 붙지만, 누르면 **이 Task 의 모든 칸**이 함께 열린다.
-                     접혀 있을 때는 흐려진 카드 **위에** 앉는다(.foldwrap.folded > .fold-b). -->
-                <button v-if="panelPageVisible(p, st.k) && overflowed(p, st.k)" class="fold-b" @click.stop="toggleSub(p.key)">{{
-                        subOpen[p.key] ? '접기' : '+' + cellHidden(p, st.k) + '개 더' }}</button>
-            </div>
-          </div>
-        </div>
-        </div>
-
-      </template>
-      <div class="mt-axis-more-row">
-        <div v-for="st in states" :key="'more-' + st.k" class="mt-axis-more-cell"
-             :class="['c-' + st.k, { closed: !bandOpen(st.k) }]">
-          <button v-if="bandOpen(st.k) && axisHidden(st.k)" type="button" class="mt-axis-more-btn"
-                  @click="moreBand(st.k)">
-            <span>{{ axisHidden(st.k) }}개 더 보기</span>
-            <small>{{ axisShown(st.k) }} / {{ axisEntryCount(st.k) }}</small>
-          </button>
-        </div>
-      </div>
-      </div>
-    </template>
-
-    <!-- ══ 상태 = 세로축 : 상태 패널이 가로로 꽉 차서 쌓이고, 그 안에서 그룹이 좌우로 ══ -->
-    <template v-else>
-      <div v-for="st in states" :key="st.k" class="mt-band" :class="['c-' + st.k, { closed: !bandOpen(st.k) }]">
-        <div class="mt-bandh-w">
-          <button class="mt-bandh" @click="toggleBand(st.k)"
-                  :title="bandOpen(st.k) ? '접기' : '펼치기'">
-            <span class="chev" :class="{ open: bandOpen(st.k) }">▸</span>{{ st.label }}
-            <b>{{ bandCount(st.k) }}</b>
-          </button>
-          <span v-if="axisPending(st.k)" class="mt-axis-load"
-                :class="{ degraded: axisDegraded(st.k) }"
-                :title="'완료된 JQL leaf ' + axisChunks(st.k) + '개 반영'">
-            <i v-if="axisLoading(st.k)" aria-hidden="true"></i>{{ axisLoadText(st.k) }}
-          </span>
-          <span v-if="bandFilter(st.k)" class="mt-colf">
-            <button v-for="o in bandFilter(st.k).opts" :key="o.k" type="button"
-                    class="mt-colf-b" :class="{ on: opt(st.k) === o.k }"
-                    :title="o.hint" @click.stop="setBandFilter(st.k, o.k)">{{ o.label }}</button>
-          </span>
-        </div>
-        <template v-if="bandOpen(st.k)">
-        <!-- 그룹화 없음 → 카드 그리드 하나 -->
-        <div v-if="groupBy === 'none'" class="mt-grid2">
-          <TaskCard v-for="c in pagedCards(panels[0], st.k)" :key="c.key" :card="c"
-                   :style="sigStyle(c)" :epic-title="epicDisplayTitle(c.epicKey)"
-                   :epic-pending="epicPending(c.epicKey)" />
-          <div v-if="!pagedCards(panels[0], st.k).length" class="mt-none">{{ axisEmptyText(st.k) }}</div>
-        </div>
-        <!-- 그룹화 있음 → 그룹이 좌우로 늘어서고 각 그룹 안이 그리드 -->
-        <div v-else class="mt-grouprow">
-          <div v-if="!bandCount(st.k)" class="mt-none">{{ axisEmptyText(st.k) }}</div>
-          <template v-for="p in panels" :key="p.key">
-            <!-- 하위 없는 Task 묶음 — 카드로만 -->
-            <template v-if="p.kind === 'solo'">
-              <TaskCard v-for="c in pagedCards(p, st.k)" :key="'so-' + c.key" :card="c"
-                   :style="sigStyle(c)" :epic-title="epicDisplayTitle(c.epicKey)"
-                   :epic-pending="epicPending(c.epicKey)" />
-            </template>
-            <div v-else v-show="panelPageVisible(p, st.k)" class="mt-gcard2 k-task"
-                 :class="{ folded: isGroupClosed(p) }" :style="sigStyle(p.group)">
-              <div class="mt-gh">
-            <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
-                 :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done',
-                        urgent: isUrgentC(p.group) }">
-              <span v-if="isHotC(p.group)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
-              <PriIcon :rank="p.group.priRank" :name="p.group.pri" />
-              <TypeBadge :type="p.group.type" />
-              <span class="mt-key">{{ p.key }}</span>
-              <span class="mt-title">{{ p.group.voc ? vocStrip(p.title) : p.title }}</span>
-              <span v-if="p.epicKey" class="mt-epic" :class="{ pending: epicPending(p.epicKey) }"
-                    :title="'Epic: ' + epicDisplayTitle(p.epicKey)">{{ epicDisplayTitle(p.epicKey) }}</span>
-              <span v-else-if="p.group.voc" class="mt-voc" :title="'사용자 VoC' + (vocSegs(p.title).length > 1 ? ' — ' + vocSegs(p.title).slice(1).join(' · ') : '')">
-                <span v-for="(s, i) in vocSegs(p.title)" :key="i" class="mt-voc-seg" :class="{ head: i === 0 }">{{ s }}</span>
-              </span>
-              <span v-else class="mt-epic none">Epic 없음</span>
-              <span class="mt-sep" aria-hidden="true"></span>
-              <span class="mt-owner" :class="{ me: p.group.mine }"
-                    :title="(p.group.assignee || '미할당') + ' 담당' + (p.group.mine ? ' (나)' : '')">
-                <Avatar :user="p.group.assigneeId" :name="p.group.assignee" :size="16" />{{ p.group.assignee || '미할당' }}</span>
-              <DueText :card="p.group" />
-
-            </div>
-              </div>
-              <SubtaskFoldBar :panel="p" :closed="isGroupClosed(p)" @toggle="toggleGroup(p)" />
-              <div v-if="!isGroupClosed(p)" class="mt-gbody one"
-                   :class="{ foldwrap: foldable(p), folded: peeking(p), 'fold-peek': peeking(p) }">
-                <div v-for="c in cellCards(p, st.k)" :key="c.key" class="mt-card tkt"
-                     :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done',
-                             urgent: isUrgentC(c) }" :style="sigStyle(c)" :data-key="c.key">
-                  <span v-if="isHotC(c)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
-                  <PriIcon :rank="c.priRank" :name="c.pri" />
-                  <span class="mt-key">{{ c.key }}</span>
-                  <span class="mt-title">{{ c.title }}</span>
-                  <span class="mt-subdue-sep" aria-hidden="true"></span>
-                  <span class="mt-owner mt-sub-owner" :class="{ me: c.mine }"
-                        :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
-                    <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />
-                    <span class="mt-owner-name">{{ c.assignee || '미할당' }}</span>
-                  </span>
-                  <DueText :card="c" />
-                </div>
-                <!-- 넘친 칸에만 더보기가 붙지만, 누르면 **이 Task 의 모든 칸**이 함께 열린다.
-                     접혀 있을 때는 흐려진 카드 **위에** 앉는다(.foldwrap.folded > .fold-b). -->
-                <button v-if="overflowed(p, st.k)" class="fold-b" @click.stop="toggleSub(p.key)">{{
-                        subOpen[p.key] ? '접기' : '+' + cellHidden(p, st.k) + '개 더' }}</button>
-              </div>
-            </div>
-          </template>
-        </div>
-        <div v-if="axisHidden(st.k)" class="mt-axis-more">
-          <button type="button" class="mt-axis-more-btn" @click="moreBand(st.k)">
-            <span>{{ axisHidden(st.k) }}개 더 보기</span>
-            <small>{{ axisShown(st.k) }} / {{ axisEntryCount(st.k) }}</small>
-          </button>
-        </div>
-        </template>
-      </div>
-    </template>
+    </div>
     <!-- 옵션 패널 — 세 축을 여기서 정한다. **화면 하단에 띄운다**:
          이 화면의 본론은 목록이고 옵션은 가끔 건드리는 것이라, 위에 두면 스크롤 한 판을
          옵션이 먼저 먹는다. 마크업도 목록 뒤에 둬 탭 이동이 목록을 먼저 지나가게 한다
