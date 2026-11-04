@@ -141,7 +141,7 @@ class Cache:
             return original
         done = False
         if key.startswith("comments:"):
-            suffix = key.split(":", 1)[1]
+            suffix = ":".join(key.split(":", 3)[1:3])  # page/projection suffixes still belong to one issue
             row = self._conn.execute(
                 "SELECT payload,fetched_at FROM cache WHERE key IN (?,?,?) ORDER BY fetched_at DESC LIMIT 1",
                 tuple(kind + ":" + suffix for kind in ("issue", "issueL", "issueview")),
