@@ -7,7 +7,7 @@ from tools.codex_mcp_eval.cases import OUTPUT_SCHEMA as QUERY_SCHEMA, SYSTEM_CON
 from tools.codex_mcp_eval.identity_fixture import CONTEXT_TICKET, build_identity_data
 
 SUITE = "codex-mcp-identity"
-BATTERY_VERSION = "1.0.0"
+BATTERY_VERSION = "1.0.1"
 PROMPT_VERSION = "codex-mcp-identity-v1"
 OUTPUT_SCHEMA = copy.deepcopy(QUERY_SCHEMA)
 SYSTEM_CONTEXT = QUERY_CONTEXT + """
@@ -27,7 +27,8 @@ CASES = [
     {"id": "ID-GIVEN-AMBIGUOUS", "candidates": ["kang", "kim"], "prompts": ["수아님" + _REQUEST]},
     {"id": "ID-FULL-AMBIGUOUS", "candidates": ["jung_garam", "jung_narae"], "prompts": ["정민수님" + _REQUEST]},
     {"id": "ID-COMPOUND-SURNAME", "target": "namgung", "prompts": ["남궁민수 책임" + _REQUEST]},
-    {"id": "ID-NOT-FOUND", "candidates": [], "prompts": ["유나대리" + _REQUEST]},
+    {"id": "ID-NOT-FOUND", "candidates": [], "emptySearchQueries": ["유나", "유나대리"],
+     "prompts": ["유나대리" + _REQUEST]},
     {"id": "ID-TICKET-CONTEXT", "target": "kang", "context": CONTEXT_TICKET,
      "prompts": [f"{CONTEXT_TICKET} 현재 담당자인 수아님" + _REQUEST]},
 ]
@@ -47,13 +48,15 @@ def review_contract():
             person = truth["identities"][case["target"]]
             expected = {**person, "reportedTotal": person["total"], "orderedKeys": person["openTaskKeys"],
                         "contextTicket": case.get("context"), "inventUserId": False,
+                        "contextAssigneeId": person["id"] if case.get("context") else None,
                         "taskScope": "current Open/In Progress ordinary Task in DL; no Epic/SubTask/Done"}
             question = "호칭·회사·복성·티켓 문맥을 정확히 해석하고 확인된 사람의 업무만 끝까지 집계했는가"
         else:
             expected = {"candidates": [truth["identities"][alias] for alias in case["candidates"]],
                         "resultKeys": [], "reportedTotal": None, "mustAskClarification": True,
                         "mustNotSelectFirstCandidate": True, "inventUserId": False,
-                        "notFoundIsNotZeroTasks": not case["candidates"]}
+                        "notFoundIsNotZeroTasks": not case["candidates"],
+                        "acceptedEmptySearchQueries": case.get("emptySearchQueries")}
             question = "동명이인 또는 미확인 신원을 구분하고 후보·회사나 정확한 이름 확인을 구체적으로 요청했는가"
         specs[case["id"]] = {"goal": question, "elements": [
             _element(case["id"].lower().replace("-", "_"), "factual_grounding", question, expected)]}
@@ -66,13 +69,20 @@ def review_contract():
 
 
 def _observed(calls, truth):
-    ids, keys = set(), set()
+    ids, keys, assignees = set(), set(), set()
     known_users, known_keys = set(truth.get("users", {})), set(truth.get("issues", {}))
     def walk(value):
         if isinstance(value, dict):
+            key = value.get("key")
+            if isinstance(key, str) and key in known_keys:
+                # Link fields only inside this ticket record, never across siblings/calls.
+                assigned = value.get("assigneeId")
+                raw = (value.get("fields") or {}).get("assignee") if isinstance(value.get("fields"), dict) else None
+                candidates = [assigned, *(raw.get(field) for field in ("name", "accountId"))] if isinstance(raw, dict) else [assigned]
+                assignees.update((key, uid) for uid in candidates if isinstance(uid, str) and uid in known_users)
             for field, item in value.items():
                 if isinstance(item, str):
-                    if field in {"id", "name", "key", "accountId", "assignee", "reporter"} and item in known_users:
+                    if field in {"id", "name", "key", "accountId", "assignee", "assigneeId", "reporter"} and item in known_users:
                         ids.add(item)
                     if field in {"key", "issueKey", "ticketKey", "srcKey"} and item in known_keys:
                         keys.add(item)
@@ -83,7 +93,7 @@ def _observed(calls, truth):
     for call in calls:
         if (call.get("result") or {}).get("ok") is True and not call.get("isError"):
             walk(call["result"].get("data"))
-    return ids, keys
+    return ids, keys, assignees
 
 
 def check(case, output, calls, ground_truth=None):
@@ -91,7 +101,7 @@ def check(case, output, calls, ground_truth=None):
     truth, failures = ground_truth or {}, []
     answer = output.get("structuredAnswer") or {}
     result_keys = answer.get("resultKeys") or []
-    ids, keys = _observed(calls, truth)
+    ids, keys, assignees = _observed(calls, truth)
     if not output.get("ok") or not output.get("reply"):
         failures.append("execution_not_complete")
     if output.get("forbiddenToolEvents"):
@@ -115,14 +125,20 @@ def check(case, output, calls, ground_truth=None):
                 failures.append("target_identity_not_observed_or_cited")
             if result_keys != expected["openTaskKeys"] or answer.get("reportedTotal") != expected["total"]:
                 failures.append("verified_identity_ticket_scope_mismatch")
-            if case.get("context") and case["context"] not in keys:
-                failures.append("ticket_context_not_observed")
+            if case.get("context") and (case["context"], expected["id"]) not in assignees:
+                failures.append("ticket_context_assignee_not_observed")
     else:
         if result_keys or answer.get("reportedTotal") is not None or answer.get("progress") is not None:
             failures.append("unresolved_identity_has_asserted_workload")
         expected_ids = {truth.get("identities", {}).get(alias, {}).get("id") for alias in case["candidates"]}
         if not expected_ids.issubset(ids):
             failures.append("ambiguity_candidates_not_observed")
+        queries = case.get("emptySearchQueries")
+        if queries and not any(row.get("name") == "search_users" and not row.get("isError")
+                and (row.get("arguments") or {}).get("query", "").strip() in queries
+                and (row.get("result") or {}).get("ok") is True
+                and ((row.get("result") or {}).get("data") or {}).get("users") == [] for row in calls):
+            failures.append("relevant_empty_identity_search_not_observed")
     # Queries and complete results are retained by the fixture/runner for direct review:
     # whether the reply really asks an appropriate question is deliberately not scored here.
     return {"pass": not failures, "failures": failures, "observedUserIds": sorted(ids),

@@ -96,6 +96,10 @@ class EvaluationFixture:
             return [self._safe(item) for item in value]
         return value.replace(self._token, "[redacted]") if isinstance(value, str) and self._token else value
 
+    def configure_scope(self, settings):
+        if not settings.search_jira_projects or not settings.search_confluence_spaces:
+            raise ValueError("Configured Jira projects and Confluence spaces are required")
+
     def __enter__(self):
         if not _ACTIVE_CASE.acquire(blocking=False):
             raise RuntimeError("Evaluation cases must run sequentially in this process")
@@ -124,8 +128,7 @@ class EvaluationFixture:
             # Even generated links describe only the disposable fixture, never production.
             settings.jira_base = settings.confluence_base = "http://127.0.0.1:8080"
             settings.jira_user = settings.jira_token = ""
-            if not settings.search_jira_projects or not settings.search_confluence_spaces:
-                raise ValueError("Configured Jira projects and Confluence spaces are required")
+            self.configure_scope(settings)
             self.settings = settings
             get_world.cache_clear()
             self.world = World(load_plan(), load_people(), self.today)

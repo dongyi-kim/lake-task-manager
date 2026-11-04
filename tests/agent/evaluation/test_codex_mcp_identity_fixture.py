@@ -14,7 +14,7 @@ from tools.codex_mcp_eval.runner import _battery, parse_args
 def test_identity_cases_preregister_ambiguity_compound_surname_and_id_distinction():
     data = build_identity_data("2026-11-04")
     assert len(battery.CASES) == len({case["id"] for case in battery.CASES}) == 9
-    assert battery.SUITE == "codex-mcp-identity" and battery.BATTERY_VERSION == "1.0.0"
+    assert battery.SUITE == "codex-mcp-identity" and battery.BATTERY_VERSION == "1.0.1"
     assert data["oracle"]["identities"]["kang"]["id"] == "강수아 가람데이터"
     assert data["oracle"]["identities"]["kim"]["id"] != "김수아 나래솔루션"
     assert data["oracle"]["identities"]["namgung"]["openTaskKeys"] == ["DL-93061", "DL-93062"]
@@ -108,3 +108,49 @@ def test_ambiguity_and_missing_person_require_unknown_total_but_prose_is_direct_
     truth["readOnlyToolNames"] = ["search_users"]
     calls.append({"name": "create_task", "result": {"ok": False}})
     assert "tool_outside_read_only_catalog_requested" in battery.check(case, output, calls, truth)["failures"]
+
+
+def test_missing_identity_requires_successful_relevant_empty_search():
+    data = build_identity_data("2026-11-04")
+    truth = {**data["oracle"], "users": data["users"], "issues": data["issues"]}
+    case = next(row for row in battery.CASES if row["id"] == "ID-NOT-FOUND")
+    output = {"ok": True, "reply": "이름을 확인해 주세요.", "structuredAnswer": {
+        "resultKeys": [], "reportedTotal": None, "progress": None, "sources": []}}
+    search = {"name": "search_users", "arguments": {"query": "유나"}, "result": {"ok": True, "data": {"users": []}}}
+    for query in case["emptySearchQueries"]:
+        search["arguments"]["query"] = query
+        assert battery.check(case, output, [search], truth)["pass"]
+    for bad in (
+        {"name": "get_auth_status", "result": {"ok": True, "data": {"authenticated": True}}},
+        {**search, "arguments": {"query": "관련 없는 사람"}},
+        {**search, "isError": True}, {**search, "result": {"ok": False, "data": {"users": []}}},
+        {**search, "result": {"ok": True, "data": {"users": [{"id": "someone"}]}}},
+    ):
+        assert "relevant_empty_identity_search_not_observed" in battery.check(case, output, [bad], truth)["failures"]
+
+
+def test_context_identity_requires_key_and_assignee_in_same_successful_record():
+    data = build_identity_data("2026-11-04")
+    truth = {**data["oracle"], "users": data["users"], "issues": data["issues"]}
+    case = next(row for row in battery.CASES if row["id"] == "ID-TICKET-CONTEXT")
+    person = truth["identities"]["kang"]
+    output = {"ok": True, "reply": "확인한 담당자의 미완료 업무", "structuredAnswer": {
+        "resultKeys": person["openTaskKeys"], "reportedTotal": 2, "progress": None,
+        "sources": [{"kind": "person", "id": person["id"], "url": ""}]}}
+    baseline = [{"name": "search_users", "result": {"ok": True, "data": {"users": [{"id": person["id"]}]}}},
+                {"name": "search_issues", "result": {"ok": True, "data": {
+                    "issues": [{"key": key} for key in person["openTaskKeys"]]}}}]
+    failure = "ticket_context_assignee_not_observed"
+    assert failure in battery.check(case, output, baseline, truth)["failures"]
+    for tool, record in (
+        ("get_ticket", {"key": case["context"], "assigneeId": person["id"]}),
+        ("search_issues", {"issues": [{"key": case["context"], "fields": {"assignee": {"name": person["id"]}}}]}),
+        ("search_issues", {"issues": [{"key": case["context"], "fields": {"assignee": {"accountId": person["id"]}}}]}),
+    ):
+        linked = {"name": tool, "result": {"ok": True, "data": record}}
+        assert battery.check(case, output, [*baseline, linked], truth)["pass"]
+        assert failure in battery.check(case, output, [*baseline, {**linked, "isError": True}], truth)["failures"]
+        assert failure in battery.check(case, output, [*baseline, {**linked, "result": {"ok": False, "data": record}}], truth)["failures"]
+    split = {"name": "search_issues", "result": {"ok": True, "data": {"issues": [
+        {"key": case["context"]}, {"key": "DL-93002", "assigneeId": person["id"]}]}}}
+    assert failure in battery.check(case, output, [*baseline, split], truth)["failures"]

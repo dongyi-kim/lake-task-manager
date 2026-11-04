@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import copy
 from datetime import date, timedelta
+from unittest.mock import patch
 
-from tools.codex_mcp_eval.fixture import EvaluationFixture, _hash
+from tools.codex_mcp_eval.fixture import EvaluationFixture, World, _hash
 
 PEOPLE = (
     ("kang", "강수아 가람데이터", "강수아 가람데이터"),
@@ -20,11 +21,15 @@ PEOPLE = (
     ("namgung", "남궁민수 두루시스템", "남궁민수 두루시스템"),
 )
 CONTEXT_TICKET = "DL-93001"
+ACTOR_ID = World.ME
+IDENTITY_PLAN = {"project_key": "DL", "modules": ["TEST"], "epics": {}, "wbs": []}
+IDENTITY_ROSTER = {"TEST": [uid for _, uid, _ in PEOPLE] + [ACTOR_ID]}
 
 
 def build_identity_data(today: date | str) -> dict:
     today = date.fromisoformat(today) if isinstance(today, str) else today
     users = {uid: {"name": uid, "displayName": display} for _, uid, display in PEOPLE}
+    users[ACTOR_ID] = {"name": ACTOR_ID, "displayName": "검증계정 가상회사"}
     issues, identities = {}, {}
     for index, (alias, uid, display) in enumerate(PEOPLE):
         base = 93000 + index * 10
@@ -53,17 +58,26 @@ def build_identity_data(today: date | str) -> dict:
                 "comments": [], "changelog": [], "worklog": [], "links": [], "remotelinks": [],
                 "subtasks": [f"DL-{base + 4}"] if offset == 1 else []}
     return {"users": users, "issues": issues,
-            "oracle": {"identities": identities, "contextTicket": CONTEXT_TICKET,
+            "oracle": {"identities": identities, "contextTicket": CONTEXT_TICKET, "currentUserId": ACTOR_ID,
                        "contextAssignee": identities["kang"]["id"], "today": today.isoformat()}}
 
 
 class IdentityFixture(EvaluationFixture):
+    def configure_scope(self, settings):
+        settings.search_jira_projects, settings.search_confluence_spaces = ["DL"], []
+        settings.managers = [ACTOR_ID]
+
     def __enter__(self):
-        super().__enter__()
         try:
+            from app.infra import settings
+            from tools.codex_mcp_eval import fixture
+            # Patch both imported aliases and dynamic product imports before World/runtime setup.
+            for module in (settings, fixture):
+                self._patches.enter_context(patch.object(module, "load_plan", lambda: copy.deepcopy(IDENTITY_PLAN)))
+                self._patches.enter_context(patch.object(module, "load_people", lambda: copy.deepcopy(IDENTITY_ROSTER)))
+            super().__enter__()
             data = build_identity_data(self.today)
             self._identity_truth = data["oracle"]
-            self.settings.search_jira_projects = ["DL"]
             for owner in (self.world, self.store):
                 owner.users = copy.deepcopy(data["users"])
                 owner.issues = copy.deepcopy(data["issues"])
@@ -92,6 +106,8 @@ class IdentityFixture(EvaluationFixture):
     def assert_conformance(self):
         """Host-only REST checks; no cache warming or fabricated alias endpoint."""
         raw, searches, queries = self.provider._client, {}, []
+        actor = raw.get("/rest/api/2/myself").json()
+        assert actor["name"] == ACTOR_ID and actor["displayName"] == self.store.users[ACTOR_ID]["displayName"]
         for query, aliases in (("수아", ("kang", "kim")), ("정민수", ("jung_garam", "jung_narae")),
                                ("남궁민수", ("namgung",)), ("유나", ())):
             response = raw.get("/rest/api/2/user/search", params={"username": query, "maxResults": 100})
@@ -113,5 +129,5 @@ class IdentityFixture(EvaluationFixture):
                        for row in page["issues"])
             queries.append({"jql": query, "keys": person["openTaskKeys"], "total": page["total"]})
         assert self.upstream_calls == [] and self.tool_calls == []
-        return {"userSearch": searches, "quotedAssigneeJql": queries, "cacheWarmed": False,
+        return {"userSearch": searches, "quotedAssigneeJql": queries, "cacheWarmed": False, "currentUserId": actor["name"],
                 "aliasSearchOverride": False, "usernameDistinctFromDisplayName": True}
