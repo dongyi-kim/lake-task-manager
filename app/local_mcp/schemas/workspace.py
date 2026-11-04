@@ -103,9 +103,9 @@ class TicketReference(OpenModel):
 class DocumentLink(OpenModel):
     title: str
     url: str
-    linkId: str | None
-    mention: bool
-    rel: str
+    linkId: str | None = None
+    mention: bool | None = None
+    rel: str | None = None
 
 
 class TicketContext(OpenModel):

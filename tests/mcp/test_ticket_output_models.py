@@ -190,6 +190,31 @@ def test_attachment_without_content_keeps_other_valid_attachments(build_env, mon
     assert result.attachments[1].id == "2" and result.attachments[1].url
 
 
+def test_legacy_document_cache_rows_are_returned_without_refetch_or_invented_metadata(build_env):
+    env, functions = build_env(), {}
+    register_reads(lambda fn, **_options: functions.setdefault(fn.__name__, fn), env.runtime)
+    rows = [{"title": "Old reference", "url": "https://example.com/old"},
+            {"title": "Existing link", "url": "https://example.com/link", "linkId": "1"}]
+    env.cache.set(f"documents:{env.client.env}:DL-1", rows, 600)
+    before = len(env.calls)
+    payload = functions["get_documents"]("DL-1")
+    assert_contract("get_documents", payload)
+    assert payload["documents"] == rows and len(env.calls) == before
+
+
+def test_legacy_comment_cache_rows_keep_missing_identity_fields_absent(build_env):
+    env, functions = build_env(), {}
+    register_reads(lambda fn, **_options: functions.setdefault(fn.__name__, fn), env.runtime)
+    env.client.current_user()
+    row = {"date": "2026-01-01", "author": "Legacy author", "html": "<p>old comment</p>"}
+    env.cache.set(f"comments:{env.client.env}:DL-1", [row], 600)
+    before = len(env.calls)
+    payload = functions["get_comments"]("DL-1")
+    assert_contract("get_comments", payload)
+    assert payload["comments"] == [{**row, "mine": False}]
+    assert len(env.calls) == before
+
+
 @pytest.mark.parametrize("name,value", [
     ("get_user", {"id": 123, "name": "Person"}),
     ("get_comments", {"comments": [], "returnedCount": "0", "limit": 10, "sourceLimit": 20, "mayHaveMore": False}),

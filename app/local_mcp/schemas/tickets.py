@@ -72,11 +72,11 @@ class TicketView(TicketBadge):
 
 
 class CommentPreview(OpenModel):
-    id: str
+    id: str | None = None
     date: str
-    updated: str
+    updated: str | None = None
     author: str | None
-    authorId: str | None
+    authorId: str | None = None
     html: str
     mine: bool
 
@@ -311,9 +311,9 @@ class Attachments(OpenModel):
 class DocumentLink(OpenModel):
     title: str
     url: str
-    linkId: str | None
-    mention: bool
-    rel: str
+    linkId: str | None = None
+    mention: bool | None = None
+    rel: str | None = None
 
 
 class Documents(OpenModel):

@@ -22,6 +22,16 @@ JQL leaf/issue/user/Epic/Confluence 캐시, mutation invalidation을 사용한�
 
 ## 도구
 
+53개 도구 모두 `inputSchema`와 `outputSchema`를 제공한다. 출력은 공통 성공/오류 envelope와
+도구별 `data` 타입으로 정의하며, 조회 성공에는 `cache`, `partial`, `missing`도 포함된다.
+실제 반환 JSON은 기존과 동일하게 `content`의 JSON 텍스트 및 `structuredContent`에 함께 제공한다.
+SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제거하지 않는다.
+
+출력 계약은 `schemas/`에서 티켓·워크스페이스·쓰기/인증별로 관리한다. 원본 Jira 필드나 선택 목록처럼
+구조가 가변적인 부분은 확장 가능하게 두고, LTM이 제공하는 식별자·pagination·집계 필드는 명시한다.
+서버 응답이 계약과 다르면 `output_schema_mismatch` 오류의 `operationResult`에 원래 결과를 보존한다.
+이미 쓰기가 완료됐을 수 있으므로 이 오류는 `retryable=false`, `repeatWrite=false`이며 자동 재실행하지 않는다.
+
 | 목적 | 도구 |
 |---|---|
 | 인증 상태·복구·로그인 시작 | `get_auth_status`, `authenticate` |
