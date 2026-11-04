@@ -1,4 +1,6 @@
 """Task grouping exposes only local membership of Epics already present in the snapshot."""
+import pytest
+
 from app.domain import task_grouping
 from app.domain.mytasks import build_my_tasks, hydrate_my_task_snapshot
 from app.infra.cache import Cache
@@ -42,3 +44,11 @@ def test_bad_optional_wbs_config_does_not_block_task_projection(monkeypatch):
         raise ValueError("invalid local plan")
     monkeypatch.setattr(task_grouping, "load_plan", invalid)
     assert task_grouping.task_grouping_meta([{"epic": "DL-1"}])["unavailable"] is True
+
+
+@pytest.mark.parametrize("raw", [None, "scalar", ["list"]], ids=["empty-yaml", "scalar-yaml", "list-yaml"])
+def test_structurally_invalid_wbs_yaml_keeps_tasks_available(monkeypatch, raw):
+    from app.infra import settings
+    monkeypatch.setattr(settings, "_read_yaml", lambda _path: raw)
+    assert task_grouping.task_grouping_meta([{"epic": "DL-1"}]) == {
+        "revision": None, "wbs": [], "unavailable": True}

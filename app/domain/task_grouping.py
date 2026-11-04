@@ -10,7 +10,7 @@ def task_grouping_meta(groups, plan=None):
     if plan is None:
         try:
             plan = load_plan()
-        except (OSError, ValueError, KeyError, TypeError, YAMLError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, YAMLError):
             # A broken optional WBS configuration must not hide otherwise accessible Tasks.
             return {"revision": None, "wbs": [], "unavailable": True}
     revision = hashlib.sha256(json.dumps(
