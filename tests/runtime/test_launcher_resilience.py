@@ -2,6 +2,8 @@
 
 import ast
 import ctypes
+import os
+import subprocess
 import sys
 import threading
 import time
@@ -251,6 +253,24 @@ def test_blocking_tray_job_does_not_block_callbacks_and_coalesces_duplicates():
         assert calls == [1]
     finally:
         release.set()
+
+
+def test_update_launch_starts_its_own_supervisor(monkeypatch):
+    tree = ast.parse((REPO_ROOT / "run.py").read_text(encoding="utf-8"))
+    tray = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_run_tray")
+    restart = next(node for node in tray.body if isinstance(node, ast.FunctionDef) and node.name == "restart")
+    server = SimpleNamespace(should_exit=False)
+    ns = {"os": os, "sys": sys, "server": server, "_launcher_bat": lambda: REPO_ROOT / "run.py"}
+    exec(compile(ast.Module(body=[restart], type_ignores=[]), "run.py", "exec"), ns)
+    seen = []
+    monkeypatch.setenv("LAKE_SUPERVISED_WORKER", "previous-worker-nonce")
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(subprocess, "Popen", lambda command, **kwargs: seen.append(kwargs))
+    stopped = threading.Event()
+    ns["restart"](SimpleNamespace(stop=stopped.set))
+    assert "LAKE_SUPERVISED_WORKER" not in seen[0]["env"]
+    assert seen[0]["env"]["LAKE_RESTART"] == "1"
+    assert server.should_exit and stopped.is_set()
 
 
 def test_slow_login_fallback_keeps_full_interactive_allowance_healthy(monkeypatch):
