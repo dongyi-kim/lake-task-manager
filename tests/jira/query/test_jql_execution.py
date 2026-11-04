@@ -48,14 +48,90 @@ def test_opaque_or_reuses_already_warm_memberships(monkeypatch):
     assert len(calls) == 2
 
 
+def test_partial_warm_stream_yields_cached_rows_before_fetching_missing_membership(monkeypatch):
+    c = client()
+    first = 'assignee = "test.ui01" AND statusCategory = "To Do"'
+    second = 'assignee = "test.ui02" AND statusCategory = "To Do"'
+    expected = c.search_issues(first, max_results=None)
+    calls = spy(c, monkeypatch)
+    stream = c.iter_search_issue_chunks(f"({first}) OR ({second})")
+    warm = next(stream)
+    assert {row["key"] for row in warm["issues"]} == {row["key"] for row in expected}
+    assert calls == []
+    rest = list(stream)
+    assert len(rest) == 1 and len(calls) == 1
+    assert "test.ui02" in calls[0] and "test.ui01" not in calls[0]
 
 
+def test_missing_selector_keeps_group_results_without_poisoning_logical_leafs(monkeypatch):
+    c = client()
+    seed = c.get_issue_light("DL-9012")
+    seed = deepcopy(seed)
+    seed["fields"].pop("reporter", None)
+    monkeypatch.setattr(c, "_fetch_exhaustive_jql", lambda *_args: [seed])
+    query = "assignee = test.ui01 OR reporter = test.ui02"
+    chunks = list(c.iter_search_issue_chunks(query))
+    assert len(chunks) == 1 and chunks[0]["issues"] == [seed]
+    assert len(chunks[0]["completedLeaves"]) == 2
+    for leaf in c._compile_jql(query).leaves:
+        assert c.cache.get(c._jql_leaf_key(leaf)[2]) is None
 
 
+def test_group_failure_is_one_request_and_no_successful_empty_cache(monkeypatch):
+    c = client()
+    calls = []
+    def fail(*args):
+        calls.append(args)
+        raise RuntimeError("injected transport failure")
+    monkeypatch.setattr(c, "_fetch_exhaustive_jql", fail)
+    query = "assignee = a OR assignee = b OR reporter = a"
+    chunks = list(c.iter_search_issue_chunks(query))
+    assert len(calls) == len(chunks) == 1
+    assert chunks[0]["error"]["kind"] == "other"
+    assert len(chunks[0]["completedLeaves"]) == 3
+    for leaf in c._compile_jql(query).leaves:
+        assert c.cache.get(c._jql_leaf_key(leaf)[2]) is None
 
 
+def test_group_singleflight_and_all_memberships_survive_stream_close(monkeypatch):
+    c = client()
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    def fetch(*args):
+        calls.append(args)
+        entered.set()
+        assert release.wait(3)
+        return []
+    monkeypatch.setattr(c, "_fetch_exhaustive_jql", fetch)
+    query = "assignee = a OR assignee = b"
+    def consume():
+        stream = c.iter_search_issue_chunks(query)
+        first = next(stream)
+        stream.close()
+        return first
+    with ThreadPoolExecutor(2) as pool:
+        first = pool.submit(consume)
+        assert entered.wait(3)
+        second = pool.submit(consume)
+        release.set()
+        assert len(first.result()["completedLeaves"]) == 2
+        second.result()
+    assert len(calls) == 1
+    for leaf in c._compile_jql(query).leaves:
+        assert c.cache.get(c._jql_leaf_key(leaf)[2]) == []
 
 
+def test_group_result_cannot_publish_after_mutation(monkeypatch):
+    c = client()
+    query = "assignee = a OR reporter = b"
+    def fetch(*_args):
+        c._record_mutation(MutationEvent("fields", "DL-1", changed_fields=("assignee",)))
+        return []
+    monkeypatch.setattr(c, "_fetch_exhaustive_jql", fetch)
+    chunks = list(c.iter_search_issue_chunks(query))
+    assert len(chunks) == 1 and chunks[0].get("error")
+    for leaf in c._compile_jql(query).leaves:
+        assert c.cache.get(c._jql_leaf_key(leaf)[2]) is None
 
 
 @pytest.mark.parametrize("fault", ["failure", "duplicate", "total-change"])

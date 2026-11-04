@@ -16,10 +16,11 @@
 - group.pct(= SP 가중 롤업, 부분점수 포함)
 """
 
+import json
 import re
 import secrets
 import threading
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from app.domain.names import real_name
 from app.domain.progress import norm_cat
@@ -46,6 +47,7 @@ _PARTIAL = {"done": 1.0, "inprogress": 0.4, "todo": 0.0}
 _NO_DUE = 10 ** 6           # 마감 없음 = 맨 뒤. None 정렬 분기를 안 만들려고 큰 수를 쓴다
 # '최근 완료' 로 볼 기간 선택지. 1주는 워크로드의 done7d 와 같은 창이다.
 DONE_WINDOWS = {"1w": 7, "1m": 30}
+MYTASK_PEOPLE_BATCH_SIZE = 5
 ASYNC_SYNC_TTL = 30 * 60
 TASK_STREAM_CONTRACT = "task-snapshot.v1"
 _TASK_SYNC_LOCK = threading.RLock()
@@ -436,13 +438,11 @@ class _TaskRowsClient:
 def _leaf_status_axis(leaf):
     """Best-effort status band for progress display; membership still comes from issue rows."""
     value = re.sub(r'\s+', ' ', str(leaf or '').lower())
-    if re.search(r'statuscategory\s*=\s*(?:"done"|done)(?:\s|$|\))', value):
-        return "done"
-    if re.search(r'statuscategory\s*=\s*(?:"in progress"|in progress)(?:\s|$|\))', value):
-        return "inprogress"
-    if re.search(r'statuscategory\s*=\s*(?:"to do"|to do)(?:\s|$|\))', value):
-        return "todo"
-    return None
+    matches = [axis for name, axis in (("done", "done"), ("in progress", "inprogress"),
+                                      ("to do", "todo"))
+               if re.search(r'statuscategory\s*=\s*(?:"%s"|%s)(?:\s|$|\))' % (name, name),
+                            value)]
+    return matches[0] if len(matches) == 1 else None
 
 
 def iter_my_task_models(client, user=None, include_done=False, limit=None, scope="assignee",
@@ -519,11 +519,21 @@ def iter_my_task_models(client, user=None, include_done=False, limit=None, scope
     # The precise total is available without running an upstream request.  Unsupported syntax is
     # one legacy chunk and remains correct, merely less granular.
     leaf_total = 0
+    query_leaf_indexes = []
+    query_leaf_counts = []
+    execution_queries = []
+    query_time = datetime.now(timezone.utc)
     for _cache_key, jql, _max_results in calls:
         try:
-            leaf_total += len(client._compile_jql(jql).leaves)
+            compiled = client._compile_jql(jql, now=query_time)
+            leaves = compiled.leaves
+            execution_queries.append(compiled.canonical)
         except Exception:
-            leaf_total += 1
+            leaves = (jql,)
+            execution_queries.append(jql)
+        leaf_total += len(leaves)
+        query_leaf_counts.append(len(leaves))
+        query_leaf_indexes.append({leaf: index for index, leaf in enumerate(leaves)})
 
     # Do not replace a warm same-filter browser model with an empty planning shell.  A new filter
     # already starts from its own empty cache entry, while both cases receive axes/progress now.
@@ -545,41 +555,46 @@ def iter_my_task_models(client, user=None, include_done=False, limit=None, scope
 
     for query_index, (cache_key, jql, max_results) in enumerate(calls):
         cached_batch = []
-        for chunk in client.iter_search_issue_chunks(jql, light=True):
-            leaf_done += 1
-            leaf = chunk.get("leaf")
-            axis = _leaf_status_axis(leaf)
-            if chunk.get("error"):
+        # Freeze relative date/user functions at planning time, even if earlier groups are slow.
+        for chunk in client.iter_search_issue_chunks(execution_queries[query_index], light=True):
+            # Context lookup may have failed during planning and recovered before execution.
+            # In that case the real compiled count replaces the provisional legacy chunk count.
+            actual_total = chunk.get("leafTotal")
+            if type(actual_total) is int and actual_total > 0:
+                leaf_total += actual_total - query_leaf_counts[query_index]
+                query_leaf_counts[query_index] = actual_total
+            # A physical Jira response may finish several logical memberships. Count and
+            # label each logical leaf without rebuilding the same model for every one.
+            leaves = chunk.get("completedLeaves") or [chunk.get("leaf")]
+            leaf_done += len(leaves)
+            completed_batch = []
+            chunk_error = chunk.get("error")
+            if chunk_error:
                 query_failed[query_index] = True
-                error = dict(chunk["error"])
-                errors.append(error)
+            else:
+                combined = list(chunk.get("combined") or ())
+                query_results[query_index] = (
+                    combined if max_results is None else combined[:max(0, int(max_results))]
+                )
+            for leaf in leaves:
                 completed = {
-                    "leaf": leaf, "axis": axis, "status": "error", "error": error,
-                    "leafIndex": chunk.get("leafIndex"),
+                    "leaf": leaf, "axis": _leaf_status_axis(leaf),
+                    "status": "error" if chunk_error else "success",
+                    "leafIndex": query_leaf_indexes[query_index].get(leaf, chunk.get("leafIndex")),
                     "queryIndex": query_index, "queryTotal": query_total,
                 }
-                if chunk.get("coalesceCached"):
-                    cached_batch.append(completed)
-                else:
-                    yield event(
-                        cumulative_model(), errors=errors, leaf_done=leaf_done,
-                        leaf_total=leaf_total, completed_leaf=completed)
-                continue
-            combined = list(chunk.get("combined") or ())
-            query_results[query_index] = (
-                combined if max_results is None else combined[:max(0, int(max_results))]
-            )
-            completed = {
-                "leaf": leaf, "axis": axis, "status": "success",
-                "leafIndex": chunk.get("leafIndex"),
-                "queryIndex": query_index, "queryTotal": query_total,
-            }
+                if chunk_error:
+                    error = {**chunk_error, "leaf": leaf}
+                    errors.append(error)
+                    completed["error"] = error
+                completed_batch.append(completed)
             if chunk.get("coalesceCached"):
-                cached_batch.append(completed)
+                cached_batch.extend(completed_batch)
             else:
                 yield event(
                     cumulative_model(), errors=errors, leaf_done=leaf_done,
-                    leaf_total=leaf_total, completed_leaf=completed)
+                    leaf_total=leaf_total, completed_leaf=completed_batch[-1],
+                    completed_leaves=completed_batch)
         if cached_batch:
             # A fully warm subquery completes without upstream waiting.  Emit one cumulative
             # snapshot instead of N near-identical payloads; cold leaves remain one-by-one.
@@ -692,18 +707,26 @@ def build_my_tasks(client, user=None, include_done=False, limit=None, scope="ass
         j = base if include_done else "%s AND %s" % (base, cond)   # include_done 이면 상태 무관 전체
         return j + " ORDER BY duedate ASC"
 
-    # (cache_key, jql) 서브쿼리 — `IN`/`OR` 을 **사람 하나치**로 쪼갠다. 사람별 목록은 모듈이
-    # 겹치면 그대로 재사용되므로 각자 캐시 대상이다. 'me' 도 사람이라 같은 규칙을 쓴다:
-    # currentUser 로 온 사번이든 picker(사번)든 **같은 사번 → 같은 `asg:{id}`/`rep:{id}` 키**로
-    # 모여 currentUser()/username 이 따로 캐시되거나 중복 조회되지 않는다.
+    # Bound module request groups while preserving the compiler's individual person/role/status
+    # memberships. The shared Jira layer reuses those leaves across modules and workload views.
     subqs = []
 
     def _add(kkey, base):
         subqs.append(("mt:%s:%s:%s" % (env, kkey, filt), _where(base)))
 
     if scope_kind == "module":
-        for p in sorted(mod_ids):
-            _add("asgrep:%s" % p, '(assignee = "%s" OR reporter = "%s")' % (p, p))
+        members = sorted(mod_ids)
+        # Explicit legacy limits apply per person; batching must not silently change their union.
+        batch_size = MYTASK_PEOPLE_BATCH_SIZE if limit is None else 1
+        for start in range(0, len(members), batch_size):
+            batch = members[start:start + batch_size]
+            base = " OR ".join('(assignee = %s OR reporter = %s)' %
+                               (json.dumps(person, ensure_ascii=False),
+                                json.dumps(person, ensure_ascii=False)) for person in batch)
+            cache_id = ("asgrep:%s" % batch[0] if len(batch) == 1 else
+                        "asgrep-group:%s" % json.dumps(batch, ensure_ascii=False,
+                                                       separators=(",", ":")))
+            _add(cache_id, "(%s)" % base)
         if mod_comps:
             _add("cmp:%s" % ",".join(sorted(mod_comps)), _in("component", mod_comps))
         if not subqs:
@@ -839,7 +862,7 @@ def build_my_tasks(client, user=None, include_done=False, limit=None, scope="ass
         if not g:
             g = groups[node["key"]] = {
                 "key": node["key"], "title": node["title"], "type": node["type"],
-                "mine": is_mine(node), "role": node.get("role"),
+                "mine": is_mine(node), "role": role_of(node),
                 "assignee": node["assignee"], "assigneeId": node["assigneeId"],
                 "status": node["status"], "statusCategory": node["statusCategory"],
                 "reporter": node.get("reporter"), "reporterId": node.get("reporterId"),
