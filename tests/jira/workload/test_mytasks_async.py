@@ -502,9 +502,11 @@ def test_progressive_leaf_union_matches_authoritative_task_model(scope):
     assert events[-1]["done"] is True
     chunks = [event for event in events if event["completedLeaf"]]
     assert chunks
-    assert [event["progress"]["completed"] for event in chunks] == \
-        list(range(1, len(chunks) + 1))
-    assert all(event["progress"]["total"] == len(chunks) for event in chunks)
+    completed = 0
+    for event in chunks:
+        completed += len(event["completedLeaves"])
+        assert event["progress"]["completed"] == completed
+    assert all(event["progress"]["total"] == completed for event in chunks)
 
     # Every partial response is already an authoritative union: keys are unique, order and
     # statistics are server-produced, and the browser never needs to merge a leaf model.
@@ -552,51 +554,51 @@ def test_fully_warm_subquery_coalesces_leafs_into_one_authoritative_snapshot():
 
     cold_leaf_events = [event for event in cold if event["completedLeaves"]]
     warm_leaf_events = [event for event in warm if event["completedLeaves"]]
-    assert len(cold_leaf_events) > 1
+    assert len(cold_leaf_events) == 1  # One physical query completes all three status memberships.
     assert len(warm_leaf_events) == 1
     assert len(warm_leaf_events[0]["completedLeaves"]) == warm[-1]["progress"]["total"]
     assert warm[-1]["model"]["groups"] == cold[-1]["model"]["groups"]
 
 
-def test_leaf_failures_are_isolated_classified_and_later_leaves_still_arrive(monkeypatch):
+@pytest.mark.parametrize("failure, kind", [
+    (PermissionError("HTTP 403 permission denied"), "permission"),
+    (SessionExpired("HTTP 401 session expired"), "auth"),
+    (RuntimeError("temporary Jira failure"), "other"),
+])
+def test_opaque_query_failure_is_classified_without_fanning_out_retries(monkeypatch, failure, kind):
     client = _client()
-    original = client._cached_jql_leaf
+    attempted = []
 
-    def flaky(leaf, *args, **kwargs):
-        if "DL-9008" in leaf:
-            raise PermissionError("HTTP 403 permission denied")
-        if "DL-9028" in leaf:
-            raise SessionExpired("HTTP 401 session expired")
-        if "DL-9030" in leaf:
-            raise RuntimeError("temporary Jira failure")
-        return original(leaf, *args, **kwargs)
+    def flaky(jql, *args, **kwargs):
+        attempted.append(jql)
+        raise failure
 
-    monkeypatch.setattr(client, "_cached_jql_leaf", flaky)
+    monkeypatch.setattr(client, "_fetch_exhaustive_jql", flaky)
     chunks = list(client.iter_search_issue_chunks(
         "key = DL-9008 OR key = DL-9028 OR key = DL-9030 OR key = DL-9020"))
 
     errors = [chunk["error"]["kind"] for chunk in chunks if chunk.get("error")]
-    assert sorted(errors) == ["auth", "other", "permission"]
-    assert any(any(issue["key"] == "DL-9020" for issue in chunk["issues"])
-               for chunk in chunks if not chunk.get("error"))
-    assert len(chunks) == 4
+    assert errors == [kind]
+    assert len(chunks) == len(attempted) == 1
+    assert len(chunks[0]["completedLeaves"]) == 4
+    assert chunks[0]["issues"] == []
 
 
-def test_retry_after_partial_failure_only_refetches_the_uncached_leaf(monkeypatch):
+def test_retry_after_opaque_query_failure_refetches_one_whole_query(monkeypatch):
     client = _client()
-    original = client._fetch_jql_leaf
+    original = client._fetch_exhaustive_jql
     upstream = []
     failed_once = False
 
-    def flaky(leaf, fields, light):
+    def flaky(leaf, fields, light, result_limit):
         nonlocal failed_once
         upstream.append(leaf)
         if "DL-9028" in leaf and not failed_once:
             failed_once = True
             raise RuntimeError("temporary Jira failure")
-        return original(leaf, fields, light)
+        return original(leaf, fields, light, result_limit)
 
-    monkeypatch.setattr(client, "_fetch_jql_leaf", flaky)
+    monkeypatch.setattr(client, "_fetch_exhaustive_jql", flaky)
     query = "key = DL-9008 OR key = DL-9028 OR key = DL-9030 OR key = DL-9020"
     first = list(client.iter_search_issue_chunks(query))
     assert sum(bool(chunk.get("error")) for chunk in first) == 1
@@ -610,10 +612,17 @@ def test_retry_after_partial_failure_only_refetches_the_uncached_leaf(monkeypatc
     assert {issue["key"] for chunk in retried for issue in chunk.get("issues") or ()} == {
         "DL-9008", "DL-9028", "DL-9030", "DL-9020",
     }
+    upstream.clear()
+    list(client.iter_search_issue_chunks(query))
+    assert upstream == []
 
 
 def test_partial_task_stream_keeps_successes_and_does_not_publish_partial_mt_cache(monkeypatch):
     client = _client()
+    # Previously loaded axes stay usable if the remaining cold status query fails.
+    for status in ("To Do", "In Progress"):
+        list(client.iter_search_issue_chunks(
+            f'assignee = "test.ui01" AND statusCategory = "{status}" ORDER BY duedate ASC'))
     original = client._cached_jql_leaf
 
     def one_denied_leaf(leaf, *args, **kwargs):

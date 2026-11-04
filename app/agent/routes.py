@@ -24,6 +24,8 @@ from pydantic import BaseModel
 from app.agent import config as _cfg
 from app.agent import profiles as _profiles
 from app.agent import secrets as _secrets
+from app.agent import connection_settings as _connections
+from app.agent.connection_settings import reset_runtime as _reset_runtime
 from app.agent.workflow.contracts import QuestionAnswerReceipt
 
 log = logging.getLogger("agent.api")
@@ -142,10 +144,7 @@ def api_settings(body: _SettingsBody):
 
 
 def _config_result(config_id: str) -> dict:
-    row = next((x for x in _cfg.status().get("configs", []) if x["id"] == config_id), None)
-    if not row:
-        raise KeyError("설정을 찾을 수 없습니다.")
-    return row
+    return _connections.get_config(config_id)
 
 
 @router.get("/configs")
@@ -157,12 +156,7 @@ def api_configs():
 @router.post("/configs")
 def api_config_create(body: _ConfigCreateBody):
     try:
-        if body.provider == "fake":
-            from app.infra.settings import get_settings
-            if (get_settings().jira_env or "").lower() == "prod":
-                raise ValueError("운영 환경에서는 테스트(가짜) 연결을 추가할 수 없습니다.")
-        row = _profiles.create(body.name, body.provider)
-        return JSONResponse({"ok": True, "config": _config_result(row["id"])})
+        return JSONResponse({"ok": True, "config": _connections.create_config(body.name, body.provider)})
     except (ValueError, KeyError) as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
@@ -170,16 +164,8 @@ def api_config_create(body: _ConfigCreateBody):
 @router.put("/configs/{config_id}")
 def api_config_update(config_id: str, body: _ConfigUpdateBody):
     try:
-        patch = {k: getattr(body, k) for k in
-                 ("name", "chatModel", "chatModelSimple", "embedModel", "apiVersion",
-                  "chatModelProfile", "chatModelSimpleProfile",
-                  "embeddingProvider", "embeddingApiVersion",
-                  "embedRevision", "embedPrecision", "embedDimension", "embedNormalization")
-                 if getattr(body, k) is not None}
-        _profiles.update(config_id, patch)
-        if body.secrets:
-            _secrets.save_for(config_id, body.secrets)
-        return JSONResponse({"ok": True, "config": _config_result(config_id)})
+        return JSONResponse({"ok": True, "config": _connections.update_config(
+            config_id, body.model_dump(exclude_none=True))})
     except (ValueError, KeyError) as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
@@ -187,7 +173,7 @@ def api_config_update(config_id: str, body: _ConfigUpdateBody):
 @router.delete("/configs/{config_id}")
 def api_config_delete(config_id: str):
     try:
-        _profiles.remove(config_id)
+        _connections.delete_config(config_id)
         return JSONResponse({"ok": True})
     except (ValueError, KeyError) as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
@@ -211,21 +197,21 @@ def api_config_models(config_id: str):
     if not _profiles.get(config_id):
         return JSONResponse({"chat": [], "embed": [], "error": "설정을 찾을 수 없습니다."},
                             status_code=404)
-    return JSONResponse(_cfg.list_models(config_id=config_id))
+    return JSONResponse(_connections.list_models(config_id))
 
 
 @router.post("/configs/{config_id}/probe/auth")
 def api_config_probe_auth(config_id: str):
     if not _profiles.get(config_id):
         return JSONResponse({"ok": False, "error": "설정을 찾을 수 없습니다."}, status_code=404)
-    return JSONResponse(_cfg.probe_auth(config_id=config_id))
+    return JSONResponse(_connections.check_connection(config_id, "auth"))
 
 
 @router.post("/configs/{config_id}/probe")
 def api_config_probe(config_id: str):
     if not _profiles.get(config_id):
         return JSONResponse({"ok": False, "error": "설정을 찾을 수 없습니다."}, status_code=404)
-    return JSONResponse(_cfg.probe(config_id=config_id))
+    return JSONResponse(_connections.check_connection(config_id, "models"))
 
 
 @router.post("/configs/{config_id}/models/verify")
@@ -238,9 +224,7 @@ def api_config_models_verify(config_id: str, body: _VerifyBody):
 
 @router.post("/configs/{config_id}/activate")
 def api_config_activate(config_id: str):
-    r = _cfg.activate(config_id)
-    if r.get("ok"):
-        _reset_runtime()
+    r = _connections.activate_config(config_id)
     return JSONResponse({**r, **_cfg.status()})
 
 
@@ -451,26 +435,6 @@ def api_approve(body: _ApproveBody):
 def api_cancel(body: _ApproveBody):
     from app.agent.workflow import session
     return JSONResponse(session.cancel(body.threadId, body.token))
-
-
-def _reset_runtime():
-    """설정이 바뀌면 LLM 을 쥐고 있는 것들을 전부 놓는다."""
-    try:
-        from app.agent.workflow import graph
-        graph.reset()
-    except Exception:
-        pass
-    try:
-        from app.agent import capabilities
-        capabilities.reset()
-    except Exception:
-        pass
-    try:
-        from app.agent.retrieval import dynamic_index, static_index
-        static_index._cached.update(sig=None, store=None)
-        dynamic_index._cached.update(sig=None, store=None)
-    except Exception:
-        pass
 
 
 def install(app) -> tuple[bool, str]:

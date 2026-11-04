@@ -34,6 +34,10 @@ def test_sdk_overload_keeps_ui_and_auth_available_and_recovers(build_env):
                     base_url=env.runtime.url.removesuffix("/mcp"),
                     headers={"Authorization": "Bearer " + env.runtime.credentials.token()}) as http:
                 async with Client(streamable_http_client(env.runtime.url, http_client=http)) as mcp:
+                    # Discover the catalog before measuring admission/control-lane latency.
+                    # Otherwise the SDK's first successful call fetches every output schema
+                    # inside the one-second overload assertion (failed calls skip that fetch).
+                    await mcp.list_tools()
                     async def call(index):
                         results.append(await mcp.call_tool("held_read", {"index": index}))
 

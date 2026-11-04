@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
+from contextlib import ExitStack
 from datetime import date, timedelta
 from html import escape, unescape
 from typing import NamedTuple
@@ -27,6 +28,8 @@ from app.domain.names import real_name
 from app.content.sections import split_sections
 from app.jira.jql import (JqlUnsupported, compile_jql, fields_with_order,
                           sort_issues)
+from app.jira.jql_execution import (group_query, partition_fields, partition_rows, plan_groups,
+                                    projection_scope, row_projection_complete, selector_fields)
 from app.jira.cache_policy import (JqlCachePolicy, MutationEvent,
                                    changed_predicate_fields)
 from app.jira.identity_service import JiraIdentityMixin
@@ -545,11 +548,6 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     # 않게 한다. 외부 Jira에서 직접 바꾼 이름도 다음 근무일에는 자연히 다시 확인한다.
     EPIC_META_TTL = 12 * 3600
     JQL_LEAF_RESULT_LIMIT = 10_000
-    # A serial provider (prod SSO/mock) cannot make a large DNF cold query interactive if every
-    # leaf blocks the response.  Build the first exhaustive snapshot with one equivalent Jira
-    # query and warm every leaf at background priority; later equivalent queries use those leaves.
-    # Small DNF queries stay synchronous so their leaf cache is immediately reusable.
-    JQL_FOREGROUND_LEAF_LIMIT = 4
     JQL_BOOTSTRAP_RESULT_LIMIT = 50_000
     PROVIDER_WAIT_SECONDS = 1
     PROVIDER_RETRY_SECONDS = 20
@@ -1107,16 +1105,10 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         return self._search(jql, cache_key=cache_key, max_results=max_results)
 
     def iter_search_issue_chunks(self, jql, fields=None, light=True):
-        """Yield one fully cached DNF leaf as soon as it finishes.
+        """Yield cached logical memberships as bounded physical request groups complete.
 
-        This is the progressive counterpart of :meth:`search_issues`.  Every yielded chunk has
-        already completed its leaf cache, row cache and ``issueL`` write-through, so a browser
-        that switches filters may stop consuming the stream without losing completed work.
-
-        Serial providers (prod SSO and the latency-injected mock) intentionally submit one leaf
-        at a time.  A newly selected filter can therefore enter the provider priority queue at
-        the next leaf boundary instead of sitting behind every leaf of the abandoned filter.
-        Parallel-safe providers yield futures in completion order.
+        Switching filters keeps completed memberships and issue rows. Serial providers submit
+        one group at a time; arbitrary OR queries remain opaque unless all leaves are already warm.
         """
         requested_fields = fields
         if isinstance(requested_fields, (list, tuple, set)):
@@ -1165,73 +1157,120 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             }
             return
 
-        execution_fields = fields_with_order(requested_fields, compiled.order)
+        groups = plan_groups(compiled, self.s.epic_link_field_id)
+        execution_fields = partition_fields(fields_with_order(requested_fields, compiled.order), groups)
         generation = self._jql_generation()
         projection = self._projection_signature(execution_fields, light)
-        items = tuple(enumerate(zip(compiled.leaves, compiled.leaf_fields)))
         combined = {}
-        coalesce_cached = bool(items) and all(
-            self._jql_leaf_cache_ready(
-                leaf, execution_fields, light, generation, projection)
-            for _index, (leaf, _predicate_fields) in items)
+        coalesce_cached = all(self._jql_leaf_cache_ready(
+            member.leaf, execution_fields, light, generation, projection, selector_fields(group))
+            for group in groups for member in group)
+        for group, result, error in self._iter_jql_groups(
+                groups, execution_fields, light, generation, projection):
+            rows = [] if error else self._combine_jql_rows(
+                [part_rows for _members, part_rows in result], compiled.order)
+            for issue in rows:
+                if issue.get("key"):
+                    combined[issue["key"]] = issue
+            chunk = {
+                "leaf": group_query(group), "leafIndex": group[0].index,
+                "leafTotal": len(compiled.leaves), "issues": rows,
+                "combined": sort_issues(combined.values(), compiled.order),
+                "fallback": False, "coalesceCached": coalesce_cached,
+            }
+            if len(group) > 1:
+                chunk["completedLeaves"] = [member.leaf for member in group]
+            if error:
+                chunk["error"] = failure(error)
+            yield chunk
 
-        def fetch(item):
-            index, (leaf, predicate_fields) = item
-            rows = self._cached_jql_leaf(
-                leaf, predicate_fields, execution_fields, light, generation, projection)
-            return index, leaf, rows
-
-        provider = self.provider
-        if getattr(provider, "supports_parallel", False) and len(items) > 1:
-            with ThreadPoolExecutor(max_workers=min(8, len(items))) as executor:
-                futures = {executor.submit(fetch, item): item for item in items}
-                for future in as_completed(futures):
-                    fallback_index, (fallback_leaf, _predicate_fields) = futures[future]
-                    try:
-                        index, leaf, rows = future.result()
-                    except Exception as exc:
-                        yield {
-                            "leaf": fallback_leaf, "leafIndex": fallback_index,
-                            "leafTotal": len(items), "issues": [],
-                            "combined": sort_issues(combined.values(), compiled.order),
-                            "fallback": False, "coalesceCached": coalesce_cached,
-                            "error": failure(exc),
-                        }
-                        continue
-                    for issue in rows:
-                        key = (issue or {}).get("key")
-                        if key:
-                            combined[key] = issue
-                    yield {
-                        "leaf": leaf, "leafIndex": index, "leafTotal": len(items),
-                        "issues": rows,
-                        "combined": sort_issues(combined.values(), compiled.order),
-                        "fallback": False, "coalesceCached": coalesce_cached,
-                    }
+    def _iter_jql_groups(self, groups, fields, light, generation, projection):
+        def execute(group):
+            try:
+                with projection_scope(group):
+                    return group, self._execute_jql_group(group, fields, light, generation, projection), None
+            except Exception as exc:
+                return group, None, exc
+        pending = []
+        for group in groups:
+            ready = tuple(member for member in group if self._jql_leaf_cache_ready(
+                member.leaf, fields, light, generation, projection, selector_fields(group)))
+            if ready:
+                yield execute(ready)
+            remaining = tuple(member for member in group if member not in ready)
+            if remaining:
+                pending.append(remaining)
+        if getattr(self.provider, "supports_parallel", False) and len(pending) > 1:
+            with ThreadPoolExecutor(max_workers=min(8, len(groups))) as pool:
+                for future in as_completed([pool.submit(execute, group) for group in pending]):
+                    yield future.result()
         else:
-            for item in items:
-                fallback_index, (fallback_leaf, _predicate_fields) = item
-                try:
-                    index, leaf, rows = fetch(item)
-                except Exception as exc:
-                    yield {
-                        "leaf": fallback_leaf, "leafIndex": fallback_index,
-                        "leafTotal": len(items), "issues": [],
-                        "combined": sort_issues(combined.values(), compiled.order),
-                        "fallback": False, "coalesceCached": coalesce_cached,
-                        "error": failure(exc),
-                    }
+            for group in pending:
+                yield execute(group)
+
+    def _execute_jql_group(self, group, fields, light, generation, projection):
+        if len(group) == 1:
+            member = group[0]
+            return [(group, self._cached_jql_leaf(member.leaf, member.fields, fields, light,
+                                                 generation, projection))]
+        opaque = any(not member.family for member in group)
+        # Opaque ORs may reuse a fully warm set of existing logical memberships, but a cold
+        # arbitrary query is never expanded into speculative requests.
+        if opaque and not all(self.cache.get(self._jql_leaf_key(m.leaf)[2]) is not None for m in group):
+            dependencies = tuple(sorted({field for member in group for field in member.fields}))
+            return [(group, self._cached_jql_leaf(group_query(group), dependencies, fields, light,
+                                                 generation, projection,
+                                                 result_limit=self.JQL_BOOTSTRAP_RESULT_LIMIT))]
+        with ExitStack() as locks:
+            for key in sorted({self._jql_leaf_key(member.leaf)[2] for member in group}):
+                locks.enter_context(self._jql_lock(key))
+            fence = self.cache.fence()
+            if generation != self._jql_generation():
+                raise UpstreamUnavailable("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
+            complete, missing = [], []
+            for member in group:
+                keys = self.cache.get(self._jql_leaf_key(member.leaf)[2])
+                if isinstance(keys, list):
+                    complete.append(((member,), self._hydrate_jql_leaf_rows(
+                        keys, fields, light, generation, projection)))
+                else:
+                    missing.append(member)
+            if not missing:
+                return complete
+            missing = tuple(missing)
+            query = group_query(missing)
+            dependencies = tuple(sorted({field for member in missing for field in member.fields}))
+            if len(missing) == 1:
+                rows = self._fetch_jql_leaf(query, fields, light)
+                fetched_at = time.time()
+            else:
+                rows = self._cached_jql_leaf(query, dependencies, fields, light, generation, projection,
+                    result_limit=max(self.JQL_BOOTSTRAP_RESULT_LIMIT, len(missing) * self.JQL_LEAF_RESULT_LIMIT))
+                fetched_at = (self.cache.metadata(self._jql_leaf_key(query)[2]) or {}).get("fetchedAt")
+            if self.cache.fence() != fence or generation != self._jql_generation():
+                raise UpstreamUnavailable("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
+            verified = {badge.get("username") for member in missing
+                        if isinstance(badge := self.cache.get(
+                            f"userbadge:{self.env}:{member.value.lower()}"), dict)}
+            partitions = partition_rows(missing, rows, verified)
+            if partitions is None or fetched_at is None:
+                return complete + [(missing, rows)]
+            self._store_jql_rows(rows, generation, projection, fields)
+            unproven = []
+            for member, subset in zip(missing, partitions):
+                if subset is None:
+                    unproven.append(member)
                     continue
-                for issue in rows:
-                    key = (issue or {}).get("key")
-                    if key:
-                        combined[key] = issue
-                yield {
-                    "leaf": leaf, "leafIndex": index, "leafTotal": len(items),
-                    "issues": rows,
-                    "combined": sort_issues(combined.values(), compiled.order),
-                    "fallback": False, "coalesceCached": coalesce_cached,
-                }
+                epoch, digest, key = self._jql_leaf_key(member.leaf)
+                keys = [row["key"] for row in subset if row.get("key")]
+                self._register_jql_leaf_indexes(key, digest, epoch, keys, member.fields)
+                if not self.cache.set_if_fence(key, keys, self.s.cache_ttl_seconds, fence,
+                                               fetched_at=fetched_at):
+                    raise UpstreamUnavailable("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
+                complete.append(((member,), subset))
+            if unproven:
+                complete.append((tuple(unproven), rows))
+            return complete
 
     def _jql_epoch_namespace(self):
         return self._jql_policy.epoch_namespace()
@@ -1274,7 +1313,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     def _mutation_batch_scope(self):
         return self._jql_policy.mutation_batch_scope()
 
-    def _compile_jql(self, jql):
+    def _compile_jql(self, jql, *, now=None):
         raw = str(jql or "")
         needs_user = bool(re.search(
             r"\bcurrentUser\s*\(|\b(?:start|end)Of(?:Day|Week|Month|Year)\s*\(|"
@@ -1285,6 +1324,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             user_id=(user or {}).get("id") or "",
             timezone_name=(user or {}).get("timezone") or "Asia/Seoul",
             ttl_seconds=self.s.cache_ttl_seconds,
+            now=now,
         )
 
     def _projection_signature(self, fields, light):
@@ -1332,7 +1372,10 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 write_through=False)
             total = page.get("total")
             if total is not None:
-                expected_total = int(total)
+                total = int(total)
+                if expected_total is not None and total != expected_total:
+                    raise ValueError("Jira 검색 중 전체 건수가 변경되었습니다. 다시 조회하세요.")
+                expected_total = total
                 if expected_total > result_limit:
                     raise JqlUnsupported(
                         f"JQL 결과가 안전 한도 {result_limit}건을 초과했습니다.")
@@ -1349,11 +1392,18 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             start = int(next_start)
         if expected_total is not None and len(issues) != expected_total:
             raise ValueError("Jira leaf 검색 결과가 불완전합니다.")
+        issue_keys = [(issue or {}).get("key") for issue in issues]
+        if any(not key for key in issue_keys) or len(set(issue_keys)) != len(issue_keys):
+            raise ValueError("Jira 검색 결과에 누락되거나 중복된 issue key가 있습니다.")
         if self._projection_covers_issue_cache(fields, light):
             pfx = "issueL" if light else "issue"
+            # An incomplete response can still provide a usable query result, but it must not
+            # replace a complete canonical ticket. Null identities are valid; omitted standard
+            # fields are not. Optional instance-specific custom fields may legitimately be absent.
             self.cache.set_many_if_fence(
                 ((f"{pfx}:{self.env}:{(issue or {}).get('key')}", issue)
-                 for issue in issues if (issue or {}).get("key")),
+                 for issue in issues if (issue or {}).get("key")
+                 and row_projection_complete(issue, fields)),
                 self.s.cache_ttl_seconds, fence)
         return issues
 
@@ -1366,12 +1416,13 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         return (f"jqlrow:v{self.JQL_CACHE_VERSION}:{self.env}:g{generation}:"
                 f"{projection}:{issue_key}")
 
-    def _store_jql_rows(self, issues, generation, projection):
+    def _store_jql_rows(self, issues, generation, projection, fields=None):
         fence = self.cache.fence()
         ttl = max(int(self.s.cache_ttl_seconds), self.JQL_SNAPSHOT_TTL)
         self.cache.set_many_if_fence(
             ((self._jql_row_key(generation, projection, (issue or {}).get("key")), issue)
-             for issue in issues if (issue or {}).get("key")),
+             for issue in issues if (issue or {}).get("key")
+             and row_projection_complete(issue, fields)),
             ttl, fence)
 
     def _load_jql_rows(self, issue_keys, generation, projection):
@@ -1420,6 +1471,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             for issue_key, cache_key in zip(issue_keys, cache_keys)
             if isinstance(cached_rows.get(cache_key), dict)
             and cached_rows.get(cache_key).get("key") == issue_key
+            and row_projection_complete(cached_rows.get(cache_key), fields)
         }
 
         missing = [key for key in issue_keys if key not in by_key]
@@ -1429,9 +1481,10 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 f"issueL:{self.env}:{key}" for key in missing) if light else {}
             for issue_key in missing:
                 row = full.get(f"issue:{self.env}:{issue_key}")
-                if row is None and light:
+                if not row_projection_complete(row, fields) and light:
                     row = light_rows.get(f"issueL:{self.env}:{issue_key}")
-                if isinstance(row, dict) and row.get("key") == issue_key:
+                if (isinstance(row, dict) and row.get("key") == issue_key
+                        and row_projection_complete(row, fields)):
                     by_key[issue_key] = row
             missing = [key for key in issue_keys if key not in by_key]
 
@@ -1446,17 +1499,22 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         rows = [by_key[key] for key in issue_keys if key in by_key]
         if len(rows) != len(issue_keys):
             raise ValueError("JQL leaf issue row를 완전하게 복원하지 못했습니다.")
-        self._store_jql_rows(rows, generation, projection)
+        self._store_jql_rows(rows, generation, projection, fields)
         return rows
 
     def _cached_jql_leaf(self, leaf, predicate_fields, fields, light,
-                         generation, projection):
+                         generation, projection, *, result_limit=None):
         leaf_generation, digest, key = self._jql_leaf_key(leaf)
         lock = self._jql_lock(key)
         with lock:
+            fence = self.cache.fence()
+            fetched_rows = None
             def produce():
-                rows = self._fetch_jql_leaf(leaf, fields, light)
-                self._store_jql_rows(rows, generation, projection)
+                nonlocal fetched_rows
+                rows = (self._fetch_jql_leaf(leaf, fields, light) if result_limit is None else
+                        self._fetch_exhaustive_jql(leaf + " ORDER BY key ASC", fields, light, result_limit))
+                fetched_rows = rows
+                self._store_jql_rows(rows, generation, projection, fields)
                 issue_keys = [
                     (row or {}).get("key") for row in rows if (row or {}).get("key")
                 ]
@@ -1470,10 +1528,23 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             issue_keys = self.cache.get_or_set_strict(
                 key, self.s.cache_ttl_seconds,
                 produce)[0]
-        return self._hydrate_jql_leaf_rows(
-            issue_keys, fields, light, generation, projection)
+            if self.cache.fence() != fence:
+                raise UpstreamUnavailable("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
+            source = (self.cache.metadata(key) or {}).get("fetchedAt")
+            opaque_key = (f"jqlopaque:v{self.JQL_CACHE_VERSION}:{self.env}:g{generation}:"
+                          f"{projection}:{digest}:{source}")
+            scoped = self.cache.get(opaque_key) if fetched_rows is None else None
+            rows = fetched_rows if fetched_rows is not None else (
+                scoped if isinstance(scoped, list) else self._hydrate_jql_leaf_rows(
+                    issue_keys, fields, light, generation, projection))
+            if (source is not None and scoped is None
+                    and any(not row_projection_complete(row, fields) for row in rows)):
+                # These are usable query results, not complete shared ticket projections.
+                self.cache.set_if_fence(opaque_key, rows, self.s.cache_ttl_seconds, fence,
+                                        fetched_at=source)
+            return rows
 
-    def _jql_leaf_cache_ready(self, leaf, fields, light, generation, projection):
+    def _jql_leaf_cache_ready(self, leaf, fields, light, generation, projection, required=()):
         """Whether membership and every projected row can be read without upstream work.
 
         Task streaming uses this only as a conservative batching hint.  A false negative merely
@@ -1491,7 +1562,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     for issue_key in issue_keys]
         projected = self.cache.get_many(row_keys)
         missing = [issue_key for issue_key, row_key in zip(issue_keys, row_keys)
-                   if not isinstance(projected.get(row_key), dict)]
+                   if not row_projection_complete(projected.get(row_key), fields, required)]
         if not missing:
             return True
         if not self._projection_covers_issue_cache(fields, light):
@@ -1500,8 +1571,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         light_rows = self.cache.get_many(
             f"issueL:{self.env}:{issue_key}" for issue_key in missing) if light else {}
         return all(
-            isinstance(full.get(f"issue:{self.env}:{issue_key}"), dict)
-            or (light and isinstance(light_rows.get(f"issueL:{self.env}:{issue_key}"), dict))
+            row_projection_complete(full.get(f"issue:{self.env}:{issue_key}"), fields, required)
+            or (light and row_projection_complete(light_rows.get(f"issueL:{self.env}:{issue_key}"), fields, required))
             for issue_key in missing)
 
     @staticmethod
@@ -1514,81 +1585,14 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     combined[key] = issue
         return sort_issues(combined.values(), order)
 
-    def _warm_jql_leaves_bg(self, compiled, fields, light, generation, projection, context):
-        """Finish every cold DNF leaf without holding the visible request open.
-
-        Serial Jira providers use a priority queue.  Marking this work background means a tab
-        click or mutation can overtake it between leaf/page requests instead of waiting for an
-        entire large decomposition to drain.
-        """
-        digest = hashlib.sha256(
-            f"{context}\n{generation}\n{projection}\n{compiled.canonical}".encode("utf-8")
-        ).hexdigest()
-        inflight_key = f"jqlwarm:{self.env}:g{generation}:{digest}"
-        self._ensure_bg()
-        with self._bg_lock:
-            if inflight_key in self._bg_inflight:
-                return
-            self._bg_inflight.add(inflight_key)
-
-        def job():
-            try:
-                with background_upstream():
-                    for leaf, predicate_fields in zip(
-                            compiled.leaves, compiled.leaf_fields):
-                        # A successful write made this generation obsolete.  New searches will
-                        # schedule their own generation; do not spend the serial queue on old data.
-                        if self._jql_generation() != generation:
-                            break
-                        try:
-                            self._cached_jql_leaf(
-                                leaf, predicate_fields, fields, light, generation, projection)
-                        except Exception:
-                            # Never turn a partial/error response into a cached empty leaf.  A
-                            # later query retries the missing leaf through the normal path.
-                            continue
-            finally:
-                with self._bg_lock:
-                    self._bg_inflight.discard(inflight_key)
-
-        self._bg_pool.submit(job)
-
     def _build_jql_snapshot(self, compiled, fields, light, generation, projection, context):
-        provider = self.provider
-        serial_cold_bootstrap = (
-            len(compiled.leaves) > self.JQL_FOREGROUND_LEAF_LIMIT
-            and not getattr(provider, "supports_parallel", False)
-        )
-        if serial_cold_bootstrap:
-            # The canonical query is logically identical to the union of every DNF leaf.  Fetch it
-            # exhaustively (no app Limit/Pagination) so the first screen gets a complete snapshot,
-            # then populate every leaf in the background for cross-screen reuse.
-            try:
-                rows = self._fetch_exhaustive_jql(
-                    compiled.canonical, fields, light, self.JQL_BOOTSTRAP_RESULT_LIMIT)
-                self._store_jql_rows(rows, generation, projection)
-                self._warm_jql_leaves_bg(
-                    compiled, fields, light, generation, projection, context)
-                return {
-                    "canonical": compiled.canonical,
-                    "context": context,
-                    "projection": projection,
-                    "light": bool(light),
-                    "generation": generation,
-                    "issueKeys": [row.get("key") for row in sort_issues(rows, compiled.order)
-                                  if row.get("key")],
-                    "leafWarmPending": True,
-                }
-            except JqlUnsupported:
-                # Very large whole-query snapshots keep the strict leaf path and its per-leaf cap.
-                pass
-
-        fetch = lambda item: self._cached_jql_leaf(
-            item[0], item[1], fields, light, generation, projection)
-        # Every decomposed leaf executes (or hits its own cache); no global-limit early exit.
-        rows_by_leaf = self._pmap(tuple(zip(compiled.leaves, compiled.leaf_fields)), fetch)
-        rows = self._combine_jql_rows(rows_by_leaf, compiled.order)
-        self._store_jql_rows(rows, generation, projection)
+        groups = plan_groups(compiled, self.s.epic_link_field_id)
+        rows_by_group = []
+        for _group, result, error in self._iter_jql_groups(groups, fields, light, generation, projection):
+            if error:
+                raise error
+            rows_by_group.extend(rows for _members, rows in result)
+        rows = self._combine_jql_rows(rows_by_group, compiled.order)
         return {
             "canonical": compiled.canonical,
             "context": context,
@@ -1596,10 +1600,12 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             "light": bool(light),
             "generation": generation,
             "issueKeys": [row.get("key") for row in rows if row.get("key")],
+            "issues": rows,
         }
 
     def _jql_snapshot(self, compiled, fields, light, snapshot_id=None):
         context = self._jql_user_context()
+        fields = partition_fields(fields, plan_groups(compiled, self.s.epic_link_field_id))
         projection = self._projection_signature(fields, light)
 
         def read_snapshot(sid):
@@ -1633,7 +1639,6 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             def build():
                 fence = self.cache.fence()
                 snapshot = self._build_jql_snapshot(compiled, fields, light, generation, projection, context)
-                snapshot["issues"] = self._load_jql_rows(snapshot.get("issueKeys") or [], generation, projection)
                 sid = f"{generation}.{identity}.{uuid4().hex}"
                 snapshot_key = f"jqlsnap:v{self.JQL_CACHE_VERSION}:{self.env}:{sid}"
                 if not self.cache.set_if_fence(snapshot_key, snapshot, self.JQL_SNAPSHOT_TTL, fence):
@@ -1648,8 +1653,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                            snapshot_id=None):
         """One deterministic page from the app-composed OR snapshot.
 
-        Unsupported grammar/order keeps the historical Jira pagination path. Supported queries
-        execute and cache every DNF leaf, then union, deduplicate and sort locally before slicing.
+        Unsupported grammar/order keeps Jira pagination. Proven reusable memberships are batched;
+        arbitrary cold OR queries use a single cached query. Results are sorted before slicing.
         """
         start = max(0, int(start_at or 0))
         size = max(1, min(int(max_results or 100), 100))
@@ -2071,7 +2076,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             for e in w["epics"]:
                 if e["key"] not in seen:
                     seen.add(e["key"]); keys.append(e["key"])
-        self.prefetch_issues([self._resolve(k) for k in keys])   # epic 원본을 한 번에
+        self.prefetch_issues([self._resolve(k) for k in keys], light=True)
+        self._prime_epic_memberships(keys)
         results = self._pmap(keys, self.epic_progress_one)
         return {k: r for k, r in zip(keys, results)}
 

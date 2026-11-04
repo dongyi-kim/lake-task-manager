@@ -22,7 +22,7 @@ JQL leaf/issue/user/Epic/Confluence 캐시, mutation invalidation을 사용한�
 
 ## 도구
 
-56개 도구 모두 `inputSchema`와 `outputSchema`를 제공한다. 출력은 공통 성공/오류 envelope와
+63개 도구 모두 `inputSchema`와 `outputSchema`를 제공한다. 출력은 공통 성공/오류 envelope와
 도구별 `data` 타입으로 정의하며, 조회 성공에는 `cache`, `partial`, `missing`도 포함된다.
 실제 반환 JSON은 기존과 동일하게 `content`의 JSON 텍스트 및 `structuredContent`에 함께 제공한다.
 SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제거하지 않는다.
@@ -48,6 +48,7 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 | 일괄 필드 수정 | `bulk_update` |
 | PMO_VIT 등록·해제 | `get_vit_overview`, `set_vit_tracking` |
 | WBS 계획·인력 관리 | `get_workspace_config`, `create_wbs_task`, `update_wbs_task`, `delete_wbs_task`, `set_module_people`, `rename_people_module`, `delete_people_module` |
+| LLM 연결 설정 | `get_llm_settings`, `create_llm_config`, `update_llm_config`, `delete_llm_config`, `list_llm_models`, `check_llm_connection`, `activate_llm_config` |
 | 본문·필드 수정·전이 | `update_description`, `update_fields`, `transition_ticket` |
 | 댓글 | `add_comment`, `edit_comment`, `delete_comment` |
 | 티켓·문서 링크 | `add_issue_link`, `delete_issue_link`, `add_document`, `delete_document` |
@@ -62,7 +63,7 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 `fetchedAt`·`freshUntil`·`displayUntil`, stale 여부와 policy revision을 반환한다.
 관측 정보가 없으면 `available: false, state: unknown`으로 표시하며 최신 데이터라고 단정하지 않는다.
 
-업무 도구 53개와 인증 도구 2개, 가이드 도구 1개로 총 **56개**를 제공한다. `get_ticket`의 `descriptionHtml`은 열람용, `descriptionEditHtml`은
+업무 도구 53개와 인증 도구 2개, 가이드 도구 1개, LLM 설정 도구 7개로 총 **63개**를 제공한다. `get_ticket`의 `descriptionHtml`은 열람용, `descriptionEditHtml`은
 수정용 본문이다. 생성 시 `body.descriptionHtml`, 이후 본문 수정은 `update_description(html, ...)`,
 댓글 작성·수정은 `add_comment`·`edit_comment(html, ...)`를 사용한다. 기존 UI와 동일한 Jira serializer를 거친다.
 댓글 수정 전에는 `get_comment_source(key, comment_id)`의 `html`을 읽는다. `get_comments`의 표시 HTML은
@@ -210,7 +211,33 @@ UI 통합검색·내장 Agent·MCP는 환경/Confluence 서버/사용자/요청 
 
 WBS와 사용자 활동에는 UI와 같은 manager 검사, 팀 워크로드에는 같은 module/people 범위가 적용된다.
 Bitbucket 검색은 현재 LTM에서도 예정 기능의 mock placeholder이므로 MCP 도구에 포함하지 않는다.
-LLM 설정, 인증 쿠키, 비밀값 관리, 임의 REST 호출도 업무 도구로 노출하지 않는다.
+인증 쿠키, 비밀값 원문 조회, 임의 REST 호출이나 파일 접근은 노출하지 않는다.
+
+### LLM 연결 설정
+
+LLM 설정 도구는 **설정 → AI 연결 설정**과 같은 named config·키 저장소·검증 지문을 사용한다.
+Jira 로그인 없이 동작하며, MCP로 Jira를 사용하는 데 LLM 연결 설정이 필요한 것은 아니다.
+
+1. `get_llm_settings`로 후보와 활성 ID, 환경변수 우선 적용 여부를 확인한다.
+2. `create_llm_config(name, provider)`로 후보를 만들고 `update_llm_config(config_id, changes)`로
+   모델·Azure 배포명·URL·키를 저장한다. provider는 생성 후 고정이며 새 후보는 자동 활성화하지 않는다.
+3. `check_llm_connection(config_id, stage="auth")`로 인증을 확인한다. `list_llm_models`는
+   모델 목록만 조회하며 검증 완료로 표시하거나 활성화하지 않는다.
+4. 모델을 지정한 뒤 `check_llm_connection(..., stage="models")`를 명시적으로 호출한다.
+   실제 chat·embedding·capability 요청이 발생할 수 있고 과금될 수 있다. `passed`와 진단 결과를 확인한다.
+5. 두 검증을 모두 통과한 현재 지문만 `activate_llm_config`로 적용한다. 키·헤더·URL·모델을
+   바꾸면 필요한 검증을 다시 수행한다. 사용 중인 설정은 삭제할 수 없으며 다른 검증된 설정을 먼저 적용한다.
+
+설정 목록은 기본 3개(최대 10개), 모델 목록은 `kind="chat"|"simple"|"embed"`별 기본 25개(최대 50개)씩
+반환한다. `hasMore`, `nextStartAt`으로 이어 읽고 `total`은 해당 목록의 전체 개수다. 데이터 응답은
+8KiB 이내이며 모델·설정 ID는 자르지 않는다. 단일 항목이 너무 크면 명시적인 오류와 UI 확인 안내를 준다.
+긴 연결 진단은 `truncated:true`, `originalBytes`, `preview`로 제한된 미리보기임을 표시한다.
+
+`changes.secrets`는 UI와 같은 `aoaiEndpoint`, `aoaiApiKey`, `openaiApiKey`, `compatBaseUrl`,
+`compatApiKey`, `compatHeaders`, `simpleBaseUrl/ApiKey/Headers`, `embeddingBaseUrl/ApiKey/Headers`를 받는다.
+헤더는 문자열 값의 JSON 객체다. 생략한 값은 유지하고 빈 문자열은 저장된 값을 지운다.
+URL에 인증정보·query·fragment를 넣지 않는다. 키·헤더는 쓰기 전용이며 조회에는 `configured` 또는
+빈 문자열만 제공한다. 환경변수 자체는 수정하지 않으며 환경변수 우선순위는 유지한다.
 
 티켓 쓰기 도구는 **Jira에 직접 반영**하고 WBS·인력 관리 도구는 로컬 설정을 저장한다.
 외부 클라이언트에서 사용자가 허용한 작업만 실행해야 한다.
@@ -248,6 +275,7 @@ MCP는 UI와 별도 작업 용량을 사용한다. 업무 도구는 동시 8개,
 - `hierarchy_tools.py`, `app/jira/hierarchy_service.py`: 범용 하위 계층 탐색과 실패 목록
 - `security.py`, `settings.py`: loopback/bearer 경계와 명시적 설정 복사
 - `read_tools.py`, `workspace_tools.py`, `write_tools.py`, `vit_tools.py`, `admin_tools.py`: 타입이 있는 업무 도구 catalog
+- `llm_tools.py`, `app/agent/connection_settings.py`: UI와 공유하는 named LLM 설정·검증·활성화
 - `stdio.py`: 표준 SDK stdio/HTTP 메시지 중계
 - `app/services/ticket_commands.py`: HTTP UI와 MCP가 공유하는 쓰기 command
 - `app/services/workspace_config.py`: WBS·인력 UI와 MCP가 공유하는 설정 command

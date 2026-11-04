@@ -1,7 +1,6 @@
 """JQL canonicalization, decomposition and cache generation contracts."""
 
 from datetime import datetime, timezone
-import time
 
 import pytest
 
@@ -243,35 +242,24 @@ def test_narrow_projection_never_poisons_shared_light_issue_cache():
     assert cached and (cached.get("fields") or {}).get("subtasks")
 
 
-def test_large_serial_dnf_returns_bootstrap_snapshot_then_caches_every_leaf():
+def test_large_serial_people_query_batches_and_immediately_caches_memberships():
     client = JiraClient(get_settings(), Cache(":memory:"))
     calls = _count_searches(client)
+    users = ("skcc.x1042", "skcc.x1103", "skcc.i2011", "skcc.x1210", "skcc.i2044")
     query = " OR ".join(
-        f"project = DL AND assignee = test.ui0{index}"
-        for index in range(1, 6)
+        f"parent = DL-9100 AND assignee = {user}" for user in users
     ) + " ORDER BY updated DESC"
-
     rows = client.search_issues(query, max_results=5)
     assert rows
-    # A serial provider gets one complete foreground snapshot instead of blocking the UI on five
-    # leaves.  The leaf cache warmer then executes all five without holding this response open.
-    assert calls[0]["jql"].endswith("ORDER BY updated DESC, key ASC")
+    assert len(calls) == 1
+    assert calls[0]["jql"].endswith("ORDER BY key ASC")
     assert " OR " in calls[0]["jql"]
-
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        leaf_queries = [call["jql"] for call in calls
-                        if call["jql"].endswith("ORDER BY key ASC")]
-        if len({value for value in leaf_queries}) == 5:
-            break
-        time.sleep(0.02)
-    assert len({value for value in leaf_queries}) == 5
-
-    count = len(calls)
-    for index in range(1, 6):
-        client.search_issues(
-            f"project = DL AND assignee = test.ui0{index}", max_results=5)
-    assert len(calls) == count
+    for leaf in client._compile_jql(query).leaves:
+        assert isinstance(client.cache.get(client._jql_leaf_key(leaf)[2]), list)
+    for user in users:
+        client.search_issues(f"parent = DL-9100 AND assignee = {user}", max_results=5)
+    assert len(calls) == 1
+    assert not getattr(client, "_bg_inflight", None)
 
 
 def test_snapshot_cursor_stays_stable_across_new_query_generation():

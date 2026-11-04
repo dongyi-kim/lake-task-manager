@@ -14,6 +14,7 @@ Epic/Story/Sub-Task 트리를 만든다. 모든 쓰기는 **사용자 승인 후
   `get_llm()` / `get_embeddings()` / `callbacks()` / `status()` / `probe()`.
 - **secrets.py** — API 키 저장소(`CACHE_DIR/agent_secrets.json`, 원자적 교체).
   prefs 는 "비밀 아닌 개인 설정"용이라 **파일을 나눈다**(sso_store 와 같은 급).
+- **connection_settings.py** — 설정 UI와 local MCP가 공유하는 named 연결 관리·검증·명시적 활성화.
 - **fake.py** — 결정적 Fake LLM/임베딩. `with_structured_output` 도 지원해 Request Architect 분기까지 굴러간다.
 - **approval.py** — 쓰기 전 사용자 승인(HITL)을 **도구 경계에서** 강제. 토큰은 초안 내용의
   해시에 묶여 있어 A 를 승인받고 B 를 만들 수 없다. 1회용 · 30분 만료.
@@ -33,5 +34,9 @@ Epic/Story/Sub-Task 트리를 만든다. 모든 쓰기는 **사용자 승인 후
   로컬 개발은 `openai`, 구조 검증은 `fake`.
 - **관측이 없다고 앱이 죽지 않는다** — Langfuse 설정이 없으면 `callbacks()` 가 빈 리스트다.
 - 비밀값은 화면으로 **원문을 돌려보내지 않는다**(`secrets.masked()`).
+- 연결 검증은 요청 시작 당시의 키·헤더·URL·모델 지문과 완료 시점이 일치할 때만 저장한다.
+  이전 버전의 named 연결은 모델 지문에 일부 인증값이 빠져 있었으므로 업그레이드 후 **모델 확인 →
+  이 설정 사용**을 한 번 다시 수행해야 한다. 과거 모델 검증이 현재 키로 수행됐는지 증명할 수 없어
+  자동 이전하지 않는다. 설정값·키는 보존하며 환경변수 주입 경로의 검증 면제는 유지한다.
 - 도구는 **LTM 내부 함수를 직접 호출**한다(HTTP 왕복 없음). `JiraClient`·`domain/*` 를 그대로 쓰므로
   캐시·무효화가 재사용되고, provider 만 바뀌면 **prod SSO 에서도 그대로 동작**한다.
