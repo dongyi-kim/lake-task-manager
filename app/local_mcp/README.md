@@ -65,6 +65,24 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 댓글 작성·수정은 `add_comment`·`edit_comment(html, ...)`를 사용한다. 기존 UI와 동일한 Jira serializer를 거친다.
 `update_fields`의 `labels`와 `components`에는 문자열 배열을 전달하며 `[]`는 해당 필드를 모두 비운다.
 
+### 동명이인과 최근 사용자 근거
+
+`search_users(query, limit=8)`은 후보 순서를 유지하며 각 후보에 `matchContext`를 붙인다.
+`configured`는 로컬 people config 등록 여부, `sameModule`은 현재 사용자와 확인된 공통 모듈 여부다.
+`recentLookupAt`, `recentSelectionAt`, `recentMentionAt`은 각각 명시적 MCP 조회, UI 사용자 선택,
+UI 멘션 삽입 시각(Unix 초)이다. 멘션 삽입은 게시 완료를 뜻하지 않는다. 검색 결과에 노출되거나
+뱃지가 자동 렌더링되는 것만으로 이력을 기록하지 않는다.
+
+이력은 Jira 주소·환경·확인된 사용자별로 분리해 7일/200건 유지한다. 이전 브라우저의 계정 구분 없는
+localStorage 기록은 자동 이관하지 않으며 새 활동부터 수집한다. 설정·인증·이력 확인이 불가능하면
+값을 `null`로 남기고 `contextAvailable`로 가용성을 알린다. 이력 기록 실패는 편집을 막지 않는다.
+조회 중 계정·서버가 바뀌면 모든 개인 근거를 제외하고 `contextChanged=true`로 재검색을 안내한다.
+
+`limit`은 1~50이다. `mayHaveMore=true`면 제한에 닿았고, 짧은 응답의 `null`은 Jira가 전체 건수를
+주지 않아 완전성을 알 수 없다는 뜻이다. `coverage=bounded`이므로 이름 후보가 하나뿐이라는 사실만으로
+전역에서 유일한 사람이라고 단정하지 않는다. 필요하면 회사·성명·실제 username으로 좁힌다.
+최근성·같은 모듈·등록 여부는 판단 보조 정보이며 신원 확정이나 권한의 근거가 아니다.
+
 ### 범용 조회로 기간·대상별 업무 분석
 
 기간별 보고서나 특정 업무의 집계 전용 도구는 제공하지 않는다. Codex 등 연결된 Agent가 범용 조회를
