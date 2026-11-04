@@ -22,7 +22,7 @@ JQL leaf/issue/user/Epic/Confluence 캐시, mutation invalidation을 사용한�
 
 ## 도구
 
-55개 도구 모두 `inputSchema`와 `outputSchema`를 제공한다. 출력은 공통 성공/오류 envelope와
+56개 도구 모두 `inputSchema`와 `outputSchema`를 제공한다. 출력은 공통 성공/오류 envelope와
 도구별 `data` 타입으로 정의하며, 조회 성공에는 `cache`, `partial`, `missing`도 포함된다.
 실제 반환 JSON은 기존과 동일하게 `content`의 JSON 텍스트 및 `structuredContent`에 함께 제공한다.
 SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제거하지 않는다.
@@ -45,6 +45,7 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 | 부속 정보·첨부파일 내용 | `get_attachments`, `read_attachment`, `get_documents` |
 | 생성 | `create_task`, `create_subtask`, `create_epic` |
 | 일괄 생성 | `bulk_validate`, `bulk_create` |
+| 일괄 필드 수정 | `bulk_update` |
 | PMO_VIT 등록·해제 | `get_vit_overview`, `set_vit_tracking` |
 | WBS 계획·인력 관리 | `get_workspace_config`, `create_wbs_task`, `update_wbs_task`, `delete_wbs_task`, `set_module_people`, `rename_people_module`, `delete_people_module` |
 | 본문·필드 수정·전이 | `update_description`, `update_fields`, `transition_ticket` |
@@ -61,13 +62,25 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 `fetchedAt`·`freshUntil`·`displayUntil`, stale 여부와 policy revision을 반환한다.
 관측 정보가 없으면 `available: false, state: unknown`으로 표시하며 최신 데이터라고 단정하지 않는다.
 
-업무 도구 52개와 인증 도구 2개, 가이드 도구 1개로 총 **55개**를 제공한다. `get_ticket`의 `descriptionHtml`은 열람용, `descriptionEditHtml`은
+업무 도구 53개와 인증 도구 2개, 가이드 도구 1개로 총 **56개**를 제공한다. `get_ticket`의 `descriptionHtml`은 열람용, `descriptionEditHtml`은
 수정용 본문이다. 생성 시 `body.descriptionHtml`, 이후 본문 수정은 `update_description(html, ...)`,
 댓글 작성·수정은 `add_comment`·`edit_comment(html, ...)`를 사용한다. 기존 UI와 동일한 Jira serializer를 거친다.
 댓글 수정 전에는 `get_comment_source(key, comment_id)`의 `html`을 읽는다. `get_comments`의 표시 HTML은
 수정 원본이 아니다. 원본 조회는 UI와 같은 최신 최대 1,000개 검색 범위이며 Jira가 더 작게 제한할 수 있다.
 원본을 찾지 못하면 오류를 반환하므로 미리보기로 대신 덮어쓰지 않는다.
 `update_fields`의 `labels`와 `components`에는 문자열 배열을 전달하며 `[]`는 해당 필드를 모두 비운다.
+
+`bulk_update(items, client_mutation_id)`는 최대 10개의 `{key, fields}`를 순서대로 수정한다.
+예: `{"key":"DL-123","fields":{"summary":"새 제목","labels":["etl"]}}`.
+성공·실패는 원래 `index`와 `key`로 반환하며 실패해도 다른 티켓은 계속 처리한다. 롤백은 없다.
+완료 티켓은 먼저 명시적으로 Reopened 전이를 수행해야 하며, Reporter 변경은 실제 Jira 권한이 필요하다.
+필드별 권한·선택지는 `list_options(kind="edit_fields", key=...)`로 확인한다. `epic`은 Epic 소속만
+바꾸며 Task/SubTask 변환이나 SubTask 부모 변경을 의미하지 않는다. 일괄 수정 UI는 추가하지 않는다.
+재시도는 성공 행을 포함한 **전체 배열·순서·ID를 그대로** 보낸다. 성공 행은 다시 쓰지 않으며,
+응답 유실은 `outcome_unknown`으로 보존해 새 ID로 중복 실행하지 않는다. 실패 행의 `action`이
+권한 확인·별도 재오픈·로그인·동일 요청 재시도·결과 확인을 안내한다. 긴 오류는 preview로 표시한다.
+도중에 Jira 계정이 바뀌면 미완료 행을 쓰지 않고 `restore_original_user`를 안내한다. 인증 복구가
+실패해도 이미 확인된 성공 행과 실패 행은 유지하며 `authentication.jira`에 복구 오류를 별도로 표시한다.
 
 ### 작성 가이드라인 스킬
 

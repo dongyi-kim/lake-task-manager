@@ -4,9 +4,9 @@ import base64
 import binascii
 from typing import Annotated, Literal
 
-from pydantic import ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from app.services.ticket_models import BulkBody, ChildBody, EpicBody, FieldsBody, TransitionBody
+from app.services.ticket_models import BulkBody, ChildBody, EpicBody, TransitionBody
 
 HTML_DESCRIPTION = (
     "Editor HTML, not Markdown, Jira wiki or TipTap JSON. Read get_content_guide for supported "
@@ -62,9 +62,11 @@ class EpicInput(EpicBody):
     descriptionHtml: str | None = Field(default=None, description=HTML_DESCRIPTION)
 
 
-class FieldsInput(FieldsBody):
+class FieldChanges(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    clientMutationId: MutationId
+    priority: str | None = Field(default=None, description="Actual priority name; null preserves.")
+    labels: list[str] | None = Field(default=None, description="Replaces all labels; [] clears, null preserves.")
+    components: list[str] | None = Field(default=None, description="Replaces all component names; [] clears, null preserves.")
     summary: str | None = Field(default=None, min_length=1, description="New non-empty ticket title (rename). Omit or null to preserve.")
     assignee: str | None = Field(default=None, description="Verified Jira user ID; empty unassigns, null preserves.")
     reporter: str | None = Field(default=None, description="Verified Jira user ID; requires Jira MODIFY_REPORTER permission.")
@@ -72,6 +74,10 @@ class FieldsInput(FieldsBody):
     epic: str | None = Field(default=None, description="Existing Epic issue key; empty removes membership, null preserves.")
     descriptionHtml: str | None = Field(default=None, description=(
         HTML_DESCRIPTION + " Replaces the entire body; null leaves unchanged and empty clears it."))
+
+
+class FieldsInput(FieldChanges):
+    clientMutationId: MutationId
 
 
 class TransitionInput(TransitionBody):
@@ -305,3 +311,5 @@ def register_writes(register, runtime):
                delete_comment, transition_ticket, add_issue_link, delete_issue_link, add_document,
                delete_document, add_attachment, delete_attachment, delete_ticket):
         register(fn, read_only=False)
+    from app.local_mcp.bulk_update_tools import register_bulk_updates
+    register_bulk_updates(register, runtime)

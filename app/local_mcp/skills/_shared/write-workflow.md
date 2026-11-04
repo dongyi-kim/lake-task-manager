@@ -19,7 +19,8 @@ name을 쓰며 화면에 없는 담당자·resolution·소요시간을 임의로
 - 한 번의 논리적 쓰기마다 8~128자의 고유 ID를 만들고 요청 내용을 함께 보존한다. 영문자·숫자로 시작하고 나머지는 영문자·숫자·`.`·`_`·`:`·`-`를 사용한다.
 - `create_task`·`create_subtask`·`create_epic`·`update_fields`·`transition_ticket`은 `body.clientMutationId`를 받는다. 본문·댓글·첨부 등 다른 쓰기는 `client_mutation_id` 인자를 받는다.
 - 같은 요청의 재시도는 **동일 ID + 동일 인자**다. 새로운 요청이나 확정된 요청 내용 변경에는 새로운 ID를 쓴다. 아직 결과가 불명확한 쓰기를 새 ID로 반복하지 않는다.
-- `bulk_create`는 전체 배열과 순서가 하나의 요청이다. 같은 ID 아래 성공 항목을 제외하거나 실패 행만 보내면 안 된다.
+- `bulk_create`·`bulk_update`는 전체 배열과 순서가 하나의 요청이다. 같은 ID 아래 성공 항목을 제외하거나 실패 행만 보내면 안 된다.
+- `bulk_update`는 최대 10개의 `{key, fields}`를 수정하며 labels·components 배열은 추가가 아니라 전체 교체다. 완료 티켓은 별도 Reopened 전이 후 수정한다. 권한 부족은 재로그인으로 우회할 수 없으며 `list_options(kind="edit_fields", key=...)`로 편집 가능 필드를 확인한다.
 
 ## 오류와 부분 성공
 
