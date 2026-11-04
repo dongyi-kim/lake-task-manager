@@ -125,9 +125,13 @@ LTM에서 수정한 내용은 기간에 관계없이 갱신하며, 편집 권한
         Jira / Confluence / Bitbucket DC
 ```
 
-검색 결과, 상세 티켓, 사용자와 Epic 메타데이터는 서로 재사용된다. 지원되는 JQL은 정규화한 뒤 OR leaf로
-분해해 개별 캐싱하고, 앱에서 합집합·중복 제거·정렬·pagination을 수행한다. Jira 쓰기가 성공하면
+검색 결과, 상세 티켓, 사용자와 Epic 메타데이터는 서로 재사용된다. JQL은 정규화하고, 재사용 가능한
+사람·상태·Epic 조건은 묶어서 조회한 뒤 개별 캐싱한다. 임의 OR 검색은 전체 결과를 캐싱하며
+모든 조건을 추가로 재조회하지 않는다. 앱에서 합집합·중복 제거·정렬·pagination을 수행한다. Jira 쓰기가 성공하면
 mutation 정보와 issue→leaf 역인덱스로 영향받는 상세·목록·집계 캐시만 선택적으로 갱신한다.
+
+실제 Task 필터·워크로드·WBS 흐름의 비교 수치와 한계는
+[JQL UI 성능 보고서](research/agent-improvement/reports/jql-strategic-cache-ui-20261104.md)에 있다.
 
 ## 실행 환경
 
