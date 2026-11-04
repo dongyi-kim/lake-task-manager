@@ -32,9 +32,10 @@ import { categoryColor } from "../../lib/colors.js";
 import {
   AXIS_PAGE_SIZE, BAND_FILTERS, NARROW, NO_DUE, OPTIONS, PREF_KEY, STATES, STATE_KEYS, SUB_CAP,
   TASK_RETRY_DELAYS, cloneTaskModel, epicSig, patchTaskData, reconcileTaskModel,
-  resolveDefaultModule, retryDelay,
+  resolveDefaultModule,
   taskLoadErrorKind, uniformStatusCategory,
 } from "../mytasks/taskModel.js";
+import { hydrateTaskGroups } from "../mytasks/taskHydration.js";
 import { pushToast } from "../../lib/toast.js";
 import { vocBadgeSegs, vocStripTitle } from "../../lib/voc.js";
 import { confirmDoneDespiteOpenSubs } from "../../lib/doneGuard.js";
@@ -47,7 +48,7 @@ export default {
                 SubtaskFoldBar },
   data() {
     return {
-      model: null, loading: false, err: "",
+      model: null, loading: false, err: "", childSync: {},
       streamAxes: {
         todo: { state: "loading", chunks: 0 },
         inprogress: { state: "loading", chunks: 0 },
@@ -146,7 +147,7 @@ export default {
       this.refreshMe();
       // 성공한 leaf는 서버 cache에서 즉시 재사용되고 인증 때문에 실패한 leaf만 Jira를 다시 탄다.
       // 이미 보이는 카드도 유지해, 재로그인이 전체 목록 재로딩처럼 보이지 않게 한다.
-      this.load({ quiet: true });
+      if (!this._resumeChildHydration()) this.load({ quiet: true });
     });
     window.addEventListener('workspace-config-updated', this._workspaceUpdate = async () => {
       this._dropModelCache();
@@ -161,6 +162,7 @@ export default {
     this._bindDrag();
   },
   unmounted() {
+    this._loadSeq = (this._loadSeq || 0) + 1;
     if (this._streamAbort) this._streamAbort.abort();
     if (this._taskRetryTimer) clearTimeout(this._taskRetryTimer);
     if (this._epicMetaTimer) clearTimeout(this._epicMetaTimer);
@@ -526,7 +528,9 @@ export default {
       const requestToken = (window.crypto && window.crypto.randomUUID)
         ? window.crypto.randomUUID() : Date.now().toString(36) + "-" + seq;
       this._activeRequestToken = requestToken;
-      let lastSequence = -1;
+      this.childSync = {};
+      this._childRun = null;
+      let lastSequence = -1, receivedFinal = false;
       let streamHadAuthFailure = false;
       let streamHadOtherFailure = false;
       const failedAxes = new Map();
@@ -564,6 +568,7 @@ export default {
           const eventSequence = Number(event.sequence);
           if (!Number.isInteger(eventSequence) || eventSequence <= lastSequence) return;
           lastSequence = eventSequence;
+          if (event.done && event.model) receivedFinal = true;
 
           const progress = event.progress || {};
           const active = seq === this._loadSeq && this._activeRequestToken === requestToken;
@@ -677,6 +682,7 @@ export default {
             this.streamAxes = axes;
           }
         }, controller.signal);
+        if (!receivedFinal) throw new Error("Task 동기화가 완료되기 전에 연결이 종료되었습니다.");
       }
       catch (e) {
         if (controller.signal.aborted || seq !== this._loadSeq) return;
@@ -723,126 +729,52 @@ export default {
         noDue: atoms.filter((atom) => atom.dueDays === null || atom.dueDays === undefined).length,
       };
     },
-    async _hydrateModel(model, seq, cacheKey, cache, cacheGeneration, requestToken) {
+    _resumeChildHydration() {
+      const run = this._childRun;
+      const keys = Object.keys(this.childSync).filter((key) => this.childSync[key] === "waiting-auth");
+      if (!run || !keys.length || !this.model?.streamComplete
+          || !this.states.every((st) => this.axisState(st.k) === "done")) return false;
+      if (run.resuming) return true;
+      run.resuming = true;
+      run.promise.finally(() => {
+        if (this._childRun !== run || this._activeRequestToken !== run.requestToken) return;
+        this._hydrateModel(this.model, run.seq, run.cacheKey, run.cache,
+          run.cacheGeneration, run.requestToken, keys);
+      });
+      return true;
+    },
+    _hydrateModel(model, seq, cacheKey, cache, cacheGeneration, requestToken, keys) {
       const syncId = model && model.syncId;
-      if (!syncId) return;
-      // Never reconcile into ``model`` directly: for a warm same-filter load it is commonly both
-      // the visible Vue object and cache[cacheKey].  A superseded response mutating that alias was
-      // how old SubTasks briefly (or permanently) replaced a newer filter snapshot.
-      let workingModel = cloneTaskModel(model);
-      const jobs = (workingModel.groups || []).filter((group) => group.childrenPending)
-        .map((group) => ({ type: "group", key: group.key }));
-      let cursor = 0;
-      let snapshotSequence = Number(workingModel.snapshotSequence) || 0;
-      const generationCurrent = () => this._taskCacheGenerations
-        && this._taskCacheGenerations[cacheKey] === cacheGeneration;
-      const publish = () => {
-        // Same filter, newer request: discard this hydrate entirely. Different active filter:
-        // retain this completed response in its own filter cache, but never touch visible state.
-        if (!generationCurrent()) return false;
-        cache[cacheKey] = workingModel;
-        this._queueEpicMetadata(workingModel, cache);
-        const active = this._loadSeq === seq && this._activeRequestToken === requestToken
-          && this.model && this.model.syncId === syncId;
-        if (active && this.model !== workingModel) this.model = workingModel;
-        return true;
-      };
-      const settlePermission = (job, error) => {
-        const group = (workingModel.groups || []).find((row) => row.key === job.key);
-        if (!group) return;
-        group.childrenPending = false;
-        group.childrenLoaded = false;
-        group.childrenUnavailable = true;
-        group.childrenUnavailableCount = Math.max(1, Number(group.childrenUnavailableCount) || 0);
-        group.childrenMissing = [{ key: job.key, kind: "permission", phase: "child-issue",
-                                   error: String((error && error.message) || error || "") }];
-        publish();
-      };
-      // 브라우저 요청은 둘만 병렬화한다. 서버에서는 background priority라 새 퀵필터 JQL이
-      // 이 작업들을 앞지르고, 이미 시작된 옛 필터 결과만 해당 필터 캐시에 안전하게 남는다.
-      const worker = async () => {
-        while (cursor < jobs.length) {
-          if (seq !== this._loadSeq) return;   // 아직 시작하지 않은 옛 필터 보강은 새 필터에 양보
-          const job = jobs[cursor++];
-          try {
-            const result = job.type === "group"
-              ? await api.myTasksGroup(syncId, job.key)
-              : await api.myTasksEpics(syncId);
-            if (!result || result.contract !== "task-snapshot.v1" || result.type !== "snapshot"
-                || result.syncId !== syncId || !Number.isInteger(Number(result.sequence))
-                || Number(result.sequence) <= snapshotSequence || !result.model) continue;
-            if (!generationCurrent()) return;
-            snapshotSequence = Number(result.sequence);
-            const next = Object.assign({}, result.model, { streamComplete: true });
-            workingModel = reconcileTaskModel(workingModel, next);
-            publish();
-
-            const missing = result.missing || [];
-            if (result.retryable) {
-              const kinds = new Set(missing.map((row) => row.kind || "other"));
-              const kind = kinds.has("auth") ? "auth"
-                : (kinds.has("transport") ? "transport" : "other");
-              if (kind === "auth") {
-                window.dispatchEvent(new CustomEvent("need-login"));
-              } else {
-                const attempt = Number(job.attempt) || 0;
-                const delay = TASK_RETRY_DELAYS[attempt];
-                if (delay !== undefined) {
-                  await retryDelay(delay);
-                  if (seq !== this._loadSeq || !generationCurrent()) return;
-                  jobs.push(Object.assign({}, job, { attempt: attempt + 1 }));
-                  continue;
-                }
-              }
-              const notices = this._childErrorNotices || (this._childErrorNotices = new Set());
-              const noticeKey = syncId + ":" + job.key + ":" + kind;
-              if (!notices.has(noticeKey)) {
-                notices.add(noticeKey);
-                pushToast({
-                  kind: "error", key: "task-child-" + noticeKey,
-                  title: kind === "auth" ? "일부 SubTask를 인증 문제로 불러오지 못했습니다"
-                                         : "일부 SubTask를 계속 불러오지 못했습니다",
-                  message: "불러온 Parent와 SubTask는 그대로 사용할 수 있습니다.", timeout: 7000,
-                });
-              }
-            }
-          } catch (e) {
-            const kind = taskLoadErrorKind(e);
-            if (kind === "permission") {
-              // Per-ticket visibility is a terminal best-effort outcome. Keep the Parent and stop
-              // this group's spinner without a toast or a false successful child cache.
-              settlePermission(job, e);
-              continue;
-            }
-            if (kind === "auth") {
-              window.dispatchEvent(new CustomEvent("need-login"));
-            } else {
-              const attempt = Number(job.attempt) || 0;
-              const delay = TASK_RETRY_DELAYS[attempt];
-              if (delay !== undefined) {
-                // 이 worker만 잠깐 양보하고 실패한 Parent를 큐 맨 뒤에 넣는다. 다른 Parent의
-                // 성공 응답은 계속 화면/cache에 반영되며, 이미 성공한 job은 다시 실행하지 않는다.
-                await retryDelay(delay);
-                if (seq !== this._loadSeq) return;
-                jobs.push(Object.assign({}, job, { attempt: attempt + 1 }));
-                continue;
-              }
-            }
-            const notices = this._childErrorNotices || (this._childErrorNotices = new Set());
-            const noticeKey = syncId + ":" + job.key + ":" + kind;
-            if (!notices.has(noticeKey)) {
-              notices.add(noticeKey);
-              pushToast({
-                kind: "error", key: "task-child-" + noticeKey,
-                title: kind === "auth" ? "일부 SubTask를 인증 문제로 불러오지 못했습니다"
-                                       : "일부 SubTask를 계속 불러오지 못했습니다",
-                message: "불러온 Parent와 SubTask는 그대로 사용할 수 있습니다.", timeout: 7000,
-              });
-            }
-          }
-        }
-      };
-      await Promise.allSettled([worker(), worker()]);
+      if (!syncId) return Promise.resolve();
+      const current = () => this._taskCacheGenerations?.[cacheKey] === cacheGeneration;
+      const active = () => current() && this._loadSeq === seq
+        && this._activeRequestToken === requestToken && this.model?.syncId === syncId;
+      const run = { seq, cacheKey, cache, cacheGeneration, requestToken };
+      this._childRun = run;
+      run.promise = hydrateTaskGroups({ model, keys,
+        loadGroup: (id, key) => api.myTasksGroup(id, key),
+        isCurrent: current, canStart: active,
+        publish: (working) => {
+          if (!current()) return;
+          cache[cacheKey] = working;
+          this._queueEpicMetadata(working, cache);
+          if (active()) this.model = working;
+        },
+        onStates: (states) => { if (active()) this.childSync = { ...this.childSync, ...states }; },
+        onFailure: (key, kind) => {
+          if (kind === "auth") window.dispatchEvent(new CustomEvent("need-login"));
+          pushToast({ kind: "error", key: "task-child-" + syncId + ":" + key + ":" + kind,
+            title: kind === "auth" ? "일부 SubTask를 인증 문제로 불러오지 못했습니다"
+                                  : "일부 SubTask를 계속 불러오지 못했습니다",
+            message: "불러온 Parent와 SubTask는 그대로 사용할 수 있습니다.", timeout: 7000 });
+        },
+      });
+      return run.promise;
+    },
+    childSyncState(group) {
+      if (!group.childrenPending) return group.childrenLoaded ? "complete" : "unavailable";
+      if (this.childSync[group.key]) return this.childSync[group.key];
+      return this._streamAbort && this.states.some((st) => this.axisLoading(st.k)) ? "queued" : "paused";
     },
     /** 티켓이 바뀌면 클라이언트 모델 캐시는 낡는다 — 통째로 비운다(서버 mt: 캐시도 같은 이유로 무효화). */
     _dropModelCache() { this._mcache = {}; this._taskCacheGenerations = {}; },
@@ -1157,12 +1089,13 @@ export default {
         assignees.push({ id, name: name || id });
       }
       return {
-        key: g.key, kind: "task", group: g,
+        key: g.key, kind: "task", group: g, syncState: this.childSyncState(g),
         title: g.title, epicKey: g.epic,
         mode, mineCount: mineCards.length, allCount: all.length, assignees,
         // 1컬럼 모드의 부모는 별도 축약 UI 가 아니라 단독 Task 와 같은 TaskCard 를 그대로 쓴다.
         parentCard: this.card(g, g, !!g.mine),
         cards: this.sorted(shown),
+        emptyFiltered: g.childrenLoaded === true && shown.length === 0,
         // 화면에 일부만 펼쳐도 판정은 동료 몫까지 포함한 **모든 실제 Sub-Task** 기준이다.
         singleStatus: uniformStatusCategory(all),
         rank: this.rankOf(all),
@@ -1217,7 +1150,7 @@ export default {
       const uniform = p && p.kind === "task" ? p.singleStatus : null;
       const rawParent = p?.parentCard?.statusCategory;
       const parentStatus = STATE_KEYS.has(rawParent) ? rawParent : "todo";
-      return uniform && this.bandOpen(parentStatus) ? parentStatus : null;
+      return (uniform || p.emptyFiltered) && this.bandOpen(parentStatus) ? parentStatus : null;
     },
     parentState(p) {
       const value = p?.group?.statusCategory;
@@ -1565,7 +1498,7 @@ export default {
                 </div>
                 <SubtaskFoldBar :panel="c.compactPanel" :closed="isGroupClosed(c.compactPanel)"
                                 @toggle="toggleGroup(c.compactPanel)" />
-                <div v-if="!isGroupClosed(c.compactPanel)"
+                <div v-if="!c.compactPanel.emptyFiltered && !isGroupClosed(c.compactPanel)"
                      class="mt-gbody one mt-compact-children"
                      :class="{ foldwrap: foldable(c.compactPanel), folded: peeking(c.compactPanel),
                                'fold-peek': peeking(c.compactPanel) }">

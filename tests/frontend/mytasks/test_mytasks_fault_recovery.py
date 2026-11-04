@@ -47,15 +47,11 @@ def test_auth_and_transport_failures_keep_axis_recoverable_but_permission_is_sil
 def test_group_hydration_has_independent_model_and_same_filter_generation_fence():
     src = VIEW.read_text(encoding="utf-8")
 
-    assert "let workingModel = cloneTaskModel(model);" in src
-    assert "const cacheGenerations = this._taskCacheGenerations" in src
-    assert "const cacheGeneration = cacheGenerations[key] = (cacheGenerations[key] || 0) + 1;" in src
-    assert "this._taskCacheGenerations[cacheKey] === cacheGeneration" in src
-    assert "if (!generationCurrent()) return;" in src
-    assert "workingModel = reconcileTaskModel(workingModel, next);" in src
-    assert "reconcileTaskModel(active ? this.model : cache[cacheKey], next)" not in src
-    assert "this._activeRequestToken === requestToken" in src
+    assert "this._taskCacheGenerations?.[cacheKey] === cacheGeneration" in src
+    assert "this._activeRequestToken === requestToken && this.model?.syncId === syncId" in src
     assert "this._taskCacheGenerations = {};" in src
+    assert "cache[cacheKey] = working" in src
+    assert "if (active()) this.model = working" in src
 
 
 def test_buffered_old_stream_event_cannot_mutate_new_same_filter_cache_alias():
@@ -71,21 +67,6 @@ def test_buffered_old_stream_event_cannot_mutate_new_same_filter_cache_alias():
     assert "const target = active && preserveVisible ? this.model : streamModel;" in replace
     assert "streamModel = reconciled;" in replace
     assert "active ? this.model : cache[key]" not in replace
-
-
-def test_partial_group_result_retries_missing_and_permission_settles_without_toast():
-    src = VIEW.read_text(encoding="utf-8")
-
-    assert "const missing = result.missing || [];" in src
-    assert "if (result.retryable)" in src
-    assert 'kinds.has("transport") ? "transport" : "other"' in src
-    assert "jobs.push(Object.assign({}, job, { attempt: attempt + 1 }))" in src
-    assert "settlePermission(job, e);" in src
-    settle = src[src.index("const settlePermission"):src.index("// 브라우저 요청은 둘만", src.index("const settlePermission"))]
-    assert "group.childrenPending = false;" in settle
-    assert "group.childrenUnavailable = true;" in settle
-    assert "pushToast" not in settle
-    assert 'error.phase === "child-membership"' in src
 
 
 def test_request_owned_clone_cannot_mutate_visible_or_cached_model_alias():
