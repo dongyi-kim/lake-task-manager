@@ -515,6 +515,24 @@ def _hide_console_win():
         pass
 
 
+def _show_console_win():
+    """Restore the launcher console when automatic recovery has exhausted its attempts."""
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        get_console = ctypes.windll.kernel32.GetConsoleWindow
+        get_console.argtypes, get_console.restype = [], wintypes.HWND
+        show = ctypes.windll.user32.ShowWindow
+        show.argtypes, show.restype = [wintypes.HWND, ctypes.c_int], wintypes.BOOL
+        hwnd = get_console()
+        if hwnd:
+            show(hwnd, 5)  # SW_SHOW
+    except Exception:
+        pass
+
+
 # ── 전역 단축키(Windows): Ctrl+Alt+Space → 앱 창을 **지금 보고 있는 모니터**로 불러온다 ──────────
 #   '내가 창으로 가는' 게 아니라 '창이 나에게 오는' 동작이다. 포그라운드 창이 있는 모니터의 작업영역
 #   중앙으로 앱 창을 옮겨 전면화·포커스한다(다른 모니터·최소화·닫힘 모두 커버). 핸들은 64비트라
@@ -1331,6 +1349,7 @@ def _run_tray(s):
                 # 잠깐 기다린다. 안 그러면 새 인스턴스가 "이미 떠 있음"으로 오판해 창만 열고 종료해,
                 # 결국 둘 다 사라진다(=업데이트 후 아무것도 안 뜸).
                 env = dict(os.environ, LAKE_RESTART="1")
+                env.pop("LAKE_SUPERVISED_WORKER", None)
                 subprocess.Popen(cmd, cwd=str(bat.parent), env=env,
                                  creationflags=0x00000010)   # CREATE_NEW_CONSOLE (독립 실행)
                 launched = True
@@ -1624,7 +1643,8 @@ def main():
 
     # Task Manager의 이미지 이름은 Python 코드의 title이 아니라 실행 파일명에서 온다.
     # 기존 인스턴스/포트 확인을 마친 뒤 named launcher로 실행 주체를 전환한다.
-    reexec_with_process_name(s.jira_env)
+    if not os.environ.get("LAKE_SUPERVISED_WORKER"):
+        reexec_with_process_name(s.jira_env)
 
     if dev_reload:
         _run_hot_reload(s)
@@ -1655,6 +1675,13 @@ def main():
         except Exception:
             use_tray = False
     if use_tray:
+        from app.launcher.supervisor import WORKER_ENV, run_supervisor
+        if not os.environ.get(WORKER_ENV):
+            raise SystemExit(run_supervisor(
+                [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]],
+                cwd=os.getcwd(), env=dict(os.environ),
+                base_url=f"http://127.0.0.1:{s.app_port}",
+                on_ready=_hide_console_win, on_failure=_show_console_win))
         _run_tray(s)         # icon.run() 이 블로킹; [종료] 시 반환
         os._exit(0)
     else:
