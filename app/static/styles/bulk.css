@@ -5,6 +5,8 @@
 
 .blk-ov { position: fixed; inset: 0; z-index: 100000; display: flex; align-items: center;
   justify-content: center; padding: 24px; background: rgba(0, 0, 0, .38); }
+/* Destructive record confirmation must remain above this unusually high bulk overlay. */
+body:has(.blk-ov) > .cfm-ov { z-index: 100001; }
 /* 높이는 **창 크기에 비례해 넉넉히** 잡는다 — JSON 은 수십 줄이 예사인데, 내용에 따라
    창이 자라게 두면 대개 작게 떠서 편집기가 좁아진다(한 화면에 대여섯 줄만 보였다).
    min() 의 앞 항은 아주 큰 화면에서 창이 과하게 커지지 않게 하는 상한이다. */
@@ -194,7 +196,7 @@
 .blk-err.jump:hover { background: var(--danger-bg); }
 
 /* ── 푸터 ─────────────────────────────────────────────────────────── */
-.blk-f { display: flex; align-items: center; gap: 8px; padding: 11px 16px; flex: none;
+.blk-f { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 11px 16px; flex: none;
   border-top: 1px solid var(--border); }
 .blk-hint { flex: 1 1 auto; font-size: 11px; color: var(--muted-2); }
 

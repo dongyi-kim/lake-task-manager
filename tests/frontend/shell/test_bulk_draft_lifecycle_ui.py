@@ -133,3 +133,59 @@ def test_initial_context_failure_can_close_or_retry_without_discarding_typed_jso
     assert page.evaluate("() => window.bulkDraftVm.src") == source
     assert posts == []
     assert not [error for error in errors if f"HTTP {status} " not in error or "/api/bulk/create-context" not in error]
+
+
+@pytest.mark.parametrize("age_days", [0, 8], ids=["pending", "expired"])
+def test_explicit_bulk_record_delete_cancels_safely_and_reopens_new_input(editor_browser, age_days):
+    page, base, errors, _ = editor_browser
+    writes = []
+    page.on("request", lambda request: writes.append(request.url)
+            if request.method == "DELETE" or (request.method == "POST" and "/api/bulk/create" in request.url) else None)
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"], origin=base)
+    page.goto(base)
+    page.evaluate("""async () => {
+      const {createApp} = await import('/vendor/vue.esm-browser.prod.js');
+      const {default:component} = await import('/components/ui/BulkCreateDialog.js');
+      window.mountBulkDraft=()=>{
+        const host=document.createElement('div'); document.body.append(host);
+        window.bulkDraftApp=createApp(component,{mode:'task',onClose:()=>window.bulkDraftApp.unmount()});
+        window.bulkDraftVm=window.bulkDraftApp.mount(host);
+      }; window.mountBulkDraft();
+    }""")
+    page.wait_for_function("() => window.bulkDraftVm.formDraftReady")
+    source = page.evaluate("""async days => {
+      const {newBulkRun,bulkRunResult}=await import('/lib/bulkCreateRun.js');
+      const vm=window.bulkDraftVm;
+      const items=[{summary:'confirmed record',type:'Task',epic:null},{summary:'uncertain record',type:'Task',epic:null}];
+      vm.creationRun=newBulkRun('task',items,'bulk:record:discard',vm.executionScope);
+      vm.creationRun.firstAttemptAt=Date.now()-days*86400000;
+      vm.creationRun.chunks[0].attempted=true;
+      vm.creationRun.chunks[0].states={0:{ok:true,key:'DL-9007'},1:{ok:null,error:'response lost'}};
+      vm.createMutationId=vm.creationRun.id; vm.items=items; vm.src=JSON.stringify({mode:'task',items});
+      vm.step='preview'; vm.showRunResult(bulkRunResult(vm.creationRun));
+      await vm.flushFormDraft(); window.bulkDraftKey=vm._formKey;
+      vm.busy=true; await vm.discardExecutionRecord(); vm.busy=false;
+      return vm.src;
+    }""", age_days)
+    page.set_viewport_size({"width": 390, "height": 844})
+    footer_fits = page.locator(".blk-f").evaluate("node => node.scrollWidth <= node.clientWidth")
+    assert footer_fits
+    assert page.get_by_role("alertdialog").count() == 0
+    page.locator(".blk").get_by_role("button", name="입력 JSON 복사").click()
+    assert page.evaluate("() => navigator.clipboard.readText()") == source
+    page.locator(".blk").get_by_role("button", name="실행 기록 삭제").click()
+    confirm = page.get_by_role("alertdialog")
+    assert "실제 생성된 Jira 티켓은 삭제되지 않습니다" in confirm.inner_text()
+    assert "Jira에서 생성 여부를 확인" in confirm.inner_text()
+    confirm.get_by_role("button", name="취소", exact=True).click()
+    saved = page.evaluate("async () => (await (await import('/lib/draft.js')).loadDraft(window.bulkDraftKey)).fields.creationRun.id")
+    assert saved == "bulk:record:discard" and page.locator(".blk").is_visible()
+    page.locator(".blk").get_by_role("button", name="실행 기록 삭제").click()
+    page.get_by_role("alertdialog").get_by_role("button", name="실행 기록 삭제", exact=True).click()
+    page.locator(".blk").wait_for(state="detached")
+    assert page.evaluate("async () => await (await import('/lib/draft.js')).loadDraft(window.bulkDraftKey)") is None
+    page.evaluate("() => window.mountBulkDraft()")
+    page.wait_for_function("() => window.bulkDraftVm.formDraftReady")
+    assert page.evaluate("() => ({step:window.bulkDraftVm.step,run:window.bulkDraftVm.creationRun})") == {"step": "input", "run": None}
+    assert "uncertain record" not in page.evaluate("() => window.bulkDraftVm.src")
+    assert writes == [] and not errors

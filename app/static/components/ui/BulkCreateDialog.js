@@ -21,6 +21,7 @@ import { validateBulk, exampleJson, fieldDocs, buildLlmPrompt } from "../../lib/
 import { categoryColor } from "../../lib/colors.js";
 import { errorLines } from "../../lib/jsonlines.js";
 import { formDraft } from "../../lib/formDraft.js";
+import { confirmBox } from "../../lib/confirm.js";
 import { newMutationId } from "../../lib/mutationId.js";
 import { newBulkRun, executeBulkRun, bulkRunResult, bulkScopeKey } from "../../lib/bulkCreateRun.js";
 import TypeBadge from "./TypeBadge.js";
@@ -68,7 +69,7 @@ export default {
       step: "input",          // input | preview (결과도 preview 에서 보인다)
       src: "",
       errors: [], warnings: [], errOpen: true,
-      checking: false, busy: false, draftRetrying: false, unboundCloseRequested: false,
+      checking: false, busy: false, draftRetrying: false, unboundCloseRequested: false, discardingRun: false,
       items: [],              // 검증 통과한 항목
       opts: { types: [], priorities: [], components: [] },   // 프롬프트에 박을 실제 선택지
       result: null, createMutationId: "", creationRun: null, executionScope: null,
@@ -87,6 +88,7 @@ export default {
   computed: {
     isSub() { return this.mode === "subtask"; },
     title() { return this.isSub ? "Bulk Sub Task 추가하기" : "Bulk Task 추가하기"; },
+    canDiscardRun() { return !!this.creationRun && !!(this.result?.pending.length || this.result?.blocked); },
     docs() { return fieldDocs(this.mode); },
     /** 오류가 가리키는 **원문의 줄** — 편집기가 그 줄을 붉게 칠한다.
      *  "3번 항목의 duedate" 는 정확하지만 어디를 고칠지는 안 알려 준다. 줄로 바꿔 준다. */
@@ -231,7 +233,7 @@ export default {
       finally { this.draftRetrying = false; }
     },
     async preserveAndClose() {
-      if (this.busy) return;
+      if (this.busy || this.discardingRun) return;
       if (!this.formDraftReady && !this.creationRun && !this.createMutationId) {
         // No write exists, and an unknown actor must not acquire a durable user-scoped draft.
         if (this.src.trim()) { this.unboundCloseRequested = true; return; }
@@ -247,6 +249,19 @@ export default {
     async copySource() {
       const ok = await copyText(this.src);
       pushToast({ kind: ok ? "success" : "error", title: ok ? "입력 JSON을 복사했습니다" : "복사 실패" });
+    },
+    async discardExecutionRecord() {
+      if (this.busy || this.discardingRun || !this.creationRun) return;
+      const result = bulkRunResult(this.creationRun);
+      if (!result.pending.length && !result.blocked) return;
+      this.discardingRun = true;
+      try {
+        if (!await confirmBox("이 실행 기록을 삭제할까요? 실제 생성된 Jira 티켓은 삭제되지 않습니다. 결과 미확정 항목은 Jira에서 생성 여부를 확인한 뒤 새로 작성해야 중복 생성을 피할 수 있습니다.",
+          { okLabel: "실행 기록 삭제", danger: true, note: "필요한 입력은 먼저 JSON으로 복사하세요. 기록 삭제 후에는 이 요청의 결과를 LTM에서 다시 확인할 수 없습니다." })) return;
+        await this.finishFormDraft();
+        this.$emit("close");
+      } catch (_) { this._formFinished = false; /* Failed local deletion keeps the record visible. */ }
+      finally { this.discardingRun = false; }
     },
     setGuideHidden(v) {
       this.guideHidden = v;
@@ -346,7 +361,7 @@ export default {
      * 건마다 다시 묻게 된다. 묶음 안에서는 한 번만 묻는다.
      */
     async create() {
-      if (this.busy) return;
+      if (this.busy || this.discardingRun) return;
       this.busy = true;
       try {
         await this._formReady;
@@ -604,7 +619,9 @@ export default {
         </template>
         <template v-else>
           <!-- 실패분 회수 — Jira 는 롤백이 없으니, 고쳐서 다시 돌리는 게 유일한 복구다. -->
-          <button v-if="result.pending.length || result.notStarted.length" class="cmt-ed-btn primary" :disabled="busy || !!result.blocked" @click="create">같은 요청으로 결과 확인·계속</button>
+          <button v-if="result.pending.length || result.notStarted.length" class="cmt-ed-btn primary" :disabled="busy || discardingRun || !!result.blocked" @click="create">같은 요청으로 결과 확인·계속</button>
+          <button v-if="canDiscardRun" class="cmt-ed-btn ghost" :disabled="busy || discardingRun" @click="copySource">입력 JSON 복사</button>
+          <button v-if="canDiscardRun" class="cmt-ed-btn ghost" :disabled="busy || discardingRun" @click="discardExecutionRecord">실행 기록 삭제</button>
           <button v-if="result.failed.length" class="cmt-ed-btn ghost" :disabled="busy || !!result.blocked || result.pending.length || result.notStarted.length" @click="copyFailed">실패분 JSON 복사</button>
           <button v-if="result.failed.length" class="cmt-ed-btn ghost" :disabled="busy || !!result.blocked || result.pending.length || result.notStarted.length" @click="retryFailed">실패분만 다시</button>
           <span class="blk-hint">{{ result.failed.length ? '실패한 것만 골라 고칠 수 있습니다' : '' }}</span>
