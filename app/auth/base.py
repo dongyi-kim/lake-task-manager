@@ -152,6 +152,14 @@ class UpstreamUnavailable(RuntimeError):
     """
 
 
+class MutationPreflightUnavailable(UpstreamUnavailable):
+    """A required read failed while the caller can prove no write has been attempted.
+
+    Raise only around pre-write reads, never a multi-step mutation or a provider write.
+    Unlike an uncertain commit, this proof permits clearing a newly pending receipt.
+    """
+
+
 class UpstreamBusy(UpstreamUnavailable):
     """Local admission/deadline refusal before an upstream operation started.
 
@@ -159,6 +167,10 @@ class UpstreamBusy(UpstreamUnavailable):
     Only the refused operation is known not to have started: an enclosing multi-step mutation
     must still preserve proof of any earlier writes before authorizing a retry.
     """
+
+
+class MutationPreflightBusy(UpstreamBusy, MutationPreflightUnavailable):
+    """Pre-write admission refusal: safely retryable without opening the outage breaker."""
 
 
 class MutationOutcomeUnknown(UpstreamUnavailable):

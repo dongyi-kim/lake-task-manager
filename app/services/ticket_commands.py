@@ -3,7 +3,7 @@
 from contextlib import nullcontext
 from urllib.parse import urlsplit
 
-from app.auth.base import write_upstream
+from app.auth.base import MutationPreflightBusy, MutationPreflightUnavailable, UpstreamBusy, UpstreamError, UpstreamUnavailable, write_upstream
 from app.domain.ticket_actions import field_update_error, is_done
 from app.jira.mutation_recovery import Reconciliation, UNKNOWN
 
@@ -19,6 +19,17 @@ class CommandError(ValueError):
     def __init__(self, message, status=400):
         super().__init__(message)
         self.status = status
+
+
+def _preflight_read(read):
+    try:
+        return read()
+    except (UpstreamUnavailable, UpstreamError) as exc:
+        if isinstance(exc, UpstreamError) and exc.status < 500:
+            raise  # Preserve authentication and actual Jira permission/validation failures.
+        error_type = MutationPreflightBusy if isinstance(exc, UpstreamBusy) else MutationPreflightUnavailable
+        raise error_type(
+            "수정에 필요한 Jira 정보를 확인하지 못했습니다. 같은 요청으로 다시 시도해 주세요.") from exc
 
 
 class TicketCommands:
@@ -122,7 +133,7 @@ class TicketCommands:
         def write():
             # Fetch current labels before changing membership, so an old display
             # copy cannot remove labels another Jira user has just added.
-            current = self.client.ticket_view(key, fresh=True)
+            current = _preflight_read(lambda: self.client.ticket_view(key, fresh=True))
             if not current:
                 raise CommandError("티켓을 찾을 수 없습니다.", 404)
             labels = list(current.get("labels") or [])
@@ -139,14 +150,14 @@ class TicketCommands:
                 "summary", "descriptionHtml", "epic") if getattr(body, name) is not None}
             # The display badge intentionally suppresses read errors. Authorizing a
             # write must propagate them and must not treat missing status as Open.
-            current = client.get_issue_light(key, strict=True)
+            current = _preflight_read(lambda: client.get_issue_light(key, strict=True))
             if not (current or {}).get("fields", {}).get("status"):
                 raise CommandError("티켓 상태를 확인하지 못해 수정할 수 없습니다.", 503)
             error = field_update_error(current, ["description" if name == "descriptionHtml" else name
                                                  for name in requested if name not in ("reporter", "epic")])
             if is_done(current):
                 raise CommandError(error or "완료된 티켓의 속성은 바꿀 수 없습니다.", 409)
-            meta, fields, denied = client.editmeta(key), {}, []
+            meta, fields, denied = _preflight_read(lambda: client.editmeta(key, strict=True)), {}, []
             for name, value in requested.items():
                 field = self.settings.epic_link_field_id if name == "epic" else name
                 if name in ("assignee", "reporter"):
@@ -204,7 +215,7 @@ class TicketCommands:
 
     def delete_ticket(self, key, mutation_id=None):
         def write():
-            self.require_edit(key)
+            _preflight_read(lambda: self.require_edit(key))
             return self.client.delete_issue(key)
         return self._once("delete", mutation_id, {"key": key}, write)
 
@@ -220,8 +231,8 @@ class TicketCommands:
 
     def delete_attachment(self, key, attachment_id, mutation_id=None):
         def write():
-            self.require_edit(key)
-            fields = self.client.get_issue(key).get("fields") or {}
+            _preflight_read(lambda: self.require_edit(key))
+            fields = _preflight_read(lambda: self.client.get_issue(key)).get("fields") or {}
             if str(attachment_id) not in {str(row.get("id")) for row in fields.get("attachment", [])}:
                 raise CommandError("이 티켓에 속한 첨부 ID가 아닙니다.", 404)
             return self.client.delete_attachment(attachment_id, key=key)
@@ -236,7 +247,7 @@ class TicketCommands:
 
     def delete_link(self, key, link_id, other=None, mutation_id=None):
         def write():
-            fields = self.client.get_issue(key).get("fields") or {}
+            fields = _preflight_read(lambda: self.client.get_issue(key)).get("fields") or {}
             link = next((row for row in fields.get("issuelinks", []) if str(row.get("id")) == str(link_id)), None)
             if link is None:
                 raise CommandError("이 티켓에 속한 링크 ID가 아닙니다.", 404)
@@ -256,6 +267,6 @@ class TicketCommands:
 
     def delete_document(self, key, link_id, mutation_id=None):
         def write():
-            self.require_edit(key)
+            _preflight_read(lambda: self.require_edit(key))
             return self.client.delete_remote_link(key, link_id)
         return self._once("document-delete", mutation_id, {"key": key, "id": link_id}, write)

@@ -17,7 +17,7 @@ from typing import NamedTuple
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
-from app.auth.base import (LoginRequired, PermissionDenied, SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable,
+from app.auth.base import (LoginRequired, MutationPreflightBusy, MutationPreflightUnavailable, PermissionDenied, SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable,
                            background_upstream, write_upstream)
 from app.infra.cache_policy import note_read, revalidating
 from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
@@ -2700,14 +2700,18 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     EDITABLE = {"summary", "description", "priority", "assignee", "reporter", "duedate",
                 "labels", "components", "issuetype", "epic"}
 
-    def editmeta(self, key):
+    def editmeta(self, key, *, strict=False):
         """편집 가능한 필드 → {필드id: {name, type, required, operations, allowedValues}}.
-        실패하면 빈 dict(=아무것도 못 고침). 조용히 열어 주는 것보다 조용히 닫는 게 안전하다."""
+        UI 기본 조회는 실패 시 닫고, 쓰기/MCP의 strict 조회는 실패 원인을 보존한다."""
         try:
             data = self.provider.get_json(f"/rest/api/2/issue/{key}/editmeta") or {}
+            if strict and (not isinstance(data, dict) or not isinstance(data.get("fields"), dict)):
+                raise UpstreamUnavailable("Jira 편집 항목 응답이 불완전합니다.")
         except SessionExpired:
             raise
         except Exception:
+            if strict:
+                raise
             return {}
         out = {}
         for fid, f in (data.get("fields") or {}).items():
@@ -2747,8 +2751,16 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     def update_fields(self, key, fields):
         """필드 수정(PUT /issue). fields 는 Jira 형식 그대로 — 변환은 라우트가 한다."""
         fields = fields or {}
-        if "reporter" in fields and "reporter" not in self.editmeta(key):
-            raise PermissionDenied(f"/rest/api/2/issue/{key}", "이 Jira 티켓의 보고자를 변경할 권한이 없습니다.")
+        if "reporter" in fields:
+            try:
+                metadata = self.editmeta(key, strict=True)
+            except (UpstreamUnavailable, UpstreamError) as exc:
+                if isinstance(exc, UpstreamError) and exc.status < 500:
+                    raise
+                error_type = MutationPreflightBusy if isinstance(exc, UpstreamBusy) else MutationPreflightUnavailable
+                raise error_type("보고자 편집 권한을 확인하지 못했습니다. 같은 요청으로 다시 시도해 주세요.") from exc
+            if "reporter" not in metadata:
+                raise PermissionDenied(f"/rest/api/2/issue/{key}", "이 Jira 티켓의 보고자를 변경할 권한이 없습니다.")
         relationship_change = any(
             field in fields for field in ("parent", self.s.epic_link_field_id))
         old_parent, old_epic = self._lineage_of(key) if relationship_change else (None, None)
@@ -3549,25 +3561,34 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         except Exception:
             return {"hoursPerDay": 8.0, "daysPerWeek": 5.0, "enabled": True}
 
-    def transitions(self, key):
-        """이 티켓에서 지금 가능한 전이 목록(+화면 필드). 실패하면 빈 목록."""
+    def transitions(self, key, *, strict=False):
+        """이 티켓의 전이·화면·LTM 댓글 조건. strict 호출은 실패를 빈 선택지로 숨기지 않는다."""
         try:
             data = self.provider.get_json(f"/rest/api/2/issue/{key}/transitions",
                                           params={"expand": "transitions.fields"})
         except SessionExpired:
             raise
         except Exception:
+            if strict:
+                raise
             return []
+        rows = data.get("transitions") if isinstance(data, dict) else None
+        if strict and not isinstance(rows, list):
+            raise UpstreamUnavailable("Jira 전환 정보를 확인할 수 없습니다.")
         out = []
-        for t in (data or {}).get("transitions") or []:
+        for t in rows or []:
             to = t.get("to") or {}
             cat = norm_cat((to.get("statusCategory") or {}).get("key"))
+            screen = self._screen_fields(t.get("fields") or {})
             out.append({
                 "id": str(t.get("id")), "name": t.get("name") or "",
                 "to": to.get("name") or "", "toId": str(to.get("id") or ""),
                 "toCategory": cat,
                 "hasScreen": bool(t.get("hasScreen")),
-                "fields": self._screen_fields(t.get("fields") or {}),
+                "fields": screen,
+                "commentRequired": cat == "done" or any(
+                    (field.get("system") or field.get("id")) == "comment" and field.get("required")
+                    for field in screen["fields"]),
             })
         # 완료로 가는 길이 여럿이면(Resolved/Closed) **Resolved 를 먼저** 놓는다.
         # 우리 앱에서 '완료' 는 "작업자가 끝냈다" 이지 "검증까지 끝나 닫혔다" 가 아니다 —
@@ -3773,7 +3794,14 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             # Re-read immediately before every POST and require the screen to match the frozen
             # authority. Pending retries reconcile *before* arriving here, so a proven commit does
             # not pay this fetch, while a proven-absent retry cannot use a stale workflow screen.
-            fresh = self._authoritative_transition(key, tid)
+            try:
+                fresh = self._authoritative_transition(key, tid)
+            except (UpstreamUnavailable, UpstreamError) as exc:
+                if isinstance(exc, UpstreamError) and exc.status < 500:
+                    raise
+                # Only this read is covered: no POST has started, so a retry needs no reconciliation.
+                error_type = MutationPreflightBusy if isinstance(exc, UpstreamBusy) else MutationPreflightUnavailable
+                raise error_type("전환 실행 전 Jira 정보를 확인하지 못했습니다. 같은 요청으로 다시 시도해 주세요.") from exc
             if fresh != authority:
                 raise ValueError("전환 화면 정보가 바뀌었습니다. 화면을 다시 열어 주세요.")
             allowed = set(authority.get("allowedFields") or ())
