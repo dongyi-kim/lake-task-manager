@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.auth.base import LoginRequired, PRIO_BACKGROUND, SessionExpired, UpstreamUnavailable, background_upstream
+from app.auth.base import LoginRequired, PRIO_BACKGROUND, SessionExpired, UpstreamBusy, UpstreamUnavailable, background_upstream
 from app.auth.sso_session import SsoSessionProvider
 from app.auth.sso_store import SsoStore
 from app.infra.cache import Cache
@@ -187,7 +187,8 @@ def test_provider_creation_failure_cannot_override_a_new_login(tmp_path, monkeyp
         raise LoginRequired("fixture: old missing session")
 
     monkeypatch.setattr(c, "_make_provider", replaced_during_construction)
-    assert c.direct_session_state() == "unknown"
+    with pytest.raises(UpstreamBusy):
+        c.direct_session_state()
     assert not c._session_dead
 
 
