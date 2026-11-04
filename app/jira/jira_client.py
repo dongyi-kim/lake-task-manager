@@ -1105,16 +1105,10 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         return self._search(jql, cache_key=cache_key, max_results=max_results)
 
     def iter_search_issue_chunks(self, jql, fields=None, light=True):
-        """Yield one fully cached DNF leaf as soon as it finishes.
+        """Yield cached logical memberships as bounded physical request groups complete.
 
-        This is the progressive counterpart of :meth:`search_issues`.  Every yielded chunk has
-        already completed its leaf cache, row cache and ``issueL`` write-through, so a browser
-        that switches filters may stop consuming the stream without losing completed work.
-
-        Serial providers (prod SSO and the latency-injected mock) intentionally submit one leaf
-        at a time.  A newly selected filter can therefore enter the provider priority queue at
-        the next leaf boundary instead of sitting behind every leaf of the abandoned filter.
-        Parallel-safe providers yield futures in completion order.
+        Switching filters keeps completed memberships and issue rows. Serial providers submit
+        one group at a time; arbitrary OR queries remain opaque unless all leaves are already warm.
         """
         requested_fields = fields
         if isinstance(requested_fields, (list, tuple, set)):
@@ -1163,73 +1157,32 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             }
             return
 
-        execution_fields = fields_with_order(requested_fields, compiled.order)
+        groups = plan_groups(compiled, self.s.epic_link_field_id)
+        execution_fields = partition_fields(fields_with_order(requested_fields, compiled.order), groups)
         generation = self._jql_generation()
         projection = self._projection_signature(execution_fields, light)
-        items = tuple(enumerate(zip(compiled.leaves, compiled.leaf_fields)))
         combined = {}
-        coalesce_cached = bool(items) and all(
-            self._jql_leaf_cache_ready(
-                leaf, execution_fields, light, generation, projection)
-            for _index, (leaf, _predicate_fields) in items)
-
-        def fetch(item):
-            index, (leaf, predicate_fields) = item
-            rows = self._cached_jql_leaf(
-                leaf, predicate_fields, execution_fields, light, generation, projection)
-            return index, leaf, rows
-
-        provider = self.provider
-        if getattr(provider, "supports_parallel", False) and len(items) > 1:
-            with ThreadPoolExecutor(max_workers=min(8, len(items))) as executor:
-                futures = {executor.submit(fetch, item): item for item in items}
-                for future in as_completed(futures):
-                    fallback_index, (fallback_leaf, _predicate_fields) = futures[future]
-                    try:
-                        index, leaf, rows = future.result()
-                    except Exception as exc:
-                        yield {
-                            "leaf": fallback_leaf, "leafIndex": fallback_index,
-                            "leafTotal": len(items), "issues": [],
-                            "combined": sort_issues(combined.values(), compiled.order),
-                            "fallback": False, "coalesceCached": coalesce_cached,
-                            "error": failure(exc),
-                        }
-                        continue
-                    for issue in rows:
-                        key = (issue or {}).get("key")
-                        if key:
-                            combined[key] = issue
-                    yield {
-                        "leaf": leaf, "leafIndex": index, "leafTotal": len(items),
-                        "issues": rows,
-                        "combined": sort_issues(combined.values(), compiled.order),
-                        "fallback": False, "coalesceCached": coalesce_cached,
-                    }
-        else:
-            for item in items:
-                fallback_index, (fallback_leaf, _predicate_fields) = item
-                try:
-                    index, leaf, rows = fetch(item)
-                except Exception as exc:
-                    yield {
-                        "leaf": fallback_leaf, "leafIndex": fallback_index,
-                        "leafTotal": len(items), "issues": [],
-                        "combined": sort_issues(combined.values(), compiled.order),
-                        "fallback": False, "coalesceCached": coalesce_cached,
-                        "error": failure(exc),
-                    }
-                    continue
-                for issue in rows:
-                    key = (issue or {}).get("key")
-                    if key:
-                        combined[key] = issue
-                yield {
-                    "leaf": leaf, "leafIndex": index, "leafTotal": len(items),
-                    "issues": rows,
-                    "combined": sort_issues(combined.values(), compiled.order),
-                    "fallback": False, "coalesceCached": coalesce_cached,
-                }
+        coalesce_cached = all(self._jql_leaf_cache_ready(
+            member.leaf, execution_fields, light, generation, projection, selector_fields(group))
+            for group in groups for member in group)
+        for group, result, error in self._iter_jql_groups(
+                groups, execution_fields, light, generation, projection):
+            rows = [] if error else self._combine_jql_rows(
+                [part_rows for _members, part_rows in result], compiled.order)
+            for issue in rows:
+                if issue.get("key"):
+                    combined[issue["key"]] = issue
+            chunk = {
+                "leaf": group_query(group), "leafIndex": group[0].index,
+                "leafTotal": len(compiled.leaves), "issues": rows,
+                "combined": sort_issues(combined.values(), compiled.order),
+                "fallback": False, "coalesceCached": coalesce_cached,
+            }
+            if len(group) > 1:
+                chunk["completedLeaves"] = [member.leaf for member in group]
+            if error:
+                chunk["error"] = failure(error)
+            yield chunk
 
     def _iter_jql_groups(self, groups, fields, light, generation, projection):
         def execute(group):
