@@ -5,6 +5,7 @@ import { api } from "../../lib/api.js";
 export default {
   name: "LoginOverlay",
   data() { return { show: false, busy: false, msg: "", tried: false, hasCache: false,
+                    manualRetryRequired: false,
                     prog: 0, phase: "auto" }; },   // prog 0~100(자동로그인 타임아웃 진행바), phase: auto|manual
   watch: {
     // 미인증이 확인되면 **곧바로** 로그인을 시작한다. 버튼을 기다릴 이유가 없다 —
@@ -16,17 +17,27 @@ export default {
   },
   mounted() {
     // 도중에 세션이 끊긴 경우: 캐시로 버틸 수 있으면 막지 않고 인증만 다시 건다.
-    window.addEventListener("need-login", () => {
+    this._onNeedLogin = () => {
       // 화면을 막는 건 **보여 줄 캐시조차 없을 때** 뿐이다. 그 외에는 뒤에서 인증만 다시 건다.
       if (!this.hasCache) this.show = true;
       this.kick();
-    });
+    };
+    window.addEventListener("need-login", this._onNeedLogin);
     // 서버가 로그인 성공을 알리면(창 없이 갱신 포함) 오버레이를 바로 걷고 다음 시도를 풀어 준다.
-    window.addEventListener("auth-ok", () => {
+    this._onAuthOk = () => {
       this.show = false; this.msg = ""; this.busy = false;
+      this._loginSequence = (this._loginSequence || 0) + 1;
+      this._attemptId = null; this.manualRetryRequired = false;
       this._stopProg();                              // 진행바 정지·리셋
       this.tried = false; this._lastTry = 0;         // 쿨다운 리셋 — 다음에 정말 필요하면 즉시 재시도
-    });
+    };
+    window.addEventListener("auth-ok", this._onAuthOk);
+    this._onLoginState = event => {
+      const state = event.detail;
+      if (!this.busy || !this._attemptId || state?.attemptId !== this._attemptId) return;
+      if (state.state === "completed" && !state.succeeded) this._loginFailed();
+    };
+    window.addEventListener("auth-login-state", this._onLoginState);
     // ★ 캐시가 살아 있으면 화면을 막지 않는다 — 오프라인에서도 최소한의 이용성을 준다.
     //   그때도 로그인 시도는 백그라운드로 계속되고(아래 kick), 상태는 상단 알림이 말한다.
     api.health().then((h) => {
@@ -42,12 +53,17 @@ export default {
      *  ★ **자주 부르지 않는다.** prod 는 401 이 주기적으로 스쳐 지나가는데, 그때마다 로그인을
      *    걸면 인증 흐름이 끊임없이 돌며 화면이 요동친다. 한 번 시도했으면 한동안 쉰다. */
     kick() {
+      if (this.manualRetryRequired) return;
       const now = Date.now();
       if (this.tried && now - (this._lastTry || 0) < 120000) return;   // 2분 쿨다운
       this.tried = true; this._lastTry = now;
       this.doLogin();
     },
     async doLogin() {
+      if (this.busy) return;
+      this.tried = true; this._lastTry = Date.now();
+      this.manualRetryRequired = false; this._attemptId = null;
+      const sequence = this._loginSequence = (this._loginSequence || 0) + 1;
       // 앱 창 모드의 로그인은 **이 창을 Jira 로 보냈다가** 앱으로 되돌린다. 그때 주소가 초기값이라
       // 보던 화면(내 Task·티켓)이 홈으로 리셋됐다 — 어디였는지 적어 두고 돌아와서 되돌린다.
       try { sessionStorage.setItem("lake.route", location.hash || ""); } catch (e) { /* noop */ }
@@ -56,7 +72,13 @@ export default {
       this.msg = "SSO 로그인을 진행하고 있습니다.";
       try {
         const r = await api.login();
-        if (r && r.pending) return;                    // 앱 창 모드: 이 창이 Jira 로 이동됨(대기)
+        if (sequence !== this._loginSequence) return;
+        this._attemptId = r?.attemptId || null;
+        if (r && r.pending) return;                    // status watcher follows this exact attempt
+        if (r?.state === "completed") {
+          if (!r.succeeded) this._loginFailed();
+          return;                                     // successful attempt still needs auth confirmation
+        }
         if (r && r.ok) {
           // ★ **새로고침하지 않는다.** 보던 티켓 창·쓰던 글·스크롤이 전부 날아간다. 인증은
           //   서버 쪽에서 이미 끝났으므로, 오버레이만 걷고 하던 일을 계속하게 둔다
@@ -65,8 +87,15 @@ export default {
           window.dispatchEvent(new CustomEvent("auth-ok"));
           return;
         }
-        this.msg = "로그인이 완료되지 않았습니다(시간 초과/취소). 다시 시도하세요.";
-      } catch (e) { this.msg = "로그인 실패: " + e.message; }
+        this._loginFailed();
+      } catch (e) {
+        if (sequence !== this._loginSequence) return;
+        this._loginFailed("로그인 실패: " + e.message);
+      }
+    },
+    _loginFailed(message = "로그인이 완료되지 않았습니다(시간 초과/취소). 다시 시도하세요.") {
+      this.msg = message;
+      this.manualRetryRequired = true;
       this.busy = false;
       this._stopProg();
     },
@@ -88,7 +117,13 @@ export default {
       this.prog = 0; this.phase = "auto";
     },
   },
-  unmounted() { this._stopProg(); },
+  unmounted() {
+    this._stopProg();
+    this._loginSequence = (this._loginSequence || 0) + 1;
+    window.removeEventListener("need-login", this._onNeedLogin);
+    window.removeEventListener("auth-ok", this._onAuthOk);
+    window.removeEventListener("auth-login-state", this._onLoginState);
+  },
   template: `
     <div v-if="show" class="login-ov">
       <div class="login-card">

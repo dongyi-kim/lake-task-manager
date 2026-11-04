@@ -46,7 +46,8 @@ def test_frontend_requests_time_out_without_turning_transport_stalls_into_login(
     refresh = (STATIC / "components" / "ui" / "FloatingRefresh.js").read_text(encoding="utf-8")
     assert "const REQUEST_TIMEOUT_MS" in api
     assert "new AbortController()" in api and "ctl.abort()" in api
-    assert "timeoutMs: 310 * 1000" in api       # 사람 로그인은 일반 조회보다 길게
+    # Login now returns immediately and follows the attempt through status polling.
+    # tests/frontend/shell/test_login_recovery_ui.py covers cancel/retry/completion behavior.
     assert "timeoutMs: 16 * 60 * 1000" in api  # 대용량 첨부도 일반 조회 상한을 쓰지 않음
     assert 'this.mode === "degraded"' in banner
     assert 'st.mode === "degraded"' in refresh
