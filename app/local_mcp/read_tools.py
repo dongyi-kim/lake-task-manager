@@ -130,6 +130,8 @@ def register_reads(register, runtime):
         solely because they are recent/configured/in the same module; use request context or ask.
         If contextChanged=true, the session changed during this lookup; repeat the search before choosing.
         Use actual returned IDs in JQL and get_workload. Search results do not update user history.
+        For authoring, use the verified ID in a mention's data-id; @displayName alone is plain text.
+        get_content_guide(skill=ltm-task-authoring,path=references/people-and-links.md) gives exact markup.
         """
         from app.domain.person_context import search_people
         return search_people(runtime.client, runtime.settings, query, limit)

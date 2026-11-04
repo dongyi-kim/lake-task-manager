@@ -22,7 +22,7 @@ JQL leaf/issue/user/Epic/Confluence 캐시, mutation invalidation을 사용한�
 
 ## 도구
 
-54개 도구 모두 `inputSchema`와 `outputSchema`를 제공한다. 출력은 공통 성공/오류 envelope와
+55개 도구 모두 `inputSchema`와 `outputSchema`를 제공한다. 출력은 공통 성공/오류 envelope와
 도구별 `data` 타입으로 정의하며, 조회 성공에는 `cache`, `partial`, `missing`도 포함된다.
 실제 반환 JSON은 기존과 동일하게 `content`의 JSON 텍스트 및 `structuredContent`에 함께 제공한다.
 SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제거하지 않는다.
@@ -35,6 +35,7 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 | 목적 | 도구 |
 |---|---|
 | 인증 상태·복구·로그인 시작 | `get_auth_status`, `authenticate` |
+| 작성 스킬·콘텐츠 예제 | `get_content_guide` |
 | JQL·페이지 | `search_issues` |
 | 티켓 본문·댓글·이력·자식·Epic | `get_ticket`, `get_comments`, `get_comment_source`, `get_history`, `get_field_history`, `get_children`, `get_epic`, `get_ticket_context` |
 | 원본 댓글·변경이력 페이지, 전체 하위 계층 | `get_evidence_page`, `get_descendants` |
@@ -60,10 +61,41 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 `fetchedAt`·`freshUntil`·`displayUntil`, stale 여부와 policy revision을 반환한다.
 관측 정보가 없으면 `available: false, state: unknown`으로 표시하며 최신 데이터라고 단정하지 않는다.
 
-업무 도구 52개와 인증 도구 2개, 총 **54개**를 제공한다. `get_ticket`의 `descriptionHtml`은 열람용, `descriptionEditHtml`은
+업무 도구 52개와 인증 도구 2개, 가이드 도구 1개로 총 **55개**를 제공한다. `get_ticket`의 `descriptionHtml`은 열람용, `descriptionEditHtml`은
 수정용 본문이다. 생성 시 `body.descriptionHtml`, 이후 본문 수정은 `update_description(html, ...)`,
 댓글 작성·수정은 `add_comment`·`edit_comment(html, ...)`를 사용한다. 기존 UI와 동일한 Jira serializer를 거친다.
+댓글 수정 전에는 `get_comment_source(key, comment_id)`의 `html`을 읽는다. `get_comments`의 표시 HTML은
+수정 원본이 아니다. 원본 조회는 UI와 같은 최신 최대 1,000개 검색 범위이며 Jira가 더 작게 제한할 수 있다.
+원본을 찾지 못하면 오류를 반환하므로 미리보기로 대신 덮어쓰지 않는다.
 `update_fields`의 `labels`와 `components`에는 문자열 배열을 전달하며 `[]`는 해당 필드를 모두 비운다.
+
+### 작성 가이드라인 스킬
+
+실행 중인 앱 버전에 맞는 세 스킬을 제공한다. `skills/`가 원본이며 외부 Agent의 로컬 설치는 필요 없다.
+스킬을 언제 읽고 적용하는지는 연결한 클라이언트가 결정한다.
+
+| 스킬 | 작업 |
+|---|---|
+| `ltm-task-authoring` | Task·Epic·SubTask 생성과 기존 본문 수정 |
+| `ltm-comment-authoring` | 댓글 작성·수정과 transition 댓글 |
+| `ltm-bulk-task-create` | Markdown을 사용하는 일괄 생성·검증·부분 실패 처리 |
+
+MCP Skills 확장 `io.modelcontextprotocol/skills`의 `skills/list`와 `skills/get`은 메타데이터와
+URI·SHA-256·바이트 크기의 파일 manifest를 제공한다. 내용은 `resources/read`로 읽는다.
+예: `skill://ltm-task-authoring/SKILL.md`. 각 스킬의 `references/`에는 콘텐츠 형식, 인물 검색·링크,
+쓰기 절차와 예제가 있다. 공통 자료는 물리적으로 한 번만 보관하고 각 스킬 하위 URI로 제공한다.
+서버 시작 시 파일과 manifest를 함께 고정하므로 읽기 결과의 digest가 목록과 일치한다.
+
+최신 HTTP 연결에서 Skills 확장을 탐색할 수 있다. 기존 stdio proxy와 확장 미지원 클라이언트는
+`get_content_guide()`로 목록을 읽고,
+`get_content_guide(skill="ltm-task-authoring")`로 본문을 읽는다. 참고 문서는 같은 `skill`에
+`path="references/content-format.md"`처럼 상대경로를 전달한다. 이 경로는 게시된 문서만 선택하며
+임의 로컬 파일이나 URL을 읽지 않는다. 가이드 조회는 Jira 로그인 없이 가능하지만 MCP의
+Bearer token·loopback·Host/Origin 검사는 그대로 적용한다. Jira/Confluence 조회·쓰기는 기존 인증 경로를 따른다.
+
+본문·댓글·transition 댓글은 HTML, bulk `description`은 Markdown이다. 가이드는 실제 지원하는
+멘션·Jira/Confluence/외부 URL·표·체크리스트·코드·이미지 예제와 본문 전용 영역 구분을 설명한다.
+스킬은 사용자 요청 범위나 쓰기 권한을 확대하지 않고 기존 API 계약을 따른다.
 
 ### 동명이인과 최근 사용자 근거
 
@@ -205,7 +237,3 @@ LLM 설정, 인증 쿠키, 비밀값 관리, 임의 REST 호출도 업무 도구
 실제 Codex와 HTTP MCP를 연결한 조회 품질·시간·토큰 검증은
 [`Codex MCP 평가 안내`](../../tools/codex_mcp_eval/README.md)의 별도 수동 배터리를 사용한다.
 기존 조회 질문과 exact JQL·통합검색·부분 실패 계약을 8개 사례로 검증하며, 자동 판정과 직접 정성평가를 구분한다.
-
-댓글 수정 전 `get_comment_source(key, comment_id)`의 편집용 `html`을 읽습니다.
-`get_comments`의 표시 HTML을 수정 원본으로 사용하지 않습니다. 원본 조회는 UI와 같은 최신
-최대 1,000개 요청 범위이며 Jira가 더 작게 제한할 수 있습니다. 원본이 없으면 덮어쓰지 않습니다.
