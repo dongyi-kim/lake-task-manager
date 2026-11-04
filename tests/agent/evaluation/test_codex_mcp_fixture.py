@@ -10,6 +10,7 @@ from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
 from app.infra.settings import get_settings
+from app.local_mcp.llm_tools import LLM_TOOLS
 from tools.codex_mcp_eval.fixture import EvaluationFixture
 
 
@@ -63,9 +64,11 @@ def test_full_world_sdk_reads_share_ui_cache_and_reject_every_write(tmp_path):
         async def scenario():
             async with httpx2.AsyncClient(headers={"Authorization": "Bearer " + token}) as http:
                 async with Client(streamable_http_client(url, http_client=http)) as mcp:
-                    names = {tool.name for tool in (await mcp.list_tools()).tools}
+                    catalog = {tool.name: tool for tool in (await mcp.list_tools()).tools}
+                    names = set(catalog)
                     assert {"get_ticket", "search_workspace", "search_issues"} <= names
-                    assert not {"create_task", "update_fields", "get_workspace_config"} & names
+                    assert not {"create_task", "update_fields", "change_ticket_hierarchy", "get_workspace_config"} & names
+                    assert catalog["get_hierarchy_options"].output_schema
                     result = await mcp.call_tool("get_ticket", {"key": "DL-9090"})
                     assert not result.is_error and result.structured_content["data"]["key"] == "DL-9090"
                     assert len(fixture.upstream_calls) == before
@@ -83,6 +86,29 @@ def test_full_world_sdk_reads_share_ui_cache_and_reject_every_write(tmp_path):
     assert not (tmp_path / "fixture" / "mcp-secret.json").exists()
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", port))
+
+
+def test_private_fixture_excludes_live_llm_settings_and_provider_tools(tmp_path, monkeypatch):
+    from app.agent import connection_settings
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("Private evaluation must not access live LLM settings or providers")
+
+    for name in ("read_settings", "list_models", "create_config", "update_config",
+                 "delete_config", "check_connection", "activate_config"):
+        monkeypatch.setattr(connection_settings, name, forbidden)
+    with EvaluationFixture(tmp_path / "no-live-llm", port=0) as fixture:
+        async def scenario():
+            async with httpx2.AsyncClient(headers={"Authorization": "Bearer " + fixture.token}) as http:
+                async with Client(streamable_http_client(fixture.url, http_client=http)) as mcp:
+                    names = {tool.name for tool in (await mcp.list_tools()).tools}
+                    assert not names & LLM_TOOLS
+                    for name in sorted(LLM_TOOLS):
+                        rejected = await mcp.call_tool(name, {})
+                        assert rejected.is_error, name
+        anyio.run(scenario)
+        assert fixture.upstream_calls == []
+        assert fixture.summary()["worldUnchanged"] and fixture.summary()["providerStoreUnchanged"]
 
 
 def test_cases_use_fresh_world_store_and_cache_and_busy_port_is_not_changed(tmp_path):

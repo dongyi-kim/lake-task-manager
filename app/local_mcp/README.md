@@ -22,7 +22,7 @@ JQL leaf/issue/user/Epic/Confluence 캐시, mutation invalidation을 사용한�
 
 ## 도구
 
-63개 도구 모두 `inputSchema`와 `outputSchema`를 제공한다. 출력은 공통 성공/오류 envelope와
+65개 도구 모두 `inputSchema`와 `outputSchema`를 제공한다. 출력은 공통 성공/오류 envelope와
 도구별 `data` 타입으로 정의하며, 조회 성공에는 `cache`, `partial`, `missing`도 포함된다.
 실제 반환 JSON은 기존과 동일하게 `content`의 JSON 텍스트 및 `structuredContent`에 함께 제공한다.
 SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제거하지 않는다.
@@ -50,6 +50,7 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 | WBS 계획·인력 관리 | `get_workspace_config`, `create_wbs_task`, `update_wbs_task`, `delete_wbs_task`, `set_module_people`, `rename_people_module`, `delete_people_module` |
 | LLM 연결 설정 | `get_llm_settings`, `create_llm_config`, `update_llm_config`, `delete_llm_config`, `list_llm_models`, `check_llm_connection`, `activate_llm_config` |
 | 본문·필드 수정·전이 | `update_description`, `update_fields`, `transition_ticket` |
+| Task/SubTask 변환·부모 변경 | `get_hierarchy_options`, `change_ticket_hierarchy` |
 | 댓글 | `add_comment`, `edit_comment`, `delete_comment` |
 | 티켓·문서 링크 | `add_issue_link`, `delete_issue_link`, `add_document`, `delete_document` |
 | 첨부·삭제 | `add_attachment`, `delete_attachment`, `delete_ticket` |
@@ -63,13 +64,18 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 `fetchedAt`·`freshUntil`·`displayUntil`, stale 여부와 policy revision을 반환한다.
 관측 정보가 없으면 `available: false, state: unknown`으로 표시하며 최신 데이터라고 단정하지 않는다.
 
-업무 도구 53개와 인증 도구 2개, 가이드 도구 1개, LLM 설정 도구 7개로 총 **63개**를 제공한다. `get_ticket`의 `descriptionHtml`은 열람용, `descriptionEditHtml`은
+업무 도구 55개와 인증 도구 2개, 가이드 도구 1개, LLM 설정 도구 7개로 총 **65개**를 제공한다. `get_ticket`의 `descriptionHtml`은 열람용, `descriptionEditHtml`은
 수정용 본문이다. 생성 시 `body.descriptionHtml`, 이후 본문 수정은 `update_description(html, ...)`,
 댓글 작성·수정은 `add_comment`·`edit_comment(html, ...)`를 사용한다. 기존 UI와 동일한 Jira serializer를 거친다.
 댓글 수정 전에는 `get_comment_source(key, comment_id)`의 `html`을 읽는다. `get_comments`의 표시 HTML은
 수정 원본이 아니다. 원본 조회는 UI와 같은 최신 최대 1,000개 검색 범위이며 Jira가 더 작게 제한할 수 있다.
 원본을 찾지 못하면 오류를 반환하므로 미리보기로 대신 덮어쓰지 않는다.
 `update_fields`의 `labels`와 `components`에는 문자열 배열을 전달하며 `[]`는 해당 필드를 모두 비운다.
+
+계층 변경은 공개 REST PUT이 아닌 기본 Jira 8.20.8의 네이티브 폼을 사용한다. `get_hierarchy_options`에서
+필수 입력과 보안 수준·제거될 필드를 확인하고, 반환된 `previewHash`와 동일 입력으로 실행한다.
+완료 상태·동일 프로젝트·타입·권한 제한을 지키며, 최종 타입/부모를 재조회하고 이전·새 관계 캐시를 갱신한다.
+사내 전용 widget 등 알 수 없는 폼은 중단한다. 운영 Jira UI·SSO 검증은 아직 수행하지 않았다.
 
 `bulk_update(items, client_mutation_id)`는 최대 10개의 `{key, fields}`를 순서대로 수정한다.
 예: `{"key":"DL-123","fields":{"summary":"새 제목","labels":["etl"]}}`.
@@ -274,6 +280,21 @@ MCP는 UI와 별도 작업 용량을 사용한다. 업무 도구는 동시 8개,
 실제 파일 바이트를 base64로 반환하며, `nextOffset`을 따라 최대 10MiB 파일을 읽는다. 로컬 파일 경로는 받지 않는다.
 
 ## 코드와 검증
+
+Dev Tools(`#/devtools`)의 **계층 변경 원클릭 테스트**는 현재 연결된 Jira에 테스트용 Task 3개를
+생성한 뒤 Task → SubTask → 다른 부모로 이동 → Task 복원을 실제 MCP 도구로 실행한다.
+실행 환경·프로젝트와 타입을 확인한 뒤 버튼을 누른다. 테스트 티켓은 결과 확인을 위해 남으며
+자동 삭제하지 않는다. 운영 Jira에서도 현재 로그인 계정의 생성·편집·이동 권한이 그대로 적용된다.
+
+- `GET /api/dev/hierarchy-test/options`: 현재 환경·프로젝트와 실제 타입 이름
+- `POST /api/dev/hierarchy-test`: `{ "runId": "고유 UUID", "expectedScope": "options의 scope", "taskType": "Task", "subtaskType": "Sub-task" }`
+- `GET /api/dev/hierarchy-test/{runId}`: 단계별 진행·오류와 생성된 Jira 티켓 링크
+
+POST는 실행을 시작하고 상태를 반환한다. 화면을 닫아도 서버에서 진행하며, 같은 runId와 입력으로
+재개하면 저장된 단계·mutation receipt를 사용한다. 필수 입력·권한·완료 상태·결과 불명확 문제가
+생기면 후속 단계를 중단한다. 타입·상태 ID나 제거될 필드를 임의로 선택하지 않는다.
+일반 mock에는 Jira의 네이티브 변환 화면이 없으므로 해당 단계의 미지원 결과를 그대로 표시한다.
+자동 회귀 테스트의 폼 fixture 통과와 운영 Jira 검증은 별개다.
 
 - `runtime.py`: SDK 등록·응답·lifespan과 앱 연결
 - `authentication.py`: 공통 인증 확인·복구와 인증 도구

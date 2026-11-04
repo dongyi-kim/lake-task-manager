@@ -3,6 +3,7 @@
 import inspect
 import json
 import re
+from contextvars import ContextVar
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -16,6 +17,8 @@ from app.auth.base import MutationOutcomeUnknown, MutationPreflightUnavailable, 
 from app.local_mcp.read_tools import register_reads
 from app.local_mcp.evidence_tools import register_evidence
 from app.local_mcp.hierarchy_tools import register_hierarchy
+from app.local_mcp.hierarchy_write_tools import register_hierarchy_writes
+from app.jira.hierarchy_forms import HierarchyFormError
 from app.local_mcp.read_metadata import read_result, has_partial
 from app.local_mcp.output_schema import schema_for
 from app.local_mcp.security import Credentials, LocalGuard
@@ -33,6 +36,11 @@ from app.local_mcp.authentication import (AUTH_TOOLS, CONFIG_WRITES, Authenticat
 from app.local_mcp.capacity import ToolCapacityExceeded, ToolLane
 from app.services.workspace_config import WorkspaceConfigCommands
 from app.services.ticket_commands import CommandError, TicketCommands
+
+
+# An in-process diagnostic may bind the original actor across authentication retries.
+# Context propagation keeps this fence isolated from unrelated UI/MCP requests.
+write_context_guard = ContextVar("ltm_mcp_write_context_guard", default=None)
 
 
 class LocalMcpRuntime:
@@ -78,6 +86,7 @@ class LocalMcpRuntime:
         register_reads(self.register, self)
         register_evidence(self.register, self)
         register_hierarchy(self.register, self)
+        register_hierarchy_writes(self.register, self)
         register_workspace(self.register, self)
         register_vit(self.register, self)
         register_admin(self.register, self)
@@ -145,6 +154,8 @@ class LocalMcpRuntime:
                 "jiraState": jira_state, "tokenMasked": "•••••••• (설정됨)"}
 
     def _error(self, exc):
+        if isinstance(exc, HierarchyFormError):
+            return {"code": exc.code, "status": exc.status, "message": str(exc), "retryable": False}
         if isinstance(exc, MutationPreflightUnavailable):
             busy = isinstance(exc, UpstreamBusy)
             if not busy and self.classify_error:
@@ -228,6 +239,9 @@ class LocalMcpRuntime:
             return read_result(fn, kwargs, None) if read_only else self._write_result(fn, kwargs)
 
         def call(arguments):
+            guard = write_context_guard.get()
+            if not read_only and guard is not None:
+                guard()
             return read_result(fn, arguments, self.client) if read_only else self._write_result(fn, arguments)
 
         if fn.__name__ in AUTH_TOOLS:

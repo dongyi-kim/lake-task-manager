@@ -12,6 +12,7 @@ role 로 가른다 — 라우트 등록·게이팅이 전부 그 함수를 거�
 
 # name -> 한 줄 설명. 새 dev 기능은 여기 등록한다.
 DEV_TOOLS = {
+    "hierarchy_test": "현재 Jira에 전용 테스트 티켓 3개를 만들고 Task/SubTask 변환과 부모 변경을 검증합니다.",
     "bitbucket_probe": "사내 Bitbucket 실제 REST 응답의 필드 구조를 확인(값 마스킹). "
                        "code/repo 검색 mock 을 실물에 맞추기 위한 일회성 진단.",
     "sso_status": "각 서비스(Jira/Confluence/Bitbucket)가 지금 인증됐는지 확인. "
