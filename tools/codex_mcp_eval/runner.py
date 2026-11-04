@@ -25,6 +25,12 @@ GATE = {"automaticPassRate": 1.0, "materialFalseFacts": 0, "unauthorizedWrites":
 
 
 def _battery(name, today):
+    if name == "identities":
+        from tools.codex_mcp_eval import identity_cases
+        from tools.codex_mcp_eval.identity_fixture import IdentityFixture
+        return SimpleNamespace(**{key: getattr(identity_cases, key) for key in (
+            "BATTERY_VERSION", "CHECKER_DEPENDENCIES", "OUTPUT_SCHEMA", "PROMPT_VERSION", "SUITE",
+            "SYSTEM_CONTEXT", "check", "review_contract", "CASES")}, fixture=IdentityFixture)
     if name == "reporting":
         from tools.codex_mcp_eval import reporting_cases
         from tools.codex_mcp_eval.reporting_fixture import ReportingFixture
@@ -42,7 +48,7 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(description="Exploratory Codex + read-only LTM HTTP MCP quality battery")
     parser.add_argument("--run-group", default=datetime.now().strftime("%Y%m%d-%H%M%S-codex-mcp"))
     parser.add_argument("--date", default=date.today().isoformat())
-    parser.add_argument("--battery", choices=("queries", "reporting"), default="queries")
+    parser.add_argument("--battery", choices=("queries", "reporting", "identities"), default="queries")
     parser.add_argument("--cases", nargs="+")
     parser.add_argument("--warm-replay", action="store_true",
                         help="After each measured answer, separately replay successful read calls over HTTP to measure cache reuse")
