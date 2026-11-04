@@ -25,6 +25,7 @@ import time
 
 from app.agent import secrets as _secrets
 from app.agent import profiles as _profiles
+from app.agent.diagnostics import diagnostic_text
 from app.agent.model_profiles import EXECUTION_LAYERS as _EXECUTION_LAYERS
 from app.agent.model_profiles import profile_for_contract as _profile_for_contract
 from app.agent.model_profiles import resolve as _resolve_model_config
@@ -123,6 +124,11 @@ def _auth_signature(config_id: str = "") -> str:
              _secret("embeddingApiKey", config_id) or "",
              _secret("embeddingHeaders", config_id) or ""]
     embedding_version = str((_profile(config_id) or {}).get("embeddingApiVersion") or "")
+    if embedding_provider(config_id) == "aoai":
+        effective = os.getenv("LAKE_AGENT_EMBED_API_VERSION") or embedding_version or api_version(config_id)
+        # Preserve legacy AOAI-chat fingerprints when its already-hashed version is reused.
+        if embedding_version or p != "aoai" or effective != api_version(config_id):
+            embedding_version = effective
     if embedding_version:
         parts.append(embedding_version)
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:32]
@@ -870,7 +876,7 @@ def probe(timeout: float = 30.0, config_id: str = "") -> dict:
         msg = get_llm(temperature=0, max_tokens=5, config_id=config_id).invoke(
             "reply with the single word: pong")
         out["chat"] = {"ok": True, "ms": int((time.time() - t0) * 1000),
-                       "sample": str(getattr(msg, "content", msg))[:60]}
+                       "sample": diagnostic_text(getattr(msg, "content", msg), 60)}
     except Exception as e:
         out["chat"] = {"ok": False, "ms": int((time.time() - t0) * 1000), "error": _brief(e)}
 
@@ -887,7 +893,7 @@ def probe(timeout: float = 30.0, config_id: str = "") -> dict:
             msg = get_llm(temperature=0, max_tokens=5, tier="simple",
                           config_id=config_id).invoke("reply with the single word: pong")
             out["simple"] = {"ok": True, "ms": int((time.time() - ts) * 1000),
-                             "sample": str(getattr(msg, "content", msg))[:60]}
+                             "sample": diagnostic_text(getattr(msg, "content", msg), 60)}
         except Exception as e:
             out["simple"] = {"ok": False, "ms": int((time.time() - ts) * 1000),
                              "error": _brief(e)}
@@ -1164,7 +1170,7 @@ def verify_models(names: list, timeout: float = 15.0, config_id: str = "") -> di
 
 def _brief(e: Exception) -> str:
     s = str(e).strip().replace("\n", " ")
-    return (s[:300] + "…") if len(s) > 300 else s
+    return diagnostic_text(s, 300, suffix="…")
 
 
 def diagnose(timeout: float = 30.0) -> dict:

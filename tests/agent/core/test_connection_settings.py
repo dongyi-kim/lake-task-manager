@@ -70,3 +70,35 @@ def test_legacy_active_marker_requires_one_time_model_check_and_reactivation(cid
     assert not connections.activate_config(cid)["ok"]
     assert connections.check_connection(cid, "models")["ok"]
     assert connections.activate_config(cid)["ok"] and config.verified()
+
+
+@pytest.mark.parametrize("explicit_version", ["", "2025-03-01-preview"])
+def test_mixed_provider_embedding_hashes_effective_api_version(cid, monkeypatch, explicit_version):
+    target = connections.create_config("혼합 연결", "openai_compat")["id"]
+    connections.update_config(target, {"embeddingProvider": "aoai", "apiVersion": "2024-10-21",
+                                       "embeddingApiVersion": explicit_version})
+    config.mark_verified(target)
+    assert connections.activate_config(target)["ok"]
+    before = config._auth_signature(target)
+    connections.update_config(target, {"apiVersion": "2025-01-01-preview"})
+    assert config.embedding_definition(target).api_version == (explicit_version or "2025-01-01-preview")
+    assert (config._auth_signature(target) == before) is bool(explicit_version)
+    assert config.verified() is bool(explicit_version)
+    monkeypatch.setattr(config, "list_models", lambda **_kw: {"chat": ["chat"], "embed": ["embed"]})
+    assert connections.check_connection(target, "auth")["ok"] and config.auth_ok(target)
+    assert config.models_ok(target) is bool(explicit_version)
+    assert connections.activate_config(target)["ok"] is bool(explicit_version)
+
+
+def test_diagnostic_sanitizer_precedes_shortening_and_resets_on_error(cid):
+    from app.agent import capabilities
+    from app.agent.diagnostics import diagnostic_sanitizer, diagnostic_text
+    secret = "fixture-private-" * 5
+    with pytest.raises(RuntimeError), diagnostic_sanitizer(lambda text: text.replace(secret, "[redacted]")):
+        assert secret[:15] not in config._brief(ValueError("x" * 280 + secret))
+        assert secret[:15] not in capabilities._brief(ValueError("x" * 220 + secret))
+        assert secret[:15] not in diagnostic_text("x" * 40 + secret, 60)
+        capabilities.record("complex", "plain_chat", False, "x" * 220 + secret, config_id=cid)
+        assert secret[:15] not in capabilities.get("complex", cid)["errors"]["plain_chat"]
+        raise RuntimeError("force finally")
+    assert config._brief(ValueError(secret)) == secret
