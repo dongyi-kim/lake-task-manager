@@ -11,6 +11,7 @@ PMO 대시보드의 **계산·조립 로직**. 정규화된 이슈를 입력받�
 - **vit.py** — 기능2 PMO_VIT 현안 조립(shell/module/detail, 뉴스 컷오프, 평탄화).
 - **mytasks.py** — '내 Task' Parent 우선 모델 + Parent별 SubTask 비동기 보강 + 우선순위/카테고리 롤업.
 - **search.py** — 통합 검색(Jira/Confluence/Bitbucket) + 멘션/사용자 제안 + 인력 해석.
+- **person_context.py** — 확인된 사용자 후보에 모듈·등록·최근 활동 근거를 붙이며 계정 전환 시 이력을 격리.
 - **names.py** — `real_name`(displayName 에서 회사 제거) + `staff_kind`(x*/i* 개발/운영 뱃지).
 
 ## 규칙

@@ -47,6 +47,11 @@ CREATE TABLE IF NOT EXISTS recent (
     opened_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_recent_at ON recent(opened_at DESC);
+CREATE TABLE IF NOT EXISTS person_recent (
+    scope TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, seen_at REAL NOT NULL,
+    PRIMARY KEY(scope, user_id, kind)
+);
+CREATE INDEX IF NOT EXISTS ix_person_recent_at ON person_recent(scope, seen_at DESC);
 CREATE TABLE IF NOT EXISTS cache_epoch (
     namespace TEXT PRIMARY KEY,
     value     INTEGER NOT NULL
@@ -403,6 +408,7 @@ class Cache:
             self._conn.execute("DELETE FROM snapshot WHERE taken_at < ?",
                                (now - self.SNAPSHOT_KEEP_DAYS * 86400,))
             self._conn.execute("DELETE FROM mutation_receipt WHERE expires_at < ?", (now,))
+            self._conn.execute("DELETE FROM person_recent WHERE seen_at<=?", (now - self.PERSON_RECENT_SECONDS,))
         except Exception:
             pass
 
@@ -652,6 +658,41 @@ class Cache:
     # 백엔드를 연다. localStorage 에 두면 브라우저마다 목록이 갈린다. (브라우저 히스토리·캐시는
     # 웹페이지가 읽을 수 없으므로, 우리가 연 것을 우리가 기록하는 수밖에 없다.)
     RECENT_KEEP = 200                       # 이 개수만 남기고 오래된 것부터 버린다
+    PERSON_RECENT_SECONDS = 7 * 86400
+    PERSON_RECENT_KEEP = 200
+
+    def touch_person_recent(self, scope, user_id, kind):
+        """Explicit choices only; independent of display-cache freshness or invalidation."""
+        if not scope or not user_id or kind not in {"lookup", "selection", "mention"}:
+            raise ValueError("Invalid person history event")
+        now = time.time()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO person_recent(scope,user_id,kind,seen_at) VALUES (?,?,?,?) "
+                "ON CONFLICT(scope,user_id,kind) DO UPDATE SET seen_at=max(seen_at,excluded.seen_at)",
+                (scope, user_id, kind, now))
+            self._conn.execute("DELETE FROM person_recent WHERE seen_at<=?",
+                               (now - self.PERSON_RECENT_SECONDS,))
+            self._conn.execute(
+                "DELETE FROM person_recent WHERE scope=? AND rowid NOT IN "
+                "(SELECT rowid FROM person_recent WHERE scope=? ORDER BY seen_at DESC,rowid DESC LIMIT ?)",
+                (scope, scope, self.PERSON_RECENT_KEEP))
+            self._conn.commit()
+
+    def person_recent(self, scope, user_ids):
+        """Read only requested candidates; never return an actor's entire interaction log."""
+        ids = list(dict.fromkeys(user_ids))
+        if not scope or not ids:
+            return {}
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT user_id,kind,seen_at FROM person_recent WHERE scope=? AND seen_at>? "
+                "AND user_id IN (" + ",".join("?" for _ in ids) + ")",
+                (scope, time.time() - self.PERSON_RECENT_SECONDS, *ids)).fetchall()
+        result = {}
+        for user_id, kind, seen_at in rows:
+            result.setdefault(user_id, {})[kind] = seen_at
+        return result
 
     def touch_recent(self, url, kind, title, meta="", type_="", data=""):
         if not url:
