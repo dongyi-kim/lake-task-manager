@@ -47,14 +47,13 @@ def test_uniform_subtask_status_reuses_solo_parent_and_foldable_children_in_one_
     css = (STATIC / "styles" / "mytasks.css").read_text(encoding="utf-8")
 
     assert "export function uniformStatusCategory(cards)" in model
-    assert "singleStatus: uniformStatusCategory(all)" in view
+    assert "singleStatus: uniformStatusCategory(shown)" in view
     assert "parentCard: this.card(g, g, !!g.mine)" in view
     assert 'const compact = this.axis === "h" ? grouped.filter((p) => this.compactStatus(p)) : [];' in view
     assert "const solo = this.soloPanel(" in view
     assert "compactPanel: p" in view
     assert "statusCategory: p.singleStatus" not in view
-    assert 'const rawParent = p?.parentCard?.statusCategory;' in view
-    assert 'return (uniform || p.emptyFiltered) && this.bandOpen(parentStatus) ? parentStatus : null;' in view
+    assert "const category = compactTaskCategory(p);" in view
     assert 'kind: "solo", cards: this.sorted(vis)' in view
     assert '<TaskCard v-if="!c.compactPanel" :card="c"' in view
     assert 'class="mt-compact-flow"' in view
@@ -74,7 +73,7 @@ def test_uniform_subtask_status_reuses_solo_parent_and_foldable_children_in_one_
     assert ':closed="isGroupClosed(c.compactPanel)"' in view
     assert ':closed="isGroupClosed(p)"' in view
     assert 'class="mt-roll"' not in view
-    assert 'mode === "all" || mode === "collapsed"' in view
+    assert "filteredTaskChildren(" in view
     assert 'class="mt-gbody one mt-compact-children"' in view
     assert "cellCards(c.compactPanel, c.compactPanel.singleStatus)" in view
     assert "overflowed(c.compactPanel, c.compactPanel.singleStatus)" in view
@@ -179,7 +178,7 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
     assert "const gone = [...before]" not in view
     assert "_mergeHydration" not in view
     assert "if (!seen.has(atom.key))" in view
-    assert "if (p?.group?.childrenPending) return null;" in view
+    assert "panel.group.childrenPending || panel.group.childrenUnavailable" in model
 
 
 def test_mytasks_quiet_refresh_keeps_visible_dom_and_patches_only_changed_keys():
