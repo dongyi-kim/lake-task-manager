@@ -26,6 +26,7 @@ from app.local_mcp.settings import build_settings_router
 from app.local_mcp.write_tools import register_writes
 from app.local_mcp.workspace_tools import register_workspace
 from app.local_mcp.confluence_read_tools import register_confluence_reads
+from app.local_mcp.confluence_write_tools import register_confluence_writes
 from app.local_mcp.vit_tools import register_vit
 from app.local_mcp.admin_tools import register_admin
 from app.local_mcp.llm_tools import LLM_TOOLS, register_llm
@@ -67,10 +68,10 @@ class LocalMcpRuntime:
         self.server = MCPServer(
             "lake-task-manager", extensions=[SkillsExtension(self.skill_catalog)], instructions=(
                 "The running local LTM instance shares its Jira authentication and caches. "
-                "Tools read and directly write Jira and local WBS/people configuration; "
+                "Tools read and directly write Jira, Confluence and local WBS/people configuration; "
                 "use only actions authorized by your user. "
                 "Discover issue types, edit fields and transition IDs with list_options. "
-                "Jira writes require a unique client mutation ID: keep it unchanged for retries. "
+                "Jira and Confluence writes require a unique client mutation ID: keep it unchanged for retries. "
                 "Local WBS/people writes instead require the last-read expected_revision. "
                 "An outcome_unknown result is not failure proof and must never be repeated with a new ID. "
                 "Tools silently maintain authentication and retry a confirmed auth rejection once. "
@@ -83,13 +84,17 @@ class LocalMcpRuntime:
                 "Authoring skills are served through skills/list, skills/get and resources/read. "
                 "Before rich Task/comment authoring or bulk creation, read the matching SKILL.md; "
                 "get_content_guide() lists the same guides for clients without Skills support. "
-                "Task/comment HTML and bulk description Markdown are different input contracts."))
+                "Task/comment HTML and bulk description Markdown are different input contracts. "
+                "Confluence uses storage XHTML and expected published versions; read ltm-confluence-authoring "
+                "before editing. A matching published version never proves collaborative drafts are absent. "
+                "Use attachment downloadUrl for full binary files, not repeated large base64 tool output."))
         register_reads(self.register, self)
         register_evidence(self.register, self)
         register_hierarchy(self.register, self)
         register_hierarchy_writes(self.register, self)
         register_workspace(self.register, self)
         register_confluence_reads(self.register, self)
+        register_confluence_writes(self.register, self)
         register_vit(self.register, self)
         register_admin(self.register, self)
         register_llm(self.register, self)

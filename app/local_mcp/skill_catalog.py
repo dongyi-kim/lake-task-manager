@@ -7,7 +7,7 @@ from pathlib import Path
 import yaml
 
 
-SKILL_NAMES = ("ltm-task-authoring", "ltm-comment-authoring", "ltm-bulk-task-create")
+SKILL_NAMES = ("ltm-task-authoring", "ltm-comment-authoring", "ltm-bulk-task-create", "ltm-confluence-authoring")
 _MIME_TYPES = {".md": "text/markdown", ".html": "text/html", ".json": "application/json"}
 MAX_RESOURCE_BYTES = 8 * 1024  # Keep each progressive-disclosure read below the context budget.
 
@@ -19,7 +19,7 @@ class SkillCatalog:
         shared = self._load_files(root / "_shared", root)
         for name in SKILL_NAMES:
             files = self._load_files(root / name, root)
-            for path, content in shared.items():
+            for path, content in (shared.items() if name != "ltm-confluence-authoring" else ()):
                 destination = "references/" + path
                 if destination in files:
                     raise ValueError(f"Duplicate skill resource: {name}/{destination}")

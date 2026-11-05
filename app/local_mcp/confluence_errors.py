@@ -29,7 +29,9 @@ def confluence_error(exc):
         result["retryable"] = status == 429 or bool(status and status >= 500)
         if status == 401:
             result["needLogin"] = True
-        if getattr(exc, "next_action", None):
+        if getattr(exc, "reason", None):
+            result["reason"] = exc.reason
+        if isinstance(getattr(exc, "next_action", None), dict):
             result["nextAction"] = exc.next_action
         return result
     if isinstance(exc, SessionExpired):

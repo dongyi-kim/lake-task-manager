@@ -32,6 +32,7 @@ from app.routes.dashboards import build_dashboard_router
 from app.routes.mytasks import build_mytasks_router
 from app.routes.resources import build_resource_router
 from app.routes.confluence import build_confluence_router
+from app.routes.confluence_download import build_confluence_download_router
 from app.routes.ticket_commands import (
     FieldsBody as _FieldsBody,
     build_ticket_command_router,
@@ -1124,6 +1125,7 @@ def api_me():
 
 app.include_router(build_resource_router(get_client=lambda: _client, cache=_cache, settings=_settings))
 app.include_router(build_confluence_router(get_client=lambda: _client))
+app.include_router(build_confluence_download_router(get_client=lambda: _client))
 app.include_router(build_mytasks_router(get_client=lambda: _client))
 app.include_router(build_ticket_router(get_client=lambda: _client))
 app.include_router(build_ticket_command_router(
