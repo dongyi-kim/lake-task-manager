@@ -15,6 +15,49 @@ TITLES = ["굵게", "기울임", "취소선", "인라인 코드", "글자색", "
           "노트 콜아웃 {note}", "팁 콜아웃 {tip}", "경고 콜아웃 {warning}",
           "왼쪽 정렬", "가운데 정렬", "오른쪽 정렬", "글꼴", "이미지",
           "표 삽입 — 행·열 선택", "마크다운 표 붙여넣기 → 변환", "에디터 최대화"]
+CALLOUT_KINDS = ("info", "note", "tip", "success", "warning", "error")
+JIRA_CALLOUT = {"info": "info", "note": "grey", "tip": "idea", "success": "idea",
+                "warning": "warning", "error": "warning"}
+
+
+def _assert_jira_callout_storage(page, base, key, surface, marker, *, legacy=False):
+    """Use actual upstream HTML, without LTM CSS, so a class-only export cannot pass."""
+    response = page.request.get(f"{base}/__editor_test__/stored/{key}")
+    assert response.ok, response.text()
+    stored = response.json()
+    source = stored["description"] if surface == "description" else next(
+        comment["body"] for comment in stored["comments"] if marker in comment["body"])
+    panels = page.evaluate("""html => {
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      return [...doc.querySelectorAll('div')]
+        .filter(el => [...el.classList].some(c => c.startsWith('jePanel_')))
+        .map(el => el.outerHTML);
+    }""", source)
+    assert panels, source
+    standalone = page.context.browser.new_page()
+    try:
+        standalone.set_content("<!doctype html><html><body>" + "".join(panels) + "</body></html>")
+        assert standalone.locator("style, link[rel=stylesheet]").count() == 0
+        for kind in CALLOUT_KINDS:
+            native = standalone.locator(".callout-" + kind + ".jePanel_" + JIRA_CALLOUT[kind])
+            assert native.count(), (kind, source)
+        for panel in standalone.locator("body > div").all():
+            assert panel.evaluate("""el => {
+              const s = getComputedStyle(el);
+              return el.style.border && el.style.padding &&
+                parseFloat(s.borderTopWidth) > 0 && ['solid', 'dashed'].includes(s.borderTopStyle) &&
+                s.borderTopColor !== 'rgba(0, 0, 0, 0)' &&
+                parseFloat(s.paddingLeft) > 0 && parseFloat(s.paddingTop) > 0;
+            }"""), panel.evaluate("el => el.outerHTML")
+        assert standalone.locator(".jePanel_info").first.evaluate(
+            "el => getComputedStyle(el).borderTopColor") == "rgb(158, 182, 212)"
+        assert standalone.locator(".jePanel_info").first.evaluate(
+            "el => { const s=getComputedStyle(el); return parseFloat(s.paddingLeft)>parseFloat(s.paddingRight); }")
+        if legacy:
+            assert standalone.locator(".jePanel_dashed", has_text="JIRA-dashed").count() == 1
+            assert standalone.locator(".jePanel_grey", has_text="UNKNOWN-PRESERVED").count() == 1
+    finally:
+        standalone.close()
 
 
 def _select(editor, text):
@@ -298,6 +341,8 @@ def test_toolbar_and_all_slash_commands_survive_draft_and_publish_cycles(editor_
             rendered = page.locator(".tkt-cmt-b", has_text="UI-PLAIN")
             rendered.wait_for(state="visible")
         _assert_controls(rendered)
+        _assert_jira_callout_storage(
+            page, base, "DL-9001" if surface == "description" else "DL-9007", surface, "UI-PLAIN")
         ticket_badge = rendered.locator(".jira-badge[data-key='DL-9001']").first
         ticket_badge.hover()
         page.locator(".reference-hover[role=tooltip]").wait_for(state="visible")
@@ -313,3 +358,72 @@ def test_toolbar_and_all_slash_commands_survive_draft_and_publish_cycles(editor_
             editor.locator(".jira-badge[href*='/browse/DL-9001']").first.hover()
             page.locator(".reference-hover[role=tooltip]").wait_for(state="visible")
     assert not errors, {"errors": errors, "inventory": inventory}
+
+
+@pytest.mark.parametrize("surface", ["description", "comment"])
+@pytest.mark.parametrize("editor_browser", [{"format": "html"}], indirect=True)
+def test_old_ltm_and_native_jira_callouts_survive_edit_and_republish(editor_browser, surface):
+    from playwright.sync_api import expect
+
+    page, base, errors, _upload = editor_browser
+    key = "DL-9001" if surface == "description" else "DL-9007"
+    # Seed old stored content, not editor state. New UI creation is covered above through all
+    # toolbar/slash controls; this case specifically starts with pre-upgrade Jira data.
+    cases = [("callout callout-" + kind, "OLD-LTM-" + kind, kind) for kind in CALLOUT_KINDS]
+    cases += [("jePanel_" + native, "JIRA-" + native, kind) for native, kind in (
+        ("info", "info"), ("warning", "warning"), ("idea", "tip"), ("grey", "note"), ("dashed", "note"))]
+    html = "<p>LEGACY-CALLOUTS</p>" + "".join(
+        f'<div class="{classes}"><p>{label}</p></div>' for classes, label, _kind in cases
+    ) + '<div class="jePanel_custom"><p>UNKNOWN-PRESERVED</p></div>'
+    html = html.replace('class="jePanel_info"',
+                        'class="jePanel_info" style="border:1px solid #9eb6d4;padding: .5em 1em .5em 2.5em;"')
+    response = page.request.post(f"{base}/__editor_test__/seed/{key}", data={surface: html})
+    assert response.ok, response.text()
+    # This is a format-compatibility test, not a mutation-vs-background-search race. Let the
+    # app's startup candidate prewarm finish before writing its first very short fixture edit.
+    with page.expect_response(lambda r: "/api/parent-task-candidates?" in r.url) as prewarm:
+        _open_ticket(page, base, key)
+    assert prewarm.value.ok, prewarm.value.text()
+    for cycle in range(2):
+        rendered = page.locator(".tkt-main") if surface == "description" else page.locator(
+            ".tkt-cmt-b", has_text="LEGACY-CALLOUTS")
+        rendered.wait_for(state="visible")
+        rendered.get_by_text("LEGACY-CALLOUTS", exact=True).wait_for(state="visible")
+        for _classes, label, kind in cases:
+            assert rendered.locator(".callout-" + kind).filter(has_text=label).count() == 1
+        assert rendered.locator(".callout-note", has_text="UNKNOWN-PRESERVED").count() == 1
+        if surface == "description":
+            page.locator("button.sec-edit").first.click()
+            editor = page.locator(".tkt-desc-edit .ProseMirror")
+        else:
+            page.locator(".tkt-cmt", has=rendered).get_by_role("button", name="수정", exact=True).click()
+            editor = page.locator(".tkt-cmt .ProseMirror")
+        editor.wait_for(state="visible")
+        if surface == "comment":
+            submit = editor.locator("xpath=ancestor::div[contains(@class,'cmt-editor')][1]").locator(
+                ".cmt-ed-bar button.primary")
+            expect(submit, f"edit cycle={cycle}; notices={page.locator('.cmt-restored').all_inner_texts()}").to_be_enabled()
+        for _classes, label, kind in cases:
+            callout = editor.locator(".callout-" + kind).filter(has_text=label)
+            assert callout.count() == 1
+            _select(editor, label + (" EDIT1" if cycle else ""))
+            page.keyboard.press("End")
+            page.keyboard.insert_text(" EDIT" + str(cycle + 1))
+            assert callout.get_by_text(label + (" EDIT1 EDIT2" if cycle else " EDIT1"), exact=True).count() == 1
+        assert editor.locator(".callout-note", has_text="UNKNOWN-PRESERVED").count() == 1
+        if surface == "description":
+            page.locator(".tkt-desc-edit-f button.primary").click()
+        else:
+            submit.click()
+        editor.wait_for(state="detached")
+        _assert_jira_callout_storage(page, base, key, surface, "LEGACY-CALLOUTS", legacy=True)
+        assert page.evaluate("""async () => {
+          const d = await new Promise(resolve => { const r=indexedDB.open('ltm-drafts'); r.onsuccess=()=>resolve(r.result); });
+          return await new Promise(resolve => { const r=d.transaction('drafts').objectStore('drafts').count(); r.onsuccess=()=>resolve(r.result); });
+        }""") == 0, "Successful publication must not resurrect a conflicting draft"
+    rendered = page.locator(".tkt-main") if surface == "description" else page.locator(
+        ".tkt-cmt-b", has_text="LEGACY-CALLOUTS")
+    rendered.get_by_text("OLD-LTM-info EDIT1 EDIT2", exact=True).wait_for(state="visible")
+    for _classes, label, kind in cases:
+        assert rendered.locator(".callout-" + kind).filter(has_text=f"{label} EDIT1 EDIT2").count() == 1
+    assert not errors, errors
