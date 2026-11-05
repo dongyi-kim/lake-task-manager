@@ -271,10 +271,16 @@ def test_real_mcp_sdk_command_schemas_and_publish_read_edit_roundtrip(build_env)
     from mcp import Client
     from app.local_mcp.schemas.confluence_writes import DATA_MODELS
 
-    env, upstream = build_env(), ConfluenceFixture()
+    from app.mock.confluence import install_confluence
+
+    env = build_env()
     env.runtime.settings.search_confluence_spaces = ["DL"]
-    env.runtime.settings.confluence_base = "https://docs.test/wiki"
-    env.client._provider = upstream
+    env.runtime.settings.confluence_base = "http://confluence.test"
+    env.store.confluence = {"u01": []}
+    install_confluence(env.provider._client.app)
+    state = env.provider._client.app.state.confluence
+    state.seed()
+    parent = state.create({"type": "page", "title": "Parent", "space": {"key": "DL"}})["id"]
     assert env.runtime.server._tool_manager.get_tool("create_confluence_page")
 
     async def scenario():
@@ -293,7 +299,7 @@ def test_real_mcp_sdk_command_schemas_and_publish_read_edit_roundtrip(build_env)
                 return result.structured_content["data"]
 
             page = await call("create_confluence_page", {"space": "DL", "title": "SDK document",
-                "body": "<p>first</p>", "parent_id": "10", "client_mutation_id": "sdk-create-001"})
+                "body": "<p>first</p>", "parent_id": parent, "client_mutation_id": "sdk-create-001"})
             read = await call("read_confluence_document", {"page": page["id"], "format": "storage"})
             assert read["content"] == "<p>first</p>"
             updated = await call("update_confluence_page", {"page_id": page["id"], "expected_version": 1,
