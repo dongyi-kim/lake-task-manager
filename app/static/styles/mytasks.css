@@ -5,14 +5,6 @@
    카드(.mt-card)는 배치와 무관하게 하나 — 리스트든 그리드든 같은 것을 읽게 한다. */
 
 .mytasks { padding: 2px 0 40px; }
-.mt-task-section.titled { margin: 16px 0 22px; border: 1px solid var(--border);
-  border-top: 3px solid var(--section-color); border-radius: 5px; min-width: 0; }
-.mt-section-header { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap;
-  padding: 10px 12px; background: color-mix(in srgb, var(--section-color) 7%, var(--panel)); }
-.mt-section-header h2 { margin: 0; font-size: 14px; color: var(--text); }
-.mt-section-label { font-size: 11px; color: var(--section-color); font-weight: 700; }
-.mt-section-extra { flex-basis: 100%; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
-.mt-task-section.titled > .mt-headrow { padding: 0 8px; }
 .mt-axis-more-row.vertical { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* ══ 상단: 퀵필터(담당/보고/모듈) + 요약 타일 — 워크로드식 정형(딱딱) ══ */
