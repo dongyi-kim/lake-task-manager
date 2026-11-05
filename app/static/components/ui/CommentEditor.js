@@ -187,7 +187,14 @@ export default {
       },
       onSelectionUpdate: () => { self.tick++; },
       onTransaction: () => { self.tick++; },
-      onUpdate: () => { self.tick++; self._draftFinished = false; self.saveDraftSoon(); },   // 작성 중 임시저장(디바운스)
+      onUpdate: () => {
+        self.tick++;
+        // Successful submit cleanup may trigger editor transactions before Vue unmounts it.
+        // Those transactions must not resurrect the just-deleted draft.
+        if (self.busy && self._draftFinished) return;
+        self._draftFinished = false;
+        self.saveDraftSoon();
+      },
     });
     if (this._dead) { try { this._ed.destroy(); } catch (e) { /* noop */ } return; }
     this._baseHtml = this._ed.getHTML();

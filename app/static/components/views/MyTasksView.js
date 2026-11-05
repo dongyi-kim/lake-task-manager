@@ -35,10 +35,14 @@ import {
 } from "../mytasks/taskModel.js";
 import TASK_SECTION_TEMPLATE from "../mytasks/taskSectionTemplate.js";
 import { BOARD_HEADER_TEMPLATE, OPTIONS_PANEL_TEMPLATE } from "../mytasks/taskBoardTemplate.js";
+import { OPTIONS_WIDTH, OPTIONS_MIN_WIDTH, OPTIONS_MAX_WIDTH,
+  optionsPanelComputed, optionsPanelMethods } from "../mytasks/taskOptionsPanel.js";
 import { groupTaskSections } from "../mytasks/taskGrouping.js";
 import { DUE_FILTER_OPTIONS, priorityOptions as buildPriorityOptions,
   matchTaskDisplayFilters } from "../mytasks/taskDisplayFilters.js";
 import { hydrateTaskGroups } from "../mytasks/taskHydration.js";
+import TaskFindBar from "../mytasks/TaskFindBar.js";
+import taskFindMixin from "../mytasks/taskFindMixin.js";
 import { pushToast } from "../../lib/toast.js";
 import { vocBadgeSegs, vocStripTitle } from "../../lib/voc.js";
 import { confirmDoneDespiteOpenSubs } from "../../lib/doneGuard.js";
@@ -47,8 +51,9 @@ export { reconcileTaskModel, resolveDefaultModule, uniformStatusCategory } from 
 
 export default {
   name: "MyTasksView",
+  mixins: [taskFindMixin],
   components: { TypeBadge, Avatar, TaskCard, PriIcon, DueText, FieldEdit, AdvancedSearchDialog, TransitionDialog,
-                SubtaskFoldBar },
+                SubtaskFoldBar, TaskFindBar },
   data() {
     return {
       model: null, loading: false, err: "", childSync: {},
@@ -65,6 +70,7 @@ export default {
       axis: window.matchMedia(NARROW).matches ? "v" : "h",
       groupBy: "sub",       // wbs | epic | sub (Task) | none; 기존 저장값 sub 유지
       optionsClosed: window.matchMedia(NARROW).matches,
+      optionsWidth: OPTIONS_WIDTH, optionsViewportWidth: window.innerWidth,
       // 하위(Sub-Task) 보기 — **화면 전체에 하나**. collapsed | mine | all.
       // 전에는 그룹마다 버튼을 달아 개별로 바꿨는데, 그룹이 열 개면 열 번 눌러야 원하는 상태가 되고
       // 지금 무엇이 펼쳐져 있는지도 카드마다 달라 한눈에 안 잡혔다. 보기 방식은 화면의 성격이지
@@ -172,7 +178,7 @@ export default {
       if (this._optionsFrame) return;
       this._optionsFrame = requestAnimationFrame(() => {
         this._optionsFrame = null;
-        this.updateOptionsHeight();
+        this.updateOptionsLayout();
       });
     };
     window.addEventListener("scroll", this._optionsViewport, { passive: true, capture: true });
@@ -191,6 +197,7 @@ export default {
     window.removeEventListener('workspace-config-updated', this._workspaceUpdate);
     this._unbindDrag && this._unbindDrag();
     this._boardResize?.disconnect();
+    this._stopOptionsResize?.();
     window.removeEventListener("scroll", this._optionsViewport, true);
     window.removeEventListener("resize", this._optionsViewport);
     if (this._optionsFrame) cancelAnimationFrame(this._optionsFrame);
@@ -199,6 +206,7 @@ export default {
                                  : this._mq.removeListener(this._onMq);
   },
   computed: {
+    ...optionsPanelComputed,
     groups() { return (this.model && this.model.groups) || []; },
     epicMap() {
       const m = {};
@@ -368,10 +376,14 @@ export default {
       for (const state of this.states) {
         out[state.k] = new Set(this.axisEntries[state.k].slice(0, this.axisPage[state.k]));
       }
+      if (this.findActive && out[this.findActive.category]) {
+        out[this.findActive.category].add(this.findActive.entryId);
+      }
       return out;
     },
   },
   methods: {
+    ...optionsPanelMethods,
     /** 세션 사용자와 모듈 디렉토리를 Task 본문과 독립적으로 받는다.
      *  선택 이력이 없으면 첫 소속 모듈을 기본으로 잡고, 모듈 필터가 활성화된 상태라면
      *  먼저 시작한 전체 모듈 요청을 즉시 취소해 새 기본 모듈로 전환한다. */
@@ -920,6 +932,7 @@ export default {
     /** Task+SubTask 그룹 개별 접기/펴기. '모두 접기'도 하단바 한 번으로 다시 열 수 있다. */
     isGroupClosed(panel) {
       if (!panel) return true;
+      if (this.findOpens(panel)) return false;
       if (Object.prototype.hasOwnProperty.call(this.gClosed, panel.key)) return !!this.gClosed[panel.key];
       return panel.mode === "collapsed";
     },
@@ -991,6 +1004,9 @@ export default {
       try { saved = JSON.parse(localStorage.getItem(PREF_KEY) || "null"); } catch (e) { saved = null; }
       if (!saved) return;
       if (typeof saved.optionsClosed === "boolean") this.optionsClosed = saved.optionsClosed;
+      if (Number.isFinite(saved.optionsWidth)) {
+        this.optionsWidth = Math.round(Math.max(OPTIONS_MIN_WIDTH, Math.min(OPTIONS_MAX_WIDTH, saved.optionsWidth)));
+      }
       if (typeof saved.priorityFilter === "string" && saved.priorityFilter.length <= 256
           && (saved.priorityFilter === "__none__"
             || (saved.priorityFilter.startsWith("name:") && saved.priorityFilter.slice(5).trim()))) {
@@ -1025,7 +1041,8 @@ export default {
     },
     savePrefs() {
       const out = { bandClosed: this.bandClosed, epicHidden: this.epicHidden, gClosed: this.gClosed,
-                    optionsClosed: this.optionsClosed, priorityFilter: this.priorityFilter, dueFilter: this.dueFilter,
+                    optionsClosed: this.optionsClosed, optionsWidth: this.optionsWidth,
+                    priorityFilter: this.priorityFilter, dueFilter: this.dueFilter,
                     scope: this.scope, moduleSel: this.moduleSel, moduleSelExplicit: this.moduleSelExplicit,
                     projPref: this.projPref,
                     assigneeSel: this.assigneeSel, reporterSel: this.reporterSel, jqlText: this.jqlText };
@@ -1254,7 +1271,8 @@ export default {
     /** 가로축의 1컬럼 버전. 부모 상태 열이 접혔으면 부모 정보가 찌그러지지 않게 기존 전폭으로 둔다. */
     compactStatus(p) {
       const category = compactTaskCategory(p);
-      return category && this.bandOpen(category) ? category : null;
+      // Layout/search membership must not depend on the temporary find reveal.
+      return category && !this.bandClosed[category] ? category : null;
     },
     parentState(p) {
       const value = p?.group?.statusCategory;
@@ -1291,21 +1309,13 @@ export default {
      */
     cellCards(p, k) { return this.byState(p.cards)[k]; },
     /** 이 칸을 접어서 보여 줄 것인가 — 접기 대상이고 아직 안 폈을 때. */
-    peeking(p) { return this.foldable(p) && !this.subOpen[p.key]; },
+    peeking(p) { return !this.findOpens(p) && this.foldable(p) && !this.subOpen[p.key]; },
     /** 세로축 모드의 상태 밴드 접기 — 지금 안 보는 상태를 통째로 치우고 화면을 벌 수 있게. */
-    bandOpen(k) { return !this.bandClosed[k]; },
+    bandOpen(k) { return this.findActive?.category === k || !this.bandClosed[k]; },
     updateBoardAxis() {
       const width = this.$refs.board?.getBoundingClientRect().width || window.innerWidth;
       this.axis = width <= 900 ? "v" : "h";
-      this.updateOptionsHeight();
-    },
-    updateOptionsHeight() {
-      const panel = this.$refs.optionsPanel;
-      if (!panel || this.optionsClosed) return;
-      // Desktop leaves room for global add/refresh buttons; the mobile drawer covers them.
-      const bottom = window.matchMedia(NARROW).matches ? 12 : 120;
-      const height = Math.max(100, window.innerHeight - panel.getBoundingClientRect().top - bottom);
-      panel.style.setProperty("--mt-options-height", height + "px");
+      this.updateOptionsLayout();
     },
     toggleOptions() {
       this.optionsClosed = !this.optionsClosed;
@@ -1492,7 +1502,8 @@ export default {
     },
   },
   template: `
-  <div class="mytasks" :class="'ax-' + axis" :style="{ '--mt-cols': gridCols }">
+  <div class="mytasks" :class="['ax-' + axis, { 'options-closed': optionsClosed }]"
+       :style="{ '--mt-cols': gridCols, '--mt-options-width': optionsRenderedWidth + 'px' }">
     <!-- 상단 요약 타일. 조회 조건은 좌측 보기 옵션에 모은다. -->
     <div class="mt-top">
       <AdvancedSearchDialog v-if="advOpen" :projects="(me && me.searchProjects) || []" :my-id="myId"
@@ -1514,7 +1525,12 @@ export default {
     <div class="mt-workspace" :class="{ 'options-closed': optionsClosed }">
     ${OPTIONS_PANEL_TEMPLATE}
     <div class="mt-board" ref="board" :class="{ 'all-closed': states.every(st => !bandOpen(st.k)) }">
+    <div class="mt-board-tools" :class="{ finding: findOpen }">
+    <TaskFindBar v-if="findOpen" ref="taskFind" :query="findQuery" :index="findIndex"
+                 :total="findResults.length" :loading="findLoading"
+                 @query="findQuery = $event" @next="nextFind" @close="closeFind" />
     ${BOARD_HEADER_TEMPLATE}
+    </div>
     <div class="mt-board-lanes">
     <div v-if="axis === 'h'" class="mt-colbg" aria-hidden="true">
       <div v-for="st in states" :key="st.k" :class="'c-' + st.k"></div>

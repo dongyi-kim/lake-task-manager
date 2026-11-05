@@ -8,6 +8,14 @@
 // 남아 있었다. 그래서 이 한 곳에서만 그린다.
 import { ymd } from "../../lib/fmt.js";
 
+// Shared with card find so searches use exactly the date/D-day text that users read.
+export function dueLabel(card) {
+  if (card.statusCategory === "done") return "✓ " + (card.resolved ? ymd(card.resolved) : "완료");
+  const days = card.dueDays;
+  if (days === null || days === undefined) return "미정";
+  return days < 0 ? "D+" + -days : days === 0 ? "D-DAY" : "D-" + days;
+}
+
 export default {
   name: "DueText",
   props: {
@@ -19,10 +27,7 @@ export default {
   computed: {
     done() { return this.card.statusCategory === "done"; },
     d() { const v = this.card.dueDays; return v === null || v === undefined ? null : v; },
-    label() {
-      if (this.d === null) return "미정";
-      return this.d < 0 ? "D+" + -this.d : this.d === 0 ? "D-DAY" : "D-" + this.d;
-    },
+    label() { return dueLabel(this.card); },
     cls() {
       if (this.done) return "fin";
       if (this.d === null) return "none";
@@ -37,7 +42,7 @@ export default {
   },
   template: `
   <span class="tc-when" :class="[cls, { inh: !done && card.dueInherited }]" :title="tip">
-    <b v-if="done">{{ noDate ? '✓' : ('✓ ' + (doneAt || '완료')) }}</b>
+    <b v-if="done">{{ noDate ? '✓' : label }}</b>
     <b v-else><i v-if="card.dueInherited" class="inh-m">↑</i>{{ label }}</b>
   </span>`,
 };

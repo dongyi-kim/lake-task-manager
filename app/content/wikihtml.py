@@ -18,6 +18,8 @@ import re
 from html import escape, unescape
 from html.parser import HTMLParser
 
+from app.content.callouts import callout_kind
+
 # 제로폭 문자 — 눈에 안 보이지만 str.strip() 은 공백으로 안 본다(zwnj ‌ 등).
 # TipTap 이 빈 문단을 <p>&nbsp;&zwnj;</p> 로 내보내는데, 이걸 안 지우면 댓글 끝에 빈 줄이
 # 하나씩 쌓인다(사용자가 겪은 그것). strip() 앞에 이 문자들을 함께 벗긴다.
@@ -208,10 +210,8 @@ def _blocks(node, lines, depth=0):
             lines.append("=== " + _inline(c).strip() + " ===")
             lines.append("")
             continue
-        if t == "div" and "callout" in cls:
+        if t == "div" and (kind := callout_kind(cls)):
             # Jira 콜아웃 매크로 — <div class="callout callout-info"> <-> {info}…{info}
-            m = re.search(r"callout-(\w+)", cls)
-            kind = m.group(1) if m else "info"
             inner = []
             _blocks(c, inner)
             lines.append("{" + kind + "}")

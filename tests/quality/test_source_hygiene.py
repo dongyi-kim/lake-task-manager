@@ -39,20 +39,17 @@ def _code_only(src: str) -> list:
     return masked
 
 
-@pytest.mark.parametrize("path", AGENT_PY, ids=lambda p: p.name)
-def test_agent_source_has_no_collapsed_newlines(path):
+@pytest.mark.parametrize("path", AGENT_PY + TOOLS_PY, ids=lambda p: p.relative_to(_ROOT).as_posix())
+def test_python_source_hygiene(path):
     src = path.read_text(encoding="utf-8")
-    bad = [(i, raw.strip()[:90])
-           for i, (raw, m) in enumerate(zip(src.splitlines(), _code_only(src)), 1)
-           if len(raw) > 100 and m.strip() and "      " in m.lstrip()]
-    assert not bad, (
-        f"{path.name} 에 줄바꿈이 공백으로 뭉개진 코드 줄이 있다 — "
-        + "; ".join(f"L{i}: {s}" for i, s in bad)
-        + " (heredoc 대신 Edit 도구로 고칠 것)")
-
-
-@pytest.mark.parametrize("path", AGENT_PY + TOOLS_PY, ids=lambda p: p.name)
-def test_agent_source_has_no_control_chars(path):
-    hit = CTRL_RE.search(path.read_text(encoding="utf-8"))
-    assert not hit, (f"{path.name} 에 제어문자 0x{ord(hit.group()):02x} 가 박혔다 — "
-                     r"정규식의 \b 가 백스페이스로 변한 그 사고다")
+    violations = []
+    hit = CTRL_RE.search(src)
+    if hit:
+        violations.append(f"control character: 0x{ord(hit.group()):02x}")
+    if path in AGENT_PY:
+        bad = [(i, raw.strip()[:90])
+               for i, (raw, m) in enumerate(zip(src.splitlines(), _code_only(src)), 1)
+               if len(raw) > 100 and m.strip() and "      " in m.lstrip()]
+        if bad:
+            violations.append("collapsed newlines: " + "; ".join(f"L{i}: {s}" for i, s in bad))
+    assert not violations, f"{path.relative_to(_ROOT)}:\n" + "\n".join(violations)

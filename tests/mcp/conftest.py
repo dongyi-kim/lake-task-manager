@@ -1,6 +1,7 @@
 """Real SDK/ASGI transport fixtures; no app singleton, LLM, external Jira or injected delay."""
 
 from types import SimpleNamespace
+from time import perf_counter
 
 import pytest
 from fastapi import FastAPI
@@ -21,9 +22,11 @@ from app.services.ticket_commands import CommandError
 
 
 @pytest.fixture
-def build_env(tmp_path):
+def build_env(tmp_path, request):
     opened = []
+    build_seconds = []
     def build(port=4457):
+        started = perf_counter()
         config = Config(project_key="DL", current_user="u01", latency_ms=0)
         store = PermissionStore(config)
         store.permissions["MODIFY_REPORTER"] = False
@@ -64,8 +67,15 @@ def build_env(tmp_path):
             require_edit=require_edit, session_user=lambda: {"id": "u01"},
         ))
         runtime.install(app)
+        build_seconds.append(perf_counter() - started)
         return SimpleNamespace(app=app, runtime=runtime, client=client, provider=provider,
                                store=store, calls=calls, cache=cache)
     yield build
+    # The factory runs during test calls, so pytest's setup duration cannot isolate its cost.
+    # Record it in JUnit without sharing mutable Jira, auth, cache or receipt state.
+    request.node.user_properties.extend([
+        ("mcp_environment_build_count", len(build_seconds)),
+        ("mcp_environment_build_seconds", f"{sum(build_seconds):.6f}"),
+    ])
     for resource in reversed(opened):
         resource.close()

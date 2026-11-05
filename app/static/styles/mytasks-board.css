@@ -1,9 +1,9 @@
 /* A continuous status grid. Epic/WBS titles divide rows; only real tickets are cards. */
-.mytasks { padding-bottom: 40px; }
-.mt-workspace { display: grid; grid-template-columns: 220px minmax(0, 1fr); align-items: start; gap: 16px; }
-.mt-workspace.options-closed { grid-template-columns: 38px minmax(0, 1fr); }
+.mytasks { --mt-sidebar-space: var(--mt-options-width, 220px); margin-left: -28px;
+  padding-left: calc(var(--mt-sidebar-space) + 16px); padding-bottom: 40px; }
+.mytasks.options-closed { --mt-sidebar-space: 30px; }
+.mt-workspace { min-width: 0; }
 .mt-board, .mt-board-lanes { position: relative; min-width: 0; }
-.mt-workspace > .mt-board { grid-column: 2; }
 .mt-board-lanes > .mt-task-section, .mt-board-lanes > .mt-axis-more-row { position: relative; z-index: 1; }
 .mt-board-lanes > .mt-colbg { inset: 0; padding: 0; gap: 0; }
 .mt-board-lanes > .mt-colbg > div { border: 0; border-radius: 0;
@@ -47,22 +47,31 @@
 .mt-board .mt-bandh small { font-weight: 400; color: var(--muted-2); }
 .mt-board .mt-band.closed { margin-bottom: 8px; }
 
-/* A collapsible sidebar keeps the board's status headings purely descriptive. */
-.mt-options-panel { position: sticky; top: 62px; min-width: 0; border: 1px solid var(--border);
-  border-radius: 6px; background: var(--panel); z-index: 5; display: flex; flex-direction: column;
-  max-height: var(--mt-options-height, calc(100dvh - 182px)); }
-.mt-options-toggle { display: flex; align-items: center; gap: 8px; width: 100%; height: 38px;
-  flex-shrink: 0;
-  padding: 0 12px; border: 0; border-bottom: 1px solid var(--border); background: none;
-  color: var(--text); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
-.mt-options-toggle svg { width: 17px; height: 17px; flex: none; }
-.mt-options-toggle:hover { background: var(--panel-2); }
+/* The options are a full-height app panel, with the ticket dialog's edge handle. */
+.mt-options-panel { position: fixed; top: var(--mt-options-top, 46px); left: 0; bottom: 0;
+  width: var(--mt-options-width, 220px); min-width: 0; max-width: calc(100vw - 48px);
+  border: 0; border-right: 1px solid var(--border); background: var(--panel-2);
+  z-index: 5; display: flex; flex-direction: column; }
+.mt-options-heading { display: flex; align-items: center; height: 40px; flex: none;
+  padding: 0 14px; border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 700; }
+.mt-options-toggle { position: absolute; top: 50%; right: -9px; transform: translateY(-50%);
+  display: flex; align-items: center; justify-content: center; width: 18px; height: 54px;
+  padding: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--panel);
+  color: var(--muted); box-shadow: 0 1px 4px rgba(0,0,0,.16); cursor: pointer; z-index: 2; }
+.mt-options-toggle svg { width: 15px; height: 15px; flex: none; }
+.mt-options-toggle:hover { color: var(--accent); border-color: var(--accent); }
 .mt-options-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.mt-options-panel.collapsed { background: transparent; }
-.mt-options-panel.collapsed .mt-options-toggle { justify-content: center; padding: 0; border-bottom: 0; }
+.mt-options-panel.collapsed { width: 30px; }
 .mt-options-panel.collapsed .mt-options-toggle svg { transform: rotate(180deg); }
-.mt-options-panel.collapsed .mt-options-toggle > span { display: none; }
-.mt-options-content { padding: 12px; min-height: 0; overflow-y: auto;
+.mt-options-rail-label { margin: 18px auto 0; writing-mode: vertical-rl; font-size: 11px;
+  color: var(--muted); letter-spacing: 2px; }
+.mt-options-grip { position: absolute; top: 0; bottom: 0; right: -3px; width: 7px;
+  cursor: col-resize; touch-action: none; z-index: 1; }
+.mt-options-grip::after { content: ""; position: absolute; top: 0; bottom: 0; right: 3px; width: 2px; }
+.mt-options-grip:hover::after, .mt-options-grip:focus-visible::after { background: var(--accent); }
+.mt-options-grip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* The surface reaches the bottom; only scrollable content reserves the global add/refresh controls. */
+.mt-options-content { padding: 12px 14px 124px; min-height: 0; overflow-y: auto;
   overscroll-behavior: contain; scrollbar-width: thin; }
 .mt-options-panel .mt-qf { flex-direction: column; align-items: stretch; gap: 8px; }
 .mt-quick-title { color: var(--muted-2); font-size: 10.5px; margin-bottom: 2px; }
@@ -105,10 +114,10 @@
 .mt-epic-checklist-title small { font-size: inherit; }
 .mt-epic-check { display: flex; align-items: center; gap: 7px; padding: 6px 0;
   min-height: 28px; font-size: 11.5px; line-height: 1.4; cursor: pointer; border-radius: 3px; }
-.mt-epic-check:hover { background: var(--panel-2); }
+.mt-epic-check:hover { background: var(--panel); }
 .mt-epic-check.master { font-weight: 700; }
 .mt-epic-check input { flex: none; width: 13px; height: 13px; margin: 0; accent-color: var(--accent); }
-.mt-epic-check > span { min-width: 0; overflow-wrap: anywhere; }
+.mt-epic-check > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mt-epic-check input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .mt-options-backdrop { display: none; }
 .ax-v .mt-board-head.mt-headrow { position: static; grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -119,8 +128,9 @@
 .ax-v .mt-board-head .mt-axis-load, .ax-v .mt-status-range { flex-basis: 100%; font-size: 10px; }
 .ax-v .mt-grid2 { grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); }
 @media (max-width: 900px) {
-  .mt-workspace, .mt-workspace.options-closed { grid-template-columns: 38px minmax(0, 1fr); gap: 10px; }
-  .mt-options-panel:not(.collapsed) { position: fixed; top: 62px; left: 12px; width: 236px; z-index: 8101; }
+  .mytasks { --mt-sidebar-space: 30px; }
+  .mt-options-panel:not(.collapsed) { z-index: 8101; }
+  .mt-options-panel:not(.collapsed) .mt-options-content { padding-bottom: 16px; }
   .mt-options-backdrop { display: block; position: fixed; inset: 0; z-index: 8100;
     background: color-mix(in srgb, var(--bg) 55%, transparent); }
   .mt-section-header h2 { flex: 0 1 auto; min-width: 0; max-width: 100%; }

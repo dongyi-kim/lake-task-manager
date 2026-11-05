@@ -23,7 +23,7 @@ from app.auth.base import (LoginRequired, MutationPreflightBusy, MutationPreflig
 from app.infra.cache_policy import note_read, revalidating
 from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
                        flatten_task_lists, lift_mentions_html, mark_explicit_jira_links, sanitize_html,
-                       shorten_mention_names, text_to_html, tidy_html, unproxy_media)
+                       serialize_jira_html, shorten_mention_names, text_to_html, tidy_html, unproxy_media)
 from app.domain.names import real_name
 from app.content.sections import split_sections
 from app.jira.jql import (JqlUnsupported, compile_jql, fields_with_order,
@@ -3024,7 +3024,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         # sec-title-node class 가 떨어져 그냥 <div> 로 남아 '=== ===' 표식이 사라진다).
         # wiki 모드는 html_to_wiki 가 이미 둘 다 같은 형태로 바꾼다.
         if fmt == "html":
-            return sanitize_html(flatten_mentions_html(flatten_section_titles(flatten_task_lists(html))))
+            return serialize_jira_html(flatten_mentions_html(flatten_section_titles(flatten_task_lists(html))))
         return html_to_wiki(html)
 
     def _description_fmt(self):
@@ -3062,7 +3062,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         html = unproxy_media(html)          # 재편집 시 박힌 프록시 URL(/api/img?u=..)을 원래 첨부로 복원
         from app.content.wikihtml import html_to_wiki
         if self._comment_fmt() == "html":
-            return sanitize_html(flatten_mentions_html(flatten_task_lists(html)))
+            return serialize_jira_html(flatten_mentions_html(flatten_task_lists(html)))
         return html_to_wiki(html)
 
     def create_child(self, parent_key, itype, summary, priority=None,
