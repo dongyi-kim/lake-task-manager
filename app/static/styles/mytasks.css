@@ -164,7 +164,7 @@
 .mt-pri.low { background: var(--border-hi); }
 .mt-card .tbadge { flex: none; font-size: 9px; padding: 0 4px; line-height: 15px; }
 .mt-key { flex: none; font-family: ui-monospace, Consolas, monospace; font-size: 10.5px;
-  color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; }
+  color: var(--accent); font-weight: 500; font-variant-numeric: tabular-nums; }
 .mt-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; font-size: 12.5px; }
 /* 담당자 — 이름 앞에 프로필 사진(없으면 시그니처 컬러 + 이니셜). 누가 맡았는지는
@@ -1044,18 +1044,14 @@
   box-shadow: 0 8px 24px rgba(0,0,0,.22); }
 .mt-card.mtdnd-src { opacity: .35; outline: 2px dashed var(--accent); outline-offset: -2px; }
 
-/* Unread updates keep the Epic rail and urgency fill; three blue edges add emphasis
-   without changing card dimensions or keyboard/drag outlines. */
+/* A thin blue ring covers all four edges, outside the Epic rail. Keep card geometry,
+   urgency colors and keyboard/find outlines intact; the soft blue shadow adds emphasis. */
 :root[data-theme] .mytasks .mt-card.update-unread,
 :root[data-theme] .mytasks .mt-card.update-unread:hover,
 :root[data-theme] .mytasks .mt-gcard2.k-task > .mt-gbody .mt-card.update-unread,
 :root[data-theme] .mytasks .mt-compact-head > .mt-card.two.update-unread {
-  border-top-color: var(--accent); border-right-color: var(--accent); border-bottom-color: var(--accent);
-  box-shadow: inset 0 1px var(--accent), inset -1px 0 var(--accent), inset 0 -1px var(--accent),
-    0 3px 10px color-mix(in srgb, var(--accent) 22%, transparent);
-}
-:root[data-theme] .mytasks .mt-card.parent.update-unread {
-  box-shadow: inset 0 2px var(--accent), inset -2px 0 var(--accent), inset 0 -2px var(--accent);
+  box-shadow: 0 0 0 1px var(--accent),
+    0 3px 10px color-mix(in srgb, var(--accent) 28%, transparent);
 }
 .mt-card.update-unread .mt-key, .mt-card.update-unread .mt-title,
 .mt-card.update-unread .mt-owner { font-weight: 800; }
