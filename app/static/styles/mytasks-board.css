@@ -61,6 +61,14 @@
 .mt-options-toggle svg { width: 15px; height: 15px; flex: none; }
 .mt-options-toggle:hover { color: var(--accent); border-color: var(--accent); }
 .mt-options-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* A cool filter rail separates light-mode controls from the neutral ticket board.
+   Keep geometry and the dark palette unchanged; the edge is also the resize boundary. */
+:root[data-theme="light"] .mt-options-panel { background: #dfe8f3; border-right-color: #94a7c0; }
+:root[data-theme="light"] .mt-options-heading {
+  background: #d2dfef; border-bottom-color: #b6c6da; color: #334e73; }
+:root[data-theme="light"] .mt-options-toggle { background: #edf3fb; }
+:root[data-theme="light"] .mt-options-toggle:not(:hover):not(:focus-visible) {
+  border-color: #94a7c0; color: #456080; }
 .mt-options-panel.collapsed { width: 30px; }
 .mt-options-panel.collapsed .mt-options-toggle svg { transform: rotate(180deg); }
 .mt-options-rail-label { margin: 18px auto 0; writing-mode: vertical-rl; font-size: 11px;
