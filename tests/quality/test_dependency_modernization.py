@@ -18,7 +18,7 @@ RUNTIME_PINS = {
     "python-multipart": "0.0.32",
     "pydantic": "2.13.4",
     "pywin32": "312",
-    "jira820": "0.12.0",
+    "jira820": "0.13.0",
     "langchain": "1.3.15",
     "langchain-core": "1.5.6",
     "langchain-openai": "1.5.1",
@@ -46,6 +46,10 @@ SSO_PINS = {
     "pillow": "12.3.0",
 }
 
+RUNTIME_SOURCE_PINS = {
+    "jira820": "git+https://github.com/dongyi-kim/jira820.git@ed9b89f2377ec6e263f103aaa400ce1d5b002c0e",
+}
+
 
 def _direct_requirements(filename: str) -> dict[str, Requirement]:
     rows: dict[str, Requirement] = {}
@@ -67,15 +71,17 @@ def _dependency(package: str, dependency: str) -> Requirement:
     )
 
 
-def test_all_direct_runtime_dependencies_are_exact_stable_pins():
+def test_all_direct_runtime_dependencies_are_exact_version_or_immutable_source_pins():
     requirements = _direct_requirements("requirements.txt")
     actual = {
         name: next(iter(req.specifier)).version
         for name, req in requirements.items()
         if len(req.specifier) == 1 and next(iter(req.specifier)).operator == "=="
     }
-    assert actual == RUNTIME_PINS
-    assert all(not Version(version).is_prerelease for version in actual.values())
+    assert actual == {name: version for name, version in RUNTIME_PINS.items() if name not in RUNTIME_SOURCE_PINS}
+    assert {name: req.url for name, req in requirements.items() if req.url} == RUNTIME_SOURCE_PINS
+    assert set(requirements) == set(RUNTIME_PINS)
+    assert all(not Version(version).is_prerelease for version in RUNTIME_PINS.values())
 
 
 def test_sso_and_test_dependencies_are_exact_stable_pins():
