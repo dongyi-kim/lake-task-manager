@@ -47,7 +47,7 @@ SSO_PINS = {
 }
 
 RUNTIME_SOURCE_PINS = {
-    "jira820": "git+https://github.com/dongyi-kim/jira820.git@010b4db64fbfd9a4644f154e39121dfa88263ec3",
+    "jira820": "git+https://github.com/dongyi-kim/jira820.git@021628129e231b0e3ec80030e3039fdeeb97987f",
 }
 
 

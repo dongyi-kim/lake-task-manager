@@ -20,7 +20,7 @@ pywin32==312; sys_platform == "win32"
 # 0.5.0+: 멀티프로젝트(이슈별 project) + 통합검색(JQL text~ / Confluence CQL) 필요.
 # 0.13.0: Confluence 계층·리비전·CRUD와 고정 문서 ID를 공통 mock에서 제공한다.
 # PyPI 발행 전까지 검증한 공개 commit으로 고정한다. branch HEAD는 사용하지 않는다.
-jira820 @ git+https://github.com/dongyi-kim/jira820.git@010b4db64fbfd9a4644f154e39121dfa88263ec3
+jira820 @ git+https://github.com/dongyi-kim/jira820.git@021628129e231b0e3ec80030e3039fdeeb97987f
 
 # ── AI 에이전트 (LTM Agent) ────────────────────────────────────────────────
 #
