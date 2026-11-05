@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from support.paths import REPO_ROOT
+from support.browser import launch_chromium
 
 ROOT = REPO_ROOT
 DESCRIPTION_TICKET = "DL-9001"
@@ -144,23 +145,7 @@ def editor_browser(request, tmp_path):
     try:
         _wait_http(f"http://127.0.0.1:{port}/api/health", proc)
         with sync_playwright.sync_playwright() as playwright:
-            try:
-                browser = playwright.chromium.launch()
-            except Exception as bundled_exc:  # noqa: BLE001 — 번들 Chromium이 없으면 설치 브라우저 폴백
-                browser = None
-                for executable in (
-                    Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
-                    Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
-                ):
-                    if not executable.exists():
-                        continue
-                    try:
-                        browser = playwright.chromium.launch(executable_path=str(executable))
-                        break
-                    except Exception:  # noqa: BLE001 — 다음 설치 브라우저 시도
-                        pass
-                if browser is None:
-                    pytest.skip(f"chromium 없음: {str(bundled_exc)[:120]}")
+            browser = launch_chromium(playwright)
             page = browser.new_page(viewport={"width": 1720, "height": 1080})
             page.set_default_timeout(20_000)
             errors: list[str] = []
