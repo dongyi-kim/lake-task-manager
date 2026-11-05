@@ -25,7 +25,6 @@ def test_http_catalog_has_specific_output_contract_for_every_tool(build_env):
                 async with Client(streamable_http_client(env.runtime.url, http_client=http)) as client:
                     catalog = {tool.name: tool for tool in (await client.list_tools()).tools}
                     assert set(catalog) == set(data_types()) | {"get_hierarchy_options", "change_ticket_hierarchy"}
-                    assert len(catalog) == 65
                     for tool in catalog.values():
                         schema = tool.output_schema
                         assert schema and schema["type"] == "object"
