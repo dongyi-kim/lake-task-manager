@@ -465,8 +465,9 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .mention-badge .mention-av > img.mention-av-img.on { opacity: 1; }
 .mention-nm { min-width: 0; }
 
-/* 앱 전역 참조 호버 — body 직속 fixed layer라 표·다이얼로그 overflow에 잘리지 않는다. */
-.reference-hover { position:fixed; z-index:1200; width:max-content; min-width:220px;
+/* body 직속 호버는 티켓(9000)·대량 작성(100000) 다이얼로그 위에 표시한다.
+   클릭을 가로채지 않으며 전역 토스트(1000000)보다 아래에 둔다. */
+.reference-hover { position:fixed; z-index:110000; width:max-content; min-width:220px;
   max-width:min(430px, calc(100vw - 16px)); padding:8px 10px; border:1px solid var(--border-hi);
   border-radius:8px; background:var(--panel); color:var(--text); box-shadow:var(--shadow);
   font-size:11.5px; line-height:1.45; pointer-events:none; }
