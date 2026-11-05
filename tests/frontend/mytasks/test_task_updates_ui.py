@@ -134,9 +134,15 @@ def _assert_blue_edges(card):
       const accent=getComputedStyle(probe).color; probe.remove();
       return accent;
     }""")
-    for side in ("top", "right", "bottom"):
-        expect(card).to_have_css(f"border-{side}-color", accent)
-    expect(card).to_have_css("box-shadow", re.compile(r"(?:.*inset){3}"))
+    # A zero-offset outer ring covers all four sides without replacing the Epic rail.
+    expect(card).to_have_css("box-shadow", re.compile(re.escape(accent) + r" 0px 0px 0px 1px"))
+    shadow = card.evaluate('el => getComputedStyle(el).boxShadow')
+    assert 'inset' not in shadow
+    assert ' 0px 3px 10px ' in shadow, "the thin ring retains a soft blue elevation"
+
+
+def _key_weight(card):
+    return card.locator('.mt-key').evaluate('el => Number(getComputedStyle(el).fontWeight)')
 
 
 def test_updates_filter_precedes_paging_and_compact_layout_without_requery(updates_board):
@@ -226,11 +232,19 @@ def test_urgency_is_next_to_due_and_update_styling_keeps_semantic_edges(updates_
     for key in ("DL-305", "DL-307", "DL-308"):
         assert "🔥" not in page.locator(f'.mt-card[data-key="{key}"] .tc-when').inner_text()
 
-    # Update emphasis may replace urgency's three border colors, never Epic's rail.
+    # Include the wide parent renderer without changing the other tests' filter fixtures.
+    updates_board['activity']['DL-100']['latestRelevantAt'] = updates_board['now'] - 3600000
+    page.evaluate("async () => (await import('/lib/ticketUpdates.js')).observeTicketUpdates(['DL-100'], {force:true})")
+    page.locator('.mt-card.parent.update-unread[data-key="DL-100"]').wait_for()
+    # Update emphasis wraps the existing urgency borders and Epic rail.
     old = page.locator('.mt-card[data-key="DL-301"]')
     assert urgent.evaluate("el => getComputedStyle(el).borderLeftColor") == old.evaluate("el => getComputedStyle(el).borderLeftColor")
-    for key in ("DL-9007", "DL-101", "DL-200", "DL-305"):
-        _assert_blue_edges(page.locator(f'.mt-card[data-key="{key}"]'))
+    normal_weight = _key_weight(old)
+    assert normal_weight <= 500
+    for key in ("DL-9007", "DL-100", "DL-101", "DL-200", "DL-305"):
+        card = page.locator(f'.mt-card[data-key="{key}"]')
+        _assert_blue_edges(card)
+        assert _key_weight(card) >= normal_weight + 200
     child = page.locator('.mt-card[data-key="DL-101"]')
     assert child.evaluate("el => getComputedStyle(el).borderLeftColor") == page.locator(
         '.mt-card[data-key="DL-102"]').evaluate("el => getComputedStyle(el).borderLeftColor")
@@ -239,6 +253,7 @@ def test_urgency_is_next_to_due_and_update_styling_keeps_semantic_edges(updates_
     assert page.locator('.mt-card[data-key="DL-305"] .mt-title').evaluate(
         "el => getComputedStyle(el).textDecorationLine.includes('line-through')")
     output = updates_board["screenshot_dir"]
+    page.evaluate('window.scrollTo(0, 0)')
     page.screenshot(path=str(output / "task-updates-desktop.png"), animations="disabled")
     page.get_by_role("button", name="설정", exact=True).click()
     page.get_by_role("switch", name="다크/라이트", exact=True).click()
@@ -246,7 +261,7 @@ def test_urgency_is_next_to_due_and_update_styling_keeps_semantic_edges(updates_
     assert page.locator('html').get_attribute("data-theme") == "dark"
     page.mouse.move(500, 20)
     page.screenshot(path=str(output / "task-updates-dark.png"), animations="disabled")
-    for key in ("DL-9007", "DL-101", "DL-200", "DL-305"):
+    for key in ("DL-9007", "DL-100", "DL-101", "DL-200", "DL-305"):
         _assert_blue_edges(page.locator(f'.mt-card[data-key="{key}"]'))
     urgent.hover()
     page.screenshot(path=str(output / "task-updates-hover.png"), animations="disabled")
@@ -267,12 +282,15 @@ def test_urgency_is_next_to_due_and_update_styling_keeps_semantic_edges(updates_
 
 
 def test_closing_loaded_ticket_moves_it_between_update_filters_without_jira_reload(updates_board):
+    from playwright.sync_api import expect
+
     ctx = updates_board
     page = ctx["page"]
     control = page.get_by_label("업데이트 필터", exact=True)
     control.select_option("yes")
     card = page.locator('.mt-card.update-unread[data-key="DL-9007"]')
     card.wait_for()
+    unread_weight = _key_weight(card)
     requests = len(ctx["streams"])
     with page.expect_response("**/api/tickets/viewed"):
         card.click()
@@ -289,6 +307,9 @@ def test_closing_loaded_ticket_moves_it_between_update_filters_without_jira_relo
     card.wait_for()
     assert "update-unread" not in card.get_attribute("class")
     assert card.locator('.tc-update-mark').count() == 0
+    assert _key_weight(card) < unread_weight
+    assert _key_weight(card) == _key_weight(page.locator('.mt-card[data-key="DL-301"]'))
+    expect(card).not_to_have_css('box-shadow', re.compile(r'0px 0px 0px 1px'))
     assert len(ctx["streams"]) == requests
     assert not ctx["errors"], ctx["errors"]
 
@@ -315,6 +336,8 @@ def test_find_remains_on_read_card_with_urgency_and_sidebar_filters(updates_boar
     dialog.wait_for(state='hidden')
     card.wait_for()
     expect(card.locator('.tc-update-mark')).to_have_count(0)
+    assert _key_weight(card) <= 500
+    expect(card).not_to_have_css('box-shadow', re.compile(r'0px 0px 0px 1px'))
     expect(card).to_have_css('outline-width', '3px')
     assert '🔥' in card.locator('.tc-when').inner_text()
     control = page.get_by_label("업데이트 필터", exact=True)
