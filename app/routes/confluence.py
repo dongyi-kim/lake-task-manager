@@ -158,6 +158,9 @@ def build_confluence_router(*, get_client):
             _check_space(client, (data.get("space") or {}).get("key"))
             base = (client.s.confluence_base or "").rstrip("/")
             result = dict(data)
+            # body.view does not expand ancestors. Navigation follows the current
+            # tree even when the reader is displaying a pinned historical body.
+            result["ancestors"] = current.get("ancestors") or []
             result["html"] = document_html((data.get("body", {}).get("view") or {}).get("value", ""), base, page_id)
             result.pop("body", None)
             result["url"] = base + f"/pages/viewpage.action?pageId={page_id}"

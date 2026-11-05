@@ -104,3 +104,13 @@ def test_html_security_and_configured_host_media():
     assert _media_path(base, "12", "/wiki/download/attachments/13/image.png") is None
     assert _media_path(base, "12", "/wiki/download/attachments/12/%2e%2e/secret") is None
     assert _media_path(base, "12", "https://evil.example/wiki/download/attachments/12/image.png") is None
+
+
+def test_reader_uses_head_path_when_body_does_not_expand_ancestors(browser_api, monkeypatch):
+    http, service, client = browser_api
+    ancestors = [{"id": "1", "title": "Root"}, {"id": "2", "title": "Guides"}]
+    monkeypatch.setattr(service, "head", lambda *a, **k: {"id": "12", "space": {"key": "ETL"}, "ancestors": ancestors})
+    monkeypatch.setattr(service, "body", lambda *a, **k: {"id": "12", "space": {"key": "ETL"},
+        "version": {"number": 1}, "body": {"view": {"value": "<h2>Body</h2>"}}})
+    response = http.get("/api/confluence/pages/12")
+    assert response.status_code == 200 and response.json()["ancestors"] == ancestors
