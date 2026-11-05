@@ -35,6 +35,8 @@ import {
 } from "../mytasks/taskModel.js";
 import TASK_SECTION_TEMPLATE from "../mytasks/taskSectionTemplate.js";
 import { BOARD_HEADER_TEMPLATE, OPTIONS_PANEL_TEMPLATE } from "../mytasks/taskBoardTemplate.js";
+import { OPTIONS_WIDTH, OPTIONS_MIN_WIDTH, OPTIONS_MAX_WIDTH,
+  optionsPanelComputed, optionsPanelMethods } from "../mytasks/taskOptionsPanel.js";
 import { groupTaskSections } from "../mytasks/taskGrouping.js";
 import { DUE_FILTER_OPTIONS, priorityOptions as buildPriorityOptions,
   matchTaskDisplayFilters } from "../mytasks/taskDisplayFilters.js";
@@ -65,6 +67,7 @@ export default {
       axis: window.matchMedia(NARROW).matches ? "v" : "h",
       groupBy: "sub",       // wbs | epic | sub (Task) | none; 기존 저장값 sub 유지
       optionsClosed: window.matchMedia(NARROW).matches,
+      optionsWidth: OPTIONS_WIDTH, optionsViewportWidth: window.innerWidth,
       // 하위(Sub-Task) 보기 — **화면 전체에 하나**. collapsed | mine | all.
       // 전에는 그룹마다 버튼을 달아 개별로 바꿨는데, 그룹이 열 개면 열 번 눌러야 원하는 상태가 되고
       // 지금 무엇이 펼쳐져 있는지도 카드마다 달라 한눈에 안 잡혔다. 보기 방식은 화면의 성격이지
@@ -172,7 +175,7 @@ export default {
       if (this._optionsFrame) return;
       this._optionsFrame = requestAnimationFrame(() => {
         this._optionsFrame = null;
-        this.updateOptionsHeight();
+        this.updateOptionsLayout();
       });
     };
     window.addEventListener("scroll", this._optionsViewport, { passive: true, capture: true });
@@ -191,6 +194,7 @@ export default {
     window.removeEventListener('workspace-config-updated', this._workspaceUpdate);
     this._unbindDrag && this._unbindDrag();
     this._boardResize?.disconnect();
+    this._stopOptionsResize?.();
     window.removeEventListener("scroll", this._optionsViewport, true);
     window.removeEventListener("resize", this._optionsViewport);
     if (this._optionsFrame) cancelAnimationFrame(this._optionsFrame);
@@ -199,6 +203,7 @@ export default {
                                  : this._mq.removeListener(this._onMq);
   },
   computed: {
+    ...optionsPanelComputed,
     groups() { return (this.model && this.model.groups) || []; },
     epicMap() {
       const m = {};
@@ -372,6 +377,7 @@ export default {
     },
   },
   methods: {
+    ...optionsPanelMethods,
     /** 세션 사용자와 모듈 디렉토리를 Task 본문과 독립적으로 받는다.
      *  선택 이력이 없으면 첫 소속 모듈을 기본으로 잡고, 모듈 필터가 활성화된 상태라면
      *  먼저 시작한 전체 모듈 요청을 즉시 취소해 새 기본 모듈로 전환한다. */
@@ -991,6 +997,9 @@ export default {
       try { saved = JSON.parse(localStorage.getItem(PREF_KEY) || "null"); } catch (e) { saved = null; }
       if (!saved) return;
       if (typeof saved.optionsClosed === "boolean") this.optionsClosed = saved.optionsClosed;
+      if (Number.isFinite(saved.optionsWidth)) {
+        this.optionsWidth = Math.round(Math.max(OPTIONS_MIN_WIDTH, Math.min(OPTIONS_MAX_WIDTH, saved.optionsWidth)));
+      }
       if (typeof saved.priorityFilter === "string" && saved.priorityFilter.length <= 256
           && (saved.priorityFilter === "__none__"
             || (saved.priorityFilter.startsWith("name:") && saved.priorityFilter.slice(5).trim()))) {
@@ -1025,7 +1034,8 @@ export default {
     },
     savePrefs() {
       const out = { bandClosed: this.bandClosed, epicHidden: this.epicHidden, gClosed: this.gClosed,
-                    optionsClosed: this.optionsClosed, priorityFilter: this.priorityFilter, dueFilter: this.dueFilter,
+                    optionsClosed: this.optionsClosed, optionsWidth: this.optionsWidth,
+                    priorityFilter: this.priorityFilter, dueFilter: this.dueFilter,
                     scope: this.scope, moduleSel: this.moduleSel, moduleSelExplicit: this.moduleSelExplicit,
                     projPref: this.projPref,
                     assigneeSel: this.assigneeSel, reporterSel: this.reporterSel, jqlText: this.jqlText };
@@ -1297,15 +1307,7 @@ export default {
     updateBoardAxis() {
       const width = this.$refs.board?.getBoundingClientRect().width || window.innerWidth;
       this.axis = width <= 900 ? "v" : "h";
-      this.updateOptionsHeight();
-    },
-    updateOptionsHeight() {
-      const panel = this.$refs.optionsPanel;
-      if (!panel || this.optionsClosed) return;
-      // Desktop leaves room for global add/refresh buttons; the mobile drawer covers them.
-      const bottom = window.matchMedia(NARROW).matches ? 12 : 120;
-      const height = Math.max(100, window.innerHeight - panel.getBoundingClientRect().top - bottom);
-      panel.style.setProperty("--mt-options-height", height + "px");
+      this.updateOptionsLayout();
     },
     toggleOptions() {
       this.optionsClosed = !this.optionsClosed;
@@ -1492,7 +1494,8 @@ export default {
     },
   },
   template: `
-  <div class="mytasks" :class="'ax-' + axis" :style="{ '--mt-cols': gridCols }">
+  <div class="mytasks" :class="['ax-' + axis, { 'options-closed': optionsClosed }]"
+       :style="{ '--mt-cols': gridCols, '--mt-options-width': optionsRenderedWidth + 'px' }">
     <!-- 상단 요약 타일. 조회 조건은 좌측 보기 옵션에 모은다. -->
     <div class="mt-top">
       <AdvancedSearchDialog v-if="advOpen" :projects="(me && me.searchProjects) || []" :my-id="myId"
