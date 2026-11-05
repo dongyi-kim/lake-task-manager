@@ -97,6 +97,7 @@ def editor_browser(request, tmp_path):
     env.update({
         "JIRA_ENV": "mock",
         "LAKE_NO_WINDOW": "1",
+        "APP_PORT": str(port),  # Origin validation must use the same port as the fixture server.
         "LAKE_MOCK_LATENCY_MS": str(latency_ms),
         # Preferences, MCP credentials and auth state must be as isolated as the Jira cache.
         "LAKE_CACHE_DIR": str(run_dir),
@@ -112,8 +113,26 @@ def editor_browser(request, tmp_path):
             "import jira820.serialize as serializer",
             "original = serializer.render_wiki",
             "serializer.render_wiki = lambda body, *args: body if (body or '').lstrip().startswith('<') else original(body, *args)",
+            "from app.main import app, _client",
+            # Inspect/seed the mock upstream's stored HTML without passing through LTM's display
+            # sanitizer. These routes exist only in this test process, never in the app router.
+            "@app.get('/__editor_test__/stored/{key}')",
+            "def stored(key: str):",
+            "    assert key in ('DL-9001', 'DL-9007')",
+            "    issue = _client.provider.get_json('/rest/api/2/issue/' + key)",
+            "    comments = _client.provider.get_json('/rest/api/2/issue/' + key + '/comment')",
+            "    return {'description': issue['fields'].get('description'), 'comments': comments['comments']}",
+            "@app.post('/__editor_test__/seed/{key}')",
+            "def seed(key: str, body: dict):",
+            "    assert key in ('DL-9001', 'DL-9007')",
+            "    if 'description' in body:",
+            "        _client.provider.put_json('/rest/api/2/issue/' + key, {'fields': {'description': body['description']}})",
+            "    if 'comment' in body:",
+            "        _client.provider.post_json('/rest/api/2/issue/' + key + '/comment', {'body': body['comment']})",
+            "    return {'ok': True}",
+            "app.router.routes[:] = app.router.routes[-2:] + app.router.routes[:-2]",
             "import uvicorn",
-            f"uvicorn.run('app.main:app', host='127.0.0.1', port={port}, log_level='warning')",
+            f"uvicorn.run(app, host='127.0.0.1', port={port}, log_level='warning')",
         ])]
     log_path = run_dir / "server.log"
     log = log_path.open("w", encoding="utf-8")
@@ -146,10 +165,15 @@ def editor_browser(request, tmp_path):
             page.set_default_timeout(20_000)
             errors: list[str] = []
             page.on("pageerror", lambda exc: errors.append(str(exc)[:400]))
-            page.on("response", lambda response: errors.append(
-                f"HTTP {response.status} {response.url}")
-                if (response.status >= 400 and "/api/" in response.url
-                    and "/api/favicon" not in response.url) else None)
+            def response_error(response):
+                if response.status < 400 or "/api/" not in response.url or "/api/favicon" in response.url:
+                    return
+                try:
+                    detail = response.text()[:300]
+                except Exception:  # The page may already be closing after a failed assertion.
+                    detail = ""
+                errors.append(f"HTTP {response.status} {response.url} {detail}")
+            page.on("response", response_error)
             try:
                 yield page, f"http://127.0.0.1:{port}", errors, upload_path
             finally:
