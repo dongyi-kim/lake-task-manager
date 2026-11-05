@@ -6,6 +6,7 @@ and searches share one explicit invalidation contract.
 """
 
 import hashlib
+import json
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -83,9 +84,11 @@ class JqlCachePolicy:
         return self.cache.epoch(self.leaf_epoch_namespace())
 
     def user_context(self):
-        user = self.owner.current_user() or {}
-        identity = str(user.get("id") or "anonymous")
-        return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+        # A local cache is installation-owned. currentUser() still resolves in JQL preprocessing.
+        settings = getattr(self.owner, "s", None)
+        scope = [self.owner.env, str(getattr(settings, "jira_base", "") or "").rstrip("/"),
+                 str(getattr(settings, "project_key", "") or "")]
+        return "local-" + hashlib.sha256(json.dumps(scope).encode()).hexdigest()[:16]
 
     def advance_generation(self):
         self.cache.bump_epoch(self.leaf_epoch_namespace())

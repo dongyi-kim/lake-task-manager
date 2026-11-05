@@ -1,4 +1,4 @@
-"""Manager-only local configuration API, using the same commands as MCP."""
+"""Local single-user local configuration API, using the same commands as MCP."""
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError

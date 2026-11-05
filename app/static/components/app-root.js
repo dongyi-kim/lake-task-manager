@@ -1,4 +1,4 @@
-// app-root.js — SPA 루트: 해시 라우팅(#/wbs #/vit #/workload) + nav + 산식 callout + 로그인 오버레이.
+// app-root.js — SPA 루트: 해시 라우팅(#/wbs #/vit #/workload) + nav + 산식 callout + 연결 안내.
 // <keep-alive> 로 뷰 상태(데이터·detail/activity 캐시·펼침) 보존 → 탭 전환 재fetch 없음. updated: 2026-07-09
 import MyTasksView from "./views/MyTasksView.js";
 import WorkloadView from "./views/WorkloadView.js";
@@ -31,22 +31,17 @@ import { installAuthActivityProbe } from "../lib/authActivity.js";
 // #/guide 는 예전 주소를 살리는 별칭이다(북마크를 깨지 않는다).
 const ROUTES = { home: HomeView, guide: HomeView, ai: AgentView, wbs: WbsView, vit: VitView,
                  workload: WorkloadView, mytasks: MyTasksView, devtools: DevToolsView };
-// 탭 정의 한곳 — 라벨과 접근 권한이 갈라지지 않게. manager: true 면 매니저에게만 보인다.
-// (티켓 뷰/다이얼로그·검색은 역할과 무관하다 — 여기 없는 건 다 누구나 쓴다.)
+// 로컬 앱의 모든 화면은 설치 사용자에게 열려 있다. Jira 권한은 실제 조회/쓰기에서 확인한다.
 const TABS = [
   // ✨ 는 **AI 탭에만** 붙는다(사용자 요청) — 새로 생긴 기능이라 눈이 먼저 가야 한다.
   //    라벨 문자열에 이모지를 섞지 않고 플래그로 두는 이유: 라벨은 라우팅·검색·
   //    접근성 텍스트에도 쓰여서, 거기까지 이모지가 따라가면 안 된다.
   { k: "ai", label: "AI", spark: true },
-  { k: "wbs", label: "WBS Dashboard", manager: true },
+  { k: "wbs", label: "WBS Dashboard" },
   { k: "vit", label: "현안 (PMO_VIT)" },
-  // 인력 워크로드 — 매니저는 전체 모듈, 비매니저도 **자기 모듈**은 볼 수 있다(백엔드가 사번→모듈로
-  // 스코프한다). 그래서 manager 게이트를 두지 않는다(탭 노출·라우팅 모두 개방).
   { k: "workload", label: "인력 워크로드" },
   { k: "mytasks", label: "Task" },
 ];
-// 탭에 없지만 주소로는 갈 수 있는 매니저 전용 화면(설정 메뉴에서 진입).
-const MANAGER_ONLY = new Set(TABS.filter((t) => t.manager).map((t) => t.k).concat(["devtools"]));
 function currentRoute() { return location.hash.replace("#/", "") || "home"; }
 // /browse/DL-1234 — 그 티켓만의 단독 페이지("새 창에서 열기" 대상).
 // Jira 와 같은 URL 형태라 주소만 보고도 어느 티켓인지 안다.
@@ -58,43 +53,18 @@ function ticketOf() {
 export default {
   name: "AppRoot",
   components: { FormulaCallout, LoginOverlay, StatusBanner, ToastStack, TicketMenu, TicketDialog, TransitionDialog, SearchOverlay, SettingsMenu, FloatingRefresh, AddTicketFab, GuideSpot },
-  // ready=health 판정 전. prod 첫 실행: 부팅로더 → (여기) 로딩 스피너 → 로그인 오버레이/대시보드.
-  //   → 흰 화면 없음 + 로그인 필요 시 뷰를 먼저 안 띄워 401 에러 깜빡임 방지.
+  // Health reads local configuration; Jira authentication never gates local navigation/drafts.
   data() { return { route: currentRoute(), theme: document.documentElement.getAttribute("data-theme") || "light",
                     ready: false, needLogin: false, ticketKey: null, searchOpen: false,
-                    // null = 아직 모름 · true = 매니저 · false = 아님.
-                    // ★ 모를 때는 **막지 않는다**(false 일 때만 제한). 판정이 늦거나 실패했다고
-                    //   매니저의 탭이 사라지거나 첫 화면에서 튕기는 쪽이, 워커에게 잠깐 보였다가
-                    //   사라지는 쪽보다 훨씬 나쁘다. 데이터는 어차피 서버가 403 으로 막는다.
-                    manager: null,
-                    // 캐시로 버틸 수 있는가. 미인증이어도 캐시가 살아 있으면 화면은 띄운다.
-                    hasCache: false,
                     // 배포 repo 업데이트 가능 여부(null=아직 모름). updating=재시작 트리거 후.
                     update: null, updating: false,
                     // 하위 상태변경 후처리: 부모 전이에 필수 입력이 있으면 이 다이얼로그로 채운다.
                     cascadeTrx: null,
                     ticketKeyFromPath: ticketOf() }; },
   computed: {
-    // ★ 매니저 전용 탭은 **매니저로 확정된 뒤에만** 보인다(manager===true). 예전엔 '아직 모름
-    //   (null)' 일 때도 보여 줘서, 워커에게 잠깐 떴다가 사라졌다 — 순서를 뒤집어 '판정 후 표시'.
-    //   (판정이 끝내 실패하면 그 탭은 안 뜨지만, 주소로는 갈 수 있고 데이터는 서버가 막는다.)
-    tabs() { return TABS.filter((t) => !t.manager || this.manager === true); },
-    /** 이 사용자가 볼 수 있는 화면인가. 매니저 전용인데 '아님(false)' 이면 접근을 막는다.
-     *  (아직 모름(null)일 땐 막지 않는다 — 판정 지연으로 매니저가 튕기는 게 더 나쁘다.) */
-    allowed() { return !MANAGER_ONLY.has(this.route) || this.manager !== false; },
-    view() {
-      if (!this.allowed) return ROUTES.mytasks;   // 권한 없는 주소는 '내 Task' 로
-      return ROUTES[this.route] || ROUTES.home;
-    },
+    tabs() { return TABS; },
+    view() { return ROUTES[this.route] || ROUTES.home; },
     pageTicket() { return this.ticketKeyFromPath; },
-  },
-  watch: {
-    // 볼 수 없는 주소면 주소 자체를 바로잡는다. 화면만 바꿔치면 해시가 #/wbs 로 남아
-    // 탭 강조가 아무 데도 안 걸리고, 새로고침할 때마다 같은 상황이 되풀이된다.
-    route() { this.guard(); },
-    // 판정이 늦게 도착해 '매니저 아님' 으로 밝혀지면 그때 자리를 옮긴다.
-    // (기본 진입 #없음 = wbs 도 여기서 걸린다 — 워커의 기본 화면은 내 Task 다.)
-    manager() { this.guard(); },
   },
   mounted() {
     // 티켓 링크·뱃지와 사람 멘션은 화면별 구현 대신 앱 전체가 같은 상세 호버를 사용한다.
@@ -129,16 +99,9 @@ export default {
     // 하위 티켓 상태변경/생성의 **후처리** — 부모 상태 규칙을 촉발하면 '상위도 바꿀까?' 물어본다.
     window.addEventListener("cascade-prompt", (e) => { if (e && e.detail) this.onCascade(e.detail); });
     window.addEventListener("need-login", () => {
-      // ★ **이미 화면이 떠 있으면 갈아엎지 않는다.** prod 는 세션이 잠깐씩 끊겼다 붙는데,
-      //   그때마다 화면을 로그인 오버레이로 바꾸면 보던 티켓 창과 쓰던 글이 사라진다.
-      //   인증이 필요하다는 사실은 상단 알림이 말하고, 재인증은 뒤에서 조용히 돈다.
-      //   처음 뜰 때(아직 아무것도 못 그린 상태)만 오버레이로 막는다.
-      if (this.ready) return;
-      this.needLogin = true; this.ready = true;
+      this.needLogin = true; // connection notice only; never replace the active view
     });
-    // 인증이 서면 화면을 연다. **런처가 서버 자기 창으로 SSO 를 끝내는 경로**(prod 첫 기동)에서는
-    // 프론트가 로그인을 건 적이 없어, 여기서 안 열면 오버레이만 걷히고 아무 화면도 없이 남는다.
-    // (api.js 의 인증 감시자가 그 순간을 잡아 auth-ok 를 쏜다.)
+    // 인증 복구는 현재 화면과 초안을 유지한 채 데이터 갱신만 재개한다.
     window.addEventListener("auth-ok", () => {
       this.needLogin = false; this.ready = true;
       api.warmGlobals();       // 어느 탭의 본 데이터도 기다리지 않고 FieldEdit 기본목록 준비
@@ -170,24 +133,16 @@ export default {
     //   멎는다. 여기에 부팅을 묶으면 창이 '불러오는 중…' 에서 몇 분씩 갇힌다(실제로 겪었다).
     api.health().then((h) => {
       this.needLogin = !!(h && h.needLogin);
-      this.hasCache = !!(h && h.hasCache);
-      // 미인증인 채로 뜬 첫 화면 — 인증이 서는 순간을 지켜본다. 401 을 한 번도 안 겪는 경로
-      // (캐시가 없어 뷰가 아예 안 뜬 경우)라 여기서 직접 걸어 줘야 한다.
+      // The nonblocking connection notice performs silent recovery; observe its completion.
       if (this.needLogin) watchAuth();
       else api.warmGlobals();  // Task/티켓 로딩이 느려도 FieldEdit 추천은 독립적으로 데운다.
     }).catch(() => {}).finally(() => { this.ready = true; });
-    // 매니저 판정은 **부팅과 무관하게** 따로 흐른다. 결과가 오면 watch 가 정리한다.
-    api.me().then((me) => { this.manager = !!(me && me.manager); })
-      .catch(() => { this.manager = null; });   // 모르면 막지 않는다(아래 주석 참고)
     // 업데이트(배포 repo 최신 여부) — 시작 시 + 주기적으로 확인. 실패는 조용히(표시만 하는 기능).
     this.checkUpdate();
     setInterval(() => this.checkUpdate(), 30 * 60 * 1000);
   },
   unmounted() { if (this._stopAuthActivity) this._stopAuthActivity(); },
   methods: {
-    /** 볼 수 없는 주소면 워커 기본 화면(내 Task)으로. 화면만 바꿔치지 않고 **주소까지** 고친다
-     *  — 안 그러면 탭 강조가 아무 데도 안 걸리고 새로고침마다 같은 상황이 되풀이된다. */
-    guard() { if (!this.allowed) location.hash = "#/mytasks"; },
     /** 하위 상태변경 후처리 — 부모도 바꿀지 확인하고, [예]면 기존 전이 경로로 상위를 전이한다.
      *  필수 입력이 있는 전이면(needsScreen) 부모 전이 다이얼로그를 열어 사용자가 채우게 한다.
      *  상위 전이가 또 조상 규칙을 촉발하면 응답의 cascade 로 **연쇄**된다. */
@@ -288,14 +243,11 @@ export default {
         </div>
       </header>
       <div v-if="!ready" class="loading page">인증 확인 중…</div>
-      <!-- 티켓 단독 페이지: 대시보드 뷰 대신 티켓 내용만 -->
-      <TicketDialog v-else-if="!needLogin && pageTicket" :key="pageTicket"
+      <!-- Jira 세션은 개별 데이터 요청에서 처리한다. 로컬 화면과 초안은 항상 열린다. -->
+      <TicketDialog v-else-if="pageTicket" :key="pageTicket"
                     :key-id="pageTicket" mode="page" :theme="theme"
                     @search="searchOpen = true" @toggle-theme="toggleTheme" />
-      <!-- 인증이 안 됐어도 **캐시가 살아 있으면** 화면을 준다. 오프라인에서 아무것도 못 보는
-           것보다, 낡았다는 사실을 알리면서 어제 것이라도 보여 주는 편이 쓸모 있다.
-           캐시가 죽었으면(dead_ttl 초과) 보여 줄 게 없으므로 인증 전에는 못 들어간다. -->
-      <template v-else-if="!needLogin || hasCache">
+      <template v-else>
         <StatusBanner />
         <FormulaCallout :route="route" />
         <keep-alive><component :is="view"></component></keep-alive>
@@ -307,7 +259,7 @@ export default {
       <!-- 우하단 알림 스택 — 인증·다운로드 등 주요 알림이 쌓였다 사라진다(항상 존재) -->
       <ToastStack />
       <!-- 좌하단 '+' 티켓 추가(공통) — 로그인·devtools 제외하고 어디서든 -->
-      <AddTicketFab v-if="ready && (!needLogin || hasCache) && route !== 'devtools'" />
+      <AddTicketFab v-if="ready && route !== 'devtools'" />
       <!-- 기능 안내(한 번만) — 목록은 lib/guides.js. 다이얼로그가 떠 있으면 띄우지 않는다:
            가리킬 버튼이 그 뒤에 가려져 무엇을 말하는지 알 수 없게 된다. -->
       <GuideSpot v-if="ready && !needLogin && !ticketKey && !pageTicket" :route="route" />

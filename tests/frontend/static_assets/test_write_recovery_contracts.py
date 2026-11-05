@@ -46,9 +46,9 @@ def test_pending_create_storage_outlives_renderer_restart_and_matches_receipt_tt
 
 def test_auth_error_keeps_server_reason_and_triggers_login_recovery():
     api = _read("lib/api.js")
-    assert "b.detail || b.error" in api
+    assert "body.detail || body.error" in api
     assert "error.needLogin" in api
-    assert 'window.dispatchEvent(new CustomEvent("need-login"))' in api
+    assert 'window.dispatchEvent(new CustomEvent("need-login", { detail: { silentFailed: true } }))' in api
 
 
 
@@ -60,7 +60,7 @@ def test_no_screen_transition_calls_share_the_same_durable_receipt_contract():
     assert 'const scope = "transition-api:"' in api
     assert "payload = saved && saved.payload ? saved.payload" in api
     assert 'clientMutationId: newMutationId("transition")' in api
-    assert "if (managed && !(error && (error.uncertain || error.needLogin)))" in api
+    assert "if (managed && !(error && (error.uncertain || error.needLogin || error.authRecovered || error.authRecoveryPending)))" in api
     for source in (tasks, root):
         assert 'targetStatusId: t.toId || ""' in source
         assert 'targetStatusName: t.to || ""' in source

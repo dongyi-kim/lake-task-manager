@@ -23,7 +23,7 @@ def test_ui_http_response_loss_replays_confirmed_rows_without_duplicate_creation
         assert len(writes) == 5
 
 
-@pytest.mark.parametrize("field", ["environment", "jiraBase", "projectKey", "userId"])
+@pytest.mark.parametrize("field", ["environment", "jiraBase", "projectKey"])
 def test_bulk_ui_scope_rechecks_authoritative_context_before_any_write(build_env, monkeypatch, field):
     env = build_env()
     with TestClient(env.app) as http:
@@ -46,8 +46,8 @@ def test_bulk_ui_scope_rechecks_authoritative_context_before_any_write(build_env
         assert not [call for call in env.calls if call[:2] == ("post", "/rest/api/2/issue")]
         current = http.get("/api/bulk/create-context").json()
         assert current[field] != scope[field]
-        # Both GET and the POST fence query upstream identity, bypassing the old /api/me cache.
-        assert len([call for call in env.calls if call[:2] == ("get", "/rest/api/2/myself")]) == 3
+        # Local draft scope lookup and an invalid scope never query Jira identity.
+        assert not [call for call in env.calls if call[:2] == ("get", "/rest/api/2/myself")]
 
 
 def test_bulk_ui_lost_write_auth_error_then_reconciliation_returns_original_key(build_env, monkeypatch):
@@ -55,6 +55,8 @@ def test_bulk_ui_lost_write_auth_error_then_reconciliation_returns_original_key(
     from app.auth.base import SessionExpired, UpstreamUnavailable
 
     env = build_env()
+    # Normal auth/activity already knows the Jira author; no write-time /myself is needed.
+    env.cache.set(f"myself:{env.client.env}", {"id": "u01", "actorAliases": ["u01"]}, 3600)
     original_post, original_get = env.provider.post_json, env.provider.get_json
     committed = []
 
@@ -90,8 +92,7 @@ def test_bulk_ui_lost_write_auth_error_then_reconciliation_returns_original_key(
 
 
 @pytest.mark.parametrize("when", ["validation", "after-first-row"])
-@pytest.mark.parametrize("replace_provider", [True, False], ids=["reset-provider", "same-provider-new-actor"])
-def test_bulk_dispatch_cannot_switch_actor_mid_batch(build_env, monkeypatch, when, replace_provider):
+def test_bulk_dispatch_cannot_adopt_replaced_provider_mid_batch(build_env, monkeypatch, when):
     from copy import copy
     from app.services.ticket_commands import TicketCommands
 
@@ -107,10 +108,9 @@ def test_bulk_dispatch_cannot_switch_actor_mid_batch(build_env, monkeypatch, whe
             return
         switched = True
         env.store.config.current_user = "u02"
-        if replace_provider:
-            replacement = copy(env.provider)
-            env.client.reset_provider()
-            env.client._provider, env.client._provider_built = replacement, True
+        replacement = copy(env.provider)
+        env.client.reset_provider()
+        env.client._provider, env.client._provider_built = replacement, True
 
     def validate_then_switch(self, mode, items):
         checked = original_validate(self, mode, items)
@@ -147,3 +147,18 @@ def test_bulk_dispatch_cannot_switch_actor_mid_batch(build_env, monkeypatch, whe
         assert len(set(env.store.issues) - before) == 5
         assert keys <= {row["key"] for row in recovered.json()["created"]}
         assert all(env.store.issues[row["key"]]["reporter"] == "u01" for row in recovered.json()["created"])
+
+
+def test_bulk_local_context_is_available_without_auth_and_accepts_legacy_user_field(build_env, monkeypatch):
+    env = build_env()
+    original = env.client._fetch_current_user
+    monkeypatch.setattr(env.client, "_fetch_current_user", lambda: pytest.fail("local scope must not fetch identity"))
+    with TestClient(env.app) as http:
+        scope = http.get("/api/bulk/create-context").json()
+        assert set(scope) == {"environment", "jiraBase", "projectKey"}
+        assert env.calls == []
+        monkeypatch.setattr(env.client, "_fetch_current_user", original)
+        response = http.post("/api/bulk/create", json={"mode": "task", "items": [
+            {"summary": "legacy local draft", "type": "Task", "epic": None}],
+            "clientMutationId": "bulk:legacy:local:0001", "expectedScope": {**scope, "userId": "old-user"}})
+        assert response.status_code == 200 and response.json()["ok"]

@@ -46,6 +46,7 @@ export const STATE_KEYS = new Set(STATES.map((state) => state.k));
 const VOC_SIG = "var(--ty-story)";
 
 export function taskLoadErrorKind(error) {
+  if (error?.authRecovered || error?.authRecoveryPending) return "other";
   const message = String((error && error.message) || error || "").toLowerCase();
   if (/\b403\b|forbidden|permission|not permitted|권한/.test(message)) return "permission";
   if (/\b401\b|login|required|session|anonymous|인증|로그인/.test(message)) return "auth";

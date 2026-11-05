@@ -6,7 +6,7 @@ the response never reached LTM.  This module stores a small durable receipt and 
 client mutation ids.  On a retry it asks a caller-provided reconciler to prove FOUND/ABSENT before
 ever issuing the write again.
 
-The receipt contains a SHA-256 payload fingerprint, minimal Jira actor aliases, optional workflow
+The receipt contains a SHA-256 payload fingerprint, optional cached Jira author evidence, optional workflow
 authority, and the eventual Jira response. The submitted logical payload itself is never stored.
 """
 
@@ -52,9 +52,11 @@ class MutationReceiptStore:
     # the UI to preserve input and retry reconciliation, never the mutation itself.
     ABSENT_RETRY_GRACE_SECONDS = 30
 
-    def __init__(self, cache, environment):
+    def __init__(self, cache, environment, *, scope=None):
         self.cache = cache
         self.environment = str(environment or "")
+        self.scope = scope
+        self.scope_id = self.fingerprint(scope)[:24] if scope is not None else None
         self._guard = threading.Lock()
         self._locks: dict[str, threading.Lock] = {}
         # A timed-out SSO call can keep running in Playwright's owner thread after its FastAPI
@@ -74,7 +76,8 @@ class MutationReceiptStore:
             return ""
         if not _MUTATION_ID.fullmatch(mid):
             raise ValueError("올바르지 않은 clientMutationId 입니다.")
-        return f"v1:{self.environment}:{str(kind or '').strip()}:{mid}"
+        prefix = f"v2:{self.environment}:{self.scope_id}" if self.scope_id else f"v1:{self.environment}"
+        return f"{prefix}:{str(kind or '').strip()}:{mid}"
 
     def _lock(self, key):
         with self._guard:
@@ -103,7 +106,21 @@ class MutationReceiptStore:
     def receipt(self, kind, mutation_id):
         """Return a durable receipt for callers that need its recovery context before execute."""
         key = self._key(kind, mutation_id)
-        return self.cache.mutation_receipt(key) if key else None
+        if not key:
+            return None
+        current = self.cache.mutation_receipt(key)
+        if current or self.scope is None:
+            return current
+        legacy_key = f"v1:{self.environment}:{str(kind or '').strip()}:{str(mutation_id).strip()}"
+        legacy = self.cache.mutation_receipt(legacy_key)
+        if legacy is None:
+            return None
+        # v1 did not record a Jira server/project. Never adopt or replay it under an
+        # assumed current configuration, even if it already contains a success result.
+        raise MutationOutcomeUnknown(str(mutation_id),
+            "이전 버전의 요청에는 Jira 연결 정보가 없어 결과를 자동 재확인할 수 없습니다. "
+            "초안과 요청 기록은 보존했습니다. 원래 Jira에서 생성 여부를 확인해 주세요.")
+
 
     def execute(self, *, kind, mutation_id, payload, write, reconcile, after_success,
                 context=None, recover_inflight=None, before_retry=None):
@@ -149,7 +166,7 @@ class MutationReceiptStore:
                     and inflight.get("context") != context):
                 raise ValueError("실행 중인 Jira 요청 복구 정보와 현재 요청이 일치하지 않습니다.")
 
-            receipt = self.cache.mutation_receipt(key)
+            receipt = self.receipt(kind, mutation_id)
             if receipt and receipt.get("fingerprint") != fingerprint:
                 raise ValueError("같은 clientMutationId가 다른 요청에 재사용되었습니다.")
             if (receipt and context is not None and receipt.get("context") is not None
@@ -241,9 +258,8 @@ class MutationReceiptStore:
                         mutation_id,
                         "Jira 반영 여부를 아직 확인 중입니다. 입력은 보존되며 잠시 후 다시 시도해 주세요.",
                     )
-                # The receipt freezes the original authenticated writer. A recovered Jira session
-                # may belong to a different account; only re-authorize a proven-absent POST after
-                # the caller confirms that the current actor still matches that receipt.
+                # A proven-absent retry must still target the receipt's original Jira connection.
+                # This hook does not require a second identity lookup in a local single-user app.
                 if before_retry is not None:
                     try:
                         before_retry()
@@ -357,6 +373,8 @@ def _actor_aliases(value):
         for item in (value.get("aliases") or value.get("actorAliases") or [])
         if str(item or "").strip()
     }
+    if value.get("localScope") is not None:
+        return aliases  # The local marker is not an upstream Jira author.
     aliases.update(
         str(value.get(field) or "").strip().casefold()
         for field in ("id", "name", "key", "accountId")

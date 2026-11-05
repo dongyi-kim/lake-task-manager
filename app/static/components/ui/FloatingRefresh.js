@@ -64,27 +64,18 @@ export default {
       if (!st.needLogin) return true;                        // 정상 — 바로 받는다
 
       this.phase = "auth";
-      this._toast("info", "인증이 만료되어 다시 로그인합니다", "잠시만 기다려 주세요…", 5000);
+      this._toast("info", "Jira 연결을 복구합니다", "백그라운드에서 연결을 확인합니다…", 5000);
       let r = null;
-      try { r = await api.login(); }
+      try { r = await api.recoverAuth(); }
       catch (e) {
         this._toast("error", "로그인에 실패했습니다", (e && e.message) || "잠시 후 다시 시도해 주세요.");
         return false;
       }
-      if (r && r.pending) {
-        // 앱 창 모드: 이 창이 Jira 로 이동해 사람이 직접 로그인한다. 지금 데이터를 받을 수는 없다.
-        this._toast("info", "로그인 창에서 사내 로그인을 완료해 주세요",
-                    "로그인이 끝나면 화면이 자동으로 최신 데이터를 받아옵니다.");
-        return false;
-      }
       if (!(r && r.ok)) {
-        this._toast("error", "로그인이 완료되지 않았습니다",
-                    "시간이 초과되었거나 취소되었습니다. 잠시 후 다시 눌러 주세요.");
+        this._toast("info", r?.needLogin ? "Jira 로그인이 필요합니다" : "Jira 연결을 확인하고 있습니다",
+                    r?.needLogin ? "연결 안내 또는 설정의 로그인 버튼을 눌러 주세요." : "잠시 후 다시 시도해 주세요.");
         return false;
       }
-      // 인증이 방금 섰다 — api.js 가 이 신호로 memo(죽은 요청)를 비우고 각 화면을 깨운다.
-      // 성공 알림은 여기서 내지 않는다: ToastStack 이 auth-ok 를 받아 이미 띄운다(두 번 말하게 된다).
-      window.dispatchEvent(new CustomEvent("auth-ok"));
       return true;
     },
 

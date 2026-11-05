@@ -15,7 +15,6 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.auth.base import SessionExpired, UpstreamUnavailable
 from app.infra import settings as config
 from app.services.ticket_commands import CommandError
 
@@ -118,16 +117,9 @@ class WorkspaceConfigCommands:
         self.config_dir = Path(config_dir) if config_dir is not None else None
 
     def _authorize(self):
-        client = self.get_client()
-        try:
-            user = client.current_user_for_authorization() or {}
-        except UpstreamUnavailable as exc:
-            # An unreachable server is not proof of logout, but stale identity cannot authorize.
-            raise CommandError("현재 사용자 권한을 확인할 수 없습니다. 연결 복구 후 다시 시도해 주세요.", 401) from exc
-        if not (user.get("id") or user.get("name")):
-            raise SessionExpired("설정을 변경하려면 Jira 사용자 인증을 확인해 주세요.")
-        self.require_manager()
-        return client
+        # Local YAML belongs to this installation, even while Jira is offline or logged out.
+        # Keep the constructor callback for older embedders; it is no longer an account gate.
+        return self.get_client()
 
     def _paths(self):
         directory = self.config_dir or config.CONFIG_DIR

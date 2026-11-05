@@ -18,7 +18,7 @@ def test_bulk_ui_reconciles_lost_chunk_without_new_ids_or_false_failures():
     import assert from 'node:assert/strict';
     const mod = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
     const {newBulkRun, executeBulkRun, bulkRunResult} = mod;
-    const scope={environment:'mock',jiraBase:'http://jira.local',projectKey:'DL',userId:'u01'};
+    const scope={environment:'mock',jiraBase:'http://jira.local',projectKey:'DL'};
     const items = Array.from({length:10}, (_,i) => ({summary:'row '+i,type:'Task',epic:null}));
     let run = newBulkRun('task', items, 'bulk:ui:test',scope), journal, lost=true, writes=0;
     const receipts=new Map(), calls=[];
@@ -112,15 +112,16 @@ def test_bulk_ui_reconciles_lost_chunk_without_new_ids_or_false_failures():
 
     // Context changes between chunks: original scope is never replaced by the new endpoint response.
     vm.creationRun=null; vm.executionScope=scope; vm.items=items; vm.result=null; payloads=[];
-    deps.api.bulkCreate=async body=>{payloads.push(body); currentScope={...scope,userId:'u02'};
+    deps.api.bulkCreate=async body=>{payloads.push(body); currentScope={...scope,projectKey:'OTHER'};
       return {created:body.items.map((_,index)=>({index,key:'DL-'+index})),failed:[]};};
     await vm.create(); assert.equal(payloads.length,1); assert.equal(vm.result.created.length,5);
-    assert.equal(vm.result.pending.length,5); assert.equal(vm.creationRun.scope.userId,'u01');
+    assert.equal(vm.result.pending.length,5); assert.equal(vm.creationRun.scope.projectKey,'DL');
 
     // First write also refuses a context different from the one captured on dialog open.
     vm.creationRun=null; vm.items=items; vm.result=null;
     await vm.create(); assert.equal(payloads.length,1); assert.equal(vm.creationRun,null);
     assert.notEqual(mod.bulkScopeKey(scope),mod.bulkScopeKey({...scope,projectKey:'OTHER'}));
+    assert.equal(mod.bulkScopeKey(scope),mod.bulkScopeKey({...scope,userId:'legacy-user'}));
     """
     result = subprocess.run([node, "--input-type=module"], input=script, text=True,
                             capture_output=True, timeout=20, encoding="utf-8")

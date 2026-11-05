@@ -1,5 +1,6 @@
 import { CacheMemo } from "./cacheMemo.js";
 import { rememberDraftContext } from "./draftIdentity.js";
+import { createAuthRecovery } from "./apiAuth.js";
 // api.js — 백엔드 리소스 호출 래퍼. 401 needLogin 을 전역 이벤트로 알린다(LoginOverlay 가 수신).
 // GET 응답을 URL 키로 memo(프로미스 캐시) → 탭 전환/중복요청 재fetch 방지. refresh() 에서 clear.
 // updated: 2026-07-09
@@ -9,6 +10,49 @@ const REQUEST_TIMEOUT_MS = 35 * 1000;
 // 타임라인은 보조 정보이고 하위 changelog까지 모아 일반 조회보다 비싸다. 이 요청 하나가
 // 다이얼로그를 오래 붙잡지 않게 더 짧게 끊고, 해당 패널에서만 다시 시도하게 한다.
 const TIMELINE_TIMEOUT_MS = 15 * 1000;
+
+const authRecovery = createAuthRecovery({
+  probe: () => req("/api/auth/probe?recover=1", { method: "POST", timeoutMs: 45 * 1000 }),
+  loginRequired: () => { watchAuth(); window.dispatchEvent(new CustomEvent("need-login", { detail: { silentFailed: true } })); },
+  recovered: () => window.dispatchEvent(new CustomEvent("auth-ok")),
+});
+const authControlPath = path => /^\/api\/(?:auth\/|login(?:[/?]|$)|status(?:[/?]|$))/.test(path);
+
+function authError(body, recovery) {
+  const error = new Error(recovery?.ok
+    ? "인증 연결을 복구했습니다. 입력은 보존되었습니다. 같은 내용으로 다시 시도하세요."
+    : recovery && !recovery.needLogin
+      ? "백그라운드 연결 확인이 아직 끝나지 않았습니다. 입력은 보존되며 잠시 후 다시 시도할 수 있습니다."
+      : (body && (body.detail || body.error)) || "인증이 만료되었습니다. 입력은 보존되며 로그인 후 다시 제출할 수 있습니다.");
+  error.status = 401;
+  error.needLogin = !!(body?.needLogin && (!recovery || recovery.needLogin));
+  error.uncertain = !!body?.uncertain;
+  error.authRecovered = !!recovery?.ok;
+  error.authRecoveryPending = !!(recovery && !recovery.ok && !recovery.needLogin);
+  return error;
+}
+
+async function fetchWithAuth(path, options) {
+  const generation = authRecovery.generation;
+  let response = await fetch(path, options);
+  if (response.status !== 401) return response;
+  let b = {}; try { b = await response.clone().json(); } catch (_) { /* non-JSON rejection */ }
+  let recovery = null;
+  if (b.needLogin && !authControlPath(path)) {
+    try { recovery = await authRecovery.recover(generation, options.signal); }
+    catch (error) { error.authRejected = true; error.uncertain = !!b.uncertain; throw error; }
+    // A 401 cannot prove that every step of a compound write was rejected. Preserve its exact
+    // mutation ID and draft; only a caller using the receipt contract may explicitly retry it.
+    if (recovery.ok && /^(GET|HEAD)$/.test(String(options.method || "GET").toUpperCase())) {
+      response = await fetch(path, options);
+      if (response.status !== 401) return response;
+      try { b = await response.clone().json(); } catch (_) { b = {}; }
+      recovery = null; // one retry is the limit, even if renewal appeared successful
+      if (b.needLogin) authRecovery.requireLogin();
+    }
+  }
+  throw authError(b, recovery);
+}
 
 async function req(path, opts) {
   // 브라우저 fetch 기본값은 무한 대기다. 서버/SSO worker 가 비정상 상태여도 화면의 버튼과
@@ -32,27 +76,19 @@ async function req(path, opts) {
   const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, timeoutMs);
   let r;
   try {
-    r = await fetch(path, o);
+    r = await fetchWithAuth(path, o);
   } catch (e) {
     if (timedOut) {
       const error = new Error("요청 시간이 초과되었습니다. 입력은 보존되며 잠시 후 다시 시도할 수 있습니다.");
-      error.uncertain = mutation;
+      error.uncertain = !!e.uncertain || (mutation && !e.authRejected);
+      error.authRecoveryPending = !!e.authRejected;
       throw error;
     }
-    if (mutation && e) e.uncertain = true;
+    if (mutation && e && !e.status && !e.authRejected) e.uncertain = true;
     throw e;
   } finally {
     clearTimeout(timer);
     if (callerSignal) callerSignal.removeEventListener("abort", abortFromCaller);
-  }
-  if (r.status === 401) {
-    let b = {}; try { b = await r.clone().json(); } catch (e) {}
-    if (b && b.needLogin) { watchAuth(); window.dispatchEvent(new CustomEvent("need-login")); }
-    const error = new Error((b && (b.detail || b.error))
-      || "인증이 만료되었습니다. 입력은 보존되며 로그인 후 다시 제출할 수 있습니다.");
-    error.status = 401;
-    error.needLogin = !!(b && b.needLogin);
-    throw error;
   }
   if (!r.ok) {
     // 서버가 남긴 이유를 그대로 올린다 — 'HTTP 502' 만 보여 주면 사용자도 우리도 알 수 없다.
@@ -93,13 +129,10 @@ async function streamNdjson(path, onEvent, signal) {
   };
   arm();
   try {
-    const response = await fetch(path, {
+    const generation = authRecovery.generation;
+    const response = await fetchWithAuth(path, {
       signal: ctl.signal, headers: { Accept: "application/x-ndjson" }, cache: "no-store",
     });
-    if (response.status === 401) {
-      watchAuth(); window.dispatchEvent(new CustomEvent("need-login"));
-      throw new Error("HTTP 401");
-    }
     if (!response.ok) throw new Error("HTTP " + response.status);
     const decoder = new TextDecoder();
     let pending = "";
@@ -111,24 +144,37 @@ async function streamNdjson(path, onEvent, signal) {
         if (!line.trim()) continue;
         const event = JSON.parse(line);
         if (event.type === "error") {
-          if (event.needLogin) { watchAuth(); window.dispatchEvent(new CustomEvent("need-login")); }
-          throw new Error(event.error || "Task 스트림을 불러오지 못했습니다.");
+          throw event.needLogin ? authError(event, null)
+            : new Error(event.error || "Task 스트림을 불러오지 못했습니다.");
         }
         onEvent(event);
       }
     };
-    if (!response.body || !response.body.getReader) {
-      consume(await response.text() + "\n");
-      return;
+    let reader;
+    try {
+      if (!response.body || !response.body.getReader) {
+        consume(await response.text() + "\n");
+        return;
+      }
+      reader = response.body.getReader();
+      while (true) {
+        const part = await reader.read();
+        if (part.done) break;
+        arm();
+        consume(decoder.decode(part.value, { stream: true }));
+      }
+      consume(decoder.decode() + (pending ? "\n" : ""));
+    } catch (error) {
+      if (error.needLogin) {
+        // Some snapshots have already been published: repair authentication, but let the
+        // existing per-axis retry merge the rest instead of replaying a partially read stream.
+        const recovery = await authRecovery.recover(generation, ctl.signal);
+        throw authError({ needLogin: true, detail: error.message }, recovery);
+      }
+      throw error;
+    } finally {
+      if (reader) await reader.cancel().catch(() => {});
     }
-    const reader = response.body.getReader();
-    while (true) {
-      const part = await reader.read();
-      if (part.done) break;
-      arm();
-      consume(decoder.decode(part.value, { stream: true }));
-    }
-    consume(decoder.decode() + (pending ? "\n" : ""));
   } catch (error) {
     if (timedOut) throw new Error("요청 시간이 초과되었습니다. 앱은 계속 실행 중이며 잠시 후 다시 시도할 수 있습니다.");
     throw error;
@@ -143,15 +189,8 @@ async function streamNdjson(path, onEvent, signal) {
 // 최근 300개면 "다시 열면 즉시" 체감은 유지되면서 힙은 일정 수준에서 멈춘다.
 const _memo = new CacheMemo(req, detail => window.dispatchEvent(new CustomEvent('api-cache-updated', { detail })));
 function get(path, opts) { return _memo.get(path, opts); }
-let personActor = null, personActorGeneration = 0;
-function resetPersonActor() { personActor = null; personActorGeneration += 1; _memo.delete("/api/me"); }
-function loadMe() {
-  const generation = personActorGeneration;
-  return get("/api/me").then(me => {
-    if (generation === personActorGeneration) personActor = me?.id || null;
-    return me;
-  });
-}
+function resetPersonActor() { _memo.delete("/api/me"); }
+function loadMe() { return get("/api/me"); }
 window.addEventListener("need-login", resetPersonActor);
 let policyRevision = -1, policyRefresh = null;
 function applyPrefs(p, broadcast = false) {
@@ -211,8 +250,8 @@ export function watchAuth() {
 // 시점**에 걸리므로 어떤 컴포넌트의 auth-ok 처리보다 **먼저** 돈다 — 화면들이 다시 받을 때는
 // memo 가 이미 비어 있어 진짜 새 요청이 나간다(등록 순서가 곧 실행 순서다).
 window.addEventListener("auth-ok", () => {
+  authRecovery.authenticated();
   _memo.clear(); stopAuthWatch(); resetPersonActor();
-  loadMe().catch(() => {}); // Refill once after authentication, never for every selection.
 });
 
 function jsonReq(path, method, body, opts) {
@@ -244,7 +283,7 @@ function transitionReq(key, body) {
       if (managed) clearPendingMutation(scope);
       evict(key); evictLists(); return result;
     }).catch((error) => {
-      if (managed && !(error && (error.uncertain || error.needLogin))) {
+      if (managed && !(error && (error.uncertain || error.needLogin || error.authRecovered || error.authRecoveryPending))) {
         clearPendingMutation(scope);
       }
       throw error;
@@ -257,7 +296,7 @@ function idle(fn) { (window.requestIdleCallback || ((f) => setTimeout(f, 250)))(
 function warmGet(u) { try { get(u).catch(() => {}); } catch (e) { /* noop */ } }
 
 export const api = {
-  health: () => req("/api/health").then(h => { rememberDraftContext(h); return h; }), // local metadata, no Jira
+  health: () => req("/api/health").then(health => { rememberDraftContext(health); return health; }),                                    // 로그인 상태 — memo 제외
   raw: (path, opts) => req(path, opts),                                // memo 없이 매번 조회(설정 메뉴 등)
   evict: (key) => evict(encodeURIComponent(key)),                      // 이 티켓 관련 memo 비우기(강제 새로고침)
   workspaceConfigUpdated: (revision, kind = 'all') => {
@@ -278,6 +317,7 @@ export const api = {
     warmGet("/api/ticket/" + k + "/menu");
   }),
   authProbe: () => req("/api/auth/probe", { method: "POST", timeoutMs: 45 * 1000 }),
+  recoverAuth: (signal) => authRecovery.recover(authRecovery.generation, signal),
   login: () => {
     const generation = ++_authGeneration;
     return req("/api/login", { method: "POST", timeoutMs: 30 * 1000 }).then(result => {
@@ -451,9 +491,7 @@ export const api = {
     + (key ? "&key=" + encodeURIComponent(key) : ""); return q ? req(u, opts) : get(u); },
   personRecent: (userId, event) => {
     // Never fetch identity or prompt login just to record an optional selection hint.
-    const actorHint = personActor;
-    if (!actorHint) return Promise.resolve({ recorded: false });
-    return jsonReq("/api/people/recent", "POST", { userId, event, actorHint },
+    return jsonReq("/api/people/recent", "POST", { userId, event },
       { headers: { "Content-Type": "application/json", "x-ltm-local": "1" } });
   },
   linkTitle: (u) => req("/api/linktitle?u=" + encodeURIComponent(u || "")),             // 링크 뱃지 제목(og:title)
@@ -491,7 +529,7 @@ export const api = {
         try { sessionStorage.removeItem(storageKey); } catch (_) { /* noop */ }
         evict(encodeURIComponent(key)); return r;
       }).catch((e) => {
-        if (!(e && (e.uncertain || e.needLogin))) {
+        if (!(e && (e.uncertain || e.needLogin || e.authRecovered || e.authRecoveryPending))) {
           try { sessionStorage.removeItem(storageKey); } catch (_) { /* noop */ }
         }
         throw e;

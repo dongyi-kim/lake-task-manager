@@ -1,37 +1,34 @@
 // HomeView.js — 메인 랜딩(#/home). 로고·제목 + 서비스 인증 상황 + 주요 페이지 소개.
 //
-// 소개 카드는 **본인에게 허락된 페이지만** 보여준다(매니저 전용은 manager===true 일 때만).
+// 로컬 앱의 주요 화면은 Jira 계정/설정 역할 판정 없이 바로 보여준다.
 // 인증 상황은 서비스별(Jira/Confluence/Bitbucket)로 표시 — SettingsMenu 와 같은 소스.
 import { api } from "../../lib/api.js";
 import { RELEASES } from "../../lib/releaseNotes.js";
 
 const SERVICES = ["Jira", "Confluence", "Bitbucket"];
 
-// 주요 페이지 소개. manager:true 는 매니저에게만. k 는 라우트(#/k).
+// 주요 페이지 소개. k 는 라우트(#/k).
 const PAGES = [
-  { k: "ai", label: "AI 어시스턴트", icon: "🤖", manager: false,
+  { k: "ai", label: "AI 어시스턴트", icon: "🤖",
     desc: "업무를 한 문장으로 말하면 과거 이력을 조사해 티켓 초안까지 만듭니다. 지식·현황 질문도 답합니다." },
-  { k: "wbs", label: "WBS Dashboard", icon: "📊", manager: true,
+  { k: "wbs", label: "WBS Dashboard", icon: "📊",
     desc: "모듈 → WBS Task → Epic 진척률을 Story Point 기준으로 롤업해 프로젝트 전체를 간트로 조망합니다." },
-  { k: "vit", label: "현안 (PMO_VIT)", icon: "🎯", manager: false,
+  { k: "vit", label: "현안 (PMO_VIT)", icon: "🎯",
     desc: "PMO_VIT 루트 현안의 자손(Epic·Task·Sub-Task) 진행 상황을 데일리로 트래킹합니다." },
-  { k: "workload", label: "인력 워크로드", icon: "👥", manager: true,
+  { k: "workload", label: "인력 워크로드", icon: "👥",
     desc: "인력별 작업량(진행 중 · 최근 7일 완료)과 활동을 모듈 단위로 봅니다." },
-  { k: "mytasks", label: "Task", icon: "✅", manager: false,
+  { k: "mytasks", label: "Task", icon: "✅",
     desc: "담당·보고·모듈 단위로 일감을 마감 · 우선순위로 정렬해 한눈에 봅니다." },
 ];
 
 export default {
   name: "HomeView",
-  // manager 는 스스로 확인한다(api.me 는 memo 라 앱루트와 중복 요청이 아니다). null=아직 모름.
-  data() { return { auth: null, env: "", manager: null, releases: RELEASES.slice(0, 10),
+  data() { return { auth: null, env: "", releases: RELEASES.slice(0, 10),
                     ask: "", askBusy: false, askNote: "" }; },
   computed: {
-    // 허락된 페이지만 — 매니저 전용은 manager 가 확정(true)일 때만 노출(먼저 판정, 그 뒤 표시).
-    pages() { return PAGES.filter((p) => !p.manager || this.manager === true); },
+    pages() { return PAGES; },
   },
   mounted() {
-    api.me().then((me) => { this.manager = !!(me && me.manager); }).catch(() => { this.manager = null; });
     api.health().then((h) => { this.env = (h && h.env) || ""; }).catch(() => {});
     // 서비스별 인증 상황(Jira/Confluence/Bitbucket) — 하나로 모아 받는다.
     api.raw("/api/dev/sso").then((r) => {
@@ -57,7 +54,7 @@ export default {
         let h = await api.health().catch(() => null);
         if (h && h.needLogin) {
           this.askNote = "세션이 만료되어 인증을 시도합니다…";
-          try { await api.login(); h = await api.health().catch(() => h); }
+          try { await api.recoverAuth(); h = await api.health().catch(() => h); }
           catch (e) { /* 로그인 실패 — 아래 캐시 판단으로 */ }
         }
         if (h && h.needLogin) {
@@ -117,7 +114,6 @@ export default {
         <span class="hc-go" aria-hidden="true">→</span>
       </a>
     </div>
-    <p v-if="manager === null" class="home-hint">권한 확인 중… 매니저 전용 페이지는 확인 후 표시됩니다.</p>
 
     <!-- 최근 업데이트(릴리즈 노트) — 유저가 느낄 변화만 짧게. 내용은 lib/releaseNotes.js -->
     <section v-if="releases.length" class="home-notes">

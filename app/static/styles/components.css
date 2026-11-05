@@ -116,6 +116,8 @@
   border: 1px solid color-mix(in srgb, var(--st-prog) 40%, var(--border));
   box-shadow: 0 6px 24px rgba(0,0,0,.18), 0 1px 3px rgba(0,0,0,.10); }
 .stbanner.offline { border-color: color-mix(in srgb, var(--today) 42%, var(--border)); }
+.stbanner.login-notice { top: 76px; max-width: min(420px, calc(100vw - 24px)); }
+.login-notice .login-btn { padding: 6px 14px; font-size: 12px; }
 .stb-dot { width: 8px; height: 8px; border-radius: 999px; flex: none; background: var(--st-prog);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--st-prog) 22%, transparent); }
 .stbanner.offline .stb-dot { background: var(--today);

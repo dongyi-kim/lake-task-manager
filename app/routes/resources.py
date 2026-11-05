@@ -26,7 +26,7 @@ class RecentBody(BaseModel):
 class PersonRecentBody(BaseModel):
     userId: str = Field(min_length=1, max_length=512)
     event: Literal["selection", "mention"]
-    actorHint: str = Field(min_length=1, max_length=512)
+    actorHint: str | None = Field(default=None, max_length=512)  # Older clients may still send it.
 
 
 def build_resource_router(*, get_client, cache, settings) -> APIRouter:

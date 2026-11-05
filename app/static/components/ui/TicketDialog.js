@@ -59,7 +59,7 @@ export default {
   emits: ["close", "search", "toggle-theme"],
   data() { return { v: null, comments: null, ancestors: [], siblings: [], timeline: [], children: [], related: [], atts: [], docs: [],
                     pdesc: null, pdescOpen: false, pdescErr: "",
-                    me: null, composing: false, composeCollapsed: false, composePreview: "", composeHasDraft: false,
+                    composing: false, composeCollapsed: false, composePreview: "", composeHasDraft: false,
                     editingId: null, editInitial: "", editErr: "",
                     cmtSort: "new",              // new=최신순(기본) | old=오래된순. 초 단위까지 비교.
                     // 링크 추가(관련 티켓/관련문서) · 파일 첨부(＋ 버튼 · 드래그앤드롭)
@@ -624,7 +624,6 @@ export default {
         this.editingId = null; this.editInitial = ""; this.editErr = "";
         this.kidTypes = []; this.adding = false; this.ncErr = ""; this.emeta = null;
       }
-      if (!this.me) api.me().then((m) => { this.me = m || {}; }).catch(() => { this.me = {}; });
 
       // ★ 본문(description)을 **가장 먼저** 큐에 넣는다 — 상류가 직렬(prod SSO)일 땐 먼저 보낸 게 먼저
       //   처리된다. 전엔 본문을 맨 마지막에 await 해, 사용자가 제일 먼저 읽는 본문이 다른 패널 8개 뒤로
@@ -863,14 +862,8 @@ export default {
     kidCard(c) {
       return childCard(c, this.v && this.v.due);
     },
-    // 본인 댓글 판정은 **서버가 매긴 c.mine 을 우선**한다(세션 사용자로 서버가 대조 — id 형식/
-    // 로딩 타이밍에 안 흔들린다). 옛 캐시로 mine 이 없을 때만 클라이언트 비교로 폴백.
-    canEdit(c) {
-      if (!c) return false;
-      if (c.mine === true) return true;
-      if (c.mine === false) return false;
-      return !!(this.me && this.me.id && c.authorId === this.me.id);
-    },
+    // Jira의 댓글 편집 권한은 저장/삭제 요청에서 확인한다. 로컬 작성자 비교로 기능을 숨기지 않는다.
+    canEdit(c) { return !!c; },
     reloadComments() {
       return this.retryPanel("comments");
     },

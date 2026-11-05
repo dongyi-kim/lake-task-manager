@@ -141,7 +141,7 @@ export default {
         await this.finishFormDraft(true);
         this.$emit("created", key);
       } catch (e) {
-        if (!(e && (e.uncertain || e.needLogin))) {
+        if (!(e && (e.uncertain || e.needLogin || e.authRecovered || e.authRecoveryPending))) {
           this.createMutationId = "";
           this.pendingCreatePayload = null;
         }

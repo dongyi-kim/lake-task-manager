@@ -208,7 +208,7 @@ def test_create_invalidates_unfiltered_leaf_that_can_gain_the_new_issue():
     assert client.cache.get(leaf_key) is None
 
 
-def test_leaf_row_and_snapshot_keys_are_partitioned_by_user_context():
+def test_leaf_row_and_snapshot_reuse_local_context_without_identity_lookup():
     client = JiraClient(get_settings(), Cache(":memory:"))
     client.current_user = lambda: {"id": "user-a"}
     _generation_a, _digest_a, leaf_a = client._jql_leaf_key("project = DL")
@@ -217,16 +217,31 @@ def test_leaf_row_and_snapshot_keys_are_partitioned_by_user_context():
         "project = DL ORDER BY key ASC", max_results=2,
         fields="summary,status", light=True)["snapshotId"]
 
-    client.current_user = lambda: {"id": "user-b"}
+    client.current_user = lambda: (_ for _ in ()).throw(AssertionError("JQL without currentUser must not fetch identity"))
     _generation_b, _digest_b, leaf_b = client._jql_leaf_key("project = DL")
     projection_b = client._projection_signature("summary,status", True)
     snapshot_b = client.search_issues_page(
         "project = DL ORDER BY key ASC", max_results=2,
         fields="summary,status", light=True)["snapshotId"]
 
-    assert leaf_a != leaf_b
-    assert projection_a != projection_b
-    assert snapshot_a != snapshot_b
+    assert leaf_a == leaf_b
+    assert projection_a == projection_b
+    assert snapshot_a == snapshot_b
+
+
+def test_local_jql_cache_does_not_cross_jira_server_or_project():
+    from copy import copy
+    settings = copy(get_settings())
+    client = JiraClient(settings, Cache(":memory:"))
+    client.current_user = lambda: (_ for _ in ()).throw(AssertionError("unexpected identity lookup"))
+    original = client._jql_leaf_key("project = DL")[2]
+    projection = client._projection_signature("summary,status", True)
+    settings.jira_base = "https://another-jira.invalid"
+    assert client._jql_leaf_key("project = DL")[2] != original
+    assert client._projection_signature("summary,status", True) != projection
+    next_key = client._jql_leaf_key("project = DL")[2]
+    settings.project_key = "OTHER"
+    assert client._jql_leaf_key("project = DL")[2] != next_key
 
 
 def test_narrow_projection_never_poisons_shared_light_issue_cache():

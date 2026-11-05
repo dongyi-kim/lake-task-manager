@@ -122,7 +122,7 @@ def register_reads(register, runtime):
         mayHaveMore=true signals saturation; null means Jira supplied no coverage evidence.
         Refine by full name/company/username before selecting.
         Even an unsaturated page is not a complete roster or proof of global name uniqueness.
-        matchContext separately reports configured membership, sameModule with the caller, and
+        matchContext separately reports configured membership, sameModule with the cached Jira identity, and local
         recentLookupAt/recentSelectionAt/recentMentionAt (Unix seconds, last 7 days).
         Mention recency means an explicit UI mention selection, not proof a comment was posted.
         Null flags/times and contextAvailable distinguish unknown context from available evidence.
@@ -140,7 +140,7 @@ def register_reads(register, runtime):
         """Read a verified Jira identity/badge by user_id; empty user_id means the logged-in user.
         Returns identity/display fields, or null for an unknown explicit user. Resolve display-name
         ambiguity with search_users first. This lookup does not enumerate module membership or activity.
-        A successful explicit user_id lookup records local recency for the current caller;
+        A successful explicit user_id lookup records recency for this local installation;
         self lookups and passive UI badge rendering do not record it.
         """
         from app.domain.person_context import capture_person_context, record_person_event
@@ -200,7 +200,7 @@ def register_reads(register, runtime):
 
     def get_workload(user_id: str, done_days: int = 7, assigned_window: str = "all") -> dict:
         """Read one person's current workload: returns statistics and tickets in open/inProgress/done7d buckets.
-        Resolve user_id first; the caller must have access to this person. done_days accepts 7/14/28
+        Resolve user_id first; Jira permissions apply to the returned tickets. done_days accepts 7/14/28
         rolling days, not calendar weeks/months; done7d retains that name for all three choices.
         Done uses current Done status and recent resolved date (updated fallback when resolved is absent).
         assigned_window=1w/1m/all filters only open/in-progress by updated within 7/30 days or all.

@@ -25,7 +25,8 @@ def test_explicit_selection_sync_is_best_effort_and_never_records_passive_reads(
       const settle = () => new Promise(resolve => setTimeout(resolve, 0));
       rememberUser({id:'u01', name:'첫 후보'});
       recentUsers(); mentionInitialUsers([]);
-      await settle(); assert.equal(calls.length, 0); // No identity fetch solely for history.
+      await settle(); assert.equal(calls.length, 1); // Local history needs no identity fetch.
+      assert.equal(calls[0].url, '/api/people/recent');
       await api.me();
       const beforePassive = calls.length;
       recentUsers(); mentionInitialUsers([{id:'passive', name:'아직 고르지 않은 사람'}]);
@@ -36,12 +37,13 @@ def test_explicit_selection_sync_is_best_effort_and_never_records_passive_reads(
       await settle();
       const posts = calls.filter(c => c.url === '/api/people/recent');
       assert.deepEqual(posts.map(c => JSON.parse(c.options.body)), [
-        {userId:'u02', event:'selection', actorHint:'actor-a'},
-        {userId:'u03', event:'mention', actorHint:'actor-a'}]);
+        {userId:'u01', event:'selection'},
+        {userId:'u02', event:'selection'},
+        {userId:'u03', event:'mention'}]);
       assert.equal(posts[0].options.headers['x-ltm-local'], '1');
       await api.refresh(); // Generic GET eviction must not erase the verified actor hint.
       rememberUser({id:'after-refresh', name:'새로고침 후 선택'});
-      await settle(); assert.equal(JSON.parse(calls.at(-1).options.body).actorHint, 'actor-a');
+      await settle(); assert.equal(JSON.parse(calls.at(-1).options.body).actorHint, undefined);
       offline = true;
       rememberUser({id:'u04', name:'오프라인 선택'});
       await settle(); assert.equal(recentUsers()[0].id, 'u04');
@@ -49,10 +51,10 @@ def test_explicit_selection_sync_is_best_effort_and_never_records_passive_reads(
       offline = false; actor = 'actor-b';
       window.dispatchEvent(new Event('auth-ok'));
       rememberUser({id:'u05', name:'새 로그인 대기'});
-      await settle(); assert.equal(calls.length, count + 1); // Only the auth boundary /me lookup.
-      assert.equal(calls.at(-1).url, '/api/me');
+      await settle(); assert.equal(calls.length, count + 1); // Selection stays available during login.
+      assert.equal(calls.at(-1).url, '/api/people/recent');
       rememberUser({id:'u06', name:'새 계정 선택'});
-      await settle(); assert.equal(JSON.parse(calls.at(-1).options.body).actorHint, 'actor-b');
+      await settle(); assert.equal(JSON.parse(calls.at(-1).options.body).actorHint, undefined);
     '''.replace('API', json.dumps((REPO_ROOT / 'app/static/lib/api.js').as_uri())).replace(
         'SUGGESTIONS', json.dumps((REPO_ROOT / 'app/static/lib/userSuggestions.js').as_uri()))
     subprocess.run([shutil.which('node'), '--input-type=module', '-e', script],

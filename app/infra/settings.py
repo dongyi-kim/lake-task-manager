@@ -314,19 +314,8 @@ def _normalize_wbs(raw):
 
 
 def is_manager(settings, user):
-    """이 사용자가 매니저인가. user 는 id 문자열 또는 /myself 응답 dict.
-    화이트리스트가 비어 있으면(미설정) 전원 매니저로 본다."""
-    if not settings.managers:
-        return True
-    # 후보를 **전부** 대조한다. 표현이 여러 가지라(우리 내부 {id: 사번, name: 표시이름} /
-    # Jira 원본 {name: 사번, key, displayName}) 하나만 골라 비교하면, 설정에 적은 값이
-    # 하필 다른 필드에 있을 때 조용히 거부된다 — 본인은 매니저인데 "매니저 전용" 만 본다.
-    # 로컬 1인 앱의 화이트리스트라 관대하게 받는 편이 낫다(막는 게 목적이 아니라 화면 분기다).
-    if isinstance(user, dict):
-        cands = [user.get(k) for k in ("id", "name", "key", "displayName", "emailAddress")]
-    else:
-        cands = [user]
-    return any(str(c or "").strip().lower() in settings.managers for c in cands)
+    """Deprecated compatibility helper. Local single-user access ignores managers YAML."""
+    return True
 
 
 def load_wbs_config(path=None):

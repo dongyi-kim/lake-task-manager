@@ -108,7 +108,7 @@ def test_proven_absent_comment_is_written_once_on_retry():
 
     with pytest.raises(MutationOutcomeUnknown):
         client.add_comment("DL-2", "재시도 본문", mutation_id=mutation_id)
-    receipt_key = "v1:prod:comment-create:" + mutation_id
+    receipt_key = client._mutation_receipts._key("comment-create", mutation_id)
     receipt = client.cache.mutation_receipt(receipt_key)
     client.cache.set_mutation_receipt(
         receipt_key, receipt["fingerprint"], "pending", None,
@@ -191,7 +191,7 @@ def test_sso_job_timeout_never_reposts_while_old_owner_can_still_commit():
 
     # Even an artificially old receipt may not use authoritative-absence logic while the actual
     # owner thread is still able to commit this request.
-    receipt_key = "v1:prod:comment-create:" + mutation_id
+    receipt_key = client._mutation_receipts._key("comment-create", mutation_id)
     receipt = client.cache.mutation_receipt(receipt_key)
     client.cache.set_mutation_receipt(
         receipt_key, receipt["fingerprint"], "pending", None,
@@ -374,7 +374,7 @@ def test_pending_reconciliation_failure_never_authorizes_duplicate_write(
 
     assert provider.posts == 1
     receipt = client.cache.mutation_receipt(
-        "v1:prod:comment-create:" + mutation_id)
+        client._mutation_receipts._key("comment-create", mutation_id))
     assert receipt and receipt["state"] == "pending"
 
 
@@ -693,7 +693,7 @@ def test_identity_failure_before_first_attempt_creates_no_pending_receipt():
 
     assert provider.posts == 0
     assert client.cache.mutation_receipt(
-        "v1:prod:comment-create:" + mutation_id) is None
+        client._mutation_receipts._key("comment-create", mutation_id)) is None
 
 
 def test_proven_absent_retry_refuses_a_different_authenticated_actor():
@@ -703,7 +703,7 @@ def test_proven_absent_retry_refuses_a_different_authenticated_actor():
 
     with pytest.raises(MutationOutcomeUnknown):
         client.add_comment("DL-73", "계정 변경 중", mutation_id=mutation_id)
-    receipt_key = "v1:prod:comment-create:" + mutation_id
+    receipt_key = client._mutation_receipts._key("comment-create", mutation_id)
     receipt = client.cache.mutation_receipt(receipt_key)
     client.cache.set_mutation_receipt(
         receipt_key, receipt["fingerprint"], "pending", None,
@@ -852,7 +852,7 @@ def test_proven_absent_transition_can_retry_after_consistency_grace():
 
     with pytest.raises(MutationOutcomeUnknown):
         client.do_transition("DL-30", "31", **_transition_kwargs(mutation_id))
-    receipt_key = "v1:prod:transition:" + mutation_id
+    receipt_key = client._mutation_receipts._key("transition", mutation_id)
     receipt = client.cache.mutation_receipt(receipt_key)
     client.cache.set_mutation_receipt(
         receipt_key, receipt["fingerprint"], "pending", None,
@@ -898,7 +898,7 @@ def test_done_policy_comes_from_fresh_jira_metadata_not_client_hint():
 
     assert provider.posts == 0
     assert client.cache.mutation_receipt(
-        "v1:prod:transition:ltm-transition:bbbbbbbb-1111-1111-1111-111111111111") is None
+        client._mutation_receipts._key("transition", "ltm-transition:bbbbbbbb-1111-1111-1111-111111111111")) is None
 
 
 def test_done_comment_is_server_required_even_when_client_omits_target_hints():
@@ -919,7 +919,7 @@ def test_pending_transition_receipt_freezes_authoritative_target_and_screen():
     with pytest.raises(MutationOutcomeUnknown):
         client.do_transition("DL-30", "31", **_transition_kwargs(mutation_id))
 
-    receipt = client.cache.mutation_receipt("v1:prod:transition:" + mutation_id)
+    receipt = client.cache.mutation_receipt(client._mutation_receipts._key("transition", mutation_id))
     assert receipt["context"] == {
         "actor": _ACTOR,
         "authority": {
@@ -972,3 +972,60 @@ def test_transition_reconciliation_requires_status_and_availability_proof(
     checked = reconcile_transition(provider, "DL-30", "31", "5", "Resolved")
 
     assert checked.state == expected
+
+
+def test_local_mutation_identity_requires_no_jira_user_lookup():
+    from app.jira.identity_service import JiraIdentityMixin
+    client = _client(SimpleNamespace(get_json=lambda *_a, **_k: pytest.fail("unexpected /myself")))
+    client.mutation_actor_identity = JiraIdentityMixin.mutation_actor_identity.__get__(client)
+    client.assert_mutation_actor_identity = JiraIdentityMixin.assert_mutation_actor_identity.__get__(client)
+    actor = client.mutation_actor_identity()
+    assert actor["id"] == "local" and actor["aliases"] == []
+    assert actor["localScope"]["projectKey"] == "DL"
+    assert client.assert_mutation_actor_identity(_ACTOR)  # Old receipt proof remains compatible.
+    client.s.project_key = "OTHER"
+    with pytest.raises(ValueError, match="연결·프로젝트"):
+        client.assert_mutation_actor_identity(actor)
+
+
+@pytest.mark.parametrize("state", ["pending", "success"])
+def test_unproven_legacy_receipt_is_preserved_without_replay_or_false_success(state):
+    from app.jira.mutation_recovery import MutationReceiptStore
+    cache = Cache(":memory:")
+    mid = "legacy:receipt:scope:001"
+    scope = {"environment": "prod", "jiraBase": "https://jira-a", "projectKey": "DL"}
+    old = MutationReceiptStore(cache, "prod")
+    payload = {"fields": {"summary": "original"}, "actor": _ACTOR}
+    fingerprint = old.fingerprint(payload)
+    cache.set_mutation_receipt(old._key("issue-create", mid), fingerprint, state, {"key": "DL-1"},
+                               time.time() - 10, 500, context={"actor": _ACTOR})
+    for changes in ({}, {"jiraBase": "https://jira-b"}, {"projectKey": "OTHER"}):
+        local = MutationReceiptStore(cache, "prod", scope={**scope, **changes})
+        with pytest.raises(MutationOutcomeUnknown, match="이전 버전"):
+            local.execute(kind="issue-create", mutation_id=mid, payload=payload,
+                          write=lambda: pytest.fail("unproven legacy write must not replay"),
+                          reconcile=lambda _r: pytest.fail("unknown server must not reconcile"), after_success=lambda _r: None)
+        assert cache.mutation_receipt(local._key("issue-create", mid)) is None
+    assert cache.mutation_receipt(old._key("issue-create", mid))["fingerprint"] == fingerprint
+
+
+def test_new_receipts_share_local_operator_but_keep_server_project_scope():
+    from app.jira.mutation_recovery import MutationReceiptStore
+    cache = Cache(":memory:")
+    scope = {"environment": "prod", "jiraBase": "https://jira-a", "projectKey": "DL"}
+    local = MutationReceiptStore(cache, "prod", scope=scope)
+    assert local._key("issue-create", "local:001") == MutationReceiptStore(cache, "prod", scope=scope)._key("issue-create", "local:001")
+    for changes in ({"jiraBase": "https://jira-b"}, {"projectKey": "OTHER"}):
+        assert local._key("issue-create", "local:001") != MutationReceiptStore(cache, "prod", scope={**scope, **changes})._key("issue-create", "local:001")
+
+
+def test_actorless_response_loss_stays_unknown_without_duplicate_post():
+    from app.jira.identity_service import JiraIdentityMixin
+    provider = _CommentProvider()
+    client = _client(provider)
+    client.mutation_actor_identity = JiraIdentityMixin.mutation_actor_identity.__get__(client)
+    client.assert_mutation_actor_identity = JiraIdentityMixin.assert_mutation_actor_identity.__get__(client)
+    for _ in range(2):
+        with pytest.raises(MutationOutcomeUnknown):
+            client.add_comment("DL-1", "without cached author evidence", mutation_id="local:comment:unknown:001")
+    assert provider.posts == 1

@@ -31,7 +31,7 @@ def authentication_error(exc):
 
 
 def services_for(name, arguments):
-    if name in AUTH_TOOLS:
+    if name in AUTH_TOOLS or name in CONFIG_WRITES or name == "get_workspace_config":
         return ()
     if name in {"search_confluence_documents", "read_confluence_document"}:
         return ("confluence",)

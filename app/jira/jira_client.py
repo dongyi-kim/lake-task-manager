@@ -593,7 +593,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         self._jql_lock_guard = threading.Lock()
         self._jql_locks = {}
         self._jql_policy = JqlCachePolicy(self)
-        self._mutation_receipts = MutationReceiptStore(self.cache, self.env)
+        self._mutation_receipts = MutationReceiptStore(self.cache, self.env, scope=self.mutation_scope())
         # 세션 사용자 캐시도 함께 버린다. 안 그러면 로그인 직후에도 옛 판정(빈 사용자)이
         # TTL 동안 남아 매니저 여부·본인 댓글 판정이 계속 틀린다.
         try:
@@ -3040,23 +3040,16 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         return fmt if fmt in ("html", "wiki") else ("html" if self.env == "prod" else "wiki")
 
     def _mutation_actor_for(self, kind, mutation_id):
-        """Resolve the writer once, then reuse its durable receipt context on every retry.
-
-        A timed-out Playwright write may still be running while a new provider is unavailable.
-        Looking up ``/myself`` before consulting that receipt would hide the in-flight proof behind
-        another network failure. Persisting only Jira identity aliases (never content) lets the
-        coordinator inspect the old operation first and prevents a different login from claiming
-        the same client mutation id.
-        """
+        """Reuse saved fingerprint evidence, including old actor fields, without identity lookup."""
         if not mutation_id:
             return None, None
+        if self._mutation_receipts.scope != self.mutation_scope():
+            raise ValueError("Jira 연결 설정이 변경되었습니다. 앱을 재시작한 뒤 원래 요청 결과를 확인해 주세요.")
         receipt = self._mutation_receipts.receipt(kind, mutation_id)
         if receipt:
             context = receipt.get("context")
             actor = context.get("actor") if isinstance(context, dict) else None
-            if not isinstance(actor, dict) or not actor.get("aliases"):
-                raise ValueError(
-                    "이전 Jira 요청의 사용자 식별 정보가 부족합니다. 중복 방지를 위해 Jira에서 결과를 확인해 주세요.")
+            self.assert_mutation_actor_identity(actor)
             return actor, receipt
         return self.mutation_actor_identity(), None
 

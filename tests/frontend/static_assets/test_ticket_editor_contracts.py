@@ -51,7 +51,7 @@ def test_frontend_requests_time_out_without_turning_transport_stalls_into_login(
     assert "timeoutMs: 16 * 60 * 1000" in api  # 대용량 첨부도 일반 조회 상한을 쓰지 않음
     assert 'this.mode === "degraded"' in banner
     assert 'st.mode === "degraded"' in refresh
-    assert "api.login()" in refresh             # degraded 분기 뒤에서만 인증 흐름 진입
+    assert "api.recoverAuth()" in refresh       # refresh silently repairs; only a login button opens SSO
 
 
 def test_ticket_timeline_is_deferred_and_never_blocks_loaded_dialog_sections():

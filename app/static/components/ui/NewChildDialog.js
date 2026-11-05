@@ -296,7 +296,7 @@ export default {
       } catch (e) {
         // 인증이 끊긴 경우에도 Jira가 쓰기를 받았는지 확정할 수 없는 transport 경로가 섞일 수
         // 있다. 로그인 복구 뒤 같은 논리 요청 id로 재조사해야 중복 Task가 생기지 않는다.
-        if (!(e && (e.uncertain || e.needLogin))) {
+        if (!(e && (e.uncertain || e.needLogin || e.authRecovered || e.authRecoveryPending))) {
           this.createMutationId = "";
           this.pendingCreatePayload = null;
         }

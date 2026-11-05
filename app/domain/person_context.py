@@ -2,8 +2,6 @@
 
 import hashlib
 import json
-import threading
-import time
 from urllib.parse import urlsplit, urlunsplit
 
 from app.auth.base import UpstreamUnavailable
@@ -11,7 +9,6 @@ from app.domain.names import real_name
 from app.infra.settings import module_dir
 
 
-_MEMO_GUARD = threading.Lock()
 _UNBOUND = object()
 
 
@@ -59,54 +56,47 @@ def capture_person_context(client, settings):
 
 
 def _actor(client, settings, expected_stamp=_UNBOUND):
-    """Optional evidence never consumes persisted identity or updates global auth state."""
+    """Cached Jira identity is optional business evidence for same-module suggestions."""
     try:
-        with _MEMO_GUARD:
-            if not hasattr(client, "_person_context_lock"):
-                client._person_context_lock = threading.Lock()
-        with client._person_context_lock:
-            stamp = _binding(client, settings)
-            if stamp[0] is None or getattr(client, "_session_dead", False) or (
-                    expected_stamp is not _UNBOUND and stamp != expected_stamp):
-                return "", None
-            prior = getattr(client, "_person_context_actor", None)
-            if prior and prior[0] == stamp and time.monotonic() < prior[1]:
-                return prior[2], stamp
-            actor = ""
-            try:
-                raw = stamp[0].get_json("/rest/api/2/myself", quiet=True)
-                if isinstance(raw, dict):
-                    candidate = raw.get("name") or raw.get("key") or raw.get("accountId")
-                    if isinstance(candidate, str) and "anonymous" not in candidate.lower():
-                        actor = _id(candidate)
-            except Exception:
-                pass
-            if not _current(client, settings, stamp):
-                return "", None  # A login/provider replacement won the race.
-            client._person_context_actor = (stamp, time.monotonic() + 60, actor)
-            return actor, stamp
+        stamp = _binding(client, settings)
+        if expected_stamp is not _UNBOUND and stamp != expected_stamp:
+            return "", None
+        raw = client.cache.get_stale(f"myself:{client.env}") or {}
+        actor = _id(raw.get("id") or raw.get("name"))
+        return actor, stamp
     except Exception:
         return "", None
 
 
 def record_person_event(client, settings, user_id, kind, actor_hint=None, *, expected_stamp=_UNBOUND):
-    """A picker/mention insertion is an interaction, not proof of a submitted mention."""
+    """Local selection history needs no Jira identity; actor_hint is legacy input only."""
     if kind not in {"lookup", "selection", "mention"} or not _id(user_id):
         return False
     if expected_stamp is not _UNBOUND and not _current(client, settings, expected_stamp):
         return False
-    actor, stamp = _actor(client, settings, expected_stamp)
-    if not actor or actor_hint is not None and _id(actor_hint) != actor:
-        return False
     try:
-        # Only the short cache write is locked against provider replacement, never the probe.
+        instance = _instance(settings)
         with client._provider_lock:
-            if not _current(client, settings, stamp):
+            if expected_stamp is not _UNBOUND and not _current(client, settings, expected_stamp):
                 return False
-            client.cache.touch_person_recent(_scope(stamp[2], actor), _id(user_id), kind)
-            return _current(client, settings, stamp)
+            client.cache.touch_person_recent(_scope(instance, "local"), _id(user_id), kind)
+            return True
     except Exception:
-        return False  # Recording is best effort; the original user action has already succeeded.
+        return False
+
+
+def _history(client, settings, ids, actor):
+    scope = _scope(_instance(settings), "local")
+    # Older installations recorded the same operator under their Jira identity. Preserve
+    # those rows/timestamps and combine them lazily, without a network identity lookup.
+    history = client.cache.person_recent(scope, ids)
+    if actor:
+        legacy = client.cache.person_recent(_scope(_instance(settings), actor), ids)
+        for uid, events in legacy.items():
+            target = history.setdefault(uid, {})
+            for event, timestamp in events.items():
+                target[event] = max(target.get(event, 0), timestamp)
+    return history
 
 
 def search_people(client, settings, query, limit=8):
@@ -143,16 +133,14 @@ def search_people(client, settings, query, limit=8):
     except Exception:
         by_user = None
     history = None
-    if actor:
+    if not changed:
         try:
-            history = client.cache.person_recent(_scope(stamp[2], actor), [_id(u["id"]) for u in users])
+            history = _history(client, settings, [_id(u["id"]) for u in users], actor)
         except Exception:
             pass
     changed = changed or not _current(client, settings, operation)
     if changed:
         actor, history, by_user = "", None, None
-    elif not _current(client, settings, stamp):
-        actor, history = "", None
     actor_modules = by_user.get(actor) if by_user is not None and actor else None
     for user in users:
         uid = _id(user["id"])
