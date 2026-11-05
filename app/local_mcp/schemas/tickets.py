@@ -217,8 +217,8 @@ class TransitionOption(Option):
     hasScreen: bool
     fields: TransitionScreen
     commentRequired: bool = Field(default=False, description=(
-        "Send non-empty body.commentHtml. True for every Done transition under LTM policy, "
-        "even when Jira omits comment from fields, or when Jira requires it on another transition."))
+        "True only when Jira's transition screen requires a comment. Completion comments are "
+        "recommended, but optional when false; empty editor content adds no comment."))
 
 
 class EpicOption(OpenModel):

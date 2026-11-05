@@ -21,7 +21,7 @@ import {
   EDITOR_HEIGHT_KEY, EDITOR_HEIGHT_MIN, EDITOR_HEIGHT_MAX,
   loadEditorHeight, saveEditorHeight, validEditorHeight,
 } from "../editor/editorHeight.js";
-import { escapeHtml as esc } from "../editor/editorHtml.js";
+import { escapeHtml as esc, hasEditorContent } from "../editor/editorHtml.js";
 import {
   UPLOAD_TRIES, sleep, stripPendingRef, fitWidth, fmtSize,
 } from "../editor/editorFiles.js";
@@ -32,7 +32,7 @@ import {
 import {
   createEditorExtensions, STYLES, FONTS, COLORS, BGCOLORS,
 } from "../editor/editorExtensions.js";
-import { hasClipboardTableHtml, tsvTableNode } from "../editor/editorClipboard.js";
+import { fencedCodeNodes, hasClipboardCodeHtml, hasClipboardTableHtml, tsvTableNode } from "../editor/editorClipboard.js";
 import COMMENT_EDITOR_TEMPLATE from "../editor/commentEditorTemplate.js";
 import { newMutationId } from "../../lib/mutationId.js";
 
@@ -53,6 +53,8 @@ export default {
     // 바깥에서 ref 로 submit() 을 부르면 이미지 업로드·초안 정리까지 그대로 탄다 —
     // 그 로직을 밖에서 다시 짜면 반드시 어긋난다.
     hideFooter: { type: Boolean, default: false },
+    // A larger form may submit without a comment; standalone comments remain required.
+    allowEmpty: { type: Boolean, default: false },
     // 영역 구분선(=== 제목 ===)을 쓸 수 있는가. **본문에서만 켠다.**
     // 티켓 뷰가 영역으로 쪼개 보여 주는 건 설명뿐이라, 댓글에서 구분선을 허용하면 편집기에선
     // 선으로 보이다가 등록하면 그냥 '=== 제목 ===' 글자로 남는다 — 없는 구조를 약속하는 셈이다.
@@ -130,10 +132,22 @@ export default {
           const cd = event.clipboardData;
           const html = cd && cd.getData && cd.getData("text/html");
           const txt = cd && cd.getData && cd.getData("text/plain");
+          // Inside code, preserve literal pasted text. In particular tabs are not
+          // spreadsheet columns and fences/URLs are not new blocks/badges here.
+          if (self._ed.isActive("codeBlock")) return false;
           // Excel은 표와 PNG 미리보기를 함께 싣는다. 구조화된 표가 있으면 ProseMirror의 HTML
           // 파서가 처리하게 두고, HTML이 없는 TSV 셀 범위도 편집 가능한 표 노드로 복원한다.
           if (self.kind !== "agentchat" && hasClipboardTableHtml(html)) return false;
-          const pastedTable = self.kind !== "agentchat" && tsvTableNode(txt);
+          if (self.kind !== "agentchat" && hasClipboardCodeHtml(html)) return false;
+          // Plain-text fallbacks must not discard the richer HTML alternative.
+          // Continue through file handling for mixed HTML + pasted-image payloads.
+          const textOnly = !String(html || "").trim();
+          const pastedCode = self.kind !== "agentchat" && textOnly && fencedCodeNodes(txt);
+          if (pastedCode) {
+            self._ed.chain().focus().insertContent(pastedCode).run();
+            event.preventDefault(); return true;
+          }
+          const pastedTable = self.kind !== "agentchat" && textOnly && tsvTableNode(txt);
           if (pastedTable) {
             self._ed.chain().focus().insertContent(pastedTable).run();
             event.preventDefault(); return true;
@@ -658,10 +672,10 @@ export default {
         html = html.replace(re, jiraOrigin.replace(/\/+$/, "") + "$1");
       }
       const text = (this._ed.getText() || "").trim();
-      // 이미지/링크 뱃지·체크박스만 있는 댓글도 유효한 내용이다(텍스트가 비어도 통과).
-      // (체크박스는 getText 에 안 잡혀 '내용 없음' 으로 오판되던 문제 — <input> 존재로 판정.)
-      const hasNode = /<img\b/i.test(html) || /<a\b/i.test(html) || /<input\b/i.test(html);
-      if (!text && !hasNode) { this.err = "내용을 입력하세요."; return; }
+      if (!hasEditorContent(html)) {
+        if (!this.allowEmpty) { this.err = "내용을 입력하세요."; return; }
+        html = "";
+      }
       this.busy = true; this.err = "";
       const uploaded = [];       // 이번 시도에서 새로 올린 첨부 id(확정 실패 때만 롤백)
       const failed = [];                               // UPLOAD_TRIES 회 재시도 후에도 못 올린 파일 이름

@@ -9,8 +9,7 @@
 //     ★ '1d' 가 몇 시간인지는 **우리가 정하지 않는다** — Jira 인스턴스 설정
 //       (workingHoursPerDay, DC 기본 8시간)이 정한다. 그 값을 읽어와 화면에 그대로 알린다.
 //       안 알리면 사용자는 하루를 24시간으로 여기고 적는데 Jira 는 8시간으로 기록한다.
-//  2) **코멘트를 필수로 받는다.** Jira 에선 선택이지만, 무엇을 했는지 한 줄도 없이 닫힌
-//     티켓은 나중에 아무도 해석하지 못한다. 이 앱을 통해 닫는 것에는 기록을 남긴다.
+//  2) 완료 전이에서도 코멘트를 선택적으로 작성할 수 있다. 필수 여부는 Jira 화면 정의를 따른다.
 //     입력은 **댓글과 같은 에디터**를 쓴다 — 표·코드·이미지 붙여넣기·멘션이 그대로 되고,
 //     여기만 맨 textarea 면 "왜 여기선 안 되지" 가 된다. 제출은 이 화면이 소유하고
 //     (버튼이 둘이면 안 된다) 에디터의 submit() 을 ref 로 부른다 — 이미지 업로드·초안 정리가
@@ -72,9 +71,10 @@ export default {
       return mapped;
     },
     // Some Jira DC workflows omit `comment` from transition screen metadata even though the
-    // transition REST endpoint accepts update.comment. LTM completion policy still requires a
-    // record, so a Done transition always exposes the shared rich comment editor.
+    // transition REST endpoint accepts update.comment. Offer the shared editor for Done
+    // transitions too, but only require a comment when Jira's screen metadata requires it.
     needsComment() { return this.transition.toCategory === "done" || !!this.has.comment; },
+    commentRequired() { return !!(this.has.comment && this.has.comment.required); },
     pendingCommentHtml() {
       return (this.pendingTransitionPayload && this.pendingTransitionPayload.commentHtml) || "";
     },
@@ -95,7 +95,7 @@ export default {
       if (need("worklog") && !(this.days || this.hours || this.minutes)) out.push("소요시간");
       if (need("assignee") && !this.user) out.push("담당자");
       if (need("resolution") && !this.resolution) out.push("처리 방법");
-      // 코멘트 내용 유무는 에디터가 판정한다(빈 본문이면 제출 시 스스로 막는다) —
+      // 코멘트 내용 유무는 에디터가 판정한다(필수인 빈 본문은 제출 시 스스로 막는다) —
       // 여기서 HTML 을 들여다보며 다시 판정하면 두 규칙이 갈린다.
       return out;
     },
@@ -298,12 +298,13 @@ export default {
         </label>
 
         <div v-if="needsComment" class="trx-f">
-          <span class="trx-l">코멘트 <i v-if="transition.toCategory === 'done' || (has.comment && has.comment.required)">필수</i></span>
+          <span class="trx-l">코멘트 <i v-if="commentRequired">필수</i><span v-else> · 선택</span></span>
           <!-- 댓글과 **같은 에디터** — 표·코드·이미지 붙여넣기·멘션이 그대로 된다.
                버튼 줄은 감추고(제출은 아래 한 곳) ref 로 submit() 을 부른다. -->
           <CommentEditor v-if="formDraftReady" ref="ed" :ticket-key="ticket" hide-footer kind="transition"
                          :draft-scope="pendingScope()" :mutation-pending="!!transitionMutationId"
                          :initial="pendingCommentHtml" :submit-fn="sendTransition"
+                         :allow-empty="!commentRequired"
                          @cancel="closeGuarded" />
         </div>
       </div>

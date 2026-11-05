@@ -12,6 +12,18 @@ import pytest
 from app.content.htmlsafe import proxy_images, sanitize_html, text_to_html, tidy_html   # noqa: E402
 
 
+@pytest.mark.parametrize("html, expected", [
+    ("", False), ("<p> &nbsp;<br></p><p>\u200b\ufeff</p>", False),
+    ("<script>alert(1)</script>", False), ("<p>완료</p>", True),
+    ('<img src="/secure/attachment/1/a.png">', True),
+    ("<table><tr><td></td></tr></table>", True), ("<hr>", True),
+    ('<input type="checkbox">', True), ('<a href="https://example.org"></a>', True),
+])
+def test_empty_editor_content_preserves_rich_elements(html, expected):
+    from app.content.htmlsafe import has_rich_content
+    assert has_rich_content(sanitize_html(html)) is expected
+
+
 # ── 1. 위험 요소 제거 ───────────────────────────────────────────────
 def test_script_tag_and_content_removed():
     out = sanitize_html("<p>안녕</p><script>alert(1)</script>")

@@ -100,6 +100,8 @@ def editor_browser(request, tmp_path):
         "LAKE_NO_WINDOW": "1",
         "APP_PORT": str(port),  # Origin validation must use the same port as the fixture server.
         "LAKE_MOCK_LATENCY_MS": str(latency_ms),
+        # Local-only writes validate Host/Origin against the configured listener.
+        "APP_PORT": str(port),
         # Preferences, MCP credentials and auth state must be as isolated as the Jira cache.
         "LAKE_CACHE_DIR": str(run_dir),
         "CACHE_DB_PATH": str(run_dir / "cache.sqlite3"),
