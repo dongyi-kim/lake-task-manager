@@ -11,6 +11,7 @@ def test_grouping_preserves_bundles_paging_and_cards_without_requery(editor_brow
 
     def task(key, epic=None, **extra):
         row = {"key": key, "title": "Task " + key, "type": "Task", "mine": True,
+               "queryMatched": True,
                "statusCategory": "todo", "assignee": "담당자", "assigneeId": "admin",
                "priRank": 2, "pri": "Medium", "dueDays": None, "epic": epic,
                "hasSubs": False, "childrenPending": False, "childrenLoaded": True, **extra}
@@ -224,5 +225,19 @@ def test_grouping_preserves_bundles_paging_and_cards_without_requery(editor_brow
     priority.select_option("")
     due.select_option("")
     assert len(requests) == after_reload_requests
+
+    # Ownership does not imply membership in the original query. A long-resolved
+    # context parent outside its date/JQL window must not return as a local match.
+    priority.select_option("name:Medium")
+    due.select_option("calm")
+    assert visible_keys() == {"DL-100"} and total_count() == 1
+    parent.update(queryMatched=False, statusCategory="done", status="Resolved",
+                  resolved="2025-01-01T00:00:00.000+0000")
+    with page.expect_response("**/api/mytasks/stream?*"):
+        page.evaluate("window.dispatchEvent(new CustomEvent('ticket-changed', {detail:{key:'DL-100'}}))")
+    page.locator('.mt-card[data-key="DL-100"]').wait_for(state="hidden")
+    assert visible_keys() == set() and total_count() == 0
+    select.select_option("none")
+    assert visible_keys() == set() and total_count() == 0
     print("Local priority/deadline filtering and counts, side options/persistence, shared status controls, grouping/paging, responsive sections, unchanged DOM: passed")
     assert not errors

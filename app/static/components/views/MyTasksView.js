@@ -1166,7 +1166,10 @@ export default {
         (c) => this.cardPass(c));
     },
     parentMatchesAlone(g, children) {
-      return this.hasDisplayFilters && g.childrenLoaded === true && !g.childrenPending && !g.childrenUnavailable
+      // mine describes assignee/module relevance, not membership in the date/JQL query.
+      // Missing membership in an older snapshot must not promote a context-only parent.
+      return this.hasDisplayFilters && g.queryMatched === true
+        && g.childrenLoaded === true && !g.childrenPending && !g.childrenUnavailable
         && !children.shown.length && (g.mine || this.subView === "all")
         && this.cardPass(this.card(g, g, !!g.mine));
     },
