@@ -7,7 +7,11 @@ from frontend.editor.test_editor_roundtrip_ui import editor_browser  # noqa: F40
 
 
 def test_grouping_preserves_bundles_paging_and_cards_without_requery(editor_browser):
-    page, base, errors, _ = editor_browser
+    page, base, errors, upload_path = editor_browser
+    page.on("console", lambda message: errors.append(message.text) if message.type == "error" else None)
+    # Network-free UI checks use the app's system-font fallback, not a CDN request.
+    page.route("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/**",
+               lambda route: route.fulfill(content_type="text/css", body=""))
 
     def task(key, epic=None, **extra):
         row = {"key": key, "title": "Task " + key, "type": "Task", "mine": True,
@@ -27,7 +31,8 @@ def test_grouping_preserves_bundles_paging_and_cards_without_requery(editor_brow
     compact["atoms"] = [task("DL-601")["atoms"][0]]
     groups.append(compact)
     model = {"groups": groups, "epics": [{"key": key, "title": title, "pending": False}
-             for key, title in [("DL-9001", "Alpha"), ("DL-9002", "Beta")]],
+             for key, title in [("DL-9001", "Alpha — 여러 모듈이 함께 진행하는 아주 긴 이름의 Epic 구현과 검증"),
+                                ("DL-9002", "Beta")]],
              "groupingMeta": {"revision": "fixture", "wbs": [
                  {"id": "A", "module": "First", "name": "First WBS", "epics": ["DL-9001"]},
                  {"id": "B", "module": "Second", "name": "Second WBS", "epics": ["DL-9001", "DL-9002"]}]},
@@ -74,11 +79,58 @@ def test_grouping_preserves_bundles_paging_and_cards_without_requery(editor_brow
     options_panel = page.locator('.mt-options-panel')
     options_content = options_panel.locator('.mt-options-content')
     assert options_panel.count() == 1 and options_content.is_visible()
+    assert page.title() == "Lake Task Manager"
+    panel_box = options_panel.bounding_box()
+    assert panel_box["x"] == 0
+    assert abs(panel_box["y"] + panel_box["height"] - 1080) < 1
+    assert abs(panel_box["y"] - page.locator('header.top').bounding_box()["height"]) < 1
+    fold_box = page.get_by_role('button', name="보기 옵션 접기", exact=True).bounding_box()
+    assert abs(fold_box["x"] + fold_box["width"] / 2 - panel_box["width"]) < 2
+    assert abs(fold_box["y"] + fold_box["height"] / 2 - panel_box["y"] - panel_box["height"] / 2) < 1
+
+    # Drag, keyboard and reset all resize the same panel without querying Jira.
+    grip = page.get_by_role('separator', name="보기 옵션 너비 조절", exact=True)
+    grip_box = grip.bounding_box()
+    page.mouse.move(grip_box["x"] + 3, grip_box["y"] + 80)
+    page.mouse.down()
+    page.mouse.move(grip_box["x"] + 103, grip_box["y"] + 80, steps=5)
+    page.mouse.up()
+    assert abs(options_panel.bounding_box()["width"] - 320) < 2
+    assert page.evaluate("JSON.parse(localStorage.getItem('mytasks.opts')).optionsWidth") == 320
+    assert page.evaluate("document.body.style.userSelect") == ""
+    grip.press("End")
+    assert options_panel.bounding_box()["width"] == 460
+    grip.dblclick(position={"x": 3, "y": 80})
+    assert options_panel.bounding_box()["width"] == 220
+    grip.press("ArrowRight")
+    assert options_panel.bounding_box()["width"] == 236
+    # Losing focus mid-drag releases pointer handlers and leaves a usable panel.
+    grip_box = grip.bounding_box()
+    page.mouse.move(grip_box["x"] + 3, grip_box["y"] + 80)
+    page.mouse.down()
+    page.mouse.move(grip_box["x"] + 87, grip_box["y"] + 80)
+    page.evaluate("window.dispatchEvent(new Event('blur'))")
+    page.mouse.up()
+    assert options_panel.bounding_box()["width"] == 320
+    assert page.evaluate("document.body.style.cursor") == ""
+    assert len(requests) == initial_requests
+
+    epic_label = options_panel.locator('.mt-epic-check[title^="Alpha"] > span')
+    assert epic_label.evaluate("el => { const s=getComputedStyle(el); return s.whiteSpace === 'nowrap' && s.textOverflow === 'ellipsis' && el.scrollWidth > el.clientWidth; }")
+    assert epic_label.bounding_box()["height"] < 20
+    page.evaluate("document.activeElement.blur(); window.scrollTo(0, 0)")
+    page.locator('.mt-options-heading').click()
+    page.mouse.move(500, 20)
+    page.screenshot(path=str(upload_path.parent / "task-sidebar-desktop.png"))
     board_width = page.locator('.mt-board').bounding_box()["width"]
     page.get_by_role('button', name="보기 옵션 접기", exact=True).click()
     options_content.wait_for(state="hidden")
+    assert options_panel.bounding_box()["width"] == 30
     page.wait_for_function("width => document.querySelector('.mt-board').getBoundingClientRect().width > width + 100", arg=board_width)
     assert len(requests) == initial_requests
+    header.locator('.mt-status-heading').first.click()
+    page.mouse.move(500, 20)
+    page.screenshot(path=str(upload_path.parent / "task-sidebar-collapsed.png"))
     page.get_by_role('button', name="보기 옵션 펼치기", exact=True).click()
     options_content.wait_for(state="visible")
     assert len(requests) == initial_requests
@@ -178,6 +230,14 @@ def test_grouping_preserves_bundles_paging_and_cards_without_requery(editor_brow
     page.get_by_role('button', name="보기 옵션 펼치기", exact=True).click()
     options_content.wait_for(state="visible")
     assert abs(page.locator('.mt-board').bounding_box()["width"] - mobile_board_width) < 2
+    assert options_panel.bounding_box()["x"] == 0
+    assert abs(options_panel.bounding_box()["y"] + options_panel.bounding_box()["height"] - 900) < 1
+    page.locator('.mt-options-heading').click()
+    page.screenshot(path=str(upload_path.parent / "task-sidebar-mobile.png"))
+    page.set_viewport_size({"width": 320, "height": 900})
+    page.wait_for_function("document.querySelector('.mt-options-panel').getBoundingClientRect().width <= 272")
+    assert page.evaluate("JSON.parse(localStorage.getItem('mytasks.opts')).optionsWidth") == 320
+    page.set_viewport_size({"width": 390, "height": 900})
     progress.uncheck()
     assert not first.locator('.mt-band.c-inprogress .mt-card[data-key="DL-102"]').is_visible()
     assert not page.locator('.mt-card[data-key="DL-400"]').is_visible()
@@ -216,6 +276,7 @@ def test_grouping_preserves_bundles_paging_and_cards_without_requery(editor_brow
     after_reload_requests = len(requests)
     page.get_by_role('button', name="보기 옵션 펼치기", exact=True).click()
     options_content.wait_for(state="visible")
+    assert options_panel.bounding_box()["width"] == 320
     assert select.input_value() == "wbs"
     assert controls.get_by_label("최근 완료 조회 기간", exact=True).input_value() == "1m"
     assert not progress.is_checked()
@@ -239,5 +300,13 @@ def test_grouping_preserves_bundles_paging_and_cards_without_requery(editor_brow
     assert visible_keys() == set() and total_count() == 0
     select.select_option("none")
     assert visible_keys() == set() and total_count() == 0
+    grip_box = grip.bounding_box()
+    page.mouse.move(grip_box["x"] + 3, grip_box["y"] + 80)
+    page.mouse.down()
+    page.goto(base + "/#/")
+    page.locator('.mytasks').wait_for(state="detached")
+    page.mouse.up()
+    assert page.evaluate("document.body.style.userSelect") == ""
+    assert page.evaluate("document.body.style.cursor") == ""
     print("Local priority/deadline filtering and counts, side options/persistence, shared status controls, grouping/paging, responsive sections, unchanged DOM: passed")
     assert not errors

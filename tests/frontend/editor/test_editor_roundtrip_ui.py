@@ -97,6 +97,7 @@ def editor_browser(request, tmp_path):
     env.update({
         "JIRA_ENV": "mock",
         "LAKE_NO_WINDOW": "1",
+        "APP_PORT": str(port),  # Origin validation must use the same port as the fixture server.
         "LAKE_MOCK_LATENCY_MS": str(latency_ms),
         # Local-only writes validate Host/Origin against the configured listener.
         "APP_PORT": str(port),
@@ -114,8 +115,26 @@ def editor_browser(request, tmp_path):
             "import jira820.serialize as serializer",
             "original = serializer.render_wiki",
             "serializer.render_wiki = lambda body, *args: body if (body or '').lstrip().startswith('<') else original(body, *args)",
+            "from app.main import app, _client",
+            # Inspect/seed the mock upstream's stored HTML without passing through LTM's display
+            # sanitizer. These routes exist only in this test process, never in the app router.
+            "@app.get('/__editor_test__/stored/{key}')",
+            "def stored(key: str):",
+            "    assert key in ('DL-9001', 'DL-9007')",
+            "    issue = _client.provider.get_json('/rest/api/2/issue/' + key)",
+            "    comments = _client.provider.get_json('/rest/api/2/issue/' + key + '/comment')",
+            "    return {'description': issue['fields'].get('description'), 'comments': comments['comments']}",
+            "@app.post('/__editor_test__/seed/{key}')",
+            "def seed(key: str, body: dict):",
+            "    assert key in ('DL-9001', 'DL-9007')",
+            "    if 'description' in body:",
+            "        _client.provider.put_json('/rest/api/2/issue/' + key, {'fields': {'description': body['description']}})",
+            "    if 'comment' in body:",
+            "        _client.provider.post_json('/rest/api/2/issue/' + key + '/comment', {'body': body['comment']})",
+            "    return {'ok': True}",
+            "app.router.routes[:] = app.router.routes[-2:] + app.router.routes[:-2]",
             "import uvicorn",
-            f"uvicorn.run('app.main:app', host='127.0.0.1', port={port}, log_level='warning')",
+            f"uvicorn.run(app, host='127.0.0.1', port={port}, log_level='warning')",
         ])]
     log_path = run_dir / "server.log"
     log = log_path.open("w", encoding="utf-8")
@@ -148,10 +167,15 @@ def editor_browser(request, tmp_path):
             page.set_default_timeout(20_000)
             errors: list[str] = []
             page.on("pageerror", lambda exc: errors.append(str(exc)[:400]))
-            page.on("response", lambda response: errors.append(
-                f"HTTP {response.status} {response.url}")
-                if (response.status >= 400 and "/api/" in response.url
-                    and "/api/favicon" not in response.url) else None)
+            def response_error(response):
+                if response.status < 400 or "/api/" not in response.url or "/api/favicon" in response.url:
+                    return
+                try:
+                    detail = response.text()[:300]
+                except Exception:  # The page may already be closing after a failed assertion.
+                    detail = ""
+                errors.append(f"HTTP {response.status} {response.url} {detail}")
+            page.on("response", response_error)
             try:
                 yield page, f"http://127.0.0.1:{port}", errors, upload_path
             finally:
@@ -563,20 +587,60 @@ def test_editor_table_does_not_trap_ticket_dialog_vertical_wheel(editor_browser)
     assert not errors, f"browser page errors: {errors}"
 
 
-def test_comment_composer_uses_compact_scoped_height(editor_browser):
-    """지연과 무관한 높이·폴딩 동작은 기본 0ms fixture에서 검증한다."""
+@pytest.mark.parametrize("surface", ["page", "dialog"])
+@pytest.mark.parametrize("viewport", [(1720, 1080), (720, 800)])
+def test_comment_composer_uses_compact_scoped_height(editor_browser, surface, viewport):
+    """도크 경계의 손잡이 위치와 높이·폴딩 상태는 두 티켓 화면에서 같아야 한다."""
     page, base, errors, _upload_path = editor_browser
+    page.set_viewport_size({"width": viewport[0], "height": viewport[1]})
     page.add_init_script(
         "localStorage.setItem('cmtEditorH', '700'); "
         "localStorage.removeItem('cmtEditorComposeH');")
-    _open_ticket(page, base, COMMENT_TICKET)
+    if surface == "page":
+        _open_ticket(page, base, COMMENT_TICKET)
+    else:
+        page.goto(f"{base}/#/mytasks", wait_until="load", timeout=45_000)
+        page.wait_for_function("() => !!window.__lakeUp", timeout=20_000)
+        page.get_by_role("button", name="검색 /").click()
+        page.get_by_role("textbox", name="Jira · Confluence · Bitbucket 통합 검색…").fill(COMMENT_TICKET)
+        page.locator(".sr-item", has_text=COMMENT_TICKET).first.click()
+        page.locator(".tkt-ov .tkt-main").wait_for(state="visible")
     page.get_by_role("button", name="＋ 댓글 달기").click()
 
     editor = page.locator(".tkt-compose-editor .ProseMirror")
     host = page.locator(".tkt-compose-editor .cmt-ed-host")
     handle = page.get_by_role("separator", name="댓글 작성창 높이 조절")
+    hide = page.get_by_role("button", name="댓글 작성창 가리기")
+
+    def assert_dock_controls():
+        geometry = page.locator(".tkt-compose-dock").evaluate("""dock => {
+            const rect = el => el.getBoundingClientRect();
+            const d = rect(dock), button = dock.querySelector('.tkt-compose-hide');
+            const b = rect(button), h = rect(dock.querySelector('.tkt-compose-resize'));
+            const label = rect(button.querySelector('b'));
+            const chevron = rect(button.querySelector('.tkt-compose-hide-chevron'));
+            const hit = y => button.contains(document.elementFromPoint(b.x + b.width / 2, y));
+            return {
+                borderY: d.top + parseFloat(getComputedStyle(dock).borderTopWidth) / 2,
+                dockCenterX: d.x + d.width / 2,
+                buttonCenterX: b.x + b.width / 2, buttonCenterY: b.y + b.height / 2,
+                handleCenterY: h.y + h.height / 2,
+                toolbarTop: rect(dock.querySelector('.cmt-editor')).top, buttonBottom: b.bottom,
+                labelAboveChevron: label.y + label.height / 2 < chevron.y + chevron.height / 2,
+                upperHit: hit(b.top + 2), lowerHit: hit(b.bottom - 2),
+            };
+        }""")
+        assert abs(geometry["buttonCenterX"] - geometry["dockCenterX"]) < 0.6, geometry
+        assert abs(geometry["buttonCenterY"] - geometry["borderY"]) < 0.6, geometry
+        assert abs(geometry["handleCenterY"] - geometry["borderY"]) < 0.6, geometry
+        assert geometry["buttonBottom"] < geometry["toolbarTop"], geometry
+        assert geometry["labelAboveChevron"] and geometry["upperHit"] and geometry["lowerHit"], geometry
+        return geometry
+
     editor.wait_for(state="visible")
     handle.wait_for(state="visible")
+    geometry = assert_dock_controls()
+    print(f"comment dock {surface} {viewport}: {geometry}")
     initial = host.evaluate("el => el.getBoundingClientRect().height")
     assert 175 <= initial <= 185, f"compact comment height expected 180px, got {initial}"
     assert page.evaluate("localStorage.getItem('cmtEditorH')") == "700"
@@ -596,13 +660,35 @@ def test_comment_composer_uses_compact_scoped_height(editor_browser):
     assert resized >= initial + 60, f"top resize did not grow editor: {initial} -> {resized}"
     assert int(page.evaluate("localStorage.getItem('cmtEditorComposeH')")) == round(resized)
     assert page.evaluate("localStorage.getItem('cmtEditorH')") == "700"
+    assert_dock_controls()
 
-    page.get_by_role("button", name="댓글 작성창 가리기").click()
+    hide.click()
     folded = page.locator("button.tkt-cmt-addbtn.draft")
     folded.wait_for(state="visible")
+    handle.wait_for(state="hidden")
+    hide.wait_for(state="hidden")
     assert "댓글 높이 조절 초안" in folded.inner_text()
     folded.click()
     assert "댓글 높이 조절 초안" in editor.inner_text()
+    assert host.evaluate("el => el.getBoundingClientRect().height") == resized
+    assert_dock_controls()
+
+    page.get_by_title("에디터 최대화", exact=True).click()
+    maximized = page.locator(".tkt-compose-editor .cmt-editor.maximized")
+    maximized.wait_for(state="visible")
+    handle.wait_for(state="hidden")
+    max_box, hide_box = maximized.bounding_box(), hide.bounding_box()
+    assert max_box is not None and hide_box is not None
+    assert abs(hide_box["y"] + hide_box["height"] / 2 - max_box["y"]) < 1
+    hide.click()
+    folded.wait_for(state="visible")
+    folded.click()
+    maximized.wait_for(state="visible")
+    assert "댓글 높이 조절 초안" in editor.inner_text()
+    page.get_by_title("최대화 해제", exact=True).click()
+    handle.wait_for(state="visible")
+    assert host.evaluate("el => el.getBoundingClientRect().height") == resized
+    assert_dock_controls()
 
     reset_box = handle.bounding_box()
     assert reset_box is not None
@@ -611,6 +697,7 @@ def test_comment_composer_uses_compact_scoped_height(editor_browser):
     reset = host.evaluate("el => el.getBoundingClientRect().height")
     assert 175 <= reset <= 185
     assert page.evaluate("localStorage.getItem('cmtEditorComposeH')") is None
+    assert_dock_controls()
     assert not errors, f"browser page errors: {errors}"
 
 

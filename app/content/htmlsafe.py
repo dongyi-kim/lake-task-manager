@@ -16,6 +16,9 @@ import urllib.parse
 from html import escape, unescape
 from html.parser import HTMLParser
 
+from app.content.callouts import (JIRA_PANEL_STYLES, VENDOR_CALLOUT_RE,
+                                 callout_kind, jira_panel_kind)
+
 
 def has_rich_content(sanitized_html):
     """Distinguish an empty editor document from text or meaningful rich elements.
@@ -330,28 +333,6 @@ def mark_explicit_jira_links(html, source):
 
     return _SAFE_ANCHOR_TAG_RE.sub(repl, html)
 
-# ── 벤더 콜아웃 class 정규화 ──────────────────────────────────────────
-# 실 사내 Jira DC 는 {info} 매크로를 <div class="jePanel_info"> 로 렌더한다(dev mock 은
-# <div class="callout callout-info">). 정규화 없이는 allowlist 에 없는 class 라 통째로
-# 지워져 **prod 에서만 콜아웃이 맨 div 로 보인다**(스타일 0). 여기서 표준형으로 바꿔두면
-# CSS·프론트는 `callout callout-*` 하나만 알면 된다.
-_CALLOUT_TYPES = {"note", "info", "warning", "tip", "success", "error"}
-_VENDOR_CALLOUT_RE = re.compile(r"^jePanel[_-](\w+)$", re.I)
-
-
-def _expand_class(tok):
-    """class 토큰 하나 → 표준 토큰 목록(정규화 대상이 아니면 자기 자신).
-
-    코드블록: **원래 Jira 와 동일한 태그** 를 유지한다 — `<pre class="jecodeblock"><code class="language-X">`.
-    (에디터·mock·prod 전부 이 형태로 통일. jecodeblock class 와 language-* class 를 살린다.
-     highlight.js 가 language-* 를 읽어 렌더 강조.)"""
-    m = _VENDOR_CALLOUT_RE.match(tok)
-    if m:
-        t = m.group(1).lower()
-        # 모르는 타입도 콜아웃 형태는 유지한다(무스타일 div 로 떨어지는 것보다 낫다)
-        return ["callout", "callout-" + (t if t in _CALLOUT_TYPES else "note")]
-    return [tok]
-
 
 def _safe_url(value, allow_data_image=False):
     """href/src 로 안전한 URL 인지. 안전 scheme 또는 상대경로/앵커만 허용."""
@@ -371,8 +352,9 @@ def _safe_url(value, allow_data_image=False):
 
 
 class _Sanitizer(HTMLParser):
-    def __init__(self):
+    def __init__(self, *, jira_panels=False):
         super().__init__(convert_charrefs=True)
+        self._jira_panels = jira_panels
         self.out = []
         self._drop_depth = 0     # _DROP_SUBTREE 내부면 >0
         self._cb_index = 0       # 이 필드에서 몇 번째 체크박스인가 — 원본 순서 = 화면 순서
@@ -455,6 +437,7 @@ class _Sanitizer(HTMLParser):
     def _attrs(self, tag, attrs):
         allowed = _ALLOWED_ATTRS.get(tag, set())
         parts, classes, href_val, src_val, safe_styles = [], [], None, None, []
+        preferred_panel = None
         for k, v in attrs:
             k = (k or "").lower()
             if k == "style":
@@ -467,9 +450,10 @@ class _Sanitizer(HTMLParser):
             if k.startswith("on") or k in ("srcset", "formaction", "xlink:href"):
                 continue                 # 이벤트 핸들러·기타 위험 속성 제거
             if k == "class":             # 허용 클래스 토큰(또는 코드 언어 language-*/lang-*)만 유지
-                toks = [n for t in (v or "").split() for n in _expand_class(t)]
-                classes += [t for t in toks
-                            if t in _ALLOWED_CLASSES or t.startswith(("lang-", "language-"))]
+                classes.extend((v or "").split())
+                continue
+            if k == "data-jira-panel" and tag == "div":
+                preferred_panel = v       # 아래에서 note/dashed 조합만 허용한다.
                 continue
             if k not in allowed:
                 continue
@@ -480,6 +464,20 @@ class _Sanitizer(HTMLParser):
             if k == "src":
                 src_val = v or ""
             parts.append(k + '="' + escape(v or "", quote=True) + '"')
+        kind = callout_kind(classes)
+        if kind:
+            panel = jira_panel_kind(kind, classes, preferred_panel)
+            classes = ["callout", "callout-" + kind] + [
+                c for c in classes if c != "callout" and not c.startswith("callout-")
+                and not VENDOR_CALLOUT_RE.fullmatch(c)]
+            if tag == "div" and panel == "dashed":
+                parts.append('data-jira-panel="dashed"')
+        classes = [c for c in classes
+                   if c in _ALLOWED_CLASSES or c.startswith(("lang-", "language-"))]
+        if self._jira_panels and tag == "div" and kind:
+            # Legacy classes FIRST: released LTM versions read the first callout-*.
+            classes.append("jePanel_" + panel)
+            safe_styles.append(JIRA_PANEL_STYLES[panel])
         if tag == "img" and src_val and _EMOTICON_RE.search(unescape(src_val)) and "emoticon" not in classes:
             # Jira 이모티콘/이모지 이미지 — 확대(줌) 버튼이 붙지 않도록 표식.
             classes.append("emoticon")
@@ -550,10 +548,19 @@ def _safe_style(v):
 
 def sanitize_html(html):
     """신뢰 불가 HTML → allowlist 로 정화한 안전 HTML 문자열. 파싱 실패 시 전부 escape."""
+    return _sanitize_html(html)
+
+
+def serialize_jira_html(html):
+    """Sanitize for storage with fixed JEditor panel styles, never arbitrary CSS."""
+    return _sanitize_html(html, jira_panels=True)
+
+
+def _sanitize_html(html, *, jira_panels=False):
     if not html:
         return ""
     try:
-        s = _Sanitizer()
+        s = _Sanitizer(jira_panels=jira_panels)
         s.feed(str(html))
         s.close()
         return "".join(s.out)
