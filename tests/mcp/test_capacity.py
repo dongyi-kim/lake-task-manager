@@ -110,15 +110,16 @@ def test_cancelled_admitted_write_never_starts_after_worker_queue_releases():
     anyio.run(scenario)
 
 
-def test_provider_busy_is_not_classified_as_transport_or_login_failure(build_env):
-    from app.auth.base import UpstreamBusy
+@pytest.mark.parametrize("kind,code", [("busy", "rate_limited"), ("query_changed", "query_state_changed")])
+def test_provider_busy_is_not_classified_as_transport_or_login_failure(build_env, kind, code):
+    from app.auth.base import QueryStateChanged, UpstreamBusy
 
     env = build_env()
     classified = []
     env.runtime.classify_error = lambda exc: classified.append(exc)
 
     def busy_read() -> dict:
-        raise UpstreamBusy("Queue full")
+        raise (QueryStateChanged if kind == "query_changed" else UpstreamBusy)("Local read cancelled")
 
     env.runtime.register(busy_read, read_only=True, output_type=dict)
 
@@ -126,7 +127,7 @@ def test_provider_busy_is_not_classified_as_transport_or_login_failure(build_env
         async with Client(env.runtime.server) as mcp:
             result = await mcp.call_tool("busy_read", {})
             error = result.structured_content["error"]
-            assert result.is_error and error["code"] == "rate_limited"
+            assert result.is_error and error["code"] == code
             assert error["retryable"] is True and error["needLogin"] is False
             assert "executed" not in error and classified == []
 

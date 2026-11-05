@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.auth.base import (MutationOutcomeUnknown, PermissionDenied, SessionExpired, UpstreamBusy,
+from app.auth.base import (MutationOutcomeUnknown, PermissionDenied, QueryStateChanged, SessionExpired, UpstreamBusy,
                            UpstreamUnavailable)
 from app.infra.cache import Cache
 from app.infra.cache_policy import CachePolicy, CacheHeadersMiddleware
@@ -360,6 +360,8 @@ def _on_upstream_unavailable(request: Request, exc: UpstreamUnavailable):
     여기서 ``session_alive()`` 를 다시 부르면 이미 굳은 큐를 한 번 더 기다리게 된다. 회로만
     잠깐 열어 캐시로 버티게 하고 503으로 즉시 돌려, localhost UI와 트레이는 계속 살린다.
     """
+    if isinstance(exc, QueryStateChanged):
+        return _on_query_state_changed(request, exc)
     if isinstance(exc, UpstreamBusy):
         return _on_upstream_busy(request, exc)
     _client.mark_upstream_down(str(exc)[:160])
@@ -367,6 +369,14 @@ def _on_upstream_unavailable(request: Request, exc: UpstreamUnavailable):
         status_code=503,
         content={"error": "Jira 연결이 응답하지 않습니다. 앱은 계속 실행 중이며 잠시 후 자동 재시도합니다.",
                  "retryable": True, "detail": str(exc)[:200]})
+
+
+@app.exception_handler(QueryStateChanged)
+def _on_query_state_changed(request: Request, exc: QueryStateChanged):
+    return JSONResponse(
+        status_code=503, headers={"Retry-After": "1"},
+        content={"error": str(exc), "code": "query_state_changed",
+                 "retryable": True, "needLogin": False})
 
 
 @app.exception_handler(UpstreamBusy)

@@ -6,19 +6,21 @@ from types import SimpleNamespace
 import pytest
 
 import app.main as main
-from app.auth.base import SessionExpired, UpstreamBusy
+from app.auth.base import QueryStateChanged, SessionExpired, UpstreamBusy, UpstreamUnavailable
 from app.infra.cache import Cache
 from app.jira.jira_client import JiraClient
 
 
-def test_queue_pressure_does_not_open_transport_circuit(monkeypatch):
+@pytest.mark.parametrize("error_type,code", [(UpstreamBusy, "upstream_busy"),
+                                           (QueryStateChanged, "query_state_changed")])
+def test_retryable_local_cancellation_does_not_open_transport_circuit(monkeypatch, error_type, code):
     calls = []
     monkeypatch.setattr(main._client, "mark_upstream_down", lambda *args: calls.append(args))
-    response = main._on_upstream_unavailable(None, UpstreamBusy("queue full"))
+    response = main._on_upstream_unavailable(None, error_type("local read cancelled"))
     payload = json.loads(response.body)
     assert response.status_code == 503
     assert response.headers["retry-after"] == "1"
-    assert payload["code"] == "upstream_busy"
+    assert payload["code"] == code
     assert payload["retryable"] and not payload["needLogin"]
     assert "executed" not in payload and "uncertain" not in payload
     assert not calls
@@ -117,3 +119,11 @@ def test_busy_silent_renewal_is_not_memoized_as_failed_authentication(client):
     assert not getattr(client, "_session_dead", False)
     assert client._renew_service("Jira") is True
     assert len(calls) == 2
+
+
+def test_real_transport_failure_still_opens_circuit(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main._client, "mark_upstream_down", lambda *args: calls.append(args))
+    response = main._on_upstream_unavailable(None, UpstreamUnavailable("real network timeout"))
+    assert response.status_code == 503 and json.loads(response.body)["retryable"]
+    assert calls == [("real network timeout",)]

@@ -13,7 +13,7 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import ValidationError
 from starlette.routing import Route
 
-from app.auth.base import MutationOutcomeUnknown, MutationPreflightUnavailable, PermissionDenied, SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable
+from app.auth.base import MutationOutcomeUnknown, MutationPreflightUnavailable, PermissionDenied, QueryStateChanged, SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable
 from app.local_mcp.read_tools import register_reads
 from app.local_mcp.evidence_tools import register_evidence
 from app.local_mcp.hierarchy_tools import register_hierarchy
@@ -161,6 +161,9 @@ class LocalMcpRuntime:
                     "retryWithSameMutationId": True, **({"retryAfterSeconds": 1} if busy else {})}
         if isinstance(exc, AuthenticationUnavailable):
             return error_payload(exc.state)
+        if isinstance(exc, QueryStateChanged):
+            return {"code": "query_state_changed", "status": 503, "message": str(exc),
+                    "retryable": True, "retryAfterSeconds": 1, "needLogin": False}
         if isinstance(exc, UpstreamBusy):
             return {"code": "rate_limited", "status": 429, "message": str(exc),
                     "retryable": True, "retryAfterSeconds": 1, "needLogin": False}
