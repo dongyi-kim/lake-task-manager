@@ -23,6 +23,13 @@ class MentionUsers(BaseModel):
     usernames: list[str] = Field(max_length=100)
 
 
+class UpdateDocument(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    body: str = Field(max_length=2_000_000)
+    expected_version: int = Field(ge=1)
+    mutation_id: str = Field(min_length=8, max_length=128)
+
+
 def build_confluence_authoring_router(*, get_client):
     router = APIRouter(prefix="/api/confluence")
 
@@ -65,6 +72,10 @@ def build_confluence_authoring_router(*, get_client):
             return commands.upload_attachment(page_id=page_id, filename=file.filename, data=data,
                 mutation_id=mutation_id, content_type=file.content_type or "application/octet-stream")
         return reply(request, write)
+
+    @router.put("/pages/{page_id}")
+    def update(request: Request, page_id: str, payload: UpdateDocument):
+        return reply(request, lambda commands: commands.update_page(page_id=page_id, **payload.model_dump()))
 
     @router.post("/mention-users")
     def users(request: Request, payload: MentionUsers):
