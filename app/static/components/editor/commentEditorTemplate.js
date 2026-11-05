@@ -7,6 +7,7 @@ const COMMENT_EDITOR_TEMPLATE = `
     </div>
     <template v-else>
       <div class="cmt-tb" v-show="ready">
+        <button v-if="kind === 'confluence'" type="button" class="tb-b" @click="openConfluenceMacro()" title="Confluence 매크로 삽입">매크로</button>
         <button type="button" class="tb-b" :class="{on:active('bold')}" @click="tbBold" title="굵게"><b>B</b></button>
         <button type="button" class="tb-b" :class="{on:active('italic')}" @click="tbItalic" title="기울임"><i>I</i></button>
         <button type="button" class="tb-b" :class="{on:active('strike')}" @click="tbStrike" title="취소선"><s>S</s></button>
@@ -203,6 +204,7 @@ const COMMENT_EDITOR_TEMPLATE = `
         <button class="cmt-ed-btn primary" :disabled="busy || !ready || draftConflict" @click="submit">
           {{ busy ? busyLabel : submitLabel }}</button>
       </div>
+      <Teleport to="body"><ConfluenceMacroDialog v-if="confMacroDialog" :initial="confMacroDialog" :editing="confMacroDialog.position !== null" @apply="applyConfluenceMacro" @close="confMacroDialog=null" /></Teleport>
     </template>
   </div>`;
 

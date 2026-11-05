@@ -5,8 +5,8 @@
 Confluence 탭의 **새 문서**에서 Space, 현재 문서 아래/Space 최상위 위치, 제목을 선택한다.
 본문은 Jira 본문·댓글과 같은 LTM 에디터를 사용한다. 헤딩 자동 번호는 기본으로 켜져 있으며
 끄고 켤 수 있다. 편집 중에는 번호를 별도 속성으로 관리하고 발행 시 헤딩 텍스트에 한 번 넣는다.
-사용자가 직접 입력한 번호는 임의로 지우지 않는다. 기존 Confluence 문서의 LTM 재편집 UI는
-아직 제공하지 않으며, 운영 문서 수정의 공동편집 호환성 gate도 유지한다.
+사용자가 직접 입력한 번호는 임의로 지우지 않는다. 기존 문서는 원문 storage에서 재편집한다.
+운영 문서 수정의 공동편집 호환성 gate는 유지한다. [기본 매크로·왕복 편집 검증](confluence-macros.md) 참고.
 
 파일 선택·이미지 붙여넣기·드래그로 넣은 첨부는 초안과 함께 IndexedDB에 저장한다.
 닫기·페이지 이동·재접속 후 복원하며, 일반 초안은 기존 7일 정책을 따른다. 파일당 최대 10MiB,
@@ -39,7 +39,7 @@ Confluence 탭의 **새 문서**에서 Space, 현재 문서 아래/Space 최상�
 | 코드 블록 | [`code`](https://confluence.atlassian.com/conf92/code-block-macro-1477576170.html) | 현재 신규 문서는 언어와 원문을 native code macro로 저장한다. 제목·접힘·줄 번호·시작 번호의 세부 설정 보존은 추가 개발이다. |
 | 가로 구분선 | [`<hr />`](https://confluence.atlassian.com/conf92/confluence-storage-format-1477576006.html) | 매크로가 아닌 기본 storage 요소. 기존 에디터·변환기에서 지원한다. |
 
-### 현재 코드에서 확인한 차이
+### 초기 작성 UI에서 확인했던 차이
 
 - `document_html()`에 `<h2 id="original-heading">`과 해당 앵커 링크를 넣으면 ID가 제거되고
   링크는 Confluence base URL로 바뀐다. 본문 TOC를 그대로 표시하는 것만으로는 이동을 보장할 수 없다.
@@ -50,7 +50,9 @@ Confluence 탭의 **새 문서**에서 Space, 현재 문서 아래/Space 최상�
 - 신규 문서용 `confluenceStorage()`는 기존 native macro를 읽어 되돌려 쓰는 파서가 아니다.
   렌더링 HTML을 재편집 원본으로 삼으면 매개변수·참조·알 수 없는 매크로가 사라질 수 있다.
 
-### 후속 구현 결정
+### 매크로 구현 원칙
+
+아래 원칙의 구현 결과와 실제 지원 범위는 [기본 매크로 문서](confluence-macros.md)에 기록한다.
 
 LTM 에디터에 Confluence 전용 macro 노드를 추가한다. `/` 메뉴에서 삽입하고 문서 선택과 매개변수
 폼으로 수정한다. 저장에는 `ac:structured-macro`, 매개변수, body, 참조를 사용하며 표시 결과로

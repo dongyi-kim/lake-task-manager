@@ -9,6 +9,7 @@ from frontend.editor.test_editor_roundtrip_ui import (
 def open_composer(page, base):
     page.add_init_script("localStorage.setItem('lake.guides.seen', JSON.stringify(['global-search-recent-1','quick-open-hotkey-1','browser-localhost-access-1','local-mcp-connect-1','refresh-fab-1']))")
     page.goto(base + "/#/confluence/890100000001")
+    page.locator('.conf-document > h1').wait_for()
     page.get_by_role("button", name="＋ 새 문서", exact=True).click()
     editor = page.locator(".conf-composer .ProseMirror")
     editor.wait_for()
@@ -163,7 +164,7 @@ def test_partial_attachment_failure_resumes_after_reload_without_recreating_page
     page.route("**/api/confluence/pages/*/attachments", uploads)
     page.on("request", lambda request: calls.update(create=calls["create"] + 1) if request.method == "POST" and request.url == base + "/api/confluence/pages" else None)
     page.get_by_role("button", name="발행", exact=True).click()
-    page.get_by_text(re.compile("문서는 생성되었습니다.*fixture upload unavailable")).wait_for()
+    page.get_by_text(re.compile("문서는 발행되었습니다.*fixture upload unavailable")).wait_for()
     assert calls["create"] == 1
     page.reload()
     page.get_by_role("button", name="＋ 새 문서", exact=True).click()

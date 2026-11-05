@@ -1,6 +1,7 @@
-// New LTM documents only: existing Confluence storage/macros never pass through this adapter.
+// Native macro nodes retain their storage parameters and unsupported source fragments.
 // DC 9.2 format: https://confluence.atlassian.com/conf92/confluence-storage-format-1477576006.html
 import { outlineNumbers } from "../components/editor/headingNumbering.js";
+import { parseStorage, serializeMacro } from "./confluenceMacroStorage.js";
 const escape = text => String(text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const cdata = text => "<![CDATA[" + String(text).replace(/]]>/g, "]]]]><![CDATA[>") + "]]>";
 const allowed = new Set("p strong b em i s u code span div h1 h2 h3 h4 h5 h6 ul ol li blockquote table tbody thead tfoot tr th td br hr colgroup col".split(" "));
@@ -18,6 +19,12 @@ export function confluenceStorage(html, { assets = [], numbered = false, users =
   const sequence = outlineNumbers(headings.map(node => +node.tagName[1]));
   const numbers = new Map(headings.map((node, index) => [node, sequence[index]]));
   let taskId = 0;
+  for (const node of root.querySelectorAll('[data-conf-config]')) {
+    const raw = JSON.parse(node.dataset.confConfig || '{}').raw;
+    if (raw) for (const item of parseStorage(raw).getElementsByTagNameNS('http://atlassian.com/content','task-id')) {
+      const value=Number(item.textContent); if (Number.isSafeInteger(value) && value>taskId) taskId=value;
+    }
+  }
   const children = node => [...node.childNodes].map(serialize).join("");
   const style = node => {
     const supported = ["color", "background-color", "font-family", "text-align", "text-decoration", "border", "border-collapse", "width"];
@@ -28,6 +35,7 @@ export function confluenceStorage(html, { assets = [], numbered = false, users =
   };
   const ref = name => '<ri:attachment ri:filename="' + escape(name) + '" />';
   const url = value => {
+    if (value.startsWith("#")) return escape(value);
     if (/^\/browse\/[A-Za-z][A-Za-z0-9]*-\d+$/.test(value) && jiraBase) value = jiraBase.replace(/\/$/, "") + value;
     try { return ["http:", "https:", "mailto:"].includes(new URL(value).protocol) ? escape(value) : ""; } catch (_) { return ""; }
   };
@@ -35,6 +43,7 @@ export function confluenceStorage(html, { assets = [], numbered = false, users =
     if (node.nodeType === 3) return escape(node.textContent);
     if (node.nodeType !== 1) return "";
     const tag = node.tagName.toLowerCase();
+    if (node.dataset.confMacro) return serializeMacro(node, children(node.querySelector(':scope > .conf-macro-content') || node));
     if (["script", "style", "iframe", "object", "svg"].includes(tag)) return "";
     if (node.dataset.type === "mention") {
       const key = users[node.dataset.id];
@@ -73,6 +82,7 @@ export function confluenceStorage(html, { assets = [], numbered = false, users =
     if (tag === "label" || tag === "input") return "";
     if (!allowed.has(tag)) return children(node);
     let attrs = "", css = style(node);
+    if (node.id) attrs += ' id="' + escape(node.id) + '"';
     if (["table", "th", "td"].includes(tag)) css += ";border:1px solid #b6bec9";
     if (css) attrs += ' style="' + escape(css) + '"';
     for (const key of ["colspan", "rowspan", "span", "start"]) {

@@ -1,0 +1,40 @@
+/* Native document blocks, deliberately quieter than application cards. */
+.conf-editor-macro { margin:12px 0; border:1px solid var(--border-hi); border-left:3px solid var(--accent); border-radius:4px; overflow:hidden; }
+.conf-macro-settings { display:block; width:100%; border:0; border-bottom:1px solid var(--border); text-align:left; padding:5px 10px; background:var(--panel-2); color:var(--muted); font-family:inherit; font-size:11px; font-weight:500; line-height:1.6; cursor:pointer; }
+.conf-macro-content { padding:4px 12px; min-height:36px; }
+.conf-macro-content > :first-child { margin-top:6px; }
+.conf-macro-content > :last-child { margin-bottom:6px; }
+.conf-editor-macro > pre.conf-macro-content { margin:0; padding:12px; white-space:pre; background:var(--code-bg); color:var(--code-fg); }
+.conf-editor-macro-inline { display:inline-flex; vertical-align:baseline; margin:0 3px; border-left-width:1px; }
+.conf-editor-macro-inline .conf-macro-settings { display:inline; width:auto; padding:1px 7px; border:0; }
+.conf-editor-macro-inline:has(img) { display:inline-flex; flex-direction:column; max-width:100%; }
+.conf-editor-macro img { max-width:100%; max-height:440px; object-fit:contain; }
+.conf-macro-overlay { position:fixed; inset:0; z-index:15000; background:#0008; display:flex; align-items:center; justify-content:center; padding:16px; }
+.conf-macro-dialog { width:460px; max-width:100%; max-height:85dvh; overflow:auto; background:var(--panel); color:var(--text); border:1px solid var(--border-hi); border-radius:10px; padding:20px; box-shadow:0 20px 70px #0005; scrollbar-width:thin; }
+.conf-macro-dialog header,.conf-macro-dialog footer { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+.conf-macro-dialog h3 { margin:0; font-size:17px; }
+.conf-macro-dialog label { display:grid; grid-template-columns:minmax(100px,1fr) minmax(0,2fr); gap:12px; align-items:center; margin:12px 0; font-size:13px; }
+.conf-macro-dialog :is(input,select) { width:100%; min-width:0; padding:7px 9px; border:1px solid var(--border-hi); background:var(--bg); color:var(--text); border-radius:4px; }
+.conf-macro-dialog footer { margin-top:20px; justify-content:flex-end; }
+.conf-macro-result { display:block; width:100%; text-align:left; border:0; border-bottom:1px solid var(--border); background:transparent; color:var(--text); padding:9px; cursor:pointer; }
+.conf-macro-result:hover { background:var(--panel-2); }
+.conf-macro-result small { color:var(--muted); margin-left:8px; }
+.conf-document-body details.conf-expand { display:block; width:auto; height:auto; margin:16px 0; padding:0; border:1px solid var(--border-hi); border-radius:4px; }
+.conf-document-body details.conf-expand > summary { padding:10px 14px; cursor:pointer; font-weight:600; background:var(--panel-2); }
+.conf-document-body details.conf-expand > :not(summary) { margin-left:16px; margin-right:16px; }
+.conf-native-panel { border:1px solid var(--border-hi); padding:12px 16px; margin:16px 0; border-radius:4px; }
+.conf-macro-unavailable { color:var(--muted); font-size:12px; padding:10px 12px; border-left:2px solid var(--border-hi); }
+.conf-status { display:inline-block; font-size:11px; font-weight:700; padding:2px 7px; line-height:1.5; border-radius:3px; background:var(--conf-status-color,#64748b); color:white; }
+.conf-status-red { --conf-status-color:#c9372c; }.conf-status-yellow { --conf-status-color:#936400; }.conf-status-green { --conf-status-color:#21784c; }.conf-status-blue { --conf-status-color:#2563c7; }
+.conf-status-subtle { color:var(--conf-status-color,#64748b); background:color-mix(in srgb,var(--conf-status-color,#64748b) 12%,var(--panel)); }
+:root[data-theme="dark"] .conf-status-subtle { color:color-mix(in srgb,var(--conf-status-color,#64748b) 35%,white); }
+.conf-document-body pre.conf-code { display:flex; gap:16px; }
+.conf-document-body pre.conf-no-panel { background:transparent; color:inherit; border:0; padding:0; }
+.conf-code-lines { user-select:none; color:var(--muted); border-right:1px solid var(--border-hi); padding-right:12px; text-align:right; }
+.conf-inline-toc { border-left:2px solid var(--border-hi); padding:8px 16px; margin:16px 0; font-size:13px; }
+.conf-inline-toc ul { list-style:none; padding:0; margin:0; }
+.conf-inline-toc li { margin:5px 0; }
+.conf-inline-toc span { margin-right:12px; }
+.conf-macro-tree { padding:8px 0; font-size:13px; }
+.conf-macro-tree-row { display:flex; align-items:center; min-height:30px; gap:6px; }
+.conf-macro-tree-row a { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

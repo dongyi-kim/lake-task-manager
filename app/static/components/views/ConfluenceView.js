@@ -1,6 +1,7 @@
 import { api } from "../../lib/api.js";
 import { confluencePageId, openConfluenceDocument, readFavorites, writeFavorites, readRecentDocuments, rememberDocument, readNavigationFolds } from "../../lib/confluenceNavigation.js";
 import { documentHeadings, visibleHeading } from "../../lib/confluenceToc.js";
+import { mountConfluenceMacros } from "../../lib/confluenceMacroView.js";
 import confluenceLayout from "../../lib/confluenceLayout.js";
 import ConfluencePanel from "../ui/ConfluencePanel.js";
 import ConfluenceDocumentList from "../ui/ConfluenceDocumentList.js";
@@ -19,7 +20,7 @@ export default {
     query: "", results: [], searchNext: null, searching: false, searched: false,
     loading: false, error: "", doc: null, selectedId: "", reading: false, readError: "",
     checking: false, revision: null, revisionError: "",
-    headings: [], activeHeading: "", composing: false }; },
+    headings: [], activeHeading: "", composing: false, editingPage: null, openingEditor: false }; },
   computed: {
     rows() {
       const result = [];
@@ -53,9 +54,21 @@ export default {
   deactivated() { this.stopToc(); },
   beforeUnmount() { window.removeEventListener("hashchange", this._hash); this.stopToc(); },
   methods: {
-    startCompose() { this.closeDrawer(); this.stopToc(); this.composing = true; },
+    startCompose() { this.editingPage = null; this.closeDrawer(); this.stopToc(); this.composing = true; },
+    async editDocument() {
+      if (this.openingEditor || !this.doc) return;
+      const id = this.doc.id, generation = this._readGeneration;
+      this.openingEditor = true; this.readError = "";
+      try {
+        const source = await api.confluenceSource(id);
+        if (generation !== this._readGeneration) return;
+        this.editingPage = source; this.closeDrawer(); this.stopToc(); this.composing = true;
+      } catch (error) { if (generation === this._readGeneration) this.readError = error.message; }
+      finally { this.openingEditor = false; }
+    },
     closeCompose() { this.composing = false; this.$nextTick(() => this.buildToc()); },
-    createdDocument(id) { this.closeCompose(); this.children = {}; this.expanded = {}; this.loadRoots(); this.open(id); },
+    createdDocument(id) { this.closeCompose(); this.children = {}; this.expanded = {}; this.loadRoots();
+      if (String(id) === this.selectedId) this.read(id, null, true); else this.open(id); },
     async initialize() {
       // Local configuration is independent of SSO/network so saved titles appear immediately.
       try { const config = await api.confluenceConfig(); this.base = config.base;
@@ -116,8 +129,12 @@ export default {
       } catch (error) { if (gen === this._searchGeneration) this.error = error.message; }
       finally { if (gen === this._searchGeneration) this.searching = false; }
     },
-    open(id) { this.closeDrawer(); openConfluenceDocument(id); },
-    async read(id, version = null) {
+    open(id) { this.closeDrawer();
+      try { const url=new URL(String(id)); this._pendingAnchor=url.hash ? decodeURIComponent(url.hash.slice(1)) : ''; } catch (_) { this._pendingAnchor=''; }
+      openConfluenceDocument(id);
+      if (confluencePageId(String(id)) === this.selectedId && this._pendingAnchor) this.$nextTick(()=>this.jumpToAnchor(this._pendingAnchor));
+    },
+    async read(id, version = null, refresh = false) {
       const gen = ++this._readGeneration;
       const replacing = String(this.doc?.id) === String(id);
       const scrollTop = replacing ? this.$refs.reader?.scrollTop || 0 : 0;
@@ -125,13 +142,14 @@ export default {
       this.revision = null; this.revisionError = ""; this.checking = false;
       if (!replacing) { this.stopToc(); this.doc = null; this.headings = []; this.activeHeading = ""; }
       try {
-        const data = await api.confluenceDocument(id, version);
+        const data = await api.confluenceDocument(id, version, refresh);
         if (gen !== this._readGeneration) return;
         this.doc = data;
         this.recentDocuments = rememberDocument(this.base, this.recentDocuments, data);
         const favorite = this.favorites.find(row => String(row.id) === String(data.id));
         if (favorite && favorite.title !== data.title) { favorite.title = data.title; this.saveFavorites(); }
-        this.$nextTick(() => { this.buildToc(); if (this.$refs.reader) this.$refs.reader.scrollTop = scrollTop; this.updateToc(); });
+        this.$nextTick(() => { this.buildToc(); if (this.$refs.reader) this.$refs.reader.scrollTop = scrollTop;
+          if (this._pendingAnchor) { this.jumpToAnchor(this._pendingAnchor); this._pendingAnchor=''; } this.updateToc(); });
       } catch (error) { if (gen === this._readGeneration) { this.readError = error.message;
         if ([403, 404].includes(error.status)) { this.doc = null; this.headings = []; this.stopToc(); } } }
       finally { if (gen === this._readGeneration) this.reading = false; }
@@ -140,7 +158,10 @@ export default {
       if (!this.doc || this.checking) return;
       const id = this.doc.id, gen = this._readGeneration;
       this.checking = true; this.revisionError = "";
-      try { const result = await api.confluenceRevision(id, this.version); if (gen === this._readGeneration) this.revision = result; }
+      try { const result = await api.confluenceRevision(id, this.version); if (gen === this._readGeneration) {
+        if (result.isLatest) await this.read(id, null, true);
+        if (String(this.selectedId) === String(id)) this.revision = result;
+      } }
       catch (error) { if (gen === this._readGeneration) { this.revision = null; this.revisionError = error.message;
         if ([403, 404].includes(error.status)) { this.doc = null; this.headings = []; this.stopToc(); } } }
       finally { if (gen === this._readGeneration) this.checking = false; }
@@ -157,6 +178,7 @@ export default {
       try { localStorage.setItem("ltm.confluence.navigation-folds", JSON.stringify(this.navigationFolds)); } catch (_) { /* session state remains */ }
     },
     stopToc() {
+      this._unmountMacros?.(); this._unmountMacros = null;
       if (this._tocReader && this._tocScroll) this._tocReader.removeEventListener("scroll", this._tocScroll);
       if (this._tocFrame) cancelAnimationFrame(this._tocFrame);
       this._tocFrame = null; this._tocReader = null; this._tocClicked = false;
@@ -166,6 +188,7 @@ export default {
       const body = this.$refs.documentBody, reader = this.$refs.reader;
       if (!body || !reader) { this.headings = []; return; }
       this._tocHeadings = documentHeadings(body);
+      this._unmountMacros = mountConfluenceMacros(body, this._tocHeadings);
       this.headings = this._tocHeadings.map(({ id, title, level }) => ({ id, title, level }));
       this._tocReader = reader;
       this._tocScroll = () => {
@@ -180,6 +203,8 @@ export default {
     jumpToHeading(id) {
       const target = this._tocHeadings?.find(row => row.id === id), reader = this._tocReader;
       if (!target || !reader) return;
+      for (let parent = target.node.parentElement; parent && parent !== reader; parent = parent.parentElement)
+        if (parent.tagName === "DETAILS") parent.open = true;
       this._tocClicked = true; this.activeHeading = id;
       const top = target.node.getBoundingClientRect().top - reader.getBoundingClientRect().top + reader.scrollTop - 12;
       reader.scrollTo({ top, behavior: "auto" });
@@ -191,8 +216,20 @@ export default {
     path(item) { return (item.ancestors || []).map(row => row.title).join(" / ") || item.space?.name || item.space?.key || ""; },
     date(value) { if (!value) return ""; const date = new Date(typeof value === "number" ? value * 1000 : value); return Number.isNaN(+date) ? "" : date.toLocaleString(); },
     author() { const who = this.doc?.version?.by; return who?.displayName || who?.username || ""; },
+    jumpToAnchor(id) {
+      const target = [...(this.$refs.documentBody?.querySelectorAll('[id]') || [])].find(node => node.id === id || node.id === 'conf-anchor-'+id);
+      if (!target) return;
+      for (let parent=target.parentElement; parent && parent!==this.$refs.reader; parent=parent.parentElement) if (parent.tagName==='DETAILS') parent.open=true;
+      target.scrollIntoView({block:'start'});
+    },
     linkClick(event) {
       const link = event.target.closest("a[href]"); if (!link) return;
+      if (link.getAttribute("href").startsWith("#")) {
+        if (link.getAttribute("href").startsWith("#/confluence/")) return;
+        event.preventDefault();
+        let id; try { id = decodeURIComponent(link.getAttribute("href").slice(1)); } catch (_) { return; }
+        this.jumpToAnchor(id); return;
+      }
       try { const url = new URL(link.href); if (url.origin === new URL(this.base).origin && confluencePageId(url.href)) { event.preventDefault(); this.open(url.href); } }
       catch (_) { /* sanitizer already handles non-web links */ }
     },
@@ -229,10 +266,11 @@ export default {
         </div>
       </ConfluencePanel>
       <div v-if="!composing && showSidebar && !compact" class="conf-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="문서 탐색 너비 조절" :aria-valuenow="sidebarWidth" aria-valuemin="224" :aria-valuemax="panelMax('sidebar')" @pointerdown="startPanelResize('sidebar', $event)" @keydown="resizePanelKey('sidebar', $event)"></div>
-      <ConfluenceComposer v-if="composing" :base="base" :spaces="spaces" :space="space" :parent="doc ? { id: doc.id, title: doc.title, space: doc.space?.key } : null" @close="closeCompose" @created="createdDocument" />
+      <ConfluenceComposer v-if="composing" :base="base" :spaces="spaces" :space="space" :editing-page="editingPage" :parent="doc ? { id: doc.id, title: doc.title, space: doc.space?.key } : null" @close="closeCompose" @created="createdDocument" />
       <main v-else class="conf-main">
         <header class="conf-toolbar">
           <button class="btn conf-create" :disabled="!base || !spaces.length" @click="startCompose">＋ 새 문서</button>
+          <button v-if="doc?.canEdit" class="btn conf-edit" :disabled="reading || openingEditor" @click="editDocument">{{ openingEditor ? '원문 확인 중…' : '수정' }}</button>
           <div class="conf-toolbar-location"><button v-if="!showSidebar || compact" class="btn conf-nav-toggle" @click="toggleSidebar" :aria-expanded="showSidebar"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4h14v12H3zM8 4v12"/></svg>문서 탐색</button><span>{{ doc?.space?.name || '문서' }}</span></div>
           <div v-if="doc" class="conf-actions"><button class="btn conf-favorite-toggle" @click="toggleFavorite" :aria-pressed="isFavorite" :aria-label="isFavorite ? '즐겨찾기 해제' : '즐겨찾기 추가'">{{ isFavorite ? '★' : '☆' }}</button><button class="btn conf-check" @click="checkLatest" :disabled="checking || reading" aria-label="최신 여부 확인"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 8a6 6 0 10-1 6M16 3v5h-5"/></svg><span>{{ checking ? '확인 중…' : '최신 여부 확인' }}</span></button><a :href="doc.url" target="_blank" rel="noopener noreferrer" class="btn conf-external" aria-label="Confluence에서 열기" title="Confluence에서 열기"><span>원문</span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M11 3h6v6M17 3l-8 8M8 4H4v12h12v-4"/></svg></a><button v-if="headings.length" class="btn conf-toc-toggle" @click="toggleToc" :aria-expanded="showToc" aria-controls="conf-document-toc"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h12M4 10h12M4 15h8"/></svg>목차</button></div>
         </header>
@@ -240,6 +278,7 @@ export default {
         <div v-if="newer" class="conf-new-version" role="status">새 발행 버전 v{{ revision.latestPublishedVersion }}이 있습니다.<button class="btn" @click="read(doc.id, revision.latestPublishedVersion)">새 버전 보기</button></div>
         <p v-else-if="revision?.isLatest" class="conf-current" role="status">확인 시점의 최신 발행 버전입니다. {{ date(revision.checkedAt) }}</p>
         <div ref="reader" class="conf-reader" tabindex="0" aria-label="문서 본문" :aria-busy="reading">
+          <p v-if="doc?.macroWarnings?.length" class="conf-muted">일부 매크로는 원문 확인이 필요합니다. <button class="conf-more" @click="read(doc.id,null,true)" :disabled="reading">본문 다시 불러오기</button></p>
           <p v-if="reading" class="conf-muted" role="status">문서를 불러오는 중…</p>
           <article v-if="doc" class="conf-document"><nav v-if="doc.ancestors?.length" class="conf-breadcrumb" aria-label="문서 경로"><button v-for="item in doc.ancestors" :key="item.id" @click="open(item.id)">{{ item.title }}</button></nav><h1>{{ doc.title }}</h1><p class="conf-document-meta">v{{ version }} <span v-if="doc.version?.when">{{ date(doc.version.when) }} 수정</span><span>{{ author() }}</span><span v-if="checkedAt">최신 확인 {{ date(checkedAt) }}</span></p><div ref="documentBody" class="conf-document-body" v-html="doc.html" @click="linkClick"></div></article>
           <div v-else-if="!reading && !readError" class="conf-empty"><h2>프로젝트 문서를 한곳에서</h2><p>왼쪽 트리나 검색에서 문서를 선택하세요.<br>자주 보는 문서는 즐겨찾기에 고정할 수 있습니다.</p></div>

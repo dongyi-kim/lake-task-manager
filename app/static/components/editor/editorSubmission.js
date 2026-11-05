@@ -10,7 +10,7 @@ export const editorSubmissionMethods = {
     for (const url of this._pending.keys()) URL.revokeObjectURL(url);
     this._pending.clear(); this.submitMutationId = ""; this.pendingSubmitHtml = "";
     if (((this.kind === "comment" && !this.initial) || this.draftScope) && this._ed && !this._dead) {
-      this._ed.commands.clearContent(false); this.restored = false;
+      this._ed.commands.clearContent({ emitUpdate: false }); this.restored = false;
     }
   },
   async submitWithAdapter(html, jiraBase) {
@@ -32,7 +32,7 @@ export const editorSubmissionMethods = {
       this.err = error.message || String(error);
     } finally {
       this.busy = false;
-      if (this._ed && !this._dead) this._ed.setEditable(!this.readOnly);
+      if (this._ed && !this._dead) this._ed.setEditable(!this.readOnly, false);
     }
   },
 };
