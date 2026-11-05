@@ -22,7 +22,7 @@ JQL leaf/issue/user/Epic/Confluence 캐시, mutation invalidation을 사용한�
 
 ## 도구
 
-65개 도구 모두 `inputSchema`와 `outputSchema`를 제공한다. 출력은 공통 성공/오류 envelope와
+등록된 모든 도구는 `inputSchema`와 `outputSchema`를 제공한다. 최신 목록은 MCP `tools/list`로 확인한다. 출력은 공통 성공/오류 envelope와
 도구별 `data` 타입으로 정의하며, 조회 성공에는 `cache`, `partial`, `missing`도 포함된다.
 실제 반환 JSON은 기존과 동일하게 `content`의 JSON 텍스트 및 `structuredContent`에 함께 제공한다.
 SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제거하지 않는다.
@@ -40,6 +40,9 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 | 티켓 본문·댓글·이력·자식·Epic | `get_ticket`, `get_comments`, `get_comment_source`, `get_history`, `get_field_history`, `get_children`, `get_epic`, `get_ticket_context` |
 | 원본 댓글·변경이력 페이지, 전체 하위 계층 | `get_evidence_page`, `get_descendants` |
 | 통합검색·Confluence 검색/본문 | `search_workspace`, `search_confluence_documents`, `read_confluence_document` |
+| Confluence 발행 버전·Space·트리·문맥 | `check_confluence_revision`, `list_confluence_spaces`, `list_confluence_pages`, `get_confluence_context` |
+| Confluence 작성·댓글·첨부·라벨 | `create_confluence_page`, `update_confluence_page`, `create_confluence_comment`, `read_confluence_comment`, `update_confluence_comment`, `delete_confluence_comment`, `upload_confluence_attachment`, `read_confluence_attachment`, `delete_confluence_attachment`, `add_confluence_labels`, `remove_confluence_label` |
+| Confluence 구조·직접 제한·휴지통 | `move_confluence_document`, `get_confluence_restrictions`, `set_confluence_restrictions`, `trash_confluence_document`, `list_confluence_trashed_pages`, `restore_confluence_document`, `bulk_confluence_changes` |
 | 사람·선택지·워크로드 | `search_users`, `get_user`, `list_options`, `get_workload` |
 | WBS·VIT·팀 워크로드·활동 | `get_dashboard`, `get_vit_detail`, `get_epic_progress`, `get_activity` |
 | 부속 정보·첨부파일 내용 | `get_attachments`, `read_attachment`, `get_documents` |
@@ -64,7 +67,7 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 `fetchedAt`·`freshUntil`·`displayUntil`, stale 여부와 policy revision을 반환한다.
 관측 정보가 없으면 `available: false, state: unknown`으로 표시하며 최신 데이터라고 단정하지 않는다.
 
-업무 도구 55개와 인증 도구 2개, 가이드 도구 1개, LLM 설정 도구 7개로 총 **65개**를 제공한다. `get_ticket`의 `descriptionHtml`은 열람용, `descriptionEditHtml`은
+`get_ticket`의 `descriptionHtml`은 열람용, `descriptionEditHtml`은
 수정용 본문이다. 생성 시 `body.descriptionHtml`, 이후 본문 수정은 `update_description(html, ...)`,
 댓글 작성·수정은 `add_comment`·`edit_comment(html, ...)`를 사용한다. 기존 UI와 동일한 Jira serializer를 거친다.
 댓글 수정 전에는 `get_comment_source(key, comment_id)`의 `html`을 읽는다. `get_comments`의 표시 HTML은
