@@ -118,3 +118,33 @@ def test_partial_refresh_keeps_old_complete_data_and_mutation_expires_both_cache
     client._invalidate_ticket_content("DL-9007", comments=True)
     for suffix in ("", ":coverage", ":full"):
         assert client.cache.get_stale(f"comments:{client.env}:DL-9007{suffix}") is None
+
+
+@pytest.mark.parametrize("when", ["while_loading", "after_publish"])
+def test_full_snapshot_never_borrows_newer_cached_coverage(comments_client, when):
+    client, _, _, _, clock = comments_client
+    started = clock[0]
+    cache_key = f"comments:{client.env}:DL-9007:full"
+    newer = {"comments": [{"id": "new-snapshot"}], "complete": True}
+    def prime_newer():
+        clock[0] += 20
+        client.cache.invalidate(cache_key)
+        client.cache.set(cache_key, newer, 600)
+    if when == "while_loading":
+        original = client._provider.get_json
+        def racing(*args, **kwargs):
+            result = original(*args, **kwargs)
+            if kwargs["params"].get("startAt") == 200:
+                prime_newer()
+            return result
+        client._provider.get_json = racing
+    else:
+        client.cache.on_upstream_ok = prime_newer
+    returned = client.issue_comments_complete("DL-9007")
+    assert len(returned["comments"]) == 250
+    assert client.cache.get(cache_key) == newer
+    if when == "while_loading":
+        assert returned["partial"] and not returned["complete"] and returned["fetchedAt"] is None
+    else:
+        assert returned["complete"] and returned["fetchedAt"] == started
+    assert client.cache.metadata(cache_key)["fetchedAt"] == started + 20

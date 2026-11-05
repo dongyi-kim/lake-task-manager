@@ -463,3 +463,100 @@ def test_fresh_issue_view_records_only_successful_source_metadata(cache, clock, 
     else:
         assert result is None and not sources
         assert cache.get(f"issueview:{client.env}:DL-1") is None
+
+
+@pytest.mark.parametrize("api", ["get_or_set", "get_or_set_swr"])
+@pytest.mark.parametrize("interleave", ["reprime", "background", "failed_refresh"])
+def test_display_snapshot_keeps_value_and_source_together(cache, clock, api, interleave):
+    key = "comments:mock:DL-1"
+    cache.set(key, ["old"] * 4, 600)
+    original_time = clock[0]
+    clock[0] += 601
+    if interleave != "background":
+        cache.invalidate(key)
+    new_time = clock[0]
+
+    def prime():
+        cache.set(key, ["new"] * 5, 600)
+
+    def background(*_args):
+        assert interleave == "background", "invalidated display must await fresh data"
+        prime()  # Background completion after stale selection but before the HTTP response.
+
+    def producer():
+        if interleave == "failed_refresh":
+            prime()  # A concurrent successful refresh wins while this producer fails.
+            raise ConnectionError("older request failed")
+        pytest.fail("the completed reprime already satisfies this read")
+
+    if interleave == "reprime":
+        def upstream_available():
+            prime()  # Reproduce completion between display capture and SWR eligibility check.
+            return False
+        cache.skip_producer = upstream_available
+    cache.revalidator = background
+    with read_scope() as sources:
+        result = (cache.get_or_set(key, 600, producer) if api == "get_or_set" else
+                  cache.get_or_set_swr(key, 600, producer, background))[0]
+    if interleave == "background":
+        assert result == ["old"] * 4
+        assert sources[-1]["state"] == "stale"
+        assert sources[-1]["fetchedAt"] == original_time
+    else:
+        assert result == ["new"] * 5
+        assert sources[-1]["state"] == "fresh"
+        assert sources[-1]["fetchedAt"] == new_time
+    assert cache.get(key) == ["new"] * 5
+
+
+def test_shared_refresh_keeps_its_own_provenance_after_a_newer_cache_write(cache, clock, monkeypatch):
+    from concurrent.futures import Future
+    from app.infra import cache as cache_module
+    joined, entered, release = threading.Event(), threading.Event(), threading.Event()
+    class ObservedFuture(Future):
+        def result(self, *args, **kwargs):
+            joined.set()
+            return super().result(*args, **kwargs)
+    monkeypatch.setattr(cache_module, "Future", ObservedFuture)
+    key = "comments:mock:DL-1"
+    original_time = clock[0]
+    def producer():
+        entered.set()
+        assert release.wait(5)
+        return ["old"]
+    def newer_write():
+        clock[0] += 20
+        cache.invalidate(key)
+        cache.set(key, ["new"], 600)
+    cache.on_upstream_ok = newer_write
+    def read():
+        with read_scope() as sources:
+            value = cache.refresh(key, 600, producer)
+        return value, sources
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        owner = pool.submit(read)
+        assert entered.wait(5)
+        follower = pool.submit(read)
+        assert joined.wait(5)
+        release.set()
+        for result in (owner.result(), follower.result()):
+            value, sources = result
+            assert value == ["old"]
+            assert sources[-1]["fetchedAt"] == original_time
+    assert cache.get(key) == ["new"]
+    assert cache.metadata(key)["fetchedAt"] == original_time + 20
+
+
+def test_fenced_refresh_cannot_claim_newer_cache_provenance(cache, clock):
+    key = "comments:mock:DL-1"
+    original_time = clock[0]
+    def producer():
+        clock[0] += 20
+        cache.invalidate(key)
+        cache.set(key, ["new"], 600)
+        return ["old"]
+    with read_scope() as sources:
+        assert cache.refresh(key, 600, producer) == ["old"]
+    assert sources[-1]["fetchedAt"] == original_time
+    assert sources[-1]["state"] == "stale" and sources[-1]["invalidated"]
+    assert cache.get(key) == ["new"]

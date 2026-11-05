@@ -20,7 +20,7 @@ from uuid import uuid4
 
 from app.auth.base import (LoginRequired, MutationPreflightBusy, MutationPreflightUnavailable, PermissionDenied, SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable,
                            background_upstream, write_upstream)
-from app.infra.cache_policy import note_read, revalidating
+from app.infra.cache_policy import note_read, read_scope, revalidating
 from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
                        flatten_task_lists, lift_mentions_html, mark_explicit_jira_links, sanitize_html,
                        serialize_jira_html, shorten_mention_names, text_to_html, tidy_html, unproxy_media)
@@ -2271,8 +2271,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     def issue_comments_complete(self, key, *, fresh_after=None):
         """Dialog-only coverage, sharing completed snapshots and the normal mutation prefix."""
         base_key = f"comments:{self.env}:{key}"
-        base = self.cache.get_alive(base_key, record=False)
-        source = self.cache.metadata(base_key)
+        base, source = self.cache._display_snapshot(base_key)
         if (base and source and not source["invalidated"]
                 and (fresh_after is None or source["fetchedAt"] * 1000 >= fresh_after)
                 and self.comment_coverage(key, base[0])["complete"]):
@@ -2296,11 +2295,17 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                        "displayUntil": started + self.cache.display_ttl(cache_key), "state": "fresh"})
             return snapshot
         try:
-            snapshot = self.cache.refresh(cache_key, self.s.cache_ttl_seconds, produce,
-                min_fetched_at=fresh_after / 1000 if fresh_after is not None else None)
+            with read_scope(strict=revalidating()) as sources:
+                snapshot = self.cache.refresh(cache_key, self.s.cache_ttl_seconds, produce,
+                    min_fetched_at=fresh_after / 1000 if fresh_after is not None else None)
         except _UncacheablePartial as exc:
             return {**exc.value, "partial": True, "fetchedAt": None}
-        source = self.cache.metadata(cache_key)
+        for observed in sources:
+            note_read(observed)
+        # The row may already have been replaced by a newer request. Use the provenance
+        # delivered with this flight's result, never that newer row's timestamp.
+        source = min((row for row in sources if row.get("kind") == "comments"),
+                     key=lambda row: row["fetchedAt"], default=None)
         if (not source or source["invalidated"]
                 or (fresh_after is not None and source["fetchedAt"] * 1000 < fresh_after)):
             return {**snapshot, "complete": False, "partial": True, "hasMore": True, "fetchedAt": None,
