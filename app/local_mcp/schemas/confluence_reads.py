@@ -33,14 +33,47 @@ class ConfluenceList(OpenModel):
 
 class ConfluenceContext(OpenModel):
     pageId: str
-    kind: Literal["ancestors", "comment", "attachment", "label", "restriction"]
+    kind: Literal["ancestors", "attachment", "label", "restriction"]
     results: list[dict[str, JsonValue]] | None = None
     data: dict[str, JsonValue] | None = None
     hasMore: bool | None = None
     nextStartAt: int | None = None
 
 
+class ConfluenceCommentAuthor(OpenModel):
+    username: str | None = None
+    userKey: str | None = None
+    displayName: str | None = None
+
+
+class ConfluenceCommentVersion(OpenModel):
+    number: int
+    when: str | None
+    by: ConfluenceCommentAuthor
+
+
+class ConfluenceCommentPreview(OpenModel):
+    id: str
+    version: ConfluenceCommentVersion
+    preview: str
+    format: Literal["text-preview"]
+    bodyLength: int
+    bodyTruncated: bool
+
+
+class ConfluenceCommentPage(OpenModel):
+    pageId: str
+    kind: Literal["comment"]
+    results: list[ConfluenceCommentPreview]
+    startAt: int
+    returned: int
+    hasMore: bool
+    nextStartAt: int | None
+    coverage: Literal["accessible_only"]
+    bodyReadHint: str
+
+
 OUTPUT_MODELS = {"check_confluence_revision": ConfluenceRevision,
                  "list_confluence_spaces": ConfluenceList,
                  "list_confluence_pages": ConfluenceList,
-                 "get_confluence_context": ConfluenceContext}
+                 "get_confluence_context": ConfluenceContext | ConfluenceCommentPage}
