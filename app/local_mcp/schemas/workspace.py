@@ -6,6 +6,7 @@ from pydantic import Field
 
 from .common import JsonValue, OpenModel
 from .tickets import MissingParent
+from .confluence_reads import ConfluenceBodyCache
 
 
 class SearchItem(OpenModel):
@@ -51,6 +52,8 @@ class DocumentSummary(OpenModel):
     excerpt: str
     url: str
     modified: str | None
+    version: dict[str, JsonValue] | None = None
+    ancestors: list[dict[str, JsonValue]] | None = None
 
 
 class DocumentPage(OpenModel):
@@ -76,6 +79,7 @@ class DocumentBody(OpenModel):
     totalCharacters: int
     hasMore: bool
     nextOffset: int | None
+    cacheInfo: ConfluenceBodyCache | None = None
 
 
 class AttachmentBytes(OpenModel):

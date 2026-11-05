@@ -25,6 +25,7 @@ from app.local_mcp.security import Credentials, LocalGuard
 from app.local_mcp.settings import build_settings_router
 from app.local_mcp.write_tools import register_writes
 from app.local_mcp.workspace_tools import register_workspace
+from app.local_mcp.confluence_read_tools import register_confluence_reads
 from app.local_mcp.vit_tools import register_vit
 from app.local_mcp.admin_tools import register_admin
 from app.local_mcp.llm_tools import LLM_TOOLS, register_llm
@@ -88,6 +89,7 @@ class LocalMcpRuntime:
         register_hierarchy(self.register, self)
         register_hierarchy_writes(self.register, self)
         register_workspace(self.register, self)
+        register_confluence_reads(self.register, self)
         register_vit(self.register, self)
         register_admin(self.register, self)
         register_llm(self.register, self)
@@ -150,6 +152,9 @@ class LocalMcpRuntime:
                 "jiraState": jira_state, "tokenMasked": "•••••••• (설정됨)"}
 
     def _error(self, exc):
+        if getattr(exc, "service", None) == "confluence":
+            from app.local_mcp.confluence_errors import confluence_error
+            return confluence_error(exc)
         if isinstance(exc, HierarchyFormError):
             return {"code": exc.code, "status": exc.status, "message": str(exc), "retryable": False}
         if isinstance(exc, MutationPreflightUnavailable):

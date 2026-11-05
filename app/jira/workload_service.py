@@ -562,11 +562,13 @@ class JiraWorkloadMixin:
     def _fetch_confluence(self, user):
         if not self.s.confluence_base:
             return []
-        data = self.provider.get_json("/rest/api/content/search", params={
-            "cql": f'contributor = "{user}" and lastmodified >= now("-14d")',
+        import json
+        from app.jira.confluence_service import cached_read
+        data = cached_read(self, "confsearch", "/rest/api/content/search", {
+            "cql": f'contributor = {json.dumps(user)} and lastmodified >= now("-14d")',
             "expand": "version,space",
             "limit": 25,
-        })
+        }, lambda data: isinstance(data.get("results"), list))
         if not isinstance(data, dict) or not isinstance(data.get("results", []), list):
             raise ValueError("Confluence activity response is malformed")
         return [{

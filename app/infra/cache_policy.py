@@ -14,6 +14,7 @@ class CachePolicy(BaseModel):
 
     metadataDisplaySeconds: int = Field(default=2592000, ge=86400, le=31536000, multiple_of=86400)
     metadataFreshnessSeconds: int = Field(default=86400, ge=3600, le=2592000, multiple_of=3600)
+    confluenceBodyRetentionSeconds: int = Field(default=2592000, ge=86400, le=31536000, multiple_of=86400)
 
     @model_validator(mode="after")
     def display_covers_freshness(self):
@@ -26,6 +27,8 @@ class CachePolicy(BaseModel):
 
     def ttl(self, key, value, original, done=False):
         kind = key.split(":", 1)[0]
+        if kind == "confbody":
+            return self.confluenceBodyRetentionSeconds
         if kind in LONG_DISPLAY_KINDS:
             return self.metadataFreshnessSeconds
         if kind in {"issue", "issueL", "issueview"}:
@@ -42,7 +45,8 @@ class CachePolicy(BaseModel):
 LONG_DISPLAY_KINDS = frozenset({"epicmeta", "avatar_url", "avatar_bytes"})
 DISPLAY_KINDS = LONG_DISPLAY_KINDS | frozenset({"issue", "issueL", "issueview", "comments", "epicmeta",
     "user", "userbadge", "ancestors", "siblings", "children", "related", "attachments",
-    "documents", "remotelinks", "timeline", "changelog", "mentionctx", "epic_tree", "confpage"})
+    "documents", "remotelinks", "timeline", "changelog", "mentionctx", "epic_tree", "confpage",
+    "confhead", "confview", "confrelated", "conftree"})
 # jqlrow/jqlsnap retain their snapshot lifetime, independent of fresh-query reuse.
 LIST_KINDS = frozenset({"jqlleaf", "jqlcurrent", "mt", "mytasks", "workload", "workload_bucket",
     "activity", "wbs_build", "vit_build", "vit_bases", "vit_list", "search", "epic_cand",
@@ -88,7 +92,7 @@ def revalidating():
 
 def primary_sources(rows):
     """Long-lived labels/photos do not date the core ticket or list they decorate."""
-    core = [row for row in rows if row.get("kind") not in LONG_DISPLAY_KINDS]
+    core = [row for row in rows if row.get("kind") not in LONG_DISPLAY_KINDS | {"confbody"}]
     return core or rows
 
 

@@ -9,6 +9,7 @@ import itertools
 import os
 import threading
 import time
+from urllib.parse import urlsplit
 
 from .base import (AuthProvider, MULTIPART_HEADERS, PRIO_WRITE, SessionExpired,
                    UpstreamError, WRITE_HEADERS, upstream_priority)
@@ -67,6 +68,18 @@ class InProcessProvider(AuthProvider):
             _sleep_for(path, params)
             return self._client.get(path, params=params or {})
         r = self._serial(do, priority)
+        # Confluence permission/validation/outage responses are not Jira logouts.
+        # Keep the legacy Jira fixture behavior until its own transport contracts change.
+        resource = urlsplit(path).path
+        if any(resource.startswith(prefix) for prefix in ("/rest/api/content", "/rest/api/space", "/rest/api/search", "/rest/api/user/current")):
+            if r.status_code == 401:
+                error = SessionExpired(f"HTTP 401 on {path}")
+            elif r.status_code >= 400:
+                error = UpstreamError(r.status_code, path, r.text)
+            else:
+                return r
+            error.service = "confluence"
+            raise error
         if r.status_code in (401, 403) or r.status_code >= 500:
             raise SessionExpired(f"HTTP {r.status_code} on {path}")
         return r

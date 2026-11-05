@@ -17,6 +17,7 @@ from jira820.config import Config
 from app.infra.settings import get_settings
 from app.mock.permissions import PermissionStore, install_permission_route
 from app.mock.query_compat import install_query_compat
+from app.mock.confluence import install_confluence
 from app.mock.world import World as _World, get_world
 
 W_ME = _World.ME          # dev 세션 사용자(= world 픽스처의 "나")
@@ -86,4 +87,5 @@ def build_injected_app():
     app = make_app(store=build_store())
     install_permission_route(app)
     install_query_compat(app)
+    install_confluence(app)
     return app

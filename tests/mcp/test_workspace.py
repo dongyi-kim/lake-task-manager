@@ -50,10 +50,11 @@ def test_real_sdk_workspace_search_docs_full_body_and_shared_ui_cache(build_env)
                     # Existing internal document consumer primes the exact body projection used by MCP.
                     env.client.confluence_page(str(allowed["id"]), expand="body.storage,space,version")
                     before = len(env.calls)
-                    parts, offset = [], 0
+                    parts, offset, version = [], 0, None
                     while True:
                         chunk = await call("read_confluence_document", {
-                            "page": str(allowed["id"]), "offset": offset, "max_chars": 17})
+                            "page": str(allowed["id"]), "offset": offset, "max_chars": 17, "version": version})
+                        version = chunk["version"]["number"]
                         parts.append(chunk["content"])
                         if not chunk["hasMore"]:
                             break
@@ -147,7 +148,7 @@ def test_confluence_cache_shares_local_identity_scopes_servers_and_removes_revok
     assert other["id"] == first["id"] and other["body"] == first["body"] and len(env.calls) > before
     assert other["_links"]["self"].startswith("http://other-confluence.test/")
     with env.cache._lock:
-        env.cache._conn.execute("UPDATE cache SET fetched_at=? WHERE key LIKE 'confpage:%'", (time.time() - 700,))
+        env.cache._conn.execute("UPDATE cache SET fetched_at=? WHERE key LIKE 'confhead:%'", (time.time() - 700,))
         env.cache._conn.commit()
     def denied(*_args, **_kwargs):
         raise PermissionDenied("Confluence access revoked")
@@ -173,7 +174,7 @@ def test_incomplete_confluence_search_requires_space_expansion_and_is_not_cached
     monkeypatch.setattr(env.client, "_conf_get_json", response)
     with pytest.raises(UpstreamUnavailable):
         env.client.confluence_search('space = "DL"')
-    assert requested[0]["expand"] == "content.space,content.version"
+    assert set(requested[0]["expand"].split(",")) >= {"content.space", "content.version"}
     assert not env.cache.entries_by_prefix("confsearch:")
     monkeypatch.setattr(env.client, "_conf_get_json", lambda *_args, **_kwargs: {
         "results": [{"content": {"id": "1", "space": {"key": "DL"}}}]})
@@ -184,7 +185,7 @@ def test_late_confluence_permission_failure_cannot_erase_newer_cache(build_env, 
     env = build_env()
     identifier = str(_documents(env)[0]["id"])
     original = env.client.confluence_page(identifier, strict=True)
-    cache_key = next(iter(env.cache.entries_by_prefix("confpage:")))
+    cache_key = next(iter(env.cache.entries_by_prefix("confhead:")))
     with env.cache._lock:
         env.cache._conn.execute("UPDATE cache SET fetched_at=? WHERE key=?", (time.time() - 700, cache_key))
         env.cache._conn.commit()

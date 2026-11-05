@@ -216,6 +216,8 @@ class Settings:
              "configured": bool(self.bitbucket_base) and self.bitbucket_enabled,
              "paths": ["/rest/api/1.0/inbox/pull-requests/count", "/rest/api/1.0/repos?limit=1"]},
         ]
+        self.confluence_verified_features = [v.strip() for v in os.getenv("CONFLUENCE_VERIFIED_FEATURES", "").split(",") if v.strip()]
+        self.confluence_verification_revision = os.getenv("CONFLUENCE_VERIFICATION_REVISION", "")
         # SSO 로그인 순회·판정에는 **설정된 것만** (base 없는 서비스는 창을 못 연다).
         self.auth_targets = [(s["name"], s["base"], s["paths"]) for s in self.services if s["configured"]]
         self.cache_db_path = _cache_path(pick("CACHE_DB_PATH", cache.get("db_path"), "cache.sqlite3"))   # 상대경로 → .cache/
@@ -229,17 +231,19 @@ class Settings:
                     "displaySeconds": cache.get("dead_ttl_seconds", 86400),
                     "resolvedFreshnessSeconds": 86400,
                     "resolvedCommentsFreshnessSeconds": 3600,
-                    "metadataDisplaySeconds": 2592000, "metadataFreshnessSeconds": 86400}
+                    "metadataDisplaySeconds": 2592000, "metadataFreshnessSeconds": 86400,
+                    "confluenceBodyRetentionSeconds": 2592000}
         env_keys = {"freshnessSeconds": "CACHE_TTL_SECONDS", "displaySeconds": "CACHE_DEAD_TTL_SECONDS",
                     "resolvedFreshnessSeconds": "CACHE_RESOLVED_TTL_SECONDS",
                     "resolvedCommentsFreshnessSeconds": "CACHE_RESOLVED_COMMENTS_TTL_SECONDS",
                     "metadataDisplaySeconds": "CACHE_METADATA_DISPLAY_SECONDS",
-                    "metadataFreshnessSeconds": "CACHE_METADATA_TTL_SECONDS"}
+                    "metadataFreshnessSeconds": "CACHE_METADATA_TTL_SECONDS",
+                    "confluenceBodyRetentionSeconds": "CACHE_CONFLUENCE_BODY_RETENTION_SECONDS"}
         defaults.update(policy_values)
         defaults.update({key: int(os.environ[env]) for key, env in env_keys.items() if env in os.environ})
         saved = prefs.load()
         if saved.get("cachePolicy") is not None:
-            defaults = saved["cachePolicy"]
+            defaults.update(saved["cachePolicy"])
         self._cache_policy_lock = threading.Lock()
         self.cache_policy = CachePolicy(**defaults)
         self.policy_revision = int(saved.get("policyRevision") or 0)

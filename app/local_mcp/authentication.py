@@ -33,7 +33,7 @@ def authentication_error(exc):
 def services_for(name, arguments):
     if name in AUTH_TOOLS or name in CONFIG_WRITES or name == "get_workspace_config":
         return ()
-    if name in {"search_confluence_documents", "read_confluence_document"}:
+    if "_confluence_" in name:
         return ("confluence",)
     if name == "search_workspace":
         return tuple(dict.fromkeys(arguments.get("sources") or ("jira", "confluence")))
