@@ -558,17 +558,31 @@ def test_editor_table_does_not_trap_ticket_dialog_vertical_wheel(editor_browser)
     # 바깥 티켓 본문이 스크롤되어야 한다.
     host.evaluate("el => { el.scrollTop = el.scrollHeight; }")
     wrapper.scroll_into_view_if_needed()
+    body = overlay.locator(".tkt-body")
+    # On a tall viewport scrollIntoView can leave the dialog itself at its end too.
+    # Keep the editor at its boundary, but leave real outer room for chaining.
+    body.evaluate("el => { el.scrollTop = 0; }")
+    page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+    host.evaluate("el => { el.scrollTop = el.scrollHeight; }")
     box = wrapper.bounding_box()
     assert box is not None
-    body = overlay.locator(".tkt-body")
     before = body.evaluate("el => el.scrollTop")
+    assert body.evaluate("el => el.scrollHeight - el.clientHeight") > before
+    assert host.evaluate("el => el.scrollHeight-el.clientHeight-el.scrollTop") <= 1
+    assert wrapper.evaluate("""el => {
+      const r = el.getBoundingClientRect();
+      return el.contains(document.elementFromPoint(r.x+r.width/2, r.y+r.height/2));
+    }""")
     page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
     page.mouse.wheel(0, 420)
+    # Chromium may consume the first wheel on the host's fractional last pixel. A second
+    # discrete gesture must chain; do not turn this into a retry-until-pass loop.
+    page.wait_for_timeout(150)
+    if body.evaluate("el => el.scrollTop") == before:
+        page.mouse.wheel(0, 420)
     page.wait_for_function(
         "before => document.querySelector('.tkt-ov .tkt-body').scrollTop > before",
-        arg=before,
-        timeout=3_000,
-    )
+        arg=before, timeout=3_000)
 
     assert not errors, f"browser page errors: {errors}"
 
