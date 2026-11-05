@@ -7,6 +7,7 @@ import WbsView from "./views/WbsView.js";
 import HomeView from "./views/HomeView.js";
 import AgentView from "./views/AgentView.js";
 import DevToolsView from "./views/DevToolsView.js";
+import ConfluenceView from "./views/ConfluenceView.js";
 import FloatingRefresh from "./ui/FloatingRefresh.js";
 import AddTicketFab from "./ui/AddTicketFab.js";
 import FormulaCallout from "./ui/FormulaCallout.js";
@@ -31,7 +32,7 @@ import { installAuthActivityProbe } from "../lib/authActivity.js";
 // 새 대화를 시작한다(입력 전달은 HomeView → sessionStorage → AgentView).
 // #/guide 는 예전 주소를 살리는 별칭이다(북마크를 깨지 않는다).
 const ROUTES = { home: HomeView, guide: HomeView, ai: AgentView, wbs: WbsView, vit: VitView,
-                 workload: WorkloadView, mytasks: MyTasksView, devtools: DevToolsView };
+                 workload: WorkloadView, mytasks: MyTasksView, devtools: DevToolsView, confluence: ConfluenceView };
 // 로컬 앱의 모든 화면은 설치 사용자에게 열려 있다. Jira 권한은 실제 조회/쓰기에서 확인한다.
 const TABS = [
   // ✨ 는 **AI 탭에만** 붙는다(사용자 요청) — 새로 생긴 기능이라 눈이 먼저 가야 한다.
@@ -42,8 +43,9 @@ const TABS = [
   { k: "vit", label: "현안 (PMO_VIT)" },
   { k: "workload", label: "인력 워크로드" },
   { k: "mytasks", label: "Task" },
+  { k: "confluence", label: "Confluence" },
 ];
-function currentRoute() { return location.hash.replace("#/", "") || "home"; }
+function currentRoute() { return location.hash.replace("#/", "").split(/[/?]/)[0] || "home"; }
 // /browse/DL-1234 — 그 티켓만의 단독 페이지("새 창에서 열기" 대상).
 // Jira 와 같은 URL 형태라 주소만 보고도 어느 티켓인지 안다.
 function ticketOf() {
@@ -254,7 +256,7 @@ export default {
         <FormulaCallout :route="route" />
         <keep-alive><component :is="view"></component></keep-alive>
         <!-- 좌하단 플로팅 강제 새로고침 — 데이터 화면에서만(개발 도구·티켓 단독 페이지 제외) -->
-        <FloatingRefresh v-if="route !== 'devtools'" />
+        <FloatingRefresh v-if="route !== 'devtools' && route !== 'confluence'" />
       </template>
       <TicketMenu />
       <LoginOverlay />
@@ -263,7 +265,7 @@ export default {
       <ClipboardTicketPrompt v-if="ready && !needLogin" :jira-base="clipboardJiraBase"
                              :open-keys="[ticketKey, pageTicket]" />
       <!-- 좌하단 '+' 티켓 추가(공통) — 로그인·devtools 제외하고 어디서든 -->
-      <AddTicketFab v-if="ready && route !== 'devtools'" />
+      <AddTicketFab v-if="ready && route !== 'devtools' && route !== 'confluence'" />
       <!-- 기능 안내(한 번만) — 목록은 lib/guides.js. 다이얼로그가 떠 있으면 띄우지 않는다:
            가리킬 버튼이 그 뒤에 가려져 무엇을 말하는지 알 수 없게 된다. -->
       <GuideSpot v-if="ready && !needLogin && !ticketKey && !pageTicket" :route="route" />

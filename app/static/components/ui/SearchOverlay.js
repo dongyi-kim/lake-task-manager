@@ -1,5 +1,5 @@
 // SearchOverlay.js — 스포트라이트형 통합 검색(우상단). Jira+Confluence+Bitbucket(mock) 병렬.
-// 입력 디바운스 → /api/search. Jira 결과는 인앱 티켓 다이얼로그로, Confluence 는 시스템 브라우저로.
+// 입력 디바운스 → /api/search. Jira 결과는 티켓 다이얼로그로, Confluence 는 문서 화면으로.
 // 스코프 토글(소속 한정 ↔ 전체), 키보드 ↑↓/Enter/Esc. updated: 2026-07-15
 import { api } from "../../lib/api.js";
 import { ymdhm } from "../../lib/fmt.js";
@@ -8,6 +8,7 @@ import Avatar from "./Avatar.js";
 import { createTypeahead } from "../../lib/typeahead.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
 import { categoryColor } from "../../lib/colors.js";
+import { openConfluenceDocument } from "../../lib/confluenceNavigation.js";
 
 const RECENT_MAX = 20;
 // 예전 host/URL 형태로 저장된 같은 항목을 합친 뒤에도 20개를 채울 수 있도록 넉넉히 받는다.
@@ -170,7 +171,8 @@ export default {
         // title 은 검색 하이라이트(<mark>)가 섞인 HTML — 저장은 평문으로.
         recordOpen({ url: f.it.url, kind: "confluence", title: stripTags(f.it.title),
                      meta: (f.it.path || []).slice().reverse().join(" ‹ ") });
-        this.openExternal(f.it.url);
+        if (openConfluenceDocument(f.it.id || f.it.url)) this.$emit("close");
+        else this.openExternal(f.it.url);
       }
     },
     // 최근 항목 열기 — Jira 티켓이면 인앱 다이얼로그, 그 외는 시스템 브라우저.
@@ -180,6 +182,7 @@ export default {
       recordOpen({ url: it.url, kind: it.kind, title: it.title, meta: it.meta, type: it.type,
                    data: it.kind === "jira" ? this.jiraData(it) : (it.data || {}) });
       if (m) { this.$emit("open-ticket", m[1].toUpperCase()); this.$emit("close"); return; }
+      if (it.kind === "confluence" && openConfluenceDocument(it.url)) { this.$emit("close"); return; }
       this.openExternal(it.url);
     },
     // 검색결과/최근항목 공통 — Jira 티켓의 표시용 부가필드만 추린다.
