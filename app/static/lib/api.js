@@ -1,4 +1,5 @@
 import { CacheMemo } from "./cacheMemo.js";
+import { rememberDraftContext } from "./draftIdentity.js";
 // api.js — 백엔드 리소스 호출 래퍼. 401 needLogin 을 전역 이벤트로 알린다(LoginOverlay 가 수신).
 // GET 응답을 URL 키로 memo(프로미스 캐시) → 탭 전환/중복요청 재fetch 방지. refresh() 에서 clear.
 // updated: 2026-07-09
@@ -256,7 +257,7 @@ function idle(fn) { (window.requestIdleCallback || ((f) => setTimeout(f, 250)))(
 function warmGet(u) { try { get(u).catch(() => {}); } catch (e) { /* noop */ } }
 
 export const api = {
-  health: () => req("/api/health"),                                    // 로그인 상태 — memo 제외
+  health: () => req("/api/health").then(h => { rememberDraftContext(h); return h; }), // local metadata, no Jira
   raw: (path, opts) => req(path, opts),                                // memo 없이 매번 조회(설정 메뉴 등)
   evict: (key) => evict(encodeURIComponent(key)),                      // 이 티켓 관련 memo 비우기(강제 새로고침)
   workspaceConfigUpdated: (revision, kind = 'all') => {

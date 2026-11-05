@@ -28,6 +28,10 @@ def _mount(page, name, props):
 def test_create_form_cancel_and_reload_restore_fields_and_editor(editor_browser, name, props):
     page, base, errors, _ = editor_browser
     page.goto(base)
+    page.evaluate("""async () => {
+      const {api} = await import('/lib/api.js');
+      api.me = async () => ({manager:false}); // Non-admin / identity unavailable must not gate local drafts.
+    }""")
     _mount(page, name, props)
     page.locator(".nk-sum").fill("보존할 생성 초안")
     page.locator(".nk-desc-t").filter(has_text="설명").click()
@@ -145,16 +149,74 @@ def test_draft_storage_commit_order_expiry_and_scope(editor_browser):
       const openRecovery = openFailed && (await fresh.loadDraft(key)).html === 'open recovered';
       const {api} = await import('/lib/api.js');
       const oldMe = api.me, oldHealth = api.health;
-      const keys = [key];
-      for (const [env, jiraBase, id] of [['mock','http://jira-a','user-a'], ['mock','http://jira-a','user-b'], ['prod','http://jira-b','user-a']]) {
-        api.me = async () => ({id}); api.health = async () => ({env, jiraBase});
+      let calls = 0;
+      api.health = async () => { calls++; throw new Error('offline'); };
+      identity.rememberDraftContext({env:'prod', jiraBase:'https://jira-a', projectKey:'DL'});
+      const keys = [];
+      for (const failure of ['missing', 'forbidden', 'expired', 'offline', 'pending']) {
+        api.me = async () => {
+          calls++;
+          if (failure === 'missing') return {};
+          if (failure === 'pending') return new Promise(() => {});
+          throw Object.assign(new Error(failure), {status: failure === 'forbidden' ? 403 : 401});
+        };
         window.dispatchEvent(new Event('auth-ok'));
         keys.push(await identity.resolveDraftKey('test:ordering'));
       }
+      identity.rememberDraftContext({env:'prod', jiraBase:'https://jira-a', projectKey:'OTHER'});
+      const otherProject = await identity.resolveDraftKey('test:ordering');
+      identity.rememberDraftContext({env:'prod', jiraBase:'https://jira-b', projectKey:'DL'});
+      const otherServer = await identity.resolveDraftKey('test:ordering');
       api.me = oldMe; api.health = oldHealth;
-      return {ordered, expired, failed, openRecovery, scoped: new Set(keys).size === 4 && keys.every(k => k.startsWith('v2:'))};
+      return {ordered, expired, failed, openRecovery, calls,
+        scoped: new Set(keys).size === 1 && new Set([keys[0], otherProject, otherServer]).size === 3};
     }""")
-    assert result == {"ordered": "new", "expired": None, "failed": True, "openRecovery": True, "scoped": True}
+    assert result == {"ordered": "new", "expired": None, "failed": True, "openRecovery": True, "calls": 0, "scoped": True}
+    assert not errors
+
+
+def test_local_draft_migration_keeps_images_receipts_and_does_not_resurrect(editor_browser):
+    page, base, errors, _ = editor_browser
+    page.goto(base)
+    result = page.evaluate("""async () => {
+      const d = await import('/lib/draft.js');
+      const identity = await import('/lib/draftIdentity.js');
+      const scope = 'scoped:comment:DL-9007:42';
+      identity.rememberDraftContext({env:'prod', jiraBase:'https://jira-a', projectKey:'DL'});
+      const prefix = 'v2:prod:' + encodeURIComponent('https://jira-a') + ':';
+      const old = prefix + 'old-user:' + scope, latest = prefix + 'new-user:' + scope;
+      const other = 'v2:prod:' + encodeURIComponent('https://jira-b') + ':user:' + scope;
+      const now = Date.now, stamp = now();
+      Date.now = () => stamp - 2000;
+      await d.saveDraft(old, {html:'older'});
+      Date.now = () => stamp - 1000;
+      await d.saveDraft(latest, {html:'latest', mutationId:'receipt-1', pendingHtml:'pending',
+        images:[{token:'draft:image',name:'same.png',blob:new Blob(['image-data'])}]});
+      Date.now = () => stamp;
+      await d.saveDraft(other, {html:'other server'});
+      Date.now = now;
+      const key = await identity.resolveDraftKey(scope), record = await d.loadDraft(key);
+      const oldRecord = await d.loadDraft(old), latestRecord = await d.loadDraft(latest);
+      await d.clearDraft(key);
+      await identity.resolveDraftKey(scope);
+      // A first offline session has no cached health metadata; still no HTTP is needed.
+      localStorage.removeItem('ltm-draft-context.v3');
+      const offline = await import('/lib/draftIdentity.js?first-offline');
+      const fallback = await offline.resolveDraftKey('new:DL-9007');
+      await d.saveDraft(fallback, {html:'offline draft'});
+      offline.rememberDraftContext({env:'prod', jiraBase:'https://jira-a', projectKey:'DL'});
+      const recovered = await offline.resolveDraftKey('new:DL-9007');
+      return {html:record.html, image:await record.images[0].blob.text(),
+        receipt:record.mutationId, pending:record.pendingHtml, timestamp:record.savedAt === stamp - 1000,
+        originals:oldRecord.html === 'older' && latestRecord.html === 'latest'
+          && oldRecord.migratedTo === key && latestRecord.migratedTo === key,
+        other:(await d.loadDraft(other)).html,
+        deleted:await d.loadDraft(key), offline:(await d.loadDraft(recovered)).html,
+        fallback:fallback === 'v3:local:new:DL-9007' && recovered !== fallback};
+    }""")
+    assert result == {"html": "latest", "image": "image-data", "receipt": "receipt-1", "pending": "pending",
+                      "timestamp": True, "originals": True, "other": "other server", "deleted": None,
+                      "offline": "offline draft", "fallback": True}
     assert not errors
 
 
