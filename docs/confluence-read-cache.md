@@ -11,6 +11,10 @@ Confluence 인증·조회·SQLite 캐시를 사용한다. 조회 범위는 기�
 - `list_confluence_spaces`, `list_confluence_pages`: 접근 가능한 Space와 루트·직계 자식을
   조회한다. 홈페이지 밖 루트도 포함한다. 각 목록의 `nextStartAt`을 따라간다.
 - `get_confluence_context`: 조상 경로, 댓글, 첨부 목록, 라벨, 페이지 제한을 조회한다.
+- 댓글 목록은 본문 원문 대신 길이가 제한된 텍스트 미리보기·ID·버전·수정자를 반환한다.
+  `bodyLength`는 원본 storage 문자 수이며 `bodyTruncated`가 있으면 원문 전체로 해석하지 않는다.
+  선택한 댓글의 전체 본문은 해당 ID와 버전을 지정해 별도로 읽는다. 응답 크기 한도 때문에
+  요청 개수보다 적게 반환돼도 `nextStartAt`을 그대로 따라가면 생략된 댓글을 이어서 조회한다.
 - `read_confluence_document`: 숫자 ID 또는 설정된 서버의 페이지 URL로 본문을 읽는다.
   `text`는 읽기용 텍스트, `storage`는 매크로를 보존하는 Confluence 원문 XHTML이다.
 

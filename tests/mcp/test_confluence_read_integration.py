@@ -1,5 +1,6 @@
 """Real MCP SDK + shared HTTP fixture, including immutable revision reads."""
 from datetime import date
+import json
 
 import anyio
 from mcp import Client
@@ -98,3 +99,51 @@ def test_dc_fixture_preserves_versions_storage_comments_attachments_and_restrict
     assert changed.status_code == 200 and "read" in changed.json()
     state.denied.add(cid)
     assert http.get(f"/rest/api/content/{cid}").status_code == 403
+
+
+def test_comment_context_bounds_large_bodies_and_paginates_without_omission(build_env):
+    env = build_env()
+    state, ids = documents(env)
+    page = ids["Runbook"]
+    comments = []
+    for index in range(55):
+        body = "<p>" + ("x" * 500000 if index == 0 else f"comment {index} " * 100) + "</p>"
+        row = state.create({"type": "comment", "container": {"id": page},
+                            "body": {"storage": {"value": body}},
+                            "version": {"number": 1, "by": {"displayName": "Editor", "username": "u01",
+                                                           "avatarUrls": {"large": "unused" * 100000}}}})
+        comments.append(row["id"])
+    async def scenario():
+        async with Client(env.runtime.server) as mcp:
+            seen, start = [], 0
+            while True:
+                response = await mcp.call_tool("get_confluence_context", {
+                    "page": page, "kind": "comment", "start_at": start, "max_results": 50})
+                assert not response.is_error, response.structured_content
+                data = response.structured_content["data"]
+                assert len(json.dumps(data, ensure_ascii=False)) <= 12000
+                assert data["results"] and data["returned"] < 50
+                for item in data["results"]:
+                    assert item["format"] == "text-preview" and item["bodyTruncated"]
+                    assert len(item["preview"]) <= 400
+                    assert "body" not in item and "avatarUrls" not in item["version"]["by"]
+                if start == 0:
+                    assert data["results"][0]["bodyLength"] == 500007
+                seen.extend(item["id"] for item in data["results"])
+                if not data["hasMore"]:
+                    break
+                assert data["nextStartAt"] == start + data["returned"]
+                start = data["nextStartAt"]
+            assert seen == comments and len(seen) == len(set(seen))
+    anyio.run(scenario)
+
+
+def test_mock_does_not_invent_unrequested_ancestor_expansion(build_env):
+    env = build_env()
+    _, ids = documents(env)
+    http = env.provider._client
+    path = "/rest/api/content/" + ids["Runbook"]
+    unexpanded = http.get(path, params={"expand": "body.storage,space,version"}).json()
+    assert "ancestors" not in unexpanded
+    expanded = http.get(path, params={"expand": "body.storage,space,version,ancestors"}).json()
+    assert [row["id"] for row in expanded["ancestors"]] == [ids["Guides"]]
