@@ -489,7 +489,7 @@ def reconcile_transition(provider, issue_key, transition_id, target_status_id=""
     """Reconcile a response-lost workflow transition without executing it twice.
 
     A status match by itself is not enough: global/self transitions can remain executable in the
-    destination state, and a required completion note must also be visible in the comment feed.
+    destination state, and any submitted completion note must also be visible in the comment feed.
     We only declare success when the exact target status is current, the submitted transition id
     is no longer available, and any expected comment is proven. Conversely, retry is safe only
     when the target is not current and the same transition is still available. Every
@@ -528,7 +528,7 @@ def reconcile_transition(provider, issue_key, transition_id, target_status_id=""
         if expected_comment:
             comment_check = reconcile_comment(
                 provider, issue_key, expected_comment, receipt or {}, expected_actor)
-            # A status-changing transition must never be repeated at this point. But a required
+            # A status-changing transition must never be repeated at this point. A submitted
             # completion note is part of LTM's logical mutation, so don't call it successful until
             # the fresh Jira comment feed proves that note exists as well.
             if comment_check.state != FOUND:

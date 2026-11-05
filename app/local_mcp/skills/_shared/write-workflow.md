@@ -9,8 +9,10 @@
 완료 상태·작업별 권한·Task/SubTask 계층 변경의 지원 범위는 [티켓 작업 가이드](ticket-actions.md)를 확인한다. `ticket_completed`·`field_not_editable`의 `nextAction`은 조회 안내이며 추가 쓰기 권한이 아니다.
 
 상태 전이는 `list_options(kind="transitions", key=...)`의 현재 전이 ID와 화면 필드를 확인한다.
-`commentRequired=true`이면 `body.commentHtml`을 반드시 작성한다. 완료 전이는 Jira 화면 metadata에
-댓글이 없어도 LTM에서 완료 기록을 요구한다. 담당자는 확인된 사용자 ID, resolution은 허용 선택지의
+완료 전이에는 결과를 남기는 댓글을 **권장**하지만 필수는 아니다. 생략하거나 빈 내용이면
+댓글 없이 상태만 전이한다. 댓글을 임의로 지어내거나 댓글을 받으려고 승인된 전이를 멈추지 않는다.
+Jira가 `commentRequired=true`로 지정한 경우에만 `body.commentHtml`을 반드시 작성한다.
+담당자는 확인된 사용자 ID, resolution은 허용 선택지의
 name을 쓰며 화면에 없는 담당자·resolution·소요시간을 임의로 보내지 않는다.
 필수 `worklog`는 `body.days`·`body.hours`·`body.minutes` 중 하나 이상에 양수로 입력한다.
 `timeSpent`나 `worklog`라는 body 인자는 없으며 `fields[].inputFields`가 정확한 인자 경로다.

@@ -222,7 +222,7 @@
 .trx-time input { width: 58px; }
 .trx-hint i { font-style: normal; color: var(--accent); }
 /* 전이 화면 안의 댓글 에디터 — 다이얼로그 폭에 맞추고, 본문이 길어지면 화면을 넘지 않게 */
-.trx .cmt-editor { border: 1px solid var(--border); border-radius: 9px; background: var(--panel-2); }
+.trx .cmt-editor { border: 1px solid var(--border); border-radius: 9px; background: var(--panel); }
 /* 기본 높이만 정한다 — 사용자가 끌어서 정한 높이(인라인 style)가 이걸 이긴다 */
 .trx .cmt-ed-host { max-height: 190px; overflow: auto; }
 

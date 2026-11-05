@@ -297,6 +297,9 @@ def test_toolbar_and_all_slash_commands_survive_draft_and_publish_cycles(editor_
             editor.wait_for(state="detached")
             rendered = page.locator(".tkt-cmt-b", has_text="UI-PLAIN")
             rendered.wait_for(state="visible")
+        # Closing the editor precedes the asynchronous fresh ticket render.
+        # Wait for this publish's content, not merely the always-mounted container.
+        rendered.get_by_text("끝 SECOND" if cycle else "UI-PLAIN", exact=False).first.wait_for()
         _assert_controls(rendered)
         ticket_badge = rendered.locator(".jira-badge[data-key='DL-9001']").first
         ticket_badge.hover()

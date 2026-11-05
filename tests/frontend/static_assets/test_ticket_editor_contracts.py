@@ -238,7 +238,7 @@ def test_excel_clipboard_prefers_editable_table_over_png_preview():
     assert paste.index("hasClipboardTableHtml(html)") < paste.index("const files = cd && cd.files")
     assert paste.index("tsvTableNode(txt)") < paste.index("const files = cd && cd.files")
     assert 'if (self.kind !== "agentchat" && hasClipboardTableHtml(html)) return false;' in paste
-    assert paste.count('self.kind !== "agentchat"') == 2
+    assert paste.index('isActive("codeBlock")') < paste.index("tsvTableNode(txt)")
     assert "export function parseTsv" in clipboard
     assert 'type: "tableCell"' in clipboard and 'type: "tableRow"' in clipboard
 

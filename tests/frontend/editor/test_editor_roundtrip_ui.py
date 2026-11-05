@@ -98,6 +98,8 @@ def editor_browser(request, tmp_path):
         "JIRA_ENV": "mock",
         "LAKE_NO_WINDOW": "1",
         "LAKE_MOCK_LATENCY_MS": str(latency_ms),
+        # Local-only writes validate Host/Origin against the configured listener.
+        "APP_PORT": str(port),
         # Preferences, MCP credentials and auth state must be as isolated as the Jira cache.
         "LAKE_CACHE_DIR": str(run_dir),
         "CACHE_DB_PATH": str(run_dir / "cache.sqlite3"),

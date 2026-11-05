@@ -92,7 +92,8 @@ class TransitionInput(TransitionBody):
     resolution: str = Field(default="", description="Resolution allowedValues.name (not its id), if present on the transition screen.")
     clientMutationId: MutationId
     commentHtml: str = Field(default="", description=HTML_DESCRIPTION + (
-        " Required and non-empty for Done transitions or commentRequired=true; otherwise empty adds no comment."))
+        " Recommended for Done transitions to record the outcome, but optional unless commentRequired=true. "
+        "Empty or whitespace-only editor content adds no comment. Do not invent a completion note."))
 
 
 def register_writes(register, runtime):
@@ -225,8 +226,9 @@ def register_writes(register, runtime):
         Use fields.fields required values: assignee is a verified user ID and resolution an allowedValues name.
         Required worklog uses body.days/hours/minutes, with at least one positive value; do not invent
         a duration or send timeSpent/worklog. Discover fields[].inputFields for the exact argument mapping.
-        A Done transition always requires non-empty body.commentHtml (commentRequired=true), even when
-        Jira omits the comment screen field. Do not send assignee/resolution/worklog absent from the screen.
+        A completion comment is recommended for Done transitions, but optional unless Jira sets
+        commentRequired=true. Empty content adds no comment; do not invent a note or delay an authorized
+        transition just to request one. Do not send assignee/resolution/worklog absent from the screen.
         Unknown outcomes must be retried with the same clientMutationId, never a replacement ID.
         Available transitions and required fields depend on this ticket, workflow and Jira permissions.
         An empty list is not permission to invent an ID; fields missing from the MCP mapping require Jira UI.

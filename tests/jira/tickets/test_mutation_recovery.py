@@ -901,14 +901,56 @@ def test_done_policy_comes_from_fresh_jira_metadata_not_client_hint():
         "v1:prod:transition:ltm-transition:bbbbbbbb-1111-1111-1111-111111111111") is None
 
 
-def test_done_comment_is_server_required_even_when_client_omits_target_hints():
+@pytest.mark.parametrize("comment", [None, "", " \n\t"])
+def test_done_without_comment_omits_comment_update(comment):
     provider = _TransitionProvider(commit_before_failure=False)
+    provider.posts = 1
     client = _client(provider)
 
-    with pytest.raises(ValueError, match="코멘트"):
+    assert client.transitions("DL-30")[0]["commentRequired"] is False
+    assert client.do_transition("DL-30", "31", resolution="Done", comment=comment) == {"ok": True}
+    assert "comment" not in provider.last_body.get("update", {})
+    assert provider.comments == []
+
+
+def test_jira_required_comment_is_still_enforced():
+    class RequiredCommentProvider(_TransitionProvider):
+        def _transition(self):
+            result = super()._transition()
+            result["fields"]["comment"] = {
+                "name": "Comment", "required": True,
+                "schema": {"type": "string", "system": "comment"},
+            }
+            return result
+
+    provider = RequiredCommentProvider(commit_before_failure=False)
+    client = _client(provider)
+    assert client.transitions("DL-30")[0]["commentRequired"] is True
+    with pytest.raises(ValueError, match="필수.*comment"):
         client.do_transition("DL-30", "31", resolution="Done")
 
     assert provider.posts == 0
+
+
+@pytest.mark.parametrize("legacy", [True, False], ids=["old-empty-markup", "new-omitted-comment"])
+def test_empty_comment_retry_preserves_its_original_receipt_after_upgrade(legacy):
+    from app.services.ticket_commands import TicketCommands
+    from app.services.ticket_models import TransitionBody
+
+    provider = _TransitionProvider()
+    client = _client(provider)
+    mutation_id = "ltm-transition:empty-upgrade-retry"
+    html = "<p><br></p>"
+    with pytest.raises(MutationOutcomeUnknown):
+        client.do_transition("DL-30", "31", resolution="Done",
+                             comment=html if legacy else None, mutation_id=mutation_id)
+    command = TicketCommands(lambda: client, client.s)
+    body = TransitionBody(id="31", resolution="Done", commentHtml=html,
+                          clientMutationId=mutation_id)
+    assert command.transition("DL-30", body)["ok"]
+    assert command.transition("DL-30", body)["ok"]
+    assert provider.posts == 1
+    assert len(provider.comments) == int(legacy)
 
 
 def test_pending_transition_receipt_freezes_authoritative_target_and_screen():

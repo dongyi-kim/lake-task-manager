@@ -17,6 +17,32 @@ from html import escape, unescape
 from html.parser import HTMLParser
 
 
+def has_rich_content(sanitized_html):
+    """Distinguish an empty editor document from text or meaningful rich elements.
+
+    Input must already be sanitized; an empty paragraph/line break is not a comment,
+    while an image, table, rule, checkbox or link can be useful without visible text.
+    """
+    class ContentProbe(HTMLParser):
+        present = False
+
+        def handle_data(self, data):
+            self.present |= bool(data.replace("\u200b", "").replace("\ufeff", "").strip())
+
+        def handle_starttag(self, tag, attrs):
+            values = dict(attrs)
+            self.present |= (tag in {"table", "hr", "input"}
+                             or tag == "img" and bool(values.get("src"))
+                             or tag == "a" and bool(values.get("href")))
+
+        handle_startendtag = handle_starttag
+
+    probe = ContentProbe(convert_charrefs=True)
+    probe.feed(sanitized_html or "")
+    probe.close()
+    return probe.present
+
+
 class _TaskFlatten(HTMLParser):
     """TipTap TaskList 를 사내 JEDITOR **네이티브 체크박스 문단**으로 편다.
 

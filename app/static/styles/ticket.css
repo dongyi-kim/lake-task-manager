@@ -527,9 +527,13 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
    반올림 때문에 세로로 1~2px 씩 넘치는 일이 흔한데, 그러면 마우스가 표/코드 위에 있을 때
    휠이 그 몇 px 를 먹고 **본문으로 전달되지 않는다**. "스크롤이 잠겼다 됐다" 하는 증상의
    정체가 이것이다(커서를 옆으로 옮기면 다시 되는 게 단서). */
-.tkt-desc pre { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+/* Jira/clipboard HTML can carry a fixed white/black inline style. Code surfaces
+   follow the active LTM theme in both display and editing; token colors remain. */
+.tkt-desc pre { background: var(--panel-2) !important; color: var(--text) !important;
+  border: 1px solid var(--border); border-radius: 8px;
   padding: 6px 10px; overflow: auto hidden; margin: 0 0 10px; }
-.tkt-desc pre code { background: none; border: 0; padding: 0; font-size: 12.5px; line-height: 1.5;
+.tkt-desc pre code { background: transparent !important; color: inherit !important;
+  border: 0; padding: 0; font-size: 12.5px; line-height: 1.5;
   white-space: pre; display: block; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
 /* 줄번호 거터 — <pre> 를 [번호열 | 코드] 2열로. 폰트·line-height 를 code 와 맞춰 정렬. */
 .tkt-desc pre.has-ln { display: flex; gap: 10px; }

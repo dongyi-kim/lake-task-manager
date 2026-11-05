@@ -25,7 +25,7 @@
 
 `ticket_completed` 오류는 `nextAction`으로 현재 전이 목록을 조회하는 방법을 준다. 이 조회는 재열기 실행 승인이 아니다. 사용자가 재열기를 요청한 경우에만 실제 제공된 재열기 전이를 별도로 실행한 뒤 새 수정 요청을 보낸다. 작업 편의를 위해 자동으로 재열기·수정·재완료하지 않는다.
 
-재열기 전이가 없거나 필수 필드가 MCP에서 지원되지 않으면 Jira workflow/권한 확인이 필요하다. `worklog`가 필수이면 실제 소요시간을 `body.days`·`body.hours`·`body.minutes`로 전달한다. 모르는 시간을 임의로 채우지 않는다. `commentRequired=true`이면 비어 있지 않은 `body.commentHtml`도 필요하다.
+재열기 전이가 없거나 필수 필드가 MCP에서 지원되지 않으면 Jira workflow/권한 확인이 필요하다. `worklog`가 필수이면 실제 소요시간을 `body.days`·`body.hours`·`body.minutes`로 전달한다. 모르는 시간을 임의로 채우지 않는다. 완료 댓글은 권장 사항이며, 비우면 댓글 없이 전이한다. Jira가 `commentRequired=true`로 지정한 경우에만 비어 있지 않은 `body.commentHtml`이 필요하다.
 
 ## 계층 변경과 Jira 화면
 

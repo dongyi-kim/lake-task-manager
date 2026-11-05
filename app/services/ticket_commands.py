@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from urllib.parse import urlsplit
 
 from app.auth.base import MutationPreflightBusy, MutationPreflightUnavailable, UpstreamBusy, UpstreamError, UpstreamUnavailable, write_upstream
+from app.content.htmlsafe import has_rich_content, sanitize_html
 from app.domain.ticket_actions import is_done
 from app.jira.mutation_recovery import Reconciliation, UNKNOWN
 
@@ -194,17 +195,26 @@ class TicketCommands:
 
     def transition(self, key, body):
         client = self.client
+        comment_html = sanitize_html(body.commentHtml or "")
+        has_comment = has_rich_content(comment_html)
+        recovery = {}
+        if (not has_comment and body.commentHtml and body.clientMutationId
+                and client._mutation_receipts.receipt("transition", body.clientMutationId)):
+            # An older app could already have sent empty paragraph markup. Preserve its
+            # exact payload only if JiraClient proves it matches that durable receipt.
+            recovery["_legacy_empty_comment"] = client.comment_field_value(body.commentHtml)
         duration = " ".join(f"{int(value)}{unit}" for value, unit in (
             (body.days, "d"), (body.hours, "h"), (body.minutes, "m")) if value)
         # The Jira workflow validates transition-specific fields, including optional comment.
         client.do_transition(
             key, body.id, time_spent=duration or None, assignee=body.assignee or None,
             resolution=body.resolution or None,
-            comment=client.comment_field_value(body.commentHtml) if body.commentHtml else None,
+            comment=client.comment_field_value(comment_html) if has_comment else None,
             target_status_id=body.targetStatusId or None,
             target_status_name=body.targetStatusName or None,
             target_status_category=body.targetStatusCategory or None,
             mutation_id=body.clientMutationId or None,
+            **recovery,
         )
         try:
             cascade = client.cascade_suggestion(key)

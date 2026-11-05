@@ -3615,7 +3615,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 "toCategory": cat,
                 "hasScreen": bool(t.get("hasScreen")),
                 "fields": screen,
-                "commentRequired": cat == "done" or any(
+                "commentRequired": any(
                     (field.get("system") or field.get("id")) == "comment" and field.get("required")
                     for field in screen["fields"]),
             })
@@ -3755,14 +3755,12 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         for semantic in ("worklog", "assignee", "resolution"):
             if supplied[semantic] and semantic not in allowed:
                 raise ValueError(f"현재 전환 화면에는 {semantic} 항목이 없습니다. 다시 열어 주세요.")
-        # Done comments are an explicit LTM policy even when Jira DC omits comment metadata.
+        # Jira DC accepts optional Done comments even when its screen omits comment metadata.
         if supplied["comment"] and "comment" not in allowed and not done:
             raise ValueError("현재 전환 화면에는 코멘트 항목이 없습니다. 다시 열어 주세요.")
         for semantic in required:
             if semantic in supplied and not supplied[semantic]:
                 raise ValueError(f"필수 전환 항목을 입력해 주세요: {semantic}")
-        if done and not supplied["comment"]:
-            raise ValueError("완료 전환에는 코멘트가 필요합니다.")
         choices = authority.get("resolutionValues") or []
         if supplied["resolution"] and choices and not any(
                 str(resolution).strip().casefold() == str(choice).strip().casefold()
@@ -3772,7 +3770,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     def do_transition(self, key, transition_id, *, time_spent=None, assignee=None,
                       resolution=None, comment=None, target_status_id=None,
                       target_status_name=None, target_status_category=None,
-                      mutation_id=None):
+                      mutation_id=None, _legacy_empty_comment=None):
         """전이 실행. 화면 필드는 Jira 규약대로 fields/update 에 나눠 싣는다
         (worklog·comment 는 '추가' 라 update, resolution·assignee 는 '설정' 이라 fields).
 
@@ -3782,6 +3780,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
           있는지는 transitions() 응답이 이미 알고 있으니 그걸로 거른다.
         """
         tid = str(transition_id)
+        comment = comment if str(comment or "").strip() else None
         mutation_actor, existing_receipt = self._mutation_actor_for(
             "transition", mutation_id)
         if existing_receipt:
@@ -3799,9 +3798,6 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             authority, target_status_id=target_status_id,
             target_status_name=target_status_name,
             target_status_category=target_status_category)
-        self._validate_transition_inputs(
-            authority, time_spent=time_spent, assignee=assignee,
-            resolution=resolution, comment=comment)
         logical_payload = {
             "key": str(key or "").upper(), "transitionId": tid,
             "timeSpent": time_spent or "", "assignee": assignee or "",
@@ -3815,6 +3811,13 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             "requiredFields": authority.get("requiredFields") or [],
             "actor": mutation_actor,
         }
+        if existing_receipt and not comment and _legacy_empty_comment:
+            legacy_payload = {**logical_payload, "comment": _legacy_empty_comment}
+            if existing_receipt.get("fingerprint") == self._mutation_receipts.fingerprint(legacy_payload):
+                comment, logical_payload = _legacy_empty_comment, legacy_payload
+        self._validate_transition_inputs(
+            authority, time_spent=time_spent, assignee=assignee,
+            resolution=resolution, comment=comment)
 
         def validate_result(result):
             return result if isinstance(result, dict) and result else {"ok": True}
@@ -3843,8 +3846,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             if time_spent and "worklog" in allowed:
                 update["worklog"] = [{"add": {"timeSpent": time_spent}}]
             # 코멘트는 화면에 없어도 대개 받아 준다(transition comment 는 특별 취급). 일반 전이는
-            # 화면 선언을 따르되, 완료 전이는 LTM 정책상 근거 댓글이 필수라 prod 메타데이터가
-            # comment를 누락하더라도 update.comment를 함께 보낸다.
+            # 화면 선언을 따르되, 완료 전이에 작성한 선택 댓글은 prod 메타데이터가
+            # comment를 누락하더라도 함께 보낸다. 빈 댓글은 update에 넣지 않는다.
             if comment and ("comment" in allowed
                             or authority.get("targetStatusCategory") == "done"):
                 update["comment"] = [{"add": {"body": comment}}]

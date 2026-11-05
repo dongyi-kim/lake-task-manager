@@ -169,8 +169,8 @@ def register_reads(register, runtime):
         Managed project/issuetype/reporter are supplied by LTM/Jira. unsupportedRequired is page-local:
         fields without an MCP input or Jira default require the Jira UI, not invented custom arguments.
         field_id/start_at/max_results apply only to create_fields; other option lists retain their contracts.
-        For transitions, fields lists Jira's screen and commentRequired includes LTM completion policy:
-        send non-empty body.commentHtml when true, even if the Jira screen omits comment.
+        For transitions, fields lists Jira's screen and commentRequired reflects Jira's required comment.
+        Completion comments are recommended, not mandatory unless commentRequired=true; empty adds none.
         Each screen field's inputFields maps to transition_ticket arguments. Required worklog means
         at least one of body.days/hours/minutes must be positive, using the user's actual work duration.
         An empty inputFields means LTM cannot submit that field; required unsupported fields need Jira.
