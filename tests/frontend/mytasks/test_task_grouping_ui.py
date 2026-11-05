@@ -81,8 +81,8 @@ def test_grouping_preserves_bundles_paging_and_cards_without_requery(editor_brow
     assert options_panel.count() == 1 and options_content.is_visible()
     assert page.title() == "Lake Task Manager"
     epic_choices = options_panel.locator('.mt-epic-check > span').all_text_contents()
-    assert epic_choices[:2] == ["모든 Epic", "사용자 VoC"]
-    assert epic_choices[2].startswith("Alpha") and epic_choices[3] == "Beta"
+    assert epic_choices[:3] == ["모든 Epic", "사용자 VoC", "Epic 없음"]
+    assert epic_choices[3].startswith("Alpha") and epic_choices[4] == "Beta"
     panel_box = options_panel.bounding_box()
     assert panel_box["x"] == 0
     assert abs(panel_box["y"] + panel_box["height"] - 1080) < 1
