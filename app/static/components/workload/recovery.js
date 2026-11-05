@@ -6,6 +6,7 @@ export const WORKLOAD_BUCKET_RETRY_DELAYS = [800, 2400, 5000];
 export const WORKLOAD_REQUEST_CONCURRENCY = 3;
 
 export function workloadErrorKind(error) {
+  if (error?.authRecovered || error?.authRecoveryPending) return "other";
   const explicit = String((error && (error.errorKind || error.kind)) || "").toLowerCase();
   if (explicit === "permission") return "permission";
   if (explicit === "auth") return "auth";

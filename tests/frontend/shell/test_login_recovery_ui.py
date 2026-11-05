@@ -70,7 +70,7 @@ def login_ui(static_server):
             window.addEventListener('auth-ok',()=>window.__authOK++);
             createApp({components:{LoginOverlay},template:`<main><h1>작성 중인 티켓</h1>
               <textarea aria-label="작성 중인 내용">초안 유지</textarea>
-              <button @click="$refs.login.show=true">로그인 화면 열기</button>
+              <button @click="$refs.login.doLogin()">로그인 화면 열기</button>
               <LoginOverlay ref="login" /></main>`}).mount('#app');
           </script></body></html>"""))
         page.clock.install()
@@ -135,7 +135,7 @@ def test_cancelled_login_reenables_retry_and_old_status_cannot_finish_new_attemp
     assert page.evaluate("window.__authOK") == 0
     state["down"] = False
     page.clock.fast_forward(2501)
-    expect(page.locator(".login-ov")).to_have_count(0)
+    expect(page.locator(".login-notice")).to_have_count(0)
     expect(page.get_by_label("작성 중인 내용")).to_have_value("초안 유지")
     assert page.evaluate("window.__authOK") == 1
     assert calls.count("/api/login") == 2
@@ -154,12 +154,12 @@ def test_immediate_completed_login_response_never_substitutes_for_auth_confirmat
     assert calls.count("/api/login") == 1
     assert page.evaluate("window.__authOK") == 0
     page.clock.fast_forward(2501)
-    expect(page.locator(".login-ov")).to_be_visible()
+    expect(page.locator(".login-notice")).to_be_visible()
     assert page.evaluate("window.__authOK") == 0
     if succeeded:
         state["needLogin"] = False
         page.clock.fast_forward(2501)
-        expect(page.locator(".login-ov")).to_have_count(0)
+        expect(page.locator(".login-notice")).to_have_count(0)
         assert page.evaluate("window.__authOK") == 1
     else:
         expect(page.get_by_role("button", name="다시 시도")).to_be_enabled()

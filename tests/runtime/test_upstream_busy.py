@@ -27,7 +27,7 @@ def test_queue_pressure_does_not_open_transport_circuit(monkeypatch):
 @pytest.fixture
 def client():
     cache = Cache(":memory:")
-    result = JiraClient(SimpleNamespace(jira_env="prod"), cache)
+    result = JiraClient(SimpleNamespace(jira_env="prod", jira_base="https://jira.test", project_key="DL"), cache)
     yield result
     result.close()
     cache.close()

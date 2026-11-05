@@ -800,73 +800,28 @@ def _session_user():
 
 
 def _is_manager(me=None):
-    """세션 사용자가 매니저인가. 매니저 전용 화면(WBS·워크로드)의 단일 판정 지점.
-
-    ★ '세션을 아직 못 읽음' 과 '매니저가 아님' 은 **다른 상태**다. 둘을 같이 취급하면
-      prod 첫 실행처럼 세션이 아직 없는 동안 403 이 나고, 사용자는 로그인도 못 한 채
-      "매니저 전용 화면입니다" 만 본다 — 권한 문제가 아니라 인증 문제인데.
-      current_user() 는 실패를 예외가 아니라 **빈 dict** 로 알려주므로 그것으로 판단한다.
-      모르면 막지 않는다: 정말 권한이 없으면 뒤의 데이터 호출이 401/403 을 내 로그인으로 이어진다.
-    """
-    from app.infra.settings import is_manager as _im
-    if me is None:
-        me = _session_user()
-    if not (me or {}).get("id") and not (me or {}).get("name"):
-        return True          # 세션 미확인 — 판정 불가이므로 막지 않는다
-    return _im(_settings, me)
+    """Legacy API compatibility: this installation has one local operator."""
+    return True
 
 
 def _require_manager():
-    """매니저 전용 API 게이트. 프론트에서 탭을 숨기지만 주소를 직접 치면 그만이라,
-    데이터를 주는 쪽에서도 막는다(숨김은 접근 제어가 아니다)."""
-    if not _is_manager():
-        raise HTTPException(status_code=403, detail="매니저 전용 화면입니다.")
+    """Compatibility callback; local features do not require a Jira role."""
 
 
-# ── 워크로드 스코프 ──────────────────────────────────────────────────────────
-# 인력 워크로드는 매니저 전용이었지만, **비매니저도 '자기 모듈'은 볼 수 있게** 연다.
-# 매니저 = 전체 모듈. 비매니저 = 자기가 속한 모듈만(사번→모듈 매핑). 게이트는 데이터 쪽에서 건다
-# (프론트 숨김은 접근 제어가 아니다).
 def _my_modules_or_all():
-    """(restricted, module_set). 매니저면 (False, None)=제한 없음. 비매니저면 (True, {내 모듈…})."""
-    me = _session_user()
-    if _is_manager(me):
-        return False, None
-    try:
-        from app.infra.settings import modules_of
-        return True, set(modules_of(me.get("id") or me.get("name") or ""))
-    except Exception:
-        return True, set()
+    return False, None
 
 
 def _scoped_people():
-    """워크로드용 people(모듈→인력) — 비매니저는 자기 모듈만, 매니저는 전체.
-    빌더가 모듈 목록을 people 에서 뽑으므로(workload_modules) 여기서 거르면 출력이 그대로 좁아진다."""
-    people = load_people()
-    restricted, mods = _my_modules_or_all()
-    if not restricted:
-        return people
-    return {m: v for m, v in people.items() if m in mods}
+    return load_people()
 
 
 def _require_module_access(module):
-    """비매니저가 자기 모듈이 아닌 모듈을 직접 조회하는 것을 막는다."""
-    restricted, mods = _my_modules_or_all()
-    if restricted and module not in mods:
-        raise HTTPException(status_code=403, detail="이 모듈은 조회 권한이 없습니다.")
+    """Every configured module is available to the local operator."""
 
 
 def _require_person_access(user):
-    """비매니저가 자기 모듈 밖 인력의 상세를 직접 조회하는 것을 막는다(모듈 인력에 한함)."""
-    restricted, mods = _my_modules_or_all()
-    if not restricted:
-        return
-    u = (user or "").strip().lower()
-    people = load_people()
-    for m in mods:
-        if any((pid or "").strip().lower() == u for pid in people.get(m, [])):
-            return
-    raise HTTPException(status_code=403, detail="이 인력은 조회 권한이 없습니다.")
+    """Every configured person is available to the local operator."""
 
 
 @app.get("/api/health/live", include_in_schema=False)
@@ -889,6 +844,8 @@ def health():
     need = _client.needs_login()
     st = _client.upstream_state()
     return {"status": "ok", "env": _settings.jira_env, "projectKey": _settings.project_key,
+            "executionScope": {"environment": _client.env,
+                "jiraBase": (_settings.jira_base or "").rstrip("/"), "projectKey": _settings.project_key},
             "needLogin": need, "rev": _BUILD_REV,
             # 이 사본이 특정 버전에 **묶여 있으면** 화면이 그렇게 말해야 한다. 안 그러면
             # "왜 업데이트가 안 되냐" 를 아무도 설명할 수 없다(옛 배포가 남긴 SHA 핀이 그랬다).
@@ -961,13 +918,19 @@ def api_status():
 
 
 @app.post("/api/auth/probe")
-def api_auth_probe():
+def api_auth_probe(recover: bool = False, request: Request = None):
     """사용자가 유휴 상태에서 돌아왔을 때 실행하는 비차단형 프론트 백그라운드 확인.
 
     mock/local 은 외부 SSO가 없으므로 즉시 no-op. prod 에서만 Jira ``/myself``를 직접
     확인하고, 만료가 확실할 때 먼저 headless silent SSO 갱신을 시도한다. 사람 입력이
     필요한 경우에만 ``needLogin``을 반환해 기존 LoginOverlay 흐름으로 넘긴다.
     """
+    if recover:
+        from app.local_mcp.security import local_request_error
+        error = local_request_error(request.scope, _settings.app_port) if request else "Local request required"
+        if error:
+            return JSONResponse({"error": error}, status_code=403)
+        return JSONResponse(_client.proactive_auth_probe(force=True, wait=True))
     return JSONResponse(_client.proactive_auth_probe())
 
 
@@ -1084,25 +1047,12 @@ def api_login():
 
 
 def _may_edit(key: str) -> bool:
-    """이 티켓을 바꿀 수 있는가 — **내 티켓(담당/보고)이거나 매니저**.
-    남의 티켓 상태를 아무나 바꾸면 그건 협업이 아니라 사고다. 매니저는 조율 책임이 있어 연다."""
-    if _is_manager():
-        return True
-    me = (_session_user().get("id") or "").lower()
-    if not me:
-        return False                      # 세션을 모르면 남의 티켓일 수 있다 → 열지 않는다
-    # Mutation preflight must not turn an expired session into a local 403 merely because the
-    # best-effort badge API suppresses Jira errors. Use the strict variant so global auth recovery
-    # can distinguish idle-session loss from a real authorization denial.
-    strict_badge = getattr(_client, "_ticket_badge_strict", None)
-    b = (strict_badge(key) if callable(strict_badge) else _client.ticket_badge(key)) or {}
-    return me in {(b.get("assigneeId") or "").lower(), (b.get("reporterId") or "").lower()}
+    """Jira metadata and the upstream write decide ticket permissions."""
+    return True
 
 
 def _require_edit(key: str):
-    if not _may_edit(key):
-        raise HTTPException(status_code=403,
-                            detail="담당자·보고자 또는 매니저만 바꿀 수 있습니다.")
+    """Legacy command callback; do not infer Jira permission from local roles."""
 
 
 class _OpenBody(BaseModel):

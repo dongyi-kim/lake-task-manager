@@ -41,7 +41,7 @@ def test_ui_recording_local_boundary_and_expired_auth_are_noninteractive(build_e
             monkeypatch.setattr(env.provider, "get_json", lambda *_a, **_k: expired())
             env.client._provider_generation += 1
             response = await http.post("/api/people/recent", json=body, headers=headers)
-            assert response.status_code == 200 and response.json() == {"recorded": False}
+            assert response.status_code == 200 and response.json() == {"recorded": True}
             missing_hint = {"userId": "sua.one", "event": "mention"}
-            assert (await http.post("/api/people/recent", json=missing_hint, headers=headers)).status_code == 422
+            assert (await http.post("/api/people/recent", json=missing_hint, headers=headers)).status_code == 200
     anyio.run(scenario)

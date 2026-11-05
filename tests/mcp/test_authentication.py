@@ -12,6 +12,8 @@ from app.services.ticket_commands import CommandError
 
 def prod(env, monkeypatch, results=None):
     monkeypatch.setattr(env.client, "env", "prod")
+    from app.jira.mutation_recovery import MutationReceiptStore
+    env.client._mutation_receipts = MutationReceiptStore(env.cache, "prod", scope=env.client.mutation_scope())
     login = [True]
     monkeypatch.setattr(env.client, "needs_login", lambda: login[0])
     calls = []

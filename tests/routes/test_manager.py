@@ -8,43 +8,22 @@ def _s(managers):
     return SimpleNamespace(managers=managers)
 
 
-def test_empty_whitelist_means_no_restriction():
-    """빈 목록은 '아무도 없음' 이 아니라 '미설정' — 안 그러면 config 를 안 채운 설치에서
-    아무에게도 아무것도 안 보인다."""
-    assert is_manager(_s([]), "anyone") is True
-    assert is_manager(_s([]), {"id": "anyone"}) is True
+def test_legacy_manager_setting_does_not_restrict_local_operator():
+    for user in (None, "", "worker.park", {"id": "worker.park"}):
+        assert is_manager(_s(["pm.kim"]), user) is True
 
 
-def test_whitelist_matches_by_id():
-    st = _s(["pm.kim", "pl.lee"])
-    assert is_manager(st, "pm.kim") is True
-    assert is_manager(st, "worker.park") is False
-
-
-def test_case_insensitive_and_trimmed():
-    st = _s(["pm.kim"])
-    assert is_manager(st, "  PM.Kim  ") is True
-
-
-def test_dict_matches_any_representation():
-    """사용자 표현이 여러 가지다 — 우리 내부 {id: 사번, name: **표시이름**},
-    Jira 원본 {name: 사번, key, displayName}. 설정에 적은 값이 어느 필드에 있든 통해야 한다.
-    하나만 골라 비교하면 본인은 매니저인데 조용히 거부된다(실제로 겪은 버그)."""
-    assert is_manager(_s(["test.ui01"]), {"id": "test.ui01", "name": "UI픽스처01"}) is True
-    assert is_manager(_s(["ui픽스처01"]), {"id": "test.ui01", "name": "UI픽스처01"}) is True
-    assert is_manager(_s(["skcc.11890"]), {"id": "x", "key": "skcc.11890"}) is True
-    assert is_manager(_s(["a@b.com"]), {"id": "x", "emailAddress": "a@b.com"}) is True
-    assert is_manager(_s(["test.ui01"]), {"id": "other", "name": "다른사람"}) is False
-
-
-def test_raw_jira_myself_falls_back_to_name():
-    """Jira 원본 /myself 는 id 가 없고 name 이 곧 사번이다."""
-    assert is_manager(_s(["pm.kim"]), {"name": "pm.kim", "displayName": "김PM"}) is True
-
-
-def test_missing_user_is_not_manager():
-    assert is_manager(_s(["pm.kim"]), None) is False
-    assert is_manager(_s(["pm.kim"]), "") is False
+def test_local_feature_gates_do_not_fetch_jira_identity(monkeypatch):
+    import app.main as m
+    monkeypatch.setattr(m._client, "current_user", lambda: (_ for _ in ()).throw(AssertionError("unexpected /me")))
+    monkeypatch.setattr(m, "load_people", lambda: {"One": ["u1"], "Two": ["u2"]})
+    assert m._is_manager() and m._may_edit("DL-1")
+    assert m._my_modules_or_all() == (False, None)
+    assert m._scoped_people() == {"One": ["u1"], "Two": ["u2"]}
+    m._require_manager()
+    m._require_module_access("Two")
+    m._require_person_access("u2")
+    m._require_edit("DL-1")
 
 
 def test_current_user_does_not_cache_failure():
@@ -72,26 +51,6 @@ def test_current_user_does_not_cache_failure():
     assert c.current_user() == {}             # 실패 — 캐시되면 안 된다
     assert c.current_user()["id"] == "pm.kim"  # 로그인 후 즉시 반영
     assert len(calls) == 2
-
-
-def test_unknown_session_is_not_treated_as_worker():
-    """'세션을 아직 못 읽음' 과 '매니저가 아님' 은 다른 상태다. 같이 취급하면 prod 첫 실행에서
-    로그인도 못 한 채 '매니저 전용 화면입니다' 만 보게 된다(권한이 아니라 인증 문제인데).
-    current_user() 는 실패를 예외가 아니라 **빈 dict** 로 알린다 — 그 경로가 핵심."""
-    import app.main as m
-
-    orig = m._client.current_user
-    try:
-        m._client.current_user = lambda: {}          # 세션 미확인
-        m._settings.managers = ["pm.kim"]
-        assert m._is_manager() is True               # 막지 않는다
-        m._client.current_user = lambda: {"id": "worker.park", "name": "박워커"}
-        assert m._is_manager() is False              # 읽혔고 목록에 없으면 워커
-        m._client.current_user = lambda: {"id": "pm.kim", "name": "김PM"}
-        assert m._is_manager() is True
-    finally:
-        m._client.current_user = orig
-        m._settings.managers = []
 
 
 # ── 2중 TTL 캐시 — 오프라인/미인증에서 화면을 지키는 지점 ──────────────────

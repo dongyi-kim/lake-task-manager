@@ -2,9 +2,9 @@
 const REPLAY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // Server receipts outlive this by one day.
 
 export function bulkScopeKey(scope) {
-  const fields = ["environment", "jiraBase", "projectKey", "userId"];
+  const fields = ["environment", "jiraBase", "projectKey"];
   if (!scope || fields.some(field => !String(scope[field] || "").trim()))
-    throw new Error("Jira 실행 정보를 확인하지 못했습니다. 원래 연결과 사용자로 다시 확인하세요.");
+    throw new Error("Jira 실행 정보를 확인하지 못했습니다. 원래 Jira 연결을 다시 확인하세요.");
   return fields.map(field => encodeURIComponent(scope[field])).join(":");
 }
 

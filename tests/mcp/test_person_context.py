@@ -41,37 +41,32 @@ def test_search_preserves_candidates_order_and_adds_independent_evidence(people)
         "params": {"username": "수아", "maxResults": 9}})]
 
 
-def test_history_scope_actor_hint_and_unknown_metadata(people, monkeypatch):
+def test_local_history_keeps_instance_scope_without_jira_identity(people, monkeypatch):
     env, settings = people, people.runtime.settings
-    settings.jira_base = "https://JIRA.EXAMPLE.TEST:443/context/"
-    assert not context.record_person_event(env.client, settings, "sua.one", "selection", "other-actor")
-    assert context.record_person_event(env.client, settings, "sua.one", "selection", "u01")
-    settings.jira_base = "https://jira.example.test/context"
-    assert context.search_people(env.client, settings, "수아")["users"][0]["matchContext"]["recentSelectionAt"]
-    original_base = settings.jira_base
-    settings.jira_base = original_base.rstrip("/") + "/another-jira"
-    assert context.search_people(env.client, settings, "수아")["users"][0]["matchContext"]["recentSelectionAt"] is None
-    settings.jira_base = original_base
-    original_env, settings.jira_env = settings.jira_env, "different-environment"
-    assert context.search_people(env.client, settings, "수아")["users"][0]["matchContext"]["recentSelectionAt"] is None
-    settings.jira_env = original_env
-    env.client.env += "@next-day"
-    assert context.search_people(env.client, settings, "수아")["users"][0]["matchContext"]["recentSelectionAt"]
-    original_get = env.provider.get_json
-    replacement = SimpleNamespace(get_json=lambda path, **kwargs: {"name": "sua.two"} if path.endswith("/myself")
-                                   else original_get(path, **kwargs))
-    env.client._provider = replacement
-    env.client._provider_generation += 1
-    assert context.search_people(env.client, settings, "수아")["users"][0]["matchContext"]["recentSelectionAt"] is None
-    def unavailable(*_args, **_kwargs):
-        raise SessionExpired("expired")
-    replacement.get_json = lambda path, **kwargs: unavailable() if path.endswith("/myself") else original_get(path, **kwargs)
-    env.client._provider_generation += 1
-    monkeypatch.setattr(context, "module_dir", unavailable)
+    original = env.provider.get_json
+    def unavailable(path, **kwargs):
+        if path.endswith("/myself"):
+            pytest.fail("Local history must not fetch identity")
+        return original(path, **kwargs)
+    monkeypatch.setattr(env.provider, "get_json", unavailable)
+    env.cache.invalidate(f"myself:{env.client.env}")
+    env.client._session_dead = True
+    assert context.record_person_event(env.client, settings, "sua.one", "selection", "obsolete-actor")
+    env.client._session_dead = False
     result = context.search_people(env.client, settings, "수아")
-    assert result["contextAvailable"] == {"configuration": False, "history": False, "actor": False}
-    assert all(all(value is None for value in row["matchContext"].values()) for row in result["users"])
-    assert not context.record_person_event(env.client, settings, "sua.one", "mention")
+    assert result["users"][0]["matchContext"]["recentSelectionAt"]
+    assert result["contextAvailable"] == {"configuration": True, "history": True, "actor": False}
+    settings.jira_base += "/another-jira"
+    assert context.search_people(env.client, settings, "수아")["users"][0]["matchContext"]["recentSelectionAt"] is None
+
+
+def test_legacy_actor_history_remains_available_without_timestamp_refresh(people):
+    env, settings = people, people.runtime.settings
+    scope = context._scope(context._instance(settings), "u01")
+    env.cache.touch_person_recent(scope, "sua.one", "mention")
+    timestamp = env.cache.person_recent(scope, ["sua.one"])["sua.one"]["mention"]
+    result = context.search_people(env.client, settings, "수아")
+    assert result["users"][0]["matchContext"]["recentMentionAt"] == timestamp
 
 
 def test_scoped_history_expires_and_caps_without_polluting_url_recents(people, monkeypatch):
@@ -123,7 +118,7 @@ def test_optional_actor_probe_never_changes_auth_or_transport_state(people, monk
     fields = ("_session_dead", "_upstream_down_until", "_upstream_reason", "_auth_probe_result")
     before = [getattr(env.client, field, None) for field in fields]
     result = context.search_people(env.client, env.runtime.settings, "수아")
-    assert len(result["users"]) == 2 and result["contextAvailable"]["actor"] is False
+    assert len(result["users"]) == 2 and result["contextAvailable"]["actor"] is True
     assert [getattr(env.client, field, None) for field in fields] == before
 
 
@@ -156,15 +151,6 @@ def test_malformed_rows_keep_valid_candidates_and_provider_race_discards_actor(p
         if path.endswith("/user/search") else original(path, **kwargs))
     capped = context.search_people(env.client, env.runtime.settings, "Same", limit=50)
     assert capped["returned"] == 8 and capped["mayHaveMore"] is None and capped["coverage"] == "bounded"
-    # A valid raw response from a replaced provider is no longer the current actor's evidence.
-    def changed(path, **kwargs):
-        if path.endswith("/myself"):
-            env.client._provider_generation += 1
-            return {"name": "u01"}
-        return [valid]
-    monkeypatch.setattr(env.provider, "get_json", changed)
-    env.client._provider_generation += 1
-    assert not context.record_person_event(env.client, env.runtime.settings, "sua.one", "lookup")
 
 
 def test_optional_actor_probe_is_shared_across_concurrent_recordings(people):
@@ -174,21 +160,11 @@ def test_optional_actor_probe_is_shared_across_concurrent_recordings(people):
         results = list(workers.map(lambda _index: context.record_person_event(
             env.client, env.runtime.settings, "sua.one", "lookup"), range(12)))
     assert all(results)
-    assert [path for _method, path, _kwargs in env.calls[before:]] == ["/rest/api/2/myself"]
+    assert [path for _method, path, _kwargs in env.calls[before:]] == []
 
 
 def test_actor_scope_is_fenced_between_probe_and_history_access(people, monkeypatch):
     env, settings = people, people.runtime.settings
-    original_actor, original_base = context._actor, settings.jira_base
-    with monkeypatch.context() as patch:
-        def moved(client, settings, expected_stamp=context._UNBOUND):
-            snapshot = original_actor(client, settings, expected_stamp)
-            settings.jira_base += "/changed-after-probe"
-            return snapshot
-        patch.setattr(context, "_actor", moved)
-        assert not context.record_person_event(env.client, settings, "sua.two", "lookup")
-        assert env.cache._conn.execute("SELECT count(*) FROM person_recent").fetchone()[0] == 0
-    settings.jira_base = original_base
     assert context.record_person_event(env.client, settings, "sua.one", "mention")
     original_read = env.cache.person_recent
     def replaced(scope, ids):
@@ -229,7 +205,7 @@ def test_search_started_by_old_actor_never_gets_new_actor_context(people, monkey
     assert len(result["users"]) == 2 and result["partial"] and result["contextChanged"]
     assert result["contextAvailable"] == {"configuration": False, "history": False, "actor": False}
     assert all(all(value is None for value in row["matchContext"].values()) for row in result["users"])
-    assert probes == ["bob"]  # The stale search never probes the replacement actor.
+    assert probes == []  # The stale search never probes the replacement actor.
     assert not context.record_person_event(env.client, settings, "sua.one", "lookup", expected_stamp=operation)
     assert not context.record_person_event(env.client, settings, "sua.one", "lookup", expected_stamp=None)
 

@@ -21,6 +21,7 @@ import { validateBulk, exampleJson, fieldDocs, buildLlmPrompt } from "../../lib/
 import { categoryColor } from "../../lib/colors.js";
 import { errorLines } from "../../lib/jsonlines.js";
 import { formDraft } from "../../lib/formDraft.js";
+import { resolveDraftKey, localDraftContext } from "../../lib/draftIdentity.js";
 import { confirmBox } from "../../lib/confirm.js";
 import { newMutationId } from "../../lib/mutationId.js";
 import { newBulkRun, executeBulkRun, bulkRunResult, bulkScopeKey } from "../../lib/bulkCreateRun.js";
@@ -56,8 +57,8 @@ export default {
   name: "BulkCreateDialog",
   mixins: [formDraft(function () { return "bulk-create:" + this.mode; },
     ["src", "step", "items", "createMutationId", "creationRun", "result", "status", "done"], "ded", async function(scope) {
-      this.executionScope = await api.bulkCreateContext();
-      return "v3:bulk:" + bulkScopeKey(this.executionScope) + ":" + scope;
+      this.executionScope = localDraftContext();
+      return resolveDraftKey(scope);
     }, function() {
       return !!this.creationRun?.chunks.some(chunk => chunk.attempted) && !bulkRunResult(this.creationRun).ok;
     })],
@@ -400,8 +401,9 @@ export default {
     },
     async checkExecutionScope(expected) {
       const current = await api.bulkCreateContext();
-      if (bulkScopeKey(current) !== bulkScopeKey(expected))
-        throw new Error("작성 중 Jira 연결·프로젝트·사용자가 변경됐습니다. 원래 연결로 돌아온 뒤 같은 요청을 확인하세요.");
+      if (expected && bulkScopeKey(current) !== bulkScopeKey(expected))
+        throw new Error("작성 중 Jira 연결·프로젝트가 변경됐습니다. 원래 연결로 돌아온 뒤 같은 요청을 확인하세요.");
+      if (!expected) this.executionScope = current;
     },
 
     /** 실패분만 다시 JSON 으로 — 고쳐서 다시 돌리라고. */

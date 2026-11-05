@@ -96,9 +96,12 @@ def test_bulk_uses_ui_validation_keeps_order_relationships_and_retries_only_fail
     anyio.run(scenario)
 
 
-@pytest.mark.parametrize("reconciled", [False, True], ids=["unproven-time", "proven-created-after-attempt"])
-def test_bulk_response_lost_keeps_per_item_receipt_and_never_duplicates(build_env, monkeypatch, reconciled):
+@pytest.mark.parametrize("reconciled,known_actor", [(False, True), (True, True), (True, False)],
+                         ids=["unproven-time", "proven-created-after-attempt", "unproven-creator"])
+def test_bulk_response_lost_keeps_per_item_receipt_and_never_duplicates(build_env, monkeypatch, reconciled, known_actor):
     env = build_env()
+    if known_actor:
+        env.client.current_user()  # Cached evidence may prove ownership; creation itself never requires it.
     original = env.provider.post_json
     writes = []
     def response_lost(path, json_body=None, **kwargs):
@@ -131,14 +134,14 @@ def test_bulk_response_lost_keeps_per_item_receipt_and_never_duplicates(build_en
             monkeypatch.setattr(env.provider, "post_json", original)
             repeated = await mcp.call_tool("bulk_create", args)
             repeated_data = repeated.structured_content["data"]
-            if reconciled:
+            if reconciled and known_actor:
                 assert not repeated.is_error and repeated_data["ok"]
                 assert [row["index"] for row in repeated_data["created"]] == [0, 1]
                 assert repeated_data["failed"] == []
                 assert repeated_data["created"][1] == data["created"][0]
             else:
                 assert repeated.is_error and repeated.structured_content["partial"] is True
-                # A matching candidate older than attemptedAt is not proof of this
+                # Neither an older candidate nor one without known creator evidence proves this
                 # write. Keep uncertainty and the confirmed sibling without a POST.
                 assert repeated_data["created"] == data["created"]
                 assert repeated_data["failed"][0]["code"] == "outcome_unknown"

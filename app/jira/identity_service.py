@@ -191,46 +191,23 @@ class JiraIdentityMixin:
         except Exception:
             return {}
 
-    def mutation_actor_identity(self):
-        """Return a stable authenticated actor fingerprint for idempotent Jira creates.
+    def mutation_scope(self):
+        """The local installation owns writes; Jira identities are business data, not app users."""
+        return {"environment": self.env, "jiraBase": str(getattr(self.s, "jira_base", "") or "").rstrip("/"),
+                "projectKey": self.s.project_key}
 
-        This must run before a pending receipt is written. If identity cannot be established, the
-        mutation is not sent: without an actor, reconciliation could mistake another person's
-        simultaneous same-body comment, same-name attachment, or same-fields issue for ours.
-        """
-        current = self.current_user() or {}
-        actor_id = str(current.get("id") or "").strip()
-        aliases = sorted({
-            str(value or "").strip().casefold()
-            for value in (current.get("actorAliases") or [actor_id])
-            if str(value or "").strip()
-        })
-        if actor_id and aliases:
-            return {"id": actor_id, "aliases": aliases}
-        if self.needs_login():
-            raise SessionExpired("Jira 사용자 확인이 필요합니다. 로그인 후 다시 시도해 주세요.")
-        raise UpstreamUnavailable(
-            "Jira 사용자 정보를 확인하지 못해 중복 방지를 보장할 수 없습니다. 잠시 후 다시 시도해 주세요.")
+    def mutation_actor_identity(self):
+        """No /myself request: cached aliases are optional reconciliation evidence only."""
+        current = self.cache.get_stale(f"myself:{self.env}") or {}
+        aliases = sorted({str(value).strip().casefold() for value in
+                          (current.get("actorAliases") or [current.get("id")]) if value})
+        return {"id": "local", "localScope": self.mutation_scope(), "aliases": aliases}
 
     def assert_mutation_actor_identity(self, expected):
-        """Freshly prove a response-loss retry still runs as the receipt's original actor."""
-        raw = self.provider.get_json("/rest/api/2/myself") or {}
-        aliases = {
-            str(raw.get(field) or "").strip().casefold()
-            for field in ("name", "key", "accountId")
-            if str(raw.get(field) or "").strip()
-        }
-        wanted = {
-            str(value or "").strip().casefold()
-            for value in ((expected or {}).get("aliases") or [])
-            if str(value or "").strip()
-        }
-        if not aliases or any("anonymous" in value for value in aliases):
-            raise SessionExpired("Jira 사용자 확인이 필요합니다. 로그인 후 다시 시도해 주세요.")
-        if not wanted or not (wanted & aliases):
-            raise ValueError(
-                "Jira 로그인 사용자가 이전 요청과 다릅니다. 원래 사용자로 로그인해 결과를 확인해 주세요.")
-        self.mark_session_alive()
+        """Preserve the original server/project on a proven-absent retry, without login lookup."""
+        scope = (expected or {}).get("localScope")
+        if scope is not None and scope != self.mutation_scope():
+            raise ValueError("Jira 연결·프로젝트가 이전 요청과 다릅니다. 원래 연결에서 결과를 확인해 주세요.")
         return True
 
     def direct_session_state(self, *, background=False):

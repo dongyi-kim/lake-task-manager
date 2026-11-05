@@ -17,6 +17,8 @@ class WizardFixture:
         self.env, self.values, self.calls = env, {}, []
         self.lost, self.no_commit, self.required, self.denied = False, False, "", False
         env.runtime.settings.jira_base = "https://jira.fixture.test/jira"
+        from app.jira.mutation_recovery import MutationReceiptStore
+        env.client._mutation_receipts = MutationReceiptStore(env.cache, env.client.env, scope=env.client.mutation_scope())
         original = env.provider.get_json
         def get(path, *args, **kwargs):
             if path.startswith("/rest/api/2/issuetype/"):
@@ -159,8 +161,8 @@ def test_sdk_conversion_reparent_reverse_replay_and_cache_invalidation(build_env
     anyio.run(scenario)
 
 
-@pytest.mark.parametrize("fault", ["source_changed", "actor_changed", "epic_type", "parent_security"])
-def test_changed_preview_identity_and_wrong_type_stop_before_commit(build_env, monkeypatch, fault):
+@pytest.mark.parametrize("fault", ["source_changed", "connection_changed", "epic_type", "parent_security"])
+def test_changed_preview_connection_and_wrong_type_stop_before_commit(build_env, monkeypatch, fault):
     env = build_env()
     wizard = WizardFixture(env, monkeypatch)
     key, parent = seed(env), seed(env)
@@ -178,13 +180,10 @@ def test_changed_preview_identity_and_wrong_type_stop_before_commit(build_env, m
             body = {"action": "convert_to_subtask", "parent_key": parent, "issue_type_id": "7"}
             preview = await mcp.call_tool("get_hierarchy_options", {"key": key, "body": body})
             assert not preview.is_error
-            env.client.mutation_actor_identity()  # Freeze the original account before replacement.
             if fault == "source_changed":
                 env.store.issues[key]["tupdated"] = "15:42"
-            elif fault == "actor_changed":
-                original = env.provider.get_json
-                monkeypatch.setattr(env.provider, "get_json", lambda path, *args, **kwargs:
-                    {"name": "u02", "key": "u02"} if path == "/rest/api/2/myself" else original(path, *args, **kwargs))
+            elif fault == "connection_changed":
+                monkeypatch.setattr(env.client.s, "jira_base", "https://different-jira.invalid")
             elif fault == "epic_type":
                 body["issue_type_id"] = env.store.serializer.type_map["Epic"]
             else:

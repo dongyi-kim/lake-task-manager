@@ -565,3 +565,26 @@ def test_broken_provider_rebuild_waits_for_circuit_breaker():
     c._upstream_down_until = 0
     assert c.provider is replacement
     assert built == [True] and closed == [True]
+
+
+@pytest.mark.parametrize("origin,host,client,allowed", [
+    (None, "127.0.0.1:4457", "127.0.0.1", True),
+    ("http://127.0.0.1:4457", "127.0.0.1:4457", "127.0.0.1", True),
+    ("https://outside.invalid", "127.0.0.1:4457", "127.0.0.1", False),
+    (None, "outside.invalid", "127.0.0.1", False),
+    (None, "127.0.0.1:4457", "192.0.2.4", False),
+])
+def test_forced_silent_auth_probe_requires_local_caller(monkeypatch, origin, host, client, allowed):
+    from starlette.requests import Request
+    import app.main as m
+    calls = []
+    monkeypatch.setattr(m._settings, "app_port", 4457)
+    monkeypatch.setattr(m._client, "proactive_auth_probe", lambda **options: calls.append(options) or {"ok": True})
+    headers = [(b"host", host.encode())]
+    if origin:
+        headers.append((b"origin", origin.encode()))
+    request = Request({"type": "http", "method": "POST", "scheme": "http", "path": "/api/auth/probe",
+        "query_string": b"recover=1", "server": ("127.0.0.1", 4457), "client": (client, 1234), "headers": headers})
+    response = m.api_auth_probe(recover=True, request=request)
+    assert response.status_code == (200 if allowed else 403)
+    assert calls == ([{"force": True, "wait": True}] if allowed else [])

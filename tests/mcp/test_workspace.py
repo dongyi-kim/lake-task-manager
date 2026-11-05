@@ -127,20 +127,25 @@ def test_description_attachment_roundtrip_and_dashboard_access(build_env):
             for tool, arguments in (("get_dashboard", {"kind": "wbs"}),
                                     ("get_dashboard", {"kind": "workload", "module": "private"}),
                                     ("get_activity", {"user_id": "u02"})):
-                assert (await mcp.call_tool(tool, arguments)).is_error
-            assert len(env.calls) == before
+                result = await mcp.call_tool(tool, arguments)
+                assert not result.is_error, result.structured_content
+            assert all(method == "get" for method, _path, _body in env.calls[before:])
     anyio.run(scenario)
 
 
-def test_confluence_cache_partitions_users_and_removes_revoked_content(build_env, monkeypatch):
+def test_confluence_cache_shares_local_identity_scopes_servers_and_removes_revoked_content(build_env, monkeypatch):
     env = build_env()
     document = _documents(env)[0]
     identifier = str(document["id"])
     first = env.client.confluence_page(identifier, strict=True)
     before = len(env.calls)
     assert env.client.confluence_page(identifier, strict=True) == first and len(env.calls) == before
-    monkeypatch.setattr(env.client, "current_user", lambda: {"id": "another-user"})
-    assert env.client.confluence_page(identifier, strict=True) == first and len(env.calls) > before
+    monkeypatch.setattr(env.client, "current_user", lambda: pytest.fail("local cache does not require Jira identity"))
+    assert env.client.confluence_page(identifier, strict=True) == first and len(env.calls) == before
+    env.client.s.confluence_base = "http://other-confluence.test"
+    other = env.client.confluence_page(identifier, strict=True)
+    assert other["id"] == first["id"] and other["body"] == first["body"] and len(env.calls) > before
+    assert other["_links"]["self"].startswith("http://other-confluence.test/")
     with env.cache._lock:
         env.cache._conn.execute("UPDATE cache SET fetched_at=? WHERE key LIKE 'confpage:%'", (time.time() - 700,))
         env.cache._conn.commit()

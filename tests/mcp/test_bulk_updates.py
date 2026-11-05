@@ -197,7 +197,7 @@ def test_worst_case_batch_errors_have_bounded_structured_output(build_env, monke
     anyio.run(scenario)
 
 
-def test_partial_batch_cannot_resume_under_a_different_jira_user(build_env, monkeypatch):
+def test_partial_batch_preserves_receipts_without_an_account_gate(build_env, monkeypatch):
     env = build_env()
     original_put, original_get = env.provider.put_json, env.provider.get_json
     def deny(path, json_body=None, **kwargs):
@@ -217,18 +217,18 @@ def test_partial_batch_cannot_resume_under_a_different_jira_user(build_env, monk
             monkeypatch.setattr(env.provider, "get_json", changed_actor)
             monkeypatch.setattr(env.provider, "put_json", original_put)
             result = await mcp.call_tool("bulk_update", args)
-            assert result.is_error and result.structured_content["partial"] is True
+            assert not result.is_error, result.structured_content
             data = result.structured_content["data"]
-            assert data["updated"] == [{"index": 0, "key": keys[0], "fields": ["summary"]}]
-            assert data["failed"][0]["code"] == "actor_changed"
-            assert data["failed"][0]["action"] == "restore_original_user"
-            assert data["failed"][0]["writeExecuted"] is False
-            assert len(puts(env)) == 1 and env.store.issues[keys[1]]["summary"] == "before 1"
+            assert [row["key"] for row in data["updated"]] == keys
+            assert data["failed"] == []
+            assert len(puts(env)) == 2 and env.store.issues[keys[1]]["summary"] == "later"
+            # Confirmed first row is replayed locally; only the rejected second row is written.
+            assert not any(path == "/rest/api/2/myself" for method, path, _ in env.calls)
     anyio.run(scenario)
 
 
 @pytest.mark.parametrize("switch_at", ["between_rows", "auth_recovery"])
-def test_account_switch_preserves_prior_success_and_blocks_new_row(build_env, monkeypatch, switch_at):
+def test_local_batch_preserves_success_across_identity_or_auth_failure(build_env, monkeypatch, switch_at):
     env = build_env()
     original_put, original_get = env.provider.put_json, env.provider.get_json
     original_auth = env.runtime.authentication.check
@@ -260,11 +260,17 @@ def test_account_switch_preserves_prior_success_and_blocks_new_row(build_env, mo
                               {"key": keys[1], "fields": {"summary": "second"}}],
                     "client_mutation_id": "bulkedit:mid-switch:001"}
             result = await mcp.call_tool("bulk_update", args)
-            assert result.is_error and result.structured_content["partial"]
             data = result.structured_content["data"]
-            assert [row["key"] for row in data["updated"]] == [keys[0]]
-            assert [(row["key"], row["code"]) for row in data["failed"]] == [(keys[1], "actor_changed")]
-            assert len(puts(env)) == 1 and env.store.issues[keys[1]]["summary"] == "before 1"
+            if switch_at == "between_rows":
+                assert not result.is_error and data["failed"] == []
+                assert [row["key"] for row in data["updated"]] == keys
+                assert len(puts(env)) == 2
+            else:
+                # Repeated real Jira 401 still blocks this row; a local identity hint does not.
+                assert result.is_error and result.structured_content["partial"]
+                assert [row["key"] for row in data["updated"]] == [keys[0]]
+                assert [(row["key"], row["code"]) for row in data["failed"]] == [(keys[1], "authentication_required")]
+                assert len(puts(env)) == 1 and env.store.issues[keys[1]]["summary"] == "before 1"
             monkeypatch.setattr(env.provider, "get_json", original_get)
             monkeypatch.setattr(env.provider, "put_json", original_put)
             assert not (await mcp.call_tool("bulk_update", args)).is_error

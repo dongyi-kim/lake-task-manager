@@ -219,7 +219,7 @@ export default {
         if (r && r.ok === false) throw new Error(r.error || "전이에 실패했습니다.");
       } catch (e) {
         this.busy = false;
-        if (!(e && (e.uncertain || e.needLogin))) {
+        if (!(e && (e.uncertain || e.needLogin || e.authRecovered || e.authRecoveryPending))) {
           this.transitionMutationId = "";
           this.pendingTransitionPayload = null;
         }

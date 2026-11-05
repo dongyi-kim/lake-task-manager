@@ -24,9 +24,7 @@ export default {
   props: { theme: { type: String, default: "light" } },
   emits: ["toggle-theme"],
   data() {
-    return { me: null,   // 세션 사용자 — config 의 manager 목록에 무엇을 적어야 하는지 보이려고
-      manager: false,   // 매니저 아니면 Dev Tools 섹션을 감춘다(판정 전에도 감춤)
-     
+    return { me: null,   // 연결된 Jira 계정 표시용. 로컬 기능 접근 여부와 무관하다.
       open: false, rev: "", pinned: "", tools: null, loggingIn: false,
       guideMsg: "",     // '가이드 다시 보기' 를 누른 뒤의 짧은 확인 문구
       // 서비스별 독립 상태 — loading|ok|no|off|err. 각자 도착하는 대로 렌더된다.
@@ -44,8 +42,6 @@ export default {
     needsAuth() { return this.services.some((s) => s.status === "no" || s.status === "err"); },
   },
   mounted() {
-    api.me().then((me) => { this.me = me || null; this.manager = !!(me && me.manager); })
-      .catch((e) => { this.me = { error: (e && e.message) || "확인 실패" }; });
     api.prefs().then((p) => { this.bbEnabled = !!p.bitbucketEnabled; this.bbConfigured = !!p.bitbucketConfigured;
       if (p.quickOpenHotkey) this.hotkey = p.quickOpenHotkey;
       this.agentOn = !!p.agentEnabled; this.agentWhy = p.agentReason || ""; })
@@ -54,7 +50,9 @@ export default {
     document.addEventListener("click", this._onDoc, true);
     document.addEventListener("keydown", this._onEsc = (e) => { if (e.key === "Escape" && this.open) this.close(); });
     // 로그인이 방금 성공하면(서버가 auth-ok 를 쏜다) 4초 폴링을 기다리지 말고 **즉시** 다시 확인한다.
-    window.addEventListener("auth-ok", this._onAuthOk = () => { if (this.open) this.probeAll(); });
+    window.addEventListener("auth-ok", this._onAuthOk = () => {
+      if (this.open) { this.loadIdentity(); this.probeAll(); }
+    });
   },
   unmounted() {
     document.removeEventListener("click", this._onDoc, true);
@@ -63,6 +61,10 @@ export default {
     this._stopPoll();
   },
   methods: {
+    loadIdentity() {
+      // Opening local settings must not start Jira authentication for an account label.
+      this.me = api.cached("/api/me") || null;
+    },
     /** 본 기록을 지운다 — 다음에 해당 화면에 가면 안내가 다시 뜬다.
      *  창을 닫아 버리면 방금 지운 것이 눈에 안 보이므로, 여기서 짧게 확인만 주고 열어 둔다. */
     replayGuides() {
@@ -90,6 +92,7 @@ export default {
     },
     openMenu() {
       this.open = true;
+      this.loadIdentity();
       api.health().then((h) => {
         this.rev = (h && h.rev) || "";
         this.pinned = (h && h.pinned) || "";      // 고정돼 있으면 그 사실을 화면에 드러낸다
@@ -144,19 +147,14 @@ export default {
       <!-- SSO 상태 (서비스별 개별·실시간) -->
       <div class="sm-sec">
         <div class="sm-h">SSO 인증</div>
-        <!-- 지금 앱이 나를 누구로 보고 있는지. config 의 manager 목록에 적을 값이 곧 이 id 다
-             — 이게 안 보이면 "나는 매니저인데 왜 안 되지" 를 추측으로 풀어야 한다. -->
+        <!-- 실제 Jira에 연결된 계정. 확인 지연/실패가 로컬 설정을 막지 않는다. -->
         <div v-if="me" class="sm-who">
           <template v-if="me.error">세션 확인 실패 — {{ me.error }}</template>
-          <!-- '세션 미확인' 과 '워커' 를 구분해 보인다. 둘을 같은 말로 쓰면
-               로그인이 안 된 건지 권한이 없는 건지 알 수 없다. -->
           <template v-else-if="!me.known">
             <b>세션 미확인</b><span>아래 [인증하기] 로 SSO 로그인하세요</span>
           </template>
           <template v-else>
             <b>{{ me.id }}</b><span v-if="me.name"> · {{ me.name }}</span>
-            <em :class="{ mgr: manager }">{{ manager ? '매니저' : '일반' }}</em>
-            <span v-if="!manager" class="sm-who-h">config 의 manager 목록에 위 id 를 넣으면 매니저</span>
           </template>
         </div>
         <div v-for="s in services" :key="s.name" class="sm-row" :title="s.detail">
@@ -237,14 +235,13 @@ export default {
         <button class="sm-btn" @click="mcpDlg = true; close()">에이전트 연결 설정 →</button>
       </div>
 
-      <!-- 워크스페이스 관리 — 매니저 전용 -->
-      <div v-if="manager" class="sm-sec">
+      <!-- 로컬 워크스페이스 설정 -->
+      <div class="sm-sec">
         <div class="sm-h">워크스페이스 관리</div>
         <button class="sm-btn" @click="workspaceDlg = true; close()">인력 · WBS 관리 →</button>
       </div>
 
-      <!-- Dev Tools — 매니저 전용 -->
-      <div v-if="manager" class="sm-sec">
+      <div class="sm-sec">
         <div class="sm-h">Dev Tools</div>
         <a class="sm-btn sm-devgo" href="#/devtools" @click="close()">개발용 API 열기 →</a>
       </div>
@@ -260,6 +257,6 @@ export default {
     <CacheSettingsDialog v-if="cacheDlg" @close="cacheDlg = false" />
     <AgentSettingsDialog v-if="agentDlg" @close="agentDlg = false" />
     <LocalMcpDialog v-if="mcpDlg" @close="closeMcp" />
-    <WorkspaceAdminDialog v-if="workspaceDlg && manager" @close="closeWorkspace" />
+    <WorkspaceAdminDialog v-if="workspaceDlg" @close="closeWorkspace" />
   </div>`,
 };

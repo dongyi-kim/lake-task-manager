@@ -194,7 +194,7 @@ def register_workspace(register, runtime):
 
     def get_dashboard(kind: Literal["wbs", "vit", "workload"], module: str = "") -> dict:
         """Read the current WBS, VIT or workload dashboard, using the same UI builders and permissions.
-        kind=wbs returns the configured weighted Epic/SP rollup and requires manager permission;
+        kind=wbs returns the configured weighted Epic/SP rollup for this local installation;
         module does not filter WBS. For vit/workload, module selects a module; workload requires its access.
         Empty workload module uses the caller's visible people. VIT uses descendant counts, not Story Points.
         Return shape follows the selected dashboard; partial/missing denotes incomplete data.
@@ -232,7 +232,7 @@ def register_workspace(register, runtime):
         return vit.vit_detail(runtime.client, load_plan(), load_people(), key)
 
     def get_activity(user_id: str) -> dict:
-        """Read a manager-only recent activity preview for a verified user_id.
+        """Read a local recent activity preview for a verified user_id.
         Returns user, jira, confluence, partial and sourceErrors. Jira feed is capped at 20 events;
         Confluence is capped at 25 modified documents from the last 14 days. No pagination/date bounds.
         This is activity discovery, not a complete worklog, assigned-work list or calendar-period report.

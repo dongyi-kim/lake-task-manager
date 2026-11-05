@@ -215,7 +215,7 @@ Confluence 검색은 `search.confluence.spaces` 범위에서 페이지를 반환
 UI 통합검색·내장 Agent·MCP는 환경/Confluence 서버/사용자/요청 projection으로 구분된 같은 캐시를 사용한다.
 인증 실패나 불완전 응답을 빈 문서로 캐싱하지 않는다. Confluence 문서 생성·수정은 현재 LTM에 없는 기능이므로 제공하지 않는다.
 
-WBS와 사용자 활동에는 UI와 같은 manager 검사, 팀 워크로드에는 같은 module/people 범위가 적용된다.
+로컬 UI와 MCP는 모든 설정된 WBS·모듈·인력을 사용할 수 있다. 로컬 WBS/people 설정은 Jira 인증 없이 읽고 편집하며, Jira 조회·쓰기는 기존 인증과 upstream 권한을 따른다.
 Bitbucket 검색은 현재 LTM에서도 예정 기능의 mock placeholder이므로 MCP 도구에 포함하지 않는다.
 인증 쿠키, 비밀값 원문 조회, 임의 REST 호출이나 파일 접근은 노출하지 않는다.
 

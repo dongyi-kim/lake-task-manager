@@ -79,7 +79,12 @@ class HierarchyProbe:
             raise ProbeError("response_too_large", 413)
         context = {"environment": client.s.jira_env, "cacheEnvironment": client.env,
                    "projectKey": client.s.project_key, "server": server, "actor": actor}
-        return hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest(), context
+        # Cached Jira aliases are optional reconciliation evidence, not local workspace identity.
+        # Warming /myself between options/start or during a run must not change its server scope.
+        scope_context = context
+        if isinstance(actor, dict) and actor.get("localScope"):
+            scope_context = {**context, "actor": {"id": actor.get("id"), "localScope": actor["localScope"]}}
+        return hashlib.sha256(json.dumps(scope_context, sort_keys=True).encode()).hexdigest(), context
 
     def _identity(self):
         state = self.runtime.authentication.check("jira")

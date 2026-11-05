@@ -28,7 +28,9 @@ def admin_ui(static_server):
         page.on("console", lambda message: errors.append(message.text)
                 if message.type == "error" and not any(code in message.text for code in
                    ("status of 403", "status of 409", "status of 503")) else None)
-        state = {"manager": True, "fail": None, "hold": False, "config": {
+        state = {"manager": False, "me_calls": 0, "hold_me": False, "me_held": [],
+                 "health": {}, "api_calls": [], "hold_auth": False, "auth_held": [],
+                 "fail": None, "hold": False, "config": {
             "revision": "1", "projectKey": "DL", "tasks": [{"id": "workbench-1", "module": "Workbench",
                 "name": "쿼리 워크스페이스", "start": "2026-01-01", "end": "2026-12-31",
                 "epics": [{"key": "DL-110", "weight": 7}, {"key": "DL-109", "weight": 3}]}],
@@ -37,12 +39,11 @@ def admin_ui(static_server):
         def api(route):
             request = route.request
             path = urlsplit(request.url).path
+            state["api_calls"].append(path)
             if path.startswith("/api/workspace/config"):
                 body = request.post_data_json if request.post_data else None
                 requests.append((request.method, path, body, request.headers))
-                if not state["manager"]:
-                    route.fulfill(status=403, json={"detail": "매니저 권한이 필요합니다."})
-                elif state["hold"]:
+                if state["hold"]:
                     held.append(route)
                 elif state["fail"]:
                     code, message = state["fail"]
@@ -60,9 +61,20 @@ def admin_ui(static_server):
                 else:
                     route.fulfill(json=state["config"])
             elif path == "/api/me":
-                route.fulfill(json={"id": "fixture-user", "known": True, "manager": state["manager"]})
+                state["me_calls"] += 1
+                if state["hold_me"]:
+                    state["me_held"].append(route)
+                else:
+                    route.fulfill(json={"id": "fixture-user", "known": True, "manager": state["manager"]})
             elif path == "/api/prefs":
                 route.fulfill(json={"agentEnabled": False, "bitbucketConfigured": False})
+            elif path == "/api/health":
+                route.fulfill(json=state["health"])
+            elif path == "/api/auth/probe":
+                if state["hold_auth"]:
+                    state["auth_held"].append(route)
+                else:
+                    route.fulfill(json={"ok": False, "needLogin": True})
             elif path.startswith("/api/dev/sso/"):
                 route.fulfill(json={"configured": False})
             else:
@@ -204,23 +216,80 @@ def test_deleting_final_task_updates_open_wbs_to_empty_state(admin_ui):
     assert next(row for row in requests if row[0] == "PUT")[2]["tasks"] == []
 
 
-def test_regular_user_menu_hidden_and_server_denial_cannot_show_config(admin_ui):
+def test_local_navigation_and_settings_do_not_wait_for_jira_identity(admin_ui):
     page, state, requests, _held, expect = admin_ui
-    state["manager"] = False
-    page.reload()
+    state["hold_me"] = True
+    routes = page.evaluate("""async () => {
+      const { createApp } = await import('/vendor/vue.esm-browser.prod.js');
+      const { default: Home } = await import('/components/views/HomeView.js');
+      const { default: Root } = await import('/components/app-root.js');
+      const { default: Ticket } = await import('/components/ui/TicketDialog.js');
+      const host = document.createElement('main'); host.id = 'local-home'; document.body.append(host);
+      createApp(Home).mount(host);
+      return {
+        tabs: Root.computed.tabs.call({manager:false}).map(t => t.k),
+        wbs: Root.computed.view.call({route:'wbs', manager:false, allowed:false}).name,
+        tools: Root.computed.view.call({route:'devtools', manager:false, allowed:false}).name,
+        comments: Ticket.methods.canEdit.call({}, {id:'other-author', mine:false}),
+      };
+    }""")
+    assert routes == {"tabs": ["ai", "wbs", "vit", "workload", "mytasks"],
+                      "wbs": "WbsView", "tools": "DevToolsView", "comments": True}
+    expect(page.locator('#local-home a[href="#/wbs"]')).to_be_visible()
+    expect(page.locator('#local-home a[href="#/workload"]')).to_be_visible()
+    assert state["me_calls"] == 0  # Mounting home/settings no longer queries Jira to grant access.
     page.get_by_role("button", name="설정", exact=True).click()
-    expect(page.get_by_role("button", name="인력 · WBS 관리 →", exact=True)).to_have_count(0)
+    expect(page.get_by_role("button", name="인력 · WBS 관리 →", exact=True)).to_be_visible()
+    expect(page.get_by_role("link", name="개발용 API 열기 →", exact=True)).to_be_visible()
     assert requests == []
-    # Even a stale manager UI cannot render config after the server removes permission.
-    state["manager"] = True
-    page.reload()
-    page.get_by_role("button", name="설정", exact=True).click()
-    page.get_by_role("button", name="인력 · WBS 관리 →", exact=True).wait_for()
-    state["manager"] = False
     page.get_by_role("button", name="인력 · WBS 관리 →", exact=True).click()
-    expect(page.get_by_role("alert")).to_have_text("매니저 권한이 필요합니다.")
-    expect(page.get_by_label("Task 1 이름", exact=True)).to_have_count(0)
-    expect(page.get_by_role("button", name="다시 불러오기", exact=True)).to_be_enabled()
+    expect(page.get_by_label("Task 1 이름", exact=True)).to_have_value("쿼리 워크스페이스")
+    assert state["me_calls"] == 0  # Even opening local settings needs no Jira identity request.
+
+
+def test_no_jira_session_or_cache_never_blocks_local_shell_and_drafts(admin_ui):
+    page, state, _requests, _held, expect = admin_ui
+    state["health"] = {"needLogin": True, "hasCache": False, "env": "prod",
+                       "jiraBase": "https://jira.local", "projectKey": "DL"}
+    state["hold_auth"] = True
+    page.evaluate("""async () => {
+      document.querySelector('#app').remove();
+      const {createApp} = await import('/vendor/vue.esm-browser.prod.js');
+      const {default: Root} = await import('/components/app-root.js');
+      const host=document.createElement('div'); host.id='local-shell'; document.body.append(host);
+      window.localShell=createApp(Root); window.localShell.mount(host);
+    }""")
+    shell = page.locator("#local-shell")
+    expect(shell.locator('.home a[href="#/wbs"]')).to_be_visible()
+    expect(shell.get_by_role("button", name="티켓 추가", exact=True)).to_be_visible()
+    shell.get_by_role("button", name="설정", exact=True).click()
+    shell.get_by_role("button", name="인력 · WBS 관리 →", exact=True).click()
+    expect(page.get_by_label("Task 1 이름", exact=True)).to_have_value("쿼리 워크스페이스")
+    assert state["auth_held"]  # Local UI is live while silent renewal is still pending.
+    assert "/api/login" not in state["api_calls"]
+    assert state["me_calls"] == 0
+    for route in state["auth_held"]:
+        route.fulfill(json={"ok": False, "needLogin": True})
+    state["auth_held"].clear()
+    state["hold_auth"] = False
+    expect(page.locator(".login-notice")).to_be_visible()
+    assert page.locator(".login-ov").count() == 0
+    assert "/api/login" not in state["api_calls"]
+    page.get_by_label("Task 1 이름", exact=True).fill("인증 없이 로컬 수정")
+    expect(page.get_by_label("Task 1 이름", exact=True)).to_have_value("인증 없이 로컬 수정")
+    # A genuine rich editor remains usable while the same unauthenticated shell is mounted.
+    page.evaluate("""async () => {
+      const {createApp} = await import('/vendor/vue.esm-browser.prod.js');
+      const {default: Editor} = await import('/components/ui/CommentEditor.js');
+      const host=document.createElement('div'); host.id='local-draft'; document.body.append(host);
+      window.localDraft=createApp(Editor,{draftKey:'offline-shell-draft',placeholder:'local draft'});
+      window.localDraftVm=window.localDraft.mount(host);
+    }""")
+    editor = page.locator("#local-draft .ProseMirror[contenteditable=true]")
+    editor.fill("Jira 세션과 무관한 로컬 초안")
+    page.evaluate("window.localDraftVm.flushDraft()")
+    expect(editor).to_have_text("Jira 세션과 무관한 로컬 초안")
+    assert "/api/login" not in state["api_calls"]
 
 
 def test_mobile_focus_and_closed_dialog_ignores_late_load(admin_ui):

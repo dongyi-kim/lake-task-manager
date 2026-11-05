@@ -85,12 +85,22 @@ export function migrateDraft(key, matches) {
           cursor.continue();
           return;
         }
+        const pending = record => !!record?.preserveExpiredForMutation;
         let newest = existing;
         for (const source of sources) {
-          if (!newest || (source.record.savedAt || 0) > (newest.savedAt || 0)) newest = source.record;
-          store.put({ ...source.record, migratedTo: key }, source.key);
+          const candidate = source.record;
+          if (!pending(existing) && (!newest || (pending(candidate) && !pending(newest))
+              || (pending(candidate) === pending(newest) && (candidate.savedAt || 0) > (newest.savedAt || 0)))) newest = candidate;
         }
-        if (newest && newest !== existing) store.put(newest, key);
+        for (const source of sources) {
+          // Other unresolved runs stay discoverable after this receipt is resolved/discarded.
+          if (!pending(source.record) || source.record === newest)
+            store.put({ ...source.record, migratedTo: key }, source.key);
+        }
+        if (newest && newest !== existing) {
+          if (existing) store.put(existing, key + ":preserved:" + String(existing.savedAt || 0));
+          store.put(newest, key);
+        }
       };
     });
   });

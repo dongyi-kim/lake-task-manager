@@ -17,13 +17,13 @@ export default {
   data() { return { mode: "ok", lastSyncAt: null, hidden: false }; },
   computed: {
     show() { return !this.hidden && ["offline", "authenticating", "degraded"].includes(this.mode); },
-    label() { return this.mode === "offline" ? "오프라인" : (this.mode === "degraded" ? "Jira 응답 지연" : "인증 중"); },
+    label() { return this.mode === "offline" ? "오프라인" : (this.mode === "degraded" ? "Jira 응답 지연" : "Jira 연결 확인"); },
     detail() {
       return this.mode === "offline"
         ? "사내망에 연결되지 않았습니다. 연결되면 자동으로 최신 데이터를 받아옵니다."
         : (this.mode === "degraded"
           ? "앱은 정상 실행 중입니다. 저장된 데이터를 계속 볼 수 있고 잠시 후 자동 재시도합니다."
-          : "SSO 로그인을 진행하고 있습니다. 완료되면 자동으로 최신 데이터를 받아옵니다.");
+          : "백그라운드에서 연결을 확인합니다. 로컬 설정과 초안은 계속 사용할 수 있습니다.");
     },
     since() {
       if (!this.lastSyncAt) return "저장된 이전 데이터";

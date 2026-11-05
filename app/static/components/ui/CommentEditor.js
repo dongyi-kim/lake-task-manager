@@ -703,7 +703,7 @@ export default {
             for (let attempt = 1; attempt <= UPLOAD_TRIES; attempt++) {
               try { res = await api.attachmentUpload(this.ticketKey, file, info.uploadMutationId); break; }
               catch (e) {
-                if (e && (e.uncertain || e.needLogin)) { uncertainUpload = e; break; }
+                if (e && (e.uncertain || e.needLogin || e.authRecovered || e.authRecoveryPending)) { uncertainUpload = e; break; }
                 if (attempt < UPLOAD_TRIES) {                      // 아직 기회가 남았으면 잠깐 뒤 재시도
                   this.upName = info.name + " (재시도 " + attempt + "/" + (UPLOAD_TRIES - 1) + ")";
                   await sleep(400 * attempt);                      // 점점 더 기다렸다 다시(백오프)
@@ -780,7 +780,7 @@ export default {
       } catch (e) {
         // timeout/응답 유실이면 댓글은 이미 생성됐을 수 있다. 이때 첨부를 지우면 게시된 댓글의
         // 이미지가 즉시 깨지고, 재시도에서 또 업로드된다. 확인 가능한 실패에만 롤백한다.
-        const preserveUpload = !!(e && (e.uncertain || e.needLogin));
+        const preserveUpload = !!(e && (e.uncertain || e.needLogin || e.authRecovered || e.authRecoveryPending));
         if (preserveUpload && this.draftKey()) await this.flushDraft();
         if (!preserveUpload) {
           for (const id of uploaded) {

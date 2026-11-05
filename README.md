@@ -209,7 +209,7 @@ $env:FAKE_LATENCY_MS="800"
 
 개발 샘플과 최종 사용자 설정은 `config/`에 있다.
 
-- [`config/jira.yml`](config/jira.yml) — 환경, Jira/Confluence/Bitbucket 주소, 검색 범위, 필드, 매니저, 캐시와 포트
+- [`config/jira.yml`](config/jira.yml) — 환경, Jira/Confluence/Bitbucket 주소, 검색 범위, 필드, 캐시와 포트
 - [`config/wbs_config.yaml`](config/wbs_config.yaml) — Module·WBS·Epic N:M 매핑과 가중치
 - [`config/people.yaml`](config/people.yaml) — 모듈별 인력과 표시 설정
 - [`config/module-aliases.yaml`](config/module-aliases.yaml) — 모듈 명칭 정규화
@@ -297,3 +297,6 @@ Playwright Chromium과 자동 업데이트를 관리한다. 이 저장소의 `ma
 - prod SSO 세션과 자격증명, `.cache/` 산출물은 커밋하지 않는다.
 
 상세한 저장소 작업 규칙은 [`AGENTS.md`](AGENTS.md), 진행 상태는 [`PROGRESS.md`](PROGRESS.md)에서 확인한다.
+
+
+LTM은 로컬 단일 사용자 앱입니다. Jira 로그인은 Jira API 인증에만 사용하며, 로컬 화면·설정·초안·추천 이력은 Jira 사용자나 매니저 역할로 제한하지 않습니다. 기존 `manager.managers` 설정은 호환성을 위해 읽지만 접근 제한에는 사용하지 않습니다. 담당자·보고자·내 모듈 같은 업무 정보와 Jira 서버의 실제 편집 권한은 그대로 적용됩니다. 로컬 MCP의 토큰과 loopback/Origin 검증도 유지됩니다.

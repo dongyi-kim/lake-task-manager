@@ -180,7 +180,7 @@ def test_local_draft_migration_keeps_images_receipts_and_does_not_resurrect(edit
     page.goto(base)
     result = page.evaluate("""async () => {
       const d = await import('/lib/draft.js');
-      const identity = await import('/lib/draftIdentity.js');
+      const identity = await import('/lib/draftIdentity.js?migration-test');
       const scope = 'scoped:comment:DL-9007:42';
       identity.rememberDraftContext({env:'prod', jiraBase:'https://jira-a', projectKey:'DL'});
       const prefix = 'v2:prod:' + encodeURIComponent('https://jira-a') + ':';
@@ -206,17 +206,52 @@ def test_local_draft_migration_keeps_images_receipts_and_does_not_resurrect(edit
       await d.saveDraft(fallback, {html:'offline draft'});
       offline.rememberDraftContext({env:'prod', jiraBase:'https://jira-a', projectKey:'DL'});
       const recovered = await offline.resolveDraftKey('new:DL-9007');
+      const bulkScope = 'form:bulk-create:task';
+      const bulkOld = 'v3:bulk:prod:' + encodeURIComponent('https://jira-a') + ':DL:old-user:' + bulkScope;
+      const run = {id:'bulk:old:001', scope:{environment:'prod',jiraBase:'https://jira-a',projectKey:'DL',userId:'old-user'},
+        chunks:[{attempted:true, body:{clientMutationId:'bulk:old:001:0'}, states:{0:{ok:null}}}]};
+      await d.saveDraft(bulkOld, {fields:{creationRun:run}, preserveExpiredForMutation:true});
+      const newerBulk = bulkOld.replace(':old-user:', ':new-user:');
+      const anotherPending = bulkOld.replace(':old-user:', ':pending-user:');
+      Date.now = () => stamp + 1000;
+      await d.saveDraft(newerBulk, {fields:{src:'newer normal draft'}});
+      Date.now = () => stamp - 5000;
+      await d.saveDraft(anotherPending, {fields:{creationRun:{...run,id:'bulk:older:002'}}, preserveExpiredForMutation:true});
+      Date.now = now;
+      const bulkKey = await identity.resolveDraftKey(bulkScope);
+      const bulk = await d.loadDraft(bulkKey);
+      const newestPending = bulkOld.replace(':old-user:', ':third-pending-user:');
+      Date.now = () => stamp + 5000;
+      await d.saveDraft(newestPending, {fields:{creationRun:{...run,id:'bulk:newer:003'}}, preserveExpiredForMutation:true});
+      Date.now = now;
+      await identity.resolveDraftKey(bulkScope);
+      const activePendingKept = (await d.loadDraft(bulkKey)).fields.creationRun.id === run.id;
+      await d.clearDraft(bulkKey);
+      await identity.resolveDraftKey(bulkScope);
+      const nextPendingRecovered = (await d.loadDraft(bulkKey)).fields.creationRun.id === 'bulk:newer:003';
+      await d.clearDraft(bulkKey);
+      await identity.resolveDraftKey(bulkScope);
+      const remainingBulk = await d.loadDraft(bulkKey);
+      identity.rememberDraftContext({env:'mock',jiraBase:'http://jira.local',projectKey:'DL',
+        executionScope:{environment:'mock@2026-11-05',jiraBase:'http://jira.local',projectKey:'DL'}});
+      const execution = identity.localDraftContext();
+      const {bulkScopeKey} = await import('/lib/bulkCreateRun.js');
+      const mockScopeMatches = bulkScopeKey(execution) === bulkScopeKey({environment:'mock@2026-11-05',
+        jiraBase:'http://jira.local',projectKey:'DL'});
       return {html:record.html, image:await record.images[0].blob.text(),
         receipt:record.mutationId, pending:record.pendingHtml, timestamp:record.savedAt === stamp - 1000,
         originals:oldRecord.html === 'older' && latestRecord.html === 'latest'
           && oldRecord.migratedTo === key && latestRecord.migratedTo === key,
         other:(await d.loadDraft(other)).html,
         deleted:await d.loadDraft(key), offline:(await d.loadDraft(recovered)).html,
-        fallback:fallback === 'v3:local:new:DL-9007' && recovered !== fallback};
+        fallback:fallback === 'v3:local:new:DL-9007' && recovered !== fallback,
+        pendingPreserved:remainingBulk.fields.creationRun.id === 'bulk:older:002' && activePendingKept && nextPendingRecovered,
+        mockScopeMatches, bulk:JSON.stringify(bulk.fields.creationRun) === JSON.stringify(run) && bulk.preserveExpiredForMutation
+          && (await d.loadDraft(bulkOld)).migratedTo === bulkKey};
     }""")
     assert result == {"html": "latest", "image": "image-data", "receipt": "receipt-1", "pending": "pending",
                       "timestamp": True, "originals": True, "other": "other server", "deleted": None,
-                      "offline": "offline draft", "fallback": True}
+                      "offline": "offline draft", "fallback": True, "bulk": True, "mockScopeMatches": True, "pendingPreserved": True}
     assert not errors
 
 
@@ -310,4 +345,33 @@ def test_uncertain_transition_can_close_and_restores_exact_receipt(editor_browse
     page.wait_for_function("() => window.draftVm.$refs.ed?.ready")
     assert page.evaluate("window.draftVm.$refs.ed.discardDraft()") is False
     assert page.evaluate("window.draftVm.$refs.ed.draftConflict") is False
+    assert not errors
+
+
+def test_bulk_form_uses_local_health_execution_scope_without_open_time_identity(editor_browser):
+    page, base, errors, _ = editor_browser
+    page.goto(base)
+    page.evaluate("""async () => {
+      const {api} = await import('/lib/api.js');
+      const {rememberDraftContext} = await import('/lib/draftIdentity.js');
+      await api.health();
+      rememberDraftContext({env:'mock',jiraBase:'http://jira.local',projectKey:'DL',
+        executionScope:{environment:'mock@2026-11-05',jiraBase:'http://jira.local',projectKey:'DL'}});
+      window.bulkContextCalls = 0; window.bulkWrites = [];
+      api.bulkCreateContext = async () => { window.bulkContextCalls++; return {
+        environment:'mock@2026-11-05',jiraBase:'http://jira.local',projectKey:'DL'}; };
+      api.bulkCreate = async body => { window.bulkWrites.push(body); return {
+        ok:true, created:body.items.map((_,index)=>({index,key:'DL-'+(9900+index)})), failed:[]}; };
+    }""")
+    _mount(page, "BulkCreateDialog", {"mode": "task"})
+    assert page.evaluate("window.bulkContextCalls") == 0
+    result = page.evaluate("""async () => {
+      const vm=window.draftVm;
+      vm.items=[{summary:'local scope smoke',type:'Task',epic:null}];
+      await vm.create();
+      return {result:vm.result, writes:window.bulkWrites};
+    }""")
+    assert result["result"]["ok"] and len(result["writes"]) == 1
+    assert result["writes"][0]["expectedScope"]["environment"] == "mock@2026-11-05"
+    assert "userId" not in result["writes"][0]["expectedScope"]
     assert not errors
