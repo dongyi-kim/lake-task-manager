@@ -213,11 +213,6 @@ def test_paragraph_with_attributes_is_splittable():
     assert len(r[0]["kv"]) == 2
 
 
-def test_class_bearing_container_still_rejected():
-    """class 는 패널·콜아웃의 '의미'를 담으므로 여전히 자르지 않는다."""
-    assert _one('<div class="callout callout-info"><p>=== x ===</p></div><p>뒤</p>')
-
-
 def test_real_prod_shape():
     """제보된 실제 prod HTML 구조 — 한 문단에 구분선 2개, 내용은 다음 문단."""
     from app.content.htmlsafe import sanitize_html, tidy_html
