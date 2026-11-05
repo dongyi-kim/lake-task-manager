@@ -31,7 +31,9 @@
 
 /* Dim surfaces and individual nonmatches, never a container of matching SubTasks.
    No scrim intercepts clicks: filters, cards, folding and pagination remain usable. */
-.mt-find-active { --mt-find-backdrop: color-mix(in srgb, var(--bg) 66%, #000); }
+.mt-find-active { --mt-find-backdrop: color-mix(in srgb, var(--bg) 66%, #000);
+  --mt-find-current: #527400; }
+:root[data-theme="dark"] .mt-find-active { --mt-find-current: #d2ff4f; }
 .mt-find-active .mt-board-lanes { background: var(--mt-find-backdrop); }
 .mt-find-active .mt-colbg { opacity: .18; }
 :root .mytasks.mt-find-active :is(.mt-gcard2, .mt-compact-flow) { background: transparent;
@@ -48,8 +50,9 @@
 .mytasks.mt-find-active .mt-card.mt-find-match:not(.urgent) { background: var(--panel); }
 .mt-find-active .mt-card.mt-find-match {
   outline: 1px solid var(--warn); outline-offset: -1px; scroll-margin-block: 120px; }
-.mt-find-active .mt-card.mt-find-current { outline: 3px solid var(--warn); outline-offset: -2px;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 28%, transparent), 0 4px 16px #0003; }
+.mt-find-active .mt-card.mt-find-current { outline: 3px solid var(--mt-find-current); outline-offset: -2px;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mt-find-current) 36%, transparent),
+    0 0 18px color-mix(in srgb, var(--mt-find-current) 22%, transparent); }
 .mt-find-active .mt-card.mt-find-match .mt-title { opacity: 1; }
 @media (max-width: 900px) {
   .mt-find-dock { right: 12px; bottom: max(12px, env(safe-area-inset-bottom)); }
