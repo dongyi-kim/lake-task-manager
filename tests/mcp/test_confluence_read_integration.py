@@ -3,6 +3,7 @@ from datetime import date
 import json
 
 import anyio
+import pytest
 from mcp import Client
 
 from app.mock.confluence import install_confluence
@@ -101,13 +102,14 @@ def test_dc_fixture_preserves_versions_storage_comments_attachments_and_restrict
     assert http.get(f"/rest/api/content/{cid}").status_code == 403
 
 
-def test_comment_context_bounds_large_bodies_and_paginates_without_omission(build_env):
+@pytest.mark.parametrize("symbol", ["x", "🧪"], ids=["ascii", "multibyte"])
+def test_comment_context_bounds_large_bodies_and_paginates_without_omission(build_env, symbol):
     env = build_env()
     state, ids = documents(env)
     page = ids["Runbook"]
     comments = []
     for index in range(55):
-        body = "<p>" + ("x" * 500000 if index == 0 else f"comment {index} " * 100) + "</p>"
+        body = "<p>" + (symbol * 500000 if index == 0 else f"comment {index} " + symbol * 1000) + "</p>"
         row = state.create({"type": "comment", "container": {"id": page},
                             "body": {"storage": {"value": body}},
                             "version": {"number": 1, "by": {"displayName": "Editor", "username": "u01",
@@ -121,7 +123,7 @@ def test_comment_context_bounds_large_bodies_and_paginates_without_omission(buil
                     "page": page, "kind": "comment", "start_at": start, "max_results": 50})
                 assert not response.is_error, response.structured_content
                 data = response.structured_content["data"]
-                assert len(json.dumps(data, ensure_ascii=False)) <= 12000
+                assert len(json.dumps(data, ensure_ascii=False).encode("utf-8")) <= 8000
                 assert data["results"] and data["returned"] < 50
                 for item in data["results"]:
                     assert item["format"] == "text-preview" and item["bodyTruncated"]
