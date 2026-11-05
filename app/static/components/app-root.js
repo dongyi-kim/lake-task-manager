@@ -222,7 +222,7 @@ export default {
     },
   },
   template: `
-    <div class="wrap" :class="{ 'wrap-bare': pageTicket }">
+    <div class="wrap" :class="{ 'wrap-bare': pageTicket, 'wrap-confluence': route === 'confluence' && !pageTicket }">
       <header v-if="!pageTicket" class="top">
         <a href="#/home" class="nav-home" title="홈으로">
           <img class="nav-logo" src="icon.png" alt="Lake Task Manager" />
