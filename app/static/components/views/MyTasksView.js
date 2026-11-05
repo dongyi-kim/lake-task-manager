@@ -44,6 +44,8 @@ import { groupTaskSections } from "../mytasks/taskGrouping.js";
 import { DUE_FILTER_OPTIONS, UPDATE_FILTER_OPTIONS, isUnrankedPriority, priorityOptions as buildPriorityOptions,
   matchTaskDisplayFilters } from "../mytasks/taskDisplayFilters.js";
 import { hydrateTaskGroups } from "../mytasks/taskHydration.js";
+import TaskFindBar from "../mytasks/TaskFindBar.js";
+import taskFindMixin from "../mytasks/taskFindMixin.js";
 import { pushToast } from "../../lib/toast.js";
 import { vocBadgeSegs, vocStripTitle } from "../../lib/voc.js";
 import { confirmDoneDespiteOpenSubs } from "../../lib/doneGuard.js";
@@ -52,9 +54,9 @@ export { reconcileTaskModel, resolveDefaultModule, uniformStatusCategory } from 
 
 export default {
   name: "MyTasksView",
-  mixins: [ticketUpdateView],
+  mixins: [ticketUpdateView, taskFindMixin],
   components: { TypeBadge, Avatar, TaskCard, PriIcon, DueText, FieldEdit, AdvancedSearchDialog, TransitionDialog,
-                SubtaskFoldBar, TicketUpdateMark },
+                SubtaskFoldBar, TicketUpdateMark, TaskFindBar },
   data() {
     return {
       model: null, loading: false, err: "", childSync: {},
@@ -112,6 +114,11 @@ export default {
     };
   },
   watch: {
+    ticketUpdatesRevision() {
+      // Unread changes can rerender only TaskCard (the all filter has no read-state
+      // dependency). Reapply find outlines after that child class binding is patched.
+      if (this.findOpen) this.$nextTick(() => this.paintFind());
+    },
     rawCards: { immediate: true, handler(cards) { observeTicketUpdates(cards.concat(this.groups)); } },
   },
   mounted() {
@@ -381,6 +388,9 @@ export default {
       const out = {};
       for (const state of this.states) {
         out[state.k] = new Set(this.axisEntries[state.k].slice(0, this.axisPage[state.k]));
+      }
+      if (this.findActive && out[this.findActive.category]) {
+        out[this.findActive.category].add(this.findActive.entryId);
       }
       return out;
     },
@@ -935,6 +945,7 @@ export default {
     /** Task+SubTask 그룹 개별 접기/펴기. '모두 접기'도 하단바 한 번으로 다시 열 수 있다. */
     isGroupClosed(panel) {
       if (!panel) return true;
+      if (this.findOpens(panel)) return false;
       if (Object.prototype.hasOwnProperty.call(this.gClosed, panel.key)) return !!this.gClosed[panel.key];
       return panel.mode === "collapsed";
     },
@@ -1281,7 +1292,8 @@ export default {
     /** 가로축의 1컬럼 버전. 부모 상태 열이 접혔으면 부모 정보가 찌그러지지 않게 기존 전폭으로 둔다. */
     compactStatus(p) {
       const category = compactTaskCategory(p);
-      return category && this.bandOpen(category) ? category : null;
+      // Layout/search membership must not depend on the temporary find reveal.
+      return category && !this.bandClosed[category] ? category : null;
     },
     parentState(p) {
       const value = p?.group?.statusCategory;
@@ -1318,9 +1330,9 @@ export default {
      */
     cellCards(p, k) { return this.byState(p.cards)[k]; },
     /** 이 칸을 접어서 보여 줄 것인가 — 접기 대상이고 아직 안 폈을 때. */
-    peeking(p) { return this.foldable(p) && !this.subOpen[p.key]; },
+    peeking(p) { return !this.findOpens(p) && this.foldable(p) && !this.subOpen[p.key]; },
     /** 세로축 모드의 상태 밴드 접기 — 지금 안 보는 상태를 통째로 치우고 화면을 벌 수 있게. */
-    bandOpen(k) { return !this.bandClosed[k]; },
+    bandOpen(k) { return this.findActive?.category === k || !this.bandClosed[k]; },
     updateBoardAxis() {
       const width = this.$refs.board?.getBoundingClientRect().width || window.innerWidth;
       this.axis = width <= 900 ? "v" : "h";
@@ -1533,7 +1545,12 @@ export default {
     <div class="mt-workspace" :class="{ 'options-closed': optionsClosed }">
     ${OPTIONS_PANEL_TEMPLATE}
     <div class="mt-board" ref="board" :class="{ 'all-closed': states.every(st => !bandOpen(st.k)) }">
+    <div class="mt-board-tools" :class="{ finding: findOpen }">
+    <TaskFindBar v-if="findOpen" ref="taskFind" :query="findQuery" :index="findIndex"
+                 :total="findResults.length" :loading="findLoading"
+                 @query="findQuery = $event" @next="nextFind" @close="closeFind" />
     ${BOARD_HEADER_TEMPLATE}
+    </div>
     <div class="mt-board-lanes">
     <div v-if="axis === 'h'" class="mt-colbg" aria-hidden="true">
       <div v-for="st in states" :key="st.k" :class="'c-' + st.k"></div>

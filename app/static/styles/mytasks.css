@@ -1069,3 +1069,16 @@
 .mt-subfoot-label.update-unread { color: var(--accent); font-weight: 800; }
 .mt-subfoot-label.update-unread::after { content: ''; display: inline-block; margin-left: 4px;
   width: 5px; height: 5px; border-radius: 50%; background: currentColor; vertical-align: middle; }
+.mt-board-tools { position: sticky; top: 46px; z-index: 12; background: var(--bg); }
+.mt-board-tools .mt-board-head.mt-headrow { position: static; }
+.ax-v .mt-board-tools:not(.finding) { position: static; }
+.mt-find { display: flex; align-items: center;
+  flex-wrap: wrap; gap: 6px; padding: 8px; margin-bottom: 8px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--panel, #fff); box-shadow: 0 2px 10px #0002; }
+.mt-find input { flex: 1; min-width: 100px; max-width: 360px; }
+.mt-find-count { font-size: 12px; font-variant-numeric: tabular-nums; }
+.mt-find button { width: 28px; height: 28px; cursor: pointer; }
+.mt-find-loading { color: var(--muted); font-size: 11px; }
+.mt-card.mt-find-match { outline: 2px solid #e5b12e; outline-offset: -2px; }
+.mt-card.mt-find-current { outline: 3px solid #d88000; outline-offset: -3px;
+  box-shadow: 0 0 0 3px #e5b12e55; }

@@ -291,3 +291,37 @@ def test_closing_loaded_ticket_moves_it_between_update_filters_without_jira_relo
     assert card.locator('.tc-update-mark').count() == 0
     assert len(ctx["streams"]) == requests
     assert not ctx["errors"], ctx["errors"]
+
+
+def test_find_remains_on_read_card_with_urgency_and_sidebar_filters(updates_board):
+    from playwright.sync_api import expect
+
+    ctx = updates_board
+    page = ctx["page"]
+    page.locator('.mt-opt', has_text="그룹화").locator('select').select_option('none')
+    page.keyboard.press('Control+f')
+    query = page.get_by_role('textbox', name="카드에서 찾기")
+    query.fill('DL-9007')
+    card = page.locator('.mt-card.mt-find-current[data-key="DL-9007"]')
+    card.locator('.tc-update-mark').wait_for()
+    expect(card).to_have_css('outline-width', '3px')
+    _assert_blue_edges(card)
+    requests = len(ctx["streams"])
+    with page.expect_response('**/api/tickets/viewed'):
+        card.click()
+        dialog = page.locator('.tkt-dlg')
+        dialog.locator('.tkt-comments .tkt-cmt').first.wait_for()
+        dialog.get_by_role('button', name="닫기", exact=True).click()
+    dialog.wait_for(state='hidden')
+    card.wait_for()
+    expect(card.locator('.tc-update-mark')).to_have_count(0)
+    expect(card).to_have_css('outline-width', '3px')
+    assert '🔥' in card.locator('.tc-when').inner_text()
+    control = page.get_by_label("업데이트 필터", exact=True)
+    control.select_option('yes')
+    expect(page.locator('.mt-find-count')).to_have_text('0 / 0')
+    control.select_option('no')
+    card.wait_for()
+    expect(page.locator('.mt-find-count')).to_have_text('1 / 1')
+    assert len(ctx["streams"]) == requests
+    assert not ctx["errors"], ctx["errors"]
