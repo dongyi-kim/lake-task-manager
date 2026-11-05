@@ -177,6 +177,14 @@ class UpstreamBusy(UpstreamUnavailable):
     """
 
 
+class QueryStateChanged(UpstreamBusy):
+    """A read lost its mutation-generation fence; retrying the query is safe.
+
+    This is local consistency cancellation, not a transport outage or authentication failure.
+    It inherits the non-outage handling of UpstreamBusy but never describes a refused write.
+    """
+
+
 class MutationPreflightBusy(UpstreamBusy, MutationPreflightUnavailable):
     """Pre-write admission refusal: safely retryable without opening the outage breaker."""
 

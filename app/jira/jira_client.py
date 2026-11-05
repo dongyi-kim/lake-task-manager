@@ -18,7 +18,7 @@ from typing import NamedTuple
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
-from app.auth.base import (LoginRequired, MutationPreflightBusy, MutationPreflightUnavailable, PermissionDenied, SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable,
+from app.auth.base import (LoginRequired, MutationPreflightBusy, MutationPreflightUnavailable, PermissionDenied, QueryStateChanged, SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable,
                            background_upstream, write_upstream)
 from app.infra.cache_policy import note_read, read_scope, revalidating
 from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
@@ -1233,7 +1233,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 locks.enter_context(self._jql_lock(key))
             fence = self.cache.fence()
             if generation != self._jql_generation():
-                raise UpstreamUnavailable("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
+                raise QueryStateChanged("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
             complete, missing = [], []
             for member in group:
                 keys = self.cache.get(self._jql_leaf_key(member.leaf)[2])
@@ -1255,7 +1255,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     result_limit=max(self.JQL_BOOTSTRAP_RESULT_LIMIT, len(missing) * self.JQL_LEAF_RESULT_LIMIT))
                 fetched_at = (self.cache.metadata(self._jql_leaf_key(query)[2]) or {}).get("fetchedAt")
             if self.cache.fence() != fence or generation != self._jql_generation():
-                raise UpstreamUnavailable("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
+                raise QueryStateChanged("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
             verified = {badge.get("username") for member in missing
                         if isinstance(badge := self.cache.get(
                             f"userbadge:{self.env}:{member.value.lower()}"), dict)}
@@ -1273,7 +1273,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 self._register_jql_leaf_indexes(key, digest, epoch, keys, member.fields)
                 if not self.cache.set_if_fence(key, keys, self.s.cache_ttl_seconds, fence,
                                                fetched_at=fetched_at):
-                    raise UpstreamUnavailable("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
+                    raise QueryStateChanged("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
                 complete.append(((member,), subset))
             if unproven:
                 complete.append((tuple(unproven), rows))
@@ -1536,7 +1536,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 key, self.s.cache_ttl_seconds,
                 produce)[0]
             if self.cache.fence() != fence:
-                raise UpstreamUnavailable("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
+                raise QueryStateChanged("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
             source = (self.cache.metadata(key) or {}).get("fetchedAt")
             opaque_key = (f"jqlopaque:v{self.JQL_CACHE_VERSION}:{self.env}:g{generation}:"
                           f"{projection}:{digest}:{source}")
@@ -1649,7 +1649,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 sid = f"{generation}.{identity}.{uuid4().hex}"
                 snapshot_key = f"jqlsnap:v{self.JQL_CACHE_VERSION}:{self.env}:{sid}"
                 if not self.cache.set_if_fence(snapshot_key, snapshot, self.JQL_SNAPSHOT_TTL, fence):
-                    raise UpstreamUnavailable("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
+                    raise QueryStateChanged("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
                 return {"snapshotId": sid}
 
             current = self.cache.get_or_set_strict(
@@ -3519,9 +3519,16 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         q 별로 결과를 캐시하면 재조회는 cache.get 한 번이다(새 Task/Epic Link 변경 시 'epic_cand:' 무효화)."""
         ql = (q or "").strip().lower()
         ck = f"epic_cand:res:{self.env}:{ql}:{int(limit)}:{int(bool(exclude_linked))}"
-        return self.cache.get_or_set(
-            ck, self.OPTIONS_TTL,
-            lambda: self._parent_task_candidates_build(q, limit, exclude_linked))[0]
+        for attempt in range(2):
+            try:
+                return self.cache.get_or_set(
+                    ck, self.OPTIONS_TTL,
+                    lambda: self._parent_task_candidates_build(q, limit, exclude_linked))[0]
+            except QueryStateChanged:
+                if attempt:
+                    raise
+                # Only this safe read retries once. Authentication/permission/network errors
+                # retain their existing handling, and no write is repeated.
 
     def _parent_task_candidates_build(self, q="", limit=20, exclude_linked=False):
         """Epic 에 넣을 **기존 Task 후보** — 일반 이슈(Epic·Sub-Task 제외). q 로 키/제목 필터.
