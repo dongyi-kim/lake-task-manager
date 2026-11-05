@@ -83,13 +83,19 @@ const QUICK_FILTER_TEMPLATE = `
 export const OPTIONS_PANEL_TEMPLATE = `
   <div v-if="!optionsClosed" class="mt-options-backdrop" @click="toggleOptions" aria-hidden="true"></div>
   <aside ref="optionsPanel" class="mt-options-panel" :class="{ collapsed: optionsClosed }" aria-label="Tasks 보기 옵션">
+    <div v-show="!optionsClosed" class="mt-options-heading">보기 옵션</div>
+    <span v-if="optionsClosed" class="mt-options-rail-label" aria-hidden="true">보기 옵션</span>
     <button type="button" class="mt-options-toggle" @click="toggleOptions"
             :aria-expanded="!optionsClosed" aria-controls="mt-options-content"
             :aria-label="optionsClosed ? '보기 옵션 펼치기' : '보기 옵션 접기'"
             :title="optionsClosed ? '보기 옵션 펼치기' : '보기 옵션 접기'">
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m12 5-5 5 5 5"/></svg>
-      <span>보기 옵션</span>
     </button>
+    <div v-if="!optionsClosed" class="mt-options-grip" role="separator" tabindex="0"
+         aria-orientation="vertical" aria-label="보기 옵션 너비 조절" aria-controls="mt-options-content"
+         aria-valuemin="200" :aria-valuemax="optionsMaxWidth" :aria-valuenow="optionsRenderedWidth"
+         title="너비 조절 — 드래그 또는 방향키 · 두 번 클릭하면 기본 너비"
+         @pointerdown="startOptionsResize" @keydown="resizeOptionsKey" @dblclick="resetOptionsWidth"></div>
     <div id="mt-options-content" class="mt-options-content" v-show="!optionsClosed">
       ${QUICK_FILTER_TEMPLATE}
       ${STATUS_CONTROLS_TEMPLATE}
