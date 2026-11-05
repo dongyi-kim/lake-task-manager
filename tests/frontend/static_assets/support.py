@@ -32,6 +32,14 @@ def agent_view_source() -> str:
     return "\n".join(path.read_text(encoding="utf-8") for path in paths)
 
 
+def task_view_source() -> str:
+    """Include the shared board and section renderers in the Task UI contract surface."""
+    paths = [STATIC / "components/views/MyTasksView.js",
+             STATIC / "components/mytasks/taskBoardTemplate.js",
+             STATIC / "components/mytasks/taskSectionTemplate.js"]
+    return "\n".join(path.read_text(encoding="utf-8") for path in paths)
+
+
 def template_literal(source: str) -> str | None:
     """Read inline Vue templates and extracted ``*_TEMPLATE`` module constants."""
     masked = source.replace("\\`", "\0")

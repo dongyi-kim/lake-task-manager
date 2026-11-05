@@ -16,8 +16,10 @@ export const PREF_KEY = "mytasks.opts";
 
 export const OPTIONS = [
   { key: "groupBy", label: "그룹화", opts: [
-    { k: "none", label: "없음", hint: "모든 티켓을 개별 카드로" },
-    { k: "sub", label: "Sub Task", hint: "부모 Task 로 묶고 그 안에 Sub-Task — 하위가 없는 Task 는 그냥 카드" }] },
+    { k: "wbs", label: "WBS Task", hint: "WBS Task 안에 부모 Task와 하위를 함께 표시" },
+    { k: "epic", label: "Epic", hint: "Epic 안에 부모 Task와 하위를 함께 표시" },
+    { k: "sub", label: "Task", hint: "부모 Task 로 묶고 그 안에 Sub-Task — 하위가 없는 Task 는 그냥 카드" },
+    { k: "none", label: "묶지 않음", hint: "모든 티켓을 개별 카드로" }] },
   { key: "subView", label: "Sub Task 보기", opts: [
     { k: "collapsed", label: "모두 접기", hint: "하위를 모두 접는다 — 부모 Task 만 본다" },
     { k: "mine", label: "내 티켓만", hint: "하위 중 내가 담당인 것만 펼친다" },

@@ -14,6 +14,9 @@ export function categoryColor(key) {
   return "var(--cat" + ((h % CATEGORY_N) + 1) + ")";
 }
 
+// WBS identity is independent of configuration order and shared by Gantt and Task sections.
+export function wbsColor(id) { return categoryColor("wbs:" + id); }
+
 // statusCategory(todo|inprogress|done) → CSS 변수 / 라벨
 export const STATUS_VAR = { todo: "var(--st-todo)", inprogress: "var(--st-prog)", done: "var(--st-done)" };
 // 하위 티켓 정렬 순서: Open → 진행중 → 해결(완료)

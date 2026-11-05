@@ -5,6 +5,7 @@
    카드(.mt-card)는 배치와 무관하게 하나 — 리스트든 그리드든 같은 것을 읽게 한다. */
 
 .mytasks { padding: 2px 0 40px; }
+.mt-axis-more-row.vertical { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* ══ 상단: 퀵필터(담당/보고/모듈) + 요약 타일 — 워크로드식 정형(딱딱) ══ */
 .mt-top { display: flex; flex-direction: column; gap: 10px; margin: 0 0 14px; }

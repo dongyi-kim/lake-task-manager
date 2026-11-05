@@ -1,18 +1,16 @@
 // MyTasksView.js — '내 Task'.
 //
 // 백엔드는 **사실 하나**(내 실행 원자 + 부모/동료/Epic 맥락)만 주고, 배치는 전부 여기서 한다.
-// 상단 옵션 패널이 세 축을 정한다:
+// 좌측 보기 옵션 패널이 세 축을 정한다:
 //
 //  1) 상태 축   **폭이 정한다(옵션 아님)**. 3칼럼이 들어가면 가로축, 안 들어가면 세로축.
 //               가로 = 할당됨/진행중/최근완료가 세로로 긴 칼럼(칸반). 티켓은 1차원 리스트.
 //               세로 = 상태가 가로로 꽉 찬 패널로 쌓임. 티켓은 그리드.
-//               ★ 그룹은 늘 상태의 **반대 축**에 놓인다 — 가로 모드면 그룹이 위아래로 쌓이고,
-//                 세로 모드면 상태 패널 안에서 그룹이 좌우로 늘어선다.
+//               WBS/Epic 섹션이 바깥에 있고, 각 섹션 안의 상태 축만 화면 폭에 따라 바뀐다.
 //               ★ 두 모드 모두 상태를 **접을 수 있고**, 접힘 상태(bandClosed)를 공유한다 —
 //                 창을 줄였다고 접어 둔 게 펴지면 그건 같은 화면이 아니다.
-//  2) 그룹화    없음     = 모든 Task/Sub-Task가 개별 카드
-//               Sub Task = 같은 부모 Task로 묶고 그 안에 Sub-Task. 하위가 없는 Task는
-//                          묶을 게 없으므로 그룹이 아니라 그냥 카드다.
+//  2) 그룹화    WBS Task / Epic = 해당 소속 안에 기존 Task+Sub-Task 묶음을 그대로 배치.
+//               Task = 같은 부모로 묶기, 묶지 않음 = 모든 Task/Sub-Task를 개별 카드로.
 //  3) 유관 보기 그룹 안에서 담당이 '나'인 티켓을 강조해 먼저 보여주고,
 //               확장 버튼을 누르면 내가 담당이 아닌 티켓(동료 몫)도 함께 보여준다.
 //
@@ -21,7 +19,7 @@ import { reactive } from "../../vendor/vue.esm-browser.prod.js";
 import { api } from "../../lib/api.js";
 import TypeBadge from "../ui/TypeBadge.js";
 import Avatar from "../ui/Avatar.js";
-import PriIcon from "../ui/PriIcon.js";
+import PriIcon, { priRankOf } from "../ui/PriIcon.js";
 import TaskCard, { isHot, isUrgent } from "../ui/TaskCard.js";
 import DueText from "../ui/DueText.js";
 import FieldEdit from "../ui/FieldEdit.js";
@@ -35,6 +33,11 @@ import {
   resolveDefaultModule,
   taskLoadErrorKind, uniformStatusCategory, filteredTaskChildren, compactTaskCategory,
 } from "../mytasks/taskModel.js";
+import TASK_SECTION_TEMPLATE from "../mytasks/taskSectionTemplate.js";
+import { BOARD_HEADER_TEMPLATE, OPTIONS_PANEL_TEMPLATE } from "../mytasks/taskBoardTemplate.js";
+import { groupTaskSections } from "../mytasks/taskGrouping.js";
+import { DUE_FILTER_OPTIONS, priorityOptions as buildPriorityOptions,
+  matchTaskDisplayFilters } from "../mytasks/taskDisplayFilters.js";
 import { hydrateTaskGroups } from "../mytasks/taskHydration.js";
 import { pushToast } from "../../lib/toast.js";
 import { vocBadgeSegs, vocStripTitle } from "../../lib/voc.js";
@@ -60,14 +63,15 @@ export default {
       dragTrx: null,        // 드랍한 전이에 필수 입력이 있으면 TransitionDialog 로 채운다 {ticket, transition}
       // 폭이 정한다(사용자 선택 아님). 좁으면 v(세로) — 화면이 답을 알고 있다.
       axis: window.matchMedia(NARROW).matches ? "v" : "h",
-      groupBy: "sub",       // none | sub (부모 Task 로 묶기)
+      groupBy: "sub",       // wbs | epic | sub (Task) | none; 기존 저장값 sub 유지
+      optionsClosed: window.matchMedia(NARROW).matches,
       // 하위(Sub-Task) 보기 — **화면 전체에 하나**. collapsed | mine | all.
       // 전에는 그룹마다 버튼을 달아 개별로 바꿨는데, 그룹이 열 개면 열 번 눌러야 원하는 상태가 되고
       // 지금 무엇이 펼쳐져 있는지도 카드마다 달라 한눈에 안 잡혔다. 보기 방식은 화면의 성격이지
       // 그룹 하나하나의 속성이 아니다.
       subView: "mine",
-      bandClosed: {},       // 세로축 모드에서 접어 둔 상태 밴드 { todo|inprogress|done: true }
-      // 상단 퀵필터 — 세 세그먼트(담당자/보고자/모듈) + 고급 검색. 각 세그먼트는 [버튼][우측 선택]
+      bandClosed: {},       // 전체 보드의 상태 열/밴드 접힘 { todo|inprogress|done: true }
+      // 좌측 퀵필터 — 세 세그먼트(담당자/보고자/모듈) + 고급 검색. 각 세그먼트는 [버튼][우측 선택]
       // 으로, 버튼이 그 스코프를 켜고 우측 선택(사람 picker / 모듈 콤보)이 대상을 정한다. Default = '나'.
       scope: "assignee",    // assignee | reporter | module | jql
       moduleSel: "",        // 선택한 모듈명("" = 내 모듈 전체) — 사용자 선택은 포커스 떠나도 유지
@@ -81,13 +85,14 @@ export default {
       openFilter: "all",    // 할당됨 축: all | 2w   (서버 질의 조건)
       progFilter: "all",    // 진행 중 축: all | 1m  (기본 모두 — 지금 하는 일을 숨기지 않는다)
       doneFilter: "1w",     // 완료 축 기간: 1w | 1m (서버 질의 조건)
+      priorityFilter: "",  // 실제 Jira 우선순위 이름 — 추가 조회 없는 표시 필터
+      dueFilter: "",       // calm | soon | overdue | none; 빈 값은 전체
       axisPage: { todo: AXIS_PAGE_SIZE, inprogress: AXIS_PAGE_SIZE, done: AXIS_PAGE_SIZE },
       sort: "due",
       busy: false,
-      // Epic 필터(하단 콤보) — **가릴 버킷**만 담는다(비어 있으면 전부 표시). 새로 나타난 Epic 은
+      // Epic 필터 — **가릴 버킷**만 담는다(비어 있으면 전부 표시). 새로 나타난 Epic 은
       // 여기 없으니 기본 표시된다. 버킷 키 = Epic 키, 소속 없음은 "__none__".
       epicHidden: {},
-      epicOpen: false,
       // Project 필터 — jira.yml search 에 등록된 프로젝트는 **기본 체크**, 그 외는 **기본 언체크**.
       // projPref[proj] = true(보임)|false(숨김) 은 사용자가 명시적으로 토글한 것만 담는다(없으면 기본 규칙).
       projPref: {},
@@ -156,9 +161,23 @@ export default {
       if (seq === this._loadSeq) this.load({ quiet: true });
     });
     this._mq = window.matchMedia(NARROW);
-    this._onMq = (e) => { this.axis = e.matches ? "v" : "h"; };
+    this._onMq = () => this.updateBoardAxis();
     this._mq.addEventListener ? this._mq.addEventListener("change", this._onMq)
                               : this._mq.addListener(this._onMq);
+    if (typeof ResizeObserver !== "undefined") {
+      this._boardResize = new ResizeObserver(() => this.updateBoardAxis());
+      this._boardResize.observe(this.$refs.board);
+    }
+    this._optionsViewport = () => {
+      if (this._optionsFrame) return;
+      this._optionsFrame = requestAnimationFrame(() => {
+        this._optionsFrame = null;
+        this.updateOptionsHeight();
+      });
+    };
+    window.addEventListener("scroll", this._optionsViewport, { passive: true, capture: true });
+    window.addEventListener("resize", this._optionsViewport);
+    this.updateBoardAxis();
     this._bindDrag();
   },
   unmounted() {
@@ -171,6 +190,10 @@ export default {
     window.removeEventListener("auth-ok", this._authok);
     window.removeEventListener('workspace-config-updated', this._workspaceUpdate);
     this._unbindDrag && this._unbindDrag();
+    this._boardResize?.disconnect();
+    window.removeEventListener("scroll", this._optionsViewport, true);
+    window.removeEventListener("resize", this._optionsViewport);
+    if (this._optionsFrame) cancelAnimationFrame(this._optionsFrame);
     if (!this._mq) return;
     this._mq.removeEventListener ? this._mq.removeEventListener("change", this._onMq)
                                  : this._mq.removeListener(this._onMq);
@@ -203,6 +226,7 @@ export default {
     /** 상태 열 폭 — 접힌 열은 좁은 레일만 남긴다(사라지면 되펼 자리가 없다).
      *  헤더 줄과 모든 그룹 본문이 같은 변수를 쓰므로 칼럼이 통째로 함께 움직인다. */
     gridCols() {
+      if (this.states.every((st) => !this.bandOpen(st.k))) return "repeat(3, minmax(0, 1fr))";
       return this.states.map((st) => (this.bandOpen(st.k) ? "minmax(0, 1fr)" : "34px")).join(" ");
     },
     doneDays() { return (this.model && this.model.doneWindowDays) || 7; },
@@ -216,8 +240,34 @@ export default {
       }
       return out;
     },
-    /** Epic·Project 필터를 적용한 카드 — 배치·집계는 모두 이걸 쓴다(가린 것은 개수에서도 빠진다). */
-    allCards() { return this.rawCards.filter((c) => this.epicPass(c) && this.projPass(c) && !this.excluded[c.key]); },
+    /** 표시 필터를 적용한 카드 — 배치·집계는 모두 이걸 쓴다(가린 것은 개수에서도 빠진다). */
+    allCards() {
+      const cards = new Map(this.rawCards.filter((c) => this.cardPass(c)).map((card) => [card.key, card]));
+      if (this.hasDisplayFilters) for (const group of this.groups) {
+        if (group.hasSubs && this.parentMatchesAlone(group, this.taskChildren(group))) {
+          const parent = this.card(group, group, !!group.mine);
+          cards.set(parent.key, parent);
+        }
+      }
+      return [...cards.values()];
+    },
+    hasDisplayFilters() { return !!(this.priorityFilter || this.dueFilter); },
+    dueFilterOptions() { return DUE_FILTER_OPTIONS; },
+    priorityOptions() {
+      // 그룹의 priRank는 자식 롤업이므로 옵션 정렬에는 부모 자신의 이름에서 구한 순위를 쓴다.
+      return buildPriorityOptions(this.rawCards.concat(this.groups.map((g) => ({ ...g,
+        priRank: priRankOf(g.pri) }))), this.priorityFilter);
+    },
+    summaryCounts() {
+      // 요약은 기존과 같이 조회 스코프에 속한 티켓만 센다. 관계 맥락용 동료/부모는 더하지 않는다.
+      const cards = this.allCards.filter((card) => card.mine);
+      const active = cards.filter((card) => card.statusCategory !== "done");
+      return { total: cards.length,
+        overdue: active.filter((card) => Number.isFinite(card.dueDays) && card.dueDays < 0).length,
+        today: active.filter((card) => card.dueDays === 0).length,
+        week: active.filter((card) => card.dueDays > 0 && card.dueDays <= 7).length,
+        done: cards.filter((card) => card.statusCategory === "done").length };
+    },
     // ── Project 필터 ── (jira.yml search 등록=기본 보임 / 미등록=기본 숨김, 사용자 토글 가능)
     searchProjects() { return (this.me && this.me.searchProjects) || []; },
     /** 내 Task 에 실제로 있는 프로젝트(이슈키 접두사)들 — 등록 여부와 함께. */
@@ -277,32 +327,17 @@ export default {
     /** 화면에 그릴 목록.
      *  ★ 그룹은 **하위가 실제로 있을 때만** 만든다. Sub-Task 가 없는 Task 는 묶을 게 없으므로
      *    자기 자신만 담은 그룹 패널이 아니라 **그냥 티켓 카드**다(그게 사실에 맞는 표현이다). */
-    panels() {
-      if (this.groupBy === "none") {
-        return [{ key: "__all__", kind: "none", cards: this.visible(this.allCards) }];
-      }
-      // 하위가 있는 Task 를 **위로**, 하위 없는 단독 Task 묶음을 아래로.
-      // 단독 묶음은 서로 아무 관계 없는 티켓을 담는 자루라 그 '순위'(가장 급한 카드)는 사실상
-      // 전체 최솟값이 된다 → 다른 그룹과 같이 정렬하면 언제나 맨 위를 차지한다. 순위 경쟁은
-      // 실제 묶음(그룹)끼리만 시키고, 자루는 자리를 고정한다.
-      // Epic 필터: 그룹은 부모·자식이 같은 Epic 을 공유하므로 그룹의 버킷으로 통째로 거른다.
-      const grouped = this.groups
-        .filter((g) => g.hasSubs && this.epicPass(g) && this.projPass(g) && !this.excluded[g.key])
-        .map((g) => this.taskPanel(g));
-      // 가로축에서 모든 Sub-Task 가 한 상태인 Task 는 그룹 패널이 아니다. 하위 없는 Task 와
-      // 같은 마지막 카드 목록으로 보내 폭·위치·정렬을 완전히 공유하고, 하위 목록만 카드 아래에 붙인다.
-      // 단, 어느 열에 놓일지는 Sub-Task 상태가 아니라 **부모 Task 자신의 상태**가 정한다.
-      // 세로축이거나 부모 상태 열을 접었으면 기존 그룹 표현을 유지한다.
-      const compact = this.axis === "h" ? grouped.filter((p) => this.compactStatus(p)) : [];
-      const out = grouped.filter((p) => !compact.includes(p))
-        .sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1]);
-      const solo = this.soloPanel(
-        this.groups.filter((g) => !g.hasSubs && this.epicPass(g) && this.projPass(g) && !this.excluded[g.key]),
-        compact,
-      );
-      if (solo) out.push(solo);
-      return out;
+    sections() {
+      if (this.groupBy === "none") return [{ key: "__all__", title: "", panels: [
+        { key: "__all__", kind: "none", cards: this.visible(this.allCards) },
+      ] }];
+      const groups = this.groups.filter((g) => this.epicPass(g) && this.projPass(g) && !this.excluded[g.key]);
+      const sections = groupTaskSections(groups, this.groupBy, this.model?.groupingMeta || {}, this.epicMap);
+      const visible = sections.map((section) => ({ ...section, panels: this.taskPanelsFor(section.groups) }))
+        .filter((section) => section.panels.length);
+      return visible.length ? visible : [{ key: "__all__", title: "", groups: [], panels: [] }];
     },
+    panels() { return this.sections.flatMap((section) => section.panels); },
     /** 상태축별 페이지 단위. 독립 Task/1축 Task는 카드 하나, 혼합 SubTask 그룹은 부모 그룹
      *  하나를 한 항목으로 센다. 그룹 안의 자식은 기존 폴더블 UI가 담당하므로 페이지가
      *  Task 경계를 잘라 부모만 보이거나 일부 자식만 사라지는 일이 없다. */
@@ -902,6 +937,18 @@ export default {
     },
     /** Epic 필터 — 이 카드/그룹의 버킷이 가려지지 않았는가. */
     epicPass(x) { return !this.epicHidden[this.bucketOf(x)]; },
+    displayPass(card) { return matchTaskDisplayFilters(card, this.priorityFilter, this.dueFilter); },
+    cardPass(card) {
+      return !this.excluded[card.key] && this.epicPass(card) && this.projPass(card) && this.displayPass(card);
+    },
+    setDisplayFilter(field, value) {
+      const options = field === "priorityFilter" ? [{ k: "" }, ...this.priorityOptions]
+        : field === "dueFilter" ? DUE_FILTER_OPTIONS : [];
+      if (!options.some((option) => option.k === value) || this[field] === value) return;
+      this[field] = value;
+      this.resetAxisPages();
+      this.savePrefs();
+    },
     toggleEpic(k) {
       const h = Object.assign({}, this.epicHidden);
       if (h[k]) delete h[k]; else h[k] = true;
@@ -943,15 +990,20 @@ export default {
       let saved = null;
       try { saved = JSON.parse(localStorage.getItem(PREF_KEY) || "null"); } catch (e) { saved = null; }
       if (!saved) return;
+      if (typeof saved.optionsClosed === "boolean") this.optionsClosed = saved.optionsClosed;
+      if (typeof saved.priorityFilter === "string" && saved.priorityFilter.length <= 256
+          && (saved.priorityFilter === "__none__"
+            || (saved.priorityFilter.startsWith("name:") && saved.priorityFilter.slice(5).trim()))) {
+        this.priorityFilter = saved.priorityFilter;
+      }
+      if (DUE_FILTER_OPTIONS.some((option) => option.k === saved.dueFilter)) this.dueFilter = saved.dueFilter;
       for (const o of OPTIONS) {
         if (o.opts.some((x) => x.k === saved[o.key])) this[o.key] = saved[o.key];
       }
-      // 상태 칸 제목으로 옮긴 표시 범위도 같이 기억한다(플로팅 바에서 빠졌을 뿐 값은 그대로다)
+      // 표시 범위와 상태 열 접힘은 공통 보기 옵션으로 기억한다.
       for (const f of Object.values(BAND_FILTERS)) {
         if (f.opts.some((x) => x.k === saved[f.key])) this[f.key] = saved[f.key];
       }
-      // 상태 열 접힘은 옵션 목록에 없지만(콤보가 아니라 헤더 클릭) 같이 기억한다 —
-      // 매번 다시 접게 하면 접기의 의미가 없다.
       if (saved.bandClosed && typeof saved.bandClosed === "object") {
         this.bandClosed = Object.assign({}, saved.bandClosed);
       }
@@ -973,6 +1025,7 @@ export default {
     },
     savePrefs() {
       const out = { bandClosed: this.bandClosed, epicHidden: this.epicHidden, gClosed: this.gClosed,
+                    optionsClosed: this.optionsClosed, priorityFilter: this.priorityFilter, dueFilter: this.dueFilter,
                     scope: this.scope, moduleSel: this.moduleSel, moduleSelExplicit: this.moduleSelExplicit,
                     projPref: this.projPref,
                     assigneeSel: this.assigneeSel, reporterSel: this.reporterSel, jqlText: this.jqlText };
@@ -1035,6 +1088,7 @@ export default {
     },
     /** 이 상태 칸에 붙는 표시 범위 정의(없으면 null). 진행 중은 기간 개념이 없다 — 지금 하는 일이다. */
     bandFilter(k) { return BAND_FILTERS[k] || null; },
+    bandRangeLabel(k) { return BAND_FILTERS[k]?.opts.find((o) => o.k === this.opt(k))?.label || ""; },
     /** 그 칸의 현재 값 */
     opt(k) { const f = BAND_FILTERS[k]; return f ? this[f.key] : null; },
     setBandFilter(k, v) {
@@ -1069,12 +1123,59 @@ export default {
       const pri = Math.min(...pool.map((c) => c.priRank));
       return this.sort === "pri" ? [pri, due] : [due, pri];
     },
+    taskPanelsFor(groups) {
+      // 하위가 있는 Task 를 **위로**, 하위 없는 단독 Task 묶음을 아래로.
+      // 단독 묶음은 서로 아무 관계 없는 티켓을 담는 자루라 그 '순위'(가장 급한 카드)는 사실상
+      // 전체 최솟값이 된다 → 다른 그룹과 같이 정렬하면 언제나 맨 위를 차지한다. 순위 경쟁은
+      // 실제 묶음(그룹)끼리만 시키고, 자루는 자리를 고정한다.
+      // Epic 필터: 그룹은 부모·자식이 같은 Epic 을 공유하므로 그룹의 버킷으로 통째로 거른다.
+      const grouped = groups
+        .filter((g) => g.hasSubs && this.epicPass(g) && this.projPass(g) && !this.excluded[g.key])
+        .map((g) => this.taskPanel(g))
+        // A matching child keeps its parent as context. A matching parent never broadens children.
+        // Incomplete groups remain until hydration can determine whether any child matches.
+        .filter((p) => !this.hasDisplayFilters || p.cards.length || this.parentMatchesAlone(p.group, { shown: p.cards })
+          || p.group.childrenLoaded !== true || p.group.childrenPending || p.group.childrenUnavailable);
+      // 가로축에서 모든 Sub-Task 가 한 상태인 Task 는 그룹 패널이 아니다. 하위 없는 Task 와
+      // 같은 마지막 카드 목록으로 보내 폭·위치·정렬을 완전히 공유하고, 하위 목록만 카드 아래에 붙인다.
+      // 단, 어느 열에 놓일지는 Sub-Task 상태가 아니라 **부모 Task 자신의 상태**가 정한다.
+      // 세로축이거나 부모 상태 열을 접었으면 기존 그룹 표현을 유지한다.
+      const compact = this.axis === "h" ? grouped.filter((p) => this.compactStatus(p)) : [];
+      const out = grouped.filter((p) => !compact.includes(p))
+        .sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1]);
+      const solo = this.soloPanel(
+        groups.filter((g) => !g.hasSubs && this.epicPass(g) && this.projPass(g) && !this.excluded[g.key]),
+        compact,
+      );
+      if (solo) out.push(solo);
+      return out;
+    },
+    sectionCount(section, state) {
+      const groups = new Set((section.groups || this.groups).map((group) => group.key));
+      return this.allCards.filter((card) => groups.has(card.parent?.key || card.key)
+        && (!state || card.statusCategory === state) && (this.subView === "all" || card.mine)).length;
+    },
+    sectionPageVisible(section) {
+      return !section.title || section.panels.some((panel) => panel.kind === "task"
+        ? this.panelPageVisibleAny(panel) : this.states.some((state) => this.pagedCards(panel, state.k).length));
+    },
+    taskChildren(g) {
+      return filteredTaskChildren(
+        g.atoms.map((a) => this.card(a, g, true)),
+        g.others.map((a) => this.card(a, g, false)), this.subView,
+        (c) => this.cardPass(c));
+    },
+    parentMatchesAlone(g, children) {
+      // mine describes assignee/module relevance, not membership in the date/JQL query.
+      // Missing membership in an older snapshot must not promote a context-only parent.
+      return this.hasDisplayFilters && g.queryMatched === true
+        && g.childrenLoaded === true && !g.childrenPending && !g.childrenUnavailable
+        && !children.shown.length && (g.mine || this.subView === "all")
+        && this.cardPass(this.card(g, g, !!g.mine));
+    },
     taskPanel(g) {
       const mode = this.subView;
-      const { all, own: mineCards, shown } = filteredTaskChildren(
-        g.atoms.map((a) => this.card(a, g, true)),
-        g.others.map((a) => this.card(a, g, false)), mode,
-        (c) => !this.excluded[c.key] && this.epicPass(c) && this.projPass(c));
+      const { all, own: mineCards, shown } = this.taskChildren(g);
       // 하단바는 현재 펼쳐 둔 범위와 무관하게 실제 Sub-Task 담당자를 모두 보여 준다.
       // 부모 담당자는 부모 카드에 이미 있으므로 중복하지 않는다.
       const assignees = [];
@@ -1105,8 +1206,14 @@ export default {
     soloPanel(gs, compactPanels = []) {
       const cards = [];
       for (const g of gs) {
-        for (const a of g.atoms) if (!this.excluded[a.key]) cards.push(this.card(a, g, true));
-        for (const ot of g.others) if (!this.excluded[ot.key]) cards.push(this.card(ot, g, false));
+        for (const a of g.atoms) {
+          const card = this.card(a, g, true);
+          if (this.cardPass(card)) cards.push(card);
+        }
+        for (const ot of g.others) {
+          const card = this.card(ot, g, false);
+          if (this.cardPass(card)) cards.push(card);
+        }
       }
       const vis = this.visible(cards);
       // 단독 Task 처럼 취급하므로 열 배치도 부모 Task 자신의 상태를 그대로 쓴다. Sub-Task의
@@ -1187,6 +1294,25 @@ export default {
     peeking(p) { return this.foldable(p) && !this.subOpen[p.key]; },
     /** 세로축 모드의 상태 밴드 접기 — 지금 안 보는 상태를 통째로 치우고 화면을 벌 수 있게. */
     bandOpen(k) { return !this.bandClosed[k]; },
+    updateBoardAxis() {
+      const width = this.$refs.board?.getBoundingClientRect().width || window.innerWidth;
+      this.axis = width <= 900 ? "v" : "h";
+      this.updateOptionsHeight();
+    },
+    updateOptionsHeight() {
+      const panel = this.$refs.optionsPanel;
+      if (!panel || this.optionsClosed) return;
+      // Desktop leaves room for global add/refresh buttons; the mobile drawer covers them.
+      const bottom = window.matchMedia(NARROW).matches ? 12 : 120;
+      const height = Math.max(100, window.innerHeight - panel.getBoundingClientRect().top - bottom);
+      panel.style.setProperty("--mt-options-height", height + "px");
+    },
+    toggleOptions() {
+      this.optionsClosed = !this.optionsClosed;
+      this.projOpen = false;
+      this.savePrefs();
+      this.$nextTick(() => this.updateBoardAxis());
+    },
     toggleBand(k) {
       this.bandClosed = Object.assign({}, this.bandClosed, { [k]: !this.bandClosed[k] });
       this.savePrefs();
@@ -1367,403 +1493,58 @@ export default {
   },
   template: `
   <div class="mytasks" :class="'ax-' + axis" :style="{ '--mt-cols': gridCols }">
-    <!-- ══ 상단: 퀵필터(담당/보고/모듈) + 요약 타일 — 딱딱한 워크로드식 정형 ══ -->
+    <!-- 상단 요약 타일. 조회 조건은 좌측 보기 옵션에 모은다. -->
     <div class="mt-top">
-      <div class="mt-qf">
-        <!-- 담당자 세그먼트: [담당자][picker: 나/이름] — 버튼이 스코프를 켜고 picker 가 대상을 정한다. -->
-        <span class="mt-qf-seg">
-          <button type="button" class="mt-qf-b seg-l" :class="{ on: scope === 'assignee' }"
-                  @click="setScope('assignee')" title="담당자 기준으로 보기">담당자</button>
-          <FieldEdit class="mt-qf-fe seg-r" :class="{ 'qf-on': scope === 'assignee' }" ticket="__filter__"
-                     field="assignee" local :value="assigneeSel ? assigneeSel.id : ''"
-                     :user-id="assigneeSel ? assigneeSel.id : ''" @pick="pickAssignee">
-            <span class="qf-fe-v">{{ assigneeSel ? assigneeSel.name : '나' }}</span><span class="qf-fe-cav">▾</span>
-          </FieldEdit>
-        </span>
-        <!-- 보고자 세그먼트 -->
-        <span class="mt-qf-seg">
-          <button type="button" class="mt-qf-b seg-l" :class="{ on: scope === 'reporter' }"
-                  @click="setScope('reporter')" title="보고자 기준으로 보기">보고자</button>
-          <FieldEdit class="mt-qf-fe seg-r" :class="{ 'qf-on': scope === 'reporter' }" ticket="__filter__"
-                     field="reporter" local :value="reporterSel ? reporterSel.id : ''"
-                     :user-id="reporterSel ? reporterSel.id : ''" @pick="pickReporter">
-            <span class="qf-fe-v">{{ reporterSel ? reporterSel.name : '나' }}</span><span class="qf-fe-cav">▾</span>
-          </FieldEdit>
-        </span>
-        <!-- 모듈 세그먼트: [모듈][콤보] — 콤보 선택은 포커스 떠나도 유지, 버튼이 모듈 스코프를 켠다. -->
-        <span class="mt-qf-seg">
-          <button type="button" class="mt-qf-b seg-l" :class="{ on: scope === 'module' }"
-                  @click="setScope('module')" title="모듈 단위로 보기">모듈</button>
-          <select class="mt-qf-sel seg-r" :class="{ on: scope === 'module' }"
-                  :value="moduleSel || '__all__'"
-                  @change="onModulePick($event.target.value)" title="모듈 선택(포커스 떠나도 유지)">
-            <option value="__all__">{{ myModules.length ? '내 모듈 전체' : '모듈 전체' }}</option>
-            <optgroup v-if="myModules.length" label="내 모듈">
-              <option v-for="m in myModules" :key="'my-' + m" :value="m">{{ m }}</option>
-            </optgroup>
-            <optgroup v-if="otherModules.length" label="다른 모듈">
-              <option v-for="m in otherModules" :key="'ot-' + m" :value="m">{{ m }}</option>
-            </optgroup>
-          </select>
-        </span>
-
-        <!-- 고급 검색: [고급 검색][JQL 입력][🔍] — 버튼은 빌더 다이얼로그, 우측 입력창은 JQL 직접 입력,
-             돋보기(또는 Enter)로 그 JQL 을 Task 에 검색해 띄운다. -->
-        <span class="mt-qf-seg mt-qf-adv" :class="{ 'qf-on': scope === 'jql' }">
-          <button type="button" class="mt-qf-b seg-l" @click="advOpen = true"
-                  title="조건을 조합해 JQL 만들기">고급 검색</button>
-          <input class="mt-qf-jql" v-model="jqlText" @keydown.enter="runJql"
-                 placeholder="JQL 직접 입력 또는 [고급 검색]" spellcheck="false" autocomplete="off" />
-          <button type="button" class="mt-qf-jgo seg-r" @click="runJql" title="이 JQL 로 검색" aria-label="검색">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-          </button>
-        </span>
-      </div>
       <AdvancedSearchDialog v-if="advOpen" :projects="(me && me.searchProjects) || []" :my-id="myId"
                             :initial="jqlText" @apply="onAdvApply" @close="advOpen = false" />
       <div v-if="model && model.counts" class="mt-tiles">
-        <div class="mt-tile over" :class="{ zero: !model.counts.overdue }">
-          <b>{{ model.counts.overdue }}</b><span>지남</span></div>
-        <div class="mt-tile today" :class="{ zero: !model.counts.today }">
-          <b>{{ model.counts.today }}</b><span>오늘</span></div>
-        <div class="mt-tile week" :class="{ zero: !model.counts.week }">
-          <b>{{ model.counts.week }}</b><span>이번 주</span></div>
-        <div class="mt-tile"><b>{{ model.counts.total }}</b><span>전체</span></div>
-        <div class="mt-tile done"><b>{{ model.counts.done }}</b><span>최근 완료</span></div>
+        <div class="mt-tile over" :class="{ zero: !summaryCounts.overdue }">
+          <b>{{ summaryCounts.overdue }}</b><span>지남</span></div>
+        <div class="mt-tile today" :class="{ zero: !summaryCounts.today }">
+          <b>{{ summaryCounts.today }}</b><span>오늘</span></div>
+        <div class="mt-tile week" :class="{ zero: !summaryCounts.week }">
+          <b>{{ summaryCounts.week }}</b><span>이번 주</span></div>
+        <div class="mt-tile"><b>{{ summaryCounts.total }}</b><span>전체</span></div>
+        <div class="mt-tile done"><b>{{ summaryCounts.done }}</b><span>최근 완료</span></div>
       </div>
     </div>
 
     <div v-if="err" class="mt-err">{{ err }}</div>
 
-    <!-- ══ 상태 = 가로축 : 칼럼 헤더는 맨 위 한 줄, 그룹은 **각자 하나의 카드** 안에 3칼럼 ══
-         (그룹마다 헤더를 반복하면 빈 헤더가 그룹 수만큼 늘어나고, 반대로 헤더만 위에 두고 카드를
-          안 씌우면 어디부터 어디까지가 한 그룹인지 안 읽힌다 — 둘 다 피한 구조다.) -->
-    <template v-if="axis === 'h'">
-      <div class="mt-headrow">
-        <div v-for="st in states" :key="'h-' + st.k" class="mt-colh"
-             :class="['c-' + st.k, { closed: !bandOpen(st.k) }]">
-          <button class="mt-colh-b" @click="toggleBand(st.k)"
-                  :title="(bandOpen(st.k) ? '접기' : '펼치기') + ' — ' + st.label">
-            <span class="chev" :class="{ open: bandOpen(st.k) }">▸</span>
-            <template v-if="bandOpen(st.k)">{{ st.label }}</template>
-            <b>{{ allCards.filter(c => c.statusCategory === st.k && (subView === 'all' || c.mine)).length }}</b>
-          </button>
-          <span v-if="bandOpen(st.k) && axisPending(st.k)" class="mt-axis-load"
-                :class="{ degraded: axisDegraded(st.k) }"
-                :title="'완료된 JQL leaf ' + axisChunks(st.k) + '개 반영'">
-            <i v-if="axisLoading(st.k)" aria-hidden="true"></i>{{ axisLoadText(st.k) }}
-          </span>
-          <!-- 표시 범위는 **그 칸에만** 걸리는 조건이라 그 칸의 제목에 둔다 -->
-          <span v-if="bandOpen(st.k) && bandFilter(st.k)" class="mt-colf">
-            <button v-for="o in bandFilter(st.k).opts" :key="o.k" type="button"
-                    class="mt-colf-b" :class="{ on: opt(st.k) === o.k }"
-                    :title="o.hint" @click.stop="setBandFilter(st.k, o.k)">{{ o.label }}</button>
-          </span>
-        </div>
+    <div class="mt-workspace" :class="{ 'options-closed': optionsClosed }">
+    ${OPTIONS_PANEL_TEMPLATE}
+    <div class="mt-board" ref="board" :class="{ 'all-closed': states.every(st => !bandOpen(st.k)) }">
+    ${BOARD_HEADER_TEMPLATE}
+    <div class="mt-board-lanes">
+    <div v-if="axis === 'h'" class="mt-colbg" aria-hidden="true">
+      <div v-for="st in states" :key="st.k" :class="'c-' + st.k"></div>
+    </div>
+    <section v-for="section in sections" :key="section.key" v-show="sectionPageVisible(section)"
+             class="mt-task-section" :class="{ titled: section.title }" :data-task-section="section.key"
+             :style="{ '--section-color': section.color || 'var(--muted)' }">
+      <header v-if="section.title" class="mt-section-header">
+        <span class="mt-section-mark" aria-hidden="true"></span>
+        <h2>{{ section.title }}</h2><span v-if="section.label" class="mt-section-label">{{ section.label }}</span>
+        <span class="mt-section-rule" aria-hidden="true"></span>
+        <span class="mt-section-count">{{ sectionCount(section) }}개</span>
+        <small v-for="extra in section.extra" :key="extra.epic" class="mt-section-extra">
+          {{ extra.epic }} 다른 소속: {{ extra.names.join(' / ') }}
+        </small>
+      </header>
+      ${TASK_SECTION_TEMPLATE}
+    </section>
+    <div class="mt-axis-more-row" :class="{ vertical: axis === 'v' }">
+      <div v-for="st in states" :key="'more-' + st.k" class="mt-axis-more-cell"
+           :class="['c-' + st.k, { closed: !bandOpen(st.k) }]">
+        <button v-if="bandOpen(st.k) && axisHidden(st.k)" type="button" class="mt-axis-more-btn"
+                @click="moreBand(st.k)">
+          <span>{{ st.label }} · {{ axisHidden(st.k) }}개 더 보기</span>
+          <small>{{ axisShown(st.k) }} / {{ axisEntryCount(st.k) }}</small>
+        </button>
       </div>
-
-      <!-- 칼럼 배경 — 카드 뒤에 **한 겹으로** 깐다. 셀마다 칠하면 그룹 카드가 놓인 구간에서
-           띠가 끊겨 '영역' 이 아니라 '카드 뒤 색칠' 로 보인다(실제로 그랬다). -->
-      <div class="mt-hwrap">
-        <div class="mt-colbg" aria-hidden="true">
-          <div v-for="st in states" :key="'bg-' + st.k" :class="'c-' + st.k"></div>
-        </div>
-
-      <div v-if="!panels.length" class="mt-axis-shell">
-        <div v-for="st in states" :key="'shell-' + st.k" :class="'c-' + st.k">
-          <span><i v-if="axisLoading(st.k)" aria-hidden="true"></i>{{ axisEmptyText(st.k) }}</span>
-        </div>
-      </div>
-
-      <template v-for="p in panels" :key="p.key">
-        <!-- 그룹화 없음 / 하위 없는 Task 묶음 — 묶을 게 없으니 카드 테두리도 없다 -->
-        <div v-if="p.kind === 'none' || p.kind === 'solo'" class="mt-gbody plain">
-          <div v-for="st in states" :key="'n-' + st.k" class="mt-cell"
-               :class="['c-' + st.k, { empty: !pagedCards(p, st.k).length,
-                                                closed: !bandOpen(st.k) }]">
-            <template v-for="c in pagedCards(p, st.k)" :key="c.key">
-              <TaskCard v-if="!c.compactPanel" :card="c"
-                     :style="sigStyle(c)" :epic-title="epicDisplayTitle(c.epicKey)"
-                     :epic-pending="epicPending(c.epicKey)" />
-              <!-- 1축 Task 는 단독 Task 와 같은 셀·배열·TaskCard 를 그대로 쓴다.
-                   공용 하단바와 폴더블 Sub-Task 목록만 부모 카드 바로 아래에 잇는다. -->
-              <div v-else class="mt-compact-flow" :style="sigStyle(c)"
-                   :class="{ folded: isGroupClosed(c.compactPanel), open: !isGroupClosed(c.compactPanel) }">
-                <div class="mt-compact-head">
-                  <TaskCard :card="c" :style="sigStyle(c)" :epic-title="epicDisplayTitle(c.epicKey)"
-                            :epic-pending="epicPending(c.epicKey)" />
-                </div>
-                <SubtaskFoldBar :panel="c.compactPanel" :closed="isGroupClosed(c.compactPanel)"
-                                @toggle="toggleGroup(c.compactPanel)" />
-                <div v-if="!c.compactPanel.emptyFiltered && !isGroupClosed(c.compactPanel)"
-                     class="mt-gbody one mt-compact-children"
-                     :class="{ foldwrap: foldable(c.compactPanel), folded: peeking(c.compactPanel),
-                               'fold-peek': peeking(c.compactPanel) }">
-                  <div v-for="sub in cellCards(c.compactPanel, c.compactPanel.singleStatus)" :key="sub.key" class="mt-card tkt"
-                       :class="{ mine: sub.mine, rel: !sub.mine, done: sub.statusCategory === 'done',
-                               urgent: isUrgentC(sub) }" :style="sigStyle(sub)" :data-key="sub.key">
-                    <span v-if="isHotC(sub)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
-                    <PriIcon :rank="sub.priRank" :name="sub.pri" />
-                    <span class="mt-key">{{ sub.key }}</span>
-                    <span class="mt-title">{{ sub.title }}</span>
-                    <span class="mt-subdue-sep" aria-hidden="true"></span>
-                    <span class="mt-owner mt-sub-owner" :class="{ me: sub.mine }"
-                          :title="(sub.assignee || '미할당') + ' 담당' + (sub.mine ? ' (나)' : '')">
-                      <Avatar :user="sub.assigneeId" :name="sub.assignee" :size="15" />
-                      <span class="mt-owner-name">{{ sub.assignee || '미할당' }}</span>
-                    </span>
-                    <DueText :card="sub" />
-                  </div>
-                  <button v-if="overflowed(c.compactPanel, c.compactPanel.singleStatus)" class="fold-b"
-                          @click.stop="toggleSub(c.compactPanel.key)">{{
-                          subOpen[c.compactPanel.key] ? '접기' : '+' + cellHidden(c.compactPanel, c.compactPanel.singleStatus) + '개 더' }}</button>
-                </div>
-              </div>
-            </template>
-          </div>
-        </div>
-
-        <!-- Task 그룹 = 카드 하나 -->
-        <div v-else-if="p.kind === 'task' && panelPageVisibleAny(p)" class="mt-gslot">
-        <div class="mt-gcard2 k-task" :class="{ folded: isGroupClosed(p) }" :style="sigStyle(p.group)">
-          <div class="mt-gh">
-            <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
-                 :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done',
-                        urgent: isUrgentC(p.group) }">
-              <span v-if="isHotC(p.group)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
-              <PriIcon :rank="p.group.priRank" :name="p.group.pri" />
-              <TypeBadge :type="p.group.type" />
-              <span class="mt-key">{{ p.key }}</span>
-              <span class="mt-title">{{ p.group.voc ? vocStrip(p.title) : p.title }}</span>
-              <span v-if="p.epicKey" class="mt-epic" :class="{ pending: epicPending(p.epicKey) }"
-                    :title="'Epic: ' + epicDisplayTitle(p.epicKey)">{{ epicDisplayTitle(p.epicKey) }}</span>
-              <span v-else-if="p.group.voc" class="mt-voc" :title="'사용자 VoC' + (vocSegs(p.title).length > 1 ? ' — ' + vocSegs(p.title).slice(1).join(' · ') : '')">
-                <span v-for="(s, i) in vocSegs(p.title)" :key="i" class="mt-voc-seg" :class="{ head: i === 0 }">{{ s }}</span>
-              </span>
-              <span v-else class="mt-epic none">Epic 없음</span>
-              <span class="mt-sep" aria-hidden="true"></span>
-              <span class="mt-owner" :class="{ me: p.group.mine }"
-                    :title="(p.group.assignee || '미할당') + ' 담당' + (p.group.mine ? ' (나)' : '')">
-                <Avatar :user="p.group.assigneeId" :name="p.group.assignee" :size="16" />{{ p.group.assignee || '미할당' }}</span>
-              <DueText :card="p.group" />
-
-            </div>
-          </div>
-          <SubtaskFoldBar :panel="p" :closed="isGroupClosed(p)" @toggle="toggleGroup(p)" />
-          <div v-if="!isGroupClosed(p)" class="mt-gbody">
-            <div v-for="st in states" :key="p.key + st.k" class="mt-cell"
-                 :class="['c-' + st.k, { empty: !panelPageVisible(p, st.k) || !byState(p.cards)[st.k].length,
-                                                closed: !bandOpen(st.k),
-                                                foldwrap: foldable(p),
-                                                folded: peeking(p), 'fold-peek': peeking(p) }]">
-                <div v-for="c in (panelPageVisible(p, st.k) ? cellCards(p, st.k) : [])" :key="c.key" class="mt-card tkt"
-                     :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done',
-                             urgent: isUrgentC(c) }" :style="sigStyle(c)" :data-key="c.key">
-                  <span v-if="isHotC(c)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
-                  <PriIcon :rank="c.priRank" :name="c.pri" />
-                  <span class="mt-key">{{ c.key }}</span>
-                  <span class="mt-title">{{ c.title }}</span>
-                  <span class="mt-subdue-sep" aria-hidden="true"></span>
-                  <span class="mt-owner mt-sub-owner" :class="{ me: c.mine }"
-                        :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
-                    <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />
-                    <span class="mt-owner-name">{{ c.assignee || '미할당' }}</span>
-                  </span>
-                  <DueText :card="c" />
-                </div>
-                <!-- 넘친 칸에만 더보기가 붙지만, 누르면 **이 Task 의 모든 칸**이 함께 열린다.
-                     접혀 있을 때는 흐려진 카드 **위에** 앉는다(.foldwrap.folded > .fold-b). -->
-                <button v-if="panelPageVisible(p, st.k) && overflowed(p, st.k)" class="fold-b" @click.stop="toggleSub(p.key)">{{
-                        subOpen[p.key] ? '접기' : '+' + cellHidden(p, st.k) + '개 더' }}</button>
-            </div>
-          </div>
-        </div>
-        </div>
-
-      </template>
-      <div class="mt-axis-more-row">
-        <div v-for="st in states" :key="'more-' + st.k" class="mt-axis-more-cell"
-             :class="['c-' + st.k, { closed: !bandOpen(st.k) }]">
-          <button v-if="bandOpen(st.k) && axisHidden(st.k)" type="button" class="mt-axis-more-btn"
-                  @click="moreBand(st.k)">
-            <span>{{ axisHidden(st.k) }}개 더 보기</span>
-            <small>{{ axisShown(st.k) }} / {{ axisEntryCount(st.k) }}</small>
-          </button>
-        </div>
-      </div>
-      </div>
-    </template>
-
-    <!-- ══ 상태 = 세로축 : 상태 패널이 가로로 꽉 차서 쌓이고, 그 안에서 그룹이 좌우로 ══ -->
-    <template v-else>
-      <div v-for="st in states" :key="st.k" class="mt-band" :class="['c-' + st.k, { closed: !bandOpen(st.k) }]">
-        <div class="mt-bandh-w">
-          <button class="mt-bandh" @click="toggleBand(st.k)"
-                  :title="bandOpen(st.k) ? '접기' : '펼치기'">
-            <span class="chev" :class="{ open: bandOpen(st.k) }">▸</span>{{ st.label }}
-            <b>{{ bandCount(st.k) }}</b>
-          </button>
-          <span v-if="axisPending(st.k)" class="mt-axis-load"
-                :class="{ degraded: axisDegraded(st.k) }"
-                :title="'완료된 JQL leaf ' + axisChunks(st.k) + '개 반영'">
-            <i v-if="axisLoading(st.k)" aria-hidden="true"></i>{{ axisLoadText(st.k) }}
-          </span>
-          <span v-if="bandFilter(st.k)" class="mt-colf">
-            <button v-for="o in bandFilter(st.k).opts" :key="o.k" type="button"
-                    class="mt-colf-b" :class="{ on: opt(st.k) === o.k }"
-                    :title="o.hint" @click.stop="setBandFilter(st.k, o.k)">{{ o.label }}</button>
-          </span>
-        </div>
-        <template v-if="bandOpen(st.k)">
-        <!-- 그룹화 없음 → 카드 그리드 하나 -->
-        <div v-if="groupBy === 'none'" class="mt-grid2">
-          <TaskCard v-for="c in pagedCards(panels[0], st.k)" :key="c.key" :card="c"
-                   :style="sigStyle(c)" :epic-title="epicDisplayTitle(c.epicKey)"
-                   :epic-pending="epicPending(c.epicKey)" />
-          <div v-if="!pagedCards(panels[0], st.k).length" class="mt-none">{{ axisEmptyText(st.k) }}</div>
-        </div>
-        <!-- 그룹화 있음 → 그룹이 좌우로 늘어서고 각 그룹 안이 그리드 -->
-        <div v-else class="mt-grouprow">
-          <div v-if="!bandCount(st.k)" class="mt-none">{{ axisEmptyText(st.k) }}</div>
-          <template v-for="p in panels" :key="p.key">
-            <!-- 하위 없는 Task 묶음 — 카드로만 -->
-            <template v-if="p.kind === 'solo'">
-              <TaskCard v-for="c in pagedCards(p, st.k)" :key="'so-' + c.key" :card="c"
-                   :style="sigStyle(c)" :epic-title="epicDisplayTitle(c.epicKey)"
-                   :epic-pending="epicPending(c.epicKey)" />
-            </template>
-            <div v-else v-show="panelPageVisible(p, st.k)" class="mt-gcard2 k-task"
-                 :class="{ folded: isGroupClosed(p) }" :style="sigStyle(p.group)">
-              <div class="mt-gh">
-            <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
-                 :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done',
-                        urgent: isUrgentC(p.group) }">
-              <span v-if="isHotC(p.group)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
-              <PriIcon :rank="p.group.priRank" :name="p.group.pri" />
-              <TypeBadge :type="p.group.type" />
-              <span class="mt-key">{{ p.key }}</span>
-              <span class="mt-title">{{ p.group.voc ? vocStrip(p.title) : p.title }}</span>
-              <span v-if="p.epicKey" class="mt-epic" :class="{ pending: epicPending(p.epicKey) }"
-                    :title="'Epic: ' + epicDisplayTitle(p.epicKey)">{{ epicDisplayTitle(p.epicKey) }}</span>
-              <span v-else-if="p.group.voc" class="mt-voc" :title="'사용자 VoC' + (vocSegs(p.title).length > 1 ? ' — ' + vocSegs(p.title).slice(1).join(' · ') : '')">
-                <span v-for="(s, i) in vocSegs(p.title)" :key="i" class="mt-voc-seg" :class="{ head: i === 0 }">{{ s }}</span>
-              </span>
-              <span v-else class="mt-epic none">Epic 없음</span>
-              <span class="mt-sep" aria-hidden="true"></span>
-              <span class="mt-owner" :class="{ me: p.group.mine }"
-                    :title="(p.group.assignee || '미할당') + ' 담당' + (p.group.mine ? ' (나)' : '')">
-                <Avatar :user="p.group.assigneeId" :name="p.group.assignee" :size="16" />{{ p.group.assignee || '미할당' }}</span>
-              <DueText :card="p.group" />
-
-            </div>
-              </div>
-              <SubtaskFoldBar :panel="p" :closed="isGroupClosed(p)" @toggle="toggleGroup(p)" />
-              <div v-if="!p.emptyFiltered && !isGroupClosed(p)" class="mt-gbody one"
-                   :class="{ foldwrap: foldable(p), folded: peeking(p), 'fold-peek': peeking(p) }">
-                <div v-for="c in cellCards(p, st.k)" :key="c.key" class="mt-card tkt"
-                     :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done',
-                             urgent: isUrgentC(c) }" :style="sigStyle(c)" :data-key="c.key">
-                  <span v-if="isHotC(c)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
-                  <PriIcon :rank="c.priRank" :name="c.pri" />
-                  <span class="mt-key">{{ c.key }}</span>
-                  <span class="mt-title">{{ c.title }}</span>
-                  <span class="mt-subdue-sep" aria-hidden="true"></span>
-                  <span class="mt-owner mt-sub-owner" :class="{ me: c.mine }"
-                        :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
-                    <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />
-                    <span class="mt-owner-name">{{ c.assignee || '미할당' }}</span>
-                  </span>
-                  <DueText :card="c" />
-                </div>
-                <!-- 넘친 칸에만 더보기가 붙지만, 누르면 **이 Task 의 모든 칸**이 함께 열린다.
-                     접혀 있을 때는 흐려진 카드 **위에** 앉는다(.foldwrap.folded > .fold-b). -->
-                <button v-if="overflowed(p, st.k)" class="fold-b" @click.stop="toggleSub(p.key)">{{
-                        subOpen[p.key] ? '접기' : '+' + cellHidden(p, st.k) + '개 더' }}</button>
-              </div>
-            </div>
-          </template>
-        </div>
-        <div v-if="axisHidden(st.k)" class="mt-axis-more">
-          <button type="button" class="mt-axis-more-btn" @click="moreBand(st.k)">
-            <span>{{ axisHidden(st.k) }}개 더 보기</span>
-            <small>{{ axisShown(st.k) }} / {{ axisEntryCount(st.k) }}</small>
-          </button>
-        </div>
-        </template>
-      </div>
-    </template>
-    <!-- 옵션 패널 — 세 축을 여기서 정한다. **화면 하단에 띄운다**:
-         이 화면의 본론은 목록이고 옵션은 가끔 건드리는 것이라, 위에 두면 스크롤 한 판을
-         옵션이 먼저 먹는다. 마크업도 목록 뒤에 둬 탭 이동이 목록을 먼저 지나가게 한다
-         (보이는 순서와 읽는 순서를 맞춘다). -->
-    <div class="mt-bar float">
-      <label v-for="o in options" :key="o.key" class="mt-opt">
-        <span class="mt-opt-l" :class="o.cls">{{ o.label }}</span>
-        <select class="mt-sel" :value="$data[o.key]" @change="setOpt(o, $event.target.value)"
-                :title="hintOf(o)">
-          <option v-for="v in o.opts" :key="v.k" :value="v.k" :title="v.hint">{{ v.label }}</option>
-        </select>
-      </label>
-
-      <!-- Epic 필터 — 체크박스 다중선택 콤보. 내 Task 유관 Epic + 사용자 VoC + 소속 없음을 개별로. -->
-      <div v-if="epicOptions.length || hasVocBucket || hasNoneBucket" class="mt-opt mt-epicf">
-        <span class="mt-opt-l">Epic</span>
-        <div class="mt-ef">
-          <button class="mt-ef-btn" :class="{ on: !allEpicsShown }" @click.stop="epicOpen = !epicOpen"
-                  :title="'Epic 필터 — ' + epicFilterLabel">
-            {{ epicFilterLabel }}<i class="mt-ef-cav">▾</i>
-          </button>
-          <div v-if="epicOpen" class="mt-ef-back" @click="epicOpen = false"></div>
-          <div v-if="epicOpen" class="mt-ef-pop" @click.stop>
-            <button type="button" class="mt-ef-i master" @click="toggleAllEpics">
-              <span class="mt-ef-ck" :class="{ on: allEpicsShown, ind: anyEpicHidden && !allEpicsShown }"></span>
-              모든 Epic</button>
-            <div class="mt-ef-sep"></div>
-            <div class="mt-ef-list">
-              <button v-for="e in epicOptions" :key="e.key" type="button" class="mt-ef-i" @click="toggleEpic(e.key)"
-                      :title="e.title">
-                <span class="mt-ef-ck" :class="{ on: !epicHidden[e.key] }"></span>
-                <span class="mt-ef-dot" :style="{ background: e.color }"></span>
-                <span class="mt-ef-t">{{ e.title }}</span></button>
-              <!-- 사용자 VoC — Epic 은 아니지만 논리적으로 Epic 처럼. 끄면 Epic 에 안 속한 VoC 가 숨는다. -->
-              <button v-if="hasVocBucket" type="button" class="mt-ef-i" @click="toggleEpic('__voc__')">
-                <span class="mt-ef-ck" :class="{ on: !epicHidden['__voc__'] }"></span>
-                <span class="mt-ef-dot" style="background: var(--ty-story)"></span>
-                <span class="mt-ef-t">사용자 VoC</span></button>
-              <button v-if="hasNoneBucket" type="button" class="mt-ef-i" @click="toggleEpic('__none__')">
-                <span class="mt-ef-ck" :class="{ on: !epicHidden['__none__'] }"></span>
-                <span class="mt-ef-dot none"></span><span class="mt-ef-t">Epic 없음</span></button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Project 필터 — Epic 필터와 같은 다중선택 콤보. jira.yml search 등록 프로젝트는 기본 체크,
-           그 외(다른 프로젝트에 걸린 내 티켓 등)는 기본 언체크로 감춘다(콤보에서 켤 수 있다). -->
-      <div v-if="projectOptions.length > 1 || anyProjectHidden" class="mt-opt mt-epicf">
-        <span class="mt-opt-l">Project</span>
-        <div class="mt-ef">
-          <button class="mt-ef-btn" :class="{ on: !allProjectsShown }" @click.stop="projOpen = !projOpen"
-                  :title="'Project 필터 — ' + projFilterLabel">
-            {{ projFilterLabel }}<i class="mt-ef-cav">▾</i>
-          </button>
-          <div v-if="projOpen" class="mt-ef-back" @click="projOpen = false"></div>
-          <div v-if="projOpen" class="mt-ef-pop" @click.stop>
-            <button type="button" class="mt-ef-i master" @click="toggleAllProjects">
-              <span class="mt-ef-ck" :class="{ on: allProjectsShown, ind: anyProjectHidden && !allProjectsShown }"></span>
-              모든 Project</button>
-            <div class="mt-ef-sep"></div>
-            <div class="mt-ef-list">
-              <button v-for="p in projectOptions" :key="p.key" type="button" class="mt-ef-i"
-                      @click="toggleProj(p.key)" :title="p.registered ? p.key : p.key + ' — 검색 미등록'">
-                <span class="mt-ef-ck" :class="{ on: projShown(p.key) }"></span>
-                <span class="mt-ef-t">{{ p.key }}</span>
-                <span v-if="!p.registered" class="mt-projf-x" title="jira.yml search 에 미등록">미등록</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
+    </div>
+    </div>
+    </div>
     </div>
 
     <!-- ══ 카드 드래그 상태변경 — 오버레이 드랍가이드 ══

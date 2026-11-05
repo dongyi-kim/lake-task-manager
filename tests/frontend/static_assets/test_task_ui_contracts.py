@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from frontend.static_assets.support import ROOT, STATIC, comment_editor_source
+from frontend.static_assets.support import ROOT, STATIC, comment_editor_source, task_view_source
 
 def test_create_dialog_descriptions_do_not_share_comment_drafts():
     """생성창의 본문은 새 댓글 초안 저장소를 쓰면 안 된다.
@@ -41,7 +41,7 @@ def test_ticket_create_dialogs_use_wider_responsive_defaults():
 
 def test_uniform_subtask_status_reuses_solo_parent_and_foldable_children_in_one_column():
     """한 상태 그룹은 단독 Task 목록에 편입되고 모든 그룹이 같은 하단 폴더블 바를 쓴다."""
-    view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
+    view = task_view_source()
     fold = (STATIC / "components" / "ui" / "SubtaskFoldBar.js").read_text(encoding="utf-8")
     model = (STATIC / "components" / "mytasks" / "taskModel.js").read_text(encoding="utf-8")
     css = (STATIC / "styles" / "mytasks.css").read_text(encoding="utf-8")
@@ -102,7 +102,7 @@ def test_uniform_subtask_status_reuses_solo_parent_and_foldable_children_in_one_
 
 
 def test_mytasks_uses_axis_pagination_without_splitting_subtask_groups():
-    view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
+    view = task_view_source()
     model = (STATIC / "components" / "mytasks" / "taskModel.js").read_text(encoding="utf-8")
     css = (STATIC / "styles" / "mytasks.css").read_text(encoding="utf-8")
 
@@ -112,14 +112,14 @@ def test_mytasks_uses_axis_pagination_without_splitting_subtask_groups():
     assert 'v-for="c in pagedCards(p, st.k)"' in view
     assert 'panelPageVisibleAny(p)' in view
     assert 'v-show="panelPageVisible(p, st.k)"' in view
-    assert view.count('class="mt-axis-more-btn"') == 2
+    assert view.count('class="mt-axis-more-btn"') == 1
     assert "{{ axisHidden(st.k) }}개 더 보기" in view
     assert ".mt-axis-more-row { display: grid;" in css
     assert ".mt-axis-more-btn { display: inline-flex;" in css
 
 
 def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_overwrite():
-    view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
+    view = task_view_source()
     model = (STATIC / "components" / "mytasks" / "taskModel.js").read_text(encoding="utf-8")
     api = (STATIC / "lib" / "api.js").read_text(encoding="utf-8")
 
@@ -182,7 +182,7 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
 
 
 def test_mytasks_quiet_refresh_keeps_visible_dom_and_patches_only_changed_keys():
-    view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
+    view = task_view_source()
     model = (STATIC / "components" / "mytasks" / "taskModel.js").read_text(encoding="utf-8")
 
     assert 'const preserveVisible = !!(opts.quiet && this.model && this._activeCacheKey === key);' in view
@@ -223,7 +223,7 @@ def test_mytasks_quiet_refresh_keeps_visible_dom_and_patches_only_changed_keys()
 
 def test_mytasks_defaults_to_my_module_and_reloads_identity_after_auth():
     """선택 이력이 없으면 내 모듈을 쓰고, prod 최초 인증 실패 뒤에도 모듈 목록을 복구한다."""
-    view = (STATIC / "components" / "views" / "MyTasksView.js").read_text(encoding="utf-8")
+    view = task_view_source()
     model = (STATIC / "components" / "mytasks" / "taskModel.js").read_text(encoding="utf-8")
 
     assert "export function resolveDefaultModule(selected, explicit, mine, all)" in model
