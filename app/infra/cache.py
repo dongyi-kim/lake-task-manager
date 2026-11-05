@@ -194,6 +194,7 @@ class Cache:
         """Share foreground/background producers. Only complete successes advance source age."""
         with self._lock:
             fence = self._write_fence
+            started = time.time()
             flight_key = (key, fence)
             future = self._flights.get(flight_key)
             owner = future is None
@@ -206,8 +207,8 @@ class Cache:
                     return fresh
                 future = self._flights[flight_key] = Future()
         if not owner:
-            value = future.result()
-            note_read(self.metadata(key))
+            value, source = future.result()
+            note_read(source)
             return value
         try:
             with read_scope(strict=True) as sources:
@@ -215,13 +216,24 @@ class Cache:
             # Core assemblies retain their source age. A separately retained Epic label or photo
             # must not turn today's complete ticket/list into ten-day-old, already-dead data.
             primary = sources if key.split(":", 1)[0] in LONG_DISPLAY_KINDS else primary_sources(sources)
-            fetched = min((r["fetchedAt"] for r in primary), default=time.time())
+            fetched = min((r["fetchedAt"] for r in primary), default=started)
             complete = value is not None and not (isinstance(value, dict) and
                        (value.get("error") or value.get("errors") or value.get("partial")))
             if key.split(":", 1)[0] in {"issue", "issueL", "issueview"} and self.policy:
                 complete = complete and isinstance(value, dict) and isinstance(value.get("fields"), dict)
+            source = None
             if complete:
-                self.set_if_fence(key, value, ttl, fence, fetched_at=fetched)
+                with self._lock:
+                    stored = self.set_if_fence(key, value, ttl, fence, fetched_at=fetched)
+                    if stored:
+                        source = self.metadata(key)
+                    else:
+                        # This pre-mutation producer may return to its original callers, but
+                        # cannot borrow newer cache data's age or claim current coverage.
+                        until = fetched + self.display_ttl(key)
+                        source = {"kind": key.split(":", 1)[0], "fetchedAt": fetched,
+                                  "freshUntil": 0, "displayUntil": until, "invalidated": True,
+                                  "state": "dead" if time.time() > until else "stale"}
             if complete:
                 self.last_upstream_ok = time.time()
                 if self.on_upstream_ok:
@@ -229,8 +241,8 @@ class Cache:
                         self.on_upstream_ok()
                     except Exception:
                         pass
-            future.set_result(value)
-            note_read(self.metadata(key))
+            future.set_result((value, source))
+            note_read(source)
             return value
         except BaseException as exc:
             from app.auth.base import PermissionDenied
@@ -436,27 +448,28 @@ class Cache:
             if self._needs_revalidate(key):
                 self.revalidator(key, ttl, producer)
             return hit, True
-        alive = self.get_alive(key, record=False)
+        alive, source = self._display_snapshot(key)
         display = key.split(":", 1)[0] in DISPLAY_KINDS | SWR_AGGREGATE_KINDS
         if not revalidating() and alive is not None:
             if self.skip_producer and self.skip_producer():
                 self.served_stale_at = time.time()
-                note_read(self.metadata(key))
+                note_read(source)
                 return alive[0], True
             if (self.policy is not None and display and self.revalidator
-                    and not (self.metadata(key) or {}).get("invalidated", True)):
+                    and not (source or {}).get("invalidated", True)):
                 self.revalidator(key, ttl, producer)
                 self.served_stale_at = time.time()
-                note_read(self.metadata(key))
+                note_read(source)
                 return alive[0], True
         try:
             return self.refresh(key, ttl, producer), False
         except Exception:
-            if revalidating() or alive is None or self.get_alive(key, record=False) is None:
+            current, current_source = self._display_snapshot(key)
+            if revalidating() or alive is None or current is None:
                 raise
             self.served_stale_at = time.time()
-            note_read(self.metadata(key))
-            return alive[0], True
+            note_read(current_source)
+            return current[0], True
 
     def get_or_set_strict(self, key, ttl, producer):
         hit = self.get(key)
@@ -490,20 +503,27 @@ class Cache:
 
     def get_alive(self, key, dead_ttl=None, *, record=True):
         """죽지 않은(dead_ttl 이내) 값. 낡았어도 준다. (값, 받아온 시각) 또는 None."""
-        got = self.get_stale_at(key)
-        if not got and self.policy is not None:
-            with self._lock:
-                row = self._conn.execute("SELECT payload,fetched_at FROM cache_display WHERE key=?", (key,)).fetchone()
-            if row:
-                got = json.loads(row[0]), float(row[1])
-        if not got:
-            return None
-        dead = self.display_ttl(key) if dead_ttl is None else int(dead_ttl)
-        if time.time() - got[1] > dead:
-            return None
-        if record:
-            note_read(self.metadata(key))
-        return got
+        with self._lock:
+            got = self.get_stale_at(key)
+            if not got and self.policy is not None:
+                with self._lock:
+                    row = self._conn.execute("SELECT payload,fetched_at FROM cache_display WHERE key=?", (key,)).fetchone()
+                if row:
+                    got = json.loads(row[0]), float(row[1])
+            if not got:
+                return None
+            dead = self.display_ttl(key) if dead_ttl is None else int(dead_ttl)
+            if time.time() - got[1] > dead:
+                return None
+            if record:
+                note_read(self.metadata(key))
+            return got
+
+    def _display_snapshot(self, key):
+        """Keep display value and its provenance together across concurrent reprime/invalidation."""
+        with self._lock:
+            alive = self.get_alive(key, record=False)
+            return alive, self.metadata(key) if alive is not None else None
 
     def has_any(self):
         with self._lock:
@@ -524,22 +544,23 @@ class Cache:
             if self._needs_revalidate(key):
                 background(key, ttl, producer)
             return hit, "fresh"
-        alive = self.get_alive(key, record=False)
+        alive, source = self._display_snapshot(key)
         if alive is not None and not revalidating():
             if self.skip_producer and self.skip_producer():
-                note_read(self.metadata(key))
+                note_read(source)
                 return alive[0], "stale"
-            if not (self.metadata(key) or {}).get("invalidated", True):
+            if not (source or {}).get("invalidated", True):
                 background(key, ttl, producer)
-                note_read(self.metadata(key))
+                note_read(source)
                 return alive[0], "stale"
         try:
             return self.refresh(key, ttl, producer), "miss"
         except Exception:
-            if revalidating() or alive is None or self.get_alive(key, record=False) is None:
+            current, current_source = self._display_snapshot(key)
+            if revalidating() or alive is None or current is None:
                 raise
-            note_read(self.metadata(key))
-            return alive[0], "stale"
+            note_read(current_source)
+            return current[0], "stale"
 
     def _archive_display(self, where, args):
         if self.policy is None:
