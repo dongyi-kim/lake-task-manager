@@ -178,14 +178,14 @@ export const OPTIONS_PANEL_TEMPLATE = `
           <i class="mt-ef-dot" style="background: var(--ty-story)" aria-hidden="true"></i>
           <span>사용자 VoC</span>
         </label>
+        <label v-if="hasNoneBucket" class="mt-epic-check">
+          <input type="checkbox" :checked="!epicHidden['__none__']" @change="toggleEpic('__none__')" />
+          <i class="mt-ef-dot none" aria-hidden="true"></i><span>Epic 없음</span>
+        </label>
         <label v-for="e in epicOptions" :key="e.key" class="mt-epic-check" :title="e.title">
           <input type="checkbox" :checked="!epicHidden[e.key]" @change="toggleEpic(e.key)" />
           <i class="mt-ef-dot" :style="{ background: e.color }" aria-hidden="true"></i>
           <span>{{ e.title }}</span>
-        </label>
-        <label v-if="hasNoneBucket" class="mt-epic-check">
-          <input type="checkbox" :checked="!epicHidden['__none__']" @change="toggleEpic('__none__')" />
-          <i class="mt-ef-dot none" aria-hidden="true"></i><span>Epic 없음</span>
         </label>
       </div>
 
