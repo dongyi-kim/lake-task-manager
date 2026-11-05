@@ -412,6 +412,15 @@ export const api = {
     + "&scope=" + encodeURIComponent(scope || "scoped")
     + (only ? "&only=" + encodeURIComponent(only) : "")),               // only=jira|confluence
   confluenceConfig: () => req("/api/confluence/config"),
+  confluenceCreate: payload => req("/api/confluence/pages", { method: "POST", mutation: true,
+    headers: { "Content-Type": "application/json", "X-LTM-Confluence": "1" }, body: JSON.stringify(payload) }),
+  confluenceMentionUsers: usernames => req("/api/confluence/mention-users", { method: "POST",
+    headers: { "Content-Type": "application/json", "X-LTM-Confluence": "1" }, body: JSON.stringify({ usernames }) }),
+  confluenceUpload: (id, file, mutationId) => {
+    const body = new FormData(); body.append("file", file); body.append("mutation_id", mutationId);
+    return req("/api/confluence/pages/" + encodeURIComponent(id) + "/attachments", {
+      method: "POST", mutation: true, headers: { "X-LTM-Confluence": "1" }, body });
+  },
   confluenceSpaces: (start = 0) => req("/api/confluence/spaces?start=" + start),
   confluencePages: (space, parent = "", start = 0) => req("/api/confluence/pages?space=" + encodeURIComponent(space)
     + "&parent=" + encodeURIComponent(parent) + "&start=" + start),

@@ -6,6 +6,39 @@
 .wrap-confluence header.top .top-actions { flex-shrink:0; }
 .wrap-confluence header.top .nav-home { flex-shrink:0; }
 .conf-workspace { display:flex; flex:1; min-height:0; min-width:0; position:relative; overflow:hidden; color:var(--text); background:var(--panel); }
+.conf-composer { display:flex; flex-direction:column; width:100%; min-width:0; min-height:0; }
+.conf-compose-header { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:20px 28px; border-bottom:1px solid var(--border); }
+.conf-compose-eyebrow { color:var(--muted); font-size:10px; letter-spacing:1.5px; }
+.conf-compose-header h2 { margin:4px 0 0; font-size:23px; font-weight:720; }
+.conf-compose-actions { display:flex; gap:8px; }
+.conf-compose-actions .primary { background:var(--accent); color:var(--panel); border-color:var(--accent); font-weight:700; }
+.conf-compose-scroll { overflow:auto; padding:26px 28px 40px; scrollbar-width:none; }
+.conf-compose-scroll::-webkit-scrollbar { display:none; }
+.conf-compose-fields { padding:0; border:0; margin:0 auto; min-width:0; max-width:1040px; }
+.conf-compose-location { display:flex; gap:18px; margin-bottom:22px; }
+.conf-compose-location label { display:flex; flex-direction:column; gap:6px; min-width:0; flex:1; color:var(--muted); font-size:12px; }
+.conf-compose-location select { width:100%; color:var(--text); background:var(--panel-2); border:1px solid var(--border); border-radius:5px; padding:9px 10px; text-overflow:ellipsis; }
+.conf-compose-title { box-sizing:border-box; width:100%; color:var(--text); background:none; border:0; border-bottom:1px solid var(--border); padding:10px 0 16px; font:inherit; font-size:30px; font-weight:700; outline:none; }
+.conf-compose-title:focus { border-color:var(--accent); }
+.conf-number-toggle { display:flex; align-items:center; gap:8px; margin:16px 0; font-size:12px; }
+.conf-number-toggle span { color:var(--muted); margin-left:8px; }
+.conf-composer .ProseMirror [data-heading-number]::before { content:attr(data-heading-number); position:static; display:inline; width:auto; height:auto; background:none; border:0; padding:0; margin:0 .35em 0 0; color:var(--muted); font-variant-numeric:tabular-nums; }
+.conf-composer .cmt-ed-host { scrollbar-width:none; }
+.conf-composer .cmt-ed-host::-webkit-scrollbar { display:none; }
+.conf-composer .cmt-editor { border-radius:6px; }
+.conf-compose-note { display:flex; align-items:center; justify-content:space-between; gap:12px; max-width:1040px; margin:12px auto 0; font-size:11px; color:var(--muted); }
+.conf-compose-progress { max-width:1040px; margin:16px auto 0; padding:12px 14px; background:var(--panel-2); border-left:2px solid var(--accent); font-size:12px; }
+.conf-document-body .callout { margin:16px 0; padding:12px 16px; border:1px solid var(--border-hi); border-left:3px solid #5794d2; background:var(--panel-2); }
+.conf-document-body .callout-tip { border-left-color:#64a47c; }
+.conf-document-body :is(.callout-note,.callout-warning) { border-left-color:#d8a743; }
+@media (max-width:700px) {
+  .conf-compose-header { padding:14px 16px; flex-wrap:wrap; }
+  .conf-compose-header h2 { font-size:20px; }
+  .conf-compose-actions { margin-left:auto; }
+  .conf-compose-scroll { padding:18px 14px 30px; }
+  .conf-compose-title { font-size:24px; }
+  .conf-compose-location { flex-direction:column; gap:10px; }
+}
 .conf-panel { position:static; margin:0; padding:0; min-width:0; min-height:0; max-width:none; max-height:none; height:auto; border:0; color:var(--text); flex-shrink:0; }
 .conf-panel[open] { display:flex; flex-direction:column; }
 .conf-sidebar { width:var(--conf-sidebar-width); background:var(--panel-2); }

@@ -7,8 +7,8 @@
 // 부모는 submitFn(finalHTML) 만 넘긴다(작성/수정은 부모가 선택). 출력은 HTML(서버가 wiki 로 변환).
 import { loadTiptap } from "../../lib/tiptap.js";
 import { ensureHljsTheme } from "../../lib/hljs.js";
-import { clearDraft } from "../../lib/draft.js";
 import { editorDraftMethods } from "../editor/editorDraft.js";
+import { editorSubmissionMethods } from "../editor/editorSubmission.js";
 import { api } from "../../lib/api.js";
 import LinkPicker from "./LinkPicker.js";
 import MarkdownTableDialog from "./MarkdownTableDialog.js";
@@ -48,6 +48,10 @@ export default {
     initial: { type: String, default: "" },            // 수정 시 기존 HTML
     submitLabel: { type: String, default: "등록" },
     submitFn: { type: Function, required: true },       // async (html) => any (실패 시 throw)
+    submitAdapter: { type: Function, default: null },
+    readOnly: { type: Boolean, default: false },
+    headingNumbering: { type: Boolean, default: false },
+    autoNumberHeadings: { type: Boolean, default: false },
     // 이 에디터가 더 큰 화면의 **한 필드**로 들어갈 때(예: 상태 전이 화면)는 자기 버튼 줄을
     // 감춘다. 화면에 제출 버튼이 두 개면 무엇이 무엇을 하는지 알 수 없다.
     // 바깥에서 ref 로 submit() 을 부르면 이미지 업로드·초안 정리까지 그대로 탄다 —
@@ -77,6 +81,10 @@ export default {
     initialHeight: { type: Number, default: 0 },
   },
   emits: ["submitted", "cancel"],
+  watch: {
+    readOnly(value) { if (this._ed && !this.busy) this._ed.setEditable(!value); },
+    autoNumberHeadings() { if (this._ed) this._ed.view.dispatch(this._ed.state.tr.setMeta("headingNumbering", true)); },
+  },
   data() { return { ready: false, loadErr: "", busy: false, err: "", tick: 0, languages: [],
                     maximized: false, restored: false, draftError: "", draftConflict: false,
                     submitMutationId: "", pendingSubmitHtml: "",
@@ -214,7 +222,8 @@ export default {
     this._baseHtml = this._ed.getHTML();
     await this.restoreDraft();
     if (this._dead) return;
-    this._ed.setEditable(true);                                   // 이전에 쓰다 만 내용 복원
+    this._ed.setEditable(!this.readOnly);                         // 이전에 쓰다 만 내용 복원
+    if (this.headingNumbering) this._ed.view.dispatch(this._ed.state.tr.setMeta("headingNumbering", true));
     // renderer reload/page hide는 Vue unmount보다 먼저 일어날 수 있다. 입력 debounce(700ms)가
     // 끝나기 전이어도 지금 보이는 HTML과 Blob을 즉시 IndexedDB에 넘겨 둔다.
     this._flushDraftOnExit = () => { if (!this._dead && this.draftKey()) this.flushDraft(); };
@@ -633,6 +642,7 @@ export default {
     // ── 작성 중 임시저장(IndexedDB, TTL 7일) — 가리기/이동해도 내용·이미지가 남는다 ──
     // Description/comment edits store their base HTML so changed server content requires a choice.
     ...editorDraftMethods,
+    ...editorSubmissionMethods,
     // 바깥(생성 다이얼로그 등)에서 '설명을 쓸지' 판단용 — 글자·이미지·링크·체크박스 하나라도 있으면 false.
     isBlank() {
       if (!this._ed) return true;
@@ -676,6 +686,7 @@ export default {
         if (!this.allowEmpty) { this.err = "내용을 입력하세요."; return; }
         html = "";
       }
+      if (this.submitAdapter) return this.submitWithAdapter(html, jiraOrigin);
       this.busy = true; this.err = "";
       const uploaded = [];       // 이번 시도에서 새로 올린 첨부 id(확정 실패 때만 롤백)
       const failed = [];                               // UPLOAD_TRIES 회 재시도 후에도 못 올린 파일 이름
@@ -747,27 +758,7 @@ export default {
         this.pendingSubmitHtml = html;
         if (this.draftScopeName() && await this.flushDraft() === false) throw new Error(this.draftError);
         await this.submitFn(html, this.submitMutationId || null);
-        this._draftFinished = true;
-        const dk = this.draftKey();
-        // 제출 직전 onUpdate가 예약한 saveDraft가 clearDraft **뒤에** 끝나면 완료된 글이 다시
-        // 살아난다. 예약을 취소하고 이미 시작한 write까지 기다린 다음 마지막으로 삭제한다.
-        clearTimeout(this._dt); this._dt = null;
-        if (this._draftWrite) { try { await this._draftWrite; } catch (_) { /* IndexedDB 실패는 무해 */ } }
-        if (dk) { try { await clearDraft(dk); } catch (error) { this.reportDraftError(error); } }                 // 제출 성공 → 임시저장 삭제(마지막 write)
-        this._draftWrite = null;
-        for (const u of this._pending.keys()) URL.revokeObjectURL(u);
-        this._pending.clear();
-        this.submitMutationId = "";
-        this.pendingSubmitHtml = "";
-        // 새 댓글 editor를 부모가 계속 mount해도 다음 입력은 빈 상태여야 한다. scope 기반
-        // 일회성 editor도 성공 직후 비운다. 부모의 done emit이 다음 tick에 unmount되더라도
-        // beforeUnmount가 완료된 본문을 다시 초안으로 저장하는 race를 막는다.
-        // 수정/본문은 서버 원문을 유지한다. false=onUpdate/draft 저장 미발생.
-        if (((this.kind === "comment" && !this.initial) || this.draftScope)
-            && this._ed && !this._dead) {
-          this._ed.commands.clearContent(false);
-          this.restored = false;
-        }
+        await this.finishSubmission();
         // 본문 저장까지 성공한 뒤에야 '일부 파일 실패'를 알린다 — 본문은 확실히 저장됐고, 어떤
         // 파일이 빠졌는지 우하단 알림으로 분명히 남긴다(다이얼로그가 닫혀도 보이도록 토스트로).
         if (failed.length) {
