@@ -10,6 +10,7 @@ const MODALS = '[role="dialog"]:not(.guide-bub), [role="alertdialog"], dialog[op
 export default {
   data: () => ({ findOpen: false, findQuery: "", findKey: "" }),
   computed: {
+    findSpotlight() { return this.findOpen && !!this.findQuery.trim(); },
     findResults() { return this.findOpen ? findTaskCards(taskFindRows(this.sections, (key) => this.epicTitle(key)), this.findQuery) : []; },
     findIndex() { return this.findResults.findIndex((row) => row.key === this.findKey); },
     findActive() { return this.findResults[this.findIndex] || null; },

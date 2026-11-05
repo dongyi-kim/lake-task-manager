@@ -3,6 +3,9 @@
   padding-left: calc(var(--mt-sidebar-space) + 16px); padding-bottom: 40px; }
 .mytasks.options-closed { --mt-sidebar-space: 30px; }
 .mt-workspace { min-width: 0; }
+.mt-board-tools { position: sticky; top: 46px; z-index: 12; background: var(--bg); }
+.mt-board-tools .mt-board-head.mt-headrow { position: static; }
+.ax-v .mt-board-tools { position: static; }
 .mt-board, .mt-board-lanes { position: relative; min-width: 0; }
 .mt-board-lanes > .mt-task-section, .mt-board-lanes > .mt-axis-more-row { position: relative; z-index: 1; }
 .mt-board-lanes > .mt-colbg { inset: 0; padding: 0; gap: 0; }
