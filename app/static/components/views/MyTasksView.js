@@ -1522,7 +1522,8 @@ export default {
     },
   },
   template: `
-  <div class="mytasks" :class="['ax-' + axis, { 'options-closed': optionsClosed }]"
+  <div class="mytasks" :class="['ax-' + axis, { 'options-closed': optionsClosed,
+       'mt-finding': findOpen, 'mt-find-active': findSpotlight }]"
        :style="{ '--mt-cols': gridCols, '--mt-options-width': optionsRenderedWidth + 'px' }">
     <!-- 상단 요약 타일. 조회 조건은 좌측 보기 옵션에 모은다. -->
     <div class="mt-top">
@@ -1545,10 +1546,7 @@ export default {
     <div class="mt-workspace" :class="{ 'options-closed': optionsClosed }">
     ${OPTIONS_PANEL_TEMPLATE}
     <div class="mt-board" ref="board" :class="{ 'all-closed': states.every(st => !bandOpen(st.k)) }">
-    <div class="mt-board-tools" :class="{ finding: findOpen }">
-    <TaskFindBar v-if="findOpen" ref="taskFind" :query="findQuery" :index="findIndex"
-                 :total="findResults.length" :loading="findLoading"
-                 @query="findQuery = $event" @next="nextFind" @close="closeFind" />
+    <div class="mt-board-tools">
     ${BOARD_HEADER_TEMPLATE}
     </div>
     <div class="mt-board-lanes">
@@ -1582,6 +1580,10 @@ export default {
     </div>
     </div>
     </div>
+
+    <TaskFindBar v-if="findOpen" ref="taskFind" :query="findQuery" :index="findIndex"
+                 :total="findResults.length" :loading="findLoading"
+                 @query="findQuery = $event" @next="nextFind" @close="closeFind" />
 
     <!-- ══ 카드 드래그 상태변경 — 오버레이 드랍가이드 ══
          가로축(칸반)이면 세로 3등분(위/중간/아래), 세로축이면 가로 3등분(좌/중/우).
