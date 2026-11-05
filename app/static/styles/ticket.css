@@ -254,6 +254,8 @@
 .tl-dot.k-comment { background: var(--muted-2); }
 .tl-line { width: 1px; flex: 1; min-height: 12px; background: var(--border); }
 .tl-body { min-width: 0; flex: 1; padding-bottom: 9px; display: flex; flex-direction: column; }
+.tl-body.update-unread { background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-radius: 4px; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent); }
 .tl-t { font-size: 11px; color: var(--text); line-height: 1.35; word-break: break-word; }
 .tl-m { font-size: 9.5px; color: var(--muted-2); margin-top: 1px; }
 /* 자손(하위 티켓)의 상태 변경 — 출처 키를 앞에 붙이고 살짝 눌러 본인 이벤트와 구분. 클릭 시 그 티켓으로 */
@@ -614,6 +616,9 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   border-radius: 8px; padding: 8px 12px; background: var(--panel); }
 .tkt-cmt-h { display: flex; gap: 7px; align-items: center; font-size: 12.5px; margin-bottom: 3px; }
 .tkt-cmt-h .muted { font-size: 11.5px; }
+.tkt-cmt-h.update-unread { background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-radius: 4px; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent); }
+.tkt-update-label { font-size: 10px; font-weight: 600; color: var(--accent); white-space: nowrap; }
 /* 코멘트는 이제 HTML(<p>/<br>) 렌더 → white-space:normal. (pre-wrap 이면 태그 사이 개행이
    실제 줄바꿈으로 렌더돼 문단마다 빈 줄이 겹치는 문제. 코드블록은 pre.code 가 자체 pre 유지) */
 .tkt-cmt-b { font-size: 12.5px; white-space: normal; word-break: break-word; }

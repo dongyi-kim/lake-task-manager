@@ -483,7 +483,9 @@
 .tc-when b { font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; font-weight: 700;
   font-variant-numeric: tabular-nums; min-width: 5ch; text-align: center; color: var(--muted-2); }
 .tc-when.over b { color: var(--today); }
-.tc-when.today b, .tc-when.soon b { color: var(--st-prog); }
+.tc-when.hot b { color: var(--today); font-weight: 800; }
+.tc-when.hot { gap: 3px; }
+.tc-due-flame { font-size: 12px; line-height: 1; font-style: normal; }
 .tc-when.none b { color: var(--muted-2); opacity: .7; }
 .tc-when.inh b { font-style: italic; }      /* 제 마감이 아니라 상위에서 물려받은 값 */
 .tc-when .inh-m { font-style: normal; opacity: .65; margin-right: 1px; }
@@ -554,22 +556,8 @@
 .tc-when.fin b { color: var(--st-done); }
 .tc-l2 .tc-fin { border: 0; background: none; padding: 0; }   /* 남은 뱃지 스타일 무력화 */
 
-/* ── 급함 표식 — 카드 우측 상단에 띄운다 ────────────────────────────────────
-   2행 안에 두면 다른 정보와 같은 무게로 줄에 섞여 훑을 때 안 걸린다. 카드 밖으로 반쯤
-   나온 표식은 스크롤 중에도 눈에 먼저 들어온다 — 그게 이 표시의 목적이다.
-   제목이 긴 카드와 겹치지 않도록 1행 오른쪽에 자리를 비워 둔다. */
-.mt-card.two { position: relative; }
-/* 좌측 상단 — 카드를 왼쪽부터 읽으므로 급함이 **제목보다 먼저** 눈에 든다.
-   (우측이면 제목을 다 읽고 나서야 급한 줄 안다.)
-   ★ 자리를 비우지 않는다. 표식은 **순수 오버레이**여야 한다 — padding 으로 밀면 급한 카드만
-     제목 시작 위치가 달라져 목록을 세로로 훑을 수 없다. 그래서 x 를 카드 왼쪽 끝에 맞추고
-     세로로 카드 위쪽에 걸쳐 띄운다(내용이 있는 자리를 피한다). */
+/* Update indicator uses the former corner marker; urgency stays beside D-day. */
 .mt-card { position: relative; }
-.tc-hot { position: absolute; top: -9px; left: 0; z-index: 3; pointer-events: none;
-  font-size: 14px; line-height: 1; padding: 2px; border-radius: 999px;
-  background: color-mix(in srgb, var(--today) 16%, var(--panel));
-  border: 1px solid color-mix(in srgb, var(--today) 30%, transparent);
-  box-shadow: 0 1px 4px rgba(0,0,0,.22); cursor: default; }
 
 /* ── 급한 티켓 — 최우선(Blocker/Highest) 이거나 마감 3일 이내 ─────────────────
    카드 전체에 옅은 붉은 기를 준다. 표식(🔥)은 '이것 하나' 를 가리키지만, 면 색은 목록을
@@ -587,18 +575,11 @@
 /* Epic 뱃지는 반투명 배경이라 붉은 카드 위에서 제 색이 붉게 물든다 — 바탕을 불투명으로 깔아
    어느 카드에 놓이든 Epic 색이 그대로 나오게 한다. */
 /* 채운 뱃지는 붉은 카드 위에서도 제 색을 그대로 지킨다 — 별도 보정이 필요 없다 */
-.mt-card.urgent .tc-hot { background: color-mix(in srgb, var(--today) 22%, var(--panel)); }
+
 /* 영역 음영 위(칼럼·밴드 안)에서도 붉은 기가 살아야 한다 — 그쪽 규칙이 배경을 흰색으로 덮는다 */
 .mt-cell .mt-card.two.urgent:not(:hover), .mt-band .mt-card.urgent:not(:hover) {
   background: color-mix(in srgb, var(--today) 6%, var(--panel)); }
 
-/* 한 줄 카드(그룹 부모·Sub-Task)의 🔥 — 여기선 **행의 오른쪽 끝이 곧 카드의 우측 상단**이라
-   따로 띄울 자리가 없다. 마감 표시 뒤에 붙이면 같은 위치를 뜻하면서 줄 높이도 안 건드린다.
-   2줄 카드처럼 카드 밖으로 내밀 수 없는 이유: 그룹 카드는 overflow:hidden(둥근 하위 바닥) 이라
-   잘려 나가고, Sub-Task 는 한 줄이라 내밀면 위 카드와 겹친다. */
-/* 한 줄 카드(그룹 부모·Sub-Task)도 같은 자리·같은 모양. 인라인으로 두면 우선순위 아이콘부터
-   줄 전체가 오른쪽으로 밀려, 급한 카드만 열이 어긋난다. */
-.tc-hot.inline { top: -11px; }
 /* 하위 카드는 회색 바닥 위에서 흰색으로 지정돼 있다 — 급하면 그 지정을 이겨야 붉은 기가 산다 */
 .mt-gcard2.k-task > .mt-gbody .mt-card.urgent:not(:hover) {
   background: color-mix(in srgb, var(--today) 7%, var(--panel));
@@ -1062,3 +1043,29 @@
   border: 1.5px solid var(--accent); border-left-width: 4px; border-radius: 3px; padding: 8px 13px;
   box-shadow: 0 8px 24px rgba(0,0,0,.22); }
 .mt-card.mtdnd-src { opacity: .35; outline: 2px dashed var(--accent); outline-offset: -2px; }
+
+/* Unread updates keep the Epic rail and urgency fill; three blue edges add emphasis
+   without changing card dimensions or keyboard/drag outlines. */
+:root[data-theme] .mytasks .mt-card.update-unread,
+:root[data-theme] .mytasks .mt-card.update-unread:hover,
+:root[data-theme] .mytasks .mt-gcard2.k-task > .mt-gbody .mt-card.update-unread,
+:root[data-theme] .mytasks .mt-compact-head > .mt-card.two.update-unread {
+  border-top-color: var(--accent); border-right-color: var(--accent); border-bottom-color: var(--accent);
+  box-shadow: inset 0 1px var(--accent), inset -1px 0 var(--accent), inset 0 -1px var(--accent),
+    0 3px 10px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+:root[data-theme] .mytasks .mt-card.parent.update-unread {
+  box-shadow: inset 0 2px var(--accent), inset -2px 0 var(--accent), inset 0 -2px var(--accent);
+}
+.mt-card.update-unread .mt-key, .mt-card.update-unread .mt-title,
+.mt-card.update-unread .mt-owner { font-weight: 800; }
+.tc-update-mark { position: absolute; top: -9px; left: 0; z-index: 3;
+  width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center;
+  box-sizing: border-box; border: 1px solid var(--panel); border-radius: 50%;
+  color: white; background: var(--accent); pointer-events: none;
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--accent) 35%, transparent); }
+.tc-update-mark svg { width: 14px; height: 14px; }
+.mt-card:not(.two) > .tc-update-mark { top: -11px; }
+.mt-subfoot-label.update-unread { color: var(--accent); font-weight: 800; }
+.mt-subfoot-label.update-unread::after { content: ''; display: inline-block; margin-left: 4px;
+  width: 5px; height: 5px; border-radius: 50%; background: currentColor; vertical-align: middle; }

@@ -1,5 +1,10 @@
 // Local display filters use the same effective card values as the board renderer.
 // The caller supplies inherited SubTask deadlines and includes parent cards in options.
+import { priRankOf } from "../ui/PriIcon.js";
+
+export const UPDATE_FILTER_OPTIONS = [
+  { k: "yes", label: "있음" }, { k: "no", label: "없음" }, { k: "all", label: "모두" },
+];
 export const DUE_FILTER_OPTIONS = [
   { k: "", label: "전체" },
   { k: "calm", label: "여유", hint: "마감까지 8일 이상" },
@@ -45,7 +50,18 @@ export function priorityOptions(cards, selected = "") {
   return [...options.values()].sort((a, b) => a.rank - b.rank || a.label.localeCompare(b.label, "ko"));
 }
 
-export function matchTaskDisplayFilters(card, priorityFilter = "", dueFilter = "") {
-  return (!priorityFilter || priorityValue(card) === priorityFilter)
+export function isUnrankedPriority(name) {
+  return /^(?:unclassified|none|not set|undefined|-)?$/i.test(String(name || "").trim());
+}
+
+export function matchTaskDisplayFilters(card, priorityFilter = "", dueFilter = "", threshold) {
+  const selected = priorityFilter.startsWith("name:") ? priorityFilter.slice(5) : "";
+  const rank = Number.isFinite(threshold) && threshold !== 999 ? threshold : priRankOf(selected);
+  // Unclassified/empty values are not a low priority. Keep those choices exact.
+  const priorityMatch = !priorityFilter || (isUnrankedPriority(selected)
+    ? priorityValue(card) === priorityFilter
+    : !isUnrankedPriority(priorityKey(card))
+      && (Number.isFinite(card?.priRank) ? card.priRank : priRankOf(priorityKey(card))) <= rank);
+  return priorityMatch
     && (!dueFilter || deadlineBucket(card) === dueFilter);
 }

@@ -47,7 +47,7 @@ def _project(it, cutoff):
     children = [{"key": n.get("key"), "type": n.get("type"), "summary": n.get("summary"),
                  "assignee": n.get("assignee"), "status": n.get("status"),
                  "statusCategory": n.get("statusCategory"),
-                 "created": n.get("created"), "resolved": n.get("resolved")}
+                 "created": n.get("created"), "updated": n.get("updated"), "resolved": n.get("resolved")}
                 for n in (it.get("tree") or [])]
     return {
         "key": it["key"], "summary": it["summary"], "type": it["type"], "module": it.get("module"),

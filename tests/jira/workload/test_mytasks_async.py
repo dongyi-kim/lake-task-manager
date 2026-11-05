@@ -70,6 +70,7 @@ def test_deferred_base_returns_parent_before_peer_subtasks_and_hydrates_one_grou
     assert base["syncId"]
     assert parent["childrenPending"] is True
     assert parent["kidsTotal"] == 4
+    assert parent["updated"] == client.get_issue_light("DL-9020")["fields"]["updated"]
     assert {row["key"] for row in parent["atoms"]} == {"DL-9021", "DL-9022"}
     assert parent["others"] == []
     # Base phase may fetch missing Parent rows, but must not batch the peer SubTasks yet.
@@ -78,6 +79,9 @@ def test_deferred_base_returns_parent_before_peer_subtasks_and_hydrates_one_grou
 
     hydrated = hydrate_my_task_group(client, base["syncId"], "DL-9020")
     assert hydrated["childrenPending"] is False
+    assert hydrated["updated"] == parent["updated"]
+    for child in hydrated["atoms"] + hydrated["others"]:
+        assert child["updated"] == client.get_issue_light(child["key"])["fields"]["updated"]
     assert {row["key"] for row in hydrated["others"]} == {"DL-9023", "DL-9024"}
     # Hydrating one Parent does not mutate or wait for another Parent group.
     assert other_parent["childrenPending"] is True

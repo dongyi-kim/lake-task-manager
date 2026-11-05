@@ -344,6 +344,7 @@ class JiraWorkloadMixin:
             "status": status.get("name", ""),
             "statusCategory": norm_cat((status.get("statusCategory") or {}).get("key")),
             "due": fields.get("duedate") or None,
+            "updated": fields.get("updated") or None,
             "resolved": fields.get("resolutiondate") or None,
             "priority": priority,
             "priRank": pri_rank(priority),

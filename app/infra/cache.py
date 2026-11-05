@@ -52,6 +52,11 @@ CREATE TABLE IF NOT EXISTS person_recent (
     PRIMARY KEY(scope, user_id, kind)
 );
 CREATE INDEX IF NOT EXISTS ix_person_recent_at ON person_recent(scope, seen_at DESC);
+-- Read watermarks are local UI state, not expiring Jira data or clearable search history.
+CREATE TABLE IF NOT EXISTS ticket_read_state (
+    scope TEXT NOT NULL, issue_key TEXT NOT NULL, viewed_through INTEGER NOT NULL,
+    PRIMARY KEY(scope, issue_key)
+);
 CREATE TABLE IF NOT EXISTS cache_epoch (
     namespace TEXT PRIMARY KEY,
     value     INTEGER NOT NULL
@@ -185,7 +190,7 @@ class Cache:
             note_read(self.metadata(key))
             return value
 
-    def refresh(self, key, ttl, producer):
+    def refresh(self, key, ttl, producer, *, min_fetched_at=None):
         """Share foreground/background producers. Only complete successes advance source age."""
         with self._lock:
             fence = self._write_fence
@@ -194,7 +199,9 @@ class Cache:
             owner = future is None
             if owner:
                 # A producer may have finished between the caller's miss and this lock.
-                fresh = self.get(key)
+                source = self.metadata(key) if min_fetched_at is not None else None
+                fresh = (self.get(key) if min_fetched_at is None or
+                         (source and source["fetchedAt"] >= min_fetched_at) else None)
                 if fresh is not None:
                     return fresh
                 future = self._flights[flight_key] = Future()
@@ -693,6 +700,30 @@ class Cache:
         for user_id, kind, seen_at in rows:
             result.setdefault(user_id, {})[kind] = seen_at
         return result
+
+    def ticket_read_states(self, scope, keys):
+        keys = list(dict.fromkeys(keys))
+        if not keys:
+            return {}
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT issue_key, viewed_through FROM ticket_read_state WHERE scope=? "
+                "AND issue_key IN (%s)" % ",".join("?" for _ in keys),
+                (scope, *keys)).fetchall()
+        return dict(rows)
+
+    def mark_ticket_viewed(self, scope, key, viewed_through):
+        """Persist the displayed-content watermark; late responses cannot move it backwards."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO ticket_read_state(scope,issue_key,viewed_through) VALUES (?,?,?) "
+                "ON CONFLICT(scope,issue_key) DO UPDATE SET "
+                "viewed_through=MAX(ticket_read_state.viewed_through,excluded.viewed_through)",
+                (scope, key, viewed_through))
+            self._conn.commit()
+            return self._conn.execute(
+                "SELECT viewed_through FROM ticket_read_state WHERE scope=? AND issue_key=?",
+                (scope, key)).fetchone()[0]
 
     def touch_recent(self, url, kind, title, meta="", type_="", data=""):
         if not url:

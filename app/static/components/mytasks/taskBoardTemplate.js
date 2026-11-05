@@ -100,12 +100,13 @@ export const OPTIONS_PANEL_TEMPLATE = `
       ${QUICK_FILTER_TEMPLATE}
       ${STATUS_CONTROLS_TEMPLATE}
       <div class="mt-ticket-filters" role="group" aria-label="티켓 표시 조건">
+        <span class="mt-options-section-title">필터 조건</span>
         <label class="mt-opt">
           <span class="mt-opt-l">우선순위</span>
           <select class="mt-sel" :value="priorityFilter" @change="setDisplayFilter('priorityFilter', $event.target.value)"
-                  aria-label="우선순위 필터">
+                  aria-label="우선순위 필터" title="선택한 우선순위 이상을 표시합니다">
             <option value="">전체</option>
-            <option v-for="option in priorityOptions" :key="option.k" :value="option.k">{{ option.label }}</option>
+            <option v-for="option in priorityOptions" :key="option.k" :value="option.k">{{ option.label }}{{ unrankedPriority(option.label) || option.k === '__none__' ? '' : ' 이상' }}</option>
           </select>
         </label>
         <label class="mt-opt">
@@ -115,8 +116,16 @@ export const OPTIONS_PANEL_TEMPLATE = `
             <option v-for="option in dueFilterOptions" :key="option.k" :value="option.k" :title="option.hint">{{ option.label }}</option>
           </select>
         </label>
+        <label class="mt-opt">
+          <span class="mt-opt-l">업데이트</span>
+          <select class="mt-sel" :value="updateFilter" @change="setDisplayFilter('updateFilter', $event.target.value)"
+                  aria-label="업데이트 필터" title="최근 7일 이내에 아직 확인하지 않은 변경과 댓글">
+            <option v-for="option in updateFilterOptions" :key="option.k" :value="option.k">{{ option.label }}</option>
+          </select>
+        </label>
       </div>
       <div class="mt-view-controls">
+      <span class="mt-options-section-title">보기 옵션</span>
       <label v-for="o in options" :key="o.key" class="mt-opt">
         <span class="mt-opt-l" :class="o.cls">{{ o.label }}</span>
         <select class="mt-sel" :value="$data[o.key]" @change="setOpt(o, $event.target.value)"
@@ -164,15 +173,15 @@ export const OPTIONS_PANEL_TEMPLATE = `
                  @change="toggleAllEpics" />
           <span>모든 Epic</span>
         </label>
-        <label v-for="e in epicOptions" :key="e.key" class="mt-epic-check" :title="e.title">
-          <input type="checkbox" :checked="!epicHidden[e.key]" @change="toggleEpic(e.key)" />
-          <i class="mt-ef-dot" :style="{ background: e.color }" aria-hidden="true"></i>
-          <span>{{ e.title }}</span>
-        </label>
         <label v-if="hasVocBucket" class="mt-epic-check">
           <input type="checkbox" :checked="!epicHidden['__voc__']" @change="toggleEpic('__voc__')" />
           <i class="mt-ef-dot" style="background: var(--ty-story)" aria-hidden="true"></i>
           <span>사용자 VoC</span>
+        </label>
+        <label v-for="e in epicOptions" :key="e.key" class="mt-epic-check" :title="e.title">
+          <input type="checkbox" :checked="!epicHidden[e.key]" @change="toggleEpic(e.key)" />
+          <i class="mt-ef-dot" :style="{ background: e.color }" aria-hidden="true"></i>
+          <span>{{ e.title }}</span>
         </label>
         <label v-if="hasNoneBucket" class="mt-epic-check">
           <input type="checkbox" :checked="!epicHidden['__none__']" @change="toggleEpic('__none__')" />

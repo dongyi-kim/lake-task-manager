@@ -36,8 +36,8 @@ const TASK_SECTION_TEMPLATE = `
                                'fold-peek': peeking(c.compactPanel) }">
                   <div v-for="sub in cellCards(c.compactPanel, c.compactPanel.singleStatus)" :key="sub.key" class="mt-card tkt"
                        :class="{ mine: sub.mine, rel: !sub.mine, done: sub.statusCategory === 'done',
-                               urgent: isUrgentC(sub) }" :style="sigStyle(sub)" :data-key="sub.key">
-                    <span v-if="isHotC(sub)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
+                               urgent: isUrgentC(sub), 'update-unread': isUnread(sub) }" :style="sigStyle(sub)" :data-key="sub.key">
+                    <TicketUpdateMark v-if="isUnread(sub)" />
                     <PriIcon :rank="sub.priRank" :name="sub.pri" />
                     <span class="mt-key">{{ sub.key }}</span>
                     <span class="mt-title">{{ sub.title }}</span>
@@ -64,9 +64,9 @@ const TASK_SECTION_TEMPLATE = `
           <div class="mt-gh">
             <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
                  :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done',
-                        urgent: isUrgentC(p.group) }">
-              <span v-if="isHotC(p.group)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
-              <PriIcon :rank="p.group.priRank" :name="p.group.pri" />
+                        urgent: isUrgentC(p.parentCard), 'update-unread': isUnread(p.group) }">
+              <TicketUpdateMark v-if="isUnread(p.group)" />
+              <PriIcon :rank="p.parentCard.priRank" :name="p.group.pri" />
               <TypeBadge :type="p.group.type" />
               <span class="mt-key">{{ p.key }}</span>
               <span class="mt-title">{{ p.group.voc ? vocStrip(p.title) : p.title }}</span>
@@ -93,8 +93,8 @@ const TASK_SECTION_TEMPLATE = `
                                                 folded: peeking(p), 'fold-peek': peeking(p) }]">
                 <div v-for="c in (panelPageVisible(p, st.k) ? cellCards(p, st.k) : [])" :key="c.key" class="mt-card tkt"
                      :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done',
-                             urgent: isUrgentC(c) }" :style="sigStyle(c)" :data-key="c.key">
-                  <span v-if="isHotC(c)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
+                             urgent: isUrgentC(c), 'update-unread': isUnread(c) }" :style="sigStyle(c)" :data-key="c.key">
+                  <TicketUpdateMark v-if="isUnread(c)" />
                   <PriIcon :rank="c.priRank" :name="c.pri" />
                   <span class="mt-key">{{ c.key }}</span>
                   <span class="mt-title">{{ c.title }}</span>
@@ -152,9 +152,9 @@ const TASK_SECTION_TEMPLATE = `
               <div class="mt-gh">
             <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
                  :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done',
-                        urgent: isUrgentC(p.group) }">
-              <span v-if="isHotC(p.group)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
-              <PriIcon :rank="p.group.priRank" :name="p.group.pri" />
+                        urgent: isUrgentC(p.parentCard), 'update-unread': isUnread(p.group) }">
+              <TicketUpdateMark v-if="isUnread(p.group)" />
+              <PriIcon :rank="p.parentCard.priRank" :name="p.group.pri" />
               <TypeBadge :type="p.group.type" />
               <span class="mt-key">{{ p.key }}</span>
               <span class="mt-title">{{ p.group.voc ? vocStrip(p.title) : p.title }}</span>
@@ -177,8 +177,8 @@ const TASK_SECTION_TEMPLATE = `
                    :class="{ foldwrap: foldable(p), folded: peeking(p), 'fold-peek': peeking(p) }">
                 <div v-for="c in cellCards(p, st.k)" :key="c.key" class="mt-card tkt"
                      :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done',
-                             urgent: isUrgentC(c) }" :style="sigStyle(c)" :data-key="c.key">
-                  <span v-if="isHotC(c)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
+                             urgent: isUrgentC(c), 'update-unread': isUnread(c) }" :style="sigStyle(c)" :data-key="c.key">
+                  <TicketUpdateMark v-if="isUnread(c)" />
                   <PriIcon :rank="c.priRank" :name="c.pri" />
                   <span class="mt-key">{{ c.key }}</span>
                   <span class="mt-title">{{ c.title }}</span>

@@ -27,6 +27,8 @@ import {
   timelineLabel, timelineBadgeClass, timelineValue, timelineText,
 } from "../ticket-dialog/model.js";
 import { recordOpen } from "../../lib/recent.js";
+import { observeTicketUpdates, ticketUpdateMetadata, acknowledgeTicketUpdates, ingestTicketUpdates,
+  updateTimestamp, commentUpdateAt, isRecentUnread, isMajorHistoryUpdate } from "../../lib/ticketUpdates.js";
 import { highlightIn as hljsHighlight, ensureHljsTheme } from "../../lib/hljs.js";
 import { loadTiptap } from "../../lib/tiptap.js";
 import { confirmBox } from "../../lib/confirm.js";
@@ -58,6 +60,7 @@ export default {
            theme: { type: String, default: "light" } },   // 페이지 모드 테마 버튼 표시용
   emits: ["close", "search", "toggle-theme"],
   data() { return { v: null, comments: null, ancestors: [], siblings: [], timeline: [], children: [], related: [], atts: [], docs: [],
+                    updateBaseline: null, updateOpenedAt: 0, updatesReady: false,
                     pdesc: null, pdescOpen: false, pdescErr: "",
                     me: null, composing: false, composeCollapsed: false, composePreview: "", composeHasDraft: false,
                     editingId: null, editInitial: "", editErr: "",
@@ -99,7 +102,22 @@ export default {
         this.v = value;
         if (event.detail.removed) this.err = '티켓이 삭제되었거나 접근 권한이 없습니다.';
       }
-      if (path === '/api/issue/' + encodeURIComponent(this.keyId) + '/comments' && !this.editingId) this.comments = value;
+      const commentsPath = '/api/issue/' + encodeURIComponent(this.keyId) + '/comments';
+      if (path === commentsPath && !this.editingId) {
+        const metadata = api.cacheMetadata(path);
+        if (this._updateCommentsEvidence?.full && metadata?.commentsComplete !== 1) {
+          // A late first-page SWR must not shrink a complete displayed list. If that page
+          // came from a newer read, refresh the full list without hiding the older comments.
+          const after = (metadata?.fetchedAt || 0) * 1000;
+          if (after > (this._updateCommentsEvidence.fetchedAt || 0) * 1000) {
+            this._updateCommentsRequiredAfter = Math.max(this._updateCommentsRequiredAfter || 0, after);
+            this.refreshUpdateComments(this.keyId, after, true);
+          }
+        } else this.applyUpdateComments(value, path);
+      }
+      if (path === commentsPath + '/complete' && !this.editingId && value?.complete) {
+        this.applyUpdateComments(value.comments, path, value);
+      }
       const panels = { ancestors: 'ancestors', siblings: 'siblings', children: 'children',
                        related: 'related', attachments: 'atts', documents: 'docs' };
       for (const [suffix, field] of Object.entries(panels)) {
@@ -111,6 +129,8 @@ export default {
     };
     window.addEventListener('api-cache-updated', this._cacheUpdated);
     window.addEventListener('cache-policy-changed', this._cachePolicy);
+    document.addEventListener('visibilitychange', this._updatesVisible = () => this.acknowledgeDisplayedUpdates());
+    document.addEventListener('pointerdown', this._updatesVisible, true);
     // Esc: 위에 뜬 것부터 하나씩 닫는다(확대 → 상태 팝업 → 다이얼로그).
     // 안쪽 것을 두고 다이얼로그가 먼저 닫히면, 열려 있던 팝업의 투명 배경(fe-back)이 남아
     // 화면 전체가 안 눌리는 상태가 된다 — 실제로 그렇게 막혔다.
@@ -167,6 +187,9 @@ export default {
   unmounted() {
     window.removeEventListener('api-cache-updated', this._cacheUpdated);
     window.removeEventListener('cache-policy-changed', this._cachePolicy);
+    document.removeEventListener('visibilitychange', this._updatesVisible);
+    document.removeEventListener('pointerdown', this._updatesVisible, true);
+    this._updateViewKey = null;
     this._req = (this._req || 0) + 1;        // pending timeline poll 등 늦은 응답 무효화
     window.removeEventListener("keydown", this._onKey);
     window.removeEventListener("resize", this._onResize);
@@ -319,13 +342,122 @@ export default {
   },
   watch: {
     keyId() { this.load(); },
-    v() { this.$nextTick(() => { this.augment(); this.posCollapse(); }); },   // 설명 렌더 후 확대버튼·뱃지 + 접기버튼 위치
-    comments() { this.$nextTick(() => { this.augment(); this.posCollapse(); }); },  // 코멘트 렌더 후
+    v() { this.$nextTick(() => { this.augment(); this.posCollapse(); this.acknowledgeDisplayedUpdates(); }); },
+    comments() { this.$nextTick(() => { this.augment(); this.posCollapse(); this.acknowledgeDisplayedUpdates(); }); },
     pdesc() { this.$nextTick(this.augment); },        // 상위 설명 렌더 후(확대버튼·뱃지 주입)
     // 이 Sub-Task 에 설명이 없으면 상위 설명을 자동으로 펼친다(가장 흔한 케이스)
     parentOf(p) { if (p && this.ownDescEmpty && !this.pdescOpen) this.toggleParentDesc(); },
   },
   methods: {
+    beginUpdateView(key) {
+      if (this._updateViewKey === key) return;
+      this._updateViewKey = key;
+      this.updateOpenedAt = Date.now(); this.updateBaseline = null; this.updatesReady = false;
+      this._updateDetailReady = false; this._updateAckThrough = 0;
+      this._updateAckPending = null; this._updateAckFailedAt = 0;
+      this._updateCommentsPending = null; this._updateCommentsFailedAt = 0;
+      this._updateCommentsQueuedAfter = 0;
+      this._updateCommentsRequiredAfter = 0;
+      this._updateCommentsEvidence = null;
+      const openedAt = this.updateOpenedAt;
+      observeTicketUpdates([key], { force: true }).then(ok => {
+        if (!ok || this._updateViewKey !== key || this.updateOpenedAt !== openedAt) return;
+        const metadata = ticketUpdateMetadata(key) || {};
+        this.updateBaseline = metadata.lastViewedAt || null; // frozen for this entire open dialog
+        this._openingCommentAt = updateTimestamp(metadata.latestCommentAt);
+        this.updatesReady = true;
+        this.$nextTick(() => this.acknowledgeDisplayedUpdates());
+      });
+    },
+    unreadComment(comment) {
+      return this.updatesReady && isRecentUnread(commentUpdateAt(comment), this.updateBaseline);
+    },
+    unreadHistory(event) {
+      return this.updatesReady && !event.srcKey && (isMajorHistoryUpdate(event) || event.kind === "comment")
+        && isRecentUnread(event.updated || event.date, this.updateBaseline);
+    },
+    applyUpdateComments(rows, path, coverage) {
+      this._updateCommentsEvidence = coverage ? { fetchedAt: coverage.fetchedAt, complete: coverage.complete === true, full: true }
+        : { fetchedAt: api.cacheMetadata(path)?.fetchedAt, complete: api.cacheMetadata(path)?.commentsComplete === 1 };
+      this.comments = rows;
+    },
+    refreshUpdateComments(key, after, complete = false) {
+      if (this._updateCommentsPending) {
+        if (complete) this._updateCommentsQueuedAfter = Math.max(this._updateCommentsQueuedAfter || 0, after || 0);
+        return;
+      }
+      if (Date.now() - (this._updateCommentsFailedAt || 0) < 5000) return;
+      const path = '/api/issue/' + encodeURIComponent(key) + '/comments' + (complete ? '/complete' : '');
+      const requestId = this._req, commentsId = this._commentsReq = (this._commentsReq || 0) + 1;
+      const pending = complete ? api.ticketCommentsComplete(key, after) : api.ticketComments(key, after);
+      const revision = api.cacheRevision(path);
+      const job = { key, openedAt: this.updateOpenedAt };
+      const fresh = () => this._updateViewKey === key && this.updateOpenedAt === job.openedAt
+        && this._req === requestId && this._commentsReq === commentsId;
+      let applied = false;
+      this._updateCommentsPending = job;
+      pending.then(value => {
+        if (!fresh()) return;
+        if (complete && !value?.complete) { this._updateCommentsFailedAt = Date.now(); return; }
+        const rows = complete ? value.comments : value;
+        if (api.cacheRevision(path) === revision && Array.isArray(rows)) {
+          this.applyUpdateComments(rows, path, complete ? value : null); applied = true;
+        }
+      }).catch(() => { if (fresh()) this._updateCommentsFailedAt = Date.now(); })
+        .finally(() => {
+          if (this._updateCommentsPending !== job) return;
+          this._updateCommentsPending = null;
+          const queuedAfter = this._updateCommentsQueuedAfter || 0;
+          this._updateCommentsQueuedAfter = 0;
+          if (applied && fresh()) this.$nextTick(() => {
+            if (!fresh()) return;
+            const evidence = this._updateCommentsEvidence;
+            if (queuedAfter && (!evidence?.complete || (evidence.fetchedAt || 0) * 1000 < queuedAfter)) {
+              this.refreshUpdateComments(key, queuedAfter, true);
+            } else if (!complete && !evidence?.complete) this.acknowledgeDisplayedUpdates();
+          });
+        });
+    },
+    async acknowledgeDisplayedUpdates() {
+      const key = this._updateViewKey;
+      if (!key || key !== this.keyId || !this.updatesReady || !this._updateDetailReady || !this.v
+          || this.err || !this.panelReady('comments') || !Array.isArray(this.comments)
+          || document.visibilityState === 'hidden' || !this.$el?.isConnected) return;
+      if ((this._updateCommentsRequiredAfter || 0) > (this._updateCommentsEvidence?.fetchedAt || 0) * 1000) {
+        this.refreshUpdateComments(key, this._updateCommentsRequiredAfter, true);
+        return;
+      }
+      const detailThrough = updateTimestamp(this.v.updated);
+      const displayedCommentAt = Math.max(0, ...this.comments.map(comment => commentUpdateAt(comment)));
+      ingestTicketUpdates({ tickets: { [key]: { latestCommentAt: displayedCommentAt,
+        latestRelevantAt: Math.max(detailThrough <= Date.now() ? detailThrough : 0, displayedCommentAt) } } });
+      const commentsThrough = Math.max(0, ...this.comments.map(comment => commentUpdateAt(comment))
+        .filter(time => time <= this.updateOpenedAt));
+      const through = Math.max(commentsThrough, detailThrough <= this.updateOpenedAt ? detailThrough : 0);
+      if (!isRecentUnread(Math.max(through, this._openingCommentAt <= this.updateOpenedAt ? this._openingCommentAt : 0),
+        ticketUpdateMetadata(key)?.lastViewedAt)) return;
+      const commentsSource = (this._updateCommentsEvidence?.fetchedAt || 0) * 1000;
+      if (!this._updateCommentsEvidence?.complete) {
+        this.refreshUpdateComments(key, detailThrough <= this.updateOpenedAt ? detailThrough : commentsThrough, true);
+        return; // first-page freshness cannot prove that an older edited comment was displayed
+      }
+      if (detailThrough <= this.updateOpenedAt && detailThrough > commentsSource) {
+        this.refreshUpdateComments(key, detailThrough);
+        return; // old comments stay visible; failed refresh never acknowledges an unseen edit
+      }
+      // A fresh detail can arrive before a stale comments cache has caught up. Do not mark an
+      // unseen known comment read merely because issue.updated already includes that comment.
+      if (this._openingCommentAt <= this.updateOpenedAt && this._openingCommentAt > commentsThrough) return;
+      if (!through || through <= (this._updateAckThrough || 0) || this._updateAckPending
+          || Date.now() - (this._updateAckFailedAt || 0) < 5000) return;
+      const job = { key, openedAt: this.updateOpenedAt };
+      this._updateAckPending = job;
+      const ok = await acknowledgeTicketUpdates(key, through);
+      if (this._updateAckPending === job) this._updateAckPending = null;
+      if (this._updateViewKey !== key || this.updateOpenedAt !== job.openedAt) return;
+      if (ok) this._updateAckThrough = Math.max(this._updateAckThrough || 0, through);
+      else this._updateAckFailedAt = Date.now(); // next user activity may retry, without a hot loop
+    },
     /** 이 티켓의 Jira 링크를 클립보드로 복사. */
     async copyLink() {
       const { ok, url } = await copyTicketLink(this.keyId);
@@ -412,12 +544,16 @@ export default {
     /** 보조 패널은 모두 같은 생명주기를 쓴다. 실패를 빈 배열로 바꾸지 않고, 도착한 패널만
      *  즉시 반영한다. 호출 순서가 곧 prod 직렬 SSO의 우선순위이므로 spec 순서를 보존한다. */
     _loadDialogPanel(name, key = this.keyId, requestId = this._req) {
-      const fresh = () => requestId === this._req && this.keyId === key;
+      const isComments = name === 'comments';
+      const commentsId = isComments ? (this._commentsReq = (this._commentsReq || 0) + 1) : null;
+      const commentsPath = '/api/issue/' + encodeURIComponent(key) + '/comments';
+      let commentsRevision;
+      const fresh = () => requestId === this._req && this.keyId === key && (!isComments || commentsId === this._commentsReq);
       const specs = {
         editmeta: { get: () => api.editmeta(key), put: (v) => { this.emeta = v || {}; } },
         childTypes: { get: () => api.childTypes(key), put: (v) => { this.kidTypes = v || []; } },
         ancestors: { get: () => api.ticketAncestors(key), put: (v) => { this.ancestors = v || []; } },
-        comments: { get: () => api.ticketComments(key), put: (v) => { this.comments = v || []; } },
+        comments: { get: () => api.ticketComments(key), put: (v) => { this.applyUpdateComments(v || [], commentsPath); } },
         siblings: { get: () => api.ticketSiblings(key), put: (v) => { this.siblings = v || []; } },
         attachments: { get: () => api.ticketAttachments(key), put: (v) => {
           this.atts = v || []; this.attOpen = this.atts.length <= FOLD_AT;
@@ -430,14 +566,16 @@ export default {
       };
       const spec = specs[name];
       if (!spec || !fresh()) return Promise.resolve(null);
+      if (isComments) { this._updateCommentsPending = null; this._updateCommentsFailedAt = 0; this._updateCommentsQueuedAfter = 0; }
       this._setPanelState(name, "loading");
       let pending;
-      try { pending = spec.get(); }
+      try { pending = spec.get(); if (isComments) commentsRevision = api.cacheRevision(commentsPath); }
       catch (error) { pending = Promise.reject(error); }
       return Promise.resolve(pending).then((value) => {
-        if (!fresh()) return value;
+        if (!fresh() || (isComments && commentsRevision !== api.cacheRevision(commentsPath))) return value;
         spec.put(value);
         this._setPanelState(name, "ready");
+        if (name === "comments") this.$nextTick(() => this.acknowledgeDisplayedUpdates());
         return value;
       }).catch((error) => {
         if (fresh()) this._setPanelState(name, "error", requestErrorText(error));
@@ -607,7 +745,11 @@ export default {
       // quiet=true (필드 저장 후 재조회 등): v·패널을 **비우지 않는다** → 스켈레톤으로 돌아가 레이아웃이
       // 깨졌다 복구되는 대신, 응답이 오는 대로 **제자리에서** 값만 갱신된다(편집 시 깨짐 방지).
       const key = this.keyId;
+      this.beginUpdateView(key);
+      this._updateDetailReady = false;
       const my = this._req = (this._req || 0) + 1;
+      this._updateCommentsPending = null; this._updateCommentsFailedAt = 0;
+      this._updateCommentsQueuedAfter = 0;
       const fresh = () => my === this._req && this.keyId === key;
       this.err = "";
       if (!quiet) {
@@ -632,6 +774,7 @@ export default {
       const vp = api.ticket(key, force).then((v) => {          // force=강제면 서버 캐시도 건너뜀
         if (!fresh()) return;
         this.v = v;
+        this._updateDetailReady = !!v;
         // 검색창을 빈 상태로 열었을 때 보여줄 '최근 열어본 항목'에 남긴다.
         if (v) {
           recordOpen({ url: v.url || ("/browse/" + key), kind: "jira",
@@ -1654,10 +1797,11 @@ export default {
               <div v-else class="tkt-comments">
                 <div v-for="(c, i) in sortedComments" :key="c.id || i" class="tkt-cmt"
                      :style="{ '--sig': sigColor(c.authorId) }">
-                  <div class="tkt-cmt-h">
+                  <div class="tkt-cmt-h" :class="{ 'update-unread': unreadComment(c) }">
                     <Avatar :user="c.authorId" :name="c.author" :size="20" /><b>{{ c.author }}</b>
                     <span class="muted">{{ fdt(c.date) }}</span>
                     <span v-if="c.updated && c.updated !== c.date" class="muted tkt-cmt-edited">· 수정됨</span>
+                    <span v-if="unreadComment(c)" class="tkt-update-label">새 업데이트</span>
                     <span v-if="canEdit(c) && editingId !== c.id" class="tkt-cmt-acts">
                       <button class="tkt-cmt-act" @click="startEdit(c)">수정</button>
                       <button class="tkt-cmt-act" @click="delComment(c)">삭제</button>
@@ -1713,7 +1857,7 @@ export default {
                   <span class="tl-dot" :class="'k-' + e.kind"></span>
                   <span v-if="i < visibleTimeline.length - 1" class="tl-line"></span>
                 </span>
-                <span class="tl-body">
+                <span class="tl-body" :class="{ 'update-unread': unreadHistory(e) }">
                   <span class="tl-t"><span v-if="e.srcKey" class="tl-src">{{ e.srcKey }}</span
                     ><template v-if="tlKind(e) === 'comment'"
                       ><span class="tl-b on">{{ e.author || '—' }}</span> 댓글 작성</template

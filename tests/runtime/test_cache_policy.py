@@ -16,6 +16,11 @@ def issue(done=False):
 
 @pytest.fixture
 def clock(monkeypatch):
+    # Cache clocks also affect date.today(). Keep the mock Jira calendar anchored before
+    # 1970-based TTL tests initialize the process-wide World used by later UI/domain tests.
+    from app.mock.world import get_world
+    world = get_world()
+    monkeypatch.setattr("app.mock.world.get_world", lambda: world)
     now = [100000.0]
     monkeypatch.setattr("app.infra.cache.time.time", lambda: now[0])
     return now

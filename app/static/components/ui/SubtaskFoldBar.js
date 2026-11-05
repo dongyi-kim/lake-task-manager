@@ -1,9 +1,11 @@
 // Shared Task-with-SubTask folding footer for compact and three-axis layouts.
 import Avatar from "./Avatar.js";
 import { childSyncBusy } from "../mytasks/taskHydration.js";
+import { ticketUpdateView } from "../../lib/ticketUpdateView.js";
 
 export default {
   name: "SubtaskFoldBar",
+  mixins: [ticketUpdateView],
   components: { Avatar },
   props: {
     panel: { type: Object, required: true },
@@ -19,6 +21,7 @@ export default {
       return this.total ? Math.round(this.done * 100 / this.total) : 0;
     },
     assignees() { return this.panel?.assignees || []; },
+    unreadChildren() { return (this.panel.cards || []).some(card => this.isUnread(card)); },
     pending() { return childSyncBusy(this.panel?.syncState); },
     note() {
       if (this.panel.emptyFiltered) return "현재 필터에 해당하는 SubTask 없음";
@@ -33,7 +36,8 @@ export default {
             :aria-expanded="panel.emptyFiltered ? false : !closed" :title="note || (closed ? 'SubTask 펼치기' : 'SubTask 접기')"
             @click.stop="!panel.emptyFiltered && $emit('toggle')">
       <span class="mt-subfoot-toggle" :class="{ open: !closed }" aria-hidden="true">▸</span>
-      <span class="mt-subfoot-label"><strong>{{ total }}</strong> Subtasks</span>
+      <span class="mt-subfoot-label" :class="{ 'update-unread': unreadChildren }"
+            :title="unreadChildren ? '아직 확인하지 않은 SubTask 변경이 있습니다' : ''"><strong>{{ total }}</strong> Subtasks</span>
       <span v-if="assignees.length" class="mt-subfoot-sep" aria-hidden="true"></span>
       <span v-if="assignees.length" class="mt-subfoot-owners">
         <span v-for="owner in assignees" :key="owner.id || owner.name" class="mt-subfoot-owner"

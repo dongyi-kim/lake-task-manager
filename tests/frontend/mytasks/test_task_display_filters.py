@@ -31,7 +31,11 @@ assert.equal(priorityKey({pri:null}),'');
 const high={pri:'P1-Critical',priRank:1,dueDays:7};
 assert.ok(matches(high),'defaults show every card');
 assert.ok(matches(high,'name:P1-Critical','soon'));
-assert.ok(!matches(high,'name:P2-Major','soon'),'both dimensions must match');
+assert.ok(matches(high,'name:P2-Major','soon'),'selected priority includes higher priorities');
+assert.ok(!matches(high,'name:P0-Blocker','soon'),'lower priorities are excluded');
+assert.ok(matches({pri:'Custom urgent',priRank:0},'name:Custom high','',1));
+assert.ok(!matches({pri:'Unclassified',priRank:2},'name:Medium'),
+  'unclassified is not a ranked Medium ticket');
 assert.ok(!matches(high,'name:P1-Critical','overdue'));
 assert.ok(matches({pri:'',dueDays:null},'__none__','none'));
 assert.ok(matches({pri:' Unclassified ',priRank:2},'name:Unclassified'));

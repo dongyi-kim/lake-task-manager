@@ -20,8 +20,11 @@ import { api } from "../../lib/api.js";
 import TypeBadge from "../ui/TypeBadge.js";
 import Avatar from "../ui/Avatar.js";
 import PriIcon, { priRankOf } from "../ui/PriIcon.js";
-import TaskCard, { isHot, isUrgent } from "../ui/TaskCard.js";
+import TaskCard, { isUrgent } from "../ui/TaskCard.js";
 import DueText from "../ui/DueText.js";
+import TicketUpdateMark from "../ui/TicketUpdateMark.js";
+import { ticketUpdateView } from "../../lib/ticketUpdateView.js";
+import { observeTicketUpdates } from "../../lib/ticketUpdates.js";
 import FieldEdit from "../ui/FieldEdit.js";
 import AdvancedSearchDialog from "../ui/AdvancedSearchDialog.js";
 import TransitionDialog from "../ui/TransitionDialog.js";
@@ -38,7 +41,7 @@ import { BOARD_HEADER_TEMPLATE, OPTIONS_PANEL_TEMPLATE } from "../mytasks/taskBo
 import { OPTIONS_WIDTH, OPTIONS_MIN_WIDTH, OPTIONS_MAX_WIDTH,
   optionsPanelComputed, optionsPanelMethods } from "../mytasks/taskOptionsPanel.js";
 import { groupTaskSections } from "../mytasks/taskGrouping.js";
-import { DUE_FILTER_OPTIONS, priorityOptions as buildPriorityOptions,
+import { DUE_FILTER_OPTIONS, UPDATE_FILTER_OPTIONS, isUnrankedPriority, priorityOptions as buildPriorityOptions,
   matchTaskDisplayFilters } from "../mytasks/taskDisplayFilters.js";
 import { hydrateTaskGroups } from "../mytasks/taskHydration.js";
 import { pushToast } from "../../lib/toast.js";
@@ -49,8 +52,9 @@ export { reconcileTaskModel, resolveDefaultModule, uniformStatusCategory } from 
 
 export default {
   name: "MyTasksView",
+  mixins: [ticketUpdateView],
   components: { TypeBadge, Avatar, TaskCard, PriIcon, DueText, FieldEdit, AdvancedSearchDialog, TransitionDialog,
-                SubtaskFoldBar },
+                SubtaskFoldBar, TicketUpdateMark },
   data() {
     return {
       model: null, loading: false, err: "", childSync: {},
@@ -90,6 +94,7 @@ export default {
       doneFilter: "1w",     // 완료 축 기간: 1w | 1m (서버 질의 조건)
       priorityFilter: "",  // 실제 Jira 우선순위 이름 — 추가 조회 없는 표시 필터
       dueFilter: "",       // calm | soon | overdue | none; 빈 값은 전체
+      updateFilter: "all", // yes | no | all — 확인 상태만 로컬에서 필터링
       axisPage: { todo: AXIS_PAGE_SIZE, inprogress: AXIS_PAGE_SIZE, done: AXIS_PAGE_SIZE },
       sort: "due",
       busy: false,
@@ -105,6 +110,9 @@ export default {
       // Task+SubTask 그룹별 '완료 하위 더 보기' 펼침 { groupKey: true } — 일시 상태(저장 안 함).
       subOpen: {},          // Task 별 하위 펼침(일시 상태 — 화면을 떠나면 접힌다)
     };
+  },
+  watch: {
+    rawCards: { immediate: true, handler(cards) { observeTicketUpdates(cards.concat(this.groups)); } },
   },
   mounted() {
     this.loadPrefs();
@@ -256,8 +264,9 @@ export default {
       }
       return [...cards.values()];
     },
-    hasDisplayFilters() { return !!(this.priorityFilter || this.dueFilter); },
+    hasDisplayFilters() { return !!(this.priorityFilter || this.dueFilter || this.updateFilter !== "all"); },
     dueFilterOptions() { return DUE_FILTER_OPTIONS; },
+    updateFilterOptions() { return UPDATE_FILTER_OPTIONS; },
     priorityOptions() {
       // 그룹의 priRank는 자식 롤업이므로 옵션 정렬에는 부모 자신의 이름에서 구한 순위를 쓴다.
       return buildPriorityOptions(this.rawCards.concat(this.groups.map((g) => ({ ...g,
@@ -943,13 +952,18 @@ export default {
     },
     /** Epic 필터 — 이 카드/그룹의 버킷이 가려지지 않았는가. */
     epicPass(x) { return !this.epicHidden[this.bucketOf(x)]; },
-    displayPass(card) { return matchTaskDisplayFilters(card, this.priorityFilter, this.dueFilter); },
+    unrankedPriority: isUnrankedPriority,
+    displayPass(card) {
+      return matchTaskDisplayFilters(card, this.priorityFilter, this.dueFilter,
+        this.priorityOptions.find(option => option.k === this.priorityFilter)?.rank)
+        && (this.updateFilter === "all" || this.isUnread(card) === (this.updateFilter === "yes"));
+    },
     cardPass(card) {
       return !this.excluded[card.key] && this.epicPass(card) && this.projPass(card) && this.displayPass(card);
     },
     setDisplayFilter(field, value) {
       const options = field === "priorityFilter" ? [{ k: "" }, ...this.priorityOptions]
-        : field === "dueFilter" ? DUE_FILTER_OPTIONS : [];
+        : field === "dueFilter" ? DUE_FILTER_OPTIONS : field === "updateFilter" ? UPDATE_FILTER_OPTIONS : [];
       if (!options.some((option) => option.k === value) || this[field] === value) return;
       this[field] = value;
       this.resetAxisPages();
@@ -1006,6 +1020,7 @@ export default {
         this.priorityFilter = saved.priorityFilter;
       }
       if (DUE_FILTER_OPTIONS.some((option) => option.k === saved.dueFilter)) this.dueFilter = saved.dueFilter;
+      if (UPDATE_FILTER_OPTIONS.some((option) => option.k === saved.updateFilter)) this.updateFilter = saved.updateFilter;
       for (const o of OPTIONS) {
         if (o.opts.some((x) => x.k === saved[o.key])) this[o.key] = saved[o.key];
       }
@@ -1035,7 +1050,7 @@ export default {
     savePrefs() {
       const out = { bandClosed: this.bandClosed, epicHidden: this.epicHidden, gClosed: this.gClosed,
                     optionsClosed: this.optionsClosed, optionsWidth: this.optionsWidth,
-                    priorityFilter: this.priorityFilter, dueFilter: this.dueFilter,
+                    priorityFilter: this.priorityFilter, dueFilter: this.dueFilter, updateFilter: this.updateFilter,
                     scope: this.scope, moduleSel: this.moduleSel, moduleSelExplicit: this.moduleSelExplicit,
                     projPref: this.projPref,
                     assigneeSel: this.assigneeSel, reporterSel: this.reporterSel, jqlText: this.jqlText };
@@ -1053,6 +1068,8 @@ export default {
       const inherit = !own && t.key !== g.key && g.dueDays !== null && g.dueDays !== undefined;
       const next = Object.assign({}, t, {
         mine,
+        // Group rank is a child rollup; a parent's display/filter uses its own priority.
+        priRank: t.key === g.key && g.hasSubs ? priRankOf(t.pri) : t.priRank,
         parent: g,
         epicKey: t.epic || g.epic || null,
         due: inherit ? g.due : t.due,
@@ -1343,7 +1360,6 @@ export default {
     },
     // 급함 판정은 2줄 카드와 **같은 함수**를 쓴다. 그룹·Sub-Task 카드가 다른 기준으로 붉어지면
     // 같은 화면에서 '급함' 의 뜻이 두 개가 된다.
-    isHotC(c) { return c.statusCategory !== "done" && isHot(c.dueDays); },
     isUrgentC(c) { return c.statusCategory !== "done" && isUrgent(c); },
 
     // ── 카드 드래그로 상태변경 ──────────────────────────────────────

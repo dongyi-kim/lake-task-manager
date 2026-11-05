@@ -20,11 +20,16 @@ from support.paths import STATIC_ROOT
 
 @pytest.fixture(scope="module")
 def static_server():
+    class StaticServer(ThreadingHTTPServer):
+        # A TicketDialog imports dozens of ESM assets concurrently. Windows refuses queued
+        # connections beyond the default backlog of five before the test UI can even mount.
+        request_queue_size = 128
+
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self, *_args):
             pass
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(STATIC_ROOT)))
+    server = StaticServer(("127.0.0.1", 0), partial(Handler, directory=str(STATIC_ROOT)))
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     yield f"http://127.0.0.1:{server.server_port}"
