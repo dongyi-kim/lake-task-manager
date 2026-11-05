@@ -91,6 +91,9 @@ def window_harness(monkeypatch, *, driver_error=False, launch_error=False, closi
     class Context:
         pages = [page]
 
+        def grant_permissions(self, permissions, *, origin):
+            ns.setdefault("clipboard_grants", []).append((permissions, origin))
+
         def wait_for_event(self, name, timeout):
             if driver_error:
                 raise RuntimeError("injected driver pipe failure")
@@ -122,21 +125,23 @@ def window_harness(monkeypatch, *, driver_error=False, launch_error=False, closi
     return ns, events, profiles
 
 
-@pytest.mark.parametrize("driver_error,launch_error", [(False, False), (True, False), (False, True)])
-def test_window_lifecycle_releases_live_count_and_cleans_up_on_owner(monkeypatch, driver_error, launch_error):
+@pytest.mark.parametrize("driver_error,launch_error,port", [(False, False, 4457), (True, False, 4567), (False, True, 4457)])
+def test_window_lifecycle_releases_live_count_and_cleans_up_on_owner(monkeypatch, driver_error, launch_error, port):
     ns, events, profiles = window_harness(monkeypatch, driver_error=driver_error, launch_error=launch_error)
     owner = threading.get_ident()
     if driver_error or launch_error:
         with pytest.raises(RuntimeError):
-            ns["_window_session"](SimpleNamespace(app_port=4457, jira_env="mock"))
+            ns["_window_session"](SimpleNamespace(app_port=port, jira_env="mock"))
     else:
-        assert ns["_window_session"](SimpleNamespace(app_port=4457, jira_env="prod"), auto_login=True)
+        assert ns["_window_session"](SimpleNamespace(app_port=port, jira_env="prod"), auto_login=True)
         assert ("login", "jira") in events
     assert [name for name, _ in events].count("opened") == 1
     assert [name for name, _ in events].count("closed") == 1
     assert all(thread_id == owner for name, thread_id in events if name != "login")
     assert events[-1] == ("playwright.stop", owner)
     assert profiles == [str(Path("persistent-profile"))]  # Never retry with an empty temporary profile.
+    assert ns.get("clipboard_grants", []) == ([] if launch_error else
+        [(["clipboard-read"], f"http://127.0.0.1:{port}")])
     assert ns["_APP_WINDOW_LOCK"].acquire(blocking=False)
     ns["_APP_WINDOW_LOCK"].release()
 

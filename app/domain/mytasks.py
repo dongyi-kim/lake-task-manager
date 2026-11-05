@@ -200,6 +200,7 @@ def _hydrated_group(parent, children, context, expected_keys):
     return {
         "key": parent["key"], "title": parent["title"], "type": parent["type"],
         "mine": initial.get("mine", _matches_scope(parent, context)),
+        "queryMatched": parent_matched,
         "role": initial.get("role", parent.get("role")),
         "assignee": parent["assignee"], "assigneeId": parent["assigneeId"],
         "status": parent["status"], "statusCategory": parent["statusCategory"],
@@ -868,6 +869,8 @@ def build_my_tasks(client, user=None, include_done=False, limit=None, scope="ass
             g = groups[node["key"]] = {
                 "key": node["key"], "title": node["title"], "type": node["type"],
                 "mine": is_mine(node), "role": role_of(node),
+                # Same-assignee context parents can fall outside the query's status/date range.
+                "queryMatched": node["key"] in seen,
                 "assignee": node["assignee"], "assigneeId": node["assigneeId"],
                 "status": node["status"], "statusCategory": node["statusCategory"],
                 "reporter": node.get("reporter"), "reporterId": node.get("reporterId"),

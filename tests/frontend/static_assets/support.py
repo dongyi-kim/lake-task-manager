@@ -33,8 +33,9 @@ def agent_view_source() -> str:
 
 
 def task_view_source() -> str:
-    """Include the shared section renderer in the same Task UI contract surface."""
+    """Include the shared board and section renderers in the Task UI contract surface."""
     paths = [STATIC / "components/views/MyTasksView.js",
+             STATIC / "components/mytasks/taskBoardTemplate.js",
              STATIC / "components/mytasks/taskSectionTemplate.js"]
     return "\n".join(path.read_text(encoding="utf-8") for path in paths)
 

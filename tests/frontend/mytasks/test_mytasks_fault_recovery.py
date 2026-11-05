@@ -41,7 +41,7 @@ def test_auth_and_transport_failures_keep_axis_recoverable_but_permission_is_sil
     assert 'this._markPendingAxes("retrying", kind);' in src
     assert 'this._markPendingAxes("done", kind);' in src
     assert 'this.load({ quiet: true });' in src
-    assert 'v-if="axisPending(st.k)"' in src
+    assert 'v-if="bandOpen(st.k) && axisPending(st.k)"' in src
     assert "{{ axisEmptyText(st.k) }}" in src
 
 

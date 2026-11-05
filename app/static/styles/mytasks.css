@@ -5,14 +5,6 @@
    카드(.mt-card)는 배치와 무관하게 하나 — 리스트든 그리드든 같은 것을 읽게 한다. */
 
 .mytasks { padding: 2px 0 40px; }
-.mt-task-section.titled { margin: 16px 0 22px; border: 1px solid var(--border);
-  border-top: 3px solid var(--section-color); border-radius: 5px; min-width: 0; }
-.mt-section-header { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap;
-  padding: 10px 12px; background: color-mix(in srgb, var(--section-color) 7%, var(--panel)); }
-.mt-section-header h2 { margin: 0; font-size: 14px; color: var(--text); }
-.mt-section-label { font-size: 11px; color: var(--section-color); font-weight: 700; }
-.mt-section-extra { flex-basis: 100%; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
-.mt-task-section.titled > .mt-headrow { padding: 0 8px; }
 .mt-axis-more-row.vertical { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* ══ 상단: 퀵필터(담당/보고/모듈) + 요약 타일 — 워크로드식 정형(딱딱) ══ */
@@ -1070,7 +1062,10 @@
   border: 1.5px solid var(--accent); border-left-width: 4px; border-radius: 3px; padding: 8px 13px;
   box-shadow: 0 8px 24px rgba(0,0,0,.22); }
 .mt-card.mtdnd-src { opacity: .35; outline: 2px dashed var(--accent); outline-offset: -2px; }
-.mt-find { position: sticky; top: 0; z-index: 12; display: flex; align-items: center;
+.mt-board-tools { position: sticky; top: 46px; z-index: 12; background: var(--bg); }
+.mt-board-tools .mt-board-head.mt-headrow { position: static; }
+.ax-v .mt-board-tools:not(.finding) { position: static; }
+.mt-find { display: flex; align-items: center;
   flex-wrap: wrap; gap: 6px; padding: 8px; margin-bottom: 8px; border: 1px solid var(--border);
   border-radius: 8px; background: var(--panel, #fff); box-shadow: 0 2px 10px #0002; }
 .mt-find input { flex: 1; min-width: 100px; max-width: 360px; }

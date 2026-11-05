@@ -47,6 +47,12 @@ def test_find_reveals_hidden_cards_and_restores_layout(editor_browser):
     query = page.get_by_role("textbox", name="카드에서 찾기")
     query.fill("DL-108")
     page.locator('.mt-find-current[data-key="DL-108"]:visible').wait_for()
+    sidebar_box = page.locator('.mt-options-panel').bounding_box()
+    find_box = page.locator('.mt-find').bounding_box()
+    header_box = page.locator('.mt-board-head').bounding_box()
+    assert find_box["x"] >= sidebar_box["x"] + sidebar_box["width"]
+    assert header_box["y"] >= find_box["y"] + find_box["height"]
+    assert page.get_by_role('separator', name="보기 옵션 너비 조절").is_visible()
     assert page.locator('.mt-find-count').inner_text() == "1 / 1"
     assert page.locator('.mt-gcard2.folded:visible').count() == 0
     query.press("Escape")
@@ -69,6 +75,16 @@ def test_find_reveals_hidden_cards_and_restores_layout(editor_browser):
     assert page.locator('.mt-card[data-key="DL-240"]:visible').count() == 0
     assert len(requests) == initial_requests
 
+    # Sidebar display filters change the same loaded search model without an upstream query.
+    page.keyboard.press("Control+f")
+    query.fill("DL-108")
+    page.get_by_role('combobox', name="마감기한 필터").select_option('overdue')
+    expect(page.locator('.mt-find-count')).to_have_text("0 / 0")
+    page.get_by_role('combobox', name="마감기한 필터").select_option('')
+    page.locator('.mt-find-current[data-key="DL-108"]:visible').wait_for()
+    query.press("Escape")
+    assert len(requests) == initial_requests
+
     # All grouping modes and narrow layout use the same model search.
     select = page.locator('.mt-opt', has_text="그룹화").locator('select')
     for mode in ["epic", "sub", "none", "wbs"]:
@@ -84,7 +100,8 @@ def test_find_reveals_hidden_cards_and_restores_layout(editor_browser):
     page.set_viewport_size({"width": 720, "height": 900})
     page.locator('.mytasks.ax-v').wait_for()
     band = page.locator('.mt-band.c-todo')
-    band.locator('.mt-bandh').click()
+    page.locator('[data-status-control="todo"] input[type="checkbox"]').uncheck()
+    page.get_by_role('button', name="보기 옵션 접기", exact=True).click()
     expect(band).to_have_class("mt-band c-todo closed")
     narrow_prefs = page.evaluate("localStorage.getItem('mytasks.opts')")
     page.keyboard.press("Control+f")

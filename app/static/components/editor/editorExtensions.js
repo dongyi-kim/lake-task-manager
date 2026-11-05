@@ -92,19 +92,26 @@ function calloutExt(T) {
           },
           renderHTML: () => ({}),        // 종류는 아래 class 로만 표현
         },
+        jiraPanel: {
+          default: null,
+          parseHTML: (el) => el.getAttribute("data-jira-panel") === "dashed" ? "dashed" : null,
+          renderHTML: () => ({}),
+        },
       };
     },
     parseHTML() { return [{ tag: "div.callout" }]; },
     renderHTML({ node, HTMLAttributes }) {
       return ["div", Object.assign({}, HTMLAttributes,
-        { class: "callout callout-" + (node.attrs.type || "info") }), 0];
+        { class: "callout callout-" + (node.attrs.type || "info") },
+        node.attrs.type === "note" && node.attrs.jiraPanel === "dashed"
+          ? { "data-jira-panel": "dashed" } : {}), 0];
     },
     addCommands() {
       const name = this.name;
       return {
         toggleCallout: (type) => ({ editor, commands }) => {
           if (editor.isActive(name, { type })) return commands.lift(name);      // 같은 종류 → 해제
-          if (editor.isActive(name)) return commands.updateAttributes(name, { type });  // 종류 변경
+          if (editor.isActive(name)) return commands.updateAttributes(name, { type, jiraPanel: null });  // 종류 변경
           return commands.wrapIn(name, { type });
         },
       };

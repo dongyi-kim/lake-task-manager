@@ -1,38 +1,8 @@
 // One shared status layout for Task, Epic, and WBS sections; evaluated in MyTasksView scope.
 const TASK_SECTION_TEMPLATE = `
-    <!-- ══ 상태 = 가로축 : 칼럼 헤더는 맨 위 한 줄, 그룹은 **각자 하나의 카드** 안에 3칼럼 ══
-         (그룹마다 헤더를 반복하면 빈 헤더가 그룹 수만큼 늘어나고, 반대로 헤더만 위에 두고 카드를
-          안 씌우면 어디부터 어디까지가 한 그룹인지 안 읽힌다 — 둘 다 피한 구조다.) -->
+    <!-- Shared board header/background live outside these flat Epic/WBS sections. -->
     <template v-if="axis === 'h'">
-      <div class="mt-headrow">
-        <div v-for="st in states" :key="'h-' + st.k" class="mt-colh"
-             :class="['c-' + st.k, { closed: !bandOpen(st.k) }]">
-          <button class="mt-colh-b" @click="toggleBand(st.k)"
-                  :title="(bandOpen(st.k) ? '접기' : '펼치기') + ' — ' + st.label">
-            <span class="chev" :class="{ open: bandOpen(st.k) }">▸</span>
-            <template v-if="bandOpen(st.k)">{{ st.label }}</template>
-            <b>{{ sectionCount(section, st.k) }}</b>
-          </button>
-          <span v-if="bandOpen(st.k) && axisPending(st.k)" class="mt-axis-load"
-                :class="{ degraded: axisDegraded(st.k) }"
-                :title="'완료된 JQL leaf ' + axisChunks(st.k) + '개 반영'">
-            <i v-if="axisLoading(st.k)" aria-hidden="true"></i>{{ axisLoadText(st.k) }}
-          </span>
-          <!-- 표시 범위는 **그 칸에만** 걸리는 조건이라 그 칸의 제목에 둔다 -->
-          <span v-if="bandOpen(st.k) && bandFilter(st.k)" class="mt-colf">
-            <button v-for="o in bandFilter(st.k).opts" :key="o.k" type="button"
-                    class="mt-colf-b" :class="{ on: opt(st.k) === o.k }"
-                    :title="o.hint" @click.stop="setBandFilter(st.k, o.k)">{{ o.label }}</button>
-          </span>
-        </div>
-      </div>
-
-      <!-- 칼럼 배경 — 카드 뒤에 **한 겹으로** 깐다. 셀마다 칠하면 그룹 카드가 놓인 구간에서
-           띠가 끊겨 '영역' 이 아니라 '카드 뒤 색칠' 로 보인다(실제로 그랬다). -->
       <div class="mt-hwrap">
-        <div class="mt-colbg" aria-hidden="true">
-          <div v-for="st in states" :key="'bg-' + st.k" :class="'c-' + st.k"></div>
-        </div>
 
       <div v-if="!section.panels.length" class="mt-axis-shell">
         <div v-for="st in states" :key="'shell-' + st.k" :class="'c-' + st.k">
@@ -153,21 +123,11 @@ const TASK_SECTION_TEMPLATE = `
     <template v-else>
       <div v-for="st in states" :key="st.k" class="mt-band" :class="['c-' + st.k, { closed: !bandOpen(st.k) }]">
         <div class="mt-bandh-w">
-          <button class="mt-bandh" @click="toggleBand(st.k)"
-                  :title="bandOpen(st.k) ? '접기' : '펼치기'">
-            <span class="chev" :class="{ open: bandOpen(st.k) }">▸</span>{{ st.label }}
+          <div class="mt-bandh">
+            {{ st.label }}
             <b>{{ sectionCount(section, st.k) }}</b>
-          </button>
-          <span v-if="axisPending(st.k)" class="mt-axis-load"
-                :class="{ degraded: axisDegraded(st.k) }"
-                :title="'완료된 JQL leaf ' + axisChunks(st.k) + '개 반영'">
-            <i v-if="axisLoading(st.k)" aria-hidden="true"></i>{{ axisLoadText(st.k) }}
-          </span>
-          <span v-if="bandFilter(st.k)" class="mt-colf">
-            <button v-for="o in bandFilter(st.k).opts" :key="o.k" type="button"
-                    class="mt-colf-b" :class="{ on: opt(st.k) === o.k }"
-                    :title="o.hint" @click.stop="setBandFilter(st.k, o.k)">{{ o.label }}</button>
-          </span>
+            <small v-if="!bandOpen(st.k)">접힘</small>
+          </div>
         </div>
         <template v-if="bandOpen(st.k)">
         <!-- 그룹화 없음 → 카드 그리드 하나 -->

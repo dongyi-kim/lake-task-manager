@@ -306,6 +306,16 @@
   position: absolute; right: 0; width: 100%; }
 .toast-move { transition: transform .26s ease; }
 
+/* A suggestion, not a modal: no focus trap and no layout shift while writing. */
+.clipboard-ticket-prompt { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+  z-index: 9850; display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
+  gap: 8px; width: max-content; max-width: calc(100vw - 32px); box-sizing: border-box;
+  padding: 10px 14px; border: 1px solid var(--border-hi); border-radius: 10px;
+  background: var(--panel); color: var(--text); box-shadow: 0 6px 24px rgba(0,0,0,.18); font-size: 12px; }
+.clipboard-ticket-prompt select { max-width: 100%; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 4px; padding: 4px; }
+.clipboard-ticket-prompt .btn { flex: none; }
+
 /* 우상단 고정. 파일명은 아이콘 옆(윗줄), **저장 경로는 아랫줄에 전체**(말줄임 없이 줄바꿈). */
 .dltoast { position: fixed; right: 14px; top: 14px; z-index: 9700;
   display: flex; flex-wrap: wrap; align-items: center; gap: 4px 9px;
