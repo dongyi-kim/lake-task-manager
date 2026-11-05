@@ -26,3 +26,23 @@ export function readFavorites(base) {
 export function writeFavorites(base, rows) {
   localStorage.setItem("ltm.confluence.favorites:" + base, JSON.stringify(rows));
 }
+
+export function readRecentDocuments(base) {
+  try {
+    const rows = JSON.parse(localStorage.getItem("ltm.confluence.recent:" + base) || "[]");
+    return Array.isArray(rows) ? rows.filter(row => /^\d+$/.test(String(row.id)) && typeof row.title === "string").slice(0, 20) : [];
+  } catch (_) { return []; }
+}
+
+export function rememberDocument(base, rows, doc) {
+  const id = String(doc.id);
+  const next = [{ id, title: doc.title, space: doc.space?.key || "", openedAt: Date.now() },
+    ...rows.filter(row => String(row.id) !== id)].slice(0, 20);
+  try { localStorage.setItem("ltm.confluence.recent:" + base, JSON.stringify(next)); } catch (_) { /* usable this session */ }
+  return next;
+}
+
+export function readNavigationFolds() {
+  try { return JSON.parse(localStorage.getItem("ltm.confluence.navigation-folds") || "{}") || {}; }
+  catch (_) { return {}; }
+}

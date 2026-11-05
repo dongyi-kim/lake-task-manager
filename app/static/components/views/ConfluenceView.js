@@ -1,8 +1,9 @@
 import { api } from "../../lib/api.js";
-import { confluencePageId, openConfluenceDocument, readFavorites, writeFavorites } from "../../lib/confluenceNavigation.js";
+import { confluencePageId, openConfluenceDocument, readFavorites, writeFavorites, readRecentDocuments, rememberDocument, readNavigationFolds } from "../../lib/confluenceNavigation.js";
 import { documentHeadings, visibleHeading } from "../../lib/confluenceToc.js";
 import confluenceLayout from "../../lib/confluenceLayout.js";
 import ConfluencePanel from "../ui/ConfluencePanel.js";
+import ConfluenceDocumentList from "../ui/ConfluenceDocumentList.js";
 
 const pageId = () => location.hash.match(/^#\/confluence\/(\d+)/)?.[1] || "";
 const nextStart = data => data?._links?.next ? Number(data.start || 0) + Number(data.size ?? data.results?.length ?? 0) : null;
@@ -10,9 +11,9 @@ const merge = (old, rows) => [...new Map([...old, ...rows].map(row => [String(ro
 
 export default {
   name: "ConfluenceView",
-  components: { ConfluencePanel },
+  components: { ConfluencePanel, ConfluenceDocumentList },
   mixins: [confluenceLayout],
-  data() { return { base: "", favorites: [], spaces: [], space: "", spacesNext: null,
+  data() { return { base: "", favorites: [], recentDocuments: [], navigationFolds: readNavigationFolds(), spaces: [], space: "", spacesNext: null,
     roots: [], rootsNext: null, children: {}, expanded: {}, loadingBranches: {}, branchErrors: {},
     query: "", results: [], searchNext: null, searching: false, searched: false,
     loading: false, error: "", doc: null, selectedId: "", reading: false, readError: "",
@@ -43,7 +44,7 @@ export default {
   },
   mounted() {
     this._generation = 0; this._readGeneration = 0; this._searchGeneration = 0;
-    this._hash = () => { const id = pageId(); if (id && id !== this.selectedId) this.read(id); };
+    this._hash = () => { const id = pageId(); if (this._navigationReady && id && id !== this.selectedId) this.read(id); };
     window.addEventListener("hashchange", this._hash);
     this.initialize();
   },
@@ -55,8 +56,10 @@ export default {
       // Local configuration is independent of SSO/network so saved titles appear immediately.
       try { const config = await api.confluenceConfig(); this.base = config.base;
         const spaces = new Set((config.spaces || []).map(value => value.toLowerCase()));
-        this.favorites = readFavorites(this.base).filter(row => spaces.has(String(row.space || "").toLowerCase())); }
+        this.favorites = readFavorites(this.base).filter(row => spaces.has(String(row.space || "").toLowerCase()));
+        this.recentDocuments = readRecentDocuments(this.base).filter(row => spaces.has(String(row.space || "").toLowerCase())); }
       catch (error) { this.error = error.message; }
+      this._navigationReady = true;
       this.loadSpaces(); this._hash();
     },
     async loadSpaces(more = false) {
@@ -121,6 +124,7 @@ export default {
         const data = await api.confluenceDocument(id, version);
         if (gen !== this._readGeneration) return;
         this.doc = data;
+        this.recentDocuments = rememberDocument(this.base, this.recentDocuments, data);
         const favorite = this.favorites.find(row => String(row.id) === String(data.id));
         if (favorite && favorite.title !== data.title) { favorite.title = data.title; this.saveFavorites(); }
         this.$nextTick(() => { this.buildToc(); if (this.$refs.reader) this.$refs.reader.scrollTop = scrollTop; this.updateToc(); });
@@ -144,6 +148,10 @@ export default {
       this.saveFavorites();
     },
     saveFavorites() { try { writeFavorites(this.base, this.favorites); } catch (_) { this.readError = "즐겨찾기를 저장하지 못했습니다. 브라우저 저장 공간을 확인해 주세요."; } },
+    toggleNavigationList(name) {
+      this.navigationFolds[name] = !this.navigationFolds[name];
+      try { localStorage.setItem("ltm.confluence.navigation-folds", JSON.stringify(this.navigationFolds)); } catch (_) { /* session state remains */ }
+    },
     stopToc() {
       if (this._tocReader && this._tocScroll) this._tocReader.removeEventListener("scroll", this._tocScroll);
       if (this._tocFrame) cancelAnimationFrame(this._tocFrame);
@@ -190,11 +198,8 @@ export default {
       <ConfluencePanel :visible="showSidebar" :compact="compact" label="문서 탐색" @close="toggleSidebar" class="conf-panel conf-sidebar">
         <div class="conf-panel-title"><h1>Confluence</h1><button class="conf-fold" @click="toggleSidebar" aria-label="문서 탐색 접기" title="문서 탐색 접기"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M12 5l-5 5 5 5"/></svg></button></div>
         <div class="conf-sidebar-scroll">
-        <section class="conf-favorites" aria-label="즐겨찾기">
-          <h2>즐겨찾기 <span>{{ favorites.length }}</span></h2>
-          <p v-if="!favorites.length" class="conf-muted">문서의 ☆ 버튼으로 여기에 고정하세요.</p>
-          <button v-for="item in favorites" :key="item.id" class="conf-tree-title" :class="{selected: selectedId === item.id}" @click="open(item.id)" :title="item.title">★ {{ item.title }}</button>
-        </section>
+        <ConfluenceDocumentList title="즐겨찾기" :rows="favorites" :selected-id="selectedId" :expanded="!navigationFolds.favorites" @toggle="toggleNavigationList('favorites')" @open="open" empty-text="문서의 ☆ 버튼으로 여기에 고정하세요." />
+        <ConfluenceDocumentList title="최근 열어본 문서" :rows="recentDocuments" :selected-id="selectedId" :expanded="!navigationFolds.recent" @toggle="toggleNavigationList('recent')" @open="open" empty-text="열어본 문서가 여기에 표시됩니다." />
         <label class="conf-space-label">Space<select v-model="space" @change="changeSpace" aria-label="Space"><option v-for="item in spaces" :key="item.key" :value="item.key">{{ item.name }} ({{ item.key }})</option></select></label>
         <button v-if="spacesNext !== null" class="conf-more" @click="loadSpaces(true)">Space 더 보기</button>
         <form class="conf-search" @submit.prevent="search()"><input v-model="query" @input="!query.trim() && search()" aria-label="문서 트리 검색" placeholder="이 Space의 문서 검색"><button class="btn" :disabled="searching">검색</button></form>

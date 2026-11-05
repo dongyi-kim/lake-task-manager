@@ -23,10 +23,12 @@
 .conf-resizing { user-select:none; cursor:col-resize; }
 .conf-workspace :is(.conf-sidebar-scroll,.conf-reader,.conf-toc nav,.conf-document-body pre,.conf-document-body table) { scrollbar-width:none; }
 .conf-workspace :is(.conf-sidebar-scroll,.conf-reader,.conf-toc nav,.conf-document-body pre,.conf-document-body table)::-webkit-scrollbar { display:none; }
-.conf-favorites { padding-bottom:12px; margin-bottom:14px; border-bottom:1px solid var(--border-hi); }
-.conf-favorites h2 { font-size:12px; margin:0 0 7px; color:var(--muted); display:flex; align-items:center; gap:6px; }
-.conf-favorites h2 span { font-weight:400; }
-.conf-favorites > button { display:block; width:100%; padding:7px 8px; text-align:left; }
+.conf-local-list { padding-bottom:10px; margin-bottom:12px; border-bottom:1px solid var(--border); }
+.conf-local-list h2 { font-size:12px; margin:0 0 5px; }
+.conf-list-toggle { display:flex; align-items:center; width:100%; gap:6px; border:0; background:none; color:var(--muted); font:inherit; text-align:left; cursor:pointer; padding:4px 0; }
+.conf-list-chevron { width:14px; font-size:18px; line-height:1; }
+.conf-list-count { margin-left:auto; font-weight:400; font-size:11px; }
+.conf-local-list .conf-tree-title { display:block; width:100%; padding:7px 8px; text-align:left; }
 .conf-space-label { display:flex; flex-direction:column; gap:5px; color:var(--muted); font-size:12px; font-weight:600; }
 .conf-space-label select { width:100%; background:var(--panel); border:1px solid var(--border-hi); color:var(--text); padding:7px; border-radius:5px; }
 .conf-search { display:flex; gap:5px; margin:12px 0; }

@@ -123,7 +123,7 @@ def test_confluence_tree_favorites_search_revision_and_responsive(editor_browser
     assert page.locator(".conf-current").count() == 0
     assert page.locator(".conf-document-body h2").first.inner_text() == "버전 3 본문"
     page.get_by_role("button", name="즐겨찾기 해제", exact=True).click()
-    assert page.get_by_role("region", name="즐겨찾기", exact=True).get_by_role("button").count() == 0
+    assert page.get_by_role("region", name="즐겨찾기", exact=True).locator(".conf-tree-title").count() == 0
     page.set_viewport_size({"width": 390, "height": 844})
     page.get_by_role("button", name="목차", exact=True).wait_for()
     assert not toc.is_visible()
@@ -304,6 +304,47 @@ def test_confluence_cache_retention_setting_persists_and_restores(editor_browser
     page.get_by_role("status").filter(has_text="저장했습니다").wait_for()
     assert page.request.get(base + "/api/prefs").json()["cachePolicy"]["confluenceBodyRetentionSeconds"] == 30 * 86400
     assert not errors, errors
+
+
+def test_confluence_local_lists_fold_and_remember_successful_reads(editor_browser):
+    page, base, errors, _ = editor_browser
+    state = install_documents(page)
+    page.goto(base + "/#/confluence/12")
+    recent = page.get_by_role("region", name="최근 열어본 문서", exact=True)
+    recent.get_by_role("button", name="적재 가이드", exact=True).wait_for()
+    page.get_by_role("button", name="즐겨찾기 추가", exact=True).click()
+    favorites = page.get_by_role("region", name="즐겨찾기", exact=True)
+    favorites.get_by_role("button", name="즐겨찾기", exact=True).click()
+    assert not favorites.locator(".conf-tree-title").is_visible()
+    before = list(state["reads"])
+    recent.get_by_role("button", name="최근 열어본 문서", exact=True).click()
+    assert not recent.locator(".conf-tree-title").is_visible()
+    assert state["reads"] == before
+    page.reload()
+    page.locator(".conf-document h1").wait_for()
+    assert recent.get_by_role("button", name="최근 열어본 문서", exact=True).get_attribute("aria-expanded") == "false"
+    assert favorites.get_by_role("button", name="즐겨찾기", exact=True).get_attribute("aria-expanded") == "false"
+    page.goto(base + "/#/confluence/22")
+    page.locator(".conf-document h1").filter(has_text="아직 펼치지 않은 적재 설계").wait_for()
+    recent.get_by_role("button", name="최근 열어본 문서", exact=True).click()
+    assert recent.locator(".conf-tree-title").all_text_contents() == ["아직 펼치지 않은 적재 설계", "적재 가이드"]
+    recent.get_by_role("button", name="적재 가이드", exact=True).click()
+    page.locator(".conf-document h1").filter(has_text="적재 가이드").wait_for()
+    assert recent.locator(".conf-tree-title").all_text_contents() == ["적재 가이드", "아직 펼치지 않은 적재 설계"]
+    page.route("**/api/confluence/pages/404", lambda route: route.fulfill(status=404, json={"service": "confluence", "error": "찾을 수 없음"}))
+    page.goto(base + "/#/confluence/404")
+    page.get_by_text("찾을 수 없음", exact=False).wait_for()
+    assert recent.locator(".conf-tree-title").count() == 2
+    bounds = page.evaluate("""async () => {
+      const {rememberDocument,readRecentDocuments} = await import('/lib/confluenceNavigation.js');
+      let rows=[];
+      for(let i=1;i<=25;i++) rows=rememberDocument('fixture-only',rows,{id:String(i),title:'Doc '+i,space:{key:'ETL'}});
+      const result=readRecentDocuments('fixture-only');
+      localStorage.removeItem('ltm.confluence.recent:fixture-only');
+      return result.map(r=>r.id);
+    }""")
+    assert len(bounds) == 20 and bounds[0] == "25" and bounds[-1] == "6"
+    assert not [error for error in errors if not (error.startswith("HTTP 404 ") and "/api/confluence/pages/404" in error)]
 
 
 def test_unified_search_opens_in_app_and_confluence_auth_is_service_local(editor_browser):
