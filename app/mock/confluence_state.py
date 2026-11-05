@@ -112,7 +112,8 @@ class ConfluenceState:
         data = copy.deepcopy(row)
         cid = row["id"]
         data.pop("parent", None)
-        data["ancestors"] = self.ancestors(row)
+        if "ancestors" in expand.split(","):
+            data["ancestors"] = self.ancestors(row)
         data["_links"] = {"webui": f"/spaces/{row['space']['key']}/pages/{cid}", "self": base + f"/rest/api/content/{cid}"}
         if row["type"] == "attachment":
             data["_links"]["download"] = f"/download/attachments/{row['container']['id']}/{row['title']}"

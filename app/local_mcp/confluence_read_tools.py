@@ -179,7 +179,10 @@ def register_confluence_reads(register, runtime):
 
     def get_confluence_context(page: str, kind: Literal["ancestors", "comment", "attachment", "label", "restriction"],
                                start_at: int = 0, max_results: int = 50) -> dict:
-        """Read ancestors, comments (storage source), attachment metadata, labels or page restrictions.
+        """Read ancestors, bounded comment previews, attachment metadata, labels or page restrictions.
+        Comment rows contain id, compact version/author, text preview, storage bodyLength/bodyTruncated;
+        they are not full storage source. Retrieve a selected comment separately by ID and version.
+        The response budget may return fewer rows than max_results. Follow nextStartAt without skipping.
         Comments/attachments change independently of the page revision. Follow nextStartAt for lists;
         direct page restrictions are returned as data. Inspect ancestor restrictions separately before
         reasoning about inherited access; this is not an effective-permission calculation. No bypass.
@@ -189,6 +192,9 @@ def register_confluence_reads(register, runtime):
             rows = current.get("ancestors") or []
             return {"pageId": cid, "kind": kind, "results": rows, "hasMore": False, "nextStartAt": None}
         data = conf.list_related(runtime.client, cid, kind, start_at, max_results)
+        if kind == "comment":
+            from .confluence_comment_previews import comment_page
+            return comment_page(cid, data, start_at, max_results)
         return {"pageId": cid, "kind": kind, **({"data": data} if kind == "restriction" else _page(data, start_at, max_results))}
 
     for fn in (check_confluence_revision, list_confluence_spaces, list_confluence_pages, get_confluence_context):
