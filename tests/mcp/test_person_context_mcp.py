@@ -18,7 +18,13 @@ def test_public_person_search_contract_and_explicit_lookup_history(build_env, mo
             assert not first.is_error
             data = first.structured_content['data']
             candidate = next(u for u in data['users'] if u['id'] == 'u02')
-            assert candidate['matchContext']['sameModule'] is True
+            # Local search/history must work before /myself has ever been loaded. Same-module
+            # evidence becomes available only after an ordinary business identity read.
+            assert candidate['matchContext']['sameModule'] is None
+            assert not any(path == '/rest/api/2/myself' for _method, path, _body in env.calls)
+            env.client.current_user()
+            known = await client.call_tool('search_users', {'query':'u02'})
+            assert known.structured_content['data']['users'][0]['matchContext']['sameModule'] is True
             assert candidate['matchContext']['recentLookupAt'] is None
             Draft202012Validator(tools['search_users'].output_schema).validate(first.structured_content)
             again = await client.call_tool('search_users', {'query':'u02'})

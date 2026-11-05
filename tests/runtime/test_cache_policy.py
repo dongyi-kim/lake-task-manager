@@ -258,7 +258,8 @@ def test_http_source_headers_and_explicit_revalidation(cache, clock):
 def test_full_done_issue_satisfies_light_request_beyond_general_ttl(cache, clock):
     from types import SimpleNamespace
     from app.jira.jira_client import JiraClient
-    client = JiraClient(SimpleNamespace(jira_env="prod", cache_ttl_seconds=600), cache)
+    client = JiraClient(SimpleNamespace(jira_env="prod", jira_base="https://jira.test", project_key="DL",
+                                      cache_ttl_seconds=600), cache)
     cache.set("issue:prod:DL-1", issue(True), 600)
     clock[0] += 3600
     client._provider = SimpleNamespace(get_json=lambda *a, **k: pytest.fail("fresh full hit must satisfy light"))

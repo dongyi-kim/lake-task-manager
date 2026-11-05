@@ -117,17 +117,21 @@ async def test_required_create_metadata_blocks_before_any_ticket(build_env, monk
     assert not creates(env) and wizard.commits == 0
 
 
-async def test_actor_change_before_next_write_stops_and_never_creates_as_replacement(build_env, monkeypatch, tmp_path):
+async def test_server_change_before_next_write_stops_and_never_creates_as_replacement(build_env, monkeypatch, tmp_path):
     env, wizard, probe = setup_probe(build_env, monkeypatch, tmp_path)
-    original = env.provider.get_json
-    def get(path, *args, **kwargs):
-        if path == "/rest/api/2/myself" and len(creates(env)) >= 1:
-            return {"name": "other", "key": "other"}
-        return original(path, *args, **kwargs)
-    monkeypatch.setattr(env.provider, "get_json", get)
+    original = env.provider.post_json
+    def post(path, *args, **kwargs):
+        result = original(path, *args, **kwargs)
+        if path == "/rest/api/2/issue":
+            env.client.s.jira_base = "https://other-jira.test"
+        return result
+    monkeypatch.setattr(env.provider, "post_json", post)
     await start(probe, "probe:identity:0001", "Task", "Sub-task")
-    result = await settled(probe, "probe:identity:0001")
-    assert result["error"]["code"] == "actor_changed"
+    with pytest.raises(ProbeError, match="서버"):
+        await settled(probe, "probe:identity:0001")
+    # The public journal read also rejects the changed server, while the saved run records
+    # why it stopped before the second write.
+    assert probe._load("probe:identity:0001")["error"]["code"] == "scope_changed"
     assert len(creates(env)) == 1 and wizard.commits == 0
 
 
@@ -202,8 +206,22 @@ async def test_options_scope_must_match_before_starting_any_write(build_env, mon
     assert not creates(env) and not list(probe.state_dir.glob("*.json"))
 
 
+async def test_optional_cached_identity_does_not_change_local_probe_scope(build_env, monkeypatch, tmp_path):
+    env, wizard, probe = setup_probe(build_env, monkeypatch, tmp_path)
+    scope = (await probe.options())["scope"]
+    assert env.client.mutation_actor_identity()["aliases"] == []
+    env.client.current_user()  # An ordinary business-data request warms optional creator evidence.
+    assert env.client.mutation_actor_identity()["aliases"]
+    assert (await probe.options())["scope"] == scope
+    await probe.start("probe:identity-cache:0001", "Task", "Sub-task", scope)
+    result = await settled(probe, "probe:identity-cache:0001")
+    assert result["status"] == "passed" and len(creates(env)) == 3 and wizard.commits == 3
+    env.cache.forget(f"myself:{env.client.env}")
+    assert (await probe.get("probe:identity-cache:0001"))["status"] == "passed"
+
+
 @pytest.mark.parametrize("changed", [True, False])
-async def test_sdk_auth_retry_rechecks_original_actor_inside_retry_boundary(build_env, monkeypatch, tmp_path, changed):
+async def test_sdk_auth_retry_uses_local_scope_instead_of_an_account_gate(build_env, monkeypatch, tmp_path, changed):
     env, wizard, probe = setup_probe(build_env, monkeypatch, tmp_path)
     original_get, original_post = env.provider.get_json, env.provider.post_json
     rejected, recovered = [False], [False]
@@ -226,10 +244,9 @@ async def test_sdk_auth_retry_rechecks_original_actor_inside_retry_boundary(buil
     await start(probe, "probe:auth-retry:0001", "Task", "Sub-task")
     result = await settled(probe, "probe:auth-retry:0001")
     assert recovered[0]
-    if changed:
-        assert result["status"] == "failed" and not creates(env) and wizard.commits == 0
-    else:
-        assert result["status"] == "passed" and len(creates(env)) == 3 and wizard.commits == 3
+    assert result["status"] == "passed" and len(creates(env)) == 3 and wizard.commits == 3
+    # A definite pre-write 401 may retry after recovery, without a separate /myself gate.
+    assert not any(path == "/rest/api/2/myself" for _method, path, _body in env.calls)
 
 
 async def test_translated_native_type_labels_match_authoritative_ids(build_env, monkeypatch, tmp_path):

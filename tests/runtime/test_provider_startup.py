@@ -31,7 +31,7 @@ def _call(fn):
 @pytest.fixture
 def client():
     cache = Cache(":memory:")
-    result = JiraClient(SimpleNamespace(jira_env="prod"), cache)
+    result = JiraClient(SimpleNamespace(jira_env="prod", jira_base="https://jira.test", project_key="DL"), cache)
     yield result
     result.close()
     cache.close()

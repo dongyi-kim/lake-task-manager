@@ -69,7 +69,7 @@ def test_busy_during_recovery_preserves_receipt_without_opening_circuit(receipts
 @pytest.mark.parametrize("method", ["current_user", "current_user_for_authorization"])
 def test_identity_overload_does_not_publish_empty_identity_or_change_auth_state(method):
     cache = Cache(":memory:")
-    client = JiraClient(SimpleNamespace(jira_env="prod"), cache)
+    client = JiraClient(SimpleNamespace(jira_env="prod", jira_base="https://jira.test", project_key="DL"), cache)
     client._provider = SimpleNamespace(get_json=_busy)
     client._provider_built = True
     client.needs_login = lambda: False
