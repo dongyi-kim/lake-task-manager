@@ -2,6 +2,8 @@
 import os
 import sys
 
+import pytest
+
 from app.domain import search   # noqa: E402
 from app.infra.cache import Cache                  # noqa: E402
 from app.jira.jira_client import JiraClient       # noqa: E402
@@ -200,24 +202,11 @@ def _keys(q):
     return [(x["key"], x.get("exact", False)) for x in r["jira"]["items"]]
 
 
-def test_exact_ticket_key_comes_first():
-    """티켓 키를 그대로 치면 그 티켓이 맨 위.
-
-    text~ 검색만으로는 본문에 그 키가 언급된 다른 티켓이 위에 올 수 있다
-    (예: DL-9001 이 코멘트에 적힌 DL-9007). 정확히 그 티켓을 찾는 게 의도다.
-    """
-    ks = _keys("DL-9001")
-    assert ks and ks[0] == ("DL-9001", True)
-
-
-def test_bare_number_resolves_to_project_key():
-    """번호만 쳐도 검색 대상 프로젝트 키를 붙여 찾는다."""
-    ks = _keys("9001")
-    assert ks and ks[0] == ("DL-9001", True)
-
-
-def test_key_match_is_case_insensitive():
-    ks = _keys("dl-9001")
+@pytest.mark.parametrize("query", ["DL-9001", "9001", "dl-9001"],
+                         ids=["exact-key", "bare-number", "case-insensitive"])
+def test_exact_ticket_key_comes_first(query):
+    """키·번호·소문자 검색 모두 본문에 키가 언급된 다른 티켓보다 정확한 티켓을 먼저 반환한다."""
+    ks = _keys(query)
     assert ks and ks[0] == ("DL-9001", True)
 
 

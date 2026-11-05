@@ -775,6 +775,7 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   gap: 10px; min-width: 0; padding: 8px 14px 9px;
   border-top: 1px solid var(--border); border-radius: 0 0 11px 11px;
   background: var(--panel); box-shadow: 0 -7px 18px rgba(0,0,0,.1); }
+.tkt-compose-dock.open { padding-top: 20px; }
 .tkt-cmt-compose { flex: 1 1 auto; min-width: 0; margin: 0; padding: 0; }
 .tkt-cmt-addbtn { border: 1px dashed var(--border); background: var(--panel); color: var(--muted);
   min-height: 34px; font-size: 12.5px; padding: 6px 14px; border-radius: 9px;
@@ -789,15 +790,15 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .tkt-cmt-draft-open { flex: none; font-size: 10.5px; color: var(--muted-2); }
 .tkt-cmt-err { margin-top: 8px; font-size: 12px; color: #d1425c; }
 
-/* 에디터 상단 경계 — 좌·우 패널의 분할선처럼 넓게 잡히는 띠다. 위로 끌면 작성창이 커진다. */
-.tkt-compose-editor { position: relative; padding-top: 16px; }
-.tkt-compose-resize { position: absolute; top: 12px; left: 0; right: 0; z-index: 5; height: 8px;
+/* 도크 상단 1px 경계의 중심 — 위로 끌면 작성창이 커지고, 버튼도 같은 선에 걸친다. */
+.tkt-compose-resize { position: absolute; top: -.5px; left: 0; right: 0; z-index: 5; height: 8px;
+  transform: translateY(-50%);
   cursor: row-resize; touch-action: none; user-select: none; }
 .tkt-compose-resize::after { content: ""; position: absolute; top: 3px; left: 0; right: 0; height: 2px;
   background: transparent; transition: background .12s; }
 .tkt-compose-resize:hover::after { background: var(--accent); }
 /* 폴딩 버튼은 경계선 중심에 걸치고, 라벨 아래 화살표를 둔 두 줄 손잡이로 보인다. */
-.tkt-compose-hide { position: absolute; top: 0; left: 50%; z-index: 6; transform: translateX(-50%);
+.tkt-compose-hide { position: absolute; top: -.5px; left: 50%; z-index: 6; transform: translate(-50%, -50%);
   width: 64px; height: 32px; padding: 3px 8px 4px; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 1px;
   cursor: pointer; font: inherit; font-size: 10.5px; line-height: 1; color: var(--muted);
@@ -807,9 +808,9 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); }
 .tkt-compose-hide > b { font-weight: 600; }
 .tkt-compose-hide:hover { color: var(--accent); border-color: var(--accent); background: var(--panel-2); }
-.tkt-compose-editor:has(.cmt-editor.maximized) .tkt-compose-hide {
-  position: fixed; top: calc(3vh - 16px); z-index: 9002; }
-.tkt-compose-editor:has(.cmt-editor.maximized) .tkt-compose-resize { display: none; }
+.tkt-compose-dock:has(.cmt-editor.maximized) .tkt-compose-hide {
+  position: fixed; top: 3vh; z-index: 9002; }
+.tkt-compose-dock:has(.cmt-editor.maximized) .tkt-compose-resize { display: none; }
 .tkt-compose-editor > .cmt-editor { margin-top: 0; }
 /* 새 댓글 도크는 상단 경계가 높이 조절을 맡는다. 기존 하단 손잡이는 이 자리에서만 감춘다. */
 .tkt-compose-editor > .cmt-editor:not(.maximized) > .cmt-ed-grip { display: none; }

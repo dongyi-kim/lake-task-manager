@@ -1897,6 +1897,16 @@ export default {
              늦어져도 작성창까지 함께 밀리거나 가려지지 않는다. 수정 에디터는 기존 댓글 자리에 남는다. -->
         <div class="tkt-compose-dock"
              :class="{ open: composing && !composeCollapsed, 'has-draft': composing && composeCollapsed && composeHasDraft }">
+          <!-- 본문과 도크의 공통 경계를 기준으로 높이 조절 띠와 중앙 폴딩 버튼을 배치한다. -->
+          <template v-if="composing && !composeCollapsed">
+            <div class="tkt-compose-resize" role="separator" aria-orientation="horizontal"
+                 aria-label="댓글 작성창 높이 조절" title="끌어서 높이 조절 · 더블클릭하면 기본 높이"
+                 @pointerdown="resizeCompose" @dblclick="resetComposeHeight"></div>
+            <button type="button" class="tkt-compose-hide" title="댓글 작성창 가리기"
+                    aria-label="댓글 작성창 가리기" @click="collapseCompose">
+              <b>가리기</b><span class="tkt-compose-hide-chevron" aria-hidden="true"></span>
+            </button>
+          </template>
           <!-- 강제 새로고침도 도크 안에 둬 작성창과 겹치지 않는다. -->
           <button class="tkt-refresh" :class="{ busy: refreshing }" @click="hardRefresh"
                   :title="refreshing ? '새로 받는 중…' : '강제 새로고침 (캐시 비우고 다시 받기)'"
@@ -1920,14 +1930,6 @@ export default {
               <template v-else>＋ 댓글 달기</template>
             </button>
             <div v-if="composing" v-show="!composeCollapsed" class="tkt-compose-editor">
-              <!-- 좌·우 패널 경계처럼 넓은 조작 영역을 두고, 중앙 폴딩 버튼은 경계선에 걸친다. -->
-              <div class="tkt-compose-resize" role="separator" aria-orientation="horizontal"
-                   aria-label="댓글 작성창 높이 조절" title="끌어서 높이 조절 · 더블클릭하면 기본 높이"
-                   @pointerdown="resizeCompose" @dblclick="resetComposeHeight"></div>
-              <button type="button" class="tkt-compose-hide" title="댓글 작성창 가리기"
-                      aria-label="댓글 작성창 가리기" @click="collapseCompose">
-                <b>가리기</b><span class="tkt-compose-hide-chevron" aria-hidden="true"></span>
-              </button>
               <CommentEditor ref="newCommentEditor" :ticket-key="tk" :mention-users="mentionUsers"
                 height-key="cmtEditorComposeH" :initial-height="180"
                 submit-label="등록" :submit-fn="submitNew"

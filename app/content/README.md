@@ -14,3 +14,14 @@ Jira 원문(HTML 또는 wiki markup)을 **화면에 안전하게 그릴 수 있�
 - 순수 함수 유지 — 여기서 상류(Jira)를 호출하지 마라. 프록시 URL 은 '문자열 재작성'만 하고,
   실제 미디어 fetch 는 `app/jira` 가 한다.
 - description/comment 포맷 규약(prod=JEDITOR HTML, mock/local=wiki)의 **변환 지점**이 여기다.
+
+## JEditor 콜아웃 저장 호환
+
+`callouts.py`는 LTM 6종과 JEditor native 패널의 대응을 관리한다. 읽기는 기존
+`callout-*`, HTML 저장은 `serialize_jira_html`의 native class와 고정 inline style을 사용한다.
+`success → idea`, `error → warning`은 가장 가까운 native 표현이며 기존 LTM class를 먼저
+남겨 종류를 보존한다. 원래 Jira의 점선 패널은 검증된 `data-jira-panel="dashed"`로 보존한다.
+위키 저장은 기존 매크로를 유지한다. 전체 문서나 기존 티켓을 일괄 변환하지 않는다.
+
+Native 스타일 근거: [JEditor 3.13.4 (Jira 8 호환)](https://marketplace.atlassian.com/rest/2/addons/com.jiraeditor.jeditor/versions/name/3.13.4?hosting=server)의
+`includes/ckeditor2/defaults.js`. 배경/아이콘은 Jira의 `includes/css/issueview.css`가 제공한다.

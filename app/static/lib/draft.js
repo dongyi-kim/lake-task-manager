@@ -60,6 +60,42 @@ export function loadDraft(key) {
   });
 }
 
+/** Copy the newest live legacy draft atomically, retaining originals for recovery. Mark every
+ * source as migrated so a successful submit/discard cannot resurrect an older account's draft.
+ * Blobs, mutation receipts and savedAt are copied unchanged; migration does not extend the TTL. */
+export function migrateDraft(key, matches) {
+  return ordered(key, async () => {
+    const db = await idb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite"), store = tx.objectStore(STORE);
+      tx.oncomplete = resolve;
+      tx.onabort = tx.onerror = () => reject(tx.error || new Error("초안 복원 실패"));
+      const sources = [];
+      let existing = null;
+      const scan = store.openCursor();
+      scan.onsuccess = () => {
+        const cursor = scan.result;
+        if (cursor) {
+          const record = cursor.value;
+          if (cursor.key === key) existing = record;
+          else if (typeof cursor.key === "string" && matches(cursor.key) && !record.migratedTo
+              && (record.preserveExpiredForMutation || Date.now() - (record.savedAt || 0) <= DRAFT_TTL_MS)) {
+            sources.push({ key: cursor.key, record });
+          }
+          cursor.continue();
+          return;
+        }
+        let newest = existing;
+        for (const source of sources) {
+          if (!newest || (source.record.savedAt || 0) > (newest.savedAt || 0)) newest = source.record;
+          store.put({ ...source.record, migratedTo: key }, source.key);
+        }
+        if (newest && newest !== existing) store.put(newest, key);
+      };
+    });
+  });
+}
+
 let swept = false;
 export async function purgeExpired() {
   if (swept) return;

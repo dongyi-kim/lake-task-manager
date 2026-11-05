@@ -9,11 +9,34 @@ suite를 실행한다.
 - Python 3.11, Ubuntu
 - `JIRA_ENV=mock`
 - Fake Jira, fake LLM, 로컬 fixture·로컬 서버만 사용
-- 실행 명령: `python -m pytest -q --basetemp=.cache/test-tmp/ci`
+- 실행 명령: `python -m pytest -q --basetemp=.cache/test-tmp/ci --durations=30 -ra --junitxml=.cache/test-results/pytest.xml`
 - GitHub secret, 사내 Jira/Confluence, OpenAI/Azure OpenAI API 호출 없음
 
 전체 suite의 최종 판정은 GitHub Actions 결과를 기준으로 한다. CI가 실패하면 실패한 test와
 직접 관련된 test를 로컬에서 재현한 뒤 수정한다.
+
+### 결과와 실행 시간 읽기
+
+- 로그의 `slowest 30 durations`에서 setup/call/teardown 비용을 구분하고, `-ra`의 skip 사유를
+  확인한다. 사례 수 감소만으로 속도 개선이나 검증 범위 유지를 판단하지 않는다.
+- 성공·실패한 pytest 결과는 `code-tests-results` artifact의 `pytest.xml`로 14일간 보존한다.
+  JUnit의 사례별 시간은 setup/call/teardown 합계다. pytest 실행 전 dependency 설치가 실패하면
+  보고서가 없을 수 있으며, artifact에는 이 XML만 올린다.
+- MCP의 `build_env`는 test call 안에서 환경을 만들므로 setup 시간만으로 비용을 알 수 없다.
+  JUnit properties의 `mcp_environment_build_count`와 `mcp_environment_build_seconds`는 각
+  test에서 완료한 환경 생성 횟수와 누적 시간이다. 이 값은 사례 전체 시간에 이미 포함되어 있다.
+  Jira·인증·SQLite cache·mutation receipt는 계속 test별로 격리한다.
+- 기본 CI dependency에는 Playwright/Chromium이 없다. 브라우저 검증의 skip은 통과한 검증이
+  아니며, 해당 회귀를 다룰 때는 준비된 로컬 브라우저 환경에서도 확인한다. 템플릿 없는 자산은
+  파일별 기계적 검사에서 적용 가능한 규칙만 검사하며 skip 사례로 만들지 않는다.
+
+### 테스트를 통합할 때
+
+같은 입력과 같은 검증을 반복하는 사례는 하나로 합치고, 입력이 다른 동작은 이름 있는
+parameter 사례로 보존한다. 자산·Python 소스의 기계적 검사는 파일별로 한 번 읽어 적용 가능한
+모든 규칙과 실패 사유를 보고한다. 선택 dependency가 필요한 JS parser는 별도 검사로 유지해
+parser가 없더라도 다른 소스 검증이 실행되게 한다. 도메인·HTTP·MCP·브라우저가 서로 다른
+경계에서 확인하는 회귀는 단순히 같은 기능을 다룬다는 이유로 삭제하지 않는다.
 
 ## 로컬 검증: 변경 범위만
 

@@ -13,6 +13,7 @@ import FormulaCallout from "./ui/FormulaCallout.js";
 import LoginOverlay from "./ui/LoginOverlay.js";
 import StatusBanner from "./ui/StatusBanner.js";
 import ToastStack from "./ui/ToastStack.js";
+import ClipboardTicketPrompt from "./ui/ClipboardTicketPrompt.js";
 import TicketMenu from "./ui/TicketMenu.js";
 import TicketDialog from "./ui/TicketDialog.js";
 import TransitionDialog from "./ui/TransitionDialog.js";
@@ -57,11 +58,11 @@ function ticketOf() {
 
 export default {
   name: "AppRoot",
-  components: { FormulaCallout, LoginOverlay, StatusBanner, ToastStack, TicketMenu, TicketDialog, TransitionDialog, SearchOverlay, SettingsMenu, FloatingRefresh, AddTicketFab, GuideSpot },
+  components: { FormulaCallout, LoginOverlay, StatusBanner, ToastStack, ClipboardTicketPrompt, TicketMenu, TicketDialog, TransitionDialog, SearchOverlay, SettingsMenu, FloatingRefresh, AddTicketFab, GuideSpot },
   // ready=health 판정 전. prod 첫 실행: 부팅로더 → (여기) 로딩 스피너 → 로그인 오버레이/대시보드.
   //   → 흰 화면 없음 + 로그인 필요 시 뷰를 먼저 안 띄워 401 에러 깜빡임 방지.
   data() { return { route: currentRoute(), theme: document.documentElement.getAttribute("data-theme") || "light",
-                    ready: false, needLogin: false, ticketKey: null, searchOpen: false,
+                    ready: false, needLogin: false, ticketKey: null, searchOpen: false, clipboardJiraBase: "",
                     // null = 아직 모름 · true = 매니저 · false = 아님.
                     // ★ 모를 때는 **막지 않는다**(false 일 때만 제한). 판정이 늦거나 실패했다고
                     //   매니저의 탭이 사라지거나 첫 화면에서 튕기는 쪽이, 워커에게 잠깐 보였다가
@@ -169,6 +170,7 @@ export default {
     //   Playwright 전용 스레드 한 줄로 직렬화돼 있어 세션이 굳으면 최대 JOB_TIMEOUT(180s)까지
     //   멎는다. 여기에 부팅을 묶으면 창이 '불러오는 중…' 에서 몇 분씩 갇힌다(실제로 겪었다).
     api.health().then((h) => {
+      this.clipboardJiraBase = String((h && h.jiraBase) || "");
       this.needLogin = !!(h && h.needLogin);
       this.hasCache = !!(h && h.hasCache);
       // 미인증인 채로 뜬 첫 화면 — 인증이 서는 순간을 지켜본다. 401 을 한 번도 안 겪는 경로
@@ -306,6 +308,8 @@ export default {
       <LoginOverlay />
       <!-- 우하단 알림 스택 — 인증·다운로드 등 주요 알림이 쌓였다 사라진다(항상 존재) -->
       <ToastStack />
+      <ClipboardTicketPrompt v-if="ready && !needLogin" :jira-base="clipboardJiraBase"
+                             :open-keys="[ticketKey, pageTicket]" />
       <!-- 좌하단 '+' 티켓 추가(공통) — 로그인·devtools 제외하고 어디서든 -->
       <AddTicketFab v-if="ready && (!needLogin || hasCache) && route !== 'devtools'" />
       <!-- 기능 안내(한 번만) — 목록은 lib/guides.js. 다이얼로그가 떠 있으면 띄우지 않는다:

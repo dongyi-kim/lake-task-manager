@@ -140,10 +140,10 @@ def test_new_comment_composer_hides_without_unmounting_and_shows_text_only_previ
     assert "async cancelCompose()" in dialog and "await ed.flushDraft()" in dialog
     assert 'clone.querySelectorAll("img, table, pre, hr, .img-wrap, .tableWrapper")' in editor
     assert "async flushDraft()" in editor and "async discardDraft()" in editor
-    assert ".tkt-compose-hide { position: absolute; top: 0; left: 50%" in css
+    assert ".tkt-compose-hide { position: absolute; top: -.5px; left: 50%" in css
     assert ".tkt-compose-resize { position: absolute" in css and "cursor: row-resize" in css
     assert ".tkt-compose-hide-chevron" in css and "border-bottom: 1.5px solid currentColor" in css
-    assert ".tkt-compose-editor:has(.cmt-editor.maximized) .tkt-compose-hide" in css
+    assert ".tkt-compose-dock:has(.cmt-editor.maximized) .tkt-compose-hide" in css
     assert ".tkt-compose-editor .cmt-ed-bar > .cmt-ed-btn.ghost { color: var(--danger)" in css
     assert ".tkt-cmt-addbtn.draft" in css and ".tkt-cmt-draft-v" in css
 

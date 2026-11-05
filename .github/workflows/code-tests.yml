@@ -46,5 +46,15 @@ jobs:
 
       - name: Run deterministic tests
         run: |
-          mkdir -p .cache/test-tmp
-          python -m pytest -q --basetemp=.cache/test-tmp/ci
+          mkdir -p .cache/test-tmp .cache/test-results
+          python -m pytest -q --basetemp=.cache/test-tmp/ci --durations=30 -ra --junitxml=.cache/test-results/pytest.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: code-tests-results
+          path: .cache/test-results/pytest.xml
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
