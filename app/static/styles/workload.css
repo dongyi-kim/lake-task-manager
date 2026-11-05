@@ -74,6 +74,10 @@
 .wtk.done { opacity: .85; }
 .wtk .tbadge { justify-self: start; }
 .wtk .ky { white-space: nowrap; }
+.wl-view .ticket-update-row.update-unread { box-shadow: inset 2px 0 var(--accent), inset 0 -1px var(--accent); }
+.wl-view .ticket-update-row.update-unread :is(.ky,.sm,.wl-risk-key,.wl-risk-title) { font-weight: 800; }
+.wl-view .ticket-update-row .tc-update-mark { position: static; width: 17px; height: 17px; margin-right: 4px; vertical-align: middle; }
+.wl-view .ticket-update-row .tc-update-mark svg { width: 12px; height: 12px; }
 .wtk .sm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
 .wtk .sched { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 5px; font-variant-numeric: tabular-nums; }
 

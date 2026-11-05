@@ -80,6 +80,9 @@ def test_grouping_preserves_bundles_paging_and_cards_without_requery(editor_brow
     options_content = options_panel.locator('.mt-options-content')
     assert options_panel.count() == 1 and options_content.is_visible()
     assert page.title() == "Lake Task Manager"
+    epic_choices = options_panel.locator('.mt-epic-check > span').all_text_contents()
+    assert epic_choices[:2] == ["모든 Epic", "사용자 VoC"]
+    assert epic_choices[2].startswith("Alpha") and epic_choices[3] == "Beta"
     panel_box = options_panel.bounding_box()
     assert panel_box["x"] == 0
     assert abs(panel_box["y"] + panel_box["height"] - 1080) < 1
@@ -179,10 +182,10 @@ def test_grouping_preserves_bundles_paging_and_cards_without_requery(editor_brow
     assert total_count() == 1
     assert page.locator('.mt-tile.week b').inner_text() == "1"
     due.select_option("calm")
-    assert visible_keys() == {"DL-100"}, "matching parent remains when all children are filtered out"
+    assert visible_keys() == {"DL-100", "DL-101"}, "Medium or higher retains the High child"
     assert total_count() == 1 and header.locator('.c-todo b').inner_text() == "1"
     select.select_option("none")
-    assert visible_keys() == {"DL-100"} and total_count() == 1
+    assert visible_keys() == {"DL-101"} and total_count() == 1
     select.select_option("wbs")
     priority.select_option("name:High")
     due.select_option("overdue")
@@ -289,6 +292,11 @@ def test_grouping_preserves_bundles_paging_and_cards_without_requery(editor_brow
 
     # Ownership does not imply membership in the original query. A long-resolved
     # context parent outside its date/JQL window must not return as a local match.
+    # Give the High child its own near deadline so the cumulative priority filter
+    # leaves only the parent's calm deadline in this scenario.
+    parent["atoms"][0]["dueDays"] = 2
+    with page.expect_response("**/api/mytasks/stream?*"):
+        page.evaluate("window.dispatchEvent(new CustomEvent('ticket-changed', {detail:{key:'DL-101'}}))")
     priority.select_option("name:Medium")
     due.select_option("calm")
     assert visible_keys() == {"DL-100"} and total_count() == 1

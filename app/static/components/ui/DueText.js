@@ -27,6 +27,7 @@ export default {
   computed: {
     done() { return this.card.statusCategory === "done"; },
     d() { const v = this.card.dueDays; return v === null || v === undefined ? null : v; },
+    hot() { return !this.done && Number.isFinite(this.d) && this.d <= 7; },
     label() { return dueLabel(this.card); },
     cls() {
       if (this.done) return "fin";
@@ -41,8 +42,9 @@ export default {
     },
   },
   template: `
-  <span class="tc-when" :class="[cls, { inh: !done && card.dueInherited }]" :title="tip">
+  <span class="tc-when" :class="[cls, { hot, inh: !done && card.dueInherited }]" :title="tip">
     <b v-if="done">{{ noDate ? '✓' : label }}</b>
     <b v-else><i v-if="card.dueInherited" class="inh-m">↑</i>{{ label }}</b>
+    <span v-if="hot" class="tc-due-flame" role="img" aria-label="마감 임박">🔥</span>
   </span>`,
 };

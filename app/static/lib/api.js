@@ -106,8 +106,9 @@ async function req(path, opts) {
   }
   if (onCacheMetadata && r.headers?.get) {
     const number = (key) => { const v = r.headers.get('X-LTM-' + key); return v ? Number(v) : undefined; };
-    onCacheMetadata({ fetchedAt: number('Fetched-At'), freshUntil: number('Fresh-Until'),
+    onCacheMetadata({ fetchedAt: number('Comments-Fetched-At') ?? number('Fetched-At'), freshUntil: number('Fresh-Until'),
                       displayUntil: number('Display-Until'),
+                      commentsComplete: number('Comments-Complete'), commentsTotal: number('Comments-Total'),
                       displayKind: r.headers.get('X-LTM-Display-Kind') || undefined });
   }
   return r.json();
@@ -330,6 +331,8 @@ export const api = {
   prefs: () => req("/api/prefs").then(p => applyPrefs(p)),
   setPrefs: (body) => jsonReq("/api/prefs", "PUT", body).then(p => applyPrefs(p, true)),
   cached: (path) => _memo.peek(path),
+  cacheMetadata: (path) => _memo.metadata(path),
+  cacheRevision: (path) => _memo.revision(path),
   refresh: () => req("/api/refresh", { method: "POST" }).then((r) => { _memo.clear(); return r; }),
   wbs: () => get("/api/wbs"),
   epicTree: (key) => get("/api/epic/" + encodeURIComponent(key) + "/tree"),
@@ -421,7 +424,10 @@ export const api = {
   ticketRelated: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/related"),
   ticketAttachments: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/attachments"),
   ticketDocuments: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/documents"),
-  ticketComments: (key) => get("/api/issue/" + encodeURIComponent(key) + "/comments"),
+  ticketComments: (key, freshAfter) => get("/api/issue/" + encodeURIComponent(key) + "/comments",
+    freshAfter ? { freshAfter } : undefined),
+  ticketCommentsComplete: (key, freshAfter) => get("/api/issue/" + encodeURIComponent(key) + "/comments/complete",
+    freshAfter ? { freshAfter } : undefined),
 
   // ── 링크 걸기(관련 티켓 / 관련문서) ──
   linkTypes: () => get("/api/linktypes"),                              // 관계 선택지(캐시됨)
@@ -444,6 +450,10 @@ export const api = {
     return req("/api/recent" + (p.size ? "?" + p.toString() : ""));
   },
   recentAdd: (item) => jsonReq("/api/recent", "POST", item),
+  ticketActivity: (keys) => jsonReq("/api/tickets/activity", "POST", { keys },
+    { headers: { "Content-Type": "application/json", "X-LTM-Local": "1" } }),
+  ticketViewed: (key, viewedThrough) => jsonReq("/api/tickets/viewed", "POST", { key, viewedThrough },
+    { headers: { "Content-Type": "application/json", "X-LTM-Local": "1" } }),
   recentClear: (url) => req("/api/recent" + (url ? "?url=" + encodeURIComponent(url) : ""),
                             { method: "DELETE" }),
 

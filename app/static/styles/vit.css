@@ -52,6 +52,11 @@
 .c-info .l1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 5px; }
 .c-info .l2 { display: flex; align-items: baseline; gap: 7px; margin-bottom: 5px; min-width: 0; cursor: pointer; }
 .c-info .l2:hover .summ { color: var(--accent); }
+.vit-view .ticket-update-row.update-unread { box-shadow: inset 0 -2px var(--accent); }
+.vit-view .ticket-update-row.update-unread :is(.summ,.sm,.key,.ky,.who,.asg) { font-weight: 800; }
+.vit-view .ticket-update-row .tc-update-mark { position: static; flex: 0 0 auto; width: 17px; height: 17px; align-self: center; }
+.vit-view .ticket-update-row .tc-update-mark svg { width: 12px; height: 12px; }
+.vit-view .ct-tkt .tc-update-mark { margin-right: 4px; }
 /* 제목만 크게 강조 — 타입·번호는 **서로 같은 크기**로 작게(제목의 보조 정보) */
 .c-info .l2 .summ { font-size: 17px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .c-info .l2 .ty { flex: 0 0 auto; font-weight: 700; font-size: 11.5px; }   /* 타입 = 타입색 텍스트(색은 인라인) */

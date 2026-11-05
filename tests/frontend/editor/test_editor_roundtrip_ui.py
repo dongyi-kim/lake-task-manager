@@ -97,6 +97,7 @@ def editor_browser(request, tmp_path):
     env = os.environ.copy()
     env.update({
         "JIRA_ENV": "mock",
+        "APP_PORT": str(port),
         "LAKE_NO_WINDOW": "1",
         "APP_PORT": str(port),  # Origin validation must use the same port as the fixture server.
         "LAKE_MOCK_LATENCY_MS": str(latency_ms),

@@ -3,6 +3,8 @@
 // 4계층 lazy(Epic→Task→Sub-Task), 파일탐색기식 가이드선/[+], 상태색 바. updated: 2026-07-08
 import { api } from "../../lib/api.js";
 import { moduleColor, categoryColor, wbsColor, statusLabel } from "../../lib/colors.js";
+import { isTicketUnread, observeTicketUpdates } from "../../lib/ticketUpdates.js";
+import TicketUpdateMark from "../ui/TicketUpdateMark.js";
 
 export default {
   name: "WbsView",
@@ -10,6 +12,7 @@ export default {
                     // Epic 별로 '못 가져온 하위 수'(-1 = 통째로 실패). 없는 것과 못 받은 것은 다르다.
                     partial: {}, hideBugVoc: true, _rt: null, _onResize: null }; },
   created() {
+    window.addEventListener("ticket-updates-changed", this._ticketUpdate = e => this.updateReadRows(e.detail?.keys));
     window.addEventListener('api-cache-updated', this._cacheUpdate = e => this.applyCacheUpdate(e.detail));
     window.addEventListener('cache-policy-changed', this._policyUpdate = () => {
       api.wbs().catch(() => {});
@@ -42,6 +45,7 @@ export default {
     window.addEventListener("resize", this._onResize);
   },
   unmounted() {
+    window.removeEventListener("ticket-updates-changed", this._ticketUpdate);
     window.removeEventListener('api-cache-updated', this._cacheUpdate);
     window.removeEventListener('cache-policy-changed', this._policyUpdate);
     this._treeEpoch = (this._treeEpoch || 0) + 1;
@@ -74,6 +78,12 @@ export default {
     },
   },
   methods: {
+    updateReadRows(keys) {
+      const selected = keys ? new Set(keys) : null;
+      for (const { element, card } of this._ticketRows || []) {
+        if (!selected || selected.has(card.key)) element.classList.toggle("update-unread", isTicketUnread(card));
+      }
+    },
     applyCacheUpdate({ path, value }) {
       if (!value || value.partial || value.error) return;
       if (path === '/api/wbs' && this.D) this.D = value;
@@ -144,6 +154,7 @@ export default {
       const R = this.$refs;
       const glabels = R.glabels, gscroll = R.gscroll, taxis = R.taxis, tgrid = R.tgrid, trows = R.trows, gtime = R.gtime;
       if (!glabels) return;
+      this._ticketRows = [];
       const expanded = this.expanded, epicTree = this.epicTree, unit = this.unit;
       const hideBV = this.hideBugVoc;
       const keep = (n) => !hideBV || (n.type !== "Bug" && n.component !== "사용자 VoC");   // Bug/VoC 시각 숨김
@@ -240,7 +251,12 @@ export default {
         const lr = el("div", "lrow " + level + (o.hasChildren ? " clk" : "") + (o.isOpen ? " open" : ""));
         lr.style.height = H[level] + "px";
         const nm = el("div", "lname");
-        nm.innerHTML = guideHTML(o) + "<span class='lc'>" + o.html + "</span>";
+        nm.innerHTML = guideHTML(o) + "<span class='lc'>" + (o.card ? TicketUpdateMark.template : "") + o.html + "</span>";
+        if (o.card) {
+          lr.classList.add("ticket-update-row");
+          lr.dataset.key = o.card.key;
+          self._ticketRows.push({ element: lr, card: o.card });
+        }
         lr.appendChild(nm);
         lr.appendChild(el("div", "lpct", o.pct || ""));
         schedCells(lr, o.dates);
@@ -343,6 +359,7 @@ export default {
             const epicX = xpx(pd(p.start));
             const shared = epicWbsCount[p.epicKey] > 1 ? "<span class='shared'>×" + epicWbsCount[p.epicKey] + "</span>" : "";
             emit("epic", {
+              card: ep,
               anc: [], isLast: lastE, hasChildren: true, isOpen: eOpen,
               html: badge("Epic") + "<span class='wt'>" + p.weight + "</span><span class='nm'>" + ep.name + "</span>" + shared,
               pct: pct(ep.progressPct), dates: { s: p.start, e: p.end },
@@ -390,6 +407,7 @@ export default {
               const lastT = (ti === nt - 1);
               const taskX = xpx(pd(t.start));
               emit("task", {
+                card: t,
                 anc: [!lastE], isLast: lastT, hasChildren: subs.length > 0, isOpen: tOpen,
                 html: badge(t.type) + "<span class='nm'>" + t.summary + "</span><span class='tag'>" + t.key + "</span>",
                 dates: { s: t.start, e: t.end },
@@ -405,6 +423,7 @@ export default {
               const subAncX = []; if (!lastE) subAncX.push(wbsX); if (!lastT) subAncX.push(epicX);
               subs.forEach((s, si) => {
                 emit("sub", {
+                  card: s,
                   anc: [!lastE, !lastT], isLast: (si === ns - 1), hasChildren: false,
                   html: badge(s.type) + "<span class='nm'>" + s.summary + "</span><span class='tag'>" + s.key + "</span>",
                   dates: null,
@@ -418,6 +437,8 @@ export default {
           });
         });
       });
+      this.updateReadRows();
+      observeTicketUpdates(this._ticketRows.map(row => row.card));
     },
   },
   template: `

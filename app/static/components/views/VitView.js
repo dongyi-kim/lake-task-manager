@@ -7,6 +7,9 @@ import { moduleColor, STATUS_ORDER, STATUS_VAR, statusLabel, typeLabel, TYPE_BG 
 import { esc, mdISO, ymd, ymdhm, mdhm, tkt, dday } from "../../lib/fmt.js";
 import TypeBadge from "../ui/TypeBadge.js";
 import StatusPill from "../ui/StatusPill.js";
+import TicketUpdateMark from "../ui/TicketUpdateMark.js";
+import { ticketUpdateView } from "../../lib/ticketUpdateView.js";
+import { observeTicketUpdates } from "../../lib/ticketUpdates.js";
 
 const KLAB = { created: "생성됨", done: "완료됨", resolved: "해결됨" };
 
@@ -16,12 +19,18 @@ const STALE_DAYS = 5;
 
 export default {
   name: "VitView",
-  components: { TypeBadge, StatusPill },
+  components: { TypeBadge, StatusPill, TicketUpdateMark },
+  mixins: [ticketUpdateView],
   data() { return { d: null, err: "", detail: {}, detailOpen: {}, hideDone: false,
                     mods: {}, modErr: {}, modPartial: {}, modLoading: {},
                     detailErr: {}, detailLoading: {}, busy: false,
                     briefDays: BRIEF_DAYS }; },
+  watch: { updateTickets(rows) { observeTicketUpdates(rows); } },
   computed: {
+    updateTickets() {
+      return this.allIssues.flatMap(row => [row, ...(row.children || [])])
+        .concat(Object.values(this.detail).flatMap(row => this.flatTree(row.tree).map(item => item.node)));
+    },
     allIssues() {
       if (!this.d) return [];
       return this.d.modules.flatMap((m) => this.mods[m.module] || []);
@@ -283,6 +292,7 @@ export default {
       const prog = n.resolved ? ("완료 " + ymdhm(n.resolved)) : (n.created ? ("생성 " + ymdhm(n.created)) : "");
       return `<span class='typc'>${g}</span>`
         + `<span class='tcard'>`
+        + (this.isUnread(n) ? TicketUpdateMark.template : "")
         + `<span class='tbadge v-solid' style='--tc:${TYPE_BG[n.type] || "var(--ty-task)"}'>${typeLabel(n.type)}</span>`
         + `<span class='ky'>${esc(n.key)}</span>`
         + `<span class='sm'>${esc(n.summary || "")}</span>`
@@ -353,10 +363,10 @@ export default {
           <template v-for="it in sortedIssues(m.module)" :key="it.key">
             <div class="vrow">
               <!-- 티켓 컬럼 3줄: [제목(크게)|타입|번호] / [상태|기간상태뱃지|담당자] / [시작|Due] -->
-              <div class="c-info">
+              <div class="c-info ticket-update-row" :class="{ 'update-unread': isUnread(it) }" :data-key="it.key">
                 <div class="l2 tkt" :data-key="it.key" role="button" tabindex="0"
                      :title="it.key + ' · ' + it.summary">
-                  <span class="summ">{{ it.summary }}</span><span class="ty" :style="{ color: tyColor(it.type) }">{{ tyLabel(it.type) }}</span><span class="key">{{ it.key }}</span>
+                  <TicketUpdateMark v-if="isUnread(it)" /><span class="summ">{{ it.summary }}</span><span class="ty" :style="{ color: tyColor(it.type) }">{{ tyLabel(it.type) }}</span><span class="key">{{ it.key }}</span>
                 </div>
                 <div class="l1">
                   <StatusPill :cat="it.statusCategory" :label="it.status" />
@@ -382,10 +392,10 @@ export default {
                   <span class="cv-seg s-done" :style="{ flexGrow: kidStats(it).done }"></span>
                 </div>
                 <div class="c-children">
-                  <div v-for="c in kids(it)" :key="c.key" class="ctr tkt" :data-key="c.key"
+                  <div v-for="c in kids(it)" :key="c.key" class="ctr tkt ticket-update-row" :class="{ 'update-unread': isUnread(c) }" :data-key="c.key"
                        role="button" tabindex="0" :title="c.key + ' · ' + c.summary">
                     <div class="scell" :class="scls(c.statusCategory)">{{ slb(c.status, c.statusCategory) }}</div>
-                    <div class="ct-tkt"><span class="sm">{{ c.summary }}</span><span class="ty">{{ tyLabel(c.type) }}</span></div>
+                    <div class="ct-tkt"><TicketUpdateMark v-if="isUnread(c)" /><span class="sm">{{ c.summary }}</span><span class="ty">{{ tyLabel(c.type) }}</span></div>
                     <div class="dt">{{ fy(c.created) || "—" }}</div>
                     <div class="dt">{{ c.resolved ? fy(c.resolved) : "—" }}</div>
                     <div class="asg">{{ c.assignee || "—" }}</div>
@@ -406,7 +416,7 @@ export default {
               <div v-if="detail[it.key]" class="dcols">
                 <div>
                   <div class="sec-t">소속 티켓 트리 ({{ flatTree(detail[it.key].tree).length }}개 · 상태·최근 진척)</div>
-                  <div v-for="(r, k) in flatTree(detail[it.key].tree)" :key="k" class="tnode tkt"
+                  <div v-for="(r, k) in flatTree(detail[it.key].tree)" :key="k" class="tnode tkt ticket-update-row" :class="{ 'update-unread': isUnread(r.node) }"
                        :data-key="r.node.key" role="button" tabindex="0"
                        :title="r.node.key + ' · ' + r.node.summary" v-html="treeRowHtml(r)"></div>
                 </div>

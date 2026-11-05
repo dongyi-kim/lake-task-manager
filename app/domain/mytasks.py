@@ -111,6 +111,7 @@ def _node(raw, today, epic_field):
         "pri": pri_name, "priRank": pri_rank, "priBand": _PRI_BAND.get(pri_rank, "mid"),
         "due": f.get("duedate") or None,
         "dueDays": dd,
+        "updated": f.get("updated") or None,
         "resolved": f.get("resolutiondate") or None,   # 완료 카드는 마감 대신 완료일을 보인다
         "sp": f.get(epic_field["sp"]),
         "epic": f.get(epic_field["epic"]) or None,
@@ -204,6 +205,7 @@ def _hydrated_group(parent, children, context, expected_keys):
         "role": initial.get("role", parent.get("role")),
         "assignee": parent["assignee"], "assigneeId": parent["assigneeId"],
         "status": parent["status"], "statusCategory": parent["statusCategory"],
+        "updated": parent.get("updated"),
         "reporter": parent.get("reporter"), "reporterId": parent.get("reporterId"),
         "voc": parent.get("voc"), "epic": parent["epic"],
         "pri": parent["pri"], "priRank": min((node["priRank"] for node in mine), default=2),
@@ -873,6 +875,7 @@ def build_my_tasks(client, user=None, include_done=False, limit=None, scope="ass
                 "queryMatched": node["key"] in seen,
                 "assignee": node["assignee"], "assigneeId": node["assigneeId"],
                 "status": node["status"], "statusCategory": node["statusCategory"],
+                "updated": node.get("updated"),
                 "reporter": node.get("reporter"), "reporterId": node.get("reporterId"),
                 "voc": node.get("voc"),          # Epic 이 없어도 VoC 는 전용 Epic 처럼 묶고 색을 준다
                 "epic": node["epic"], "pri": node["pri"], "priRank": node["priRank"],

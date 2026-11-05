@@ -47,6 +47,11 @@
 .lrow .ltil { font-size: 10px; color: var(--muted); text-align: center; }
 .lrow .led { font-size: 10px; color: var(--muted); text-align: left; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .lrow .tag { font-size: 9px; color: var(--muted); background: var(--track); border-radius: 2px; padding: 1px 5px; flex: 0 0 auto; }
+.wbs-view .ticket-update-row.update-unread { box-shadow: inset 2px 0 var(--accent), inset 0 -1px var(--accent); }
+.wbs-view .ticket-update-row.update-unread :is(.nm,.tag) { font-weight: 800; }
+.wbs-view .ticket-update-row .tc-update-mark { display: none; position: static; flex: 0 0 auto; width: 17px; height: 17px; }
+.wbs-view .ticket-update-row.update-unread .tc-update-mark { display: inline-flex; }
+.wbs-view .ticket-update-row .tc-update-mark svg { width: 12px; height: 12px; }
 .lrow.clk { cursor: pointer; } .lrow.clk:hover { background: rgba(127,127,127,.05); }
 
 /* 파일탐색기식 트리 가이드선 + [+]/[−] */

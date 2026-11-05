@@ -78,6 +78,11 @@ class _UncacheablePartial(RuntimeError):
         self.value = value
 
 
+def _comment_signature(rows):
+    return [[str(row.get(field) or "") for field in ("id", "date", "updated")]
+            for row in rows if isinstance(row, dict)]
+
+
 def _repair_leaked_color_macros(html):
     """일부 renderedFields 응답에 글자로 남은 안전한 hex color 매크로만 HTML로 복구한다."""
     return _LEAKED_COLOR_RE.sub(
@@ -238,6 +243,7 @@ def _display_node(raw, sp_field, with_subs=False):
         "type": (f.get("issuetype") or {}).get("name", ""),
         "summary": f.get("summary") or raw.get("key"),
         "statusName": st.get("name", ""),
+        "updated": f.get("updated") or None,
         "statusCat": _norm_cat((st.get("statusCategory") or {}).get("key")),
         "start": (f.get("created") or "")[:10] or None,
         "end": (f.get("duedate") or f.get("resolutiondate") or f.get("updated") or "")[:10] or None,
@@ -254,6 +260,7 @@ def _display_node(raw, sp_field, with_subs=False):
                 "type": (sf.get("issuetype") or {}).get("name", "Sub-Task"),
                 "summary": sf.get("summary") or s.get("key"),
                 "statusName": sst.get("name", ""),
+                "updated": sf.get("updated") or None,
                 "statusCat": _norm_cat((sst.get("statusCategory") or {}).get("key")),
                 "component": _comp_of(sf),
             })
@@ -2151,6 +2158,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             "statusCategory": _norm_cat(((f.get("status") or {}).get("statusCategory") or {}).get("key")),
             "status": ((f.get("status") or {}).get("name") or ""),
             "created": f.get("created") or None,          # 전체 datetime 유지(뉴스 시간표시)
+            "updated": f.get("updated") or None,
             "resolved": f.get("resolutiondate") or None,
             "children": [],
         }
@@ -2216,21 +2224,99 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             "html": html,
         }
 
-    def _issue_comments(self, key, limit=5):
+    def _issue_comments(self, key, limit=5, *, fresh_after=None):
         """코멘트 — `comments:{env}:{key}` 로 티켓 단위 캐시(항상 CACHE_COMMENTS 건 보관)."""
         want = max(1, int(limit or 5))
 
         def do():
+            fence = self.cache.fence()
+            started = time.time()
             data = self.provider.get_json(
                 f"/rest/api/2/issue/{key}/comment",
                 params={"maxResults": self.CACHE_COMMENTS, "orderBy": "-created",
                         "expand": "renderedBody"})
-            return [self._project_comment_row(c)
+            rows = [self._project_comment_row(c)
                     for c in (data.get("comments") or [])[:self.CACHE_COMMENTS]]
-        rows = self.cache.get_or_set(f"comments:{self.env}:{key}", self.s.cache_ttl_seconds, do)[0]
+            total = data.get("total")
+            ids = [row.get("id") for row in rows]
+            complete = (type(total) is int and total >= 0 and data.get("startAt") == 0
+                        and total == len(rows) and all(ids) and len(set(ids)) == len(ids))
+            coverage_key = f"comments:{self.env}:{key}:coverage"
+            self.cache.set_if_fence(coverage_key,
+                {"total": total if type(total) is int and total >= 0 else None,
+                 "complete": complete, "signature": _comment_signature(rows)},
+                self.s.cache_ttl_seconds, fence, fetched_at=started)
+            note_read(self.cache.metadata(coverage_key))
+            return rows
+        cache_key = f"comments:{self.env}:{key}"
+        source = self.cache.metadata(cache_key) if fresh_after is not None else None
+        if fresh_after is not None and (not source or source["invalidated"]
+                                       or source["fetchedAt"] * 1000 < fresh_after):
+            # A newer detail cannot acknowledge an older cached comment list. Join this
+            # key's normal refresh flight and await its result; failures keep the display
+            # copy and its source age, but must not be returned as a proven fresh list.
+            rows = self.cache.refresh(cache_key, self.s.cache_ttl_seconds, do,
+                                      min_fetched_at=fresh_after / 1000)
+        else:
+            rows = self.cache.get_or_set(cache_key, self.s.cache_ttl_seconds, do)[0]
         return rows[:want]
 
-    def comment_snapshot(self, key, *, cap=None, page_size=None):
+    def comment_coverage(self, key, rows):
+        hit = self.cache.get_alive(f"comments:{self.env}:{key}:coverage", record=False)
+        proof = hit[0] if hit and isinstance(hit[0], dict) else {}
+        matches = proof.get("signature") == _comment_signature(rows)
+        return {"complete": bool(matches and proof.get("complete")),
+                "total": proof.get("total") if matches else None}
+
+    def issue_comments_complete(self, key, *, fresh_after=None):
+        """Dialog-only coverage, sharing completed snapshots and the normal mutation prefix."""
+        base_key = f"comments:{self.env}:{key}"
+        base = self.cache.get_alive(base_key, record=False)
+        source = self.cache.metadata(base_key)
+        if (base and source and not source["invalidated"]
+                and (fresh_after is None or source["fetchedAt"] * 1000 >= fresh_after)
+                and self.comment_coverage(key, base[0])["complete"]):
+            note_read(source)
+            rows = base[0]
+            return {"key": key, "comments": self._comments_display_ownership(rows), "total": len(rows), "returned": len(rows),
+                    "pages": 1, "complete": True, "hasMore": False, "remaining": 0,
+                    "fetchedAt": source["fetchedAt"]}
+
+        cache_key = base_key + ":full"
+        def produce():
+            started = time.time()
+            with background_upstream():
+                snapshot = self.comment_snapshot(key, _for_ui=True)
+            if not snapshot["complete"]:
+                raise _UncacheablePartial(snapshot)
+            # The first page predates later pages. Finish time would wrongly prove coverage
+            # of an edit made to an earlier page while the remaining pages were loading.
+            note_read({"kind": "comments", "fetchedAt": started,
+                       "freshUntil": started + self.s.cache_ttl_seconds,
+                       "displayUntil": started + self.cache.display_ttl(cache_key), "state": "fresh"})
+            return snapshot
+        try:
+            snapshot = self.cache.refresh(cache_key, self.s.cache_ttl_seconds, produce,
+                min_fetched_at=fresh_after / 1000 if fresh_after is not None else None)
+        except _UncacheablePartial as exc:
+            return {**exc.value, "partial": True, "fetchedAt": None}
+        source = self.cache.metadata(cache_key)
+        if (not source or source["invalidated"]
+                or (fresh_after is not None and source["fetchedAt"] * 1000 < fresh_after)):
+            return {**snapshot, "complete": False, "partial": True, "hasMore": True, "fetchedAt": None,
+                    "incompleteReason": "changed_during_read"}
+        return {**snapshot, "comments": self._comments_display_ownership(snapshot["comments"]),
+                "fetchedAt": source["fetchedAt"]}
+
+    def _comments_display_ownership(self, rows):
+        # The normal comments request already resolved this identity. Full coverage must not
+        # add an auth lookup, nor cache actor-specific flags inside the shared snapshot.
+        hit = self.cache.get_alive(f"myself:{self.env}", record=False)
+        me = str((hit[0].get("id") if hit and isinstance(hit[0], dict) else "") or "").casefold()
+        return [dict(row, mine=str(row.get("authorId") or "").casefold() == me)
+                for row in rows] if me else rows
+
+    def comment_snapshot(self, key, *, cap=None, page_size=None, _for_ui=False):
         """Return a bounded, pagination-proven comment snapshot for evidence acquisition.
 
         This deliberately bypasses the 20-row UI cache.  ``complete`` means the provider
@@ -2238,16 +2324,18 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         page through that total was observed exactly once.  Missing totals, repeated or
         non-advancing pages, provider errors and cap overflow remain explicit incomplete
         evidence rather than being misreported as an empty/full history.
+        Private dialog mode follows the same pagination proof through the declared total;
+        it preserves UI media proxying and does not alter the bounded evidence/MCP contract.
         """
         try:
             if ((cap is not None and type(cap) is not int)
                     or (page_size is not None and type(page_size) is not int)):
                 raise ValueError("comment snapshot bounds must be integers")
-            maximum = min(
+            maximum = None if _for_ui else min(
                 self.COMMENT_SNAPSHOT_CAP,
                 max(1, cap if cap is not None else self.COMMENT_SNAPSHOT_CAP),
             )
-            size = min(
+            size = 100 if _for_ui else min(
                 self.COMMENT_SNAPSHOT_PAGE_SIZE,
                 maximum,
                 max(1, page_size if page_size is not None
@@ -2267,10 +2355,10 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         reason = ""
         error = ""
         try:
-            while len(rows) < maximum:
+            while maximum is None or len(rows) < maximum:
                 data = self.provider.get_json(
                     f"/rest/api/2/issue/{key}/comment",
-                    params={"startAt": start, "maxResults": min(size, maximum - len(rows)),
+                    params={"startAt": start, "maxResults": min(size, maximum - len(rows)) if maximum is not None else size,
                             "orderBy": "-created", "expand": "renderedBody"},
                 ) or {}
                 if not isinstance(data, dict):
@@ -2302,8 +2390,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                         duplicate = True
                         break
                     seen_ids.add(comment_id)
-                    rows.append(self._project_comment_row(comment, proxy_media=False))
-                    if len(rows) >= maximum:
+                    rows.append(self._project_comment_row(comment, proxy_media=_for_ui))
+                    if maximum is not None and len(rows) >= maximum:
                         break
                 if duplicate:
                     reason = "duplicate_page"
@@ -2319,7 +2407,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             if not reason:
                 if total is None:
                     reason = "total_missing"
-                elif total > maximum:
+                elif maximum is not None and total > maximum:
                     reason = "cap_exceeded"
                 elif len(rows) != total or start < total:
                     reason = "coverage_mismatch"
@@ -2526,11 +2614,12 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         raw = self.get_issue(key)
         return _display_node(raw, self.s.sp_field_id, with_subs=True) if raw else None
 
-    def issue_comments(self, key, limit=5):
+    def issue_comments(self, key, limit=5, *, fresh_after=None):
         """단일 티켓 코멘트 — mock/local/prod 동일 형태.
         본인 댓글 판정(mine)은 **캐시 밖**에서 매번 세션 사용자로 매긴다 — 캐시에 구우면 세션이
         아직 없던 순간의 값이 굳는다. 프론트는 이 서버 판정(mine)을 그대로 믿는다(수정/삭제 노출)."""
-        rows = self._issue_comments(key, limit)
+        rows = (self._issue_comments(key, limit, fresh_after=fresh_after) if fresh_after is not None
+                else self._issue_comments(key, limit))
         me = ((self.current_user() or {}).get("id") or "").strip().lower()
         return [dict(c, mine=bool(me) and (c.get("authorId") or "").strip().lower() == me) for c in rows]
 

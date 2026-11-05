@@ -18,6 +18,9 @@ import {
 import ProgressBar from "../ui/ProgressBar.js";
 import TypeBadge from "../ui/TypeBadge.js";
 import Avatar from "../ui/Avatar.js";
+import TicketUpdateMark from "../ui/TicketUpdateMark.js";
+import { ticketUpdateView } from "../../lib/ticketUpdateView.js";
+import { observeTicketUpdates } from "../../lib/ticketUpdates.js";
 
 // 상세 3컬럼 — 상태 흐름 순서(할당 → 진행 → 완료). 세 버킷 모두 같은 행 컴포넌트를 쓴다.
 // '최근 완료' 로 볼 기간(일) — 백엔드 JiraClient.WL_DONE_DAYS 와 같아야 한다.
@@ -39,7 +42,8 @@ const NONE_COLOR = "var(--border-hi)";    // Epic 없음
 
 export default {
   name: "WorkloadView",
-  components: { ProgressBar, TypeBadge, Avatar },
+  components: { ProgressBar, TypeBadge, Avatar, TicketUpdateMark },
+  mixins: [ticketUpdateView],
   data() {
     // 옵션(완료 성과 계산식·정렬)은 브라우저에 남긴다 — 매번 다시 고르는 건 화면이 할 일이다.
     let pref = {};
@@ -116,7 +120,12 @@ export default {
     window.removeEventListener('workspace-config-updated', this._workspaceUpdate);
   },
   activated() { this.scheduleMeasure(); },   // keep-alive 재활성 시 평균선 재측정
+  watch: { updateTickets(rows) { observeTicketUpdates(rows); } },
   computed: {
+    updateTickets() {
+      const rows = Object.values(this.tkd).flatMap(box => WL_COLS.flatMap(col => box[col.k] || []));
+      return rows.concat([...(this.dueRisk?.over || []), ...(this.dueRisk?.soon || [])].map(row => row.t));
+    },
     WL_COLS() { return WL_COLS; },
     DONE_DAYS() { return DONE_DAYS; },
     ASSIGNED_WINDOWS() { return ASSIGNED_WINDOWS; },
@@ -1138,10 +1147,10 @@ export default {
                         <button v-if="bucketStateOf(p.id, c.k).kind !== 'auth'" class="wl-retry" @click.stop="retryBucket(p.id, c.k)">다시 시도</button>
                       </div>
                       <template v-else-if="bucketStateOf(p.id, c.k).status === 'success' || bucketStateOf(p.id, c.k).status === 'partial'">
-                        <div v-for="t in tkd[p.id][c.k]" :key="c.k + '-' + t.key" class="wtk tkt"
-                             :class="c.cls" :data-key="t.key" role="button" tabindex="0"
+                        <div v-for="t in tkd[p.id][c.k]" :key="c.k + '-' + t.key" class="wtk tkt ticket-update-row"
+                             :class="[c.cls, { 'update-unread': isUnread(t) }]" :data-key="t.key" role="button" tabindex="0"
                              :title="t.key + ' · ' + t.summary">
-                          <TypeBadge :type="t.type" /><span class="ky">{{ t.key }}</span>
+                          <TypeBadge :type="t.type" /><span class="ky"><TicketUpdateMark v-if="isUnread(t)" />{{ t.key }}</span>
                           <span class="sm">{{ vocStrip(t) }}</span>
                           <span class="sched">
                             <span v-if="t.epic" class="ebadge" :style="{ '--sig': epicColorOf(p.id, t) }"
@@ -1207,17 +1216,17 @@ export default {
                 <div class="wl-mon-big" :class="{ warn: dueRisk.over.length }">초과 <b>{{ dueRisk.over.length }}{{ dueRisk.complete ? '' : '+' }}</b> · 임박 <b>{{ dueRisk.soon.length }}{{ dueRisk.complete ? '' : '+' }}</b></div>
                 <div v-if="dueRiskBusy" class="muted mini"><span class="spinner"></span> 실패한 항목 다시 확인 중…</div>
                 <div class="wl-risk-list">
-                  <span v-for="(x, i) in dueRisk.over.slice(0, 6)" :key="'o' + i" class="wl-risk-row tkt" :data-key="x.t.key" role="button"
+                  <span v-for="(x, i) in dueRisk.over.slice(0, 6)" :key="'o' + i" class="wl-risk-row tkt ticket-update-row" :class="{ 'update-unread': isUnread(x.t) }" :data-key="x.t.key" role="button"
                         :title="x.t.key + ' · ' + x.who + ' · ' + x.t.summary">
-                    <b class="wl-risk-key">{{ x.t.key }}</b>
+                    <b class="wl-risk-key"><TicketUpdateMark v-if="isUnread(x.t)" />{{ x.t.key }}</b>
                     <span class="wl-risk-title">{{ vocStrip(x.t) }}</span>
                     <span v-if="x.t.voc && !x.t.epic" class="wl-risk-epic voc" :style="{ '--ec': riskEpic(x.t).color }"><span v-for="(sg, si) in vocSegs(x.t.summary)" :key="si" class="vseg" :class="{ head: si === 0 }">{{ sg }}</span></span>
                     <span v-else class="wl-risk-epic" :style="{ '--ec': riskEpic(x.t).color }">{{ riskEpic(x.t).label }}</span>
                     <b class="wl-risk-dd" :class="ddCls(x.t.due)">{{ dd(x.t.due) }}</b>
                   </span>
-                  <span v-for="(x, i) in dueRisk.soon.slice(0, 4)" :key="'s' + i" class="wl-risk-row tkt" :data-key="x.t.key" role="button"
+                  <span v-for="(x, i) in dueRisk.soon.slice(0, 4)" :key="'s' + i" class="wl-risk-row tkt ticket-update-row" :class="{ 'update-unread': isUnread(x.t) }" :data-key="x.t.key" role="button"
                         :title="x.t.key + ' · ' + x.who + ' · ' + x.t.summary">
-                    <b class="wl-risk-key">{{ x.t.key }}</b>
+                    <b class="wl-risk-key"><TicketUpdateMark v-if="isUnread(x.t)" />{{ x.t.key }}</b>
                     <span class="wl-risk-title">{{ vocStrip(x.t) }}</span>
                     <span v-if="x.t.voc && !x.t.epic" class="wl-risk-epic voc" :style="{ '--ec': riskEpic(x.t).color }"><span v-for="(sg, si) in vocSegs(x.t.summary)" :key="si" class="vseg" :class="{ head: si === 0 }">{{ sg }}</span></span>
                     <span v-else class="wl-risk-epic" :style="{ '--ec': riskEpic(x.t).color }">{{ riskEpic(x.t).label }}</span>
