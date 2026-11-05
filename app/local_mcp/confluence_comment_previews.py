@@ -6,7 +6,7 @@ from html.parser import HTMLParser
 from app.auth.base import UpstreamUnavailable
 
 
-COMMENT_PAGE_CHARACTERS = 12000
+COMMENT_PAGE_BYTES = 8000
 
 
 class _PreviewText(HTMLParser):
@@ -51,7 +51,7 @@ def comment_page(cid, data, start, limit):
         preview = _preview(row)
         candidate = {**result, "results": result["results"] + [preview]}
         # Reserve room for the final pagination fields without depending on upstream page size.
-        if len(json.dumps(candidate, ensure_ascii=False)) > COMMENT_PAGE_CHARACTERS - 128:
+        if len(json.dumps(candidate, ensure_ascii=False).encode("utf-8")) > COMMENT_PAGE_BYTES - 128:
             break
         result["results"].append(preview)
     count = len(result["results"])
