@@ -841,12 +841,15 @@ def _require_person_access(user):
 async def live_health():
     """Process watchdog: no worker pool, cache lock, disk, Jira, or login probe."""
     try:
-        healthy = _runtime_health_hook is None or _runtime_health_hook()
+        components = _runtime_health_hook() if _runtime_health_hook else True
+        healthy = components.get("healthy", False) if isinstance(components, dict) else components
     except Exception:
+        components = {"reason": "health_hook_error"}
         healthy = False
     return JSONResponse(status_code=200 if healthy else 503,
                         content={"status": "ok" if healthy else "unresponsive", "pid": os.getpid(),
-                                 "instance": os.environ.get("LAKE_SUPERVISED_WORKER", "")})
+                                 "instance": os.environ.get("LAKE_SUPERVISED_WORKER", ""),
+                                 **({"components": components} if isinstance(components, dict) else {})})
 
 
 @app.get("/api/health")
@@ -1174,6 +1177,9 @@ _local_mcp = LocalMcpRuntime(
     request_login=request_service_login,
 )
 _local_mcp.install(app)
+from app.infra.runtime_diagnostics import install_runtime_monitor
+install_runtime_monitor(app, directory=CACHE_DIR / "logs" / "runtime", mcp_host=_local_mcp.transport_host,
+                        components=lambda: _runtime_health_hook() if _runtime_health_hook else None, revision=_BUILD_REV)
 
 if _devtools.enabled(_settings, "hierarchy_test"):
     from app.routes.dev_hierarchy_probe import build_hierarchy_probe_router

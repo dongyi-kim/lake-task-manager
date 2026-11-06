@@ -131,7 +131,7 @@ def probe_worker(base_url, worker, instance, timeout=2):
 def run_supervisor(argv, *, cwd, env, base_url, on_ready=None, on_failure=None, worker_factory=OwnedWorker,
                    probe=probe_worker, clock=time.monotonic, sleep=time.sleep,
                    startup_grace=60, interval=5, misses_allowed=3, restart_limit=3,
-                   restart_window=600, report=print):
+                   restart_window=600, report=print, record=lambda *args, **kwargs: None):
     """Return 0 on normal quit; stop explicitly after three recoveries in ten minutes.
 
     Each replacement gets identical executable/arguments/cwd/environment except for
@@ -155,16 +155,21 @@ def run_supervisor(argv, *, cwd, env, base_url, on_ready=None, on_failure=None, 
         child_env = {**env, WORKER_ENV: instance}
         try:
             worker = worker_factory(list(argv), cwd, child_env)
+            record("worker_spawned", workerPid=worker.pid)
         except Exception as exc:
+            record("worker_spawn_failed", errorType=type(exc).__name__)
             return failed(f"Lake Task Manager could not start: {exc}")
         started, misses, healthy = clock(), 0, False
         clean_exit = False
+        reason = "supervisor interrupted"
+        code = None
         try:
             while True:
                 code = worker.poll()
                 if code is not None:
                     clean_exit = code == 0
                     if clean_exit:
+                        record("worker_exit", workerPid=worker.pid, exitCode=0)
                         return 0
                     reason = f"worker exited with code {code}"
                     break
@@ -180,6 +185,9 @@ def run_supervisor(argv, *, cwd, env, base_url, on_ready=None, on_failure=None, 
                         break
                 sleep(interval)
         finally:
+            if not clean_exit:
+                record("worker_recovery", workerPid=worker.pid, reason=reason, misses=misses,
+                       exitCode=code, uptimeSeconds=round(clock() - started, 2))
             worker.close(clean_exit=clean_exit)
         now = clock()
         while restarts and now - restarts[0] >= restart_window:

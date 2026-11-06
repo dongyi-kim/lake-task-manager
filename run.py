@@ -24,12 +24,13 @@ from pathlib import Path
 import uvicorn
 
 from app.infra.process_identity import reexec_with_process_name
+from app.infra.runtime_diagnostics import record_failure as _record_runtime_failure
 from app.infra.settings import APP_ROOT, get_settings
 from app.launcher.hotkey import parse_hotkey as _parse_hotkey
 from app.launcher.runtime_health import (
     probe_tray_pump as _probe_tray_pump,
-    window_healthy as _window_healthy,
     window_phase as _window_phase,
+    runtime_status as _runtime_status,
 )
 from app.launcher.instance import (
     port_is_listening as _port_is_listening,
@@ -82,6 +83,7 @@ def _serve_bg(s, wait=True):
             server.run()
         except BaseException as error:  # Uvicorn bind failure raises SystemExit on this thread.
             server._ltm_error = error
+            _record_runtime_failure("server", error)
         finally:
             server._ltm_stopped.set()
 
@@ -1136,10 +1138,11 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None, server=N
             except PWTimeoutError:
                 continue
         return True
-    except Exception:
+    except Exception as error:
         if page is not None and page.is_closed():
             return False  # User closed the window during a pending Playwright operation.
         failed = True
+        _record_runtime_failure("window", error)
         raise
     finally:
         _window_phase("closing", 60)
@@ -1460,8 +1463,7 @@ def _run_tray(s):
     open_window(initial=True)                          # 시작 시 창 1개 오픈
     runtime_failure = []
     tray_probe = {"healthy": True, "at": time.monotonic()}
-    _appmain.set_runtime_health_hook(lambda: _window_healthy() and tray_probe["healthy"]
-                                     and time.monotonic() - tray_probe["at"] < 15)
+    _appmain.set_runtime_health_hook(lambda: _runtime_status(tray_probe))
 
     def monitor_tray():
         failures = 0
@@ -1682,11 +1684,17 @@ def main():
     if use_tray:
         from app.launcher.supervisor import WORKER_ENV, run_supervisor
         if not os.environ.get(WORKER_ENV):
-            raise SystemExit(run_supervisor(
-                [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]],
-                cwd=os.getcwd(), env=dict(os.environ),
-                base_url=f"http://127.0.0.1:{s.app_port}",
-                on_ready=_hide_console_win, on_failure=_show_console_win))
+            from app.infra.settings import CACHE_DIR
+            from app.infra.runtime_diagnostics import RuntimeLog
+            runtime_log = RuntimeLog(CACHE_DIR / "logs" / "runtime", "supervisor")
+            try:
+                raise SystemExit(run_supervisor(
+                    [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]],
+                    cwd=os.getcwd(), env=dict(os.environ),
+                    base_url=f"http://127.0.0.1:{s.app_port}", record=runtime_log.record,
+                    on_ready=_hide_console_win, on_failure=_show_console_win))
+            finally:
+                runtime_log.close()
         _run_tray(s)         # icon.run() 이 블로킹; [종료] 시 반환
         os._exit(0)
     else:
