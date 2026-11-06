@@ -65,12 +65,31 @@ def test_pinned_view_and_revision_check_delegate_to_shared_service(browser_api, 
     assert http.get("/api/confluence/pages/12/revision?known_version=3").json()["isLatest"] is False
 
 
-def test_tree_search_is_space_scoped_and_paginated(browser_api, monkeypatch):
+def test_full_text_search_is_space_scoped_and_paginated(browser_api, monkeypatch):
     http, service, _ = browser_api
     calls = []
     monkeypatch.setattr(service, "search", lambda c, q, s, l: calls.append((q, s, l)) or {"results": [], "start": s})
     http.get('/api/confluence/search', params={"q": '적재 "표"', "space": "ETL", "start": 30})
     assert calls == [('type = page AND text ~ "적재 \\"표\\"" AND space = "ETL" ORDER BY lastmodified DESC', 30, 30)]
+
+
+def test_tree_index_reads_cached_metadata_without_text_query_or_bodies(browser_api, monkeypatch):
+    http, service, _ = browser_api
+    calls = []
+    def search(client, query, start, limit):
+        calls.append((query, start, limit))
+        return {"results": [{"content": {"id": "22", "title": "Data Lake",
+            "space": {"key": "ETL"}, "ancestors": [{"id": "12", "title": "Root"}],
+            "body": {"storage": {"value": "not part of tree"}}}}],
+            "start": start, "size": 1, "_links": {"next": "?start=31"}}
+    monkeypatch.setattr(service, "search", search)
+    result = http.get('/api/confluence/tree', params={"space": "ETL", "start": 30}).json()
+    assert calls == [('type = page AND space = "ETL" ORDER BY title ASC', 30, 100)]
+    assert result["results"] == [{"id": "22", "title": "Data Lake", "space": {"key": "ETL"},
+                                   "ancestors": [{"id": "12", "title": "Root"}]}]
+    assert result["start"] == 30 and result["_links"]["next"] == "?start=31"
+    assert http.get('/api/confluence/tree?space=OTHER').status_code == 403
+    assert len(calls) == 1
 
 
 def test_scope_rejects_other_spaces_and_latest_external_move(browser_api, monkeypatch):
