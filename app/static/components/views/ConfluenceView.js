@@ -8,6 +8,8 @@ import ConfluenceDocumentList from "../ui/ConfluenceDocumentList.js";
 import ConfluenceComposer from "../ui/ConfluenceComposer.js";
 import ConfluencePageMenu from "../ui/ConfluencePageMenu.js";
 import confluenceTree from "../../lib/confluenceTree.js";
+import confluenceSavedTree from '../../lib/confluenceSavedTree.js';
+import ConfluenceTreeRow from '../ui/ConfluenceTreeRow.js';
 
 const pageId = () => location.hash.match(/^#\/confluence\/(\d+)/)?.[1] || "";
 const nextStart = data => data?._links?.next ? Number(data.start || 0) + Number(data.size ?? data.results?.length ?? 0) : null;
@@ -15,8 +17,8 @@ const merge = (old, rows) => [...new Map([...old, ...rows].map(row => [String(ro
 
 export default {
   name: "ConfluenceView",
-  components: { ConfluencePanel, ConfluenceDocumentList, ConfluenceComposer, ConfluencePageMenu },
-  mixins: [confluenceLayout, confluenceTree],
+  components: { ConfluencePanel, ConfluenceDocumentList, ConfluenceComposer, ConfluencePageMenu, ConfluenceTreeRow },
+  mixins: [confluenceLayout, confluenceTree, confluenceSavedTree],
   data() { return { base: "", favorites: [], recentDocuments: [], navigationFolds: readNavigationFolds(), spaces: [], space: "", spacesNext: null,
     loading: false, error: "", doc: null, selectedId: "", reading: false, readError: "",
     checking: false, revision: null, revisionError: "",
@@ -66,7 +68,8 @@ export default {
       try { const config = await api.confluenceConfig(); this.base = config.base;
         const spaces = new Set((config.spaces || []).map(value => value.toLowerCase()));
         this.favorites = readFavorites(this.base).filter(row => spaces.has(String(row.space || "").toLowerCase()));
-        this.recentDocuments = readRecentDocuments(this.base).filter(row => spaces.has(String(row.space || "").toLowerCase())); }
+        this.recentDocuments = readRecentDocuments(this.base).filter(row => spaces.has(String(row.space || "").toLowerCase()));
+        this.loadSavedTrees(); }
       catch (error) { this.error = error.message; }
       this._navigationReady = true;
       this.loadSpaces(); this._hash();
@@ -212,16 +215,15 @@ export default {
           </div>
         </div>
         <div class="conf-sidebar-scroll">
-          <ConfluenceDocumentList title="즐겨찾기" :rows="favorites" :selected-id="selectedId" :expanded="!navigationFolds.favorites" @toggle="toggleNavigationList('favorites')" @open="open" empty-text="문서의 ☆ 버튼으로 여기에 고정하세요." />
-          <ConfluenceDocumentList title="최근 열어본 문서" :rows="recentDocuments" :selected-id="selectedId" :expanded="!navigationFolds.recent" @toggle="toggleNavigationList('recent')" @open="open" empty-text="열어본 문서가 여기에 표시됩니다." />
+          <ConfluenceDocumentList title="즐겨찾기" :rows="favorites" :selected-id="selectedId" :expanded="!navigationFolds.favorites" @toggle="toggleNavigationList('favorites')" @open="open" empty-text="문서의 ☆ 버튼으로 여기에 고정하세요."
+            :nodes="savedTreeNodes" :favorites="favoriteIds" :pending="savedTreePending" :errors="savedTreeErrors" @expand="expandSavedTree" @menu="showPageMenu" />
+          <ConfluenceDocumentList title="최근 열어본 문서" :rows="recentDocuments" :selected-id="selectedId" :expanded="!navigationFolds.recent" @toggle="toggleNavigationList('recent')" @open="open" empty-text="열어본 문서가 여기에 표시됩니다."
+            :nodes="savedTreeNodes" :favorites="favoriteIds" :pending="savedTreePending" :errors="savedTreeErrors" @expand="expandSavedTree" @menu="showPageMenu" />
           <p v-if="error" class="conf-error" role="alert">{{ error }} <button class="conf-more" @click="loadSpaces()">다시 시도</button></p>
           <div class="conf-tree-caption"><span>페이지 트리</span><span>{{ tree.count }}</span></div>
           <div class="conf-tree" :class="{'is-finding': tree.searching}" role="navigation" aria-label="문서 트리" :aria-busy="treeLoading">
-            <div v-for="row in tree.rows" :key="row.id" class="conf-tree-row" :class="{'is-match': row.match, 'has-match': row.containsMatch, 'is-current-match': activeMatch === row.id, selected: selectedId === row.id}" :data-page-id="row.id" :style="{'--depth': row.level}" @contextmenu.prevent.stop="showPageMenu(row,$event)" @keydown.shift.f10.prevent="showPageMenu(row,$event)">
-              <button v-if="row.hasChildren" class="conf-tree-toggle" @click="toggle(row)" :aria-expanded="row.open" :aria-label="row.title + ' 하위 문서'"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg></button>
-              <span v-else class="conf-tree-leaf" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4 2h5l3 3v9H4zM9 2v4h3"/></svg></span>
-              <button class="conf-tree-title" :class="{selected: selectedId === row.id}" :aria-current="selectedId === row.id ? 'page' : null" @click="open(row.id)" :title="row.title"><mark v-if="row.match">{{ row.title }}</mark><template v-else>{{ row.title }}</template></button>
-            </div>
+            <ConfluenceTreeRow v-for="row in tree.rows" :key="row.id" :row="row" :selected-id="selectedId" :favorite="favoriteIds.has(row.id)"
+              :current-match="activeMatch === row.id" :pending="treeLoading && treePending === row.id" @toggle="toggle" @open="open" @menu="showPageMenu" />
             <p v-if="treeLoading" class="conf-muted" role="status">문서 목록을 불러오는 중…</p>
             <p v-if="treeError" class="conf-error" role="alert">{{ treeError }} <button class="conf-more" @click="loadTree()">문서 목록 다시 시도</button></p>
             <p v-if="!treeLoading && !tree.count && !treeError" class="conf-muted">이 Space에서 볼 수 있는 문서가 없습니다.</p>

@@ -29,6 +29,10 @@ def install_documents(page):
                 {"id": "13", "title": "하위 운영 문서", "ancestors": [{"id": "12", "title": "적재 가이드"}]},
                 {"id": "22", "title": "아직 펼치지 않은 적재 설계", "ancestors": [{"id": "12", "title": "적재 가이드"}]},
             ], "size": 4, "nextStart": None}
+            parents = {str(r['ancestors'][-1]['id']) for r in data['results'] if r.get('ancestors')}
+            for row in data['results']:
+                row['hasChildren'] = row['id'] in parents
+                row['space'] = {'key': args.get('space', ['ETL'])[0]}
             if path.endswith('/snapshot'):
                 data = {'batches': [{'parent': '', 'start': 0, **data}], 'jobs': []}
             elif path.endswith('/branch'):
@@ -154,13 +158,13 @@ def test_confluence_tree_favorites_search_revision_and_responsive(editor_browser
     page.locator(".conf-reader").evaluate("el => el.scrollTop = 0")
     page.wait_for_function("() => document.querySelector('.conf-toc button[aria-current]').textContent === '버전 2 본문'")
     page.get_by_role("button", name="즐겨찾기 추가", exact=True).click()
-    page.get_by_role("region", name="즐겨찾기", exact=True).get_by_role("button", name="★ 적재 가이드").wait_for()
+    page.get_by_role("region", name="즐겨찾기", exact=True).get_by_role("button", name="적재 가이드", exact=True).wait_for()
     assert state["reads"] == [("12", 2)]
 
     # Persisted favorites remain usable even if Space enumeration is unavailable.
     state["spaces_fail"] = True
     page.reload()
-    page.get_by_role("region", name="즐겨찾기", exact=True).get_by_role("button", name="★ 적재 가이드").wait_for()
+    page.get_by_role("region", name="즐겨찾기", exact=True).get_by_role("button", name="적재 가이드", exact=True).wait_for()
     page.get_by_text("Confluence 연결 대기", exact=False).wait_for()
     state["spaces_fail"] = False
     page.get_by_role("button", name="다시 시도", exact=True).click()
@@ -171,7 +175,7 @@ def test_confluence_tree_favorites_search_revision_and_responsive(editor_browser
     result.wait_for(); result.click()
     page.locator(".conf-document h1").filter(has_text="아직 펼치지 않은 적재 설계").wait_for()
     assert state["reads"][-1][0] == "22"
-    page.get_by_role("region", name="즐겨찾기", exact=True).get_by_role("button", name="★ 적재 가이드").click()
+    page.get_by_role("region", name="즐겨찾기", exact=True).get_by_role("button", name="적재 가이드", exact=True).click()
     page.locator(".conf-document h1").filter(has_text="적재 가이드").wait_for()
     page.locator(".conf-reader").evaluate("el => el.scrollTop = 300")
     before = page.locator(".conf-reader").evaluate("el => el.scrollTop")
