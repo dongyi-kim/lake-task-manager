@@ -17,6 +17,10 @@ def register_guides(register, runtime):
         text, SHA-256 digest and byte size; reads only packaged guides, never arbitrary files/URLs.
         Covers HTML versus bulk Markdown, person resolution/mentions, Jira/Confluence/URL links,
         tables, checklists, code, images and preserving existing content when editing.
+        All authoring skills include references/draft-review.md: recommend sharing a readable draft
+        and destination for confirmation before submission; honor existing approval of that content
+        or explicit direct-submit instructions without redundant confirmation. This is guidance,
+        not a required server approval step; draft-only requests do not authorize publishing.
         Confluence authoring uses storage XHTML, published version checks and its own reference files;
         select ltm-confluence-authoring before document/comment editing or page organization.
         Also available via skills/list, skills/get and resources/read for capable clients.

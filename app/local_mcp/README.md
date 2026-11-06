@@ -94,7 +94,7 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 
 ### 작성 가이드라인 스킬
 
-실행 중인 앱 버전에 맞는 세 스킬을 제공한다. `skills/`가 원본이며 외부 Agent의 로컬 설치는 필요 없다.
+실행 중인 앱 버전에 맞는 네 스킬을 제공한다. `skills/`가 원본이며 외부 Agent의 로컬 설치는 필요 없다.
 스킬을 언제 읽고 적용하는지는 연결한 클라이언트가 결정한다.
 
 | 스킬 | 작업 |
@@ -102,6 +102,15 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 | `ltm-task-authoring` | Task·Epic·SubTask 생성과 기존 본문 수정 |
 | `ltm-comment-authoring` | 댓글 작성·수정과 transition 댓글 |
 | `ltm-bulk-task-create` | Markdown을 사용하는 일괄 생성·검증·부분 실패 처리 |
+| `ltm-confluence-authoring` | Confluence 문서·댓글 작성과 버전 충돌·구조 변경 처리 |
+
+댓글·티켓 본문·Confluence 문서의 작성·수정은 **제출 전 읽을 수 있는 초안과 게시 대상을
+사용자에게 공유하고 확인받는 것을 권장**한다. 이미 해당 내용을 승인했거나 바로 제출하라는
+지시가 있으면 같은 확인을 반복하지 않는다. 초안만 요청한 경우에는 게시하지 않는다.
+공통 [초안 검토 가이드](skills/_shared/draft-review.md)는 각 스킬에서
+`get_content_guide(skill=스킬이름, path="references/draft-review.md")`로 읽을 수 있다.
+일괄 생성은 항목별 내용을 보여주고 묶음 단위로 확인받는다. 이는 Agent 가이드이며
+MCP 쓰기 도구에 필수 승인 인자나 별도 승인 팝업을 추가하지 않는다.
 
 MCP Skills 확장 `io.modelcontextprotocol/skills`의 `skills/list`와 `skills/get`은 메타데이터와
 URI·SHA-256·바이트 크기의 파일 manifest를 제공한다. 내용은 `resources/read`로 읽는다.

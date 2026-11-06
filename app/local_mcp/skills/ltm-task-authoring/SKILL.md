@@ -5,11 +5,12 @@ description: LTM MCP로 Task·Epic·SubTask 한 건을 생성하거나 기존 �
 
 # LTM 티켓 작성
 
-사용자가 요청한 업무의 범위·완료 조건·근거를 보존해 Jira 티켓으로 작성한다. 새로운 담당자·기한·업무 사실을 만들어 넣지 않는다. 초안만 요청했다면 게시하지 않는다. 생성·수정이 이미 요청 범위에 포함돼 있으면 같은 승인을 반복해서 묻지 않는다.
+사용자가 요청한 업무의 범위·완료 조건·근거를 보존해 Jira 티켓으로 작성한다. 새로운 담당자·기한·업무 사실을 만들어 넣지 않는다. 생성·본문 수정 전에 읽을 수 있는 초안과 대상을 공유하고 확인받는 것을 권장한다. 해당 내용이 이미 승인됐거나 바로 제출하라는 지시가 있으면 재확인하지 않는다. 초안만 요청했다면 게시하지 않는다.
 
 ## 필요한 참고 문서
 
-- 리치 본문을 만들 때 [작성 형식](references/content-format.md)을 읽는다.
+- [제출 전 초안 검토](references/draft-review.md): 검토할 내용, 확인 시점, 기존 승인 재사용.
+- 본문 작성 시 [작성 형식](references/content-format.md)의 **Jira Task 본문 작성 스타일**을 읽는다. 비교는 표, 작업 목록은 간결한 개조식, 점검사항·작업목표는 체크박스를 권장한다. 배경·원인·질문은 조사와 연결어를 살린 짧은 문장으로 쓴다. 리치 본문 형식도 같은 문서를 따른다.
 - 사람·Jira·Confluence·외부 링크를 넣을 때 [사람과 링크](references/people-and-links.md)를 읽는다.
 - 게시 전과 오류 복구 시 [쓰기·검증 절차](references/write-workflow.md)를 따른다.
 - 완료 상태·권한·타입/부모 변경을 다룰 때 [티켓 작업 가이드](references/ticket-actions.md)를 읽는다.
@@ -17,12 +18,13 @@ description: LTM MCP로 Task·Epic·SubTask 한 건을 생성하거나 기존 �
 
 ## 생성
 
-1. 사용자 요청에서 제목, 업무 범위, 티켓 계층과 알려진 필드를 정리한다. 주어진 문서·티켓을 근거로 삼을 때는 해당 내용을 읽는다.
+1. 사용자 요청에서 제목, 업무 범위, 티켓 계층과 알려진 필드를 정리한다. 주어진 문서·티켓을 근거로 삼을 때는 해당 내용을 읽는다. 참고한 Epic이라는 이유만으로 새 Task의 부모로 지정하지 않는다. 참조 링크와 Epic·parent 소속은 별개의 결정이다.
 2. 독립 Task는 `list_options(kind="task_types")`, 기존 Epic/Task의 자식은 `list_options(kind="child_types", key=...)`로 실제 허용 type을 확인한다. 이어 `list_options(kind="create_fields", issue_type=실제이름)`의 **모든 필드 페이지**를 `nextStartAt`으로 읽어 필수값과 `inputFields` 경로를 확인한다. `field_id`를 추가하면 해당 필드의 정확한 기본값·허용 선택지를 별도로 페이지 조회한다. `managed=true`인 project/issuetype/reporter는 LTM/Jira가 처리한다. 각 페이지의 `unsupportedRequired`를 모아, 지원 입력이나 Jira 기본값이 없는 필수 custom field가 있으면 해당 생성은 Jira에서 처리해야 함을 알린다.
-3. `create_task(body, epic_key)`는 Task-tier를 만든다. 기존 Epic 연결은 `epic_key`, 독립 티켓은 빈 문자열이다. SubTask는 기존 Task-tier의 `parent_key`로 `create_subtask`를 호출한다. Epic은 `create_epic`을 사용한다.
+3. 계층에 맞는 생성 도구를 선택한다. `create_task(body, epic_key)`는 Task-tier이며 기존 Epic 연결은 `epic_key`, 독립 티켓은 빈 문자열이다. SubTask는 기존 Task-tier의 `parent_key`를 받는 `create_subtask`, Epic은 `create_epic`이다. 이 단계에서는 아직 제출하지 않는다.
 4. `body.summary`, `body.type`과 필요한 선택 필드만 채운다. Epic 생성은 `type` 대신 `summary`와 선택적인 `epicName`을 받는다. 본문은 `body.descriptionHtml`에 HTML로 넣는다. 생성 요청에 `reporter`를 넣지 않는다.
 5. `body.assignee`는 확인한 Jira 사용자 ID, `components`·`labels`는 문자열 배열, `duedate`는 `YYYY-MM-DD`다. 각 쓰기에는 새 `clientMutationId`를 정하고 정확한 요청을 보존한다.
-6. 반환된 key로 생성 결과를 확인한다. 첨부가 필요하면 이 key에 업로드한 후 본문에 반환 경로를 넣어 별도 수정한다. 첨부 단계가 실패해도 티켓을 다시 생성하지 않는다.
+6. 초안 검토가 필요한 요청이라면 구성한 내용·대상·참조를 공유하고 확인받는 것을 권장한다. 기존 승인 또는 바로 제출하라는 지시는 재사용한다. 선택한 생성 도구에 완성된 요청을 제출한다.
+7. 반환된 key로 생성 결과를 확인한다. 첨부가 필요하면 이 key에 업로드한 후 본문에 반환 경로를 넣어 별도 수정한다. 첨부 단계가 실패해도 티켓을 다시 생성하지 않는다.
 
 본문에는 업무에 맞는 제목·목록·표를 선택한다. 목적, 작업 범위, 완료 조건, 관련 근거가 유용할 수 있지만 사용자가 제공한 양식이나 짧은 요청을 불필요한 고정 템플릿으로 늘리지 않는다.
 
@@ -33,4 +35,4 @@ description: LTM MCP로 Task·Epic·SubTask 한 건을 생성하거나 기존 �
 3. `update_description(key, html, client_mutation_id)`은 **본문 전체 교체**다. `html=""`은 삭제 의도가 있을 때만 쓴다. 완료 티켓 본문은 직접 수정할 수 없으며, 요청 범위에 포함된 실제 재열기 전이가 먼저 필요하다.
 4. 게시 후 `get_ticket(key, fresh=true)`로 요청한 변경과 보존할 내용을 확인한다. 결과에는 티켓 key와 실제 수행한 변경, 남은 후속 단계를 구분한다.
 
-본문의 링크는 관계 등록과 별개다. 실제 Jira 이슈 링크나 문서 연결까지 요청된 경우에만 `add_issue_link`·`add_document`를 추가 호출한다. 생성 응답의 `cascade`는 제안이며 실행된 상태 전이가 아니다.
+실제로 참고한 Jira 이슈·Confluence 문서·외부 자료는 본문 참조와 함께 **티켓의 이슈 링크·문서 연결에도 적극 등록하는 것을 권장**한다. [사람과 링크](references/people-and-links.md)의 참조 연결 절차에 따라 초안에 연결 대상을 포함하고, 생성된 key에 승인 범위의 연결을 추가·확인한다. 생성 응답의 `cascade`는 제안이며 실행된 상태 전이가 아니다.
