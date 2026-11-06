@@ -47,7 +47,49 @@ def _media_path(base, page_id, value):
     return target.path + (("?" + target.query) if target.query else "")
 
 
-def document_html(raw, base, page_id, media_owners=()):
+def _resource_image_path(base, value):
+    target, origin = urlsplit(urljoin(base.rstrip("/") + "/", value)), urlsplit(base)
+    root = origin.path.rstrip("/")
+    if (target.scheme, target.netloc) != (origin.scheme, origin.netloc):
+        return None
+    from urllib.parse import unquote
+    decoded = unquote(target.path)
+    if any(part in ("..", ".") for part in decoded.split("/")) or "\\" in decoded:
+        return None
+    if any(target.path.startswith(root + path) for path in ("/download/resources/", "/images/", "/s/")):
+        return target.path + (("?" + target.query) if target.query else "")
+    return None
+
+
+def _document_image(value, base, page_id, jira_base=""):
+    """Authenticated native attachments; remote images remain browser image requests."""
+    if not (value or "").strip():
+        return None
+    if re.fullmatch(r"data:image/(?:png|jpeg|gif|webp|avif);base64,[A-Za-z0-9+/=\s]+", value or "", re.I):
+        return value
+    try:
+        target = urlsplit(urljoin(base.rstrip("/") + "/", value or ""))
+        if target.scheme not in ("http", "https") or not target.hostname or target.username or target.password:
+            return None
+        origin = urlsplit(base)
+        if (target.scheme, target.netloc) == (origin.scheme, origin.netloc):
+            # A URL image can reference another page's attachment. Its proxy checks that
+            # owner's Space and current permissions, exactly like an ri:attachment image.
+            match = re.search(r"/download/(?:attachments|thumbnails)/(\d+)/", target.path)
+            if match and (path := _media_path(base, match[1], target.geturl())):
+                return f"/api/confluence/pages/{match[1]}/image?path=" + quote(path, safe="")
+            if path := _resource_image_path(base, target.geturl()):
+                return f"/api/confluence/pages/{page_id}/image?path=" + quote(path, safe="")
+        jira = urlsplit(jira_base)
+        if jira_base and (target.scheme, target.netloc) == (jira.scheme, jira.netloc):
+            return "/api/img?u=" + quote(target.geturl(), safe="")
+        # No server-side fetch to arbitrary hosts and no Jira/Confluence credentials sent.
+        return target.geturl()
+    except ValueError:
+        return None
+
+
+def document_html(raw, base, page_id, media_owners=(), *, jira_base=""):
     """Sanitize server-rendered macros; resolve links and proxy only this page's media."""
     # Retain known native macro intent through the shared restrictive class allowlist.
     # This affects display only; Confluence storage is never rewritten as Jira panels.
@@ -70,11 +112,14 @@ def document_html(raw, base, page_id, media_owners=()):
             if tag == "img":
                 owner = next((str(owner) for owner in (page_id, *media_owners) if _media_path(base, str(owner), values.get("src", ""))), None)
                 path = _media_path(base, owner, values.get("src", "")) if owner else None
-                if not path:
-                    self.out.append('<span class="conf-media-unavailable">' + escape(values.get("alt") or "외부 이미지") + "</span>")
+                src = (f"/api/confluence/pages/{owner}/image?path=" + quote(path, safe="") if path
+                       else _document_image(values.get("src", ""), base, page_id, jira_base))
+                if not src:
+                    self.out.append('<span class="conf-media-unavailable">' + escape(values.get("alt") or "이미지 주소를 확인할 수 없습니다") + "</span>")
                     return
-                values["src"] = f"/api/confluence/pages/{owner}/image?path=" + quote(path, safe="")
+                values["src"] = src
                 values["loading"] = "lazy"
+                values["referrerpolicy"] = "no-referrer"
             if tag == "a" and values.get("href"):
                 owner = next((str(owner) for owner in (page_id, *media_owners) if _media_path(base, str(owner), values["href"])), None)
                 path = _media_path(base, owner, values["href"]) if owner else None
@@ -212,7 +257,7 @@ def build_confluence_router(*, get_client):
                     result['macroWarnings'] = renderer.warnings
                 except (ValueError, SyntaxError):
                     result['macroWarnings'] = ['원문의 일부 구조를 해석하지 못해 Confluence 렌더링 결과를 표시합니다.']
-            result["html"] = document_html(raw, base, page_id, owners)
+            result["html"] = document_html(raw, base, page_id, owners, jira_base=getattr(client.s, "jira_base", ""))
             result.pop("body", None)
             result["url"] = base + f"/pages/viewpage.action?pageId={page_id}"
             result["confluenceBase"] = base
@@ -262,7 +307,7 @@ def build_confluence_router(*, get_client):
         try:
             _page_id(page_id)
             base = (client.s.confluence_base or "").rstrip("/")
-            checked = _media_path(base, page_id, path)
+            checked = _media_path(base, page_id, path) or _resource_image_path(base, path)
             if not checked:
                 return Response(status_code=403)
             current = service.head(client, page_id)
@@ -278,9 +323,10 @@ def build_confluence_router(*, get_client):
                     raise
                 data, mime = client.provider.get_bytes(target)
             mime = (mime or "").split(";")[0].lower()
-            if mime not in ("image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"):
+            if mime not in ("image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/svg+xml"):
                 return Response(status_code=415)
-            return Response(data, media_type=mime, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+            return Response(data, media_type=mime, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'"})
         except UpstreamError as exc:
             return Response(status_code=exc.status if exc.status in (401, 403, 404) else 502)
         except SessionExpired:

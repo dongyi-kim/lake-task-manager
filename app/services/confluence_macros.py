@@ -109,7 +109,13 @@ class MacroRenderer:
         if tag == AC + "image":
             attachment = node.find(RI + "attachment")
             if attachment is None:
-                return self.unavailable("외부 이미지: Confluence 원문에서 확인하세요.")
+                external = node.find(RI + "url")
+                if external is None:
+                    return self.unavailable("이미지 주소를 확인하지 못했습니다.")
+                # The document sanitizer validates the URL before the browser receives it.
+                src = external.get(RI + "value", "")
+                width = node.get(AC + "width", "")
+                return '<img src="' + escape(src, quote=True) + '" alt="' + escape(node.get(AC + "alt", ""), quote=True) + '"' + (' width="' + width + '"' if width.isdigit() else '') + ' />'
             owner = str(page["id"])
             if attachment.find(RI + "page") is not None:
                 # Resolve the attachment's own page under the same configured-space policy.

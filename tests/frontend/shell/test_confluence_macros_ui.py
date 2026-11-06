@@ -176,6 +176,36 @@ def test_restored_edit_draft_keeps_its_revision_and_cannot_overwrite_newer_page(
     assert stored(page,base,cid)['storage']=='<p>Remote revision</p>' and not errors
 
 
+def test_external_image_and_source_text_styles_render_inside_expand(editor_browser, tmp_path):
+    page, base, errors, _ = editor_browser
+    requests = []
+    def external(route):
+        requests.append(route.request.headers)
+        route.fulfill(content_type='image/png', body=PNG_1X1)
+    page.route('https://images.example.test/confluence-chart.png', external)
+    source = macro('expand', '<p>기본 본문</p><font color="#de350b" face="serif" size="4">원문 색상</font>'
+        '<p><span style="color:var(--ds-text-accent-blue, rgb(0,82,204));font-size:18px">파란 강조</span></p>'
+        '<ac:image ac:alt="외부 그림" ac:width="120"><ri:url ri:value="https://images.example.test/confluence-chart.png"/></ac:image>',
+        {'title': '작게 접히는 상세 내용'})
+    cid = create(page, base, '외부 이미지와 원문 서식', source)
+    page.goto(base + '/#/confluence/' + cid)
+    page.get_by_text('작게 접히는 상세 내용', exact=True).click()
+    image = page.locator('.conf-document-body img[alt="외부 그림"]')
+    image.wait_for(state='visible')
+    image.evaluate('el => new Promise((resolve,reject) => {if(el.complete) resolve(); else {el.onload=resolve;el.onerror=reject}})')
+    assert image.evaluate('el => el.naturalWidth') > 0
+    assert image.get_attribute('referrerpolicy') == 'no-referrer'
+    red = page.locator('.conf-document-body').get_by_text('원문 색상', exact=True)
+    blue = page.locator('.conf-document-body').get_by_text('파란 강조', exact=True)
+    assert red.evaluate('el => getComputedStyle(el).color') == 'rgb(222, 53, 11)'
+    assert red.evaluate('el => getComputedStyle(el).fontSize') == '18px'
+    assert blue.evaluate('el => getComputedStyle(el).color') == 'rgb(0, 82, 204)'
+    assert requests and all('authorization' not in headers and 'referer' not in headers for headers in requests)
+    assert stored(page, base, cid)['storage'] == source  # display normalization never rewrites source
+    page.screenshot(path=str(tmp_path / 'confluence-external-image.png'))
+    assert not errors
+
+
 def test_tree_pagination_retry_unloaded_search_and_include_refresh(editor_browser):
     page,base,errors,_=editor_browser
     open_composer(page,base); page.get_by_role('button',name='초안 삭제',exact=True).click()
