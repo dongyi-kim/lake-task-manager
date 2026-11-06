@@ -196,18 +196,14 @@ def build_confluence_router(*, get_client):
     def tree(space: str = Query(..., min_length=1, max_length=255),
              start: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=100)):
         def read():
-            import json
             client = get_client()
             _check_space(client, space)
-            # Query-independent metadata shares the existing Confluence cache. No bodies,
-            # per-document requests, or user search term are sent to Confluence.
-            data = service.search(client, 'type = page AND space = ' + json.dumps(space) +
-                                  ' ORDER BY title ASC', start, limit)
-            return {**data, "results": [{"id": row["content"]["id"],
-                "title": row["content"].get("title", ""),
+            data = service.tree_pages(client, space, start, limit)
+            return {**data, "results": [{"id": row["id"],
+                "title": row.get("title", ""),
                 "ancestors": [{"id": item["id"], "title": item.get("title", "")}
-                              for item in row["content"].get("ancestors", [])],
-                "space": {"key": row["content"]["space"]["key"]}}
+                              for item in row.get("ancestors", [])],
+                "space": {"key": row["space"]["key"]}}
                 for row in data["results"]]}
         return reply(read)
 

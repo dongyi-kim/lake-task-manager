@@ -192,6 +192,40 @@ def list_spaces(client, start=0, limit=50):
     return cached_read(client, "conftree", "/rest/api/space", {"start": start, "limit": limit}, _rows)
 
 
+def tree_pages(client, space_key, start=0, limit=100):
+    """Enumerate the Space, not its search index. Fetch only hierarchy metadata."""
+    from urllib.parse import quote
+    _pagination(start, limit)
+    if not space_key:
+        raise ValueError("문서 트리 조회에는 Space가 필요합니다.")
+
+    def validate(data):
+        if not _rows(data):
+            return False
+        for row in data["results"]:
+            if (not str(row.get("id", "")).isdigit() or not isinstance(row.get("title"), str)
+                    or (row.get("space") or {}).get("key") != space_key
+                    or not isinstance(row.get("ancestors"), list)
+                    or any(not isinstance(a, dict) or not str(a.get("id", "")).isdigit()
+                           for a in row["ancestors"])):
+                return False
+        next_link = (data.get("_links") or {}).get("next")
+        if next_link:
+            # Permission filtering may return fewer rows (even zero) than the cursor
+            # advances. Never derive the next offset from the visible result count.
+            if not isinstance(next_link, str):
+                return False
+            offsets = parse_qs(urlsplit(next_link).query).get("start", [])
+            if len(offsets) != 1 or not offsets[0].isdigit() or int(offsets[0]) <= start:
+                return False
+        return True
+
+    data = cached_read(client, "conftree", f"/rest/api/space/{quote(space_key, safe='')}/content/page",
+                       {"start": start, "limit": limit, "depth": "all", "expand": "space,ancestors"}, validate)
+    next_link = (data.get("_links") or {}).get("next")
+    return {**data, "nextStart": int(parse_qs(urlsplit(next_link).query)["start"][0]) if next_link else None}
+
+
 def list_pages(client, space_key="", parent_id="", start=0, limit=50):
     _pagination(start, limit)
     params = {"start": start, "limit": limit, "expand": "space,version,ancestors,history"}

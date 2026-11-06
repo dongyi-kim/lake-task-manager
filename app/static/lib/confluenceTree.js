@@ -27,9 +27,11 @@ export default {
           const start = this.treeNext;
           const data = await api.confluenceTree(space, start);
           if (generation !== this._treeGeneration) return;
-          this.treePages = [...new Map([...this.treePages, ...(data.results || [])].map(row => [String(row.id), row])).values()];
-          const next = data._links?.next ? Number(data.start || 0) + Number(data.size ?? data.results?.length ?? 0) : null;
-          if (next !== null && (!Number.isFinite(next) || next <= start)) throw new Error("다음 문서 목록을 확인하지 못했습니다.");
+          const next = data.nextStart;
+          if (!Array.isArray(data.results) || next !== null && (!Number.isInteger(next) || next <= start)) {
+            throw new Error("다음 문서 목록을 확인하지 못했습니다.");
+          }
+          this.treePages = [...new Map([...this.treePages, ...data.results].map(row => [String(row.id), row])).values()];
           this.treeNext = next;
         }
       } catch (error) { if (generation === this._treeGeneration) this.treeError = error.message; }
