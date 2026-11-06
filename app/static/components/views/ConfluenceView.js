@@ -1,6 +1,8 @@
 import { api } from "../../lib/api.js";
 import { confluencePageId, openConfluenceDocument, readFavorites, writeFavorites } from "../../lib/confluenceNavigation.js";
 import { documentHeadings, visibleHeading } from "../../lib/confluenceToc.js";
+import confluenceLayout from "../../lib/confluenceLayout.js";
+import ConfluencePanel from "../ui/ConfluencePanel.js";
 
 const pageId = () => location.hash.match(/^#\/confluence\/(\d+)/)?.[1] || "";
 const nextStart = data => data?._links?.next ? Number(data.start || 0) + Number(data.size ?? data.results?.length ?? 0) : null;
@@ -8,12 +10,14 @@ const merge = (old, rows) => [...new Map([...old, ...rows].map(row => [String(ro
 
 export default {
   name: "ConfluenceView",
+  components: { ConfluencePanel },
+  mixins: [confluenceLayout],
   data() { return { base: "", favorites: [], spaces: [], space: "", spacesNext: null,
     roots: [], rootsNext: null, children: {}, expanded: {}, loadingBranches: {}, branchErrors: {},
     query: "", results: [], searchNext: null, searching: false, searched: false,
     loading: false, error: "", doc: null, selectedId: "", reading: false, readError: "",
-    checking: false, revision: null, revisionError: "", sidebarOpen: true,
-    headings: [], activeHeading: "", tocOpen: true, tocMobileOpen: false, compact: false }; },
+    checking: false, revision: null, revisionError: "",
+    headings: [], activeHeading: "" }; },
   computed: {
     rows() {
       const result = [];
@@ -35,21 +39,17 @@ export default {
     newer() { return this.revision && this.doc && Number(this.revision.latestPublishedVersion) > Number(this.doc.version?.number); },
     version() { return this.doc?.version?.number || ""; },
     checkedAt() { return this.revision?.checkedAt || this.doc?.cacheInfo?.headCheckedAt; },
-    showToc() { return this.compact ? this.tocMobileOpen : this.tocOpen; },
     headingDepth() { return Math.min(...this.headings.map(row => row.level), 6); },
   },
   mounted() {
     this._generation = 0; this._readGeneration = 0; this._searchGeneration = 0;
-    this._compactQuery = window.matchMedia("(max-width:1100px)");
-    this._resize = () => { this.compact = this._compactQuery.matches; this.tocMobileOpen = false; };
-    this._resize(); this._compactQuery.addEventListener("change", this._resize);
     this._hash = () => { const id = pageId(); if (id && id !== this.selectedId) this.read(id); };
     window.addEventListener("hashchange", this._hash);
     this.initialize();
   },
   activated() { if (this._hash) this._hash(); this.$nextTick(() => this.buildToc()); },
   deactivated() { this.stopToc(); },
-  beforeUnmount() { window.removeEventListener("hashchange", this._hash); this._compactQuery?.removeEventListener("change", this._resize); this.stopToc(); },
+  beforeUnmount() { window.removeEventListener("hashchange", this._hash); this.stopToc(); },
   methods: {
     async initialize() {
       // Local configuration is independent of SSO/network so saved titles appear immediately.
@@ -109,7 +109,7 @@ export default {
       } catch (error) { if (gen === this._searchGeneration) this.error = error.message; }
       finally { if (gen === this._searchGeneration) this.searching = false; }
     },
-    open(id) { openConfluenceDocument(id); },
+    open(id) { this.closeDrawer(); openConfluenceDocument(id); },
     async read(id, version = null) {
       const gen = ++this._readGeneration;
       const replacing = String(this.doc?.id) === String(id);
@@ -170,10 +170,12 @@ export default {
       if (!target || !reader) return;
       this._tocClicked = true; this.activeHeading = id;
       const top = target.node.getBoundingClientRect().top - reader.getBoundingClientRect().top + reader.scrollTop - 12;
-      reader.scrollTo({ top, behavior: "auto" }); target.node.focus({ preventScroll: true });
-      if (this.compact) this.tocMobileOpen = false;
+      reader.scrollTo({ top, behavior: "auto" });
+      if (this.compact) {
+        this.closeDrawer();
+        this.$nextTick(() => requestAnimationFrame(() => target.node.focus({ preventScroll: true })));
+      } else target.node.focus({ preventScroll: true });
     },
-    toggleToc() { if (this.compact) this.tocMobileOpen = !this.tocMobileOpen; else this.tocOpen = !this.tocOpen; },
     path(item) { return (item.ancestors || []).map(row => row.title).join(" / ") || item.space?.name || item.space?.key || ""; },
     date(value) { if (!value) return ""; const date = new Date(typeof value === "number" ? value * 1000 : value); return Number.isNaN(+date) ? "" : date.toLocaleString(); },
     author() { const who = this.doc?.version?.by; return who?.displayName || who?.username || ""; },
@@ -184,9 +186,10 @@ export default {
     },
   },
   template: `
-    <section class="conf-workspace" aria-label="Confluence 문서">
-      <aside v-show="sidebarOpen" class="conf-sidebar" aria-label="문서 탐색">
-        <div class="conf-sidebar-title"><h1>Confluence</h1><button class="btn" @click="sidebarOpen = false" aria-label="문서 탐색 접기">접기</button></div>
+    <section class="conf-workspace" :class="{ 'conf-compact': compact, 'conf-resizing': draggingPanel }" :style="layoutStyle" aria-label="Confluence 문서">
+      <ConfluencePanel :visible="showSidebar" :compact="compact" label="문서 탐색" @close="toggleSidebar" class="conf-panel conf-sidebar">
+        <div class="conf-panel-title"><h1>Confluence</h1><button class="conf-fold" @click="toggleSidebar" aria-label="문서 탐색 접기" title="문서 탐색 접기"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M12 5l-5 5 5 5"/></svg></button></div>
+        <div class="conf-sidebar-scroll">
         <section class="conf-favorites" aria-label="즐겨찾기">
           <h2>즐겨찾기 <span>{{ favorites.length }}</span></h2>
           <p v-if="!favorites.length" class="conf-muted">문서의 ☆ 버튼으로 여기에 고정하세요.</p>
@@ -214,17 +217,24 @@ export default {
             <p v-if="!loading && !roots.length && !error" class="conf-muted">이 Space에서 볼 수 있는 루트 문서가 없습니다.</p>
           </template>
         </div>
-      </aside>
+        </div>
+      </ConfluencePanel>
+      <div v-if="showSidebar && !compact" class="conf-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="문서 탐색 너비 조절" :aria-valuenow="sidebarWidth" aria-valuemin="224" :aria-valuemax="panelMax('sidebar')" @pointerdown="startPanelResize('sidebar', $event)" @keydown="resizePanelKey('sidebar', $event)"></div>
       <main class="conf-main">
-        <header class="conf-toolbar"><button v-if="!sidebarOpen" class="btn" @click="sidebarOpen = true">문서 탐색</button><span>{{ doc?.space?.name || '문서' }}</span><div v-if="doc" class="conf-actions"><button v-if="headings.length" class="btn" @click="toggleToc" :aria-expanded="showToc" aria-controls="conf-document-toc">목차</button><button class="btn conf-favorite-toggle" @click="toggleFavorite" :aria-pressed="isFavorite" :aria-label="isFavorite ? '즐겨찾기 해제' : '즐겨찾기 추가'">{{ isFavorite ? '★' : '☆' }}</button><button class="btn" @click="checkLatest" :disabled="checking || reading">{{ checking ? '확인 중…' : '최신 여부 확인' }}</button><a :href="doc.url" target="_blank" rel="noopener noreferrer" class="btn">Confluence에서 열기</a></div></header>
+        <header class="conf-toolbar">
+          <div class="conf-toolbar-location"><button v-if="!showSidebar || compact" class="btn conf-nav-toggle" @click="toggleSidebar" :aria-expanded="showSidebar"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4h14v12H3zM8 4v12"/></svg>문서 탐색</button><span>{{ doc?.space?.name || '문서' }}</span></div>
+          <div v-if="doc" class="conf-actions"><button class="btn conf-favorite-toggle" @click="toggleFavorite" :aria-pressed="isFavorite" :aria-label="isFavorite ? '즐겨찾기 해제' : '즐겨찾기 추가'">{{ isFavorite ? '★' : '☆' }}</button><button class="btn conf-check" @click="checkLatest" :disabled="checking || reading" aria-label="최신 여부 확인"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 8a6 6 0 10-1 6M16 3v5h-5"/></svg><span>{{ checking ? '확인 중…' : '최신 여부 확인' }}</span></button><a :href="doc.url" target="_blank" rel="noopener noreferrer" class="btn conf-external" aria-label="Confluence에서 열기" title="Confluence에서 열기"><span>원문</span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M11 3h6v6M17 3l-8 8M8 4H4v12h12v-4"/></svg></a><button v-if="headings.length" class="btn conf-toc-toggle" @click="toggleToc" :aria-expanded="showToc" aria-controls="conf-document-toc"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h12M4 10h12M4 15h8"/></svg>목차</button></div>
+        </header>
         <p v-if="readError || revisionError" class="conf-error" role="alert">{{ readError || revisionError }} <button v-if="readError" class="conf-more" @click="read(selectedId)">다시 시도</button></p>
         <div v-if="newer" class="conf-new-version" role="status">새 발행 버전 v{{ revision.latestPublishedVersion }}이 있습니다.<button class="btn" @click="read(doc.id, revision.latestPublishedVersion)">새 버전 보기</button></div>
         <p v-else-if="revision?.isLatest" class="conf-current" role="status">확인 시점의 최신 발행 버전입니다. {{ date(revision.checkedAt) }}</p>
-        <div class="conf-reading-layout"><div ref="reader" class="conf-reader" :aria-busy="reading">
+        <div ref="reader" class="conf-reader" tabindex="0" aria-label="문서 본문" :aria-busy="reading">
           <p v-if="reading" class="conf-muted" role="status">문서를 불러오는 중…</p>
           <article v-if="doc" class="conf-document"><nav v-if="doc.ancestors?.length" class="conf-breadcrumb" aria-label="문서 경로"><button v-for="item in doc.ancestors" :key="item.id" @click="open(item.id)">{{ item.title }}</button></nav><h1>{{ doc.title }}</h1><p class="conf-document-meta">v{{ version }} <span v-if="doc.version?.when">{{ date(doc.version.when) }} 수정</span><span>{{ author() }}</span><span v-if="checkedAt">최신 확인 {{ date(checkedAt) }}</span></p><div ref="documentBody" class="conf-document-body" v-html="doc.html" @click="linkClick"></div></article>
           <div v-else-if="!reading && !readError" class="conf-empty"><h2>프로젝트 문서를 한곳에서</h2><p>왼쪽 트리나 검색에서 문서를 선택하세요.<br>자주 보는 문서는 즐겨찾기에 고정할 수 있습니다.</p></div>
-        </div><aside v-if="headings.length" v-show="showToc" id="conf-document-toc" class="conf-toc" aria-label="이 문서의 목차"><h2>이 문서의 목차</h2><nav aria-label="본문 목차"><button v-for="heading in headings" :key="heading.id" :style="{'--level': heading.level - headingDepth}" :aria-current="activeHeading === heading.id ? 'location' : null" @click="jumpToHeading(heading.id)">{{ heading.title }}</button></nav></aside></div>
+        </div>
       </main>
+      <div v-if="headings.length && showToc && !compact" class="conf-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="목차 너비 조절" :aria-valuenow="tocWidth" aria-valuemin="180" :aria-valuemax="panelMax('toc')" @pointerdown="startPanelResize('toc', $event)" @keydown="resizePanelKey('toc', $event)"></div>
+      <ConfluencePanel v-if="headings.length" :visible="showToc" :compact="compact" label="이 문서의 목차" @close="toggleToc" id="conf-document-toc" class="conf-panel conf-toc"><div class="conf-panel-title"><h2>이 문서의 목차</h2><button class="conf-fold" @click="toggleToc" aria-label="목차 접기" title="목차 접기"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 5l5 5-5 5"/></svg></button></div><nav aria-label="본문 목차"><button v-for="heading in headings" :key="heading.id" :style="{'--level': heading.level - headingDepth}" :aria-current="activeHeading === heading.id ? 'location' : null" @click="jumpToHeading(heading.id)">{{ heading.title }}</button></nav></ConfluencePanel>
     </section>`,
 };

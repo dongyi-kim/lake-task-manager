@@ -2,6 +2,8 @@
 import json
 from urllib.parse import parse_qs, urlsplit
 
+import pytest
+
 from frontend.editor.test_editor_roundtrip_ui import editor_browser  # noqa: F401
 
 
@@ -131,12 +133,152 @@ def test_confluence_tree_favorites_search_revision_and_responsive(editor_browser
     assert not toc.is_visible()
     assert page.locator(".conf-workspace").evaluate("el => el.scrollWidth <= el.clientWidth + 2")
     page.screenshot(path=str(tmp_path / "confluence-mobile.png"))
-    page.get_by_role("button", name="문서 탐색 접기", exact=True).click()
     page.get_by_role("button", name="문서 탐색", exact=True).click()
+    page.get_by_role("dialog", name="문서 탐색", exact=True).wait_for()
+    page.get_by_role("button", name="문서 탐색 접기", exact=True).click()
     unexpected = [error for error in errors if not (
         error.startswith("HTTP 503 ") and any(path in error for path in (
             "/api/confluence/spaces", "/api/confluence/pages/12/revision")))]
     assert not unexpected, unexpected
+
+
+def test_confluence_docked_panel_resize_and_collapse_persist(editor_browser):
+    page, base, errors, _ = editor_browser
+    state = install_documents(page)
+    page.set_viewport_size({"width": 1440, "height": 960})
+    page.goto(base + "/#/confluence/12")
+    page.locator(".conf-document h1").wait_for()
+    sidebar = page.locator(".conf-sidebar")
+    toc = page.locator(".conf-toc")
+    reader = page.locator(".conf-reader")
+    left = page.get_by_role("separator", name="문서 탐색 너비 조절", exact=True)
+    right = page.get_by_role("separator", name="목차 너비 조절", exact=True)
+
+    for handle, panel, movement in ((left, sidebar, 48), (right, toc, -40)):
+        box = handle.bounding_box()
+        before = panel.bounding_box()["width"]
+        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + 100)
+        page.mouse.down()
+        page.mouse.move(box["x"] + box["width"] / 2 + movement, box["y"] + 100, steps=5)
+        page.mouse.up()
+        assert abs(panel.bounding_box()["width"] - before - abs(movement)) <= 2
+        assert page.locator(".conf-resizing").count() == 0
+    before_keys = (sidebar.bounding_box()["width"], toc.bounding_box()["width"])
+    left.press("ArrowLeft")
+    right.press("ArrowRight")
+    widths = {"sidebarWidth": sidebar.bounding_box()["width"], "tocWidth": toc.bounding_box()["width"]}
+    assert abs(widths["sidebarWidth"] - before_keys[0] + 16) <= 2
+    assert abs(widths["tocWidth"] - before_keys[1] + 16) <= 2
+    saved = page.evaluate("JSON.parse(localStorage.getItem('lake.confluence.layout.v1'))")
+    assert all(abs(saved[key] - value) <= 2 for key, value in widths.items())
+
+    # Folding changes only layout, preserving both the document and network work.
+    body_width = reader.bounding_box()["width"]
+    read_count = len(state["reads"])
+    page.get_by_role("button", name="문서 탐색 접기", exact=True).click()
+    page.get_by_role("button", name="목차 접기", exact=True).click()
+    sidebar.wait_for(state="hidden")
+    toc.wait_for(state="hidden")
+    assert reader.bounding_box()["width"] > body_width + 500
+    assert len(state["reads"]) == read_count
+    page.reload()
+    page.locator(".conf-document h1").wait_for()
+    assert not sidebar.is_visible() and not toc.is_visible()
+    page.get_by_role("button", name="문서 탐색", exact=True).click()
+    page.get_by_role("button", name="목차", exact=True).click()
+    sidebar.wait_for(); toc.wait_for()
+    assert abs(sidebar.bounding_box()["width"] - widths["sidebarWidth"]) <= 2
+    assert abs(toc.bounding_box()["width"] - widths["tocWidth"]) <= 2
+    reader.press("PageDown")
+    page.wait_for_function("document.querySelector('.conf-reader').scrollTop > 100")
+    assert reader.evaluate("el => getComputedStyle(el).scrollbarWidth") == "none"
+    assert page.evaluate("window.scrollY") == 0
+    assert not errors, errors
+
+
+@pytest.mark.parametrize("width", [700, 390], ids=["narrow-window", "phone"])
+def test_confluence_compact_drawers_leave_document_visible(editor_browser, width):
+    page, base, errors, _ = editor_browser
+    install_documents(page)
+    page.set_viewport_size({"width": width, "height": 844})
+    page.goto(base + "/#/confluence/12")
+    page.locator(".conf-compact .conf-document h1").wait_for()
+    sidebar = page.get_by_role("dialog", name="문서 탐색", exact=True)
+    toc = page.get_by_role("dialog", name="이 문서의 목차", exact=True)
+    reader = page.locator(".conf-reader")
+    assert not sidebar.is_visible() and not toc.is_visible()
+    assert reader.bounding_box()["height"] > 844 * .65
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+    assert page.evaluate("document.documentElement.scrollHeight <= innerHeight + 1")
+
+    navigation = page.get_by_role("button", name="문서 탐색", exact=True)
+    navigation.click()
+    sidebar.wait_for()
+    assert page.locator("dialog:modal").count() == 1
+    page.keyboard.press("Shift+Tab")
+    # Native dialogs may hand focus to browser chrome, but never to inert page controls.
+    assert page.evaluate("document.activeElement === document.body || !!document.activeElement.closest('.conf-sidebar')")
+    page.keyboard.press("Tab")
+    assert page.evaluate("!!document.activeElement.closest('.conf-sidebar')")
+    page.keyboard.press("Escape")
+    sidebar.wait_for(state="hidden")
+    assert navigation.evaluate("el => el === document.activeElement")
+
+    navigation.click()
+    sidebar.wait_for()
+    box = sidebar.bounding_box()
+    # The remaining body strip is a dismissible backdrop, not a second scroll surface.
+    assert box["x"] + box["width"] < width - 5
+    page.mouse.click(width - 4, 820)
+    sidebar.wait_for(state="hidden")
+    navigation.click()
+    sidebar.get_by_role("navigation", name="문서 트리").get_by_role("button", name="적재 가이드", exact=True).click()
+    sidebar.wait_for(state="hidden")
+
+    page.get_by_role("button", name="목차", exact=True).click()
+    toc.wait_for()
+    assert page.locator("dialog:modal").count() == 1
+    assert not sidebar.is_visible()
+    toc.get_by_role("button", name="공통 절차", exact=True).nth(1).click()
+    toc.wait_for(state="hidden")
+    page.wait_for_function("document.activeElement.matches('.conf-document-body h3')")
+    assert reader.evaluate("el => el.scrollTop") > 0
+    assert page.evaluate("window.scrollY") == 0
+    page.get_by_role("button", name="목차", exact=True).click()
+    current = toc.locator("[aria-current='location']")
+    assert current.inner_text() == "공통 절차"
+    page.keyboard.press("Escape")
+    toc.wait_for(state="hidden")
+
+    # The native drawer must release its top layer before global search can take focus.
+    navigation.click()
+    tree_search = sidebar.get_by_label("문서 트리 검색", exact=True)
+    tree_search.press("/")
+    assert tree_search.input_value() == "/"
+    assert sidebar.is_visible() and page.locator(".sr-input").count() == 0
+    tree_search.press("Control+k")
+    search = page.get_by_placeholder("Jira · Confluence · Bitbucket 통합 검색…", exact=True)
+    search.wait_for()
+    sidebar.wait_for(state="hidden")
+    assert page.locator("dialog:modal").count() == 0
+    assert search.evaluate("el => el === document.activeElement")
+    search.press("Escape")
+    search.wait_for(state="hidden")
+    navigation.click()
+    sidebar.get_by_role("button", name="문서 탐색 접기", exact=True).press("/")
+    search.wait_for()
+    sidebar.wait_for(state="hidden")
+    assert page.locator("dialog:modal").count() == 0
+    assert search.evaluate("el => el === document.activeElement")
+    search.press("Escape")
+    search.wait_for(state="hidden")
+
+    # Compact overlays never overwrite the saved desktop dock preferences.
+    page.set_viewport_size({"width": 1440, "height": 960})
+    page.get_by_role("separator", name="문서 탐색 너비 조절", exact=True).wait_for()
+    page.get_by_role("separator", name="목차 너비 조절", exact=True).wait_for()
+    assert page.locator("dialog:modal").count() == 0
+    assert not errors, errors
 
 
 def test_confluence_cache_retention_setting_persists_and_restores(editor_browser):
