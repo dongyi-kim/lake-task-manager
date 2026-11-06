@@ -53,7 +53,7 @@
 .conf-fold { display:grid; place-items:center; width:28px; height:28px; flex-shrink:0; border:1px solid transparent; border-radius:4px; background:none; color:var(--muted); cursor:pointer; }
 .conf-fold:hover { color:var(--text); border-color:var(--border-hi); background:var(--panel-3); }
 .conf-fold svg,.conf-toolbar svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; flex-shrink:0; }
-.conf-sidebar-scroll { overflow:auto; min-height:0; padding:8px 14px 24px; }
+.conf-sidebar-scroll { overflow:auto; min-height:0; padding:10px 10px 16px; }
 .conf-resizer { width:8px; flex-shrink:0; cursor:col-resize; touch-action:none; position:relative; background:var(--panel); }
 .conf-resizer::before { content:""; position:absolute; inset:0 auto 0 3px; width:1px; background:var(--border); }
 .conf-resizer::after { content:""; position:absolute; width:3px; height:32px; top:50%; left:2px; border-radius:3px; background:var(--border-hi); }
@@ -61,27 +61,44 @@
 .conf-resizing { user-select:none; cursor:col-resize; }
 .conf-workspace :is(.conf-sidebar-scroll,.conf-reader,.conf-toc nav,.conf-document-body pre,.conf-document-body table) { scrollbar-width:none; }
 .conf-workspace :is(.conf-sidebar-scroll,.conf-reader,.conf-toc nav,.conf-document-body pre,.conf-document-body table)::-webkit-scrollbar { display:none; }
-.conf-local-list { padding-bottom:10px; margin-bottom:12px; border-bottom:1px solid var(--border); }
+.conf-local-list { padding-bottom:8px; margin-bottom:8px; border-bottom:1px solid var(--border); }
+.conf-local-list > div { max-height:156px; overflow:auto; scrollbar-width:none; }
+.conf-local-list > div::-webkit-scrollbar { display:none; }
 .conf-local-list h2 { font-size:12px; margin:0 0 5px; }
 .conf-list-toggle { display:flex; align-items:center; width:100%; gap:6px; border:0; background:none; color:var(--muted); font:inherit; text-align:left; cursor:pointer; padding:4px 0; }
 .conf-list-chevron { width:14px; font-size:18px; line-height:1; }
 .conf-list-count { margin-left:auto; font-weight:400; font-size:11px; }
-.conf-local-list .conf-tree-title { display:block; width:100%; padding:7px 8px; text-align:left; }
+.conf-local-list .conf-tree-title { display:block; width:100%; padding:4px 8px; text-align:left; line-height:18px; }
+.conf-navigation-controls { flex-shrink:0; padding:0 12px 10px; border-bottom:1px solid var(--border); }
 .conf-space-label { display:flex; flex-direction:column; gap:5px; color:var(--muted); font-size:12px; font-weight:600; }
 .conf-space-label select { width:100%; background:var(--panel); border:1px solid var(--border-hi); color:var(--text); padding:7px; border-radius:5px; }
-.conf-search { display:flex; gap:5px; margin:12px 0; }
-.conf-search input { min-width:0; flex:1; color:var(--text); background:var(--panel); border:1px solid var(--border-hi); border-radius:5px; padding:7px; font:inherit; font-size:12px; }
-.conf-search .btn { font-size:12px; padding:5px 8px; }
+.conf-search { display:flex; align-items:center; gap:6px; margin:9px 0 0; padding:0 7px; background:var(--panel); border:1px solid var(--border-hi); border-radius:5px; }
+.conf-search:focus-within { outline:2px solid color-mix(in srgb,var(--accent) 45%,transparent); border-color:var(--accent); }
+.conf-search > svg { width:14px; height:14px; fill:none; stroke:var(--muted); stroke-width:1.5; flex-shrink:0; }
+.conf-search input { min-width:0; flex:1; width:100%; color:var(--text); background:none; border:0; outline:none; padding:7px 0; font:inherit; font-size:12px; }
+.conf-find-control { width:24px; height:24px; display:grid; place-items:center; padding:0; border:0; border-radius:3px; background:none; color:var(--muted); cursor:pointer; font-size:16px; }
+.conf-find-control:hover:not(:disabled) { background:var(--panel-3); color:var(--text); }
+.conf-find-control:disabled { opacity:.35; cursor:default; }
+.conf-find-status { display:flex; align-items:center; gap:3px; margin-top:5px; color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; }
+.conf-find-status > span { flex:1; }
+.conf-tree-caption { display:flex; justify-content:space-between; padding:6px 4px; color:var(--muted); font-size:11px; font-weight:600; }
 .conf-tree { padding-bottom:24px; }
-.conf-tree-row { display:flex; align-items:center; min-height:32px; margin-left:calc(var(--depth) * 14px); }
-.conf-expand { width:25px; height:30px; flex-shrink:0; background:none; border:0; color:var(--muted); cursor:pointer; font-size:20px; line-height:1; }
+.conf-tree-row { display:flex; align-items:center; min-height:26px; margin-left:calc(var(--depth) * 14px); border-radius:4px; position:relative; }
+.conf-tree-row:hover { background:var(--panel-3); }
+.conf-tree-toggle,.conf-tree-leaf { display:grid; place-items:center; width:22px; height:24px; padding:0; flex-shrink:0; background:none; border:0; color:var(--muted); }
+.conf-tree-toggle { cursor:pointer; }
+.conf-tree-toggle svg,.conf-tree-leaf svg { width:13px; height:13px; fill:none; stroke:currentColor; stroke-width:1.3; stroke-linecap:round; stroke-linejoin:round; }
+.conf-tree-toggle[aria-expanded="true"] svg { transform:rotate(90deg); }
+.conf-tree-row .conf-tree-title { padding:4px 5px 4px 1px; line-height:18px; }
+.conf-tree-row.selected { background:color-mix(in srgb,var(--accent) 12%,var(--panel)); }
+.conf-tree.is-finding .conf-tree-row:not(.is-match):not(.has-match) { opacity:.6; }
+.conf-tree-row.is-match { background:color-mix(in srgb,var(--accent) 14%,var(--panel)); }
+.conf-tree-row mark { background:none; color:var(--accent); font-weight:700; }
+.conf-tree-row.is-current-match { box-shadow:inset 0 0 0 1px var(--accent); }
 .conf-tree-title { border:0; background:none; color:var(--text); font:inherit; font-size:12px; text-align:left; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:7px 6px; border-radius:4px; cursor:pointer; }
 .conf-tree-row .conf-tree-title { flex:1; }
-.conf-tree-title:hover,.conf-search-result:hover { background:var(--panel-3); }
-.conf-tree-title.selected,.conf-search-result.selected { background:color-mix(in srgb,var(--accent) 14%,var(--panel)); color:var(--accent); font-weight:700; }
-.conf-search-result { display:flex; flex-direction:column; gap:4px; width:100%; text-align:left; border:0; background:none; color:var(--text); padding:9px 7px; cursor:pointer; border-radius:4px; }
-.conf-search-result strong { font-size:12px; line-height:1.5; }
-.conf-search-result small { color:var(--muted); font-size:10px; line-height:1.5; }
+.conf-tree-title:hover { background:var(--panel-3); }
+.conf-tree-title.selected { background:color-mix(in srgb,var(--accent) 14%,var(--panel)); color:var(--accent); font-weight:700; }
 .conf-more { background:none; border:0; color:var(--accent); cursor:pointer; padding:7px 3px; font:inherit; font-size:12px; text-align:left; }
 .conf-muted { color:var(--muted); font-size:12px; line-height:1.7; margin:6px 0; }
 .conf-main { min-width:0; min-height:0; flex:1; display:flex; flex-direction:column; background:var(--panel); }
@@ -94,20 +111,20 @@
 .conf-toolbar .btn[aria-expanded="true"] { background:var(--panel-2); color:var(--accent); }
 .conf-actions .conf-favorite-toggle { font-size:22px; padding:0 6px; }
 .conf-favorite-toggle[aria-pressed="true"] { color:var(--warn); }
-.conf-reader { overflow:auto; min-height:0; min-width:0; flex:1; scroll-behavior:auto; padding:36px clamp(24px,3.5vw,56px) 72px; }
+.conf-reader { overflow:auto; min-height:0; min-width:0; flex:1; scroll-behavior:auto; padding:24px 20px 48px; }
 .conf-toc { width:var(--conf-toc-width); background:var(--panel); }
 .conf-toc nav { display:flex; flex-direction:column; min-height:0; overflow:auto; padding:14px 14px 32px; }
 .conf-toc nav button { border:0; border-left:2px solid var(--border); background:none; color:var(--muted); padding:7px 8px 7px calc(10px + var(--level) * 10px); text-align:left; font:inherit; font-size:12px; line-height:1.6; overflow-wrap:anywhere; cursor:pointer; }
 .conf-toc nav button:hover { color:var(--text); background:var(--panel-2); }
 .conf-toc nav button[aria-current="location"] { color:var(--accent); border-left-color:var(--accent); font-weight:700; background:color-mix(in srgb,var(--accent) 7%,var(--panel)); }
-.conf-document { max-width:78ch; margin:0 auto; }
+.conf-document { width:100%; min-width:0; margin:0; }
 .conf-document > h1 { font-size:clamp(24px,2.3vw,32px); line-height:1.45; letter-spacing:-.025em; margin:10px 0 12px; font-weight:750; overflow-wrap:anywhere; }
 .conf-document-meta { display:flex; flex-wrap:wrap; gap:8px 16px; color:var(--muted); font-size:11px; margin:0 0 30px; }
 .conf-breadcrumb { display:flex; flex-wrap:wrap; gap:6px; }
 .conf-breadcrumb button { background:none; border:0; color:var(--muted); font:inherit; font-size:11px; padding:2px 0; cursor:pointer; }
 .conf-breadcrumb button + button::before { content:"/"; margin-right:6px; color:var(--muted-2); }
 .conf-document-body { font-size:14px; line-height:1.8; overflow-wrap:anywhere; }
-.conf-document-body p { max-width:80ch; margin:0 0 16px; }
+.conf-document-body p { margin:0 0 16px; }
 .conf-document-body :is(h1,h2,h3,h4,h5,h6) { line-height:1.5; margin:32px 0 12px; }
 .conf-document-body h2 { font-size:21px; letter-spacing:-.02em; }
 .conf-document-body h3 { font-size:17px; }
@@ -116,6 +133,10 @@
 .conf-document-body th,.conf-document-body td { border:1px solid var(--border-hi); padding:7px 10px; vertical-align:top; }
 .conf-document-body th { background:var(--panel-2); }
 .conf-document-body pre { background:var(--code-bg); color:var(--code-fg); overflow:auto; padding:14px; border-radius:5px; }
+.conf-workspace :is(.conf-reader,.conf-document-body pre,.conf-document-body table) { scrollbar-width:auto; }
+.conf-workspace :is(.conf-reader,.conf-document-body pre,.conf-document-body table)::-webkit-scrollbar { display:block; width:0; height:7px; }
+.conf-workspace :is(.conf-reader,.conf-document-body pre,.conf-document-body table)::-webkit-scrollbar-thumb { background:var(--border-hi); border-radius:5px; }
+.conf-workspace :is(.conf-reader,.conf-document-body pre,.conf-document-body table)::-webkit-scrollbar-track { background:transparent; }
 .conf-document-body blockquote { border-left:3px solid var(--border-hi); padding:3px 16px; margin:16px 0; color:var(--muted); }
 .conf-document-body a { color:var(--accent); }
 .conf-media-unavailable { display:inline-block; padding:8px; background:var(--panel-2); color:var(--muted); font-size:12px; }
@@ -142,7 +163,7 @@
   .wrap-confluence header.top .search-trig :is(span,kbd) { display:none; }
   .conf-toolbar { padding:8px 12px; gap:4px; }
   .conf-toolbar-location > span { display:none; }
-  .conf-reader { padding:24px 22px 56px; }
+  .conf-reader { padding:18px 12px 40px; }
   .conf-document > h1 { font-size:26px; }
   .conf-document-meta { gap:5px 12px; margin-bottom:24px; }
   .conf-empty { margin:36px 0; }

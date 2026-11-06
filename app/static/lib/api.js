@@ -428,6 +428,7 @@ export const api = {
       method: "POST", mutation: true, headers: { "X-LTM-Confluence": "1" }, body });
   },
   confluenceSpaces: (start = 0) => req("/api/confluence/spaces?start=" + start),
+  confluenceTree: (space, start = 0) => req("/api/confluence/tree?space=" + encodeURIComponent(space) + "&start=" + start),
   confluencePages: (space, parent = "", start = 0) => req("/api/confluence/pages?space=" + encodeURIComponent(space)
     + "&parent=" + encodeURIComponent(parent) + "&start=" + start),
   confluenceSearch: (query, space = "", start = 0, ancestor = "") => req("/api/confluence/search?q=" + encodeURIComponent(query)

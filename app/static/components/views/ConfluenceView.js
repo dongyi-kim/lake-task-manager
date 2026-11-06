@@ -7,7 +7,7 @@ import ConfluencePanel from "../ui/ConfluencePanel.js";
 import ConfluenceDocumentList from "../ui/ConfluenceDocumentList.js";
 import ConfluenceComposer from "../ui/ConfluenceComposer.js";
 import ConfluencePageMenu from "../ui/ConfluencePageMenu.js";
-import { normalizeSearchText } from "../../lib/searchText.js";
+import confluenceTree from "../../lib/confluenceTree.js";
 
 const pageId = () => location.hash.match(/^#\/confluence\/(\d+)/)?.[1] || "";
 const nextStart = data => data?._links?.next ? Number(data.start || 0) + Number(data.size ?? data.results?.length ?? 0) : null;
@@ -16,30 +16,12 @@ const merge = (old, rows) => [...new Map([...old, ...rows].map(row => [String(ro
 export default {
   name: "ConfluenceView",
   components: { ConfluencePanel, ConfluenceDocumentList, ConfluenceComposer, ConfluencePageMenu },
-  mixins: [confluenceLayout],
+  mixins: [confluenceLayout, confluenceTree],
   data() { return { base: "", favorites: [], recentDocuments: [], navigationFolds: readNavigationFolds(), spaces: [], space: "", spacesNext: null,
-    roots: [], rootsNext: null, children: {}, expanded: {}, loadingBranches: {}, branchErrors: {},
-    query: "", results: [], searchNext: null, searching: false, searched: false,
     loading: false, error: "", doc: null, selectedId: "", reading: false, readError: "",
     checking: false, revision: null, revisionError: "",
     headings: [], activeHeading: "", composing: false, editingPage: null, openingEditor: false, composeParent: null, contextPage: null }; },
   computed: {
-    rows() {
-      const result = [];
-      const visit = (items, level, visited = new Set()) => items.forEach(item => {
-        const id = String(item.id);
-        if (visited.has(id)) return;
-        const next = new Set(visited); next.add(id);
-        result.push({ ...item, id, level });
-        if (this.expanded[id]) {
-          visit(this.children[id]?.results || [], level + 1, next);
-          if (this.loadingBranches[id] || this.branchErrors[id] || this.children[id]?.next !== null)
-            result.push({ id: "more-" + id, parent: id, level: level + 1, more: true });
-        }
-      });
-      visit(this.roots, 0);
-      return result;
-    },
     isFavorite() { return !!this.doc && this.favorites.some(row => String(row.id) === String(this.doc.id)); },
     newer() { return this.revision && this.doc && Number(this.revision.latestPublishedVersion) > Number(this.doc.version?.number); },
     version() { return this.doc?.version?.number || ""; },
@@ -47,14 +29,14 @@ export default {
     headingDepth() { return Math.min(...this.headings.map(row => row.level), 6); },
   },
   mounted() {
-    this._generation = 0; this._readGeneration = 0; this._searchGeneration = 0;
+    this._readGeneration = 0;
     this._hash = () => { const id = pageId(); if (this._navigationReady && id && id !== this.selectedId) this.read(id); };
     window.addEventListener("hashchange", this._hash);
     this.initialize();
   },
   activated() { if (this._hash) this._hash(); this.$nextTick(() => this.buildToc()); },
-  deactivated() { this._searchGeneration++; this.searching = false; this.contextPage=null; this.stopToc(); },
-  beforeUnmount() { this._searchGeneration++; window.removeEventListener("hashchange", this._hash); this.stopToc(); },
+  deactivated() { this.contextPage=null; this.stopToc(); },
+  beforeUnmount() { window.removeEventListener("hashchange", this._hash); this.stopToc(); },
   methods: {
     startCompose(parent = null) { this.editingPage = null; this.composeParent = parent; this.contextPage = null;
       this.closeDrawer(); this.stopToc(); this.headings = []; this.composing = true; },
@@ -77,7 +59,7 @@ export default {
       finally { this.openingEditor = false; }
     },
     closeCompose() { this.composing = false; this.$nextTick(() => this.buildToc()); },
-    createdDocument(id) { this.closeCompose(); this.children = {}; this.expanded = {}; this.loadRoots();
+    createdDocument(id) { this.closeCompose(); this.loadTree(true);
       if (String(id) === this.selectedId) this.read(id, null, true); else this.open(id); },
     async initialize() {
       // Local configuration is independent of SSO/network so saved titles appear immediately.
@@ -101,76 +83,11 @@ export default {
     },
     async changeSpace() {
       this.contextPage = null;
-      this._generation++; this._searchGeneration++;
-      this.roots = []; this.rootsNext = null; this.children = {}; this.expanded = {};
-      this.loadingBranches = {}; this.branchErrors = {}; this.results = []; this.searched = false;
-      await Promise.all([this.loadRoots(), this.query.trim() ? this.search() : Promise.resolve()]);
-    },
-    async loadRoots(more = false) {
-      const gen = this._generation; this.loading = true; this.error = "";
-      try {
-        const data = await api.confluencePages(this.space, "", more ? this.rootsNext : 0);
-        if (gen !== this._generation) return;
-        this.roots = merge(more ? this.roots : [], data.results || []); this.rootsNext = nextStart(data);
-      } catch (error) { if (gen === this._generation) this.error = error.message; }
-      finally { if (gen === this._generation) this.loading = false; }
-    },
-    async toggle(row) {
-      this.expanded[row.id] = !this.expanded[row.id];
-      if (this.expanded[row.id] && !this.children[row.id]) await this.loadChildren(row.id);
-    },
-    async loadChildren(id, more = false) {
-      if (this.loadingBranches[id]) return;
-      const gen = this._generation; this.loadingBranches[id] = true; this.branchErrors[id] = "";
-      try {
-        const data = await api.confluencePages(this.space, id, more ? this.children[id].next : 0);
-        if (gen !== this._generation) return;
-        this.children[id] = { results: merge(more ? this.children[id].results : [], data.results || []), next: nextStart(data) };
-      } catch (error) { if (gen === this._generation) this.branchErrors[id] = error.message; }
-      finally { if (gen === this._generation) this.loadingBranches[id] = false; }
-    },
-    searchChanged() { this._searchGeneration++; this.searching = false; this.searched = false; this.searchNext = null; this.results = []; },
-    async search(more = false) {
-      if (!this.query.trim()) { this._searchGeneration++; this.results = []; this.searched = false; this.searching = false; return; }
-      const gen = ++this._searchGeneration; this.searching = true; this.error = "";
-      const query = this.query, space = this.space, needle = normalizeSearchText(query);
-      if (!more) { this.results = []; this.searchNext = null; }
-      this.searched = true;
-      const append = data => {
-        if (gen === this._searchGeneration) this.results = merge(this.results, data);
-      };
-      try {
-        // Keep Confluence's existing full-text results. Its token index cannot
-        // guarantee "Data Lake" == "datalake", so also scan cached title metadata.
-        // Each page renders immediately; no document bodies or hidden result cap.
-        const fullText = async () => {
-          const data = await api.confluenceSearch(query, space, more ? this.searchNext : 0);
-          if (gen !== this._searchGeneration) return;
-          append((data.results || []).map(item => item.content || item));
-          this.searchNext = nextStart(data);
-        };
-        const titles = async () => {
-          let start = 0;
-          while (gen === this._searchGeneration) {
-            // Query-independent cache keys are reused when the user changes spacing.
-            const data = await api.confluenceSearch("", space, start);
-            if (gen !== this._searchGeneration) return;
-            append((data.results || []).map(item => item.content || item)
-              .filter(item => normalizeSearchText(item.title).includes(needle)));
-            const next = nextStart(data);
-            if (next === null) return;
-            if (!Number.isFinite(next) || next <= start) throw new Error("문서 검색의 다음 페이지를 확인하지 못했습니다. 다시 시도해 주세요.");
-            start = next;
-          }
-        };
-        // Settle both branches before releasing loading state, retaining partial results.
-        const results = await Promise.allSettled(more ? [fullText()] : [fullText(), titles()]);
-        const failure = results.find(result => result.status === "rejected");
-        if (failure) throw failure.reason;
-      } catch (error) { if (gen === this._searchGeneration) this.error = error.message; }
-      finally { if (gen === this._searchGeneration) this.searching = false; }
+      await this.loadTree(true);
     },
     open(id) { this.closeDrawer();
+      const matchId = confluencePageId(String(id));
+      if (this.tree.matches.includes(matchId)) this.activeMatch = matchId;
       try { const url=new URL(String(id)); this._pendingAnchor=url.hash ? decodeURIComponent(url.hash.slice(1)) : ''; } catch (_) { this._pendingAnchor=''; }
       openConfluenceDocument(id);
       if (confluencePageId(String(id)) === this.selectedId && this._pendingAnchor) this.$nextTick(()=>this.jumpToAnchor(this._pendingAnchor));
@@ -256,7 +173,6 @@ export default {
         this.$nextTick(() => requestAnimationFrame(() => target.node.focus({ preventScroll: true })));
       } else target.node.focus({ preventScroll: true });
     },
-    path(item) { return (item.ancestors || []).map(row => row.title).join(" / ") || item.space?.name || item.space?.key || ""; },
     date(value) { if (!value) return ""; const date = new Date(typeof value === "number" ? value * 1000 : value); return Number.isNaN(+date) ? "" : date.toLocaleString(); },
     author() { const who = this.doc?.version?.by; return who?.displayName || who?.username || ""; },
     jumpToAnchor(id) {
@@ -281,31 +197,34 @@ export default {
     <section class="conf-workspace" :class="{ 'conf-compact': compact, 'conf-resizing': draggingPanel }" :style="layoutStyle" aria-label="Confluence 문서">
       <ConfluencePanel v-if="!composing" :visible="showSidebar" :compact="compact" label="문서 탐색" @close="toggleSidebar" class="conf-panel conf-sidebar">
         <div class="conf-panel-title"><h1>Confluence</h1><button class="conf-fold" @click="toggleSidebar" aria-label="문서 탐색 접기" title="문서 탐색 접기"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M12 5l-5 5 5 5"/></svg></button></div>
-        <div class="conf-sidebar-scroll">
-        <ConfluenceDocumentList title="즐겨찾기" :rows="favorites" :selected-id="selectedId" :expanded="!navigationFolds.favorites" @toggle="toggleNavigationList('favorites')" @open="open" empty-text="문서의 ☆ 버튼으로 여기에 고정하세요." />
-        <ConfluenceDocumentList title="최근 열어본 문서" :rows="recentDocuments" :selected-id="selectedId" :expanded="!navigationFolds.recent" @toggle="toggleNavigationList('recent')" @open="open" empty-text="열어본 문서가 여기에 표시됩니다." />
-        <label class="conf-space-label">Space<select v-model="space" @change="changeSpace" aria-label="Space"><option v-for="item in spaces" :key="item.key" :value="item.key">{{ item.name }} ({{ item.key }})</option></select></label>
-        <button v-if="spacesNext !== null" class="conf-more" @click="loadSpaces(true)">Space 더 보기</button>
-          <form class="conf-search" @submit.prevent="search()"><input v-model="query" @input="searchChanged" aria-label="문서 트리 검색" placeholder="문서 검색 · 제목은 공백 무시"><button class="btn" :disabled="searching">검색</button></form>
-        <p v-if="error" class="conf-error" role="alert">{{ error }} <button class="conf-more" @click="query.trim() ? search() : (space ? loadRoots() : loadSpaces())">다시 시도</button></p>
-        <div class="conf-tree" role="navigation" aria-label="문서 트리">
-          <p v-if="searching" role="status" class="conf-muted">검색 중…</p>
-          <template v-if="searched && query.trim()">
-            <p class="conf-muted">{{ results.length }}개 표시{{ searchNext !== null ? ' · 더 불러올 결과가 있습니다' : '' }}</p>
-            <button v-for="item in results" :key="item.id" class="conf-search-result" :class="{selected: selectedId === String(item.id)}" @click="open(item.id)" @contextmenu.prevent.stop="showPageMenu(item,$event)" @keydown.shift.f10.prevent="showPageMenu(item,$event)"><strong>{{ item.title }}</strong><small>{{ path(item) }}</small></button>
-            <p v-if="!results.length && !error" class="conf-muted">검색에서 반환된 문서가 없습니다. 다른 검색어로 찾아보세요.</p>
-            <button v-if="searchNext !== null" class="conf-more" @click="search(true)" :disabled="searching">검색 결과 더 보기</button>
-          </template>
-          <template v-else>
-            <div v-for="row in rows" :key="row.id" class="conf-tree-row" :style="{'--depth': row.level}" @contextmenu.prevent.stop="showPageMenu(row,$event)" @keydown.shift.f10.prevent="showPageMenu(row,$event)">
-              <template v-if="row.more"><span v-if="loadingBranches[row.parent]" class="conf-muted" role="status">불러오는 중…</span><button v-else class="conf-more" @click="loadChildren(row.parent, !branchErrors[row.parent])">{{ branchErrors[row.parent] ? '하위 문서 다시 시도' : '하위 문서 더 보기' }}</button></template>
-              <template v-else><button class="conf-expand" @click="toggle(row)" :aria-expanded="!!expanded[row.id]" :aria-label="row.title + ' 하위 문서'">{{ expanded[row.id] ? '⌄' : '›' }}</button><button class="conf-tree-title" :class="{selected: selectedId === row.id}" @click="open(row.id)" :title="row.title">{{ row.title }}</button></template>
-            </div>
-            <p v-if="loading" class="conf-muted" role="status">문서 목록을 불러오는 중…</p>
-            <button v-if="rootsNext !== null" class="conf-more" @click="loadRoots(true)" :disabled="loading">루트 문서 더 보기</button>
-            <p v-if="!loading && !roots.length && !error" class="conf-muted">이 Space에서 볼 수 있는 루트 문서가 없습니다.</p>
-          </template>
+        <div class="conf-navigation-controls">
+          <label class="conf-space-label">Space<select v-model="space" @change="changeSpace" aria-label="Space"><option v-for="item in spaces" :key="item.key" :value="item.key">{{ item.name }} ({{ item.key }})</option></select></label>
+          <button v-if="spacesNext !== null" class="conf-more" @click="loadSpaces(true)">Space 더 보기</button>
+          <div class="conf-search">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8" cy="8" r="5"/><path d="m12 12 5 5"/></svg>
+            <input v-model="query" aria-label="문서 트리 검색" placeholder="트리에서 제목 찾기" @keydown.enter.prevent="moveTreeMatch($event.shiftKey ? -1 : 1)" @keydown.esc.prevent="clearTreeSearch" />
+            <button v-if="query" type="button" class="conf-find-control" @click="clearTreeSearch" aria-label="트리 검색 지우기">×</button>
+          </div>
+          <div v-if="tree.searching" class="conf-find-status" role="status">
+            <span>{{ tree.matches.length ? matchPosition + ' / ' + tree.matches.length + '개 일치' : (treeLoading ? '일치 문서 찾는 중…' : '일치하는 제목 없음') }}</span>
+            <button class="conf-find-control" @click="moveTreeMatch(-1)" :disabled="!tree.matches.length" aria-label="이전 일치 문서">↑</button><button class="conf-find-control" @click="moveTreeMatch(1)" :disabled="!tree.matches.length" aria-label="다음 일치 문서">↓</button>
+          </div>
         </div>
+        <div class="conf-sidebar-scroll">
+          <ConfluenceDocumentList title="즐겨찾기" :rows="favorites" :selected-id="selectedId" :expanded="!navigationFolds.favorites" @toggle="toggleNavigationList('favorites')" @open="open" empty-text="문서의 ☆ 버튼으로 여기에 고정하세요." />
+          <ConfluenceDocumentList title="최근 열어본 문서" :rows="recentDocuments" :selected-id="selectedId" :expanded="!navigationFolds.recent" @toggle="toggleNavigationList('recent')" @open="open" empty-text="열어본 문서가 여기에 표시됩니다." />
+          <p v-if="error" class="conf-error" role="alert">{{ error }} <button class="conf-more" @click="loadSpaces()">다시 시도</button></p>
+          <div class="conf-tree-caption"><span>페이지 트리</span><span>{{ tree.count }}</span></div>
+          <div class="conf-tree" :class="{'is-finding': tree.searching}" role="navigation" aria-label="문서 트리" :aria-busy="treeLoading">
+            <div v-for="row in tree.rows" :key="row.id" class="conf-tree-row" :class="{'is-match': row.match, 'has-match': row.containsMatch, 'is-current-match': activeMatch === row.id, selected: selectedId === row.id}" :data-page-id="row.id" :style="{'--depth': row.level}" @contextmenu.prevent.stop="showPageMenu(row,$event)" @keydown.shift.f10.prevent="showPageMenu(row,$event)">
+              <button v-if="row.hasChildren" class="conf-tree-toggle" @click="toggle(row)" :aria-expanded="row.open" :aria-label="row.title + ' 하위 문서'"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg></button>
+              <span v-else class="conf-tree-leaf" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4 2h5l3 3v9H4zM9 2v4h3"/></svg></span>
+              <button class="conf-tree-title" :class="{selected: selectedId === row.id}" :aria-current="selectedId === row.id ? 'page' : null" @click="open(row.id)" :title="row.title"><mark v-if="row.match">{{ row.title }}</mark><template v-else>{{ row.title }}</template></button>
+            </div>
+            <p v-if="treeLoading" class="conf-muted" role="status">문서 목록을 불러오는 중…</p>
+            <p v-if="treeError" class="conf-error" role="alert">{{ treeError }} <button class="conf-more" @click="loadTree()">문서 목록 다시 시도</button></p>
+            <p v-if="!treeLoading && !tree.count && !treeError" class="conf-muted">이 Space에서 볼 수 있는 문서가 없습니다.</p>
+          </div>
         </div>
         <ConfluencePageMenu v-if="contextPage" :key="contextPage.row.id" :target="contextPage" @close="contextPage=null" @create="startCompose" />
       </ConfluencePanel>
@@ -325,7 +244,7 @@ export default {
           <p v-if="doc?.macroWarnings?.length" class="conf-muted">일부 매크로는 원문 확인이 필요합니다. <button class="conf-more" @click="read(doc.id,null,true)" :disabled="reading">본문 다시 불러오기</button></p>
           <p v-if="reading" class="conf-muted" role="status">문서를 불러오는 중…</p>
           <article v-if="doc" class="conf-document"><nav v-if="doc.ancestors?.length" class="conf-breadcrumb" aria-label="문서 경로"><button v-for="item in doc.ancestors" :key="item.id" @click="open(item.id)">{{ item.title }}</button></nav><h1>{{ doc.title }}</h1><p class="conf-document-meta">v{{ version }} <span v-if="doc.version?.when">{{ date(doc.version.when) }} 수정</span><span>{{ author() }}</span><span v-if="checkedAt">최신 확인 {{ date(checkedAt) }}</span></p><div ref="documentBody" class="conf-document-body" v-html="doc.html" @click="linkClick"></div></article>
-          <div v-else-if="!reading && !readError" class="conf-empty"><h2>프로젝트 문서를 한곳에서</h2><p>왼쪽 트리나 검색에서 문서를 선택하세요.<br>자주 보는 문서는 즐겨찾기에 고정할 수 있습니다.</p></div>
+          <div v-else-if="!reading && !readError" class="conf-empty"><h2>프로젝트 문서를 한곳에서</h2><p>왼쪽 페이지 트리에서 문서를 선택하세요.<br>자주 보는 문서는 즐겨찾기에 고정할 수 있습니다.</p></div>
         </div>
       </main>
       <div v-if="(composing || headings.length) && showToc && !compact" class="conf-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="목차 너비 조절" :aria-valuenow="tocWidth" aria-valuemin="180" :aria-valuemax="panelMax('toc')" @pointerdown="startPanelResize('toc', $event)" @keydown="resizePanelKey('toc', $event)"></div>

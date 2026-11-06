@@ -19,9 +19,10 @@
 .conf-macro-result { display:block; width:100%; text-align:left; border:0; border-bottom:1px solid var(--border); background:transparent; color:var(--text); padding:9px; cursor:pointer; }
 .conf-macro-result:hover { background:var(--panel-2); }
 .conf-macro-result small { color:var(--muted); margin-left:8px; }
-.conf-document-body details.conf-expand { display:block; width:auto; height:auto; margin:16px 0; padding:0; border:1px solid var(--border-hi); border-radius:4px; }
-.conf-document-body details.conf-expand > summary { padding:10px 14px; cursor:pointer; font-weight:600; background:var(--panel-2); }
-.conf-document-body details.conf-expand > :not(summary) { margin-left:16px; margin-right:16px; }
+.conf-document-body details.conf-expand { display:block; width:auto; height:auto; margin:10px 0; padding:0; border:1px solid var(--border); border-radius:4px; font:inherit; color:inherit; }
+.conf-document-body details.conf-expand > summary { padding:5px 9px; cursor:pointer; font-size:13px; line-height:20px; font-weight:500; background:color-mix(in srgb,var(--panel-2) 45%,var(--panel)); }
+.conf-document-body details.conf-expand > summary::marker { color:var(--muted); font-size:10px; }
+.conf-document-body details.conf-expand > :not(summary) { margin-left:10px; margin-right:10px; }
 .conf-native-panel { border:1px solid var(--border-hi); padding:12px 16px; margin:16px 0; border-radius:4px; }
 .conf-macro-unavailable { color:var(--muted); font-size:12px; padding:10px 12px; border-left:2px solid var(--border-hi); }
 .conf-status { display:inline-block; font-size:11px; font-weight:700; padding:2px 7px; line-height:1.5; border-radius:3px; background:var(--conf-status-color,#64748b); color:white; }
