@@ -11,7 +11,7 @@ description: LTM MCP로 여러 Task 또는 SubTask를 검증하고 일괄 생성
 
 - [제출 전 초안 검토](references/draft-review.md): 항목별 내용·대상 제시와 묶음 단위 확인.
 - 이름·링크 확인은 [사람과 링크](references/people-and-links.md)를 사용한다.
-- 본문은 [작성 형식](references/content-format.md)의 **Bulk Markdown** 절을 따른다. 일반 티켓 생성의 HTML과 다르다.
+- 본문은 [작성 형식](references/content-format.md)의 **Jira Task 본문 작성 스타일**과 **Bulk Markdown** 절을 따른다. 어미 없는 개조식 표현과 점검사항·작업목표의 체크박스 활용을 권장한다. 일괄 생성의 Markdown은 일반 티켓 생성의 HTML과 다르다.
 - 실행·부분 실패는 [쓰기·검증 절차](references/write-workflow.md)를 따른다.
 - [예제 데이터](references/examples.json)의 `bulkItems`는 구조를 보여주는 샘플이다.
 

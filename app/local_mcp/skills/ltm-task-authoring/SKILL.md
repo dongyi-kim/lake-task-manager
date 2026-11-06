@@ -10,7 +10,7 @@ description: LTM MCP로 Task·Epic·SubTask 한 건을 생성하거나 기존 �
 ## 필요한 참고 문서
 
 - [제출 전 초안 검토](references/draft-review.md): 검토할 내용, 확인 시점, 기존 승인 재사용.
-- 리치 본문을 만들 때 [작성 형식](references/content-format.md)을 읽는다.
+- 본문 작성 시 [작성 형식](references/content-format.md)의 **Jira Task 본문 작성 스타일**을 읽는다. 어미 없는 개조식 표현과 점검사항·작업목표의 체크박스 활용을 권장하며, 리치 본문 형식도 같은 문서를 따른다.
 - 사람·Jira·Confluence·외부 링크를 넣을 때 [사람과 링크](references/people-and-links.md)를 읽는다.
 - 게시 전과 오류 복구 시 [쓰기·검증 절차](references/write-workflow.md)를 따른다.
 - 완료 상태·권한·타입/부모 변경을 다룰 때 [티켓 작업 가이드](references/ticket-actions.md)를 읽는다.
