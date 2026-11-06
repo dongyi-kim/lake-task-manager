@@ -3117,7 +3117,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         """
         if not html:
             return None
-        html = unproxy_media(html)          # 재편집 시 박힌 프록시 URL(/api/img?u=..)을 원래 첨부로 복원
+        from app.content.editor_input import normalize_editor_html
+        html = normalize_editor_html(html, getattr(self.s, "jira_base", ""))
         from app.content.wikihtml import html_to_wiki
         fmt = self._description_fmt()
         # HTML 모드: 태스크리스트를 먼저 **체크박스 문단**으로, 영역 구분선을 **'=== 제목 ==='
@@ -3160,7 +3161,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         글자로 샌다(리포트된 버그). mock/local(jira820)=wiki 라 html_to_wiki 로 변환한다."""
         if not html:
             return ""
-        html = unproxy_media(html)          # 재편집 시 박힌 프록시 URL(/api/img?u=..)을 원래 첨부로 복원
+        from app.content.editor_input import normalize_editor_html
+        html = normalize_editor_html(html, getattr(self.s, "jira_base", ""))
         from app.content.wikihtml import html_to_wiki
         if self._comment_fmt() == "html":
             return serialize_jira_html(flatten_mentions_html(flatten_task_lists(html)))

@@ -257,22 +257,18 @@ def test_lost_creation_response_replays_same_request_without_duplicate_document(
     assert not [error for error in errors if "ERR_FAILED" not in str(error) and "403" not in str(error)]
 
 
-def test_numbering_and_storage_adapter_keep_text_and_reject_unresolved_assets(editor_browser):
+def test_numbering_matches_shared_server_serializer(editor_browser):
     page, base, errors, _ = editor_browser
     page.goto(base)
     result = page.evaluate("""async () => {
       const { outlineNumbers } = await import('/components/editor/headingNumbering.js');
-      const { confluenceStorage } = await import('/lib/confluenceStorage.js');
-      const rejected = [];
-      for (const html of ['<img src="blob:missing">','<a href="draft:missing">file</a>',
-          '<span data-type="mention" data-id="unknown">Name</span>']) {
-        try { confluenceStorage(html); } catch (error) { rejected.push(error.message); }
-      }
-      return { sequence: outlineNumbers([2,4,4,3,2,1,2]), rejected,
-        text: confluenceStorage('<h2 data-heading-number="99">10 Manual</h2><h4>Child</h4><pre><code>x &lt; y &amp;&amp; z ]]&gt;</code></pre><script>bad()</script>', {numbered:true}) };
+      const { api } = await import('/lib/api.js');
+      const sequence = outlineNumbers([2,4,4,3,2,1,2]);
+      const result = await api.confluencePrepareEditor({html:
+        '<h2>10 Manual</h2><h4>Child</h4><h4>Third</h4><h3>Up</h3><h2>Two</h2><h1>Three</h1><h2>Last</h2>', numbered:true});
+      return { sequence, storage:result.storage };
     }""")
     assert result["sequence"] == ["1", "1.1", "1.2", "1.3", "2", "3", "3.1"]
-    assert len(result["rejected"]) == 3
-    assert "<h2>1 10 Manual</h2>" in result["text"] and "<h4>1.1 Child</h4>" in result["text"]
-    assert "]]]]><![CDATA[>" in result["text"] and "bad()" not in result["text"]
+    import re
+    assert re.findall(r'<h[1-6]>([\d.]+) ', result["storage"]) == result["sequence"]
     assert not errors

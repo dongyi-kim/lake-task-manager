@@ -3,7 +3,6 @@ import { api } from "../../lib/api.js";
 import { saveDraft, loadDraft, clearDraft } from "../../lib/draft.js";
 import { newMutationId } from "../../lib/mutationId.js";
 import { resolveDraftKey } from "../../lib/draftIdentity.js";
-import { confluenceStorage, mentionIds } from "../../lib/confluenceStorage.js";
 import { confluenceEditorHtml } from "../../lib/confluenceMacroStorage.js";
 
 export default {
@@ -82,7 +81,7 @@ export default {
       this.error = "";
       await this.$refs.editor.submit();
     },
-    async publishDocument({ html, files, jiraBase }) {
+    async publishDocument({ html, files }) {
       if (this.revisionConflict) throw new Error('초안 작성 후 서버 문서가 변경되었습니다. 최신 원문과 초안을 확인해 주세요.');
       this.busy = true;
       try {
@@ -98,8 +97,8 @@ export default {
             filename: "ltm-" + file.token.replace(/[^a-zA-Z0-9]/g, "").slice(-16) + "-" + file.name.replace(/[\\/\x00-\x1f]/g, "_").slice(-160),
             mutationId: newMutationId("conf-file"), uploaded: false }));
           this.progress = "발행 내용 확인 중…";
-          const ids = mentionIds(html), users = ids.length ? await api.confluenceMentionUsers(ids) : {};
-          const body = confluenceStorage(html, { assets, numbered: this.form.numbered, users, jiraBase });
+          const { storage: body } = await api.confluencePrepareEditor({ html, numbered: this.form.numbered,
+            assets: assets.map(({ token, filename }) => ({ token, filename })) });
           this.run = { startedAt: Date.now(), page: null, completed: false, assets,
             payload: { title: this.form.title.trim(), body, mutation_id: newMutationId("conf-page"),
               ...(this.editingPage ? {expected_version:this.sourceVersion}

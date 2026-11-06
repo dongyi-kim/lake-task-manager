@@ -8,11 +8,12 @@ from pydantic import Field
 
 from app.local_mcp.write_tools import MutationId
 from app.services.confluence_commands import ConfluenceCommands
+from app.content.confluence_editor import EditorOptions
 
 
 Version = Annotated[int, Field(ge=1, description="Published version returned by the latest read; a mismatch aborts the write.")]
 Storage = Annotated[str, Field(description=(
-    "Confluence storage XHTML (ac:/ri: macros preserved), not Jira editor HTML. "
+    "Confluence storage XHTML (ac:/ri: macros preserved), or LTM editor HTML with format=editor_html. "
     "Read get_content_guide(skill='ltm-confluence-authoring'). format=text escapes plain text."))]
 
 
@@ -27,19 +28,23 @@ def register_confluence_writes(register, runtime):
             raise
 
     def create_confluence_page(space: str, title: str, body: Storage, client_mutation_id: MutationId,
-                               parent_id: str | None = None, format: Literal["storage", "text"] = "storage") -> dict:
+                               parent_id: str | None = None, format: Literal["storage", "text", "editor_html"] = "storage",
+                               editor_options: EditorOptions | None = None) -> dict:
         """Create a published page in a configured Space, optionally below a page in that same Space.
         No parent means a Space root, not automatically the homepage. Resolve Space/parent IDs first.
-        Storage XHTML preserves Confluence macros; Markdown/Jira HTML are different formats.
+        format=editor_html uses LTM's shared checkbox, mention, code, table, callout and macro serializer.
+        editor_options.assets maps editor image/file tokens to uploaded filenames; numbered adds heading numbers.
+        Native storage remains unchanged; Markdown is not an HTML input.
         Reuse client_mutation_id for the exact retry; outcome_unknown must never be retried with a new ID.
         This does not copy another document or manipulate another editor's unpublished draft.
         """
         return call("create_page", space=space, title=title, body=body, mutation_id=client_mutation_id,
-                    parent_id=parent_id, format=format)
+                    parent_id=parent_id, format=format, editor_options=editor_options)
 
     def update_confluence_page(page_id: str, expected_version: Version, client_mutation_id: MutationId,
                                body: Storage | None = None, title: str | None = None,
-                               format: Literal["storage", "text"] = "storage") -> dict:
+                               format: Literal["storage", "text", "editor_html"] = "storage",
+                               editor_options: EditorOptions | None = None) -> dict:
         """Replace the published body and/or rename a page, preserving omitted fields.
         Read storage and check its published revision first; expected_version is mandatory.
         A version conflict aborts: re-read/review rather than replacing expected_version on an old body.
@@ -48,25 +53,27 @@ def register_confluence_writes(register, runtime):
         No forced overwrite, draft deletion or automatic merge is performed. Existing macros must be retained.
         """
         return call("update_page", page_id=page_id, expected_version=expected_version, mutation_id=client_mutation_id,
-                    body=body, title=title, format=format)
+                    body=body, title=title, format=format, editor_options=editor_options)
 
     def create_confluence_comment(page_id: str, body: Storage, client_mutation_id: MutationId,
-                                  format: Literal["storage", "text"] = "storage") -> dict:
+                                  format: Literal["storage", "text", "editor_html"] = "storage",
+                                  editor_options: EditorOptions | None = None) -> dict:
         """Add a footer comment to a page; inline annotated comments are not created by this tool.
         Comments have their own versions; a new comment need not increment the page's body version.
         Supply Confluence storage XHTML or format=text, and retain the mutation ID for retries.
         """
-        return call("create_comment", page_id=page_id, body=body, mutation_id=client_mutation_id, format=format)
+        return call("create_comment", page_id=page_id, body=body, mutation_id=client_mutation_id, format=format, editor_options=editor_options)
 
     def update_confluence_comment(page_id: str, comment_id: str, expected_version: Version, body: Storage,
-                                  client_mutation_id: MutationId, format: Literal["storage", "text"] = "storage") -> dict:
+                                  client_mutation_id: MutationId, format: Literal["storage", "text", "editor_html"] = "storage",
+                                  editor_options: EditorOptions | None = None) -> dict:
         """Replace a comment belonging to page_id, using that comment's expected_version (not the page version).
         Obtain ID/version from get_confluence_context(kind='comment'); read_confluence_comment returns full
         version-pinned source chunks. Do not replace a full comment with a truncated list preview.
         Confluence edit permissions apply.
         """
         return call("update_comment", page_id=page_id, comment_id=comment_id, body=body,
-                    expected_version=expected_version, mutation_id=client_mutation_id, format=format)
+                    expected_version=expected_version, mutation_id=client_mutation_id, format=format, editor_options=editor_options)
 
     def delete_confluence_comment(page_id: str, comment_id: str, expected_version: Version,
                                   client_mutation_id: MutationId) -> dict:

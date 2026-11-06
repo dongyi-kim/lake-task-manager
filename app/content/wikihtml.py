@@ -33,7 +33,7 @@ def _blank(t):
     return not (t or "").strip(_BLANK_CHARS)
 # ────────────────────────── HTML → Jira wiki ──────────────────────────
 
-_VOID = {"br", "img", "hr", "input"}
+_VOID = {"br", "img", "hr", "input", "col"}
 _BLOCK = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li",
           "blockquote", "pre", "table", "thead", "tbody", "tr", "td", "th", "hr", "div"}
 

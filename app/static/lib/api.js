@@ -418,6 +418,8 @@ export const api = {
     headers: { "Content-Type": "application/json", "X-LTM-Confluence": "1" }, body: JSON.stringify(payload) }),
   confluenceCreate: payload => req("/api/confluence/pages", { method: "POST", mutation: true,
     headers: { "Content-Type": "application/json", "X-LTM-Confluence": "1" }, body: JSON.stringify(payload) }),
+  confluencePrepareEditor: payload => req("/api/confluence/prepare-editor", { method: "POST",
+    headers: { "Content-Type": "application/json", "X-LTM-Confluence": "1" }, body: JSON.stringify(payload) }),
   confluenceMentionUsers: usernames => req("/api/confluence/mention-users", { method: "POST",
     headers: { "Content-Type": "application/json", "X-LTM-Confluence": "1" }, body: JSON.stringify({ usernames }) }),
   confluenceUpload: (id, file, mutationId) => {
