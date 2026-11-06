@@ -80,14 +80,9 @@ class JiraMediaMixin:
         if not page_id:
             return None
 
-        def produce():
-            raw = self._conf_get_json(f"{base}/rest/api/content/{page_id}")
-            return ((raw or {}).get("title") or "").strip()
-
         try:
-            return self.cache.get_or_set(
-                f"conftitle:{self.env}:{page_id}", self.CONF_TITLE_TTL, produce,
-            )[0] or None
+            from app.jira.confluence_service import head
+            return (head(self, page_id).get("title") or "").strip() or None
         except Exception:
             return None
 

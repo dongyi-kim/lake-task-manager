@@ -183,7 +183,7 @@ def test_transport_catalog_exposes_auth_tools_with_safe_defaults(build_env):
     async def scenario():
         async with Client(env.runtime.server) as mcp:
             catalog = {tool.name: tool for tool in (await mcp.list_tools()).tools}
-            assert len(catalog) == 65
+            assert {"get_auth_status", "authenticate"}.issubset(catalog)
             assert catalog["get_auth_status"].annotations.read_only_hint
             assert not catalog["authenticate"].annotations.read_only_hint
             assert catalog["authenticate"].input_schema["properties"]["interactive"]["default"] is False

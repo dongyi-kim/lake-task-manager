@@ -3,6 +3,7 @@ import { api } from '../../lib/api.js';
 const FIELDS = [
   ['metadataDisplaySeconds', 'Epic 이름·프로필 사진 보존 기간', '일', 86400, 365, 30],
   ['metadataFreshnessSeconds', 'Epic 이름·프로필 사진 갱신 간격', '시간', 3600, 720, 24],
+  ['confluenceBodyRetentionSeconds', 'Confluence 버전별 원본 보관 기간', '일', 86400, 365, 30],
   ['displaySeconds', '화면 표시 보존 기간', '시간', 3600, 720, 24],
   ['freshnessSeconds', '일반 데이터 갱신 간격', '분', 60, 1440, 10],
   ['resolvedFreshnessSeconds', '완료 티켓 갱신 간격', '시간', 3600, 720, 24],

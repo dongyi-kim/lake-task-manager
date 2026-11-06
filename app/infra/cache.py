@@ -85,6 +85,8 @@ class Cache:
     # 이 기간만 남긴다. set() 이 일정 횟수마다 한 번씩 자동 정리하고, 시작 시에도 한 번 돈다.
     SNAPSHOT_KEEP_DAYS = 120
     PURGE_EVERY = 400            # set() 이 이만큼 쌓일 때마다 한 번 정리(비용 amortize)
+    CONFLUENCE_BODY_BUDGET = 256 * 1024 * 1024
+    CONFLUENCE_BODY_MAX_ENTRY = 8 * 1024 * 1024
 
     def __init__(self, db_path, dead_ttl=DEAD_TTL_DEFAULT):
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -160,6 +162,8 @@ class Cache:
         return self.policy.ttl(key, value, original, done)
 
     def display_ttl(self, key):
+        if key.startswith("confbody:"):
+            return self.policy.confluenceBodyRetentionSeconds if self.policy else 30 * 86400
         if self.policy and key.split(":", 1)[0] in LONG_DISPLAY_KINDS:
             return self.policy.metadataDisplaySeconds
         return self.dead_ttl
@@ -269,6 +273,8 @@ class Cache:
                 (key, json.dumps(value, ensure_ascii=False), time.time(), int(ttl)),
             )
             self._conn.execute("DELETE FROM cache_display WHERE key=?", (key,))
+            if key.startswith("confbody:"):
+                self._trim_confluence_bodies()
             # 주기적 자동 정리 — 오래 켜 두는 세션에서도 디스크가 계속 늘지 않게(비용은 amortize).
             self._set_count += 1
             if self._set_count >= self.PURGE_EVERY:
@@ -303,6 +309,8 @@ class Cache:
                 (key, json.dumps(value, ensure_ascii=False), (time.time() if fetched_at is None else fetched_at), int(ttl)),
             )
             self._conn.execute("DELETE FROM cache_display WHERE key=?", (key,))
+            if key.startswith("confbody:"):
+                self._trim_confluence_bodies()
             self._set_count += 1
             if self._set_count >= self.PURGE_EVERY:
                 self._set_count = 0
@@ -421,9 +429,13 @@ class Cache:
                 for table in ("cache", "cache_display"):
                     self._conn.execute(f"DELETE FROM {table} WHERE ? - fetched_at > CASE WHEN "
                                    "substr(key,1,instr(key,':')-1) IN ('epicmeta','avatar_url','avatar_bytes') "
-                                   "THEN ? ELSE ? END", (now, self.policy.metadataDisplaySeconds, self.dead_ttl))
+                                   "THEN ? WHEN key LIKE 'confbody:%' THEN ? ELSE ? END",
+                                   (now, self.policy.metadataDisplaySeconds,
+                                    self.policy.confluenceBodyRetentionSeconds, self.dead_ttl))
             else:
-                self._conn.execute("DELETE FROM cache WHERE ? - fetched_at > ?", (now, self.dead_ttl))
+                self._conn.execute("DELETE FROM cache WHERE ? - fetched_at > CASE WHEN key LIKE 'confbody:%' "
+                                   "THEN ? ELSE ? END", (now, 30 * 86400, self.dead_ttl))
+            self._trim_confluence_bodies()
             self._conn.execute("DELETE FROM snapshot WHERE taken_at < ?",
                                (now - self.SNAPSHOT_KEEP_DAYS * 86400,))
             self._conn.execute("DELETE FROM mutation_receipt WHERE expires_at < ?", (now,))
@@ -436,6 +448,18 @@ class Cache:
         with self._lock:
             self._purge_within_lock()
             self._conn.commit()
+
+    def _trim_confluence_bodies(self):
+        """Bound immutable revisions without truncating a caller's document result."""
+        rows = self._conn.execute("SELECT key,length(CAST(payload AS BLOB)) FROM cache "
+                                  "WHERE key LIKE 'confbody:%' ORDER BY fetched_at DESC,key").fetchall()
+        used, remove = 0, []
+        for key, size in rows:
+            if size > self.CONFLUENCE_BODY_MAX_ENTRY or used + size > self.CONFLUENCE_BODY_BUDGET:
+                remove.append((key,))
+            else:
+                used += size
+        self._conn.executemany("DELETE FROM cache WHERE key=?", remove)
 
     def close(self):
         """Release the SQLite handle (benchmarks and short-lived clients)."""
@@ -531,8 +555,9 @@ class Cache:
                 row = self._conn.execute(
                     f"SELECT 1 FROM {table} WHERE ? - fetched_at <= CASE WHEN "
                     "substr(key,1,instr(key,':')-1) IN ('epicmeta','avatar_url','avatar_bytes') "
-                    "THEN ? ELSE ? END LIMIT 1",
+                    "THEN ? WHEN key LIKE 'confbody:%' THEN ? ELSE ? END LIMIT 1",
                     (time.time(), self.policy.metadataDisplaySeconds if self.policy else self.dead_ttl,
+                     self.policy.confluenceBodyRetentionSeconds if self.policy else 30 * 86400,
                      self.dead_ttl)).fetchone()
                 if row:
                     return True
@@ -578,6 +603,19 @@ class Cache:
             for table in ("cache", "cache_display"):
                 self._conn.execute(f"DELETE FROM {table} WHERE key=?", (key,))
             self._conn.commit()
+
+    def forget_prefixes(self, prefixes, *, fence=None):
+        """Remove a denied/deleted resource including display copies, atomically."""
+        with self._lock:
+            if fence is not None and self._write_fence != fence:
+                return False
+            self._write_fence += 1
+            for prefix in prefixes:
+                for table in ("cache", "cache_display"):
+                    self._conn.execute(f"DELETE FROM {table} WHERE key>=? AND key<?",
+                                       (prefix, prefix + "\uffff"))
+            self._conn.commit()
+            return True
 
     def invalidate(self, prefix=None):
         with self._lock:

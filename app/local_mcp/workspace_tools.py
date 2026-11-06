@@ -38,93 +38,31 @@ def register_workspace(register, runtime):
 
     def search_confluence_documents(query: str = "", start_at: int = 0, max_results: int = 20,
                                      content_type: Literal["page", "blogpost", ""] = "page",
-                                     modified_after: str = "") -> dict:
-        """Search document metadata/excerpts in configured Confluence spaces, ordered by lastModified DESC.
-        Returns documents, canonicalCql, scopeSpaces, total, hasMore and nextStartAt. start_at is zero-based;
-        max_results=1..100. Follow nextStartAt until hasMore=false; a source total alone may be incomplete.
-        Empty query lists recent documents; content_type is page/blogpost/empty for either.
-        modified_after=YYYY-MM-DD is an inclusive modification bound, not a completion date.
-        Read each relevant document's full body with read_confluence_document before drawing conclusions.
+                                     modified_after: str = "", space_key: str = "", title: str = "",
+                                     parent_id: str = "", ancestor_id: str = "", labels: list[str] | None = None,
+                                     cql: str = "") -> dict:
+        """Search Confluence metadata within configured spaces, with pagination and optional complete CQL.
+        Filters: keyword, exact title, Space, parent/ancestor IDs, labels, modification date.
+        cql is an alternative to the other content filters; configured Space boundaries always apply.
+        Follow nextStartAt until hasMore=false. Search index may lag writes: use check_confluence_revision
+        for latest published metadata, and read_confluence_document for full body evidence.
         """
-        if not 1 <= max_results <= 100 or start_at < 0:
-            raise ValueError("max_results는 1~100, start_at은 0 이상이어야 합니다.")
-        spaces = _spaces(runtime)
-        conditions = ["space in (" + ", ".join(json.dumps(space, ensure_ascii=False) for space in spaces) + ")"]
-        if query:
-            conditions.append("siteSearch ~ " + json.dumps(query, ensure_ascii=False))
-        if content_type:
-            conditions.append("type = " + json.dumps(content_type))
-        if modified_after:
-            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", modified_after):
-                raise ValueError("modified_after는 YYYY-MM-DD 형식이어야 합니다.")
-            date.fromisoformat(modified_after)
-            conditions.append("lastModified >= " + json.dumps(modified_after))
-        cql = " AND ".join(conditions) + " ORDER BY lastModified DESC"
-        result = runtime.client.confluence_search(cql, start=start_at, limit=max_results)
-        rows, documents = result.get("results") or [], []
-        base = (runtime.settings.confluence_base or "").rstrip("/")
-        allowed = {space.casefold() for space in spaces}
-        for row in rows:
-            content = row.get("content") or {}
-            space = (content.get("space") or {}).get("key") or row.get("space") or ""
-            if str(space).casefold() not in allowed:
-                continue
-            url = row.get("url") or (content.get("_links") or {}).get("webui") or ""
-            documents.append({"id": str(content.get("id") or row.get("id") or ""), "space": space,
-                              "title": row.get("title") or content.get("title") or "",
-                              "excerpt": row.get("excerpt") or "",
-                              "url": base + url if url.startswith("/") else url,
-                              "modified": row.get("lastModified") or (content.get("version") or {}).get("when")})
-        total = result.get("totalSize", result.get("total"))
-        next_start = start_at + len(rows)
-        # Some Confluence/search adapters report only the scanned total. A full
-        # page may have a successor even when totalSize equals this page's end.
-        more = bool(rows) and (bool((result.get("_links") or {}).get("next"))
-                              or len(rows) >= max_results or total is not None and next_start < int(total))
-        return {"documents": documents, "canonicalCql": cql, "scopeSpaces": spaces,
-                "startAt": start_at, "returned": len(documents), "total": total,
-                "hasMore": more, "nextStartAt": next_start if more else None}
+        from .confluence_read_tools import search_documents
+        return search_documents(runtime, query=query, start_at=start_at, max_results=max_results,
+                                content_type=content_type, modified_after=modified_after, space_key=space_key,
+                                title=title, parent_id=parent_id, ancestor_id=ancestor_id, labels=labels, cql=cql)
 
     def read_confluence_document(page: str, offset: int = 0, max_chars: int = 12000,
-                                  format: Literal["text", "storage"] = "text") -> dict:
-        """Read document evidence by numeric page ID or configured-host /pages/{id} / ?pageId= URL.
-        Resolve legacy /display/SPACE/title URLs with search_confluence_documents first. Configured spaces apply.
-        Returns id/title/space/url/version and content, offset, totalCharacters, hasMore, nextOffset.
-        offset counts characters; max_chars=1..50000. Follow nextOffset until hasMore=false for the full body.
-        text strips markup; storage preserves source XHTML, useful for table structure. This is the current
-        document version, not a historical version. Arbitrary URLs are not fetched.
+                                  format: Literal["text", "storage"] = "text", version: int | None = None) -> dict:
+        """Read a current or historical published Confluence page by ID/configured-host URL.
+        Pass the first response's version.number on every subsequent nextOffset request; offset>0 requires
+        version so publication during reading cannot mix revisions. text strips markup; storage preserves
+        source XHTML/macros and is the editing source. cacheInfo separates body age from head verification.
+        check_confluence_revision refreshes metadata without downloading the body. Neither tool proves
+        absence of unpublished edits. Configured Spaces apply; arbitrary URLs are never fetched.
         """
-        if offset < 0 or not 1 <= max_chars <= 50000:
-            raise ValueError("offset은 0 이상, max_chars는 1~50000이어야 합니다.")
-        spaces = _spaces(runtime)
-        identifier = page.strip()
-        if not identifier.isdigit():
-            url, base = urlsplit(identifier), urlsplit(runtime.settings.confluence_base or "")
-            if (url.scheme not in ("http", "https") or url.netloc != base.netloc
-                    or url.username or url.password or not url.path.startswith(base.path.rstrip("/") + "/")):
-                raise ValueError("설정된 Confluence 주소의 페이지 URL 또는 숫자 ID를 사용하세요.")
-            match = re.search(r"/pages/([0-9]+)(?:/|$)", url.path)
-            identifier = match.group(1) if match else parse_qs(url.query).get("pageId", [""])[0]
-            if not identifier:
-                raise ValueError("URL에 페이지 ID가 없습니다. search_confluence_documents로 검색한 숫자 ID를 사용하세요.")
-        runtime.check_object_id(identifier)
-        data = runtime.client.confluence_page(identifier, expand="body.storage,space,version", strict=True)
-        space = (data.get("space") or {}).get("key") or ""
-        if space.casefold() not in {value.casefold() for value in spaces}:
-            raise CommandError("문서가 설정된 Confluence space 범위 밖입니다.", 403)
-        body = ((data.get("body") or {}).get("storage") or {}).get("value")
-        if not isinstance(body, str):
-            raise UpstreamUnavailable("Confluence 문서 본문이 응답에 없습니다.")
-        if format == "text":
-            body = unescape(re.sub(r"<[^>]+>", " ", re.sub(r"</(?:p|div|h[1-6]|li|tr)>|<br\s*/?>", "\n", body)))
-            body = re.sub(r"[ \t]+", " ", body).strip()
-        end = min(offset + max_chars, len(body))
-        base = (runtime.settings.confluence_base or "").rstrip("/")
-        web = (data.get("_links") or {}).get("webui") or f"/pages/viewpage.action?pageId={identifier}"
-        return {"id": identifier, "title": data.get("title") or "", "space": space,
-                "url": base + web if web.startswith("/") else web, "version": data.get("version") or {},
-                "format": format, "content": body[offset:end], "offset": offset,
-                "totalCharacters": len(body), "hasMore": end < len(body), "nextOffset": end if end < len(body) else None}
+        from .confluence_read_tools import read_document
+        return read_document(runtime, page, offset=offset, max_chars=max_chars, format=format, version=version)
 
     def read_attachment(key: str, attachment_id: str, offset: int = 0, max_bytes: int = 262144) -> dict:
         """Download bytes of an attachment verified to belong to key; obtain attachment_id from get_attachments.
