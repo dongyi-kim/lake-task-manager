@@ -10,43 +10,6 @@ export function parseStorage(value) {
   if (doc.querySelector("parsererror")) throw new Error("Confluence 원문을 안전하게 읽지 못했습니다. 원문에서 확인하세요.");
   return doc.documentElement;
 }
-export function serializeMacro(node, content) {
-  const name = node.dataset.confMacro, config = JSON.parse(node.dataset.confConfig || "{}");
-  const definition = macroDefinition(name);
-  if (!definition) {
-    if (!config.raw) throw new Error("보존할 매크로 원문이 없습니다.");
-    return [...parseStorage(config.raw).childNodes].map(xml).join("");
-  }
-  const root = parseStorage(config.raw || `<ac:structured-macro ac:name="${esc(name)}" ac:schema-version="1" />`), macro = root.firstElementChild;
-  if (macro?.namespaceURI !== AC || macro.localName !== "structured-macro" || macro.getAttributeNS(AC,"name") !== name) throw new Error("매크로 종류와 원문이 일치하지 않습니다.");
-  const parameter = (key, value) => {
-    let item = [...macro.children].find(el => el.namespaceURI === AC && el.localName === "parameter" && el.getAttributeNS(AC,"name") === key);
-    if (!item) { item = macro.ownerDocument.createElementNS(AC,"ac:parameter"); item.setAttributeNS(AC,"ac:name",key); macro.append(item); }
-    item.replaceChildren();
-    if (typeof value === "string") item.textContent = value;
-    else item.append(macro.ownerDocument.importNode(value,true));
-  };
-  for (const [key,value] of Object.entries(config.params || {})) parameter(key,String(value));
-  if (Object.hasOwn(definition,"page")) {
-    if (config.reference) {
-      const ref = config.reference;
-      parameter(definition.page, parseStorage(`<ac:link><ri:page ri:content-title="${esc(ref.title)}"${ref.space ? ` ri:space-key="${esc(ref.space)}"` : ''} /></ac:link>`).firstElementChild);
-    } else if (!definition.optionalPage && !config.params?.[definition.page]?.trim()) throw new Error("참조 문서를 선택하세요.");
-    else if (definition.optionalPage && !config.params?.[definition.page]) [...macro.children].filter(item => item.getAttributeNS(AC,"name") === definition.page).forEach(item => item.remove());
-  }
-  for (const item of [...macro.children]) if (item.namespaceURI === AC && ["rich-text-body","plain-text-body"].includes(item.localName)) item.remove();
-  if (definition.body) {
-    const body = macro.ownerDocument.createElementNS(AC,"ac:" + (definition.body === "plain" ? "plain-text-body" : "rich-text-body"));
-    if (definition.body === "plain") {
-      const parts = node.textContent.split(']]>');
-      parts.forEach((part,index) => body.append(macro.ownerDocument.createCDATASection((index ? '>' : '') + part + (index < parts.length-1 ? ']]' : ''))));
-    }
-    else for (const item of [...parseStorage(content).childNodes]) body.append(macro.ownerDocument.importNode(item,true));
-    macro.append(body);
-  }
-  return xml(macro);
-}
-
 // Storage is the editing source. Rendered HTML cannot retain macro parameters or identities.
 export function confluenceEditorHtml(storage,pageId,base = location.origin) {
   const root = parseStorage(storage), children = node => [...node.childNodes].map(render).join("");

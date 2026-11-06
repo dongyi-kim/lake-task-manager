@@ -7,6 +7,9 @@ Jira 원문(HTML 또는 wiki markup)을 **화면에 안전하게 그릴 수 있�
 - **htmlsafe.py** — HTML 새니타이저(`sanitize_html`) + task-list 평탄화(`flatten_task_lists`) +
   첨부/이미지 프록시 URL 재작성(`proxy_attachment_*`) + 이모티콘 처리. `_Sanitizer`/`_TaskFlatten`(HTMLParser).
 - **wikihtml.py** — Jira wiki markup ↔ HTML **양방향** 변환(`html_to_wiki`/`wiki_to_html`). 자기완결·순수.
+- **editor_input.py** — UI·MCP Jira HTML 제출 시 프록시·멘션·로컬 이슈 URL 정규화.
+- **confluence_editor.py** — UI·MCP `editor_html` → 네이티브 Confluence storage 변환. 사용자 ID 조회는 command 계층에서 끝내고 결과를 인자로 주입한다.
+- **confluence_xml.py** — 크기·깊이가 제한된 storage XML 파싱. 기존 `storage` 입력은 HTML 정화 경로로 보내지 않는다.
 - **sections.py** — 렌더된 description HTML 을 `=== 제목 ===` 구분선 기준으로 **섹션 분할** +
   key/value 행 추출(`split_sections`). 소비처는 jira_client 의 티켓 뷰 조립.
 

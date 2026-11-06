@@ -9,6 +9,7 @@ from app.jira import confluence_service as reads
 from app.local_mcp.confluence_errors import confluence_error
 from app.services.confluence_commands import ConfluenceCommands, MAX_ATTACHMENT_BYTES
 from app.services.ticket_commands import CommandError
+from app.content.confluence_editor import EditorOptions
 
 
 class CreateDocument(BaseModel):
@@ -21,6 +22,10 @@ class CreateDocument(BaseModel):
 
 class MentionUsers(BaseModel):
     usernames: list[str] = Field(max_length=100)
+
+
+class PrepareEditor(EditorOptions):
+    html: str = Field(max_length=2_000_000)
 
 
 class UpdateDocument(BaseModel):
@@ -65,6 +70,11 @@ def build_confluence_authoring_router(*, get_client):
             return commands.create_page(**payload.model_dump())
         return reply(request, write)
 
+    @router.post("/prepare-editor")
+    def prepare(request: Request, payload: PrepareEditor):
+        return reply(request, lambda commands: {"storage": commands.prepare_editor(
+            payload.html, payload.model_dump(exclude={"html"}))})
+
     @router.post("/pages/{page_id}/attachments")
     def upload(request: Request, page_id: str, mutation_id: str = Form(...), file: UploadFile = File(...)):
         def write(commands):
@@ -79,17 +89,6 @@ def build_confluence_authoring_router(*, get_client):
 
     @router.post("/mention-users")
     def users(request: Request, payload: MentionUsers):
-        def resolve(commands):
-            result = {}
-            for username in dict.fromkeys(payload.usernames):
-                if not username or len(username) > 255:
-                    raise CommandError("유효한 사용자 이름이 필요합니다.")
-                item = commands.request("GET", "/rest/api/user", params={"username": username})
-                # Jira usernames are lookup inputs, never assumed to be Confluence user keys.
-                if (not isinstance(item, dict) or item.get("username") != username or not item.get("userKey")):
-                    raise CommandError("Confluence 멘션 사용자를 확인하지 못했습니다: " + username)
-                result[username] = item["userKey"]
-            return result
-        return reply(request, resolve)
+        return reply(request, lambda commands: commands.mention_users(payload.usernames))
 
     return router

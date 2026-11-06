@@ -9,6 +9,8 @@ import anyio
 from mcp import Client
 import pytest
 
+from app.content.confluence_xml import AC, parse_storage
+
 
 class Elements(HTMLParser):
     def __init__(self, text):
@@ -123,4 +125,54 @@ def test_served_examples_create_read_edit_and_republish(build_env, monkeypatch, 
             for token in ("<table", "<pre", "source_table", "https://example.com/reference"):
                 assert token in result["descriptionHtml"]
 
+    anyio.run(scenario)
+
+
+def test_confluence_editor_html_page_comment_create_read_edit_roundtrip(build_env):
+    from app.mock.confluence import install_confluence
+    env = build_env()
+    env.runtime.settings.confluence_base = "http://confluence.test"
+    env.runtime.settings.search_confluence_spaces = ["DL"]
+    install_confluence(env.provider._client.app)
+    state = env.provider._client.app.state.confluence
+    body = ('<h2>작업 목표</h2><ul data-type="taskList"><li data-type="taskItem" data-checked="false">검증</li></ul>'
+            '<p><input type="checkbox" checked>확인</p><table><tr><td>테이블</td></tr></table>'
+            '<pre><code class="language-sql">select 1;</code></pre><div class="callout callout-info"><p>안내</p></div>')
+    async def scenario():
+        async with Client(env.runtime.server) as sdk:
+            async def call(name, args):
+                result = await sdk.call_tool(name, args)
+                assert not result.is_error, result.structured_content
+                return result.structured_content['data']
+            page = await call('create_confluence_page', {'space':'DL','title':'Shared input','body':body,
+                'format':'editor_html','editor_options':{'numbered':True}, 'client_mutation_id':'shared:create:page'})
+            page_id = page['id']
+            stored = state.get(page_id)['body']['storage']['value']
+            root = parse_storage(stored)
+            assert [x.text for x in root.iter(AC+'task-status')] == ['incomplete','complete']
+            assert root.find('h2').text == '1 작업 목표'
+            assert len(root.findall('.//table')) == 1
+            assert {x.get(AC+'name') for x in root.iter(AC+'structured-macro')} == {'code','info'}
+            read = await call('read_confluence_document', {'page':page_id,'format':'storage'})
+            assert read['content'] == stored
+            comment = await call('create_confluence_comment', {'page_id':page_id,'body':body,
+                'format':'editor_html','client_mutation_id':'shared:create:comment'})
+            comment_id = comment['id']
+            comment_before = state.get(comment_id)['body']['storage']['value']
+            await call('read_confluence_comment', {'page_id':page_id,'comment_id':comment_id})
+            # Existing storage editing is exact preservation; native macros never pass an HTML sanitizer.
+            await call('update_confluence_page', {'page_id':page_id,'expected_version':1,
+                'body':stored + '<p>추가 확인</p>', 'format':'storage','client_mutation_id':'shared:update:page'})
+            await call('update_confluence_comment', {'page_id':page_id,'comment_id':comment_id,'expected_version':1,
+                'body':comment_before + '<p>추가 확인</p>', 'format':'storage','client_mutation_id':'shared:update:comment'})
+            for content_id, original in [(page_id, stored), (comment_id, comment_before)]:
+                updated = state.get(content_id)
+                assert updated['body']['storage']['value'] == original + '<p>추가 확인</p>'
+                assert updated['version']['number'] == 2
+            await call('read_confluence_document', {'page':page_id,'format':'storage'})
+            await call('read_confluence_comment', {'page_id':page_id,'comment_id':comment_id})
+            before = len(state.pages)
+            failed = await sdk.call_tool('create_confluence_page', {'space':'DL','title':'Reject image',
+                'body':'<img src="blob:missing">','format':'editor_html','client_mutation_id':'shared:reject:image'})
+            assert failed.is_error and len(state.pages) == before
     anyio.run(scenario)

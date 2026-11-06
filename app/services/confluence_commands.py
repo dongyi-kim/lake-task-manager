@@ -56,6 +56,30 @@ class ConfluenceCommands:
     def client(self):
         return self.get_client()
 
+    def mention_users(self, usernames):
+        result = {}
+        for username in dict.fromkeys(usernames):
+            if not username or len(username) > 255:
+                raise CommandError("유효한 사용자 이름이 필요합니다.")
+            item = self.request("GET", "/rest/api/user", params={"username": username})
+            if not isinstance(item, dict) or item.get("username") != username or not item.get("userKey"):
+                raise CommandError("Confluence 멘션 사용자를 확인하지 못했습니다: " + username)
+            result[username] = item["userKey"]
+        return result
+
+    def prepare_editor(self, body, options=None):
+        from app.content.confluence_editor import EditorOptions, editor_storage, editor_usernames
+        options = options if isinstance(options, EditorOptions) else EditorOptions.model_validate(options or {})
+        users = self.mention_users(editor_usernames(body))
+        return editor_storage(body, **options.model_dump(), users=users, jira_base=getattr(self.settings, 'jira_base', ''))
+
+    def content_value(self, body, format, editor_options=None):
+        if format == "editor_html":
+            return self.prepare_editor(body, editor_options)
+        if editor_options is not None:
+            raise CommandError("editor_options는 format=editor_html에서만 사용할 수 있습니다.")
+        return storage_value(body, format)
+
     def check_space(self, space):
         allowed = {str(item).casefold() for item in self.settings.search_confluence_spaces or []}
         if not allowed:
@@ -211,11 +235,11 @@ class ConfluenceCommands:
                 raise
         return Reconciliation(UNKNOWN)
 
-    def create_page(self, *, space, title, body, mutation_id, parent_id=None, format="storage"):
+    def create_page(self, *, space, title, body, mutation_id, parent_id=None, format="storage", editor_options=None):
         space = self.check_space(space)
         if not str(title).strip():
             raise CommandError("문서 제목이 필요합니다.")
-        text, marker = storage_value(body, format), self._marker(mutation_id)
+        text, marker = self.content_value(body, format, editor_options), self._marker(mutation_id)
         parent_id = identifier(parent_id) if parent_id else None
         payload = {"type": "page", "status": "current", "title": title, "space": {"key": space},
                    "body": {"storage": {"value": text, "representation": "storage"}},
@@ -240,13 +264,13 @@ class ConfluenceCommands:
         return self.execute(kind="create_page", mutation_id=mutation_id, payload=payload, write=write,
                             reconcile=reconcile, affected_ids=[parent_id], recover_inflight=normalize)
 
-    def update_page(self, *, page_id, expected_version, mutation_id, body=None, title=None, format="storage"):
+    def update_page(self, *, page_id, expected_version, mutation_id, body=None, title=None, format="storage", editor_options=None):
         page_id = identifier(page_id)
         if body is None and title is None:
             raise CommandError("변경할 제목 또는 본문이 필요합니다.")
         if title is not None and not title.strip():
             raise CommandError("문서 제목은 비울 수 없습니다.")
-        text = storage_value(body, format) if body is not None else None
+        text = self.content_value(body, format, editor_options) if body is not None else None
         marker = self._marker(mutation_id)
         logical = {"pageId": page_id, "expectedVersion": expected_version, "body": text, "title": title}
         normalize = lambda raw: self._result(raw, "update_page", expected_id=page_id)
@@ -266,8 +290,8 @@ class ConfluenceCommands:
             reconcile=lambda receipt: self._recover_content(page_id, expected_version + 1, marker, "update_page"),
             affected_ids=[page_id], recover_inflight=normalize)
 
-    def create_comment(self, *, page_id, body, mutation_id, format="storage"):
-        page_id, text = identifier(page_id), storage_value(body, format)
+    def create_comment(self, *, page_id, body, mutation_id, format="storage", editor_options=None):
+        page_id, text = identifier(page_id), self.content_value(body, format, editor_options)
         if not text.strip():
             raise CommandError("댓글 내용이 필요합니다.")
         marker = self._marker(mutation_id)
@@ -300,9 +324,9 @@ class ConfluenceCommands:
             raise CommandError("댓글·첨부 버전이 변경되었습니다. 다시 조회하세요.", 409, reason="version_conflict")
         return item
 
-    def update_comment(self, *, page_id, comment_id, body, expected_version, mutation_id, format="storage"):
+    def update_comment(self, *, page_id, comment_id, body, expected_version, mutation_id, format="storage", editor_options=None):
         page_id, comment_id = identifier(page_id), identifier(comment_id)
-        text, marker = storage_value(body, format), self._marker(mutation_id)
+        text, marker = self.content_value(body, format, editor_options), self._marker(mutation_id)
         payload = {"id": comment_id, "type": "comment", "version": {"number": expected_version + 1, "message": marker},
                    "body": {"storage": {"value": text, "representation": "storage"}}}
         normalize = lambda raw: self._result(raw, "update_comment", parent_id=page_id, expected_id=comment_id)

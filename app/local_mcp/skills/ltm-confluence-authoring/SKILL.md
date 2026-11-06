@@ -18,6 +18,7 @@ LTM에 설정된 Confluence Space와 현재 인증 권한 안에서 작업한다
 ## 작성·수정
 
 - 페이지: `create_confluence_page` 또는 `update_confluence_page`. 댓글: `create_confluence_comment` 또는 `update_confluence_comment`. 본문 예제는 [storage 형식](references/storage-format.md)을 필요할 때 읽는다.
+- `format="editor_html"`은 LTM 에디터 HTML을 UI와 같은 서버 변환기로 처리한다. 체크박스·표·코드블록·콜아웃·멘션을 네이티브 Confluence 요소로 변환한다. `editor_options.numbered=true`로 헤딩 번호를 붙일 수 있다. HTML 멘션은 실제 사용자 ID를 먼저 조회해야 한다.
 - `format="storage"`는 Confluence XHTML이다. Jira editor HTML, Markdown, TipTap JSON을 그대로 넣지 않는다. 단순 텍스트에는 `format="text"`를 사용한다.
 - 기존 본문 수정은 전체 본문 교체다. 수정 대상 이외의 매크로·링크·표·이미지와 알 수 없는 `ac:`/`ri:` 요소를 유지한다. 열람용 `body.view`나 태그가 제거된 text를 원문으로 다시 저장하지 않는다.
 - `expected_version`은 방금 읽은 대상의 버전이다. 댓글 수정에는 페이지 버전이 아닌 댓글 버전을 사용한다. `get_confluence_context(kind="comment")`에서 ID를 찾고 `read_confluence_comment`의 버전 고정 조각을 이어 원문을 읽는다. 목록 미리보기로 전체 댓글을 덮어쓰지 않는다.
@@ -27,6 +28,7 @@ LTM에 설정된 Confluence Space와 현재 인증 권한 안에서 작업한다
 ## 첨부·라벨
 
 - `upload_confluence_attachment`에 파일 이름과 base64 바이트를 전달한다. 로컬 경로·임의 다운로드 URL을 전달하지 않는다. 10MiB 이하이며 같은 파일 이름이 있으면 다른 이름을 사용한다.
+- `editor_html`의 이미지·파일은 업로드 후 `editor_options.assets=[{"token":"본문의 src 또는 href", "filename":"업로드한 실제 파일명"}]`으로 연결한다. 새 문서는 텍스트로 생성 → 첨부 업로드 → 조회한 버전으로 본문 수정 순서다. 미업로드 blob/draft 주소는 저장 전에 오류로 반환한다.
 - 이미지 참조는 업로드 결과의 실제 파일 이름을 쓴다. 업로드 성공 후 본문 수정이 실패했다면 이미 업로드된 첨부를 재사용한다.
 - `read_confluence_attachment`는 기본 1KiB, 최대 4KiB의 base64 미리보기와 `downloadUrl`을 반환한다. 전체 파일은 로컬 HTTP 클라이언트로 이 URL에서 바이너리로 내려받아 모델 문맥 밖에 저장한다. 큰 파일을 수천 번의 MCP 호출로 이어 붙이지 않는다. 미리보기 후속 조각에는 첫 응답의 `version`을 전달하며 `nextOffset`은 디코딩한 바이트 기준이다.
 - `add_confluence_labels`는 기존 라벨을 보존한다. `remove_confluence_label`은 지정한 라벨 하나만 제거한다. 라벨 변경을 본문 버전 변경으로 추정하지 않는다.
