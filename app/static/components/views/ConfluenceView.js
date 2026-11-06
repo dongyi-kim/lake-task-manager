@@ -7,6 +7,7 @@ import ConfluencePanel from "../ui/ConfluencePanel.js";
 import ConfluenceDocumentList from "../ui/ConfluenceDocumentList.js";
 import ConfluenceComposer from "../ui/ConfluenceComposer.js";
 import ConfluencePageMenu from "../ui/ConfluencePageMenu.js";
+import { normalizeSearchText } from "../../lib/searchText.js";
 
 const pageId = () => location.hash.match(/^#\/confluence\/(\d+)/)?.[1] || "";
 const nextStart = data => data?._links?.next ? Number(data.start || 0) + Number(data.size ?? data.results?.length ?? 0) : null;
@@ -52,8 +53,8 @@ export default {
     this.initialize();
   },
   activated() { if (this._hash) this._hash(); this.$nextTick(() => this.buildToc()); },
-  deactivated() { this.contextPage=null; this.stopToc(); },
-  beforeUnmount() { window.removeEventListener("hashchange", this._hash); this.stopToc(); },
+  deactivated() { this._searchGeneration++; this.searching = false; this.contextPage=null; this.stopToc(); },
+  beforeUnmount() { this._searchGeneration++; window.removeEventListener("hashchange", this._hash); this.stopToc(); },
   methods: {
     startCompose(parent = null) { this.editingPage = null; this.composeParent = parent; this.contextPage = null;
       this.closeDrawer(); this.stopToc(); this.headings = []; this.composing = true; },
@@ -128,14 +129,44 @@ export default {
       } catch (error) { if (gen === this._generation) this.branchErrors[id] = error.message; }
       finally { if (gen === this._generation) this.loadingBranches[id] = false; }
     },
+    searchChanged() { this._searchGeneration++; this.searching = false; this.searched = false; this.searchNext = null; this.results = []; },
     async search(more = false) {
       if (!this.query.trim()) { this._searchGeneration++; this.results = []; this.searched = false; this.searching = false; return; }
       const gen = ++this._searchGeneration; this.searching = true; this.error = "";
+      const query = this.query, space = this.space, needle = normalizeSearchText(query);
+      if (!more) { this.results = []; this.searchNext = null; }
+      this.searched = true;
+      const append = data => {
+        if (gen === this._searchGeneration) this.results = merge(this.results, data);
+      };
       try {
-        const data = await api.confluenceSearch(this.query, this.space, more ? this.searchNext : 0);
-        if (gen !== this._searchGeneration) return;
-        const rows = (data.results || []).map(item => item.content || item);
-        this.results = merge(more ? this.results : [], rows); this.searchNext = nextStart(data); this.searched = true;
+        // Keep Confluence's existing full-text results. Its token index cannot
+        // guarantee "Data Lake" == "datalake", so also scan cached title metadata.
+        // Each page renders immediately; no document bodies or hidden result cap.
+        const fullText = async () => {
+          const data = await api.confluenceSearch(query, space, more ? this.searchNext : 0);
+          if (gen !== this._searchGeneration) return;
+          append((data.results || []).map(item => item.content || item));
+          this.searchNext = nextStart(data);
+        };
+        const titles = async () => {
+          let start = 0;
+          while (gen === this._searchGeneration) {
+            // Query-independent cache keys are reused when the user changes spacing.
+            const data = await api.confluenceSearch("", space, start);
+            if (gen !== this._searchGeneration) return;
+            append((data.results || []).map(item => item.content || item)
+              .filter(item => normalizeSearchText(item.title).includes(needle)));
+            const next = nextStart(data);
+            if (next === null) return;
+            if (!Number.isFinite(next) || next <= start) throw new Error("문서 검색의 다음 페이지를 확인하지 못했습니다. 다시 시도해 주세요.");
+            start = next;
+          }
+        };
+        // Settle both branches before releasing loading state, retaining partial results.
+        const results = await Promise.allSettled(more ? [fullText()] : [fullText(), titles()]);
+        const failure = results.find(result => result.status === "rejected");
+        if (failure) throw failure.reason;
       } catch (error) { if (gen === this._searchGeneration) this.error = error.message; }
       finally { if (gen === this._searchGeneration) this.searching = false; }
     },
@@ -255,7 +286,7 @@ export default {
         <ConfluenceDocumentList title="최근 열어본 문서" :rows="recentDocuments" :selected-id="selectedId" :expanded="!navigationFolds.recent" @toggle="toggleNavigationList('recent')" @open="open" empty-text="열어본 문서가 여기에 표시됩니다." />
         <label class="conf-space-label">Space<select v-model="space" @change="changeSpace" aria-label="Space"><option v-for="item in spaces" :key="item.key" :value="item.key">{{ item.name }} ({{ item.key }})</option></select></label>
         <button v-if="spacesNext !== null" class="conf-more" @click="loadSpaces(true)">Space 더 보기</button>
-        <form class="conf-search" @submit.prevent="search()"><input v-model="query" @input="!query.trim() && search()" aria-label="문서 트리 검색" placeholder="이 Space의 문서 검색"><button class="btn" :disabled="searching">검색</button></form>
+          <form class="conf-search" @submit.prevent="search()"><input v-model="query" @input="searchChanged" aria-label="문서 트리 검색" placeholder="문서 검색 · 제목은 공백 무시"><button class="btn" :disabled="searching">검색</button></form>
         <p v-if="error" class="conf-error" role="alert">{{ error }} <button class="conf-more" @click="query.trim() ? search() : (space ? loadRoots() : loadSpaces())">다시 시도</button></p>
         <div class="conf-tree" role="navigation" aria-label="문서 트리">
           <p v-if="searching" role="status" class="conf-muted">검색 중…</p>

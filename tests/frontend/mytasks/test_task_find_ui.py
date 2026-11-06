@@ -57,7 +57,7 @@ def test_find_reveals_hidden_cards_and_restores_layout(editor_browser):
     def task(number, **extra):
         subject = ['신규 적재 테이블 정의', '공통 모델 검토', '데이터 정합성 점검', '운영 배치 모니터링'][number % 4]
         row = {"key": f"DL-{number}", "title": f"{subject} · 한글 Task {number}", "type": "Task", "mine": True,
-               "statusCategory": "todo", "assignee": "담당자", "assigneeId": "admin",
+               "statusCategory": "todo", "assignee": "담당자", "assigneeId": "test.ui01",
                "priRank": 2, "pri": "Medium", "dueDays": None, "epic": "DL-9001",
                "hasSubs": False, "childrenPending": False, "childrenLoaded": True, **extra}
         return {**row, "atoms": [row], "others": []}
@@ -105,6 +105,11 @@ def test_find_reveals_hidden_cards_and_restores_layout(editor_browser):
     _wait_opacity(page, other_selector, other_opacity - .01, other_opacity + .01)
     query.fill("DL-108")
     page.locator('.mt-find-current[data-key="DL-108"]:visible').wait_for()
+    for variant in ['d l - 108', '한글task108', '한 글　ＴＡＳＫ １０８']:
+        query.fill(variant)
+        expect(page.locator('.mt-find-current[data-key="DL-108"]:visible')).to_have_count(1)
+        expect(page.locator('.mt-find-count')).to_have_text('1 / 1')
+    query.fill('DL-108')
     expect(page.locator('.mytasks.mt-find-active')).to_have_count(1)
     # A child result must remain bright even when its parent card does not match.
     _wait_opacity(page, '.mt-find-current[data-key="DL-108"]', .95, 1)
@@ -178,8 +183,8 @@ def test_find_reveals_hidden_cards_and_restores_layout(editor_browser):
     related_other = '.mt-card.rel[data-key="DL-110"]'
     _wait_opacity(page, related_match, .95, 1)
     _wait_opacity(page, related_other, 0, .3)
-    assert page.locator(related_match).evaluate('el => getComputedStyle(el).backgroundColor') == page.locator(
-        '.mt-find-current[data-key="DL-102"]').evaluate('el => getComputedStyle(el).backgroundColor')
+    page.wait_for_function("""selector => getComputedStyle(document.querySelector(selector)).backgroundColor ===
+      getComputedStyle(document.querySelector('.mt-find-current[data-key="DL-102"]')).backgroundColor""", arg=related_match)
     if page.locator('.guide-x').is_visible():
         page.locator('.guide-x').click()
     page.screenshot(path=str(upload_path.parent / 'find-focus-light.png'), animations='disabled')
@@ -189,8 +194,8 @@ def test_find_reveals_hidden_cards_and_restores_layout(editor_browser):
     page.wait_for_function("document.documentElement.dataset.theme === 'dark'")
     _wait_opacity(page, related_match, .95, 1)
     _wait_opacity(page, related_other, 0, .3)
-    assert page.locator(related_match).evaluate('el => getComputedStyle(el).backgroundColor') == page.locator(
-        '.mt-find-current[data-key="DL-102"]').evaluate('el => getComputedStyle(el).backgroundColor')
+    page.wait_for_function("""selector => getComputedStyle(document.querySelector(selector)).backgroundColor ===
+      getComputedStyle(document.querySelector('.mt-find-current[data-key="DL-102"]')).backgroundColor""", arg=related_match)
     if page.locator('.guide-x').is_visible():
         page.locator('.guide-x').click()
     page.screenshot(path=str(upload_path.parent / 'find-focus-dark.png'), animations='disabled')
