@@ -1,4 +1,6 @@
 // TipTap schema, node views, keyboard behavior, slash commands, and mention suggestions.
+import { confluenceMacroNodes } from "./confluenceMacroNodes.js";
+import { confluenceSlashCommands } from "../../lib/confluenceMacros.js";
 import { sigColor, initialOf } from "../../lib/colors.js";
 import { createManagedMentionItems, mentionInitialUsers, rememberUser } from "../../lib/userSuggestions.js";
 import { typeaheadDelay } from "../../lib/typeahead.js";
@@ -313,7 +315,9 @@ function slashSuggestion(host) {
     command: ({ editor, range, props }) => props.run(editor, range, host),
     items: ({ query }) => {
       const q = (query || "").trim().toLowerCase();
-      return SLASH.filter((it) => {
+      const extra = host.kind === "confluence" ? confluenceSlashCommands() : [];
+      const replaced = new Set(extra.map(item => item.id));
+      return [...SLASH.filter(item => !replaced.has(item.id)), ...extra].filter((it) => {
         if (it.only === "sections" && !host.sections) return false;
         if (!q) return true;
         return it.id.startsWith(q) || it.t.toLowerCase().includes(q) || it.k.includes(q);
@@ -433,6 +437,7 @@ export function createEditorExtensions(T, {
     // v3 StarterKit의 Link는 모든 <a>를 mark로 먼저 소비한다. Jira/문서 링크는
     // linkBadge atom으로 편집하므로 끄고, 코드블럭도 아래 Lowlight 구현으로 교체한다.
     T.StarterKit.configure({ codeBlock: false, link: false }),
+    ...(host.kind === "confluence" ? confluenceMacroNodes(T, host) : []),
     ...(host.headingNumbering ? [headingNumbering(T, host)] : []),
     codeLineNumbers(T).configure({ lowlight: T.lowlight, HTMLAttributes: { class: "jecodeblock" } }),
     calloutExt(T),

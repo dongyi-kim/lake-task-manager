@@ -12,6 +12,8 @@ import { editorSubmissionMethods } from "../editor/editorSubmission.js";
 import { api } from "../../lib/api.js";
 import LinkPicker from "./LinkPicker.js";
 import MarkdownTableDialog from "./MarkdownTableDialog.js";
+import ConfluenceMacroDialog from "./ConfluenceMacroDialog.js";
+import { macroNodeType } from "../../lib/confluenceMacros.js";
 import { pushToast } from "../../lib/toast.js";
 import { agentApi } from "../../lib/agentApi.js";
 import { beginBusy } from "../../lib/uibusy.js";
@@ -42,7 +44,7 @@ const URL_RE = /^https?:\/\/\S+$/i;
 
 export default {
   name: "CommentEditor",
-  components: { LinkPicker, MarkdownTableDialog, AgentSettingsDialog },
+  components: { LinkPicker, MarkdownTableDialog, AgentSettingsDialog, ConfluenceMacroDialog },
   props: {
     ticketKey: { type: String, required: true },
     initial: { type: String, default: "" },            // 수정 시 기존 HTML
@@ -85,7 +87,7 @@ export default {
     readOnly(value) { if (this._ed && !this.busy) this._ed.setEditable(!value); },
     autoNumberHeadings() { if (this._ed) this._ed.view.dispatch(this._ed.state.tr.setMeta("headingNumbering", true)); },
   },
-  data() { return { ready: false, loadErr: "", busy: false, err: "", tick: 0, languages: [],
+  data() { return { ready: false, loadErr: "", busy: false, err: "", tick: 0, languages: [], confMacroDialog: null,
                     maximized: false, restored: false, draftError: "", draftConflict: false,
                     submitMutationId: "", pendingSubmitHtml: "",
                     // 인라인 모드에서 사용자가 끌어 정한 본문 높이(px). null = 기본값.
@@ -286,6 +288,24 @@ export default {
     },
   },
   methods: {
+    openConfluenceMacro(name = "expand", position = null) {
+      if (this.kind !== "confluence" || this.readOnly || this.busy) return;
+      const node = position === null ? null : this._ed.state.doc.nodeAt(position);
+      this._confMacroNode = node;
+      this.confMacroDialog = { name, config: node?.attrs.config || {}, position };
+    },
+    applyConfluenceMacro({ name, config }) {
+      const target = this.confMacroDialog, type = macroNodeType(name);
+      if (target.position !== null) {
+        const current = this._ed.state.doc.nodeAt(target.position);
+        if (current !== this._confMacroNode) { this.err = "매크로 위치가 변경되었습니다. 설정을 다시 열어 주세요."; this.confMacroDialog = null; return; }
+        this._ed.view.dispatch(this._ed.state.tr.setNodeMarkup(target.position, undefined, { macro: name, config }));
+      } else {
+        const content = type === "confluenceBlock" ? [{ type: "paragraph" }] : undefined;
+        this._ed.chain().focus().insertContent({ type, attrs: { macro: name, config }, ...(content ? { content } : {}) }).run();
+      }
+      this.confMacroDialog = null; this._ed.commands.focus();
+    },
     active(name, attrs) { this.tick; return this._ed && this._ed.isActive(name, attrs); },
     cmd(fn) { if (this._ed) { fn(this._ed.chain().focus()); this._ed.commands.focus(); } },
     /** 글자색 — 빈 값이면 해제(color 속성 제거). */

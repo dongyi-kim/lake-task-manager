@@ -412,6 +412,10 @@ export const api = {
     + "&scope=" + encodeURIComponent(scope || "scoped")
     + (only ? "&only=" + encodeURIComponent(only) : "")),               // only=jira|confluence
   confluenceConfig: () => req("/api/confluence/config"),
+  confluenceSource: id => req("/api/confluence/pages/" + encodeURIComponent(id) + "/source"),
+  confluenceAttachments: (id,start=0) => req("/api/confluence/pages/" + encodeURIComponent(id) + "/attachments?start=" + start),
+  confluenceUpdate: (id,payload) => req("/api/confluence/pages/" + encodeURIComponent(id), { method: "PUT", mutation: true,
+    headers: { "Content-Type": "application/json", "X-LTM-Confluence": "1" }, body: JSON.stringify(payload) }),
   confluenceCreate: payload => req("/api/confluence/pages", { method: "POST", mutation: true,
     headers: { "Content-Type": "application/json", "X-LTM-Confluence": "1" }, body: JSON.stringify(payload) }),
   confluenceMentionUsers: usernames => req("/api/confluence/mention-users", { method: "POST",
@@ -424,10 +428,10 @@ export const api = {
   confluenceSpaces: (start = 0) => req("/api/confluence/spaces?start=" + start),
   confluencePages: (space, parent = "", start = 0) => req("/api/confluence/pages?space=" + encodeURIComponent(space)
     + "&parent=" + encodeURIComponent(parent) + "&start=" + start),
-  confluenceSearch: (query, space = "", start = 0) => req("/api/confluence/search?q=" + encodeURIComponent(query)
-    + "&space=" + encodeURIComponent(space) + "&start=" + start),
-  confluenceDocument: (id, version) => req("/api/confluence/pages/" + encodeURIComponent(id)
-    + (version ? "?version=" + version : "")),
+  confluenceSearch: (query, space = "", start = 0, ancestor = "") => req("/api/confluence/search?q=" + encodeURIComponent(query)
+    + "&space=" + encodeURIComponent(space) + "&start=" + start + (ancestor ? "&ancestor=" + encodeURIComponent(ancestor) : "")),
+  confluenceDocument: (id, version, refresh=false) => req("/api/confluence/pages/" + encodeURIComponent(id)
+    + (version || refresh ? "?" + new URLSearchParams({...(version ? {version} : {}), ...(refresh ? {refresh:true} : {})}) : "")),
   confluenceRevision: (id, version) => req("/api/confluence/pages/" + encodeURIComponent(id) + "/revision?known_version=" + version),
   // fresh: 캐시를 건너뛴다(본문 편집 시작·편집 중 충돌 감시). 평소엔 쓰지 마라 — 상류 왕복이다.
   // ★ 이때는 memo(get)를 타면 안 된다 — 프로미스 캐시가 URL 이 같다는 이유로 **늘 첫 응답**을

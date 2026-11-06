@@ -4,7 +4,7 @@ export function documentHeadings(element) {
   const used = new Set();
   return [...element.querySelectorAll("h1,h2,h3,h4,h5,h6")].map(node => {
     const title = (node.textContent || "").replace(/\s+/g, " ").trim();
-    const stem = "conf-heading-" + (title.normalize("NFKC").toLowerCase()
+    const stem = node.id || "conf-heading-" + (title.normalize("NFKC").toLowerCase()
       .replace(nonHeadingCharacters, "-").replace(/^-|-$/g, "").slice(0, 80) || "section");
     let id = stem, index = 2;
     while (used.has(id)) id = stem + "-" + index++;

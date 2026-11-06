@@ -96,6 +96,7 @@ LTM에서 수정한 내용은 기간에 관계없이 갱신하며, 편집 권한
 - 새 문서는 공통 LTM 에디터로 작성하고 헤딩 자동 번호·표·코드·멘션·파일·이미지 첨부 사용
 - 닫아도 초안과 첨부를 보관하며, 발행 도중 실패하면 같은 문서의 남은 첨부부터 재개
 - [문서 작성·첨부와 매크로 호환 범위](docs/confluence-authoring.md) 참고
+- Expand·Include·Page Tree·TOC 등 [기본 매크로 18종과 slash 명령](docs/confluence-macros.md)을 작성·재편집하고 원문을 보존
 
 ### Local MCP — 외부 Agent 연결
 
