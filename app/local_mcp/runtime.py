@@ -27,6 +27,7 @@ from app.local_mcp.write_tools import register_writes
 from app.local_mcp.workspace_tools import register_workspace
 from app.local_mcp.confluence_read_tools import register_confluence_reads
 from app.local_mcp.confluence_write_tools import register_confluence_writes
+from app.local_mcp.confluence_organization_tools import register_confluence_organization
 from app.local_mcp.vit_tools import register_vit
 from app.local_mcp.admin_tools import register_admin
 from app.local_mcp.llm_tools import LLM_TOOLS, register_llm
@@ -95,6 +96,7 @@ class LocalMcpRuntime:
         register_workspace(self.register, self)
         register_confluence_reads(self.register, self)
         register_confluence_writes(self.register, self)
+        register_confluence_organization(self.register, self)
         register_vit(self.register, self)
         register_admin(self.register, self)
         register_llm(self.register, self)
@@ -231,7 +233,7 @@ class LocalMcpRuntime:
         validation = bool(data.get("errors")) and not failed and not partial
         unknown = any(isinstance(row, dict) and row.get("code") == "outcome_unknown" for row in failed)
         retryable = (any(row.get("retryable") or row.get("needLogin") for row in failed)
-                     if fn.__name__ == "bulk_update" else bool(failed))
+                     if fn.__name__ in {"bulk_update", "bulk_confluence_changes"} else bool(failed))
         code = "validation_failed" if validation else "partial_failure" if partial else "write_failed"
         error = {"code": code, "message": "일괄 요청 검증에 실패했습니다." if validation else
                  "일부 항목만 완료되었습니다. data의 성공/실패 항목을 확인하세요." if partial else
@@ -310,22 +312,23 @@ class LocalMcpRuntime:
                 else:
                     failures[service] = state
             result["partial"] = has_partial(result.get("data"))
-        elif fn.__name__ in {"bulk_create", "bulk_update"} and not result.get("ok"):
+        elif fn.__name__ in {"bulk_create", "bulk_update", "bulk_confluence_changes"} and not result.get("ok"):
             failed = (result.get("data") or {}).get("failed") or []
             if any(row.get("needLogin") for row in failed):
+                service = "confluence" if fn.__name__ == "bulk_confluence_changes" else "jira"
                 try:
-                    state = self.authentication.check("jira", force=True)
+                    state = self.authentication.check(service, force=True)
                     if state["authenticated"] and not any(row.get("code") == "outcome_unknown" for row in failed):
                         # Keep the entire original batch and ID: per-row receipts reuse successes.
                         result = call(arguments)
                         if any(row.get("needLogin") for row in (result.get("data") or {}).get("failed") or []):
-                            state = self.authentication.state("jira", {"needLogin": True})
+                            state = self.authentication.state(service, {"needLogin": True})
                     if not state["authenticated"]:
-                        result["authentication"] = {"jira": error_payload(state)}
+                        result["authentication"] = {service: error_payload(state)}
                 except Exception as exc:
                     # A recovery lookup/manifest failure must not erase already-confirmed rows.
                     recovery = self._error(exc)
-                    result["authentication"] = {"jira": recovery}
+                    result["authentication"] = {service: recovery}
                     result["error"]["retryable"] = bool(recovery.get("retryable"))
         if failures:
             result["partial"] = True
