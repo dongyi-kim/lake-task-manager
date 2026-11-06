@@ -24,6 +24,7 @@ def test_completed_ticket_work_time_is_clear_without_extra_worklog_requests(edit
         field = page.locator('.tkt-work-time')
         expect(field).to_be_visible()
         expect(field).to_have_text("누적 작업시간" + label)
+        assert field.locator('.k').evaluate("el => getComputedStyle(el).whiteSpace") == 'nowrap'
         assert "하위 티켓 시간은 포함하지 않습니다" in field.get_attribute("title")
         if seconds == 5400:
             page.screenshot(path=str(upload.parent / "completed-ticket-work-time.png"))

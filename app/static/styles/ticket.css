@@ -365,6 +365,7 @@
   padding: 12px 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
 .tkt-meta > div { display: flex; gap: 8px; font-size: 12px; align-items: baseline; }
 .tkt-meta .k { color: var(--muted-2); flex: 0 0 58px; font-size: 11px; letter-spacing: .3px; }
+.tkt-meta .tkt-work-time .k { flex-basis: auto; white-space: nowrap; }
 /* 상태 값 — 타이틀바(.tb-st)와 같은 색 규칙 */
 .val-st { font-weight: 700; }
 .val-st.st-todo { color: var(--st-todo); }
