@@ -194,14 +194,16 @@ def build_confluence_router(*, get_client):
 
     @router.get("/tree")
     def tree(space: str = Query(..., min_length=1, max_length=255),
-             start: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=100)):
+             start: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), background: bool = False):
         def read():
             client = get_client()
             _check_space(client, space)
-            data = service.tree_pages(client, space, start, limit)
-            if data['nextStart'] is None and limit == 100:
+            from app.auth.base import _prio_scope, PRIO_BACKGROUND
+            with _prio_scope(PRIO_BACKGROUND if background else 0):
+                data = service.tree_pages(client, space, start, limit)
+            if data['nextStart'] is None:
                 from app.services.confluence_tree import seed_complete_index
-                seed_complete_index(client, space)
+                seed_complete_index(client, space, limit)
             return {**data, "results": [{"id": row["id"],
                 "title": row.get("title", ""),
                 "ancestors": [{"id": item["id"], "title": item.get("title", "")}

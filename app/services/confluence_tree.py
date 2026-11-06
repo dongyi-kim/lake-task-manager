@@ -118,7 +118,7 @@ def snapshot(client, space):
     return {'batches': batches, 'jobs': jobs}
 
 
-def seed_complete_index(client, space):
+def seed_complete_index(client, space, limit=100):
     """A completed bulk pass also warms parent caches. No extra upstream reads."""
     import hashlib
     import json
@@ -128,7 +128,7 @@ def seed_complete_index(client, space):
             return
         seen.add(offset)
         path = f'/rest/api/space/{quote(space, safe="")}/content/page'
-        params = {'start': offset, 'limit': 100, 'depth': 'all', 'expand': 'space,ancestors'}
+        params = {'start': offset, 'limit': limit, 'depth': 'all', 'expand': 'space,ancestors'}
         signature = json.dumps([path, params], sort_keys=True, ensure_ascii=False)
         cache_key = f'conftree:{reads.scope_key(client)}:' + hashlib.sha256(signature.encode()).hexdigest()
         data = client.cache.get(cache_key)

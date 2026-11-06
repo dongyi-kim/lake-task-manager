@@ -28,7 +28,7 @@ export default {
       const queue = new ConfluenceTreeQueue({
         snapshot: () => api.confluenceTreeSnapshot(space),
         read: job => api.confluenceTreeBranch(space, job),
-        bulkRead: start => api.confluenceTree(space, start, true),
+        bulkRead: (start, background) => api.confluenceTree(space, start, true, background),
         changed: rows => { if (this._treeQueue === queue) this.treePages = rows; },
         state: ({ loading, pending, errors }) => { if (this._treeQueue !== queue) return;
           this.treeLoading = loading; this.treePending = pending;

@@ -428,8 +428,8 @@ export const api = {
       method: "POST", mutation: true, headers: { "X-LTM-Confluence": "1" }, body });
   },
   confluenceSpaces: (start = 0) => req("/api/confluence/spaces?start=" + start),
-  confluenceTree: (space, start = 0, refresh = false) => req("/api/confluence/tree?space=" + encodeURIComponent(space) + "&start=" + start
-    + (refresh ? '&revalidate=1' : '')),
+  confluenceTree: (space, start = 0, refresh = false, background = false) => req("/api/confluence/tree?space=" + encodeURIComponent(space) + "&start=" + start
+    + '&limit=500&background=' + background + (refresh ? '&revalidate=1' : '')),
   confluenceTreeSnapshot: space => req('/api/confluence/tree/snapshot?space=' + encodeURIComponent(space)),
   confluenceTreeBranch: (space, job) => req('/api/confluence/tree/branch?' + new URLSearchParams({ space,
     parent: job.parent, start: job.start, background: job.background ? 'true' : 'false', revalidate: '1' })),

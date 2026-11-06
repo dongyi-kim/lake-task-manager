@@ -116,3 +116,21 @@ def test_first_child_creation_reopens_a_previously_confirmed_leaf(client):
     # Root metadata may still say no children. A newly collected branch must survive
     # subsequent snapshots without another upstream request.
     assert any(row['id'] == '2' for b in tree.snapshot(client, 'DL')['batches'] for row in b['results'])
+
+
+def test_large_metadata_batch_uses_server_cursor_and_remembers_limit_rejection(client):
+    from app.auth.base import UpstreamError
+    from app.jira import confluence_service as reads
+    calls = []
+    def get(url, params):
+        calls.append((params['start'], params['limit']))
+        if params['limit'] > 100:
+            raise UpstreamError(400, url)
+        return {'results': [node(params['start'] + 1)], '_links': {'next': '?start=37'} if params['start'] == 0 else {}}
+    client._conf_get_json = get
+    assert reads.tree_pages(client, 'DL', limit=500)['nextStart'] == 37
+    reads.tree_pages(client, 'DL', start=37, limit=500)
+    tree.seed_complete_index(client, 'DL', 500)
+    assert calls == [(0, 500), (0, 100), (37, 100)]
+    assert tree.snapshot(client, 'DL')['jobs'] == []
+    assert {r['id'] for b in tree.snapshot(client, 'DL')['batches'] for r in b['results']} == {'1', '38'}

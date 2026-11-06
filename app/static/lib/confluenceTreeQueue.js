@@ -96,7 +96,7 @@ export class ConfluenceTreeQueue {
       const [key, job] = jobs[0]; this.queue.delete(key); this.active = job; this.publish();
       try {
         const index = job.parent === '@index';
-        const batch = index ? await this.bulkRead(job.start)
+        const batch = index ? await this.bulkRead(job.start, !this.searching)
           : await this.read({ ...job, background: job.rank > 0 && !this.searching });
         if (this.stopped) return;
         if (!Array.isArray(batch.results) || batch.nextStart !== null && (!Number.isInteger(batch.nextStart) || batch.nextStart <= job.start)) {

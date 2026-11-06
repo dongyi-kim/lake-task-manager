@@ -66,14 +66,14 @@ def invalidate(client, ids, *, remove_bodies=False):
     client.cache.forget_prefixes(prefixes)
 
 
-def cached_read(client, kind, path, params, validate, *, key=None, force=False, ttl=None, denied_prefixes=None, resource_id=None):
+def cached_read(client, kind, path, params, validate, *, key=None, force=False, ttl=None, denied_prefixes=None, resource_id=None, load=None):
     signature = json.dumps([path, params], sort_keys=True, ensure_ascii=False)
     key = key or f"{kind}:{scope_key(client)}:" + hashlib.sha256(signature.encode()).hexdigest()
     denied = []
     def fetch():
         fence = client.cache.fence()
         try:
-            data = raw_read(client, path, params)
+            data = load() if load else raw_read(client, path, params)
             if not validate(data):
                 raise UpstreamUnavailable("Confluence가 완전한 응답을 반환하지 않았습니다.")
             if kind == "confhead":
@@ -195,7 +195,8 @@ def list_spaces(client, start=0, limit=50):
 def tree_pages(client, space_key, start=0, limit=100):
     """Enumerate the Space, not its search index. Fetch only hierarchy metadata."""
     from urllib.parse import quote
-    _pagination(start, limit)
+    if start < 0 or not 1 <= limit <= 500:
+        raise ValueError('트리 조회 start는 0 이상, limit은 1~500이어야 합니다.')
     if not space_key:
         raise ValueError("문서 트리 조회에는 Space가 필요합니다.")
 
@@ -220,8 +221,23 @@ def tree_pages(client, space_key, start=0, limit=100):
                 return False
         return True
 
-    data = cached_read(client, "conftree", f"/rest/api/space/{quote(space_key, safe='')}/content/page",
-                       {"start": start, "limit": limit, "depth": "all", "expand": "space,ancestors"}, validate)
+    path = f"/rest/api/space/{quote(space_key, safe='')}/content/page"
+    params = {"start": start, "limit": limit, "depth": "all", "expand": "space,ancestors"}
+    def load():
+        cap_key = f'confmeta-limit:{scope_key(client)}'
+        actual = {**params, 'limit': min(limit, client.cache.get(cap_key) or limit)}
+        try:
+            return raw_read(client, path, actual)
+        except UpstreamError as exc:
+            if exc.status != 400 or actual['limit'] <= 100:
+                raise
+            # Some installations/plugins reject large limits instead of capping them.
+            # Only remember the fallback after the smaller request succeeds.
+            data = raw_read(client, path, {**actual, 'limit': 100})
+            if validate(data):
+                client.cache.set(cap_key, 100, 86400)
+            return data
+    data = cached_read(client, 'conftree', path, params, validate, load=load)
     next_link = (data.get("_links") or {}).get("next")
     return {**data, "nextStart": int(parse_qs(urlsplit(next_link).query)["start"][0]) if next_link else None}
 
