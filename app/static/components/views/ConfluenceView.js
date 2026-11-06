@@ -92,7 +92,7 @@ export default {
     },
     open(id) { this.closeDrawer();
       const matchId = confluencePageId(String(id));
-      if (matchId) this.prioritizeTree(matchId);
+      if (this.tree.nodes.get(matchId)?.hasChildren === true) this.prioritizeTree(matchId);
       if (this.tree.matches.includes(matchId)) this.activeMatch = matchId;
       try { const url=new URL(String(id)); this._pendingAnchor=url.hash ? decodeURIComponent(url.hash.slice(1)) : ''; } catch (_) { this._pendingAnchor=''; }
       openConfluenceDocument(id);

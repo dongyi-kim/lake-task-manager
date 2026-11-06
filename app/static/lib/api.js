@@ -436,6 +436,7 @@ export const api = {
   confluenceTree: (space, start = 0, refresh = false, background = false) => req("/api/confluence/tree?space=" + encodeURIComponent(space) + "&start=" + start
     + '&limit=500&background=' + background + (refresh ? '&revalidate=1' : '')),
   confluenceTreeSnapshot: space => req('/api/confluence/tree/snapshot?space=' + encodeURIComponent(space)),
+  confluenceTreeFavorite: (space, ids, start) => req('/api/confluence/tree/favorite?' + new URLSearchParams({space, page_ids:ids.join(','), start, revalidate:'1'})),
   confluenceTreeBranch: (space, job) => req('/api/confluence/tree/branch?' + new URLSearchParams({ space,
     parent: job.parent, start: job.start, background: job.background ? 'true' : 'false', revalidate: '1' })),
   confluencePages: (space, parent = "", start = 0) => req("/api/confluence/pages?space=" + encodeURIComponent(space)

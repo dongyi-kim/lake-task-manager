@@ -242,6 +242,18 @@ def build_confluence_router(*, get_client):
                 return branch(client, space, parent, start)
         return reply(read)
 
+    @router.get('/tree/favorite')
+    def tree_favorite(space: str = Query(..., min_length=1, max_length=255),
+                      page_ids: str = Query(..., max_length=500, pattern=r'^\d+(,\d+)*$'), start: int = Query(0, ge=0)):
+        def read():
+            from app.services.confluence_tree_focus import favorite_pages
+            from app.auth.base import _prio_scope, PRIO_BACKGROUND
+            client = get_client()
+            _check_space(client, space)
+            with _prio_scope(PRIO_BACKGROUND):
+                return favorite_pages(client, space, page_ids, start)
+        return reply(read)
+
     @router.get("/search")
     def search(q: str = Query("", max_length=1000), space: str = Query("", max_length=255), ancestor: str = "",
                start: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100)):
