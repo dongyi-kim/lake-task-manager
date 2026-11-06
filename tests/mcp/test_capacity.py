@@ -179,3 +179,22 @@ def test_cancelled_running_write_keeps_capacity_until_real_completion():
         assert writes == ["written"]
 
     anyio.run(scenario)
+
+
+def test_http_disconnect_before_worker_dispatch_prevents_late_write():
+    from app.local_mcp.capacity import ToolLane, ToolRequestCancelled, request_disconnected
+    async def scenario():
+        lane, disconnected, writes = ToolLane(1), threading.Event(), []
+        token = request_disconnected.set(disconnected)
+        try:
+            async with lane.limiter:
+                call = asyncio.create_task(lane.run(lambda: writes.append("written")))
+                await asyncio.sleep(0)
+                disconnected.set()
+            with pytest.raises(ToolRequestCancelled):
+                await call
+            assert writes == []
+        finally:
+            request_disconnected.reset(token)
+        assert await lane.run(lambda: "ready") == "ready"
+    anyio.run(scenario)

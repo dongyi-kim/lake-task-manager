@@ -6,6 +6,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 import threading
 
 from starlette.responses import JSONResponse
+from app.local_mcp.capacity import request_disconnected
 
 
 class TransportHost:
@@ -66,12 +67,35 @@ class TransportHost:
             caller = asyncio.get_running_loop()
             lock = threading.Lock()
             started = cancelled = False
+            disconnected = threading.Event()
+            relays = set()
 
-            async def relay(fn, *args):
+            async def relay(fn, *args, receiving=False):
                 # ASGI receive/send belong to Uvicorn's loop. Only SDK work moves;
                 # no socket, queue, cache, client or authentication session is copied.
+                fallback = {"type": "http.disconnect"} if receiving else None
+                if disconnected.is_set():
+                    return fallback
                 future = asyncio.run_coroutine_threadsafe(fn(*args), caller)
-                return await asyncio.wrap_future(future)
+                with lock:
+                    relays.add(future)
+                    abandoned = disconnected.is_set()
+                if abandoned:
+                    future.cancel()
+                try:
+                    return await asyncio.wrap_future(future)
+                except OSError:
+                    # ASGI servers report closed client sockets from send().
+                    # Finish SDK cleanup instead of abandoning its session task.
+                    disconnected.set()
+                    return fallback
+                except asyncio.CancelledError:
+                    if disconnected.is_set():
+                        return fallback
+                    raise
+                finally:
+                    with lock:
+                        relays.discard(future)
 
             async def execute():
                 nonlocal started
@@ -81,9 +105,11 @@ class TransportHost:
                     started = True
                 task = asyncio.current_task()
                 self._requests.add(task)
+                token = request_disconnected.set(disconnected)
                 try:
-                    await app(scope, lambda: relay(receive), lambda message: relay(send, message))
+                    await app(scope, lambda: relay(receive, receiving=True), lambda message: relay(send, message))
                 finally:
+                    request_disconnected.reset(token)
                     self._requests.discard(task)
                     self._permits.release()
 
@@ -94,7 +120,23 @@ class TransportHost:
                 except RuntimeError:
                     operation.close()
                     return await JSONResponse({"error": "MCP is stopping"}, status_code=503)(scope, receive, send)
-                await asyncio.wrap_future(future)
+                forwarded = asyncio.wrap_future(future)
+                forwarded.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+                try:
+                    # Let the SDK finish its stateless-session teardown even if
+                    # the HTTP caller leaves. Raw cancellation skips that cleanup.
+                    await asyncio.shield(forwarded)
+                except asyncio.CancelledError:
+                    disconnected.set()
+                    with lock:
+                        abandoned_relays = tuple(relays)
+                        if not started:
+                            cancelled = True
+                    for pending in abandoned_relays:
+                        pending.cancel()
+                    if not started:
+                        future.cancel()
+                    raise
             finally:
                 with lock:
                     if not started:

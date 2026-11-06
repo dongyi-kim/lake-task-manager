@@ -37,7 +37,7 @@ from app.local_mcp.skill_catalog import SkillCatalog
 from app.local_mcp.skill_protocol import SkillsExtension
 from app.local_mcp.authentication import (AUTH_TOOLS, CONFIG_WRITES, Authentication, AuthenticationUnavailable,
     authentication_error, error_payload, register_authentication, services_for)
-from app.local_mcp.capacity import ToolCapacityExceeded, ToolLane
+from app.local_mcp.capacity import ToolCapacityExceeded, ToolRequestCancelled, ToolLane
 from app.local_mcp.transport_host import TransportHost
 from app.local_mcp.profiles import ADDITIVE, PROFILE_LABELS, build_profiles
 from app.services.workspace_config import WorkspaceConfigCommands
@@ -378,6 +378,9 @@ class LocalMcpRuntime:
         async def invoke(**kwargs):
             try:
                 payload = await lane.run(lambda: call(kwargs))
+            except ToolRequestCancelled:
+                payload = {"ok": False, "error": {"code": "request_cancelled", "status": 499,
+                    "message": "요청 연결이 종료되어 실행하지 않았습니다.", "retryable": False, "executed": False}}
             except ToolCapacityExceeded:
                 payload = {"ok": False, "error": {
                     "code": "rate_limited", "status": 429,
