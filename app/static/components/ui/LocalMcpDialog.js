@@ -5,9 +5,10 @@ export default {
   name: "LocalMcpDialog",
   emits: ["close"],
   data() {
-    return { status: null, busy: "", error: "", notice: "", secret: "", manualCopy: "" };
+    return { status: null, profile: "all", busy: "", error: "", notice: "", secret: "", manualCopy: "" };
   },
   computed: {
+    profileUrl() { return this.status?.profiles?.find(item => item.id === this.profile)?.url || this.status?.url; },
     jiraLabel() {
       return { ready: "Jira 인증됨", login_required: "Jira 로그인 필요",
         degraded: "Jira 연결 확인 필요", unknown: "Jira 상태 미확인" }[this.status?.jiraState]
@@ -80,8 +81,8 @@ export default {
       return this.perform("copy", async () => {
         this.manualCopy = ""; this.notice = "";
         const epoch = this._epoch;
-        const text = format === "address" ? this.status.url
-          : (await localMcpApi.credentials(format)).text;
+        const text = format === "address" ? this.profileUrl
+          : (await localMcpApi.credentials(format, this.profile)).text;
         if (!this._alive || epoch !== this._epoch) return;
         if (!text) throw new Error("복사할 연결 정보가 없습니다.");
         const copied = await copyText(text);
@@ -97,7 +98,7 @@ export default {
     keydown(event) {
       if (event.key === "Escape") { event.stopPropagation(); this.$emit("close"); }
       if (event.key !== "Tab") return;
-      const controls = [...this.$refs.dialog.querySelectorAll("button:not(:disabled), input, textarea")];
+      const controls = [...this.$refs.dialog.querySelectorAll("button:not(:disabled), input, textarea, select:not(:disabled)")];
       const first = controls[0], last = controls[controls.length - 1];
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
       else if (!event.shiftKey && (document.activeElement === last || !this.$refs.dialog.contains(document.activeElement))) {
@@ -124,9 +125,14 @@ export default {
             </div>
             <p class="mcp-note">{{ jiraLabel }} · LTM이 실행 중일 때 연결할 수 있습니다.</p>
 
+            <label class="mcp-label" for="mcp-profile">사용할 기능</label>
+            <select id="mcp-profile" v-model="profile" :disabled="!!busy" @change="clearSecrets">
+              <option v-for="item in status.profiles || [{id:'all',label:'전체 기능'}]" :key="item.id" :value="item.id">{{ item.label }}</option>
+            </select>
+            <p class="mcp-note">필요한 도구만 연결해 에이전트의 입력량을 줄입니다. 인증과 캐시는 함께 사용합니다.</p>
             <label class="mcp-label" for="mcp-url">서버 주소</label>
             <div class="mcp-row">
-              <input id="mcp-url" :value="status.url" readonly @focus="$event.target.select()">
+              <input id="mcp-url" :value="profileUrl" readonly @focus="$event.target.select()">
               <button :disabled="!!busy" @click="copy('address')">주소 복사</button>
             </div>
 

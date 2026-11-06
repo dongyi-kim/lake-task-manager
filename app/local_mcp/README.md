@@ -22,6 +22,20 @@ JQL leaf/issue/user/Epic/Confluence 캐시, mutation invalidation을 사용한�
 
 ## 도구
 
+설정의 **사용할 기능**에서 전체/Jira/Confluence/조회·보고/설정 관리를 선택해 연결 설정을
+복사할 수 있다. 기본 `/mcp`는 전체 도구를 그대로 제공한다. 선택한 연결은 각각
+`/mcp/jira`, `/mcp/confluence`, `/mcp/reporting`, `/mcp/settings`이며 HTTP와 stdio 모두 지원한다.
+각 프로필은 같은 인증·캐시·요청 용량·mutation receipt를 사용한다. 프로필은 도구 탐색 범위를
+줄이는 편의 기능이며 별도 사용자 권한 경계가 아니다. 같은 토큰으로 전체 연결을 사용할 수 있다.
+
+검색 결과에서 key를 고를 때는 `search_issues(detail="summary")`, 티켓 본문 열람은
+`get_ticket(detail="read")`, 수정 준비는 `detail="edit"`, 메타데이터만 필요하면 `detail="summary"`를
+권장한다. 본문을 자르지 않고 중복 표현을 생략하며 기본 `full` 응답은 유지한다. summary 검색에는
+custom field가 없으므로 해당 필드가 필요한 집계는 full을 사용한다. 공유 캐시는 축소하지 않는다.
+
+생성·추가 도구와 기존 내용을 교체·삭제하는 도구의 `destructiveHint`를 구분한다.
+이는 클라이언트에 제공하는 설명이며 승인이나 권한을 대신하지 않는다.
+
 등록된 모든 도구는 `inputSchema`와 `outputSchema`를 제공한다. 최신 목록은 MCP `tools/list`로 확인한다. 출력은 공통 성공/오류 envelope와
 도구별 `data` 타입으로 정의하며, 조회 성공에는 `cache`, `partial`, `missing`도 포함된다.
 실제 반환 JSON은 기존과 동일하게 `content`의 JSON 텍스트 및 `structuredContent`에 함께 제공한다.

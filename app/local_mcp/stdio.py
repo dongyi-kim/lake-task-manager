@@ -14,7 +14,7 @@ def connection_settings():
     url, token = os.getenv("LTM_MCP_URL", ""), os.getenv("LTM_MCP_TOKEN", "")
     parsed = urlsplit(url)
     if (parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost", "::1")
-            or not parsed.port or parsed.path != "/mcp" or parsed.query or parsed.fragment
+            or not parsed.port or parsed.path not in ("/mcp", "/mcp/jira", "/mcp/confluence", "/mcp/reporting", "/mcp/settings") or parsed.query or parsed.fragment
             or parsed.username or parsed.password or not token):
         raise ValueError("실행 중인 LTM 설정에서 인증 포함 stdio 연결 설정을 복사해 주세요.")
     return url, token

@@ -30,9 +30,9 @@ description: LTM MCP로 Task·Epic·SubTask 한 건을 생성하거나 기존 �
 
 ## 기존 본문 수정
 
-1. `get_ticket(key, fresh=true)`로 최신 `descriptionEditHtml`과 상태를 읽는다. 열람용 `descriptionHtml`이나 화면 DOM 전체를 새 본문으로 복사하지 않는다.
+1. `get_ticket(key, fresh=true, detail="edit")`로 최신 `descriptionEditHtml`과 상태를 읽는다. 열람용 `descriptionHtml`이나 화면 DOM 전체를 새 본문으로 복사하지 않는다.
 2. 요청한 부분만 바꾸고 기존 링크·멘션 ID·이미지 경로·다른 섹션을 보존한다. 변경에 필요한 권한과 필드는 `list_options(kind="edit_fields", key=...)`로 확인할 수 있다.
 3. `update_description(key, html, client_mutation_id)`은 **본문 전체 교체**다. `html=""`은 삭제 의도가 있을 때만 쓴다. 완료 티켓 본문은 직접 수정할 수 없으며, 요청 범위에 포함된 실제 재열기 전이가 먼저 필요하다.
-4. 게시 후 `get_ticket(key, fresh=true)`로 요청한 변경과 보존할 내용을 확인한다. 결과에는 티켓 key와 실제 수행한 변경, 남은 후속 단계를 구분한다.
+4. 게시 후 `get_ticket(key, fresh=true, detail="read")`로 요청한 변경과 보존할 내용을 확인한다. 결과에는 티켓 key와 실제 수행한 변경, 남은 후속 단계를 구분한다.
 
 실제로 참고한 Jira 이슈·Confluence 문서·외부 자료는 본문 참조와 함께 **티켓의 이슈 링크·문서 연결에도 적극 등록하는 것을 권장**한다. [사람과 링크](references/people-and-links.md)의 참조 연결 절차에 따라 초안에 연결 대상을 포함하고, 생성된 key에 승인 범위의 연결을 추가·확인한다. 생성 응답의 `cascade`는 제안이며 실행된 상태 전이가 아니다.
