@@ -35,10 +35,12 @@ def test_comment_submit_waits_for_pending_draft_before_final_delete():
     """제출 성공 뒤 예약된 saveDraft가 완료 글을 되살리는 경쟁 상태를 막는다."""
     src = comment_editor_source()
     success = src.index("await this.submitFn(html, this.submitMutationId || null);")
-    cancel = src.index("clearTimeout(this._dt)", success)
+    assert "await this.finishSubmission();" in src[success:success + 150]
+    src = (STATIC / "components" / "editor" / "editorSubmission.js").read_text(encoding="utf-8")
+    cancel = src.index("clearTimeout(this._dt)")
     wait = src.index("await this._draftWrite", cancel)
-    delete = src.index("await clearDraft(dk)", wait)
-    assert success < cancel < wait < delete
+    delete = src.index("await clearDraft(this.draftKey())", wait)
+    assert cancel < wait < delete
 def test_frontend_requests_time_out_without_turning_transport_stalls_into_login():
     """브라우저 fetch도 무한 대기하지 않고, 연결 지연은 별도 상태로 안내한다."""
     api = (STATIC / "lib" / "api.js").read_text(encoding="utf-8")

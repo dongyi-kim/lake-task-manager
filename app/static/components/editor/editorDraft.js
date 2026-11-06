@@ -34,6 +34,7 @@ export const editorDraftMethods = {
       const hasNode = /<img\b|<a\b|<input\b|<table\b|<pre\b|<blockquote\b|<h[1-6]\b|<hr\b/i.test(html);
       const empty = (!text && !imgs.length && !hasNode);
       const record = { html, images: imgs, baseHtml: this._baseHtml || "",
+                       preserveExpiredForMutation: !!(this.submitAdapter && this.mutationPending),
                        mutationId: this.submitMutationId || "", pendingHtml: this.pendingSubmitHtml || "" };
       const write = (async () => {
         const k = this._resolvedDraftKey || await resolveDraftKey(scope);

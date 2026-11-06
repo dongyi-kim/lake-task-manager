@@ -7,6 +7,7 @@ import { paintMentionBadge } from "../../lib/mentionBadge.js";
 import { escapeHtml as esc } from "./editorHtml.js";
 import { fileBadgeExt, imageResizeExt } from "./editorFiles.js";
 import { linkBadgeExt } from "./linkBadges.js";
+import { headingNumbering } from "./headingNumbering.js";
 
 // 멘션 팝업 아바타 — 네트워크 요청(=404 스팸) 없이 이니셜 원.
 // 색은 기본 아바타·댓글 구분 바와 같은 시그니처 컬러(colors.js) 를 쓴다.
@@ -432,6 +433,7 @@ export function createEditorExtensions(T, {
     // v3 StarterKit의 Link는 모든 <a>를 mark로 먼저 소비한다. Jira/문서 링크는
     // linkBadge atom으로 편집하므로 끄고, 코드블럭도 아래 Lowlight 구현으로 교체한다.
     T.StarterKit.configure({ codeBlock: false, link: false }),
+    ...(host.headingNumbering ? [headingNumbering(T, host)] : []),
     codeLineNumbers(T).configure({ lowlight: T.lowlight, HTMLAttributes: { class: "jecodeblock" } }),
     calloutExt(T),
     ...(sections ? [sectionExt(T)] : []),
