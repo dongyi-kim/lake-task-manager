@@ -13,6 +13,13 @@ from app.infra.settings import get_settings   # noqa: E402
 from app.mock.world import get_world         # noqa: E402
 
 
+def test_work_time_uses_own_seconds_not_parent_rollup_or_estimate():
+    for seconds in (None, 0, 5400, 60 * 60 * 25):
+        fields = {"timespent": seconds, "aggregatetimespent": 999999, "timeoriginalestimate": 12345}
+        assert _build_ticket_view({"fields": fields}, "sp")["timeSpentSeconds"] == seconds
+    assert _build_ticket_view({"fields": {}}, "sp")["timeSpentSeconds"] is None
+
+
 # ── 순수 빌더: renderedFields(HTML) 우선 + 정화 ──
 def test_builder_prefers_rendered_html_and_sanitizes():
     raw = {

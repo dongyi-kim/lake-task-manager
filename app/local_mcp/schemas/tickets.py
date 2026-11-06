@@ -55,6 +55,7 @@ class DescriptionSection(OpenModel):
 
 
 class TicketView(TicketBadge):
+    timeSpentSeconds: int | None = Field(default=None, description="Cumulative worklog seconds for this ticket, including completion entries; excludes subtasks. Null means no available record.")
     subtask: bool
     reporter: str | None
     assigneeDisplay: str | None

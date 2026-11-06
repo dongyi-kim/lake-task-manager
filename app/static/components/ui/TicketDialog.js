@@ -24,7 +24,7 @@ import {
   loadKidSort, saveKidSort, loadSpineW, saveSpineW, loadSpineHidden, saveSpineHidden,
   loadTlW, saveTlW, loadTlHidden, saveTlHidden, formatBytes, descriptionEmpty,
   childCard, sortChildren, sortComments, priorityClass, timelineKind, timelineBadged,
-  timelineLabel, timelineBadgeClass, timelineValue, timelineText,
+  timelineLabel, timelineBadgeClass, timelineValue, timelineText, workTimeLabel,
 } from "../ticket-dialog/model.js";
 import { recordOpen } from "../../lib/recent.js";
 import { observeTicketUpdates, ticketUpdateMetadata, acknowledgeTicketUpdates, ingestTicketUpdates,
@@ -198,6 +198,7 @@ export default {
     if (this._cbRaf) { cancelAnimationFrame(this._cbRaf); this._cbRaf = 0; }
   },
   computed: {
+    recordedWorkTime() { return workTimeLabel(this.v?.timeSpentSeconds); },
     FOLD_AT: () => FOLD_AT,
     /** 하위가 무엇인지는 **내 타입**이 정한다 — Epic 밑은 Task, Task 밑은 Sub-Task.
      *  Sub-Task 밑은 없다(Jira 가 3단까지만 둔다) → 그때만 칸을 안 그린다.
@@ -1517,6 +1518,9 @@ export default {
             <div><span class="k">작업 기한</span><span class="val">
               <FieldEdit :ticket="tk" field="duedate" :meta="fmeta('duedate')"
                          :value="v.due" @saved="onFieldSaved">{{ v.due || '—' }}</FieldEdit></span></div>
+            <div v-if="v.statusCategory === 'done' || v.timeSpentSeconds != null" class="tkt-work-time"
+                 title="완료 처리 시 입력한 시간을 포함한 이 티켓의 누적 작업시간입니다. 하위 티켓 시간은 포함하지 않습니다.">
+              <span class="k">누적 작업시간</span><span class="val">{{ recordedWorkTime }}</span></div>
             <div><span class="k">컴포넌트</span><span class="val">
               <FieldEdit :ticket="tk" field="components" :meta="fmeta('components')"
                          :value="v.components || []" @saved="onFieldSaved">

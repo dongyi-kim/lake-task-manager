@@ -172,3 +172,10 @@ export function timelineText(event) {
   }
   return (event.field || "변경") + " " + from + " → " + to;
 }
+// Display Jira's accumulated worklog duration without assuming an 8-hour workday.
+export function workTimeLabel(seconds) {
+  if (seconds == null || typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return "기록 없음";
+  const total = Math.floor(seconds), hours = Math.floor(total / 3600), minutes = Math.floor(total % 3600 / 60);
+  return [hours ? hours + "시간" : "", minutes ? minutes + "분" : "", total % 60 ? total % 60 + "초" : ""].filter(Boolean).join(" ") || "0분";
+}
+
