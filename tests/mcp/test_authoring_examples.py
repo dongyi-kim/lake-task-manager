@@ -22,6 +22,10 @@ class Elements(HTMLParser):
 
 def assert_rich_content(text, *, editing):
     nodes = Elements(text).tags
+    boxes = [attrs for tag, attrs in nodes if tag == "input" and attrs.get("type") == "checkbox"]
+    assert len(boxes) == 3, text
+    assert sum("checked" in attrs for attrs in boxes) == 1, text
+    assert {attrs.get("data-cb-id") or attrs.get("id") for attrs in boxes} >= {"native-done", "native-open"}, text
     for tag in ("table", "pre", "img"):
         assert any(name == tag for name, _ in nodes), (tag, text)
     assert "source_table" in text and "요청된 범위" in text
@@ -73,7 +77,10 @@ def test_served_examples_create_read_edit_and_republish(build_env, monkeypatch, 
                 text = samples[kind]
                 for name, value in values.items():
                     text = text.replace("__" + name + "__", escape(value, quote=True))
-                return text
+                # Read/edit HTML uses native inputs, whereas new editor output uses
+                # TipTap task lists. Both forms must survive the same command path.
+                return text + ('<p>체크 항목: <input type="checkbox" data-cb-id="native-done" checked>'
+                               '완료 <input type="checkbox" id="native-open">미완료</p>')
 
             # Include a unique phrase shared by the body/comment structural assertions.
             body = content("descriptionHtml") + "<p>요청된 범위</p>"

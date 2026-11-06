@@ -18,6 +18,7 @@ from html.parser import HTMLParser
 
 from app.content.callouts import (JIRA_PANEL_STYLES, VENDOR_CALLOUT_RE,
                                  callout_kind, jira_panel_kind)
+from app.content.checkboxes import checkbox_id, native_checkbox
 
 
 def has_rich_content(sanitized_html):
@@ -62,6 +63,7 @@ class _TaskFlatten(HTMLParser):
         self._task = 0        # taskList <ul> 깊이
         self._li = 0          # li 깊이(중첩 대비)
         self._chk = False
+        self._cid = ""
         self._buf = []        # li 안 인라인 텍스트/서식
         self._label = 0       # label 서브트리 깊이(체크박스 UI 는 버린다)
 
@@ -79,6 +81,7 @@ class _TaskFlatten(HTMLParser):
         if tag == "li":
             if self._li == 0:
                 self._chk = (dict(attrs).get("data-checked") or "").lower() == "true"
+                self._cid = checkbox_id(dict(attrs))
                 self._buf = []
             self._li += 1
             return
@@ -110,9 +113,11 @@ class _TaskFlatten(HTMLParser):
         if tag == "li" and self._li:
             self._li -= 1
             if self._li == 0:
-                chk = ' checked="checked"' if self._chk else ""
-                self.out.append('<p dir="auto"><input type="checkbox"%s />%s</p>'
-                                % (chk, "".join(self._buf).strip()))
+                attrs = {"id": self._cid}
+                if self._chk:
+                    attrs["checked"] = ""
+                self.out.append('<p dir="auto">' + native_checkbox(attrs)
+                                + "".join(self._buf).strip() + '</p>')
             return
         if tag in ("div", "p", "span"):
             return
@@ -374,7 +379,10 @@ class _Sanitizer(HTMLParser):
         # id 는 원본에 있으면 그대로 싣는다(원본 순서 = 화면 순서라 index 도 함께 유효).
         idx = self._cb_index
         self._cb_index += 1
-        cid = (d.get("id") or "").strip()
+        cid = checkbox_id(d)
+        if self._jira_panels:
+            self.out.append(native_checkbox(d))
+            return
         idattr = (' data-cb-id="%s"' % escape(cid, quote=True)) if cid else ""
         self.out.append('<input type="checkbox"%s class="tkt-cb" data-cb-index="%d"%s />'
                         % (chk, idx, idattr))
