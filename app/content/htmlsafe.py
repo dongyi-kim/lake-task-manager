@@ -403,6 +403,8 @@ class _Sanitizer(HTMLParser):
                 return           # void drop 태그: 그 태그만 버리고 이어감(뒤 내용 안 삼킴)
             self._drop_depth = 1
             return
+        if self._confluence and tag == "font":
+            tag, attrs = self._font_span(attrs)
         if tag not in self._tags:
             return               # 태그만 제거, 자식 텍스트는 남김
         self.out.append("<" + tag + self._attrs(tag, attrs) + ">")
@@ -413,6 +415,8 @@ class _Sanitizer(HTMLParser):
         if tag == "input":
             self._emit_input(attrs)
             return
+        if self._confluence and tag == "font":
+            tag, attrs = self._font_span(attrs)
         if tag in _DROP_SUBTREE or tag not in self._tags:
             return
         self.out.append("<" + tag + self._attrs(tag, attrs) + " />")
@@ -422,6 +426,8 @@ class _Sanitizer(HTMLParser):
             if tag in _DROP_SUBTREE:
                 self._drop_depth -= 1
             return
+        if self._confluence and tag == "font":
+            tag = "span"
         if tag not in self._tags or tag in _VOID:
             return
         self.out.append("</" + tag + ">")
@@ -444,6 +450,17 @@ class _Sanitizer(HTMLParser):
     def handle_pi(self, data):
         pass
 
+    def _font_span(self, attrs):
+        values = dict(attrs)
+        styles = [values.get("style") or ""]
+        for attr, prop in (("face", "font-family"), ("color", "color")):
+            if values.get(attr):
+                styles.append(prop + ":" + values[attr])
+        sizes = {"1": "10px", "2": "13px", "3": "16px", "4": "18px", "5": "24px", "6": "32px", "7": "48px"}
+        if values.get("size") in sizes:
+            styles.append("font-size:" + sizes[values["size"]])
+        return "span", [(key, value) for key, value in attrs if key not in {"face", "color", "size", "style"}] + [("style", ";".join(styles))]
+
     def _attrs(self, tag, attrs):
         allowed = _ALLOWED_ATTRS.get(tag, set())
         if self._confluence:
@@ -455,7 +472,7 @@ class _Sanitizer(HTMLParser):
             if k == "style":
                 # style 은 통째로 위험(behaviour·url·expression)하지만, **정렬·글꼴만** 골라
                 # 통과시킨다 — 에디터의 text-align/font-family 가 렌더·재편집에서 살아남게.
-                safe = _safe_style(v)
+                safe = _safe_style(v, confluence=self._confluence)
                 if safe:
                     safe_styles.append(safe)
                 continue
@@ -539,7 +556,7 @@ _COLOR_RE = re.compile(
     r"|^[a-zA-Z]+$")
 
 
-def _safe_style(v):
+def _safe_style(v, *, confluence=False):
     out = []
     for decl in (v or "").split(";"):
         if ":" not in decl:
@@ -550,12 +567,26 @@ def _safe_style(v):
         low = val.lower()
         if "url(" in low or "expression" in low or "javascript" in low:
             continue
+        # Confluence's CSS variables are not defined in LTM. Preserve their explicit
+        # literal fallback, still subject to the same color allowlist.
+        if confluence and prop in ("color", "background-color"):
+            fallback = re.fullmatch(r"var\(--[\w-]+,\s*(.+)\)", val)
+            if fallback:
+                val = fallback[1].strip()
         if prop == "text-align" and low in _ALIGN_OK:
             out.append("text-align:" + low)
         elif prop == "font-family" and "(" not in val and _FONT_RE.match(val):
             out.append("font-family:" + val)
         elif prop in ("color", "background-color") and _COLOR_RE.match(val):
             out.append(prop + ":" + val)
+        elif confluence and prop == "font-size":
+            size = re.fullmatch(r"(\d+(?:\.\d+)?)(px|pt|em|rem|%)", low)
+            if size and 0 < float(size[1]) <= {"px": 96, "pt": 72, "em": 4, "rem": 4, "%": 400}[size[2]]:
+                out.append(prop + ":" + low)
+        elif confluence and ((prop == "font-weight" and low in {"normal", "bold", "bolder", "lighter", *map(str, range(100, 1000, 100))})
+                             or (prop == "font-style" and low in {"normal", "italic", "oblique"})
+                             or (prop == "text-decoration" and low in {"none", "underline", "line-through", "underline line-through"})):
+            out.append(prop + ":" + low)
     return ";".join(out)
 
 

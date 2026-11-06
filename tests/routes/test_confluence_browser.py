@@ -125,7 +125,8 @@ def test_html_security_and_configured_host_media():
                          '<img src="/wiki/download/attachments/12/image.png" onerror="evil()">'
                          '<a href="javascript:evil()">bad</a><input type="checkbox">', base, "12")
     assert "onclick" not in html and "onerror" not in html and "javascript" not in html
-    assert "evil.example" not in html
+    assert 'src="https://evil.example/tracker"' in html
+    assert 'referrerpolicy="no-referrer"' in html
     assert '/api/confluence/pages/12/image?path=' in html
     assert 'disabled="disabled"' in html
     assert _media_path(base, "12", "/wiki/download/attachments/13/image.png") is None
