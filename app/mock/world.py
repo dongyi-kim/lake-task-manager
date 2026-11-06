@@ -128,6 +128,9 @@ class World:
         self._build_confluence()
         self._build_dataset_docs()    # ★ _build_confluence 뒤 — 그쪽이 self.confluence 에 대입한다
         self._build_meeting_docs()    # ★ 회의록 배터리 내부 문서도 같은 이유로 마지막에 추가한다
+        from app.mock.confluence_world import build_confluence_documents
+        for page in build_confluence_documents(self.today):
+            self.confluence.setdefault(page["author"], []).append(page)
 
     # ── 사용자 ──
     def _make_users(self):
