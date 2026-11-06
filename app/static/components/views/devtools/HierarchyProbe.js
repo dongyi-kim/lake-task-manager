@@ -107,6 +107,15 @@ export default {
     stepName(name) { return NAMES[name] || name; },
     roleName(name) { return ROLES[name] || name; },
     pretty(value) { return JSON.stringify(value, null, 2); },
+    formDiagnostic(error) {
+      const d = error?.formDiagnostic;
+      if (!d) return "";
+      const reason = { http_response: "변환 화면 응답 오류", form_not_identified: "응답에서 지원하는 변환 폼을 찾지 못함",
+        transport_timeout: "변환 화면 요청 시간 초과", transport_failure: "변환 화면 전송 실패" }[d.reason];
+      if (!reason) return "";
+      return [reason, d.httpStatus ? "HTTP " + d.httpStatus : "",
+        Number.isInteger(d.formCount) ? "폼 " + d.formCount + "개 / 지원 폼 " + d.supportedFormCount + "개" : ""].filter(Boolean).join(" · ");
+    },
     ticketUrl(value) {
       try { const url = new URL(value); return ["http:", "https:"].includes(url.protocol) ? url.href : ""; }
       catch (_) { return ""; }
@@ -158,6 +167,8 @@ export default {
         <ol class="hp-steps"><li v-for="(step, index) in report.steps" :key="index">
           <span>{{ stepName(step.name) }}</span><span :class="'hp-' + step.status">{{ label(step.status) }}</span>
           <small v-if="step.key">{{ step.key }}</small><p v-if="step.error" class="hp-error">{{ step.error.message }}</p>
+          <p v-if="formDiagnostic(step.error)" class="hp-hint">{{ formDiagnostic(step.error) }}
+            <span v-if="report.environment === 'mock' && step.error.formDiagnostic.httpStatus === 404"> · Mock에 변환 웹 화면이 구현되어 있지 않습니다.</span></p>
           <details v-if="step.inputs?.length || step.changes?.length"><summary>필요한 입력·변경 확인</summary>
             <pre>{{ pretty({ inputs: step.inputs, changes: step.changes }) }}</pre></details>
         </li></ol>

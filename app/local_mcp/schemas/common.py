@@ -27,6 +27,13 @@ class RecoveryAction(OpenModel):
     arguments: dict[str, JsonValue] | None = None
 
 
+class FormDiagnostic(BaseModel):
+    reason: Literal["http_response", "form_not_identified", "transport_timeout", "transport_failure"]
+    httpStatus: int | None = Field(default=None, ge=100, le=599)
+    formCount: int | None = Field(default=None, ge=0, le=20000)
+    supportedFormCount: int | None = Field(default=None, ge=0, le=20000)
+
+
 class ToolError(OpenModel):
     # UI/shared production handlers use error/detail, while native MCP errors use
     # message. Describe all existing variants without manufacturing wire fields.
@@ -47,6 +54,10 @@ class ToolError(OpenModel):
     retryable: bool | None = None
     needLogin: bool | None = None
     service: str | None = None
+    formDiagnostic: FormDiagnostic | None = Field(default=None, description=(
+        "Native Jira conversion form failure: transport failure/timeout, unexpected HTTP status, "
+        "or supported form not identified. Contains structural counts only; no HTML, URLs or tokens. "
+        "An HTTP 404 in mock may mean the native wizard is not implemented."))
     nextAction: RecoveryAction | None = None
     clientMutationId: str | None = None
     repeatWrite: bool | None = None
