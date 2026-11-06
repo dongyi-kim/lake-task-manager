@@ -416,6 +416,7 @@ def _append_second_publish(page, editor, marker: str) -> None:
     page.keyboard.type(marker)
 
 
+@pytest.mark.parametrize("editor_browser", [{"format": "wiki"}, {"format": "html"}], indirect=True)
 def test_description_and_comment_all_formats_survive_two_ui_publish_cycles(editor_browser):
     page, base, errors, upload_path = editor_browser
     _open_ticket(page, base, DESCRIPTION_TICKET)

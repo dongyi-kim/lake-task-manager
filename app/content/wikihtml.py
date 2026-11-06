@@ -19,6 +19,7 @@ from html import escape, unescape
 from html.parser import HTMLParser
 
 from app.content.callouts import callout_kind
+from app.content.checkboxes import checkbox_id, native_checkbox
 
 # 제로폭 문자 — 눈에 안 보이지만 str.strip() 은 공백으로 안 본다(zwnj ‌ 등).
 # TipTap 이 빈 문단을 <p>&nbsp;&zwnj;</p> 로 내보내는데, 이걸 안 지우면 댓글 끝에 빈 줄이
@@ -32,7 +33,7 @@ def _blank(t):
     return not (t or "").strip(_BLANK_CHARS)
 # ────────────────────────── HTML → Jira wiki ──────────────────────────
 
-_VOID = {"br", "img", "hr"}
+_VOID = {"br", "img", "hr", "input"}
 _BLOCK = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li",
           "blockquote", "pre", "table", "thead", "tbody", "tr", "td", "th", "hr", "div"}
 
@@ -182,6 +183,8 @@ def _inline(node):
                 out.append("!" + ref + ("|width=" + w if w else "") + "!")
         elif t == "br":
             out.append("\n")
+        elif t == "input" and (c.attrs.get("type") or "").lower() == "checkbox":
+            out.append(native_checkbox(c.attrs))
         else:
             out.append(_inline(c))
     return "".join(out)
@@ -221,6 +224,10 @@ def _blocks(node, lines, depth=0):
         elif t == "p" or t == "div":
             inner = _inline(c).strip()
             if not _blank(inner):
+                # Edit HTML can contain native/sanitized checkbox inputs without a
+                # TipTap taskList. Keep the JEditor paragraph that the read path revives.
+                if _contains_checkbox(c):
+                    inner = '<p dir="auto">' + inner + '</p>'
                 lines.append(inner)
                 lines.append("")
         elif t in ("h1", "h2", "h3", "h4", "h5", "h6"):
@@ -287,6 +294,11 @@ def _list(node, lines, marker):
             _list(nl, lines, (marker + ("#" if nl.tag == "ol" else "*")))
 
 
+def _contains_checkbox(node):
+    return (node.tag == "input" and (node.attrs.get("type") or "").lower() == "checkbox"
+            or any(_contains_checkbox(child) for child in node.children))
+
+
 def _tasklist(node, lines, marker):
     """태스크 리스트 → 사내 Jira(JEDITOR 플러그인)의 **네이티브 체크박스 HTML** 로 저장한다.
 
@@ -299,7 +311,6 @@ def _tasklist(node, lines, marker):
         if li.tag != "li":
             continue
         checked = (li.attrs.get("data-checked") or "").lower() == "true"
-        chk = ' checked="checked"' if checked else ""
         inline_parts, nested = [], []
         for ch in li.children:
             if ch.tag in ("ul", "ol"):
@@ -314,7 +325,10 @@ def _tasklist(node, lines, marker):
         # id 가 없으면 prod 가 개별 토글/저장을 못 걸 수 있어 우리도 붙인다. len(lines) 는 이 문서에서
         # 지금까지 나온 줄 수라 체크박스마다 유일하고, 내용을 안 바꾸면 같은 id 라 재저장에도 안 흔들린다.
         cid = int(hashlib.md5(("%d:%s" % (len(lines), text)).encode("utf-8")).hexdigest()[:11], 16)
-        lines.append('<p dir="auto"><input id="%d" type="checkbox"%s />%s</p>' % (cid, chk, text))
+        attrs = {"id": checkbox_id(li.attrs) or str(cid)}
+        if checked:
+            attrs["checked"] = ""
+        lines.append('<p dir="auto">' + native_checkbox(attrs) + text + '</p>')
         for nl in nested:
             # 중첩 태스크는 다시 체크박스로(평면), 그 외 목록은 기존 wiki 목록으로.
             if "tasklist" in (nl.attrs.get("data-type") or "").lower():
