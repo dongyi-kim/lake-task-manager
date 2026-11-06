@@ -19,6 +19,7 @@ from app.local_mcp.evidence_tools import register_evidence
 from app.local_mcp.hierarchy_tools import register_hierarchy
 from app.local_mcp.hierarchy_write_tools import register_hierarchy_writes
 from app.jira.hierarchy_forms import HierarchyFormError
+from app.auth.web_forms import FormTransportUnavailable
 from app.local_mcp.read_metadata import read_result, has_partial
 from app.local_mcp.output_schema import schema_for
 from app.local_mcp.security import Credentials, LocalGuard
@@ -151,7 +152,8 @@ class LocalMcpRuntime:
 
     def _error(self, exc):
         if isinstance(exc, HierarchyFormError):
-            return {"code": exc.code, "status": exc.status, "message": str(exc), "retryable": False}
+            return {"code": exc.code, "status": exc.status, "message": str(exc), "retryable": False,
+                    **({"formDiagnostic": exc.diagnostic} if exc.diagnostic else {})}
         if isinstance(exc, MutationPreflightUnavailable):
             busy = isinstance(exc, UpstreamBusy)
             if not busy and self.classify_error:
@@ -198,6 +200,10 @@ class LocalMcpRuntime:
             return {"code": "authentication_required" if authentication else "upstream_unavailable",
                     "service": "confluence", "message": str(exc), "needLogin": authentication,
                     "retryable": not authentication}
+        if isinstance(exc, FormTransportUnavailable):
+            error = self.classify_error(exc) if self.classify_error else {
+                "code": "upstream_unavailable", "message": str(exc), "needLogin": False, "retryable": True}
+            return {**error, "formDiagnostic": exc.diagnostic}
         if isinstance(exc, (SessionExpired, UpstreamUnavailable)) and self.classify_error:
             return self.classify_error(exc)
         if isinstance(exc, SessionExpired):

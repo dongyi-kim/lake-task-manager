@@ -13,9 +13,10 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
 
 class HierarchyFormError(ValueError):
-    def __init__(self, message, *, code="unsupported_hierarchy_form", status=409):
+    def __init__(self, message, *, code="unsupported_hierarchy_form", status=409, diagnostic=None):
         super().__init__(message)
         self.code, self.status = code, status
+        self.diagnostic = diagnostic
 
 
 @dataclass
@@ -110,12 +111,14 @@ class HierarchyForms:
     def _page(self, response, path, issue_id, redirect_alias=None):
         if response["status"] in (301, 302, 303):
             if not redirect_alias or not response.get("location"):
-                raise HierarchyFormError("Jira 변환 화면이 예상하지 않은 이동을 요청했습니다.")
+                raise HierarchyFormError("Jira 변환 화면이 예상하지 않은 이동을 요청했습니다.",
+                                         diagnostic={"reason": "http_response", "httpStatus": response["status"]})
             path = self._path(response["location"], path, {redirect_alias})
             self._issue_id(path, issue_id)
             response = self.provider.web_form(path)
         if response["status"] != 200:
-            raise HierarchyFormError("Jira 변환 화면을 열지 못했습니다.", status=response["status"])
+            raise HierarchyFormError("Jira 변환 화면을 열지 못했습니다.", status=response["status"],
+                                     diagnostic={"reason": "http_response", "httpStatus": response["status"]})
         page = _Page(response.get("html") or "")
         errors = [node.text() for node in page.root.nodes() if
                   {"error", "errorMessage", "aui-message-error"} & set(node.attrs.get("class", "").split())]
@@ -133,7 +136,10 @@ class HierarchyForms:
                 continue
             forms.append((node, path))
         if len(forms) != 1:
-            raise HierarchyFormError("Jira 변환 폼을 확인하지 못했습니다. 권한·workflow 또는 화면 변경을 확인하세요.")
+            raise HierarchyFormError("Jira 변환 폼을 확인하지 못했습니다. 권한·workflow 또는 화면 변경을 확인하세요.",
+                                     diagnostic={"reason": "form_not_identified", "httpStatus": 200,
+                                                 "formCount": sum(1 for _ in page.root.nodes({"form"})),
+                                                 "supportedFormCount": len(forms)})
         form, path = forms[0]
         self._issue_id(path, issue_id)
         if form.attrs.get("method", "get").lower() != "post":

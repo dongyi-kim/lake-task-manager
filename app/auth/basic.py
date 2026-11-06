@@ -72,7 +72,7 @@ class BasicAuthProvider(AuthProvider):
         return self._get(path, params).text
 
     def web_form(self, path, fields=None, *, may_commit=False):
-        from .web_forms import check_html_size, form_request, form_response, identity_response
+        from .web_forms import FormTransportUnavailable, check_html_size, form_request, form_response, identity_response
         url, headers, body = form_request(self.base, path, fields, may_commit)
 
         def identity_probe():
@@ -94,8 +94,8 @@ class BasicAuthProvider(AuthProvider):
                     data.extend(chunk)
                 return form_response(self.base, response.status_code, response.headers,
                                      bytes(data), identity_probe)
-        except requests.RequestException:
-            raise UpstreamUnavailable("Jira 폼 서버에 연결할 수 없습니다.") from None
+        except requests.RequestException as exc:
+            raise FormTransportUnavailable(timeout=isinstance(exc, requests.Timeout)) from None
 
     def get_bytes(self, path, params=None):
         url = path if path.startswith(("http://", "https://")) else self.base + path

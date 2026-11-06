@@ -55,7 +55,24 @@ class ProbeError(CommandError):
     def public(self):
         return {"code": self.code, "message": str(self),
                 "outcomeUnknown": self.code in {"outcome_unknown", "journal_unavailable"},
-                "retryable": self.code in {"outcome_unknown", "upstream_unavailable", "rate_limited", "authentication_pending"}}
+                "retryable": self.code in {"outcome_unknown", "upstream_unavailable", "rate_limited", "authentication_pending"},
+                **({"formDiagnostic": self.details["formDiagnostic"]} if self.details.get("formDiagnostic") else {})}
+
+
+def _form_diagnostic(error):
+    """Keep only bounded structural evidence, including when resuming SDK errors."""
+    value = error.get("formDiagnostic")
+    if not isinstance(value, dict) or value.get("reason") not in {
+        "http_response", "form_not_identified", "transport_timeout", "transport_failure"
+    }:
+        return {}
+    result = {"reason": value["reason"]}
+    for name, lower, upper in (("httpStatus", 100, 599), ("formCount", 0, 20000),
+                                ("supportedFormCount", 0, 20000)):
+        number = value.get(name)
+        if type(number) is int and lower <= number <= upper:
+            result[name] = number
+    return {"formDiagnostic": result}
 
 
 class HierarchyProbe:
@@ -111,7 +128,8 @@ class HierarchyProbe:
         if isinstance(exc, ProbeError):
             return exc
         classified = self.runtime._error(exc)
-        return ProbeError(classified.get("code", "internal_error"), classified.get("status", 503))
+        return ProbeError(classified.get("code", "internal_error"), classified.get("status", 503),
+                          **_form_diagnostic(classified))
 
     def _save(self, run):
         path = self._path(run["runId"])
@@ -183,7 +201,8 @@ class HierarchyProbe:
             error = payload.get("error") or {}
             if error.get("code") == "output_schema_mismatch" or (error.get("repeatWrite") is False and "operationResult" in error):
                 raise ProbeError("outcome_unknown")
-            raise ProbeError(error.get("code", "internal_error"), error.get("status", 400))
+            raise ProbeError(error.get("code", "internal_error"), error.get("status", 400),
+                             **_form_diagnostic(error))
         return payload["data"]
 
     async def _project_types(self):

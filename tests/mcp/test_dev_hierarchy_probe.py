@@ -17,7 +17,34 @@ def anyio_backend():
 
 from app.services.dev_hierarchy_probe import HierarchyProbe, ProbeError
 from app.auth.base import SessionExpired
+from app.auth.web_forms import FormTransportUnavailable
 from tests.mcp.test_hierarchy_actions import WizardFixture
+
+
+@pytest.mark.parametrize("response,diagnostic", [
+    ({"status": 404, "html": "private server response", "location": ""},
+     {"reason": "http_response", "httpStatus": 404}),
+    ({"status": 200, "html": '<form action="https://private.example/?token=secret"><input value="private"></form>', "location": ""},
+     {"reason": "form_not_identified", "httpStatus": 200, "formCount": 1, "supportedFormCount": 0}),
+    (FormTransportUnavailable(timeout=True), {"reason": "transport_timeout"}),
+])
+async def test_native_form_failure_evidence_survives_sdk_journal_and_copy(build_env, monkeypatch, tmp_path, response, diagnostic):
+    env, wizard, probe = setup_probe(build_env, monkeypatch, tmp_path)
+    def form(*args, **kwargs):
+        if isinstance(response, Exception):
+            raise response
+        return response
+    monkeypatch.setattr(env.provider, "web_form", form)
+    run_id = "probe:form:0001"
+    await start(probe, run_id, "Task", "Sub-task")
+    result = await settled(probe, run_id)
+    assert result["status"] == "failed"
+    assert result["steps"][3]["error"]["formDiagnostic"] == diagnostic
+    assert result["error"]["formDiagnostic"] == diagnostic
+    restored = await HierarchyProbe(env.runtime, probe.state_dir).get(run_id)
+    assert restored["steps"][3]["error"]["formDiagnostic"] == diagnostic
+    assert len(creates(env)) == 3 and wizard.commits == 0
+    assert "private" not in json.dumps(result) and "secret" not in json.dumps(result)
 
 
 async def settled(probe, run_id):
