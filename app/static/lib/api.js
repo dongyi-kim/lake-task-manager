@@ -37,6 +37,13 @@ async function fetchWithAuth(path, options) {
   let response = await fetch(path, options);
   if (response.status !== 401) return response;
   let b = {}; try { b = await response.clone().json(); } catch (_) { /* non-JSON rejection */ }
+  // Confluence reads already attempted service-specific silent renewal on the server.
+  // Never recover Jira or discard its healthy session because this other service expired.
+  if (b.service === "confluence") {
+    const error = new Error(b.error || "Confluence 인증을 확인해 주세요.");
+    error.status = 401; error.service = "confluence"; error.needLogin = !!b.needLogin;
+    throw error;
+  }
   let recovery = null;
   if (b.needLogin && !authControlPath(path)) {
     try { recovery = await authRecovery.recover(generation, options.signal); }
@@ -404,6 +411,15 @@ export const api = {
   search: (q, scope, only) => req("/api/search?q=" + encodeURIComponent(q)
     + "&scope=" + encodeURIComponent(scope || "scoped")
     + (only ? "&only=" + encodeURIComponent(only) : "")),               // only=jira|confluence
+  confluenceConfig: () => req("/api/confluence/config"),
+  confluenceSpaces: (start = 0) => req("/api/confluence/spaces?start=" + start),
+  confluencePages: (space, parent = "", start = 0) => req("/api/confluence/pages?space=" + encodeURIComponent(space)
+    + "&parent=" + encodeURIComponent(parent) + "&start=" + start),
+  confluenceSearch: (query, space = "", start = 0) => req("/api/confluence/search?q=" + encodeURIComponent(query)
+    + "&space=" + encodeURIComponent(space) + "&start=" + start),
+  confluenceDocument: (id, version) => req("/api/confluence/pages/" + encodeURIComponent(id)
+    + (version ? "?version=" + version : "")),
+  confluenceRevision: (id, version) => req("/api/confluence/pages/" + encodeURIComponent(id) + "/revision?known_version=" + version),
   // fresh: 캐시를 건너뛴다(본문 편집 시작·편집 중 충돌 감시). 평소엔 쓰지 마라 — 상류 왕복이다.
   // ★ 이때는 memo(get)를 타면 안 된다 — 프로미스 캐시가 URL 이 같다는 이유로 **늘 첫 응답**을
   //   돌려준다. 서버가 캐시를 건너뛰고 no-store 를 붙여도 여기서 막히면 아무 소용이 없다.
