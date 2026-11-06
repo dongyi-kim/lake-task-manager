@@ -8,6 +8,8 @@ export default {
   deactivated() { this.$refs.panel?.close(); },
   methods: {
     sync() {
+      // Release modal inertness before the caller's nextTick moves focus into the editor.
+      if (!this.visible) { this.$refs.panel?.close(); return; }
       this.$nextTick(() => {
         const panel = this.$refs.panel;
         if (!panel) return;
