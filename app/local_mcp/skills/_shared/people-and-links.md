@@ -42,7 +42,7 @@ Jira 이슈 관계는 `list_options(kind="link_types")`에서 지원 타입을 �
 ## Confluence 문서와 외부 URL
 
 - 통합 탐색은 `search_workspace(query, sources=["jira", "confluence"])`를 사용한다. 문서 목록을 더 조회하려면 `search_confluence_documents`의 `hasMore`·`nextStartAt`을 따른다.
-- 문서를 근거로 내용을 쓰려면 `read_confluence_document(page=확인한ID또는URL)`을 읽는다. 긴 문서는 `hasMore`·`nextOffset`을 따른다. 검색 excerpt나 문서 제목만으로 문서 내용을 단정하지 않는다.
+- 문서를 근거로 내용을 쓰려면 `read_confluence_document(page=확인한ID또는URL)`을 읽는다. 긴 문서는 `hasMore`·`nextOffset`을 따르고, 후속 호출의 `version`에 첫 응답의 `version.number`를 전달해 같은 버전의 조각만 이어 읽는다. 검색 excerpt나 문서 제목만으로 문서 내용을 단정하지 않는다.
 - `read_confluence_document`는 설정된 Confluence의 숫자 page ID 또는 지원되는 `/pages/{id}`·`?pageId=` URL을 받는다. 구형 `/display/SPACE/title` 링크는 검색에서 page ID를 확인한다. 임의 외부 URL을 가져오는 도구가 아니다.
 - 본문에는 확인한 문서 URL과 제목으로 일반 `<a href="...">제목</a>`를 넣는다. LTM이 Confluence/웹 링크 뱃지로 렌더링한다. 별도의 Confluence 사람 멘션 문법이나 `@문서제목`을 만들지 않는다.
 
