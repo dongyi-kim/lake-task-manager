@@ -83,6 +83,8 @@ def test_complete_bulk_pass_seeds_parent_caches_without_refreshing_age(client):
     assert [row['id'] for row in snap['batches'][1]['results']] == ['2', '3']
     assert all(not row['hasChildren'] for row in snap['batches'][1]['results'])
     assert len({b['cacheInfo']['fetchedAt'] for b in snap['batches']}) == 1
+    assert [row['id'] for row in tree.branch(client, 'DL', '1')['results']] == ['2', '3']
+    assert len(calls) == 1  # Expanding the warm branch must not add a parent-head GET.
 
 
 def test_move_reconciliation_without_head_only_invalidates_old_and_new_parent(client):

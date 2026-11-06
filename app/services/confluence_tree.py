@@ -58,8 +58,10 @@ def branch(client, space, parent='', start=0):
             and (row.get('space') or {}).get('key') == space for row in data['results'])
     fence = client.cache.fence()
     try:
-        if parent:
+        if parent and client.cache.get(cache_key) is None:
             # Navigation rows prime these heads, so traversing a known parent adds no lookup.
+            # A fresh validated branch is itself reusable; do not add a head GET
+            # just because its rows originated in a bulk metadata pass.
             current = reads.head(client, parent)
             if current['space']['key'] != space:
                 raise PermissionDenied('설정된 Confluence Space 범위 밖입니다.')
