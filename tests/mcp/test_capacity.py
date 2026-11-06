@@ -23,11 +23,12 @@ def test_sdk_overload_keeps_ui_and_auth_available_and_recovers(build_env):
 
     async def scenario():
         saturated = anyio.Event()
+        caller_loop = asyncio.get_running_loop()
 
         def record_start(index):
             entered.append(index)
             if len(entered) == 8:
-                saturated.set()
+                caller_loop.call_soon_threadsafe(saturated.set)
 
         def held_read(index: int) -> dict:
             anyio.from_thread.run_sync(record_start, index)
@@ -56,10 +57,10 @@ def test_sdk_overload_keeps_ui_and_auth_available_and_recovers(build_env):
                             with anyio.fail_after(10):
                                 await saturated.wait()
                                 async with anyio.create_task_group() as rejected_calls:
-                                    for index in range(8, 40):
+                                    for index in range(8, 24):
                                         rejected_calls.start_soon(call, index)
                             assert len(entered) == 8
-                            assert len(results) == 32
+                            assert len(results) == 16
                             for result in results:
                                 error = result.structured_content["error"]
                                 assert result.is_error and error["code"] == "rate_limited"

@@ -21,6 +21,9 @@ def launcher_functions(*names):
     nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
     namespace = {"threading": threading, "time": time, "sys": sys,
                  "_APP_WINDOW_LOCK": threading.Lock(), "_WINDOW_ICONS": {}, "_BOOT_DATA_URL": "data:text/html,boot"}
+    namespace["runtime_failures"] = []
+    namespace["_record_runtime_failure"] = lambda component, error: namespace["runtime_failures"].append(
+        (component, type(error).__name__))
     exec(compile(ast.Module(body=nodes, type_ignores=[]), "run.py", "exec"), namespace)
     return namespace
 
@@ -49,6 +52,7 @@ def test_server_thread_exit_is_observed_without_waiting_for_startup_deadline(fai
     assert time.monotonic() - started < .5
     assert caught.value.__cause__ is failure
     assert not server._ltm_thread.is_alive()
+    assert ns["runtime_failures"] == ([("server", type(failure).__name__)] if failure else [])
 
 
 def test_navigation_has_one_deadline_without_unbounded_evaluate():

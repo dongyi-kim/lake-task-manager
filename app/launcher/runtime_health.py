@@ -18,6 +18,17 @@ def window_healthy():
     return phase == "closed" or (phase != "failed" and time.monotonic() <= deadline)
 
 
+def runtime_status(tray_probe):
+    phase, deadline = _window_runtime
+    now = time.monotonic()
+    tray_age = max(0, now - tray_probe["at"])
+    window_ok = window_healthy()
+    tray_ok = tray_probe["healthy"] and tray_age < 15
+    return {"healthy": window_ok and tray_ok, "windowPhase": phase,
+            "windowHealthy": window_ok, "windowOverdueSeconds": round(max(0, now - deadline), 2)
+            if phase != "closed" else 0, "trayHealthy": tray_ok, "trayProbeAgeSeconds": round(tray_age, 2)}
+
+
 def probe_tray_pump(icon):
     """Call only from a probe worker. None means native probing is unsupported."""
     if not sys.platform.startswith("win") or not getattr(icon, "_hwnd", None):

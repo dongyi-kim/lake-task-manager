@@ -4,7 +4,7 @@ import inspect
 import json
 import re
 from contextvars import ContextVar
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import HTTPException
@@ -38,6 +38,7 @@ from app.local_mcp.skill_protocol import SkillsExtension
 from app.local_mcp.authentication import (AUTH_TOOLS, CONFIG_WRITES, Authentication, AuthenticationUnavailable,
     authentication_error, error_payload, register_authentication, services_for)
 from app.local_mcp.capacity import ToolCapacityExceeded, ToolLane
+from app.local_mcp.transport_host import TransportHost
 from app.local_mcp.profiles import ADDITIVE, PROFILE_LABELS, build_profiles
 from app.services.workspace_config import WorkspaceConfigCommands
 from app.services.ticket_commands import CommandError, TicketCommands
@@ -69,7 +70,7 @@ class LocalMcpRuntime:
         self.started = False
         self.skill_catalog = SkillCatalog()
         self.server = MCPServer(
-            "lake-task-manager", extensions=[SkillsExtension(self.skill_catalog)], instructions=(
+            "lake-task-manager", log_level="WARNING", extensions=[SkillsExtension(self.skill_catalog)], instructions=(
                 "The running local LTM instance shares its Jira authentication and caches. "
                 "Tools read and directly write Jira, Confluence and local WBS/people configuration; "
                 "use only actions authorized by your user. "
@@ -121,6 +122,7 @@ class LocalMcpRuntime:
             max_request_body_size=16 * 1024 * 1024,
         )
         self.profiles = build_profiles(self)
+        self.transport_host = TransportHost([http for _server, http in self.profiles.values()])
 
     def _finalize_input_contracts(self):
         # SDK outer models otherwise discard misplaced arguments before our tool can see them.
@@ -418,15 +420,13 @@ class LocalMcpRuntime:
         app.include_router(build_workspace_config_router(self.workspace_config, port=self.port))
         for name, (_server, http) in self.profiles.items():
             path = "/mcp" + ("/" + name if name != "all" else "")
-            app.router.routes.append(Route(path, LocalGuard(http, credentials=self.credentials, port=self.port),
+            app.router.routes.append(Route(path, self.transport_host.wrap(LocalGuard(http, credentials=self.credentials, port=self.port)),
                                            methods=["GET", "POST", "DELETE", "OPTIONS"]))
         previous_lifespan = app.router.lifespan_context
 
         @asynccontextmanager
         async def lifespan(application):
-            async with previous_lifespan(application), AsyncExitStack() as stack:
-                for _server, http in self.profiles.values():
-                    await stack.enter_async_context(http.router.lifespan_context(http))
+            async with previous_lifespan(application), self.transport_host.lifespan():
                 self.started = True
                 try:
                     yield
