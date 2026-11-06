@@ -10,20 +10,27 @@ def test_tree_keeps_all_pages_after_capped_empty_and_short_batches(editor_browse
     page, base, errors, _ = editor_browser
     install_documents(page)
     calls = []
-    root = {'id': '12', 'title': 'Complete tree', 'ancestors': []}
+    root = {'id': '12', 'title': 'Complete tree', 'ancestors': [], 'hasChildren': True}
     def tree(route):
-        start = int(parse_qs(urlsplit(route.request.url).query)['start'][0])
+        if '/snapshot?' in route.request.url:
+            route.fulfill(json={'batches': [], 'jobs': [{'parent': '', 'start': 0, 'depth': 0}]}); return
+        args = parse_qs(urlsplit(route.request.url).query)
+        start, parent = int(args['start'][0]), args.get('parent', [''])[0]
+        if not parent:
+            route.fulfill(json={'parent': '', 'start': 0, 'results': [root], 'nextStart': None}); return
+        if parent != '12':
+            route.fulfill(json={'parent': parent, 'start': start, 'results': [], 'nextStart': None}); return
         calls.append(start)
         if start == 0:
-            rows, following = [root], 100
+            rows, following = [], 100
         elif start == 100:
             rows, following = [], 200
         else:
-            rows = [{'id': str(i), 'title': f'Page {i}', 'ancestors': [root]}
+            rows = [{'id': str(i), 'title': f'Page {i}', 'ancestors': [root], 'hasChildren': False}
                     for i in range(start, min(start + 25, 405))]
             following = start + 25 if start < 400 else None
-        route.fulfill(json={'results': rows, 'size': len(rows), 'start': start, 'nextStart': following})
-    page.route('**/api/confluence/tree?*', tree)
+        route.fulfill(json={'parent': parent, 'results': rows, 'size': len(rows), 'start': start, 'nextStart': following})
+    page.route('**/api/confluence/tree/**', tree)
     page.goto(base + '/#/confluence')
     nav = page.get_by_role('navigation', name='문서 트리', exact=True)
     expect(page.locator('.conf-tree-caption')).to_contain_text('206')
@@ -45,18 +52,20 @@ def test_tree_partial_retry_and_space_switch_discard_late_metadata(editor_browse
     install_documents(page)
     pending, calls = [], []
     def tree(route):
+        if '/snapshot?' in route.request.url:
+            route.fulfill(json={'batches': [], 'jobs': [{'parent': '', 'start': 0, 'depth': 0}]}); return
         args = parse_qs(urlsplit(route.request.url).query)
-        space, start = args['space'][0], int(args['start'][0])
-        calls.append((space, start))
+        space, parent = args['space'][0], args.get('parent', [''])[0]
+        calls.append((space, parent))
         if space == 'OPS':
             pending.append(route)
-        elif start == 0:
-            route.fulfill(json={'results': [{'id': '12', 'title': 'Root'}], 'size': 1, 'nextStart': 1})
-        elif calls.count(('ETL', 1)) == 1:
+        elif not parent:
+            route.fulfill(json={'parent': '', 'start': 0, 'results': [{'id': '12', 'title': 'Root', 'hasChildren': True}], 'nextStart': None})
+        elif calls.count(('ETL', '12')) <= 2:
             route.fulfill(status=503, json={'service': 'confluence', 'error': '목록 연결 지연'})
         else:
-            route.fulfill(json={'results': [{'id': '22', 'title': 'Nested needle', 'ancestors': [{'id': '12', 'title': 'Root'}]}], 'start': 1, 'size': 1, 'nextStart': None})
-    page.route('**/api/confluence/tree?*', tree)
+            route.fulfill(json={'parent': parent, 'start': 0, 'results': [{'id': '22', 'title': 'Nested needle', 'hasChildren': False, 'ancestors': [{'id': '12', 'title': 'Root'}]}], 'nextStart': None})
+    page.route('**/api/confluence/tree/**', tree)
     page.goto(base + '/#/confluence')
     nav = page.get_by_role('navigation', name='문서 트리', exact=True)
     page.get_by_role('button', name='문서 목록 다시 시도').wait_for()
@@ -64,11 +73,11 @@ def test_tree_partial_retry_and_space_switch_discard_late_metadata(editor_browse
     page.get_by_label('문서 트리 검색', exact=True).fill('nestedneedle')
     page.get_by_role('button', name='문서 목록 다시 시도').click()
     expect(nav.locator('.is-match')).to_have_text('Nested needle')
-    assert calls == [('ETL', 0), ('ETL', 1), ('ETL', 1)]
+    assert calls == [('ETL', ''), ('ETL', '12'), ('ETL', '12'), ('ETL', '12')]
     page.get_by_label('Space', exact=True).select_option('OPS')
     page.wait_for_function("document.querySelector('.conf-tree').getAttribute('aria-busy') === 'true'")
     # Wait for the deliberately held request without introducing blanket server latency.
-    with page.expect_request('**/api/confluence/tree?space=ETL&start=0'):
+    with page.expect_request('**/api/confluence/tree/snapshot?space=ETL'):
         page.get_by_label('Space', exact=True).select_option('ETL')
     expect(nav.locator('.is-match')).to_have_text('Nested needle')
     assert pending

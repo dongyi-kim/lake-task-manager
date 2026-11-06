@@ -1,50 +1,52 @@
-import { api } from "./api.js";
-import { pageTree } from "./confluenceTreeModel.js";
+import { api } from './api.js';
+import { pageTree } from './confluenceTreeModel.js';
+import { ConfluenceTreeQueue } from './confluenceTreeQueue.js';
 
 export default {
-  data: () => ({ query: "", treePages: [], treeNext: 0, treeLoading: false, treeError: "",
-    expanded: {}, searchOverrides: {}, activeMatch: "" }),
+  data: () => ({ query: '', treePages: [], treeLoading: false, treeError: '',
+    expanded: {}, searchOverrides: {}, activeMatch: '', treePending: '' }),
   computed: {
     tree() { return pageTree(this.treePages, this.expanded, this.query, this.searchOverrides); },
     matchPosition() { return this.tree.matches.indexOf(this.activeMatch) + 1; },
   },
   watch: {
-    query() { this.searchOverrides = {}; this.activeMatch = ""; this.selectTreeMatch(); },
-    "tree.matches"() { this.selectTreeMatch(); },
+    query() { this.searchOverrides = {}; this.activeMatch = ''; this.selectTreeMatch();
+      this._treeQueue?.search(this.query ? this.tree.matches.filter(id => this.tree.nodes.get(id)?.hasChildren !== false) : null); },
+    'tree.matches'() { this.selectTreeMatch(); },
   },
-  mounted() { this._treeGeneration = 0; },
-  activated() { if (this.space && this.treeNext !== null && !this.treeLoading) this.loadTree(); },
-  deactivated() { this._treeGeneration++; this.treeLoading = false; },
-  beforeUnmount() { this._treeGeneration++; },
+  activated() { if (this.space && !this._treeQueue) this.loadTree(); },
+  deactivated() { this._treeQueue?.stop(); this._treeQueue = null; this.treeLoading = false; },
+  beforeUnmount() { this._treeQueue?.stop(); },
   methods: {
     async loadTree(reset = false) {
-      if (!this.space || this.treeLoading && !reset) return;
-      const generation = ++this._treeGeneration, space = this.space;
-      if (reset) { this.treePages = []; this.treeNext = 0; this.expanded = {}; this.searchOverrides = {}; }
-      this.treeLoading = true; this.treeError = "";
-      try {
-        while (this.treeNext !== null) {
-          const start = this.treeNext;
-          const data = await api.confluenceTree(space, start);
-          if (generation !== this._treeGeneration) return;
-          const next = data.nextStart;
-          if (!Array.isArray(data.results) || next !== null && (!Number.isInteger(next) || next <= start)) {
-            throw new Error("다음 문서 목록을 확인하지 못했습니다.");
-          }
-          this.treePages = [...new Map([...this.treePages, ...data.results].map(row => [String(row.id), row])).values()];
-          this.treeNext = next;
-        }
-      } catch (error) { if (generation === this._treeGeneration) this.treeError = error.message; }
-      finally { if (generation === this._treeGeneration) this.treeLoading = false; }
+      if (!this.space) return;
+      if (!reset && this._treeQueue?.errors.size) { this._treeQueue.retry(); return; }
+      const space = this.space;
+      this._treeQueue?.stop();
+      if (this._treeSpace !== space) { this.treePages = []; this.expanded = {}; this.searchOverrides = {}; }
+      this._treeSpace = space; this.treeError = ''; this.treeLoading = true;
+      const queue = new ConfluenceTreeQueue({
+        snapshot: () => api.confluenceTreeSnapshot(space),
+        read: job => api.confluenceTreeBranch(space, job),
+        bulkRead: start => api.confluenceTree(space, start, true),
+        changed: rows => { if (this._treeQueue === queue) this.treePages = rows; },
+        state: ({ loading, pending, errors }) => { if (this._treeQueue !== queue) return;
+          this.treeLoading = loading; this.treePending = pending;
+          this.treeError = errors.length ? `일부 하위 문서를 불러오지 못했습니다. (${errors.length}개 영역)` : ''; },
+      });
+      this._treeQueue = queue;
+      await queue.start();
     },
+    prioritizeTree(id) { if (this.tree.nodes.get(String(id))?.hasChildren !== false) this._treeQueue?.prioritize(id); },
     toggle(row) {
       if (this.tree.searching) this.searchOverrides[row.id] = !row.open;
       else this.expanded[row.id] = !row.open;
+      if (!row.open) this.prioritizeTree(row.id);
     },
-    clearTreeSearch() { this.query = ""; this.searchOverrides = {}; },
+    clearTreeSearch() { this.query = ''; this.searchOverrides = {}; },
     selectTreeMatch() {
       if (this.tree.matches.includes(this.activeMatch)) return;
-      this.activeMatch = this.tree.matches[0] || "";
+      this.activeMatch = this.tree.matches[0] || '';
       if (this.activeMatch) this.$nextTick(() => this.scrollTreeMatch());
     },
     moveTreeMatch(direction = 1) {
@@ -56,11 +58,12 @@ export default {
       while (parent && !visited.has(parent)) {
         visited.add(parent); this.searchOverrides[parent] = true; parent = this.tree.nodes.get(parent)?.parent;
       }
+      this.prioritizeTree(this.activeMatch);
       this.$nextTick(() => this.scrollTreeMatch());
     },
     scrollTreeMatch() {
-      const row = [...(this.$el.querySelectorAll('.conf-tree-row[data-page-id]'))].find(el => el.dataset.pageId === this.activeMatch);
-      row?.scrollIntoView({ block: "nearest" });
+      const row = [...this.$el.querySelectorAll('.conf-tree-row[data-page-id]')].find(el => el.dataset.pageId === this.activeMatch);
+      row?.scrollIntoView({ block: 'nearest' });
     },
   },
 };

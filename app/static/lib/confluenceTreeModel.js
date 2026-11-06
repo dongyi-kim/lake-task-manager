@@ -45,7 +45,7 @@ export function pageTree(pages, expanded = {}, query = "", overrides = {}) {
     for (const node of groups.get(parent) || []) {
       if (visited.has(node.id)) continue;
       visited.add(node.id);
-      const hasChildren = !!groups.get(node.id)?.length;
+      const hasChildren = !!groups.get(node.id)?.length || node.hasChildren === true;
       const open = hasChildren && (needle && overrides[node.id] !== undefined
         ? overrides[node.id] : !!expanded[node.id] || !!needle && paths.has(node.id));
       if (node.match) orderedMatches.push(node.id);

@@ -1,0 +1,138 @@
+// One metadata request at a time. Interactions promote queued branches without flooding SSO.
+export class ConfluenceTreeQueue {
+  constructor({ snapshot, read, bulkRead, changed, state }) {
+    Object.assign(this, { snapshot, read, bulkRead, changed, state });
+    this.branches = new Map(); this.queue = new Map(); this.done = new Set();
+    this.working = new Map(); this.errors = new Map(); this.sequence = 0; this.stopped = false;
+    this.indexRows = new Map(); this.bulkStarted = false; this.denied = new Set();
+  }
+  stop() { this.stopped = true; }
+  enqueue(job) {
+    const key = job.parent + ':' + job.start;
+    if (!this.queue.has(key) && (!this.done.has(key) || job.refresh)) {
+      this.queue.set(key, { rank: job.parent ? 1 : 0, order: this.sequence++, ...job });
+    }
+    return this.queue.get(key);
+  }
+  publish() {
+    if (this.stopped) return;
+    const rows = new Map(), parents = [''], seen = new Set();
+    for (const parent of parents) {
+      if (seen.has(parent) || this.denied.has(parent)) continue;
+      seen.add(parent);
+      for (const batch of this.branches.get(parent)?.values() || []) for (const row of batch.results) {
+        const id = String(row.id);
+        if (!this.denied.has(id)) { rows.set(id, row); parents.push(id); }
+      }
+    }
+    for (const [id, row] of this.indexRows) if (!this.denied.has(id) &&
+      !(row.ancestors || []).some(a => this.denied.has(String(a.id)))) rows.set(id, row);
+    this.changed([...rows.values()].map(row => {
+      const pages = this.branches.get(String(row.id));
+      const complete = pages && [...pages.values()].some(batch => batch.nextStart === null);
+      return complete ? { ...row, hasChildren: [...pages.values()].some(batch => batch.results.length > 0) } : row;
+    }));
+    this.state({ loading: !this.paused && (!!this.running || !!this.queue.size), pending: this.active?.parent || '', errors: [...this.errors.values()] });
+  }
+  async start() {
+    this.running = true;
+    try {
+      const data = await this.snapshot();
+      if (this.stopped) return;
+      this.cold = !data.batches.length;
+      for (const batch of data.batches) {
+        const pages = this.branches.get(batch.parent) || new Map();
+        pages.set(batch.start, batch); this.branches.set(batch.parent, pages);
+        this.done.add(batch.parent + ':' + batch.start);
+      }
+      for (const job of data.jobs) this.enqueue(job);
+      this.publish();
+    } catch (error) {
+      this.errors.set('snapshot', error); this.enqueue({ parent: '', start: 0, depth: 0 });
+    } finally { this.running = false; }
+    await this.run();
+  }
+  prioritize(id) {
+    if (String(id) === this.active?.parent) return;
+    const parent = String(id), job = this.enqueue({ parent, start: 0, depth: 0 });
+    if (job) job.rank = -1;
+    for (const item of this.queue.values()) if (item.parent === parent) item.rank = -1;
+    this.run();
+  }
+  search(ids) { this.searching = ids !== null; for (const id of ids || []) this.prioritize(id); }
+  finishIndex() {
+    const groups = new Map([['', []]]);
+    for (const row of this.indexRows.values()) groups.set(String(row.id), []);
+    for (const row of this.indexRows.values()) {
+      const parent = String(row.ancestors?.at(-1)?.id || '');
+      if (!groups.has(parent)) groups.set(parent, []);
+      groups.get(parent).push(row);
+    }
+    this.branches.clear(); this.queue.clear(); this.errors.clear();
+    for (const [parent, rows] of groups) {
+      const results = rows.map(row => ({ ...row, hasChildren: !!groups.get(String(row.id))?.length }));
+      this.branches.set(parent, new Map([[0, { parent, start: 0, results, nextStart: null }]]));
+      this.done.add(parent + ':0');
+    }
+    this.indexRows.clear();
+  }
+  retry() {
+    this.paused = false;
+    for (const error of this.errors.values()) if (error.job) this.enqueue({ ...error.job, attempts: 0 });
+    this.errors.clear(); this.run();
+  }
+  async run() {
+    if (this.running || this.stopped || this.paused) return;
+    this.running = true;
+    while (this.queue.size && !this.stopped && !this.paused) {
+      // Broad trees/search favour one bulk metadata pass over one round-trip per parent.
+      // Explicit user branches still outrank the pass; small trees stay breadth-first.
+      const coldDescendants = this.cold && this.done.has(':0') && ![...this.queue.values()].some(job => !job.parent);
+      if (this.bulkRead && !this.bulkStarted && (coldDescendants || this.queue.size >= 8 || this.searching && this.queue.size > 1)) {
+        this.bulkStarted = true;
+        this.enqueue({ parent: '@index', start: 0, depth: 0, rank: 0 });
+      }
+      const jobs = [...this.queue.entries()].sort(([, a], [, b]) => a.rank - b.rank || a.depth - b.depth || a.order - b.order);
+      const [key, job] = jobs[0]; this.queue.delete(key); this.active = job; this.publish();
+      try {
+        const index = job.parent === '@index';
+        const batch = index ? await this.bulkRead(job.start)
+          : await this.read({ ...job, background: job.rank > 0 && !this.searching });
+        if (this.stopped) return;
+        if (!Array.isArray(batch.results) || batch.nextStart !== null && (!Number.isInteger(batch.nextStart) || batch.nextStart <= job.start)) {
+          throw new Error('문서 목록의 다음 위치를 확인하지 못했습니다.');
+        }
+        this.done.add(key); this.errors.delete(key); this.errors.delete('snapshot');
+        if (index) {
+          for (const row of batch.results) this.indexRows.set(String(row.id), row);
+          if (batch.nextStart === null) this.finishIndex();
+          else this.enqueue({ ...job, start: batch.nextStart, attempts: 0 });
+          this.publish(); continue;
+        }
+        let pages = this.working.get(job.parent);
+        if (!pages || job.start === 0) pages = new Map(job.start > 0 ? this.branches.get(job.parent) : []);
+        pages.set(job.start, batch); this.working.set(job.parent, pages);
+        // Keep an old complete branch until every page of its replacement arrives.
+        if (!job.refresh || batch.nextStart === null) this.branches.set(job.parent, new Map(pages));
+        if (batch.nextStart !== null) this.enqueue({ ...job, start: batch.nextStart, attempts: 0 });
+        else this.working.delete(job.parent);
+        for (const row of batch.results) if (row.hasChildren !== false) {
+          this.enqueue({ parent: String(row.id), start: 0, depth: job.depth + 1 });
+        }
+      } catch (error) {
+        if (this.stopped) return;
+        if (![401, 403, 404].includes(error.status) && (job.attempts || 0) < 1) {
+          this.enqueue({ ...job, attempts: (job.attempts || 0) + 1, rank: 2 });
+        } else if ([403, 404].includes(error.status)) {
+          if (!job.parent || job.parent === '@index') { this.branches.clear(); this.indexRows.clear(); this.queue.clear(); }
+          else {
+            this.denied.add(job.parent);
+            for (const [queuedKey, queued] of this.queue) if (queued.parent === job.parent) this.queue.delete(queuedKey);
+          }
+        } else { error.job = job; this.errors.set(key, error); if (error.status === 401) this.paused = true; }
+      }
+      this.publish();
+    }
+    this.active = null; this.running = false; this.publish();
+  }
+}

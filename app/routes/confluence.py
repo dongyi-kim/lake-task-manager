@@ -199,12 +199,36 @@ def build_confluence_router(*, get_client):
             client = get_client()
             _check_space(client, space)
             data = service.tree_pages(client, space, start, limit)
+            if data['nextStart'] is None and limit == 100:
+                from app.services.confluence_tree import seed_complete_index
+                seed_complete_index(client, space)
             return {**data, "results": [{"id": row["id"],
                 "title": row.get("title", ""),
                 "ancestors": [{"id": item["id"], "title": item.get("title", "")}
                               for item in row.get("ancestors", [])],
                 "space": {"key": row["space"]["key"]}}
                 for row in data["results"]]}
+        return reply(read)
+
+    @router.get('/tree/snapshot')
+    def tree_snapshot(space: str = Query(..., min_length=1, max_length=255)):
+        def read():
+            from app.services.confluence_tree import snapshot
+            client = get_client()
+            _check_space(client, space)
+            return snapshot(client, space)
+        return reply(read)
+
+    @router.get('/tree/branch')
+    def tree_branch(space: str = Query(..., min_length=1, max_length=255), parent: str = '',
+                    start: int = Query(0, ge=0), background: bool = False):
+        def read():
+            from app.services.confluence_tree import branch
+            from app.auth.base import _prio_scope, PRIO_BACKGROUND
+            client = get_client()
+            _check_space(client, space)
+            with _prio_scope(PRIO_BACKGROUND if background else 0):
+                return branch(client, space, parent, start)
         return reply(read)
 
     @router.get("/search")

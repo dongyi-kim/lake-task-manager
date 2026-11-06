@@ -46,7 +46,7 @@ LONG_DISPLAY_KINDS = frozenset({"epicmeta", "avatar_url", "avatar_bytes"})
 DISPLAY_KINDS = LONG_DISPLAY_KINDS | frozenset({"issue", "issueL", "issueview", "comments", "epicmeta",
     "user", "userbadge", "ancestors", "siblings", "children", "related", "attachments",
     "documents", "remotelinks", "timeline", "changelog", "mentionctx", "epic_tree", "confpage",
-    "confhead", "confview", "confrelated", "conftree"})
+    "confhead", "confview", "confrelated", "conftree", "confbranch"})
 # jqlrow/jqlsnap retain their snapshot lifetime, independent of fresh-query reuse.
 LIST_KINDS = frozenset({"jqlleaf", "jqlcurrent", "mt", "mytasks", "workload", "workload_bucket",
     "activity", "wbs_build", "vit_build", "vit_bases", "vit_list", "search", "epic_cand",
