@@ -24,6 +24,7 @@ class RecentBody(BaseModel):
     meta: str = ""
     type: str = ""
     data: dict = Field(default_factory=dict)
+    openedAt: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
 
 class PersonRecentBody(BaseModel):
@@ -122,7 +123,7 @@ def build_resource_router(*, get_client, cache, settings) -> APIRouter:
 
     @router.post("/api/recent")
     def api_recent_add(body: RecentBody):
-        cache.touch_recent(body.url, body.kind, body.title, body.meta, body.type, body.data or {})
+        cache.touch_recent(body.url, body.kind, body.title, body.meta, body.type, body.data or {}, opened_at=body.openedAt)
         return JSONResponse({"ok": True})
 
     @router.delete("/api/recent")

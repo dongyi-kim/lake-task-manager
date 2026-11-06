@@ -3,7 +3,7 @@ import ConfluenceTreeRow from './ConfluenceTreeRow.js';
 export default {
   components: { ConfluenceTreeRow },
   props: { title: String, rows: Array, expanded: Boolean, selectedId: String, emptyText: String,
-    nodes: Map, favorites: Set, pending: Object, errors: Object },
+    nodes: Map, favorites: Set, recents: Set, pending: Object, errors: Object },
   emits: ['toggle', 'open', 'expand', 'menu'],
   data: () => ({ folds: {} }),
   computed: {
@@ -37,7 +37,7 @@ export default {
     <div v-show="expanded">
       <p v-if="!rows.length" class="conf-muted">{{ emptyText }}</p>
       <template v-for="row in visibleRows" :key="row.key">
-        <ConfluenceTreeRow :row="row" :selected-id="selectedId" :favorite="favorites?.has(row.id)" :pending="pending?.[row.id]"
+        <ConfluenceTreeRow :row="row" :selected-id="selectedId" :favorite="favorites?.has(row.id)" :recent="recents?.has(row.id)" :pending="pending?.[row.id]"
           @toggle="toggleRow" @open="$emit('open',$event)" @menu="(row,event)=>$emit('menu',row,event)" />
         <p v-if="row.open && errors?.[row.id]" class="conf-saved-error" role="alert">하위 문서를 불러오지 못했습니다.
           <button class="conf-more" @click="$emit('expand',row)">다시 시도</button></p>

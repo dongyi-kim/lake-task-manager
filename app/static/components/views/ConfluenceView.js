@@ -1,5 +1,5 @@
 import { api } from "../../lib/api.js";
-import { confluencePageId, openConfluenceDocument, readFavorites, writeFavorites, readRecentDocuments, rememberDocument, readNavigationFolds } from "../../lib/confluenceNavigation.js";
+import { confluencePageId, openConfluenceDocument, readFavorites, writeFavorites, readNavigationFolds } from "../../lib/confluenceNavigation.js";
 import { documentHeadings, visibleHeading } from "../../lib/confluenceToc.js";
 import { mountConfluenceMacros } from "../../lib/confluenceMacroView.js";
 import confluenceLayout from "../../lib/confluenceLayout.js";
@@ -9,6 +9,7 @@ import ConfluenceComposer from "../ui/ConfluenceComposer.js";
 import ConfluencePageMenu from "../ui/ConfluencePageMenu.js";
 import confluenceTree from "../../lib/confluenceTree.js";
 import confluenceSavedTree from '../../lib/confluenceSavedTree.js';
+import confluenceRecents from '../../lib/confluenceRecents.js';
 import ConfluenceTreeRow from '../ui/ConfluenceTreeRow.js';
 import { readConfluence } from '../../lib/confluenceRead.js';
 import ConfluenceReadNotice from '../ui/ConfluenceReadNotice.js';
@@ -20,7 +21,7 @@ const merge = (old, rows) => [...new Map([...old, ...rows].map(row => [String(ro
 export default {
   name: "ConfluenceView",
   components: { ConfluencePanel, ConfluenceDocumentList, ConfluenceComposer, ConfluencePageMenu, ConfluenceTreeRow, ConfluenceReadNotice },
-  mixins: [confluenceLayout, confluenceTree, confluenceSavedTree],
+  mixins: [confluenceLayout, confluenceTree, confluenceSavedTree, confluenceRecents],
   data() { return { base: "", favorites: [], recentDocuments: [], navigationFolds: readNavigationFolds(), spaces: [], space: "", spacesNext: null,
     loading: false, error: "", doc: null, selectedId: "", reading: false, readError: "", readFailure: null, readSlow: false, readRetrying: false, requestedVersion: null,
     checking: false, revision: null, revisionError: "",
@@ -69,8 +70,9 @@ export default {
       // Local configuration is independent of SSO/network so saved titles appear immediately.
       try { const config = await api.confluenceConfig(); this.base = config.base;
         const spaces = new Set((config.spaces || []).map(value => value.toLowerCase()));
+        this._recentSpaces = spaces;
         this.favorites = readFavorites(this.base).filter(row => spaces.has(String(row.space || "").toLowerCase()));
-        this.recentDocuments = readRecentDocuments(this.base).filter(row => spaces.has(String(row.space || "").toLowerCase()));
+        this.loadRecentDocuments();
         this.loadSavedTrees(); }
       catch (error) { this.error = error.message; }
       this._navigationReady = true;
@@ -115,7 +117,7 @@ export default {
           () => { if (gen === this._readGeneration) this.readRetrying = true; });
         if (gen !== this._readGeneration) return;
         this.doc = data;
-        this.recentDocuments = rememberDocument(this.base, this.recentDocuments, data);
+        this.rememberDocument(data);
         const favorite = this.favorites.find(row => String(row.id) === String(data.id));
         if (favorite && favorite.title !== data.title) { favorite.title = data.title; this.saveFavorites(); }
         this.$nextTick(() => { this.buildToc(); if (this.$refs.reader) this.$refs.reader.scrollTop = scrollTop;
@@ -224,13 +226,13 @@ export default {
         </div>
         <div class="conf-sidebar-scroll">
           <ConfluenceDocumentList title="즐겨찾기" :rows="favorites" :selected-id="selectedId" :expanded="!navigationFolds.favorites" @toggle="toggleNavigationList('favorites')" @open="open" empty-text="문서의 ☆ 버튼으로 여기에 고정하세요."
-            :nodes="savedTreeNodes" :favorites="favoriteIds" :pending="savedTreePending" :errors="savedTreeErrors" @expand="expandSavedTree" @menu="showPageMenu" />
-          <ConfluenceDocumentList title="최근 열어본 문서" :rows="recentDocuments" :selected-id="selectedId" :expanded="!navigationFolds.recent" @toggle="toggleNavigationList('recent')" @open="open" empty-text="열어본 문서가 여기에 표시됩니다."
-            :nodes="savedTreeNodes" :favorites="favoriteIds" :pending="savedTreePending" :errors="savedTreeErrors" @expand="expandSavedTree" @menu="showPageMenu" />
+            :nodes="savedTreeNodes" :favorites="favoriteIds" :recents="recentDocumentIds" :pending="savedTreePending" :errors="savedTreeErrors" @expand="expandSavedTree" @menu="showPageMenu" />
+          <ConfluenceDocumentList title="최근 열어본 문서" :rows="recentMenu" :selected-id="selectedId" :expanded="!navigationFolds.recent" @toggle="toggleNavigationList('recent')" @open="open" empty-text="열어본 문서가 여기에 표시됩니다."
+            :nodes="savedTreeNodes" :favorites="favoriteIds" :recents="recentDocumentIds" :pending="savedTreePending" :errors="savedTreeErrors" @expand="expandSavedTree" @menu="showPageMenu" />
           <p v-if="error" class="conf-error" role="alert">{{ error }} <button class="conf-more" @click="loadSpaces()">다시 시도</button></p>
           <div class="conf-tree-caption"><span>페이지 트리</span><span>{{ tree.count }}</span></div>
           <div class="conf-tree" :class="{'is-finding': tree.searching}" role="navigation" aria-label="문서 트리" :aria-busy="treeLoading">
-            <ConfluenceTreeRow v-for="row in tree.rows" :key="row.id" :row="row" :selected-id="selectedId" :favorite="favoriteIds.has(row.id)"
+            <ConfluenceTreeRow v-for="row in tree.rows" :key="row.id" :row="row" :selected-id="selectedId" :favorite="favoriteIds.has(row.id)" :recent="recentDocumentIds.has(row.id)"
               :current-match="activeMatch === row.id" :pending="treeLoading && treePending === row.id" @toggle="toggle" @open="open" @menu="showPageMenu" />
             <p v-if="treeLoading" class="conf-muted" role="status">문서 목록을 불러오는 중…</p>
             <p v-if="treeError" class="conf-error" role="alert">{{ treeError }} <button class="conf-more" @click="loadTree()">문서 목록 다시 시도</button></p>

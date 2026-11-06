@@ -98,7 +98,7 @@
 .conf-tree-title { border:0; background:none; color:var(--text); font:inherit; font-size:12px; text-align:left; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:7px 6px; border-radius:4px; cursor:pointer; }
 .conf-tree-row .conf-tree-title { flex:1; }
 .conf-tree-row.is-favorite { background:color-mix(in srgb,#d4a017 7%,var(--panel)); }
-.conf-tree-row.is-favorite .conf-tree-title { font-weight:700; }
+.conf-tree-row.is-favorite .conf-tree-title,.conf-tree-row.is-recent .conf-tree-title { font-weight:700; }
 .conf-tree-star { flex-shrink:0; width:15px; color:#af7800; font-size:12px; line-height:1; }
 [data-theme="dark"] .conf-tree-star { color:#f4c655; }
 .conf-tree-row.is-favorite.selected,.conf-tree-row.is-favorite.is-match { background:color-mix(in srgb,var(--accent) 14%,var(--panel)); }

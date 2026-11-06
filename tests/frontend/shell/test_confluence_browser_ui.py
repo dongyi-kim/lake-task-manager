@@ -22,7 +22,7 @@ def install_documents(page):
             if state["spaces_fail"]:
                 request.fulfill(status=503, json={"service": "confluence", "error": "Confluence 연결 대기"}); return
             data = {"results": [{"id": 1, "key": "ETL", "name": "ETL 문서"}, {"id": 2, "key": "OPS", "name": "운영"}], "size": 2}
-        elif path.endswith("/tree") or path.endswith('/snapshot') or path.endswith('/branch'):
+        elif path.endswith("/tree") or path.endswith('/snapshot') or path.endswith('/branch') or path.endswith('/tree/favorite'):
             data = {"results": [
                 {"id": "12", "title": "적재 가이드", "ancestors": []},
                 {"id": "90", "title": "홈페이지 밖 루트 문서", "ancestors": []},
@@ -412,17 +412,9 @@ def test_confluence_local_lists_fold_and_remember_successful_reads(editor_browse
     assert recent.locator(".conf-tree-title").all_text_contents() == ["적재 가이드", "아직 펼치지 않은 적재 설계"]
     page.route("**/api/confluence/pages/404", lambda route: route.fulfill(status=404, json={"service": "confluence", "error": "찾을 수 없음"}))
     page.goto(base + "/#/confluence/404")
-    page.get_by_text("찾을 수 없음", exact=False).wait_for()
+    page.get_by_role('alert').get_by_text('문서를 찾을 수 없습니다', exact=True).wait_for()
     assert recent.locator(".conf-tree-title").count() == 2
-    bounds = page.evaluate("""async () => {
-      const {rememberDocument,readRecentDocuments} = await import('/lib/confluenceNavigation.js');
-      let rows=[];
-      for(let i=1;i<=25;i++) rows=rememberDocument('fixture-only',rows,{id:String(i),title:'Doc '+i,space:{key:'ETL'}});
-      const result=readRecentDocuments('fixture-only');
-      localStorage.removeItem('ltm.confluence.recent:fixture-only');
-      return result.map(r=>r.id);
-    }""")
-    assert len(bounds) == 20 and bounds[0] == "25" and bounds[-1] == "6"
+    assert len(page.request.get(base + '/api/recent?kind=confluence&limit=100').json()) == 2
     assert not [error for error in errors if not (error.startswith("HTTP 404 ") and "/api/confluence/pages/404" in error)]
 
 
