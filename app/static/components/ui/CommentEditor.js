@@ -14,6 +14,7 @@ import LinkPicker from "./LinkPicker.js";
 import MarkdownTableDialog from "./MarkdownTableDialog.js";
 import ConfluenceMacroDialog from "./ConfluenceMacroDialog.js";
 import { macroNodeType } from "../../lib/confluenceMacros.js";
+import { editorOutline } from "../editor/editorOutline.js";
 import { pushToast } from "../../lib/toast.js";
 import { agentApi } from "../../lib/agentApi.js";
 import { beginBusy } from "../../lib/uibusy.js";
@@ -82,7 +83,7 @@ export default {
     heightKey: { type: String, default: EDITOR_HEIGHT_KEY },
     initialHeight: { type: Number, default: 0 },
   },
-  emits: ["submitted", "cancel"],
+  emits: ["submitted", "cancel", "outline"],
   watch: {
     readOnly(value) { if (this._ed && !this.busy) this._ed.setEditable(!value); },
     autoNumberHeadings() { if (this._ed) this._ed.view.dispatch(this._ed.state.tr.setMeta("headingNumbering", true)); },
@@ -235,8 +236,10 @@ export default {
     window.addEventListener("pagehide", this._flushDraftOnExit);
     document.addEventListener("visibilitychange", this._flushDraftWhenHidden);
     this.ready = true;
+    if (this.kind === 'confluence') this._outline = editorOutline(this._ed, value => this.$emit('outline',value));
   },
   beforeUnmount() {
+    this._outline?.destroy();
     clearTimeout(this._dt); this._dt = null;       // 제출/이동 뒤 예약 저장이 옛 초안을 되살리지 않게
     // route/dialog unmount는 await할 수 없지만 flushDraft는 첫 await 전에 HTML/Blob snapshot과
     // write promise를 만든다. 성공 제출 경로는 이 promise를 기다린 뒤 마지막 clear를 수행한다.
@@ -288,6 +291,7 @@ export default {
     },
   },
   methods: {
+    jumpToHeading(id) { this._outline?.jump(id); },
     openConfluenceMacro(name = "expand", position = null) {
       if (this.kind !== "confluence" || this.readOnly || this.busy) return;
       const node = position === null ? null : this._ed.state.doc.nodeAt(position);

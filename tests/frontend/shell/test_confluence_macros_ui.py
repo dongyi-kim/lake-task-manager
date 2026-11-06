@@ -58,6 +58,10 @@ def test_native_storage_edit_publish_render_preserves_macros_and_attachments(edi
     page.get_by_role('button',name='초안 삭제',exact=True).click()
     source_id = create(page,base,'Macro source',macro('excerpt','<p>Excerpt payload</p>',{'hidden':'true'})+'<p>Included text</p>')
     source = '<h1 id="intro">Guide</h1>'+macro('toc')+macro('expand','<h2>Expanded section</h2><p>Editable content</p>',{'title':'Details'})
+    source += '<p><strong>Native bold</strong> <em>Native italic</em> <code>Native inline</code></p><p style="text-align:right"><span style="color:#dc2626;background-color:#fef08a">Native color</span></p>'
+    source += '<table><tbody><tr><th>Native header</th></tr><tr><td>Native cell</td></tr></tbody></table>'
+    source += '<p><ac:link ac:anchor="checkpoint"><ac:link-body><strong>Native anchor label</strong></ac:link-body></ac:link></p>'
+    source += '<h2><ac:link ac:anchor="checkpoint"><ac:plain-text-link-body><![CDATA[Linked heading]]></ac:plain-text-link-body></ac:link></h2><h2><a href="https://example.com">Badge heading</a></h2>'
     source += ''.join(macro(name,'<p>'+name+' content</p>',{'title':name}) for name in ['panel','info','note','tip','warning','excerpt','toc-zone'])
     source += macro('status',params={'title':'READY','colour':'Green','subtle':'true'})+macro('anchor',params={'':'checkpoint'})
     source += macro('include',params={'':'Macro source'})+macro('excerpt-include',params={'':'Macro source'})
@@ -81,8 +85,18 @@ def test_native_storage_edit_publish_render_preserves_macros_and_attachments(edi
     assert body.locator('.conf-inline-toc a').count() >= 2
     assert body.locator('.conf-code-lines').inner_text().startswith('8\n9')
     body.locator('img').evaluate('el => el.decode()')
+    assert body.locator('table td').inner_text() == 'Native cell'
+    assert body.locator('a[href="#conf-anchor-checkpoint"] strong').inner_text() == 'Native anchor label'
     page.get_by_role('button',name='수정',exact=True).click()
     editor=page.locator('.conf-composer .ProseMirror')
+    editor.locator('table td').wait_for()
+    page.get_by_role('navigation',name='본문 목차',exact=True).get_by_role('button',name='Expanded section',exact=True).click()
+    page.wait_for_function("document.querySelector('.conf-composer .ProseMirror').editor.state.selection.$from.parent.textContent==='Expanded section'")
+    toc=page.get_by_role('navigation',name='본문 목차',exact=True)
+    assert toc.get_by_role('button',name='Linked heading',exact=True).count() == 1
+    assert toc.get_by_role('button',name='Badge heading',exact=True).count() == 1
+    assert editor.locator('strong').filter(has_text='Native bold').count() == 1
+    editor.locator('table td').fill('Native cell edited')
     editor.locator('[data-conf-macro="expand"] .conf-macro-settings').click()
     dialog=page.get_by_role('dialog',name='Confluence 매크로 설정')
     dialog.get_by_label('제목',exact=True).fill('Updated details')
@@ -114,6 +128,7 @@ def test_native_storage_edit_publish_render_preserves_macros_and_attachments(edi
     noformat=next(node for node in native if node.get(AC+'name')=='noformat')
     assert noformat.findtext(AC+'plain-text-body') == '  untouched &nbsp; <!DOCTYPE html>\nspacing ]]> preserved'
     assert page.locator('.conf-document-body img').evaluate('el=>el.complete && el.naturalWidth>0')
+    assert page.locator('.conf-document-body table td').inner_text() == 'Native cell edited'
     page.get_by_role('button',name='수정',exact=True).click()
     page.wait_for_function("() => document.querySelector('.conf-composer .ProseMirror') || document.querySelector('.conf-composer .conf-error')")
     assert not page.locator('.conf-composer .conf-error').count(), page.locator('.conf-composer').inner_text() + '\n' + updated['storage']
@@ -122,6 +137,9 @@ def test_native_storage_edit_publish_render_preserves_macros_and_attachments(edi
     page.get_by_role('button',name='발행',exact=True).click()
     page.locator('.conf-document-body summary',has_text='Updated details').wait_for()
     assert len(list(tree(stored(page,base,cid)['storage']).iter(AC+'structured-macro')))==19
+    assert page.locator('.conf-document-body table td').inner_text() == 'Native cell edited'
+    assert page.locator('.conf-document-body a[href="#conf-anchor-checkpoint"] strong').inner_text() == 'Native anchor label'
+    assert page.locator('.conf-document-body').get_by_text('Native color',exact=True).evaluate('el=>getComputedStyle(el).color') == 'rgb(220, 38, 38)'
     assert not errors
 
 

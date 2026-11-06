@@ -6,6 +6,7 @@ import confluenceLayout from "../../lib/confluenceLayout.js";
 import ConfluencePanel from "../ui/ConfluencePanel.js";
 import ConfluenceDocumentList from "../ui/ConfluenceDocumentList.js";
 import ConfluenceComposer from "../ui/ConfluenceComposer.js";
+import ConfluencePageMenu from "../ui/ConfluencePageMenu.js";
 
 const pageId = () => location.hash.match(/^#\/confluence\/(\d+)/)?.[1] || "";
 const nextStart = data => data?._links?.next ? Number(data.start || 0) + Number(data.size ?? data.results?.length ?? 0) : null;
@@ -13,14 +14,14 @@ const merge = (old, rows) => [...new Map([...old, ...rows].map(row => [String(ro
 
 export default {
   name: "ConfluenceView",
-  components: { ConfluencePanel, ConfluenceDocumentList, ConfluenceComposer },
+  components: { ConfluencePanel, ConfluenceDocumentList, ConfluenceComposer, ConfluencePageMenu },
   mixins: [confluenceLayout],
   data() { return { base: "", favorites: [], recentDocuments: [], navigationFolds: readNavigationFolds(), spaces: [], space: "", spacesNext: null,
     roots: [], rootsNext: null, children: {}, expanded: {}, loadingBranches: {}, branchErrors: {},
     query: "", results: [], searchNext: null, searching: false, searched: false,
     loading: false, error: "", doc: null, selectedId: "", reading: false, readError: "",
     checking: false, revision: null, revisionError: "",
-    headings: [], activeHeading: "", composing: false, editingPage: null, openingEditor: false }; },
+    headings: [], activeHeading: "", composing: false, editingPage: null, openingEditor: false, composeParent: null, contextPage: null }; },
   computed: {
     rows() {
       const result = [];
@@ -51,10 +52,18 @@ export default {
     this.initialize();
   },
   activated() { if (this._hash) this._hash(); this.$nextTick(() => this.buildToc()); },
-  deactivated() { this.stopToc(); },
+  deactivated() { this.contextPage=null; this.stopToc(); },
   beforeUnmount() { window.removeEventListener("hashchange", this._hash); this.stopToc(); },
   methods: {
-    startCompose() { this.editingPage = null; this.closeDrawer(); this.stopToc(); this.composing = true; },
+    startCompose(parent = null) { this.editingPage = null; this.composeParent = parent; this.contextPage = null;
+      this.closeDrawer(); this.stopToc(); this.headings = []; this.composing = true; },
+    showPageMenu(row,event) {
+      if (row.more) return;
+      const box=event.currentTarget.getBoundingClientRect();
+      this.contextPage={row:{...row,space:row.space?.key || row.space || this.space},
+        x:event.clientX || box.left, y:event.clientY || box.bottom};
+    },
+    editorOutline(value) { this.headings=value.headings; this.activeHeading=value.active; },
     async editDocument() {
       if (this.openingEditor || !this.doc) return;
       const id = this.doc.id, generation = this._readGeneration;
@@ -62,7 +71,7 @@ export default {
       try {
         const source = await api.confluenceSource(id);
         if (generation !== this._readGeneration) return;
-        this.editingPage = source; this.closeDrawer(); this.stopToc(); this.composing = true;
+        this.editingPage = source; this.composeParent = null; this.closeDrawer(); this.stopToc(); this.headings = []; this.composing = true;
       } catch (error) { if (generation === this._readGeneration) this.readError = error.message; }
       finally { this.openingEditor = false; }
     },
@@ -90,6 +99,7 @@ export default {
       finally { this.loading = false; }
     },
     async changeSpace() {
+      this.contextPage = null;
       this._generation++; this._searchGeneration++;
       this.roots = []; this.rootsNext = null; this.children = {}; this.expanded = {};
       this.loadingBranches = {}; this.branchErrors = {}; this.results = []; this.searched = false;
@@ -184,6 +194,7 @@ export default {
       this._tocFrame = null; this._tocReader = null; this._tocClicked = false;
     },
     buildToc() {
+      if (this.composing) return;
       this.stopToc();
       const body = this.$refs.documentBody, reader = this.$refs.reader;
       if (!body || !reader) { this.headings = []; return; }
@@ -201,6 +212,7 @@ export default {
     },
     updateToc() { if (this._tocReader) this.activeHeading = visibleHeading(this._tocHeadings || [], this._tocReader); },
     jumpToHeading(id) {
+      if (this.composing) { this.closeDrawer(); this.$nextTick(() => this.$refs.composer?.jumpToHeading(id)); return; }
       const target = this._tocHeadings?.find(row => row.id === id), reader = this._tocReader;
       if (!target || !reader) return;
       for (let parent = target.node.parentElement; parent && parent !== reader; parent = parent.parentElement)
@@ -249,12 +261,12 @@ export default {
           <p v-if="searching" role="status" class="conf-muted">검색 중…</p>
           <template v-if="searched && query.trim()">
             <p class="conf-muted">{{ results.length }}개 표시{{ searchNext !== null ? ' · 더 불러올 결과가 있습니다' : '' }}</p>
-            <button v-for="item in results" :key="item.id" class="conf-search-result" :class="{selected: selectedId === String(item.id)}" @click="open(item.id)"><strong>{{ item.title }}</strong><small>{{ path(item) }}</small></button>
+            <button v-for="item in results" :key="item.id" class="conf-search-result" :class="{selected: selectedId === String(item.id)}" @click="open(item.id)" @contextmenu.prevent.stop="showPageMenu(item,$event)" @keydown.shift.f10.prevent="showPageMenu(item,$event)"><strong>{{ item.title }}</strong><small>{{ path(item) }}</small></button>
             <p v-if="!results.length && !error" class="conf-muted">검색에서 반환된 문서가 없습니다. 다른 검색어로 찾아보세요.</p>
             <button v-if="searchNext !== null" class="conf-more" @click="search(true)" :disabled="searching">검색 결과 더 보기</button>
           </template>
           <template v-else>
-            <div v-for="row in rows" :key="row.id" class="conf-tree-row" :style="{'--depth': row.level}">
+            <div v-for="row in rows" :key="row.id" class="conf-tree-row" :style="{'--depth': row.level}" @contextmenu.prevent.stop="showPageMenu(row,$event)" @keydown.shift.f10.prevent="showPageMenu(row,$event)">
               <template v-if="row.more"><span v-if="loadingBranches[row.parent]" class="conf-muted" role="status">불러오는 중…</span><button v-else class="conf-more" @click="loadChildren(row.parent, !branchErrors[row.parent])">{{ branchErrors[row.parent] ? '하위 문서 다시 시도' : '하위 문서 더 보기' }}</button></template>
               <template v-else><button class="conf-expand" @click="toggle(row)" :aria-expanded="!!expanded[row.id]" :aria-label="row.title + ' 하위 문서'">{{ expanded[row.id] ? '⌄' : '›' }}</button><button class="conf-tree-title" :class="{selected: selectedId === row.id}" @click="open(row.id)" :title="row.title">{{ row.title }}</button></template>
             </div>
@@ -264,12 +276,13 @@ export default {
           </template>
         </div>
         </div>
+        <ConfluencePageMenu v-if="contextPage" :key="contextPage.row.id" :target="contextPage" @close="contextPage=null" @create="startCompose" />
       </ConfluencePanel>
       <div v-if="!composing && showSidebar && !compact" class="conf-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="문서 탐색 너비 조절" :aria-valuenow="sidebarWidth" aria-valuemin="224" :aria-valuemax="panelMax('sidebar')" @pointerdown="startPanelResize('sidebar', $event)" @keydown="resizePanelKey('sidebar', $event)"></div>
-      <ConfluenceComposer v-if="composing" :base="base" :spaces="spaces" :space="space" :editing-page="editingPage" :parent="doc ? { id: doc.id, title: doc.title, space: doc.space?.key } : null" @close="closeCompose" @created="createdDocument" />
+      <ConfluenceComposer v-if="composing" ref="composer" :base="base" :spaces="spaces" :space="space" :editing-page="editingPage" :parent="composeParent || (doc ? { id: doc.id, title: doc.title, space: doc.space?.key } : null)" :parent-draft="!!composeParent" :toc-visible="showToc" @toggle-toc="toggleToc" @outline="editorOutline" @close="closeCompose" @created="createdDocument" />
       <main v-else class="conf-main">
         <header class="conf-toolbar">
-          <button class="btn conf-create" :disabled="!base || !spaces.length" @click="startCompose">＋ 새 문서</button>
+          <button class="btn conf-create" :disabled="!base || !spaces.length" @click="startCompose()">＋ 새 문서</button>
           <button v-if="doc?.canEdit" class="btn conf-edit" :disabled="reading || openingEditor" @click="editDocument">{{ openingEditor ? '원문 확인 중…' : '수정' }}</button>
           <div class="conf-toolbar-location"><button v-if="!showSidebar || compact" class="btn conf-nav-toggle" @click="toggleSidebar" :aria-expanded="showSidebar"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4h14v12H3zM8 4v12"/></svg>문서 탐색</button><span>{{ doc?.space?.name || '문서' }}</span></div>
           <div v-if="doc" class="conf-actions"><button class="btn conf-favorite-toggle" @click="toggleFavorite" :aria-pressed="isFavorite" :aria-label="isFavorite ? '즐겨찾기 해제' : '즐겨찾기 추가'">{{ isFavorite ? '★' : '☆' }}</button><button class="btn conf-check" @click="checkLatest" :disabled="checking || reading" aria-label="최신 여부 확인"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 8a6 6 0 10-1 6M16 3v5h-5"/></svg><span>{{ checking ? '확인 중…' : '최신 여부 확인' }}</span></button><a :href="doc.url" target="_blank" rel="noopener noreferrer" class="btn conf-external" aria-label="Confluence에서 열기" title="Confluence에서 열기"><span>원문</span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M11 3h6v6M17 3l-8 8M8 4H4v12h12v-4"/></svg></a><button v-if="headings.length" class="btn conf-toc-toggle" @click="toggleToc" :aria-expanded="showToc" aria-controls="conf-document-toc"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h12M4 10h12M4 15h8"/></svg>목차</button></div>
@@ -284,7 +297,7 @@ export default {
           <div v-else-if="!reading && !readError" class="conf-empty"><h2>프로젝트 문서를 한곳에서</h2><p>왼쪽 트리나 검색에서 문서를 선택하세요.<br>자주 보는 문서는 즐겨찾기에 고정할 수 있습니다.</p></div>
         </div>
       </main>
-      <div v-if="!composing && headings.length && showToc && !compact" class="conf-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="목차 너비 조절" :aria-valuenow="tocWidth" aria-valuemin="180" :aria-valuemax="panelMax('toc')" @pointerdown="startPanelResize('toc', $event)" @keydown="resizePanelKey('toc', $event)"></div>
-      <ConfluencePanel v-if="!composing && headings.length" :visible="showToc" :compact="compact" label="이 문서의 목차" @close="toggleToc" id="conf-document-toc" class="conf-panel conf-toc"><div class="conf-panel-title"><h2>이 문서의 목차</h2><button class="conf-fold" @click="toggleToc" aria-label="목차 접기" title="목차 접기"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 5l5 5-5 5"/></svg></button></div><nav aria-label="본문 목차"><button v-for="heading in headings" :key="heading.id" :style="{'--level': heading.level - headingDepth}" :aria-current="activeHeading === heading.id ? 'location' : null" @click="jumpToHeading(heading.id)">{{ heading.title }}</button></nav></ConfluencePanel>
+      <div v-if="(composing || headings.length) && showToc && !compact" class="conf-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="목차 너비 조절" :aria-valuenow="tocWidth" aria-valuemin="180" :aria-valuemax="panelMax('toc')" @pointerdown="startPanelResize('toc', $event)" @keydown="resizePanelKey('toc', $event)"></div>
+      <ConfluencePanel v-if="composing || headings.length" :visible="showToc" :compact="compact" label="이 문서의 목차" @close="toggleToc" id="conf-document-toc" class="conf-panel conf-toc"><div class="conf-panel-title"><h2>이 문서의 목차</h2><button class="conf-fold" @click="toggleToc" aria-label="목차 접기" title="목차 접기"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 5l5 5-5 5"/></svg></button></div><nav aria-label="본문 목차"><p v-if="!headings.length" class="conf-muted">본문에 헤딩을 추가하면 여기에 표시됩니다.</p><button v-for="heading in headings" :key="heading.id" :style="{'--level': heading.level - headingDepth}" :aria-current="activeHeading === heading.id ? 'location' : null" @click="jumpToHeading(heading.id)">{{ heading.title }}</button></nav></ConfluencePanel>
     </section>`,
 };

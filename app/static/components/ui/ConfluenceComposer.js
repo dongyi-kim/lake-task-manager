@@ -9,13 +9,14 @@ import { confluenceEditorHtml } from "../../lib/confluenceMacroStorage.js";
 export default {
   name: "ConfluenceComposer",
   components: { CommentEditor },
-  props: { base: String, spaces: Array, space: String, parent: Object, editingPage: Object },
-  emits: ["close", "created"],
+  props: { base: String, spaces: Array, space: String, parent: Object, editingPage: Object, parentDraft: Boolean, tocVisible: Boolean },
+  emits: ["close", "created", "outline", "toggle-toc"],
   data() { return { ready: false, busy: false, error: "", progress: "", restored: false,
     formKey: "", draftId: "new", runHistory: [], knownParents: [], initialHtml: "", sourceVersion: this.editingPage?.version.number || null,
     form: { title: this.editingPage?.title || "", space: this.editingPage?.space?.key || this.parent?.space || this.space, parent: this.parent || null, numbered: !this.editingPage }, run: null }; },
   computed: {
-    draftScope() { return "confluence:" + this.base + ":" + (this.editingPage ? "edit:" + this.editingPage.id + ":" : "") + this.draftId; },
+    contextKey() { return this.editingPage ? ':edit:'+this.editingPage.id : this.parentDraft ? ':parent:'+this.parent.id : ''; },
+    draftScope() { return "confluence:" + this.base + this.contextKey + ":" + this.draftId; },
     locked() { return this.busy || !!this.run; },
     revisionConflict() { return !!this.editingPage && !this.run && this.sourceVersion !== this.editingPage.version.number; },
     parentAvailable() { return this.form.parent && this.form.parent.space === this.form.space; },
@@ -25,7 +26,7 @@ export default {
   async mounted() {
     try {
       this.initialHtml = this.editingPage ? confluenceEditorHtml(this.editingPage.storage,this.editingPage.id,this.base) : "";
-      this.formKey = await resolveDraftKey("scoped:confluence:" + this.base + (this.editingPage ? ":edit:" + this.editingPage.id : "") + ":form");
+      this.formKey = await resolveDraftKey("scoped:confluence:" + this.base + this.contextKey + ":form");
       const draft = await loadDraft(this.formKey);
       if (draft) { this.form = draft.form; this.run = draft.run; this.draftId = draft.draftId || "new"; this.runHistory = draft.runHistory || []; this.restored = true;
         if (this.editingPage) this.sourceVersion = draft.sourceVersion || draft.run?.payload.expected_version || null; }
@@ -38,6 +39,7 @@ export default {
     } catch (error) { this.error = "초안 복원 실패: " + error.message; }
   },
   methods: {
+    jumpToHeading(id) { this.$refs.editor?.jumpToHeading(id); },
     persist() { return saveDraft(this.formKey, JSON.parse(JSON.stringify({ form: this.form, run: this.run,
       draftId: this.draftId, sourceVersion: this.sourceVersion, runHistory: this.runHistory, preserveExpiredForMutation: !!this.run }))); },
     chooseParent(id) { this.form.parent = this.parentChoices.find(item => item.id === id) || null; },
@@ -143,6 +145,7 @@ export default {
     <section class="conf-composer" aria-label="새 Confluence 문서" @keydown.esc.stop="close">
       <header class="conf-compose-header"><div><h2>{{ editingPage ? '문서 수정' : '새 문서' }}</h2></div>
         <div class="conf-compose-actions"><button class="btn" :disabled="busy" @click="close">닫기 · 초안 보관</button>
+          <button class="btn" @click="$emit('toggle-toc')" :aria-expanded="tocVisible" aria-controls="conf-document-toc">목차</button>
           <button class="btn primary" :disabled="busy || !ready || revisionConflict" @click="publish">{{ busy ? '발행 중…' : run?.completed ? '발행한 문서 보기' : run ? '발행 이어서 하기' : '발행' }}</button></div></header>
       <p v-if="revisionConflict" class="conf-error" role="alert">초안 작성 이후 서버 문서가 변경되었습니다. 초안은 보관 중이며 자동으로 덮어쓰지 않습니다. 원문과 비교한 뒤 초안을 삭제하고 최신 문서에서 다시 수정해 주세요. <a :href="base + '/pages/viewpage.action?pageId=' + editingPage.id" target="_blank" rel="noopener noreferrer">최신 원문 확인</a></p>
       <p v-if="error" class="conf-error" role="alert">{{ error }}</p>
@@ -155,7 +158,7 @@ export default {
           <input class="conf-compose-title" v-model="form.title" maxlength="255" aria-label="문서 제목" placeholder="문서 제목">
           <label class="conf-number-toggle"><input type="checkbox" v-model="form.numbered">헤딩 자동 번호 <span>1 → 1.1 → 1.1.1</span></label>
           <CommentEditor :key="draftId" ref="editor" ticket-key="" kind="confluence" :submit-fn="noop" :submit-adapter="publishDocument"
-            :initial="initialHtml"
+            :initial="initialHtml" @outline="$emit('outline',$event)"
             :draft-scope="draftScope" :read-only="locked" :mutation-pending="!!run" :heading-numbering="true" :auto-number-headings="form.numbered"
             :hide-footer="true" :allow-empty="true" :initial-height="400" height-key="lake.confluence.editor.height"
             placeholder="문서를 작성하세요. / 로 표·코드·링크 넣기, @ 로 멘션, 파일·이미지 붙여넣기와 드래그" @submitted="submitted" />

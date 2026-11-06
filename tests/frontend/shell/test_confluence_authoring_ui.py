@@ -38,9 +38,15 @@ def test_new_document_rich_editor_draft_attachments_and_numbering(editor_browser
     assert editor.locator("h1").get_attribute("data-heading-number") == "1"
     assert editor.locator("h1").evaluate("el => getComputedStyle(el,'::before').position") == "static"
     assert editor.locator("h2").get_attribute("data-heading-number") == "1.1"
+    toc=page.get_by_role('navigation',name='본문 목차',exact=True)
+    toc.get_by_role('button',name='1 CONF-H1',exact=True).wait_for()
+    toc.get_by_role('button',name='1.1 CONF-H2',exact=True).wait_for()
+    assert editor.locator('[data-heading-number]').evaluate_all("els=>els.every(el=>getComputedStyle(el).paddingLeft==='0px')")
     page.get_by_role("checkbox", name=re.compile("헤딩 자동 번호")).uncheck()
     assert editor.locator("h1").get_attribute("data-heading-number") is None
+    toc.get_by_role('button',name='CONF-H1',exact=True).wait_for()
     page.get_by_role("checkbox", name=re.compile("헤딩 자동 번호")).check()
+    toc.get_by_role('button',name='1 CONF-H1',exact=True).wait_for()
     creates, jira_uploads = [], []
     page.on("request", lambda request: creates.append(request.post_data_json) if request.method == "POST" and request.url == base + "/api/confluence/pages" else None)
     page.on("request", lambda request: jira_uploads.append(request.url) if request.method == "POST" and "/api/ticket/" in request.url else None)
@@ -71,6 +77,40 @@ def test_new_document_rich_editor_draft_attachments_and_numbering(editor_browser
     page.reload()
     page.locator(".conf-document h1").filter(has_text="Confluence authoring roundtrip").wait_for()
     assert page.locator(".conf-document-body img").count() == 3
+    # The page authored in LTM must also survive editing its native storage source.
+    for cycle in (1, 2):
+        page.get_by_role('button',name='수정',exact=True).click()
+        editor=page.locator('.conf-composer .ProseMirror')
+        editor.locator('table td').filter(has_text='CONF-TABLE').wait_for()
+        assert editor.locator('h1').inner_text() == '1 CONF-H1'
+        toc.get_by_role('button',name='1 CONF-H1',exact=True).wait_for()
+        assert toc.get_by_role('button',name='1 1 CONF-H1',exact=True).count() == 0
+        for selector, sentinel in [('strong','CONF-BOLD'),('em','CONF-ITALIC'),('s','CONF-STRIKE'),
+            ('code','CONF-INLINE-count(*)'),('blockquote','CONF-QUOTE'),('ul','CONF-BULLET'),('ol','CONF-ORDERED')]:
+            assert editor.locator(selector).filter(has_text=sentinel).count() == 1
+        for img in editor.locator('[data-conf-macro="resource:image"] img').all():
+            response = page.request.get(base + img.get_attribute('src'))
+            assert response.ok, (img.get_attribute('src'), response.status, response.text())
+            img.evaluate('el=>el.decode()')
+        assert editor.locator('[data-conf-macro="resource:image"] img').count() == 3
+        editor.locator('table td').filter(has_text='CONF-TABLE').fill('CONF-TABLE edited '+str(cycle))
+        editor.locator('[data-conf-macro="code"] pre').fill('CONF-SQL edited '+str(cycle))
+        page.get_by_role('button',name='발행',exact=True).click()
+        body=page.locator('.conf-document-body')
+        body.locator('td').filter(has_text='CONF-TABLE edited '+str(cycle)).wait_for()
+        assert body.locator('pre code').inner_text() == 'CONF-SQL edited '+str(cycle)
+        assert body.locator('h1').inner_text() == '1 CONF-H1'
+        assert body.locator('input[type="checkbox"]').count() == 2
+        assert body.locator('input[type="checkbox"][checked]').count() == 1
+        assert body.locator('a[href*="/browse/DL-9001"]').count() == 1
+        assert body.get_by_text('@conf-user-test.ui02',exact=True).count() == 1
+        assert body.locator('a[href*="checklist.txt"]').count() == 1
+        style=body.get_by_text('CONF-STYLE',exact=True)
+        assert style.evaluate('el=>getComputedStyle(el).color') == 'rgb(220, 38, 38)'
+        assert style.evaluate('el=>getComputedStyle(el).backgroundColor') == 'rgb(254, 240, 138)'
+        assert body.locator('table td').first.evaluate('el=>parseFloat(getComputedStyle(el).borderTopWidth)') > 0
+        for img in body.locator('img').all(): img.evaluate('el=>el.decode()')
+        assert body.locator('img').count() == 3
     page.get_by_role("button", name="＋ 새 문서", exact=True).click()
     page.locator(".conf-composer .ProseMirror").wait_for()
     assert page.get_by_role("textbox", name="문서 제목", exact=True).input_value() == ""
