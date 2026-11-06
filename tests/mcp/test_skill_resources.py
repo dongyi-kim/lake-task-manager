@@ -26,10 +26,12 @@ def _catalog_files(tmp_path):
 def test_catalog_snapshots_bytes_and_projects_shared_files_within_each_manifest(tmp_path):
     catalog = _catalog_files(tmp_path)
     entries = catalog.list_skills()
-    assert len(entries) == 3
+    assert {entry["frontmatter"]["name"] for entry in entries} == {
+        "ltm-task-authoring", "ltm-comment-authoring", "ltm-bulk-task-create", "ltm-confluence-authoring"}
     for entry in entries:
         root = entry["uri"].removesuffix("SKILL.md")
-        assert len(entry["resources"]) == 2
+        # Jira editor markup must not be silently projected into Confluence's guide.
+        assert len(entry["resources"]) == (1 if entry["frontmatter"]["name"] == "ltm-confluence-authoring" else 2)
         for resource in entry["resources"]:
             assert resource["uri"].startswith(root)
             content = catalog.read(resource["uri"])
