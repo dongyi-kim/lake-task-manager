@@ -63,7 +63,9 @@ def test_completion_requirements_are_discoverable_and_retry_does_not_repeat_writ
             for _ in range(2):
                 await call("transition_ticket", {"key": key, "body": body})
             assert sum(method == "post" and target == path for method, target, _ in env.calls) == 1
-            assert (await call("get_ticket", {"key": key}))["statusCategory"] == "done"
+            completed = await call("get_ticket", {"key": key})
+            assert completed["statusCategory"] == "done"
+            assert completed["timeSpentSeconds"] == 5400
             comments = (await call("get_comments", {"key": key}))["comments"]
             has_note = "검증한 완료 기록" in (comment_html or "")
             assert len(comments) == int(has_note)

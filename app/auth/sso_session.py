@@ -590,7 +590,7 @@ class SsoSessionProvider(AuthProvider):
         return self._submit(lambda: self._fetch(path, params, True))
 
     def web_form(self, path, fields=None, *, may_commit=False):
-        from .web_forms import check_html_size, form_request, form_response, identity_response
+        from .web_forms import FormTransportUnavailable, check_html_size, form_request, form_response, identity_response
         url, headers, body = form_request(self.base, path, fields, may_commit)
 
         def do():
@@ -622,9 +622,7 @@ class SsoSessionProvider(AuthProvider):
                 raise
             except Exception as exc:
                 # _submit logs/retire decisions must never contain a form URL/token/body.
-                message = ("Jira native form transport timeout."
-                           if self._is_transport_error(exc) else "Jira 폼 요청을 완료하지 못했습니다.")
-                raise UpstreamUnavailable(message) from None
+                raise FormTransportUnavailable(timeout=self._is_transport_error(exc)) from None
             finally:
                 if response is not None:
                     try:

@@ -20,6 +20,12 @@
 
 평문 `@이름`이나 이름만 담긴 일반 하이퍼링크는 실제 멘션이 아니다. LTM은 위 canonical span을 실제 Jira 사용자 멘션으로 변환한다. Jira의 알림 전달 성공 여부까지 보장한다는 뜻은 아니다. 멘션은 담당자 지정과도 별개다.
 
+## Task 작성 시 참조 연결 권장
+
+Task·Epic·SubTask 작성에 실제로 참고한 Jira 이슈·Confluence 문서·외부 자료는 **본문 링크와 함께 티켓의 이슈 링크·문서 연결에도 적극 등록하는 것을 권장**한다. 단순 본문 링크만으로 Jira 관계나 remote link가 생기지는 않는다.
+
+초안 공유 시 연결할 대상과 관계 유형을 함께 보여주고 같은 승인 범위에서 처리한다. 이미 허용된 연결을 건별로 다시 확인하지 않는다. 조회 중 발견한 모든 자료를 무차별로 연결하거나 사용자가 제외한 자료를 추가하지 않는다. `get_ticket_context`의 이슈 링크와 `get_documents`의 문서 링크를 확인해 기존 연결은 재사용하고 새 연결만 추가한다.
+
 ## Jira 티켓
 
 key 또는 제목으로 `search_issues`/`search_workspace`에서 찾고 `get_ticket`으로 대상·내용을 확인한다. 링크는 응답의 사용자용 `url`을 사용한다. Jira REST `self`는 본문 탐색 링크가 아니다.
@@ -31,12 +37,12 @@ key 또는 제목으로 `search_issues`/`search_workspace`에서 찾고 `get_tic
 
 LTM 열람 화면에서 단순 티켓 키는 short 뱃지로 자동 표시되고, 명시적 Jira 링크는 기본 detailed 뱃지로 표시된다. 번호 언급을 모두 링크로 감싸서 의도치 않게 detailed로 바꾸지 않는다. 뱃지의 상태·제목·아바타 DOM을 직접 만들지 않는다.
 
-본문 참조는 실제 티켓 관계를 생성하지 않는다. 관계 등록까지 요청된 경우 `list_options(kind="link_types")`에서 지원 타입을 확인하고 `add_issue_link(key, other_key, client_mutation_id, type_name, direction)`를 사용한다. `direction="outward"`는 key→other_key이며 parent/Epic 계층 설정과는 별개다.
+Jira 이슈 관계는 `list_options(kind="link_types")`에서 지원 타입을 확인하고 `add_issue_link(key, other_key, client_mutation_id, type_name, direction)`로 등록한다. 단순 참조에는 실제 제공되는 일반 관련 관계를 선택하며, 근거 없이 차단·의존·중복 관계를 만들지 않는다. `direction="outward"`는 key→other_key이며 parent/Epic 계층 설정과는 별개다. 추가 후 `get_ticket_context`로 확인한다.
 
 ## Confluence 문서와 외부 URL
 
 - 통합 탐색은 `search_workspace(query, sources=["jira", "confluence"])`를 사용한다. 문서 목록을 더 조회하려면 `search_confluence_documents`의 `hasMore`·`nextStartAt`을 따른다.
-- 문서를 근거로 내용을 쓰려면 `read_confluence_document(page=확인한ID또는URL)`을 읽는다. 긴 문서는 `hasMore`·`nextOffset`을 따른다. 검색 excerpt나 문서 제목만으로 문서 내용을 단정하지 않는다.
+- 문서를 근거로 내용을 쓰려면 `read_confluence_document(page=확인한ID또는URL)`을 읽는다. 긴 문서는 `hasMore`·`nextOffset`을 따르고, 후속 호출의 `version`에 첫 응답의 `version.number`를 전달해 같은 버전의 조각만 이어 읽는다. 검색 excerpt나 문서 제목만으로 문서 내용을 단정하지 않는다.
 - `read_confluence_document`는 설정된 Confluence의 숫자 page ID 또는 지원되는 `/pages/{id}`·`?pageId=` URL을 받는다. 구형 `/display/SPACE/title` 링크는 검색에서 page ID를 확인한다. 임의 외부 URL을 가져오는 도구가 아니다.
 - 본문에는 확인한 문서 URL과 제목으로 일반 `<a href="...">제목</a>`를 넣는다. LTM이 Confluence/웹 링크 뱃지로 렌더링한다. 별도의 Confluence 사람 멘션 문법이나 `@문서제목`을 만들지 않는다.
 
@@ -47,4 +53,4 @@ LTM 열람 화면에서 단순 티켓 키는 short 뱃지로 자동 표시되고
 
 예시 도메인은 사용자 자료가 아니다. 실제 작성에서는 사용자가 제공했거나 조회로 확인한 URL을 사용한다. 단순 URL 등록 요청은 문서 내용을 읽었다고 주장하지 않는 한 불필요한 내용 조회를 요구하지 않는다.
 
-티켓의 문서 연결 목록에도 등록하라는 요청이면 `add_document(key, url, client_mutation_id, title)`를 사용하고 `get_documents`로 확인한다. 이것은 Jira remote link 등록이며 Confluence 문서 생성/수정은 수행하지 않는다.
+참조 문서·외부 URL은 `add_document(key, url, client_mutation_id, title)`로 티켓의 문서 연결 목록에 등록하고 `get_documents`로 확인한다. 이것은 Jira remote link 등록이며 Confluence 문서 생성/수정은 수행하지 않는다.

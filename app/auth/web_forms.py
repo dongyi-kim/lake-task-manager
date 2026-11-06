@@ -20,6 +20,18 @@ _ACTIONS = {
 _COMMITS = {"ConvertIssueConvert.jspa", "ConvertSubTaskConvert.jspa", "MoveSubTaskParent.jspa"}
 
 
+class FormTransportUnavailable(UpstreamUnavailable):
+    """Safe machine-readable failure; never include URLs, response text or exception text."""
+
+    def __init__(self, *, timeout=False, http_status=None):
+        message = "Jira native form transport timeout." if timeout else "Jira 폼 요청을 완료하지 못했습니다."
+        self.diagnostic = {"reason": "transport_timeout" if timeout else "transport_failure"}
+        if type(http_status) is int and 100 <= http_status <= 599:
+            message = f"Jira 폼 서버 응답 오류(HTTP {http_status})."
+            self.diagnostic = {"reason": "http_response", "httpStatus": http_status}
+        super().__init__(message)
+
+
 def _origin(parts):
     return parts.scheme.lower(), (parts.hostname or "").lower(), parts.port or (
         443 if parts.scheme.lower() == "https" else 80)
@@ -120,7 +132,7 @@ def form_response(base, status, headers, body, identity_probe):
     ):
         raise SessionExpired("Jira 인증 세션을 다시 확인해야 합니다.")
     if status >= 500:
-        raise UpstreamUnavailable(f"Jira 폼 서버 응답 오류(HTTP {status}).")
+        raise FormTransportUnavailable(http_status=status)
     if status == 403:
         alive = identity_probe()
         if alive is True:

@@ -19,7 +19,10 @@ class SkillCatalog:
         shared = self._load_files(root / "_shared", root)
         for name in SKILL_NAMES:
             files = self._load_files(root / name, root)
-            for path, content in (shared.items() if name != "ltm-confluence-authoring" else ()):
+            for path, content in shared.items():
+                # Draft review is format-independent; Jira markup/workflow guides are not.
+                if name == "ltm-confluence-authoring" and path != "draft-review.md":
+                    continue
                 destination = "references/" + path
                 if destination in files:
                     raise ValueError(f"Duplicate skill resource: {name}/{destination}")

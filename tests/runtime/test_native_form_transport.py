@@ -239,6 +239,7 @@ def test_sso_transport_error_is_sanitized_before_queue_retirement_logs(capsys):
         provider.web_form("/secure/ConvertIssueConvert.jspa", FIELDS, may_commit=True)
     assert "secret" not in str(raised.value)
     assert provider._is_transport_error(raised.value)
+    assert raised.value.diagnostic == {"reason": "transport_timeout"}
     assert jobs == [(-1, True)] and len(sender.calls) == 1
     assert capsys.readouterr() == ("", "")
 
@@ -246,3 +247,11 @@ def test_sso_transport_error_is_sanitized_before_queue_retirement_logs(capsys):
 def test_normal_jira_page_with_login_link_is_not_a_login_form():
     html = b'<a href="/login.jsp">Log in</a><form action="ConvertIssueSetIssueType.jspa"></form>'
     assert form_response(BASE, 200, {}, html, lambda: None)["html"] == html.decode()
+
+
+def test_sso_non_transport_exception_keeps_no_exception_or_form_values():
+    provider, sender, _ = sso(TypeError("secret form body or url"))
+    with pytest.raises(UpstreamUnavailable) as raised:
+        provider.web_form("/secure/ConvertIssue.jspa?id=123")
+    assert raised.value.diagnostic == {"reason": "transport_failure"}
+    assert "secret" not in str(raised.value) and len(sender.calls) == 1

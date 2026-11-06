@@ -19,6 +19,7 @@ from app.local_mcp.evidence_tools import register_evidence
 from app.local_mcp.hierarchy_tools import register_hierarchy
 from app.local_mcp.hierarchy_write_tools import register_hierarchy_writes
 from app.jira.hierarchy_forms import HierarchyFormError
+from app.auth.web_forms import FormTransportUnavailable
 from app.local_mcp.read_metadata import read_result, has_partial
 from app.local_mcp.output_schema import schema_for
 from app.local_mcp.security import Credentials, LocalGuard
@@ -85,6 +86,11 @@ class LocalMcpRuntime:
                 "Authoring skills are served through skills/list, skills/get and resources/read. "
                 "Before rich Task/comment authoring or bulk creation, read the matching SKILL.md; "
                 "get_content_guide() lists the same guides for clients without Skills support. "
+                "For ticket descriptions, comments and Confluence documents, recommend sharing a readable "
+                "draft or proposed changes and the destination for user confirmation before submission; "
+                "see references/draft-review.md in any authoring skill. Honor existing approval of that "
+                "content and explicit direct-submit instructions without asking again. A draft-only request "
+                "does not authorize publishing. This guidance adds no server-side approval gate. "
                 "Task/comment HTML and bulk description Markdown are different input contracts. "
                 "Confluence uses storage XHTML and expected published versions; read ltm-confluence-authoring "
                 "before editing. A matching published version never proves collaborative drafts are absent. "
@@ -163,7 +169,8 @@ class LocalMcpRuntime:
             from app.local_mcp.confluence_errors import confluence_error
             return confluence_error(exc)
         if isinstance(exc, HierarchyFormError):
-            return {"code": exc.code, "status": exc.status, "message": str(exc), "retryable": False}
+            return {"code": exc.code, "status": exc.status, "message": str(exc), "retryable": False,
+                    **({"formDiagnostic": exc.diagnostic} if exc.diagnostic else {})}
         if isinstance(exc, MutationPreflightUnavailable):
             busy = isinstance(exc, UpstreamBusy)
             if not busy and self.classify_error:
@@ -210,6 +217,10 @@ class LocalMcpRuntime:
             return {"code": "authentication_required" if authentication else "upstream_unavailable",
                     "service": "confluence", "message": str(exc), "needLogin": authentication,
                     "retryable": not authentication}
+        if isinstance(exc, FormTransportUnavailable):
+            error = self.classify_error(exc) if self.classify_error else {
+                "code": "upstream_unavailable", "message": str(exc), "needLogin": False, "retryable": True}
+            return {**error, "formDiagnostic": exc.diagnostic}
         if isinstance(exc, (SessionExpired, UpstreamUnavailable)) and self.classify_error:
             return self.classify_error(exc)
         if isinstance(exc, SessionExpired):

@@ -502,6 +502,9 @@ def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None, epic_name_f
                                  _norm_cat((st.get("statusCategory") or {}).get("key"))),
         "due": f.get("duedate") or None,
         "resolved": f.get("resolutiondate") or None,
+        # Own ticket worklogs, including completion-transition entries. Jira's
+        # aggregate timespent also includes children and must not be used here.
+        "timeSpentSeconds": f.get("timespent"),
         "labels": f.get("labels") or [],
         "components": [c.get("name") for c in (f.get("components") or []) if c.get("name")],
         "sp": f.get(sp_field),
