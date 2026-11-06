@@ -373,7 +373,8 @@ def _set_checkbox(html, index, checked, cbid=None):
 #: 화면에 그대로 보임). 그 이스케이프된 체크박스 문단만 실제 HTML 로 되돌려 로컬도 prod 처럼 렌더.
 #: `<p dir="auto">` 뿐 아니라 dir 이 없는 `<p>`(정화가 dir 을 떼면 이 형태)도 되살린다.
 _ESC_CB_PARA = re.compile(
-    r'&lt;p(?:\s[^&]*?)?&gt;\s*&lt;input\b([^&]*?)/?\s*&gt;(.*?)&lt;/p&gt;', re.I | re.S)
+    r'&lt;p(?:\s[^&]*?)?&gt;(.*?)&lt;/p&gt;', re.I | re.S)
+_ESC_CB_INPUT = re.compile(r'&lt;input\b(.*?)/?\s*&gt;', re.I | re.S)
 
 
 def _revive_checkboxes(html):
@@ -381,13 +382,19 @@ def _revive_checkboxes(html):
         return html
 
     def one(m):
-        attrs, text = m.group(1), m.group(2)
-        if "checkbox" not in attrs.lower():
-            return m.group(0)          # 체크박스가 아닌 이스케이프는 건드리지 않는다
+        def checkbox(match):
+            attrs = match.group(1)
+            if not _CB_TYPE_RE.search(attrs):
+                return match.group(0)
+            return '<input' + attrs + '>'
+
+        body, count = _ESC_CB_INPUT.subn(checkbox, m.group(1))
+        if not count or body == m.group(1):
+            return m.group(0)
         # ★ `<p>` 로 다시 감싸지 않는다 — 이 조각은 이미 jira820 이 만든 바깥 `<p>` 안이라,
         #    `<p>` 를 넣으면 p 안의 p 가 돼(브라우저가 빈 p 로 쪼갬) 줄간격이 크게 벌어졌다.
         #    체크박스를 **인라인**으로 두면 바깥 p 안에서 줄바꿈(<br>)만으로 깔끔히 나열된다.
-        return '<input' + attrs + '>' + text
+        return body
 
     return _ESC_CB_PARA.sub(one, html)
 
