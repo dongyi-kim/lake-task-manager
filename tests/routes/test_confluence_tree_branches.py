@@ -134,3 +134,10 @@ def test_large_metadata_batch_uses_server_cursor_and_remembers_limit_rejection(c
     assert calls == [(0, 500), (0, 100), (37, 100)]
     assert tree.snapshot(client, 'DL')['jobs'] == []
     assert {r['id'] for b in tree.snapshot(client, 'DL')['batches'] for r in b['results']} == {'1', '38'}
+
+
+def test_bulk_retains_ancestor_stubs_when_only_descendant_is_returned(client):
+    from app.jira import confluence_service as reads
+    client._conf_get_json = lambda *a, **k: {'results': [node(2, '1')]}
+    reads.tree_pages(client, 'DL'); tree.seed_complete_index(client, 'DL')
+    assert {r['id'] for b in tree.snapshot(client, 'DL')['batches'] for r in b['results']} == {'1', '2'}

@@ -137,6 +137,9 @@ def seed_complete_index(client, space, limit=100):
         sources.append(client.cache.metadata(cache_key)['fetchedAt'])
         rows.update((str(row['id']), row) for row in data['results'])
         offset = next_start(data, offset)
+    for row in list(rows.values()):
+        for index, ancestor in enumerate(row['ancestors']):
+            rows.setdefault(str(ancestor['id']), {**ancestor, 'space': row['space'], 'ancestors': row['ancestors'][:index]})
     groups = {'': []}
     for cid in rows:
         groups[cid] = []

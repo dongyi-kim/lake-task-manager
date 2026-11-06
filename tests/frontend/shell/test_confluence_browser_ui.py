@@ -74,7 +74,7 @@ def test_tree_search_highlights_hierarchy_without_search_requests(editor_browser
     requests = []
     def metadata(route):
         if '/snapshot?' in route.request.url:
-            route.fulfill(json={'batches': [], 'jobs': [{'parent': '', 'start': 0, 'depth': 0}]}); return
+            route.fulfill(json={'batches': [{'parent': '', 'start': 0, 'results': [{'id':'12','title':'Data Lake Root','hasChildren':True},{'id':'90','title':'Unrelated document','hasChildren':False}], 'nextStart': None}], 'jobs': [{'parent': '12', 'start': 0, 'depth': 1}]}); return
         args = parse_qs(urlsplit(route.request.url).query)
         parent = args.get('parent', [''])[0]
         requests.append(parent)
@@ -102,7 +102,7 @@ def test_tree_search_highlights_hierarchy_without_search_requests(editor_browser
         assert tree.locator('[data-page-id="22"]').evaluate("el => el.style.getPropertyValue('--depth')") == '1'
         expect(tree.get_by_role('button', name='Unrelated document', exact=True)).to_be_visible()
         assert tree.locator('[data-page-id="22"] .conf-tree-toggle').count() == 0
-    assert requests[:2] == ['', '12'] and upstream_searches == []
+    assert requests == ['12'] and upstream_searches == []
     assert state['reads'] == []
     page.get_by_label('문서 트리 검색', exact=True).fill('datalake')
     page.get_by_role('button', name='다음 일치 문서').click()

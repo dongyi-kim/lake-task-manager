@@ -61,6 +61,10 @@ export class ConfluenceTreeQueue {
   }
   search(ids) { this.searching = ids !== null; for (const id of ids || []) this.prioritize(id); }
   finishIndex() {
+    for (const row of [...this.indexRows.values()]) for (const [index, ancestor] of (row.ancestors || []).entries()) {
+      const id = String(ancestor.id);
+      if (!this.indexRows.has(id)) this.indexRows.set(id, {...ancestor, id, space:row.space, ancestors:row.ancestors.slice(0,index)});
+    }
     const groups = new Map([['', []]]);
     for (const row of this.indexRows.values()) groups.set(String(row.id), []);
     for (const row of this.indexRows.values()) {

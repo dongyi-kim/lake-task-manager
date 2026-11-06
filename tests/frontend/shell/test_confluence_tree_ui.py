@@ -13,7 +13,7 @@ def test_tree_keeps_all_pages_after_capped_empty_and_short_batches(editor_browse
     root = {'id': '12', 'title': 'Complete tree', 'ancestors': [], 'hasChildren': True}
     def tree(route):
         if '/snapshot?' in route.request.url:
-            route.fulfill(json={'batches': [], 'jobs': [{'parent': '', 'start': 0, 'depth': 0}]}); return
+            route.fulfill(json={'batches': [{'parent': '', 'start': 0, 'results': [root], 'nextStart': None}], 'jobs': [{'parent': '12', 'start': 0, 'depth': 1}]}); return
         args = parse_qs(urlsplit(route.request.url).query)
         start, parent = int(args['start'][0]), args.get('parent', [''])[0]
         if not parent:
@@ -53,7 +53,7 @@ def test_tree_partial_retry_and_space_switch_discard_late_metadata(editor_browse
     pending, calls = [], []
     def tree(route):
         if '/snapshot?' in route.request.url:
-            route.fulfill(json={'batches': [], 'jobs': [{'parent': '', 'start': 0, 'depth': 0}]}); return
+            route.fulfill(json={'batches': [{'parent': '', 'start': 0, 'results': [{'id':'12','title':'Root','hasChildren':True}], 'nextStart': None}], 'jobs': [{'parent': '12', 'start': 0, 'depth': 1}]}); return
         args = parse_qs(urlsplit(route.request.url).query)
         space, parent = args['space'][0], args.get('parent', [''])[0]
         calls.append((space, parent))
@@ -73,7 +73,7 @@ def test_tree_partial_retry_and_space_switch_discard_late_metadata(editor_browse
     page.get_by_label('문서 트리 검색', exact=True).fill('nestedneedle')
     page.get_by_role('button', name='문서 목록 다시 시도').click()
     expect(nav.locator('.is-match')).to_have_text('Nested needle')
-    assert calls == [('ETL', ''), ('ETL', '12'), ('ETL', '12'), ('ETL', '12')]
+    assert calls == [('ETL', '12'), ('ETL', '12'), ('ETL', '12')]
     page.get_by_label('Space', exact=True).select_option('OPS')
     page.wait_for_function("document.querySelector('.conf-tree').getAttribute('aria-busy') === 'true'")
     # Wait for the deliberately held request without introducing blanket server latency.
