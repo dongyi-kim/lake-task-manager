@@ -68,7 +68,8 @@ def branch(client, space, parent='', start=0):
         if reads._denied(exc):
             # Cached ancestors can still reference a now-restricted subtree. Never
             # resurrect its titles on the next local snapshot after a definitive denial.
-            client.cache.forget_prefixes([prefix(client, space)])
+            client.cache.forget_prefixes([prefix(client, space), dirty_prefix(client, space),
+                                         f'conftree:{reads.scope_key(client)}:'])
         raise
     source = client.cache.metadata(cache_key) or {}
     if source.get('state') == 'fresh':

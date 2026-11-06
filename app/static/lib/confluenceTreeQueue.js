@@ -54,6 +54,7 @@ export class ConfluenceTreeQueue {
   }
   prioritize(id) {
     if (String(id) === this.active?.parent) return;
+    if ([...this.indexRows.values()].some(row => String(row.ancestors?.at(-1)?.id) === String(id))) return;
     const parent = String(id), job = this.enqueue({ parent, start: 0, depth: 0 });
     if (job) job.rank = -1;
     for (const item of this.queue.values()) if (item.parent === parent) item.rank = -1;
@@ -109,6 +110,10 @@ export class ConfluenceTreeQueue {
         this.done.add(key); this.errors.delete(key); this.errors.delete('snapshot');
         if (index) {
           for (const row of batch.results) this.indexRows.set(String(row.id), row);
+          // The in-flight bulk pass already revealed these children. Let that
+          // pass finish coverage instead of issuing a duplicate user-branch read.
+          const covered = new Set([...this.indexRows.values()].map(row => String(row.ancestors?.at(-1)?.id || '')));
+          for (const [queuedKey, queued] of this.queue) if (queued.rank < 0 && covered.has(queued.parent)) this.queue.delete(queuedKey);
           if (batch.nextStart === null) this.finishIndex();
           else this.enqueue({ ...job, start: batch.nextStart, attempts: 0 });
           this.publish(); continue;

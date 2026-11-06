@@ -141,3 +141,16 @@ def test_bulk_retains_ancestor_stubs_when_only_descendant_is_returned(client):
     client._conf_get_json = lambda *a, **k: {'results': [node(2, '1')]}
     reads.tree_pages(client, 'DL'); tree.seed_complete_index(client, 'DL')
     assert {r['id'] for b in tree.snapshot(client, 'DL')['batches'] for r in b['results']} == {'1', '2'}
+
+
+def test_denied_branch_cannot_be_resurrected_from_the_bulk_cache(client):
+    from app.auth.base import UpstreamError
+    from app.jira import confluence_service as reads
+    client._conf_get_json = lambda *a, **k: {'results': [node(1), node(2, '1')]}
+    reads.tree_pages(client, 'DL'); tree.seed_complete_index(client, 'DL')
+    client.cache.invalidate(tree.prefix(client, 'DL') + '1:')
+    client._conf_get_json = lambda *a, **k: (_ for _ in ()).throw(UpstreamError(403,'denied'))
+    with pytest.raises(UpstreamError), read_scope(strict=True):
+        tree.branch(client, 'DL', '1')
+    tree.seed_complete_index(client, 'DL')
+    assert tree.snapshot(client, 'DL')['batches'] == []

@@ -62,5 +62,23 @@ def test_priority_bfs_cache_retry_and_late_space_response():
       await broad.start();
       assert.deepEqual(broadCalls,['branch:','index:0']);
       assert.equal(broad.queue.size,0);
+      const coveredCalls=[]; let firstIndex;
+      const covered = new ConfluenceTreeQueue({snapshot:async()=>({batches:[],jobs:[{parent:'',start:0,depth:0}]}),
+        read:async job=>{coveredCalls.push('branch:'+job.parent);return batch('',[row('1',true)]);},
+        bulkRead:async start=>{coveredCalls.push('index:'+start);if(!start) return new Promise(resolve=>firstIndex=resolve);
+          return batch('',[{...row('3'),ancestors:[{id:'1',title:'1'}]}],100);}, changed:()=>{},state:()=>{}});
+      const covering=covered.start(); while(!firstIndex) await new Promise(resolve=>setImmediate(resolve));
+      covered.prioritize('1');
+      firstIndex(batch('',[{...row('1'),ancestors:[]},{...row('2'),ancestors:[{id:'1',title:'1'}]}],0,100));
+      await covering;
+      assert.deepEqual(coveredCalls,['branch:','index:0','index:100']);
+      let authCalls=0, authFailed=true, authState;
+      const auth = new ConfluenceTreeQueue({snapshot:async()=>({batches:[batch('',[row('1',true),row('2',true)])],
+          jobs:[{parent:'1',start:0,depth:1},{parent:'2',start:0,depth:1}]}),
+        read:async job=>{authCalls++; if(authFailed)throw Object.assign(new Error('expired'),{status:401}); return batch(job.parent,[]);},
+        changed:()=>{},state:s=>authState=s});
+      await auth.start(); assert.equal(authCalls,1); assert.equal(authState.loading,false);
+      authFailed=false; auth.retry(); while(auth.running) await new Promise(resolve=>setImmediate(resolve));
+      assert.equal(authCalls,3); assert.equal(authState.errors.length,0);
     '''.replace('MODULE', json.dumps(uri))
     subprocess.run([node, '--input-type=module', '-e', script], check=True, capture_output=True, text=True)
