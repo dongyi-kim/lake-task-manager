@@ -10,7 +10,7 @@ description: LTM MCP로 Task·Epic·SubTask 한 건을 생성하거나 기존 �
 ## 필요한 참고 문서
 
 - [제출 전 초안 검토](references/draft-review.md): 검토할 내용, 확인 시점, 기존 승인 재사용.
-- 본문 작성 시 [작성 형식](references/content-format.md)의 **Jira Task 본문 작성 스타일**을 읽는다. 어미 없는 개조식 표현과 점검사항·작업목표의 체크박스 활용을 권장하며, 리치 본문 형식도 같은 문서를 따른다.
+- 본문 작성 시 [작성 형식](references/content-format.md)의 **Jira Task 본문 작성 스타일**을 읽는다. 표·bullet·어미 없는 개조식·간결한 문체와 점검사항·작업목표의 체크박스 활용을 권장하며, 리치 본문 형식도 같은 문서를 따른다.
 - 사람·Jira·Confluence·외부 링크를 넣을 때 [사람과 링크](references/people-and-links.md)를 읽는다.
 - 게시 전과 오류 복구 시 [쓰기·검증 절차](references/write-workflow.md)를 따른다.
 - 완료 상태·권한·타입/부모 변경을 다룰 때 [티켓 작업 가이드](references/ticket-actions.md)를 읽는다.
@@ -34,4 +34,4 @@ description: LTM MCP로 Task·Epic·SubTask 한 건을 생성하거나 기존 �
 3. `update_description(key, html, client_mutation_id)`은 **본문 전체 교체**다. `html=""`은 삭제 의도가 있을 때만 쓴다. 완료 티켓 본문은 직접 수정할 수 없으며, 요청 범위에 포함된 실제 재열기 전이가 먼저 필요하다.
 4. 게시 후 `get_ticket(key, fresh=true)`로 요청한 변경과 보존할 내용을 확인한다. 결과에는 티켓 key와 실제 수행한 변경, 남은 후속 단계를 구분한다.
 
-본문의 링크는 관계 등록과 별개다. 실제 Jira 이슈 링크나 문서 연결까지 요청된 경우에만 `add_issue_link`·`add_document`를 추가 호출한다. 생성 응답의 `cascade`는 제안이며 실행된 상태 전이가 아니다.
+실제로 참고한 Jira 이슈·Confluence 문서·외부 자료는 본문 참조와 함께 **티켓의 이슈 링크·문서 연결에도 적극 등록하는 것을 권장**한다. [사람과 링크](references/people-and-links.md)의 참조 연결 절차에 따라 초안에 연결 대상을 포함하고, 생성된 key에 승인 범위의 연결을 추가·확인한다. 생성 응답의 `cascade`는 제안이며 실행된 상태 전이가 아니다.

@@ -11,7 +11,7 @@ description: LTM MCP로 여러 Task 또는 SubTask를 검증하고 일괄 생성
 
 - [제출 전 초안 검토](references/draft-review.md): 항목별 내용·대상 제시와 묶음 단위 확인.
 - 이름·링크 확인은 [사람과 링크](references/people-and-links.md)를 사용한다.
-- 본문은 [작성 형식](references/content-format.md)의 **Jira Task 본문 작성 스타일**과 **Bulk Markdown** 절을 따른다. 어미 없는 개조식 표현과 점검사항·작업목표의 체크박스 활용을 권장한다. 일괄 생성의 Markdown은 일반 티켓 생성의 HTML과 다르다.
+- 본문은 [작성 형식](references/content-format.md)의 **Jira Task 본문 작성 스타일**과 **Bulk Markdown** 절을 따른다. 표·bullet·어미 없는 개조식·간결한 문체와 점검사항·작업목표의 체크박스 활용을 권장한다. 일괄 생성의 Markdown은 일반 티켓 생성의 HTML과 다르다.
 - 실행·부분 실패는 [쓰기·검증 절차](references/write-workflow.md)를 따른다.
 - [예제 데이터](references/examples.json)의 `bulkItems`는 구조를 보여주는 샘플이다.
 
@@ -39,5 +39,7 @@ description: LTM MCP로 여러 Task 또는 SubTask를 검증하고 일괄 생성
 4. 결과의 `created`, `failed`, `errors`, `warnings`와 원래 인덱스를 확인한다. 전체 요청이 반환됐어도 모든 항목이 생성됐다는 뜻은 아니다. 일부 실패가 있어도 성공 항목은 롤백되지 않는다.
 5. 재시도는 **동일한 전체 ordered items + 동일 mutation ID**로 한다. 같은 ID 아래 실패 행만 추리거나 순서를 바꾸지 않는다. 결과가 불명확한 항목에 새 ID를 발급해 중복 생성하지 않는다.
 6. 생성된 key로 결과를 확인하고 성공·실패·미확인을 항목별로 보고한다. 이미지나 실제 사람 멘션 등 Markdown 밖의 요소는 생성 완료 key에 별도 첨부/HTML 수정이 필요하다. 후속 수정 실패를 티켓 생성 실패로 오인하지 않는다.
+
+각 항목이 실제로 참고한 Jira 이슈·Confluence 문서·외부 자료는 티켓의 이슈 링크·문서 연결에도 적극 등록하는 것을 권장한다. [사람과 링크](references/people-and-links.md)에 따라 항목별 연결 계획을 초안에 포함하고, 생성 완료 key에 승인 범위의 연결을 추가·확인한다. bulk 입력에 임의의 링크 필드를 만들지 않으며 연결 실패 때문에 성공한 티켓을 다시 생성하지 않는다.
 
 100개를 넘으면 순서를 유지해 여러 batch로 나누고 각 batch에 별도 mutation ID를 사용한다. 생성하지 못한 내용이나 후속 작업을 생략한 채 전체 완료라고 보고하지 않는다.
