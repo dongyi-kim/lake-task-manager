@@ -25,7 +25,8 @@ def test_packaged_stdio_mode_never_runs_app_startup(monkeypatch):
     assert called == ["proxy"]
 
 
-def test_stdio_proxy_uses_the_running_http_instance_and_shared_cache(build_env):
+@pytest.mark.parametrize("profile", ["", "/jira"])
+def test_stdio_proxy_uses_the_running_http_instance_and_shared_cache(build_env, profile):
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     env = build_env(listener.getsockname()[1])
@@ -38,7 +39,7 @@ def test_stdio_proxy_uses_the_running_http_instance_and_shared_cache(build_env):
     assert server.started
     executable = Path(__file__).resolve().parents[2] / "app" / "local_mcp" / "stdio.py"
     parameters = StdioServerParameters(command=sys.executable, args=[str(executable)], env={
-        "LTM_MCP_URL": env.runtime.url, "LTM_MCP_TOKEN": env.runtime.credentials.token(),
+        "LTM_MCP_URL": env.runtime.url + profile, "LTM_MCP_TOKEN": env.runtime.credentials.token(),
         "PYTHONDONTWRITEBYTECODE": "1",
     })
     async def scenario():

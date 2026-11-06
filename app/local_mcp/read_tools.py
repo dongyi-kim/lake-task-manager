@@ -7,11 +7,12 @@ from pydantic import Field
 
 from app.jira.jql import _split_order, tokenize
 from app.services.ticket_commands import CommandError
+from app.local_mcp.projections import issue_projection, ticket_projection
 
 
 def register_reads(register, runtime):
     def search_issues(jql: str, start_at: int = 0, max_results: int = 50,
-                      snapshot_id: str | None = None) -> dict:
+                      snapshot_id: str | None = None, detail: Literal["full", "summary"] = "full") -> dict:
         """Search current Jira issues with exact JQL inside configured search projects.
         Returns issues, total, hasMore, nextStartAt and snapshotId; max_results is 1..100,
         start_at is zero-based. Follow every page with the same JQL and returned snapshotId
@@ -20,6 +21,8 @@ def register_reads(register, runtime):
         a recent update does not prove completion, and current assignee is not historical ownership.
         Read get_ticket for the full description and get_evidence_page for paginated comments/history.
         Issue url is a user-facing Jira link; self is a REST URL. Caches are shared with the UI.
+        Prefer detail=summary for discovery: it omits descriptions, avatars and custom fields from
+        the response only. Use full when those fields are needed; pagination and caches are unchanged.
         """
         if not 1 <= max_results <= 100 or start_at < 0:
             raise ValueError("max_results는 1~100, start_at은 0 이상이어야 합니다.")
@@ -35,23 +38,25 @@ def register_reads(register, runtime):
         base = runtime.settings.jira_base.rstrip("/")
         # Add navigation metadata without changing the shared snapshot/issue cache.
         return {**page, "issues": [
-            {**issue, "url": base + "/browse/" + issue["key"]}
+            {**(issue_projection(issue) if detail == "summary" else issue), "url": base + "/browse/" + issue["key"]}
             for issue in page.get("issues") or []
         ]}
 
-    def get_ticket(key: str, fresh: bool = False) -> dict:
+    def get_ticket(key: str, fresh: bool = False, detail: Literal["full", "summary", "read", "edit"] = "full") -> dict:
         """Read one current ticket's metadata and complete description by Jira key.
         Returns the ticket view, including descriptionHtml for reading and descriptionEditHtml
         for safe editing. fresh=true waits for an upstream refresh; default reuses UI caches.
         Use get_evidence_page for full discussion/changes; get_comments is only a recent preview.
         This is the current ticket, not a past snapshot.
         A Done status alone does not establish when work completed or which claimed deliverables remain valid.
+        Choose summary for metadata, read for one complete display body, or edit for one complete
+        editable body. These modes avoid duplicate body representations. Default full is unchanged.
         """
         runtime.check_key(key)
         result = runtime.client.ticket_view(key, fresh=fresh)
         if result is None:
             raise ValueError("티켓을 찾을 수 없거나 조회 권한이 없습니다.")
-        return result
+        return ticket_projection(result, detail)
 
     def get_comments(key: str, limit: int = 100) -> dict:
         """Read a recent comment preview for one ticket, newest first; limit=1..1000.

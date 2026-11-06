@@ -81,10 +81,12 @@ def test_management_and_mcp_boundaries_rotation_disable_and_actual_peer(build_en
                     denied = await http.post("/api/mcp/credentials", json={"format": "token"}, headers={**headers, **other})
                     assert denied.status_code == 403
                 await http.post("/api/mcp/rotate", json={}, headers=headers)
-                assert (await http.post("/mcp", json={}, headers={"Authorization": "Bearer " + token})).status_code == 401
+                for path in ["/mcp", "/mcp/jira", "/mcp/confluence", "/mcp/reporting", "/mcp/settings"]:
+                    assert (await http.post(path, json={}, headers={"Authorization": "Bearer " + token})).status_code == 401
                 await http.put("/api/mcp/settings", json={"enabled": False}, headers=headers)
                 assert (await http.get("/api/mcp/settings")).json()["ready"] is False
-                assert (await http.post("/mcp", json={}, headers={"Authorization": "Bearer " + env.runtime.credentials.token()})).status_code == 503
+                for path in ["/mcp", "/mcp/jira", "/mcp/confluence", "/mcp/reporting", "/mcp/settings"]:
+                    assert (await http.post(path, json={}, headers={"Authorization": "Bearer " + env.runtime.credentials.token()})).status_code == 503
                 # Rotation is available while disabled; no implicit re-enable.
                 await http.post("/api/mcp/rotate", json={}, headers=headers)
                 assert not env.runtime.credentials.enabled

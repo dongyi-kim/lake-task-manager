@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 import pytest
 
 from support.paths import STATIC_ROOT
+from support.browser import launch_chromium
 
 
 @pytest.fixture(scope="module")
@@ -42,12 +43,7 @@ def static_server():
 def ui(static_server):
     pw = pytest.importorskip("playwright.sync_api")
     with pw.sync_playwright() as p:
-        try:
-            browser = p.chromium.launch()
-        except pw.Error as exc:
-            if "Executable doesn't exist" in str(exc):
-                pytest.skip("Optional Chromium binary is not installed")
-            raise
+        browser = launch_chromium(p)
         page = browser.new_page(viewport={"width": 1280, "height": 900})
         errors, requests, held = [], [], []
         page.on("pageerror", lambda error: errors.append(str(error)))
@@ -57,6 +53,7 @@ def ui(static_server):
 
         def status():
             return {"enabled": state["enabled"], "ready": state["enabled"],
+                    "profiles": [{"id": key, "label": label, "url": static_server + "/mcp" + ("/" + key if key != "all" else "")} for key,label in [("all","전체 기능"),("jira","Jira 업무"),("confluence","Confluence 문서")]],
                     "url": static_server + "/mcp", "jiraState": "ready", "tokenMasked": "••••••••"}
 
         def api(route):
@@ -72,15 +69,16 @@ def ui(static_server):
                     if state["hold"]:
                         held.append(route)
                         return
+                    url = static_server + "/mcp" + ("/" + body["profile"] if body.get("profile", "all") != "all" else "")
                     if body["format"] == "token":
                         text = state["token"]
                     elif body["format"] == "http":
                         text = json.dumps({"mcpServers": {"lake-task-manager": {
-                            "url": status()["url"], "headers": {"Authorization": "Bearer " + state["token"]}}}})
+                            "url": url, "headers": {"Authorization": "Bearer " + state["token"]}}}})
                     else:
                         text = json.dumps({"mcpServers": {"lake-task-manager": {
                             "command": "fixture-python", "args": ["fixture-stdio.py"],
-                            "env": {"LTM_MCP_URL": status()["url"], "LTM_MCP_TOKEN": state["token"]}}}})
+                            "env": {"LTM_MCP_URL": url, "LTM_MCP_TOKEN": state["token"]}}}})
                     route.fulfill(json={"text": text})
                     return
                 if path.endswith("/rotate"):
@@ -257,12 +255,7 @@ def test_full_app_uses_actual_management_endpoints(tmp_path, monkeypatch):
             time.sleep(0.05)
         assert server.started, "Full mock app failed to start"
         with pw.sync_playwright() as p:
-            try:
-                browser = p.chromium.launch()
-            except pw.Error as exc:
-                if "Executable doesn't exist" in str(exc):
-                    pytest.skip("Optional Chromium binary is not installed")
-                raise
+            browser = launch_chromium(p)
             try:
                 page = browser.new_page(viewport={"width": 1280, "height": 900})
                 errors = []
@@ -302,3 +295,19 @@ def test_full_app_uses_actual_management_endpoints(tmp_path, monkeypatch):
         server.should_exit = True
         worker.join(timeout=10)
         sock.close()
+
+
+def test_profile_address_and_copied_config_follow_selection(ui, static_server):
+    page, state, requests, _, expect = ui
+    page.get_by_label("사용할 기능", exact=True).select_option("confluence")
+    expect(page.get_by_label("서버 주소", exact=True)).to_have_value(static_server + "/mcp/confluence")
+    page.get_by_role("button", name="HTTP 설정 복사 · 인증 포함", exact=True).click()
+    page.wait_for_function("window.__copied.length === 1")
+    copied = json.loads(page.evaluate("window.__copied[0]"))["mcpServers"]["lake-task-manager"]
+    assert copied["url"] == static_server + "/mcp/confluence"
+    assert requests[-1][2]["profile"] == "confluence"
+    page.get_by_role("button", name="토큰 보기", exact=True).click()
+    expect(page.get_by_label("연결 토큰 원문")).to_be_visible()
+    page.get_by_label("사용할 기능", exact=True).select_option("jira")
+    expect(page.get_by_label("가려진 연결 토큰")).to_be_visible()
+    assert state["token"] not in page.locator("body").inner_text()

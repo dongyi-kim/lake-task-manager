@@ -17,6 +17,7 @@ class EnableBody(BaseModel):
 
 class ExportBody(BaseModel):
     format: Literal["token", "http", "stdio"]
+    profile: Literal["all", "jira", "confluence", "reporting", "settings"] = "all"
 
 
 def build_settings_router(*, runtime):
@@ -53,18 +54,19 @@ def build_settings_router(*, runtime):
     def export(request: Request, body: ExportBody):
         check(request)
         token = runtime.credentials.token()
+        url = runtime.url + ("/" + body.profile if body.profile != "all" else "")
         if body.format == "token":
             text = token
         elif body.format == "http":
             text = json.dumps({"mcpServers": {"lake-task-manager": {
-                "url": runtime.url, "headers": {"Authorization": "Bearer " + token},
+                "url": url, "headers": {"Authorization": "Bearer " + token},
             }}}, ensure_ascii=False, indent=2)
         else:
             text = json.dumps({"mcpServers": {"lake-task-manager": {
                 "command": sys.executable,
                 "args": ["--mcp-stdio"] if getattr(sys, "frozen", False)
                         else [str(Path(__file__).with_name("stdio.py").resolve())],
-                "env": {"LTM_MCP_URL": runtime.url, "LTM_MCP_TOKEN": token},
+                "env": {"LTM_MCP_URL": url, "LTM_MCP_TOKEN": token},
             }}}, ensure_ascii=False, indent=2)
         from fastapi.responses import JSONResponse
         return JSONResponse({"text": text}, headers={"Cache-Control": "no-store"})

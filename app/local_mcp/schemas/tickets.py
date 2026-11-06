@@ -72,6 +72,16 @@ class TicketView(TicketBadge):
     url: str
 
 
+class CompactTicket(TicketBadge):
+    detail: Literal["summary", "read", "edit"]
+    reporter: str | None
+    labels: list[str]
+    components: list[str]
+    url: str
+    descriptionHtml: str | None = None
+    descriptionEditHtml: str | None = None
+
+
 class CommentPreview(OpenModel):
     id: str | None = None
     date: str
@@ -471,7 +481,7 @@ class Descendants(OpenModel):
 
 
 DATA_MODELS = {
-    "search_issues": SearchPage, "get_ticket": TicketView, "get_comments": Comments,
+    "search_issues": SearchPage, "get_ticket": TicketView | CompactTicket, "get_comments": Comments,
     "get_comment_source": CommentSource,
     "get_history": History, "get_children": Children, "get_epic": Epic,
     "search_users": Users, "get_user": Identity | None, "list_options": Options,

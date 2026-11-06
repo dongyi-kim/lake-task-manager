@@ -12,6 +12,6 @@ function change(path, method, body) {
 export const localMcpApi = {
   settings: () => api.raw("/api/mcp/settings", { cache: "no-store" }),
   configure: (enabled) => change("settings", "PUT", { enabled }),
-  credentials: (format) => change("credentials", "POST", { format }),
+  credentials: (format, profile = "all") => change("credentials", "POST", { format, profile }),
   rotate: () => change("rotate", "POST", {}),
 };

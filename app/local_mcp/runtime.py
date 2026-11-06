@@ -4,7 +4,7 @@ import inspect
 import json
 import re
 from contextvars import ContextVar
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Annotated
 
 from fastapi import HTTPException
@@ -38,6 +38,7 @@ from app.local_mcp.skill_protocol import SkillsExtension
 from app.local_mcp.authentication import (AUTH_TOOLS, CONFIG_WRITES, Authentication, AuthenticationUnavailable,
     authentication_error, error_payload, register_authentication, services_for)
 from app.local_mcp.capacity import ToolCapacityExceeded, ToolLane
+from app.local_mcp.profiles import ADDITIVE, PROFILE_LABELS, build_profiles
 from app.services.workspace_config import WorkspaceConfigCommands
 from app.services.ticket_commands import CommandError, TicketCommands
 
@@ -86,6 +87,11 @@ class LocalMcpRuntime:
                 "Authoring skills are served through skills/list, skills/get and resources/read. "
                 "Before rich Task/comment authoring or bulk creation, read the matching SKILL.md; "
                 "get_content_guide() lists the same guides for clients without Skills support. "
+                "For a single ticket start with get_content_guide(skill='ltm-task-authoring'); "
+                "comments use ltm-comment-authoring, bulk creation ltm-bulk-task-create, documents ltm-confluence-authoring. "
+                "Read referenced guides only when needed for the task, not the whole catalog. "
+                "Use search_issues(detail='summary') to discover keys and get_ticket(detail='read' or 'edit') "
+                "to avoid duplicate body representations; full output remains available. "
                 "For ticket descriptions, comments and Confluence documents, recommend sharing a readable "
                 "draft or proposed changes and the destination for user confirmation before submission; "
                 "see references/draft-review.md in any authoring skill. Honor existing approval of that "
@@ -114,6 +120,7 @@ class LocalMcpRuntime:
             streamable_http_path="/mcp", stateless_http=True, json_response=True,
             max_request_body_size=16 * 1024 * 1024,
         )
+        self.profiles = build_profiles(self)
 
     def _finalize_input_contracts(self):
         # SDK outer models otherwise discard misplaced arguments before our tool can see them.
@@ -162,7 +169,9 @@ class LocalMcpRuntime:
             jira_state = "ready"
         enabled = self.credentials.enabled
         return {"enabled": enabled, "url": self.url, "ready": self.started and enabled,
-                "jiraState": jira_state, "tokenMasked": "•••••••• (설정됨)"}
+                "jiraState": jira_state, "tokenMasked": "•••••••• (설정됨)",
+                "profiles": [{"id": name, "label": label, "url": self.url + ("/" + name if name != "all" else "")}
+                             for name, label in PROFILE_LABELS.items()]}
 
     def _error(self, exc):
         if getattr(exc, "service", None) == "confluence":
@@ -394,7 +403,7 @@ class LocalMcpRuntime:
         self.server.add_tool(invoke, name=fn.__name__, description=fn.__doc__,
                              structured_output=True,
                              annotations=ToolAnnotations(read_only_hint=read_only,
-                                                         destructive_hint=not read_only,
+                                                         destructive_hint=not read_only and fn.__name__ not in ADDITIVE,
                                                          open_world_hint=False))
         if fn.__name__ in LLM_TOOLS:
             # MCP 2 validates its generated outer model before invoke; nested SecretStr/config
@@ -407,13 +416,17 @@ class LocalMcpRuntime:
         from app.routes.workspace_config import build_workspace_config_router
         app.include_router(build_settings_router(runtime=self))
         app.include_router(build_workspace_config_router(self.workspace_config, port=self.port))
-        app.router.routes.append(Route("/mcp", LocalGuard(
-            self.http_app, credentials=self.credentials, port=self.port), methods=["GET", "POST", "DELETE", "OPTIONS"]))
+        for name, (_server, http) in self.profiles.items():
+            path = "/mcp" + ("/" + name if name != "all" else "")
+            app.router.routes.append(Route(path, LocalGuard(http, credentials=self.credentials, port=self.port),
+                                           methods=["GET", "POST", "DELETE", "OPTIONS"]))
         previous_lifespan = app.router.lifespan_context
 
         @asynccontextmanager
         async def lifespan(application):
-            async with previous_lifespan(application), self.http_app.router.lifespan_context(self.http_app):
+            async with previous_lifespan(application), AsyncExitStack() as stack:
+                for _server, http in self.profiles.values():
+                    await stack.enter_async_context(http.router.lifespan_context(http))
                 self.started = True
                 try:
                     yield
