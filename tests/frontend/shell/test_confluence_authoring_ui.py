@@ -38,9 +38,15 @@ def test_new_document_rich_editor_draft_attachments_and_numbering(editor_browser
     assert editor.locator("h1").get_attribute("data-heading-number") == "1"
     assert editor.locator("h1").evaluate("el => getComputedStyle(el,'::before').position") == "static"
     assert editor.locator("h2").get_attribute("data-heading-number") == "1.1"
+    toc=page.get_by_role('navigation',name='본문 목차',exact=True)
+    toc.get_by_role('button',name='1 CONF-H1',exact=True).wait_for()
+    toc.get_by_role('button',name='1.1 CONF-H2',exact=True).wait_for()
+    assert editor.locator('[data-heading-number]').evaluate_all("els=>els.every(el=>getComputedStyle(el).paddingLeft==='0px')")
     page.get_by_role("checkbox", name=re.compile("헤딩 자동 번호")).uncheck()
     assert editor.locator("h1").get_attribute("data-heading-number") is None
+    toc.get_by_role('button',name='CONF-H1',exact=True).wait_for()
     page.get_by_role("checkbox", name=re.compile("헤딩 자동 번호")).check()
+    toc.get_by_role('button',name='1 CONF-H1',exact=True).wait_for()
     creates, jira_uploads = [], []
     page.on("request", lambda request: creates.append(request.post_data_json) if request.method == "POST" and request.url == base + "/api/confluence/pages" else None)
     page.on("request", lambda request: jira_uploads.append(request.url) if request.method == "POST" and "/api/ticket/" in request.url else None)
@@ -77,6 +83,8 @@ def test_new_document_rich_editor_draft_attachments_and_numbering(editor_browser
         editor=page.locator('.conf-composer .ProseMirror')
         editor.locator('table td').filter(has_text='CONF-TABLE').wait_for()
         assert editor.locator('h1').inner_text() == '1 CONF-H1'
+        toc.get_by_role('button',name='1 CONF-H1',exact=True).wait_for()
+        assert toc.get_by_role('button',name='1 1 CONF-H1',exact=True).count() == 0
         for selector, sentinel in [('strong','CONF-BOLD'),('em','CONF-ITALIC'),('s','CONF-STRIKE'),
             ('code','CONF-INLINE-count(*)'),('blockquote','CONF-QUOTE'),('ul','CONF-BULLET'),('ol','CONF-ORDERED')]:
             assert editor.locator(selector).filter(has_text=sentinel).count() == 1

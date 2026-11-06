@@ -16,16 +16,16 @@ def test_live_editor_outline_tracks_edits_scroll_and_responsive_navigation(edito
         page.keyboard.insert_text('Outline content '+str(i)); page.keyboard.press('Enter')
     page.keyboard.type('## Details'); page.keyboard.press('Enter')
     page.keyboard.insert_text('Details content')
-    toc.get_by_role('button',name='Overview',exact=True).wait_for()
-    toc.get_by_role('button',name='Details',exact=True).click()
+    toc.get_by_role('button',name='1 Overview',exact=True).wait_for()
+    toc.get_by_role('button',name='1.1 Details',exact=True).click()
     page.wait_for_function("document.querySelector('.conf-composer .ProseMirror').editor.state.selection.$from.parent.textContent==='Details'")
-    page.wait_for_function("document.querySelector('.conf-toc [aria-current=location]')?.textContent==='Details'")
+    page.wait_for_function("document.querySelector('.conf-toc [aria-current=location]')?.textContent==='1.1 Details'")
     page.keyboard.press('End'); page.keyboard.insert_text(' updated')
-    toc.get_by_role('button',name='Details updated',exact=True).wait_for()
-    assert toc.get_by_role('button',name='Details',exact=True).count() == 0
+    toc.get_by_role('button',name='1.1 Details updated',exact=True).wait_for()
+    assert toc.get_by_role('button',name='1.1 Details',exact=True).count() == 0
     editor.hover(); page.mouse.wheel(0,-10000)
-    page.wait_for_function("document.querySelector('.conf-toc [aria-current=location]')?.textContent==='Overview'")
-    toc.get_by_role('button',name='Overview',exact=True).click()
+    page.wait_for_function("document.querySelector('.conf-toc [aria-current=location]')?.textContent==='1 Overview'")
+    toc.get_by_role('button',name='1 Overview',exact=True).click()
     page.wait_for_function("document.querySelector('.conf-composer .ProseMirror').editor.state.selection.$from.parent.textContent==='Overview'")
     assert editor.locator('h1').evaluate("el=>{const host=el.closest('.cmt-ed-host').getBoundingClientRect(),box=el.getBoundingClientRect();return box.top>=host.top-1 && box.bottom<=host.bottom}")
     separator=page.get_by_role('separator',name='목차 너비 조절',exact=True)
@@ -38,7 +38,7 @@ def test_live_editor_outline_tracks_edits_scroll_and_responsive_navigation(edito
     page.set_viewport_size({'width':700,'height':900})
     page.get_by_role('button',name='목차',exact=True).click()
     page.get_by_role('dialog',name='이 문서의 목차',exact=True).wait_for()
-    toc.get_by_role('button',name='Details updated',exact=True).click()
+    toc.get_by_role('button',name='1.1 Details updated',exact=True).click()
     toc.wait_for(state='hidden')
     page.wait_for_function("document.querySelector('.conf-composer .ProseMirror').editor.state.selection.$from.parent.textContent==='Details updated'")
     page.wait_for_function("document.activeElement===document.querySelector('.conf-composer .ProseMirror')")
@@ -48,15 +48,15 @@ def test_live_editor_outline_tracks_edits_scroll_and_responsive_navigation(edito
     page.get_by_role('button',name='닫기 · 초안 보관',exact=True).click()
     page.get_by_role('button',name='＋ 새 문서',exact=True).click()
     page.get_by_role('button',name='목차',exact=True).click()
-    toc.get_by_role('button',name='Details updated',exact=True).wait_for()
-    assert toc.get_by_role('button',name='Details updated',exact=True).evaluate("el=>el.style.getPropertyValue('--level')") == '2'
-    toc.get_by_role('button',name='Details updated',exact=True).click()
+    toc.get_by_role('button',name='1.1 Details updated',exact=True).wait_for()
+    assert toc.get_by_role('button',name='1.1 Details updated',exact=True).evaluate("el=>el.style.getPropertyValue('--level')") == '2'
+    toc.get_by_role('button',name='1.1 Details updated',exact=True).click()
     page.wait_for_function("document.querySelector('.conf-composer .ProseMirror').editor.state.selection.$from.parent.textContent==='Details updated'")
     page.wait_for_function("document.activeElement===document.querySelector('.conf-composer .ProseMirror')")
     page.keyboard.press('Control+Alt+0')
     editor.locator('p',has_text='Details updated').wait_for()
     page.get_by_role('button',name='목차',exact=True).click()
-    assert toc.get_by_role('button',name='Details updated',exact=True).count() == 0
+    assert toc.get_by_role('button',name='1.1 Details updated',exact=True).count() == 0
     assert not errors
 
 

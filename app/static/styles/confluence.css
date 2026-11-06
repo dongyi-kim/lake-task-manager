@@ -26,6 +26,7 @@
 .conf-compose-title:focus { border-color:var(--accent); }
 .conf-number-toggle { display:flex; align-items:center; gap:8px; margin:16px 0; font-size:12px; }
 .conf-number-toggle span { color:var(--muted); margin-left:8px; }
+.conf-composer .ProseMirror [data-heading-number] { padding-left:0; }
 .conf-composer .ProseMirror [data-heading-number]::before { content:attr(data-heading-number); position:static; display:inline; width:auto; height:auto; background:none; border:0; padding:0; margin:0 .35em 0 0; color:var(--muted); font-variant-numeric:tabular-nums; }
 .conf-composer .cmt-ed-host { scrollbar-width:none; }
 .conf-composer .cmt-ed-host::-webkit-scrollbar { display:none; }

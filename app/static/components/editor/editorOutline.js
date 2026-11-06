@@ -19,7 +19,7 @@ export function editorOutline(editor, changed) {
     rows = [];
     editor.state.doc.descendants((node, pos) => {
       if (node.type.name === 'heading') rows.push({id: String(pos), pos, level: node.attrs.level,
-        title: headingText(node), node: editor.view.nodeDOM(pos)});
+        title: (node.attrs.outlineNumber ? node.attrs.outlineNumber + ' ' : '') + headingText(node), node: editor.view.nodeDOM(pos)});
     });
     let active = rows[0]?.id || '';
     if (mode === 'scroll') {
@@ -31,7 +31,7 @@ export function editorOutline(editor, changed) {
     changed({headings: rows.map(({id,title,level}) => ({id,title,level})), active});
   };
   const schedule = source => { mode = source; if (!frame) frame = requestAnimationFrame(publish); };
-  const transaction = ({transaction: tr}) => { if (tr.docChanged || tr.selectionSet) { jumpScroll = null; schedule('selection'); } };
+  const transaction = ({transaction: tr}) => { if (tr.docChanged || tr.selectionSet || tr.getMeta('headingNumbering')) { jumpScroll = null; schedule('selection'); } };
   const scroll = event => {
     if (!event.target.contains?.(editor.view.dom)) return;
     // scrollIntoView can stop at the document bottom, before the clicked heading reaches
