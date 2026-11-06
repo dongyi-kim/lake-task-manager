@@ -1,5 +1,6 @@
 """Real-browser document navigation with deterministic upstream-shaped responses."""
 import json
+import re
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -70,10 +71,10 @@ def test_tree_search_highlights_hierarchy_without_search_requests(editor_browser
         start = int(args.get('start', ['0'])[0])
         requests.append(start)
         if start == 0:
-            data = {'results': [{'id': '12', 'title': 'Root'}, {'id': '90', 'title': 'Unrelated document'}],
+            data = {'results': [{'id': '12', 'title': 'Data Lake Root'}, {'id': '90', 'title': 'Unrelated document'}],
                     'start': 0, 'size': 2, '_links': {'next': '?start=2'}}
         else:
-            row = {'id': '22', 'title': 'Data Lake 적재 가이드', 'ancestors': [{'id': '12', 'title': 'Root'}]}
+            row = {'id': '22', 'title': 'Data Lake 적재 가이드', 'ancestors': [{'id': '12', 'title': 'Data Lake Root'}]}
             data = {'results': [row, row], 'start': 2, 'size': 2}
         route.fulfill(json=data)
     page.route('**/api/confluence/tree?*', metadata)
@@ -82,23 +83,30 @@ def test_tree_search_highlights_hierarchy_without_search_requests(editor_browser
     page.goto(base + '/#/confluence')
     tree = page.get_by_role('navigation', name='문서 트리', exact=True)
     expect(tree).to_have_attribute('aria-busy', 'false')
-    tree.get_by_role('button', name='Root 하위 문서', exact=True).wait_for()
+    tree.get_by_role('button', name='Data Lake Root 하위 문서', exact=True).wait_for()
     assert tree.locator('[data-page-id="90"] .conf-tree-toggle').count() == 0
     assert tree.locator('[data-page-id="22"]').count() == 0
     for query in ['datalake', 'DATA   LAKE', 'ｄａｔａ　ｌａｋｅ', '적재가이드', '적 재 가 이 드']:
         page.get_by_label('문서 트리 검색', exact=True).fill(query)
-        expect(tree.locator('.is-match')).to_have_count(1)
-        expect(tree.locator('.is-match')).to_contain_text('Data Lake 적재 가이드')
+        expect(tree.locator('.is-match')).to_have_count(1 if query.startswith('적') else 2)
+        expect(tree.locator('[data-page-id="22"].is-match')).to_contain_text('Data Lake 적재 가이드')
         expect(tree.locator('[data-page-id="12"] .conf-tree-toggle')).to_have_attribute('aria-expanded', 'true')
         assert tree.locator('[data-page-id="22"]').evaluate("el => el.style.getPropertyValue('--depth')") == '1'
         expect(tree.get_by_role('button', name='Unrelated document', exact=True)).to_be_visible()
         assert tree.locator('[data-page-id="22"] .conf-tree-toggle').count() == 0
     assert requests == [0, 2] and upstream_searches == []
     assert state['reads'] == []
+    page.get_by_label('문서 트리 검색', exact=True).fill('datalake')
+    page.get_by_role('button', name='다음 일치 문서').click()
+    expect(tree.locator('[data-page-id="22"]')).to_have_class(re.compile('is-current-match'))
+    page.get_by_role('button', name='이전 일치 문서').click()
+    expect(tree.locator('[data-page-id="12"]')).to_have_class(re.compile('is-current-match'))
+    tree.locator('[data-page-id="22"] .conf-tree-title').click()
+    expect(page.locator('.conf-find-status')).to_contain_text('2 / 2개 일치')
     page.get_by_label('문서 트리 검색', exact=True).press('Escape')
     expect(tree.locator('.is-match')).to_have_count(0)
     expect(tree.locator('[data-page-id="22"]')).to_have_count(0)
-    tree.get_by_role('button', name='Root 하위 문서', exact=True).click()
+    tree.get_by_role('button', name='Data Lake Root 하위 문서', exact=True).click()
     page.get_by_label('문서 트리 검색', exact=True).fill('not present')
     expect(page.locator('.conf-find-status')).to_contain_text('일치하는 제목 없음')
     expect(tree.locator('[data-page-id="22"]')).to_be_visible()
