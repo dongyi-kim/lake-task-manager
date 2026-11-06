@@ -40,7 +40,8 @@ def storage_value(value, format="storage"):
         return "<p>" + html.escape(value).replace("\n", "<br />") + "</p>"
     if format != "storage":
         raise CommandError("format은 storage 또는 text여야 합니다.")
-    if re.search(r"<!\s*(?:DOCTYPE|ENTITY)\b", value, re.I):
+    markup = re.sub(r'<!\[CDATA\[[\s\S]*?\]\]>', '', value)
+    if re.search(r"<!\s*(?:DOCTYPE|ENTITY)\b", markup, re.I):
         raise CommandError("Confluence 본문에 DTD나 외부 entity를 넣을 수 없습니다.")
     # Do not round-trip through Jira's HTML sanitizer: it drops ac:/ri: macros.
     # Confluence validates storage XHTML on write; rejected markup remains a 4xx.

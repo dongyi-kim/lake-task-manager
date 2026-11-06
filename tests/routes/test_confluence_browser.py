@@ -55,11 +55,11 @@ def test_pinned_view_and_revision_check_delegate_to_shared_service(browser_api, 
     def body(received, cid, version=None, representation="storage"):
         calls.append((received, cid, version, representation))
         return {"id": cid, "title": "문서", "version": {"number": version}, "space": {"key": "ETL"},
-                "body": {"view": {"value": '<h1>내용</h1><script>alert(1)</script>'}}}
+                "body": {representation: {"value": '<h1>내용</h1><script>alert(1)</script>'}}}
     monkeypatch.setattr(service, "body", body)
     monkeypatch.setattr(service, "check_revision", lambda c, p, v: {"pageId": p, "latestPublishedVersion": 4, "isLatest": v == 4})
     response = http.get("/api/confluence/pages/12?version=3").json()
-    assert calls == [(client, "12", 3, "view")]
+    assert calls == [(client, "12", 3, "view"), (client, "12", 3, "storage")]
     assert response["html"] == "<h1>내용</h1>"
     assert "body" not in response
     assert http.get("/api/confluence/pages/12/revision?known_version=3").json()["isLatest"] is False
@@ -119,6 +119,6 @@ def test_reader_uses_head_path_when_body_does_not_expand_ancestors(browser_api, 
     ancestors = [{"id": "1", "title": "Root"}, {"id": "2", "title": "Guides"}]
     monkeypatch.setattr(service, "head", lambda *a, **k: {"id": "12", "space": {"key": "ETL"}, "ancestors": ancestors})
     monkeypatch.setattr(service, "body", lambda *a, **k: {"id": "12", "space": {"key": "ETL"},
-        "version": {"number": 1}, "body": {"view": {"value": "<h2>Body</h2>"}}})
+        "version": {"number": 1}, "body": {"view": {"value": "<h2>Body</h2>"}, "storage": {"value": "<h2>Body</h2>"}}})
     response = http.get("/api/confluence/pages/12")
     assert response.status_code == 200 and response.json()["ancestors"] == ancestors

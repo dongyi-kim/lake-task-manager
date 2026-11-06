@@ -352,9 +352,11 @@ def _safe_url(value, allow_data_image=False):
 
 
 class _Sanitizer(HTMLParser):
-    def __init__(self, *, jira_panels=False):
+    def __init__(self, *, jira_panels=False, confluence=False):
         super().__init__(convert_charrefs=True)
         self._jira_panels = jira_panels
+        self._confluence = confluence
+        self._tags = _ALLOWED_TAGS | ({"details", "summary", "section"} if confluence else set())
         self.out = []
         self._drop_depth = 0     # _DROP_SUBTREE 내부면 >0
         self._cb_index = 0       # 이 필드에서 몇 번째 체크박스인가 — 원본 순서 = 화면 순서
@@ -393,7 +395,7 @@ class _Sanitizer(HTMLParser):
                 return           # void drop 태그: 그 태그만 버리고 이어감(뒤 내용 안 삼킴)
             self._drop_depth = 1
             return
-        if tag not in _ALLOWED_TAGS:
+        if tag not in self._tags:
             return               # 태그만 제거, 자식 텍스트는 남김
         self.out.append("<" + tag + self._attrs(tag, attrs) + ">")
 
@@ -403,7 +405,7 @@ class _Sanitizer(HTMLParser):
         if tag == "input":
             self._emit_input(attrs)
             return
-        if tag in _DROP_SUBTREE or tag not in _ALLOWED_TAGS:
+        if tag in _DROP_SUBTREE or tag not in self._tags:
             return
         self.out.append("<" + tag + self._attrs(tag, attrs) + " />")
 
@@ -412,7 +414,7 @@ class _Sanitizer(HTMLParser):
             if tag in _DROP_SUBTREE:
                 self._drop_depth -= 1
             return
-        if tag not in _ALLOWED_TAGS or tag in _VOID:
+        if tag not in self._tags or tag in _VOID:
             return
         self.out.append("</" + tag + ">")
 
@@ -436,6 +438,8 @@ class _Sanitizer(HTMLParser):
 
     def _attrs(self, tag, attrs):
         allowed = _ALLOWED_ATTRS.get(tag, set())
+        if self._confluence:
+            allowed = allowed | {"id", "data-conf-code", "data-conf-toc", "data-conf-dynamic"}
         parts, classes, href_val, src_val, safe_styles = [], [], None, None, []
         preferred_panel = None
         for k, v in attrs:
@@ -473,7 +477,8 @@ class _Sanitizer(HTMLParser):
             if tag == "div" and panel == "dashed":
                 parts.append('data-jira-panel="dashed"')
         classes = [c for c in classes
-                   if c in _ALLOWED_CLASSES or c.startswith(("lang-", "language-"))]
+                   if c in _ALLOWED_CLASSES or c.startswith(("lang-", "language-"))
+                   or self._confluence and c in {"conf-native-panel", "conf-expand", "conf-code", "conf-no-panel", "conf-inline-toc", "conf-toc-zone", "conf-dynamic-macro", "conf-macro-unavailable", "conf-status", "conf-status-subtle", "conf-status-grey", "conf-status-red", "conf-status-yellow", "conf-status-green", "conf-status-blue"}]
         if self._jira_panels and tag == "div" and kind:
             # Legacy classes FIRST: released LTM versions read the first callout-*.
             classes.append("jePanel_" + panel)
@@ -556,11 +561,15 @@ def serialize_jira_html(html):
     return _sanitize_html(html, jira_panels=True)
 
 
-def _sanitize_html(html, *, jira_panels=False):
+def sanitize_confluence_html(html):
+    return _sanitize_html(html, confluence=True)
+
+
+def _sanitize_html(html, *, jira_panels=False, confluence=False):
     if not html:
         return ""
     try:
-        s = _Sanitizer(jira_panels=jira_panels)
+        s = _Sanitizer(jira_panels=jira_panels, confluence=confluence)
         s.feed(str(html))
         s.close()
         return "".join(s.out)

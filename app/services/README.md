@@ -8,6 +8,7 @@
 - `confluence_commands.py`: 설정된 Space 안에서 페이지·댓글·첨부·라벨을 변경한다. 같은 인증 provider,
   리비전 조회, mutation receipt와 캐시 무효화를 사용한다. 기존 문서 수정은 공동편집 검증 설정이 필요하다.
 - `confluence_content_reads.py`: 댓글 원문 분할 조회와 버전 고정 첨부 다운로드. MCP 미리보기는 크기를 제한한다.
+- `confluence_macros.py`: native storage 매크로 표시, 권한을 확인한 Include 참조, 동적 트리 descriptor.
 - `confluence_organization.py`: 같은 Space의 이동·순서·휴지통·복원·직접 제한 및 의존 순서가 있는 일괄 작업.
   복제·Space 간 이동·영구 삭제는 제공하지 않는다.
 

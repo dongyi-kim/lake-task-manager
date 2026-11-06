@@ -194,7 +194,7 @@ def list_spaces(client, start=0, limit=50):
 
 def list_pages(client, space_key="", parent_id="", start=0, limit=50):
     _pagination(start, limit)
-    params = {"start": start, "limit": limit, "expand": "space,version,ancestors"}
+    params = {"start": start, "limit": limit, "expand": "space,version,ancestors,history"}
     if parent_id:
         parent_id = resolve_page(client, parent_id)
         parent = head(client, parent_id)

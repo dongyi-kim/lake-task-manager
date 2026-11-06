@@ -8,7 +8,8 @@ from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse, Response
 
 from app.auth.base import PermissionDenied, SessionExpired, UpstreamError, UpstreamUnavailable
-from app.content.htmlsafe import sanitize_html
+from app.content.htmlsafe import sanitize_confluence_html
+from app.services.confluence_macros import MacroRenderer, has_macros
 from app.jira import confluence_service as service
 
 
@@ -46,7 +47,7 @@ def _media_path(base, page_id, value):
     return target.path + (("?" + target.query) if target.query else "")
 
 
-def document_html(raw, base, page_id):
+def document_html(raw, base, page_id, media_owners=()):
     """Sanitize server-rendered macros; resolve links and proxy only this page's media."""
     # Retain known native macro intent through the shared restrictive class allowlist.
     # This affects display only; Confluence storage is never rewritten as Jira panels.
@@ -67,16 +68,18 @@ def document_html(raw, base, page_id):
         def handle_starttag(self, tag, attrs):
             values = dict(attrs)
             if tag == "img":
-                path = _media_path(base, page_id, values.get("src", ""))
+                owner = next((str(owner) for owner in (page_id, *media_owners) if _media_path(base, str(owner), values.get("src", ""))), None)
+                path = _media_path(base, owner, values.get("src", "")) if owner else None
                 if not path:
                     self.out.append('<span class="conf-media-unavailable">' + escape(values.get("alt") or "외부 이미지") + "</span>")
                     return
-                values["src"] = f"/api/confluence/pages/{page_id}/image?path=" + quote(path, safe="")
+                values["src"] = f"/api/confluence/pages/{owner}/image?path=" + quote(path, safe="")
                 values["loading"] = "lazy"
             if tag == "a" and values.get("href"):
-                path = _media_path(base, page_id, values["href"])
-                values["href"] = (f"/api/confluence/pages/{page_id}/file?path=" + quote(path, safe="")
-                                  if path else urljoin(base.rstrip("/") + "/", values["href"]))
+                owner = next((str(owner) for owner in (page_id, *media_owners) if _media_path(base, str(owner), values["href"])), None)
+                path = _media_path(base, owner, values["href"]) if owner else None
+                values["href"] = (f"/api/confluence/pages/{owner}/file?path=" + quote(path, safe="")
+                                  if path else values["href"] if values["href"].startswith("#") else urljoin(base.rstrip("/") + "/", values["href"]))
             if tag == "input":
                 values["disabled"] = "disabled"
             self.out.append("<" + tag + "".join(" " + k + '="' + escape(v or "", quote=True) + '"'
@@ -91,7 +94,7 @@ def document_html(raw, base, page_id):
             self.out.append(escape(data))
 
     parser = Links()
-    parser.feed(sanitize_html(raw))
+    parser.feed(sanitize_confluence_html(raw))
     parser.close()
     return "".join(parser.out)
 
@@ -145,7 +148,7 @@ def build_confluence_router(*, get_client):
         return reply(read)
 
     @router.get("/search")
-    def search(q: str = Query("", max_length=1000), space: str = Query("", max_length=255),
+    def search(q: str = Query("", max_length=1000), space: str = Query("", max_length=255), ancestor: str = "",
                start: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100)):
         def run():
             import json
@@ -158,14 +161,18 @@ def build_confluence_router(*, get_client):
                 clauses.append("space = " + json.dumps(space, ensure_ascii=False))
             else:
                 clauses.append("space in (" + ",".join(json.dumps(value) for value in _spaces(client)) + ")")
+            if ancestor:
+                parent = service.head(client, _page_id(ancestor))
+                _check_space(client, parent.get('space', {}).get('key'))
+                clauses.append('ancestor = ' + ancestor)
             return service.search(client, " AND ".join(clauses) + " ORDER BY lastmodified DESC", start, limit)
         return reply(run)
 
     @router.get("/pages/{page_id}")
-    def page(page_id: str, version: int | None = Query(None, ge=1)):
+    def page(page_id: str, version: int | None = Query(None, ge=1), refresh: bool = False):
         def read():
             client = get_client()
-            current = service.head(client, _page_id(page_id))
+            current = service.head(client, _page_id(page_id), force=refresh)
             _check_space(client, (current.get("space") or {}).get("key"))
             data = service.body(client, page_id, version=version, representation="view")
             _check_space(client, (data.get("space") or {}).get("key"))
@@ -174,11 +181,48 @@ def build_confluence_router(*, get_client):
             # body.view does not expand ancestors. Navigation follows the current
             # tree even when the reader is displaying a pinned historical body.
             result["ancestors"] = current.get("ancestors") or []
-            result["html"] = document_html((data.get("body", {}).get("view") or {}).get("value", ""), base, page_id)
+            source = service.body(client, page_id, version=data["version"]["number"], representation="storage")
+            storage = source['body']['storage']['value']
+            raw = (data.get("body", {}).get("view") or {}).get("value", "")
+            owners = ()
+            if has_macros(storage):
+                renderer = MacroRenderer(client, force=refresh)
+                try:
+                    raw = renderer.render({**source, "ancestors": current.get("ancestors") or []}, storage)
+                    owners = renderer.owners
+                    result['macroWarnings'] = renderer.warnings
+                except (ValueError, SyntaxError):
+                    result['macroWarnings'] = ['원문의 일부 구조를 해석하지 못해 Confluence 렌더링 결과를 표시합니다.']
+            result["html"] = document_html(raw, base, page_id, owners)
             result.pop("body", None)
             result["url"] = base + f"/pages/viewpage.action?pageId={page_id}"
             result["confluenceBase"] = base
+            features = getattr(client.s, 'confluence_verified_features', ()) or ()
+            if isinstance(features, str):
+                features = [value.strip() for value in features.split(',')]
+            result['canEdit'] = str(getattr(client, 'env', '')).split('@', 1)[0] == 'mock' or (getattr(client.s, 'confluence_verification_revision', '') == '9.2.4'
+                and 'update_page' in features)
             return result
+        return reply(read)
+
+    @router.get("/pages/{page_id}/source")
+    def source(page_id: str):
+        def read():
+            client = get_client()
+            current = service.head(client, _page_id(page_id), force=True)
+            _check_space(client, (current.get('space') or {}).get('key'))
+            data = service.body(client, page_id, version=current['version']['number'])
+            return {'id': page_id, 'title': data['title'], 'space': data['space'], 'version': data['version'],
+                    'storage': data['body']['storage']['value']}
+        return reply(read)
+
+    @router.get("/pages/{page_id}/attachments")
+    def attachments(page_id: str, start: int = Query(0, ge=0)):
+        def read():
+            client = get_client()
+            current = service.head(client, _page_id(page_id))
+            _check_space(client, (current.get('space') or {}).get('key'))
+            return service.list_related(client, page_id, 'attachment', start, 100)
         return reply(read)
 
     @router.get("/pages/{page_id}/revision")

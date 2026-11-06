@@ -14,6 +14,8 @@ DOCUMENT_IDS = {
     "long_title": "890100000011",
     "pmo": "890100000020",
     "pmo_child": "890100000021",
+    "macros": "890100000030",
+    "excerpt": "890100000031",
 }
 PAGINATION_CHILD_IDS = tuple(str(890100001000 + index) for index in range(1, 56))
 
@@ -97,4 +99,20 @@ def build_confluence_documents(today):
         "<h2>프로젝트 문서</h2><p>DL과 다른 Space의 문서입니다. Space 전환 시 이전 검색 결과와 트리가 섞이지 않아야 합니다.</p>", space="PMO")
     add(DOCUMENT_IDS["pmo_child"], "[UI 검증] PMO 주간 점검",
         "<h2>진척 확인</h2><p>이번 주 완료 사항과 다음 주 계획을 확인합니다.</p>", parent=pmo, space="PMO")
+    add(DOCUMENT_IDS['macros'], '[UI 검증] Confluence 기본 매크로', '''
+<p>Confluence 원문 형식으로 작성하고 LTM에서도 접기·펼치기와 목차를 사용할 수 있습니다.</p>
+<ac:structured-macro ac:name="status"><ac:parameter ac:name="title">운영 준비</ac:parameter><ac:parameter ac:name="colour">Green</ac:parameter><ac:parameter ac:name="subtle">true</ac:parameter></ac:structured-macro>
+<ac:structured-macro ac:name="toc"/>
+<h2>배포 전 확인</h2>
+<ac:structured-macro ac:name="info"><ac:parameter ac:name="title">검증 기준</ac:parameter><ac:rich-text-body><p>원천과 목적지의 기준 시각을 맞춘 뒤 건수·중복·NULL을 확인하세요.</p></ac:rich-text-body></ac:structured-macro>
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">운영 체크리스트 자세히 보기</ac:parameter><ac:rich-text-body><h3>권한과 스케줄</h3><ul><li>실행 계정의 조회·쓰기 권한</li><li>재실행 구간의 중복 방지</li><li>서비스 조회 정상 여부</li></ul></ac:rich-text-body></ac:structured-macro>
+<h2>품질 확인 쿼리</h2>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:parameter ac:name="linenumbers">true</ac:parameter><ac:plain-text-body><![CDATA[SELECT load_date, COUNT(*) AS row_count
+FROM lake.daily_orders
+GROUP BY load_date;]]></ac:plain-text-body></ac:structured-macro>
+<hr/><h2>공통 운영 원칙</h2>
+<ac:structured-macro ac:name="excerpt-include"><ac:parameter ac:name="">[UI 검증] 공통 발췌 원문</ac:parameter></ac:structured-macro>
+<h2>관련 문서</h2><ac:structured-macro ac:name="children"/>
+''', parent=guide)
+    add(DOCUMENT_IDS['excerpt'], '[UI 검증] 공통 발췌 원문', '<ac:structured-macro ac:name="excerpt"><ac:rich-text-body><p>검증에 실패한 데이터는 공개하지 않습니다. 기존 정상 데이터는 새 검증이 끝날 때까지 유지합니다.</p></ac:rich-text-body></ac:structured-macro>', parent=DOCUMENT_IDS['macros'])
     return rows
