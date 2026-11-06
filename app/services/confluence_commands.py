@@ -193,6 +193,9 @@ class ConfluenceCommands:
             raise ValueError("Completed transport requires command reconciliation")
         def after_success(result):
             if invalidate_result:
+                from app.services.confluence_tree import invalidate_changed_branches
+                invalidate_changed_branches(self.client, kind, payload, result or {},
+                                            [*affected_ids, (result or {}).get('id')])
                 self.invalidate([*affected_ids, (result or {}).get("id")])
             if invalidate_permissions:
                 scope = reads.scope_key(self.client)

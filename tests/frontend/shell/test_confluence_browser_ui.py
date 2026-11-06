@@ -22,13 +22,19 @@ def install_documents(page):
             if state["spaces_fail"]:
                 request.fulfill(status=503, json={"service": "confluence", "error": "Confluence 연결 대기"}); return
             data = {"results": [{"id": 1, "key": "ETL", "name": "ETL 문서"}, {"id": 2, "key": "OPS", "name": "운영"}], "size": 2}
-        elif path.endswith("/tree"):
+        elif path.endswith("/tree") or path.endswith('/snapshot') or path.endswith('/branch'):
             data = {"results": [
                 {"id": "12", "title": "적재 가이드", "ancestors": []},
                 {"id": "90", "title": "홈페이지 밖 루트 문서", "ancestors": []},
                 {"id": "13", "title": "하위 운영 문서", "ancestors": [{"id": "12", "title": "적재 가이드"}]},
                 {"id": "22", "title": "아직 펼치지 않은 적재 설계", "ancestors": [{"id": "12", "title": "적재 가이드"}]},
             ], "size": 4, "nextStart": None}
+            if path.endswith('/snapshot'):
+                data = {'batches': [{'parent': '', 'start': 0, **data}], 'jobs': []}
+            elif path.endswith('/branch'):
+                parent = args.get('parent', [''])[0]
+                data['results'] = [r for r in data['results'] if str((r.get('ancestors') or [{}])[-1].get('id', '')) == parent]
+                data.update(parent=parent, start=0)
         elif path.endswith("/search"):
             data = {"results": [{"content": {"id": "22", "title": "아직 펼치지 않은 적재 설계",
                     "ancestors": [{"id": "12", "title": "적재 가이드"}], "space": {"key": "ETL"}}}], "size": 1}
@@ -67,17 +73,19 @@ def test_tree_search_highlights_hierarchy_without_search_requests(editor_browser
     state = install_documents(page)
     requests = []
     def metadata(route):
+        if '/snapshot?' in route.request.url:
+            route.fulfill(json={'batches': [{'parent': '', 'start': 0, 'results': [{'id':'12','title':'Data Lake Root','hasChildren':True},{'id':'90','title':'Unrelated document','hasChildren':False}], 'nextStart': None}], 'jobs': [{'parent': '12', 'start': 0, 'depth': 1}]}); return
         args = parse_qs(urlsplit(route.request.url).query)
-        start = int(args.get('start', ['0'])[0])
-        requests.append(start)
-        if start == 0:
-            data = {'results': [{'id': '12', 'title': 'Data Lake Root'}, {'id': '90', 'title': 'Unrelated document'}],
-                    'start': 0, 'size': 2, 'nextStart': 2}
+        parent = args.get('parent', [''])[0]
+        requests.append(parent)
+        if not parent:
+            data = {'results': [{'id': '12', 'title': 'Data Lake Root', 'hasChildren': True}, {'id': '90', 'title': 'Unrelated document', 'hasChildren': False}],
+                    'parent': '', 'start': 0, 'nextStart': None}
         else:
-            row = {'id': '22', 'title': 'Data Lake 적재 가이드', 'ancestors': [{'id': '12', 'title': 'Data Lake Root'}]}
-            data = {'results': [row, row], 'start': 2, 'size': 2, 'nextStart': None}
+            row = {'id': '22', 'title': 'Data Lake 적재 가이드', 'ancestors': [{'id': '12', 'title': 'Data Lake Root'}], 'hasChildren': False}
+            data = {'results': [row, row] if parent == '12' else [], 'parent': parent, 'start': 0, 'nextStart': None}
         route.fulfill(json=data)
-    page.route('**/api/confluence/tree?*', metadata)
+    page.route('**/api/confluence/tree/**', metadata)
     upstream_searches = []
     page.on('request', lambda request: upstream_searches.append(request.url) if '/api/confluence/search?' in request.url else None)
     page.goto(base + '/#/confluence')
@@ -94,7 +102,7 @@ def test_tree_search_highlights_hierarchy_without_search_requests(editor_browser
         assert tree.locator('[data-page-id="22"]').evaluate("el => el.style.getPropertyValue('--depth')") == '1'
         expect(tree.get_by_role('button', name='Unrelated document', exact=True)).to_be_visible()
         assert tree.locator('[data-page-id="22"] .conf-tree-toggle').count() == 0
-    assert requests == [0, 2] and upstream_searches == []
+    assert requests == ['12'] and upstream_searches == []
     assert state['reads'] == []
     page.get_by_label('문서 트리 검색', exact=True).fill('datalake')
     page.get_by_role('button', name='다음 일치 문서').click()
