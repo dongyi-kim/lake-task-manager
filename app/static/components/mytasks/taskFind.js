@@ -3,8 +3,7 @@ import { STATES } from "./taskModel.js";
 import { dueLabel } from "../ui/DueText.js";
 import { typeLabel } from "../../lib/colors.js";
 import { vocBadgeSegs } from "../../lib/voc.js";
-
-const normalize = (value) => String(value || "").normalize("NFKC").toLocaleLowerCase().trim();
+import { normalizeSearchText as normalize } from "../../lib/searchText.js";
 
 export function taskFindRows(sections, epicTitle = (key) => key) {
   const rows = [], seen = new Set();

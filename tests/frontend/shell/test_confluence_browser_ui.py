@@ -52,6 +52,43 @@ def install_documents(page):
     return state
 
 
+def test_tree_search_ignores_case_and_whitespace_across_unopened_pages(editor_browser):
+    from playwright.sync_api import expect
+
+    page, base, errors, _ = editor_browser
+    state = install_documents(page)
+    requests = []
+    def search(route):
+        args = parse_qs(urlsplit(route.request.url).query)
+        query, start = args.get('q', [''])[0], int(args.get('start', ['0'])[0])
+        requests.append((query, start))
+        if query:
+            # The upstream text index cannot find a joined word across token boundaries.
+            data = {'results': [], 'start': 0, 'size': 0}
+        elif start == 0:
+            data = {'results': [{'content': {'id': '20', 'title': 'Unrelated document'}}],
+                    'start': 0, 'size': 1, '_links': {'next': '?start=1'}}
+        else:
+            data = {'results': [{'content': {'id': '22', 'title': 'Data Lake 적재 가이드'}},
+                                {'content': {'id': '22', 'title': 'Data Lake 적재 가이드'}}],
+                    'start': 1, 'size': 2}
+        route.fulfill(json=data)
+    page.route('**/api/confluence/search?*', search)
+    page.goto(base + '/#/confluence')
+    page.get_by_role('button', name='홈페이지 밖 루트 문서', exact=True).wait_for()
+    for query in ['datalake', 'DATA   LAKE', 'ｄａｔａ　ｌａｋｅ', '적재가이드', '적 재 가 이 드']:
+        page.get_by_label('문서 트리 검색', exact=True).fill(query)
+        page.locator('.conf-search button').click()
+        expect(page.locator('.conf-search-result')).to_have_count(1)
+        expect(page.locator('.conf-search-result')).to_contain_text('Data Lake 적재 가이드')
+        expect(page.locator('.conf-search button')).to_be_enabled()
+    assert ('', 1) in requests  # a nonmatching first metadata page must not end the scan
+    assert state['reads'] == []  # title matching never fetches document bodies
+    page.get_by_label('문서 트리 검색', exact=True).fill('   ')
+    expect(page.locator('.conf-search-result')).to_have_count(0)
+    assert not errors
+
+
 def test_confluence_tree_favorites_search_revision_and_responsive(editor_browser, tmp_path):
     page, base, errors, _ = editor_browser
     state = install_documents(page)

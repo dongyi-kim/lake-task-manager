@@ -27,6 +27,12 @@ for(const panel of [grouped,compact]) {
   assert.equal(findTaskCards(rows,'한글')[0].parentKey,'DL-1');
   assert.equal(findTaskCards(rows,'강수아').length,2);
   assert.equal(findTaskCards(rows,'공통 epic').length,2);
+  for (const query of ['공통EPIC', '공 통\tＥＰＩＣ', ' 공통\u00a0 ePic ']) {
+    assert.equal(findTaskCards(rows,query).length,2,query);
+  }
+  assert.equal(findTaskCards(rows,'한 글하위')[0].key,'DL-2');
+  assert.equal(findTaskCards(rows,'d l - 2')[0].key,'DL-2');
+  assert.equal(findTaskCards(rows,'\t\u00a0　').length,0);
   assert.equal(findTaskCards(rows,'').length,0);
   assert.equal(nextTaskMatch(rows,'DL-2',1),'DL-1');
   assert.equal(nextTaskMatch(rows,'DL-1',-1),'DL-2');
