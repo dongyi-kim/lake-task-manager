@@ -28,7 +28,7 @@ export default {
       this.recentDocuments = recentItems(100, 'confluence')
         .filter(row => row.url.startsWith(this.base.replace(/\/+$/, '') + '/'))
         .map(row => ({id:confluencePageId(row.pageId || row.id || row.url), title:row.title,
-          space:row.space?.key || row.space || '', openedAt:row.openedAt}))
+          space:String(row.space?.key || row.space || ''), openedAt:row.openedAt}))
         .filter(row => row.id && (!row.space || this._recentSpaces?.has(row.space.toLowerCase())));
     },
     async loadRecentDocuments(migrate = true) {

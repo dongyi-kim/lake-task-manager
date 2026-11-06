@@ -11,6 +11,7 @@ const LOCAL_KEY = "recent.items";
 const LOCAL_KEEP = 100;
 let revision = 0;
 let lastOpened = '';
+const unsynced = new Map();
 export const recentRevision = () => revision;
 
 const _BROWSE = /\/browse\/([A-Za-z][A-Za-z0-9]*-\d+)/;
@@ -84,7 +85,7 @@ export function recentItems(limit = 20, kind = "") {
 
 /** 서버 정본과 로컬 최신 항목을 합쳐 미러를 갱신한다. 방금 연 항목이 늦은 GET에 지워지지 않는다. */
 export function hydrateRecent(items, authoritativeKind = '') {
-  const local = stored().filter(item => !authoritativeKind || item.kind !== authoritativeKind);
+  const local = stored().filter(item => !authoritativeKind || item.kind !== authoritativeKind || unsynced.has(item.url));
   const next = merge(items || [], local);
   save(next);
   return next;
@@ -94,6 +95,8 @@ export function hydrateRecent(items, authoritativeKind = '') {
 export function forgetRecent(url) {
   revision++;
   const target = canonicalUrl(url || '', 'confluence');
+  unsynced.delete(target); _last.delete(target);
+  if (lastOpened === target) lastOpened = '';
   save(stored().filter((item) => canonicalUrl(item.url, item.kind, item) !== target));
 }
 
@@ -115,9 +118,13 @@ export function recordOpen(item) {
   lastOpened = url;
   _last.set(url, {at:now, signature});
   revision++;
+  const write = {}; unsynced.set(url, write);
   // 로컬 미러가 먼저다. POST가 지연/실패해도 이 브라우저의 다음 피커에는 즉시 나타난다.
   save(merge([normalize(payload, now / 1000)], stored()));
-  return api.recentAdd(payload).then(() => true, () => false); // Persistence failure keeps the immediate mirror.
+  return api.recentAdd(payload).then(() => {
+    if (unsynced.get(url) === write) unsynced.delete(url);
+    return true;
+  }, () => false); // Persistence failure keeps the immediate mirror.
 }
 
 /** 검색 하이라이트(<mark>)가 섞인 제목을 평문으로 — 저장·표시용. */

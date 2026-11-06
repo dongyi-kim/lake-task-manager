@@ -30,6 +30,8 @@ def test_recent_identity_mirror_order_and_priority_scope():
       assert.equal(recentItems(1000,'confluence').length,100);
       forgetRecent(base+'/spaces/ETL/pages/6/Title');
       assert.equal(recentItems(1000,'confluence').length,99);
+      await recordOpen(doc(6)); // Explicit delete must not leave a cooldown that prevents reopening.
+      assert.equal(recentItems(100,'confluence')[0].pageId,'6');
       hydrateRecent([doc(42)],'confluence');
       assert.equal(recentItems(1000,'confluence').length,1);
       assert.equal(recentItems(1000,'jira').length,100);
@@ -45,6 +47,12 @@ def test_recent_identity_mirror_order_and_priority_scope():
       pending[1]([doc(42)]); await newer;
       pending[0]([doc(43)]); await old;
       assert.equal(recentItems(100,'confluence')[0].pageId,'42','late history snapshot must not overwrite a newer one');
+      let saved;
+      api.recentAdd=()=>new Promise(resolve=>saved=resolve);
+      const saving=recordOpen(doc(44));
+      hydrateRecent([doc(42)],'confluence');
+      assert.equal(recentItems(100,'confluence')[0].pageId,'44','a GET issued during a write must retain that local visit');
+      saved({ok:true}); await saving;
     '''.replace('RECENT',json.dumps((REPO_ROOT/'app/static/lib/recent.js').as_uri())).replace(
         'TREE',json.dumps((REPO_ROOT/'app/static/lib/confluenceTree.js').as_uri())).replace(
         'API',json.dumps((REPO_ROOT/'app/static/lib/api.js').as_uri())).replace(
