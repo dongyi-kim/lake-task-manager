@@ -48,6 +48,17 @@ def _media_path(base, page_id, value):
 
 def document_html(raw, base, page_id):
     """Sanitize server-rendered macros; resolve links and proxy only this page's media."""
+    # Retain known native macro intent through the shared restrictive class allowlist.
+    # This affects display only; Confluence storage is never rewritten as Jira panels.
+    def panel_class(match):
+        mapping = {"information": "info", "info": "info", "note": "note", "tip": "tip", "warning": "warning"}
+        classes = match[3].split()
+        for name, kind in mapping.items():
+            if "confluence-information-macro-" + name in classes:
+                classes += ["callout", "callout-" + kind]
+                break
+        return match[1] + match[2] + " ".join(classes) + match[2]
+    raw = re.sub(r'''(\bclass\s*=\s*)(["'])(.*?)\2''', panel_class, raw, flags=re.I | re.S)
     class Links(HTMLParser):
         def __init__(self):
             super().__init__(convert_charrefs=True)
@@ -63,7 +74,9 @@ def document_html(raw, base, page_id):
                 values["src"] = f"/api/confluence/pages/{page_id}/image?path=" + quote(path, safe="")
                 values["loading"] = "lazy"
             if tag == "a" and values.get("href"):
-                values["href"] = urljoin(base.rstrip("/") + "/", values["href"])
+                path = _media_path(base, page_id, values["href"])
+                values["href"] = (f"/api/confluence/pages/{page_id}/file?path=" + quote(path, safe="")
+                                  if path else urljoin(base.rstrip("/") + "/", values["href"]))
             if tag == "input":
                 values["disabled"] = "disabled"
             self.out.append("<" + tag + "".join(" " + k + '="' + escape(v or "", quote=True) + '"'

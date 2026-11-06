@@ -9,6 +9,14 @@ from app.auth.base import SessionExpired, UpstreamError, UpstreamUnavailable
 from app.routes.confluence import build_confluence_router, document_html, _media_path
 
 
+def test_native_callout_style_and_attachment_link_survive_sanitizing():
+    rendered = document_html('<div class="confluence-information-macro confluence-information-macro-tip"><p>Tip</p></div>'
+        '<a href="/wiki/download/attachments/12/report.txt">Report</a>', "https://docs.example/wiki", "12")
+    assert 'class="callout callout-tip"' in rendered
+    assert '/api/confluence/pages/12/file?path=' in rendered
+    assert "report.txt" in rendered
+
+
 @pytest.fixture()
 def browser_api(monkeypatch):
     from app.routes import confluence
