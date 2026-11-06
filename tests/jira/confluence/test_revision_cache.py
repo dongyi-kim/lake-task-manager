@@ -64,6 +64,46 @@ def test_force_revision_check_fetches_only_metadata_and_reuses_original_body(sou
     assert len([p for _, p in source.calls if "body.storage" in p["expand"]]) == 2
 
 
+def test_browser_body_pair_primes_mcp_source_in_one_versioned_request(source):
+    original = source.fetch
+    def fetch(path, params=None):
+        data = original(path, params)
+        if 'body.view' in params.get('expand', ''):
+            data['body']['view'] = {'value': '<p>rendered first revision</p>'}
+        return data
+    source.client._conf_get_json = fetch
+    view = conf.body(source.client, '100', representation='view', prefetch_storage=True)
+    source_body = conf.body(source.client, '100')
+    assert len(source.calls) == 2  # head + view/storage together
+    assert view['body'] == {'view': {'value': '<p>rendered first revision</p>'}}
+    assert set(source_body['body']) == {'storage'}
+    fetched = source_body['cacheInfo']['bodyFetchedAt']
+    assert conf.body(source.client, '100')['cacheInfo']['bodyFetchedAt'] == fetched
+    assert len(source.calls) == 2
+
+
+def test_incomplete_combined_body_does_not_poison_either_cache(source):
+    # The source fixture returns storage only: the complete paired response is required.
+    with pytest.raises(UpstreamUnavailable):
+        conf.body(source.client, '100', representation='view', prefetch_storage=True)
+    assert not source.cache.entries_by_prefix('confbody:')
+    assert not source.cache.entries_by_prefix('confview:')
+
+
+def test_combined_body_respects_write_generation_fence(source):
+    original = source.fetch
+    def fetch(path, params=None):
+        data = original(path, params)
+        if 'body.view' in params.get('expand', ''):
+            data['body']['view'] = {'value': '<p>old</p>'}
+            source.cache.invalidate('conf')  # A write completes while the old read is pending.
+        return data
+    source.client._conf_get_json = fetch
+    conf.body(source.client, '100', representation='view', prefetch_storage=True)
+    assert not source.cache.entries_by_prefix('confbody:')
+    assert not source.cache.entries_by_prefix('confview:')
+
+
 def test_30_day_retention_survives_purge_and_preserves_source_age(source, monkeypatch):
     now = time.time()
     monkeypatch.setattr("app.infra.cache.time.time", lambda: now)
