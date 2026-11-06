@@ -28,7 +28,7 @@ def install_documents(page):
                 {"id": "90", "title": "홈페이지 밖 루트 문서", "ancestors": []},
                 {"id": "13", "title": "하위 운영 문서", "ancestors": [{"id": "12", "title": "적재 가이드"}]},
                 {"id": "22", "title": "아직 펼치지 않은 적재 설계", "ancestors": [{"id": "12", "title": "적재 가이드"}]},
-            ], "size": 4}
+            ], "size": 4, "nextStart": None}
         elif path.endswith("/search"):
             data = {"results": [{"content": {"id": "22", "title": "아직 펼치지 않은 적재 설계",
                     "ancestors": [{"id": "12", "title": "적재 가이드"}], "space": {"key": "ETL"}}}], "size": 1}
@@ -72,10 +72,10 @@ def test_tree_search_highlights_hierarchy_without_search_requests(editor_browser
         requests.append(start)
         if start == 0:
             data = {'results': [{'id': '12', 'title': 'Data Lake Root'}, {'id': '90', 'title': 'Unrelated document'}],
-                    'start': 0, 'size': 2, '_links': {'next': '?start=2'}}
+                    'start': 0, 'size': 2, 'nextStart': 2}
         else:
             row = {'id': '22', 'title': 'Data Lake 적재 가이드', 'ancestors': [{'id': '12', 'title': 'Data Lake Root'}]}
-            data = {'results': [row, row], 'start': 2, 'size': 2}
+            data = {'results': [row, row], 'start': 2, 'size': 2, 'nextStart': None}
         route.fulfill(json=data)
     page.route('**/api/confluence/tree?*', metadata)
     upstream_searches = []

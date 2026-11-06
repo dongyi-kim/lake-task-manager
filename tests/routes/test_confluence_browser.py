@@ -76,18 +76,18 @@ def test_full_text_search_is_space_scoped_and_paginated(browser_api, monkeypatch
 def test_tree_index_reads_cached_metadata_without_text_query_or_bodies(browser_api, monkeypatch):
     http, service, _ = browser_api
     calls = []
-    def search(client, query, start, limit):
-        calls.append((query, start, limit))
-        return {"results": [{"content": {"id": "22", "title": "Data Lake",
+    def tree_pages(client, space, start, limit):
+        calls.append((space, start, limit))
+        return {"results": [{"id": "22", "title": "Data Lake",
             "space": {"key": "ETL"}, "ancestors": [{"id": "12", "title": "Root"}],
-            "body": {"storage": {"value": "not part of tree"}}}}],
-            "start": start, "size": 1, "_links": {"next": "?start=31"}}
-    monkeypatch.setattr(service, "search", search)
+            "body": {"storage": {"value": "not part of tree"}}}],
+            "start": start, "size": 1, "nextStart": 31, "_links": {"next": "?start=31"}}
+    monkeypatch.setattr(service, "tree_pages", tree_pages)
     result = http.get('/api/confluence/tree', params={"space": "ETL", "start": 30}).json()
-    assert calls == [('type = page AND space = "ETL" ORDER BY title ASC', 30, 100)]
+    assert calls == [('ETL', 30, 100)]
     assert result["results"] == [{"id": "22", "title": "Data Lake", "space": {"key": "ETL"},
                                    "ancestors": [{"id": "12", "title": "Root"}]}]
-    assert result["start"] == 30 and result["_links"]["next"] == "?start=31"
+    assert result["start"] == 30 and result["nextStart"] == 31
     assert http.get('/api/confluence/tree?space=OTHER').status_code == 403
     assert len(calls) == 1
 

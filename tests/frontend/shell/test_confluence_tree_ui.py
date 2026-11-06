@@ -5,6 +5,40 @@ from frontend.editor.test_editor_roundtrip_ui import editor_browser  # noqa: F40
 from frontend.shell.test_confluence_browser_ui import install_documents
 
 
+def test_tree_keeps_all_pages_after_capped_empty_and_short_batches(editor_browser):
+    from playwright.sync_api import expect
+    page, base, errors, _ = editor_browser
+    install_documents(page)
+    calls = []
+    root = {'id': '12', 'title': 'Complete tree', 'ancestors': []}
+    def tree(route):
+        start = int(parse_qs(urlsplit(route.request.url).query)['start'][0])
+        calls.append(start)
+        if start == 0:
+            rows, following = [root], 100
+        elif start == 100:
+            rows, following = [], 200
+        else:
+            rows = [{'id': str(i), 'title': f'Page {i}', 'ancestors': [root]}
+                    for i in range(start, min(start + 25, 405))]
+            following = start + 25 if start < 400 else None
+        route.fulfill(json={'results': rows, 'size': len(rows), 'start': start, 'nextStart': following})
+    page.route('**/api/confluence/tree?*', tree)
+    page.goto(base + '/#/confluence')
+    nav = page.get_by_role('navigation', name='문서 트리', exact=True)
+    expect(page.locator('.conf-tree-caption')).to_contain_text('206')
+    expect(nav).to_have_attribute('aria-busy', 'false')
+    nav.get_by_role('button', name='Complete tree 하위 문서', exact=True).click()
+    expect(nav.locator('[data-page-id]')).to_have_count(206)
+    assert set(nav.locator('[data-page-id]').evaluate_all('rows=>rows.map(row=>row.dataset.pageId)')) == {'12', *map(str, range(200, 405))}
+    page.get_by_label('문서 트리 검색', exact=True).fill('p A g E 404')
+    expect(nav.locator('.is-match')).to_have_text('Page 404')
+    nav.locator('.is-match .conf-tree-title').click()
+    expect(page.locator('.conf-document')).to_be_visible()
+    assert calls == [0, 100, *range(200, 401, 25)]
+    assert not errors
+
+
 def test_tree_partial_retry_and_space_switch_discard_late_metadata(editor_browser):
     from playwright.sync_api import expect
     page, base, errors, _ = editor_browser
@@ -17,11 +51,11 @@ def test_tree_partial_retry_and_space_switch_discard_late_metadata(editor_browse
         if space == 'OPS':
             pending.append(route)
         elif start == 0:
-            route.fulfill(json={'results': [{'id': '12', 'title': 'Root'}], 'size': 1, '_links': {'next': '?start=1'}})
+            route.fulfill(json={'results': [{'id': '12', 'title': 'Root'}], 'size': 1, 'nextStart': 1})
         elif calls.count(('ETL', 1)) == 1:
             route.fulfill(status=503, json={'service': 'confluence', 'error': '목록 연결 지연'})
         else:
-            route.fulfill(json={'results': [{'id': '22', 'title': 'Nested needle', 'ancestors': [{'id': '12', 'title': 'Root'}]}], 'start': 1, 'size': 1})
+            route.fulfill(json={'results': [{'id': '22', 'title': 'Nested needle', 'ancestors': [{'id': '12', 'title': 'Root'}]}], 'start': 1, 'size': 1, 'nextStart': None})
     page.route('**/api/confluence/tree?*', tree)
     page.goto(base + '/#/confluence')
     nav = page.get_by_role('navigation', name='문서 트리', exact=True)
@@ -38,7 +72,7 @@ def test_tree_partial_retry_and_space_switch_discard_late_metadata(editor_browse
         page.get_by_label('Space', exact=True).select_option('ETL')
     expect(nav.locator('.is-match')).to_have_text('Nested needle')
     assert pending
-    pending[0].fulfill(json={'results': [{'id': '999', 'title': 'Wrong Space needle'}], 'size': 1})
+    pending[0].fulfill(json={'results': [{'id': '999', 'title': 'Wrong Space needle'}], 'size': 1, 'nextStart': None})
     page.get_by_label('문서 트리 검색', exact=True).fill('needle')
     expect(nav.locator('.is-match')).to_have_count(1)
     expect(nav.locator('[data-page-id="999"]')).to_have_count(0)

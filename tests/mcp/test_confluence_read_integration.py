@@ -24,6 +24,33 @@ def documents(env):
     return state, by_title
 
 
+def test_space_tree_enumerates_every_mock_page_without_search_index(build_env):
+    from app.jira import confluence_service as service
+    env = build_env()
+    documents(env)
+    env.store.confluence = {"u01": [
+        {"title": f"Nested {i}", "space": "DL", "body": "not fetched", "date": date.today(),
+         "ancestors": ["Root", f"Group {i // 25}"]} for i in range(205)
+    ]}
+    upstream = env.provider._client.app
+    state = install_confluence(upstream)
+    state.seed()
+    # Simulate stale/absent CQL indexing, without changing authoritative content.
+    state.search = lambda cql: []
+    expected = set(state.pages)
+    for _ in range(2):
+        found, offset = set(), 0
+        while offset is not None:
+            batch = service.tree_pages(env.client, "DL", start=offset)
+            found.update(row["id"] for row in batch["results"])
+            assert all("body" not in row for row in batch["results"])
+            offset = batch["nextStart"]
+        assert found == expected
+    gets = [call for call in env.calls if call[0] == "get"]
+    assert len(gets) == 3
+    assert all("/rest/api/space/DL/content/page" in call[1] for call in gets)
+
+
 def test_sdk_tree_revision_and_pinned_body_share_ui_cache(build_env):
     env = build_env()
     state, ids = documents(env)
