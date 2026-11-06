@@ -302,7 +302,8 @@ def _replace_with_rich_content(page, editor, prefix: str, *, section: bool,
 
 
 def _assert_editor_schema(editor, prefix: str, *, expect_blob: bool = False,
-                          full_styles: bool = False) -> None:
+                          full_styles: bool = False,
+                          jira_href: str = "/browse/DL-9001") -> None:
     for name, selector in FORMAT_SELECTORS.items():
         assert editor.locator(selector).count() >= 1, f"editor lost {name}: {prefix}"
     assert editor.get_by_text(f"{prefix}-PLAIN", exact=False).count() == 1
@@ -312,7 +313,7 @@ def _assert_editor_schema(editor, prefix: str, *, expect_blob: bool = False,
     assert table_wrapper.evaluate("el => getComputedStyle(el).overscrollBehaviorY") == "auto"
     assert editor.evaluate(
         "el => getComputedStyle(el.closest('.cmt-ed-host')).overscrollBehaviorY") == "auto"
-    jira_link = editor.locator("a[href='/browse/DL-9001']")
+    jira_link = editor.locator(f"a[href='{jira_href}']")
     assert jira_link.count() == 1
     assert "jira-badge-detail" in (jira_link.get_attribute("class") or "")
     style = editor.evaluate(
@@ -420,6 +421,13 @@ def _append_second_publish(page, editor, marker: str) -> None:
 def test_description_and_comment_all_formats_survive_two_ui_publish_cycles(editor_browser):
     page, base, errors, upload_path = editor_browser
     _open_ticket(page, base, DESCRIPTION_TICKET)
+    # Submission resolves local ticket links to the configured Jira origin. Reopening must
+    # preserve that exact destination and the detailed badge, not the pasted relative URL.
+    health = page.request.get(base + "/api/health")
+    assert health.ok
+    jira_base = health.json()["jiraBase"].rstrip("/")
+    assert jira_base
+    stored_jira_href = jira_base + "/browse/DL-9001"
 
     # ── 본문: 작성 → 제출 → 렌더 → 수정 → 제출 → 렌더 ──
     page.locator("button.sec-edit").first.click()
@@ -436,7 +444,7 @@ def test_description_and_comment_all_formats_survive_two_ui_publish_cycles(edito
     page.locator("button.sec-edit").first.click()
     desc_editor = page.locator(".tkt-desc-edit .ProseMirror")
     desc_editor.wait_for(state="visible")
-    _assert_editor_schema(desc_editor, "DESC")
+    _assert_editor_schema(desc_editor, "DESC", jira_href=stored_jira_href)
     _assert_reopened_images(desc_editor)
     _append_second_publish(page, desc_editor, "DESC-SECOND-PUBLISH")
     page.locator(".tkt-desc-edit-f button.primary").click()
@@ -470,7 +478,7 @@ def test_description_and_comment_all_formats_survive_two_ui_publish_cycles(edito
     assert comment_editor.is_visible(), (
         f"comment editor did not open; errors={errors}; "
         f"ui={page.locator('.tkt-cmt-err').all_inner_texts()}")
-    _assert_editor_schema(comment_editor, "COMMENT")
+    _assert_editor_schema(comment_editor, "COMMENT", jira_href=stored_jira_href)
     _assert_reopened_images(comment_editor)
     _append_second_publish(page, comment_editor, "COMMENT-SECOND-PUBLISH")
     page.locator(".tkt-comments .tkt-cmt .cmt-ed-bar > button.primary").click()
