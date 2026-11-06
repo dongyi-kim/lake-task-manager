@@ -16,6 +16,7 @@ import sqlite3
 import threading
 import time
 from concurrent.futures import Future
+from app.infra.recent_history import canonical_url, migrate_documents
 from app.infra.cache_policy import (LONG_DISPLAY_KINDS, DISPLAY_KINDS, SWR_AGGREGATE_KINDS,
                                    is_done, note_read, primary_sources, read_scope, revalidating)
 
@@ -132,6 +133,7 @@ class Cache:
                 self._conn.execute("ALTER TABLE recent ADD COLUMN type TEXT NOT NULL DEFAULT ''")
             if cols and "data" not in cols:
                 self._conn.execute("ALTER TABLE recent ADD COLUMN data TEXT NOT NULL DEFAULT ''")
+            migrate_documents(self._conn)
             receipt_cols = {
                 r[1] for r in self._conn.execute("PRAGMA table_info(mutation_receipt)")
             }
@@ -784,9 +786,12 @@ class Cache:
                 "SELECT viewed_through FROM ticket_read_state WHERE scope=? AND issue_key=?",
                 (scope, key)).fetchone()[0]
 
-    def touch_recent(self, url, kind, title, meta="", type_="", data=""):
+    def touch_recent(self, url, kind, title, meta="", type_="", data="", *, opened_at=None):
         if not url:
             return
+        original_url = url
+        url = canonical_url(url, kind, data)
+        stamp = time.time() if opened_at is None else min(float(opened_at), time.time())
         # data 는 표시용 부가필드(JSON 문자열). dict 로 들어오면 직렬화.
         if isinstance(data, (dict, list)):
             try:
@@ -794,15 +799,22 @@ class Cache:
             except Exception:
                 data = ""
         with self._lock:
+            if url != original_url:
+                self._conn.execute("DELETE FROM recent WHERE url=? AND kind='confluence'", (original_url,))
             self._conn.execute(
                 "INSERT INTO recent(url, kind, title, meta, type, data, opened_at) VALUES (?,?,?,?,?,?,?) "
                 "ON CONFLICT(url) DO UPDATE SET opened_at=excluded.opened_at, "
-                "title=excluded.title, meta=excluded.meta, kind=excluded.kind, type=excluded.type, data=excluded.data",
-                (url, kind or "web", title or url, meta or "", type_ or "", data or "", time.time()),
+                "title=excluded.title, meta=excluded.meta, kind=excluded.kind, type=excluded.type, data=excluded.data "
+                "WHERE excluded.opened_at>=recent.opened_at",
+                (url, kind or "web", title or url, meta or "", type_ or "", data or "", stamp),
             )
+            # Jira/web activity must not evict the independent 100-document history.
             self._conn.execute(
-                "DELETE FROM recent WHERE url NOT IN "
-                "(SELECT url FROM recent ORDER BY opened_at DESC LIMIT ?)", (self.RECENT_KEEP,))
+                "DELETE FROM recent WHERE kind='confluence' AND url NOT IN "
+                "(SELECT url FROM recent WHERE kind='confluence' ORDER BY opened_at DESC,rowid DESC LIMIT 100)")
+            self._conn.execute(
+                "DELETE FROM recent WHERE kind!='confluence' AND url NOT IN "
+                "(SELECT url FROM recent WHERE kind!='confluence' ORDER BY opened_at DESC,rowid DESC LIMIT ?)", (self.RECENT_KEEP,))
             self._conn.commit()
 
     def recent_items(self, limit=20, kind=None):
@@ -811,7 +823,7 @@ class Cache:
         if kind:
             sql += " WHERE kind=?"
             args.append(kind)
-        sql += " ORDER BY opened_at DESC LIMIT ?"
+        sql += " ORDER BY opened_at DESC,rowid DESC LIMIT ?"
         args.append(limit)
         with self._lock:
             rows = self._conn.execute(sql, args).fetchall()
@@ -835,7 +847,7 @@ class Cache:
     def forget_recent(self, url=None):
         with self._lock:
             if url:
-                self._conn.execute("DELETE FROM recent WHERE url=?", (url,))
+                self._conn.execute("DELETE FROM recent WHERE url IN (?,?)", (url, canonical_url(url, 'confluence')))
             else:
                 self._conn.execute("DELETE FROM recent")
             self._conn.commit()

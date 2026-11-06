@@ -170,7 +170,7 @@ export default {
       if (f.src === "confluence" && f.it.url) {
         // title 은 검색 하이라이트(<mark>)가 섞인 HTML — 저장은 평문으로.
         recordOpen({ url: f.it.url, kind: "confluence", title: stripTags(f.it.title),
-                     meta: (f.it.path || []).slice().reverse().join(" ‹ ") });
+                     meta: (f.it.path || []).slice().reverse().join(" ‹ "), data:{pageId:f.it.id, space:f.it.space || ''} });
         if (openConfluenceDocument(f.it.id || f.it.url)) this.$emit("close");
         else this.openExternal(f.it.url);
       }
@@ -180,7 +180,8 @@ export default {
       const m = /\/browse\/([A-Za-z][A-Za-z0-9]*-\d+)/.exec(it.url || "");
       // 다시 열었으니 맨 위로 — 저장돼 있던 표시필드(key·epicKey/Name·assignee·…)도 함께 재기록.
       recordOpen({ url: it.url, kind: it.kind, title: it.title, meta: it.meta, type: it.type,
-                   data: it.kind === "jira" ? this.jiraData(it) : (it.data || {}) });
+                   data: it.kind === "jira" ? this.jiraData(it) : it.kind === 'confluence'
+                     ? {pageId:it.pageId, space:it.space || '', confluenceBase:it.confluenceBase} : (it.data || {}) });
       if (m) { this.$emit("open-ticket", m[1].toUpperCase()); this.$emit("close"); return; }
       if (it.kind === "confluence" && openConfluenceDocument(it.url)) { this.$emit("close"); return; }
       this.openExternal(it.url);

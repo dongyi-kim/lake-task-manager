@@ -1,4 +1,4 @@
-"""Read a favorite's path and subtree without walking every ancestor/parent."""
+"""Read saved/recent priority paths and subtrees without walking every ancestor/parent."""
 import json
 
 from app.jira import confluence_service as reads

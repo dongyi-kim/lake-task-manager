@@ -1,7 +1,7 @@
 export default {
-  props: { row: Object, selectedId: String, favorite: Boolean, currentMatch: Boolean, pending: Boolean },
+  props: { row: Object, selectedId: String, favorite: Boolean, recent: Boolean, currentMatch: Boolean, pending: Boolean },
   emits: ['toggle', 'open', 'menu'],
-  template: `<div class="conf-tree-row" :class="{'is-match': row.match, 'has-match': row.containsMatch, 'is-current-match': currentMatch, 'is-favorite': favorite, selected: selectedId === row.id}"
+  template: `<div class="conf-tree-row" :class="{'is-match': row.match, 'has-match': row.containsMatch, 'is-current-match': currentMatch, 'is-favorite': favorite, 'is-recent': recent, selected: selectedId === row.id}"
     :data-page-id="row.id" :style="{'--depth': row.level || 0}" @contextmenu.prevent.stop="$emit('menu',row,$event)" @keydown.shift.f10.prevent="$emit('menu',row,$event)">
     <button v-if="row.hasChildren || row.unknownChildren" class="conf-tree-toggle" @click="$emit('toggle',row)"
       :aria-expanded="row.hasChildren ? !!row.open : undefined" :aria-label="row.title + (row.unknownChildren ? ' 하위 문서 확인' : ' 하위 문서')">

@@ -15,7 +15,7 @@ export default {
   },
   methods: {
     async loadSavedTrees() {
-      const spaces = [...new Set([...this.favorites, ...this.recentDocuments].map(row => row.space).filter(Boolean))];
+      const spaces = [...new Set([...this.favorites, ...this.recentDocuments.slice(0,10)].map(row => row.space).filter(Boolean))];
       await Promise.allSettled(spaces.map(async space => {
         const revision = this._savedRevision?.[space] || 0;
         const data = await api.confluenceTreeSnapshot(space); // local SQLite only

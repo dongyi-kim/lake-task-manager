@@ -34,14 +34,6 @@ export function readRecentDocuments(base) {
   } catch (_) { return []; }
 }
 
-export function rememberDocument(base, rows, doc) {
-  const id = String(doc.id);
-  const next = [{ id, title: doc.title, space: doc.space?.key || "", openedAt: Date.now() },
-    ...rows.filter(row => String(row.id) !== id)].slice(0, 20);
-  try { localStorage.setItem("ltm.confluence.recent:" + base, JSON.stringify(next)); } catch (_) { /* usable this session */ }
-  return next;
-}
-
 export function readNavigationFolds() {
   try { return JSON.parse(localStorage.getItem("ltm.confluence.navigation-folds") || "{}") || {}; }
   catch (_) { return {}; }
