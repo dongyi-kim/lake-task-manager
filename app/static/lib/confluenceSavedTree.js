@@ -25,7 +25,8 @@ export default {
     async expandSavedTree(row) {
       if (this.savedTreePending[row.id]) return;
       const space = row.space?.key || row.space || this.space;
-      this._savedRevision ||= {}; this._savedRevision[space] = (this._savedRevision[space] || 0) + 1;
+      this._savedRevision = this._savedRevision || {};
+      this._savedRevision[space] = (this._savedRevision[space] || 0) + 1;
       this.savedTreePending[row.id] = true; this.savedTreeErrors[row.id] = false;
       const rows = [];
       try {
