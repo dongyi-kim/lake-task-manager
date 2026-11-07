@@ -185,15 +185,37 @@ def test_incomplete_refresh_preserves_previous_source_age_and_recovers(evidence_
     assert get_evidence_page(client, "DL-12", "history")["items"][0]["id"] == "2"
 
 
-def test_generic_tools_use_real_sdk_and_validate_project_scope(build_env):
+def test_generic_tools_use_real_sdk_and_validate_project_scope(build_env, monkeypatch):
     env = build_env()
+    # Count the MCP read, not asynchronous refreshes triggered while building the fixture.
+    monkeypatch.setattr(env.client, "_reprime", lambda *_args, **_kwargs: None)
     key = env.client.create_child(None, "Task", "SDK evidence")["key"]
     env.client.add_comment(key, "Exact source comment")
+    child = env.client.create_child(key, "Sub-task", "Separate child evidence")["key"]
+    env.client.add_comment(child, "Child comment must not leak into parent evidence")
+    transition = next(row for row in env.client.transitions(child) if row["toCategory"] == "inprogress")
+    env.client.do_transition(child, transition["id"])
+    env.cache.invalidate()
+    env.calls.clear()
     async def scenario():
         async with Client(env.runtime.server) as mcp:
+            catalog = {tool.name: tool for tool in (await mcp.list_tools()).tools}
+            assert catalog["get_evidence_page"].input_schema["properties"]["kind"]["default"] == "comments"
+            assert catalog["get_history"].input_schema["properties"]["include_children"]["default"] is False
+            assert "no child lookup" in catalog["get_evidence_page"].description
             response = await mcp.call_tool("get_evidence_page", {"key": key})
             assert not response.is_error, response.structured_content
-            assert response.structured_content["data"]["items"][0]["body"] == "Exact source comment"
+            data = response.structured_content["data"]
+            assert data["key"] == key and data["kind"] == "comments" and data["total"] == 1
+            assert [row["body"] for row in data["items"]] == ["Exact source comment"]
+            assert not any("changelog" in call[2].get("params", {}).get("expand", "")
+                           for call in env.calls if call[0] == "get")
+            response = await mcp.call_tool("get_evidence_page", {"key": key, "kind": "history"})
+            assert not response.is_error, response.structured_content
+            assert response.structured_content["data"]["total"] == 0
+            paths = [call[1] for call in env.calls if call[0] == "get"]
+            assert f"/rest/api/2/issue/{key}/comment" in paths
+            assert not any(child in path or path == "/rest/api/2/search" for path in paths), paths
             denied = await mcp.call_tool("get_evidence_page", {"key": "OTHER-1"})
             assert denied.is_error
     anyio.run(scenario)

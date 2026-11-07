@@ -109,6 +109,7 @@ def register_workspace(register, runtime):
 
     def get_field_history(key: str, limit: int = 100) -> dict:
         """Read recent field changes including description/summary omitted by get_history's display timeline.
+        Use for change questions; progress summaries start with get_ticket and get_comments instead.
         Returns history rows (date, author, field, from, to), limit and mayHaveMore. limit=1..1000;
         the latest selected rows are returned in ascending date order. date is YYYY-MM-DD, without time/zone.
         There is no offset pagination; mayHaveMore=true means the returned history may be incomplete.
@@ -161,8 +162,9 @@ def register_workspace(register, runtime):
     def get_vit_detail(key: str) -> dict:
         """Read one visible PMO_VIT root's detail; returns key, descendant tree and recent root comments.
         Tree statuses are current. This does not return all descendant comments or a full history.
-        Use get_vit_overview to establish registration/visibility, get_comments for discussion,
-        and get_history/get_field_history for changes. Empty detail alone does not prove no work exists.
+        Use get_vit_overview to establish registration/visibility, get_ticket/get_comments for progress,
+        and get_history/get_field_history only when change chronology is needed.
+        Empty detail alone does not prove no work exists.
         """
         from app.domain import vit
         from app.infra.settings import load_people, load_plan

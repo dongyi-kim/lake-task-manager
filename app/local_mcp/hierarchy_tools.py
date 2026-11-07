@@ -22,7 +22,10 @@ def register_hierarchy(register, runtime):
         Discovery has no hidden ticket cap; pagination is a live hierarchy, not a frozen snapshot.
         total counts returned-scope visible rows; when partial=true it is a lower bound.
         Hidden Jira membership cannot be discovered; missing lists known denied/failed branches.
-        Read each required ticket's get_evidence_page for full descendant history or discussion.
+        This discovers membership/current fields, not descendant comments or history. For progress,
+        use relevant tickets' get_ticket and get_comments; page older discussion with
+        get_evidence_page(kind=comments) when needed. Do not routinely read every descendant's
+        field history; request kind=history for specific change/timing questions only.
         Parent/SubTask rows are separate hierarchy levels, not automatically additive work units.
         Task child membership and issue caches are shared with UI. Epic membership uses scoped
         project JQL through the shared search cache; no unscoped Agile fallback is performed.
