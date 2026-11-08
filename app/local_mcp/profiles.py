@@ -34,7 +34,7 @@ def build_profiles(runtime):
     result = {"all": (runtime.server, runtime.http_app)}
     for profile in (name for name in PROFILE_LABELS if name != "all"):
         server = MCPServer("lake-task-manager-" + profile, log_level="WARNING",
-            extensions=[SkillsExtension(runtime.skill_catalog)],
+            extensions=[SkillsExtension(runtime.skill_catalog)] if runtime.enable_skills_extension else [],
             instructions=runtime.server.instructions + " This connection exposes the " + profile
                          + " catalog; unavailable tools require another profile or the full /mcp endpoint.")
         for tool in runtime.server._tool_manager.list_tools():

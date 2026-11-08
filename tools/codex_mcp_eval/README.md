@@ -1,5 +1,69 @@
 # Codex + LTM MCP 조회 품질 평가
 
+## #190 업무 조사·보고 후보 평가
+
+`--battery work`는 `codex-mcp-work` 0.1.0 / prompt `codex-mcp-work-v1`이다.
+R01~R11의 정상·경계 22사례를 별도 fixture와 oracle로 제공한다. 기존 queries/reporting/identities의
+질문·정답·버전은 바꾸지 않는다. 이는 합성 사례의 평가 준비이며 실제 모델 성능 결과가 아니다.
+
+| 인자 | 의미 |
+|---|---|
+| `--skill-condition baseline` | 기존 작성 4스킬; 신규 조사 스킬 없음(기본값) |
+| `--skill-condition candidate` | 동일 backend에 연구·보고 후보 2스킬과 참고 자료 추가 |
+| `--skill-transport default` | Skills 확장·리소스와 fallback 제공(기본값) |
+| `--skill-transport fallback` | 확장·리소스를 제공하지 않고 get_content_guide만 제공 |
+| `--output-root PATH` | work raw 보관 루트; 저장소 내부 거절, 기본은 OS temp/ltm-evaluation-results |
+| `--recovery-scenario NAME` | 아래 6개 장애 중 하나; work/candidate와 WORK-R02-boundary만 사용 |
+| `--recovery-mode uninterrupted\|restarted` | 같은 최종 source의 무중단/중단 후 새 세션 비교 |
+
+실제 모델·예산·중단 기준을 승인한 후 기존 launcher로만 실행한다. 예:
+
+```powershell
+python -B -X utf8 tools/agent_eval_launcher.py codex-mcp --battery work --date 2026-11-09 --skill-condition candidate --skill-transport fallback --run-group 20261109-work-b-01 --cases WORK-R02-normal
+python -B -X utf8 tools/agent_eval_launcher.py codex-mcp --battery work --date 2026-11-09 --skill-condition candidate --recovery-scenario expired-snapshot --recovery-mode restarted --run-group 20261109-work-resume-01
+```
+
+같은 run group/repeat index를 다시 쓰지 않는다. A/B 순서는 교차하고 commit/model/effort/date/fixture/
+질문/schema를 고정한다. 실제 skill/resource 읽기의 URI·digest, 카탈로그·runtime 안내 hash를 남긴다.
+후보 SKILL.md를 실제 읽지 않으면 실패다. 네이티브 확장 지원 여부는 실제 trace로 판단하고, SDK
+계약 검사를 실제 모델의 확장 자동 발견·품질 결과로 대체하지 않는다.
+
+### 로컬 저장·복구 전용 조건
+
+일반 A/B는 기존처럼 LTM 읽기만 허용한다. 복구 조건만 추가 MCP `research_files`의
+`list_files`, `read_file`, `write_file`을 허용한다. 제품 LTM에는 이 도구를 등록하지 않는다.
+한 조사 폴더 밖 접근·링크·Windows drive/stream은 거절하며 파일은 1MiB, 전체 32MiB/512개 이하다.
+읽기는 2000자 페이지, 쓰기는 fsync 후 원자적 교체다. shell·host skills·web·다른 서비스는 계속 차단한다.
+
+장애 이름은 `between-pages`, `after-response`, `record-chunk`, `corrupt-progress`,
+`expired-snapshot`, `source-changed`다. 각 조건은 실제 파일·MCP 응답에서 경계를 관측한 뒤
+Codex 프로세스를 중단한다. 장애가 발생하지 않은 실행은 통과로 처리하지 않는다.
+재개는 새 ephemeral Codex process, 새 JiraClient·SQLite·MCP 세션을 사용하며 조사 파일만 유지한다.
+이전 대화·oracle은 전달하지 않는다. 재사용 근거는 이전의 성공 응답이 실제 evidence 파일에 저장된
+경우만 인정한다. 변경 조건에서는 검색 membership·수정된 티켓·문서를 새 phase에서 재검증한다.
+source-changed 무중단 조건도 동일한 최종 source revision 2를 사용한다.
+
+raw에는 phase별 응답·파일 작업·MCP/upstream trace·사용량·원본 fingerprint와 통제한 장애를 보존한다.
+복구 suite는 `codex-mcp-work-recovery`이며 실제 질문과 최종 source revision의 기대값을 manifest에
+기록한다. `output.mcpToolCalls`는 모든 phase의 실제 LTM 호출이고 `groundingCalls`는 판정에 사용할
+근거다. `eligiblePersistedCalls`는 저장이 확인된 재사용 가능 근거 수이며 실제 재사용 횟수가 아니다.
+summary의 toolCalls는 LTM 호출과 파일 호출의 합이고 두 종류의 소계와 파일 I/O 비용도 별도로 남긴다.
+합산 비용에는 중단 phase도 포함하고, 관측할 수 없는 값은 null이다. 복구 성공과 호출 감소는 별개다.
+필요한 댓글 재순회는 허용하고 실제 중복 조회·복구 시간·파일 읽기/쓰기 비용을 별도로 비교한다.
+fixture DB와 임시 인증 파일은 성공·실패 모두 정리한다. 명시적으로 보존하는 raw·조사 evidence는
+출력 루트에 남긴다. OS temp의 자동 정리를 영구 보관으로 표현하지 말고, 장기 검수에는 사용자가
+정한 저장소 밖 output root를 사용한다. 과거 .cache raw는 이동·삭제하지 않는다.
+
+### 검증과 기본 제공 조건
+
+오프라인 검사에서는 실제 MCP 경로를 사용하되 모델 subprocess만 대체한다. 모든 댓글·긴 레코드의
+연속 offset/digest, 문서 revision별 전체 본문, 출처 ID와 URL의 연결, 부분 실패와 지표를 검사한다.
+실제 모델 smoke 11계열×기본/fallback=22, A/B 22×2×5=220, 복구 6×2×5=60으로 총 302사례와
+별도 preflight/재실행 예산을 승인받는다. 자동 통과 뒤 사람이 원문과 사례별 근거·한국어·양식을
+직접 검수한다. 평균 4.5/5 이상, 중대한 허위 사실·무단 쓰기·실패를 0건으로 처리·근거 없는 확정
+집계 0건이 기본 제공 기준이다. focused 재실행으로 최초 full 실패를 덮지 않는다.
+현재 후보는 기본 제공되지 않는다. 실제 비교·검수 후 별도 변경으로 활성화한다.
+
 실행 중인 앱과 같은 `LocalMcpRuntime`·JiraClient·인증 HTTP 전송을 사용하되 사례마다 별도의 전체 mock
 World와 SQLite를 구성한다. 운영 Jira와 내장 LTM LLM은 호출하지 않는다. 모델은 설치된 Codex CLI의
 기존 ChatGPT 로그인을 사용한다. 비밀 파일을 읽거나 복사하지 않으며 MCP bearer만 자식 환경변수로 전달한다.

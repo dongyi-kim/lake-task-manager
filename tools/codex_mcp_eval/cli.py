@@ -38,7 +38,8 @@ def executable() -> str:
     return result
 
 
-def command(binary: str, workspace: Path, *, model=MODEL, effort=EFFORT, mcp_url=None, schema_path=None) -> list[str]:
+def command(binary: str, workspace: Path, *, model=MODEL, effort=EFFORT, mcp_url=None, schema_path=None,
+            files_url=None) -> list[str]:
     args = [binary, "exec", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check",
             "--sandbox", "read-only", "--json", "--color", "never", "-C", str(workspace), "-m", model]
     config = {**HARDENING, "model_reasoning_effort": effort}
@@ -46,6 +47,10 @@ def command(binary: str, workspace: Path, *, model=MODEL, effort=EFFORT, mcp_url
         config.update({"mcp_servers.ltm.url": mcp_url,
                        "mcp_servers.ltm.bearer_token_env_var": TOKEN_ENV,
                        "mcp_servers.ltm.required": True})
+    if files_url:
+        config.update({"mcp_servers.research_files.url": files_url,
+                       "mcp_servers.research_files.bearer_token_env_var": TOKEN_ENV,
+                       "mcp_servers.research_files.required": True})
     for key, value in config.items():
         args.extend(["-c", key + "=" + json.dumps(value, ensure_ascii=False)])
     if schema_path:
@@ -72,7 +77,7 @@ def safe_event(value, secret=""):
     return value.replace(secret, "[REDACTED]") if isinstance(value, str) and secret else value
 
 
-def parse_events(stdout: str, *, secret="") -> dict:
+def parse_events(stdout: str, *, secret="", allow_research_files=False) -> dict:
     events, replies, errors, forbidden = [], [], [], []
     usage, completed = None, False
     for line in stdout.splitlines():
@@ -97,7 +102,9 @@ def parse_events(stdout: str, *, secret="") -> dict:
             forbidden.append(item.get("type"))
         elif item.get("type") and item["type"] not in {"agent_message", "mcp_tool_call", "todo_list", "error"}:
             forbidden.append("unexpected_item:" + item["type"])
-        if item.get("type") == "mcp_tool_call" and item.get("server") != "ltm":
+        file_call = (allow_research_files and item.get("server") == "research_files"
+                     and item.get("tool") in {"list_files", "read_file", "write_file"})
+        if item.get("type") == "mcp_tool_call" and item.get("server") != "ltm" and not file_call:
             forbidden.append("unapproved_mcp_server")
         if event.get("type") == "turn.completed":
             completed, usage = True, event.get("usage") or {}
@@ -118,7 +125,8 @@ def parse_events(stdout: str, *, secret="") -> dict:
 
 
 def run(binary: str, prompt: str, workspace: Path, *, model=MODEL, effort=EFFORT,
-        mcp_url=None, token="", timeout=600, schema=None, process_run=subprocess.run) -> dict:
+        mcp_url=None, token="", timeout=600, schema=None, process_run=subprocess.run,
+        files_url=None, stop_event=None) -> dict:
     workspace.mkdir(parents=True, exist_ok=False)
     env = dict(os.environ)
     # Inherit the user's existing Codex login, never copy/read its credential files.
@@ -129,7 +137,11 @@ def run(binary: str, prompt: str, workspace: Path, *, model=MODEL, effort=EFFORT
     if schema is not None:
         schema_path = workspace.parent / (workspace.name + "-output-schema.json")
         schema_path.write_text(json.dumps(schema, ensure_ascii=False), encoding="utf-8")
-    args = command(binary, workspace, model=model, effort=effort, mcp_url=mcp_url, schema_path=schema_path)
+    args = command(binary, workspace, model=model, effort=effort, mcp_url=mcp_url, schema_path=schema_path,
+                   files_url=files_url)
+    if stop_event is not None and process_run is subprocess.run:
+        from tools.codex_mcp_eval.recovery_process import interruptible_process
+        process_run = lambda args, **kwargs: interruptible_process(args, stop_event=stop_event, **kwargs)
     started = time.perf_counter()
     try:
         result = process_run(args, input=prompt, encoding="utf-8", errors="replace",
@@ -138,12 +150,13 @@ def run(binary: str, prompt: str, workspace: Path, *, model=MODEL, effort=EFFORT
         partial = exc.stdout or ""
         if isinstance(partial, bytes):
             partial = partial.decode("utf-8", errors="replace")
-        parsed = parse_events(partial, secret=token)
+        parsed = parse_events(partial, secret=token, allow_research_files=bool(files_url))
         parsed.update(ok=False, error="codex_timeout", durationSeconds=time.perf_counter() - started,
                       stderrPresent=bool(exc.stderr), incomplete=True)
         return parsed
-    parsed = parse_events(result.stdout, secret=token)
+    parsed = parse_events(result.stdout, secret=token, allow_research_files=bool(files_url))
     parsed.update(durationSeconds=time.perf_counter() - started, exitCode=result.returncode)
+    parsed["intentionalInterruption"] = bool(getattr(result, "intentional_interruption", False))
     parsed["ok"] = bool(result.returncode == 0 and parsed["completed"] and parsed["reply"]
                         and not parsed["errors"] and not parsed["forbiddenToolEvents"])
     if schema is not None:

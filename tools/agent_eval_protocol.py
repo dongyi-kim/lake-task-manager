@@ -538,9 +538,10 @@ def _path_token(value: Any) -> str:
 
 def raw_result_path(
     suite: str, metadata: Mapping[str, Any], requested: str | os.PathLike[str] | None = None,
+    *, root: str | os.PathLike[str] | None = None,
 ) -> Path:
     """Resolve a raw-output file strictly inside the git-ignored evaluation cache."""
-    root = RAW_RESULT_ROOT.resolve()
+    root = Path(root).resolve() if root is not None else RAW_RESULT_ROOT.resolve()
     run = metadata.get("run") or {}
     battery = metadata.get("battery") or {}
     group = _path_token(run.get("runGroupId") or "unassigned")
