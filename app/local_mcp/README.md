@@ -95,7 +95,9 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 숨은 제한이 없다. `hasMore`, `nextStartAt`, `snapshotId`를 따라 동일 snapshot의 다음 페이지를 요청한다.
 로컬 정렬을 지원하지 않는 JQL은 기존 Jira pagination으로 폴백하며, 이 경우 snapshot ID가 없다.
 읽기 결과는 MCP structured content의 `{ok: true, data: ...}`에 있다. 제한이 있는 댓글/이력 조회는
-요청 limit을 응답에 명시한다. 이력은 기본적으로 현재 티켓만 포함하고 `include_children`을 켜면 하위 이력도 조회한다.
+요청 limit을 응답에 명시한다. `get_history`만 `include_children=true`를 명시하면 직계 자식의
+상태 변경도 포함한다(기본 false). `get_evidence_page`는 항상 지정한 티켓 한 개의 선택한 종류만
+조회하며 자식 댓글·변경 이력을 자동 수집하지 않는다.
 읽기에는 `cache` 출처 정보와 `partial` 여부도 포함한다. 출처를 수집할 수 있으면 가장 오래된
 `fetchedAt`·`freshUntil`·`displayUntil`, stale 여부와 policy revision을 반환한다.
 관측 정보가 없으면 `available: false, state: unknown`으로 표시하며 최신 데이터라고 단정하지 않는다.
@@ -187,14 +189,25 @@ localStorage 기록은 자동 이관하지 않으며 새 활동부터 수집한�
 
 - `search_issues`: 날짜·담당자·Component 등 JQL 조건으로 전체 후보를 조회한다. `updated`는 완료일이
   아니며, 현재 완료 목록과 과거 완료 이벤트도 다른 개념이다. 기간·timezone·완료 기준을 먼저 정한다.
-- `get_descendants`: Epic→Task→SubTask 또는 Task→SubTask를 펼친다. 부모의 `updated`가 오래돼도
-  하위 티켓을 빠뜨리지 않는다. 원본 필드와 parent/depth/Epic 상속 관계를 반환하며 사업 진척률은 계산하지 않는다.
-- `get_evidence_page`: `comments` 또는 `history`의 원본 ID·작성자·시각·본문·변경값을 페이지로 읽는다.
-  모든 `nextStartAt`을 따라가고 ID로 중복을 제거한다. 부모와 각 자손의 기록을 읽어 티켓별 출처를 유지한다.
-- `get_ticket`: 제목만으로 확정하기 어려운 업무의 본문을 확인한다. 댓글의 후속 변경·취소도 함께 검토한다.
+- `get_ticket(detail="read")` + `get_comments`: 주요 진척·성과·장애 요약의 기본 근거다. 기본정보와
+  본문으로 업무 범위를 파악하고, 최근 댓글에서 실제 진행 내용·결정·후속 변경·취소를 확인한다.
+  이 자료로 질문에 답할 수 있으면 변경 이력을 추가 조회하지 않는다.
+- `get_descendants`: 질문에 하위 업무가 포함되면 Epic→Task→SubTask 또는 Task→SubTask를 펼친다.
+  부모의 `updated`가 오래돼도 하위 티켓을 빠뜨리지 않는다. 현재 필드와 parent/depth/Epic 관계만
+  반환한다. 관련 자식의 본문·댓글을 확인하되 자식 전체의 변경 이력을 일괄 조회하는 단계로 연결하지 않는다.
+- `get_evidence_page(kind="comments")`: 최근 댓글만으로 부족하거나 전체 논의의 검토가 필요할 때
+  사용한다. 업무 제외·취소 여부를 빠짐없이 검토하는 집계라면 필요한 티켓의 댓글 페이지를 끝까지 읽는다.
+  일반 요약에서 필요한 근거가 확보되면 중단할 수 있지만, 조회 범위를 전체 검토로 표현하지 않는다.
+- `get_evidence_page(kind="history")`: 정확한 전이 시각·변경자·이전 값·과거 담당자·재오픈 등 변경
+  경위가 질문에 필요하거나 본문·댓글·현재 상태가 충돌할 때 해당 티켓만 추가 조회한다. 일간·주간·월간
+  질문이라는 이유만으로 모든 티켓 이력을 읽지 않는다. 현재 `resolutiondate` 기준 완료 목록과
+  기간 내 모든 완료·재오픈 이벤트 집계를 구분하며, 후자는 변경 이력이 필요하다.
 
 기존 `get_comments`는 최대 20개를 보유하는 UI 캐시, `get_history`는 표시용 요약 타임라인이다.
-전체 댓글·이력 분석에는 `get_evidence_page`를 사용한다. Jira 8.20의 expanded changelog가
+`get_evidence_page`의 기본값은 `kind="comments"`이며, 한 호출은 지정한 key만 대상으로 한다.
+자식 기록이 필요하면 자식 key로 별도 호출한다. 댓글을 읽는 요청은 변경 이력을 함께 가져오지 않는다.
+전체 검토가 필요한 종류만 모든 `nextStartAt`을 따라가고 ID로 중복을 제거하며 티켓별 출처를 유지한다.
+Jira 8.20의 expanded changelog가
 잘려 있으면 `sourceComplete=false`를 반환한다. 이때 `hasMore=false`도 전체 이력 확인을 뜻하지 않는다.
 실시간 offset/계층 조회는 변경 중 불변 snapshot을 보장하지 않으므로 total·ID 변화를 확인한다.
 권한상 숨겨진 자손은 알 수 없으며 확인된 실패·누락은 별도로 반환한다. 미확인을 0건으로 집계하지 않는다.

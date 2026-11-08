@@ -19,7 +19,9 @@ def register_reads(register, runtime):
         (when present) before reporting a complete count. There is no implicit total cap.
         For calendar reports use explicit date boundaries and distinguish resolved from updated;
         a recent update does not prove completion, and current assignee is not historical ownership.
-        Read get_ticket for the full description and get_evidence_page for paginated comments/history.
+        For progress summaries, read relevant tickets with get_ticket(detail=read) and get_comments.
+        Use get_evidence_page(kind=comments) if older or complete discussion is needed; field history
+        is for questions about changes or exact event timing, not routine discovery of every result.
         Issue url is a user-facing Jira link; self is a REST URL. Caches are shared with the UI.
         Prefer detail=summary for discovery: it omits descriptions, avatars and custom fields from
         the response only. Use full when those fields are needed; pagination and caches are unchanged.
@@ -46,7 +48,9 @@ def register_reads(register, runtime):
         """Read one current ticket's metadata and complete description by Jira key.
         Returns the ticket view, including descriptionHtml for reading and descriptionEditHtml
         for safe editing. fresh=true waits for an upstream refresh; default reuses UI caches.
-        Use get_evidence_page for full discussion/changes; get_comments is only a recent preview.
+        Start here for progress: combine metadata/description with get_comments for recent discussion.
+        If older discussion or a complete review is needed, use get_evidence_page(kind=comments).
+        Read field history only when the question requires change chronology or unresolved discrepancies.
         This is the current ticket, not a past snapshot.
         A Done status alone does not establish when work completed or which claimed deliverables remain valid.
         Choose summary for metadata, read for one complete display body, or edit for one complete
@@ -59,10 +63,13 @@ def register_reads(register, runtime):
         return ticket_projection(result, detail)
 
     def get_comments(key: str, limit: int = 100) -> dict:
-        """Read a recent comment preview for one ticket, newest first; limit=1..1000.
+        """Read recent discussion for one ticket, newest first; limit=1..1000.
+        Pair with get_ticket metadata/description as the starting evidence for progress summaries.
         The UI cache holds at most sourceLimit=20 comments even when a larger limit is requested.
         Returns comments, returnedCount, limit, sourceLimit and conservative mayHaveMore.
-        Use get_evidence_page(kind=comments) to read the full discussion with real pagination.
+        If this preview cannot answer the question, or a complete review is required, use
+        get_evidence_page(kind=comments) for older discussion with real pagination. Do not infer
+        that no cancellation/exclusion exists from a preview when mayHaveMore=true.
         For editing, use get_comment_source with the verified comment ID.
         Use comment IDs/dates/authors and text as evidence for exclusions, cancellations and revised scope.
         Comment claims do not themselves change Jira status or prove completed deliverable counts.
@@ -92,10 +99,13 @@ def register_reads(register, runtime):
 
     def get_history(key: str, include_children: bool = False, limit: int = 100) -> dict:
         """Read a recent display timeline for one ticket, newest first, limited to 1..1000 events.
+        Use for change chronology, not as the default source for major progress or deliverables;
+        start those summaries with get_ticket and get_comments.
         Returns timeline and limit. Includes creation, selected field changes and only the latest
-        10 comment events; include_children=true adds direct children's status changes, not all
+        10 comment events; include_children defaults false. Explicit true adds direct children's status changes, not all
         descendant discussion. This is a bounded view without pagination or a completeness guarantee.
-        Use get_evidence_page for original comments or field histories with full timestamp and coverage.
+        For exact event timestamps/source coverage, use get_evidence_page(kind=history) for each
+        required key. Discussion itself uses kind=comments; neither mode automatically reads children.
         """
         runtime.check_key(key)
         if not 1 <= limit <= 1000:

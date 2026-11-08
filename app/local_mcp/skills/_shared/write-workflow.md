@@ -39,6 +39,6 @@ MCP 응답의 `ok`, `data` 안의 업무 결과, `partial`·`missing`·오류를
 
 ## 게시 후 확인
 
-본문·생성은 `get_ticket(key, fresh=true)`, 댓글은 `get_comments` 또는 원본 `get_evidence_page`, 첨부는 `get_attachments`·`read_attachment`, 문서 연결은 `get_documents`로 확인한다. 수정 시 요청한 내용뿐 아니라 보존하기로 한 기존 내용도 비교한다.
+본문·생성은 `get_ticket(key, fresh=true)`, 댓글은 `get_comments`(대상 ID가 없으면 `get_evidence_page(kind="comments")`), 첨부는 `get_attachments`·`read_attachment`, 문서 연결은 `get_documents`로 확인한다. 수정 시 요청한 내용뿐 아니라 보존하기로 한 기존 내용도 비교한다. 댓글 게시 확인에 변경 이력이나 자식 티켓 조회는 필요하지 않다.
 
 재조회가 실패하면 “쓰기 응답은 성공, 결과 재조회는 실패”처럼 관측을 구분한다. 부분 결과를 전체 성공이나 빈 데이터로 보고하지 않는다. 최종 답에는 확인된 key/comment ID, 실제 변경 내용, 실패·미확인 단계만 필요한 만큼 표시한다.

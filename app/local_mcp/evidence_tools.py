@@ -8,13 +8,20 @@ from app.jira import evidence_service
 def register_evidence(register, runtime):
     def get_evidence_page(key: str, kind: Literal["comments", "history"] = "comments",
                           start_at: int = 0, max_results: int = 100, record_offset: int = 0) -> dict:
-        """Read original Jira comments or changelog records with IDs, full timestamps and authors.
-        key is one ticket; kind=comments returns body/renderedBody/created/updated and original
+        """Page original comments or field history for one ticket when the question needs more evidence.
+        For progress summaries, start with get_ticket(detail=read) and get_comments. Use kind=comments
+        for older discussion or a complete review of decisions, exclusions and revised scope.
+        Use kind=history only for change chronology, exact transition times, historical ownership or
+        unresolved discrepancies; do not fetch every ticket's history as a routine progress-summary step.
+        key is exactly one ticket: no child lookup, recursive traversal or descendant history is included.
+        kind defaults to comments; it returns body/renderedBody/created/updated and original
         author; kind=history returns created/author/items including field IDs and from/to values.
         authorId is null when Jira supplies only a display name; never infer identity from names.
         Returns items, total, returned, hasMore, nextStartAt, complete/sourceComplete and partial.
         max_results is 1..100 and start_at is zero-based. Responses are bounded to 8KiB of data,
-        so fewer records may be returned. Follow every nextStartAt; a complete page is not the collection.
+        so fewer records may be returned. Follow every nextStartAt when complete coverage of the selected
+        source is required; a complete page is not the collection. Otherwise stop when the question is
+        supported and report the inspected scope, never claim an exhaustive review from a preview.
         An oversized record is represented by id/sourceIndex/recordJson/recordOffset/nextRecordOffset/
         totalCharacters/recordSha256. Concatenate recordJson chunks and parse JSON to recover the record.
         While nextRecordOffset is non-null, repeat at the same sourceIndex with max_results=1 and
