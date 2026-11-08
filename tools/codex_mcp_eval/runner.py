@@ -70,12 +70,14 @@ def parse_args(argv):
     parser.add_argument("--model", default=cli.MODEL)
     parser.add_argument("--effort", default=cli.EFFORT)
     parser.add_argument("--repeat-index", type=int, default=1)
-    parser.add_argument("--repetitions", type=int, default=1)
+    parser.add_argument("--repetitions", type=int)
     parser.add_argument("--run-kind", choices=("exploratory", "qualification"), default="exploratory")
     parser.add_argument("--candidate-order-index", type=int)
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--codex", default=None)
     options = parser.parse_args(argv)
+    if options.repetitions is None:
+        options.repetitions = options.repeat_index if options.run_kind == "exploratory" else 1
     if options.battery != "work" and (options.skill_condition != "baseline" or options.skill_transport != "default"):
         parser.error("Skill comparison options require the work battery")
     if options.recovery_scenario:
@@ -136,6 +138,13 @@ def _payload(metadata, records, selected, preflight, *, failure=None):
                     "latency": summarize_latency(durations) if durations else None},
         "cases": records,
     }
+    applications = [row["skillApplication"] for row in records if "skillApplication" in row]
+    if applications:
+        payload["summary"]["skillAdoption"] = {
+            "offeredCases": sum(row["offered"] for row in applications),
+            "entrypointReadCases": sum(row["entrypointRead"] for row in applications),
+            "resourceReadCases": sum(row["candidateResourceReads"] > 0 for row in applications),
+            "qualityMetric": False, "comparisonPolicy": "intention-to-treat-no-nonadopter-exclusion"}
     if failure:
         payload.update(infrastructureError=failure, executionComplete=False)
     return payload
@@ -220,6 +229,15 @@ def launch(argv=None, *, cli_run=None, fixture_factory=None, identity_fn=None):
                 record = {"id": case["id"], "inputs": case["prompts"], "output": {}, "durationSeconds": 0,
                           "automaticPass": False, "infrastructureError": "fixture_or_runtime_failed",
                           "errorType": type(exc).__name__}
+            if options.battery == "work":
+                reads = [row for row in record.get("skillReads", []) if row["uri"].startswith(
+                    ("skill://ltm-work-research/", "skill://ltm-work-reporting/"))]
+                record["skillApplication"] = {"offered": options.skill_condition == "candidate",
+                    "entrypointRead": any(row["uri"].endswith("/SKILL.md") for row in reads),
+                    "candidateResourceReads": len(reads),
+                    "attribution": "observed-resource-reads" if reads else (
+                        "exposure-only" if options.skill_condition == "candidate" else "baseline"),
+                    "qualityMetric": False}
             records.append(record)
             write_raw_result(out, _payload(metadata, records, selected, preflight))
             print(f"{'PASS' if record['automaticPass'] else 'FAIL'} {case['id']} · {record['durationSeconds']:.1f}s", flush=True)
@@ -276,11 +294,6 @@ def _run_case(case, options, binary, run_root, catalog_hash, cli_run, fixture_fa
                   "sourceSnapshot": str((directory / "oracle.json").relative_to(artifact_root or RAW_RESULT_ROOT))}
         if getattr(options, "battery", None) == "work":
             record["skillReads"] = list(fixture.skill_reads)
-            if options.skill_condition == "candidate" and not any(
-                    row["uri"] in {"skill://ltm-work-research/SKILL.md", "skill://ltm-work-reporting/SKILL.md"}
-                    for row in record["skillReads"]):
-                automatic["failures"].append("candidate_skill_not_read")
-                automatic["pass"] = record["automaticPass"] = False
         if output.get("error") in {"codex_timeout", "codex_execution_failed"}:
             record["infrastructureError"] = output["error"]
         return record

@@ -9,11 +9,16 @@ from tools.codex_mcp_eval.cases import OUTPUT_SCHEMA as BASE_SCHEMA, SYSTEM_CONT
 from tools.codex_mcp_eval.reporting_cases import _ticket_evidence
 from tools.codex_mcp_eval.reporting_fixture import periods
 from tools.codex_mcp_eval.work_data import build_work_data
-from tools.codex_mcp_eval.work_evidence import evidence_collection, document_complete, source_observed
+from tools.codex_mcp_eval.work_evidence import (evidence_collection, document_complete, source_observed,
+                                             optional_count_progress, count_ratio_labeled)
 
-SUITE, BATTERY_VERSION, PROMPT_VERSION = "codex-mcp-work", "0.1.1", "codex-mcp-work-v1"
+SUITE, BATTERY_VERSION, PROMPT_VERSION = "codex-mcp-work", "0.2.0", "codex-mcp-work-v2"
 REFERENCE_DATE = "2026-11-09"
 OUTPUT_SCHEMA = copy.deepcopy(BASE_SCHEMA)
+_sources = OUTPUT_SCHEMA["properties"]["sources"]["items"]["properties"]
+_sources["kind"]["enum"].append("comment")
+_sources["id"]["description"] = "원본 식별자: ticket은 실제 key, comment는 실제 댓글 ID, document는 실제 문서 ID, person은 실제 사용자 ID. 합성 ID를 만들지 마세요."
+_sources["url"]["description"] = "실제 반환된 url/self를 사용하세요. 댓글의 상대 self는 실제 관측한 같은 티켓의 서버 주소로 절대화할 수 있습니다. 댓글은 부모 ticket 출처와 reply의 댓글 ID로 인용해도 됩니다."
 OUTPUT_SCHEMA["properties"]["resultKeys"]["description"] = "요청 범위에서 실제 판단에 사용한 근거 티켓 key. key 오름차순, 중복 없음."
 OUTPUT_SCHEMA["properties"]["operations"] = {"type": "array", "items": {"type": "object",
     "additionalProperties": False, "properties": {"category": {"type": "string"},
@@ -74,12 +79,15 @@ def review_contract(today=REFERENCE_DATE, *, source_revision=1):
     oracle = build_work_data(today, source_revision=source_revision)["oracle"]
     specs = {}
     for row in materialize_cases(today):
+        expected = copy.deepcopy(oracle["cases"][row["id"]])
+        if row["family"] == "R10":
+            expected["optionalCountProgress"] = "null or a complete observed hierarchy's explicitly labeled all-ticket/child count ratio; workload progress is not inferred"
         specs[row["id"]] = {"goal": row["prompts"][0], "elements": [{
             "id": row["id"].lower(), "dimension": "factual_grounding",
             "question": "단위·기간·사람·근거·집계를 보존하고 한국어로 요청을 완결했는가",
             "majorWhen": "허위 기여·완료·집계, 누락을 0건으로 처리하거나 자료 충돌·제외를 숨김",
             "evidenceSources": ["output.reply", "output.mcpToolCalls", "sourceSnapshot"],
-            "expected": oracle["cases"][row["id"]]}]}
+            "expected": expected}]}
     suite = [{"id": "work_direct_review", "dimension": "request_fulfillment",
         "question": "원문을 직접 읽어 자연스러운 한국어·양식·근거 추적성과 미확인 공개를 검수했는가",
         "majorWhen": "자동 검사만으로 정성 통과 선언", "expected": {"humanMeanMinimum": 4.5},
@@ -110,7 +118,8 @@ def check(case, output, calls, ground_truth=None):
     keys = answer.get("resultKeys") or []
     if keys != expected["keys"] or answer.get("reportedTotal") != expected["total"]:
         failures.append("result_scope_or_count_mismatch")
-    if answer.get("progress") != expected["progress"]:
+    if answer.get("progress") != expected["progress"] and not (
+            case["family"] == "R10" and optional_count_progress(successful, answer.get("progress"), reply)):
         failures.append("progress_mismatch")
     if any(not by_ticket.get(key) for key in keys) or any(
             r["text"] not in by_ticket.get(r["key"], "") for r in expected["requiredEvidence"]):
@@ -148,4 +157,5 @@ def check(case, output, calls, ground_truth=None):
 
 
 CHECKER_DEPENDENCIES = (check, review_contract, materialize_cases, build_work_data, evidence_collection,
-                        document_complete, source_observed, SYSTEM_CONTEXT, OUTPUT_SCHEMA, CASES)
+                        document_complete, source_observed, optional_count_progress, count_ratio_labeled,
+                        SYSTEM_CONTEXT, OUTPUT_SCHEMA, CASES)

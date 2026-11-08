@@ -84,7 +84,8 @@ def test_work_fixture_exposes_real_sources_and_only_requested_guides(tmp_path, c
         assert fixture.fingerprint() == before
 
 
-def test_work_runner_selects_condition_and_retains_manifest_without_model(tmp_path):
+@pytest.mark.parametrize("read_guide", [True, False])
+def test_work_runner_selects_condition_and_retains_manifest_without_model(tmp_path, read_guide):
     from tools.codex_mcp_eval import cli
     from mcp.client.streamable_http import streamable_http_client
     import httpx2
@@ -96,7 +97,8 @@ def test_work_runner_selects_condition_and_retains_manifest_without_model(tmp_pa
         async def scenario():
             async with httpx2.AsyncClient(headers={"Authorization": "Bearer " + kwargs["token"]}) as http:
                 async with Client(streamable_http_client(kwargs["mcp_url"], http_client=http)) as client:
-                    await client.call_tool("get_content_guide", {"skill": "ltm-work-reporting"})
+                    if read_guide:
+                        await client.call_tool("get_content_guide", {"skill": "ltm-work-reporting"})
                     for key in ("DL-94001", "DL-94002", "DL-94007"):
                         response = await client.call_tool("get_ticket", {"key": key, "detail": "read"})
                         assert not response.is_error
@@ -117,7 +119,9 @@ def test_work_runner_selects_condition_and_retains_manifest_without_model(tmp_pa
     context = payload["evaluation"]["run"]["externalRuntime"]
     assert context["skillCondition"] == "candidate" and context["skillTransport"] == "fallback"
     assert context["skillManifestSha256"]
-    assert payload["cases"][0]["skillReads"]
+    application = payload["cases"][0]["skillApplication"]
+    assert application["entrypointRead"] is read_guide
+    assert application["attribution"] == ("observed-resource-reads" if read_guide else "exposure-only")
     assert payload["humanReview"]["status"] == "pending"
     assert not list((tmp_path / "raw").rglob("mcp-secret.json"))
     assert not list((tmp_path / "raw").rglob("jira-cache.sqlite3"))

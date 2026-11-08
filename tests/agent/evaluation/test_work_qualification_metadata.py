@@ -13,6 +13,12 @@ def test_experiment_defaults_use_requested_sol_high():
     assert (cli.MODEL, cli.EFFORT) == ("gpt-6.1-sol", "high")
 
 
+def test_exploratory_retry_index_remains_supported_without_new_design_flags():
+    options = runner.parse_args(["--repeat-index", "2"])
+    assert options.repeat_index == options.repetitions == 2
+    assert options.run_kind == "exploratory"
+
+
 @pytest.mark.parametrize("extra", [
     ["--run-kind", "qualification"],
     ["--run-kind", "qualification", "--repetitions", "5", "--candidate-order-index", "1", "--cases", "WORK-R01-normal"],

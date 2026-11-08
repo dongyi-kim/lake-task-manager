@@ -73,11 +73,24 @@ $env:LTM_CODEX_EXECUTABLE = 'C:/Users/PC/AppData/Local/Programs/OpenAI/Codex/bin
 python -X utf8 tools/agent_eval_launcher.py codex-mcp --run-group 20261104-codex-mcp-r01 --date 2026-11-04
 ```
 
-수동 실행은 network-enabled process에서 한다. 기본 모델 `gpt-6-astra`, reasoning effort `ultra`.
+수동 실행은 network-enabled process에서 한다. 기본 모델 `gpt-6.1-sol`, reasoning effort `high`.
 launcher가 argument와 기존 로그인을 확인하고 고유 attempt를 예약한 뒤 짧은 실제 Codex 응답으로
 연결을 확인한다. preflight 비용·토큰은 별도 기록하며 사례 시간에는 합산하지 않는다.
 포트는 4457 고정이다. 점유 중이면 다른 포트를 선택하지 않고 실패한다. 단위 테스트만 명시적으로 port 0을 쓴다.
 직접 runner 실행은 거부한다. 재실행은 새 `--run-group`이나 `--repeat-index`를 사용하며 기존 claim/raw를 지우지 않는다.
+
+Qualification은 `--run-kind qualification --repetitions 5 --repeat-index N --candidate-order-index M`을
+명시하고 전체 battery를 실행한다. 반복 전체에서 planned repetitions는 고정하며, A/B 순서는 사전에
+교차 배치해 별도 실행 기록에 남긴다. dirty commit이나 유효하지 않은 설계는 모델 호출 전에 거부한다.
+탐색 실행의 기존 `--repeat-index N` 단독 재시도는 유지한다.
+
+Work battery 0.2.0은 스킬 노출과 실제 열람을 `skillApplication`/`summary.skillAdoption`으로 나눈다.
+열람하지 않은 사례도 주 A/B 비교에 포함하며 열람률을 답변 품질 점수로 바꾸지 않는다. 미열람 사례에서
+스킬을 실제 실행했다고 주장하지 않는다. 복구 battery의 명시적 스킬·파일 절차 검사는 별도로 유지한다.
+출처는 원본 ID를 사용하고 댓글을 별도 인용할 때 kind=comment를 쓴다. 상대 self는 실제 관측한 같은
+티켓의 서버 주소와 원본 댓글 ID·경로가 일치할 때만 절대화한다. 합성 ID나 추정 focused-comment URL은
+허용하지 않는다. R10의 선택적 수치 진척은 전체 계층·상태를 확인한 뒤 티켓 수 또는 하위 수라는 분모와
+산식을 밝힌 경우만 허용하며, 불완전 사례나 명시적 하위-only 요청의 계약을 완화하지 않는다.
 
 `--cases MCP-J1 MCP-O1`처럼 고유 ID로 focused 실행할 수 있다. focused 성공으로 이전 full run 실패를 대체하지 않는다.
 버전은 external suite `1.0.1`, protocol `3.0.0`, human rubric `2.0.0`이며 기존 내장 Agent 배터리와
