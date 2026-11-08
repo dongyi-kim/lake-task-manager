@@ -69,6 +69,22 @@ def test_ab_and_repeats_share_benchmark_but_retain_candidate_identity(tmp_path, 
     assert all(row["run"]["repetitions"] == 5 for row in metadata)
     assert metadata[1]["run"]["externalRuntime"]["skillCondition"] == "candidate"
 
+    recovery_metadata = []
+    for mode in ("uninterrupted", "restarted"):
+        args = ["--battery", "work", "--date", "2026-11-09", "--skill-condition", "candidate",
+                "--run-group", "recovery-" + mode, "--output-root", str(tmp_path), "--codex", "stub",
+                "--run-kind", "qualification", "--repetitions", "5", "--candidate-order-index", "1",
+                "--recovery-scenario", "between-pages", "--recovery-mode", mode]
+        assert runner.launch(args, cli_run=lambda *a, **k: {"ok": True, "reply": "PREFLIGHT"},
+                             fixture_factory=fixture,
+                             identity_fn=lambda *a, **k: {"runtime": "test", "version": "1"}) == 0
+        payload = json.loads(next((tmp_path / ("recovery-" + mode)).glob("*.json")).read_text(encoding="utf-8"))
+        recovery_metadata.append(payload["evaluation"])
+    assert recovery_metadata[0]["benchmarkKey"] == recovery_metadata[1]["benchmarkKey"]
+    assert recovery_metadata[0]["candidateKey"] != recovery_metadata[1]["candidateKey"]
+    assert recovery_metadata[0]["run"]["externalContext"]["modelInvocationTimeoutSeconds"] == 600
+    assert recovery_metadata[0]["run"]["externalContext"]["preflightTimeoutSeconds"] == 90
+
     monkeypatch.setattr(protocol, "git_snapshot", lambda: {
         "commit": "a" * 40, "gitStatusAvailable": True, "dirtyTrackedFiles": ["changed.py"],
         "dirtyUntrackedFiles": False, "candidateTreeSha256": "b" * 64})

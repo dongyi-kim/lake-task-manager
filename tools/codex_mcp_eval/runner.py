@@ -199,6 +199,7 @@ def launch(argv=None, *, cli_run=None, fixture_factory=None, identity_fn=None):
             prompt_version=battery.PROMPT_VERSION, suite_review_elements=suite_review, case_review_specs=case_specs,
             checker_dependencies=(*battery.CHECKER_DEPENDENCIES, GATE), external_runtime=identity,
             benchmark_context={"fixtureDate": options.date, "timezone": "Asia/Seoul", "readScope": scope,
+                               "modelInvocationTimeoutSeconds": options.timeout, "preflightTimeoutSeconds": 90,
                                "fixtureConformance": conformance,
                                "outputContract": "external-json-answer-v1", "gate": GATE,
                                **({"warmReplay": "successful-reads-three-http-repetitions-after-answer"}

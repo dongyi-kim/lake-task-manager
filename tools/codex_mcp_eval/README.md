@@ -92,6 +92,11 @@ Work battery 0.2.0은 스킬 노출과 실제 열람을 `skillApplication`/`summ
 허용하지 않는다. R10의 선택적 수치 진척은 전체 계층·상태를 확인한 뒤 티켓 수 또는 하위 수라는 분모와
 산식을 밝힌 경우만 허용하며, 불완전 사례나 명시적 하위-only 요청의 계약을 완화하지 않는다.
 
+0.2.1에서는 답변의 progress가 업무 진척률이며 조사 수집 완료율이 아님을 schema와 복구 요청에
+명시한다. 복구 비교의 두 mode는 같은 문제·검수 manifest를 공유하고 실제 mode는 candidate identity에
+기록한다. mode별 검수 조건은 공통 manifest의 modes에서 해당 조건을 선택한다. 각 모델 호출의 timeout과
+별도 preflight timeout도 공통 benchmark context에 기록한다. 복구의 두 phase는 각각 호출 제한을 적용한다.
+
 `--cases MCP-J1 MCP-O1`처럼 고유 ID로 focused 실행할 수 있다. focused 성공으로 이전 full run 실패를 대체하지 않는다.
 버전은 external suite `1.0.1`, protocol `3.0.0`, human rubric `2.0.0`이며 기존 내장 Agent 배터리와
 동일 benchmark라고 주장하지 않는다. S3~S6 원문 질문과 기대 사실을 재사용하고 별도의 MCP 전송·출력 계약을 기록한다.

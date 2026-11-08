@@ -19,6 +19,8 @@ resultKeys는 위 검색 범위에서 판단에 사용한 key 오름차순이며
 research_files는 이 조사의 전용 로컬 파일 기능입니다. 서버의 조사·보고 가이드와 저장·재개 참고를
 필요에 따라 읽고 실제 응답 구조를 evidence/에 보존한 다음 progress를 갱신하세요.
 manifest와 resume도 유지하세요. 파일·shell·외부 서비스는 이 명시적 파일 기능 외에는 사용하지 마세요.
+출력의 progress는 사용자가 요청한 업무 진척률입니다. 조사 수집 완료율과 구분하고,
+업무 진척률을 요청하지 않은 질문에서는 null로 두세요. 수집 진행은 조사 파일에 기록하세요.
 """
 
 
@@ -38,13 +40,16 @@ def recovery_battery(base, today, scenario, mode):
         spec["goal"] = case["prompts"][0]
         expected = spec["elements"][0]["expected"]
         expected["documents"] = ["운영 결정"]
-        expected["recovery"] = {"scenario": scenario, "mode": mode, "sourceRevision": revision,
-            "cachePolicy": "new-private-database-every-phase", "originalDialogueAvailable": False}
+        expected["recovery"] = {"scenario": scenario, "sourceRevision": revision,
+            "cachePolicy": "new-private-database-every-phase", "treatmentField": "run.externalRuntime.recoveryMode",
+            "modes": {"uninterrupted": {"phaseCount": 1, "initialSourceRevision": revision},
+                      "restarted": {"phaseCount": 2, "initialSourceRevision": 1,
+                                    "originalDialogueAvailable": False, "requiresSavedFilesRead": True}}}
         return suite, {case["id"]: spec}
     return SimpleNamespace(**{**vars(base), "SUITE": "codex-mcp-work-recovery", "CASES": [case],
-        "PROMPT_VERSION": "codex-mcp-work-recovery-v1", "SYSTEM_CONTEXT": "", "review_contract": review,
+        "PROMPT_VERSION": "codex-mcp-work-recovery-v2", "SYSTEM_CONTEXT": "", "review_contract": review,
         "CHECKER_DEPENDENCIES": (*base.CHECKER_DEPENDENCIES, RECOVERY_PROMPT, recovery_prompt,
-                                  RecoveryController, persisted_calls, scenario, mode)})
+                                  RecoveryController, persisted_calls, scenario)})
 
 
 def _phase(directory, index, options, binary, cli_run, files_root, controller, revision, fixture_factory):

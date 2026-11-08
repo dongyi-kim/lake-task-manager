@@ -71,6 +71,19 @@ def test_source_changed_review_contract_matches_final_oracle_and_real_prompt():
     assert battery.SUITE == "codex-mcp-work-recovery"
 
 
+@pytest.mark.parametrize("scenario", RECOVERY_SCENARIOS)
+def test_recovery_treatments_share_the_same_benchmark_manifest(scenario):
+    from tools.agent_eval_protocol import battery_manifest_sha256, normalize_specialized_review_specs
+    from tools.codex_mcp_eval.recovery_runner import recovery_battery
+    manifests = []
+    for mode in ("uninterrupted", "restarted"):
+        battery = recovery_battery(runner._battery("work", "2026-11-09"), "2026-11-09", scenario, mode)
+        registry = normalize_specialized_review_specs(battery.CASES, *battery.review_contract())
+        manifests.append(battery_manifest_sha256(battery.CASES, registry,
+                                                 checker_dependencies=battery.CHECKER_DEPENDENCIES))
+    assert manifests[0] == manifests[1]
+
+
 @pytest.mark.parametrize("forbidden", [[], ["command_execution"]])
 def test_recovery_retains_all_phase_violations_and_counts_executed_calls(tmp_path, monkeypatch, forbidden):
     from tools.agent_eval_isolation import NETWORK_PREFLIGHT_MARKER

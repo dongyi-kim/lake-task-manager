@@ -61,6 +61,8 @@ def test_work_schema_defines_source_identity_without_synthesized_comment_ids():
     assert "comment" in properties["kind"]["enum"]
     assert "comment" in properties["id"]["description"]
     assert "self" in properties["url"]["description"]
+    progress = work_cases.OUTPUT_SCHEMA["properties"]["progress"]["description"]
+    assert "업무" in progress and "조사" in progress and "null" in progress
 
 
 @pytest.mark.parametrize("include_root", [True, False])

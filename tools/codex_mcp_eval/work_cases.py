@@ -12,9 +12,10 @@ from tools.codex_mcp_eval.work_data import build_work_data
 from tools.codex_mcp_eval.work_evidence import (evidence_collection, document_complete, source_observed,
                                              optional_count_progress, count_ratio_labeled)
 
-SUITE, BATTERY_VERSION, PROMPT_VERSION = "codex-mcp-work", "0.2.0", "codex-mcp-work-v2"
+SUITE, BATTERY_VERSION, PROMPT_VERSION = "codex-mcp-work", "0.2.1", "codex-mcp-work-v3"
 REFERENCE_DATE = "2026-11-09"
 OUTPUT_SCHEMA = copy.deepcopy(BASE_SCHEMA)
+OUTPUT_SCHEMA["properties"]["progress"]["description"] = "사용자가 요청한 업무의 진척률만 기록합니다. 조사 수집·파일 저장의 완료율은 이 필드에 넣지 마세요. 업무 진척을 요청하지 않았거나 전체를 확인하지 못하면 null입니다. 조사 진행은 progress 파일에서 별도로 관리합니다."
 _sources = OUTPUT_SCHEMA["properties"]["sources"]["items"]["properties"]
 _sources["kind"]["enum"].append("comment")
 _sources["id"]["description"] = "원본 식별자: ticket은 실제 key, comment는 실제 댓글 ID, document는 실제 문서 ID, person은 실제 사용자 ID. 합성 ID를 만들지 마세요."

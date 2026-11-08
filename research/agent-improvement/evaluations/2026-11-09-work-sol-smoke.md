@@ -95,9 +95,9 @@ It does not overwrite 0.1.1 attempts or convert automatic results into qualitati
   Invalid/dirty qualification is rejected before model calls. Historical exploratory
   retry-index usage remains supported.
 
-Regression tests reproduced the issues before the implementation changes. Targeted
-real-model confirmation of source/progress cases, full 220-case A/B and 60-case cold
-recovery evaluation, direct rubric scoring and any default activation remain pending.
+Regression tests reproduced the issues before the implementation changes. The full
+220-case A/B and 60-case cold recovery evaluation, direct rubric scoring and any
+default activation remain pending. Focused confirmations follow below.
 
 Validation after the independent review fix pass: **125 focused/protocol tests
 passed** in 90.19s. New negative cases reject unrelated scope words, workload
@@ -105,3 +105,49 @@ claims, ratios attributed to the wrong scope, conflicting displayed percentages,
 missing hierarchy pages/status disagreement, failed source reads and missing IDs.
 The denominator-label check is bounded arithmetic/text validation; direct semantic
 review remains mandatory. Full offline CI is handled by the PR workflow.
+
+## Focused confirmation and first cold diagnostic
+
+Frozen commit `0d754a9b3b077456d356b453421fab4c32d62c11`, work 0.2.0 / prompt v2,
+same Sol/high model and fixture. Full offline GitHub CI for this commit succeeded.
+
+| Run group suffix | Cases | Original automatic result | Answer time | MCP calls | Total tokens |
+|---|---|---:|---:|---:|---:|
+| `v02-confirm-default-e4deee74` | R08, R10 normal | 2/2 | 92.2s | 37 | 436,042 |
+| `v02-confirm-fallback-e4deee74` | R08, R10 normal | 2/2 | 101.0s | 37 | 489,094 |
+| `v02-recovery-diagnostic-e4deee74` | between-pages, restarted | 0/1 | 248.1s | 85 LTM + 133 file | null |
+
+All suffixes have prefix `20261109-sol-high-` under the durable evidence root.
+The root agent directly read all four confirmation answers: both transports used
+actual comment ID 61010 with `kind=comment`; R10 preserved revision 1 and current
+states with correctly labeled child-only or all-ticket count ratios. All four read
+candidate entrypoints. These focused passes do not replace original failed attempts.
+
+The cold diagnostic intentionally stopped phase 0 after a real saved page and
+checkpoint (34.29s). Phase 1 read the investigation files in a fresh session/cache
+and finished in 213.83s. Full-comment/chunk/document coverage checks passed and the
+answer correctly excluded cancellation, duplicate LOAD-1 and out-of-period work:
+two unique tables. Both phases preserved source snapshots and recorded no forbidden
+tools. One first-phase response was eligible persisted evidence; this is not an
+observed count of avoided calls.
+
+The original failure is **`progress_mismatch`**: the model put collection completion
+`5/5 = 100%` into the answer's business-progress field. Recovery lacked the normal
+prompt's explicit field semantics. The output schema/request is clarified in work
+**0.2.1 / prompt v3**, recovery prompt v2: collection progress belongs in files and
+answer progress stays null when business progress was not requested. The strict
+null oracle remains; the failed raw is not rescored as a pass.
+
+Investigation files: 62, retained size 755,278 bytes. File calls wrote 2,329,224 bytes
+including rewrites, read 13,946 bytes and took 3.38s inside the file service; overall
+model/MCP time includes copying and orchestration as well. Total token usage is null
+because interrupted phase 0 emitted no completed-turn usage. Do not compare this
+missing total against a complete uninterrupted token total or treat it as zero.
+
+Before full qualification, the recovery treatment was also removed from shared
+battery/review identity: each scenario now declares both mode-specific review paths
+in one common manifest, while actual mode stays in candidate identity. Six scenarios
+and actual runner metadata regressions reproduced eight failures before the fix;
+**86 focused tests passed** afterward (87.18s). Invocation/preflight timeout limits
+are recorded in benchmark context. New cold confirmation and full qualification
+remain pending.
