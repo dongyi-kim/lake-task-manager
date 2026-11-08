@@ -9,6 +9,8 @@ description: LTM MCP로 여러 Task 또는 SubTask를 검증하고 일괄 생성
 
 ## 필요한 참고 문서
 
+- [한국어 작성과 검수](references/korean-writing.md): 조건·기한·담당자·체크 상태 보존.
+
 - [제출 전 초안 검토](references/draft-review.md): 항목별 내용·대상 제시와 묶음 단위 확인.
 - 이름·링크 확인은 [사람과 링크](references/people-and-links.md)를 사용한다.
 - 본문은 [작성 형식](references/content-format.md)의 **Jira Task 본문 작성 스타일**과 **Bulk Markdown** 절을 따른다. 비교는 표, 작업 목록은 간결한 개조식, 점검사항·작업목표는 체크박스를 권장한다. 배경·원인·질문은 조사와 연결어를 살린 짧은 문장으로 쓴다. 일괄 생성의 Markdown은 일반 티켓 생성의 HTML과 다르다.

@@ -1,0 +1,42 @@
+{
+  "exampleOnly": true,
+  "manifest": {
+    "schemaVersion": 1,
+    "investigationId": "synthetic-example",
+    "question": "합성 ETL 모듈의 기간 실적",
+    "scope": {"jiraProjects": ["DEMO"], "confluenceSpaces": ["DEMO"], "moduleBasis": "Component"},
+    "period": {"start": "2026-10-01T00:00:00+09:00", "end": "2026-11-01T00:00:00+09:00"},
+    "timezone": "Asia/Seoul",
+    "asOf": "2026-11-09T09:00:00+09:00",
+    "sources": {"jira": "https://jira.example.invalid", "confluence": "https://wiki.example.invalid"},
+    "skillResources": [{"uri": "skill://ltm-work-reporting/SKILL.md", "digest": "use-the-actual-catalog-digest"}]
+  },
+  "progress": {
+    "schemaVersion": 1,
+    "generation": 2,
+    "collection": [{
+      "key": "DEMO-1", "kind": "comments", "status": "incomplete",
+      "arguments": {"key": "DEMO-1", "kind": "comments", "start_at": 5, "max_results": 100},
+      "sourceComplete": null,
+      "evidenceFiles": ["evidence/demo-1-comments-page-0.json"]
+    }],
+    "analysis": [{"key": "DEMO-1", "status": "pending", "reason": "후속 취소 댓글 확인 필요"}],
+    "failures": [],
+    "nextAction": "유효한 조회 조건과 댓글 위치를 확인한 뒤 남은 댓글을 읽는다"
+  },
+  "evidence": {
+    "sourceIdentity": {"key": "DEMO-1", "commentId": "11"},
+    "eventAt": "2026-10-15T10:00:00+09:00",
+    "retrievedAt": "2026-11-09T09:01:00+09:00",
+    "body": "합성 예제: prod.dw.sales 적재 검증 완료",
+    "complete": true
+  },
+  "finding": {
+    "entityIdentity": "demo/prod/warehouse/dw/sales",
+    "eventIdentity": "investigation-local-event-1",
+    "category": "new_ingestion",
+    "status": "unconfirmed",
+    "sourceFiles": ["evidence/demo-1-comments-page-0.json"],
+    "reason": "현재 댓글은 성공을 주장하지만 전체 취소·제외 검토는 아직 미완료"
+  }
+}

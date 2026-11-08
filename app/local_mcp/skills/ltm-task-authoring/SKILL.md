@@ -9,6 +9,8 @@ description: LTM MCP로 Task·Epic·SubTask 한 건을 생성하거나 기존 �
 
 ## 필요한 참고 문서
 
+- [한국어 작성과 검수](references/korean-writing.md): 수치·부정·보류·담당자의 의미를 보존하는 표현.
+
 - [제출 전 초안 검토](references/draft-review.md): 검토할 내용, 확인 시점, 기존 승인 재사용.
 - 본문 작성 시 [작성 형식](references/content-format.md)의 **Jira Task 본문 작성 스타일**을 읽는다. 비교는 표, 작업 목록은 간결한 개조식, 점검사항·작업목표는 체크박스를 권장한다. 배경·원인·질문은 조사와 연결어를 살린 짧은 문장으로 쓴다. 리치 본문 형식도 같은 문서를 따른다.
 - 사람·Jira·Confluence·외부 링크를 넣을 때 [사람과 링크](references/people-and-links.md)를 읽는다.

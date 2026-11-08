@@ -8,20 +8,30 @@ import yaml
 
 
 SKILL_NAMES = ("ltm-task-authoring", "ltm-comment-authoring", "ltm-bulk-task-create", "ltm-confluence-authoring")
+RESEARCH_SKILL_NAMES = ("ltm-work-research", "ltm-work-reporting")
 _MIME_TYPES = {".md": "text/markdown", ".html": "text/html", ".json": "application/json"}
 MAX_RESOURCE_BYTES = 8 * 1024  # Keep each progressive-disclosure read below the context budget.
 
 
 class SkillCatalog:
-    def __init__(self, root: Path | None = None):
+    def __init__(self, root: Path | None = None, *, include_research: bool = False):
         root = (root or Path(__file__).with_name("skills")).resolve()
         self._entries, self._files = {}, {}
         shared = self._load_files(root / "_shared", root)
-        for name in SKILL_NAMES:
+        research = self._load_files(root / "_research", root) if include_research else {}
+        self.names = SKILL_NAMES + (RESEARCH_SKILL_NAMES if include_research else ())
+        for name in self.names:
             files = self._load_files(root / name, root)
+            if name in RESEARCH_SKILL_NAMES:
+                for path, content in research.items():
+                    destination = "references/" + path
+                    if destination in files:
+                        raise ValueError(f"Duplicate skill resource: {name}/{destination}")
+                    files[destination] = content
             for path, content in shared.items():
                 # Draft review is format-independent; Jira markup/workflow guides are not.
-                if name == "ltm-confluence-authoring" and path != "draft-review.md":
+                if (name == "ltm-confluence-authoring" or name in RESEARCH_SKILL_NAMES) and path not in {
+                        "draft-review.md", "korean-writing.md"}:
                     continue
                 destination = "references/" + path
                 if destination in files:
@@ -88,6 +98,6 @@ class SkillCatalog:
             if path != "SKILL.md":
                 raise ValueError("Select a skill before requesting a resource")
             return {"skills": self.list_skills()}
-        if skill not in SKILL_NAMES:
-            raise ValueError("Unknown authoring skill")
+        if skill not in self.names:
+            raise ValueError("Unknown or unavailable packaged skill")
         return self.read(f"skill://{skill}/{path}")

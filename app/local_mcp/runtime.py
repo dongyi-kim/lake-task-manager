@@ -52,7 +52,8 @@ write_context_guard = ContextVar("ltm_mcp_write_context_guard", default=None)
 class LocalMcpRuntime:
     def __init__(self, *, get_client, settings, secret_path, require_edit=lambda key: None,
                  require_person_access=lambda user: None, classify_error=None,
-                 require_manager=None, require_module_access=None, scoped_people=lambda: {}, request_login=None):
+                 require_manager=None, require_module_access=None, scoped_people=lambda: {}, request_login=None,
+                 include_research_skills=False):
         self.get_client, self.settings = get_client, settings
         self.port = settings.app_port
         self.url = f"http://127.0.0.1:{self.port}/mcp"
@@ -68,7 +69,7 @@ class LocalMcpRuntime:
         self._work_lane = ToolLane(8)
         self._control_lane = ToolLane(2)
         self.started = False
-        self.skill_catalog = SkillCatalog()
+        self.skill_catalog = SkillCatalog(include_research=include_research_skills)
         self.server = MCPServer(
             "lake-task-manager", log_level="WARNING", extensions=[SkillsExtension(self.skill_catalog)], instructions=(
                 "The running local LTM instance shares its Jira authentication and caches. "
@@ -106,7 +107,14 @@ class LocalMcpRuntime:
                 "Task/comment HTML and bulk description Markdown are different input contracts. "
                 "Confluence uses storage XHTML and expected published versions; read ltm-confluence-authoring "
                 "before editing. A matching published version never proves collaborative drafts are absent. "
-                "Use attachment downloadUrl for full binary files, not repeated large base64 tool output."))
+                "Use attachment downloadUrl for full binary files, not repeated large base64 tool output.") + (
+                " Candidate investigation guides are enabled for evaluation: use ltm-work-research for "
+                "work context, history, progress and contributions; ltm-work-reporting for period totals "
+                "and report drafts. Discover them through the same skill catalog/get_content_guide. "
+                "For multi-page investigations read their checkpoint-resume reference and use client-local "
+                "files when available; if no file tool exists, disclose that and provide a resume brief. "
+                "These read/draft guides do not authorize publishing or add file tools."
+                if include_research_skills else ""))
         register_reads(self.register, self)
         register_evidence(self.register, self)
         register_hierarchy(self.register, self)

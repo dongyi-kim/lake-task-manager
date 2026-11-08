@@ -92,8 +92,9 @@ def test_catalog_rejects_outside_symlink(tmp_path):
 
 
 @pytest.mark.parametrize("version", ["2025-11-25", "2026-07-28"])
-def test_http_skill_catalog_and_resources_are_discoverable_without_jira(build_env, monkeypatch, version):
-    env = build_env()
+@pytest.mark.parametrize("include_research", [False, True])
+def test_http_skill_catalog_and_resources_are_discoverable_without_jira(build_env, monkeypatch, version, include_research):
+    env = build_env(include_research_skills=include_research)
     def unavailable(*_args, **_kwargs):
         raise AssertionError("Packaged guides must not invoke Jira or its authentication")
     monkeypatch.setattr(env.runtime, "get_client", unavailable)
@@ -127,7 +128,7 @@ def test_http_skill_catalog_and_resources_are_discoverable_without_jira(build_en
                     assert capabilities["extensions"]["io.modelcontextprotocol/skills"] == {}
                 assert "resources" in capabilities
                 listed = (await call("skills/list"))["result"]
-                assert {row["frontmatter"]["name"] for row in listed["skills"]} == set(SKILL_NAMES)
+                assert {row["frontmatter"]["name"] for row in listed["skills"]} == set(env.runtime.skill_catalog.names)
                 assert ("ttlMs" in listed) == (version == "2026-07-28")
                 resource_metadata = {row["uri"]: row for row in (await call("resources/list"))["result"]["resources"]}
                 for entry in listed["skills"]:

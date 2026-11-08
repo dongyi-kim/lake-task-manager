@@ -1,0 +1,74 @@
+# Issue 190: research, reporting and resumable investigations
+
+Status: approved implementation plan; candidate only until real-model qualification.
+Spec: https://github.com/dongyi-kim/lake-task-manager/issues/190 plus the user's
+2026-11-09 checkpoint/resume requirement and approved conversation plan.
+
+## Goal and constraints
+
+Provide `ltm-work-research` and `ltm-work-reporting` with shared Korean, evidence,
+aggregation and client-local recovery guides. Preserve #187's body/comments-first
+guidance. Keep existing four authoring skills and output contracts compatible.
+Do not add production filesystem MCP tools, question-specific reporting tools,
+new cache modes or JQL strategies. No paid/model run without separate approval.
+Use one checkout, preserve unrelated editor work in Git, and use OS temporary
+directories for development/test scratch with finally cleanup.
+
+## Task 1: candidate packaged skills
+
+- Add catalog opt-in `include_research=False`, with explicit shared-reference
+  selection so Jira markup does not leak into research or Confluence guides.
+- Add two guides, research-only shared references and reproducible checkpoint
+  examples. Every packaged resource remains at most 8192 UTF-8 bytes.
+- Extend fallback input enum and runtime skill discovery, conditionally describing
+  only enabled skills. Keep resource/fallback bytes and digests identical.
+- Test opt-in/default isolation, reference resolution, schemas, real MCP SDK reads,
+  no Jira access and preservation of existing authoring resources.
+
+## Task 2: work research/reporting evaluation
+
+- Add a new versioned `work` battery with R01..R11 normal and boundary cases.
+- Reuse reporting/identity mock foundations, with Confluence revisions, person
+  ambiguity, activity, operations-event identity, cancellations and full evidence.
+- Keep oracle data outside the model workspace and derive checks from successful
+  actual MCP responses, not tool names/arguments or answer strings alone.
+- A/B uses identical backend, fixture, dates and output schema; only candidate
+  guide exposure changes. Record skill reads and content digests in manifests.
+- Existing batteries remain backward-compatible. Freshness/JQL effects are not
+  attributed to skills. Native extension and fallback transport are distinguished.
+
+## Task 3: local recovery
+
+- Guide artifacts: manifest.json, progress.json, evidence/, findings.jsonl,
+  report.md and resume.md. Save evidence before advancing progress.
+- Resume checks task/source/scope identity, last valid generation, source age,
+  snapshot validity and full-record digest; deduplicate by actual source identity.
+- No file capability: report this and return a textual resume brief.
+- Add evaluation-only rooted list/read/atomic-write tools. No shell or arbitrary
+  filesystem/network access. Test traversal, symlinks, partial writes and bounds.
+- Recovery sessions share only saved files and the same fixture world; fresh
+  client/cache/session per restart. Six faults: between pages, response before
+  checkpoint, record chunk, corrupt final progress, expired snapshot, source
+  changes. Compare with uninterrupted answers against the correct source state.
+- Evaluation output root is outside the repo; authentication/fixture scratch is
+  removed on every exit and retained evidence is identified explicitly.
+
+## Task 4: verification and handoff
+
+- Run focused MCP/catalog and evaluation tests; preserve RED/GREEN evidence.
+- Whole-branch independent review, fix substantive findings with regression tests.
+- Commit by context; skills delivery and evaluation work use separate PR branches
+  if needed, using dependent commits without a second checkout.
+- Report candidate status and pending real-model validation honestly. Do not merge
+  or release as part of implementation.
+
+## Later real-model gate (not authorized to run)
+
+Model proposal: current harness gpt-6-astra/ultra, explicitly approved before run.
+Smoke: 11 B cases in default and fallback = 22. Main A/B: 22 x 2 x 5 = 220.
+Recovery: 6 x uninterrupted/restarted x 5 = 60. Total 302 plus preflights/retries.
+Record exact commit/manifests/model/clock/order, genuine tool evidence, token,
+latency, upstream work and file overhead. Preserve first failures and new attempts.
+Require automatic gates, direct human review mean >=4.5/5 and zero material false
+facts, unauthorized writes, failures represented as zero, or ungrounded counts.
+Only a later qualified rollout enables the candidate skills by default.
