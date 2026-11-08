@@ -114,7 +114,7 @@ def test_work_runner_selects_condition_and_retains_manifest_without_model(tmp_pa
                            identity_fn=lambda *a, **k: {"runtime": "test-no-model", "version": "test"})
     payload = json.loads(next((tmp_path / "raw" / "offline-work").glob("*.json")).read_text(encoding="utf-8"))
     assert result == 0, payload
-    context = payload["evaluation"]["run"]["externalContext"]
+    context = payload["evaluation"]["run"]["externalRuntime"]
     assert context["skillCondition"] == "candidate" and context["skillTransport"] == "fallback"
     assert context["skillManifestSha256"]
     assert payload["cases"][0]["skillReads"]

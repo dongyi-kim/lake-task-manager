@@ -1,4 +1,4 @@
-"""One exploratory, versioned Codex/HTTP-MCP battery with retained attempts."""
+"""One versioned Codex/HTTP-MCP battery with explicit qualification design."""
 from __future__ import annotations
 
 import argparse
@@ -54,7 +54,7 @@ def _battery(name, today):
 
 
 def parse_args(argv):
-    parser = argparse.ArgumentParser(description="Exploratory Codex + read-only LTM HTTP MCP quality battery")
+    parser = argparse.ArgumentParser(description="Codex + read-only LTM HTTP MCP quality battery")
     parser.add_argument("--run-group", default=datetime.now().strftime("%Y%m%d-%H%M%S-codex-mcp"))
     parser.add_argument("--date", default=date.today().isoformat())
     parser.add_argument("--battery", choices=("queries", "reporting", "identities", "work"), default="queries")
@@ -70,6 +70,9 @@ def parse_args(argv):
     parser.add_argument("--model", default=cli.MODEL)
     parser.add_argument("--effort", default=cli.EFFORT)
     parser.add_argument("--repeat-index", type=int, default=1)
+    parser.add_argument("--repetitions", type=int, default=1)
+    parser.add_argument("--run-kind", choices=("exploratory", "qualification"), default="exploratory")
+    parser.add_argument("--candidate-order-index", type=int)
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--codex", default=None)
     options = parser.parse_args(argv)
@@ -91,8 +94,15 @@ def parse_args(argv):
         date.fromisoformat(options.date)
     except ValueError:
         parser.error("date must be YYYY-MM-DD")
-    if options.repeat_index < 1 or not 10 <= options.timeout <= 3600:
-        parser.error("repeat-index must be positive and timeout must be 10..3600 seconds")
+    if not 1 <= options.repeat_index <= options.repetitions or not 10 <= options.timeout <= 3600:
+        parser.error("repeat-index must be 1..repetitions and timeout must be 10..3600 seconds")
+    if options.candidate_order_index is not None and options.candidate_order_index < 1:
+        parser.error("candidate-order-index must be positive")
+    if options.run_kind == "qualification":
+        if options.repetitions < 5 or options.candidate_order_index is None:
+            parser.error("Qualification requires at least 5 repetitions and a recorded candidate-order-index")
+        if options.cases and not options.recovery_scenario:
+            parser.error("Qualification requires the full battery without --cases")
     available = {case["id"] for case in _battery(options.battery, options.date).CASES}
     if options.cases and (set(options.cases) - available or len(set(options.cases)) != len(options.cases)):
         parser.error("cases must be unique IDs from the selected battery")
@@ -160,11 +170,15 @@ def launch(argv=None, *, cli_run=None, fixture_factory=None, identity_fn=None):
             if options.recovery_scenario:
                 skills.update(recoveryScenario=options.recovery_scenario, recoveryMode=options.recovery_mode,
                               fileCapability="rooted-evaluation-only-mcp-v1")
-    identity.update(provider="codex-chatgpt", toolCatalogSha256=catalog_hash,
+            # Exposure is the treatment; source-conformance is shared by both arms.
+            conformance = {key: value for key, value in conformance.items()
+                           if key not in {"skillCondition", "skillTransport"}}
+    identity.update(provider="codex-chatgpt", toolCatalogSha256=catalog_hash, **skills,
                     outputSchemaSha256=_hash(battery.OUTPUT_SCHEMA))
     suite_review, case_specs = battery.review_contract()
-    environment = {"LTM_EVAL_RUN_KIND": "exploratory", "LTM_EVAL_RUN_GROUP_ID": options.run_group,
-        "LTM_EVAL_REPEAT_INDEX": str(options.repeat_index), "LTM_EVAL_REPETITIONS": str(options.repeat_index),
+    environment = {"LTM_EVAL_RUN_KIND": options.run_kind, "LTM_EVAL_RUN_GROUP_ID": options.run_group,
+        "LTM_EVAL_REPEAT_INDEX": str(options.repeat_index), "LTM_EVAL_REPETITIONS": str(options.repetitions),
+        "LTM_EVAL_CANDIDATE_ORDER_INDEX": str(options.candidate_order_index or "unrecorded"),
         "LTM_EVAL_CACHE_POLICY": "fresh-client-and-private-cache-each-case",
         "LTM_EVAL_PROCESS_ISOLATION": "sequential-private-http-server-and-world-each-case",
         "LTM_EVAL_RUNTIME_PROFILE": "external-codex-http-mcp-readonly-v1",
@@ -177,9 +191,11 @@ def launch(argv=None, *, cli_run=None, fixture_factory=None, identity_fn=None):
             checker_dependencies=(*battery.CHECKER_DEPENDENCIES, GATE), external_runtime=identity,
             benchmark_context={"fixtureDate": options.date, "timezone": "Asia/Seoul", "readScope": scope,
                                "fixtureConformance": conformance,
-                               "outputContract": "external-json-answer-v1", "gate": GATE, **skills,
+                               "outputContract": "external-json-answer-v1", "gate": GATE,
                                **({"warmReplay": "successful-reads-three-http-repetitions-after-answer"}
                                   if options.warm_replay else {})})
+    if options.run_kind == "qualification" and not metadata["qualificationEligible"]:
+        raise RuntimeError("Invalid qualification: " + "; ".join(metadata["qualificationIneligibilityReasons"]))
     out = reserve_raw_result_path(raw_result_path(battery.SUITE, metadata, root=artifact_root))
     # No secret, expected answer, source fixture or repository file is put in the model's cwd.
     try:

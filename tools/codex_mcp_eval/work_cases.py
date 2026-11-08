@@ -11,7 +11,7 @@ from tools.codex_mcp_eval.reporting_fixture import periods
 from tools.codex_mcp_eval.work_data import build_work_data
 from tools.codex_mcp_eval.work_evidence import evidence_collection, document_complete, source_observed
 
-SUITE, BATTERY_VERSION, PROMPT_VERSION = "codex-mcp-work", "0.1.0", "codex-mcp-work-v1"
+SUITE, BATTERY_VERSION, PROMPT_VERSION = "codex-mcp-work", "0.1.1", "codex-mcp-work-v1"
 REFERENCE_DATE = "2026-11-09"
 OUTPUT_SCHEMA = copy.deepcopy(BASE_SCHEMA)
 OUTPUT_SCHEMA["properties"]["resultKeys"]["description"] = "요청 범위에서 실제 판단에 사용한 근거 티켓 key. key 오름차순, 중복 없음."

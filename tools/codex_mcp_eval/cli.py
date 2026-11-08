@@ -9,8 +9,8 @@ import time
 from pathlib import Path
 
 TOKEN_ENV = "LTM_EVAL_MCP_BEARER"
-MODEL = "gpt-6-astra"
-EFFORT = "ultra"
+MODEL = "gpt-6.1-sol"
+EFFORT = "high"
 HARDENING = {
     "project_doc_max_bytes": 0,
     "features.shell_tool": False,

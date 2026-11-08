@@ -62,9 +62,11 @@ directories for development/test scratch with finally cleanup.
 - Report candidate status and pending real-model validation honestly. Do not merge
   or release as part of implementation.
 
-## Later real-model gate (not authorized to run)
+## Real-model gate (authorized by continuation)
 
-Model proposal: current harness gpt-6-astra/ultra, explicitly approved before run.
+Model: gpt-6.1-sol/high, explicitly selected by the user on 2026-11-09.
+The interrupted Astra exploratory attempt is retained separately and excluded
+from Sol comparisons. No later experiment uses Astra.
 Smoke: 11 B cases in default and fallback = 22. Main A/B: 22 x 2 x 5 = 220.
 Recovery: 6 x uninterrupted/restarted x 5 = 60. Total 302 plus preflights/retries.
 Record exact commit/manifests/model/clock/order, genuine tool evidence, token,
