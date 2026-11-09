@@ -21,6 +21,9 @@ from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+if __name__ == "__main__":
+    # Edge helpers import this canonical name even when the CLI executes the file.
+    sys.modules["tools.jql_ui_benchmark"] = sys.modules[__name__]
 
 from tools.jql_ui_benchmark_fixture import ETL, LOGICAL_NOW
 from tools.jql_cache_benchmark import dependency_identity, repository_identity, reserve_attempt
@@ -215,15 +218,19 @@ def measure(page, name, action, result):
         records = after["requests"][len(before["requests"]):]
         row.update(requests=records, searchRequests=sum(r["path"] == "/rest/api/2/search" for r in records),
                    allRequests=len(records), longTasks=page.evaluate("window.__benchLong || []"))
-        if EVIDENCE_DIR:
-            screenshot = EVIDENCE_DIR / f"{len(result):03d}-{name.replace(':', '-')}.png"
-            page.screenshot(path=str(screenshot), full_page=False)
-            row["screenshot"] = str(screenshot)
-        result.append(row)
-        if RAW_STREAM:
-            RAW_STREAM.write(json.dumps(row, ensure_ascii=False) + "\n")
-            RAW_STREAM.flush()
+        record_row(page, row, result)
     print(json.dumps({k:row[k] for k in ("name","firstContentMs","completeMs","searchRequests","allRequests")}), flush=True)
+
+
+def record_row(page, row, rows):
+    if EVIDENCE_DIR:
+        screenshot = EVIDENCE_DIR / f"{len(rows):03d}-{row['name'].replace(':', '-')}.png"
+        page.screenshot(path=str(screenshot), full_page=False)
+        row["screenshot"] = str(screenshot)
+    rows.append(row)
+    if RAW_STREAM:
+        RAW_STREAM.write(json.dumps(row, ensure_ascii=False) + "\n")
+        RAW_STREAM.flush()
 
 
 def journey(page, rows, repeats, smoke=False):
@@ -364,6 +371,10 @@ def observation_complete(result):
                     for row in result.get("rows", []) if not row.get("skipped")))
 
 
+def scenario_coverage_complete(result):
+    return not any(row.get("skipped") for row in result.get("rows", []))
+
+
 def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, reverse=False,
            keep_server=False, rapid=False, mutation=False, generic=False, timeout=60):
     global EVIDENCE_DIR, RAW_STREAM, UI_TIMEOUT
@@ -462,7 +473,11 @@ def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, r
         except OSError:
             result["port4457Closed"] = True
         result["observationComplete"] = observation_complete(result)
-        result["uiPass"] = bool(result.get("uiPass") and result["observationComplete"])
+        result["scenarioCoverageComplete"] = scenario_coverage_complete(result)
+        result["coverageGaps"].extend(f"Skipped scenario: {row['name']}: {row.get('reason', '')}"
+                                      for row in rows if row.get("skipped"))
+        result["uiPass"] = bool(result.get("uiPass") and result["observationComplete"]
+                                and result["scenarioCoverageComplete"])
         with (output / "result.json").open("x", encoding="utf-8") as stream:
             json.dump(result, stream, ensure_ascii=False, indent=2)
     return result

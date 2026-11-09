@@ -4,6 +4,9 @@ from types import SimpleNamespace
 import json
 from concurrent.futures import ThreadPoolExecutor
 import threading
+import subprocess
+import sys
+import textwrap
 
 import pytest
 
@@ -115,3 +118,95 @@ def test_observation_gate_rejects_any_unsettled_or_wrong_identity_artifact(faile
     else:
         result[failed] = False
     assert runner.observation_complete(result) is False
+
+
+def test_direct_cli_edges_share_configured_runtime_without_starting_server(tmp_path):
+    repo = Path(__file__).resolve().parents[3]
+    script = textwrap.dedent('''
+        import io, json, runpy, sys
+        from pathlib import Path
+        entry = Path(sys.argv[1]).resolve()
+        sys.argv = [str(entry), '--repo', str(entry.parent.parent), '--run', sys.argv[2],
+                    '--dependency-label', 'test-only', '--timeout', '120', '--rapid']
+        class EntryObserved(Exception): pass
+        def observe(frame, event, arg):
+            if event != 'call' or frame.f_code.co_name != 'run_ui' or Path(frame.f_code.co_filename) != entry:
+                return
+            sys.setprofile(None)
+            runtime = frame.f_globals
+            runtime.update(UI_TIMEOUT=frame.f_locals['timeout'], EVIDENCE_DIR=Path(sys.argv[4]),
+                           RAW_STREAM=io.StringIO())
+            runtime['EVIDENCE_DIR'].mkdir()
+            from tools import jql_ui_edge_scenarios as edge
+            edge_runtime = edge.measure.__globals__
+            class Page:
+                def screenshot(self, *, path, full_page):
+                    Path(path).write_bytes(b'captured')
+            rows = []
+            edge_runtime['record_row'](Page(), {'name': 'entry-edge'}, rows)
+            print(json.dumps({'sameRuntime': edge_runtime is runtime,
+                              'timeout': edge_runtime['UI_TIMEOUT'],
+                              'evidence': str(edge_runtime['EVIDENCE_DIR']),
+                              'rawShared': edge_runtime['RAW_STREAM'] is runtime['RAW_STREAM'],
+                              'rawWritten': 'entry-edge' in runtime['RAW_STREAM'].getvalue(),
+                              'screenshotWritten': (runtime['EVIDENCE_DIR'] / '000-entry-edge.png').is_file(),
+                              'networkShared': edge.new_page.__globals__['NETWORK_FAILURES'] is runtime['NETWORK_FAILURES']}))
+            raise EntryObserved
+        sys.setprofile(observe)
+        try:
+            runpy.run_path(str(entry), run_name='__main__')
+        except EntryObserved:
+            pass
+    ''')
+    completed = subprocess.run([sys.executable, "-B", "-c", script,
+                                str(repo / "tools/jql_ui_benchmark.py"), str(tmp_path / "evidence")],
+                               cwd=repo, capture_output=True, text=True, timeout=20)
+    assert completed.returncode == 0, completed.stderr
+    state = json.loads(completed.stdout)
+    assert state == {"sameRuntime": True, "timeout": 120, "evidence": str(tmp_path / "evidence"),
+                     "rawShared": True, "rawWritten": True, "screenshotWritten": True, "networkShared": True}
+
+
+def run_rapid_without_browser(monkeypatch, partial_at, timeout):
+    from tools import jql_ui_benchmark as runner
+    from tools import jql_ui_edge_scenarios as edge
+    clock = [0.0]
+    monkeypatch.setattr(runner, "UI_TIMEOUT", timeout)
+    monkeypatch.setattr(runner.time, "perf_counter", lambda: clock[0])
+    class Page:
+        context = SimpleNamespace(close=lambda: None)
+        def evaluate(self, _script):
+            return {"cards": int(clock[0] >= partial_at), "complete": False, "requestToken": "partial"}
+        def wait_for_timeout(self, milliseconds):
+            clock[0] += milliseconds / 1000
+        def goto(self, _url): pass
+        def locator(self, _selector):
+            return SimpleNamespace(select_option=lambda _value: None)
+    page = Page()
+    def measure(_page, name, action, rows):
+        action()
+        rows.append({"name": name, "ok": True, "requests": [],
+                     "state": {"keys": ["DL-1"], "requestToken": "new", "key": "module:Catalog|all"}})
+    monkeypatch.setattr(edge, "new_page", lambda *_: page)
+    monkeypatch.setattr(edge, "measure", measure)
+    monkeypatch.setattr(edge, "wait_idle", lambda: None)
+    monkeypatch.setattr(edge, "wait_state", lambda _page: None)
+    monkeypatch.setattr(edge, "request", lambda *_args, **_kwargs: {"requests": []})
+    rows = []
+    edge.rapid_filter(None, None, rows, [])
+    return rows, clock[0]
+
+
+def test_rapid_partial_wait_uses_configured_deadline_beyond_ten_seconds(monkeypatch):
+    rows, elapsed = run_rapid_without_browser(monkeypatch, partial_at=12, timeout=15)
+    assert any(row["name"] == "rapid-switch-to-catalog" for row in rows), rows
+    assert 12 <= elapsed < 15
+
+
+def test_rapid_partial_deadline_returns_explicit_coverage_gap(monkeypatch):
+    from tools import jql_ui_benchmark as runner
+    rows, elapsed = run_rapid_without_browser(monkeypatch, partial_at=100, timeout=.035)
+    assert elapsed == pytest.approx(.035)
+    assert rows[-1]["name"] == "rapid-partial-frame" and rows[-1]["skipped"] is True
+    assert runner.scenario_coverage_complete({"rows": rows}) is False
+    assert runner.scenario_coverage_complete({"rows": [{"name": "rapid-switch-to-catalog", "ok": True}]}) is True

@@ -5,11 +5,23 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.jql_ui_benchmark import BASE, STATE_JS, measure, new_page, request, wait_idle, wait_state
+from tools import jql_ui_benchmark as harness
+
+
+def wait_partial_frame(page):
+    deadline = time.perf_counter() + harness.UI_TIMEOUT
+    while (remaining := deadline - time.perf_counter()) > 0:
+        state = page.evaluate(STATE_JS)
+        if state.get('cards', 0) and not state.get('complete'):
+            return state
+        page.wait_for_timeout(min(20, remaining * 1000))
+    return None
 
 
 def rapid_filter(browser, repo, rows, errors):
@@ -23,14 +35,11 @@ def rapid_filter(browser, repo, rows, errors):
     page = new_page(browser, repo, errors)
     before = request('/__jql_benchmark')
     page.goto(BASE+'/#/mytasks')
-    for _ in range(500):
-        old = page.evaluate(STATE_JS)
-        if old.get('cards',0) and not old.get('complete'):
-            break
-        page.wait_for_timeout(20)
-    else:
-        rows.append({"name": "rapid-partial-frame", "skipped": True,
-                     "reason": "No partial frame observed in bounded zero-latency window; not cancellation qualification"})
+    old = wait_partial_frame(page)
+    if old is None:
+        harness.record_row(page, {"name": "rapid-partial-frame", "skipped": True, "ok": False,
+                           "partialDeadlineSeconds": harness.UI_TIMEOUT,
+                           "reason": "No partial frame observed before configured deadline; cancellation coverage failed"}, rows)
         wait_state(page)
         return page
     middle = request('/__jql_benchmark')
