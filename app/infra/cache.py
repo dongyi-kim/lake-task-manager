@@ -318,14 +318,14 @@ class Cache:
             self._conn.commit()
             return True
 
-    def set_many_if_fence(self, values, ttl, fence):
+    def set_many_if_fence(self, values, ttl, fence, *, fetched_at=None):
         """Store a group atomically when the producer's generation fence is still current.
 
         JQL searches write through tens or hundreds of issues.  Committing each row separately
         turns local cache persistence into a visible UI delay, so the normalized query layer uses
         one SQLite transaction while keeping the same mutation race fence.
         """
-        rows = [(str(key), json.dumps(value, ensure_ascii=False), time.time(), int(ttl))
+        rows = [(str(key), json.dumps(value, ensure_ascii=False), time.time() if fetched_at is None else fetched_at, int(ttl))
                 for key, value in values]
         if not rows:
             return True
