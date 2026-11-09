@@ -1,4 +1,4 @@
-"""Actual-browser JQL latency comparison; all run artifacts live under .cache.
+"""Actual-browser JQL harness; disposable OS scratch and exclusive external evidence.
 
 The flow under test is: Task -> many quick-filter changes -> workload -> WBS -> Task,
 with rendered progress, result identity, cache reuse, and upstream request accounting.
@@ -7,8 +7,6 @@ Browser plugin not available: use the already installed Python Playwright runtim
 from __future__ import annotations
 
 import argparse
-import hashlib
-import importlib.util
 import json
 import os
 import re
@@ -16,13 +14,23 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
 
-from jql_ui_benchmark_fixture import ETL, WORKBENCH, LOGICAL_NOW
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from tools.jql_ui_benchmark_fixture import ETL, LOGICAL_NOW
+from tools.jql_cache_benchmark import dependency_identity, repository_identity, reserve_attempt
 
 BASE = "http://127.0.0.1:4457"
+UI_TIMEOUT = 60
+EVIDENCE_DIR = None
+RAW_STREAM = None
+NETWORK_FAILURES = []
+CONSOLE_WARNINGS = []
 
 
 def request(path, method="GET"):
@@ -31,30 +39,32 @@ def request(path, method="GET"):
         return json.load(response)
 
 
-def prepare(repo, run):
+def prepare(repo, run, bundle=None):
     import yaml
+    from tools.codex_mcp_eval.etl import build_etl_world
+    bundle = bundle or build_etl_world()
     config = run / "config"
     config.mkdir(parents=True)
     for source in (repo / "config").glob("*.y*ml"):
         shutil.copy2(source, config / source.name)
-    (config / "people.yaml").write_text(yaml.safe_dump({"ETL": ETL, "Workbench": WORKBENCH,
-        "TEST": ["test.ui01", "test.ui02"]}), encoding="utf-8")
-    plan = {"project_key": "DL", "wbs": [
-        {"module": "ETL", "tasks": [{"name": "ETL 성능 검증", "start": "2026-01-01", "end": "2026-12-31",
-            "epics": [{"ticket": "DL-101", "weight": 1}, {"ticket": "DL-102", "weight": 1}]}]},
-        {"module": "Workbench", "tasks": [{"name": "중첩 모듈 검증", "start": "2026-01-01", "end": "2026-12-31",
-            "epics": [{"ticket": "DL-110", "weight": 1}, {"ticket": "DL-101", "weight": 1}]}]},
-        {"module": "TEST", "tasks": []}]}
+    (config / "people.yaml").write_text(yaml.safe_dump(bundle.world.people), encoding="utf-8")
+    plan = {"project_key": bundle.world.plan["project_key"], "wbs": []}
+    for module in bundle.world.modules:
+        tasks = [{"id": row["id"], "name": row["name"], "start": row["start"], "end": row["end"],
+                  "epics": [{"ticket": epic["key"], "weight": epic["weight"]} for epic in row["epics"]]}
+                 for row in bundle.world.plan["wbs"] if row.get("moduleId", row.get("module")) == module]
+        plan["wbs"].append({"module": module, "tasks": tasks})
     (config / "wbs_config.yaml").write_text(yaml.safe_dump(plan, allow_unicode=True), encoding="utf-8")
     cfg = yaml.safe_load((config / "jira.yml").read_text(encoding="utf-8"))
     cfg["env"] = "mock"
     cfg["managers"] = []
     cfg["search"]["jira"]["projects"] = ["DL"]
+    cfg.setdefault("server", {}).update(host="127.0.0.1", port=4457)
     (config / "jira.yml").write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
     bootstrap = run / "bootstrap"
     bootstrap.mkdir()
     (bootstrap / "sitecustomize.py").write_text(
-        "from jql_ui_benchmark_fixture import install\ninstall()\n", encoding="utf-8")
+        "from tools.jql_ui_benchmark_fixture import install\ninstall()\n", encoding="utf-8")
     return config, bootstrap
 
 
@@ -62,11 +72,9 @@ def server_executable(repo):
     if os.name != "nt":
         return sys.executable
     # run.py's Python launcher exits after spawning the named image; own that image directly.
-    spec = importlib.util.spec_from_file_location("benchmark_process_identity", repo / "app/infra/process_identity.py")
-    identity = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(identity)
-    executable = identity.named_launcher_path(sys.executable, "mock")
-    identity._sync_launcher(Path(getattr(sys, "_base_executable", sys.executable)), executable, "mock")
+    executable = Path(sys.executable).resolve().with_name("LakeTaskManagerDev.exe")
+    if not executable.is_file():
+        raise RuntimeError("Existing named development launcher is required; no launcher installation is performed")
     return str(executable)
 
 
@@ -96,19 +104,30 @@ def stop_owned_server(process):
         process.wait(timeout=10)
 
 
-def launch(repo, run, latency):
+def child_environment(repo, scratch, config, bootstrap, latency, source=None):
+    env = dict(os.environ if source is None else source)
+    paths = [str(bootstrap), str(repo)] + [part for part in env.get("PYTHONPATH", "").split(os.pathsep) if part]
+    env.update(JIRA_ENV="mock", APP_HOST="127.0.0.1", APP_PORT="4457", CONFIG_DIR=str(config),
+               LAKE_CACHE_DIR=str(scratch / "runtime"), CACHE_DB_PATH=str(scratch / "runtime.sqlite3"),
+               LAKE_MOCK_LATENCY_MS=str(latency), LAKE_NO_WINDOW="1", PYTHONUTF8="1",
+               PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=os.pathsep.join(dict.fromkeys(paths)))
+    return env
+
+
+def launch(repo, scratch, output, latency, bundle):
     try:
         health = request("/api/health")
     except OSError:
         health = None
     if health is not None:
         raise RuntimeError(f"Port 4457 is already occupied; inspect and stop verified LTM first: {health}")
-    config, bootstrap = prepare(repo, run)
-    env = os.environ.copy()
-    env.update(JIRA_ENV="mock", APP_PORT="4457", CONFIG_DIR=str(config), LAKE_CACHE_DIR=str(run / "runtime"),
-               LAKE_MOCK_LATENCY_MS=str(latency), LAKE_NO_WINDOW="1", PYTHONUTF8="1",
-               PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=os.pathsep.join([str(bootstrap), str(Path(__file__).parent), str(repo)]))
-    log = (run / "server.log").open("w", encoding="utf-8")
+    import socket
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 4457))
+    config, bootstrap = prepare(repo, scratch, bundle)
+    env = child_environment(repo, scratch, config, bootstrap, latency)
+    env["JQL_UI_WIRE_DIR"] = str(output / "wire")
+    log = (output / "server.log").open("x", encoding="utf-8")
     process = None
     try:
         process = subprocess.Popen([server_executable(repo), str(repo / "run.py"), "--reload"], cwd=repo,
@@ -117,14 +136,14 @@ def launch(repo, run, latency):
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             if process.poll() is not None:
-                raise RuntimeError(f"Server exited during startup: {run / 'server.log'}")
+                raise RuntimeError(f"Server exited during startup: {output / 'server.log'}")
             try:
                 health = request("/api/health")
                 metrics = request("/__jql_benchmark")
                 return process, log, health, metrics
             except (OSError, ValueError):
                 time.sleep(.25)
-        raise RuntimeError(f"Server did not start: {run / 'server.log'}")
+        raise RuntimeError(f"Server did not start: {output / 'server.log'}")
     except BaseException:
         try:
             stop_owned_server(process)
@@ -157,7 +176,8 @@ STATE_JS = """() => {
 }"""
 
 
-def wait_state(page, timeout=240):
+def wait_state(page, timeout=None):
+    timeout = timeout or UI_TIMEOUT
     start, first = time.perf_counter(), None
     while time.perf_counter() - start < timeout:
         state = page.evaluate(STATE_JS)
@@ -176,28 +196,45 @@ def measure(page, name, action, result):
     prior = page.evaluate(STATE_JS)
     start = time.perf_counter()
     page.evaluate("window.__benchLong=[]")
-    action()
-    click_ms = (time.perf_counter()-start)*1000
-    state, first, elapsed = wait_state(page)
-    completed_ms = (time.perf_counter()-start)*1000
-    assert state.get('ready') and state.get('cards',0)>0, state
-    assert page.locator('vite-error-overlay,webpack-dev-server-client-overlay').count()==0
-    after = request("/__jql_benchmark")
-    records = after["requests"][len(before["requests"]):]
-    row = {"name":name,"actionMs":round(click_ms,2), "firstContentMs":round(click_ms+(first or 0),2),
-        "completeMs":round(completed_ms,2), "state":state,
-        "requests":records, "searchRequests":sum(r["path"] == "/rest/api/2/search" for r in records),
-        "allRequests":len(records), "cacheDelta":{k:v-before["cache"].get(k,0) for k,v in after["cache"].items()},
-        "longTasks":page.evaluate("window.__benchLong || []")}
-    row['previousKey'] = prior.get('key')
-    row['previousToken'] = prior.get('requestToken')
-    result.append(row)
+    row = {"name": name, "previousKey": prior.get("key"), "previousToken": prior.get("requestToken")}
+    try:
+        action()
+        click_ms = (time.perf_counter()-start)*1000
+        state, first, _elapsed = wait_state(page)
+        row.update(actionMs=round(click_ms, 2), firstContentMs=round(click_ms+(first or 0), 2), state=state)
+        assert state.get('ready') and state.get('cards',0)>0, state
+        assert page.locator('vite-error-overlay,webpack-dev-server-client-overlay').count()==0
+        row["ok"] = True
+    except BaseException as error:
+        row.update(ok=False, error=repr(error), state=page.evaluate(STATE_JS))
+        raise
+    finally:
+        row["completeMs"] = round((time.perf_counter() - start) * 1000, 2)
+        row["settlement"] = request("/__jql_benchmark/settle", method="POST")
+        after = request("/__jql_benchmark")
+        records = after["requests"][len(before["requests"]):]
+        row.update(requests=records, searchRequests=sum(r["path"] == "/rest/api/2/search" for r in records),
+                   allRequests=len(records), longTasks=page.evaluate("window.__benchLong || []"))
+        if EVIDENCE_DIR:
+            screenshot = EVIDENCE_DIR / f"{len(result):03d}-{name.replace(':', '-')}.png"
+            page.screenshot(path=str(screenshot), full_page=False)
+            row["screenshot"] = str(screenshot)
+        result.append(row)
+        if RAW_STREAM:
+            RAW_STREAM.write(json.dumps(row, ensure_ascii=False) + "\n")
+            RAW_STREAM.flush()
     print(json.dumps({k:row[k] for k in ("name","firstContentMs","completeMs","searchRequests","allRequests")}), flush=True)
 
 
-def journey(page, rows, repeats):
-    measure(page,"task-module-etl-cold",lambda: page.goto(BASE+"/#/mytasks"),rows)
+def journey(page, rows, repeats, smoke=False):
+    measure(page,"task-journey-entry",lambda: page.goto(BASE+"/#/mytasks"),rows)
     for cycle in range(repeats):
+        def band(status, value, legacy_label):
+            select = page.locator(f'[data-status-control="{status}"] select')
+            if select.count():
+                select.select_option(value)
+            else:
+                page.locator(f'.mt-colh.c-{status}').get_by_role('button', name=legacy_label, exact=True).click()
         def person(index, user):
             page.locator('.mt-qf-fe .fe-v').nth(index).click()
             page.get_by_placeholder('이름 또는 사번').fill(user)
@@ -205,28 +242,28 @@ def journey(page, rows, repeats):
 
         def expand_wbs():
             page.get_by_role('button',name='전체 Epic 펼치기',exact=True).click()
-            for key in ('DL-101','DL-102','DL-110'):
-                page.locator('.lrow.epic').filter(has_text=key).first.locator('.tgl').last.click()
+            for key in ('DL-20000','DL-20002'):
+                page.locator(f'.lrow.epic[data-key="{key}"]').first.locator('.tgl').last.click()
 
         def expand_subtasks():
             page.locator('.lrow.task.clk .tgl').last.click()
             page.wait_for_function("document.querySelectorAll('.g-labels .lrow.sub').length > 0")
 
         actions = [
-            ("done-month", lambda: page.locator('.mt-colh.c-done').get_by_role('button',name='1달',exact=True).click()),
-            ("allocated-2w", lambda: page.locator('.mt-colh.c-todo').get_by_role('button',name='2주 내 갱신',exact=True).click()),
-            ("progress-month", lambda: page.locator('.mt-colh.c-inprogress').get_by_role('button',name='1달 내 갱신',exact=True).click()),
+            ("done-month", lambda: band('done', '1m', '1달')),
+            ("allocated-2w", lambda: band('todo', '2w', '2주 내 갱신')),
+            ("progress-month", lambda: band('inprogress', '1m', '1달 내 갱신')),
             ("assignee-scope", lambda: page.get_by_role('button',name='담당자',exact=True).click()),
-            ("assignee-other", lambda: person(0, ETL[1+(cycle+5)%14])),
+            ("assignee-other", lambda: person(0, ETL[1])),
             ("reporter-scope", lambda: page.get_by_role('button',name='보고자',exact=True).click()),
-            ("reporter-other", lambda: person(1, ETL[1+(cycle+10)%14])),
-            ("module-workbench", lambda: page.locator('.mt-qf-sel').select_option('Workbench')),
+            ("reporter-other", lambda: person(1, ETL[2])),
+            ("module-catalog", lambda: page.locator('.mt-qf-sel').select_option('Catalog')),
             ("module-etl", lambda: page.locator('.mt-qf-sel').select_option('ETL')),
-            ("allocated-all", lambda: page.locator('.mt-colh.c-todo').get_by_role('button',name='모두',exact=True).click()),
-            ("progress-all", lambda: page.locator('.mt-colh.c-inprogress').get_by_role('button',name='모두',exact=True).click()),
-            ("done-week", lambda: page.locator('.mt-colh.c-done').get_by_role('button',name='1주',exact=True).click()),
+            ("allocated-all", lambda: band('todo', 'all', '모두')),
+            ("progress-all", lambda: band('inprogress', 'all', '모두')),
+            ("done-week", lambda: band('done', '1w', '1주')),
             ("workload-after-task", lambda: page.locator('a[href="#/workload"]').click()),
-            ("workload-module-workbench", lambda: page.locator('.wl-modsel').select_option('Workbench')),
+            ("workload-module-catalog", lambda: page.locator('.wl-modsel').select_option('Catalog')),
             ("workload-module-etl", lambda: page.locator('.wl-modsel').select_option('ETL')),
             ("workload-month", lambda: page.locator('.wl-opt').filter(has=page.locator('.wl-opt-l',has_text='할당 갱신')).get_by_role('button',name='1달',exact=True).click()),
             ("workload-all", lambda: page.locator('.wl-opt').filter(has=page.locator('.wl-opt-l',has_text='할당 갱신')).get_by_role('button',name='전체',exact=True).click()),
@@ -239,18 +276,16 @@ def journey(page, rows, repeats):
             ("task-return", lambda: page.locator('a[href="#/mytasks"]').click()),
         ]
         for name, action in actions:
+            if smoke and name not in {"done-month", "assignee-scope", "assignee-other", "module-catalog", "module-etl",
+                                      "workload-after-task", "wbs-after-workload", "wbs-expand", "task-return"}:
+                continue
             measure(page,f"{cycle+1}:{name}",action,rows)
 
 
 def wait_idle():
-    for _ in range(480):
-        metrics=request('/__jql_benchmark')
-        if all(r['done'] for r in metrics['requests']):
-            time.sleep(.15)
-            if all(r['done'] for r in request('/__jql_benchmark')['requests']):
-                return
-        time.sleep(.25)
-    raise TimeoutError('Upstream background work did not drain')
+    state = request('/__jql_benchmark/settle', method='POST')
+    if not state['complete']:
+        raise TimeoutError(f'Upstream background work did not drain: {state}')
 
 
 def new_page(browser, repo, errors):
@@ -269,6 +304,11 @@ def new_page(browser, repo, errors):
       window.__benchLong=[];new PerformanceObserver(l=>window.__benchLong.push(...l.getEntries().map(e=>({start:e.startTime,duration:e.duration})))).observe({type:'longtask',buffered:true});""")
     page=context.new_page()
     page.on('pageerror',lambda e:errors.append(str(e)))
+    page.on('console', lambda message: errors.append({"type": "console", "text": message.text})
+            if message.type == 'error' else CONSOLE_WARNINGS.append(message.text) if message.type == 'warning' else None)
+    page.on('requestfailed', lambda item: NETWORK_FAILURES.append({"url": item.url, "failure": item.failure}))
+    page.on('response', lambda response: NETWORK_FAILURES.append({"url": response.url, "status": response.status})
+            if response.status >= 400 else None)
     return page
 
 
@@ -302,70 +342,163 @@ def reverse_flow(browser, repo, rows, errors):
     return page
 
 
+def wire_tail(directory):
+    values = {}
+    for file in sorted(directory.glob("wire-*.jsonl")):
+        for line in file.read_text(encoding="utf-8").splitlines():
+            row = json.loads(line)
+            values[(row["pid"], row["sequence"])] = row
+    rows = sorted(values.values(), key=lambda row: (row["start"], row["pid"], row["sequence"]))
+    return {"requests": rows, "dispatchAttempts": len(rows),
+            "searchPageAttempts": sum(row["path"] == "/rest/api/2/search" for row in rows),
+            "authProbeAttempts": sum(row["path"] == "/rest/api/2/myself" for row in rows),
+            "complete": all(row["done"] for row in rows)}
+
+
+def observation_complete(result):
+    return (all(result.get(name) is True for name in
+                ("revisionStable", "port4457Closed", "ownedProcessStopped", "scratchRemoved"))
+            and result.get("settlementBeforeStop", {}).get("complete") is True
+            and result.get("wireTail", {}).get("complete") is True
+            and all(row.get("settlement", {}).get("complete") is True
+                    for row in result.get("rows", []) if not row.get("skipped")))
+
+
+def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, reverse=False,
+           keep_server=False, rapid=False, mutation=False, generic=False, timeout=60):
+    global EVIDENCE_DIR, RAW_STREAM, UI_TIMEOUT
+    if keep_server:
+        raise ValueError("--keep-server is incompatible with owned process/scratch cleanup")
+    repo = Path(repo).resolve()
+    if repo != Path(__file__).resolve().parents[1] or repo != Path.cwd().resolve():
+        raise ValueError("Use the current application checkout; no alternate checkout or source copy")
+    output = reserve_attempt(repo, output)
+    EVIDENCE_DIR = output / "screenshots"
+    EVIDENCE_DIR.mkdir()
+    (output / "wire").mkdir()
+    UI_TIMEOUT = timeout
+    NETWORK_FAILURES.clear()
+    CONSOLE_WARNINGS.clear()
+    rows, errors = [], []
+    identity = repository_identity(repo)
+    result = {"protocol": "jql-ui-year-v2", "qualificationEligible": False,
+        "revision": identity, "dependencies": dependency_identity(os.environ.get("JQL_DEPENDENCY_LABEL", "declared-environment-unspecified")),
+        "browser": "Chromium via Python Playwright; Browser plugin not available",
+        "clockControl": "cache/JQL/CacheMemo frozen; actual browser, latency, deadlines and performance clocks",
+        "viewport": {"width": 1600, "height": 1000}, "rows": rows, "consoleErrors": errors,
+        "consoleWarnings": CONSOLE_WARNINGS, "networkFailures": NETWORK_FAILURES,
+        "latencyMs": latency, "samples": {"cold": cold, "warm": warm, "journeys": journeys, "smoke": smoke},
+        "mcpCalls": 0, "modelUsage": None,
+        "coverageGaps": ["Not ten repeated UI samples or a paired arm comparison",
+            "Current WBS references two of five public Epic contexts; no invented WBS links",
+            "Confluence report/source fidelity not exercised by these navigation flows",
+            "Optional edge scenarios are measured only when explicitly requested"]}
+    process, log, scratch_path = None, None, None
+    RAW_STREAM = (output / "rows.jsonl").open("x", encoding="utf-8")
+    try:
+        with tempfile.TemporaryDirectory() as scratch:
+            scratch_path = Path(scratch)
+            result["scratchPath"] = str(scratch_path)
+            try:
+                from tools.codex_mcp_eval.etl import build_etl_world
+                bundle = build_etl_world()
+                result["world"] = bundle.manifest
+                with (output / "manifest.json").open("x", encoding="utf-8") as stream:
+                    json.dump(result, stream, ensure_ascii=False, indent=2)
+                process, log, health, metrics = launch(repo, scratch_path, output, latency, bundle)
+                result.update(health=health, fixture=metrics, ownedProcess=process.pid)
+                assert health.get("rev") and identity["commit"].startswith(health["rev"]), health
+                assert metrics["issueCount"] == 10000 and metrics["worldHash"] == bundle.manifest["data_sha256"]
+                from playwright.sync_api import sync_playwright
+                with sync_playwright() as pw:
+                    installed = list((Path(os.environ["LOCALAPPDATA"]) / "ms-playwright").glob("chromium-*/chrome-win64/chrome.exe"))
+                    if not installed:
+                        raise RuntimeError("No installed Chromium; this harness does not install browsers")
+                    executable = max(installed, key=lambda path: int(path.parents[1].name.rsplit('-', 1)[1]))
+                    browser = pw.chromium.launch(headless=True, executable_path=str(executable))
+                    try:
+                        page = entry_samples(browser, repo, rows, errors, cold, warm)
+                        journey(page, rows, journeys, smoke=smoke)
+                        if reverse:
+                            page = reverse_flow(browser, repo, rows, errors)
+                        if rapid or mutation or generic:
+                            from tools import jql_ui_edge_scenarios as edge
+                            if rapid:
+                                page = edge.rapid_filter(browser, repo, rows, errors)
+                            if mutation:
+                                edge.mutate(page, rows)
+                            if generic:
+                                edge.generic_query(page, rows)
+                        result.update(title=page.title(), url=page.url, bodyText=page.locator("body").inner_text()[:1500])
+                        assert result["url"].startswith(BASE) and result["title"] and result["bodyText"].strip()
+                        assert not errors, errors
+                        result["uiPass"] = True
+                    finally:
+                        browser.close()
+            finally:
+                if process:
+                    try:
+                        result["settlementBeforeStop"] = request('/__jql_benchmark/settle', method='POST')
+                        result["finalMetrics"] = request('/__jql_benchmark')
+                        result["finalHealth"] = request('/api/health')
+                    except Exception as error:
+                        result["finalMetricsError"] = repr(error)
+                    stop_owned_server(process)
+                    result["ownedProcessStopped"] = process.poll() is not None
+                if log:
+                    log.close()
+    except BaseException as error:
+        result.update(uiPass=False, error=repr(error))
+    finally:
+        RAW_STREAM.close()
+        RAW_STREAM = None
+        result["scratchRemoved"] = scratch_path is None or not scratch_path.exists()
+        result["wireTail"] = wire_tail(output / "wire")
+        result["revisionAfter"] = repository_identity(repo)
+        result["revisionStable"] = identity == result["revisionAfter"]
+        try:
+            request('/api/health')
+            result["port4457Closed"] = False
+        except OSError:
+            result["port4457Closed"] = True
+        result["observationComplete"] = observation_complete(result)
+        result["uiPass"] = bool(result.get("uiPass") and result["observationComplete"])
+        with (output / "result.json").open("x", encoding="utf-8") as stream:
+            json.dump(result, stream, ensure_ascii=False, indent=2)
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo",type=Path,required=True)
     parser.add_argument("--run",type=Path,required=True)
     parser.add_argument("--latency",type=int,default=0)
     parser.add_argument("--journeys",type=int,default=1)
-    parser.add_argument("--cold",type=int,default=0)
-    parser.add_argument("--warm",type=int,default=0)
+    parser.add_argument("--cold",type=int,default=1)
+    parser.add_argument("--warm",type=int,default=1)
     parser.add_argument("--reverse",action='store_true')
     parser.add_argument("--keep-server",action="store_true")
-    parser.add_argument("--attach",action="store_true",help="Debug controls against an existing benchmark instance; not a cold sample")
+    parser.add_argument("--full-flow", action="store_true")
+    parser.add_argument("--rapid", action="store_true")
+    parser.add_argument("--mutation", action="store_true")
+    parser.add_argument("--generic", action="store_true")
+    parser.add_argument("--timeout", type=int, default=60)
+    parser.add_argument("--dependency-dir", type=Path)
+    parser.add_argument("--dependency-label", required=True)
     args = parser.parse_args()
-    args.repo, args.run = args.repo.resolve(), args.run.resolve()
-    args.run.mkdir(parents=True,exist_ok=False)
-    process, log = None, None
-    try:
-        if args.attach:
-            health, metrics = request('/api/health'), request('/__jql_benchmark')
-        else:
-            process, log, health, metrics = launch(args.repo,args.run,args.latency)
-        from playwright.sync_api import sync_playwright
-        rows, errors = [], []
-        result = {"baseline":"2fdb8feb8d18f3d8852ae3d1bcda54f058a332e8","repo":str(args.repo),
-            "sourceCommit":subprocess.check_output(['git','-c',f'safe.directory={args.repo.as_posix()}','-C',str(args.repo),'rev-parse','HEAD'],text=True).strip(),
-            "sourceDiffSha256":hashlib.sha256(subprocess.check_output(['git','-c',f'safe.directory={args.repo.as_posix()}','-C',str(args.repo),'diff','HEAD'])).hexdigest(),
-            "harnessSha256":{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in Path(__file__).parent.glob('jql_ui*.py')},
-            "clockControl":"server Cache/JiraClient.time.time and compile_jql now fixed; browser CacheMemo injected now fixed; real Date.now, scheduling and perf_counter",
-            "health":health,"fixture":{k:metrics[k] for k in ("worldHash","issueCount","etlPeople","logicalClock")},
-            "latencyMs":args.latency,"browser":"Chromium via Playwright; Browser plugin not available",
-            "requestedSamples":{"cold":args.cold,"warm":args.warm,"journeys":args.journeys,"reverse":args.reverse},
-            "viewport":{"width":1600,"height":1000},"rows":rows,"consoleErrors":errors}
-        try:
-            with sync_playwright() as pw:
-                # Reuse the installed browser, even when Python Playwright was upgraded separately.
-                installed = list((Path(os.environ["LOCALAPPDATA"]) / "ms-playwright").glob("chromium-*/chrome-win64/chrome.exe"))
-                executable = max(installed, key=lambda path: int(path.parents[1].name.rsplit('-',1)[1]))
-                browser = pw.chromium.launch(headless=True, executable_path=str(executable))
-                page = entry_samples(browser,args.repo,rows,errors,args.cold,args.warm) if (args.cold or args.warm) else new_page(browser,args.repo,errors)
-                journey(page,rows,args.journeys)
-                if args.reverse:
-                    page=reverse_flow(browser,args.repo,rows,errors)
-                result["title"], result["url"] = page.title(),page.url
-                result["bodyText"] = page.locator('body').inner_text()[:1500]
-                assert result['url'].startswith(BASE) and result['title'] and result['bodyText'].strip()
-                assert not errors,errors
-                browser.close()
-        except BaseException as exc:
-            result["error"] = repr(exc)
-            raise
-        finally:
-            try:
-                result["finalMetrics"] = request('/__jql_benchmark')
-            except Exception as exc:
-                result["finalMetricsError"] = repr(exc)
-            (args.run/'result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
-    finally:
-        try:
-            if not args.keep_server:
-                stop_owned_server(process)
-        finally:
-            if log:
-                log.close()
+    if args.dependency_dir:
+        overlay = str(args.dependency_dir.resolve())
+        sys.path.insert(0, overlay)
+        os.environ["PYTHONPATH"] = os.pathsep.join([overlay, os.environ.get("PYTHONPATH", "")])
+    os.environ["JQL_DEPENDENCY_LABEL"] = args.dependency_label
+    result = run_ui(args.repo, args.run, latency=args.latency, cold=args.cold, warm=args.warm,
+        journeys=args.journeys, smoke=not args.full_flow, reverse=args.reverse, keep_server=args.keep_server,
+        rapid=args.rapid, mutation=args.mutation, generic=args.generic, timeout=args.timeout)
+    print(json.dumps({"output": str(args.run), "uiPass": result["uiPass"], "error": result.get("error"),
+                      "scratchRemoved": result["scratchRemoved"], "qualificationEligible": False}), flush=True)
+    return 0 if result["uiPass"] else 1
 
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

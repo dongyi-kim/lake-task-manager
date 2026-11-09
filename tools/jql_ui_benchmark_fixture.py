@@ -1,220 +1,202 @@
-"""Opt-in, loopback-only instrumentation for the actual JQL UI benchmark.
-
-Imported only by the benchmark's temporary sitecustomize. No production imports.
-The same fixture and instrumentation run against baseline and candidate source.
-"""
+"""Opt-in year-world instrumentation, imported only by disposable sitecustomize."""
 from __future__ import annotations
 
 import copy
-import hashlib
+from datetime import datetime, timedelta, timezone
 import json
 import os
+from pathlib import Path
 import threading
 import time
-from collections import Counter
-from datetime import date, datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 
-ETL = ["test.ui01"] + [f"perf.etl{i:02d}" for i in range(2, 16)]
-WORKBENCH = ETL[4:9] + [f"perf.wb{i:02d}" for i in range(1, 4)]
-DAY = date(2026, 11, 4)
-LOGICAL_NOW = datetime(2026, 11, 4, 6, 0, tzinfo=timezone.utc)
+ETL = [f"etl.user{index:02d}" for index in range(8)]
+CATALOG = ETL
+LOGICAL_NOW = datetime(2026, 11, 10, 23, 59, 59, tzinfo=timezone(timedelta(hours=9)))
 
 
 class CacheClock:
-    """Freeze freshness only; do not change real scheduling, deadlines, or latency."""
-    @staticmethod
-    def time():
+    def time(self):
         return LOGICAL_NOW.timestamp()
 
     def __getattr__(self, name):
         return getattr(time, name)
 
 
-def fixture_world():
-    from app.infra.settings import get_settings, load_people, load_plan
+def fixture_world(bundle=None):
+    from app.infra.settings import get_settings
     from app.mock.world import World
+    from tools.codex_mcp_eval.etl import build_etl_world
+    bundle = bundle or build_etl_world()
+    world = World.__new__(World)
+    for name, value in vars(bundle.world).items():
+        setattr(world, name, copy.deepcopy(value))
+    settings = get_settings()
+    world.sp_field, world.epic_link_field = settings.sp_field_id, settings.epic_link_field_id
+    world._counter = 60000
+    world.gen_modules = list(world.modules)
+    world._comp_ids = {name: str(100 + index) for index, name in enumerate(world.modules)}
+    world._index()
+    return world
 
-    w = World.__new__(World)
-    w.today, w.plan, w.people = DAY, load_plan(), load_people()
-    w.project = "DL"
-    s = get_settings()
-    w.sp_field, w.epic_link_field = s.sp_field_id, s.epic_link_field_id
-    w.modules = ["ETL", "Workbench", "TEST"]
-    w.gen_modules = ["ETL", "Workbench"]
-    w._comp_ids = {m: str(100+i) for i, m in enumerate(w.modules + ["사용자 VoC"])}
-    w.users = {
-        u: {"name": u, "displayName": f"성능{i:02d} TEST", "realName": f"성능{i:02d}",
-            "company": "TEST", "active": True}
-        for i, u in enumerate(dict.fromkeys(ETL + WORKBENCH + ["test.ui02", "lead"]), 1)
-    }
-    w.issues, w.sprints, w.attachments = {}, {}, {}
-    w._counter = 30000
-    for key, module in [("DL-101", "ETL"), ("DL-102", "ETL"), ("DL-110", "Workbench")]:
-        w._fx(key, "Epic", f"[{module}] 성능 검증 Epic {key}", module=module, component=module,
-              assignee=ETL[0], reporter=ETL[1], sp=10, epicName=f"{key} 성능 Epic", labels=["perf-fixture"])
-    sequence = 20000
-    for module, people, size in [("ETL", ETL, 30), ("Workbench", WORKBENCH[5:], 12)]:
-        for person_idx, user in enumerate(people):
-            for n in range(size):
-                sequence += 1
-                key = f"DL-{sequence}"
-                cat = ["todo", "inprogress", "done"][n % 3]
-                age = [2, 10, 20, 45][(n // 3) % 4]
-                epic = ("DL-101" if n % 2 else "DL-102") if module == "ETL" else "DL-110"
-                row = w._fx(key, "Task", f"[{module}] {user} 검증 작업 {n:02d}",
-                    module=module, component=module, assignee=user,
-                    reporter=people[(person_idx + 1) % len(people)],
-                    statusCategory=cat, statusName={"todo": "Open", "inprogress": "In Progress", "done": "Resolved"}[cat],
-                    updated=DAY-timedelta(days=age), created=DAY-timedelta(days=50),
-                    resolved=DAY-timedelta(days=age) if cat == "done" else None,
-                    due=DAY+timedelta(days=(n % 7)-3), epicKey=epic, sp=3,
-                    description="고정된 성능 비교용 본문", labels=["perf-fixture"], priority="P2-Major")
-                if n in (1, 7):
-                    for child in range(3):
-                        sequence += 1
-                        child_key = f"DL-{sequence}"
-                        row["subtasks"].append(child_key)
-                        w._fx(child_key, "Sub-Task", f"[{module}] 하위 {child_key}",
-                            module=module, component=module, assignee=user,
-                            reporter=people[(person_idx+1) % len(people)], parentKey=key, epicKey=None,
-                            statusCategory=["todo", "inprogress", "done"][child],
-                            statusName=["Open", "In Progress", "Resolved"][child],
-                            updated=DAY-timedelta(days=2), resolved=DAY-timedelta(days=2) if child == 2 else None,
-                            sp=1, priority="P2-Major", labels=["perf-fixture"])
-    # Component-only matches and unresolved Done fallback must remain visible.
-    for i in range(15):
-        sequence += 1
-        w._fx(f"DL-{sequence}", "Task", f"[ETL] 미배정 업무 {i}", module="ETL", component="ETL",
-              assignee=None, reporter="lead", epicKey="DL-101", labels=["perf-fixture"],
-              priority="P2-Major", sp=1)
-    w._index()
-    w._build_activity()
-    w.confluence = {}
-    return w
+
+class WireLedger:
+    """Observe TestClient.request once, including direct identity probes and retries."""
+    def __init__(self, event_path=None):
+        self.condition = threading.Condition()
+        self.requests = []
+        self.active = 0
+        self.admitted = 0
+        self.last_activity = time.monotonic()
+        self.event_path = Path(event_path) if event_path else None
+        if self.event_path:
+            self.event_path.touch(exist_ok=False)
+
+    def _event(self, row):
+        if self.event_path:
+            with self.event_path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({**row, "pid": os.getpid()}, ensure_ascii=False) + "\n")
+
+    def observe(self, request):
+        def dispatch(method, url, *args, **kwargs):
+            started = time.perf_counter()
+            path = urlsplit(str(url)).path
+            row = {"method": str(method).upper(), "path": path, "params": copy.deepcopy(kwargs.get("params") or {}),
+                   "done": False, "dispatchAttempt": True, "serverReceived": None, "status": None,
+                   "start": started, "fieldNames": sorted((kwargs.get("json") or {}).get("fields", {}))}
+            with self.condition:
+                row["sequence"] = len(self.requests)
+                self.requests.append(row)
+                self._event(row)
+                self.active += 1
+                self.last_activity = time.monotonic()
+            details = {}
+            try:
+                response = request(method, url, *args, **kwargs)
+                details.update(status=response.status_code, responseBytes=len(response.content), serverReceived=True)
+                return response
+            except BaseException as error:
+                details["error"] = type(error).__name__
+                raise
+            finally:
+                end = time.perf_counter()
+                with self.condition:
+                    row.update(details, done=True, end=end, elapsedMs=(end - started) * 1000)
+                    self._event(row)
+                    self.active -= 1
+                    self.last_activity = time.monotonic()
+                    self.condition.notify_all()
+        return dispatch
+
+    def observe_admission(self, method):
+        def admitted(*args, **kwargs):
+            with self.condition:
+                self.admitted += 1
+                self.last_activity = time.monotonic()
+            try:
+                return method(*args, **kwargs)
+            finally:
+                with self.condition:
+                    self.admitted -= 1
+                    self.last_activity = time.monotonic()
+                    self.condition.notify_all()
+        return admitted
+
+    def snapshot(self):
+        with self.condition:
+            return copy.deepcopy(self.requests)
+
+    def settle(self, timeout=10, quiet=.15):
+        started, deadline = time.monotonic(), time.monotonic() + timeout
+        with self.condition:
+            while True:
+                now = time.monotonic()
+                quiet_remaining = quiet - (now - self.last_activity)
+                if not self.active and not self.admitted and quiet_remaining <= 0:
+                    return {"complete": True, "timedOut": False, "active": 0, "admitted": 0, "waitSeconds": now - started}
+                if now >= deadline:
+                    return {"complete": False, "timedOut": True, "active": self.active,
+                            "admitted": self.admitted, "waitSeconds": now - started}
+                self.condition.wait(min(deadline - now, max(.001, quiet_remaining))
+                                    if not self.active and not self.admitted else deadline - now)
 
 
 def install():
     if os.environ.get("JIRA_ENV") != "mock" or os.environ.get("APP_PORT") != "4457":
-        raise RuntimeError("Benchmark instrumentation requires mock and fixed loopback port 4457")
+        raise RuntimeError("Benchmark requires mock and the fixed port 4457")
     import webbrowser
-    # The harness owns its browser; the dev launcher's second tab would warm caches.
-    webbrowser.open = lambda *args, **kwargs: False
-    import logging
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    import app.mock.world as world_module
-    world = fixture_world()
+    webbrowser.open = lambda *_args, **_kwargs: False
+    from tools.codex_mcp_eval.etl import build_etl_world
+    from app.infra import settings
+    from app.mock import world as world_module
+    bundle = build_etl_world()
+    world = fixture_world(bundle)
+    world.plan = settings.load_plan()
+    world.people = settings.load_people()
+    world_module.World.ME = ETL[0]
     world_module.get_world = lambda: world
-    fingerprint = hashlib.sha256(json.dumps(world.issues, sort_keys=True, default=str).encode()).hexdigest()
+
     from app.auth.inprocess import InProcessProvider
-    from app.infra.cache import Cache
-    import app.infra.cache as cache_module
-    import app.jira.jira_client as client_module
-    import app.jira.jql as jql_module
-    cache_module.time = CacheClock()
-    client_module.time = CacheClock()
-    real_compile = jql_module.compile_jql
+    from app.infra import cache, cache_policy
+    from app.jira import jira_client, jql
+    clock = CacheClock()
+    cache.time = cache_policy.time = jira_client.time = clock
+    original_compile = jql.compile_jql
+    def compile_fixed(raw, **kwargs):
+        kwargs["now"] = LOGICAL_NOW
+        return original_compile(raw, **kwargs)
+    jql.compile_jql = jira_client.compile_jql = compile_fixed
 
-    def fixed_compile(raw, **kwargs):
-        kwargs['now'] = LOGICAL_NOW
-        return real_compile(raw, **kwargs)
+    wire_directory = Path(os.environ["JQL_UI_WIRE_DIR"])
+    ledger = WireLedger(wire_directory / f"wire-{os.getpid()}.jsonl")
+    original_init = InProcessProvider.__init__
+    providers = []
+    def initialize(provider):
+        original_init(provider)
+        providers.append(provider)
+        store = provider._client.app.state.store
+        for name in ("issues", "users", "confluence", "attachments", "activity", "sprints"):
+            setattr(store, name, copy.deepcopy(getattr(world, name)))
+        store.reindex()
+        original_fields = store.serializer.issue_fields
+        def timestamp_fields(issue, base_url=""):
+            fields = original_fields(issue, base_url)
+            fields.update(issue.get("_timestamps") or {})
+            return fields
+        store.serializer.issue_fields = timestamp_fields
+        provider._client.request = ledger.observe(provider._client.request)
+    InProcessProvider.__init__ = initialize
+    for name in ("_get", "_write", "web_form", "post_multipart"):
+        setattr(InProcessProvider, name, ledger.observe_admission(getattr(InProcessProvider, name)))
 
-    client_module.compile_jql = jql_module.compile_jql = fixed_compile
-
-    lock = threading.Lock()
-    requests = []
-    hits = Counter()
-    original_get = InProcessProvider._get
-    original_write = InProcessProvider._write
-    original_cache_get = Cache.get
-    original_many = Cache.get_many
-
-    def counted_get(self, path, params, priority=None):
-        start = time.perf_counter()
-        with lock:
-            entry = {"method": "GET", "path": path, "params": copy.deepcopy(params), "priority": priority,
-                     "start": start, "done": False}
-            requests.append(entry)
-        details = {}
-        try:
-            result = original_get(self, path, params, priority)
-            if path == "/rest/api/2/search":
-                payload = result.json()
-                details["rows"] = len(payload.get("issues", []))
-                details["total"] = payload.get("total")
-            details["status"] = result.status_code
-            return result
-        except BaseException as exc:
-            details["error"] = type(exc).__name__
-            raise
-        finally:
-            end = time.perf_counter()
-            with lock:
-                entry.update(details, done=True, end=end, elapsedMs=(end-start)*1000)
-
-    def counted_write(self, method, path, json_body, params, want_json=True):
-        start=time.perf_counter()
-        entry={"method":method.upper(),"path":path,"params":copy.deepcopy(params),
-               "fieldNames":sorted((json_body or {}).get('fields',{})),"start":start,"done":False}
-        with lock:
-            requests.append(entry)
-        details = {}
-        try:
-            return original_write(self,method,path,json_body,params,want_json=want_json)
-        except BaseException as exc:
-            details['error']=type(exc).__name__
-            raise
-        finally:
-            end = time.perf_counter()
-            with lock:
-                entry.update(details,done=True,end=end,elapsedMs=(end-start)*1000)
-
-    def cache_get(self, key):
-        result = original_cache_get(self, key)
-        with lock:
-            hits[(str(key).split(":", 1)[0], "hit" if result is not None else "miss")] += 1
-        return result
-
-    def cache_many(self, keys, *args, **kwargs):
-        keys = list(keys)
-        result = original_many(self, keys, *args, **kwargs)
-        with lock:
-            for key in keys:
-                hits[(str(key).split(":", 1)[0], "hit" if key in result else "miss")] += 1
-        return result
-
-    InProcessProvider._get, InProcessProvider._write = counted_get, counted_write
-    Cache.get, Cache.get_many = cache_get, cache_many
     from app import main
     from starlette.responses import JSONResponse
     from starlette.routing import Route
-
     @main.app.middleware("http")
     async def isolated_browser(request, call_next):
-        # Ignore pre-existing localhost tabs from earlier manual dev sessions.
         if request.headers.get("host", "").split(":", 1)[0] != "127.0.0.1":
             return JSONResponse({"detail": "Isolated benchmark: use 127.0.0.1"}, status_code=503)
         return await call_next(request)
-
     def metrics(request):
         if request.client.host not in ("127.0.0.1", "::1"):
             return JSONResponse({}, status_code=403)
-        with lock:
-            value = {"pid": os.getpid(), "worldHash": fingerprint, "issueCount": len(world.issues),
-                     "logicalClock": LOGICAL_NOW.isoformat(),
-                     "etlPeople": len(ETL), "requests": copy.deepcopy(requests),
-                     "cache": {f"{kind}:{hit}": n for (kind, hit), n in hits.items()}}
-        return JSONResponse(value)
-
-    main.app.router.routes.insert(0, Route("/__jql_benchmark", metrics, methods=["GET"]))
-
+        return JSONResponse({"pid": os.getpid(), "worldHash": bundle.manifest["data_sha256"],
+            "manifest": bundle.manifest, "issueCount": len(world.issues), "logicalClock": LOGICAL_NOW.isoformat(),
+            "etlPeople": len(ETL), "currentUser": ETL[0], "requests": ledger.snapshot(), "cache": {},
+            "observerCoverage": "all provider TestClient.request dispatches; cache counters not observed",
+            "providerIssueCounts": [len(provider._client.app.state.store.issues) for provider in providers]})
+    def settle(request):
+        if request.client.host not in ("127.0.0.1", "::1"):
+            return JSONResponse({}, status_code=403)
+        return JSONResponse(ledger.settle())
     def reset(request):
         if request.client.host not in ("127.0.0.1", "::1"):
             return JSONResponse({}, status_code=403)
-        with lock:
-            if any(not entry["done"] for entry in requests):
-                return JSONResponse({"pending": True}, status_code=409)
+        if not ledger.settle()["complete"]:
+            return JSONResponse({"pending": True}, status_code=409)
         main._cache.invalidate()
         return JSONResponse({"cleared": True})
-
-    main.app.router.routes.insert(0, Route("/__jql_benchmark/reset", reset, methods=["POST"]))
+    main.app.router.routes[:0] = [Route("/__jql_benchmark", metrics, methods=["GET"]),
+        Route("/__jql_benchmark/settle", settle, methods=["POST"]),
+        Route("/__jql_benchmark/reset", reset, methods=["POST"])]
