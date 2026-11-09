@@ -1,17 +1,22 @@
 # Issue 190: research, reporting and resumable investigations
 
-Status: approved implementation plan; initial product release authorized before the full follow-up matrix.
+Status: initial product release v2026.11.09 published with default-enabled skills; full repeated qualification follows.
 Spec: https://github.com/dongyi-kim/lake-task-manager/issues/190 plus the user's
 2026-11-09 checkpoint/resume requirement and approved conversation plan.
 
 ## Goal and constraints
 
-User steering on2026-11-09 supersedes the original hold-to-full-qualification rollout:
-ship the adequately verified product first, with both new skills enabled by default
-(explicitly selected), then continue the remaining A/B and recovery qualification.
-Use app repository main/tag/public GitHub Release, leaving deploy-repository pointers,
-tags and releases unchanged. Preserve the separate draft evaluationPR192 and all raw
-failures; publishing the initial product does not claim the full302-case matrix passed.
+The user explicitly changed the rollout order on2026-11-09: release the reasonably
+verified product first, with both research/reporting skills enabled by default,
+then continue full A/B and cold-recovery validation in the separate evaluationPR.
+Completed product CI, default/fallback22-case smoke, firstcandidate22-case automatic/
+direct review and independent product code review support this initial delivery.
+This supersedes the original default-off/no-merge/no-release hold below; it does
+not assert complete302-case qualification. Release only the app main/tag/public
+GitHub Release; do not change deploy-repository pointers, tags or releases.
+ProductPR191 merged as9ad95f81 and public v2026.11.09 was published on that appmain
+commit. Preserve separate draft evaluationPR192 and all original raw/failures, then
+continue the full follow-up matrix on the released product plus corrected evaluator.
 
 Provide `ltm-work-research` and `ltm-work-reporting` with shared Korean, evidence,
 aggregation and client-local recovery guides. Preserve #187's body/comments-first

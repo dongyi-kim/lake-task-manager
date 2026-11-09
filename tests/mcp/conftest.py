@@ -25,7 +25,7 @@ from app.services.ticket_commands import CommandError
 def build_env(tmp_path, request):
     opened = []
     build_seconds = []
-    def build(port=4457, *, include_research_skills=False):
+    def build(port=4457, *, include_research_skills=None):
         started = perf_counter()
         config = Config(project_key="DL", current_user="u01", latency_ms=0)
         store = PermissionStore(config)
@@ -58,7 +58,7 @@ def build_env(tmp_path, request):
             if store.get_issue(key).get("reporter") != "u01":
                 raise CommandError("이 티켓은 편집할 수 없습니다.", 403)
         app = FastAPI()
-        candidate = {"include_research_skills": True} if include_research_skills else {}
+        candidate = {"include_research_skills": include_research_skills} if include_research_skills is not None else {}
         runtime = LocalMcpRuntime(get_client=lambda: client, settings=settings,
                                   secret_path=tmp_path / f"credentials-{port}.json", require_edit=require_edit,
                                   **candidate)
