@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import socket
 import threading
 import tempfile
@@ -18,6 +19,7 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlsplit
 from unittest.mock import patch
 
 import anyio
@@ -221,7 +223,12 @@ class EvaluationFixture:
         original = self.provider._get
         def observed(path, params, priority=None):
             started = time.perf_counter()
-            record = {"method": "GET", "path": str(path), "params": self._safe(params or {}), "responseBytes": None}
+            route = urlsplit(str(path)).path
+            service = ("jira" if re.search(r"/rest/(?:api/(?:2|latest)|agile/[^/]+|auth/[^/]+)/", route)
+                       else "confluence" if re.search(r"/rest/api/(?:content|search|space|user)(?:/|$)", route)
+                       else None)
+            record = {"method": "GET", "service": service, "path": str(path),
+                      "params": self._safe(params or {}), "responseBytes": None}
             try:
                 result = original(path, params, priority)
                 record["status"] = result.status_code

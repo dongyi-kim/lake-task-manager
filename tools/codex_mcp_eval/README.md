@@ -108,6 +108,13 @@ Work battery 0.2.0은 스킬 노출과 실제 열람을 `skillApplication`/`summ
 MCP 호출 수와 혼동하지 않으며, 요청 소요시간 합은 사용자 체감 wall time이 아니다. 관측이
 없으면 null이고, 관측된 요청 0건은 0이다. 개별 응답 용량/시간이 누락되면 해당 합도 null이다.
 
+정량 성능의 필수 지표에 **실제 Jira API 호출 횟수**를 포함한다. `summary.jiraApi.requests`와
+`summary.confluenceApi.requests`를 MCP 호출 수와 별도로 비교한다. provider의 실제 API 요청 경로로
+서비스를 구분하고 검색 페이지·단건 조회·실패·재시도를 각각 센다. 캐시 적중은 추가 Jira 요청 0회다.
+preflight/fixture 구성은 측정에서 제외한다. 원본 case별 `upstreamCalls`와 중단 전후 모든 phase를
+보존해 사례/반복/조건별 합을 검증한다. 관측 누락 또는 미분류 경로가 있으면 서비스별 합은 null이다.
+응답 byte·요청시간 합·최종 답변 wall time을 함께 보며, 근거 완전성·정확도는 같은 품질 gate를 유지한다.
+
 `--cases MCP-J1 MCP-O1`처럼 고유 ID로 focused 실행할 수 있다. focused 성공으로 이전 full run 실패를 대체하지 않는다.
 버전은 external suite `1.0.2`, protocol `3.0.0`, human rubric `2.0.0`이며 기존 내장 Agent 배터리와
 동일 benchmark라고 주장하지 않는다. S3~S6 원문 질문과 기대 사실을 재사용하고 별도의 MCP 전송·출력 계약을 기록한다.

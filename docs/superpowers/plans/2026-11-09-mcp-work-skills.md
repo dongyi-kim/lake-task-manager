@@ -102,7 +102,13 @@ from Sol comparisons. No later experiment uses Astra.
 Smoke: 11 B cases in default and fallback = 22. Main A/B: 22 x 2 x 5 = 220.
 Recovery: 6 x uninterrupted/restarted x 5 = 60. Total 302 plus preflights/retries.
 Record exact commit/manifests/model/clock/order, genuine tool evidence, token,
-latency, upstream work and file overhead. Preserve first failures and new attempts.
+latency, upstream work and file overhead. The quantitative performance criteria
+explicitly include actual Jira API request count, separate from MCP and Confluence
+counts, per case and summed by arm/repeat. Count source search pages, individual
+reads, failed requests and retries; a cache hit adds zero. Exclude preflight/fixture
+setup and keep unobserved/unclassified service totals null, not zero. Also compare
+Jira response bytes/request time and answer wall time, without equating fewer MCP
+calls with reduced Jira load. Preserve first failures and new attempts.
 Require automatic gates, direct human review mean >=4.5/5 and zero material false
 facts, unauthorized writes, failures represented as zero, or ungrounded counts.
 Only a later qualified rollout enables the candidate skills by default.

@@ -115,9 +115,12 @@ def _hash(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
-def _upstream_summary(records):
+def _upstream_summary(records, *, service=None):
     observed = bool(records) and all(isinstance(row.get("upstreamCalls"), list) for row in records)
     calls = [call for row in records for call in row["upstreamCalls"]] if observed else []
+    if service is not None:
+        observed = observed and all(call.get("service") in {"jira", "confluence"} for call in calls)
+        calls = [call for call in calls if call.get("service") == service]
     def total(field):
         values = [call.get(field) for call in calls]
         return round(sum(values), 6) if observed and all(value is not None for value in values) else None
@@ -141,11 +144,14 @@ def _payload(metadata, records, selected, preflight, *, failure=None):
             calls=None, prompt_tokens=total("promptTokens"), completion_tokens=total("completionTokens"),
             total_tokens=total("totalTokens"), cached_tokens=total("cachedTokens"), cost_usd=None),
         "metricAvailability": {"modelCalls": False, "costUsd": False, "timeToFirstToken": False,
+                               "upstreamCountIncludes": "case source HTTP attempts, including pages, failures and retries; cache hits add zero; preflight/setup excluded",
                                "latencyIncludes": "Codex process startup + model + MCP; fixture setup excluded"},
         "summary": {"completed": len(records), "total": len(selected),
                     "automaticPass": sum(row["automaticPass"] for row in records),
                     "toolCalls": ltm_calls + file_calls, "ltmToolCalls": ltm_calls, "fileToolCalls": file_calls,
                     "upstream": _upstream_summary(records),
+                    "jiraApi": _upstream_summary(records, service="jira"),
+                    "confluenceApi": _upstream_summary(records, service="confluence"),
                     "latency": summarize_latency(durations) if durations else None},
         "cases": records,
     }

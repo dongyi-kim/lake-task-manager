@@ -43,3 +43,42 @@ def test_upstream_metrics_keep_actual_requests_separate_and_unknown_totals_null(
     assert _upstream_summary([{}])["requests"] is None
     records[0]["upstreamCalls"][1]["responseBytes"] = None
     assert _upstream_summary(records)["responseBytes"] is None
+
+
+def test_jira_api_count_includes_pages_and_retries_but_not_confluence_or_cache_hits():
+    from tools.codex_mcp_eval.runner import _upstream_summary
+    records = [{"upstreamCalls": [
+        {"service": "jira", "path": "/rest/api/2/search", "status": 200},
+        {"service": "jira", "path": "/rest/api/2/search", "status": 200},
+        {"service": "jira", "path": "/rest/api/2/issue/DL-1", "errorType": "TimeoutError"},
+        {"service": "jira", "path": "/rest/api/2/issue/DL-1", "status": 200},
+        {"service": "confluence", "path": "/rest/api/content/1", "status": 200}]}]
+    assert _upstream_summary(records, service="jira")["requests"] == 4
+    assert _upstream_summary(records, service="confluence")["requests"] == 1
+    assert _upstream_summary([{"upstreamCalls": []}], service="jira")["requests"] == 0
+    assert _upstream_summary([{}], service="jira")["requests"] is None
+    records[0]["upstreamCalls"].append({"path": "unclassified"})
+    assert _upstream_summary(records, service="jira")["requests"] is None
+
+
+def test_service_counts_observe_real_provider_and_batch_cache_hits(tmp_path):
+    import anyio
+    from mcp import Client
+    from tools.codex_mcp_eval.runner import _upstream_summary
+    from tools.codex_mcp_eval.work_fixture import WorkFixture
+    with WorkFixture(tmp_path / "metric-fixture", port=0, today="2026-11-09") as fixture:
+        async def scenario():
+            async with Client(fixture.runtime.server) as client:
+                args = {"keys": ["DL-94001", "DL-94002", "DL-94007"], "include_description": True}
+                assert not (await client.call_tool("get_tickets", args)).is_error
+                rows = [{"upstreamCalls": list(fixture.upstream_calls)}]
+                assert _upstream_summary(rows, service="jira")["requests"] == 1
+                before = len(fixture.upstream_calls)
+                assert not (await client.call_tool("get_tickets", args)).is_error
+                assert _upstream_summary([{"upstreamCalls": fixture.upstream_calls[before:]}], service="jira")["requests"] == 0
+                assert not (await client.call_tool("read_confluence_document", {
+                    "page": fixture.document_ids["운영 결정"]})).is_error
+                rows = [{"upstreamCalls": list(fixture.upstream_calls)}]
+                assert _upstream_summary(rows, service="jira")["requests"] == 1
+                assert _upstream_summary(rows, service="confluence")["requests"] >= 1
+        anyio.run(scenario)
