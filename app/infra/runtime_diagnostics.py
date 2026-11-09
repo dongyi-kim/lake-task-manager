@@ -83,6 +83,7 @@ class RuntimeMonitor:
             self.log.record("runtime_responsive", loopLagSeconds=lag)
         self._stalled = stalled
         for name, loop in self.loops.items():
+            loop = loop() if callable(loop) else loop
             if loop is not None and not loop.is_closed():
                 # Pulse execution proves the loop is servicing work. No API/auth request.
                 loop.call_soon_threadsafe(self._pulse, name)
@@ -98,7 +99,7 @@ def install_runtime_monitor(app, *, directory, mcp_host, components, revision=""
     async def lifespan(application):
         async with previous(application):
             log = RuntimeLog(directory, "worker")
-            monitor = RuntimeMonitor(log, {"ui": asyncio.get_running_loop(), "mcp": mcp_host._loop}, components)
+            monitor = RuntimeMonitor(log, {"ui": asyncio.get_running_loop(), "mcp": lambda: mcp_host._loop}, components)
             stop = threading.Event()
 
             def observe():
@@ -106,6 +107,8 @@ def install_runtime_monitor(app, *, directory, mcp_host, components, revision=""
                 try:
                     while not stop.wait(1):
                         try:
+                            for event in mcp_host.drain_events():
+                                log.record(event["event"], **{name: value for name, value in event.items() if name != "event"})
                             monitor.sample()
                         except Exception:
                             log.record("monitor_sample_failed")
