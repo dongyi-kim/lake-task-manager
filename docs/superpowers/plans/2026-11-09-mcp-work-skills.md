@@ -121,6 +121,16 @@ do not establish that no known/denied child was omitted. Keep the checker strict
   new candidate and run the full11-case default/fallback smoke before its A/B,
   plus fresh recovery confirmation. Keep every failed schedule and attempt.
 
+The subsequent c144c0bf Work1.0 default smoke was10/11, but its R03 failure was
+an evaluator false positive: successful descendant raw metadata supplied the same
+ticket's REST self, and actual comments supplied matching relative self paths.
+The validator omitted that typed metadata path. Preserve the original score;
+accept only direct, key-matched metadata through the existing endpoint guards,
+including literal observed ticket self. Negative tests must reject nested body/
+parent URLs, unknown/failed/mismatched routes and unsafe endpoints. Version this
+checker meaning change as Work2.0/recovery3.0, keep guide0.1.4 unchanged, and run
+fresh qualification without substituting the old model outputs.
+
 - Guide artifacts: manifest.json, progress.json, evidence/, findings.jsonl,
   report.md and resume.md. Save evidence before advancing progress.
 - Resume checks task/source/scope identity, last valid generation, source age,

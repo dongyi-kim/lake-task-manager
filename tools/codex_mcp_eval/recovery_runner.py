@@ -51,7 +51,7 @@ def recovery_battery(base, today, scenario, mode):
                                     "originalDialogueAvailable": False, "requiresSavedFilesRead": True}}}
         return suite, {case["id"]: spec}
     return SimpleNamespace(**{**vars(base), "SUITE": "codex-mcp-work-recovery", "CASES": [case],
-        "BATTERY_VERSION": "2.0.0", "PROMPT_VERSION": "codex-mcp-work-recovery-v3", "SYSTEM_CONTEXT": "", "review_contract": review,
+        "BATTERY_VERSION": "3.0.0", "PROMPT_VERSION": "codex-mcp-work-recovery-v3", "SYSTEM_CONTEXT": "", "review_contract": review,
         "CHECKER_DEPENDENCIES": (*base.CHECKER_DEPENDENCIES, RECOVERY_PROMPT, recovery_prompt,
                                   RecoveryController, persisted_calls, scenario)})
 

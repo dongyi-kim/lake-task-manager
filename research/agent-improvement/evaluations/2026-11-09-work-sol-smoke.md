@@ -423,3 +423,41 @@ query-only100% is correctly rejected. Related asset/leaf/prompt-integrity checks
 passed **68 tests,1 skipped** (existing Windows symlink limitation), and narrow
 independent review found no important issue. New candidate confirmation and full
 qualification remain pending. Default activation remains off; no merge/release.
+
+### Guide 0.1.4 confirmation: grounded URI rejected by Work1.0 checker
+
+Clean commit `c144c0bf` (product guide commit `3b4ebed4`) started full default/
+fallback smoke before any new A/B, then planned one fresh recovery confirmation.
+Default smoke completed10/11; the helper stopped before fallback and recovery.
+The sole failure is R03 `source_not_observed`, with original raw SHA
+`56da16a88de17d47bcef723714ecdcb3bffc77cc881cd6e03d8ecdaa36bb10da`.
+The same formal native Sol/high panel directly reviewed all11 outputs and sources:
+mean4.99/5,352 common and23 specialized items, no material facts/semantic defects.
+R02 operations[] remains a local minor. R10 actually used a fresh, complete2/2
+descendants collection with no missing/partial and verified child fields, so the
+whole-hierarchy guide correction is supported in this pressure case.
+
+R03's successful `get_descendants` contained a wrapper/raw key-matched DL-94008
+issue with numeric ID1974554802 and literal REST self on `http://testserver`.
+Actual comments61008/61009 contained their matching relative REST self paths.
+The final URLs exactly normalize those observed values. The checker had collected
+ticket origins only from get_ticket/search_issues/get_tickets, overlooking the
+typed descendant issue. This is a checker false positive, unlike the earlier
+unsupported whole-hierarchy R10 claim. Original10/11 remains unchanged.
+
+Prospective Work2.0.0 / recovery3.0.0 adds only direct typed descendant metadata
+where wrapper key equals raw key, and explicit own URLs on child badges. Literal
+ticket REST self also uses the same actual-address/key/numeric-ID/endpoint checks.
+No arbitrary nested description/parent origin is accepted, and missing URLs are
+not synthesized. Existing credentials, query/fragment, foreign host, mismatched
+key/ID and failed-response rejection remains. A partial returned citation still
+cannot prove whole-progress coverage. The product guide remains0.1.4.
+
+Four source-route regressions first failed, including actual MCP. Two further
+literal-ticket-self regressions first failed, again including actual MCP. Final
+related source/boundary checks passed56 tests; recovery/metadata/cohort checks
+passed72 tests (overlapping earlier evidence is not summed). Narrow independent
+reviews found no important issue. Both product/eval full offline CI passed at
+3b4ebed4/c144c0bf before this checker-only correction. New full smoke and recovery
+confirmation must use the new frozen checker; no old scores are reclassified or
+substituted into its qualification.

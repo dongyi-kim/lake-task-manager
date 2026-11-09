@@ -32,7 +32,7 @@ def source_observed(calls, source):
     successful = [c for c in calls if not c.get("isError") and (c.get("result") or {}).get("ok") is True]
     if any(matches(c["result"].get("data")) for c in successful):
         return True
-    if source.get("kind") != "comment":
+    if source.get("kind") not in {"comment", "ticket"}:
         return False
     tickets = {}
     for call in successful:
@@ -42,6 +42,15 @@ def source_observed(calls, source):
         rows = [data] if call.get("name") == "get_ticket" else []
         if call.get("name") in {"search_issues", "get_tickets"}:
             rows = data.get("issues") or []
+        elif call.get("name") == "get_descendants":
+            rows = [row["issue"] for row in data.get("issues") or []
+                    if isinstance(row, dict) and isinstance(row.get("issue"), dict)
+                    and isinstance(row.get("key"), str) and re.fullmatch(r"[A-Z][A-Z0-9_]*-\d+", row["key"])
+                    and row["issue"].get("key") == row["key"]]
+        elif call.get("name") == "get_children":
+            rows = [row for row in data.get("children") or []
+                    if isinstance(row, dict) and isinstance(row.get("key"), str)
+                    and re.fullmatch(r"[A-Z][A-Z0-9_]*-\d+", row["key"])]
         for row in rows:
             if not isinstance(row, dict) or not row.get("key"):
                 continue
@@ -61,6 +70,8 @@ def source_observed(calls, source):
                 if (base.scheme in {"http", "https"} and base.netloc and not base.username and not base.password
                         and not base.query and not base.fragment and base.path.endswith(suffix)):
                     tickets.setdefault(key, []).append((address, base, base.path[:-len(suffix)], identifiers))
+    if source.get("kind") == "ticket":
+        return any(url == address for address, *_ in tickets.get(identity, []))
     decoded = {}
     for call in successful:
         page = call["result"].get("data") or {}

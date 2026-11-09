@@ -148,6 +148,14 @@ IN key는 검색 후보이며 필수 개별 조회 목록이 아니다. 검색 �
 `nextCall.arguments` 또는 기존 cursor에서 같은 쿼리·snapshot·다음 위치를 확인한다. 다른 검색의
 cursor를 인정하지 않으며 중단이 실제 발생하지 않은 시도는 복구 성공으로 보고하지 않는다.
 
+Work 2.0.0 / recovery 3.0.0은 `get_descendants.issues[*].issue`의 직접 티켓 metadata도
+출처로 인정한다. wrapper key와 raw key가 일치해야 하며, 실제 url/self와 key·numeric ID·경로·origin을
+검증한다. `get_children`도 자기 레코드에 실제 주소가 있을 때만 사용하며 없는 주소는 만들지 않는다.
+관측된 티켓 REST self를 티켓 출처로 쓸 수 있고, 실제 반환된 상대 댓글 self를 같은 티켓의 관측된
+주소로 절대화할 수 있다. 임의 description/parent 중첩 URL, 다른 key·ID, 실패 응답 및 인증정보·
+query·fragment를 받아들이지 않는다. 부분 계층에서 반환된 개별 출처의 유효성은 전체 진척률의
+완전성 증명이 아니다. 이전 Work1.0 출처 false positive 원본은 그대로 유지하고 새 실행과 섞지 않는다.
+
 `--cases MCP-J1 MCP-O1`처럼 고유 ID로 focused 실행할 수 있다. focused 성공으로 이전 full run 실패를 대체하지 않는다.
 버전은 external suite `1.0.2`, protocol `3.0.0`, human rubric `2.0.0`이며 기존 내장 Agent 배터리와
 동일 benchmark라고 주장하지 않는다. S3~S6 원문 질문과 기대 사실을 재사용하고 별도의 MCP 전송·출력 계약을 기록한다.
