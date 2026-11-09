@@ -650,3 +650,18 @@ fixture/work/recovery checks48passed117.42s; no real model or external Jira call
 An independent Sol/high static review found no Important issue. New exact-source
 CI and a new external freeze are required before fresh23 prerequisites or the still
 unfinished220A/B+60recovery matrix. Old raw attempts and scores remain immutable.
+
+The first product integration CIs failed:197 exposed the already reproduced comment
+clock/order fixture issue (now separate PR200);198 and199 saw generic HTTP errors
+during ordinary SDK calls. Exact eval b72 CI42600226203 also failed4cases with4687
+passed/120skipped645.61s. Those original logs remain failures. Their generic errors
+do not prove which HTTP status/body occurred. A deterministic new regression did
+prove that one stale2.1s pulse immediately rejected a responsive worker with503,
+before the configured three-miss policy. Two cases were RED then GREEN after bounded
+business-admission grace; health/diagnostic predicates remain strict. Actual guarded
+dispatch advances the pulse; old/stopping/fatal generations stay fenced. Nine fence
+cases passed; source-integrated product-related60passed80.41s. Independent Sol/high
+review found no Important issue; its test-isolation Minor was fixed. After merge,
+worker/qualification-controls21passed13.93s. No real model or external Jira call.
+V8 was prepared only and is held without attempts; a new exact-source CI/freeze is
+required after these fixes. No previous score, timeout or failed CI is replaced.
