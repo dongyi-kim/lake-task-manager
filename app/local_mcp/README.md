@@ -119,6 +119,10 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 요청 limit을 응답에 명시한다. `get_history`만 `include_children=true`를 명시하면 직계 자식의
 상태 변경도 포함한다(기본 false). `get_evidence_page`는 항상 지정한 티켓 한 개의 선택한 종류만
 조회하며 자식 댓글·변경 이력을 자동 수집하지 않는다.
+이어 읽기는 `data.nextCall.arguments` 전체를 같은 도구에 복사한다. 긴 기록은 페이지 위치와 내부
+문자 위치를 함께 옮겨야 하므로 `nextStartAt`만 반복하지 않는다. nextCall은 요청한 묶음 크기를
+유지하며 응답의8KiB 제한에도 포함된다. 기존 start_at/record_offset 인자도 유효하다. nextCall이
+null이어도 sourceComplete/partial을 확인하고, 미확인 원본을 전체 없음으로 단정하지 않는다.
 읽기에는 `cache` 출처 정보와 `partial` 여부도 포함한다. 출처를 수집할 수 있으면 가장 오래된
 `fetchedAt`·`freshUntil`·`displayUntil`, stale 여부와 policy revision을 반환한다.
 관측 정보가 없으면 `available: false, state: unknown`으로 표시하며 최신 데이터라고 단정하지 않는다.

@@ -2,7 +2,7 @@
 name: ltm-work-research
 description: LTM MCP로 테이블·기능·키워드의 업무 경위, 사람의 실제 기여, 모듈·Epic·WBS·Task의 활동과 진척을 조사하거나 중단한 조사를 이어갈 때 사용한다. 기간 실적 집계나 정해진 보고서 양식 작성이 주목적이면 ltm-work-reporting을 선택한다.
 metadata:
-  version: 0.1.2-candidate
+  version: 0.1.3-candidate
 ---
 
 # 업무 맥락과 진척 조사

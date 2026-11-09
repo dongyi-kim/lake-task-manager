@@ -104,6 +104,8 @@ class LocalMcpRuntime:
                 "Read field history only to answer change chronology, transition timing, historical ownership "
                 "or unresolved discrepancies; do not routinely fetch history for every ticket or descendant. "
                 "get_evidence_page reads one key only, never child tickets. "
+                "Continue evidence pages by copying data.nextCall.arguments, not nextStartAt alone; "
+                "long records also need the returned record_offset. Stop if continuation arguments do not advance. "
                 "For ticket descriptions, comments and Confluence documents, recommend sharing a readable "
                 "draft or proposed changes and the destination for user confirmation before submission; "
                 "see references/draft-review.md in any authoring skill. Honor existing approval of that "

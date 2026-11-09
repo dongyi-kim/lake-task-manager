@@ -426,6 +426,19 @@ class EvidenceChunk(OpenModel):
     recordSha256: str
 
 
+class EvidenceArguments(OpenModel):
+    key: str
+    kind: Literal["comments", "history"]
+    start_at: int = Field(ge=0)
+    max_results: int = Field(ge=1, le=100)
+    record_offset: int = Field(ge=0)
+
+
+class EvidenceCall(OpenModel):
+    name: Literal["get_evidence_page"]
+    arguments: EvidenceArguments
+
+
 class EvidencePage(OpenModel):
     key: str
     kind: Literal["comments", "history"]
@@ -442,6 +455,7 @@ class EvidencePage(OpenModel):
     returned: int
     hasMore: bool | None
     nextStartAt: int | None
+    nextCall: EvidenceCall | None = Field(default=None, description="Copy these complete continuation arguments, including record offset. Null means no proven next call; inspect sourceComplete/partial before claiming completeness.")
     availableTotal: int | None = None
 
 
