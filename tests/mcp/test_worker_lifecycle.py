@@ -25,6 +25,7 @@ async def until(predicate):
 def test_health_snapshot_does_not_call_a_non_admitting_worker_healthy(failure):
     worker = WorkerLifecycle([])
     worker.current, worker.state = Generation(1), "healthy"
+    worker._closing = False
     generation = worker.current
     generation.thread = SimpleNamespace(is_alive=lambda: True)
     generation.accepting = True
