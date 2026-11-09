@@ -97,8 +97,19 @@ Work battery 0.2.0은 스킬 노출과 실제 열람을 `skillApplication`/`summ
 기록한다. mode별 검수 조건은 공통 manifest의 modes에서 해당 조건을 선택한다. 각 모델 호출의 timeout과
 별도 preflight timeout도 공통 benchmark context에 기록한다. 복구의 두 phase는 각각 호출 제한을 적용한다.
 
+0.3.0은 실제 성공 응답과 이어 읽기 인자가 동일한 비종료 페이지를 세 번 반복하면
+`read_continuation_not_advancing`으로 실패시킨다. 긴 댓글의 `sourceIndex`/`nextRecordOffset`을
+다음 `start_at`/`record_offset`으로 옮겨야 한다. 새 membership 조회는 이전 membership을 지우되,
+이미 검증한 같은 원본 ID+SHA의 연속 chunk는 재사용할 수 있다. 다른 ID·digest나 미수집 chunk를
+허용하지 않는다. 상태 전용 질문은 성공한 다건 검색/계층의 typed status 필드로 검증할 수 있으며,
+본문·댓글 안의 임의 status 문자열은 상태 필드로 취급하지 않는다.
+
+`summary.upstream`은 실제 provider 요청 수·응답 byte·요청 소요시간 합을 별도로 기록한다.
+MCP 호출 수와 혼동하지 않으며, 요청 소요시간 합은 사용자 체감 wall time이 아니다. 관측이
+없으면 null이고, 관측된 요청 0건은 0이다. 개별 응답 용량/시간이 누락되면 해당 합도 null이다.
+
 `--cases MCP-J1 MCP-O1`처럼 고유 ID로 focused 실행할 수 있다. focused 성공으로 이전 full run 실패를 대체하지 않는다.
-버전은 external suite `1.0.1`, protocol `3.0.0`, human rubric `2.0.0`이며 기존 내장 Agent 배터리와
+버전은 external suite `1.0.2`, protocol `3.0.0`, human rubric `2.0.0`이며 기존 내장 Agent 배터리와
 동일 benchmark라고 주장하지 않는다. S3~S6 원문 질문과 기대 사실을 재사용하고 별도의 MCP 전송·출력 계약을 기록한다.
 
 | 사례 | 검증 |

@@ -85,7 +85,8 @@ def test_recovery_treatments_share_the_same_benchmark_manifest(scenario):
 
 
 @pytest.mark.parametrize("forbidden", [[], ["command_execution"]])
-def test_recovery_retains_all_phase_violations_and_counts_executed_calls(tmp_path, monkeypatch, forbidden):
+@pytest.mark.parametrize("scenario", ["between-pages", "source-changed"])
+def test_recovery_retains_all_phase_violations_and_counts_executed_calls(tmp_path, monkeypatch, forbidden, scenario):
     from tools.agent_eval_isolation import NETWORK_PREFLIGHT_MARKER
     from tools.codex_mcp_eval import recovery_runner
     monkeypatch.setenv(NETWORK_PREFLIGHT_MARKER, "1")
@@ -93,6 +94,8 @@ def test_recovery_retains_all_phase_violations_and_counts_executed_calls(tmp_pat
         if controller:
             controller._trigger("observed test boundary")
         calls = [{"name": f"executed-{index}-{i}"} for i in range(2 if index == 0 else 1)]
+        if index == 0:
+            calls[0]["name"] = "get_tickets"
         return {"output": {"ok": index == 1, "intentionalInterruption": index == 0,
                            "forbiddenToolEvents": forbidden if index == 0 else [], "durationSeconds": 1},
             "mcpToolCalls": calls, "persistedCalls": calls[:1], "fileCalls": [{"name": "read_file", "ok": True,
@@ -101,18 +104,18 @@ def test_recovery_retains_all_phase_violations_and_counts_executed_calls(tmp_pat
             "isolation": {"worldUnchanged": True, "providerStoreUnchanged": True}}, {}
     monkeypatch.setattr(recovery_runner, "_phase", phase)
     def check(case, output, calls, oracle):
-        assert len(calls) == 2, "grounding evidence differs from executed calls"
+        assert len(calls) == (1 if scenario == "source-changed" else 2), "grounding evidence differs from executed calls"
         return {"pass": not output.get("forbiddenToolEvents"),
                 "failures": ["unapproved_tool_used"] if output.get("forbiddenToolEvents") else []}
     battery = SimpleNamespace(OUTPUT_SCHEMA={}, check=check)
-    options = SimpleNamespace(recovery_mode="restarted", recovery_scenario="between-pages")
+    options = SimpleNamespace(recovery_mode="restarted", recovery_scenario=scenario)
     case = {"id": "WORK-R02-boundary"}
     record = recovery_runner.run_recovery_case(case, options, "stub", tmp_path, None, battery, artifact_root=tmp_path)
     assert record["output"]["forbiddenToolEvents"] == forbidden
     assert record["automaticPass"] == (not forbidden)
     assert len(record["output"]["mcpToolCalls"]) == 3
-    assert len(record["groundingCalls"]) == 2
-    assert record["recovery"]["eligiblePersistedCalls"] == 1
+    assert len(record["groundingCalls"]) == (1 if scenario == "source-changed" else 2)
+    assert record["recovery"]["eligiblePersistedCalls"] == (0 if scenario == "source-changed" else 1)
     assert record["fileMetrics"]["calls"] == 2
     summary = runner._payload({"battery": {"name": "test"}}, [record], [case], {})["summary"]
     assert summary["toolCalls"] == 5 and summary["fileToolCalls"] == 2 and summary["ltmToolCalls"] == 3

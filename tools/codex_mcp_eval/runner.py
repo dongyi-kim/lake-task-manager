@@ -115,6 +115,16 @@ def _hash(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
+def _upstream_summary(records):
+    observed = bool(records) and all(isinstance(row.get("upstreamCalls"), list) for row in records)
+    calls = [call for row in records for call in row["upstreamCalls"]] if observed else []
+    def total(field):
+        values = [call.get(field) for call in calls]
+        return round(sum(values), 6) if observed and all(value is not None for value in values) else None
+    return {"observed": observed, "requests": len(calls) if observed else None,
+            "responseBytes": total("responseBytes"), "sumRequestSeconds": total("durationSeconds")}
+
+
 def _payload(metadata, records, selected, preflight, *, failure=None):
     durations = [row["durationSeconds"] for row in records]
     usage = [row["output"].get("usage") or {} for row in records]
@@ -135,6 +145,7 @@ def _payload(metadata, records, selected, preflight, *, failure=None):
         "summary": {"completed": len(records), "total": len(selected),
                     "automaticPass": sum(row["automaticPass"] for row in records),
                     "toolCalls": ltm_calls + file_calls, "ltmToolCalls": ltm_calls, "fileToolCalls": file_calls,
+                    "upstream": _upstream_summary(records),
                     "latency": summarize_latency(durations) if durations else None},
         "cases": records,
     }

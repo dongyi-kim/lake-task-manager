@@ -21,10 +21,14 @@ def citation_calls():
     ]
 
 
-def test_observed_comment_self_can_use_the_observed_same_ticket_origin():
+@pytest.mark.parametrize("tool", ["get_ticket", "search_issues", "get_tickets"])
+def test_observed_comment_self_can_use_the_observed_same_ticket_origin(tool):
     source = {"kind": "comment", "id": "61010",
               "url": "https://jira.example/jira/rest/api/2/issue/DL-94010/comment/61010"}
-    assert source_observed(citation_calls(), source)
+    calls = citation_calls()
+    if tool != "get_ticket":
+        calls[0] = {"name": tool, "result": {"ok": True, "data": {"issues": [calls[0]["result"]["data"]]}}}
+    assert source_observed(calls, source)
 
 
 @pytest.mark.parametrize("field,value", [
@@ -66,14 +70,27 @@ def test_work_schema_defines_source_identity_without_synthesized_comment_ids():
 
 
 @pytest.mark.parametrize("include_root", [True, False])
-def test_optional_report_progress_uses_complete_observed_hierarchy_and_labeled_units(tmp_path, include_root):
+@pytest.mark.parametrize("body_mode", ["single", "batch-metadata"])
+def test_optional_report_progress_uses_complete_observed_hierarchy_and_labeled_units(tmp_path, include_root, body_mode):
     case = next(c for c in work_cases.CASES if c["id"] == "WORK-R10-normal")
     with WorkFixture(tmp_path / "source", port=0, today="2026-11-09", skill_condition="candidate") as fixture:
         truth = fixture.ground_truth()
         async def scenario():
             async with Client(fixture.runtime.server) as client:
-                for key in ("DL-94010", "DL-94011", "DL-94012"):
-                    await client.call_tool("get_ticket", {"key": key, "detail": "read"})
+                if body_mode == "single":
+                    for key in ("DL-94010", "DL-94011", "DL-94012"):
+                        await client.call_tool("get_ticket", {"key": key, "detail": "read"})
+                else:
+                    offset, snapshot = 0, None
+                    while True:
+                        response = await client.call_tool("search_issues", {
+                            "jql": "key in (DL-94010,DL-94011,DL-94012) ORDER BY key ASC",
+                            "detail": "summary", "include_description": False,
+                            "start_at": offset, "snapshot_id": snapshot})
+                        page = response.structured_content["data"]
+                        if not page["hasMore"]:
+                            break
+                        offset, snapshot = page["nextStartAt"], page["snapshotId"]
                 await client.call_tool("read_confluence_document", {"page": truth["documentIds"]["주간보고"], "version": 1})
                 for offset in ((0, 2) if include_root else (0,)):
                     await client.call_tool("get_descendants", {"root_key": "DL-94010", "include_root": include_root,
@@ -101,5 +118,9 @@ def test_optional_report_progress_uses_complete_observed_hierarchy_and_labeled_u
     incomplete = [c for c in calls if not (c["name"] == "get_descendants" and c["arguments"].get("start_at") == (2 if include_root else 0))]
     assert not check({"done": 1, "total": 3, "percent": 100 / 3}, incomplete)["pass"]
     changed = copy.deepcopy(calls)
-    next(c for c in changed if c["name"] == "get_ticket" and c["arguments"]["key"] == "DL-94011")["result"]["data"]["statusCategory"] = "inprogress"
+    if body_mode == "single":
+        next(c for c in changed if c["name"] == "get_ticket" and c["arguments"]["key"] == "DL-94011")["result"]["data"]["statusCategory"] = "inprogress"
+    else:
+        next(row for c in changed if c["name"] == "search_issues" for row in c["result"]["data"]["issues"]
+             if row["key"] == "DL-94011")["fields"]["status"]["statusCategory"]["key"] = "indeterminate"
     assert not check({"done": 1, "total": 3, "percent": 100 / 3}, changed)["pass"]

@@ -108,7 +108,7 @@ def run_recovery_case(case, options, binary, run_root, cli_run, battery, *, arti
     reusable = first["persistedCalls"] if len(phases) == 2 else []
     if final_revision == 2:
         # A new search membership and edited records must be confirmed in the fresh phase.
-        reusable = [c for c in reusable if c["name"] not in {"search_issues", "read_confluence_document"}
+        reusable = [c for c in reusable if c["name"] not in {"search_issues", "get_tickets", "read_confluence_document"}
                     and (c.get("arguments") or {}).get("key") not in {"DL-94002", "DL-94017"}]
     evidence = [*reusable, *last["mcpToolCalls"]]
     output = copy.deepcopy(last["output"])

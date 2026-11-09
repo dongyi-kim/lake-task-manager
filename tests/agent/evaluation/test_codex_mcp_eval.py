@@ -129,6 +129,28 @@ def test_failed_or_tail_only_document_reads_are_not_complete_evidence():
     assert "document_body_not_complete" in cases.check(_case("MCP-U1"), output, calls)["failures"]
 
 
+@pytest.mark.parametrize('tool', ['get_ticket', 'get_tickets', 'search_issues'])
+def test_unified_search_accepts_actual_complete_body_from_single_or_batch(tool):
+    from copy import deepcopy
+    body = {'key': 'DL-7001', 'descriptionHtml': '<p>source</p>'} if tool == 'get_ticket' else {
+        'issues': [{'key': 'DL-7001', 'fields': {'description': 'source'}}]}
+    calls = [_call('search_workspace', data={'jira': {'items': [{}]}, 'confluence': {'items': [{}]}}),
+             _call(tool, {'key': 'DL-7001'} if tool == 'get_ticket' else {'keys': ['DL-7001']}, body),
+             _call('get_comments', {'key': 'DL-7001'}, {'comments': []}),
+             _call('read_confluence_document', data={'id': '1', 'title': 'Puffin NDV 적용 검토 노트',
+                 'content': 'source', 'offset': 0, 'totalCharacters': 6, 'hasMore': False})]
+    output = _output(['DL-7001'], 1)
+    assert cases.check(_case('MCP-U1'), output, calls)['pass']
+    for failed in (True, False):
+        bad = deepcopy(calls)
+        if failed:
+            bad[1]['result']['ok'] = False
+        else:
+            bad[1]['result']['data'] = {'key': 'DL-7001'} if tool == 'get_ticket' else {
+                'issues': [{'key': 'DL-7001', 'fields': {'summary': 'source'}}]}
+        assert 'required_ticket_body_not_observed' in cases.check(_case('MCP-U1'), output, bad)['failures']
+
+
 def test_protocol_external_identity_and_unavailable_metrics_are_explicit(monkeypatch):
     suite, specs = cases.review_contract()
     metadata = protocol.build_run_metadata(suite=cases.SUITE, battery_version=cases.BATTERY_VERSION,

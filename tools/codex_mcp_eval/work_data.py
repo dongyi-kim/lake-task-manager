@@ -96,10 +96,11 @@ def build_work_data(today: date | str, *, source_revision: int = 1) -> dict:
          "body": "<table><tr><th>업무</th><th>실적</th><th>장애</th><th>다음 작업</th></tr></table>"},
     ]}
 
-    def expected(keys, total=None, *, required=(), documents=(), progress=None, operations=False, uncertain=False):
+    def expected(keys, total=None, *, required=(), documents=(), progress=None, operations=False, uncertain=False,
+                 statuses=None):
         return {"keys": sorted(keys), "total": total, "requiredEvidence": list(required),
                 "documents": list(documents), "progress": progress, "operations": operations,
-                "mustDiscloseUncertainty": uncertain}
+                "mustDiscloseUncertainty": uncertain, "requiredStatuses": dict(statuses or {})}
 
     req = lambda key, text: {"key": f"DL-{key}", "text": text}
     cases = {}
@@ -115,7 +116,8 @@ def build_work_data(today: date | str, *, source_revision: int = 1) -> dict:
                  "requiredEvidence": [*new["requiredEvidence"], req(94006, "실제 적재하지 않았음"), req(94017, "이전 월 제외")]})
     pair(3, expected(["DL-94008"], 1, required=[req(94008, "오늘 활동")]),
          expected([], 0, required=[req(94009, "오늘 수행·댓글·완료 활동 없음")]))
-    pair(4, expected([ROOT, *CHILDREN], 3, required=[req(94010, "진행 중"), req(94012, "진행 중")],
+    current_statuses = {ROOT: "inprogress", CHILDREN[0]: "done", CHILDREN[1]: "inprogress"}
+    pair(4, expected([ROOT, *CHILDREN], 3, statuses=current_statuses,
                      progress={"done": 1, "total": 2, "percent": 50}),
          expected([ROOT, CHILDREN[0]], None, uncertain=True))
     pair(5, expected(["DL-94013"], 1, required=[req(94013, "실제 매핑 검증을 완료")]),
@@ -131,7 +133,7 @@ def build_work_data(today: date | str, *, source_revision: int = 1) -> dict:
          expected(["DL-94014"], None, required=[req(94014, "리뷰만 수행")], uncertain=True))
     pair(9, expected(["DL-94015"], 1, required=[req(94015, "RENAME-1")]),
          expected(["DL-94015", "DL-94016"], 2, required=[req(94016, "별개 테이블")]))
-    pair(10, expected([ROOT, *CHILDREN], 3, required=[req(94012, "진행 중")], documents=["주간보고"]),
+    pair(10, expected([ROOT, *CHILDREN], 3, statuses=current_statuses, documents=["주간보고"]),
          expected([], None, documents=["과거보고없음"], uncertain=True))
     pair(11, expected(["DL-94008"], 1, required=[req(94008, "우회 설정")], documents=["일간 양식"]),
          expected([ROOT, CHILDREN[0]], None, documents=["일간 양식"], uncertain=True))

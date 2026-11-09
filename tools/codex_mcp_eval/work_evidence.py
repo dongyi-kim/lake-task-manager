@@ -23,8 +23,16 @@ def source_observed(calls, source):
         return True
     if source.get("kind") != "comment":
         return False
-    tickets = {c["result"]["data"].get("key"): c["result"]["data"].get("url") for c in successful
-               if c.get("name") == "get_ticket" and isinstance(c["result"].get("data"), dict)}
+    tickets = {}
+    for call in successful:
+        data = call["result"].get("data")
+        if not isinstance(data, dict):
+            continue
+        rows = [data] if call.get("name") == "get_ticket" else (
+            data.get("issues") or [] if call.get("name") in {"search_issues", "get_tickets"} else [])
+        for row in rows:
+            if isinstance(row, dict) and row.get("key") and row.get("url"):
+                tickets[row["key"]] = row["url"]
     for call in successful:
         page = call["result"].get("data") or {}
         if call.get("name") != "get_evidence_page" or not isinstance(page, dict) or page.get("kind") != "comments":
@@ -76,6 +84,40 @@ def count_ratio_labeled(reply, done, total, include_root):
     return False
 
 
+def observed_status_categories(calls):
+    """Use typed status fields only; never parse description/comment text as metadata."""
+    observed = {}
+    categories = {"done": "done", "indeterminate": "inprogress", "inprogress": "inprogress",
+                  "new": "todo", "todo": "todo"}
+    def add(key, category):
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]*-\d+", key) or not isinstance(category, str):
+            return
+        value = categories.get(category)
+        observed[key] = value if key not in observed else value if observed[key] == value else None
+    def issue(row):
+        if not isinstance(row, dict):
+            return
+        fields = row.get("fields") or {}
+        status = fields.get("status") or {}
+        add(row.get("key"), (status.get("statusCategory") or {}).get("key"))
+    for call in calls:
+        result = call.get("result") or {}
+        if call.get("isError") or result.get("ok") is not True or not isinstance(result.get("data"), dict):
+            continue
+        data = result["data"]
+        if call.get("name") == "get_ticket":
+            add(data.get("key"), data.get("statusCategory"))
+        elif call.get("name") in {"search_issues", "get_tickets"}:
+            for row in data.get("issues") or []:
+                issue(row)
+        elif call.get("name") == "get_descendants":
+            for row in data.get("issues") or []:
+                raw = row.get("issue") or {}
+                issue(raw)
+                issue((raw.get("fields") or {}).get("parent"))
+    return observed
+
+
 def optional_count_progress(calls, progress, reply, root="DL-94010"):
     """Allow labeled ticket-count ratios only after a full hierarchy and status read."""
     if not isinstance(progress, dict) or any(type(progress.get(k)) is not int for k in ("done", "total")):
@@ -84,8 +126,7 @@ def optional_count_progress(calls, progress, reply, root="DL-94010"):
     if type(percent) not in (int, float) or not math.isfinite(percent):
         return False
     successful = [c for c in calls if not c.get("isError") and (c.get("result") or {}).get("ok") is True]
-    tickets = {c["result"]["data"].get("key"): c["result"]["data"] for c in successful
-               if c.get("name") == "get_ticket" and isinstance(c["result"].get("data"), dict)}
+    statuses = observed_status_categories(successful)
     rows, total, ended, valid, included = {}, None, False, False, None
     for call in successful:
         data = call["result"].get("data") or {}
@@ -109,18 +150,16 @@ def optional_count_progress(calls, progress, reply, root="DL-94010"):
     if not valid or not ended or not total or set(rows) != set(range(total)):
         return False
     by_key = {row.get("key"): row for row in rows.values()}
-    if (len(by_key) != total or (root in by_key) != included or root not in tickets
-            or not tickets[root].get("statusCategory") or not set(by_key) <= tickets.keys()):
+    if len(by_key) != total or (root in by_key) != included:
         return False
     for key, row in by_key.items():
-        category = (row.get("issue", {}).get("fields", {}).get("status", {}).get("statusCategory") or {}).get("key")
-        if not category or not tickets[key].get("statusCategory") or (category == "done") != (tickets[key]["statusCategory"] == "done"):
-            return False
         if key != root and (row.get("parentKey") != root or row.get("depth") != 1):
             return False
     for include_root in (True, False):
         keys = set(by_key) | {root} if include_root else set(by_key) - {root}
-        done = sum(tickets[key]["statusCategory"] == "done" for key in keys)
+        if any(not statuses.get(key) for key in keys):
+            continue
+        done = sum(statuses[key] == "done" for key in keys)
         if (keys and progress["done"] == done and progress["total"] == len(keys)
                 and math.isclose(percent, 100 * done / len(keys), abs_tol=0.1)
                 and count_ratio_labeled(reply, done, len(keys), include_root)):
@@ -140,7 +179,8 @@ def evidence_collection(calls, key, kind="comments"):
         start, count, items = page.get("startAt"), page.get("total"), page.get("items") or []
         first_offset = items[0].get("recordOffset", 0) if items else 0
         if start == 0 and first_offset == 0:
-            records, chunks, started, ended, valid = {}, {}, True, False, True
+            # Membership is fresh; same-ID/same-digest source bytes remain reusable.
+            records, started, ended, valid = {}, True, False, True
         if type(start) is not int or type(count) is not int or count < 0:
             valid = False
             continue
@@ -156,7 +196,7 @@ def evidence_collection(calls, key, kind="comments"):
             source = item.get("sourceIndex")
             records.pop(source, None)
             digest = item.get("recordSha256")
-            state = chunks.setdefault((source, digest), {})
+            state = chunks.setdefault((str(item.get("id")), digest), {})
             state[item["recordOffset"]] = item["recordJson"]
             text, offset = "", 0
             while offset in state and state[offset]:
@@ -174,6 +214,33 @@ def evidence_collection(calls, key, kind="comments"):
                 and all(row.get("id") for row in records.values())
                 and len({str(row.get("id")) for row in records.values()}) == total)
     return {"complete": complete, "records": [records[i] for i in sorted(records)], "total": total}
+
+
+def has_stalled_pagination(calls):
+    """Three identical successful continuation reads are an observed no-progress loop."""
+    source_tools = {"get_evidence_page", "search_issues", "get_descendants",
+                    "search_confluence_documents", "read_confluence_document"}
+    previous, repeated = None, 0
+    for call in calls:
+        result = call.get("result") or {}
+        if call.get("name") not in source_tools or call.get("isError") or result.get("ok") is not True:
+            continue
+        data = result.get("data")
+        if not isinstance(data, dict):
+            previous, repeated = None, 0
+            continue
+        pending = (data.get("hasMore") is True or data.get("nextStartAt") is not None
+                   or data.get("nextOffset") is not None)
+        if not pending:
+            previous, repeated = None, 0
+            continue
+        signature = sha256(json.dumps([call["name"], call.get("arguments"), data],
+                                      ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        repeated = repeated + 1 if signature == previous else 1
+        previous = signature
+        if repeated > 2:
+            return True
+    return False
 
 
 def document_complete(calls, identifier, *, version=None):

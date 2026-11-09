@@ -151,3 +151,53 @@ and actual runner metadata regressions reproduced eight failures before the fix;
 **86 focused tests passed** afterward (87.18s). Invocation/preflight timeout limits
 are recorded in benchmark context. New cold confirmation and full qualification
 remain pending.
+
+## Second cold diagnostic: stalled nested continuation
+
+Frozen `f263ce7d7cbaea7750b13824107c2af90ffd9d45`, work 0.2.1 / prompt v3,
+group `20261109-sol-high-v021-recovery-confirm-e4deee74`, between-pages/restarted.
+The original result failed `comment_collection_incomplete` and
+`required_evidence_not_observed`; original raw remains unchanged. The answer's count
+was two and business progress correctly null. Total time was 318.31s (35.46s interrupted
+phase + 282.84s resumed). Interrupted usage is unknown, not zero.
+
+Direct trace inspection found a real operational defect: the resumed model repeated
+the same `start_at=25` call without the returned `nextRecordOffset` 560 times while
+reading DL-94006's long comment. It later advanced and obtained the full cancellation
+record. The phase made 596 evidence-page calls, 588 for that ticket. Across the run,
+1,316 file calls wrote 51,356,607 bytes and read 140,803 bytes; file-service time was
+26.45s. This is not an acceptable recovery success despite the correct final count.
+
+A separate checker defect rejected valid reuse: the first membership traversal had
+all 51 records and complete comment 62100 (20,556 characters). A second membership
+scan revalidated the same ID and SHA, reusing verified middle chunks. The checker
+incorrectly erased all chunk evidence at the new first page. Prospective 0.3.0 keeps
+chunk evidence by record ID+digest while replacing membership; missing, changed or
+foreign-source chunks still fail. Running the new logic diagnostically on the old raw
+finds complete coverage **and** a stalled continuation. It does not turn that failed
+attempt into a pass.
+
+Candidate guides now map `sourceIndex` and `nextRecordOffset` to the exact next
+arguments and require diagnosing two identical nonadvancing successful responses
+before a third. The prospective automatic gate fails three identical continuing reads.
+Real confirmation is required before full qualification. Both phases preserved source
+snapshots and recorded zero forbidden calls. The unused f263 qualification schedule
+is retained and must be superseded for the next frozen commit.
+
+## Batched collection refinement before qualification
+
+The user requested fewer MCP/Jira requests, description-only opt-in, and approved
+a distinct `get_tickets(keys, include_description=false)` for known key sets.
+`search_issues` remains discovery and `get_ticket` supplies one detailed/rendered/edit
+view. The batch validates configured scope, deduplicates at most 100 keys, preserves
+requested order and discloses missing tickets/bodies. Jira search retrieves multiple
+bodies per request; there is no per-key GET fan-out. Descriptions remain off by default
+and there is no arbitrary field selector. Server page caps still require real pages.
+
+SDK regression tests verify three bodies in one actual Jira search with zero individual
+issue GETs, on/off projection isolation, missing versus empty bodies, scope and snapshot
+constraints. Typed status fields and same-ticket source origins from successful batch
+responses now count as evidence, avoiding forced duplicate individual reads. Changed-source
+recovery excludes old persisted batches. Actual provider requests, response bytes and
+summed request time are reported separately from MCP counts; unobserved totals stay null.
+These are implementation checks, not a measured real-model efficiency improvement.
