@@ -201,3 +201,29 @@ responses now count as evidence, avoiding forced duplicate individual reads. Cha
 recovery excludes old persisted batches. Actual provider requests, response bytes and
 summed request time are reported separately from MCP counts; unobserved totals stay null.
 These are implementation checks, not a measured real-model efficiency improvement.
+
+## Batched-path real confirmation and two checker disagreements
+
+Frozen `3514abe792211e7f199c10c19a853632e2f9a280`, work 0.3.0, group
+`20261109-sol-high-v03-batch-confirm-e4deee74`. R01/R04/R08/R10 normal completed;
+original automatic **2/4**, entrypoint reads **3/4**, 159.81s, 791,427 tokens,
+40 MCP calls, **23 actual Jira API requests** and 10 Confluence API requests.
+Jira responses totaled 53,994 bytes / 0.250742s summed request time; these local mock
+times are not production Jira latency. All source fingerprints remained unchanged.
+The wrapper stopped on failure before starting the planned cold confirmation.
+
+The root directly read all four final answers and an independent reviewer checked
+both disputes against actual responses. R01 used one get_tickets for three bodies;
+its relative comment self was resolved against the same returned ticket's absolute
+REST self at testserver. The checker had indexed only its canonical browse URL.
+R10 read fresh complete direct membership, both leaf SubTasks and their parent/status
+fields, reporting a correctly labeled 1/2 child count. The checker demanded another
+get_descendants traversal despite equivalent complete membership evidence.
+
+Prospective 0.3.1 bounds alternate origins to validated same-ticket REST self and
+recognizes verified fresh Task-to-leaf membership below the display cap. Negative
+tests reject unrelated paths, changed IDs/parents, stale/partial/capped/duplicate
+memberships, unknown leaf types and conflicting statuses. The initial focused set
+passed 47 tests. A separate diagnostic report records the resulting checker ruling
+and the original raw SHA; it does not overwrite original 2/4 or replace a fresh run.
+Final qualification and default activation remain pending.

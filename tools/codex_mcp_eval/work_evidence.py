@@ -28,33 +28,47 @@ def source_observed(calls, source):
         data = call["result"].get("data")
         if not isinstance(data, dict):
             continue
-        rows = [data] if call.get("name") == "get_ticket" else (
-            data.get("issues") or [] if call.get("name") in {"search_issues", "get_tickets"} else [])
+        rows = [data] if call.get("name") == "get_ticket" else []
+        if call.get("name") in {"search_issues", "get_tickets"}:
+            rows = data.get("issues") or []
         for row in rows:
-            if isinstance(row, dict) and row.get("key") and row.get("url"):
-                tickets[row["key"]] = row["url"]
+            if not isinstance(row, dict) or not row.get("key"):
+                continue
+            key = row["key"]
+            identifiers = {key}
+            if re.fullmatch(r"\d+", str(row.get("id") or "")):
+                identifiers.add(str(row["id"]))
+            endpoints = [(row.get("url"), "/browse/" + key)] + [
+                (row.get("self"), "/rest/api/2/issue/" + token) for token in identifiers]
+            for address, suffix in endpoints:
+                if not isinstance(address, str):
+                    continue
+                try:
+                    base = urlsplit(address)
+                except ValueError:
+                    continue
+                if (base.scheme in {"http", "https"} and base.netloc and not base.username and not base.password
+                        and not base.query and not base.fragment and base.path.endswith(suffix)):
+                    tickets.setdefault(key, []).append((address, base, base.path[:-len(suffix)], identifiers))
     for call in successful:
         page = call["result"].get("data") or {}
         if call.get("name") != "get_evidence_page" or not isinstance(page, dict) or page.get("kind") != "comments":
             continue
         key = page.get("key")
-        ticket_url = tickets.get(key)
-        if not ticket_url:
-            continue
-        base = urlsplit(ticket_url)
-        suffix = "/browse/" + str(key)
-        if base.scheme not in {"http", "https"} or not base.netloc or not base.path.endswith(suffix):
-            continue
-        context = base.path[:-len(suffix)]
-        expected_path = f"{context}/rest/api/2/issue/{key}/comment/{identity}"
         for record in page.get("items") or []:
             if str(record.get("id")) != identity or not isinstance(record.get("self"), str):
                 continue
-            normalized = urljoin(ticket_url, record["self"])
-            target = urlsplit(normalized)
-            if (normalized == url and target.scheme == base.scheme and target.netloc == base.netloc
-                    and target.path == expected_path and not target.query and not target.fragment):
-                return True
+            for address, base, context, identifiers in tickets.get(key, []):
+                try:
+                    normalized = urljoin(address, record["self"])
+                    target = urlsplit(normalized)
+                except ValueError:
+                    continue
+                paths = {f"{context}/rest/api/2/issue/{token}/comment/{identity}" for token in identifiers}
+                if (normalized == url and target.scheme == base.scheme and target.netloc == base.netloc
+                        and target.path in paths and not target.username and not target.password
+                        and not target.query and not target.fragment):
+                    return True
     return False
 
 
@@ -118,6 +132,46 @@ def observed_status_categories(calls):
     return observed
 
 
+def leaf_subtask_membership(calls, root):
+    """Equivalent complete hierarchy for this fixture's Task -> leaf SubTask route."""
+    from app.jira.jira_client import JiraClient
+    root_types, leaf_proofs, membership = [], {}, None
+    for call in calls:
+        result = call.get("result") or {}
+        if (call.get("isError") or result.get("ok") is not True or result.get("partial") is not False
+                or result.get("missing") != 0 or (result.get("cache") or {}).get("state") != "fresh"):
+            continue
+        data = result.get("data") or {}
+        name = call.get("name")
+        if name == "get_ticket" and data.get("key") == root:
+            root_types.append(data.get("type") == "Task")
+        elif name in {"get_tickets", "search_issues"}:
+            for issue in data.get("issues") or []:
+                key, fields = issue.get("key"), issue.get("fields") or {}
+                kind = fields.get("issuetype") or {}
+                if key == root:
+                    root_types.append(kind.get("name") == "Task" and kind.get("subtask") is False)
+                else:
+                    valid = kind.get("subtask") is True and (fields.get("parent") or {}).get("key") == root
+                    leaf_proofs[key] = valid and leaf_proofs.get(key, True)
+        elif name == "get_children" and (call.get("arguments") or {}).get("key") == root:
+            children = data.get("children")
+            if not isinstance(children, list) or len(children) >= JiraClient.CHILD_DISPLAY_LIMIT:
+                return None
+            keys = [row.get("key") for row in children]
+            if (len(set(keys)) != len(keys) or not all(isinstance(key, str) for key in keys)
+                    or any(row.get("isSubtask") is not True for row in children)):
+                return None
+            current = set(keys)
+            if membership is not None and membership != current:
+                return None
+            membership = current
+    if (not root_types or not all(root_types) or membership is None
+            or any(not leaf_proofs.get(key) for key in membership)):
+        return None
+    return membership
+
+
 def optional_count_progress(calls, progress, reply, root="DL-94010"):
     """Allow labeled ticket-count ratios only after a full hierarchy and status read."""
     if not isinstance(progress, dict) or any(type(progress.get(k)) is not int for k in ("done", "total")):
@@ -147,14 +201,18 @@ def optional_count_progress(calls, progress, reply, root="DL-94010"):
                 valid = False
             rows[index] = row
         ended |= data.get("hasMore") is False and data.get("nextStartAt") is None
-    if not valid or not ended or not total or set(rows) != set(range(total)):
-        return False
-    by_key = {row.get("key"): row for row in rows.values()}
-    if len(by_key) != total or (root in by_key) != included:
-        return False
-    for key, row in by_key.items():
-        if key != root and (row.get("parentKey") != root or row.get("depth") != 1):
+    if valid and ended and total and set(rows) == set(range(total)):
+        by_key = {row.get("key"): row for row in rows.values()}
+        if len(by_key) != total or (root in by_key) != included:
             return False
+        for key, row in by_key.items():
+            if key != root and (row.get("parentKey") != root or row.get("depth") != 1):
+                return False
+    else:
+        children = leaf_subtask_membership(successful, root)
+        if children is None:
+            return False
+        by_key = dict.fromkeys(children)
     for include_root in (True, False):
         keys = set(by_key) | {root} if include_root else set(by_key) - {root}
         if any(not statuses.get(key) for key in keys):

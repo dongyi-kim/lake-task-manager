@@ -11,9 +11,9 @@ from tools.codex_mcp_eval.reporting_fixture import periods
 from tools.codex_mcp_eval.work_data import build_work_data
 from tools.codex_mcp_eval.work_evidence import (evidence_collection, document_complete, source_observed,
                                              optional_count_progress, count_ratio_labeled, has_stalled_pagination,
-                                             observed_status_categories)
+                                             observed_status_categories, leaf_subtask_membership)
 
-SUITE, BATTERY_VERSION, PROMPT_VERSION = "codex-mcp-work", "0.3.0", "codex-mcp-work-v3"
+SUITE, BATTERY_VERSION, PROMPT_VERSION = "codex-mcp-work", "0.3.1", "codex-mcp-work-v3"
 REFERENCE_DATE = "2026-11-09"
 OUTPUT_SCHEMA = copy.deepcopy(BASE_SCHEMA)
 OUTPUT_SCHEMA["properties"]["progress"]["description"] = "사용자가 요청한 업무의 진척률만 기록합니다. 조사 수집·파일 저장의 완료율은 이 필드에 넣지 마세요. 업무 진척을 요청하지 않았거나 전체를 확인하지 못하면 null입니다. 조사 진행은 progress 파일에서 별도로 관리합니다."
@@ -165,4 +165,5 @@ def check(case, output, calls, ground_truth=None):
 
 CHECKER_DEPENDENCIES = (check, review_contract, materialize_cases, build_work_data, evidence_collection,
                         document_complete, source_observed, optional_count_progress, count_ratio_labeled,
-                        has_stalled_pagination, observed_status_categories, SYSTEM_CONTEXT, OUTPUT_SCHEMA, CASES)
+                        has_stalled_pagination, observed_status_categories, leaf_subtask_membership,
+                        SYSTEM_CONTEXT, OUTPUT_SCHEMA, CASES)

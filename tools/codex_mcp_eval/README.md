@@ -115,6 +115,12 @@ preflight/fixture 구성은 측정에서 제외한다. 원본 case별 `upstreamC
 보존해 사례/반복/조건별 합을 검증한다. 관측 누락 또는 미분류 경로가 있으면 서비스별 합은 null이다.
 응답 byte·요청시간 합·최종 답변 wall time을 함께 보며, 근거 완전성·정확도는 같은 품질 gate를 유지한다.
 
+0.3.1은 같은 티켓의 canonical URL 또는 검증된 REST self로 상대 댓글 self를 절대화할 수 있다.
+REST self는 실제 key/numeric ID와 정확한 경로가 일치해야 하며 임의 host·인증정보·query·fragment는
+허용하지 않는다. Task의 fresh/nonpartial 직접 자식 조회가 표시 상한 미만이고, 모든 자식이 원본
+필드의 SubTask/parent 관계로 검증된 leaf이면 완전 계층의 동등 근거로 인정한다. 임의 batch의
+일부 자식만으로는 비율을 허용하지 않으며 상태·단위·산식 검사는 그대로 적용한다.
+
 `--cases MCP-J1 MCP-O1`처럼 고유 ID로 focused 실행할 수 있다. focused 성공으로 이전 full run 실패를 대체하지 않는다.
 버전은 external suite `1.0.2`, protocol `3.0.0`, human rubric `2.0.0`이며 기존 내장 Agent 배터리와
 동일 benchmark라고 주장하지 않는다. S3~S6 원문 질문과 기대 사실을 재사용하고 별도의 MCP 전송·출력 계약을 기록한다.

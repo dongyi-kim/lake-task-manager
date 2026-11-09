@@ -55,6 +55,35 @@ def test_comment_normalization_requires_successful_same_ticket_and_record():
     assert not source_observed(calls, source)
 
 
+@pytest.mark.parametrize('rest_id', ['DL-94010', '444'])
+def test_comment_can_use_the_same_observed_ticket_rest_self_origin(rest_id):
+    calls = citation_calls()
+    ticket = {'key': 'DL-94010', 'id': '444', 'url': 'https://browse.example/jira/browse/DL-94010',
+              'self': 'https://rest.example/jira/rest/api/2/issue/' + rest_id}
+    calls[0] = {'name': 'get_tickets', 'result': {'ok': True, 'data': {'issues': [ticket]}}}
+    source = {'kind': 'comment', 'id': '61010',
+              'url': 'https://rest.example/jira/rest/api/2/issue/DL-94010/comment/61010'}
+    assert source_observed(calls, source)
+    calls[0]['result']['ok'] = False
+    assert not source_observed(calls, source)
+
+
+@pytest.mark.parametrize('rest_self', [
+    'https://rest.example/jira/rest/api/2/issue/DL-94011',
+    'https://rest.example/jira/rest/api/2/issue/445',
+    'https://rest.example/jira/arbitrary/DL-94010',
+    'https://user:pass@rest.example/jira/rest/api/2/issue/DL-94010',
+    'https://rest.example/jira/rest/api/2/issue/DL-94010?x=1',
+    'https://rest.example/jira/rest/api/2/issue/DL-94010#fragment',
+])
+def test_comment_rejects_unrelated_or_unvalidated_rest_origins(rest_self):
+    calls = citation_calls()
+    calls[0] = {'name': 'get_tickets', 'result': {'ok': True, 'data': {'issues': [{
+        'key': 'DL-94010', 'id': '444', 'url': 'https://browse.example/jira/browse/DL-94010', 'self': rest_self}]}}}
+    assert not source_observed(calls, {'kind': 'comment', 'id': '61010',
+        'url': 'https://rest.example/jira/rest/api/2/issue/DL-94010/comment/61010'})
+
+
 def test_missing_source_identity_is_not_a_literal_none_identifier():
     calls = [{"result": {"ok": True, "data": {"key": None, "url": "https://jira.example/browse/DL-1"}}}]
     assert not source_observed(calls, {"kind": "ticket", "id": "None", "url": "https://jira.example/browse/DL-1"})
