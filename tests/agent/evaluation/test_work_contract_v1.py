@@ -114,5 +114,3 @@ def test_empty_citation_fillers_are_rejected_by_schema_and_scalar_unit_is_explic
     assert list(Draft202012Validator(work_cases.OUTPUT_SCHEMA).iter_errors(payload))
     prompt = next(c for c in work_cases.CASES if c['id'] == 'WORK-R07-boundary')['prompts'][0]
     assert 'reportedTotal' in prompt and 'union' in prompt and '고유 테이블' in prompt
-
-

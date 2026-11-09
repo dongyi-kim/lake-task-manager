@@ -11,11 +11,14 @@ from tools.codex_mcp_eval.work_data import build_work_data
 def test_progress_counts_accept_typed_bulk_statuses_without_body_strings(tool):
     case = next(row for row in work_cases.CASES if row["id"] == "WORK-R04-normal")
     issues = [{"key": key, "url": "http://127.0.0.1:8080/browse/" + key,
-               "fields": {"status": {"name": name, "statusCategory": {"key": category}}}}
+               "fields": {"status": {"name": name, "statusCategory": {"key": category}},
+                          "issuetype": {"name": "Task" if key == "DL-94010" else "Sub-Task",
+                                        "subtask": key != "DL-94010"}}}
               for key, name, category in [("DL-94010", "In Progress", "indeterminate"),
                                           ("DL-94011", "Resolved", "done"),
                                           ("DL-94012", "In Progress", "indeterminate")]]
-    calls = [{"name": tool, "result": {"ok": True, "data": {
+    calls = [{"name": tool, "result": {"ok": True, "partial": False, "missing": 0,
+        "cache": {"state": "fresh"}, "data": {
         "issues": issues, "total": 3, "returned": 3, "hasMore": False, "nextStartAt": None}}}]
     answer = {"reply": "부모는 진행 중, 하위 티켓 수 기준 완료 1/2=50%입니다. 조사 티켓 3건입니다.",
               "resultKeys": [row["key"] for row in issues], "reportedTotal": 3,
@@ -23,6 +26,10 @@ def test_progress_counts_accept_typed_bulk_statuses_without_body_strings(tool):
               "sources": [{"kind": "ticket", "id": issues[0]["key"], "url": issues[0]["url"]}]}
     output = {"ok": True, "reply": answer["reply"], "structuredAnswer": answer}
     truth = build_work_data("2026-11-09")["oracle"]
+    assert not work_cases.check(case, output, calls, truth)["pass"]
+    calls.append({"name": "get_children", "arguments": {"key": "DL-94010"}, "result": {
+        "ok": True, "partial": False, "missing": 0, "cache": {"state": "fresh"},
+        "data": {"children": [{"key": key, "isSubtask": True} for key in ["DL-94011", "DL-94012"]]}}})
     assert work_cases.check(case, output, calls, truth)["pass"]
     wrong, missing = copy.deepcopy(calls), copy.deepcopy(calls)
     wrong[0]["result"]["data"]["issues"][1]["fields"]["status"]["statusCategory"]["key"] = "indeterminate"

@@ -10,9 +10,10 @@ from tools.codex_mcp_eval.reporting_fixture import periods
 from tools.codex_mcp_eval.work_data import build_work_data
 from tools.codex_mcp_eval.work_evidence import (evidence_collection, document_complete, source_observed,
                                              optional_count_progress, has_stalled_pagination,
-                                             observed_status_categories, leaf_subtask_membership, observed_scope_references)
+                                             observed_status_categories, leaf_subtask_membership, observed_scope_references,
+                                             literal_source_records)
 
-SUITE, BATTERY_VERSION, PROMPT_VERSION = "codex-mcp-work", "2.0.0", "codex-mcp-work-v4"
+SUITE, BATTERY_VERSION, PROMPT_VERSION = "codex-mcp-work", "3.0.0", "codex-mcp-work-v4"
 REFERENCE_DATE = "2026-11-09"
 OUTPUT_SCHEMA = copy.deepcopy(BASE_SCHEMA)
 OUTPUT_SCHEMA["properties"]["progress"]["description"] = "사용자가 요청한 업무의 진척률만 기록합니다. 조사 수집·파일 저장의 완료율은 이 필드에 넣지 마세요. 업무 진척을 요청하지 않았거나 전체를 확인하지 못하면 null입니다. 조사 진행은 progress 파일에서 별도로 관리합니다."
@@ -98,11 +99,11 @@ def review_contract(today=REFERENCE_DATE, *, source_revision=1):
                 "majorWhen": "불완전·실패·모호한 대상의 집계를 확정하거나 한계를 숨김",
                 "expected": {"unknownCountsStayNull": True, "semanticReviewRequired": True},
                 "evidenceSources": ["output.reply", "output.mcpToolCalls", "sourceSnapshot"]})
-        if row["family"] == "R10":
+        if row["family"] in {"R04", "R10"}:
             specs[row["id"]]["elements"].append({"id": "progress_denominator", "dimension": "factual_grounding",
                 "question": "수치 진척을 제시했다면 전체/하위 티켓 수의 분모와 산식이 문맥에서 명확한가",
                 "majorWhen": "개수 비율을 업무량 진척으로 표현하거나 분모·단위가 불명확/상충함",
-                "expected": {"nullProgressAllowed": True, "countScopeMustBeExplicit": True,
+                "expected": {"nullProgressAllowed": expected["progress"] is None, "countScopeMustBeExplicit": True,
                              "workloadProgressNotInferred": True, "semanticReviewRequired": True},
                 "evidenceSources": ["output.reply", "output.structuredAnswer", "output.mcpToolCalls"]})
     suite = [{"id": "work_direct_review", "dimension": "request_fulfillment",
@@ -110,6 +111,13 @@ def review_contract(today=REFERENCE_DATE, *, source_revision=1):
         "majorWhen": "자동 검사만으로 정성 통과 선언", "expected": {"humanMeanMinimum": 4.5},
         "evidenceSources": ["output.reply", "output.mcpToolCalls"]}]
     return suite, specs
+
+
+def schema_for_case(case):
+    schema = copy.deepcopy(OUTPUT_SCHEMA)
+    if case["family"] != "R07":
+        schema["properties"]["operations"]["maxItems"] = 0
+    return schema
 
 
 def check(case, output, calls, ground_truth=None):
@@ -145,8 +153,11 @@ def check(case, output, calls, ground_truth=None):
     if (keys != sorted(set(keys)) or not required_keys <= set(keys) or not set(keys) <= required_keys | optional_keys
             or answer.get("reportedTotal") != expected["total"]):
         failures.append("result_scope_or_count_mismatch")
-    if answer.get("progress") != expected["progress"] and not (
-            case["family"] == "R10" and optional_count_progress(successful, answer.get("progress"), reply)):
+    progress = answer.get("progress")
+    grounded_progress = progress is not None and optional_count_progress(successful, progress, reply)
+    if progress is not None and not grounded_progress:
+        failures.append("progress_membership_not_proved")
+    if progress != expected["progress"] and not (case["family"] == "R10" and grounded_progress):
         failures.append("progress_mismatch")
     if any(not by_ticket.get(key) for key in required_keys) or any(
             r["text"] not in by_ticket.get(r["key"], "") for r in expected["requiredEvidence"]):
@@ -161,6 +172,8 @@ def check(case, output, calls, ground_truth=None):
             failures.append("required_document_not_observed")
     if expected["operations"] and answer.get("operations") != truth.get("operations"):
         failures.append("operation_units_mismatch")
+    if not expected["operations"] and answer.get("operations") != []:
+        failures.append("unexpected_operation_rows")
     if case["id"] == "WORK-R05-boundary":
         people = json.dumps([c["result"].get("data") for c in successful
                              if c["name"] in {"search_users", "get_user"}], ensure_ascii=False)
@@ -181,13 +194,13 @@ def check(case, output, calls, ground_truth=None):
         if not known_failure and not known_partial or denied not in reply:
             failures.append("denied_branch_not_observed_or_disclosed")
     semantic = (["uncertainty_disclosure"] if expected["mustDiscloseUncertainty"] else [])
-    if case["family"] == "R10":
+    if case["family"] in {"R04", "R10"}:
         semantic.append("progress_denominator")
     return {"pass": not failures, "failures": list(dict.fromkeys(failures)), "semanticReviewRequirements": semantic,
             "humanReviewRequired": True, "notAQualitativeScore": True}
 
 
-CHECKER_DEPENDENCIES = (check, review_contract, materialize_cases, build_work_data, evidence_collection,
+CHECKER_DEPENDENCIES = (check, review_contract, schema_for_case, materialize_cases, build_work_data, evidence_collection,
                         document_complete, source_observed, optional_count_progress, observed_scope_references,
-                        has_stalled_pagination, observed_status_categories, leaf_subtask_membership,
+                        has_stalled_pagination, observed_status_categories, leaf_subtask_membership, literal_source_records,
                         SYSTEM_CONTEXT, OUTPUT_SCHEMA, CASES)

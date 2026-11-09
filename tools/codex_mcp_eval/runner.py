@@ -33,7 +33,7 @@ def _battery(name, today):
         from tools.codex_mcp_eval.work_fixture import WorkFixture
         return SimpleNamespace(**{key: getattr(work_cases, key) for key in (
             "BATTERY_VERSION", "CHECKER_DEPENDENCIES", "OUTPUT_SCHEMA", "PROMPT_VERSION", "SUITE",
-            "SYSTEM_CONTEXT", "check")}, review_contract=lambda: work_cases.review_contract(today),
+            "SYSTEM_CONTEXT", "check", "schema_for_case")}, review_contract=lambda: work_cases.review_contract(today),
             CASES=work_cases.materialize_cases(today), fixture=WorkFixture)
     if name == "identities":
         from tools.codex_mcp_eval import identity_cases
@@ -202,6 +202,8 @@ def launch(argv=None, *, cli_run=None, fixture_factory=None, identity_fn=None):
                            if key not in {"skillCondition", "skillTransport"}}
     identity.update(provider="codex-chatgpt", toolCatalogSha256=catalog_hash, **skills,
                     outputSchemaSha256=_hash(battery.OUTPUT_SCHEMA))
+    if hasattr(battery, "schema_for_case"):
+        identity["caseOutputSchemaSha256"] = {case["id"]: _hash(battery.schema_for_case(case)) for case in battery.CASES}
     suite_review, case_specs = battery.review_contract()
     environment = {"LTM_EVAL_RUN_KIND": options.run_kind, "LTM_EVAL_RUN_GROUP_ID": options.run_group,
         "LTM_EVAL_REPEAT_INDEX": str(options.repeat_index), "LTM_EVAL_REPETITIONS": str(options.repetitions),
@@ -283,7 +285,8 @@ def _run_case(case, options, binary, run_root, catalog_hash, cli_run, fixture_fa
         oracle = fixture.ground_truth()  # Direct immutable store snapshot; no Jira/cache reads.
         prompt = battery.SYSTEM_CONTEXT + f"\n현재 fixture 날짜: {options.date} (Asia/Seoul).\n\n사용자 요청:\n" + "\n".join(case["prompts"])
         output = cli_run(binary, prompt, directory / "workspace", model=options.model, effort=options.effort,
-                         mcp_url=fixture.url, token=fixture.token, timeout=options.timeout, schema=battery.OUTPUT_SCHEMA)
+                         mcp_url=fixture.url, token=fixture.token, timeout=options.timeout,
+                         schema=battery.schema_for_case(case) if hasattr(battery, "schema_for_case") else battery.OUTPUT_SCHEMA)
         output["mcpToolCalls"] = list(fixture.tool_calls)
         automatic = battery.check(case, output, fixture.tool_calls, oracle)
         isolation = fixture.summary()

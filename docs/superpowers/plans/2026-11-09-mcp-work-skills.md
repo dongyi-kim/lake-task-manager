@@ -1,10 +1,17 @@
 # Issue 190: research, reporting and resumable investigations
 
-Status: approved implementation plan; candidate only until real-model qualification.
+Status: approved implementation plan; initial product release authorized before the full follow-up matrix.
 Spec: https://github.com/dongyi-kim/lake-task-manager/issues/190 plus the user's
 2026-11-09 checkpoint/resume requirement and approved conversation plan.
 
 ## Goal and constraints
+
+User steering on2026-11-09 supersedes the original hold-to-full-qualification rollout:
+ship the adequately verified product first, with both new skills enabled by default
+(explicitly selected), then continue the remaining A/B and recovery qualification.
+Use app repository main/tag/public GitHub Release, leaving deploy-repository pointers,
+tags and releases unchanged. Preserve the separate draft evaluationPR192 and all raw
+failures; publishing the initial product does not claim the full302-case matrix passed.
 
 Provide `ltm-work-research` and `ltm-work-reporting` with shared Korean, evidence,
 aggregation and client-local recovery guides. Preserve #187's body/comments-first
@@ -131,6 +138,32 @@ parent URLs, unknown/failed/mismatched routes and unsafe endpoints. Version this
 checker meaning change as Work2.0/recovery3.0, keep guide0.1.4 unchanged, and run
 fresh qualification without substituting the old model outputs.
 
+The first Work2 pair at694296df ended candidate22/22/direct4.98 and baseline21/22/
+direct4.95. BaselineR10's full-membership claim was genuinely unproven. A separate
+whole-branch review identified two automatic-gate gaps: oracle-equal R04 progress
+bypassed hierarchy proof, and recovery never affirmatively verified current complete
+JQL membership. Preserve this entire pair and stop subsequent repetitions.
+
+- Require observed complete membership for every non-null progress ratio, including
+  exact-oracle R04 values. Reuse batch status metadata and a proven leaf-child snapshot;
+  add required direct denominator review for R04 as well as R10.
+- Require the last recovery phase's successful scoped canonical JQL, consistent search
+  snapshot and complete/unique page coverage. Old saved search and known-key body batches
+  cannot prove the current filtered population. Retain already verified body evidence.
+  Do not add two-item restrictions to body batches or require duplicate body reads.
+- Bind literal source URLs to typed record locations, rejecting cross-kind identity
+  coincidences and objects quoted within bodies. Preserve valid literal person/comment/
+  document URLs and verified ticket/comment self normalization.
+- Record these prospective semantics as Work3.0.0/recovery4.0.0; product guide0.1.4
+  and rendered questions are unchanged. Regressions must first expose the old false
+  passes. Complete the independent code-review loop before a new freeze and fresh
+  qualification. Old raw, scores, reviews and failed schedules stay unchanged.
+- Enforce the existing empty operations array for non-operational cases in both the
+  checker and the case-specific CLI schema, record each actual schema SHA, and keep
+  operational/other batteries' schemas compatible. Same immutable search snapshot
+  pages remain reusable after repeated first-page reads; conflicts and incomplete
+  new snapshots still fail. Preserve unified search's typed source URLs/origins.
+
 - Guide artifacts: manifest.json, progress.json, evidence/, findings.jsonl,
   report.md and resume.md. Save evidence before advancing progress.
 - Resume checks task/source/scope identity, last valid generation, source age,
@@ -151,8 +184,9 @@ fresh qualification without substituting the old model outputs.
 - Whole-branch independent review, fix substantive findings with regression tests.
 - Commit by context; skills delivery and evaluation work use separate PR branches
   if needed, using dependent commits without a second checkout.
-- Report candidate status and pending real-model validation honestly. Do not merge
-  or release as part of implementation.
+- Report initial release status and pending full-model validation honestly. The
+  original no-merge/release hold is superseded by the explicit first-release request
+  above; merge/release productPR191, retain evaluationPR192 for follow-up work.
 
 ## Real-model gate (authorized by continuation)
 
@@ -176,4 +210,6 @@ or cache aging. Keep original model counts/timing and every replay response
 difference. A cold-only request gap is not general Jira-load reduction evidence.
 Require automatic gates, direct human review mean >=4.5/5 and zero material false
 facts, unauthorized writes, failures represented as zero, or ungrounded counts.
-Only a later qualified rollout enables the candidate skills by default.
+The user explicitly authorized a first rollout with the new skills enabled after
+the completed product checks/smokes/first candidate run; the full matrix remains
+required follow-up evidence and must not be represented as already qualified.

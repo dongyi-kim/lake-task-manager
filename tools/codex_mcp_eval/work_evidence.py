@@ -6,6 +6,62 @@ import re
 from urllib.parse import parse_qs, urljoin, urlsplit
 
 
+def literal_source_records(call, kind):
+    """Read identities only at typed result locations, never inside quoted bodies."""
+    data, name = call.get("result", {}).get("data"), call.get("name")
+    if not isinstance(data, dict):
+        return []
+    tickets, documents, comments, actors = [], [], [], []
+    if name == "get_ticket":
+        tickets = [data]
+        comments = data.get("comments") or []
+    elif name in {"get_tickets", "search_issues"}:
+        tickets = data.get("issues") or []
+    elif name == "get_descendants":
+        tickets = [row["issue"] for row in data.get("issues") or [] if isinstance(row, dict)
+                   and isinstance(row.get("issue"), dict) and isinstance(row.get("key"), str)
+                   and re.fullmatch(r"[A-Z][A-Z0-9_]*-\d+", row["key"])
+                   and row["key"] == row["issue"].get("key")]
+    elif name == "get_children":
+        tickets = [row for row in data.get("children") or [] if isinstance(row, dict)
+                   and isinstance(row.get("key"), str) and re.fullmatch(r"[A-Z][A-Z0-9_]*-\d+", row["key"])]
+    elif name == "search_workspace":
+        tickets = [row for row in (data.get("jira") or {}).get("items") or []
+                   if isinstance(row, dict) and row.get("type") == "jira"]
+        documents = [row for row in (data.get("confluence") or {}).get("items") or []
+                     if isinstance(row, dict) and row.get("type") == "confluence"]
+    elif name == "get_comments":
+        comments = data.get("comments") or []
+    elif name == "get_comment_source":
+        comments = [data]
+    elif name == "get_evidence_page" and data.get("kind") in {"comments", "history"}:
+        records = [row for row in data.get("items") or [] if isinstance(row, dict) and "recordJson" not in row]
+        if data["kind"] == "comments":
+            comments = records
+        else:
+            actors = [row.get("author") for row in records]
+    elif name == "get_history":
+        actors = [row.get("author") for row in data.get("timeline") or [] if isinstance(row, dict)]
+    elif name in {"read_confluence_document", "check_confluence_revision"}:
+        documents = [data]
+    elif name in {"search_confluence_documents", "get_documents"}:
+        documents = data.get("documents") or []
+    if kind == "person":
+        if name == "get_user":
+            actors.append(data)
+        elif name == "search_users":
+            actors.extend(data.get("users") or [])
+        for record in [*tickets, *comments, *documents]:
+            if not isinstance(record, dict):
+                continue
+            for metadata in (record, record.get("fields") or {}):
+                if isinstance(metadata, dict):
+                    actors.extend(metadata.get(field) for field in ("author", "updateAuthor", "assignee", "reporter"))
+        return [row for row in actors if isinstance(row, dict)]
+    return [row for row in {"ticket": tickets, "document": documents, "comment": comments}.get(kind, [])
+            if isinstance(row, dict)]
+
+
 def source_observed(calls, source):
     identity, url = source.get("id"), source.get("url")
     fields = {"ticket": ("key",), "comment": ("id",), "document": ("id",), "person": ("id", "name", "key")}.get(source.get("kind"))
@@ -27,31 +83,15 @@ def source_observed(calls, source):
                             return True
                     except ValueError:
                         pass
-            return any(matches(item) for item in value.values())
-        return isinstance(value, list) and any(matches(item) for item in value)
+        return False
     successful = [c for c in calls if not c.get("isError") and (c.get("result") or {}).get("ok") is True]
-    if any(matches(c["result"].get("data")) for c in successful):
+    if any(matches(row) for call in successful for row in literal_source_records(call, source.get("kind"))):
         return True
     if source.get("kind") not in {"comment", "ticket"}:
         return False
     tickets = {}
     for call in successful:
-        data = call["result"].get("data")
-        if not isinstance(data, dict):
-            continue
-        rows = [data] if call.get("name") == "get_ticket" else []
-        if call.get("name") in {"search_issues", "get_tickets"}:
-            rows = data.get("issues") or []
-        elif call.get("name") == "get_descendants":
-            rows = [row["issue"] for row in data.get("issues") or []
-                    if isinstance(row, dict) and isinstance(row.get("issue"), dict)
-                    and isinstance(row.get("key"), str) and re.fullmatch(r"[A-Z][A-Z0-9_]*-\d+", row["key"])
-                    and row["issue"].get("key") == row["key"]]
-        elif call.get("name") == "get_children":
-            rows = [row for row in data.get("children") or []
-                    if isinstance(row, dict) and isinstance(row.get("key"), str)
-                    and re.fullmatch(r"[A-Z][A-Z0-9_]*-\d+", row["key"])]
-        for row in rows:
+        for row in literal_source_records(call, "ticket"):
             if not isinstance(row, dict) or not row.get("key"):
                 continue
             key = row["key"]

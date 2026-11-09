@@ -2,9 +2,11 @@
 
 ## #190 업무 조사·보고 후보 평가
 
-`--battery work`는 `codex-mcp-work` 0.1.0 / prompt `codex-mcp-work-v1`이다.
-R01~R11의 정상·경계 22사례를 별도 fixture와 oracle로 제공한다. 기존 queries/reporting/identities의
-질문·정답·버전은 바꾸지 않는다. 이는 합성 사례의 평가 준비이며 실제 모델 성능 결과가 아니다.
+`--battery work`는 `codex-mcp-work` 3.0.0 / prompt `codex-mcp-work-v4`이다.
+복구는 `codex-mcp-work-recovery` 4.0.0 / prompt `codex-mcp-work-recovery-v3`이다.
+R01~R11의 정상·경계 22사례를 별도 fixture와 oracle로 제공한다. 다른 배터리의 질문·정답을
+바꾸지 않으며 queries는 이어읽기 안내 변경으로 1.0.2다. 아래 과거 버전 설명은 변경 이력이다.
+실제 모델 결과와 합성 fixture 검증은 구분한다.
 
 | 인자 | 의미 |
 |---|---|
@@ -25,10 +27,17 @@ python -B -X utf8 tools/agent_eval_launcher.py codex-mcp --battery work --date 2
 
 같은 run group/repeat index를 다시 쓰지 않는다. A/B 순서는 교차하고 commit/model/effort/date/fixture/
 질문/schema를 고정한다. 실제 skill/resource 읽기의 URI·digest, 카탈로그·runtime 안내 hash를 남긴다.
-후보 SKILL.md를 실제 읽지 않으면 실패다. 네이티브 확장 지원 여부는 실제 trace로 판단하고, SDK
+일반 A/B는 후보를 읽지 않은 사례도 ITT에 포함하며 미열람 자체로 감점하지 않는다. 명시적으로
+저장·재개 가이드를 사용하도록 요청하는 복구 조건은 후보 SKILL.md 실제 열람을 요구한다.
+네이티브 확장 지원 여부는 실제 trace로 판단하고, SDK
 계약 검사를 실제 모델의 확장 자동 발견·품질 결과로 대체하지 않는다.
 
 ### 로컬 저장·복구 전용 조건
+
+현재 완전성 gate는 정답과 같은 진행률에도 전체 계층의 관측 근거를 요구하고 R04/R10의
+분모 의미를 직접 검수한다. 복구는 마지막 세션의 실제 `canonicalJql`·snapshot·전체 페이지·
+종료·미누락을 확인한다. 알려진 key의 다건 본문은 재사용하며 모집단 검색의 대체로 보지 않는다.
+본문 다건 크기는 추가로 제한하지 않는다. URL 인용도 도구·레코드의 실제 종류와 일치해야 한다.
 
 일반 A/B는 기존처럼 LTM 읽기만 허용한다. 복구 조건만 추가 MCP `research_files`의
 `list_files`, `read_file`, `write_file`을 허용한다. 제품 LTM에는 이 도구를 등록하지 않는다.

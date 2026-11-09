@@ -94,6 +94,7 @@ def test_work_runner_selects_condition_and_retains_manifest_without_model(tmp_pa
     def fake_cli(binary, prompt, workspace, **kwargs):
         if not kwargs.get("mcp_url"):
             return {"ok": True, "reply": "LTM_PREFLIGHT_OK"}
+        assert kwargs["schema"]["properties"]["operations"]["maxItems"] == 0
         async def scenario():
             async with httpx2.AsyncClient(headers={"Authorization": "Bearer " + kwargs["token"]}) as http:
                 async with Client(streamable_http_client(kwargs["mcp_url"], http_client=http)) as client:
@@ -118,6 +119,8 @@ def test_work_runner_selects_condition_and_retains_manifest_without_model(tmp_pa
     assert result == 0, payload
     context = payload["evaluation"]["run"]["externalRuntime"]
     assert context["skillCondition"] == "candidate" and context["skillTransport"] == "fallback"
+    selected = next(row for row in work_cases.CASES if row["id"] == "WORK-R02-normal")
+    assert context["caseOutputSchemaSha256"][selected["id"]] == runner._hash(work_cases.schema_for_case(selected))
     assert context["skillManifestSha256"]
     application = payload["cases"][0]["skillApplication"]
     assert application["entrypointRead"] is read_guide

@@ -126,6 +126,7 @@ def test_real_mcp_cold_restart_and_controlled_source_changes(tmp_path, monkeypat
     query = ('labels = work_research_fixture AND key in '
              '(DL-94001,DL-94002,DL-94006,DL-94007,DL-94017,DL-94018) ORDER BY key ASC')
     def fake_cli(binary, prompt, workspace, **kwargs):
+        assert kwargs["schema"]["properties"]["operations"]["maxItems"] == 0
         async def exercise():
             async with httpx2.AsyncClient(headers={"Authorization": "Bearer " + kwargs["token"]}) as http:
                 async with Client(streamable_http_client(kwargs["mcp_url"], http_client=http)) as jira:

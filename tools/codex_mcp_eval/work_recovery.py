@@ -9,6 +9,54 @@ RECOVERY_SCENARIOS = ("between-pages", "after-response", "record-chunk", "corrup
                       "expired-snapshot", "source-changed")
 
 
+def complete_search_membership(calls, canonical_jql):
+    """Prove the final scoped query from actual fresh, coherent search responses.
+
+    A known-key batch is body evidence, not query membership. Search page size is
+    unrestricted; source snapshot, row coverage and terminal metadata prove completion.
+    """
+    groups, latest = {}, None
+    for call in calls:
+        result = call.get("result") or {}
+        data = result.get("data") or {}
+        if (call.get("name") != "search_issues" or call.get("isError") or result.get("ok") is not True
+                or data.get("canonicalJql") != canonical_jql):
+            continue
+        snapshot, start, total = data.get("snapshotId"), data.get("startAt"), data.get("total")
+        if (not isinstance(snapshot, str) or not snapshot or type(start) is not int or start < 0
+                or type(total) is not int or total < 0):
+            latest = None
+            continue
+        latest = snapshot
+        if start == 0 and snapshot not in groups:
+            groups[snapshot] = {"rows": {}, "total": total, "valid": True, "ended": False}
+        group = groups.setdefault(snapshot, {"rows": {}, "total": total, "valid": False, "ended": False})
+        rows, cache = data.get("issues"), result.get("cache") or {}
+        valid = (isinstance(rows, list) and result.get("partial") is False and result.get("missing") == 0
+                 and cache.get("state") == "fresh" and not cache.get("invalidated")
+                 and group["total"] == total)
+        if not valid:
+            group["valid"] = False
+            continue
+        end = start + len(rows)
+        group["valid"] &= (end <= total and data.get("returned") == len(rows)
+            and type(data.get("hasMore")) is bool
+            and ((data["hasMore"] and bool(rows) and data.get("nextStartAt") == end and end < total)
+                 or (data["hasMore"] is False and data.get("nextStartAt") is None and end == total)))
+        for index, row in enumerate(rows, start):
+            key = row.get("key") if isinstance(row, dict) else None
+            if not isinstance(key, str) or not key or index in group["rows"] and group["rows"][index] != key:
+                group["valid"] = False
+            group["rows"][index] = key
+        group["ended"] |= data.get("hasMore") is False
+    group = groups.get(latest)
+    if (not group or not group["valid"] or not group["ended"]
+            or set(group["rows"]) != set(range(group["total"]))):
+        return None
+    keys = set(group["rows"].values())
+    return keys if len(keys) == group["total"] else None
+
+
 def _nodes(value):
     yield value
     if isinstance(value, dict):

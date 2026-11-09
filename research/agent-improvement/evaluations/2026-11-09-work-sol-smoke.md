@@ -461,3 +461,83 @@ reviews found no important issue. Both product/eval full offline CI passed at
 3b4ebed4/c144c0bf before this checker-only correction. New full smoke and recovery
 confirmation must use the new frozen checker; no old scores are reclassified or
 substituted into its qualification.
+
+## Work2 fresh prequalification and retained first pair
+
+Frozen694296df, guide0.1.4, Work2/recovery3, Sol6.1/high. Fresh default/fallback
+smoke each11/11, direct means4.98/4.99. Between-pages/restarted confirmation1/1,
+direct4.8, actual Jira7/Confluence4/MCP43/file251,279.2s; aggregate token counts
+remainnull. All29 saved response payloads match actual MCP results,53comments
+and the7-chunk long cancellation record were verified. Consuming prequalification
+audit bound all23 cases/specs/snapshots/authored reviews/source counts, with no
+material/major finding. It did not claim full qualification.
+
+| First paired repeat | Candidate | Baseline |
+| --- | ---: | ---: |
+| Original automatic | 22/22 | 21/22 |
+| Direct human mean | 4.98 | 4.95 |
+| Actual Jira requests | 104 | 116 |
+| Confluence requests | 21 | 21 |
+| MCP calls | 244 | 174 |
+| Answer duration sum | 988.4s | 879.6s |
+| Answer p50/p95 | 39.35/75.08s | 36.11/79.62s |
+| Total tokens | 4,661,517 | 3,604,137 |
+| Cached input tokens | 3,876,864 | 2,957,824 |
+
+Both22-case outputs were directly reviewed with704common/52specialized items each.
+Candidate19/22 observed guide adoption remains separate from primaryITT22/22.
+BaselineR10's exact1/2=50% ratio had only exhausted permission-filtered parent JQL,
+not exhaustive root membership. Native review confirmed a genuine unsupported
+whole-coverage claim (common/case-specific majors); arithmetic/denominator wording
+is clear and the oracle numbers are correct, so materialFalseFacts remains0.
+Human mean does not remove the majors. BaselineR07 also reread7 complete cached
+record chunks once, increasing MCP work without additional Jira source requests.
+Jira response-byte totals remainnull on both arms; this mock first repeat establishes
+neither production latency/CPU improvement nor a general cold/warm load reduction.
+The earlier guide0.1.3 warm10/10 replay belongs to its own separate pair.
+
+Original raw SHA256candidate:
+`f4187c45b47e854c8a1e319f6f153e2e9d1ff30a3059bd877cdc16fa668fe7d3`;
+baseline:`e8b501e60067489f7833cc17cb7adf2d448741ccdf872417f3fd2de59d101782`.
+Qualification-schedule-v4 stopped after this44-case pair for the independent
+code-review findings below, before any other repeats or recovery matrix cases.
+
+## Prospective completeness-gate corrections
+
+Whole-branch Sol/high code review found no productPR191 blocker, but two important
+evaluator gaps. Oracle-equal R04 progress skipped the complete-hierarchy helper,
+and recovery accepted correct known-key body/count evidence without proving the
+last session's complete current filtered JQL population. A no-HTTP diagnostic
+reproduced exact50% passing while its hierarchy-proof helper returnedfalse.
+
+New regressions first produced16 failures/4passes, including actualMCP known-key
+metadata with no hierarchy. The corrected progress gate accepts the same already
+observed batch statuses after actual fresh leaf-child membership is obtained.
+Recovery now consumes actual canonicalJql/snapshot/page/end/uniqueness evidence
+from the last phase, rejecting missing/partial/wrong-query/mixed/stale membership.
+It preserves body reuse and accepts complete larger batches. The focused gate,
+batch-status and12 actualMCP recovery-mode/scenario regressions passed56checks.
+
+The review also found literal document IDs could be labeled comment/person and
+body-quoted records could pass as actual comments. Five new negative tests failed
+first; literal matching now uses typed result paths. The related source suite
+passed70checks. Product guide0.1.4 is unchanged. Prospective Work3/recovery4 has
+new direct R04 denominator semantics; rendered question text is unchanged.
+No prior scores or model outputs are reclassified into the new qualification.
+
+Two final review negatives exposed loss of legitimate unified-search source URLs
+and loss of completed same-snapshot membership after a first-page reread. Three
+regressions failed first; typed Jira/Confluence workspace paths now also provide
+comment origins, and frozen snapshot coverage is reused while conflicts/new
+incomplete snapshots fail. Related regression65passed. Non-operational arrays
+also have a hard empty-array check and case-specific CLI maxItems0 constraints;
+actual case schema SHA is retained in runtime metadata. The earlier two negative
+schema/contract tests failed first; launcher/recovery/metadata/cohort suite102passed
+(overlaps earlier sets, not summed). Rendered questions and guide0.1.4 are unchanged.
+
+On2026-11-09 the user explicitly chose an initial product release with the new
+skills enabled after reasonable product validation, with full repeated A/B and
+recovery validation afterward. This supersedes the original default-off rollout
+hold, not the evidence requirements or the retained failures. The release is not
+a claim that the complete302-case follow-up has passed. Product and evaluation
+changes remain separate, and deploy-repository tags/pointers/releases are excluded.

@@ -8,11 +8,13 @@ from types import SimpleNamespace
 from tools.agent_eval_protocol import write_raw_result
 from tools.agent_eval_isolation import NETWORK_PREFLIGHT_MARKER
 from tools.codex_mcp_eval.recovery_fixture import RecoveryFixture
-from tools.codex_mcp_eval.work_recovery import RecoveryController, persisted_calls
+from tools.codex_mcp_eval.work_recovery import RecoveryController, complete_search_membership, persisted_calls
 from tools.codex_mcp_eval.reporting_fixture import periods
 
-RECOVERY_PROMPT = """다음 조사만 수행하세요. Jira 검색 조건은
-labels = work_research_fixture AND key in (DL-94001,DL-94002,DL-94006,DL-94007,DL-94017,DL-94018) ORDER BY key ASC
+RECOVERY_JQL = ("labels = work_research_fixture AND key in "
+                "(DL-94001,DL-94002,DL-94006,DL-94007,DL-94017,DL-94018) ORDER BY key ASC")
+RECOVERY_PROMPT = f"""다음 조사만 수행하세요. Jira 검색 조건은
+{RECOVERY_JQL}
 이며 검색 페이지 크기는 2입니다. 질문의 월 기간에 신규 적재한 고유 테이블 수를 조사하세요.
 집계 모집단은 이 JQL의 전체 검색 결과입니다. IN의 key들은 검색 후보 범위이며 각각을 필수
 개별 조회 대상으로 지정한 것이 아닙니다. 정상적으로 끝까지 조회한 검색에 반환되지 않은 후보를
@@ -30,6 +32,14 @@ manifest와 resume도 유지하세요. 파일·shell·외부 서비스는 이 �
 def recovery_prompt(today):
     start, end = periods(today)["month"]
     return RECOVERY_PROMPT + f"\n집계 기간: {start} 00:00 이상 {end} 00:00 미만, Asia/Seoul."
+
+
+def recovery_canonical_jql():
+    from app.jira.jql import compile_jql
+    # WorkFixture fixes the configured search scope to DL; match the actual MCP
+    # canonical result, including that guard, rather than trusting request arguments.
+    where, order = RECOVERY_JQL.split(" ORDER BY ")
+    return compile_jql(f'project in ("DL") AND ({where}) ORDER BY {order}').canonical
 
 
 def recovery_battery(base, today, scenario, mode):
@@ -51,9 +61,10 @@ def recovery_battery(base, today, scenario, mode):
                                     "originalDialogueAvailable": False, "requiresSavedFilesRead": True}}}
         return suite, {case["id"]: spec}
     return SimpleNamespace(**{**vars(base), "SUITE": "codex-mcp-work-recovery", "CASES": [case],
-        "BATTERY_VERSION": "3.0.0", "PROMPT_VERSION": "codex-mcp-work-recovery-v3", "SYSTEM_CONTEXT": "", "review_contract": review,
+        "BATTERY_VERSION": "4.0.0", "PROMPT_VERSION": "codex-mcp-work-recovery-v3", "SYSTEM_CONTEXT": "", "review_contract": review,
         "CHECKER_DEPENDENCIES": (*base.CHECKER_DEPENDENCIES, RECOVERY_PROMPT, recovery_prompt,
-                                  RecoveryController, persisted_calls, scenario)})
+                                  RecoveryController, persisted_calls, complete_search_membership,
+                                  RECOVERY_JQL, recovery_canonical_jql, scenario)})
 
 
 def _phase(directory, index, options, binary, cli_run, files_root, controller, revision, fixture_factory):
@@ -91,7 +102,7 @@ def run_recovery_case(case, options, binary, run_root, cli_run, battery, *, arti
     restarted = options.recovery_mode == "restarted"
     controller = RecoveryController(options.recovery_scenario) if restarted else None
     final_revision = 2 if options.recovery_scenario == "source-changed" else 1
-    options.work_output_schema = battery.OUTPUT_SCHEMA
+    options.work_output_schema = battery.schema_for_case(case) if hasattr(battery, "schema_for_case") else battery.OUTPUT_SCHEMA
     first, oracle = _phase(directory, 0, options, binary, cli_run, files_root, controller,
                            1 if restarted else final_revision, fixture_factory)
     phases, failures = [first], []
@@ -120,6 +131,9 @@ def run_recovery_case(case, options, binary, run_root, cli_run, battery, *, arti
     output["forbiddenToolEvents"] = [event for p in phases
                                     for event in p["output"].get("forbiddenToolEvents", [])]
     automatic = battery.check(case, output, evidence, oracle)
+    population = complete_search_membership(last["mcpToolCalls"], recovery_canonical_jql())
+    if population is None or population != set(oracle["cases"][case["id"]]["keys"]):
+        automatic["failures"].append("recovery_population_not_proved")
     automatic["failures"].extend(failures)
     if not all(p["isolation"]["worldUnchanged"] and p["isolation"]["providerStoreUnchanged"] for p in phases):
         automatic["failures"].append("read_only_world_mutated")
