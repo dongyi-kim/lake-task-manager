@@ -96,12 +96,21 @@ def test_recovery_retains_all_phase_violations_and_counts_executed_calls(tmp_pat
         calls = [{"name": f"executed-{index}-{i}"} for i in range(2 if index == 0 else 1)]
         if index == 0:
             calls[0]["name"] = "get_tickets"
+        else:
+            # This test isolates cross-phase violations/counting. Its resumed
+            # phase still needs a valid, fully observed population (empty here).
+            calls[0] = {"name": "search_issues", "result": {"ok": True, "partial": False,
+                "missing": 0, "cache": {"state": "fresh"}, "data": {
+                    "canonicalJql": recovery_runner.recovery_canonical_jql(), "snapshotId": "resumed",
+                    "startAt": 0, "total": 0, "returned": 0, "issues": [],
+                    "hasMore": False, "nextStartAt": None}}}
         return {"output": {"ok": index == 1, "intentionalInterruption": index == 0,
                            "forbiddenToolEvents": forbidden if index == 0 else [], "durationSeconds": 1},
             "mcpToolCalls": calls, "persistedCalls": calls[:1], "fileCalls": [{"name": "read_file", "ok": True,
                 "result": {"content": "saved"}, "durationSeconds": 0.1}],
             "skillReads": [{"uri": "skill://ltm-work-reporting/SKILL.md"}], "upstreamCalls": [],
-            "isolation": {"worldUnchanged": True, "providerStoreUnchanged": True}}, {}
+            "isolation": {"worldUnchanged": True, "providerStoreUnchanged": True}}, {
+                "cases": {"WORK-R02-boundary": {"keys": []}}}
     monkeypatch.setattr(recovery_runner, "_phase", phase)
     def check(case, output, calls, oracle):
         assert len(calls) == (1 if scenario == "source-changed" else 2), "grounding evidence differs from executed calls"
