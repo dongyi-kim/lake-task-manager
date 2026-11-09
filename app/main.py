@@ -846,6 +846,11 @@ async def live_health():
     except Exception:
         components = {"reason": "health_hook_error"}
         healthy = False
+    if _local_mcp.started:
+        mcp_health = _local_mcp.transport_host.health_snapshot()
+        if mcp_health["state"] == "recovery_failed":
+            components = {**(components if isinstance(components, dict) else {}), "mcp": mcp_health}
+            healthy = False
     return JSONResponse(status_code=200 if healthy else 503,
                         content={"status": "ok" if healthy else "unresponsive", "pid": os.getpid(),
                                  "instance": os.environ.get("LAKE_SUPERVISED_WORKER", ""),

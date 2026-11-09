@@ -4,6 +4,7 @@ import time
 import threading
 
 import httpx2
+from jsonschema import Draft202012Validator
 import pytest
 
 
@@ -66,8 +67,11 @@ def test_live_app_automatically_rebuilds_stopped_sdk_and_all_profiles(build_env,
         async with env.app.router.lifespan_context(env.app):
             async with http_client(env) as http:
                 catalog = await rpc(http, "tools/list")
-                old_server, old_loop = env.runtime.server, host._loop
-                old_loop.call_soon_threadsafe(host._stop.set)
+                generation = host._worker.current
+                host._worker.state = "unresponsive"
+                assert host._loop is None  # A strict health sample is not the owned worker handle.
+                old_server, old_loop = env.runtime.server, generation.loop
+                generation.stop.set()  # Fault injection targets ownership, not a nullable health sample.
                 assert (await http.get("/test-live")).json() == {"status": "ok"}
                 await wait_for_replacement(host, old_loop)
                 assert env.runtime.server is not old_server
@@ -85,6 +89,46 @@ def test_live_app_automatically_rebuilds_stopped_sdk_and_all_profiles(build_env,
                 assert env.client is original_client and env.cache is original_cache
                 assert env.calls == []
         assert host._loop is None
+    asyncio.run(scenario())
+
+
+def test_health_and_restart_ack_use_no_jira_and_deduplicate_generation(build_env, monkeypatch):
+    env = build_env()
+    host = env.runtime.transport_host
+    host.monitor_interval = .01
+    host.probe_timeout = .5
+    monkeypatch.setattr(env.runtime, "get_client", lambda: pytest.fail("health tools must not initialize Jira"))
+
+    async def scenario():
+        async with env.app.router.lifespan_context(env.app):
+            async with http_client(env) as http:
+                tools = {row["name"]: row for row in (await rpc(http, "tools/list"))["tools"]}
+                assert {"get_mcp_health", "request_mcp_restart"} <= tools.keys()
+                async def call(name, arguments=None):
+                    result = await rpc(http, "tools/call", {"name": name, "arguments": arguments or {}})
+                    assert not result.get("isError"), result
+                    Draft202012Validator(tools[name]["outputSchema"]).validate(result["structuredContent"])
+                    return result["structuredContent"]["data"]
+                health = await call("get_mcp_health")
+                assert health["state"] == "healthy"
+                generation, old_loop = health["generation"], host._loop
+                first = await call("request_mcp_restart", {"expected_generation": generation})
+                assert first["accepted"] and first["status"] == "queued"
+                second = await asyncio.wait_for(http.post("/mcp", json={"jsonrpc": "2.0", "id": 2,
+                    "method": "tools/call", "params": {"name": "request_mcp_restart",
+                        "arguments": {"expected_generation": generation}}}), 5)
+                if second.status_code == 503:
+                    assert second.json()["executed"] is False
+                else:
+                    assert second.status_code == 200
+                    assert second.json()["result"]["structuredContent"]["data"]["status"] in {
+                        "already_queued", "generation_changed"}
+                await wait_for_replacement(host, old_loop)
+                health = await call("get_mcp_health")
+                assert health["state"] == "healthy" and health["generation"] == generation + 1
+                stale = await call("request_mcp_restart", {"expected_generation": generation})
+                assert not stale["accepted"] and stale["status"] == "generation_changed"
+                assert env.calls == []
     asyncio.run(scenario())
 
 
@@ -109,13 +153,48 @@ def test_slow_business_work_does_not_restart_a_responsive_mcp_loop(build_env):
                         await asyncio.sleep(.02)
                     assert entered.is_set()
                     await asyncio.sleep(.8)
-                    guide = await rpc(http, "tools/call", {"name": "get_content_guide"})
-                    assert not guide.get("isError")
-                    assert host.health_snapshot()["state"] == "healthy"
+                    health = await rpc(http, "tools/call", {"name": "get_mcp_health"})
+                    assert health["structuredContent"]["data"]["state"] == "healthy"
                     assert host._loop is loop and host.health_snapshot()["generation"] == generation
                     assert host.health_snapshot()["restartCount"] == 0
                 finally:
                     release.set()
                     result = await pending
                 assert result["structuredContent"]["data"] == {"finished": True}
+    asyncio.run(scenario())
+
+
+def test_blocked_mcp_loop_keeps_app_responsive_and_never_starts_over_old_worker(build_env):
+    env = build_env()
+    host = env.runtime.transport_host
+    host.monitor_interval, host.probe_timeout = .01, .05
+    host._worker.shutdown_timeout = .1
+    entered, release = threading.Event(), threading.Event()
+    def block_loop():
+        entered.set()
+        release.wait(3)
+    @env.app.get("/test-live")
+    async def live():
+        return {"status": "ok"}
+    async def scenario():
+        async with env.app.router.lifespan_context(env.app):
+            generation = host._worker.current
+            generation.loop.call_soon_threadsafe(block_loop)
+            try:
+                deadline = time.monotonic() + 2
+                while host.health_snapshot()["state"] != "recovery_failed":
+                    assert time.monotonic() < deadline, host.health_snapshot()
+                    await asyncio.sleep(.02)
+                assert entered.is_set() and generation.thread.is_alive()
+                assert host._worker.current is generation
+                assert host.health_snapshot()["lastRecoveryReason"] == "shutdown_timeout"
+                async with http_client(env) as http:
+                    assert (await http.get("/test-live")).json() == {"status": "ok"}
+                    refused = await http.post("/mcp", json={"jsonrpc": "2.0", "id": 1,
+                        "method": "tools/list"})
+                    assert refused.status_code == 503 and refused.json()["executed"] is False
+                assert not env.calls
+            finally:
+                release.set()
+        assert not generation.thread.is_alive()
     asyncio.run(scenario())

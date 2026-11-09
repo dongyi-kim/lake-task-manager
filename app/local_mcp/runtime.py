@@ -40,6 +40,7 @@ from app.local_mcp.authentication import (AUTH_TOOLS, CONFIG_WRITES, Authenticat
 from app.local_mcp.capacity import ToolCapacityExceeded, ToolRequestCancelled, ToolLane
 from app.local_mcp.transport_host import TransportHost
 from app.local_mcp.profiles import ADDITIVE, PROFILE_LABELS, build_profiles
+from app.local_mcp.runtime_tools import HEALTH_TOOLS, register_runtime_tools
 from app.services.workspace_config import WorkspaceConfigCommands
 from app.services.ticket_commands import CommandError, TicketCommands
 
@@ -134,6 +135,7 @@ class LocalMcpRuntime:
         register_writes(self.register, self)
         register_authentication(self.register, self)
         register_guides(self.register, self)
+        register_runtime_tools(self.register, self)
         self._finalize_input_contracts()
         self.http_app = self.server.streamable_http_app(
             streamable_http_path="/mcp", stateless_http=True, json_response=True,
@@ -299,6 +301,8 @@ class LocalMcpRuntime:
         return {"ok": False, "partial": partial, "data": data, "error": error}
 
     def _invoke_authenticated(self, fn, kwargs, read_only):
+        if fn.__name__ in HEALTH_TOOLS:
+            return read_result(fn, kwargs, None) if read_only else self._write_result(fn, kwargs)
         if fn.__name__ == "get_content_guide":
             return read_result(fn, kwargs, None)
         if fn.__name__ in LLM_TOOLS:
@@ -394,7 +398,7 @@ class LocalMcpRuntime:
 
     def register(self, fn, *, read_only, output_type=None):
         contract = schema_for(fn.__name__, output_type, read_only)
-        lane = self._control_lane if fn.__name__ in AUTH_TOOLS or fn.__name__ == "get_content_guide" else self._work_lane
+        lane = self._control_lane if fn.__name__ in AUTH_TOOLS | HEALTH_TOOLS or fn.__name__ == "get_content_guide" else self._work_lane
 
         def call(kwargs):
             try:
@@ -419,7 +423,7 @@ class LocalMcpRuntime:
                     "code": "rate_limited", "status": 429,
                     "message": "LTM이 다른 요청을 처리 중입니다. 잠시 후 같은 요청으로 다시 시도해 주세요.",
                     "retryable": True, "retryAfterSeconds": 1, "executed": False,
-                    "retryWithSameMutationId": not read_only and fn.__name__ not in AUTH_TOOLS | CONFIG_WRITES | LLM_TOOLS,
+                    "retryWithSameMutationId": not read_only and fn.__name__ not in AUTH_TOOLS | CONFIG_WRITES | LLM_TOOLS | HEALTH_TOOLS,
                 }}
             try:
                 contract.model_validate(payload)
