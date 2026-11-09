@@ -21,6 +21,54 @@ async def until(predicate):
     pytest.fail("Lifecycle did not reach the expected bounded state")
 
 
+@pytest.mark.parametrize("failure", ["stale_pulse", "finished"])
+def test_health_snapshot_does_not_call_a_non_admitting_worker_healthy(failure):
+    worker = WorkerLifecycle([])
+    worker.current, worker.state = Generation(1), "healthy"
+    generation = worker.current
+    generation.thread = SimpleNamespace(is_alive=lambda: True)
+    generation.accepting = True
+    generation.last_heartbeat = time.monotonic() - (10 if failure == "stale_pulse" else 0)
+    if failure == "finished":
+        generation.finished.set_result(None)
+    assert not worker.can_admit(generation)
+    assert worker.snapshot()["state"] == "unresponsive"
+
+
+def test_shutdown_before_worker_thread_enters_preserves_its_stop_signal(monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    original_thread = threading.Thread
+    def delayed_thread(*args, target, **kwargs):
+        def delayed_owner():
+            entered.set()
+            assert release.wait(2)
+            target()
+        return original_thread(*args, target=delayed_owner, **kwargs)
+    monkeypatch.setattr(threading, "Thread", delayed_thread)
+    worker = WorkerLifecycle([])
+    worker.monitor_interval, worker.shutdown_timeout = .01, .4
+    async def scenario():
+        async def running():
+            async with worker.lifespan():
+                pytest.fail("Startup was cancelled before its owner ran")
+        task = asyncio.create_task(running())
+        await until(entered.is_set)
+        generation = worker.current
+        try:
+            task.cancel()
+            await until(lambda: worker._closing)
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not generation.thread.is_alive()
+        finally:
+            release.set()
+            if generation.stop is not None:
+                generation.stop.set()
+            await until(lambda: not generation.thread.is_alive())
+    asyncio.run(scenario())
+
+
 def test_failed_ack_does_not_activate_restart_and_duplicate_acks_coalesce():
     worker = WorkerLifecycle([])
     worker.current, worker._closing, worker.state = Generation(1), False, "healthy"

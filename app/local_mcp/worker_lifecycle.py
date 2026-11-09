@@ -27,7 +27,7 @@ class Generation:
     ready: Future = field(default_factory=Future)
     finished: Future = field(default_factory=Future)
     loop: object = None
-    stop: object = None
+    stop: threading.Event = field(default_factory=threading.Event)
     thread: object = None
     requests: set = field(default_factory=set)
     leases: set = field(default_factory=set)
@@ -57,7 +57,7 @@ class WorkerLifecycle:
         generation = self.current
         alive = bool(generation and generation.thread and generation.thread.is_alive())
         state = self.state
-        if state == "healthy" and (not alive or not generation.accepting):
+        if state == "healthy" and (not alive or not self.can_admit(generation)):
             state = "unresponsive"
         return {"state": state, "generation": generation.number if generation else 0,
             "workerAlive": alive, "automaticRecovery": not self._closing,
@@ -110,7 +110,7 @@ class WorkerLifecycle:
         self.current = generation
 
         async def serve():
-            generation.loop, generation.stop = asyncio.get_running_loop(), threading.Event()
+            generation.loop = asyncio.get_running_loop()
             applications = self.factory() if previous and self.factory else self.applications
             async with AsyncExitStack() as stack:
                 for app in applications:
