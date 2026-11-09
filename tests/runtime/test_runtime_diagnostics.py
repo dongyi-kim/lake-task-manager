@@ -84,3 +84,17 @@ def test_native_health_reports_window_and_tray_separately(monkeypatch):
     state = runtime_health.runtime_status({"healthy": True, "at": 99})
     assert not state["healthy"] and not state["windowHealthy"] and state["trayHealthy"]
     assert state["windowOverdueSeconds"] == 5
+
+
+def test_monitor_samples_current_mcp_generation_instead_of_closed_old_loop():
+    seen = []
+    def loop(name):
+        return SimpleNamespace(is_closed=lambda: False,
+            call_soon_threadsafe=lambda callback, key: seen.append(name))
+    current = [loop("old")]
+    monitor = RuntimeMonitor(SimpleNamespace(record=lambda *args, **kwargs: None),
+        {"mcp": lambda: current[0]})
+    monitor.sample()
+    current[0] = loop("replacement")
+    monitor.sample()
+    assert seen == ["old", "replacement"]

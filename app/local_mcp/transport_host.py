@@ -1,76 +1,62 @@
 """Keep SDK parsing/catalog/serialization off the UI event loop, in the same process."""
 
 import asyncio
-from concurrent.futures import Future
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 import threading
 
 from starlette.responses import JSONResponse
 from app.local_mcp.capacity import request_disconnected
+from app.local_mcp.worker_lifecycle import WorkerLifecycle, RequestLease, request_lease
 
 
 class TransportHost:
-    def __init__(self, applications, capacity=32):
+    def __init__(self, applications, capacity=32, *, factory=None, quiescent=lambda: True):
         self.applications = applications
         self._permits = threading.BoundedSemaphore(capacity)
-        self._loop = None
-        self._requests = set()
+        self._worker = WorkerLifecycle(applications, factory=factory, quiescent=quiescent)
+        self.monitor_interval, self.probe_timeout = 1.0, .5
+
+    @property
+    def _loop(self):
+        generation = self._worker.current
+        return generation.loop if self._worker.can_admit(generation) else None
+
+    @property
+    def _stop(self):
+        return self._worker.current.stop
+
+    def health_snapshot(self):
+        return self._worker.snapshot()
+
+    def request_restart(self, expected_generation):
+        return self._worker.request_restart(expected_generation)
+
+    def drain_events(self):
+        return self._worker.drain_events()
 
     @asynccontextmanager
     async def lifespan(self):
-        ready, finished = Future(), Future()
-
-        async def serve():
-            self._loop = asyncio.get_running_loop()
-            self._stop = asyncio.Event()
-            async with AsyncExitStack() as stack:
-                for app in self.applications:
-                    await stack.enter_async_context(app.router.lifespan_context(app))
-                ready.set_result(None)
-                await self._stop.wait()
-                for task in tuple(self._requests):
-                    task.cancel()
-                if self._requests:
-                    await asyncio.gather(*self._requests, return_exceptions=True)
-
-        def owner():
-            try:
-                asyncio.run(serve())
-            except BaseException as exc:
-                self._loop = None
-                if not ready.done():
-                    ready.set_exception(exc)
-                finished.set_exception(exc)
-            else:
-                self._loop = None
-                finished.set_result(None)
-
-        thread = threading.Thread(target=owner, name="ltm-mcp-transport", daemon=True)
-        thread.start()
-        try:
-            await asyncio.shield(asyncio.wrap_future(ready))
+        self._worker.monitor_interval, self._worker.probe_timeout = self.monitor_interval, self.probe_timeout
+        async with self._worker.lifespan():
             yield
-        finally:
-            loop = self._loop
-            if loop is not None and not loop.is_closed():
-                loop.call_soon_threadsafe(self._stop.set)
-            await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(finished)), timeout=10)
 
-    def wrap(self, app):
+    def wrap(self, app, *, dynamic=False):
         async def bridge(scope, receive, send):
+            generation = self._worker.current
             loop = self._loop
             if loop is None:
-                return await JSONResponse({"error": "MCP is not running"}, status_code=503)(scope, receive, send)
+                return await JSONResponse({"error": "MCP is not running", "executed": False}, status_code=503)(scope, receive, send)
             if not self._permits.acquire(blocking=False):
                 return await JSONResponse({"error": "MCP request capacity exceeded", "executed": False},
                     status_code=429, headers={"Retry-After": "1"})(scope, receive, send)
             caller = asyncio.get_running_loop()
             lock = threading.Lock()
             started = cancelled = False
-            disconnected = threading.Event()
+            lease = RequestLease(generation)
+            disconnected = lease.disconnected
             relays = set()
 
-            async def relay(fn, *args, receiving=False):
+            async def relay(fn, *args, receiving=False, sending=False):
                 # ASGI receive/send belong to Uvicorn's loop. Only SDK work moves;
                 # no socket, queue, cache, client or authentication session is copied.
                 fallback = {"type": "http.disconnect"} if receiving else None
@@ -83,7 +69,11 @@ class TransportHost:
                 if abandoned:
                     future.cancel()
                 try:
-                    return await asyncio.wrap_future(future)
+                    result = await asyncio.wrap_future(future)
+                    if (sending and args[0].get("type") == "http.response.body"
+                            and not args[0].get("more_body", False) and not disconnected.is_set()):
+                        lease.response_complete = True
+                    return result
                 except OSError:
                     # ASGI servers report closed client sockets from send().
                     # Finish SDK cleanup instead of abandoning its session task.
@@ -100,17 +90,24 @@ class TransportHost:
             async def execute():
                 nonlocal started
                 with lock:
-                    if cancelled:
-                        return
+                    if cancelled or not generation.accepting or generation is not self._worker.current:
+                        return False
                     started = True
                 task = asyncio.current_task()
-                self._requests.add(task)
+                generation.requests.add(task)
+                generation.leases.add(lease)
                 token = request_disconnected.set(disconnected)
+                lease_token = request_lease.set(lease)
                 try:
-                    await app(scope, lambda: relay(receive, receiving=True), lambda message: relay(send, message))
+                    application = app() if dynamic else app
+                    await application(scope, lambda: relay(receive, receiving=True),
+                                      lambda message: relay(send, message, sending=True))
                 finally:
+                    request_lease.reset(lease_token)
                     request_disconnected.reset(token)
-                    self._requests.discard(task)
+                    generation.requests.discard(task)
+                    generation.leases.discard(lease)
+                    self._worker.finish_request(lease)
                     self._permits.release()
 
             try:
@@ -125,7 +122,10 @@ class TransportHost:
                 try:
                     # Let the SDK finish its stateless-session teardown even if
                     # the HTTP caller leaves. Raw cancellation skips that cleanup.
-                    await asyncio.shield(forwarded)
+                    accepted = await asyncio.shield(forwarded)
+                    if accepted is False:
+                        return await JSONResponse({"error": "MCP is recovering", "executed": False},
+                            status_code=503)(scope, receive, send)
                 except asyncio.CancelledError:
                     disconnected.set()
                     with lock:
