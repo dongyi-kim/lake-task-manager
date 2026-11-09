@@ -1,5 +1,5 @@
 import { api } from './api.js';
-import { pageTree } from './confluenceTreeModel.js';
+import { pageTree, replaceTreeBranch } from './confluenceTreeModel.js';
 
 export default {
   data: () => ({ savedTreePages: {}, savedTreePending: {}, savedTreeErrors: {} }),
@@ -25,6 +25,13 @@ export default {
     async expandSavedTree(row) {
       if (this.savedTreePending[row.id]) return;
       const space = row.space?.key || row.space || this.space;
+      const id = String(row.id);
+      this._savedBranches = this._savedBranches || {};
+      const versions = this._savedBranches[space] ||= new Map();
+      const known = (this.savedTreePages[space] || []).find(item => String(item.id) === id);
+      const ancestry = row.ancestors || known?.ancestors || [];
+      const observed = ancestry.map(parent => [String(parent.id), versions.get(String(parent.id))]);
+      const current = () => observed.every(([parent, version]) => versions.get(parent) === version);
       this._savedRevision = this._savedRevision || {};
       this._savedRevision[space] = (this._savedRevision[space] || 0) + 1;
       this.savedTreePending[row.id] = true; this.savedTreeErrors[row.id] = false;
@@ -33,17 +40,22 @@ export default {
         let start = 0;
         do {
           const batch = await api.confluenceTreeBranch(space, {parent:row.id, start, background:false});
+          if (!current()) return; // A newer ancestor replacement owns this subtree.
           rows.push(...batch.results); start = batch.nextStart;
         } while (start !== null);
-        const old = (this.savedTreePages[space] || []).filter(item => String(item.ancestors?.at(-1)?.id || '') !== row.id && String(item.id) !== row.id);
-        this.savedTreePages[space] = [...old, {...row, hasChildren:!!rows.length, unknownChildren:false}, ...rows];
-        // Current tree uses its own queue, backed by exactly the same branch cache.
-        if (space === this.space) this.prioritizeTree(row.id);
+        versions.set(id, (versions.get(id) || 0) + 1);
+        this.savedTreePages[space] = replaceTreeBranch(this.savedTreePages[space] || [], row, rows);
+        if (space === this.space) {
+          if (this._treeQueue) this._treeQueue.acceptBranch(row, rows);
+          else this.treePages = replaceTreeBranch(this.treePages, row, rows);
+        }
       } catch (error) {
+        if (!current()) return;
         this.savedTreeErrors[row.id] = true;
         if ([403,404].includes(error.status)) {
-          this.savedTreePages[space] = (this.savedTreePages[space] || []).filter(item => String(item.id) !== row.id &&
-            !(item.ancestors || []).some(parent => String(parent.id) === row.id));
+          versions.set(id, (versions.get(id) || 0) + 1);
+          this.savedTreePages[space] = (this.savedTreePages[space] || []).filter(item => String(item.id) !== id &&
+            !(item.ancestors || []).some(parent => String(parent.id) === id));
           if (space === this.space) this.loadTree(true);
         }
       }
