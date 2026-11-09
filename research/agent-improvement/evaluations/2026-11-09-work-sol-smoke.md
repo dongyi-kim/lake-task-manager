@@ -344,3 +344,82 @@ no remaining important issue. Product PR191 full offline CI passed at2633bd3c an
 PR192's full offline CI passed at40673f69. Fresh
 same-commit boundary/recovery diagnostics and the full qualification remain pending;
 no v3 matrix has been executed and no candidate is enabled by default.
+
+### Subsequent v3 first pair, cache diagnostic and final fallback failure
+
+At clean commit `6447aa28`, guide candidate `0.1.3`, Work `1.0.0` and recovery
+`2.0.0`, fresh boundary confirmation passed4/4 and between-pages restart passed1/1
+(direct4.9/5). The seed190 v3 schedule then executed its first candidate→baseline
+pair. Original source worlds/stores and every attempt remain unchanged.
+
+| First repeat, all22 cases | Candidate | Baseline |
+|---|---:|---:|
+| Automatic pass |22/22|22/22|
+| Direct-review mean |4.98/5|4.98/5|
+| Actual Jira requests |106|116|
+| Confluence requests |20|22|
+| MCP calls |234|167|
+| Answer wall seconds, summed |1058.3|878.1|
+| Total tokens |4516887|3404244|
+| Cached tokens |3650176|2667008|
+| Observed candidate entrypoint reads |19/22|0/22|
+
+Jira response bytes remain unknown/null because failed-response bodies were not
+observed. Failed requests and retries count; cache hits add no upstream request.
+Each real-model case starts with a fresh client/private cache. The same single,
+unblinded native Codex Sol/high panel directly reviewed all44 answers,704 common
+and52 specialized items per arm, with exact case/snapshot SHA and excerpts. No
+material false facts or major semantic failures; local minors remain recorded.
+Both consuming cohort audits reject qualification because four repeats are missing.
+
+Candidate raw SHA:
+`34c11423f35af0135b1703b9aa3cae4c3d6db201aa920d6e4d723ace6cf37361`.
+Baseline raw SHA:
+`14cf046bffdad875430f12714e6f8ec170af8ee0bfda3325dc139063a2e52a48`.
+The retained groups end in `main-candidate-v200-e4deee74` and
+`main-baseline-v200-e4deee74`. Authored parts and compact summaries are under
+external `reviews/v3-main-...`; no score was copied across arms.
+
+The user's cache concern was checked with an additional **zero experiment-model
+call** diagnostic across all44 recorded cases. Immediate serial cold→warm replay
+used the same fixture/cache for the second pass and retained all responses.
+
+| Jira requests | Candidate | Baseline |
+|---|---:|---:|
+| Original real-model cold-start |106|116|
+| Serial cold replay |104|115|
+| Immediate warm replay |10|10|
+
+The original concurrency, thinking delays and cache aging are not replayed.
+Twelve original not-executed rate limits and one query-state-guard failure succeed
+when serialized; three cases have a total of three fewer cold-replay requests.
+Original106/116 is not overwritten. All401 cold/warm result pairs have equal
+business data after explicitly scoped cache/check/generated-time metadata and
+opaque pagination-ID comparison; worlds/stores remain unchanged. Raw differences,
+all802 replay calls and analysis scripts are retained under `warm-replay-v3/`.
+Its manifest SHA is
+`446b2324c975e5a1338091067e7c09a1b61a44d20191095d86cad1fb395775b6`.
+The first cold request gap disappears with warm cache; candidate MCP, token and
+wall-time costs were higher. No general performance or causal gain is claimed.
+
+Final same-commit smoke completed11 cases in each transport: default11/11,
+direct4.98/5; fallback10/11, direct4.91/5. Fallback R10's1/2=50% and actual three
+visible ticket facts are correct, but only a completed `parent = DL-94010` search
+establishes membership. The root read exposes no child keys/count. Child parent and
+SubTask fields prove inclusion/leafness, not exhaustiveness. Permission-filtered
+search can hide known denied children. The reviewer records major whole-coverage
+and confidence defects, with no fabricated factual count or false denominator unit.
+The original `progress_mismatch` remains; no checker relaxation or rescore.
+
+Default smoke SHA:
+`8240a2f5a2c9ca51fd88db5926ee99fc744f96aea39f0f17eda172d782bd2456`.
+Fallback smoke SHA:
+`ff594978ef0c9a62415d9954cf7069049fc1ae1230791ce852e8b9bded3a2501`.
+The v3 schedule stops after its first A/B pair. Candidate guide0.1.4 now directs
+whole-progress questions to complete hierarchy evidence and distinguishes cache
+reuse from cold API-load claims. An actual MCP regression proves parent REST can
+know two children while an exhausted, fresh, nonpartial search returns only one;
+query-only100% is correctly rejected. Related asset/leaf/prompt-integrity checks
+passed **68 tests,1 skipped** (existing Windows symlink limitation), and narrow
+independent review found no important issue. New candidate confirmation and full
+qualification remain pending. Default activation remains off; no merge/release.

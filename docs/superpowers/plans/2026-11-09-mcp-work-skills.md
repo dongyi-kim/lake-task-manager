@@ -104,6 +104,23 @@ The schedule stopped before baseline. Preserve this full failed attempt and its
   and explicit material-fact finding arrays. A cohort decision is not whole-matrix
   completion or permission to roll out before all required gates.
 
+### Further guide correction after the final fallback smoke
+
+The frozen 6447aa28 candidate completed its first full A/B pair (both22/22,
+direct means4.98/4.98), but final fallback smoke failed R10 (10/11). Retain all
+original results. Complete parent JQL proves its permission-filtered query set,
+not exhaustive Task membership. Root read metadata and two leaf parent fields
+do not establish that no known/denied child was omitted. Keep the checker strict.
+
+- Candidate guide0.1.4 requires complete hierarchy evidence for whole-progress
+  denominators, while reusing a proven Task-to-leaf direct-child snapshot.
+  Replace query-only membership discovery rather than adding duplicate key reads.
+- Preserve the real failing pressure case and an actual MCP regression where
+  parent REST knows two children but a fresh, exhausted parent search returns one.
+- Do not mix previous candidate repetitions with the corrected guide. Freeze a
+  new candidate and run the full11-case default/fallback smoke before its A/B,
+  plus fresh recovery confirmation. Keep every failed schedule and attempt.
+
 - Guide artifacts: manifest.json, progress.json, evidence/, findings.jsonl,
   report.md and resume.md. Save evidence before advancing progress.
 - Resume checks task/source/scope identity, last valid generation, source age,
@@ -142,6 +159,11 @@ reads, failed requests and retries; a cache hit adds zero. Exclude preflight/fix
 setup and keep unobserved/unclassified service totals null, not zero. Also compare
 Jira response bytes/request time and answer wall time, without equating fewer MCP
 calls with reduced Jira load. Preserve first failures and new attempts.
+Separate cold-start measurements from cache reuse. Fixed-transcript immediate
+warm replays of completed paired runs are diagnostics with no experiment model
+calls; they preserve recorded order but not original concurrency, thinking delays
+or cache aging. Keep original model counts/timing and every replay response
+difference. A cold-only request gap is not general Jira-load reduction evidence.
 Require automatic gates, direct human review mean >=4.5/5 and zero material false
 facts, unauthorized writes, failures represented as zero, or ungrounded counts.
 Only a later qualified rollout enables the candidate skills by default.
