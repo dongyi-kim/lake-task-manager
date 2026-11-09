@@ -73,6 +73,19 @@ def test_complete_linked_five_repeat_cohort_passes_without_claiming_whole_qualif
     assert result['qualificationClaim'] is False
 
 
+def test_three_arm_order_is_opt_in_and_preserves_two_arm_default():
+    from tools.codex_mcp_eval.qualification import audit_cohort
+    runs, reviews, snapshots = cohort()
+    order = {1: 1, 2: 2, 3: 3, 4: 1, 5: 2}
+    for run in runs:
+        run['evaluation']['run']['candidateOrderIndex'] = order[run['evaluation']['run']['repeatIndex']]
+    kwargs = dict(evaluator=EVALUATOR, expected_case_ids=[CASE], source_snapshot_hashes=snapshots,
+                  expected_order_by_repeat=order, expected_commit='a' * 40, expected_runtime=RUNTIME)
+    assert not audit_cohort(runs, reviews, **kwargs)['designPassed']
+    result = audit_cohort(runs, reviews, comparison_order_indices=(1, 2, 3), **kwargs)
+    assert result['designPassed'] and result['qualityPassed']
+
+
 def test_real_producer_order_strings_and_authored_finding_arrays_are_supported():
     runs, reviews, snapshots = cohort()
     for run, review in zip(runs, reviews):

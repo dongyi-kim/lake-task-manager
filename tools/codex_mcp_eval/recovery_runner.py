@@ -10,6 +10,9 @@ from tools.agent_eval_isolation import NETWORK_PREFLIGHT_MARKER
 from tools.codex_mcp_eval.recovery_fixture import RecoveryFixture
 from tools.codex_mcp_eval.work_recovery import RecoveryController, complete_search_membership, persisted_calls
 from tools.codex_mcp_eval.reporting_fixture import periods
+from tools.codex_mcp_eval.metrics import aggregate_usage, file_metrics
+from tools.codex_mcp_eval.attempts import (snapshot_attempt, mark_infrastructure_failure,
+                                         combine_phase_attempts, settle_attempt)
 
 RECOVERY_JQL = ("labels = work_research_fixture AND key in "
                 "(DL-94001,DL-94002,DL-94006,DL-94007,DL-94017,DL-94018) ORDER BY key ASC")
@@ -68,32 +71,79 @@ def recovery_battery(base, today, scenario, mode):
 
 
 def _phase(directory, index, options, binary, cli_run, files_root, controller, revision, fixture_factory):
-    with fixture_factory(directory / f"fixture-{index}", files_root=files_root, controller=controller,
-                         port=4457, today=options.date, skill_condition="candidate",
-                         skill_transport=options.skill_transport, source_revision=revision) as fixture:
-        oracle = fixture.ground_truth()
-        oracle["cases"]["WORK-R02-boundary"]["documents"] = ["운영 결정"]
-        prompt = recovery_prompt(options.date)
-        if index:
-            prompt += ("\n새 세션입니다. 이전 대화는 없습니다. 조사 파일을 먼저 읽고 중단한 조사를 재개하세요. "
-                       "resume가 없거나 손상됐으면 목록·manifest·정상 근거에서 상태를 복구하세요. "
-                       "현재 근거가 달라졌을 수 있으므로 가이드에 따라 재검증하세요.")
-        output = cli_run(binary, prompt, directory / f"workspace-{index}", model=options.model,
-            effort=options.effort, mcp_url=fixture.url, files_url=fixture.files_url, token=fixture.token,
-            timeout=options.timeout, schema=options.work_output_schema,
-            **({"stop_event": controller.stop} if controller else {}))
-        record = {"prompt": prompt, "output": output, "mcpToolCalls": copy.deepcopy(fixture.tool_calls),
-                  "fileCalls": copy.deepcopy(fixture.files.calls), "skillReads": list(fixture.skill_reads),
-                  "upstreamCalls": list(fixture.upstream_calls), "isolation": fixture.summary(),
-                  "sourceRevision": revision, "cachePolicy": "new-private-database-every-phase"}
-        record["persistedCalls"] = persisted_calls(fixture.files, fixture.tool_calls)
-        write_raw_result(directory / f"phase-{index}-oracle.json", oracle)
-        write_raw_result(directory / f"phase-{index}-events.json", {"events": output.get("events", [])})
-        return record, oracle
+    record = {"output": {}, "durationSeconds": 0, "modelAttempted": False,
+              "sourceRevision": revision, "cachePolicy": "new-private-database-every-phase"}
+    oracle, fixture, stage = {}, None, "recovery_fixture_setup_failed"
+    try:
+        with fixture_factory(directory / f"fixture-{index}", files_root=files_root, controller=controller,
+                             port=4457, today=options.date, skill_condition="candidate",
+                             skill_transport=options.skill_transport, source_revision=revision) as fixture:
+            oracle = fixture.ground_truth()
+            oracle["cases"]["WORK-R02-boundary"]["documents"] = ["운영 결정"]
+            prompt = recovery_prompt(options.date)
+            if index:
+                prompt += ("\n새 세션입니다. 이전 대화는 없습니다. 조사 파일을 먼저 읽고 중단한 조사를 재개하세요. "
+                           "resume가 없거나 손상됐으면 목록·manifest·정상 근거에서 상태를 복구하세요. "
+                           "현재 근거가 달라졌을 수 있으므로 가이드에 따라 재검증하세요.")
+            record["prompt"] = prompt
+            stage, record["modelAttempted"] = "recovery_model_invocation_failed", True
+            output = cli_run(binary, prompt, directory / f"workspace-{index}", model=options.model,
+                effort=options.effort, mcp_url=fixture.url, files_url=fixture.files_url, token=fixture.token,
+                timeout=options.timeout, schema=options.work_output_schema,
+                **({"stop_event": controller.stop} if controller else {}))
+            record["output"] = output
+            stage = "recovery_attempt_snapshot_failed"
+            snapshot_attempt(record, fixture, output)
+            stage = "recovery_attempt_checkpoint_failed"
+            write_raw_result(directory / f"phase-{index}-attempt.json", record)
+            stage = "recovery_observer_settlement_failed"
+            settle_attempt(record, fixture)
+            stage = "recovery_summary_failed"
+            record["isolation"] = fixture.summary()
+            record["persistedCalls"] = persisted_calls(fixture.files, fixture.tool_calls)
+            stage = "recovery_source_write_failed"
+            write_raw_result(directory / f"phase-{index}-oracle.json", oracle)
+            stage = "recovery_events_write_failed"
+            write_raw_result(directory / f"phase-{index}-events.json", {"events": output.get("events", [])})
+            stage = "recovery_fixture_teardown_failed"
+    except Exception as exc:
+        if fixture is not None and not record.get("attemptCaptured"):
+            try:
+                snapshot_attempt(record, fixture)
+            except Exception as capture_error:
+                mark_infrastructure_failure(record, capture_error, "recovery_attempt_snapshot_failed")
+        mark_infrastructure_failure(record, exc, stage)
+        try:
+            write_raw_result(directory / f"phase-{index}-failure.json", record)
+        except Exception as write_error:
+            mark_infrastructure_failure(record, write_error, "recovery_failure_checkpoint_failed")
+    finally:
+        if fixture is not None and record.get("modelAttempted"):
+            try:
+                settle_attempt(record, fixture, after_teardown=True)
+                write_raw_result(directory / f"phase-{index}-attempt-final.json", record)
+            except Exception as exc:
+                mark_infrastructure_failure(record, exc, "recovery_final_capture_failed")
+    return record, oracle
 
 
 def run_recovery_case(case, options, binary, run_root, cli_run, battery, *, artifact_root,
                       fixture_factory=RecoveryFixture):
+    if os.environ.get(NETWORK_PREFLIGHT_MARKER) != "1":
+        raise RuntimeError("Recovery evaluation requires the approved launcher preflight")
+    phases = []
+    try:
+        return _run_recovery_case(case, options, binary, run_root, cli_run, battery,
+            artifact_root=artifact_root, fixture_factory=fixture_factory, retained_phases=phases)
+    except Exception as exc:
+        record = {"id": case["id"], "inputs": case.get("prompts", []), "automaticPass": False}
+        combine_phase_attempts(record, phases)
+        mark_infrastructure_failure(record, exc, "recovery_processing_failed")
+        return record
+
+
+def _run_recovery_case(case, options, binary, run_root, cli_run, battery, *, artifact_root,
+                      fixture_factory=RecoveryFixture, retained_phases=None):
     if os.environ.get(NETWORK_PREFLIGHT_MARKER) != "1":
         raise RuntimeError("Recovery evaluation requires the approved launcher preflight")
     directory = run_root / case["id"]
@@ -105,7 +155,10 @@ def run_recovery_case(case, options, binary, run_root, cli_run, battery, *, arti
     options.work_output_schema = battery.schema_for_case(case) if hasattr(battery, "schema_for_case") else battery.OUTPUT_SCHEMA
     first, oracle = _phase(directory, 0, options, binary, cli_run, files_root, controller,
                            1 if restarted else final_revision, fixture_factory)
-    phases, failures = [first], []
+    phases, failures = retained_phases, []
+    phases.append(first)
+    if first.get("infrastructureError"):
+        raise RuntimeError("Recovery first phase failed")
     if restarted:
         if not controller.trigger or not first["output"].get("intentionalInterruption"):
             failures.append("recovery_fault_not_triggered")
@@ -117,6 +170,8 @@ def run_recovery_case(case, options, binary, run_root, cli_run, battery, *, arti
             resumed, oracle = _phase(directory, 1, options, binary, cli_run, files_root, None,
                                      final_revision, fixture_factory)
             phases.append(resumed)
+            if resumed.get("infrastructureError"):
+                raise RuntimeError("Recovery resumed phase failed")
             if not any(c["name"] == "read_file" and c["ok"] for c in resumed["fileCalls"]):
                 failures.append("resume_files_not_read")
     last = phases[-1]
@@ -143,22 +198,16 @@ def run_recovery_case(case, options, binary, run_root, cli_run, battery, *, arti
     automatic["pass"] = not automatic["failures"]
     duration = sum(p["output"].get("durationSeconds", 0) for p in phases)
     output["durationSeconds"] = duration
-    fields = ("promptTokens", "completionTokens", "totalTokens", "cachedTokens")
-    output["usage"] = {name: (sum(values) if all(type(v) is int for v in values) else None)
-                       for name in fields for values in [[(p["output"].get("usage") or {}).get(name) for p in phases]]}
-    output["usage"].update(calls=None, costUsd=None)
+    output["usage"], usage_coverage = aggregate_usage(p["output"] for p in phases)
     record = {"id": case["id"], "inputs": [p.get("prompt", RECOVERY_PROMPT) for p in phases], "output": output,
         "durationSeconds": duration, "automaticPass": automatic["pass"], "automaticContract": automatic,
         "isolation": last["isolation"], "upstreamCalls": [c for p in phases for c in p["upstreamCalls"]],
         "skillReads": [r for p in phases for r in p["skillReads"]], "phases": phases,
         "groundingCalls": evidence,
-        "fileMetrics": {
-            "calls": sum(len(p["fileCalls"]) for p in phases),
-            "durationSeconds": sum(c.get("durationSeconds", 0) for p in phases for c in p["fileCalls"]),
-            "readBytes": sum(len((c.get("result") or {}).get("content", "").encode("utf-8"))
-                             for p in phases for c in p["fileCalls"] if c["name"] == "read_file" and c["ok"]),
-            "writeBytes": sum(len((c.get("arguments") or {}).get("content", "").encode("utf-8"))
-                              for p in phases for c in p["fileCalls"] if c["name"] == "write_file" and c["ok"])},
+        **({"protocolCalls": [call for phase in phases for call in phase["protocolCalls"]]}
+           if all("protocolCalls" in phase for phase in phases) else {}),
+        "usageCoverage": usage_coverage,
+        "fileMetrics": file_metrics([c for p in phases for c in p["fileCalls"]]),
         "recovery": {"scenario": options.recovery_scenario, "mode": options.recovery_mode,
                      "trigger": controller.trigger if controller else None,
                      "eligiblePersistedCalls": len(reusable), "controlledSourceRevision": final_revision},
