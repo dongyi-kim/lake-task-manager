@@ -66,3 +66,17 @@ def test_healthy_server_reports_stalled_native_owner_to_watchdog(monkeypatch):
     response = TestClient(main.app).get("/api/health/live")
     assert response.status_code == 503
     assert response.json()["status"] == "unresponsive"
+
+
+def test_unrecoverable_mcp_worker_reaches_owned_process_watchdog(monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(main, "_runtime_health_hook", lambda: True)
+    monkeypatch.setattr(main._local_mcp, "started", True)
+    state = {"state": "recovery_failed", "generation": 4}
+    monkeypatch.setattr(main._local_mcp.transport_host, "health_snapshot", lambda: dict(state))
+    client = TestClient(main.app)
+    response = client.get("/api/health/live")
+    assert response.status_code == 503
+    assert response.json()["components"]["mcp"]["state"] == "recovery_failed"
+    state["state"] = "recovering"
+    assert client.get("/api/health/live").status_code == 200
