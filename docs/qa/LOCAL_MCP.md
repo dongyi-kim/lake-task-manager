@@ -1,5 +1,37 @@
 # Local MCP 검증 — 2026-11-03
 
+## 2026-11-09 연결·상태 복구 후속
+
+앱은 별도 MCP 워커의 heartbeat를 1초마다 확인합니다. 일시적인 업무 지연이나 Jira 오류만으로
+워커를 교체하지 않습니다. 워커 종료·연속 heartbeat 누락 시 이전 세대와 실제 동기 작업의 종료를
+기다린 뒤 새 SDK/profile manager를 만듭니다. 종료 대기는10초, 워커 복구는10분 내3회로 제한하며,
+복구 불가 상태는 정상 실행 모드의 기존 앱 watchdog에 전달합니다. 개발 reload는 기존 watcher를
+유지합니다. URL·토큰·업무 캐시·mutation receipt를 유지하고 업무 요청을 자동 재전송하지 않습니다.
+
+모든 profile의 `get_mcp_health`는 Jira·인증 조회 없이 세대·상태·복구 여부를 반환합니다.
+`request_mcp_restart(expected_generation)`는 현재 세대에만 요청을 예약하며 중복을 병합합니다.
+요청 응답의 마지막 body 전송과 SDK 정리 전에는 재기동하지 않으며 끊어진 ACK로 재기동하지 않습니다.
+죽은 MCP 연결에서는 이 도구를 호출할 수 있으리라 기대하지 않고 백그라운드 복구나 트레이를 사용합니다.
+
+트레이의 **상태 확인**은 앱·MCP 상태와 최근 복구 사유를 보여 줍니다. 별도 작업 스레드에서
+1초 제한의 PID·instance 확인을 포함한 로컬 `/api/health/live`와 최신 MCP heartbeat를 확인합니다.
+대화 상자가 열려 있어도 트레이의 앱 열기·종료 처리를 막지 않습니다. 추가 Jira 호출은 없습니다.
+
+Claude Desktop stdio 프록시는 개별 HTTP 연결 실패를 원래 요청 ID의 오류로 반환하고 계속 실행합니다.
+다음 읽기는 같은 주소로 새 HTTP 연결을 열 수 있습니다. 완료 여부가 불명확한 변경은 자동 재전송하지
+않으며 `retryable=false`, `retryReadOnly=true`, `repeatWrite=false`를 반환합니다. 구버전 프록시가
+이미 종료된 경우 업데이트 후 Claude Desktop을 트레이에서 완전히 종료하고 다시 실행해야 합니다.
+
+검증은 실제 SDK/HTTP/stdio와 격리한 mock Jira를 사용했습니다. 같은 stdio 세션에서 LTM 종료 중
+연속 실패 후 복구, MCP-only 세대 교체 후 캐시 공유, 변경 완료 후 응답 유실에도 실행1회,
+정상 동시 읽기 유지, 시작 전 종료 신호 보존, 멈춘 loop 위에 두 번째 워커를 만들지 않음을 확인했습니다.
+독립 Sol/high 리뷰의 중요 지적2건을 수정했습니다. Windows 네이티브 대화 상자의 복구 중·복구 실패
+문구는 접근성 트리로 확인하고 Enter로 닫았습니다. 화면 캡처는 `FrameArrived timed out`이므로
+시각 배치나 실제 트레이 메뉴 전체를 직접 검증한 결과로 취급하지 않습니다.
+실제 사용자 prod 로그·Claude 설정은 이 작업 환경에서 확인하지 못했습니다. 전체 오프라인 CI는 PR별 확인합니다.
+
+## 기존 기능 검증
+
 아래 SDK·UI 기능 검증은 실제 Jira와 LLM을 호출하지 않았다. 지연 주입은 0ms이며, 격리한
 Jira820 fixture와 실행 중인 LTM의 동일 JiraClient를 사용했다. 기존 creation permission 변경 위에 MCP를 구현했다.
 이후 수행한 실제 Codex + HTTP MCP 품질 평가는 아래 별도 결과와

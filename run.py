@@ -1377,6 +1377,18 @@ def _run_tray(s):
     def on_restart(icon, item):
         run_tray_job("restart", lambda: restart(icon))
 
+    def health_snapshot():
+        native = _runtime_status(tray_probe)
+        app_healthy = bool(server.started and not server.should_exit and native["healthy"]
+                           and app_responding(s.app_port))
+        return {"app": {"state": "healthy" if app_healthy else "unresponsive", "port": s.app_port},
+                "mcp": _appmain._local_mcp.transport_host.health_snapshot()}
+
+    from app.launcher.health_status import app_responding, show_health_status
+
+    def on_health(icon, item):
+        run_tray_job("health", lambda: show_health_status(health_snapshot()))
+
     def on_quit(icon, item):
         try:
             server.should_exit = True
@@ -1433,6 +1445,7 @@ def _run_tray(s):
 
     menu = pystray.Menu(
         pystray.MenuItem("앱 열기", on_open, default=True),
+        pystray.MenuItem("상태 확인", on_health),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("SSO 인증", pystray.Menu(lambda: sso_items())),
         pystray.MenuItem("SSO 상태 새로고침", lambda icon, item: probe_sso_async(icon)),
@@ -1529,6 +1542,24 @@ def _run_hot_reload(s):
 def _serve_hot_reload_worker(host, port):
     """watchfiles가 변경 때마다 새로 띄우는 Uvicorn worker."""
     uvicorn.run("app.main:app", host=host, port=port, log_level="info", proxy_headers=False)
+
+
+def _supervise_runtime(s, *, hide_console):
+    """All normal modes share owned-process recovery; reload keeps its watcher."""
+    from app.launcher.supervisor import WORKER_ENV, run_supervisor
+    if os.environ.get(WORKER_ENV):
+        return
+    from app.infra.settings import CACHE_DIR
+    from app.infra.runtime_diagnostics import RuntimeLog
+    runtime_log = RuntimeLog(CACHE_DIR / "logs" / "runtime", "supervisor")
+    try:
+        raise SystemExit(run_supervisor(
+            [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]],
+            cwd=os.getcwd(), env=dict(os.environ),
+            base_url=f"http://127.0.0.1:{s.app_port}", record=runtime_log.record,
+            on_ready=_hide_console_win if hide_console else None, on_failure=_show_console_win))
+    finally:
+        runtime_log.close()
 
 
 def _ensure_deps() -> None:
@@ -1670,6 +1701,7 @@ def main():
         except Exception:
             use_window = False
     if not use_window:
+        _supervise_runtime(s, hide_console=False)
         _run_plain(s)
         return
 
@@ -1681,20 +1713,8 @@ def main():
             from PIL import Image  # noqa: F401
         except Exception:
             use_tray = False
+    _supervise_runtime(s, hide_console=use_window)
     if use_tray:
-        from app.launcher.supervisor import WORKER_ENV, run_supervisor
-        if not os.environ.get(WORKER_ENV):
-            from app.infra.settings import CACHE_DIR
-            from app.infra.runtime_diagnostics import RuntimeLog
-            runtime_log = RuntimeLog(CACHE_DIR / "logs" / "runtime", "supervisor")
-            try:
-                raise SystemExit(run_supervisor(
-                    [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]],
-                    cwd=os.getcwd(), env=dict(os.environ),
-                    base_url=f"http://127.0.0.1:{s.app_port}", record=runtime_log.record,
-                    on_ready=_hide_console_win, on_failure=_show_console_win))
-            finally:
-                runtime_log.close()
         _run_tray(s)         # icon.run() 이 블로킹; [종료] 시 반환
         os._exit(0)
     else:
