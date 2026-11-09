@@ -541,3 +541,87 @@ recovery validation afterward. This supersedes the original default-off rollout
 hold, not the evidence requirements or the retained failures. The release is not
 a claim that the complete302-case follow-up has passed. Product and evaluation
 changes remain separate, and deploy-repository tags/pointers/releases are excluded.
+
+## Released product and post-release Work3 evidence
+
+PR191 merged to9ad95f81424faa718a7f89524aac39431698d3ff and public
+v2026.11.09 was published2026-11-09T06:41:56Z. Both research skills are enabled by
+default; explicit false keeps the controlled four-authoring-skill baseline. Tested
+product1c79789c and merged main had identical trees. Product/main full CI passed,
+as did evaluation5059e816 CI42574938814. No deploy-repository pointer/tag/release
+was changed. This release was explicitly authorized before full qualification.
+
+Fresh Work3.0.0 at5059e816, guide0.1.4, Sol/high, protocol3.0.0/rubric2.0.0:
+
+| Exploratory smoke | Default | Fallback |
+| --- | ---: | ---: |
+| Automatic / directly reviewed | 11/11 | 11/11 |
+| Direct mean | 5.00 | 4.990909… |
+| Jira / Confluence / MCP | 58 / 10 / 112 | 54 / 9 / 115 |
+| Duration sum | 599.1s | 579.2s |
+| Total / cached-input tokens | 2330606 / 1991168 | 2254940 / 1918336 |
+| Observed adoption / ITT | 9/11 / 11 | 10/11 / 11 |
+
+Each arm has352common/24actual specialized items, no material/major finding and
+all case/source/spec/schema/review hashes checked. Fallback R03 has one temporal
+minor: comment-created clock time is stronger than the event time in its body.
+Raw groups are20261109-sol-high-v014w3-smoke-{default,fallback}-e4deee74;
+SHA256respectively5d8ef1040e67645a64fb668e3b590dd1a54a295748d44fa8f1b1ad99c7ae268e
+andc8258d29d8c7ed928d3b571200ca44a65e2b902a993a86032989e58d3eaccda5.
+Reviews remain under the external durable root in reviews/v5-smoke-*-part*.json.
+
+The subsequent between-pages/restarted confirmation FAILED0/1: phase0 intentional
+stop73.391s, phase1codex_timeout600.061s. The saved report/count2 was supported by
+complete JQL5/53comments/7long-record chunks/document v1, but no final structured
+answer was returned. Original8f48b85819e18fb6c5ef0e82307a61d9884b191aa81fde0c6a9cdd8cf63d6bf9
+and its failed verdict are unchanged. Jira11/Confluence3/MCP48/file113; token/cost
+unknown. No positive prequalification audit or v5 matrix was started. Direct
+failure reviewa0a91858afa68e74c4b25865f9c317e7a7da36d3beea19d06de2bc1e9fe3dcd9
+distinguishes missing final output from actual incorrect scope/operations rows.
+
+## Compact-checkpoint diagnostic and production disconnect feedback
+
+Separate productPR193 clarifies storing one application response, retaining all
+source/cache/completeness/cursor/recordJson metadata and unique warnings/errors.
+Static guides use manifest URI/digest/version; progress stays compact. Guide0.1.5
+at evaluation95e83140 had one prospectively registered exploratory confirmation,
+group20261109-sol-high-v015w3-recovery-overhead-e4deee74, same600s/phase/Sol/high.
+It completed1/1 in366.7s: Jira7/Confluence3/MCP42/file70. Aggregate tokens/cost
+remainnull. Rawdcf76034fd7861d6c4c62656d9f352d83ee0e5d7dfcd992f82f4c65d2e42a313.
+
+The same single unblinded native Sol/high reviewer directly checked32common and
+both actual Recovery4 specialized elements. Mean4.9: fulfillment5, grounding4.5,
+actionability5, safety5, communication5; no material/major finding. Saved findings
+attach precise event/decision clocks to comment-created timestamps, a temporal
+minor. Count2, complete fresh JQL membership,53comments, long cancellation-record
+reconstruction/SHA, document v1, actual new session/saved-file reads, retained
+expired-snapshot error and new full search all matched sources. Reviewpart SHA
+48f3dec859824256caf5aa71972f7e56209551c084f4e5468e696a74a14284bb; summary SHA
+239f8c03cef2eaed671d611d80ece12920c142b4165277a8fd64e5c8f98422f8.
+
+Observed writes676414→215974B, phase1 progress203248→9617B, static-guide copies5→0.
+These runs interrupted at different actual boundaries (eligible saved calls6vs1),
+so neither latency/Jira differences nor byte reductions establish causal speedup
+or production load improvement. The failed0.1.4 case remains failed; this single
+0.1.5 diagnostic cannot qualify the complete repeated matrix.
+
+The user then reported Claude+production LTM advancing to the next query group
+after disconnecting, saying the monthly total was unconfirmed. Separate product
+PR194/guide0.1.6 makes the current failed group a completion barrier: retain exact
+arguments, retry transient reads, revalidate expired snapshots, finish missing
+pages/fragments, or stop at that group for a concrete required action. Explicit
+partial-investigation requests are the exception. Successful nonadvancing pages
+and transport-failure retries are distinct. No new runtime retry API was added.
+Native Sol/high code review and four bounded pressure scenarios found no important
+issue; this was not a Claude runtime experiment. Packaged resource/SDK/prompt
+checks52passed/1OS-symlinkskip; the final narrow wording/resource check1passed.
+
+Evaluation95e83140 full CI42581858250 did not pass: the job hit15minutes and its
+log exposed the continuation SDK fixture assuming posting order equals newest-first
+source order when all four writes happen in one second. An external offline clock
+probe reproduced1failure. Pinning this fixture's source timestamps, without
+changing order/body/fragment/hash/single-GET assertions, made the same probe pass;
+the complete related payload file passed18checks. No CI timeout or product
+pagination contract was widened. Current guide0.1.6 needs its own frozen source
+and fresh checks before the still-uncompleted220A/B+60recovery matrix. Prior raw
+scores, cache replay and all failed attempts remain separate and immutable.
