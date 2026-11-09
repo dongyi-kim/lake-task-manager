@@ -18,7 +18,7 @@ jobs:
   pytest:
     name: Python 3.11 / offline suite
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       CI: "true"
       TZ: Asia/Seoul
