@@ -78,7 +78,7 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 |---|---|
 | 인증 상태·복구·로그인 시작 | `get_auth_status`, `authenticate` |
 | 작성 스킬·콘텐츠 예제 | `get_content_guide` |
-| JQL·페이지 | `search_issues` |
+| JQL·페이지·알고 있는 key 묶음 | `search_issues`, `get_tickets` |
 | 티켓 본문·댓글·이력·자식·Epic | `get_ticket`, `get_comments`, `get_comment_source`, `get_history`, `get_field_history`, `get_children`, `get_epic`, `get_ticket_context` |
 | 원본 댓글·변경이력 페이지, 전체 하위 계층 | `get_evidence_page`, `get_descendants` |
 | 통합검색·Confluence 검색/본문 | `search_workspace`, `search_confluence_documents`, `read_confluence_document` |
@@ -103,6 +103,18 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 검색은 `search.jira.projects` 범위로 제한한다. `search_issues`는 한 페이지 최대 100건이며 전체 건수에
 숨은 제한이 없다. `hasMore`, `nextStartAt`, `snapshotId`를 따라 동일 snapshot의 다음 페이지를 요청한다.
 로컬 정렬을 지원하지 않는 JQL은 기존 Jira pagination으로 폴백하며, 이 경우 snapshot ID가 없다.
+알고 있는 여러 key는 `get_tickets(keys=[...])`로 한 번에 최대 100건씩 읽는다. 기본정보는 유지하고
+부하가 큰 description만 기본 제외하며, 필요한 key 집합에만 `include_description=true`를 켠다.
+내부에서는 실제 Jira 검색을 묶어 사용하며 key마다 개별 GET을 반복하지 않는다. 서버가 검색 페이지를
+작게 제한하면 실제 다음 위치를 따라 수집한다. 입력 중복은 제거하고 결과는 요청 순서를 유지한다.
+`missingKeys`는 미반환 범위이며 권한·비가시성 등과 구분할 수 없으므로 없어진 티켓이라고 단정하지
+않는다. 이때 `complete=false`이다. 요청한 본문 누락은 `descriptionMissingKeys`로 별도 표시하며,
+반환된 null/빈 본문과 구분한다. 조회 실패는 0건으로 반환하지 않는다.
+
+`search_issues`는 후보 탐색용이고 같은 본문 옵션을 지원한다. 다음 페이지의 JQL·snapshotId·
+`include_description` 값은 유지한다. 검색/다건의 본문은 원래 Jira markup이다. 한 티켓의 렌더링·
+편집 원문이 필요하면 `get_ticket(detail="read"/"edit")`을 사용하고 이미 받은 상태·본문은 재사용한다.
+
 읽기 결과는 MCP structured content의 `{ok: true, data: ...}`에 있다. 제한이 있는 댓글/이력 조회는
 요청 limit을 응답에 명시한다. `get_history`만 `include_children=true`를 명시하면 직계 자식의
 상태 변경도 포함한다(기본 false). `get_evidence_page`는 항상 지정한 티켓 한 개의 선택한 종류만

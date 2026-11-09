@@ -2,7 +2,7 @@
 name: ltm-work-research
 description: LTM MCP로 테이블·기능·키워드의 업무 경위, 사람의 실제 기여, 모듈·Epic·WBS·Task의 활동과 진척을 조사하거나 중단한 조사를 이어갈 때 사용한다. 기간 실적 집계나 정해진 보고서 양식 작성이 주목적이면 ltm-work-reporting을 선택한다.
 metadata:
-  version: 0.1.1-candidate
+  version: 0.1.2-candidate
 ---
 
 # 업무 맥락과 진척 조사
@@ -11,11 +11,13 @@ metadata:
 
 ## 시작과 필요한 참고 자료
 
-1. [범위·인물·시점](references/research-scope.md)으로 대상과 기간을 고정한다. 복구 요청이면 먼저 기존 `resume.md`를 읽는다.
-2. 여러 티켓·문서·페이지를 조사하거나 전체 댓글·긴 기록을 읽으면 조회 전에 [중간 저장과 재개](references/checkpoint-resume.md)를 읽고 조사 폴더를 준비한다. [저장 예제](references/checkpoint-example.json)는 형식 설명용 합성 자료다.
-3. [근거 수집](references/research-evidence.md)에 따라 검색→기본정보·본문→관련 댓글→필요한 문서 순서로 좁힌다. 정확한 변경 시점·전후값·과거 담당자·재오픈·자료 충돌이 질문에 필요할 때만 이력을 추가한다.
-4. 수치나 기여를 해석하면 [계층과 집계](references/work-counting.md)를 읽는다. 조회 최신성은 [조회 기준](references/read-strategy.md)을 따른다.
-5. 결과 문장은 [한국어 작성](references/korean-writing.md), 질문별 도달 조건은 [요청 대응표](references/request-matrix.md)로 검수한다.
+참고 자료를 전부 읽지 말고 이번 질문에 필요한 것만 선택한다. 이미 읽은 같은 URI/digest는 재사용한다.
+
+1. 여러 대상은 [묶음 조회·재사용](references/read-strategy.md)으로 수집 계획을 세운다. 후보 탐색은 `search_issues`, 정해진 key 집합은 `get_tickets`로 묶어 읽는다. 본문은 기본 제외하고 필요한 집합만 `include_description=true`로 요청한다. 받은 필드를 key별로 다시 읽지 않는다.
+2. 대상·인물·기간이 모호하면 [범위·인물·시점](references/research-scope.md)을 참고한다. 복구 요청이면 먼저 기존 `resume.md`를 읽는다.
+3. 여러 페이지·긴 기록 등 중단 비용이 큰 조사에는 수집 전에 [중간 저장과 재개](references/checkpoint-resume.md)를 읽고 조사 폴더를 준비한다. [저장 예제](references/checkpoint-example.json)는 합성 자료다. 짧은 단건 확인에는 생략할 수 있다.
+4. 전체 댓글·긴 레코드를 읽을 때는 [근거 수집과 이어 읽기](references/research-evidence.md)를 읽고 실제 페이지/레코드 위치를 따른다. 이력은 정확한 변경 시점·전후값·과거 담당·충돌 해소에 필요할 때만 추가한다.
+5. 수치·기여·계층 단위를 해석하면 [집계](references/work-counting.md), 종료 범위가 불명확하면 [요청 대응표](references/request-matrix.md), 문장·양식 보완이 필요하면 [한국어 작성](references/korean-writing.md)을 참고한다.
 
 ## 조사와 종료
 

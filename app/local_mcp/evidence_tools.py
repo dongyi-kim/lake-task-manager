@@ -9,7 +9,7 @@ def register_evidence(register, runtime):
     def get_evidence_page(key: str, kind: Literal["comments", "history"] = "comments",
                           start_at: int = 0, max_results: int = 100, record_offset: int = 0) -> dict:
         """Page original comments or field history for one ticket when the question needs more evidence.
-        For progress summaries, start with get_ticket(detail=read) and get_comments. Use kind=comments
+        For progress summaries, reuse batched metadata/needed bodies and relevant get_comments. Use kind=comments
         for older discussion or a complete review of decisions, exclusions and revised scope.
         Use kind=history only for change chronology, exact transition times, historical ownership or
         unresolved discrepancies; do not fetch every ticket's history as a routine progress-summary step.

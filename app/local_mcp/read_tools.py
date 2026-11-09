@@ -12,19 +12,29 @@ from app.local_mcp.projections import issue_projection, ticket_projection
 
 def register_reads(register, runtime):
     def search_issues(jql: str, start_at: int = 0, max_results: int = 50,
-                      snapshot_id: str | None = None, detail: Literal["full", "summary"] = "full") -> dict:
+                      snapshot_id: str | None = None, detail: Literal["full", "summary"] = "full",
+                      include_description: bool = False) -> dict:
         """Search current Jira issues with exact JQL inside configured search projects.
         Returns issues, total, hasMore, nextStartAt and snapshotId; max_results is 1..100,
         start_at is zero-based. Follow every page with the same JQL and returned snapshotId
         (when present) before reporting a complete count. There is no implicit total cap.
         For calendar reports use explicit date boundaries and distinguish resolved from updated;
         a recent update does not prove completion, and current assignee is not historical ownership.
-        For progress summaries, read relevant tickets with get_ticket(detail=read) and get_comments.
+        For progress summaries, reuse returned metadata and request needed bodies in a batch;
+        add get_ticket(detail=read) or get_comments only for missing/rendered body or discussion evidence.
         Use get_evidence_page(kind=comments) if older or complete discussion is needed; field history
         is for questions about changes or exact event timing, not routine discovery of every result.
         Issue url is a user-facing Jira link; self is a REST URL. Caches are shared with the UI.
-        Prefer detail=summary for discovery: it omits descriptions, avatars and custom fields from
-        the response only. Use full when those fields are needed; pagination and caches are unchanged.
+        Prefer detail=summary for discovery: it trims metadata avatars and custom fields in the response.
+        Description is excluded by default. For needed candidates use JQL key in (...) and
+        include_description=true to collect complete raw bodies in the same Jira search, without
+        per-ticket GET fan-out or fetching attachments/issue links. Other field selection is unchanged.
+        The description switch is independent of detail: true includes the body even with summary.
+        Raw description retains Jira markup;
+        use get_ticket(read/edit) when a rendered/editable representation is actually needed.
+        Preserve include_description with the snapshot on following pages; changing the switch starts
+        a new first-page search. descriptionMissingKeys identifies requested bodies not returned;
+        a returned null/empty description is a known empty body. Do not re-read fields already obtained.
         """
         if not 1 <= max_results <= 100 or start_at < 0:
             raise ValueError("max_results는 1~100, start_at은 0 이상이어야 합니다.")
@@ -36,19 +46,74 @@ def register_reads(register, runtime):
         if order:
             query += " ORDER BY " + " ".join(t.value for t in order)
         page = runtime.client.search_issues_page(query, start_at=start_at, max_results=max_results,
-                                                 snapshot_id=snapshot_id)
+            snapshot_id=snapshot_id, **({"fields": runtime.client._issue_fields(light=True) + ",description",
+                                       "light": False} if include_description else {}))
         base = runtime.settings.jira_base.rstrip("/")
         # Add navigation metadata without changing the shared snapshot/issue cache.
-        return {**page, "issues": [
-            {**(issue_projection(issue) if detail == "summary" else issue), "url": base + "/browse/" + issue["key"]}
-            for issue in page.get("issues") or []
-        ]}
+        issues = []
+        for issue in page.get("issues") or []:
+            projected = issue_projection(issue) if detail == "summary" else {
+                **issue, "fields": {key: value for key, value in issue["fields"].items() if key != "description"}}
+            if include_description and "description" in issue["fields"]:
+                projected["fields"]["description"] = issue["fields"]["description"]
+            if not include_description and isinstance(projected.get("renderedFields"), dict):
+                projected["renderedFields"] = {key: value for key, value in projected["renderedFields"].items()
+                                               if key != "description"}
+            issues.append({**projected, "url": base + "/browse/" + issue["key"]})
+        result = {**page, "issues": issues}
+        if include_description:
+            result.update(descriptionRequested=True, descriptionMissingKeys=[
+                issue["key"] for issue in page.get("issues") or [] if "description" not in issue["fields"]])
+        return result
+
+    def get_tickets(keys: Annotated[list[str], Field(min_length=1, max_length=100)],
+                    include_description: bool = False) -> dict:
+        """Read 1..100 known Jira keys together, using batched search rather than per-ticket GETs.
+        Use search_issues to discover candidates, get_tickets when keys are already known,
+        and get_ticket(read/edit) for one rendered/editable description. Other metadata uses
+        the existing search field selection. Descriptions are excluded by default; enable
+        include_description only for the needed key set to receive complete raw Jira markup.
+        Keys are normalized and deduplicated; issues preserve requested order. Returned
+        missingKeys means not returned (possibly unavailable or not visible), never proof of
+        nonexistence. complete=false requires reporting the missing scope. Missing requested
+        bodies appear separately in descriptionMissingKeys; returned null/empty is known empty.
+        A batch uses Jira search pages if the server applies a smaller page cap; it never
+        fetches individual issues. Split larger key sets into batches of at most 100.
+        """
+        requested = list(dict.fromkeys(key.upper() for key in keys))
+        for key in requested:
+            runtime.check_key(key)
+        query = "key in (" + ",".join(json.dumps(key) for key in sorted(requested)) + ") ORDER BY key ASC"
+        rows, missing_bodies, start, snapshot, seen = {}, set(), 0, None, set()
+        while True:
+            page = search_issues(query, start_at=start, max_results=100, snapshot_id=snapshot,
+                                 include_description=include_description)
+            for issue in page["issues"]:
+                if issue["key"] not in requested:
+                    raise ValueError("요청하지 않은 티켓이 다건 조회에 포함되었습니다.")
+                rows[issue["key"]] = issue
+            missing_bodies.update(page.get("descriptionMissingKeys") or [])
+            if not page["hasMore"]:
+                break
+            next_start = page.get("nextStartAt")
+            if type(next_start) is not int or next_start <= start or next_start in seen or next_start >= len(requested):
+                raise ValueError("다건 조회의 페이지 위치가 전진하지 않습니다.")
+            seen.add(start)
+            start, snapshot = next_start, page.get("snapshotId")
+        missing = [key for key in requested if key not in rows]
+        result = {"issues": [rows[key] for key in requested if key in rows], "requestedKeys": requested,
+                  "returned": len(rows), "missingKeys": missing, "complete": not missing}
+        if include_description:
+            result.update(descriptionRequested=True,
+                          descriptionMissingKeys=[key for key in requested if key in missing_bodies])
+        return result
 
     def get_ticket(key: str, fresh: bool = False, detail: Literal["full", "summary", "read", "edit"] = "full") -> dict:
         """Read one current ticket's metadata and complete description by Jira key.
         Returns the ticket view, including descriptionHtml for reading and descriptionEditHtml
         for safe editing. fresh=true waits for an upstream refresh; default reuses UI caches.
-        Start here for progress: combine metadata/description with get_comments for recent discussion.
+        For one ticket combine metadata/description with relevant recent discussion. For several
+        needed bodies prefer get_tickets(include_description=true), reusing already returned fields.
         If older discussion or a complete review is needed, use get_evidence_page(kind=comments).
         Read field history only when the question requires change chronology or unresolved discrepancies.
         This is the current ticket, not a past snapshot.
@@ -64,7 +129,7 @@ def register_reads(register, runtime):
 
     def get_comments(key: str, limit: int = 100) -> dict:
         """Read recent discussion for one ticket, newest first; limit=1..1000.
-        Pair with get_ticket metadata/description as the starting evidence for progress summaries.
+        Pair with ticket metadata/description already obtained in batch or through get_ticket.
         The UI cache holds at most sourceLimit=20 comments even when a larger limit is requested.
         Returns comments, returnedCount, limit, sourceLimit and conservative mayHaveMore.
         If this preview cannot answer the question, or a complete review is required, use
@@ -245,6 +310,6 @@ def register_reads(register, runtime):
         runtime.check_key(key)
         return {"documents": runtime.client.ticket_documents(key)}
 
-    for fn in (search_issues, get_ticket, get_comments, get_comment_source, get_history, get_children, get_epic,
+    for fn in (search_issues, get_tickets, get_ticket, get_comments, get_comment_source, get_history, get_children, get_epic,
                search_users, get_user, list_options, get_workload, get_attachments, get_documents):
         register(fn, read_only=True)
