@@ -27,7 +27,7 @@ export default {
       const space = row.space?.key || row.space || this.space;
       const id = String(row.id);
       this._savedBranches = this._savedBranches || {};
-      const versions = this._savedBranches[space] ||= new Map();
+      const versions = this._savedBranches[space] = this._savedBranches[space] || new Map();
       const known = (this.savedTreePages[space] || []).find(item => String(item.id) === id);
       const ancestry = row.ancestors || known?.ancestors || [];
       const observed = ancestry.map(parent => [String(parent.id), versions.get(String(parent.id))]);
