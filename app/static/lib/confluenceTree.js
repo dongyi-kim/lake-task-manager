@@ -13,14 +13,17 @@ export default {
     query() { this.searchOverrides = {}; this.activeMatch = ''; this.selectTreeMatch();
       this._treeQueue?.search(this.query ? this.tree.matches.filter(id => this.tree.nodes.get(id)?.hasChildren !== false) : null); },
     'tree.matches'() { this.selectTreeMatch(); },
-    favorites: { deep: true, handler() { this._treeQueue?.setFavorites(this.treeFavoriteIds()); } },
+    favorites: { deep: true, handler() { this._treeQueue?.setFavorites(this.treePriorityIds()); } },
+    recentDocuments: { deep: true, handler() { this._treeQueue?.setFavorites(this.treePriorityIds()); } },
   },
   activated() { if (this.space && !this._treeQueue) this.loadTree(); },
   deactivated() { this._treeQueue?.stop(); this._treeQueue = null; this.treeLoading = false; },
   beforeUnmount() { this._treeQueue?.stop(); },
   methods: {
-    treeFavoriteIds() {
-      return (this.favorites || []).filter(row => String(row.space?.key || row.space).toLowerCase() === String(this.space).toLowerCase()).map(row => String(row.id));
+    treePriorityIds() {
+      // The existing batched saved-page lane serves favorites and the ten visible recents.
+      return [...new Set([...(this.favorites || []), ...(this.recentDocuments || []).slice(0,10)]
+        .filter(row => String(row.space?.key || row.space).toLowerCase() === String(this.space).toLowerCase()).map(row => String(row.id)))];
     },
     async loadTree(reset = false) {
       if (!this.space) return;
@@ -34,7 +37,7 @@ export default {
         read: job => api.confluenceTreeBranch(space, job),
         bulkRead: (start, background) => api.confluenceTree(space, start, true, background),
         favoriteRead: (id, start) => api.confluenceTreeFavorite(space, id, start),
-        favorites: this.treeFavoriteIds(),
+        favorites: this.treePriorityIds(),
         changed: rows => { if (this._treeQueue === queue) this.treePages = rows; },
         state: ({ loading, pending, errors }) => { if (this._treeQueue !== queue) return;
           this.treeLoading = loading; this.treePending = pending;

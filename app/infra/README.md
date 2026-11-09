@@ -8,6 +8,7 @@
   `get_or_set`(폴백) · `get_or_set_swr`(stale-while-revalidate) · exact-key 묶음 무효화 · TTL prefix
   index 조회 · 주기 purge · snapshot(시계열) · recent(최근 열람) 제공.
 - **cache_policy.py** — 사용자 설정에 따른 freshness/display TTL, 요청별 수집 시각과 HTTP 응답 metadata.
+- **recent_history.py** — Confluence 문서 ID 기반 최근 열람 URL 정규화·기존 이력 중복 제거(100개, 원래 열람 시각 보존).
 - **settings.py** — config 로딩(jira.yml·wbs_config·people) + 경로 탐색(dev/frozen/컨테이너) + `Settings` + `is_manager`.
   ★ `SRC_DIR = Path(__file__)...parent×3` — 이 파일이 **app/infra/** 에 있어 repo 루트까지 3단계다(이동 시 주의).
 - **prefs.py** — 사용자 환경설정 JSON 로드/저장(app_prefs.json — 커밋 금지).

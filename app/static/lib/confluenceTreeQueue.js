@@ -115,7 +115,9 @@ export class ConfluenceTreeQueue {
     for (const [key, job] of this.queue) if (job.favoriteIds && !job.favoriteIds.some(id => this.favorites.includes(id))) this.queue.delete(key);
     if (!this.ready || this.complete || !this.favoriteRead) return;
     const pending = new Set([...(this.active?.favoriteIds || []), ...[...this.queue.values()].flatMap(job => job.favoriteIds || [])]);
-    const missing = this.favorites.filter(id => !this.focusDone.has(id) && !this.subtreeReady(id) && !pending.has(id));
+    const missing = this.favorites.filter(id => !this.focusDone.has(id)
+      && !this.focusRows.get(id)?.ancestors?.some(a => this.focusDone.has(String(a.id)))
+      && !this.subtreeReady(id) && !pending.has(id));
     for (let offset = 0; offset < missing.length; offset += 20) {
       const ids = missing.slice(offset, offset + 20).sort();
       this.enqueue({parent:'@favorite:' + ids.join(','), favoriteIds:ids, start:0, depth:0, rank:-1});
