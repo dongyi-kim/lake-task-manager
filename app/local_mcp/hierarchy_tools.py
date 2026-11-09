@@ -23,7 +23,8 @@ def register_hierarchy(register, runtime):
         total counts returned-scope visible rows; when partial=true it is a lower bound.
         Hidden Jira membership cannot be discovered; missing lists known denied/failed branches.
         This discovers membership/current fields, not descendant comments or history. For progress,
-        use relevant tickets' get_ticket and get_comments; page older discussion with
+        reuse returned fields, batch needed bodies with search_issues(include_description=true), and
+        add get_comments only for relevant discussion; page older discussion with
         get_evidence_page(kind=comments) when needed. Do not routinely read every descendant's
         field history; request kind=history for specific change/timing questions only.
         Parent/SubTask rows are separate hierarchy levels, not automatically additive work units.

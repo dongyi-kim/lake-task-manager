@@ -7,10 +7,14 @@ from pydantic import Field
 
 def register_guides(register, runtime):
     def get_content_guide(
-        skill: Literal["", "ltm-task-authoring", "ltm-comment-authoring", "ltm-bulk-task-create", "ltm-confluence-authoring"] = "",
+        skill: Literal["", "ltm-task-authoring", "ltm-comment-authoring", "ltm-bulk-task-create", "ltm-confluence-authoring",
+                       "ltm-work-research", "ltm-work-reporting"] = "",
         path: Annotated[str, Field(max_length=200)] = "SKILL.md",
     ) -> dict:
-        """Read LTM's version-matched Task, comment, bulk-create or Confluence authoring skills.
+        """Read LTM's enabled, version-matched packaged skills. Only catalog-listed skills are available.
+        Candidate research/reporting guides, when enabled, cover investigations, period reports,
+        grounded counts and client-local checkpoints/resume. They do not grant publishing permission
+        or provide filesystem access. Authoring guides cover Task, comment, bulk-create and Confluence.
         With no skill, return the catalog and each skill's file manifest. Choose a skill to read
         SKILL.md; follow its relative references with the same skill and path, e.g.
         references/content-format.md or references/people-and-links.md. Returns URI, MIME,

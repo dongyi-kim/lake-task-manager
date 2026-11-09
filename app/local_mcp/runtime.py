@@ -52,7 +52,8 @@ write_context_guard = ContextVar("ltm_mcp_write_context_guard", default=None)
 class LocalMcpRuntime:
     def __init__(self, *, get_client, settings, secret_path, require_edit=lambda key: None,
                  require_person_access=lambda user: None, classify_error=None,
-                 require_manager=None, require_module_access=None, scoped_people=lambda: {}, request_login=None):
+                 require_manager=None, require_module_access=None, scoped_people=lambda: {}, request_login=None,
+                 include_research_skills=True):
         self.get_client, self.settings = get_client, settings
         self.port = settings.app_port
         self.url = f"http://127.0.0.1:{self.port}/mcp"
@@ -68,7 +69,7 @@ class LocalMcpRuntime:
         self._work_lane = ToolLane(8)
         self._control_lane = ToolLane(2)
         self.started = False
-        self.skill_catalog = SkillCatalog()
+        self.skill_catalog = SkillCatalog(include_research=include_research_skills)
         self.server = MCPServer(
             "lake-task-manager", log_level="WARNING", extensions=[SkillsExtension(self.skill_catalog)], instructions=(
                 "The running local LTM instance shares its Jira authentication and caches. "
@@ -91,13 +92,18 @@ class LocalMcpRuntime:
                 "For a single ticket start with get_content_guide(skill='ltm-task-authoring'); "
                 "comments use ltm-comment-authoring, bulk creation ltm-bulk-task-create, documents ltm-confluence-authoring. "
                 "Read referenced guides only when needed for the task, not the whole catalog. "
-                "Use search_issues(detail='summary') to discover keys and get_ticket(detail='read' or 'edit') "
-                "to avoid duplicate body representations; full output remains available. "
-                "For progress summaries, start with ticket metadata/description and get_comments. "
+                "Use scoped search_issues(detail='summary') for batched discovery. Descriptions are off by default; "
+                "use get_tickets(keys=[...]) for a known key set, enabling include_description only when needed. Reuse returned fields "
+                "before individual reads. get_ticket(detail='read' or 'edit') supplies rendered/editable bodies "
+                "when needed; raw search descriptions retain Jira markup. "
+                "For progress summaries, start with metadata and needed body/discussion evidence; "
+                "use get_comments only for relevant recent discussion not already obtained. "
                 "Use get_evidence_page(kind='comments') when older or complete discussion is needed. "
                 "Read field history only to answer change chronology, transition timing, historical ownership "
                 "or unresolved discrepancies; do not routinely fetch history for every ticket or descendant. "
                 "get_evidence_page reads one key only, never child tickets. "
+                "Continue evidence pages by copying data.nextCall.arguments, not nextStartAt alone; "
+                "long records also need the returned record_offset. Stop if continuation arguments do not advance. "
                 "For ticket descriptions, comments and Confluence documents, recommend sharing a readable "
                 "draft or proposed changes and the destination for user confirmation before submission; "
                 "see references/draft-review.md in any authoring skill. Honor existing approval of that "
@@ -106,7 +112,14 @@ class LocalMcpRuntime:
                 "Task/comment HTML and bulk description Markdown are different input contracts. "
                 "Confluence uses storage XHTML and expected published versions; read ltm-confluence-authoring "
                 "before editing. A matching published version never proves collaborative drafts are absent. "
-                "Use attachment downloadUrl for full binary files, not repeated large base64 tool output."))
+                "Use attachment downloadUrl for full binary files, not repeated large base64 tool output.") + (
+                " Candidate investigation guides are enabled for evaluation: use ltm-work-research for "
+                "work context, history, progress and contributions; ltm-work-reporting for period totals "
+                "and report drafts. Discover them through the same skill catalog/get_content_guide. "
+                "For multi-page investigations read their checkpoint-resume reference and use client-local "
+                "files when available; if no file tool exists, disclose that and provide a resume brief. "
+                "These read/draft guides do not authorize publishing or add file tools."
+                if include_research_skills else ""))
         register_reads(self.register, self)
         register_evidence(self.register, self)
         register_hierarchy(self.register, self)

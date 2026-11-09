@@ -9,6 +9,8 @@ description: LTM MCP로 특정 티켓에 댓글을 작성하거나 기존 댓글
 
 ## 필요한 참고 문서
 
+- [한국어 작성과 검수](references/korean-writing.md): 원문 주장과 확인한 사실, 진행·완료·보류 구분.
+
 - [제출 전 초안 검토](references/draft-review.md): 첨부 업로드 전 검토와 기존 승인 재사용.
 - [작성 형식](references/content-format.md): HTML·표·체크리스트·코드·첨부 이미지. 영역 구분은 본문 전용이다.
 - [사람과 링크](references/people-and-links.md): 이름 식별, 실제 멘션, Jira/Confluence/외부 링크.

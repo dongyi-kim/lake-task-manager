@@ -1,5 +1,15 @@
 # Local MCP
 
+## 조사·보고 스킬 (#190)
+
+`ltm-work-research`와 `ltm-work-reporting`을 실행 중인 MCP의 기본 카탈로그에 제공한다.
+기존 작성 스킬 4개를 함께 유지하며, 통제 평가에는 `include_research_skills=False`로 제외할 수 있다.
+Skills 확장과 `get_content_guide`에서 같은 파일·digest를 읽는다.
+스킬은 본문·댓글 우선 조사, 실적 단위·근거 검수, 클라이언트 로컬 중간 저장과 재개를 안내한다.
+LTM에 파일 도구를 추가하지 않으며, 파일 기능이 없는 클라이언트에는 재개 요약을 안내한다.
+제품 회귀·기본/대체 경로와 첫 후보 실행을 검증한 뒤 사용자 요청으로 1차 배포하며,
+전체 반복 A/B·복구 검증은 후속 평가에서 이어간다.
+
 실행 중인 LTM이 `http://127.0.0.1:<설정 포트>/mcp`에서 표준 Streamable HTTP MCP를 제공한다.
 별도 Jira 로그인, LLM 키, 별도 서버 실행이 필요 없다. UI와 같은 `JiraClient`, 인증 provider,
 JQL leaf/issue/user/Epic/Confluence 캐시, mutation invalidation을 사용한다.
@@ -69,7 +79,7 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 |---|---|
 | 인증 상태·복구·로그인 시작 | `get_auth_status`, `authenticate` |
 | 작성 스킬·콘텐츠 예제 | `get_content_guide` |
-| JQL·페이지 | `search_issues` |
+| JQL·페이지·알고 있는 key 묶음 | `search_issues`, `get_tickets` |
 | 티켓 본문·댓글·이력·자식·Epic | `get_ticket`, `get_comments`, `get_comment_source`, `get_history`, `get_field_history`, `get_children`, `get_epic`, `get_ticket_context` |
 | 원본 댓글·변경이력 페이지, 전체 하위 계층 | `get_evidence_page`, `get_descendants` |
 | 통합검색·Confluence 검색/본문 | `search_workspace`, `search_confluence_documents`, `read_confluence_document` |
@@ -94,10 +104,26 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 검색은 `search.jira.projects` 범위로 제한한다. `search_issues`는 한 페이지 최대 100건이며 전체 건수에
 숨은 제한이 없다. `hasMore`, `nextStartAt`, `snapshotId`를 따라 동일 snapshot의 다음 페이지를 요청한다.
 로컬 정렬을 지원하지 않는 JQL은 기존 Jira pagination으로 폴백하며, 이 경우 snapshot ID가 없다.
+알고 있는 여러 key는 `get_tickets(keys=[...])`로 한 번에 최대 100건씩 읽는다. 기본정보는 유지하고
+부하가 큰 description만 기본 제외하며, 필요한 key 집합에만 `include_description=true`를 켠다.
+내부에서는 실제 Jira 검색을 묶어 사용하며 key마다 개별 GET을 반복하지 않는다. 서버가 검색 페이지를
+작게 제한하면 실제 다음 위치를 따라 수집한다. 입력 중복은 제거하고 결과는 요청 순서를 유지한다.
+`missingKeys`는 미반환 범위이며 권한·비가시성 등과 구분할 수 없으므로 없어진 티켓이라고 단정하지
+않는다. 이때 `complete=false`이다. 요청한 본문 누락은 `descriptionMissingKeys`로 별도 표시하며,
+반환된 null/빈 본문과 구분한다. 조회 실패는 0건으로 반환하지 않는다.
+
+`search_issues`는 후보 탐색용이고 같은 본문 옵션을 지원한다. 다음 페이지의 JQL·snapshotId·
+`include_description` 값은 유지한다. 검색/다건의 본문은 원래 Jira markup이다. 한 티켓의 렌더링·
+편집 원문이 필요하면 `get_ticket(detail="read"/"edit")`을 사용하고 이미 받은 상태·본문은 재사용한다.
+
 읽기 결과는 MCP structured content의 `{ok: true, data: ...}`에 있다. 제한이 있는 댓글/이력 조회는
 요청 limit을 응답에 명시한다. `get_history`만 `include_children=true`를 명시하면 직계 자식의
 상태 변경도 포함한다(기본 false). `get_evidence_page`는 항상 지정한 티켓 한 개의 선택한 종류만
 조회하며 자식 댓글·변경 이력을 자동 수집하지 않는다.
+이어 읽기는 `data.nextCall.arguments` 전체를 같은 도구에 복사한다. 긴 기록은 페이지 위치와 내부
+문자 위치를 함께 옮겨야 하므로 `nextStartAt`만 반복하지 않는다. nextCall은 요청한 묶음 크기를
+유지하며 응답의8KiB 제한에도 포함된다. 기존 start_at/record_offset 인자도 유효하다. nextCall이
+null이어도 sourceComplete/partial을 확인하고, 미확인 원본을 전체 없음으로 단정하지 않는다.
 읽기에는 `cache` 출처 정보와 `partial` 여부도 포함한다. 출처를 수집할 수 있으면 가장 오래된
 `fetchedAt`·`freshUntil`·`displayUntil`, stale 여부와 policy revision을 반환한다.
 관측 정보가 없으면 `available: false, state: unknown`으로 표시하며 최신 데이터라고 단정하지 않는다.

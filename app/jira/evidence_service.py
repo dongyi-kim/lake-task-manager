@@ -19,8 +19,23 @@ def _json_size(value):
     return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
 
 
+def _with_next_call(page):
+    next_call = None
+    if page["hasMore"] is True and type(page.get("nextStartAt")) is int:
+        start, offset = page["nextStartAt"], 0
+        for item in page["items"]:
+            if "recordJson" in item and type(item.get("nextRecordOffset")) is int:
+                start, offset = item["sourceIndex"], item["nextRecordOffset"]
+                break
+        next_call = {"name": "get_evidence_page", "arguments": {
+            "key": page["key"], "kind": page["kind"], "start_at": start,
+            "max_results": page["maxResults"], "record_offset": offset}}
+    return {**page, "nextCall": next_call}
+
+
 def _bounded_evidence_page(page, record_offset):
     """Keep records lossless while bounding each model-visible response by UTF-8 bytes."""
+    page = _with_next_call(page)
     rows = page["items"]
     if record_offset and not rows:
         raise ValueError("record_offset에 해당하는 원본 기록이 없습니다.")
@@ -29,8 +44,8 @@ def _bounded_evidence_page(page, record_offset):
 
     def prefix(count):
         more = count < len(rows) or page["hasMore"]
-        return {**page, "items": rows[:count], "returned": count,
-                "hasMore": more, "nextStartAt": page["startAt"] + count if more else None}
+        return _with_next_call({**page, "items": rows[:count], "returned": count,
+                "hasMore": more, "nextStartAt": page["startAt"] + count if more else None})
 
     if not record_offset:
         # Stop only between complete records. The next page starts at the first omitted row.
@@ -58,9 +73,9 @@ def _bounded_evidence_page(page, record_offset):
                 "recordJson": record[record_offset:end], "recordOffset": record_offset,
                 "nextRecordOffset": next_offset, "totalCharacters": len(record),
                 "recordSha256": digest}
-        return {**page, "items": [item], "returned": 1, "hasMore": more,
+        return _with_next_call({**page, "items": [item], "returned": 1, "hasMore": more,
                 "nextStartAt": (page["startAt"] if next_offset is not None else
-                                page["startAt"] + 1) if more else None}
+                                page["startAt"] + 1) if more else None})
 
     lower, upper = record_offset, min(len(record), record_offset + EVIDENCE_PAGE_MAX_BYTES)
     while lower < upper:
@@ -132,10 +147,11 @@ def _comments_page(client, key, start_at, max_results):
 
     source_start = start_at // 100 * 100
     source = source_page(source_start)
-    if (source["sourceComplete"] and source_start + len(source["items"]) <= start_at < source["total"]):
-        # Jira may clamp maxResults below 100. Resume exactly where the caller needs data,
-        # never jump by the requested source page size or mistake a short page for the end.
-        source_start = start_at
+    while (source["sourceComplete"] and source_start + len(source["items"]) <= start_at < source["total"]):
+        # Align to the observed server page size, not each small MCP slice. Reuse the
+        # clamped source page across slices; a changed clamp is handled by the loop.
+        size = len(source["items"])
+        source_start += (start_at - source_start) // size * size
         source = source_page(source_start)
     rows = source["items"][start_at - source_start:start_at - source_start + max_results]
     more = start_at + len(rows) < source["total"] if source["sourceComplete"] else None
@@ -176,8 +192,8 @@ def _history_page(client, key, start_at, max_results):
 
 def get_evidence_page(client, key, kind="comments", start_at=0, max_results=100, record_offset=0):
     validate_page(start_at, max_results)
-    if type(record_offset) is not int or record_offset < 0 or (record_offset and max_results != 1):
-        raise ValueError("record_offset은 0 이상 정수이며, 이어 읽을 때 max_results=1을 사용하세요.")
+    if type(record_offset) is not int or record_offset < 0:
+        raise ValueError("record_offset은 첫 원본 기록의 0 이상 문자 위치여야 합니다.")
     key = key.strip().upper()
     if kind == "comments":
         page = _comments_page(client, key, start_at, max_results)

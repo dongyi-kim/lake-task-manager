@@ -6,6 +6,9 @@ import json
 from types import SimpleNamespace
 
 import pytest
+import anyio
+from jsonschema import Draft202012Validator
+from mcp import Client
 
 from app.jira.evidence_service import get_evidence_page
 
@@ -169,7 +172,95 @@ def test_record_digest_exposes_edits_between_continuation_reads():
 
 
 @pytest.mark.parametrize("arguments", [{"record_offset": -1}, {"record_offset": True},
-    {"record_offset": 1}, {"max_results": 1, "record_offset": 1000000}])
+    {"max_results": 1, "record_offset": 1000000}])
 def test_record_continuation_rejects_invalid_ranges(arguments):
     with pytest.raises(ValueError):
         get_evidence_page(client_for("comments", [{"id": "1", "body": "hello"}]), "DL-1", **arguments)
+
+
+@pytest.mark.parametrize('kind,source_cap', [('comments', 100), ('comments', 17), ('history', 100)])
+@pytest.mark.parametrize('batch_size', [3, 100])
+def test_ready_continuation_roundtrips_middle_chunk_and_keeps_batch_size(kind, source_cap, batch_size):
+    text = '긴 원문🙂 "인용" \\ 줄\n' * 2000
+    rows = [{'id': '0', 'body': 'before'}, {'id': '1', 'body': text},
+            *[{'id': str(index), 'body': 'after'} for index in range(2, 32)]]
+    if kind == 'history':
+        rows = [{'id': row['id'], 'items': [{'field': 'description', 'toString': row['body']}]} for row in rows]
+    client = client_for(kind, rows, source_cap=source_cap)
+    arguments = {'key': 'DL-1', 'kind': kind, 'max_results': batch_size}
+    collected, fragments, previous, resumed_batches = [], [], None, []
+    for _ in range(100):
+        page = get_evidence_page(client, **arguments)
+        assert_bounded(page)
+        position = (page['startAt'], arguments.get('record_offset', 0))
+        assert previous is None or position > previous
+        previous = position
+        for row in page['items']:
+            if 'recordJson' in row:
+                fragments.append(row['recordJson'])
+                if row['nextRecordOffset'] is None:
+                    decoded = json.loads(''.join(fragments))
+                    assert hashlib.sha256(''.join(fragments).encode()).hexdigest() == row['recordSha256']
+                    collected.append(decoded)
+            else:
+                collected.append(row)
+        if page['startAt'] >= 2:
+            resumed_batches.append(page['returned'])
+        continuation = page['nextCall']
+        if continuation is None:
+            assert page['hasMore'] is False
+            break
+        assert continuation['name'] == 'get_evidence_page'
+        arguments = continuation['arguments']
+        assert arguments['key'] == 'DL-1' and arguments['kind'] == kind and arguments['max_results'] == batch_size
+    else:
+        pytest.fail('continuation did not terminate')
+    assert [row['id'] for row in collected] == [row['id'] for row in rows]
+    assert fragments and any(size > 1 for size in resumed_batches)
+    if kind == 'comments':
+        assert collected[1]['body'] == text
+    else:
+        assert collected[1]['items'][0]['toString'] == text
+    assert len(client.source_calls) == (2 if kind == 'comments' and source_cap == 17 else 1)
+
+
+def test_sdk_copies_ready_arguments_without_repeating_or_refetching_comments(build_env):
+    env = build_env()
+    key = env.client.create_child(None, 'Task', 'continuation contract')['key']
+    path = f'/rest/api/2/issue/{key}/comment'
+    bodies = ['before', '긴 원문🙂 "인용" 줄\n' * 1500, 'after 1', 'after 2']
+    for body in bodies:
+        env.provider.post_json(path, json_body={'body': body})
+    env.calls.clear()
+    async def scenario():
+        async with Client(env.runtime.server) as client:
+            tool = next(row for row in (await client.list_tools()).tools if row.name == 'get_evidence_page')
+            args, positions, records, fragments = {'key': key}, set(), [], []
+            for _ in range(80):
+                response = await client.call_tool('get_evidence_page', args)
+                assert not response.is_error, response.structured_content
+                Draft202012Validator(tool.output_schema).validate(response.structured_content)
+                page = response.structured_content['data']
+                assert_bounded(page)
+                position = (page['startAt'], args.get('record_offset', 0))
+                assert position not in positions
+                positions.add(position)
+                for row in page['items']:
+                    if 'recordJson' in row:
+                        fragments.append(row['recordJson'])
+                        if row['nextRecordOffset'] is None:
+                            combined = ''.join(fragments)
+                            assert hashlib.sha256(combined.encode()).hexdigest() == row['recordSha256']
+                            records.append(json.loads(combined))
+                    else:
+                        records.append(row)
+                if page['nextCall'] is None:
+                    assert not page['hasMore'] and page['complete']
+                    break
+                args = page['nextCall']['arguments']
+                assert args['max_results'] == 100
+            else:
+                pytest.fail('SDK continuation did not finish')
+            assert [row['body'] for row in records] == bodies
+            assert len([call for call in env.calls if call[0] == 'get' and call[1] == path]) == 1
+    anyio.run(scenario)

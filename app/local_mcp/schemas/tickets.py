@@ -27,6 +27,18 @@ class SearchPage(OpenModel):
     nextStartAt: int | None
     snapshotId: str | None = None
     canonicalJql: str | None = None
+    descriptionRequested: bool | None = Field(default=None, description="True when raw descriptions were explicitly requested in the batched search.")
+    descriptionMissingKeys: list[str] | None = Field(default=None, description="Issues whose requested description was not returned. A returned null/empty description is a known empty body.")
+
+
+class TicketBatch(OpenModel):
+    issues: list[RawIssue]
+    requestedKeys: list[str]
+    returned: int
+    missingKeys: list[str] = Field(description="Requested keys not returned; may be unavailable or not visible. Does not establish nonexistence.")
+    complete: bool = Field(description="All requested tickets were returned. Description completeness is separate.")
+    descriptionRequested: bool | None = None
+    descriptionMissingKeys: list[str] | None = None
 
 
 class TicketBadge(OpenModel):
@@ -414,6 +426,19 @@ class EvidenceChunk(OpenModel):
     recordSha256: str
 
 
+class EvidenceArguments(OpenModel):
+    key: str
+    kind: Literal["comments", "history"]
+    start_at: int = Field(ge=0)
+    max_results: int = Field(ge=1, le=100)
+    record_offset: int = Field(ge=0)
+
+
+class EvidenceCall(OpenModel):
+    name: Literal["get_evidence_page"]
+    arguments: EvidenceArguments
+
+
 class EvidencePage(OpenModel):
     key: str
     kind: Literal["comments", "history"]
@@ -430,6 +455,7 @@ class EvidencePage(OpenModel):
     returned: int
     hasMore: bool | None
     nextStartAt: int | None
+    nextCall: EvidenceCall | None = Field(default=None, description="Copy these complete continuation arguments, including record offset. Null means no proven next call; inspect sourceComplete/partial before claiming completeness.")
     availableTotal: int | None = None
 
 
@@ -481,7 +507,7 @@ class Descendants(OpenModel):
 
 
 DATA_MODELS = {
-    "search_issues": SearchPage, "get_ticket": TicketView | CompactTicket, "get_comments": Comments,
+    "search_issues": SearchPage, "get_tickets": TicketBatch, "get_ticket": TicketView | CompactTicket, "get_comments": Comments,
     "get_comment_source": CommentSource,
     "get_history": History, "get_children": Children, "get_epic": Epic,
     "search_users": Users, "get_user": Identity | None, "list_options": Options,
