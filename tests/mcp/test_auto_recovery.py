@@ -67,8 +67,11 @@ def test_live_app_automatically_rebuilds_stopped_sdk_and_all_profiles(build_env,
         async with env.app.router.lifespan_context(env.app):
             async with http_client(env) as http:
                 catalog = await rpc(http, "tools/list")
-                old_server, old_loop = env.runtime.server, host._loop
-                old_loop.call_soon_threadsafe(host._stop.set)
+                generation = host._worker.current
+                host._worker.state = "unresponsive"
+                assert host._loop is None  # A strict health sample is not the owned worker handle.
+                old_server, old_loop = env.runtime.server, generation.loop
+                generation.stop.set()  # Fault injection targets ownership, not a nullable health sample.
                 assert (await http.get("/test-live")).json() == {"status": "ok"}
                 await wait_for_replacement(host, old_loop)
                 assert env.runtime.server is not old_server
