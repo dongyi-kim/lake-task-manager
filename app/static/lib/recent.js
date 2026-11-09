@@ -14,6 +14,15 @@ let lastOpened = '';
 const unsynced = new Map();
 export const recentRevision = () => revision;
 
+// Another tab's mirror changes invalidate snapshots already in flight here.
+window.addEventListener?.('storage', event => {
+  if ((event.key === LOCAL_KEY || event.key === null) &&
+      (!event.storageArea || event.storageArea === localStorage)) {
+    revision++; lastOpened = '';
+    window.dispatchEvent(new CustomEvent('recent-changed'));
+  }
+});
+
 const _BROWSE = /\/browse\/([A-Za-z][A-Za-z0-9]*-\d+)/;
 
 /** 저장 키 정규화 — **티켓의 정체는 키**다. URL(호스트 포함)을 정체로 삼으면 같은 티켓이
@@ -94,10 +103,10 @@ export function hydrateRecent(items, authoritativeKind = '') {
 /** 지우기 UI도 서버 응답 전에 로컬 목록에서 즉시 빠지게 한다. */
 export function forgetRecent(url) {
   revision++;
-  const target = canonicalUrl(url || '', 'confluence');
-  unsynced.delete(target); _last.delete(target);
-  if (lastOpened === target) lastOpened = '';
-  save(stored().filter((item) => canonicalUrl(item.url, item.kind, item) !== target));
+  const targets = new Set([canonicalUrl(url || ''), canonicalUrl(url || '', 'confluence')]);
+  for (const target of targets) { unsynced.delete(target); _last.delete(target); }
+  if (targets.has(lastOpened)) lastOpened = '';
+  save(stored().filter((item) => !targets.has(canonicalUrl(item.url, item.kind, item))));
 }
 
 export function recordOpen(item) {
@@ -115,6 +124,7 @@ export function recordOpen(item) {
   };
   const signature = JSON.stringify(payload), previous = _last.get(url);
   if (lastOpened === url && previous && previous.signature === signature && now - previous.at < DEDUP_MS) return Promise.resolve(true);
+  payload.openedAt = now / 1000; // Server arrival order may differ from visit order.
   lastOpened = url;
   _last.set(url, {at:now, signature});
   revision++;

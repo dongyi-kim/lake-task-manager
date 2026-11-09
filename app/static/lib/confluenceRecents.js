@@ -10,16 +10,13 @@ export default {
   },
   mounted() {
     this._recentChanged = () => this.syncRecentDocuments();
-    this._recentStorage = event => { if (event.key === 'recent.items') this.syncRecentDocuments(); };
     this._recentFocus = () => { if (this.base && !document.hidden) this.loadRecentDocuments(false); };
     window.addEventListener('recent-changed', this._recentChanged);
-    window.addEventListener('storage', this._recentStorage);
     window.addEventListener('focus', this._recentFocus);
   },
   activated() { if (this.base) this.loadRecentDocuments(false); },
   beforeUnmount() {
     window.removeEventListener('recent-changed', this._recentChanged);
-    window.removeEventListener('storage', this._recentStorage);
     window.removeEventListener('focus', this._recentFocus);
   },
   methods: {
