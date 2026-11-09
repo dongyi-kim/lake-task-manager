@@ -153,7 +153,7 @@ class LocalMcpRuntime:
         # all live application state, but give every profile fresh SDK ownership.
         previous = self.server
         self.server = MCPServer("lake-task-manager", log_level="WARNING", instructions=previous.instructions,
-            extensions=[SkillsExtension(self.skill_catalog)])
+            extensions=[SkillsExtension(self.skill_catalog)] if self.enable_skills_extension else [])
         for tool in previous._tool_manager.list_tools():
             self.server._tool_manager._tools[tool.name] = tool
         self.http_app = self.server.streamable_http_app(streamable_http_path="/mcp", stateless_http=True,

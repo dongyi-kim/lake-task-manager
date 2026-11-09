@@ -176,6 +176,12 @@ class EvaluationFixture:
             self._token = self.runtime.credentials.token()
             self._secret_owned = True
             self._observe_tools()
+            original_factory = self.runtime.transport_host._worker.factory
+            def observed_factory():
+                applications = original_factory()
+                self._observe_tools()  # Fresh SDK instances must keep the same evidence observers.
+                return applications
+            self.runtime.transport_host._worker.factory = observed_factory
             self.tool_catalog = [tool.model_dump(mode="json", by_alias=True)
                                  for tool in anyio.run(self.runtime.server.list_tools)]
             self.catalog_sha256 = _hash(self.tool_catalog)
@@ -184,8 +190,8 @@ class EvaluationFixture:
             extra_apps = self.extra_http_apps()
             @asynccontextmanager
             async def lifespan(_app):
-                async with AsyncExitStack() as stack:
-                    for http_app in [self.runtime.http_app, *[app for _, app in extra_apps]]:
+                async with self.runtime.transport_host.lifespan(), AsyncExitStack() as stack:
+                    for _, http_app in extra_apps:
                         await stack.enter_async_context(http_app.router.lifespan_context(http_app))
                     self.runtime.started = True
                     try:
@@ -197,8 +203,9 @@ class EvaluationFixture:
             reads = build_ticket_router(get_client=lambda: self.client)
             reads.routes[:] = [route for route in reads.routes if "GET" in (getattr(route, "methods", None) or ())]
             self.app.include_router(reads)
-            self.app.router.routes.append(Route("/mcp", LocalGuard(
-                self.runtime.http_app, credentials=self.runtime.credentials, port=self.port),
+            def current_mcp():
+                return LocalGuard(self.runtime.http_app, credentials=self.runtime.credentials, port=self.port)
+            self.app.router.routes.append(Route("/mcp", self.runtime.transport_host.wrap(current_mcp, dynamic=True),
                 methods=["GET", "POST", "DELETE", "OPTIONS"]))
             for path, http_app in extra_apps:
                 self.app.router.routes.append(Route(path, LocalGuard(http_app,

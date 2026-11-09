@@ -625,3 +625,28 @@ the complete related payload file passed18checks. No CI timeout or product
 pagination contract was widened. Current guide0.1.6 needs its own frozen source
 and fresh checks before the still-uncompleted220A/B+60recovery matrix. Prior raw
 scores, cache replay and all failed attempts remain separate and immutable.
+
+### Desktop disconnect and supervised evaluation transport follow-up
+
+The later CI-only PR195 raises the total offline job budget from15 to20minutes;
+model phase timeouts remain600seconds. The exact prior source d6dc passed full CI,
+but its prepared v7 model prerequisites were held before execution when the user
+reported persistent Claude Desktop disconnects and requested background recovery
+and tray health. No v7 model result exists or is substituted for an older attempt.
+
+Product PR196 keeps the same stdio process/session alive through an HTTP outage,
+without replaying an uncertain write. PR197/198/199 add serialized worker generation
+ownership, real SDK/profile replacement, bounded health/recovery and tray status.
+Final related product checks92passed; independent Sol/high findings were fixed.
+The actual user's production logs/config remain unavailable. These are code/SDK
+regressions, not a new real-Claude quality evaluation.
+
+The private evaluation fixture now uses the product TransportHost instead of
+bypassing it. Rebuilding retains the default/fallback extension flag and reinstalls
+tool/resource/recovery observers on fresh SDK instances. Baseline/candidate guide
+selection remains independent; write handlers remain absent. Four combinations
+were RED on stopped health before integration and GREEN after it. Related private
+fixture/work/recovery checks48passed117.42s; no real model or external Jira call.
+An independent Sol/high static review found no Important issue. New exact-source
+CI and a new external freeze are required before fresh23 prerequisites or the still
+unfinished220A/B+60recovery matrix. Old raw attempts and scores remain immutable.
