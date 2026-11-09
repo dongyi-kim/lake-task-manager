@@ -9,7 +9,7 @@ from tools.agent_lang_ab import SCENARIOS, BATTERY_VERSION as SOURCE_BATTERY_VER
 from tools.agent_eval_review_specs import review_specs
 
 SUITE = "codex-mcp"
-BATTERY_VERSION = "1.0.1"
+BATTERY_VERSION = "1.0.2"
 PROMPT_VERSION = "codex-mcp-readonly-v1"
 OUTPUT_SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -83,7 +83,8 @@ def review_contract():
     additions = {
         "MCP-U1": ("Jira·Confluence 통합검색과 본문·댓글 근거", "factual_grounding",
             {"requiredTicketKeys": ["DL-7001"], "requiredDocumentTitles": ["[Lake] Iceberg Puffin NDV 적용 검토 노트"],
-             "requiredTools": ["search_workspace", "get_ticket", "get_comments", "read_confluence_document"],
+             "requiredTools": ["search_workspace", "get_comments", "read_confluence_document"],
+             "requiredTicketBody": "DL-7001 complete rendered/raw description from get_ticket, get_tickets or search_issues",
              "facts": ["older 20 candidate tables", "newer five-sample result", "StarRocks consumption unconfirmed"]}),
         "MCP-J1": ("JQL 3건 pagination 끝까지 읽기", "contract_actionability",
             {"jql": EXACT_JQL, "pageSize": 3, "orderedKeys": HISTORY_KEYS, "total": 8}),
@@ -112,7 +113,7 @@ def check(case, output, calls, ground_truth=None):
         failures.append("unapproved_tool_used")
     if not calls:
         failures.append("no_mcp_evidence")
-    successful = [row for row in calls if (row.get("result") or {}).get("ok") is True]
+    successful = [row for row in calls if not row.get("isError") and (row.get("result") or {}).get("ok") is True]
     names = {row.get("name") for row in successful}
     answer = output.get("structuredAnswer") or {}
     result_keys = answer.get("resultKeys") or []
@@ -160,11 +161,21 @@ def check(case, output, calls, ground_truth=None):
             if re.search(r"100\s*%|모두\s*완료|전부\s*완료", reply) and not re.search(r"(?:주장|댓글|문서|보고|아니|차이|불일치)", reply):
                 failures.append("false_completion_claim")
     if key == "MCP-U1":
-        for name in ("search_workspace", "get_ticket", "get_comments", "read_confluence_document"):
+        for name in ("search_workspace", "get_comments", "read_confluence_document"):
             if name not in names:
                 failures.append("missing_tool:" + name)
         require_keys(["DL-7001"])
-        for name in ("get_ticket", "get_comments"):
+        body_observed = False
+        for row in successful:
+            data = (row.get("result") or {}).get("data") or {}
+            if row.get("name") == "get_ticket" and data.get("key") == "DL-7001":
+                body_observed |= any(isinstance(data.get(field), str) for field in ("descriptionHtml", "descriptionEditHtml"))
+            elif row.get("name") in {"get_tickets", "search_issues"}:
+                body_observed |= any(issue.get("key") == "DL-7001" and "description" in (issue.get("fields") or {})
+                                     for issue in data.get("issues") or [])
+        if not body_observed:
+            failures.append("required_ticket_body_not_observed")
+        for name in ("get_comments",):
             if not any(row.get("name") == name and (row.get("arguments") or {}).get("key") == "DL-7001" for row in successful):
                 failures.append("required_ticket_evidence_not_read:" + name)
         if not any(row.get("name") == "search_workspace" and

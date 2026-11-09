@@ -1,0 +1,160 @@
+"""Real-smoke disagreements: bounded normalization and verified optional progress."""
+import copy
+
+import anyio
+from mcp import Client
+import pytest
+from support.evaluation_tmp import external_tmp_path as tmp_path
+
+from tools.codex_mcp_eval import work_cases
+from tools.codex_mcp_eval.work_evidence import source_observed
+from tools.codex_mcp_eval.work_fixture import WorkFixture
+
+
+def citation_calls():
+    return [
+        {"name": "get_ticket", "result": {"ok": True, "data": {
+            "key": "DL-94010", "url": "https://jira.example/jira/browse/DL-94010"}}},
+        {"name": "get_evidence_page", "result": {"ok": True, "data": {
+            "key": "DL-94010", "kind": "comments", "items": [{"id": "61010",
+                "self": "/jira/rest/api/2/issue/DL-94010/comment/61010"}]}}},
+    ]
+
+
+@pytest.mark.parametrize("tool", ["get_ticket", "search_issues", "get_tickets"])
+def test_observed_comment_self_can_use_the_observed_same_ticket_origin(tool):
+    source = {"kind": "comment", "id": "61010",
+              "url": "https://jira.example/jira/rest/api/2/issue/DL-94010/comment/61010"}
+    calls = citation_calls()
+    if tool != "get_ticket":
+        calls[0] = {"name": tool, "result": {"ok": True, "data": {"issues": [calls[0]["result"]["data"]]}}}
+    assert source_observed(calls, source)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("id", "DL-94010/comment/61010"), ("id", "61011"), ("kind", "ticket"),
+    ("url", "https://foreign.example/jira/rest/api/2/issue/DL-94010/comment/61010"),
+    ("url", "https://jira.example/jira/rest/api/2/issue/DL-94011/comment/61010"),
+    ("url", "https://jira.example/jira/browse/DL-94010?focusedCommentId=61010"),
+])
+def test_comment_citation_rejects_invented_or_cross_record_identity(field, value):
+    source = {"kind": "comment", "id": "61010",
+              "url": "https://jira.example/jira/rest/api/2/issue/DL-94010/comment/61010", field: value}
+    assert not source_observed(citation_calls(), source)
+
+
+def test_comment_normalization_requires_successful_same_ticket_and_record():
+    source = {"kind": "comment", "id": "61010",
+              "url": "https://jira.example/jira/rest/api/2/issue/DL-94010/comment/61010"}
+    for index in (0, 1):
+        calls = citation_calls()
+        calls[index]["result"]["ok"] = False
+        assert not source_observed(calls, source)
+    calls = citation_calls()
+    calls[1]["result"]["data"]["key"] = "DL-94011"
+    assert not source_observed(calls, source)
+
+
+@pytest.mark.parametrize('rest_id', ['DL-94010', '444'])
+def test_comment_can_use_the_same_observed_ticket_rest_self_origin(rest_id):
+    calls = citation_calls()
+    ticket = {'key': 'DL-94010', 'id': '444', 'url': 'https://browse.example/jira/browse/DL-94010',
+              'self': 'https://rest.example/jira/rest/api/2/issue/' + rest_id}
+    calls[0] = {'name': 'get_tickets', 'result': {'ok': True, 'data': {'issues': [ticket]}}}
+    source = {'kind': 'comment', 'id': '61010',
+              'url': 'https://rest.example/jira/rest/api/2/issue/DL-94010/comment/61010'}
+    assert source_observed(calls, source)
+    calls[0]['result']['ok'] = False
+    assert not source_observed(calls, source)
+
+
+@pytest.mark.parametrize('rest_self', [
+    'https://rest.example/jira/rest/api/2/issue/DL-94011',
+    'https://rest.example/jira/rest/api/2/issue/445',
+    'https://rest.example/jira/arbitrary/DL-94010',
+    'https://user:pass@rest.example/jira/rest/api/2/issue/DL-94010',
+    'https://rest.example/jira/rest/api/2/issue/DL-94010?x=1',
+    'https://rest.example/jira/rest/api/2/issue/DL-94010#fragment',
+])
+def test_comment_rejects_unrelated_or_unvalidated_rest_origins(rest_self):
+    calls = citation_calls()
+    calls[0] = {'name': 'get_tickets', 'result': {'ok': True, 'data': {'issues': [{
+        'key': 'DL-94010', 'id': '444', 'url': 'https://browse.example/jira/browse/DL-94010', 'self': rest_self}]}}}
+    assert not source_observed(calls, {'kind': 'comment', 'id': '61010',
+        'url': 'https://rest.example/jira/rest/api/2/issue/DL-94010/comment/61010'})
+
+
+def test_missing_source_identity_is_not_a_literal_none_identifier():
+    calls = [{"result": {"ok": True, "data": {"key": None, "url": "https://jira.example/browse/DL-1"}}}]
+    assert not source_observed(calls, {"kind": "ticket", "id": "None", "url": "https://jira.example/browse/DL-1"})
+
+
+def test_work_schema_defines_source_identity_without_synthesized_comment_ids():
+    properties = work_cases.OUTPUT_SCHEMA["properties"]["sources"]["items"]["properties"]
+    assert "comment" in properties["kind"]["enum"]
+    assert "comment" in properties["id"]["description"]
+    assert "self" in properties["url"]["description"]
+    progress = work_cases.OUTPUT_SCHEMA["properties"]["progress"]["description"]
+    assert "업무" in progress and "조사" in progress and "null" in progress
+
+
+@pytest.mark.parametrize("include_root", [True, False])
+@pytest.mark.parametrize("body_mode", ["single", "batch-metadata"])
+def test_optional_report_progress_uses_complete_observed_hierarchy_and_labeled_units(tmp_path, include_root, body_mode):
+    case = next(c for c in work_cases.CASES if c["id"] == "WORK-R10-normal")
+    with WorkFixture(tmp_path / "source", port=0, today="2026-11-09", skill_condition="candidate") as fixture:
+        truth = fixture.ground_truth()
+        async def scenario():
+            async with Client(fixture.runtime.server) as client:
+                if body_mode == "single":
+                    for key in ("DL-94010", "DL-94011", "DL-94012"):
+                        await client.call_tool("get_ticket", {"key": key, "detail": "read"})
+                else:
+                    offset, snapshot = 0, None
+                    while True:
+                        response = await client.call_tool("search_issues", {
+                            "jql": "key in (DL-94010,DL-94011,DL-94012) ORDER BY key ASC",
+                            "detail": "summary", "include_description": False,
+                            "start_at": offset, "snapshot_id": snapshot})
+                        page = response.structured_content["data"]
+                        if not page["hasMore"]:
+                            break
+                        offset, snapshot = page["nextStartAt"], page["snapshotId"]
+                await client.call_tool("read_confluence_document", {"page": truth["documentIds"]["주간보고"], "version": 1})
+                for offset in ((0, 2) if include_root else (0,)):
+                    await client.call_tool("get_descendants", {"root_key": "DL-94010", "include_root": include_root,
+                                                               "start_at": offset, "max_results": 2})
+        anyio.run(scenario)
+        calls = copy.deepcopy(fixture.tool_calls)
+    answer = {"reply": "조사 3건. 전체 티켓 수 기준 1/3=33.3%, 하위 티켓은 1/2=50%. 현재 진행 중.",
+              "resultKeys": ["DL-94010", "DL-94011", "DL-94012"], "reportedTotal": 3,
+              "progress": None, "operations": [], "sources": [{"kind": "ticket", "id": "DL-94010",
+                                "url": "http://127.0.0.1:8080/browse/DL-94010"}]}
+    def check(progress, evidence=calls, reply=None):
+        current = {**answer, "progress": progress, **({"reply": reply} if reply else {})}
+        return work_cases.check(case, {"ok": True, "reply": current["reply"], "structuredAnswer": current}, evidence, truth)
+    for progress in (None, {"done": 1, "total": 3, "percent": 100 / 3}, {"done": 1, "total": 2, "percent": 50}):
+        assert check(progress)["pass"]
+    natural = check({"done": 1, "total": 3, "percent": 100 / 3}, reply=(
+        "조사 티켓 수는 3건(부모 1건·하위 2건)입니다. 완료 1건, 진행 중 2건으로 "
+        "티켓 수 기준 완료율은 33.3%입니다. 하위 티켓만 보면 1/2건 완료로 50%입니다."))
+    assert natural["pass"] and "progress_denominator" in natural["semanticReviewRequirements"]
+    assert not check({"done": 2, "total": 3, "percent": 200 / 3})["pass"]
+    assert not check({"done": 1, "total": 3, "percent": 40})["pass"]
+    # These statements require semantic judgment, not matching one vocabulary pattern.
+    # Numeric source proof alone never establishes that their prose passes review.
+    for wording in ("진척 33.3%입니다.", "업무량 기준 진척률은 50%입니다.",
+                    "전체 티켓은 1/2, 하위 티켓은 1/3 완료입니다.", "전체 티켓 수 기준 1/3=50%입니다."):
+        pending = check({"done": 1, "total": 3, "percent": 100 / 3}, reply=wording)
+        assert pending["humanReviewRequired"] and "progress_denominator" in pending["semanticReviewRequirements"]
+    assert check({"done": 1, "total": 2, "percent": 50}, reply="하위 티켓 2건 중 1건 완료, 50%입니다.")["pass"]
+    assert check({"done": 1, "total": 3, "percent": 100 / 3}, reply="전체 티켓 수 기준 완료율은 33.3%입니다.")["pass"]
+    incomplete = [c for c in calls if not (c["name"] == "get_descendants" and c["arguments"].get("start_at") == (2 if include_root else 0))]
+    assert not check({"done": 1, "total": 3, "percent": 100 / 3}, incomplete)["pass"]
+    changed = copy.deepcopy(calls)
+    if body_mode == "single":
+        next(c for c in changed if c["name"] == "get_ticket" and c["arguments"]["key"] == "DL-94011")["result"]["data"]["statusCategory"] = "inprogress"
+    else:
+        next(row for c in changed if c["name"] == "search_issues" for row in c["result"]["data"]["issues"]
+             if row["key"] == "DL-94011")["fields"]["status"]["statusCategory"]["key"] = "indeterminate"
+    assert not check({"done": 1, "total": 3, "percent": 100 / 3}, changed)["pass"]

@@ -1,5 +1,78 @@
 # Codex + LTM MCP 조회 품질 평가
 
+## #190 업무 조사·보고 후보 평가
+
+`--battery work`는 `codex-mcp-work` 3.0.0 / prompt `codex-mcp-work-v4`이다.
+복구는 `codex-mcp-work-recovery` 4.0.0 / prompt `codex-mcp-work-recovery-v3`이다.
+R01~R11의 정상·경계 22사례를 별도 fixture와 oracle로 제공한다. 다른 배터리의 질문·정답을
+바꾸지 않으며 queries는 이어읽기 안내 변경으로 1.0.2다. 아래 과거 버전 설명은 변경 이력이다.
+실제 모델 결과와 합성 fixture 검증은 구분한다.
+
+| 인자 | 의미 |
+|---|---|
+| `--skill-condition baseline` | 기존 작성 4스킬; 신규 조사 스킬 없음(기본값) |
+| `--skill-condition candidate` | 동일 backend에 연구·보고 후보 2스킬과 참고 자료 추가 |
+| `--skill-transport default` | Skills 확장·리소스와 fallback 제공(기본값) |
+| `--skill-transport fallback` | 확장·리소스를 제공하지 않고 get_content_guide만 제공 |
+| `--output-root PATH` | work raw 보관 루트; 저장소 내부 거절, 기본은 OS temp/ltm-evaluation-results |
+| `--recovery-scenario NAME` | 아래 6개 장애 중 하나; work/candidate와 WORK-R02-boundary만 사용 |
+| `--recovery-mode uninterrupted\|restarted` | 같은 최종 source의 무중단/중단 후 새 세션 비교 |
+
+실제 모델·예산·중단 기준을 승인한 후 기존 launcher로만 실행한다. 예:
+
+```powershell
+python -B -X utf8 tools/agent_eval_launcher.py codex-mcp --battery work --date 2026-11-09 --skill-condition candidate --skill-transport fallback --run-group 20261109-work-b-01 --cases WORK-R02-normal
+python -B -X utf8 tools/agent_eval_launcher.py codex-mcp --battery work --date 2026-11-09 --skill-condition candidate --recovery-scenario expired-snapshot --recovery-mode restarted --run-group 20261109-work-resume-01
+```
+
+같은 run group/repeat index를 다시 쓰지 않는다. A/B 순서는 교차하고 commit/model/effort/date/fixture/
+질문/schema를 고정한다. 실제 skill/resource 읽기의 URI·digest, 카탈로그·runtime 안내 hash를 남긴다.
+일반 A/B는 후보를 읽지 않은 사례도 ITT에 포함하며 미열람 자체로 감점하지 않는다. 명시적으로
+저장·재개 가이드를 사용하도록 요청하는 복구 조건은 후보 SKILL.md 실제 열람을 요구한다.
+네이티브 확장 지원 여부는 실제 trace로 판단하고, SDK
+계약 검사를 실제 모델의 확장 자동 발견·품질 결과로 대체하지 않는다.
+
+### 로컬 저장·복구 전용 조건
+
+현재 완전성 gate는 정답과 같은 진행률에도 전체 계층의 관측 근거를 요구하고 R04/R10의
+분모 의미를 직접 검수한다. 복구는 마지막 세션의 실제 `canonicalJql`·snapshot·전체 페이지·
+종료·미누락을 확인한다. 알려진 key의 다건 본문은 재사용하며 모집단 검색의 대체로 보지 않는다.
+본문 다건 크기는 추가로 제한하지 않는다. URL 인용도 도구·레코드의 실제 종류와 일치해야 한다.
+
+일반 A/B는 기존처럼 LTM 읽기만 허용한다. 복구 조건만 추가 MCP `research_files`의
+`list_files`, `read_file`, `write_file`을 허용한다. 제품 LTM에는 이 도구를 등록하지 않는다.
+한 조사 폴더 밖 접근·링크·Windows drive/stream은 거절하며 파일은 1MiB, 전체 32MiB/512개 이하다.
+읽기는 2000자 페이지, 쓰기는 fsync 후 원자적 교체다. shell·host skills·web·다른 서비스는 계속 차단한다.
+
+장애 이름은 `between-pages`, `after-response`, `record-chunk`, `corrupt-progress`,
+`expired-snapshot`, `source-changed`다. 각 조건은 실제 파일·MCP 응답에서 경계를 관측한 뒤
+Codex 프로세스를 중단한다. 장애가 발생하지 않은 실행은 통과로 처리하지 않는다.
+재개는 새 ephemeral Codex process, 새 JiraClient·SQLite·MCP 세션을 사용하며 조사 파일만 유지한다.
+이전 대화·oracle은 전달하지 않는다. 재사용 근거는 이전의 성공 응답이 실제 evidence 파일에 저장된
+경우만 인정한다. 변경 조건에서는 검색 membership·수정된 티켓·문서를 새 phase에서 재검증한다.
+source-changed 무중단 조건도 동일한 최종 source revision 2를 사용한다.
+
+raw에는 phase별 응답·파일 작업·MCP/upstream trace·사용량·원본 fingerprint와 통제한 장애를 보존한다.
+복구 suite는 `codex-mcp-work-recovery`이며 실제 질문과 최종 source revision의 기대값을 manifest에
+기록한다. `output.mcpToolCalls`는 모든 phase의 실제 LTM 호출이고 `groundingCalls`는 판정에 사용할
+근거다. `eligiblePersistedCalls`는 저장이 확인된 재사용 가능 근거 수이며 실제 재사용 횟수가 아니다.
+summary의 toolCalls는 LTM 호출과 파일 호출의 합이고 두 종류의 소계와 파일 I/O 비용도 별도로 남긴다.
+합산 비용에는 중단 phase도 포함하고, 관측할 수 없는 값은 null이다. 복구 성공과 호출 감소는 별개다.
+필요한 댓글 재순회는 허용하고 실제 중복 조회·복구 시간·파일 읽기/쓰기 비용을 별도로 비교한다.
+fixture DB와 임시 인증 파일은 성공·실패 모두 정리한다. 명시적으로 보존하는 raw·조사 evidence는
+출력 루트에 남긴다. OS temp의 자동 정리를 영구 보관으로 표현하지 말고, 장기 검수에는 사용자가
+정한 저장소 밖 output root를 사용한다. 과거 .cache raw는 이동·삭제하지 않는다.
+
+### 검증과 기본 제공 조건
+
+오프라인 검사에서는 실제 MCP 경로를 사용하되 모델 subprocess만 대체한다. 모든 댓글·긴 레코드의
+연속 offset/digest, 문서 revision별 전체 본문, 출처 ID와 URL의 연결, 부분 실패와 지표를 검사한다.
+실제 모델 smoke 11계열×기본/fallback=22, A/B 22×2×5=220, 복구 6×2×5=60으로 총 302사례와
+별도 preflight/재실행 예산을 승인받는다. 자동 통과 뒤 사람이 원문과 사례별 근거·한국어·양식을
+직접 검수한다. 평균 4.5/5 이상, 중대한 허위 사실·무단 쓰기·실패를 0건으로 처리·근거 없는 확정
+집계 0건이 기본 제공 기준이다. focused 재실행으로 최초 full 실패를 덮지 않는다.
+현재 후보는 기본 제공되지 않는다. 실제 비교·검수 후 별도 변경으로 활성화한다.
+
 실행 중인 앱과 같은 `LocalMcpRuntime`·JiraClient·인증 HTTP 전송을 사용하되 사례마다 별도의 전체 mock
 World와 SQLite를 구성한다. 운영 Jira와 내장 LTM LLM은 호출하지 않는다. 모델은 설치된 Codex CLI의
 기존 ChatGPT 로그인을 사용한다. 비밀 파일을 읽거나 복사하지 않으며 MCP bearer만 자식 환경변수로 전달한다.
@@ -9,14 +82,91 @@ $env:LTM_CODEX_EXECUTABLE = 'C:/Users/PC/AppData/Local/Programs/OpenAI/Codex/bin
 python -X utf8 tools/agent_eval_launcher.py codex-mcp --run-group 20261104-codex-mcp-r01 --date 2026-11-04
 ```
 
-수동 실행은 network-enabled process에서 한다. 기본 모델 `gpt-6-astra`, reasoning effort `ultra`.
+수동 실행은 network-enabled process에서 한다. 기본 모델 `gpt-6.1-sol`, reasoning effort `high`.
 launcher가 argument와 기존 로그인을 확인하고 고유 attempt를 예약한 뒤 짧은 실제 Codex 응답으로
 연결을 확인한다. preflight 비용·토큰은 별도 기록하며 사례 시간에는 합산하지 않는다.
 포트는 4457 고정이다. 점유 중이면 다른 포트를 선택하지 않고 실패한다. 단위 테스트만 명시적으로 port 0을 쓴다.
 직접 runner 실행은 거부한다. 재실행은 새 `--run-group`이나 `--repeat-index`를 사용하며 기존 claim/raw를 지우지 않는다.
 
+Qualification은 `--run-kind qualification --repetitions 5 --repeat-index N --candidate-order-index M`을
+명시하고 전체 battery를 실행한다. 반복 전체에서 planned repetitions는 고정하며, A/B 순서는 사전에
+교차 배치해 별도 실행 기록에 남긴다. dirty commit이나 유효하지 않은 설계는 모델 호출 전에 거부한다.
+탐색 실행의 기존 `--repeat-index N` 단독 재시도는 유지한다.
+
+Work battery 0.2.0은 스킬 노출과 실제 열람을 `skillApplication`/`summary.skillAdoption`으로 나눈다.
+열람하지 않은 사례도 주 A/B 비교에 포함하며 열람률을 답변 품질 점수로 바꾸지 않는다. 미열람 사례에서
+스킬을 실제 실행했다고 주장하지 않는다. 복구 battery의 명시적 스킬·파일 절차 검사는 별도로 유지한다.
+출처는 원본 ID를 사용하고 댓글을 별도 인용할 때 kind=comment를 쓴다. 상대 self는 실제 관측한 같은
+티켓의 서버 주소와 원본 댓글 ID·경로가 일치할 때만 절대화한다. 합성 ID나 추정 focused-comment URL은
+허용하지 않는다. R10의 선택적 수치 진척은 전체 계층·상태를 확인한 뒤 티켓 수 또는 하위 수라는 분모와
+산식을 밝힌 경우만 허용하며, 불완전 사례나 명시적 하위-only 요청의 계약을 완화하지 않는다.
+
+0.2.1에서는 답변의 progress가 업무 진척률이며 조사 수집 완료율이 아님을 schema와 복구 요청에
+명시한다. 복구 비교의 두 mode는 같은 문제·검수 manifest를 공유하고 실제 mode는 candidate identity에
+기록한다. mode별 검수 조건은 공통 manifest의 modes에서 해당 조건을 선택한다. 각 모델 호출의 timeout과
+별도 preflight timeout도 공통 benchmark context에 기록한다. 복구의 두 phase는 각각 호출 제한을 적용한다.
+
+0.3.0은 실제 성공 응답과 이어 읽기 인자가 동일한 비종료 페이지를 세 번 반복하면
+`read_continuation_not_advancing`으로 실패시킨다. 긴 댓글의 `sourceIndex`/`nextRecordOffset`을
+다음 `start_at`/`record_offset`으로 옮겨야 한다. 새 membership 조회는 이전 membership을 지우되,
+이미 검증한 같은 원본 ID+SHA의 연속 chunk는 재사용할 수 있다. 다른 ID·digest나 미수집 chunk를
+허용하지 않는다. 상태 전용 질문은 성공한 다건 검색/계층의 typed status 필드로 검증할 수 있으며,
+본문·댓글 안의 임의 status 문자열은 상태 필드로 취급하지 않는다.
+
+`summary.upstream`은 실제 provider 요청 수·응답 byte·요청 소요시간 합을 별도로 기록한다.
+MCP 호출 수와 혼동하지 않으며, 요청 소요시간 합은 사용자 체감 wall time이 아니다. 관측이
+없으면 null이고, 관측된 요청 0건은 0이다. 개별 응답 용량/시간이 누락되면 해당 합도 null이다.
+
+정량 성능의 필수 지표에 **실제 Jira API 호출 횟수**를 포함한다. `summary.jiraApi.requests`와
+`summary.confluenceApi.requests`를 MCP 호출 수와 별도로 비교한다. provider의 실제 API 요청 경로로
+서비스를 구분하고 검색 페이지·단건 조회·실패·재시도를 각각 센다. 캐시 적중은 추가 Jira 요청 0회다.
+preflight/fixture 구성은 측정에서 제외한다. 원본 case별 `upstreamCalls`와 중단 전후 모든 phase를
+보존해 사례/반복/조건별 합을 검증한다. 관측 누락 또는 미분류 경로가 있으면 서비스별 합은 null이다.
+응답 byte·요청시간 합·최종 답변 wall time을 함께 보며, 근거 완전성·정확도는 같은 품질 gate를 유지한다.
+
+0.3.1은 같은 티켓의 canonical URL 또는 검증된 REST self로 상대 댓글 self를 절대화할 수 있다.
+REST self는 실제 key/numeric ID와 정확한 경로가 일치해야 하며 임의 host·인증정보·query·fragment는
+허용하지 않는다. Task의 fresh/nonpartial 직접 자식 조회가 표시 상한 미만이고, 모든 자식이 원본
+필드의 SubTask/parent 관계로 검증된 leaf이면 완전 계층의 동등 근거로 인정한다. 임의 batch의
+일부 자식만으로는 비율을 허용하지 않으며 상태·단위·산식 검사는 그대로 적용한다.
+
+Work **1.0.0 / prompt v4**는 첫 전체 실행의 계약 불일치를 반영한 major battery 변경이다.
+resultKeys는 활동이 없어서 제외한 티켓을 포함한 실제 검토 근거다. 부분 조회에서 실제 확인한
+WBS 상위 맥락·미조회 참조는 별도 관계 근거가 있을 때 포함할 수 있으며, 미조회 본문·상태를
+읽었다는 뜻은 아니다. 빈 출처 URL/ID는 금지하고 실제 URL이 없으면 행을 생략한다. 실제 사용자
+self와 SHA로 완전히 복원한 댓글의 self도 관측 근거로 인정한다. R07의 scalar는 union 테이블 수로
+명시한다. 이전 raw와 점수를 새 계약으로 덮어쓰거나 같은 A/B로 섞지 않는다.
+
+자동 검사는 수치 산식·전체 source coverage·실제 상태·실패 시 null·권한/출처를 검증한다.
+한국어의 분모·단위 및 미확정 공개는 필수 specialized 직접 검수 항목으로 판정한다. 특정 단어가
+없다는 이유로 실패시키는 regex를 사용하지 않는다. 두 항목의 major는 평균 점수와 무관하게 탈락이다.
+
+직접 검수 후 `qualification.audit_cohort`에 사전 일정의 case ID·순서·commit·모델/effort/조건,
+모든 반복 raw, authored review 및 실제 source snapshot SHA를 전달한다. metadata의 문자열 순서 값과
+검수의 `materialFalseFacts: []`를 지원한다. 모든 case/반복과 원본 SHA·실제 검수 spec·literal excerpt,
+protocol의32개 공통 항목과 모든 specialized 항목, 관측 Jira API 수를 검증한 뒤 자동100%·평균4.5·
+critical major0을 적용한다. 평균 기준은 표시용 반올림 전 점수로 비교한다. 해당되는 미확정 공개·수치 분모 검수를 NA로
+건너뛰면 탈락하며, 수치 진척을 제시하지 않은 경우의 분모 NA는 이유와 함께 허용한다.
+baseline은 design validity와 품질을 구분해 보고한다. main의 arm별, 복구의 scenario/mode별
+cohort를 각각 검증하며, 같은 평가자 panel과 공통 benchmark를 비교한다.
+cohort 통과가 전체 A/B·복구 검증 완료를 대신하지 않으며 반환값의 qualificationClaim은 false다.
+
+복구 suite 2.0.0 / prompt v3는 집계 모집단을 완전한 JQL 검색의 실제 반환 집합으로 명시한다.
+IN key는 검색 후보이며 필수 개별 조회 목록이 아니다. 검색 실패·불완전 결과를 확정 집계로
+바꾸지 않는다. 중단 장치는 정상 응답의 실제 저장을 검증한 뒤 `nextArguments`, 직접 인자,
+`nextCall.arguments` 또는 기존 cursor에서 같은 쿼리·snapshot·다음 위치를 확인한다. 다른 검색의
+cursor를 인정하지 않으며 중단이 실제 발생하지 않은 시도는 복구 성공으로 보고하지 않는다.
+
+Work 2.0.0 / recovery 3.0.0은 `get_descendants.issues[*].issue`의 직접 티켓 metadata도
+출처로 인정한다. wrapper key와 raw key가 일치해야 하며, 실제 url/self와 key·numeric ID·경로·origin을
+검증한다. `get_children`도 자기 레코드에 실제 주소가 있을 때만 사용하며 없는 주소는 만들지 않는다.
+관측된 티켓 REST self를 티켓 출처로 쓸 수 있고, 실제 반환된 상대 댓글 self를 같은 티켓의 관측된
+주소로 절대화할 수 있다. 임의 description/parent 중첩 URL, 다른 key·ID, 실패 응답 및 인증정보·
+query·fragment를 받아들이지 않는다. 부분 계층에서 반환된 개별 출처의 유효성은 전체 진척률의
+완전성 증명이 아니다. 이전 Work1.0 출처 false positive 원본은 그대로 유지하고 새 실행과 섞지 않는다.
+
 `--cases MCP-J1 MCP-O1`처럼 고유 ID로 focused 실행할 수 있다. focused 성공으로 이전 full run 실패를 대체하지 않는다.
-버전은 external suite `1.0.1`, protocol `3.0.0`, human rubric `2.0.0`이며 기존 내장 Agent 배터리와
+버전은 external suite `1.0.2`, protocol `3.0.0`, human rubric `2.0.0`이며 기존 내장 Agent 배터리와
 동일 benchmark라고 주장하지 않는다. S3~S6 원문 질문과 기대 사실을 재사용하고 별도의 MCP 전송·출력 계약을 기록한다.
 
 | 사례 | 검증 |

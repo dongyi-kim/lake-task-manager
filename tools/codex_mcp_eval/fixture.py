@@ -9,14 +9,17 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import socket
 import threading
+import tempfile
 import time
-from contextlib import ExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, ExitStack, asynccontextmanager
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlsplit
 from unittest.mock import patch
 
 import anyio
@@ -64,7 +67,8 @@ class EvaluationFixture:
     def __init__(self, run_dir: str | Path, port: int = 4457, *, fault: str | None = None,
                  today: str | None = None):
         self.run_dir = Path(run_dir).resolve()
-        if not any(part in {".cache", ".tmp", ".test"} for part in self.run_dir.parts):
+        if (not self.run_dir.is_relative_to(Path(tempfile.gettempdir()).resolve())
+                and not any(part in {".cache", ".tmp", ".test"} for part in self.run_dir.parts)):
             raise ValueError("Evaluation fixture files must stay under .cache, .tmp or .test")
         if not 0 <= port <= 65535 or fault not in (None, "partial"):
             raise ValueError("Invalid fixture port or fault")
@@ -101,6 +105,12 @@ class EvaluationFixture:
     def configure_scope(self, settings):
         if not settings.search_jira_projects or not settings.search_confluence_spaces:
             raise ValueError("Configured Jira projects and Confluence spaces are required")
+
+    def runtime_options(self):
+        return {}
+
+    def extra_http_apps(self):
+        return []
 
     def __enter__(self):
         if not _ACTIVE_CASE.acquire(blocking=False):
@@ -161,18 +171,28 @@ class EvaluationFixture:
             self.runtime = _ReadOnlyRuntime(
                 get_client=lambda: self.client, settings=settings,
                 secret_path=self.run_dir / "mcp-secret.json", require_manager=require_manager,
-                require_module_access=lambda _module: require_manager(), scoped_people=load_people)
+                require_module_access=lambda _module: require_manager(), scoped_people=load_people,
+                **self.runtime_options())
             self._token = self.runtime.credentials.token()
             self._secret_owned = True
             self._observe_tools()
+            original_factory = self.runtime.transport_host._worker.factory
+            def observed_factory():
+                applications = original_factory()
+                self._observe_tools()  # Fresh SDK instances must keep the same evidence observers.
+                return applications
+            self.runtime.transport_host._worker.factory = observed_factory
             self.tool_catalog = [tool.model_dump(mode="json", by_alias=True)
                                  for tool in anyio.run(self.runtime.server.list_tools)]
             self.catalog_sha256 = _hash(self.tool_catalog)
             self._before = self.fingerprint()
 
+            extra_apps = self.extra_http_apps()
             @asynccontextmanager
             async def lifespan(_app):
-                async with self.runtime.http_app.router.lifespan_context(self.runtime.http_app):
+                async with self.runtime.transport_host.lifespan(), AsyncExitStack() as stack:
+                    for _, http_app in extra_apps:
+                        await stack.enter_async_context(http_app.router.lifespan_context(http_app))
                     self.runtime.started = True
                     try:
                         yield
@@ -183,9 +203,14 @@ class EvaluationFixture:
             reads = build_ticket_router(get_client=lambda: self.client)
             reads.routes[:] = [route for route in reads.routes if "GET" in (getattr(route, "methods", None) or ())]
             self.app.include_router(reads)
-            self.app.router.routes.append(Route("/mcp", LocalGuard(
-                self.runtime.http_app, credentials=self.runtime.credentials, port=self.port),
+            def current_mcp():
+                return LocalGuard(self.runtime.http_app, credentials=self.runtime.credentials, port=self.port)
+            self.app.router.routes.append(Route("/mcp", self.runtime.transport_host.wrap(current_mcp, dynamic=True),
                 methods=["GET", "POST", "DELETE", "OPTIONS"]))
+            for path, http_app in extra_apps:
+                self.app.router.routes.append(Route(path, LocalGuard(http_app,
+                    credentials=self.runtime.credentials, port=self.port),
+                    methods=["GET", "POST", "DELETE", "OPTIONS"]))
             self._server = uvicorn.Server(uvicorn.Config(self.app, log_level="error", access_log=False,
                                                        proxy_headers=False, timeout_graceful_shutdown=5))
             self._thread = threading.Thread(target=lambda: self._server.run(sockets=[self._listener]),
@@ -205,10 +230,16 @@ class EvaluationFixture:
         original = self.provider._get
         def observed(path, params, priority=None):
             started = time.perf_counter()
-            record = {"method": "GET", "path": str(path), "params": self._safe(params or {})}
+            route = urlsplit(str(path)).path
+            service = ("jira" if re.search(r"/rest/(?:api/(?:2|latest)|agile/[^/]+|auth/[^/]+)/", route)
+                       else "confluence" if re.search(r"/rest/api/(?:content|search|space|user)(?:/|$)", route)
+                       else None)
+            record = {"method": "GET", "service": service, "path": str(path),
+                      "params": self._safe(params or {}), "responseBytes": None}
             try:
                 result = original(path, params, priority)
                 record["status"] = result.status_code
+                record["responseBytes"] = len(result.content)
                 return result
             except Exception as exc:
                 # The shared mock provider conflates 403 with session expiry. Keep

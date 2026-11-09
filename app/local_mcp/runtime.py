@@ -54,7 +54,7 @@ class LocalMcpRuntime:
     def __init__(self, *, get_client, settings, secret_path, require_edit=lambda key: None,
                  require_person_access=lambda user: None, classify_error=None,
                  require_manager=None, require_module_access=None, scoped_people=lambda: {}, request_login=None,
-                 include_research_skills=True):
+                 include_research_skills=True, enable_skills_extension=True):
         self.get_client, self.settings = get_client, settings
         self.port = settings.app_port
         self.url = f"http://127.0.0.1:{self.port}/mcp"
@@ -71,8 +71,10 @@ class LocalMcpRuntime:
         self._control_lane = ToolLane(2)
         self.started = False
         self.skill_catalog = SkillCatalog(include_research=include_research_skills)
+        self.enable_skills_extension = enable_skills_extension
         self.server = MCPServer(
-            "lake-task-manager", log_level="WARNING", extensions=[SkillsExtension(self.skill_catalog)], instructions=(
+            "lake-task-manager", log_level="WARNING",
+            extensions=[SkillsExtension(self.skill_catalog)] if enable_skills_extension else [], instructions=(
                 "The running local LTM instance shares its Jira authentication and caches. "
                 "Tools read and directly write Jira, Confluence and local WBS/people configuration; "
                 "use only actions authorized by your user. "
@@ -151,7 +153,7 @@ class LocalMcpRuntime:
         # all live application state, but give every profile fresh SDK ownership.
         previous = self.server
         self.server = MCPServer("lake-task-manager", log_level="WARNING", instructions=previous.instructions,
-            extensions=[SkillsExtension(self.skill_catalog)])
+            extensions=[SkillsExtension(self.skill_catalog)] if self.enable_skills_extension else [])
         for tool in previous._tool_manager.list_tools():
             self.server._tool_manager._tools[tool.name] = tool
         self.http_app = self.server.streamable_http_app(streamable_http_path="/mcp", stateless_http=True,
