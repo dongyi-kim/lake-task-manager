@@ -115,7 +115,7 @@ def build_work_data(today: date | str, *, source_revision: int = 1) -> dict:
     pair(2, new, {**copy.deepcopy(new), "keys": sorted([*new["keys"], "DL-94006", "DL-94017"]),
                  "requiredEvidence": [*new["requiredEvidence"], req(94006, "실제 적재하지 않았음"), req(94017, "이전 월 제외")]})
     pair(3, expected(["DL-94008"], 1, required=[req(94008, "오늘 활동")]),
-         expected([], 0, required=[req(94009, "오늘 수행·댓글·완료 활동 없음")]))
+         expected(["DL-94009"], 0, required=[req(94009, "오늘 수행·댓글·완료 활동 없음")]))
     current_statuses = {ROOT: "inprogress", CHILDREN[0]: "done", CHILDREN[1]: "inprogress"}
     pair(4, expected([ROOT, *CHILDREN], 3, statuses=current_statuses,
                      progress={"done": 1, "total": 2, "percent": 50}),

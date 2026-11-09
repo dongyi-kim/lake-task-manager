@@ -1,6 +1,7 @@
 """Already observed batched status fields must not require redundant body reads."""
 import copy
 import pytest
+from support.evaluation_tmp import external_tmp_path as tmp_path
 
 from tools.codex_mcp_eval import work_cases
 from tools.codex_mcp_eval.work_data import build_work_data

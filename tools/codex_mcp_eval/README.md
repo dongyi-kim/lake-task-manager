@@ -121,6 +121,27 @@ REST self는 실제 key/numeric ID와 정확한 경로가 일치해야 하며 �
 필드의 SubTask/parent 관계로 검증된 leaf이면 완전 계층의 동등 근거로 인정한다. 임의 batch의
 일부 자식만으로는 비율을 허용하지 않으며 상태·단위·산식 검사는 그대로 적용한다.
 
+Work **1.0.0 / prompt v4**는 첫 전체 실행의 계약 불일치를 반영한 major battery 변경이다.
+resultKeys는 활동이 없어서 제외한 티켓을 포함한 실제 검토 근거다. 부분 조회에서 실제 확인한
+WBS 상위 맥락·미조회 참조는 별도 관계 근거가 있을 때 포함할 수 있으며, 미조회 본문·상태를
+읽었다는 뜻은 아니다. 빈 출처 URL/ID는 금지하고 실제 URL이 없으면 행을 생략한다. 실제 사용자
+self와 SHA로 완전히 복원한 댓글의 self도 관측 근거로 인정한다. R07의 scalar는 union 테이블 수로
+명시한다. 이전 raw와 점수를 새 계약으로 덮어쓰거나 같은 A/B로 섞지 않는다.
+
+자동 검사는 수치 산식·전체 source coverage·실제 상태·실패 시 null·권한/출처를 검증한다.
+한국어의 분모·단위 및 미확정 공개는 필수 specialized 직접 검수 항목으로 판정한다. 특정 단어가
+없다는 이유로 실패시키는 regex를 사용하지 않는다. 두 항목의 major는 평균 점수와 무관하게 탈락이다.
+
+직접 검수 후 `qualification.audit_cohort`에 사전 일정의 case ID·순서·commit·모델/effort/조건,
+모든 반복 raw, authored review 및 실제 source snapshot SHA를 전달한다. metadata의 문자열 순서 값과
+검수의 `materialFalseFacts: []`를 지원한다. 모든 case/반복과 원본 SHA·실제 검수 spec·literal excerpt,
+protocol의32개 공통 항목과 모든 specialized 항목, 관측 Jira API 수를 검증한 뒤 자동100%·평균4.5·
+critical major0을 적용한다. 평균 기준은 표시용 반올림 전 점수로 비교한다. 해당되는 미확정 공개·수치 분모 검수를 NA로
+건너뛰면 탈락하며, 수치 진척을 제시하지 않은 경우의 분모 NA는 이유와 함께 허용한다.
+baseline은 design validity와 품질을 구분해 보고한다. main의 arm별, 복구의 scenario/mode별
+cohort를 각각 검증하며, 같은 평가자 panel과 공통 benchmark를 비교한다.
+cohort 통과가 전체 A/B·복구 검증 완료를 대신하지 않으며 반환값의 qualificationClaim은 false다.
+
 `--cases MCP-J1 MCP-O1`처럼 고유 ID로 focused 실행할 수 있다. focused 성공으로 이전 full run 실패를 대체하지 않는다.
 버전은 external suite `1.0.2`, protocol `3.0.0`, human rubric `2.0.0`이며 기존 내장 Agent 배터리와
 동일 benchmark라고 주장하지 않는다. S3~S6 원문 질문과 기대 사실을 재사용하고 별도의 MCP 전송·출력 계약을 기록한다.

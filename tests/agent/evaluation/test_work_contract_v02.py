@@ -135,13 +135,18 @@ def test_optional_report_progress_uses_complete_observed_hierarchy_and_labeled_u
         return work_cases.check(case, {"ok": True, "reply": current["reply"], "structuredAnswer": current}, evidence, truth)
     for progress in (None, {"done": 1, "total": 3, "percent": 100 / 3}, {"done": 1, "total": 2, "percent": 50}):
         assert check(progress)["pass"]
+    natural = check({"done": 1, "total": 3, "percent": 100 / 3}, reply=(
+        "조사 티켓 수는 3건(부모 1건·하위 2건)입니다. 완료 1건, 진행 중 2건으로 "
+        "티켓 수 기준 완료율은 33.3%입니다. 하위 티켓만 보면 1/2건 완료로 50%입니다."))
+    assert natural["pass"] and "progress_denominator" in natural["semanticReviewRequirements"]
     assert not check({"done": 2, "total": 3, "percent": 200 / 3})["pass"]
     assert not check({"done": 1, "total": 3, "percent": 40})["pass"]
-    assert not check({"done": 1, "total": 3, "percent": 100 / 3}, reply="진척 33.3%입니다.")["pass"]
-    assert not check({"done": 1, "total": 2, "percent": 50}, reply="하위 티켓을 조회했습니다. 업무량 기준 진척률은 50%입니다.")["pass"]
-    assert not check({"done": 1, "total": 3, "percent": 100 / 3}, reply="전체 티켓은 3건입니다. 진척률은 33.3%입니다.")["pass"]
-    assert not check({"done": 1, "total": 3, "percent": 100 / 3}, reply="전체 티켓은 1/2, 하위 티켓은 1/3 완료입니다.")["pass"]
-    assert not check({"done": 1, "total": 3, "percent": 100 / 3}, reply="전체 티켓 수 기준 1/3=50%입니다.")["pass"]
+    # These statements require semantic judgment, not matching one vocabulary pattern.
+    # Numeric source proof alone never establishes that their prose passes review.
+    for wording in ("진척 33.3%입니다.", "업무량 기준 진척률은 50%입니다.",
+                    "전체 티켓은 1/2, 하위 티켓은 1/3 완료입니다.", "전체 티켓 수 기준 1/3=50%입니다."):
+        pending = check({"done": 1, "total": 3, "percent": 100 / 3}, reply=wording)
+        assert pending["humanReviewRequired"] and "progress_denominator" in pending["semanticReviewRequirements"]
     assert check({"done": 1, "total": 2, "percent": 50}, reply="하위 티켓 2건 중 1건 완료, 50%입니다.")["pass"]
     assert check({"done": 1, "total": 3, "percent": 100 / 3}, reply="전체 티켓 수 기준 완료율은 33.3%입니다.")["pass"]
     incomplete = [c for c in calls if not (c["name"] == "get_descendants" and c["arguments"].get("start_at") == (2 if include_root else 0))]

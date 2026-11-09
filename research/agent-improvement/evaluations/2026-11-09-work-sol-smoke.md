@@ -227,3 +227,78 @@ memberships, unknown leaf types and conflicting statuses. The initial focused se
 passed 47 tests. A separate diagnostic report records the resulting checker ruling
 and the original raw SHA; it does not overwrite original 2/4 or replace a fresh run.
 Final qualification and default activation remain pending.
+
+## First full candidate attempt: preserved failure and direct review
+
+Frozen `76f7658e3050c4358cebe8a661fc0e484f62cc64`, work0.3.1 / promptv3,
+group `20261109-sol-high-main-candidate-v031-e4deee74`, repeat1/order1. The
+predeclared driver completed all22 and stopped on exit1 before baseline. Original
+automatic **12/22**, entrypoint reads **18/22**. The five-repeat A/B is incomplete.
+
+| Metric | Observed |
+|---|---:|
+| Answer time | 1,002.10s; p50 42.73s / p95 99.48s |
+| Input / output / total tokens | 4,891,442 / 31,759 / 4,923,201 |
+| Cached input tokens | 4,041,472 |
+| MCP calls | 4,861 |
+| Actual Jira API requests | **108** |
+| Confluence API requests | 21 |
+
+Jira response-byte total is unknown because a denied request's body was not
+observable; it is not zero-filled. Requests include failures/retries and are
+separate from MCP calls. No production Jira latency/improvement is inferred.
+
+A native Codex Sol/high reviewer directly read every answer and actual sources,
+authored every common/specialized checklist, and validated all22 identities,
+case/source SHA and literal excerpts. The root also read all22 answers and
+reconciled the findings. Single-attempt human mean is **4.94/5**, with dimensions
+request4.95 / facts4.91 / actionability4.86 / safety5.00 / communication4.98.
+The panel is one formal reviewer, unblinded; there is no baseline or improvement
+claim. Detailed authored reviews and validated aggregation are under external
+`reviews/candidate-r01-part01.json` through part03 and `candidate-r01-summary.json`.
+The original raw SHA is `d5a17ad23f5d7f33a74fbaf0f43642915f3d0497afe2ddbd80c5befe35be903d`.
+
+Two actual defects remain in this attempt:
+
+- R02-boundary read evidence4,653 times, including **4,630** identical start25/
+  max100 calls with no record offset. It did not read a candidate entrypoint.
+  Full51-record cancellation coverage and the final2-table answer were correct;
+  the unchanged cursor loop is a major execution/performance failure. Jira made
+  only8 requests because the repeated source page was cached.
+- R05-boundary's visible candidate IDs and null count were correct, but one
+  structured person source added an extra character to the ID and used an empty
+  URL. This is a genuine identity/reference contract failure and is not accepted.
+
+Other disagreements concern evidence-basis keys (inspected no-activity ticket,
+observed WBS ancestor and known denied reference), literal returned person self,
+reconstructed comment self, and natural Korean uncertainty/denominator wording.
+R07-boundary has **31 MCP calls and no repeated evidence-page arguments**; its
+business table/union counts were correct, while reportedTotal6 explicitly meant
+completed tickets and its prompt had not fixed that scalar to union2. This is
+metric-contract ambiguity, not an invented business count. Do not attribute R02's
+loop to R07. Original automatic results remain unchanged.
+
+Prospective product correction returns one ready-to-copy nextCall including record
+offset and original batch size, inside the8KiB response budget. Legacy arguments
+remain valid. Work1.0.0 / promptv4 makes the scalar/basis/citation contract explicit
+and moves Korean meaning to mandatory direct-review elements, preserving numerical
+coverage checks. A deterministic cohort audit now rejects missing repetitions,
+unlinked/changed reviews, automatic failures and critical semantic majors even
+above the mean threshold. It was also applied to the retained real attempt:22
+linked reviews, mean4.94, Jira108, **qualityPassed=false**. No original raw/review
+was edited; the failed/incomplete v2 schedule is retained and must be superseded.
+
+The last offline CI had one failure (4,536 passed /120 skipped): the new metric
+fixture used CI's repository-local default tmp_path, which WorkFixture correctly
+rejects. It now imports the existing external scratch fixture; local test scratch
+continues to use OS temp. Fresh boundary/recovery confirmation, full qualification
+and any default activation remain pending.
+
+Additional regression evidence for the prospective correction: with32 comments,
+a17-record Jira server cap and3-record MCP slices, source-page reuse reduced
+actual mock Jira requests from6 to2 without changing the records. Continuation
+tests cover3/100 batches, Unicode/JSON/hash reconstruction, comments/history and
+8KiB bounds. Cohort audit tests also cover actual producer order strings and
+authored finding arrays, contradictory model identity, inappropriate NA variants,
+and a rounded4.50 display whose true mean is below4.5. Latest focused verification
+passed59 tests; broader offline CI is rerun after publishing the corrected commits.

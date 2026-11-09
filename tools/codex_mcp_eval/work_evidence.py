@@ -3,7 +3,7 @@ from hashlib import sha256
 import json
 import math
 import re
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 
 def source_observed(calls, source):
@@ -13,9 +13,20 @@ def source_observed(calls, source):
         return False
     def matches(value):
         if isinstance(value, dict):
-            if (identity in {str(value[field]) for field in fields if value.get(field) is not None}
-                    and url == value.get("url")):
-                return True
+            identities = {str(value[field]) for field in fields if value.get(field) is not None}
+            if identity in identities:
+                if url == value.get("url"):
+                    return True
+                if source.get("kind") == "person" and url == value.get("self"):
+                    try:
+                        address = urlsplit(url)
+                        user_ids = set(parse_qs(address.query).get("username", []) + parse_qs(address.query).get("key", []))
+                        if (re.search(r"/rest/api/(?:2|latest)/user$", address.path)
+                                and address.scheme in {"", "http", "https"} and not address.fragment
+                                and not address.username and not address.password and identities & user_ids):
+                            return True
+                    except ValueError:
+                        pass
             return any(matches(item) for item in value.values())
         return isinstance(value, list) and any(matches(item) for item in value)
     successful = [c for c in calls if not c.get("isError") and (c.get("result") or {}).get("ok") is True]
@@ -50,12 +61,18 @@ def source_observed(calls, source):
                 if (base.scheme in {"http", "https"} and base.netloc and not base.username and not base.password
                         and not base.query and not base.fragment and base.path.endswith(suffix)):
                     tickets.setdefault(key, []).append((address, base, base.path[:-len(suffix)], identifiers))
+    decoded = {}
     for call in successful:
         page = call["result"].get("data") or {}
         if call.get("name") != "get_evidence_page" or not isinstance(page, dict) or page.get("kind") != "comments":
             continue
         key = page.get("key")
-        for record in page.get("items") or []:
+        records = list(page.get("items") or [])
+        if any("recordJson" in item and str(item.get("id")) == identity for item in records):
+            if key not in decoded:
+                decoded[key] = evidence_collection(successful, key)["records"]
+            records.extend(decoded[key])
+        for record in records:
             if str(record.get("id")) != identity or not isinstance(record.get("self"), str):
                 continue
             for address, base, context, identifiers in tickets.get(key, []):
@@ -72,30 +89,25 @@ def source_observed(calls, source):
     return False
 
 
-def count_ratio_labeled(reply, done, total, include_root):
-    """Tie scope, a count unit and arithmetic to one clause, not unrelated words."""
-    scopes = re.compile(r"전체|부모(?:를)?\s*포함|하위|자식|자손")
-    fraction = rf"(?<!\d){done}\s*/\s*{total}(?!\d)"
-    counted = rf"(?<!\d){total}\s*(?:건|개)\s*중\s*{done}\s*(?:건|개)(?!\d)"
-    for clause in re.split(r"[\n;!?]|(?<!\d)\.|\.(?!\d)", reply):
-        markers = list(scopes.finditer(clause))
-        prefix = clause[:markers[0].start()] if markers else ""
-        for index, marker in enumerate(markers):
-            if bool(re.match(r"전체|부모", marker.group())) != include_root:
-                continue
-            end = markers[index + 1].start() if index + 1 < len(markers) else len(clause)
-            segment = clause[marker.start():end]
-            if re.search(r"업무량|작업량|스토리\s*포인트|story\s*points", segment, re.I):
-                continue
-            percentages = [float(value) for value in re.findall(r"(\d+(?:\.\d+)?)\s*%", segment)]
-            if any(not math.isclose(value, 100 * done / total, abs_tol=0.1) for value in percentages):
-                continue
-            has_unit = re.search(r"티켓|개수|건수|(?<=\d)\s*(?:건|개)", prefix + segment)
-            explicit_ratio = re.search(f"{fraction}|{counted}", segment)
-            count_basis = re.search(r"티켓\s*(?:수|개수|건수)\s*(?:기준|대비)", prefix + segment)
-            if has_unit and (explicit_ratio or count_basis and percentages):
-                return True
-    return False
+def observed_scope_references(calls, root):
+    """Context/missing references are not proof of an unread ticket's body/status."""
+    ancestors, unavailable = set(), set()
+    for call in calls:
+        result = call.get("result") or {}
+        if call.get("isError") or result.get("ok") is not True:
+            continue
+        data = result.get("data") or {}
+        if call.get("name") == "get_ticket" and data.get("key") == root:
+            key = data.get("epicKey")
+            if isinstance(key, str) and re.fullmatch(r"[A-Z][A-Z0-9_]*-\d+", key):
+                ancestors.add(key)
+        elif (call.get("name") == "get_descendants" and data.get("rootKey") == root
+              and (result.get("partial") is True or data.get("partial") is True)):
+            for row in data.get("missing") or []:
+                key = row.get("key")
+                if isinstance(key, str) and re.fullmatch(r"[A-Z][A-Z0-9_]*-\d+", key):
+                    unavailable.add(key)
+    return {"ancestors": ancestors, "unavailable": unavailable}
 
 
 def observed_status_categories(calls):
@@ -121,6 +133,9 @@ def observed_status_categories(calls):
         data = result["data"]
         if call.get("name") == "get_ticket":
             add(data.get("key"), data.get("statusCategory"))
+        elif call.get("name") == "get_children":
+            for row in data.get("children") or []:
+                add(row.get("key"), row.get("statusCategory"))
         elif call.get("name") in {"search_issues", "get_tickets"}:
             for row in data.get("issues") or []:
                 issue(row)
@@ -152,8 +167,11 @@ def leaf_subtask_membership(calls, root):
                 if key == root:
                     root_types.append(kind.get("name") == "Task" and kind.get("subtask") is False)
                 else:
-                    valid = kind.get("subtask") is True and (fields.get("parent") or {}).get("key") == root
-                    leaf_proofs[key] = valid and leaf_proofs.get(key, True)
+                    parent = (fields.get("parent") or {}).get("key")
+                    if kind.get("subtask") is False or parent is not None and parent != root:
+                        leaf_proofs[key] = False
+                    elif kind.get("subtask") is True and parent == root:
+                        leaf_proofs[key] = leaf_proofs.get(key, True)
         elif name == "get_children" and (call.get("arguments") or {}).get("key") == root:
             children = data.get("children")
             if not isinstance(children, list) or len(children) >= JiraClient.CHILD_DISPLAY_LIMIT:
@@ -167,13 +185,13 @@ def leaf_subtask_membership(calls, root):
                 return None
             membership = current
     if (not root_types or not all(root_types) or membership is None
-            or any(not leaf_proofs.get(key) for key in membership)):
+            or any(leaf_proofs.get(key) is False for key in membership)):
         return None
     return membership
 
 
 def optional_count_progress(calls, progress, reply, root="DL-94010"):
-    """Allow labeled ticket-count ratios only after a full hierarchy and status read."""
+    """Prove ratio arithmetic/coverage; mandatory direct review judges the reply's scope."""
     if not isinstance(progress, dict) or any(type(progress.get(k)) is not int for k in ("done", "total")):
         return False
     percent = progress.get("percent")
@@ -219,8 +237,7 @@ def optional_count_progress(calls, progress, reply, root="DL-94010"):
             continue
         done = sum(statuses[key] == "done" for key in keys)
         if (keys and progress["done"] == done and progress["total"] == len(keys)
-                and math.isclose(percent, 100 * done / len(keys), abs_tol=0.1)
-                and count_ratio_labeled(reply, done, len(keys), include_root)):
+                and math.isclose(percent, 100 * done / len(keys), abs_tol=0.1)):
             return True
     return False
 

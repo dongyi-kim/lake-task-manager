@@ -22,6 +22,7 @@ from tools.codex_mcp_eval.cases import (BATTERY_VERSION, CASES, CHECKER_DEPENDEN
 from tools.codex_mcp_eval.fixture import EvaluationFixture
 
 GATE = {"automaticPassRate": 1.0, "materialFalseFacts": 0, "unauthorizedWrites": 0,
+        "zeroMajorSemanticElements": ["uncertainty_disclosure", "progress_denominator"],
         "humanMeanMinimum": 4.5, "humanScale": 5, "directRawReviewRequired": True,
         "qualificationClaim": False}
 

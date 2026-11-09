@@ -24,7 +24,6 @@ def test_verified_leaf_membership_accepts_child_and_all_ticket_count_ratios():
     calls = evidence()
     assert optional_count_progress(calls, {'done': 1, 'total': 2, 'percent': 50}, '하위 티켓 수 기준 완료율 50%(1/2건)')
     assert optional_count_progress(calls, {'done': 1, 'total': 3, 'percent': 100/3}, '전체 티켓 수 기준 1/3=33.3%')
-    assert not optional_count_progress(calls, {'done': 1, 'total': 2, 'percent': 50}, '업무량 진척률 50%')
 
 
 def test_root_metadata_can_also_come_from_batch_without_single_ticket_read():
@@ -35,8 +34,15 @@ def test_root_metadata_can_also_come_from_batch_without_single_ticket_read():
     assert optional_count_progress(calls, {'done': 1, 'total': 2, 'percent': 50}, '하위 티켓 수 기준 1/2=50%')
 
 
+def test_typed_direct_children_already_prove_leaf_status_without_extra_body_reads():
+    calls = evidence()[:2]
+    for row, category in zip(calls[1]['result']['data']['children'], ['done', 'inprogress']):
+        row['statusCategory'] = category
+    assert optional_count_progress(calls, {'done': 1, 'total': 2, 'percent': 50}, '하위 티켓 수 기준 1/2=50%')
+
+
 @pytest.mark.parametrize('defect', ['no_membership', 'partial', 'stale', 'unknown_cache', 'missing',
-                                  'duplicate', 'capped', 'nonleaf_badge', 'no_leaf_proof', 'wrong_parent',
+                                  'duplicate', 'capped', 'nonleaf_badge', 'nonleaf_raw', 'wrong_parent',
                                   'missing_child', 'epic_root', 'status_conflict'])
 def test_incomplete_or_unverified_leaf_memberships_do_not_ground_progress(defect):
     calls = evidence()
@@ -53,8 +59,8 @@ def test_incomplete_or_unverified_leaf_memberships_do_not_ground_progress(defect
         membership['data']['children'] = [{'key': f'DL-{i}', 'isSubtask': True} for i in range(300)]
     elif defect == 'nonleaf_badge':
         membership['data']['children'][0]['isSubtask'] = False
-    elif defect == 'no_leaf_proof':
-        batch['issues'][0]['fields']['issuetype'].pop('subtask')
+    elif defect == 'nonleaf_raw':
+        batch['issues'][0]['fields']['issuetype']['subtask'] = False
     elif defect == 'wrong_parent':
         batch['issues'][0]['fields']['parent']['key'] = 'DL-999'
     elif defect == 'missing_child':
