@@ -1,3 +1,5 @@
+import { replaceTreeBranch } from './confluenceTreeModel.js';
+
 // One metadata request at a time. Interactions promote queued branches without flooding SSO.
 export class ConfluenceTreeQueue {
   constructor({ snapshot, read, bulkRead, favoriteRead, favorites = [], changed, state }) {
@@ -6,8 +8,21 @@ export class ConfluenceTreeQueue {
     this.working = new Map(); this.errors = new Map(); this.sequence = 0; this.stopped = false;
     this.indexRows = new Map(); this.bulkStarted = false; this.denied = new Set();
     this.focusRows = new Map(); this.focusDone = new Set(); this.urgentStreak = 0;
+    this.refreshedBranches = new Map();
   }
   stop() { this.stopped = true; }
+  acceptBranch(parent, results) {
+    const id = String(parent.id);
+    this.refreshedBranches.delete(id);
+    this.refreshedBranches.set(id, {parent, results});
+    this.branches.set(id, new Map([[0, {parent:id, start:0, results, nextStart:null}]]));
+    this.working.delete(id); this.done.add(id + ':0');
+    for (const [key, job] of this.queue) if (job.parent === id) this.queue.delete(key);
+    for (const [key, error] of this.errors) if (error.job?.parent === id) this.errors.delete(key);
+    this.denied.delete(id);
+    for (const row of results) this.denied.delete(String(row.id));
+    this.publish();
+  }
   enqueue(job) {
     const key = job.parent + ':' + job.start;
     if (!this.queue.has(key) && (!this.done.has(key) || job.refresh)) {
@@ -30,11 +45,16 @@ export class ConfluenceTreeQueue {
     }
     for (const [id, row] of this.indexRows) if (!this.denied.has(id) &&
       !(row.ancestors || []).some(a => this.denied.has(String(a.id)))) rows.set(id, row);
-    this.changed([...rows.values()].map(row => {
+    let published = [...rows.values()].map(row => {
       const pages = this.branches.get(String(row.id));
       const complete = pages && [...pages.values()].some(batch => batch.nextStart === null);
       return complete ? { ...row, hasChildren: [...pages.values()].some(batch => batch.results.length > 0) } : row;
-    }));
+    });
+    for (const {parent, results} of this.refreshedBranches.values()) {
+      published = replaceTreeBranch(published, parent, results);
+    }
+    this.changed(published.filter(row => !this.denied.has(String(row.id)) &&
+      !(row.ancestors || []).some(parent => this.denied.has(String(parent.id)))));
     this.state({ loading: !this.paused && (!!this.running || !!this.queue.size), pending: this.active?.parent || '', errors: [...this.errors.values()] });
   }
   async start() {
@@ -162,12 +182,14 @@ export class ConfluenceTreeQueue {
       const [key, job] = this.urgentStreak >= 2 && background ? background : jobs[0];
       this.urgentStreak = job.rank < 0 ? this.urgentStreak + 1 : 0;
       this.queue.delete(key); this.active = job; this.publish();
+      const refresh = this.refreshedBranches.get(job.parent);
       try {
         const index = job.parent === '@index';
         const batch = job.favoriteIds ? await this.favoriteRead(job.favoriteIds, job.start)
           : index ? await this.bulkRead(job.start, true)
           : await this.read({ ...job, background: job.rank > 0 });
         if (this.stopped) return;
+        if (refresh !== this.refreshedBranches.get(job.parent)) continue;
         if (!Array.isArray(batch.results) || batch.nextStart !== null && (!Number.isInteger(batch.nextStart) || batch.nextStart <= job.start)) {
           throw new Error('문서 목록의 다음 위치를 확인하지 못했습니다.');
         }
@@ -195,11 +217,12 @@ export class ConfluenceTreeQueue {
         }
       } catch (error) {
         if (this.stopped) return;
+        if (refresh !== this.refreshedBranches.get(job.parent)) continue;
         if (![401, 403, 404].includes(error.status) && (job.attempts || 0) < 1) {
           this.enqueue({ ...job, attempts: (job.attempts || 0) + 1, rank: 2 });
         } else if ([403, 404].includes(error.status)) {
           if (job.favoriteIds) continue; // Search permission may differ from page read access; full tree still proceeds.
-          if (!job.parent || job.parent === '@index') { this.branches.clear(); this.indexRows.clear(); this.focusRows.clear(); this.queue.clear(); }
+          if (!job.parent || job.parent === '@index') { this.branches.clear(); this.indexRows.clear(); this.focusRows.clear(); this.queue.clear(); this.refreshedBranches.clear(); }
           else {
             this.denied.add(job.parent);
             for (const [queuedKey, queued] of this.queue) if (queued.parent === job.parent) this.queue.delete(queuedKey);

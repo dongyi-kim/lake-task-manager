@@ -1,5 +1,18 @@
 import { normalizeSearchText } from "./searchText.js";
 
+// An explicit complete branch read supersedes old rows beneath that parent.
+export function replaceTreeBranch(pages, parent, children) {
+  const id = String(parent.id), known = new Map(children.map(row => [String(row.id), row]));
+  const kept = pages.filter(row => {
+    if (String(row.id) === id || known.has(String(row.id))) return false;
+    const path = row.ancestors || [], at = path.findIndex(row => String(row.id) === id);
+    if (at < 0) return true;
+    const child = known.get(String(path[at + 1]?.id || row.id));
+    return child && child.hasChildren !== false;
+  });
+  return [{...parent, hasChildren:!!children.length, unknownChildren:false}, ...children, ...kept];
+}
+
 // Space metadata only: searching never changes the tree into a results list.
 export function pageTree(pages, expanded = {}, query = "", overrides = {}) {
   const nodes = new Map(), needle = normalizeSearchText(query);
