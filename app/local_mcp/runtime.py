@@ -140,7 +140,22 @@ class LocalMcpRuntime:
             max_request_body_size=16 * 1024 * 1024,
         )
         self.profiles = build_profiles(self)
-        self.transport_host = TransportHost([http for _server, http in self.profiles.values()])
+        self.transport_host = TransportHost([http for _server, http in self.profiles.values()],
+            factory=self._rebuild_transport_apps,
+            quiescent=lambda: self._work_lane.quiescent and self._control_lane.quiescent)
+
+    def _rebuild_transport_apps(self):
+        # SDK session managers are single-use. Retain compiled tool descriptors and
+        # all live application state, but give every profile fresh SDK ownership.
+        previous = self.server
+        self.server = MCPServer("lake-task-manager", log_level="WARNING", instructions=previous.instructions,
+            extensions=[SkillsExtension(self.skill_catalog)])
+        for tool in previous._tool_manager.list_tools():
+            self.server._tool_manager._tools[tool.name] = tool
+        self.http_app = self.server.streamable_http_app(streamable_http_path="/mcp", stateless_http=True,
+            json_response=True, max_request_body_size=16 * 1024 * 1024)
+        self.profiles = build_profiles(self)
+        return [http for _server, http in self.profiles.values()]
 
     def _finalize_input_contracts(self):
         # SDK outer models otherwise discard misplaced arguments before our tool can see them.
@@ -441,7 +456,9 @@ class LocalMcpRuntime:
         app.include_router(build_workspace_config_router(self.workspace_config, port=self.port))
         for name, (_server, http) in self.profiles.items():
             path = "/mcp" + ("/" + name if name != "all" else "")
-            app.router.routes.append(Route(path, self.transport_host.wrap(LocalGuard(http, credentials=self.credentials, port=self.port)),
+            def current_endpoint(profile=name):
+                return LocalGuard(self.profiles[profile][1], credentials=self.credentials, port=self.port)
+            app.router.routes.append(Route(path, self.transport_host.wrap(current_endpoint, dynamic=True),
                                            methods=["GET", "POST", "DELETE", "OPTIONS"]))
         previous_lifespan = app.router.lifespan_context
 

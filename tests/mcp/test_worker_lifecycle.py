@@ -25,6 +25,7 @@ async def until(predicate):
 def test_health_snapshot_does_not_call_a_non_admitting_worker_healthy(failure):
     worker = WorkerLifecycle([])
     worker.current, worker.state = Generation(1), "healthy"
+    worker._closing = False
     generation = worker.current
     generation.thread = SimpleNamespace(is_alive=lambda: True)
     generation.accepting = True
@@ -33,6 +34,27 @@ def test_health_snapshot_does_not_call_a_non_admitting_worker_healthy(failure):
         generation.finished.set_result(None)
     assert not worker.can_admit(generation)
     assert worker.snapshot()["state"] == "unresponsive"
+
+
+@pytest.mark.parametrize("fence", ["closing", "stopping", "finished", "dead", "not_accepting", "old", "recovering", "fatal", "overdue"])
+def test_suspect_admission_never_bypasses_generation_or_shutdown_fences(fence):
+    worker = WorkerLifecycle([])
+    generation = Generation(1)
+    worker.current, worker.state, worker._closing = generation, "unresponsive", False
+    generation.thread = SimpleNamespace(is_alive=lambda: True)
+    generation.accepting, generation.last_heartbeat = True, time.monotonic() - 2.1
+    assert worker.can_dispatch(generation) and not worker.can_admit(generation)
+    assert worker.snapshot()["state"] == "unresponsive"
+    if fence == "closing": worker._closing = True
+    elif fence == "stopping": generation.stop.set()
+    elif fence == "finished": generation.finished.set_result(None)
+    elif fence == "dead": generation.thread = SimpleNamespace(is_alive=lambda: False)
+    elif fence == "not_accepting": generation.accepting = False
+    elif fence == "old": worker.current = Generation(2)
+    elif fence == "recovering": worker.state = "recovering"
+    elif fence == "fatal": worker.state = "recovery_failed"
+    else: generation.last_heartbeat = time.monotonic() - 10
+    assert not worker.can_dispatch(generation)
 
 
 def test_shutdown_before_worker_thread_enters_preserves_its_stop_signal(monkeypatch):
