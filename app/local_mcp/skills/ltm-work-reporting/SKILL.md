@@ -2,7 +2,7 @@
 name: ltm-work-reporting
 description: LTM MCP로 일간·주간·월간 실적을 집계하거나, 개인·모듈·Epic·WBS의 보고서 초안을 만들거나, 기존 보고·사용자 양식과 비교할 때 사용한다. 중단된 집계를 로컬 조사 자료로 재개하는 요청도 포함한다.
 metadata:
-  version: 0.1.2-candidate
+  version: 0.1.3-candidate
 ---
 
 # 근거에 따른 업무 집계와 보고

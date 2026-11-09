@@ -71,6 +71,39 @@ the current exposed search already reads complete bodies.
 
 ## Task 3: local recovery
 
+### Evidence-driven refinement after the first full candidate run
+
+The frozen 76f7658e work0.3.1 candidate r1 completed22 cases, original12/22 pass.
+The schedule stopped before baseline. Preserve this full failed attempt and its
+4,630 identical pending-record reads; do not rescore it or mix versions in A/B.
+
+- Return a ready-to-copy `nextCall` from bounded evidence pages, including both
+  source index and record offset. Include its bytes in the8KiB bound and put this
+  continuation rule first in tool/runtime guidance. Keep legacy arguments valid.
+- Permit a chunk offset with a larger max_results; it applies to the first record.
+  Preserve the caller's batch size through chunk completion, avoiding a forced
+  series of one-record reads afterward. Test exact reconstruction and advance.
+- Align resultKeys with actual evidence basis, including inspected exclusions and
+  separately verified context/missing references. Keep unknown totals/progress null.
+- Accept literal returned self with matching identity and verified reconstructed
+  comment citations; reject invented/empty identities and URLs. Unknown citation
+  URLs mean omit the entry, never synthesize a filler. Clarify R07's total unit.
+- Validate numerical ratios/source coverage deterministically. Require direct
+  semantic review of denominator labels and uncertainty disclosure; exact Korean
+  word-pattern checks must not reject clear equivalent wording or replace review.
+- Fix the CI test's missing external tmp_path fixture. Do not create repository
+  test scratch locally to reproduce CI's legacy base path.
+- Apply RED/GREEN tests, independent review, a new battery/prompt version and fresh
+  boundary/recovery confirmations before a new frozen qualification schedule.
+- Work1.0.0/promptv4 is a major contract revision. Audit each full five-repeat
+  arm/scenario/mode against preregistered IDs/order/commit/model and retained raw,
+  binding every authored review to case/source SHA and actual specialized spec.
+  Protocol validation covers every common/specialized item. Any major denominator
+  or uncertainty finding fails regardless of mean; incomplete cohorts never qualify.
+  Keep original metadata/reviews intact, including producer string order indices
+  and explicit material-fact finding arrays. A cohort decision is not whole-matrix
+  completion or permission to roll out before all required gates.
+
 - Guide artifacts: manifest.json, progress.json, evidence/, findings.jsonl,
   report.md and resume.md. Save evidence before advancing progress.
 - Resume checks task/source/scope identity, last valid generation, source age,
