@@ -231,6 +231,10 @@ def test_sdk_copies_ready_arguments_without_repeating_or_refetching_comments(bui
     bodies = ['before', '긴 원문🙂 "인용" 줄\n' * 1500, 'after 1', 'after 2']
     for body in bodies:
         env.provider.post_json(path, json_body={'body': body})
+    # The mock serves newest first. Pin that source order instead of depending on
+    # all four writes landing within the same wall-clock second.
+    for index, comment in enumerate(env.store.get_issue(key)['comments']):
+        comment['tcreated'] = comment['tupdated'] = f'12:00:{59 - index:02d}'
     env.calls.clear()
     async def scenario():
         async with Client(env.runtime.server) as client:
