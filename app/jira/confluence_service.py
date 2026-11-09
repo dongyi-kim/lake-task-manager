@@ -142,7 +142,7 @@ def check_revision(client, cid, known_version=None):
             "draftState": "unknown"}
 
 
-def body(client, cid, version=None, representation="storage"):
+def body(client, cid, version=None, representation="storage", *, prefetch_storage=False):
     cid = resolve_page(client, cid)
     if representation not in ("storage", "view"):
         raise ValueError("본문 형식은 storage 또는 view여야 합니다.")
@@ -156,9 +156,23 @@ def body(client, cid, version=None, representation="storage"):
     def validate(data):
         return (_valid_page(data, cid) and data["version"]["number"] == version
                 and isinstance(((data.get("body") or {}).get(representation) or {}).get("value"), str))
+    storage_key = f'confbody:{scope_key(client)}:{cid}:{version}:storage:1'
+    together = representation == 'view' and prefetch_storage and client.cache.get(storage_key) is None
+    params = {"version": version, "expand": f"body.{representation},space,version" + (',body.storage' if together else '')}
+    def load():
+        fence, fetched = client.cache.fence(), time.time()
+        data = raw_read(client, f'/rest/api/content/{cid}', params)
+        if together:
+            if not validate(data) or not isinstance((data.get('body', {}).get('storage') or {}).get('value'), str):
+                raise UpstreamUnavailable('Confluence 본문 응답이 완전하지 않습니다.')
+            storage = copy.deepcopy(data)
+            storage['body'].pop('view', None)
+            retention = getattr(getattr(client.cache, 'policy', None), 'confluenceBodyRetentionSeconds', 30 * 86400)
+            client.cache.set_if_fence(storage_key, storage, retention, fence, fetched_at=fetched)
+            data['body'].pop('storage', None)
+        return data
     result = cached_read(client, kind, f"/rest/api/content/{cid}",
-                         {"version": version, "expand": f"body.{representation},space,version"},
-                         validate, key=key, ttl=ttl, resource_id=cid)
+                         params, validate, key=key, ttl=ttl, resource_id=cid, load=load)
     result = copy.deepcopy(result)
     source = client.cache.metadata(key) or {}
     current_source = client.cache.metadata(f"confhead:{scope_key(client)}:{cid}:current") or {}

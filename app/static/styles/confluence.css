@@ -149,6 +149,15 @@
 .conf-document-body a { color:var(--accent); }
 .conf-media-unavailable { display:inline-block; padding:8px; background:var(--panel-2); color:var(--muted); font-size:12px; }
 .conf-error { color:var(--danger); font-size:12px; line-height:1.7; margin:8px 12px; }
+.conf-read-notice { display:flex; gap:12px; flex-shrink:0; margin:12px 20px; padding:14px 16px; border:1px solid var(--border-hi); border-radius:6px; background:var(--panel-2); color:var(--text); }
+.conf-notice-icon { display:grid; place-items:center; flex-shrink:0; width:24px; height:24px; border-radius:50%; background:color-mix(in srgb,var(--accent) 12%,transparent); color:var(--accent); font-size:16px; font-weight:700; }
+.conf-read-notice.is-error .conf-notice-icon { background:color-mix(in srgb,var(--danger) 12%,transparent); color:var(--danger); }
+.conf-notice-content { min-width:0; font-size:13px; line-height:1.6; }
+.conf-notice-content strong { font-weight:650; }
+.conf-notice-content p { margin:3px 0 0; color:var(--muted); font-size:12px; }
+.conf-notice-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.conf-notice-actions .btn { font-size:12px; }
+@media(max-width:700px) { .conf-read-notice { margin:10px 12px; padding:12px; } }
 .conf-current,.conf-new-version { margin:0; padding:10px 24px; font-size:12px; line-height:1.6; background:color-mix(in srgb,var(--accent) 8%,var(--panel)); }
 .conf-current { color:var(--good); }
 .conf-new-version { display:flex; align-items:center; gap:12px; justify-content:space-between; }

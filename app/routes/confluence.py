@@ -2,15 +2,19 @@
 from html import escape
 from html.parser import HTMLParser
 import re
+import logging
+import time
 from urllib.parse import quote, urljoin, urlsplit
 
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse, Response
 
-from app.auth.base import PermissionDenied, SessionExpired, UpstreamError, UpstreamUnavailable
+from app.auth.base import PermissionDenied, SessionExpired, UpstreamError, UpstreamUnavailable, UpstreamBusy
 from app.content.htmlsafe import sanitize_confluence_html
 from app.services.confluence_macros import MacroRenderer, has_macros
 from app.jira import confluence_service as service
+
+log = logging.getLogger('ltm.confluence.read')
 
 
 def _page_id(value):
@@ -160,18 +164,23 @@ def build_confluence_router(*, get_client):
         except ValueError as exc:
             return JSONResponse({"error": str(exc), "service": "confluence"}, status_code=422)
         except PermissionDenied:
-            return JSONResponse({"error": "이 Confluence 문서를 볼 권한이 없습니다.", "service": "confluence"}, status_code=403)
+            return JSONResponse({"error": "이 Confluence 문서를 볼 권한이 없습니다.", "service": "confluence", 'reason': 'permission_denied'}, status_code=403)
         except UpstreamError as exc:
             status = getattr(exc, "status", 502)
             status = status if status in (401, 403, 404, 409, 429) else 502
             return JSONResponse({"error": "Confluence 문서를 불러오지 못했습니다.", "service": "confluence",
-                                 "needLogin": status == 401}, status_code=status)
+                                 "needLogin": status == 401, 'reason': {401:'authentication',403:'permission_denied',404:'not_found'}.get(status,'upstream_error'),
+                                 'retryable': status in (429,502)}, status_code=status)
         except SessionExpired:
             return JSONResponse({"error": "Confluence 인증을 복구하지 못했습니다. 연결 상태를 확인한 뒤 다시 시도해 주세요.",
-                                 "service": "confluence", "needLogin": True}, status_code=401)
-        except UpstreamUnavailable:
+                                 "service": "confluence", "needLogin": True, 'reason': 'authentication'}, status_code=401)
+        except TimeoutError:
+            return JSONResponse({'error': 'Confluence 응답 대기 시간이 초과되었습니다.', 'service': 'confluence',
+                                 'reason': 'upstream_timeout', 'retryable': True}, status_code=504)
+        except UpstreamUnavailable as exc:
             return JSONResponse({"error": "Confluence 연결이 응답하지 않습니다. 잠시 후 다시 시도해 주세요.",
-                                 "service": "confluence", "retryable": True}, status_code=503)
+                                 "service": "confluence", "retryable": True,
+                                 'reason': 'upstream_busy' if isinstance(exc, UpstreamBusy) else 'upstream_unavailable'}, status_code=503)
 
     @router.get("/spaces")
     def spaces(start: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):
@@ -256,11 +265,14 @@ def build_confluence_router(*, get_client):
 
     @router.get("/pages/{page_id}")
     def page(page_id: str, version: int | None = Query(None, ge=1), refresh: bool = False):
+        started, phase = time.perf_counter(), 'metadata'
         def read():
+            nonlocal phase
             client = get_client()
             current = service.head(client, _page_id(page_id), force=refresh)
             _check_space(client, (current.get("space") or {}).get("key"))
-            data = service.body(client, page_id, version=version, representation="view")
+            phase = 'body'
+            data = service.body(client, page_id, version=version, representation="view", prefetch_storage=True)
             _check_space(client, (data.get("space") or {}).get("key"))
             base = (client.s.confluence_base or "").rstrip("/")
             result = dict(data)
@@ -272,6 +284,7 @@ def build_confluence_router(*, get_client):
             raw = (data.get("body", {}).get("view") or {}).get("value", "")
             owners = ()
             if has_macros(storage):
+                phase = 'macros'
                 renderer = MacroRenderer(client, force=refresh)
                 try:
                     raw = renderer.render({**source, "ancestors": current.get("ancestors") or []}, storage)
@@ -289,7 +302,11 @@ def build_confluence_router(*, get_client):
             result['canEdit'] = str(getattr(client, 'env', '')).split('@', 1)[0] == 'mock' or (getattr(client.s, 'confluence_verification_revision', '') == '9.2.4'
                 and 'update_page' in features)
             return result
-        return reply(read)
+        response = reply(read)
+        elapsed = round((time.perf_counter() - started) * 1000)
+        if response.status_code >= 400 or elapsed >= 2000:
+            log.info('document page=%s phase=%s status=%s elapsed_ms=%s', page_id, phase, response.status_code, elapsed)
+        return response
 
     @router.get("/pages/{page_id}/source")
     def source(page_id: str):

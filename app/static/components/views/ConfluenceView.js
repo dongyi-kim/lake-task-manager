@@ -10,6 +10,8 @@ import ConfluencePageMenu from "../ui/ConfluencePageMenu.js";
 import confluenceTree from "../../lib/confluenceTree.js";
 import confluenceSavedTree from '../../lib/confluenceSavedTree.js';
 import ConfluenceTreeRow from '../ui/ConfluenceTreeRow.js';
+import { readConfluence } from '../../lib/confluenceRead.js';
+import ConfluenceReadNotice from '../ui/ConfluenceReadNotice.js';
 
 const pageId = () => location.hash.match(/^#\/confluence\/(\d+)/)?.[1] || "";
 const nextStart = data => data?._links?.next ? Number(data.start || 0) + Number(data.size ?? data.results?.length ?? 0) : null;
@@ -17,10 +19,10 @@ const merge = (old, rows) => [...new Map([...old, ...rows].map(row => [String(ro
 
 export default {
   name: "ConfluenceView",
-  components: { ConfluencePanel, ConfluenceDocumentList, ConfluenceComposer, ConfluencePageMenu, ConfluenceTreeRow },
+  components: { ConfluencePanel, ConfluenceDocumentList, ConfluenceComposer, ConfluencePageMenu, ConfluenceTreeRow, ConfluenceReadNotice },
   mixins: [confluenceLayout, confluenceTree, confluenceSavedTree],
   data() { return { base: "", favorites: [], recentDocuments: [], navigationFolds: readNavigationFolds(), spaces: [], space: "", spacesNext: null,
-    loading: false, error: "", doc: null, selectedId: "", reading: false, readError: "",
+    loading: false, error: "", doc: null, selectedId: "", reading: false, readError: "", readFailure: null, readSlow: false, readRetrying: false, requestedVersion: null,
     checking: false, revision: null, revisionError: "",
     headings: [], activeHeading: "", composing: false, editingPage: null, openingEditor: false, composeParent: null, contextPage: null }; },
   computed: {
@@ -38,7 +40,7 @@ export default {
   },
   activated() { if (this._hash) this._hash(); this.$nextTick(() => this.buildToc()); },
   deactivated() { this.contextPage=null; this.stopToc(); },
-  beforeUnmount() { window.removeEventListener("hashchange", this._hash); this.stopToc(); },
+  beforeUnmount() { this._readAbort?.abort(); window.removeEventListener("hashchange", this._hash); this.stopToc(); },
   methods: {
     startCompose(parent = null) { this.editingPage = null; this.composeParent = parent; this.contextPage = null;
       this.closeDrawer(); this.stopToc(); this.headings = []; this.composing = true; },
@@ -98,13 +100,19 @@ export default {
     },
     async read(id, version = null, refresh = false) {
       const gen = ++this._readGeneration;
+      this.requestedVersion = version;
+      this._readAbort?.abort();
+      const controller = this._readAbort = new AbortController();
+      this.readSlow = false; this.readRetrying = false; this.readFailure = null;
+      const slowTimer = setTimeout(() => { if (gen === this._readGeneration) this.readSlow = true; }, 8000);
       const replacing = String(this.doc?.id) === String(id);
       const scrollTop = replacing ? this.$refs.reader?.scrollTop || 0 : 0;
       this.selectedId = String(id); this.reading = true; this.readError = "";
       this.revision = null; this.revisionError = ""; this.checking = false;
       if (!replacing) { this.stopToc(); this.doc = null; this.headings = []; this.activeHeading = ""; }
       try {
-        const data = await api.confluenceDocument(id, version, refresh);
+        const data = await readConfluence(id, version, refresh, controller.signal,
+          () => { if (gen === this._readGeneration) this.readRetrying = true; });
         if (gen !== this._readGeneration) return;
         this.doc = data;
         this.recentDocuments = rememberDocument(this.base, this.recentDocuments, data);
@@ -112,9 +120,9 @@ export default {
         if (favorite && favorite.title !== data.title) { favorite.title = data.title; this.saveFavorites(); }
         this.$nextTick(() => { this.buildToc(); if (this.$refs.reader) this.$refs.reader.scrollTop = scrollTop;
           if (this._pendingAnchor) { this.jumpToAnchor(this._pendingAnchor); this._pendingAnchor=''; } this.updateToc(); });
-      } catch (error) { if (gen === this._readGeneration) { this.readError = error.message;
+      } catch (error) { if (gen === this._readGeneration && error.name !== 'AbortError') { this.readError = error.message; this.readFailure = error;
         if ([403, 404].includes(error.status)) { this.doc = null; this.headings = []; this.stopToc(); } } }
-      finally { if (gen === this._readGeneration) this.reading = false; }
+      finally { clearTimeout(slowTimer); if (gen === this._readGeneration) this.reading = false; }
     },
     async checkLatest() {
       if (!this.doc || this.checking) return;
@@ -240,7 +248,9 @@ export default {
           <div class="conf-toolbar-location"><button v-if="!showSidebar || compact" class="btn conf-nav-toggle" @click="toggleSidebar" :aria-expanded="showSidebar"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4h14v12H3zM8 4v12"/></svg>문서 탐색</button><span>{{ doc?.space?.name || '문서' }}</span></div>
           <div v-if="doc" class="conf-actions"><button class="btn conf-favorite-toggle" @click="toggleFavorite" :aria-pressed="isFavorite" :aria-label="isFavorite ? '즐겨찾기 해제' : '즐겨찾기 추가'">{{ isFavorite ? '★' : '☆' }}</button><button class="btn conf-check" @click="checkLatest" :disabled="checking || reading" aria-label="최신 여부 확인"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 8a6 6 0 10-1 6M16 3v5h-5"/></svg><span>{{ checking ? '확인 중…' : '최신 여부 확인' }}</span></button><a :href="doc.url" target="_blank" rel="noopener noreferrer" class="btn conf-external" aria-label="Confluence에서 열기" title="Confluence에서 열기"><span>원문</span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M11 3h6v6M17 3l-8 8M8 4H4v12h12v-4"/></svg></a><button v-if="headings.length" class="btn conf-toc-toggle" @click="toggleToc" :aria-expanded="showToc" aria-controls="conf-document-toc"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h12M4 10h12M4 15h8"/></svg>목차</button></div>
         </header>
-        <p v-if="readError || revisionError" class="conf-error" role="alert">{{ readError || revisionError }} <button v-if="readError" class="conf-more" @click="read(selectedId)">다시 시도</button></p>
+        <ConfluenceReadNotice :error="readError ? (readFailure || readError) : null" :loading="reading" :slow="readSlow" :retrying="readRetrying" :cached="!!doc"
+          :url="doc?.url || (selectedId ? base + '/pages/viewpage.action?pageId=' + selectedId : '')" @retry="read(selectedId,requestedVersion)" />
+        <p v-if="revisionError" class="conf-error" role="alert">{{ revisionError }}</p>
         <div v-if="newer" class="conf-new-version" role="status">새 발행 버전 v{{ revision.latestPublishedVersion }}이 있습니다.<button class="btn" @click="read(doc.id, revision.latestPublishedVersion)">새 버전 보기</button></div>
         <p v-else-if="revision?.isLatest" class="conf-current" role="status">확인 시점의 최신 발행 버전입니다. {{ date(revision.checkedAt) }}</p>
         <div ref="reader" class="conf-reader" tabindex="0" aria-label="문서 본문" :aria-busy="reading">

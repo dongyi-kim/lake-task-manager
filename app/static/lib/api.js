@@ -42,6 +42,7 @@ async function fetchWithAuth(path, options) {
   if (b.service === "confluence") {
     const error = new Error(b.error || "Confluence 인증을 확인해 주세요.");
     error.status = 401; error.service = "confluence"; error.needLogin = !!b.needLogin;
+    error.reason = b.reason || 'authentication';
     throw error;
   }
   let recovery = null;
@@ -86,7 +87,10 @@ async function req(path, opts) {
     r = await fetchWithAuth(path, o);
   } catch (e) {
     if (timedOut) {
-      const error = new Error("요청 시간이 초과되었습니다. 입력은 보존되며 잠시 후 다시 시도할 수 있습니다.");
+      const read = /^(GET|HEAD)$/.test(String(o.method || 'GET').toUpperCase());
+      const error = new Error(read ? '응답 대기 시간이 초과되었습니다. 잠시 후 다시 시도할 수 있습니다.'
+        : "요청 시간이 초과되었습니다. 입력은 보존되며 잠시 후 다시 시도할 수 있습니다.");
+      error.reason = 'request_timeout'; error.retryable = read;
       error.uncertain = !!e.uncertain || (mutation && !e.authRejected);
       error.authRecoveryPending = !!e.authRejected;
       throw error;
@@ -105,6 +109,7 @@ async function req(path, opts) {
     error.status = r.status;
     error.retryable = !!(body && body.retryable);
     error.uncertain = !!(body && body.uncertain);
+    error.reason = body?.reason; error.service = body?.service;
     throw error;
   }
   const revisionHeader = r.headers?.get?.('X-LTM-Policy-Revision');
@@ -437,8 +442,8 @@ export const api = {
     + "&parent=" + encodeURIComponent(parent) + "&start=" + start),
   confluenceSearch: (query, space = "", start = 0, ancestor = "") => req("/api/confluence/search?q=" + encodeURIComponent(query)
     + "&space=" + encodeURIComponent(space) + "&start=" + start + (ancestor ? "&ancestor=" + encodeURIComponent(ancestor) : "")),
-  confluenceDocument: (id, version, refresh=false) => req("/api/confluence/pages/" + encodeURIComponent(id)
-    + (version || refresh ? "?" + new URLSearchParams({...(version ? {version} : {}), ...(refresh ? {refresh:true} : {})}) : "")),
+  confluenceDocument: (id, version, refresh=false, signal) => req("/api/confluence/pages/" + encodeURIComponent(id)
+    + (version || refresh ? "?" + new URLSearchParams({...(version ? {version} : {}), ...(refresh ? {refresh:true} : {})}) : ""), {signal}),
   confluenceRevision: (id, version) => req("/api/confluence/pages/" + encodeURIComponent(id) + "/revision?known_version=" + version),
   // fresh: 캐시를 건너뛴다(본문 편집 시작·편집 중 충돌 감시). 평소엔 쓰지 마라 — 상류 왕복이다.
   // ★ 이때는 memo(get)를 타면 안 된다 — 프로미스 캐시가 URL 이 같다는 이유로 **늘 첫 응답**을

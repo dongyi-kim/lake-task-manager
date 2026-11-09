@@ -52,7 +52,7 @@ def test_service_errors_do_not_reach_jira_handlers(browser_api, monkeypatch, err
 def test_pinned_view_and_revision_check_delegate_to_shared_service(browser_api, monkeypatch):
     http, service, client = browser_api
     calls = []
-    def body(received, cid, version=None, representation="storage"):
+    def body(received, cid, version=None, representation="storage", **options):
         calls.append((received, cid, version, representation))
         return {"id": cid, "title": "문서", "version": {"number": version}, "space": {"key": "ETL"},
                 "body": {representation: {"value": '<h1>내용</h1><script>alert(1)</script>'}}}
