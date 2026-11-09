@@ -56,18 +56,27 @@ class RecoveryController:
         for call in saved:
             page = call["result"]["data"]
             for node in nodes:
-                arguments = node.get("arguments") if isinstance(node.get("arguments"), dict) else {}
-                key = node.get("key", arguments.get("key"))
-                if key is not None and key != page.get("key"):
+                # Clients may save nextCall.arguments, nextArguments, or a direct
+                # argument object. Walked children retain the actual source cursor.
+                arguments = node.get("arguments") if isinstance(node.get("arguments"), dict) else node
+                if call["name"] == "search_issues" and arguments.get("jql") != call["arguments"].get("jql"):
                     continue
+                key = node.get("key", arguments.get("key"))
                 kind = node.get("kind", arguments.get("kind"))
-                if kind is not None and kind != page.get("kind"):
+                if call["name"] == "get_evidence_page" and (
+                        not key or not kind or key != page.get("key") or kind != page.get("kind")):
+                    continue
+                if call["name"] == "search_issues" and (key is not None or kind is not None):
+                    continue
+                snapshot = node.get("snapshotId", arguments.get("snapshot_id"))
+                if call["name"] == "search_issues" and page.get("snapshotId") and snapshot != page["snapshotId"]:
+                    continue
+                if snapshot is not None and snapshot != page.get("snapshotId"):
                     continue
                 continuation = node.get("nextStartAt", arguments.get("start_at"))
                 has_fragment = any(item.get("nextRecordOffset") is not None for item in page.get("items", []))
                 page_checkpoint |= (type(continuation) is int and continuation == page.get("nextStartAt")
                                     and page.get("hasMore") is True and not has_fragment)
-                snapshot = node.get("snapshotId", arguments.get("snapshot_id"))
                 snapshot_checkpoint |= bool(snapshot and snapshot == page.get("snapshotId"))
                 completed_checkpoint |= (node.get("status") == "complete" and key == page.get("key")
                                          and page.get("hasMore") is False)

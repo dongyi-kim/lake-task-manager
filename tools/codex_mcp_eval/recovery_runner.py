@@ -14,6 +14,9 @@ from tools.codex_mcp_eval.reporting_fixture import periods
 RECOVERY_PROMPT = """다음 조사만 수행하세요. Jira 검색 조건은
 labels = work_research_fixture AND key in (DL-94001,DL-94002,DL-94006,DL-94007,DL-94017,DL-94018) ORDER BY key ASC
 이며 검색 페이지 크기는 2입니다. 질문의 월 기간에 신규 적재한 고유 테이블 수를 조사하세요.
+집계 모집단은 이 JQL의 전체 검색 결과입니다. IN의 key들은 검색 후보 범위이며 각각을 필수
+개별 조회 대상으로 지정한 것이 아닙니다. 정상적으로 끝까지 조회한 검색에 반환되지 않은 후보를
+모집단에 추가하지 마세요. 검색 실패·누락·불완전 응답은 공개하고 전체 건수를 미확정으로 남기세요.
 전체 댓글의 취소·제외, 같은 작업의 재보고, 기간 밖 작업을 반영하고 운영 결정 문서와도 대조하세요.
 resultKeys는 위 검색 범위에서 판단에 사용한 key 오름차순이며 reportedTotal은 고유 테이블 수입니다.
 research_files는 이 조사의 전용 로컬 파일 기능입니다. 서버의 조사·보고 가이드와 저장·재개 참고를
@@ -40,6 +43,7 @@ def recovery_battery(base, today, scenario, mode):
         spec["goal"] = case["prompts"][0]
         expected = spec["elements"][0]["expected"]
         expected["documents"] = ["운영 결정"]
+        expected["populationBasis"] = "complete-returned-JQL-membership; IN keys are candidates, not required individual reads"
         expected["recovery"] = {"scenario": scenario, "sourceRevision": revision,
             "cachePolicy": "new-private-database-every-phase", "treatmentField": "run.externalRuntime.recoveryMode",
             "modes": {"uninterrupted": {"phaseCount": 1, "initialSourceRevision": revision},
@@ -47,7 +51,7 @@ def recovery_battery(base, today, scenario, mode):
                                     "originalDialogueAvailable": False, "requiresSavedFilesRead": True}}}
         return suite, {case["id"]: spec}
     return SimpleNamespace(**{**vars(base), "SUITE": "codex-mcp-work-recovery", "CASES": [case],
-        "PROMPT_VERSION": "codex-mcp-work-recovery-v2", "SYSTEM_CONTEXT": "", "review_contract": review,
+        "BATTERY_VERSION": "2.0.0", "PROMPT_VERSION": "codex-mcp-work-recovery-v3", "SYSTEM_CONTEXT": "", "review_contract": review,
         "CHECKER_DEPENDENCIES": (*base.CHECKER_DEPENDENCIES, RECOVERY_PROMPT, recovery_prompt,
                                   RecoveryController, persisted_calls, scenario)})
 

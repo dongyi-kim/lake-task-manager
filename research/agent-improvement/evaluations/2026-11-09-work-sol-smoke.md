@@ -302,3 +302,45 @@ tests cover3/100 batches, Unicode/JSON/hash reconstruction, comments/history and
 authored finding arrays, contradictory model identity, inappropriate NA variants,
 and a rounded4.50 display whose true mean is below4.5. Latest focused verification
 passed59 tests; broader offline CI is rerun after publishing the corrected commits.
+
+### Prospective Work1.0.0 boundary confirmation and rejected recovery attempt
+
+Clean commit40673f69, Sol6.1/high, real MCP over mock Jira at port4457:
+`20261109-sol-high-v100-boundary-confirm-e4deee74` completed R02/R03/R05/R07 boundary
+with automatic4/4. The retained raw SHA is
+`3ebd622c9fc61400ec2c91ff575e77dfc5fbd5dc66a313cfb375c309f64d1e84`.
+Total259.20s,68 MCP calls,20 actual Jira requests,0 Confluence,259,680 source bytes,
+1,100,419 total tokens. R02 andR07 each used23 evidence calls with zero repeated
+arguments and fully reconstructed the cancellation comment. Candidate entrypoint
+adoption was3/4; non-adopter R05 remains included. These are diagnostic cases,
+not an A/B or performance improvement estimate.
+
+All four final answers and their source calls were directly reviewed by the same
+single unblinded native Codex Sol/high panel: mean4.97/5, zero major/caps/material
+false facts. Exact case/snapshot SHA, excerpts and the full32 common plus specialized
+checklist were validated in external `reviews/v100-boundary-confirm.json`. R02 has
+one minor output-contract issue: correct operational rows despite the non-operational
+question's empty-array instruction. This diagnostic does not replace any prior failure.
+
+The sibling recovery diagnostic is **failed**, original raw SHA
+`396146aa459487272a9ba48983e460aa89f2cc0a965de3b4072ad907af9de155`:
+196.83s,34 LTM MCP+60 file calls, actual Jira8/Confluence3,124,674 Jira response
+bytes,489,320 file-write bytes and0 file-read bytes. It completed only one phase;
+the fault never fired, so it provides no cold-session recovery evidence. The model
+saved actual search pages and legitimate `nextArguments` progress, which the
+controller did not recognize. It also interpreted the JQL's candidate key18 as a
+required unread member and returned null/unknown after a missing-key lookup;
+the intended population was the complete returned JQL membership. This is an
+ambiguous input contract, not an invented business fact. The result remains0/1.
+
+Prospective correction is confined to the evaluation harness: recognize source-
+linked direct/nested argument cursors and reject mismatching query/snapshot;
+clarify search candidate vs returned population without relaxing failed or
+incomplete query disclosure. Recovery battery becomes2.0.0 / promptv3, while main
+Work stays1.0.0. Four behavioral regressions first failed, then recovery/integrity
+checks passed80 tests. Four additional missing-identity regressions first failed;
+the corrected source binding then passed31 recovery tests. Read-only review found
+no remaining important issue. Product PR191 full offline CI passed at2633bd3c and
+PR192's full offline CI passed at40673f69. Fresh
+same-commit boundary/recovery diagnostics and the full qualification remain pending;
+no v3 matrix has been executed and no candidate is enabled by default.

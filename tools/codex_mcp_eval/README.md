@@ -142,6 +142,12 @@ baseline은 design validity와 품질을 구분해 보고한다. main의 arm별,
 cohort를 각각 검증하며, 같은 평가자 panel과 공통 benchmark를 비교한다.
 cohort 통과가 전체 A/B·복구 검증 완료를 대신하지 않으며 반환값의 qualificationClaim은 false다.
 
+복구 suite 2.0.0 / prompt v3는 집계 모집단을 완전한 JQL 검색의 실제 반환 집합으로 명시한다.
+IN key는 검색 후보이며 필수 개별 조회 목록이 아니다. 검색 실패·불완전 결과를 확정 집계로
+바꾸지 않는다. 중단 장치는 정상 응답의 실제 저장을 검증한 뒤 `nextArguments`, 직접 인자,
+`nextCall.arguments` 또는 기존 cursor에서 같은 쿼리·snapshot·다음 위치를 확인한다. 다른 검색의
+cursor를 인정하지 않으며 중단이 실제 발생하지 않은 시도는 복구 성공으로 보고하지 않는다.
+
 `--cases MCP-J1 MCP-O1`처럼 고유 ID로 focused 실행할 수 있다. focused 성공으로 이전 full run 실패를 대체하지 않는다.
 버전은 external suite `1.0.2`, protocol `3.0.0`, human rubric `2.0.0`이며 기존 내장 Agent 배터리와
 동일 benchmark라고 주장하지 않는다. S3~S6 원문 질문과 기대 사실을 재사용하고 별도의 MCP 전송·출력 계약을 기록한다.
