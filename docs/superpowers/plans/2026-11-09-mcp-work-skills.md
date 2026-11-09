@@ -1,10 +1,19 @@
 # Issue 190: research, reporting and resumable investigations
 
-Status: approved implementation plan; candidate only until real-model qualification.
+Status: initial product release with default-enabled skills authorized; full repeated qualification follows.
 Spec: https://github.com/dongyi-kim/lake-task-manager/issues/190 plus the user's
 2026-11-09 checkpoint/resume requirement and approved conversation plan.
 
 ## Goal and constraints
+
+The user explicitly changed the rollout order on2026-11-09: release the reasonably
+verified product first, with both research/reporting skills enabled by default,
+then continue full A/B and cold-recovery validation in the separate evaluationPR.
+Completed product CI, default/fallback22-case smoke, firstcandidate22-case automatic/
+direct review and independent product code review support this initial delivery.
+This supersedes the original default-off/no-merge/no-release hold below; it does
+not assert complete302-case qualification. Release only the app main/tag/public
+GitHub Release; do not change deploy-repository pointers, tags or releases.
 
 Provide `ltm-work-research` and `ltm-work-reporting` with shared Korean, evidence,
 aggregation and client-local recovery guides. Preserve #187's body/comments-first

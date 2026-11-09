@@ -53,7 +53,7 @@ class LocalMcpRuntime:
     def __init__(self, *, get_client, settings, secret_path, require_edit=lambda key: None,
                  require_person_access=lambda user: None, classify_error=None,
                  require_manager=None, require_module_access=None, scoped_people=lambda: {}, request_login=None,
-                 include_research_skills=False):
+                 include_research_skills=True):
         self.get_client, self.settings = get_client, settings
         self.port = settings.app_port
         self.url = f"http://127.0.0.1:{self.port}/mcp"

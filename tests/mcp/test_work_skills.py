@@ -1,4 +1,4 @@
-"""Candidate investigation guides share real MCP transport without premature rollout."""
+"""Investigation guides share real MCP transport and preserve an explicit authoring subset."""
 from hashlib import sha256
 import re
 
@@ -46,7 +46,7 @@ def test_candidate_resources_are_complete_small_and_jira_markup_is_not_projected
                     assert root + link in uris, (uri, link)
 
 
-def test_real_sdk_fallback_reads_candidates_without_jira_and_default_rejects_them(build_env, monkeypatch):
+def test_real_sdk_reads_research_without_jira_and_explicit_opt_out_rejects_them(build_env, monkeypatch):
     env = build_env(include_research_skills=True)
     monkeypatch.setattr(env.runtime, "get_client", lambda: pytest.fail("guides must not initialize Jira"))
 
@@ -71,9 +71,29 @@ def test_real_sdk_fallback_reads_candidates_without_jira_and_default_rejects_the
                     assert body["text"] == read.contents[0].text
                     assert body["digest"] == resource["digest"]
             assert env.calls == []
-        default = build_env(port=4458)
+        default = build_env(port=4458, include_research_skills=False)
         assert "ltm-work-research" not in default.runtime.server.instructions
         async with Client(default.runtime.server) as client:
             result = await client.call_tool("get_content_guide", {"skill": "ltm-work-research"})
             assert result.is_error
+    anyio.run(scenario)
+
+
+def test_production_runtime_exposes_both_research_guides_by_default(build_env, monkeypatch):
+    env = build_env()
+    monkeypatch.setattr(env.runtime, "get_client", lambda: pytest.fail("guides must not initialize Jira"))
+    async def scenario():
+        async with Client(env.runtime.server) as client:
+            listed = await client.call_tool("get_content_guide", {})
+            names = {row["frontmatter"]["name"] for row in listed.structured_content["data"]["skills"]}
+            assert names == set(SKILL_NAMES) | RESEARCH
+            tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+            assert RESEARCH <= set(tools["get_content_guide"].input_schema["properties"]["skill"]["enum"])
+            assert not {"list_files", "read_file", "write_file"} & tools.keys()
+            for name in RESEARCH:
+                fallback = await client.call_tool("get_content_guide", {"skill": name})
+                resource = await client.read_resource(f"skill://{name}/SKILL.md")
+                assert not fallback.is_error
+                assert fallback.structured_content["data"]["text"] == resource.contents[0].text
+        assert env.calls == []
     anyio.run(scenario)

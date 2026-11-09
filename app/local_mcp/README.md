@@ -1,13 +1,14 @@
 # Local MCP
 
-## 조사·보고 스킬 후보 (#190)
+## 조사·보고 스킬 (#190)
 
-`ltm-work-research`와 `ltm-work-reporting`은 평가용 후보이며 기본 카탈로그에는 없다.
-내부 `LocalMcpRuntime(include_research_skills=True)`로 구성한 평가 인스턴스에서만 제공한다.
-기본·후보 모두 Skills 확장과 `get_content_guide`에서 같은 파일·digest를 읽는다.
+`ltm-work-research`와 `ltm-work-reporting`을 실행 중인 MCP의 기본 카탈로그에 제공한다.
+기존 작성 스킬 4개를 함께 유지하며, 통제 평가에는 `include_research_skills=False`로 제외할 수 있다.
+Skills 확장과 `get_content_guide`에서 같은 파일·digest를 읽는다.
 스킬은 본문·댓글 우선 조사, 실적 단위·근거 검수, 클라이언트 로컬 중간 저장과 재개를 안내한다.
 LTM에 파일 도구를 추가하지 않으며, 파일 기능이 없는 클라이언트에는 재개 요약을 안내한다.
-실제 Agent A/B·복구 평가와 직접 원문 검수 전에는 기본 제공하지 않는다.
+제품 회귀·기본/대체 경로와 첫 후보 실행을 검증한 뒤 사용자 요청으로 1차 배포하며,
+전체 반복 A/B·복구 검증은 후속 평가에서 이어간다.
 
 실행 중인 LTM이 `http://127.0.0.1:<설정 포트>/mcp`에서 표준 Streamable HTTP MCP를 제공한다.
 별도 Jira 로그인, LLM 키, 별도 서버 실행이 필요 없다. UI와 같은 `JiraClient`, 인증 provider,
