@@ -37,6 +37,38 @@ directories for development/test scratch with finally cleanup.
 - Existing batteries remain backward-compatible. Freshness/JQL effects are not
   attributed to skills. Native extension and fallback transport are distinguished.
 
+## Added requirement: fewer upstream requests
+
+User steering on 2026-11-09 requires collecting necessary information in a few
+multi-issue requests, reducing both MCP overhead and actual Jira requests/latency.
+Jira 8.20 search supports selected fields including description. Existing MCP search
+uses a light projection that omits it even with detail=full; do not pretend that
+the current exposed search already reads complete bodies.
+
+- User approved a separate `get_tickets(keys, include_description=false)` for
+  known key sets, alongside single-ticket get_ticket and discovery search_issues.
+  Bound batches at 100, validate configured scope before I/O, deduplicate keys,
+  preserve requested order and report missing tickets/bodies explicitly. Never
+  implement the batch as N single-ticket GETs. Follow actual smaller search pages.
+- Expose optional `include_description=false` on existing search_issues,
+  retaining existing defaults and query/project/pagination/cache isolation. Query
+  the needed key set and opt into description plus existing metadata in one search.
+  User explicitly declined general controls for other fields; do not expose a
+  general fields selector or additional field toggles. The body switch is independent
+  of the existing metadata detail projection and defaults off to avoid body cost.
+  No per-key network fan-out or automatic full-field expansion for this path.
+- Preserve raw description fidelity, distinguish omitted fields from empty values,
+  retain returned keys/URLs and field-specific snapshot identity. A read projection
+  must not poison canonical UI issue caches.
+- Guide discovery/relationship/status collection in batches, reuse returned fields,
+  and read extra bodies/comments/history only for actual evidence gaps. Do not load
+  every skill reference or re-read identical URI/digest resources for every task.
+- Verify actual provider endpoint counts/bytes/latency as well as MCP counts, using
+  a cold multi-issue body-read regression and meaningful real-model comparisons.
+  Completeness checks must accept genuinely observed bulk evidence rather than
+  requiring duplicate single-ticket reads. Comment previews remain previews unless
+  their returned pagination proves complete coverage.
+
 ## Task 3: local recovery
 
 - Guide artifacts: manifest.json, progress.json, evidence/, findings.jsonl,

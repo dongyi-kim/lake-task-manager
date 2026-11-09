@@ -24,7 +24,7 @@ def includes(profile, tool):
     if profile == "reporting":
         return bool(tool.annotations.read_only_hint) and not config
     if profile == "confluence":
-        return confluence or name in {"search_workspace", "search_users", "get_user", "get_ticket", "search_issues"}
+        return confluence or name in {"search_workspace", "search_users", "get_user", "get_ticket", "get_tickets", "search_issues"}
     if profile == "jira":
         return not config and (not confluence or name in {"search_confluence_documents", "read_confluence_document"})
     return False

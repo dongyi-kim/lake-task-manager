@@ -1,6 +1,6 @@
 # 최소 충분 근거와 완전성
 
-검색으로 후보를 좁히고 `get_ticket(detail="read")`의 기본정보·본문과 `get_comments`의 최근 논의를 먼저 읽는다. 참조된 Confluence 문서는 질문에 필요한 부분을 실제로 읽고 ID·revision·위치를 남긴다. 최신 문서라는 이유만으로 실제 실행 기록을 덮지 않는다.
+검색·계층 조회로 필요한 대상을 묶어 수집하고, 정해진 여러 key는 `get_tickets`로 함께 읽는다. 본문이 필요한 집합에만 `include_description=true`를 켠다. 이미 반환된 기본정보·본문은 재조회하지 않는다. `get_ticket(detail="read")`는 누락이나 렌더링 원문 확인에, `get_comments`는 필요한 최근 논의에 사용한다. 참조된 Confluence 문서는 필요한 부분을 실제로 읽고 ID·revision·위치를 남긴다. 최신 문서라는 이유만으로 실제 실행 기록을 덮지 않는다.
 
 | 필요한 답 | 추가 조회 |
 |---|---|
