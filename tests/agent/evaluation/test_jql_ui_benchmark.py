@@ -210,3 +210,37 @@ def test_rapid_partial_deadline_returns_explicit_coverage_gap(monkeypatch):
     assert rows[-1]["name"] == "rapid-partial-frame" and rows[-1]["skipped"] is True
     assert runner.scenario_coverage_complete({"rows": rows}) is False
     assert runner.scenario_coverage_complete({"rows": [{"name": "rapid-switch-to-catalog", "ok": True}]}) is True
+
+
+def test_http_trace_preserves_typed_failure_and_success_without_reading_success_body():
+    from io import StringIO
+    from tools import jql_ui_benchmark as runner
+    trace, failures = [], []
+    stream = StringIO()
+    body = {"code": "query_state_changed", "retryable": True, "needLogin": False}
+    response = SimpleNamespace(url=runner.BASE + "/api/ticket/DL-1/siblings", status=503,
+        request=SimpleNamespace(method="GET"), headers={"retry-after": "1"}, json=lambda: body)
+    runner.record_http_response(response, trace, failures, stream)
+    response.status = 200
+    response.json = lambda: pytest.fail("successful response bodies must not be consumed by observation")
+    runner.record_http_response(response, trace, failures, stream)
+    assert [row["status"] for row in trace] == [503, 200]
+    assert trace[0]["body"] == body and trace[0]["retryAfter"] == "1"
+    assert trace[0]["method"] == "GET" and trace[1]["sequence"] == 1
+    assert trace[0]["observedAt"] <= trace[1]["observedAt"]
+    assert failures == trace[:1] and "body" not in trace[1]
+    assert [json.loads(line) for line in stream.getvalue().splitlines()] == trace
+
+
+def test_http_trace_keeps_unreadable_error_and_does_not_observe_external_resources():
+    from tools import jql_ui_benchmark as runner
+    trace, failures = [], []
+    def unreadable():
+        raise ValueError("not JSON")
+    response = SimpleNamespace(url=runner.BASE + "/api/test", status=502,
+        request=SimpleNamespace(method="GET"), headers={}, json=unreadable)
+    runner.record_http_response(response, trace, failures)
+    assert trace[0]["bodyReadError"] == "ValueError('not JSON')" and failures == trace
+    response.url = "https://example.invalid/api/test"
+    runner.record_http_response(response, trace, failures)
+    assert len(trace) == 1

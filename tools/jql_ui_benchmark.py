@@ -34,6 +34,8 @@ EVIDENCE_DIR = None
 RAW_STREAM = None
 NETWORK_FAILURES = []
 CONSOLE_WARNINGS = []
+HTTP_RESPONSES = []
+HTTP_STREAM = None
 
 
 def request(path, method="GET"):
@@ -295,6 +297,25 @@ def wait_idle():
         raise TimeoutError(f'Upstream background work did not drain: {state}')
 
 
+def record_http_response(response, trace, failures, stream=None):
+    """Retain typed local failures and later retry statuses without consuming successful bodies."""
+    if not response.url.startswith(BASE + "/api/"):
+        return
+    row = {"sequence": len(trace), "observedAt": time.perf_counter(), "url": response.url,
+           "method": response.request.method, "status": response.status}
+    trace.append(row)
+    if response.status >= 400:
+        row["retryAfter"] = response.headers.get("retry-after")
+        try:
+            row["body"] = response.json()
+        except Exception as error:
+            row["bodyReadError"] = repr(error)
+        failures.append(row)
+    if stream:
+        stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+        stream.flush()
+
+
 def new_page(browser, repo, errors):
     context = browser.new_context(viewport={'width':1600,'height':1000})
     guide_ids = re.findall(r'id:\s*"([^"]+)"', (repo/'app/static/lib/guides.js').read_text(encoding='utf-8'))
@@ -311,11 +332,11 @@ def new_page(browser, repo, errors):
       window.__benchLong=[];new PerformanceObserver(l=>window.__benchLong.push(...l.getEntries().map(e=>({start:e.startTime,duration:e.duration})))).observe({type:'longtask',buffered:true});""")
     page=context.new_page()
     page.on('pageerror',lambda e:errors.append(str(e)))
-    page.on('console', lambda message: errors.append({"type": "console", "text": message.text})
+    page.on('console', lambda message: errors.append({"type": "console", "text": message.text,
+                                                     "location": message.location, "observedAt": time.perf_counter()})
             if message.type == 'error' else CONSOLE_WARNINGS.append(message.text) if message.type == 'warning' else None)
     page.on('requestfailed', lambda item: NETWORK_FAILURES.append({"url": item.url, "failure": item.failure}))
-    page.on('response', lambda response: NETWORK_FAILURES.append({"url": response.url, "status": response.status})
-            if response.status >= 400 else None)
+    page.on('response', lambda response: record_http_response(response, HTTP_RESPONSES, NETWORK_FAILURES, HTTP_STREAM))
     return page
 
 
@@ -377,7 +398,7 @@ def scenario_coverage_complete(result):
 
 def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, reverse=False,
            keep_server=False, rapid=False, mutation=False, generic=False, timeout=60):
-    global EVIDENCE_DIR, RAW_STREAM, UI_TIMEOUT
+    global EVIDENCE_DIR, RAW_STREAM, HTTP_STREAM, UI_TIMEOUT
     if keep_server:
         raise ValueError("--keep-server is incompatible with owned process/scratch cleanup")
     repo = Path(repo).resolve()
@@ -390,6 +411,7 @@ def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, r
     UI_TIMEOUT = timeout
     NETWORK_FAILURES.clear()
     CONSOLE_WARNINGS.clear()
+    HTTP_RESPONSES.clear()
     rows, errors = [], []
     identity = repository_identity(repo)
     result = {"protocol": "jql-ui-year-v2", "qualificationEligible": False,
@@ -397,7 +419,7 @@ def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, r
         "browser": "Chromium via Python Playwright; Browser plugin not available",
         "clockControl": "cache/JQL/CacheMemo frozen; actual browser, latency, deadlines and performance clocks",
         "viewport": {"width": 1600, "height": 1000}, "rows": rows, "consoleErrors": errors,
-        "consoleWarnings": CONSOLE_WARNINGS, "networkFailures": NETWORK_FAILURES,
+        "consoleWarnings": CONSOLE_WARNINGS, "networkFailures": NETWORK_FAILURES, "httpResponses": HTTP_RESPONSES,
         "latencyMs": latency, "samples": {"cold": cold, "warm": warm, "journeys": journeys, "smoke": smoke},
         "mcpCalls": 0, "modelUsage": None,
         "coverageGaps": ["Not ten repeated UI samples or a paired arm comparison",
@@ -406,6 +428,7 @@ def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, r
             "Optional edge scenarios are measured only when explicitly requested"]}
     process, log, scratch_path = None, None, None
     RAW_STREAM = (output / "rows.jsonl").open("x", encoding="utf-8")
+    HTTP_STREAM = (output / "http.jsonl").open("x", encoding="utf-8")
     try:
         with tempfile.TemporaryDirectory() as scratch:
             scratch_path = Path(scratch)
@@ -463,6 +486,8 @@ def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, r
     finally:
         RAW_STREAM.close()
         RAW_STREAM = None
+        HTTP_STREAM.close()
+        HTTP_STREAM = None
         result["scratchRemoved"] = scratch_path is None or not scratch_path.exists()
         result["wireTail"] = wire_tail(output / "wire")
         result["revisionAfter"] = repository_identity(repo)
