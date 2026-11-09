@@ -33,6 +33,22 @@ async def wait_for_replacement(host, old_loop):
                 f"failure={host._worker.current.failure_type}, frames={host._worker.current.failure_frames}")
 
 
+@pytest.mark.parametrize("observed_misses", [0, 1])
+def test_one_late_heartbeat_does_not_reject_a_responsive_worker(build_env, observed_misses):
+    env = build_env()
+    host = env.runtime.transport_host
+    async def scenario():
+        async with env.app.router.lifespan_context(env.app):
+            worker, generation = host._worker, host._worker.current
+            generation.last_heartbeat = time.monotonic() - 2.1
+            worker.state, worker.failures = ("unresponsive" if observed_misses else "healthy"), observed_misses
+            assert worker.snapshot()["state"] == "unresponsive"
+            async with http_client(env) as http:
+                assert (await rpc(http, "tools/list"))["tools"]
+            assert worker.current is generation and worker.restart_count == 0
+    asyncio.run(scenario())
+
+
 def test_live_app_automatically_rebuilds_stopped_sdk_and_all_profiles(build_env, monkeypatch):
     env = build_env()
     host = env.runtime.transport_host
