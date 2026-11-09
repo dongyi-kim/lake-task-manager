@@ -2,7 +2,7 @@
 name: ltm-work-reporting
 description: LTM MCP로 일간·주간·월간 실적을 집계하거나, 개인·모듈·Epic·WBS의 보고서 초안을 만들거나, 기존 보고·사용자 양식과 비교할 때 사용한다. 중단된 집계를 로컬 조사 자료로 재개하는 요청도 포함한다.
 metadata:
-  version: 0.1.5-candidate
+  version: 0.1.6-candidate
 ---
 
 # 근거에 따른 업무 집계와 보고
@@ -16,7 +16,7 @@ metadata:
 1. 여러 대상은 [묶음 조회·재사용](references/read-strategy.md)으로 수집 계획을 세운다. 후보 탐색은 `search_issues`, 정해진 key 집합은 `get_tickets`로 묶어 읽는다. 본문은 기본 제외하고 필요한 집합만 `include_description=true`로 요청한다. 받은 필드를 key별로 다시 읽지 않는다.
 2. 기간·인물·범위가 모호하면 [범위·인물·시점](references/research-scope.md)을 참고한다. 사용자 양식·이전 보고가 있으면 읽고 문서 ID·revision·기준 시각을 기록한다.
 3. 여러 페이지·긴 기록 등 중단 비용이 큰 집계는 수집 전에 [중간 저장과 재개](references/checkpoint-resume.md)를 읽고 준비한다. 재개는 `resume.md`·manifest부터 확인한다. [저장 예제](references/checkpoint-example.json)는 합성 자료다.
-4. 전체 댓글·긴 레코드를 읽을 때는 [근거 수집과 이어 읽기](references/research-evidence.md)를 읽는다. 완전 집계에 필요하면 preview를 반복하지 말고 원본을 끝까지 읽는다. 일반 보고라는 이유로 모든 이력을 추가하지 않는다.
+4. 연결이 끊기거나 전체 댓글·긴 레코드를 읽을 때는 [근거 수집·실패 구간 복구](references/research-evidence.md)를 읽는다. 완전 집계에 필요하면 preview를 반복하지 말고 원본을 끝까지 읽는다. 일반 보고라는 이유로 모든 이력을 추가하지 않는다.
 5. [계층과 집계](references/work-counting.md)로 산출물·사건별 ledger를 작성한다. 종료 범위가 불명확하면 [요청 대응표](references/request-matrix.md), 문장·양식 보완이 필요하면 [한국어 작성](references/korean-writing.md)을 참고한다.
 
 ## 보고 계약
