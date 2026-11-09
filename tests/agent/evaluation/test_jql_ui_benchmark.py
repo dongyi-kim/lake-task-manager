@@ -7,6 +7,7 @@ import threading
 import subprocess
 import sys
 import textwrap
+from copy import deepcopy
 
 import pytest
 
@@ -244,3 +245,128 @@ def test_http_trace_keeps_unreadable_error_and_does_not_observe_external_resourc
     response.url = "https://example.invalid/api/test"
     runner.record_http_response(response, trace, failures)
     assert len(trace) == 1
+
+
+def recovered_read_evidence():
+    url = "http://127.0.0.1:4457/api/ticket/DL-1/siblings"
+    shared = {"url": url, "method": "GET", "pageId": "p1", "actionId": "a1"}
+    failed = {**shared, "sequence": 0, "requestId": "p1:r1", "startedAt": 10.,
+              "observedAt": 11., "finishedAt": 11.1, "status": 503,
+              "body": {"code": "query_state_changed", "retryable": True, "needLogin": False}}
+    success = {**shared, "sequence": 1, "requestId": "p1:r2", "startedAt": 12.,
+               "observedAt": 13., "finishedAt": 13.1, "status": 200}
+    console = {"type": "console", "text": "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+               "location": {"url": url}, "pageId": "p1", "actionId": "a1", "observedAt": 11.2}
+    proof = {"targetKey": "DL-1", "expectedTitle": "latest", "title": "latest", "modelTitle": "latest",
+             "expectedKeys": ["DL-1", "DL-2"], "renderedKeys": ["DL-2", "DL-1"],
+             "modelKeys": ["DL-1", "DL-2"], "renderedCount": 2, "modelCount": 2,
+             "currentKeys": ["DL-1"], "siblingCurrentTitle": "latest", "panelState": "ready",
+             "requestId": 2, "currentRequestId": 2, "beforeRequestId": 1, "dialogKey": "DL-1",
+             "taskToken": "current-task", "verifiedAt": 14., "worldHash": "public-world", "settled": True}
+    row = {"name": "mutation-summary", "pageId": "p1", "actionId": "a1", "ok": True,
+           "startedAt": 9., "deadlineAt": 50., "settlement": {"complete": True},
+           "state": {"requestToken": "current-task"}, "dialogProof": proof}
+    return [console], [failed, success], [failed], [row]
+
+
+def test_exact_recovered_typed_read_keeps_raw_errors_and_requires_independent_ui_proof():
+    from tools.jql_ui_benchmark import classify_recovered_reads
+    errors, http, failures, rows = recovered_read_evidence()
+    original = deepcopy((errors, http, failures, rows))
+    result = classify_recovered_reads(errors, http, failures, rows, "public-world")
+    assert result["complete"] is True
+    assert result["recovered"][0]["failureSequence"] == 0
+    assert result["recovered"][0]["successSequence"] == 1
+    assert result["rawConsoleErrorCount"] == 1 and result["rawHttpErrorCount"] == 1
+    assert (errors, http, failures, rows) == original
+
+
+@pytest.mark.parametrize("bad", ["old-inflight", "repeated", "generic", "unreadable", "wrong-ui",
+    "missing-member", "duplicate-member", "wrong-token", "wrong-request", "no-settlement", "late",
+    "ambiguous", "pageerror", "write", "different-page", "missing-start", "wrong-world", "unrecovered",
+    "uncertain", "not-retryable", "login", "missing-failure-copy"])
+def test_recovery_classification_fails_closed_on_wrong_or_ambiguous_evidence(bad):
+    from tools.jql_ui_benchmark import classify_recovered_reads
+    errors, http, failures, rows = recovered_read_evidence()
+    if bad == "old-inflight": http[1]["startedAt"] = 10.5
+    elif bad == "repeated":
+        another = {**deepcopy(http[0]), "sequence": 2, "requestId": "p1:r3", "observedAt": 13.2}
+        http.append(another); failures.append(another)
+    elif bad == "generic": http[0]["body"]["code"] = "upstream_unavailable"
+    elif bad == "unreadable": http[0].pop("body"); http[0]["bodyReadError"] = "not JSON"
+    elif bad == "wrong-ui": rows[0]["dialogProof"]["title"] = "old"
+    elif bad == "missing-member": rows[0]["dialogProof"]["renderedKeys"] = ["DL-1"]
+    elif bad == "duplicate-member": rows[0]["dialogProof"]["renderedKeys"] = ["DL-1", "DL-1"]
+    elif bad == "wrong-token": rows[0]["state"]["requestToken"] = "new-request"
+    elif bad == "wrong-request": rows[0]["dialogProof"]["currentRequestId"] = 3
+    elif bad == "no-settlement": rows[0]["settlement"]["complete"] = False
+    elif bad == "late": http[1]["finishedAt"] = 46.
+    elif bad == "ambiguous": http.append({**http[1], "sequence": 2, "requestId": "p1:r3"})
+    elif bad == "pageerror": errors.append("Uncaught TypeError")
+    elif bad == "write": http[0]["method"] = "POST"
+    elif bad == "different-page": http[1]["pageId"] = "p2"
+    elif bad == "missing-start": http[1].pop("startedAt")
+    elif bad == "wrong-world": rows[0]["dialogProof"]["worldHash"] = "other"
+    elif bad == "unrecovered": http.pop()
+    elif bad == "uncertain": http[0]["body"]["uncertain"] = True
+    elif bad == "not-retryable": http[0]["body"]["retryable"] = False
+    elif bad == "login": http[0]["body"]["needLogin"] = True
+    elif bad == "missing-failure-copy": failures.clear(); http[0]["body"]["code"] = "other"
+    assert classify_recovered_reads(errors, http, failures, rows, "public-world")["complete"] is False
+
+
+def test_independent_sibling_membership_uses_public_parent_or_epic_fields_only():
+    from tools.jql_ui_edge_scenarios import expected_public_siblings
+    world = SimpleNamespace(world=SimpleNamespace(issues={
+        "DL-1": {"type": "Task", "parentKey": None, "epicKey": "DL-9"},
+        "DL-2": {"type": "Task", "parentKey": None, "epicKey": "DL-9"},
+        "DL-3": {"type": "Sub-Task", "parentKey": "DL-1", "epicKey": None},
+        "DL-4": {"type": "Sub-Task", "parentKey": "DL-1", "epicKey": None},
+        "DL-8": {"type": "Task", "parentKey": None, "epicKey": "DL-10"},
+        "DL-9": {"type": "Epic", "parentKey": None, "epicKey": None},
+    }))
+    assert expected_public_siblings(world, "DL-1") == ["DL-1", "DL-2"]
+    assert expected_public_siblings(world, "DL-3") == ["DL-3", "DL-4"]
+    assert expected_public_siblings(world, "DL-9") == []
+
+
+def test_requestfailed_cancellation_is_retained_unclassified_without_recovered_label():
+    from tools.jql_ui_benchmark import classify_recovered_reads
+    aborted = {"url": "/api/mytasks/stream", "failure": "net::ERR_ABORTED"}
+    result = classify_recovered_reads([], [], [aborted], [], "public-world")
+    assert result['unclassifiedRequestFailures'] == [aborted]
+    assert result['recovered'] == []
+    assert 'rapid scenario' in result['requestFailureScope']
+
+
+def test_observer_preserves_request_start_page_action_and_finish_through_response_reordering(monkeypatch):
+    from tools import jql_ui_benchmark as runner
+    clock = [10.]
+    handlers = {}
+    class Page:
+        def on(self, name, handler): handlers[name] = handler
+    page = Page()
+    context = SimpleNamespace(add_init_script=lambda *_: None, route=lambda *_: None, new_page=lambda: page)
+    browser = SimpleNamespace(new_context=lambda **_: context)
+    monkeypatch.setattr(runner.time, 'perf_counter', lambda: clock[0])
+    monkeypatch.setattr(runner, 'HTTP_RESPONSES', [])
+    monkeypatch.setattr(runner, 'NETWORK_FAILURES', [])
+    monkeypatch.setattr(runner, 'HTTP_STREAM', None)
+    runner.new_page(browser, Path(__file__).resolve().parents[3], [])
+    class Request:
+        method = 'GET'
+        url = runner.BASE + '/api/ticket/DL-1/siblings'
+    first, second = Request(), Request()
+    page._jql_evidence['actionId'] = 'old-action'
+    handlers['request'](first)
+    clock[0] = 12.
+    page._jql_evidence['actionId'] = 'new-action'
+    handlers['request'](second)
+    clock[0] = 13.
+    handlers['response'](SimpleNamespace(url=first.url, request=first, status=200))
+    clock[0] = 14.
+    handlers['requestfinished'](first)
+    row = runner.HTTP_RESPONSES[0]
+    assert row['startedAt'] == 10. and row['actionId'] == 'old-action' and row['finishedAt'] == 14.
+    assert page._jql_evidence['requests'][first]['requestId'] != page._jql_evidence['requests'][second]['requestId']
+    assert row['pageId'] == page._jql_evidence['pageId']

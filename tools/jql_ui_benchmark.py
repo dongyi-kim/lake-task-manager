@@ -36,6 +36,8 @@ NETWORK_FAILURES = []
 CONSOLE_WARNINGS = []
 HTTP_RESPONSES = []
 HTTP_STREAM = None
+PAGE_SEQUENCE = 0
+ACTION_SEQUENCE = 0
 
 
 def request(path, method="GET"):
@@ -197,11 +199,19 @@ def wait_state(page, timeout=None):
 
 
 def measure(page, name, action, result):
+    global ACTION_SEQUENCE
     before = request("/__jql_benchmark")
     prior = page.evaluate(STATE_JS)
     start = time.perf_counter()
+    ACTION_SEQUENCE += 1
+    context = getattr(page, "_jql_evidence", {})
+    context["actionId"] = f"a{ACTION_SEQUENCE}"
+    context["deadlineAt"] = start + UI_TIMEOUT
+    context.pop("dialogProof", None)
     page.evaluate("window.__benchLong=[]")
-    row = {"name": name, "previousKey": prior.get("key"), "previousToken": prior.get("requestToken")}
+    row = {"name": name, "previousKey": prior.get("key"), "previousToken": prior.get("requestToken"),
+           "pageId": context.get("pageId"), "actionId": context["actionId"],
+           "startedAt": start, "deadlineAt": context["deadlineAt"]}
     try:
         action()
         click_ms = (time.perf_counter()-start)*1000
@@ -220,7 +230,10 @@ def measure(page, name, action, result):
         records = after["requests"][len(before["requests"]):]
         row.update(requests=records, searchRequests=sum(r["path"] == "/rest/api/2/search" for r in records),
                    allRequests=len(records), longTasks=page.evaluate("window.__benchLong || []"))
+        if context.get("dialogProof"):
+            row['dialogProof'] = context['dialogProof']
         record_row(page, row, result)
+        context["actionId"] = None
     print(json.dumps({k:row[k] for k in ("name","firstContentMs","completeMs","searchRequests","allRequests")}), flush=True)
 
 
@@ -297,12 +310,14 @@ def wait_idle():
         raise TimeoutError(f'Upstream background work did not drain: {state}')
 
 
-def record_http_response(response, trace, failures, stream=None):
+def record_http_response(response, trace, failures, stream=None, request_evidence=None):
     """Retain typed local failures and later retry statuses without consuming successful bodies."""
     if not response.url.startswith(BASE + "/api/"):
         return
     row = {"sequence": len(trace), "observedAt": time.perf_counter(), "url": response.url,
            "method": response.request.method, "status": response.status}
+    if request_evidence:
+        row.update(request_evidence)
     trace.append(row)
     if response.status >= 400:
         row["retryAfter"] = response.headers.get("retry-after")
@@ -314,9 +329,91 @@ def record_http_response(response, trace, failures, stream=None):
     if stream:
         stream.write(json.dumps(row, ensure_ascii=False) + "\n")
         stream.flush()
+    return row
+
+
+def classify_recovered_reads(errors, http, failures, rows, world_hash):
+    """Classify one exact, proved dialog recovery; retain every original error/counter."""
+    recovered, console_used, http_used = [], set(), set()
+    for failed in http:
+        body = failed.get("body")
+        if (failed.get("status") != 503 or failed.get("method") not in {"GET", "HEAD"}
+                or not isinstance(body, dict) or body.get("code") != "query_state_changed"
+                or body.get("retryable") is not True or body.get("needLogin") is not False
+                or body.get("uncertain") or not all(failed.get(k) for k in ("requestId", "pageId", "actionId"))
+                or not isinstance(failed.get("startedAt"), (int, float))):
+            continue
+        same = [item for item in http if all(item.get(k) == failed.get(k)
+                for k in ("pageId", "actionId", "method", "url"))]
+        if sum(item.get("status", 0) >= 400 for item in same) != 1:
+            continue
+        candidates = [item for item in same if item.get("status") == 200
+            and item.get("requestId") != failed["requestId"]
+            and isinstance(item.get("startedAt"), (int, float))
+            and isinstance(item.get("finishedAt"), (int, float))
+            and failed["observedAt"] < item["startedAt"] <= item["observedAt"] <= item["finishedAt"]
+            <= failed["startedAt"] + 35]
+        if len(candidates) != 1:
+            continue
+        success = candidates[0]
+        # Even an older in-flight success or a second later request makes attribution ambiguous.
+        if sum(item.get("status") == 200 and item.get("observedAt", 0) >= failed["observedAt"]
+               for item in same) != 1:
+            continue
+        matches = [row for row in rows if row.get("name") == "mutation-summary"
+            and row.get("pageId") == failed["pageId"] and row.get("actionId") == failed["actionId"]]
+        if len(matches) != 1:
+            continue
+        row, proof = matches[0], matches[0].get("dialogProof", {})
+        expected, rendered, model = (proof.get(k) for k in ("expectedKeys", "renderedKeys", "modelKeys"))
+        target = proof.get("targetKey")
+        if (not isinstance(expected, list) or not isinstance(rendered, list) or not isinstance(model, list)
+                or len(set(expected)) != len(expected) or sorted(rendered) != sorted(expected)
+                or sorted(model) != sorted(expected) or proof.get("renderedCount") != len(expected)
+                or proof.get("modelCount") != len(expected) or proof.get("worldHash") != world_hash
+                or not world_hash or row.get("ok") is not True or row.get("settlement", {}).get("complete") is not True
+                or proof.get("settled") is not True or proof.get("panelState") != "ready"
+                or not proof.get("expectedTitle") or proof.get("title") != proof["expectedTitle"]
+                or proof.get("modelTitle") != proof["expectedTitle"] or proof.get("dialogKey") != target
+                or proof.get("currentKeys") != ([target] if target in expected else [])
+                or (target in expected and proof.get("siblingCurrentTitle") != proof["expectedTitle"])
+                or type(proof.get("requestId")) is not int or proof["requestId"] != proof.get("currentRequestId")
+                or proof["requestId"] <= proof.get("beforeRequestId", proof["requestId"])
+                or not proof.get("taskToken") or proof["taskToken"] != row.get("state", {}).get("requestToken")
+                or not success["finishedAt"] <= proof.get("verifiedAt", 0) <= row.get("deadlineAt", 0)
+                or failed["url"] != BASE + "/api/ticket/" + str(target) + "/siblings"):
+            continue
+        native = []
+        for index, error in enumerate(errors):
+            if (isinstance(error, dict) and error.get("type") == "console"
+                    and re.fullmatch(r"Failed to load resource: the server responded with a status of 503 \([^)]*\)", error.get("text", ""))
+                    and error.get("location", {}).get("url") == failed["url"]
+                    and error.get("pageId") == failed["pageId"] and error.get("actionId") == failed["actionId"]
+                    and failed["startedAt"] <= error.get("observedAt", 0) <= proof["verifiedAt"]):
+                native.append(index)
+        if len(native) > 1:
+            continue
+        console_used.update(native)
+        http_used.add(failed["sequence"])
+        recovered.append({"failureSequence": failed["sequence"], "successSequence": success["sequence"],
+            "failureRequestId": failed["requestId"], "successRequestId": success["requestId"],
+            "consoleIndices": native, "pageId": failed["pageId"], "actionId": failed["actionId"],
+            "oracleRow": row["name"], "verifiedAt": proof["verifiedAt"]})
+    unexpected_console = [error for index, error in enumerate(errors) if index not in console_used]
+    unexpected_http = [failure for failure in http if failure.get('status', 0) >= 400
+                       and failure.get('sequence') not in http_used]
+    # Preserve the original rapid-filter cancellation contract. This classifier adjudicates
+    # HTTP error responses; requestfailed events remain raw and explicitly unclassified.
+    unclassified_requests = [failure for failure in failures if failure.get('status') is None]
+    return {"complete": not unexpected_console and not unexpected_http, "recovered": recovered,
+        "unexpectedConsoleErrors": unexpected_console, "unexpectedNetworkFailures": unexpected_http,
+        "unclassifiedRequestFailures": unclassified_requests,
+        "requestFailureScope": "HTTP responses only; rapid scenario owns cancellation correctness",
+        "rawConsoleErrorCount": len(errors), "rawHttpErrorCount": sum(row.get("status", 0) >= 400 for row in http)}
 
 
 def new_page(browser, repo, errors):
+    global PAGE_SEQUENCE
     context = browser.new_context(viewport={'width':1600,'height':1000})
     guide_ids = re.findall(r'id:\s*"([^"]+)"', (repo/'app/static/lib/guides.js').read_text(encoding='utf-8'))
     context.add_init_script("localStorage.setItem('lake.guides.seen',"+json.dumps(json.dumps(guide_ids))+");")
@@ -331,12 +428,41 @@ def new_page(browser, repo, errors):
       localStorage.setItem('workload.opts',JSON.stringify({mod:'ETL',assignedWindow:'all',doneDays:7}));
       window.__benchLong=[];new PerformanceObserver(l=>window.__benchLong.push(...l.getEntries().map(e=>({start:e.startTime,duration:e.duration})))).observe({type:'longtask',buffered:true});""")
     page=context.new_page()
+    PAGE_SEQUENCE += 1
+    evidence = page._jql_evidence = {"pageId": f"p{PAGE_SEQUENCE}", "actionId": None, "requests": {}, "responses": {}}
+    def persist(event):
+        if HTTP_STREAM:
+            HTTP_STREAM.write(json.dumps(event, ensure_ascii=False) + "\n"); HTTP_STREAM.flush()
+    def began(item):
+        if not item.url.startswith(BASE + '/api/'):
+            return
+        row = {"requestId": f"{evidence['pageId']}:r{len(evidence['requests'])}",
+               "pageId": evidence['pageId'], "actionId": evidence['actionId'], "startedAt": time.perf_counter()}
+        evidence['requests'][item] = row
+        persist({"event": "request-start", **row, "url": item.url, "method": item.method})
+    def responded(response):
+        row = record_http_response(response, HTTP_RESPONSES, NETWORK_FAILURES, HTTP_STREAM,
+                                   evidence['requests'].get(response.request))
+        if row is not None:
+            row.update(evidence['requests'].get(response.request, {}))
+            evidence['responses'][response.request] = row
+    def finished(item):
+        metadata = evidence['requests'].get(item)
+        if metadata is not None:
+            metadata['finishedAt'] = time.perf_counter()
+            if item in evidence['responses']:
+                evidence['responses'][item]['finishedAt'] = metadata['finishedAt']
+            persist({"event": "request-finished", **metadata})
     page.on('pageerror',lambda e:errors.append(str(e)))
     page.on('console', lambda message: errors.append({"type": "console", "text": message.text,
-                                                     "location": message.location, "observedAt": time.perf_counter()})
+                                                     "location": message.location, "observedAt": time.perf_counter(),
+                                                     "pageId": evidence['pageId'], "actionId": evidence['actionId']})
             if message.type == 'error' else CONSOLE_WARNINGS.append(message.text) if message.type == 'warning' else None)
-    page.on('requestfailed', lambda item: NETWORK_FAILURES.append({"url": item.url, "failure": item.failure}))
-    page.on('response', lambda response: record_http_response(response, HTTP_RESPONSES, NETWORK_FAILURES, HTTP_STREAM))
+    page.on('request', began)
+    page.on('requestfinished', finished)
+    page.on('requestfailed', lambda item: NETWORK_FAILURES.append({"url": item.url, "failure": item.failure,
+                                                                 **evidence['requests'].get(item, {})}))
+    page.on('response', responded)
     return page
 
 
@@ -398,7 +524,7 @@ def scenario_coverage_complete(result):
 
 def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, reverse=False,
            keep_server=False, rapid=False, mutation=False, generic=False, timeout=60):
-    global EVIDENCE_DIR, RAW_STREAM, HTTP_STREAM, UI_TIMEOUT
+    global EVIDENCE_DIR, RAW_STREAM, HTTP_STREAM, UI_TIMEOUT, PAGE_SEQUENCE, ACTION_SEQUENCE
     if keep_server:
         raise ValueError("--keep-server is incompatible with owned process/scratch cleanup")
     repo = Path(repo).resolve()
@@ -412,6 +538,7 @@ def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, r
     NETWORK_FAILURES.clear()
     CONSOLE_WARNINGS.clear()
     HTTP_RESPONSES.clear()
+    PAGE_SEQUENCE = ACTION_SEQUENCE = 0
     rows, errors = [], []
     identity = repository_identity(repo)
     result = {"protocol": "jql-ui-year-v2", "qualificationEligible": False,
@@ -460,12 +587,14 @@ def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, r
                             if rapid:
                                 page = edge.rapid_filter(browser, repo, rows, errors)
                             if mutation:
-                                edge.mutate(page, rows)
+                                edge.mutate(page, rows, bundle)
                             if generic:
                                 edge.generic_query(page, rows)
                         result.update(title=page.title(), url=page.url, bodyText=page.locator("body").inner_text()[:1500])
                         assert result["url"].startswith(BASE) and result["title"] and result["bodyText"].strip()
-                        assert not errors, errors
+                        result['recoveryClassification'] = classify_recovered_reads(errors, HTTP_RESPONSES,
+                            NETWORK_FAILURES, rows, bundle.manifest['data_sha256'])
+                        assert result['recoveryClassification']['complete'], result['recoveryClassification']
                         result["uiPass"] = True
                     finally:
                         browser.close()
@@ -499,10 +628,14 @@ def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, r
             result["port4457Closed"] = True
         result["observationComplete"] = observation_complete(result)
         result["scenarioCoverageComplete"] = scenario_coverage_complete(result)
+        result['recoveryClassification'] = classify_recovered_reads(errors, HTTP_RESPONSES,
+            NETWORK_FAILURES, rows, result.get('world', {}).get('data_sha256'))
         result["coverageGaps"].extend(f"Skipped scenario: {row['name']}: {row.get('reason', '')}"
                                       for row in rows if row.get("skipped"))
         result["uiPass"] = bool(result.get("uiPass") and result["observationComplete"]
-                                and result["scenarioCoverageComplete"])
+                                and result["scenarioCoverageComplete"] and result['recoveryClassification']['complete'])
+        if result['recoveryClassification']['unclassifiedRequestFailures']:
+            result['coverageGaps'].append('requestfailed events retained without HTTP recovery classification; rapid scenario separately checks cancellation tokens and result keys')
         with (output / "result.json").open("x", encoding="utf-8") as stream:
             json.dump(result, stream, ensure_ascii=False, indent=2)
     return result
