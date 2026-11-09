@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 import threading
+import time
 
 from starlette.responses import JSONResponse
 from app.local_mcp.capacity import request_disconnected
@@ -43,7 +44,7 @@ class TransportHost:
     def wrap(self, app, *, dynamic=False):
         async def bridge(scope, receive, send):
             generation = self._worker.current
-            loop = self._loop
+            loop = generation.loop if self._worker.can_dispatch(generation) else None
             if loop is None:
                 return await JSONResponse({"error": "MCP is not running", "executed": False}, status_code=503)(scope, receive, send)
             if not self._permits.acquire(blocking=False):
@@ -90,9 +91,10 @@ class TransportHost:
             async def execute():
                 nonlocal started
                 with lock:
-                    if cancelled or not generation.accepting or generation is not self._worker.current:
+                    if cancelled or disconnected.is_set() or not self._worker.can_dispatch(generation):
                         return False
                     started = True
+                generation.last_heartbeat = time.monotonic()  # Actual dispatch proves loop progress.
                 task = asyncio.current_task()
                 generation.requests.add(task)
                 generation.leases.add(lease)

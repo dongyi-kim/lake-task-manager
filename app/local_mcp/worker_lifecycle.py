@@ -67,9 +67,20 @@ class WorkerLifecycle:
                 if generation and generation.last_heartbeat else None}
 
     def can_admit(self, generation):
-        return (generation is not None and generation is self.current and self.state == "healthy"
-            and generation.accepting and not generation.finished.done()
+        return (self._current_running(generation) and self.state == "healthy"
             and time.monotonic() - generation.last_heartbeat <= max(self.probe_timeout, 2 * self.monitor_interval))
+
+    def _current_running(self, generation):
+        return (generation is not None and generation is self.current and not self._closing
+            and generation.thread is not None and generation.thread.is_alive()
+            and generation.accepting and not generation.finished.done() and not generation.stop.is_set())
+
+    def can_dispatch(self, generation):
+        # One delayed timer is suspicion, not the configured consecutive-miss verdict.
+        # Keep strict health/observer sampling separate from bounded business admission.
+        grace = max(self.probe_timeout, 2 * self.monitor_interval) + self.misses_allowed * self.monitor_interval
+        return (self._current_running(generation) and self.state in {"healthy", "unresponsive"}
+            and time.monotonic() - generation.last_heartbeat <= grace)
 
     def _record(self, event, **fields):
         with self._lock:
