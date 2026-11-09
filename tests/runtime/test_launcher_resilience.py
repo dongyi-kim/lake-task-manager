@@ -264,6 +264,30 @@ def test_blocking_tray_job_does_not_block_callbacks_and_coalesces_duplicates():
         release.set()
 
 
+@pytest.mark.parametrize("hide_console", [False, True])
+def test_normal_runtime_supervision_preserves_console_mode_and_skips_owned_child(monkeypatch, tmp_path, hide_console):
+    from app.launcher import supervisor
+    from app.infra import runtime_diagnostics, settings
+    ns = launcher_functions("_supervise_runtime")
+    called, closed = [], []
+    monkeypatch.delenv(supervisor.WORKER_ENV, raising=False)
+    monkeypatch.setattr(supervisor, "run_supervisor", lambda *args, **kwargs: called.append((args, kwargs)) or 0)
+    monkeypatch.setattr(settings, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(runtime_diagnostics, "RuntimeLog", lambda *args: SimpleNamespace(
+        record=lambda *args, **kwargs: None, close=lambda: closed.append(True)))
+    hidden, shown = lambda: None, lambda: None
+    ns.update(os=os, Path=Path, __file__=str(REPO_ROOT / "run.py"),
+        _hide_console_win=hidden, _show_console_win=shown)
+    with pytest.raises(SystemExit) as stopped:
+        ns["_supervise_runtime"](SimpleNamespace(app_port=4457), hide_console=hide_console)
+    assert stopped.value.code == 0 and closed == [True]
+    assert called[0][1]["on_ready"] is (hidden if hide_console else None)
+    assert called[0][1]["on_failure"] is shown
+    monkeypatch.setenv(supervisor.WORKER_ENV, "already-owned-generation")
+    ns["_supervise_runtime"](SimpleNamespace(app_port=4457), hide_console=hide_console)
+    assert len(called) == 1
+
+
 def test_update_launch_starts_its_own_supervisor(monkeypatch):
     tree = ast.parse((REPO_ROOT / "run.py").read_text(encoding="utf-8"))
     tray = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_run_tray")

@@ -21,6 +21,18 @@ class ToolLane:
     def __init__(self, capacity):
         self._permits = threading.BoundedSemaphore(capacity)
         self.limiter = anyio.CapacityLimiter(capacity)
+        self._ownership_lock = threading.Lock()
+        self._owned = 0
+
+    @property
+    def quiescent(self):
+        with self._ownership_lock:
+            return self._owned == 0
+
+    def _release(self):
+        with self._ownership_lock:
+            self._owned -= 1
+        self._permits.release()
 
     async def run(self, fn):
         disconnected = request_disconnected.get()
@@ -28,6 +40,8 @@ class ToolLane:
         # their caller has already given up. Other lanes and the UI stay usable.
         if not self._permits.acquire(blocking=False):
             raise ToolCapacityExceeded
+        with self._ownership_lock:
+            self._owned += 1
         lock = threading.Lock()
         started = cancelled = False
 
@@ -45,7 +59,7 @@ class ToolLane:
                 # The worker owns admission until actual completion. A transport's
                 # raw asyncio cancellation can bypass AnyIO's cancellation shield,
                 # but must not free capacity while a Jira write is still running.
-                self._permits.release()
+                self._release()
 
         try:
             return await anyio.to_thread.run_sync(execute, limiter=self.limiter)
@@ -55,4 +69,4 @@ class ToolLane:
                     # Covers cancellation at dispatch/limiter checkpoints and a
                     # worker dequeuing this job after its caller was cancelled.
                     cancelled = True
-                    self._permits.release()
+                    self._release()

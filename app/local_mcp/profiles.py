@@ -5,7 +5,7 @@ from app.local_mcp.skill_protocol import SkillsExtension
 
 PROFILE_LABELS = {"all": "전체 기능", "jira": "Jira 업무", "confluence": "Confluence 문서",
                   "reporting": "조회·보고", "settings": "설정 관리"}
-CONTROL = {"authenticate", "get_auth_status", "get_content_guide"}
+CONTROL = {"authenticate", "get_auth_status", "get_content_guide", "get_mcp_health", "request_mcp_restart"}
 CONFIG = {"get_workspace_config", "create_wbs_task", "update_wbs_task", "delete_wbs_task",
           "set_module_people", "rename_people_module", "delete_people_module"}
 ADDITIVE = {"create_task", "create_subtask", "create_epic", "bulk_create", "add_comment",

@@ -65,6 +65,16 @@ def test_stdio_proxy_uses_the_running_http_instance_and_shared_cache(build_env, 
                     assert key in env.store.issues  # No standalone process-local mock world was created.
                     direct = env.client.ticket_view(key)
                     before = len(env.calls)
+                    # The same Desktop-owned process/session also survives an
+                    # MCP-only worker replacement while the LTM app stays alive.
+                    worker = env.runtime.transport_host._worker
+                    old = worker.current
+                    old.stop.set()
+                    deadline = time.monotonic() + 7
+                    while (worker.current is old or worker.snapshot()["state"] != "healthy"):
+                        assert time.monotonic() < deadline, worker.snapshot()
+                        await anyio.sleep(.02)
+                    assert {tool.name for tool in (await session.list_tools()).tools}
                     read = await session.call_tool("get_ticket", {"key": key})
                     assert read.structured_content["data"]["summary"] == direct["summary"]
                     assert len(env.calls) == before

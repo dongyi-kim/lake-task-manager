@@ -12,12 +12,13 @@ def data_types():
     from app.local_mcp.schemas.mutations import DATA_MODELS as mutations
     from app.local_mcp.schemas.guides import DATA_MODELS as guides
     from app.local_mcp.schemas.llm import DATA_MODELS as llm
+    from app.local_mcp.schemas.runtime import DATA_MODELS as runtime
     from app.local_mcp.schemas.confluence_reads import OUTPUT_MODELS as confluence_reads
     from app.local_mcp.schemas.confluence_writes import DATA_MODELS as confluence_writes
     from app.local_mcp.schemas.confluence_organization import DATA_MODELS as confluence_organization
 
     result = {}
-    for group in (tickets, workspace, mutations, guides, llm, confluence_reads, confluence_writes, confluence_organization):
+    for group in (tickets, workspace, mutations, guides, llm, runtime, confluence_reads, confluence_writes, confluence_organization):
         if result.keys() & group.keys():
             raise ValueError("Duplicate MCP output contract")
         result.update(group)
