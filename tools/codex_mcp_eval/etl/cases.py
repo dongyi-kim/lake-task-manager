@@ -6,8 +6,8 @@ from copy import deepcopy
 from tools.codex_mcp_eval.work_cases import OUTPUT_SCHEMA as BASE_SCHEMA
 
 SUITE = "codex-mcp-etl-year"
-BATTERY_VERSION = "2.1.0"
-PROMPT_VERSION = "codex-mcp-etl-year-v2.1"
+BATTERY_VERSION = "2.1.1"
+PROMPT_VERSION = "codex-mcp-etl-year-v2.1.1"
 REFERENCE_DATE = "2026-11-10"
 
 OUTPUT_SCHEMA = deepcopy(BASE_SCHEMA)
@@ -57,7 +57,8 @@ research_files는 모든 후보에게 동일하게 제공되는 조사 전용 �
 명시적으로 수치 진척률을 묻는 질문만 퍼센트와 분모를 계산합니다. 일반 보고에 전체 퍼센트나 분모를 채우기 위한 추가 조사를 하지 마세요.
 resultKeys는 판단에 사용한 근거 티켓 key 오름차순이며 중복은 없습니다. 실제 관측한 연결 맥락·검토 후 제외한 티켓도 포함할 수 있지만 집계 포함과는 다릅니다.
 sources에는 실제 관측한 ID와 URL만 쓰세요.
-measurements는 stream(development/operations/simple_voc), scope, metric, value, unit으로 집계합니다.
+measurements는 질문에서 요청한 대상·단위의 값을 stream(development/operations/simple_voc), scope, metric, value, unit으로 집계합니다.
+추가 보조 지표와 확인된 소계는 reply에 단위·근거·미확인 범위를 붙여 설명하고 measurements에 임의로 추가하지 마세요.
 scope는 질문의 명시적 대상·기간이며 아래 표준명을 사용하세요.
 일간·주간 활동은 activity_tickets, 월간 개발 진행 대상은 active_tickets, 요청은 request_tickets,
 active_tickets는 해당 월의 어느 시점에 In Progress 또는 Reopened 상태였던 고유 개발 티켓 수(이월 포함)입니다.
@@ -66,13 +67,15 @@ active_tickets는 해당 월의 어느 시점에 In Progress 또는 Reopened 상
 실행 사건은 work_events, 단순 문의의 운영 실행은 executed_operations, 실제 답변·확인 완료는 resolved_requests입니다.
 개별 개발의 검수 완료 산출물 개수는 verified_deliverables(단위 deliverables), 개별 개발 월말 scope는 ID@YYYY-MM-end입니다.
 보고로 확인한 Task 진척은 reportProgress에 key, view, jiraStatus, implementation/testAccepted/finalAccepted/planned의
-중복 없는 실제 산출물명 배열, acceptedEvents(입증된 고유 수용 사건 수, 중복 여부 미확정이면 null)를 씁니다.
+중복 없는 실제 산출물명 배열, acceptedEvents(해당 관점의 보고로 입증된 고유 수용 사건 수, 대응·중복 여부 미확정이면 null)를 씁니다.
 view는 YYYY-MM-end/current/as-of-YYYY-MM-DD/known-YYYY-MM-DD/reconstructed-YYYY-MM-DD 중 질문에 맞는 관점입니다.
-산출물 개수는 해당 배열 길이이며 다른 단계의 수용·계획을 합쳐 전체 완료로 표현하지 마세요.
+보고의 단계별 산출물 개수는 해당 배열 길이로 표현하고 measurements에 중복 기입하지 마세요. 다른 단계의 수용·계획을 합쳐 전체 완료로 표현하지 마세요.
+acceptedEvents는 실제 모든 업무의 총수가 아닙니다. 해당 보고 근거에서 수용 사건이 확인되지 않은 것과 실제 수용이 없다는 주장을 구분하세요.
 보고 조사에서는 reportFindings에 실제 documentId/version/번호가 있는 section, 원문 산출물명 deliverable,
 stage, 실제 발생시각 occurredAt(날짜만 확인되면 그 날짜), 명시된 패키지 artifact, 검수·인수 판정 outcome,
 candidateKeys와 matchStatus를 적으세요. outcome은 명시된 accepted/rejected/pending만 쓰며 구현·계획을 수용으로 바꾸지 말고 해당 없으면 null입니다.
 구현·검수·인수·계획은 구분하고 날짜나 패키지가 없으면 null입니다. 같은 보고 항목에 여러 산출물이 있으면 분리합니다.
+산출물명은 해당 문서 버전·항목에서 실제 읽은 이름을 쓰고, 같은 주장을 짧은 이름과 긴 이름으로 중복 기입하지 마세요.
 candidateKeys는 정렬·중복 제거하며 공개된 모듈·환경·기능·산출물·참여자·릴리즈·기간으로 대조한 후보입니다.
 다른 모듈·환경의 자료를 제외 근거로 썼다면 inScope=false로 두고 해당 Task의 완료 실적에는 섞지 마세요.
 verified는 한 후보로 입증된 대응, ambiguous는 공개 근거로 둘 이상이 남는 대응, unresolved는 입증 가능한 후보 없음입니다.
@@ -147,6 +150,13 @@ def schema_for_case(case):
         schema["properties"]["progress"] = {"type": "null"}
     if case["family"] != "F07":
         schema["properties"]["reportedTotal"] = {"type": "null"}
+    if case["family"] == "F07" or case["id"] in {"ETL-F06-normal", "ETL-F14-boundary"}:
+        # These questions express requested counts in reportedTotal or named
+        # report-stage arrays; do not require or invite duplicate scalar metrics.
+        schema["properties"]["measurements"]["maxItems"] = 0
+    elif case["family"] in {"F04", "F05"} or case["id"] == "ETL-F06-boundary":
+        schema["properties"]["measurements"]["maxItems"] = 1
+        schema["properties"]["measurements"]["items"]["properties"]["metric"] = {"const": "percent"}
     return schema
 
 
@@ -209,13 +219,19 @@ def review_contract(today=REFERENCE_DATE):
 from .checks import (build_expectations, check as _check, observed_sources, _rows_match, _number_equal, _at,
                      _public_report_findings, _unique_rows, _attach_reports, _report_rows_match, _complete_report_search, _normalized_public_text,
                      observed_ticket_inputs, ticket_inputs_match, _complete_epic_tree, _observed_result_keys, _result_keys_match,
-                     _field_fact, _require_report_status, _same_instant, field_facts_observed,
+                     _field_fact, _require_report_status, _report_progress_row, _report_requirements, _catalog_reports,
+                     _same_instant, field_facts_observed,
                      document_complete, evidence_collection, has_stalled_pagination, literal_source_records, source_observed)
+from .report_checks import (public_text, row_identity, merge_requirements, grounded_name,
+                            match_findings, match_progress, report_contract)
 from .oracle import EventOracle
 CHECKER_DEPENDENCIES = (check, _check, build_expectations, observed_sources, _rows_match, _number_equal, _at,
                         _public_report_findings, _unique_rows, _attach_reports, _report_rows_match, _complete_report_search, _normalized_public_text,
                         observed_ticket_inputs, ticket_inputs_match, _complete_epic_tree, _observed_result_keys, _result_keys_match,
-                        _field_fact, _require_report_status, _same_instant, field_facts_observed,
+                        _field_fact, _require_report_status, _report_progress_row, _report_requirements, _catalog_reports,
+                        _same_instant, field_facts_observed,
+                        public_text, row_identity, merge_requirements, grounded_name,
+                        match_findings, match_progress, report_contract,
                         document_complete, evidence_collection, has_stalled_pagination, literal_source_records, source_observed,
                         EventOracle, review_contract, schema_for_case, materialize_cases,
                         SYSTEM_CONTEXT, OUTPUT_SCHEMA, CASES)

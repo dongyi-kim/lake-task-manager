@@ -14,6 +14,7 @@ import re
 
 from tools.codex_mcp_eval.work_evidence import (document_complete, evidence_collection,
     has_stalled_pagination, literal_source_records, source_observed)
+from .report_checks import merge_requirements, report_contract, row_identity
 
 
 def _at(value):
@@ -83,26 +84,97 @@ def _require_report_status(row, bundle, key, state, at, knowledge_at):
             "valueAtView": state["status"], "viewAt": at.isoformat(), "knowledgeAt": known.isoformat()})
 
 
+def _report_progress_row(snapshot, key, view):
+    state = snapshot["issues"][key]
+    progress = state["progress"]
+    ambiguous = any(match["status"] != "verified" and key in match["candidate_keys"]
+                    for match in snapshot["report_correspondence"])
+    return {"key": key, "view": view, "jiraStatus": state["status"],
+        "implementation": list(progress["reported_implementation"]),
+        "testAccepted": list(progress["test_accepted_deliverables"]),
+        "finalAccepted": list(progress["final_accepted_deliverables"]),
+        "planned": list(progress["planned_deliverables"]),
+        "acceptedEvents": None if ambiguous else progress["reported_acceptance_events"]}
+
+
+def _report_requirements(bundle, snapshot, keys, at, knowledge_at, *, matches=(), progress=False):
+    requirements = {"requiredSources": [source for match in matches for source in match["proof_sources"]],
+                    "requiredTicketInputs": {}, "requiredFieldFacts": []}
+    for key in keys:
+        state = snapshot["issues"].get(key)
+        if state is None:
+            # Excluded module context can belong to another stream. Its report
+            # correspondence proves a candidate, not development progress.
+            visible = sorted(bundle.oracle._visible(at, knowledge_at, [key]),
+                             key=lambda event: (event.occurred_at, event.recorded_at, event.identity))
+            issue = next(event for event in visible if event.kind == "issue")
+            status = issue.payload.get("initial_status", "In Progress")
+            for event in visible:
+                if event.kind == "field" and event.payload["field"] == "status":
+                    status = event.payload["value"]
+            state = {"status": status, "sources": list(issue.sources)}
+        requirements["requiredSources"] += [source for source in state["sources"]
+            if bundle.public_sources[source]["kind"] == "jira_description"]
+        if progress:
+            requirements["requiredSources"] += state["progress"]["sources"]
+        _require_report_status(requirements, bundle, key, state, at, knowledge_at)
+    return requirements
+
+
+def _catalog_reports(row, bundle, snapshot, matches, at, knowledge_at, view):
+    """Optional context stays inside the requested snapshots/revision policy.
+
+    The catalog is independent of the answer and carries every added evidence
+    obligation. It is host-only and never adds optional rows to subject prompts.
+    """
+    catalog = row.setdefault("reportCatalog", {"findings": [], "progress": []})
+    indexed = {name: {row_identity(entry["row"]): entry for entry in entries}
+               for name, entries in catalog.items()}
+    def add(kind, public_row, requirements, **extra):
+        identity = row_identity(public_row)
+        if identity not in indexed[kind]:
+            entry = {"row": public_row, **requirements, **extra}
+            indexed[kind][identity] = entry
+            catalog[kind].append(entry)
+        else:
+            merge_requirements(indexed[kind][identity], requirements)
+    for match in matches:
+        requirements = _report_requirements(bundle, snapshot, match["candidate_keys"],
+                                             at, knowledge_at, matches=[match])
+        for finding in _public_report_findings(bundle, [match]):
+            report_source = next(source for source in match["report_sources"]
+                if bundle.public_sources[source].get("kind") == "confluence_revision")
+            add("findings", finding, requirements, reportSource=report_source)
+    keys = {key for match in matches for key in match["candidate_keys"] if key in snapshot["issues"]}
+    for key in sorted(keys):
+        requirements = _report_requirements(bundle, snapshot, [key], at, knowledge_at, progress=True)
+        add("progress", _report_progress_row(snapshot, key, view), requirements)
+
+
 def _attach_reports(row, bundle, at, *, keys, view, knowledge_at=None, revisions=False, include_decoy=False):
     snapshot = bundle.oracle.development(at, knowledge_at=knowledge_at)
     selected = set(keys)
     if include_decoy:
         selected.add("DL-50003")
-    matches = [match for match in snapshot["report_correspondence"] if selected.intersection(match["candidate_keys"])]
+    available_matches = list(snapshot["report_correspondence"])
+    matches = [match for match in available_matches if selected.intersection(match["candidate_keys"])]
     old_matches = []
     if revisions:
         for old in snapshot["superseded_report_versions"]:
             event = next(e for e in bundle.oracle.events if e.kind == "development_report"
                          and e.payload["document"] == old["document"] and e.payload["version"] == old["version"])
             old_view = bundle.oracle.development(at, knowledge_at=event.recorded_at)
-            old_matches += [match for match in old_view["report_correspondence"]
-                            if match["document"] == old["document"] and match["version"] == old["version"]
-                            and selected.intersection(match["candidate_keys"])]
+            available_old = [match for match in old_view["report_correspondence"]
+                             if match["document"] == old["document"] and match["version"] == old["version"]]
+            available_matches += available_old
+            old_matches += [match for match in available_old if selected.intersection(match["candidate_keys"])]
+    _catalog_reports(row, bundle, snapshot, available_matches, at, knowledge_at, view)
     all_matches = matches + old_matches
     row["reportFindings"] = _unique_rows(row["reportFindings"] + _public_report_findings(bundle, all_matches))
     contract = row.setdefault("reportExpectations", {"taskProgress": {}, "knowledgeComparisons": {},
         "excludedTaskKeys": [], "correspondenceEvidence": "module/environment/function/deliverable/participant/release/period",
-        "privateIntentIsEvidence": False, "titleSimilarityIsEnough": False})
+        "privateIntentIsEvidence": False, "titleSimilarityIsEnough": False,
+        "acceptedEventsMeaning": "Unique reported acceptance events in this evidence/view; null when attribution or multiplicity is unresolved. Zero reported acceptances does not prove zero actual work or full completion."})
     for match in all_matches:
         row["requiredSources"] += match["proof_sources"]
         row["keys"] += match["candidate_keys"]
@@ -115,12 +187,7 @@ def _attach_reports(row, bundle, at, *, keys, view, knowledge_at=None, revisions
         contract["taskProgress"][key] = {field: deepcopy(progress[field]) for field in (
             "state", "known", "reported_implementation", "test_accepted_deliverables", "final_accepted_deliverables",
             "planned_deliverables", "reported_acceptance_events", "duplicate_status", "overall_percent", "conflicts")}
-        ambiguous = any(match["status"] != "verified" and key in match["candidate_keys"] for match in matches)
-        row["reportProgress"].append({"key": key, "view": view, "jiraStatus": state["status"],
-            "implementation": list(progress["reported_implementation"]),
-            "testAccepted": list(progress["test_accepted_deliverables"]),
-            "finalAccepted": list(progress["final_accepted_deliverables"]), "planned": list(progress["planned_deliverables"]),
-            "acceptedEvents": None if ambiguous else progress["reported_acceptance_events"]})
+        row["reportProgress"].append(_report_progress_row(snapshot, key, view))
         row["keys"].append(key)
     if include_decoy:
         contract["excludedTaskKeys"].append("DL-50003")
@@ -770,17 +837,21 @@ def check(case, output, calls, ground_truth=None):
         failures.append("measurement_mismatch")
     if not _rows_match(answer.get("denominators"), expected["denominators"], ("scope", "metric", "unit"), ("numerator", "denominator")):
         failures.append("denominator_mismatch")
-    if not _report_rows_match(answer.get("reportFindings", []), expected["reportFindings"]):
+    findings_ok, progress_ok, report_requirements = report_contract(
+        answer, expected, calls, truth.get("publicSources", {}))
+    if not findings_ok:
         failures.append("report_correspondence_or_claim_mismatch")
-    if not _report_rows_match(answer.get("reportProgress", []), expected["reportProgress"]):
+    if not progress_ok:
         failures.append("report_progress_stage_or_duplicate_mismatch")
-    if not ticket_inputs_match(calls, expected["requiredTicketInputs"], truth.get("ticketFieldIds", {})):
+    required_evidence = merge_requirements({name: deepcopy(expected[name]) for name in (
+        "requiredSources", "requiredTicketInputs", "requiredFieldFacts")}, report_requirements)
+    if not ticket_inputs_match(calls, required_evidence["requiredTicketInputs"], truth.get("ticketFieldIds", {})):
         failures.append("required_typed_inputs_not_observed")
-    if not field_facts_observed(calls, expected["requiredFieldFacts"], truth.get("publicSources", {})):
+    if not field_facts_observed(calls, required_evidence["requiredFieldFacts"], truth.get("publicSources", {})):
         failures.append("required_historical_fact_not_observed")
     if answer.get("progress") != expected["progress"] or answer.get("reportedTotal") != expected["reportedTotal"]:
         failures.append("progress_or_total_mismatch")
-    required = set(expected["requiredSources"])
+    required = set(required_evidence["requiredSources"])
     public = {key: value for key, value in truth.get("publicSources", {}).items() if key in required}
     if required - observed_sources(calls, public):
         failures.append("required_evidence_not_observed")

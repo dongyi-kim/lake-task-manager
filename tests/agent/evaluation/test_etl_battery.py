@@ -23,7 +23,7 @@ def bundle():
 def test_new_battery_has_exactly_fourteen_normal_boundary_families():
     cases = battery()
     assert cases.SUITE == "codex-mcp-etl-year"
-    assert cases.BATTERY_VERSION == "2.1.0"
+    assert cases.BATTERY_VERSION == "2.1.1"
     assert len(cases.CASES) == 28
     assert {row["family"] for row in cases.CASES} == {f"F{i:02}" for i in range(1, 15)}
     assert all({r["variant"] for r in cases.CASES if r["family"] == family} == {"normal", "boundary"}
@@ -32,6 +32,31 @@ def test_new_battery_has_exactly_fourteen_normal_boundary_families():
     assert all("WORK-R" not in r["id"] and "oracle" not in r["prompts"][0].lower() for r in cases.CASES)
     # Period/module discovery questions must not hand the complete cohort to the subject.
     assert all("DL-" not in r["prompts"][0] for r in cases.CASES if r["family"] in {"F01", "F02", "F03"})
+
+
+def test_case_schemas_accept_requested_result_shapes_including_recovery(bundle):
+    from jsonschema import Draft202012Validator, ValidationError
+    from tools.codex_mcp_eval.etl.checks import build_expectations
+    from tools.codex_mcp_eval.etl.recovery import recovery_cases
+
+    cases = battery()
+    expected = build_expectations(bundle)
+    for case in [*cases.CASES, *recovery_cases()]:
+        row = expected[case.get("sourceCaseId", case["id"])]
+        schema = cases.schema_for_case(case)
+        Draft202012Validator.check_schema(schema)
+        answer = {"reply": "요청한 단위와 근거를 확인했습니다.", "resultKeys": row["keys"], "sources": [],
+                  **{field: copy.deepcopy(row[field]) for field in (
+                      "reportedTotal", "progress", "measurements", "denominators", "reportFindings", "reportProgress")}}
+        validator = Draft202012Validator(schema)
+        validator.validate(answer)
+        if case["id"] in {"ETL-F06-normal", "ETL-F14-boundary"}:
+            # Named stages/counts already live in reportProgress; an unsolicited
+            # whole-task percentage must not expand the requested output contract.
+            answer["measurements"].append({"stream": "development", "scope": "current", "metric": "percent",
+                                           "value": None, "unit": "percent"})
+            with pytest.raises(ValidationError):
+                validator.validate(answer)
 
 
 def test_expectations_distinguish_sp_child_ratio_and_operation_units(bundle):
