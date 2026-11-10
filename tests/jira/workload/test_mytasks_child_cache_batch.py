@@ -83,9 +83,14 @@ def test_warm_parent_batch_keeps_snapshot_and_proof_with_one_commit(parents, mod
 
 
 def test_cached_empty_membership_and_per_parent_miss_failure_remain_distinct(parents, monkeypatch):
-    client, _writer, _clock, rows, memberships = parents
+    client, _writer, clock, rows, memberships = parents
     client.cache.set(client._direct_child_cache_key("DL-2"), [], 600)
     client.cache.set(client._direct_child_cache_key("DL-3"), None, 600)
+    # DL-1/DL-4 are known cached parents; only DL-3 has genuinely unavailable proof.
+    client.cache.set_many_if_fence(
+        ((f"issueL:{client.env}:{row['key']}", row) for row in rows
+         if row["key"] in {"DL-1", "DL-4"}),
+        600, client.cache.fence(), fetched_at=clock[0], upstream_validated=False)
     original = client.direct_child_keys
     called = []
 
@@ -113,15 +118,22 @@ def test_new_live_scope_does_not_reuse_unvalidated_batch_entries(parents, monkey
     original_sources = {key: client.cache.metadata(client._direct_child_cache_key(key)) for key in memberships}
     original = client.direct_child_keys
     called = []
+    requests = []
+
+    def unavailable(path, **kwargs):
+        requests.append(path)
+        raise UpstreamUnavailable("independent parent validation unavailable")
 
     def fallback(key, **kwargs):
         called.append(key)
         return original(key, **kwargs)
 
     monkeypatch.setattr(client, "direct_child_keys", fallback)
+    monkeypatch.setattr(client.provider, "get_json", unavailable)
     with read_scope(cache_mode="live"):
         actual = _build(client, rows)
     assert set(called) == set(memberships)
+    assert requests == []  # Protected retained memberships fail closed before parent reads.
     groups = {group["key"]: group for group in actual["groups"]}
     # Merely supplying a row is not a fresh upstream proof against retained membership.
     assert {error["key"] for error in actual["loadErrors"]} == set(memberships)

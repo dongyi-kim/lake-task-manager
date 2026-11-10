@@ -281,7 +281,7 @@ def test_failed_parent_read_does_not_cache_false_empty_membership(monkeypatch):
     partial_parent = {"key": "DL-9020", "fields": {"issuetype": {"name": "Task"}}}
     monkeypatch.setattr(
         client, "get_issue_light",
-        lambda _key: (_ for _ in ()).throw(RuntimeError("upstream unavailable")))
+        lambda _key, **_kwargs: (_ for _ in ()).throw(RuntimeError("upstream unavailable")))
 
     with pytest.raises(RuntimeError, match="upstream unavailable"):
         client.direct_child_keys("DL-9020", parent_issue=partial_parent)
@@ -732,6 +732,11 @@ def test_done_window_cannot_crowd_active_axes_out_of_the_task_model(monkeypatch)
                 rows = todo
             else:
                 rows = []
+            # This fake transport must publish the dated parent rows that a real JQL
+            # response supplies; invented unbacked rows cannot certify child membership.
+            client.cache.set_many_if_fence(
+                ((f"issueL:{client.env}:{row['key']}", row) for row in rows),
+                client.s.cache_ttl_seconds, client.cache.fence())
             for row in rows:
                 combined[row["key"]] = row
             yield {

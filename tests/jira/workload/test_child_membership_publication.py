@@ -7,7 +7,7 @@ import pytest
 
 from app.auth.base import QueryStateChanged
 from app.domain import mytasks
-from app.infra.cache import Cache
+from app.infra.cache import Cache, CacheReadPolicyError
 from app.infra.cache_policy import CachePolicy, read_scope
 from app.infra.settings import get_settings
 from app.jira.jira_client import JiraClient
@@ -58,8 +58,13 @@ def _model(client, rows):
 
 def test_cold_membership_publication_is_one_commit_with_same_complete_model(upstream):
     client, clock, rows, calls = upstream
+    # Expected display state must use actual dated cache rows, not certify unobserved
+    # supplied dictionaries. Remove that setup before measuring the cold publication.
+    client.cache.set_many_if_fence(
+        ((f"issueL:{client.env}:{row['key']}", row) for row in rows), 600, client.cache.fence(),
+        fetched_at=clock[0], upstream_validated=False)
     expected = _model(client, rows)
-    client.cache.forget_prefixes(("childkeys:",))
+    client.cache.forget_prefixes(("childkeys:", "issueL:"))
     started = clock[0]
     statements = []
     client.cache._conn.set_trace_callback(statements.append)
@@ -224,3 +229,132 @@ def test_live_supplied_epic_keeps_independent_search_fallback(upstream):
         assert client.direct_child_keys("DL-1", parent_issue=epic) == ["DL-2"]
         assert client.cache.metadata(key)["upstreamValidated"]
     assert calls == [0]
+
+
+def _aged_parent(upstream, has_children):
+    """An eligible older projection and a changed actual issue endpoint, with no child cache."""
+    client, clock, _rows, _calls = upstream
+    old = _row(1)
+    old["fields"]["subtasks"] = [{"key": "DL-11"}] if has_children else []
+    current = _row(1)
+    current["fields"]["subtasks"] = [{"key": "DL-12"}]
+    fetched = clock[0] - 650  # Outside HOT, inside both WARM and COLD.
+    parent_key = f"issueL:{client.env}:DL-1"
+    client.cache.set_if_fence(parent_key, old, 600, client.cache.fence(),
+                              fetched_at=fetched, upstream_validated=False)
+    source = client.cache.metadata(parent_key)
+    records = {"DL-1": current, "DL-11": _row(11), "DL-12": _row(12)}
+    for key in ("DL-11", "DL-12"):
+        records[key]["fields"]["issuetype"] = {"name": "Sub-Task"}
+    requests = []
+
+    def issue_endpoint(path, params=None):
+        requests.append(path)
+        assert path.startswith("/rest/api/2/issue/"), path
+        assert params and "fields" in params
+        return deepcopy(records[path.rsplit("/", 1)[1]])
+
+    client._provider.get_json = issue_endpoint
+    return parent_key, source, old, current, records, requests
+
+
+@pytest.mark.parametrize("mode", ["warm", "cold"])
+@pytest.mark.parametrize("has_children", [False, True])
+def test_supplied_eligible_parent_cannot_publish_newer_membership_without_upstream_proof(
+        upstream, mode, has_children):
+    client, clock, _rows, _calls = upstream
+    parent_key, original, old, _current, _records, requests = _aged_parent(upstream, has_children)
+    membership_key = client._direct_child_cache_key("DL-1")
+    with read_scope(cache_mode=mode):
+        supplied = client.get_issue_light("DL-1")
+        assert supplied == old and requests == []
+        children = client.direct_child_keys("DL-1", parent_issue=supplied)
+        source = client.cache.metadata(membership_key)
+        assert source is not None
+        if requests:
+            # An independent upstream read is a valid alternative to reusing captured proof.
+            assert requests == ["/rest/api/2/issue/DL-1"]
+            assert children == ["DL-12"]
+            assert source["fetchedAt"] == clock[0] and source["upstreamValidated"]
+        else:
+            assert children == (["DL-11"] if has_children else [])
+            assert source["fetchedAt"] == original["fetchedAt"]
+            assert source["upstreamValidated"] is False
+            assert client.cache.metadata(parent_key)["rowIdentity"] == original["rowIdentity"]
+
+
+@pytest.mark.parametrize("follow_mode", ["hot", "live"])
+@pytest.mark.parametrize("has_children", [False, True])
+def test_hot_or_live_after_aged_supplied_parent_observes_changed_children(
+        upstream, follow_mode, has_children):
+    client, clock, _rows, _calls = upstream
+    _parent_key, _source, _old, _current, _records, requests = _aged_parent(upstream, has_children)
+    with read_scope(cache_mode="warm"):
+        supplied = client.get_issue_light("DL-1")
+        client.direct_child_keys("DL-1", parent_issue=supplied)
+    initial_reads = len(requests)
+    assert initial_reads in (0, 1)
+    with read_scope(cache_mode=follow_mode):
+        assert client.direct_child_keys("DL-1") == ["DL-12"]
+        source = client.cache.metadata(client._direct_child_cache_key("DL-1"))
+        assert source["fetchedAt"] == clock[0]
+        new_read = follow_mode == "live" or not initial_reads
+        assert source["upstreamValidated"] is bool(new_read)
+    assert requests == ["/rest/api/2/issue/DL-1"] * (initial_reads + int(new_read))
+
+
+@pytest.mark.parametrize("has_children", [False, True])
+def test_epic_tree_warm_parent_cannot_make_old_membership_hot(upstream, has_children):
+    client, clock, _rows, _calls = upstream
+    _parent_key, original, _old, _current, records, requests = _aged_parent(upstream, has_children)
+    client.cache.set(client._direct_child_cache_key("DL-900"), ["DL-1"], 600)
+    client.cache.set_if_fence(f"issueL:{client.env}:DL-11", records["DL-11"], 600,
+                              client.cache.fence(), fetched_at=original["fetchedAt"],
+                              upstream_validated=False)
+    with read_scope(cache_mode="warm"):
+        first = client._build_epic_tree("DL-900")
+        assert [node["key"] for node in first] == ["DL-1"]
+    with read_scope(cache_mode="hot"):
+        tree = client._build_epic_tree("DL-900")
+        assert [node["key"] for node in tree] == ["DL-1"]
+        assert [node["key"] for node in tree[0]["children"]] == ["DL-12"]
+        assert client.cache.metadata(client._direct_child_cache_key("DL-1"))["fetchedAt"] == clock[0]
+    # Regardless of whether the warm producer independently refreshed, each required issue
+    # is fetched once. An old false-empty list must not suppress the actual new child.
+    assert requests == ["/rest/api/2/issue/DL-1", "/rest/api/2/issue/DL-12"]
+
+
+@pytest.mark.parametrize("change", ["same_time_identity", "newer_identity", "invalidation", "unproven_bytes"])
+def test_supplied_parent_cannot_borrow_proof_from_other_bytes_or_retired_identity(upstream, change):
+    client, clock, _rows, _calls = upstream
+    parent_key, original, _old, current, _records, requests = _aged_parent(upstream, True)
+    membership_key = client._direct_child_cache_key("DL-1")
+    with read_scope(cache_mode="warm"):
+        supplied = client.get_issue_light("DL-1")
+        if change in {"same_time_identity", "newer_identity"}:
+            fetched = original["fetchedAt"] if change == "same_time_identity" else clock[0]
+            client.cache.set_if_fence(parent_key, current, 600, client.cache.fence(),
+                                      fetched_at=fetched, upstream_validated=False)
+            assert client.cache.metadata(parent_key)["rowIdentity"] != original["rowIdentity"]
+        elif change == "invalidation":
+            client.cache.invalidate_keys([parent_key])
+        else:
+            supplied["fields"]["subtasks"] = [{"key": "DL-99"}]  # No source contains these bytes.
+        try:
+            children = client.direct_child_keys("DL-1", parent_issue=supplied)
+        except (CacheReadPolicyError, QueryStateChanged):
+            assert client.cache.get_stale_at(membership_key) is None
+            return
+        source = client.cache.metadata(membership_key)
+        if requests:
+            assert requests == ["/rest/api/2/issue/DL-1"]
+            assert children == ["DL-12"]
+            assert source["fetchedAt"] == clock[0] and source["upstreamValidated"]
+        elif change == "unproven_bytes":
+            assert children == ["DL-11"]  # The actual unchanged cached projection is usable.
+            assert source["fetchedAt"] == original["fetchedAt"] and not source["upstreamValidated"]
+        else:
+            assert change != "invalidation"
+            assert children == ["DL-12"]
+            expected_age = original["fetchedAt"] if change == "same_time_identity" else clock[0]
+            assert source["fetchedAt"] == expected_age and not source["upstreamValidated"]

@@ -1013,6 +1013,10 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
     def _cached_issues(self, keys, *, light=False):
         """Read eligible issue projections together, preserving newest-source precedence."""
+        return {key: entry[0] for key, entry in self._cached_issue_entries(keys, light=light).items()}
+
+    def _cached_issue_entries(self, keys, *, light=False):
+        """Keep the selected payload together with its atomically captured source and key."""
         keys = list(dict.fromkeys(key for key in keys if key))
         prefixes = ("issue", "issueL") if light else ("issue",)
         candidates = self.cache.get_many_with_metadata(
@@ -1023,9 +1027,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             small = candidates.get(f"issueL:{self.env}:{key}") if light else None
             if (full is not None and (light or full[0] is not None)
                     and (small is None or full[1]["fetchedAt"] >= small[1]["fetchedAt"])):
-                found[key] = full[0]
+                found[key] = (*full, f"issue:{self.env}:{key}")
             elif small is not None:
-                found[key] = small[0]
+                found[key] = (*small, f"issueL:{self.env}:{key}")
         return found
 
     def get_issue_light(self, key, *, strict=False):
@@ -5266,11 +5270,13 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
     def _direct_child_keys_reader(self, parent_keys):
         """Batch eligible memberships; leave each caller's scalar fallback/errors unchanged."""
+        parent_keys = list(dict.fromkeys(str(key or "").strip().upper() for key in parent_keys))
         fence = self.cache.fence()
         try:
             cached = self.cache.get_many(self._direct_child_cache_key(key) for key in parent_keys)
         except Exception:
             cached = {}
+        read_parent = self._direct_child_parent_reader(parent_keys)
 
         def read(key, *, parent_issue=None, parent_type=None, limit=None):
             parent_key = str(key or "").strip().upper()
@@ -5284,11 +5290,37 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             # eligibility after that work rather than return an earlier captured membership.
             cached.clear()
             return self.direct_child_keys(parent_key, parent_issue=parent_issue,
-                                          parent_type=parent_type, limit=limit)
+                                          parent_type=parent_type, limit=limit, _read_parent=read_parent)
 
         return read
 
-    def direct_child_keys(self, key, *, parent_issue=None, parent_type=None, limit=None):
+    def _direct_child_parent_reader(self, parent_keys):
+        """Select current parents inside the producer; supplied rows carry no implicit proof."""
+        entries, fence = None, None
+
+        def read(key):
+            nonlocal entries, fence
+            if entries is None:
+                fence = self.cache.fence()
+                # Probe observations include unused projections/parents. Only the tuple
+                # actually consumed below belongs to this membership producer's source age.
+                with read_scope():
+                    entries = self._cached_issue_entries(parent_keys, light=True)
+            entry = entries.get(key)
+            if entry is not None and self.cache.fence() == fence:
+                raw, source, cache_key = entry
+                ttl = source["freshUntil"] - source["fetchedAt"]
+                if self.cache._eligible(cache_key, raw, source["fetchedAt"], ttl, source["rowIdentity"]):
+                    note_read(source)
+                    return raw
+            # A real fallback can wait or raise; later parents need a new batch/policy check.
+            entries = None
+            return self.get_issue_light(key, strict=True)
+
+        return read
+
+    def direct_child_keys(self, key, *, parent_issue=None, parent_type=None, limit=None,
+                          _read_parent=None):
         """Return one shared, complete direct-child membership list.
 
         MyTasks can seed this cache from the parent row already returned by its main JQL. Ticket
@@ -5307,15 +5339,28 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         supplied = parent_issue if isinstance(parent_issue, dict) else None
         if supplied and str(supplied.get("key") or "").strip().upper() != parent_key:
             supplied = None
+        read_parent = _read_parent or self._direct_child_parent_reader([parent_key])
+
+        def protect_retained_membership():
+            if supplied is not None and current_read_policy().mode == CacheMode.LIVE:
+                existing = self.cache.metadata(self._direct_child_cache_key(parent_key))
+                if existing and not existing["invalidated"] and not existing.get("upstreamValidated"):
+                    # A delayed canonical parent can itself have request validation. It is
+                    # not independent authority over an equal/newer retained membership.
+                    from app.infra.cache import CacheReadPolicyError
+                    raise CacheReadPolicyError("Supplied parent cannot validate the retained child membership")
 
         def build():
             raw = supplied
             fields = (raw.get("fields") or {}) if raw else {}
             issue_type = str(parent_type or (fields.get("issuetype") or {}).get("name") or "")
-            # Non-Epic membership is authoritative only when the requested ``subtasks`` field is
-            # actually present. A partial row must not silently turn "unknown" into an empty list.
-            if not issue_type or (issue_type.casefold() != "epic" and "subtasks" not in fields):
-                raw = self.get_issue_light(parent_key)
+            known_type = bool(issue_type)
+            # Select the parent's own payload/source together; never certify supplied bytes
+            # using a later metadata lookup or the membership producer's current timestamp.
+            if issue_type.casefold() != "epic":
+                if known_type:
+                    protect_retained_membership()
+                raw = read_parent(parent_key)
                 fields = (raw.get("fields") or {}) if isinstance(raw, dict) else {}
                 issue_type = str((fields.get("issuetype") or {}).get("name") or issue_type)
 
@@ -5330,13 +5375,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     rows = self._fetch_agile_epic_children(parent_key)
                 candidates = [(row or {}).get("key") for row in rows]
             else:
-                if supplied is not None and current_read_policy().mode == CacheMode.LIVE:
-                    existing = self.cache.metadata(self._direct_child_cache_key(parent_key))
-                    if existing and not existing["invalidated"] and not existing.get("upstreamValidated"):
-                        # A delayed JQL may already have copied its old parent into issueL. That
-                        # cached parent is not independent proof against this retained membership.
-                        from app.infra.cache import CacheReadPolicyError
-                        raise CacheReadPolicyError("Supplied parent cannot validate the retained child membership")
+                if not known_type:
+                    protect_retained_membership()
                 subtasks = fields.get("subtasks")
                 if not isinstance(subtasks, list):
                     raise ValueError(f"{parent_key} direct-child membership is incomplete")

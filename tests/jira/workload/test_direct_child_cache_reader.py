@@ -93,6 +93,9 @@ def test_reader_preserves_eligible_proof_empty_membership_and_scalar_limit_norma
 def test_scalar_fallback_discards_later_hits_even_if_it_raises(hierarchy, monkeypatch, raises):
     client, clock, seed = hierarchy
     seed("DL-2", ["DL-OLD"], ttl=5)
+    # The replacement membership needs a dated parent source; caller bytes alone are not proof.
+    client.cache.set_if_fence(f"issueL:{client.env}:DL-2", row("DL-2", ["DL-NEW"]), 600,
+                              client.cache.fence(), fetched_at=clock[0], upstream_validated=False)
     scalar, called = client.direct_child_keys, []
     def fallback(key, **kwargs):
         called.append(key)
@@ -122,13 +125,19 @@ def test_mutation_after_capture_rechecks_membership(hierarchy):
     assert read("DL-1") == ["DL-NEW"]
 
 
-def test_new_live_scope_does_not_certify_retained_membership_from_supplied_parent(hierarchy):
+def test_new_live_scope_does_not_certify_retained_membership_from_supplied_parent(hierarchy, monkeypatch):
     client, _, seed = hierarchy
     ck, original = seed("DL-1", ["DL-OLD"])
+    requests = []
+    def unavailable(path, **kwargs):
+        requests.append(path)
+        raise UpstreamUnavailable("independent parent validation unavailable")
+    monkeypatch.setattr(client.provider, "get_json", unavailable)
     with read_scope(cache_mode="live"):
         read = client._direct_child_keys_reader(["DL-1"])
         with pytest.raises(CacheReadPolicyError):
             read("DL-1", parent_issue=row("DL-1", ["DL-NEW"]))
+    assert requests == []
     source = client.cache.metadata(ck)
     assert (source["rowIdentity"], source["fetchedAt"]) == (original["rowIdentity"], original["fetchedAt"])
 
