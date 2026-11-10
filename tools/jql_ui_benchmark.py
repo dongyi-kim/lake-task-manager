@@ -7,6 +7,8 @@ Browser plugin not available: use the already installed Python Playwright runtim
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.metadata
 import json
 import os
 import re
@@ -184,6 +186,120 @@ STATE_JS = """() => {
 }"""
 
 
+BUSINESS_JS = """() => {
+ const kind=location.hash.includes('workload')?'workload':location.hash.includes('wbs')?'wbs':'task';
+ const name={task:'MyTasksView',workload:'WorkloadView',wbs:'WbsView'}[kind];
+ function find(n){if(!n)return null;if(Array.isArray(n)){for(const x of n){const v=find(x);if(v)return v;}return null;}
+  if(n.component){if(n.component.type.name===name)return n.component.proxy;const v=find(n.component.subTree);if(v)return v;}
+  return Array.isArray(n.children)?find(n.children):null;}
+ const v=find(document.querySelector('#app')?._vnode);
+ if(!v)return {version:'public-ui-business-v1',kind,stable:false,error:'view_not_found'};
+ const copy=x=>x===undefined?null:JSON.parse(JSON.stringify(x));
+ const list=x=>{if(!Array.isArray(x)||x.length>20000)throw Error('unbounded_or_missing_business_rows');return x;};
+ const fields=['key','parentKey','type','isSub','status','statusCategory','assigneeId','reporterId',
+  'due','dueDays','updated','resolved','components','epic','epicKey','mine','dueInherited','isGroupSelf','hasSubs','queryMatched'];
+ function fact(x,group){const r=Object.fromEntries(fields.map(k=>[k,copy(x[k])]));
+  r.groupKey=group?.key||x.parent?.key||null;return r;}
+ function identity(){if(kind==='task')return {key:v.apiScope+'|'+v.openFilter+'|'+v.progFilter+'|'+v.doneFilter,
+  activeKey:copy(v._activeCacheKey),requestToken:copy(v._activeRequestToken),sequence:copy(v.model?.snapshotSequence),
+  filters:[v.groupBy,v.subView,v.priorityFilter,v.dueFilter,v.updateFilter,copy(v.projPref),copy(v.epicHidden),copy(v.excluded)],
+  keys:list(v.allCards||[]).map(x=>x.key),groups:list(v.model?.groups||[]).map(g=>[g.key,
+   list(g.atoms||[]).map(x=>x.key),list(g.others||[]).map(x=>x.key)])};
+ if(kind==='workload')return {key:v.mod+'|'+v.assignedWindow+'|'+v.doneDays,requestToken:copy(v.peopleLoadEpoch),
+  module:v.curMod?.module,roster:list(v.curMod?.people||[]).map(p=>p.id),metric:v.metric,excludeVoc:v.excludeVoc};
+ return {key:'wbs',epoch:copy(v._treeEpoch),requests:copy(v._treeReq),keys:Object.fromEntries(Object.entries(v.epicTree||{}).filter(([k,a])=>Array.isArray(a)).map(([k,a])=>[k,a.map(x=>x.key)]))};}
+ const before=identity();
+ const out={version:'public-ui-business-v1',kind,identityBefore:before,error:copy(v.err)};
+ if(kind==='task'){
+  const groups=list(v.model?.groups||[]);
+  out.complete=!!v.model?.streamComplete&&!v._streamAbort&&Object.values(v.streamAxes||{}).every(x=>x.state==='done');
+  out.scope=v.apiScope;out.actor=v.me?.id||v.me?.name||null;out.today=copy(v.model?.today);
+  out.bands={open:v.openFilter,progress:v.progFilter,done:v.doneFilter};
+  out.filters=Object.fromEntries(['groupBy','subView','priorityFilter','dueFilter','updateFilter','projPref',
+    'epicHidden','excluded','searchProjects','bandClosed','axisPage','gClosed','subOpen'].map(k=>[k,copy(v[k])]));
+  out.counts=copy(v.model?.counts);out.summaryCounts=copy(v.summaryCounts);out.loadErrors=copy(v.model?.loadErrors);
+  out.groups=groups.map(g=>({...fact(g),hasSubs:!!g.hasSubs,queryMatched:copy(g.queryMatched),
+    childrenPending:!!g.childrenPending,childrenLoaded:copy(g.childrenLoaded),childrenUnavailable:!!g.childrenUnavailable,
+    childrenMissing:copy(g.childrenMissing),childrenLoadedCount:copy(g.childrenLoadedCount),kidsTotal:copy(g.kidsTotal)}));
+  out.owned=groups.flatMap(g=>list(g.atoms||[]).map(x=>fact(x,g)));
+  out.related=groups.flatMap(g=>list(g.others||[]).map(x=>fact(x,g)));
+  out.cards=list(v.allCards||[]).map(x=>fact(x));
+  out.domCards=Array.from(document.querySelectorAll('.mytasks .mt-card[data-key]')).map(el=>{
+   let c=el.__vueParentComponent;while(c&&c.type?.name!=='TaskCard')c=c.parent;
+   return c?.props?.card?{...fact(c.props.card),domKey:el.dataset.key}: {domKey:el.dataset.key,unverified:true};});
+ }else if(kind==='workload'){
+  out.complete=!!v.statsComplete;out.module=v.curMod?.module;out.requestedModule=v.mod;
+  out.roster=list(v.curMod?.people||[]).map(p=>p.id);out.peopleCount=copy(v.curMod?.peopleCount);
+  out.assignedWindow=v.assignedWindow;out.doneDays=v.doneDays;out.metric=v.metric;out.excludeVoc=v.excludeVoc;
+  out.totals=copy(v.totals);out.retainedOtherPersonIds=Object.keys(v.pstat||{}).filter(k=>!out.roster.includes(k));
+  out.people=out.roster.map(id=>{const p=v.pstat?.[id];if(!p)return {id,missing:true};
+   const r=Object.fromEntries(['id','error','partial','loading','retrying','missingParents'].map(k=>[k,copy(p[k])]));
+   for(const k of ['open','inProgress','done7d']){const b=p[k];r[k]=b?{count:copy(b.count),
+    partial:copy(b.partial),retryable:copy(b.retryable),missingParents:copy(b.missingParents)}:null;}return r;});
+  out.domRoster=Array.from(document.querySelectorAll('.wl-people .prow .pname[title]')).map(e=>e.getAttribute('title'));
+ }else{
+  out.complete=!!v.D&&Object.values(v.epicTree||{}).every(Array.isArray);out.partial=copy(v.partial);
+  function treeFact(x,parent=null){return {key:x.key,type:copy(x.type),status:copy(x.statusName),
+   statusCategory:copy(x.statusCat),updated:copy(x.updated),component:copy(x.component),parentKey:parent,
+   children:parent===null?list(x.children||[]).map(c=>treeFact(c,x.key)):[]};}
+  out.trees=Object.fromEntries(Object.entries(v.epicTree||{}).filter(([k,a])=>Array.isArray(a)).map(([k,a])=>[k,list(a).map(x=>treeFact(x))]));
+ }
+ out.identityAfter=identity();out.stable=JSON.stringify(before)===JSON.stringify(out.identityAfter);
+ return out;
+}"""
+
+
+def capture_business(page, settled_state):
+    """One passive projection, never a readiness poll or a refresh/retry."""
+    try:
+        observed = page.evaluate(BUSINESS_JS)
+        failures = []
+        identity = observed.get("identityBefore") or {}
+        if not observed.get("stable"):
+            failures.append("generation_changed_during_capture")
+        if not settled_state.get("complete") or not observed.get("complete") or observed.get("error"):
+            failures.append("incomplete_or_failed_view")
+        required = ["key", "requestToken"] if observed.get("kind") != "wbs" else ["key"]
+        if observed.get("kind") == "task":
+            required += ["activeKey", "sequence"]
+        if any(settled_state.get(k) is None or identity.get(k) != settled_state.get(k) for k in required):
+            failures.append("settled_identity_mismatch")
+        if observed.get("kind") == "task":
+            if identity.get("activeKey") != identity.get("key") or identity.get("keys") != settled_state.get("keys"):
+                failures.append("settled_card_keys_mismatch")
+            if observed.get("loadErrors") or any(g.get("childrenPending") or g.get("childrenUnavailable")
+                                                     or g.get("childrenMissing") for g in observed.get("groups", [])):
+                failures.append("incomplete_task_children")
+        if observed.get("kind") == "workload":
+            if any(p.get("missing") or p.get("error") or p.get("loading") or p.get("retrying") or p.get("partial")
+                   or p.get("missingParents") or any(not p.get(k) or p[k].get("partial") or p[k].get("missingParents")
+                                                     for k in ("open", "inProgress", "done7d"))
+                   for p in observed.get("people", [])):
+                failures.append("incomplete_workload_people")
+        if observed.get("kind") == "wbs" and (observed.get("partial") or identity.get("keys") != settled_state.get("treeKeys")):
+            failures.append("partial_or_replaced_wbs_tree")
+        observed.update(verified=not failures, failures=failures)
+        return observed
+    except Exception as error:
+        return {"version": "public-ui-business-v1", "verified": False,
+                "failures": ["business_observer_error"], "error": repr(error)}
+
+
+def browser_identity(executable, browser_version):
+    path = Path(executable).resolve(strict=True)
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {"playwrightVersion": importlib.metadata.version("playwright"), "executablePath": str(path),
+            "executableSha256": digest.hexdigest(), "browserVersion": browser_version}
+
+
+def require_browser_identity(expected, actual):
+    if expected != actual:
+        raise ValueError("Browser identity does not match the pinned package/binary/version")
+
+
 def wait_state(page, timeout=None):
     timeout = timeout or UI_TIMEOUT
     start, first = time.perf_counter(), None
@@ -231,6 +347,9 @@ def measure(page, name, action, result):
         records = after["requests"][len(before["requests"]):]
         row.update(requests=records, searchRequests=sum(r["path"] == "/rest/api/2/search" for r in records),
                    allRequests=len(records), longTasks=page.evaluate("window.__benchLong || []"))
+        observer_started = time.perf_counter()
+        row["business"] = capture_business(page, row["state"])
+        row["businessObserverMs"] = round((time.perf_counter() - observer_started) * 1000, 2)
         if context.get("dialogProof"):
             row['dialogProof'] = context['dialogProof']
         record_row(page, row, result)
@@ -564,7 +683,7 @@ def scenario_coverage_complete(result):
 
 
 def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, reverse=False,
-           keep_server=False, rapid=False, mutation=False, generic=False, timeout=60):
+           keep_server=False, rapid=False, mutation=False, generic=False, timeout=60, browser_pin=None):
     global EVIDENCE_DIR, RAW_STREAM, HTTP_STREAM, UI_TIMEOUT, PAGE_SEQUENCE, ACTION_SEQUENCE
     if keep_server:
         raise ValueError("--keep-server is incompatible with owned process/scratch cleanup")
@@ -583,7 +702,7 @@ def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, r
     PAGE_SEQUENCE = ACTION_SEQUENCE = 0
     rows, errors = [], []
     identity = repository_identity(repo)
-    result = {"protocol": "jql-ui-year-v2", "qualificationEligible": False,
+    result = {"protocol": "jql-ui-year-v3", "qualificationEligible": False,
         "revision": identity, "dependencies": dependency_identity(os.environ.get("JQL_DEPENDENCY_LABEL", "declared-environment-unspecified")),
         "browser": "Chromium via Python Playwright; Browser plugin not available",
         "clockControl": "cache/JQL/CacheMemo frozen; actual browser, latency, deadlines and performance clocks",
@@ -611,16 +730,26 @@ def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, r
                     json.dump(result, stream, ensure_ascii=False, indent=2)
                 process, log, health, metrics = launch(repo, scratch_path, output, latency, bundle)
                 result.update(health=health, fixture=metrics, ownedProcess=process.pid)
+                import yaml
+                cache_config = yaml.safe_load((scratch_path / "config" / "jira.yml").read_text(encoding="utf-8")).get("cache", {})
+                result["clockContract"] = {"logicalNow": metrics["logicalClock"], "timezone": bundle.world.users[bundle.world.ME]["timeZone"],
+                    "ttlSeconds": (cache_config.get("policy") or {}).get("freshnessSeconds", cache_config.get("ttl_seconds", 600)),
+                    "searchProjects": ["DL"], "actor": bundle.world.ME}
                 assert health.get("rev") and identity["commit"].startswith(health["rev"]), health
                 assert metrics["issueCount"] == 10000 and metrics["worldHash"] == bundle.manifest["data_sha256"]
                 from playwright.sync_api import sync_playwright
                 with sync_playwright() as pw:
-                    installed = list((Path(os.environ["LOCALAPPDATA"]) / "ms-playwright").glob("chromium-*/chrome-win64/chrome.exe"))
+                    pinned_browser = json.loads(Path(browser_pin).read_text(encoding="utf-8")) if browser_pin else None
+                    installed = ([Path(pinned_browser["executablePath"])] if pinned_browser else
+                        list((Path(os.environ["LOCALAPPDATA"]) / "ms-playwright").glob("chromium-*/chrome-win64/chrome.exe")))
                     if not installed:
                         raise RuntimeError("No installed Chromium; this harness does not install browsers")
-                    executable = max(installed, key=lambda path: int(path.parents[1].name.rsplit('-', 1)[1]))
+                    executable = installed[0] if pinned_browser else max(installed, key=lambda path: int(path.parents[1].name.rsplit('-', 1)[1]))
                     browser = pw.chromium.launch(headless=True, executable_path=str(executable))
                     try:
+                        result["browserIdentity"] = browser_identity(executable, browser.version)
+                        if pinned_browser:
+                            require_browser_identity(pinned_browser, result["browserIdentity"])
                         page = entry_samples(browser, repo, rows, errors, cold, warm)
                         journey(page, rows, journeys, smoke=smoke)
                         if reverse:
@@ -640,7 +769,11 @@ def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, r
                         assert result['recoveryClassification']['complete'], result['recoveryClassification']
                         result["uiPass"] = True
                     finally:
-                        browser.close()
+                        try:
+                            result["browserIdentityAfter"] = browser_identity(executable, browser.version)
+                            result["browserIdentityStable"] = result.get("browserIdentity") == result["browserIdentityAfter"]
+                        finally:
+                            browser.close()
             finally:
                 if process:
                     try:
@@ -670,13 +803,17 @@ def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, r
         except OSError:
             result["port4457Closed"] = True
         result["observationComplete"] = observation_complete(result)
+        business_rows = [row for row in rows if "completeMs" in row]
+        result["businessCaptureComplete"] = bool(business_rows) and all(
+            row.get("business", {}).get("verified") is True for row in business_rows)
         result["scenarioCoverageComplete"] = scenario_coverage_complete(result)
         result['recoveryClassification'] = classify_recovered_reads(errors, HTTP_RESPONSES,
             NETWORK_FAILURES, rows, result.get('world', {}).get('data_sha256'), HTTP_REQUEST_STARTS)
         result["coverageGaps"].extend(f"Skipped scenario: {row['name']}: {row.get('reason', '')}"
                                       for row in rows if row.get("skipped"))
         result["uiPass"] = bool(result.get("uiPass") and result["observationComplete"]
-                                and result["scenarioCoverageComplete"] and result['recoveryClassification']['complete'])
+                                and result["scenarioCoverageComplete"] and result['recoveryClassification']['complete']
+                                and result["businessCaptureComplete"] and result.get("browserIdentityStable"))
         if result['recoveryClassification']['unclassifiedRequestFailures']:
             result['coverageGaps'].append('requestfailed events retained without HTTP recovery classification; rapid scenario separately checks cancellation tokens and result keys')
         with (output / "result.json").open("x", encoding="utf-8") as stream:
@@ -701,6 +838,7 @@ def main():
     parser.add_argument("--timeout", type=int, default=60)
     parser.add_argument("--dependency-dir", type=Path)
     parser.add_argument("--dependency-label", required=True)
+    parser.add_argument("--browser-pin", type=Path, help="Exact saved browserIdentity JSON; no binary fallback")
     args = parser.parse_args()
     if args.dependency_dir:
         overlay = str(args.dependency_dir.resolve())
@@ -709,7 +847,7 @@ def main():
     os.environ["JQL_DEPENDENCY_LABEL"] = args.dependency_label
     result = run_ui(args.repo, args.run, latency=args.latency, cold=args.cold, warm=args.warm,
         journeys=args.journeys, smoke=not args.full_flow, reverse=args.reverse, keep_server=args.keep_server,
-        rapid=args.rapid, mutation=args.mutation, generic=args.generic, timeout=args.timeout)
+        rapid=args.rapid, mutation=args.mutation, generic=args.generic, timeout=args.timeout, browser_pin=args.browser_pin)
     print(json.dumps({"output": str(args.run), "uiPass": result["uiPass"], "error": result.get("error"),
                       "scratchRemoved": result["scratchRemoved"], "qualificationEligible": False}), flush=True)
     return 0 if result["uiPass"] else 1
