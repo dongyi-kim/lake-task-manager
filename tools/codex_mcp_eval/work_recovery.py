@@ -90,10 +90,10 @@ class RecoveryController:
         except ValueError:
             return
         is_progress = path.rsplit("/", 1)[-1].startswith("progress")
-        if not self.files or not (path.startswith("evidence/") or is_progress):
+        if not self.files or not (is_evidence_path(path) or is_progress):
             return
         saved = persisted_calls(self.files, self.observed)
-        if self.scenario == "record-chunk" and path.startswith("evidence/") and any(
+        if self.scenario == "record-chunk" and is_evidence_path(path) and any(
                 item.get("recordJson") and item.get("nextRecordOffset") is not None
                 for call in saved for item in call["result"]["data"].get("items", [])):
             self._trigger("observed record fragment saved", path)
@@ -147,11 +147,19 @@ class RecoveryController:
             self._trigger("upstream read completed before next checkpoint")
 
 
-def persisted_calls(files, calls):
-    """Only genuine successful responses actually saved before interruption may be reused."""
+def is_evidence_path(path):
+    """An exact evidence directory component inside a relative capability path."""
+    if not isinstance(path, str) or not path or "\\" in path or ":" in path:
+        return False
+    parts = path.split("/")
+    return not any(part in {"", ".", ".."} for part in parts) and "evidence" in parts[:-1]
+
+
+def saved_response_hashes(files, paths=None):
+    """Read only the private inventory through ResearchFiles containment checks."""
     hashes = set()
     for item in files.list_files()["files"]:
-        if not item["path"].startswith("evidence/"):
+        if not is_evidence_path(item["path"]) or paths is not None and item["path"] not in paths:
             continue
         target = files._path(item["path"])
         text = target.read_text(encoding="utf-8")
@@ -162,5 +170,14 @@ def persisted_calls(files, calls):
             except ValueError:
                 continue
             hashes.update(_digest(node) for node in _nodes(data) if isinstance(node, (dict, list)))
+    return hashes
+
+
+def persisted_calls(files, calls):
+    """Only genuine successful responses actually saved before interruption may be reused."""
+    hashes = saved_response_hashes(files)
     return [row for row in calls if not row.get("isError") and (row.get("result") or {}).get("ok") is True
             and any(_digest(value) in hashes for value in (row["result"], row["result"].get("data")))]
+
+
+SAVED_RESPONSE_DEPENDENCIES = (is_evidence_path, saved_response_hashes, _nodes, _digest)

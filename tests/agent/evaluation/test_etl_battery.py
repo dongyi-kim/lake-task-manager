@@ -372,7 +372,9 @@ def test_group_checkpoint_must_reference_the_observed_complete_group(tmp_path):
     controller = RecoveryController("group-boundary")
     files = ResearchFiles(tmp_path, after_write=controller.after_write)
     controller.files = files
-    body = {"ok": True, "data": {"hasMore": False, "snapshotId": "actual-snapshot", "canonicalJql": "actual-query"}}
+    body = {"ok": True, "partial": False, "missing": 0, "cache": {"state": "fresh"},
+            "data": {"hasMore": False, "snapshotId": "actual-snapshot", "canonicalJql": "actual-query",
+                     "startAt": 0, "total": 0, "returned": 0, "issues": [], "nextStartAt": None}}
     controller.observe_ltm("search_issues", {"jql": "actual-query"}, body)
     files.write_file("evidence/source.json", json.dumps(body))
     files.write_file("progress.json", json.dumps({"status": "complete", "unrelated": True}))
@@ -479,7 +481,10 @@ def test_shared_runner_etl_launch_uses_real_http_evidence_and_equal_files(tmp_pa
 
 
 @pytest.mark.parametrize("scenario,new_backend", [("client-restart", False), ("backend-restart", True)])
-def test_recovery_executes_actual_lifecycle_and_retains_both_phase_costs(tmp_path, bundle, scenario, new_backend):
+@pytest.mark.parametrize("shape,prefix", [("flat", ""), ("local-arguments", "investigation/run/"),
+                                         ("local-reference", "investigation/run/")])
+def test_recovery_executes_actual_lifecycle_and_retains_both_phase_costs(tmp_path, bundle, scenario,
+                                                                     new_backend, shape, prefix):
     assert importlib.util.find_spec("tools.codex_mcp_eval.etl.recovery_runner"), "ETL recovery runner is missing"
     import anyio
     from mcp import Client
@@ -488,7 +493,7 @@ def test_recovery_executes_actual_lifecycle_and_retains_both_phase_costs(tmp_pat
     from tools.codex_mcp_eval.etl.fixture import EtlFixture
     from tools.codex_mcp_eval.etl.recovery_runner import recovery_battery, run_recovery_case
     from unittest.mock import patch
-    active, instances, roots = [], [], []
+    active, instances, roots, late = [], [], [], []
     def factory(path, **kwargs):
         fixture = EtlFixture(path, **{**kwargs, "port": 0, "bundle": bundle})
         active[:] = [fixture]
@@ -501,14 +506,29 @@ def test_recovery_executes_actual_lifecycle_and_retains_both_phase_costs(tmp_pat
         async def read():
             async with Client(fixture.runtime.server) as client:
                 if first:
+                    unsaved = await client.call_tool("get_evidence_page", {"key": "DL-31002", "kind": "history"})
+                    assert not unsaved.is_error
+                    late.append(unsaved.structured_content)
                     response = await client.call_tool("get_evidence_page", {"key": "DL-31001", "kind": "comments"})
                     assert not response.is_error
-                    await fixture.files.server.call_tool("write_file", {"path": "evidence/first.json",
+                    await fixture.files.server.call_tool("write_file", {"path": prefix + "evidence/first.json",
                         "content": json.dumps(response.structured_content, ensure_ascii=False)})
-                    await fixture.files.server.call_tool("write_file", {"path": "progress.json",
-                        "content": json.dumps({"groups": [{"key": "DL-31001", "kind": "comments", "status": "complete"}]})})
+                    if shape == "flat":
+                        checkpoint = {"key": "DL-31001", "kind": "comments", "status": "complete"}
+                    elif shape == "local-arguments":
+                        checkpoint = {"status": "complete", "lastSavedArguments": {
+                            "key": "DL-31001", "kind": "comments"}, "lastChunk": prefix + "evidence/first.json"}
+                    else:
+                        checkpoint = {"state": "complete", "lastSaved": prefix + "evidence/first.json"}
+                    result = await fixture.files.server.call_tool("write_file", {"path": prefix + "progress.json",
+                        "content": json.dumps({"groups": {"comments/DL-31001": checkpoint,
+                            "history/DL-31002": {"state": "pending"}}})})
+                    assert not result.is_error
+                    assert kwargs["stop_event"].is_set(), "the real checkpoint must cause the interruption"
                 else:
-                    await fixture.files.server.call_tool("read_file", {"path": "progress.json"})
+                    await fixture.files.server.call_tool("read_file", {"path": prefix + "progress.json"})
+                    await fixture.files.server.call_tool("write_file", {"path": prefix + "evidence/phase1-only.json",
+                        "content": json.dumps(late[0], ensure_ascii=False)})
                     await client.call_tool("get_ticket", {"key": "DL-31001", "detail": "read"})
         anyio.run(read)
         return {"ok": False, "reply": "", "intentionalInterruption": first, "durationSeconds": 1,
@@ -528,4 +548,9 @@ def test_recovery_executes_actual_lifecycle_and_retains_both_phase_costs(tmp_pat
     assert record["output"]["usage"]["promptTokens"] == 20
     assert record["output"]["usage"]["totalTokens"] is None
     assert record["recovery"]["backendRestarted"] is new_backend
+    assert record["recovery"]["trigger"]["failedGroup"] == {"key": "DL-31002", "kind": "history"}
+    assert len(record["phases"][0]["persistedCalls"]) == 1
+    assert record["phases"][0]["persistedCalls"][0]["result"]["data"]["key"] == "DL-31001"
+    assert record["recovery"]["eligiblePersistedCalls"] == (0 if new_backend else 1)
+    assert not any(call["result"] == late[0] for call in record["groundingCalls"])
     assert len(list(tmp_path.glob("*/phase-*-events.json"))) == 2

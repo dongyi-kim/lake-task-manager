@@ -86,7 +86,7 @@ def recorded_trace(bundle):
                     prefix = await search()
                     assert persisted_calls(fixture.files, [prefix]) == []
                     await fixture.files.server.call_tool("write_file", {
-                        "path": "evidence/search-prefix.json",
+                        "path": "investigation/run/evidence/search-prefix.json",
                         "content": json.dumps(prefix["result"], ensure_ascii=False)})
                     saved_prefix = persisted_calls(fixture.files, [prefix])
                     assert saved_prefix == [prefix]
@@ -442,13 +442,13 @@ def test_actual_runner_accepts_saved_prefix_and_current_contiguous_tails_without
                             "jql": QUERY, "detail": "summary", "max_results": 100})
                         assert not response.is_error
                     await fixture.files.server.call_tool("write_file", {
-                        "path": "evidence/prefix.json",
+                        "path": "investigation/run/evidence/prefix.json",
                         "content": json.dumps(response.structured_content, ensure_ascii=False)})
                 else:
                     fragments, offset = [], 0
                     while True:
                         saved = await fixture.files.server.call_tool("read_file", {
-                            "path": "evidence/prefix.json", "offset": offset})
+                            "path": "investigation/run/evidence/prefix.json", "offset": offset})
                         data = saved.structured_content
                         fragments.append(data["content"])
                         if data["nextOffset"] is None:

@@ -3,6 +3,7 @@ from copy import deepcopy
 from threading import Event
 
 from tools.codex_mcp_eval.work_recovery import persisted_calls
+from tools.codex_mcp_eval.recovery_checkpoint import checkpoint_nodes, pending_group, completed_saved_call
 
 RECOVERY_SCENARIOS = ("search-pagination", "comments-pagination", "history-pagination",
                       "group-boundary", "client-restart", "backend-restart")
@@ -43,44 +44,28 @@ class RecoveryController:
     def after_write(self, path, content):
         # Restarts/group cuts are eligible only after genuine returned evidence
         # has been durably written. persisted_calls checks exact JSON digests.
-        if self.scenario not in {"group-boundary", "client-restart", "backend-restart"} or not self.files:
+        if (self.scenario not in {"group-boundary", "client-restart", "backend-restart"} or not self.files
+                or not path.rsplit("/", 1)[-1].startswith("progress")):
             return
         saved = persisted_calls(self.files, self.observed)
-        if not saved or not path.rsplit("/", 1)[-1].startswith("progress"):
+        if not saved:
             return
         import json
         try:
             checkpoint = json.loads(content)
         except ValueError:
             return
-        def nodes(value):
-            if isinstance(value, dict):
-                yield value
-                for child in value.values():
-                    yield from nodes(child)
-            elif isinstance(value, list):
-                for child in value:
-                    yield from nodes(child)
-        complete = [call for call in saved if (call["result"].get("data") or {}).get("hasMore") is False]
-        checkpoint_nodes = list(nodes(checkpoint))
-        pending = next(({"key": node["key"], "kind": node["kind"]} for node in checkpoint_nodes
-                        if node.get("key") and node.get("kind") in {"comments", "history"}
-                        and node.get("status") in {"pending", "incomplete", "collecting", "failed"}), None)
-        for node in checkpoint_nodes:
-            if node.get("status") != "complete":
-                continue
-            for call in complete:
+        nodes = list(checkpoint_nodes(checkpoint))
+        pending = next((group for node, constraint in nodes
+                        if (group := pending_group(node, constraint)) is not None), None)
+        for node, constraint in nodes:
+            call = completed_saved_call(self.files, node, constraint, saved)
+            if call:
                 data = call["result"]["data"]
-                evidence_match = (call["name"] == "get_evidence_page" and bool(node.get("key"))
-                    and node.get("key") == data.get("key") and node.get("kind") == data.get("kind"))
-                search_match = (call["name"] == "search_issues" and bool(data.get("snapshotId"))
-                    and node.get("snapshotId", node.get("snapshot_id")) == data["snapshotId"]
-                    and node.get("jql", node.get("canonicalJql")) in {
-                        call["arguments"].get("jql"), data.get("canonicalJql")})
-                if evidence_match or search_match:
-                    self._trigger("completed group checkpoint before interruption", path=path,
-                                  key=data.get("key"), kind=data.get("kind"), failedGroup=pending,
-                                  requiresBackendRestart=self.contract["backendRestart"])
+                self._trigger("completed group checkpoint before interruption", path=path,
+                              key=data.get("key"), kind=data.get("kind"), failedGroup=pending,
+                              requiresBackendRestart=self.contract["backendRestart"])
+                return
 
 
 def recovery_cases():

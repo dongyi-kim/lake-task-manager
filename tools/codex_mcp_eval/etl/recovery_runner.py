@@ -10,11 +10,13 @@ from tools.agent_eval_isolation import NETWORK_PREFLIGHT_MARKER
 from tools.agent_eval_protocol import write_raw_result
 from tools.codex_mcp_eval.work_evidence import evidence_collection
 from tools.codex_mcp_eval.work_recovery import complete_search_membership, persisted_calls
+from tools.codex_mcp_eval.work_recovery import SAVED_RESPONSE_DEPENDENCIES
+from tools.codex_mcp_eval.recovery_checkpoint import CHECKPOINT_DEPENDENCIES
 from .fixture import EtlFixture
 from .recovery import RECOVERY_SCENARIOS, RecoveryController, recovery_cases
 from .world import build_etl_world
 
-RECOVERY_VERSION = "3.0.2"
+RECOVERY_VERSION = "3.0.3"
 RECOVERY_PROMPT = """
 이 조사는 연구용 복구 검증도 포함합니다. 먼저 ETL 모듈의 기간 내 신규 적재 요청을 검색하고 전체 페이지를 확인하세요.
 그 다음 티켓별 댓글 근거 그룹을 수집하고 고객 최초 적재 요청의 상태 변경 이력도 전체 페이지로 확인하세요.
@@ -48,6 +50,7 @@ def recovery_battery(base, today, scenario, mode):
         "review_contract": review, "check": check,
         "CHECKER_DEPENDENCIES": (*base.CHECKER_DEPENDENCIES, recovery_battery, run_recovery_case,
                                   RecoveryController, persisted_calls, complete_search_membership,
+                                  *SAVED_RESPONSE_DEPENDENCIES, *CHECKPOINT_DEPENDENCIES,
                                   _tool_order, _search_membership, audit_failed_group_first,
                                   RECOVERY_PROMPT, scenario, mode)})
 

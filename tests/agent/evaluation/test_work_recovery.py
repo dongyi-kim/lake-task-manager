@@ -26,19 +26,27 @@ def test_interruptible_process_stops_and_retains_stdout():
     assert "retained" in result.stdout
 
 
-def test_persisted_calls_exclude_unsaved_evidence_and_failed_reads(tmp_path):
+@pytest.mark.parametrize("prefix", ["", "investigation/run/"])
+@pytest.mark.parametrize("suffix", [".json", ".jsonl"])
+def test_persisted_calls_exclude_unsaved_evidence_and_failed_reads(tmp_path, prefix, suffix):
     calls = [{"name": "get_ticket", "arguments": {"key": "DL-1"},
               "result": {"ok": True, "data": {"key": "DL-1", "description": "real"}}},
              {"name": "get_ticket", "arguments": {"key": "DL-2"},
               "result": {"ok": True, "data": {"key": "DL-2", "description": "unsaved"}}}]
     files = ResearchFiles(tmp_path)
-    files.write_file("evidence/one.json", json.dumps(calls[0]["result"]))
-    files.write_file("evidence/fake.json", '{"key":"DL-2","description":"invented"}')
+    files.write_file(prefix + "evidence/one" + suffix, json.dumps(calls[0]["result"]))
+    files.write_file(prefix + "evidence/fake.json", '{"key":"DL-2","description":"invented"}')
+    failed = {"name": "get_ticket", "result": {"ok": False, "data": {"key": "DL-3"}}}
+    files.write_file(prefix + "evidence/failed.json", json.dumps(failed["result"]))
+    for path in ("report.json", "evidence.json", "evidence-old/one.json", "some-evidence/one.json"):
+        files.write_file(prefix + path, json.dumps(calls[1]["result"]))
+    calls.append(failed)
     assert persisted_calls(files, calls) == calls[:1]
 
 
 @pytest.mark.parametrize("scenario", RECOVERY_SCENARIOS)
-def test_each_recovery_fault_has_an_observable_trigger(tmp_path, scenario):
+@pytest.mark.parametrize("prefix", ["", "investigation/run/"])
+def test_each_recovery_fault_has_an_observable_trigger(tmp_path, scenario, prefix):
     controller = RecoveryController(scenario)
     files = ResearchFiles(tmp_path, after_write=controller.after_write)
     controller.files = files
@@ -47,8 +55,8 @@ def test_each_recovery_fault_has_an_observable_trigger(tmp_path, scenario):
             "items": [{"recordJson": "part", "nextRecordOffset": 10}] if scenario == "record-chunk" else []}
     response = {"ok": True, "data": data}
     controller.observe_ltm("get_evidence_page", {"key": "DL-1", "kind": "comments", "start_at": 0}, response)
-    files.write_file("evidence/page.json", json.dumps(response))
-    files.write_file("progress.json", '{"generation":1,"key":"DL-1","kind":"comments","snapshotId":"old","nextStartAt":2}')
+    files.write_file(prefix + "evidence/page.json", json.dumps(response))
+    files.write_file(prefix + "progress.json", '{"generation":1,"key":"DL-1","kind":"comments","snapshotId":"old","nextStartAt":2}')
     if scenario == "after-response":
         assert not controller.stop.is_set()
         controller.observe_ltm("get_evidence_page", {"key": "DL-1", "start_at": 2},
@@ -77,17 +85,18 @@ def test_saved_search_cursor_triggers_between_pages_for_client_progress_shapes(t
 
 
 @pytest.mark.parametrize("mismatch", ["jql", "snapshot_id", "start_at"])
-def test_checkpoint_must_match_the_saved_search_query_snapshot_and_cursor(tmp_path, mismatch):
+@pytest.mark.parametrize("prefix", ["", "investigation/run/"])
+def test_checkpoint_must_match_the_saved_search_query_snapshot_and_cursor(tmp_path, mismatch, prefix):
     controller = RecoveryController("between-pages")
     files = ResearchFiles(tmp_path, after_write=controller.after_write)
     controller.files = files
     query = "project = DL ORDER BY key ASC"
     response = {"ok": True, "data": {"snapshotId": "observed", "hasMore": True, "nextStartAt": 2}}
     controller.observe_ltm("search_issues", {"jql": query, "start_at": 0}, response)
-    files.write_file("evidence/search.json", json.dumps(response))
+    files.write_file(prefix + "evidence/search.json", json.dumps(response))
     cursor = {"jql": query, "start_at": 2, "snapshot_id": "observed"}
     cursor[mismatch] = 4 if mismatch == "start_at" else "another"
-    files.write_file("progress.json", json.dumps({"arguments": cursor}))
+    files.write_file(prefix + "progress.json", json.dumps({"arguments": cursor}))
     assert not controller.stop.is_set()
 
 
