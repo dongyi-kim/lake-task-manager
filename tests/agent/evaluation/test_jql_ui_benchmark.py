@@ -266,19 +266,36 @@ def recovered_read_evidence():
     row = {"name": "mutation-summary", "pageId": "p1", "actionId": "a1", "ok": True,
            "startedAt": 9., "deadlineAt": 50., "settlement": {"complete": True},
            "state": {"requestToken": "current-task"}, "dialogProof": proof}
-    return [console], [failed, success], [failed], [row]
+    starts = [{**shared, 'requestId': 'p1:r1', 'startedAt': 10.},
+              {**shared, 'requestId': 'p1:r2', 'startedAt': 12.}]
+    return [console], [failed, success], [failed], [row], starts
 
 
 def test_exact_recovered_typed_read_keeps_raw_errors_and_requires_independent_ui_proof():
     from tools.jql_ui_benchmark import classify_recovered_reads
-    errors, http, failures, rows = recovered_read_evidence()
-    original = deepcopy((errors, http, failures, rows))
-    result = classify_recovered_reads(errors, http, failures, rows, "public-world")
+    errors, http, failures, rows, starts = recovered_read_evidence()
+    original = deepcopy((errors, http, failures, rows, starts))
+    result = classify_recovered_reads(errors, http, failures, rows, "public-world", starts)
     assert result["complete"] is True
     assert result["recovered"][0]["failureSequence"] == 0
-    assert result["recovered"][0]["successSequence"] == 1
+    assert result["recovered"][0]["successSequences"] == [1]
     assert result["rawConsoleErrorCount"] == 1 and result["rawHttpErrorCount"] == 1
-    assert (errors, http, failures, rows) == original
+    assert (errors, http, failures, rows, starts) == original
+
+
+def test_two_completed_reads_establish_observable_recovery_without_retry_attribution():
+    from tools.jql_ui_benchmark import classify_recovered_reads
+    errors, http, failures, rows, starts = recovered_read_evidence()
+    http.append({**http[1], 'sequence': 2, 'requestId': 'p1:r3', 'startedAt': 12.5,
+                 'observedAt': 13.3, 'finishedAt': 13.5})
+    starts.append({**starts[1], 'requestId': 'p1:r3', 'startedAt': 12.5})
+    original = deepcopy((errors, http, failures, rows, starts))
+    result = classify_recovered_reads(errors, http, failures, rows, 'public-world', starts)
+    assert result['complete'] is True
+    assert result['recovered'][0]['successSequences'] == [1, 2]
+    assert result['recovered'][0]['retryAttribution'] == 'not-observed'
+    assert result['recovered'][0]['accountedRequestIds'] == ['p1:r1', 'p1:r2', 'p1:r3']
+    assert (errors, http, failures, rows, starts) == original
 
 
 @pytest.mark.parametrize("bad", ["old-inflight", "repeated", "generic", "unreadable", "wrong-ui",
@@ -287,11 +304,12 @@ def test_exact_recovered_typed_read_keeps_raw_errors_and_requires_independent_ui
     "uncertain", "not-retryable", "login", "missing-failure-copy"])
 def test_recovery_classification_fails_closed_on_wrong_or_ambiguous_evidence(bad):
     from tools.jql_ui_benchmark import classify_recovered_reads
-    errors, http, failures, rows = recovered_read_evidence()
-    if bad == "old-inflight": http[1]["startedAt"] = 10.5
+    errors, http, failures, rows, starts = recovered_read_evidence()
+    if bad == "old-inflight": http[1]["startedAt"] = starts[1]['startedAt'] = 10.5
     elif bad == "repeated":
         another = {**deepcopy(http[0]), "sequence": 2, "requestId": "p1:r3", "observedAt": 13.2}
         http.append(another); failures.append(another)
+        starts.append({**starts[0], 'requestId': 'p1:r3'})
     elif bad == "generic": http[0]["body"]["code"] = "upstream_unavailable"
     elif bad == "unreadable": http[0].pop("body"); http[0]["bodyReadError"] = "not JSON"
     elif bad == "wrong-ui": rows[0]["dialogProof"]["title"] = "old"
@@ -312,7 +330,38 @@ def test_recovery_classification_fails_closed_on_wrong_or_ambiguous_evidence(bad
     elif bad == "not-retryable": http[0]["body"]["retryable"] = False
     elif bad == "login": http[0]["body"]["needLogin"] = True
     elif bad == "missing-failure-copy": failures.clear(); http[0]["body"]["code"] = "other"
-    assert classify_recovered_reads(errors, http, failures, rows, "public-world")["complete"] is False
+    assert classify_recovered_reads(errors, http, failures, rows, "public-world", starts)["complete"] is False
+
+
+@pytest.mark.parametrize('bad', ['no-ledger', 'empty-ledger', 'pending', 'abort', 'missing-finish',
+    'duplicate-start-id', 'duplicate-response-id', 'wrong-start-time', 'after-proof', 'later-failure',
+    'outside-budget', 'unmatched-start-before-error', 'unmatched-response', 'missing-failed-finish',
+    'late-failed-finish'])
+def test_every_relevant_start_must_have_one_finished_in_budget_response_before_proof(bad):
+    from tools.jql_ui_benchmark import classify_recovered_reads
+    errors, http, failures, rows, starts = recovered_read_evidence()
+    if bad == 'no-ledger': starts = None
+    elif bad == 'empty-ledger': starts = []
+    elif bad in {'pending', 'unmatched-start-before-error'}:
+        starts.append({**starts[1], 'requestId': 'p1:r3',
+                       'startedAt': 12.5 if bad == 'pending' else 9.5})
+    elif bad == 'abort': failures.append({**starts[1], 'failure': 'net::ERR_ABORTED'})
+    elif bad == 'missing-finish': http[1].pop('finishedAt')
+    elif bad == 'missing-failed-finish': http[0].pop('finishedAt')
+    elif bad == 'late-failed-finish': http[0]['finishedAt'] = 14.5
+    elif bad == 'duplicate-start-id': starts.append(deepcopy(starts[1]))
+    elif bad == 'duplicate-response-id': http.append({**http[1], 'sequence': 2})
+    elif bad == 'wrong-start-time': starts[1]['startedAt'] = 12.1
+    elif bad == 'after-proof': http[1]['finishedAt'] = 14.5
+    elif bad == 'later-failure':
+        starts.append({**starts[1], 'requestId': 'p1:r3', 'startedAt': 14.5})
+        http.append({**http[1], 'requestId': 'p1:r3', 'sequence': 2, 'startedAt': 14.5,
+                     'observedAt': 15., 'finishedAt': 15.1, 'status': 502})
+    elif bad == 'outside-budget':
+        http[1]['finishedAt'] = 46.; rows[0]['dialogProof']['verifiedAt'] = 47.
+    elif bad == 'unmatched-response':
+        http.append({**http[1], 'sequence': 2, 'requestId': 'unobserved'})
+    assert classify_recovered_reads(errors, http, failures, rows, 'public-world', starts)['complete'] is False
 
 
 def test_independent_sibling_membership_uses_public_parent_or_epic_fields_only():
@@ -350,6 +399,7 @@ def test_observer_preserves_request_start_page_action_and_finish_through_respons
     browser = SimpleNamespace(new_context=lambda **_: context)
     monkeypatch.setattr(runner.time, 'perf_counter', lambda: clock[0])
     monkeypatch.setattr(runner, 'HTTP_RESPONSES', [])
+    monkeypatch.setattr(runner, 'HTTP_REQUEST_STARTS', [])
     monkeypatch.setattr(runner, 'NETWORK_FAILURES', [])
     monkeypatch.setattr(runner, 'HTTP_STREAM', None)
     runner.new_page(browser, Path(__file__).resolve().parents[3], [])
@@ -370,3 +420,6 @@ def test_observer_preserves_request_start_page_action_and_finish_through_respons
     assert row['startedAt'] == 10. and row['actionId'] == 'old-action' and row['finishedAt'] == 14.
     assert page._jql_evidence['requests'][first]['requestId'] != page._jql_evidence['requests'][second]['requestId']
     assert row['pageId'] == page._jql_evidence['pageId']
+    assert len(runner.HTTP_REQUEST_STARTS) == 2
+    assert runner.HTTP_REQUEST_STARTS[0]['startedAt'] == 10.
+    assert runner.HTTP_REQUEST_STARTS[0]['url'] == first.url

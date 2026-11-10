@@ -35,6 +35,7 @@ RAW_STREAM = None
 NETWORK_FAILURES = []
 CONSOLE_WARNINGS = []
 HTTP_RESPONSES = []
+HTTP_REQUEST_STARTS = []
 HTTP_STREAM = None
 PAGE_SEQUENCE = 0
 ACTION_SEQUENCE = 0
@@ -332,8 +333,53 @@ def record_http_response(response, trace, failures, stream=None, request_evidenc
     return row
 
 
-def classify_recovered_reads(errors, http, failures, rows, world_hash):
-    """Classify one exact, proved dialog recovery; retain every original error/counter."""
+def accounted_dialog_reads(failed, http, failures, request_starts):
+    """Account for every same-action read, including starts with no response yet."""
+    if not isinstance(request_starts, list):
+        return None
+    fields = ('pageId', 'actionId', 'method', 'url')
+    same = lambda row: all(row.get(key) == failed.get(key) for key in fields)
+    starts = [row for row in request_starts if same(row)]
+    responses = [row for row in http if same(row)]
+    if not starts or len(starts) != len(responses):
+        return None
+    successes, ids = [], []
+    for start in sorted(starts, key=lambda row: row.get('startedAt', 0)):
+        rid = start.get('requestId')
+        if (not isinstance(rid, str) or not rid
+                or sum(row.get('requestId') == rid for row in request_starts) != 1):
+            return None
+        matched = [row for row in http if row.get('requestId') == rid]
+        if len(matched) != 1:
+            return None
+        response = matched[0]
+        if not all(response.get(key) == start.get(key) for key in (*fields, 'startedAt')):
+            return None
+        times = [response.get(key) for key in ('startedAt', 'observedAt', 'finishedAt')]
+        if (not all(type(value) in (int, float) for value in times)
+                or not times[0] <= times[1] <= times[2]
+                or times[2] > min(times[0] + 35, failed['startedAt'] + 35)
+                or type(response.get('sequence')) is not int
+                or sum(row.get('sequence') == response['sequence'] for row in http) != 1):
+            return None
+        ids.append(rid)
+        if rid == failed['requestId']:
+            if response.get('status') != 503:
+                return None
+        elif response.get('status') != 200:
+            return None
+        elif times[2] > failed['observedAt']:
+            successes.append(response)
+    if (failed['requestId'] not in ids or not any(row['startedAt'] > failed['observedAt'] for row in successes)
+            or any(row.get('status') is None and (row.get('requestId') in ids or
+                (row.get('url') == failed['url'] and row.get('pageId') == failed['pageId']
+                 and row.get('actionId') == failed['actionId'])) for row in failures)):
+        return None
+    return successes, ids
+
+
+def classify_recovered_reads(errors, http, failures, rows, world_hash, request_starts=None):
+    """Prospective observable recovery, with automatic-retry attribution unobserved."""
     recovered, console_used, http_used = [], set(), set()
     for failed in http:
         body = failed.get("body")
@@ -343,23 +389,11 @@ def classify_recovered_reads(errors, http, failures, rows, world_hash):
                 or body.get("uncertain") or not all(failed.get(k) for k in ("requestId", "pageId", "actionId"))
                 or not isinstance(failed.get("startedAt"), (int, float))):
             continue
-        same = [item for item in http if all(item.get(k) == failed.get(k)
-                for k in ("pageId", "actionId", "method", "url"))]
-        if sum(item.get("status", 0) >= 400 for item in same) != 1:
+        accounted = accounted_dialog_reads(failed, http, failures, request_starts)
+        if accounted is None:
             continue
-        candidates = [item for item in same if item.get("status") == 200
-            and item.get("requestId") != failed["requestId"]
-            and isinstance(item.get("startedAt"), (int, float))
-            and isinstance(item.get("finishedAt"), (int, float))
-            and failed["observedAt"] < item["startedAt"] <= item["observedAt"] <= item["finishedAt"]
-            <= failed["startedAt"] + 35]
-        if len(candidates) != 1:
-            continue
-        success = candidates[0]
-        # Even an older in-flight success or a second later request makes attribution ambiguous.
-        if sum(item.get("status") == 200 and item.get("observedAt", 0) >= failed["observedAt"]
-               for item in same) != 1:
-            continue
+        successes, accounted_ids = accounted
+        last_completion = max(failed['finishedAt'], max(item['finishedAt'] for item in successes))
         matches = [row for row in rows if row.get("name") == "mutation-summary"
             and row.get("pageId") == failed["pageId"] and row.get("actionId") == failed["actionId"]]
         if len(matches) != 1:
@@ -380,7 +414,7 @@ def classify_recovered_reads(errors, http, failures, rows, world_hash):
                 or type(proof.get("requestId")) is not int or proof["requestId"] != proof.get("currentRequestId")
                 or proof["requestId"] <= proof.get("beforeRequestId", proof["requestId"])
                 or not proof.get("taskToken") or proof["taskToken"] != row.get("state", {}).get("requestToken")
-                or not success["finishedAt"] <= proof.get("verifiedAt", 0) <= row.get("deadlineAt", 0)
+                or not last_completion <= proof.get("verifiedAt", 0) <= row.get("deadlineAt", 0)
                 or failed["url"] != BASE + "/api/ticket/" + str(target) + "/siblings"):
             continue
         native = []
@@ -395,8 +429,11 @@ def classify_recovered_reads(errors, http, failures, rows, world_hash):
             continue
         console_used.update(native)
         http_used.add(failed["sequence"])
-        recovered.append({"failureSequence": failed["sequence"], "successSequence": success["sequence"],
-            "failureRequestId": failed["requestId"], "successRequestId": success["requestId"],
+        recovered.append({"failureSequence": failed["sequence"],
+            "successSequences": [item['sequence'] for item in successes],
+            "failureRequestId": failed["requestId"], "successRequestIds": [item['requestId'] for item in successes],
+            "accountedRequestIds": accounted_ids, "outcome": "observable-dialog-recovery",
+            "retryAttribution": "not-observed",
             "consoleIndices": native, "pageId": failed["pageId"], "actionId": failed["actionId"],
             "oracleRow": row["name"], "verifiedAt": proof["verifiedAt"]})
     unexpected_console = [error for index, error in enumerate(errors) if index not in console_used]
@@ -405,7 +442,9 @@ def classify_recovered_reads(errors, http, failures, rows, world_hash):
     # Preserve the original rapid-filter cancellation contract. This classifier adjudicates
     # HTTP error responses; requestfailed events remain raw and explicitly unclassified.
     unclassified_requests = [failure for failure in failures if failure.get('status') is None]
-    return {"complete": not unexpected_console and not unexpected_http, "recovered": recovered,
+    return {"complete": isinstance(request_starts, list) and not unexpected_console and not unexpected_http,
+        "contract": "observable-dialog-recovery-v1", "retryAttribution": "not-observed",
+        "requestLedgerAvailable": isinstance(request_starts, list), "recovered": recovered,
         "unexpectedConsoleErrors": unexpected_console, "unexpectedNetworkFailures": unexpected_http,
         "unclassifiedRequestFailures": unclassified_requests,
         "requestFailureScope": "HTTP responses only; rapid scenario owns cancellation correctness",
@@ -437,8 +476,10 @@ def new_page(browser, repo, errors):
         if not item.url.startswith(BASE + '/api/'):
             return
         row = {"requestId": f"{evidence['pageId']}:r{len(evidence['requests'])}",
-               "pageId": evidence['pageId'], "actionId": evidence['actionId'], "startedAt": time.perf_counter()}
+               "pageId": evidence['pageId'], "actionId": evidence['actionId'], "startedAt": time.perf_counter(),
+               "url": item.url, "method": item.method}
         evidence['requests'][item] = row
+        HTTP_REQUEST_STARTS.append(dict(row))
         persist({"event": "request-start", **row, "url": item.url, "method": item.method})
     def responded(response):
         row = record_http_response(response, HTTP_RESPONSES, NETWORK_FAILURES, HTTP_STREAM,
@@ -538,6 +579,7 @@ def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, r
     NETWORK_FAILURES.clear()
     CONSOLE_WARNINGS.clear()
     HTTP_RESPONSES.clear()
+    HTTP_REQUEST_STARTS.clear()
     PAGE_SEQUENCE = ACTION_SEQUENCE = 0
     rows, errors = [], []
     identity = repository_identity(repo)
@@ -547,6 +589,7 @@ def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, r
         "clockControl": "cache/JQL/CacheMemo frozen; actual browser, latency, deadlines and performance clocks",
         "viewport": {"width": 1600, "height": 1000}, "rows": rows, "consoleErrors": errors,
         "consoleWarnings": CONSOLE_WARNINGS, "networkFailures": NETWORK_FAILURES, "httpResponses": HTTP_RESPONSES,
+        "httpRequestStarts": HTTP_REQUEST_STARTS,
         "latencyMs": latency, "samples": {"cold": cold, "warm": warm, "journeys": journeys, "smoke": smoke},
         "mcpCalls": 0, "modelUsage": None,
         "coverageGaps": ["Not ten repeated UI samples or a paired arm comparison",
@@ -593,7 +636,7 @@ def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, r
                         result.update(title=page.title(), url=page.url, bodyText=page.locator("body").inner_text()[:1500])
                         assert result["url"].startswith(BASE) and result["title"] and result["bodyText"].strip()
                         result['recoveryClassification'] = classify_recovered_reads(errors, HTTP_RESPONSES,
-                            NETWORK_FAILURES, rows, bundle.manifest['data_sha256'])
+                            NETWORK_FAILURES, rows, bundle.manifest['data_sha256'], HTTP_REQUEST_STARTS)
                         assert result['recoveryClassification']['complete'], result['recoveryClassification']
                         result["uiPass"] = True
                     finally:
@@ -629,7 +672,7 @@ def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, r
         result["observationComplete"] = observation_complete(result)
         result["scenarioCoverageComplete"] = scenario_coverage_complete(result)
         result['recoveryClassification'] = classify_recovered_reads(errors, HTTP_RESPONSES,
-            NETWORK_FAILURES, rows, result.get('world', {}).get('data_sha256'))
+            NETWORK_FAILURES, rows, result.get('world', {}).get('data_sha256'), HTTP_REQUEST_STARTS)
         result["coverageGaps"].extend(f"Skipped scenario: {row['name']}: {row.get('reason', '')}"
                                       for row in rows if row.get("skipped"))
         result["uiPass"] = bool(result.get("uiPass") and result["observationComplete"]

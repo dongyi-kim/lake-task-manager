@@ -202,7 +202,8 @@ def main():
     harness.RAW_STREAM = (harness.EVIDENCE_DIR / 'rows.jsonl').open('x', encoding='utf-8')
     rows, errors=[],[]
     result={'rows':rows,'consoleErrors':errors,'fixture':request('/__jql_benchmark')['worldHash'],
-            'httpResponses':harness.HTTP_RESPONSES,'networkFailures':harness.NETWORK_FAILURES,
+            'httpResponses':harness.HTTP_RESPONSES,'httpRequestStarts':harness.HTTP_REQUEST_STARTS,
+            'networkFailures':harness.NETWORK_FAILURES,
             'scope':'requestfailed events remain unclassified; rapid scenario owns cancellation correctness'}
     try:
         with sync_playwright() as pw:
@@ -220,7 +221,7 @@ def main():
                 generic_query(page,rows)
             browser.close()
         result['recoveryClassification'] = harness.classify_recovered_reads(errors, harness.HTTP_RESPONSES,
-            harness.NETWORK_FAILURES, rows, bundle.manifest['data_sha256'])
+            harness.NETWORK_FAILURES, rows, bundle.manifest['data_sha256'], harness.HTTP_REQUEST_STARTS)
         assert result['recoveryClassification']['complete'], result['recoveryClassification']
     except BaseException as exc:
         result['error']=repr(exc)
