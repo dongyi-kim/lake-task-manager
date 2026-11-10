@@ -38,7 +38,7 @@ class RecoveryController:
                 and data["nextStartAt"] > data.get("startAt", -1)):
             self._trigger("real response before remaining pages", name=name,
                           key=data.get("key"), kind=data.get("kind"), snapshotId=data.get("snapshotId"),
-                          nextStartAt=data["nextStartAt"])
+                          nextStartAt=data["nextStartAt"], canonicalJql=data.get("canonicalJql"))
 
     def after_write(self, path, content):
         # Restarts/group cuts are eligible only after genuine returned evidence

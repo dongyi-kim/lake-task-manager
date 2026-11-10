@@ -83,6 +83,7 @@ class EvaluationFixture:
         self.transport_calls: list[dict[str, Any]] = []
         self._lock = threading.Lock()
         self._observer_condition = threading.Condition(self._lock)
+        self._observer_order = 0
         self._active_observers = {"provider": 0, "transport": 0, "tool": 0, "file": 0, "protocol": 0}
         self._observer_last_activity = time.monotonic()
         self._transport_scope = ContextVar("evaluation_transport_scope", default=False)
@@ -141,17 +142,19 @@ class EvaluationFixture:
 
     def _begin_observer(self, kind, collection=None, record=None):
         with self._observer_condition:
+            self._observer_order += 1
             self._active_observers[kind] += 1
             self._observer_last_activity = time.monotonic()
             if collection is not None:
-                record.update(complete=False, sequence=len(collection))
+                record.update(complete=False, sequence=len(collection), startOrder=self._observer_order)
                 collection.append(record)
             self._observer_condition.notify_all()
 
     def _finish_observer(self, kind, record=None, **updates):
         with self._observer_condition:
+            self._observer_order += 1
             if record is not None:
-                record.update(updates, complete=True)
+                record.update(updates, complete=True, endOrder=self._observer_order)
             self._active_observers[kind] -= 1
             self._observer_last_activity = time.monotonic()
             self._observer_condition.notify_all()

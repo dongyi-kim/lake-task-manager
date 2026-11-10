@@ -390,7 +390,10 @@ def test_failed_group_audit_rejects_starting_another_group_first():
         return {"name": "get_evidence_page", "arguments": {"key": key, "kind": kind},
                 "result": {"ok": True, "data": {"key": key, "kind": kind, "hasMore": False,
                     "sourceComplete": True, "partial": False}}}
-    assert audit_failed_group_first(target, [call("DL-31000", "comments")]) == []
+    # A fabricated terminal flag lacks host completion order and full source
+    # coverage. Actual sequential/persisted-prefix positives use the SDK in
+    # test_etl_recovery_search_order.py.
+    assert audit_failed_group_first(target, [call("DL-31000", "comments")]) == ["failed_group_not_completed"]
     assert audit_failed_group_first(target, [call("DL-31001", "comments"), call("DL-31000", "comments")]) == [
         "next_group_started_before_failed_group_completed"]
 

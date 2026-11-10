@@ -14,7 +14,7 @@ from .fixture import EtlFixture
 from .recovery import RECOVERY_SCENARIOS, RecoveryController, recovery_cases
 from .world import build_etl_world
 
-RECOVERY_VERSION = "3.0.1"
+RECOVERY_VERSION = "3.0.2"
 RECOVERY_PROMPT = """
 이 조사는 연구용 복구 검증도 포함합니다. 먼저 ETL 모듈의 기간 내 신규 적재 요청을 검색하고 전체 페이지를 확인하세요.
 그 다음 티켓별 댓글 근거 그룹을 수집하고 고객 최초 적재 요청의 상태 변경 이력도 전체 페이지로 확인하세요.
@@ -48,35 +48,77 @@ def recovery_battery(base, today, scenario, mode):
         "review_contract": review, "check": check,
         "CHECKER_DEPENDENCIES": (*base.CHECKER_DEPENDENCIES, recovery_battery, run_recovery_case,
                                   RecoveryController, persisted_calls, complete_search_membership,
-                                  audit_failed_group_first, RECOVERY_PROMPT, scenario, mode)})
+                                  _tool_order, _search_membership, audit_failed_group_first,
+                                  RECOVERY_PROMPT, scenario, mode)})
 
 
-def audit_failed_group_first(trigger, calls):
+def _tool_order(call):
+    """A host-observed completion, never inferred from list position or clocks."""
+    start, end = call.get("startOrder"), call.get("endOrder")
+    if call.get("complete") is True and type(start) is int and type(end) is int and 0 < start < end:
+        return start, end
+    return None
+
+
+def _search_membership(calls, canonical, *, prefix_calls=()):
+    """Saved pages require a current fresh read of their retained snapshot."""
+    if not isinstance(canonical, str) or not canonical:
+        return None
+    current = sorted((call for call in calls if call.get("name") == "search_issues"
+                      and _tool_order(call) is not None), key=lambda call: _tool_order(call)[1])
+    found = complete_search_membership(current, canonical)
+    if found is not None or not prefix_calls:
+        return found
+    snapshots = set()
+    for call in current:
+        result = call.get("result") or {}
+        data, cache = result.get("data") or {}, result.get("cache") or {}
+        snapshot = data.get("snapshotId")
+        if (result.get("ok") is True and not call.get("isError")
+                and data.get("canonicalJql") == canonical and isinstance(snapshot, str) and snapshot
+                and result.get("partial") is False and result.get("missing") == 0
+                and cache.get("state") == "fresh" and not cache.get("invalidated")):
+            snapshots.add(snapshot)
+    prefix = [call for call in prefix_calls if call.get("name") == "search_issues"
+              and _tool_order(call) is not None
+              and ((call.get("result") or {}).get("data") or {}).get("canonicalJql") == canonical
+              and ((call.get("result") or {}).get("data") or {}).get("snapshotId") in snapshots]
+    return complete_search_membership(sorted([*prefix, *current], key=lambda call: _tool_order(call)[1]), canonical)
+
+
+def audit_failed_group_first(trigger, calls, *, prefix_calls=()):
     """Audit actual resumed reads, not a claimed progress percentage."""
     target = trigger.get("failedGroup") or {"key": trigger.get("key"), "kind": trigger.get("kind")}
     if not target.get("key") or not target.get("kind"):
         if trigger.get("scenario") == "search-pagination":
-            search_done = False
+            canonical = trigger.get("canonicalJql")
             for call in calls:
-                data = (call.get("result") or {}).get("data") or {}
-                if call.get("name") == "search_issues" and data.get("hasMore") is False:
-                    search_done = True
-                if call.get("name") == "get_evidence_page" and not search_done:
-                    return ["next_group_started_before_failed_search_completed"]
+                if call.get("name") == "get_evidence_page":
+                    order = _tool_order(call)
+                    # Dispatch-list position is not completion order: concurrent
+                    # search results can arrive after this evidence group began.
+                    before = [row for row in calls if order and _tool_order(row) is not None
+                              and _tool_order(row)[1] < order[0]]
+                    saved = [row for row in prefix_calls if order and _tool_order(row) is not None
+                             and _tool_order(row)[1] < order[0]]
+                    if order is None or _search_membership(before, canonical, prefix_calls=saved) is None:
+                        return ["next_group_started_before_failed_search_completed"]
         return []
-    completed = False
+    completed = sorted((call for call in (*prefix_calls, *calls) if _tool_order(call) is not None),
+                       key=lambda call: _tool_order(call)[1])
     for call in calls:
         if call.get("name") != "get_evidence_page":
             continue
         data = (call.get("result") or {}).get("data") or {}
         arguments = call.get("arguments") or {}
         group = (data.get("key", arguments.get("key")), data.get("kind", arguments.get("kind")))
-        if group != (target["key"], target["kind"]) and not completed:
-            return ["next_group_started_before_failed_group_completed"]
-        if (group == (target["key"], target["kind"]) and (call.get("result") or {}).get("ok") is True
-                and data.get("hasMore") is False and data.get("sourceComplete") is True and not data.get("partial")):
-            completed = True
-    return [] if completed else ["failed_group_not_completed"]
+        if group != (target["key"], target["kind"]):
+            order = _tool_order(call)
+            before = [row for row in completed if order and _tool_order(row)[1] < order[0]]
+            if order is None or not evidence_collection(before, target["key"], target["kind"])["complete"]:
+                return ["next_group_started_before_failed_group_completed"]
+    return ([] if evidence_collection(completed, target["key"], target["kind"])["complete"]
+            else ["failed_group_not_completed"])
 
 
 def run_recovery_case(case, options, binary, run_root, cli_run, battery, *, artifact_root,
@@ -184,29 +226,34 @@ def run_recovery_case(case, options, binary, run_root, cli_run, battery, *, arti
     if restarted and (not controller.trigger or len(phases) != 2
                       or not phases[0]["output"].get("intentionalInterruption")):
         failures.append("recovery_fault_not_triggered")
+    # Only exact responses actually saved before interruption are eligible in a
+    # retained backend. A new backend cannot borrow its old snapshot proof.
+    reusable = phases[0].get("persistedCalls", []) if len(phases) == 2 and not backend_restarted else []
     if len(phases) == 2:
         last = phases[-1]
         discovery = {"read_file"} if phases[0].get("savedFileCount", 0) else {"read_file", "list_files"}
         if not any(call.get("name") in discovery and call.get("ok") for call in last.get("fileCalls", [])):
             failures.append("resume_files_not_read")
-        failures += audit_failed_group_first(controller.trigger or {}, last.get("output", {}).get("mcpToolCalls", []))
+        failures += audit_failed_group_first(controller.trigger or {},
+            last.get("output", {}).get("mcpToolCalls", []), prefix_calls=reusable)
     else:
         last = phases[-1] if phases else {"output": {}}
     record["isolation"] = deepcopy(last.get("isolation", {}))
     # Saved immutable bytes are usable in a retained backend. A restarted
     # backend must revalidate source/snapshot state via actual new reads; old
     # search snapshots never qualify merely because their files still exist.
-    reusable = phases[0].get("persistedCalls", []) if len(phases) == 2 and not backend_restarted else []
     grounding = [*reusable, *(last.get("output", {}).get("mcpToolCalls") or [])]
     try:
         automatic = battery.check(case, record["output"], grounding, oracle or {})
         if restarted:
-            successful = [call for call in last.get("output", {}).get("mcpToolCalls", [])
+            current_calls = sorted((call for call in last.get("output", {}).get("mcpToolCalls", [])
+                                    if _tool_order(call) is not None), key=lambda call: _tool_order(call)[1])
+            successful = [call for call in current_calls
                           if call.get("name") == "search_issues" and (call.get("result") or {}).get("ok") is True]
             canonical = {(call["result"].get("data") or {}).get("canonicalJql") for call in successful}
             membership = set()
             for query in canonical - {None}:
-                found = complete_search_membership(last["output"]["mcpToolCalls"], query)
+                found = _search_membership(current_calls, query, prefix_calls=reusable)
                 if found is not None:
                     membership.update(found)
             required = set((oracle or {}).get("cases", {}).get(case["sourceCaseId"], {}).get("keys", []))
