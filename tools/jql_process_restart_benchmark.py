@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections import Counter
 from contextlib import contextmanager
 import hashlib
 import json
@@ -157,6 +158,42 @@ def continuation_dispatches(rows, *, pid, start_sequence):
     return sum(row["pid"] == pid and row["sequence"] >= start_sequence for row in rows)
 
 
+class LaterPageFault:
+    """Keep the disposable phase-A outage active through every admitted retry."""
+    def __init__(self, armed_path, log_path, *, enabled):
+        self.armed, self.log, self.enabled = Path(armed_path), Path(log_path), enabled
+        self.lock = threading.Lock()
+
+    def inject(self, scope):
+        if not self.enabled or scope.get("path") != "/rest/api/2/search":
+            return False
+        query = urllib.parse.parse_qs(scope.get("query_string", b"").decode())
+        if int(query.get("startAt", [0])[0]) <= 0:
+            return False
+        with self.lock:
+            if not self.armed.exists():
+                return False
+            record = {"pid": os.getpid(), "path": scope["path"], "params": query,
+                      "status": 503, "injected": True, "at": time.perf_counter()}
+            with self.log.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        return True
+
+
+def fault_evidence(records, calls, *, phase_a_pid):
+    wire = [row for row in calls if row["pid"] == phase_a_pid and row.get("status") == 503]
+    def signature(row):
+        params = tuple(sorted((name, tuple(str(value) for value in values) if isinstance(values, list)
+                               else (str(values),)) for name, values in row["params"].items()))
+        return row["pid"], row["path"], row["status"], params
+    valid = all(row.get("injected") is True and row.get("pid") == phase_a_pid
+                and row.get("status") == 503 and row.get("path") == "/rest/api/2/search" for row in records)
+    return {"injectedCount": len(records), "wire503Count": len(wire),
+            "matched": bool(records) and valid and Counter(map(signature, records)) == Counter(map(signature, wire))}
+
+
 def recovery_complete(result):
     phases = result.get("phases", [])
     if [phase.get("name") for phase in phases] != ["interrupted", "recovery", "continuation"]:
@@ -164,6 +201,7 @@ def recovery_complete(result):
     pids = [phase.get("backendPid") for phase in phases]
     paths = [phase.get("cachePath") for phase in phases]
     membership = result.get("membership", {})
+    faults = result.get("faultEvidence", {})
     return (all(type(pid) is int and pid > 0 for pid in pids) and len(set(pids)) == 3
             and bool(paths[0]) and len(set(paths)) == 1
             and all(phases[index].get("cacheBefore") == phases[index - 1].get("cacheAfter")
@@ -175,7 +213,10 @@ def recovery_complete(result):
             and membership.get("complete") is True and membership.get("expectedCount") == EXPECTED_COUNT
             and membership.get("returnedCount") == EXPECTED_COUNT and membership.get("pageCount") == 23
             and membership.get("continuationPages") == 22 and bool(result.get("injectedFailure"))
-            and result.get("injectedWire503Count") == 1 and result.get("frozenContinuationRestAttempts") == 0
+            and faults.get("matched") is True and faults.get("injectedCount", 0) > 0
+            and faults["injectedCount"] == faults.get("wire503Count") == result.get("injectedWire503Count")
+            and faults["injectedCount"] == result.get("injectedFaultCount")
+            and result.get("frozenContinuationRestAttempts") == 0
             and all(result.get(name) is True for name in ("revisionStable", "scratchRemoved", "port4457Closed", "withinOverallDeadline"))
             and result.get("wireTail", {}).get("complete") is True)
 
@@ -366,25 +407,16 @@ def install():
     from starlette.responses import JSONResponse
     from tools.jql_ui_benchmark_fixture import install as install_year_world
     original_init = InProcessProvider.__init__
-    lock = threading.Lock()
+    fault = LaterPageFault(os.environ["JQL_RESTART_ARMED"], os.environ["JQL_RESTART_FAULT_LOG"],
+                          enabled=os.environ.get("JQL_RESTART_INJECT") == "1")
     def initialize(provider):
         original_init(provider)
         if os.environ.get("JQL_RESTART_INJECT") != "1":
             return
         app = provider._client.app
         original = app.middleware_stack or app.build_middleware_stack()
-        armed, fired = Path(os.environ["JQL_RESTART_ARMED"]), Path(os.environ["JQL_RESTART_FIRED"])
         async def interrupt(scope, receive, send):
-            query = urllib.parse.parse_qs(scope.get("query_string", b"").decode())
-            fail = False
-            if scope.get("path") == "/rest/api/2/search" and int(query.get("startAt", [0])[0]) > 0:
-                with lock:
-                    if armed.exists() and not fired.exists():
-                        with fired.open("x", encoding="utf-8") as stream:
-                            json.dump({"pid": os.getpid(), "path": scope["path"], "params": query,
-                                       "status": 503, "injected": True}, stream)
-                        fail = True
-            if fail:
+            if fault.inject(scope):
                 await JSONResponse({"errorMessages": ["common restart: injected later-page failure"]}, status_code=503)(scope, receive, send)
             else:
                 await original(scope, receive, send)
@@ -402,17 +434,24 @@ def run(repo, output, *, arm, dependency_label, overall_timeout=900, per_call_ti
     deadline = Deadline(overall_timeout, per_call_timeout)
     identity = repository_identity(repo)
     output = reserve_attempt(repo, output)
-    manifest = {"protocol": "jql-process-restart-v1", "arm": arm, "revision": identity,
+    manifest = {"protocol": "jql-process-restart-v2", "arm": arm, "revision": identity,
                 "dependencies": dependency_identity(dependency_label), "query": BULK, "pageSize": PAGE_SIZE,
                 "options": {"detail": "summary", "include_description": False},
                 "cachePolicy": "omitted", "strategy": "omitted", "latencyMs": 0,
                 "overallTimeoutSeconds": overall_timeout, "perCallTimeoutSeconds": per_call_timeout,
+                "faultProfile": {"phaseA": "Every search page with startAt>0 returns 503 while armed, until owned process stops",
+                    "phaseBC": "injection disabled; same persisted cache", "driverBusinessRetries": 0,
+                    "publicExpectation": "typed unsuccessful search after existing bounded MCP read recovery",
+                    "providerSemantics": "Mock InProcessProvider maps Jira 503 to SessionExpired; mock auth.check can replay the read once. This is fixture behavior, not a production authentication claim.",
+                    "evidence": "append-only faults.jsonl must match every phase-A PID wire503, including retry pages"},
                 "modelUsage": None, "qualificationEligible": False}
     result = {**manifest, "phases": [], "complete": False}
     started = time.perf_counter()
     scratch_path, verifier = None, None
     with RawAttempt(output, manifest) as attempt:
         transport = Transport(attempt, deadline)
+        fault_log = output / "faults.jsonl"
+        fault_log.touch(exist_ok=False)
         try:
             if not port_closed():
                 raise RuntimeError("Port 4457 must be free before the common restart run")
@@ -435,14 +474,13 @@ def run(repo, output, *, arm, dependency_label, overall_timeout=900, per_call_ti
                 (output / "wire").mkdir()
                 env = child_environment(repo, scratch_path, config, bootstrap, 0)
                 env.update(LAKE_REV=identity["commit"], JQL_UI_WIRE_DIR=str(output / "wire"),
-                           JQL_RESTART_ARMED=str(scratch_path / "fault-armed"), JQL_RESTART_FIRED=str(scratch_path / "fault-fired.json"))
+                           JQL_RESTART_ARMED=str(scratch_path / "fault-armed"), JQL_RESTART_FAULT_LOG=str(fault_log))
                 transport.token = Credentials(scratch_path / "runtime/local_mcp_secret.json").token()
                 env["JQL_RESTART_INJECT"] = "1"
                 with application(repo, scratch_path, output, env, transport, "interrupted", identity["commit"], result) as phase:
                     verifier.advertised = set(phase["advertisedSnapshotDiagnostics"])
                     Path(env["JQL_RESTART_ARMED"]).touch(exist_ok=False)
                     result["injectedFailure"] = typed_failure(transport.search(verifier))
-                    result["fault"] = json.loads(Path(env["JQL_RESTART_FIRED"]).read_text(encoding="utf-8"))
                 env["JQL_RESTART_INJECT"] = "0"
                 with application(repo, scratch_path, output, env, transport, "recovery", identity["commit"], result) as phase:
                     verifier.advertised = set(phase["advertisedSnapshotDiagnostics"])
@@ -472,7 +510,11 @@ def run(repo, output, *, arm, dependency_label, overall_timeout=900, per_call_ti
             if "continuationStartSequence" in continuation:
                 result["frozenContinuationRestAttempts"] = continuation_dispatches(calls,
                     pid=continuation["backendPid"], start_sequence=continuation["continuationStartSequence"])
-            result["injectedWire503Count"] = sum(row.get("status") == 503 for row in calls)
+            result["faults"] = [json.loads(line) for line in fault_log.read_text(encoding="utf-8").splitlines()]
+            phase_a = next((phase for phase in result["phases"] if phase["name"] == "interrupted"), {})
+            result["faultEvidence"] = fault_evidence(result["faults"], calls, phase_a_pid=phase_a.get("backendPid"))
+            result["injectedFaultCount"] = result["faultEvidence"]["injectedCount"]
+            result["injectedWire503Count"] = result["faultEvidence"]["wire503Count"]
             result["protocolMetrics"] = protocol_counts(transport.rows)
             result["mcpCalls"] = result["protocolMetrics"]["businessCalls"]
             result["upstreamMetrics"] = dispatch_metrics(calls)

@@ -2,6 +2,7 @@
 from copy import deepcopy
 from types import SimpleNamespace
 import asyncio
+import json
 
 import pytest
 
@@ -130,13 +131,14 @@ def complete_result():
                         "cacheAfter": {"sha": f"after-{index}"}, "stopped": True, "portClosed": True,
                         "settlement": {"complete": True, "active": 0, "admitted": 0}}
                        for index, (name, pid) in enumerate(zip(("interrupted", "recovery", "continuation"), (10, 20, 30)))],
-            "injectedFailure": {"code": "upstream_unavailable"}, "injectedWire503Count": 1,
+            "injectedFailure": {"code": "upstream_unavailable"}, "injectedFaultCount": 2, "injectedWire503Count": 2,
+            "faultEvidence": {"matched": True, "injectedCount": 2, "wire503Count": 2},
             "frozenContinuationRestAttempts": 0, "revisionStable": True, "scratchRemoved": True,
             "port4457Closed": True, "withinOverallDeadline": True, "wireTail": {"complete": True}}
 
 
 @pytest.mark.parametrize("bad", ["pid", "cache", "lineage", "settlement", "admission", "stopped", "port",
-                                 "membership", "revision", "scratch", "wire", "failure", "faultCount", "rest", "deadline"])
+                                 "membership", "revision", "scratch", "wire", "failure", "faultCount", "faultMatch", "rest", "deadline"])
 def test_completion_gate_rejects_missing_restart_recovery_or_cleanup_evidence(bad):
     from tools.jql_process_restart_benchmark import recovery_complete
     result = complete_result()
@@ -154,6 +156,7 @@ def test_completion_gate_rejects_missing_restart_recovery_or_cleanup_evidence(ba
     elif bad == "wire": result["wireTail"]["complete"] = False
     elif bad == "failure": result["injectedFailure"] = None
     elif bad == "faultCount": result["injectedWire503Count"] = 0
+    elif bad == "faultMatch": result["faultEvidence"]["matched"] = False
     elif bad == "rest": result["frozenContinuationRestAttempts"] = 1
     elif bad == "deadline": result["withinOverallDeadline"] = False
     assert recovery_complete(result) is False
@@ -232,3 +235,55 @@ def test_protocol_call_has_one_wall_deadline_and_preserves_timeout_without_retry
     assert len(dispatched) == 1
     assert len(transport.rows) == 1 and transport.rows[0]["done"] is True
     assert evidence[-1]["error"]["type"] == "TimeoutError"
+
+
+def test_persistent_later_page_fault_blocks_bounded_read_recovery_and_records_every_injection(tmp_path):
+    from tools.jql_process_restart_benchmark import LaterPageFault, typed_failure
+    armed, log = tmp_path / "armed", tmp_path / "faults.jsonl"
+    log.touch()
+    scope = {"path": "/rest/api/2/search", "query_string": b"jql=component%3DETL&startAt=100&maxResults=100"}
+    fault = LaterPageFault(armed, log, enabled=True)
+    assert fault.inject(scope) is False
+    armed.touch()
+    first_page = {**scope, "query_string": b"jql=component%3DETL&startAt=0&maxResults=100"}
+    assert fault.inject(first_page) is False
+    # The original one-shot actual run returned this successful public response.
+    recovered = {"ok": True, "data": {"total": 2245, "returned": 100, "hasMore": True}}
+    with pytest.raises(ValueError, match="typed tool failure"):
+        typed_failure(recovered)
+    # Both original and retried later-page reads remain unavailable while armed.
+    assert fault.inject(scope) is True
+    assert fault.inject(first_page) is False
+    assert fault.inject(scope) is True
+    records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 2 and all(row["status"] == 503 and row["injected"] for row in records)
+    assert [row["params"]["startAt"] for row in records] == [["100"], ["100"]]
+    assert LaterPageFault(armed, log, enabled=False).inject(scope) is False
+    armed.unlink()
+    assert fault.inject(scope) is False
+    assert len(log.read_text(encoding="utf-8").splitlines()) == 2
+
+
+@pytest.mark.parametrize("mismatch", [None, "missingRecord", "extraRecord", "otherPid", "wrongQuery", "wrongOffset"])
+def test_fault_records_match_every_phase_a_wire_503_including_repeated_retry_pages(mismatch):
+    from tools.jql_process_restart_benchmark import fault_evidence
+    record = {"pid": 10, "path": "/rest/api/2/search", "status": 503, "injected": True,
+              "params": {"jql": ["same"], "startAt": ["100"], "maxResults": ["100"]}}
+    records = [deepcopy(record), deepcopy(record)]
+    wire = [{"pid": pid, "path": "/rest/api/2/search", "status": status,
+             "params": {"jql": "same", "startAt": 100, "maxResults": 100}}
+            for pid, status in ((10, 200), (10, 503), (10, 503), (20, 503))]
+    if mismatch == "missingRecord": records.pop()
+    elif mismatch == "extraRecord": records.append(deepcopy(record))
+    elif mismatch == "otherPid": records[0]["pid"] = 20
+    elif mismatch == "wrongQuery": records[0]["params"]["jql"] = ["other"]
+    elif mismatch == "wrongOffset": records[0]["params"]["startAt"] = ["200"]
+    evidence = fault_evidence(records, wire, phase_a_pid=10)
+    assert evidence["wire503Count"] == 2
+    assert evidence["injectedCount"] == len(records)
+    assert evidence["matched"] is (mismatch is None)
+
+
+def test_no_injection_cannot_qualify_via_vacuous_wire_matching():
+    from tools.jql_process_restart_benchmark import fault_evidence
+    assert fault_evidence([], [], phase_a_pid=10) == {"injectedCount": 0, "wire503Count": 0, "matched": False}
