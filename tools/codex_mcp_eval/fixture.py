@@ -329,6 +329,7 @@ class EvaluationFixture:
                     finally:
                         self.runtime.started = False
             self.app = FastAPI(lifespan=lifespan)
+            self.app.add_middleware(LocalGuard, credentials=self.runtime.credentials, port=self.port)
             # Real UI GET route for cache-sharing checks; omit every mutation route.
             reads = build_ticket_router(get_client=lambda: self.client)
             reads.routes[:] = [route for route in reads.routes if "GET" in (getattr(route, "methods", None) or ())]

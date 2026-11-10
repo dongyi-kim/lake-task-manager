@@ -58,7 +58,8 @@ def test_full_world_sdk_reads_share_ui_cache_and_reject_every_write(tmp_path):
         assert fixture.upstream_calls == [], "ground truth must not warm the measured cache"
         with httpx.Client() as http:
             assert http.post(url, json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).status_code == 401
-            ui = http.get(url.replace("/mcp", "/api/ticket/DL-9090"))
+            ui = http.get(url.replace("/mcp", "/api/ticket/DL-9090"),
+                          headers={"Authorization": "Bearer " + token})
             assert ui.status_code == 200
         before = len(fixture.upstream_calls)
         async def scenario():
@@ -86,6 +87,43 @@ def test_full_world_sdk_reads_share_ui_cache_and_reject_every_write(tmp_path):
     assert not (tmp_path / "fixture" / "mcp-secret.json").exists()
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", port))
+
+
+@pytest.mark.parametrize("suffix", ["", "/ancestors", "/children", "/related", "/documents"],
+                         ids=["ticket", "ancestors", "children", "related", "documents"])
+@pytest.mark.parametrize("authorization", [None, "Bearer wrong-fixture-token"], ids=["missing", "wrong"])
+def test_ticket_get_boundary_rejects_unowned_reads_without_touching_shared_state(tmp_path, suffix, authorization):
+    with EvaluationFixture(tmp_path / "guarded-gets", port=0, today="2026-11-04") as fixture:
+        assert "DL-9090" in fixture.store.issues
+        fixture.cache.set("guard-check:sentinel", {"unchanged": True}, 600)
+
+        def snapshot():
+            # Include original source timestamps/row identities, retained values,
+            # recency and epochs: a denied GET must not even warm/touch the cache.
+            with fixture.cache._lock:
+                tables = {row[0] for row in fixture.cache._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                assert {"cache", "cache_display", "cache_epoch"} <= tables
+                # H has fewer tables than F: include every present table rather
+                # than assuming the candidate's identity/access/budget schema.
+                cached = {table: fixture.cache._conn.execute(
+                    'SELECT * FROM "' + table.replace('"', '""') + '" ORDER BY 1').fetchall()
+                          for table in sorted(tables)}
+                fence = fixture.cache.fence()
+            return {"cache": cached, "fence": fence, "world": fixture.fingerprint(),
+                    "traces": json.dumps([fixture.tool_calls, fixture.upstream_calls,
+                                          fixture.transport_calls, fixture.protocol_calls], sort_keys=True)}
+
+        assert fixture.settle_observers()["complete"] is True
+        before = snapshot()
+        headers = {} if authorization is None else {"Authorization": authorization}
+        with httpx.Client() as http:
+            response = http.get(fixture.url.replace("/mcp", "/api/ticket/DL-9090" + suffix), headers=headers)
+        assert fixture.settle_observers()["complete"] is True
+        after = snapshot()
+        assert response.status_code == 401
+        assert after == before
+        assert fixture.token not in response.text
 
 
 def test_private_fixture_excludes_live_llm_settings_and_provider_tools(tmp_path, monkeypatch):
