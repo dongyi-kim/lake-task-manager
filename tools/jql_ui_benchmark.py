@@ -224,9 +224,24 @@ BUSINESS_JS = """() => {
   out.owned=groups.flatMap(g=>list(g.atoms||[]).map(x=>fact(x,g)));
   out.related=groups.flatMap(g=>list(g.others||[]).map(x=>fact(x,g)));
   out.cards=list(v.allCards||[]).map(x=>fact(x));
+  // Production Vue omits the DOM __vueParentComponent backlink. Associate
+  // component props through the rendered vnode root's exact element identity.
+  const cardRoots=new Map(),visited=new Set();
+  function renderedCards(n){if(!n||typeof n!=='object'||visited.has(n))return;visited.add(n);
+   if(Array.isArray(n)){n.forEach(renderedCards);return;}
+   const c=n.component;
+   if(c){if(c.type?.name==='TaskCard'){
+     const el=c.subTree?.el,card=c.props?.card;
+     if(el){const rows=cardRoots.get(el)||[];
+      rows.push(!c.isUnmounted&&el.isConnected===true&&card?.key===el.dataset?.key?card:null);
+      cardRoots.set(el,rows);}}
+    renderedCards(c.subTree);}
+   if(Array.isArray(n.children))n.children.forEach(renderedCards);}
+  renderedCards(document.querySelector('#app')?._vnode);
   out.domCards=Array.from(document.querySelectorAll('.mytasks .mt-card[data-key]')).map(el=>{
-   let c=el.__vueParentComponent;while(c&&c.type?.name!=='TaskCard')c=c.parent;
-   return c?.props?.card?{...fact(c.props.card),domKey:el.dataset.key}: {domKey:el.dataset.key,unverified:true};});
+   const rows=cardRoots.get(el);
+   return rows?.length===1&&rows[0]?{...fact(rows[0]),domKey:el.dataset.key}:
+    {domKey:el.dataset.key,unverified:true};});
  }else if(kind==='workload'){
   out.complete=!!v.statsComplete;out.module=v.curMod?.module;out.requestedModule=v.mod;
   out.roster=list(v.curMod?.people||[]).map(p=>p.id);out.peopleCount=copy(v.curMod?.peopleCount);

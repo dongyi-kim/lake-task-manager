@@ -170,6 +170,8 @@ def mutate(page, rows, bundle):
 
 
 def generic_query(page, rows):
+    if not page.locator('.mt-qf-jql').is_visible():
+        measure(page, 'generic-task-entry', lambda: page.locator('a[href="#/mytasks"]').click(), rows)
     query='project = DL AND (component = ETL OR component = Catalog) ORDER BY key ASC'
     reordered='(component = Catalog OR component = ETL) AND project = DL ORDER BY key ASC'
     def submit(value):

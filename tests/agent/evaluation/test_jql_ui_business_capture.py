@@ -10,17 +10,26 @@ import pytest
 from tools import jql_ui_benchmark as runner
 
 
-def javascript_capture(kind, view, *, mutate=False):
+def javascript_capture(kind, view, *, mutate=False, dom_mode="production"):
     node = shutil.which("node")
     if not node:
         pytest.skip("Node is required to exercise the actual observer JavaScript")
-    payload = {"source": runner.BUSINESS_JS, "kind": kind, "view": view, "mutate": mutate}
+    payload = {"source": runner.BUSINESS_JS, "kind": kind, "view": view, "mutate": mutate,
+               "domMode": dom_mode}
     script = r"""
 const x=JSON.parse(require('fs').readFileSync(0,'utf8'));
 const v=x.view;
 const component={type:{name:{task:'MyTasksView',workload:'WorkloadView',wbs:'WbsView'}[x.kind]},proxy:v};
-const cards=(v.domCardFixtures||v.allCards||[]).map(card=>({dataset:{key:card.key},
-  __vueParentComponent:{type:{name:'TaskCard'},props:{card}}}));
+// Production Vue has vnode/component links, but no element.__vueParentComponent.
+const cards=(v.domCardFixtures||v.allCards||[]).map(card=>({dataset:{key:card.key},isConnected:true}));
+const cardVnodes=cards.map((el,i)=>({component:{type:{name:'TaskCard'},
+  props:{card:(v.domCardFixtures||v.allCards)[i]},subTree:{el}}}));
+component.subTree={children:[{children:cardVnodes}]};
+if(x.domMode==='wrong-key')cards[0].dataset.key='DL-wrong';
+if(x.domMode==='detached')cards[0].isConnected=false;
+if(x.domMode==='other-element')cardVnodes[0].component.subTree.el={...cards[0]};
+if(x.domMode==='duplicate')cardVnodes.push({component:{type:{name:'TaskCard'},
+  props:{card:{...(v.domCardFixtures||v.allCards)[0],status:'stale'}},subTree:{el:cards[0]}}});
 global.location={hash:{task:'#/mytasks',workload:'#/workload',wbs:'#/wbs'}[x.kind]};
 global.document={querySelector:()=>({_vnode:{component}}),querySelectorAll:s=>
   s.includes('mt-card')?cards:(v.curMod?.people||[]).map(p=>({getAttribute:()=>p.id}))};
@@ -79,6 +88,14 @@ def test_actual_projection_detects_generation_change_during_computed_read():
     assert snapshot["stable"] is False
     assert snapshot["identityBefore"]["requestToken"] == "req1"
     assert snapshot["identityAfter"]["requestToken"] == "replacement"
+
+
+@pytest.mark.parametrize("dom_mode", ["wrong-key", "detached", "other-element", "duplicate"])
+def test_dom_capture_rejects_unassociated_stale_or_ambiguous_component_roots(dom_mode):
+    snapshot = javascript_capture("task", task_view(), dom_mode=dom_mode)
+    assert snapshot["domCards"][0]["unverified"] is True
+    assert "status" not in snapshot["domCards"][0]
+    assert snapshot["domCards"][1]["status"] == "In Progress"
 
 
 def test_workload_captures_only_visible_roster_not_retained_other_module_person():
