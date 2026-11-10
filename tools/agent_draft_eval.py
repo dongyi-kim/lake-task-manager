@@ -195,7 +195,7 @@ if __name__ == "__main__":
     print(f"\n{time.time()-t0:.0f}s · ${round(sum((o.get('usage') or {}).get('costUsd', 0) or 0 for o in outs), 4)}")
     out_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "research", "agent-improvement", "results", "draft_eval_last.json",
+        ".research", "agent-improvement", "results", "draft_eval_last.json",
     )
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as fh:

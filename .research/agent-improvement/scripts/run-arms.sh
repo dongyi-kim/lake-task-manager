@@ -6,8 +6,8 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../../.." && pwd)"
 deploy_root="$(cd "$repo_root/.." && pwd)"
-results_dir="$repo_root/research/agent-improvement/results"
-logs_dir="$repo_root/research/agent-improvement/logs"
+results_dir="$repo_root/.research/agent-improvement/results"
+logs_dir="$repo_root/.research/agent-improvement/logs"
 
 mkdir -p "$results_dir" "$logs_dir"
 

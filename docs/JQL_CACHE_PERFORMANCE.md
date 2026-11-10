@@ -1,7 +1,7 @@
 # JQL 분해 캐시 성능·정합성 검증
 
 이 문서는 최초 분해 캐시 구현 당시의 기록이다. 현재는 재사용할 조건을 묶어 조회하고 임의 OR의
-강제 개별 실행을 줄였다. 최신 실제 UI 비교는 [2026-11-04 보고서](../research/agent-improvement/reports/jql-strategic-cache-ui-20261104.md)를 참고한다.
+강제 개별 실행을 줄였다. 최신 실제 UI 비교는 [2026-11-04 보고서](../.research/agent-improvement/reports/jql-strategic-cache-ui-20261104.md)를 참고한다.
 
 ## 조건
 

@@ -35,7 +35,7 @@ Claude Desktop stdio 프록시는 개별 HTTP 연결 실패를 원래 요청 ID�
 아래 SDK·UI 기능 검증은 실제 Jira와 LLM을 호출하지 않았다. 지연 주입은 0ms이며, 격리한
 Jira820 fixture와 실행 중인 LTM의 동일 JiraClient를 사용했다. 기존 creation permission 변경 위에 MCP를 구현했다.
 이후 수행한 실제 Codex + HTTP MCP 품질 평가는 아래 별도 결과와
-[전체 보고서](../../research/agent-improvement/evaluations/2026-11-04-codex-mcp-external-quality.md)에 기록했다.
+[전체 보고서](../../.research/agent-improvement/evaluations/2026-11-04-codex-mcp-external-quality.md)에 기록했다.
 
 | 경로 | 결과 |
 |---|---|
