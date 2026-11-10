@@ -23,7 +23,7 @@ def bundle():
 def test_new_battery_has_exactly_fourteen_normal_boundary_families():
     cases = battery()
     assert cases.SUITE == "codex-mcp-etl-year"
-    assert cases.BATTERY_VERSION == "2.0.1"
+    assert cases.BATTERY_VERSION == "2.1.0"
     assert len(cases.CASES) == 28
     assert {row["family"] for row in cases.CASES} == {f"F{i:02}" for i in range(1, 15)}
     assert all({r["variant"] for r in cases.CASES if r["family"] == family} == {"normal", "boundary"}
@@ -194,7 +194,7 @@ def test_checker_does_not_accept_oracle_numbers_without_observed_evidence(bundle
     expected = build_expectations(bundle)
     row = next(c for c in cases.CASES if c["id"] == "ETL-F08-normal")
     answer = {"reply": "운영 실적을 확인했습니다.", "resultKeys": expected[row["id"]]["keys"],
-              "reportedTotal": 2, "progress": None, "sources": [],
+              "reportedTotal": None, "progress": None, "sources": [],
               "measurements": expected[row["id"]]["measurements"], "denominators": [], "reportFindings": [], "reportProgress": []}
     result = cases.check(row, {"ok": True, "reply": answer["reply"], "structuredAnswer": answer},
                          [], {"cases": expected, "publicSources": bundle.public_sources})
@@ -286,7 +286,7 @@ def test_fixture_serves_only_public_world_and_both_document_versions(tmp_path, b
         expected = truth["cases"]["ETL-F08-normal"]
         answer = {"reply": "운영 고객 1개, 테스트 고객 1개를 별도 테이블로 확인. 대기 대상은 미실행이며 공동 보고는 중복 실행이 아닙니다.",
                   "resultKeys": expected["keys"], "measurements": copy.deepcopy(expected["measurements"]),
-                  "reportedTotal": 2, "progress": None, "denominators": [],
+                  "reportedTotal": None, "progress": None, "denominators": [],
                   "reportFindings": [], "reportProgress": [],
                   "sources": [{"kind": "ticket", "id": "DL-31000", "url": "http://127.0.0.1:8080/browse/DL-31000"}]}
         case = next(c for c in battery().CASES if c["id"] == "ETL-F08-normal")

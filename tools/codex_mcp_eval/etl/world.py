@@ -15,7 +15,7 @@ from .oracle import EventOracle
 from .projection import comment_source, project
 
 KST = timezone(timedelta(hours=9))
-VERSION = "etl-year-world-v3"
+VERSION = "etl-year-world-v4"
 DEVELOPMENT_LIFECYCLES = {
     "dormant_recent_start": "DL-21010", "comment_verified_partial": "DL-21012",
     "insufficient_comments": "DL-21013", "long_running_incremental": "DL-21014",
@@ -142,7 +142,7 @@ def _report_task_context(key, participant):
     profiles = {
         "DL-21740": (["복구 위치 보존"], ["재시작 토큰 저장"]),
         "DL-21742": (["이벤트 중복 차단"], ["멱등 처리 키"]),
-        "DL-21743": (["원천 계약 지문", "스키마 변화 표식"], ["계약 지문 비교기"]),
+        "DL-21743": (["원천 계약 지문", "스키마 변화 표식"], ["계약 지문 비교기", "추가 합계 검증"]),
         "DL-21744": (["시간창 역전 처리"], ["역순 입력 정렬", "역순 재시도 시험", "시간창 역전 처리 인수", "극단 지연 시나리오"]),
         "DL-21745": (["배치 역전 보정"], ["지연 구간 보정"]),
         "DL-21747": (["배치 역전 보정"], ["지연 구간 보정"]),
@@ -164,10 +164,14 @@ def _development_reports(a):
         return a.spec.months[11][0] + timedelta(days=day-1 + (31 if november else 0), hours=hour)
     participants = [f"etl.user{i:02d}" for i in range(8)]
     context = {"module": "ETL", "environment": "prod", "release": "R17", "participants": participants}
-    def claim(deliverable, stage, day=None, *, artifact=None, outcome="accepted", november=False):
-        return {"deliverable": deliverable, "stage": stage,
-                "occurred_at": at(day, 10, november=november) if day else None,
-                "artifact": artifact, "outcome": outcome}
+    def claim(deliverable, stage, day=None, *, artifact=None, outcome="accepted", november=False,
+              period_bound=True):
+        result = {"deliverable": deliverable, "stage": stage,
+                  "occurred_at": at(day, 10, november=november) if day else None,
+                  "artifact": artifact, "outcome": outcome}
+        if not period_bound:
+            result["period_bound"] = False
+        return result
     def item(identifier, scopes, text, *claims, **metadata):
         return {"item_id": identifier, "context": {"scopes": scopes}, "text": text,
                 "claims": list(claims), **metadata}
@@ -199,12 +203,17 @@ def _development_reports(a):
         item("order-recovery", ["복구 위치 보존", "이벤트 중복 차단"], "10월 15일 R17 주문 복구 패치 검수 실적: 복구 위치 보존의 재시작 토큰 저장, 이벤트 중복 차단의 멱등 처리 키 시험 수용.", token, dedup),
         item("reverse-final", ["시간창 역전 처리"], "시간창 역전 처리 인수는 10월 29일 고객이 승인했다. 시간창 역전 처리 담당이 참석했다.", claim("시간창 역전 처리 인수", "final_acceptance", 29)),
         item("boundary-check", ["분산 체크포인트 교차검증"], "분산 체크포인트 교차검증: 경계 조건 검증 수용. 이번 달 검수 목록에 반영했다.", claim("경계 조건 검증", "test_acceptance")),
-        item("integration-pending", ["다중 원천 통합"], "다중 원천 통합 검증: Jira 상태는 10월 31일 종료로 기록됐다. 11월 2일 고객 검수에서 원천 간 합계 불일치가 남아 인수 보류를 통보받았다.", claim("다중 원천 통합 검증", "final_acceptance", 2, outcome="rejected", november=True)),
+        item("integration-pending", ["다중 원천 통합"], "다중 원천 통합 검증: Jira 상태는 10월 31일 종료로 기록됐다. 11월 2일 고객 검수에서 원천 간 합계 불일치가 남아 인수 보류를 통보받았다.", claim("다중 원천 통합 검증", "final_acceptance", 2, outcome="pending", november=True)),
     ])
     report("etl-dev-daily-2026-10-24", "ETL 개발 일간보고 2026-10-24", at(25), at(24, 0), at(25, 0), [
         item("fingerprint-final", ["스키마 변화 표식"], "스키마 변화 표식의 계약 지문 비교기는 10월 24일 인수 승인으로 기록했다.", claim("계약 지문 비교기", "final_acceptance", 24))])
     report("etl-dev-daily-2026-10-24", "ETL 개발 일간보고 2026-10-24", at(5, november=True), at(24, 0), at(25, 0), [
-        item("fingerprint-final", ["스키마 변화 표식"], "11월 5일 정정: 10월 24일 계약 지문 비교기 인수 승인 기록은 test 환경 시연과 혼동했다. 운영 인수 보류이며 추가 합계 검증을 계획했다. 스키마 변화 표식 담당 검토.", claim("계약 지문 비교기", "plan", 24, outcome="pending"))], version=2)
+        # These new undated statements are not dated to the withdrawn October24
+        # acceptance. Unlike explicit "this week/month" reports, their public text
+        # supplies no original-period occurrence for the pending decision or plan.
+        item("fingerprint-final", ["스키마 변화 표식"], "11월 5일 정정: 10월 24일 계약 지문 비교기 인수 승인 기록은 test 환경 시연과 혼동했다. 운영 인수 보류이며 추가 합계 검증을 계획했다. 스키마 변화 표식 담당 검토.",
+             claim("계약 지문 비교기", "final_acceptance", outcome="pending", period_bound=False),
+             claim("추가 합계 검증", "plan", outcome=None, period_bound=False))], version=2)
     report("storage-dev-daily-2026-10-23", "Storage 개발 일간보고 2026-10-23", at(24), at(23, 0), at(24, 0), [
         item("storage-fingerprint", ["스키마 변화 표식"], "Storage 스키마 변화 표식: test 환경 R17 계약 지문 비교기 검수를 10월 23일 수용했다.",
              claim("계약 지문 비교기", "test_acceptance", 23, artifact="Storage 검증 패키지"))],
@@ -493,7 +502,7 @@ def build_etl_world(spec=None):
     counts = dict(Counter(event.stream for event in events if event.kind == "issue"))
     counts["total"] = len(world.issues)
     digest = hashlib.sha256(json.dumps({"issues": world.issues, "users": world.users,
-        "documents": documents}, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
+        "documents": documents, "plan": world.plan}, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
     manifest = {"version": VERSION, "seed": spec.seed, "timezone": "Asia/Seoul", "start": stamp(spec.start),
                 "end": stamp(spec.end), "observed_until": stamp(spec.observed_until), "counts": counts,
                 "data_sha256": digest, "event_count": len(events), "public_source_count": len(sources),

@@ -135,7 +135,7 @@ class EtlFixture(EvaluationFixture):
 
     def fingerprint(self):
         result = super().fingerprint()
-        result["worldSha256"] = _hash([result["worldSha256"], self.world.users])
+        result["worldSha256"] = _hash([result["worldSha256"], self.world.users, self.world.plan])
         state = getattr(self.provider._client.app.state, "confluence", None)
         result["providerStoreSha256"] = _hash([result["providerStoreSha256"], self.store.users,
                                               state.snapshot() if state else None])

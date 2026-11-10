@@ -6,8 +6,8 @@ from copy import deepcopy
 from tools.codex_mcp_eval.work_cases import OUTPUT_SCHEMA as BASE_SCHEMA
 
 SUITE = "codex-mcp-etl-year"
-BATTERY_VERSION = "2.0.1"
-PROMPT_VERSION = "codex-mcp-etl-year-v2"
+BATTERY_VERSION = "2.1.0"
+PROMPT_VERSION = "codex-mcp-etl-year-v2.1"
 REFERENCE_DATE = "2026-11-10"
 
 OUTPUT_SCHEMA = deepcopy(BASE_SCHEMA)
@@ -43,9 +43,8 @@ OUTPUT_SCHEMA["properties"]["reportProgress"] = {"type": "array", "items": {
         "key": {"type": "string"}, "view": {"type": "string"}, "jiraStatus": {"type": "string"},
         **{name: {"type": "array", "items": {"type": "string"}} for name in
            ("implementation", "testAccepted", "finalAccepted", "planned")},
-        "acceptedEvents": {"type": ["integer", "null"], "minimum": 0},
-        "percent": {"type": ["number", "null"], "minimum": 0, "maximum": 100}},
-    "required": ["key", "view", "jiraStatus", "implementation", "testAccepted", "finalAccepted", "planned", "acceptedEvents", "percent"]}}
+        "acceptedEvents": {"type": ["integer", "null"], "minimum": 0}},
+    "required": ["key", "view", "jiraStatus", "implementation", "testAccepted", "finalAccepted", "planned", "acceptedEvents"]}}
 OUTPUT_SCHEMA["required"].append("reportProgress")
 
 # Schema vocabulary is a measurement contract, never an answer or query shortcut.
@@ -54,16 +53,20 @@ SYSTEM_CONTEXT = """LTM 조회 전용 평가입니다. 실행 중인 MCP의 실�
 research_files는 모든 후보에게 동일하게 제공되는 조사 전용 파일 기능입니다. 필요하면 사용하세요.
 기준시각은 2026-11-10 KST입니다. 질문의 기간은 시작 포함·끝 제외이며 과거 기간만으로 cold 정책을 선택하지 않습니다.
 조사 중 누락·실패·미확인은 0이나 완료로 바꾸지 마세요. 조사 진행과 업무 진척을 구분하세요.
-resultKeys는 판단에 사용한 범위의 티켓 key 오름차순입니다. sources에는 실제 관측한 ID와 URL만 쓰세요.
+일반 일간·주간·월간 보고와 진척 조사는 실제 달라진 내용·확인된 산출물·남은 일·장애를 먼저 설명하고 건수로 보조합니다.
+명시적으로 수치 진척률을 묻는 질문만 퍼센트와 분모를 계산합니다. 일반 보고에 전체 퍼센트나 분모를 채우기 위한 추가 조사를 하지 마세요.
+resultKeys는 판단에 사용한 근거 티켓 key 오름차순이며 중복은 없습니다. 실제 관측한 연결 맥락·검토 후 제외한 티켓도 포함할 수 있지만 집계 포함과는 다릅니다.
+sources에는 실제 관측한 ID와 URL만 쓰세요.
 measurements는 stream(development/operations/simple_voc), scope, metric, value, unit으로 집계합니다.
 scope는 질문의 명시적 대상·기간이며 아래 표준명을 사용하세요.
-활동은 activity_tickets, 개발 월 활동은 active_tickets, 요청은 request_tickets,
+일간·주간 활동은 activity_tickets, 월간 개발 진행 대상은 active_tickets, 요청은 request_tickets,
+active_tickets는 해당 월의 어느 시점에 In Progress 또는 Reopened 상태였던 고유 개발 티켓 수(이월 포함)입니다.
+이 진행 대상 건수는 실질 작업 증명의 건수와 다릅니다. 실제 변화·근거 부족·행정 갱신만 있는 경우를 내용에서 구분하세요.
 접수 완료는 completed_tickets, 요청 대상은 requested_targets, 완료 고유 테이블은 completed_unique_tables,
 실행 사건은 work_events, 단순 문의의 운영 실행은 executed_operations, 실제 답변·확인 완료는 resolved_requests입니다.
-개별 개발의 검수 완료 산출물 개수는 verified_deliverables(단위 deliverables), 전체 업무 퍼센트는 percent입니다.
-개별 개발 월말 scope는 ID@YYYY-MM-end이며 전체 범위·가중치가 없으면 percent는 null입니다.
+개별 개발의 검수 완료 산출물 개수는 verified_deliverables(단위 deliverables), 개별 개발 월말 scope는 ID@YYYY-MM-end입니다.
 보고로 확인한 Task 진척은 reportProgress에 key, view, jiraStatus, implementation/testAccepted/finalAccepted/planned의
-중복 없는 실제 산출물명 배열, acceptedEvents(중복 제거한 수용 사건 수), percent(분모 없으면 null)를 씁니다.
+중복 없는 실제 산출물명 배열, acceptedEvents(입증된 고유 수용 사건 수, 중복 여부 미확정이면 null)를 씁니다.
 view는 YYYY-MM-end/current/as-of-YYYY-MM-DD/known-YYYY-MM-DD/reconstructed-YYYY-MM-DD 중 질문에 맞는 관점입니다.
 산출물 개수는 해당 배열 길이이며 다른 단계의 수용·계획을 합쳐 전체 완료로 표현하지 마세요.
 보고 조사에서는 reportFindings에 실제 documentId/version/번호가 있는 section, 원문 산출물명 deliverable,
@@ -74,7 +77,8 @@ candidateKeys는 정렬·중복 제거하며 공개된 모듈·환경·기능·�
 다른 모듈·환경의 자료를 제외 근거로 썼다면 inScope=false로 두고 해당 Task의 완료 실적에는 섞지 마세요.
 verified는 한 후보로 입증된 대응, ambiguous는 공개 근거로 둘 이상이 남는 대응, unresolved는 입증 가능한 후보 없음입니다.
 보고 조사가 아닌 질문은 reportFindings=[], reportProgress=[]입니다. 문서 제목 유사성이나 Jira 링크 존재만으로 완료를 단정하지 마세요.
-분모 미확정 총계는 null로 둡니다. 운영 unit은 tickets/targets/tables/events를 구별합니다.
+전체 건수가 미확정이면 해당 measurements.value는 null입니다. 확인된 소계는 reply에서 별도로 명명하고 전체 값에 넣지 마세요.
+운영 unit은 tickets/targets/tables/events를 구별합니다.
 scope 표기는 일간 YYYY-MM-DD, 주간 시작일/끝일, 월간 YYYY-MM,
 WBS·Epic·Task는 ID@current 또는 ID@YYYY-MM-DD입니다.
 운영 유형별 scope는 load/modify/reload/suspend/delete@기간, 고객 적재는 customers@2025-11,
@@ -82,10 +86,13 @@ WBS·Epic·Task는 ID@current 또는 ID@YYYY-MM-DD입니다.
 월말 자산은 scope YYYY-MM-end, metric active_tables, unit tables입니다.
 연합은 scope sales-marketing@YYYY-MM-end이며 metric views/external_tables/federation_edges,
 unit views/tables/edges입니다. 정정 비교는 known-at-2025-12-01/reconstructed-now를 scope로 씁니다.
-진척은 percent(단위 percent), 분모는 denominators에 scope, metric, numerator, denominator, unit으로 기록합니다.
+명시적으로 요청된 수치 진척률은 percent(단위 percent), 분모는 denominators에 scope, metric, numerator, denominator, unit으로 기록합니다.
+수치 진척률을 묻지 않은 질문은 percent 측정값을 만들지 않고 denominators=[], progress=null입니다.
 SP 진척의 metric은 SP-weighted epic progress 또는 SP progress, 하위 개수는 child completion count입니다.
+WBS 분자는 각 Epic 표시 진척률×가중치의 합, 분모는 가중치 합, unit은 weighted percent입니다. Epic 분모의 unit은 SP입니다.
+progress 객체는 명시적 하위 완료 개수 진척에만 쓰고 그 외에는 null입니다.
 그 외 수치·상태·시간순서·환경·불확실성은 reply에서 근거와 연결하세요.
-reportedTotal은 질문의 대표 총계이며 여러 스트림을 섞은 단일 총계나 진척이 불필요하면 null입니다.
+reportedTotal은 명시적으로 요청한 조사 티켓 수에만 쓰고, 그 외는 null입니다. 여러 단위의 집계는 measurements에서 각각 답합니다.
 """
 
 
@@ -93,20 +100,20 @@ def materialize_cases(today=REFERENCE_DATE):
     if today != REFERENCE_DATE:
         raise ValueError("The ETL year battery freezes its observation date")
     prompts = [
-        ("ETL 모듈의 2026-10-15 하루 실제 활동을 개발·데이터 운영·단순 VoC별 활동 티켓 수와 함께 현재 자료로 복원해줘. 개발 일간보고와 관련 Jira를 대조해 구현·시험 수용·향후 계획 및 보고 항목과 Task의 대응을 구분해줘.",
-         "ETL 모듈의 2026-10-24 하루 실제 활동을 현재 자료로 복원해줘. 세 흐름별 활동 티켓 수를 쓰고, 당일 개발보고의 최초본·정정본과 같은 이름의 다른 모듈·환경을 대조해 실제 운영 인수와 시연·계획을 구분해줘."),
-        ("2026-10-19 이상 2026-10-26 미만 ETL 원천 계약 지문·스키마 변화 표식과 시간창 역전 처리의 실제 개발 활동 티켓 수와 주간 진척을 현재 자료로 복원해줘. 주간보고와 관련 일간보고를 대조해 Task 대응·구현·시험 수용·인수·계획을 구분해줘.",
-         "2026-10-19 이상 2026-10-26 미만 ETL 배치 역전 보정과 분산 체크포인트 교차검증의 개발 활동을 복원해줘. 주간·월간보고에서 후보 Task가 여러 개이거나 발생일이 없는 반복 검수를 임의로 귀속·날짜 지정·누적하지 마. 활동 티켓 총수와 10월 말까지 확인된 진척, 확정할 수 없는 범위를 구분해줘."),
-        ("2025년 11월 ETL 월간 실적을 개발 활동 티켓, 데이터 운영 접수 티켓, 단순 VoC 접수 티켓으로 나눠 집계해줘. carryover와 세 단위를 구분해줘.",
-         "2026년 10월 ETL 월간 실적을 개발 활동 티켓, 데이터 운영 접수 티켓, 단순 VoC 접수 티켓으로 집계해줘. 개발은 대기 후 착수·댓글만의 부분 검수·희박한 근거·장기 검증·의존 대기·재오픈·인수인계·행정 갱신을 비교해줘. 일간·주간·월간 개발보고도 찾아 Jira URL이 없어도 공개 맥락으로 대응을 검증하고, 여러 Task의 묶음·한 Task의 분산 보고·다른 모듈/환경·모호한 대응을 구분해줘. 완료 산출물과 구현·시험 수용·최종 인수·계획의 개수, 수용 사건 중복, 전체 퍼센트 산정 가능성을 구분해줘."),
+        ("ETL 모듈의 2026-10-15 하루 업무를 개발·데이터 운영·단순 VoC로 나눠 현재 자료로 정리해줘. 무엇이 진척됐고 무엇이 남았는지 중심으로 쓰고 활동 티켓 수도 덧붙여줘. 개발 일간보고와 관련 Jira를 대조해 구현·시험 수용·향후 계획 및 보고 항목과 Task의 대응을 구분해줘.",
+         "ETL 모듈의 2026-10-24 하루 실제 진척과 남은 일을 현재 자료로 정리해줘. 세 흐름별 활동 티켓 수는 보조로 쓰고, 당일 개발보고의 최초본·정정본과 같은 이름의 다른 모듈·환경을 대조해 실제 운영 인수와 시연·계획을 구분해줘."),
+        ("2026-10-19 이상 2026-10-26 미만 ETL 원천 계약 지문·스키마 변화 표식과 시간창 역전 처리의 주간 업무를 정리해줘. 무엇을 구현·검증했고 어떤 작업·장애가 남았는지 먼저 쓰고 실제 활동 티켓 수를 덧붙여줘. 주간보고와 관련 일간보고를 대조해 Task 대응·구현·시험 수용·인수·계획을 구분해줘.",
+         "2026-10-19 이상 2026-10-26 미만 ETL 배치 역전 보정과 분산 체크포인트 교차검증의 주간 진척 내용을 정리해줘. 주간·월간보고에서 후보 Task가 여러 개이거나 발생일이 없는 반복 검수를 임의로 귀속·날짜 지정·누적하지 마. 10월 말까지 확인된 진척·남은 일·미확인 범위를 중심으로 쓰고 활동 티켓 총수를 보조해줘."),
+        ("2025년 11월 ETL 월간 업무를 개발·데이터 운영·단순 VoC로 나눠 정리해줘. 실제 진척된 내용·산출물·남은 일 중심으로 쓰고 월중 In Progress 또는 Reopened였던 개발 진행 대상, 데이터 운영 접수 티켓, 단순 VoC 접수 티켓 건수를 덧붙여줘. 개발 이월 대상과 실제 진척 확인 여부를 구분해줘.",
+         "2026년 10월 ETL 월간 업무를 실제 진척 내용·확인된 산출물·남은 작업·장애 중심으로 정리하고 월중 In Progress 또는 Reopened였던 개발 진행 대상, 데이터 운영 접수 티켓, 단순 VoC 접수 티켓 건수를 덧붙여줘. 개발은 대기 후 착수·댓글만의 부분 검수·희박한 근거·장기 검증·의존 대기·재오픈·인수인계·행정 갱신을 비교하고 진행 대상 건수와 실제 진척 확인 여부를 구분해줘. 일간·주간·월간 개발보고도 찾아 Jira URL이 없어도 공개 맥락으로 대응을 검증하고, 여러 Task의 묶음·한 Task의 분산 보고·다른 모듈/환경·모호한 대응을 구분해줘. 구현·시험 수용·최종 인수·계획을 나누고 확인된 산출물 건수와 수용 사건 중복·미확정 범위를 표시해줘."),
         ("ETL-1 데이터 파이프라인 안정화 WBS의 2026-01-15 00:00 직전 진척을 당시 적용된 매핑과 SP 기준으로 복원해줘.",
-         "ETL-1 데이터 파이프라인 안정화 WBS의 현재 진척을 최신 적용 매핑으로 계산하고 2026-01-15 당시와 매핑이 어떻게 달라졌는지 알려줘. Jira 부모 계층과 구분해줘."),
+         "ETL-1 데이터 파이프라인 안정화 WBS의 현재 SP 진척률(%)을 최신 적용 매핑으로 계산하고 2026-01-15 당시와 매핑이 어떻게 달라졌는지 알려줘. Jira 부모 계층과 구분해줘."),
         ("DL-20000 수집 계약과 스키마 Epic의 2026-01-15 00:00 직전 진척을 SP 분자·분모와 함께 알려줘.",
          "DL-20004 품질 검증과 관측 Epic의 현재 SP 진척과 하위 업무의 실제 구현·시험 수용·인수를 구분해줘. 개발보고를 함께 대조하고, Jira 종료와 보고의 인수 보류가 충돌하거나 Task 대응이 모호하면 SP 산식 결과와 업무상 완료 판단을 별도로 설명해줘."),
-        ("DL-21744 시간창 역전 처리 Task의 현재 실제 진척을 일간·주간·월간 개발보고와 대조해줘. 보고마다 다르게 적힌 구현·시험 수용·최종 인수·후속 계획을 분리하고 각각의 산출물 수·고유 수용 사건 수와 전체 퍼센트 산정 가능성을 알려줘.",
-         "DL-21000의 2026-01-15 00:00 직전 하위 완료 개수 진척을 복원하고 현재와 하위 소속이 다른 이유도 설명해줘."),
+        ("DL-21744 시간창 역전 처리 Task의 현재 실제 진척을 일간·주간·월간 개발보고와 대조해줘. 무엇을 구현·검증했고 인수와 후속 작업은 어디까지인지 중심으로 쓰고, 각각의 산출물 수·고유 수용 사건 수를 덧붙여줘.",
+         "DL-21000의 2026-01-15 00:00 직전 하위 완료 개수와 개수 기준 진척률(%)을 복원하고 현재와 하위 소속이 다른 이유도 설명해줘."),
         ("DL-21001 Subtask의 현재 상태와 부모, 담당 변경 경위를 근거로 알려줘. 조사 티켓 수를 써줘.",
-         "DL-21001 Subtask의 2026-01-15 00:00 직전 상태와 부모를 현재와 비교해줘. 이전 부모에서 한 일을 새 부모의 당시 실적으로 돌리지 마."),
+         "DL-21001 Subtask의 2026-01-15 00:00 직전 상태와 부모를 현재와 비교하고 조사 티켓 수를 써줘. 이전 부모에서 한 일을 새 부모의 당시 실적으로 돌리지 마."),
         ("2025년 11월 ETL 고객 테이블 최초 적재 요청의 실제 실적을 조사해줘. prod.crm.customers와 test.crm.customers 접수의 요청 티켓·요청 대상·완료 티켓·완료 고유 테이블·실행 사건 수를 구분해줘.",
          "2025년 11월 ETL 신규 적재 전체 요청의 티켓·대상·완료 고유 테이블·실행 사건 수를 알려줘. 월 경계, 다중 대상 일부 완료, 중복 보고와 정정을 반영하고 증거가 없으면 총계를 미확정으로 남겨줘."),
         ("2025-11-14 이상 2025-11-17 미만 접수된 ETL 컬럼·쿼리 변경의 티켓·대상·완료 고유 테이블·실행 사건 수를 알려줘. 신규 적재와 구분해줘.",
@@ -133,7 +140,14 @@ CASES = materialize_cases()
 
 
 def schema_for_case(case):
-    return deepcopy(OUTPUT_SCHEMA)
+    schema = deepcopy(OUTPUT_SCHEMA)
+    if case["family"] not in {"F04", "F05"} and case["id"] != "ETL-F06-boundary":
+        schema["properties"]["denominators"]["maxItems"] = 0
+    if case["id"] != "ETL-F06-boundary":
+        schema["properties"]["progress"] = {"type": "null"}
+    if case["family"] != "F07":
+        schema["properties"]["reportedTotal"] = {"type": "null"}
+    return schema
 
 
 def check(case, output, calls, ground_truth=None):
@@ -160,6 +174,13 @@ def review_contract(today=REFERENCE_DATE):
         "질문의 신선도 요구를 보존하고 과거 기간만으로 오래된 캐시 정책을 선택하지 않았는가",
         {"explicitModeMaxAgesSeconds": {"live": 0, "hot": 600, "warm": 86400, "cool": 604800, "cold": 2592000},
          "historicalPeriodImpliesCoolOrCold": False, "requiredConformance": "request-cache-policy-and-MCP-propagation"}))
+    suite.append(element("etl_content_first", "request_fulfillment",
+        "일반 보고·진척 조사에서 무엇이 구현·검증됐고 무엇이 남거나 막혔는지 실제 내용을 우선 설명했는가",
+        {"ordinaryReportPriority": ["substantive changes and delivered content", "remaining work and blockers", "supporting counts"],
+         "countsOrStatusListAloneIsSufficient": False, "percentageRequiresExplicitRequest": True,
+         "explicitCountQuestionsRequireAccurateCounts": True,
+         "confirmedSubtotalMayReplaceUnknownTotal": False,
+         "unsupportedCompletionOrEventMultiplicityAllowed": False}))
     specs = {}
     for row in CASES:
         expected = truth[row["id"]]
@@ -187,13 +208,13 @@ def review_contract(today=REFERENCE_DATE):
 # cannot silently preserve the same manifest while changing qualification.
 from .checks import (build_expectations, check as _check, observed_sources, _rows_match, _number_equal, _at,
                      _public_report_findings, _unique_rows, _attach_reports, _report_rows_match, _complete_report_search, _normalized_public_text,
-                     observed_ticket_inputs, ticket_inputs_match,
+                     observed_ticket_inputs, ticket_inputs_match, _complete_epic_tree, _observed_result_keys, _result_keys_match,
                      _field_fact, _require_report_status, _same_instant, field_facts_observed,
                      document_complete, evidence_collection, has_stalled_pagination, literal_source_records, source_observed)
 from .oracle import EventOracle
 CHECKER_DEPENDENCIES = (check, _check, build_expectations, observed_sources, _rows_match, _number_equal, _at,
                         _public_report_findings, _unique_rows, _attach_reports, _report_rows_match, _complete_report_search, _normalized_public_text,
-                        observed_ticket_inputs, ticket_inputs_match,
+                        observed_ticket_inputs, ticket_inputs_match, _complete_epic_tree, _observed_result_keys, _result_keys_match,
                         _field_fact, _require_report_status, _same_instant, field_facts_observed,
                         document_complete, evidence_collection, has_stalled_pagination, literal_source_records, source_observed,
                         EventOracle, review_contract, schema_for_case, materialize_cases,

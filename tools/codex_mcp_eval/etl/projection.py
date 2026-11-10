@@ -94,7 +94,7 @@ def project(events, spec):
         "date": datetime.fromisoformat(p["revisions"][-1]["published_at"]).date(),
         "ancestors": p.get("ancestors", []), "body": p["revisions"][-1]["body"]} for p in documents.values()]}
     plan = {"project_key": "DL", "modules": ["ETL", "Catalog", "Query", "Security", "Storage", "Platform"],
-            "epics": {}, "wbs": [{"id": "ETL-1", "moduleId": "ETL", "name": "데이터 파이프라인 안정화",
+            "epics": {}, "wbs": [{"id": "ETL-1", "module": "ETL", "moduleId": "ETL", "name": "데이터 파이프라인 안정화",
                 "start": spec.start.date().isoformat(), "end": spec.end.date().isoformat(),
                 "epics": [{"key": key, "weight": weight}
                           for key, weight in mappings.get("ETL-1", {}).items()]}]}

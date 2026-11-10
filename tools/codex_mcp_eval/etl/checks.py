@@ -120,7 +120,7 @@ def _attach_reports(row, bundle, at, *, keys, view, knowledge_at=None, revisions
             "implementation": list(progress["reported_implementation"]),
             "testAccepted": list(progress["test_accepted_deliverables"]),
             "finalAccepted": list(progress["final_accepted_deliverables"]), "planned": list(progress["planned_deliverables"]),
-            "acceptedEvents": None if ambiguous else progress["reported_acceptance_events"], "percent": progress["overall_percent"]})
+            "acceptedEvents": None if ambiguous else progress["reported_acceptance_events"]})
         row["keys"].append(key)
     if include_decoy:
         contract["excludedTaskKeys"].append("DL-50003")
@@ -224,7 +224,6 @@ def build_expectations(bundle):
                 item_scope = key + "@2026-10-end"
                 measure(row, "development", item_scope, "verified_deliverables",
                         len(progress["completed_deliverables"]), "deliverables")
-                measure(row, "development", item_scope, "percent", progress["overall_percent"], "percent")
             row["mustDiscloseUncertainty"] = True
             row["distinctions"] += ["created vs started", "verified deliverables vs arbitrary overall percent",
                 "substantive activity vs administrative updated", "reopened acceptance withdrawal",
@@ -252,7 +251,7 @@ def build_expectations(bundle):
                       distinctions=("SP-weighted progress vs child count", "parent status vs child completion", "historical hierarchy"))
             if family in {4, 5}:
                 task_keys = [key for key in keys if snapshot["issues"][key]["type"] != "Epic"]
-                row["requiredTicketInputs"] = ticket_inputs(task_keys, ("sp", "type", "epic", "status") if at == now else ("sp", "type", "epic", "created_date"))
+                row["requiredTicketInputs"] = ticket_inputs(task_keys, ("sp", "type", "epic", "status", "component") if at == now else ("sp", "type", "epic", "created_date"))
                 row["requiredSources"] = proof(task_keys, kinds={"field"}, field_names={"status", "parent", "epic"}) if at != now else []
             if family == 4:
                 mapping = [e for e in events if e.kind == "mapping" and e.occurred_at < at]
@@ -320,7 +319,7 @@ def build_expectations(bundle):
         return row
 
     customer_keys = ["DL-31000", "DL-31001", "DL-31002"]
-    operations(8, "normal", customer_keys, "customers@2025-11")["reportedTotal"] = 2
+    operations(8, "normal", customer_keys, "customers@2025-11")
     load_keys = [k for k, e in issues.items() if e.stream == "operations" and start <= e.occurred_at < end
                  and e.payload["operation"] == "load"]
     operations(8, "boundary", load_keys, "load@2025-11")
@@ -338,7 +337,9 @@ def build_expectations(bundle):
                       proof([k for ks in cohorts.values() for k in ks]),
                       distinctions=("modify vs reload vs suspend vs delete", "execution vs period-end inventory"))
             for operation, keys in cohorts.items():
-                data = oracle.operations(start, bundle.spec.end, issue_keys=keys)
+                # Boundary asks November activity; normal selects requests in a
+                # short window and asks their actual outcomes as of observation.
+                data = oracle.operations(start, end if variant == "boundary" else now, issue_keys=keys)
                 row["mustDiscloseUncertainty"] |= not data["complete"]
                 scope = operation + "@" + ("2025-11" if variant == "boundary" else "2025-11-14/2025-11-17")
                 for metric, unit in units.items():
@@ -381,7 +382,6 @@ def build_expectations(bundle):
             row["mustDiscloseUncertainty"] = resolved["resolved_requests"] is None
             row["unknownRequestKeys"] = resolved["unknown_request_keys"]
             row["knownResolvedRequests"] = resolved["known_resolved_requests"]
-        row["reportedTotal"] = len(keys)
     for variant in ("normal", "boundary"):
         ops = customer_keys if variant == "boundary" else customer_keys[:1]
         row = operations(13, variant, ops, "linked-customers@2025-11")
@@ -506,6 +506,43 @@ def _normalized_public_text(value):
     return " ".join("".join(parser.parts).split())
 
 
+def _complete_epic_tree(call):
+    """Current, complete native Epic rows are typed evidence, not quoted prose."""
+    result = call.get("result") or {}
+    if call.get("name") != "get_epic" or call.get("isError") or result.get("ok") is not True:
+        return None
+    cache, data = result.get("cache"), result.get("data")
+    if not isinstance(cache, dict) or not isinstance(data, dict):
+        return None
+    if (result.get("partial") is not False or type(result.get("missing")) is not int or result["missing"] != 0
+            or cache.get("available") is not True or cache.get("state") != "fresh" or cache.get("invalidated") is not False
+            or data.get("partial") or data.get("errors") or data.get("missing")
+            or data.get("missingKeys") or data.get("hasMore") or data.get("complete") is False):
+        return None
+    epic = data.get("epic")
+    owner = epic.get("key") if isinstance(epic, dict) else None
+    requested = (call.get("arguments") or {}).get("key")
+    if (not isinstance(owner, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]*-\d+", owner)
+            or not isinstance(requested, str) or owner != requested.strip().upper()):
+        return None
+    tree = data.get("tree")
+    if not isinstance(tree, list):
+        return None
+    seen = set()
+    for row in tree:
+        if (not isinstance(row, dict) or not isinstance(row.get("key"), str)
+                or not re.fullmatch(r"[A-Z][A-Z0-9_]*-\d+", row["key"]) or row["key"] in seen
+                or not all(name in row for name in ("sp", "type", "statusName", "statusCat", "component"))
+                or not isinstance(row["type"], str) or not row["type"] or row["type"] in {"Epic", "Sub-Task"}
+                or not isinstance(row["statusName"], str) or not row["statusName"]
+                or not isinstance(row["statusCat"], str) or row["statusCat"] not in {"todo", "inprogress", "done"}
+                or row["component"] is not None and not isinstance(row["component"], str)
+                or row["sp"] is not None and (type(row["sp"]) not in (int, float) or not math.isfinite(row["sp"]))):
+            return None
+        seen.add(row["key"])
+    return owner, tree
+
+
 def observed_ticket_inputs(calls, field_ids):
     """Typed metadata can prove arithmetic inputs without downloading a body."""
     rows = {}
@@ -522,6 +559,13 @@ def observed_ticket_inputs(calls, field_ids):
     for call in calls:
         if call.get("isError") or (call.get("result") or {}).get("ok") is not True:
             continue
+        epic_tree = _complete_epic_tree(call)
+        if epic_tree is not None:
+            owner, tree = epic_tree
+            for record in tree:
+                metadata = {name: record[name] for name in ("sp", "type", "component")}
+                metadata.update(status=record["statusName"], epic=owner)
+                rows.setdefault(record["key"], []).append(metadata)
         for record in literal_source_records(call, "ticket"):
             key = record.get("key")
             if not key:
@@ -552,6 +596,49 @@ def observed_ticket_inputs(calls, field_ids):
                         metadata[name] = day(record[source])
             rows.setdefault(key, []).append(metadata)
     return rows
+
+
+def _observed_result_keys(calls, field_ids):
+    """Literal ticket identities and known typed relations; never arguments/body text."""
+    keys = set()
+    def add(value):
+        if isinstance(value, str) and re.fullmatch(r"[A-Z][A-Z0-9_]*-\d+", value):
+            keys.add(value)
+    def ticket(record):
+        add(record.get("key"))
+        for name in ("epicKey", "parentKey"):
+            add(record.get(name))
+        fields = record.get("fields") or {}
+        if isinstance(fields, dict):
+            parent = fields.get("parent")
+            if isinstance(parent, dict):
+                add(parent.get("key"))
+            add(fields.get(field_ids.get("epic")))
+            for child in fields.get("subtasks") or []:
+                if isinstance(child, dict):
+                    add(child.get("key"))
+    for call in calls:
+        if call.get("isError") or (call.get("result") or {}).get("ok") is not True:
+            continue
+        for record in literal_source_records(call, "ticket"):
+            ticket(record)
+        epic_tree = _complete_epic_tree(call)
+        if epic_tree is not None:
+            owner, tree = epic_tree
+            add(owner)
+            for record in tree:
+                ticket(record)
+                for child in record.get("children") or []:
+                    if isinstance(child, dict):
+                        add(child.get("key"))
+    return keys
+
+
+def _result_keys_match(actual, expected, calls, field_ids):
+    if not isinstance(actual, list) or not all(isinstance(key, str) for key in actual) or actual != sorted(set(actual)):
+        return False
+    required, supplied = set(expected), set(actual)
+    return required <= supplied and supplied - required <= _observed_result_keys(calls, field_ids)
 
 
 def ticket_inputs_match(calls, expected, field_ids):
@@ -677,7 +764,7 @@ def check(case, output, calls, ground_truth=None):
         failures.append("unapproved_tool_used")
     if has_stalled_pagination(output.get("mcpToolCalls") or calls):
         failures.append("read_continuation_not_advancing")
-    if answer.get("resultKeys") != expected["keys"]:
+    if not _result_keys_match(answer.get("resultKeys"), expected["keys"], calls, truth.get("ticketFieldIds", {})):
         failures.append("result_scope_mismatch")
     if not _rows_match(answer.get("measurements"), expected["measurements"], ("stream", "scope", "metric", "unit"), ("value",)):
         failures.append("measurement_mismatch")
@@ -713,6 +800,6 @@ def check(case, output, calls, ground_truth=None):
     # be judged from the real prose; keyword presence cannot qualify a run.
     return {"pass": not failures, "failures": list(dict.fromkeys(failures)),
             "humanReviewRequired": True, "notAQualitativeScore": True,
-            "semanticReviewRequirements": ["factual_grounding", "request_fulfillment", "safety_uncertainty",
-                                           "readability", "source_traceability"],
+            "semanticReviewRequirements": ["request_fulfillment", "factual_grounding", "contract_actionability",
+                                           "safety_uncertainty", "communication_rendering"],
             "streamHardGate": {"directMeanMinimum": 4.5, "materialDefectsAllowed": 0}}

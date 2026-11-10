@@ -21,10 +21,30 @@ class EventOracle:
                 and e.sources and (keys is None or e.issue_key in keys)]
 
     def active_development(self, start, end):
+        """Ongoing inventory from sourced status intervals at the observation horizon."""
         stamp(start), stamp(end)
-        return sorted(e.issue_key for e in self.events if e.kind == "issue" and e.stream == "development"
-                      and any(left < end and right > start for left, right in
-                              (e.payload.get("active_intervals") or [(e.occurred_at, e.payload["active_until"])])))
+        if start >= end:
+            raise ValueError("The requested interval must be nonempty")
+        end = min(end, self.observed_until)
+        if start >= end:
+            return []
+        visible = self._visible(end)
+        states = {e.issue_key: (e.payload.get("initial_status", "In Progress"), e.occurred_at)
+                  for e in visible if e.kind == "issue" and e.stream == "development"}
+        changes = [e for e in visible if e.issue_key in states and e.stream == "development"
+                   and e.kind == "field" and e.payload["field"] == "status"]
+        ongoing, active = {"In Progress", "Reopened"}, set()
+        for e in sorted(changes, key=lambda row: (row.occurred_at, row.recorded_at, row.identity)):
+            status, since = states[e.issue_key]
+            if e.occurred_at < since:
+                continue
+            if status in ongoing and since < e.occurred_at and e.occurred_at > start:
+                active.add(e.issue_key)
+            states[e.issue_key] = (e.payload["value"], e.occurred_at)
+        for key, (status, since) in states.items():
+            if status in ongoing and since < end:
+                active.add(key)
+        return sorted(active)
 
     def operations(self, start, end, *, knowledge_at=None, issue_keys=None):
         stamp(start), stamp(end)
@@ -107,13 +127,14 @@ class EventOracle:
 
     def development(self, at, *, knowledge_at=None, issue_keys=None):
         events = sorted(self._visible(at, knowledge_at), key=lambda e: (e.occurred_at, e.recorded_at, e.identity))
-        state, mappings, progress_events = {}, {}, {}
+        state, mappings, progress_events, components = {}, {}, {}, {}
         for e in events:
             p = e.payload
             if e.kind == "issue" and e.stream in {"development", "development_epics"}:
-                state[e.issue_key] = {"status": p.get("initial_status", "In Progress"), "sp": p.get("sp", 0),
+                state[e.issue_key] = {"status": p.get("initial_status", "In Progress"), "sp": p.get("sp"),
                                       "parent": p.get("parent"), "epic": p.get("epic"),
                                       "type": p["type"], "assignee": p["assignee"], "sources": list(e.sources)}
+                components[e.issue_key] = p.get("module")
             elif e.kind == "field" and e.issue_key in state:
                 field = {"status": "status", "parent": "parent", "epic": "epic", "assignee": "assignee"}.get(p["field"])
                 if field:
@@ -131,15 +152,22 @@ class EventOracle:
         epic_progress = {}
         for key, row in state.items():
             if row["type"] == "Epic":
-                children = [v for v in state.values() if v["epic"] == key and v["type"] != "Sub-Task"]
-                total = sum(v["sp"] or 0 for v in children)
-                done = sum(v["sp"] or 0 for v in children if v["status"] in {"Resolved", "Closed"})
-                epic_progress[key] = {"sp_total": total, "sp_done": done, "percent": 100 * done / total if total else None}
+                # Independent authored-fact reduction of the documented SP contract.
+                # Exclusion affects this rollup only, never activity or child-count views.
+                children = [v for child_key, v in state.items() if v["epic"] == key
+                            and v["type"] not in {"Sub-Task", "Bug", "Ops", "운영"}
+                            and components[child_key] != "사용자 VoC"]
+                total = sum(1 if v["sp"] is None else v["sp"] for v in children)
+                done = sum(1 if v["sp"] is None else v["sp"] for v in children
+                           if v["status"] in {"Resolved", "Closed"})
+                epic_progress[key] = {"sp_total": round(total, 1), "sp_done": round(done, 1),
+                                      "percent": round(100 * done / total, 1) if total > 0 else 0.0}
         wbs = {}
         for key, mapping in mappings.items():
             valid = [(epic_progress.get(epic, {}).get("percent"), weight) for epic, weight in mapping.items()]
+            weight_total = sum(weight for _, weight in valid) or 1
             wbs[key] = {"metric": "SP-weighted epic progress", "epic_weights": mapping,
-                        "percent": sum(value * weight for value, weight in valid) / sum(weight for _, weight in valid)
+                        "percent": round(sum(value * (weight / weight_total) for value, weight in valid), 1)
                         if valid and all(value is not None for value, _ in valid) else None}
         keys = set(issue_keys) if issue_keys is not None else None
         correspondences, superseded = self._report_correspondence(events, at)
@@ -171,8 +199,13 @@ class EventOracle:
                     occurred = claim["occurred_at"]
                     if occurred is not None and occurred >= at:
                         continue
-                    if occurred is None and report["period_end"] > at:
-                        continue
+                    if occurred is None:
+                        if report["period_end"] > at:
+                            continue
+                        # A correction can withdraw a past assertion without dating
+                        # its new pending decision/plan to that assertion's period.
+                        if claim.get("period_bound") is False and event.recorded_at >= at:
+                            continue
                     candidates, proofs = [], list(event.sources)
                     for key, (profile, issue) in profiles.items():
                         if item.get("jira_keys") and key not in item["jira_keys"]:

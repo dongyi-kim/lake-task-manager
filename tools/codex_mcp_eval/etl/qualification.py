@@ -9,8 +9,8 @@ from .recovery import recovery_cases
 
 REPRESENTATIVE_CASE_IDS = ("ETL-F03-boundary", "ETL-F04-boundary", "ETL-F08-normal",
                            "ETL-F09-boundary", "ETL-F12-boundary", "ETL-F14-boundary")
-SCHEDULE_VERSION = "etl-year-schedule-v2"
-SCHEDULE_STATUS = "frozen-for-pilot-after-report-proof-review"
+SCHEDULE_VERSION = "etl-year-schedule-v3"
+SCHEDULE_STATUS = "content-first-pilot-and-formal-selection"
 
 REPRESENTATIVE_COVERAGE = {
     "ETL-F03-boundary": ("three-stream monthly scope", "eight original Task lifecycles", "unlinked and paraphrased reports",
