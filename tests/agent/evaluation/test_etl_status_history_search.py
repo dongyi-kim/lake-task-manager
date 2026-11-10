@@ -10,6 +10,7 @@ import pytest
 
 from app.mock.permissions import PermissionStore
 from app.mock.query_compat import install_query_compat
+from app.jira.jql import compile_jql
 from tools.codex_mcp_eval.etl.status_history_search import install_status_history_search
 
 
@@ -51,7 +52,7 @@ def public_rows():
 def endpoints():
     clients = []
     def build(rows=None, *, install=True, denied=(), delegate_hook=None,
-              search_timezone="UTC", user_timezone=None, current_user="u01"):
+              search_timezone="UTC", user_timezone=None, current_user="u01", observed_until=OBSERVED):
         store = PermissionStore(Config(project_key="DL", current_user=current_user, latency_ms=0), seed=False)
         store.users = {"u01": {"name": "u01", "displayName": "Public User",
                                 "timeZone": search_timezone if user_timezone is None else user_timezone}}
@@ -72,7 +73,7 @@ def endpoints():
                 delegate_hook(request, kwargs)
                 return original(request, **kwargs)
             route.endpoint = observed
-        registration = install_status_history_search(app, observed_until=OBSERVED,
+        registration = install_status_history_search(app, observed_until=observed_until,
                                                      search_timezone=search_timezone) if install else None
         client = TestClient(app, raise_server_exceptions=False)
         clients.append(client)
@@ -376,3 +377,121 @@ def test_invalid_during_operands_fail_the_whole_or_query(endpoints, bounds):
     response = search(client, 'key = DL-1 OR status WAS "In Progress" DURING ' + bounds)
     assert response.status_code == 400
     assert response.json()["errorMessages"]
+
+
+UI_NOW = datetime.fromisoformat("2026-11-10T23:59:59+09:00")
+
+
+def ui_date_issue(key, *, updated, resolved=None, status="Resolved"):
+    row = issue(key, status, created="2026-10-01T00:00:00+00:00")
+    # Deliberately identical convenience dates: day truncation cannot prove the cutoff.
+    row["updated"] = date(2026, 11, 10)
+    row["resolved"] = date(2026, 11, 10) if resolved is not None else None
+    row["_timestamps"].update(updated=updated, resolutiondate=resolved)
+    return row
+
+
+@pytest.mark.parametrize("field,relative,literal,utc_cutoff", [
+    ("resolved", "-7d", "2026-11-03 23:50", "2026-11-03T14:50:00+00:00"),
+    ("updated", "-14d", "2026-10-27 23:50", "2026-10-27T14:50:00+00:00"),
+    ("updated", "-30d", "2026-10-11 23:50", "2026-10-11T14:50:00+00:00"),
+])
+def test_ordinary_generated_ui_minute_ge_uses_exact_public_instants(
+        endpoints, field, relative, literal, utc_cutoff):
+    cutoff = datetime.fromisoformat(utc_cutoff)
+    instants = [(cutoff + timedelta(seconds=offset)).isoformat() for offset in (-1, 0, 1)]
+    instants.append(cutoff.astimezone(timezone(timedelta(hours=9))).isoformat())
+    rows = [ui_date_issue(f"DL-{i}", updated=stamp, resolved=stamp)
+            for i, stamp in enumerate(instants, 1)]
+    client, *_ = endpoints(rows, search_timezone="Asia/Seoul", observed_until=UI_NOW)
+    compiled = compile_jql(f"project = DL AND statusCategory = Done AND {field} >= {relative} ORDER BY key ASC",
+                           user_id="u01", timezone_name="Asia/Seoul", now=UI_NOW,
+                           ttl_seconds=600, decompose=False)
+    assert f'{field} >= "{literal}"' in compiled.canonical
+    response = search(client, compiled.canonical, fields="summary,updated,resolutiondate")
+    assert keys(response) == ["DL-2", "DL-3", "DL-4"]
+    assert response.json()["total"] == 3
+    assert response.json()["issues"][0]["fields"]["updated"] == utc_cutoff
+
+
+@pytest.mark.parametrize("zone,expected", [("Asia/Seoul", ["DL-2", "DL-3"]), ("UTC", [])])
+@pytest.mark.parametrize("field", ["updated", "resolved", "resolutiondate"])
+def test_ordinary_minute_ge_uses_actor_zone_across_utc_calendar_date(endpoints, zone, expected, field):
+    stamps = ["2026-11-03T14:59:59+00:00", "2026-11-03T15:00:00+00:00",
+              "2026-11-04T00:00:01+09:00"]
+    rows = [ui_date_issue(f"DL-{i}", updated=stamp, resolved=stamp)
+            for i, stamp in enumerate(stamps, 1)]
+    client, *_ = endpoints(rows, search_timezone=zone, observed_until=UI_NOW)
+    assert client.get("/rest/api/2/myself").json()["timeZone"] == zone
+    assert keys(search(client, f'{field} >= "2026-11-04 00:00" ORDER BY key ASC')) == expected
+
+
+def test_ordinary_workload_generated_done_empty_resolution_fallback(endpoints):
+    old, at = "2026-11-03T14:49:59+00:00", "2026-11-03T14:50:00+00:00"
+    rows = [ui_date_issue("DL-1", updated=at, resolved=None),
+            ui_date_issue("DL-2", updated=old, resolved=None),
+            ui_date_issue("DL-3", updated=at, resolved=old),
+            ui_date_issue("DL-4", updated=old, resolved=at),
+            ui_date_issue("DL-5", updated=at, resolved=None, status="In Progress")]
+    client, *_ = endpoints(rows, search_timezone="Asia/Seoul", observed_until=UI_NOW)
+    raw = ('project = DL AND statusCategory = Done AND (resolved >= -7d '
+           'OR (resolved IS EMPTY AND updated >= -7d)) ORDER BY key ASC')
+    compiled = compile_jql(raw, timezone_name="Asia/Seoul", user_id="u01", now=UI_NOW,
+                           ttl_seconds=600, decompose=False)
+    assert 'resolved >= "2026-11-03 23:50"' in compiled.canonical
+    assert "resolved IS EMPTY" in compiled.canonical
+    assert keys(search(client, compiled.canonical)) == ["DL-1", "DL-4"]
+    # Task Done uses resolution alone: it must not silently acquire Workload's fallback.
+    assert keys(search(client, 'statusCategory = Done AND resolved >= "2026-11-03 23:50"')) == ["DL-4"]
+    assert keys(search(client, 'resolved IS EMPTY ORDER BY key ASC')) == ["DL-1", "DL-2", "DL-5"]
+
+
+@pytest.mark.parametrize("query", [
+    'updated >= "2026-02-30 12:00"', 'updated >= "2026-11-03 24:00"',
+    'updated >= "2026-11-03 23:60"', 'updated >= "2026-11-03 23:50:00"',
+    'updated > "2026-11-03 23:50"', 'updated = "2026-11-03 23:50"',
+    'updated < "2026-11-03 23:50"', 'updated <= "2026-11-03 23:50"',
+    'due >= "2026-11-03 23:50"', 'created >= "2026-11-03 23:50"',
+    'updated IS EMPTY', 'resolved IS NOT EMPTY',
+])
+def test_ordinary_unproven_date_shapes_still_reject_entire_or_query(endpoints, query):
+    row = ui_date_issue("DL-1", updated="2026-11-03T14:50:00+00:00")
+    client, *_ = endpoints([row], search_timezone="Asia/Seoul", observed_until=UI_NOW)
+    response = search(client, "key = DL-1 OR " + query)
+    assert response.status_code == 400, response.text
+    assert response.json()["errorMessages"]
+
+
+@pytest.mark.parametrize("field", ["updated", "resolutiondate"])
+@pytest.mark.parametrize("bad", ["missing", "2026-11-03T14:50:00", "not-a-time", ""])
+def test_ordinary_minute_query_fails_closed_on_unknown_public_timestamp(endpoints, field, bad):
+    row = ui_date_issue("DL-1", updated="2026-11-03T14:50:00+00:00",
+                        resolved="2026-11-03T14:50:00+00:00")
+    if bad == "missing":
+        del row["_timestamps"][field]
+    else:
+        row["_timestamps"][field] = bad
+    client, *_ = endpoints([row], search_timezone="Asia/Seoul", observed_until=UI_NOW)
+    query_field = "resolved" if field == "resolutiondate" else field
+    response = search(client, f'{query_field} >= "2026-11-03 23:50"')
+    assert response.status_code == 400, response.text
+    assert response.json()["errorMessages"]
+
+
+def test_ordinary_resolution_empty_requires_known_null_not_missing_or_malformed(endpoints):
+    row = ui_date_issue("DL-1", updated="2026-11-03T14:50:00+00:00")
+    client, store, *_ = endpoints([row], search_timezone="Asia/Seoul", observed_until=UI_NOW)
+    assert keys(search(client, 'resolutiondate IS EMPTY')) == ["DL-1"]
+    del store.issues["DL-1"]["_timestamps"]["resolutiondate"]
+    assert search(client, 'resolved IS EMPTY').status_code == 400
+    store.issues["DL-1"]["_timestamps"]["resolutiondate"] = "not-a-time"
+    assert search(client, 'resolved IS EMPTY').status_code == 400
+    store.issues["DL-1"]["_timestamps"]["resolutiondate"] = "2026-11-03T14:50:00"
+    assert search(client, 'resolved IS EMPTY').status_code == 400
+
+
+def test_ordinary_minute_query_rechecks_changed_actor_timezone(endpoints):
+    row = ui_date_issue("DL-1", updated="2026-11-03T14:50:00+00:00")
+    client, store, *_ = endpoints([row], search_timezone="Asia/Seoul", observed_until=UI_NOW)
+    store.users["u01"]["timeZone"] = "UTC"
+    assert search(client, 'updated >= "2026-11-03 23:50"').status_code == 400

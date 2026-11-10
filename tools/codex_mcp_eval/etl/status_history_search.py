@@ -5,6 +5,10 @@ and row.nextChange >= operand1.lower + 1000ms. Day upper is 23:59:59.000;
 minute upper is :59.000. Equal-time rows remain. This is binary-grounded
 fixture conformance, not live-server/plugin parity. See the external research
 record jira820-during-bytecode-findings-54ac71.md and official artifact below.
+
+Ordinary updated/resolved >= absolute-minute operands use the documented
+actor-local minute start and public aware timestamps, independently of DURING.
+This finite UI contract does not establish ordinary subsecond/index parity.
 """
 from __future__ import annotations
 
@@ -174,7 +178,20 @@ def _historical(tokens, zone, intervals):
     return matches
 
 
-def _ordinary(store, tokens, raw):
+def _ordinary_instant(issue, field):
+    key = "resolutiondate" if field in {"resolved", "resolutiondate"} else field
+    timestamps = issue.get("_timestamps")
+    if not isinstance(timestamps, dict) or key not in timestamps:
+        _error("required public ordinary timestamp is missing")
+    value = timestamps[key]
+    # A projected null resolution is known EMPTY; an absent or malformed field
+    # is unknown and must not turn the Workload fallback into a broad match.
+    if key == "resolutiondate" and value is None:
+        return None
+    return _instant(value)
+
+
+def _ordinary(store, tokens, raw, zone):
     field = _value(tokens[0]).casefold()
     if field == "parent":
         wanted = _parent_matches(store, raw, False)
@@ -210,6 +227,22 @@ def _ordinary(store, tokens, raw):
     elif field in _TEXT:
         valid = op == "~"
     elif field in _DATES:
+        if (field in {"resolved", "resolutiondate"} and op == "IS"
+                and values == ["EMPTY"] and rest[0].kind == "WORD"):
+            return lambda issue: _ordinary_instant(issue, field) is None
+        if len(values) == 1 and re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", values[0]):
+            if field not in {"updated", "resolved", "resolutiondate"} or op != ">=":
+                _error("unsupported ordinary minute field/operator")
+            try:
+                cutoff = datetime.strptime(values[0], "%Y-%m-%d %H:%M").replace(tzinfo=zone)
+            except ValueError:
+                _error("invalid ordinary minute date")
+            cutoff = cutoff.astimezone(timezone.utc)
+            # Jira 8.20 field/operator references document minute operands in
+            # the user's timezone and inclusive >=. No DURING bound expansion
+            # or pinned date-only predicate is involved in this comparison.
+            return lambda issue: ((value := _ordinary_instant(issue, field)) is not None
+                                  and value >= cutoff)
         valid = op in {"=", ">", ">=", "<", "<="} and len(values) == 1
         value = values[0]
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
@@ -277,7 +310,7 @@ def _membership(store, query, observed_until, zone):
                 if _value(tokens[0]).casefold() != "status":
                     _error("only status history is supported")
                 return _historical(tokens, zone, intervals)
-            return _ordinary(store, tokens, node.value)
+            return _ordinary(store, tokens, node.value, zone)
         predicates = [compile_node(child) for child in node.children]
         combine = all if isinstance(node, And) else any
         return lambda issue: combine(predicate(issue) for predicate in predicates)
@@ -318,7 +351,7 @@ class StatusHistoryInstallation:
             "during": "created<=operand2.upper AND nextChange>=operand1.lower+1000ms",
             "dayUpper": "23:59:59.000", "minuteUpper": ":59.000", "zeroDurationRows": "retained",
             "source": "public-created/current-status/serialized-status-changelog",
-            "ordinaryDates": "pinned date-only YYYY-MM-DD/-Nd/-Nw; no datetime/function/unit parity claim",
+            "ordinaryDates": "pinned date-only YYYY-MM-DD/-Nd/-Nw; updated/resolved/resolutiondate >= YYYY-MM-DD HH:mm uses actor-local minute start and public aware timestamps; resolved/resolutiondate IS EMPTY requires explicit public null",
             "unsupportedOrdinaryShapes": ["embedded comma lists", "escaped string literals",
                                           "date functions and subday/month/year relatives"],
             "nativeEvidence": {"coreUrl": CORE_URL, "coreSha256": CORE_SHA256,
