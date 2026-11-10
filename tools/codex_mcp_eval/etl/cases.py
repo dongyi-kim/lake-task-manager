@@ -6,7 +6,7 @@ from copy import deepcopy
 from tools.codex_mcp_eval.work_cases import OUTPUT_SCHEMA as BASE_SCHEMA
 
 SUITE = "codex-mcp-etl-year"
-BATTERY_VERSION = "2.1.1"
+BATTERY_VERSION = "2.1.2"
 PROMPT_VERSION = "codex-mcp-etl-year-v2.1.1"
 REFERENCE_DATE = "2026-11-10"
 
@@ -219,7 +219,10 @@ def review_contract(today=REFERENCE_DATE):
 from .checks import (build_expectations, check as _check, observed_sources, _rows_match, _number_equal, _at,
                      _public_report_findings, _unique_rows, _attach_reports, _report_rows_match, _complete_report_search, _normalized_public_text,
                      observed_ticket_inputs, ticket_inputs_match, _complete_epic_tree, _observed_result_keys, _result_keys_match,
-                     _field_fact, _require_report_status, _report_progress_row, _report_requirements, _catalog_reports,
+                     _field_fact, _require_report_status, _report_progress_row, _report_requirements, _catalog_reports, _optional_current_reports,
+                     _scope_only_activity_plan, _optional_period_empty_reports,
+                     _attach_lifecycle_expectations, _native_progress_expectations, _fresh_complete_native_data,
+                     _native_progress_route, _native_progress_scope, _native_progress_values_match, _dashboard_progress_matches,
                      _same_instant, field_facts_observed,
                      document_complete, evidence_collection, has_stalled_pagination, literal_source_records, source_observed)
 from .report_checks import (public_text, row_identity, merge_requirements, grounded_name,
@@ -228,7 +231,10 @@ from .oracle import EventOracle
 CHECKER_DEPENDENCIES = (check, _check, build_expectations, observed_sources, _rows_match, _number_equal, _at,
                         _public_report_findings, _unique_rows, _attach_reports, _report_rows_match, _complete_report_search, _normalized_public_text,
                         observed_ticket_inputs, ticket_inputs_match, _complete_epic_tree, _observed_result_keys, _result_keys_match,
-                        _field_fact, _require_report_status, _report_progress_row, _report_requirements, _catalog_reports,
+                        _field_fact, _require_report_status, _report_progress_row, _report_requirements, _catalog_reports, _optional_current_reports,
+                        _scope_only_activity_plan, _optional_period_empty_reports,
+                        _attach_lifecycle_expectations, _native_progress_expectations, _fresh_complete_native_data,
+                        _native_progress_route, _native_progress_scope, _native_progress_values_match, _dashboard_progress_matches,
                         _same_instant, field_facts_observed,
                         public_text, row_identity, merge_requirements, grounded_name,
                         match_findings, match_progress, report_contract,

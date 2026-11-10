@@ -208,6 +208,24 @@ class EtlFixture(EvaluationFixture):
         unsupported = raw.get("/rest/api/2/search", params={
             "jql": 'key = DL-21010 OR status WAS Open BY unsupportedActor'})
         assert unsupported.status_code == 400, unsupported.text
+        # Also exercise the observed broad monthly query: a singleton probe
+        # cannot expose an inconsistent history elsewhere in the full corpus.
+        # The independent oracle reads sourced status events, not this adapter.
+        start, end = self.bundle.spec.months[-1]
+        monthly_query = ('project = DL AND component = ETL AND issuetype != Epic '
+                         'AND status WAS IN ("In Progress", Reopened) '
+                         f'DURING ("{start.date()}", "{(end - timedelta(days=1)).date()}") ORDER BY key ASC')
+        monthly = raw.get("/rest/api/2/search", params={"jql": monthly_query, "maxResults": 500})
+        assert monthly.status_code == 200, monthly.text
+        monthly = monthly.json()
+        monthly_keys = {row["key"] for row in monthly["issues"]}
+        expected_monthly = set(self.bundle.oracle.active_development(start, end)) - self.store.denied_issue_keys
+        development = {event.issue_key for event in self.bundle.oracle.events
+                       if event.kind == "issue" and event.stream == "development"}
+        # Operations and VoC are also Tasks: the server returns candidates;
+        # their business classification remains a separate investigation step.
+        assert monthly_keys & development == expected_monthly
+        assert monthly["total"] == len(monthly_keys)
         for identity, page_id in self.document_ids.items():
             response = raw.get("/rest/api/content/" + page_id, params={"expand": "body.storage,version"})
             assert response.status_code == 200 and response.json()["title"] == self.bundle.documents[identity]["title"]
@@ -216,6 +234,8 @@ class EtlFixture(EvaluationFixture):
                 "dataManifest": deepcopy(self.bundle.manifest), "skillCondition": self.skill_condition,
                 "statusHistorySearch": {"contract": self.status_history_search.contract, "probes": probes,
                                         "unsupportedStatus": unsupported.status_code,
+                                        "monthlyActiveCount": len(monthly_keys & development),
+                                        "monthlyCandidateCount": len(monthly_keys),
                                         "currentUser": actor["name"], "timeZone": actor["timeZone"]},
                 "researchFiles": self.files is not None}
 

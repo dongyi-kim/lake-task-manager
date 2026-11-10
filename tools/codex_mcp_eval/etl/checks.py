@@ -104,20 +104,15 @@ def _report_requirements(bundle, snapshot, keys, at, knowledge_at, *, matches=()
         state = snapshot["issues"].get(key)
         if state is None:
             # Excluded module context can belong to another stream. Its report
-            # correspondence proves a candidate, not development progress.
-            visible = sorted(bundle.oracle._visible(at, knowledge_at, [key]),
-                             key=lambda event: (event.occurred_at, event.recorded_at, event.identity))
-            issue = next(event for event in visible if event.kind == "issue")
-            status = issue.payload.get("initial_status", "In Progress")
-            for event in visible:
-                if event.kind == "field" and event.payload["field"] == "status":
-                    status = event.payload["value"]
-            state = {"status": status, "sources": list(issue.sources)}
+            # finding asserts correspondence, not a Jira status or progress.
+            issue = next(event for event in bundle.oracle._visible(at, knowledge_at, [key])
+                         if event.kind == "issue")
+            state = {"sources": list(issue.sources)}
         requirements["requiredSources"] += [source for source in state["sources"]
             if bundle.public_sources[source]["kind"] == "jira_description"]
         if progress:
             requirements["requiredSources"] += state["progress"]["sources"]
-        _require_report_status(requirements, bundle, key, state, at, knowledge_at)
+            _require_report_status(requirements, bundle, key, state, at, knowledge_at)
     return requirements
 
 
@@ -151,6 +146,10 @@ def _catalog_reports(row, bundle, snapshot, matches, at, knowledge_at, view):
         add("progress", _report_progress_row(snapshot, key, view), requirements)
 
 
+def _scope_only_activity_plan(match):
+    return match["claim"]["stage"] == "plan" and "same_item_companion" in match["matched_dimensions"]
+
+
 def _attach_reports(row, bundle, at, *, keys, view, knowledge_at=None, revisions=False, include_decoy=False):
     snapshot = bundle.oracle.development(at, knowledge_at=knowledge_at)
     selected = set(keys)
@@ -170,11 +169,14 @@ def _attach_reports(row, bundle, at, *, keys, view, knowledge_at=None, revisions
             old_matches += [match for match in available_old if selected.intersection(match["candidate_keys"])]
     _catalog_reports(row, bundle, snapshot, available_matches, at, knowledge_at, view)
     all_matches = matches + old_matches
-    row["reportFindings"] = _unique_rows(row["reportFindings"] + _public_report_findings(bundle, all_matches))
+    row["reportFindings"] = _unique_rows(row["reportFindings"] + _public_report_findings(
+        bundle, [match for match in all_matches if not _scope_only_activity_plan(match)]))
     contract = row.setdefault("reportExpectations", {"taskProgress": {}, "knowledgeComparisons": {},
         "excludedTaskKeys": [], "correspondenceEvidence": "module/environment/function/deliverable/participant/release/period",
         "privateIntentIsEvidence": False, "titleSimilarityIsEnough": False,
         "acceptedEventsMeaning": "Unique reported acceptance events in this evidence/view; null when attribution or multiplicity is unresolved. Zero reported acceptances does not prove zero actual work or full completion."})
+    contract["optionalActivityPlans"] = _unique_rows(contract.get("optionalActivityPlans", []) +
+        _public_report_findings(bundle, [match for match in all_matches if _scope_only_activity_plan(match)]))
     for match in all_matches:
         row["requiredSources"] += match["proof_sources"]
         row["keys"] += match["candidate_keys"]
@@ -201,12 +203,202 @@ def _attach_reports(row, bundle, at, *, keys, view, knowledge_at=None, revisions
     return snapshot
 
 
+def _optional_period_empty_reports(row, bundle, snapshot, *, keys, at, knowledge_at, view):
+    """Allow selected public Task context with no attributed report claim in this view.
+
+    Zero counts reported acceptance events, never actual work or completion.
+    Ambiguous correspondence remains a claim and cannot become an empty row.
+    """
+    profiles = {event.issue_key for event in bundle.oracle._visible(at, knowledge_at, keys)
+                if event.kind == "issue" and event.payload.get("report_context")
+                and event.payload["type"] == "Task"}
+    attributed = {key for match in snapshot["report_correspondence"] for key in match["candidate_keys"]}
+    catalog = row.setdefault("reportCatalog", {"findings": [], "progress": []})
+    existing = {row_identity(entry["row"]) for entry in catalog["progress"]}
+    for key in sorted((set(keys) & profiles & snapshot["issues"].keys()) - attributed):
+        public_row = _report_progress_row(snapshot, key, view)
+        if public_row["acceptedEvents"] != 0 or any(public_row[field] for field in (
+                "implementation", "testAccepted", "finalAccepted", "planned")):
+            continue
+        if row_identity(public_row) not in existing:
+            catalog["progress"].append({"row": public_row, **_report_requirements(
+                bundle, snapshot, [key], at, knowledge_at, progress=True)})
+
+
+def _optional_current_reports(row, bundle, snapshot, *, keys, revisions=False, revision_cache=None):
+    """Allow labelled current context without adding period rows or mandatory reads."""
+    selected = set(keys)
+    matches = [match for match in snapshot["report_correspondence"]
+               if selected.intersection(match["candidate_keys"])]
+    cache = revision_cache if revision_cache is not None else {}
+    if revisions:
+        for old in snapshot["superseded_report_versions"]:
+            event = next(event for event in bundle.oracle.events if event.kind == "development_report"
+                and event.payload["document"] == old["document"] and event.payload["version"] == old["version"])
+            if event.recorded_at not in cache:
+                cache[event.recorded_at] = bundle.oracle.development(bundle.spec.observed_until,
+                                                                    knowledge_at=event.recorded_at)
+            matches += [match for match in cache[event.recorded_at]["report_correspondence"]
+                if match["document"] == old["document"] and match["version"] == old["version"]
+                and selected.intersection(match["candidate_keys"])]
+    temporary = {}
+    _catalog_reports(temporary, bundle, snapshot, matches, bundle.spec.observed_until, None, "current")
+    catalog = row.setdefault("reportCatalog", {"findings": [], "progress": []})
+    for kind, entries in temporary["reportCatalog"].items():
+        existing = {row_identity(entry["row"]) for entry in catalog[kind]}
+        # Findings have no view field. An identical required period finding must
+        # retain its existing proof, rather than silently acquiring a mandatory
+        # current-status read just because optional context was made available.
+        catalog[kind] += [entry for entry in entries if row_identity(entry["row"]) not in existing]
+
+
+def _attach_lifecycle_expectations(row, lifecycle):
+    """Keep substantive progress review/proof without unsolicited scalar metrics."""
+    row["lifecycleExpectations"] = deepcopy(lifecycle)
+    row["keys"] = sorted(set(row["keys"]) | set(lifecycle))
+    for progress in lifecycle.values():
+        row["requiredSources"] += progress["sources"]
+
+
+def _native_progress_expectations(bundle, snapshot, epic_keys, arithmetic_inputs, *, wbs=None):
+    """Independent current native values; never a subject-output or product reduction."""
+    epics = {}
+    for key in epic_keys:
+        children = [(child, state) for child, state in snapshot["issues"].items()
+                    if state.get("epic") == key and state["type"] != "Sub-Task"]
+        eligible = [(child, state) for child, state in children
+                    if state["type"] not in {"Bug", "Ops", "운영"}
+                    and bundle.world.issues[child]["component"] != "사용자 VoC"]
+        value = snapshot["epics"][key]
+        epics[key] = {"name": bundle.world.issues[key]["summary"], "doneSp": value["sp_done"],
+            "totalSp": value["sp_total"], "progressPct": value["percent"],
+            "mockSp": round(sum(1 if state["sp"] is None else state["sp"] for child, state in eligible
+                                if "mock" in bundle.world.issues[child].get("labels", [])), 1),
+            "countedIssues": len(eligible), "excludedIssues": len(children) - len(eligible)}
+    contract = {"view": "current", "epics": epics, "arithmeticKeys": sorted(arithmetic_inputs),
+                "arithmeticTicketInputs": deepcopy(arithmetic_inputs)}
+    if wbs is not None:
+        row = snapshot["wbs"][wbs]
+        contract["wbs"] = {"id": wbs, "weights": deepcopy(row["epic_weights"]), "progressPct": row["percent"]}
+    return contract
+
+
+def _fresh_complete_native_data(call):
+    result = call.get("result") or {}
+    if not isinstance(result, dict):
+        return None
+    cache, data = result.get("cache"), result.get("data")
+    if (call.get("isError") or result.get("ok") is not True or result.get("partial") is not False
+            or type(result.get("missing")) is not int or result["missing"] != 0
+            or not isinstance(cache, dict) or cache.get("available") is not True
+            or cache.get("state") != "fresh" or cache.get("invalidated") is not False
+            or not isinstance(data, dict) or data.get("partial") or data.get("missing")
+            or data.get("missingKeys") or data.get("errors") or data.get("hasMore")
+            or data.get("complete") is False or data.get("sourceComplete") is False or data.get("incompleteReason")):
+        return None
+    return data
+
+
+def _native_progress_values_match(data, wanted):
+    return (isinstance(data, dict) and data.get("name") == wanted["name"]
+        and all(type(data.get(name)) in (int, float) and _number_equal(data[name], wanted[name])
+                for name in ("doneSp", "totalSp", "progressPct", "mockSp")))
+
+
+def _dashboard_progress_matches(call, contract):
+    # The actual MCP contract requires kind; there is no implicit WBS default.
+    if call.get("name") != "get_dashboard" or (call.get("arguments") or {}).get("kind") != "wbs":
+        return False
+    data = _fresh_complete_native_data(call)
+    if data is None or not isinstance(data.get("epics"), dict):
+        return False
+    for key, wanted in contract["epics"].items():
+        entry = data["epics"].get(key)
+        if not _native_progress_values_match(entry, wanted) or entry.get("key") != key:
+            return False
+    wanted_wbs = contract.get("wbs")
+    if wanted_wbs is not None:
+        rows = data.get("wbs")
+        if not isinstance(rows, list):
+            return False
+        rows = [row for row in rows if isinstance(row, dict) and row.get("id") == wanted_wbs["id"]]
+        if (len(rows) != 1 or type(rows[0].get("progressPct")) not in (int, float)
+                or not _number_equal(rows[0]["progressPct"], wanted_wbs["progressPct"])):
+            return False
+        parts = rows[0].get("epics")
+        if not isinstance(parts, list) or any(not isinstance(part, dict) for part in parts):
+            return False
+        indexed = {part.get("epicKey"): part for part in parts if isinstance(part.get("epicKey"), str)}
+        if len(indexed) != len(parts) or indexed.keys() != wanted_wbs["weights"].keys():
+            return False
+        if not all(type(indexed[key].get("weight")) in (int, float)
+                   and type(indexed[key].get("epicPct")) in (int, float)
+                   and _number_equal(indexed[key]["weight"], weight)
+                   and _number_equal(indexed[key]["epicPct"], contract["epics"][key]["progressPct"])
+                   for key, weight in wanted_wbs["weights"].items()):
+            return False
+    return True
+
+
+def _native_progress_route(calls, contract, field_ids):
+    epics = contract.get("epics", {})
+    if contract.get("view") != "current" or not epics:
+        return False
+    complete = [call for call in calls if _fresh_complete_native_data(call) is not None]
+    if any(_dashboard_progress_matches(call, contract) for call in complete):
+        return True
+    identities = {key: {"summary": wanted["name"], "type": "Epic"} for key, wanted in epics.items()}
+    # Reuse every already-supported typed metadata location, including search
+    # rows. The existing extractor never promotes arbitrary references/prose.
+    if not ticket_inputs_match(complete, identities, field_ids):
+        return False
+    for key, wanted in epics.items():
+        def matches(call):
+            argument = (call.get("arguments") or {}).get("key")
+            if (call.get("name") != "get_epic_progress" or not isinstance(argument, str)
+                    or argument.strip().upper() != key):
+                return False
+            data = call["result"]["data"]
+            return (_native_progress_values_match(data, wanted)
+                and all(type(data.get(name)) is int and data[name] >= 0 and data[name] == wanted[name]
+                        for name in ("countedIssues", "excludedIssues")))
+        if not any(matches(call) for call in complete):
+            return False
+    return True
+
+
+def _native_progress_scope(expected):
+    contract = expected["nativeProgressEvidence"]
+    keys = set(expected["keys"]) - set(contract["arithmeticKeys"])
+    # Native arithmetic never discharges report/context membership or proof.
+    keys.update(row["key"] for row in expected["reportProgress"])
+    keys.update(key for row in expected["reportFindings"] for key in row["candidateKeys"])
+    inputs = deepcopy(expected["requiredTicketInputs"])
+    for key, arithmetic in contract["arithmeticTicketInputs"].items():
+        inputs[key] = {name: value for name, value in inputs.get(key, {}).items()
+                       if name not in arithmetic or value != arithmetic[name]}
+        if not inputs[key]:
+            inputs.pop(key)
+    for row in expected["reportProgress"]:
+        if row["view"] == "current":
+            inputs.setdefault(row["key"], {})["status"] = row["jiraStatus"]
+    return keys, inputs
+
+
 def build_expectations(bundle):
     oracle, events = bundle.oracle, bundle.oracle.events
     start, end = bundle.spec.months[0]
     now = bundle.spec.observed_until
     issues = {event.issue_key: event for event in events if event.kind == "issue"}
     result = {}
+    current_report_snapshot, current_revision_cache = None, {}
+
+    def current_report_context(row, *, revisions=False):
+        nonlocal current_report_snapshot
+        if current_report_snapshot is None:
+            current_report_snapshot = oracle.development(now)
+        _optional_current_reports(row, bundle, current_report_snapshot, keys=row["keys"],
+                                  revisions=revisions, revision_cache=current_revision_cache)
 
     def new(family, variant, keys=(), sources=(), *, distinctions=(), unknown=False):
         row = {"keys": sorted(set(keys)), "measurements": [], "denominators": [],
@@ -250,6 +442,7 @@ def build_expectations(bundle):
             report_snapshot = _attach_reports(row, bundle, b if variant == "normal" else _at("2026-11-01"),
                 keys=report_keys, view="as-of-" + right if variant == "normal" else "2026-10-end",
                 revisions=variant == "boundary", include_decoy=variant == "boundary")
+            current_report_context(row, revisions=variant == "boundary")
             for stream in ("development", "operations", "simple_voc"):
                 observed = {e.issue_key for e in records if e.stream == stream}
                 if stream == "development":
@@ -260,11 +453,19 @@ def build_expectations(bundle):
                 measure(row, stream, left if family == 1 else left + "/" + right, "activity_tickets",
                         None if stream == "development" and variant == "boundary" else len(observed), "tickets")
                 row["keys"] += list(observed)
+            _optional_period_empty_reports(row, bundle, report_snapshot, keys=row["keys"],
+                at=b if variant == "normal" else _at("2026-11-01"), knowledge_at=None,
+                view="as-of-" + right if variant == "normal" else "2026-10-end")
     for variant, keys in (("normal", ["DL-21743", "DL-21744"]),
                           ("boundary", ["DL-21745", "DL-21747", "DL-21749"])):
         row = new(2, variant, distinctions=("weekly report vs actual occurrence", "ambiguous matching and undated duplicate"))
-        _attach_reports(row, bundle, _at("2026-10-26" if variant == "normal" else "2026-11-01"), keys=keys,
+        report_at = _at("2026-10-26" if variant == "normal" else "2026-11-01")
+        report_view = "as-of-2026-10-26" if variant == "normal" else "2026-10-end"
+        report_snapshot = _attach_reports(row, bundle, report_at, keys=keys,
                         view="as-of-2026-10-26" if variant == "normal" else "2026-10-end")
+        _optional_period_empty_reports(row, bundle, report_snapshot, keys=row["keys"],
+                                      at=report_at, knowledge_at=None, view=report_view)
+        current_report_context(row)
         measure(row, "development", "2026-10-19/2026-10-26", "activity_tickets", 2 if variant == "normal" else None, "tickets")
     for variant, month in (("normal", 0), ("boundary", 11)):
         a, b = bundle.spec.months[month]
@@ -284,20 +485,17 @@ def build_expectations(bundle):
         if variant == "boundary":
             lifecycle_keys = {key for keys in bundle.manifest["development_lifecycle_coverage"].values() for key in keys}
             lifecycle = {key: value["progress"] for key, value in oracle.development(b)["issues"].items() if key in lifecycle_keys}
-            row["lifecycleExpectations"] = deepcopy(lifecycle)
-            row["keys"] = sorted(set(row["keys"]) | set(lifecycle))
-            for key, progress in lifecycle.items():
-                row["requiredSources"] += progress["sources"]
-                item_scope = key + "@2026-10-end"
-                measure(row, "development", item_scope, "verified_deliverables",
-                        len(progress["completed_deliverables"]), "deliverables")
+            _attach_lifecycle_expectations(row, lifecycle)
             row["mustDiscloseUncertainty"] = True
             row["distinctions"] += ["created vs started", "verified deliverables vs arbitrary overall percent",
                 "substantive activity vs administrative updated", "reopened acceptance withdrawal",
                 "historical contributor vs current assignee", "dependency wait vs implementation completion"]
             report_keys = sorted({key for match in oracle.development(b)["report_correspondence"] for key in match["candidate_keys"]
                                   if bundle.world.issues[key]["component"] == "ETL"})
-            _attach_reports(row, bundle, b, keys=report_keys, view="2026-10-end", revisions=True, include_decoy=True)
+            report_snapshot = _attach_reports(row, bundle, b, keys=report_keys, view="2026-10-end", revisions=True, include_decoy=True)
+            _optional_period_empty_reports(row, bundle, report_snapshot, keys=row["keys"],
+                                          at=b, knowledge_at=None, view="2026-10-end")
+        current_report_context(row, revisions=variant == "boundary")
 
     for family in (4, 5, 6, 7):
         for variant in ("normal", "boundary"):
@@ -320,6 +518,10 @@ def build_expectations(bundle):
                 task_keys = [key for key in keys if snapshot["issues"][key]["type"] != "Epic"]
                 row["requiredTicketInputs"] = ticket_inputs(task_keys, ("sp", "type", "epic", "status", "component") if at == now else ("sp", "type", "epic", "created_date"))
                 row["requiredSources"] = proof(task_keys, kinds={"field"}, field_names={"status", "parent", "epic"}) if at != now else []
+                if at == now:
+                    row["nativeProgressEvidence"] = _native_progress_expectations(bundle, snapshot,
+                        list(weights) if family == 4 else [epic_key], row["requiredTicketInputs"],
+                        wbs="ETL-1" if family == 4 else None)
             if family == 4:
                 mapping = [e for e in events if e.kind == "mapping" and e.occurred_at < at]
                 required_mapping = max(mapping, key=lambda e: e.occurred_at)
@@ -831,7 +1033,11 @@ def check(case, output, calls, ground_truth=None):
         failures.append("unapproved_tool_used")
     if has_stalled_pagination(output.get("mcpToolCalls") or calls):
         failures.append("read_continuation_not_advancing")
-    if not _result_keys_match(answer.get("resultKeys"), expected["keys"], calls, truth.get("ticketFieldIds", {})):
+    required_keys, required_inputs = expected["keys"], expected["requiredTicketInputs"]
+    if expected.get("nativeProgressEvidence") and _native_progress_route(
+            calls, expected["nativeProgressEvidence"], truth.get("ticketFieldIds", {})):
+        required_keys, required_inputs = _native_progress_scope(expected)
+    if not _result_keys_match(answer.get("resultKeys"), required_keys, calls, truth.get("ticketFieldIds", {})):
         failures.append("result_scope_mismatch")
     if not _rows_match(answer.get("measurements"), expected["measurements"], ("stream", "scope", "metric", "unit"), ("value",)):
         failures.append("measurement_mismatch")
@@ -843,8 +1049,9 @@ def check(case, output, calls, ground_truth=None):
         failures.append("report_correspondence_or_claim_mismatch")
     if not progress_ok:
         failures.append("report_progress_stage_or_duplicate_mismatch")
-    required_evidence = merge_requirements({name: deepcopy(expected[name]) for name in (
-        "requiredSources", "requiredTicketInputs", "requiredFieldFacts")}, report_requirements)
+    required_evidence = merge_requirements({"requiredSources": deepcopy(expected["requiredSources"]),
+        "requiredTicketInputs": deepcopy(required_inputs),
+        "requiredFieldFacts": deepcopy(expected["requiredFieldFacts"])}, report_requirements)
     if not ticket_inputs_match(calls, required_evidence["requiredTicketInputs"], truth.get("ticketFieldIds", {})):
         failures.append("required_typed_inputs_not_observed")
     if not field_facts_observed(calls, required_evidence["requiredFieldFacts"], truth.get("publicSources", {})):

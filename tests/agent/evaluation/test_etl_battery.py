@@ -23,7 +23,7 @@ def bundle():
 def test_new_battery_has_exactly_fourteen_normal_boundary_families():
     cases = battery()
     assert cases.SUITE == "codex-mcp-etl-year"
-    assert cases.BATTERY_VERSION == "2.1.1"
+    assert cases.BATTERY_VERSION == "2.1.2"
     assert len(cases.CASES) == 28
     assert {row["family"] for row in cases.CASES} == {f"F{i:02}" for i in range(1, 15)}
     assert all({r["variant"] for r in cases.CASES if r["family"] == family} == {"normal", "boundary"}
@@ -280,6 +280,12 @@ def test_fixture_serves_only_public_world_and_both_document_versions(tmp_path, b
         assert fixture.files.list_files()["files"] == []
         proof = fixture.assert_conformance()
         assert proof["cacheWarmed"] is False
+        history_proof = proof["statusHistorySearch"]
+        assert history_proof["currentUser"] == "etl.user00" and history_proof["timeZone"] == "Asia/Seoul"
+        assert [row["keys"] for row in history_proof["probes"]] == [["DL-21010"], []]
+        assert history_proof["unsupportedStatus"] == 400
+        assert history_proof["monthlyActiveCount"] == 108
+        assert history_proof["contract"]["nativeEvidence"]["liveServerOrPluginParityTested"] is False
         raw = fixture.provider._client
         page_id = fixture.document_ids["etl-monthly-2025-11"]
         first = raw.get("/rest/api/content/" + page_id, params={"version": 1, "expand": "body.storage,version"}).json()
