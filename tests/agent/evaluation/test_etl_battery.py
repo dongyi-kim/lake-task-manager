@@ -400,21 +400,25 @@ def test_failed_group_audit_rejects_starting_another_group_first():
 
 def test_shared_runner_selects_etl_without_changing_old_work_battery():
     from tools.codex_mcp_eval import runner
-    options = runner.parse_args(["--battery", "etl", "--cases", "ETL-F08-normal"])
+    from tools.codex_mcp_eval.etl.cases import REFERENCE_DATE
+    options = runner.parse_args(["--battery", "etl", "--date", REFERENCE_DATE, "--cases", "ETL-F08-normal"])
     assert options.research_files is True
     selected = runner._battery("etl", "2026-11-10")
     assert selected.SUITE == battery().SUITE and len(selected.CASES) == 28
     old = runner._battery("work", "2026-11-09")
     assert old.SUITE == "codex-mcp-work" and old.BATTERY_VERSION == "4.0.0" and len(old.CASES) == 22
     from tools.codex_mcp_eval.etl.qualification import REPRESENTATIVE_CASE_IDS
-    pilot = runner.parse_args(["--battery", "etl", "--etl-phase", "pilot", "--etl-arm", "C"])
+    pilot = runner.parse_args(["--battery", "etl", "--date", REFERENCE_DATE,
+                               "--etl-phase", "pilot", "--etl-arm", "C"])
     assert set(pilot.cases) == set(REPRESENTATIVE_CASE_IDS) and pilot.skill_condition == "candidate"
     with pytest.raises(SystemExit):
         runner.parse_args(["--battery", "etl", "--date", "2026-11-09"])
     with pytest.raises(SystemExit):
-        runner.parse_args(["--battery", "etl", "--etl-phase", "pilot", "--etl-arm", "B", "--cases", "ETL-F08-normal"])
+        runner.parse_args(["--battery", "etl", "--date", REFERENCE_DATE,
+                           "--etl-phase", "pilot", "--etl-arm", "B", "--cases", "ETL-F08-normal"])
     with pytest.raises(SystemExit):
-        runner.parse_args(["--battery", "etl", "--recovery-scenario", "between-pages"])
+        runner.parse_args(["--battery", "etl", "--date", REFERENCE_DATE,
+                           "--recovery-scenario", "between-pages"])
 
 
 def test_shared_runner_etl_launch_uses_real_http_evidence_and_equal_files(tmp_path):
@@ -423,6 +427,7 @@ def test_shared_runner_etl_launch_uses_real_http_evidence_and_equal_files(tmp_pa
     from mcp import Client
     from mcp.client.streamable_http import streamable_http_client
     from tools.codex_mcp_eval import runner
+    from tools.codex_mcp_eval.etl.cases import REFERENCE_DATE
     from tools.codex_mcp_eval.etl.fixture import EtlFixture
     runtime_paths, model_paths = [], []
     def fixture(path, **kwargs):
@@ -452,7 +457,8 @@ def test_shared_runner_etl_launch_uses_real_http_evidence_and_equal_files(tmp_pa
                       {"kind": "ticket", "id": "DL-21001", "url": "http://127.0.0.1:8080/browse/DL-21001"}]}
         return {"ok": True, "reply": answer["reply"], "structuredAnswer": answer, "events": [],
                 "durationSeconds": 1, "usage": {"promptTokens": 10, "completionTokens": 2, "totalTokens": 12}}
-    arguments = ["--battery", "etl", "--cases", "ETL-F07-normal", "--codex", "offline-stub",
+    arguments = ["--battery", "etl", "--date", REFERENCE_DATE,
+        "--cases", "ETL-F07-normal", "--codex", "offline-stub",
         "--output-root", str(tmp_path / "raw"), "--run-group", "etl-offline-http"]
     dependencies = dict(cli_run=cli_run, fixture_factory=fixture,
                         identity_fn=lambda *a, **k: {"runtime": "offline-test", "version": "test"})
