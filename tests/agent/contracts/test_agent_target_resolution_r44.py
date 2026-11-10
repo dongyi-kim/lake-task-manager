@@ -366,9 +366,22 @@ def _provider_child(key: str, category: str) -> dict:
     }
 
 
-def test_jira_child_snapshot_reads_parent_relation_and_exact_current_statuses():
+@pytest.fixture
+def jira_snapshot_client(tmp_path):
+    from app.infra.cache import Cache
+    from app.infra.settings import get_settings
     from app.jira.jira_client import JiraClient
 
+    cache = Cache(tmp_path / "snapshot.sqlite3")
+    client = JiraClient(get_settings(), cache)
+    try:
+        yield client
+    finally:
+        client.close()
+        cache.close()
+
+
+def test_jira_child_snapshot_reads_parent_relation_and_exact_current_statuses(jira_snapshot_client):
     calls = []
 
     def get_json(path, params=None, **_kwargs):
@@ -384,7 +397,7 @@ def test_jira_child_snapshot_reads_parent_relation_and_exact_current_statuses():
             _provider_child("DL-9095", "indeterminate"),
         ]}
 
-    client = object.__new__(JiraClient)
+    client = jira_snapshot_client
     client._provider = SimpleNamespace(get_json=get_json)
     client._provider_built = True
 
@@ -396,9 +409,7 @@ def test_jira_child_snapshot_reads_parent_relation_and_exact_current_statuses():
     assert len(calls) == 2
 
 
-def test_jira_child_snapshot_fails_closed_on_partial_or_wrong_batch_identity():
-    from app.jira.jira_client import JiraClient
-
+def test_jira_child_snapshot_fails_closed_on_partial_or_wrong_batch_identity(jira_snapshot_client):
     def get_json(path, params=None, **_kwargs):
         if path.endswith("/issue/DL-9090"):
             return {"key": "DL-9090", "fields": {
@@ -410,7 +421,7 @@ def test_jira_child_snapshot_fails_closed_on_partial_or_wrong_batch_identity():
             _provider_child("DL-9999", "indeterminate"),
         ]}
 
-    client = object.__new__(JiraClient)
+    client = jira_snapshot_client
     client._provider = SimpleNamespace(get_json=get_json)
     client._provider_built = True
 
@@ -420,10 +431,8 @@ def test_jira_child_snapshot_fails_closed_on_partial_or_wrong_batch_identity():
     assert got["incompleteReason"] == "wrong_or_duplicate_child"
 
 
-def test_jira_child_snapshot_requires_exact_parent_identity():
-    from app.jira.jira_client import JiraClient
-
-    client = object.__new__(JiraClient)
+def test_jira_child_snapshot_requires_exact_parent_identity(jira_snapshot_client):
+    client = jira_snapshot_client
     client._provider = SimpleNamespace(get_json=lambda *_args, **_kwargs: {
         "fields": {"issuetype": {"name": "Task"}, "subtasks": []},
     })

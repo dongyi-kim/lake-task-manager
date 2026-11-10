@@ -17,15 +17,20 @@ def test_real_tree_partial_reads_remain_retryable_and_recover(build_env, monkeyp
     env = build_env()
     parent = env.client.create_child(None, parent_type, "partial root", labels=["PMO_VIT"])["key"]
     child = env.client.create_child(parent, child_type, "visible after recovery")["key"]
-    original = env.client.get_issue_light
+    # Keep the relationship known while forcing the child through the provider. A new
+    # Epic membership search would otherwise repopulate the very row being denied.
+    assert env.client.direct_child_keys(parent, parent_type=parent_type) == [child]
+    env.cache.forget_prefixes((f"issue:{env.client.env}:{child}",
+                               f"issueL:{env.client.env}:{child}"))
+    original = env.provider.get_json
     blocked = True
 
-    def read(key, *args, **kwargs):
-        if key == child and blocked:
+    def read(path, *args, **kwargs):
+        if path == f"/rest/api/2/issue/{child}" and blocked:
             raise PermissionDenied("child temporarily invisible")
-        return original(key, *args, **kwargs)
+        return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(env.client, "get_issue_light", read)
+    monkeypatch.setattr(env.provider, "get_json", read)
 
     async def scenario():
         nonlocal blocked
@@ -61,14 +66,18 @@ def test_partial_refresh_keeps_complete_epic_cache_and_original_age(build_env, m
     with env.cache._lock:
         env.cache._conn.execute("UPDATE cache SET fetched_at=? WHERE key=?", (fetched, key))
         env.cache._conn.commit()
-    original = env.client.get_issue_light
+    # The complete tree already primed membership. Remove both child projections so
+    # the refresh must observe the provider failure instead of a valid cache hit.
+    env.cache.forget_prefixes((f"issue:{env.client.env}:{child}",
+                               f"issueL:{env.client.env}:{child}"))
+    original = env.provider.get_json
 
-    def read(issue_key, *args, **kwargs):
-        if issue_key == child:
+    def read(path, *args, **kwargs):
+        if path == f"/rest/api/2/issue/{child}":
             raise PermissionDenied("child temporarily invisible")
-        return original(issue_key, *args, **kwargs)
+        return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(env.client, "get_issue_light", read)
+    monkeypatch.setattr(env.provider, "get_json", read)
     env.client.miss_begin()
     assert env.client.epic_tree(parent) == complete
     assert env.client.miss_count() > 0

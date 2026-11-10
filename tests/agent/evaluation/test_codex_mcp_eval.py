@@ -283,10 +283,44 @@ def test_runner_retains_real_sdk_page_trace_and_isolation_without_calling_llm(tm
     if warm:
         replay = record["warmReplay"]
         assert replay["uniqueCalls"] == 3 and len(replay["reads"]) == 9
-        assert all(row["ok"] and row["dataByteIdentical"] for row in replay["reads"])
+        assert all(row["ok"] and row["businessDataIdentical"] for row in replay["reads"])
+        for row in replay["reads"]:
+            execution = row["executionDiagnostics"]
+            assert execution["replay"]["physicalQueryCount"] == 0
+            if row["arguments"]["start_at"] == 0:
+                assert execution["original"]["physicalQueryCount"] == 1
+                assert not row["dataByteIdentical"]
+            else:
+                assert execution["original"]["physicalQueryCount"] == 0
+                assert row["dataByteIdentical"]
         assert sum(row["upstreamRequests"] for row in replay["reads"]) == 0
+        assert sum(row["upstreamDurationSeconds"] for row in replay["reads"]) == 0
     else:
         assert record["warmReplay"] is None
     assert result["metrics"]["calls"] is None and result["humanReview"]["status"] == "pending"
     with pytest.raises(FileExistsError):
         runner.launch(args, cli_run=lambda *a, **k: pytest.fail("duplicate paid attempt"), fixture_factory=fixture, identity_fn=identity)
+
+
+def test_warm_replay_business_comparison_excludes_only_search_dispatch_count():
+    from copy import deepcopy
+    from tools.codex_mcp_eval.warm_replay import _business_data
+
+    cold = {"issues": [{"key": "DL-1", "fields": {"summary": "original"}}], "total": 1,
+            "execution": {"physicalQueryCount": 1, "effectiveStrategy": "auto"}}
+    warm = deepcopy(cold)
+    warm["execution"]["physicalQueryCount"] = 0
+    assert warm != cold
+    assert _business_data("search_issues", warm) == _business_data("search_issues", cold)
+    assert cold["execution"]["physicalQueryCount"] == 1
+    assert warm["execution"]["physicalQueryCount"] == 0
+
+    for changed in (
+        {**warm, "total": 2},
+        {**warm, "issues": [{"key": "DL-2", "fields": {"summary": "original"}}]},
+        {**warm, "issues": [{"key": "DL-1", "fields": {"summary": "changed"}}]},
+        {**warm, "execution": {**warm["execution"], "effectiveStrategy": "off"}},
+    ):
+        assert _business_data("search_issues", changed) != _business_data("search_issues", cold)
+    # Another tool may use execution as business data; it gets no search exception.
+    assert _business_data("get_ticket", warm) != _business_data("get_ticket", cold)
