@@ -71,6 +71,7 @@ Operations distinguish request tickets, completed tickets, requested targets, co
 
 ### #189
 
+- Workspace discovery uses a bounded first page, including the server's smaller page cap. A preview is never published as exhaustive membership. It may reuse already complete whole-query or decomposed memberships only when all required cached rows, ordering fields, source ages and generation proofs are available; a cache miss does not trigger full hydration. Exact ticket-number candidates across configured projects are batched separately while retaining priority and visibility filtering.
 - strategy: auto/off/people/full; max_parts integer 1..64, default 64. No redundant decomposition boolean.
 - Distinguish logical leaves, unique physical JQL groups, HTTP pages and concurrency. The physical-query budget includes hydration and fallback, excluding repeated pages/retries of the same query.
 - Plan once and pass the execution plan through search/snapshot creation. Reuse proven cache coverage, deduplicate missing keys and batch the remainder without extra cost-estimation probes.
@@ -118,6 +119,10 @@ Fourteen families, each normal/boundary: daily, weekly, monthly; WBS, Epic, Task
 Hard gates: required automatic contracts 100%; material false completion/count/contribution/freshness and unauthorized writes 0; direct review mean >=4.5/5 per stream, no averaging away major defects. All strategy keys/order/total agree; no incomplete-success cache entries. Fully covered valid hits have zero business-data REST requests. Equivalent-quality deterministic empty/expired/mutated/recovery requests do not increase versus H; predefined overlap/reuse cases strictly improve. UI p95 regression exceeding max(100ms,10%) prevents default promotion. Efficiency claims require observed paired data; disclose missing usage and per-stream results.
 
 ## Rollout and recovery record
+
+Post-pilot repairs preserve the original results and create a new prospective condition: ETL main/recovery contracts are 3.0.0; the shared work checker is 4.0.0. The host accepts only bounded equivalent evidence, clarifies module/environment scope independently of period relevance, and retains the actual undated-plan failures. Candidate skills are 0.1.9. The versioned evidence wire format retains exact content/history/non-actor metadata and supplied actor identity fields while excluding actor profile presentation fields; raw caches remain unchanged. This transport optimization belongs to the remaining public/resource A package and must be disclosed when attributing H-to-F+A effects. Unknown wire formats fail closed; supported-format chunk changes require restarting the affected record.
+
+Prospective formal deadline amendment after the retained A/B/C pilots: use 1,200 seconds per model invocation uniformly across A/B/C, including each recovery phase, with the existing 90-second preflight. Outer limits are 36,000 seconds for A/C 28-case batches, 9,000 for B's six cases, and 3,000 for a two-phase recovery case. This is headroom for necessary evidence reading and final delivery, not a measured minimum or an efficiency claim. Preserve every original 600-second attempt, its failures and unknown usage; do not extend an attempt in flight or automatically retry until passing. The separate application 35-second inactivity responsiveness requirement remains unchanged. Update and verify the actual launcher arguments and recorded conditions before formal execution.
 
 Order: baseline/metrics → world/oracle/battery → equivalent refactor → #188/#189 → #190 and pilot → first complete round/direct review → staged initial release → five-repeat qualification.
 
