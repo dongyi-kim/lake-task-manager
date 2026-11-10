@@ -1,4 +1,5 @@
 // Request activity is independent of the server's incomplete-data flags.
+import { reactive } from "../../vendor/vue.esm-browser.prod.js";
 import { cloneTaskModel, reconcileTaskModel, TASK_RETRY_DELAYS, retryDelay,
   taskLoadErrorKind } from "./taskModel.js";
 
@@ -6,7 +7,7 @@ export const childSyncBusy = (state) => ["queued", "loading", "retrying"].includ
 
 export async function hydrateTaskGroups({ model, loadGroup, isCurrent, canStart, publish,
   onStates, onFailure, keys, wait = retryDelay }) {
-  let working = cloneTaskModel(model);
+  let working = reactive(cloneTaskModel(model));
   const syncId = working.syncId;
   let sequence = Number(working.snapshotSequence) || 0;
   const selected = keys && new Set(keys);

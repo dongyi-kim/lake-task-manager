@@ -62,6 +62,18 @@ async function fetchWithAuth(path, options) {
   throw authError(b, recovery);
 }
 
+// Body readers and retry waits must share fetch's cancellation/deadline, even if a transport
+// has already delivered its headers or does not promptly reject on abort.
+function withinRequest(pending, signal) {
+  return new Promise((resolve, reject) => {
+    const abort = () => finish(reject, signal.reason || new DOMException('Aborted', 'AbortError'));
+    const finish = (settle, value) => { signal.removeEventListener('abort', abort); settle(value); };
+    signal.addEventListener('abort', abort, { once: true });
+    Promise.resolve(pending).then(value => finish(resolve, value), error => finish(reject, error));
+    if (signal.aborted) abort();
+  });
+}
+
 async function req(path, opts) {
   // 브라우저 fetch 기본값은 무한 대기다. 서버/SSO worker 가 비정상 상태여도 화면의 버튼과
   // 새로고침은 다시 눌릴 수 있어야 하므로 모든 요청에 상한을 둔다. 로그인·업로드처럼 사람이
@@ -81,10 +93,56 @@ async function req(path, opts) {
     else callerSignal.addEventListener("abort", abortFromCaller, { once: true });
   }
   o.signal = ctl.signal;
+  const read = !mutation && /^(GET|HEAD)$/.test(String(o.method || 'GET').toUpperCase());
   const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, timeoutMs);
   let r;
   try {
-    r = await fetchWithAuth(path, o);
+    for (let attempt = 0; ; attempt++) {
+      ctl.signal.throwIfAborted();
+      // Auth recovery owns its abort classification (in particular a rejected write).
+      r = await fetchWithAuth(path, o);
+      ctl.signal.throwIfAborted();
+      if (r.ok) break;
+      let body = {};
+      try { body = await withinRequest(r.clone().json(), ctl.signal); }
+      catch (error) { if (ctl.signal.aborted) throw error; } // non-JSON rejection
+      if (attempt === 0 && read && r.status === 503 && body?.code === 'query_state_changed'
+          && body.retryable === true && body.needLogin === false && !body.uncertain) {
+        // This is an invalidated read, never a write replay or a general 503 retry.
+        const after = r.headers?.get?.('Retry-After');
+        const seconds = after != null && /^\d+$/.test(after.trim()) ? Number(after) : NaN;
+        const date = after != null ? Date.parse(after) : NaN;
+        const delay = Number.isFinite(seconds) ? seconds * 1000
+          : Number.isFinite(date) ? Math.max(0, date - Date.now()) : 1000;
+        let retryTimer;
+        try {
+          await withinRequest(new Promise(resolve => {
+            // The original timer owns expiry. Rounding a remaining-time sleep can wake
+            // slightly before that timer and accidentally start another request at the limit.
+            retryTimer = setTimeout(resolve, Math.min(delay, timeoutMs));
+          }), ctl.signal);
+        } finally { clearTimeout(retryTimer); }
+        continue;
+      }
+      const error = new Error((body && (body.error || body.detail)) || 'HTTP ' + r.status);
+      error.status = r.status;
+      error.code = body?.code; error.needLogin = !!body?.needLogin;
+      error.retryable = !!body?.retryable; error.uncertain = !!body?.uncertain;
+      error.reason = body?.reason; error.service = body?.service;
+      throw error;
+    }
+    const revisionHeader = r.headers?.get?.('X-LTM-Policy-Revision');
+    if (path !== '/api/prefs' && revisionHeader != null && Number(revisionHeader) !== policyRevision && !policyRefresh) {
+      policyRefresh = req('/api/prefs').then(p => applyPrefs(p)).catch(() => {}).finally(() => { policyRefresh = null; });
+    }
+    if (onCacheMetadata && r.headers?.get) {
+      const number = (key) => { const v = r.headers.get('X-LTM-' + key); return v ? Number(v) : undefined; };
+      onCacheMetadata({ fetchedAt: number('Comments-Fetched-At') ?? number('Fetched-At'), freshUntil: number('Fresh-Until'),
+                        displayUntil: number('Display-Until'),
+                        commentsComplete: number('Comments-Complete'), commentsTotal: number('Comments-Total'),
+                        displayKind: r.headers.get('X-LTM-Display-Kind') || undefined });
+    }
+    return await withinRequest(r.json(), ctl.signal);
   } catch (e) {
     if (timedOut) {
       const read = /^(GET|HEAD)$/.test(String(o.method || 'GET').toUpperCase());
@@ -101,29 +159,6 @@ async function req(path, opts) {
     clearTimeout(timer);
     if (callerSignal) callerSignal.removeEventListener("abort", abortFromCaller);
   }
-  if (!r.ok) {
-    // 서버가 남긴 이유를 그대로 올린다 — 'HTTP 502' 만 보여 주면 사용자도 우리도 알 수 없다.
-    let msg = "", body = {};
-    try { body = await r.clone().json(); msg = (body && (body.error || body.detail)) || ""; } catch (e) { /* 본문이 JSON 이 아님 */ }
-    const error = new Error(msg || "HTTP " + r.status);
-    error.status = r.status;
-    error.retryable = !!(body && body.retryable);
-    error.uncertain = !!(body && body.uncertain);
-    error.reason = body?.reason; error.service = body?.service;
-    throw error;
-  }
-  const revisionHeader = r.headers?.get?.('X-LTM-Policy-Revision');
-  if (path !== '/api/prefs' && revisionHeader != null && Number(revisionHeader) !== policyRevision && !policyRefresh) {
-    policyRefresh = req('/api/prefs').then(p => applyPrefs(p)).catch(() => {}).finally(() => { policyRefresh = null; });
-  }
-  if (onCacheMetadata && r.headers?.get) {
-    const number = (key) => { const v = r.headers.get('X-LTM-' + key); return v ? Number(v) : undefined; };
-    onCacheMetadata({ fetchedAt: number('Comments-Fetched-At') ?? number('Fetched-At'), freshUntil: number('Fresh-Until'),
-                      displayUntil: number('Display-Until'),
-                      commentsComplete: number('Comments-Complete'), commentsTotal: number('Comments-Total'),
-                      displayKind: r.headers.get('X-LTM-Display-Kind') || undefined });
-  }
-  return r.json();
 }
 
 /** Read newline-delimited JSON incrementally.  The timeout is inactivity-based: every completed
