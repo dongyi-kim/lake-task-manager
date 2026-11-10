@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 from datetime import datetime, timedelta, timezone
 import json
+import math
 import os
 from pathlib import Path
 import threading
@@ -122,6 +123,21 @@ class WireLedger:
                                     if not self.active and not self.admitted else deadline - now)
 
 
+def settlement_response(request, ledger):
+    """Local settlement route, independently testable without a year-world app."""
+    from starlette.responses import JSONResponse
+    if request.client.host not in ("127.0.0.1", "::1"):
+        return JSONResponse({}, status_code=403)
+    try:
+        timeout = float(request.query_params.get("timeoutSeconds", "10"))
+        if not math.isfinite(timeout) or not 0 <= timeout <= 120:
+            raise ValueError("out of range")
+    except ValueError:
+        return JSONResponse({"detail": "timeoutSeconds must be a finite number between 0 and 120"},
+                            status_code=400)
+    return JSONResponse(ledger.settle(timeout=timeout))
+
+
 def install():
     if os.environ.get("JIRA_ENV") != "mock" or os.environ.get("APP_PORT") != "4457":
         raise RuntimeError("Benchmark requires mock and the fixed port 4457")
@@ -191,9 +207,7 @@ def install():
             "observerCoverage": "all provider TestClient.request dispatches; cache counters not observed",
             "providerIssueCounts": [len(provider._client.app.state.store.issues) for provider in providers]})
     def settle(request):
-        if request.client.host not in ("127.0.0.1", "::1"):
-            return JSONResponse({}, status_code=403)
-        return JSONResponse(ledger.settle())
+        return settlement_response(request, ledger)
     def reset(request):
         if request.client.host not in ("127.0.0.1", "::1"):
             return JSONResponse({}, status_code=403)

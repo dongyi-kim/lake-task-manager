@@ -43,9 +43,9 @@ PAGE_SEQUENCE = 0
 ACTION_SEQUENCE = 0
 
 
-def request(path, method="GET"):
+def request(path, method="GET", *, timeout=15):
     req = urllib.request.Request(BASE + path, method=method)
-    with urllib.request.urlopen(req, timeout=15) as response:
+    with urllib.request.urlopen(req, timeout=timeout) as response:
         return json.load(response)
 
 
@@ -173,7 +173,8 @@ STATE_JS = """() => {
  if (selector === '.mytasks') return {ready:!!v.model,
    complete:!!v.model?.streamComplete && !v._streamAbort && Object.values(v.streamAxes).every(x=>x.state==='done') && !(v.model.groups||[]).some(x=>x.childrenPending),
    key:v.apiScope+'|'+v.openFilter+'|'+v.progFilter+'|'+v.doneFilter,
-   activeKey:v._activeCacheKey, requestToken:v._activeRequestToken, sequence:v.model?.snapshotSequence,
+   activeKey:v._activeCacheKey, requestToken:v._activeRequestToken, sequence:v.model?.snapshotSequence??null,
+   syncId:v.model?.syncId??null,syncPending:v.model?.syncPending??null,epicsPending:v.model?.epicsPending??null,
    keys:(v.allCards || []).map(x=>x.key), counts:v.model && v.model.counts,
    axes:v.streamAxes, progress:v.streamProgress, cards:document.querySelectorAll('.mt-card').length, err:v.err};
  if (selector === '.wl-view') return {ready:!!v.d, complete:!!v.statsComplete,
@@ -202,6 +203,7 @@ BUSINESS_JS = """() => {
   r.groupKey=group?.key||x.parent?.key||null;return r;}
  function identity(){if(kind==='task')return {key:v.apiScope+'|'+v.openFilter+'|'+v.progFilter+'|'+v.doneFilter,
   activeKey:copy(v._activeCacheKey),requestToken:copy(v._activeRequestToken),sequence:copy(v.model?.snapshotSequence),
+  syncId:copy(v.model?.syncId),syncPending:copy(v.model?.syncPending),epicsPending:copy(v.model?.epicsPending),
   filters:[v.groupBy,v.subView,v.priorityFilter,v.dueFilter,v.updateFilter,copy(v.projPref),copy(v.epicHidden),copy(v.excluded)],
   keys:list(v.allCards||[]).map(x=>x.key),groups:list(v.model?.groups||[]).map(g=>[g.key,
    list(g.atoms||[]).map(x=>x.key),list(g.others||[]).map(x=>x.key)])};
@@ -224,23 +226,25 @@ BUSINESS_JS = """() => {
   out.owned=groups.flatMap(g=>list(g.atoms||[]).map(x=>fact(x,g)));
   out.related=groups.flatMap(g=>list(g.others||[]).map(x=>fact(x,g)));
   out.cards=list(v.allCards||[]).map(x=>fact(x));
-  // Production Vue omits the DOM __vueParentComponent backlink. Associate
-  // component props through the rendered vnode root's exact element identity.
+  // Production Vue omits the DOM __vueParentComponent backlink. Native inline
+  // cards bind their actual row to DueText; other cards bind it to TaskCard.
   const cardRoots=new Map(),visited=new Set();
+  function associate(c,el){if(!el)return;const rows=cardRoots.get(el)||[],card=c.props?.card;
+   rows.push({kind:c.type.name,card:!c.isUnmounted&&c.subTree?.el?.isConnected===true&&
+    el.isConnected===true&&card?.key===el.dataset?.key?card:null});cardRoots.set(el,rows);}
   function renderedCards(n){if(!n||typeof n!=='object'||visited.has(n))return;visited.add(n);
    if(Array.isArray(n)){n.forEach(renderedCards);return;}
    const c=n.component;
-   if(c){if(c.type?.name==='TaskCard'){
-     const el=c.subTree?.el,card=c.props?.card;
-     if(el){const rows=cardRoots.get(el)||[];
-      rows.push(!c.isUnmounted&&el.isConnected===true&&card?.key===el.dataset?.key?card:null);
-      cardRoots.set(el,rows);}}
+   if(c){if(c.type?.name==='TaskCard')associate(c,c.subTree?.el);
+    if(c.type?.name==='DueText')associate(c,c.subTree?.el?.closest?.('.mt-card[data-key]'));
     renderedCards(c.subTree);}
    if(Array.isArray(n.children))n.children.forEach(renderedCards);}
   renderedCards(document.querySelector('#app')?._vnode);
   out.domCards=Array.from(document.querySelectorAll('.mytasks .mt-card[data-key]')).map(el=>{
    const rows=cardRoots.get(el);
-   return rows?.length===1&&rows[0]?{...fact(rows[0]),domKey:el.dataset.key}:
+   const unique=rows&&rows.every(r=>r.card)&&new Set(rows.map(r=>r.card));
+   return unique?.size===1&&['TaskCard','DueText'].every(k=>rows.filter(r=>r.kind===k).length<=1)?
+    {...fact(rows[0].card),domKey:el.dataset.key}:
     {domKey:el.dataset.key,unverified:true};});
  }else if(kind==='workload'){
   out.complete=!!v.statsComplete;out.module=v.curMod?.module;out.requestedModule=v.mod;
@@ -276,7 +280,25 @@ def capture_business(page, settled_state):
             failures.append("incomplete_or_failed_view")
         required = ["key", "requestToken"] if observed.get("kind") != "wbs" else ["key"]
         if observed.get("kind") == "task":
-            required += ["activeKey", "sequence"]
+            required += ["activeKey"]
+            scope, bands = observed.get("scope"), observed.get("bands") or {}
+            sync_fields = ("syncId", "syncPending", "epicsPending")
+            # snapshotSequence is a model child/epic-sync ordinal, distinct from
+            # the stream event sequence already fenced by the production view.
+            generic_without_sync = (
+                isinstance(scope, str) and scope.startswith("jql:") and bool(scope[4:].strip())
+                and identity.get("key") == scope + "|" + "|".join(str(bands.get(k)) for k in ("open", "progress", "done"))
+                and all("sequence" in row and row["sequence"] is None
+                        and all(k in row for k in sync_fields) and row["syncId"] is None
+                        and (row["syncPending"] is None or type(row["syncPending"]) is int and row["syncPending"] == 0)
+                        and (row["epicsPending"] is None or row["epicsPending"] is False)
+                        and isinstance(row.get("requestToken"), str) and bool(row["requestToken"].strip())
+                        for row in (settled_state, identity))
+                and settled_state.get("complete") is True and observed.get("complete") is True
+                and isinstance(identity.get("keys"), list) and isinstance(settled_state.get("keys"), list)
+                and identity.get("keys") == settled_state.get("keys"))
+            if not generic_without_sync:
+                required.append("sequence")
         if any(settled_state.get(k) is None or identity.get(k) != settled_state.get(k) for k in required):
             failures.append("settled_identity_mismatch")
         if observed.get("kind") == "task":
@@ -316,10 +338,13 @@ def require_browser_identity(expected, actual):
 
 
 def wait_state(page, timeout=None):
-    timeout = timeout or UI_TIMEOUT
+    timeout = UI_TIMEOUT if timeout is None else timeout
     start, first = time.perf_counter(), None
+    state = {}
     while time.perf_counter() - start < timeout:
         state = page.evaluate(STATE_JS)
+        if time.perf_counter() - start >= timeout:
+            break
         if first is None and state.get("cards", 0) and state.get('activeKey',state.get('key')) == state.get('key'):
             first = (time.perf_counter()-start)*1000
         if state.get("complete") and state.get('activeKey',state.get('key')) == state.get('key'):
@@ -347,7 +372,7 @@ def measure(page, name, action, result):
     try:
         action()
         click_ms = (time.perf_counter()-start)*1000
-        state, first, _elapsed = wait_state(page)
+        state, first, _elapsed = wait_state(page, timeout=max(0, context["deadlineAt"] - time.perf_counter()))
         row.update(actionMs=round(click_ms, 2), firstContentMs=round(click_ms+(first or 0), 2), state=state)
         assert state.get('ready') and state.get('cards',0)>0, state
         assert page.locator('vite-error-overlay,webpack-dev-server-client-overlay').count()==0
@@ -357,11 +382,23 @@ def measure(page, name, action, result):
         raise
     finally:
         row["completeMs"] = round((time.perf_counter() - start) * 1000, 2)
-        row["settlement"] = request("/__jql_benchmark/settle", method="POST")
-        after = request("/__jql_benchmark")
-        records = after["requests"][len(before["requests"]):]
-        row.update(requests=records, searchRequests=sum(r["path"] == "/rest/api/2/search" for r in records),
-                   allRequests=len(records), longTasks=page.evaluate("window.__benchLong || []"))
+        remaining = max(0, context["deadlineAt"] - time.perf_counter())
+        row["settlementBudgetSeconds"] = remaining
+        try:
+            row["settlement"] = request(f"/__jql_benchmark/settle?timeoutSeconds={remaining}",
+                                        method="POST", timeout=remaining + 5)
+        except Exception as error:
+            row["settlement"] = {"complete": False, "error": repr(error), "active": None, "admitted": None}
+        row["settledMs"] = round((time.perf_counter() - start) * 1000, 2)
+        try:
+            after = request("/__jql_benchmark")
+            records = after["requests"][len(before["requests"]):]
+            row.update(requests=records, searchRequests=sum(r["path"] == "/rest/api/2/search" for r in records),
+                       allRequests=len(records), requestAccountingComplete=True)
+        except Exception as error:
+            row.update(requests=None, searchRequests=None, allRequests=None, requestAccountingComplete=False,
+                       requestAccountingError=repr(error))
+        row["longTasks"] = page.evaluate("window.__benchLong || []")
         observer_started = time.perf_counter()
         row["business"] = capture_business(page, row["state"])
         row["businessObserverMs"] = round((time.perf_counter() - observer_started) * 1000, 2)
@@ -369,6 +406,8 @@ def measure(page, name, action, result):
             row['dialogProof'] = context['dialogProof']
         record_row(page, row, result)
         context["actionId"] = None
+    if not row["settlement"].get("complete") or not row["requestAccountingComplete"]:
+        raise TimeoutError(f"Upstream background work did not drain within the action budget: {row['settlement']}")
     print(json.dumps({k:row[k] for k in ("name","firstContentMs","completeMs","searchRequests","allRequests")}), flush=True)
 
 

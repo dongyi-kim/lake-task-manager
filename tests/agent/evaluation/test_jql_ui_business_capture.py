@@ -10,12 +10,12 @@ import pytest
 from tools import jql_ui_benchmark as runner
 
 
-def javascript_capture(kind, view, *, mutate=False, dom_mode="production"):
+def javascript_capture(kind, view, *, mutate=False, dom_mode="production", with_state=False):
     node = shutil.which("node")
     if not node:
         pytest.skip("Node is required to exercise the actual observer JavaScript")
     payload = {"source": runner.BUSINESS_JS, "kind": kind, "view": view, "mutate": mutate,
-               "domMode": dom_mode}
+               "domMode": dom_mode, "stateSource": runner.STATE_JS, "withState": with_state}
     script = r"""
 const x=JSON.parse(require('fs').readFileSync(0,'utf8'));
 const v=x.view;
@@ -24,6 +24,18 @@ const component={type:{name:{task:'MyTasksView',workload:'WorkloadView',wbs:'Wbs
 const cards=(v.domCardFixtures||v.allCards||[]).map(card=>({dataset:{key:card.key},isConnected:true}));
 const cardVnodes=cards.map((el,i)=>({component:{type:{name:'TaskCard'},
   props:{card:(v.domCardFixtures||v.allCards)[i]},subTree:{el}}}));
+const dueVnodes=cards.map((el,i)=>({component:{type:{name:'DueText'},
+  props:{card:(v.domCardFixtures||v.allCards)[i]},subTree:{el:{isConnected:true,
+    closest:selector=>selector==='.mt-card[data-key]'?el:null}}}}));
+if(x.domMode==='taskcard-due')cardVnodes.forEach((n,i)=>n.component.subTree.children=[dueVnodes[i]]);
+if(x.domMode.startsWith('inline'))cardVnodes.splice(0,cardVnodes.length,
+  ...cards.map((el,i)=>({el,children:[dueVnodes[i]]})));
+if(x.domMode==='inline-wrong-key')cards[0].dataset.key='DL-wrong';
+if(x.domMode==='inline-detached-root')cards[0].isConnected=false;
+if(x.domMode==='inline-detached-due')dueVnodes[0].component.subTree.el.isConnected=false;
+if(x.domMode==='inline-cross-card')dueVnodes[0].component.props.card=(v.domCardFixtures||v.allCards)[1];
+if(x.domMode==='inline-conflict')cardVnodes[0].children.push({component:{type:{name:'TaskCard'},
+  props:{card:{...(v.domCardFixtures||v.allCards)[0],status:'stale'}},subTree:{el:cards[0]}}});
 component.subTree={children:[{children:cardVnodes}]};
 if(x.domMode==='wrong-key')cards[0].dataset.key='DL-wrong';
 if(x.domMode==='detached')cards[0].isConnected=false;
@@ -35,7 +47,8 @@ global.document={querySelector:()=>({_vnode:{component}}),querySelectorAll:s=>
   s.includes('mt-card')?cards:(v.curMod?.people||[]).map(p=>({getAttribute:()=>p.id}))};
 if(x.mutate){const a=v.allCards;let calls=0;Object.defineProperty(v,'allCards',
   {get(){if(++calls===2)v._activeRequestToken='replacement';return a;}});}
-console.log(JSON.stringify(eval('('+x.source+')')()));
+const business=eval('('+x.source+')')();
+console.log(JSON.stringify(x.withState?{business,state:eval('('+x.stateSource+')')()}:business));
 """
     result = subprocess.run([node, "-e", script], input=json.dumps(payload),
                             text=True, encoding="utf-8", capture_output=True, timeout=10, check=True)
@@ -98,6 +111,75 @@ def test_dom_capture_rejects_unassociated_stale_or_ambiguous_component_roots(dom
     assert snapshot["domCards"][1]["status"] == "In Progress"
 
 
+@pytest.mark.parametrize("dom_mode", ["inline", "taskcard-due"])
+def test_dom_capture_reads_inline_parent_and_child_actual_due_props(dom_mode):
+    view = task_view()
+    view["domCardFixtures"] = [view["model"]["groups"][0], *view["allCards"]]
+    snapshot = javascript_capture("task", view, dom_mode=dom_mode)
+    assert [row["key"] for row in snapshot["domCards"]] == ["DL-1", "DL-2", "DL-3"]
+    assert snapshot["domCards"][0]["status"] == "Open"
+    assert snapshot["domCards"][1]["dueInherited"] is True
+    assert snapshot["domCards"][2]["mine"] is False
+
+
+@pytest.mark.parametrize("dom_mode", ["inline-wrong-key", "inline-detached-root",
+                                     "inline-detached-due", "inline-cross-card", "inline-conflict"])
+def test_inline_due_association_does_not_launder_stale_or_conflicting_props(dom_mode):
+    snapshot = javascript_capture("task", task_view(), dom_mode=dom_mode)
+    assert snapshot["domCards"][0]["unverified"] is True
+    assert "status" not in snapshot["domCards"][0]
+    assert snapshot["domCards"][1]["status"] == "In Progress"
+
+
+def generic_capture(**sync_fields):
+    view = task_view()
+    view["apiScope"] = 'jql:project = DL ORDER BY key ASC'
+    view["_activeCacheKey"] = view["apiScope"] + "|all|all|1w"
+    del view["model"]["snapshotSequence"]
+    view["model"].update(sync_fields)
+    return javascript_capture("task", view, with_state=True)
+
+
+@pytest.mark.parametrize("sync_pending,epics_pending", [(None, None), (None, False), (0, False)])
+def test_completed_generic_without_optional_sync_sequence_uses_exact_request_identity(sync_pending, epics_pending):
+    projection = generic_capture(syncPending=sync_pending, epicsPending=epics_pending)
+    for identity in (projection["state"], projection["business"]["identityBefore"]):
+        assert {field: identity[field] for field in ("sequence", "syncId", "syncPending", "epicsPending")} == {
+            "sequence": None, "syncId": None, "syncPending": sync_pending, "epicsPending": epics_pending}
+    page = type("Page", (), {"evaluate": lambda self, _: deepcopy(projection["business"])})()
+    assert runner.capture_business(page, projection["state"])["verified"] is True
+
+
+@pytest.mark.parametrize("bad", ["non-generic", "empty-query", "sequence", "token", "empty-token", "keys",
+                               "active-key", "scope", "sync-id", "sync-pending", "epics-pending", "missing-sync-field",
+                               "missing-keys"])
+def test_absent_generic_sequence_cannot_waive_scope_generation_or_sync_fences(bad):
+    projection = generic_capture()
+    state, snapshot = projection["state"], projection["business"]
+    identity = snapshot["identityBefore"]
+    if bad in {"non-generic", "empty-query"}:
+        snapshot["scope"] = "assignee:u1" if bad == "non-generic" else "jql:  "
+        for item in (state, identity):
+            item["key"] = item["activeKey"] = snapshot["scope"] + "|all|all|1w"
+    elif bad == "sequence": state["sequence"] = 1
+    elif bad == "token": state["requestToken"] = "different"
+    elif bad == "empty-token": state["requestToken"] = identity["requestToken"] = ""
+    elif bad == "keys": state["keys"] = list(reversed(state["keys"]))
+    elif bad == "active-key": state["activeKey"] = identity["activeKey"] = "old"
+    elif bad == "scope": snapshot["scope"] = "jql:different query"
+    elif bad == "sync-id": state["syncId"] = identity["syncId"] = "pending-session"
+    elif bad == "sync-pending": state["syncPending"] = identity["syncPending"] = 1
+    elif bad == "epics-pending": state["epicsPending"] = identity["epicsPending"] = True
+    elif bad == "missing-keys":
+        state.pop("keys", None)
+        identity.pop("keys", None)
+    else:
+        state.pop("syncId", None)
+        identity.pop("syncId", None)
+    page = type("Page", (), {"evaluate": lambda self, _: snapshot})()
+    assert runner.capture_business(page, state)["verified"] is False
+
+
 def test_workload_captures_only_visible_roster_not_retained_other_module_person():
     bucket = {"count": {"task": 2, "subtask": 1, "voc": 1}, "epics": {}}
     v = {"mod": "Catalog", "curMod": {"module": "Catalog", "peopleCount": 1, "people": [{"id": "u2"}]},
@@ -139,17 +221,17 @@ def test_capture_is_once_after_complete_time_and_settlement(monkeypatch):
             return state if source == runner.STATE_JS else []
         def locator(self, _selector):
             return type("Locator", (), {"count": lambda self: 0})()
-    def api(path, method="GET"):
+    def api(path, method="GET", **_kwargs):
         calls.append(path)
         return {"complete": True} if "settle" in path else {"requests": []}
     def capture(page, settled):
-        assert calls[-2:] == ["/__jql_benchmark/settle", "/__jql_benchmark"]
+        assert [path.split("?", 1)[0] for path in calls[-2:]] == ["/__jql_benchmark/settle", "/__jql_benchmark"]
         calls.append("capture")
         clock[0] += 5
         return {"verified": True}
     monkeypatch.setattr(runner, "request", api)
     monkeypatch.setattr(runner.time, "perf_counter", lambda: clock[0])
-    monkeypatch.setattr(runner, "wait_state", lambda page: (deepcopy(state), 10, 50))
+    monkeypatch.setattr(runner, "wait_state", lambda page, **_kwargs: (deepcopy(state), 10, 50))
     monkeypatch.setattr(runner, "capture_business", capture)
     monkeypatch.setattr(runner, "record_row", lambda page, row, rows: rows.append(row))
     rows = []
