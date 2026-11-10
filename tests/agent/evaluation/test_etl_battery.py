@@ -402,7 +402,7 @@ def test_shared_runner_selects_etl_without_changing_old_work_battery():
     selected = runner._battery("etl", "2026-11-10")
     assert selected.SUITE == battery().SUITE and len(selected.CASES) == 28
     old = runner._battery("work", "2026-11-09")
-    assert old.SUITE == "codex-mcp-work" and old.BATTERY_VERSION == "3.0.0" and len(old.CASES) == 22
+    assert old.SUITE == "codex-mcp-work" and old.BATTERY_VERSION == "4.0.0" and len(old.CASES) == 22
     from tools.codex_mcp_eval.etl.qualification import REPRESENTATIVE_CASE_IDS
     pilot = runner.parse_args(["--battery", "etl", "--etl-phase", "pilot", "--etl-arm", "C"])
     assert set(pilot.cases) == set(REPRESENTATIVE_CASE_IDS) and pilot.skill_condition == "candidate"

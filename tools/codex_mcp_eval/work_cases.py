@@ -13,7 +13,7 @@ from tools.codex_mcp_eval.work_evidence import (evidence_collection, document_co
                                              observed_status_categories, leaf_subtask_membership, observed_scope_references,
                                              literal_source_records, _evidence_record_format)
 
-SUITE, BATTERY_VERSION, PROMPT_VERSION = "codex-mcp-work", "3.0.0", "codex-mcp-work-v4"
+SUITE, BATTERY_VERSION, PROMPT_VERSION = "codex-mcp-work", "4.0.0", "codex-mcp-work-v4"
 REFERENCE_DATE = "2026-11-09"
 OUTPUT_SCHEMA = copy.deepcopy(BASE_SCHEMA)
 OUTPUT_SCHEMA["properties"]["progress"]["description"] = "사용자가 요청한 업무의 진척률만 기록합니다. 조사 수집·파일 저장의 완료율은 이 필드에 넣지 마세요. 업무 진척을 요청하지 않았거나 전체를 확인하지 못하면 null입니다. 조사 진행은 progress 파일에서 별도로 관리합니다."
