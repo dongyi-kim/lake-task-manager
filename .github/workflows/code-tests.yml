@@ -18,7 +18,7 @@ jobs:
   pytest:
     name: Python 3.11 / offline suite
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       CI: "true"
       TZ: Asia/Seoul
@@ -28,6 +28,9 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v5
+        with:
+          # A/B evaluation reads the exact deployed skill revision from Git.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -46,15 +49,48 @@ jobs:
 
       - name: Run deterministic tests
         run: |
-          mkdir -p .cache/test-tmp .cache/test-results
-          python -m pytest -q --basetemp=.cache/test-tmp/ci --durations=30 -ra --junitxml=.cache/test-results/pytest.xml
+          runner_root=$(realpath "$RUNNER_TEMP")
+          owned_root=$(mktemp -d "$runner_root/ltm-tests.XXXXXXXX")
+          echo "LTM_CI_TEST_ROOT=$owned_root" >> "$GITHUB_ENV"
+          scratch="$owned_root/scratch"
+          mkdir -p "$scratch/tmp" "$owned_root/results"
+          cleanup_scratch() {
+            resolved_root=$(realpath -e "$owned_root")
+            target=$(realpath -m "$scratch")
+            if [[ "$(dirname "$resolved_root")" != "$runner_root" ||
+                  "$(basename "$resolved_root")" != ltm-tests.* ||
+                  "$target" != "$resolved_root/scratch" ]]; then
+              echo "Refusing to clean an unowned test scratch path" >&2
+              return 1
+            fi
+            rm -rf -- "$target"
+          }
+          trap cleanup_scratch EXIT
+          export TMPDIR="$scratch/tmp"
+          export LAKE_CACHE_DIR="$scratch/runtime"
+          export CACHE_DB_PATH="$scratch/runtime/cache.sqlite3"
+          python -m pytest -q --basetemp="$scratch/cases" -o "cache_dir=$scratch/cache" \
+            --durations=30 -ra --junitxml="$owned_root/results/pytest.xml"
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: code-tests-results
-          path: .cache/test-results/pytest.xml
+          path: ${{ env.LTM_CI_TEST_ROOT }}/results/pytest.xml
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Clean test results
+        if: always()
+        run: |
+          if [[ -z "${LTM_CI_TEST_ROOT:-}" ]]; then exit 0; fi
+          runner_root=$(realpath "$RUNNER_TEMP")
+          target=$(realpath -e "$LTM_CI_TEST_ROOT")
+          if [[ "$(dirname "$target")" != "$runner_root" ||
+                "$(basename "$target")" != ltm-tests.* ]]; then
+            echo "Refusing to clean an unowned test results path" >&2
+            exit 1
+          fi
+          rm -rf -- "$target"

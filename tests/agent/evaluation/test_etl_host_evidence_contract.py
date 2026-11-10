@@ -153,7 +153,15 @@ def test_ordinary_reports_do_not_demand_whole_task_percent_but_explicit_progress
     for case_id in ("ETL-F04-boundary", "ETL-F05-boundary", "ETL-F06-boundary"):
         assert any(row["metric"] == "percent" for row in expected[case_id]["measurements"])
     monthly = expected["ETL-F03-boundary"]
-    assert any(row["metric"] == "verified_deliverables" for row in monthly["measurements"])
+    # Public Oct8/20 acceptance comments name these deliverables and remaining
+    # work; DL-21013's Oct22 comment only says "확인 중입니다."
+    lifecycle = monthly["lifecycleExpectations"]
+    assert lifecycle["DL-21012"]["known"] is True
+    assert lifecycle["DL-21012"]["completed_deliverables"] == ["CDC 체크포인트 저장", "중복 방지 키 검증"]
+    assert lifecycle["DL-21012"]["pending_deliverables"] == ["장애 복구 통합 검증"]
+    assert lifecycle["DL-21012"]["overall_percent"] is None
+    assert lifecycle["DL-21013"]["known"] is False
+    assert lifecycle["DL-21013"]["completed_deliverables"] == []
     assert monthly["reportExpectations"]["taskProgress"]["DL-21749"]["reported_acceptance_events"] is None
     assert all(row["acceptedEvents"] is None for row in monthly["reportProgress"] if row["key"] == "DL-21749")
 

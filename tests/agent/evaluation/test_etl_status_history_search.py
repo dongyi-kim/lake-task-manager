@@ -408,7 +408,7 @@ def test_ordinary_generated_ui_minute_ge_uses_exact_public_instants(
     client, *_ = endpoints(rows, search_timezone="Asia/Seoul", observed_until=UI_NOW)
     compiled = compile_jql(f"project = DL AND statusCategory = Done AND {field} >= {relative} ORDER BY key ASC",
                            user_id="u01", timezone_name="Asia/Seoul", now=UI_NOW,
-                           ttl_seconds=600, decompose=False)
+                           ttl_seconds=600)
     assert f'{field} >= "{literal}"' in compiled.canonical
     response = search(client, compiled.canonical, fields="summary,updated,resolutiondate")
     assert keys(response) == ["DL-2", "DL-3", "DL-4"]
@@ -439,7 +439,7 @@ def test_ordinary_workload_generated_done_empty_resolution_fallback(endpoints):
     raw = ('project = DL AND statusCategory = Done AND (resolved >= -7d '
            'OR (resolved IS EMPTY AND updated >= -7d)) ORDER BY key ASC')
     compiled = compile_jql(raw, timezone_name="Asia/Seoul", user_id="u01", now=UI_NOW,
-                           ttl_seconds=600, decompose=False)
+                           ttl_seconds=600)
     assert 'resolved >= "2026-11-03 23:50"' in compiled.canonical
     assert "resolved IS EMPTY" in compiled.canonical
     assert keys(search(client, compiled.canonical)) == ["DL-1", "DL-4"]
