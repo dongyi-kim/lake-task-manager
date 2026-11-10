@@ -6,8 +6,8 @@ from copy import deepcopy
 from tools.codex_mcp_eval.work_cases import OUTPUT_SCHEMA as BASE_SCHEMA
 
 SUITE = "codex-mcp-etl-year"
-BATTERY_VERSION = "2.1.2"
-PROMPT_VERSION = "codex-mcp-etl-year-v2.1.1"
+BATTERY_VERSION = "3.0.0"
+PROMPT_VERSION = "codex-mcp-etl-year-v3.0.0"
 REFERENCE_DATE = "2026-11-10"
 
 OUTPUT_SCHEMA = deepcopy(BASE_SCHEMA)
@@ -34,7 +34,8 @@ OUTPUT_SCHEMA["properties"]["reportFindings"] = {"type": "array", "items": {
         "occurredAt": {"type": ["string", "null"]}, "artifact": {"type": ["string", "null"]},
         "outcome": {"type": ["string", "null"], "enum": ["accepted", "rejected", "pending", None]},
         "candidateKeys": {"type": "array", "items": {"type": "string"}},
-        "inScope": {"type": "boolean"},
+        "inScope": {"type": "boolean", "description":
+            "Public module/environment correspondence only; independent of period relevance and superseded revision validity."},
         "matchStatus": {"type": "string", "enum": ["verified", "ambiguous", "unresolved"]}},
     "required": ["documentId", "version", "section", "deliverable", "stage", "occurredAt", "artifact", "outcome", "candidateKeys", "matchStatus", "inScope"]}}
 OUTPUT_SCHEMA["required"].append("reportFindings")
@@ -78,6 +79,8 @@ candidateKeys와 matchStatus를 적으세요. outcome은 명시된 accepted/reje
 산출물명은 해당 문서 버전·항목에서 실제 읽은 이름을 쓰고, 같은 주장을 짧은 이름과 긴 이름으로 중복 기입하지 마세요.
 candidateKeys는 정렬·중복 제거하며 공개된 모듈·환경·기능·산출물·참여자·릴리즈·기간으로 대조한 후보입니다.
 다른 모듈·환경의 자료를 제외 근거로 썼다면 inScope=false로 두고 해당 Task의 완료 실적에는 섞지 마세요.
+inScope는 공개 모듈·환경이 요청 대상과 대응하는지만 뜻합니다. 같은 모듈·환경이면 기간 밖이거나 철회된 버전도 true이며,
+발생일·관점·정정에 따른 실적 포함 여부와는 별개입니다. 기간 밖·철회 사실을 해당 기간의 수용·계획 배열에 넣지 마세요.
 verified는 한 후보로 입증된 대응, ambiguous는 공개 근거로 둘 이상이 남는 대응, unresolved는 입증 가능한 후보 없음입니다.
 보고 조사가 아닌 질문은 reportFindings=[], reportProgress=[]입니다. 문서 제목 유사성이나 Jira 링크 존재만으로 완료를 단정하지 마세요.
 전체 건수가 미확정이면 해당 measurements.value는 null입니다. 확인된 소계는 reply에서 별도로 명명하고 전체 값에 넣지 마세요.
@@ -91,7 +94,8 @@ WBS·Epic·Task는 ID@current 또는 ID@YYYY-MM-DD입니다.
 unit views/tables/edges입니다. 정정 비교는 known-at-2025-12-01/reconstructed-now를 scope로 씁니다.
 명시적으로 요청된 수치 진척률은 percent(단위 percent), 분모는 denominators에 scope, metric, numerator, denominator, unit으로 기록합니다.
 수치 진척률을 묻지 않은 질문은 percent 측정값을 만들지 않고 denominators=[], progress=null입니다.
-SP 진척의 metric은 SP-weighted epic progress 또는 SP progress, 하위 개수는 child completion count입니다.
+SP 진척의 metric은 SP-weighted epic progress 또는 SP progress이며 두 표기는 동등한 별칭입니다.
+scope·분자·분모·unit은 정확히 유지하고 WBS의 weighted percent와 Epic의 SP 단위를 바꾸지 마세요. 하위 개수는 child completion count입니다.
 WBS 분자는 각 Epic 표시 진척률×가중치의 합, 분모는 가중치 합, unit은 weighted percent입니다. Epic 분모의 unit은 SP입니다.
 progress 객체는 명시적 하위 완료 개수 진척에만 쓰고 그 외에는 null입니다.
 그 외 수치·상태·시간순서·환경·불확실성은 reply에서 근거와 연결하세요.
@@ -216,7 +220,7 @@ def review_contract(today=REFERENCE_DATE):
 
 # Include host checker/reducer code in the battery fingerprint: changing a gate
 # cannot silently preserve the same manifest while changing qualification.
-from .checks import (build_expectations, check as _check, observed_sources, _rows_match, _number_equal, _at,
+from .checks import (build_expectations, check as _check, observed_sources, _rows_match, _denominators_match, _number_equal, _at,
                      _public_report_findings, _unique_rows, _attach_reports, _report_rows_match, _complete_report_search, _normalized_public_text,
                      observed_ticket_inputs, ticket_inputs_match, _complete_epic_tree, _observed_result_keys, _result_keys_match,
                      _field_fact, _require_report_status, _report_progress_row, _report_requirements, _catalog_reports, _optional_current_reports,
@@ -227,8 +231,10 @@ from .checks import (build_expectations, check as _check, observed_sources, _row
                      document_complete, evidence_collection, has_stalled_pagination, literal_source_records, source_observed)
 from .report_checks import (public_text, row_identity, merge_requirements, grounded_name,
                             match_findings, match_progress, report_contract)
+from .evidence_equivalence import full_instant, unchanged_status_observed, mapping_identity_keys
+from tools.codex_mcp_eval.work_evidence import _evidence_record_format
 from .oracle import EventOracle
-CHECKER_DEPENDENCIES = (check, _check, build_expectations, observed_sources, _rows_match, _number_equal, _at,
+CHECKER_DEPENDENCIES = (check, _check, build_expectations, observed_sources, _rows_match, _denominators_match, _number_equal, _at,
                         _public_report_findings, _unique_rows, _attach_reports, _report_rows_match, _complete_report_search, _normalized_public_text,
                         observed_ticket_inputs, ticket_inputs_match, _complete_epic_tree, _observed_result_keys, _result_keys_match,
                         _field_fact, _require_report_status, _report_progress_row, _report_requirements, _catalog_reports, _optional_current_reports,
@@ -238,6 +244,8 @@ CHECKER_DEPENDENCIES = (check, _check, build_expectations, observed_sources, _ro
                         _same_instant, field_facts_observed,
                         public_text, row_identity, merge_requirements, grounded_name,
                         match_findings, match_progress, report_contract,
+                        full_instant, unchanged_status_observed, mapping_identity_keys,
                         document_complete, evidence_collection, has_stalled_pagination, literal_source_records, source_observed,
+                        _evidence_record_format,
                         EventOracle, review_contract, schema_for_case, materialize_cases,
                         SYSTEM_CONTEXT, OUTPUT_SCHEMA, CASES)

@@ -23,7 +23,7 @@ def bundle():
 def test_new_battery_has_exactly_fourteen_normal_boundary_families():
     cases = battery()
     assert cases.SUITE == "codex-mcp-etl-year"
-    assert cases.BATTERY_VERSION == "2.1.2"
+    assert cases.BATTERY_VERSION == "3.0.0"
     assert len(cases.CASES) == 28
     assert {row["family"] for row in cases.CASES} == {f"F{i:02}" for i in range(1, 15)}
     assert all({r["variant"] for r in cases.CASES if r["family"] == family} == {"normal", "boundary"}

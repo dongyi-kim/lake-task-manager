@@ -15,6 +15,7 @@ import re
 from tools.codex_mcp_eval.work_evidence import (document_complete, evidence_collection,
     has_stalled_pagination, literal_source_records, source_observed)
 from .report_checks import merge_requirements, report_contract, row_identity
+from .evidence_equivalence import mapping_identity_keys, unchanged_status_observed
 
 
 def _at(value):
@@ -37,6 +38,8 @@ def _public_report_findings(bundle, matches):
         event = reports[(match["document"], match["version"])]
         position = next(index for index, item in enumerate(event.payload["items"], 1)
                        if item["item_id"] == match["item_id"])
+        item = event.payload["items"][position - 1]
+        context = {**event.payload["report_context"], **item.get("context", {})}
         claim = match["claim"]
         source = bundle.public_sources[event.sources[0]]
         headings = re.findall(r"<h2>(\d+)\.", source["text"])
@@ -49,7 +52,7 @@ def _public_report_findings(bundle, matches):
             "outcome": claim["outcome"] if claim["stage"] in {"test_acceptance", "final_acceptance"}
                        or claim["outcome"] == "pending" else None,
             "candidateKeys": list(match["candidate_keys"]), "matchStatus": match["status"],
-            "inScope": source["title"].startswith("ETL 개발")})
+            "inScope": context.get("module") == "ETL" and context.get("environment") == "prod"})
     return _unique_rows(findings)
 
 
@@ -473,11 +476,9 @@ def build_expectations(bundle):
         ops = [k for k, e in issues.items() if e.stream == "operations" and a <= e.occurred_at < b]
         voc = [k for k, e in issues.items() if e.stream == "simple_voc" and a <= e.occurred_at < b]
         keys = dev + ops + voc
-        exceptions = [key for key, event in issues.items() if event.stream == "development" and
-                      event.occurred_at < b and key not in dev and bundle.world.issues[key]["statusCategory"] != "done"]
-        row = new(3, variant, keys + exceptions, proof(exceptions, kinds={"field", "development_progress"}, field_names={"status"}),
+        row = new(3, variant, keys,
                   distinctions=("carryover vs new requests", "three separate streams"))
-        row["requiredTicketInputs"] = ticket_inputs(keys + exceptions, ("summary", "component", "type", "created_date", "resolved_date", "status"))
+        row["requiredTicketInputs"] = ticket_inputs(keys, ("summary", "component", "type", "created_date", "resolved_date", "status"))
         scope = a.strftime("%Y-%m")
         measure(row, "development", scope, "active_tickets", len(dev), "tickets")
         measure(row, "operations", scope, "request_tickets", len(ops), "tickets")
@@ -523,13 +524,19 @@ def build_expectations(bundle):
                         list(weights) if family == 4 else [epic_key], row["requiredTicketInputs"],
                         wbs="ETL-1" if family == 4 else None)
             if family == 4:
-                mapping = [e for e in events if e.kind == "mapping" and e.occurred_at < at]
+                mapping = [e for e in events if e.kind == "mapping" and e.payload["wbs"] == "ETL-1" and e.occurred_at < at]
                 required_mapping = max(mapping, key=lambda e: e.occurred_at)
                 row["requiredSources"] += list(required_mapping.sources)
+                identity_mappings = [required_mapping]
                 if variant == "boundary":
                     prior = oracle.development(_at("2026-01-15"))["wbs"]["ETL-1"]["epic_weights"]
                     row["mappingComparison"] = {"2026-01-15": prior, "current": weights}
                     row["requiredSources"] += [source for event in mapping if event.payload["version"] == 1 for source in event.sources]
+                    identity_mappings += [event for event in mapping if event.payload["version"] == 1]
+                row["mappingIdentityEvidence"] = [{"source": source,
+                    "documentId": bundle.public_sources[source]["id"], "version": event.payload["version"],
+                    "wbs": event.payload["wbs"], "epicKeys": sorted(event.payload["epics"])}
+                    for event in identity_mappings for source in event.sources]
                 value = snapshot["wbs"]["ETL-1"]["percent"]
                 scope = "ETL-1@" + ("2026-01-15" if at != now else "current")
                 weighted = (sum(snapshot["epics"][key]["percent"] * weight for key, weight in weights.items())
@@ -708,6 +715,16 @@ def _rows_match(actual, expected, identity, numeric):
         return False
     return all((found := index.get(tuple(row.get(k) for k in identity))) is not None
                and all(_number_equal(found.get(k), row[k]) for k in numeric) for row in expected)
+
+
+def _denominators_match(actual, expected):
+    """Only the two public SP metric labels are equivalent; units distinguish them."""
+    def normalized(rows):
+        if not isinstance(rows, list):
+            return rows
+        return [{**row, "metric": "SP progress"} if isinstance(row, dict) and
+                row.get("metric") in {"SP progress", "SP-weighted epic progress"} else row for row in rows]
+    return _rows_match(normalized(actual), normalized(expected), ("scope", "metric", "unit"), ("numerator", "denominator"))
 
 
 def _report_rows_match(actual, expected):
@@ -903,11 +920,11 @@ def _observed_result_keys(calls, field_ids):
     return keys
 
 
-def _result_keys_match(actual, expected, calls, field_ids):
+def _result_keys_match(actual, expected, calls, field_ids, mapping_keys=()):
     if not isinstance(actual, list) or not all(isinstance(key, str) for key in actual) or actual != sorted(set(actual)):
         return False
     required, supplied = set(expected), set(actual)
-    return required <= supplied and supplied - required <= _observed_result_keys(calls, field_ids)
+    return required <= supplied and supplied - required <= _observed_result_keys(calls, field_ids) | set(mapping_keys)
 
 
 def ticket_inputs_match(calls, expected, field_ids):
@@ -954,11 +971,6 @@ def field_facts_observed(calls, facts, public_sources):
     observed_comments = observed_sources(successful, needed_comments)
     for fact in facts:
         key = fact["key"]
-        if fact.get("unchanged"):
-            history = histories[key]
-            if not history["complete"] or any(item.get("field") == fact["field"] for record in history["records"] for item in record.get("items", [])):
-                return False
-            continue
         if fact.get("relation"):
             expected_value = fact["to"] if fact["relation"] == "after-transition" else fact["from"]
             occurred, at = datetime.fromisoformat(fact["occurredAt"]), datetime.fromisoformat(fact["viewAt"])
@@ -966,6 +978,13 @@ def field_facts_observed(calls, facts, public_sources):
                     (occurred < at) != (fact["relation"] == "after-transition") or
                     datetime.fromisoformat(fact["recordedAt"]) > datetime.fromisoformat(fact["knowledgeAt"])):
                 return False
+        if unchanged_status_observed(successful, fact):
+            continue
+        if fact.get("unchanged"):
+            history = histories[key]
+            if not history["complete"] or any(item.get("field") == fact["field"] for record in history["records"] for item in record.get("items", [])):
+                return False
+            continue
         history_match = (_same_instant(fact["occurredAt"], fact["recordedAt"]) and any(
             _same_instant(record.get("created"), fact["recordedAt"]) and any(
                 item.get("field") == fact["field"] and item.get("fromString", item.get("from")) == fact["from"]
@@ -1037,11 +1056,12 @@ def check(case, output, calls, ground_truth=None):
     if expected.get("nativeProgressEvidence") and _native_progress_route(
             calls, expected["nativeProgressEvidence"], truth.get("ticketFieldIds", {})):
         required_keys, required_inputs = _native_progress_scope(expected)
-    if not _result_keys_match(answer.get("resultKeys"), required_keys, calls, truth.get("ticketFieldIds", {})):
+    mapping_keys = mapping_identity_keys(calls, expected.get("mappingIdentityEvidence", []), truth.get("publicSources", {}))
+    if not _result_keys_match(answer.get("resultKeys"), required_keys, calls, truth.get("ticketFieldIds", {}), mapping_keys):
         failures.append("result_scope_mismatch")
     if not _rows_match(answer.get("measurements"), expected["measurements"], ("stream", "scope", "metric", "unit"), ("value",)):
         failures.append("measurement_mismatch")
-    if not _rows_match(answer.get("denominators"), expected["denominators"], ("scope", "metric", "unit"), ("numerator", "denominator")):
+    if not _denominators_match(answer.get("denominators"), expected["denominators"]):
         failures.append("denominator_mismatch")
     findings_ok, progress_ok, report_requirements = report_contract(
         answer, expected, calls, truth.get("publicSources", {}))

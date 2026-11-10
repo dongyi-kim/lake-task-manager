@@ -11,7 +11,7 @@ from tools.codex_mcp_eval.work_data import build_work_data
 from tools.codex_mcp_eval.work_evidence import (evidence_collection, document_complete, source_observed,
                                              optional_count_progress, has_stalled_pagination,
                                              observed_status_categories, leaf_subtask_membership, observed_scope_references,
-                                             literal_source_records)
+                                             literal_source_records, _evidence_record_format)
 
 SUITE, BATTERY_VERSION, PROMPT_VERSION = "codex-mcp-work", "3.0.0", "codex-mcp-work-v4"
 REFERENCE_DATE = "2026-11-09"
@@ -203,4 +203,5 @@ def check(case, output, calls, ground_truth=None):
 CHECKER_DEPENDENCIES = (check, review_contract, schema_for_case, materialize_cases, build_work_data, evidence_collection,
                         document_complete, source_observed, optional_count_progress, observed_scope_references,
                         has_stalled_pagination, observed_status_categories, leaf_subtask_membership, literal_source_records,
+                        _evidence_record_format,
                         SYSTEM_CONTEXT, OUTPUT_SCHEMA, CASES)
