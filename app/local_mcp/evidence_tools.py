@@ -8,7 +8,7 @@ from app.jira import evidence_service
 def register_evidence(register, runtime):
     def get_evidence_page(key: str, kind: Literal["comments", "history"] = "comments",
                           start_at: int = 0, max_results: int = 100, record_offset: int = 0) -> dict:
-        """Page original comments or field history for one ticket when the question needs more evidence.
+        """Page source comments or field history with normalized actor identity for one ticket.
         To continue, copy data.nextCall.arguments into this tool's next call. Do not follow
         nextStartAt alone: an oversized record keeps that index while its record_offset advances.
         For progress summaries, reuse batched metadata/needed bodies and relevant get_comments. Use kind=comments
@@ -16,8 +16,12 @@ def register_evidence(register, runtime):
         Use kind=history only for change chronology, exact transition times, historical ownership or
         unresolved discrepancies; do not fetch every ticket's history as a routine progress-summary step.
         key is exactly one ticket: no child lookup, recursive traversal or descendant history is included.
-        kind defaults to comments; it returns body/renderedBody/created/updated and original
-        author; kind=history returns created/author/items including field IDs and from/to values.
+        recordFormat=jira-evidence-v2 preserves exact body/renderedBody/created/updated,
+        all history items (including unknown fields), and all non-actor record metadata/visibility.
+        author and updateAuthor are separate normalized identities: only supplied accountId/name/key/
+        displayName/self/timeZone survive. Avatar URLs, emailAddress, active and arbitrary actor profile
+        extras are excluded; this is not full raw Jira actor JSON. Source caches retain original profiles.
+        kind defaults to comments; kind=history returns created/author/items with field IDs/from/to values.
         authorId is null when Jira supplies only a display name; never infer identity from names.
         Returns items, total, returned, hasMore, nextStartAt, nextCall, complete/sourceComplete and partial.
         max_results is 1..100 and start_at is zero-based. Responses are bounded to 8KiB of data,
@@ -25,13 +29,18 @@ def register_evidence(register, runtime):
         source is required; a complete page is not the collection. Otherwise stop when the question is
         supported and report the inspected scope, never claim an exhaustive review from a preview.
         An oversized record is represented by id/sourceIndex/recordJson/recordOffset/nextRecordOffset/
-        totalCharacters/recordSha256. Concatenate recordJson chunks and parse JSON to recover the record.
+        totalCharacters/recordSha256/recordFormat. Concatenate recordJson chunks and parse JSON to recover
+        the declared normalized record, not excluded actor profiles. Require matching recordFormat and
+        recordSha256 across chunks. Do not combine legacy unmarked/v1 chunks with v2. For changes between
+        these supported formats or a digest change within one supported format, restart only the affected
+        record at record_offset=0. Unknown formats require stopping and diagnosing the unsupported collection;
+        rereading one record does not make that unknown-format collection supported.
         nextCall already combines sourceIndex and nextRecordOffset, preserving the requested batch size.
         Legacy callers can use record_offset=nextRecordOffset at sourceIndex, then nextStartAt with
         record_offset=0 after the record finishes. The offset applies to the first record; max_results=1
         remains supported but is not required. Offsets count Unicode
-        characters. Require identical recordSha256 across chunks; restart the record if it changes.
-        This is lossless pagination, not a partial source. Comments use live Jira offset pagination,
+        characters. This is content-exact pagination within the declared record format, not a partial
+        source. Comments use live Jira offset pagination,
         so deduplicate IDs and recheck totals if writes occur between pages. History pages cover
         the available expanded changelog (availableTotal). Jira 8.20 may truncate that expansion;
         sourceComplete=false explicitly means older history is unavailable even when hasMore=false.

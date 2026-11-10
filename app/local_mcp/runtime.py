@@ -5,12 +5,12 @@ import json
 import re
 from contextvars import ContextVar
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import HTTPException
 from mcp.server import MCPServer
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 from starlette.routing import Route
 
 from app.auth.base import MutationOutcomeUnknown, MutationPreflightUnavailable, PermissionDenied, QueryStateChanged, SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable
@@ -20,6 +20,8 @@ from app.local_mcp.hierarchy_tools import register_hierarchy
 from app.local_mcp.hierarchy_write_tools import register_hierarchy_writes
 from app.jira.hierarchy_forms import HierarchyFormError
 from app.auth.web_forms import FormTransportUnavailable
+from app.infra.cache import CacheReadPolicyError
+from app.infra.cache_policy import resolve_read_policy
 from app.local_mcp.read_metadata import read_result, has_partial
 from app.local_mcp.output_schema import schema_for
 from app.local_mcp.security import Credentials, LocalGuard
@@ -213,6 +215,9 @@ class LocalMcpRuntime:
                              for name, label in PROFILE_LABELS.items()]}
 
     def _error(self, exc):
+        if isinstance(exc, CacheReadPolicyError):
+            return {"code": "cache_policy_unavailable", "status": 503, "message": str(exc),
+                    "retryable": True, "needLogin": False}
         if getattr(exc, "service", None) == "confluence":
             from app.local_mcp.confluence_errors import confluence_error
             return confluence_error(exc)
@@ -367,7 +372,12 @@ class LocalMcpRuntime:
                     result["data"][service] = retried["data"][service]
                     # The original scope excludes this second read: do not label the combined
                     # result fresh based only on the first attempt's observed cache entries.
-                    result["cache"] = {"available": False, "state": "unknown"}
+                    cache = result["cache"]
+                    result["cache"] = {"available": False, "state": "unknown", **{
+                        key: cache[key] for key in ("requestedCacheMode", "effectiveCacheMode", "maxAgeSeconds")
+                        if key in cache}}
+                    if "requestedCacheMode" in cache:
+                        result["cache"].update(compliant=False, upstreamValidated=False)
                     if (retried["data"].get(service) or {}).get("needLogin"):
                         failures[service] = self.authentication.state(service, {"needLogin": True})
                 else:
@@ -396,14 +406,21 @@ class LocalMcpRuntime:
             result["authentication"] = {service: error_payload(state) for service, state in failures.items()}
             for service, error in result["authentication"].items():
                 result["data"][service] = {"items": [], "error": error["message"], "authentication": error}
+        if result.get("partial") and "requestedCacheMode" in result.get("cache", {}):
+            result["cache"]["compliant"] = False
         return result
 
     def register(self, fn, *, read_only, output_type=None):
         contract = schema_for(fn.__name__, output_type, read_only)
         lane = self._control_lane if fn.__name__ in AUTH_TOOLS | HEALTH_TOOLS or fn.__name__ == "get_content_guide" else self._work_lane
+        policy_read = read_only and fn.__name__ not in (
+            AUTH_TOOLS | HEALTH_TOOLS | LLM_TOOLS | {"get_content_guide", "get_workspace_config"})
 
         def call(kwargs):
             try:
+                if policy_read:
+                    # Reject contradictory options before authentication can make a request.
+                    resolve_read_policy(kwargs.get("cache_mode"), force_refresh=bool(kwargs.get("fresh")))
                 return self._invoke_authenticated(fn, kwargs, read_only)
             except Exception as exc:
                 # Error classification can touch authentication state too; keep it
@@ -442,7 +459,15 @@ class LocalMcpRuntime:
             )
         invoke.__name__, invoke.__doc__ = fn.__name__, fn.__doc__
         result_annotation = Annotated[CallToolResult, contract]
-        invoke.__signature__ = inspect.signature(fn).replace(return_annotation=result_annotation)
+        signature = inspect.signature(fn)
+        if policy_read:
+            mode_annotation = Annotated[Literal["live", "hot", "warm", "cool", "cold"] | None, Field(description=(
+                "Maximum source age: live=upstream validation, hot=600s, warm=86400s, cool=604800s, cold=2592000s. "
+                "Omit for existing resource policies. fresh=true means live and conflicts with other modes. "
+                "Check cache.compliant and partial; unknown provenance is not fresh proof."))]
+            signature = signature.replace(parameters=[*signature.parameters.values(), inspect.Parameter(
+                "cache_mode", inspect.Parameter.KEYWORD_ONLY, default=None, annotation=mode_annotation)])
+        invoke.__signature__ = signature.replace(return_annotation=result_annotation)
         invoke.__annotations__ = {**fn.__annotations__, "return": result_annotation}
         self.server.add_tool(invoke, name=fn.__name__, description=fn.__doc__,
                              structured_output=True,

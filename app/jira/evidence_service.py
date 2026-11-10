@@ -1,4 +1,4 @@
-"""Lossless, paged Jira evidence using the running client's cache/auth boundary.
+"""Content-exact, identity-normalized Jira evidence using the client's cache/auth boundary.
 
 This module deliberately does not calculate reporting periods, ownership or business metrics.
 Comments are real REST pages. Jira 8.20 only documents expanded changelog, so a truncated
@@ -10,9 +10,22 @@ import hashlib
 import json
 
 from app.auth.base import SessionExpired
+from app.infra.cache_policy import current_read_policy
 
 
 EVIDENCE_PAGE_MAX_BYTES = 8192
+EVIDENCE_RECORD_FORMAT = "jira-evidence-v2"
+_ACTOR_FIELDS = ("accountId", "name", "key", "displayName", "self", "timeZone")
+
+
+def _wire_record(row):
+    """Project actor profiles only; shared source-page caches keep their original rows."""
+    result = deepcopy(row)
+    for role in ("author", "updateAuthor"):
+        actor = result.get(role)
+        if isinstance(actor, dict):
+            result[role] = {field: actor[field] for field in _ACTOR_FIELDS if field in actor}
+    return result
 
 
 def _json_size(value):
@@ -30,6 +43,11 @@ def _with_next_call(page):
         next_call = {"name": "get_evidence_page", "arguments": {
             "key": page["key"], "kind": page["kind"], "start_at": start,
             "max_results": page["maxResults"], "record_offset": offset}}
+        policy = current_read_policy()
+        if policy.explicit:
+            # Include the option before byte sizing so copied continuation arguments
+            # retain the requested source age even across oversized record chunks.
+            next_call["arguments"]["cache_mode"] = policy.mode.value
     return {**page, "nextCall": next_call}
 
 
@@ -70,6 +88,7 @@ def _bounded_evidence_page(page, record_offset):
         next_offset = end if end < len(record) else None
         more = next_offset is not None or len(rows) > 1 or page["hasMore"]
         item = {"id": rows[0]["id"], "sourceIndex": page["startAt"],
+                "recordFormat": EVIDENCE_RECORD_FORMAT,
                 "recordJson": record[record_offset:end], "recordOffset": record_offset,
                 "nextRecordOffset": next_offset, "totalCharacters": len(record),
                 "recordSha256": digest}
@@ -201,4 +220,6 @@ def get_evidence_page(client, key, kind="comments", start_at=0, max_results=100,
         page = _history_page(client, key, start_at, max_results)
     else:
         raise ValueError("kind는 comments 또는 history여야 합니다.")
-    return _bounded_evidence_page(page, record_offset)
+    wire = {**page, "recordFormat": EVIDENCE_RECORD_FORMAT,
+            "items": [_wire_record(row) for row in page["items"]]}
+    return _bounded_evidence_page(wire, record_offset)

@@ -9,6 +9,8 @@ import time
 from urllib.parse import parse_qs, urlsplit
 
 from app.auth.base import PermissionDenied, UpstreamError, UpstreamUnavailable
+from app.infra.cache import CacheReadPolicyError
+from app.infra.cache_policy import RequestReadPolicy, current_read_policy, note_read, read_scope
 
 
 def scope_key(client):
@@ -171,11 +173,29 @@ def body(client, cid, version=None, representation="storage", *, prefetch_storag
             client.cache.set_if_fence(storage_key, storage, retention, fence, fetched_at=fetched)
             data['body'].pop('storage', None)
         return data
-    result = cached_read(client, kind, f"/rest/api/content/{cid}",
-                         params, validate, key=key, ttl=ttl, resource_id=cid, load=load)
-    result = copy.deepcopy(result)
-    source = client.cache.metadata(key) or {}
+    policy = current_read_policy()
     current_source = client.cache.metadata(f"confhead:{scope_key(client)}:{cid}:current") or {}
+    source = None
+    if kind == "confbody" and policy.explicit:
+        # Published storage revisions are immutable. The requested policy applies to the
+        # head/permission check above; rereading identical version bytes adds no freshness.
+        with read_scope(strict=True, cache_mode=RequestReadPolicy()) as body_sources:
+            result = cached_read(client, kind, f"/rest/api/content/{cid}",
+                                 params, validate, key=key, ttl=ttl, resource_id=cid, load=load)
+        source = next((row for row in reversed(body_sources) if row.get("kind") == kind), None)
+        if (not source or source.get("invalidated") or source.get("state") != "fresh"
+                or not current_source.get("compliant") or not validate(result)):
+            raise CacheReadPolicyError("Confluence revision freshness could not be verified")
+        note_read(dict(source, immutableRevision=True, revision=version,
+                       requestedCacheMode=policy.mode.value, effectiveCacheMode=policy.mode.value,
+                       maxAgeSeconds=policy.max_age_seconds, compliant=True,
+                       upstreamValidated=current_source.get("upstreamValidated", False),
+                       latestRevisionCheckedAt=current_source.get("fetchedAt")))
+    else:
+        result = cached_read(client, kind, f"/rest/api/content/{cid}",
+                             params, validate, key=key, ttl=ttl, resource_id=cid, load=load)
+    result = copy.deepcopy(result)
+    source = source or client.cache.metadata(key) or {}
     result["cacheInfo"] = {"bodyVersion": version, "bodyFetchedAt": source.get("fetchedAt"),
                            "latestPublishedVersion": current["version"]["number"],
                            "headCheckedAt": current_source.get("fetchedAt"),

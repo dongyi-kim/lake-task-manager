@@ -111,7 +111,7 @@ class JqlCachePolicy:
             prefix = self.index_prefix("issue", generation, event.key)
             keys.update(
                 value
-                for value in self.cache.entries_by_prefix(prefix).values()
+                for value in self.cache.entries_by_prefix(prefix, retained=True).values()
                 if isinstance(value, str)
             )
 
@@ -123,7 +123,7 @@ class JqlCachePolicy:
             prefix = self.index_prefix("field", generation, field)
             keys.update(
                 value
-                for value in self.cache.entries_by_prefix(prefix).values()
+                for value in self.cache.entries_by_prefix(prefix, retained=True).values()
                 if isinstance(value, str)
             )
         return keys

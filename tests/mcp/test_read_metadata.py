@@ -14,7 +14,7 @@ from app.local_mcp import read_metadata
 ])
 def test_worst_source_state_is_never_upgraded_to_fresh(monkeypatch, states, expected):
     @contextmanager
-    def scope(strict=False):
+    def scope(strict=False, cache_mode=None):
         yield [{"state": state, "fetchedAt": 10, "freshUntil": 20, "displayUntil": 30} for state in states]
     monkeypatch.setattr(read_metadata, "read_scope", scope)
     assert read_metadata.read_result(lambda: {}, {}, SimpleNamespace())["cache"]["state"] == expected
@@ -34,9 +34,9 @@ def test_sdk_read_scope_tracks_oldest_source_inside_worker(build_env, monkeypatc
     active = []
     seen = []
     @contextmanager
-    def scope(strict=False):
+    def scope(strict=False, cache_mode=None):
         active.append(True)
-        seen.append(strict)
+        seen.append((strict, cache_mode.mode.value))
         try:
             yield [{"state": "fresh", "fetchedAt": 20, "freshUntil": 40, "displayUntil": 80},
                    {"state": "stale", "fetchedAt": 10, "freshUntil": 30, "displayUntil": 70,
@@ -55,6 +55,8 @@ def test_sdk_read_scope_tracks_oldest_source_inside_worker(build_env, monkeypatc
             assert not result.is_error
             assert result.structured_content["cache"] == {
                 "available": True, "state": "stale", "invalidated": True, "sourceCount": 2,
-                "fetchedAt": 10, "freshUntil": 30, "displayUntil": 70, "policyRevision": 9}
+                "fetchedAt": 10, "freshUntil": 30, "displayUntil": 70, "policyRevision": 9,
+                "requestedCacheMode": "live", "effectiveCacheMode": "live", "maxAgeSeconds": 0,
+                "compliant": False, "upstreamValidated": False, "oldestComponentFetchedAt": 10}
     anyio.run(scenario)
-    assert seen == [True] and not active
+    assert seen == [(True, "live")] and not active

@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 from app.auth.base import (MutationOutcomeUnknown, PermissionDenied, QueryStateChanged, SessionExpired, UpstreamBusy,
                            UpstreamUnavailable)
-from app.infra.cache import Cache
+from app.infra.cache import Cache, CacheReadPolicyError
 from app.infra.cache_policy import CachePolicy, CacheHeadersMiddleware
 from app.jira.jira_client import JiraClient
 from app.infra.settings import STATIC_DIR, get_settings, load_people
@@ -379,6 +379,15 @@ def _on_query_state_changed(request: Request, exc: QueryStateChanged):
     return JSONResponse(
         status_code=503, headers={"Retry-After": "1"},
         content={"error": str(exc), "code": "query_state_changed",
+                 "retryable": True, "needLogin": False})
+
+
+@app.exception_handler(CacheReadPolicyError)
+def _on_cache_policy_unavailable(request: Request, exc: CacheReadPolicyError):
+    """A failed freshness proof is local to this read, without an authentication side effect."""
+    return JSONResponse(
+        status_code=503, headers={"Retry-After": "1"},
+        content={"error": str(exc), "code": "cache_policy_unavailable",
                  "retryable": True, "needLogin": False})
 
 

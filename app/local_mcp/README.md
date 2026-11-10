@@ -238,10 +238,20 @@ Jira 8.20의 expanded changelog가
 실시간 offset/계층 조회는 변경 중 불변 snapshot을 보장하지 않으므로 total·ID 변화를 확인한다.
 권한상 숨겨진 자손은 알 수 없으며 확인된 실패·누락은 별도로 반환한다. 미확인을 0건으로 집계하지 않는다.
 
+`get_evidence_page`의 `recordFormat="jira-evidence-v2"`는 본문·renderedBody·시각·history items와
+visibility 등 비행위자 필드를 그대로 보존한다. `author`와 `updateAuthor`는 각각 실제 제공된
+`accountId/name/key/displayName/self/timeZone`만 보존한다. avatarUrls·emailAddress·active·기타
+프로필 속성을 제외하므로 원래의 전체 Jira actor JSON과는 의미상 호환성 변경이다. 원본 source
+cache나 UI 렌더링은 바꾸지 않는다. 이 도구에는 전체 actor 프로필을 돌려주는 입력 모드가 없다.
+
 새 두 도구의 데이터 페이지는 최대 8KiB다. 댓글·이력 한 건이 너무 크면 `recordJson` 조각과
 `nextRecordOffset`을 반환한다. 같은 `sourceIndex`에서 `max_results=1`, `record_offset`으로 이어 읽고,
-같은 `recordSha256`인지 확인한 뒤 조각을 합쳐 JSON으로 해석한다. 원본 변경으로 hash가 달라지면
-해당 기록을 처음부터 다시 읽는다. 하위 계층의 누락 목록은 `nextMissingStartAt`을 별도로 따라간다.
+같은 `recordFormat`과 `recordSha256`인지 확인한 뒤 조각을 합쳐 JSON으로 해석한다. hash는 선언된
+정규화 레코드의 정확한 JSON에 대한 값이며 제외된 프로필까지 복원한다는 뜻은 아니다. 구형 무표기/v1
+조각과 v2 조각을 섞지 않는다. 지원하는 무표기/v1↔v2 사이 형식 변경이나 같은 지원 형식의 hash
+변경은 해당 기록만 다시 읽고 다른 정상 기록은 보존한다. 알 수 없는 format은 중단하고 지원되지
+않는 수집 형식을 진단한다. 그 기록 하나만 다시 읽어 미지원 수집을 정상화하지 않는다. 하위 계층
+누락은 `nextMissingStartAt`을 따로 따라간다.
 하위 목록은 일반 갱신 간격을 사용하며 완료 티켓 원본의 긴 TTL 때문에 갱신이 지연되지 않는다.
 Epic 탐색은 설정 프로젝트로 제한한 JQL을 사용하며 범위 밖 티켓을 가져오는 Agile fallback은 하지 않는다.
 

@@ -362,8 +362,24 @@ def test_stale_issue_fallback_is_not_promoted_to_a_fresh_batch_hit(monkeypatch):
     assert client.cache.get_stale_at(cache_key)[1] == before[1]
 
 
+def _omit_search_membership(client, monkeypatch, key):
+    """Keep this relationship unknown so the per-parent fallback must actually run."""
+    original = client.provider.get_json
+
+    def incomplete_parent(path, *args, **kwargs):
+        data = original(path, *args, **kwargs)
+        if path == "/rest/api/2/search":
+            for row in data.get("issues", []):
+                if row.get("key") == key:
+                    row.get("fields", {}).pop("subtasks", None)
+        return data
+
+    monkeypatch.setattr(client.provider, "get_json", incomplete_parent)
+
+
 def test_child_membership_auth_failure_is_retryable_not_false_standalone(monkeypatch):
     client = _client()
+    _omit_search_membership(client, monkeypatch, "DL-9020")
     original = client.direct_child_keys
 
     def expired(key, **kwargs):
@@ -387,6 +403,7 @@ def test_child_membership_auth_failure_is_retryable_not_false_standalone(monkeyp
 
 def test_progressive_stream_classifies_child_membership_transport_without_aborting(monkeypatch):
     client = _client()
+    _omit_search_membership(client, monkeypatch, "DL-9020")
     original = client.direct_child_keys
 
     def disconnected(key, **kwargs):

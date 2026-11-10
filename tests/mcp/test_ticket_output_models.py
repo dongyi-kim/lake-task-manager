@@ -230,10 +230,13 @@ def test_known_nested_fields_cannot_silently_coerce_or_disappear(name, value):
 
 def test_evidence_chunk_requires_digest_and_real_numeric_offsets():
     data = {"id": "1", "sourceIndex": 0, "recordJson": "partial", "recordOffset": 0,
-            "nextRecordOffset": 7, "totalCharacters": 30, "recordSha256": "abc"}
+            "nextRecordOffset": 7, "totalCharacters": 30, "recordSha256": "abc",
+            "recordFormat": "jira-evidence-v2"}
     EvidenceChunk.model_validate(data)
     with pytest.raises(ValidationError):
         EvidenceChunk.model_validate({**data, "recordOffset": "0"})
+    with pytest.raises(ValidationError):
+        EvidenceChunk.model_validate({**data, "recordFormat": "future"})
     del data["recordSha256"]
     with pytest.raises(ValidationError):
         EvidenceChunk.model_validate(data)

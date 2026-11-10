@@ -40,7 +40,9 @@ def test_failed_child_is_counted_not_swallowed(client, monkeypatch):
 
 def test_issues_by_keys_counts_missing(client, monkeypatch):
     client.miss_begin()
-    monkeypatch.setattr(client, "get_issue", lambda k: (_ for _ in ()).throw(RuntimeError("x")))
-    out = client.issues_by_keys(["DL-9001", "DL-9002"])
+    # Both batch prefetch and scalar fallback must actually fail; successful prefetched
+    # rows are usable even when no scalar getter is needed.
+    monkeypatch.setattr(client.provider, "get_json", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("x")))
+    out = client.issues_by_keys(["DL-88899001", "DL-88899002"])
     assert out == []
     assert client.miss_count() == 2
