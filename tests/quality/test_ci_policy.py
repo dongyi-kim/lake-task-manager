@@ -1,5 +1,7 @@
 """CI는 결정적 코드 test만 자동화하고 유료·외부 API 배터리는 수동으로 유지한다."""
 
+import shlex
+
 from support.paths import REPO_ROOT
 
 
@@ -13,19 +15,29 @@ def test_code_test_workflow_runs_full_offline_suite_on_pr_and_main():
     assert "types: [opened, synchronize, reopened, ready_for_review]" in text
     assert "branches: [main]" in text
     assert "JIRA_ENV: mock" in text
-    assert "mkdir -p .cache/test-tmp" in text
-    assert "python -m pytest -q --basetemp=.cache/test-tmp/ci" in text
     assert "requirements-test.txt" in text
     assert "actions/checkout@v5" in text
     assert "actions/setup-python@v6" in text
-    command = "python -m pytest -q --basetemp=.cache/test-tmp/ci --durations=30 -ra --junitxml=.cache/test-results/pytest.xml"
-    assert command in text
+    assert "fetch-depth: 0" in text
+    assert "timeout-minutes: 30" in text
+    assert 'owned_root=$(mktemp -d "$runner_root/ltm-tests.XXXXXXXX")' in text
+    assert 'export TMPDIR="$scratch/tmp"' in text
+    command = ('python -m pytest -q --basetemp="$TMPDIR/cases" -o "cache_dir=$scratch/cache" '
+               '--durations=30 -ra --junitxml="$owned_root/results/pytest.xml"')
+    commands = [line.strip() for line in text.replace("\\\n", "").splitlines()
+                if line.strip().startswith("python -m pytest ")]
+    # Exactly one unfiltered whole-suite command; extra test paths/-k would narrow coverage.
+    assert [shlex.split(line) for line in commands] == [shlex.split(command)]
     assert command in (ROOT / "docs" / "TESTING.md").read_text(encoding="utf-8")
-    assert "if: always()" in text
+    assert 'trap cleanup_scratch EXIT' in text
+    assert text.count("if: always()") == 2  # Upload results, then clean their owned OS root.
     assert "actions/upload-artifact@v7" in text
     assert "name: code-tests-results" in text
-    assert "path: .cache/test-results/pytest.xml" in text
+    assert 'path: ${{ env.LTM_CI_TEST_ROOT }}/results/pytest.xml' in text
     assert "include-hidden-files: true" in text
+    assert "name: Clean test results" in text
+    assert 'target=$(realpath -e "$LTM_CI_TEST_ROOT")' in text
+    assert '"$(dirname "$target")" != "$runner_root"' in text
 
 
 def test_code_test_workflow_never_runs_real_api_batteries_or_secrets():

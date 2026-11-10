@@ -69,7 +69,7 @@ jobs:
           export TMPDIR="$scratch/tmp"
           export LAKE_CACHE_DIR="$scratch/runtime"
           export CACHE_DB_PATH="$scratch/runtime/cache.sqlite3"
-          python -m pytest -q --basetemp="$scratch/cases" -o "cache_dir=$scratch/cache" \
+          python -m pytest -q --basetemp="$TMPDIR/cases" -o "cache_dir=$scratch/cache" \
             --durations=30 -ra --junitxml="$owned_root/results/pytest.xml"
 
       - name: Upload test results
