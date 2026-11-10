@@ -15,7 +15,9 @@ def _investigation(tmp_path, count):
     root.mkdir()
     # Private investigation artifacts, not repository/source copies. Reverse
     # insertion prevents directory iteration order from satisfying sorted output.
-    paths = [f"evidence/{index:03d}-{'근거단계' * 24}.json" for index in range(count)]
+    # Each component stays below Linux's 255-byte limit; the complete Unicode
+    # inventory still exceeds the MCP page budget and exercises byte accounting.
+    paths = [f"evidence/{index:03d}-{'근거단계' * 16}.json" for index in range(count)]
     for path in reversed(paths):
         target = root / path
         target.parent.mkdir(exist_ok=True)
