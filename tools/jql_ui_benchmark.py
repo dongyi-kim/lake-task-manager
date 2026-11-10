@@ -12,6 +12,7 @@ import importlib.metadata
 import json
 import os
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -41,10 +42,23 @@ HTTP_REQUEST_STARTS = []
 HTTP_STREAM = None
 PAGE_SEQUENCE = 0
 ACTION_SEQUENCE = 0
+_OWNERSHIP_TOKEN = None
+
+
+def _ownership_token(value=None):
+    token = _OWNERSHIP_TOKEN if value is None else value
+    if not isinstance(token, str) or not token or not token.isascii():
+        raise ValueError("An explicit benchmark owner token is required")
+    return token
+
+
+def _redact_owner(text):
+    return text.replace(_OWNERSHIP_TOKEN, "[redacted]") if _OWNERSHIP_TOKEN else text
 
 
 def request(path, method="GET", *, timeout=15):
-    req = urllib.request.Request(BASE + path, method=method)
+    req = urllib.request.Request(BASE + path, method=method,
+                                 headers={"X-LTM-Benchmark-Owner": _ownership_token()})
     with urllib.request.urlopen(req, timeout=timeout) as response:
         return json.load(response)
 
@@ -114,13 +128,14 @@ def stop_owned_server(process):
         process.wait(timeout=10)
 
 
-def child_environment(repo, scratch, config, bootstrap, latency, source=None):
+def child_environment(repo, scratch, config, bootstrap, latency, source=None, *, ownership_token=None):
     env = dict(os.environ if source is None else source)
     paths = [str(bootstrap), str(repo)] + [part for part in env.get("PYTHONPATH", "").split(os.pathsep) if part]
     env.update(JIRA_ENV="mock", APP_HOST="127.0.0.1", APP_PORT="4457", CONFIG_DIR=str(config),
                LAKE_CACHE_DIR=str(scratch / "runtime"), CACHE_DB_PATH=str(scratch / "runtime.sqlite3"),
                LAKE_MOCK_LATENCY_MS=str(latency), LAKE_NO_WINDOW="1", PYTHONUTF8="1",
-               PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=os.pathsep.join(dict.fromkeys(paths)))
+               PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=os.pathsep.join(dict.fromkeys(paths)),
+               JQL_UI_OWNER_TOKEN=_ownership_token(ownership_token))
     return env
 
 
@@ -626,7 +641,8 @@ def classify_recovered_reads(errors, http, failures, rows, world_hash, request_s
 
 def new_page(browser, repo, errors):
     global PAGE_SEQUENCE
-    context = browser.new_context(viewport={'width':1600,'height':1000})
+    context = browser.new_context(viewport={'width':1600,'height':1000},
+                                  extra_http_headers={"X-LTM-Benchmark-Owner": _ownership_token()})
     guide_ids = re.findall(r'id:\s*"([^"]+)"', (repo/'app/static/lib/guides.js').read_text(encoding='utf-8'))
     context.add_init_script("localStorage.setItem('lake.guides.seen',"+json.dumps(json.dumps(guide_ids))+");")
     # Use CacheMemo's existing injected clock only. Keep browser clocks, throttles,
@@ -738,7 +754,7 @@ def scenario_coverage_complete(result):
 
 def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, reverse=False,
            keep_server=False, rapid=False, mutation=False, generic=False, timeout=60, browser_pin=None):
-    global EVIDENCE_DIR, RAW_STREAM, HTTP_STREAM, UI_TIMEOUT, PAGE_SEQUENCE, ACTION_SEQUENCE
+    global EVIDENCE_DIR, RAW_STREAM, HTTP_STREAM, UI_TIMEOUT, PAGE_SEQUENCE, ACTION_SEQUENCE, _OWNERSHIP_TOKEN
     if keep_server:
         raise ValueError("--keep-server is incompatible with owned process/scratch cleanup")
     repo = Path(repo).resolve()
@@ -772,6 +788,7 @@ def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, r
     process, log, scratch_path = None, None, None
     RAW_STREAM = (output / "rows.jsonl").open("x", encoding="utf-8")
     HTTP_STREAM = (output / "http.jsonl").open("x", encoding="utf-8")
+    previous_owner, _OWNERSHIP_TOKEN = _OWNERSHIP_TOKEN, secrets.token_urlsafe(32)
     try:
         with tempfile.TemporaryDirectory() as scratch:
             scratch_path = Path(scratch)
@@ -835,13 +852,13 @@ def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, r
                         result["finalMetrics"] = request('/__jql_benchmark')
                         result["finalHealth"] = request('/api/health')
                     except Exception as error:
-                        result["finalMetricsError"] = repr(error)
+                        result["finalMetricsError"] = _redact_owner(repr(error))
                     stop_owned_server(process)
                     result["ownedProcessStopped"] = process.poll() is not None
                 if log:
                     log.close()
     except BaseException as error:
-        result.update(uiPass=False, error=repr(error))
+        result.update(uiPass=False, error=_redact_owner(repr(error)))
     finally:
         RAW_STREAM.close()
         RAW_STREAM = None
@@ -856,6 +873,8 @@ def run_ui(repo, output, *, latency=0, cold=1, warm=1, journeys=1, smoke=True, r
             result["port4457Closed"] = False
         except OSError:
             result["port4457Closed"] = True
+        finally:
+            _OWNERSHIP_TOKEN = previous_owner
         result["observationComplete"] = observation_complete(result)
         business_rows = [row for row in rows if "completeMs" in row]
         result["businessCaptureComplete"] = bool(business_rows) and all(

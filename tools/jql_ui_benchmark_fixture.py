@@ -7,6 +7,7 @@ import json
 import math
 import os
 from pathlib import Path
+import secrets
 import threading
 import time
 from urllib.parse import urlsplit
@@ -15,6 +16,36 @@ from urllib.parse import urlsplit
 ETL = [f"etl.user{index:02d}" for index in range(8)]
 CATALOG = ETL
 LOGICAL_NOW = datetime(2026, 11, 10, 23, 59, 59, tzinfo=timezone(timedelta(hours=9)))
+
+
+class RunOwnershipGuard:
+    """Reject unrelated HTTP before handlers without buffering owned streams."""
+    def __init__(self, app, *, token, counter=None):
+        if not isinstance(token, str) or not token or not token.isascii():
+            raise ValueError("An explicit ASCII benchmark owner token is required")
+        self.app, self._token = app, token.encode("ascii")
+        self._counter, self._lock = counter if counter is not None else ({"blocked": 0}, threading.Lock())
+
+    @property
+    def blocked_requests(self):
+        with self._lock:
+            return self._counter["blocked"]
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = scope.get("headers") or ()
+        owners = [value for name, value in headers if name.lower() == b"x-ltm-benchmark-owner"]
+        host = next((value for name, value in headers if name.lower() == b"host"), b"")
+        if (len(owners) != 1 or not secrets.compare_digest(owners[0], self._token)
+                or host.split(b":", 1)[0] != b"127.0.0.1"):
+            with self._lock:
+                self._counter["blocked"] += 1
+            from starlette.responses import JSONResponse
+            await JSONResponse({"detail": "Unowned benchmark request"}, status_code=403)(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
 
 
 class CacheClock:
@@ -141,6 +172,9 @@ def settlement_response(request, ledger):
 def install():
     if os.environ.get("JIRA_ENV") != "mock" or os.environ.get("APP_PORT") != "4457":
         raise RuntimeError("Benchmark requires mock and the fixed port 4457")
+    owner = os.environ.get("JQL_UI_OWNER_TOKEN")
+    # Validate before importing the app or constructing any provider/world.
+    RunOwnershipGuard(None, token=owner)
     import webbrowser
     webbrowser.open = lambda *_args, **_kwargs: False
     from tools.codex_mcp_eval.etl import build_etl_world
@@ -193,18 +227,19 @@ def install():
     from app import main
     from starlette.responses import JSONResponse
     from starlette.routing import Route
-    @main.app.middleware("http")
-    async def isolated_browser(request, call_next):
-        if request.headers.get("host", "").split(":", 1)[0] != "127.0.0.1":
-            return JSONResponse({"detail": "Isolated benchmark: use 127.0.0.1"}, status_code=503)
-        return await call_next(request)
+    ownership = ({"blocked": 0}, threading.Lock())
+    main.app.add_middleware(RunOwnershipGuard, token=owner, counter=ownership)
     def metrics(request):
         if request.client.host not in ("127.0.0.1", "::1"):
             return JSONResponse({}, status_code=403)
+        with ownership[1]:
+            blocked = ownership[0]["blocked"]
         return JSONResponse({"pid": os.getpid(), "worldHash": bundle.manifest["data_sha256"],
             "manifest": bundle.manifest, "issueCount": len(world.issues), "logicalClock": LOGICAL_NOW.isoformat(),
             "etlPeople": len(ETL), "currentUser": ETL[0], "requests": ledger.snapshot(), "cache": {},
             "observerCoverage": "all provider TestClient.request dispatches; cache counters not observed",
+            "ownership": {"contract": "run-owned-http-v1", "required": True, "foreignBlockedHttpRequests": blocked,
+                          "blockedRequestsAreProviderRest": False},
             "providerIssueCounts": [len(provider._client.app.state.store.issues) for provider in providers]})
     def settle(request):
         return settlement_response(request, ledger)

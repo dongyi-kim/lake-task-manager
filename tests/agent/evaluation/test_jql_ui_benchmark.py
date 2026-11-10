@@ -53,7 +53,8 @@ def test_actual_ui_bootstrap_initializes_full_public_provider_status_scheme(tmp_
     wire = tmp_path / "wire"
     wire.mkdir()
     source = dict(runner.os.environ, PYTHONPATH=runner.os.pathsep.join(sys.path))
-    env = runner.child_environment(repo, tmp_path, config, bootstrap, 0, source)
+    env = runner.child_environment(repo, tmp_path, config, bootstrap, 0, source,
+                                   ownership_token="explicit-unit-owner")
     env["JQL_UI_WIRE_DIR"] = str(wire)
     reopened = sorted((key for key, row in bundle.world.issues.items() if row["statusName"] == "Reopened"),
                       key=lambda key: int(key.split("-")[1]))
@@ -61,7 +62,7 @@ def test_actual_ui_bootstrap_initializes_full_public_provider_status_scheme(tmp_
     expected = {"hash": bundle.manifest["data_sha256"], "issueCount": len(bundle.world.issues),
                 "reopenedCount": len(reopened), "firstKeys": reopened[:10]}
     script = textwrap.dedent('''
-        import json, sys
+        import json, os, sys
         from fastapi.testclient import TestClient
         # Python loaded bootstrap/sitecustomize.py before this script. Do not call
         # install or the status adapter manually: this exercises the actual entry.
@@ -69,7 +70,8 @@ def test_actual_ui_bootstrap_initializes_full_public_provider_status_scheme(tmp_
         from app import main
         expected = json.load(sys.stdin)
         provider = main._client.provider
-        app_client = TestClient(main.app, base_url='http://127.0.0.1', client=('127.0.0.1', 50000))
+        app_client = TestClient(main.app, base_url='http://127.0.0.1', client=('127.0.0.1', 50000),
+            headers={'X-LTM-Benchmark-Owner': os.environ['JQL_UI_OWNER_TOKEN']})
         try:
             raw = provider._client
             store = raw.app.state.store
@@ -139,7 +141,7 @@ def test_child_environment_preserves_dependency_overlay_and_scratch_cache(tmp_pa
     from tools import jql_ui_benchmark as runner
     repo = Path(__file__).resolve().parents[3]
     environment = runner.child_environment(repo, tmp_path, tmp_path / "config", tmp_path / "bootstrap", 0,
-                                          {"PYTHONPATH": "pinned-overlay"})
+                                          {"PYTHONPATH": "pinned-overlay"}, ownership_token="explicit-unit-owner")
     assert "pinned-overlay" in environment["PYTHONPATH"].split(runner.os.pathsep)
     assert Path(environment["LAKE_CACHE_DIR"]).is_relative_to(tmp_path)
     assert Path(environment["CACHE_DB_PATH"]).is_relative_to(tmp_path)
@@ -462,6 +464,7 @@ def test_requestfailed_cancellation_is_retained_unclassified_without_recovered_l
 
 def test_observer_preserves_request_start_page_action_and_finish_through_response_reordering(monkeypatch):
     from tools import jql_ui_benchmark as runner
+    monkeypatch.setattr(runner, "_OWNERSHIP_TOKEN", "explicit-unit-owner")
     clock = [10.]
     handlers = {}
     class Page:

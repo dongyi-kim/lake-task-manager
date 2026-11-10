@@ -192,6 +192,10 @@ def main():
     p.add_argument('--mutation',action='store_true')
     p.add_argument('--generic',action='store_true')
     args=p.parse_args()
+    owner = os.environ.get("JQL_UI_OWNER_TOKEN")
+    if not owner:
+        raise ValueError("Standalone edge checks require an explicit benchmark owner token in the environment")
+    harness._OWNERSHIP_TOKEN = harness._ownership_token(owner)
     from tools.codex_mcp_eval.etl import build_etl_world
     bundle = build_etl_world()
     assert request('/__jql_benchmark')['worldHash'] == bundle.manifest['data_sha256']
@@ -226,7 +230,7 @@ def main():
             harness.NETWORK_FAILURES, rows, bundle.manifest['data_sha256'], harness.HTTP_REQUEST_STARTS)
         assert result['recoveryClassification']['complete'], result['recoveryClassification']
     except BaseException as exc:
-        result['error']=repr(exc)
+        result['error']=harness._redact_owner(repr(exc))
         raise
     finally:
         harness.HTTP_STREAM.close(); harness.HTTP_STREAM = None

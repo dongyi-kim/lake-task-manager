@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import secrets
 import socket
 import subprocess
 import sys
@@ -249,9 +250,18 @@ async def send_http(method, url, headers, data, timeout):
 
 class Transport:
     """One HTTP attempt per operation; retain exact sanitized request/response bodies."""
-    def __init__(self, attempt, deadline):
+    def __init__(self, attempt, deadline, *, ownership_token):
+        if not isinstance(ownership_token, str) or not ownership_token or not ownership_token.isascii():
+            raise ValueError("An explicit benchmark owner token is required")
         self.attempt, self.deadline, self.rows = attempt, deadline, []
         self.token, self.version, self.phase = "", "2025-06-18", "preflight"
+        self._ownership_token = ownership_token
+
+    def _redact(self, text):
+        for token in (self.token, self._ownership_token):
+            if token:
+                text = text.replace(token, "[redacted]")
+        return text
 
     def event(self, row):
         self.attempt.record(row)
@@ -262,7 +272,8 @@ class Transport:
         self.rows.append(row)
         self.event({**row, "event": "start"})
         started = time.perf_counter()
-        headers = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
+        headers = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json",
+                   "X-LTM-Benchmark-Owner": self._ownership_token}
         if rpc_method:
             headers.update(Authorization="Bearer " + self.token, **{"MCP-Protocol-Version": self.version})
         try:
@@ -276,7 +287,7 @@ class Transport:
                     None if body is None else json.dumps(body).encode("utf-8"), timeout), timeout)
             row["httpStatus"], text = asyncio.run(exchange())
             # Never persist the bearer credential, including unexpected error echoes.
-            text = text.replace(self.token, "[redacted]") if self.token else text
+            text = self._redact(text)
             try:
                 row["response"] = json.loads(text) if text else None
             except ValueError:
@@ -286,8 +297,7 @@ class Transport:
                 raise RuntimeError(f"HTTP {row['httpStatus']} at {path}")
             return row["response"]
         except Exception as error:
-            row["error"] = {"type": type(error).__name__, "message": str(error).replace(self.token, "[redacted]")
-                            if self.token else str(error)}
+            row["error"] = {"type": type(error).__name__, "message": self._redact(str(error))}
             raise
         finally:
             row.update(done=True, durationMs=round((time.perf_counter() - started) * 1000, 3))
@@ -449,7 +459,8 @@ def run(repo, output, *, arm, dependency_label, overall_timeout=900, per_call_ti
     started = time.perf_counter()
     scratch_path, verifier = None, None
     with RawAttempt(output, manifest) as attempt:
-        transport = Transport(attempt, deadline)
+        ownership_token = secrets.token_urlsafe(32)
+        transport = Transport(attempt, deadline, ownership_token=ownership_token)
         fault_log = output / "faults.jsonl"
         fault_log.touch(exist_ok=False)
         try:
@@ -472,7 +483,7 @@ def run(repo, output, *, arm, dependency_label, overall_timeout=900, per_call_ti
                 (bootstrap / "sitecustomize.py").write_text(
                     "from tools.jql_process_restart_benchmark import install\ninstall()\n", encoding="utf-8")
                 (output / "wire").mkdir()
-                env = child_environment(repo, scratch_path, config, bootstrap, 0)
+                env = child_environment(repo, scratch_path, config, bootstrap, 0, ownership_token=ownership_token)
                 env.update(LAKE_REV=identity["commit"], JQL_UI_WIRE_DIR=str(output / "wire"),
                            JQL_RESTART_ARMED=str(scratch_path / "fault-armed"), JQL_RESTART_FAULT_LOG=str(fault_log))
                 transport.token = Credentials(scratch_path / "runtime/local_mcp_secret.json").token()
@@ -499,7 +510,7 @@ def run(repo, output, *, arm, dependency_label, overall_timeout=900, per_call_ti
                         verifier.add(payload["data"])
                     phase["paginationSettlement"] = require_settled(transport.http("/__jql_benchmark/settle", "POST"))
         except BaseException as error:
-            result["error"] = {"type": type(error).__name__, "message": str(error)}
+            result["error"] = {"type": type(error).__name__, "message": transport._redact(str(error))}
         finally:
             result["membership"] = verifier.result() if verifier else {"complete": False}
             result["scratchRemoved"] = scratch_path is None or not scratch_path.exists()

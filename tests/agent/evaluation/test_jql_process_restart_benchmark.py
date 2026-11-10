@@ -229,7 +229,8 @@ def test_protocol_call_has_one_wall_deadline_and_preserves_timeout_without_retry
         dispatched.append(args)
         await asyncio.sleep(.1)
     monkeypatch.setattr(runner, "send_http", slow_http)
-    transport = runner.Transport(SimpleNamespace(record=evidence.append), runner.Deadline(1, .01))
+    transport = runner.Transport(SimpleNamespace(record=evidence.append), runner.Deadline(1, .01),
+                                 ownership_token="explicit-unit-owner")
     with pytest.raises(TimeoutError):
         transport.rpc("tools/list")
     assert len(dispatched) == 1
