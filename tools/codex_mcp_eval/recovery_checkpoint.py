@@ -6,9 +6,14 @@ from tools.codex_mcp_eval.work_recovery import (
 
 
 def checkpoint_nodes(value, group=None):
-    """Carry only an immediate groups map key, never a sibling/ancestor identity."""
+    """Traverse wrappers; each local binding is one indivisible candidate."""
     if isinstance(value, dict):
         yield value, group
+        # Arguments, references and arbitrary descendants belong to this
+        # binding. Reconsidering them alone would discard its rejected identity.
+        if group is not None or any(field in value for field in (
+                "arguments", "lastSavedArguments", "lastSaved", "lastChunk")):
+            return
         for name, child in value.items():
             if name == "groups" and isinstance(child, dict):
                 for key, node in child.items():
@@ -18,8 +23,11 @@ def checkpoint_nodes(value, group=None):
                         if found and kind in {"comments", "history"} and issue and not any(
                                 part in issue for part in ("/", ":")):
                             constraint = {"name": "get_evidence_page", "key": issue, "kind": kind}
-                    yield from checkpoint_nodes(node, constraint)
-            else:
+                    if isinstance(node, dict):
+                        yield node, constraint
+            # An overall run state may contain independent explicit groups,
+            # but its other descendants are not new checkpoint candidates.
+            elif name == "groups" or not any(field in value for field in ("status", "state")):
                 yield from checkpoint_nodes(child)
     elif isinstance(value, list):
         for child in value:

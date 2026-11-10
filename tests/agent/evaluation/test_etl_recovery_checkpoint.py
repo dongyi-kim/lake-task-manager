@@ -138,6 +138,59 @@ def test_local_identity_conflicts_cannot_borrow_matching_global_response(tmp_pat
     assert controller.trigger is None and not controller.stop.is_set()
 
 
+@pytest.mark.parametrize("container", ["arguments", "lastSavedArguments", "arbitrary"])
+@pytest.mark.parametrize("conflict", ["wrong-map", "conflicting-parent", "wrong-reference"])
+def test_nested_completion_cannot_rehabilitate_a_rejected_binding(tmp_path, sources, container, conflict):
+    calls = [*sources["comments"], *sources["other"]]
+    controller, files = saved_controller(tmp_path, calls)
+    child = {"status": "complete", "key": "DL-31005", "kind": "comments"}
+    node = {"status": "complete", "key": "DL-31005", "kind": "comments", container: child}
+    map_key = "comments/DL-31005"
+    if conflict == "wrong-map":
+        map_key = "history/DL-31001"
+    elif conflict == "conflicting-parent":
+        node.update(key="DL-31001", kind="history")
+    else:
+        node["lastChunk"] = "evidence/page-2.json"  # Genuine bytes for another group.
+    files.write_file("progress.json", json.dumps({"groups": {map_key: node}}))
+    assert controller.trigger is None and not controller.stop.is_set()
+
+
+@pytest.mark.parametrize("container", ["arguments", "lastSavedArguments", "arbitrary"])
+@pytest.mark.parametrize("conflict", ["wrong-map", "conflicting-parent", "wrong-reference"])
+def test_nested_pending_cannot_override_the_next_valid_failed_group(tmp_path, sources, container, conflict):
+    calls = [*sources["comments"], *sources["other"], *sources["search"]]
+    controller, files = saved_controller(tmp_path, calls)
+    child = {"state": "pending", "key": "DL-31005", "kind": "comments"}
+    node = {"state": "pending", "key": "DL-31005", "kind": "comments", container: child}
+    map_key = "comments/DL-31005"
+    if conflict == "wrong-map":
+        map_key = "history/DL-31001"
+    elif conflict == "conflicting-parent":
+        node.update(key="DL-31001", kind="history")
+    else:
+        # A rejected completed binding cannot donate its child's pending identity.
+        node.update(state="complete", lastChunk="evidence/page-2.json")
+    search = completed(sources["search"], "flat")["groups"]["search"]
+    files.write_file("progress.json", json.dumps({"groups": {map_key: node, "search": search,
+        "history/DL-31002": {"state": "pending"}}}))
+    assert controller.stop.is_set() and controller.trigger
+    assert controller.trigger["failedGroup"] == {"key": "DL-31002", "kind": "history"}
+
+
+@pytest.mark.parametrize("field", ["status", "state"])
+@pytest.mark.parametrize("shape", ["flat", "local-arguments", "local-reference"])
+def test_overall_run_state_preserves_explicit_groups_without_promoting_metadata(tmp_path, sources, field, shape):
+    calls = sources["comments"]
+    controller, files = saved_controller(tmp_path, calls)
+    checkpoint = {field: "collecting", "arbitrary": {
+        "state": "pending", "key": "DL-31001", "kind": "history"},
+        "groups": completed(calls, shape)["groups"]}
+    files.write_file("progress.json", json.dumps(checkpoint))
+    assert controller.stop.is_set() and controller.trigger
+    assert controller.trigger["failedGroup"] == {"key": "DL-31006", "kind": "comments"}
+
+
 @pytest.mark.parametrize("damage", ["unsaved", "altered", "failed", "reference-missing", "reference-outside",
                                   "reference-traversal", "reference-near-evidence"])
 def test_reference_requires_exact_successful_saved_bytes(tmp_path, sources, damage):
