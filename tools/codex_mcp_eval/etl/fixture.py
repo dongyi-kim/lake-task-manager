@@ -50,10 +50,13 @@ class EtlFixture(EvaluationFixture):
         from app.infra import settings
         from app.local_mcp import runtime as runtime_module
         from .skills import research_catalog
+        from .status_history_search import install_status_history_search
         base = fixture.World
         public = self.bundle.world
 
         class PublicWorld(base):
+            ME = public.ME
+
             def __init__(world, *args, **kwargs):
                 for name, value in vars(public).items():
                     setattr(world, name, deepcopy(value))
@@ -76,6 +79,7 @@ class EtlFixture(EvaluationFixture):
             for name in ("issues", "users", "confluence", "attachments", "activity", "sprints"):
                 setattr(self.store, name, deepcopy(getattr(public, name)))
             self.store.reindex()
+            self.store.config.current_user = public.ME
             self.store.denied_issue_keys = {"DL-21001"} if self.fault == "partial" else set()
             # Preserve the same timestamp and ordered-comment adaptations used
             # by ReportingFixture, without installing that older fixture world.
@@ -96,6 +100,8 @@ class EtlFixture(EvaluationFixture):
                         "comments": rows[startAt:startAt + maxResults]}
 
             upstream = self.provider._client.app
+            self.status_history_search = install_status_history_search(upstream,
+                observed_until=self.bundle.spec.observed_until, search_timezone=self.bundle.manifest["timezone"])
             upstream.add_api_route("/rest/api/2/issue/{key}/comment", ordered_comments, methods=["GET"])
             upstream.router.routes.insert(0, upstream.router.routes.pop())
             state = install_confluence(upstream)
@@ -135,10 +141,12 @@ class EtlFixture(EvaluationFixture):
 
     def fingerprint(self):
         result = super().fingerprint()
-        result["worldSha256"] = _hash([result["worldSha256"], self.world.users, self.world.plan])
+        result["worldSha256"] = _hash([result["worldSha256"], self.world.users, self.world.plan,
+                                      getattr(self.world, "ME", None)])
         state = getattr(self.provider._client.app.state, "confluence", None)
         result["providerStoreSha256"] = _hash([result["providerStoreSha256"], self.store.users,
-                                              state.snapshot() if state else None])
+                                              state.snapshot() if state else None,
+                                              getattr(getattr(self.store, "config", None), "current_user", None)])
         return result
 
     def ground_truth(self):
@@ -165,12 +173,50 @@ class EtlFixture(EvaluationFixture):
         comments = raw.get("/rest/api/2/issue/DL-31000/comment", params={"maxResults": 100, "startAt": 200,
             "orderBy": "created"}).json()
         assert comments["total"] > 200 and any("RUN-CUSTOMERS" in row["body"] for row in comments["comments"])
+        # Probe the public long-dormant Task on a day before its first status
+        # transition. A silently ignored WAS predicate would pass the positive
+        # search but incorrectly return the same key for the negative search.
+        from datetime import datetime, timedelta
+        import json
+        from zoneinfo import ZoneInfo
+        identity = raw.get("/rest/api/2/myself")
+        assert identity.status_code == 200, identity.text
+        actor = identity.json()
+        assert actor["name"] == self.bundle.manifest["currentUser"]
+        assert actor["timeZone"] == self.bundle.manifest["timezone"]
+        task = raw.get("/rest/api/2/issue/DL-21010", params={"expand": "changelog"})
+        assert task.status_code == 200, task.text
+        task = task.json()
+        history = task["changelog"]
+        assert history["startAt"] == 0 and history["total"] == len(history["histories"])
+        transitions = [(datetime.fromisoformat(row["created"]), item)
+                       for row in history["histories"] for item in row["items"]
+                       if item.get("field") == "status"]
+        changed, item = min(transitions, key=lambda pair: pair[0])
+        day = changed.astimezone(ZoneInfo(actor["timeZone"])).date() - timedelta(days=1)
+        assert datetime.fromisoformat(task["fields"]["created"]).date() < day
+        assert item["fromString"] != item["toString"]
+        probes = []
+        for status, wanted in ((item["fromString"], ["DL-21010"]), (item["toString"], [])):
+            jql = (f'key = DL-21010 AND status WAS {json.dumps(status)} '
+                   f'DURING ("{day}", "{day}")')
+            response = raw.get("/rest/api/2/search", params={"jql": jql})
+            assert response.status_code == 200, response.text
+            found = response.json()
+            assert [row["key"] for row in found["issues"]] == wanted and found["total"] == len(wanted)
+            probes.append({"jql": jql, "keys": wanted})
+        unsupported = raw.get("/rest/api/2/search", params={
+            "jql": 'key = DL-21010 OR status WAS Open BY unsupportedActor'})
+        assert unsupported.status_code == 400, unsupported.text
         for identity, page_id in self.document_ids.items():
             response = raw.get("/rest/api/content/" + page_id, params={"expand": "body.storage,version"})
             assert response.status_code == 200 and response.json()["title"] == self.bundle.documents[identity]["title"]
         assert not self.upstream_calls
         return {"cacheWarmed": False, "etlIssueCount": len(actual), "documents": dict(self.document_ids),
                 "dataManifest": deepcopy(self.bundle.manifest), "skillCondition": self.skill_condition,
+                "statusHistorySearch": {"contract": self.status_history_search.contract, "probes": probes,
+                                        "unsupportedStatus": unsupported.status_code,
+                                        "currentUser": actor["name"], "timeZone": actor["timeZone"]},
                 "researchFiles": self.files is not None}
 
     def close(self):
@@ -179,6 +225,9 @@ class EtlFixture(EvaluationFixture):
         finally:
             # Only this fixture's verified, randomly allocated OS scratch is
             # removed. Shared investigation files belong to the run owner.
+            installation = getattr(self, "status_history_search", None)
+            if installation is not None and not (self._thread and self._thread.is_alive()):
+                installation.uninstall()
             target = self._scratch.resolve()
             if target.parent != Path(tempfile.gettempdir()).resolve():
                 raise RuntimeError("ETL scratch escaped the OS temporary directory")

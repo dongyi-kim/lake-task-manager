@@ -195,18 +195,22 @@ class EventOracle:
             report = event.payload
             for item in report["items"]:
                 context = {**report["report_context"], **item.get("context", {})}
-                for claim in item["claims"]:
+
+                def visible_claim(claim):
                     occurred = claim["occurred_at"]
                     if occurred is not None and occurred >= at:
-                        continue
+                        return False
                     if occurred is None:
                         if report["period_end"] > at:
-                            continue
+                            return False
                         # A correction can withdraw a past assertion without dating
                         # its new pending decision/plan to that assertion's period.
                         if claim.get("period_bound") is False and event.recorded_at >= at:
-                            continue
-                    candidates, proofs = [], list(event.sources)
+                            return False
+                    return True
+
+                def matching_keys(claim):
+                    candidates = []
                     for key, (profile, issue) in profiles.items():
                         if item.get("jira_keys") and key not in item["jira_keys"]:
                             continue
@@ -223,12 +227,33 @@ class EventOracle:
                         if report["period_end"] <= issue.occurred_at:
                             continue
                         candidates.append(key)
-                        proofs.extend(issue.sources)
+                    return candidates
+
+                for claim in item["claims"]:
+                    if not visible_claim(claim):
+                        continue
+                    candidates = matching_keys(claim)
+                    scope_only = False
+                    if not candidates and claim["stage"] == "plan" and claim["deliverable"] in item["text"]:
+                        # A literal activity plan can share its numbered item's
+                        # publicly matched scope, but never inherits acceptance,
+                        # deliverable membership or another item's association.
+                        candidates = sorted({key for companion in item["claims"]
+                            if companion["stage"] in {"implementation", "test_acceptance", "final_acceptance"}
+                            and companion["deliverable"] in item["text"] and visible_claim(companion)
+                            for key in matching_keys(companion)})
+                        scope_only = bool(candidates)
+                    proofs = list(event.sources)
+                    for key in candidates:
+                        proofs.extend(profiles[key][1].sources)
+                    dimensions = ["module", "environment", "function",
+                                  "same_item_companion" if scope_only else "deliverable",
+                                  "participant", "release", "period"]
                     rows.append({"document": report["document"], "version": report["version"],
                         "item_id": item["item_id"], "candidate_keys": sorted(candidates),
                         "status": "verified" if len(candidates) == 1 else "ambiguous" if candidates else "unresolved",
                         "proof_sources": sorted(set(proofs)), "report_sources": list(event.sources),
-                        "matched_dimensions": ["module", "environment", "function", "deliverable", "participant", "release", "period"] if candidates else [],
+                        "matched_dimensions": dimensions if candidates else [],
                         "period_start": stamp(report["period_start"]), "period_end": stamp(report["period_end"]),
                         "release": context.get("release"),
                         "published_at": stamp(event.recorded_at), "claim": deepcopy(claim)})
@@ -253,7 +278,10 @@ class EventOracle:
             progress["sources"].extend(match["proof_sources"])
             progress["report_sources"].extend(match["report_sources"])
             if stage == "plan":
-                progress["planned_deliverables"].append(name)
+                # Scope association proves a reported activity, not a named
+                # Task deliverable or an outstanding meeting after later work.
+                if "deliverable" in match["matched_dimensions"]:
+                    progress["planned_deliverables"].append(name)
                 continue
             progress["known"] = True
             progress["state"] = "in_progress"

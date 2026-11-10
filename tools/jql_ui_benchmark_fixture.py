@@ -134,7 +134,7 @@ def install():
     world = fixture_world(bundle)
     world.plan = settings.load_plan()
     world.people = settings.load_people()
-    world_module.World.ME = ETL[0]
+    world_module.World.ME = world.ME
     world_module.get_world = lambda: world
 
     from app.auth.inprocess import InProcessProvider
@@ -159,12 +159,16 @@ def install():
         for name in ("issues", "users", "confluence", "attachments", "activity", "sprints"):
             setattr(store, name, copy.deepcopy(getattr(world, name)))
         store.reindex()
+        store.config.current_user = world.ME
         original_fields = store.serializer.issue_fields
         def timestamp_fields(issue, base_url=""):
             fields = original_fields(issue, base_url)
             fields.update(issue.get("_timestamps") or {})
             return fields
         store.serializer.issue_fields = timestamp_fields
+        from tools.codex_mcp_eval.etl.status_history_search import install_status_history_search
+        install_status_history_search(provider._client.app,
+            observed_until=bundle.spec.observed_until, search_timezone=bundle.manifest["timezone"])
         provider._client.request = ledger.observe(provider._client.request)
     InProcessProvider.__init__ = initialize
     for name in ("_get", "_write", "web_form", "post_multipart"):

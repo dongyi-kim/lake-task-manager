@@ -47,7 +47,33 @@ def test_manifest_identity_changes_when_only_public_plan_changes(monkeypatch):
     assert original.world.users == changed.world.users
     assert original.documents == changed.documents
     assert original.manifest["data_sha256"] != changed.manifest["data_sha256"]
-    assert changed.manifest["version"] == "etl-year-world-v4"
+    assert changed.manifest["version"] == "etl-year-world-v5"
+
+
+def test_public_query_actor_has_the_declared_kst_profile():
+    public, _, _ = project((), authoring.YearWorldSpec())
+    assert public.ME == "etl.user00" and public.ME in public.users
+    assert {user["timeZone"] for user in public.users.values()} == {"Asia/Seoul"}
+
+
+def test_manifest_binds_query_actor_without_changing_tickets(monkeypatch):
+    for name in ("_development", "_operations", "_simple_and_other", "_development_reports"):
+        monkeypatch.setattr(authoring, name, lambda author: None)
+    original = authoring.build_etl_world()
+    real_project = authoring.project
+
+    def alternate_actor(*args):
+        result = real_project(*args)
+        result[0].ME = "etl.user01"
+        return result
+
+    monkeypatch.setattr(authoring, "project", alternate_actor)
+    changed = authoring.build_etl_world()
+    assert original.world.issues == changed.world.issues
+    assert original.world.users == changed.world.users
+    assert original.manifest["currentUser"] == "etl.user00"
+    assert changed.manifest["currentUser"] == "etl.user01"
+    assert original.manifest["data_sha256"] != changed.manifest["data_sha256"]
 
 
 def test_fixture_world_identity_tracks_plan_without_changing_provider_identity():
@@ -65,6 +91,23 @@ def test_fixture_world_identity_tracks_plan_without_changing_provider_identity()
     assert changed["providerStoreSha256"] == first["providerStoreSha256"]
     fixture.world.plan["wbs"][0]["module"] = "ETL"
     assert fixture.fingerprint() == first
+
+
+def test_fixture_fingerprint_cannot_hide_an_actor_change():
+    from tools.codex_mcp_eval.etl.fixture import EtlFixture
+
+    fixture = EtlFixture.__new__(EtlFixture)
+    fixture.world = SimpleNamespace(today=at("2026-11-10").date(), _counter=1,
+        issues={}, confluence={}, attachments={}, users={}, plan={}, ME="etl.user00")
+    fixture.store = SimpleNamespace(issues={}, confluence={}, attachments={}, activity={}, users={},
+        config=SimpleNamespace(current_user="etl.user00"))
+    fixture.provider = SimpleNamespace(_client=SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace())))
+    first = fixture.fingerprint()
+    fixture.world.ME = "etl.user01"
+    assert fixture.fingerprint()["worldSha256"] != first["worldSha256"]
+    fixture.world.ME = "etl.user00"
+    fixture.store.config.current_user = "etl.user01"
+    assert fixture.fingerprint()["providerStoreSha256"] != first["providerStoreSha256"]
 
 
 def test_daily_correction_keeps_source_text_but_separates_pending_from_new_plan(reports):

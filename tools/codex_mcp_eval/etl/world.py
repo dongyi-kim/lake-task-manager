@@ -15,7 +15,7 @@ from .oracle import EventOracle
 from .projection import comment_source, project
 
 KST = timezone(timedelta(hours=9))
-VERSION = "etl-year-world-v4"
+VERSION = "etl-year-world-v5"
 DEVELOPMENT_LIFECYCLES = {
     "dormant_recent_start": "DL-21010", "comment_verified_partial": "DL-21012",
     "insufficient_comments": "DL-21013", "long_running_incremental": "DL-21014",
@@ -190,13 +190,13 @@ def _development_reports(a):
         item("linked-restart", ["복구 위치 보존"], '<a href="http://127.0.0.1:8080/browse/DL-21740">복구 위치 보존</a>: 10월 15일 R17 주문 복구 패치의 재시작 토큰 저장 시험을 검수자가 수용했다.', token, jira_keys=["DL-21740"]),
         item("source-fingerprint", ["스키마 변화 표식"], "스키마 변화 표식의 계약 지문 비교기 구현을 10월 15일 마쳤다. 검수는 주간 회의로 넘겼다.", claim("계약 지문 비교기", "implementation", 15)),
         item("order-recovery", ["복구 위치 보존", "이벤트 중복 차단"], "복구 위치 보존과 이벤트 중복 차단을 묶은 R17 주문 복구 패치를 10월 15일 검수했다. 재시작 토큰 저장과 멱등 처리 키 시험을 수용했다.", token, dedup),
-        item("reverse-implementation", ["시간창 역전 처리"], "시간창 역전 처리: 10월 15일 역순 입력 정렬 구현을 마쳤다. 극단 지연 시나리오는 다음 릴리즈 검토 안건이다.", claim("역순 입력 정렬", "implementation", 15), claim("극단 지연 시나리오", "plan", 15)),
+        item("reverse-implementation", ["시간창 역전 처리"], "시간창 역전 처리: 10월 15일 역순 입력 정렬 구현을 마쳤다. 극단 지연 시나리오는 다음 릴리즈 검토 안건이다.", claim("역순 입력 정렬", "implementation", 15), claim("극단 지연 시나리오", "plan", outcome=None)),
     ])
     report("etl-dev-weekly-2026-10-26", "ETL 개발 주간보고 2026-10-26", at(27), at(19, 0), at(26, 0), [
         item("order-recovery", ["복구 위치 보존", "이벤트 중복 차단"], "전주 10월 15일에 수용한 R17 주문 복구 패치의 재시작 토큰 저장과 멱등 처리 키 시험 결과를 이관했다. 복구 위치 보존·이벤트 중복 차단 담당 공동 참석.", token, dedup),
         item("source-fingerprint", ["원천 계약 지문"], "원천 계약 지문: 10월 23일 계약 지문 비교기 회귀 시험을 검수자가 수용했다.", claim("계약 지문 비교기", "test_acceptance", 23, artifact="R17 계약 비교 시험")),
-        item("reverse-test", ["시간창 역전 처리"], "시간창 역전 처리: 10월 22일 역순 재시도 시험을 수용했다. 인수 회의는 다음 주 예정이다.", claim("역순 재시도 시험", "test_acceptance", 22)),
-        item("late-window", ["배치 역전 보정"], "배치 역전 보정의 지연 구간 보정을 이번 주 검수했다. etl.user07이 공동 검토했다.", claim("지연 구간 보정", "test_acceptance"), intended_task_key="DL-21745"),
+        item("reverse-test", ["시간창 역전 처리"], "시간창 역전 처리: 10월 22일 역순 재시도 시험을 수용했다. 인수 회의는 다음 주 예정이다.", claim("역순 재시도 시험", "test_acceptance", 22), claim("인수 회의", "plan", outcome=None)),
+        item("late-window", ["배치 역전 보정"], "배치 역전 보정의 지연 구간 보정을 이번 주 검수했다. etl.user07이 공동 검토했다.", claim("지연 구간 보정", "test_acceptance", outcome=None), intended_task_key="DL-21745"),
         item("boundary-check", ["분산 체크포인트 교차검증"], "분산 체크포인트 교차검증: 경계 조건 검증을 이번 주 수용했다.", claim("경계 조건 검증", "test_acceptance")),
     ])
     report("etl-dev-monthly-2026-10", "ETL 개발 월간보고 2026-10", at(3, november=True), at(1, 0), at(1, 0, november=True), [
@@ -501,9 +501,9 @@ def build_etl_world(spec=None):
     world, sources, documents = project(events, spec)
     counts = dict(Counter(event.stream for event in events if event.kind == "issue"))
     counts["total"] = len(world.issues)
-    digest = hashlib.sha256(json.dumps({"issues": world.issues, "users": world.users,
+    digest = hashlib.sha256(json.dumps({"issues": world.issues, "users": world.users, "currentUser": world.ME,
         "documents": documents, "plan": world.plan}, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
-    manifest = {"version": VERSION, "seed": spec.seed, "timezone": "Asia/Seoul", "start": stamp(spec.start),
+    manifest = {"version": VERSION, "seed": spec.seed, "timezone": "Asia/Seoul", "currentUser": world.ME, "start": stamp(spec.start),
                 "end": stamp(spec.end), "observed_until": stamp(spec.observed_until), "counts": counts,
                 "data_sha256": digest, "event_count": len(events), "public_source_count": len(sources),
                 "randomness": "SHA-256(seed|entity-key), independent per entity", "statistics": "synthetic defaults"}

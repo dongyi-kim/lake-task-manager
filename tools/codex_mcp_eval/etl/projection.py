@@ -19,7 +19,8 @@ def comment_source(key, identity):
 
 def project(events, spec):
     issues, sources, documents, mappings = {}, {}, {}, {}
-    users = {f"etl.user{i:02d}": {"name": f"etl.user{i:02d}", "displayName": name + " 가상데이터팀"}
+    users = {f"etl.user{i:02d}": {"name": f"etl.user{i:02d}", "displayName": name + " 가상데이터팀",
+                                "timeZone": "Asia/Seoul"}
              for i, name in enumerate(("김지우", "박서준", "이하은", "최민재", "정수아", "윤도윤", "한채원", "송지호"))}
     for e in sorted(events, key=lambda row: (row.recorded_at, row.identity)):
         if not e.sources:
@@ -98,7 +99,7 @@ def project(events, spec):
                 "start": spec.start.date().isoformat(), "end": spec.end.date().isoformat(),
                 "epics": [{"key": key, "weight": weight}
                           for key, weight in mappings.get("ETL-1", {}).items()]}]}
-    world = SimpleNamespace(today=spec.observed_until.date(), issues=issues, users=users, confluence=confluence,
+    world = SimpleNamespace(today=spec.observed_until.date(), ME="etl.user00", issues=issues, users=users, confluence=confluence,
         attachments={}, activity={}, sprints={}, plan=plan, project="DL", modules=plan["modules"],
         people={m: list(users) for m in plan["modules"]}, by_label={}, by_assignee={}, epic_children={})
     for key, row in issues.items():
