@@ -45,6 +45,78 @@ def test_generated_yaml_round_trips_public_plan_without_touching_source_config(t
     assert (repo / "config/wbs_config.yaml").read_bytes() == before
 
 
+def test_actual_ui_bootstrap_initializes_full_public_provider_status_scheme(tmp_path, bundle):
+    """Run sitecustomize's real install hook in a child, without a listener/browser."""
+    from tools import jql_ui_benchmark as runner
+    repo = Path(__file__).resolve().parents[3]
+    config, bootstrap = runner.prepare(repo, tmp_path, bundle)
+    wire = tmp_path / "wire"
+    wire.mkdir()
+    source = dict(runner.os.environ, PYTHONPATH=runner.os.pathsep.join(sys.path))
+    env = runner.child_environment(repo, tmp_path, config, bootstrap, 0, source)
+    env["JQL_UI_WIRE_DIR"] = str(wire)
+    reopened = sorted((key for key, row in bundle.world.issues.items() if row["statusName"] == "Reopened"),
+                      key=lambda key: int(key.split("-")[1]))
+    assert reopened and all(bundle.world.issues[key]["statusCategory"] == "inprogress" for key in reopened)
+    expected = {"hash": bundle.manifest["data_sha256"], "issueCount": len(bundle.world.issues),
+                "reopenedCount": len(reopened), "firstKeys": reopened[:10]}
+    script = textwrap.dedent('''
+        import json, sys
+        from fastapi.testclient import TestClient
+        # Python loaded bootstrap/sitecustomize.py before this script. Do not call
+        # install or the status adapter manually: this exercises the actual entry.
+        assert 'sitecustomize' in sys.modules and 'app.main' in sys.modules
+        from app import main
+        expected = json.load(sys.stdin)
+        provider = main._client.provider
+        app_client = TestClient(main.app, base_url='http://127.0.0.1', client=('127.0.0.1', 50000))
+        try:
+            raw = provider._client
+            store = raw.app.state.store
+            assert len(store.issues) == expected['issueCount'] == 10000
+            assert store.config.current_user == 'etl.user00'
+            response = app_client.get('/__jql_benchmark')
+            assert response.status_code == 200, response.text
+            proof = response.json()
+            assert proof['worldHash'] == expected['hash']
+            assert proof['issueCount'] == 10000 and proof['providerIssueCounts'] == [10000]
+            scheme = getattr(raw.app.state, 'etl_status_history_search').contract['publicStatusScheme']
+            assert scheme['version'] == 'public-status-category-v1'
+            page = raw.get('/rest/api/2/search', params={
+                'jql': 'status = Reopened AND statusCategory = indeterminate ORDER BY key ASC',
+                'maxResults': 10, 'fields': 'status'})
+            assert page.status_code == 200, page.text
+            page = page.json()
+            assert page['total'] == expected['reopenedCount']
+            assert [row['key'] for row in page['issues']] == expected['firstKeys']
+            catalog = raw.get('/rest/api/2/status').json()
+            status = next(row for row in catalog if row['name'] == 'Reopened')
+            assert status['id'] == '4' and status['statusCategory']['key'] == 'indeterminate'
+            assert next(row for row in store.config.statuses if row[0] == 'Reopened') == ['Reopened', 'inprogress', '4']
+            for row in page['issues']:
+                issue = raw.get('/rest/api/2/issue/' + row['key'], params={'fields': 'status'})
+                assert issue.status_code == 200, issue.text
+                assert issue.json()['fields']['status'] == row['fields']['status'] == status
+            negative = raw.get('/rest/api/2/search', params={
+                'jql': 'status = Reopened AND statusCategory = new', 'maxResults': 10})
+            assert negative.status_code == 200 and negative.json()['total'] == 0
+            assert app_client.post('/__jql_benchmark/settle').json()['complete'] is True
+            print(json.dumps({'worldHash': proof['worldHash'], 'issues': len(store.issues),
+                              'reopenedCount': page['total'], 'statusId': status['id'], 'settled': True}))
+        finally:
+            app_client.close()
+            main._client.close()
+            main._cache.close()
+    ''')
+    result = subprocess.run([sys.executable, "-B", "-X", "utf8", "-c", script], cwd=repo, env=env,
+                            input=json.dumps(expected), text=True, encoding="utf-8", capture_output=True, timeout=90)
+    assert result.returncode == 0, result.stdout + result.stderr
+    observed = json.loads(result.stdout.splitlines()[-1])
+    assert observed == {"worldHash": expected["hash"], "issues": 10000,
+                        "reopenedCount": len(reopened), "statusId": "4", "settled": True}
+    assert list(wire.glob("wire-*.jsonl"))
+
+
 def test_wire_observer_counts_auth_pages_retry_and_failure_once_each():
     ledger = fixture.WireLedger()
     def dispatch(method, url, **kwargs):

@@ -328,12 +328,37 @@ class _View:
         return getattr(self._original, name)
 
 
+def _public_status_scheme(store):
+    """Bind the evaluation provider's wire scheme to its public issue facts.
+
+    The ordinary provider has its own workflow. Never change that global scheme
+    or infer a category from a status name; retain its stable status IDs here.
+    """
+    configured = {name: (category, identity) for name, category, identity in store.config.statuses}
+    if len(configured) != len(store.config.statuses):
+        raise ValueError("Duplicate configured public status names")
+    categories = {}
+    for issue in store.issues.values():
+        name, category = issue.get("statusName"), issue.get("statusCategory")
+        if name not in configured or category not in {"todo", "inprogress", "done"}:
+            raise ValueError("Unknown public status name or category")
+        if name in categories and categories[name] != category:
+            raise ValueError("Conflicting public status categories")
+        categories[name] = category
+    statuses = [type(row)((name, categories.get(name, category), identity))
+                for row in store.config.statuses for name, category, identity in [row]]
+    return statuses, {name: (category, identity) for name, category, identity in statuses}
+
+
 class StatusHistoryInstallation:
     def __init__(self, app, observed_until, search_timezone):
         self.app, self.observed_until, self.search_timezone = app, observed_until, search_timezone
         self.route = None
         self.original_user = app.state.store.serializer.user_obj
         self.user_wrapper = None
+        self.original_statuses = app.state.store.config.statuses
+        self.original_status_map = app.state.store.serializer.status_map
+        self.statuses = self.status_map = None
 
     def uninstall(self):
         if self.route in self.app.router.routes:
@@ -341,6 +366,10 @@ class StatusHistoryInstallation:
         serializer = self.app.state.store.serializer
         if serializer.user_obj is self.user_wrapper:
             serializer.user_obj = self.original_user
+        if self.app.state.store.config.statuses is self.statuses:
+            self.app.state.store.config.statuses = self.original_statuses
+        if serializer.status_map is self.status_map:
+            serializer.status_map = self.original_status_map
         if getattr(self.app.state, _REGISTRY, None) is self:
             delattr(self.app.state, _REGISTRY)
 
@@ -351,6 +380,8 @@ class StatusHistoryInstallation:
             "during": "created<=operand2.upper AND nextChange>=operand1.lower+1000ms",
             "dayUpper": "23:59:59.000", "minuteUpper": ":59.000", "zeroDurationRows": "retained",
             "source": "public-created/current-status/serialized-status-changelog",
+            "publicStatusScheme": {"version": "public-status-category-v1",
+                "statuses": self.statuses, "identity": "existing configured status IDs retained"},
             "ordinaryDates": "pinned date-only YYYY-MM-DD/-Nd/-Nw; updated/resolved/resolutiondate >= YYYY-MM-DD HH:mm uses actor-local minute start and public aware timestamps; resolved/resolutiondate IS EMPTY requires explicit public null",
             "unsupportedOrdinaryShapes": ["embedded comma lists", "escaped string literals",
                                           "date functions and subday/month/year relatives"],
@@ -362,9 +393,11 @@ def install_status_history_search(app, *, observed_until, search_timezone):
     observed_until = _instant(observed_until)
     zone = _zone(search_timezone)
     _actor(app.state.store, search_timezone)
+    statuses, status_map = _public_status_scheme(app.state.store)
     existing = getattr(app.state, _REGISTRY, None)
     if existing:
-        if existing.observed_until != observed_until or existing.search_timezone != search_timezone:
+        if (existing.observed_until != observed_until or existing.search_timezone != search_timezone
+                or existing.status_map != status_map):
             raise ValueError("Conflicting per-app history search installation")
         return existing
     original = next(route.endpoint for route in app.router.routes
@@ -372,6 +405,8 @@ def install_status_history_search(app, *, observed_until, search_timezone):
                     and "GET" in getattr(route, "methods", ()))
     installed = StatusHistoryInstallation(app, observed_until, search_timezone)
     store = app.state.store
+    installed.statuses, installed.status_map = statuses, status_map
+    store.config.statuses, store.serializer.status_map = statuses, status_map
     def user_obj(uid):
         original_user = installed.original_user(uid)
         user = store.users.get(uid)

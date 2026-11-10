@@ -9,6 +9,7 @@ from jira820.config import Config
 import pytest
 
 from app.mock.permissions import PermissionStore
+from app.mock.fakebridge import _STATUSES
 from app.mock.query_compat import install_query_compat
 from app.jira.jql import compile_jql
 from tools.codex_mcp_eval.etl.status_history_search import install_status_history_search
@@ -53,7 +54,8 @@ def endpoints():
     clients = []
     def build(rows=None, *, install=True, denied=(), delegate_hook=None,
               search_timezone="UTC", user_timezone=None, current_user="u01", observed_until=OBSERVED):
-        store = PermissionStore(Config(project_key="DL", current_user=current_user, latency_ms=0), seed=False)
+        store = PermissionStore(Config(project_key="DL", current_user=current_user, latency_ms=0,
+                                       statuses=_STATUSES), seed=False)
         store.users = {"u01": {"name": "u01", "displayName": "Public User",
                                 "timeZone": search_timezone if user_timezone is None else user_timezone}}
         store.issues = {row["key"]: row for row in (public_rows() if rows is None else rows)}

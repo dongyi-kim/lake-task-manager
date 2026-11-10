@@ -6,7 +6,7 @@ from copy import deepcopy
 from tools.codex_mcp_eval.work_cases import OUTPUT_SCHEMA as BASE_SCHEMA
 
 SUITE = "codex-mcp-etl-year"
-BATTERY_VERSION = "3.0.0"
+BATTERY_VERSION = "3.0.1"
 PROMPT_VERSION = "codex-mcp-etl-year-v3.0.0"
 REFERENCE_DATE = "2026-11-10"
 
@@ -234,6 +234,8 @@ from .report_checks import (public_text, row_identity, merge_requirements, groun
 from .evidence_equivalence import full_instant, unchanged_status_observed, mapping_identity_keys
 from tools.codex_mcp_eval.work_evidence import _evidence_record_format
 from .oracle import EventOracle
+from .status_history_search import (_public_status_scheme, StatusHistoryInstallation,
+                                    install_status_history_search)
 CHECKER_DEPENDENCIES = (check, _check, build_expectations, observed_sources, _rows_match, _denominators_match, _number_equal, _at,
                         _public_report_findings, _unique_rows, _attach_reports, _report_rows_match, _complete_report_search, _normalized_public_text,
                         observed_ticket_inputs, ticket_inputs_match, _complete_epic_tree, _observed_result_keys, _result_keys_match,
@@ -247,5 +249,6 @@ CHECKER_DEPENDENCIES = (check, _check, build_expectations, observed_sources, _ro
                         full_instant, unchanged_status_observed, mapping_identity_keys,
                         document_complete, evidence_collection, has_stalled_pagination, literal_source_records, source_observed,
                         _evidence_record_format,
+                        _public_status_scheme, StatusHistoryInstallation, install_status_history_search,
                         EventOracle, review_contract, schema_for_case, materialize_cases,
                         SYSTEM_CONTEXT, OUTPUT_SCHEMA, CASES)
