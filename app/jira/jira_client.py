@@ -10,9 +10,8 @@ import re
 import sys
 import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextlib import ExitStack
-from contextvars import copy_context
 from datetime import date, timedelta
 from html import escape, unescape
 from typing import NamedTuple
@@ -29,8 +28,9 @@ from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_secti
                        serialize_jira_html, shorten_mention_names, text_to_html, tidy_html, unproxy_media)
 from app.domain.names import real_name
 from app.content.sections import split_sections
-from app.jira.jql import (JqlUnsupported, compile_jql, fields_with_order,
+from app.jira.jql import (JqlExpansionLimit, JqlUnsupported, compile_jql, fields_with_order,
                           sort_issues)
+from app.jira.search_preview import search_prefix, search_preview
 from app.jira.jql_execution import (group_query, partition_fields, partition_rows, plan_groups,
                                     projection_scope, row_projection_complete, selector_fields)
 from app.jira.cache_policy import (JqlCachePolicy, MutationEvent,
@@ -43,6 +43,10 @@ from app.jira.mutation_recovery import (MutationReceiptStore,
                                         reconcile_created_issue,
                                         reconcile_transition)
 from app.jira.workload_service import JiraWorkloadMixin, workload_category
+from app.jira.jql_budget import claim_physical_query
+from app.jira.jql_scheduling import BoundedQueryScheduler
+from app.jira.jql_strategy import execution_plan, hydrate_pending
+from app.jira.jql_budget import budgeted_query, current_budget, validate_max_parts
 
 
 # 실 Jira DC statusCategory.key → 내부 vocab (new=todo, indeterminate=inprogress, done=done)
@@ -617,6 +621,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                                   "nextCheckAt": None, "failure": None}
         self._jql_lock_guard = threading.Lock()
         self._jql_locks = {}
+        # Preserve the established parallel limit until a four-worker candidate qualifies.
+        self._query_scheduler = BoundedQueryScheduler(capacity=8)
         self._jql_policy = JqlCachePolicy(self)
         self._mutation_receipts = MutationReceiptStore(self.cache, self.env, scope=self.mutation_scope())
         # 세션 사용자 캐시도 함께 버린다. 안 그러면 로그인 직후에도 옛 판정(빈 사용자)이
@@ -1140,7 +1146,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         그대로 재사용되므로 캐시 가치가 크다(담당/상태 변경 시 'mt:' 프리픽스째 무효화한다)."""
         return self._search(jql, cache_key=cache_key, max_results=max_results)
 
-    def iter_search_issue_chunks(self, jql, fields=None, light=True):
+    @budgeted_query
+    def iter_search_issue_chunks(self, jql, fields=None, light=True, *, strategy="auto", max_parts=64):
         """Yield cached logical memberships as bounded physical request groups complete.
 
         Switching filters keeps completed memberships and issue rows. Serial providers submit
@@ -1167,7 +1174,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             return {"kind": kind, "message": message}
 
         try:
-            compiled = self._compile_jql(jql)
+            compiled = self._compile_jql(jql, strategy=strategy)
         except JqlUnsupported:
             try:
                 issues = self._legacy_search(
@@ -1193,32 +1200,42 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             }
             return
 
-        groups = plan_groups(compiled, self.s.epic_link_field_id)
-        execution_fields = partition_fields(fields_with_order(requested_fields, compiled.order), groups)
+        plan, execution_fields = execution_plan(
+            self, compiled, fields_with_order(requested_fields, compiled.order), light, strategy, max_parts)
+        groups = plan.groups
         generation = self._jql_generation()
         projection = self._projection_signature(execution_fields, light)
         combined = {}
+        fence, failed = self.cache.fence(), False
         coalesce_cached = all(self._jql_leaf_cache_ready(
             member.leaf, execution_fields, light, generation, projection, selector_fields(group))
             for group in groups for member in group)
-        for group, result, error in self._iter_jql_groups(
-                groups, execution_fields, light, generation, projection):
-            rows = [] if error else self._combine_jql_rows(
-                [part_rows for _members, part_rows in result], compiled.order)
-            for issue in rows:
-                if issue.get("key"):
-                    combined[issue["key"]] = issue
-            chunk = {
-                "leaf": group_query(group), "leafIndex": group[0].index,
-                "leafTotal": len(compiled.leaves), "issues": rows,
-                "combined": sort_issues(combined.values(), compiled.order),
-                "fallback": False, "coalesceCached": coalesce_cached,
-            }
-            if len(group) > 1:
-                chunk["completedLeaves"] = [member.leaf for member in group]
-            if error:
-                chunk["error"] = failure(error)
-            yield chunk
+        with observed_reads(self._iter_jql_groups, groups, execution_fields, light,
+                            generation, projection) as (results, sources):
+            for group, result, error in results:
+                failed = failed or bool(error)
+                rows = [] if error else self._combine_jql_rows(
+                    [part_rows for _members, part_rows in result], compiled.order)
+                for issue in rows:
+                    if issue.get("key"):
+                        combined[issue["key"]] = issue
+                chunk = {
+                    "leaf": group_query(group), "leafIndex": group[0].index,
+                    "leafTotal": len(compiled.leaves), "issues": rows,
+                    "combined": sort_issues(combined.values(), compiled.order),
+                    "fallback": False, "coalesceCached": coalesce_cached,
+                    "execution": {**plan.diagnostics(), **current_budget().diagnostics()},
+                }
+                if len(group) > 1:
+                    chunk["completedLeaves"] = [member.leaf for member in group]
+                elif group[0].whole:
+                    chunk["completedLeaves"] = list(compiled.leaves)
+                if error:
+                    chunk["error"] = failure(error)
+                yield chunk
+        if not failed:
+            metadata = reduce_read_metadata(sources, source_selection="all")
+            self._publish_jql_union(compiled, combined.values(), generation, metadata, fence)
 
     def _iter_jql_groups(self, groups, fields, light, generation, projection):
         def execute(group):
@@ -1236,19 +1253,21 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             remaining = tuple(member for member in group if member not in ready)
             if remaining:
                 pending.append(remaining)
-        if getattr(self.provider, "supports_parallel", False) and len(pending) > 1:
-            with ThreadPoolExecutor(max_workers=min(8, len(groups))) as pool:
-                for future in as_completed([pool.submit(copy_context().run, execute, group) for group in pending]):
-                    yield future.result()
-        else:
+        try:
+            hydrate_pending(self, pending, fields, light, generation, projection)
+        except Exception as exc:
             for group in pending:
-                yield execute(group)
+                yield group, None, exc
+            return
+        yield from self._query_scheduler.run_bounded(
+            pending, execute, parallel_capable=getattr(self.provider, "supports_parallel", False))
 
     def _execute_jql_group(self, group, fields, light, generation, projection):
         if len(group) == 1:
             member = group[0]
             return [(group, self._cached_jql_leaf(member.leaf, member.fields, fields, light,
-                                                 generation, projection).issues)]
+                                                 generation, projection, result_limit=(
+                    self.JQL_BOOTSTRAP_RESULT_LIMIT if member.whole else None)).issues)]
         opaque = any(not member.family for member in group)
         # Opaque ORs may reuse a fully warm set of existing logical memberships, but a cold
         # arbitrary query is never expanded into speculative requests.
@@ -1352,19 +1371,21 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     def _mutation_batch_scope(self):
         return self._jql_policy.mutation_batch_scope()
 
-    def _compile_jql(self, jql, *, now=None):
+    def _compile_jql(self, jql, *, now=None, strategy="auto"):
+        if not isinstance(strategy, str) or strategy not in {"auto", "off", "people", "full"}:
+            raise ValueError("strategy must be auto, off, people or full")
         raw = str(jql or "")
         needs_user = bool(re.search(
             r"\bcurrentUser\s*\(|\b(?:start|end)Of(?:Day|Week|Month|Year)\s*\(|"
             r"(?<![A-Za-z0-9_])[+-]\d+[mhdw](?![A-Za-z0-9_])", raw, re.I))
         user = self.current_user() if needs_user else {}
-        return compile_jql(
-            raw,
-            user_id=(user or {}).get("id") or "",
-            timezone_name=(user or {}).get("timezone") or "Asia/Seoul",
-            ttl_seconds=self.s.cache_ttl_seconds,
-            now=now,
-        )
+        options = dict(user_id=(user or {}).get("id") or "",
+                       timezone_name=(user or {}).get("timezone") or "Asia/Seoul",
+                       ttl_seconds=self.s.cache_ttl_seconds, now=now)
+        try:
+            return compile_jql(raw, decompose=strategy != "off", **options)
+        except JqlExpansionLimit:
+            return compile_jql(raw, decompose=False, **options)
 
     def _projection_signature(self, fields, light):
         normalized = ",".join(sorted(
@@ -1609,8 +1630,24 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     key, digest, leaf_generation, issue_keys, predicate_fields)
                 return issue_keys
 
+            # Reconstructing a broad cached membership may cost more than one whole search.
+            # Decide before dispatch; a dynamic budget still protects concurrent cache changes.
+            budget = current_budget()
+            entry = self.cache.get_with_metadata(key) if budget is not None else None
+            existing = entry[0] if entry else None
+            force_whole = False
+            if isinstance(existing, list):
+                opaque_key = self._jql_opaque_key(generation, projection, digest, entry[1])
+                scoped = self.cache.get(opaque_key) if opaque_key else None
+                _rows, missing, _sources = self._resolve_cached_jql_rows(
+                    existing, fields, light, generation, projection)
+                queries = ["key in (%s) ORDER BY key ASC" % ",".join(missing[start:start + self.ISSUE_BATCH])
+                           for start in range(0, len(missing), self.ISSUE_BATCH)]
+                force_whole = not isinstance(scoped, list) and not budget.can_fit(queries)
             with read_scope() as membership_sources:
-                issue_keys = self.cache.get_or_set_strict(key, self.s.cache_ttl_seconds, produce)[0]
+                issue_keys = (self.cache.refresh(key, self.s.cache_ttl_seconds, produce,
+                                                min_fetched_at=float("inf")) if force_whole else
+                              self.cache.get_or_set_strict(key, self.s.cache_ttl_seconds, produce)[0])
             for observed in membership_sources:
                 note_read(observed)
             if self.cache.fence() != fence:
@@ -1660,9 +1697,29 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     combined[key] = issue
         return sort_issues(combined.values(), order)
 
+    def _publish_jql_union(self, compiled, rows, generation, metadata, fence):
+        """Publish only a complete, still-current union with its captured collection proof."""
+        if (self.cache.fence() != fence or generation != self._jql_generation()
+                or metadata.get("fetchedAt") is None or metadata.get("compliant") is False):
+            return False
+        policy = current_read_policy()
+        validated = bool(metadata.get("upstreamValidated"))
+        if policy.explicit and (not validated if policy.mode == CacheMode.LIVE else
+                               time.time() - metadata["fetchedAt"] > policy.max_age_seconds):
+            return False
+        # The complete union proves this whole query, not arbitrary individual predicates.
+        epoch, digest, whole_key = self._jql_leaf_key(compiled.whole_query)
+        if self.cache.get(whole_key) is None:
+            keys = [row["key"] for row in rows if row.get("key")]
+            predicates = tuple(sorted({field for leaf in compiled.leaf_fields for field in leaf}))
+            self._register_jql_leaf_indexes(whole_key, digest, epoch, keys, predicates)
+            return self.cache.set_if_fence(whole_key, keys, self.s.cache_ttl_seconds, fence,
+                fetched_at=metadata["fetchedAt"], upstream_validated=validated)
+        return True
 
-    def _build_jql_snapshot(self, compiled, fields, light, generation, projection, context):
-        groups = plan_groups(compiled, self.s.epic_link_field_id)
+    def _build_jql_snapshot(self, compiled, fields, light, generation, projection, context, plan):
+        groups = plan.groups
+        fence = self.cache.fence()
         rows_by_group = []
         with read_scope() as sources:
             for _group, result, error in self._iter_jql_groups(groups, fields, light, generation, projection):
@@ -1673,6 +1730,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             note_read(source)
         rows = self._combine_jql_rows(rows_by_group, compiled.order)
         metadata = reduce_read_metadata(sources, source_selection="all")
+        if not self._publish_jql_union(compiled, rows, generation, metadata, fence):
+            raise QueryStateChanged("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
         policy = current_read_policy()
         return {
             "canonical": compiled.canonical,
@@ -1685,11 +1744,18 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             "createdAt": time.time(),
             "cacheMode": policy.mode.value if policy.explicit else None,
             "sourceMetadata": metadata,
+            "strategy": plan.requested_strategy,
+            "maxParts": plan.max_parts,
+            "execution": plan.diagnostics(),
         }
 
-    def _jql_snapshot(self, compiled, fields, light, snapshot_id=None):
+    def _jql_snapshot(self, compiled, fields, light, snapshot_id=None, *, strategy="auto", max_parts=64):
         context = self._jql_user_context()
-        fields = partition_fields(fields, plan_groups(compiled, self.s.epic_link_field_id))
+        validate_max_parts(max_parts)
+        groups = plan_groups(compiled, self.s.epic_link_field_id, strategy=strategy)
+        # Snapshot identity uses the pre-budget partition, even when execution falls back
+        # to one whole query. Frozen rows need no new membership/entity coverage proof.
+        fields = partition_fields(fields, groups)
         projection = self._projection_signature(fields, light)
         policy = current_read_policy()
         mode = policy.mode.value if policy.explicit else None
@@ -1710,7 +1776,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     or snapshot.get("context") != context
                     or snapshot.get("projection") != projection
                     or bool(snapshot.get("light")) != bool(light)
-                    or snapshot.get("cacheMode") != mode):
+                    or snapshot.get("cacheMode") != mode
+                    or snapshot.get("strategy", "auto") != strategy
+                    or snapshot.get("maxParts", 64) != max_parts):
                 raise ValueError("검색 snapshot이 현재 JQL 또는 필드 projection과 일치하지 않습니다.")
             issue_keys = list(snapshot.get("issueKeys") or [])
             hydrated = dict(snapshot)
@@ -1740,6 +1808,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             return read_snapshot(snapshot_id)
         generation = self._jql_generation()
         identity_text = f"{context}\n{generation}\n{projection}\n{compiled.canonical}"
+        if strategy != "auto" or max_parts != 64:
+            identity_text += f"\n{strategy}\n{max_parts}"
         if mode is not None:
             identity_text += f"\n{mode}"
         identity = hashlib.sha256(identity_text.encode("utf-8")).hexdigest()[:32]
@@ -1748,7 +1818,12 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         with lock:
             def build():
                 fence = self.cache.fence()
-                snapshot = self._build_jql_snapshot(compiled, fields, light, generation, projection, context)
+                # Cost/coverage probes may be abandoned by a whole-query fallback.
+                # Only actual execution sources may date or validate the snapshot pointer.
+                with read_scope():
+                    plan, _selected = execution_plan(
+                        self, compiled, fields, light, strategy, max_parts, groups=groups)
+                snapshot = self._build_jql_snapshot(compiled, fields, light, generation, projection, context, plan)
                 sid = f"{generation}.{identity}.{uuid4().hex}"
                 snapshot_key = f"jqlsnap:v{self.JQL_CACHE_VERSION}:{self.env}:{sid}"
                 if not self.cache.set_if_fence(snapshot_key, snapshot, self.JQL_SNAPSHOT_TTL, fence,
@@ -1764,8 +1839,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 current = self.cache.get_or_set_strict(key, ttl, build)[0]
         return read_snapshot(current["snapshotId"])
 
+    @budgeted_query
     def search_issues_page(self, jql, start_at=0, max_results=100, fields=None, light=True,
-                           snapshot_id=None):
+                           snapshot_id=None, *, strategy="auto", max_parts=64):
         """One deterministic page from the app-composed OR snapshot.
 
         Unsupported grammar/order keeps Jira pagination. Proven reusable memberships are batched;
@@ -1779,15 +1855,19 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         requested_fields = (requested_fields or self._issue_fields(light=light)).strip()
         try:
             with read_scope() as sources:
-                compiled = self._compile_jql(jql)
+                compiled = self._compile_jql(jql, strategy=strategy)
                 execution_fields = fields_with_order(requested_fields, compiled.order)
                 sid, snapshot = self._jql_snapshot(
-                    compiled, execution_fields, light, snapshot_id=snapshot_id)
+                    compiled, execution_fields, light, snapshot_id=snapshot_id,
+                    strategy=strategy, max_parts=max_parts)
         except JqlUnsupported:
             if snapshot_id:
                 raise ValueError("검색 snapshot이 현재 JQL과 일치하지 않습니다. 첫 페이지부터 다시 조회하세요.")
-            return self._legacy_search_issues_page(
+            page = self._legacy_search_issues_page(
                 jql, start_at=start, max_results=size, fields=requested_fields, light=light)
+            return {**page, "execution": {"requestedStrategy": strategy, "effectiveStrategy": "off",
+                "logicalLeafCount": None, "physicalGroupCount": 1,
+                "fallbackReason": "unsupported_jql", **current_budget().diagnostics()}}
         for source in sources:
             note_read(source)
         issues = list(snapshot.get("issues") or [])
@@ -1807,8 +1887,23 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             "snapshotCreatedAt": snapshot["createdAt"],
             "snapshotSourceFetchedAt": snapshot["sourceFetchedAt"],
             "snapshotFrozen": bool(snapshot_id),
+            "execution": {**snapshot.get("execution", {}), **current_budget().diagnostics()},
         }
 
+    @budgeted_query
+    def search_issues_preview(self, jql, *, limit=100, fields=None, light=True):
+        """Bounded discovery, independent of exhaustive pages and frozen snapshots."""
+        return search_preview(self, jql, limit=limit, fields=fields, light=light)
+
+    def _query_page(self, jql, fields, *, start_at=0, max_results=100, **extra_params):
+        provider = self.provider
+        params = {"jql": jql, "fields": fields, "maxResults": max_results, **extra_params}
+        if start_at is not None:
+            params["startAt"] = start_at
+        with self._query_scheduler.page_scope(
+                parallel_capable=getattr(provider, "supports_parallel", False)):
+            claim_physical_query(jql)
+            return provider.get_json("/rest/api/2/search", params=params)
 
     def _legacy_search_issues_page(self, jql, start_at=0, max_results=100, fields=None,
                                    light=True, write_through=True):
@@ -1827,9 +1922,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             requested_fields = ",".join(str(x) for x in requested_fields if str(x).strip())
         requested_fields = (requested_fields or self._issue_fields(light=light)).strip()
         fence, started = self.cache.fence(), time.time()
-        data = self.provider.get_json("/rest/api/2/search", params={
-            "jql": jql, "fields": requested_fields,
-            "startAt": start, "maxResults": size})
+        data = self._query_page(jql, requested_fields, start_at=start, max_results=size)
         if (not isinstance(data, dict) or not isinstance(data.get("issues"), list)
                 or data.get("errorMessages") or data.get("errors")):
             if self._looks_anonymous(data):
@@ -2035,13 +2128,15 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 self.s.cache_ttl_seconds, fence,
                 fetched_at=data.get("snapshotSourceFetchedAt", collected), upstream_validated=validated)
 
-    def _search(self, jql, cache_key=None, max_results=200, light=True, ttl=None):
+    @budgeted_query
+    def _search(self, jql, cache_key=None, max_results=200, light=True, ttl=None, *, strategy="auto", max_parts=64):
         fields = self._issue_fields(light=light)
         fence = self.cache.fence()
         try:
-            compiled = self._compile_jql(jql)
+            compiled = self._compile_jql(jql, strategy=strategy)
             execution_fields = fields_with_order(fields, compiled.order)
-            _sid, snapshot = self._jql_snapshot(compiled, execution_fields, light)
+            _sid, snapshot = self._jql_snapshot(compiled, execution_fields, light,
+                                               strategy=strategy, max_parts=max_parts)
             issues = list(snapshot.get("issues") or [])
             if max_results is not None:
                 issues = issues[:max(0, int(max_results))]
@@ -2074,8 +2169,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         def do():
             issues, start = [], 0
             while True:
-                data = self.provider.get_json("/rest/api/2/search", params={
-                    "jql": jql, "fields": fields, "startAt": start, "maxResults": 100})
+                data = self._query_page(jql, fields, start_at=start)
                 # 검색 응답이 아니면(예: 인증 끊긴 Jira 의 로그인 HTML) 그 자리에서 멈춘다.
                 # ★ 예전엔 여기서 곧장 SessionExpired 를 올렸는데, 검색은 VIT·WBS·워크로드·
                 #   내 Task 에서 쉴 새 없이 돈다 — 응답이 조금만 예상과 달라도 그때마다 세션을
@@ -2088,9 +2182,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                         raise SessionExpired("익명 응답(검색) — 세션 끊김(재인증 필요).")
                     # 없는 커스텀 필드 때문이면 그 필드 빼고 이 페이지만 다시(로그는 _note 가 1회).
                     if self._note_bad_field(data):
-                        data = self.provider.get_json("/rest/api/2/search", params={
-                            "jql": jql, "fields": self._issue_fields(light=light),
-                            "startAt": start, "maxResults": 100})
+                        data = self._query_page(jql, self._issue_fields(light=light), start_at=start)
                         if isinstance(data, dict) and "issues" in data:
                             batch = data.get("issues", [])
                             issues.extend(batch); start += 100
@@ -2226,16 +2318,16 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         items = list(items)
         prov = self.provider
         if prov is not None and getattr(prov, "supports_parallel", False) and len(items) > 1:
-            def observed(item):
+            def observed(indexed):
+                index, item = indexed
                 self.miss_begin()
                 try:
-                    return fn(item), self.miss_count()
+                    return index, fn(item), self.miss_count()
                 finally:
                     self.miss_begin()
-            with ThreadPoolExecutor(max_workers=min(8, len(items))) as ex:
-                results = [future.result() for future in [ex.submit(copy_context().run, observed, item) for item in items]]
-            self.miss_add(sum(missing for _value, missing in results))
-            return [value for value, _missing in results]
+            results = sorted(self._query_scheduler.run_bounded(enumerate(items), observed))
+            self.miss_add(sum(missing for _index, _value, missing in results))
+            return [value for _index, value, _missing in results]
         return [fn(x) for x in items]
 
     def epic_progress_map(self, plan):
@@ -3730,11 +3822,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         exclude_linked=True 면 **이미 다른 Epic 에 속한 Task 를 뺀다**(자르기 전에 걸러야 소속 없는
         후보가 limit 안에 남는다). JQL 은 단순히(project + 최신순), 나머지는 파이썬에서 — mock/prod 공통."""
         pk = self.s.project_key
-        # 상위 Task 피커의 **첫 로딩이 느린** 주범 — q 와 무관한 이 200건 검색을 매번 새로 돌렸다.
-        # q 필터·정렬은 파이썬에서 하므로 목록 자체는 재사용 가능. cache_key + 긴 TTL(OPTIONS_TTL)로
-        # 캐시 효용을 높인다(새 Task 생성·Epic Link 변경 시 'epic_cand:' 프리픽스로 무효화).
-        raws = self._search(f"project = {pk} ORDER BY updated DESC", max_results=200,
-                            cache_key=f"epic_cand:all:{self.env}", ttl=self.EPIC_LIST_TTL) or []
+        # 필터·관련도 정렬에 앞서 최신 200건만 모은다. 전체 프로젝트 snapshot을 만들지 않고
+        # q와 무관한 bounded prefix를 공유하며, 새 Task/필드 변경은 기존 정책으로 무효화한다.
+        raws = search_prefix(self, f"project = {pk} ORDER BY updated DESC")["issues"]
         enf = self.s.epic_link_field_id
         ql = (q or "").strip().lower()
         out = []
@@ -4989,10 +5079,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         for i in range(0, len(miss), self.ISSUE_BATCH):
             chunk = miss[i:i + self.ISSUE_BATCH]
             try:
-                data = self.provider.get_json("/rest/api/2/search", params={
-                    "jql": "key in (%s)" % ",".join(chunk),
-                    "fields": "created,reporter", "expand": "changelog",
-                    "maxResults": len(chunk)})
+                data = self._query_page(
+                    "key in (%s)" % ",".join(chunk), "created,reporter",
+                    start_at=None, max_results=len(chunk), expand="changelog")
             except SessionExpired:
                 raise
             except Exception:

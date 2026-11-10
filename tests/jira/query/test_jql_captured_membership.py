@@ -51,7 +51,7 @@ def test_partition_keeps_captured_age_when_union_refreshes_before_partition(monk
             client._execute_jql_group(group, fields, True, generation, projection)
         monkeypatch.setattr(client, "_cached_jql_leaf", original)
         with read_scope(cache_mode="hot"):
-            result = client.search_issues_page("assignee = a", fields=fields)
+            result = client.search_issues_page("assignee = a", fields=fields, strategy="full")
         assert result["issues"] == []
         assert calls[-1] == "assignee = a ORDER BY key ASC"
     finally:
@@ -70,11 +70,12 @@ def test_exact_opaque_projection_replay_uses_no_repair_query():
     client._provider = SimpleNamespace(get_json=get_json, supports_parallel=False)
     client._provider_built = True
     try:
-        first = client.search_issues_page("key = DL-1", fields="summary,status")
+        first = client.search_issues_page("key = DL-1", fields="summary,status", strategy="off")
         client.cache.forget_prefixes(["jqlcurrent:", "jqlsnap:"])
         calls.clear()
-        repeated = client.search_issues_page("key = DL-1", fields="summary,status")
+        repeated = client.search_issues_page("key = DL-1", fields="summary,status", strategy="off", max_parts=1)
         assert repeated["issues"] == first["issues"]
+        assert repeated["execution"]["physicalQueryCount"] == 0
         assert calls == []
     finally:
         client.close()
@@ -94,14 +95,14 @@ def test_same_timestamp_membership_replacement_cannot_reuse_previous_opaque_rows
     client._provider_built = True
     try:
         query = "project = DL"
-        first = client.search_issues_page(query, fields="summary,status")
+        first = client.search_issues_page(query, fields="summary,status", strategy="off")
         assert first["issues"][0]["key"] == "DL-1"
-        membership = client._jql_leaf_key(client._compile_jql(query).leaves[0])[2]
+        membership = client._jql_leaf_key(client._compile_jql(query).whole_query)[2]
         client.cache.set_if_fence(membership, ["DL-2"], 600, client.cache.fence(), fetched_at=100000)
         client.cache.forget_prefixes(["jqlcurrent:", "jqlsnap:"])
         current[0] = "DL-2"
         with read_scope(cache_mode="hot"):
-            result = client.search_issues_page(query, fields="summary,status")
+            result = client.search_issues_page(query, fields="summary,status", strategy="off")
         assert [row["key"] for row in result["issues"]] == ["DL-2"]
     finally:
         client.close()

@@ -17,6 +17,16 @@ class RawIssue(OpenModel):
     url: str | None = None
 
 
+class QueryExecution(OpenModel):
+    requestedStrategy: Literal["auto", "off", "people", "full"]
+    effectiveStrategy: Literal["auto", "off", "people", "full"]
+    maxParts: int
+    logicalLeafCount: int | None = None
+    physicalGroupCount: int | None = None
+    physicalQueryCount: int = Field(description="Distinct dispatched JQL, excluding repeated pages/retries; not a REST-attempt counter.")
+    fallbackReason: str | None = None
+
+
 class SearchPage(OpenModel):
     issues: list[RawIssue]
     startAt: int
@@ -30,6 +40,7 @@ class SearchPage(OpenModel):
     snapshotSourceFetchedAt: float | None = None
     snapshotFrozen: bool | None = Field(default=None, description="A continuation reads the frozen result; it does not perform a new live validation.")
     canonicalJql: str | None = None
+    execution: QueryExecution | None = None
     descriptionRequested: bool | None = Field(default=None, description="True when raw descriptions were explicitly requested in the batched search.")
     descriptionMissingKeys: list[str] | None = Field(default=None, description="Issues whose requested description was not returned. A returned null/empty description is a known empty body.")
 
@@ -42,6 +53,7 @@ class TicketBatch(OpenModel):
     complete: bool = Field(description="All requested tickets were returned. Description completeness is separate.")
     descriptionRequested: bool | None = None
     descriptionMissingKeys: list[str] | None = None
+    execution: QueryExecution | None = None
 
 
 class TicketBadge(OpenModel):

@@ -22,6 +22,7 @@ def test_live_historical_search_page_has_real_source_without_cached_issue_rows(b
             assert not result.is_error, result.structured_content
             body = result.structured_content
             assert body["data"]["issues"] == [] and body["data"]["total"] == 0
+            assert body["data"]["execution"]["fallbackReason"] == "unsupported_jql"
             assert body["cache"]["available"] and body["cache"]["upstreamValidated"]
             assert body["cache"]["compliant"] and not body["cache"]["invalidated"]
             assert len(calls) == 1

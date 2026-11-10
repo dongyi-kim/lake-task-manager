@@ -1,11 +1,15 @@
 """Batch proven reusable memberships without evaluating arbitrary JQL locally."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from contextlib import contextmanager
 from contextvars import ContextVar
 import json
 
-from app.jira.jql import And, Atom, _Parser, _unquote, tokenize
+from app.jira.jql import And, Atom, CompiledJql, _Parser, _unquote, tokenize
+from app.jira.jql_budget import (
+    PhysicalQueryBudgetExceeded, claim_physical_query, physical_query_scope, query_identity,
+    validate_max_parts,
+)
 
 
 GROUP_SIZE = 5
@@ -49,6 +53,63 @@ class Member:
     value: str = ""
     category: str = ""
     guard: tuple = ()
+    whole: bool = False
+
+
+@dataclass(frozen=True)
+class ExecutionPlan:
+    compiled: CompiledJql
+    groups: tuple[tuple[Member, ...], ...]
+    requested_strategy: str
+    effective_strategy: str
+    max_parts: int
+    logical_leaf_count: int | None
+    physical_group_count: int
+    fallback_reason: str | None = None
+
+    def diagnostics(self):
+        return {"requestedStrategy": self.requested_strategy,
+                "effectiveStrategy": self.effective_strategy,
+                "maxParts": self.max_parts, "logicalLeafCount": self.logical_leaf_count,
+                "physicalGroupCount": self.physical_group_count,
+                "fallbackReason": self.fallback_reason}
+
+
+def build_execution_plan(compiled, epic_field, *, strategy="auto", max_parts=64,
+                         covered_leaves=(), pending_queries=None, groups=None):
+    """Select requests using proven cache coverage, without upstream cost probes.
+
+    ``covered_leaves`` proves membership, projection and freshness. A callable receives
+    the selected groups once, allowing projection-aware coverage without replanning.
+    An opaque union never claims to partition an arbitrary JQL.
+    """
+    if not isinstance(strategy, str) or strategy not in {"auto", "off", "people", "full"}:
+        raise ValueError("strategy must be auto, off, people or full")
+    validate_max_parts(max_parts)
+    if groups is None:
+        groups = plan_groups(compiled, epic_field, strategy=strategy)
+    covered = set(covered_leaves(groups) if callable(covered_leaves) else covered_leaves)
+    queries = ({query_identity(query) for query in pending_queries(groups, covered)}
+               if pending_queries is not None else
+               {query_identity(group_query(missing)) for group in groups
+                if (missing := tuple(member for member in group if member.leaf not in covered))})
+    effective, reason = strategy, None
+    if not compiled.dnf_expanded and strategy != "off":
+        effective, reason = "off", "dnf_not_expanded"
+    if len(queries) > max_parts:
+        # A true monolithic member avoids dispatching separate hydration for each cached
+        # logical membership after discovering that their physical cost is unaffordable.
+        groups = _whole_group(compiled, tuple(member for group in groups for member in group))
+        queries = {query_identity(groups[0][0].leaf)}
+        effective, reason = "off", "physical_query_budget"
+    return ExecutionPlan(compiled, groups, strategy, effective, max_parts,
+                         len(compiled.leaves) if compiled.dnf_expanded else None,
+                         len(queries), reason)
+
+
+def _whole_group(compiled, members):
+    fields = tuple(sorted({field for member in members for field in member.fields}))
+    return ((Member(0, compiled.whole_query or group_query(members), fields, whole=True),),)
 
 
 def _literal(token):
@@ -94,9 +155,28 @@ def _member(index, leaf, fields, epic_field):
     return Member(index, leaf, fields, family, selector, value, category, tuple(guards))
 
 
-def plan_groups(compiled, epic_field):
+def plan_groups(compiled, epic_field, *, strategy="auto"):
+    """Choose structural groups and projection requirements without reading the cache."""
+    if not isinstance(strategy, str) or strategy not in {"auto", "off", "people", "full"}:
+        raise ValueError("strategy must be auto, off, people or full")
     members = tuple(_member(i, leaf, fields, epic_field) for i, (leaf, fields)
                     in enumerate(zip(compiled.leaves, compiled.leaf_fields)))
+    if strategy == "off" or not compiled.dnf_expanded:
+        return _whole_group(compiled, members)
+    if strategy == "full":
+        return tuple((member,) for member in members)
+    if strategy == "people":
+        people = tuple(member for member in members if member.family == "people")
+        opaque = tuple(replace(member, family="", selector="", value="", category="", guard=())
+                       for member in members if member.family != "people")
+        return _group_members(people) + ((opaque,) if opaque else ())
+    # Omitted auto retains the deployed proof/group selection until qualification.
+    return _group_members(members)
+
+
+def _group_members(members):
+    if not members:
+        return ()
     if len(members) < 2 or any(not member.family for member in members):
         return (members,)
     groups = []

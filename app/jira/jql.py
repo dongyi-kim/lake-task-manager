@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import calendar
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import cmp_to_key
 from typing import Iterable
@@ -23,6 +23,10 @@ MAX_ATOMS_PER_LEAF = 64
 
 class JqlUnsupported(ValueError):
     """The query must use the legacy Jira execution path."""
+
+
+class JqlExpansionLimit(JqlUnsupported):
+    """Normalization succeeded, but logical DNF expansion exceeds the safety cap."""
 
 
 @dataclass(frozen=True)
@@ -63,6 +67,8 @@ class CompiledJql:
     leaves: tuple[str, ...]
     leaf_fields: tuple[tuple[str, ...], ...]
     order: tuple[OrderSpec, ...]
+    whole_query: str = field(default="", compare=False)
+    dnf_expanded: bool = True
 
 
 _WORD_END = set(" \t\r\n(),<>!=~\"'")
@@ -453,6 +459,24 @@ def _node_key(node) -> str:
     return op.join(f"({_node_key(child)})" for child in node.children)
 
 
+def _render_condition(node) -> str:
+    if isinstance(node, Atom):
+        return node.value
+    if isinstance(node, Not):
+        return f"NOT ({_render_condition(node.child)})"
+    operator = " AND " if isinstance(node, And) else " OR "
+    return operator.join(_render_condition(child) if isinstance(child, (Atom, Not))
+                         else f"({_render_condition(child)})" for child in node.children)
+
+
+def _predicate_fields(node) -> set[str]:
+    if isinstance(node, Atom):
+        return {_atom_field(node.value)} if node.value else set()
+    if isinstance(node, Not):
+        return _predicate_fields(node.child)
+    return set().union(*(_predicate_fields(child) for child in node.children))
+
+
 def _nnf(node, negate: bool = False):
     if isinstance(node, Atom):
         return Not(node) if negate else node
@@ -477,14 +501,14 @@ def _dnf(node) -> list[tuple[str, ...]]:
         for child in node.children:
             rows.extend(_dnf(child))
             if len(rows) > MAX_LEAVES:
-                raise JqlUnsupported("OR 분해 결과가 64개 leaf를 초과했습니다.")
+                raise JqlExpansionLimit("OR 분해 결과가 64개 leaf를 초과했습니다.")
         return rows
     rows = [tuple()]
     for child in node.children:
         child_rows = _dnf(child)
         rows = [left + right for left in rows for right in child_rows]
         if len(rows) > MAX_LEAVES:
-            raise JqlUnsupported("JQL DNF 전개 결과가 64개 leaf를 초과했습니다.")
+            raise JqlExpansionLimit("JQL DNF 전개 결과가 64개 leaf를 초과했습니다.")
     return rows
 
 
@@ -523,7 +547,8 @@ def _parse_order(tokens: list[Token]) -> tuple[OrderSpec, ...]:
 
 
 def compile_jql(raw: str, *, user_id: str = "", timezone_name: str = "UTC",
-                now: datetime | None = None, ttl_seconds: int = 900) -> CompiledJql:
+                now: datetime | None = None, ttl_seconds: int = 900,
+                decompose: bool = True) -> CompiledJql:
     tokens = tokenize((raw or "").strip().rstrip(";").strip())
     condition_tokens, order_tokens = _split_order(tokens)
     try:
@@ -540,6 +565,16 @@ def compile_jql(raw: str, *, user_id: str = "", timezone_name: str = "UTC",
     parsed = _Parser(condition_tokens).parse()
     normalized = _normalize_tree(parsed, user_id, context_now)
     normalized = _nnf(normalized)
+    whole_query = _render_condition(normalized)
+    order = _parse_order(order_tokens)
+    order_text = ", ".join(f"{spec.field} {spec.direction}" for spec in order)
+    if not decompose:
+        # Context normalization is useful independently of DNF. In particular, an explicit
+        # monolithic search must never expand an exponential expression just to count it.
+        return CompiledJql(
+            canonical=(whole_query + " ORDER BY " + order_text).strip(),
+            leaves=(whole_query,), leaf_fields=(tuple(sorted(_predicate_fields(normalized))),),
+            order=order, whole_query=whole_query, dnf_expanded=False)
     rows = _dnf(normalized)
     clean: set[tuple[str, ...]] = set()
     for row in rows:
@@ -556,11 +591,10 @@ def compile_jql(raw: str, *, user_id: str = "", timezone_name: str = "UTC",
     if not leaves:
         leaves = ("",)
         leaf_fields = (tuple(),)
-    order = _parse_order(order_tokens)
-    order_text = ", ".join(f"{spec.field} {spec.direction}" for spec in order)
     base = " OR ".join(f"({leaf})" for leaf in leaves) if len(leaves) > 1 else leaves[0]
     canonical = (base + " ORDER BY " + order_text).strip()
-    return CompiledJql(canonical=canonical, leaves=leaves, leaf_fields=leaf_fields, order=order)
+    return CompiledJql(canonical=canonical, leaves=leaves, leaf_fields=leaf_fields, order=order,
+                       whole_query=whole_query)
 
 
 def fields_with_order(fields: str, order: Iterable[OrderSpec]) -> str:

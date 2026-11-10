@@ -35,6 +35,7 @@ def test_live_unsupported_page_reports_request_start_even_without_cache_rows(cli
             'status WAS "Resolved" DURING ("2026-10-01", "2026-11-01")', fields="summary")
         source = reduce_read_metadata(sources)
     assert result["issues"] == rows
+    assert result["execution"]["fallbackReason"] == "unsupported_jql"
     assert len(calls) == 1
     assert source["fetchedAt"] == started
     assert source["upstreamValidated"] and source["compliant"]
