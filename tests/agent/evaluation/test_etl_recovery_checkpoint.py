@@ -35,6 +35,11 @@ def sources():
                         page = search[-1]["result"]["data"]
                         search.append(await call("search_issues", jql=QUERY, max_results=1,
                             start_at=page["nextStartAt"], snapshot_id=page["snapshotId"]))
+                    live_search = [await call("search_issues", jql=QUERY, max_results=1, cache_mode="live")]
+                    while live_search[-1]["result"]["data"]["hasMore"]:
+                        page = live_search[-1]["result"]["data"]
+                        live_search.append(await call("search_issues", jql=QUERY, max_results=1,
+                            cache_mode="live", start_at=page["nextStartAt"], snapshot_id=page["snapshotId"]))
                     other_search = await call("search_issues", jql="key = DL-31001", max_results=100)
                     comments = [await call("get_evidence_page", key="DL-31005", kind="comments", max_results=2)]
                     comments.append(await call("get_evidence_page", key="DL-31005", kind="comments",
@@ -43,7 +48,7 @@ def sources():
                     fragment = await call("get_evidence_page", key="DL-31005", kind="comments",
                                           start_at=2, record_offset=1, max_results=1)
                     assert fragment["result"]["data"]["items"][0]["recordOffset"] == 1
-                    return {"search": search, "comments": comments, "other": [other],
+                    return {"search": search, "live-search": live_search, "comments": comments, "other": [other],
                             "other-search": [other_search], "fragment": [fragment]}
             return anyio.run(collect)
 
@@ -79,8 +84,20 @@ def completed(calls, shape, prefix=""):
             "lastSavedArguments": {"key": "DL-31006", "kind": "comments"}}}}
 
 
+@pytest.mark.parametrize("field", ["snapshotId", "snapshot_id"])
+@pytest.mark.parametrize("value", [None, "unrelated"])
+def test_live_evidence_null_snapshot_is_inapplicable_not_conflicting(tmp_path, sources, field, value):
+    calls = sources["comments"]
+    assert all(call["result"]["data"].get("snapshotId") is None for call in calls)
+    controller, files = saved_controller(tmp_path, calls)
+    checkpoint = completed(calls, "local-arguments")
+    checkpoint["groups"]["comments/DL-31005"][field] = value
+    files.write_file("progress.json", json.dumps(checkpoint))
+    assert controller.stop.is_set() is (value is None)
+
+
 @pytest.mark.parametrize("scenario", ["group-boundary", "client-restart", "backend-restart"])
-@pytest.mark.parametrize("collection", ["search", "comments"])
+@pytest.mark.parametrize("collection", ["search", "live-search", "comments"])
 @pytest.mark.parametrize("shape", ["flat", "arguments", "local-arguments", "local-reference"])
 @pytest.mark.parametrize("prefix", ["", "investigation/run/"])
 def test_completed_local_checkpoint_cuts_and_retains_pending_group(tmp_path, sources, scenario,
@@ -261,11 +278,11 @@ def test_each_shared_recovery_helper_changes_the_battery_fingerprint(monkeypatch
     if suite == "generic":
         from tools.codex_mcp_eval.recovery_runner import recovery_battery
         battery = recovery_battery(runner._battery("work", "2026-11-09"), "2026-11-09", "between-pages", "restarted")
-        assert battery.BATTERY_VERSION == "4.0.1"
+        assert battery.BATTERY_VERSION == "4.0.2"
     else:
         from tools.codex_mcp_eval.etl.recovery_runner import recovery_battery
         battery = recovery_battery(runner._battery("etl", "2026-11-10"), "2026-11-10", "client-restart", "restarted")
-        assert battery.BATTERY_VERSION == "3.0.3"
+        assert battery.BATTERY_VERSION == "3.0.4"
     before = protocol.battery_manifest_sha256(battery.CASES, checker_dependencies=battery.CHECKER_DEPENDENCIES)
     original = protocol.inspect.getsource
     for helper in (*SAVED_RESPONSE_DEPENDENCIES, *CHECKPOINT_DEPENDENCIES):

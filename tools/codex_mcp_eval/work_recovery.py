@@ -3,37 +3,79 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+from math import isfinite
 from threading import Event
 
 RECOVERY_SCENARIOS = ("between-pages", "after-response", "record-chunk", "corrupt-progress",
                       "expired-snapshot", "source-changed")
 
 
+def _live_snapshot_binding(call):
+    """Identity of a live snapshot, including its original source time and policy."""
+    result, arguments = call["result"], call.get("arguments") or {}
+    data, cache = result["data"], result.get("cache") or {}
+    dates = (data.get("snapshotCreatedAt"), data.get("snapshotSourceFetchedAt"), cache.get("displayUntil"))
+    if (arguments.get("cache_mode") != "live" or cache.get("requestedCacheMode") != "live"
+            or cache.get("effectiveCacheMode") != "live" or cache.get("available") is not True
+            or not all(type(value) in (int, float) and isfinite(value) for value in dates)
+            or dates[2] <= dates[0]):
+        return None
+    return (arguments.get("jql"), arguments.get("detail", "full"),
+            arguments.get("include_description", False), arguments.get("strategy", "auto"),
+            arguments.get("max_parts", 64), *dates)
+
+
 def complete_search_membership(calls, canonical_jql):
-    """Prove the final scoped query from actual fresh, coherent search responses.
+    """Prove fixed-result membership from trusted, completion-ordered host reads.
 
     A known-key batch is body evidence, not query membership. Search page size is
     unrestricted; source snapshot, row coverage and terminal metadata prove completion.
+    Successful backend reads enforce snapshot TTL and permission partition. Frozen
+    live continuations prove the anchor's population, never a new live validation.
+    Recovery callers separately restrict saved prefixes to currently validated sources.
     """
     groups, latest = {}, None
+    queries = {(call.get("arguments") or {}).get("jql") for call in calls
+               if call.get("name") == "search_issues"
+               and ((call.get("result") or {}).get("data") or {}).get("canonicalJql") == canonical_jql}
     for call in calls:
         result = call.get("result") or {}
         data = result.get("data") or {}
-        if (call.get("name") != "search_issues" or call.get("isError") or result.get("ok") is not True
-                or data.get("canonicalJql") != canonical_jql):
+        arguments = call.get("arguments") or {}
+        if call.get("name") != "search_issues":
+            continue
+        if call.get("isError") or result.get("ok") is not True:
+            if data.get("canonicalJql") == canonical_jql or arguments.get("jql") in queries:
+                latest = None
+            continue
+        if data.get("canonicalJql") != canonical_jql:
             continue
         snapshot, start, total = data.get("snapshotId"), data.get("startAt"), data.get("total")
         if (not isinstance(snapshot, str) or not snapshot or type(start) is not int or start < 0
                 or type(total) is not int or total < 0):
             latest = None
             continue
-        latest = snapshot
-        if start == 0 and snapshot not in groups:
-            groups[snapshot] = {"rows": {}, "total": total, "valid": True, "ended": False}
-        group = groups.setdefault(snapshot, {"rows": {}, "total": total, "valid": False, "ended": False})
+        # A no-cursor restart may legitimately reuse the backend's cached ID;
+        # it must prove all rows again. An old explicit cursor cannot restart it.
+        if start == 0 and (snapshot not in groups or (
+                snapshot != latest and arguments.get("snapshot_id") is None)):
+            cache = result.get("cache") or {}
+            binding = _live_snapshot_binding(call)
+            anchor = (binding if cache.get("state") == "fresh" and cache.get("compliant") is True
+                      and cache.get("upstreamValidated") is True else None)
+            groups[snapshot] = {"rows": {}, "total": total, "valid": True, "ended": False,
+                                "liveBinding": anchor}
+            latest = snapshot
+        if snapshot != latest:
+            continue  # An old cursor cannot reactivate a superseded population.
+        group = groups[snapshot]
         rows, cache = data.get("issues"), result.get("cache") or {}
+        frozen = (start > 0 and group["liveBinding"] is not None
+                  and _live_snapshot_binding(call) == group["liveBinding"]
+                  and arguments.get("snapshot_id") == snapshot and arguments.get("start_at", 0) == start
+                  and data.get("snapshotFrozen") is True and cache.get("state") == "stale")
         valid = (isinstance(rows, list) and result.get("partial") is False and result.get("missing") == 0
-                 and cache.get("state") == "fresh" and not cache.get("invalidated")
+                 and (cache.get("state") == "fresh" or frozen) and not cache.get("invalidated")
                  and group["total"] == total)
         if not valid:
             group["valid"] = False
@@ -180,4 +222,5 @@ def persisted_calls(files, calls):
             and any(_digest(value) in hashes for value in (row["result"], row["result"].get("data")))]
 
 
-SAVED_RESPONSE_DEPENDENCIES = (is_evidence_path, saved_response_hashes, _nodes, _digest)
+SAVED_RESPONSE_DEPENDENCIES = (is_evidence_path, saved_response_hashes, _nodes, _digest,
+                             _live_snapshot_binding)

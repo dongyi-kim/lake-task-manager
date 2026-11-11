@@ -98,11 +98,21 @@ def recorded_trace(bundle):
                         tails.append(next_call)
                         data = next_call["result"]["data"]
                     contiguous_evidence = await evidence()
+                    cached_restart = [await search()]
+                    assert cached_restart[0]["result"]["data"]["snapshotId"] == prefix["result"]["data"]["snapshotId"]
+                    while cached_restart[-1]["result"]["data"]["hasMore"]:
+                        data = cached_restart[-1]["result"]["data"]
+                        cached_restart.append(await search(start_at=data["nextStartAt"], snapshot_id=data["snapshotId"]))
 
                     # A fresh complete replacement must be allowed even when its
                     # snapshot differs from the interrupted cursor.
                     replacement = await search(max_results=100, cache_mode="live")
                     replacement_evidence = await evidence()
+                    live = [await search(cache_mode="live")]
+                    while live[-1]["result"]["data"]["hasMore"]:
+                        data = live[-1]["result"]["data"]
+                        live.append(await search(cache_mode="live", start_at=data["nextStartAt"],
+                                                 snapshot_id=data["snapshotId"]))
                     return {"trigger": trigger, "first": first,
                         "canonical": page["canonicalJql"], "unrelated": unrelated,
                         "earlyEvidence": early_evidence, "eventual": eventual,
@@ -110,7 +120,9 @@ def recorded_trace(bundle):
                         "validatedEvidence": validated_evidence,
                         "savedPrefix": saved_prefix, "tails": tails,
                         "contiguousEvidence": contiguous_evidence,
+                        "cachedRestart": cached_restart,
                         "replacement": replacement,
+                        "live": live,
                         "replacementEvidence": replacement_evidence}
 
             trace = anyio.run(collect)
@@ -121,6 +133,74 @@ def test_trigger_binds_the_actual_interrupted_canonical_query(recorded_trace):
     trace = recorded_trace
     assert trace["trigger"].get("canonicalJql") == trace["canonical"]
     assert trace["trigger"]["snapshotId"] == trace["first"]["result"]["data"]["snapshotId"]
+
+
+def test_live_snapshot_continuations_prove_membership_without_becoming_fresh(recorded_trace):
+    calls = deepcopy(recorded_trace["live"])
+    before = deepcopy(calls)
+    assert calls[0]["result"]["cache"]["upstreamValidated"] is True
+    assert all(row["result"]["cache"]["state"] == "stale" for row in calls[1:])
+    assert complete_search_membership(calls, recorded_trace["canonical"]) == KEYS
+    assert calls == before
+
+
+@pytest.mark.parametrize("damage", ["anchor-stale", "anchor-unvalidated", "tail-only", "query",
+    "cursor", "snapshot", "created", "fetched", "expiry", "frozen", "description", "detail",
+    "policy", "strategy", "parts", "invalidated", "partial", "gap", "duplicate", "terminal"])
+def test_live_snapshot_exception_requires_bound_complete_source(recorded_trace, damage):
+    calls = deepcopy(recorded_trace["live"])
+    first, tail = calls[0], calls[-1]
+    data, cache, args = tail["result"]["data"], tail["result"]["cache"], tail["arguments"]
+    if damage == "anchor-stale": first["result"]["cache"]["state"] = "stale"
+    elif damage == "anchor-unvalidated": first["result"]["cache"]["upstreamValidated"] = False
+    elif damage == "tail-only": calls = calls[1:]
+    elif damage == "query": args["jql"] = "key = DL-31000"
+    elif damage == "cursor": args["start_at"] = 0
+    elif damage == "snapshot": args["snapshot_id"] = "unrelated"
+    elif damage == "created": data["snapshotCreatedAt"] += 1
+    elif damage == "fetched": data["snapshotSourceFetchedAt"] += 1
+    elif damage == "expiry": cache["displayUntil"] += 1
+    elif damage == "frozen": data["snapshotFrozen"] = False
+    elif damage == "description": args["include_description"] = True
+    elif damage == "detail": args["detail"] = "full"
+    elif damage == "policy": args["cache_mode"] = "warm"
+    elif damage == "strategy": args["strategy"] = "off"
+    elif damage == "parts": args["max_parts"] = 2
+    elif damage == "invalidated": cache["invalidated"] = True
+    elif damage == "partial": tail["result"]["partial"] = True
+    elif damage == "gap": calls.pop(1)
+    elif damage == "duplicate": data["issues"][0]["key"] = first["result"]["data"]["issues"][0]["key"]
+    else: data["nextStartAt"] = 3
+    assert complete_search_membership(calls, recorded_trace["canonical"]) is None
+
+
+@pytest.mark.parametrize("damage", ["partial", "failed", "stale", "valid"])
+def test_old_tail_cannot_reactivate_superseded_search(recorded_trace, damage):
+    trace = deepcopy(recorded_trace)
+    newer = trace["live"][0]
+    if damage == "partial": newer["result"]["partial"] = True
+    elif damage == "failed": newer.update(isError=True); newer["result"]["ok"] = False
+    elif damage == "stale": newer["result"]["cache"]["state"] = "stale"
+    calls = [trace["eventual"], newer, trace["validatedComplete"]]
+    assert complete_search_membership(calls, trace["canonical"]) is None
+
+
+@pytest.mark.parametrize("damage", [None, "partial", "stale", "missing-first", "missing-tail"])
+def test_no_cursor_fresh_restart_reestablishes_cached_snapshot(recorded_trace, damage):
+    trace = deepcopy(recorded_trace)
+    restarted = trace["cachedRestart"]
+    first = restarted[0]
+    assert first["arguments"].get("snapshot_id") is None
+    assert first["result"]["cache"]["state"] == "fresh"
+    if damage == "partial": first["result"]["partial"] = True
+    elif damage == "stale": first["result"]["cache"]["state"] = "stale"
+    elif damage == "missing-first": restarted.pop(0)
+    elif damage == "missing-tail": restarted.pop()
+    # A transient transport rejection leaves the backend's cached snapshot intact.
+    failure = {"name": "search_issues", "arguments": trace["savedPrefix"][0]["arguments"],
+               "isError": True, "result": {"ok": False, "error": {"status": 429}}}
+    calls = [*trace["savedPrefix"], failure, *restarted]
+    assert complete_search_membership(calls, trace["canonical"]) == (KEYS if damage is None else None)
 
 
 def test_actual_unrelated_terminal_then_evidence_fails_despite_eventual_population(recorded_trace):

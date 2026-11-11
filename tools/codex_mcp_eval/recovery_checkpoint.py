@@ -98,6 +98,9 @@ def binds_saved_call(node, constraint, call, references):
                 # A null initial request snapshot requests a new snapshot.
                 if field == "snapshot_id" and value is None:
                     continue
+                # Live evidence pages have no snapshot identity to bind.
+                if field == "snapshotId" and value is None and not search and page.get("snapshotId") is None:
+                    continue
                 if not isinstance(value, str) or not value or value not in valid:
                     return False
     if constraint and any(value != (call["name"] if field == "name" else page.get(field))
