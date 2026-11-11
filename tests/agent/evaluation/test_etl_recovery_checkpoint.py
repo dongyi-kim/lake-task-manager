@@ -84,6 +84,109 @@ def completed(calls, shape, prefix=""):
             "lastSavedArguments": {"key": "DL-31006", "kind": "comments"}}}}
 
 
+def layout_checkpoint(calls, prefix=""):
+    checkpoint = completed(calls, "local-reference", prefix)
+    node = next(iter(checkpoint["groups"].values()))
+    node["status"] = node.pop("state")
+    node["nextCall"] = None
+    node["lastEvidence"] = node.pop("lastSaved")
+    if calls[-1]["name"] == "search_issues":
+        node["snapshot"] = {"id": calls[-1]["result"]["data"]["snapshotId"]}
+    else:
+        node["cursor"] = {"arguments": deepcopy(calls[-1]["arguments"]), "nextCall": None}
+    return checkpoint
+
+
+@pytest.mark.parametrize("scenario,collection,grouped", [
+    ("group-boundary", "live-search", True), ("client-restart", "comments", True),
+    ("backend-restart", "comments", False)])
+def test_observed_layout_checkpoint_binds_saved_source(tmp_path, sources, scenario, collection, grouped):
+    calls = sources[collection]
+    controller, files = saved_controller(tmp_path, calls, scenario=scenario, prefix="investigation/run/")
+    for index, call in enumerate(calls):
+        files.write_file(f"investigation/run/evidence/page-{index}.json", json.dumps({
+            "tool": call["name"], "arguments": call["arguments"], "response": call["result"]}))
+    checkpoint = layout_checkpoint(calls, "investigation/run/")
+    if not grouped:
+        checkpoint = next(iter(checkpoint["groups"].values()))
+    files.write_file("investigation/run/progress.json", json.dumps(checkpoint))
+    assert controller.stop.is_set() and controller.trigger
+    assert controller.trigger["requiresBackendRestart"] is (scenario == "backend-restart")
+
+
+@pytest.mark.parametrize("damage", ["cursor-key", "cursor-kind", "cursor-arguments", "cursor-container",
+    "snapshot-id", "snapshot-container", "snapshot-value", "alias-reference", "alias-snapshot-vs-direct",
+    "alias-snapshot-vs-arguments", "alias-cursor-vs-direct", "alias-cursor-vs-arguments"])
+def test_local_alias_conflicts_cannot_be_ignored_beside_valid_binding(tmp_path, sources, damage):
+    calls = sources["search" if "snapshot" in damage else "comments"]
+    controller, files = saved_controller(tmp_path, [*calls, *sources["other"]])
+    checkpoint = completed(calls, "local-reference")
+    node = next(iter(checkpoint["groups"].values()))
+    if damage.startswith("cursor"):
+        node["cursor"] = {"arguments": deepcopy(calls[-1]["arguments"])}
+        if damage == "cursor-container":
+            node["cursor"] = []
+        elif damage == "cursor-arguments":
+            node["cursor"]["arguments"] = []
+        else:
+            node["cursor"]["arguments"][damage.removeprefix("cursor-")] = "different"
+    elif damage == "alias-reference":
+        node["lastEvidence"] = f"evidence/page-{len(calls)}.json"
+    elif damage.startswith("alias-cursor"):
+        node["cursor"] = {"arguments": deepcopy(calls[-1]["arguments"])}
+        if damage.endswith("direct"):
+            node["key"] = "different"
+        else:
+            node["lastSavedArguments"] = {"key": "different", "kind": "comments"}
+    else:
+        snapshot = calls[-1]["result"]["data"]["snapshotId"]
+        node["snapshot"] = {"id": "different"}
+        if damage == "snapshot-container":
+            node["snapshot"] = []
+        elif damage == "snapshot-value":
+            node["snapshot"]["id"] = []
+        elif damage == "alias-snapshot-vs-direct":
+            node["snapshotId"] = snapshot
+        elif damage == "alias-snapshot-vs-arguments":
+            node["arguments"] = {"snapshot_id": snapshot}
+    files.write_file("progress.json", json.dumps(checkpoint))
+    assert controller.trigger is None and not controller.stop.is_set()
+
+
+@pytest.mark.parametrize("alias", ["lastEvidence", "cursor", "snapshot"])
+def test_rejected_alias_binding_cannot_borrow_completed_descendant(tmp_path, sources, alias):
+    calls = sources["comments"]
+    controller, files = saved_controller(tmp_path, [*calls, *sources["other"]])
+    child = completed(calls, "local-reference")["groups"]["comments/DL-31005"]
+    rejected = {"lastEvidence": "evidence/page-2.json"} if alias == "lastEvidence" else {
+        alias: {"arguments": {"key": "different"}} if alias == "cursor" else {"id": "different"}}
+    files.write_file("progress.json", json.dumps({**rejected, "arbitrary": child}))
+    assert controller.trigger is None and not controller.stop.is_set()
+
+
+@pytest.mark.parametrize("damage", ["unsaved", "altered", "terminal-only", "record-gap", "path-traversal",
+                                  "path-prefix", "path-missing"])
+def test_last_evidence_alias_requires_exact_complete_saved_source(tmp_path, sources, damage):
+    calls = deepcopy(sources["comments" if damage == "record-gap" else "search"])
+    if damage == "terminal-only":
+        calls = calls[-1:]
+    elif damage == "record-gap":
+        calls[0]["result"]["data"]["items"].pop()
+    controller, files = saved_controller(tmp_path, calls, save=damage != "unsaved")
+    checkpoint = layout_checkpoint(calls)
+    node = next(iter(checkpoint["groups"].values()))
+    if damage == "altered":
+        files.write_file(node["lastEvidence"], "{}")
+    elif damage == "path-traversal":
+        node["lastEvidence"] = "../evidence/page-2.json"
+    elif damage == "path-prefix":
+        node["lastEvidence"] = "evidence/"
+    elif damage == "path-missing":
+        node["lastEvidence"] = "evidence/missing.json"
+    files.write_file("progress.json", json.dumps(checkpoint))
+    assert controller.trigger is None and not controller.stop.is_set()
+
+
 @pytest.mark.parametrize("field", ["snapshotId", "snapshot_id"])
 @pytest.mark.parametrize("value", [None, "unrelated"])
 def test_live_evidence_null_snapshot_is_inapplicable_not_conflicting(tmp_path, sources, field, value):
@@ -278,11 +381,11 @@ def test_each_shared_recovery_helper_changes_the_battery_fingerprint(monkeypatch
     if suite == "generic":
         from tools.codex_mcp_eval.recovery_runner import recovery_battery
         battery = recovery_battery(runner._battery("work", "2026-11-09"), "2026-11-09", "between-pages", "restarted")
-        assert battery.BATTERY_VERSION == "4.0.2"
+        assert battery.BATTERY_VERSION == "4.0.3"
     else:
         from tools.codex_mcp_eval.etl.recovery_runner import recovery_battery
         battery = recovery_battery(runner._battery("etl", "2026-11-10"), "2026-11-10", "client-restart", "restarted")
-        assert battery.BATTERY_VERSION == "3.0.4"
+        assert battery.BATTERY_VERSION == "3.0.5"
     before = protocol.battery_manifest_sha256(battery.CASES, checker_dependencies=battery.CHECKER_DEPENDENCIES)
     original = protocol.inspect.getsource
     for helper in (*SAVED_RESPONSE_DEPENDENCIES, *CHECKPOINT_DEPENDENCIES):

@@ -16,7 +16,7 @@ from .fixture import EtlFixture
 from .recovery import RECOVERY_SCENARIOS, RecoveryController, recovery_cases
 from .world import build_etl_world
 
-RECOVERY_VERSION = "3.0.4"
+RECOVERY_VERSION = "3.0.5"
 RECOVERY_PROMPT = """
 이 조사는 연구용 복구 검증도 포함합니다. 먼저 ETL 모듈의 기간 내 신규 적재 요청을 검색하고 전체 페이지를 확인하세요.
 그 다음 티켓별 댓글 근거 그룹을 수집하고 고객 최초 적재 요청의 상태 변경 이력도 전체 페이지로 확인하세요.

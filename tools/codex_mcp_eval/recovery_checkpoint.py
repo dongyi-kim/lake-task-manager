@@ -12,7 +12,7 @@ def checkpoint_nodes(value, group=None):
         # Arguments, references and arbitrary descendants belong to this
         # binding. Reconsidering them alone would discard its rejected identity.
         if group is not None or any(field in value for field in (
-                "arguments", "lastSavedArguments", "lastSaved", "lastChunk")):
+                "arguments", "lastSavedArguments", "lastSaved", "lastChunk", "lastEvidence", "cursor", "snapshot")):
             return
         for name, child in value.items():
             if name == "groups" and isinstance(child, dict):
@@ -47,6 +47,21 @@ def local_identities(node):
             if not isinstance(node[field], dict):
                 return None
             identities.append(node[field])
+    # These are local aliases, never a search through arbitrary descendants.
+    if "cursor" in node:
+        cursor = node["cursor"]
+        if not isinstance(cursor, dict):
+            return None
+        if "arguments" in cursor:
+            if not isinstance(cursor["arguments"], dict):
+                return None
+            identities.append(cursor["arguments"])
+    if "snapshot" in node:
+        snapshot = node["snapshot"]
+        if not isinstance(snapshot, dict):
+            return None
+        if "id" in snapshot:
+            identities.append({"snapshotId": snapshot["id"]})
     return identities
 
 
@@ -68,7 +83,7 @@ def pending_group(node, constraint):
 
 def checkpoint_references(files, node):
     references = []
-    for field in ("lastSaved", "lastChunk"):
+    for field in ("lastSaved", "lastChunk", "lastEvidence"):
         if field not in node:
             continue
         path = node[field]
