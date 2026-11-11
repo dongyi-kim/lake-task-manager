@@ -23,7 +23,7 @@ def bundle():
 def test_new_battery_has_exactly_fourteen_normal_boundary_families():
     cases = battery()
     assert cases.SUITE == "codex-mcp-etl-year"
-    assert cases.BATTERY_VERSION == "3.0.1"
+    assert cases.BATTERY_VERSION == "3.0.2"
     assert len(cases.CASES) == 28
     assert {row["family"] for row in cases.CASES} == {f"F{i:02}" for i in range(1, 15)}
     assert all({r["variant"] for r in cases.CASES if r["family"] == family} == {"normal", "boundary"}
@@ -85,6 +85,84 @@ def test_expectations_distinguish_sp_child_ratio_and_operation_units(bundle):
     assert lifecycle["DL-21013"]["known"] is False
     assert lifecycle["DL-21012"]["completed_deliverables"] == ["CDC 체크포인트 저장", "중복 방지 키 검증"]
     assert lifecycle["DL-21017"]["completed_deliverables"] == []
+
+
+@pytest.fixture(scope="module")
+def operation_expectations(bundle):
+    from tools.codex_mcp_eval.etl.checks import build_expectations
+    return build_expectations(bundle)
+
+
+def test_operation_expectations_preserve_each_questions_requested_metrics(operation_expectations):
+    normal = operation_expectations["ETL-F08-normal"]
+    boundary = operation_expectations["ETL-F08-boundary"]
+    assert [row["metric"] for row in normal["measurements"]] == [
+        "request_tickets", "completed_tickets", "requested_targets", "completed_unique_tables", "work_events"]
+    assert [row["metric"] for row in boundary["measurements"]] == [
+        "request_tickets", "requested_targets", "completed_unique_tables", "work_events"]
+    # The unrequested scalar remains available to the host for semantic/evidence review.
+    assert "completed_tickets" in boundary["operations"]
+
+
+def requested_load_answer(expected):
+    return {"reply": "Requested units are distinct; unverified work remains unknown.",
+        "resultKeys": expected["keys"], "sources": [], "reportedTotal": None, "progress": None,
+        "denominators": [], "reportFindings": [], "reportProgress": [],
+        "measurements": [{"stream": "operations", "scope": "load@2025-11", "metric": metric,
+            "value": expected["operations"][metric], "unit": unit} for metric, unit in (
+                ("request_tickets", "tickets"), ("requested_targets", "targets"),
+                ("completed_unique_tables", "tables"), ("work_events", "events"))]}
+
+
+@pytest.mark.parametrize("recovery", [False, True], ids=["boundary", "recovery-client"])
+def test_requested_four_measurements_pass_the_boundary_measurement_gate(operation_expectations, bundle, recovery):
+    cases = battery()
+    case = next(row for row in cases.CASES if row["id"] == "ETL-F08-boundary")
+    if recovery:
+        from tools.codex_mcp_eval.etl.recovery_runner import recovery_battery
+        cases = recovery_battery(cases, cases.REFERENCE_DATE, "client-restart", "restarted")
+        case = cases.CASES[0]
+    answer = requested_load_answer(operation_expectations["ETL-F08-boundary"])
+    checked = cases.check(case, {"ok": True, "reply": answer["reply"], "structuredAnswer": answer},
+                          [], {"cases": operation_expectations, "publicSources": bundle.public_sources})
+    assert "measurement_mismatch" not in checked["failures"]
+    assert "no_mcp_evidence" in checked["failures"]  # This isolates measurement correctness, not overall qualification.
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra", "duplicate", "wrong_metric", "wrong_stream",
+                                     "wrong_scope", "wrong_unit", "wrong_value"])
+def test_boundary_measurement_gate_stays_strict(operation_expectations, bundle, mutation):
+    cases = battery()
+    expected = operation_expectations["ETL-F08-boundary"]
+    answer = requested_load_answer(expected)
+    rows = answer["measurements"]
+    if mutation == "missing":
+        rows.pop()
+    elif mutation == "extra":
+        rows.append({"stream": "operations", "scope": "load@2025-11", "metric": "completed_tickets",
+                     "value": expected["operations"]["completed_tickets"], "unit": "tickets"})
+    elif mutation == "duplicate":
+        rows[-1] = copy.deepcopy(rows[0])
+    elif mutation == "wrong_value":
+        rows[0]["value"] += 1
+    else:
+        field = mutation.removeprefix("wrong_")
+        rows[0][field] = "unrequested"
+    case = next(row for row in cases.CASES if row["id"] == "ETL-F08-boundary")
+    checked = cases.check(case, {"ok": True, "reply": answer["reply"], "structuredAnswer": answer},
+                          [], {"cases": operation_expectations, "publicSources": bundle.public_sources})
+    assert "measurement_mismatch" in checked["failures"]
+
+
+def test_normal_still_requires_explicitly_requested_completed_tickets(operation_expectations, bundle):
+    cases = battery()
+    case = next(row for row in cases.CASES if row["id"] == "ETL-F08-normal")
+    answer = requested_load_answer(operation_expectations[case["id"]])
+    for row in answer["measurements"]:
+        row["scope"] = "customers@2025-11"
+    checked = cases.check(case, {"ok": True, "reply": answer["reply"], "structuredAnswer": answer},
+                          [], {"cases": operation_expectations, "publicSources": bundle.public_sources})
+    assert "measurement_mismatch" in checked["failures"]
 
 
 def test_report_contract_keeps_private_item_labels_out_and_distinguishes_public_ambiguity(bundle):
@@ -366,22 +444,24 @@ def test_preregistered_schedule_is_pilot_eighteen_formal_three_hundred_seventy()
         validate_selection("formal", "A", REPRESENTATIVE_CASE_IDS)
 
 
-def test_group_checkpoint_must_reference_the_observed_complete_group(tmp_path):
+def test_group_cut_uses_saved_source_and_actual_incoming_identity(tmp_path):
     from tools.codex_mcp_eval.etl.recovery import RecoveryController
     from tools.codex_mcp_eval.research_files import ResearchFiles
     controller = RecoveryController("group-boundary")
-    files = ResearchFiles(tmp_path, after_write=controller.after_write)
+    files = ResearchFiles(tmp_path)
     controller.files = files
-    body = {"ok": True, "partial": False, "missing": 0, "cache": {"state": "fresh"},
+    cache = {"state": "fresh", "available": True, "compliant": True, "invalidated": False}
+    body = {"ok": True, "partial": False, "missing": 0, "cache": cache,
             "data": {"hasMore": False, "snapshotId": "actual-snapshot", "canonicalJql": "actual-query",
                      "startAt": 0, "total": 0, "returned": 0, "issues": [], "nextStartAt": None}}
     controller.observe_ltm("search_issues", {"jql": "actual-query"}, body)
     files.write_file("evidence/source.json", json.dumps(body))
     files.write_file("progress.json", json.dumps({"status": "complete", "unrelated": True}))
     assert controller.trigger is None
-    files.write_file("progress.json", json.dumps({"groups": [
-        {"status": "complete", "snapshotId": "actual-snapshot", "jql": "actual-query"},
-        {"status": "pending", "key": "DL-31000", "kind": "comments"}]}))
+    target = {"ok": True, "partial": False, "missing": 0, "cache": cache,
+              "data": {"key": "DL-31000", "kind": "comments", "sourceComplete": True,
+                       "partial": False, "hasMore": False, "startAt": 0, "total": 0, "items": []}}
+    controller.observe_ltm("get_evidence_page", {"key": "DL-31000", "kind": "comments"}, target)
     assert controller.trigger["failedGroup"] == {"key": "DL-31000", "kind": "comments"}
 
 
@@ -506,9 +586,6 @@ def test_recovery_executes_actual_lifecycle_and_retains_both_phase_costs(tmp_pat
         async def read():
             async with Client(fixture.runtime.server) as client:
                 if first:
-                    unsaved = await client.call_tool("get_evidence_page", {"key": "DL-31002", "kind": "history"})
-                    assert not unsaved.is_error
-                    late.append(unsaved.structured_content)
                     response = await client.call_tool("get_evidence_page", {"key": "DL-31001", "kind": "comments"})
                     assert not response.is_error
                     await fixture.files.server.call_tool("write_file", {"path": prefix + "evidence/first.json",
@@ -524,7 +601,11 @@ def test_recovery_executes_actual_lifecycle_and_retains_both_phase_costs(tmp_pat
                         "content": json.dumps({"groups": {"comments/DL-31001": checkpoint,
                             "history/DL-31002": {"state": "pending"}}})})
                     assert not result.is_error
-                    assert kwargs["stop_event"].is_set(), "the real checkpoint must cause the interruption"
+                    assert not kwargs["stop_event"].is_set(), "checkpoint vocabulary must not cause a cut"
+                    unsaved = await client.call_tool("get_evidence_page", {"key": "DL-31002", "kind": "history"})
+                    assert not unsaved.is_error
+                    late.append(unsaved.structured_content)
+                    assert kwargs["stop_event"].is_set(), "the real next-group response must cause the interruption"
                 else:
                     await fixture.files.server.call_tool("read_file", {"path": prefix + "progress.json"})
                     await fixture.files.server.call_tool("write_file", {"path": prefix + "evidence/phase1-only.json",

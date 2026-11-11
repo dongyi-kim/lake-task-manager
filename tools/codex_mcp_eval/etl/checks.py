@@ -584,13 +584,13 @@ def build_expectations(bundle):
     units = {"request_tickets": "tickets", "completed_tickets": "tickets", "requested_targets": "targets",
              "completed_unique_tables": "tables", "work_events": "events"}
 
-    def operations(family, variant, keys, scope, *, interval=None):
+    def operations(family, variant, keys, scope, *, interval=None, requested_metrics=None):
         data = oracle.operations(*(interval or (start, end)), issue_keys=keys)
         row = new(family, variant, keys, proof(keys), unknown=not data["complete"],
             distinctions=("request tickets vs requested targets vs completed tickets", "unique tables vs execution events",
                           "partial completion", "environment and verified rename", "duplicate reporting and corrections"))
-        for metric, unit in units.items():
-            measure(row, "operations", scope, metric, data[metric], unit)
+        for metric in units if requested_metrics is None else requested_metrics:
+            measure(row, "operations", scope, metric, data[metric], units[metric])
         row["operations"] = data
         return row
 
@@ -598,7 +598,8 @@ def build_expectations(bundle):
     operations(8, "normal", customer_keys, "customers@2025-11")
     load_keys = [k for k, e in issues.items() if e.stream == "operations" and start <= e.occurred_at < end
                  and e.payload["operation"] == "load"]
-    operations(8, "boundary", load_keys, "load@2025-11")
+    operations(8, "boundary", load_keys, "load@2025-11", requested_metrics=(
+        "request_tickets", "requested_targets", "completed_unique_tables", "work_events"))
     # A missing proof can occur even when this specific cohort has no missing
     # execution: its unresolved second target is explicitly not a completed table.
     result["ETL-F08-boundary"]["mustDiscloseUncertainty"] = True

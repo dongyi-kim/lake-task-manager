@@ -6,7 +6,7 @@ from copy import deepcopy
 from tools.codex_mcp_eval.work_cases import OUTPUT_SCHEMA as BASE_SCHEMA
 
 SUITE = "codex-mcp-etl-year"
-BATTERY_VERSION = "3.0.1"
+BATTERY_VERSION = "3.0.2"
 PROMPT_VERSION = "codex-mcp-etl-year-v3.0.0"
 REFERENCE_DATE = "2026-11-10"
 

@@ -11,12 +11,11 @@ from tools.agent_eval_protocol import write_raw_result
 from tools.codex_mcp_eval.work_evidence import evidence_collection
 from tools.codex_mcp_eval.work_recovery import complete_search_membership, persisted_calls
 from tools.codex_mcp_eval.work_recovery import SAVED_RESPONSE_DEPENDENCIES
-from tools.codex_mcp_eval.recovery_checkpoint import CHECKPOINT_DEPENDENCIES
 from .fixture import EtlFixture
-from .recovery import RECOVERY_SCENARIOS, RecoveryController, recovery_cases
+from .recovery import RECOVERY_SCENARIOS, RecoveryController, recovery_cases, SOURCE_GROUP_DEPENDENCIES
 from .world import build_etl_world
 
-RECOVERY_VERSION = "3.0.5"
+RECOVERY_VERSION = "3.0.6"
 RECOVERY_PROMPT = """
 이 조사는 연구용 복구 검증도 포함합니다. 먼저 ETL 모듈의 기간 내 신규 적재 요청을 검색하고 전체 페이지를 확인하세요.
 그 다음 티켓별 댓글 근거 그룹을 수집하고 고객 최초 적재 요청의 상태 변경 이력도 전체 페이지로 확인하세요.
@@ -50,7 +49,7 @@ def recovery_battery(base, today, scenario, mode):
         "review_contract": review, "check": check,
         "CHECKER_DEPENDENCIES": (*base.CHECKER_DEPENDENCIES, recovery_battery, run_recovery_case,
                                   RecoveryController, persisted_calls, complete_search_membership,
-                                  *SAVED_RESPONSE_DEPENDENCIES, *CHECKPOINT_DEPENDENCIES,
+                                  *SAVED_RESPONSE_DEPENDENCIES, *SOURCE_GROUP_DEPENDENCIES, evidence_collection,
                                   _tool_order, _search_membership, audit_failed_group_first,
                                   RECOVERY_PROMPT, scenario, mode)})
 
@@ -153,6 +152,8 @@ def run_recovery_case(case, options, binary, run_root, cli_run, battery, *, arti
                 attempt = phases[-1]
                 try:
                     settle_attempt(attempt, fixture, offsets=attempt["observerOffsets"], after_teardown=True)
+                    if attempt["phaseIndex"] == 0 and controller:
+                        controller.settle_cut(settled=attempt.get("settlement", {}).get("complete") is True)
                     write_raw_result(directory / f"phase-{attempt['phaseIndex']}-attempt-final.json", attempt)
                 except Exception as exc:
                     mark_infrastructure_failure(attempt, exc, "observer_tail_or_final_checkpoint")
@@ -198,6 +199,8 @@ def run_recovery_case(case, options, binary, run_root, cli_run, battery, *, arti
             if attempt.get("settlement", {}).get("complete") is False:
                 mark_infrastructure_failure(attempt, RuntimeError("Unsettled observer tail"), "observer_settlement_timeout")
             attempt["persistedCalls"] = persisted_calls(fixture.files, attempt.get("output", {}).get("mcpToolCalls", []))
+            if index == 0 and controller:
+                controller.settle_cut(settled=attempt.get("settlement", {}).get("complete") is True)
             attempt["savedFileCount"] = len(fixture.files.list_files()["files"])
             attempt["isolation"] = fixture.summary()
         except Exception as exc:
@@ -229,6 +232,9 @@ def run_recovery_case(case, options, binary, run_root, cli_run, battery, *, arti
     if restarted and (not controller.trigger or len(phases) != 2
                       or not phases[0]["output"].get("intentionalInterruption")):
         failures.append("recovery_fault_not_triggered")
+    if (restarted and controller.trigger and controller.cut_call is not None
+            and controller.trigger.get("cutPosition", {}).get("qualifiesFailedGroupWindow") is not True):
+        failures.append("recovery_fault_position_not_exercised")
     # Only exact responses actually saved before interruption are eligible in a
     # retained backend. A new backend cannot borrow its old snapshot proof.
     reusable = phases[0].get("persistedCalls", []) if len(phases) == 2 and not backend_restarted else []
