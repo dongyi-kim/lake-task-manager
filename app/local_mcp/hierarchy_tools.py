@@ -10,6 +10,9 @@ def register_hierarchy(register, runtime):
         """Read the current flat hierarchy below an Epic, Task or SubTask, recursively.
         Returns issues containing key,parentKey,depth,epicKey,issue (light fields without subtasks), plus
         total/returned/hasMore/nextStartAt, complete/partial and per-branch missing reasons.
+        Assignee/reporter keep only supplied accountId,name,key,displayName,self,timeZone identity
+        fields; avatar/email/active and other profile extras are omitted. Null/unknown identities
+        are not invented. Other light fields, custom fields and actual parent context remain.
         include_root defaults true; root depth is zero and parentKey is null for this traversal.
         Task descendants are discovered even when the Task itself has not recently changed.
         epicKey inherits through Task to SubTask. No period/current-assignee filter is applied.

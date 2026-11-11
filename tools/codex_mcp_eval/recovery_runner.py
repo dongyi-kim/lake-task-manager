@@ -10,7 +10,6 @@ from tools.agent_eval_isolation import NETWORK_PREFLIGHT_MARKER
 from tools.codex_mcp_eval.recovery_fixture import RecoveryFixture
 from tools.codex_mcp_eval.work_recovery import RecoveryController, complete_search_membership, persisted_calls
 from tools.codex_mcp_eval.work_recovery import SAVED_RESPONSE_DEPENDENCIES
-from tools.codex_mcp_eval.recovery_checkpoint import CHECKPOINT_DEPENDENCIES
 from tools.codex_mcp_eval.reporting_fixture import periods
 from tools.codex_mcp_eval.metrics import aggregate_usage, file_metrics
 from tools.codex_mcp_eval.attempts import (snapshot_attempt, mark_infrastructure_failure,
@@ -66,10 +65,10 @@ def recovery_battery(base, today, scenario, mode):
                                     "originalDialogueAvailable": False, "requiresSavedFilesRead": True}}}
         return suite, {case["id"]: spec}
     return SimpleNamespace(**{**vars(base), "SUITE": "codex-mcp-work-recovery", "CASES": [case],
-        "BATTERY_VERSION": "4.0.2", "PROMPT_VERSION": "codex-mcp-work-recovery-v3", "SYSTEM_CONTEXT": "", "review_contract": review,
+        "BATTERY_VERSION": "4.0.4", "PROMPT_VERSION": "codex-mcp-work-recovery-v3", "SYSTEM_CONTEXT": "", "review_contract": review,
         "CHECKER_DEPENDENCIES": (*base.CHECKER_DEPENDENCIES, RECOVERY_PROMPT, recovery_prompt,
                                   RecoveryController, persisted_calls, complete_search_membership,
-                                  *SAVED_RESPONSE_DEPENDENCIES, *CHECKPOINT_DEPENDENCIES,
+                                  *SAVED_RESPONSE_DEPENDENCIES,
                                   RECOVERY_JQL, recovery_canonical_jql, scenario)})
 
 

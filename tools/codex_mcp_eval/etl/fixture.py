@@ -32,8 +32,6 @@ class EtlFixture(EvaluationFixture):
         if today != self.bundle.spec.observed_until.date().isoformat():
             raise ValueError("The ETL fixture freezes its observation date")
         self._scratch = Path(tempfile.gettempdir()).resolve() / uuid4().hex
-        if controller:
-            kwargs["files_after_write"] = controller.after_write
         super().__init__(self._scratch, *args, today=today, **kwargs)
         if controller:
             controller.files = self.files

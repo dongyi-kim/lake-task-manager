@@ -2,7 +2,15 @@
 
 from app.auth.base import SessionExpired
 from app.infra.cache_policy import CacheMode, current_read_policy, note_read, read_scope
-from app.jira.evidence_service import validate_page, _check_auth, _json_size, EVIDENCE_PAGE_MAX_BYTES
+from app.jira.evidence_service import (validate_page, _check_auth, _json_size,
+                                      EVIDENCE_PAGE_MAX_BYTES, project_actor_identity)
+
+
+def _hierarchy_fields(fields, light_fields):
+    """Build response fields without shrinking shared source/cache actor profiles."""
+    return {name: project_actor_identity(value) if name in {"assignee", "reporter"} else value
+            for name, value in fields.items() if name in light_fields}
+
 
 def get_descendants(client, root_key, *, projects, include_root=True, start_at=0, max_results=100,
                     missing_start_at=0):
@@ -43,13 +51,12 @@ def get_descendants(client, root_key, *, projects, include_root=True, start_at=0
                         # A full issue cache can satisfy a light read. Keep the transport light
                         # even on that hit: do not repeat long descriptions/attachments in a tree.
                         projected = {name: value for name, value in raw.items() if name in {"key", "id", "self"}}
-                        projected["fields"] = {name: value for name, value in fields.items() if name in light_fields}
+                        projected["fields"] = _hierarchy_fields(fields, light_fields)
                         rows.append({"key": key, "parentKey": parent, "depth": depth,
                                      "epicKey": epic, "issue": projected})
                         children, refreshed = _descendant_children(client, key, raw, allowed)
                         if refreshed is not raw:
-                            projected["fields"] = {name: value for name, value in refreshed["fields"].items()
-                                                   if name in light_fields}
+                            projected["fields"] = _hierarchy_fields(refreshed["fields"], light_fields)
                             epic = refreshed["fields"].get(client.s.epic_link_field_id) or inherited_epic
                             rows[-1]["epicKey"] = epic
                     except Exception as exc:

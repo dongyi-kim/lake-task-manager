@@ -503,7 +503,7 @@ class Descendant(OpenModel):
     parentKey: str | None
     depth: int
     epicKey: str | None
-    issue: RawIssue
+    issue: RawIssue = Field(description="Light Jira issue preserving custom fields and parent context; assignee/reporter project only supplied accountId/name/key/displayName/self/timeZone, excluding avatar/email/active/profile extras. Null or unknown identity is not synthesized.")
     projectionOmissions: list[str] | None = None
     details: TicketDetails | None = None
 

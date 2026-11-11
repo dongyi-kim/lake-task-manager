@@ -242,7 +242,9 @@ def test_real_mcp_cold_restart_and_controlled_source_changes(tmp_path, monkeypat
     def fake_cli(binary, prompt, workspace, **kwargs):
         assert kwargs["schema"]["properties"]["operations"]["maxItems"] == 0
         async def exercise():
-            async with httpx2.AsyncClient(headers={"Authorization": "Bearer " + kwargs["token"]}) as http:
+            # Fixture requests can outlast HTTPX's 5s default on loaded CI workers.
+            async with httpx2.AsyncClient(headers={"Authorization": "Bearer " + kwargs["token"]},
+                                          timeout=httpx2.Timeout(5.0, read=60.0)) as http:
                 async with Client(streamable_http_client(kwargs["mcp_url"], http_client=http)) as jira:
                     async with Client(streamable_http_client(kwargs["files_url"], http_client=http)) as files:
                         async def save(path, content):
