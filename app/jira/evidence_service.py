@@ -18,13 +18,20 @@ EVIDENCE_RECORD_FORMAT = "jira-evidence-v2"
 _ACTOR_FIELDS = ("accountId", "name", "key", "displayName", "self", "timeZone")
 
 
+def project_actor_identity(actor):
+    """Copy supplied identity fields without deriving IDs or changing unknown actor shapes."""
+    if isinstance(actor, dict):
+        return {field: deepcopy(actor[field]) for field in _ACTOR_FIELDS if field in actor}
+    return deepcopy(actor)
+
+
 def _wire_record(row):
     """Project actor profiles only; shared source-page caches keep their original rows."""
     result = deepcopy(row)
     for role in ("author", "updateAuthor"):
         actor = result.get(role)
         if isinstance(actor, dict):
-            result[role] = {field: actor[field] for field in _ACTOR_FIELDS if field in actor}
+            result[role] = project_actor_identity(actor)
     return result
 
 
