@@ -1,4 +1,5 @@
 """Cold-session recovery fault injection is testable without any model execution."""
+from contextlib import contextmanager
 import json
 import subprocess
 import sys
@@ -11,6 +12,110 @@ from support.evaluation_tmp import external_tmp_path as tmp_path
 from tools.codex_mcp_eval.recovery_process import interruptible_process
 from tools.codex_mcp_eval.work_recovery import RecoveryController, RECOVERY_SCENARIOS, persisted_calls
 from tools.codex_mcp_eval.research_files import ResearchFiles
+
+
+@contextmanager
+def _rethrow_recovery_failure(monkeypatch, scenario, mode):
+    """Expose the first caught exception only after the runner finishes cleanup."""
+    from tools.codex_mcp_eval import attempts, recovery_runner
+    mark_failure = attempts.mark_infrastructure_failure
+    failures = []
+
+    def capture(record, exc, stage):
+        failures.append((exc, exc.__traceback__, stage, record))
+        return mark_failure(record, exc, stage)
+
+    def settlement(value):
+        return {key: value[key] for key in
+                ("complete", "timedOut", "afterTeardown", "timeoutSeconds", "waitSeconds") if key in value} | {
+                    "active": None if value.get("active") is None else {
+                        key: value["active"].get(key) for key in
+                        ("provider", "transport", "tool", "file", "protocol")}}
+
+    def selected(record):
+        return {key: record.get(key) for key in ("sourceRevision", "modelAttempted", "attemptCaptured")} | {
+            "infrastructureErrors": [{key: error.get(key) for key in ("stage", "errorType")}
+                                     for error in record.get("infrastructureErrors", [])],
+            "settlement": settlement(record.get("settlement") or {}),
+            "settlementHistory": [settlement(value) for value in record.get("settlementHistory", [])]}
+
+    with monkeypatch.context() as patch:
+        patch.setattr(recovery_runner, "mark_infrastructure_failure", capture)
+        patch.setattr(attempts, "mark_infrastructure_failure", capture)
+        yield
+    if failures:
+        exc, original_traceback, stage, record = failures[0]
+        exc.add_note(json.dumps({"scenario": scenario, "mode": mode, "firstStage": stage,
+            "originalTracebackAvailable": original_traceback is not None,
+            "stages": [{"stage": item[2], "errorType": type(item[0]).__name__} for item in failures],
+            "firstAttempt": selected(record),
+            "phases": [selected(phase) for phase in failures[-1][3].get("phases", [])]}, sort_keys=True))
+        raise exc.with_traceback(original_traceback)
+
+
+@pytest.mark.parametrize("marker_module", ["runner", "attempts"])
+def test_expected_success_capture_preserves_first_traceback_and_cleanup(monkeypatch, marker_module):
+    import traceback
+    from tools.codex_mcp_eval import attempts, recovery_runner
+    originals = (recovery_runner.mark_infrastructure_failure, attempts.mark_infrastructure_failure)
+    first = LookupError("original synthetic failure")
+    record = {"output": {"token": "not-for-diagnostics"}, "modelAttempted": True,
+              "settlementHistory": [{"complete": False, "timedOut": True}]}
+    cleanup = []
+
+    def original_failure():
+        raise first
+
+    with pytest.raises(LookupError) as caught:
+        with _rethrow_recovery_failure(monkeypatch, "synthetic", "uninterrupted"):
+            try:
+                try:
+                    original_failure()
+                except LookupError as exc:
+                    module = recovery_runner if marker_module == "runner" else attempts
+                    module.mark_infrastructure_failure(record, exc, "initial_failure")
+            finally:
+                cleanup.append("finished")
+                record["settlement"] = {"complete": True, "timedOut": False,
+                                        "active": {"provider": 0}, "token": "not-for-diagnostics"}
+                record["settlementHistory"].append(record["settlement"])
+            attempts.mark_infrastructure_failure(record, RuntimeError("later failure"), "later_failure")
+
+    assert caught.value is first
+    assert "original_failure" in [frame.f_code.co_name for frame, _ in traceback.walk_tb(first.__traceback__)]
+    assert cleanup == ["finished"]
+    assert record["automaticPass"] is False
+    assert [item["stage"] for item in record["infrastructureErrors"]] == ["initial_failure", "later_failure"]
+    details = json.loads(first.__notes__[-1])
+    assert details["firstStage"] == "initial_failure"
+    assert details["firstAttempt"]["settlement"]["complete"] is True
+    assert [item["timedOut"] for item in details["firstAttempt"]["settlementHistory"]] == [True, False]
+    assert "not-for-diagnostics" not in first.__notes__[-1]
+    assert originals == (recovery_runner.mark_infrastructure_failure, attempts.mark_infrastructure_failure)
+
+
+def test_expected_success_capture_leaves_success_unchanged(monkeypatch):
+    from tools.codex_mcp_eval import attempts, recovery_runner
+    originals = (recovery_runner.mark_infrastructure_failure, attempts.mark_infrastructure_failure)
+    record = {"automaticPass": True}
+    with _rethrow_recovery_failure(monkeypatch, "synthetic", "uninterrupted"):
+        result = record
+    assert result is record and record == {"automaticPass": True}
+    assert originals == (recovery_runner.mark_infrastructure_failure, attempts.mark_infrastructure_failure)
+
+
+def test_expected_success_capture_labels_unraised_observer_failure(monkeypatch):
+    from tools.codex_mcp_eval import attempts
+    failure = TimeoutError()
+    record = {"settlement": {"complete": None, "active": None}}
+    with pytest.raises(TimeoutError) as caught:
+        with _rethrow_recovery_failure(monkeypatch, "synthetic", "uninterrupted"):
+            attempts.mark_infrastructure_failure(record, failure, "observer_settlement_timeout")
+    assert caught.value is failure
+    details = json.loads(failure.__notes__[-1])
+    assert details["originalTracebackAvailable"] is False
+    assert details["firstStage"] == "observer_settlement_timeout"
+    assert details["firstAttempt"]["settlement"]["active"] is None
 
 
 def test_interruptible_process_stops_and_retains_stdout():
@@ -218,8 +323,9 @@ def test_real_mcp_cold_restart_and_controlled_source_changes(tmp_path, monkeypat
     options = SimpleNamespace(date="2026-11-09", model="stub", effort="stub", timeout=10,
         skill_transport="fallback", recovery_scenario=scenario, recovery_mode=mode)
     case = next(c for c in work_cases.CASES if c["id"] == "WORK-R02-boundary")
-    record = run_recovery_case(case, options, "stub", tmp_path / "run", fake_cli, work_cases,
-                               artifact_root=tmp_path, fixture_factory=fixture)
+    with _rethrow_recovery_failure(monkeypatch, scenario, mode):
+        record = run_recovery_case(case, options, "stub", tmp_path / "run", fake_cli, work_cases,
+                                   artifact_root=tmp_path, fixture_factory=fixture)
     assert record["automaticPass"], {
         "contract": record["automaticContract"],
         "infrastructureErrors": record.get("infrastructureErrors"),
