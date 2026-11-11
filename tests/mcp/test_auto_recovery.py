@@ -53,8 +53,8 @@ def test_one_late_heartbeat_does_not_reject_a_responsive_worker(build_env, obser
 def test_live_app_automatically_rebuilds_stopped_sdk_and_all_profiles(build_env, monkeypatch):
     env = build_env()
     host = env.runtime.transport_host
-    host.monitor_interval = .01
-    host.probe_timeout = .5
+    # Keep production heartbeat timing while the real SDK builds its catalog.
+    # This test injects worker exit; the blocked-loop test covers heartbeat expiry.
     monkeypatch.setattr(env.runtime, "get_client", lambda: pytest.fail("recovery must not initialize Jira"))
     original_client, original_cache = env.client, env.cache
     token = env.runtime.credentials.token()
@@ -95,8 +95,7 @@ def test_live_app_automatically_rebuilds_stopped_sdk_and_all_profiles(build_env,
 def test_health_and_restart_ack_use_no_jira_and_deduplicate_generation(build_env, monkeypatch):
     env = build_env()
     host = env.runtime.transport_host
-    host.monitor_interval = .01
-    host.probe_timeout = .5
+    # Manual restart should use the same monitor cadence as production.
     monkeypatch.setattr(env.runtime, "get_client", lambda: pytest.fail("health tools must not initialize Jira"))
 
     async def scenario():
