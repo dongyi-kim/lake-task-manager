@@ -220,7 +220,13 @@ def test_real_mcp_cold_restart_and_controlled_source_changes(tmp_path, monkeypat
     case = next(c for c in work_cases.CASES if c["id"] == "WORK-R02-boundary")
     record = run_recovery_case(case, options, "stub", tmp_path / "run", fake_cli, work_cases,
                                artifact_root=tmp_path, fixture_factory=fixture)
-    assert record["automaticPass"], record["automaticContract"]
+    assert record["automaticPass"], {
+        "contract": record["automaticContract"],
+        "infrastructureErrors": record.get("infrastructureErrors"),
+        "phases": [{"infrastructureErrors": phase.get("infrastructureErrors"),
+                    "settlement": phase.get("settlement")}
+                   for phase in record.get("phases", [])],
+    }
     assert len(record["phases"]) == (2 if mode == "restarted" else 1)
     assert bool(record["recovery"]["trigger"]) == (mode == "restarted")
     if mode == "uninterrupted" or scenario == "source-changed":
